@@ -2231,11 +2231,13 @@ K('#51', 0, () => 0);
 // returns there with the target's EAX, the target's own argument pops undone (KERNEL32 restores ESP with LEAVE)
 API.KERNEL32['#51'] = ['regs', function () {
   if (!this.nativeUser16()) { const sp = this.reg('esp'), r = this.r32(sp); this.reg('esp', sp + 4); this.reg('eax', 0); return r; }
+  // as a continuation, so a target that waits (a message box's loop) can give up the processor: the arguments are
+  // copied below, the target returns through a return thunk, which moves ESP back and goes on at `ret`
   const esp = this.reg('esp'), target = this.r32(esp), ret = this.r32(esp + 4);
-  const args = []; for (let i = 0; i < 10; i++) args.push(this.r32(esp + 8 + 4 * i));
-  const eax = this.call(target, args);
-  this.reg('eax', eax); this.reg('esp', esp + 8);
-  return ret;
+  let sp = esp - 40; this.u8.copyWithin(sp, esp + 8, esp + 48);
+  sp -= 4; this.w32(sp, this.thunkFor('KERNEL32', '__Ret32.' + this.retToken({ done() { this.reg('esp', esp + 8); return ret; } })));
+  this.reg('esp', sp);
+  return target;
 }];
 K('#68', 3, function (sp) { return this.lin(sp); });      // K32WOWGetVDMPointerFix
 K('#69', 1, () => 0);
