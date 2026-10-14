@@ -1441,6 +1441,10 @@ def16('KERNEL', 517, '', 'jmp', function () {
 // thread runs here, so there is nothing to boost
 def16('KERNEL', 535, 'll', 'v', function () {});
 def16('KERNEL', 536, 'll', 'v', function () {});
+for (const o of [531, 532, 542]) def16('KERNEL', o, '', 'jmp', function () {   // TEMP probe
+  const f = this.cpu.ssb.value + (this.cpu.esp.value & 0xffff); (window.__k5 = window.__k5 || []).push([o, [0, 2, 4, 6, 8, 10, 12, 14].map(k => this.r16(f + k).toString(16)).join(' ')]);
+  this.trapped = 'probe ' + o; return LAYOUT.SENTINEL;
+});
 // KRNL386 seg2:7A70 (#618): the size in bytes of a Win32 dialog template, DLGTEMPLATE or DLGTEMPLATEEX (signature
 // FFFF0001), as USER needs it to copy one; items are DWORD-aligned
 def16('KERNEL', 618, 'x', 'w', function (sp) {
