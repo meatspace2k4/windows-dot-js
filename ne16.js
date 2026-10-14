@@ -443,7 +443,11 @@ const vxdApi = (id, name, fns) => {
   VXD_API[id] = { name, fns };
   def16('VXD', id, '', 'jmp', function () {
     const f = this.cpu.eax.value & 0xffff, h = fns[f];
-    if (!h) { this.trapped = `unimplemented ${name} (VxD ${id.toString(16)}h) API function ${f.toString(16)}h`; return LAYOUT.SENTINEL; }
+    if (!h) {
+      const ret = this.cpu.ssb.value + (this.cpu.esp.value & 0xffff), m = this.neByHandle(this.r16(ret + 2));
+      this.trapped = `unimplemented ${name} (VxD ${id.toString(16)}h) API function ${f.toString(16)}h, called from ${m ? m.name : '?'} ${this.r16(ret + 2).toString(16)}:${this.r16(ret).toString(16)}`;
+      return LAYOUT.SENTINEL;
+    }
     const r = h.call(this); if (r !== undefined) this.cpu.eax.value = lo16(this.cpu.eax.value, r);
     return this.retf16(0);
   });
@@ -461,7 +465,20 @@ vxdApi(0x0442, 'VTDAPI', {
   // a selector to the system time in milliseconds, which USER reads for message times (the VxD keeps it current;
   // here it is refreshed whenever native code calls out)
   9() { if (!this.timeLin) { this.timeLin = this.alloc(16); this.timeSel = this.allocSels(this.timeLin, 16); } this.tick16(); return this.timeSel; },
+  // a periodic callback, as SYSTEM.DRV registers its timer handler: ES:BX -> { min ms, max ms, far handler, ...,
+  // flags }; run by timers16() at the shorter period
+  7() {
+    const a = this.lin((this.cpu.es.value << 16) | (this.cpu.ebx.value & 0xffff));
+    (this.vtdCallbacks = this.vtdCallbacks || []).push({ ms: this.r16(a) || 55, off: this.r16(a + 4), sel: this.r16(a + 6), due: this.now() + (this.r16(a) || 55) });
+    return 1;
+  },
 });
+/** call the VTDAPI periodic callbacks that are due; the host runs this between slices of guest code */
+P.timers16 = function () {
+  if (!this.vtdCallbacks || this.depth) return;
+  const now = this.now();
+  for (const c of this.vtdCallbacks) if (now >= c.due) { c.due = Math.max(c.due + c.ms, now); this.tick16(); this.call16(c.sel, c.off, []); }
+};
 
 // the display VxD's driver interface (minivdd): registration, mode-change notifications and the display configuration
 P.displayConfig = function () {
