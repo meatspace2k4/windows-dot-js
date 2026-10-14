@@ -939,7 +939,17 @@ def('KERNEL32', 'SetThreadPriority', 2, () => 1);
 def('KERNEL32', 'GetThreadPriority', 1, () => 0);
 def('KERNEL32', 'OpenProcess', 3, function (a, inh, pid) { return this.newHandle({ kind: 'process', pid }); });
 def('KERNEL32', 'DeviceIoControl', 8, function () { this.lastError = 50; return 0; });
-def('KERNEL32', 'LoadLibraryExA', 3, function (name, f, fl) { return API.KERNEL32.LoadLibraryA[1].call(this, name); });
+// LOAD_LIBRARY_AS_DATAFILE (2): only a file that is a Win32 image loads (VERSION.DLL tries every file it is given this
+// way first); anything else fails with ERROR_BAD_EXE_FORMAT
+def('KERNEL32', 'LoadLibraryExA', 3, function (name, f, fl) {
+  if (fl & 2) {
+    const path = this.readA(name) || '';
+    let pe = false;
+    try { const b = this.fs.readFile(this.fs.resolve ? this.fs.resolve(path) : path); const o = b.length > 0x40 ? b[0x3c] | b[0x3d] << 8 | b[0x3e] << 16 | b[0x3f] << 24 : 0; pe = b[0] === 0x4d && b[1] === 0x5a && o + 4 <= b.length && b[o] === 0x50 && b[o + 1] === 0x45 && !b[o + 2] && !b[o + 3]; } catch (_) { pe = false; }
+    if (!pe) { this.lastError = 193; return 0; }
+  }
+  return API.KERNEL32.LoadLibraryA[1].call(this, name);
+});
 def('KERNEL32', 'WriteProfileStringA', 3, function (sec, key, v) { return API.KERNEL32.WritePrivateProfileStringA[1].call(this, sec, key, v, 0); });
 def('KERNEL32', 'GetProfileIntA', 3, function (sec, key, dflt) { return API.KERNEL32.GetPrivateProfileIntA[1].call(this, sec, key, dflt, 0); });
 def('KERNEL32', 'GetNumberFormatA', 6, function (lc, fl, val, fmt, out, n) {
