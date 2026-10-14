@@ -654,17 +654,16 @@ function taskbarProperties(page = 0) {
   // the picture above the options: the Start menu (large or small icons) over the taskbar, the clock shown or not,
   // a window over the taskbar when it is not on top, the taskbar gone to an edge when it hides
   const preview = {
-    type: 'custom', page: 0, x: 18, y: 16, w: 334, h: 150,
+    type: 'custom', page: 0, x: 48, y: 36, w: 274, h: 130,
     draw(a) {
-      fill(a.x, a.y, a.w, a.h, '#008080');
-      const sm = IMG[opt.small ? 'tpstartsmall' : 'tpstartlarge'], bar = IMG.tpbar, by = a.y + a.h - bar.height + (opt.autohide ? bar.height - 3 : 0);
-      const drawBar = () => {
-        ctx.drawImage(bar, a.x + ((a.w - bar.width) >> 1), by);
-        if (!opt.clock) { const e = IMG.tpbarend; ctx.drawImage(e, a.x + ((a.w + bar.width) >> 1) - e.width, by + ((bar.height - e.height) >> 1)); }
-      };
-      if (!opt.autohide) ctx.drawImage(sm, a.x + ((a.w - bar.width) >> 1), a.y + a.h - bar.height - sm.height + 4);
-      if (opt.ontop) { drawBar(); } else { drawBar(); ctx.drawImage(IMG.tpontop, a.x + a.w - IMG.tpontop.width - 40, a.y + a.h - IMG.tpontop.height + 6); }
-      if (opt.autohide) ctx.drawImage(IMG.tpautohide, a.x + a.w - IMG.tpautohide.width - 40, a.y + 30);
+      const sc = IMG.tpscene, bar = IMG.tpbar, by = a.y + a.h - bar.height;
+      ctx.drawImage(sc, a.x, a.y);
+      if (!opt.small) ctx.drawImage(IMG.tpstartlarge, a.x, by - IMG.tpstartlarge.height);
+      if (!opt.autohide) {
+        ctx.drawImage(bar, a.x + 2, by);
+        if (!opt.clock) ctx.drawImage(IMG.tpnoclock, a.x + 2 + bar.width - IMG.tpnoclock.width, by + ((bar.height - IMG.tpnoclock.height) >> 1));
+      }
+      if (!opt.ontop) ctx.drawImage(IMG.tpwindow, a.x + 150, by - 14);
     },
   };
   const apply = () => {
@@ -675,7 +674,7 @@ function taskbarProperties(page = 0) {
   const clearBtn = { type: 'button', page: 1, x: 270, y: 252, w: 75, h: 23, label: '&Clear', disabled: !fs.readdir(RECENT).length, fn: clear };
   win = dialog('Taskbar Properties', 370, 330, [
     { type: 'tabs', x: 6, y: 6, w: 358, h: 290, tabs: ['Taskbar Options', 'Start Menu Programs'] },
-    { ...preview, y: 36 },
+    preview,
     chk('&Always on top', 'ontop', 196), chk('A&uto hide', 'autohide', 216), chk('Show &small icons in Start menu', 'small', 236), chk('Show &Clock', 'clock', 256),
     { type: 'group', page: 1, x: 16, y: 36, w: 338, h: 170, label: 'Customize Start Menu' },
     { type: 'icon', page: 1, name: 'programs32', x: 28, y: 58 },
@@ -2968,7 +2967,7 @@ function elements() {
   add('pushbutton', 'Start', L.start, { window: 'Taskbar', pressed: !!(menuSrc && menuSrc.kind === 'start') });
   for (const b of L.btns) add('pushbutton', b.t.title, b, { window: 'Taskbar', pressed: b.t === active && !b.t.min });
   for (const i of L.icons) add('icon', i.t.tip, i, { window: 'Taskbar' });
-  add('clock', clockStr(), L.tray, { window: 'Taskbar' });
+  if (tbar.clock) add('clock', clockStr(), L.tray, { window: 'Taskbar' });
   menus.forEach((m, d) => m.items.forEach((it, i) => {
     const r = m.rows[i]; if (it.sep) return;
     add('menuitem', label(it.label), { x: m.x + 3, y: m.y + r.y, w: m.w - 6, h: r.h }, { window: 'Menu', depth: d, disabled: !!it.disabled, submenu: !!it.sub, hot: m.hover === i, checked: !!it.check });

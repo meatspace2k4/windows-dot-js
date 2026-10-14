@@ -21,13 +21,12 @@ MAGENTA, SILVER = (255, 0, 255), (192, 192, 192)
 img = {
     'tbstd': png('comctl32_bmp_120.png', SILVER),      # IDB_STD_SMALL_COLOR: cut copy paste undo redo delete new open save ...
     'tbview': png('comctl32_bmp_124.png', SILVER),     # IDB_VIEW_SMALL_COLOR: large small list details ... parent, map/disconnect drive
-    'tpstartlarge': png('explorer_bmp_149.png'),       # Taskbar Properties previews
-    'tpstartsmall': png('explorer_bmp_150.png'),
-    'tpbar': png('explorer_bmp_151.png'),
-    'tpbarend': png('explorer_bmp_152.png'),
-    'tpclock': png('explorer_bmp_153.png'),
-    'tpontop': png('explorer_bmp_144.png'),
-    'tpautohide': png('explorer_bmp_145.png'),
+    'tpscene': png('explorer_bmp_149.png'),            # Taskbar Properties preview: the screen, small-icon Start menu
+    'tpstartlarge': png('explorer_bmp_150.png'),       # the large-icon Start menu laid over it
+    'tpbar': png('explorer_bmp_151.png'),              # the taskbar with its clock
+    'tpnoclock': png('explorer_bmp_153.png'),          # the taskbar's right end without the clock
+    'tpwindows': png('explorer_bmp_144.png'),           # windows, for a taskbar that is not on top
+    'tpwindow': png('explorer_bmp_145.png'),
     'taskbar16': png('shell32_ico_40_16x16_4.png'),        # Settings > Taskbar...
     'taskbar32': png('shell32_ico_40_32x32_4.png'),
 }
