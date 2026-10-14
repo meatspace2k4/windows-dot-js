@@ -1279,7 +1279,7 @@ def16('KERNEL', 517, '', 'jmp', function () {
   const n = this.r32(f + 4) & 0x7fffffff, mask = this.r32(f + 8), proc = this.r32(f + 12);
   const args = new Array(n);
   for (let i = 0; i < n; i++) { const v = this.r32(f + 16 + 4 * i); args[n - 1 - i] = mask & (1 << i) ? this.lin(v) : v; }
-  const r = u32(this.callFlatFrom16(proc, args));
+  const r = u32(this.callFlatFrom16(proc, args)); if (window.W95CP32) window.W95CP32(proc, args, r);
   this.cpu.eax.value = r | 0; this.cpu.edx.value = lo16(this.cpu.edx.value, r >>> 16);
   return this.retf16(12 + 4 * n);
 });
@@ -1427,8 +1427,17 @@ def16('KERNEL', 453, 'lx', 'l', function (h, name) {
   if (!(name >>> 16)) return m.exports.get('#' + (name & 0xffff)) || 0;
   return m.exports.get(this.readA(this.lin(name))) || 0;
 });
-def16('KERNEL', 472, 'l', 'w', function (h32) { return h32 ? this.hinst16(h32) : 0; });   // MapHInstLS
-def16('KERNEL', 473, 'w', 'l', function (h16) { return this.hinst32(h16); });              // MapHInstSL
+// MapHInstLS / MapHInstSL take and return registers, as KRNL386's do (seg3:07DC, seg3:0811): EAX = Win32 handle ->
+// AX = 16-bit handle (a value of 64K or less is already one; 0 is the current task's), and AX = 16-bit handle ->
+// EAX = the Win32 module it stands in for (the 16-bit handle itself when it is not one)
+def16('KERNEL', 472, '', 'jmp', function () {
+  const h = u32(this.cpu.eax.value), r = h > 0xffff ? this.hinst16(h) : h || (this.exe ? this.hinst16(this.exe.base) : 0);
+  this.cpu.eax.value = lo16(this.cpu.eax.value, r); return this.retf16(0);
+});
+def16('KERNEL', 473, '', 'jmp', function () {
+  const h = this.cpu.eax.value & 0xffff, h16 = h || (this.exe ? this.hinst16(this.exe.base) : 0);
+  this.cpu.eax.value = (this.hinst32(h16) || h) | 0; return this.retf16(0);
+});
 def16('KERNEL', 476, 'l', 'l', function (h) { return h; });                                            // ConvertToGlobalHandle: one process, so already global
 def16('KERNEL', 474, 'l', 'w', function (h) { return this.handles.delete(h) ? 1 : 0; });               // CloseW32Handle
 def16('KERNEL', 105, '', 'w', function () { return 0x0400; });                                         // GetExeVersion: system code expects Windows 4.0
