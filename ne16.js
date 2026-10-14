@@ -1478,6 +1478,8 @@ def16('KERNEL', 56, '', 'jmp', function () {
   this.seg('ds', w(6)); this.ax(v);
   this.seg('cs', w(1)); return u32(this.selBase(w(1)) + w(0));
 });
+// KRNL386 seg1:5CD0 (#490): exchanges a KERNEL word (its data at 121Ah) with the argument, returning the old value
+def16('KERNEL', 490, 'w', 'w', function (v) { const o = this.k490 || 0; this.k490 = v; return o; });
 // KRNL386 seg1:7A28 (#365): adds `delta` (+1 or -1) to the lock count of the global block a selector belongs to; the
 // callback relays lock the caller's stack segment while 32-bit code holds pointers into it
 def16('KERNEL', 365, 'wi', 'v', function (sel, delta) {
