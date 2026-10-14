@@ -504,6 +504,7 @@ def('KERNEL32', 'GetModuleFileNameA', 3, function (h, buf, n) { return this.writ
 def('KERNEL32', 'ExitProcess', 1, function (code) { this.exitCode = code; this.host.exited(code); return 0; });
 def('KERNEL32', 'TerminateProcess', 2, function (h, code) { this.exitCode = code; this.host.exited(code); return 1; });
 def('KERNEL32', 'GetCurrentProcess', 0, () => 0xffffffff);
+def('KERNEL32', 'DisableThreadLibraryCalls', 1, () => 1);   // one thread: there are no thread attach notices to stop
 def('KERNEL32', 'GetTickCount', 0, function () { return (this.now() - this.t0 + 3600000) >>> 0; });
 def('KERNEL32', 'Sleep', 1, function () { return 0; });
 def('KERNEL32', 'GetVersion', 0, () => 0xc0000004);
