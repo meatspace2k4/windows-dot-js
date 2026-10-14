@@ -1,3 +1,9 @@
+# WITHDRAWN: not a bug
+
+Result: `origin` is "null" and `title` is "". The Client module runs in its own
+sandboxed, opaque-origin frame. `document` is that frame's document, not the
+desktop app's, so the write landed inside the pane only.
+
 # Desktop: plugin `Client` modules run in the host app's document
 
 **Version:** Claude Code 2.1.295 (mod loaded), CLI now 2.1.296; Claude desktop app, Code tab, macOS.
