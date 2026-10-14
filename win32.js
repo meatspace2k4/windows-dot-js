@@ -535,6 +535,7 @@ def('KERNEL32', 'LoadLibraryA', 1, function (n) {
   const name = (this.readA(n) || '').toUpperCase().replace(/^.*\\/, '').replace(/\.DLL$/, '');
   const native = this.loadDll(name);
   if (native) { const pending = this.inits; this.inits = []; for (const m of pending) this.call(m.meta.entry, [m.base, 1, 0]); return native.base; }
+  if (!API[name]) { this.lastError = 126; return 0; }   // ERROR_MOD_NOT_FOUND: neither a system DLL here nor one implemented in JS
   return 0x10000000 | (this.newHandle({ kind: 'module', name }) & 0xffff);
 });
 def('KERNEL32', 'FreeLibrary', 1, () => 1);
