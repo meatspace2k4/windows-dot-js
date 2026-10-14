@@ -1168,7 +1168,24 @@ P.neResources = function (m) {
   return (m.res = out);
 };
 const resKey = function (sp) { if (!(sp >>> 16)) return sp & 0xffff; const s = this.readA(this.lin(sp)); return s[0] === '#' ? parseInt(s.slice(1), 10) : s.toUpperCase(); };
+// a Win32 module's resources, reached through its 16-bit handle (USER loading for a Win32 program); returned in the
+// layout 16-bit USER reads: accelerator tables go from 8-byte to 5-byte entries
+const res32 = (p, h32, id, type) => {
+  const mod = p.moduleFor(h32); if (!mod || mod.base !== h32) return null;
+  const r = p.findResource(type, id, mod); if (!r) return null;
+  let data = p.u8.slice(r.addr, r.addr + r.size);
+  if (type === 9) {   // RT_ACCELERATOR
+    const out = []; for (let o = 0; o + 8 <= data.length; o += 8) { out.push(data[o], data[o + 2], data[o + 3], data[o + 4], data[o + 5]); if (data[o] & 0x80) break; }
+    data = new Uint8Array(out);
+  }
+  return data;
+};
 def16('KERNEL', 60, 'wxx', 'w', function (h, name, type) {     // FindResource
+  const h32 = this.hinst32 && this.hinst32(h);
+  if (h32) {
+    const data = res32(this, h32, resKey.call(this, name), resKey.call(this, type)); if (!data) return 0;
+    (this.resHandles = this.resHandles || []).push({ data }); return this.resHandles.length * 4;
+  }
   const m = this.neByHandle(h); if (!m) return 0;
   const k = resKey.call(this, name), t = resKey.call(this, type);
   const i = this.neResources(m).findIndex(r => r.id === k && r.type === t);
@@ -1177,6 +1194,7 @@ def16('KERNEL', 60, 'wxx', 'w', function (h, name, type) {     // FindResource
 });
 def16('KERNEL', 61, 'ww', 'w', function (h, hr) {               // LoadResource
   const e = this.resHandles && this.resHandles[hr / 4 - 1]; if (!e) return 0;
+  if (!e.g && e.data) { e.g = this.globalAlloc16(0, e.data.length || 1); this.u8.set(e.data, this.gblock(e.g).lin); }
   if (!e.g) { e.g = this.globalAlloc16(0, e.r.len); this.u8.set(e.m.file.subarray(e.r.off, e.r.off + e.r.len), this.gblock(e.g).lin); }
   return e.g;
 });
