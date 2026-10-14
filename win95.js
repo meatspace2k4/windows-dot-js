@@ -549,13 +549,14 @@ function unpackState(b) {
   const n = dv.getUint32(8, true);
   return { registry: JSON.parse(new TextDecoder().decode(b.subarray(12, 12 + n))), disk: b.subarray(12 + n) };
 }
+// true when C: was set up fresh this run
 function boot() {
   const saved = host && host.load();
   if (saved) {
     try {
       const st = unpackState(saved);
       mountDrives(); fs.restore('C', st.disk); W95Win32.regRestore(st.registry); fs.chdir('C:\\');
-      return;
+      return false;
     } catch (e) {
       console.error('saved state unreadable, starting fresh:', e);
       host.discard();
@@ -563,6 +564,7 @@ function boot() {
     }
   }
   makeDisk();
+  return true;
 }
 let saveTimer = 0, saveFirst = 0;
 function scheduleSave() {
@@ -577,12 +579,12 @@ function saveNow() {
   clearTimeout(saveTimer); saveTimer = 0;
   try { host.save(packState()); } catch (e) { console.error('saving state failed:', e); }
 }
-function persistChanges() {
+function persistChanges(fresh) {
   if (!host) return;
   fs.on(e => { if ([e.path, e.path2].some(p => p && /^C:/i.test(p))) scheduleSave(); });
   W95Win32.regOn(scheduleSave);
   window.addEventListener('beforeunload', () => { if (saveTimer) { clearTimeout(saveTimer); saveTimer = 0; host.saveSync(packState()); } });
-  if (!host.load.lastHadState) saveNow();
+  if (fresh) saveNow();
 }
 
 // ---------------------------------------------------------------- shell namespace
@@ -2379,8 +2381,7 @@ function resize() {
 window.addEventListener('resize', resize);
 setInterval(() => { blinkOn = !blinkOn; dirty(); }, 530);
 
-boot();
-persistChanges();
+persistChanges(boot());
 desk.src = new FsSource(DESKTOP_DIR);
 fs.on(() => dirty());
 Promise.all(ready).then(() => { resize(); kbd.focus(); dirty(); });
