@@ -1278,6 +1278,8 @@ def16('KERNEL', 568, 'llw', 'l', function (target, relay, owner) {
   t.used += 17;
   const sp = u32((t.sel << 16) | off); this.thunklets.set(key, sp); return sp;
 });
+// AllocSLThunkletCallback (#562): #568 for the current owner, as KRNL386 forwards it
+def16('KERNEL', 562, 'll', 'l', function (target, relay) { return K16['KERNEL.#568'][2].call(this, target, relay, 0); });
 // The glue every thunklet jumps to (KRNL386 seg2:75E6, which InitCBClient installs). On entry the 16-bit stack holds
 // [relay index][client id][target][return CS:IP][arguments]; it saves BP, SI, DI and DS with BP at the saved BP and
 // jumps to the client's 16-bit relay for that index (RegisterCBClient's table), which moves on to the 32-bit side.
@@ -1374,6 +1376,12 @@ def16('KERNEL', 615, 'lll', 'v', function (src, size, dst) {
     const extra = r16(); if (ex) w16(extra); else b(extra & 0xff);
     if (extra) copy(extra);
   }
+});
+// GetDummyModuleHandleDS (#602): for a Win32 task, AX and DS = the selector of its stand-in module (0 otherwise)
+def16('KERNEL', 602, '', 'jmp', function () {
+  const sel = this.exe && this.nativeUser16() && !this.thread16 ? this.hinst16(this.exe.base) : 0;
+  this.cpu.eax.value = lo16(this.cpu.eax.value, sel); if (sel) this.seg('ds', sel);
+  return this.retf16(0);
 });
 // KRNL386 seg1:7A28 (#365): adds `delta` (+1 or -1) to the lock count of the global block a selector belongs to; the
 // callback relays lock the caller's stack segment while 32-bit code holds pointers into it
