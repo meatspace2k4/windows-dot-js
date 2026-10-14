@@ -39,7 +39,7 @@ class Process {
     this.cpu = {};
     for (const n of CPU_REGS) this.cpu[n] = new WebAssembly.Global({ value: 'i32', mutable: true }, n === 'fcw' ? 0x37f : 0);
     this.depth = 0; this.exitCode = null; this.trapped = null; this.waiting = false; this.lastYield = 0;
-    this.t0 = host.now();
+    this.t0 = host.now(); this.busy = 0;
     this.thunks = []; this.thunkByName = new Map();
     this.handles = new Map(); this.nextHandle = 0x100;
     this.windows = new Map(); this.classes = new Map(); this.queue = []; this.timers = []; this.quit = null;
@@ -161,7 +161,7 @@ class Process {
   slice() {
     if (this.exitCode !== null) return false;
     if (this.trapped) { this.fail(this.trapped); return false; }
-    this.depth = 0; this.waiting = false; this.lastYield = this.host.now();
+    this.depth = 0; this.waiting = false; this.lastYield = this.now();
     const r = this.runAt(this.resumeEip);
     if (r === 1) { this.resumeEip = this.reg('eip'); return true; }
     if (r === 2 || this.trapped) { this.fail(this.trapped || `bad address ${this.reg('eip').toString(16)}`); return false; }
@@ -284,7 +284,7 @@ class Process {
     return this.call(w.proc, [hwnd, msg, u32(wp), u32(lp)]);
   }
   nextMessage(filter, remove) {
-    const now = this.host.now();
+    const now = this.now();
     let i = this.queue.findIndex(m => !filter || m.hwnd === filter);
     if (i >= 0) { const m = this.queue[i]; if (remove) this.queue.splice(i, 1); return m; }
     if (this.quit !== null) return { hwnd: 0, msg: WM.QUIT, wp: this.quit, lp: 0 };
@@ -297,11 +297,16 @@ class Process {
   }
   writeMsg(p, m) {
     this.w32(p, m.hwnd); this.w32(p + 4, m.msg); this.w32(p + 8, m.wp); this.w32(p + 12, m.lp);
-    this.w32(p + 16, (this.host.now() - this.t0) | 0); const c = this.host.cursor(); this.w32(p + 20, c.x); this.w32(p + 24, c.y);
+    this.w32(p + 16, (this.now() - this.t0) | 0); const c = this.host.cursor(); this.w32(p + 20, c.x); this.w32(p + 24, c.y);
   }
   /** Earliest time something becomes deliverable, for the host scheduler. */
+  /** Guest clock: real time, or later while the guest is still busy with work charged to it. */
+  now() { return Math.max(this.host.now(), this.busy); }
+  /** Charge ms of CPU time the original machine spent; the guest does not run again until it has elapsed. */
+  charge(ms) { if (ms > 0) this.busy = this.now() + ms; }
   ready() {
     if (this.exitCode !== null || this.trapped) return false;
+    if (this.host.now() < this.busy) return false;
     if (this.dlgDone) return true;
     if (this.modal) return false;
     if (!this.waiting) return true;
@@ -466,7 +471,7 @@ def('KERNEL32', 'GetModuleFileNameA', 3, function (h, buf, n) { return this.writ
 def('KERNEL32', 'ExitProcess', 1, function (code) { this.exitCode = code; this.host.exited(code); return 0; });
 def('KERNEL32', 'TerminateProcess', 2, function (h, code) { this.exitCode = code; this.host.exited(code); return 1; });
 def('KERNEL32', 'GetCurrentProcess', 0, () => 0xffffffff);
-def('KERNEL32', 'GetTickCount', 0, function () { return (this.host.now() - this.t0 + 3600000) >>> 0; });
+def('KERNEL32', 'GetTickCount', 0, function () { return (this.now() - this.t0 + 3600000) >>> 0; });
 def('KERNEL32', 'Sleep', 1, function () { return 0; });
 def('KERNEL32', 'GetVersion', 0, () => 0xc0000004);
 def('KERNEL32', 'GetVersionExA', 1, function (p) { this.w32(p + 4, 4); this.w32(p + 8, 0); this.w32(p + 12, 950); this.w32(p + 16, 1); this.writeA(p + 20, ' B'); return 1; });
@@ -862,7 +867,7 @@ def('USER32', 'GetMessageA', 4, function (p, hwnd) {
   this.writeMsg(p, m); return m.msg === WM.QUIT ? 0 : 1;
 });
 def('USER32', 'PeekMessageA', 5, function (p, hwnd, a, b, remove) {
-  if (this.depth === 0 && this.host.now() - this.lastYield > 15) { this.waiting = false; return YIELD; }
+  if (this.depth === 0 && this.now() - this.lastYield > 15) { this.waiting = false; return YIELD; }
   const m = this.nextMessage(hwnd, remove & 1);
   if (!m) return 0;
   this.writeMsg(p, m); return 1;
@@ -887,7 +892,7 @@ def('USER32', 'SetTimer', 4, function (h, id, ms, proc) {
   const q = Math.max(1, Math.ceil(ms / TICK_MS)) * TICK_MS;
   // with a window the caller's id is used as given (0 included); only window-less timers get a generated id
   const tid = h ? id : (0x7000 + this.timers.length);
-  this.timers.push({ hwnd: h, id: tid, ms: q, proc, due: this.host.now() + q }); return h ? (id || 1) : tid;
+  this.timers.push({ hwnd: h, id: tid, ms: q, proc, due: this.now() + q }); return h ? (id || 1) : tid;
 });
 def('USER32', 'KillTimer', 2, function (h, id) { this.timers = this.timers.filter(t => !(t.hwnd === h && t.id === id)); return 1; });
 def('USER32', 'GetClientRect', 2, function (h, p) {
