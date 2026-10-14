@@ -318,7 +318,8 @@ function translate(p, lin, csb, d32) {
         if (osz === 4) {
           if (left) f.lg(B).lg(C).op('shl').lg(T).c(32).lg(C).op('sub').op('shr_u').op('or').ls(R).lg(B).c(32).lg(C).op('sub').op('shr_u').c(1).op('and').gs('cf');
           else f.lg(B).lg(C).op('shr_u').lg(T).c(32).lg(C).op('sub').op('shl').op('or').ls(R).lg(B).lg(C).c(1).op('sub').op('shr_u').c(1).op('and').gs('cf');
-        } else throw new Unsupported('16-bit shld/shrd');
+        } else if (left) f.lg(B).c(16).op('shl').lg(T).c(0xffff).op('and').op('or').lg(C).op('shl').c(16).op('shr_u').ls(R).lg(B).c(16).lg(C).op('sub').op('shr_u').c(1).op('and').gs('cf');
+        else f.lg(T).c(16).op('shl').lg(B).c(0xffff).op('and').op('or').lg(C).op('shr_u').c(0xffff).op('and').ls(R).lg(B).lg(C).c(1).op('sub').op('shr_u').c(1).op('and').gs('cf');   // counts past 16 are undefined on x86
         szp(osz); wr(o, osz, R); f.end(); continue;
       }
       if (b2 === 0xa0 || b2 === 0xa8) { f.gg(b2 === 0xa0 ? 'fsel' : 'gsel').ls(T); push(T, osz); continue; }
