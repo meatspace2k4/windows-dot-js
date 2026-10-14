@@ -1220,19 +1220,27 @@ P.neResources = function (m) {
 const resKey = function (sp) { if (!(sp >>> 16)) return sp & 0xffff; const s = this.readA(this.lin(sp)); return s[0] === '#' ? parseInt(s.slice(1), 10) : s.toUpperCase(); };
 // a Win32 menu template (Unicode) in the 16-bit layout: the same items with ANSI text
 const menu16 = d => {
-  if (d[0] | d[1] << 8) return d;     // MENUEX: no 16-bit form
-  const out = [0, 0, 0, 0]; let o = 4 + (d[2] | d[3] << 8);
-  const text = () => { const c = []; for (;;) { const ch = d[o] | d[o + 1] << 8; o += 2; if (!ch || o > d.length) break; c.push(ch); } return window.W95FS.encode(String.fromCharCode(...c)); };
-  const level = () => {
-    while (o + 2 <= d.length) {
+  const out = [], ver = d[0] | d[1] << 8, hs = d[2] | d[3] << 8;
+  let o = 4; out.push(d[0], d[1], d[2], d[3]); for (let k = 0; k < hs; k++) out.push(d[o++]);
+  const text = () => { const c = []; for (;;) { const ch = d[o] | d[o + 1] << 8; o += 2; if (!ch || o > d.length) break; c.push(ch); } out.push(...window.W95FS.encode(String.fromCharCode(...c)), 0); };
+  // items as KRNL386 converts them: standard items keep flags, id (none for MF_POPUP) and the text in ANSI; MENUEX
+  // items become type, state, a word id, a byte resinfo and ANSI text, unaligned, popups followed by their help id
+  for (let level = 1; level && o + 2 <= d.length;) {
+    if (!ver) {
       const fl = d[o] | d[o + 1] << 8; o += 2; out.push(fl & 0xff, fl >> 8);
-      if (!(fl & 0x10)) { out.push(d[o], d[o + 1]); o += 2; }     // MF_POPUP items have no id
-      out.push(...text(), 0);
-      if (fl & 0x10) level();
-      if (fl & 0x80) return;                                        // MF_END
+      if (fl & 0x10) level++; else { out.push(d[o], d[o + 1]); o += 2; }
+      text();
+      if (fl & 0x80) level--;
+    } else {
+      for (let k = 0; k < 8; k++) out.push(d[o++]);
+      out.push(d[o], d[o + 1]); o += 4;
+      const fl = d[o] | d[o + 1] << 8; o += 2; out.push(fl & 0xff);
+      text(); o = (o + 3) & ~3;
+      if (fl & 1) { for (let k = 0; k < 4; k++) out.push(d[o++]); level++; }
+      if (fl & 0x80) level--;
     }
-  };
-  level(); return new Uint8Array(out);
+  }
+  return new Uint8Array(out);
 };
 // a Win32 dialog template (DLGTEMPLATE, or DLGTEMPLATEEX by its signature FFFF0001) in the layout 16-bit USER reads,
 // as KRNL386's converter (seg2:785E) writes it: a byte item count, items as x, y, cx, cy, id, style, predefined
