@@ -1232,8 +1232,41 @@ const menu16 = d => {
   };
   level(); return new Uint8Array(out);
 };
+// a Win32 dialog template (DLGTEMPLATE, or DLGTEMPLATEEX by its signature FFFF0001) in the layout 16-bit USER reads,
+// as KRNL386's converter (seg2:785E) writes it: a byte item count, items as x, y, cx, cy, id, style, predefined
+// classes as one byte, ANSI strings (characters with no ANSI form become '_'); the extended form keeps its extra
+// fields and word-sized extra counts. Items are DWORD-aligned in the source.
+const dialog16 = d => {
+  const out = []; let i = 0;
+  const r16 = () => { const v = d[i] | d[i + 1] << 8; i += 2; return v; }, r32 = () => { const v = (d[i] | d[i + 1] << 8 | d[i + 2] << 16 | d[i + 3] << 24) >>> 0; i += 4; return v; };
+  const b = v => out.push(v & 0xff), w16 = v => out.push(v & 0xff, (v >> 8) & 0xff), w32 = v => out.push(v & 0xff, (v >> 8) & 0xff, (v >> 16) & 0xff, (v >>> 24) & 0xff);
+  const copy = n => { for (let k = 0; k < n; k++) out.push(d[i + k]); i += n; };
+  const str = () => {
+    const c = []; for (;;) { const ch = r16(); if (!ch || i > d.length) break; c.push(ch); }
+    const t = window.W95FS.encode(String.fromCharCode(...c)); for (let k = 0; k < t.length; k++) b(c[k] < 0x80 || t[k] !== 0x3f ? t[k] : 0x5f); b(0);
+  };
+  const szOrOrd = () => { const v = d[i] | d[i + 1] << 8; if (!v) { i += 2; b(0); } else if ((v & 0xff) === 0xff) { i += 2; b(0xff); copy(2); } else str(); };
+  let style = r32(); const ex = style === 0xffff0001;
+  if (ex) { w32(style); copy(8); style = r32(); }
+  w32(style);
+  if (!ex) i += 4;
+  let n = r16() & 0xff; b(n); copy(8);
+  szOrOrd(); szOrOrd(); str();
+  if (style & 0x40) { copy(2); if (ex) copy(4); str(); }
+  for (; n; n--) {
+    i = (i + 3) & ~3;
+    if (ex) copy(24);
+    else { const st = (d[i] | d[i + 1] << 8 | d[i + 2] << 16 | d[i + 3] << 24) >>> 0; i += 8; copy(10); w32(st); }
+    const c = d[i] | d[i + 1] << 8;
+    if (!c) { i += 2; b(0); } else if (c === 0xffff) { i += 2; b(r16() & 0xff); } else str();   // class
+    szOrOrd();                                                                                     // text
+    const extra = r16(); if (ex) w16(extra); else b(extra & 0xff);
+    if (extra) copy(extra);
+  }
+  return new Uint8Array(out);
+};
 // a Win32 module's resources, reached through its 16-bit handle (USER loading for a Win32 program); returned in the
-// layout 16-bit USER reads: accelerator tables go from 8-byte to 5-byte entries, menus to ANSI text
+// layout 16-bit USER reads: accelerator tables go from 8-byte to 5-byte entries, menus and dialogs to ANSI text
 const res32 = (p, h32, id, type) => {
   const mod = p.moduleFor(h32); if (!mod || mod.base !== h32) return null;
   const r = p.findResource(type, id, mod); if (!r) return null;
@@ -1243,6 +1276,7 @@ const res32 = (p, h32, id, type) => {
     data = new Uint8Array(out);
   }
   if (type === 4) data = menu16(data);   // RT_MENU
+  if (type === 5) data = dialog16(data); // RT_DIALOG
   return data;
 };
 def16('KERNEL', 60, 'wxx', 'w', function (h, name, type) {     // FindResource
@@ -1316,6 +1350,18 @@ def16('KERNEL', 568, 'llw', 'l', function (target, relay, owner) {
   t.used += 17;
   const sp = u32((t.sel << 16) | off); this.thunklets.set(key, sp); return sp;
 });
+// AllocLSThunkletCallback (#561): a 32-bit entry for a 16-bit function, laid out as Windows 95 writes one (nop; push
+// dword target; nop; push dword relay; jmp glue) so 32-bit code can call it and recognise it; the glue is the 32-bit
+// routine InitCBClient registered (USER32's), which calls the target through the relay. Run by dataCode.
+def16('KERNEL', 561, 'll', 'l', function (target, relay) {
+  this.lsThunklets = this.lsThunklets || new Map();
+  for (const [a, t] of this.lsThunklets) if (t.target === u32(target) && t.relay === u32(relay)) return a;
+  const a = this.alloc(16);
+  this.u8.set([0x90, 0x68], a); this.w32(a + 2, target); this.u8.set([0x90, 0x68], a + 6); this.w32(a + 8, relay);
+  this.u8[a + 12] = 0xe9; this.w32(a + 13, u32((this.cbGlueLS || 0) - (a + 17)));
+  this.lsThunklets.set(a, { target: u32(target), relay: u32(relay) });
+  return a;
+});
 // AllocSLThunkletCallback (#562): #568 for the current owner, as KRNL386 forwards it
 def16('KERNEL', 562, 'll', 'l', function (target, relay) { return K16['KERNEL.#568'][2].call(this, target, relay, 0); });
 // The glue every thunklet jumps to (KRNL386 seg2:75E6, which InitCBClient installs). On entry the 16-bit stack holds
@@ -1385,35 +1431,10 @@ def16('KERNEL', 618, 'x', 'w', function (sp) {
   return o & 0xffff;
 });
 // KRNL386 seg2:785E (#615): a Win32 dialog template at flat `src` written at flat `dst` in the layout 16-bit USER
-// reads: a byte item count, items as x, y, cx, cy, id, style, predefined classes as one byte, ANSI strings (characters
-// with no ANSI form become '_'). DLGTEMPLATEEX keeps its extended fields and word-sized extra counts.
+// reads (dialog16)
 def16('KERNEL', 615, 'lll', 'v', function (src, size, dst) {
-  let i = u32(src), o = u32(dst);
-  const r16 = () => { const v = this.r16(i); i += 2; return v; }, r32 = () => { const v = this.r32(i); i += 4; return v; };
-  const b = v => { this.u8[o++] = v; }, w16 = v => { this.w16(o, v); o += 2; }, w32 = v => { this.w32(o, v); o += 4; };
-  const copy = n => { this.u8.copyWithin(o, i, i + n); o += n; i += n; };
-  const str = () => {
-    const c = []; for (;;) { const ch = r16(); if (!ch) break; c.push(ch); }
-    const t = window.W95FS.encode(String.fromCharCode(...c)); for (let k = 0; k < t.length; k++) b(c[k] < 0x80 || t[k] !== 0x3f ? t[k] : 0x5f); b(0);
-  };
-  const szOrOrd = () => { const v = this.r16(i); if (!v) { i += 2; b(0); } else if ((v & 0xff) === 0xff) { i += 2; b(0xff); copy(2); } else str(); };
-  let style = r32(); const ex = u32(style) === 0xffff0001;
-  if (ex) { w32(style); copy(8); style = r32(); }
-  w32(style);
-  if (!ex) i += 4;
-  let n = r16() & 0xff; b(n); copy(8);
-  szOrOrd(); szOrOrd(); str();
-  if (style & 0x40) { copy(2); if (ex) copy(4); str(); }
-  for (; n; n--) {
-    i = u32(src) + ((i - u32(src) + 3) & ~3);
-    if (ex) { copy(12); copy(2); copy(10); }
-    else { const st = this.r32(i); i += 8; copy(10); w32(st); }
-    const c = this.r16(i);
-    if (!c) { i += 2; b(0); } else if (c === 0xffff) { i += 2; b(r16() & 0xff); } else str();   // class
-    szOrOrd();                                                                                     // text
-    const extra = r16(); if (ex) w16(extra); else b(extra & 0xff);
-    if (extra) copy(extra);
-  }
+  const out = dialog16(this.u8.subarray(u32(src), u32(src) + (size || 0x10000)));
+  this.u8.set(out, u32(dst));
 });
 // GetDummyModuleHandleDS (#602): for a Win32 task, AX and DS = the selector of its stand-in module (0 otherwise)
 def16('KERNEL', 602, '', 'jmp', function () {
@@ -1898,7 +1919,7 @@ K('#91', 1, function (buf) { this.writeA(buf, ''); });                          
 KR('K32Thk1632Epilog', function () { return ret32(this); });
 K('#17', 0, () => 0);                                      // CommonUnimpStub
 K('#18', 2, function (pid, off) { return 0; });           // GetProcessDword
-K('#23', 0, () => 0);                                      // GDIReallyCares
+K('#23', 1, () => 0);                                      // GDIReallyCares (marks a handle's object as one GDI tracks)
 K('#38', 0, () => 0); K('#39', 0, () => 0);
 KR('#33', function () { return ret32(this); });    // frees 16-bit blocks a thread queued for release (thread flag 20h); none are queued here
 K('#48', 1, function (p) { if (p) this.w32(p, 0); return 0; });   // ReleaseThunkLock
@@ -1939,6 +1960,8 @@ K('EnumResourceNamesA', 4, () => 0);
  * Executing it is equivalent to setting those registers and jumping to the primer.
  */
 P.dataCode = function (eip) {
+  const tl = this.lsThunklets && this.lsThunklets.get(u32(eip));
+  if (tl) { push32(this, tl.target); push32(this, tl.relay); return this.cbGlueLS; }
   const ls = this.lsRelays && this.lsRelays.get(u32(eip));
   if (ls) {   // ThunkConnect32's relays: target n (CL, or the byte at [EBP-4] for QT_Thunk) of the table into EDX
     const n = ls.ft ? this.reg('ecx') & 0xff : this.u8[u32(this.reg('ebp') - 4)];
