@@ -293,6 +293,13 @@ const INTS = {
         (this.exVec = this.exVec || {})[`${ax === 0x0283 ? 0x0202 : ax - 1}:${bx & 0xff}`] = u32((cx << 16) | (this.cpu.edx.value & 0xffff)); return;
       case 0x0501: { const n = u32((bx << 16) | cx), p = this.alloc(n); this.cpu.ebx.value = lo16(this.cpu.ebx.value, p >>> 16); this.cpu.ecx.value = lo16(this.cpu.ecx.value, p);
         this.cpu.esi.value = lo16(this.cpu.esi.value, p >>> 16); this.cpu.edi.value = lo16(this.cpu.edi.value, p); return; }
+      case 0x0500: {   // free memory information: what is left of the guest heap, in bytes and 4 KB pages; -1 where unknown
+        const a = this.lin((this.cpu.es.value << 16) | (this.cpu.edi.value & 0xffff)), free = LAYOUT.HEAP_END - this.heapTop, pages = free >>> 12;
+        const total = (LAYOUT.HEAP_END - LAYOUT.HEAP) >>> 12;
+        for (let k = 0; k < 12; k++) this.w32(a + 4 * k, 0xffffffff);
+        this.w32(a, free); this.w32(a + 4, pages); this.w32(a + 8, pages); this.w32(a + 12, total);
+        this.w32(a + 16, total); this.w32(a + 20, pages); this.w32(a + 24, total); this.w32(a + 28, pages); this.w32(a + 32, 0);
+        return; }
       case 0x0502: return;
       case 0x0600: case 0x0601: case 0x0702: case 0x0703: return;
       case 0x0800: { /* physical address mapping: identity within guest memory */ return; }
