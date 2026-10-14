@@ -1157,8 +1157,10 @@ KR('#89', function () {          // FT_PrologPrime: [ESP] = offset of the target
 KR('QT_Thunk', function () { return this.qtThunk(); });
 KR('FT_Prolog', function () { return this.ftProlog(); });
 KR('FT_Thunk', function () {
+  const ret = pop32(this);
   const ebp = this.reg('ebp'), map = this.r32(ebp - 20), target = this.r32(ebp - 52);
-  return this.call16from32(target, this.reg('esp'), Math.min(ebp - this.reg('esp') - 0x40, 0x80), map);
+  this.call16from32(target, this.reg('esp'), Math.min(ebp - this.reg('esp') - 0x40, 0x80), map);
+  return ret;
 });
 for (let n = 0; n <= 56; n += 4) KR('FT_Exit' + n, function () {
   const ebp = this.reg('ebp');
