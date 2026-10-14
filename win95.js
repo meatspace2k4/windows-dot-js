@@ -2633,6 +2633,14 @@ function elements() {
     const r = m.rows[i]; if (it.sep) return;
     add('menuitem', label(it.label), { x: m.x + 3, y: m.y + r.y, w: m.w - 6, h: r.h }, { window: 'Menu', depth: d, disabled: !!it.disabled, submenu: !!it.sub, hot: m.hover === i });
   }));
+  // covered: a click at its centre would land on something drawn over it (a later window, the taskbar, a menu)
+  const bar = { x: 0, y: L.y, w: W, h: TB }, above = [];
+  for (let i = out.length - 1; i >= 0; i--) {
+    const e = out[i], cx = e.x + (e.w >> 1), cy = e.y + (e.h >> 1);
+    if (e.window === 'Menu') { above.push(e); continue; }
+    e.covered = above.some(a => inR(a, cx, cy)) || (e.window !== 'Taskbar' && inR(bar, cx, cy));
+    if (e.role === 'window') above.push(e);
+  }
   return out;
 }
 // the front-most element matching every given field: strings match exactly, RegExps test
