@@ -39,7 +39,6 @@ P.init16 = function () {
   this.atoms = new Map();             // selector -> atom table
   this.dosFiles = new Map(); this.nextDosFile = 5;
   this.mapls = new Map();             // linear 32K-aligned base -> selector (MapLS)
-  this.ctx16 = [];                    // saved 16-bit contexts across 16 -> 32 thunks
   this.th16 = (window.W95SYSTEM && window.W95SYSTEM.thunks16 || []).map(k => this.thunk16Def(k));
   this.lastError16 = 0;
 };
@@ -1275,13 +1274,25 @@ def16('THUNKLET', 1, '', 'jmp', function () {
 // (n, conversion mask, proc); mask bit i converts the i-th parameter from the stack top from 16:16 to linear.
 // Returns the result in DX:AX and removes everything the caller pushed.
 def16('KERNEL', 517, '', 'jmp', function () {
-  const f = u32(this.cpu.ssb.value) + (this.cpu.esp.value & 0xffff);
+  const ssb = u32(this.cpu.ssb.value), f = ssb + (this.cpu.esp.value & 0xffff);
   const n = this.r32(f + 4) & 0x7fffffff, mask = this.r32(f + 8), proc = this.r32(f + 12);
   const args = new Array(n);
   for (let i = 0; i < n; i++) { const v = this.r32(f + 16 + 4 * i); args[n - 1 - i] = mask & (1 << i) ? this.lin(v) : v; }
-  const r = u32(this.callFlatFrom16(proc, args)); if (window.W95CP32) window.W95CP32(proc, args, r);
-  this.cpu.eax.value = r | 0; this.cpu.edx.value = lo16(this.cpu.edx.value, r >>> 16);
-  return this.retf16(12 + 4 * n);
+  const save = {}; for (const r of GPR) save[r] = this.cpu[r].value; for (const [s, b] of SEGS) { save[s] = this.cpu[s].value; save[b] = this.cpu[b].value; }
+  save.done = function (c) {
+    const r = u32(this.cpu.eax.value); if (window.W95CP32) window.W95CP32(proc, args, r);
+    for (const g of GPR) this.cpu[g].value = c[g]; for (const [s, b] of SEGS) { this.cpu[s].value = c[s]; this.cpu[b].value = c[b]; }
+    this.cpu.eax.value = r | 0; this.cpu.edx.value = lo16(this.cpu.edx.value, r >>> 16);
+    return this.retf16(12 + 4 * n);
+  };
+  // on the flat alias of the 16-bit stack, as KRNL386's 16 -> 32 callbacks run
+  for (const [s, b] of SEGS) { this.cpu[s].value = 0; if (s !== 'fsel') this.cpu[b].value = 0; }
+  this.cpu.fs.value = LAYOUT.TIB;
+  let esp = f & ~3;
+  for (let i = n - 1; i >= 0; i--) { esp -= 4; this.w32(esp, args[i]); }
+  esp -= 4; this.w32(esp, this.thunkFor('KERNEL32', '__Ret32.' + this.retToken(save)));
+  this.cpu.esp.value = esp;
+  return proc;
 });
 // VWin32_BoostThreadGroup / VWin32_BoostThreadStatic (#535, #536): scheduler priority boosts through VWIN32; one
 // thread runs here, so there is nothing to boost
@@ -1452,7 +1463,13 @@ def16('KERNEL', 22, 'w', 'w', function (h) { const b = this.gblock(h); return b 
 def16('KERNEL', 29, '', 'v', function () {});                                                          // Yield
 def16('KERNEL', 117, '', 'v', function () {});                                                         // OldYield
 def16('KERNEL', 150, 'w', 'v', function () {});                                                        // DirectedYield
-def16('KERNEL', 30, 'w', 'w', function () { return 0; });                                              // WaitEvent
+// WaitEvent: the task sleeps until an event is posted to it. A thread that is not inside a call JS made gives up
+// its slice once (timers, input and the other threads run) and the wait then ends; USER checks its queue again.
+def16('KERNEL', 30, 'w', 'w', function () {
+  const t = thr(this, 0), top = this.thread16 ? this.depth === this.thread16.depth : this.depth === 0;
+  if (top && !t.slept) { t.slept = true; return YIELD; }
+  t.slept = false; return 0;
+});
 def16('KERNEL', 31, 'w', 'v', function () {});                                                         // PostEvent
 def16('KERNEL', 32, 'wi', 'w', function () { return 0; });                                             // SetPriority
 def16('KERNEL', 33, 'w', 'w', function () { return 0; });                                              // LockCurrentTask
@@ -1473,18 +1490,53 @@ def16('KERNEL', 337, 'xw', 'w', function (sp, n) {                              
 def16('KERNEL', 352, 'xpi', 'l', function (dsp, s, n) {                                               // lstrcatn
   const d = this.lin(dsp), a = this.readA(d) || ''; if (n > a.length) W(this, d, a + (this.readA(s) || ''), n); return dsp;
 });
+// ---- 16 <-> 32-bit transitions as continuations. Each transition records what the way back needs and leaves
+// through a return thunk of its own (one per transition in flight), so no JS frame waits on the callee: code that
+// blocks below it (USER's WaitEvent in GetMessage) suspends the whole guest until a later slice, and threads that
+// interleave their transitions each come back to their own.
+const NRET = 256;
+P.retToken = function (rec) {
+  if (!this.retFree) { this.retFree = []; for (let k = NRET - 1; k >= 0; k--) this.retFree.push(k); this.retRecs = []; }
+  const k = this.retFree.pop(); if (k === undefined) throw new GuestError('too many 16/32-bit transitions in flight');
+  this.retRecs[k] = rec; return k;
+};
+P.retTake = function (k) {
+  const rec = this.retRecs && this.retRecs[k]; if (!rec) throw new GuestError('return through a transition that is not in flight');
+  this.retRecs[k] = null; this.retFree.push(k); if (rec.ssel) this.stkFree.push(rec.ssel);
+  return rec;
+};
+/** a 64K stack alias selector for a transition, based at `base` */
+P.stackSel = function (base) {
+  this.stkFree = this.stkFree || [];
+  const sel = this.stkFree.pop() || this.allocSels(base, 0x10000);
+  this.setDesc(sel, base, 0xffff, 0xf300); return sel;
+};
+for (let k = 0; k < NRET; k++) def16('RET16', k, '', 'jmp', function () { return this.return16to32(this.retTake(k)); });
+API.KERNEL32 = API.KERNEL32 || {};
+for (let k = 0; k < NRET; k++) {
+  API.KERNEL32['__Ret32.' + k] = ['regs', function () { const rec = this.retTake(k); return rec.done.call(this, rec); }];
+}
 /** 16 -> 32 transition for SL thunks: EBX + 0x16 addresses the 16-bit arguments; the target returns with CL = argument bytes */
 P.enter32from16 = function (target) {
   const ctx = { esp: this.cpu.esp.value, ebp: this.cpu.ebp.value, esi: this.cpu.esi.value, edi: this.cpu.edi.value, ebx: this.cpu.ebx.value };
   for (const [s, b] of SEGS) { ctx[s] = this.cpu[s].value; ctx[b] = this.cpu[b].value; }
   const frame = u32((this.cpu.ssb.value >>> 0) + (this.cpu.esp.value & 0xffff));
   ctx.frame = frame;
-  this.ctx16.push(ctx);
+  ctx.done = function (c) {   // back to the 16-bit caller, dropping CL bytes of its arguments
+    const n = this.cpu.ecx.value & 0xff;
+    for (const r of ['ebp', 'esi', 'edi', 'ebx']) this.cpu[r].value = c[r];
+    for (const [s, b] of SEGS) { this.cpu[s].value = c[s]; this.cpu[b].value = c[b]; }
+    const ip = this.r16(c.frame), cs = this.r16(c.frame + 2);
+    this.cpu.esp.value = lo16(c.esp, (c.esp & 0xffff) + 4 + n);
+    this.seg('cs', cs);
+    return u32(this.selBase(cs) + ip);
+  };
+  const back = this.thunkFor('KERNEL32', '__Ret32.' + this.retToken(ctx));
   for (const [s, b] of SEGS) { this.cpu[s].value = 0; if (s !== 'fsel') this.cpu[b].value = 0; }
   this.cpu.fs.value = LAYOUT.TIB;
   this.cpu.ebx.value = frame - 0x12;
   let esp = (frame - 0x80) & ~3;
-  esp -= 4; this.w32(esp, this.ret16Thunk());
+  esp -= 4; this.w32(esp, back);
   this.cpu.esp.value = esp; this.cpu.ebp.value = esp;
   return target;
 };
@@ -1502,19 +1554,6 @@ P.callFlatFrom16 = function (addr, args) {
     this.cpu.eax.value = eax; this.cpu.edx.value = edx;
   }
 };
-P.ret16Thunk = function () { return this.thunkFor('KERNEL32', '__Return16'); };
-API.KERNEL32 = API.KERNEL32 || {};
-API.KERNEL32.__Return16 = ['regs', function () {
-  const ctx = this.ctx16.pop(); if (!ctx) throw new GuestError('16-bit return without a thunk frame');
-  const n = this.cpu.ecx.value & 0xff;
-  for (const r of ['ebp', 'esi', 'edi', 'ebx']) this.cpu[r].value = ctx[r];
-  for (const [s, b] of SEGS) { this.cpu[s].value = ctx[s]; this.cpu[b].value = ctx[b]; }
-  const ip = this.r16(ctx.frame), cs = this.r16(ctx.frame + 2);
-  this.cpu.esp.value = lo16(ctx.esp, (ctx.esp & 0xffff) + 4 + n);
-  this.seg('cs', cs);
-  return u32(this.selBase(cs) + ip);
-}];
-
 // ---------------------------------------------------------------- KERNEL32 thunk services used by GDI32.DLL
 const K = (name, n, fn) => { API.KERNEL32[name] = [n, fn]; };
 const KR = (name, fn) => { API.KERNEL32[name] = ['regs', fn]; };
@@ -1558,8 +1597,7 @@ KR('FT_Prolog', function () { return this.ftProlog(); });
 KR('FT_Thunk', function () {
   const ret = pop32(this);
   const ebp = this.reg('ebp'), map = this.r32(ebp - 20), target = this.r32(ebp - 52);
-  this.call16from32(target, this.reg('esp'), Math.min(ebp - this.reg('esp') - 0x40, 0x80), map);
-  return ret;
+  return this.enter16from32(target, this.reg('esp'), Math.min(ebp - this.reg('esp') - 0x40, 0x80), map, false, () => ret);
 });
 for (let n = 0; n <= 56; n += 4) KR('FT_Exit' + n, function () {
   const ebp = this.reg('ebp');
@@ -1579,53 +1617,54 @@ P.ftProlog = function () {
 P.qtThunk = function () {
   const ret = pop32(this);
   const sp = this.reg('esp'), n = Math.min(this.reg('ebp') - sp, 64);
-  const r = this.call16from32(this.reg('edx'), sp, n, 0);
-  this.reg('esp', this.reg('esp') + 0);   // call16from32 adjusted ESP for the bytes the callee popped
-  return ret;
+  return this.enter16from32(this.reg('edx'), sp, n, 0, false, () => ret);
 };
 /**
- * Call a 16:16 target whose `n` argument bytes sit on the flat stack at `src`. As on Windows 95 the 16-bit stack
+ * Enter a 16:16 target whose `n` argument bytes sit on the flat stack at `src`. As on Windows 95 the 16-bit stack
  * aliases the 32-bit one: SS:SP addresses the argument block in place, so anything the callee writes there is seen
  * by the 32-bit side. `map` marks argument dwords holding flat pointers into the block (converted to SS:offset).
+ * The callee's far return comes back through a return thunk (return16to32), which puts the 32-bit registers back,
+ * moves ESP past the bytes the callee popped and continues where `done` says. `ret32`: the callee returns with a
+ * 32-bit far return (66h lret).
  */
-P.call16from32 = function (target, src, n, map, ret32 = false) {
+P.enter16from32 = function (target, src, n, map, ret32, done) {
   const sel = target >>> 16, off = target & 0xffff;
-  const save = { ebx: this.reg('ebx'), esi: this.reg('esi'), edi: this.reg('edi'), ebp: this.reg('ebp'), esp: this.reg('esp') };
-  const lvl = this.stackLevel++; const ssel = L.STK + 8 * lvl;
-  const base = (src - 0xf000) & ~0xf;
-  this.setDesc(ssel, base, 0xffff, 0xf300); this.seg('ss', ssel);
+  const base = (src - 0xf000) & ~0xf, ssel = this.stackSel(base);
+  const rec = { ebx: this.reg('ebx'), esi: this.reg('esi'), edi: this.reg('edi'), ebp: this.reg('ebp'), esp: this.reg('esp'), ret32, done, ssel };
+  this.seg('ss', ssel);
   let sp = src - base;
   if (map) for (let i = 0; i < 32; i++) if (map & (1 << i)) {
     const a = src + 2 * i, ptr = this.r32(a);
     this.w32(a, u32((ssel << 16) | (ptr - base)));
   }
-  const sp0 = sp;
-  if (ret32) { sp -= 4; this.w32(base + sp, L.SENT); sp -= 4; this.w32(base + sp, 0); }    // for a 0x66 lret
-  else { sp -= 2; this.w16(base + sp, L.SENT); sp -= 2; this.w16(base + sp, 0); }
+  rec.sp0 = sp;
+  const back = this.thunk16For('RET16.#' + this.retToken(rec));
+  if (ret32) { sp -= 4; this.w32(base + sp, back >>> 16); sp -= 4; this.w32(base + sp, back & 0xffff); }
+  else { sp -= 2; this.w16(base + sp, back >>> 16); sp -= 2; this.w16(base + sp, back & 0xffff); }
   this.reg('esp', sp); this.seg('ds', 0); this.seg('es', 0); this.seg('cs', sel);
-  this.cpu.ebp.value = lo16(this.cpu.ebp.value, sp0 + n);
-  this.depth++;
-  const r = this.runAt(u32(this.selBase(sel) + off));
-  this.depth--; this.stackLevel--;
-  if (r !== 0 || this.trapped) throw new GuestError(this.trapped || `16-bit thunk target ${target.toString(16)} did not return`);
-  const popped = ((this.cpu.esp.value & 0xffff) - sp0) & 0xffff;
+  this.cpu.ebp.value = lo16(this.cpu.ebp.value, rec.sp0 + n);
+  return u32(this.selBase(sel) + off);
+};
+P.return16to32 = function (rec) {
+  const popped = ((this.cpu.esp.value & 0xffff) - rec.sp0) & 0xffff;
   const ax = this.cpu.eax.value & 0xffff, dx = this.cpu.edx.value & 0xffff;
   this.last16 = { eax: u32(this.cpu.eax.value), ebx: u32(this.cpu.ebx.value), ecx: u32(this.cpu.ecx.value) };
-  if (ret32) this.reg('eax', this.last16.eax); else { this.reg('eax', ((dx << 16) | ax) >>> 0); this.reg('edx', dx); }
-  for (const r of ['ebx', 'esi', 'edi', 'ebp']) this.reg(r, save[r]);
+  if (rec.ret32) this.reg('eax', this.last16.eax); else { this.reg('eax', ((dx << 16) | ax) >>> 0); this.reg('edx', dx); }
+  for (const r of ['ebx', 'esi', 'edi', 'ebp']) this.reg(r, rec[r]);
   for (const [s, b] of SEGS) { this.cpu[s].value = 0; if (s !== 'fsel') this.cpu[b].value = 0; }
   this.cpu.fs.value = LAYOUT.TIB;
-  this.reg('esp', save.esp + popped);
-  return this.reg('eax');
+  this.reg('esp', rec.esp + popped);
+  return u32(rec.done.call(this, rec));
 };
 KR('#45', function () {          // Common32ThkLS: EAX = 16-bit common entry, CX = target*4 (into DI), EDX.hi = dword args
   const ret = pop32(this), n = (this.reg('edx') >>> 16) * 4, edi = this.reg('edi');
   this.reg('edi', lo16(edi, this.reg('ecx')));      // the target index goes to the 16-bit side only
   const sp = this.reg('esp');
   this.reg('esp', sp - 32);
-  this.call16from32(this.reg('eax'), sp - 32, n + 32, 0, true);
-  this.reg('esp', sp + (this.last16.ebx & 0xff)); this.reg('edi', edi);
-  return ret;
+  return this.enter16from32(this.reg('eax'), sp - 32, n + 32, 0, true, function () {
+    this.reg('esp', sp + (this.last16.ebx & 0xff)); this.reg('edi', edi);
+    return ret;
+  });
 });
 // pointer mapping
 KR('SMapLS', function () { const a = this.reg('eax'); this.reg('edx', a >>> 16 ? this.mapLS(a) : 0); if (a >>> 16) this.reg('eax', this.reg('edx')); return ret32(this); });
