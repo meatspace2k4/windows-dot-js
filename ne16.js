@@ -388,6 +388,7 @@ const INTS = {
     }
     this.trapped = `unhandled int 21h ax=${this.ax().toString(16)}`; return LAYOUT.SENTINEL;
   },
+  0x11() { this.ax(0x0023); },   // BIOS equipment list: a floppy drive (A:), a maths coprocessor, 80x25 colour display
   0x2f(next) {
     const ax = this.ax();
     if (ax === 0x1600) { this.ax(0x0004 | (0x00 << 8)); this.cpu.eax.value = lo16(this.cpu.eax.value, 0x0004); return; }  // Windows 4.00 enhanced mode
