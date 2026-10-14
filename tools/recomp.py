@@ -496,19 +496,20 @@ class Translator:
         a, b = Loc(f, ops[0]), Loc(f, ops[1]); t = f.i(); a.read(); f.ls(t)
         a.write(lambda: b.read()); b.write(lambda: f.lg(t))
     def x_push(self, f, ins, ops, live):
-        sz = opsize(ins) if segmode() else 4
+        sz = opsize(ins)    # 66h-prefixed pushes move a word in 32-bit code too (thunk code builds 16-bit frames this way)
         if ops[0].type == X.X86_OP_REG and ops[0].reg in SREG:
             if segmode(): push_val(f, lambda: f.gg(SREG[ops[0].reg][0]), sz)
-            else: push_val(f, lambda: f.c(0x23))
+            elif ops[0].reg == X.X86_REG_GS: push_val(f, lambda: f.gg('gsel'), sz)
+            else: push_val(f, lambda: f.c(0x23), sz)
             return
         s = Loc(f, ops[0], sz)
         if ops[0].type == X.X86_OP_IMM: push_val(f, lambda: f.c(ops[0].imm), sz)
         else: push_val(f, lambda: s.read(), sz)
     def x_pop(self, f, ins, ops, live):
-        sz = opsize(ins) if segmode() else 4
+        sz = opsize(ins)
         t = f.i(); pop_to(f, t, sz)
         if ops[0].type == X.X86_OP_REG and ops[0].reg in SREG:
-            if segmode(): load_sreg(f, ops[0].reg, lambda: f.lg(t))
+            if segmode() or ops[0].reg == X.X86_REG_GS: load_sreg(f, ops[0].reg, lambda: f.lg(t))
             return
         Loc(f, ops[0], sz).write(lambda: f.lg(t))
     def lptr(self, f, ins, ops, sreg):
@@ -1315,6 +1316,14 @@ def decode_ne(ne, entries):
                 if (i.ops[1].imm & 0xffff) < sg['len'] and t not in seen: todo.append(t)
         # far pointers assembled in code: a selector fixup naming one of our code segments with an imm16 next to it
         prev = {i.next: a for a, i in insns.items()}
+        # Win16 parameter validation: `mov bp, sp; [push ds; pop ds;] push <error handler>` keeps the handler at [bp-2]
+        for i in list(insns.values()):
+            if i.segbase is None or i.mn != 'push' or not i.ops or i.ops[0].type != X.X86_OP_IMM: continue
+            a, k = prev.get(i.addr), 0
+            while a is not None and k < 3 and not (insns[a].mn == 'mov' and insns[a].i.op_str == 'bp, sp'): a, k = prev.get(a), k + 1
+            if a is not None and k < 3:
+                sg = ne.seg_of(i.segbase); v = i.ops[0].imm & 0xffff
+                if v < sg['len'] and sg['base'] + v not in seen: todo.append(sg['base'] + v)
         for site, tsg in getattr(ne, 'selrefs', []):
             host = next((insns[a] for a in range(site - 1, site - 6, -1) if a in insns and insns[a].next > site), None)
             if host is None: continue

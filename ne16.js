@@ -881,7 +881,16 @@ def16('KERNEL', 107, 'w', 'w', function (m) { const o = this.errMode16 || 0; thi
 def16('KERNEL', 147, 'l', 'v', function (e) { this.lastError = e; });
 def16('KERNEL', 148, '', 'l', function () { return this.lastError || 0; });
 def16('KERNEL', 324, 'wx', 'v', function (code) { console.warn('[KERNEL] LogError', code.toString(16)); });
-def16('KERNEL', 327, '', 'jmp', function () { return this.retf16(0); });      // HandleParamError (register)
+def16('KERNEL', 327, '', 'jmp', function () {    // HandleParamError: BX = error, CX:AX = parameter; errors unwind to the handler at [BP-2]
+  const err = this.cpu.ebx.value & 0xffff, ssb = this.cpu.ssb.value >>> 0, sp = this.cpu.esp.value & 0xffff;
+  const ip = this.r16(ssb + sp), cs = this.r16(ssb + sp + 2);
+  if (window.W95PARAMERR) window.W95PARAMERR(err, cs, ip, this);
+  if (err & 0x8000) return this.retf16(0);
+  const bp = this.cpu.ebp.value & 0xffff, nbp = this.r16(ssb + bp) & 0xfffe, handler = this.r16(ssb + ((bp - 2) & 0xffff));
+  this.cpu.esp.value = lo16(this.cpu.esp.value, bp - 2); this.cpu.ebp.value = lo16(this.cpu.ebp.value, nbp);
+  this.cpu.eax.value = 0; this.cpu.ecx.value = 0; this.cpu.edx.value = 0; this.seg('es', 0);
+  this.seg('cs', cs); return u32(this.selBase(cs) + handler);
+});
 def16('KERNEL', 435, '', 'w', () => 0);                                        // GetTaskFlags
 def16('KERNEL', 237, '', 'v', function () {});                                 // K237 nop
 def16('KERNEL', 447, '', 'v', function () {});                                 // WIN32_OldYield
