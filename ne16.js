@@ -1647,6 +1647,17 @@ K('#86', 1, () => 0);                                                           
 K('#97', 1, () => 0);                                                                                                        // _LeaveSysLevel
 K('#49', 1, () => 0);                                      // RestoreThunkLock
 K('#51', 0, () => 0);
+// W32S_BackTo32 (KERNEL32 #51), as USER32's thunklet relays use it under native USER: entered by a jump with [ESP] the
+// 32-bit target and [ESP+4] where to return; calls the target with the ten DWORDs above those as its arguments and
+// returns there with the target's EAX, the target's own argument pops undone (KERNEL32 restores ESP with LEAVE)
+API.KERNEL32['#51'] = ['regs', function () {
+  if (!this.nativeUser16()) { const sp = this.reg('esp'), r = this.r32(sp); this.reg('esp', sp + 4); this.reg('eax', 0); return r; }
+  const esp = this.reg('esp'), target = this.r32(esp), ret = this.r32(esp + 4);
+  const args = []; for (let i = 0; i < 10; i++) args.push(this.r32(esp + 8 + 4 * i));
+  const eax = this.call(target, args);
+  this.reg('eax', eax); this.reg('esp', esp + 8);
+  return ret;
+}];
 K('#68', 3, function (sp) { return this.lin(sp); });      // K32WOWGetVDMPointerFix
 K('#69', 1, () => 0);
 K('#86', 1, () => 0);
