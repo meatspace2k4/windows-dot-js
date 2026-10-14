@@ -1337,6 +1337,21 @@ def decode_ne(ne, entries):
     while True:
         indirect = {i.segbase for i in insns.values() if i.segbase is not None and i.mn in ('call', 'jmp') and i.tgt is None
                     and i.ops and i.ops[0].type == X.X86_OP_MEM and i.ops[0].size == 2 and i.ops[0].mem.segment != X.X86_REG_CS}
+        # `mov r16, imm16 ... mov word ptr [var], r16` where [var] is called or jumped through
+        prev = {i.next: a for a, i in insns.items()}
+        slots = {(i.segbase, i.i.op_str) for i in insns.values() if i.segbase is not None and i.mn in ('call', 'jmp') and i.tgt is None
+                 and i.ops and i.ops[0].type == X.X86_OP_MEM and i.ops[0].size == 2}
+        for i in list(insns.values()):
+            if i.mn == 'mov' and len(i.ops) == 2 and i.ops[0].type == X.X86_OP_MEM and i.ops[1].type == X.X86_OP_REG \
+                    and (i.segbase, i.i.op_str.split(',')[0]) in slots:
+                reg, a = i.ops[1].reg, prev.get(i.addr)
+                for _ in range(12):
+                    if a is None: break
+                    j = insns[a]
+                    if j.mn == 'mov' and len(j.ops) == 2 and j.ops[0].type == X.X86_OP_REG and j.ops[0].reg == reg and j.ops[1].type == X.X86_OP_IMM:
+                        sg = ne.seg_of(i.segbase); v = j.ops[1].imm & 0xffff
+                        if v < sg['len'] and sg['base'] + v not in seen: todo.append(sg['base'] + v)
+                    a = prev.get(a)
         # likewise `mov r16, imm16` for registers that a segment calls or jumps through
         viareg = {(i.segbase, i.ops[0].reg) for i in insns.values() if i.segbase is not None and i.mn in ('call', 'jmp')
                   and i.ops and i.ops[0].type == X.X86_OP_REG and i.ops[0].size == 2}
