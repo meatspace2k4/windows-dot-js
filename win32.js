@@ -280,7 +280,9 @@ class Process {
     };
     let o = find(root, type); if (o === null || !(o & 0x80000000)) return null;
     o = find(root + (o & 0x7fffffff), id); if (o === null || !(o & 0x80000000)) return null;
-    o = find(root + (o & 0x7fffffff)); if (o === null) return null;
+    // the language: neutral, then US English, then any (multilingual system DLLs list Arabic and others first)
+    const ld = root + (o & 0x7fffffff);
+    o = find(ld, 0); if (o === null) o = find(ld, 0x409); if (o === null) o = find(ld); if (o === null) return null;
     const de = root + (o & 0x7fffffff);
     return { addr: mod.base + this.r32(de), size: this.r32(de + 4) };
   }
