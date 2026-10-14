@@ -1847,6 +1847,11 @@ def16('KERNEL', 105, '', 'w', function () { return 0x0400; });                  
 def16('KERNEL', 132, '', 'l', function () { return 0x0c29; });                                         // GetWinFlags: protected mode, 486, enhanced, 80x87, paging
 def16('KERNEL', 1, 'w', 'v', function (code) { throw new GuestError(`FatalExit(${code})`); });
 def16('KERNEL', 22, 'w', 'w', function (h) { const b = this.gblock(h); return b ? (b.lock & 0xff) : 0; });   // GlobalFlags: the lock count
+// LockSegment / UnlockSegment: a segment's lock count, -1 meaning the caller's DS; the segment's selector, or 0 when
+// it is not a global block
+const segOf = (p, seg) => ((seg & 0xffff) === 0xffff ? p.cpu.ds.value : seg) & 0xffff;
+def16('KERNEL', 23, 'w', 'w', function (seg) { const s = segOf(this, seg), b = this.gblock(s); if (!b) return 0; b.lock = (b.lock || 0) + 1; return this.gsel(s); });
+def16('KERNEL', 24, 'w', 'w', function (seg) { const s = segOf(this, seg), b = this.gblock(s); if (!b) return 0; if (b.lock) b.lock--; return b.lock ? this.gsel(s) : 0; });   // 0 once unlocked
 // one task runs here, so yielding, task events and priorities have nothing to act on
 def16('KERNEL', 29, '', 'v', function () {                                                             // Yield: as OldYield (#447)
   const t = thr(this, 0), top = this.thread16 ? this.depth === this.thread16.depth : this.depth === 0;
