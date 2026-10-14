@@ -1274,6 +1274,14 @@ def decode_ne(ne, entries):
                         out.append(sg['base'] + v)
                     return out
             return []
+        if ins.mn in ('jmp', 'call') and op.type == X.X86_OP_MEM and op.size == 2 and op.mem.segment in (0, X.X86_REG_DS) \
+                and not op.mem.base and not op.mem.index and ne.autodata:
+            # `jmp word ptr [var]`: the variable's initial value in DGROUP is a target too
+            dg = ne.segs[ne.autodata - 1]; o = op.mem.disp & 0xffff
+            if o + 2 <= dg['len']:
+                v = int.from_bytes(ne.image[dg['base'] - ne.base + o: dg['base'] - ne.base + o + 2], 'little')
+                if 0 < v < sg['len']: return [sg['base'] + v]
+            return []
         if ins.mn in ('mov', 'movzx') and len(ins.ops) == 2: op = ins.ops[1]   # table loaded into a register, called later
         if op.type != X.X86_OP_MEM or op.mem.segment != X.X86_REG_CS or not op.mem.disp or op.size not in (2, 4) \
                 or not (op.mem.base or op.mem.index): return []
