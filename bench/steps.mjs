@@ -161,7 +161,7 @@ export const STEPS = [
     run: async () => {
       await reset();
       const out = {};
-      const list = win95.fs.readdir('C:\\WINDOWS\\SYSTEM', '*.scr').map(i => i.path).sort();
+      const list = win95.fs.readdir('C:\\WINDOWS\\SYSTEM', '*.scr').map(i => i.path).sort().filter(p => !globalThis.__only || __only.test(p));
       for (const path of list) {
         const name = path.split('\\').pop().replace(/\.scr$/i, '');
         let failed = null; const off = win95.on('program.exit', e => { if (e.why) failed = e.why; });
