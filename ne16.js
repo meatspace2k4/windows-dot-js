@@ -994,7 +994,10 @@ def16('KERNEL', 47, 's', 'w', function (name) {   // GetModuleHandle
   if (JS16.includes(n) && !(m && m.meta)) return this.jsModule(n).hModule;   // natively loaded only in a native-USER session
   return m ? m.hModule : 0;
 });
-def16('KERNEL', 133, 'w', 'w', function (h) { if (h === this.kernelModule().hModule) return h; const m = this.neByHandle(h); return m ? m.hModule : 0; });   // GetExePtr
+def16('KERNEL', 133, 'w', 'w', function (h) {   // GetExePtr (a Win32 module's 16-bit handle is its own module)
+  if (h === this.kernelModule().hModule) return h; if (this.hinst32 && this.hinst32(h)) return h;
+  const m = this.neByHandle(h); return m ? m.hModule : 0;
+});
 def16('KERNEL', 228, 'w', 'w', function (h) { const m = this.neByHandle(h); return m ? m.hModule : 0; });
 def16('KERNEL', 50, 'wx', 'l', function (h, name) {   // GetProcAddress
   const key = name >>> 16 ? this.readA(this.lin(name)) : name & 0xffff;
@@ -1192,6 +1195,7 @@ def16('KERNEL', 60, 'wxx', 'w', function (h, name, type) {     // FindResource
   if (i < 0) return 0;
   (this.resHandles = this.resHandles || []).push({ m, r: m.res[i] }); return this.resHandles.length * 4;
 });
+def16('KERNEL', 168, 'www', 'w', function (h, type, size) { return this.globalAlloc16(GMEM_MOVEABLE, size); });   // DirectResAlloc
 def16('KERNEL', 61, 'ww', 'w', function (h, hr) {               // LoadResource
   const e = this.resHandles && this.resHandles[hr / 4 - 1]; if (!e) return 0;
   if (!e.g && e.data) { e.g = this.globalAlloc16(0, e.data.length || 1); this.u8.set(e.data, this.gblock(e.g).lin); }
@@ -1232,7 +1236,47 @@ def16('KERNEL', 482, 's', 'l', function (name) {          // LoadSystemLibrary32
   this.runPendingInits();
   return m.base;
 });
-def16('KERNEL', 619, 'wxl', 'w', function () { return 1; });                // RegisterCBClient
+def16('KERNEL', 619, 'wxl', 'w', function (id, relay16, relay32) {         // RegisterCBClient: a callback client's 16-bit entry and 32-bit relay table
+  (this.cbClients = this.cbClients || new Map()).set(id, { relay16, relay32 }); return 1;
+});
+// AllocSLThunkletCallbackEx: a 16:16 entry that calls a 32-bit function through a callback client's relay. The
+// thunklet is code as Windows 95 writes it (push dword target, push dword relay, jmp far glue), so IsSLThunklet
+// knows it and 16-bit code calls it like any far function; `relay` is the client id (high word) and relay index.
+def16('KERNEL', 568, 'llw', 'l', function (target, relay, owner) {
+  this.thunklets = this.thunklets || new Map();
+  const key = `${u32(target)}:${u32(relay)}`; if (this.thunklets.has(key)) return this.thunklets.get(key);
+  if (!this.thunkletSeg || this.thunkletSeg.used + 16 > 0x10000) {
+    const lin = this.alloc(0x10000); this.thunkletSeg = { lin, sel: this.allocSels(lin, 0x10000, 0xfb00), used: 0 };
+  }
+  const t = this.thunkletSeg, off = t.used, a = t.lin + off, glue = this.thunk16For('THUNKLET.#1');
+  this.u8.set([0x66, 0x68], a); this.w32(a + 2, target); this.u8.set([0x66, 0x68], a + 6); this.w32(a + 8, relay);
+  this.u8[a + 12] = 0xea; this.w16(a + 13, glue & 0xffff); this.w16(a + 15, glue >>> 16);
+  t.used += 17;
+  const sp = u32((t.sel << 16) | off); this.thunklets.set(key, sp); return sp;
+});
+// The glue every thunklet jumps to. On entry the 16-bit stack holds [relay][target][return CS:IP][arguments]; it
+// saves BP, SI, DI and DS above 24h bytes of room and the 16:16 SS:SP of that room, moves to the flat stack with EBP
+// at the saved BP (arguments from EBP+0Eh) and EBX at the saved SS:SP, and far-jumps to the relay. The relay (USER32's)
+// calls the target and returns to the 16-bit caller itself: lss sp,[ebx]; add sp,24h; pop ds/di/si/bp; add sp,8; retf.
+def16('THUNKLET', 1, '', 'jmp', function () {
+  const ssb = u32(this.cpu.ssb.value), push16 = v => { const sp = (this.cpu.esp.value - 2) & 0xffff; this.cpu.esp.value = lo16(this.cpu.esp.value, sp); this.w16(ssb + sp, v); };
+  const relayWord = this.r32(ssb + (this.cpu.esp.value & 0xffff));
+  push16(this.cpu.ebp.value & 0xffff);
+  const bp = this.cpu.esp.value & 0xffff;
+  push16(this.cpu.esi.value & 0xffff); push16(this.cpu.edi.value & 0xffff); push16(this.cpu.ds.value & 0xffff);
+  this.cpu.esp.value = lo16(this.cpu.esp.value, (this.cpu.esp.value - 0x24) & 0xffff);
+  const room = this.cpu.esp.value & 0xffff, ss = this.cpu.ss.value & 0xffff;
+  push16(ss); push16(room);
+  const c = this.cbClients && this.cbClients.get(relayWord >>> 16);
+  if (!c) throw new GuestError(`thunklet for callback client ${relayWord >>> 16}, which is not registered`);
+  const relay = this.r32(c.relay32 + 4 * (relayWord & 0xffff));
+  const ebx = ssb + (this.cpu.esp.value & 0xffff);
+  this.cpu.ebp.value = ssb + bp; this.cpu.ebx.value = ebx;
+  this.seg('ss', L.FLATDS); this.cpu.esp.value = ebx & ~3;
+  this.seg('ds', L.FLATDS); this.seg('es', L.FLATDS); this.seg('gsel', 0);
+  this.seg('cs', L.FLATCS);
+  return u32(relay);
+});
 // IsSLThunklet: whether a far pointer addresses a 16-to-32 thunklet (push dword, push dword, jmp far), as KRNL386 checks
 def16('KERNEL', 612, 'x', 'w', function (sp) {
   if (!(sp >>> 16) || !this.selValid(sp >>> 16)) return 0;
