@@ -1,0 +1,13 @@
+# generated from the Windows 95 CD (tools/build_system.py, build_savers.py, build_shell_assets.py, extract.py)
+/system.js
+/savers.js
+/assets.js
+/assets-shell.js
+/cdrom.js
+# built apps and dependencies
+electron/node_modules/
+electron/Windows 95.app/
+mac/Windows 95.app/
+__pycache__/
+.DS_Store
+.claude/settings.local.json
