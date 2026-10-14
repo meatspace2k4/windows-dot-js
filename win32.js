@@ -167,6 +167,7 @@ class Process {
   /** Call a guest function (stdcall) from inside an API implementation. */
   call(addr, args) {
     if (!addr) return 0;
+    if (this.cpu.ss.value & 0xffff) return this.callFlatFrom16(addr, args);
     const save = { esp: this.reg('esp'), eip: this.reg('eip') };
     for (let i = args.length - 1; i >= 0; i--) this.push(args[i]);
     this.push(LAYOUT.SENTINEL);

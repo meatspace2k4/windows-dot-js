@@ -754,6 +754,20 @@ P.enter32from16 = function (target) {
   this.cpu.esp.value = esp; this.cpu.ebp.value = esp;
   return target;
 };
+/** run a 32-bit guest call while the CPU is in a 16-bit context: switch to the flat stack below SS:SP and back */
+P.callFlatFrom16 = function (addr, args) {
+  const save = {}; for (const r of GPR) save[r] = this.cpu[r].value; for (const [s, b] of SEGS) { save[s] = this.cpu[s].value; save[b] = this.cpu[b].value; }
+  const flat = u32((this.cpu.ssb.value >>> 0) + (this.cpu.esp.value & 0xffff));
+  for (const [s, b] of SEGS) { this.cpu[s].value = 0; if (s !== 'fsel') this.cpu[b].value = 0; }
+  this.cpu.fs.value = LAYOUT.TIB;
+  this.cpu.esp.value = (flat - 0x200) & ~3;
+  try { return this.call(addr, args); }
+  finally {
+    const eax = this.cpu.eax.value, edx = this.cpu.edx.value;
+    for (const r of GPR) this.cpu[r].value = save[r]; for (const [s, b] of SEGS) { this.cpu[s].value = save[s]; this.cpu[b].value = save[b]; }
+    this.cpu.eax.value = eax; this.cpu.edx.value = edx;
+  }
+};
 P.ret16Thunk = function () { return this.thunkFor('KERNEL32', '__Return16'); };
 API.KERNEL32 = API.KERNEL32 || {};
 API.KERNEL32.__Return16 = ['regs', function () {
