@@ -108,18 +108,21 @@ export const STEPS = [
   },
   {
     name: 'notepad',
-    about: 'open a 64 KB text file in Notepad, type 1000 characters, save',
+    about: 'open a 60,000-byte text file in Notepad (its limit is 65,535), type 1000 characters, save',
     run: async () => {
       await reset();
       if (!win95.fs.exists(BENCH)) win95.fs.mkdir(BENCH);
       const line = 'The quick brown fox jumps over the lazy dog. 0123456789\r\n';
-      win95.fs.writeFile(BENCH + '\\big.txt', line.repeat(Math.ceil(65536 / line.length)).slice(0, 65536));
+      win95.fs.writeFile(BENCH + '\\big.txt', line.repeat(Math.ceil(60000 / line.length)).slice(0, 60000));
       const open = await measure(5, () => win95.run('notepad ' + BENCH + '\\big.txt'), () => win95.close(/Notepad$/));
       win95.run('notepad ' + BENCH + '\\big.txt'); await frame();
+      // anything else on screen (a refusal, an error) would make the timings meaningless
+      if (!win95.window('big - Notepad') || win95.windows().length !== 1) throw new Error('Notepad did not open the file: ' + win95.windows().map(w => w.title).join(', '));
       const t = performance.now(); win95.type('x'.repeat(1000)); win95.render(); const type_ms = performance.now() - t;
       await frame();
       const s = performance.now(); win95.key('alt+f', 's'); win95.render(); const save_ms = performance.now() - s;
       const saved = win95.fs.stat(BENCH + '\\big.txt').size;
+      if (saved !== 61000) throw new Error(`saved ${saved} bytes, expected 61000`);
       await reset();
       win95.fs.unlink(BENCH + '\\big.txt'); win95.fs.rmdir(BENCH);
       return { open, type_1000_ms: +type_ms.toFixed(3), per_key_ms: +(type_ms / 1000).toFixed(4), save_ms: +save_ms.toFixed(3), saved_bytes: saved };
@@ -161,7 +164,7 @@ export const STEPS = [
     run: async () => {
       await reset();
       const out = {};
-      const list = win95.fs.readdir('C:\\WINDOWS\\SYSTEM', '*.scr').map(i => i.path).sort().filter(p => !globalThis.__only || __only.test(p));
+      const list = win95.fs.readdir('C:\\WINDOWS\\SYSTEM', '*.scr').map(i => i.path).sort();
       for (const path of list) {
         const name = path.split('\\').pop().replace(/\.scr$/i, '');
         let failed = null; const off = win95.on('program.exit', e => { if (e.why) failed = e.why; });
