@@ -1113,7 +1113,7 @@ def16('KERNEL', 334, 'xw', 'w', function (sp, n) { return okPtr.call(this, sp, n
 def16('KERNEL', 335, 'xw', 'w', function (sp, n) { return okPtr.call(this, sp, n); });
 def16('KERNEL', 346, 'xl', 'w', function (sp, n) { return okPtr.call(this, sp, n); });
 def16('KERNEL', 347, 'xl', 'w', function (sp, n) { return okPtr.call(this, sp, n); });
-def16('KERNEL', 627, 'll', 'w', function (a, n) { return a ? 0 : 1; });             // IsBadFlatReadWritePtr
+def16('KERNEL', 627, 'xlw', 'w', function (sp, n) { return okPtr.call(this, sp, n); });   // IsBadFlatReadWritePtr(16:16 from HugeMapLS, size, write)
 
 // strings
 def16('KERNEL', 88, 'px', 'l', function (d, s) { const t = this.readA(this.lin(s)) || ''; W(this, d, t); return this.mapLS(d); });
