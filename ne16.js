@@ -1079,7 +1079,7 @@ def16('KERNEL', 327, '', 'jmp', function () {    // HandleParamError: BX = error
 def16('KERNEL', 435, 'w', 'w', () => 0x10);                                     // GetTaskFlags(hTask): every task here is Win32 (TDBF_WIN32)
 def16('KERNEL', 237, '', 'v', function () {});                                 // K237 nop
 def16('KERNEL', 447, '', 'v', function () {});                                 // WIN32_OldYield
-def16('KERNEL', 471, '', 'l', () => 1);                                        // GetCurrentProcessId
+def16('KERNEL', 471, '', 'l', function () { return this.inSystem && this.inSystem() ? SYS_PID : MAIN_PID; });   // GetCurrentProcessId: KERNEL32's ids
 def16('KEYBOARD', 100, 'w', 'v', function () {});                              // ScreenSwitchEnable
 
 // selectors
@@ -1563,7 +1563,7 @@ def16('KERNEL', 625, '', 'w', function () {
 const GPD = { 0: 0, '-4': 0, '-8': 0, '-12': 0, '-16': 0, '-20': 0, '-24': 0, '-28': 0, '-32': 0, '-36': 0, '-40': 0, '-44': 0x400, '-48': 0, '-52': 0, '-56': 0 };
 const pdw = (p, pid, off) => {
   if (!(off in GPD)) throw new GuestError(`GetProcessDword offset ${off}`);
-  pid = pid || (p.inSystem() ? 'system' : 0);   // USER's start-up runs as the system process, not the program's
+  pid = pid || (p.inSystem() ? SYS_PID : MAIN_PID);   // USER's start-up runs as the system process, not the program's
   p.procDword = p.procDword || new Map(); if (!p.procDword.has(pid)) p.procDword.set(pid, { ...GPD }); return p.procDword.get(pid);
 };
 def16('KERNEL', 485, 'li', 'l', function (pid, off) { return pdw(this, pid, off)[off] >>> 0; });
@@ -1582,7 +1582,7 @@ def16('KERNEL', 479, 'l', 'v', function (h) { const e = ev16(this, h); if (e) e.
 // ---- threads. One processor runs them one at a time: a thread created here starts when the scheduler next runs
 // (threads16, between slices of the main thread), runs until it waits on an event that is not set (then yields
 // in the wait, resuming there once the event is set), and ends when its procedure returns.
-const MAIN_TID = 0x51, SYS_TID = 0x41;   // the program's thread, and the system thread USER starts up on
+const MAIN_TID = 0x51, SYS_TID = 0x41, MAIN_PID = 0x50, SYS_PID = 0x40;   // the program's thread, and the system thread USER starts up on
 const thr = (p, tid) => {   // a thread's record by id (0 or the main thread's id: the current/main thread)
   p.threadsById = p.threadsById || new Map([[MAIN_TID, { id: MAIN_TID }]]);
   const id = tid || (p.thread16 ? p.thread16.id : p.inSystem() ? SYS_TID : MAIN_TID);
@@ -1955,7 +1955,7 @@ K('#37', 2, function (h, name) {                                                
 K('#91', 1, function (buf) { this.writeA(buf, ''); });                                                       // PK16FNF: no prefix for 16-bit file names
 KR('K32Thk1632Epilog', function () { return ret32(this); });
 K('#17', 0, () => 0);                                      // CommonUnimpStub
-K('#18', 2, function (pid, off) { return 0; });           // GetProcessDword
+K('#18', 2, function (pid, off) { return pdw(this, pid, off | 0)[off | 0] >>> 0; });   // GetProcessDword
 K('#23', 1, () => 0);                                      // GDIReallyCares (marks a handle's object as one GDI tracks)
 K('#38', 0, () => 0); K('#39', 0, () => 0);
 KR('#33', function () { return ret32(this); });    // frees 16-bit blocks a thread queued for release (thread flag 20h); none are queued here
