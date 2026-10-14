@@ -125,6 +125,8 @@ export const STEPS = [
       if (saved !== 61000) throw new Error(`saved ${saved} bytes, expected 61000`);
       await reset();
       win95.fs.unlink(BENCH + '\\big.txt'); win95.fs.rmdir(BENCH);
+      // opening the file put it on Start > Documents; take it off again
+      for (const i of win95.fs.readdir('C:\\WINDOWS\\Recent')) if (/^Target=C:\\BENCH\\/im.test(win95.fs.readText(i.path))) win95.fs.unlink(i.path);
       return { open, type_1000_ms: +type_ms.toFixed(3), per_key_ms: +(type_ms / 1000).toFixed(4), save_ms: +save_ms.toFixed(3), saved_bytes: saved };
     },
   },
