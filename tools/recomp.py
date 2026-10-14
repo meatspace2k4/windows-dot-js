@@ -1419,6 +1419,7 @@ def build_ne(path, out, base, selbase, lookup, registry):
         return THUNK16_SEL, 4 * reg['thunks'].index(tk)
     fixups, far_targets = ne.relocate(resolve)
     entries = [ne.segs[s - 1]['base'] + o for s, o in ne.entries.values() if ne.segs[s - 1]['code']]
+    entries += [sg['base'] for sg in ne.segs if sg['code'] and sg['len']]   # far pointers to offset 0 look like nulls to the heuristics
     if ne.entry_seg: entries.append(ne.segs[ne.entry_seg - 1]['base'] + ne.entry_off)
     entries += far_targets
     # flat-thunk connection data: {checksum, 16:16 common entry}; the entry is reached only through it
