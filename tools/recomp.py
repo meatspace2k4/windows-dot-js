@@ -577,11 +577,18 @@ class Translator:
             else: f.lg(t).gs('ebp')
             return
         f.gg('ebp').gs('esp'); pop_to(f, t); f.lg(t).gs('ebp')
-    def x_cdq(self, f, ins, ops, live): f.gg('eax').c(31).e(OPS['shr_s']).gs('edx')
-    def x_cwde(self, f, ins, ops, live): f.gg('eax').c(16).e(OPS['shl']).c(16).e(OPS['shr_s']).gs('eax')
+    # 98h/99h mean CBW/CWD or CWDE/CDQ by operand size; capstone names them by the 32-bit form in 16-bit code
+    def x_cdq(self, f, ins, ops, live):
+        if opsize(ins) == 2: return self.x_cwd(f, ins, ops, live)
+        f.gg('eax').c(31).e(OPS['shr_s']).gs('edx')
+    def x_cwde(self, f, ins, ops, live):
+        if opsize(ins) == 2: return self.x_cbw(f, ins, ops, live)
+        f.gg('eax').c(16).e(OPS['shl']).c(16).e(OPS['shr_s']).gs('eax')
+    def x_cdq_32(self, f): f.gg('eax').c(31).e(OPS['shr_s']).gs('edx')
     def x_cbw(self, f, ins, ops, live):
         f.gg('eax').c(~0xffff).e(OPS['and_']).gg('eax').c(24).e(OPS['shl']).c(24).e(OPS['shr_s']).c(0xffff).e(OPS['and_']).e(OPS['or_']).gs('eax')
     def x_cwd(self, f, ins, ops, live):
+        if opsize(ins) == 4: return self.x_cdq_32(f)
         f.gg('edx').c(~0xffff).e(OPS['and_']).gg('eax').c(16).e(OPS['shl']).c(31).e(OPS['shr_s']).c(0xffff).e(OPS['and_']).e(OPS['or_']).gs('edx')
     def x_bswap(self, f, ins, ops, live):
         d = Loc(f, ops[0]); t = f.i(); d.read(); f.ls(t)
