@@ -611,8 +611,22 @@ def('KERNEL32', 'GetStringTypeA', 5, () => 0);
 def('KERNEL32', 'GetStringTypeW', 4, () => 0);
 def('KERNEL32', 'LCMapStringA', 6, () => 0);
 def('KERNEL32', 'LCMapStringW', 6, () => 0);
-def('KERNEL32', 'MultiByteToWideChar', 6, () => 0);
-def('KERNEL32', 'WideCharToMultiByte', 8, () => 0);
+// code page 1252 <-> UTF-16; a zero output size asks for the size needed
+def('KERNEL32', 'MultiByteToWideChar', 6, function (cp, fl, src, n, dst, max) {
+  const len = n === 0xffffffff || n === -1 ? this.readA(src).length + 1 : n, b = this.u8.subarray(src, src + len);
+  const t = new TextDecoder('windows-1252').decode(b);
+  if (!max) return t.length;
+  const k = Math.min(t.length, max); for (let i = 0; i < k; i++) this.w16(dst + 2 * i, t.charCodeAt(i));
+  return k;
+});
+def('KERNEL32', 'WideCharToMultiByte', 8, function (cp, fl, src, n, dst, max, dflt, used) {
+  let t = '';
+  if (n === 0xffffffff || n === -1) { for (let a = src; ; a += 2) { const c = this.r16(a); t += String.fromCharCode(c); if (!c) break; } }
+  else for (let i = 0; i < n; i++) t += String.fromCharCode(this.r16(src + 2 * i));
+  const b = window.W95FS.encode(t); if (used) this.w32(used, 0);
+  if (!max) return b.length;
+  const k = Math.min(b.length, max); this.u8.set(b.subarray(0, k), dst); return k;
+});
 def('KERNEL32', 'GetPriorityClass', 1, () => 0x20);
 def('KERNEL32', 'SetPriorityClass', 2, () => 1);
 def('KERNEL32', 'FindResourceA', 3, function (m, name, type) {
@@ -828,6 +842,102 @@ def('KERNEL32', 'SetLocalTime', 1, () => 0);
 def('KERNEL32', 'CreatePipe', 4, () => 0);
 def('KERNEL32', 'CreateProcessA', 10, () => 0);
 def('KERNEL32', 'ReadConsoleA', 5, () => 0);
+// ---- what SHELL32.DLL and COMCTL32.DLL need of KERNEL32 beyond the above
+const ft64 = (p, a) => (BigInt(p.r32(a + 4)) << 32n) | BigInt(p.r32(a));
+const ftPut = (p, a, t) => { p.w32(a, Number(t & 0xffffffffn)); p.w32(a + 4, Number((t >> 32n) & 0xffffffffn)); };
+def('KERNEL32', 'GetFileTime', 4, function (h, c, a, w) {
+  const f = fileOf(this, h); if (!f) return 0;
+  const i = this.fs.fstat(f.fd), t = ms => BigInt(Math.round(ms)) * 10000n + 116444736000000000n;
+  if (c) ftPut(this, c, t(i.ctime)); if (a) ftPut(this, a, t(i.atime)); if (w) ftPut(this, w, t(i.mtime)); return 1;
+});
+def('KERNEL32', 'CompareFileTime', 2, function (a, b) { const x = ft64(this, a), y = ft64(this, b); return x < y ? 0xffffffff : x > y ? 1 : 0; });
+def('KERNEL32', 'FileTimeToDosDateTime', 3, function (ft, pd, pt) {
+  const d = new Date(Number((ft64(this, ft) - 116444736000000000n) / 10000n));
+  this.w16(pd, ((d.getUTCFullYear() - 1980) << 9) | ((d.getUTCMonth() + 1) << 5) | d.getUTCDate());
+  this.w16(pt, (d.getUTCHours() << 11) | (d.getUTCMinutes() << 5) | (d.getUTCSeconds() >> 1)); return 1;
+});
+def('KERNEL32', 'DosDateTimeToFileTime', 3, function (dd, tt, ft) {
+  const ms = Date.UTC((dd >> 9) + 1980, ((dd >> 5) & 15) - 1, dd & 31, tt >> 11, (tt >> 5) & 63, (tt & 31) * 2);
+  ftPut(this, ft, BigInt(ms) * 10000n + 116444736000000000n); return 1;
+});
+def('KERNEL32', 'GetDiskFreeSpaceExA', 4, function (n, avail, total, free) {
+  return fsCall(this, () => { const v = this.fs.statvfs(this.readA(n) || this.fs.cwd);
+    if (avail) ftPut(this, avail, BigInt(v.free)); if (total) ftPut(this, total, BigInt(v.total)); if (free) ftPut(this, free, BigInt(v.free)); return 1; });
+});
+def('KERNEL32', 'GetVolumeInformationA', 8, function (root, name, nn, serial, maxc, flags, fsn, nf) {
+  return fsCall(this, () => {
+    const l = ((this.readA(root) || this.fs.cwd)[0] || 'C').toUpperCase(), v = this.fs.vols.get(l); if (!v) throw new window.W95FS.FSError(3, l);
+    if (name) this.writeA(name, v.label || '', nn); if (serial) this.w32(serial, v.serial || 0x1d2c3b4a);
+    if (maxc) this.w32(maxc, 255); if (flags) this.w32(flags, 0x4006); if (fsn) this.writeA(fsn, v.kind === 'cdrom' ? 'CDFS' : 'FAT', nf); return 1;
+  });
+});
+def('KERNEL32', 'SetVolumeLabelA', 2, function (root, name) { return fsCall(this, () => (this.fs.setLabel(((this.readA(root) || this.fs.cwd)[0] || 'C').toUpperCase(), this.readA(name) || ''), 1)); });
+def('KERNEL32', 'GetShortPathNameA', 3, function (l, s, n) { const r = fsCall(this, () => this.fs.shortPath ? this.fs.shortPath(this.readA(l)) : this.readA(l), null); if (r === null) return 0; return this.writeA(s, r, n); });
+def('KERNEL32', 'ExpandEnvironmentStringsA', 3, function (src, dst, n) {
+  const env = { WINDIR: 'C:\\WINDOWS', SYSTEMROOT: 'C:\\WINDOWS', TEMP: 'C:\\WINDOWS\\TEMP', TMP: 'C:\\WINDOWS\\TEMP', PATH: 'C:\\WINDOWS;C:\\WINDOWS\\COMMAND' };
+  const r = (this.readA(src) || '').replace(/%([^%]+)%/g, (m, k) => env[k.toUpperCase()] ?? m);
+  if (n) this.writeA(dst, r, n); return r.length + 1;
+});
+def('KERNEL32', 'RtlZeroMemory', 2, function (p, n) { this.u8.fill(0, p, p + n); });
+def('KERNEL32', 'InterlockedExchange', 2, function (p, v) { const o = this.r32(p); this.w32(p, v); return o; });
+def('KERNEL32', 'GlobalSize', 1, function (p) { return this.allocs.get(p) || 0; });
+def('KERNEL32', 'GlobalHandle', 1, p => p);
+def('KERNEL32', 'LocalSize', 1, function (p) { return this.allocs.get(p) || 0; });
+def('KERNEL32', 'IsBadCodePtr', 1, function (a) { return a && a < this.mem.buffer.byteLength ? 0 : 1; });
+def('KERNEL32', 'DebugBreak', 0, () => 0);
+def('KERNEL32', 'GetThreadLocale', 0, () => 0x409);
+def('KERNEL32', 'SetThreadPriority', 2, () => 1);
+def('KERNEL32', 'GetThreadPriority', 1, () => 0);
+def('KERNEL32', 'OpenProcess', 3, function (a, inh, pid) { return this.newHandle({ kind: 'process', pid }); });
+def('KERNEL32', 'DeviceIoControl', 8, function () { this.lastError = 50; return 0; });
+def('KERNEL32', 'LoadLibraryExA', 3, function (name, f, fl) { return API.KERNEL32.LoadLibraryA[1].call(this, name); });
+def('KERNEL32', 'WriteProfileStringA', 3, function (sec, key, v) { return API.KERNEL32.WritePrivateProfileStringA[1].call(this, sec, key, v, 0); });
+def('KERNEL32', 'GetProfileIntA', 3, function (sec, key, dflt) { return API.KERNEL32.GetPrivateProfileIntA[1].call(this, sec, key, dflt, 0); });
+def('KERNEL32', 'GetNumberFormatA', 6, function (lc, fl, val, fmt, out, n) {
+  const v = Number(this.readA(val)); if (!isFinite(v)) return 0;
+  const r = v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  if (!n) return r.length + 1; return this.writeA(out, r, n) + 1;
+});
+def('KERNEL32', 'FormatMessageA', 7, function (fl, src, id, lang, buf, n) {
+  const t = `Error ${id}.\r\n`;
+  if (fl & 0x100) { const p = this.alloc(t.length + 1); this.writeA(p, t); this.w32(buf, p); return t.length; }   // FORMAT_MESSAGE_ALLOCATE_BUFFER
+  return this.writeA(buf, t, n);
+});
+def('KERNEL32', '_hread', 3, function (h, b, n) { return API.KERNEL32._lread[1].call(this, h, b, n); });
+def('KERNEL32', '_hwrite', 3, function (h, b, n) { return API.KERNEL32._lwrite[1].call(this, h, b, n); });
+// events and semaphores: one guest thread, so a wait finds the object signalled or times out at once
+def('KERNEL32', 'CreateEventA', 4, function (sa, manual, initial) { return this.newHandle({ kind: 'event', manual: !!manual, set: !!initial }); });
+def('KERNEL32', 'CreateSemaphoreA', 4, function (sa, init, max) { return this.newHandle({ kind: 'semaphore', count: init, max }); });
+def('KERNEL32', 'ReleaseSemaphore', 3, function (h, n, prev) { const o = this.obj(h); if (!o) return 0; if (prev) this.w32(prev, o.count); o.count = Math.min(o.max, o.count + n); return 1; });
+def('KERNEL32', 'WaitForMultipleObjects', 4, function (n, hs, all, ms) {
+  for (let i = 0; i < n; i++) { const o = this.obj(this.r32(hs + 4 * i)); if (!o || (o.kind === 'event' && o.set) || (o.kind === 'semaphore' && o.count > 0) || !['event', 'semaphore'].includes(o.kind)) { if (o && o.kind === 'event' && !o.manual) o.set = false; if (o && o.kind === 'semaphore') o.count--; return i; } }
+  return 0x102;
+});
+// change notifications: nothing changes the disk while a guest waits on one, so they never fire
+def('KERNEL32', 'FindFirstChangeNotificationA', 3, function () { return this.newHandle({ kind: 'event', manual: true, set: false }); });
+def('KERNEL32', 'FindNextChangeNotification', 1, () => 1);
+def('KERNEL32', 'FindCloseChangeNotification', 1, function (h) { this.handles.delete(h); return 1; });
+// global atoms, shared by the process's modules
+const atomsOf = p => p.atoms || (p.atoms = { byName: new Map(), byId: new Map(), next: 0xc000 });
+def('KERNEL32', 'GlobalAddAtomA', 1, function (s) {
+  if (!(s >>> 16)) return s & 0xffff;
+  const t = atomsOf(this), k = (this.readA(s) || '').toUpperCase();
+  if (k[0] === '#') return parseInt(k.slice(1), 10) & 0xffff;
+  let a = t.byName.get(k); if (!a) { a = { id: t.next++, name: this.readA(s), refs: 0 }; t.byName.set(k, a); t.byId.set(a.id, a); }
+  a.refs++; return a.id;
+});
+def('KERNEL32', 'GlobalDeleteAtom', 1, function (id) { const t = atomsOf(this), a = t.byId.get(id); if (a && --a.refs <= 0) { t.byId.delete(id); t.byName.delete(a.name.toUpperCase()); } return 0; });
+def('KERNEL32', 'GlobalFindAtomA', 1, function (s) { const a = atomsOf(this).byName.get((this.readA(s) || '').toUpperCase()); return a ? a.id : 0; });
+def('KERNEL32', 'GlobalGetAtomNameA', 3, function (id, buf, n) { const a = atomsOf(this).byId.get(id); return a ? this.writeA(buf, a.name, n) : 0; });
+// KERNEL32's unnamed exports (by ordinal) that the shell uses
+def('KERNEL32', '#10', 2, function (s, d) { this.writeA(d, this.readA(s) || ''); return 1; });                                  // CharToOemA
+def('KERNEL32', '#11', 3, function (s, d, n) { this.u8.copyWithin(d, s, s + n); return 1; });                                   // CharToOemBuffA
+def('KERNEL32', '#12', 2, function (s, d) { this.writeA(d, this.readA(s) || ''); return 1; });                                  // OemToCharA
+def('KERNEL32', '#13', 3, function (s, d, n) { this.u8.copyWithin(d, s, s + n); return 1; });                                   // OemToCharBuffA
+def('KERNEL32', '#15', -1, function (buf, fmt) { return this.writeA(buf, wsprintf(this, this.readA(fmt), this.reg('esp') + 12)); });   // wsprintfA
+def('KERNEL32', '#16', 3, function (buf, fmt, va) { return this.writeA(buf, wsprintf(this, this.readA(fmt), va)); });           // wvsprintfA
+def('KERNEL32', '#100', 3, () => 1);
+
 def('KERNEL32', 'ReadConsoleInputA', 4, () => 0);
 def('KERNEL32', 'PeekConsoleInputA', 4, () => 0);
 def('KERNEL32', 'GetNumberOfConsoleInputEvents', 2, () => 0);

@@ -1840,6 +1840,27 @@ P.hinst16 = function (h32) {
 };
 P.hinst32 = function (h16) { return (this.h32of && this.h32of.get(h16 & 0xfffe)) || 0; };
 KR('K32Thk1632Prolog', function () { return ret32(this); });
+// CallbackNN (NN = 12..64 argument bytes): calls the function in the last argument with the others, stdcall, as
+// KERNEL32's trampolines do (the return address takes the function's slot and a bare `ret` returns through it)
+KR('__CallbackRet', function () { return ret32(this); });
+for (let n = 12; n <= 64; n += 4) KR('Callback' + n, function () {
+  const ret = pop32(this), sp = this.reg('esp'), fn = this.r32(sp + n - 4);
+  this.w32(sp + n - 4, ret); push32(this, this.thunkFor('KERNEL32', '__CallbackRet'));
+  return fn;
+});
+// KERNEL32's 16-bit helpers by ordinal: copies of 32-bit blocks as 16-bit global memory, and 16-bit libraries
+K('#19', 1, function (h) {                                                                                     // ThunkTheTemplateHandle
+  const n = this.allocs.get(h) || 0; if (!n) return 0;
+  const g = this.globalAlloc16(0, n); this.u8.copyWithin(this.gblock(g).lin, h, h + n); return g;
+});
+K('#31', 1, function (h) { return K16['KERNEL.#17'][2].call(this, h & 0xffff); });                            // GlobalFree16
+K('#35', 1, function (name) { const m = this.loadLibrary16(this.readA(name) || '', true); return m ? (m.hInstance || m.hModule) : 0; });   // LoadLibrary16
+K('#36', 1, () => 0);                                                                                          // FreeLibrary16
+K('#37', 2, function (h, name) {                                                                               // GetProcAddress16
+  const m = this.neByHandle(h & 0xffff); if (!m || !m.meta) return 0;
+  return this.neExport(m, name >>> 16 ? this.readA(name) : name & 0xffff) || 0;
+});
+K('#91', 1, function (buf) { this.writeA(buf, ''); });                                                       // PK16FNF: no prefix for 16-bit file names
 KR('K32Thk1632Epilog', function () { return ret32(this); });
 K('#17', 0, () => 0);                                      // CommonUnimpStub
 K('#18', 2, function (pid, off) { return 0; });           // GetProcessDword
