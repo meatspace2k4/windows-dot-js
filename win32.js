@@ -170,7 +170,7 @@ class Process {
     this.depth++;
     const r = this.runAt(addr);
     this.depth--;
-    if (r !== 0) throw new GuestError(this.trapped || 'guest callback did not return');
+    if (r !== 0) throw new GuestError(this.trapped || `guest callback did not return (${r} at ${this.reg('eip').toString(16)})`);
     const ret = this.reg('eax');
     this.reg('esp', save.esp); this.cpu.eip.value = save.eip;
     return ret;
