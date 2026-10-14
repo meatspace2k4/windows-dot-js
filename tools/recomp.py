@@ -1274,19 +1274,22 @@ def decode_ne(ne, entries):
                         out.append(sg['base'] + v)
                     return out
             return []
-        if op.type != X.X86_OP_MEM or op.mem.segment != X.X86_REG_CS or not op.mem.disp or op.size != 2: return []
+        if ins.mn in ('mov', 'movzx') and len(ins.ops) == 2: op = ins.ops[1]   # table loaded into a register, called later
+        if op.type != X.X86_OP_MEM or op.mem.segment != X.X86_REG_CS or not op.mem.disp or op.size not in (2, 4) \
+                or not (op.mem.base or op.mem.index): return []
         reg = op.mem.base or op.mem.index; count = None
         for prev in reversed(recent[-6:]):
             if prev.mn == 'cmp' and prev.ops[0].type == X.X86_OP_REG and prev.ops[1].type == X.X86_OP_IMM:
                 count = (prev.ops[1].imm & 0xffff) + 1; break
         out, tab = [], op.mem.disp & 0xffff
         if count is None: count = 64
+        w = op.size
         for k in range(count):
-            o = tab + 2 * k
-            if o + 2 > sg['len']: break
-            v = int.from_bytes(ne.image[sg['base'] - ne.base + o: sg['base'] - ne.base + o + 2], 'little')
+            o = tab + w * k
+            if o + w > sg['len']: break
+            v = int.from_bytes(ne.image[sg['base'] - ne.base + o: sg['base'] - ne.base + o + w], 'little')
             if v >= sg['len']: break
-            out.append(sg['base'] + v)
+            if v: out.append(sg['base'] + v)
         return out
     def walk(start):
         a = start; recent = []
@@ -1308,7 +1311,8 @@ def decode_ne(ne, entries):
                     ins.tgt = sg['base'] + (got.operands[0].imm & (0xffff if sg['bits'] == 16 and got.prefix[2] != 0x66 else 0xffffffff))
             insns[a] = ins; recent.append(ins)
             if ins.tgt is not None: todo.append(ins.tgt)
-            if ins.mn in ('jmp', 'call') and got.operands and ins.tgt is None: todo.extend(table(ins, sg, recent))
+            if (ins.mn in ('jmp', 'call') and got.operands and ins.tgt is None) or (ins.mn in ('mov', 'movzx') and len(got.operands) == 2):
+                todo.extend(table(ins, sg, recent))
             if ins.mn in ('jmp', 'ljmp', 'ret', 'retf', 'hlt', 'int3', 'ud2', 'iret', 'iretd'): return
             a = ins.next
     def drain():
