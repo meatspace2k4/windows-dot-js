@@ -218,6 +218,7 @@ class Process {
   post(hwnd, msg, wp = 0, lp = 0) { this.queue.push({ hwnd, msg, wp: u32(wp), lp: u32(lp) }); }
   sendMsg(hwnd, msg, wp = 0, lp = 0) {
     const w = this.windows.get(hwnd); if (!w) return 0;
+    if (w.kind === 'control') return ctlMessage(this, w, msg, u32(wp), u32(lp));
     return this.call(w.proc, [hwnd, msg, u32(wp), u32(lp)]);
   }
   nextMessage(filter, remove) {
@@ -239,6 +240,7 @@ class Process {
   /** Earliest time something becomes deliverable, for the host scheduler. */
   ready() {
     if (this.exitCode !== null || this.trapped) return false;
+    if (this.modal) return false;
     if (!this.waiting) return true;
     return !!this.nextMessage(0, false);
   }
@@ -279,12 +281,12 @@ class DC {
   // Win95 GDI lines are not antialiased: rasterize with Bresenham into 1px spans.
   line(x0, y0, x1, y1) {
     const p = this.pen; if (p.style === 5 || !this.ctx) return;
-    const g = this.ctx; g.fillStyle = this.color(p.color);
+    const g = this.ctx; g.fillStyle = this.color(p.color); g.beginPath();
     const wd = p.width, o = wd >> 1;
     let dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1, err = dx + dy;
     let x = x0, y = y0, runX = x, runY = y, len = 0;
     const horiz = dx >= -dy;
-    const flush = () => { if (!len) return; if (horiz) g.fillRect(Math.min(runX, runX + (len - 1) * sx) - o, runY - o, len + wd - 1, wd); else g.fillRect(runX - o, Math.min(runY, runY + (len - 1) * sy) - o, wd, len + wd - 1); };
+    const flush = () => { if (!len) return; if (horiz) g.rect(Math.min(runX, runX + (len - 1) * sx) - o, runY - o, len + wd - 1, wd); else g.rect(runX - o, Math.min(runY, runY + (len - 1) * sy) - o, wd, len + wd - 1); };
     // end point excluded, like LineTo
     while (!(x === x1 && y === y1)) {
       if (!len) { runX = x; runY = y; }
@@ -294,7 +296,7 @@ class DC {
       if (e2 <= dx) { err += dx; y += sy; my = true; }
       if ((horiz && my) || (!horiz && mx)) { flush(); len = 0; }
     }
-    flush();
+    flush(); g.fill();
   }
   fill(x, y, w, h, color) { if (!this.ctx || w <= 0 || h <= 0) return; this.ctx.fillStyle = this.color(color); this.ctx.fillRect(x, y, w, h); }
   fontCss() {
@@ -523,7 +525,7 @@ def('USER32', 'DestroyWindow', 1, function (h) {
   this.host.destroyed && this.host.destroyed(h);
   return 1;
 });
-def('USER32', 'ShowWindow', 2, () => 1);
+def('USER32', 'ShowWindow', 2, function (h, cmd) { const w = wOf(this, h); if (w && w.kind === 'control') w.visible = cmd !== 0; return 1; });
 def('USER32', 'UpdateWindow', 1, () => 1);
 def('USER32', 'SetWindowPos', 7, () => 1);
 def('USER32', 'DefWindowProcA', 4, function (h, msg, wp, lp) {
@@ -531,6 +533,7 @@ def('USER32', 'DefWindowProcA', 4, function (h, msg, wp, lp) {
   if (msg === WM.CLOSE) return API.USER32.DestroyWindow[1].call(this, h);
   if (msg === WM.ERASEBKGND && w) { const dc = new DC(this, w.ctx, w.w, w.h, h); const b = this.obj(w.cls.brush); if (b && !b.nul) dc.fill(0, 0, w.w, w.h, b.color); return 1; }
   if (msg === WM.NCCREATE || msg === WM.NCACTIVATE) return 1;
+  if (msg === WM.PAINT && w) { const ps = this.alloc(64); API.USER32.BeginPaint[1].call(this, h, ps); API.USER32.EndPaint[1].call(this, h, ps); this.free(ps); return 0; }
   if (msg === WM.SETCURSOR) { this.host.setCursor && this.host.setCursor(w && w.cls.cursor); return 1; }
   return 0;
 });
@@ -567,7 +570,11 @@ def('USER32', 'SetTimer', 4, function (h, id, ms, proc) {
   this.timers.push({ hwnd: h, id: id || (0x7000 + this.timers.length), ms, proc, due: this.host.now() + ms }); return id || 1;
 });
 def('USER32', 'KillTimer', 2, function (h, id) { this.timers = this.timers.filter(t => !(t.hwnd === h && t.id === id)); return 1; });
-def('USER32', 'GetClientRect', 2, function (h, p) { const w = this.windows.get(h); writeRect(this, p, 0, 0, w ? w.w : this.host.width, w ? w.h : this.host.height); return 1; });
+def('USER32', 'GetClientRect', 2, function (h, p) {
+  const w = this.windows.get(h);
+  if (!w && h && h === this.host.previewParent) { writeRect(this, p, 0, 0, this.host.previewW, this.host.previewH); return 1; }
+  writeRect(this, p, 0, 0, w ? w.w : this.host.width, w ? w.h : this.host.height); return 1;
+});
 def('USER32', 'GetWindowRect', 2, function (h, p) { const w = this.windows.get(h); if (w) writeRect(this, p, w.x, w.y, w.x + w.w, w.y + w.h); else writeRect(this, p, 0, 0, this.host.width, this.host.height); return 1; });
 def('USER32', 'GetDC', 1, function (h) {
   const w = this.windows.get(h);
@@ -619,9 +626,147 @@ def('USER32', 'GetWindowTextA', 3, function (h, buf, n) { const w = this.windows
 def('USER32', 'SetWindowTextA', 2, function (h, s) { const w = this.windows.get(h); if (w) w.title = this.readA(s); return 1; });
 def('USER32', 'GetWindowLongA', 2, function (h, i) { const w = this.windows.get(h); return w ? (w.extra.get(i) || 0) : 0; });
 def('USER32', 'SetWindowLongA', 3, function (h, i, v) { const w = this.windows.get(h); if (!w) return 0; const o = w.extra.get(i) || 0; w.extra.set(i, v); return o; });
-def('USER32', 'DialogBoxParamA', 5, function () { return this.host.dialog ? this.host.dialog(this, ...arguments) : 0; });
-def('USER32', 'EndDialog', 2, () => 1);
-def('USER32', 'EnableWindow', 2, () => 0);
+// ---- dialogs: templates from the image's resources, driven by the guest dialog procedure
+const DLG_CLASS = { 0x80: 'button', 0x81: 'edit', 0x82: 'static', 0x83: 'listbox', 0x84: 'scrollbar', 0x85: 'combobox' };
+class Dialog {
+  constructor(proc, tmpl, parent, dlgProc, param) {
+    this.kind = 'dialog'; this.proc = dlgProc; this.p = proc; this.parent = parent; this.param = param;
+    this.ctls = []; this.extra = new Map(); this.result = null; this.title = '';
+    this.parse(tmpl);
+    this.hwnd = proc.newHandle(this); proc.windows.set(this.hwnd, this);
+    for (const c of this.ctls) { c.hwnd = proc.newHandle(c); c.dlg = this; proc.windows.set(c.hwnd, c); }
+    // up-down controls with UDS_AUTOBUDDY take the previous control as buddy
+    this.ctls.forEach((c, i) => { if (c.cls === 'msctls_updown32' && c.style & 0x10 && i) c.buddy = this.ctls[i - 1]; });
+  }
+  parse(a) {
+    const p = this.p, sz = () => { const v = p.r16(a); if (v === 0) { a += 2; return ''; } if (v === 0xffff) { const o = p.r16(a + 2); a += 4; return o; } const s = p.readW(a); a += 2 * (s.length + 1); return s; };
+    const ex = p.r16(a + 2) === 0xffff && p.r16(a) === 1;
+    let n;
+    if (ex) { this.style = p.r32(a + 12); n = p.r16(a + 16); this.x = p.dv.getInt16(a + 18, true); this.y = p.dv.getInt16(a + 20, true); this.cx = p.dv.getInt16(a + 22, true); this.cy = p.dv.getInt16(a + 24, true); a += 26; }
+    else { this.style = p.r32(a); n = p.r16(a + 8); this.x = p.dv.getInt16(a + 10, true); this.y = p.dv.getInt16(a + 12, true); this.cx = p.dv.getInt16(a + 14, true); this.cy = p.dv.getInt16(a + 16, true); a += 18; }
+    sz(); sz(); this.title = sz();
+    if (this.style & 0x40) { this.pt = p.r16(a); a += ex ? 6 : 2; this.face = p.readW(a); a += 2 * (this.face.length + 1); }
+    for (let i = 0; i < n; i++) {
+      a = (a + 3) & ~3;
+      const c = { kind: 'control', extra: new Map(), items: [], data: [], sel: -1, check: 0, pos: 0, min: 0, max: 100, enabled: true, visible: true, limit: 0 };
+      if (ex) { c.style = p.r32(a + 8); c.x = p.dv.getInt16(a + 12, true); c.y = p.dv.getInt16(a + 14, true); c.cx = p.dv.getInt16(a + 16, true); c.cy = p.dv.getInt16(a + 18, true); c.id = p.r32(a + 20); a += 24; }
+      else { c.style = p.r32(a); c.x = p.dv.getInt16(a + 8, true); c.y = p.dv.getInt16(a + 10, true); c.cx = p.dv.getInt16(a + 12, true); c.cy = p.dv.getInt16(a + 14, true); c.id = p.r16(a + 16); a += 18; }
+      const cls = sz(); c.cls = typeof cls === 'number' ? DLG_CLASS[cls] || String(cls) : cls.toLowerCase();
+      const t = sz(); c.text = typeof t === 'number' ? '' : t; c.res = typeof t === 'number' ? t : null;
+      const extra = p.r16(a); a += 2 + extra;
+      c.enabled = !(c.style & 0x08000000); c.visible = !!(c.style & 0x10000000);
+      this.ctls.push(c);
+    }
+  }
+  ctl(id) { return this.ctls.find(c => c.id === id) || null; }
+  send(msg, wp, lp) { return this.p.call(this.proc, [this.hwnd, msg, u32(wp), u32(lp)]); }
+  command(c, code = 0) { this.send(WM.COMMAND, (code << 16) | (c ? c.id : 0), c ? c.hwnd : 0); }
+  // user interaction entry points (called by the shell)
+  click(c) {
+    const t = c.style & 0xf;
+    if (c.cls === 'button') {
+      if (t === 3 || t === 6) c.check = c.check ? 0 : 1;
+      if (t === 9) this.radio(c);
+    }
+    this.command(c, 0);
+  }
+  radio(c) {
+    const i = this.ctls.indexOf(c);
+    let s = i; while (s > 0 && !(this.ctls[s].style & 0x20000)) s--;
+    for (let k = s; k < this.ctls.length; k++) {
+      const o = this.ctls[k]; if (k > s && o.style & 0x20000) break;
+      if (o.cls === 'button' && ((o.style & 0xf) === 9 || (o.style & 0xf) === 4)) o.check = o === c ? 1 : 0;
+    }
+  }
+  edited(c) { this.command(c, c.cls === 'combobox' ? 5 : 0x300); }
+  selected(c) { this.command(c, 1); }
+  scrolled(c, code) { this.send(c.style & 1 ? 0x115 : 0x114, ((c.pos & 0xffff) << 16) | code, c.hwnd); }
+  spun(c, d) {
+    const lo = Math.min(c.min, c.max), hi = Math.max(c.min, c.max);
+    c.pos = Math.max(lo, Math.min(hi, c.pos + (c.min > c.max ? -d : d)));
+    if (c.buddy && c.style & 2) { c.buddy.text = String(c.pos); this.edited(c.buddy); }
+    this.send(0x115, ((c.pos & 0xffff) << 16) | 4, c.hwnd);
+  }
+}
+function ctlMessage(p, c, msg, wp, lp) {
+  switch (msg) {
+    case 0x0c: c.text = p.readA(lp) || ''; return 1;
+    case 0x0d: return p.writeA(lp, c.text || '', wp);
+    case 0x0e: return (c.text || '').length;
+    case 0x30: case 0xc5: case 0x415: case 0x414: case 0x417: case 0xb1: case 0x401 + 0x13: return 0;
+    case 0xf0: return c.check;
+    case 0xf1: c.check = wp; return 0;
+    case 0x400: return c.pos;
+    case 0x401: return c.min;
+    case 0x402: return c.max;
+    case 0x405: c.pos = lp | 0; return 0;
+    case 0x406: c.min = lp & 0xffff; c.max = lp >>> 16; return 0;
+    case 0x407: c.min = lp | 0; return 0;
+    case 0x408: c.max = lp | 0; return 0;
+    case 0x465: c.max = (lp << 16) >> 16; c.min = lp >> 16; return 0;
+    case 0x466: return ((c.max & 0xffff) | (c.min << 16)) >>> 0;
+    case 0x467: c.pos = (lp << 16) >> 16; if (c.buddy && c.style & 2) c.buddy.text = String(c.pos); return 0;
+    case 0x468: return c.pos & 0xffff;
+    case 0x469: { const o = c.buddy; c.buddy = p.windows.get(wp) || null; return o ? o.hwnd : 0; }
+    case 0x143: case 0x180: c.items.push(p.readA(lp) || ''); c.data.push(0); return c.items.length - 1;
+    case 0x14a: case 0x181: { const i = (wp | 0) < 0 ? c.items.length : wp; c.items.splice(i, 0, p.readA(lp) || ''); c.data.splice(i, 0, 0); return i; }
+    case 0x14b: case 0x184: c.items = []; c.data = []; c.sel = -1; return 0;
+    case 0x14e: case 0x186: c.sel = (wp | 0) < c.items.length ? wp | 0 : -1; if (c.cls === 'combobox') c.text = c.items[c.sel] || ''; return c.sel;
+    case 0x147: case 0x188: return c.sel >>> 0;
+    case 0x148: case 0x189: return p.writeA(lp, c.items[wp] || '');
+    case 0x149: case 0x18a: return (c.items[wp] || '').length;
+    case 0x146: case 0x18b: return c.items.length;
+    case 0x150: case 0x199: return c.data[wp] || 0;
+    case 0x151: case 0x19a: c.data[wp] = lp; return 1;
+    case 0x158: case 0x14c: case 0x18f: { const s = (p.readA(lp) || '').toLowerCase(); return c.items.findIndex(x => (msg === 0x158 ? x.toLowerCase() === s : x.toLowerCase().startsWith(s))) >>> 0; }
+    case 0x14d: { const s = (p.readA(lp) || '').toLowerCase(); const i = c.items.findIndex(x => x.toLowerCase().startsWith(s)); if (i >= 0) { c.sel = i; c.text = c.items[i]; } return i >>> 0; }
+    case 0x0a: c.enabled = !!wp; return 0;
+  }
+  return 0;
+}
+const wOf = (p, h) => p.windows.get(h);
+def('USER32', 'DialogBoxParamA', 5, function (inst, name, parent, proc, param) {
+  if (this.dlgDone) { const r = this.dlgDone.result; this.dlgDone = null; return r; }
+  const r = this.findResource(5, this.resName(name)); if (!r) return u32(-1);
+  const d = new Dialog(this, r.addr, parent, proc, param);
+  if (!this.host.dialog) return u32(-1);
+  this.modal = d;
+  this.host.dialog(this, d);
+  d.send(WM.INITDIALOG, (d.ctls.find(c => c.enabled && c.visible) || {}).hwnd || 0, param);
+  if (d.result !== null) { this.modal = null; this.host.closeDialog && this.host.closeDialog(d); this.windows.delete(d.hwnd); return d.result; }
+  this.waiting = true;
+  return YIELD;
+});
+def('USER32', 'EndDialog', 2, function (h, r) {
+  const d = wOf(this, h); if (!d || d.kind !== 'dialog') return 0;
+  d.result = r;
+  if (this.modal === d) {
+    this.modal = null; this.dlgDone = d;
+    for (const c of d.ctls) this.windows.delete(c.hwnd);
+    this.windows.delete(d.hwnd);
+    this.host.closeDialog && this.host.closeDialog(d);
+  }
+  return 1;
+});
+def('USER32', 'GetDlgItem', 2, function (h, id) { const d = wOf(this, h); const c = d && d.ctl && d.ctl(id); return c ? c.hwnd : 0; });
+def('USER32', 'GetDlgCtrlID', 1, function (h) { const c = wOf(this, h); return c && c.kind === 'control' ? c.id : 0; });
+def('USER32', 'SendDlgItemMessageA', 5, function (h, id, msg, wp, lp) { const d = wOf(this, h); const c = d && d.ctl && d.ctl(id); return c ? ctlMessage(this, c, msg, wp, lp) : 0; });
+def('USER32', 'SetDlgItemInt', 4, function (h, id, v, signed) { const d = wOf(this, h); const c = d && d.ctl(id); if (c) c.text = String(signed ? v | 0 : v >>> 0); return 1; });
+def('USER32', 'GetDlgItemInt', 4, function (h, id, ok, signed) {
+  const d = wOf(this, h); const c = d && d.ctl(id); const n = c ? parseInt(c.text, 10) : NaN;
+  if (ok) this.w32(ok, Number.isNaN(n) ? 0 : 1); return Number.isNaN(n) ? 0 : n >>> 0;
+});
+def('USER32', 'SetDlgItemTextA', 3, function (h, id, s) { const d = wOf(this, h); const c = d && d.ctl(id); if (c) c.text = this.readA(s) || ''; return 1; });
+def('USER32', 'GetDlgItemTextA', 4, function (h, id, buf, n) { const d = wOf(this, h); const c = d && d.ctl(id); return this.writeA(buf, c ? c.text : '', n); });
+def('USER32', 'CheckDlgButton', 3, function (h, id, v) { const d = wOf(this, h); const c = d && d.ctl(id); if (c) c.check = v; return 1; });
+def('USER32', 'IsDlgButtonChecked', 2, function (h, id) { const d = wOf(this, h); const c = d && d.ctl(id); return c ? c.check : 0; });
+def('USER32', 'CheckRadioButton', 4, function (h, a, b, id) {
+  const d = wOf(this, h); if (!d) return 0;
+  for (const c of d.ctls) if (c.id >= a && c.id <= b) c.check = c.id === id ? 1 : 0;
+  return 1;
+});
+def('USER32', 'EnableWindow', 2, function (h, en) { const w = wOf(this, h); if (!w) return 0; const o = w.enabled === false; w.enabled = !!en; return o ? 1 : 0; });
+def('USER32', 'IsWindowEnabled', 1, function (h) { const w = wOf(this, h); return w && w.enabled !== false ? 1 : 0; });
 def('COMCTL32', '#17', 0, () => 0);
 def('COMCTL32', 'InitCommonControls', 0, () => 0);
 def('COMDLG32', 'ChooseColorA', 1, () => 0);
