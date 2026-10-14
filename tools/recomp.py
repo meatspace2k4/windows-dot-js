@@ -639,7 +639,7 @@ class Translator:
             f.lg(m.addr).mem(LOAD[sz]).ls(off); f.lg(m.addr).c(sz).e(OPS['add']).mem(0x2f).ls(sel)
         if push_ret:
             push_val(f, lambda: f.gg('cs'), sz)
-            push_val(f, lambda: f.c(ins.next - ins.segbase), sz)
+            push_val(f, lambda: f.c(ins.next - (ins.segbase or 0)), sz)
         load_sreg(f, X.X86_REG_CS, lambda: f.lg(sel))
         f.gg('csb').lg(off).e(OPS['add']).e(RETURN); return True
     def x_lcall(self, f, ins, ops, live): return self.far_dest(f, ins, ops, True)
