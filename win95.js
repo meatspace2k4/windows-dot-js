@@ -356,6 +356,7 @@ function topVisible() { for (let i = windows.length - 1; i >= 0; i--) if (!windo
 function closeWin(w, force) {
   if (!windows.includes(w)) return;
   if (!force && w.body && w.body.canClose && !w.body.canClose(() => closeWin(w, true))) return;
+  if (w.body && w.body.onClose) w.body.onClose();
   windows = windows.filter(v => v !== w); tasks = tasks.filter(v => v !== w); modals = modals.filter(v => v !== w);
   if (menuSrc && menuSrc.win === w) closeMenus();
   if (active === w || !windows.includes(active)) active = modal() || topVisible();
@@ -1164,11 +1165,12 @@ function notepad(path) {
 // ---------------------------------------------------------------- dialogs
 class DialogBody {
   constructor(ctrls, o = {}) {
-    this.c = ctrls; this.o = o;
+    this.c = ctrls; this.o = o; this.page = 0;
     this.focus = ctrls.findIndex(c => c.focus);
     if (this.focus < 0) this.focus = ctrls.findIndex(c => c.def);
   }
   abs(c) { return { x: this.r.x + c.x, y: this.r.y + c.y, w: c.w || 0, h: c.h || 0 }; }
+  vis(c) { return (c.page === undefined || c.page === this.page) && c.hidden !== true; }
   hitRect(c) {
     const a = this.abs(c);
     if (c.type === 'radio' || c.type === 'check') return { ...a, w: 19 + textW(c.label), h: 14 };
@@ -1178,6 +1180,7 @@ class DialogBody {
     this.r = r;
     const focusBtn = this.c[this.focus] && this.c[this.focus].type === 'button';
     this.c.forEach((c, i) => {
+      if (!this.vis(c)) return;
       const a = this.abs(c), foc = i === this.focus && win.isActive;
       if (c.type === 'label') {
         if (c.ell) text(ellipsis(c.amp ? c.text : esc(c.text), c.w), a.x, a.y);
@@ -1187,11 +1190,21 @@ class DialogBody {
       else if (c.type === 'tabs') {
         const py = a.y + 19;
         fill(a.x, py, a.w, a.h - 19, K.face); edge(a.x, py, a.w, a.h - 19, K.hl, K.dk); edge(a.x + 1, py + 1, a.w - 2, a.h - 21, K.lt, K.sh);
-        const tw = textW(c.tabs[0]) + 18;
-        fill(a.x, a.y + 2, tw, 19, K.face);
-        fill(a.x, a.y + 2, 1, 18, K.hl); fill(a.x + 1, a.y + 1, 1, 1, K.hl); fill(a.x + 2, a.y, tw - 4, 1, K.hl);
-        fill(a.x + tw - 2, a.y + 1, 1, 1, K.dk); fill(a.x + tw - 1, a.y + 2, 1, 18, K.dk); fill(a.x + tw - 2, a.y + 2, 1, 18, K.sh);
-        text(c.tabs[0], a.x + 9, a.y + 4);
+        let tx = a.x + 2; c.hdr = [];
+        c.tabs.forEach((t, k) => { const tw = textW(t) + 12; c.hdr.push({ x: tx, y: a.y, w: tw, h: 20 }); tx += tw; });
+        const tab = (h, sel) => {
+          const x = sel ? h.x - 2 : h.x, y = sel ? a.y : a.y + 2, w = sel ? h.w + 4 : h.w, hh = sel ? 21 : 18;
+          fill(x, y + 2, w, hh - 2, K.face);
+          fill(x, y + 2, 1, hh - 2, K.hl); fill(x + 1, y + 1, 1, 1, K.hl); fill(x + 2, y, w - 4, 1, K.hl);
+          fill(x + w - 2, y + 1, 1, 1, K.dk); fill(x + w - 1, y + 2, 1, hh - 2, K.dk); fill(x + w - 2, y + 2, 1, hh - 2, K.sh);
+        };
+        c.hdr.forEach((h, k) => { if (k !== this.page) { tab(h, false); text(c.tabs[k], h.x + 6, a.y + 5); } });
+        const h = c.hdr[this.page]; tab(h, true); text(c.tabs[this.page], h.x + 6, a.y + 3);
+        if (win.isActive && this.focus === i) focusRect(h.x + 3, a.y + 3, h.w - 6, 15);
+      } else if (c.type === 'group') {
+        edge(a.x, a.y + 6, a.w, a.h - 6, K.sh, K.hl); edge(a.x + 1, a.y + 7, a.w - 2, a.h - 8, K.hl, K.sh);
+        fill(a.x + 1, a.y + 7, 1, a.h - 9, K.hl); fill(a.x + 1, a.y + 7, a.w - 3, 1, K.hl);
+        if (c.label) { const tw = textW(c.label); fill(a.x + 7, a.y, tw + 4, 13, K.face); if (c.disabled) textEmboss(c.label, a.x + 9, a.y); else text(c.label, a.x + 9, a.y); }
       } else if (c.type === 'button') {
         pushButton(a.x, a.y, a.w, a.h, c.label, { def: c.def && !focusBtn || (foc && c.type === 'button'), pressed: c.pressed, focus: foc, disabled: c.disabled });
       } else if (c.type === 'radio') {
@@ -1214,13 +1227,18 @@ class DialogBody {
       } else if (c.type === 'custom') c.draw(a, foc, win);
     });
   }
-  ctrlAt(x, y) { return this.c.findIndex(c => !['label', 'icon', 'line', 'tabs'].includes(c.type) && inR(this.hitRect(c), x, y)); }
+  ctrlAt(x, y) { return this.c.findIndex(c => this.vis(c) && !['label', 'icon', 'line', 'tabs', 'group'].includes(c.type) && inR(this.hitRect(c), x, y)); }
   down(x, y, btn, dbl) {
+    for (const [ti, c] of this.c.entries()) {
+      if (c.type !== 'tabs' || !c.hdr) continue;
+      const k = c.hdr.findIndex(h => inR(h, x, y));
+      if (k >= 0) { this.page = k; this.focus = ti; if (c.onChange) c.onChange(k); return null; }
+    }
     const i = this.ctrlAt(x, y); if (i < 0) return null;
     const c = this.c[i]; if (c.disabled) return null;
     this.focus = i;
-    if (c.type === 'radio') { this.pick(c); return null; }
-    if (c.type === 'check') { c.checked = !c.checked; return null; }
+    if (c.type === 'radio') { this.pick(c); if (c.onChange) c.onChange(); return null; }
+    if (c.type === 'check') { c.checked = !c.checked; if (c.onChange) c.onChange(); return null; }
     if (c.type === 'custom') return c.down ? c.down(x, y, btn, dbl, this.abs(c)) || null : null;
     if (c.type === 'edit') {
       if (c.onDrop && (c.readonly || x >= this.abs(c).x + c.w - 18)) { c.onDrop(this.abs(c)); return null; }
@@ -1241,7 +1259,7 @@ class DialogBody {
     if (e.key === 'Tab') {
       const f = this.c.map((o, i) => i).filter(i => {
         const o = this.c[i];
-        return !o.disabled && (['button', 'edit', 'check'].includes(o.type) || (o.type === 'radio' && o.checked) || (o.type === 'custom' && o.key));
+        return this.vis(o) && !o.disabled && (['button', 'edit', 'check', 'tabs'].includes(o.type) || (o.type === 'radio' && o.checked) || (o.type === 'custom' && o.key));
       });
       if (!f.length) return true;
       const k = f.indexOf(this.focus); this.focus = f[(k + (e.shiftKey ? f.length - 1 : 1)) % f.length]; return true;
@@ -1266,7 +1284,11 @@ class DialogBody {
       else if (e.key === 'Home') c.caret = 0;
       else if (e.key === 'End') c.caret = v.length;
       else return false;
+      if (c.onChange && c.value !== v) c.onChange();
       blinkOn = true; return true;
+    }
+    if (c && c.type === 'tabs' && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+      this.page = (this.page + (e.key === 'ArrowRight' ? 1 : c.tabs.length - 1)) % c.tabs.length; if (c.onChange) c.onChange(this.page); return true;
     }
     return false;
   }

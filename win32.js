@@ -240,6 +240,7 @@ class Process {
   /** Earliest time something becomes deliverable, for the host scheduler. */
   ready() {
     if (this.exitCode !== null || this.trapped) return false;
+    if (this.dlgDone) return true;
     if (this.modal) return false;
     if (!this.waiting) return true;
     return !!this.nextMessage(0, false);
@@ -933,5 +934,26 @@ def('GDI32', 'GetSystemPaletteUse', 1, () => 1);
 def('GDI32', 'SetSystemPaletteUse', 2, () => 1);
 def('GDI32', 'GdiFlush', 0, () => 1);
 
-window.W95Win32 = { Process, API, LAYOUT, WM, YIELD, iniGet, iniSet };
+// Read a string resource straight from PE file bytes (used to list savers by description).
+function peString(bytes, id) {
+  try {
+    const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), p = dv.getUint32(0x3c, true), opt = p + 24;
+    const nsec = dv.getUint16(p + 6, true), shdr = opt + dv.getUint16(p + 20, true), rsrc = dv.getUint32(opt + 96 + 16, true);
+    const off = rva => { for (let i = 0; i < nsec; i++) { const o = shdr + 40 * i, va = dv.getUint32(o + 12, true), sz = Math.max(dv.getUint32(o + 8, true), dv.getUint32(o + 16, true)); if (rva >= va && rva < va + sz) return rva - va + dv.getUint32(o + 20, true); } return -1; };
+    const root = off(rsrc);
+    const find = (dir, key) => {
+      const n = dv.getUint16(dir + 12, true) + dv.getUint16(dir + 14, true);
+      for (let i = 0; i < n; i++) { const e = dir + 16 + 8 * i, nm = dv.getUint32(e, true), o = dv.getUint32(e + 4, true); if (key === undefined || nm === key) return o; }
+      return null;
+    };
+    let o = find(root, 6); o = find(root + (o & 0x7fffffff), (id >> 4) + 1); o = find(root + (o & 0x7fffffff));
+    const de = root + (o & 0x7fffffff); let a = off(dv.getUint32(de, true));
+    for (let i = 0; i < (id & 15); i++) a += 2 + 2 * dv.getUint16(a, true);
+    let str = ''; const n = dv.getUint16(a, true);
+    for (let i = 0; i < n; i++) str += String.fromCharCode(dv.getUint16(a + 2 + 2 * i, true));
+    return str;
+  } catch (_) { return null; }
+}
+
+window.W95Win32 = { Process, API, LAYOUT, WM, YIELD, iniGet, iniSet, peString };
 })();
