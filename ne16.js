@@ -528,6 +528,28 @@ P.mouseEvent16 = function (flags, x, y) {
   this.tick16(); this.call16(this.mouseProc.sel, this.mouseProc.off, [], { ax: flags, bx: x & 0xffff, cx: y & 0xffff, dx: 2, si: 0, di: 0 });
   return true;
 };
+/** call an export of the native USER.EXE by ordinal (args in Pascal order, as call16 takes them) */
+P.user16 = function (ord, args = []) {
+  const u = this.ne && this.ne.get('USER'), ep = u && u.meta && this.neExport(u, ord);
+  if (!ep) throw new GuestError(`USER.${ord} is not loaded`);
+  return this.call16(ep >>> 16, ep & 0xffff, args);
+};
+/** the native USER's visible top-level windows, topmost first, with their screen rectangles, owners, classes and
+ *  titles; and the active window and the window holding the mouse capture */
+P.nativeWindows = function () {
+  if (!this.wbufLin) { this.wbufLin = this.alloc(0x200); this.wbufSel = this.allocSels(this.wbufLin, 0x200); }
+  const a = this.wbufLin, buf = u32(this.wbufSel << 16), u = (o, args) => this.user16(o, args).ax, s16 = o => (this.r16(a + o) << 16) >> 16;
+  const list = [];
+  for (let h = u(262, [['w', u(286)], ['w', 5]]), n = 0; h && n < 256; h = u(262, [['w', h], ['w', 2]]), n++) {   // GW_CHILD, GW_HWNDNEXT
+    if (!u(49, [['w', h]])) continue;                                                                                 // IsWindowVisible
+    u(32, [['w', h], ['l', buf]]);                                                                                    // GetWindowRect
+    const x = s16(0), y = s16(2), w = s16(4) - x, hh = s16(6) - y;
+    const tl = u(36, [['w', h], ['l', buf + 16], ['w', 160]]), title = tl ? this.readA(a + 16, tl) : '';               // GetWindowText
+    const cl = u(58, [['w', h], ['l', buf + 0x180], ['w', 64]]), cls = cl ? this.readA(a + 0x180, cl) : '';          // GetClassName
+    list.push({ hwnd: h, x, y, w, h: hh, title, cls, owner: u(262, [['w', h], ['w', 4]]), iconic: !!u(31, [['w', h]]) });   // GW_OWNER, IsIconic
+  }
+  return { list, active: u(60), capture: u(236) };                                                                    // GetActiveWindow, GetCapture
+};
 /** a key into USER's keybd_event (USER.289), as KEYBOARD.DRV reports one: AL = virtual key, AH = 80h on release,
  *  BL = scan code, BH = 1 for an extended key */
 P.keyEvent16 = function (vk, scan, up, ext = false) {
