@@ -822,18 +822,19 @@ class Translator:
     def x_shrd(self, f, ins, ops, live): self.dshift(f, ops, live, False)
     def dshift(self, f, ops, live, left):
         d, s = Loc(f, ops[0]), Loc(f, ops[1]); n, a, b = f.i(), f.i(), f.i()
+        sz = ops[0].size; bits = 8 * sz
         d.read(); f.ls(a); s.read(); f.ls(b); Loc(f, ops[2], 1).read(); f.c(31).e(OPS['and_']).ls(n)
         q = f.q()
-        if left:
-            f.lg(a).e(EXT_U).c64(32).e(Q['shl']).lg(b).e(EXT_U).e(Q['or_']).lg(n).e(EXT_U).e(Q['shl']).c64(32).e(Q['shr_u']).ls(q)
-        else:
-            f.lg(b).e(EXT_U).c64(32).e(Q['shl']).lg(a).e(EXT_U).e(Q['or_']).lg(n).e(EXT_U).e(Q['shr_u']).ls(q)
-        d.write(lambda: (f.lg(q), f.e(WRAP), f.lg(a), f.lg(n), f.e(SELECT)))
+        if left:   # (a:b << n) >> bits
+            f.lg(a).e(EXT_U).c64(bits).e(Q['shl']).lg(b).e(EXT_U).e(Q['or_']).lg(n).e(EXT_U).e(Q['shl']).c64(bits).e(Q['shr_u']).ls(q)
+        else:      # (b:a >> n)
+            f.lg(b).e(EXT_U).c64(bits).e(Q['shl']).lg(a).e(EXT_U).e(Q['or_']).lg(n).e(EXT_U).e(Q['shr_u']).ls(q)
+        d.write(lambda: (f.lg(q), f.e(WRAP), f.c(MASK[sz]), f.e(OPS['and_']), f.lg(a), f.lg(n), f.e(SELECT)))
         if live & CF:
-            if left: f.lg(a).c(32).lg(n).e(OPS['sub']).e(OPS['shr_u']).c(1).e(OPS['and_'])
+            if left: f.lg(a).c(bits).lg(n).e(OPS['sub']).e(OPS['shr_u']).c(1).e(OPS['and_'])
             else: f.lg(a).lg(n).c(1).e(OPS['sub']).e(OPS['shr_u']).c(1).e(OPS['and_'])
             f.gg('cf').lg(n).e(SELECT).gs('cf')
-        r = f.i(); d.read(); f.ls(r); set_szp(f, r, 4, live & (ZF | SF | PF))
+        r = f.i(); d.read(); f.ls(r); set_szp(f, r, sz, live & (ZF | SF | PF))
         if live & OF: f.c(0).gs('of')
 
     def x_mul(self, f, ins, ops, live): self.muldiv(f, ops, live, 'mul')
