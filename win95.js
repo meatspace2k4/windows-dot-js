@@ -496,8 +496,8 @@ function makeDisk() {
   fs.writeFile('C:\\COMMAND.COM', exeStub());
   txt('C:\\AUTOEXEC.BAT', '@ECHO OFF\nSET PATH=C:\\WINDOWS;C:\\WINDOWS\\COMMAND\nSET TEMP=C:\\WINDOWS\\TEMP\n');
   txt('C:\\CONFIG.SYS', 'DEVICE=C:\\WINDOWS\\HIMEM.SYS\nDOS=HIGH,UMB\nFILES=60\n');
-  txt(WINDIR + '\\WIN.INI', '[windows]\nload=\nrun=\nNullPort=None\n\n[Desktop]\nWallpaper=(None)\nTileWallpaper=0\nWallpaperStyle=0\n\n[intl]\nsCountry=United States\n');
-  txt(WINDIR + '\\SYSTEM.INI', '[boot]\nshell=Explorer.exe\nsystem.drv=system.drv\ndisplay.drv=pnpdrvr.drv\n\n[386Enh]\nmouse=*vmouse, msmouse.vxd\n\n[boot.description]\ndisplay.drv=Standard Display Adapter (VGA)\n');
+  txt(WINDIR + '\\WIN.INI', '[windows]\nload=\nrun=\nNullPort=None\nScreenSaveActive=0\nScreenSaveTimeOut=900\n\n[Desktop]\nWallpaper=(None)\nTileWallpaper=0\nWallpaperStyle=0\n\n[intl]\nsCountry=United States\n');
+  txt(WINDIR + '\\SYSTEM.INI', '[boot]\nshell=Explorer.exe\nSCRNSAVE.EXE=\nsystem.drv=system.drv\ndisplay.drv=pnpdrvr.drv\n\n[386Enh]\nmouse=*vmouse, msmouse.vxd\n\n[boot.description]\ndisplay.drv=Standard Display Adapter (VGA)\n');
   for (const e of ['NOTEPAD.EXE', 'EXPLORER.EXE', 'REGEDIT.EXE', 'CALC.EXE', 'WRITE.EXE', 'TASKMAN.EXE', 'PROGMAN.EXE', 'WINFILE.EXE', 'SOL.EXE'])
     fs.writeFile(join(WINDIR, e), exeStub());
   for (const e of ['USER.EXE', 'GDI.EXE', 'KRNL386.EXE', 'USER32.DLL', 'GDI32.DLL', 'KERNEL32.DLL', 'SHELL32.DLL', 'COMCTL32.DLL', 'VMM32.VXD'])
@@ -506,6 +506,8 @@ function makeDisk() {
   for (const e of ['SSERIFE.FON', 'VGAFIX.FON', 'VGASYS.FON', 'MARLETT.TTF', 'ARIAL.TTF', 'TIMES.TTF', 'COUR.TTF']) fs.writeFile(join(WINDIR, 'FONTS', e), exeStub());
   fs.writeFile('C:\\Program Files\\Accessories\\WORDPAD.EXE', exeStub());
   fs.writeFile(PROGRAMS + '\\Accessories\\Notepad.lnk', lnk(WINDIR + '\\NOTEPAD.EXE'));
+  // the CD's screen savers, byte for byte
+  for (const [name, s] of Object.entries((window.W95SAVERS || {}).savers || {})) fs.writeFile(join(WINDIR, name), Uint8Array.from(atob(s.scr), c => c.charCodeAt(0)));
   fs.writeFile(PROGRAMS + '\\Windows Explorer.lnk', lnk(WINDIR + '\\EXPLORER.EXE'));
   fs.chdir('C:\\');
 }
@@ -1642,6 +1644,393 @@ function sysMenu(w, x, y, above) {
   if (above) { const m = menus[0]; placeMenu(m, x, y - m.h); }
 }
 
+// ---------------------------------------------------------------- screen savers
+// Saver binaries live on C:\WINDOWS. A run reads the file from the in-memory disk, matches
+// its SHA-256 to the recompiled module, and executes it through win32.js.
+const SV = window.W95SAVERS || { savers: {}, fonts: {} };
+const b64bytes = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+const fontsReady = Promise.all(Object.entries(SV.fonts).map(([fam, data]) => {
+  const f = new FontFace(fam, b64bytes(data)); document.fonts.add(f); return f.load().catch(() => null);
+}));
+async function sha256hex(b) { const h = await crypto.subtle.digest('SHA-256', b); return [...new Uint8Array(h)].map(x => x.toString(16).padStart(2, '0')).join(''); }
+function compiledSaver(sha) {
+  for (const [name, s] of Object.entries(SV.savers)) {
+    if (s.meta.sha256 !== sha) continue;
+    if (!s.module) s.module = WebAssembly.compile(b64bytes(s.wasm));
+    return { name, s };
+  }
+  return null;
+}
+const mkc = (w, h) => Object.assign(document.createElement('canvas'), { width: Math.max(1, w), height: Math.max(1, h) });
+const PREVIEW_HWND = 0x7ff0;
+let fullSaver = null, lastInput = performance.now();
+
+class SaverRun {
+  constructor(path, mode, o = {}) { this.path = path; this.mode = mode; this.o = o; this.alive = true; this.canvas = null; this.mx = mouse.x; this.my = mouse.y; }
+  async start() {
+    let bytes;
+    try { bytes = fs.readFile(this.path); } catch (e) { msgBox('Display Properties', fsMsg(this.path, e), 'error'); return false; }
+    const hit = compiledSaver(await sha256hex(bytes));
+    if (!hit) { msgBox('Display Properties', `${basename(this.path)} has no recompiled code module.`, 'error'); this.alive = false; return false; }
+    const module = await hit.s.module; await fontsReady;
+    if (!this.alive) return false;
+    if (this.mode === 's') this.overlay();
+    if (this.mode === 'p') this.canvas = mkc(this.o.w, this.o.h);
+    const host = {
+      fs, width: W, height: H, path: this.path, now: () => performance.now(),
+      cursor: () => (this.mode === 's' ? { x: this.mx, y: this.my } : { x: mouse.x, y: mouse.y }),
+      previewParent: this.mode === 'p' ? PREVIEW_HWND : 0, previewW: this.o.w, previewH: this.o.h,
+      surface: (hwnd, w, h) => this.surface(w, h),
+      exited: (code, why) => this.exited(code, why),
+      setCursor: () => {},
+      dialog: (proc, d) => win32Dialog(proc, d),
+      closeDialog: d => { if (d.ui) closeWin(d.ui, true); dirty(); },
+    };
+    const cmd = this.mode === 's' ? `${this.path} /s` : this.mode === 'p' ? `${this.path} /p ${PREVIEW_HWND}` : `${this.path} /c:0`;
+    try { this.proc = new W95Win32.Process(bytes, module, { ...hit.s.meta, name: hit.name }, host, cmd); }
+    catch (e) { console.error(e); this.exited(-1, e.message); return false; }
+    this.loop(); return true;
+  }
+  surface(w, h) {
+    if (this.mode === 'p') return this.canvas.getContext('2d');
+    if (this.mode === 's') return this.ctx2d;
+    return mkc(w, h).getContext('2d');
+  }
+  loop() {
+    const step = () => {
+      if (!this.alive) return;
+      const p = this.proc;
+      try { for (let n = 0; this.alive && p.ready() && n < 4; n++) if (!p.slice()) break; }
+      catch (e) { console.error(e); this.exited(-1, e.message); return; }
+      if (this.mode === 'p') dirty();
+      requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }
+  overlay() {
+    const c = this.el = mkc(W, H);
+    c.style.cssText = `position:fixed;left:0;top:0;width:${W * ZOOM}px;height:${H * ZOOM}px;image-rendering:pixelated;cursor:none;z-index:10;background:#000`;
+    document.body.appendChild(c);
+    this.ctx2d = c.getContext('2d', { alpha: false });
+    const pos = e => { const r = c.getBoundingClientRect(); return [Math.floor((e.clientX - r.left) * W / r.width), Math.floor((e.clientY - r.top) * H / r.height)]; };
+    const WM = W95Win32.WM;
+    c.addEventListener('pointermove', e => { [this.mx, this.my] = pos(e); this.proc && this.proc.dispatchInput(WM.MOUSEMOVE, 0, (this.my << 16) | this.mx); });
+    c.addEventListener('pointerdown', e => { e.preventDefault(); [this.mx, this.my] = pos(e); this.proc && this.proc.dispatchInput(e.button === 2 ? WM.RBUTTONDOWN : WM.LBUTTONDOWN, 0, (this.my << 16) | this.mx); });
+    c.addEventListener('contextmenu', e => e.preventDefault());
+  }
+  key(e) { if (this.proc) this.proc.dispatchInput(W95Win32.WM.KEYDOWN, e.keyCode || 0, 0); }
+  stop() { this.alive = false; if (this.el) this.el.remove(); if (fullSaver === this) fullSaver = null; }
+  exited(code, why) {
+    if (!this.alive) return;
+    this.stop(); lastInput = performance.now(); dirty();
+    if (why) msgBox(basename(this.path), `${basename(this.path)} stopped: ${why}`, 'error');
+  }
+}
+function startFullSaver(path) {
+  if (fullSaver || !path) return;
+  closeMenus();
+  fullSaver = new SaverRun(path, 's');
+  fullSaver.start();
+}
+function saverIni() {
+  const g = (f, s, k) => W95Win32.iniGet(fs, f, s, k);
+  return { path: g('SYSTEM.INI', 'boot', 'SCRNSAVE.EXE') || '', active: g('WIN.INI', 'windows', 'ScreenSaveActive') === '1',
+    timeout: parseInt(g('WIN.INI', 'windows', 'ScreenSaveTimeOut') || '900', 10) || 900 };
+}
+setInterval(() => {
+  if (fullSaver || screen !== 'desktop') return;
+  const c = saverIni();
+  if (c.active && c.path && performance.now() - lastInput >= c.timeout * 1000) startFullSaver(c.path);
+}, 1000);
+function listSavers() {
+  const out = [];
+  for (const dir of [WINDIR, WINDIR + '\\SYSTEM']) {
+    let ents = []; try { ents = fs.readdir(dir, '*.scr'); } catch (_) { continue; }
+    for (const e of ents) {
+      let name = null; try { name = W95Win32.peString(fs.readFile(e.path), 1); } catch (_) { /* unreadable */ }
+      out.push({ path: e.path, name: name || dispName(e.name) });
+    }
+  }
+  return out.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// ---------------------------------------------------------------- Win32 dialogs owned by guest processes
+let dlgBase = null;
+function dialogBaseUnits() {
+  if (!dlgBase) dlgBase = { x: Math.floor((textW('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz') / 26 + 1) / 2), y: 13 };
+  return dlgBase;
+}
+function win32Dialog(proc, d) {
+  const bu = dialogBaseUnits(), px = v => Math.round(v * bu.x / 4), py = v => Math.round(v * bu.y / 8);
+  const body = new Win32DialogBody(proc, d, px, py);
+  const cw = px(d.cx), ch = py(d.cy), w = cw + 6, h = ch + 3 + 19 + 3;
+  const win = new Win({ ...centered(w, h), w, h, title: d.title, resizable: false, minimizable: false, maximizable: false, body, noTask: true });
+  d.ui = win; modals.push(win); openWin(win); dirty();
+}
+class Win32DialogBody {
+  constructor(proc, d, px, py) {
+    this.p = proc; this.d = d;
+    for (const c of d.ctls) c.r = { x: px(c.x), y: py(c.y), w: px(c.cx), h: py(c.cy) };
+    for (const c of d.ctls) {
+      if (c.cls === 'msctls_updown32' && c.buddy && c.style & 4) {
+        const b = c.buddy.r; b.w -= 14; c.r = { x: b.x + b.w - 2, y: b.y, w: 16, h: b.h };
+      }
+    }
+    this.focus = d.ctls.findIndex(c => c.style & 0x10000 && c.enabled && c.visible);
+  }
+  guard(fn) { try { fn(); } catch (e) { console.error(e); } dirty(); }
+  abs(c) { return { x: this.r.x + c.r.x, y: this.r.y + c.r.y, w: c.r.w, h: c.r.h }; }
+  kind(c) {
+    const t = c.style & 0xf;
+    if (c.cls === 'button') return t === 7 ? 'group' : [2, 3, 5, 6].includes(t) ? 'check' : [4, 9].includes(t) ? 'radio' : 'push';
+    if (c.cls === 'static') return 'static';
+    if (c.cls === 'edit') return 'edit';
+    if (c.cls === 'combobox') return 'combo';
+    if (c.cls === 'listbox') return 'list';
+    if (c.cls === 'msctls_trackbar32') return 'slider';
+    if (c.cls === 'msctls_updown32') return 'updown';
+    return 'other';
+  }
+  label(c) { return c.cls === 'static' && c.style & 0x80 ? esc(c.text) : c.text; }
+  draw(r, win) {
+    this.r = r;
+    const focused = this.d.ctls[this.focus];
+    this.d.ctls.forEach((c, i) => {
+      if (!c.visible) return;
+      const a = this.abs(c), k = this.kind(c), foc = i === this.focus && win.isActive, dis = !c.enabled || c.dlg && c.dlg.enabled === false;
+      if (k === 'push') {
+        const def = (c.style & 0xf) === 1 && !(focused && this.kind(focused) === 'push' && focused !== c) || (foc);
+        pushButton(a.x, a.y, a.w, a.h, c.text, { def, pressed: c.pressed, focus: foc, disabled: dis });
+      } else if (k === 'check' || k === 'radio') {
+        const ty = a.y + ((a.h - 13) >> 1);
+        if (k === 'check') {
+          fill(a.x, ty, 13, 13, dis ? K.face : K.win); edge(a.x, ty, 13, 13, K.sh, K.hl); edge(a.x + 1, ty + 1, 11, 11, K.dk, K.lt);
+          if (c.check) mglyph('check', a.x + 3, ty + 3, dis ? K.sh : K.dk);
+        } else radio(a.x, ty, c.check);
+        const lx = a.x + (k === 'check' ? 19 : 18);
+        if (dis) textEmboss(c.text, lx, ty); else text(c.text, lx, ty);
+        if (foc) focusRect(lx - 2, ty - 1, textW(c.text) + 4, 15);
+      } else if (k === 'group') {
+        edge(a.x, a.y + 6, a.w, a.h - 6, K.sh, K.hl); fill(a.x + 1, a.y + 7, 1, a.h - 9, K.hl); fill(a.x + 1, a.y + 7, a.w - 3, 1, K.hl);
+        if (c.text) { const tw = textW(c.text); fill(a.x + 7, a.y, tw + 4, 13, K.face); if (dis) textEmboss(c.text, a.x + 9, a.y); else text(c.text, a.x + 9, a.y); }
+      } else if (k === 'static') {
+        const t = c.style & 0x1f;
+        if (t === 0x10) { fill(a.x, a.y, a.w, 1, K.sh); fill(a.x, a.y + 1, a.w, 1, K.hl); }
+        else if (t === 0x12 || t === 8) { edge(a.x, a.y, a.w, a.h, K.sh, K.hl); }
+        else if (t === 7 || t === 4) edge(a.x, a.y, a.w, a.h, K.dk, K.dk);
+        else if (t === 3) icon('app32', a.x, a.y);
+        else if (t <= 2 || t === 0xb || t === 0xc) {
+          const lines = t === 0xb || t === 0xc ? [this.label(c)] : wrap(this.label(c), a.w);
+          lines.forEach((l, j) => {
+            const lw = textW(l), lx = t === 1 ? a.x + ((a.w - lw) >> 1) : t === 2 ? a.x + a.w - lw : a.x;
+            if (dis) textEmboss(l, lx, a.y + 13 * j); else text(l, lx, a.y + 13 * j);
+          });
+        }
+      } else if (k === 'edit') {
+        field(a.x, a.y, a.w, a.h, dis ? K.face : K.win);
+        const ty = a.y + ((a.h - 13) >> 1);
+        ctx.save(); ctx.beginPath(); ctx.rect(a.x + 2, a.y + 2, a.w - 4, a.h - 4); ctx.clip();
+        text(esc(c.text), a.x + 3, ty, dis ? K.sh : K.dk);
+        if (foc && blinkOn) fill(a.x + 3 + textW(esc(c.text)), ty, 1, 13, K.dk);
+        ctx.restore();
+      } else if (k === 'combo') {
+        const h = Math.min(a.h, 21);
+        field(a.x, a.y, a.w, h, dis ? K.face : K.win);
+        const bx = a.x + a.w - 18; btnUp(bx, a.y + 2, 16, h - 4); mglyph('down', bx + 4, a.y + 2 + ((h - 8) >> 1), dis ? K.sh : K.dk);
+        const tw = textW(esc(c.text));
+        if (foc) { fill(a.x + 3, a.y + 3, Math.min(tw + 2, a.w - 22), h - 6, K.sel); text(esc(c.text), a.x + 4, a.y + ((h - 13) >> 1), K.hl); }
+        else text(esc(c.text), a.x + 4, a.y + ((h - 13) >> 1), dis ? K.sh : K.dk);
+      } else if (k === 'list') {
+        field(a.x, a.y, a.w, a.h);
+        ctx.save(); ctx.beginPath(); ctx.rect(a.x + 2, a.y + 2, a.w - 4, a.h - 4); ctx.clip();
+        c.items.forEach((s, j) => {
+          const y = a.y + 2 + 13 * j; if (j === c.sel) fill(a.x + 2, y, a.w - 4, 13, K.sel);
+          text(esc(s), a.x + 4, y, j === c.sel ? K.hl : K.dk);
+        });
+        ctx.restore();
+      } else if (k === 'slider') this.slider(c, a, foc, dis);
+      else if (k === 'updown') {
+        const hh = a.h >> 1;
+        for (const [j, up] of [[0, true], [1, false]]) {
+          const y = a.y + j * hh, h = j ? a.h - hh : hh, pr = c.pressed === (up ? 1 : -1);
+          if (pr) btnDown(a.x, y, a.w, h); else btnUp(a.x, y, a.w, h);
+          const cx = a.x + (a.w >> 1) + (pr ? 1 : 0), cy = y + (h >> 1) + (pr ? 1 : 0), col = dis ? K.sh : K.dk;
+          for (let s = 0; s < 3; s++) fill(cx - s, up ? cy - 1 + s : cy + 1 - s, 2 * s + 1, 1, col);
+        }
+      }
+    });
+  }
+  sliderGeom(c, a) {
+    const lo = Math.min(c.min, c.max), hi = Math.max(c.min, c.max), span = Math.max(1, hi - lo);
+    const x0 = a.x + 8, x1 = a.x + a.w - 9;
+    return { lo, hi, x0, x1, tx: x0 + Math.round((clamp(c.pos, lo, hi) - lo) * (x1 - x0) / span) };
+  }
+  slider(c, a, foc, dis) {
+    const g = this.sliderGeom(c, a), cy = a.y + 4;
+    edge(g.x0 - 3, cy + 6, g.x1 - g.x0 + 6, 4, K.sh, K.hl); edge(g.x0 - 2, cy + 7, g.x1 - g.x0 + 4, 2, K.dk, K.lt);
+    const tx = g.tx - 5;
+    btnUp(tx, cy, 11, 18);
+    if (c.style & 1 || true) for (let v = g.lo; v <= g.hi; v += Math.max(1, Math.ceil((g.hi - g.lo) / 10))) {
+      const x = g.x0 + Math.round((v - g.lo) * (g.x1 - g.x0) / Math.max(1, g.hi - g.lo)); fill(x, cy + 21, 1, 3, K.dk);
+    }
+    fill(g.x1, cy + 21, 1, 3, K.dk);
+    if (foc) focusRect(a.x, a.y, a.w, a.h);
+  }
+  ctlAt(x, y) {
+    return this.d.ctls.findIndex(c => {
+      if (!c.visible || this.kind(c) === 'group' || (this.kind(c) === 'static' && !(c.style & 0x100))) return false;
+      return inR(this.abs(c), x, y);
+    });
+  }
+  down(x, y, btn, dbl) {
+    const i = this.ctlAt(x, y); if (i < 0) return null;
+    const c = this.d.ctls[i], k = this.kind(c), a = this.abs(c), d = this.d;
+    if (!c.enabled) return null;
+    if (k !== 'updown') this.focus = i;
+    if (k === 'push') {
+      c.pressed = true;
+      return { move: (mx, my) => { c.pressed = inR(this.abs(c), mx, my); }, up: (mx, my) => { c.pressed = false; if (inR(this.abs(c), mx, my)) this.guard(() => d.click(c)); } };
+    }
+    if (k === 'check' || k === 'radio') { this.guard(() => d.click(c)); return null; }
+    if (k === 'combo') {
+      openPopup(c.items.map((s, j) => ({ label: esc(s), check: j === c.sel, fn: () => this.guard(() => { c.sel = j; c.text = s; d.selected(c); }) })), a.x, a.y + Math.min(a.h, 21));
+      return null;
+    }
+    if (k === 'list') {
+      const j = Math.floor((y - a.y - 2) / 13);
+      if (j >= 0 && j < c.items.length) { c.sel = j; this.guard(() => { d.selected(c); if (dbl) d.command(c, 2); }); }
+      return null;
+    }
+    if (k === 'updown') {
+      const up = y < a.y + (a.h >> 1);
+      c.pressed = up ? 1 : -1; this.guard(() => d.spun(c, up ? 1 : -1));
+      return { up: () => { c.pressed = 0; dirty(); } };
+    }
+    if (k === 'slider') {
+      const set = mx => {
+        const g = this.sliderGeom(c, this.abs(c));
+        c.pos = Math.round(g.lo + clamp(mx - g.x0, 0, g.x1 - g.x0) * (g.hi - g.lo) / Math.max(1, g.x1 - g.x0));
+        this.guard(() => d.scrolled(c, 5));
+      };
+      set(x);
+      return { move: mx => set(mx), up: () => this.guard(() => { d.scrolled(c, 4); d.scrolled(c, 8); }) };
+    }
+    return null;
+  }
+  cursor(x, y) { const i = this.ctlAt(x, y); return i >= 0 && this.kind(this.d.ctls[i]) === 'edit' ? 'ibeam' : null; }
+  key(e) {
+    const d = this.d, c = d.ctls[this.focus], k = c && this.kind(c);
+    if (e.key === 'Tab') {
+      const f = d.ctls.map((o, i) => i).filter(i => { const o = d.ctls[i]; return o.visible && o.enabled && o.style & 0x10000; });
+      if (f.length) { const j = f.indexOf(this.focus); this.focus = f[(j + (e.shiftKey ? f.length - 1 : 1)) % f.length]; }
+      return true;
+    }
+    if (e.key === 'Escape') { this.guard(() => d.command(d.ctl(2) || { id: 2, hwnd: 0 })); return true; }
+    if (e.key === 'Enter' && k !== 'push') {
+      const def = d.ctls.find(o => o.cls === 'button' && (o.style & 0xf) === 1) || d.ctl(1) || { id: 1, hwnd: 0 };
+      this.guard(() => d.command(def)); return true;
+    }
+    if ((e.key === 'Enter' || e.key === ' ') && (k === 'push' || k === 'check' || k === 'radio')) { this.guard(() => d.click(c)); return true; }
+    if (k === 'slider' && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+      const lo = Math.min(c.min, c.max), hi = Math.max(c.min, c.max);
+      c.pos = clamp(c.pos + (e.key === 'ArrowRight' ? 1 : -1), lo, hi); this.guard(() => { d.scrolled(c, e.key === 'ArrowRight' ? 1 : 0); d.scrolled(c, 8); }); return true;
+    }
+    if (k === 'edit' && !e.ctrlKey && !e.metaKey) {
+      if (e.key.length === 1) c.text += e.key; else if (e.key === 'Backspace') c.text = c.text.slice(0, -1); else return false;
+      this.guard(() => d.edited(c)); return true;
+    }
+    return false;
+  }
+  canClose() { this.guard(() => this.d.command(this.d.ctl(2) || { id: 2, hwnd: 0 })); return false; }
+}
+
+// ---------------------------------------------------------------- Display Properties
+function displayProperties() {
+  const open = windows.find(w => w.title === 'Display Properties'); if (open) return activate(open);
+  const savers = [{ path: '', name: '(None)' }, ...listSavers()];
+  const ini = saverIni();
+  let cur = Math.max(0, savers.findIndex(s => s.path && ini.path && s.path.toUpperCase() === ini.path.toUpperCase()));
+  if (!ini.active) cur = 0;
+  let preview = null, win;
+  const restartPreview = () => {
+    if (preview) preview.stop(); preview = null;
+    const s = savers[cur];
+    if (s.path) { preview = new SaverRun(s.path, 'p', { w: 152, h: 104 }); preview.start(); }
+    settingsBtn.disabled = previewBtn.disabled = !s.path; dirty();
+  };
+  const combo = { type: 'edit', page: 1, x: 22, y: 256, w: 170, h: 21, value: savers[cur].name, combo: true, readonly: true,
+    onDrop: a => openPopup(savers.map((s, i) => ({ label: esc(s.name), check: i === cur, fn: () => { cur = i; combo.value = s.name; restartPreview(); } })), a.x, a.y + a.h) };
+  const wait = { type: 'edit', page: 1, x: 262, y: 292, w: 34, h: 21, value: String(Math.max(1, Math.round(ini.timeout / 60))), caret: 0 };
+  wait.caret = wait.value.length;
+  const spin = { type: 'custom', page: 1, x: 296, y: 292, w: 16, h: 21, pressed: 0,
+    draw(a) {
+      for (const [j, up] of [[0, true], [1, false]]) {
+        const y = a.y + j * 10, h = j ? 11 : 10, pr = this.pressed === (up ? 1 : -1);
+        if (pr) btnDown(a.x, y, a.w, h); else btnUp(a.x, y, a.w, h);
+        const cx = a.x + 8 + (pr ? 1 : 0), cy = y + (h >> 1) + (pr ? 1 : 0);
+        for (let s = 0; s < 3; s++) fill(cx - s, up ? cy - 1 + s : cy + 1 - s, 2 * s + 1, 1, K.dk);
+      }
+    },
+    down(x, y, btn, dbl, a) {
+      const up = y < a.y + 10; this.pressed = up ? 1 : -1;
+      wait.value = String(clamp((parseInt(wait.value, 10) || 1) + (up ? 1 : -1), 1, 60));
+      return { up: () => { this.pressed = 0; dirty(); } };
+    } };
+  const settingsBtn = { type: 'button', page: 1, x: 202, y: 255, w: 75, h: 23, label: 'Se&ttings...', fn: () => { const s = savers[cur]; if (s.path) new SaverRun(s.path, 'c').start(); } };
+  const previewBtn = { type: 'button', page: 1, x: 284, y: 255, w: 75, h: 23, label: 'Pre&view', fn: () => { const s = savers[cur]; if (s.path) startFullSaver(s.path); } };
+  const monitor = { type: 'custom', x: 104, y: 40, w: 184, h: 170,
+    draw(a) {
+      icon('monitor', a.x, a.y);
+      if (body.page === 1) {
+        if (preview && preview.canvas) ctx.drawImage(preview.canvas, a.x + 16, a.y + 17);
+        else fill(a.x + 16, a.y + 17, 152, 104, K.desk);
+      }
+    } };
+  const info = (page, y, k, v) => [{ type: 'label', page, x: 22, y, text: k }, { type: 'label', page, x: 150, y, text: v }];
+  const apply = () => {
+    const s = savers[cur], m = clamp(parseInt(wait.value, 10) || 1, 1, 60);
+    return fsTry('save', 'display settings', () => {
+      W95Win32.iniSet(fs, 'SYSTEM.INI', 'boot', 'SCRNSAVE.EXE', s.path);
+      W95Win32.iniSet(fs, 'WIN.INI', 'windows', 'ScreenSaveActive', s.path ? '1' : '0');
+      W95Win32.iniSet(fs, 'WIN.INI', 'windows', 'ScreenSaveTimeOut', String(m * 60));
+    });
+  };
+  win = dialog('Display Properties', 392, 420, [
+    { type: 'tabs', x: 6, y: 6, w: 380, h: 376, tabs: ['Background', 'Screen Saver', 'Appearance', 'Settings'] },
+    monitor,
+    { type: 'group', page: 0, x: 16, y: 222, w: 172, h: 140, label: '&Pattern' }, { type: 'edit', page: 0, x: 26, y: 242, w: 152, h: 21, value: '(None)', readonly: true },
+    { type: 'group', page: 0, x: 200, y: 222, w: 172, h: 140, label: '&Wallpaper' }, { type: 'edit', page: 0, x: 210, y: 242, w: 152, h: 21, value: '(None)', readonly: true },
+    { type: 'group', page: 1, x: 12, y: 236, w: 362, h: 92, label: '&Screen Saver' }, combo, settingsBtn, previewBtn,
+    { type: 'check', page: 1, x: 22, y: 296, label: 'Password protected', disabled: true },
+    { type: 'label', page: 1, x: 230, y: 296, text: '&Wait:', amp: true }, wait, spin, { type: 'label', page: 1, x: 318, y: 296, text: 'minutes' },
+    { type: 'group', page: 2, x: 16, y: 222, w: 356, h: 60, label: 'Sc&heme' }, { type: 'edit', page: 2, x: 26, y: 244, w: 200, h: 21, value: 'Windows Standard', readonly: true },
+    { type: 'group', page: 3, x: 16, y: 222, w: 356, h: 100, label: '' },
+    ...info(3, 236, 'Color palette:', 'True Color (24 bit)'), ...info(3, 256, 'Desktop area:', `${W} by ${H} pixels`), ...info(3, 276, 'Font size:', 'Small Fonts'),
+    { type: 'button', x: 152, y: 390, w: 75, h: 23, label: 'OK', def: true, fn: () => { if (apply()) closeWin(win); } },
+    { type: 'button', x: 232, y: 390, w: 75, h: 23, label: 'Cancel', cancel: true, fn: () => closeWin(win) },
+    { type: 'button', x: 312, y: 390, w: 75, h: 23, label: '&Apply', fn: apply },
+  ], { modal: false, noTask: false });
+  const body = win.body; body.page = 1;
+  body.onClose = () => { if (preview) preview.stop(); preview = null; };
+  win.icon = 'cpl_display';
+  restartPreview();
+  return win;
+}
+
+const APPLETS = [
+  ['access', 'Accessibility Options'], ['hardware', 'Add New Hardware'], ['appwiz', 'Add/Remove Programs'], ['datetime', 'Date/Time'],
+  ['display', 'Display'], ['fonts', 'Fonts'], ['joystick', 'Joystick'], ['keyboard', 'Keyboard'], ['modems', 'Modems'], ['mouse', 'Mouse'],
+  ['multimedia', 'Multimedia'], ['network', 'Network'], ['passwords', 'Passwords'], ['cplprinters', 'Printers'], ['regional', 'Regional Settings'],
+  ['sounds', 'Sounds'], ['system', 'System'],
+];
+function openApplet(k, name) {
+  if (k === 'display') return displayProperties();
+  if (k === 'fonts') return openPath(WINDIR + '\\FONTS');
+  if (k === 'cplprinters') return openFolder(Printers);
+  msgBox(name, `The ${name} applet is not implemented in this shell.`, 'info');
+}
+ControlPanel.list = () => APPLETS.map(([k, n]) => ({ key: 'cpl:' + k, label: n, icon: 'cpl_' + k, virt: true, open: () => openApplet(k, n) }));
+
 // ---------------------------------------------------------------- start menu
 // Programs and Documents are read from the Start Menu and Recent folders on C:.
 function menuFromDir(dir) {
@@ -1784,7 +2173,7 @@ function winDown(w, x, y, btn, dbl) {
 }
 
 cv.addEventListener('pointerdown', e => {
-  e.preventDefault(); kbd.focus();
+  e.preventDefault(); kbd.focus(); lastInput = performance.now();
   const [x, y] = pos(e); mouse = { x, y };
   try { cv.setPointerCapture(e.pointerId); } catch (_) { /* synthetic events */ }
   const btn = e.button === 2 ? 2 : 0, now = performance.now();
@@ -1804,7 +2193,7 @@ cv.addEventListener('pointerdown', e => {
   dirty();
 });
 cv.addEventListener('pointermove', e => {
-  const [x, y] = pos(e); mouse = { x, y };
+  const [x, y] = pos(e); if (x !== mouse.x || y !== mouse.y) lastInput = performance.now(); mouse = { x, y };
   if (cap && cap.move) cap.move(x, y);
   else if (menus.length) {
     const d = menuAt(x, y);
@@ -1852,6 +2241,8 @@ window.addEventListener('keydown', e => {
   handleKey(e);
 });
 function handleKey(e) {
+  lastInput = performance.now();
+  if (fullSaver) { fullSaver.key(e); if (e.preventDefault) e.preventDefault(); return; }
   if (screen !== 'desktop') return;
   let handled = false;
   if (menus.length) {
@@ -1895,5 +2286,5 @@ makeDisk();
 desk.src = new FsSource(DESKTOP_DIR);
 fs.on(() => dirty());
 Promise.all(ready).then(() => { resize(); kbd.focus(); dirty(); });
-window.win95 = { fs, render, properties, driveProps, openFolder, openPath, shellOpen, notepad, msgBox, runDialog, shutDownDialog, MyComputer, get windows() { return windows; }, get state() { return { menus: menus.length, menuSrc, modals: modals.length, cap: !!cap, drag: !!drag, screen, active: active && active.title }; } };
+window.win95 = { fs, render, displayProperties, startFullSaver, get fullSaver() { return fullSaver; }, properties, driveProps, openFolder, openPath, shellOpen, notepad, msgBox, runDialog, shutDownDialog, MyComputer, get windows() { return windows; }, get state() { return { menus: menus.length, menuSrc, modals: modals.length, cap: !!cap, drag: !!drag, screen, active: active && active.title }; } };
 })();
