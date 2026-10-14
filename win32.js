@@ -885,7 +885,9 @@ def('USER32', 'SetTimer', 4, function (h, id, ms, proc) {
   this.timers = this.timers.filter(t => !(t.hwnd === h && t.id === id));
   // Win95 USER timers run off the 18.2 Hz system tick: intervals round up to whole 54.925 ms ticks.
   const q = Math.max(1, Math.ceil(ms / TICK_MS)) * TICK_MS;
-  this.timers.push({ hwnd: h, id: id || (0x7000 + this.timers.length), ms: q, proc, due: this.host.now() + q }); return id || 1;
+  // with a window the caller's id is used as given (0 included); only window-less timers get a generated id
+  const tid = h ? id : (0x7000 + this.timers.length);
+  this.timers.push({ hwnd: h, id: tid, ms: q, proc, due: this.host.now() + q }); return h ? (id || 1) : tid;
 });
 def('USER32', 'KillTimer', 2, function (h, id) { this.timers = this.timers.filter(t => !(t.hwnd === h && t.id === id)); return 1; });
 def('USER32', 'GetClientRect', 2, function (h, p) {
