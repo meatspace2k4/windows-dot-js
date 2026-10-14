@@ -64,7 +64,8 @@ const COND = ['o', 'no', 'b', 'ae', 'e', 'ne', 'be', 'a', 's', 'ns', 'p', 'np', 
 function translate(p, lin, csb, d32) {
   const u8 = p.u8;
   const f = new Fn();
-  const T = f.loc(), A = f.loc(), B = f.loc(), R = f.loc(), C = f.loc(), X = f.loc();   // scratch locals
+  const T = f.loc(), A = f.loc(), B = f.loc(), R = f.loc(), C = f.loc(), X = f.loc(), K = f.loc();   // scratch locals
+  const W = f.loc64();
   let pc = lin, n = 0;
   const fetch = () => u8[pc++];
   const fetch16 = () => { const v = u8[pc] | (u8[pc + 1] << 8); pc += 2; return v; };
@@ -190,7 +191,7 @@ function translate(p, lin, csb, d32) {
       continue;
     }
     if (b >= 0x40 && b < 0x50) {   // inc/dec r
-      const r = b & 7, dec = b >= 0x48, cf = f.loc();
+      const r = b & 7, dec = b >= 0x48, cf = K;
       f.gg('cf').ls(cf); rdReg(r, osz); f.ls(B); f.c(1).ls(C); alu2(dec ? 5 : 0, osz); f.lg(cf).gs('cf'); wrReg(r, osz, R); continue;
     }
     if (b >= 0x50 && b < 0x58) { rdReg(b & 7, osz); f.ls(T); push(T, osz); continue; }
@@ -284,12 +285,12 @@ function translate(p, lin, csb, d32) {
       if (o.reg <= 1) { rd(o, sz); f.c(imm(sz)).op('and').ls(R); f.c(0).gs('cf'); f.c(0).gs('of'); szp(sz); continue; }
       if (o.reg === 2) { rd(o, sz); f.c(-1).op('xor').ls(T); wr(o, sz, T); continue; }
       if (o.reg === 3) { f.c(0).ls(B); rd(o, sz); f.ls(C); alu2(5, sz); wr(o, sz, R); continue; }
-      muldiv(f, o.reg, sz, o, rd, { T, B, C, R, X }, rdReg, wrReg);
+      muldiv(f, o.reg, sz, o, rd, { T, B, C, R, X, W }, rdReg, wrReg);
       continue;
     }
     if (b === 0xfe || b === 0xff) {
       const sz = b & 1 ? osz : 1, o = modrm();
-      if (o.reg <= 1) { const cf = f.loc(); f.gg('cf').ls(cf); rd(o, sz); f.ls(B); f.c(1).ls(C); alu2(o.reg ? 5 : 0, sz); f.lg(cf).gs('cf'); wr(o, sz, R); continue; }
+      if (o.reg <= 1) { const cf = K; f.gg('cf').ls(cf); rd(o, sz); f.ls(B); f.c(1).ls(C); alu2(o.reg ? 5 : 0, sz); f.lg(cf).gs('cf'); wr(o, sz, R); continue; }
       if (b === 0xff && o.reg === 6) { rd(o, osz); f.ls(T); push(T, osz); continue; }
       if (b === 0xff && o.reg === 4) { rd(o, osz); f.gg('csb').op('add').e(0x0f); return done(pc); }
       if (b === 0xff && o.reg === 2) { rd(o, osz); f.ls(B); f.c(offOf(pc)).ls(T); push(T, osz); f.lg(B).gg('csb').op('add').e(0x0f); return done(pc); }
@@ -381,10 +382,9 @@ function shift(f, op, sz, o, rd, wr, L, szp) {
 
 // mul / imul / div / idiv (group 3, sub-ops 4..7)
 function muldiv(f, op, sz, o, rd, L, rdReg, wrReg) {
-  const { T, B, C, R, X } = L;
+  const { T, B, C, R, W } = L;
   if (sz === 4) {
     rd(o, 4); f.ls(C);
-    const W = f.loc64();
     if (op === 4 || op === 5) {   // edx:eax = eax * src
       const ext = op === 4 ? EXT_U : EXT_S;
       f.gg('eax').e(ext).lg(C).e(ext).op64('mul').e(0x21, uleb(W));
