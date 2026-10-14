@@ -4,14 +4,20 @@ import base64, json, os, subprocess, sys, tempfile
 src, fonts, out = sys.argv[1], sys.argv[2], sys.argv[3]
 here = os.path.dirname(os.path.abspath(__file__))
 b64 = lambda p: base64.b64encode(open(p, 'rb').read()).decode()
-bundle = {'savers': {}, 'fonts': {}}
+bundle = {'savers': {}, 'fonts': {}, 'dlls': {}}
+# Microsoft DLLs that run natively inside saver processes: (file, load base, block-table base)
+DLLS = [('crtdll.dll', 0x01800000, 0x06800000), ('glu32.dll', 0x01900000, 0x06900000)]
 names = sys.argv[4].split(',') if len(sys.argv) > 4 else sorted(f[:-4] for f in os.listdir(src) if f.lower().endswith('.scr'))
 with tempfile.TemporaryDirectory() as tmp:
     for n in names:
         scr = os.path.join(src, n + '.scr'); base = os.path.join(tmp, n)
-        subprocess.run([sys.executable, os.path.join(here, 'recomp.py'), scr, base], check=True)
+        subprocess.run([sys.executable, os.path.join(here, 'recomp.py'), scr, base, '--lookup', '0x06000000'], check=True)
         meta = json.load(open(base + '.json'))
         bundle['savers'][n.upper() + '.SCR'] = {'scr': b64(scr), 'wasm': b64(base + '.wasm'), 'meta': meta}
+    for f, b, lk in DLLS:
+        src_f = os.path.join(src, f); base = os.path.join(tmp, f)
+        subprocess.run([sys.executable, os.path.join(here, 'recomp.py'), src_f, base, '--base', hex(b), '--lookup', hex(lk)], check=True)
+        bundle['dlls'][f.upper()] = {'file': b64(src_f), 'wasm': b64(base + '.wasm'), 'meta': json.load(open(base + '.json'))}
 for fam, f in {'W95 Wingdings': 'wingding.ttf', 'W95 Times': 'times.ttf', 'W95 Arial': 'arial.ttf', 'W95 Courier': 'cour.ttf'}.items():
     bundle['fonts'][fam] = b64(os.path.join(fonts, f))
 with open(out, 'w') as fh:

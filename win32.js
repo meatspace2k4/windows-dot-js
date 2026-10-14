@@ -1112,5 +1112,5 @@ function peString(bytes, id) {
   } catch (_) { return null; }
 }
 
-window.W95Win32 = { Process, API, LAYOUT, WM, YIELD, iniGet, iniSet, peString };
+window.W95Win32 = { Process, API, LAYOUT, WM, YIELD, iniGet, iniSet, peString, def, dcOf, GuestError, mkCanvas };
 })();

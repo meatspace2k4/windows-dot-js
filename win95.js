@@ -511,6 +511,8 @@ function makeDisk() {
     'SCRNSAVE.SCR': 'Blank Screen.scr', 'SSFLYWIN.SCR': 'Flying Windows.scr', 'SSSTARS.SCR': 'Flying Through Space.scr' };
   for (const [name, s] of Object.entries((window.W95SAVERS || {}).savers || {}))
     fs.writeFile(join(WINDIR, 'SYSTEM', LONG[name] || name), Uint8Array.from(atob(s.scr), c => c.charCodeAt(0)));
+  for (const [name, d] of Object.entries((window.W95SAVERS || {}).dlls || {}))
+    fs.writeFile(join(WINDIR, 'SYSTEM', name), Uint8Array.from(atob(d.file), c => c.charCodeAt(0)));
   fs.writeFile(PROGRAMS + '\\Windows Explorer.lnk', lnk(WINDIR + '\\EXPLORER.EXE'));
   fs.chdir('C:\\');
 }
@@ -1676,6 +1678,14 @@ class SaverRun {
     const hit = compiledSaver(await sha256hex(bytes));
     if (!hit) { msgBox('Display Properties', `${basename(this.path)} has no recompiled code module.`, 'error'); this.alive = false; return false; }
     const module = await hit.s.module; await fontsReady;
+    // Microsoft DLLs on C:\WINDOWS\SYSTEM that have recompiled modules run natively in the process
+    const dlls = new Map();
+    for (const [name, d] of Object.entries(SV.dlls || {})) {
+      let file; try { file = fs.readFile(join(WINDIR, 'SYSTEM', name)); } catch (_) { continue; }
+      if (await sha256hex(file) !== d.meta.sha256) continue;
+      if (!d.module) d.module = WebAssembly.compile(b64bytes(d.wasm));
+      dlls.set(name.replace(/\.DLL$/, ''), { file, module: await d.module, meta: d.meta });
+    }
     if (!this.alive) return false;
     if (this.mode === 's') this.overlay();
     if (this.mode === 'p') this.canvas = mkc(this.o.w, this.o.h);
@@ -1691,7 +1701,7 @@ class SaverRun {
     };
     const exe = /\s/.test(this.path) ? `"${this.path}"` : this.path;
     const cmd = this.mode === 's' ? `${exe} /s` : this.mode === 'p' ? `${exe} /p ${PREVIEW_HWND}` : `${exe} /c:0`;
-    try { this.proc = new W95Win32.Process(bytes, module, { ...hit.s.meta, name: hit.name }, host, cmd); }
+    try { this.proc = new W95Win32.Process(bytes, module, { ...hit.s.meta, name: hit.name }, host, cmd, dlls); }
     catch (e) { console.error(e); this.exited(-1, e.message); return false; }
     this.loop(); return true;
   }
