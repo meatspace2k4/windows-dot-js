@@ -335,6 +335,11 @@ def load_sreg(f, reg, val):
     s, b = SREG[reg]; t = f.i(); val(); f.c(0xffff).e(OPS['and_']).ls(t)
     f.lg(t).gs(s); f.lg(t); sel_base(f); f.gs(b)
 
+def load_sreg_flat(f, reg, val):
+    """flat code loading ES or GS: an LDT selector (TI bit) gets its base, the flat ones (GDT) base 0"""
+    s, b = SREG[reg]; t = f.i(); val(); f.c(0xffff).e(OPS['and_']).ls(t)
+    f.lg(t).gs(s); f.lg(t); sel_base(f); f.c(0); f.lg(t).c(4).e(OPS['and_']); f.e(SELECT); f.gs(b)
+
 def emit_addr(f, m, seg=True):
     parts = 0
     if m.base:
@@ -356,6 +361,7 @@ def emit_addr(f, m, seg=True):
         return
     if seg and m.segment == X.X86_REG_FS: f.gg('fs').e(OPS['add'])
     elif seg and m.segment == X.X86_REG_GS: f.gg('gsb').e(OPS['add'])
+    elif seg and m.segment == X.X86_REG_ES: f.gg('esb').e(OPS['add'])   # flat code that loaded a 16-bit selector (USER32)
     elif seg and m.segment not in (0, X.X86_REG_DS, X.X86_REG_SS, X.X86_REG_ES, X.X86_REG_CS): raise Unsupported('segment')
 
 # ---- flag helpers. All take locals holding zero-extended operands/result.
@@ -475,9 +481,9 @@ class Translator:
                 s = Loc(f, ops[1], 2); load_sreg(f, ops[0].reg, lambda: s.read()); return
             if ops[1].type == X.X86_OP_REG and ops[1].reg in SREG:
                 Loc(f, ops[0]).write(lambda: f.gg(SREG[ops[1].reg][0])); return
-        # flat code: GS may hold a 16-bit selector; the others stay flat
-        if ops[0].type == X.X86_OP_REG and ops[0].reg == X.X86_REG_GS:
-            s = Loc(f, ops[1], 2); load_sreg(f, ops[0].reg, lambda: s.read()); return
+        # flat code: GS and ES may hold a 16-bit selector; the others stay flat
+        if ops[0].type == X.X86_OP_REG and ops[0].reg in (X.X86_REG_GS, X.X86_REG_ES):
+            s = Loc(f, ops[1], 2); load_sreg_flat(f, ops[0].reg, lambda: s.read()); return
         if ops[1].type == X.X86_OP_REG and ops[1].reg == X.X86_REG_GS:
             Loc(f, ops[0]).write(lambda: f.gg('gsel')); return
         if ops[0].type == X.X86_OP_REG and ops[0].reg in (X.X86_REG_ES, X.X86_REG_DS, X.X86_REG_FS, X.X86_REG_SS): return
@@ -509,7 +515,8 @@ class Translator:
         sz = opsize(ins)
         t = f.i(); pop_to(f, t, sz)
         if ops[0].type == X.X86_OP_REG and ops[0].reg in SREG:
-            if segmode() or ops[0].reg == X.X86_REG_GS: load_sreg(f, ops[0].reg, lambda: f.lg(t))
+            if segmode(): load_sreg(f, ops[0].reg, lambda: f.lg(t))
+            elif ops[0].reg in (X.X86_REG_GS, X.X86_REG_ES): load_sreg_flat(f, ops[0].reg, lambda: f.lg(t))
             return
         Loc(f, ops[0], sz).write(lambda: f.lg(t))
     def lptr(self, f, ins, ops, sreg):
