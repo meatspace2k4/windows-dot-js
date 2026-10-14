@@ -2684,6 +2684,7 @@ class NativeApp {
   close(w) { try { this.proc.user16(110, [['w', w.hwnd], ['w', 0x10], ['w', 0], ['l', 0]]); } catch (e) { console.error(e); } this.kick(); }   // PostMessage WM_CLOSE
   exited(code, why) {
     if (!this.alive) return;
+    if (clipOwner === this) { if (!why && this.proc && !this.proc.trapped) this.clipOut(); clipOwner = null; }   // what it copied outlives it
     this.alive = false; clearTimeout(this.timer); nativeApps.delete(this);
     for (const w of this.wins.values()) closeWin(w, true);
     this.wins.clear();
