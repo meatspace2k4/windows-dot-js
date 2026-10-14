@@ -12,9 +12,12 @@ const f32 = new Float32Array(1), u32v = new Uint32Array(f32.buffer);
 const f64 = new Float64Array(1), u32d = new Uint32Array(f64.buffer);
 const asF = v => { u32v[0] = v; return f32[0]; };
 const asD = (lo, hi) => { u32d[0] = lo; u32d[1] = hi; return f64[0]; };
+const FN = {};      // raw-argument entry points, for calls made from inside this driver
+const fbits = v => { f32[0] = v; return u32v[0]; };
+const dbits = v => { f64[0] = v; return [u32d[0], u32d[1]]; };
 function gl(name, sig, fn) {
   const n = [...sig].reduce((a, c) => a + (c === 'd' ? 2 : 1), 0);
-  def('OPENGL32', name, n, function (...raw) {
+  def('OPENGL32', name, n, FN[name] = function (...raw) {
     const a = []; let k = 0;
     for (const c of sig) {
       if (c === 'd') { a.push(asD(raw[k], raw[k + 1])); k += 2; }
@@ -730,6 +733,121 @@ gl('wglGetCurrentDC', '', function () { return this.glctx ? this.glHdc : 0; });
 gl('wglShareLists', 'uu', function (c, a, b) { const A = this.obj(a), B = this.obj(b); if (A && B) B.ctx.lists = A.ctx.lists; return 1; });
 gl('wglGetProcAddress', 'p', () => 0);
 gl('wglSwapBuffers', 'u', function (c) { if (c) c.present(); return 1; });
+
+// wglUseFontOutlines: one display list per character, built from the font's native TrueType outlines
+// (GetGlyphOutline, GGO_NATIVE) in em units, faces tessellated by GLU32, sides extruded toward -z.
+const GLU = { BEGIN: 100100, VERTEX: 100101, END: 100102, COMBINE: 100105, WINDING_RULE: 100140, NONZERO: 100131 };
+def('OPENGL32', 'wglUseFontOutlines$combine', 4, function (coords, data, weight, out) {   // GLU_TESS_COMBINE
+  const v = this.alloc(24); this.u8.copyWithin(v, coords, coords + 24); (this.tessTemp || []).push(v); this.w32(out, v);
+});
+function glyphContours(p, buf, size, em, dev) {
+  const fx = a => p.i32(a) / 65536 / em, out = [];
+  for (let o = buf; o < buf + size;) {
+    const cb = p.r32(o), pts = [[fx(o + 8), fx(o + 12)]];
+    for (let c = o + 16; c < o + cb;) {
+      const type = p.r16(c), k = p.r16(c + 2), q = [];
+      for (let j = 0; j < k; j++) q.push([fx(c + 4 + 8 * j), fx(c + 8 + 8 * j)]);
+      if (type === 2) {   // TT_PRIM_QSPLINE: off-curve points with implied on-curve midpoints
+        for (let j = 0; j < k - 1; j++) {
+          const a = pts[pts.length - 1], b = q[j], e = j === k - 2 ? q[k - 1] : [(q[j][0] + q[j + 1][0]) / 2, (q[j][1] + q[j + 1][1]) / 2];
+          const d = Math.hypot(a[0] - 2 * b[0] + e[0], a[1] - 2 * b[1] + e[1]), n = Math.max(1, Math.ceil(Math.sqrt(d / (4 * dev))));
+          for (let i = 1; i <= n; i++) { const t = i / n, u = 1 - t; pts.push([u * u * a[0] + 2 * u * t * b[0] + t * t * e[0], u * u * a[1] + 2 * u * t * b[1] + t * t * e[1]]); }
+        }
+      } else pts.push(...q);
+      c += 4 + 8 * k;
+    }
+    const f = pts[0], l = pts[pts.length - 1];
+    if (pts.length > 1 && f[0] === l[0] && f[1] === l[1]) pts.pop();
+    if (pts.length > 2) out.push(pts);
+    o += cb;
+  }
+  return out;
+}
+gl('wglUseFontOutlinesA', 'uuuuffip', function (c, hdc, first, count, base, dev, ext, format, gmf) {
+  if (!c) return 0;
+  const font = dcOf(this, hdc).font, n = this.nativeFontDC && this.nativeFontDC(font); if (!n) return 0;
+  const otm = this.alloc(256); n.call('GetOutlineTextMetricsA', [n.hdc, 256, otm]);
+  const em = this.r32(otm + 92) || 2048; this.free(otm);
+  // the outlines are taken from the same face at one pixel per font unit
+  const big = { kind: 'font', lf: { ...font.lf, height: -em }, raw: font.raw && font.raw.slice() };
+  if (big.raw) new DataView(big.raw.buffer).setInt32(0, -em, true);
+  this.nativeFontDC(big);
+  if (!(dev > 0)) dev = 1 / em;
+  let glu = this.byName.get('GLU32');
+  if (!glu) { glu = this.loadDll('GLU32'); if (this.runPendingInits) this.runPendingInits(); }
+  const G = (nm, args) => this.call(glu.exports.get(nm), args);
+  const gm = this.alloc(20), mat = this.alloc(16); this.w32(mat, 0x10000); this.w32(mat + 12, 0x10000);
+  const L = (nm, ...a) => FN[nm].apply(this, a);
+  const tess = format === 1 && glu ? G('gluNewTess', []) : 0;
+  if (tess) {
+    G('gluTessCallback', [tess, GLU.BEGIN, this.thunkFor('OPENGL32', 'glBegin')]);
+    G('gluTessCallback', [tess, GLU.VERTEX, this.thunkFor('OPENGL32', 'glVertex3dv')]);
+    G('gluTessCallback', [tess, GLU.END, this.thunkFor('OPENGL32', 'glEnd')]);
+    G('gluTessCallback', [tess, GLU.COMBINE, this.thunkFor('OPENGL32', 'wglUseFontOutlines$combine')]);
+    G('gluTessProperty', [tess, GLU.WINDING_RULE, ...dbits(GLU.NONZERO)]);
+  }
+  const face = (contours, z, nz) => {   // one tessellated cap at depth z, facing nz
+    let total = 0; for (const k of contours) total += k.length;
+    const v = this.alloc(24 * total); let a = v;
+    L('glNormal3f', 0, 0, fbits(nz));
+    G('gluTessNormal', [tess, ...dbits(0), ...dbits(0), ...dbits(nz)]);
+    G('gluTessBeginPolygon', [tess, 0]);
+    for (const k of contours) {
+      G('gluTessBeginContour', [tess]);
+      for (const [x, y] of k) { this.dv.setFloat64(a, x, true); this.dv.setFloat64(a + 8, y, true); this.dv.setFloat64(a + 16, z, true); G('gluTessVertex', [tess, a, a]); a += 24; }
+      G('gluTessEndContour', [tess]);
+    }
+    G('gluTessEndPolygon', [tess]);
+    this.free(v);
+  };
+  this.tessTemp = [];
+  let ok = 1;
+  for (let i = 0; i < count; i++) {
+    const ch = first + i;
+    const need = n.call('GetGlyphOutlineA', [n.hdc, ch, 2, gm, 0, 0, mat]);
+    if ((need | 0) === -1) { ok = 0; continue; }
+    const buf = need ? this.alloc(need) : 0;
+    if (need) n.call('GetGlyphOutlineA', [n.hdc, ch, 2, gm, need, buf, mat]);
+    const contours = need ? glyphContours(this, buf, need, em, dev) : [];
+    if (buf) this.free(buf);
+    const incX = this.dv.getInt16(gm + 16, true) / em, incY = this.dv.getInt16(gm + 18, true) / em;
+    if (gmf) {
+      const g = gmf + 24 * i, f = (o, v) => this.dv.setFloat32(g + o, v, true);
+      f(0, this.r32(gm) / em); f(4, this.r32(gm + 4) / em); f(8, this.i32(gm + 8) / em); f(12, this.i32(gm + 12) / em); f(16, incX); f(20, incY);
+    }
+    L('glNewList', base + i, E.COMPILE);
+    if (format === 1 && tess) {
+      if (contours.length) {
+        face(contours, 0, 1);
+        if (ext) {
+          face(contours, -ext, -1);
+          L('glBegin', E.QUADS);
+          for (const k of contours) for (let j = 0; j < k.length; j++) {
+            const [x0, y0] = k[j], [x1, y1] = k[(j + 1) % k.length], d = Math.hypot(x1 - x0, y1 - y0) || 1;
+            L('glNormal3f', fbits((y0 - y1) / d), fbits((x1 - x0) / d), 0);
+            L('glVertex3f', fbits(x0), fbits(y0), 0); L('glVertex3f', fbits(x1), fbits(y1), 0);
+            L('glVertex3f', fbits(x1), fbits(y1), fbits(-ext)); L('glVertex3f', fbits(x0), fbits(y0), fbits(-ext));
+          }
+          L('glEnd');
+        }
+      }
+    } else {
+      for (const z of ext ? [0, -ext] : [0]) for (const k of contours) {
+        L('glBegin', E.LINE_LOOP); for (const [x, y] of k) L('glVertex3f', fbits(x), fbits(y), fbits(z)); L('glEnd');
+      }
+      if (ext) { L('glBegin', E.LINES); for (const k of contours) for (const [x, y] of k) { L('glVertex3f', fbits(x), fbits(y), 0); L('glVertex3f', fbits(x), fbits(y), fbits(-ext)); } L('glEnd'); }
+    }
+    L('glTranslatef', fbits(incX), fbits(incY), 0);
+    L('glEndList');
+    for (const t of this.tessTemp) this.free(t); this.tessTemp = [];
+  }
+  if (tess) G('gluDeleteTess', [tess]);
+  this.free(gm); this.free(mat);
+  const hbig = this.nfonts.get(big); this.nfonts.delete(big);
+  this.nativeFontDC(font); n.call('DeleteObject', [hbig]);
+  return ok;
+});
+
 const PFD_FLAGS = 0x4 | 0x20 | 0x1 | 0x400;   // DRAW_TO_WINDOW | SUPPORT_OPENGL | DOUBLEBUFFER | SWAP_COPY
 function writePFD(p, a) {
   p.u8.fill(0, a, a + 40);

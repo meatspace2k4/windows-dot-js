@@ -1102,10 +1102,17 @@ def('GDI32', 'GetStockObject', 1, i => 0x8000 | i);
 def('GDI32', 'CreatePen', 3, function (s, w, c) { return this.newHandle(new Pen(s, w, c)); });
 def('GDI32', 'CreatePenIndirect', 1, function (p) { return this.newHandle(new Pen(this.r32(p), this.r32(p + 4), this.r32(p + 12))); });
 def('GDI32', 'CreateSolidBrush', 1, function (c) { return this.newHandle(new Brush(c)); });
-def('GDI32', 'CreateFontIndirectA', 1, function (p) { return this.newHandle(new Font(readLogFont(this, p))); });
+def('GDI32', 'CreateFontIndirectA', 1, function (p) { const f = new Font(readLogFont(this, p)); f.raw = this.u8.slice(p, p + 60); return this.newHandle(f); });
 def('GDI32', 'CreateFontA', 14, function (h, w, esc, or, wt, it, ul, so, cs, op, cp, q, pf, face) {
-  return this.newHandle(new Font({ height: h | 0, width: w | 0, escapement: esc | 0, weight: wt, italic: it, underline: ul, charset: cs, face: this.readA(face) || '' }));
+  const f = new Font({ height: h | 0, width: w | 0, escapement: esc | 0, weight: wt, italic: it, underline: ul, charset: cs, face: this.readA(face) || '' });
+  const raw = new Uint8Array(60), v = new DataView(raw.buffer);
+  [h, w, esc, or, wt].forEach((x, i) => v.setInt32(4 * i, x | 0, true));
+  raw.set([it, ul, so, cs, op, cp, q, pf].map(x => x & 0xff), 20); raw.set(window.W95FS.encode(f.lf.face).subarray(0, 31), 28);
+  f.raw = raw; return this.newHandle(f);
 });
+// outline fonts come from the native TrueType rasterizer in GDI32/GDI.EXE
+def('GDI32', 'GetOutlineTextMetricsA', 3, function (hdc, cb, p) { const n = this.nativeFontDC && this.nativeFontDC(dcOf(this, hdc).font); return n ? n.call('GetOutlineTextMetricsA', [n.hdc, cb, p]) : 0; });
+def('GDI32', 'GetGlyphOutlineA', 7, function (hdc, c, fmt, gm, cb, buf, mat) { const n = this.nativeFontDC && this.nativeFontDC(dcOf(this, hdc).font); return n ? n.call('GetGlyphOutlineA', [n.hdc, c, fmt, gm, cb, buf, mat]) : -1; });
 def('GDI32', 'SelectObject', 2, function (hdc, h) {
   const dc = dcOf(this, hdc), o = this.obj(h); if (!o) return 0;
   const slot = { pen: 'pen', brush: 'brush', font: 'font', bitmap: 'bitmap' }[o.kind]; if (!slot) return 0;

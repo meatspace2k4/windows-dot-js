@@ -1288,6 +1288,43 @@ P.dataCode = function (eip) {
 P.slThunklet = function (target, rel) { return u32(target); };
 P.runPendingInits = function () { const pending = this.inits; this.inits = []; for (const m of pending) this.call(m.meta.entry, [m.base, 1, 0]); };
 
+// ---------------------------------------------------------------- native GDI behind the Win32 personality
+/** GDI.EXE, GDI32.DLL and the display driver, brought up on first use with the fonts WIN.INI lists; null without W95SYSTEM */
+P.nativeGdi = function () {
+  if (this.ngdi !== undefined) return this.ngdi;
+  this.ngdi = null;
+  const sys = window.W95SYSTEM; if (!sys || !sys.ne || !sys.ne.GDI) return null;
+  const b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+  for (const [n, d] of Object.entries(sys.dlls || {})) {
+    const k = n.replace(/\.DLL$/, '');
+    if (!this.dlls.has(k)) this.dlls.set(k, { file: d.fileBytes || (d.fileBytes = b64(d.file)), module: d.mod || (d.mod = new WebAssembly.Module(b64(d.wasm))), meta: d.meta });
+  }
+  if (!this.loadLibrary16('GDI')) return null;
+  const g = this.byName.get('GDI32'); if (!g) return null;
+  const str = s => { const a = this.alloc(s.length + 1); this.writeA(a, s); return a; };
+  const call = (n, args) => { const a = g.exports.get(n); if (!a) throw new GuestError(`GDI32 has no ${n}`); return this.call(a, args); };
+  const hdc = call('CreateDCA', [str('DISPLAY'), 0, 0, 0]); if (!hdc) return null;
+  // USER loads the [fonts] section of WIN.INI at startup
+  const fonts = window.W95Win32.iniRead(this.fs, 'WIN.INI').get('fonts');
+  for (const { value } of fonts ? fonts.keys.values() : []) call('AddFontResourceA', [str(/[\\:]/.test(value) ? value : 'C:\\WINDOWS\\FONTS\\' + value)]);
+  this.nfonts = new Map();
+  return (this.ngdi = { call, hdc, str });
+};
+/** the native DC with the native counterpart of a Win32-personality font selected; null without native GDI */
+P.nativeFontDC = function (font) {
+  const n = this.nativeGdi(); if (!n) return null;
+  let h = this.nfonts.get(font);
+  if (!h) {
+    const lf = this.alloc(60);
+    if (font.raw) this.u8.set(font.raw, lf);
+    else { this.w32(lf, font.lf.height | 0); this.w32(lf + 16, font.lf.weight || 400); this.writeA(lf + 28, font.lf.face || 'System', 32); }
+    h = n.call('CreateFontIndirectA', [lf]); this.free(lf);
+    this.nfonts.set(font, h);
+  }
+  n.call('SelectObject', [n.hdc, h]);
+  return n;
+};
+
 // names for GetProcAddress(KERNEL, "name")
 const NAMES16 = { KERNEL: {}, ...NAMES16_INIT };
 window.W95NE16 = { K16, NAMES16, L, def16 };
