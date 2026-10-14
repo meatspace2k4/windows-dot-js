@@ -868,6 +868,8 @@ def('USER32', 'DefWindowProcA', 4, function (h, msg, wp, lp) {
   return 0;
 });
 def('USER32', 'GetMessageA', 4, function (p, hwnd) {
+  // the original CPU is still busy with work already done here: real time has to catch up before the next message
+  if (this.depth === 0 && this.host.now() < this.cpuUntil) { this.waiting = false; return YIELD; }
   const m = this.nextMessage(hwnd, true);
   if (!m) {
     if (this.depth === 0) { this.waiting = true; return YIELD; }
@@ -876,7 +878,7 @@ def('USER32', 'GetMessageA', 4, function (p, hwnd) {
   this.writeMsg(p, m); return m.msg === WM.QUIT ? 0 : 1;
 });
 def('USER32', 'PeekMessageA', 5, function (p, hwnd, a, b, remove) {
-  if (this.depth === 0 && this.now() - this.lastYield > 15) { this.waiting = false; return YIELD; }
+  if (this.depth === 0 && (this.now() - this.lastYield > 15 || this.host.now() < this.cpuUntil)) { this.waiting = false; return YIELD; }
   const m = this.nextMessage(hwnd, remove & 1);
   if (!m) return 0;
   this.writeMsg(p, m); return 1;
