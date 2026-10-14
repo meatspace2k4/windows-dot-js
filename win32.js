@@ -11,10 +11,8 @@ const LAYOUT = { SENTINEL: 0xFFFFFFF0, THUNK: 0xFFFF0000, THUNK16: 0xFFFE0000, F
   STACK_LO: 0x100000, STACK_TOP: 0x3ffff0, HEAP: 0x02000000, HEAP_END: 0x06000000 };
 const YIELD = Symbol('yield');   // returned by an API implementation to suspend the guest at depth 0
 const TICK_MS = 65536 * 1000 / 1193182;   // PIT channel 0 period, 54.925 ms
-// The machine the guest runs at the speed of: a Pentium 133 retiring an x86 instruction every 1.5 clocks on average.
-const INSN_PER_MS = 133000 / 1.5;
 const CPU_REGS = ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi', 'cf', 'pf', 'zf', 'sf', 'of', 'df', 'fs', 'ftop', 'fsw', 'fcw', 'eip',
-  'cs', 'ds', 'es', 'ss', 'fsel', 'gsel', 'csb', 'dsb', 'esb', 'ssb', 'gsb', 'icount'];
+  'cs', 'ds', 'es', 'ss', 'fsel', 'gsel', 'csb', 'dsb', 'esb', 'ssb', 'gsb'];
 const WM = { NULL: 0, CREATE: 1, DESTROY: 2, MOVE: 3, SIZE: 5, ACTIVATE: 6, SETFOCUS: 7, KILLFOCUS: 8, PAINT: 0xf, CLOSE: 0x10,
   QUIT: 0x12, ERASEBKGND: 0x14, SHOWWINDOW: 0x18, ACTIVATEAPP: 0x1c, SETCURSOR: 0x20, NCCREATE: 0x81, NCDESTROY: 0x82,
   NCACTIVATE: 0x86, KEYDOWN: 0x100, KEYUP: 0x101, CHAR: 0x102, SYSKEYDOWN: 0x104, SYSCOMMAND: 0x112, TIMER: 0x113,
@@ -41,7 +39,7 @@ class Process {
     this.cpu = {};
     for (const n of CPU_REGS) this.cpu[n] = new WebAssembly.Global({ value: 'i32', mutable: true }, n === 'fcw' ? 0x37f : 0);
     this.depth = 0; this.exitCode = null; this.trapped = null; this.waiting = false; this.lastYield = 0;
-    this.t0 = host.now(); this.icount = 0; this.cpuUntil = 0;
+    this.t0 = host.now();
     this.thunks = []; this.thunkByName = new Map();
     this.handles = new Map(); this.nextHandle = 0x100;
     this.windows = new Map(); this.classes = new Map(); this.queue = []; this.timers = []; this.quit = null;
@@ -165,7 +163,6 @@ class Process {
     if (this.trapped) { this.fail(this.trapped); return false; }
     this.depth = 0; this.waiting = false; this.lastYield = this.now();
     const r = this.runAt(this.resumeEip);
-    this.account();
     if (r === 1) { this.resumeEip = this.reg('eip'); return true; }
     if (r === 2 || this.trapped) { this.fail(this.trapped || `bad address ${this.reg('eip').toString(16)}`); return false; }
     if (this.exitCode === null) this.exitCode = this.reg('eax');
@@ -198,7 +195,6 @@ class Process {
     if (code === 0) this.cpu.eip.value = LAYOUT.SENTINEL | 0;
   }
   api(eip) {
-    this.account();
     if (u32(eip) < LAYOUT.THUNK) return this.api16(u32(eip));
     const t = this.thunks[(u32(eip) - LAYOUT.THUNK) >> 2];
     if (!t || !t.def) { this.trapped = `unimplemented import ${t ? t.dll + '!' + t.nm : u32(eip).toString(16)}`; return LAYOUT.SENTINEL; }
@@ -304,18 +300,10 @@ class Process {
     this.w32(p + 16, (this.now() - this.t0) | 0); const c = this.host.cursor(); this.w32(p + 20, c.x); this.w32(p + 24, c.y);
   }
   /** Earliest time something becomes deliverable, for the host scheduler. */
-  /** Guest clock: real time, or the moment the original CPU would have finished the instructions retired so far. */
-  now() { return Math.max(this.host.now(), this.cpuUntil); }
+  now() { return this.host.now(); }
   /** Charge the guest instructions retired since the last call (counted by the translated code). */
-  /** Charge ms the original machine spent in code that is not translated (the OPENGL32 ICD). */
-  charge(ms) { if (ms > 0) this.cpuUntil = this.now() + ms; }
-  account() {
-    const v = this.cpu.icount.value, d = (v - this.icount) >>> 0; this.icount = v;
-    if (d) this.cpuUntil = this.now() + d / INSN_PER_MS;
-  }
   ready() {
     if (this.exitCode !== null || this.trapped) return false;
-    if (this.host.now() < this.cpuUntil) return false;   // still executing on the original CPU
     if (this.dlgDone) return true;
     if (this.modal) return false;
     if (!this.waiting) return true;
@@ -868,8 +856,6 @@ def('USER32', 'DefWindowProcA', 4, function (h, msg, wp, lp) {
   return 0;
 });
 def('USER32', 'GetMessageA', 4, function (p, hwnd) {
-  // the original CPU is still busy with work already done here: real time has to catch up before the next message
-  if (this.depth === 0 && this.host.now() < this.cpuUntil) { this.waiting = false; return YIELD; }
   const m = this.nextMessage(hwnd, true);
   if (!m) {
     if (this.depth === 0) { this.waiting = true; return YIELD; }
@@ -878,7 +864,7 @@ def('USER32', 'GetMessageA', 4, function (p, hwnd) {
   this.writeMsg(p, m); return m.msg === WM.QUIT ? 0 : 1;
 });
 def('USER32', 'PeekMessageA', 5, function (p, hwnd, a, b, remove) {
-  if (this.depth === 0 && (this.now() - this.lastYield > 15 || this.host.now() < this.cpuUntil)) { this.waiting = false; return YIELD; }
+  if (this.depth === 0 && this.now() - this.lastYield > 15) { this.waiting = false; return YIELD; }
   const m = this.nextMessage(hwnd, remove & 1);
   if (!m) return 0;
   this.writeMsg(p, m); return 1;

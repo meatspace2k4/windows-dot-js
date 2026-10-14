@@ -48,9 +48,7 @@ I32, I64, F32, F64 = 0x7f, 0x7e, 0x7d, 0x7c
 G = {n: i for i, n in enumerate(['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi',
                                   'cf', 'pf', 'zf', 'sf', 'of', 'df', 'fs', 'ftop', 'fsw', 'fcw', 'eip',
                                   # segment selectors and their cached bases (segmented NE code)
-                                  'cs', 'ds', 'es', 'ss', 'fsel', 'gsel', 'csb', 'dsb', 'esb', 'ssb', 'gsb',
-                                  # guest instructions retired, for running the guest at the original machine's speed
-                                  'icount'])}
+                                  'cs', 'ds', 'es', 'ss', 'fsel', 'gsel', 'csb', 'dsb', 'esb', 'ssb', 'gsb'])}
 REGS = ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi']
 
 # imported functions (index order matters)
@@ -434,7 +432,6 @@ class Translator:
     def block(self, start, lst):
         f = Fn()
         if self.TRACE: f.c(start).e(0x10, uleb(IMP['btrace']))
-        f.gg('icount').c(len(lst)).e(OPS['add']).gs('icount')
         try:
             global CUR
             for ins in lst:
@@ -977,7 +974,6 @@ class Translator:
         # block { loop { br_if ecx==0 ; one ; ecx-- ; [cmp: br_if zf mismatch] ; br loop } }
         f.e(0x02, 0x40, 0x03, 0x40)
         f.gg('ecx').e(OPS['eqz']).e(0x0d, uleb(1))
-        f.gg('icount').c(1).e(OPS['add']).gs('icount')
         one()
         f.gg('ecx').c(1).e(OPS['sub']).gs('ecx')
         if kind in ('cmps', 'scas'):
@@ -1017,7 +1013,6 @@ class Translator:
         if not rep: one(); return
         f.e(0x02, 0x40, 0x03, 0x40)
         f.gg('ecx').c(mask).e(OPS['and_']).e(OPS['eqz']).e(0x0d, uleb(1))
-        f.gg('icount').c(1).e(OPS['add']).gs('icount')
         one()
         if a16: f.gg('ecx').c(~0xffff).e(OPS['and_']).gg('ecx').c(1).e(OPS['sub']).c(0xffff).e(OPS['and_']).e(OPS['or_']).gs('ecx')
         else: f.gg('ecx').c(1).e(OPS['sub']).gs('ecx')
