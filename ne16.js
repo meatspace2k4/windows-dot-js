@@ -1283,6 +1283,10 @@ def16('KERNEL', 517, '', 'jmp', function () {
   this.cpu.eax.value = r | 0; this.cpu.edx.value = lo16(this.cpu.edx.value, r >>> 16);
   return this.retf16(12 + 4 * n);
 });
+// VWin32_BoostThreadGroup / VWin32_BoostThreadStatic (#535, #536): scheduler priority boosts through VWIN32; one
+// thread runs here, so there is nothing to boost
+def16('KERNEL', 535, 'll', 'v', function () {});
+def16('KERNEL', 536, 'll', 'v', function () {});
 // KRNL386 seg1:7A28 (#365): adds `delta` (+1 or -1) to the lock count of the global block a selector belongs to; the
 // callback relays lock the caller's stack segment while 32-bit code holds pointers into it
 def16('KERNEL', 365, 'wi', 'v', function (sel, delta) {
@@ -1659,6 +1663,7 @@ K('#17', 0, () => 0);                                      // CommonUnimpStub
 K('#18', 2, function (pid, off) { return 0; });           // GetProcessDword
 K('#23', 0, () => 0);                                      // GDIReallyCares
 K('#38', 0, () => 0); K('#39', 0, () => 0);
+KR('#33', function () { return ret32(this); });    // frees 16-bit blocks a thread queued for release (thread flag 20h); none are queued here
 K('#48', 1, function (p) { if (p) this.w32(p, 0); return 0; });   // ReleaseThunkLock
 // USER32.DLL's start-up: the Win16Lock it takes around every call into USER.EXE, and KERNEL's 16-bit system variables
 // (a block USER32 writes into). One thread runs here, so the lock has nothing to exclude.
