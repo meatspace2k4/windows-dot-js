@@ -1054,6 +1054,11 @@ def('GDI32', 'GetObjectType', 1, function (h) { const o = this.obj(h); return o 
 def('GDI32', 'GetObjectA', 3, function (h, n, p) {
   const o = this.obj(h); if (!o) return 0;
   if (o.kind === 'palette') { if (p) this.w16(p, o.entries.length); return 2; }
+  if (o.kind === 'bitmap' && p && o.dib) {
+    this.u8.fill(0, p, p + n); this.w32(p + 4, o.w); this.w32(p + 8, o.h); this.w32(p + 12, o.dib.stride); this.w16(p + 16, 1); this.w16(p + 18, o.dib.bpp); this.w32(p + 20, o.dib.ptr);
+    if (n >= 84) { this.w32(p + 24, 40); this.w32(p + 28, o.w); this.w32(p + 32, o.dib.topdown ? -o.h : o.h); this.w16(p + 36, 1); this.w16(p + 38, o.dib.bpp); this.w32(p + 44, o.dib.stride * o.h); return 84; }
+    return 24;
+  }
   if (o.kind === 'bitmap' && p) { this.u8.fill(0, p, p + n); this.w32(p + 4, o.w); this.w32(p + 8, o.h); this.w32(p + 12, o.mono ? ((o.w + 15) >> 4) << 1 : o.w * 4); this.w16(p + 16, 1); this.w16(p + 18, o.mono ? 1 : 32); return 24; }
   if (o.kind === 'font' && p) { this.u8.fill(0, p, p + n); this.w32(p, o.lf.height); this.w32(p + 16, o.lf.weight); this.writeA(p + 28, o.lf.face, 32); return 60; }
   return 0;
@@ -1165,14 +1170,117 @@ def('GDI32', 'BitBlt', 9, function (hd, x, y, w, h, hs, sx, sy, rop) {
   const usesSrc = (((rop >>> 16) & 0xff) >> 2 & 0x33) !== (((rop >>> 16) & 0xff) & 0x33);
   if (!hs || !usesSrc) return API.GDI32.PatBlt[1].call(this, hd, x, y, w, h, rop);
   const s = dcOf(this, hs); if (!s.ctx || !d.ctx) return 1;
+  dibIn(this, s.bitmap); if (d.bitmap !== s.bitmap) dibIn(this, d.bitmap);
   const src = blitSource(s, d);
   if (rop === ROP.SRCCOPY) { const g = d.pre(); g.drawImage(src, sx | 0, sy | 0, w | 0, h | 0, x | 0, y | 0, w | 0, h | 0); d.post(); }
   else rop3(d, x, y, w, h, src, sx, sy, rop);
-  d.touch(); return 1;
+  dibOut(this, d.bitmap); d.touch(); return 1;
 });
 def('GDI32', 'StretchBlt', 11, function (hd, x, y, w, h, hs, sx, sy, sw, sh) {
   const d = dcOf(this, hd), s = dcOf(this, hs); if (!s.ctx || !d.ctx) return 1;
-  const g = d.pre(); g.drawImage(blitSource(s, d), sx | 0, sy | 0, sw | 0, sh | 0, x | 0, y | 0, w | 0, h | 0); d.post(); d.touch(); return 1;
+  dibIn(this, s.bitmap); if (d.bitmap !== s.bitmap) dibIn(this, d.bitmap);
+  const g = d.pre(); g.drawImage(blitSource(s, d), sx | 0, sy | 0, sw | 0, sh | 0, x | 0, y | 0, w | 0, h | 0); d.post(); dibOut(this, d.bitmap); d.touch(); return 1;
+});
+// ---- device-independent bitmaps
+function readBmi(p, a) {
+  const size = p.r32(a), w = p.i32(a + 4), h = p.i32(a + 8), bpp = p.r16(a + 14), comp = p.r32(a + 16), used = p.r32(a + 32);
+  const ncol = bpp <= 8 ? (used || (1 << bpp)) : comp === 3 ? 3 : 0, pal = [];
+  for (let i = 0; i < (bpp <= 8 ? ncol : 0); i++) pal.push([p.r8(a + size + 4 * i + 2), p.r8(a + size + 4 * i + 1), p.r8(a + size + 4 * i)]);
+  const masks = comp === 3 ? [p.r32(a + size), p.r32(a + size + 4), p.r32(a + size + 8)] : null;
+  return { size, w, h: Math.abs(h), topdown: h < 0, bpp, comp, pal, masks, stride: ((w * bpp + 31) >> 5) << 2 };
+}
+const maskShift = m => { let s = 0; while (m && !(m & 1)) { m >>>= 1; s++; } let b = 0; while (m & 1) { m >>>= 1; b++; } return [s, b]; };
+function decodeDIB(p, bits, d, lines = d.h, start = 0) {
+  const out = new ImageData(d.w, d.h), px = out.data, u = p.u8, dv = p.dv;
+  const ms = d.masks ? d.masks.map(maskShift) : d.bpp === 16 ? [[10, 5], [5, 5], [0, 5]] : null;
+  for (let row = start; row < start + lines && row < d.h; row++) {
+    const y = d.topdown ? row : d.h - 1 - row, src = bits + (row - start) * d.stride;
+    for (let x = 0; x < d.w; x++) {
+      let r, g, b; const o = (y * d.w + x) * 4;
+      if (d.bpp <= 8) {
+        const bit = x * d.bpp, v = (u[src + (bit >> 3)] >> (8 - d.bpp - (bit & 7))) & ((1 << d.bpp) - 1);
+        [r, g, b] = d.pal[v] || [0, 0, 0];
+      } else if (d.bpp === 24) { b = u[src + 3 * x]; g = u[src + 3 * x + 1]; r = u[src + 3 * x + 2]; }
+      else if (d.bpp === 32 && !d.masks) { b = u[src + 4 * x]; g = u[src + 4 * x + 1]; r = u[src + 4 * x + 2]; }
+      else {
+        const v = d.bpp === 16 ? dv.getUint16(src + 2 * x, true) : dv.getUint32(src + 4 * x, true);
+        [r, g, b] = ms.map(([s, n]) => (((v >>> s) & ((1 << n) - 1)) * 255 / ((1 << n) - 1)) | 0);
+      }
+      px[o] = r; px[o + 1] = g; px[o + 2] = b; px[o + 3] = 255;
+    }
+  }
+  return out;
+}
+function encodeDIB(p, bits, d, img, lines = d.h, start = 0) {
+  const u = p.u8, dv = p.dv, px = img.data;
+  const nearest = (r, g, b) => { let bi = 0, bd = 1e9; d.pal.forEach(([pr, pg, pb], i) => { const e = (pr - r) ** 2 + (pg - g) ** 2 + (pb - b) ** 2; if (e < bd) { bd = e; bi = i; } }); return bi; };
+  for (let row = start; row < start + lines && row < d.h; row++) {
+    const y = d.topdown ? row : d.h - 1 - row, dst = bits + (row - start) * d.stride;
+    if (d.bpp <= 8) u.fill(0, dst, dst + d.stride);
+    for (let x = 0; x < d.w; x++) {
+      const o = (y * img.width + x) * 4, r = px[o], g = px[o + 1], b = px[o + 2];
+      if (d.bpp <= 8) { const v = nearest(r, g, b), bit = x * d.bpp; u[dst + (bit >> 3)] |= v << (8 - d.bpp - (bit & 7)); }
+      else if (d.bpp === 24) { u[dst + 3 * x] = b; u[dst + 3 * x + 1] = g; u[dst + 3 * x + 2] = r; }
+      else if (d.bpp === 32) { u[dst + 4 * x] = b; u[dst + 4 * x + 1] = g; u[dst + 4 * x + 2] = r; u[dst + 4 * x + 3] = 0; }
+      else dv.setUint16(dst + 2 * x, ((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3), true);
+    }
+  }
+}
+// DIB sections keep their pixels in guest memory; GDI operations read and write them through.
+function dibIn(p, bm) { if (bm && bm.dib) bm.canvas.getContext('2d').putImageData(decodeDIB(p, bm.dib.ptr, bm.dib), 0, 0); }
+function dibOut(p, bm) { if (bm && bm.dib) encodeDIB(p, bm.dib.ptr, bm.dib, bm.canvas.getContext('2d').getImageData(0, 0, bm.w, bm.h)); }
+def('GDI32', 'CreateDIBSection', 6, function (hdc, bmi, usage, ppv) {
+  const d = readBmi(this, bmi), ptr = this.alloc(d.stride * d.h, true);
+  const b = new Bitmap(d.w, d.h, d.bpp === 1 ? 1 : 32); b.dib = { ...d, ptr };
+  if (ppv) this.w32(ppv, ptr);
+  return this.newHandle(b);
+});
+def('GDI32', 'CreateDIBitmap', 6, function (hdc, bih, init, bits, bmi) {
+  const d = readBmi(this, bmi || bih), b = new Bitmap(d.w, d.h, 32);
+  if (init & 4 && bits) b.canvas.getContext('2d').putImageData(decodeDIB(this, bits, d), 0, 0);
+  return this.newHandle(b);
+});
+def('GDI32', 'SetDIBits', 7, function (hdc, hbm, start, lines, bits, bmi) {
+  const b = this.obj(hbm); if (!b || b.kind !== 'bitmap') return 0;
+  const d = readBmi(this, bmi), img = decodeDIB(this, bits, { ...d }, lines, start);
+  dibIn(this, b); const g = b.canvas.getContext('2d'); g.putImageData(img, 0, 0); dibOut(this, b); b.ver++;
+  return lines;
+});
+def('GDI32', 'GetDIBits', 7, function (hdc, hbm, start, lines, bits, bmi) {
+  const b = this.obj(hbm); if (!b || b.kind !== 'bitmap') return 0;
+  if (!this.r16(bmi + 14)) {                       // query: describe the bitmap
+    const bpp = b.mono ? 1 : 32;
+    this.w32(bmi + 4, b.w); this.w32(bmi + 8, b.h); this.w16(bmi + 12, 1); this.w16(bmi + 14, bpp);
+    this.w32(bmi + 16, 0); this.w32(bmi + 20, (((b.w * bpp + 31) >> 5) << 2) * b.h);
+    return b.h;
+  }
+  const d = readBmi(this, bmi);
+  if (d.bpp <= 8 && !d.pal.length) {
+    const pal = b.mono ? [[0, 0, 0], [255, 255, 255]] : Array.from({ length: 1 << d.bpp }, (_, i) => [i, i, i]);
+    pal.forEach(([r, g, bb], i) => { this.u8[bmi + d.size + 4 * i] = bb; this.u8[bmi + d.size + 4 * i + 1] = g; this.u8[bmi + d.size + 4 * i + 2] = r; this.u8[bmi + d.size + 4 * i + 3] = 0; });
+    d.pal = pal;
+  }
+  if (!bits) return 1;
+  dibIn(this, b);
+  encodeDIB(this, bits, { ...d, w: Math.min(d.w, b.w), h: d.h }, b.canvas.getContext('2d').getImageData(0, 0, b.w, b.h), lines, start);
+  return lines;
+});
+def('GDI32', 'SetDIBColorTable', 4, function (hdc, start, n, rgb) {
+  const dc = dcOf(this, hdc), b = dc.bitmap; if (!b || !b.dib) return 0;
+  for (let i = 0; i < n; i++) b.dib.pal[start + i] = [this.r8(rgb + 4 * i + 2), this.r8(rgb + 4 * i + 1), this.r8(rgb + 4 * i)];
+  return n;
+});
+def('GDI32', 'StretchDIBits', 13, function (hdc, x, y, w, h, sx, sy, sw, sh, bits, bmi) {
+  const dc = dcOf(this, hdc), d = readBmi(this, bmi), c = mkCanvas(d.w, d.h);
+  c.getContext('2d').putImageData(decodeDIB(this, bits, d), 0, 0);
+  const g = dc.pre(); g.drawImage(c, sx | 0, (d.h - (sy | 0) - (sh | 0)), sw | 0, sh | 0, x | 0, y | 0, w | 0, h | 0); dc.post(); dc.touch();
+  return h;
+});
+def('GDI32', 'SetDIBitsToDevice', 12, function (hdc, x, y, w, h, sx, sy, start, lines, bits, bmi) {
+  const dc = dcOf(this, hdc), d = readBmi(this, bmi), c = mkCanvas(d.w, d.h);
+  c.getContext('2d').putImageData(decodeDIB(this, bits, d, lines, start), 0, 0);
+  const g = dc.pre(); g.drawImage(c, sx | 0, sy | 0, w | 0, h | 0, x | 0, y | 0, w | 0, h | 0); dc.post(); dc.touch();
+  return lines;
 });
 def('GDI32', 'SetBkColor', 2, function (hdc, c) { const dc = dcOf(this, hdc); const o = dc.bk; dc.bk = c; return o; });
 def('GDI32', 'SetBkMode', 2, function (hdc, m) { const dc = dcOf(this, hdc); const o = dc.bkMode; dc.bkMode = m; return o; });
@@ -1302,5 +1410,5 @@ function peString(bytes, id) {
   } catch (_) { return null; }
 }
 
-window.W95Win32 = { Process, API, LAYOUT, WM, YIELD, iniGet, iniSet, peString, def, dcOf, GuestError, mkCanvas };
+window.W95Win32 = { Process, API, LAYOUT, WM, YIELD, iniGet, iniSet, peString, def, dcOf, GuestError, mkCanvas, dibOut };
 })();

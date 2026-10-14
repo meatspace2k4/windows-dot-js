@@ -241,6 +241,8 @@ class Context {
     this.textures = new Map(); this.texBound = 0; this.nextTex = 1;
     this.lists = new Map(); this.nextList = 1; this.listBase = 0; this.compiling = null; this.compileMode = 0;
     this.prim = null; this.unpack = { align: 4, row: 0, skipRows: 0, skipPixels: 0 };
+    // all pixel-store parameters, GL defaults: SWAP_BYTES, LSB_FIRST, ROW_LENGTH, SKIP_ROWS, SKIP_PIXELS, ALIGNMENT for unpack (0x0CF0..) and pack (0x0D00..)
+    this.pixelStore = { 0x0CF0: 0, 0x0CF1: 0, 0x0CF2: 0, 0x0CF3: 0, 0x0CF4: 0, 0x0CF5: 4, 0x0D00: 0, 0x0D01: 0, 0x0D02: 0, 0x0D03: 0, 0x0D04: 0, 0x0D05: 4 };
     this.arrays = { v: null, n: null, c: null, t: null, on: new Set() };
     this.maps = new Map(); this.grid1 = [1, 0, 1]; this.grid2 = [1, 0, 1, 1, 0, 1];
     this.attribStack = [];
@@ -365,7 +367,8 @@ class Context {
   present() {
     const dc = this.dc; if (!dc || !dc.ctx) return;
     this.g.flush();
-    const g = dc.pre(); g.drawImage(this.canvas, 0, 0); dc.post();
+    const g = dc.pre(); g.drawImage(this.canvas, 0, 0); dc.post(); dc.touch();
+    if (dc.bitmap && dc.bitmap.dib) window.W95Win32.dibOut(this.p, dc.bitmap);
   }
 }
 
@@ -595,13 +598,13 @@ gl('glScissor', 'iiii', function (c, x, y, w, h) { c.scissor = [x, y, w, h]; });
 gl('glFlush', '', function (c) { c.present(); });
 gl('glFinish', '', function (c) { c.present(); });
 gl('glGetError', '', () => 0);
-gl('glPixelStorei', 'ui', function (c, n, v) { if (n === E.UNPACK_ALIGNMENT) c.unpack.align = v || 1; else if (n === E.UNPACK_ROW_LENGTH) c.unpack.row = v; else if (n === E.UNPACK_SKIP_ROWS) c.unpack.skipRows = v; else if (n === E.UNPACK_SKIP_PIXELS) c.unpack.skipPixels = v; });
+gl('glPixelStorei', 'ui', function (c, n, v) { if (n in c.pixelStore) c.pixelStore[n] = v; if (n === E.UNPACK_ALIGNMENT) c.unpack.align = v || 1; else if (n === E.UNPACK_ROW_LENGTH) c.unpack.row = v; else if (n === E.UNPACK_SKIP_ROWS) c.unpack.skipRows = v; else if (n === E.UNPACK_SKIP_PIXELS) c.unpack.skipPixels = v; });
 gl('glGetString', 'u', function (c, n) {
   const s = { 0x1F00: 'Win95 WebGL ICD', 0x1F01: 'WebGL2', 0x1F02: '1.1.0', 0x1F03: '' }[n]; if (s === undefined) return 0;
   this.glstr = this.glstr || {}; if (!this.glstr[n]) { this.glstr[n] = this.alloc(s.length + 1); this.writeA(this.glstr[n], s); }
   return this.glstr[n];
 });
-const intState = (c, n) => ({ 0x0D33: [1024], 0x0BA2: c.viewport, 0x0C10: c.scissor, 0x0B70: [0], 0x0D32: [8], 0x0D31: [32], 0x0BA0: [c.mode], 0x0B54: [c.shade],
+const intState = (c, n) => (n in c.pixelStore ? [c.pixelStore[n]] : null) || ({ 0x0D33: [1024], 0x0BA2: c.viewport, 0x0C10: c.scissor, 0x0B70: [0], 0x0D32: [8], 0x0D31: [32], 0x0BA0: [c.mode], 0x0B54: [c.shade],
   0x0D36: [32], 0x0D38: [2], 0x0D50: [8], 0x0D52: [8], 0x0D53: [8], 0x0D54: [8], 0x0D55: [8], 0x0D56: [16], 0x0B21: [1], 0x0D35: [8] }[n]);
 gl('glGetIntegerv', 'up', function (c, n, p) { const v = intState(c, n) || [0]; v.forEach((x, i) => this.w32(p + 4 * i, x)); });
 gl('glGetFloatv', 'up', function (c, n, p) {
