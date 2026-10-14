@@ -1235,6 +1235,10 @@ def decode_ne(ne, entries):
         if t not in seen: seen.add(t); walk(t)
     return insns, seen
 
+# KERNEL constants imported as relocations (__AHSHIFT, __AHINCR, __WINFLAGS, __FLATDS)
+FLATDS_SEL = 0x000F
+KERNEL_EQUATES = {113: 3, 114: 8, 178: 0x0C29, 455: FLATDS_SEL}
+
 def load_registry(path):
     try: return json.load(open(path))
     except (OSError, ValueError): return {'thunks': [], 'modules': {}}
@@ -1246,6 +1250,7 @@ def build_ne(path, out, base, selbase, lookup, registry):
     for m in reg['modules'].values():
         for sg in m['segs']: SELBASE[sg['sel']] = sg['base']
     def resolve(mod, key):
+        if mod.upper() == 'KERNEL' and key in KERNEL_EQUATES: v = KERNEL_EQUATES[key]; return v, v
         m = reg['modules'].get(mod.upper())
         if m:
             k = str(key) if isinstance(key, int) else key.upper()
