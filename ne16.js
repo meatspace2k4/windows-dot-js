@@ -126,6 +126,7 @@ P.neExport = function (m, key) {
   return m.exports.get(key) || 0;
 };
 P.loadLibrary16 = function (name) {
+  this.init16();
   const base = name.toUpperCase().replace(/^.*\\/, '').replace(/\.(DLL|EXE|DRV)$/, '');
   if (base === 'KERNEL') return this.kernelModule();
   if (this.ne.has(base)) return this.ne.get(base);
