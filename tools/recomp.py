@@ -22,7 +22,7 @@ SENTINEL = 0xFFFFFFF0
 THUNK_BASE = 0xFFFF0000
 THUNK16_BASE = 0xFFFE0000      # 16-bit import thunks (selector THUNK16_SEL)
 THUNK16_SEL = 0xFFF7
-LDT_BASE = 0x00030000          # 8192 x {base u32, limit u32}, indexed by selector >> 3
+LDT_BASE = 0x00030000          # 8192 x {base u32, limit u32}, indexed by selector >> 3; access rights u32 at +0x10000
 FPU_BASE = 0x00010000          # 8 x f64 registers
 LOOKUP_BYTES = 0x01000000     # per-module table (i32 per code byte: block id + 1) lives at a caller-chosen base
 MEM_PAGES = 2048               # 128 MiB
@@ -736,6 +736,21 @@ class Translator:
             f.lg(sa).e(EXT_S).c64(1).e(Q['shl']).lg(n).e(EXT_U).e(Q['shr_s']).e(WRAP).c(1).e(OPS['and_']).ls(cfv)
             f.lg(sa).lg(n).e(OPS['shr_s']).c(MASK[sz]).e(OPS['and_']).ls(r)
             f.c(0).ls(ofv)
+        elif kind in ('rcl', 'rcr'):
+            m, v = f.i(), f.q(); W = bits + 1
+            f.lg(n).c(W).e(OPS['rem_u']).ls(m)
+            f.gg('cf').e(EXT_U).c64(bits).e(Q['shl']).lg(a).e(EXT_U).e(Q['or_']).ls(v)
+            sh1, sh2 = ('shl', 'shr_u') if kind == 'rcl' else ('shr_u', 'shl')
+            f.lg(v).lg(m).e(EXT_U).e(Q[sh1]).lg(v).c64(W).lg(m).e(EXT_U).e(Q['sub']).e(Q[sh2]).e(Q['or_']).ls(v)
+            f.lg(v).e(WRAP).c(MASK[sz]).e(OPS['and_']).ls(r)
+            f.lg(v).c64(bits).e(Q['shr_u']).e(WRAP).c(1).e(OPS['and_']).ls(cfv)
+            if kind == 'rcl': f.lg(r).c(bits - 1).e(OPS['shr_u']).lg(cfv).e(OPS['xor']).c(1).e(OPS['and_']).ls(ofv)
+            else: f.lg(r).c(bits - 1).e(OPS['shr_u']).lg(r).c(bits - 2).e(OPS['shr_u']).e(OPS['xor']).c(1).e(OPS['and_']).ls(ofv)
+            sel_ = (lambda newv, g: (f.lg(newv), f.gg(g), f.lg(m), f.e(SELECT), f.gs(g)))
+            d.write(lambda: (f.lg(r), f.lg(a), f.lg(m), f.e(SELECT)))
+            if live & CF: sel_(cfv, 'cf')
+            if live & OF: sel_(ofv, 'of')
+            return
         elif kind in ('rol', 'ror'):
             m = f.i()
             f.lg(n).c(bits).e(OPS['rem_u']).ls(m)
@@ -761,6 +776,17 @@ class Translator:
     def x_sar(self, f, ins, ops, live): self.shift(f, ins, ops, live, 'sar')
     def x_rol(self, f, ins, ops, live): self.shift(f, ins, ops, live, 'rol')
     def x_ror(self, f, ins, ops, live): self.shift(f, ins, ops, live, 'ror')
+    def x_rcl(self, f, ins, ops, live): self.shift(f, ins, ops, live, 'rcl')
+    def x_rcr(self, f, ins, ops, live): self.shift(f, ins, ops, live, 'rcr')
+    def descr(self, f, ops, off):
+        """lar/lsl: word at LDT entry + off for the selector in ops[1]; ZF = descriptor present"""
+        t, v = f.i(), f.i()
+        Loc(f, ops[1]).read(); f.c(0xfff8).e(OPS['and_']).c(LDT_BASE).e(OPS['add']).ls(t)
+        f.lg(t).e(0x28, 0, uleb(4)).lg(t).mem(0x28).e(OPS['or_']).c(0).e(OPS['ne']).gs('zf')
+        f.lg(t).e(0x28, 0, uleb(off)).ls(v)
+        d = Loc(f, ops[0]); f.gg('zf').e(0x04, 0x40); d.write(lambda: f.lg(v)); f.e(0x0b)
+    def x_lsl(self, f, ins, ops, live): self.descr(f, ops, 4)
+    def x_lar(self, f, ins, ops, live): self.descr(f, ops, 0x10000)   # access rights table at LDT_BASE + 0x10000
     def x_shld(self, f, ins, ops, live): self.dshift(f, ops, live, True)
     def x_shrd(self, f, ins, ops, live): self.dshift(f, ops, live, False)
     def dshift(self, f, ops, live, left):
