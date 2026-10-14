@@ -1145,7 +1145,7 @@ def('GDI32', 'PatBlt', 6, function (hdc, x, y, w, h, rop) {
   else { rop3(dc, x, y, w, h, null, 0, 0, rop); dc.touch(); }
   return 1;
 });
-def('GDI32', 'CreateCompatibleDC', 1, function (hdc) { const d = new DC(this, null, 1, 1, 0); d.bitmap = new Bitmap(1, 1, 1); d.ctx = d.bitmap.canvas.getContext('2d', { willReadFrequently: true }); d.mem = true; return this.newHandle(d); });
+def('GDI32', 'CreateCompatibleDC', 1, function (hdc) { const d = new DC(this, null, 1, 1, 0); d.bitmap = new Bitmap(1, 1, 1); this.newHandle(d.bitmap); d.ctx = d.bitmap.canvas.getContext('2d', { willReadFrequently: true }); d.mem = true; return this.newHandle(d); });
 def('GDI32', 'CreateICA', 4, function () { return this.newHandle(new DC(this, null, this.host.width, this.host.height, 0)); });
 def('GDI32', 'CreateDCA', 4, function () { return this.newHandle(new DC(this, this.host.surface(0, this.host.width, this.host.height), this.host.width, this.host.height, 0)); });
 def('GDI32', 'DeleteDC', 1, function (h) { this.handles.delete(h); return 1; });
