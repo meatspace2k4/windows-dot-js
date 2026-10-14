@@ -5,9 +5,12 @@
 // the Windows 95 screen savers use, and runs the recompiled blocks. GDI output
 // goes to a Canvas 2D surface.
 (() => {
-const LAYOUT = { SENTINEL: 0xFFFFFFF0, THUNK: 0xFFFF0000, FPU: 0x10000, TIB: 0x11000, SCRATCH: 0x12000, LOOKUP: 0x100000,
-  STACK_LO: 0x200000, STACK_TOP: 0x3ffff0, HEAP: 0x02000000, HEAP_END: 0x07f00000 };
+// guest address space: low runtime area, stack, images at 0x400000/0x1000000, native DLLs from 0x1800000,
+// heap, then per-module block lookup tables from 0x6000000
+const LAYOUT = { SENTINEL: 0xFFFFFFF0, THUNK: 0xFFFF0000, FPU: 0x10000, TIB: 0x11000, SCRATCH: 0x12000,
+  STACK_LO: 0x100000, STACK_TOP: 0x3ffff0, HEAP: 0x02000000, HEAP_END: 0x06000000 };
 const YIELD = -1 >>> 0;
+const CPU_REGS = ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi', 'cf', 'pf', 'zf', 'sf', 'of', 'df', 'fs', 'ftop', 'fsw', 'fcw', 'eip'];
 const WM = { NULL: 0, CREATE: 1, DESTROY: 2, MOVE: 3, SIZE: 5, ACTIVATE: 6, SETFOCUS: 7, KILLFOCUS: 8, PAINT: 0xf, CLOSE: 0x10,
   QUIT: 0x12, ERASEBKGND: 0x14, SHOWWINDOW: 0x18, ACTIVATEAPP: 0x1c, SETCURSOR: 0x20, NCCREATE: 0x81, NCDESTROY: 0x82,
   NCACTIVATE: 0x86, KEYDOWN: 0x100, KEYUP: 0x101, CHAR: 0x102, SYSKEYDOWN: 0x104, SYSCOMMAND: 0x112, TIMER: 0x113,
@@ -23,24 +26,31 @@ const css = ([r, g, b]) => `rgb(${r},${g},${b})`;
 // ---------------------------------------------------------------- process
 class Process {
   /**
-   * file: Uint8Array of the .scr, module: compiled WebAssembly.Module, meta: recompiler metadata
+   * file/module/meta: the executable image, its recompiled module and metadata.
+   * dlls: Map of upper-case DLL name -> { file, module, meta } for Microsoft DLLs that run natively;
+   * imports from any other DLL bind to the JS implementations in API.
    * host: { fs, width, height, surface(hwnd, w, h) -> CanvasRenderingContext2D, now(), cursor() -> {x,y}, exited(code) }
    */
-  constructor(file, module, meta, host, cmdline) {
-    this.file = file; this.meta = meta; this.host = host; this.fs = host.fs;
+  constructor(file, module, meta, host, cmdline, dlls = new Map()) {
+    this.meta = meta; this.host = host; this.fs = host.fs; this.dlls = dlls;
     this.mem = new WebAssembly.Memory({ initial: meta.layout.pages, maximum: meta.layout.pages });
+    this.cpu = {};
+    for (const n of CPU_REGS) this.cpu[n] = new WebAssembly.Global({ value: 'i32', mutable: true }, n === 'fcw' ? 0x37f : 0);
     this.depth = 0; this.exitCode = null; this.trapped = null; this.waiting = false; this.lastYield = 0;
     this.t0 = host.now();
     this.thunks = []; this.thunkByName = new Map();
     this.handles = new Map(); this.nextHandle = 0x100;
     this.windows = new Map(); this.classes = new Map(); this.queue = []; this.timers = []; this.quit = null;
     this.heapTop = LAYOUT.HEAP; this.freeList = new Map(); this.allocs = new Map();
-    this.load();
     const math = { fsin: Math.sin, fcos: Math.cos, ftan: Math.tan, fatan2: Math.atan2, fexp2: x => Math.pow(2, x), flog2: Math.log2,
       fmod: (a, b) => a % b, frem: (a, b) => a - b * Math.round(a / b), f80load: a => this.f80load(a), f80store: (a, v) => this.f80store(a, v) };
-    this.inst = new WebAssembly.Instance(module, { env: { mem: this.mem, api: e => this.api(e), trap: (e, c) => this.trap(e, c), ...math } });
-    this.x = this.inst.exports;
+    this.imports = { env: { mem: this.mem, api: e => this.api(e), trap: (e, c) => this.trap(e, c), ...math }, cpu: this.cpu };
+    this.modules = []; this.byName = new Map(); this.inits = [];
+    this.exe = this.loadImage(file, module, meta, 'EXE');
+    this.base = this.exe.base;
     this.setupStack(cmdline);
+    for (const m of this.inits) this.call(m.meta.entry, [m.base, 1, 0]);      // DllMain(DLL_PROCESS_ATTACH)
+    this.inits = [];
   }
   get u8() { return new Uint8Array(this.mem.buffer); }
   get dv() { return new DataView(this.mem.buffer); }
@@ -56,14 +66,12 @@ class Process {
     const b = window.W95FS.encode(s), n = max === undefined ? b.length : Math.min(b.length, max - 1);
     this.u8.set(b.subarray(0, n), p); this.u8[p + n] = 0; return n;
   }
-  reg(n, v) { if (v === undefined) return this.x[n].value >>> 0; this.x[n].value = v | 0; }
+  reg(n, v) { if (v === undefined) return this.cpu[n].value >>> 0; this.cpu[n].value = v | 0; }
 
-  // ---- loading
-  load() {
-    const f = this.file, dv = new DataView(f.buffer, f.byteOffset, f.byteLength), u8 = this.u8;
-    const p = dv.getUint32(0x3c, true), opt = p + 24;
-    const base = dv.getUint32(opt + 28, true); this.base = base;
-    if (base !== this.meta.base) throw new GuestError('image base mismatch');
+  // ---- loading: map sections, relocate, bind imports, instantiate the recompiled module
+  loadImage(f, module, meta, name) {
+    const dv = new DataView(f.buffer, f.byteOffset, f.byteLength), u8 = this.u8;
+    const p = dv.getUint32(0x3c, true), opt = p + 24, pref = dv.getUint32(opt + 28, true), base = meta.base;
     u8.set(f.subarray(0, dv.getUint32(opt + 60, true)), base);
     const nsec = dv.getUint16(p + 6, true), shdr = opt + dv.getUint16(p + 20, true);
     for (let i = 0; i < nsec; i++) {
@@ -71,21 +79,46 @@ class Process {
       u8.fill(0, base + va, base + va + Math.max(vs, rs));
       u8.set(f.subarray(ro, ro + Math.min(rs, vs || rs)), base + va);
     }
-    this.rsrc = dv.getUint32(opt + 96 + 2 * 8, true);
-    const imp = dv.getUint32(opt + 96 + 8, true);
-    for (let d = base + imp; this.r32(d + 12); d += 20) {
+    const dir = k => dv.getUint32(opt + 96 + 8 * k, true);
+    if (base !== pref) {
+      const delta = (base - pref) >>> 0;
+      for (let o = base + dir(5), end = o + dv.getUint32(opt + 96 + 5 * 8 + 4, true); o < end;) {
+        const page = this.r32(o), sz = this.r32(o + 4); if (!sz) break;
+        for (let k = 8; k < sz; k += 2) { const e = this.r16(o + k); if (e >> 12 === 3) { const a = base + page + (e & 0xfff); this.w32(a, this.r32(a) + delta); } }
+        o += sz;
+      }
+    }
+    const rec = { name, base, size: dv.getUint32(opt + 56, true), meta, rsrc: dir(2), exports: new Map(), run: null };
+    this.modules.push(rec); this.byName.set(name, rec);
+    const ex = dir(0);
+    if (ex) {
+      const e = base + ex, nf = this.r32(e + 20), nn = this.r32(e + 24), fa = base + this.r32(e + 28), na = base + this.r32(e + 32), oa = base + this.r32(e + 36), obase = this.r32(e + 16);
+      for (let k = 0; k < nf; k++) { const r = this.r32(fa + 4 * k); if (r) rec.exports.set('#' + (obase + k), base + r); }
+      for (let k = 0; k < nn; k++) { const r = this.r32(fa + 4 * this.r16(oa + 2 * k)); if (r) rec.exports.set(this.readA(base + this.r32(na + 4 * k)), base + r); }
+    }
+    for (let d = base + dir(1); dir(1) && this.r32(d + 12); d += 20) {
       const dll = this.readA(base + this.r32(d + 12)).toUpperCase().replace(/\.DLL$/, '');
       const iat = base + this.r32(d + 16); let lut = base + (this.r32(d) || this.r32(d + 16));
+      const native = this.loadDll(dll);
       for (let k = 0; ; k++, lut += 4) {
         const v = this.r32(lut); if (!v) break;
         const nm = v & 0x80000000 ? '#' + (v & 0xffff) : this.readA(base + v + 2);
-        this.w32(iat + 4 * k, this.thunkFor(dll, nm));
+        const addr = native && native.exports.get(nm);
+        this.w32(iat + 4 * k, addr || this.thunkFor(dll, nm));
       }
     }
-    const look = new Uint32Array(this.mem.buffer, LAYOUT.LOOKUP, (this.meta.textHi - this.meta.textLo));
-    this.meta.blocks.forEach((a, i) => { look[a - this.meta.textLo] = i + 1; });
-    this.cmdPtr = 0;
+    rec.run = new WebAssembly.Instance(module, this.imports).exports.run;
+    const look = new Uint32Array(this.mem.buffer, meta.lookup, meta.textHi - meta.textLo);
+    meta.blocks.forEach((a, i) => { look[a - meta.textLo] = i + 1; });
+    if (name !== 'EXE' && meta.entry) this.inits.push(rec);
+    return rec;
   }
+  loadDll(name) {
+    if (this.byName.has(name)) return this.byName.get(name);
+    const d = this.dlls.get(name); if (!d) return null;
+    return this.loadImage(d.file, d.module, d.meta, name);
+  }
+  moduleFor(h) { return this.modules.find(m => m.base === h) || this.exe; }
   thunkFor(dll, nm) {
     const key = dll + '!' + nm;
     if (this.thunkByName.has(key)) return this.thunkByName.get(key);
@@ -97,20 +130,32 @@ class Process {
   setupStack(cmdline) {
     const t = LAYOUT.TIB;
     this.w32(t, 0xffffffff); this.w32(t + 4, LAYOUT.STACK_TOP); this.w32(t + 8, LAYOUT.STACK_LO); this.w32(t + 0x18, t);
-    this.x.fs.value = t;
+    this.cpu.fs.value = t;
     this.cmdPtr = LAYOUT.SCRATCH; this.writeA(this.cmdPtr, cmdline);
     this.reg('esp', LAYOUT.STACK_TOP);
     this.push(LAYOUT.SENTINEL);
-    this.resumeEip = this.meta.entry;
+    this.resumeEip = this.exe.meta.entry;
   }
   push(v) { const sp = this.reg('esp') - 4; this.reg('esp', sp); this.w32(sp, v); }
 
   // ---- execution
+  /** Dispatch across modules until the sentinel (0), a yield (1) or a fault (2). */
+  runAt(eip) {
+    for (;;) {
+      eip >>>= 0;
+      if (eip === LAYOUT.SENTINEL) return 0;
+      const m = eip >= LAYOUT.THUNK ? this.modules[0] : this.modules.find(x => eip >= x.meta.textLo && eip < x.meta.textHi);
+      if (!m) { this.trapped = this.trapped || `jump to unmapped address ${eip.toString(16)}`; return 2; }
+      const r = m.run(eip);
+      if (r !== 3) return r;
+      eip = this.reg('eip');
+    }
+  }
   /** Run until the guest blocks for messages or exits. Returns false once the process has exited. */
   slice() {
     if (this.exitCode !== null || this.trapped) return false;
     this.depth = 0; this.waiting = false; this.lastYield = this.host.now();
-    const r = this.x.run(this.resumeEip);
+    const r = this.runAt(this.resumeEip);
     if (r === 1) { this.resumeEip = this.reg('eip'); return true; }
     if (r === 2 || this.trapped) { this.fail(this.trapped || `bad address ${this.reg('eip').toString(16)}`); return false; }
     if (this.exitCode === null) this.exitCode = this.reg('eax');
@@ -123,11 +168,11 @@ class Process {
     for (let i = args.length - 1; i >= 0; i--) this.push(args[i]);
     this.push(LAYOUT.SENTINEL);
     this.depth++;
-    const r = this.x.run(addr);
+    const r = this.runAt(addr);
     this.depth--;
     if (r !== 0) throw new GuestError(this.trapped || 'guest callback did not return');
     const ret = this.reg('eax');
-    this.reg('esp', save.esp); this.x.eip.value = save.eip;
+    this.reg('esp', save.esp); this.cpu.eip.value = save.eip;
     return ret;
   }
   fail(why) {
@@ -184,9 +229,9 @@ class Process {
   obj(h) { return this.handles.get(h) || STOCK.get(h) || null; }
 
   // ---- resources
-  findResource(type, id) {
-    if (!this.rsrc) return null;
-    const root = this.base + this.rsrc;
+  findResource(type, id, mod = this.exe) {
+    if (!mod.rsrc) return null;
+    const root = mod.base + mod.rsrc;
     const find = (dir, key) => {
       const nn = this.r16(dir + 12), ni = this.r16(dir + 14);
       for (let i = 0; i < nn + ni; i++) {
@@ -202,11 +247,11 @@ class Process {
     o = find(root + (o & 0x7fffffff), id); if (o === null || !(o & 0x80000000)) return null;
     o = find(root + (o & 0x7fffffff)); if (o === null) return null;
     const de = root + (o & 0x7fffffff);
-    return { addr: this.base + this.r32(de), size: this.r32(de + 4) };
+    return { addr: mod.base + this.r32(de), size: this.r32(de + 4) };
   }
   resName(p) { return p >>> 16 ? this.readA(p) : p; }
-  loadString(id) {
-    const r = this.findResource(6, (id >> 4) + 1); if (!r) return null;
+  loadString(id, mod = this.exe) {
+    const r = this.findResource(6, (id >> 4) + 1, mod); if (!r) return null;
     let a = r.addr;
     for (let i = 0; i < (id & 15); i++) a += 2 + 2 * this.r16(a);
     const n = this.r16(a); let s = '';
@@ -385,7 +430,10 @@ const TRUE = 1, FALSE = 0;
 // KERNEL32
 def('KERNEL32', 'GetCommandLineA', 0, function () { return this.cmdPtr; });
 def('KERNEL32', 'GetStartupInfoA', 1, function (p) { this.u8.fill(0, p, p + 68); this.w32(p, 68); });
-def('KERNEL32', 'GetModuleHandleA', 1, function (name) { return name ? 0 : this.base; });
+def('KERNEL32', 'GetModuleHandleA', 1, function (name) {
+  if (!name) return this.exe.base;
+  const m = this.byName.get((this.readA(name) || '').toUpperCase().replace(/\.DLL$/, '')); return m ? m.base : 0;
+});
 def('KERNEL32', 'GetModuleFileNameA', 3, function (h, buf, n) { return this.writeA(buf, this.host.path || 'C:\\WINDOWS\\SCRNSAVE.SCR', n); });
 def('KERNEL32', 'ExitProcess', 1, function (code) { this.exitCode = code; this.host.exited(code); return 0; });
 def('KERNEL32', 'TerminateProcess', 2, function (h, code) { this.exitCode = code; this.host.exited(code); return 1; });
@@ -394,11 +442,18 @@ def('KERNEL32', 'GetTickCount', 0, function () { return (this.host.now() - this.
 def('KERNEL32', 'Sleep', 1, function () { return 0; });
 def('KERNEL32', 'GetVersion', 0, () => 0xc0000004);
 def('KERNEL32', 'GetVersionExA', 1, function (p) { this.w32(p + 4, 4); this.w32(p + 8, 0); this.w32(p + 12, 950); this.w32(p + 16, 1); this.writeA(p + 20, ' B'); return 1; });
-def('KERNEL32', 'LoadLibraryA', 1, function (n) { return 0x10000000 | (this.newHandle({ kind: 'module', name: (this.readA(n) || '').toUpperCase().replace(/\.DLL$/, '') }) & 0xffff); });
+def('KERNEL32', 'LoadLibraryA', 1, function (n) {
+  const name = (this.readA(n) || '').toUpperCase().replace(/^.*\\/, '').replace(/\.DLL$/, '');
+  const native = this.loadDll(name);
+  if (native) { const pending = this.inits; this.inits = []; for (const m of pending) this.call(m.meta.entry, [m.base, 1, 0]); return native.base; }
+  return 0x10000000 | (this.newHandle({ kind: 'module', name }) & 0xffff);
+});
 def('KERNEL32', 'FreeLibrary', 1, () => 1);
 def('KERNEL32', 'GetProcAddress', 2, function (h, name) {
-  const m = this.obj(0x0000ffff & h) || { name: 'KERNEL32' };
   const nm = name >>> 16 ? this.readA(name) : '#' + name;
+  const native = this.modules.find(x => x.base === h);
+  if (native) return native.exports.get(nm) || 0;
+  const m = this.obj(0x0000ffff & h) || { name: 'KERNEL32' };
   return API[m.name] && API[m.name][nm] ? this.thunkFor(m.name, nm) : 0;
 });
 def('KERNEL32', 'RtlUnwind', 4, () => 0);
@@ -624,7 +679,7 @@ def('USER32', 'GetFocus', 0, function () { for (const h of this.windows.keys()) 
 def('USER32', 'SetFocus', 1, () => 0);
 def('USER32', 'IsWindow', 1, function (h) { return this.windows.has(h) || h === this.host.previewParent ? 1 : 0; });
 def('USER32', 'GetParent', 1, function (h) { const w = this.windows.get(h); return w ? w.parent : 0; });
-def('USER32', 'LoadStringA', 4, function (inst, id, buf, n) { const s = this.loadString(id); if (s === null) { if (n) this.u8[buf] = 0; return 0; } return this.writeA(buf, s, n); });
+def('USER32', 'LoadStringA', 4, function (inst, id, buf, n) { const s = this.loadString(id, this.moduleFor(inst)); if (s === null) { if (n) this.u8[buf] = 0; return 0; } return this.writeA(buf, s, n); });
 def('USER32', 'CharNextA', 1, function (p) { return this.u8[p] ? p + 1 : p; });
 def('USER32', 'CharUpperA', 1, function (p) { if (p >>> 16) { this.writeA(p, this.readA(p).toUpperCase()); return p; } return String.fromCharCode(p).toUpperCase().charCodeAt(0); });
 def('USER32', 'wsprintfA', -1, function (buf, fmt) { return this.writeA(buf, wsprintf(this, this.readA(fmt), this.reg('esp') + 12)); });
