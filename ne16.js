@@ -811,7 +811,7 @@ P.localReAlloc = function (hl, size, flags, sel) {
 };
 
 // ---------------------------------------------------------------- Local32 heaps (Win95 KERNEL.208..214)
-const HTABLE = 0x10000, HPAGE = 0x1000, L32HDR = 0x40;
+const HTABLE = 0x10000, HPAGE = 0x1000, L32HDR = 0x80;   // handles start past the 80h-byte LOCAL32HEADER
 P.l32 = function (heap) { const h = this.l32heaps && this.l32heaps.get(u32(heap)); if (!h) throw new GuestError(`bad Local32 heap ${u32(heap).toString(16)}`); return h; };
 P.local32Init = function (segment, tableSize, heapSize, flags) {
   let segSize = 0;
