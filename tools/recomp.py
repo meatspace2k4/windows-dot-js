@@ -1238,7 +1238,11 @@ class NE:
                 o = off
                 while True:
                     lin = sg['base'] + o; cur = int.from_bytes(self.image[lin - self.base: lin - self.base + 4], 'little')
-                    if selref is not None: self.selrefs.append((lin, selref))
+                    if selref is not None:
+                        self.selrefs.append((lin, selref))
+                        # {offset, selector} far pointers kept in tables: the word in front of the selector fixup
+                        pw = int.from_bytes(self.image[lin - self.base - 2: lin - self.base], 'little')
+                        if o >= 2 and 0 < pw < selref['len']: targets.append(selref['base'] + pw)
                     nxt = cur & 0xffff
                     if atype == 0: put(lin, 1, (cur & 0xff) + (toff if additive else 0) if additive else toff)
                     elif atype == 2: put(lin, 2, ((cur & 0xffff) + tsel) if additive else tsel)
