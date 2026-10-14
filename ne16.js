@@ -1480,6 +1480,12 @@ def16('KERNEL', 56, '', 'jmp', function () {
 });
 // KRNL386 seg1:5CD0 (#490): exchanges a KERNEL word (its data at 121Ah) with the argument, returning the old value
 def16('KERNEL', 490, 'w', 'w', function (v) { const o = this.k490 || 0; this.k490 = v; return o; });
+// ThunkConnect16 (#651): a thunk-compiler DLL's 16-bit half announcing itself (SHELL.DLL). Its 32-bit half connected
+// already or connects late, so there is nothing to record here.
+def16('KERNEL', 651, 'sswlxsw', 'w', () => 1);
+def16('KERNEL', 631, '', 'jmp', function () { throw new GuestError('C16ThkSL01: a 16-to-32 thunk-compiler call (not connected here)'); });
+def16('KERNEL', 27, 'wpw', 'w', function (h, buf, n) { const m = this.neByHandle(h); return m ? W(this, buf, m.name, n) : 0; });   // GetModuleName
+def16('KERNEL', 219, 'w', 'w', () => 0);                                                                                       // PatchCodeHandle: nothing to patch
 // KRNL386 seg1:7A28 (#365): adds `delta` (+1 or -1) to the lock count of the global block a selector belongs to; the
 // callback relays lock the caller's stack segment while 32-bit code holds pointers into it
 def16('KERNEL', 365, 'wi', 'v', function (sel, delta) {
