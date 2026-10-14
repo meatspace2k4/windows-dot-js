@@ -948,7 +948,7 @@ function bgMenu(view, desktop) {
   out.push({ label: 'Arrange &Icons', sub: [{ label: 'by &Name', fn: () => view.arrange() }, { label: 'by &Type', fn: () => view.arrange() }, { label: 'by Si&ze', fn: () => view.arrange() }, { label: 'by &Date', fn: () => view.arrange() }] },
     { label: 'Line &up Icons', fn: () => view.lineUp() }, { sep: true },
     { label: '&Paste', disabled: ro || !clip, fn: () => pasteInto(dir) }, { label: 'Paste &Shortcut', disabled: ro || !clip, fn: () => pasteShortcut(dir) }, { sep: true },
-    newMenu(view), { sep: true }, { label: 'P&roperties', disabled: !dir, fn: () => dir && properties(fsItem(fs.stat(dir))) });
+    newMenu(view), { sep: true }, { label: 'P&roperties', disabled: !desktop && !dir, fn: () => desktop ? displayProperties() : dir && properties(fsItem(fs.stat(dir))) });
   return out;
 }
 // Keyboard commands shared by folder windows and the desktop.
