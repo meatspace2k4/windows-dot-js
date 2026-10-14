@@ -27,17 +27,18 @@ const vec = items => [...uleb(items.length), ...items.flat()];
 const OP = { eqz: 0x45, eq: 0x46, ne: 0x47, lt_s: 0x48, lt_u: 0x49, gt_s: 0x4a, gt_u: 0x4b, le_s: 0x4c, le_u: 0x4d, ge_s: 0x4e, ge_u: 0x4f,
   clz: 0x67, popcnt: 0x69, add: 0x6a, sub: 0x6b, mul: 0x6c, div_s: 0x6d, div_u: 0x6e, rem_s: 0x6f, rem_u: 0x70, and: 0x71, or: 0x72, xor: 0x73,
   shl: 0x74, shr_s: 0x75, shr_u: 0x76, rotl: 0x77, rotr: 0x78 };
-const OP64 = { eqz: 0x50, ne: 0x52, lt_s: 0x53, add: 0x7c, sub: 0x7d, mul: 0x7e, div_s: 0x7f, div_u: 0x80, rem_s: 0x81, rem_u: 0x82, and: 0x83, or: 0x84, shl: 0x86, shr_s: 0x87, shr_u: 0x88 };
+const OP64 = { eqz: 0x50, ne: 0x52, lt_s: 0x53, add: 0x7c, sub: 0x7d, mul: 0x7e, div_s: 0x7f, div_u: 0x80, rem_s: 0x81, rem_u: 0x82, and: 0x83, or: 0x84, xor: 0x85, shl: 0x86, shr_s: 0x87, shr_u: 0x88 };
 const WRAP = 0xa7, EXT_S = 0xac, EXT_U = 0xad;
 
 class Fn {
-  constructor() { this.b = []; this.nloc = 0; }
+  constructor() { this.b = []; this.nloc = 0; this.n64 = 0; this.l64 = []; }
   e(...x) { for (const v of x) Array.isArray(v) ? this.b.push(...v) : this.b.push(v); return this; }
   c(v) { return this.e(0x41, sleb(v)); }
   c64(v) { return this.e(0x42, sleb64(v)); }
   op(n) { return this.e(OP[n]); }
   op64(n) { return this.e(OP64[n]); }
-  loc() { return this.nloc++; }
+  loc() { if (this.n64) throw new Error('i32 locals come first'); return this.nloc++; }
+  loc64() { this.l64.push(this.nloc + this.n64); return this.nloc + this.n64++; }
   lg(i) { return this.e(0x20, uleb(i)); }
   ls(i) { return this.e(0x21, uleb(i)); }
   lt(i) { return this.e(0x22, uleb(i)); }
@@ -48,7 +49,10 @@ class Fn {
   if_() { return this.e(0x04, 0x40); }
   else_() { return this.e(0x05); }
   end() { return this.e(0x0b); }
-  body() { const locals = this.nloc ? [1, ...uleb(this.nloc), I32] : [0]; const b = [...locals, ...this.b, 0x0b]; return [...uleb(b.length), ...b]; }
+  body() {
+    const groups = []; if (this.nloc) groups.push([...uleb(this.nloc), I32]); if (this.n64) groups.push([...uleb(this.n64), I64]);
+    const b = [...uleb(groups.length), ...groups.flat(), ...this.b, 0x0b]; return [...uleb(b.length), ...b];
+  }
 }
 
 // ---------------------------------------------------------------- decoding
@@ -130,43 +134,22 @@ function translate(p, lin, csb, d32) {
       f.lg(R).c(bits(sz) - 1).op('shr_u').c(1).op('and').gs('sf');
       f.lg(R).c(0xff).op('and').op('popcnt').c(1).op('and').op('eqz').gs('pf');
     };
-    // arithmetic on locals A..: op in 0..7 (add or adc sbb and sub xor cmp), operands in locals B (dst) C (src); result R
-    const alu = (op, sz) => {
-      const m = MASK[sz];
-      if (op === 1 || op === 4 || op === 6) {   // or and xor
+    // ALU op 0..7 (add or adc sbb and sub xor cmp) on locals B (destination) and C (source): result in R, flags set.
+    // Every new flag is computed from the old carry before any flag is written.
+    const alu2 = (op, sz) => {
+      const m = MASK[sz], w = bits(sz);
+      if (op === 1 || op === 4 || op === 6) {
         f.lg(B).lg(C).op(op === 1 ? 'or' : op === 4 ? 'and' : 'xor').ls(R); f.c(0).gs('cf'); f.c(0).gs('of'); szp(sz); return;
       }
-      const carry = op === 2 || op === 3;
-      const sub = op === 3 || op === 5 || op === 7;
-      // wide result for the carry/borrow
-      f.lg(B).c(m).op('and').e(EXT_U).lg(C).c(m).op('and').e(EXT_U);
-      if (carry) { f.e(sub ? OP64.add : OP64.add); f.gg('cf').e(EXT_U).op64('add'); }
-      if (!sub) { if (!carry) f.op64('add'); }
-      else { if (!carry) { f.op64('sub'); } else { /* stack: B, (C+cf) */ f.ls(X); f.op64('sub'); } }
-      if (sub && carry) { /* handled above via X misuse; recompute plainly */ }
-      f.e(WRAP);   // low 32 of the wide result is the result too
-      f.ls(R);
-      // cf: for add, the bit past the operand; for sub, a borrow
-      if (!sub) {
-        f.lg(B).c(m).op('and').e(EXT_U).lg(C).c(m).op('and').e(EXT_U).op64('add'); if (carry) f.gg('cf').e(EXT_U).op64('add');
-        f.c64(bits(sz)).op64('shr_u').e(WRAP).c(1).op('and').gs('cf');
-        f.lg(B).lg(R).op('xor').lg(C).lg(R).op('xor').op('and');
-      } else {
-        f.lg(B).c(m).op('and').e(EXT_U).lg(C).c(m).op('and').e(EXT_U); if (carry) { f.gg('cf').e(EXT_U).op64('add'); }
-        f.op64('lt_s');   // unsigned operands fit in 33 bits, so a signed compare is an unsigned one
-        f.gs('cf');
-        f.lg(B).lg(C).op('xor').lg(B).lg(R).op('xor').op('and');
-      }
-      f.c(bits(sz) - 1).op('shr_u').c(1).op('and').gs('of');
-      szp(sz);
-    };
-    // the carry-in versions above build the wide result on the stack in two steps; rebuild cleanly for sbb
-    const alu2 = (op, sz) => {
-      if (op !== 3) return alu(op, sz);
-      const m = MASK[sz];   // sbb: R = B - C - cf
-      f.lg(B).lg(C).op('sub').gg('cf').op('sub').ls(R);
-      f.lg(B).c(m).op('and').e(EXT_U).lg(C).c(m).op('and').e(EXT_U).gg('cf').e(EXT_U).op64('add').op64('lt_s').gs('cf');
-      f.lg(B).lg(C).op('xor').lg(B).lg(R).op('xor').op('and').c(bits(sz) - 1).op('shr_u').c(1).op('and').gs('of');
+      const carry = op === 2 || op === 3, sub = op === 3 || op === 5 || op === 7;
+      f.lg(B).lg(C).op(sub ? 'sub' : 'add'); if (carry) f.gg('cf').op(sub ? 'sub' : 'add'); f.ls(R);
+      // the carry or borrow, from the operands widened to 64 bits
+      f.lg(B).c(m).op('and').e(EXT_U).lg(C).c(m).op('and').e(EXT_U); if (carry) f.gg('cf').e(EXT_U).op64('add');
+      if (sub) f.op64('lt_s'); else f.op64('add').c64(w).op64('shr_u').e(WRAP).c(1).op('and');
+      f.ls(X);
+      if (sub) f.lg(B).lg(C).op('xor').lg(B).lg(R).op('xor').op('and'); else f.lg(B).lg(R).op('xor').lg(C).lg(R).op('xor').op('and');
+      f.c(w - 1).op('shr_u').c(1).op('and').gs('of');
+      f.lg(X).gs('cf');
       szp(sz);
     };
     const cond = c => {   // push 0/1
@@ -192,8 +175,6 @@ function translate(p, lin, csb, d32) {
       f.lg(loc).c(0xfff8).op('and').c(LDT).op('add').ld(4).gs(base);
     };
     const offOf = ln => u32(ln - csb);   // a linear address within this code segment, as an offset
-    const ret = (lin2) => done(lin2);
-    const endWithStack = () => { f.end(); };
     // ---- the instruction
     if (b < 0x40 && (b & 7) < 6) {   // ALU forms
       const op = b >> 3, form = b & 7, sz = form & 1 ? osz : 1;
@@ -342,13 +323,17 @@ function translate(p, lin, csb, d32) {
       if (b2 === 0xa0 || b2 === 0xa8) { f.gg(b2 === 0xa0 ? 'fsel' : 'gsel').ls(T); push(T, osz); continue; }
       if (b2 === 0xa1 || b2 === 0xa9) { pop(T, osz); loadSeg(b2 === 0xa1 ? 4 : 5, T); continue; }
       if (b2 === 0xb2 || b2 === 0xb4 || b2 === 0xb5) { const o = modrm(); f.lg(A).ld(osz).ls(T); f.lg(A).c(osz).op('add').ld(2).ls(B); wrReg(o.reg, osz, T); loadSeg(b2 === 0xb2 ? 2 : b2 === 0xb4 ? 4 : 5, B); continue; }
-      if (b2 === 0xa3 || b2 === 0xab || b2 === 0xb3 || b2 === 0xbb || b2 === 0xba) {   // bt / bts / btr / btc (register forms and imm)
-        const o = modrm(); if (!o.isReg && b2 !== 0xba) throw new Unsupported('bt with a memory operand and register index');
-        const kind = b2 === 0xba ? o.reg - 4 : [0, 1, 2, 3][[0xa3, 0xab, 0xb3, 0xbb].indexOf(b2)];
+      if (b2 === 0xa3 || b2 === 0xab || b2 === 0xb3 || b2 === 0xbb || b2 === 0xba) {   // bt / bts / btr / btc
+        const o = modrm(); if (!o.isReg && b2 !== 0xba) throw new Unsupported('bt with a memory operand and a register index');
+        const kind = b2 === 0xba ? o.reg - 4 : [0xa3, 0xab, 0xb3, 0xbb].indexOf(b2);   // 0 bt, 1 bts, 2 btr, 3 btc
         if (b2 === 0xba) f.c(fetch()); else rdReg(o.reg, osz);
         f.c(osz * 8 - 1).op('and').ls(C); rd(o, osz); f.ls(B);
         f.lg(B).lg(C).op('shr_u').c(1).op('and').gs('cf');
-        if (kind) { f.lg(B).c(1).lg(C).op('shl'); f.op(kind === 1 ? 'or' : kind === 2 ? 'and' : 'xor'); if (kind === 2) { f.ls(T); f.lg(B).c(1).lg(C).op('shl').c(-1).op('xor').op('and').ls(T); } else f.ls(T); wr(o, osz, T); }
+        if (kind) {
+          f.lg(B).c(1).lg(C).op('shl');
+          if (kind === 2) f.c(-1).op('xor').op('and'); else f.op(kind === 1 ? 'or' : 'xor');
+          f.ls(T); wr(o, osz, T);
+        }
         continue;
       }
       throw new Unsupported(`0f ${b2.toString(16)}`);
@@ -384,11 +369,9 @@ function shift(f, op, sz, o, rd, wr, L, szp) {
   } else if (op === 0 || op === 1) {   // rol / ror
     if (sz === 4) { f.lg(B).lg(C).op(op === 0 ? 'rotl' : 'rotr').ls(R); }
     else {
-      const T = C;   // count mod width
       f.lg(B).c(m).op('and').ls(B);
       f.lg(C).c(w).op('rem_u').ls(R);   // reuse R as k
       f.lg(B).lg(R).op(op === 0 ? 'shl' : 'shr_u').lg(B).c(w).lg(R).op('sub').op(op === 0 ? 'shr_u' : 'shl').op('or').c(m).op('and').ls(R);
-      void T;
     }
     if (op === 0) f.lg(R).c(1).op('and').gs('cf'); else f.lg(R).c(w - 1).op('shr_u').c(1).op('and').gs('cf');
   } else throw new Unsupported(op === 2 ? 'rcl' : 'rcr');
@@ -401,15 +384,20 @@ function muldiv(f, op, sz, o, rd, L, rdReg, wrReg) {
   const { T, B, C, R, X } = L;
   if (sz === 4) {
     rd(o, 4); f.ls(C);
-    if (op === 4 || op === 5) {
+    const W = f.loc64();
+    if (op === 4 || op === 5) {   // edx:eax = eax * src
       const ext = op === 4 ? EXT_U : EXT_S;
-      f.gg('eax').e(ext).lg(C).e(ext).op64('mul');
-      // the product's high and low halves
-      const P64 = f.loc(); void P64;
-      f.e(0x21, uleb(X));   // misuse guard: not used
-      throw new Unsupported('32-bit mul in run-time code');
+      f.gg('eax').e(ext).lg(C).e(ext).op64('mul').e(0x21, uleb(W));
+      f.e(0x20, uleb(W)).e(WRAP).gs('eax'); f.e(0x20, uleb(W)).c64(32).op64('shr_u').e(WRAP).gs('edx');
+      if (op === 4) f.gg('edx').c(0).op('ne'); else f.gg('eax').c(31).op('shr_s').gg('edx').op('ne');
+      f.gs('cf'); f.gg('cf').gs('of'); return;
     }
-    throw new Unsupported('32-bit div in run-time code');
+    // eax, edx = edx:eax / src, edx:eax % src
+    f.gg('edx').e(EXT_U).c64(32).op64('shl').gg('eax').e(EXT_U).op64('or').e(0x21, uleb(W));
+    const ext = op === 6 ? EXT_U : EXT_S;
+    f.e(0x20, uleb(W)).lg(C).e(ext).op64(op === 6 ? 'div_u' : 'div_s').e(WRAP).ls(T);
+    f.e(0x20, uleb(W)).lg(C).e(ext).op64(op === 6 ? 'rem_u' : 'rem_s').e(WRAP).gs('edx');
+    f.lg(T).gs('eax'); return;
   }
   if (sz === 2) {
     rd(o, 2); f.ls(C);
