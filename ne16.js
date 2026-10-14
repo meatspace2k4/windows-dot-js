@@ -1271,6 +1271,12 @@ def16('THUNKLET', 1, '', 'jmp', function () {
   this.seg('cs', relay >>> 16);
   return u32(this.selBase(relay >>> 16) + (relay & 0xffff));
 });
+// KRNL386 seg1:7A28 (#365): adds `delta` (+1 or -1) to the lock count of the global block a selector belongs to; the
+// callback relays lock the caller's stack segment while 32-bit code holds pointers into it
+def16('KERNEL', 365, 'wi', 'v', function (sel, delta) {
+  const b = this.gblock(sel | 1); if (!b) return;
+  b.lock = Math.max(0, Math.min(0xff, (b.lock || 0) + delta));
+});
 // IsSLThunklet: whether a far pointer addresses a 16-to-32 thunklet (push dword, push dword, jmp far), as KRNL386 checks
 def16('KERNEL', 612, 'x', 'w', function (sp) {
   if (!(sp >>> 16) || !this.selValid(sp >>> 16)) return 0;
