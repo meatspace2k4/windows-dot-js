@@ -419,6 +419,7 @@ const INTS = {
     this.trapped = `unhandled int 21h ax=${this.ax().toString(16)}`; return LAYOUT.SENTINEL;
   },
   0x11() { this.ax(0x0023); },
+  0x41() {},   // the kernel debugger's interface: no debugger is present, so every notification goes unheard
   0x16() { biosKbd(this); },
   0x33() {   // the DOS mouse driver interface, as far as MOUSE.DRV asks it: 24h version, type (PS/2) and IRQ
     const ax = this.ax();
