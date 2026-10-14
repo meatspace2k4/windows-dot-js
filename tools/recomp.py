@@ -322,8 +322,9 @@ def set_szp(f, r, sz, live):
     if live & PF: f.lg(r).c(0xff).e(OPS['and_']).e(OPS['popcnt']).c(1).e(OPS['and_']).c(1).e(OPS['xor']).gs('pf')
 
 def push_val(f, val):
-    f.gg('esp').c(4).e(OPS['sub']).gs('esp')
+    # the value is taken before ESP moves, so PUSH ESP stores the old ESP
     t = f.i(); val(); f.ls(t)
+    f.gg('esp').c(4).e(OPS['sub']).gs('esp')
     f.gg('esp').lg(t).mem(0x36)
 def pop_to(f, t):
     f.gg('esp').mem(0x28).ls(t); f.gg('esp').c(4).e(OPS['add']).gs('esp')
