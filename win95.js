@@ -2545,6 +2545,27 @@ class NativeApp {
     try { this.proc.keyEvent16(vk, sc & 0xff, up, sc > 0xff); } catch (err) { console.error(err); }
     this.kick();
   }
+  // text that arrives as characters (paste, IME, synthetic typing): each as the keys of a US keyboard that type it
+  typeText(str) {
+    const SYM = { ' ': [32, 0], '\n': [13, 0], '\t': [9, 0], ',': [188, 0], '.': [190, 0], '/': [191, 0], ';': [186, 0], "'": [222, 0], '[': [219, 0], ']': [221, 0],
+      '\\': [220, 0], '-': [189, 0], '=': [187, 0], '`': [192, 0], '<': [188, 1], '>': [190, 1], '?': [191, 1], ':': [186, 1], '"': [222, 1], '{': [219, 1],
+      '}': [221, 1], '|': [220, 1], '_': [189, 1], '+': [187, 1], '~': [192, 1], ')': [48, 1], '!': [49, 1], '@': [50, 1], '#': [51, 1], '$': [52, 1],
+      '%': [53, 1], '^': [54, 1], '&': [55, 1], '*': [56, 1], '(': [57, 1] };
+    const code = { 13: 'Enter', 32: 'Space', 9: 'Tab', 188: 'Comma', 190: 'Period', 191: 'Slash', 186: 'Semicolon', 222: 'Quote', 219: 'BracketLeft',
+      221: 'BracketRight', 220: 'Backslash', 189: 'Minus', 187: 'Equal', 192: 'Backquote' };
+    for (const ch of str) {
+      let vk, shift;
+      if (/[a-z]/.test(ch)) [vk, shift] = [ch.toUpperCase().charCodeAt(0), 0];
+      else if (/[A-Z]/.test(ch)) [vk, shift] = [ch.charCodeAt(0), 1];
+      else if (/[0-9]/.test(ch)) [vk, shift] = [ch.charCodeAt(0), 0];
+      else if (SYM[ch]) [vk, shift] = SYM[ch];
+      else continue;
+      const c = code[vk] || (vk >= 65 && vk <= 90 ? 'Key' + String.fromCharCode(vk) : vk >= 48 && vk <= 57 ? 'Digit' + String.fromCharCode(vk) : '');
+      if (shift) this.key({ keyCode: 16, code: 'ShiftLeft' }, false);
+      this.key({ keyCode: vk, code: c }, false); this.key({ keyCode: vk, code: c }, true);
+      if (shift) this.key({ keyCode: 16, code: 'ShiftLeft' }, true);
+    }
+  }
   focus(w) {
     try { if (w.min) this.proc.user16(42, [['w', w.hwnd], ['w', 9]]); else this.proc.user16(59, [['w', w.hwnd]]); } catch (e) { console.error(e); }   // ShowWindow SW_RESTORE, SetActiveWindow
     this.kick();
@@ -3081,13 +3102,14 @@ cv.addEventListener('contextmenu', e => e.preventDefault());
 // keydown handles everything else.
 kbd.addEventListener('input', () => {
   const s = kbd.value; kbd.value = '';
+  { const a = nativeFocus(); if (a) { lastInput = performance.now(); a.typeText(s.replace(/\r/g, '')); return; } }
   for (const ch of s.replace(/\r/g, '')) handleKey({ key: ch === '\n' ? 'Enter' : ch, shiftKey: false, ctrlKey: false, metaKey: false, altKey: false, preventDefault() {} });
 });
 // the keys go to USER while one of a native program's windows is active and the shell has nothing open over it
 const nativeFocus = () => (!menus.length && !ren && !modal() && !fullSaver && screen === 'desktop' && active && active.native && active.app.alive ? active.app : null);
 window.addEventListener('keyup', e => { const a = nativeFocus(); if (a) { e.preventDefault(); a.key(e, true); } });
 window.addEventListener('keydown', e => {
-  { const a = nativeFocus(); if (a) { lastInput = performance.now(); e.preventDefault(); a.key(e, false); return; } }
+  { const a = nativeFocus(); if (a) { lastInput = performance.now(); e.preventDefault(); if (!e.keyCode && e.key.length === 1) a.typeText(e.key); else a.key(e, false); return; } }
   // Option changes the character a Mac key types; Alt+letter means the letter on the key
   if (e.altKey && !e.ctrlKey && !e.metaKey && /^(Key[A-Z]|Digit\d)$/.test(e.code)) {
     e.preventDefault();
@@ -3351,5 +3373,5 @@ const script = {
   },
 };
 
-window.win95 = { ...script, fs, render, SaverRun, displayProperties, startFullSaver, get fullSaver() { return fullSaver; }, properties, driveProps, openFolder, openPath, shellOpen, notepad, msgBox, runDialog, shutDownDialog, MyComputer, get state() { return { menus: menus.length, menuSrc, modals: modals.length, cap: !!cap, drag: !!drag, screen, active: active && active.title }; } };
+window.win95 = { ...script, get nativeApps() { return [...nativeApps]; }, fs, render, SaverRun, displayProperties, startFullSaver, get fullSaver() { return fullSaver; }, properties, driveProps, openFolder, openPath, shellOpen, notepad, msgBox, runDialog, shutDownDialog, MyComputer, get state() { return { menus: menus.length, menuSrc, modals: modals.length, cap: !!cap, drag: !!drag, screen, active: active && active.title }; } };
 })();
