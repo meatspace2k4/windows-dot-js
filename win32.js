@@ -147,7 +147,11 @@ class Process {
       eip >>>= 0;
       if (eip === LAYOUT.SENTINEL) return 0;
       const m = eip >= LAYOUT.THUNK16 ? this.modules[0] : this.modules.find(x => eip >= x.meta.textLo && eip < x.meta.textHi);
-      if (!m) { this.trapped = this.trapped || `jump to unmapped address ${eip.toString(16)}`; return 2; }
+      if (!m) {
+        const next = this.dataCode && this.dataCode(eip);
+        if (next !== undefined && next !== null) { eip = next; continue; }
+        this.trapped = this.trapped || `jump to unmapped address ${eip.toString(16)}`; return 2;
+      }
       const r = m.run(eip);
       if (r !== 3) return r;
       eip = this.reg('eip');

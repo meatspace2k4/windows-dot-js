@@ -859,16 +859,17 @@ K('#46', 5, function (thunk, thkbuf, len, dll16) {      // ThunkInitSL
 });
 K('#41', 5, function (thunk, thkbuf, len, dll16) {      // ThunkInitLSF
   this.w32(thunk + 0x35, this.thunkFor('KERNEL32', '#90')); this.w32(thunk + 0x6d, this.thunkFor('KERNEL32', '#89'));
+  (this.lsfRelays = this.lsfRelays || new Set()).add(u32(thunk));
   const td = this.thunkData16(this.readA(dll16), this.readA(thkbuf)); const a2 = this.lin(this.r32(td + 4));
   if (a2 >>> 16) this.w32(thunk, a2); return a2;
 });
 KR('#90', function () {          // QT_ThunkPrime: EAX = relay code, EDX = offset of its target table pointer, target number at [EBP-4]
-  const relay = this.reg('eax'), table = this.r32(relay + this.reg('edx'));
+  const relay = this.reg('eax'), table = this.r32(u32(relay + this.reg('edx')));
   this.reg('edx', this.r32(table + 4 * this.u8[this.reg('ebp') - 4]));
   return this.qtThunk();
 });
 KR('#89', function () {          // FT_PrologPrime: [ESP] = offset of the target table pointer, [ESP+4] = relay code (both popped)
-  const off = pop32(this), relay = pop32(this), table = this.r32(relay + off);
+  const off = pop32(this), relay = pop32(this), table = this.r32(u32(relay + off));
   this.reg('edx', this.r32(table + 4 * (this.reg('ecx') & 0xff)));
   return this.ftProlog();
 });
@@ -975,6 +976,20 @@ K('ConvertToGlobalHandle', 1, h => h);
 K('OpenEventA', 3, () => 0); K('OpenMutexA', 3, () => 0); K('ReleaseMutex', 1, () => 1); K('SetEvent', 1, () => 1);
 K('EnumResourceNamesA', 4, () => 0);
 
+/**
+ * The thunk compiler's LSF relay code sits in the 32-bit DLL's data (ThunkInitLSF layout):
+ *   +04: jmp +20 -> +24: call/pop eax; sub eax,25 (eax = +04); mov edx, <table ptr offset>; push QT_ThunkPrime; ret
+ *   +3A: jmp +20 -> +5A: call/pop edx; sub edx,25 (edx = +3A); push edx; push <table ptr offset>; push FT_PrologPrime; ret
+ * Executing it is equivalent to setting those registers and jumping to the primer.
+ */
+P.dataCode = function (eip) {
+  if (!this.lsfRelays) return null;
+  for (const r of this.lsfRelays) {
+    if (eip === u32(r + 4)) { this.reg('eax', r + 4); this.reg('edx', this.r32(r + 0x30)); return this.r32(r + 0x35); }
+    if (eip === u32(r + 0x3a)) { push32(this, r + 0x3a); push32(this, this.r32(r + 0x68)); return this.r32(r + 0x6d); }
+  }
+  return null;
+};
 P.slThunklet = function (target, rel) { return u32(target); };
 P.runPendingInits = function () { const pending = this.inits; this.inits = []; for (const m of pending) this.call(m.meta.entry, [m.base, 1, 0]); };
 
