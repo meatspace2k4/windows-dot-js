@@ -146,6 +146,7 @@ P.loadLibrary16 = function (name, native = false) {
   const b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
   if (this.ne.has(sys.meta.name.toUpperCase())) return this.ne.get(sys.meta.name.toUpperCase());
   const rec = this.loadNE(sys.meta.name.toUpperCase(), sys.fileBytes || (sys.fileBytes = b64(sys.file)), sys.mod || (sys.mod = new WebAssembly.Module(b64(sys.wasm))), sys.meta);
+  rec.fileName = sys.fileName;
   for (const imp of sys.meta.imports || []) if (imp !== 'KERNEL' && (native || !JS16.includes(imp))) this.loadLibrary16(imp, native);
   if (!this.initNE(rec)) { console.warn('[ne16]', base, 'LibEntry failed'); }
   return rec;
@@ -1192,6 +1193,37 @@ def16('KERNEL', 461, 'llll', 'l', function (n, ph, all, ms) {                   
 def16('KERNEL', 462, '', 'l', function () { return 0x51; });                                           // GetCurrentThreadId, as KERNEL32 answers
 def16('KERNEL', 463, 'lw', 'w', function (tid, hq) { const old = this.threadQueue || 0; this.threadQueue = hq; return old; });   // SetThreadQueue
 def16('KERNEL', 464, 'l', 'w', function (tid) { return this.threadQueue || 0; });                     // GetThreadQueue
+def16('KERNEL', 476, 'l', 'l', function (h) { return h; });                                            // ConvertToGlobalHandle: one process, so already global
+def16('KERNEL', 474, 'l', 'w', function (h) { return this.handles.delete(h) ? 1 : 0; });               // CloseW32Handle
+def16('KERNEL', 105, '', 'w', function () { return 0x0400; });                                         // GetExeVersion: system code expects Windows 4.0
+def16('KERNEL', 132, '', 'l', function () { return 0x0c29; });                                         // GetWinFlags: protected mode, 486, enhanced, 80x87, paging
+def16('KERNEL', 1, 'w', 'v', function (code) { throw new GuestError(`FatalExit(${code})`); });
+def16('KERNEL', 22, 'w', 'w', function (h) { const b = this.gblock(h); return b ? (b.lock & 0xff) : 0; });   // GlobalFlags: the lock count
+// one task runs here, so yielding, task events and priorities have nothing to act on
+def16('KERNEL', 29, '', 'v', function () {});                                                          // Yield
+def16('KERNEL', 117, '', 'v', function () {});                                                         // OldYield
+def16('KERNEL', 150, 'w', 'v', function () {});                                                        // DirectedYield
+def16('KERNEL', 30, 'w', 'w', function () { return 0; });                                              // WaitEvent
+def16('KERNEL', 31, 'w', 'v', function () {});                                                         // PostEvent
+def16('KERNEL', 32, 'wi', 'w', function () { return 0; });                                             // SetPriority
+def16('KERNEL', 33, 'w', 'w', function () { return 0; });                                              // LockCurrentTask
+def16('KERNEL', 49, 'wpi', 'w', function (h, buf, n) {                                                 // GetModuleFileName
+  const m = this.neByHandle(h), f = m && m.fileName ? `C:\\WINDOWS\\SYSTEM\\${m.fileName}` : m && m.path ? m.path : (this.host && this.host.path) || '';
+  return W(this, buf, f, n);
+});
+def16('KERNEL', 73, 'w', 'w', function (id) { return this.atomTable().byId.has(id) ? id : 0; });     // GetAtomHandle
+def16('KERNEL', 129, 'ssss', 'w', function (app, key, v, f) {                                         // WritePrivateProfileString
+  try { window.W95Win32.iniSet(this.fs, f, app, key === null ? null : key, v); return 1; } catch (_) { return 0; }
+});
+def16('KERNEL', 235, '', 'v', function () {});                                                         // InvalidateNlsCache: nothing cached
+def16('KERNEL', 336, 'x', 'w', function (sp) { return okPtr.call(this, sp, 1); });                     // IsBadCodePtr
+def16('KERNEL', 337, 'xw', 'w', function (sp, n) {                                                     // IsBadStringPtr
+  if (!(sp >>> 16) || !this.selValid(sp >>> 16)) return 1;
+  const a = this.lin(sp), lim = this.selLimit(sp >>> 16); for (let i = 0; i < n; i++) { if ((sp & 0xffff) + i > lim) return 1; if (!this.u8[a + i]) break; } return 0;
+});
+def16('KERNEL', 352, 'xpi', 'l', function (dsp, s, n) {                                               // lstrcatn
+  const d = this.lin(dsp), a = this.readA(d) || ''; if (n > a.length) W(this, d, a + (this.readA(s) || ''), n); return dsp;
+});
 /** 16 -> 32 transition for SL thunks: EBX + 0x16 addresses the 16-bit arguments; the target returns with CL = argument bytes */
 P.enter32from16 = function (target) {
   const ctx = { esp: this.cpu.esp.value, ebp: this.cpu.ebp.value, esi: this.cpu.esi.value, edi: this.cpu.edi.value, ebx: this.cpu.ebx.value };
