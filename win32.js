@@ -464,6 +464,13 @@ const regAttach = store => {
   for (const [path, vals] of held) REGISTRY.set(path, new Map(vals));
   return true;
 };
+// the shell's own registry reads and writes (Explorer's settings), through the same store as a program's
+const regGet = (path, name) => { const m = REGISTRY.get(path.toLowerCase()); return m ? m.get(name.toLowerCase()) : undefined; };
+const regSet = (path, name, value) => {
+  path = path.toLowerCase(); const parts = path.split('\\');
+  for (let k = 1; k <= parts.length; k++) { const q = parts.slice(0, k).join('\\'); if (!REGISTRY.has(q)) { REGISTRY.set(q, new Map()); regChanged({ op: 'key', path: q }); } }
+  REGISTRY.get(path).set(name.toLowerCase(), value); regChanged({ op: 'set', path, name: name.toLowerCase(), value });
+};
 const HKEY = { 0x80000000: 'hkcr', 0x80000001: 'hkcu', 0x80000002: 'hklm', 0x80000003: 'hku', 0x80000005: 'hkcc', 0x80000006: 'hkdd', 1: 'hkcr', 2: 'hkcu', 3: 'hklm' };
 
 // ---------------------------------------------------------------- API table: [argc, impl]; argc < 0 = cdecl varargs
@@ -1511,5 +1518,5 @@ function peString(bytes, id) {
   } catch (_) { return null; }
 }
 
-window.W95Win32 = { regAttach, Process, API, LAYOUT, WM, YIELD, iniGet, iniSet, iniRead, peString, def, dcOf, GuestError, mkCanvas, dibOut };
+window.W95Win32 = { regAttach, regGet, regSet, Process, API, LAYOUT, WM, YIELD, iniGet, iniSet, iniRead, peString, def, dcOf, GuestError, mkCanvas, dibOut };
 })();

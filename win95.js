@@ -342,7 +342,31 @@ class Win {
   }
 }
 
-const maxRect = b => ({ x: -b, y: -b, w: W + 2 * b, h: H - TB + 2 * b });
+// Taskbar options (Taskbar Properties), kept where Explorer keeps them: the flags word of StuckRects
+// (1 auto hide, 2 always on top, 4 small icons in the Start menu, 8 clock hidden)
+const tbar = { ontop: true, autohide: false, small: false, clock: true, shown: 1 };
+const STUCK = 'hkcu\\software\\microsoft\\windows\\currentversion\\explorer';
+function loadTaskbar() {
+  const v = W95Win32.regGet(STUCK, 'StuckRects'); if (!v || !v.data || v.data.length < 12) return;
+  const f = v.data[8] | v.data[9] << 8;
+  Object.assign(tbar, { autohide: !!(f & 1), ontop: !!(f & 2), small: !!(f & 4), clock: !(f & 8) }); tbar.shown = tbar.autohide ? 0 : 1;
+}
+function saveTaskbar() {
+  const d = new Uint8Array(40), f = (tbar.autohide ? 1 : 0) | (tbar.ontop ? 2 : 0) | (tbar.small ? 4 : 0) | (tbar.clock ? 0 : 8);
+  d[0] = 40; d[8] = f; W95Win32.regSet(STUCK, 'StuckRects', { type: 3, name: 'StuckRects', data: d });
+}
+// where windows may go, and where the taskbar is now (an auto-hidden one slides down to a 2-pixel edge)
+const workH = () => (tbar.autohide ? H - 2 : H - TB);
+const barTop = () => Math.round(H - 2 - (TB - 2) * (tbar.autohide ? tbar.shown : 1));
+let slide = 0;
+function slideTaskbar(show) {
+  if (!tbar.autohide) return;
+  const want = show ? 1 : 0; if (tbar.shown === want && !slide) return;
+  cancelAnimationFrame(slide); const from = tbar.shown, t0 = performance.now();
+  const step = () => { const k = Math.min(1, (performance.now() - t0) / 120); tbar.shown = from + (want - from) * k; dirty(); slide = k < 1 ? requestAnimationFrame(step) : 0; };
+  slide = requestAnimationFrame(step);
+}
+const maxRect = b => ({ x: -b, y: -b, w: W + 2 * b, h: workH() + 2 * b });
 
 function openWin(w) {
   windows.push(w); if (!w.noTask) tasks.push(w);
@@ -372,9 +396,9 @@ function toggleMax(w) {
 }
 function nextPos(w, h) {
   const k = cascadeN++ % 8;
-  return { x: clamp(24 + k * 22, 0, Math.max(0, W - w)), y: clamp(16 + k * 22, 0, Math.max(0, H - TB - h)) };
+  return { x: clamp(24 + k * 22, 0, Math.max(0, W - w)), y: clamp(16 + k * 22, 0, Math.max(0, workH() - h)) };
 }
-function centered(w, h) { return { x: Math.max(0, (W - w) >> 1), y: Math.max(0, (H - TB - h) >> 1) }; }
+function centered(w, h) { return { x: Math.max(0, (W - w) >> 1), y: Math.max(0, (workH() - h) >> 1) }; }
 
 // ---------------------------------------------------------------- menus
 function makeMenu(items, kind) {
@@ -410,7 +434,7 @@ function closeMenus(depth = 0) {
 }
 function openStart() {
   closeMenus(); menuSrc = { kind: 'start' };
-  const m = makeMenu(START, 'start'); placeMenu(m, 2, H - TB + 2 - m.h); menus = [m];
+  const m = makeMenu(START, tbar.small ? 'startsmall' : 'start'); placeMenu(m, 2, barTop() + 2 - m.h); menus = [m];
 }
 function openBar(w, i) {
   closeMenus(); const it = w.barItems()[i]; if (!it) return;
@@ -1835,7 +1859,7 @@ const desk = {
     if (this.lay === key) return;
     const keys = new Set(items.map(i => i.key));
     for (const k of [...this.pos.keys()]) if (!keys.has(k)) this.pos.delete(k);
-    const rows = Math.max(1, Math.floor((H - TB - 6) / 75));
+    const rows = Math.max(1, Math.floor((workH() - 6) / 75));
     for (const it of items) {
       if (this.pos.has(it.key)) continue;
       const used = [...this.pos.values()];
@@ -1895,7 +1919,7 @@ function deskDown(x, y, btn, dbl) {
       const g = ghost; ghost = null;
       if (deskDrop(c.it, mx, my)) return;
       const p = desk.pos.get(key);
-      if (p) { p.x = clamp(p.x + g.dx, 0, W - 32); p.y = clamp(p.y + g.dy, 0, H - TB - 48); desk.posVer++; }
+      if (p) { p.x = clamp(p.x + g.dx, 0, W - 32); p.y = clamp(p.y + g.dy, 0, workH() - 48); desk.posVer++; }
     },
   };
 }
@@ -1904,9 +1928,9 @@ function deskDown(x, y, btn, dbl) {
 function clockStr() { const d = new Date(); const h = d.getHours() % 12 || 12; return `${h}:${String(d.getMinutes()).padStart(2, '0')} ${d.getHours() < 12 ? 'AM' : 'PM'}`; }
 function timeDate() { const d = new Date(); return `${clockStr()} ${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}`; }
 function taskLayout() {
-  const y = H - TB;
+  const y = barTop();
   const start = { x: 2, y: y + 4, w: 54, h: 22 };
-  const cw = textW(clockStr()) + 14 + trayIcons.length * 18;
+  const cw = (tbar.clock ? textW(clockStr()) + 14 : trayIcons.length ? 6 : 0) + trayIcons.length * 18;
   const tray = { x: W - 2 - cw, y: y + 4, w: cw, h: 22 };
   const icons = trayIcons.map((t, i) => ({ t, x: tray.x + 4 + i * 18, y: tray.y + 3, w: 16, h: 16 }));
   const x0 = start.x + start.w + 3, avail = tray.x - 3 - x0, n = tasks.length;
@@ -1931,9 +1955,9 @@ function drawTaskbar() {
     text(ellipsis(esc(b.t.title), b.w - 28, pressed), b.x + 23 + p, b.y + 4 + p, K.dk, pressed);
     ctx.restore();
   }
-  const t = L.tray; edge(t.x, t.y, t.w, t.h, K.sh, K.hl);
+  const t = L.tray; if (t.w) edge(t.x, t.y, t.w, t.h, K.sh, K.hl);
   for (const i of L.icons) icon(i.t.icon + '16', i.x, i.y);
-  const cs = clockStr(); text(cs, t.x + t.w - 7 - textW(cs), t.y + 4);
+  if (tbar.clock) { const cs = clockStr(); text(cs, t.x + t.w - 7 - textW(cs), t.y + 4); }
 }
 function taskDown(x, y, btn, dbl) {
   const L = taskLayout();
@@ -1949,21 +1973,21 @@ function taskDown(x, y, btn, dbl) {
   if (btn === 2 && !inR(L.tray, x, y)) {
     openPopup([
       { label: '&Cascade', fn: cascadeAll }, { label: 'Tile &Horizontally', fn: () => tileAll(false) }, { label: 'Tile &Vertically', fn: () => tileAll(true) },
-      { sep: true }, { label: '&Minimize All Windows', fn: () => tasks.forEach(minimize) }, { sep: true }, { label: 'P&roperties' },
+      { sep: true }, { label: '&Minimize All Windows', fn: () => tasks.forEach(minimize) }, { sep: true }, { label: 'P&roperties', fn: taskbarProperties },
     ], x, y);
     const m = menus[0]; placeMenu(m, x, y - m.h);
   }
 }
 function restorable() { return tasks.filter(t => !t.min && t.resizable); }
 function cascadeAll() {
-  restorable().forEach((t, i) => { if (t.max) toggleMax(t); Object.assign(t, { x: i * 22, y: i * 22, w: Math.min(t.w, W - i * 22), h: Math.min(t.h, H - TB - i * 22) }); activate(t); });
+  restorable().forEach((t, i) => { if (t.max) toggleMax(t); Object.assign(t, { x: i * 22, y: i * 22, w: Math.min(t.w, W - i * 22), h: Math.min(t.h, workH() - i * 22) }); activate(t); });
 }
 function tileAll(vert) {
   const ts = restorable(), n = ts.length; if (!n) return;
   ts.forEach((t, i) => {
     if (t.max) toggleMax(t);
-    if (vert) Object.assign(t, { x: Math.floor(i * W / n), y: 0, w: Math.floor(W / n), h: H - TB });
-    else Object.assign(t, { x: 0, y: Math.floor(i * (H - TB) / n), w: W, h: Math.floor((H - TB) / n) });
+    if (vert) Object.assign(t, { x: Math.floor(i * W / n), y: 0, w: Math.floor(W / n), h: workH() });
+    else Object.assign(t, { x: 0, y: Math.floor(i * workH() / n), w: W, h: Math.floor(workH() / n) });
   });
 }
 function sysMenu(w, x, y, above) {
@@ -2424,6 +2448,7 @@ const START = [
   { label: '&Settings', icon: 'settings', sub: [
     { label: '&Control Panel', icon: 'controlpanel', fn: () => openFolder(ControlPanel) },
     { label: '&Printers', icon: 'printers', fn: () => openFolder(Printers) },
+    { label: '&Taskbar...', icon: 'taskbar', fn: taskbarProperties },
   ] },
   { label: '&Find', icon: 'find', sub: [
     { label: '&Files or Folders...', icon: 'findfiles', disabled: true },
@@ -2450,8 +2475,9 @@ function render() {
   }
   drawDesktop();
   const m = modal();
+  if (!tbar.ontop) drawTaskbar();
   for (const w of windows) if (!w.min && !(m && m.dim && w === m)) w.draw();
-  drawTaskbar();
+  if (tbar.ontop) drawTaskbar();
   if (m && m.dim) { ctx.fillStyle = PAT.dim; ctx.fillRect(0, 0, W, H); m.draw(); }
   for (const mm of menus) drawMenu(mm);
   if (drag) xorFrame(drag.r, drag.t);
@@ -2469,7 +2495,7 @@ const SIZE_CUR = { n: 'sizens', s: 'sizens', e: 'sizewe', w: 'sizewe', nw: 'size
 function cursorAt(x, y) {
   if (drag) return drag.cursor;
   if (menus.length && menuAt(x, y) >= 0) return 'arrow';
-  if (y >= H - TB) return 'arrow';
+  if (onTaskbar(x, y)) return 'arrow';
   const w = winAt(x, y);
   if (!w || (modal() && w !== modal())) return 'arrow';
   const part = w.hit(x, y);
@@ -2479,6 +2505,8 @@ function cursorAt(x, y) {
 }
 
 // ---------------------------------------------------------------- input
+// the taskbar takes a point when it is on top, or when no window covers it there
+const onTaskbar = (x, y) => y >= barTop() && (tbar.ontop || !winAt(x, y));
 function winAt(x, y) { for (let i = windows.length - 1; i >= 0; i--) if (!windows[i].min && inR(windows[i], x, y)) return windows[i]; return null; }
 function pos(e) { const r = cv.getBoundingClientRect(); return [Math.floor((e.clientX - r.left) * W / r.width), Math.floor((e.clientY - r.top) * H / r.height)]; }
 
@@ -2523,7 +2551,7 @@ function winDown(w, x, y, btn, dbl) {
     const ox = x - w.x, oy = y - w.y;
     drag = { r: { x: w.x, y: w.y, w: w.w, h: w.h }, t: w.b, cursor: 'arrow' };
     cap = {
-      move: (mx, my) => { drag.r.x = mx - ox; drag.r.y = clamp(my - oy, -w.b, H - TB - 8); },
+      move: (mx, my) => { drag.r.x = mx - ox; drag.r.y = clamp(my - oy, -w.b, workH() - 8); },
       up: () => { w.x = drag.r.x; w.y = drag.r.y; drag = null; },
     };
     return;
@@ -2565,7 +2593,7 @@ cv.addEventListener('pointerdown', e => {
   if (ren && !(ren.box && inR(ren.box, x, y))) commitRename();
   if (ren) { dirty(); return; }
   const m = modal();
-  if (y >= H - TB) { if (!m) taskDown(x, y, btn, dbl); dirty(); return; }
+  if (onTaskbar(x, y)) { if (!m) taskDown(x, y, btn, dbl); dirty(); return; }
   const w = winAt(x, y);
   if (m && w !== m) { activate(m); dirty(); return; }
   if (w) winDown(w, x, y, btn, dbl); else deskDown(x, y, btn, dbl);
@@ -2573,6 +2601,7 @@ cv.addEventListener('pointerdown', e => {
 });
 cv.addEventListener('pointermove', e => {
   const [x, y] = pos(e); if (x !== mouse.x || y !== mouse.y) lastInput = performance.now(); mouse = { x, y };
+  if (tbar.autohide && !cap) { if (y >= H - 2 || (tbar.shown > 0 && y >= barTop())) slideTaskbar(true); else if (!(menuSrc && menuSrc.kind === 'start')) slideTaskbar(false); }
   if (cap && cap.move) cap.move(x, y);
   else if (menus.length) {
     const d = menuAt(x, y);
@@ -2588,11 +2617,11 @@ cv.addEventListener('pointermove', e => {
   const TL = taskLayout(), t = TL.tray, hov = TL.icons.find(v => inR(v, x, y));
   if (hov && screen === 'desktop' && !menus.length) {
     trayMouse(hov.t, 0x200);
-    if (hov.t.tip && (!tip || tip.text !== hov.t.tip)) { hideTip(); tip = { text: hov.t.tip, x: mouse.x, y: H - TB - 20 }; }
+    if (hov.t.tip && (!tip || tip.text !== hov.t.tip)) { hideTip(); tip = { text: hov.t.tip, x: mouse.x, y: barTop() - 20 }; }
   } else if (inR(t, x, y) && screen === 'desktop' && !menus.length) {
     if (!tip && !tipTimer) tipTimer = setTimeout(() => {
       const d = new Date();
-      tip = { text: d.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }), x: mouse.x, y: H - TB - 20 };
+      tip = { text: d.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }), x: mouse.x, y: barTop() - 20 };
       dirty();
     }, 600);
   } else hideTip();
@@ -2602,7 +2631,7 @@ function hideTip() { clearTimeout(tipTimer); tipTimer = 0; if (tip) { tip = null
 cv.addEventListener('pointerup', e => {
   const [x, y] = pos(e);
   if (cap) { const c = cap; cap = null; if (c.up) c.up(x, y); dirty(); return; }
-  if (screen === 'desktop' && !menus.length && y >= H - TB) {
+  if (screen === 'desktop' && !menus.length && onTaskbar(x, y)) {
     const ti = taskLayout().icons.find(v => inR(v, x, y)); if (ti) trayMouse(ti.t, e.button === 2 ? 0x205 : 0x202);
   }
   if (menus.length) {
@@ -2689,6 +2718,7 @@ window.addEventListener('resize', resize);
 setInterval(() => { blinkOn = !blinkOn; dirty(); }, 530);
 
 bootDisk();
+loadTaskbar();
 desk.src = new FsSource(DESKTOP_DIR);
 fs.on(() => dirty());
 Promise.all(ready).then(() => { resize(); kbd.focus(); dirty(); });
@@ -2862,7 +2892,7 @@ const script = {
   open(path) { openPath(path); dirty(); },
   saver(path) { startFullSaver(path); },
   stopSaver() { if (!fullSaver) return false; fullSaver.exited(0); return true; },
-  screen() { return { width: W, height: H, taskbar: H - TB }; },
+  screen() { return { width: W, height: H, taskbar: barTop() }; },
   screenshot() { render(); return cv.toDataURL('image/png'); },
   // the running full-screen saver's counters since it started (timers, presents, slices, guestMs, ms)
   saverStats() { const f = fullSaver; return f && f.proc ? { ...f.proc.stats, ms: performance.now() - f.proc.t0 } : null; },
