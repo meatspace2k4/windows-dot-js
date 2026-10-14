@@ -380,8 +380,8 @@ const INTS = {
     const ax = this.ax();
     if (ax === 0x1600) { this.ax(0x0004 | (0x00 << 8)); this.cpu.eax.value = lo16(this.cpu.eax.value, 0x0004); return; }  // Windows 4.00 enhanced mode
     if (ax === 0x1683) { this.cpu.ebx.value = lo16(this.cpu.ebx.value, 1); return; }    // current VM id
-    if (ax === 0x1684) {   // VxD protected-mode API entry points: only the VDD (device 0Ah) has one
-      const id = this.cpu.ebx.value & 0xffff, ep = id === 0x0a ? this.thunk16For('VDD.#0') : id === 0x11f ? this.thunk16For('VFLATD.#0') : 0;
+    if (ax === 0x1684) {   // VxD protected-mode API entry points: the VDD, VFLATD, and the VxDs USER calls (VXD_API)
+      const id = this.cpu.ebx.value & 0xffff, ep = id === 0x0a ? this.thunk16For('VDD.#0') : id === 0x11f ? this.thunk16For('VFLATD.#0') : VXD_API[id] ? this.thunk16For(`VXD.#${id}`) : 0;
       this.cpu.edi.value = lo16(this.cpu.edi.value, ep & 0xffff); this.seg('es', ep >>> 16); return;
     }
     if (ax === 0x1686) { this.ax(0); return; }                                          // in protected mode
@@ -423,6 +423,24 @@ P.vbeModeInfo = function (a, m) {
   if (masks) masks.forEach((x, i) => { this.u8[a + 0x1f + i] = x; });
   this.w32(a + 0x28, v.fb);
 };
+
+// protected-mode API entry points of the VxDs USER.EXE talks to, by device id: function number in AX (or as each
+// device takes it); a function not listed stops the caller with its device and number
+const VXD_API = {};
+const vxdApi = (id, name, fns) => {
+  VXD_API[id] = { name, fns };
+  def16('VXD', id, '', 'jmp', function () {
+    const f = this.cpu.eax.value & 0xffff, h = fns[f];
+    if (!h) { this.trapped = `unimplemented ${name} (VxD ${id.toString(16)}h) API function ${f.toString(16)}h`; return LAYOUT.SENTINEL; }
+    const r = h.call(this); if (r !== undefined) this.cpu.eax.value = lo16(this.cpu.eax.value, r);
+    return this.retf16(0);
+  });
+};
+vxdApi(0x0009, 'REBOOT', {});
+vxdApi(0x000c, 'VMD', {});
+vxdApi(0x0017, 'SHELL', {});
+vxdApi(0x0037, 'VxD 37h', {});
+vxdApi(0x0442, 'VTDAPI', {});
 
 // the display VxD's driver interface (minivdd): registration, mode-change notifications and the display configuration
 P.displayConfig = function () {
