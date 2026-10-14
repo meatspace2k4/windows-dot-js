@@ -314,8 +314,13 @@ const INTS = {
     const farp = a => this.rmode ? u32(((a >> 4) << 16) | (a & 0xf)) : this.mapLS(a);
     if (ah === 0x12 && bl === 0x10) { setBX(0x0003); setCX(0x0009); return; }        // EGA/VGA info: color, 256K
     if (ah === 0x1a && (ax & 0xff) === 0) { this.ax(0x001a); setBX(0x0008); return; } // display combination: VGA color
-    if (ah === 0x0f) { this.ax(0x5000 | (v.mode < 0x100 ? v.mode : 0x13)); setBX(0); return; }
-    if (ah === 0x00) { v.mode = ax & 0x7f; return; }
+    if (ah === 0x0f) { const a = this.adapter(); this.ax(((a.w / 8) << 8) | a.mode); setBX(0); return; }
+    if (ah === 0x00) { this.setVideoMode(ax & 0x7f, !(ax & 0x80), 0); return; }
+    if (ax === 0x10f0) {    // Tseng HiColor: BL = mode (15/16 bpp), or BL = FFh with BH = mode for 24 bpp
+      const ok = bl === 0xff ? this.setVideoMode(this.cpu.ebx.value >> 8 & 0xff, true, 24) : this.setVideoMode(bl, true, 16);
+      this.ax(ok ? 0x0010 : 0x0000); return;
+    }
+    if (ax === 0x10f1) { this.ax(0x0010); setBX(0x0003); return; }   // DAC type: Sierra 15/16-bit capable
     if (ah === 0x10 || ah === 0x11 || ah === 0x01 || ah === 0x02) return;
     if (ah === 0x4f) {
       const fn = ax & 0xff;
@@ -337,8 +342,14 @@ const INTS = {
     }
     return;   // other BIOS extensions (Video7 6Fh etc.) are absent: registers come back unchanged
   },
-  0x1a(next) {     // PCI BIOS: not present
-    if ((this.ax() >> 8) === 0xb1) { CF(this, 1); this.ax(0x8100 | (this.ax() & 0xff)); return; }
+  0x1a(next) {     // BIOS clock; no PCI BIOS
+    const ah = this.ax() >> 8;
+    if (ah === 0x00) {
+      const d = new Date(), ms = ((d.getHours() * 60 + d.getMinutes()) * 60 + d.getSeconds()) * 1000 + d.getMilliseconds();
+      const t = Math.floor(ms * 1193182 / 65536 / 1000);
+      this.cpu.ecx.value = lo16(this.cpu.ecx.value, t >>> 16); this.cpu.edx.value = lo16(this.cpu.edx.value, t); this.ax(this.ax() & 0xff00); return;
+    }
+    if (ah === 0xb1) { CF(this, 1); this.ax(0x8100 | (this.ax() & 0xff)); return; }
     this.trapped = `unhandled int 1Ah ax=${this.ax().toString(16)}`; return LAYOUT.SENTINEL;
   },
   0x21(next) {     // DOS
@@ -424,24 +435,88 @@ def16('VDD', 0, '', 'jmp', function () {
   return this.retf16(0);
 });
 
-// ---------------------------------------------------------------- VGA ports (the display driver programs them directly)
+// ---------------------------------------------------------------- display adapter: Tseng ET4000 with a Sierra HiColor DAC
+// The register file the drivers probe and program, 1 MB of VRAM behind a 64K window at A0000h selected through the
+// segment select register (3CDh), and the Tseng video BIOS modes. FRAMEBUF.DRV + DIBENG drive it as they would the card.
+const ET_MODES = { 0x03: [720, 400, 0], 0x13: [320, 200, 8], 0x2e: [640, 480, 8], 0x30: [800, 600, 8], 0x38: [1024, 768, 8] };
+const VRAM_SIZE = 1 << 20, WIN = 0xa0000;
+P.adapter = function () {
+  if (this.et) return this.et;
+  this.init16();
+  return (this.et = { vram: new Uint8Array(VRAM_SIZE), bank: 0, misc: 0x67, seq: new Uint8Array(256), gc: new Uint8Array(256), crtc: new Uint8Array(256),
+    attr: new Uint8Array(256), idx: { seq: 0, gc: 0, crtc: 0, attr: 0 }, flip: 0, dacW: 0, dacR: 0, dac: new Uint8Array(768), pelMask: 0xff,
+    hicolor: 0, hidden: 0, status: 0, mode: 3, w: 720, h: 400, bpp: 0, pitch: 0, dirty: true });
+};
+/** move the window contents to VRAM and bring in another bank */
+P.setBank = function (b) {
+  const a = this.adapter(); b &= 0x0f;
+  if (b === a.bank) return;
+  const u8 = this.u8;
+  a.vram.set(u8.subarray(WIN, WIN + 0x10000), a.bank << 16);
+  u8.set(a.vram.subarray(b << 16, (b << 16) + 0x10000), WIN);
+  a.bank = b; a.dirty = true;
+};
+/** VRAM with the window flushed: what the CRTC scans out */
+P.scanout = function () {
+  const a = this.adapter();
+  a.vram.set(this.u8.subarray(WIN, WIN + 0x10000), a.bank << 16);
+  return a;
+};
+P.setVideoMode = function (mode, clear, hicolor) {
+  const a = this.adapter(), m = ET_MODES[mode & 0x7f]; if (!m) return false;
+  a.mode = mode & 0x7f; [a.w, a.h, a.bpp] = m; a.hicolor = hicolor || 0;
+  if (hicolor) a.bpp = hicolor;
+  a.pitch = a.w * (a.bpp >> 3);
+  if (clear) { a.vram.fill(0); this.u8.fill(0, WIN, WIN + 0x10000); }
+  a.bank = 0; a.dirty = true;
+  if (a.bpp === 8 && clear) for (let i = 0; i < 256; i++) { a.dac[3 * i] = a.dac[3 * i + 1] = a.dac[3 * i + 2] = 0; }
+  return true;
+};
 P.portIO = function (port, size, isIn) {
-  const v = this.vga || (this.vga = { dacW: 0, dacR: 0, dacC: 0, pal: new Uint8Array(768), regs: {}, retrace: 0, idx: {} });
-  const eax = this.cpu.eax.value;
+  if (window.W95PORTTRACE) window.W95PORTTRACE(port, size, isIn, this);
+  const a = this.adapter(), eax = this.cpu.eax.value;
+  if (port >= 0x3b0 && port <= 0x3bf && port !== 0x3bf && !(a.misc & 1) === false) port += 0x20;   // mono CRTC aliases
   if (!isIn) {
-    const val = size === 1 ? eax & 0xff : size === 2 ? eax & 0xffff : u32(eax);
-    if (port === 0x3c8) { v.dacW = (val & 0xff) * 3; return; }
-    if (port === 0x3c7) { v.dacR = (val & 0xff) * 3; return; }
-    if (port === 0x3c9) { v.pal[v.dacW % 768] = val & 0x3f; v.dacW++; return; }
-    if (size === 2) { v.idx[port] = val & 0xff; v.regs[`${port}:${val & 0xff}`] = val >> 8; return; }
-    if ([0x3c4, 0x3ce, 0x3d4, 0x3c0].includes(port)) { v.idx[port] = val; return; }
-    v.regs[`${port - 1}:${v.idx[port - 1]}`] = val; return;
+    let val = size === 1 ? eax & 0xff : size === 2 ? eax & 0xffff : u32(eax);
+    if (size === 2 && [0x3c4, 0x3ce, 0x3d4, 0x3c0].includes(port)) { this.portIO(port, 1, false); this.cpu.eax.value = (eax & ~0xff) | (val >> 8); this.portIO(port + 1, 1, false); this.cpu.eax.value = eax; return; }
+    val &= 0xff;
+    switch (port) {
+      case 0x3c2: a.misc = val; return;
+      case 0x3c4: a.idx.seq = val; return;
+      case 0x3c5: a.seq[a.idx.seq] = val; return;
+      case 0x3ce: a.idx.gc = val; return;
+      case 0x3cf: a.gc[a.idx.gc] = val; return;
+      case 0x3d4: a.idx.crtc = val; return;
+      case 0x3d5: a.crtc[a.idx.crtc] = val; a.dirty = true; return;
+      case 0x3c0: if (!a.flip) a.idx.attr = val; else a.attr[a.idx.attr & 0x1f] = val; a.flip ^= 1; return;
+      case 0x3c6: if (a.hidden === 4) { a.hicolor = val; a.hidden = 0; } else a.pelMask = val; return;
+      case 0x3c7: a.dacR = val * 3; return;
+      case 0x3c8: a.dacW = val * 3; a.hidden = 0; return;
+      case 0x3c9: a.dac[a.dacW % 768] = val & 0x3f; a.dacW++; a.dirty = true; return;
+      case 0x3cd: this.setBank(val & 0x0f); a.segsel = val; return;
+      case 0x3bf: case 0x3d8: a.key = val; return;
+    }
+    return;
   }
   let r = 0xff;
-  if (port === 0x3da) { v.retrace ^= 9; r = v.retrace; }
-  else if (port === 0x3c9) { r = v.pal[v.dacR % 768]; v.dacR++; }
-  else if ([0x3c5, 0x3cf, 0x3d5].includes(port)) r = v.regs[`${port - 1}:${v.idx[port - 1]}`] ?? 0;
-  else if (port === 0x3cc) r = 0x67;
+  switch (port) {
+    case 0x3cc: r = a.misc; break;
+    case 0x3c4: r = a.idx.seq; break;
+    case 0x3c5: r = a.seq[a.idx.seq]; break;
+    case 0x3ce: r = a.idx.gc; break;
+    case 0x3cf: r = a.gc[a.idx.gc]; break;
+    case 0x3d4: r = a.idx.crtc; break;
+    case 0x3d5: r = a.crtc[a.idx.crtc]; break;
+    case 0x3c0: r = a.idx.attr; break;
+    case 0x3c1: r = a.attr[a.idx.attr & 0x1f]; break;
+    case 0x3da: a.flip = 0; a.status ^= 9; r = a.status; break;
+    case 0x3c6: a.hidden = a.hidden >= 4 ? 4 : a.hidden + 1; r = a.hidden === 4 ? a.hicolor : a.pelMask; break;   // four reads expose the Sierra command register
+    case 0x3c8: r = a.dacW / 3 | 0; break;
+    case 0x3c9: r = a.dac[a.dacR % 768]; a.dacR++; break;
+    case 0x3cd: r = a.segsel === undefined ? (a.bank | (a.bank << 4)) : a.segsel; break;
+    case 0x3c2: r = 0x10; break;
+  }
+  if (port !== 0x3c6) a.hidden = 0;
   const m = size === 1 ? 0xff : size === 2 ? 0xffff : 0xffffffff;
   this.cpu.eax.value = (eax & ~m) | (r & m);
 };

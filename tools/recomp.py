@@ -202,23 +202,28 @@ def flag_use_def(ins):
     if mn == 'popf': return 0, ALLF
     return 0, 0
 
+ALL_FLAGS = CF | PF | ZF | SF | OF
 def liveness(blocks):
-    succ = {}
+    # Flags are tracked precisely only along direct jumps and fall-through. Returns, calls, far and indirect
+    # transfers keep every flag live: hand-written code returns status in CF/ZF across `ret`.
+    succ, opaque = {}, set()
     for s, lst in blocks.items():
         last = lst[-1]; out = []
         g = last.i.groups
-        if last.mn in ('jmp', 'ljmp') or capstone.CS_GRP_CALL in g or last.mn.startswith('ret'):
+        if last.mn in ('jmp', 'ljmp') or capstone.CS_GRP_CALL in g or last.mn.startswith('ret') or last.mn in ('int', 'into', 'iret', 'iretd', 'lcall'):
             if last.mn == 'jmp' and imm_target(last) is not None: out.append(imm_target(last))
-        elif capstone.CS_GRP_JUMP in g:
+            else: opaque.add(s)
+        elif capstone.CS_GRP_JUMP in g or last.mn in ('loop', 'loope', 'loopne', 'jcxz', 'jecxz'):
             out += [imm_target(last), last.next]
         else: out.append(last.next)
         succ[s] = [t for t in out if t in blocks]
+        if len(succ[s]) < len([t for t in out if t is not None]): opaque.add(s)
     live_in = {s: 0 for s in blocks}
     changed = True
     while changed:
         changed = False
         for s in sorted(blocks, reverse=True):
-            live = 0
+            live = ALL_FLAGS if s in opaque else 0
             for t in succ[s]: live |= live_in[t]
             for ins in reversed(blocks[s]):
                 ins.live = live
@@ -1278,9 +1283,23 @@ def decode_ne(ne, entries):
             if ins.mn in ('jmp', 'call') and got.operands and ins.tgt is None: todo.extend(table(ins, sg, recent))
             if ins.mn in ('jmp', 'ljmp', 'ret', 'retf', 'hlt', 'int3', 'ud2', 'iret', 'iretd'): return
             a = ins.next
-    while todo:
-        t = todo.pop()
-        if t not in seen: seen.add(t); walk(t)
+    def drain():
+        while todo:
+            t = todo.pop()
+            if t not in seen: seen.add(t); walk(t)
+    drain()
+    # near code pointers kept in data: a segment that calls/jumps through `word ptr [mem]` gets every
+    # `mov word ptr [mem], imm16` it contains treated as a possible entry within that segment
+    while True:
+        indirect = {i.segbase for i in insns.values() if i.segbase is not None and i.mn in ('call', 'jmp') and i.tgt is None
+                    and i.ops and i.ops[0].type == X.X86_OP_MEM and i.ops[0].size == 2 and i.ops[0].mem.segment != X.X86_REG_CS}
+        for i in list(insns.values()):
+            if i.segbase in indirect and i.mn == 'mov' and len(i.ops) == 2 and i.ops[0].type == X.X86_OP_MEM and i.ops[0].size == 2 \
+                    and i.ops[1].type == X.X86_OP_IMM:
+                sg = ne.seg_of(i.segbase); t = sg['base'] + (i.ops[1].imm & 0xffff)
+                if (i.ops[1].imm & 0xffff) < sg['len'] and t not in seen: todo.append(t)
+        if not todo: break
+        drain()
     return insns, seen
 
 # KERNEL constants imported as relocations (__AHSHIFT, __AHINCR, __WINFLAGS, __FLATDS)
