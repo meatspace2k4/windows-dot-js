@@ -1441,9 +1441,39 @@ def16('KERNEL', 517, '', 'jmp', function () {
 // thread runs here, so there is nothing to boost
 def16('KERNEL', 535, 'll', 'v', function () {});
 def16('KERNEL', 536, 'll', 'v', function () {});
-for (const o of [531, 532, 542]) def16('KERNEL', o, '', 'jmp', function () {   // TEMP probe
-  const f = this.cpu.ssb.value + (this.cpu.esp.value & 0xffff); (window.__k5 = window.__k5 || []).push([o, [0, 2, 4, 6, 8, 10, 12, 14].map(k => this.r16(f + k).toString(16)).join(' ')]);
-  this.trapped = 'probe ' + o; return LAYOUT.SENTINEL;
+// clipboard and DDE data between the 32-bit and 16-bit sides (KRNL386 seg3, #531/#532/#542). A GDI object's handle
+// (bitmap, palette, enhanced metafile and their display formats) is the same on both sides; memory is copied into a
+// new block of the other kind. 16-bit copies made here are remembered, and #542 frees only those.
+const CLIP_GDI = new Set([2, 9, 0x0e, 0x82, 0x8e]), CLIP_MFP = new Set([3, 0x83]);
+def16('KERNEL', 531, '', 'jmp', function () {   // (fmt, hMem32, flag) -> a 16-bit global handle holding a copy
+  const f = this.cpu.ssb.value + (this.cpu.esp.value & 0xffff), h = this.r32(f + 6), fmt = this.r16(f + 10);
+  let r = 0;
+  if (CLIP_GDI.has(fmt)) r = h & 0xffff;
+  else if (!CLIP_MFP.has(fmt) && h >>> 16) {
+    const n = this.allocs.get(h) || 0;
+    r = this.globalAlloc16(0x2002, n);
+    if (r && n) this.u8.copyWithin(this.gblock(r).lin, h, h + n);
+    if (r) (this.clipAlias = this.clipAlias || new Set()).add(this.gsel(r));
+  }
+  this.cpu.eax.value = r; this.cpu.edx.value = 0;
+  return this.retf16(8);
+});
+def16('KERNEL', 532, '', 'jmp', function () {   // (fmt, hMem16, flag) -> a 32-bit global handle holding a copy
+  const f = this.cpu.ssb.value + (this.cpu.esp.value & 0xffff), h = this.r16(f + 6), fmt = this.r16(f + 8);
+  let r = 0;
+  if (CLIP_GDI.has(fmt)) r = h;
+  else if (!CLIP_MFP.has(fmt)) {
+    const b = this.gblock(h);
+    if (b) { r = this.alloc(b.size); this.u8.copyWithin(r, b.lin, b.lin + b.size); }
+  }
+  this.cpu.eax.value = r & 0xffff; this.cpu.edx.value = r >>> 16;
+  return this.retf16(6);
+});
+def16('KERNEL', 542, '', 'jmp', function () {   // (handle): free a 16-bit copy #531 made
+  const f = this.cpu.ssb.value + (this.cpu.esp.value & 0xffff), h = this.r32(f + 4) & 0xffff, sel = this.gsel(h);
+  if (h && this.clipAlias && this.clipAlias.has(sel)) { this.clipAlias.delete(sel); K16['KERNEL.#17'][2].call(this, h); }
+  this.cpu.eax.value = 0;
+  return this.retf16(4);
 });
 // KRNL386 seg2:7A70 (#618): the size in bytes of a Win32 dialog template, DLGTEMPLATE or DLGTEMPLATEEX (signature
 // FFFF0001), as USER needs it to copy one; items are DWORD-aligned
