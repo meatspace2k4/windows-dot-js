@@ -1269,6 +1269,13 @@ const pdw = (p, pid, off) => {
 };
 def16('KERNEL', 485, 'li', 'l', function (pid, off) { return pdw(this, pid, off)[off] >>> 0; });
 def16('KERNEL', 484, 'lil', 'v', function (pid, off, v) { pdw(this, pid, off)[off] = v; });
+// VWIN32's events as KRNL386 reaches them (VWin32_EventCreate .. EventSet, and 479, which sets one unless the
+// Win16Lock is held): one thread runs here, so a wait finds the event set or returns at once
+def16('KERNEL', 442, '', 'l', function () { return this.newHandle({ kind: 'event', manual: false, set: false }); });   // VWin32_EventCreate
+def16('KERNEL', 443, 'l', 'v', function (h) { this.handles.delete(h); });                                              // VWin32_EventDestroy
+def16('KERNEL', 450, 'l', 'v', function (h) { const e = ev16(this, h); if (e) e.set = false; });                     // VWin32_EventWait
+def16('KERNEL', 451, 'l', 'v', function (h) { const e = ev16(this, h); if (e) e.set = true; });                      // VWin32_EventSet
+def16('KERNEL', 479, 'l', 'v', function (h) { const e = ev16(this, h); if (e) e.set = true; });
 def16('KERNEL', 476, 'l', 'l', function (h) { return h; });                                            // ConvertToGlobalHandle: one process, so already global
 def16('KERNEL', 474, 'l', 'w', function (h) { return this.handles.delete(h) ? 1 : 0; });               // CloseW32Handle
 def16('KERNEL', 105, '', 'w', function () { return 0x0400; });                                         // GetExeVersion: system code expects Windows 4.0
