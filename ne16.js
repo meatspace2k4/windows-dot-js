@@ -104,7 +104,11 @@ P.loadNE = function (name, file, module, meta) {
   rec.hModule = this.allocSels(mdb, hdrLen);
   rec.dgroup = meta.autodata ? meta.segs[meta.autodata - 1].sel : 0;
   rec.hInstance = rec.dgroup || rec.hModule;
-  if (rec.dgroup) this.ghandles.set(rec.dgroup | 1, { lin: meta.segs[meta.autodata - 1].base, size: 0x10000, n: 1, flags: 2, lock: 0, owner: rec.hModule });
+  if (rec.dgroup) {   // DGROUP starts at its minimum allocation plus local heap and stack; the module grows it itself
+    const dg = meta.segs[meta.autodata - 1], init = Math.min(0x10000, ((dg.minalloc || 0x10000) + rd.u16(file, n + 0x10) + rd.u16(file, n + 0x12) + 15) & ~15);
+    this.ghandles.set(rec.dgroup | 1, { lin: dg.base, size: init, n: 1, flags: 2, lock: 0, owner: rec.hModule });
+    this.w32(L.LDT + (rec.dgroup & 0xfff8) + 4, init - 1);
+  }
   for (const sg of meta.segs) if (sg.num !== meta.autodata) this.ghandles.set(sg.sel | 1, { lin: sg.base, size: Math.max(sg.alloc, 1), n: 1, flags: 0, lock: 0, owner: rec.hModule, code: !(sg.flags & 1) });
   this.modules.push(rec); this.byName.set(name, rec); this.ne.set(name, rec);
   return rec;
@@ -511,7 +515,7 @@ const winIni = (p, file, sec, key) => { const { iniGet } = iniApi(); return iniG
 def16('KERNEL', 2, 'w', 'v', function (code) { this.exitCode = code; this.host.exited(code); });                        // ExitKernel
 def16('KERNEL', 3, '', 'w', () => 0x4f4);                                                                              // GetVersion (3.95)
 def16('KERNEL', 4, 'www', 'w', function (sel, start, end) { const r = this.localInit(sel, start, end); this.cpu.ecx.value = lo16(this.cpu.ecx.value, r); return r; });
-def16('KERNEL', 5, 'ww', 'w', function (fl, n) { return this.localAlloc(fl, n); });
+def16('KERNEL', 5, 'ww', 'w', function (fl, n) { const h = this.localAlloc(fl, n); this.cpu.ecx.value = lo16(this.cpu.ecx.value, h); return h; });   // also in CX
 def16('KERNEL', 6, 'www', 'w', function (h, n, fl) { return this.localReAlloc(h, n, fl); });
 def16('KERNEL', 7, 'w', 'w', function (h) { return this.localFree(h); });
 def16('KERNEL', 8, 'w', 'w', function (h) { const lh = this.lheap(); if (lh.handles.has(h & 0xffff)) { const b = this.selBase(lh.sel); this.u8[b + h + 3]++; } return this.localPtr(h); });
@@ -540,7 +544,10 @@ def16('KERNEL', 16, 'wlw', 'w', function (h, n, fl) {   // GlobalReAlloc
   return h;
 });
 def16('KERNEL', 17, 'w', 'w', function (h) { const b = this.gblock(h); if (!b) return h; const sel = this.gsel(h); this.ghandles.delete(sel); this.freeSels(sel, b.n); return 0; });
-def16('KERNEL', 18, 'w', 'l', function (h) { const b = this.gblock(h); if (!b) return 0; b.lock++; return u32(this.gsel(h) << 16); });   // GlobalLock
+def16('KERNEL', 18, 'w', 'l', function (h) {    // GlobalLock: the selector is returned in CX as well
+  const b = this.gblock(h), sel = b ? this.gsel(h) : 0; if (b) b.lock++;
+  this.cpu.ecx.value = lo16(this.cpu.ecx.value, sel); return u32(sel << 16);
+});
 def16('KERNEL', 19, 'w', 'w', function (h) { const b = this.gblock(h); if (b && b.lock) b.lock--; return b ? b.lock : 0; });
 def16('KERNEL', 20, 'w', 'l', function (h) { const b = this.gblock(h); return b ? b.size : 0; });
 def16('KERNEL', 21, 'w', 'l', function (s) { const b = this.gblock(s); if (!b) return 0; const sel = this.gsel(s); return u32(((b.flags & GMEM_MOVEABLE ? sel - 1 : sel) & 0xffff) | (sel << 16)); });  // GlobalHandle

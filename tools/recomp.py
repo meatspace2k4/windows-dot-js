@@ -1133,7 +1133,7 @@ class NE:
             o = n + u16(d, n + 0x22) + 8 * i
             off, ln, fl, al = u16(d, o) << self.align, u16(d, o + 2) or 0x10000, u16(d, o + 4), u16(d, o + 6) or 0x10000
             if not u16(d, o): ln = 0
-            sg = dict(num=i + 1, fileoff=off, len=ln, flags=fl, alloc=ln if not fl & 1 else max(al, ln), sel=selbase + 8 * i,
+            sg = dict(num=i + 1, fileoff=off, len=ln, flags=fl, alloc=ln if not fl & 1 else max(al, ln), minalloc=al, sel=selbase + 8 * i,
                       bits=32 if fl & 0x2000 else 16, code=not fl & 1)
             if i + 1 == self.autodata: sg['alloc'] = 0x10000          # DGROUP: local heap may grow to 64K
             sg['base'] = cur; cur += (max(sg['alloc'], 1) + 15) & ~15
@@ -1310,7 +1310,7 @@ def build_ne(path, out, base, selbase, lookup, registry):
                                        'exports': exports, 'names': ne.names}
     json.dump(reg, open(registry, 'w'))
     meta = dict(kind='ne', name=ne.name, sha256=hashlib.sha256(data).hexdigest(), base=base, size=ne.size, selbase=selbase,
-                segs=[{k: sg[k] for k in ('num', 'sel', 'base', 'alloc', 'len', 'flags', 'bits', 'fileoff')} for sg in ne.segs],
+                segs=[{k: sg[k] for k in ('num', 'sel', 'base', 'alloc', 'minalloc', 'len', 'flags', 'bits', 'fileoff')} for sg in ne.segs],
                 autodata=ne.autodata, entry=[ne.entry_seg, ne.entry_off], imports=ne.mods, exports=exports, names=ne.names, fixups=fixups,
                 textLo=text_lo, textHi=text_hi, lookup=lookup, blocks=order, thunks=reg['thunks'],
                 layout=dict(sentinel=SENTINEL, thunkBase=THUNK_BASE, thunk16Base=THUNK16_BASE, thunk16Sel=THUNK16_SEL, ldt=LDT_BASE, fpuBase=FPU_BASE, pages=MEM_PAGES))
