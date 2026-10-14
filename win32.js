@@ -226,7 +226,7 @@ class Process {
   realloc(p, n) { if (!p) return this.alloc(n); const old = this.allocs.get(p) || 0; if (n <= old) return p; const q = this.alloc(n, true); this.u8.copyWithin(q, p, p + old); this.free(p); return q; }
 
   // ---- handles
-  newHandle(obj) { const h = this.nextHandle; this.nextHandle += 4; this.handles.set(h, obj); obj.h = h; return h; }
+  newHandle(obj) { const h = this.nextHandle; this.nextHandle += 4; this.handles.set(h, obj); obj.handle = h; return h; }
   obj(h) { return this.handles.get(h) || STOCK.get(h) || null; }
 
   // ---- resources
@@ -319,7 +319,7 @@ STOCK.set(0x8000 | 6, new Pen(0, 1, 0xffffff)); STOCK.set(0x8000 | 7, new Pen(0,
 for (const i of [10, 11, 12, 13, 14, 16, 17]) STOCK.set(0x8000 | i, new Font({ height: -11, weight: 400, face: 'MS Sans Serif' }));
 STOCK.set(0x8000 | 15, new Palette(Array.from({ length: 20 }, (_, i) => [[0, 0, 0], [128, 0, 0], [0, 128, 0], [128, 128, 0], [0, 0, 128], [128, 0, 128], [0, 128, 128], [192, 192, 192],
   [192, 220, 192], [166, 202, 240], [255, 251, 240], [160, 160, 164], [128, 128, 128], [255, 0, 0], [0, 255, 0], [255, 255, 0], [0, 0, 255], [255, 0, 255], [0, 255, 255], [255, 255, 255]][i])));
-for (const [h, o] of STOCK) o.h = h;
+for (const [h, o] of STOCK) o.handle = h;
 
 class DC {
   constructor(proc, ctx, w, h, hwnd) {
@@ -1043,9 +1043,9 @@ def('GDI32', 'SelectObject', 2, function (hdc, h) {
   const slot = { pen: 'pen', brush: 'brush', font: 'font', bitmap: 'bitmap' }[o.kind]; if (!slot) return 0;
   const old = dc[slot]; dc[slot] = o;
   if (slot === 'bitmap') { dc.ctx = o.canvas.getContext('2d', { willReadFrequently: true }); dc.ctx.imageSmoothingEnabled = false; dc.w = o.w; dc.h = o.h; }
-  return old ? old.h : 0;
+  return old ? old.handle : 0;
 });
-def('GDI32', 'GetCurrentObject', 2, function (hdc, t) { const dc = dcOf(this, hdc); return ({ 1: dc.pen, 2: dc.brush, 6: dc.font, 7: dc.bitmap, 5: dc.pal }[t] || {}).h || 0; });
+def('GDI32', 'GetCurrentObject', 2, function (hdc, t) { const dc = dcOf(this, hdc); return ({ 1: dc.pen, 2: dc.brush, 6: dc.font, 7: dc.bitmap, 5: dc.pal }[t] || {}).handle || 0; });
 def('GDI32', 'DeleteObject', 1, function (h) { if (!STOCK.has(h)) this.handles.delete(h); return 1; });
 def('GDI32', 'GetObjectType', 1, function (h) { const o = this.obj(h); return o ? { pen: 1, brush: 2, dc: 3, palette: 5, font: 6, bitmap: 7 }[o.kind] || 0 : 0; });
 def('GDI32', 'GetObjectA', 3, function (h, n, p) {
@@ -1254,7 +1254,7 @@ def('GDI32', 'CreateHalftonePalette', 1, function () {
   const e = []; for (let r = 0; r < 6; r++) for (let g = 0; g < 6; g++) for (let b = 0; b < 6; b++) e.push([r * 51, g * 51, b * 51]);
   return this.newHandle(new Palette(e));
 });
-def('GDI32', 'SelectPalette', 3, function (hdc, h) { const dc = dcOf(this, hdc); const o = dc.pal; const p = this.obj(h); if (p) dc.pal = p; return o ? o.h : 0; });
+def('GDI32', 'SelectPalette', 3, function (hdc, h) { const dc = dcOf(this, hdc); const o = dc.pal; const p = this.obj(h); if (p) dc.pal = p; return o ? o.handle : 0; });
 def('GDI32', 'RealizePalette', 1, function (hdc) { return dcOf(this, hdc).pal.entries.length; });
 def('GDI32', 'UnrealizeObject', 1, () => 1);
 def('GDI32', 'GetPaletteEntries', 4, function (h, start, n, p) {
