@@ -154,6 +154,7 @@ class Process {
     for (;;) {
       eip >>>= 0;
       if (eip === LAYOUT.SENTINEL) return 0;
+      if (this.runHook) this.runHook(eip);   // debugging: set from the page to watch every dispatch
       const m = eip >= LAYOUT.THUNK16 ? this.modules[0] : this.modules.find(x => eip >= x.meta.textLo && eip < x.meta.textHi);
       if (!m) {
         const next = this.dataCode && this.dataCode(eip);
@@ -743,7 +744,26 @@ def('KERNEL32', 'GetUserDefaultLCID', 0, () => 0x409);
 def('KERNEL32', 'GetSystemDefaultLCID', 0, () => 0x409);
 def('KERNEL32', 'IsValidCodePage', 1, cp => (cp === 1252 || cp === 437 ? 1 : 0));
 def('KERNEL32', 'GetLocaleInfoW', 4, () => 0);
-def('KERNEL32', 'GetLocaleInfoA', 4, () => 0);
+// the locale's settings, as Windows 95 has them for English (United States) (1033); LOCALE_NOUSEROVERRIDE (80000000h)
+// changes nothing, as no user overrides are kept
+const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const LOCALE_US = {
+  0x01: '0409', 0x02: 'English (United States)', 0x1001: 'English', 0x03: 'ENU', 0x04: 'English', 0x05: '1', 0x06: 'United States',
+  0x1002: 'United States', 0x07: 'USA', 0x08: 'United States', 0x09: '0409', 0x0a: '1', 0x0b: '437', 0x1004: '1252', 0x0c: ',', 0x0d: '1',
+  0x0e: '.', 0x0f: ',', 0x10: '3;0', 0x11: '2', 0x12: '1', 0x1010: '1', 0x13: '0123456789', 0x14: '$', 0x15: 'USD', 0x16: '.', 0x17: ',',
+  0x18: '3;0', 0x19: '2', 0x1a: '2', 0x1b: '0', 0x1c: '0', 0x1d: '/', 0x1e: ':', 0x1f: 'M/d/yy', 0x20: 'dddd, MMMM dd, yyyy', 0x1003: 'h:mm:ss tt',
+  0x21: '0', 0x22: '0', 0x23: '0', 0x1005: '0', 0x24: '0', 0x25: '0', 0x26: '0', 0x27: '0', 0x28: 'AM', 0x29: 'PM', 0x1009: '1', 0x100b: '0',
+  0x100c: '6', 0x100d: '0', 0x100e: '', 0x50: '', 0x51: '-', 0x52: '3', 0x53: '0', 0x54: '1', 0x55: '0', 0x56: '1', 0x57: '0',
+};
+DAYS.forEach((d, i) => { LOCALE_US[0x2a + i] = d; LOCALE_US[0x31 + i] = d.slice(0, 3); });
+MONTHS.forEach((m, i) => { LOCALE_US[0x38 + i] = m; LOCALE_US[0x44 + i] = m.slice(0, 3); });
+def('KERNEL32', 'GetLocaleInfoA', 4, function (lc, type, buf, n) {
+  const v = LOCALE_US[type & 0x7fffffff]; if (v === undefined) { this.lastError = 87; return 0; }
+  if (!n) return v.length + 1;
+  if (n < v.length + 1) { this.lastError = 122; return 0; }
+  this.writeA(buf, v, n); return v.length + 1;
+});
 def('KERNEL32', 'CompareStringW', 6, () => 2);
 def('KERNEL32', 'CompareStringA', 6, function (lc, f, a, na, b, nb) {
   const x = this.readA(a, na < 0 ? 65536 : na) || '', y = this.readA(b, nb < 0 ? 65536 : nb) || '';
@@ -962,7 +982,14 @@ def('KERNEL32', 'WriteProfileStringA', 3, function (sec, key, v) { return API.KE
 def('KERNEL32', 'GetProfileIntA', 3, function (sec, key, dflt) { return API.KERNEL32.GetPrivateProfileIntA[1].call(this, sec, key, dflt, 0); });
 def('KERNEL32', 'GetNumberFormatA', 6, function (lc, fl, val, fmt, out, n) {
   const v = Number(this.readA(val)); if (!isFinite(v)) return 0;
-  const r = v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  // NUMBERFMT when given (digits, leading zero, grouping, decimal and thousand separators, negative order); else US
+  const f = fmt ? { digits: this.r32(fmt), lead: this.r32(fmt + 4), group: this.r32(fmt + 8), dec: this.readA(this.r32(fmt + 12)) || '.', thou: this.readA(this.r32(fmt + 16)) ?? ',', neg: this.r32(fmt + 20) }
+    : { digits: 2, lead: 1, group: 3, dec: '.', thou: ',', neg: 1 };
+  let [ip, fp] = Math.abs(v).toFixed(f.digits).split('.');
+  if (f.group) ip = ip.replace(new RegExp(`\\B(?=(\\d{${f.group}})+(?!\\d))`, 'g'), f.thou);
+  if (ip === '0' && !f.lead && fp) ip = '';
+  const body = fp ? ip + f.dec + fp : ip;
+  const r = v < 0 ? (['(' + body + ')', '-' + body, '- ' + body, body + '-', body + ' -'][f.neg] || '-' + body) : body;
   if (!n) return r.length + 1; return this.writeA(out, r, n) + 1;
 });
 // FORMAT_MESSAGE_FROM_STRING (400h) formats `src`; %1..%99 take inserts (with !fmt! printf specs) from the argument
@@ -1010,18 +1037,22 @@ def('KERNEL32', 'WaitForSingleObjectEx', 3, function (h, ms) { return API.KERNEL
 def('KERNEL32', 'FindFirstChangeNotificationA', 3, function () { return this.newHandle({ kind: 'event', manual: true, set: false }); });
 def('KERNEL32', 'FindNextChangeNotification', 1, () => 1);
 def('KERNEL32', 'FindCloseChangeNotification', 1, function (h) { this.handles.delete(h); return 1; });
-// global atoms, shared by the process's modules
+// global atoms, shared by the process's modules. Under the native USER they are USER's (GlobalAddAtom and the rest are
+// USER.268-271, which window properties and registered messages use too), as Windows 95's KERNEL32 reaches them
 const atomsOf = p => p.globalAtoms || (p.globalAtoms = { byName: new Map(), byId: new Map(), next: 0xc000 });
+const userAtom = (p, ord, args) => (p.nativeUser16 && p.nativeUser16() ? p.user16(ord, args).ax : null);
+const segStr = (p, s) => (s >>> 16 ? p.mapLS(s) : s);
 def('KERNEL32', 'GlobalAddAtomA', 1, function (s) {
+  { const r = userAtom(this, 268, [['l', segStr(this, s)]]); if (r !== null) return r; }
   if (!(s >>> 16)) return s & 0xffff;
   const t = atomsOf(this), k = (this.readA(s) || '').toUpperCase();
   if (k[0] === '#') return parseInt(k.slice(1), 10) & 0xffff;
   let a = t.byName.get(k); if (!a) { a = { id: t.next++, name: this.readA(s), refs: 0 }; t.byName.set(k, a); t.byId.set(a.id, a); }
   a.refs++; return a.id;
 });
-def('KERNEL32', 'GlobalDeleteAtom', 1, function (id) { const t = atomsOf(this), a = t.byId.get(id); if (a && --a.refs <= 0) { t.byId.delete(id); t.byName.delete(a.name.toUpperCase()); } return 0; });
-def('KERNEL32', 'GlobalFindAtomA', 1, function (s) { const a = atomsOf(this).byName.get((this.readA(s) || '').toUpperCase()); return a ? a.id : 0; });
-def('KERNEL32', 'GlobalGetAtomNameA', 3, function (id, buf, n) { const a = atomsOf(this).byId.get(id); return a ? this.writeA(buf, a.name, n) : 0; });
+def('KERNEL32', 'GlobalDeleteAtom', 1, function (id) { { const r = userAtom(this, 269, [['w', id]]); if (r !== null) return r; } const t = atomsOf(this), a = t.byId.get(id); if (a && --a.refs <= 0) { t.byId.delete(id); t.byName.delete(a.name.toUpperCase()); } return 0; });
+def('KERNEL32', 'GlobalFindAtomA', 1, function (s) { { const r = userAtom(this, 270, [['l', segStr(this, s)]]); if (r !== null) return r; } const a = atomsOf(this).byName.get((this.readA(s) || '').toUpperCase()); return a ? a.id : 0; });
+def('KERNEL32', 'GlobalGetAtomNameA', 3, function (id, buf, n) { { const r = userAtom(this, 271, [['w', id], ['l', this.mapLS(buf)], ['w', Math.min(n, 0xffff)]]); if (r !== null) return r; } const a = atomsOf(this).byId.get(id); return a ? this.writeA(buf, a.name, n) : 0; });
 // KERNEL32's unnamed exports (by ordinal) that the shell uses
 def('KERNEL32', '#10', 2, function (s, d) { this.writeA(d, this.readA(s) || ''); return 1; });                                  // CharToOemA
 def('KERNEL32', '#11', 3, function (s, d, n) { this.u8.copyWithin(d, s, s + n); return 1; });                                   // CharToOemBuffA

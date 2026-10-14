@@ -4,5 +4,11 @@
   "version": "0.1.0",
   "private": true,
   "main": "main.js",
-  "scripts": { "start": "electron .", "build": "sh build.sh" }
+  "scripts": {
+    "start": "electron .",
+    "build": "sh build.sh"
+  },
+  "devDependencies": {
+    "electron": "^44.7.2"
+  }
 }

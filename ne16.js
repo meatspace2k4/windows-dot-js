@@ -1721,7 +1721,13 @@ def16('KERNEL', 480, '', 'v', function () {});                                  
 def16('KERNEL', 481, '', 'v', function () {});                                   // _LeaveWin16Lock
 // KRNL386's bridges to Win32 events and threads (each a thunk into KERNEL32 in the real KERNEL). One thread runs
 // here: a wait finds an event signalled or times out at once, and the thread id is the one KERNEL32 reports.
-const ev16 = (p, h) => { const o = p.obj(h); return o && o.kind === 'event' ? o : null; };
+// a waitable object: an event, or a thread, which is signalled once it has ended (it stays signalled)
+const ev16 = (p, h) => {
+  const o = p.obj(h); if (!o) return null;
+  if (o.kind === 'event') return o;
+  if (o.kind === 'thread') { const t = p.threadsById && p.threadsById.get(o.id); return { manual: true, get set() { return !t || t.state === 'done'; }, set set(_) {} }; }
+  return null;
+};
 def16('KERNEL', 457, 'll', 'l', function (manual, initial) { return this.newHandle({ kind: 'event', manual: !!manual, set: !!initial }); });   // CreateW32Event
 def16('KERNEL', 458, 'l', 'l', function (h) { const e = ev16(this, h); if (!e) return 0; e.set = true; return 1; });   // SetW32Event
 def16('KERNEL', 459, 'l', 'l', function (h) { const e = ev16(this, h); if (!e) return 0; e.set = false; return 1; });  // ResetW32Event
@@ -2296,6 +2302,7 @@ P.nativeGdi = function () {
   const b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
   for (const [n, d] of Object.entries(sys.dlls || {})) {
     const k = n.replace(/\.DLL$/, '');
+    if (k !== 'GDI32') continue;   // the rest of the bundle's DLLs need the native USER (bootUser16)
     if (!this.dlls.has(k)) this.dlls.set(k, { file: d.fileBytes || (d.fileBytes = b64(d.file)), module: d.mod || (d.mod = new WebAssembly.Module(b64(d.wasm))), meta: d.meta });
   }
   if (!this.loadLibrary16('GDI')) return null;
