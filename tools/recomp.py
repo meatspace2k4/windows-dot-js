@@ -160,6 +160,7 @@ def ends_block(ins):
     return capstone.CS_GRP_JUMP in g or capstone.CS_GRP_CALL in g or ins.mn.startswith('ret') or ins.mn in FLOW
 def build_blocks(pe, insns, entries):
     starts = set(e for e in entries if e in insns)
+    starts |= {a for a, i in insns.items() if i.mn in ('div', 'idiv')}   # restartable after a divide fault
     for ins in insns.values():
         if ends_block(ins):
             if ins.next in insns: starts.add(ins.next)
@@ -862,9 +863,7 @@ class Translator:
                     f.lg(t).gs('cf'); f.lg(t).gs('of')
             else:
                 f.gg('edx').e(EXT_U).c64(32).e(Q['shl']).gg('eax').e(EXT_U).e(Q['or_']).ls(q)
-                self.divzero(f, v)
-                f.lg(q).lg(v).e(Q['div_s' if signed else 'div_u']).e(WRAP)
-                f.lg(q).lg(v).e(Q['rem_s' if signed else 'rem_u']).e(WRAP).gs('edx').gs('eax')
+                self.divide(f, q, v, signed, 4)
         elif sz == 2:
             if kind in ('mul', 'imul'):
                 f.gg('eax').c(0xffff).e(OPS['and_'])
@@ -873,14 +872,9 @@ class Translator:
                 f.gg('eax').c(~0xffff).e(OPS['and_']).lg(q).e(WRAP).c(0xffff).e(OPS['and_']).e(OPS['or_']).gs('eax')
                 f.gg('edx').c(~0xffff).e(OPS['and_']).lg(q).c64(16).e(Q['shr_u']).e(WRAP).c(0xffff).e(OPS['and_']).e(OPS['or_']).gs('edx')
             else:
-                self.divzero(f, v)
                 f.gg('edx').c(16).e(OPS['shl']).gg('eax').c(0xffff).e(OPS['and_']).e(OPS['or_'])
                 f.e(EXT_S if signed else EXT_U).ls(q)
-                t, u = f.i(), f.i()
-                f.lg(q).lg(v).e(Q['div_s' if signed else 'div_u']).e(WRAP).c(0xffff).e(OPS['and_']).ls(t)
-                f.lg(q).lg(v).e(Q['rem_s' if signed else 'rem_u']).e(WRAP).c(0xffff).e(OPS['and_']).ls(u)
-                f.gg('eax').c(~0xffff).e(OPS['and_']).lg(t).e(OPS['or_']).gs('eax')
-                f.gg('edx').c(~0xffff).e(OPS['and_']).lg(u).e(OPS['or_']).gs('edx')
+                self.divide(f, q, v, signed, 2)
         else:
             if kind in ('mul', 'imul'):
                 f.gg('eax').c(0xff).e(OPS['and_'])
@@ -890,18 +884,32 @@ class Translator:
                 if live & (CF | OF):
                     t = f.i(); f.lg(q).e(WRAP).c(0xff00).e(OPS['and_']).c(0).e(OPS['ne']).ls(t); f.lg(t).gs('cf'); f.lg(t).gs('of')
             else:
-                self.divzero(f, v)
                 f.gg('eax').c(0xffff).e(OPS['and_'])
                 if signed: f.c(16).e(OPS['shl']).c(16).e(OPS['shr_s'])
                 f.e(EXT_S if signed else EXT_U).ls(q)
-                t, u = f.i(), f.i()
-                f.lg(q).lg(v).e(Q['div_s' if signed else 'div_u']).e(WRAP).c(0xff).e(OPS['and_']).ls(t)
-                f.lg(q).lg(v).e(Q['rem_s' if signed else 'rem_u']).e(WRAP).c(0xff).e(OPS['and_']).ls(u)
-                f.gg('eax').c(~0xffff).e(OPS['and_']).lg(t).e(OPS['or_']).lg(u).c(8).e(OPS['shl']).e(OPS['or_']).gs('eax')
-    def divzero(self, f, v):
-        f.lg(v).e(Q['eqz']).e(0x04, 0x40)
-        f.c(0).c(0).e(0x10, uleb(IMP['trap'])).c(SENTINEL).e(RETURN)
-        f.e(0x0b)
+                self.divide(f, q, v, signed, 1)
+    def divide(self, f, q, v, signed, sz):
+        """q (i64 dividend) / v (i64 divisor) into AL/AH, AX/DX or EAX/EDX; #DE on a zero divisor or an overflowing quotient"""
+        quo, rem = f.q(), f.q(); bits = 8 * sz
+        f.lg(v).e(Q['eqz']).e(0x04, 0x40); self.fault(f); f.e(0x0b)
+        if signed:   # x / -1 is a negation (i64 INT_MIN / -1 would trap in wasm)
+            f.c64(0).lg(q).e(Q['sub']).lg(q).lg(v).e(Q['div_s']).lg(v).c64(-1).e(Q['eq']).e(SELECT).ls(quo)
+            f.c64(0).lg(q).lg(v).e(Q['rem_s']).lg(v).c64(-1).e(Q['eq']).e(SELECT).ls(rem)
+            f.lg(quo).c64(-(1 << (bits - 1))).e(Q['lt_s']).lg(quo).c64((1 << (bits - 1)) - 1).e(0x55).e(OPS['or_'])   # i64.gt_s
+        else:
+            f.lg(q).lg(v).e(Q['div_u']).ls(quo); f.lg(q).lg(v).e(Q['rem_u']).ls(rem)
+            f.lg(quo).c64((1 << bits) - 1).e(0x56)                                                                    # i64.gt_u
+        f.e(0x04, 0x40); self.fault(f); f.e(0x0b)
+        if sz == 4: f.lg(quo).e(WRAP).gs('eax'); f.lg(rem).e(WRAP).gs('edx')
+        elif sz == 2:
+            f.gg('eax').c(~0xffff).e(OPS['and_']).lg(quo).e(WRAP).c(0xffff).e(OPS['and_']).e(OPS['or_']).gs('eax')
+            f.gg('edx').c(~0xffff).e(OPS['and_']).lg(rem).e(WRAP).c(0xffff).e(OPS['and_']).e(OPS['or_']).gs('edx')
+        else:
+            f.gg('eax').c(~0xffff).e(OPS['and_']).lg(quo).e(WRAP).c(0xff).e(OPS['and_']).e(OPS['or_'])
+            f.lg(rem).e(WRAP).c(0xff).e(OPS['and_']).c(8).e(OPS['shl']).e(OPS['or_']).gs('eax')
+    def fault(self, f):
+        """#DE at the current instruction: the host dispatches it and leaves the continuation in the eip global"""
+        f.c(CUR.addr).c(0).e(0x10, uleb(IMP['trap'])).gg('eip').e(RETURN)
 
     def x_bt(self, f, ins, ops, live): self.bit(f, ops, live, None)
     def x_bts(self, f, ins, ops, live): self.bit(f, ops, live, 'or_')
@@ -1297,9 +1305,12 @@ def decode_ne(ne, entries):
     while True:
         indirect = {i.segbase for i in insns.values() if i.segbase is not None and i.mn in ('call', 'jmp') and i.tgt is None
                     and i.ops and i.ops[0].type == X.X86_OP_MEM and i.ops[0].size == 2 and i.ops[0].mem.segment != X.X86_REG_CS}
+        # likewise `mov r16, imm16` for registers that a segment calls or jumps through
+        viareg = {(i.segbase, i.ops[0].reg) for i in insns.values() if i.segbase is not None and i.mn in ('call', 'jmp')
+                  and i.ops and i.ops[0].type == X.X86_OP_REG and i.ops[0].size == 2}
         for i in list(insns.values()):
-            if i.segbase in indirect and i.mn == 'mov' and len(i.ops) == 2 and i.ops[0].type == X.X86_OP_MEM and i.ops[0].size == 2 \
-                    and i.ops[1].type == X.X86_OP_IMM:
+            if i.mn != 'mov' or len(i.ops) != 2 or i.ops[1].type != X.X86_OP_IMM or i.ops[0].size != 2: continue
+            if (i.segbase in indirect and i.ops[0].type == X.X86_OP_MEM) or (i.ops[0].type == X.X86_OP_REG and (i.segbase, i.ops[0].reg) in viareg):
                 sg = ne.seg_of(i.segbase); t = sg['base'] + (i.ops[1].imm & 0xffff)
                 if (i.ops[1].imm & 0xffff) < sg['len'] and t not in seen: todo.append(t)
         # far pointers assembled in code: a selector fixup naming one of our code segments with an imm16 next to it

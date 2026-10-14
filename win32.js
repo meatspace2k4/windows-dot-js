@@ -190,9 +190,9 @@ class Process {
     this.host.exited(-1, why);
   }
   trap(eip, code) {
-    if (code >= 0x100 && this.trapHook && this.trapHook(eip, code)) return;
-    this.trapped = `${['unsupported instruction', 'unsupported instruction', 'jump to unmapped address', 'breakpoint'][code] || 'trap'} at ${u32(eip).toString(16)}`;
-    if (code === 0) this.trapped = `divide by zero at ${u32(this.reg('eip')).toString(16)}`;
+    if (this.trapHook && this.trapHook(eip, code)) return;
+    this.trapped = `${['divide error', 'unsupported instruction', 'jump to unmapped address', 'breakpoint'][code] || 'trap'} at ${u32(eip).toString(16)}`;
+    if (code === 0) this.cpu.eip.value = LAYOUT.SENTINEL | 0;
   }
   api(eip) {
     if (u32(eip) < LAYOUT.THUNK) return this.api16(u32(eip));

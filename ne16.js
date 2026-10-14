@@ -171,7 +171,7 @@ P.jsModule = function (name) {
   this.jsMods.set(name, rec); return rec;
 };
 P.kernelModule = function () { return this.jsModule('KERNEL'); };
-const JS16 = ['KERNEL', 'USER', 'KEYBOARD', 'SYSTEM', 'VDD', 'VFLATD'];
+const JS16 = ['KERNEL', 'USER', 'KEYBOARD', 'SYSTEM', 'VDD', 'VFLATD', 'DPMI'];
 
 // ---------------------------------------------------------------- calling 16-bit code
 /** enter 16-bit code on an alias of the flat stack; args: [['w', v] | ['l', v]...] in Pascal order */
@@ -278,7 +278,7 @@ const INTS = {
         const b = this.r16(a + 2) | (this.u8[a + 4] << 16) | (this.u8[a + 7] << 24), l = this.r16(a) | ((this.u8[a + 6] & 0xf) << 16);
         this.setDesc(bx, u32(b), this.u8[a + 6] & 0x80 ? (l << 12) | 0xfff : l, this.r16(a + 5) << 8); this.refreshSegs(); return; }
       case 0x0200: case 0x0202: case 0x0204: {   // get real-mode / exception / protected-mode interrupt vector
-        const v = ((this.exVec = this.exVec || {})[`${ax}:${bx & 0xff}`]) || 0;
+        const v = ((this.exVec = this.exVec || {})[`${ax}:${bx & 0xff}`]) || (ax === 0x0202 ? this.thunk16For('DPMI.#1') : 0);
         this.cpu.ecx.value = lo16(this.cpu.ecx.value, v >>> 16); this.cpu.edx.value = v & 0xffff; return; }
       case 0x0201: case 0x0203: case 0x0205: case 0x0283:   // 0x0283: Windows' set-exception-handler variant
         (this.exVec = this.exVec || {})[`${ax === 0x0283 ? 0x0202 : ax - 1}:${bx & 0xff}`] = u32((cx << 16) | (this.cpu.edx.value & 0xffff)); return;
@@ -384,6 +384,7 @@ const INTS = {
   },
 };
 P.trapHook = function (e, code) {
+  if (code === 0) return this.exception16(0, u32(e));
   if (code < 0x100) return false;
   if (code >= 0x1000000) { this.portIO(code & 0xffff, (code >> 16) & 7, !!(code & 0x800000)); return true; }
   this.cpu.eip.value = this.interrupt(code - 0x100, u32(e)) | 0;
@@ -537,6 +538,30 @@ P.portIO = function (port, size, isIn) {
   const m = size === 1 ? 0xff : size === 2 ? 0xffff : 0xffffffff;
   this.cpu.eax.value = (eax & ~m) | (r & m);
 };
+
+// ---------------------------------------------------------------- processor exceptions for 16-bit clients (DPMI 0202h/0203h)
+/** dispatch exception `n` at linear `at` to the client's handler with a DPMI exception frame; false if none is installed */
+P.exception16 = function (n, at) {
+  const cs = this.cpu.cs.value & 0xffff, h = this.exVec && this.exVec[`514:${n}`];
+  if (!cs || !h) return false;
+  const ss = this.cpu.ss.value & 0xffff, sp0 = this.cpu.esp.value & 0xffff, ssb = this.cpu.ssb.value >>> 0;
+  let flags = 0x202; for (const [r, b] of [['cf', 0], ['pf', 2], ['zf', 6], ['sf', 7], ['df', 10], ['of', 11]]) flags |= (this.cpu[r].value & 1) << b;
+  const ret = this.thunk16For('DPMI.#2');
+  let sp = sp0;
+  for (const w of [ss, sp0, flags, cs, (at - this.selBase(cs)) & 0xffff, 0, ret >>> 16, ret & 0xffff]) { sp = (sp - 2) & 0xffff; this.w16(ssb + sp, w); }
+  this.cpu.esp.value = lo16(this.cpu.esp.value, sp);
+  this.seg('cs', h >>> 16);
+  this.cpu.eip.value = u32(this.selBase(h >>> 16) + (h & 0xffff)) | 0;
+  return true;
+};
+def16('DPMI', 2, '', 'jmp', function () {      // the handler's retf lands here: resume at the frame's CS:IP
+  const ssb = this.cpu.ssb.value >>> 0, sp = this.cpu.esp.value & 0xffff, f = k => this.r16(ssb + ((sp + 2 * k) & 0xffff));
+  const ip = f(1), cs = f(2), flags = f(3), nsp = f(4), nss = f(5);
+  for (const [r, b] of [['cf', 0], ['pf', 2], ['zf', 6], ['sf', 7], ['df', 10], ['of', 11]]) this.cpu[r].value = (flags >> b) & 1;
+  this.seg('ss', nss); this.cpu.esp.value = lo16(this.cpu.esp.value, nsp);
+  this.seg('cs', cs); return u32(this.selBase(cs) + ip);
+});
+def16('DPMI', 1, '', 'jmp', function () { this.trapped = 'unhandled processor exception in 16-bit code'; return LAYOUT.SENTINEL; });
 
 // ---------------------------------------------------------------- global heap
 const GMEM_MOVEABLE = 2, GMEM_ZEROINIT = 0x40;
