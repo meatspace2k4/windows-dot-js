@@ -1346,7 +1346,14 @@ def16('KERNEL', 211, 'lli', 'w', function (heap, addr, type) { return this.local
 def16('KERNEL', 213, 'llii', 'l', function (heap, addr, t1, t2) { const h = this.l32(heap); const [hd, p] = this.l32toHandle(h, t1, addr); return hd ? this.l32fromHandle(h, t2, hd, p) : 0; });
 def16('KERNEL', 214, 'lli', 'l', function (heap, addr, type) { const h = this.l32(heap); const [hd, p] = this.l32toHandle(h, type, addr); return hd ? (h.blocks.get(p) || 0) : 0; });
 def16('KERNEL', 229, 'l', 'w', function (heap) { return this.r32(this.l32(heap).hdr + 104); });
-def16('KERNEL', 444, 'pw', 'w', () => 0);
+def16('KERNEL', 444, 'pw', 'w', function (info, sel) {   // Local32Info -> LOCAL32INFO of the heap in segment `sel`
+  const h = this.l32heaps && [...this.l32heaps.values()].find(x => (this.r32(x.hdr + 104) | 7) === (sel | 7));
+  if (!h || !info) return 0;
+  let free = 0, big = 0; for (const [, n] of h.free) { free += n; big = Math.max(big, n); }
+  let used = 0; for (const n of h.blocks.values()) used += n;
+  this.w32(info + 4, free + used); this.w32(info + 8, free + used); this.w32(info + 12, free); this.w32(info + 16, big); this.w32(info + 20, free >>> 12);
+  return 1;
+});
 def16('KERNEL', 445, 'pw', 'w', () => 0);
 def16('KERNEL', 446, 'p', 'w', () => 0);
 
