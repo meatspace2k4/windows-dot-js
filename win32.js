@@ -152,9 +152,16 @@ class Process {
       if (!m) {
         const next = this.dataCode && this.dataCode(eip);
         if (next !== undefined && next !== null) { eip = next; continue; }
+        const dyn = this.dynRun && this.dynRun(eip);   // code generated at run time (dyn.js)
+        if (dyn !== undefined && dyn !== null) { eip = dyn; continue; }
         this.trapped = this.trapped || `jump to unmapped address ${eip.toString(16)}`; return 2;
       }
       const r = m.run(eip);
+      if (r === 2 && this.dynWant !== undefined) {   // no translated block there: code written at run time
+        const at = this.dynWant; this.dynWant = undefined;
+        const dyn = this.dynRun(at); if (dyn === null) return 2;
+        eip = dyn; continue;
+      }
       if (r !== 3) return r;
       eip = this.reg('eip');
     }
@@ -192,6 +199,7 @@ class Process {
     this.host.exited(-1, why);
   }
   trap(eip, code) {
+    if (code === 2 && this.dynRun) { this.dynWant = u32(eip); return; }
     if (this.trapHook && this.trapHook(eip, code)) return;
     this.trapped = `${['divide error', 'unsupported instruction', 'jump to unmapped address', 'breakpoint'][code] || 'trap'} at ${u32(eip).toString(16)}`;
     if (code === 0) this.cpu.eip.value = LAYOUT.SENTINEL | 0;
