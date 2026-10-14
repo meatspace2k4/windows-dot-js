@@ -2547,12 +2547,13 @@ class NativeApp {
   }
   clipOut() {
     const p = this.proc; if (!p || p.depth) return;
+    const code = p.exitCode; p.exitCode = null;   // called as the program exits too: its USER still holds the data
     try {
       if (!p.user16(137, [['w', 0]]).ax) return;                                    // OpenClipboard
       const h = p.user16(142, [['w', 1]]).ax, b = h && p.gblock(h);            // GetClipboardData(CF_TEXT)
       if (b) { const t = p.readA(b.lin, b.size).replace(/\r\n/g, '\n'); textClip = this.clipText = t; }
       p.user16(138);                                                                 // CloseClipboard
-    } catch (e) { console.error(e); }
+    } catch (e) { console.error(e); } finally { p.exitCode = code; }
   }
   clipIn() {
     const p = this.proc; if (!p || p.depth || textClip === this.clipText) return;
