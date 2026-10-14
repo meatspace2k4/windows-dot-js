@@ -387,7 +387,18 @@ function shift(f, op, sz, o, rd, wr, L, szp) {
       f.lg(B).lg(R).op(op === 0 ? 'shl' : 'shr_u').lg(B).c(w).lg(R).op('sub').op(op === 0 ? 'shr_u' : 'shl').op('or').c(m).op('and').ls(R);
     }
     if (op === 0) f.lg(R).c(1).op('and').gs('cf'); else f.lg(R).c(w - 1).op('shr_u').c(1).op('and').gs('cf');
-  } else throw new Unsupported(op === 2 ? 'rcl' : 'rcr');
+  } else {                      // rcl / rcr: a rotate of w + 1 bits, CF above the operand
+    const X = f.loc64(), K = f.loc64(), mask = (1n << BigInt(w + 1)) - 1n;
+    f.gg('cf').e(EXT_U).c64(w).op64('shl').lg(B).c(m).op('and').e(EXT_U).op64('or').ls(X);
+    f.lg(C).c(w + 1).op('rem_u').e(EXT_U).ls(K);
+    if (op === 2) f.lg(X).lg(K).op64('shl').lg(X).c64(w + 1).lg(K).op64('sub').op64('shr_u');
+    else f.lg(X).lg(K).op64('shr_u').lg(X).c64(w + 1).lg(K).op64('sub').op64('shl');
+    f.op64('or').c64(mask).op64('and').ls(X);
+    if (op === 3) f.lg(B).c(w - 1).op('shr_u').gg('cf').op('xor').c(1).op('and').gs('of');   // before CF changes
+    f.lg(X).c64(w).op64('shr_u').e(WRAP).c(1).op('and').gs('cf');
+    f.lg(X).e(WRAP).c(m).op('and').ls(R);
+    if (op === 2) f.lg(R).c(w - 1).op('shr_u').gg('cf').op('xor').c(1).op('and').gs('of');
+  }
   wr(o, sz, R);
   f.end();
 }
