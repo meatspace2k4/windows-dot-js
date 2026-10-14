@@ -816,8 +816,10 @@ class Translator:
             elif len(regs) == 2:
                 dst = sti(regs[0]); s_i = sti(regs[1]); src = lambda: st_get(f, s_i)
             elif len(regs) == 1:
-                dst = sti(regs[0]); src = lambda: st_get(f, 0)
-                if dst == 0: dst, src = 0, (lambda: st_get(f, 1))
+                # capstone prints D8 /r (ST0 op= ST(i)) and DE /r (ST(i) op= ST0, pop) both as "fop st(i)"
+                i = sti(regs[0])
+                if pop: dst = i; src = lambda: st_get(f, 0)
+                else: dst = 0; src = (lambda i=i: st_get(f, i))
             else:
                 dst = 1; src = lambda: st_get(f, 0)
             a, b = f.d(), f.d(); st_get(f, dst); f.ls(a); src(); f.ls(b)

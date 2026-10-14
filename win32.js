@@ -261,6 +261,7 @@ class Process {
   }
 
   // ---- windows and messages
+  absPos(w) { let x = 0, y = 0; for (let v = w; v; v = v.parentWin) { x += v.x; y += v.y; } return [x, y]; }
   post(hwnd, msg, wp = 0, lp = 0) { this.queue.push({ hwnd, msg, wp: u32(wp), lp: u32(lp) }); }
   sendMsg(hwnd, msg, wp = 0, lp = 0) {
     const w = this.windows.get(hwnd); if (!w) return 0;
@@ -335,10 +336,21 @@ class DC {
   }
   color(c) { return css(this.rgb(c)); }
   touch() { if (this.bitmap) this.bitmap.ver++; }
+  // Window DCs draw relative to the window's screen position and are clipped to it.
+  win() { return !this.bitmap && this.hwnd ? this.proc.windows.get(this.hwnd) : null; }
+  origin() { const w = this.win(); return w ? this.proc.absPos(w) : [0, 0]; }
+  pre() {
+    const g = this.ctx, w = this.win();
+    if (!w || !w.parentWin) { g.setTransform(1, 0, 0, 1, 0, 0); return g; }
+    const [x, y] = this.proc.absPos(w);
+    g.save(); g.setTransform(1, 0, 0, 1, x, y); g.beginPath(); g.rect(0, 0, w.w, w.h); g.clip(); this.clipped = true;
+    return g;
+  }
+  post() { if (this.clipped) { this.ctx.restore(); this.clipped = false; } }
   // Win95 GDI lines are not antialiased: rasterize with Bresenham into 1px spans.
   line(x0, y0, x1, y1) {
     const p = this.pen; if (p.style === 5 || !this.ctx) return;
-    const g = this.ctx; g.fillStyle = this.color(p.color); g.beginPath();
+    const g = this.pre(); g.fillStyle = this.color(p.color); g.beginPath();
     const wd = p.width, o = wd >> 1;
     let dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1, err = dx + dy;
     let x = x0, y = y0, runX = x, runY = y, len = 0;
@@ -353,9 +365,9 @@ class DC {
       if (e2 <= dx) { err += dx; y += sy; my = true; }
       if ((horiz && my) || (!horiz && mx)) { flush(); len = 0; }
     }
-    flush(); g.fill(); this.touch();
+    flush(); g.fill(); this.post(); this.touch();
   }
-  fill(x, y, w, h, color) { if (!this.ctx || w <= 0 || h <= 0) return; this.ctx.fillStyle = this.color(color); this.ctx.fillRect(x, y, w, h); this.touch(); }
+  fill(x, y, w, h, color) { if (!this.ctx || w <= 0 || h <= 0) return; const g = this.pre(); g.fillStyle = this.color(color); g.fillRect(x, y, w, h); this.post(); this.touch(); }
   fontCss() {
     // lfHeight < 0: character (em) height; > 0: cell height = ascent + descent
     const lf = this.font.lf, face = FONT_MAP[(lf.face || '').toLowerCase()] || lf.face || 'W95 Arial';
@@ -734,7 +746,8 @@ def('USER32', 'CreateWindowExA', 12, function (ex, cls, title, style, x, y, w, h
   if (!c) return 0;
   const win = { kind: 'window', cls: c, proc: c.proc, style, ex, x: x | 0, y: y | 0, w: w | 0, h: h | 0, parent, child: !!(style & 0x40000000), dirty: true, title: this.readA(title) || '', extra: new Map() };
   const hwnd = this.newHandle(win); win.hwnd = hwnd; this.windows.set(hwnd, win);
-  win.ctx = this.host.surface(hwnd, win.w, win.h, win);
+  const pw = win.child ? this.windows.get(parent) : null;
+  if (pw) { win.parentWin = pw; win.ctx = pw.ctx; } else win.ctx = this.host.surface(hwnd, win.w, win.h, win);
   const cs = this.alloc(48);
   [param, inst, menu, parent, h, w, y, x, style, title, cls, ex].forEach((v, i) => this.w32(cs + 4 * i, v));
   this.sendMsg(hwnd, WM.NCCREATE, 0, cs);
@@ -753,7 +766,17 @@ def('USER32', 'DestroyWindow', 1, function (h) {
 });
 def('USER32', 'ShowWindow', 2, function (h, cmd) { const w = wOf(this, h); if (w && w.kind === 'control') w.visible = cmd !== 0; return 1; });
 def('USER32', 'UpdateWindow', 1, () => 1);
-def('USER32', 'SetWindowPos', 7, () => 1);
+function moveWindow(p, h, x, y, w, hh, flags) {
+  const win = p.windows.get(h); if (!win || win.kind === 'control') return 1;
+  const sized = !(flags & 1) && (w !== win.w || hh !== win.h), moved = !(flags & 2) && (x !== win.x || y !== win.y);
+  if (!(flags & 2)) { win.x = x | 0; win.y = y | 0; }
+  if (!(flags & 1)) { win.w = w | 0; win.h = hh | 0; }
+  if (moved) p.sendMsg(h, WM.MOVE, 0, ((win.y & 0xffff) << 16) | (win.x & 0xffff));
+  if (sized) p.sendMsg(h, WM.SIZE, 0, ((win.h & 0xffff) << 16) | (win.w & 0xffff));
+  return 1;
+}
+def('USER32', 'SetWindowPos', 7, function (h, after, x, y, w, hh, flags) { return moveWindow(this, h, x | 0, y | 0, w | 0, hh | 0, flags); });
+def('USER32', 'MoveWindow', 6, function (h, x, y, w, hh) { return moveWindow(this, h, x | 0, y | 0, w | 0, hh | 0, 0); });
 def('USER32', 'DefWindowProcA', 4, function (h, msg, wp, lp) {
   const w = this.windows.get(h);
   if (msg === WM.CLOSE) return API.USER32.DestroyWindow[1].call(this, h);
@@ -801,7 +824,12 @@ def('USER32', 'GetClientRect', 2, function (h, p) {
   if (!w && h && h === this.host.previewParent) { writeRect(this, p, 0, 0, this.host.previewW, this.host.previewH); return 1; }
   writeRect(this, p, 0, 0, w ? w.w : this.host.width, w ? w.h : this.host.height); return 1;
 });
-def('USER32', 'GetWindowRect', 2, function (h, p) { const w = this.windows.get(h); if (w) writeRect(this, p, w.x, w.y, w.x + w.w, w.y + w.h); else writeRect(this, p, 0, 0, this.host.width, this.host.height); return 1; });
+def('USER32', 'GetWindowRect', 2, function (h, p) {
+  const w = this.windows.get(h);
+  if (w && w.kind !== 'control') { const [x, y] = this.absPos(w); writeRect(this, p, x, y, x + w.w, y + w.h); }
+  else writeRect(this, p, 0, 0, this.host.width, this.host.height);
+  return 1;
+});
 def('USER32', 'GetDC', 1, function (h) {
   const w = this.windows.get(h);
   return this.newHandle(new DC(this, w ? w.ctx : this.host.surface(0, this.host.width, this.host.height), w ? w.w : this.host.width, w ? w.h : this.host.height, h));
@@ -1072,8 +1100,9 @@ function blitSource(s, d) {
 }
 // General ternary raster operation on (pattern, source, destination), bit for bit.
 function rop3(d, x, y, w, h, src, sx, sy, rop) {
-  const g = d.ctx, idx = (rop >>> 16) & 0xff;
-  x |= 0; y |= 0; w |= 0; h |= 0;
+  const g = d.ctx, idx = (rop >>> 16) & 0xff, [ox, oy] = d.origin();
+  x = (x | 0) + ox; y = (y | 0) + oy; w |= 0; h |= 0;
+  g.setTransform(1, 0, 0, 1, 0, 0);
   const x0 = Math.max(0, x), y0 = Math.max(0, y), x1 = Math.min(g.canvas.width, x + w), y1 = Math.min(g.canvas.height, y + h);
   if (x1 <= x0 || y1 <= y0) return;
   const dd = g.getImageData(x0, y0, x1 - x0, y1 - y0), D = dd.data;
@@ -1134,13 +1163,13 @@ def('GDI32', 'BitBlt', 9, function (hd, x, y, w, h, hs, sx, sy, rop) {
   if (!hs || !usesSrc) return API.GDI32.PatBlt[1].call(this, hd, x, y, w, h, rop);
   const s = dcOf(this, hs); if (!s.ctx || !d.ctx) return 1;
   const src = blitSource(s, d);
-  if (rop === ROP.SRCCOPY) d.ctx.drawImage(src, sx | 0, sy | 0, w | 0, h | 0, x | 0, y | 0, w | 0, h | 0);
+  if (rop === ROP.SRCCOPY) { const g = d.pre(); g.drawImage(src, sx | 0, sy | 0, w | 0, h | 0, x | 0, y | 0, w | 0, h | 0); d.post(); }
   else rop3(d, x, y, w, h, src, sx, sy, rop);
   d.touch(); return 1;
 });
 def('GDI32', 'StretchBlt', 11, function (hd, x, y, w, h, hs, sx, sy, sw, sh) {
   const d = dcOf(this, hd), s = dcOf(this, hs); if (!s.ctx || !d.ctx) return 1;
-  d.ctx.drawImage(blitSource(s, d), sx | 0, sy | 0, sw | 0, sh | 0, x | 0, y | 0, w | 0, h | 0); d.touch(); return 1;
+  const g = d.pre(); g.drawImage(blitSource(s, d), sx | 0, sy | 0, sw | 0, sh | 0, x | 0, y | 0, w | 0, h | 0); d.post(); d.touch(); return 1;
 });
 def('GDI32', 'SetBkColor', 2, function (hdc, c) { const dc = dcOf(this, hdc); const o = dc.bk; dc.bk = c; return o; });
 def('GDI32', 'SetBkMode', 2, function (hdc, m) { const dc = dcOf(this, hdc); const o = dc.bkMode; dc.bkMode = m; return o; });
@@ -1167,7 +1196,7 @@ function textBitmap(fontCss, s, color) {
   return e;
 }
 function drawText(p, dc, x, y, s, opaqueRect) {
-  const g = dc.ctx; if (!g) return;
+  if (!dc.ctx) return;
   if (opaqueRect) dc.fill(opaqueRect.l, opaqueRect.t, opaqueRect.r - opaqueRect.l, opaqueRect.b - opaqueRect.t, dc.bk);
   if (!s) return;
   const col = dc.rgb(dc.text);
@@ -1176,7 +1205,7 @@ function drawText(p, dc, x, y, s, opaqueRect) {
   const tx = Math.round(ha === 6 ? x - t.w / 2 : ha === 2 ? x - t.w : x);
   const top = va === 24 ? y - t.asc : va === 8 ? y - t.h : y;
   if (dc.bkMode === 2 && !opaqueRect) dc.fill(tx, top, t.w, t.h, dc.bk);
-  g.drawImage(t.canvas, tx, top);
+  const g = dc.pre(); g.drawImage(t.canvas, tx, top); dc.post();
   dc.touch();
 }
 def('GDI32', 'TextOutA', 5, function (hdc, x, y, s, n) { drawText(this, dcOf(this, hdc), x | 0, y | 0, this.readA(s, n)); return 1; });

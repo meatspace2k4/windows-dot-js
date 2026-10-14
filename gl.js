@@ -289,6 +289,10 @@ class Context {
     }
     return { prim, data: new Float32Array(out) };
   }
+  fitDrawable() {
+    const w = this.dc && this.dc.win();
+    if (w && (w.w !== this.canvas.width || w.h !== this.canvas.height) && w.w > 0 && w.h > 0) { this.canvas.width = w.w; this.canvas.height = w.h; }
+  }
   draw(geo) {
     if (!geo.data.length) return;
     const g = this.g, P = this.shade === E.FLAT ? this.progs.flat : this.progs.smooth, u = P.u;
@@ -358,10 +362,11 @@ class Context {
       } else OPS[fn].apply(this, args);
     }
   }
+  // Copy the rendered frame into the window's current rectangle on its GDI surface.
   present() {
-    if (!this.dc || !this.dc.ctx) return;
+    const dc = this.dc; if (!dc || !dc.ctx) return;
     this.g.flush();
-    this.dc.ctx.drawImage(this.canvas, 0, 0);
+    const g = dc.pre(); g.drawImage(this.canvas, 0, 0); dc.post();
   }
 }
 
@@ -581,6 +586,7 @@ gl('glClear', 'u', function (c, m) {
   OPS.clear.call(c, m);
 });
 OPS.clear = function (m) {
+  this.fitDrawable();
   const g = this.g; this.applyState();
   g.clearColor(...this.clearColor); g.clearDepth(this.clearDepth); g.depthMask(true);
   g.clear((m & E.COLOR_BUFFER_BIT ? g.COLOR_BUFFER_BIT : 0) | (m & E.DEPTH_BUFFER_BIT ? g.DEPTH_BUFFER_BIT : 0));
