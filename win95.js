@@ -1689,7 +1689,8 @@ class SaverRun {
       dialog: (proc, d) => win32Dialog(proc, d),
       closeDialog: d => { if (d.ui) closeWin(d.ui, true); dirty(); },
     };
-    const cmd = this.mode === 's' ? `${this.path} /s` : this.mode === 'p' ? `${this.path} /p ${PREVIEW_HWND}` : `${this.path} /c:0`;
+    const exe = /\s/.test(this.path) ? `"${this.path}"` : this.path;
+    const cmd = this.mode === 's' ? `${exe} /s` : this.mode === 'p' ? `${exe} /p ${PREVIEW_HWND}` : `${exe} /c:0`;
     try { this.proc = new W95Win32.Process(bytes, module, { ...hit.s.meta, name: hit.name }, host, cmd); }
     catch (e) { console.error(e); this.exited(-1, e.message); return false; }
     this.loop(); return true;
