@@ -960,6 +960,9 @@ def('KERNEL32', 'WaitForMultipleObjects', 4, function (n, hs, all, ms) {
   for (let i = 0; i < n; i++) { const o = this.obj(this.r32(hs + 4 * i)); if (!o || (o.kind === 'event' && o.set) || (o.kind === 'semaphore' && o.count > 0) || !['event', 'semaphore'].includes(o.kind)) { if (o && o.kind === 'event' && !o.manual) o.set = false; if (o && o.kind === 'semaphore') o.count--; return i; } }
   return 0x102;
 });
+def('KERNEL32', 'CreateMutexA', 3, function (sa, owned) { return this.newHandle({ kind: 'mutex', owned: !!owned }); });
+def('KERNEL32', 'MakeCriticalSectionGlobal', 1, () => 0);
+def('KERNEL32', 'WaitForSingleObjectEx', 3, function (h, ms) { return API.KERNEL32.WaitForSingleObject[1].call(this, h, ms); });
 // change notifications: nothing changes the disk while a guest waits on one, so they never fire
 def('KERNEL32', 'FindFirstChangeNotificationA', 3, function () { return this.newHandle({ kind: 'event', manual: true, set: false }); });
 def('KERNEL32', 'FindNextChangeNotification', 1, () => 1);
