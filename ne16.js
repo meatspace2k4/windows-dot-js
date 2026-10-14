@@ -1174,6 +1174,24 @@ def16('KERNEL', 630, '', 'jmp', function () {                                 //
 def16('KERNEL', 340, 's', 'v', function () {});                                  // DiagOutput: boot-log text, kept only under a debugger
 def16('KERNEL', 480, '', 'v', function () {});                                   // _EnterWin16Lock: one thread runs here, so nothing to exclude
 def16('KERNEL', 481, '', 'v', function () {});                                   // _LeaveWin16Lock
+// KRNL386's bridges to Win32 events and threads (each a thunk into KERNEL32 in the real KERNEL). One thread runs
+// here: a wait finds an event signalled or times out at once, and the thread id is the one KERNEL32 reports.
+const ev16 = (p, h) => { const o = p.obj(h); return o && o.kind === 'event' ? o : null; };
+def16('KERNEL', 457, 'll', 'l', function (manual, initial) { return this.newHandle({ kind: 'event', manual: !!manual, set: !!initial }); });   // CreateW32Event
+def16('KERNEL', 458, 'l', 'l', function (h) { const e = ev16(this, h); if (!e) return 0; e.set = true; return 1; });   // SetW32Event
+def16('KERNEL', 459, 'l', 'l', function (h) { const e = ev16(this, h); if (!e) return 0; e.set = false; return 1; });  // ResetW32Event
+def16('KERNEL', 460, 'll', 'l', function (h, ms) {                                                     // WaitForSingleObject
+  const e = ev16(this, h); if (!e) return 0xffffffff;
+  if (!e.set) return 0x102; if (!e.manual) e.set = false; return 0;
+});
+def16('KERNEL', 461, 'llll', 'l', function (n, ph, all, ms) {                                        // WaitForMultipleObjects
+  const hs = [...Array(n)].map((_, i) => ev16(this, this.r32(this.lin(ph) + 4 * i)));
+  if (all) { if (!hs.every(e => e && e.set)) return 0x102; for (const e of hs) if (!e.manual) e.set = false; return 0; }
+  const i = hs.findIndex(e => e && e.set); if (i < 0) return 0x102; if (!hs[i].manual) hs[i].set = false; return i;
+});
+def16('KERNEL', 462, '', 'l', function () { return 0x51; });                                           // GetCurrentThreadId, as KERNEL32 answers
+def16('KERNEL', 463, 'lw', 'w', function (tid, hq) { const old = this.threadQueue || 0; this.threadQueue = hq; return old; });   // SetThreadQueue
+def16('KERNEL', 464, 'l', 'w', function (tid) { return this.threadQueue || 0; });                     // GetThreadQueue
 /** 16 -> 32 transition for SL thunks: EBX + 0x16 addresses the 16-bit arguments; the target returns with CL = argument bytes */
 P.enter32from16 = function (target) {
   const ctx = { esp: this.cpu.esp.value, ebp: this.cpu.ebp.value, esi: this.cpu.esi.value, edi: this.cpu.edi.value, ebx: this.cpu.ebx.value };
