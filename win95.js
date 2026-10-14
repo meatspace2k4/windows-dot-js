@@ -582,6 +582,7 @@ function treeControl(o) {
   const kids = p => { try { return fs.readdir(p).filter(i => (i.isDir || o.files) && !i.hidden).sort(byName); } catch (_) { return []; } };
   const t = {
     type: 'custom', x: o.x, y: o.y, w: o.w, h: o.h, sel: o.sel || null, open: new Set(o.open || []),
+    reveal(p) { for (let q = p && dirname(p); q && !isRoot(q) && q !== dirname(q); q = dirname(q)) this.open.add(q); if (p && fs.exists(p) && fs.stat(p).isDir) this.open.add(p); },
     rows() {
       const out = o.top ? [{ path: null, depth: 0, label: o.top.label, icon: o.top.icon }] : [], base = o.top ? 1 : 0;
       const walk = (p, d, label, ic) => {
@@ -624,6 +625,7 @@ function treeControl(o) {
       return false;
     },
   };
+  t.reveal(t.sel);
   return t;
 }
 
