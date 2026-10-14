@@ -1193,6 +1193,7 @@ def16('KERNEL', 461, 'llll', 'l', function (n, ph, all, ms) {                   
 def16('KERNEL', 462, '', 'l', function () { return 0x51; });                                           // GetCurrentThreadId, as KERNEL32 answers
 def16('KERNEL', 463, 'lw', 'w', function (tid, hq) { const old = this.threadQueue || 0; this.threadQueue = hq; return old; });   // SetThreadQueue
 def16('KERNEL', 464, 'l', 'w', function (tid) { return this.threadQueue || 0; });                     // GetThreadQueue
+def16('KERNEL', 624, 'll', 'v', function (tid, hq) { this.threadQueue = hq & 0xffff; });                 // SetFastQueue: the queue field (38h) of the thread
 def16('KERNEL', 476, 'l', 'l', function (h) { return h; });                                            // ConvertToGlobalHandle: one process, so already global
 def16('KERNEL', 474, 'l', 'w', function (h) { return this.handles.delete(h) ? 1 : 0; });               // CloseW32Handle
 def16('KERNEL', 105, '', 'w', function () { return 0x0400; });                                         // GetExeVersion: system code expects Windows 4.0
