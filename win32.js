@@ -154,7 +154,8 @@ class Process {
   }
   /** Run until the guest blocks for messages or exits. Returns false once the process has exited. */
   slice() {
-    if (this.exitCode !== null || this.trapped) return false;
+    if (this.exitCode !== null) return false;
+    if (this.trapped) { this.fail(this.trapped); return false; }
     this.depth = 0; this.waiting = false; this.lastYield = this.host.now();
     const r = this.runAt(this.resumeEip);
     if (r === 1) { this.resumeEip = this.reg('eip'); return true; }
@@ -171,13 +172,14 @@ class Process {
     this.depth++;
     const r = this.runAt(addr);
     this.depth--;
-    if (r !== 0) throw new GuestError(this.trapped || `guest callback did not return (${r} at ${this.reg('eip').toString(16)})`);
+    if (r !== 0 || this.trapped) throw new GuestError(this.trapped || `guest callback did not return (${r} at ${this.reg('eip').toString(16)})`);
     const ret = this.reg('eax');
     this.reg('esp', save.esp); this.cpu.eip.value = save.eip;
     return ret;
   }
   fail(why) {
-    this.trapped = why;
+    if (this.failed) return;
+    this.failed = true; this.trapped = why;
     console.error(`[win32] ${this.meta.name || ''} stopped: ${why}`);
     this.host.exited(-1, why);
   }

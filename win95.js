@@ -1716,6 +1716,9 @@ class SaverRun {
       const p = this.proc;
       try { for (let n = 0; this.alive && p.ready() && n < 4; n++) if (!p.slice()) break; }
       catch (e) { console.error(e); this.exited(-1, e.message); return; }
+      // a guest that faulted or exited without reporting it must not leave its window up
+      if (p.trapped && !p.failed) p.fail(p.trapped);
+      if (p.exitCode !== null || p.trapped) { this.exited(p.exitCode, p.trapped); return; }
       if (this.mode === 'p') dirty();
       // guest time is driven by its own timers and message loop, not by display refresh
       const p2 = this.proc, now = performance.now();
