@@ -466,6 +466,7 @@ P.scanout = function () {
   const a = this.adapter();
   a.vram = this.u8.subarray(a.vramLin, a.vramLin + VRAM_SIZE);
   if (!a.flat) a.vram.set(this.u8.subarray(WIN, WIN + 0x10000), a.bank << 16);
+  if (a.crtc[0x13]) a.pitch = (a.crtc[0x13] | ((a.crtc[0x3f] & 0x80) << 1)) * 8;   // CRTC offset register: bytes per scanline / 8
   return a;
 };
 // VFLATD: the VxD that gives display drivers a linear view of banked VRAM. Register (DX=1): ES:DI = the driver's
