@@ -1194,6 +1194,8 @@ def16('KERNEL', 482, 's', 'l', function (name) {          // LoadSystemLibrary32
   return m.base;
 });
 def16('KERNEL', 619, 'wxl', 'w', function () { return 1; });                // RegisterCBClient
+// InitCBClient: the 32-bit glue routine (USER32's) that 16-to-32 callbacks of registered clients go through
+def16('KERNEL', 623, 'l', 'w', function (glue) { this.cbGlueLS = glue; return 1; });
 def16('KERNEL', 605, 'll', 'l', function (target, rel) { return this.slThunklet(target, rel); });   // AllocSLThunkletCallback
 def16('KERNEL', 630, '', 'jmp', function () {                                 // C16ThkSL
   // the stub would load EDX from the 32-bit target table at [EDX + CX] and far-jump to the 16 -> 32 transition
