@@ -3378,6 +3378,17 @@ function elements() {
     add('window', w.title, w, { active: w.isActive, modal: modals.includes(w), maximized: !!w.max });
     add('titlebar', w.title, w.capR, win);
     for (const b of w.buttons()) add('pushbutton', { close: 'Close', max: 'Maximize', restore: 'Restore', min: 'Minimize' }[b.id], b, { ...win, disabled: !!b.disabled });
+    if (w.native && w.app.alive && w.app.proc && !w.app.proc.depth) {   // the controls USER keeps for a native window
+      let kids = []; try { kids = w.app.proc.nativeChildren(w.hwnd); } catch (e) { console.error(e); }
+      for (const c of kids) {
+        const bs = c.style & 0x0f, k = c.cls.toLowerCase();
+        const role = k === 'button' ? (bs === 7 ? 'grouping' : [2, 3, 5, 6].includes(bs) ? 'checkbutton' : [4, 9].includes(bs) ? 'radiobutton' : 'pushbutton')
+          : k === 'edit' ? 'text-edit' : k === 'static' ? 'text' : k === 'combobox' ? 'combobox' : k === 'listbox' ? 'list'
+          : k === 'scrollbar' ? 'scrollbar' : /listview/i.test(k) ? 'list' : /toolbar/i.test(k) ? 'toolbar' : 'client';
+        add(role, label(c.text), c, { ...win, cls: c.cls, id: c.id, hwnd: c.hwnd, disabled: !c.enabled, focused: c.focused,
+          ...(c.checked !== undefined ? { checked: !!c.checked } : {}), ...(role === 'text-edit' || role === 'combobox' ? { value: c.text } : {}) });
+      }
+    }
     for (const b of w.barItems()) add('menuitem', label(b.m.label), b, { ...win, menubar: true, open: w.barOpen === w.barItems().indexOf(b) });
     const body = w.body;
     if (body instanceof FolderView) {

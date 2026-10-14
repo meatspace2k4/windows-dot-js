@@ -553,6 +553,31 @@ P.nativeWindows = function () {
   }
   return { list, active: u(60), capture: u(236) };                                                                    // GetActiveWindow, GetCapture
 };
+/** the visible descendants of a native window, front to back as USER links them: rectangle, class, text, control id,
+ *  style and enabled state. Edits and combo boxes are asked for their text (WM_GETTEXT); buttons for their check
+ *  state (BM_GETCHECK) */
+P.nativeChildren = function (parent) {
+  if (!this.wbufLin) this.nativeWindows();
+  const a = this.wbufLin, buf = u32(this.wbufSel << 16), u = (o, args) => this.user16(o, args).ax, s16 = o => (this.r16(a + o) << 16) >> 16;
+  const out = [], focus = u(23);   // GetFocus
+  const walk = (p, depth) => {
+    for (let h = u(262, [['w', p], ['w', 5]]), n = 0; h && n < 512; h = u(262, [['w', h], ['w', 2]]), n++) {
+      if (!u(49, [['w', h]])) continue;
+      u(32, [['w', h], ['l', buf]]);
+      const x = s16(0), y = s16(2), w = s16(4) - x, hh = s16(6) - y;
+      const cl = u(58, [['w', h], ['l', buf + 0x180], ['w', 64]]), cls = cl ? this.readA(a + 0x180, cl) : '';
+      const style = this.user16(135, [['w', h], ['w', 0xfff0]]).dxax;                                            // GetWindowLong(GWL_STYLE)
+      const askText = /^(edit|combobox)$/i.test(cls), tl = askText ? u(111, [['w', h], ['w', 0x0d], ['w', 160], ['l', buf + 16]])   // SendMessage WM_GETTEXT
+        : u(107, [['w', h], ['w', 0x0d], ['w', 160], ['l', buf + 16]]);
+      const text = tl ? this.readA(a + 16, tl) : '';
+      const c = { hwnd: h, parent: p, x, y, w, h: hh, cls, text, id: u(277, [['w', h]]), style, enabled: !!u(35, [['w', h]]), focused: h === focus, depth };
+      if (/^button$/i.test(cls) && [2, 3, 4, 5, 6, 9].includes(style & 0x0f)) c.checked = u(111, [['w', h], ['w', 0x400], ['w', 0], ['l', 0]]);
+      out.push(c); walk(h, depth + 1);
+    }
+  };
+  walk(parent, 0);
+  return out;
+};
 /** a key into USER's keybd_event (USER.289), as KEYBOARD.DRV reports one: AL = virtual key, AH = 80h on release,
  *  BL = scan code, BH = 1 for an extended key */
 P.keyEvent16 = function (vk, scan, up, ext = false) {
