@@ -1624,8 +1624,32 @@ def16('KERNEL', 56, '', 'jmp', function () {
 def16('KERNEL', 490, 'w', 'w', function (v) { const o = this.k490 || 0; this.k490 = v; return o; });
 // ThunkConnect16 (#651): a thunk-compiler DLL's 16-bit half announcing itself (SHELL.DLL). Its 32-bit half connected
 // already or connects late, so there is nothing to record here.
-def16('KERNEL', 651, 'sswlxsw', 'w', () => 1);
-def16('KERNEL', 631, '', 'jmp', function () { throw new GuestError('C16ThkSL01: a 16-to-32 thunk-compiler call (not connected here)'); });
+// For 'SL01' thunk data (16 -> 32 calls, VER.DLL to VERSION.DLL) the names are kept for C16ThkSL01 to find the 32-bit
+// half's target table by.
+def16('KERNEL', 651, 'sswlxsw', 'w', function (dll16, dll32, hinst, reason, td, name32) {
+  if (reason === 1 && td >>> 16 && this.readA(this.lin(td), 4) === 'SL01') (this.sl01 = this.sl01 || new Map()).set(this.lin(td), { dll32, name32 });
+  return 1;
+});
+// C16ThkSL01 (#631): a thunk-compiler stub's 16 -> 32 call. EDX = 16:16 of its ThunkDataSL16, CX = target number * 4,
+// the caller's return address on top of the stack. The target is entry CX/4 of the 32-bit half's table (at its
+// ThunkDataSL32 + the offset at +20h); a table entry that is no code of that module means the target is not there, and
+// the call returns the error value the 16-bit API database (ThunkDataSL16 +28h: {argument bytes, error value} per
+// target) gives, dropping the arguments, as for a 32-bit half that never connected.
+def16('KERNEL', 631, '', 'jmp', function () {
+  const td = this.lin(u32(this.cpu.edx.value)), cx = this.cpu.ecx.value & 0xffff, rec = this.sl01 && this.sl01.get(td);
+  if (rec && !rec.mod) {
+    const m = this.loadDll(String(rec.dll32 || '').toUpperCase().replace(/^.*\\/, '').replace(/\.DLL$/, ''));
+    const td32 = m && m.exports.get(rec.name32);
+    if (td32) Object.assign(rec, { mod: m, table: u32(td32 + (this.r32(td32 + 0x20) | 0)) });
+  }
+  const tgt = rec && rec.table ? this.r32(rec.table + cx) : 0;
+  if (rec && rec.mod && tgt >= rec.mod.meta.textLo && tgt < rec.mod.meta.textHi) return this.enter32from16(tgt);
+  const db = this.lin(this.r32(td + 0x28)), nargs = db ? this.r32(db + 2 * cx) : 0, err = db ? this.r32(db + 2 * cx + 4) : 0;
+  const ssb = u32(this.cpu.ssb.value), sp = this.cpu.esp.value & 0xffff, ip = this.r16(ssb + sp), cs = this.r16(ssb + ((sp + 2) & 0xffff));
+  this.cpu.eax.value = lo16(this.cpu.eax.value, err & 0xffff); this.cpu.edx.value = lo16(this.cpu.edx.value, err >>> 16);
+  this.cpu.esp.value = lo16(this.cpu.esp.value, sp + 4 + nargs);
+  this.seg('cs', cs); return u32(this.selBase(cs) + ip);
+});
 def16('KERNEL', 27, 'wpw', 'w', function (h, buf, n) { const m = this.neByHandle(h); return m ? W(this, buf, m.name, n) : 0; });   // GetModuleName
 def16('KERNEL', 219, 'w', 'w', () => 0);                                                                                       // PatchCodeHandle: nothing to patch
 // GetCodeInfo (#104): the SEGINFO of the module segment a code pointer is in (file sector, length, flags, allocation,
