@@ -7,7 +7,10 @@ guest stack. `run(eip)` dispatches blocks until EIP hits the sentinel, an import
 thunk (handled by the JS Win32 layer, which may ask to yield) or an unknown
 address. The x87 stack lives in linear memory.
 
-usage: recomp.py IMAGE OUT_BASENAME
+usage: recomp.py IMAGE OUT_BASENAME [--base ADDR] [--lookup ADDR]
+--base relocates the image (using its .reloc table) before translation; --lookup places the
+module's block table. Registers are imported mutable globals so modules share one CPU state.
+`run` returns 3 when control leaves the module (another module or an import thunk handled by JS).
 writes OUT_BASENAME.wasm and OUT_BASENAME.json (block map + image hash).
 """
 import hashlib, json, struct, sys
@@ -18,8 +21,7 @@ from capstone import x86_const as X
 SENTINEL = 0xFFFFFFF0
 THUNK_BASE = 0xFFFF0000
 FPU_BASE = 0x00010000          # 8 x f64 registers
-LOOKUP_BASE = 0x00100000       # i32 per code byte: block id + 1
-LOOKUP_BYTES = 0x00200000
+LOOKUP_BYTES = 0x01000000     # per-module table (i32 per code byte: block id + 1) lives at a caller-chosen base
 MEM_PAGES = 2048               # 128 MiB
 
 # ---------------------------------------------------------------- wasm encoding
@@ -62,7 +64,7 @@ def u32(d, o): return struct.unpack_from('<I', d, o)[0]
 class PE:
     def __init__(self, data):
         self.data = data; p = u32(data, 0x3c); opt = p + 24
-        self.base = u32(data, opt + 28); self.entry = self.base + u32(data, opt + 16)
+        self.base = u32(data, opt + 28); self.entry = self.base + u32(data, opt + 16) if u32(data, opt + 16) else 0
         self.size = u32(data, opt + 56)
         self.secs = []
         for i in range(u16(data, p + 6)):
@@ -85,6 +87,14 @@ class PE:
                 if e >> 12 == 3: self.relocs.append(page + (e & 0xfff))
             o += blk
         self.code = [(va, max(vs, rs)) for nm, va, vs, ro, rs, ch in self.secs if ch & 0x20000000]
+        self.pref = self.base
+    def rebase(self, nb):
+        delta = (nb - self.base) & 0xffffffff
+        for r in self.relocs:
+            v = (u32(self.image, r) + delta) & 0xffffffff
+            struct.pack_into('<I', self.image, r, v)
+        self.entry = (self.entry - self.base + nb) & 0xffffffff
+        self.base = nb
     def in_code(self, va):
         r = va - self.base
         return any(a <= r < a + n for a, n in self.code)
@@ -95,7 +105,8 @@ class Insn:
     __slots__ = ('i', 'addr', 'size', 'next', 'mn', 'ops', 'prefix', 'live', 'id')
 def decode_all(pe):
     md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32); md.detail = True
-    insns, todo, seen_entries = {}, [pe.entry], set()
+    insns, todo, seen_entries = {}, [pe.entry] if pe.entry else [], set()
+    todo += export_entries(pe)
     reloc_vals = [pe.u32va(pe.base + r) for r in pe.relocs]
     data_refs = set()
     def walk(start):
@@ -125,6 +136,12 @@ def decode_all(pe):
         if not new: break
         todo.extend(new)
     return insns, seen_entries
+
+def export_entries(pe):
+    d = pe.data; p = u32(d, 0x3c); rva = u32(d, p + 24 + 96)
+    if not rva: return []
+    img = pe.image; n = u32(img, rva + 20); funcs = u32(img, rva + 28)
+    return [pe.base + u32(img, funcs + 4 * i) for i in range(n) if u32(img, funcs + 4 * i)]
 
 def build_blocks(pe, insns, entries):
     starts = set(e for e in entries if e in insns)
@@ -873,9 +890,10 @@ class Translator:
         raise Unsupported(mn)
 
 # ---------------------------------------------------------------- module assembly
-def build(path, out):
+def build(path, out, base=None, lookup=0x06000000):
     data = open(path, 'rb').read()
     pe = PE(data)
+    if base is not None and base != pe.base: pe.rebase(base)
     insns, entries = decode_all(pe)
     blocks = build_blocks(pe, insns, entries)
     liveness(blocks)
@@ -890,15 +908,12 @@ def build(path, out):
     sec = lambda n, b: bytes([n]) + uleb(len(b)) + b
     tsec = vec([b'\x60' + vec([bytes([x]) for x in p]) + vec([bytes([x]) for x in r]) for p, r in types])
     imps = [name('env') + name('mem') + b'\x02\x00' + uleb(MEM_PAGES)]
+    imps += [name('cpu') + name(n) + bytes([0x03, I32, 1]) for n in G]
     imps += [name('env') + name(n) + b'\x00' + uleb(tidx[(tuple(p), tuple(r))]) for n, p, r in IMPORTS]
     nfuncs = 1 + len(bodies)
     fsec = vec([uleb(1)] + [uleb(0)] * len(bodies))
     tbl = b'\x70\x00' + uleb(len(bodies))
-    gl = []
-    for n in G:
-        init = {'fcw': 0x37f, 'esp': 0x003ffff0}.get(n, 0)
-        gl.append(bytes([I32, 1]) + b'\x41' + sleb(s32(init)) + b'\x0b')
-    exps = [name('run') + b'\x00' + uleb(NIMP)] + [name(n) + b'\x03' + uleb(G[n]) for n in G]
+    exps = [name('run') + b'\x00' + uleb(NIMP)]
     elem = vec([b'\x00' + b'\x41\x00\x0b' + vec([uleb(NIMP + 1 + i) for i in range(len(bodies))])])
 
     # run(eip): dispatch loop
@@ -912,8 +927,8 @@ def build(path, out):
     text_lo = min(pe.base + a for a, n in pe.code); text_hi = max(pe.base + a + n for a, n in pe.code)
     assert (text_hi - text_lo) * 4 <= LOOKUP_BYTES
     r.lg(EIP).c(text_lo).e(OPS['sub']).lt(ID).c(text_hi - text_lo).e(OPS['ge_u'])
-    r.e(0x04, 0x40).lg(EIP).gs('eip').lg(EIP).c(2).e(0x10, uleb(IMP['trap'])).c(2).e(RETURN).e(0x0b)
-    r.lg(ID).c(2).e(OPS['shl']).e(0x28, 2, uleb(LOOKUP_BASE)).lt(ID).e(OPS['eqz'])
+    r.e(0x04, 0x40).lg(EIP).gs('eip').c(3).e(RETURN).e(0x0b)
+    r.lg(ID).c(2).e(OPS['shl']).e(0x28, 2, uleb(lookup)).lt(ID).e(OPS['eqz'])
     r.e(0x04, 0x40).lg(EIP).gs('eip').lg(EIP).c(2).e(0x10, uleb(IMP['trap'])).c(2).e(RETURN).e(0x0b)
     r.lg(EIP).gs('eip')
     r.lg(ID).c(1).e(OPS['sub']).e(0x11, uleb(0), 0x00).ls(EIP)   # call_indirect type 0 table 0
@@ -922,13 +937,16 @@ def build(path, out):
     rbody = r.body()
     code = vec([rbody] + [b.body() for b in bodies])
     mod = b'\0asm\x01\0\0\0' + sec(1, tsec) + sec(2, vec(imps)) + sec(3, fsec) + sec(4, vec([tbl])) + \
-          sec(6, vec(gl)) + sec(7, vec(exps)) + sec(9, elem) + sec(10, code)
+          sec(7, vec(exps)) + sec(9, elem) + sec(10, code)
     open(out + '.wasm', 'wb').write(mod)
-    meta = dict(sha256=hashlib.sha256(data).hexdigest(), base=pe.base, entry=pe.entry, textLo=text_lo, textHi=text_hi,
-                blocks=order, layout=dict(sentinel=SENTINEL, thunkBase=THUNK_BASE, fpuBase=FPU_BASE, lookupBase=LOOKUP_BASE, pages=MEM_PAGES))
+    meta = dict(sha256=hashlib.sha256(data).hexdigest(), base=pe.base, prefBase=pe.pref, entry=pe.entry, textLo=text_lo, textHi=text_hi,
+                lookup=lookup, blocks=order, layout=dict(sentinel=SENTINEL, thunkBase=THUNK_BASE, fpuBase=FPU_BASE, pages=MEM_PAGES))
     json.dump(meta, open(out + '.json', 'w'))
     print('%s: %d insns, %d blocks, wasm %d bytes' % (path.split('/')[-1], len(insns), len(blocks), len(mod)))
     if tr.unsupported: print('  unsupported:', tr.unsupported)
 
 if __name__ == '__main__':
-    build(sys.argv[1], sys.argv[2])
+    a = sys.argv[1:]; kw = {}
+    while len(a) > 2:
+        v = int(a.pop(), 0); k = a.pop().lstrip('-'); kw[k] = v
+    build(a[0], a[1], **kw)
