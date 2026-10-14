@@ -884,7 +884,7 @@ def('USER32', 'PostQuitMessage', 1, function (code) { this.quit = code; return 0
 def('USER32', 'SetTimer', 4, function (h, id, ms, proc) {
   this.timers = this.timers.filter(t => !(t.hwnd === h && t.id === id));
   // Win95 USER timers run off the 18.2 Hz system tick: intervals round up to whole 54.925 ms ticks.
-  const q = Math.max(1, Math.ceil(ms / TICK_MS)) * TICK_MS * (this.host.timerScale || 1);   // timerScale: host-side slowdown, not Win95 behaviour
+  const q = Math.max(1, Math.ceil(ms / TICK_MS)) * TICK_MS;
   // with a window the caller's id is used as given (0 included); only window-less timers get a generated id
   const tid = h ? id : (0x7000 + this.timers.length);
   this.timers.push({ hwnd: h, id: tid, ms: q, proc, due: this.host.now() + q }); return h ? (id || 1) : tid;

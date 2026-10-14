@@ -1708,7 +1708,6 @@ class SaverRun {
     if (this.mode === 'p') this.canvas = mkc(this.o.w, this.o.h);
     const host = {
       fs, width: W, height: H, path: this.path, now: () => performance.now(),
-      timerScale: hit.name === 'SSTEXT3D.SCR' ? 3 : 1,   // experiment: 3D Text frames every 3 ticks
       cursor: () => (this.mode === 's' ? { x: this.mx, y: this.my } : { x: mouse.x, y: mouse.y }),
       previewParent: this.mode === 'p' ? PREVIEW_HWND : 0, previewW: this.o.w, previewH: this.o.h,
       surface: (hwnd, w, h) => this.surface(w, h),
