@@ -409,13 +409,16 @@ const INTS = {
       case 0x33: if (al === 6) { this.cpu.ebx.value = lo16(this.cpu.ebx.value, 0x0007); this.cpu.edx.value = lo16(this.cpu.edx.value, 0x1000); } return;   // true version 7.0, in HMA
       case 0x44: if (al === 0) { this.cpu.edx.value = lo16(this.cpu.edx.value, 0x80); return; } break;
       case 0x50: case 0x51: case 0x62: return;
-      case 0x35: { const v = ((this.dosVec = this.dosVec || {})[al]) || 0; this.seg('es', v >>> 16); this.cpu.ebx.value = lo16(this.cpu.ebx.value, v); return; }
+      case 0x35: {   // a vector nobody has set leads to the BIOS service behind it, where there is one
+        const v = ((this.dosVec = this.dosVec || {})[al]) || (BIOS_INT[al] ? this.thunk16For(`BIOSINT.#${al}`) : 0);
+        this.seg('es', v >>> 16); this.cpu.ebx.value = lo16(this.cpu.ebx.value, v); return; }
       case 0x0d: return;   // disk reset: nothing is buffered
       case 0x25: (this.dosVec = this.dosVec || {})[al] = u32((this.cpu.ds.value << 16) | (this.cpu.edx.value & 0xffff)); return;
     }
     this.trapped = `unhandled int 21h ax=${this.ax().toString(16)}`; return LAYOUT.SENTINEL;
   },
   0x11() { this.ax(0x0023); },
+  0x16() { biosKbd(this); },
   0x33() {   // the DOS mouse driver interface, as far as MOUSE.DRV asks it: 24h version, type (PS/2) and IRQ
     const ax = this.ax();
     if (ax === 0x24) { this.cpu.ebx.value = lo16(this.cpu.ebx.value, 0x0626); this.cpu.ecx.value = lo16(this.cpu.ecx.value, 0x0400); return; }
@@ -469,6 +472,21 @@ P.vbeModeInfo = function (a, m) {
   if (masks) masks.forEach((x, i) => { this.u8[a + 0x1f + i] = x; });
   this.w32(a + 0x28, v.fb);
 };
+
+// BIOS services reached through interrupt vectors a driver saved and calls with pushf + far call (KEYBOARD.DRV's
+// INT 16h and INT 09h): they return as an interrupt handler that keeps its flags does (RETF 2)
+const BIOS_INT = { 0x09: true, 0x16: true };
+/** INT 16h, the BIOS keyboard: keystrokes typed reach Windows through its own driver, so the BIOS buffer is empty */
+function biosKbd(p) {
+  const ah = (p.cpu.eax.value >> 8) & 0xff;
+  if (ah === 0x01 || ah === 0x11) { p.cpu.zf.value = 1; p.ax(0); return; }          // check keystroke: none
+  if (ah === 0x02 || ah === 0x12) { p.ax((p.ax() & 0xff00) | p.u8[0x417]); return; }  // shift flags from the BIOS data area
+  if (ah === 0x00 || ah === 0x10) { p.ax(0); return; }                                 // read keystroke: none to read
+  if (ah === 0x03 || ah === 0x05) return;                                              // typematic rate, store keystroke
+  throw new GuestError(`INT 16h function ${ah.toString(16)}h`);
+}
+def16('BIOSINT', 0x16, '', 'jmp', function () { biosKbd(this); return this.retf16(2); });
+def16('BIOSINT', 0x09, '', 'jmp', function () { return this.retf16(2); });   // the hardware keyboard interrupt: nothing below Windows' driver
 
 // protected-mode API entry points of the VxDs USER.EXE talks to, by device id: function number in AX (or as each
 // device takes it); a function not listed stops the caller with its device and number
