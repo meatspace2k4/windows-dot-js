@@ -544,7 +544,7 @@ def16('KERNEL', 18, 'w', 'l', function (h) { const b = this.gblock(h); if (!b) r
 def16('KERNEL', 19, 'w', 'w', function (h) { const b = this.gblock(h); if (b && b.lock) b.lock--; return b ? b.lock : 0; });
 def16('KERNEL', 20, 'w', 'l', function (h) { const b = this.gblock(h); return b ? b.size : 0; });
 def16('KERNEL', 21, 'w', 'l', function (s) { const b = this.gblock(s); if (!b) return 0; const sel = this.gsel(s); return u32(((b.flags & GMEM_MOVEABLE ? sel - 1 : sel) & 0xffff) | (sel << 16)); });  // GlobalHandle
-def16('KERNEL', 197, 'w', 'w', function (h) { return 1; });         // GlobalFix
+def16('KERNEL', 197, 'w', 'w', function (h) { return this.gsel(h); });   // GlobalFix
 def16('KERNEL', 198, 'w', 'w', function (h) { return 1; });         // GlobalUnfix
 def16('KERNEL', 230, 'w', 'w', function (h) { return this.gsel(h); });   // GlobalSmartPageLock
 def16('KERNEL', 231, 'w', 'w', function (h) { return this.gsel(h); });   // GlobalSmartPageUnlock
