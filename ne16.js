@@ -1531,13 +1531,14 @@ P.systemPump = function () {
   const sys = this.threadsById && this.threadsById.get(SYS_TID); if (!sys || !sys.queue) return;
   if (!this.msgLin) { this.msgLin = this.alloc(32); this.msgSel = this.allocSels(this.msgLin, 32); }
   const msg = u32(this.msgSel << 16);
-  this.sysPumping = true;
+  this.sysPumping = true; const tibq = this.r16(LAYOUT.TIB + 0x28);
+  this.w16(LAYOUT.TIB + 0x28, sys.queue);   // the system thread's queue while its loop runs
   try {
     for (let n = 0; n < 64; n++) {
       if (!this.user16(109, [['l', msg], ['w', 0], ['w', 0], ['w', 0], ['w', 1]]).ax) break;   // PeekMessage, PM_REMOVE
       this.user16(113, [['l', msg]]); this.user16(114, [['l', msg]]);                             // TranslateMessage, DispatchMessage
     }
-  } finally { this.sysPumping = false; }
+  } finally { this.sysPumping = false; this.w16(LAYOUT.TIB + 0x28, tibq); }
 };
 def16('KERNEL', 461, 'llll', 'l', function (n, ph, all, ms) {                                        // WaitForMultipleObjects
   const hs = [...Array(n)].map((_, i) => ev16(this, this.r32(this.lin(ph) + 4 * i)));
@@ -1545,9 +1546,11 @@ def16('KERNEL', 461, 'llll', 'l', function (n, ph, all, ms) {                   
   const i = hs.findIndex(e => e && e.set); if (i < 0) return 0x102; if (!hs[i].manual) hs[i].set = false; return i;
 });
 def16('KERNEL', 462, '', 'l', function () { return this.thread16 ? this.thread16.id : this.inSystem() ? SYS_TID : MAIN_TID; });       // GetCurrentThreadId (the main thread is the id KERNEL32 reports)
-def16('KERNEL', 463, 'lw', 'w', function (tid, hq) { const t = thr(this, tid), old = t.queue || 0; t.queue = hq; return old; });   // SetThreadQueue
+def16('KERNEL', 463, 'lw', 'w', function (tid, hq) { const t = thr(this, tid), old = t.queue || 0; t.queue = hq; this.tibQueue(t); return old; });   // SetThreadQueue
 def16('KERNEL', 464, 'l', 'w', function (tid) { return thr(this, tid).queue || 0; });                     // GetThreadQueue
-def16('KERNEL', 624, 'll', 'v', function (tid, hq) { thr(this, tid).queue = hq & 0xffff; });                 // SetFastQueue: the queue field (38h) of the thread
+def16('KERNEL', 624, 'll', 'v', function (tid, hq) { const t = thr(this, tid); t.queue = hq & 0xffff; this.tibQueue(t); });   // SetFastQueue: the queue field (38h) of the thread
+// the program's thread keeps its queue in its TIB too (FS:[28h], USER32 reads it there), and TIB flags bit 0 marks it Win32
+P.tibQueue = function (t) { if (t.id === MAIN_TID) { this.w16(LAYOUT.TIB + 0x28, t.queue || 0); this.w16(LAYOUT.TIB + 0x1c, this.r16(LAYOUT.TIB + 0x1c) | 1); } };
 // GetFastQueue: the current thread's queue, created when it has none by USER's InitThreadInput (USER.409), which KRNL386
 // keeps a pointer to and calls with (0, 4 | 1 for a Win32 thread)
 def16('KERNEL', 625, '', 'w', function () {
