@@ -29,6 +29,9 @@ P.init16 = function () {
   this.setDesc(L.SENT, LAYOUT.SENTINEL, 0xf, 0xfb00);
   for (let i = 0; i < L.NSTK; i++) this.setDesc(L.STK + 8 * i, 0, 0xffff, 0xf300);
   this.setDesc(L.THSEL, L.T16, 0xffff, 0xfb00);
+  for (const [sel, base] of [[0x107, 0], [0x10f, 0x400], [0x117, 0xa0000], [0x11f, 0xb0000], [0x127, 0xb8000], [0x12f, 0xc0000], [0x137, 0xd0000], [0x13f, 0xe0000], [0x147, 0xf0000]])
+    this.setDesc(sel, base, 0xffff, 0xf300);   // __0000H, __0040H, __A000H ... __F000H
+  this.dosTop = 0x50000;                       // conventional memory handed out by GlobalDOSAlloc
   this.stackLevel = 0;
   this.ne = new Map();                // upper-case module name -> NE module record
   this.ghandles = new Map();          // selector -> global block {lin, size, sels, flags, lock, owner}
@@ -662,6 +665,21 @@ def16('KERNEL', 198, 'w', 'w', function (h) { return 1; });         // GlobalUnf
 def16('KERNEL', 230, 'w', 'w', function (h) { return this.gsel(h); });   // GlobalSmartPageLock
 def16('KERNEL', 231, 'w', 'w', function (h) { return this.gsel(h); });   // GlobalSmartPageUnlock
 def16('KERNEL', 138, 'w', 'l', function () { return 0x00100010; });       // GetHeapSpaces
+def16('KERNEL', 191, 'w', 'w', function (h) { const b = this.gblock(h); return b ? ++b.plock || 1 : 0; });   // GlobalPageLock
+def16('KERNEL', 192, 'w', 'w', function (h) { const b = this.gblock(h); return b && b.plock ? --b.plock : 0; });
+def16('KERNEL', 111, 'w', 'l', function (h) { const b = this.gblock(h); if (!b) return 0; b.lock++; return u32(this.gsel(h) << 16); });   // GlobalWire
+def16('KERNEL', 112, 'w', 'w', function (h) { const b = this.gblock(h); if (b && b.lock) b.lock--; return 1; });
+def16('KERNEL', 177, 'ww', 'w', function (src, dst) {    // PrestoChangoSelector: dst = src with code/data swapped
+  const acc = this.r32(L.ACC + (src & 0xfff8)); this.setDesc(dst, this.selBase(src), this.selLimit(src), acc ^ 0x0800); this.refreshSegs(); return dst;
+});
+def16('KERNEL', 170, 'w', 'w', function (s) { return this.allocSels(this.selBase(s), this.selLimit(s) + 1, 0xf300); });   // AllocCStoDSAlias
+def16('KERNEL', 184, 'l', 'l', function (n) {           // GlobalDOSAlloc: conventional memory, DX = paragraph, AX = selector
+  n = (u32(n) + 15) & ~15; if (this.dosTop + n > 0xa0000) return 0;
+  const lin = this.dosTop; this.dosTop += n; this.u8.fill(0, lin, lin + n);
+  const sel = this.allocSels(lin, n); this.ghandles.set(sel, { lin, size: n, n: 1, flags: 0, lock: 0, owner: 0 });
+  return u32(((lin >> 4) << 16) | sel);
+});
+def16('KERNEL', 185, 'w', 'w', function (s) { const b = this.gblock(s); if (b) { this.ghandles.delete(this.gsel(s)); this.freeSels(this.gsel(s), b.n); } return 0; });
 
 def16('KERNEL', 36, '', 'w', function () { return this.currentTask(); });                 // GetCurrentTask
 P.currentTask = function () {
