@@ -1590,6 +1590,25 @@ P.dataCode = function (eip) {
   return null;
 };
 P.slThunklet = function (target, rel) { return u32(target); };
+/**
+ * 16-bit code may far-jump straight into flat 32-bit code that runs on the 16-bit stack (USER.EXE into USER32's
+ * InitSharedTable, as Windows 95 does). The recompiled 32-bit modules address the stack as flat memory, so on the way
+ * in the stack becomes its flat alias (ESP = SS base + SP, SS flat), and on the way back into 16-bit module code the
+ * 16-bit SS:SP is put back. The bytes either code touches are the same.
+ */
+P.modeSwitch = function (m) {
+  const ss = this.cpu.ss.value & 0xffff, flatSS = !ss || ss === L.FLATDS;
+  if (m.kind !== 'ne') {
+    if (flatSS || !this.selValid(ss) || this.r32(L.ACC + (ss & 0xfff8)) & 0x400000) return;   // flat, or a 32-bit stack segment
+    (this.stackSwaps = this.stackSwaps || []).push({ ss, ssb: u32(this.cpu.ssb.value) });
+    this.cpu.esp.value = u32(this.cpu.ssb.value) + (this.cpu.esp.value & 0xffff);
+    this.seg('ss', L.FLATDS);
+  } else if (flatSS && this.stackSwaps && this.stackSwaps.length) {
+    const s = this.stackSwaps.pop();
+    this.cpu.esp.value = u32(this.cpu.esp.value) - s.ssb;
+    this.seg('ss', s.ss);
+  }
+};
 P.runPendingInits = function () { const pending = this.inits; this.inits = []; for (const m of pending) this.call(m.meta.entry, [m.base, 1, 0]); };
 
 // ---------------------------------------------------------------- native GDI behind the Win32 personality

@@ -156,6 +156,7 @@ class Process {
         if (dyn !== undefined && dyn !== null) { eip = dyn; continue; }
         this.trapped = this.trapped || `jump to unmapped address ${eip.toString(16)}`; return 2;
       }
+      if (this.modeSwitch && eip < LAYOUT.THUNK16) this.modeSwitch(m);
       const r = m.run(eip);
       if (r === 2 && this.dynWant !== undefined) {   // no translated block there: code written at run time
         const at = this.dynWant; this.dynWant = undefined;
