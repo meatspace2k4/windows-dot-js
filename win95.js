@@ -80,6 +80,7 @@ function amp(s) {
   return [out, ul];
 }
 const esc = s => s.replace(/&/g, '&&');
+const mnemonicOf = s => { if (!s) return ''; const [t, u] = amp(s); return u < 0 ? '' : t[u].toLowerCase(); };
 function glyph(f, ch) { let c = ch.charCodeAt(0); if (c > 255) c = 63; return f.g[c] || f.g[f.default]; }
 function rawW(s, bold, f) { let w = 0; for (const ch of s) w += glyph(f, ch)[0] + (bold ? 1 : 0); return w; }
 const textW = (s, bold = false, f = A.font) => rawW(amp(s)[0], bold, f);
@@ -2473,6 +2474,13 @@ function handleKey(e) {
       m.hover = i; handled = true;
     } else if (e.key === 'ArrowRight') { const it = m.items[m.hover]; if (it && it.sub) { openSub(d, m.hover); menus[d + 1].hover = 0; } handled = true; }
     else if (e.key === 'ArrowLeft') { if (d > 0) menus.pop(); handled = true; }
+    else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
+      // a menu item's underlined letter chooses it (the first of several with the same letter is highlighted)
+      const hits = m.items.map((it, i) => i).filter(i => !m.items[i].sep && !m.items[i].disabled && mnemonicOf(m.items[i].label) === e.key.toLowerCase());
+      if (hits.length === 1) { const it = m.items[hits[0]]; m.hover = hits[0]; if (it.sub) { openSub(d, hits[0]); menus[d + 1].hover = 0; } else activateItem(it); }
+      else if (hits.length) m.hover = hits.find(i => i > m.hover) ?? hits[0];
+      handled = true;
+    }
     else if (e.key === 'Enter') {
       const it = m.items[m.hover];
       if (it && it.sub) { openSub(d, m.hover); menus[d + 1].hover = 0; } else activateItem(it);
@@ -2481,7 +2489,12 @@ function handleKey(e) {
   } else if (ren) handled = renameKey(e);
   else {
     const target = modal() || active;
-    if (target && target.body && target.body.key) handled = target.body.key(e);
+    // Alt+letter opens the window's menu bar menu with that underlined letter
+    if (target && !modal() && e.altKey && e.key.length === 1 && target.menu) {
+      const i = target.menu.findIndex(mm => mnemonicOf(mm.label) === e.key.toLowerCase());
+      if (i >= 0) { openBar(target, i); menus[0].hover = 0; handled = true; }
+    }
+    if (!handled && target && target.body && target.body.key) handled = target.body.key(e);
     if (!handled && target && e.key === 'F4' && e.altKey) { closeWin(target); handled = true; }
     if (!handled && !target) handled = viewKey(desk, e);
   }

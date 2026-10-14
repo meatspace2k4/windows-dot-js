@@ -36,7 +36,7 @@ const BENCH = 'C:\\\\BENCH';
 export const STEPS = [
   {
     name: 'render.idle',
-    about: 'one full redraw of the empty desktop',
+    about: 'one full redraw of the empty desktop (JS time to issue the canvas drawing)',
     run: async () => {
       await reset();
       const t = []; for (let i = 0; i < 300; i++) { const s = performance.now(); win95.render(); t.push(performance.now() - s); }
@@ -118,7 +118,7 @@ export const STEPS = [
       win95.run('notepad ' + BENCH + '\\big.txt'); await frame();
       const t = performance.now(); win95.type('x'.repeat(1000)); win95.render(); const type_ms = performance.now() - t;
       await frame();
-      const s = performance.now(); win95.key('ctrl+s'); win95.render(); const save_ms = performance.now() - s;
+      const s = performance.now(); win95.key('alt+f', 's'); win95.render(); const save_ms = performance.now() - s;
       const saved = win95.fs.stat(BENCH + '\\big.txt').size;
       await reset();
       win95.fs.unlink(BENCH + '\\big.txt'); win95.fs.rmdir(BENCH);
@@ -174,7 +174,7 @@ export const STEPS = [
         win95.stopSaver(); off(); await reset();
         if (failed || !a || !b) { out[name] = { failed: failed || 'did not start' }; continue; }
         out[name] = {
-          startup_ms: +first.toFixed(1),
+          startup_ms: first === null ? null : +first.toFixed(1),
           timers_per_s: +((b.timers - a.timers) / dt).toFixed(2),
           gl_frames_per_s: +((b.presents - a.presents) / dt).toFixed(2),
           guest_cpu_pct: +(100 * (b.guestMs - a.guestMs) / (dt * 1000)).toFixed(2),
