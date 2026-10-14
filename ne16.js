@@ -892,7 +892,7 @@ def16('KERNEL', 327, '', 'jmp', function () {    // HandleParamError: BX = error
   this.cpu.eax.value = 0; this.cpu.ecx.value = 0; this.cpu.edx.value = 0; this.seg('es', 0);
   this.seg('cs', cs); return u32(this.selBase(cs) + handler);
 });
-def16('KERNEL', 435, '', 'w', () => 0);                                        // GetTaskFlags
+def16('KERNEL', 435, 'w', 'w', () => 0x10);                                     // GetTaskFlags(hTask): every task here is Win32 (TDBF_WIN32)
 def16('KERNEL', 237, '', 'v', function () {});                                 // K237 nop
 def16('KERNEL', 447, '', 'v', function () {});                                 // WIN32_OldYield
 def16('KERNEL', 471, '', 'l', () => 1);                                        // GetCurrentProcessId
