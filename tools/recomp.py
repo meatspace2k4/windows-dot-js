@@ -1302,7 +1302,7 @@ def decode_ne(ne, entries):
             ins.mn = got.mnemonic.split()[-1]; ins.ops = got.operands; ins.prefix = got.prefix
             ins.segbase = sg['base']; ins.bits = sg['bits']
             g = got.groups
-            branch = ins.mn[0] == 'j' or ins.mn in ('call', 'lcall', 'loop', 'loope', 'loopne')
+            branch = ins.mn[0] == 'j' or ins.mn in ('call', 'lcall', 'ljmp', 'loop', 'loope', 'loopne')
             if branch and got.operands and got.operands[0].type == X.X86_OP_IMM:
                 if ins.mn in ('lcall', 'ljmp'):
                     sel = got.operands[0].imm & 0xffff; ins.farsel = sel
