@@ -18,7 +18,7 @@ Coordinates are screen pixels of the emulated display, origin top left. `win95.s
 | `type(text)` | each character as a key; `\n` is Enter |
 | `key('alt+F4', 'tab', 'enter')` | named keys with `ctrl+`, `shift+`, `alt+`, `meta+`; names: `enter`, `esc`, `tab`, `backspace`, `delete`, `up`, `down`, `left`, `right`, `home`, `end`, `pageup`, `pagedown`, `space`, `F1`..`F12`, or a character |
 
-Dialog mnemonics (`&Yes`, `&No`) are not handled by the shell's dialogs yet: use `tab` and `enter`, or click.
+Dialogs take mnemonics as Windows 95 does: `key('alt+n')` presses `&No`, and the letter alone works unless the focus is in a text field.
 
 ## Windows and menus
 
@@ -56,5 +56,5 @@ win95.menus()[0]                       // ['Programs', 'Documents', ..., 'Shut D
 win95.key('esc')
 win95.run('notepad C:\\AUTOEXEC.BAT')
 win95.type('REM edited by script\n')
-win95.key('alt+F4', 'enter')           // close, then Yes to saving
+win95.key('alt+F4', 'alt+y')           // close, then Yes to saving
 ```

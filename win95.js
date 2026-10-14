@@ -1382,6 +1382,29 @@ class DialogBody {
   }
   cursor(x, y) { const i = this.ctrlAt(x, y); return i >= 0 && this.c[i].type === 'edit' && !this.c[i].readonly ? 'ibeam' : null; }
   pick(c) { this.c.forEach(o => { if (o.type === 'radio' && o.group === c.group) o.checked = o === c; }); }
+  // the control whose label underlines this letter: a button is pressed, a check box or option button is clicked,
+  // a label or group box sends the focus to the next control that takes it (an edit with its text selected)
+  mnemonic(ch) {
+    ch = ch.toLowerCase();
+    const takes = o => this.vis(o) && !o.disabled && ['button', 'edit', 'check', 'radio', 'custom'].includes(o.type) && (o.type !== 'custom' || o.key);
+    for (const [i, o] of this.c.entries()) {
+      if (!this.vis(o) || o.disabled) continue;
+      const t = o.type === 'label' ? (o.amp ? o.text : null) : ['button', 'check', 'radio', 'group'].includes(o.type) ? o.label : null;
+      if (!t) continue;
+      const [str, u] = amp(t);
+      if (u < 0 || str[u].toLowerCase() !== ch) continue;
+      if (o.type === 'button') { this.focus = i; if (o.fn) o.fn(); return true; }
+      if (o.type === 'check') { this.focus = i; o.checked = !o.checked; if (o.onChange) o.onChange(); return true; }
+      if (o.type === 'radio') { this.focus = i; this.pick(o); if (o.onChange) o.onChange(); return true; }
+      const j = this.c.findIndex((n, k) => k > i && takes(n));
+      if (j < 0) return false;
+      const n = this.c[j];
+      this.focus = j;
+      if (n.type === 'edit') n.caret = n.value.length;
+      return true;
+    }
+    return false;
+  }
   key(e) {
     const c = this.c[this.focus];
     if (e.key === 'Tab') {
@@ -1393,6 +1416,8 @@ class DialogBody {
       const k = f.indexOf(this.focus); this.focus = f[(k + (e.shiftKey ? f.length - 1 : 1)) % f.length]; return true;
     }
     if (c && c.type === 'custom' && c.key && c.key(e)) return true;
+    // mnemonics: Alt+letter anywhere, the letter alone unless the focus is in a field that takes typing
+    if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && (e.altKey || !(c && c.type === 'edit' && !c.readonly)) && this.mnemonic(e.key)) return true;
     if (e.key === 'Enter') { const b = c && c.type === 'button' ? c : this.c.find(o => o.def); if (b && b.fn) b.fn(); return true; }
     if (e.key === 'Escape') { const b = this.c.find(o => o.cancel); if (b && b.fn) b.fn(); return true; }
     if (e.key === ' ' && c && c.type === 'button') { if (c.fn) c.fn(); return true; }
@@ -2072,6 +2097,24 @@ class Win32DialogBody {
     return null;
   }
   cursor(x, y) { const i = this.ctlAt(x, y); return i >= 0 && this.kind(this.d.ctls[i]) === 'edit' ? 'ibeam' : null; }
+  // IsDialogMessage's mnemonics: a button with the underlined letter is clicked; a static text or group box
+  // (without SS_NOPREFIX) moves the focus to the next control in the tab order that is not one of those
+  mnemonic(ch) {
+    const d = this.d; ch = ch.toLowerCase();
+    for (const [i, c] of d.ctls.entries()) {
+      if (!c.visible || !c.enabled || !c.text) continue;
+      const k = this.kind(c);
+      if (k === 'static' && c.style & 0x80) continue;
+      if (!['push', 'check', 'radio', 'static', 'group'].includes(k)) continue;
+      const [str, u] = amp(c.text);
+      if (u < 0 || str[u].toLowerCase() !== ch) continue;
+      if (k === 'push' || k === 'check' || k === 'radio') { this.focus = i; this.guard(() => d.click(c)); return true; }
+      const j = d.ctls.findIndex((n, m) => m > i && n.visible && n.enabled && !['static', 'group'].includes(this.kind(n)));
+      if (j < 0) return false;
+      this.focus = j; return true;
+    }
+    return false;
+  }
   key(e) {
     const d = this.d, c = d.ctls[this.focus], k = c && this.kind(c);
     if (e.key === 'Tab') {
@@ -2080,6 +2123,7 @@ class Win32DialogBody {
       return true;
     }
     if (e.key === 'Escape') { this.guard(() => d.command(d.ctl(2) || { id: 2, hwnd: 0 })); return true; }
+    if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && (e.altKey || k !== 'edit') && this.mnemonic(e.key)) return true;
     if (e.key === 'Enter' && k !== 'push') {
       const def = d.ctls.find(o => o.cls === 'button' && (o.style & 0xf) === 1) || d.ctl(1) || { id: 1, hwnd: 0 };
       this.guard(() => d.command(def)); return true;
@@ -2396,6 +2440,11 @@ kbd.addEventListener('input', () => {
   for (const ch of s.replace(/\r/g, '')) handleKey({ key: ch === '\n' ? 'Enter' : ch, shiftKey: false, ctrlKey: false, metaKey: false, altKey: false, preventDefault() {} });
 });
 window.addEventListener('keydown', e => {
+  // Option changes the character a Mac key types; Alt+letter means the letter on the key
+  if (e.altKey && !e.ctrlKey && !e.metaKey && /^(Key[A-Z]|Digit\d)$/.test(e.code)) {
+    e.preventDefault();
+    return handleKey({ key: e.code.slice(-1).toLowerCase(), altKey: true, shiftKey: e.shiftKey, ctrlKey: false, metaKey: false, preventDefault() {} });
+  }
   if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) return;
   if (e.isComposing) return;
   handleKey(e);
