@@ -204,6 +204,7 @@ P.call16 = function (sel, off, args = [], regs = {}) {
 };
 
 // ---------------------------------------------------------------- 16-bit API dispatch
+const NAMES16_INIT = {};
 const K16 = {};   // 'MODULE.#ord' -> [args, ret, fn]   args: w word, i int16, l dword, p segptr->linear, s segptr->string, x raw segptr
 const def16 = (mod, ord, args, ret, fn) => { K16[`${mod}.#${ord}`] = [args, ret, fn]; };
 P.thunk16Def = function (key) { return { key, def: K16[key] }; };
@@ -1001,6 +1002,18 @@ def16('KERNEL', 61, 'ww', 'w', function (h, hr) {               // LoadResource
 def16('KERNEL', 62, 'w', 'l', function (h) { const b = this.gblock(h); return b ? u32(this.gsel(h) << 16) : 0; });   // LockResource
 def16('KERNEL', 63, 'w', 'w', () => 0);
 
+// USER services the 16-bit system modules call (the window manager itself is JS)
+def16('USER', 176, 'wwpi', 'i', function (hInst, id, buf, n) {     // LoadString from an NE module's RT_STRING blocks
+  const m = this.neByHandle(hInst); if (!m) return 0;
+  const r = this.neResources(m).find(x => x.type === 6 && x.id === (id >> 4) + 1); if (!r) { if (n > 0) this.u8[buf] = 0; return 0; }
+  let o = r.off;
+  for (let k = 0; k < (id & 15); k++) o += 1 + m.file[o];
+  const len = m.file[o], str = String.fromCharCode(...m.file.subarray(o + 1, o + 1 + len));
+  return n > 0 ? W(this, buf, str, n) : len;
+});
+def16('USER', 275, '', 'v', function () {});        // RepaintScreen
+NAMES16_INIT.USER = { LOADSTRING: 176, REPAINTSCREEN: 275 };
+
 // Local32
 def16('KERNEL', 208, 'wlll', 'l', function (seg, t, hs, fl) { return this.local32Init(seg, t, hs, fl); });
 def16('KERNEL', 209, 'llil', 'l', function (heap, size, type, fl) { return this.local32Alloc(heap, size, type, fl); });
@@ -1228,6 +1241,6 @@ P.slThunklet = function (target, rel) { return u32(target); };
 P.runPendingInits = function () { const pending = this.inits; this.inits = []; for (const m of pending) this.call(m.meta.entry, [m.base, 1, 0]); };
 
 // names for GetProcAddress(KERNEL, "name")
-const NAMES16 = { KERNEL: {}, USER: {} };
+const NAMES16 = { KERNEL: {}, ...NAMES16_INIT };
 window.W95NE16 = { K16, NAMES16, L, def16 };
 })();
