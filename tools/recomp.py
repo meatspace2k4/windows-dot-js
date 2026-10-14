@@ -1203,6 +1203,7 @@ class NE:
     def relocate(self, resolve):
         """apply NE relocations; returns (fixups [linear, size, value], far code targets)"""
         d, fixups, targets = self.data, [], []
+        self.selrefs = []   # (site of a selector fixup, code segment it names)
         def put(lin, size, val):
             o = lin - self.base
             self.image[o:o + size] = (val & ((1 << (8 * size)) - 1)).to_bytes(size, 'little'); fixups.append([lin, size, val & ((1 << (8 * size)) - 1)])
@@ -1218,7 +1219,9 @@ class NE:
                     else: tsel, toff = self.segs[a1 - 1]['sel'], a2
                     tsg = self.segs[(tsel - self.segs[0]['sel']) // 8]
                     if tsg['code'] and atype in (3, 11): targets.append(tsg['base'] + toff)
+                    selref = tsg if tsg['code'] and atype == 2 else None
                 else:
+                    selref = None
                     mod = self.mods[a1 - 1]
                     if kind == 1: key = a2
                     else: q = self.n + u16(d, self.n + 0x2a) + a2; key = d[q + 1:q + 1 + d[q]].decode()
@@ -1226,6 +1229,7 @@ class NE:
                 o = off
                 while True:
                     lin = sg['base'] + o; cur = int.from_bytes(self.image[lin - self.base: lin - self.base + 4], 'little')
+                    if selref is not None: self.selrefs.append((lin, selref))
                     nxt = cur & 0xffff
                     if atype == 0: put(lin, 1, (cur & 0xff) + (toff if additive else 0) if additive else toff)
                     elif atype == 2: put(lin, 2, ((cur & 0xffff) + tsel) if additive else tsel)
@@ -1298,6 +1302,24 @@ def decode_ne(ne, entries):
                     and i.ops[1].type == X.X86_OP_IMM:
                 sg = ne.seg_of(i.segbase); t = sg['base'] + (i.ops[1].imm & 0xffff)
                 if (i.ops[1].imm & 0xffff) < sg['len'] and t not in seen: todo.append(t)
+        # far pointers assembled in code: a selector fixup naming one of our code segments with an imm16 next to it
+        prev = {i.next: a for a, i in insns.items()}
+        for site, tsg in getattr(ne, 'selrefs', []):
+            host = next((insns[a] for a in range(site - 1, site - 6, -1) if a in insns and insns[a].next > site), None)
+            if host is None: continue
+            near, a = [], host.addr
+            for _ in range(3):
+                a = prev.get(a)
+                if a is None: break
+                near.append(insns[a])
+            a = host.next
+            for _ in range(3):
+                if a not in insns: break
+                near.append(insns[a]); a = insns[a].next
+            for i in near:
+                if i.mn in ('mov', 'push') and i.ops and i.ops[-1].type == X.X86_OP_IMM and i.ops[-1].size <= 2 or (i.mn == 'push' and i.ops and i.ops[0].type == X.X86_OP_IMM):
+                    v = i.ops[-1].imm & 0xffff
+                    if v < tsg['len'] and tsg['base'] + v not in seen: todo.append(tsg['base'] + v)
         if not todo: break
         drain()
     return insns, seen
