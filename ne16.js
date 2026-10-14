@@ -1323,6 +1323,27 @@ def16('KERNEL', 517, '', 'jmp', function () {
 // thread runs here, so there is nothing to boost
 def16('KERNEL', 535, 'll', 'v', function () {});
 def16('KERNEL', 536, 'll', 'v', function () {});
+// KRNL386 seg2:7A70 (#618): the size in bytes of a Win32 dialog template, DLGTEMPLATE or DLGTEMPLATEEX (signature
+// FFFF0001), as USER needs it to copy one; items are DWORD-aligned
+def16('KERNEL', 618, 'x', 'w', function (sp) {
+  const a = this.lin(sp); let o = 0;
+  const w = () => { const v = this.r16(a + o); o += 2; return v; }, d = () => { const v = this.r32(a + o); o += 4; return v; };
+  const skipStr = () => { while (w()); };
+  const szOrOrd = () => { const v = w(); if (!v) return; if ((v & 0xff) === 0xff) w(); else skipStr(); };
+  let style = d(); const ex = u32(style) === 0xffff0001;
+  if (ex) { o += 8; style = d(); } else d();
+  let n = w() & 0xff; o += 8;
+  szOrOrd(); szOrOrd(); skipStr();
+  if (style & 0x40) { w(); if (ex) d(); skipStr(); }
+  for (; n; n--) {
+    o = (o + 3) & ~3;
+    o += ex ? 24 : 18;
+    { const v = w(); if (v) { if (v === 0xffff) w(); else skipStr(); } }   // class
+    szOrOrd();                                                            // title
+    let extra = w(); if (!ex) extra &= 0xff; o += extra;
+  }
+  return o & 0xffff;
+});
 // KRNL386 seg1:7A28 (#365): adds `delta` (+1 or -1) to the lock count of the global block a selector belongs to; the
 // callback relays lock the caller's stack segment while 32-bit code holds pointers into it
 def16('KERNEL', 365, 'wi', 'v', function (sel, delta) {
