@@ -1486,6 +1486,22 @@ def16('KERNEL', 651, 'sswlxsw', 'w', () => 1);
 def16('KERNEL', 631, '', 'jmp', function () { throw new GuestError('C16ThkSL01: a 16-to-32 thunk-compiler call (not connected here)'); });
 def16('KERNEL', 27, 'wpw', 'w', function (h, buf, n) { const m = this.neByHandle(h); return m ? W(this, buf, m.name, n) : 0; });   // GetModuleName
 def16('KERNEL', 219, 'w', 'w', () => 0);                                                                                       // PatchCodeHandle: nothing to patch
+// GetCodeInfo (#104): the SEGINFO of the module segment a code pointer is in (file sector, length, flags, allocation,
+// handle, alignment shift), with ES = the module, as KRNL386 leaves it; 0 when the pointer is in no module's segment
+def16('KERNEL', 104, '', 'jmp', function () {
+  const ssb = u32(this.cpu.ssb.value), f = ssb + (this.cpu.esp.value & 0xffff);
+  const info = this.r32(f + 4), proc = this.r32(f + 8), sel = (proc >>> 16) | 7;
+  let found = null;
+  for (const m of this.ne.values()) { const sg = m.meta && m.segs && m.segs.find(x => (x.sel | 7) === sel); if (sg) { found = { m, sg }; break; } }
+  if (found && info >>> 16) {
+    const a = this.lin(info), { m, sg } = found;
+    this.w16(a, 0); this.w16(a + 2, sg.len || 0); this.w16(a + 4, sg.flags || 0); this.w16(a + 6, sg.alloc || sg.len || 0);
+    this.w16(a + 8, sg.sel); this.w16(a + 10, 4);
+    this.seg('es', m.hModule);
+  }
+  this.ax(found ? 1 : 0);
+  return this.retf16(8);
+});
 // KRNL386 seg1:7A28 (#365): adds `delta` (+1 or -1) to the lock count of the global block a selector belongs to; the
 // callback relays lock the caller's stack segment while 32-bit code holds pointers into it
 def16('KERNEL', 365, 'wi', 'v', function (sel, delta) {
