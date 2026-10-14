@@ -501,7 +501,10 @@ def('KERNEL32', 'GetModuleHandleA', 1, function (name) {
   if (!name) return this.exe.base;
   const m = this.byName.get((this.readA(name) || '').toUpperCase().replace(/\.DLL$/, '')); return m ? m.base : 0;
 });
-def('KERNEL32', 'GetModuleFileNameA', 3, function (h, buf, n) { return this.writeA(buf, this.host.path || 'C:\\WINDOWS\\SCRNSAVE.SCR', n); });
+def('KERNEL32', 'GetModuleFileNameA', 3, function (h, buf, n) {
+  const m = h && this.modules.find(x => x.base === h && x !== this.exe && x.kind !== 'ne');   // a DLL: its file in SYSTEM
+  return this.writeA(buf, m ? `C:\\WINDOWS\\SYSTEM\\${m.name}.DLL` : this.host.path || 'C:\\WINDOWS\\SCRNSAVE.SCR', n);
+});
 def('KERNEL32', 'ExitProcess', 1, function (code) { this.exitCode = code; this.host.exited(code); return 0; });
 def('KERNEL32', 'TerminateProcess', 2, function (h, code) { this.exitCode = code; this.host.exited(code); return 1; });
 def('KERNEL32', 'GetCurrentProcess', 0, () => 0xffffffff);

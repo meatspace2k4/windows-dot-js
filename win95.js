@@ -2450,12 +2450,16 @@ async function nativeProgram(bytes) {
 }
 // the files the bundle carries for programs replace the placeholders an older disk has for them
 function installPrograms() {
-  const stub = exeStub();
-  for (const [name, d] of Object.entries((window.W95SYSTEM || {}).programs || {})) {
-    const path = join(WINDIR, name); let cur = null; try { cur = fs.readFile(path); } catch (_) { /* not there */ }
-    if (cur && !(cur.length === stub.length && cur.every((b, i) => b === stub[i]))) continue;
-    fs.writeFile(path, b64bytes(d.file));
-  }
+  const stub = exeStub(), S = window.W95SYSTEM || {};
+  const put = (path, b64) => {
+    let cur = null; try { cur = fs.readFile(path); } catch (_) { /* not there */ }
+    if (cur && !(cur.length === stub.length && cur.every((b, i) => b === stub[i]))) return;
+    fs.writeFile(path, b64bytes(b64));
+  };
+  for (const [name, d] of Object.entries(S.programs || {})) put(join(WINDIR, name), d.file);
+  // the system modules the programs run on, in SYSTEM as Setup puts them (SHELL32 reads its icons from its file)
+  for (const [name, d] of Object.entries(S.dlls || {})) put(join(WINDIR, 'SYSTEM', name), d.file);
+  for (const d of Object.values(S.ne || {})) if (d.fileName) put(join(WINDIR, 'SYSTEM', d.fileName), d.file);
 }
 class NativeWin extends Win {
   constructor(app, n) {
