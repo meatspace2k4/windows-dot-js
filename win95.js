@@ -3379,10 +3379,6 @@ function elements() {
     add('titlebar', w.title, w.capR, win);
     for (const b of w.buttons()) add('pushbutton', { close: 'Close', max: 'Maximize', restore: 'Restore', min: 'Minimize' }[b.id], b, { ...win, disabled: !!b.disabled });
     if (w.native && w.app.alive && w.app.proc && !w.app.proc.depth) {   // the controls USER keeps for a native window
-      if (w.cls === '#32768') {   // a popup menu: its items
-        let items = []; try { items = w.app.proc.nativeMenu(w.hwnd); } catch (e) { console.error(e); }
-        for (const t of items) if (!t.sep) add('menuitem', label(t.text.split('\t')[0]), t, { ...win, disabled: !!(t.state & 3), checked: !!(t.state & 8), popup: !!(t.state & 0x10), hot: !!(t.state & 0x80) });
-      }
       let kids = []; try { kids = w.app.proc.nativeChildren(w.hwnd); } catch (e) { console.error(e); }
       for (const c of kids) {
         const bs = c.style & 0x0f, k = c.cls.toLowerCase();
