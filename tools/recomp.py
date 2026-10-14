@@ -1264,7 +1264,7 @@ def decode_ne(ne, entries):
         """targets of `jmp/call word ptr cs:[reg + table]` (switch tables have no relocations in NE code), and of
         `mov r16, [reg + table]; jmp/call r16` with the table in DGROUP"""
         op = ins.ops[0]
-        if op.type == X.X86_OP_REG and op.size == 2 and ne.autodata:
+        if ins.mn in ('jmp', 'call') and op.type == X.X86_OP_REG and op.size == 2 and ne.autodata:
             for prev in reversed(recent[-8:-1]):
                 if prev.mn == 'mov' and prev.ops[0].type == X.X86_OP_REG and prev.ops[0].reg == op.reg:
                     m = prev.ops[1]
@@ -1364,7 +1364,7 @@ def decode_ne(ne, entries):
                 if a is None: break
                 near.append(insns[a])
             a = host.next
-            for _ in range(3):
+            for _ in range(12):   # far pointers built as `mov ax, sel; shl eax, 16; mov ax, off1 ... mov ax, off2`
                 if a not in insns: break
                 near.append(insns[a]); a = insns[a].next
             for i in near:
