@@ -154,6 +154,7 @@ class Process {
     for (;;) {
       eip >>>= 0;
       if (eip === LAYOUT.SENTINEL) return 0;
+      if (window.W95RUN) window.W95RUN(this, eip);
       const m = eip >= LAYOUT.THUNK16 ? this.modules[0] : this.modules.find(x => eip >= x.meta.textLo && eip < x.meta.textHi);
       if (!m) {
         const next = this.dataCode && this.dataCode(eip);
