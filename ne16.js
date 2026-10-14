@@ -229,7 +229,11 @@ P.api16 = function (eip) {
     t.native = (m && m.meta && this.neExport(m, k[0] === '#' ? +k.slice(1) : k)) || 0;
   }
   if (t && !t.def && t.native) { const sel = t.native >>> 16; this.seg('cs', sel); return u32(this.selBase(sel) + (t.native & 0xffff)); }
-  if (!t || !t.def) { this.trapped = `unimplemented 16-bit import ${t ? t.key : eip.toString(16)}`; return LAYOUT.SENTINEL; }
+  if (!t || !t.def) {
+    const f = this.cpu.ssb.value + (this.cpu.esp.value & 0xffff), m = this.neByHandle(this.r16(f + 2));
+    this.trapped = `unimplemented 16-bit import ${t ? t.key : eip.toString(16)}, called from ${m ? m.name : '?'} ${this.r16(f + 2).toString(16)}:${this.r16(f).toString(16)}, stack words ${[4, 6, 8, 10, 12, 14].map(k => this.r16(f + k).toString(16)).join(' ')}`;
+    return LAYOUT.SENTINEL;
+  }
   const [args, ret, fn] = t.def;
   if (window.W95TRACE16) window.W95TRACE16(t, this);
   if (ret === 'jmp') { try { return u32(fn.call(this)); } catch (e) { if (e instanceof GuestError) { this.trapped = e.message; return LAYOUT.SENTINEL; } throw e; } }
@@ -1194,6 +1198,16 @@ def16('KERNEL', 462, '', 'l', function () { return 0x51; });                    
 def16('KERNEL', 463, 'lw', 'w', function (tid, hq) { const old = this.threadQueue || 0; this.threadQueue = hq; return old; });   // SetThreadQueue
 def16('KERNEL', 464, 'l', 'w', function (tid) { return this.threadQueue || 0; });                     // GetThreadQueue
 def16('KERNEL', 624, 'll', 'v', function (tid, hq) { this.threadQueue = hq & 0xffff; });                 // SetFastQueue: the queue field (38h) of the thread
+// Get/SetProcessDword: a process's fields by the GPD_ offsets (0 user data, -4 flags, -8 parent, -12..-32 its
+// STARTUPINFO, -36 PDB, -40 THDB, -44 expected Windows version, -48 hInstance, -52 load-done event, -56 app
+// compatibility flags). Nothing is set until someone sets it, but the version, which is 4.0.
+const GPD = { 0: 0, '-4': 0, '-8': 0, '-12': 0, '-16': 0, '-20': 0, '-24': 0, '-28': 0, '-32': 0, '-36': 0, '-40': 0, '-44': 0x400, '-48': 0, '-52': 0, '-56': 0 };
+const pdw = (p, pid, off) => {
+  if (!(off in GPD)) throw new GuestError(`GetProcessDword offset ${off}`);
+  p.procDword = p.procDword || new Map(); if (!p.procDword.has(pid)) p.procDword.set(pid, { ...GPD }); return p.procDword.get(pid);
+};
+def16('KERNEL', 485, 'li', 'l', function (pid, off) { return pdw(this, pid, off)[off] >>> 0; });
+def16('KERNEL', 484, 'lil', 'v', function (pid, off, v) { pdw(this, pid, off)[off] = v; });
 def16('KERNEL', 476, 'l', 'l', function (h) { return h; });                                            // ConvertToGlobalHandle: one process, so already global
 def16('KERNEL', 474, 'l', 'w', function (h) { return this.handles.delete(h) ? 1 : 0; });               // CloseW32Handle
 def16('KERNEL', 105, '', 'w', function () { return 0x0400; });                                         // GetExeVersion: system code expects Windows 4.0
