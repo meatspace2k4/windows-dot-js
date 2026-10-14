@@ -1737,9 +1737,8 @@ class SaverRun {
       if (p.trapped && !p.failed) p.fail(p.trapped);
       if (p.exitCode !== null || p.trapped) { this.exited(p.exitCode, p.trapped); return; }
       if (this.mode === 'p') dirty();
-      // guest time is driven by its own timers and message loop; a GL swap waits for the next display refresh
+      // guest time is driven by its own timers and message loop
       const p2 = this.proc, now = performance.now();
-      if (p2 && p2.swapWait) { requestAnimationFrame(() => { p2.swapWait = false; step(); }); return; }
       const next = p2 && p2.waiting ? Math.min(...p2.timers.map(t => t.due), now + 50) : now;
       setTimeout(step, Math.max(0, next - now));
     };

@@ -303,7 +303,7 @@ class Process {
   ready() {
     if (this.exitCode !== null || this.trapped) return false;
     if (this.dlgDone) return true;
-    if (this.modal || this.swapWait) return false;
+    if (this.modal) return false;
     if (!this.waiting) return true;
     return !!this.nextMessage(0, false);
   }
@@ -853,9 +853,7 @@ def('USER32', 'DefWindowProcA', 4, function (h, msg, wp, lp) {
   if (msg === WM.SETCURSOR) { this.host.setCursor && this.host.setCursor(w && w.cls.cursor); return 1; }
   return 0;
 });
-// After SwapBuffers the message loop waits for the next display refresh, as a vsynced OpenGL driver makes it do.
 def('USER32', 'GetMessageA', 4, function (p, hwnd) {
-  if (this.swapWait && this.depth === 0) return YIELD;
   const m = this.nextMessage(hwnd, true);
   if (!m) {
     if (this.depth === 0) { this.waiting = true; return YIELD; }
@@ -864,7 +862,7 @@ def('USER32', 'GetMessageA', 4, function (p, hwnd) {
   this.writeMsg(p, m); return m.msg === WM.QUIT ? 0 : 1;
 });
 def('USER32', 'PeekMessageA', 5, function (p, hwnd, a, b, remove) {
-  if (this.depth === 0 && (this.swapWait || this.host.now() - this.lastYield > 15)) { this.waiting = false; return YIELD; }
+  if (this.depth === 0 && this.host.now() - this.lastYield > 15) { this.waiting = false; return YIELD; }
   const m = this.nextMessage(hwnd, remove & 1);
   if (!m) return 0;
   this.writeMsg(p, m); return 1;
