@@ -1215,8 +1215,25 @@ def decode_ne(ne, entries):
     md = {16: capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_16), 32: capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)}
     for m in md.values(): m.detail = True
     insns, todo, seen = {}, list(entries), set()
+    def table(ins, sg, recent):
+        """targets of `jmp/call word ptr cs:[reg + table]` (switch tables have no relocations in NE code)"""
+        op = ins.ops[0]
+        if op.type != X.X86_OP_MEM or op.mem.segment != X.X86_REG_CS or not op.mem.disp or op.size != 2: return []
+        reg = op.mem.base or op.mem.index; count = None
+        for prev in reversed(recent[-6:]):
+            if prev.mn == 'cmp' and prev.ops[0].type == X.X86_OP_REG and prev.ops[1].type == X.X86_OP_IMM:
+                count = (prev.ops[1].imm & 0xffff) + 1; break
+        out, tab = [], op.mem.disp & 0xffff
+        if count is None: count = 64
+        for k in range(count):
+            o = tab + 2 * k
+            if o + 2 > sg['len']: break
+            v = int.from_bytes(ne.image[sg['base'] - ne.base + o: sg['base'] - ne.base + o + 2], 'little')
+            if v >= sg['len']: break
+            out.append(sg['base'] + v)
+        return out
     def walk(start):
-        a = start
+        a = start; recent = []
         while a not in insns:
             if not ne.in_code(a): return
             sg = ne.seg_of(a); off = a - sg['base']
@@ -1233,8 +1250,9 @@ def decode_ne(ne, entries):
                     if sel in SELBASE: ins.tgt = SELBASE[sel] + (got.operands[1].imm & 0xffffffff)
                 else:
                     ins.tgt = sg['base'] + (got.operands[0].imm & (0xffff if sg['bits'] == 16 and got.prefix[2] != 0x66 else 0xffffffff))
-            insns[a] = ins
+            insns[a] = ins; recent.append(ins)
             if ins.tgt is not None: todo.append(ins.tgt)
+            if ins.mn in ('jmp', 'call') and got.operands and ins.tgt is None: todo.extend(table(ins, sg, recent))
             if ins.mn in ('jmp', 'ljmp', 'ret', 'retf', 'hlt', 'int3', 'ud2', 'iret', 'iretd'): return
             a = ins.next
     while todo:
