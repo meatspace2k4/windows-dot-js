@@ -625,14 +625,13 @@ const profStr = function (file, app, key, d, buf, n) {
 def16('KERNEL', 58, 'sssxw', 'w', function (app, key, d, buf, n) { return profStr.call(this, 'WIN.INI', app, key, d, this.lin(buf), n); });
 def16('KERNEL', 128, 'sssxws', 'w', function (app, key, d, buf, n, f) { return profStr.call(this, f, app, key, d, this.lin(buf), n); });
 def16('KERNEL', 59, 'sss', 'w', function (app, key, v) { try { window.W95Win32.iniSet(this.fs, 'WIN.INI', app, key, v); return 1; } catch (_) { return 0; } });
-const reg32 = (name, ...a) => function (...v) { return API.ADVAPI32[name] ? API.ADVAPI32[name][1].apply(this, v) : 2; };
 def16('KERNEL', 217, 'lpp', 'l', function (hk, sub, out) { return API.ADVAPI32.RegOpenKeyA[1].call(this, hk, sub, out); });
 def16('KERNEL', 218, 'lpp', 'l', function (hk, sub, out) { return API.ADVAPI32.RegCreateKeyA ? API.ADVAPI32.RegCreateKeyA[1].call(this, hk, sub, out) : API.ADVAPI32.RegOpenKeyA[1].call(this, hk, sub, out); });
 def16('KERNEL', 220, 'l', 'l', () => 0);
 def16('KERNEL', 221, 'lplpl', 'l', () => 0);
 def16('KERNEL', 222, 'lp', 'l', () => 2);
-def16('KERNEL', 225, 'lpppp' + 'p', 'l', function (hk, name, res, type, data, cb) { return API.ADVAPI32.RegQueryValueExA[1].call(this, hk, name, res, type, data, cb); });
-def16('KERNEL', 226, 'lplplp'.slice(0, 5) + 'l', 'l', () => 0);
+def16('KERNEL', 225, 'lppppp', 'l', function (hk, name, res, type, data, cb) { return API.ADVAPI32.RegQueryValueExA[1].call(this, hk, name, res, type, data, cb); });
+def16('KERNEL', 226, 'lpllpl', 'l', () => 0);
 
 // files (DOS handles over the in-memory FS)
 const OF = { READ: 0, WRITE: 1, READWRITE: 2, PARSE: 0x100, DELETE: 0x200, CREATE: 0x1000, EXIST: 0x4000 };
@@ -715,7 +714,7 @@ def16('KERNEL', 63, 'w', 'w', () => 0);
 
 // Local32
 def16('KERNEL', 208, 'wlll', 'l', function (seg, t, hs, fl) { return this.local32Init(seg, t, hs, fl); });
-def16('KERNEL', 209, 'lliw'.slice(0, 2) + 'il', 'l', function (heap, size, type, fl) { return this.local32Alloc(heap, size, type, fl); });
+def16('KERNEL', 209, 'llil', 'l', function (heap, size, type, fl) { return this.local32Alloc(heap, size, type, fl); });
 def16('KERNEL', 210, 'llill', 'l', function (heap, addr, type, size, fl) { return this.local32ReAlloc(heap, addr, type, size, fl); });
 def16('KERNEL', 211, 'lli', 'w', function (heap, addr, type) { return this.local32Free(heap, addr, type); });
 def16('KERNEL', 213, 'llii', 'l', function (heap, addr, t1, t2) { const h = this.l32(heap); const [hd, p] = this.l32toHandle(h, t1, addr); return hd ? this.l32fromHandle(h, t2, hd, p) : 0; });

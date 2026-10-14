@@ -7,11 +7,12 @@
 (() => {
 // guest address space: low runtime area, stack, images at 0x400000/0x1000000, native DLLs from 0x1800000,
 // heap, then per-module block lookup tables from 0x6000000
-const LAYOUT = { SENTINEL: 0xFFFFFFF0, THUNK: 0xFFFF0000, FPU: 0x10000, TIB: 0x11000, SCRATCH: 0x12000,
+const LAYOUT = { SENTINEL: 0xFFFFFFF0, THUNK: 0xFFFF0000, THUNK16: 0xFFFE0000, FPU: 0x10000, TIB: 0x11000, SCRATCH: 0x12000,
   STACK_LO: 0x100000, STACK_TOP: 0x3ffff0, HEAP: 0x02000000, HEAP_END: 0x06000000 };
 const YIELD = Symbol('yield');   // returned by an API implementation to suspend the guest at depth 0
 const TICK_MS = 65536 * 1000 / 1193182;   // PIT channel 0 period, 54.925 ms
-const CPU_REGS = ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi', 'cf', 'pf', 'zf', 'sf', 'of', 'df', 'fs', 'ftop', 'fsw', 'fcw', 'eip'];
+const CPU_REGS = ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi', 'cf', 'pf', 'zf', 'sf', 'of', 'df', 'fs', 'ftop', 'fsw', 'fcw', 'eip',
+  'cs', 'ds', 'es', 'ss', 'fsel', 'gsel', 'csb', 'dsb', 'esb', 'ssb', 'gsb'];
 const WM = { NULL: 0, CREATE: 1, DESTROY: 2, MOVE: 3, SIZE: 5, ACTIVATE: 6, SETFOCUS: 7, KILLFOCUS: 8, PAINT: 0xf, CLOSE: 0x10,
   QUIT: 0x12, ERASEBKGND: 0x14, SHOWWINDOW: 0x18, ACTIVATEAPP: 0x1c, SETCURSOR: 0x20, NCCREATE: 0x81, NCDESTROY: 0x82,
   NCACTIVATE: 0x86, KEYDOWN: 0x100, KEYUP: 0x101, CHAR: 0x102, SYSKEYDOWN: 0x104, SYSCOMMAND: 0x112, TIMER: 0x113,
@@ -145,7 +146,7 @@ class Process {
     for (;;) {
       eip >>>= 0;
       if (eip === LAYOUT.SENTINEL) return 0;
-      const m = eip >= LAYOUT.THUNK ? this.modules[0] : this.modules.find(x => eip >= x.meta.textLo && eip < x.meta.textHi);
+      const m = eip >= LAYOUT.THUNK16 ? this.modules[0] : this.modules.find(x => eip >= x.meta.textLo && eip < x.meta.textHi);
       if (!m) { this.trapped = this.trapped || `jump to unmapped address ${eip.toString(16)}`; return 2; }
       const r = m.run(eip);
       if (r !== 3) return r;
@@ -184,14 +185,20 @@ class Process {
     this.host.exited(-1, why);
   }
   trap(eip, code) {
+    if (code >= 0x100 && this.trapHook && this.trapHook(eip, code)) return;
     this.trapped = `${['unsupported instruction', 'unsupported instruction', 'jump to unmapped address', 'breakpoint'][code] || 'trap'} at ${u32(eip).toString(16)}`;
     if (code === 0) this.trapped = `divide by zero at ${u32(this.reg('eip')).toString(16)}`;
   }
   api(eip) {
+    if (u32(eip) < LAYOUT.THUNK) return this.api16(u32(eip));
     const t = this.thunks[(u32(eip) - LAYOUT.THUNK) >> 2];
     if (!t || !t.def) { this.trapped = `unimplemented import ${t ? t.dll + '!' + t.nm : u32(eip).toString(16)}`; return LAYOUT.SENTINEL; }
     const [nargs, fn] = t.def, sp = this.reg('esp');
     if (window.W95TRACE) window.W95TRACE(t, this);
+    if (nargs === 'regs') {   // register-convention entry: the implementation moves ESP and picks the continuation
+      try { return u32(fn.call(this)); }
+      catch (e) { if (e instanceof GuestError) { this.trapped = e.message; return LAYOUT.SENTINEL; } throw e; }
+    }
     const a = []; for (let i = 0; i < (nargs < 0 ? 8 : nargs); i++) a.push(this.r32(sp + 4 + 4 * i));
     let r;
     try { r = fn.apply(this, a); }
@@ -1420,5 +1427,5 @@ function peString(bytes, id) {
   } catch (_) { return null; }
 }
 
-window.W95Win32 = { Process, API, LAYOUT, WM, YIELD, iniGet, iniSet, peString, def, dcOf, GuestError, mkCanvas, dibOut };
+window.W95Win32 = { Process, API, LAYOUT, WM, YIELD, iniGet, iniSet, iniRead, peString, def, dcOf, GuestError, mkCanvas, dibOut };
 })();
