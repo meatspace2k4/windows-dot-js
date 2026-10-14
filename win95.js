@@ -353,8 +353,9 @@ function activate(w) {
   active = w; blinkOn = true; dirty();
 }
 function topVisible() { for (let i = windows.length - 1; i >= 0; i--) if (!windows[i].min) return windows[i]; return null; }
-function closeWin(w) {
-  if (w.body && w.body.onClose) w.body.onClose();
+function closeWin(w, force) {
+  if (!windows.includes(w)) return;
+  if (!force && w.body && w.body.canClose && !w.body.canClose(() => closeWin(w, true))) return;
   windows = windows.filter(v => v !== w); tasks = tasks.filter(v => v !== w); modals = modals.filter(v => v !== w);
   if (menuSrc && menuSrc.win === w) closeMenus();
   if (active === w || !windows.includes(active)) active = modal() || topVisible();
@@ -463,132 +464,574 @@ function drawMenu(m) {
   });
 }
 
-// ---------------------------------------------------------------- folders
-const N = (label, icon, extra = {}) => ({ label, icon, ...extra });
-const cdRoot = ['Admin', 'Autorun', 'Datalink', 'Demos', 'Drivers', 'Funstuff', 'Help', 'Other', 'Sampler', 'Win95']
-  .map(n => N(n, 'folder', { children: [] }))
-  .concat([N('Autorun.inf', 'sysfile'), N('Readme.txt', 'textdoc'), N('Setup.exe', 'app')]);
-const FS = {
-  mycomputer: N('My Computer', 'mycomputer', { children: [
-    N('3\u00bd Floppy (A:)', 'floppy', { error: ['3\u00bd Floppy (A:)', 'A:\\ is not accessible.\n\nThe device is not ready.'] }),
-    N('(C:)', 'hdd', { children: [
-      N('Program Files', 'folder', { children: [N('Accessories', 'folder', { children: [] })] }),
-      N('Windows', 'folder', { children: [
-        N('Command', 'folder', { children: [] }), N('Desktop', 'folder', { children: [] }),
-        N('Fonts', 'folder', { children: [] }), N('Start Menu', 'folder', { children: [] }),
-        N('System', 'folder', { children: [] }), N('Notepad', 'notepad', { open: () => notepad() }),
-      ] }),
-      N('My Documents', 'folder', { children: [] }),
-      N('Autoexec.bat', 'batch', { open: () => notepad('Autoexec.bat', 'SET PATH=C:\\WINDOWS;C:\\WINDOWS\\COMMAND\n') }),
-      N('Config.sys', 'sysfile', { open: () => notepad('Config.sys', 'DEVICE=C:\\WINDOWS\\HIMEM.SYS\nDOS=HIGH\n') }),
-    ] }),
-    N('Win_95c (D:)', 'cdrom', { children: cdRoot }),
-    N('Control Panel', 'controlpanel', { children: [] }),
-    N('Printers', 'printers', { children: [] }),
-  ] }),
-  network: N('Network Neighborhood', 'network', { children: [
-    N('Entire Network', 'globe', { error: ['Entire Network', 'Unable to browse the network.\n\nThe network is not accessible.'] }),
-  ] }),
-  recycle: N('Recycle Bin', 'recycle', { children: [] }),
-};
+// ---------------------------------------------------------------- disk
+const { FileSystem, FSError, ATTR, join, basename, dirname, extname, is83 } = window.W95FS;
+const fs = new FileSystem();
+const WINDIR = 'C:\\WINDOWS', DESKTOP_DIR = 'C:\\WINDOWS\\Desktop', RECENT = 'C:\\WINDOWS\\Recent';
+const PROGRAMS = 'C:\\WINDOWS\\Start Menu\\Programs', BIN = 'C:\\RECYCLED', BIN_INFO = 'C:\\RECYCLED\\INFO';
 
-function openItem(n) {
-  if (n.children) return openFolder(n);
-  if (n.open) return n.open();
-  if (n.error) return msgBox(n.error[0], n.error[1], 'error');
+// Executables on C: are placeholders: an MZ header plus the DOS stub message.
+function exeStub() {
+  const b = new Uint8Array(128); b[0] = 0x4d; b[1] = 0x5a; b[0x3c] = 0x40;
+  b.set(W95FS.encode('This program cannot be run in DOS mode.\r\n$'), 0x40); return b;
+}
+const lnk = target => `[Shortcut]\r\nTarget=${target}\r\n`;
+function makeDisk() {
+  fs.mount('A', { kind: 'removable', ready: false, total: 1457664, cluster: 512 });
+  fs.mount('C', { kind: 'fixed', total: 536870912, cluster: 8192 });
+  fs.mount('D', { kind: 'cdrom', label: window.W95CD.label, readonly: true, cluster: 2048, fsname: 'CDFS' });
+  const b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+  const conv = e => (e[2] ? [e[0], e[1], e[2].map(conv)] : e[4] ? [e[0], e[1], null, e[3], b64(e[4])] : e);
+  fs.load('D', window.W95CD.tree.map(conv));
+  for (const d of ['WINDOWS\\SYSTEM', 'WINDOWS\\COMMAND', 'WINDOWS\\FONTS', 'WINDOWS\\Desktop', 'WINDOWS\\Recent',
+    'WINDOWS\\SendTo', 'WINDOWS\\TEMP', 'WINDOWS\\Start Menu\\Programs\\Accessories', 'WINDOWS\\Start Menu\\Programs\\StartUp',
+    'Program Files\\Accessories', 'My Documents']) fs.mkdir('C:\\' + d, { recursive: true });
+  fs.mkdir(BIN, { attrs: ATTR.HIDDEN | ATTR.SYSTEM });
+  fs.writeFile(BIN_INFO, ''); fs.setAttrs(BIN_INFO, ATTR.HIDDEN | ATTR.SYSTEM);
+  const txt = (p, s, attrs) => { fs.writeFile(p, s.replace(/\n/g, '\r\n')); if (attrs !== undefined) fs.setAttrs(p, attrs); };
+  const HSR = ATTR.HIDDEN | ATTR.SYSTEM | ATTR.READONLY;
+  fs.writeFile('C:\\IO.SYS', exeStub()); fs.setAttrs('C:\\IO.SYS', HSR);
+  txt('C:\\MSDOS.SYS', '[Paths]\nWinDir=C:\\WINDOWS\nWinBootDir=C:\\WINDOWS\nHostWinBootDrv=C\n\n[Options]\nBootGUI=1\nLogo=1\n', HSR);
+  fs.writeFile('C:\\COMMAND.COM', exeStub());
+  txt('C:\\AUTOEXEC.BAT', '@ECHO OFF\nSET PATH=C:\\WINDOWS;C:\\WINDOWS\\COMMAND\nSET TEMP=C:\\WINDOWS\\TEMP\n');
+  txt('C:\\CONFIG.SYS', 'DEVICE=C:\\WINDOWS\\HIMEM.SYS\nDOS=HIGH,UMB\nFILES=60\n');
+  txt(WINDIR + '\\WIN.INI', '[windows]\nload=\nrun=\nNullPort=None\n\n[Desktop]\nWallpaper=(None)\nTileWallpaper=0\nWallpaperStyle=0\n\n[intl]\nsCountry=United States\n');
+  txt(WINDIR + '\\SYSTEM.INI', '[boot]\nshell=Explorer.exe\nsystem.drv=system.drv\ndisplay.drv=pnpdrvr.drv\n\n[386Enh]\nmouse=*vmouse, msmouse.vxd\n\n[boot.description]\ndisplay.drv=Standard Display Adapter (VGA)\n');
+  for (const e of ['NOTEPAD.EXE', 'EXPLORER.EXE', 'REGEDIT.EXE', 'CALC.EXE', 'WRITE.EXE', 'TASKMAN.EXE', 'PROGMAN.EXE', 'WINFILE.EXE', 'SOL.EXE'])
+    fs.writeFile(join(WINDIR, e), exeStub());
+  for (const e of ['USER.EXE', 'GDI.EXE', 'KRNL386.EXE', 'USER32.DLL', 'GDI32.DLL', 'KERNEL32.DLL', 'SHELL32.DLL', 'COMCTL32.DLL', 'VMM32.VXD'])
+    fs.writeFile(join(WINDIR, 'SYSTEM', e), exeStub());
+  for (const e of ['FORMAT.COM', 'XCOPY.EXE', 'EDIT.COM', 'MEM.EXE', 'DELTREE.EXE']) fs.writeFile(join(WINDIR, 'COMMAND', e), exeStub());
+  for (const e of ['SSERIFE.FON', 'VGAFIX.FON', 'VGASYS.FON', 'MARLETT.TTF', 'ARIAL.TTF', 'TIMES.TTF', 'COUR.TTF']) fs.writeFile(join(WINDIR, 'FONTS', e), exeStub());
+  fs.writeFile('C:\\Program Files\\Accessories\\WORDPAD.EXE', exeStub());
+  fs.writeFile(PROGRAMS + '\\Accessories\\Notepad.lnk', lnk(WINDIR + '\\NOTEPAD.EXE'));
+  fs.writeFile(PROGRAMS + '\\Windows Explorer.lnk', lnk(WINDIR + '\\EXPLORER.EXE'));
+  fs.chdir('C:\\');
+}
+
+// ---------------------------------------------------------------- shell namespace
+const TYPES = {
+  txt: { desc: 'Text Document', icon: 'textdoc', open: p => notepad(p) },
+  log: { desc: 'Text Document', icon: 'textdoc', open: p => notepad(p) },
+  ini: { desc: 'Configuration Settings', icon: 'sysfile', open: p => notepad(p) },
+  inf: { desc: 'Setup Information', icon: 'sysfile', open: p => notepad(p) },
+  bat: { desc: 'MS-DOS Batch File', icon: 'batch', open: p => notepad(p) },
+  sys: { desc: 'System file', icon: 'sysfile' }, dll: { desc: 'Application Extension', icon: 'sysfile' },
+  vxd: { desc: 'Virtual device driver', icon: 'sysfile' }, drv: { desc: 'Device driver', icon: 'sysfile' },
+  fon: { desc: 'Font file', icon: 'sysfile' }, ttf: { desc: 'TrueType Font file', icon: 'sysfile' },
+  exe: { desc: 'Application', icon: 'app', open: (p, arg) => runExe(p, arg) },
+  com: { desc: 'MS-DOS Application', icon: 'app', open: (p, arg) => runExe(p, arg) },
+  lnk: { desc: 'Shortcut', icon: 'app', open: p => openLnk(p) },
+  hlp: { desc: 'Help File', icon: 'help' }, scr: { desc: 'Screen Saver', icon: 'app' },
+  cpl: { desc: 'Control Panel extension', icon: 'sysfile' },
+};
+const EXE_ICON = { 'NOTEPAD.EXE': 'notepad', 'EXPLORER.EXE': 'explorer' };
+const isRoot = p => /^[A-Z]:\\$/i.test(p);
+const inBin = p => /^C:\\RECYCLED(\\|$)/i.test(p);
+const num = n => n.toLocaleString('en-US');
+function fmtSize(n) {
+  if (n < 1024) return `${n} bytes`;
+  const u = ['KB', 'MB', 'GB']; let v = n / 1024, i = 0;
+  while (v >= 1024 && i < 2) { v /= 1024; i++; }
+  const t = v >= 100 ? Math.floor(v) : v >= 10 ? Math.floor(v * 10) / 10 : Math.floor(v * 100) / 100;
+  return t + u[i];
+}
+// Explorer shows all-uppercase 8.3 names in mixed case and hides registered extensions.
+function dispName(name, isDir) {
+  let n = name;
+  if (!/[a-z]/.test(n) && is83(n)) n = n[0] + n.slice(1).toLowerCase();
+  const e = extname(n);
+  return !isDir && TYPES[e] && n.length > e.length + 1 ? n.slice(0, -e.length - 1) : n;
+}
+const typeDesc = i => i.isDir ? 'Folder' : TYPES[extname(i.name)] ? TYPES[extname(i.name)].desc : extname(i.name) ? extname(i.name).toUpperCase() + ' File' : 'File';
+function readLnk(p) { try { const m = /^Target=(.*)$/m.exec(fs.readText(p)); return m ? m[1].trim() : null; } catch (_) { return null; } }
+function driveIcon(l) { const v = fs.vols.get(l); return v.kind === 'removable' ? 'floppy' : v.kind === 'cdrom' ? 'cdrom' : 'hdd'; }
+function driveLabel(l) {
+  const v = fs.vols.get(l);
+  if (v.kind === 'removable') return `3\u00bd Floppy (${l}:)`;
+  return (v.label ? v.label[0] + v.label.slice(1).toLowerCase() + ' ' : '') + `(${l}:)`;
+}
+function iconFor(i, depth = 0) {
+  if (i.isDir) return isRoot(i.path) ? driveIcon(i.drive) : 'folder';
+  const e = extname(i.name);
+  if (e === 'lnk') { const t = readLnk(i.path); try { return t && depth < 4 ? iconFor(fs.stat(t), depth + 1) : 'app'; } catch (_) { return 'app'; } }
+  if (e === 'exe') return EXE_ICON[i.name.toUpperCase()] || 'app';
+  return (TYPES[e] && TYPES[e].icon) || 'windoc';
+}
+const byName = (a, b) => (b.isDir - a.isDir) || a.name.localeCompare(b.name, 'en', { sensitivity: 'base' });
+function fsItem(i) {
+  return { key: i.ino, label: dispName(i.name, i.isDir), icon: iconFor(i), overlay: !i.isDir && extname(i.name) === 'lnk',
+    path: i.path, info: i, open: () => shellOpen(i.path) };
+}
+class FsSource {
+  constructor(path) { this.ino = fs.inoOf(path); this.id = 'fs:' + this.ino; }
+  get path() { return fs.pathOfIno(this.ino); }
+  get gone() { const p = this.path; return !p || inBin(p); }
+  get title() { const p = this.path; return isRoot(p) ? driveLabel(p[0]) : dispName(basename(p), true); }
+  get icon() { return isRoot(this.path) ? driveIcon(this.path[0]) : 'folder'; }
+  get readonly() { return fs.vols.get(this.path[0]).readonly; }
+  list() {
+    const all = fs.readdir(this.path).sort(byName);
+    this.hidden = all.filter(i => i.hidden).length;
+    return all.filter(i => !i.hidden).map(fsItem);
+  }
+}
+const virt = (id, title, icon, list) => ({ id, title, icon, list, readonly: true, path: null, gone: false });
+const ControlPanel = virt('cp', 'Control Panel', 'controlpanel', () => []);
+const Printers = virt('printers', 'Printers', 'printers', () => []);
+const MyComputer = virt('mycomputer', 'My Computer', 'mycomputer', () => [
+  ...fs.volumes().map(v => ({ key: 'drv:' + v.letter, label: driveLabel(v.letter), icon: driveIcon(v.letter), drive: v.letter, path: v.root, open: () => openPath(v.root) })),
+  { key: 'v:cp', label: 'Control Panel', icon: 'controlpanel', virt: true, open: () => openFolder(ControlPanel) },
+  { key: 'v:pr', label: 'Printers', icon: 'printers', virt: true, open: () => openFolder(Printers) },
+]);
+const Network = virt('net', 'Network Neighborhood', 'network', () => [
+  { key: 'v:en', label: 'Entire Network', icon: 'globe', virt: true, open: () => msgBox('Entire Network', 'Unable to browse the network.\n\nThe network is not accessible.', 'error') },
+]);
+const RecycleBin = virt('bin', 'Recycle Bin', 'recycle', () => binItems().map(e => ({
+  key: 'bin:' + e.file, label: dispName(basename(e.orig), e.info.isDir), icon: e.info.isDir ? 'folder' : iconFor({ ...e.info, name: basename(e.orig) }),
+  bin: e, info: e.info, open: () => binProps(e),
+})));
+Object.defineProperty(RecycleBin, 'icon', { get: () => (binItems().length ? 'recyclefull' : 'recycle') });
+
+function fsMsg(path, e) { return `${path} is not accessible.\n\n${e.message}`; }
+function openPath(path) {
+  try { const i = fs.stat(path); if (!i.isDir) return shellOpen(path); fs.readdir(path); }
+  catch (e) { if (e instanceof FSError) return msgBox(isRoot(path) ? driveLabel(path[0].toUpperCase()) : basename(path), fsMsg(path, e), 'error'); throw e; }
+  return openFolder(new FsSource(path));
+}
+function shellOpen(path, arg) {
+  let i; try { i = fs.stat(path); } catch (e) { return msgBox(basename(path), fsMsg(path, e), 'error'); }
+  if (i.isDir) return openPath(path);
+  const t = TYPES[extname(i.name)];
+  if (t && t.open) return t.open(i.path, arg);
+  msgBox(dispName(i.name), `Windows cannot open this file:\n\n${i.name}\n\nThere is no program associated with this type of file.`, 'info');
+}
+function runExe(path, arg) {
+  const n = basename(path).toUpperCase();
+  if (n === 'NOTEPAD.EXE') return notepad(arg ? resolveArg(arg) : null);
+  if (n === 'EXPLORER.EXE') return arg ? openPath(resolveArg(arg)) : openFolder(MyComputer);
+  msgBox(dispName(basename(path)), `${path} is not a valid Windows application.`, 'error');
+}
+const resolveArg = a => { a = a.trim().replace(/^"(.*)"$/, '$1'); return /^[a-z]:|^\\/i.test(a) ? a : join(fs.cwd, a); };
+function openLnk(path) {
+  const t = readLnk(path);
+  if (t && fs.exists(t)) return shellOpen(t);
+  msgBox('Problem with Shortcut', `The item '${basename(t || path)}' that this shortcut refers to has been changed or moved, so this shortcut will no longer work properly.`, 'warning');
+}
+function addRecent(path) {
+  try {
+    if (inBin(path)) return;
+    fs.writeFile(join(RECENT, basename(path) + '.lnk'), lnk(path));
+    const all = fs.readdir(RECENT).sort((a, b) => b.mtime - a.mtime);
+    for (const x of all.slice(15)) fs.unlink(x.path);
+  } catch (_) { /* Recent is best effort, like the real shell */ }
+}
+
+// ---------------------------------------------------------------- file operations
+const OP_TITLE = { delete: 'Error Deleting File or Folder', rename: 'Error Renaming File or Folder', copy: 'Error Copying File or Folder',
+  move: 'Error Moving File or Folder', create: 'Error Creating File or Folder', save: 'Notepad', restore: 'Error Restoring File' };
+function fsTry(op, name, fn) {
+  try { fn(); return true; } catch (e) {
+    if (!(e instanceof FSError)) throw e;
+    msgBox(OP_TITLE[op] || 'Error', `Cannot ${op} ${name}: ${e.message}`, 'error'); return false;
+  }
+}
+function deleteTree(p) {
+  const i = fs.stat(p);
+  if (i.readonly) fs.setAttrs(p, i.attrs & ~ATTR.READONLY);
+  if (i.isDir) { for (const k of fs.readdir(p)) deleteTree(k.path); fs.rmdir(p); } else fs.unlink(p);
+}
+function moveAny(src, dst) {
+  try { fs.rename(src, dst); } catch (e) {
+    if (e.code !== W95FS.E.NOT_SAME_DEVICE) throw e;
+    fs.copy(src, dst); deleteTree(src);
+  }
+}
+function binItems() {
+  let raw = ''; try { raw = fs.readText(BIN_INFO); } catch (_) { return []; }
+  return raw.split('\r\n').filter(Boolean).map(l => {
+    const [file, orig, t] = l.split('\t'), path = join(BIN, file);
+    return fs.exists(path) ? { file, orig, t: +t, path, info: fs.stat(path) } : null;
+  }).filter(Boolean);
+}
+const binWrite = list => fs.writeFile(BIN_INFO, list.map(e => `${e.file}\t${e.orig}\t${e.t}\r\n`).join(''));
+function recycle(path) {
+  const items = binItems(), i = fs.stat(path), orig = i.path;
+  const n = items.reduce((m, e) => Math.max(m, +((/^DC(\d+)/i.exec(e.file) || [0, 0])[1])), 0) + 1;
+  const ext = i.isDir ? '' : extname(i.name), file = `DC${n}${ext ? '.' + ext.toUpperCase() : ''}`;
+  fs.rename(orig, join(BIN, file));
+  binWrite([...items, { file, orig, t: Date.now() }]);
+}
+function restoreBin(e) {
+  fsTry('restore', basename(e.orig), () => {
+    fs.mkdir(dirname(e.orig), { recursive: true });
+    fs.rename(e.path, e.orig);
+    binWrite(binItems().filter(x => x.file !== e.file));
+  });
+}
+function purgeBin(e) { fsTry('delete', basename(e.orig), () => { deleteTree(e.path); binWrite(binItems()); }); }
+function emptyBin() {
+  const items = binItems(); if (!items.length) return;
+  const msg = items.length === 1 ? `Are you sure you want to delete '${dispName(basename(items[0].orig), items[0].info.isDir)}'?` : `Are you sure you want to delete these ${items.length} items?`;
+  msgBox(items.length === 1 ? 'Confirm File Delete' : 'Confirm Multiple File Delete', msg, 'warning', ['&Yes', '&No'], b => {
+    if (b !== '&Yes') return;
+    fsTry('delete', 'items', () => { for (const e of items) deleteTree(e.path); binWrite([]); });
+  });
+}
+function binProps(e) {
+  msgBox(`${dispName(basename(e.orig), e.info.isDir)} Properties`,
+    `Origin: ${dirname(e.orig)}\nDeleted: ${fmtDate(e.t)}\nSize: ${fmtSize(e.info.isDir ? fs.du(e.path).bytes : e.info.size)}`, null);
+}
+function confirmDelete(it, perm) {
+  if (it.bin) return msgBox('Confirm File Delete', `Are you sure you want to delete '${it.label}'?`, 'warning', ['&Yes', '&No'], b => b === '&Yes' && purgeBin(it.bin));
+  if (!it.info || isRoot(it.path)) return;
+  const dir = it.info.isDir, toBin = !perm && it.path[0].toUpperCase() === 'C' && !inBin(it.path);
+  const msg = toBin
+    ? (dir ? `Are you sure you want to remove the folder '${it.label}' and move all its contents to the Recycle Bin?` : `Are you sure you want to send '${it.label}' to the Recycle Bin?`)
+    : (dir ? `Are you sure you want to remove the folder '${it.label}' and all its contents?` : `Are you sure you want to delete '${it.label}'?`);
+  msgBox(dir ? 'Confirm Folder Delete' : 'Confirm File Delete', msg, toBin ? 'recyclefull32' : 'warning', ['&Yes', '&No'], b => {
+    if (b === '&Yes') fsTry('delete', it.label, () => (toBin ? recycle(it.path) : deleteTree(it.path)));
+  });
+}
+let clip = null;
+function cutCopy(it, mode) { if (it.info && !isRoot(it.path)) clip = { mode, path: it.path }; }
+function sameDir(a, b) { try { return fs.realpath(a).toUpperCase() === fs.realpath(b).toUpperCase(); } catch (_) { return false; } }
+function pasteInto(dir) {
+  if (!clip || !dir) return;
+  const src = clip.path; if (!fs.exists(src)) { clip = null; return; }
+  const i = fs.stat(src), name = dispName(i.name, i.isDir);
+  let dst = join(dir, i.name);
+  if (clip.mode === 'cut') {
+    if (sameDir(dirname(src), dir)) return;
+    if (fsTry('move', name, () => moveAny(src, dst))) clip = null;
+    return;
+  }
+  if (fs.exists(dst)) {
+    if (sameDir(dirname(src), dir)) {
+      for (let k = 1; ; k++) { dst = join(dir, k === 1 ? `Copy of ${i.name}` : `Copy (${k}) of ${i.name}`); if (!fs.exists(dst)) break; }
+    } else if (!i.isDir) {
+      return msgBox('Confirm File Replace', `This folder already contains a file named '${name}'.\n\nWould you like to replace the existing file?`, 'question', ['&Yes', '&No'],
+        b => b === '&Yes' && fsTry('copy', name, () => fs.copy(src, dst, { overwrite: true })));
+    }
+  }
+  fsTry('copy', name, () => fs.copy(src, dst));
+}
+function pasteShortcut(dir) { if (clip && dir) makeShortcut(clip.path, dir); }
+function makeShortcut(target, dir) {
+  const base = isRoot(target) ? driveLabel(target[0]) : dispName(basename(target), fs.stat(target).isDir);
+  let p; for (let k = 1; ; k++) { p = join(dir, `Shortcut${k > 1 ? ` (${k})` : ''} to ${base.replace(/[\\/:*?"<>|]/g, '')}.lnk`); if (!fs.exists(p)) break; }
+  return fsTry('create', 'shortcut', () => fs.writeFile(p, lnk(target))) ? p : null;
+}
+function createShortcut(view, it) {
+  const target = it.path; if (!target) return;
+  const dir = view.src.path;
+  if (!dir || view.src.readonly) {
+    return msgBox('Shortcut', 'Windows cannot create a shortcut here.\n\nDo you want the shortcut to be placed on the desktop instead?', 'question', ['&Yes', '&No'],
+      b => b === '&Yes' && makeShortcut(target, DESKTOP_DIR));
+  }
+  view.created(makeShortcut(target, dir));
+}
+function newItem(dir, kind) {
+  const base = kind === 'folder' ? 'New Folder' : 'New Text Document', ext = kind === 'folder' ? '' : '.txt';
+  let p; for (let k = 1; ; k++) { p = join(dir, base + (k > 1 ? ` (${k})` : '') + ext); if (!fs.exists(p)) break; }
+  return fsTry('create', base, () => (kind === 'folder' ? fs.mkdir(p) : fs.writeFile(p, ''))) ? p : null;
+}
+
+// ---------------------------------------------------------------- inline rename
+let ren = null;
+function startRename(view, it) {
+  if (!it || !it.info || it.bin || isRoot(it.path) || fs.vols.get(it.path[0]).readonly) return;
+  ren = { view, key: it.key, it, value: it.label, caret: it.label.length, all: true, box: null };
+}
+function commitRename() {
+  const r = ren; ren = null; if (!r) return;
+  const v = r.value.trim(); if (!v || v === r.it.label) return;
+  const i = r.it.info, e = extname(i.name);
+  const name = !i.isDir && TYPES[e] && dispName(i.name) !== i.name && !v.toLowerCase().endsWith('.' + e) ? `${v}.${e}` : v;
+  fsTry('rename', r.it.label, () => fs.rename(i.path, join(dirname(i.path), name)));
+}
+function renameKey(e) {
+  const r = ren, k = e.key;
+  if (k === 'Enter') { commitRename(); return true; }
+  if (k === 'Escape') { ren = null; return true; }
+  if (k.length === 1 && !e.ctrlKey && !e.metaKey) {
+    if (r.all) { r.value = ''; r.caret = 0; r.all = false; }
+    r.value = r.value.slice(0, r.caret) + k + r.value.slice(r.caret); r.caret++;
+  } else if (k === 'Backspace' || k === 'Delete') {
+    if (r.all) { r.value = ''; r.caret = 0; r.all = false; }
+    else if (k === 'Backspace' && r.caret > 0) { r.value = r.value.slice(0, r.caret - 1) + r.value.slice(r.caret); r.caret--; }
+    else if (k === 'Delete') r.value = r.value.slice(0, r.caret) + r.value.slice(r.caret + 1);
+  } else if (k === 'ArrowLeft') { r.caret = r.all ? 0 : Math.max(0, r.caret - 1); r.all = false; }
+  else if (k === 'ArrowRight') { r.caret = r.all ? r.value.length : Math.min(r.value.length, r.caret + 1); r.all = false; }
+  else if (k === 'Home') { r.caret = 0; r.all = false; } else if (k === 'End') { r.caret = r.value.length; r.all = false; }
+  else return false;
+  blinkOn = true; return true;
+}
+
+// ---------------------------------------------------------------- icon views (folder windows and desktop)
+function cellFor(it, x, y, wrapW) {
+  const lines = wrap(esc(it.label), wrapW), lw = Math.max(1, ...lines.map(l => textW(l)));
+  return { it, ix: x, iy: y, lines, lw, lx: x + 16 - (lw >> 1), ly: y + 35 };
+}
+const cellHit = (c, x, y) => inR({ x: c.ix, y: c.iy, w: 32, h: 32 }, x, y) || inR({ x: c.lx - 1, y: c.ly, w: c.lw + 2, h: c.lines.length * 13 }, x, y);
+function drawIconLabel(c, view, sel, focused, fg) {
+  icon(c.it.icon + '32', c.ix, c.iy, sel && focused);
+  if (c.it.overlay) icon('lnkover32', c.ix, c.iy, sel && focused);
+  if (ren && ren.view === view && ren.key === c.it.key) {
+    const tw = textW(esc(ren.value)), w = Math.max(tw + 6, 20), x = c.ix + 16 - (w >> 1), y = c.ly - 1;
+    fill(x, y, w, 15, K.win); edge(x, y, w, 15, K.dk, K.dk); ren.box = { x, y, w, h: 15 };
+    if (ren.all) { fill(x + 2, y + 1, tw + 2, 13, K.sel); text(esc(ren.value), x + 3, y + 1, K.hl); }
+    else { text(esc(ren.value), x + 3, y + 1); if (blinkOn) fill(x + 3 + textW(esc(ren.value.slice(0, ren.caret))), y + 1, 1, 13, K.dk); }
+    return;
+  }
+  const lh = c.lines.length * 13;
+  if (sel) fill(c.lx - 1, c.ly, c.lw + 2, lh, focused ? K.sel : K.face);
+  c.lines.forEach((l, j) => text(l, c.lx + ((c.lw - textW(l)) >> 1), c.ly + j * 13, sel && focused ? K.hl : fg));
+  if (sel && focused) focusRect(c.lx - 1, c.ly, c.lw + 2, lh);
+}
+function viewSelItem(v) { return v.cells.find(c => c.it.key === v.selKey)?.it || null; }
+function itemMenu(view, it) {
+  if (it.bin) return [{ label: '&Restore', bold: true, fn: () => restoreBin(it.bin) }, { sep: true }, { label: '&Delete', fn: () => confirmDelete(it) }, { sep: true }, { label: 'P&roperties', fn: () => binProps(it.bin) }];
+  const real = !!it.info && !isRoot(it.path), ro = real && fs.vols.get(it.path[0]).readonly;
+  const out = [{ label: '&Open', bold: true, fn: () => it.open() }];
+  if ((it.info && it.info.isDir) || it.drive || it.key === 'sys:mc') out.push({ label: '&Explore', fn: () => it.open() });
+  out.push({ sep: true });
+  if (real) out.push({ label: 'Cu&t', disabled: ro, fn: () => cutCopy(it, 'cut') }, { label: '&Copy', fn: () => cutCopy(it, 'copy') }, { sep: true });
+  if (it.key === 'sys:bin') out.push({ label: 'Empty Recycle &Bin', disabled: !binItems().length, fn: emptyBin }, { sep: true });
+  out.push({ label: 'Create &Shortcut', disabled: !(real || it.drive), fn: () => createShortcut(view, it) });
+  if (real) out.push({ label: '&Delete', disabled: ro, fn: () => confirmDelete(it) }, { label: 'Rena&me', disabled: ro, fn: () => startRename(view, it) });
+  out.push({ sep: true }, { label: 'P&roperties', fn: () => properties(it) });
+  return out;
+}
+function newMenu(view) {
+  const dir = view.src.path, ro = !dir || view.src.readonly;
+  return { label: 'Ne&w', disabled: ro, sub: [
+    { label: '&Folder', icon: 'folder', fn: () => view.created(newItem(dir, 'folder')) }, { sep: true },
+    { label: '&Shortcut', icon: 'app', disabled: !clip, fn: () => view.created(clip && makeShortcut(clip.path, dir)) },
+    { label: 'Text Document', icon: 'textdoc', fn: () => view.created(newItem(dir, 'text')) },
+  ] };
+}
+function bgMenu(view, desktop) {
+  const dir = view.src.path, ro = !dir || view.src.readonly;
+  const out = [];
+  if (!desktop) out.push({ label: '&View', sub: [{ label: 'Lar&ge Icons', check: true }, { label: 'S&mall Icons', disabled: true }, { label: '&List', disabled: true }, { label: '&Details', disabled: true }] }, { sep: true });
+  out.push({ label: 'Arrange &Icons', sub: [{ label: 'by &Name', fn: () => view.arrange() }, { label: 'by &Type', fn: () => view.arrange() }, { label: 'by Si&ze', fn: () => view.arrange() }, { label: 'by &Date', fn: () => view.arrange() }] },
+    { label: 'Line &up Icons', fn: () => view.lineUp() }, { sep: true },
+    { label: '&Paste', disabled: ro || !clip, fn: () => pasteInto(dir) }, { label: 'Paste &Shortcut', disabled: ro || !clip, fn: () => pasteShortcut(dir) }, { sep: true },
+    newMenu(view), { sep: true }, { label: 'P&roperties', disabled: !dir, fn: () => dir && properties(fsItem(fs.stat(dir))) });
+  return out;
+}
+// Keyboard commands shared by folder windows and the desktop.
+function viewKey(view, e) {
+  const it = viewSelItem(view), ctl = e.ctrlKey || e.metaKey, k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+  if (ctl && k === 'c' && it) { cutCopy(it, 'copy'); return true; }
+  if (ctl && k === 'x' && it) { cutCopy(it, 'cut'); return true; }
+  if (ctl && k === 'v') { pasteInto(view.src.path); return true; }
+  if (k === 'Delete' && it) { confirmDelete(it, e.shiftKey); return true; }
+  if (k === 'F2' && it) { startRename(view, it); return true; }
+  if (k === 'Enter' && it) { if (e.altKey) properties(it); else it.open(); return true; }
+  if (k === 'F5') { view.refresh(); return true; }
+  const cells = view.cells; if (!cells.length) return false;
+  const i = cells.findIndex(c => c.it.key === view.selKey);
+  const d = view.navStep(k);
+  if (d) { view.selKey = cells[i < 0 ? 0 : clamp(i + d, 0, cells.length - 1)].it.key; return true; }
+  return false;
 }
 
 const CW = 75, CH = 70;
 class FolderView {
-  constructor(node) { this.node = node; this.sel = -1; this.sb = new ScrollBar(true, () => dirty()); this.cells = []; }
+  constructor(src) { this.src = src; this.selKey = null; this.sb = new ScrollBar(true, () => dirty()); this.cells = []; this.cache = null; this.pending = null; }
+  refresh() { this.cache = null; }
+  arrange() { this.refresh(); }
+  lineUp() {}
+  navStep(k) { return { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -this.cols, ArrowDown: this.cols }[k] || 0; }
+  created(path) { if (path) { this.pending = fs.inoOf(path); this.refresh(); } }
+  items() {
+    if (!this.cache || this.cache.v !== fs.version) {
+      let list = []; try { list = this.src.list(); } catch (_) { list = []; }
+      this.cache = { v: fs.version, list }; this.lay = null;
+    }
+    return this.cache.list;
+  }
   layout(r) {
+    const items = this.items(), key = `${r.x},${r.y},${r.w},${r.h},${this.sb.pos},${this.cache.v}`;
+    if (this.lay === key) return;
     this.fr = { x: r.x, y: r.y, w: r.w, h: r.h - 22 };
     this.st = { x: r.x, y: r.y + r.h - 20, w: r.w, h: 20 };
-    const n = this.node.children.length;
-    let iw = this.fr.w - 4; const ih = this.fr.h - 4;
+    let iw = this.fr.w - 4; const ih = this.fr.h - 4, n = items.length;
     let cols = Math.max(1, Math.floor(iw / CW)), content = Math.ceil(n / cols) * CH;
     this.showSb = content > ih;
     if (this.showSb) { iw -= 16; cols = Math.max(1, Math.floor(iw / CW)); content = Math.ceil(n / cols) * CH; }
     this.cols = cols; this.inner = { x: this.fr.x + 2, y: this.fr.y + 2, w: iw, h: ih };
     this.sb.set(this.inner.x + iw, this.inner.y, ih, content, ih);
     if (!this.showSb) this.sb.pos = 0;
-    this.cells = this.node.children.map((c, i) => {
-      const cx = this.inner.x + (i % cols) * CW, cy = this.inner.y + Math.floor(i / cols) * CH - this.sb.pos;
-      const lines = wrap(c.label, CW - 4), lw = Math.max(...lines.map(l => textW(esc(l))));
-      return { node: c, ix: cx + ((CW - 32) >> 1), iy: cy + 2, lines, lw, lx: cx + ((CW - lw) >> 1), ly: cy + 36 };
-    });
+    this.cells = items.map((it, i) => cellFor(it, this.inner.x + (i % cols) * CW + 21, this.inner.y + Math.floor(i / cols) * CH - this.sb.pos + 2, CW - 4));
+    this.lay = `${r.x},${r.y},${r.w},${r.h},${this.sb.pos},${this.cache.v}`;
+    if (this.pending) {
+      const c = this.cells.find(x => x.it.key === this.pending); this.pending = null;
+      if (c) { this.selKey = c.it.key; startRename(this, c.it); }
+    }
   }
   draw(r, win) {
+    if (this.src.gone) { setTimeout(() => closeWin(win, true)); return; }
+    win.title = this.src.title; win.icon = this.src.icon;
     this.layout(r);
     field(this.fr.x, this.fr.y, this.fr.w, this.fr.h);
     ctx.save(); ctx.beginPath(); ctx.rect(this.inner.x, this.inner.y, this.inner.w, this.inner.h); ctx.clip();
-    this.cells.forEach((c, i) => drawIconLabel(c, i === this.sel, win.isActive, K.dk, K.win));
+    for (const c of this.cells) {
+      if (c.iy > this.inner.y + this.inner.h || c.ly + 40 < this.inner.y) continue;
+      drawIconLabel(c, this, c.it.key === this.selKey, win.isActive, K.dk);
+    }
     ctx.restore();
     if (this.showSb) this.sb.draw();
-    const s = this.st, n = this.node.children.length;
-    edge(s.x, s.y, s.w - 16, s.h, K.sh, K.hl);
-    text(this.sel >= 0 ? '1 object(s) selected' : `${n} object(s)`, s.x + 3, s.y + 4);
+    const s = this.st, n = this.cells.length, it = viewSelItem(this), lw = Math.floor((s.w - 16) * 0.55);
+    edge(s.x, s.y, lw - 2, s.h, K.sh, K.hl); edge(s.x + lw, s.y, s.w - lw - 16, s.h, K.sh, K.hl);
+    const hid = this.src.hidden ? ` (plus ${this.src.hidden} hidden)` : '';
+    let left = it ? '1 object(s) selected' : `${n} object(s)${hid}`, right = '';
+    if (it && it.drive) {
+      try { const v = fs.statvfs(it.path); left = `Free Space: ${fmtSize(v.free)}, Capacity: ${fmtSize(v.total)}`; } catch (_) { left = '1 object(s) selected'; }
+    } else if (it && it.info) right = it.info.isDir ? '' : fmtSize(it.info.size);
+    else if (this.src.path) right = fmtSize(this.cells.reduce((a, c) => a + (c.it.info && !c.it.info.isDir ? c.it.info.size : 0), 0));
+    ctx.save(); ctx.beginPath(); ctx.rect(s.x + 2, s.y, lw - 6, s.h); ctx.clip(); text(left, s.x + 3, s.y + 4); ctx.restore();
+    text(right, s.x + lw + 3, s.y + 4);
     if (!win.max) sizeGrip(r.x + r.w, r.y + r.h);
   }
-  itemAt(x, y) {
-    if (!inR(this.inner, x, y)) return -1;
-    return this.cells.findIndex(c => inR({ x: c.ix, y: c.iy, w: 32, h: 32 }, x, y) ||
-      inR({ x: c.lx - 1, y: c.ly, w: c.lw + 2, h: c.lines.length * 13 }, x, y));
-  }
-  down(x, y, btn, dbl, win) {
+  down(x, y, btn, dbl) {
     if (this.showSb && this.sb.contains(x, y)) return this.sb.down(x, y);
-    const i = this.itemAt(x, y); this.sel = i;
-    if (btn === 2) {
-      if (i >= 0) openPopup([{ label: '&Open', bold: true, fn: () => openItem(this.node.children[i]) }, { sep: true }, { label: 'P&roperties' }], x, y);
-      else openPopup([{ label: '&View', sub: [{ label: 'Lar&ge Icons', check: true }] }, { sep: true }, { label: 'P&roperties' }], x, y);
-    } else if (dbl && i >= 0) openItem(this.node.children[i]);
+    if (!inR(this.inner, x, y)) return null;
+    const c = this.cells.find(cc => cellHit(cc, x, y));
+    this.selKey = c ? c.it.key : null;
+    if (btn === 2) openPopup(c ? itemMenu(this, c.it) : bgMenu(this), x, y);
+    else if (dbl && c) c.it.open();
     return null;
   }
   key(e) {
-    const n = this.node.children.length; if (!n) return false;
-    const d = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -this.cols, ArrowDown: this.cols }[e.key];
-    if (d) { this.sel = this.sel < 0 ? 0 : clamp(this.sel + d, 0, n - 1); return true; }
-    if (e.key === 'Enter' && this.sel >= 0) { openItem(this.node.children[this.sel]); return true; }
-    return false;
+    if (e.key === 'Backspace') {
+      const p = this.src.path;
+      if (p) { if (isRoot(p)) openFolder(MyComputer); else openPath(dirname(p)); }
+      return true;
+    }
+    if (e.key === 'Enter' && !viewSelItem(this)) return false;
+    return viewKey(this, e);
   }
 }
-function drawIconLabel(c, sel, focused, fg, bg) {
-  icon(c.node.icon + '32', c.ix, c.iy, sel && focused);
-  const lh = c.lines.length * 13;
-  if (sel) fill(c.lx - 1, c.ly, c.lw + 2, lh, focused ? K.sel : K.face);
-  c.lines.forEach((l, j) => {
-    const lw = textW(esc(l));
-    text(esc(l), c.lx + ((c.lw - lw) >> 1), c.ly + j * 13, sel && focused ? K.hl : fg);
-  });
-  if (sel && focused) focusRect(c.lx - 1, c.ly, c.lw + 2, lh);
-  void bg;
-}
-
-function openFolder(node) {
-  const open = windows.find(w => w.body instanceof FolderView && w.body.node === node);
+function openFolder(src) {
+  const open = windows.find(w => w.body instanceof FolderView && w.body.src.id === src.id);
   if (open) { activate(open); return open; }
-  const p = nextPos(330, 240);
-  return openWin(new Win({
-    ...p, w: 330, h: 240, title: node.label, icon: node.icon, minW: 160, minH: 100,
-    body: new FolderView(node),
+  const view = new FolderView(src), p = nextPos(330, 240);
+  const isBin = src === RecycleBin;
+  let win;
+  const fileMenu = () => {
+    const it = viewSelItem(view), out = [];
+    if (isBin) out.push({ label: 'Empty Recycle &Bin', disabled: !binItems().length, fn: emptyBin }, { sep: true });
+    if (it) out.push(...itemMenu(view, it), { sep: true });
+    else if (!isBin) out.push(newMenu(view), { sep: true }, { label: 'Create &Shortcut', disabled: true }, { label: '&Delete', disabled: true }, { label: 'Rena&me', disabled: true }, { label: 'P&roperties', disabled: !src.path, fn: () => properties(fsItem(fs.stat(src.path))) }, { sep: true });
+    out.push({ label: '&Close', fn: () => closeWin(win) });
+    return out;
+  };
+  const editMenu = () => {
+    const it = viewSelItem(view), real = it && it.info && !it.bin && !isRoot(it.path), ro = !src.path || src.readonly;
+    return [{ label: '&Undo', disabled: true }, { sep: true },
+      { label: 'Cu&t', acc: 'Ctrl+X', disabled: !real || ro, fn: () => cutCopy(it, 'cut') }, { label: '&Copy', acc: 'Ctrl+C', disabled: !real, fn: () => cutCopy(it, 'copy') },
+      { label: '&Paste', acc: 'Ctrl+V', disabled: ro || !clip, fn: () => pasteInto(src.path) }, { label: 'Paste &Shortcut', disabled: ro || !clip, fn: () => pasteShortcut(src.path) }];
+  };
+  win = openWin(new Win({
+    ...p, w: 330, h: 240, title: src.title, icon: src.icon, minW: 160, minH: 100, body: view,
     menu: [
-      { label: '&File', items: () => [{ label: '&Open', disabled: true }, { sep: true }, { label: '&Close', fn: () => closeWin(active) }] },
-      { label: '&Edit', items: [{ label: '&Undo', disabled: true }, { sep: true }, { label: 'Cu&t', acc: 'Ctrl+X', disabled: true }, { label: '&Copy', acc: 'Ctrl+C', disabled: true }, { label: '&Paste', acc: 'Ctrl+V', disabled: true }, { sep: true }, { label: 'Select &All', acc: 'Ctrl+A' }] },
-      { label: '&View', items: [{ label: '&Toolbar' }, { label: 'Status &Bar', check: true }, { sep: true }, { label: 'Lar&ge Icons', check: true }, { label: 'S&mall Icons' }, { label: '&List' }, { label: '&Details' }, { sep: true }, { label: 'Line &up Icons' }, { sep: true }, { label: '&Refresh' }, { label: '&Options...' }] },
-      { label: '&Help', items: [{ label: '&Help Topics' }, { sep: true }, { label: '&About Windows 95', fn: aboutWin95 }] },
+      { label: '&File', items: fileMenu }, { label: '&Edit', items: editMenu },
+      { label: '&View', items: () => [{ label: '&Toolbar', disabled: true }, { label: 'Status &Bar', check: true }, { sep: true }, { label: 'Lar&ge Icons', check: true }, { sep: true }, { label: 'Arrange &Icons', sub: [{ label: 'by &Name', fn: () => view.arrange() }] }, { label: 'Line &up Icons' }, { sep: true }, { label: '&Refresh', fn: () => view.refresh() }] },
+      { label: '&Help', items: [{ label: '&Help Topics', disabled: true }, { sep: true }, { label: '&About Windows 95', fn: aboutWin95 }] },
     ],
   }));
+  return win;
+}
+
+// ---------------------------------------------------------------- properties
+function fmtDate(t) { return new Date(t).toLocaleString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit' }); }
+function propSheet(title, page, onApply) {
+  let win;
+  const apply = () => onApply ? onApply() : true;
+  win = dialog(title, 360, 414, [
+    { type: 'tabs', x: 6, y: 6, w: 348, h: 370, tabs: ['General'] },
+    ...page.map(c => ({ ...c, x: c.x + 6, y: c.y + 26 })),
+    { type: 'button', label: 'OK', x: 122, y: 384, w: 75, h: 23, def: true, fn: () => { if (apply()) closeWin(win); } },
+    { type: 'button', label: 'Cancel', x: 200, y: 384, w: 75, h: 23, cancel: true, fn: () => closeWin(win) },
+    { type: 'button', label: '&Apply', x: 278, y: 384, w: 75, h: 23, fn: apply },
+  ]);
+  return win;
+}
+const row = (y, k, v, w = 230) => [{ type: 'label', text: k, x: 14, y }, { type: 'label', text: v, x: 100, y, w, ell: true }];
+function properties(it) {
+  if (it.bin) return binProps(it.bin);
+  if (it.drive) return driveProps(it.drive);
+  if (!it.path) return;
+  let i; try { i = fs.stat(it.path); } catch (e) { return msgBox('Properties', fsMsg(it.path, e), 'error'); }
+  const name = dispName(i.name, i.isDir), du = i.isDir ? fs.du(i.path) : null;
+  const size = i.isDir ? du.bytes : i.size, alloc = i.isDir ? du.alloc : i.alloc;
+  const ro = fs.vols.get(i.drive).readonly;
+  const chk = (label, x, y, on, dis) => ({ type: 'check', label, x, y, checked: on, disabled: ro || dis });
+  const cRo = chk('&Read-only', 100, 286, i.readonly), cHid = chk('H&idden', 220, 286, i.hidden);
+  const cArc = chk('Ar&chive', 100, 306, i.archive), cSys = chk('S&ystem', 220, 306, i.system, true);
+  const page = [
+    { type: 'icon', name: iconFor(i) + '32', x: 14, y: 12 }, { type: 'label', text: name, x: 100, y: 22, w: 230, ell: true },
+    { type: 'line', x: 14, y: 54, w: 320 },
+    ...row(66, 'Type:', typeDesc(i)), ...row(86, 'Location:', dirname(i.path)),
+    ...row(106, 'Size:', `${fmtSize(size)} (${num(size)} bytes), ${num(alloc)} bytes used`),
+    ...(i.isDir ? row(126, 'Contains:', `${du.files} Files, ${du.dirs} Folders`) : []),
+    { type: 'line', x: 14, y: 150, w: 320 },
+    ...row(162, 'MS-DOS name:', i.shortName), ...row(182, 'Created:', fmtDate(i.ctime)),
+    ...(i.isDir ? [] : [...row(202, 'Modified:', fmtDate(i.mtime)), ...row(222, 'Accessed:', new Date(i.atime).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }))]),
+    { type: 'line', x: 14, y: 250, w: 320 },
+    { type: 'label', text: 'Attributes:', x: 14, y: 288 }, cRo, cHid, cArc, cSys,
+  ];
+  propSheet(`${name} Properties`, page, () => {
+    if (ro) return true;
+    const a = (cRo.checked ? ATTR.READONLY : 0) | (cHid.checked ? ATTR.HIDDEN : 0) | (cArc.checked ? ATTR.ARCHIVE : 0) | (cSys.checked ? ATTR.SYSTEM : 0);
+    return a === (i.attrs & 39) || fsTry('change attributes of', name, () => fs.setAttrs(i.path, a));
+  });
+}
+function driveProps(l) {
+  let v; try { v = fs.statvfs(l + ':\\'); } catch (e) { return msgBox(driveLabel(l), fsMsg(l + ':\\', e), 'error'); }
+  const kind = { fixed: 'Local Disk', removable: '3\u00bd Inch Floppy Disk', cdrom: 'CD-ROM Disk' }[v.kind];
+  const label = { type: 'edit', x: 100, y: 18, w: 160, h: 21, value: v.label, caret: v.label.length, readonly: v.readonly };
+  const swatch = (y, c) => ({ type: 'custom', x: 14, y, w: 13, h: 13, draw: a => { fill(a.x, a.y, 13, 13, c); edge(a.x, a.y, 13, 13, K.dk, K.dk); } });
+  const pie = { type: 'custom', x: 100, y: 196, w: 160, h: 100, draw: a => drawPie(a.x + 80, a.y + 34, 70, 30, 12, v.total ? v.used / v.total : 0) };
+  const page = [
+    { type: 'icon', name: driveIcon(l) + '32', x: 14, y: 12 }, { type: 'label', text: '&Label:', amp: true, x: 54, y: 22 }, label,
+    { type: 'line', x: 14, y: 54, w: 320 },
+    ...row(66, 'Type:', kind),
+    { type: 'line', x: 14, y: 88, w: 320 },
+    swatch(100, '#0000ff'), { type: 'label', text: 'Used space:', x: 34, y: 100 }, { type: 'label', text: `${num(v.used)} bytes`, x: 130, y: 100 }, { type: 'label', text: fmtSize(v.used), x: 270, y: 100 },
+    swatch(120, '#ff00ff'), { type: 'label', text: 'Free space:', x: 34, y: 120 }, { type: 'label', text: `${num(v.free)} bytes`, x: 130, y: 120 }, { type: 'label', text: fmtSize(v.free), x: 270, y: 120 },
+    { type: 'line', x: 14, y: 142, w: 320 },
+    { type: 'label', text: 'Capacity:', x: 34, y: 154 }, { type: 'label', text: `${num(v.total)} bytes`, x: 130, y: 154 }, { type: 'label', text: fmtSize(v.total), x: 270, y: 154 },
+    pie, { type: 'label', text: `Drive ${l}`, x: 158, y: 304 },
+  ];
+  propSheet(driveLabel(l) + ' Properties', page, () => label.readonly || label.value === v.label || fsTry('change the label of', `drive ${l}`, () => fs.setLabel(l + ':\\', label.value)));
+}
+function drawPie(cx, cy, rx, ry, depth, frac) {
+  const a = Math.PI * 2 * frac;
+  const wedge = (y, a0, a1, c) => { ctx.beginPath(); ctx.moveTo(cx, y); ctx.ellipse(cx, y, rx, ry, 0, a0, a1); ctx.closePath(); ctx.fillStyle = c; ctx.fill(); };
+  for (let d = depth; d > 0; d--) { wedge(cy + d, 0, a || 0.0001, '#000080'); if (frac < 1) wedge(cy + d, a, Math.PI * 2, '#800080'); }
+  if (frac > 0) wedge(cy, 0, a, '#0000ff');
+  if (frac < 1) wedge(cy, a, Math.PI * 2, '#ff00ff');
+  ctx.strokeStyle = K.dk; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.ellipse(cx + 0.5, cy + 0.5, rx, ry, 0, 0, Math.PI * 2); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(cx - rx + 0.5, cy + 0.5); ctx.lineTo(cx - rx + 0.5, cy + depth + 0.5);
+  ctx.ellipse(cx + 0.5, cy + depth + 0.5, rx, ry, 0, Math.PI, 0, true); ctx.lineTo(cx + rx + 0.5, cy + 0.5); ctx.stroke();
 }
 
 // ---------------------------------------------------------------- notepad
 class Notepad {
-  constructor(txt) {
-    this.lines = txt.replace(/\r/g, '').replace(/\t/g, '        ').split('\n');
+  constructor() {
+    this.lines = ['']; this.path = null; this.modified = false;
     this.cx = 0; this.cy = 0; this.top = 0; this.left = 0;
     this.vs = new ScrollBar(true, p => { this.top = p; dirty(); });
     this.hs = new ScrollBar(false, p => { this.left = p; dirty(); });
     this.f = A.fixed; this.cw = this.f.g[77][0]; this.lh = this.f.h;
   }
+  setText(t) { this.lines = t.replace(/\r\n?/g, '\n').replace(/\t/g, '        ').split('\n'); this.cx = this.cy = this.top = this.left = 0; this.modified = false; }
+  get title() { return `${this.path ? dispName(basename(this.path)) : 'Untitled'} - Notepad`; }
   layout(r) {
     const i = { x: r.x + 2, y: r.y + 2, w: r.w - 4, h: r.h - 4 };
     this.ta = { x: i.x, y: i.y, w: i.w - 16, h: i.h - 16 };
@@ -601,6 +1044,7 @@ class Notepad {
     this.corner = { x: i.x + i.w - 16, y: i.y + i.h - 16 };
   }
   draw(r, win) {
+    win.title = this.title;
     this.layout(r);
     field(r.x, r.y, r.w, r.h);
     ctx.save(); ctx.beginPath(); ctx.rect(this.ta.x, this.ta.y, this.ta.w, this.ta.h); ctx.clip();
@@ -637,28 +1081,27 @@ class Notepad {
   }
   cursor(x, y) { return inR(this.ta, x, y) ? 'ibeam' : null; }
   insert(s) {
-    const L = this.lines, l = L[this.cy];
-    const parts = s.split('\n');
-    if (parts.length === 1) { L[this.cy] = l.slice(0, this.cx) + s + l.slice(this.cx); this.cx += s.length; }
-    else {
-      const tail = l.slice(this.cx);
-      L[this.cy] = l.slice(0, this.cx) + parts[0];
-      L.splice(this.cy + 1, 0, ...parts.slice(1));
-      this.cy += parts.length - 1; this.cx = L[this.cy].length; L[this.cy] += tail;
-    }
+    const L = this.lines, l = L[this.cy], parts = s.split('\n');
+    this.modified = true;
+    if (parts.length === 1) { L[this.cy] = l.slice(0, this.cx) + s + l.slice(this.cx); this.cx += s.length; return; }
+    const tail = l.slice(this.cx);
+    L[this.cy] = l.slice(0, this.cx) + parts[0];
+    L.splice(this.cy + 1, 0, ...parts.slice(1));
+    this.cy += parts.length - 1; this.cx = L[this.cy].length; L[this.cy] += tail;
   }
   key(e) {
     const L = this.lines, k = e.key;
     if (e.ctrlKey || e.metaKey || e.altKey) return false;
+    if (k === 'F5') { this.insert(timeDate()); this.show(); return true; }
     if (k.length === 1) this.insert(k);
     else if (k === 'Enter') this.insert('\n');
     else if (k === 'Tab') this.insert(' '.repeat(8 - (this.cx % 8)));
     else if (k === 'Backspace') {
-      if (this.cx > 0) { L[this.cy] = L[this.cy].slice(0, this.cx - 1) + L[this.cy].slice(this.cx); this.cx--; }
-      else if (this.cy > 0) { this.cx = L[this.cy - 1].length; L[this.cy - 1] += L[this.cy]; L.splice(this.cy, 1); this.cy--; }
+      if (this.cx > 0) { L[this.cy] = L[this.cy].slice(0, this.cx - 1) + L[this.cy].slice(this.cx); this.cx--; this.modified = true; }
+      else if (this.cy > 0) { this.cx = L[this.cy - 1].length; L[this.cy - 1] += L[this.cy]; L.splice(this.cy, 1); this.cy--; this.modified = true; }
     } else if (k === 'Delete') {
-      if (this.cx < L[this.cy].length) L[this.cy] = L[this.cy].slice(0, this.cx) + L[this.cy].slice(this.cx + 1);
-      else if (this.cy < L.length - 1) { L[this.cy] += L[this.cy + 1]; L.splice(this.cy + 1, 1); }
+      if (this.cx < L[this.cy].length) { L[this.cy] = L[this.cy].slice(0, this.cx) + L[this.cy].slice(this.cx + 1); this.modified = true; }
+      else if (this.cy < L.length - 1) { L[this.cy] += L[this.cy + 1]; L.splice(this.cy + 1, 1); this.modified = true; }
     } else if (k === 'ArrowLeft') { if (this.cx > 0) this.cx--; else if (this.cy > 0) { this.cy--; this.cx = L[this.cy].length; } }
     else if (k === 'ArrowRight') { if (this.cx < L[this.cy].length) this.cx++; else if (this.cy < L.length - 1) { this.cy++; this.cx = 0; } }
     else if (k === 'ArrowUp') { if (this.cy > 0) { this.cy--; this.cx = Math.min(this.cx, L[this.cy].length); } }
@@ -670,20 +1113,49 @@ class Notepad {
     else return false;
     this.show(); return true;
   }
+  // ---- file I/O
+  load(path) {
+    let i; try { i = fs.stat(path); } catch (e) { msgBox('Notepad', `${path}\n${e.message}`, 'warning'); return false; }
+    if (i.size > 65535) { msgBox('Notepad', `The file ${dispName(i.name)} is too large for Notepad.\n\nUse another editor to edit the file.`, 'warning'); return false; }
+    let t; try { t = fs.readText(i.path); } catch (e) { msgBox('Notepad', `${i.path}\n${e.message}`, 'warning'); return false; }
+    this.setText(t); this.path = i.path; addRecent(i.path); dirty(); return true;
+  }
+  write(path) {
+    const ok = fsTry('save', dispName(basename(path)), () => fs.writeFile(path, this.lines.join('\r\n')));
+    if (ok) { this.path = fs.realpath(path); this.modified = false; addRecent(this.path); }
+    return ok;
+  }
+  save(then) { if (this.path) { if (this.write(this.path) && then) then(); } else this.saveAs(then); }
+  saveAs(then) {
+    fileDialog({ title: 'Save As', save: true, dir: this.path ? dirname(this.path) : 'C:\\My Documents', name: this.path ? basename(this.path) : '*.txt',
+      onOk: p => { if (this.write(p) && then) then(); } });
+  }
+  confirm(then) {
+    if (!this.modified) return then();
+    msgBox('Notepad', `The text in the ${this.path || 'Untitled'} file has changed.\n\nDo you want to save the changes?`, 'warning', ['&Yes', '&No', 'Cancel'], b => {
+      if (b === '&Yes') this.save(then); else if (b === '&No') then();
+    });
+  }
+  canClose(proceed) { if (!this.modified) return true; this.confirm(proceed); return false; }
 }
-function notepad(name = 'Untitled', txt = '') {
+function notepad(path) {
+  const np = new Notepad();
+  if (path && !np.load(path)) return null;
   const p = nextPos(440, 300);
-  const np = new Notepad(txt);
-  const w = new Win({
-    ...p, w: 440, h: 300, title: `${name} - Notepad`, icon: 'notepad', minW: 160, minH: 100, body: np,
+  let w;
+  const open = () => np.confirm(() => fileDialog({ title: 'Open', dir: np.path ? dirname(np.path) : 'C:\\My Documents', onOk: f => np.load(f) }));
+  w = new Win({
+    ...p, w: 440, h: 300, title: np.title, icon: 'notepad', minW: 160, minH: 100, body: np,
     menu: [
-      { label: '&File', items: () => [{ label: '&New', fn: () => { np.lines = ['']; np.cx = np.cy = np.top = np.left = 0; w.title = 'Untitled - Notepad'; } },
-        { label: '&Open...' }, { label: '&Save' }, { label: 'Save &As...' }, { sep: true }, { label: 'Page Se&tup...' }, { label: '&Print' }, { sep: true }, { label: 'E&xit', fn: () => closeWin(w) }] },
+      { label: '&File', items: () => [
+        { label: '&New', fn: () => np.confirm(() => { np.setText(''); np.path = null; }) },
+        { label: '&Open...', fn: open }, { label: '&Save', fn: () => np.save() }, { label: 'Save &As...', fn: () => np.saveAs() },
+        { sep: true }, { label: 'Page Se&tup...', disabled: true }, { label: '&Print', disabled: true }, { sep: true }, { label: 'E&xit', fn: () => closeWin(w) }] },
       { label: '&Edit', items: [{ label: '&Undo', acc: 'Ctrl+Z', disabled: true }, { sep: true }, { label: 'Cu&t', acc: 'Ctrl+X', disabled: true }, { label: '&Copy', acc: 'Ctrl+C', disabled: true },
-        { label: '&Paste', acc: 'Ctrl+V', disabled: true }, { label: 'De&lete', acc: 'Del', disabled: true }, { sep: true }, { label: 'Select &All' },
-        { label: 'Time/&Date', acc: 'F5', fn: () => { np.insert(timeDate()); np.show(); } }, { sep: true }, { label: '&Word Wrap' }] },
-      { label: '&Search', items: [{ label: '&Find...' }, { label: 'Find &Next', acc: 'F3' }] },
-      { label: '&Help', items: [{ label: '&Help Topics' }, { sep: true }, { label: '&About Notepad', fn: () => msgBox('About Notepad', 'Microsoft Notepad\nWindows 95', 'info') }] },
+        { label: '&Paste', acc: 'Ctrl+V', disabled: true }, { label: 'De&lete', acc: 'Del', disabled: true }, { sep: true }, { label: 'Select &All', disabled: true },
+        { label: 'Time/&Date', acc: 'F5', fn: () => { np.insert(timeDate()); np.show(); } }, { sep: true }, { label: '&Word Wrap', disabled: true }] },
+      { label: '&Search', items: [{ label: '&Find...', disabled: true }, { label: 'Find &Next', acc: 'F3', disabled: true }] },
+      { label: '&Help', items: [{ label: '&Help Topics', disabled: true }, { sep: true }, { label: '&About Notepad', fn: () => msgBox('About Notepad', 'Microsoft Notepad\nWindows 95', 'info') }] },
     ],
   });
   return openWin(w);
@@ -697,54 +1169,94 @@ class DialogBody {
     if (this.focus < 0) this.focus = ctrls.findIndex(c => c.def);
   }
   abs(c) { return { x: this.r.x + c.x, y: this.r.y + c.y, w: c.w || 0, h: c.h || 0 }; }
+  hitRect(c) {
+    const a = this.abs(c);
+    if (c.type === 'radio' || c.type === 'check') return { ...a, w: 19 + textW(c.label), h: 14 };
+    return a;
+  }
   draw(r, win) {
     this.r = r;
+    const focusBtn = this.c[this.focus] && this.c[this.focus].type === 'button';
     this.c.forEach((c, i) => {
       const a = this.abs(c), foc = i === this.focus && win.isActive;
-      if (c.type === 'label') wrap(c.text, c.w || 9999).forEach((l, j) => text(c.amp ? l : esc(l), a.x, a.y + j * 13));
-      else if (c.type === 'icon') icon(c.name, a.x, a.y);
-      else if (c.type === 'button') pushButton(a.x, a.y, a.w, a.h, c.label, { def: c.def && !this.c.some(o => o.type === 'button' && o !== c && this.c.indexOf(o) === this.focus), pressed: c.pressed, focus: foc });
-      else if (c.type === 'radio') {
+      if (c.type === 'label') {
+        if (c.ell) text(ellipsis(c.amp ? c.text : esc(c.text), c.w), a.x, a.y);
+        else wrap(c.amp ? c.text : esc(c.text), c.w || 9999).forEach((l, j) => text(l, a.x, a.y + j * 13));
+      } else if (c.type === 'icon') icon(c.name, a.x, a.y);
+      else if (c.type === 'line') { fill(a.x, a.y, c.w, 1, K.sh); fill(a.x, a.y + 1, c.w, 1, K.hl); }
+      else if (c.type === 'tabs') {
+        const py = a.y + 19;
+        fill(a.x, py, a.w, a.h - 19, K.face); edge(a.x, py, a.w, a.h - 19, K.hl, K.dk); edge(a.x + 1, py + 1, a.w - 2, a.h - 21, K.lt, K.sh);
+        const tw = textW(c.tabs[0]) + 18;
+        fill(a.x, a.y + 2, tw, 19, K.face);
+        fill(a.x, a.y + 2, 1, 18, K.hl); fill(a.x + 1, a.y + 1, 1, 1, K.hl); fill(a.x + 2, a.y, tw - 4, 1, K.hl);
+        fill(a.x + tw - 2, a.y + 1, 1, 1, K.dk); fill(a.x + tw - 1, a.y + 2, 1, 18, K.dk); fill(a.x + tw - 2, a.y + 2, 1, 18, K.sh);
+        text(c.tabs[0], a.x + 9, a.y + 4);
+      } else if (c.type === 'button') {
+        pushButton(a.x, a.y, a.w, a.h, c.label, { def: c.def && !focusBtn || (foc && c.type === 'button'), pressed: c.pressed, focus: foc, disabled: c.disabled });
+      } else if (c.type === 'radio') {
         radio(a.x, a.y + 1, c.checked); text(c.label, a.x + 18, a.y);
         if (foc) focusRect(a.x + 16, a.y - 1, textW(c.label) + 4, 15);
+      } else if (c.type === 'check') {
+        fill(a.x, a.y, 13, 13, c.disabled ? K.face : K.win); edge(a.x, a.y, 13, 13, K.sh, K.hl); edge(a.x + 1, a.y + 1, 11, 11, K.dk, K.lt);
+        if (c.checked) mglyph('check', a.x + 3, a.y + 3, c.disabled ? K.sh : K.dk);
+        if (c.disabled) textEmboss(c.label, a.x + 19, a.y); else text(c.label, a.x + 19, a.y);
+        if (foc) focusRect(a.x + 17, a.y - 1, textW(c.label) + 4, 15);
       } else if (c.type === 'edit') {
-        field(a.x, a.y, a.w, a.h);
-        const ty = a.y + ((a.h - 13) >> 1);
-        text(esc(c.value), a.x + 3, ty);
-        if (c.combo) { const bx = a.x + a.w - 2 - 16; btnUp(bx, a.y + 2, 16, a.h - 4); mglyph('down', bx + 4, a.y + 2 + ((a.h - 4 - 4) >> 1)); }
-        if (foc && blinkOn) fill(a.x + 3 + textW(esc(c.value.slice(0, c.caret))), ty, 1, 13, K.dk);
-      }
+        field(a.x, a.y, a.w, a.h, c.readonly && !c.combo ? K.face : K.win);
+        const ty = a.y + ((a.h - 13) >> 1), tx = a.x + 3 + (c.iconName ? 19 : 0);
+        if (c.iconName) icon(c.iconName + '16', a.x + 3, a.y + ((a.h - 16) >> 1));
+        ctx.save(); ctx.beginPath(); ctx.rect(a.x + 2, a.y + 2, a.w - 4 - (c.combo ? 16 : 0), a.h - 4); ctx.clip();
+        text(esc(c.value), tx, ty);
+        if (foc && !c.readonly && blinkOn) fill(tx + textW(esc(c.value.slice(0, c.caret))), ty, 1, 13, K.dk);
+        ctx.restore();
+        if (c.combo) { const bx = a.x + a.w - 2 - 16; btnUp(bx, a.y + 2, 16, a.h - 4); mglyph('down', bx + 4, a.y + 2 + ((a.h - 8) >> 1)); }
+      } else if (c.type === 'custom') c.draw(a, foc, win);
     });
   }
-  ctrlAt(x, y) { return this.c.findIndex(c => c.type !== 'label' && c.type !== 'icon' && inR(c.type === 'radio' ? { ...this.abs(c), w: 18 + textW(c.label), h: 14 } : this.abs(c), x, y)); }
-  down(x, y) {
+  ctrlAt(x, y) { return this.c.findIndex(c => !['label', 'icon', 'line', 'tabs'].includes(c.type) && inR(this.hitRect(c), x, y)); }
+  down(x, y, btn, dbl) {
     const i = this.ctrlAt(x, y); if (i < 0) return null;
-    const c = this.c[i]; this.focus = i;
+    const c = this.c[i]; if (c.disabled) return null;
+    this.focus = i;
     if (c.type === 'radio') { this.pick(c); return null; }
-    if (c.type === 'edit') { c.caret = c.value.length; return null; }
+    if (c.type === 'check') { c.checked = !c.checked; return null; }
+    if (c.type === 'custom') return c.down ? c.down(x, y, btn, dbl, this.abs(c)) || null : null;
+    if (c.type === 'edit') {
+      if (c.onDrop && (c.readonly || x >= this.abs(c).x + c.w - 18)) { c.onDrop(this.abs(c)); return null; }
+      const a = this.abs(c), tx = a.x + 3 + (c.iconName ? 19 : 0);
+      let k = 0; while (k < c.value.length && tx + textW(esc(c.value.slice(0, k + 1))) <= x) k++;
+      c.caret = k; blinkOn = true; return null;
+    }
     if (c.type === 'button') {
       c.pressed = true;
       return { move: (mx, my) => { c.pressed = inR(this.abs(c), mx, my); }, up: (mx, my) => { const hit = inR(this.abs(c), mx, my); c.pressed = false; if (hit && c.fn) c.fn(); } };
     }
     return null;
   }
-  cursor(x, y) { const i = this.ctrlAt(x, y); return i >= 0 && this.c[i].type === 'edit' ? 'ibeam' : null; }
+  cursor(x, y) { const i = this.ctrlAt(x, y); return i >= 0 && this.c[i].type === 'edit' && !this.c[i].readonly ? 'ibeam' : null; }
   pick(c) { this.c.forEach(o => { if (o.type === 'radio' && o.group === c.group) o.checked = o === c; }); }
   key(e) {
     const c = this.c[this.focus];
     if (e.key === 'Tab') {
-      const f = this.c.map((o, i) => i).filter(i => ['button', 'edit', 'radio'].includes(this.c[i].type) && (this.c[i].type !== 'radio' || this.c[i].checked));
+      const f = this.c.map((o, i) => i).filter(i => {
+        const o = this.c[i];
+        return !o.disabled && (['button', 'edit', 'check'].includes(o.type) || (o.type === 'radio' && o.checked) || (o.type === 'custom' && o.key));
+      });
+      if (!f.length) return true;
       const k = f.indexOf(this.focus); this.focus = f[(k + (e.shiftKey ? f.length - 1 : 1)) % f.length]; return true;
     }
+    if (c && c.type === 'custom' && c.key && c.key(e)) return true;
     if (e.key === 'Enter') { const b = c && c.type === 'button' ? c : this.c.find(o => o.def); if (b && b.fn) b.fn(); return true; }
     if (e.key === 'Escape') { const b = this.c.find(o => o.cancel); if (b && b.fn) b.fn(); return true; }
     if (e.key === ' ' && c && c.type === 'button') { if (c.fn) c.fn(); return true; }
+    if (e.key === ' ' && c && c.type === 'check') { c.checked = !c.checked; return true; }
     if (c && c.type === 'radio' && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
       const g = this.c.filter(o => o.type === 'radio' && o.group === c.group);
       const n = g[(g.indexOf(c) + (e.key === 'ArrowDown' ? 1 : g.length - 1)) % g.length];
       this.pick(n); this.focus = this.c.indexOf(n); return true;
     }
-    if (c && c.type === 'edit' && !e.ctrlKey && !e.metaKey) {
+    if (c && c.type === 'edit' && !c.readonly && !e.ctrlKey && !e.metaKey) {
       const v = c.value;
       if (e.key.length === 1) { c.value = v.slice(0, c.caret) + e.key + v.slice(c.caret); c.caret++; }
       else if (e.key === 'Backspace') { if (c.caret > 0) { c.value = v.slice(0, c.caret - 1) + v.slice(c.caret); c.caret--; } }
@@ -766,7 +1278,7 @@ function dialog(title, cw, ch, ctrls, o = {}) {
   return openWin(win);
 }
 function msgBox(title, msg, type, buttons = ['OK'], cb) {
-  const lines = msg.split('\n'), tw = Math.max(...lines.map(l => textW(esc(l)))), th = lines.length * 13;
+  const lines = wrap(esc(msg), Math.min(420, Math.floor(W * 0.6))), tw = Math.max(...lines.map(l => textW(l))), th = lines.length * 13;
   const tx = type ? 12 + 32 + 16 : 12, bw = buttons.length * 75 + (buttons.length - 1) * 6;
   const cw = Math.max(tx + tw + 14, bw + 24, 120);
   const by = 12 + Math.max(type ? 32 : 0, th) + 16, ch = by + 23 + 11;
@@ -774,13 +1286,116 @@ function msgBox(title, msg, type, buttons = ['OK'], cb) {
   const done = b => { closeWin(win); if (cb) cb(b); };
   const ctrls = [];
   if (type) ctrls.push({ type: 'icon', name: type, x: 12, y: 12 });
-  ctrls.push({ type: 'label', text: msg, x: tx, y: 12 + Math.max(0, ((type ? 32 : 0) - th) >> 1) });
+  ctrls.push({ type: 'label', text: lines.join('\n'), amp: true, x: tx, y: 12 + Math.max(0, ((type ? 32 : 0) - th) >> 1) });
   buttons.forEach((b, i) => ctrls.push({ type: 'button', label: b, x: ((cw - bw) >> 1) + i * 81, y: by, w: 75, h: 23, def: i === 0, cancel: buttons.length === 1 || i === buttons.length - 1, fn: () => done(b) }));
   win = dialog(title, cw, ch, ctrls);
-  win.body.onClose = null;
   return win;
 }
 function aboutWin95() { msgBox('About Windows 95', 'Microsoft Windows 95\n4.00.950 B\nCopyright \u00a9 1981-1996 Microsoft Corp.', 'info'); }
+
+// Win95-style common Open / Save As dialog over the in-memory file system.
+function fileDialog(o) {
+  let dir = 'C:\\'; try { dir = fs.realpath(o.dir); } catch (_) { /* fall back to C:\ */ }
+  const filters = [{ label: 'Text Documents (*.txt)', pat: '*.txt' }, { label: 'All Files (*.*)', pat: '*.*' }];
+  let fi = 0, sel = -1, entries = [], win;
+  const sb = new ScrollBar(true, () => dirty());
+  const edit = { type: 'edit', x: 92, y: 196, w: 214, h: 21, value: o.name || '', caret: (o.name || '').length, focus: true };
+  const look = { type: 'edit', x: 66, y: 8, w: 228, h: 22, value: '', combo: true, readonly: true, onDrop: a => lookMenu(a) };
+  const typ = { type: 'edit', x: 92, y: 224, w: 214, h: 21, value: filters[0].label, combo: true, readonly: true,
+    onDrop: a => openPopup(filters.map((f, i) => ({ label: esc(f.label), fn: () => { fi = i; typ.value = f.label; refresh(); } })), a.x, a.y + a.h) };
+  const refresh = () => {
+    try {
+      const all = fs.readdir(dir).filter(i => !i.hidden);
+      const pat = filters[fi].pat, files = fs.readdir(dir, pat).filter(i => !i.isDir && !i.hidden);
+      entries = all.filter(i => i.isDir).concat(files).sort(byName);
+    } catch (_) { entries = []; }
+    look.value = isRoot(dir) ? driveLabel(dir[0]) : dispName(basename(dir), true);
+    look.iconName = isRoot(dir) ? driveIcon(dir[0]) : 'folderopen';
+    sel = -1; sb.pos = 0;
+  };
+  const go = d => { try { fs.readdir(d); dir = fs.realpath(d); refresh(); } catch (e) { msgBox(o.title, fsMsg(d, e), 'error'); } };
+  const lookMenu = a => {
+    const items = [];
+    for (const v of fs.volumes()) {
+      items.push({ label: esc(driveLabel(v.letter)), icon: driveIcon(v.letter), fn: () => go(v.root) });
+      if (dir[0] === v.letter) {
+        const parts = dir.slice(3).split('\\').filter(Boolean);
+        parts.forEach((p, i) => items.push({ label: esc(' '.repeat(2 * (i + 1)) + dispName(p, true)), icon: 'folder', fn: () => go(v.root + parts.slice(0, i + 1).join('\\')) }));
+      }
+    }
+    openPopup(items, a.x, a.y + a.h);
+  };
+  const finish = p => { closeWin(win); o.onOk(p); };
+  const ok = () => {
+    const v = edit.value.trim(); if (!v) return;
+    if (/[*?]/.test(v)) { filters.push({ label: v, pat: v }); fi = filters.length - 1; typ.value = v; refresh(); return; }
+    let p = /^[a-z]:|^\\/i.test(v) ? v : join(dir, v);
+    try { if (fs.exists(p) && fs.stat(p).isDir) { go(p); edit.value = ''; edit.caret = 0; return; } }
+    catch (e) { return msgBox(o.title, `${p}\n${e.message}`, 'warning'); }
+    if (!extname(p) && fi === 0 && (o.save || !fs.exists(p))) p += '.txt';
+    if (!o.save) {
+      if (!fs.exists(p)) return msgBox(o.title, `${p}\nFile not found.\nPlease verify the correct file name was given.`, 'warning');
+      return finish(fs.realpath(p));
+    }
+    if (!fs.exists(dirname(p))) return msgBox(o.title, `${p}\nPath does not exist.\nPlease verify the correct path was given.`, 'warning');
+    if (fs.exists(p)) return msgBox(o.title, `${p} already exists.\nDo you want to replace it?`, 'warning', ['&Yes', '&No'], b => b === '&Yes' && finish(p));
+    finish(p);
+  };
+  const pickEntry = e => { if (e.isDir) go(e.path); else finish(e.path); };
+  const list = {
+    type: 'custom', x: 8, y: 38, w: 380, h: 148,
+    draw(a, foc, w) {
+      field(a.x, a.y, a.w, a.h);
+      const inner = { x: a.x + 2, y: a.y + 2, w: a.w - 20, h: a.h - 4 }, rows = Math.floor(inner.h / 17);
+      sb.set(inner.x + inner.w, inner.y, inner.h, entries.length, rows);
+      ctx.save(); ctx.beginPath(); ctx.rect(inner.x, inner.y, inner.w, inner.h); ctx.clip();
+      for (let i = sb.pos; i < Math.min(entries.length, sb.pos + rows + 1); i++) {
+        const e = entries[i], y = inner.y + (i - sb.pos) * 17 + 1, label = esc(dispName(e.name, e.isDir)), tw = textW(label);
+        icon(iconFor(e) + '16', inner.x + 2, y, i === sel && w.isActive);
+        if (i === sel) fill(inner.x + 20, y + 1, tw + 4, 14, w.isActive ? K.sel : K.face);
+        text(label, inner.x + 22, y + 2, i === sel && w.isActive ? K.hl : K.dk);
+        if (i === sel && foc) focusRect(inner.x + 20, y + 1, tw + 4, 14);
+      }
+      ctx.restore(); sb.draw();
+      this.inner = inner;
+    },
+    down(x, y, btn, dbl) {
+      if (sb.contains(x, y)) return sb.down(x, y);
+      const i = sb.pos + Math.floor((y - this.inner.y) / 17);
+      if (i < 0 || i >= entries.length) { sel = -1; return null; }
+      sel = i; const e = entries[i];
+      if (!e.isDir) { edit.value = e.name; edit.caret = e.name.length; }
+      if (dbl) pickEntry(e);
+      return null;
+    },
+    key(e) {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        sel = clamp(sel + (e.key === 'ArrowDown' ? 1 : -1), 0, entries.length - 1);
+        const en = entries[sel]; if (en && !en.isDir) { edit.value = en.name; edit.caret = en.name.length; }
+        const rows = Math.floor(this.inner.h / 17);
+        if (sel < sb.pos) sb.pos = sel; else if (sel >= sb.pos + rows) sb.pos = sel - rows + 1;
+        return true;
+      }
+      if (e.key === 'Enter' && entries[sel]) { pickEntry(entries[sel]); return true; }
+      if (e.key === 'Backspace') { if (!isRoot(dir)) go(dirname(dir)); return true; }
+      return false;
+    },
+  };
+  const up = {
+    type: 'custom', x: 300, y: 8, w: 24, h: 22, pressed: false,
+    draw(a) { if (this.pressed) btnDown(a.x, a.y, a.w, a.h); else btnUp(a.x, a.y, a.w, a.h); const o2 = this.pressed ? 1 : 0; icon('folder16', a.x + 5 + o2, a.y + 4 + o2); mglyph('up', a.x + 9 + o2, a.y + 3 + o2, K.dk); },
+    down() { this.pressed = true; return { move() {}, up: () => { this.pressed = false; if (!isRoot(dir)) go(dirname(dir)); } }; },
+  };
+  refresh();
+  win = dialog(o.title, 396, 254, [
+    { type: 'label', text: 'Look &in:', amp: true, x: 8, y: 13 }, look, up, list,
+    { type: 'label', text: 'File &name:', amp: true, x: 8, y: 200 }, edit,
+    { type: 'button', label: o.save ? '&Save' : '&Open', x: 313, y: 195, w: 75, h: 23, def: true, fn: ok },
+    { type: 'label', text: 'Files of &type:', amp: true, x: 8, y: 228 }, typ,
+    { type: 'button', label: 'Cancel', x: 313, y: 223, w: 75, h: 23, cancel: true, fn: () => closeWin(win) },
+  ]);
+  return win;
+}
 
 function runDialog() {
   const existing = windows.find(w => w.title === 'Run'); if (existing) return activate(existing);
@@ -794,18 +1409,19 @@ function runDialog() {
     edit,
     { type: 'button', label: 'OK', x: 99, y: 84, w: 75, h: 23, def: true, fn: go },
     { type: 'button', label: 'Cancel', x: 177, y: 84, w: 75, h: 23, cancel: true, fn: () => closeWin(win) },
-    { type: 'button', label: '&Browse...', x: 255, y: 84, w: 75, h: 23 },
+    { type: 'button', label: '&Browse...', x: 255, y: 84, w: 75, h: 23, fn: () => fileDialog({ title: 'Browse', dir: WINDIR, onOk: p => { edit.value = p; edit.caret = p.length; } }) },
   ], { modal: false, noTask: false });
 }
 function runCommand(v) {
-  const c = v.toLowerCase().replace(/^"|"$/g, '');
-  if (!c) return;
-  if (c === 'notepad' || c === 'notepad.exe') return notepad();
-  if (c === 'explorer' || c === 'explorer.exe') return openFolder(FS.mycomputer);
-  if (/^c:\\?$/.test(c)) return openFolder(FS.mycomputer.children[1]);
-  if (/^d:\\?$/.test(c)) return openFolder(FS.mycomputer.children[2]);
-  if (/^a:\\?$/.test(c)) return msgBox('3\u00bd Floppy (A:)', 'A:\\ is not accessible.\n\nThe device is not ready.', 'error');
-  msgBox(v, `Cannot find the file '${v}' (or one of its components). Make sure the\npath and filename are correct and that all required libraries are available.`, 'error');
+  if (!v) return;
+  let cmd = v, arg = '';
+  const q = /^"([^"]*)"\s*(.*)$/.exec(v);
+  if (q) { cmd = q[1]; arg = q[2]; } else if (!fs.exists(v)) { const m = /^(\S+)\s+(.*)$/.exec(v); if (m) { cmd = m[1]; arg = m[2]; } }
+  const bases = /^[a-z]:|^\\/i.test(cmd) ? [cmd] : [join(WINDIR, cmd), join(WINDIR, 'COMMAND', cmd), join(fs.cwd, cmd)];
+  const exts = extname(cmd) ? [''] : ['', '.exe', '.com', '.bat'];
+  for (const b of bases) for (const e of exts) if (fs.exists(b + e)) return shellOpen(fs.realpath(b + e), arg);
+  if (/^[a-z]:\\?$/i.test(cmd)) { try { fs.stat(cmd); } catch (e) { return msgBox(cmd.toUpperCase(), fsMsg(cmd.toUpperCase(), e), 'error'); } }
+  msgBox(v, `Cannot find the file '${v}' (or one of its components). Make sure the path and filename are correct and that all required libraries are available.`, 'error');
 }
 
 function shutDownDialog() {
@@ -818,7 +1434,7 @@ function shutDownDialog() {
   const yes = () => {
     const pick = radios.findIndex(r => r.checked);
     closeWin(win);
-    if (pick === 3) { [...windows].forEach(closeWin); return; }
+    if (pick === 3) { [...windows].forEach(w => closeWin(w, true)); return; }
     shutdownSeq(pick !== 0);
   };
   const bx = (cw - (3 * 75 + 12)) >> 1;
@@ -828,86 +1444,105 @@ function shutDownDialog() {
     ...radios,
     { type: 'button', label: '&Yes', x: bx, y: 118, w: 75, h: 23, def: true, fn: yes },
     { type: 'button', label: '&No', x: bx + 81, y: 118, w: 75, h: 23, cancel: true, fn: () => closeWin(win) },
-    { type: 'button', label: '&Help', x: bx + 162, y: 118, w: 75, h: 23 },
+    { type: 'button', label: '&Help', x: bx + 162, y: 118, w: 75, h: 23, disabled: true },
   ], { dim: true });
 }
 function shutdownSeq(restart) {
-  [...windows].forEach(closeWin); closeMenus();
+  [...windows].forEach(w => closeWin(w, true)); closeMenus();
   screen = 'logow'; dirty();
   setTimeout(() => {
     if (restart) { screen = 'black'; dirty(); setTimeout(boot, 1200); } else { screen = 'logos'; dirty(); }
   }, 2600);
 }
-function boot() { screen = 'desktop'; resetDesktop(); active = null; dirty(); }
+// The disk lives in memory, so it survives a restart but not a page reload.
+function boot() { screen = 'desktop'; ren = null; desk.selKey = null; active = null; dirty(); }
 
 // ---------------------------------------------------------------- desktop
-let desk = { icons: [], sel: -1 };
-function resetDesktop() {
-  desk = { sel: -1, icons: [FS.mycomputer, FS.network, FS.recycle].map((node, i) => ({ node, gx: 0, gy: i })) };
-  layoutDesk();
-}
-function layoutDesk() {
-  for (const d of desk.icons) {
-    if (d.gx !== undefined) { d.x = d.gx * 75 + 21; d.y = d.gy * 75 + 6; delete d.gx; delete d.gy; }
-    const lines = wrap(d.node.label, 72), lw = Math.max(...lines.map(l => textW(esc(l))));
-    Object.assign(d, { ix: d.x, iy: d.y, lines, lw, lx: d.x + 16 - (lw >> 1), ly: d.y + 35 });
-  }
-}
-function deskIconAt(x, y) {
-  for (let i = desk.icons.length - 1; i >= 0; i--) {
-    const c = desk.icons[i];
-    if (inR({ x: c.ix, y: c.iy, w: 32, h: 32 }, x, y) || inR({ x: c.lx - 1, y: c.ly, w: c.lw + 2, h: c.lines.length * 13 }, x, y)) return i;
-  }
-  return -1;
-}
+const SYS_ITEMS = () => [
+  { key: 'sys:mc', label: 'My Computer', icon: 'mycomputer', virt: true, open: () => openFolder(MyComputer) },
+  { key: 'sys:net', label: 'Network Neighborhood', icon: 'network', virt: true, open: () => openFolder(Network) },
+  { key: 'sys:bin', label: 'Recycle Bin', icon: binItems().length ? 'recyclefull' : 'recycle', virt: true, open: () => openFolder(RecycleBin) },
+];
+const desk = {
+  selKey: null, pos: new Map(), posVer: 0, cells: [], cache: null, lay: null, pending: null, src: null,
+  refresh() { this.cache = null; },
+  arrange() { this.pos.clear(); this.posVer++; },
+  lineUp() { for (const p of this.pos.values()) { p.x = Math.max(0, Math.round((p.x - 21) / 75)) * 75 + 21; p.y = Math.max(0, Math.round((p.y - 6) / 75)) * 75 + 6; } this.posVer++; },
+  navStep(k) { return { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 }[k] || 0; },
+  created(path) { if (path) { this.pending = fs.inoOf(path); } },
+  items() {
+    if (!this.cache || this.cache.v !== fs.version) {
+      let files = []; try { files = this.src.list(); } catch (_) { files = []; }
+      this.cache = { v: fs.version, list: [...SYS_ITEMS(), ...files] };
+    }
+    return this.cache.list;
+  },
+  layout() {
+    const items = this.items(), key = `${this.cache.v}:${W}x${H}:${this.posVer}`;
+    if (this.lay === key) return;
+    const keys = new Set(items.map(i => i.key));
+    for (const k of [...this.pos.keys()]) if (!keys.has(k)) this.pos.delete(k);
+    const rows = Math.max(1, Math.floor((H - TB - 6) / 75));
+    for (const it of items) {
+      if (this.pos.has(it.key)) continue;
+      const used = [...this.pos.values()];
+      for (let i = 0; ; i++) {
+        const x = Math.floor(i / rows) * 75 + 21, y = (i % rows) * 75 + 6;
+        if (!used.some(p => Math.abs(p.x - x) < 37 && Math.abs(p.y - y) < 37)) { this.pos.set(it.key, { x, y }); break; }
+      }
+    }
+    this.cells = items.map(it => { const p = this.pos.get(it.key); return cellFor(it, p.x, p.y, 72); });
+    this.lay = key;
+    if (this.pending) {
+      const c = this.cells.find(x => x.it.key === this.pending); this.pending = null;
+      if (c) { this.selKey = c.it.key; startRename(this, c.it); }
+    }
+  },
+};
 function drawDesktop() {
   fill(0, 0, W, H, K.desk);
-  desk.icons.forEach((c, i) => {
-    if (ghost && ghost.i === i) return;
-    if (active === null && !modal()) drawIconLabel(c, i === desk.sel, true, K.hl, K.desk);
-    else drawIconLabel(c, false, false, K.hl, K.desk);
-  });
+  desk.layout();
+  const focused = active === null && !modal();
+  for (const c of desk.cells) {
+    if (ghost && ghost.key === c.it.key) continue;
+    drawIconLabel(c, desk, focused && c.it.key === desk.selKey, true, K.hl);
+  }
   if (ghost) {
-    const c = desk.icons[ghost.i];
-    ctx.save(); ctx.globalAlpha = 0.6;
-    drawIconLabel({ ...c, ix: c.ix + ghost.dx, iy: c.iy + ghost.dy, lx: c.lx + ghost.dx, ly: c.ly + ghost.dy }, true, true, K.hl, K.desk);
-    ctx.restore();
+    const c = desk.cells.find(x => x.it.key === ghost.key);
+    if (c) {
+      ctx.save(); ctx.globalAlpha = 0.6;
+      drawIconLabel({ ...c, ix: c.ix + ghost.dx, iy: c.iy + ghost.dy, lx: c.lx + ghost.dx, ly: c.ly + ghost.dy }, null, true, true, K.hl);
+      ctx.restore();
+    }
   }
 }
-const DESK_MENU = () => [
-  { label: 'Arrange &Icons', sub: [{ label: 'by &Name', fn: () => arrangeDesk() }, { label: 'by &Type', fn: () => arrangeDesk() }, { label: 'by Si&ze', fn: () => arrangeDesk() }, { label: 'by &Date', fn: () => arrangeDesk() }, { sep: true }, { label: '&Auto Arrange' }] },
-  { label: 'Line &up Icons', fn: lineUpDesk },
-  { sep: true }, { label: '&Paste', disabled: true }, { label: 'Paste &Shortcut', disabled: true },
-  { sep: true }, { label: 'Ne&w', sub: [{ label: '&Folder' }, { label: '&Shortcut' }, { sep: true }, { label: 'Text Document' }] },
-  { sep: true }, { label: 'P&roperties' },
-];
-function arrangeDesk() {
-  const rows = Math.max(1, Math.floor((H - TB - 6) / 75));
-  desk.icons.forEach((d, i) => { d.x = Math.floor(i / rows) * 75 + 21; d.y = (i % rows) * 75 + 6; });
-  layoutDesk();
-}
-function lineUpDesk() {
-  for (const d of desk.icons) { d.x = Math.max(0, Math.round((d.x - 21) / 75)) * 75 + 21; d.y = Math.max(0, Math.round((d.y - 6) / 75)) * 75 + 6; }
-  layoutDesk();
+// Dropping a desktop icon on the Recycle Bin deletes it; on a folder or drive, moves it there.
+function deskDrop(it, x, y) {
+  const t = desk.cells.find(c => c.it.key !== it.key && cellHit(c, x, y));
+  if (!t) return false;
+  if (t.it.key === 'sys:bin') { confirmDelete(it); return true; }
+  if (it.info && t.it.path && (t.it.drive || (t.it.info && t.it.info.isDir))) {
+    fsTry('move', it.label, () => moveAny(it.path, join(t.it.path, it.info.name))); return true;
+  }
+  return false;
 }
 function deskDown(x, y, btn, dbl) {
   active = null;
-  const i = deskIconAt(x, y); desk.sel = i;
-  if (btn === 2) {
-    if (i >= 0) { const n = desk.icons[i].node; openPopup([{ label: '&Open', bold: true, fn: () => openItem(n) }, { label: '&Explore', fn: () => openItem(n) }, { sep: true }, { label: 'P&roperties' }], x, y); }
-    else openPopup(DESK_MENU(), x, y);
-    return;
-  }
-  if (i < 0) return;
-  if (dbl) { openItem(desk.icons[i].node); return; }
-  const sx = x, sy = y;
+  desk.layout();
+  const c = desk.cells.find(cc => cellHit(cc, x, y));
+  desk.selKey = c ? c.it.key : null;
+  if (btn === 2) { openPopup(c ? itemMenu(desk, c.it) : bgMenu(desk, true), x, y); return; }
+  if (!c) return;
+  if (dbl) { c.it.open(); return; }
+  const sx = x, sy = y, key = c.it.key;
   cap = {
-    move: (mx, my) => { if (ghost || Math.abs(mx - sx) > 2 || Math.abs(my - sy) > 2) ghost = { i, dx: mx - sx, dy: my - sy }; },
-    up: () => {
-      if (ghost) {
-        const d = desk.icons[ghost.i];
-        d.x = clamp(d.x + ghost.dx, 0, W - 32); d.y = clamp(d.y + ghost.dy, 0, H - TB - 48); ghost = null; layoutDesk();
-      }
+    move: (mx, my) => { if (ghost || Math.abs(mx - sx) > 2 || Math.abs(my - sy) > 2) ghost = { key, dx: mx - sx, dy: my - sy }; },
+    up: (mx, my) => {
+      if (!ghost) return;
+      const g = ghost; ghost = null;
+      if (deskDrop(c.it, mx, my)) return;
+      const p = desk.pos.get(key);
+      if (p) { p.x = clamp(p.x + g.dx, 0, W - 32); p.y = clamp(p.y + g.dy, 0, H - TB - 48); desk.posVer++; }
     },
   };
 }
@@ -986,22 +1621,25 @@ function sysMenu(w, x, y, above) {
 }
 
 // ---------------------------------------------------------------- start menu
+// Programs and Documents are read from the Start Menu and Recent folders on C:.
+function menuFromDir(dir) {
+  let list; try { list = fs.readdir(dir).filter(i => !i.hidden).sort(byName); } catch (_) { return []; }
+  return list.map(i => i.isDir
+    ? { label: esc(dispName(i.name, true)), icon: 'programs', sub: () => menuFromDir(i.path) }
+    : { label: esc(dispName(i.name)), icon: iconFor(i), fn: () => shellOpen(i.path) });
+}
 const START = [
-  { label: '&Programs', icon: 'programs', sub: () => [
-    { label: 'Accessories', icon: 'programs', sub: [{ label: 'Notepad', icon: 'notepad', fn: () => notepad() }] },
-    { label: 'StartUp', icon: 'programs', sub: [] },
-    { label: 'Windows Explorer', icon: 'explorer', fn: () => openFolder(FS.mycomputer) },
-  ] },
-  { label: '&Documents', icon: 'documents', sub: [] },
+  { label: '&Programs', icon: 'programs', sub: () => menuFromDir(PROGRAMS) },
+  { label: '&Documents', icon: 'documents', sub: () => menuFromDir(RECENT) },
   { label: '&Settings', icon: 'settings', sub: [
-    { label: '&Control Panel', icon: 'controlpanel', fn: () => openFolder(FS.mycomputer.children[3]) },
-    { label: '&Printers', icon: 'printers', fn: () => openFolder(FS.mycomputer.children[4]) },
+    { label: '&Control Panel', icon: 'controlpanel', fn: () => openFolder(ControlPanel) },
+    { label: '&Printers', icon: 'printers', fn: () => openFolder(Printers) },
   ] },
   { label: '&Find', icon: 'find', sub: [
-    { label: '&Files or Folders...', icon: 'findfiles' },
-    { label: '&Computer...', icon: 'findcomp' },
+    { label: '&Files or Folders...', icon: 'findfiles', disabled: true },
+    { label: '&Computer...', icon: 'findcomp', disabled: true },
   ] },
-  { label: '&Help', icon: 'help' },
+  { label: '&Help', icon: 'help', disabled: true },
   { label: '&Run...', icon: 'run', fn: runDialog },
   { sep: true },
   { label: 'Sh&ut Down...', icon: 'shutdown', fn: shutDownDialog },
@@ -1134,6 +1772,8 @@ cv.addEventListener('pointerdown', e => {
   if (screen === 'logos') { screen = 'black'; dirty(); setTimeout(boot, 1200); return; }
   if (screen !== 'desktop') return;
   if (menus.length && menuDown(x, y)) { dirty(); return; }
+  if (ren && !(ren.box && inR(ren.box, x, y))) commitRename();
+  if (ren) { dirty(); return; }
   const m = modal();
   if (y >= H - TB) { if (!m) taskDown(x, y, btn); dirty(); return; }
   const w = winAt(x, y);
@@ -1207,16 +1847,12 @@ function handleKey(e) {
       if (it && it.sub) { openSub(d, m.hover); menus[d + 1].hover = 0; } else activateItem(it);
       handled = true;
     }
-  } else {
+  } else if (ren) handled = renameKey(e);
+  else {
     const target = modal() || active;
     if (target && target.body && target.body.key) handled = target.body.key(e);
     if (!handled && target && e.key === 'F4' && e.altKey) { closeWin(target); handled = true; }
-    if (!handled && !target) {
-      const n = desk.icons.length;
-      if (e.key === 'ArrowDown' || e.key === 'ArrowRight') { desk.sel = (desk.sel + 1) % n; handled = true; }
-      else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') { desk.sel = (desk.sel + n - 1) % n; handled = true; }
-      else if (e.key === 'Enter' && desk.sel >= 0) { openItem(desk.icons[desk.sel].node); handled = true; }
-    }
+    if (!handled && !target) handled = viewKey(desk, e);
   }
   if (handled || ['Tab', 'Backspace', 'Enter', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) e.preventDefault();
   dirty();
@@ -1233,6 +1869,9 @@ function resize() {
 window.addEventListener('resize', resize);
 setInterval(() => { blinkOn = !blinkOn; dirty(); }, 530);
 
-Promise.all(ready).then(() => { resize(); resetDesktop(); kbd.focus(); dirty(); });
-window.win95 = { openFolder, notepad, msgBox, runDialog, shutDownDialog, FS, get windows() { return windows; }, get state() { return { menus: menus.length, menuSrc, modals: modals.length, cap: !!cap, drag: !!drag, screen, active: active && active.title }; } };
+makeDisk();
+desk.src = new FsSource(DESKTOP_DIR);
+fs.on(() => dirty());
+Promise.all(ready).then(() => { resize(); kbd.focus(); dirty(); });
+window.win95 = { fs, openFolder, openPath, shellOpen, notepad, msgBox, runDialog, shutDownDialog, MyComputer, get windows() { return windows; }, get state() { return { menus: menus.length, menuSrc, modals: modals.length, cap: !!cap, drag: !!drag, screen, active: active && active.title }; } };
 })();
