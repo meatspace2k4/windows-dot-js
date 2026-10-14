@@ -549,7 +549,7 @@ function makeDisk(mounted) {
   for (const [e, d] of Object.entries(sysFonts)) fs.writeFile(join(WINDIR, 'FONTS', e), b64(d));
   fs.writeFile('C:\\Program Files\\Accessories\\WORDPAD.EXE', exeStub());
   fs.writeFile(PROGRAMS + '\\Accessories\\Notepad.lnk', lnk(WINDIR + '\\NOTEPAD.EXE'));
-  installPrograms();
+  installPrograms(); setupRegistry();
   // the CD's screen savers, byte for byte, under the long names APPLETS.INF gives them in LDID_SYS
   const LONG = { 'BEZIER.SCR': 'Curves and Colors.scr', 'SSMARQUE.SCR': 'Scrolling Marquee.scr', 'SSMYST.SCR': 'Mystify Your Mind.scr',
     'SCRNSAVE.SCR': 'Blank Screen.scr', 'SSFLYWIN.SCR': 'Flying Windows.scr', 'SSSTARS.SCR': 'Flying Through Space.scr' };
@@ -792,7 +792,7 @@ function bootDisk() {
   mountDrives();
   W95Win32.regAttach(host.registry);
   if (!fs.attach('C', host.disk)) makeDisk(true);
-  installPrograms();
+  installPrograms(); setupRegistry();
   fs.chdir('C:\\');
 }
 
@@ -2394,6 +2394,47 @@ function win32Dialog(proc, d) {
   const win = new Win({ ...centered(w, h), w, h, title: d.title, resizable: false, minimizable: false, maximizable: false, body, noTask: true });
   d.ui = win; modals.push(win); openWin(win); dirty();
 }
+// ---------------------------------------------------------------- Setup's registry entries
+// The AddReg sections of the CD's Setup INF files, as Setup writes them: `root, key, name, flags, value` with
+// %strings% and %dirid% substituted; flag 1 makes the value binary (hex bytes), 2 leaves an existing value alone.
+function infAddReg(text, section) {
+  const sec = {}; let cur = null;
+  for (const l of text.split(/\r?\n/)) { const m = l.match(/^\s*\[([^\]]+)\]/); if (m) { cur = sec[m[1].trim().toLowerCase()] = []; continue; } if (cur) cur.push(l); }
+  const fields = l => {   // comma-separated, "quoted" with "" for a quote, ; starts a comment outside quotes
+    const out = []; let f = '', q = false, quoted = false;
+    for (let i = 0; i < l.length; i++) {
+      const c = l[i];
+      if (q) { if (c === '"') { if (l[i + 1] === '"') { f += '"'; i++; } else q = false; } else f += c; continue; }
+      if (c === '"') { q = quoted = true; continue; }
+      if (c === ';') break;
+      if (c === ',') { out.push(quoted ? f : f.trim()); f = ''; quoted = false; continue; }
+      f += c;
+    }
+    out.push(quoted ? f : f.trim()); return out;
+  };
+  const strings = {};
+  for (const l of sec.strings || []) { const m = l.match(/^\s*([^=;\s][^=]*?)\s*=\s*(.*)$/); if (m) strings[m[1].toLowerCase()] = fields(m[2])[0]; }
+  const dirs = { 10: WINDIR, 11: WINDIR + '\\SYSTEM', 17: WINDIR + '\\INF', 18: WINDIR + '\\HELP', 20: WINDIR + '\\FONTS', 24: 'C:\\', 25: WINDIR, 30: 'C:\\' };
+  const subst = s => s.replace(/%([^%]*)%/g, (m, k) => (k === '' ? '%' : dirs[k] ?? strings[k.toLowerCase()] ?? m));
+  const ROOT = { HKCR: 'hkcr', HKCU: 'hkcu', HKLM: 'hklm', HKU: 'hku' };
+  for (const l of sec[section.toLowerCase()] || []) {
+    if (!l.trim() || /^\s*;/.test(l)) continue;
+    const f = fields(l), root = ROOT[(f[0] || '').toUpperCase()]; if (!root) continue;
+    const key = root + '\\' + subst(f[1] || ''), flags = parseInt(f[3] || '0', 16) || 0;
+    if (f.length < 3) { W95Win32.regSet(key, null); continue; }
+    const name = subst(f[2] || '');
+    if (flags & 2 && W95Win32.regGet(key, name) !== undefined) continue;
+    if (flags & 1) W95Win32.regSet(key, name, { type: 3, data: Uint8Array.from(f.slice(4).filter(Boolean).map(h => parseInt(h, 16))) });
+    else W95Win32.regSet(key, name, { type: 1, data: W95FS.encode(subst(f.slice(4).join(',')) + '\0') });
+  }
+}
+// what Setup puts in the registry for the shell (SHELL.INF), on a registry that has not had it
+function setupRegistry() {
+  const inf = ((window.W95SYSTEM || {}).infs || {})['SHELL.INF']; if (!inf) return;
+  if (W95Win32.regGet('hkcr\\clsid\\{20d04fe0-3aea-1069-a2d8-08002b30309d}\\inprocserver32', '') !== undefined) return;
+  infAddReg(inf, 'shell.reg');
+}
+
 // ---------------------------------------------------------------- Windows programs on the native USER
 // A program the system bundle carries (NOTEPAD.EXE) runs as Windows 95 runs it: its own code on USER32, USER.EXE, GDI
 // and the display driver, all recompiled, in a machine of its own whose screen is an ET4000 mode no larger than the
