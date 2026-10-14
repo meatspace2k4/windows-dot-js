@@ -210,6 +210,7 @@ let cascadeN = 0;
 const modal = () => modals[modals.length - 1] || null;
 
 let rafPending = false, observing = false, seen = null;
+const mods = { shift: false };   // modifier keys held at the last pointer press
 function dirty() { if (!rafPending) { rafPending = true; requestAnimationFrame(render); } if (!observing) { observing = true; queueMicrotask(observe); } }
 
 // ---------------------------------------------------------------- scroll bars
@@ -1473,96 +1474,168 @@ function drawPie(cx, cy, rx, ry, depth, frac) {
 }
 
 // ---------------------------------------------------------------- notepad
+// Notepad is an EDIT control: one text, a caret and an anchor (the selection runs between them), tab stops every
+// eight columns, one level of undo, and word wrap to the window's width.
+let textClip = '';   // the clipboard's text, shared by every edit in the shell
 class Notepad {
   constructor() {
-    this.lines = ['']; this.path = null; this.modified = false;
-    this.cx = 0; this.cy = 0; this.top = 0; this.left = 0;
+    this.t = ''; this.c = 0; this.a = 0; this.path = null; this.modified = false; this.wrap = false;
+    this.top = 0; this.left = 0; this.undo = null; this.typing = false; this.find = { what: '', matchCase: false, down: true };
     this.vs = new ScrollBar(true, p => { this.top = p; dirty(); });
     this.hs = new ScrollBar(false, p => { this.left = p; dirty(); });
     this.f = A.fixed; this.cw = this.f.g[77][0]; this.lh = this.f.h;
   }
-  setText(t) { this.lines = t.replace(/\r\n?/g, '\n').replace(/\t/g, '        ').split('\n'); this.cx = this.cy = this.top = this.left = 0; this.modified = false; }
+  setText(t) { this.t = t.replace(/\r\n?/g, '\n'); this.c = this.a = this.top = this.left = 0; this.modified = false; this.undo = null; this.vl = null; }
   get title() { return `${this.path ? dispName(basename(this.path)) : 'Untitled'} - Notepad`; }
+  get sel() { return [Math.min(this.a, this.c), Math.max(this.a, this.c)]; }
+  get selected() { const [s, e] = this.sel; return this.t.slice(s, e); }
+  // display width of t[from, to) on a line starting at `from`, with tabs to the next multiple of eight
+  cols(from, to) { let n = 0; for (let i = from; i < to; i++) n = this.t[i] === '\t' ? (n >> 3) + 1 << 3 : n + 1; return n; }
+  // the visual lines, as index ranges; wrapped at the last space that fits, or mid-word when none does
+  lines() {
+    if (this.vl && this.vl.t === this.t && this.vl.w === (this.wrap ? this.colsVis : 0)) return this.vl.list;
+    const out = [], t = this.t;
+    for (let s = 0; ;) {
+      let e = t.indexOf('\n', s); if (e < 0) e = t.length;
+      if (!this.wrap) out.push({ s, e });
+      else {
+        let ls = s;
+        while (this.cols(ls, e) > this.colsVis) {
+          let cut = ls, n = 0;
+          while (cut < e && (n = t[cut] === '\t' ? (n >> 3) + 1 << 3 : n + 1) <= this.colsVis) cut++;
+          const sp = t.lastIndexOf(' ', cut - 1);
+          if (sp >= ls && sp < cut) cut = sp + 1;
+          if (cut === ls) cut = ls + 1;
+          out.push({ s: ls, e: cut, soft: true }); ls = cut;
+        }
+        out.push({ s: ls, e });
+      }
+      if (e >= t.length) break;
+      s = e + 1;
+    }
+    this.vl = { t, w: this.wrap ? this.colsVis : 0, list: out };
+    return out;
+  }
+  rowOf(i) { const L = this.lines(); let lo = 0, hi = L.length - 1; while (lo < hi) { const m = (lo + hi + 1) >> 1; if (L[m].s <= i) lo = m; else hi = m - 1; } return lo; }
+  // the index at display column `col` of visual line `row`
+  indexAt(row, col) {
+    const l = this.lines()[row]; let n = 0, i = l.s;
+    while (i < l.e) { const w = this.t[i] === '\t' ? ((n >> 3) + 1 << 3) - n : 1; if (n + w / 2 > col) break; n += w; i++; }
+    return i;
+  }
   layout(r) {
-    const i = { x: r.x + 2, y: r.y + 2, w: r.w - 4, h: r.h - 4 };
-    this.ta = { x: i.x, y: i.y, w: i.w - 16, h: i.h - 16 };
+    const i = { x: r.x + 2, y: r.y + 2, w: r.w - 4, h: r.h - 4 }, hsH = this.wrap ? 0 : 16;
+    this.ta = { x: i.x, y: i.y, w: i.w - 16, h: i.h - hsH };
     this.rows = Math.max(1, Math.floor(this.ta.h / this.lh)); this.colsVis = Math.max(1, Math.floor((this.ta.w - 2) / this.cw));
-    const longest = Math.max(...this.lines.map(l => l.length)) + 1;
-    this.vs.pos = this.top; this.hs.pos = this.left;
-    this.vs.set(i.x + i.w - 16, i.y, i.h - 16, this.lines.length, this.rows);
-    this.hs.set(i.x, i.y + i.h - 16, i.w - 16, Math.max(longest, 1024), this.colsVis);
-    this.top = this.vs.pos; this.left = this.hs.pos;
-    this.corner = { x: i.x + i.w - 16, y: i.y + i.h - 16 };
+    const L = this.lines();
+    this.vs.pos = this.top; this.vs.set(i.x + i.w - 16, i.y, i.h - hsH, L.length, this.rows); this.top = this.vs.pos;
+    if (!this.wrap) { this.hs.pos = this.left; this.hs.set(i.x, i.y + i.h - 16, i.w - 16, 1024, this.colsVis); this.left = this.hs.pos; } else this.left = 0;
+    this.corner = this.wrap ? null : { x: i.x + i.w - 16, y: i.y + i.h - 16 };
   }
   draw(r, win) {
     win.title = this.title;
     this.layout(r);
     field(r.x, r.y, r.w, r.h);
+    const L = this.lines(), [ss, se] = this.sel, act = win.isActive;
     ctx.save(); ctx.beginPath(); ctx.rect(this.ta.x, this.ta.y, this.ta.w, this.ta.h); ctx.clip();
-    for (let k = 0; k < this.rows + 1; k++) {
-      const line = this.lines[this.top + k]; if (line === undefined) break;
-      const s = line.slice(this.left, this.left + this.colsVis + 1);
-      if (s) text(esc(s), this.ta.x + 1, this.ta.y + k * this.lh, K.dk, false, this.f);
+    for (let k = 0; k <= this.rows; k++) {
+      const l = L[this.top + k]; if (!l) break;
+      const y = this.ta.y + k * this.lh, x0 = this.ta.x + 1 - this.left * this.cw;
+      // the line drawn in up to three runs: before, inside and after the selection
+      const cuts = [l.s, clamp(ss, l.s, l.e), clamp(se, l.s, l.e), l.e];
+      for (let j = 0; j < 3; j++) {
+        const a = cuts[j], b = cuts[j + 1]; if (a >= b) continue;
+        const x = x0 + this.cols(l.s, a) * this.cw, w = this.cols(l.s, b) * this.cw - (x - x0);
+        let shown = ''; for (let i = a, n = this.cols(l.s, a); i < b; i++) { if (this.t[i] === '\t') { const m = ((n >> 3) + 1 << 3) - n; shown += ' '.repeat(m); n += m; } else { shown += this.t[i]; n++; } }
+        const inSel = j === 1 && act;
+        if (inSel) fill(x, y, w, this.lh, K.sel);
+        text(esc(shown), x, y, inSel ? K.hl : K.dk, false, this.f);
+      }
     }
-    if (win.isActive && blinkOn && this.cy >= this.top && this.cx >= this.left)
-      fill(this.ta.x + 1 + (this.cx - this.left) * this.cw, this.ta.y + (this.cy - this.top) * this.lh, 1, this.lh, K.dk);
+    const cr = this.rowOf(this.c);
+    if (act && blinkOn && ss === se && cr >= this.top) fill(this.ta.x + 1 + (this.cols(L[cr].s, this.c) - this.left) * this.cw, this.ta.y + (cr - this.top) * this.lh, 1, this.lh, K.dk);
     ctx.restore();
-    this.vs.draw(); this.hs.draw();
-    fill(this.corner.x, this.corner.y, 16, 16, K.face);
+    this.vs.draw(); if (!this.wrap) this.hs.draw();
+    if (this.corner) fill(this.corner.x, this.corner.y, 16, 16, K.face);
   }
   show() {
     if (!this.rows) return;
-    if (this.cy < this.top) this.top = this.cy;
-    if (this.cy >= this.top + this.rows) this.top = this.cy - this.rows + 1;
-    if (this.cx < this.left) this.left = Math.max(0, this.cx - 8);
-    if (this.cx > this.left + this.colsVis - 1) this.left = this.cx - this.colsVis + 8;
+    const L = this.lines(), r = this.rowOf(this.c), col = this.cols(L[r].s, this.c);
+    if (r < this.top) this.top = r;
+    if (r >= this.top + this.rows) this.top = r - this.rows + 1;
+    if (!this.wrap) { if (col < this.left) this.left = Math.max(0, col - 8); if (col > this.left + this.colsVis - 1) this.left = col - this.colsVis + 8; }
     blinkOn = true;
   }
-  down(x, y) {
+  at(px, py) {
+    const L = this.lines(), row = clamp(this.top + Math.floor((py - this.ta.y) / this.lh), 0, L.length - 1);
+    return this.indexAt(row, this.left + (px - this.ta.x - 1) / this.cw);
+  }
+  down(x, y, btn, dbl) {
     if (this.vs.contains(x, y)) return this.vs.down(x, y);
-    if (this.hs.contains(x, y)) return this.hs.down(x, y);
+    if (!this.wrap && this.hs.contains(x, y)) return this.hs.down(x, y);
     if (!inR(this.ta, x, y)) return null;
-    const place = (px, py) => {
-      this.cy = clamp(this.top + Math.floor((py - this.ta.y) / this.lh), 0, this.lines.length - 1);
-      this.cx = clamp(this.left + Math.round((px - this.ta.x - 1) / this.cw), 0, this.lines[this.cy].length);
-      blinkOn = true;
-    };
-    place(x, y);
-    return { move: place };
+    const i = this.at(x, y);
+    if (dbl) {   // a word and the spaces after it
+      const wd = ch => ch !== undefined && /[^\s]/.test(ch);
+      let s = i, e = i; while (s > 0 && wd(this.t[s - 1])) s--; while (e < this.t.length && wd(this.t[e])) e++; while (this.t[e] === ' ') e++;
+      this.a = s; this.c = e; this.typing = false; blinkOn = true; return null;
+    }
+    this.c = i; if (!mods.shift) this.a = i; this.typing = false; blinkOn = true;
+    return { move: (mx, my) => { this.c = this.at(mx, my); this.show(); } };
   }
   cursor(x, y) { return inR(this.ta, x, y) ? 'ibeam' : null; }
-  insert(s) {
-    const L = this.lines, l = L[this.cy], parts = s.split('\n');
-    this.modified = true;
-    if (parts.length === 1) { L[this.cy] = l.slice(0, this.cx) + s + l.slice(this.cx); this.cx += s.length; return; }
-    const tail = l.slice(this.cx);
-    L[this.cy] = l.slice(0, this.cx) + parts[0];
-    L.splice(this.cy + 1, 0, ...parts.slice(1));
-    this.cy += parts.length - 1; this.cx = L[this.cy].length; L[this.cy] += tail;
+  // every change goes through here; a run of typing is one step of undo, as in the EDIT control
+  edit(s, e, ins, typing = false) {
+    if (!(typing && this.typing)) this.undo = { t: this.t, c: this.c, a: this.a };
+    this.typing = typing;
+    this.t = this.t.slice(0, s) + ins + this.t.slice(e); this.c = this.a = s + ins.length; this.modified = true; this.show();
+  }
+  insert(str, typing = false) { const [s, e] = this.sel; this.edit(s, e, str, typing); }
+  undoLast() { if (!this.undo) return; const u = this.undo; this.undo = { t: this.t, c: this.c, a: this.a }; Object.assign(this, { t: u.t, c: u.c, a: u.a }); this.typing = false; this.modified = true; this.show(); }
+  cut() { if (this.c === this.a) return; textClip = this.selected; this.insert(''); }
+  copy() { if (this.c !== this.a) textClip = this.selected; }
+  paste() { if (textClip) this.insert(textClip.replace(/\r\n?/g, '\n')); }
+  del() { if (this.c !== this.a) this.insert(''); }
+  selectAll() { this.a = 0; this.c = this.t.length; this.typing = false; this.show(); }
+  findNext(win) {
+    const f = this.find; if (!f.what) return findDialog(this, win);
+    const hay = f.matchCase ? this.t : this.t.toLowerCase(), needle = f.matchCase ? f.what : f.what.toLowerCase(), [s, e] = this.sel;
+    const i = f.down ? hay.indexOf(needle, e) : hay.lastIndexOf(needle, Math.max(0, s - 1));
+    if (i < 0 || (!f.down && i >= s)) return msgBox('Notepad', `Cannot find "${f.what}"`, 'info');
+    this.a = i; this.c = i + f.what.length; this.typing = false; this.show();
   }
   key(e) {
-    const L = this.lines, k = e.key;
-    if (e.ctrlKey || e.metaKey || e.altKey) return false;
-    if (k === 'F5') { this.insert(timeDate()); this.show(); return true; }
-    if (k.length === 1) this.insert(k);
-    else if (k === 'Enter') this.insert('\n');
-    else if (k === 'Tab') this.insert(' '.repeat(8 - (this.cx % 8)));
-    else if (k === 'Backspace') {
-      if (this.cx > 0) { L[this.cy] = L[this.cy].slice(0, this.cx - 1) + L[this.cy].slice(this.cx); this.cx--; this.modified = true; }
-      else if (this.cy > 0) { this.cx = L[this.cy - 1].length; L[this.cy - 1] += L[this.cy]; L.splice(this.cy, 1); this.cy--; this.modified = true; }
-    } else if (k === 'Delete') {
-      if (this.cx < L[this.cy].length) { L[this.cy] = L[this.cy].slice(0, this.cx) + L[this.cy].slice(this.cx + 1); this.modified = true; }
-      else if (this.cy < L.length - 1) { L[this.cy] += L[this.cy + 1]; L.splice(this.cy + 1, 1); this.modified = true; }
-    } else if (k === 'ArrowLeft') { if (this.cx > 0) this.cx--; else if (this.cy > 0) { this.cy--; this.cx = L[this.cy].length; } }
-    else if (k === 'ArrowRight') { if (this.cx < L[this.cy].length) this.cx++; else if (this.cy < L.length - 1) { this.cy++; this.cx = 0; } }
-    else if (k === 'ArrowUp') { if (this.cy > 0) { this.cy--; this.cx = Math.min(this.cx, L[this.cy].length); } }
-    else if (k === 'ArrowDown') { if (this.cy < L.length - 1) { this.cy++; this.cx = Math.min(this.cx, L[this.cy].length); } }
-    else if (k === 'Home') this.cx = 0;
-    else if (k === 'End') this.cx = L[this.cy].length;
-    else if (k === 'PageUp') { this.cy = Math.max(0, this.cy - this.rows); this.cx = Math.min(this.cx, L[this.cy].length); }
-    else if (k === 'PageDown') { this.cy = Math.min(L.length - 1, this.cy + this.rows); this.cx = Math.min(this.cx, L[this.cy].length); }
+    const t = this.t, k = e.key, shift = e.shiftKey, ctl = e.ctrlKey || e.metaKey;
+    if (e.altKey) return false;
+    if (ctl) {
+      const kk = k.toLowerCase();
+      if (kk === 'z') this.undoLast(); else if (kk === 'x') this.cut(); else if (kk === 'c') this.copy(); else if (kk === 'v') this.paste();
+      else if (k === 'Home' || k === 'End' || k === 'ArrowLeft' || k === 'ArrowRight') {
+        const wordStep = d => { let i = this.c; if (d < 0) { while (i > 0 && /\s/.test(t[i - 1])) i--; while (i > 0 && !/\s/.test(t[i - 1])) i--; } else { while (i < t.length && !/\s/.test(t[i])) i++; while (i < t.length && /\s/.test(t[i])) i++; } return i; };
+        this.c = k === 'Home' ? 0 : k === 'End' ? t.length : wordStep(k === 'ArrowLeft' ? -1 : 1);
+        if (!shift) this.a = this.c; this.typing = false;
+      } else return false;
+      this.show(); return true;
+    }
+    if (k === 'F5') { this.insert(timeDate()); return true; }
+    if (k === 'F3') { this.findNext(); return true; }
+    if (k.length === 1) { this.insert(k, true); return true; }
+    if (k === 'Enter') { this.insert('\n', true); return true; }
+    if (k === 'Tab') { this.insert('\t', true); return true; }
+    if (k === 'Backspace') { const [s, e2] = this.sel; if (s !== e2) this.edit(s, e2, ''); else if (s > 0) this.edit(s - 1, s, '', true); return true; }
+    if (k === 'Delete') { const [s, e2] = this.sel; if (s !== e2) this.edit(s, e2, ''); else if (s < t.length) this.edit(s, s + 1, ''); return true; }
+    const L = this.lines(), r = this.rowOf(this.c), col = this.cols(L[r].s, this.c);
+    let c = this.c;
+    if (k === 'ArrowLeft') c = !shift && this.a !== this.c ? this.sel[0] : Math.max(0, c - 1);
+    else if (k === 'ArrowRight') c = !shift && this.a !== this.c ? this.sel[1] : Math.min(t.length, c + 1);
+    else if (k === 'ArrowUp') c = r > 0 ? this.indexAt(r - 1, col) : c;
+    else if (k === 'ArrowDown') c = r < L.length - 1 ? this.indexAt(r + 1, col) : c;
+    else if (k === 'Home') c = L[r].s;
+    else if (k === 'End') c = L[r].e;
+    else if (k === 'PageUp') c = this.indexAt(Math.max(0, r - this.rows), col);
+    else if (k === 'PageDown') c = this.indexAt(Math.min(L.length - 1, r + this.rows), col);
     else return false;
-    this.show(); return true;
+    this.c = c; if (!shift) this.a = c; this.typing = false; this.show(); return true;
   }
   // ---- file I/O
   load(path) {
@@ -1572,7 +1645,7 @@ class Notepad {
     this.setText(t); this.path = i.path; addRecent(i.path); dirty(); return true;
   }
   write(path) {
-    const ok = fsTry('save', dispName(basename(path)), () => fs.writeFile(path, this.lines.join('\r\n')));
+    const ok = fsTry('save', dispName(basename(path)), () => fs.writeFile(path, this.t.replace(/\n/g, '\r\n')));
     if (ok) { this.path = fs.realpath(path); this.modified = false; addRecent(this.path); }
     return ok;
   }
@@ -1589,23 +1662,49 @@ class Notepad {
   }
   canClose(proceed) { if (!this.modified) return true; this.confirm(proceed); return false; }
 }
+// Search > Find: the text to find, Match case, and a direction; Find Next keeps going from the selection
+function findDialog(np) {
+  const open = windows.find(w => w.title === 'Find' && w.np === np); if (open) return activate(open);
+  let win;
+  const what = { type: 'edit', x: 72, y: 12, w: 180, h: 21, value: np.find.what || np.selected.split('\n')[0], caret: 0, focus: true };
+  what.caret = what.value.length;
+  const mc = { type: 'check', x: 8, y: 62, label: 'Match &case', checked: np.find.matchCase };
+  const up = { type: 'radio', group: 'dir', x: 172, y: 58, label: '&Up', checked: !np.find.down }, dn = { type: 'radio', group: 'dir', x: 212, y: 58, label: '&Down', checked: np.find.down };
+  win = dialog('Find', 340, 92, [
+    { type: 'label', text: 'Fi&nd what:', amp: true, x: 8, y: 16 }, what,
+    { type: 'group', x: 164, y: 42, w: 92, h: 40, label: 'Direction' }, up, dn, mc,
+    { type: 'button', x: 262, y: 10, w: 72, h: 23, label: '&Find Next', def: true, fn: () => { Object.assign(np.find, { what: what.value, matchCase: mc.checked, down: dn.checked }); if (what.value) np.findNext(); } },
+    { type: 'button', x: 262, y: 38, w: 72, h: 23, label: 'Cancel', cancel: true, fn: () => closeWin(win) },
+  ], { modal: false, noTask: true });
+  win.np = np;
+  return win;
+}
+// with no printer installed, as on a fresh Windows 95, Page Setup and Print offer to install one
+function noPrinter(title) {
+  msgBox(title, 'Before you can perform printer-related tasks such as page setup or printing a document, you need to install a printer. Do you want to install a printer now?', 'question', ['&Yes', '&No'], b => { if (b === '&Yes') openFolder(Printers); });
+}
 function notepad(path) {
   const np = new Notepad();
   if (path && !np.load(path)) return null;
   const p = nextPos(440, 300);
   let w;
   const open = () => np.confirm(() => fileDialog({ title: 'Open', dir: np.path ? dirname(np.path) : 'C:\\My Documents', onOk: f => np.load(f) }));
+  const hasSel = () => np.c !== np.a;
   w = new Win({
     ...p, w: 440, h: 300, title: np.title, icon: 'notepad', minW: 160, minH: 100, body: np,
     menu: [
       { label: '&File', items: () => [
         { label: '&New', fn: () => np.confirm(() => { np.setText(''); np.path = null; }) },
         { label: '&Open...', fn: open }, { label: '&Save', fn: () => np.save() }, { label: 'Save &As...', fn: () => np.saveAs() },
-        { sep: true }, { label: 'Page Se&tup...', disabled: true }, { label: '&Print', disabled: true }, { sep: true }, { label: 'E&xit', fn: () => closeWin(w) }] },
-      { label: '&Edit', items: [{ label: '&Undo', acc: 'Ctrl+Z', disabled: true }, { sep: true }, { label: 'Cu&t', acc: 'Ctrl+X', disabled: true }, { label: '&Copy', acc: 'Ctrl+C', disabled: true },
-        { label: '&Paste', acc: 'Ctrl+V', disabled: true }, { label: 'De&lete', acc: 'Del', disabled: true }, { sep: true }, { label: 'Select &All', disabled: true },
-        { label: 'Time/&Date', acc: 'F5', fn: () => { np.insert(timeDate()); np.show(); } }, { sep: true }, { label: '&Word Wrap', disabled: true }] },
-      { label: '&Search', items: [{ label: '&Find...', disabled: true }, { label: 'Find &Next', acc: 'F3', disabled: true }] },
+        { sep: true }, { label: 'Page Se&tup...', fn: () => noPrinter('Page Setup') }, { label: '&Print', fn: () => noPrinter('Notepad') }, { sep: true }, { label: 'E&xit', fn: () => closeWin(w) }] },
+      { label: '&Edit', items: () => [
+        { label: '&Undo', acc: 'Ctrl+Z', disabled: !np.undo, fn: () => np.undoLast() }, { sep: true },
+        { label: 'Cu&t', acc: 'Ctrl+X', disabled: !hasSel(), fn: () => np.cut() }, { label: '&Copy', acc: 'Ctrl+C', disabled: !hasSel(), fn: () => np.copy() },
+        { label: '&Paste', acc: 'Ctrl+V', disabled: !textClip, fn: () => np.paste() }, { label: 'De&lete', acc: 'Del', disabled: !hasSel(), fn: () => np.del() }, { sep: true },
+        { label: 'Select &All', fn: () => np.selectAll() },
+        { label: 'Time/&Date', acc: 'F5', fn: () => np.insert(timeDate()) }, { sep: true },
+        { label: '&Word Wrap', check: np.wrap, fn: () => { np.wrap = !np.wrap; np.vl = null; np.left = 0; np.show(); } }] },
+      { label: '&Search', items: () => [{ label: '&Find...', fn: () => findDialog(np) }, { label: 'Find &Next', acc: 'F3', fn: () => np.findNext() }] },
       { label: '&Help', items: [{ label: '&Help Topics', disabled: true }, { sep: true }, { label: '&About Notepad', fn: () => msgBox('About Notepad', 'Microsoft Notepad\nWindows 95', 'info') }] },
     ],
   });
@@ -2708,7 +2807,7 @@ function winDown(w, x, y, btn, dbl) {
 }
 
 cv.addEventListener('pointerdown', e => {
-  e.preventDefault(); kbd.focus(); lastInput = performance.now();
+  e.preventDefault(); kbd.focus(); lastInput = performance.now(); mods.shift = e.shiftKey;
   const [x, y] = pos(e); mouse = { x, y };
   try { cv.setPointerCapture(e.pointerId); } catch (_) { /* synthetic events */ }
   const btn = e.button === 2 ? 2 : 0, now = performance.now();
@@ -2929,7 +3028,7 @@ function elements() {
       if (body.mode === 'details') { let hx = body.head.x; for (const c of DETAIL_COLS) { add('columnheader', c.label, { x: hx, y: body.head.y, w: c.w, h: body.head.h }, win); hx += c.w; } }
       for (const c of body.cells) if (c.iy + 16 > body.inner.y && c.iy < body.inner.y + body.inner.h && c.ix + 16 > body.inner.x && c.ix < body.inner.x + body.inner.w) cell(c, { ...win, selected: body.selKey === c.it.key, view: body.mode });
     }
-    if (body instanceof Notepad && body.ta) add('document', w.title, body.ta, { ...win, value: body.lines.join('\r\n'), modified: body.modified });
+    if (body instanceof Notepad && body.ta) add('document', w.title, body.ta, { ...win, value: body.t.replace(/\n/g, '\r\n'), modified: body.modified, selection: body.sel, wrap: body.wrap });
     if (body instanceof DialogBody && body.r) {
       for (const c of body.c) {
         if (!body.vis(c)) continue;
