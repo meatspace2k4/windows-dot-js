@@ -365,13 +365,13 @@ def fmem_load(f, op, integer=False):
         elif sz == 8: f.lg(loc.addr).mem(0x2b)
         else: f.lg(loc.addr).e(0x10, uleb(IMP['f80load']))
 def fround(f):
-    """round f64 on stack per FCW rounding control"""
-    t = f.d(); f.ls(t)
+    """round f64 on stack per FCW rounding control: 0 nearest-even, 1 down, 2 up, 3 truncate"""
+    t, cur = f.d(), f.d(); f.ls(t)
     rc = f.i(); f.gg('fcw').c(10).e(OPS['shr_u']).c(3).e(OPS['and_']).ls(rc)
-    f.lg(t).e(D['trunc'])
-    f.lg(t).e(D['ceil']); f.lg(rc).c(2).e(OPS['eq']).e(SELECT)
-    f.lg(t).e(D['floor']); f.lg(rc).c(1).e(OPS['eq']).e(SELECT)
-    f.lg(t).e(D['nearest']); f.lg(rc).e(OPS['eqz']).e(SELECT)
+    f.lg(t).e(D['nearest']).ls(cur)
+    for op, code in (('floor', 1), ('ceil', 2), ('trunc', 3)):
+        f.lg(t).e(D[op]).lg(cur).lg(rc).c(code).e(OPS['eq']).e(SELECT).ls(cur)
+    f.lg(cur)
 
 class Translator:
     TRACE = False
