@@ -16,10 +16,11 @@ if (!replayPath) { console.error('usage: gaps.mjs <replay script> [endpoint]'); 
 
 // the replay's own steps and runner, without the part that runs them
 const src = readFileSync(resolve(replayPath), 'utf8');
-const body = src.slice(0, src.indexOf('// ---- replay')) + '\nexport { PRELUDE, STEPS, RECORDED, connect, runAll };\n';
+const body = src.slice(0, src.indexOf('// ---- replay')) + '\nexport { PRELUDE, STEPS, runAll };\n';
 const mod = join(mkdtempSync(join(tmpdir(), 'w95gaps-')), 'replay.mjs');
 writeFileSync(mod, body.replace(/^#!.*\n/, ''));
-const { PRELUDE, STEPS, connect, runAll } = await import(pathToFileURL(mod).href);
+const { PRELUDE, STEPS, runAll } = await import(pathToFileURL(mod).href);
+const { connect } = await import('./runner.mjs');
 
 // a second connection that only listens
 const cap = await connect(endpoint);

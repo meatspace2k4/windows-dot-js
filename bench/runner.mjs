@@ -7,8 +7,9 @@ export async function connect(endpoint) {
   if (!page) throw new Error('no page at ' + endpoint);
   const version = await (await fetch(endpoint + '/json/version')).json();
   const ws = new WebSocket(page.webSocketDebuggerUrl);
-  let id = 0; const pend = new Map(), events = [];
-  ws.onmessage = m => { const d = JSON.parse(m.data); if (pend.has(d.id)) { pend.get(d.id)(d); pend.delete(d.id); } else events.push(d); };
+  let id = 0; const pend = new Map();
+  const api = { onEvent: null };
+  ws.onmessage = m => { const d = JSON.parse(m.data); if (pend.has(d.id)) { pend.get(d.id)(d); pend.delete(d.id); } else if (api.onEvent) api.onEvent(d); };
   await new Promise((ok, no) => { ws.onopen = ok; ws.onerror = no; });
   const call = (method, params = {}) => new Promise((ok, no) => {
     pend.set(++id, d => d.error ? no(new Error(`${method}: ${d.error.message}`)) : ok(d.result));
@@ -19,7 +20,7 @@ export async function connect(endpoint) {
     if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text);
     return r.result.value;
   };
-  return { call, evaluate, version, url: page.url, close: () => ws.close() };
+  return Object.assign(api, { call, evaluate, version, url: page.url, close: () => ws.close() });
 }
 
 // boot: reload the page and time it until the shell has drawn its desktop

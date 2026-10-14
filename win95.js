@@ -446,7 +446,7 @@ function setHover(d, i) {
 }
 function activateItem(it) {
   if (!it || it.disabled || it.sep || it.sub) return;
-  closeMenus(); if (it.fn) it.fn();
+  closeMenus(); if (it.fn) it.fn(); else emit('menu.noop', { label: amp(it.label || '')[0] });
 }
 function drawMenu(m) {
   const { x, y, w, h } = m, start = m.kind === 'start';
@@ -1377,12 +1377,13 @@ class DialogBody {
     }
     if (c.type === 'button') {
       c.pressed = true;
-      return { move: (mx, my) => { c.pressed = inR(this.abs(c), mx, my); }, up: (mx, my) => { const hit = inR(this.abs(c), mx, my); c.pressed = false; if (hit && c.fn) c.fn(); } };
+      return { move: (mx, my) => { c.pressed = inR(this.abs(c), mx, my); }, up: (mx, my) => { const hit = inR(this.abs(c), mx, my); c.pressed = false; if (hit) this.press(c); } };
     }
     return null;
   }
   cursor(x, y) { const i = this.ctrlAt(x, y); return i >= 0 && this.c[i].type === 'edit' && !this.c[i].readonly ? 'ibeam' : null; }
   pick(c) { this.c.forEach(o => { if (o.type === 'radio' && o.group === c.group) o.checked = o === c; }); }
+  press(c) { if (c.fn) c.fn(); else emit('button.noop', { label: amp(c.label || '')[0] }); }
   // the control whose label underlines this letter: a button is pressed, a check box or option button is clicked,
   // a label or group box sends the focus to the next control that takes it (an edit with its text selected)
   mnemonic(ch) {
@@ -1394,7 +1395,7 @@ class DialogBody {
       if (!t) continue;
       const [str, u] = amp(t);
       if (u < 0 || str[u].toLowerCase() !== ch) continue;
-      if (o.type === 'button') { this.focus = i; if (o.fn) o.fn(); return true; }
+      if (o.type === 'button') { this.focus = i; this.press(o); return true; }
       if (o.type === 'check') { this.focus = i; o.checked = !o.checked; if (o.onChange) o.onChange(); return true; }
       if (o.type === 'radio') { this.focus = i; this.pick(o); if (o.onChange) o.onChange(); return true; }
       const j = this.c.findIndex((n, k) => k > i && takes(n));
@@ -1425,9 +1426,9 @@ class DialogBody {
     if (c && c.type === 'custom' && c.key && c.key(e)) return true;
     // mnemonics: Alt+letter anywhere, the letter alone unless the focus is in a field that takes typing
     if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && (e.altKey || !(c && c.type === 'edit' && !c.readonly)) && this.mnemonic(e.key)) return true;
-    if (e.key === 'Enter') { const b = c && c.type === 'button' ? c : this.c.find(o => o.def); if (b && b.fn) b.fn(); return true; }
+    if (e.key === 'Enter') { const b = c && c.type === 'button' ? c : this.c.find(o => o.def); if (b) this.press(b); return true; }
     if (e.key === 'Escape') { const b = this.c.find(o => o.cancel); if (b && b.fn) b.fn(); return true; }
-    if (e.key === ' ' && c && c.type === 'button') { if (c.fn) c.fn(); return true; }
+    if (e.key === ' ' && c && c.type === 'button') { this.press(c); return true; }
     if (e.key === ' ' && c && c.type === 'check') { c.checked = !c.checked; return true; }
     if (c && c.type === 'radio' && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
       const g = this.c.filter(o => o.type === 'radio' && o.group === c.group);
@@ -1471,6 +1472,7 @@ function msgBox(title, msg, type, buttons = ['OK'], cb) {
   ctrls.push({ type: 'label', text: lines.join('\n'), amp: true, x: tx, y: 12 + Math.max(0, ((type ? 32 : 0) - th) >> 1) });
   buttons.forEach((b, i) => ctrls.push({ type: 'button', label: b, x: ((cw - bw) >> 1) + i * 81, y: by, w: 75, h: 23, def: i === 0, cancel: buttons.length === 1 || i === buttons.length - 1, fn: () => done(b) }));
   win = dialog(title, cw, ch, ctrls);
+  win.message = { type: type || null, text: msg };
   return win;
 }
 function aboutWin95() { msgBox('About Windows 95', 'Microsoft Windows 95\n4.00.950 B\nCopyright \u00a9 1981-1996 Microsoft Corp.', 'info'); }
@@ -2498,6 +2500,10 @@ function handleKey(e) {
     if (!handled && target && e.key === 'F4' && e.altKey) { closeWin(target); handled = true; }
     if (!handled && !target) handled = viewKey(desk, e);
   }
+  if (!handled && !['Shift', 'Control', 'Alt', 'Meta', 'CapsLock'].includes(e.key)) {
+    const mods = ['ctrl', 'alt', 'shift'].filter(m => e[m + 'Key']);
+    emit('key.unhandled', { key: [...mods, e.key].join('+'), target: menus.length ? 'menu' : (modal() || active || {}).title || 'desktop' });
+  }
   if (handled || ['Tab', 'Backspace', 'Enter', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) e.preventDefault();
   dirty();
 }
@@ -2559,11 +2565,11 @@ fs.on(e => emit('fs.' + e.op, { path: e.path, ...(e.path2 ? { path2: e.path2 } :
 // Drives the shell through the same input paths a person uses: pointer events on the screen canvas in screen
 // pixels, keys through the shell's key handler. Documented in SCRIPTING.md.
 function pointer(type, x, y, button = 0) {
-  const r = cv.getBoundingClientRect();
-  cv.dispatchEvent(new PointerEvent(type, { clientX: r.left + (x + 0.5) * r.width / W, clientY: r.top + (y + 0.5) * r.height / H,
+  const el = fullSaver && fullSaver.el ? fullSaver.el : cv, r = el.getBoundingClientRect();
+  el.dispatchEvent(new PointerEvent(type, { clientX: r.left + (x + 0.5) * r.width / W, clientY: r.top + (y + 0.5) * r.height / H,
     button, buttons: type === 'pointerup' ? 0 : 1 << (button === 2 ? 1 : 0), pointerId: 1, pointerType: 'mouse', bubbles: true, cancelable: true }));
 }
-const winInfo = w => ({ title: w.title, x: w.x, y: w.y, w: w.w, h: w.h, active: w === active, minimized: !!w.min, maximized: !!w.max, modal: modals.includes(w) });
+const winInfo = w => ({ title: w.title, x: w.x, y: w.y, w: w.w, h: w.h, active: w === active, minimized: !!w.min, maximized: !!w.max, modal: modals.includes(w), ...(w.message ? { message: w.message } : {}) });
 const findWin = t => { const m = t instanceof RegExp ? w => t.test(w.title) : w => w.title === t; for (let i = windows.length - 1; i >= 0; i--) if (m(windows[i])) return windows[i]; return null; };
 const KEY_NAMES = { enter: 'Enter', esc: 'Escape', escape: 'Escape', tab: 'Tab', backspace: 'Backspace', delete: 'Delete', del: 'Delete',
   up: 'ArrowUp', down: 'ArrowDown', left: 'ArrowLeft', right: 'ArrowRight', home: 'Home', end: 'End', pageup: 'PageUp', pagedown: 'PageDown', space: ' ' };
@@ -2572,22 +2578,99 @@ function pressKey(spec) {
   const key = KEY_NAMES[name.toLowerCase()] || (/^f\d+$/i.test(name) ? name.toUpperCase() : name);
   handleKey({ key, shiftKey: mods.has('shift'), ctrlKey: mods.has('ctrl'), altKey: mods.has('alt'), metaKey: mods.has('meta'), preventDefault() {} });
 }
+// What is on screen, as Active Accessibility describes a window tree: each element's role, name, rectangle in screen
+// pixels, state and value, front-most last. Geometry is current as of a fresh redraw.
+const ROLE_W32 = { push: 'pushbutton', check: 'checkbutton', radio: 'radiobutton', group: 'grouping', static: 'text', edit: 'text-edit',
+  combo: 'combobox', list: 'list', slider: 'slider', updown: 'spinbutton' };
+function elements() {
+  render();
+  const out = [], add = (role, name, r, o = {}) => out.push({ role, name: name ?? '', x: r.x, y: r.y, w: r.w, h: r.h, ...o });
+  const label = s => amp(s || '')[0];
+  const cell = (c, o) => add('listitem', c.it.label, { x: Math.min(c.ix, c.lx), y: c.iy, w: Math.max(32, c.lw), h: c.ly + c.lines.length * 13 - c.iy }, o);
+  for (const c of desk.cells) cell(c, { window: 'Desktop', selected: desk.selKey === c.it.key });
+  for (const w of windows) {
+    if (w.min) continue;
+    const win = { window: w.title };
+    add('window', w.title, w, { active: w.isActive, modal: modals.includes(w), maximized: !!w.max });
+    add('titlebar', w.title, w.capR, win);
+    for (const b of w.buttons()) add('pushbutton', { close: 'Close', max: 'Maximize', restore: 'Restore', min: 'Minimize' }[b.id], b, { ...win, disabled: !!b.disabled });
+    for (const b of w.barItems()) add('menuitem', label(b.m.label), b, { ...win, menubar: true, open: w.barOpen === w.barItems().indexOf(b) });
+    const body = w.body;
+    if (body instanceof FolderView) for (const c of body.cells) if (c.iy + 32 > body.inner.y && c.iy < body.inner.y + body.inner.h) cell(c, { ...win, selected: body.selKey === c.it.key });
+    if (body instanceof Notepad && body.ta) add('document', w.title, body.ta, { ...win, value: body.lines.join('\r\n'), modified: body.modified });
+    if (body instanceof DialogBody && body.r) {
+      for (const c of body.c) {
+        if (!body.vis(c)) continue;
+        const r = body.hitRect(c), dis = !!c.disabled, foc = body.c[body.focus] === c;
+        if (c.type === 'button') add('pushbutton', label(c.label), r, { ...win, disabled: dis, focused: foc, default: !!c.def });
+        else if (c.type === 'check') add('checkbutton', label(c.label), r, { ...win, disabled: dis, focused: foc, checked: !!c.checked });
+        else if (c.type === 'radio') add('radiobutton', label(c.label), r, { ...win, disabled: dis, focused: foc, checked: !!c.checked });
+        else if (c.type === 'edit') add(c.onDrop ? 'combobox' : 'text-edit', '', r, { ...win, disabled: dis, focused: foc, readonly: !!c.readonly, value: c.value });
+        else if (c.type === 'label') add('text', label(c.text), r, win);
+        else if (c.type === 'group') add('grouping', label(c.label), r, win);
+        else if (c.type === 'tabs' && c.hdr) c.hdr.forEach((h, k) => add('pagetab', c.tabs[k], h, { ...win, selected: k === body.page }));
+        else if (c.type === 'custom' && c.key) add('list', '', r, { ...win, focused: foc });
+      }
+    }
+    if (body instanceof Win32DialogBody && body.r) {
+      for (const [i, c] of body.d.ctls.entries()) {
+        if (!c.visible) continue;
+        const k = body.kind(c), o = { ...win, disabled: !c.enabled, focused: body.focus === i };
+        if (k === 'check' || k === 'radio') o.checked = !!c.check;
+        if (k === 'edit' || k === 'combo') o.value = c.text;
+        if (k === 'combo' || k === 'list') { o.items = [...c.items]; o.selected = c.sel; }
+        if (k === 'slider') { o.value = c.pos; o.min = Math.min(c.min, c.max); o.max = Math.max(c.min, c.max); }
+        add(ROLE_W32[k] || k, ['edit', 'combo', 'list', 'slider', 'updown'].includes(k) ? '' : label(c.text), body.abs(c), o);
+      }
+    }
+  }
+  const L = taskLayout();
+  add('pushbutton', 'Start', L.start, { window: 'Taskbar', pressed: !!(menuSrc && menuSrc.kind === 'start') });
+  for (const b of L.btns) add('pushbutton', b.t.title, b, { window: 'Taskbar', pressed: b.t === active && !b.t.min });
+  for (const i of L.icons) add('icon', i.t.tip, i, { window: 'Taskbar' });
+  add('clock', clockStr(), L.tray, { window: 'Taskbar' });
+  menus.forEach((m, d) => m.items.forEach((it, i) => {
+    const r = m.rows[i]; if (it.sep) return;
+    add('menuitem', label(it.label), { x: m.x + 3, y: m.y + r.y, w: m.w - 6, h: r.h }, { window: 'Menu', depth: d, disabled: !!it.disabled, submenu: !!it.sub, hot: m.hover === i });
+  }));
+  return out;
+}
+// the front-most element matching every given field: strings match exactly, RegExps test
+function findEl(q) {
+  if (typeof q === 'string' || q instanceof RegExp) q = { name: q };
+  const ok = e => Object.entries(q).every(([k, v]) => v instanceof RegExp ? v.test(String(e[k] ?? '')) : e[k] === v);
+  const all = elements(); for (let i = all.length - 1; i >= 0; i--) if (ok(all[i])) return all[i];
+  return null;
+}
+// an element, a query for one, or plain coordinates, as the point a click lands on
+function target(a, b) {
+  if (typeof a === 'number') return [a, b];
+  const e = a && 'x' in a && 'w' in a ? a : findEl(a);
+  if (!e) throw new Error('no element matches ' + JSON.stringify(a, (k, v) => v instanceof RegExp ? String(v) : v));
+  return [e.x + (e.w >> 1), e.y + (e.h >> 1)];
+}
+
 const script = {
-  move(x, y) { pointer('pointermove', x, y); },
-  down(x, y, o = {}) { pointer('pointerdown', x, y, o.button === 'right' ? 2 : 0); },
-  up(x, y, o = {}) { pointer('pointerup', x, y, o.button === 'right' ? 2 : 0); },
+  move(x, y) { [x, y] = target(x, y); pointer('pointermove', x, y); },
+  down(x, y, o = {}) { if (typeof x !== 'number') { o = y || {}; [x, y] = target(x); } pointer('pointerdown', x, y, o.button === 'right' ? 2 : 0); },
+  up(x, y, o = {}) { if (typeof x !== 'number') { o = y || {}; [x, y] = target(x); } pointer('pointerup', x, y, o.button === 'right' ? 2 : 0); },
   click(x, y, o = {}) {
+    if (typeof x !== 'number') { o = y || {}; [x, y] = target(x); }
     const b = o.button === 'right' ? 2 : 0;
     for (let i = 0; i < (o.double ? 2 : 1); i++) { pointer('pointermove', x, y); pointer('pointerdown', x, y, b); pointer('pointerup', x, y, b); }
   },
-  dblclick(x, y) { script.click(x, y, { double: true }); },
+  dblclick(x, y) { if (typeof x !== 'number') [x, y] = target(x); script.click(x, y, { double: true }); },
   drag(x1, y1, x2, y2, steps = 8) {
+    if (typeof x1 !== 'number') { steps = x2 ?? 8; [x2, y2] = target(y1); [x1, y1] = target(x1); }
     pointer('pointermove', x1, y1); pointer('pointerdown', x1, y1);
     for (let i = 1; i <= steps; i++) pointer('pointermove', Math.round(x1 + (x2 - x1) * i / steps), Math.round(y1 + (y2 - y1) * i / steps));
     pointer('pointerup', x2, y2);
   },
   type(text) { for (const ch of String(text).replace(/\r/g, '')) handleKey({ key: ch === '\n' ? 'Enter' : ch, shiftKey: false, ctrlKey: false, metaKey: false, altKey: false, preventDefault() {} }); },
   key(...specs) { for (const k of specs) pressKey(k); },
+  elements(q) { const all = elements(); if (!q) return all; if (typeof q === 'string' || q instanceof RegExp) q = { name: q };
+    return all.filter(e => Object.entries(q).every(([k, v]) => v instanceof RegExp ? v.test(String(e[k] ?? '')) : e[k] === v)); },
+  find: q => findEl(q),
   windows() { return windows.map(winInfo); },
   window(title) { const w = findWin(title); return w ? winInfo(w) : null; },
   activate(title) { const w = findWin(title); if (!w) return false; if (w.min) w.min = false; activate(w); dirty(); return true; },
