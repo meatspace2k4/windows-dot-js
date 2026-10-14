@@ -134,7 +134,7 @@ P.neExport = function (m, key) {
 };
 // `native`: also bring up the modules the JS personality stands in for (JS16) from their recompiled code, for a
 // session that runs native USER; otherwise those imports stay with the JS implementations
-P.loadLibrary16 = function (name, native = false) {
+P.loadLibrary16 = function (name, native = false, defer = false) {
   this.init16();
   const base = name.toUpperCase().replace(/^.*\\/, '').replace(/\.(DLL|EXE|DRV)$/, '');
   if (base === 'KERNEL') return this.kernelModule();
@@ -148,6 +148,7 @@ P.loadLibrary16 = function (name, native = false) {
   const rec = this.loadNE(sys.meta.name.toUpperCase(), sys.fileBytes || (sys.fileBytes = b64(sys.file)), sys.mod || (sys.mod = new WebAssembly.Module(b64(sys.wasm))), sys.meta);
   rec.fileName = sys.fileName;
   for (const imp of sys.meta.imports || []) if (imp !== 'KERNEL' && (native || !JS16.includes(imp))) this.loadLibrary16(imp, native);
+  if (defer) return rec;   // the caller runs LibEntry (initNE) once what it needs is in place
   if (!this.initNE(rec)) { console.warn('[ne16]', base, 'LibEntry failed'); }
   return rec;
 };
@@ -155,7 +156,21 @@ P.loadLibrary16 = function (name, native = false) {
  *  order (system, keyboard, mouse, display, comm), then GDI and USER; returns USER's module record */
 P.bootUser16 = function () {
   for (const m of ['SYSTEM', 'KEYBOARD', 'MOUSE', 'DISPLAY', 'COMM', 'GDI']) this.loadLibrary16(m, true);
-  return this.loadLibrary16('USER', true);
+  // USER.EXE calls into USER32.DLL through flat thunks from its LibEntry on, and USER32 connects them when it loads,
+  // naming USER.EXE: so USER's image first, then USER32, then USER's LibEntry
+  const user = this.ne.get('USER') || this.loadLibrary16('USER', true, true);
+  const sys = window.W95SYSTEM, b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+  const d = sys && sys.dlls && sys.dlls['USER32.DLL'];
+  if (d && !this.byName.get('USER32')) {
+    for (const [n, x] of Object.entries(sys.dlls)) {
+      const k = n.replace(/\.DLL$/, '');
+      if (!this.dlls.has(k)) this.dlls.set(k, { file: x.fileBytes || (x.fileBytes = b64(x.file)), module: x.mod || (x.mod = new WebAssembly.Module(b64(x.wasm))), meta: x.meta });
+    }
+    this.loadDll('USER32');
+    const pending = this.inits; this.inits = []; for (const m of pending) this.call(m.meta.entry, [m.base, 1, 0]);   // DllMain(DLL_PROCESS_ATTACH)
+  }
+  if (!user.inited) { user.inited = true; if (!this.initNE(user)) console.warn('[ne16] USER LibEntry failed'); }
+  return user;
 };
 /** a module from disk that has no code (fonts and other resource-only libraries) */
 P.loadNEFile = function (name) {
@@ -1209,6 +1224,15 @@ def16('KERNEL', 462, '', 'l', function () { return 0x51; });                    
 def16('KERNEL', 463, 'lw', 'w', function (tid, hq) { const old = this.threadQueue || 0; this.threadQueue = hq; return old; });   // SetThreadQueue
 def16('KERNEL', 464, 'l', 'w', function (tid) { return this.threadQueue || 0; });                     // GetThreadQueue
 def16('KERNEL', 624, 'll', 'v', function (tid, hq) { this.threadQueue = hq & 0xffff; });                 // SetFastQueue: the queue field (38h) of the thread
+// GetFastQueue: the current thread's queue, created when it has none by USER's InitThreadInput (USER.409), which KRNL386
+// keeps a pointer to and calls with (0, 4) for a 16-bit thread
+def16('KERNEL', 625, '', 'w', function () {
+  if (this.threadQueue) return this.threadQueue;
+  const u = this.ne.get('USER'), ep = u && u.meta && this.neExport(u, 409);
+  if (!ep) return 0;
+  const r = this.call16(ep >>> 16, ep & 0xffff, [['w', 0], ['w', 4]]);
+  return this.threadQueue || r.ax;
+});
 // Get/SetProcessDword: a process's fields by the GPD_ offsets (0 user data, -4 flags, -8 parent, -12..-32 its
 // STARTUPINFO, -36 PDB, -40 THDB, -44 expected Windows version, -48 hInstance, -52 load-done event, -56 app
 // compatibility flags). Nothing is set until someone sets it, but the version, which is 4.0.
