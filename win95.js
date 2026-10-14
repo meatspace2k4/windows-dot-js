@@ -820,7 +820,11 @@ function confirmDelete(it, perm) {
     ? (dir ? `Are you sure you want to remove the folder '${it.label}' and move all its contents to the Recycle Bin?` : `Are you sure you want to send '${it.label}' to the Recycle Bin?`)
     : (dir ? `Are you sure you want to remove the folder '${it.label}' and all its contents?` : `Are you sure you want to delete '${it.label}'?`);
   msgBox(dir ? 'Confirm Folder Delete' : 'Confirm File Delete', msg, toBin ? 'recyclefull32' : 'warning', ['&Yes', '&No'], b => {
-    if (b === '&Yes') fsTry('delete', it.label, () => (toBin ? recycle(it.path) : deleteTree(it.path)));
+    if (b !== '&Yes') return;
+    if (fsTry('delete', it.label, () => (toBin ? recycle(it.path) : deleteTree(it.path)))) {
+      const e = toBin && binItems().find(x => x.orig === it.path);
+      if (e) setUndo('Undo Delete', () => restoreBin(e)); else undoOp = null;
+    }
   });
 }
 let clip = null;
@@ -833,7 +837,7 @@ function pasteInto(dir) {
   let dst = join(dir, i.name);
   if (clip.mode === 'cut') {
     if (sameDir(dirname(src), dir)) return;
-    if (fsTry('move', name, () => moveAny(src, dst))) clip = null;
+    if (fsTry('move', name, () => moveAny(src, dst))) { clip = null; setUndo('Undo Move', () => moveAny(dst, src)); }
     return;
   }
   if (fs.exists(dst)) {
@@ -844,7 +848,7 @@ function pasteInto(dir) {
         b => b === '&Yes' && fsTry('copy', name, () => fs.copy(src, dst, { overwrite: true })));
     }
   }
-  fsTry('copy', name, () => fs.copy(src, dst));
+  if (fsTry('copy', name, () => fs.copy(src, dst))) setUndo('Undo Copy', () => deleteTree(dst));
 }
 function pasteShortcut(dir) { if (clip && dir) makeShortcut(clip.path, dir); }
 function makeShortcut(target, dir) {
@@ -878,7 +882,8 @@ function commitRename() {
   const v = r.value.trim(); if (!v || v === r.it.label) return;
   const i = r.it.info, e = extname(i.name);
   const name = !i.isDir && TYPES[e] && dispName(i.name) !== i.name && !v.toLowerCase().endsWith('.' + e) ? `${v}.${e}` : v;
-  fsTry('rename', r.it.label, () => fs.rename(i.path, join(dirname(i.path), name)));
+  const to = join(dirname(i.path), name), from = i.path;
+  if (fsTry('rename', r.it.label, () => fs.rename(from, to))) setUndo('Undo Rename', () => fs.rename(to, from));
 }
 function renameKey(e) {
   const r = ren, k = e.key;
@@ -946,13 +951,16 @@ function newMenu(view) {
 function bgMenu(view, desktop) {
   const dir = view.src.path, ro = !dir || view.src.readonly;
   const out = [];
-  if (!desktop) out.push({ label: '&View', sub: [{ label: 'Lar&ge Icons', check: true }, { label: 'S&mall Icons', disabled: true }, { label: '&List', disabled: true }, { label: '&Details', disabled: true }] }, { sep: true });
-  out.push({ label: 'Arrange &Icons', sub: [{ label: 'by &Name', fn: () => view.arrange() }, { label: 'by &Type', fn: () => view.arrange() }, { label: 'by Si&ze', fn: () => view.arrange() }, { label: 'by &Date', fn: () => view.arrange() }] },
+  if (!desktop) out.push({ label: '&View', sub: viewModeItems(view) }, { sep: true });
+  out.push({ label: 'Arrange &Icons', sub: arrangeItems(view) },
     { label: 'Line &up Icons', fn: () => view.lineUp() }, { sep: true },
     { label: '&Paste', disabled: ro || !clip, fn: () => pasteInto(dir) }, { label: 'Paste &Shortcut', disabled: ro || !clip, fn: () => pasteShortcut(dir) }, { sep: true },
     newMenu(view), { sep: true }, { label: 'P&roperties', disabled: !desktop && !dir, fn: () => desktop ? displayProperties() : dir && properties(fsItem(fs.stat(dir))) });
   return out;
 }
+const viewModeItems = view => [['Lar&ge Icons', 'large'], ['S&mall Icons', 'small'], ['&List', 'list'], ['&Details', 'details']]
+  .map(([label, m]) => ({ label, radio: true, check: view.mode === m, fn: () => view.setMode(m) }));
+const arrangeItems = view => [['by &Name', 'name'], ['by &Type', 'type'], ['by Si&ze', 'size'], ['by &Date', 'date']].map(([label, by]) => ({ label, fn: () => view.arrange(by) }));
 // Keyboard commands shared by folder windows and the desktop.
 function viewKey(view, e) {
   const it = viewSelItem(view), ctl = e.ctrlKey || e.metaKey, k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
@@ -1217,7 +1225,7 @@ function openFolder(src) {
   };
   const editMenu = () => {
     const it = viewSelItem(view), real = it && it.info && !it.bin && !isRoot(it.path), ro = !src.path || src.readonly;
-    return [{ label: '&Undo', disabled: true }, { sep: true },
+    return [{ label: undoOp ? `&${undoOp.label}` : '&Undo', disabled: !undoOp, acc: 'Ctrl+Z', fn: undoLast }, { sep: true },
       { label: 'Cu&t', acc: 'Ctrl+X', disabled: !real || ro, fn: () => cutCopy(it, 'cut') }, { label: '&Copy', acc: 'Ctrl+C', disabled: !real, fn: () => cutCopy(it, 'copy') },
       { label: '&Paste', acc: 'Ctrl+V', disabled: ro || !clip, fn: () => pasteInto(src.path) }, { label: 'Paste &Shortcut', disabled: ro || !clip, fn: () => pasteShortcut(src.path) }];
   };
@@ -1225,7 +1233,12 @@ function openFolder(src) {
     ...p, w: 330, h: 240, title: src.title, icon: src.icon, minW: 160, minH: 100, body: view,
     menu: [
       { label: '&File', items: fileMenu }, { label: '&Edit', items: editMenu },
-      { label: '&View', items: () => [{ label: '&Toolbar', disabled: true }, { label: 'Status &Bar', check: true }, { sep: true }, { label: 'Lar&ge Icons', check: true }, { sep: true }, { label: 'Arrange &Icons', sub: [{ label: 'by &Name', fn: () => view.arrange() }] }, { label: 'Line &up Icons' }, { sep: true }, { label: '&Refresh', fn: () => view.refresh() }] },
+      { label: '&View', items: () => [
+        { label: '&Toolbar', check: view.toolbar, fn: () => { view.toolbar = !view.toolbar; view.refresh(); } },
+        { label: 'Status &Bar', check: view.status, fn: () => { view.status = !view.status; view.refresh(); } }, { sep: true },
+        ...viewModeItems(view), { sep: true },
+        { label: 'Arrange &Icons', sub: arrangeItems(view) }, { label: 'Line &up Icons', disabled: view.mode === 'list' || view.mode === 'details', fn: () => view.lineUp() }, { sep: true },
+        { label: '&Refresh', fn: () => view.refresh() }] },
       { label: '&Help', items: [{ label: '&Help Topics', disabled: true }, { sep: true }, { label: '&About Windows 95', fn: aboutWin95 }] },
     ],
   }));
