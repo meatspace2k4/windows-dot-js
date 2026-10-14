@@ -1170,8 +1170,24 @@ P.neResources = function (m) {
   return (m.res = out);
 };
 const resKey = function (sp) { if (!(sp >>> 16)) return sp & 0xffff; const s = this.readA(this.lin(sp)); return s[0] === '#' ? parseInt(s.slice(1), 10) : s.toUpperCase(); };
+// a Win32 menu template (Unicode) in the 16-bit layout: the same items with ANSI text
+const menu16 = d => {
+  if (d[0] | d[1] << 8) return d;     // MENUEX: no 16-bit form
+  const out = [0, 0, 0, 0]; let o = 4 + (d[2] | d[3] << 8);
+  const text = () => { const c = []; for (;;) { const ch = d[o] | d[o + 1] << 8; o += 2; if (!ch || o > d.length) break; c.push(ch); } return window.W95FS.encode(String.fromCharCode(...c)); };
+  const level = () => {
+    while (o + 2 <= d.length) {
+      const fl = d[o] | d[o + 1] << 8; o += 2; out.push(fl & 0xff, fl >> 8);
+      if (!(fl & 0x10)) { out.push(d[o], d[o + 1]); o += 2; }     // MF_POPUP items have no id
+      out.push(...text(), 0);
+      if (fl & 0x10) level();
+      if (fl & 0x80) return;                                        // MF_END
+    }
+  };
+  level(); return new Uint8Array(out);
+};
 // a Win32 module's resources, reached through its 16-bit handle (USER loading for a Win32 program); returned in the
-// layout 16-bit USER reads: accelerator tables go from 8-byte to 5-byte entries
+// layout 16-bit USER reads: accelerator tables go from 8-byte to 5-byte entries, menus to ANSI text
 const res32 = (p, h32, id, type) => {
   const mod = p.moduleFor(h32); if (!mod || mod.base !== h32) return null;
   const r = p.findResource(type, id, mod); if (!r) return null;
@@ -1180,6 +1196,7 @@ const res32 = (p, h32, id, type) => {
     const out = []; for (let o = 0; o + 8 <= data.length; o += 8) { out.push(data[o], data[o + 2], data[o + 3], data[o + 4], data[o + 5]); if (data[o] & 0x80) break; }
     data = new Uint8Array(out);
   }
+  if (type === 4) data = menu16(data);   // RT_MENU
   return data;
 };
 def16('KERNEL', 60, 'wxx', 'w', function (h, name, type) {     // FindResource
