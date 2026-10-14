@@ -321,6 +321,10 @@ class Loc:
 # ---- segmented (NE) mode. CUR is the instruction being translated.
 CUR = None
 def segmode(): return CUR is not None and CUR.segbase is not None
+# flat code that has just loaded a 16-bit SS (USER32's callback relays: `lss sp, [ebx]` then a 16-bit retf back into
+# USER.EXE) addresses the stack as SS:SP for the rest of that block
+STK16 = False
+def stack16(): return segmode() or STK16
 def opsize(ins):
     d = 4 if ins.bits == 32 else 2
     return (6 - d) if ins.prefix[2] == 0x66 else d
@@ -371,11 +375,11 @@ def set_szp(f, r, sz, live):
     if live & PF: f.lg(r).c(0xff).e(OPS['and_']).e(OPS['popcnt']).c(1).e(OPS['and_']).c(1).e(OPS['xor']).gs('pf')
 
 def sp_adjust(f, delta):
-    if segmode():   # 16-bit stack: SP wraps within SS, the high half of ESP is preserved
+    if stack16():   # 16-bit stack: SP wraps within SS, the high half of ESP is preserved
         f.gg('esp').c(~0xffff).e(OPS['and_']).gg('esp').c(delta).e(OPS['add']).c(0xffff).e(OPS['and_']).e(OPS['or_']).gs('esp')
     else: f.gg('esp').c(delta).e(OPS['add']).gs('esp')
 def sp_addr(f):
-    if segmode(): f.gg('ssb').gg('esp').c(0xffff).e(OPS['and_']).e(OPS['add'])
+    if stack16(): f.gg('ssb').gg('esp').c(0xffff).e(OPS['and_']).e(OPS['add'])
     else: f.gg('esp')
 def push_val(f, val, size=4):
     # the value is taken before ESP moves, so PUSH ESP stores the old ESP
@@ -439,7 +443,8 @@ class Translator:
         f = Fn()
         if self.TRACE: f.c(start).e(0x10, uleb(IMP['btrace']))
         try:
-            global CUR
+            global CUR, STK16
+            STK16 = False
             for ins in lst:
                 f.ti = 0; f.tq = 0; f.td = 0; CUR = ins
                 nxt = self.insn(f, ins)
@@ -520,10 +525,12 @@ class Translator:
             return
         Loc(f, ops[0], sz).write(lambda: f.lg(t))
     def lptr(self, f, ins, ops, sreg):
+        global STK16
         d, m = Loc(f, ops[0]), Loc(f, ops[1], ops[0].size); sz = ops[0].size
         t = f.i(); f.lg(m.addr).mem(LOAD[sz]).ls(t)
         load_sreg(f, sreg, lambda: (f.lg(m.addr), f.c(sz), f.e(OPS['add']), f.mem(0x2f)))
         d.write(lambda: f.lg(t))
+        if sreg == X.X86_REG_SS and sz == 2 and not segmode(): STK16 = True
     def x_pushaw(self, f, ins, ops, live):
         t = f.i(); f.gg('esp').ls(t)
         for r in REGS: push_val(f, (lambda r=r: f.lg(t) if r == 'esp' else f.gg(r)), 2)

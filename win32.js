@@ -922,8 +922,31 @@ def('KERNEL32', 'GetNumberFormatA', 6, function (lc, fl, val, fmt, out, n) {
   const r = v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   if (!n) return r.length + 1; return this.writeA(out, r, n) + 1;
 });
-def('KERNEL32', 'FormatMessageA', 7, function (fl, src, id, lang, buf, n) {
-  const t = `Error ${id}.\r\n`;
+// FORMAT_MESSAGE_FROM_STRING (400h) formats `src`; %1..%99 take inserts (with !fmt! printf specs) from the argument
+// array (2000h) or the va_list `args`; %0 ends the text, %n %% %. %! are line break, %, . and !; IGNORE_INSERTS (200h)
+// copies the text as it is. Message tables (FROM_HMODULE / FROM_SYSTEM) are not kept, so those give "Error N.".
+def('KERNEL32', 'FormatMessageA', 7, function (fl, src, id, lang, buf, n, args) {
+  let t;
+  if (fl & 0x400) {
+    const f = this.readA(src) || '';
+    if (fl & 0x200) t = f;
+    else {
+      const arg = k => fl & 0x2000 ? this.r32(args + 4 * (k - 1)) : this.r32(this.r32(args) + 4 * (k - 1));
+      t = ''; for (let i = 0; i < f.length; i++) {
+        const c = f[i]; if (c !== '%') { t += c; continue; }
+        const d = f[++i];
+        if (d === '0') break; if (d === 'n') { t += '\r\n'; continue; }
+        if (/[1-9]/.test(d)) {
+          let k = +d; if (/[0-9]/.test(f[i + 1])) k = k * 10 + +f[++i];
+          let spec = 's'; if (f[i + 1] === '!') { const e = f.indexOf('!', i + 2); spec = f.slice(i + 2, e); i = e; }
+          const v = arg(k);
+          t += /s$/.test(spec) ? (this.readA(v) || '') : wsprintf(this, '%' + spec, (() => { const a = this.alloc(4); this.w32(a, v); return a; })());
+          continue;
+        }
+        t += d;
+      }
+    }
+  } else t = `Error ${id}.\r\n`;
   if (fl & 0x100) { const p = this.alloc(t.length + 1); this.writeA(p, t); this.w32(buf, p); return t.length; }   // FORMAT_MESSAGE_ALLOCATE_BUFFER
   return this.writeA(buf, t, n);
 });
