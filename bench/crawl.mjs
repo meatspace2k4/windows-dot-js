@@ -38,15 +38,15 @@ const CRAWL = async () => {
   };
   const opened = [];
   const disabled = new Map();   // name -> where, for items and buttons that cannot be used
-  const leafs = items => {
-    for (const e of items) if (e.disabled) disabled.set(`${where.replace(/ > [^>]*$/, '')} > ${e.name}`, e.role);
+  const leafs = (items, path) => {
+    for (const e of items) if (e.disabled) disabled.set(`${path} > ${e.name}`, e.role);
     return items.filter(e => !e.disabled && !SKIP.test(e.name));
   };
   // presses every item of the menu `open()` brings up, depth first; `path` names it for the report
   const crawlMenu = async (path, open, depth = 0) => {
     await reset(); await open(); await frame();
     const top = win95.elements({ window: 'Menu', depth });
-    for (const it of leafs(top)) {
+    for (const it of leafs(top, path)) {
       await reset(); await open(); await frame();
       const e = win95.find({ window: 'Menu', depth, name: it.name }); if (!e) continue;
       where = `${path} > ${it.name}`;
@@ -90,7 +90,7 @@ const CRAWL = async () => {
       return !!win95.window(o.title);
     };
     if (!await reopen()) continue;
-    for (const b of leafs(win95.elements({ role: 'pushbutton', window: o.title })).filter(b => !b.covered && !/^(Close|Minimize|Maximize)$/.test(b.name))) {
+    for (const b of leafs(win95.elements({ role: 'pushbutton', window: o.title }), o.title).filter(b => !b.covered && !/^(Close|Minimize|Maximize)$/.test(b.name))) {
       await reset(); if (!await reopen()) break;
       where = `${o.title} > button ${b.name}`;
       const e = win95.find({ role: 'pushbutton', window: o.title, name: b.name }); if (!e) continue;
