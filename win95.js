@@ -574,61 +574,188 @@ function traySet(proc, hwnd, id, o) {
 }
 function trayDrop(proc) { for (let i = trayIcons.length - 1; i >= 0; i--) if (trayIcons[i].proc === proc) trayIcons.splice(i, 1); dirty(); }
 
-// ---------------------------------------------------------------- Browse for Folder (SHBrowseForFolder)
-function browseFolder(o) {
-  let win, sel = null, open = new Set(['C:\\']);
+// ---------------------------------------------------------------- tree of folders (and optionally files)
+// o.roots: [{ path, label, icon }] shown at depth 0; o.files: list files too; o.top: a non-selectable first row
+// (My Computer). The control's `sel` is the selected path; `open` the expanded folders.
+function treeControl(o) {
   const sb = new ScrollBar(true, () => dirty());
-  const kids = p => { try { return fs.readdir(p).filter(i => i.isDir && !i.hidden).sort(byName).map(i => i.path); } catch (_) { return []; } };
-  const rows = () => {
-    const out = [{ path: null, depth: 0, label: 'My Computer', icon: 'mycomputer' }];
-    for (const v of fs.volumes()) {
-      const walk = (p, d) => {
-        out.push({ path: p, depth: d, label: d === 1 ? driveLabel(p[0]) : basename(p), icon: d === 1 ? driveIcon(p[0]) : open.has(p) ? 'folderopen' : 'folder' });
-        if (open.has(p) && v.ready) for (const k of kids(p)) walk(k, d + 1);
+  const kids = p => { try { return fs.readdir(p).filter(i => (i.isDir || o.files) && !i.hidden).sort(byName); } catch (_) { return []; } };
+  const t = {
+    type: 'custom', x: o.x, y: o.y, w: o.w, h: o.h, sel: o.sel || null, open: new Set(o.open || []),
+    rows() {
+      const out = o.top ? [{ path: null, depth: 0, label: o.top.label, icon: o.top.icon }] : [], base = o.top ? 1 : 0;
+      const walk = (p, d, label, ic) => {
+        const st = (() => { try { return fs.stat(p); } catch (_) { return null; } })(), dir = !st || st.isDir;
+        out.push({ path: p, depth: d, dir, label, icon: ic || (dir ? (t.open.has(p) ? 'folderopen' : 'folder') : iconFor(st)) });
+        if (dir && t.open.has(p)) for (const k of kids(p)) walk(k.path, d + 1, k.isDir ? k.name : dispName(k.name));
       };
-      walk(v.root, 1);
-    }
-    return out;
-  };
-  const finish = p => { closeWin(win); o.done(p); };
-  const tree = {
-    type: 'custom', x: 12, y: 40, w: 270, h: 170,
+      for (const r of o.roots()) walk(r.path, base, r.label, r.icon);
+      return out;
+    },
     draw(a, foc, w) {
       field(a.x, a.y, a.w, a.h);
-      const list = rows(), inner = { x: a.x + 2, y: a.y + 2, w: a.w - 20, h: a.h - 4 }, n = Math.floor(inner.h / 17);
+      const list = this.rows(), inner = { x: a.x + 2, y: a.y + 2, w: a.w - 20, h: a.h - 4 }, n = Math.floor(inner.h / 17);
       sb.set(inner.x + inner.w, inner.y, inner.h, list.length, n);
       ctx.save(); ctx.beginPath(); ctx.rect(inner.x, inner.y, inner.w, inner.h); ctx.clip();
       for (let i = sb.pos; i < Math.min(list.length, sb.pos + n + 1); i++) {
         const r = list[i], y = inner.y + (i - sb.pos) * 17 + 1, x = inner.x + 2 + r.depth * 19, label = esc(r.label), tw = textW(label);
-        const on = r.path !== null && sel && r.path.toUpperCase() === sel.toUpperCase();
+        const on = r.path !== null && this.sel && r.path.toUpperCase() === this.sel.toUpperCase();
         icon(r.icon + '16', x, y, on && w.isActive);
         if (on) fill(x + 18, y + 1, tw + 4, 14, w.isActive ? K.sel : K.face);
         text(label, x + 20, y + 2, on && w.isActive ? K.hl : K.dk);
         if (on && foc) focusRect(x + 18, y + 1, tw + 4, 14);
       }
-      ctx.restore(); sb.draw(); this.inner = inner;
+      ctx.restore(); sb.draw(); this.inner = inner; this.list = list; this.top = sb.pos;
     },
     down(x, y, btn, dbl) {
       if (sb.contains(x, y)) return sb.down(x, y);
-      const r = rows()[sb.pos + Math.floor((y - this.inner.y) / 17)];
+      const r = this.rows()[sb.pos + Math.floor((y - this.inner.y) / 17)];
       if (!r || r.path === null) return null;
-      sel = r.path;
-      if (dbl || r.depth === 1) { if (open.has(r.path) && dbl) open.delete(r.path); else open.add(r.path); }
+      this.sel = r.path;
+      if (r.dir && (dbl || (o.top && r.depth === 1))) { if (this.open.has(r.path) && dbl) this.open.delete(r.path); else this.open.add(r.path); }
+      if (o.onSelect) o.onSelect(r.path);
       return null;
     },
     key(e) {
-      const list = rows().filter(r => r.path !== null), i = list.findIndex(r => sel && r.path.toUpperCase() === sel.toUpperCase());
-      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { const j = clamp(i + (e.key === 'ArrowDown' ? 1 : -1), 0, list.length - 1); sel = list[j].path; return true; }
-      if (e.key === 'ArrowRight' && sel) { open.add(sel); return true; }
-      if (e.key === 'ArrowLeft' && sel) { if (open.has(sel)) open.delete(sel); else if (!isRoot(sel)) sel = dirname(sel); return true; }
+      const list = this.rows().filter(r => r.path !== null), i = list.findIndex(r => this.sel && r.path.toUpperCase() === this.sel.toUpperCase());
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { this.sel = list[clamp(i + (e.key === 'ArrowDown' ? 1 : -1), 0, list.length - 1)].path; if (o.onSelect) o.onSelect(this.sel); return true; }
+      if (e.key === 'ArrowRight' && this.sel) { this.open.add(this.sel); return true; }
+      if (e.key === 'ArrowLeft' && this.sel) { if (this.open.has(this.sel)) this.open.delete(this.sel); else { const p = list.find(r => r.path.toUpperCase() === dirname(this.sel).toUpperCase()); if (p) this.sel = p.path; } return true; }
       return false;
     },
   };
+  return t;
+}
+
+// ---------------------------------------------------------------- Browse for Folder (SHBrowseForFolder)
+function browseFolder(o) {
+  let win;
+  const tree = treeControl({ x: 12, y: 40, w: 270, h: 170, top: { label: 'My Computer', icon: 'mycomputer' }, open: ['C:\\'],
+    roots: () => fs.volumes().map(v => ({ path: v.root, label: driveLabel(v.letter), icon: driveIcon(v.letter) })) });
+  const finish = p => { closeWin(win); o.done(p); };
   win = dialog('Browse for Folder', 294, 252, [
     { type: 'label', text: o.title || '', x: 12, y: 10, w: 270 },
     tree,
-    { type: 'button', label: 'OK', x: 126, y: 220, w: 75, h: 23, def: true, fn: () => { if (sel) finish(sel); } },
+    { type: 'button', label: 'OK', x: 126, y: 220, w: 75, h: 23, def: true, fn: () => { if (tree.sel) finish(tree.sel); } },
     { type: 'button', label: 'Cancel', x: 207, y: 220, w: 75, h: 23, cancel: true, fn: () => finish(null) },
+  ]);
+  return win;
+}
+
+// ---------------------------------------------------------------- Taskbar Properties
+const START_MENU = 'C:\\WINDOWS\\Start Menu';
+function taskbarProperties(page = 0) {
+  const open = windows.find(w => w.title === 'Taskbar Properties'); if (open) return activate(open);
+  let win;
+  const opt = { ...tbar };
+  const chk = (label, key, y) => ({ type: 'check', page: 0, label, x: 18, y, checked: key === 'clock' ? opt.clock : opt[key], onChange() { opt[key] = this.checked; dirty(); } });
+  // the picture above the options: the Start menu (large or small icons) over the taskbar, the clock shown or not,
+  // a window over the taskbar when it is not on top, the taskbar gone to an edge when it hides
+  const preview = {
+    type: 'custom', page: 0, x: 18, y: 16, w: 334, h: 150,
+    draw(a) {
+      fill(a.x, a.y, a.w, a.h, '#008080');
+      const sm = IMG[opt.small ? 'tpstartsmall' : 'tpstartlarge'], bar = IMG.tpbar, by = a.y + a.h - bar.height + (opt.autohide ? bar.height - 3 : 0);
+      const drawBar = () => {
+        ctx.drawImage(bar, a.x + ((a.w - bar.width) >> 1), by);
+        if (!opt.clock) { const e = IMG.tpbarend; ctx.drawImage(e, a.x + ((a.w + bar.width) >> 1) - e.width, by + ((bar.height - e.height) >> 1)); }
+      };
+      if (!opt.autohide) ctx.drawImage(sm, a.x + ((a.w - bar.width) >> 1), a.y + a.h - bar.height - sm.height + 4);
+      if (opt.ontop) { drawBar(); } else { drawBar(); ctx.drawImage(IMG.tpontop, a.x + a.w - IMG.tpontop.width - 40, a.y + a.h - IMG.tpontop.height + 6); }
+      if (opt.autohide) ctx.drawImage(IMG.tpautohide, a.x + a.w - IMG.tpautohide.width - 40, a.y + 30);
+    },
+  };
+  const apply = () => {
+    Object.assign(tbar, { ontop: opt.ontop, autohide: opt.autohide, small: opt.small, clock: opt.clock });
+    tbar.shown = tbar.autohide ? 0 : 1; saveTaskbar(); resize(); return true;
+  };
+  const clear = () => { fsTry('clear', 'Documents', () => { for (const i of fs.readdir(RECENT)) fs.unlink(i.path); }); clearBtn.disabled = true; };
+  const clearBtn = { type: 'button', page: 1, x: 270, y: 252, w: 75, h: 23, label: '&Clear', disabled: !fs.readdir(RECENT).length, fn: clear };
+  win = dialog('Taskbar Properties', 370, 330, [
+    { type: 'tabs', x: 6, y: 6, w: 358, h: 290, tabs: ['Taskbar Options', 'Start Menu Programs'] },
+    { ...preview, y: 36 },
+    chk('&Always on top', 'ontop', 196), chk('A&uto hide', 'autohide', 216), chk('Show &small icons in Start menu', 'small', 236), chk('Show &Clock', 'clock', 256),
+    { type: 'group', page: 1, x: 16, y: 36, w: 338, h: 170, label: 'Customize Start Menu' },
+    { type: 'icon', page: 1, name: 'programs32', x: 28, y: 58 },
+    { type: 'label', page: 1, x: 70, y: 60, w: 270, text: 'You can customize your Start menu by adding or removing items from it.' },
+    { type: 'button', page: 1, x: 70, y: 166, w: 75, h: 23, label: '&Add...', fn: () => createShortcutWizard(PROGRAMS) },
+    { type: 'button', page: 1, x: 150, y: 166, w: 75, h: 23, label: '&Remove...', fn: removeShortcuts },
+    { type: 'button', page: 1, x: 230, y: 166, w: 90, h: 23, label: 'A&dvanced...', fn: () => openPath(START_MENU) },
+    { type: 'group', page: 1, x: 16, y: 216, w: 338, h: 70, label: 'Documents Menu' },
+    { type: 'icon', page: 1, name: 'documents32', x: 28, y: 238 },
+    { type: 'label', page: 1, x: 70, y: 240, w: 190, text: 'Click to remove the contents of the Documents menu.' },
+    clearBtn,
+    { type: 'button', x: 130, y: 302, w: 75, h: 23, label: 'OK', def: true, fn: () => { apply(); closeWin(win); } },
+    { type: 'button', x: 210, y: 302, w: 75, h: 23, label: 'Cancel', cancel: true, fn: () => closeWin(win) },
+    { type: 'button', x: 290, y: 302, w: 75, h: 23, label: '&Apply', fn: apply },
+  ], { modal: false, noTask: false, icon: 'taskbar' });
+  win.body.page = page;
+  return win;
+}
+
+// Create Shortcut, as the Start menu's Add... and a folder's New > Shortcut run it: the command line, then the
+// Start Menu folder to put it in (when started from Taskbar Properties), then its name
+function createShortcutWizard(startIn) {
+  let win, step = 0;
+  const cmd = { type: 'edit', page: 0, x: 120, y: 120, w: 220, h: 21, value: '', caret: 0, focus: true };
+  const tree = treeControl({ x: 120, y: 40, w: 230, h: 160, page: 1, open: [START_MENU], sel: startIn,
+    roots: () => [{ path: START_MENU, label: 'Start Menu', icon: 'programs' }] });
+  tree.page = 1;
+  const name = { type: 'edit', page: 2, x: 120, y: 70, w: 220, h: 21, value: '', caret: 0 };
+  const back = { type: 'button', x: 120, y: 236, w: 75, h: 23, label: '< &Back', disabled: true, fn: () => go(step - 1) };
+  const next = { type: 'button', x: 195, y: 236, w: 75, h: 23, label: '&Next >', def: true, fn: () => go(step + 1) };
+  const titles = ['Create Shortcut', 'Select Program Folder', 'Select a Title for the Program'];
+  const target = () => resolveArg(cmd.value.replace(/^"([^"]*)".*$/, '$1').trim());
+  const go = n => {
+    if (n === 1 && step === 0) {
+      if (!cmd.value.trim()) return;
+      if (!fs.exists(target())) return msgBox(titles[0], `The file ${cmd.value.trim()} specified on the command line cannot be found. Make sure the path and file name are correct.`, 'error');
+      if (!startIn) n = 2;   // New > Shortcut in a folder skips choosing a folder
+      name.value = dispName(basename(target())); name.caret = name.value.length;
+    }
+    if (n === 1 && !startIn) n = 0;
+    if (n === 3) {
+      const dir = startIn ? tree.sel || PROGRAMS : win.dir, nm = name.value.trim();
+      if (!nm) return;
+      if (fsTry('create', nm, () => fs.writeFile(join(dir, nm + '.lnk'), lnk(fs.realpath(target()))))) closeWin(win);
+      return;
+    }
+    step = n; win.body.page = n; win.title = titles[n];
+    back.disabled = n === 0; next.label = n === 2 ? 'Finish' : '&Next >';
+    win.body.focus = win.body.c.indexOf(n === 0 ? cmd : n === 1 ? tree : name); dirty();
+  };
+  win = dialog(titles[0], 440, 270, [
+    { type: 'icon', name: 'app32', x: 30, y: 40 },
+    { type: 'label', page: 0, x: 120, y: 30, w: 300, text: 'Type the location and name of the item you want to create a shortcut to. Or, search for the item by clicking Browse.' },
+    { type: 'label', page: 0, x: 120, y: 102, text: 'Command &line:', amp: true }, cmd,
+    { type: 'button', page: 0, x: 265, y: 150, w: 75, h: 23, label: 'B&rowse...', fn: () => fileDialog({ title: 'Browse', dir: WINDIR, onOk: p => { cmd.value = p; cmd.caret = p.length; } }) },
+    { type: 'label', page: 1, x: 120, y: 18, text: 'Select folder to place shortcut in:' }, tree,
+    { type: 'button', page: 1, x: 120, y: 206, w: 90, h: 23, label: 'New &Folder...', fn: () => {
+      const base = tree.sel || START_MENU; let n = 'New Folder', k = 2; while (fs.exists(join(base, n))) n = `New Folder (${k++})`;
+      if (fsTry('create', n, () => fs.mkdir(join(base, n)))) { tree.open.add(base); tree.sel = join(base, n); }
+    } },
+    { type: 'label', page: 2, x: 120, y: 50, text: 'Select a &name for the shortcut:', amp: true }, name,
+    { type: 'line', x: 8, y: 226, w: 424 },
+    back, next,
+    { type: 'button', x: 290, y: 236, w: 75, h: 23, label: 'Cancel', cancel: true, fn: () => closeWin(win) },
+  ], { modal: false, noTask: false });
+  win.dir = startIn;
+  return win;
+}
+
+// Remove Shortcuts/Folders: the Start Menu's Programs tree; Remove sends the item to the Recycle Bin
+function removeShortcuts() {
+  let win;
+  const tree = treeControl({ x: 12, y: 40, w: 280, h: 200, open: [PROGRAMS], files: true,
+    roots: () => [{ path: PROGRAMS, label: 'Programs', icon: 'programs' }] });
+  win = dialog('Remove Shortcuts/Folders', 386, 252, [
+    { type: 'label', x: 12, y: 8, w: 360, text: 'To remove an item from the Start menu, select the item and click Remove.' },
+    tree,
+    { type: 'button', x: 300, y: 40, w: 75, h: 23, label: '&Remove', fn: () => {
+      const p = tree.sel; if (!p || p.toUpperCase() === PROGRAMS.toUpperCase()) return;
+      const it = fsItem(fs.stat(p)); confirmDelete(it);
+    } },
+    { type: 'button', x: 300, y: 217, w: 75, h: 23, label: 'Close', cancel: true, def: true, fn: () => closeWin(win) },
   ]);
   return win;
 }
@@ -2813,6 +2940,13 @@ function elements() {
         else if (c.type === 'label') add('text', label(c.text), r, win);
         else if (c.type === 'group') add('grouping', label(c.label), r, win);
         else if (c.type === 'tabs' && c.hdr) c.hdr.forEach((h, k) => add('pagetab', c.tabs[k], h, { ...win, selected: k === body.page }));
+        else if (c.type === 'custom' && c.list) {
+          add('outline', '', r, { ...win, focused: foc });
+          c.list.forEach((row, i) => {
+            const y = c.inner.y + (i - c.top) * 17 + 1; if (y < c.inner.y || y + 16 > c.inner.y + c.inner.h) return;
+            add('outlineitem', row.label, { x: c.inner.x + 2 + row.depth * 19, y, w: 20 + textW(esc(row.label)) + 4, h: 16 }, { ...win, path: row.path, selected: !!(row.path && c.sel && row.path.toUpperCase() === c.sel.toUpperCase()), expanded: c.open.has(row.path) });
+          });
+        }
         else if (c.type === 'custom' && c.key) add('list', '', r, { ...win, focused: foc });
       }
     }
