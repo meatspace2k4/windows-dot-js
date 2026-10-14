@@ -9,7 +9,7 @@ b64 = lambda p: base64.b64encode(open(p, 'rb').read()).decode()
 NE = [('gdi.exe', 0x01C00000, 0x1007, 0x06A00000), ('dibeng.dll', 0x01E00000, 0x1207, 0x06D00000),
       ('framebuf.drv', 0x01E80000, 0x1307, 0x06E00000), ('user.exe', 0x01A00000, 0x1407, 0x06F00000)]
 # 32-bit system DLLs: (file, load base, block-table base)
-PE = [('gdi32.dll', 0x01D00000, 0x06C00000), ('user32.dll', 0x01D40000, 0x07340000)]
+PE = [('gdi32.dll', 0x01D00000, 0x06C00000), ('user32.dll', 0x01D40000, 0x07340000), ('comdlg32.dll', 0x01D60000, 0x07380000)]
 # fonts a VGA install of Windows 95 puts in C:\WINDOWS\FONTS (WIN95_02.CAB)
 FONTS = ['vgasys.fon', 'vgafix.fon', 'vgaoem.fon', 'sserife.fon', 'serife.fon', 'coure.fon', 'smalle.fon', 'symbole.fon',
          'modern.fon', 'dosapp.fon', 'arial.ttf', 'arialbd.ttf', 'arialbi.ttf', 'ariali.ttf', 'cour.ttf', 'courbd.ttf',

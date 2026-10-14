@@ -50,6 +50,12 @@ class Process {
       fmod: (a, b) => a % b, frem: (a, b) => a - b * Math.round(a / b), f80load: a => this.f80load(a), f80store: (a, v) => this.f80store(a, v), btrace: e => { if (window.W95BTRACE) window.W95BTRACE(e >>> 0); } };
     this.imports = { env: { mem: this.mem, api: e => this.api(e), trap: (e, c) => this.trap(e, c), ...math }, cpu: this.cpu };
     this.modules = []; this.byName = new Map(); this.inits = [];
+    // a host that runs the native window system brings it up first, as Windows is up before any program starts
+    if (host.boot) {
+      const t = LAYOUT.TIB; this.w32(t, 0xffffffff); this.w32(t + 4, LAYOUT.STACK_TOP); this.w32(t + 8, LAYOUT.STACK_LO); this.w32(t + 0x18, t);
+      this.cpu.fs.value = t; this.reg('esp', LAYOUT.STACK_TOP); this.push(LAYOUT.SENTINEL);
+      host.boot(this);
+    }
     this.exe = this.loadImage(file, module, meta, 'EXE');
     this.base = this.exe.base;
     this.setupStack(cmdline);

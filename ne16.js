@@ -990,8 +990,9 @@ P.currentTask = function () {
 def16('KERNEL', 47, 's', 'w', function (name) {   // GetModuleHandle
   if (typeof name === 'number') { const m = this.neByHandle(name); return m ? m.hModule : 0; }
   const n = (name || '').toUpperCase().replace(/^.*\\/, '').replace(/\.(DLL|EXE|DRV)$/, '');
-  if (JS16.includes(n)) return this.jsModule(n).hModule;
-  const m = this.ne.get(n); return m ? m.hModule : 0;
+  const m = this.ne.get(n);
+  if (JS16.includes(n) && !(m && m.meta)) return this.jsModule(n).hModule;   // natively loaded only in a native-USER session
+  return m ? m.hModule : 0;
 });
 def16('KERNEL', 133, 'w', 'w', function (h) { if (h === this.kernelModule().hModule) return h; const m = this.neByHandle(h); return m ? m.hModule : 0; });   // GetExePtr
 def16('KERNEL', 228, 'w', 'w', function (h) { const m = this.neByHandle(h); return m ? m.hModule : 0; });
