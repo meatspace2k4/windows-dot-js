@@ -1400,10 +1400,11 @@ def decode_ne(ne, entries):
 
 # KERNEL constants imported as relocations (__AHSHIFT, __AHINCR, __WINFLAGS, __FLATDS)
 FLATDS_SEL = 0x000F
+FLATCS_SEL = 0x0017              # KERNEL's __FLATCS: the flat 32-bit code selector (ne16.js L.FLATCS)
 # selectors for fixed real-mode memory (__A000H and friends): LDT index 0x20.. (ne16.js creates them)
 REALMODE_SELS = {183: (0x0107, 0x00000), 193: (0x010F, 0x00400), 174: (0x0117, 0xA0000), 181: (0x011F, 0xB0000), 182: (0x0127, 0xB8000),
                  195: (0x012F, 0xC0000), 179: (0x0137, 0xD0000), 190: (0x013F, 0xE0000), 194: (0x0147, 0xF0000), 173: (0x0147, 0xF0000)}
-KERNEL_EQUATES = {113: 3, 114: 8, 178: 0x0C29, 455: FLATDS_SEL, **{o: s for o, (s, b) in REALMODE_SELS.items()}}
+KERNEL_EQUATES = {113: 3, 114: 8, 178: 0x0C29, 454: FLATCS_SEL, 455: FLATDS_SEL, **{o: s for o, (s, b) in REALMODE_SELS.items()}}
 
 def load_registry(path):
     try: return json.load(open(path))

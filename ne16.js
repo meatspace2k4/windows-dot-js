@@ -1348,7 +1348,7 @@ def16('KERNEL', 452, 's', 'l', function (name) {
 });
 def16('KERNEL', 453, 'lx', 'l', function (h, name) {
   const m = this.modules.find(x => x.base === h); if (!m) return 0;
-  if (!(name >>> 16)) return (m.ordinals && m.ordinals.get(name & 0xffff)) || 0;
+  if (!(name >>> 16)) return m.exports.get('#' + (name & 0xffff)) || 0;
   return m.exports.get(this.readA(this.lin(name))) || 0;
 });
 def16('KERNEL', 476, 'l', 'l', function (h) { return h; });                                            // ConvertToGlobalHandle: one process, so already global
