@@ -477,11 +477,19 @@ function exeStub() {
   b.set(W95FS.encode('This program cannot be run in DOS mode.\r\n$'), 0x40); return b;
 }
 const lnk = target => `[Shortcut]\r\nTarget=${target}\r\n`;
+// WIN.INI [fonts] as Windows 95 Setup writes it (USER loads these with AddFontResource at startup)
+const WIN_INI_FONTS = [['MS Sans Serif 8,10,12,14,18,24', 'SSERIFE.FON'], ['MS Serif 8,10,12,14,18,24', 'SERIFE.FON'], ['Courier 10,12,15', 'COURE.FON'],
+  ['Small Fonts', 'SMALLE.FON'], ['Symbol 8,10,12,14,18,24', 'SYMBOLE.FON'], ['Modern', 'MODERN.FON'],
+  ['Arial (TrueType)', 'ARIAL.TTF'], ['Arial Bold (TrueType)', 'ARIALBD.TTF'], ['Arial Bold Italic (TrueType)', 'ARIALBI.TTF'], ['Arial Italic (TrueType)', 'ARIALI.TTF'],
+  ['Courier New (TrueType)', 'COUR.TTF'], ['Courier New Bold (TrueType)', 'COURBD.TTF'], ['Courier New Bold Italic (TrueType)', 'COURBI.TTF'], ['Courier New Italic (TrueType)', 'COURI.TTF'],
+  ['Times New Roman (TrueType)', 'TIMES.TTF'], ['Times New Roman Bold (TrueType)', 'TIMESBD.TTF'], ['Times New Roman Bold Italic (TrueType)', 'TIMESBI.TTF'], ['Times New Roman Italic (TrueType)', 'TIMESI.TTF'],
+  ['Symbol (TrueType)', 'SYMBOL.TTF'], ['Wingdings (TrueType)', 'WINGDING.TTF']];
 function makeDisk() {
   fs.mount('A', { kind: 'removable', ready: false, total: 1457664, cluster: 512 });
   fs.mount('C', { kind: 'fixed', total: 536870912, cluster: 8192 });
   fs.mount('D', { kind: 'cdrom', label: window.W95CD.label, readonly: true, cluster: 2048, fsname: 'CDFS' });
   const b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+  const sysFonts = (window.W95SYSTEM || {}).fonts || {};
   const conv = e => (e[2] ? [e[0], e[1], e[2].map(conv)] : e[4] ? [e[0], e[1], null, e[3], b64(e[4])] : e);
   fs.load('D', window.W95CD.tree.map(conv));
   for (const d of ['WINDOWS\\SYSTEM', 'WINDOWS\\COMMAND', 'WINDOWS\\FONTS', 'WINDOWS\\Desktop', 'WINDOWS\\Recent',
@@ -496,14 +504,16 @@ function makeDisk() {
   fs.writeFile('C:\\COMMAND.COM', exeStub());
   txt('C:\\AUTOEXEC.BAT', '@ECHO OFF\nSET PATH=C:\\WINDOWS;C:\\WINDOWS\\COMMAND\nSET TEMP=C:\\WINDOWS\\TEMP\n');
   txt('C:\\CONFIG.SYS', 'DEVICE=C:\\WINDOWS\\HIMEM.SYS\nDOS=HIGH,UMB\nFILES=60\n');
-  txt(WINDIR + '\\WIN.INI', '[windows]\nload=\nrun=\nNullPort=None\nScreenSaveActive=0\nScreenSaveTimeOut=900\n\n[Desktop]\nWallpaper=(None)\nTileWallpaper=0\nWallpaperStyle=0\n\n[intl]\nsCountry=United States\n');
+  txt(WINDIR + '\\WIN.INI', '[windows]\nload=\nrun=\nNullPort=None\nScreenSaveActive=0\nScreenSaveTimeOut=900\n\n[Desktop]\nWallpaper=(None)\nTileWallpaper=0\nWallpaperStyle=0\n\n[intl]\nsCountry=United States\n\n[fonts]\n' + WIN_INI_FONTS.filter(([, f]) => sysFonts[f]).map(([n, f]) => `${n}=${f}\n`).join(''));
   txt(WINDIR + '\\SYSTEM.INI', '[boot]\nshell=Explorer.exe\nSCRNSAVE.EXE=\nsystem.drv=system.drv\ndisplay.drv=pnpdrvr.drv\n\n[386Enh]\nmouse=*vmouse, msmouse.vxd\n\n[boot.description]\ndisplay.drv=Standard Display Adapter (VGA)\n');
   for (const e of ['NOTEPAD.EXE', 'EXPLORER.EXE', 'REGEDIT.EXE', 'CALC.EXE', 'WRITE.EXE', 'TASKMAN.EXE', 'PROGMAN.EXE', 'WINFILE.EXE', 'SOL.EXE'])
     fs.writeFile(join(WINDIR, e), exeStub());
   for (const e of ['USER.EXE', 'GDI.EXE', 'KRNL386.EXE', 'USER32.DLL', 'GDI32.DLL', 'KERNEL32.DLL', 'SHELL32.DLL', 'COMCTL32.DLL', 'VMM32.VXD'])
     fs.writeFile(join(WINDIR, 'SYSTEM', e), exeStub());
   for (const e of ['FORMAT.COM', 'XCOPY.EXE', 'EDIT.COM', 'MEM.EXE', 'DELTREE.EXE']) fs.writeFile(join(WINDIR, 'COMMAND', e), exeStub());
-  for (const e of ['SSERIFE.FON', 'VGAFIX.FON', 'VGASYS.FON', 'MARLETT.TTF', 'ARIAL.TTF', 'TIMES.TTF', 'COUR.TTF']) fs.writeFile(join(WINDIR, 'FONTS', e), exeStub());
+  // the fonts a VGA install puts in C:\WINDOWS\FONTS, from the CD when the native system modules are present
+  for (const e of ['SSERIFE.FON', 'VGAFIX.FON', 'VGASYS.FON', 'MARLETT.TTF', 'ARIAL.TTF', 'TIMES.TTF', 'COUR.TTF']) if (!sysFonts[e]) fs.writeFile(join(WINDIR, 'FONTS', e), exeStub());
+  for (const [e, d] of Object.entries(sysFonts)) fs.writeFile(join(WINDIR, 'FONTS', e), b64(d));
   fs.writeFile('C:\\Program Files\\Accessories\\WORDPAD.EXE', exeStub());
   fs.writeFile(PROGRAMS + '\\Accessories\\Notepad.lnk', lnk(WINDIR + '\\NOTEPAD.EXE'));
   // the CD's screen savers, byte for byte, under the long names APPLETS.INF gives them in LDID_SYS
