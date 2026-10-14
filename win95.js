@@ -2446,5 +2446,51 @@ bootDisk();
 desk.src = new FsSource(DESKTOP_DIR);
 fs.on(() => dirty());
 Promise.all(ready).then(() => { resize(); kbd.focus(); dirty(); });
-window.win95 = { fs, render, SaverRun, displayProperties, startFullSaver, get fullSaver() { return fullSaver; }, properties, driveProps, openFolder, openPath, shellOpen, notepad, msgBox, runDialog, shutDownDialog, MyComputer, get windows() { return windows; }, get state() { return { menus: menus.length, menuSrc, modals: modals.length, cap: !!cap, drag: !!drag, screen, active: active && active.title }; } };
+// ---------------------------------------------------------------- scripting
+// Drives the shell through the same input paths a person uses: pointer events on the screen canvas in screen
+// pixels, keys through the shell's key handler. Documented in SCRIPTING.md.
+function pointer(type, x, y, button = 0) {
+  const r = cv.getBoundingClientRect();
+  cv.dispatchEvent(new PointerEvent(type, { clientX: r.left + (x + 0.5) * r.width / W, clientY: r.top + (y + 0.5) * r.height / H,
+    button, buttons: type === 'pointerup' ? 0 : 1 << (button === 2 ? 1 : 0), pointerId: 1, pointerType: 'mouse', bubbles: true, cancelable: true }));
+}
+const winInfo = w => ({ title: w.title, x: w.x, y: w.y, w: w.w, h: w.h, active: w === active, minimized: !!w.min, maximized: !!w.max, modal: modals.includes(w) });
+const findWin = t => { const m = t instanceof RegExp ? w => t.test(w.title) : w => w.title === t; for (let i = windows.length - 1; i >= 0; i--) if (m(windows[i])) return windows[i]; return null; };
+const KEY_NAMES = { enter: 'Enter', esc: 'Escape', escape: 'Escape', tab: 'Tab', backspace: 'Backspace', delete: 'Delete', del: 'Delete',
+  up: 'ArrowUp', down: 'ArrowDown', left: 'ArrowLeft', right: 'ArrowRight', home: 'Home', end: 'End', pageup: 'PageUp', pagedown: 'PageDown', space: ' ' };
+function pressKey(spec) {
+  const parts = spec.split('+'), name = parts.pop(), mods = new Set(parts.map(m => m.toLowerCase()));
+  const key = KEY_NAMES[name.toLowerCase()] || (/^f\d+$/i.test(name) ? name.toUpperCase() : name);
+  handleKey({ key, shiftKey: mods.has('shift'), ctrlKey: mods.has('ctrl'), altKey: mods.has('alt'), metaKey: mods.has('meta'), preventDefault() {} });
+}
+const script = {
+  move(x, y) { pointer('pointermove', x, y); },
+  down(x, y, o = {}) { pointer('pointerdown', x, y, o.button === 'right' ? 2 : 0); },
+  up(x, y, o = {}) { pointer('pointerup', x, y, o.button === 'right' ? 2 : 0); },
+  click(x, y, o = {}) {
+    const b = o.button === 'right' ? 2 : 0;
+    for (let i = 0; i < (o.double ? 2 : 1); i++) { pointer('pointermove', x, y); pointer('pointerdown', x, y, b); pointer('pointerup', x, y, b); }
+  },
+  dblclick(x, y) { script.click(x, y, { double: true }); },
+  drag(x1, y1, x2, y2, steps = 8) {
+    pointer('pointermove', x1, y1); pointer('pointerdown', x1, y1);
+    for (let i = 1; i <= steps; i++) pointer('pointermove', Math.round(x1 + (x2 - x1) * i / steps), Math.round(y1 + (y2 - y1) * i / steps));
+    pointer('pointerup', x2, y2);
+  },
+  type(text) { for (const ch of String(text).replace(/\r/g, '')) handleKey({ key: ch === '\n' ? 'Enter' : ch, shiftKey: false, ctrlKey: false, metaKey: false, altKey: false, preventDefault() {} }); },
+  key(...specs) { for (const k of specs) pressKey(k); },
+  windows() { return windows.map(winInfo); },
+  window(title) { const w = findWin(title); return w ? winInfo(w) : null; },
+  activate(title) { const w = findWin(title); if (!w) return false; if (w.min) w.min = false; activate(w); dirty(); return true; },
+  close(title) { const w = findWin(title); if (!w) return false; closeWin(w); dirty(); return true; },
+  menus() { return menus.map(m => m.items.map(i => i.sep ? '-' : amp(i.label || '')[0])); },
+  run(cmd) { runCommand(cmd); dirty(); },
+  open(path) { openPath(path); dirty(); },
+  saver(path) { startFullSaver(path); },
+  stopSaver() { if (!fullSaver) return false; fullSaver.exited(0); return true; },
+  screen() { return { width: W, height: H, taskbar: H - TB }; },
+  screenshot() { render(); return cv.toDataURL('image/png'); },
+};
+
+window.win95 = { ...script, fs, render, SaverRun, displayProperties, startFullSaver, get fullSaver() { return fullSaver; }, properties, driveProps, openFolder, openPath, shellOpen, notepad, msgBox, runDialog, shutDownDialog, MyComputer, get state() { return { menus: menus.length, menuSrc, modals: modals.length, cap: !!cap, drag: !!drag, screen, active: active && active.title }; } };
 })();
