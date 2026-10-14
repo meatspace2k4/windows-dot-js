@@ -1133,8 +1133,22 @@ def16('KERNEL', 188, 'w', 'l', function (s) { return this.selLimit(s); });
 def16('KERNEL', 189, 'wl', 'w', function (s, l) { this.w32(L.LDT + (s & 0xfff8) + 4, l); return 0; });
 def16('KERNEL', 180, 'xl', 'l', function (sp, d) { const s = sp >>> 16; this.w32(L.LDT + (s & 0xfff8), this.selBase(s) + d); this.refreshSegs(); return sp; });  // LongPtrAdd
 def16('KERNEL', 357, 'x', 'l', function (sp) { return this.lin(sp); });              // MapSL
-def16('KERNEL', 358, 'l', 'l', function (a) { return this.mapLS(a); });              // MapLS
-def16('KERNEL', 359, 'x', 'v', function () {});                                      // UnMapLS
+// MapLS (KRNL386 seg1:588F): a new selector based at the address itself, 64K limit; EAX = sel:0000, DX = sel. An
+// address below 64K is returned as it is. Callers count on the zero offset (USER's 32->16 message thunk leaves AX
+// from it in place when it calls a window procedure that takes its DS from AX). UnMapLS frees the selector.
+def16('KERNEL', 358, '', 'jmp', function () {
+  const f = this.cpu.ssb.value + (this.cpu.esp.value & 0xffff), a = this.r32(f + 4);
+  if (a >>> 16) {
+    const sel = this.allocSels(a, 0x10000);
+    (this.mapped16 = this.mapped16 || new Set()).add(sel);
+    this.cpu.eax.value = (sel << 16) >>> 0; this.cpu.edx.value = sel;
+  } else this.cpu.eax.value = a;
+  return this.retf16(4);
+});
+def16('KERNEL', 359, 'x', 'v', function (sp) {                                    // UnMapLS
+  const sel = (sp >>> 16) & 0xfff8 | 7;
+  if (this.mapped16 && this.mapped16.has(sel)) { this.mapped16.delete(sel); this.freeSels(sel, 1); }
+});
 def16('KERNEL', 613, '', 'jmp', function () {          // HugeMapLS: EAX = linear, ECX = size -> ECX = first tiled selector << 16 | selector count (GDI keeps it as deBits' selector and the unmap handle), EAX = 16:16
   const lin = u32(this.cpu.eax.value), n = u32(this.cpu.ecx.value); this.cpu.cf.value = 0;
   if (!lin) { this.cpu.eax.value = 0; this.cpu.ecx.value = 0; return this.retf16(0); }
@@ -1397,8 +1411,12 @@ def16('KERNEL', 619, 'wxl', 'w', function (id, relay16, relay32) {         // Re
 // AllocSLThunkletCallbackEx: a 16:16 entry that calls a 32-bit function through a callback client's relay. The
 // thunklet is code as Windows 95 writes it (push dword target, push dword relay, jmp far glue), so IsSLThunklet
 // knows it and 16-bit code calls it like any far function; `relay` is the client id (high word) and relay index.
+// A target that is itself an LS thunklet with this relay is the 16-bit function it wraps (KRNL386 seg3:1D42), so a
+// procedure handed out to 32-bit code and given back (SetWindowLong of the old window procedure) is the original one.
 def16('KERNEL', 568, 'llw', 'l', function (target, relay, owner) {
   this.thunklets = this.thunklets || new Map();
+  const ls = this.lsThunklets && this.lsThunklets.get(u32(target));
+  if (ls && ls.relay === u32(relay)) return ls.target;
   const key = `${u32(target)}:${u32(relay)}`; if (this.thunklets.has(key)) return this.thunklets.get(key);
   if (!this.thunkletSeg || this.thunkletSeg.used + 16 > 0x10000) {
     const lin = this.alloc(0x10000); this.thunkletSeg = { lin, sel: this.allocSels(lin, 0x10000, 0xfb00), used: 0 };
@@ -1407,13 +1425,18 @@ def16('KERNEL', 568, 'llw', 'l', function (target, relay, owner) {
   this.u8.set([0x66, 0x68], a); this.w32(a + 2, target); this.u8.set([0x66, 0x68], a + 6); this.w32(a + 8, relay);
   this.u8[a + 12] = 0xea; this.w16(a + 13, glue & 0xffff); this.w16(a + 15, glue >>> 16);
   t.used += 17;
-  const sp = u32((t.sel << 16) | off); this.thunklets.set(key, sp); return sp;
+  const sp = u32((t.sel << 16) | off); this.thunklets.set(key, sp);
+  (this.slThunklets = this.slThunklets || new Map()).set(sp, { target: u32(target), relay: u32(relay) });
+  return sp;
 });
 // AllocLSThunkletCallback (#561): a 32-bit entry for a 16-bit function, laid out as Windows 95 writes one (nop; push
 // dword target; nop; push dword relay; jmp glue) so 32-bit code can call it and recognise it; the glue is the 32-bit
 // routine InitCBClient registered (USER32's), which calls the target through the relay. Run by dataCode.
+// (and, as KRNL386 seg3:1CEF does, an SL thunklet with this relay given back is the 32-bit function it wraps)
 def16('KERNEL', 561, 'll', 'l', function (target, relay) {
   this.lsThunklets = this.lsThunklets || new Map();
+  const sl = this.slThunklets && this.slThunklets.get(u32(target));
+  if (sl && sl.relay === u32(relay)) return sl.target;
   for (const [a, t] of this.lsThunklets) if (t.target === u32(target) && t.relay === u32(relay)) return a;
   const a = this.alloc(16);
   this.u8.set([0x90, 0x68], a); this.w32(a + 2, target); this.u8.set([0x90, 0x68], a + 6); this.w32(a + 8, relay);
