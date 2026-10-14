@@ -754,17 +754,32 @@ function lrelease(h, a, size) {
   size = (size + 3) & ~3; h.free.push([a, size]); h.free.sort((x, y) => x[0] - y[0]);
   for (let i = 0; i + 1 < h.free.length;) { const [a1, n1] = h.free[i], [a2, n2] = h.free[i + 1]; if (a1 + n1 === a2) { h.free[i] = [a1, n1 + n2]; h.free.splice(i + 1, 1); } else i++; }
 }
+/** a free range of `size` bytes in a local heap; when none is left the heap's segment grows (up to 64K) as
+ *  LocalAlloc grows it through GlobalReAlloc, and the new room joins the free list */
+P.lget = function (h, size) {
+  const a = lfind(h, size); if (a) return a;
+  const b = this.gblock(h.sel); if (!b || b.size >= 0xfff0) return 0;
+  const base = this.selBase(h.sel), info = this.r16(base + 6), end = this.r16(base + info + 0xa) + 4;
+  const grow = Math.min(0xfff0, (Math.max(b.size, end) + ((size + 3) & ~3) + 0x200 + 0xff) & ~0xff);
+  if (grow <= b.size || !K16['KERNEL.#16'][2].call(this, h.sel, grow, 0)) return 0;
+  const nb = this.selBase(h.sel), nend = grow & ~3;
+  this.w16(nb + info + 0xa, nend - 4);
+  lrelease(h, end, nend - end);
+  return lfind(h, size);
+};
 P.localAlloc = function (flags, size, sel) {
-  const h = this.lheap(sel), base = this.selBase(h.sel);
+  const h = this.lheap(sel);
   const moveable = !!(flags & LMEM_MOVEABLE), want = Math.max(size, 1) + (moveable ? 2 : 0);
-  const a = lfind(h, want); if (!a) return 0;
+  const a = this.lget(h, want); if (!a) return 0;
+  let base = this.selBase(h.sel);
   h.blocks.set(a, (want + 3) & ~3);
   if (flags & LMEM_ZEROINIT || true) this.u8.fill(0, base + a, base + a + ((want + 3) & ~3));
   if (!moveable) return a;
   let ent = 0;
   for (const t of h.tables) { for (let k = 0; k < t.n; k++) { const e = t.at + 2 + 4 * k; if (this.u8[base + e + 3] === 0xff && this.u8[base + e + 2] === 0xff) { ent = e; break; } } if (ent) break; }
   if (!ent) {
-    const n = 0x20, at = lfind(h, 4 + 4 * n); if (!at) { lrelease(h, a, want); h.blocks.delete(a); return 0; }
+    const n = 0x20, at = this.lget(h, 4 + 4 * n); if (!at) { lrelease(h, a, want); h.blocks.delete(a); return 0; }
+    base = this.selBase(h.sel);
     h.blocks.set(at, (4 + 4 * n + 3) & ~3); this.w16(base + at, n);
     for (let k = 0; k < n; k++) this.w32(base + at + 2 + 4 * k, 0xffff0000);
     this.w16(base + at + 2 + 4 * n, 0); h.tables.push({ at, n }); ent = at + 2;
@@ -794,7 +809,7 @@ P.localFree = function (hl, sel) {
   return 0;
 };
 P.localReAlloc = function (hl, size, flags, sel) {
-  const h = this.lheap(sel), base = this.selBase(h.sel); hl &= 0xffff;
+  const h = this.lheap(sel); let base = this.selBase(h.sel); hl &= 0xffff;
   if (flags & LMEM_MODIFY) { if (h.handles.has(hl)) this.u8[base + hl + 2] = (flags >> 8) & 0x0f; return hl; }
   const mov = h.handles.has(hl), a = this.localBlockOf(hl, sel), old = h.blocks.get(a);
   if (!old) return 0;
@@ -810,7 +825,8 @@ P.localReAlloc = function (hl, size, flags, sel) {
     h.blocks.set(a, want); if (flags & LMEM_ZEROINIT) this.u8.fill(0, base + a + old, base + a + want); return hl;
   }
   if (!mov && !(flags & LMEM_MOVEABLE)) return 0;
-  const na = lfind(h, want); if (!na) return 0;
+  const na = this.lget(h, want); if (!na) return 0;
+  base = this.selBase(h.sel);
   this.u8.copyWithin(base + na, base + a, base + a + old); if (flags & LMEM_ZEROINIT) this.u8.fill(0, base + na + old, base + na + want);
   h.blocks.delete(a); lrelease(h, a, old); h.blocks.set(na, want);
   if (mov) { h.handles.set(hl, na); this.w16(base + hl, na + 2); this.w16(base + na, hl); return hl; }
