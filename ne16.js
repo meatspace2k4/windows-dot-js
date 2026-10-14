@@ -1254,28 +1254,22 @@ def16('KERNEL', 568, 'llw', 'l', function (target, relay, owner) {
   t.used += 17;
   const sp = u32((t.sel << 16) | off); this.thunklets.set(key, sp); return sp;
 });
-// The glue every thunklet jumps to. On entry the 16-bit stack holds [relay][target][return CS:IP][arguments]; it
-// saves BP, SI, DI and DS above 24h bytes of room and the 16:16 SS:SP of that room, moves to the flat stack with EBP
-// at the saved BP (arguments from EBP+0Eh) and EBX at the saved SS:SP, and far-jumps to the relay. The relay (USER32's)
-// calls the target and returns to the 16-bit caller itself: lss sp,[ebx]; add sp,24h; pop ds/di/si/bp; add sp,8; retf.
+// The glue every thunklet jumps to (KRNL386 seg2:75E6, which InitCBClient installs). On entry the 16-bit stack holds
+// [relay index][client id][target][return CS:IP][arguments]; it saves BP, SI, DI and DS with BP at the saved BP and
+// jumps to the client's 16-bit relay for that index (RegisterCBClient's table), which moves on to the 32-bit side.
 def16('THUNKLET', 1, '', 'jmp', function () {
   const ssb = u32(this.cpu.ssb.value), push16 = v => { const sp = (this.cpu.esp.value - 2) & 0xffff; this.cpu.esp.value = lo16(this.cpu.esp.value, sp); this.w16(ssb + sp, v); };
-  const relayWord = this.r32(ssb + (this.cpu.esp.value & 0xffff));
   push16(this.cpu.ebp.value & 0xffff);
-  const bp = this.cpu.esp.value & 0xffff;
+  const bp = this.cpu.esp.value & 0xffff; this.cpu.ebp.value = lo16(this.cpu.ebp.value, bp);
   push16(this.cpu.esi.value & 0xffff); push16(this.cpu.edi.value & 0xffff); push16(this.cpu.ds.value & 0xffff);
-  this.cpu.esp.value = lo16(this.cpu.esp.value, (this.cpu.esp.value - 0x24) & 0xffff);
-  const room = this.cpu.esp.value & 0xffff, ss = this.cpu.ss.value & 0xffff;
-  push16(ss); push16(room);
-  const c = this.cbClients && this.cbClients.get(relayWord >>> 16);
-  if (!c) throw new GuestError(`thunklet for callback client ${relayWord >>> 16}, which is not registered`);
-  const relay = this.r32(c.relay32 + 4 * (relayWord & 0xffff));
-  const ebx = ssb + (this.cpu.esp.value & 0xffff);
-  this.cpu.ebp.value = ssb + bp; this.cpu.ebx.value = ebx;
-  this.seg('ss', L.FLATDS); this.cpu.esp.value = ebx & ~3;
-  this.seg('ds', L.FLATDS); this.seg('es', L.FLATDS); this.seg('gsel', 0);
-  this.seg('cs', L.FLATCS);
-  return u32(relay);
+  this.seg('gsel', 0);
+  const index = this.r16(ssb + ((bp + 2) & 0xffff)), id = this.r16(ssb + ((bp + 4) & 0xffff));
+  const c = this.cbClients && this.cbClients.get(id);
+  if (!c) throw new GuestError(`thunklet for callback client ${id}, which is not registered`);
+  const relay = this.r32(this.lin(c.relay16) + 4 * index);
+  this.seg('ds', c.relay16 >>> 16);
+  this.seg('cs', relay >>> 16);
+  return u32(this.selBase(relay >>> 16) + (relay & 0xffff));
 });
 // IsSLThunklet: whether a far pointer addresses a 16-to-32 thunklet (push dword, push dword, jmp far), as KRNL386 checks
 def16('KERNEL', 612, 'x', 'w', function (sp) {
