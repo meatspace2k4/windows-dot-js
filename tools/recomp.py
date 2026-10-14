@@ -93,7 +93,7 @@ class PE:
         for r in self.relocs:
             v = (u32(self.image, r) + delta) & 0xffffffff
             struct.pack_into('<I', self.image, r, v)
-        self.entry = (self.entry - self.base + nb) & 0xffffffff
+        if self.entry: self.entry = (self.entry - self.base + nb) & 0xffffffff
         self.base = nb
     def in_code(self, va):
         r = va - self.base
