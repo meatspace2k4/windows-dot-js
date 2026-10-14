@@ -1121,15 +1121,17 @@ class NE:
         for i in range(u16(d, n + 0x1e)):
             q = n + u16(d, n + 0x2a) + u16(d, n + u16(d, n + 0x28) + 2 * i); self.mods.append(d[q + 1:q + 1 + d[q]].decode())
         q = n + u16(d, n + 0x26); self.name = d[q + 1:q + 1 + d[q]].decode()
-        self.segs = []
+        self.segs = []; cur = base
         for i in range(nseg):
             o = n + u16(d, n + 0x22) + 8 * i
             off, ln, fl, al = u16(d, o) << self.align, u16(d, o + 2) or 0x10000, u16(d, o + 4), u16(d, o + 6) or 0x10000
             if not u16(d, o): ln = 0
-            sg = dict(num=i + 1, fileoff=off, len=ln, flags=fl, alloc=max(al, ln), base=base + 0x10000 * i, sel=selbase + 8 * i,
+            sg = dict(num=i + 1, fileoff=off, len=ln, flags=fl, alloc=ln if not fl & 1 else max(al, ln), sel=selbase + 8 * i,
                       bits=32 if fl & 0x2000 else 16, code=not fl & 1)
             if i + 1 == self.autodata: sg['alloc'] = 0x10000          # DGROUP: local heap may grow to 64K
+            sg['base'] = cur; cur += (max(sg['alloc'], 1) + 15) & ~15
             self.segs.append(sg)
+        self.size = cur - base
         self.entries = {}
         p = n + u16(d, n + 4); ordn = 1
         while True:
@@ -1147,14 +1149,14 @@ class NE:
                 nm = d[q + 1:q + 1 + d[q]].decode('latin1'); o = u16(d, q + 1 + d[q]); q += 3 + d[q]
                 if not first: self.names[nm.upper()] = o
                 first = False
-        self.image = bytearray(0x10000 * nseg); self.base = base
+        self.image = bytearray(self.size + 16); self.base = base
         for sg in self.segs:
             if sg['len']: self.image[sg['base'] - base: sg['base'] - base + sg['len']] = d[sg['fileoff']: sg['fileoff'] + sg['len']]
         for sg in self.segs: SELBASE[sg['sel']] = sg['base']
         SELBASE[THUNK16_SEL] = THUNK16_BASE
     def seg_of(self, lin):
         for sg in self.segs:
-            if sg['base'] <= lin < sg['base'] + 0x10000: return sg
+            if sg['base'] <= lin < sg['base'] + max(sg['alloc'], 1): return sg
         return None
     def in_code(self, lin):
         sg = self.seg_of(lin); return bool(sg and sg['code'] and lin - sg['base'] < sg['len'])
@@ -1267,10 +1269,11 @@ def build_ne(path, out, base, selbase, lookup, registry):
     mod = assemble(bodies, text_lo, text_hi, lookup)
     open(out + '.wasm', 'wb').write(mod)
     exports = {str(o): [ne.segs[s - 1]['sel'], off] for o, (s, off) in ne.entries.items()}
+    meta_size = ne.size
     reg['modules'][ne.name.upper()] = {'segs': [{k: sg[k] for k in ('num', 'sel', 'base', 'alloc', 'len', 'flags', 'bits')} for sg in ne.segs],
                                        'exports': exports, 'names': ne.names}
     json.dump(reg, open(registry, 'w'))
-    meta = dict(kind='ne', name=ne.name, sha256=hashlib.sha256(data).hexdigest(), base=base, selbase=selbase,
+    meta = dict(kind='ne', name=ne.name, sha256=hashlib.sha256(data).hexdigest(), base=base, size=ne.size, selbase=selbase,
                 segs=[{k: sg[k] for k in ('num', 'sel', 'base', 'alloc', 'len', 'flags', 'bits', 'fileoff')} for sg in ne.segs],
                 autodata=ne.autodata, entry=[ne.entry_seg, ne.entry_off], exports=exports, names=ne.names, fixups=fixups,
                 textLo=text_lo, textHi=text_hi, lookup=lookup, blocks=order, thunks=reg['thunks'],
