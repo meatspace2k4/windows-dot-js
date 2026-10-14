@@ -2594,6 +2594,14 @@ class NativeApp {
   key(e, up) {
     if (!this.alive) return;
     const vk = e.keyCode || 0, sc = SCAN[e.code] || 0; if (!vk || vk === 91 || vk === 93 || vk === 224) return;   // the Mac command keys stay with the host
+    // the modifiers as the event reports them: a Shift, Ctrl or Alt pressed or released while the page had no focus
+    // (or one the browser reports only as a flag) reaches USER before the key it changes
+    this.mods = this.mods || {};
+    for (const [m, on, code] of [[16, e.shiftKey, 'ShiftLeft'], [17, e.ctrlKey, 'ControlLeft'], [18, e.altKey, 'AltLeft']]) {
+      if (m === vk || on === undefined || !!this.mods[m] === !!on) continue;
+      this.mods[m] = on; (this.keyq = this.keyq || []).push([m, SCAN[code] || 0, !on]);
+    }
+    if (vk === 16 || vk === 17 || vk === 18) this.mods[vk] = !up;
     // USER's system queue holds a limited number of events: a burst (fast or synthetic typing) goes in a few at a
     // time between slices, so the program takes each batch off before the next arrives, as a keyboard buffer would
     (this.keyq = this.keyq || []).push([vk, sc, up]);
