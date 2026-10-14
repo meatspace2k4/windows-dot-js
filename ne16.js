@@ -1448,6 +1448,12 @@ K('#18', 2, function (pid, off) { return 0; });           // GetProcessDword
 K('#23', 0, () => 0);                                      // GDIReallyCares
 K('#38', 0, () => 0); K('#39', 0, () => 0);
 K('#48', 1, function (p) { if (p) this.w32(p, 0); return 0; });   // ReleaseThunkLock
+// USER32.DLL's start-up: the Win16Lock it takes around every call into USER.EXE, and KERNEL's 16-bit system variables
+// (a block USER32 writes into). One thread runs here, so the lock has nothing to exclude.
+K('#93', 1, function (pp) { if (!this.win16Lock) this.win16Lock = this.alloc(0x40); this.w32(pp, this.win16Lock); return 0; });   // GetpWin16Lock
+K('#92', 0, function () { if (!this.pk16SysVar) this.pk16SysVar = this.alloc(0x40); return this.pk16SysVar; });            // GetPK16SysVar
+K('#86', 1, () => 0);                                                                                                        // _EnterSysLevel
+K('#97', 1, () => 0);                                                                                                        // _LeaveSysLevel
 K('#49', 1, () => 0);                                      // RestoreThunkLock
 K('#51', 0, () => 0);
 K('#68', 3, function (sp) { return this.lin(sp); });      // K32WOWGetVDMPointerFix
