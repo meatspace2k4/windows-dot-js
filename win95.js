@@ -1667,7 +1667,7 @@ function findDialog(np) {
   const open = windows.find(w => w.title === 'Find' && w.np === np); if (open) return activate(open);
   let win;
   const what = { type: 'edit', x: 72, y: 12, w: 180, h: 21, value: np.find.what || np.selected.split('\n')[0], caret: 0, focus: true };
-  what.caret = what.value.length;
+  what.caret = what.value.length; what.all = true;
   const mc = { type: 'check', x: 8, y: 62, label: 'Match &case', checked: np.find.matchCase };
   const up = { type: 'radio', group: 'dir', x: 172, y: 58, label: '&Up', checked: !np.find.down }, dn = { type: 'radio', group: 'dir', x: 212, y: 58, label: '&Down', checked: np.find.down };
   win = dialog('Find', 340, 92, [
@@ -1769,8 +1769,10 @@ class DialogBody {
         const ty = a.y + ((a.h - 13) >> 1), tx = a.x + 3 + (c.iconName ? 19 : 0);
         if (c.iconName) icon(c.iconName + '16', a.x + 3, a.y + ((a.h - 16) >> 1));
         ctx.save(); ctx.beginPath(); ctx.rect(a.x + 2, a.y + 2, a.w - 4 - (c.combo ? 16 : 0), a.h - 4); ctx.clip();
-        text(esc(c.value), tx, ty);
-        if (foc && !c.readonly && blinkOn) fill(tx + textW(esc(c.value.slice(0, c.caret))), ty, 1, 13, K.dk);
+        // a field whose whole text is selected (as when the focus arrives by Tab or a dialog opens on it) shows it highlighted
+        if (c.all && foc && c.value) { fill(tx - 1, ty, textW(esc(c.value)) + 2, 13, K.sel); text(esc(c.value), tx, ty, K.hl); }
+        else text(esc(c.value), tx, ty);
+        if (foc && !c.readonly && blinkOn && !(c.all && c.value)) fill(tx + textW(esc(c.value.slice(0, c.caret))), ty, 1, 13, K.dk);
         ctx.restore();
         if (c.combo) { const bx = a.x + a.w - 2 - 16; btnUp(bx, a.y + 2, 16, a.h - 4); mglyph('down', bx + 4, a.y + 2 + ((a.h - 8) >> 1)); }
       } else if (c.type === 'custom') c.draw(a, foc, win);
@@ -1793,7 +1795,7 @@ class DialogBody {
       if (c.onDrop && (c.readonly || x >= this.abs(c).x + c.w - 18)) { c.onDrop(this.abs(c)); return null; }
       const a = this.abs(c), tx = a.x + 3 + (c.iconName ? 19 : 0);
       let k = 0; while (k < c.value.length && tx + textW(esc(c.value.slice(0, k + 1))) <= x) k++;
-      c.caret = k; blinkOn = true; return null;
+      c.caret = k; c.all = false; blinkOn = true; return null;
     }
     if (c.type === 'button') {
       c.pressed = true;
@@ -1841,7 +1843,9 @@ class DialogBody {
         return this.vis(o) && !o.disabled && (['button', 'edit', 'check', 'tabs'].includes(o.type) || (o.type === 'radio' && o.checked) || (o.type === 'custom' && o.key));
       });
       if (!f.length) return true;
-      const k = f.indexOf(this.focus); this.focus = f[(k + (e.shiftKey ? f.length - 1 : 1)) % f.length]; return true;
+      const k = f.indexOf(this.focus); this.focus = f[(k + (e.shiftKey ? f.length - 1 : 1)) % f.length];
+      const n = this.c[this.focus]; if (n && n.type === 'edit' && !n.readonly) { n.all = true; n.caret = n.value.length; }
+      return true;
     }
     if (c && c.type === 'custom' && c.key && c.key(e)) return true;
     // mnemonics: Alt+letter anywhere, the letter alone unless the focus is in a field that takes typing
@@ -1856,6 +1860,10 @@ class DialogBody {
       this.pick(n); this.focus = this.c.indexOf(n); return true;
     }
     if (c && c.type === 'edit' && !c.readonly && !e.ctrlKey && !e.metaKey) {
+      if (c.all) {   // typing or deleting replaces the selected text; a movement key drops the selection
+        c.all = false;
+        if (e.key.length === 1 || e.key === 'Backspace' || e.key === 'Delete') { c.value = ''; c.caret = 0; if (e.key.length !== 1) { if (c.onChange) c.onChange(); return true; } }
+      }
       const v = c.value;
       if (e.key.length === 1) { c.value = v.slice(0, c.caret) + e.key + v.slice(c.caret); c.caret++; }
       else if (e.key === 'Backspace') { if (c.caret > 0) { c.value = v.slice(0, c.caret - 1) + v.slice(c.caret); c.caret--; } }
