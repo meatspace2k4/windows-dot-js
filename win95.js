@@ -208,8 +208,8 @@ let screen = 'desktop', blinkOn = true, tip = null, tipTimer = 0;
 let cascadeN = 0;
 const modal = () => modals[modals.length - 1] || null;
 
-let rafPending = false;
-function dirty() { if (!rafPending) { rafPending = true; requestAnimationFrame(render); } }
+let rafPending = false, observing = false, seen = null;
+function dirty() { if (!rafPending) { rafPending = true; requestAnimationFrame(render); } if (!observing) { observing = true; queueMicrotask(observe); } }
 
 // ---------------------------------------------------------------- scroll bars
 class ScrollBar {
@@ -1900,6 +1900,7 @@ class SaverRun {
   exited(code, why) {
     if (!this.alive) return;
     this.stop(); lastInput = performance.now(); dirty();
+    emit('program.exit', { path: this.path, mode: this.mode, code: code ?? null, ...(why ? { why } : {}) });
     if (why) msgBox(basename(this.path), `${basename(this.path)} stopped: ${why}`, 'error');
   }
 }
@@ -2495,6 +2496,44 @@ bootDisk();
 desk.src = new FsSource(DESKTOP_DIR);
 fs.on(() => dirty());
 Promise.all(ready).then(() => { resize(); kbd.focus(); dirty(); });
+// ---------------------------------------------------------------- events
+// What happened in the shell, for scripts: win95.on(type, fn) in the page, and over the DevTools protocol to a
+// client that registered the binding __w95event (Runtime.addBinding), as JSON { type, ...data }.
+// Window, menu and screen saver events come from comparing the shell's state after each change; file system
+// events come straight from the file system.
+const listeners = new Map();
+function emit(type, data = {}) {
+  const ev = { type, ...data, t: Date.now() };
+  for (const k of [type, type.split('.')[0], '*']) for (const fn of listeners.get(k) || []) { try { fn(ev); } catch (e) { console.error(e); } }
+  if (typeof window.__w95event === 'function') { try { window.__w95event(JSON.stringify(ev)); } catch (_) { /* client gone */ } }
+}
+function snapshot() {
+  return {
+    wins: new Map(windows.map(w => [w, { title: w.title, min: !!w.min, max: !!w.max }])),
+    active, menus: menus.map(m => m.items.map(i => i.sep ? '-' : amp(i.label || '')[0])),
+    saver: fullSaver && { path: fullSaver.path }, screen,
+  };
+}
+function observe() {
+  observing = false;
+  const now = snapshot(), was = seen; seen = now;
+  if (!was) return;
+  for (const [w, s] of now.wins) {
+    const o = was.wins.get(w);
+    if (!o) { emit('window.open', winInfo(w)); continue; }
+    if (o.title !== s.title) emit('window.title', { ...winInfo(w), was: o.title });
+    if (o.min !== s.min) emit(s.min ? 'window.minimize' : 'window.restore', winInfo(w));
+    if (o.max !== s.max) emit(s.max ? 'window.maximize' : 'window.restore', winInfo(w));
+  }
+  for (const [w, o] of was.wins) if (!now.wins.has(w)) emit('window.close', { title: o.title });
+  if (now.active !== was.active && now.active) emit('window.activate', winInfo(now.active));
+  if (JSON.stringify(now.menus) !== JSON.stringify(was.menus)) emit(now.menus.length ? 'menu.open' : 'menu.close', { menus: now.menus });
+  if (!was.saver && now.saver) emit('saver.start', now.saver);
+  if (was.saver && !now.saver) emit('saver.stop', was.saver);
+  if (now.screen !== was.screen) emit('screen', { screen: now.screen });
+}
+fs.on(e => emit('fs.' + e.op, { path: e.path, ...(e.path2 ? { path2: e.path2 } : {}) }));
+
 // ---------------------------------------------------------------- scripting
 // Drives the shell through the same input paths a person uses: pointer events on the screen canvas in screen
 // pixels, keys through the shell's key handler. Documented in SCRIPTING.md.
@@ -2539,6 +2578,14 @@ const script = {
   stopSaver() { if (!fullSaver) return false; fullSaver.exited(0); return true; },
   screen() { return { width: W, height: H, taskbar: H - TB }; },
   screenshot() { render(); return cv.toDataURL('image/png'); },
+  on(type, fn) { if (!listeners.has(type)) listeners.set(type, new Set()); listeners.get(type).add(fn); return () => listeners.get(type).delete(fn); },
+  // resolves with the next event of this type that passes the test, or rejects after the timeout
+  next(type, test = () => true, ms = 10000) {
+    return new Promise((ok, no) => {
+      const off = script.on(type, e => { if (test(e)) { off(); clearTimeout(t); ok(e); } });
+      const t = setTimeout(() => { off(); no(new Error(`no ${type} within ${ms} ms`)); }, ms);
+    });
+  },
 };
 
 window.win95 = { ...script, fs, render, SaverRun, displayProperties, startFullSaver, get fullSaver() { return fullSaver; }, properties, driveProps, openFolder, openPath, shellOpen, notepad, msgBox, runDialog, shutDownDialog, MyComputer, get state() { return { menus: menus.length, menuSrc, modals: modals.length, cap: !!cap, drag: !!drag, screen, active: active && active.title }; } };
