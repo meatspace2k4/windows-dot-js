@@ -5,6 +5,10 @@
 const A = window.W95;
 const cv = document.getElementById('screen');
 const ctx = cv.getContext('2d', { alpha: false });
+const kbd = document.createElement('textarea');
+kbd.setAttribute('autocapitalize', 'off'); kbd.setAttribute('autocomplete', 'off'); kbd.spellcheck = false;
+kbd.style.cssText = 'position:fixed;left:-1000px;top:0;width:10px;height:10px;opacity:0';
+document.body.appendChild(kbd);
 const ZOOM = Math.max(1, parseInt(new URLSearchParams(location.search).get('zoom'), 10) || 1);
 const TB = 28;
 let W = 640, H = 480;
@@ -860,7 +864,8 @@ function drawDesktop() {
   fill(0, 0, W, H, K.desk);
   desk.icons.forEach((c, i) => {
     if (ghost && ghost.i === i) return;
-    drawIconLabel(c, i === desk.sel, active === null && !modal(), K.hl, K.desk);
+    if (active === null && !modal()) drawIconLabel(c, i === desk.sel, true, K.hl, K.desk);
+    else drawIconLabel(c, false, false, K.hl, K.desk);
   });
   if (ghost) {
     const c = desk.icons[ghost.i];
@@ -1119,7 +1124,7 @@ function winDown(w, x, y, btn, dbl) {
 }
 
 cv.addEventListener('pointerdown', e => {
-  e.preventDefault(); cv.focus();
+  e.preventDefault(); kbd.focus();
   const [x, y] = pos(e); mouse = { x, y };
   try { cv.setPointerCapture(e.pointerId); } catch (_) { /* synthetic events */ }
   const btn = e.button === 2 ? 2 : 0, now = performance.now();
@@ -1173,7 +1178,18 @@ cv.addEventListener('pointerup', e => {
 cv.addEventListener('pointerleave', () => { mouse = { x: -100, y: -100 }; hideTip(); dirty(); });
 cv.addEventListener('contextmenu', e => e.preventDefault());
 
+// Printable characters arrive through the textarea's input event (covers paste and IME);
+// keydown handles everything else.
+kbd.addEventListener('input', () => {
+  const s = kbd.value; kbd.value = '';
+  for (const ch of s.replace(/\r/g, '')) handleKey({ key: ch === '\n' ? 'Enter' : ch, shiftKey: false, ctrlKey: false, metaKey: false, altKey: false, preventDefault() {} });
+});
 window.addEventListener('keydown', e => {
+  if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) return;
+  if (e.isComposing) return;
+  handleKey(e);
+});
+function handleKey(e) {
   if (screen !== 'desktop') return;
   let handled = false;
   if (menus.length) {
@@ -1202,9 +1218,9 @@ window.addEventListener('keydown', e => {
       else if (e.key === 'Enter' && desk.sel >= 0) { openItem(desk.icons[desk.sel].node); handled = true; }
     }
   }
-  if (handled || ['Tab', 'Backspace', ' ', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) e.preventDefault();
+  if (handled || ['Tab', 'Backspace', 'Enter', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) e.preventDefault();
   dirty();
-});
+}
 
 // ---------------------------------------------------------------- boot
 function resize() {
@@ -1217,6 +1233,6 @@ function resize() {
 window.addEventListener('resize', resize);
 setInterval(() => { blinkOn = !blinkOn; dirty(); }, 530);
 
-Promise.all(ready).then(() => { resize(); resetDesktop(); cv.focus(); dirty(); });
-window.win95 = { openFolder, notepad, msgBox, runDialog, shutDownDialog, FS, get windows() { return windows; } };
+Promise.all(ready).then(() => { resize(); resetDesktop(); kbd.focus(); dirty(); });
+window.win95 = { openFolder, notepad, msgBox, runDialog, shutDownDialog, FS, get windows() { return windows; }, get state() { return { menus: menus.length, menuSrc, modals: modals.length, cap: !!cap, drag: !!drag, screen, active: active && active.title }; } };
 })();
