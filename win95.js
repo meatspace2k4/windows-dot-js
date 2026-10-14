@@ -938,20 +938,55 @@ function moveAny(src, dst) {
     fs.copy(src, dst); deleteTree(src);
   }
 }
+// INFO as Windows 95 keeps it, so SHELL32 (deleting from a native program's file dialog) and the shell share one bin:
+// a 20-byte header (0, live records, next index, record size 118h, total size) and 118h-byte records of the original
+// path (260 bytes, a first byte of 0 marking a removed record), index, drive (0 = A:), deletion FILETIME and allocated
+// size. The file in the bin is D<drive letter><index><original extension>.
+const BIN_REC = 0x118, ftMs = (lo, hi) => (hi * 4294967296 + lo) / 10000 - 11644473600000;
+const binName = (orig, drv, idx, isDir) => { const ext = isDir ? '' : extname(basename(orig)); return `D${String.fromCharCode(65 + drv)}${idx}${ext ? '.' + ext.toUpperCase() : ''}`; };
 function binItems() {
-  let raw = ''; try { raw = fs.readText(BIN_INFO); } catch (_) { return []; }
-  return raw.split('\r\n').filter(Boolean).map(l => {
-    const [file, orig, t] = l.split('\t'), path = join(BIN, file);
-    return fs.exists(path) ? { file, orig, t: +t, path, info: fs.stat(path) } : null;
+  let b; try { b = fs.readFile(BIN_INFO); } catch (_) { return []; }
+  const u32 = o => (b[o] | b[o + 1] << 8 | b[o + 2] << 16 | b[o + 3] << 24) >>> 0, out = [];
+  if (b.length >= 20 && u32(12) === BIN_REC) {
+    for (let o = 20; o + BIN_REC <= b.length; o += BIN_REC) {
+      if (!b[o]) continue;
+      let n = 0; while (n < 260 && b[o + n]) n++;
+      const orig = W95FS.decode(b.subarray(o, o + n)), idx = u32(o + 0x104), drv = u32(o + 0x108);
+      out.push({ orig, idx, drv, t: ftMs(u32(o + 0x10c), u32(o + 0x110)) });
+    }
+  } else {   // the shell's earlier text index: file, original path, time per line
+    for (const l of W95FS.decode(b).split('\r\n').filter(Boolean)) {
+      const [file, orig, t] = l.split('\t'), m = /^D([A-Z])(\d+)/i.exec(file || '');
+      if (m) out.push({ orig, idx: +m[2], drv: m[1].toUpperCase().charCodeAt(0) - 65, t: +t, file });
+    }
+  }
+  return out.map(e => {
+    const path = join(BIN, e.file || binName(e.orig, e.drv, e.idx, false));
+    const alt = join(BIN, binName(e.orig, e.drv, e.idx, true));
+    const p = fs.exists(path) ? path : fs.exists(alt) ? alt : null;
+    return p ? { ...e, file: basename(p), path: p, info: fs.stat(p) } : null;
   }).filter(Boolean);
 }
-const binWrite = list => fs.writeFile(BIN_INFO, list.map(e => `${e.file}\t${e.orig}\t${e.t}\r\n`).join(''));
+function binWrite(list) {
+  const next = list.reduce((m, e) => Math.max(m, e.idx + 1), 0), b = new Uint8Array(20 + BIN_REC * list.length), dv = new DataView(b.buffer);
+  let total = 0;
+  list.forEach((e, k) => {
+    const o = 20 + BIN_REC * k, ft = BigInt(Math.round(e.t)) * 10000n + 116444736000000000n;
+    const size = e.info ? (e.info.isDir ? fs.du(e.path).bytes : e.info.alloc || e.info.size) : 0; total += size;
+    b.set(W95FS.encode(e.orig).subarray(0, 259), o);
+    dv.setUint32(o + 0x104, e.idx, true); dv.setUint32(o + 0x108, e.drv, true);
+    dv.setUint32(o + 0x10c, Number(ft & 0xffffffffn), true); dv.setUint32(o + 0x110, Number(ft >> 32n), true); dv.setUint32(o + 0x114, size, true);
+  });
+  dv.setUint32(4, list.length, true); dv.setUint32(8, next, true); dv.setUint32(12, BIN_REC, true); dv.setUint32(16, total, true);
+  fs.writeFile(BIN_INFO, b);
+}
 function recycle(path) {
   const items = binItems(), i = fs.stat(path), orig = i.path;
-  const n = items.reduce((m, e) => Math.max(m, +((/^DC(\d+)/i.exec(e.file) || [0, 0])[1])), 0) + 1;
-  const ext = i.isDir ? '' : extname(i.name), file = `DC${n}${ext ? '.' + ext.toUpperCase() : ''}`;
+  let next = 0; try { const b = fs.readFile(BIN_INFO); if (b.length >= 20) next = (b[8] | b[9] << 8 | b[10] << 16 | b[11] << 24) >>> 0; } catch (_) {}
+  const idx = Math.max(next, items.reduce((m, e) => Math.max(m, e.idx + 1), 0)), drv = orig.toUpperCase().charCodeAt(0) - 65;
+  const file = binName(orig, drv, idx, i.isDir);
   fs.rename(orig, join(BIN, file));
-  binWrite([...items, { file, orig, t: Date.now() }]);
+  binWrite([...items, { file, orig, idx, drv, t: Date.now(), path: join(BIN, file), info: fs.stat(join(BIN, file)) }]);
 }
 function restoreBin(e) {
   fsTry('restore', basename(e.orig), () => {
