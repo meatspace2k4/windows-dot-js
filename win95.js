@@ -903,7 +903,9 @@ function cellFor(it, x, y, wrapW) {
   const lines = wrap(esc(it.label), wrapW), lw = Math.max(1, ...lines.map(l => textW(l)));
   return { it, ix: x, iy: y, lines, lw, lx: x + 16 - (lw >> 1), ly: y + 35 };
 }
-const cellHit = (c, x, y) => inR({ x: c.ix, y: c.iy, w: 32, h: 32 }, x, y) || inR({ x: c.lx - 1, y: c.ly, w: c.lw + 2, h: c.lines.length * 13 }, x, y);
+const cellHit = (c, x, y) => c.small
+  ? inR({ x: c.ix, y: c.iy, w: c.lx - c.ix + c.lw + 2, h: 16 }, x, y)
+  : inR({ x: c.ix, y: c.iy, w: 32, h: 32 }, x, y) || inR({ x: c.lx - 1, y: c.ly, w: c.lw + 2, h: c.lines.length * 13 }, x, y);
 function drawIconLabel(c, view, sel, focused, fg) {
   icon(c.it.icon + '32', c.ix, c.iy, sel && focused);
   if (c.it.overlay) icon('lnkover32', c.ix, c.iy, sel && focused);
@@ -969,65 +971,201 @@ function viewKey(view, e) {
 }
 
 const CW = 75, CH = 70;
+// Explorer's four views, its sort orders (folders first), and the folder toolbar and status bar
+const VIEW_MODES = ['large', 'small', 'list', 'details'];
+const SORTS = {
+  name: (a, b) => a.label.localeCompare(b.label, 'en', { sensitivity: 'base' }),
+  type: (a, b) => itemType(a).localeCompare(itemType(b)) || SORTS.name(a, b),
+  size: (a, b) => ((a.info && !a.info.isDir ? a.info.size : 0) - (b.info && !b.info.isDir ? b.info.size : 0)) || SORTS.name(a, b),
+  date: (a, b) => ((b.info ? b.info.mtime : 0) - (a.info ? a.info.mtime : 0)) || SORTS.name(a, b),
+};
+function itemType(it) {
+  if (it.drive) { const v = fs.vols.get(it.drive); return { fixed: 'Local Disk', removable: '3½ Inch Floppy Disk', cdrom: 'CD-ROM Disc' }[v.kind]; }
+  if (it.info) return typeDesc(it.info);
+  return 'System Folder';
+}
+const fmtShort = t => { const d = new Date(t), h = d.getHours() % 12 || 12; return `${d.getMonth() + 1}/${d.getDate()}/${String(d.getFullYear()).slice(2)} ${h}:${String(d.getMinutes()).padStart(2, '0')} ${d.getHours() < 12 ? 'AM' : 'PM'}`; };
+const DETAIL_COLS = [{ id: 'name', label: 'Name', w: 150 }, { id: 'size', label: 'Size', w: 64, right: true }, { id: 'type', label: 'Type', w: 110 }, { id: 'date', label: 'Modified', w: 104 }];
+// toolbar buttons: [strip, index, tip, action id]; null is a separator
+const FOLDER_TB = [['tbview', 8, 'Up One Level', 'up'], null, ['tbstd', 0, 'Cut', 'cut'], ['tbstd', 1, 'Copy', 'copy'], ['tbstd', 2, 'Paste', 'paste'], null,
+  ['tbstd', 3, 'Undo', 'undo'], null, ['tbstd', 5, 'Delete', 'delete'], ['tbstd', 10, 'Properties', 'props'], null,
+  ['tbview', 0, 'Large Icons', 'large'], ['tbview', 1, 'Small Icons', 'small'], ['tbview', 2, 'List', 'list'], ['tbview', 3, 'Details', 'details']];
+function tbGlyph(strip, i, x, y, enabled) {
+  const im = IMG[strip]; if (!im) return;
+  if (enabled) { ctx.drawImage(im, i * 16, 0, 16, 16, x, y, 16, 16); return; }
+  // disabled: the glyph's shape embossed, white offset under grey
+  const c = tbGlyph.cache || (tbGlyph.cache = new Map()), k = `${strip}:${i}`;
+  if (!c.has(k)) {
+    const m = mkc(16, 16), g = m.getContext('2d'); g.drawImage(im, i * 16, 0, 16, 16, 0, 0, 16, 16);
+    const d = g.getImageData(0, 0, 16, 16), mk = col => { const o = new ImageData(16, 16); for (let p = 0; p < 256; p++) { const a = d.data[p * 4 + 3], r = d.data[p * 4], gg = d.data[p * 4 + 1], b = d.data[p * 4 + 2]; if (a && r + gg + b < 600) { o.data.set(col, p * 4); o.data[p * 4 + 3] = 255; } } const cc = mkc(16, 16); cc.getContext('2d').putImageData(o, 0, 0); return cc; };
+    c.set(k, [mk([255, 255, 255]), mk([128, 128, 128])]);
+  }
+  const [hl, sh] = c.get(k); ctx.drawImage(hl, x + 1, y + 1); ctx.drawImage(sh, x, y);
+}
+// one level of Undo, as Explorer's Edit menu has it
+let undoOp = null;
+const setUndo = (label, fn) => { undoOp = { label, fn }; };
+function undoLast() { const u = undoOp; undoOp = null; if (u) fsTry('undo', u.label, u.fn); }
+
 class FolderView {
-  constructor(src) { this.src = src; this.selKey = null; this.sb = new ScrollBar(true, () => dirty()); this.cells = []; this.cache = null; this.pending = null; }
-  refresh() { this.cache = null; }
-  arrange() { this.refresh(); }
-  lineUp() {}
-  navStep(k) { return { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -this.cols, ArrowDown: this.cols }[k] || 0; }
+  constructor(src) {
+    this.src = src; this.selKey = null; this.cells = []; this.cache = null; this.pending = null;
+    this.sb = new ScrollBar(true, () => dirty()); this.hsb = new ScrollBar(false, () => dirty());
+    this.mode = 'large'; this.sort = null; this.status = true; this.toolbar = false; this.tbDown = -1;
+  }
+  refresh() { this.cache = null; this.lay = null; }
+  arrange(by) { if (by) this.sort = by; this.refresh(); }
+  lineUp() { this.refresh(); }
+  setMode(m) { this.mode = m; this.sb.pos = this.hsb.pos = 0; this.refresh(); dirty(); }
+  navStep(k) {
+    const across = this.mode === 'list' ? this.rows : 1, down = this.mode === 'list' || this.mode === 'details' ? 1 : this.cols;
+    return { ArrowLeft: -across, ArrowRight: across, ArrowUp: -down, ArrowDown: down }[k] || 0;
+  }
   created(path) { if (path) { this.pending = fs.inoOf(path); this.refresh(); } }
   items() {
     if (!this.cache || this.cache.v !== fs.version) {
       let list = []; try { list = this.src.list(); } catch (_) { list = []; }
+      if (this.sort) list = [...list].sort((a, b) => ((b.info && b.info.isDir) - (a.info && a.info.isDir)) || SORTS[this.sort](a, b));
       this.cache = { v: fs.version, list }; this.lay = null;
     }
     return this.cache.list;
   }
   layout(r) {
-    const items = this.items(), key = `${r.x},${r.y},${r.w},${r.h},${this.sb.pos},${this.cache.v}`;
+    const items = this.items(), key = `${r.x},${r.y},${r.w},${r.h},${this.sb.pos},${this.hsb.pos},${this.cache.v},${this.mode},${this.status},${this.toolbar}`;
     if (this.lay === key) return;
-    this.fr = { x: r.x, y: r.y, w: r.w, h: r.h - 22 };
-    this.st = { x: r.x, y: r.y + r.h - 20, w: r.w, h: 20 };
-    let iw = this.fr.w - 4; const ih = this.fr.h - 4, n = items.length;
-    let cols = Math.max(1, Math.floor(iw / CW)), content = Math.ceil(n / cols) * CH;
-    this.showSb = content > ih;
-    if (this.showSb) { iw -= 16; cols = Math.max(1, Math.floor(iw / CW)); content = Math.ceil(n / cols) * CH; }
-    this.cols = cols; this.inner = { x: this.fr.x + 2, y: this.fr.y + 2, w: iw, h: ih };
-    this.sb.set(this.inner.x + iw, this.inner.y, ih, content, ih);
-    if (!this.showSb) this.sb.pos = 0;
-    this.cells = items.map((it, i) => cellFor(it, this.inner.x + (i % cols) * CW + 21, this.inner.y + Math.floor(i / cols) * CH - this.sb.pos + 2, CW - 4));
-    this.lay = `${r.x},${r.y},${r.w},${r.h},${this.sb.pos},${this.cache.v}`;
+    const tbH = this.toolbar ? 28 : 0, stH = this.status ? 22 : 0;
+    this.tb = { x: r.x, y: r.y, w: r.w, h: tbH };
+    this.fr = { x: r.x, y: r.y + tbH, w: r.w, h: r.h - tbH - stH };
+    this.st = this.status ? { x: r.x, y: r.y + r.h - 20, w: r.w, h: 20 } : null;
+    const n = items.length, m = this.mode;
+    let iw = this.fr.w - 4, ih = this.fr.h - 4;
+    this.showSb = this.showHsb = false;
+    const head = m === 'details' ? 17 : 0;
+    if (m === 'large' || m === 'small') {
+      const cw = m === 'large' ? CW : Math.min(160, Math.max(80, ...items.map(it => textW(esc(it.label)) + 26))), ch = m === 'large' ? CH : 18;
+      let cols = Math.max(1, Math.floor(iw / cw)), content = Math.ceil(n / cols) * ch;
+      if (content > ih) { this.showSb = true; iw -= 16; cols = Math.max(1, Math.floor(iw / cw)); content = Math.ceil(n / cols) * ch; }
+      this.cols = cols; this.inner = { x: this.fr.x + 2, y: this.fr.y + 2, w: iw, h: ih };
+      this.sb.set(this.inner.x + iw, this.inner.y, ih, content, ih); if (!this.showSb) this.sb.pos = 0;
+      this.cells = items.map((it, i) => {
+        const x = this.inner.x + (i % cols) * cw, y = this.inner.y + Math.floor(i / cols) * ch - this.sb.pos;
+        return m === 'large' ? cellFor(it, x + 21, y + 2, CW - 4) : smallCell(it, x + 2, y + 1, cw - 24);
+      });
+    } else if (m === 'list') {
+      const cw = Math.min(200, Math.max(80, ...items.map(it => textW(esc(it.label)) + 26)));
+      let rows = Math.max(1, Math.floor(ih / 18)), content = Math.ceil(n / rows) * cw;
+      if (content > iw) { this.showHsb = true; ih -= 16; rows = Math.max(1, Math.floor(ih / 18)); content = Math.ceil(n / rows) * cw; }
+      this.rows = rows; this.inner = { x: this.fr.x + 2, y: this.fr.y + 2, w: iw, h: ih };
+      this.hsb.set(this.inner.x, this.inner.y + ih, iw, content, iw); if (!this.showHsb) this.hsb.pos = 0;
+      this.cells = items.map((it, i) => smallCell(it, this.inner.x + Math.floor(i / rows) * cw - this.hsb.pos + 2, this.inner.y + (i % rows) * 18 + 1, cw - 24));
+    } else {
+      const total = DETAIL_COLS.reduce((a, c) => a + c.w, 0), content = n * 17;
+      if (content > ih - head) { this.showSb = true; iw -= 16; }
+      if (total > iw) { this.showHsb = true; ih -= 16; }
+      this.inner = { x: this.fr.x + 2, y: this.fr.y + 2 + head, w: iw, h: ih - head };
+      this.head = { x: this.fr.x + 2 - this.hsb.pos, y: this.fr.y + 2, h: head };
+      this.sb.set(this.inner.x + iw, this.fr.y + 2, ih, content + head, ih); if (!this.showSb) this.sb.pos = 0;
+      this.hsb.set(this.inner.x, this.fr.y + 2 + ih, iw, total, iw); if (!this.showHsb) this.hsb.pos = 0;
+      this.cells = items.map((it, i) => ({ ...smallCell(it, this.inner.x + 2 - this.hsb.pos, this.inner.y + i * 17 - this.sb.pos, DETAIL_COLS[0].w - 24), row: true }));
+    }
+    this.lay = key;
     if (this.pending) {
       const c = this.cells.find(x => x.it.key === this.pending); this.pending = null;
       if (c) { this.selKey = c.it.key; startRename(this, c.it); }
     }
   }
+  tbButtons() {
+    if (!this.toolbar) return [];
+    const out = []; let x = this.tb.x + 4;
+    for (const b of FOLDER_TB) {
+      if (!b) { x += 8; continue; }
+      out.push({ b, x, y: this.tb.y + 3, w: 23, h: 22 }); x += 23;
+    }
+    return out;
+  }
+  tbEnabled(id) {
+    const it = viewSelItem(this), real = it && it.info && !it.bin && !isRoot(it.path), ro = !this.src.path || this.src.readonly;
+    return { up: !!this.src.path || this.src !== MyComputer, cut: real && !ro, copy: !!real, paste: !ro && !!clip, undo: !!undoOp,
+      delete: !!real && !ro, props: !!it || !!this.src.path }[id] ?? true;
+  }
+  tbAction(id, win) {
+    const it = viewSelItem(this);
+    if (id === 'up') { const p = this.src.path; if (p) { if (isRoot(p)) openFolder(MyComputer); else openPath(dirname(p)); } return; }
+    if (id === 'cut' && it) return cutCopy(it, 'cut');
+    if (id === 'copy' && it) return cutCopy(it, 'copy');
+    if (id === 'paste') return pasteInto(this.src.path);
+    if (id === 'undo') return undoLast();
+    if (id === 'delete' && it) return confirmDelete(it);
+    if (id === 'props') return it ? properties(it) : this.src.path && properties(fsItem(fs.stat(this.src.path)));
+    if (VIEW_MODES.includes(id)) this.setMode(id);
+  }
   draw(r, win) {
     if (this.src.gone) { setTimeout(() => closeWin(win, true)); return; }
     win.title = this.src.title; win.icon = this.src.icon;
     this.layout(r);
+    if (this.toolbar) {
+      fill(this.tb.x, this.tb.y + this.tb.h - 2, this.tb.w, 1, K.sh); fill(this.tb.x, this.tb.y + this.tb.h - 1, this.tb.w, 1, K.hl);
+      for (const [i, t] of this.tbButtons().entries()) {
+        const on = this.tbEnabled(t.b[3]), checked = t.b[3] === this.mode, down = this.tbDown === i || checked;
+        if (down) { if (checked && this.tbDown !== i) { ctx.fillStyle = PAT.track; ctx.fillRect(t.x, t.y, t.w, t.h); } edge(t.x, t.y, t.w, t.h, K.sh, K.hl); }
+        tbGlyph(t.b[0], t.b[1], t.x + 4 + (down ? 1 : 0), t.y + 3 + (down ? 1 : 0), on);
+      }
+    }
     field(this.fr.x, this.fr.y, this.fr.w, this.fr.h);
+    if (this.mode === 'details') {
+      ctx.save(); ctx.beginPath(); ctx.rect(this.fr.x + 2, this.head.y, this.inner.w, this.head.h); ctx.clip();
+      let hx = this.head.x;
+      for (const c of DETAIL_COLS) { btnUp(hx, this.head.y, c.w, this.head.h); text(c.label, c.right ? hx + c.w - 6 - textW(c.label) : hx + 6, this.head.y + 2); hx += c.w; }
+      if (hx < this.fr.x + 2 + this.inner.w) btnUp(hx, this.head.y, this.fr.x + 2 + this.inner.w - hx, this.head.h);
+      ctx.restore();
+    }
     ctx.save(); ctx.beginPath(); ctx.rect(this.inner.x, this.inner.y, this.inner.w, this.inner.h); ctx.clip();
     for (const c of this.cells) {
-      if (c.iy > this.inner.y + this.inner.h || c.ly + 40 < this.inner.y) continue;
-      drawIconLabel(c, this, c.it.key === this.selKey, win.isActive, K.dk);
+      if (c.iy > this.inner.y + this.inner.h || c.ly + 40 < this.inner.y || c.ix > this.inner.x + this.inner.w || c.ix + 200 < this.inner.x) continue;
+      const sel = c.it.key === this.selKey;
+      if (this.mode === 'large') drawIconLabel(c, this, sel, win.isActive, K.dk);
+      else drawSmallCell(c, this, sel, win.isActive);
+      if (this.mode === 'details') {
+        let x = c.ix - 2 + DETAIL_COLS[0].w;
+        const i = c.it.info, vals = { size: i && !i.isDir ? fmtSize(i.size).replace(/ bytes$/, ' bytes') : '', type: itemType(c.it), date: i ? fmtShort(i.mtime) : '' };
+        for (const col of DETAIL_COLS.slice(1)) {
+          const v = ellipsis(esc(vals[col.id]), col.w - 12);
+          text(v, col.right ? x + col.w - 6 - textW(v) : x + 6, c.iy + 1); x += col.w;
+        }
+      }
     }
     ctx.restore();
     if (this.showSb) this.sb.draw();
-    const s = this.st, n = this.cells.length, it = viewSelItem(this), lw = Math.floor((s.w - 16) * 0.55);
-    edge(s.x, s.y, lw - 2, s.h, K.sh, K.hl); edge(s.x + lw, s.y, s.w - lw - 16, s.h, K.sh, K.hl);
-    const hid = this.src.hidden ? ` (plus ${this.src.hidden} hidden)` : '';
-    let left = it ? '1 object(s) selected' : `${n} object(s)${hid}`, right = '';
-    if (it && it.drive) {
-      try { const v = fs.statvfs(it.path); left = `Free Space: ${fmtSize(v.free)}, Capacity: ${fmtSize(v.total)}`; } catch (_) { left = '1 object(s) selected'; }
-    } else if (it && it.info) right = it.info.isDir ? '' : fmtSize(it.info.size);
-    else if (this.src.path) right = fmtSize(this.cells.reduce((a, c) => a + (c.it.info && !c.it.info.isDir ? c.it.info.size : 0), 0));
-    ctx.save(); ctx.beginPath(); ctx.rect(s.x + 2, s.y, lw - 6, s.h); ctx.clip(); text(left, s.x + 3, s.y + 4); ctx.restore();
-    text(right, s.x + lw + 3, s.y + 4);
+    if (this.showHsb) this.hsb.draw();
+    if (this.showSb && this.showHsb) fill(this.inner.x + this.inner.w, this.hsb.r.y, 16, 16, K.face);
+    if (this.st) {
+      const s = this.st, n = this.cells.length, it = viewSelItem(this), lw = Math.floor((s.w - 16) * 0.55);
+      edge(s.x, s.y, lw - 2, s.h, K.sh, K.hl); edge(s.x + lw, s.y, s.w - lw - 16, s.h, K.sh, K.hl);
+      const hid = this.src.hidden ? ` (plus ${this.src.hidden} hidden)` : '';
+      let left = it ? '1 object(s) selected' : `${n} object(s)${hid}`, right = '';
+      if (it && it.drive) {
+        try { const v = fs.statvfs(it.path); left = `Free Space: ${fmtSize(v.free)}, Capacity: ${fmtSize(v.total)}`; } catch (_) { left = '1 object(s) selected'; }
+      } else if (it && it.info) right = it.info.isDir ? '' : fmtSize(it.info.size);
+      else if (this.src.path) right = fmtSize(this.cells.reduce((a, c) => a + (c.it.info && !c.it.info.isDir ? c.it.info.size : 0), 0));
+      ctx.save(); ctx.beginPath(); ctx.rect(s.x + 2, s.y, lw - 6, s.h); ctx.clip(); text(left, s.x + 3, s.y + 4); ctx.restore();
+      text(right, s.x + lw + 3, s.y + 4);
+    }
     if (!win.max) sizeGrip(r.x + r.w, r.y + r.h);
   }
-  down(x, y, btn, dbl) {
+  down(x, y, btn, dbl, win) {
+    const tb = this.tbButtons(), ti = tb.findIndex(t => inR(t, x, y));
+    if (ti >= 0) {
+      const t = tb[ti]; if (!this.tbEnabled(t.b[3])) return null;
+      this.tbDown = ti;
+      return { move: (mx, my) => { this.tbDown = inR(t, mx, my) ? ti : -1; }, up: (mx, my) => { this.tbDown = -1; if (inR(t, mx, my)) this.tbAction(t.b[3], win); } };
+    }
     if (this.showSb && this.sb.contains(x, y)) return this.sb.down(x, y);
+    if (this.showHsb && this.hsb.contains(x, y)) return this.hsb.down(x, y);
+    if (this.mode === 'details' && y >= this.head.y && y < this.head.y + this.head.h) {
+      let hx = this.head.x;
+      for (const c of DETAIL_COLS) { if (x >= hx && x < hx + c.w) { this.arrange(c.id); return null; } hx += c.w; }
+      return null;
+    }
     if (!inR(this.inner, x, y)) return null;
     const c = this.cells.find(cc => cellHit(cc, x, y));
     this.selKey = c ? c.it.key : null;
@@ -1044,6 +1182,24 @@ class FolderView {
     if (e.key === 'Enter' && !viewSelItem(this)) return false;
     return viewKey(this, e);
   }
+}
+// small icons, list and details: a 16-pixel icon with the name beside it
+function smallCell(it, x, y, maxW) {
+  const label = ellipsis(esc(it.label), maxW), lw = Math.max(1, textW(label));
+  return { it, ix: x, iy: y, lines: [label], lw, lx: x + 19, ly: y + 1, small: true };
+}
+function drawSmallCell(c, view, sel, focused) {
+  icon(c.it.icon + '16', c.ix, c.iy, sel && focused);
+  if (c.it.overlay) icon('lnkover16', c.ix, c.iy, sel && focused);
+  if (ren && ren.view === view && ren.key === c.it.key) {
+    const tw = textW(esc(ren.value)), w = Math.max(tw + 6, 20), x = c.lx - 1, y = c.ly - 1;
+    fill(x, y, w, 15, K.win); edge(x, y, w, 15, K.dk, K.dk); ren.box = { x, y, w, h: 15 };
+    text(esc(ren.value), x + 3, y + 1); if (blinkOn) fill(x + 3 + textW(esc(ren.value.slice(0, ren.caret))), y + 1, 1, 13, K.dk);
+    return;
+  }
+  if (sel) fill(c.lx - 1, c.ly - 1, c.lw + 2, 15, focused ? K.sel : K.face);
+  text(c.lines[0], c.lx, c.ly, sel && focused ? K.hl : K.dk);
+  if (sel && focused) focusRect(c.lx - 1, c.ly - 1, c.lw + 2, 15);
 }
 function openFolder(src) {
   const open = windows.find(w => w.body instanceof FolderView && w.body.src.id === src.id);
