@@ -1695,8 +1695,10 @@ P.systemPump = function () {
 };
 def16('KERNEL', 461, 'llll', 'l', function (n, ph, all, ms) {                                        // WaitForMultipleObjects
   const hs = [...Array(n)].map((_, i) => ev16(this, this.r32(this.lin(ph) + 4 * i)));
-  if (all) { if (!hs.every(e => e && e.set)) return 0x102; for (const e of hs) if (!e.manual) e.set = false; return 0; }
-  const i = hs.findIndex(e => e && e.set); if (i < 0) return 0x102; if (!hs[i].manual) hs[i].set = false; return i;
+  const ready = all ? hs.every(e => e && e.set) : hs.some(e => e && e.set);
+  if (!ready) return ms && this.atThreadTop() ? YIELD : 0x102;   // as #460: a thread at its top level gives up its slice
+  if (all) { for (const e of hs) if (!e.manual) e.set = false; return 0; }
+  const i = hs.findIndex(e => e && e.set); if (!hs[i].manual) hs[i].set = false; return i;
 });
 def16('KERNEL', 462, '', 'l', function () { return this.thread16 ? this.thread16.id : this.inSystem() ? SYS_TID : MAIN_TID; });       // GetCurrentThreadId (the main thread is the id KERNEL32 reports)
 def16('KERNEL', 463, 'lw', 'w', function (tid, hq) { const t = thr(this, tid), old = t.queue || 0; t.queue = hq; this.tibQueue(t); return old; });   // SetThreadQueue
