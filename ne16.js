@@ -847,7 +847,7 @@ P.qtThunk = function () {
   return ret;
 };
 /** call a 16:16 target with `n` argument bytes copied from the flat stack at `src`; returns via DX:AX into EAX/EDX */
-P.call16from32 = function (target, src, n, map) {
+P.call16from32 = function (target, src, n, map, ret32 = false) {
   const sel = target >>> 16, off = target & 0xffff;
   const save = { ebx: this.reg('ebx'), esi: this.reg('esi'), edi: this.reg('edi'), ebp: this.reg('ebp'), esp: this.reg('esp') };
   // the 16-bit frame aliases the flat stack below the current ESP: copy the argument block down
@@ -861,7 +861,8 @@ P.call16from32 = function (target, src, n, map) {
     this.w32(a, u32((ssel << 16) | (p - src + sp)));
   }
   const sp0 = sp;
-  sp -= 2; this.w16(base + sp, L.SENT); sp -= 2; this.w16(base + sp, 0);
+  if (ret32) { sp -= 4; this.w32(base + sp, L.SENT); sp -= 4; this.w32(base + sp, 0); }    // for a 0x66 lret
+  else { sp -= 2; this.w16(base + sp, L.SENT); sp -= 2; this.w16(base + sp, 0); }
   this.reg('esp', sp); this.seg('ds', 0); this.seg('es', 0); this.seg('cs', sel);
   this.cpu.ebp.value = lo16(this.cpu.ebp.value, sp + 4);
   this.depth++;
@@ -871,7 +872,8 @@ P.call16from32 = function (target, src, n, map) {
   const popped = ((this.cpu.esp.value & 0xffff) - sp0) & 0xffff;
   if (map) this.u8.copyWithin(src, base + sp0, base + sp0 + n);
   const ax = this.cpu.eax.value & 0xffff, dx = this.cpu.edx.value & 0xffff;
-  this.reg('eax', ((dx << 16) | ax) >>> 0); this.reg('edx', dx); this.reg('ecx', this.cpu.ecx.value);
+  this.last16 = { eax: u32(this.cpu.eax.value), ebx: u32(this.cpu.ebx.value), ecx: u32(this.cpu.ecx.value) };
+  if (ret32) this.reg('eax', this.last16.eax); else { this.reg('eax', ((dx << 16) | ax) >>> 0); this.reg('edx', dx); }
   for (const r of ['ebx', 'esi', 'edi', 'ebp']) this.reg(r, save[r]);
   for (const [s, b] of SEGS) { this.cpu[s].value = 0; if (s !== 'fsel') this.cpu[b].value = 0; }
   this.cpu.fs.value = LAYOUT.TIB;
@@ -882,8 +884,8 @@ KR('#45', function () {          // Common32ThkLS: EAX = 16-bit common entry, CX
   const ret = pop32(this), n = (this.reg('edx') >>> 16) * 4;
   this.reg('edi', lo16(this.reg('edi'), this.reg('ecx')));
   const sp = this.reg('esp');
-  this.call16from32(this.reg('eax'), sp - 32, n + 32, 0);
-  this.reg('esp', sp + (this.cpu.ebx.value & 0xff));
+  this.call16from32(this.reg('eax'), sp - 32, n + 32, 0, true);
+  this.reg('esp', sp + (this.last16.ebx & 0xff));
   return ret;
 });
 // pointer mapping
