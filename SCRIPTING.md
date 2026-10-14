@@ -47,6 +47,45 @@ Dialogs take mnemonics as Windows 95 does: `key('alt+n')` presses `&No`, and the
 | `screenshot()` | the screen as a PNG data URL |
 | `state` | menus, modals, pointer capture, active window title |
 
+## Events
+
+| Call | Does |
+| --- | --- |
+| `on(type, fn)` | calls `fn(event)` for each event of `type`; returns the function that stops it |
+| `next(type, test?, ms = 10000)` | a promise for the next event of `type` that passes `test`; rejects after `ms` |
+
+`type` is an event name, its family (`'window'`, `'fs'`, ...) or `'*'` for all. Every event has `type` and `t`
+(ms since the epoch).
+
+| Event | Fields | When |
+| --- | --- | --- |
+| `window.open` | window fields as `windows()` gives them | a window or dialog appears |
+| `window.close` | `title` | it goes away |
+| `window.activate` | window fields | another window becomes active |
+| `window.title` | window fields, `was` | its title changes |
+| `window.minimize`, `window.maximize`, `window.restore` | window fields | |
+| `menu.open` | `menus`, as `menus()` gives them | a menu opens or the open menus change |
+| `menu.close` | `menus: []` | the last menu closes |
+| `saver.start`, `saver.stop` | `path` | a full-screen screen saver starts or ends |
+| `program.exit` | `path`, `mode` (`s`, `p`, `c`), `code`, `why` if it failed | a guest program ends |
+| `screen` | `screen` | boot screens, desktop, shutdown |
+| `fs.create`, `fs.write`, `fs.unlink`, `fs.mkdir`, `fs.rmdir`, `fs.rename`, `fs.attrib`, `fs.label`, `fs.mount` | `path`, `path2` for a rename | the file system changes |
+
+Window, menu, saver and screen events are found by comparing the shell's state after each change, so the changes
+made by one call arrive together, windows before menus. File system events arrive as each change happens.
+
+### Over the control port
+
+A DevTools client receives every event as JSON by registering the binding `__w95event`:
+
+```js
+await call('Runtime.enable')
+await call('Runtime.addBinding', { name: '__w95event' })
+// each event then arrives as Runtime.bindingCalled with params.payload = '{"type":"window.open",...}'
+```
+
+The binding stays registered across page reloads.
+
 ## Example
 
 ```js
@@ -55,6 +94,9 @@ win95.click(20, s.taskbar + 15)        // Start
 win95.menus()[0]                       // ['Programs', 'Documents', ..., 'Shut Down...']
 win95.key('esc')
 win95.run('notepad C:\\AUTOEXEC.BAT')
+await win95.next('window.open', e => /Notepad$/.test(e.title))
 win95.type('REM edited by script\n')
-win95.key('alt+F4', 'alt+y')           // close, then Yes to saving
+win95.key('alt+F4')
+await win95.next('window.open', e => e.modal)   // the save prompt
+win95.key('alt+y')                     // Yes
 ```
