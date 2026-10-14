@@ -197,4 +197,15 @@ def('SHELL32', 'DragQueryPoint', 2, () => 0);
 
 // Icon resources inside files are not read yet: every file reports none.
 def('SHELL32', 'ExtractIconA', 3, () => 0);
+
+// MPR.DLL, the network provider router, for a machine with no network installed: the real MPR needs its service
+// process (MPRSERV), which cannot run here, so every network call answers ERROR_NO_NETWORK
+const NO_NETWORK = 1222;
+for (const [name, n] of [['MultinetGetConnectionPerformanceA', 2], ['MultinetGetErrorTextA', 3], ['WNetAddConnection3A', 5],
+  ['WNetUseConnectionA', 8], ['WNetCancelConnectionA', 2], ['WNetCloseEnum', 1], ['WNetConnectionDialog1A', 1],
+  ['WNetDisconnectDialog', 2], ['WNetDisconnectDialog1A', 1], ['WNetEnumResourceA', 4], ['WNetFormatNetworkNameA', 6],
+  ['WNetGetConnectionA', 3], ['WNetGetLastErrorA', 5], ['WNetGetResourceParentA', 4], ['WNetGetResourceInformationA', 4],
+  ['WNetLogonA', 2], ['WNetOpenEnumA', 5], ['WNetRestoreConnectionA', 2], ['WNetGetHomeDirectoryA', 3], ['WNetGetUserA', 3],
+  ['WNetAddConnectionA', 3], ['WNetAddConnection2A', 4], ['WNetCancelConnection2A', 3], ['WNetConnectionDialog', 2]])
+  def('MPR', name, n, function () { this.lastError = NO_NETWORK; return NO_NETWORK; });
 })();
