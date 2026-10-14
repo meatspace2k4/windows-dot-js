@@ -887,7 +887,7 @@ def16('KERNEL', 327, '', 'jmp', function () {    // HandleParamError: BX = error
   if (window.W95PARAMERR) window.W95PARAMERR(err, cs, ip, this);
   if (err & 0x8000) return this.retf16(0);
   const bp = this.cpu.ebp.value & 0xffff, nbp = this.r16(ssb + bp) & 0xfffe, handler = this.r16(ssb + ((bp - 2) & 0xffff));
-  this.cpu.esp.value = lo16(this.cpu.esp.value, bp - 2); this.cpu.ebp.value = lo16(this.cpu.ebp.value, nbp);
+  this.cpu.esp.value = lo16(this.cpu.esp.value, bp + 2); this.cpu.ebp.value = lo16(this.cpu.ebp.value, nbp);   // frame popped: SP at the return address
   this.cpu.eax.value = 0; this.cpu.ecx.value = 0; this.cpu.edx.value = 0; this.seg('es', 0);
   this.seg('cs', cs); return u32(this.selBase(cs) + handler);
 });
