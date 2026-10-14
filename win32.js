@@ -518,7 +518,14 @@ def('KERNEL32', '#14', 4, function (h, id, buf, n) {
   const s = this.loadString(id, this.moduleFor(h)) || ''; const k = Math.min(s.length, n - 1);
   this.writeA(buf, s.slice(0, k)); return k;
 });   // one thread: there are no thread attach notices to stop
-def('KERNEL32', 'GetTickCount', 0, function () { return (this.now() - this.t0 + 3600000) >>> 0; });
+// A Win32 thread the scheduler runs (ne16.js threads16) that polls the clock in a loop gives up the processor here
+// once its slice is used: the call comes back when the thread is next scheduled
+def('KERNEL32', 'GetTickCount', 0, function () {
+  const t = this.thread16;
+  if (t && t.flat && this.depth === 0 && this.now() - (t.sliceStart || 0) > 8) { if (!t.preempt) { t.preempt = true; return YIELD; } }
+  if (t) t.preempt = false;
+  return (this.now() - this.t0 + 3600000) >>> 0;
+});
 def('KERNEL32', 'Sleep', 1, function () { return 0; });
 def('KERNEL32', 'GetVersion', 0, () => 0xc0000004);
 def('KERNEL32', 'GetVersionExA', 1, function (p) { this.w32(p + 4, 4); this.w32(p + 8, 0); this.w32(p + 12, 950); this.w32(p + 16, 1); this.writeA(p + 20, ' B'); return 1; });

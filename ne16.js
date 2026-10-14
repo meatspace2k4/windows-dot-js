@@ -1771,7 +1771,7 @@ P.threads16 = function () {
   for (const t of this.threadsById.values()) {
     if (t.id === MAIN_TID || !t.state || t.state === 'done' || t.state === 'suspended' || (t.state === 'waiting' && t.wait && !t.wait.set)) continue;   // a thread that yielded with no event to wait for (in WaitEvent) runs again
     const main = this.saveCtx16();
-    this.thread16 = t;
+    this.thread16 = t; t.sliceStart = this.now();
     let r;
     try {
       if (t.state === 'new' && t.flat) {
