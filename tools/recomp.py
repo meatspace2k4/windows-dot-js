@@ -731,7 +731,7 @@ class Translator:
     # ---- string instructions
     def string(self, f, ins, kind, sz, rep):
         step = f.i()
-        f.c(sz).c(-sz).gg('df').e(SELECT).ls(step)
+        f.c(-sz).c(sz).gg('df').e(SELECT).ls(step)      # DF=1 decrements
         def one():
             if kind == 'movs':
                 f.gg('edi').gg('esi').mem(LOAD[sz]).mem(STORE[sz])
