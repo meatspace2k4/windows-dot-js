@@ -75,7 +75,7 @@ const CRAWL = async () => {
       });
     }
   }
-  // every button in every window the crawl opened, pressed once in a fresh copy of that window
+  // every button and every menu bar menu in every window the crawl opened, each in a fresh copy of that window
   const seenWin = new Set();
   for (const o of opened) {
     if (seenWin.has(o.title)) continue; seenWin.add(o.title);
@@ -90,6 +90,22 @@ const CRAWL = async () => {
       return !!win95.window(o.title);
     };
     if (!await reopen()) continue;
+    // controls nobody can use here: disabled ones, and read-only fields with no list to pick from
+    for (const e of win95.elements({ window: o.title })) {
+      if (e.disabled && e.role !== 'menuitem') disabled.set(`${o.title} > ${e.role} ${e.name || '(unnamed)'}`, e.role);
+      if (e.role === 'text-edit' && e.readonly) disabled.set(`${o.title} > read-only field showing "${e.value}"`, e.role);
+    }
+    for (const bar of win95.elements({ window: o.title, menubar: true })) {
+      await crawlMenu(`${o.title} > ${bar.name}`, async () => { if (!win95.window(o.title)) await reopen(); win95.click(win95.find({ window: o.title, menubar: true, name: bar.name })); });
+    }
+    await reset(); if (!await reopen()) continue;
+    for (const tab of win95.elements({ window: o.title, role: 'pagetab' })) {
+      win95.click(win95.find({ window: o.title, role: 'pagetab', name: tab.name })); await frame();
+      for (const e of win95.elements({ window: o.title })) {
+        if (e.disabled && e.role !== 'menuitem') disabled.set(`${o.title} > ${tab.name} > ${e.role} ${e.name || '(unnamed)'}`, e.role);
+        if (e.role === 'text-edit' && e.readonly) disabled.set(`${o.title} > ${tab.name} > read-only field showing "${e.value}"`, e.role);
+      }
+    }
     for (const b of leafs(win95.elements({ role: 'pushbutton', window: o.title }), o.title).filter(b => !b.covered && !/^(Close|Minimize|Maximize)$/.test(b.name))) {
       await reset(); if (!await reopen()) break;
       where = `${o.title} > button ${b.name}`;
