@@ -1739,7 +1739,7 @@ class SaverRun {
       if (this.mode === 'p') dirty();
       // guest time is driven by its own timers and message loop
       const p2 = this.proc, now = performance.now();
-      const next = !p2 ? now : p2.busy > now ? p2.busy : p2.waiting ? Math.min(...p2.timers.map(t => t.due), now + 50) : now;
+      const next = p2 && p2.waiting ? Math.min(...p2.timers.map(t => t.due), now + 50) : now;
       setTimeout(step, Math.max(0, next - now));
     };
     setTimeout(step, 0);
