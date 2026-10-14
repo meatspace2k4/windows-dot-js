@@ -1344,6 +1344,37 @@ def16('KERNEL', 618, 'x', 'w', function (sp) {
   }
   return o & 0xffff;
 });
+// KRNL386 seg2:785E (#615): a Win32 dialog template at flat `src` written at flat `dst` in the layout 16-bit USER
+// reads: a byte item count, items as x, y, cx, cy, id, style, predefined classes as one byte, ANSI strings (characters
+// with no ANSI form become '_'). DLGTEMPLATEEX keeps its extended fields and word-sized extra counts.
+def16('KERNEL', 615, 'lll', 'v', function (src, size, dst) {
+  let i = u32(src), o = u32(dst);
+  const r16 = () => { const v = this.r16(i); i += 2; return v; }, r32 = () => { const v = this.r32(i); i += 4; return v; };
+  const b = v => { this.u8[o++] = v; }, w16 = v => { this.w16(o, v); o += 2; }, w32 = v => { this.w32(o, v); o += 4; };
+  const copy = n => { this.u8.copyWithin(o, i, i + n); o += n; i += n; };
+  const str = () => {
+    const c = []; for (;;) { const ch = r16(); if (!ch) break; c.push(ch); }
+    const t = window.W95FS.encode(String.fromCharCode(...c)); for (let k = 0; k < t.length; k++) b(c[k] < 0x80 || t[k] !== 0x3f ? t[k] : 0x5f); b(0);
+  };
+  const szOrOrd = () => { const v = this.r16(i); if (!v) { i += 2; b(0); } else if ((v & 0xff) === 0xff) { i += 2; b(0xff); copy(2); } else str(); };
+  let style = r32(); const ex = u32(style) === 0xffff0001;
+  if (ex) { w32(style); copy(8); style = r32(); }
+  w32(style);
+  if (!ex) i += 4;
+  let n = r16() & 0xff; b(n); copy(8);
+  szOrOrd(); szOrOrd(); str();
+  if (style & 0x40) { copy(2); if (ex) copy(4); str(); }
+  for (; n; n--) {
+    i = u32(src) + ((i - u32(src) + 3) & ~3);
+    if (ex) { copy(12); copy(2); copy(10); }
+    else { const st = this.r32(i); i += 8; copy(10); w32(st); }
+    const c = this.r16(i);
+    if (!c) { i += 2; b(0); } else if (c === 0xffff) { i += 2; b(r16() & 0xff); } else str();   // class
+    szOrOrd();                                                                                     // text
+    const extra = r16(); if (ex) w16(extra); else b(extra & 0xff);
+    if (extra) copy(extra);
+  }
+});
 // KRNL386 seg1:7A28 (#365): adds `delta` (+1 or -1) to the lock count of the global block a selector belongs to; the
 // callback relays lock the caller's stack segment while 32-bit code holds pointers into it
 def16('KERNEL', 365, 'wi', 'v', function (sel, delta) {
