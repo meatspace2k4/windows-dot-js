@@ -1257,8 +1257,23 @@ def decode_ne(ne, entries):
     for m in md.values(): m.detail = True
     insns, todo, seen = {}, list(entries), set()
     def table(ins, sg, recent):
-        """targets of `jmp/call word ptr cs:[reg + table]` (switch tables have no relocations in NE code)"""
+        """targets of `jmp/call word ptr cs:[reg + table]` (switch tables have no relocations in NE code), and of
+        `mov r16, [reg + table]; jmp/call r16` with the table in DGROUP"""
         op = ins.ops[0]
+        if op.type == X.X86_OP_REG and op.size == 2 and ne.autodata:
+            for prev in reversed(recent[-8:-1]):
+                if prev.mn == 'mov' and prev.ops[0].type == X.X86_OP_REG and prev.ops[0].reg == op.reg:
+                    m = prev.ops[1]
+                    if m.type != X.X86_OP_MEM or m.mem.segment not in (0, X.X86_REG_DS) or not m.mem.disp or not (m.mem.base or m.mem.index): return []
+                    dg = ne.segs[ne.autodata - 1]; out = []
+                    for k in range(32):
+                        o = (m.mem.disp & 0xffff) + 2 * k
+                        if o + 2 > dg['len']: break
+                        v = int.from_bytes(ne.image[dg['base'] - ne.base + o: dg['base'] - ne.base + o + 2], 'little')
+                        if v >= sg['len']: break
+                        out.append(sg['base'] + v)
+                    return out
+            return []
         if op.type != X.X86_OP_MEM or op.mem.segment != X.X86_REG_CS or not op.mem.disp or op.size != 2: return []
         reg = op.mem.base or op.mem.index; count = None
         for prev in reversed(recent[-6:]):
