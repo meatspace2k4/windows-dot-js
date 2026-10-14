@@ -253,7 +253,14 @@ class Pen { constructor(style, width, color) { this.kind = 'pen'; this.style = s
 class Brush { constructor(color, nul) { this.kind = 'brush'; this.color = color; this.nul = !!nul; } }
 class Font { constructor(lf) { this.kind = 'font'; this.lf = lf; } }
 class Palette { constructor(entries) { this.kind = 'palette'; this.entries = entries; } }
-class Bitmap { constructor(w, h) { this.kind = 'bitmap'; this.w = w; this.h = h; this.canvas = mkCanvas(Math.max(1, w), Math.max(1, h)); } }
+// Bitmaps start black (all bits zero). Monochrome bitmaps hold only black and white pixels.
+class Bitmap {
+  constructor(w, h, bpp = 32) {
+    this.kind = 'bitmap'; this.w = w; this.h = h; this.bpp = bpp; this.mono = bpp === 1; this.ver = 0; this.conv = null;
+    this.canvas = mkCanvas(Math.max(1, w), Math.max(1, h));
+    const g = this.canvas.getContext('2d'); g.fillStyle = '#000'; g.fillRect(0, 0, this.canvas.width, this.canvas.height);
+  }
+}
 function mkCanvas(w, h) {
   const c = typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(w, h) : Object.assign(document.createElement('canvas'), { width: w, height: h });
   return c;
@@ -274,11 +281,14 @@ class DC {
     this.bitmap = null; this.text = 0; this.bk = 0xffffff; this.bkMode = 2; this.align = 0; this.x = 0; this.y = 0;
     if (ctx) ctx.imageSmoothingEnabled = false;
   }
-  color(c) {
+  rgb(c) {
     c = u32(c);
-    if ((c >>> 24) === 1) { const e = this.pal.entries[c & 0xffff] || [0, 0, 0]; return css(e); }
-    return css(rgbOf(c));
+    const v = (c >>> 24) === 1 ? (this.pal.entries[c & 0xffff] || [0, 0, 0]) : rgbOf(c);
+    if (this.bitmap && this.bitmap.mono) return v[0] + v[1] + v[2] > 382 ? [255, 255, 255] : [0, 0, 0];
+    return v;
   }
+  color(c) { return css(this.rgb(c)); }
+  touch() { if (this.bitmap) this.bitmap.ver++; }
   // Win95 GDI lines are not antialiased: rasterize with Bresenham into 1px spans.
   line(x0, y0, x1, y1) {
     const p = this.pen; if (p.style === 5 || !this.ctx) return;
@@ -297,13 +307,15 @@ class DC {
       if (e2 <= dx) { err += dx; y += sy; my = true; }
       if ((horiz && my) || (!horiz && mx)) { flush(); len = 0; }
     }
-    flush(); g.fill();
+    flush(); g.fill(); this.touch();
   }
-  fill(x, y, w, h, color) { if (!this.ctx || w <= 0 || h <= 0) return; this.ctx.fillStyle = this.color(color); this.ctx.fillRect(x, y, w, h); }
+  fill(x, y, w, h, color) { if (!this.ctx || w <= 0 || h <= 0) return; this.ctx.fillStyle = this.color(color); this.ctx.fillRect(x, y, w, h); this.touch(); }
   fontCss() {
-    const lf = this.font.lf, size = Math.abs(lf.height || 13) * (lf.height > 0 ? 0.8 : 1);
-    const face = FONT_MAP[(lf.face || '').toLowerCase()] || lf.face || 'Arial';
-    return `${lf.italic ? 'italic ' : ''}${lf.weight >= 600 ? 'bold ' : ''}${Math.max(1, Math.round(size))}px "${face}", "Arial"`;
+    // lfHeight < 0: character (em) height; > 0: cell height = ascent + descent
+    const lf = this.font.lf, face = FONT_MAP[(lf.face || '').toLowerCase()] || lf.face || 'W95 Arial';
+    const style = `${lf.italic ? 'italic ' : ''}${lf.weight >= 600 ? 'bold ' : ''}`;
+    const h = lf.height || -13, size = h < 0 ? -h : h * emPerCell(style, face);
+    return `${style}${Math.max(1, Math.round(size))}px "${face}", "W95 Arial"`;
   }
 }
 const FONT_MAP = { 'ms sans serif': 'W95 Arial', 'times new roman': 'W95 Times', arial: 'W95 Arial', 'courier new': 'W95 Courier', wingdings: 'W95 Wingdings', system: 'W95 Arial' };
@@ -789,7 +801,7 @@ def('GDI32', 'SelectObject', 2, function (hdc, h) {
   const dc = dcOf(this, hdc), o = this.obj(h); if (!o) return 0;
   const slot = { pen: 'pen', brush: 'brush', font: 'font', bitmap: 'bitmap' }[o.kind]; if (!slot) return 0;
   const old = dc[slot]; dc[slot] = o;
-  if (slot === 'bitmap') { dc.ctx = o.canvas.getContext('2d'); dc.ctx.imageSmoothingEnabled = false; dc.w = o.w; dc.h = o.h; }
+  if (slot === 'bitmap') { dc.ctx = o.canvas.getContext('2d', { willReadFrequently: true }); dc.ctx.imageSmoothingEnabled = false; dc.w = o.w; dc.h = o.h; }
   return old ? old.h : 0;
 });
 def('GDI32', 'GetCurrentObject', 2, function (hdc, t) { const dc = dcOf(this, hdc); return ({ 1: dc.pen, 2: dc.brush, 6: dc.font, 7: dc.bitmap, 5: dc.pal }[t] || {}).h || 0; });
@@ -798,7 +810,7 @@ def('GDI32', 'GetObjectType', 1, function (h) { const o = this.obj(h); return o 
 def('GDI32', 'GetObjectA', 3, function (h, n, p) {
   const o = this.obj(h); if (!o) return 0;
   if (o.kind === 'palette') { if (p) this.w16(p, o.entries.length); return 2; }
-  if (o.kind === 'bitmap' && p) { this.u8.fill(0, p, p + n); this.w32(p + 4, o.w); this.w32(p + 8, o.h); this.w32(p + 12, o.w * 4); this.w16(p + 16, 1); this.w16(p + 18, 32); return 24; }
+  if (o.kind === 'bitmap' && p) { this.u8.fill(0, p, p + n); this.w32(p + 4, o.w); this.w32(p + 8, o.h); this.w32(p + 12, o.mono ? ((o.w + 15) >> 4) << 1 : o.w * 4); this.w16(p + 16, 1); this.w16(p + 18, o.mono ? 1 : 32); return 24; }
   if (o.kind === 'font' && p) { this.u8.fill(0, p, p + n); this.w32(p, o.lf.height); this.w32(p + 16, o.lf.weight); this.writeA(p + 28, o.lf.face, 32); return 60; }
   return 0;
 });
@@ -823,37 +835,99 @@ def('GDI32', 'PolyBezier', 3, function (hdc, pts, n) {
   for (let i = 1; i + 2 < n; i += 3) seg(P(i - 1), P(i), P(i + 1), P(i + 2), 0);
   return 1;
 });
-const ROP = { PATCOPY: 0xF00021, BLACKNESS: 0x42, WHITENESS: 0xFF0062, DSTINVERT: 0x550009, PATINVERT: 0x5A0049, SRCCOPY: 0xCC0020, SRCINVERT: 0x660046, SRCAND: 0x8800C6, SRCPAINT: 0xEE0086 };
+const ROP = { PATCOPY: 0xF00021, BLACKNESS: 0x42, WHITENESS: 0xFF0062, SRCCOPY: 0xCC0020 };
+// Source image of a blit as the destination sees it: mono -> color uses the destination's text
+// (0 bits) and background (1 bits) colors; color -> mono maps the source's background color to white.
+function blitSource(s, d) {
+  const sb = s.bitmap, sm = !!(sb && sb.mono), dm = !!(d.bitmap && d.bitmap.mono);
+  if (sm === dm) return s.ctx.canvas;
+  const key = sm ? `${sb.ver}|${d.rgb(d.text)}|${d.rgb(d.bk)}` : `${s.bitmap ? s.bitmap.ver : Math.random()}|${s.rgb(s.bk)}`;
+  const holder = sb || s;
+  if (holder.conv && holder.conv.key === key) return holder.conv.canvas;
+  const c = s.ctx.canvas, out = mkCanvas(c.width, c.height), g = out.getContext('2d');
+  const id = s.ctx.getImageData(0, 0, c.width, c.height), px = id.data;
+  if (sm) {
+    const fg = d.rgb(d.text), bg = d.rgb(d.bk);
+    for (let k = 0; k < px.length; k += 4) { const v = px[k] ? bg : fg; px[k] = v[0]; px[k + 1] = v[1]; px[k + 2] = v[2]; px[k + 3] = 255; }
+  } else {
+    const [br, bgc, bb] = s.rgb(s.bk);
+    for (let k = 0; k < px.length; k += 4) { const v = px[k] === br && px[k + 1] === bgc && px[k + 2] === bb ? 255 : 0; px[k] = px[k + 1] = px[k + 2] = v; px[k + 3] = 255; }
+  }
+  g.putImageData(id, 0, 0);
+  holder.conv = { key, canvas: out };
+  return out;
+}
+// General ternary raster operation on (pattern, source, destination), bit for bit.
+function rop3(d, x, y, w, h, src, sx, sy, rop) {
+  const g = d.ctx, idx = (rop >>> 16) & 0xff;
+  x |= 0; y |= 0; w |= 0; h |= 0;
+  const x0 = Math.max(0, x), y0 = Math.max(0, y), x1 = Math.min(g.canvas.width, x + w), y1 = Math.min(g.canvas.height, y + h);
+  if (x1 <= x0 || y1 <= y0) return;
+  const dd = g.getImageData(x0, y0, x1 - x0, y1 - y0), D = dd.data;
+  let S = null;
+  if (src) {
+    const tmp = mkCanvas(x1 - x0, y1 - y0).getContext('2d');
+    tmp.fillStyle = '#000'; tmp.fillRect(0, 0, x1 - x0, y1 - y0);
+    tmp.drawImage(src, (sx | 0) + (x0 - x), (sy | 0) + (y0 - y), x1 - x0, y1 - y0, 0, 0, x1 - x0, y1 - y0);
+    S = tmp.getImageData(0, 0, x1 - x0, y1 - y0).data;
+  }
+  const P = d.brush.nul ? [0, 0, 0] : d.rgb(d.brush.color);
+  for (let k = 0; k < D.length; k += 4) {
+    for (let c = 0; c < 3; c++) {
+      const p = P[c], sv = S ? S[k + c] : 0, dv = D[k + c]; let r = 0;
+      for (let t = 0; t < 8; t++) {
+        if (!((idx >> t) & 1)) continue;
+        r |= ((t & 4) ? p : ~p) & ((t & 2) ? sv : ~sv) & ((t & 1) ? dv : ~dv);
+      }
+      D[k + c] = r & 0xff;
+    }
+    D[k + 3] = 255;
+  }
+  g.putImageData(dd, x0, y0);
+}
 def('GDI32', 'PatBlt', 6, function (hdc, x, y, w, h, rop) {
   const dc = dcOf(this, hdc); x |= 0; y |= 0; w |= 0; h |= 0;
   if (w < 0) { x += w; w = -w; } if (h < 0) { y += h; h = -h; }
+  if (!dc.ctx) return 1;
   if (rop === ROP.BLACKNESS) dc.fill(x, y, w, h, 0);
   else if (rop === ROP.WHITENESS) dc.fill(x, y, w, h, 0xffffff);
-  else if (rop === ROP.DSTINVERT || rop === ROP.PATINVERT) {
-    const g = dc.ctx; g.save(); g.globalCompositeOperation = 'difference';
-    g.fillStyle = rop === ROP.DSTINVERT ? '#fff' : dc.color(dc.brush.color); g.fillRect(x, y, w, h); g.restore();
-  } else if (!dc.brush.nul) dc.fill(x, y, w, h, dc.brush.color);
+  else if (rop === ROP.PATCOPY) { if (!dc.brush.nul) dc.fill(x, y, w, h, dc.brush.color); }
+  else { rop3(dc, x, y, w, h, null, 0, 0, rop); dc.touch(); }
   return 1;
 });
-def('GDI32', 'CreateCompatibleDC', 1, function (hdc) { const d = new DC(this, null, 1, 1, 0); return this.newHandle(d); });
+def('GDI32', 'CreateCompatibleDC', 1, function (hdc) { const d = new DC(this, null, 1, 1, 0); d.bitmap = new Bitmap(1, 1, 1); d.ctx = d.bitmap.canvas.getContext('2d', { willReadFrequently: true }); d.mem = true; return this.newHandle(d); });
 def('GDI32', 'CreateICA', 4, function () { return this.newHandle(new DC(this, null, this.host.width, this.host.height, 0)); });
 def('GDI32', 'CreateDCA', 4, function () { return this.newHandle(new DC(this, this.host.surface(0, this.host.width, this.host.height), this.host.width, this.host.height, 0)); });
 def('GDI32', 'DeleteDC', 1, function (h) { this.handles.delete(h); return 1; });
-def('GDI32', 'CreateBitmap', 5, function (w, h) { return this.newHandle(new Bitmap(w, h)); });
-def('GDI32', 'CreateCompatibleBitmap', 3, function (hdc, w, h) { return this.newHandle(new Bitmap(w, h)); });
+def('GDI32', 'CreateBitmap', 5, function (w, h, planes, bpp, bits) {
+  const b = new Bitmap(w, h, planes * bpp === 1 ? 1 : 32);
+  if (bits && b.mono) {
+    const g = b.canvas.getContext('2d'), id = g.createImageData(w, h), stride = ((w + 15) >> 4) << 1;
+    for (let yy = 0; yy < h; yy++) for (let xx = 0; xx < w; xx++) {
+      const on = (this.u8[bits + yy * stride + (xx >> 3)] >> (7 - (xx & 7))) & 1, o = (yy * w + xx) * 4;
+      id.data[o] = id.data[o + 1] = id.data[o + 2] = on ? 255 : 0; id.data[o + 3] = 255;
+    }
+    g.putImageData(id, 0, 0);
+  }
+  return this.newHandle(b);
+});
+def('GDI32', 'CreateCompatibleBitmap', 3, function (hdc, w, h) {
+  const dc = this.obj(hdc); const mono = dc && dc.mem && (!dc.bitmap || dc.bitmap.mono);
+  return this.newHandle(new Bitmap(w, h, mono ? 1 : 32));
+});
 def('GDI32', 'BitBlt', 9, function (hd, x, y, w, h, hs, sx, sy, rop) {
   const d = dcOf(this, hd);
-  if (!hs || rop !== ROP.SRCCOPY && rop !== ROP.SRCINVERT && rop !== ROP.SRCAND && rop !== ROP.SRCPAINT) return API.GDI32.PatBlt[1].call(this, hd, x, y, w, h, rop);
+  const usesSrc = (((rop >>> 16) & 0xff) >> 2 & 0x33) !== (((rop >>> 16) & 0xff) & 0x33);
+  if (!hs || !usesSrc) return API.GDI32.PatBlt[1].call(this, hd, x, y, w, h, rop);
   const s = dcOf(this, hs); if (!s.ctx || !d.ctx) return 1;
-  const g = d.ctx; g.save();
-  g.globalCompositeOperation = { [ROP.SRCINVERT]: 'xor', [ROP.SRCAND]: 'multiply', [ROP.SRCPAINT]: 'lighten' }[rop] || 'copy';
-  if (rop === ROP.SRCCOPY) { g.beginPath(); g.rect(x | 0, y | 0, w | 0, h | 0); g.clip(); }
-  g.drawImage(s.ctx.canvas, sx | 0, sy | 0, w | 0, h | 0, x | 0, y | 0, w | 0, h | 0);
-  g.restore(); return 1;
+  const src = blitSource(s, d);
+  if (rop === ROP.SRCCOPY) d.ctx.drawImage(src, sx | 0, sy | 0, w | 0, h | 0, x | 0, y | 0, w | 0, h | 0);
+  else rop3(d, x, y, w, h, src, sx, sy, rop);
+  d.touch(); return 1;
 });
 def('GDI32', 'StretchBlt', 11, function (hd, x, y, w, h, hs, sx, sy, sw, sh) {
   const d = dcOf(this, hd), s = dcOf(this, hs); if (!s.ctx || !d.ctx) return 1;
-  d.ctx.drawImage(s.ctx.canvas, sx | 0, sy | 0, sw | 0, sh | 0, x | 0, y | 0, w | 0, h | 0); return 1;
+  d.ctx.drawImage(blitSource(s, d), sx | 0, sy | 0, sw | 0, sh | 0, x | 0, y | 0, w | 0, h | 0); d.touch(); return 1;
 });
 def('GDI32', 'SetBkColor', 2, function (hdc, c) { const dc = dcOf(this, hdc); const o = dc.bk; dc.bk = c; return o; });
 def('GDI32', 'SetBkMode', 2, function (hdc, m) { const dc = dcOf(this, hdc); const o = dc.bkMode; dc.bkMode = m; return o; });
@@ -883,13 +957,14 @@ function drawText(p, dc, x, y, s, opaqueRect) {
   const g = dc.ctx; if (!g) return;
   if (opaqueRect) dc.fill(opaqueRect.l, opaqueRect.t, opaqueRect.r - opaqueRect.l, opaqueRect.b - opaqueRect.t, dc.bk);
   if (!s) return;
-  const col = dc.color(dc.text).match(/\d+/g).map(Number);
+  const col = dc.rgb(dc.text);
   const t = textBitmap(dc.fontCss(), s, col);
   const ha = dc.align & 6, va = dc.align & 24;          // TA_CENTER=6, TA_RIGHT=2 ; TA_BASELINE=24, TA_BOTTOM=8, TA_TOP=0
   const tx = Math.round(ha === 6 ? x - t.w / 2 : ha === 2 ? x - t.w : x);
   const top = va === 24 ? y - t.asc : va === 8 ? y - t.h : y;
   if (dc.bkMode === 2 && !opaqueRect) dc.fill(tx, top, t.w, t.h, dc.bk);
   g.drawImage(t.canvas, tx, top);
+  dc.touch();
 }
 def('GDI32', 'TextOutA', 5, function (hdc, x, y, s, n) { drawText(this, dcOf(this, hdc), x | 0, y | 0, this.readA(s, n)); return 1; });
 def('GDI32', 'ExtTextOutA', 8, function (hdc, x, y, opt, rc, s, n) {
@@ -919,6 +994,13 @@ def('GDI32', 'GetDeviceCaps', 2, function (hdc, i) {
   return { 2: 0x400, 4: 320, 6: 240, 8: this.host.width, 10: this.host.height, 12: 24, 14: 1, 24: -1, 38: 0x7e99, 88: 96, 90: 96, 104: 0, 106: 20, 108: 24 }[i] ?? 0;
 });
 let mctx = null;
+const cellRatio = new Map();
+function emPerCell(style, face) {
+  const k = style + face; if (cellRatio.has(k)) return cellRatio.get(k);
+  const g = measureCtx(); g.font = `${style}100px "${face}", "W95 Arial"`;
+  const m = g.measureText('M'), cell = (m.fontBoundingBoxAscent || 90) + (m.fontBoundingBoxDescent || 22);
+  const r = 100 / cell; cellRatio.set(k, r); return r;
+}
 function measureCtx() { if (!mctx) mctx = mkCanvas(1, 1).getContext('2d'); return mctx; }
 // Palettes: logical palettes resolve PALETTEINDEX colors at draw time.
 def('GDI32', 'CreatePalette', 1, function (p) {
