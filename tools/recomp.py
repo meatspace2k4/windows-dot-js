@@ -1288,6 +1288,12 @@ def build_ne(path, out, base, selbase, lookup, registry):
     entries = [ne.segs[s - 1]['base'] + o for s, o in ne.entries.values() if ne.segs[s - 1]['code']]
     if ne.entry_seg: entries.append(ne.segs[ne.entry_seg - 1]['base'] + ne.entry_off)
     entries += far_targets
+    # flat-thunk connection data: {checksum, offset, 0xFFFF}; KERNEL fills in the selector of the containing segment
+    for nm, o in ne.names.items():
+        if 'THKCONNECTIONDATA' in nm and o in ne.entries:
+            s_, off = ne.entries[o]; sg = ne.segs[s_ - 1]; a = sg['base'] - ne.base + off
+            ptr = int.from_bytes(ne.image[a + 4:a + 8], 'little')
+            if ptr >> 16 == 0xffff and sg['code'] and (ptr & 0xffff) < sg['len']: entries.append(sg['base'] + (ptr & 0xffff))
     insns, seen = decode_ne(ne, entries)
     blocks = build_blocks(ne, insns, seen)
     liveness(blocks)

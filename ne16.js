@@ -777,7 +777,9 @@ const pop32 = p => { const sp = p.reg('esp'), v = p.r32(sp); p.reg('esp', sp + 4
 P.thunkData16 = function (dll16, name) {
   const m = this.loadLibrary16(dll16); if (!m) throw new GuestError(`thunk: cannot load ${dll16}`);
   const sp = this.neExport(m, name); if (!sp) throw new GuestError(`thunk: ${dll16} has no ${name}`);
-  return this.lin(sp);
+  const td = this.lin(sp);
+  if (this.r16(td + 6) === 0xffff) this.w16(td + 6, sp >>> 16);   // selector of the thunk data's own segment
+  return td;
 };
 K('#43', 5, function (thunk, thkbuf, len, dll16) {      // ThunkInitLS
   const td = this.thunkData16(this.readA(dll16), this.readA(thkbuf)); const v = this.r32(td + 4);
