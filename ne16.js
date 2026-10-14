@@ -281,6 +281,36 @@ const INTS = {
     }
     this.trapped = `unhandled DPMI ${ax.toString(16)}`; return LAYOUT.SENTINEL;
   },
+  0x10(next) {     // video BIOS with VBE 2.0: the adapter the display driver programs; its framebuffer is guest memory
+    const ax = this.ax(), ah = ax >> 8, bl = this.cpu.ebx.value & 0xff;
+    const v = this.video();
+    const setBX = x => { this.cpu.ebx.value = lo16(this.cpu.ebx.value, x); }, setCX = x => { this.cpu.ecx.value = lo16(this.cpu.ecx.value, x); };
+    const esdi = () => this.lin((this.cpu.es.value << 16) | (this.cpu.edi.value & 0xffff));
+    if (ah === 0x12 && bl === 0x10) { setBX(0x0003); setCX(0x0009); return; }        // EGA/VGA info: color, 256K
+    if (ah === 0x1a && (ax & 0xff) === 0) { this.ax(0x001a); setBX(0x0008); return; } // display combination: VGA color
+    if (ah === 0x0f) { this.ax(0x5000 | (v.mode < 0x100 ? v.mode : 0x13)); setBX(0); return; }
+    if (ah === 0x00) { v.mode = ax & 0x7f; return; }
+    if (ah === 0x10 || ah === 0x11 || ah === 0x01 || ah === 0x02) return;
+    if (ah === 0x4f) {
+      const fn = ax & 0xff;
+      if (fn === 0x00) {
+        const a = esdi(); const want2 = this.r32(a) === 0x32454256;   // 'VBE2'
+        this.u8.fill(0, a, a + (want2 ? 512 : 256)); this.writeA(a, 'VESA'); this.w16(a + 4, 0x0200);
+        this.w32(a + 6, this.mapLS(v.oem)); this.w32(a + 10, 1); this.w32(a + 14, this.mapLS(v.list)); this.w16(a + 18, v.mem >> 16);
+        this.ax(0x004f); return;
+      }
+      if (fn === 0x01) { const m = VBE_MODES[this.cpu.ecx.value & 0x1ff]; if (!m) { this.ax(0x014f); return; } this.vbeModeInfo(esdi(), m); this.ax(0x004f); return; }
+      if (fn === 0x02) { const n = this.cpu.ebx.value & 0x1ff, m = VBE_MODES[n]; if (!m) { this.ax(0x014f); return; } v.mode = n; v.cur = m; v.pitch = m.w * (m.bpp >> 3); v.start = 0; this.ax(0x004f); return; }
+      if (fn === 0x03) { setBX(v.mode | 0x4000); this.ax(0x004f); return; }
+      if (fn === 0x05) { if (!(bl & 0x80 >> 7) && (this.cpu.ebx.value & 0x100) === 0) v.bank = this.cpu.edx.value & 0xffff; else this.cpu.edx.value = lo16(this.cpu.edx.value, v.bank || 0); this.ax(0x004f); return; }
+      if (fn === 0x06) { if ((bl & 0xff) === 1) { setBX(v.pitch || 0); setCX(v.cur ? v.cur.w : 0); this.cpu.edx.value = lo16(this.cpu.edx.value, v.cur ? v.cur.h : 0); } this.ax(0x004f); return; }
+      if (fn === 0x07) { if (bl === 1) { setCX(0); this.cpu.edx.value = lo16(this.cpu.edx.value, 0); } this.ax(0x004f); return; }
+      if (fn === 0x08) { setBX(0x0600); this.ax(0x004f); return; }
+      if (fn === 0x09) { const n = this.cpu.ecx.value & 0xffff, first = this.cpu.edx.value & 0xffff, a = esdi(); for (let i = 0; i < n; i++) { const k = (first + i) * 3; v.dac[k + 2] = this.u8[a + 4 * i]; v.dac[k + 1] = this.u8[a + 4 * i + 1]; v.dac[k] = this.u8[a + 4 * i + 2]; } this.ax(0x004f); return; }
+      this.ax(0x014f); return;
+    }
+    this.trapped = `unhandled int 10h ax=${ax.toString(16)} bx=${(this.cpu.ebx.value & 0xffff).toString(16)}`; return LAYOUT.SENTINEL;
+  },
   0x21(next) {     // DOS
     const ah = (this.ax() >> 8) & 0xff, al = this.ax() & 0xff;
     CF(this, 0);
@@ -310,6 +340,30 @@ P.trapHook = function (e, code) {
   if (code >= 0x1000000) { this.portIO(code & 0xffff, (code >> 16) & 7, !!(code & 0x800000)); return true; }
   this.cpu.eip.value = this.interrupt(code - 0x100, u32(e)) | 0;
   return true;
+};
+
+// ---------------------------------------------------------------- video adapter (VBE 2.0, linear framebuffer in guest memory)
+const VBE_MODES = {};
+[[0x101, 640, 480, 8], [0x103, 800, 600, 8], [0x105, 1024, 768, 8], [0x110, 640, 480, 15], [0x111, 640, 480, 16], [0x112, 640, 480, 24],
+ [0x113, 800, 600, 15], [0x114, 800, 600, 16], [0x115, 800, 600, 24], [0x116, 1024, 768, 15], [0x117, 1024, 768, 16]]
+  .forEach(([n, w, h, bpp]) => { VBE_MODES[n] = { n, w, h, bpp: bpp === 15 ? 16 : bpp, depth: bpp }; });
+P.video = function () {
+  if (this.vid) return this.vid;
+  const mem = 4 << 20, fb = this.alloc(mem, true);
+  const oem = this.alloc(32); this.writeA(oem, 'Windows 95 VBE');
+  const ids = Object.keys(VBE_MODES).map(Number), list = this.alloc(2 * ids.length + 2);
+  ids.forEach((n, i) => this.w16(list + 2 * i, n)); this.w16(list + 2 * ids.length, 0xffff);
+  return (this.vid = { mem, fb, oem, list, mode: 3, cur: null, pitch: 0, dac: new Uint8Array(768) });
+};
+P.vbeModeInfo = function (a, m) {
+  const v = this.video(), Bpp = m.bpp >> 3;
+  this.u8.fill(0, a, a + 256);
+  this.w16(a, 0x009b); this.u8[a + 2] = 7; this.w16(a + 4, 64); this.w16(a + 6, 64); this.w16(a + 8, 0xa000);
+  this.w16(a + 0x10, m.w * Bpp); this.w16(a + 0x12, m.w); this.w16(a + 0x14, m.h); this.u8[a + 0x16] = 8; this.u8[a + 0x17] = 16;
+  this.u8[a + 0x18] = 1; this.u8[a + 0x19] = m.bpp; this.u8[a + 0x1a] = 1; this.u8[a + 0x1b] = m.bpp === 8 ? 4 : 6; this.u8[a + 0x1d] = Math.floor(v.mem / (m.w * m.h * Bpp)) - 1; this.u8[a + 0x1e] = 1;
+  const masks = { 15: [5, 10, 5, 5, 5, 0], 16: [5, 11, 6, 5, 5, 0], 24: [8, 16, 8, 8, 8, 0] }[m.depth];
+  if (masks) masks.forEach((x, i) => { this.u8[a + 0x1f + i] = x; });
+  this.w32(a + 0x28, v.fb);
 };
 
 // ---------------------------------------------------------------- VGA ports (the display driver programs them directly)
