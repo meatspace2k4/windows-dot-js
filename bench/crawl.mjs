@@ -37,15 +37,17 @@ const CRAWL = async () => {
     await frame();
   };
   const opened = [];
-  const leafs = items => items.filter(e => !e.disabled && !SKIP.test(e.name));
+  const disabled = new Map();   // name -> where, for items and buttons that cannot be used
+  const leafs = items => {
+    for (const e of items) if (e.disabled) disabled.set(`${where.replace(/ > [^>]*$/, '')} > ${e.name}`, e.role);
+    return items.filter(e => !e.disabled && !SKIP.test(e.name));
+  };
   // presses every item of the menu `open()` brings up, depth first; `path` names it for the report
   const crawlMenu = async (path, open, depth = 0) => {
     await reset(); await open(); await frame();
     const top = win95.elements({ window: 'Menu', depth });
     for (const it of leafs(top)) {
       await reset(); await open(); await frame();
-      // reopen the chain down to this level
-      for (let d = 0; d < depth; d++) {}
       const e = win95.find({ window: 'Menu', depth, name: it.name }); if (!e) continue;
       where = `${path} > ${it.name}`;
       if (it.submenu) { await crawlMenu(where, async () => { await open(); await frame(); win95.click(win95.find({ window: 'Menu', depth, name: it.name })); await sleep(450); }, depth + 1); continue; }
@@ -98,7 +100,7 @@ const CRAWL = async () => {
   }
   await reset();
   off(); window.removeEventListener('error', onErr);
-  return { found, opened };
+  return { found, opened, disabled: [...disabled.keys()] };
 };
 
 const c = await connect(endpoint);
@@ -109,3 +111,4 @@ for (const f of r.found) { const k = `${f.kind}\u0000${f.what}`; const g = group
 console.log(`windows reached: ${[...new Set(r.opened.map(o => o.title))].join(', ')}\n`);
 if (!groups.size) console.log('nothing went wrong');
 for (const g of groups.values()) console.log(`${g.kind}: ${g.what}\n    at ${[...new Set(g.at)].join('\n    at ')}`);
+console.log(`\ndisabled (not pressed):\n    ${r.disabled.sort().join('\n    ')}`);
