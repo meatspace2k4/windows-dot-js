@@ -1213,7 +1213,15 @@ function decodeDIB(p, bits, d, lines = d.h, start = 0) {
 }
 function encodeDIB(p, bits, d, img, lines = d.h, start = 0) {
   const u = p.u8, dv = p.dv, px = img.data;
-  const nearest = (r, g, b) => { let bi = 0, bd = 1e9; d.pal.forEach(([pr, pg, pb], i) => { const e = (pr - r) ** 2 + (pg - g) ** 2 + (pb - b) ** 2; if (e < bd) { bd = e; bi = i; } }); return bi; };
+  // nearest palette index, memoized per color (DIB sections are written back every frame)
+  const memo = d.memo && d.memo.pal === d.pal ? d.memo.map : (d.memo = { pal: d.pal, map: new Map() }).map;
+  const nearest = (r, g, b) => {
+    const key = (r << 16) | (g << 8) | b; let bi = memo.get(key);
+    if (bi !== undefined) return bi;
+    let bd = 1e9; bi = 0;
+    for (let i = 0; i < d.pal.length; i++) { const [pr, pg, pb] = d.pal[i], e = (pr - r) ** 2 + (pg - g) ** 2 + (pb - b) ** 2; if (e < bd) { bd = e; bi = i; } }
+    memo.set(key, bi); return bi;
+  };
   for (let row = start; row < start + lines && row < d.h; row++) {
     const y = d.topdown ? row : d.h - 1 - row, dst = bits + (row - start) * d.stride;
     if (d.bpp <= 8) u.fill(0, dst, dst + d.stride);

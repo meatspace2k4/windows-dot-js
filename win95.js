@@ -1717,9 +1717,12 @@ class SaverRun {
       try { for (let n = 0; this.alive && p.ready() && n < 4; n++) if (!p.slice()) break; }
       catch (e) { console.error(e); this.exited(-1, e.message); return; }
       if (this.mode === 'p') dirty();
-      requestAnimationFrame(step);
+      // guest time is driven by its own timers and message loop, not by display refresh
+      const p2 = this.proc, now = performance.now();
+      const next = p2 && p2.waiting ? Math.min(...p2.timers.map(t => t.due), now + 50) : now;
+      setTimeout(step, Math.max(0, next - now));
     };
-    requestAnimationFrame(step);
+    setTimeout(step, 0);
   }
   overlay() {
     const c = this.el = mkc(W, H);
