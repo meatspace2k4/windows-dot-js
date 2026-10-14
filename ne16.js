@@ -1767,9 +1767,17 @@ K('#41', 5, function (thunk, thkbuf, len, dll16) {      // ThunkInitLSF
 K('ThunkConnect32', 6, function (td, f16, m16, m32, hmod, reason) {
   if (reason !== 1) return 1;
   const magic = this.readA(td, 4), name = (this.readA(m16) || '').toUpperCase().replace(/\.DLL$/, '');
-  const m = this.loadLibrary16(name, true); if (!m) return 0;
-  const sp = this.neExport(m, this.readA(f16)); if (!sp) return 0;
-  const t16 = this.lin(sp);
+  // late binding ('LB01' in the 32-bit data): the 16-bit half is found when a thunk is first called
+  const late = this.readA(td + 0xc, 4) === 'LB01', f16name = this.readA(f16);
+  const find = () => { const m = this.loadLibrary16(name, true); const sp = m && this.neExport(m, f16name); return sp ? this.lin(sp) : 0; };
+  if (late && magic === 'LS01') {
+    this.lsRelays = this.lsRelays || new Map();
+    const rel = { ft: false, table: 0, bind: () => { if (!rel.table) { const t16 = find(); if (!t16) throw new GuestError(`thunk to ${name}: no ${f16name}`); rel.table = this.lin(this.r32(t16 + 8)); this.w32(td + 8, rel.table); } return rel.table; } };
+    this.lsRelays.set(u32(td + this.r32(td + 0x1c)), rel);
+    this.lsRelays.set(u32(td + this.r32(td + 0x20)), { ft: true, get table() { return rel.bind(); } });
+    return 1;
+  }
+  const t16 = find(); if (!t16) return 0;
   if (this.r32(t16) !== this.r32(td) || this.r32(t16 + 4) !== this.r32(td + 4)) return 0;   // magic and checksum
   if (magic === 'LS01') {
     const table = this.lin(this.r32(t16 + 8)); this.w32(td + 8, table);
@@ -1965,7 +1973,7 @@ P.dataCode = function (eip) {
   const ls = this.lsRelays && this.lsRelays.get(u32(eip));
   if (ls) {   // ThunkConnect32's relays: target n (CL, or the byte at [EBP-4] for QT_Thunk) of the table into EDX
     const n = ls.ft ? this.reg('ecx') & 0xff : this.u8[u32(this.reg('ebp') - 4)];
-    this.reg('edx', this.r32(ls.table + 4 * n));
+    this.reg('edx', this.r32((ls.bind ? ls.bind() : ls.table) + 4 * n));
     if (!ls.ft) this.reg('ecx', n);
     return ls.ft ? this.ftProlog() : this.qtThunk();
   }
