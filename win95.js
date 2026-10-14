@@ -374,6 +374,7 @@ function openWin(w) {
   activate(w); dirty(); return w;
 }
 function activate(w) {
+  if (w && w.native && !w.app.syncing) w.app.focus(w);
   if (w && modal() && w !== modal()) w = modal();
   if (w) { w.min = false; windows = windows.filter(v => v !== w); windows.push(w); }
   active = w; blinkOn = true; dirty();
@@ -381,6 +382,7 @@ function activate(w) {
 function topVisible() { for (let i = windows.length - 1; i >= 0; i--) if (!windows[i].min) return windows[i]; return null; }
 function closeWin(w, force) {
   if (!windows.includes(w)) return;
+  if (w.native && !force) { w.app.close(w); return; }
   if (!force && w.body && w.body.canClose && !w.body.canClose(() => closeWin(w, true))) return;
   if (w.body && w.body.onClose) w.body.onClose();
   windows = windows.filter(v => v !== w); tasks = tasks.filter(v => v !== w); modals = modals.filter(v => v !== w);
@@ -388,7 +390,7 @@ function closeWin(w, force) {
   if (active === w || !windows.includes(active)) active = modal() || topVisible();
   dirty();
 }
-function minimize(w) { if (!w.minimizable) return; w.min = true; if (active === w) active = topVisible(); dirty(); }
+function minimize(w) { if (!w.minimizable) return; if (w.native) { w.app.minimize(w); return; } w.min = true; if (active === w) active = topVisible(); dirty(); }
 function toggleMax(w) {
   if (!w.maximizable) return;
   if (w.max) { Object.assign(w, w.saved); w.max = false; }
@@ -547,6 +549,7 @@ function makeDisk(mounted) {
   for (const [e, d] of Object.entries(sysFonts)) fs.writeFile(join(WINDIR, 'FONTS', e), b64(d));
   fs.writeFile('C:\\Program Files\\Accessories\\WORDPAD.EXE', exeStub());
   fs.writeFile(PROGRAMS + '\\Accessories\\Notepad.lnk', lnk(WINDIR + '\\NOTEPAD.EXE'));
+  installPrograms();
   // the CD's screen savers, byte for byte, under the long names APPLETS.INF gives them in LDID_SYS
   const LONG = { 'BEZIER.SCR': 'Curves and Colors.scr', 'SSMARQUE.SCR': 'Scrolling Marquee.scr', 'SSMYST.SCR': 'Mystify Your Mind.scr',
     'SCRNSAVE.SCR': 'Blank Screen.scr', 'SSFLYWIN.SCR': 'Flying Windows.scr', 'SSSTARS.SCR': 'Flying Through Space.scr' };
@@ -789,16 +792,17 @@ function bootDisk() {
   mountDrives();
   W95Win32.regAttach(host.registry);
   if (!fs.attach('C', host.disk)) makeDisk(true);
+  installPrograms();
   fs.chdir('C:\\');
 }
 
 // ---------------------------------------------------------------- shell namespace
 const TYPES = {
-  txt: { desc: 'Text Document', icon: 'textdoc', open: p => notepad(p) },
-  log: { desc: 'Text Document', icon: 'textdoc', open: p => notepad(p) },
-  ini: { desc: 'Configuration Settings', icon: 'sysfile', open: p => notepad(p) },
-  inf: { desc: 'Setup Information', icon: 'sysfile', open: p => notepad(p) },
-  bat: { desc: 'MS-DOS Batch File', icon: 'batch', open: p => notepad(p) },
+  txt: { desc: 'Text Document', icon: 'textdoc', open: p => runNotepad(p) },
+  log: { desc: 'Text Document', icon: 'textdoc', open: p => runNotepad(p) },
+  ini: { desc: 'Configuration Settings', icon: 'sysfile', open: p => runNotepad(p) },
+  inf: { desc: 'Setup Information', icon: 'sysfile', open: p => runNotepad(p) },
+  bat: { desc: 'MS-DOS Batch File', icon: 'batch', open: p => runNotepad(p) },
   sys: { desc: 'System file', icon: 'sysfile' }, dll: { desc: 'Application Extension', icon: 'sysfile' },
   vxd: { desc: 'Virtual device driver', icon: 'sysfile' }, drv: { desc: 'Device driver', icon: 'sysfile' },
   fon: { desc: 'Font file', icon: 'sysfile' }, ttf: { desc: 'TrueType Font file', icon: 'sysfile' },
@@ -891,9 +895,13 @@ function shellOpen(path, arg) {
 }
 function runExe(path, arg) {
   const n = basename(path).toUpperCase();
-  if (n === 'NOTEPAD.EXE') return notepad(arg ? resolveArg(arg) : null);
+  if (n === 'NOTEPAD.EXE') return runNotepad(arg ? resolveArg(arg) : null, path);
   if (n === 'EXPLORER.EXE') return arg ? openPath(resolveArg(arg)) : openFolder(MyComputer);
   msgBox(dispName(basename(path)), `${path} is not a valid Windows application.`, 'error');
+}
+// Notepad: the CD's NOTEPAD.EXE on the native USER when the system bundle has it, the shell's own otherwise
+function runNotepad(file, exe = join(WINDIR, 'NOTEPAD.EXE')) {
+  runNative(exe, file ? (/\s/.test(file) ? `"${file}"` : file) : '').then(ok => { if (!ok) notepad(file); });
 }
 const resolveArg = a => { a = a.trim().replace(/^"(.*)"$/, '$1'); return /^[a-z]:|^\\/i.test(a) ? a : join(fs.cwd, a); };
 function openLnk(path) {
@@ -2201,7 +2209,7 @@ function taskDown(x, y, btn, dbl) {
   if (inR(L.start, x, y)) { if (menuSrc && menuSrc.kind === 'start') closeMenus(); else openStart(); return; }
   const b = L.btns.find(v => inR(v, x, y));
   if (b) {
-    if (btn === 2) { activate(b.t); sysMenu(b.t, x, y - 4, true); return; }
+    if (btn === 2) { activate(b.t); if (!b.t.native) sysMenu(b.t, x, y - 4, true); return; }
     if (b.t === active && !b.t.min) minimize(b.t); else activate(b.t);
     return;
   }
@@ -2386,6 +2394,185 @@ function win32Dialog(proc, d) {
   const win = new Win({ ...centered(w, h), w, h, title: d.title, resizable: false, minimizable: false, maximizable: false, body, noTask: true });
   d.ui = win; modals.push(win); openWin(win); dirty();
 }
+// ---------------------------------------------------------------- Windows programs on the native USER
+// A program the system bundle carries (NOTEPAD.EXE) runs as Windows 95 runs it: its own code on USER32, USER.EXE, GDI
+// and the display driver, all recompiled, in a machine of its own whose screen is an ET4000 mode no larger than the
+// shell's. Each visible top-level window USER has on that screen is a window of the shell at the same place, drawn
+// from the machine's framebuffer and kept in USER's order; the mouse goes to USER while it is over one of them or USER
+// holds the capture (menus, dragging), and the keys while one of them is the active window.
+const nativeApps = new Set();
+const NATIVE_MODES = [[1024, 768], [800, 600], [640, 480]];
+async function nativeProgram(bytes) {
+  const progs = (window.W95SYSTEM || {}).programs || {}, sha = await sha256hex(bytes);
+  for (const [name, d] of Object.entries(progs)) if (d.meta.sha256 === sha) return { name, d };
+  return null;
+}
+// the files the bundle carries for programs replace the placeholders an older disk has for them
+function installPrograms() {
+  const stub = exeStub();
+  for (const [name, d] of Object.entries((window.W95SYSTEM || {}).programs || {})) {
+    const path = join(WINDIR, name); let cur = null; try { cur = fs.readFile(path); } catch (_) { /* not there */ }
+    if (cur && !(cur.length === stub.length && cur.every((b, i) => b === stub[i]))) continue;
+    fs.writeFile(path, b64bytes(d.file));
+  }
+}
+class NativeWin extends Win {
+  constructor(app, n) {
+    super({ resizable: false, maximizable: false, icon: app.icon });
+    this.app = app; this.hwnd = n.hwnd; this.native = true;
+    this.noTask = !!n.owner || n.cls === '#32768' || !n.title;
+    this.minimizable = !this.noTask;
+    this.set(n);
+  }
+  set(n) { Object.assign(this, { x: n.x, y: n.y, w: n.w, h: n.h, title: n.title, min: n.iconic, cls: n.cls }); }
+  draw() { this.app.blit(this); }
+  hit(px, py) { return inR(this, px, py) ? 'native' : null; }
+  buttons() { return []; }
+  barItems() { return []; }
+}
+// scan codes (set 1) by KeyboardEvent.code; E0-prefixed keys carry 0x100
+const SCAN = (() => {
+  const t = { Escape: 1, Minus: 12, Equal: 13, Backspace: 14, Tab: 15, BracketLeft: 26, BracketRight: 27, Enter: 28, ControlLeft: 29,
+    Semicolon: 39, Quote: 40, Backquote: 41, ShiftLeft: 42, Backslash: 43, Comma: 51, Period: 52, Slash: 53, ShiftRight: 54,
+    NumpadMultiply: 55, AltLeft: 56, Space: 57, CapsLock: 58, NumLock: 69, ScrollLock: 70, NumpadSubtract: 74, NumpadAdd: 78,
+    NumpadDecimal: 83, F11: 87, F12: 88, ControlRight: 0x11d, AltRight: 0x138, NumpadEnter: 0x11c, NumpadDivide: 0x135,
+    Home: 0x147, ArrowUp: 0x148, PageUp: 0x149, ArrowLeft: 0x14b, ArrowRight: 0x14d, End: 0x14f, ArrowDown: 0x150, PageDown: 0x151,
+    Insert: 0x152, Delete: 0x153 };
+  '1234567890'.split('').forEach((c, i) => { t['Digit' + c] = 2 + i; });
+  ['QWERTYUIOP', 'ASDFGHJKL', 'ZXCVBNM'].forEach((r, k) => r.split('').forEach((c, i) => { t['Key' + c] = [0x10, 0x1e, 0x2c][k] + i; }));
+  for (let i = 1; i <= 10; i++) t['F' + i] = 0x3a + i;
+  [[7, 0x47], [8, 0x48], [9, 0x49], [4, 0x4b], [5, 0x4c], [6, 0x4d], [1, 0x4f], [2, 0x50], [3, 0x51], [0, 0x52]].forEach(([n, c]) => { t['Numpad' + n] = c; });
+  return t;
+})();
+class NativeApp {
+  constructor(path, arg) { this.path = path; this.arg = arg; this.alive = true; this.wins = new Map(); this.icon = EXE_ICON[basename(path).toUpperCase()] || 'app'; this.lastActive = 0; this.cursorOn = false; }
+  async start(bytes, prog) {
+    const S = window.W95SYSTEM;
+    await systemCompiled();
+    if (!prog.d.mod) prog.d.mod = WebAssembly.compile(b64bytes(prog.d.wasm));
+    const module = await prog.d.mod;
+    const dlls = new Map();
+    for (const [n, d] of Object.entries(S.dlls)) { d.bytes = d.bytes || b64bytes(d.file); dlls.set(n.replace(/\.DLL$/, ''), { file: d.bytes, module: d.mod, meta: d.meta }); }
+    [this.sw, this.sh] = NATIVE_MODES.find(([w, h]) => w <= W && h <= H) || NATIVE_MODES[NATIVE_MODES.length - 1];
+    const host = {
+      fs, width: this.sw, height: this.sh, path: this.path, now: () => performance.now(),
+      cursor: () => ({ x: mouse.x, y: mouse.y }), surface: (h, w, hh) => mkc(w, hh).getContext('2d'), setCursor: () => {},
+      exited: (code, why) => this.exited(code, why), boot: p => p.bootUser16(),
+    };
+    const exe = /\s/.test(this.path) ? `"${this.path}"` : this.path;
+    try { this.proc = new W95Win32.Process(bytes, module, { ...prog.d.meta, name: prog.name.replace(/\.EXE$/, '') }, host, this.arg ? `${exe} ${this.arg}` : exe, dlls); }
+    catch (e) { console.error(e); this.exited(-1, e.message); return false; }
+    if (this.proc.trapped) { this.exited(-1, this.proc.trapped); return false; }
+    this.cv = mkc(this.sw, this.sh); this.cx = this.cv.getContext('2d'); this.img = this.cx.createImageData(this.sw, this.sh);
+    this.d32 = new Uint32Array(this.img.data.buffer); this.pal = new Uint32Array(256);
+    try {
+      // the cursor USER draws shows only while the mouse is over this program's windows; its windows stay above the taskbar
+      this.proc.user16(71, [['w', 0]]);
+      const p = this.proc, r = p.wbufLin || (p.nativeWindows(), p.wbufLin);
+      p.w16(r, 0); p.w16(r + 2, 0); p.w16(r + 4, this.sw); p.w16(r + 6, Math.min(this.sh, workH()));
+      p.user16(483, [['w', 47], ['w', 0], ['l', p.wbufSel << 16], ['w', 0]]);   // SPI_SETWORKAREA
+    } catch (e) { console.error(e); }
+    nativeApps.add(this);
+    this.step(); return true;
+  }
+  step() {
+    clearTimeout(this.timer); this.timer = 0;
+    if (!this.alive) return;
+    const p = this.proc, t0 = performance.now();
+    try { for (let n = 0; this.alive && n < 4; n++) { p.stats.slices++; const live = p.slice(); p.timers16(); p.threads16(); if (!live) break; } }
+    catch (e) { console.error(e); this.exited(-1, e.message); return; }
+    p.stats.guestMs += performance.now() - t0;
+    if (p.trapped && !p.failed) p.fail(p.trapped);
+    if (p.exitCode !== null || p.trapped) { this.exited(p.exitCode, p.trapped); return; }
+    this.sync();
+    this.timer = setTimeout(() => this.step(), 16);
+  }
+  kick() { if (this.alive && this.timer) { clearTimeout(this.timer); this.timer = setTimeout(() => this.step(), 0); } }
+  // the shell's windows for USER's: added, moved, retitled, closed, in USER's order, and USER's active window active
+  sync() {
+    let nw; try { nw = this.proc.nativeWindows(); } catch (e) { console.error(e); this.exited(-1, e.message); return; }
+    const seen = new Set();
+    for (const n of nw.list) {
+      let w = this.wins.get(n.hwnd);
+      if (!w) { w = new NativeWin(this, n); this.wins.set(n.hwnd, w); windows.push(w); if (!w.noTask) tasks.push(w); }
+      else w.set(n);
+      seen.add(n.hwnd);
+    }
+    for (const [h, w] of this.wins) if (!seen.has(h)) { this.wins.delete(h); closeWin(w, true); }
+    const order = nw.list.map(n => this.wins.get(n.hwnd)).reverse(), slots = [];
+    windows.forEach((w, i) => { if (w.app === this) slots.push(i); });
+    slots.forEach((i, k) => { windows[i] = order[k]; });
+    this.capture = nw.capture;
+    if (nw.active !== this.lastActive) {
+      this.lastActive = nw.active;
+      const w = this.wins.get(nw.active); if (w && !w.min) { this.syncing = true; activate(w); this.syncing = false; }
+    }
+    this.paint(); dirty();
+  }
+  // the framebuffer under this program's windows, through the DAC, into the canvas they are drawn from
+  paint() {
+    const a = this.proc.scanout(); if (a.bpp !== 8) return;
+    const pal = this.pal, dac = a.dac, v = a.vram, pitch = a.pitch || a.w, d = this.d32, sw = this.sw, sh = this.sh;
+    for (let i = 0; i < 256; i++) { const r = dac[3 * i], g = dac[3 * i + 1], b = dac[3 * i + 2]; pal[i] = 0xff000000 | ((b << 2 | b >> 4) << 16) | ((g << 2 | g >> 4) << 8) | (r << 2 | r >> 4); }
+    for (const w of this.wins.values()) {
+      if (w.min) continue;
+      const x0 = Math.max(0, w.x), y0 = Math.max(0, w.y), x1 = Math.min(sw, a.w, w.x + w.w), y1 = Math.min(sh, a.h, w.y + w.h);
+      if (x1 <= x0 || y1 <= y0) continue;
+      for (let y = y0; y < y1; y++) { const s = y * pitch, o = y * sw; for (let x = x0; x < x1; x++) d[o + x] = pal[v[s + x]]; }
+      this.cx.putImageData(this.img, 0, 0, x0, y0, x1 - x0, y1 - y0);
+    }
+  }
+  blit(w) {
+    const x0 = Math.max(0, w.x), y0 = Math.max(0, w.y), x1 = Math.min(this.sw, w.x + w.w), y1 = Math.min(this.sh, w.y + w.h);
+    if (x1 > x0 && y1 > y0) ctx.drawImage(this.cv, x0, y0, x1 - x0, y1 - y0, x0, y0, x1 - x0, y1 - y0);
+  }
+  // the mouse: absolute moves and button changes into USER's mouse_event, as the mouse driver reports them
+  pointer(kind, x, y, btn = 0) {
+    if (!this.alive || !this.proc || this.proc.depth) return;
+    const ax = Math.round(clamp(x, 0, this.sw - 1) * 65535 / (this.sw - 1)), ay = Math.round(clamp(y, 0, this.sh - 1) * 65535 / (this.sh - 1));
+    const f = kind === 'down' ? (btn === 2 ? 8 : 2) : kind === 'up' ? (btn === 2 ? 16 : 4) : 1;
+    try { this.showCursor(true); this.proc.mouseEvent16(0x8001 | f, ax, ay); } catch (e) { console.error(e); }
+    this.kick();
+  }
+  showCursor(on) {
+    if (on === this.cursorOn || !this.alive) return;
+    this.cursorOn = on; try { this.proc.user16(71, [['w', on ? 1 : 0]]); } catch (e) { console.error(e); }
+    this.kick();
+  }
+  key(e, up) {
+    if (!this.alive || this.proc.depth) return;
+    const vk = e.keyCode || 0, sc = SCAN[e.code] || 0; if (!vk || vk === 91 || vk === 93 || vk === 224) return;   // the Mac command keys stay with the host
+    try { this.proc.keyEvent16(vk, sc & 0xff, up, sc > 0xff); } catch (err) { console.error(err); }
+    this.kick();
+  }
+  focus(w) {
+    try { if (w.min) this.proc.user16(42, [['w', w.hwnd], ['w', 9]]); else this.proc.user16(59, [['w', w.hwnd]]); } catch (e) { console.error(e); }   // ShowWindow SW_RESTORE, SetActiveWindow
+    this.kick();
+  }
+  minimize(w) { try { this.proc.user16(42, [['w', w.hwnd], ['w', 6]]); } catch (e) { console.error(e); } this.kick(); }   // SW_MINIMIZE
+  close(w) { try { this.proc.user16(110, [['w', w.hwnd], ['w', 0x10], ['w', 0], ['l', 0]]); } catch (e) { console.error(e); } this.kick(); }   // PostMessage WM_CLOSE
+  exited(code, why) {
+    if (!this.alive) return;
+    this.alive = false; clearTimeout(this.timer); nativeApps.delete(this);
+    for (const w of this.wins.values()) closeWin(w, true);
+    this.wins.clear();
+    emit('program.exit', { path: this.path, code, ...(why ? { why } : {}) });
+    if (why) msgBox(basename(this.path), `This program has performed an illegal operation and will be shut down.\n\n${why}`, 'error');
+    dirty();
+  }
+}
+// the native program whose window is under the point, or that holds USER's capture
+function nativeAt(x, y) {
+  for (const a of nativeApps) if (a.capture) return a;
+  const w = winAt(x, y); return w && w.native ? w.app : null;
+}
+async function runNative(path, arg) {
+  let bytes; try { bytes = fs.readFile(path); } catch (e) { return false; }
+  const prog = await nativeProgram(bytes); if (!prog) return false;
+  const app = new NativeApp(path, arg);
+  return app.start(bytes, prog);
+}
+
 class Win32DialogBody {
   constructor(proc, d, px, py) {
     this.p = proc; this.d = d;
@@ -2723,12 +2910,14 @@ function render() {
   drawCursor(cursorAt(mouse.x, mouse.y));
 }
 function drawCursor(name) {
+  if (name === 'none') return;
   const c = CUR[name] || CUR.arrow; if (!c || mouse.x < 0) return;
   ctx.drawImage(c.i, mouse.x - c.hx, mouse.y - c.hy);
 }
 const SIZE_CUR = { n: 'sizens', s: 'sizens', e: 'sizewe', w: 'sizewe', nw: 'sizenwse', se: 'sizenwse', ne: 'sizenesw', sw: 'sizenesw' };
 function cursorAt(x, y) {
   if (drag) return drag.cursor;
+  for (const a of nativeApps) if (a.cursorOn) return 'none';   // USER draws its own
   if (menus.length && menuAt(x, y) >= 0) return 'arrow';
   if (onTaskbar(x, y)) return 'arrow';
   const w = winAt(x, y);
@@ -2828,6 +3017,13 @@ cv.addEventListener('pointerdown', e => {
   if (ren && !(ren.box && inR(ren.box, x, y))) commitRename();
   if (ren) { dirty(); return; }
   const m = modal();
+  const na = !m ? nativeAt(x, y) : null;
+  if (na && (na.capture || !onTaskbar(x, y))) {
+    const nw = winAt(x, y); if (nw && nw.native && active !== nw) { na.syncing = true; activate(nw); na.syncing = false; }
+    na.pointer('down', x, y, btn);
+    cap = { native: na, move: (mx, my) => na.pointer('move', mx, my), up: (ux, uy) => na.pointer('up', ux, uy, btn) };
+    dirty(); return;
+  }
   if (onTaskbar(x, y)) { if (!m) taskDown(x, y, btn, dbl); dirty(); return; }
   const w = winAt(x, y);
   if (m && w !== m) { activate(m); dirty(); return; }
@@ -2837,7 +3033,10 @@ cv.addEventListener('pointerdown', e => {
 cv.addEventListener('pointermove', e => {
   const [x, y] = pos(e); if (x !== mouse.x || y !== mouse.y) lastInput = performance.now(); mouse = { x, y };
   if (tbar.autohide && !cap) { if (y >= H - 2 || (tbar.shown > 0 && y >= barTop())) slideTaskbar(true); else if (!(menuSrc && menuSrc.kind === 'start')) slideTaskbar(false); }
+  const na = !cap && !menus.length && !modal() ? nativeAt(x, y) : null;
+  for (const a of nativeApps) if (a !== na && !(cap && cap.native === a)) a.showCursor(false);
   if (cap && cap.move) cap.move(x, y);
+  else if (na) na.pointer('move', x, y);
   else if (menus.length) {
     const d = menuAt(x, y);
     if (d >= 0) { const i = rowAt(menus[d], x, y); setHover(d, i); }
@@ -2884,7 +3083,11 @@ kbd.addEventListener('input', () => {
   const s = kbd.value; kbd.value = '';
   for (const ch of s.replace(/\r/g, '')) handleKey({ key: ch === '\n' ? 'Enter' : ch, shiftKey: false, ctrlKey: false, metaKey: false, altKey: false, preventDefault() {} });
 });
+// the keys go to USER while one of a native program's windows is active and the shell has nothing open over it
+const nativeFocus = () => (!menus.length && !ren && !modal() && !fullSaver && screen === 'desktop' && active && active.native && active.app.alive ? active.app : null);
+window.addEventListener('keyup', e => { const a = nativeFocus(); if (a) { e.preventDefault(); a.key(e, true); } });
 window.addEventListener('keydown', e => {
+  { const a = nativeFocus(); if (a) { lastInput = performance.now(); e.preventDefault(); a.key(e, false); return; } }
   // Option changes the character a Mac key types; Alt+letter means the letter on the key
   if (e.altKey && !e.ctrlKey && !e.metaKey && /^(Key[A-Z]|Digit\d)$/.test(e.code)) {
     e.preventDefault();
