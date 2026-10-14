@@ -1407,6 +1407,12 @@ class DialogBody {
   }
   key(e) {
     const c = this.c[this.focus];
+    // Ctrl+Tab and Ctrl+Shift+Tab (or Ctrl+PageDown/PageUp) turn a property sheet's pages
+    const sheet = e.ctrlKey && (e.key === 'Tab' || e.key === 'PageDown' || e.key === 'PageUp') && this.c.find(o => o.type === 'tabs');
+    if (sheet) {
+      const back = e.key === 'PageUp' || (e.key === 'Tab' && e.shiftKey), n = sheet.tabs.length;
+      this.page = (this.page + (back ? n - 1 : 1)) % n; if (sheet.onChange) sheet.onChange(this.page); return true;
+    }
     if (e.key === 'Tab') {
       const f = this.c.map((o, i) => i).filter(i => {
         const o = this.c[i];
