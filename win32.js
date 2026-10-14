@@ -11,8 +11,10 @@ const LAYOUT = { SENTINEL: 0xFFFFFFF0, THUNK: 0xFFFF0000, THUNK16: 0xFFFE0000, F
   STACK_LO: 0x100000, STACK_TOP: 0x3ffff0, HEAP: 0x02000000, HEAP_END: 0x06000000 };
 const YIELD = Symbol('yield');   // returned by an API implementation to suspend the guest at depth 0
 const TICK_MS = 65536 * 1000 / 1193182;   // PIT channel 0 period, 54.925 ms
+// The machine the guest runs at the speed of: a Pentium 133 retiring an x86 instruction every 1.5 clocks on average.
+const INSN_PER_MS = 133000 / 1.5;
 const CPU_REGS = ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi', 'cf', 'pf', 'zf', 'sf', 'of', 'df', 'fs', 'ftop', 'fsw', 'fcw', 'eip',
-  'cs', 'ds', 'es', 'ss', 'fsel', 'gsel', 'csb', 'dsb', 'esb', 'ssb', 'gsb'];
+  'cs', 'ds', 'es', 'ss', 'fsel', 'gsel', 'csb', 'dsb', 'esb', 'ssb', 'gsb', 'icount'];
 const WM = { NULL: 0, CREATE: 1, DESTROY: 2, MOVE: 3, SIZE: 5, ACTIVATE: 6, SETFOCUS: 7, KILLFOCUS: 8, PAINT: 0xf, CLOSE: 0x10,
   QUIT: 0x12, ERASEBKGND: 0x14, SHOWWINDOW: 0x18, ACTIVATEAPP: 0x1c, SETCURSOR: 0x20, NCCREATE: 0x81, NCDESTROY: 0x82,
   NCACTIVATE: 0x86, KEYDOWN: 0x100, KEYUP: 0x101, CHAR: 0x102, SYSKEYDOWN: 0x104, SYSCOMMAND: 0x112, TIMER: 0x113,
@@ -39,7 +41,7 @@ class Process {
     this.cpu = {};
     for (const n of CPU_REGS) this.cpu[n] = new WebAssembly.Global({ value: 'i32', mutable: true }, n === 'fcw' ? 0x37f : 0);
     this.depth = 0; this.exitCode = null; this.trapped = null; this.waiting = false; this.lastYield = 0;
-    this.t0 = host.now(); this.busy = 0;
+    this.t0 = host.now(); this.busy = 0; this.icount = 0;
     this.thunks = []; this.thunkByName = new Map();
     this.handles = new Map(); this.nextHandle = 0x100;
     this.windows = new Map(); this.classes = new Map(); this.queue = []; this.timers = []; this.quit = null;
@@ -163,6 +165,7 @@ class Process {
     if (this.trapped) { this.fail(this.trapped); return false; }
     this.depth = 0; this.waiting = false; this.lastYield = this.now();
     const r = this.runAt(this.resumeEip);
+    this.account();
     if (r === 1) { this.resumeEip = this.reg('eip'); return true; }
     if (r === 2 || this.trapped) { this.fail(this.trapped || `bad address ${this.reg('eip').toString(16)}`); return false; }
     if (this.exitCode === null) this.exitCode = this.reg('eax');
@@ -195,6 +198,7 @@ class Process {
     if (code === 0) this.cpu.eip.value = LAYOUT.SENTINEL | 0;
   }
   api(eip) {
+    this.account();
     if (u32(eip) < LAYOUT.THUNK) return this.api16(u32(eip));
     const t = this.thunks[(u32(eip) - LAYOUT.THUNK) >> 2];
     if (!t || !t.def) { this.trapped = `unimplemented import ${t ? t.dll + '!' + t.nm : u32(eip).toString(16)}`; return LAYOUT.SENTINEL; }
@@ -304,6 +308,8 @@ class Process {
   now() { return Math.max(this.host.now(), this.busy); }
   /** Charge ms of CPU time the original machine spent; the guest does not run again until it has elapsed. */
   charge(ms) { if (ms > 0) this.busy = this.now() + ms; }
+  /** Charge the guest instructions retired since the last call (counted by the translated code). */
+  account() { const v = this.cpu.icount.value, d = (v - this.icount) >>> 0; this.icount = v; this.charge(d / INSN_PER_MS); }
   ready() {
     if (this.exitCode !== null || this.trapped) return false;
     if (this.host.now() < this.busy) return false;
