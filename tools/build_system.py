@@ -32,7 +32,8 @@ with tempfile.TemporaryDirectory() as tmp:
     bundle['thunks16'] = json.load(open(reg))['thunks']
     for f, b, lk in PE:
         p = os.path.join(src, f); base = os.path.join(tmp, f)
-        subprocess.run([sys.executable, os.path.join(here, 'recomp.py'), p, base, '--base', hex(b), '--lookup', hex(lk)], check=True)
+        trace = ['--trace'] if f.upper() in os.environ.get('TRACE_NE', '').upper().split(',') else []
+        subprocess.run([sys.executable, os.path.join(here, 'recomp.py'), p, base, '--base', hex(b), '--lookup', hex(lk)] + trace, check=True)
         bundle['dlls'][f.upper()] = {'file': b64(p), 'wasm': b64(base + '.wasm'), 'meta': json.load(open(base + '.json'))}
     for f, lk in PROGRAMS:
         p = os.path.join(src, f); base = os.path.join(tmp, f)
