@@ -1622,7 +1622,11 @@ P.nativeUser16 = function () { const u = this.ne && this.ne.get('USER'); return 
 P.hinst16 = function (h32) {
   this.h16of = this.h16of || new Map(); this.h32of = this.h32of || new Map();
   if (this.h16of.has(h32)) return this.h16of.get(h32);
-  const mdb = this.alloc(0x40); this.u8.set([0x4e, 0x45], mdb);
+  // a module database as KERNEL makes one for a Win32 module: 'NE', and flags with NE_FFLAGS_WIN32 (10h) and single
+  // data, plus the library bit for a DLL
+  const mod = this.moduleFor(h32), pe = mod && mod.base === h32 ? this.r32(h32 + 0x3c) : 0;
+  const dll = pe && (this.r16(h32 + pe + 0x16) & 0x2000);
+  const mdb = this.alloc(0x40); this.u8.set([0x4e, 0x45], mdb); this.w16(mdb + 0x0c, 0x0011 | (dll ? 0x8000 : 0));
   const sel = this.allocSels(mdb, 0x40);
   this.h16of.set(h32, sel); this.h32of.set(sel & 0xfffe, h32);
   return sel;
