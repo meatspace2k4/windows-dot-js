@@ -607,9 +607,29 @@ def('KERNEL32', 'FreeEnvironmentStringsW', 1, () => 1);
 def('KERNEL32', 'GetStdHandle', 1, () => 0xffffffff);
 def('KERNEL32', 'GetFileType', 1, () => 0);
 def('KERNEL32', 'SetHandleCount', 1, n => n);
-def('KERNEL32', 'GetStringTypeA', 5, () => 0);
+// character types (CT_CTYPE1: upper 1, lower 2, digit 4, space 8, punct 10h, control 20h, blank 40h, xdigit 80h, alpha 100h)
+def('KERNEL32', 'GetStringTypeA', 5, function (lc, type, src, n, out) {
+  const len = n === 0xffffffff || n === -1 ? this.readA(src).length + 1 : n;
+  const t = new TextDecoder('windows-1252').decode(this.u8.subarray(src, src + len));
+  for (let i = 0; i < t.length; i++) {
+    const c = t[i], up = c !== c.toLowerCase(), lo = c !== c.toUpperCase(); let v = 0;
+    if (up) v |= 0x101; if (lo) v |= 0x102; if (/[0-9]/.test(c)) v |= 0x84; if (/[a-f]/i.test(c)) v |= 0x80;
+    if (/\s/.test(c)) v |= 8; if (c === ' ' || c === '\t') v |= 0x40; if (c.charCodeAt(0) < 32) v |= 0x20;
+    if (!v && c.charCodeAt(0) > 32 && c.charCodeAt(0) !== 127) v |= 0x10;
+    this.w16(out + 2 * i, v);
+  }
+  return 1;
+});
 def('KERNEL32', 'GetStringTypeW', 4, () => 0);
-def('KERNEL32', 'LCMapStringA', 6, () => 0);
+// case mapping (LCMAP_LOWERCASE 100h, LCMAP_UPPERCASE 200h); a sort key (400h) is the upper-cased text; a zero
+// output size asks for the size needed
+def('KERNEL32', 'LCMapStringA', 6, function (lc, fl, src, n, dst, max) {
+  const len = n === 0xffffffff || n === -1 ? this.readA(src).length + 1 : n;
+  let t = new TextDecoder('windows-1252').decode(this.u8.subarray(src, src + len));
+  if (fl & 0x100) t = t.toLowerCase(); else if (fl & 0x600) t = t.toUpperCase();
+  const b = window.W95FS.encode(t); if (!max) return b.length;
+  const k = Math.min(b.length, max); this.u8.set(b.subarray(0, k), dst); return k;
+});
 def('KERNEL32', 'LCMapStringW', 6, () => 0);
 // code page 1252 <-> UTF-16; a zero output size asks for the size needed
 def('KERNEL32', 'MultiByteToWideChar', 6, function (cp, fl, src, n, dst, max) {
