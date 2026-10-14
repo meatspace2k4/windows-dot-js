@@ -50,7 +50,7 @@ REGS = ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi']
 IMPORTS = [('api', [I32], [I32]), ('trap', [I32, I32], []),
            ('fsin', [F64], [F64]), ('fcos', [F64], [F64]), ('ftan', [F64], [F64]), ('fatan2', [F64, F64], [F64]),
            ('fexp2', [F64], [F64]), ('flog2', [F64], [F64]), ('fmod', [F64, F64], [F64]), ('frem', [F64, F64], [F64]),
-           ('f80load', [I32], [F64]), ('f80store', [I32, F64], [])]
+           ('f80load', [I32], [F64]), ('f80store', [I32, F64], []), ('btrace', [I32], [])]
 IMP = {n: i for i, (n, _, _) in enumerate(IMPORTS)}
 NIMP = len(IMPORTS)
 
@@ -374,11 +374,13 @@ def fround(f):
     f.lg(t).e(D['nearest']); f.lg(rc).e(OPS['eqz']).e(SELECT)
 
 class Translator:
+    TRACE = False
     def __init__(self, pe, blocks):
         self.pe, self.blocks = pe, blocks
         self.unsupported = {}
     def block(self, start, lst):
         f = Fn()
+        if self.TRACE: f.c(start).e(0x10, uleb(IMP['btrace']))
         try:
             for ins in lst:
                 f.ti = 0; f.tq = 0; f.td = 0
@@ -947,6 +949,7 @@ def build(path, out, base=None, lookup=0x06000000):
 
 if __name__ == '__main__':
     a = sys.argv[1:]; kw = {}
+    if '--trace' in a: a.remove('--trace'); Translator.TRACE = True
     while len(a) > 2:
         v = int(a.pop(), 0); k = a.pop().lstrip('-'); kw[k] = v
     build(a[0], a[1], **kw)

@@ -43,7 +43,7 @@ class Process {
     this.windows = new Map(); this.classes = new Map(); this.queue = []; this.timers = []; this.quit = null;
     this.heapTop = LAYOUT.HEAP; this.freeList = new Map(); this.allocs = new Map();
     const math = { fsin: Math.sin, fcos: Math.cos, ftan: Math.tan, fatan2: Math.atan2, fexp2: x => Math.pow(2, x), flog2: Math.log2,
-      fmod: (a, b) => a % b, frem: (a, b) => a - b * Math.round(a / b), f80load: a => this.f80load(a), f80store: (a, v) => this.f80store(a, v) };
+      fmod: (a, b) => a % b, frem: (a, b) => a - b * Math.round(a / b), f80load: a => this.f80load(a), f80store: (a, v) => this.f80store(a, v), btrace: e => { if (window.W95BTRACE) window.W95BTRACE(e >>> 0); } };
     this.imports = { env: { mem: this.mem, api: e => this.api(e), trap: (e, c) => this.trap(e, c), ...math }, cpu: this.cpu };
     this.modules = []; this.byName = new Map(); this.inits = [];
     this.exe = this.loadImage(file, module, meta, 'EXE');
