@@ -1230,12 +1230,12 @@ P.call16from32 = function (target, src, n, map, ret32 = false) {
   return this.reg('eax');
 };
 KR('#45', function () {          // Common32ThkLS: EAX = 16-bit common entry, CX = target*4 (into DI), EDX.hi = dword args
-  const ret = pop32(this), n = (this.reg('edx') >>> 16) * 4;
-  this.reg('edi', lo16(this.reg('edi'), this.reg('ecx')));
+  const ret = pop32(this), n = (this.reg('edx') >>> 16) * 4, edi = this.reg('edi');
+  this.reg('edi', lo16(edi, this.reg('ecx')));      // the target index goes to the 16-bit side only
   const sp = this.reg('esp');
   this.reg('esp', sp - 32);
   this.call16from32(this.reg('eax'), sp - 32, n + 32, 0, true);
-  this.reg('esp', sp + (this.last16.ebx & 0xff));
+  this.reg('esp', sp + (this.last16.ebx & 0xff)); this.reg('edi', edi);
   return ret;
 });
 // pointer mapping

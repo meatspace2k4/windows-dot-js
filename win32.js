@@ -520,6 +520,7 @@ def('KERNEL32', 'GetSystemDirectoryA', 2, function (b, n) { return this.writeA(b
 def('KERNEL32', 'IsBadReadPtr', 2, function (a, n) { return !a || a + n > this.mem.buffer.byteLength ? 1 : 0; });
 def('KERNEL32', 'IsBadWritePtr', 2, function (a, n) { return !a || a + n > this.mem.buffer.byteLength ? 1 : 0; });
 def('KERNEL32', 'RtlMoveMemory', 3, function (d, s, n) { this.u8.copyWithin(d, s, s + n); });
+def('KERNEL32', 'IsDBCSLeadByte', 1, () => 0);    // code page 1252 has no lead bytes
 def('KERNEL32', 'MulDiv', 3, function (a, b, c) {    // rounded (a*b)/c, -1 on overflow or division by zero
   a |= 0; b |= 0; c |= 0; if (!c) return -1;
   const p = BigInt(a) * BigInt(b), C = BigInt(c), neg = (p < 0n) !== (C < 0n), ap = p < 0n ? -p : p, ac = C < 0n ? -C : C;
