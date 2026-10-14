@@ -22,8 +22,9 @@ with tempfile.TemporaryDirectory() as tmp:
     reg = os.path.join(tmp, 'registry.json')
     for f, b, sel, lk in NE:
         p = os.path.join(src, f); base = os.path.join(tmp, f)
+        trace = ['--trace'] if f.upper() in os.environ.get('TRACE_NE', '').upper().split(',') else []
         subprocess.run([sys.executable, os.path.join(here, 'recomp.py'), p, base, '--base', hex(b), '--selbase', hex(sel),
-                        '--lookup', hex(lk), '--registry', reg], check=True)
+                        '--lookup', hex(lk), '--registry', reg] + trace, check=True)
         meta = json.load(open(base + '.json'))
         bundle['ne'][meta['name'].upper()] = {'file': b64(p), 'fileName': f.upper(), 'wasm': b64(base + '.wasm'), 'meta': meta}
     bundle['thunks16'] = json.load(open(reg))['thunks']

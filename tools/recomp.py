@@ -1149,13 +1149,14 @@ class NE:
             sg['base'] = cur; cur += (max(sg['alloc'], 1) + 15) & ~15
             self.segs.append(sg)
         self.size = cur - base
-        self.entries = {}
+        self.entries = {}; self.entry_flags = {}
         p = n + u16(d, n + 4); ordn = 1
         while True:
             cnt, seg = d[p], d[p + 1]; p += 2
             if cnt == 0: break
             for _ in range(cnt):
                 if seg == 0: ordn += 1; continue
+                self.entry_flags[ordn] = d[p]
                 if seg == 0xff: self.entries[ordn] = (d[p + 3], u16(d, p + 4)); p += 6
                 else: self.entries[ordn] = (seg, u16(d, p + 1)); p += 3
                 ordn += 1
@@ -1183,6 +1184,17 @@ class NE:
         e = self.entries.get(key)
         if not e: return None
         return self.segs[e[0] - 1]['sel'], e[1]
+    def patch_prologs(self, fixups):
+        """the Win16 loader turns `push ds; pop ax; nop` / `mov ax, ds; nop` at exported shared-data entries into `mov ax, DGROUP`"""
+        if not self.autodata: return
+        dg = self.segs[self.autodata - 1]['sel']
+        for o, (s_, off) in self.entries.items():
+            sg = self.segs[s_ - 1]
+            if not (self.entry_flags.get(o, 0) & 2) or not sg['code']: continue
+            a = sg['base'] - self.base + off
+            if bytes(self.image[a:a + 3]) in (b'\x1e\x58\x90', b'\x8c\xd8\x90'):
+                self.image[a:a + 3] = bytes([0xb8, dg & 0xff, dg >> 8])
+                fixups.append([sg['base'] + off, 1, 0xb8]); fixups.append([sg['base'] + off + 1, 2, dg])
     def relocate(self, resolve):
         """apply NE relocations; returns (fixups [linear, size, value], far code targets)"""
         d, fixups, targets = self.data, [], []
@@ -1219,6 +1231,7 @@ class NE:
                     else: raise ValueError('reloc address type %d' % atype)
                     if additive or nxt == 0xffff or nxt >= sg['len']: break
                     o = nxt
+        self.patch_prologs(fixups)
         return fixups, targets
 
 def decode_ne(ne, entries):

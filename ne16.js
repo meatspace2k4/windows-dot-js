@@ -160,11 +160,15 @@ P.loadNEFile = function (name) {
   this.ne.set(key, rec);
   return rec;
 };
-P.kernelModule = function () {
-  if (this.kernelRec) return this.kernelRec;
+P.jsModule = function (name) {
+  this.jsMods = this.jsMods || new Map();
+  if (this.jsMods.has(name)) return this.jsMods.get(name);
   const mdb = this.alloc(0x40); this.u8.set([0x4e, 0x45], mdb);
-  return (this.kernelRec = { name: 'KERNEL', kind: 'js', hModule: this.allocSels(mdb, 0x40), hInstance: 0, segs: [] });
+  const rec = { name, kind: 'js', hModule: this.allocSels(mdb, 0x40), hInstance: 0, segs: [] };
+  this.jsMods.set(name, rec); return rec;
 };
+P.kernelModule = function () { return this.jsModule('KERNEL'); };
+const JS16 = ['KERNEL', 'USER', 'KEYBOARD', 'SYSTEM'];
 
 // ---------------------------------------------------------------- calling 16-bit code
 /** enter 16-bit code on an alias of the flat stack; args: [['w', v] | ['l', v]...] in Pascal order */
@@ -245,6 +249,7 @@ P.ax = function (v) { if (v === undefined) return this.cpu.eax.value & 0xffff; t
 // ---------------------------------------------------------------- interrupts (DPMI and friends)
 P.interrupt = function (vec, next) {
   const h = INTS[vec];
+  if (window.W95INTTRACE) window.W95INTTRACE(vec, this);
   if (!h) { this.trapped = `unhandled interrupt ${vec.toString(16)}h (ax=${this.ax().toString(16)}) at ${u32(next).toString(16)}`; return LAYOUT.SENTINEL; }
   const r = h.call(this, next);
   return r === undefined ? next : r;
@@ -322,6 +327,8 @@ const INTS = {
       case 0x33: if (al === 6) { this.cpu.ebx.value = lo16(this.cpu.ebx.value, 0x0007); this.cpu.edx.value = lo16(this.cpu.edx.value, 0x1000); } return;   // true version 7.0, in HMA
       case 0x44: if (al === 0) { this.cpu.edx.value = lo16(this.cpu.edx.value, 0x80); return; } break;
       case 0x50: case 0x51: case 0x62: return;
+      case 0x35: { const v = ((this.dosVec = this.dosVec || {})[al]) || 0; this.seg('es', v >>> 16); this.cpu.ebx.value = lo16(this.cpu.ebx.value, v); return; }
+      case 0x25: (this.dosVec = this.dosVec || {})[al] = u32((this.cpu.ds.value << 16) | (this.cpu.edx.value & 0xffff)); return;
     }
     this.trapped = `unhandled int 21h ax=${this.ax().toString(16)}`; return LAYOUT.SENTINEL;
   },
@@ -666,16 +673,18 @@ P.currentTask = function () {
 def16('KERNEL', 47, 's', 'w', function (name) {   // GetModuleHandle
   if (typeof name === 'number') { const m = this.neByHandle(name); return m ? m.hModule : 0; }
   const n = (name || '').toUpperCase().replace(/^.*\\/, '').replace(/\.(DLL|EXE|DRV)$/, '');
-  if (n === 'KERNEL') return this.kernelModule().hModule;
+  if (JS16.includes(n)) return this.jsModule(n).hModule;
   const m = this.ne.get(n); return m ? m.hModule : 0;
 });
 def16('KERNEL', 133, 'w', 'w', function (h) { if (h === this.kernelModule().hModule) return h; const m = this.neByHandle(h); return m ? m.hModule : 0; });   // GetExePtr
 def16('KERNEL', 228, 'w', 'w', function (h) { const m = this.neByHandle(h); return m ? m.hModule : 0; });
 def16('KERNEL', 50, 'wx', 'l', function (h, name) {   // GetProcAddress
   const key = name >>> 16 ? this.readA(this.lin(name)) : name & 0xffff;
-  if (h === this.kernelModule().hModule) {
-    const ord = typeof key === 'number' ? key : KNAMES[key.toUpperCase()];
-    return ord ? this.thunk16For(`KERNEL.#${ord}`) : 0;
+  const js = [...(this.jsMods || new Map()).values()].find(m => m.hModule === (h & 0xffff));
+  if (js) {
+    const ord = typeof key === 'number' ? key : (NAMES16[js.name] || {})[key.toUpperCase()];
+    if (!ord || !K16[`${js.name}.#${ord}`]) { console.warn('[ne16] GetProcAddress', js.name, key); return 0; }
+    return this.thunk16For(`${js.name}.#${ord}`);
   }
   const m = this.neByHandle(h); return m ? this.neExport(m, key) : 0;
 });
@@ -1062,6 +1071,6 @@ P.slThunklet = function (target, rel) { return u32(target); };
 P.runPendingInits = function () { const pending = this.inits; this.inits = []; for (const m of pending) this.call(m.meta.entry, [m.base, 1, 0]); };
 
 // names for GetProcAddress(KERNEL, "name")
-const KNAMES = {};
-window.W95NE16 = { K16, KNAMES, L, def16 };
+const NAMES16 = { KERNEL: {}, USER: {} };
+window.W95NE16 = { K16, NAMES16, L, def16 };
 })();
