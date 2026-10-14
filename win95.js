@@ -484,14 +484,19 @@ const WIN_INI_FONTS = [['MS Sans Serif 8,10,12,14,18,24', 'SSERIFE.FON'], ['MS S
   ['Courier New (TrueType)', 'COUR.TTF'], ['Courier New Bold (TrueType)', 'COURBD.TTF'], ['Courier New Bold Italic (TrueType)', 'COURBI.TTF'], ['Courier New Italic (TrueType)', 'COURI.TTF'],
   ['Times New Roman (TrueType)', 'TIMES.TTF'], ['Times New Roman Bold (TrueType)', 'TIMESBD.TTF'], ['Times New Roman Bold Italic (TrueType)', 'TIMESBI.TTF'], ['Times New Roman Italic (TrueType)', 'TIMESI.TTF'],
   ['Symbol (TrueType)', 'SYMBOL.TTF'], ['Wingdings (TrueType)', 'WINGDING.TTF']];
-function makeDisk() {
+function mountDrives() {
   fs.mount('A', { kind: 'removable', ready: false, total: 1457664, cluster: 512 });
   fs.mount('C', { kind: 'fixed', total: 536870912, cluster: 8192 });
   fs.mount('D', { kind: 'cdrom', label: window.W95CD.label, readonly: true, cluster: 2048, fsname: 'CDFS' });
   const b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
-  const sysFonts = (window.W95SYSTEM || {}).fonts || {};
   const conv = e => (e[2] ? [e[0], e[1], e[2].map(conv)] : e[4] ? [e[0], e[1], null, e[3], b64(e[4])] : e);
   fs.load('D', window.W95CD.tree.map(conv));
+}
+// Setup's first boot: C: as a fresh install leaves it
+function makeDisk() {
+  mountDrives();
+  const b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+  const sysFonts = (window.W95SYSTEM || {}).fonts || {};
   for (const d of ['WINDOWS\\SYSTEM', 'WINDOWS\\COMMAND', 'WINDOWS\\FONTS', 'WINDOWS\\Desktop', 'WINDOWS\\Recent',
     'WINDOWS\\SendTo', 'WINDOWS\\TEMP', 'WINDOWS\\Start Menu\\Programs\\Accessories', 'WINDOWS\\Start Menu\\Programs\\StartUp',
     'Program Files\\Accessories', 'My Documents']) fs.mkdir('C:\\' + d, { recursive: true });
@@ -525,6 +530,59 @@ function makeDisk() {
     fs.writeFile(join(WINDIR, 'SYSTEM', name), Uint8Array.from(atob(d.file), c => c.charCodeAt(0)));
   fs.writeFile(PROGRAMS + '\\Windows Explorer.lnk', lnk(WINDIR + '\\EXPLORER.EXE'));
   fs.chdir('C:\\');
+}
+
+// ---------------------------------------------------------------- persistence
+// C: and the registry live in one file the app keeps (W95HOST, from the Electron preload); a plain browser has none
+// and starts from Setup each time. Saved image: 'W95S', u32 version, u32 registry length, registry JSON, C: image.
+const host = window.W95HOST;
+const STATE_MAGIC = [0x57, 0x39, 0x35, 0x53];
+function packState() {
+  const reg = new TextEncoder().encode(JSON.stringify(W95Win32.regDump())), disk = fs.dump('C');
+  const out = new Uint8Array(12 + reg.length + disk.length), dv = new DataView(out.buffer);
+  out.set(STATE_MAGIC); dv.setUint32(4, 1, true); dv.setUint32(8, reg.length, true);
+  out.set(reg, 12); out.set(disk, 12 + reg.length); return out;
+}
+function unpackState(b) {
+  const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  if (STATE_MAGIC.some((c, i) => b[i] !== c) || dv.getUint32(4, true) !== 1) throw new Error('not a saved Windows 95 state');
+  const n = dv.getUint32(8, true);
+  return { registry: JSON.parse(new TextDecoder().decode(b.subarray(12, 12 + n))), disk: b.subarray(12 + n) };
+}
+function boot() {
+  const saved = host && host.load();
+  if (saved) {
+    try {
+      const st = unpackState(saved);
+      mountDrives(); fs.restore('C', st.disk); W95Win32.regRestore(st.registry); fs.chdir('C:\\');
+      return;
+    } catch (e) {
+      console.error('saved state unreadable, starting fresh:', e);
+      host.discard();
+      fs.vols.clear(); fs.inodes.clear();
+    }
+  }
+  makeDisk();
+}
+let saveTimer = 0, saveFirst = 0;
+function scheduleSave() {
+  if (!host) return;
+  const now = performance.now(); if (!saveTimer) saveFirst = now;
+  clearTimeout(saveTimer);
+  // a quiet half second, or two seconds into a burst of changes
+  saveTimer = setTimeout(saveNow, Math.max(0, Math.min(500, saveFirst + 2000 - now)));
+}
+function saveNow() {
+  if (!host) return;
+  clearTimeout(saveTimer); saveTimer = 0;
+  try { host.save(packState()); } catch (e) { console.error('saving state failed:', e); }
+}
+function persistChanges() {
+  if (!host) return;
+  fs.on(e => { if ([e.path, e.path2].some(p => p && /^C:/i.test(p))) scheduleSave(); });
+  W95Win32.regOn(scheduleSave);
+  window.addEventListener('beforeunload', () => { if (saveTimer) { clearTimeout(saveTimer); saveTimer = 0; host.saveSync(packState()); } });
+  if (!host.load.lastHadState) saveNow();
 }
 
 // ---------------------------------------------------------------- shell namespace
@@ -2321,7 +2379,8 @@ function resize() {
 window.addEventListener('resize', resize);
 setInterval(() => { blinkOn = !blinkOn; dirty(); }, 530);
 
-makeDisk();
+boot();
+persistChanges();
 desk.src = new FsSource(DESKTOP_DIR);
 fs.on(() => dirty());
 Promise.all(ready).then(() => { resize(); kbd.focus(); dirty(); });

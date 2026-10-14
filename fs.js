@@ -84,6 +84,7 @@ function wildRe(pattern) {
 
 // ---------------------------------------------------------------- nodes and volumes
 let inoSeq = 1;
+const IMG_MAGIC = [0x57, 0x39, 0x35, 0x44]; // 'W95D'
 class Node {
   constructor(name, dir, attrs = 0, t = Date.now()) {
     this.ino = inoSeq++; this.name = name; this.short = ''; this.dir = dir;
@@ -394,6 +395,40 @@ class FileSystem {
     try { this.write(fd, data); } finally { this.close(fd); }
   }
   appendFile(path, data) { this.writeFile(path, data, { append: true }); }
+  // ---- disk image: one volume's tree, names, attributes, times and bytes, saved and restored across runs
+  dump(letter) {
+    const v = this.vols.get(letter.toUpperCase()), parts = []; let off = 0;
+    const walk = n => {
+      const e = [n.name, n.short, n.attrs, n.ctime, n.mtime, n.atime];
+      if (n.dir) e.push([...n.kids.values()].map(walk));
+      else { e.push(null, off, n.size); parts.push(n.buf.subarray(0, n.size)); off += n.size; }
+      return e;
+    };
+    const r = v.root, meta = new TextEncoder().encode(JSON.stringify({ label: v.label, serial: v.serial,
+      times: [r.ctime, r.mtime, r.atime], kids: [...r.kids.values()].map(walk) }));
+    const out = new Uint8Array(12 + meta.length + off), dv = new DataView(out.buffer);
+    out.set(IMG_MAGIC); dv.setUint32(4, 1, true); dv.setUint32(8, meta.length, true); out.set(meta, 12);
+    let at = 12 + meta.length; for (const b of parts) { out.set(b, at); at += b.length; }
+    return out;
+  }
+  restore(letter, img) {
+    const dv = new DataView(img.buffer, img.byteOffset, img.byteLength);
+    if (IMG_MAGIC.some((c, i) => img[i] !== c) || dv.getUint32(4, true) !== 1) throw new FSError(E.INVALID_PARAMETER, letter + ':\\');
+    const len = dv.getUint32(8, true), meta = JSON.parse(new TextDecoder().decode(img.subarray(12, 12 + len))), base = 12 + len;
+    const v = this.vols.get(letter.toUpperCase()), r = v.root;
+    for (const k of r.kids.values()) this.forget(k);
+    r.kids.clear(); r.byShort.clear(); v.used = 0;
+    const add = (parent, [name, short, attrs, ct, mt, at, kids, o, size]) => {
+      const n = new Node(name, !!kids, attrs, ct);
+      n.short = short; n.parent = parent; parent.kids.set(name.toUpperCase(), n); parent.byShort.set(short, n);
+      if (kids) kids.forEach(k => add(n, k));
+      else { n.buf = img.slice(base + o, base + o + size); n.size = size; v.used += v.alloc(size); }
+      n.mtime = mt; n.atime = at;
+    };
+    meta.kids.forEach(k => add(r, k));
+    [r.ctime, r.mtime, r.atime] = meta.times; v.label = meta.label; v.serial = meta.serial;
+    this.setVol(r, v); this.emit('mount', v.letter + ':\\');
+  }
   // ---- bulk load (bypasses read-only so CD images can be populated)
   load(letter, tree) {
     const v = this.vols.get(letter.toUpperCase());
