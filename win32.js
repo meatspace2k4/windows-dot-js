@@ -154,7 +154,6 @@ class Process {
     for (;;) {
       eip >>>= 0;
       if (eip === LAYOUT.SENTINEL) return 0;
-      if (window.W95RUN) window.W95RUN(this, eip);
       const m = eip >= LAYOUT.THUNK16 ? this.modules[0] : this.modules.find(x => eip >= x.meta.textLo && eip < x.meta.textHi);
       if (!m) {
         const next = this.dataCode && this.dataCode(eip);
@@ -164,6 +163,7 @@ class Process {
         this.trapped = this.trapped || `jump to unmapped address ${eip.toString(16)}`; return 2;
       }
       if (this.modeSwitch && eip < LAYOUT.THUNK16) this.modeSwitch(m);
+      if (m.clock) this.tick16();   // SYSTEM.DRV reads the time the timer VxD keeps current
       const r = m.run(eip);
       if (r === 2 && this.dynWant !== undefined) {   // no translated block there: code written at run time
         const at = this.dynWant; this.dynWant = undefined;

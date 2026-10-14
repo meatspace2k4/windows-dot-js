@@ -98,6 +98,7 @@ P.loadNE = function (name, file, module, meta) {
   for (const [lin, size, val] of meta.fixups) { if (size === 1) u8[lin] = val; else if (size === 2) this.w16(lin, val); else this.w32(lin, val); }
   for (const [ord, [sel, off]] of Object.entries(meta.exports)) rec.exports.set(+ord, u32((sel << 16) | off));
   rec.run = new WebAssembly.Instance(module, this.imports).exports.run;
+  if (name === 'SYSTEM') rec.clock = true;
   const look = new Uint32Array(this.mem.buffer, meta.lookup, meta.textHi - meta.textLo);
   meta.blocks.forEach((a, i) => { look[a - meta.textLo] = i + 1; });
   // module database: a copy of the NE header in its own segment (hModule)
