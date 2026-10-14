@@ -1705,6 +1705,26 @@ K('#41', 5, function (thunk, thkbuf, len, dll16) {      // ThunkInitLSF
   const td = this.thunkData16(this.readA(dll16), this.readA(thkbuf)); const a2 = this.lin(this.r32(td + 4));
   if (a2 >>> 16) this.w32(thunk, a2); return a2;
 });
+// ThunkConnect32: a thunk-compiler DLL's 32-bit thunk data (magic LS01, calls from 32 to 16 bits) joined to its 16-bit
+// half's, which is the export `f16` of `m16`. The 16-bit side's target table becomes the 32-bit side's, and the relay
+// code the 32-bit data holds at its QT_Thunk and FT_Prolog offsets (Windows 95 writes `mov edx, [table + 4 * n]` and a
+// jump to QT_Thunk / FT_Prolog there) is run by dataCode. Other reasons than attach have nothing to undo.
+K('ThunkConnect32', 6, function (td, f16, m16, m32, hmod, reason) {
+  if (reason !== 1) return 1;
+  const magic = this.readA(td, 4), name = (this.readA(m16) || '').toUpperCase().replace(/\.DLL$/, '');
+  const m = this.loadLibrary16(name, true); if (!m) return 0;
+  const sp = this.neExport(m, this.readA(f16)); if (!sp) return 0;
+  const t16 = this.lin(sp);
+  if (this.r32(t16) !== this.r32(td) || this.r32(t16 + 4) !== this.r32(td + 4)) return 0;   // magic and checksum
+  if (magic === 'LS01') {
+    const table = this.lin(this.r32(t16 + 8)); this.w32(td + 8, table);
+    this.lsRelays = this.lsRelays || new Map();
+    this.lsRelays.set(u32(td + this.r32(td + 0x1c)), { ft: false, table });
+    this.lsRelays.set(u32(td + this.r32(td + 0x20)), { ft: true, table });
+    return 1;
+  }
+  throw new GuestError(`ThunkConnect32 for ${magic} thunks (${this.readA(m32)})`);
+});
 KR('#90', function () {          // QT_ThunkPrime: EAX = relay code, EDX = offset of its target table pointer, target number at [EBP-4]
   const relay = this.reg('eax'), table = this.r32(u32(relay + this.reg('edx')));
   this.reg('edx', this.r32(table + 4 * this.u8[this.reg('ebp') - 4]));
@@ -1864,6 +1884,13 @@ K('EnumResourceNamesA', 4, () => 0);
  * Executing it is equivalent to setting those registers and jumping to the primer.
  */
 P.dataCode = function (eip) {
+  const ls = this.lsRelays && this.lsRelays.get(u32(eip));
+  if (ls) {   // ThunkConnect32's relays: target n (CL, or the byte at [EBP-4] for QT_Thunk) of the table into EDX
+    const n = ls.ft ? this.reg('ecx') & 0xff : this.u8[u32(this.reg('ebp') - 4)];
+    this.reg('edx', this.r32(ls.table + 4 * n));
+    if (!ls.ft) this.reg('ecx', n);
+    return ls.ft ? this.ftProlog() : this.qtThunk();
+  }
   if (!this.lsfRelays) return null;
   for (const r of this.lsfRelays) {
     if (eip === u32(r + 4)) { this.reg('eax', r + 4); this.reg('edx', this.r32(r + 0x30)); return this.r32(r + 0x35); }
