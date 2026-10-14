@@ -2592,7 +2592,7 @@ class NativeApp {
     this.kick();
   }
   key(e, up) {
-    if (!this.alive || this.proc.depth) return;
+    if (!this.alive) return;
     const vk = e.keyCode || 0, sc = SCAN[e.code] || 0; if (!vk || vk === 91 || vk === 93 || vk === 224) return;   // the Mac command keys stay with the host
     // USER's system queue holds a limited number of events: a burst (fast or synthetic typing) goes in a few at a
     // time between slices, so the program takes each batch off before the next arrives, as a keyboard buffer would
@@ -3406,7 +3406,7 @@ const script = {
     for (let i = 1; i <= steps; i++) pointer('pointermove', Math.round(x1 + (x2 - x1) * i / steps), Math.round(y1 + (y2 - y1) * i / steps));
     pointer('pointerup', x2, y2);
   },
-  type(text) { for (const ch of String(text).replace(/\r/g, '')) handleKey({ key: ch === '\n' ? 'Enter' : ch, shiftKey: false, ctrlKey: false, metaKey: false, altKey: false, preventDefault() {} }); },
+  type(text) { const na = nativeFocus(); if (na) { na.typeText(String(text).replace(/\r/g, '')); return; } for (const ch of String(text).replace(/\r/g, '')) handleKey({ key: ch === '\n' ? 'Enter' : ch, shiftKey: false, ctrlKey: false, metaKey: false, altKey: false, preventDefault() {} }); },
   key(...specs) { for (const k of specs) pressKey(k); },
   elements(q) { const all = elements(); if (!q) return all; if (typeof q === 'string' || q instanceof RegExp) q = { name: q };
     return all.filter(e => Object.entries(q).every(([k, v]) => v instanceof RegExp ? v.test(String(e[k] ?? '')) : e[k] === v)); },
