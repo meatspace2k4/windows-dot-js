@@ -1,6 +1,6 @@
 """Recompile the Windows 95 system modules that run natively under the 16-bit personality (ne16.js) and
-write system.js: original file bytes, translated wasm and metadata for each, plus the shared table of
-16-bit import thunks. Usage: build_system.py SYS_DIR OUT.js"""
+write system.js: original file bytes, translated wasm and metadata for each, the shared table of 16-bit
+import thunks, and the font files. Usage: build_system.py SYS_DIR OUT.js [FONTS_DIR]"""
 import base64, json, os, subprocess, sys, tempfile
 src, out = sys.argv[1], sys.argv[2]
 here = os.path.dirname(os.path.abspath(__file__))
@@ -9,7 +9,14 @@ b64 = lambda p: base64.b64encode(open(p, 'rb').read()).decode()
 NE = [('gdi.exe', 0x01C00000, 0x1007, 0x06A00000)]
 # 32-bit system DLLs: (file, load base, block-table base)
 PE = [('gdi32.dll', 0x01D00000, 0x06C00000)]
-bundle = {'ne': {}, 'dlls': {}, 'thunks16': []}
+# fonts a VGA install of Windows 95 puts in C:\WINDOWS\FONTS (WIN95_02.CAB)
+FONTS = ['vgasys.fon', 'vgafix.fon', 'vgaoem.fon', 'sserife.fon', 'serife.fon', 'coure.fon', 'smalle.fon', 'symbole.fon',
+         'modern.fon', 'dosapp.fon', 'arial.ttf', 'arialbd.ttf', 'arialbi.ttf', 'ariali.ttf', 'cour.ttf', 'courbd.ttf',
+         'courbi.ttf', 'couri.ttf', 'times.ttf', 'timesbd.ttf', 'timesbi.ttf', 'timesi.ttf', 'symbol.ttf', 'wingding.ttf', 'marlett.ttf']
+fonts_dir = sys.argv[3] if len(sys.argv) > 3 else None
+bundle = {'ne': {}, 'dlls': {}, 'thunks16': [], 'fonts': {}}
+if fonts_dir:
+    for f in FONTS: bundle['fonts'][f.upper()] = b64(os.path.join(fonts_dir, f))
 with tempfile.TemporaryDirectory() as tmp:
     reg = os.path.join(tmp, 'registry.json')
     for f, b, sel, lk in NE:

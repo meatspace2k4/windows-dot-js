@@ -131,11 +131,26 @@ P.loadLibrary16 = function (name) {
   if (base === 'KERNEL') return this.kernelModule();
   if (this.ne.has(base)) return this.ne.get(base);
   const sys = window.W95SYSTEM && window.W95SYSTEM.ne[base];
-  if (!sys) return null;
+  if (!sys) return this.loadNEFile(name);
   const b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
   const rec = this.loadNE(base, sys.fileBytes || (sys.fileBytes = b64(sys.file)), sys.mod || (sys.mod = new WebAssembly.Module(b64(sys.wasm))), sys.meta);
   for (const imp of sys.meta.imports || []) if (imp !== 'KERNEL') this.loadLibrary16(imp);
   if (!this.initNE(rec)) { console.warn('[ne16]', base, 'LibEntry failed'); }
+  return rec;
+};
+/** a module from disk that has no code (fonts and other resource-only libraries) */
+P.loadNEFile = function (name) {
+  const full = this.findFile16(/\.[^\\]*$/.test(name) ? name : name + '.DLL'); if (!full) return null;
+  const key = full.toUpperCase();
+  for (const m of this.ne.values()) if (m.path === key) return m;
+  const file = this.fs.readFile(full);
+  if (file[0] !== 0x4d || file[1] !== 0x5a) return null;
+  const n = rd.u32(file, 0x3c); if (file[n] !== 0x4e || file[n + 1] !== 0x45 || rd.u16(file, n + 0x1c)) return null;
+  const hdrLen = Math.min(file.length - n, 0x4000), mdb = this.alloc(hdrLen + 16);
+  this.u8.set(file.subarray(n, n + hdrLen), mdb);
+  const rec = { name: key, path: key, kind: 'ne', file, segs: [], exports: new Map(), names: {}, meta: null, dgroup: 0 };
+  rec.hModule = rec.hInstance = this.allocSels(mdb, hdrLen);
+  this.ne.set(key, rec);
   return rec;
 };
 P.kernelModule = function () {
