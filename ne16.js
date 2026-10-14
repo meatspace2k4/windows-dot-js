@@ -1127,6 +1127,11 @@ def16('KERNEL', 630, '', 'jmp', function () {                                 //
   const target = this.r32(u32(this.cpu.edx.value + (this.cpu.ecx.value & 0xffff)));
   return this.enter32from16(target);
 });
+
+// ---- what USER.EXE's start-up asks of KERNEL (each read from KRNL386.EXE's own code where it has no public name)
+def16('KERNEL', 340, 's', 'v', function () {});                                  // DiagOutput: boot-log text, kept only under a debugger
+def16('KERNEL', 480, '', 'v', function () {});                                   // _EnterWin16Lock: one thread runs here, so nothing to exclude
+def16('KERNEL', 481, '', 'v', function () {});                                   // _LeaveWin16Lock
 /** 16 -> 32 transition for SL thunks: EBX + 0x16 addresses the 16-bit arguments; the target returns with CL = argument bytes */
 P.enter32from16 = function (target) {
   const ctx = { esp: this.cpu.esp.value, ebp: this.cpu.ebp.value, esi: this.cpu.esi.value, edi: this.cpu.edi.value, ebx: this.cpu.ebx.value };
