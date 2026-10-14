@@ -1486,6 +1486,23 @@ def16('KERNEL', 365, 'wi', 'v', function (sel, delta) {
   const b = this.gblock(sel | 1); if (!b) return;
   b.lock = Math.max(0, Math.min(0xff, (b.lock || 0) + delta));
 });
+// CBClientThunkSL (#620, KRNL386 seg2:7667): a callback client's 16-bit relay moving to its 32-bit side. It pushes the
+// 16:16 SS:SP, makes EBX the flat address of that pair and EBP the flat BP (the relay word, client id high and index
+// low, at [EBP+2]), moves to the flat stack, and goes to the client's 32-bit relay for that index, which comes back
+// with `lss sp, [ebx]`.
+def16('KERNEL', 620, '', 'jmp', function () {
+  const ss = this.cpu.ss.value & 0xffff, ssb = u32(this.cpu.ssb.value), n = this.cpu.esp.value & 0xffff;
+  const sp = (n - 4) & 0xffff; this.w16(ssb + sp, n); this.w16(ssb + ((sp + 2) & 0xffff), ss);
+  const ebx = u32(ssb + sp), ebp = u32(ebx + (((this.cpu.ebp.value & 0xffff) - sp) & 0xffff));
+  const word = this.r32(ebp + 2), c = this.cbClients && this.cbClients.get(word >>> 16);
+  if (!c) throw new GuestError(`callback relay for client ${word >>> 16}, which is not registered`);
+  const relay = this.r32(c.relay32 + 4 * (word & 0xffff));
+  this.cpu.ebx.value = ebx | 0; this.cpu.ebp.value = ebp | 0;
+  for (const [s2, b] of SEGS) { this.cpu[s2].value = 0; if (s2 !== 'fsel') this.cpu[b].value = 0; }
+  this.cpu.fs.value = LAYOUT.TIB;
+  this.cpu.esp.value = (ebx & ~3) | 0;
+  return u32(relay);
+});
 // IsSLThunklet: whether a far pointer addresses a 16-to-32 thunklet (push dword, push dword, jmp far), as KRNL386 checks
 def16('KERNEL', 612, 'x', 'w', function (sp) {
   if (!(sp >>> 16) || !this.selValid(sp >>> 16)) return 0;
@@ -1809,6 +1826,7 @@ K('ThunkConnect32', 6, function (td, f16, m16, m32, hmod, reason) {
     this.lsRelays.set(u32(td + this.r32(td + 0x20)), { ft: true, get table() { return rel.bind(); } });
     return 1;
   }
+  if (magic === 'SL01') return 1;   // 16 -> 32: the 16-bit half connects from its side (ThunkConnect16) when it loads
   const t16 = find(); if (!t16) return 0;
   if (this.r32(t16) !== this.r32(td) || this.r32(t16 + 4) !== this.r32(td + 4)) return 0;   // magic and checksum
   if (magic === 'LS01') {
