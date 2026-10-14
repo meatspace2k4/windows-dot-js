@@ -1480,7 +1480,7 @@ def16('KERNEL', 517, '', 'jmp', function () {
   };
   // on the flat alias of the 16-bit stack, as KRNL386's 16 -> 32 callbacks run
   for (const [s, b] of SEGS) { this.cpu[s].value = 0; if (s !== 'fsel') this.cpu[b].value = 0; }
-  this.cpu.fs.value = LAYOUT.TIB;
+  this.cpu.fs.value = this.tibFor();
   let esp = f & ~3;
   for (let i = n - 1; i >= 0; i--) { esp -= 4; this.w32(esp, args[i]); }
   esp -= 4; this.w32(esp, this.thunkFor('KERNEL32', '__Ret32.' + this.retToken(save)));
@@ -1635,7 +1635,7 @@ def16('KERNEL', 620, '', 'jmp', function () {
   const relay = this.r32(c.relay32 + 4 * (word & 0xffff));
   this.cpu.ebx.value = ebx | 0; this.cpu.ebp.value = ebp | 0;
   for (const [s2, b] of SEGS) { this.cpu[s2].value = 0; if (s2 !== 'fsel') this.cpu[b].value = 0; }
-  this.cpu.fs.value = LAYOUT.TIB;
+  this.cpu.fs.value = this.tibFor();
   this.cpu.esp.value = (ebx & ~3) | 0;
   return u32(relay);
 });
@@ -1703,7 +1703,9 @@ def16('KERNEL', 463, 'lw', 'w', function (tid, hq) { const t = thr(this, tid), o
 def16('KERNEL', 464, 'l', 'w', function (tid) { return thr(this, tid).queue || 0; });                     // GetThreadQueue
 def16('KERNEL', 624, 'll', 'v', function (tid, hq) { const t = thr(this, tid); t.queue = hq & 0xffff; this.tibQueue(t); });   // SetFastQueue: the queue field (38h) of the thread
 // the program's thread keeps its queue in its TIB too (FS:[28h], USER32 reads it there), and TIB flags bit 0 marks it Win32
-P.tibQueue = function (t) { if (t.id === MAIN_TID) { this.w16(LAYOUT.TIB + 0x28, t.queue || 0); this.w16(LAYOUT.TIB + 0x1c, this.r16(LAYOUT.TIB + 0x1c) | 1); } };
+/** the thread information block FS addresses in flat code: the running Win32 thread's own, else the program's */
+P.tibFor = function () { return (this.thread16 && this.thread16.tib) || LAYOUT.TIB; };
+P.tibQueue = function (t) { if (t.tib) this.w16(t.tib + 0x28, t.queue || 0); if (t.id === MAIN_TID) { this.w16(LAYOUT.TIB + 0x28, t.queue || 0); this.w16(LAYOUT.TIB + 0x1c, this.r16(LAYOUT.TIB + 0x1c) | 1); } };
 // GetFastQueue: the current thread's queue, created when it has none by USER's InitThreadInput (USER.409), which KRNL386
 // keeps a pointer to and calls with (0, 4 | 1 for a Win32 thread)
 def16('KERNEL', 625, '', 'w', function () {
@@ -1745,6 +1747,14 @@ const thr = (p, tid) => {   // a thread's record by id (0 or the main thread's i
   if (!p.threadsById.has(id)) p.threadsById.set(id, { id });
   return p.threadsById.get(id);
 };
+/** a new thread record for CreateThread (flat: a Win32 procedure) and CreateThread16; it starts when threads16 next runs */
+P.newThread = function (start, param, stack, flat, suspended) {
+  thr(this, MAIN_TID);
+  const id = MAIN_TID + this.threadsById.size, t = thr(this, id);
+  Object.assign(t, { start, param, stack: Math.max(stack || 0, 0x10000), state: suspended ? 'suspended' : 'new', flat, ctx: null, wait: null });
+  return t;
+};
+P.currentThreadId = function () { return this.thread16 ? this.thread16.id : this.inSystem && this.inSystem() ? SYS_TID : MAIN_TID; };
 def16('KERNEL', 441, 'llllll', 'l', function (attr, stack, start, param, flags, ptid) {   // CreateThread16
   thr(this, MAIN_TID);
   const id = MAIN_TID + this.threadsById.size, t = thr(this, id);
@@ -1759,12 +1769,25 @@ P.loadCtx16 = function (c) { for (const r of CTX) this.cpu[r].value = c[r]; this
 P.threads16 = function () {
   if (!this.threadsById || this.thread16 || this.depth) return;
   for (const t of this.threadsById.values()) {
-    if (t.id === MAIN_TID || !t.state || t.state === 'done' || (t.state === 'waiting' && !(t.wait && t.wait.set))) continue;
+    if (t.id === MAIN_TID || !t.state || t.state === 'done' || t.state === 'suspended' || (t.state === 'waiting' && t.wait && !t.wait.set)) continue;   // a thread that yielded with no event to wait for (in WaitEvent) runs again
     const main = this.saveCtx16();
     this.thread16 = t;
     let r;
     try {
-      if (t.state === 'new') {
+      if (t.state === 'new' && t.flat) {
+        // a Win32 thread (CreateThread): its own stack and thread information block, then its procedure called
+        // with its parameter in flat mode; returning to the sentinel ends it
+        t.stackBase = this.alloc(t.stack); t.tib = this.alloc(0x100);
+        this.u8.copyWithin(t.tib, LAYOUT.TIB, LAYOUT.TIB + 0x100);
+        this.w32(t.tib, 0xffffffff); this.w32(t.tib + 4, t.stackBase + t.stack); this.w32(t.tib + 8, t.stackBase); this.w32(t.tib + 0x18, t.tib);
+        this.w16(t.tib + 0x28, 0);
+        for (const [s, b] of SEGS) { this.cpu[s].value = 0; if (s !== 'fsel') this.cpu[b].value = 0; }
+        this.cpu.fs.value = t.tib; this.depth = 0; t.depth = 0; this.stackLevel = main.stackLevel;
+        let esp = t.stackBase + t.stack - 16; esp -= 4; this.w32(esp, t.param); esp -= 4; this.w32(esp, LAYOUT.SENTINEL);
+        this.cpu.esp.value = esp; t.state = 'running';
+        r = this.runAt(u32(t.start));
+        if (r === 0 && t.exitCode === undefined) t.exitCode = u32(this.cpu.eax.value);
+      } else if (t.state === 'new') {
         // its own flat stack, then a far call of its procedure (it returns to the sentinel)
         t.stackBase = this.alloc(t.stack); this.cpu.esp.value = t.stackBase + t.stack - 16; this.seg('ss', 0);
         this.cpu.ssb.value = 0; this.depth = 0; this.stackLevel = main.stackLevel;
@@ -1896,7 +1919,7 @@ P.enter32from16 = function (target) {
   };
   const back = this.thunkFor('KERNEL32', '__Ret32.' + this.retToken(ctx));
   for (const [s, b] of SEGS) { this.cpu[s].value = 0; if (s !== 'fsel') this.cpu[b].value = 0; }
-  this.cpu.fs.value = LAYOUT.TIB;
+  this.cpu.fs.value = this.tibFor();
   this.cpu.ebx.value = frame - 0x12;
   let esp = (frame - 0x80) & ~3;
   esp -= 4; this.w32(esp, back);
@@ -1908,7 +1931,7 @@ P.callFlatFrom16 = function (addr, args) {
   const save = {}; for (const r of GPR) save[r] = this.cpu[r].value; for (const [s, b] of SEGS) { save[s] = this.cpu[s].value; save[b] = this.cpu[b].value; }
   const flat = u32((this.cpu.ssb.value >>> 0) + (this.cpu.esp.value & 0xffff));
   for (const [s, b] of SEGS) { this.cpu[s].value = 0; if (s !== 'fsel') this.cpu[b].value = 0; }
-  this.cpu.fs.value = LAYOUT.TIB;
+  this.cpu.fs.value = this.tibFor();
   this.cpu.esp.value = (flat - 0x200) & ~3;
   try { return this.call(addr, args); }
   finally {
@@ -2044,7 +2067,7 @@ P.return16to32 = function (rec) {
   if (rec.ret32) this.reg('eax', this.last16.eax); else { this.reg('eax', ((dx << 16) | ax) >>> 0); this.reg('edx', dx); }
   for (const r of ['ebx', 'esi', 'edi', 'ebp']) this.reg(r, rec[r]);
   for (const [s, b] of SEGS) { this.cpu[s].value = 0; if (s !== 'fsel') this.cpu[b].value = 0; }
-  this.cpu.fs.value = LAYOUT.TIB;
+  this.cpu.fs.value = this.tibFor();
   this.reg('esp', rec.esp + popped);
   return u32(rec.done.call(this, rec));
 };

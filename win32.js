@@ -706,13 +706,15 @@ def('KERNEL32', 'GetTimeFormatA', 6, function (lcid, flags, st, fmt, buf, n) { r
 def('KERNEL32', 'DeleteCriticalSection', 1, () => 0);
 def('KERNEL32', 'EnterCriticalSection', 1, () => 0);
 def('KERNEL32', 'LeaveCriticalSection', 1, () => 0);
-def('KERNEL32', 'GetCurrentThreadId', 0, () => 0x51);
+def('KERNEL32', 'GetCurrentThreadId', 0, function () { return this.currentThreadId ? this.currentThreadId() : 0x51; });
 def('KERNEL32', 'GetCurrentProcessId', 0, () => 0x50);
 def('KERNEL32', 'GetCurrentThread', 0, () => 0xfffffffe);
-def('KERNEL32', 'TlsAlloc', 0, function () { this.tls = this.tls || []; this.tls.push(0); return this.tls.length - 1; });
+// TLS slots are the process's; the values are each thread's (a thread the scheduler runs keeps its own)
+const tlsOf = p => (p.thread16 && p.thread16.flat ? (p.thread16.tls = p.thread16.tls || []) : (p.tls = p.tls || []));
+def('KERNEL32', 'TlsAlloc', 0, function () { this.tls = this.tls || []; this.tlsN = Math.max(this.tlsN || 0, this.tls.length); this.tls[this.tlsN] = 0; return this.tlsN++; });
 def('KERNEL32', 'TlsFree', 1, () => 1);
-def('KERNEL32', 'TlsGetValue', 1, function (i) { return (this.tls || [])[i] || 0; });
-def('KERNEL32', 'TlsSetValue', 2, function (i, v) { this.tls = this.tls || []; this.tls[i] = v; return 1; });
+def('KERNEL32', 'TlsGetValue', 1, function (i) { return tlsOf(this)[i] || 0; });
+def('KERNEL32', 'TlsSetValue', 2, function (i, v) { tlsOf(this)[i] = v; return 1; });
 def('KERNEL32', 'SetConsoleCtrlHandler', 2, () => 1);
 def('KERNEL32', 'SetErrorMode', 1, () => 0);
 def('KERNEL32', 'RaiseException', 4, function (code) { throw new GuestError(`exception ${u32(code).toString(16)}`); });
@@ -860,9 +862,23 @@ def('KERNEL32', 'WriteConsoleA', 5, () => 1);
 def('KERNEL32', 'DuplicateHandle', 7, function (a, h, b, out) { if (out) this.w32(out, h); return 1; });
 def('KERNEL32', 'WaitForSingleObject', 2, () => 0);
 def('KERNEL32', 'GetExitCodeProcess', 2, () => 0);
-def('KERNEL32', 'CreateThread', 6, () => 0);
-def('KERNEL32', 'ExitThread', 1, function (c) { this.exitCode = c; this.host.exited(c); });
-def('KERNEL32', 'ResumeThread', 1, () => 0);
+// threads run where the scheduler for them is (a session on the native USER, ne16.js threads16); elsewhere there is
+// no second thread
+def('KERNEL32', 'CreateThread', 6, function (attr, stack, start, param, flags, ptid) {
+  if (!this.newThread || !this.nativeUser16 || !this.nativeUser16()) return 0;
+  const t = this.newThread(start, param, stack, true, !!(flags & 4));
+  if (ptid) this.w32(ptid, t.id);
+  return this.newHandle({ kind: 'thread', id: t.id });
+});
+def('KERNEL32', 'ExitThread', 'regs', function () {
+  const c = this.r32(this.reg('esp') + 4);
+  if (this.thread16 && this.thread16.id !== 0x51) { this.thread16.exitCode = c; return LAYOUT.SENTINEL; }   // ends that thread only
+  this.exitCode = c; this.host.exited(c); return LAYOUT.SENTINEL;
+});
+def('KERNEL32', 'ResumeThread', 1, function (h) {
+  const o = this.obj(h), t = o && o.kind === 'thread' && this.threadsById && this.threadsById.get(o.id);
+  if (t && t.state === 'suspended') { t.state = 'new'; return 1; } return 0;
+});
 def('KERNEL32', 'SetLocalTime', 1, () => 0);
 def('KERNEL32', 'CreatePipe', 4, () => 0);
 def('KERNEL32', 'CreateProcessA', 10, () => 0);
