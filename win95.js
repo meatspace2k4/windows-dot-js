@@ -532,6 +532,99 @@ function makeDisk(mounted) {
   fs.chdir('C:\\');
 }
 
+// ---------------------------------------------------------------- notification area
+// Icons programs put in the taskbar with Shell_NotifyIcon. Mouse messages go back to the owner's window as its
+// callback message, wParam the icon's id and lParam the mouse message, as Explorer sends them.
+const trayIcons = [];
+function trayMouse(t, msg) { if (t.msg && t.proc && t.proc.exitCode === null) t.proc.post(t.hwnd, t.msg, t.id, msg); }
+function traySet(proc, hwnd, id, o) {
+  let t = trayIcons.find(v => v.proc === proc && v.hwnd === hwnd && v.id === id);
+  if (o === null) { if (!t) return false; trayIcons.splice(trayIcons.indexOf(t), 1); dirty(); return true; }
+  if (o.add === !!t) return false;
+  if (!t) { t = { proc, hwnd, id, icon: 'app', tip: '', msg: 0 }; trayIcons.push(t); }
+  if (o.msg !== undefined) t.msg = o.msg;
+  if (o.icon !== undefined) t.icon = o.icon;
+  if (o.tip !== undefined) t.tip = o.tip;
+  dirty(); return true;
+}
+function trayDrop(proc) { for (let i = trayIcons.length - 1; i >= 0; i--) if (trayIcons[i].proc === proc) trayIcons.splice(i, 1); dirty(); }
+
+// ---------------------------------------------------------------- Browse for Folder (SHBrowseForFolder)
+function browseFolder(o) {
+  let win, sel = null, open = new Set(['C:\\']);
+  const sb = new ScrollBar(true, () => dirty());
+  const kids = p => { try { return fs.readdir(p).filter(i => i.isDir && !i.hidden).sort(byName).map(i => i.path); } catch (_) { return []; } };
+  const rows = () => {
+    const out = [{ path: null, depth: 0, label: 'My Computer', icon: 'mycomputer' }];
+    for (const v of fs.volumes()) {
+      const walk = (p, d) => {
+        out.push({ path: p, depth: d, label: d === 1 ? driveLabel(p[0]) : basename(p), icon: d === 1 ? driveIcon(p[0]) : open.has(p) ? 'folderopen' : 'folder' });
+        if (open.has(p) && v.ready) for (const k of kids(p)) walk(k, d + 1);
+      };
+      walk(v.root, 1);
+    }
+    return out;
+  };
+  const finish = p => { closeWin(win); o.done(p); };
+  const tree = {
+    type: 'custom', x: 12, y: 40, w: 270, h: 170,
+    draw(a, foc, w) {
+      field(a.x, a.y, a.w, a.h);
+      const list = rows(), inner = { x: a.x + 2, y: a.y + 2, w: a.w - 20, h: a.h - 4 }, n = Math.floor(inner.h / 17);
+      sb.set(inner.x + inner.w, inner.y, inner.h, list.length, n);
+      ctx.save(); ctx.beginPath(); ctx.rect(inner.x, inner.y, inner.w, inner.h); ctx.clip();
+      for (let i = sb.pos; i < Math.min(list.length, sb.pos + n + 1); i++) {
+        const r = list[i], y = inner.y + (i - sb.pos) * 17 + 1, x = inner.x + 2 + r.depth * 19, label = esc(r.label), tw = textW(label);
+        const on = r.path !== null && sel && r.path.toUpperCase() === sel.toUpperCase();
+        icon(r.icon + '16', x, y, on && w.isActive);
+        if (on) fill(x + 18, y + 1, tw + 4, 14, w.isActive ? K.sel : K.face);
+        text(label, x + 20, y + 2, on && w.isActive ? K.hl : K.dk);
+        if (on && foc) focusRect(x + 18, y + 1, tw + 4, 14);
+      }
+      ctx.restore(); sb.draw(); this.inner = inner;
+    },
+    down(x, y, btn, dbl) {
+      if (sb.contains(x, y)) return sb.down(x, y);
+      const r = rows()[sb.pos + Math.floor((y - this.inner.y) / 17)];
+      if (!r || r.path === null) return null;
+      sel = r.path;
+      if (dbl || r.depth === 1) { if (open.has(r.path) && dbl) open.delete(r.path); else open.add(r.path); }
+      return null;
+    },
+    key(e) {
+      const list = rows().filter(r => r.path !== null), i = list.findIndex(r => sel && r.path.toUpperCase() === sel.toUpperCase());
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { const j = clamp(i + (e.key === 'ArrowDown' ? 1 : -1), 0, list.length - 1); sel = list[j].path; return true; }
+      if (e.key === 'ArrowRight' && sel) { open.add(sel); return true; }
+      if (e.key === 'ArrowLeft' && sel) { if (open.has(sel)) open.delete(sel); else if (!isRoot(sel)) sel = dirname(sel); return true; }
+      return false;
+    },
+  };
+  win = dialog('Browse for Folder', 294, 252, [
+    { type: 'label', text: o.title || '', x: 12, y: 10, w: 270 },
+    tree,
+    { type: 'button', label: 'OK', x: 126, y: 220, w: 75, h: 23, def: true, fn: () => { if (sel) finish(sel); } },
+    { type: 'button', label: 'Cancel', x: 207, y: 220, w: 75, h: 23, cancel: true, fn: () => finish(null) },
+  ]);
+  return win;
+}
+
+// ---------------------------------------------------------------- what SHELL32 asks of the shell (shell32.js)
+window.W95SHELL = {
+  fs,
+  open: (path, arg) => { if (!fs.exists(path)) return false; shellOpen(fs.realpath(path), arg); return true; },
+  explore: path => { if (!fs.exists(path)) return false; openPath(fs.realpath(path)); return true; },
+  typeOf: (name, isDir) => isDir ? { desc: 'Folder', icon: 'folder' } : TYPES[extname(name)] || { desc: extname(name) ? `${extname(name).toUpperCase()} File` : 'File', icon: 'windoc' },
+  displayName: (name, isDir) => dispName(name, isDir),
+  special: id => ({ desktop: DESKTOP_DIR, programs: PROGRAMS, recent: RECENT, startmenu: dirname(PROGRAMS), startup: join(PROGRAMS, 'StartUp'),
+    sendto: join(WINDIR, 'SendTo'), fonts: join(WINDIR, 'FONTS'), templates: join(WINDIR, 'ShellNew'), personal: 'C:\\My Documents' })[id] || null,
+  addRecent: path => addRecent(path),
+  recycle: path => recycle(path),
+  emptyBin: () => emptyBin(),
+  about: (app, other, done) => msgBox(`About ${app}`, `${app}\nMicrosoft Windows 95\n4.00.950 B\nCopyright \u00a9 1981-1996 Microsoft Corp.${other ? '\n\n' + other : ''}`, 'info', ['OK'], () => done()),
+  browseFolder: (title, done) => browseFolder({ title, done }),
+  traySet, trayDrop,
+};
+
 // ---------------------------------------------------------------- persistence
 // C: and the registry are written through to the app's store as they change (W95HOST, from the Electron preload).
 // An empty store is a first boot: Setup builds C: and every file it writes goes through. A plain browser has no
@@ -1610,12 +1703,13 @@ function timeDate() { const d = new Date(); return `${clockStr()} ${d.getMonth()
 function taskLayout() {
   const y = H - TB;
   const start = { x: 2, y: y + 4, w: 54, h: 22 };
-  const cw = textW(clockStr()) + 14;
+  const cw = textW(clockStr()) + 14 + trayIcons.length * 18;
   const tray = { x: W - 2 - cw, y: y + 4, w: cw, h: 22 };
+  const icons = trayIcons.map((t, i) => ({ t, x: tray.x + 4 + i * 18, y: tray.y + 3, w: 16, h: 16 }));
   const x0 = start.x + start.w + 3, avail = tray.x - 3 - x0, n = tasks.length;
   const bw = n ? Math.min(160, Math.floor((avail - (n - 1) * 3) / n)) : 0;
   const btns = tasks.map((t, i) => ({ t, x: x0 + i * (bw + 3), y: y + 4, w: bw, h: 22 }));
-  return { y, start, tray, btns };
+  return { y, start, tray, btns, icons };
 }
 function drawTaskbar() {
   const L = taskLayout();
@@ -1635,10 +1729,13 @@ function drawTaskbar() {
     ctx.restore();
   }
   const t = L.tray; edge(t.x, t.y, t.w, t.h, K.sh, K.hl);
+  for (const i of L.icons) icon(i.t.icon + '16', i.x, i.y);
   const cs = clockStr(); text(cs, t.x + t.w - 7 - textW(cs), t.y + 4);
 }
-function taskDown(x, y, btn) {
+function taskDown(x, y, btn, dbl) {
   const L = taskLayout();
+  const ti = L.icons.find(v => inR(v, x, y));
+  if (ti) { trayMouse(ti.t, btn === 2 ? 0x204 : dbl ? 0x203 : 0x201); return; }
   if (inR(L.start, x, y)) { if (menuSrc && menuSrc.kind === 'start') closeMenus(); else openStart(); return; }
   const b = L.btns.find(v => inR(v, x, y));
   if (b) {
@@ -1774,7 +1871,7 @@ class SaverRun {
     c.addEventListener('contextmenu', e => e.preventDefault());
   }
   key(e) { if (this.proc) this.proc.dispatchInput(W95Win32.WM.KEYDOWN, e.keyCode || 0, 0); }
-  stop() { this.alive = false; if (this.el) this.el.remove(); if (fullSaver === this) fullSaver = null; }
+  stop() { this.alive = false; if (this.proc) trayDrop(this.proc); if (this.el) this.el.remove(); if (fullSaver === this) fullSaver = null; }
   exited(code, why) {
     if (!this.alive) return;
     this.stop(); lastInput = performance.now(); dirty();
@@ -2243,7 +2340,7 @@ cv.addEventListener('pointerdown', e => {
   if (ren && !(ren.box && inR(ren.box, x, y))) commitRename();
   if (ren) { dirty(); return; }
   const m = modal();
-  if (y >= H - TB) { if (!m) taskDown(x, y, btn); dirty(); return; }
+  if (y >= H - TB) { if (!m) taskDown(x, y, btn, dbl); dirty(); return; }
   const w = winAt(x, y);
   if (m && w !== m) { activate(m); dirty(); return; }
   if (w) winDown(w, x, y, btn, dbl); else deskDown(x, y, btn, dbl);
@@ -2263,8 +2360,11 @@ cv.addEventListener('pointermove', e => {
       }
     }
   }
-  const t = taskLayout().tray;
-  if (inR(t, x, y) && screen === 'desktop' && !menus.length) {
+  const TL = taskLayout(), t = TL.tray, hov = TL.icons.find(v => inR(v, x, y));
+  if (hov && screen === 'desktop' && !menus.length) {
+    trayMouse(hov.t, 0x200);
+    if (hov.t.tip && (!tip || tip.text !== hov.t.tip)) { hideTip(); tip = { text: hov.t.tip, x: mouse.x, y: H - TB - 20 }; }
+  } else if (inR(t, x, y) && screen === 'desktop' && !menus.length) {
     if (!tip && !tipTimer) tipTimer = setTimeout(() => {
       const d = new Date();
       tip = { text: d.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }), x: mouse.x, y: H - TB - 20 };
@@ -2277,6 +2377,9 @@ function hideTip() { clearTimeout(tipTimer); tipTimer = 0; if (tip) { tip = null
 cv.addEventListener('pointerup', e => {
   const [x, y] = pos(e);
   if (cap) { const c = cap; cap = null; if (c.up) c.up(x, y); dirty(); return; }
+  if (screen === 'desktop' && !menus.length && y >= H - TB) {
+    const ti = taskLayout().icons.find(v => inR(v, x, y)); if (ti) trayMouse(ti.t, e.button === 2 ? 0x205 : 0x202);
+  }
   if (menus.length) {
     const d = menuAt(x, y);
     if (d >= 0) { const i = rowAt(menus[d], x, y); if (i >= 0) activateItem(menus[d].items[i]); }
