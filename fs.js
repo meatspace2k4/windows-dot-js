@@ -97,7 +97,7 @@ class Volume {
   constructor(letter, o) {
     this.letter = letter.toUpperCase(); this.label = (o.label || '').toUpperCase().slice(0, 11);
     this.kind = o.kind || 'fixed'; this.readonly = !!o.readonly; this.ready = o.ready !== false;
-    this.cluster = o.cluster || 4096; this.total = o.total || 0; this.used = 0; this.fsname = o.fsname || 'FAT';
+    this.nextOrd = 1; this.cluster = o.cluster || 4096; this.total = o.total || 0; this.used = 0; this.fsname = o.fsname || 'FAT';
     this.serial = o.serial ?? ((Math.random() * 0xffffffff) >>> 0);
     this.root = new Node('', true); this.root.vol = this;
   }
@@ -193,7 +193,7 @@ class FileSystem {
   writable(v) { if (v.readonly) throw new FSError(E.WRITE_PROTECT, v.letter + ':\\'); }
   // ---- tree maintenance
   link(parent, n, name) {
-    n.name = name; n.short = shortFor(parent, name); n.parent = parent;
+    n.name = name; n.short = shortFor(parent, name); n.parent = parent; n.ord = parent.vol ? parent.vol.nextOrd++ : 0;
     parent.kids.set(name.toUpperCase(), n); parent.byShort.set(n.short, n);
     parent.mtime = Date.now(); this.setVol(n, parent.vol);
     this.meta(n); this.meta(parent);
@@ -219,7 +219,7 @@ class FileSystem {
   meta(n) {
     const s = this.stored(n); if (!s) return;
     s.node({ sid: this.sidOf(n), parent: n.parent ? this.sidOf(n.parent) : -1, name: n.name, short: n.short, dir: n.dir,
-      attrs: n.attrs, ctime: n.ctime, mtime: n.mtime, atime: n.atime });
+      ord: n.ord || 0, attrs: n.attrs, ctime: n.ctime, mtime: n.mtime, atime: n.atime });
   }
   // a volume's store and what it already holds: true when it held a tree, false when it is empty (and now takes this one)
   attach(letter, store) {
@@ -230,11 +230,11 @@ class FileSystem {
     const bySid = new Map([[0, r]]);
     for (const e of held.nodes) {
       const n = e.sid === 0 ? r : new Node(e.name, e.dir, e.attrs, e.ctime);
-      n.sid = e.sid; n.ctime = e.ctime; n.mtime = e.mtime; n.atime = e.atime; v.nextSid = Math.max(v.nextSid, e.sid + 1);
+      n.sid = e.sid; n.ord = e.ord; v.nextOrd = Math.max(v.nextOrd, e.ord + 1); n.ctime = e.ctime; n.mtime = e.mtime; n.atime = e.atime; v.nextSid = Math.max(v.nextSid, e.sid + 1);
       if (!e.dir) { n.buf = e.data || new Uint8Array(0); n.size = n.buf.length; v.used += v.alloc(n.size); }
       bySid.set(e.sid, n);
     }
-    for (const e of held.nodes) {
+    for (const e of [...held.nodes].sort((a, b) => a.ord - b.ord)) {
       if (e.sid === 0) continue;
       const n = bySid.get(e.sid), p = bySid.get(e.parent);
       n.short = e.short; n.parent = p; p.kids.set(n.name.toUpperCase(), n); p.byShort.set(n.short, n);

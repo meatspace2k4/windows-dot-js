@@ -10,7 +10,7 @@ function open(file) {
   db.exec(`
     PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;
     CREATE TABLE IF NOT EXISTS node (sid INTEGER PRIMARY KEY, parent INTEGER NOT NULL, name TEXT NOT NULL, short TEXT NOT NULL,
-      dir INTEGER NOT NULL, attrs INTEGER NOT NULL, ctime REAL NOT NULL, mtime REAL NOT NULL, atime REAL NOT NULL, size INTEGER NOT NULL DEFAULT 0);
+      dir INTEGER NOT NULL, ord INTEGER NOT NULL, attrs INTEGER NOT NULL, ctime REAL NOT NULL, mtime REAL NOT NULL, atime REAL NOT NULL, size INTEGER NOT NULL DEFAULT 0);
     CREATE INDEX IF NOT EXISTS node_parent ON node(parent);
     CREATE TABLE IF NOT EXISTS chunk (sid INTEGER NOT NULL, idx INTEGER NOT NULL, bytes BLOB NOT NULL, PRIMARY KEY (sid, idx));
     CREATE TABLE IF NOT EXISTS volume (k TEXT PRIMARY KEY, v);
@@ -18,8 +18,8 @@ function open(file) {
     CREATE TABLE IF NOT EXISTS regval (path TEXT NOT NULL, name TEXT NOT NULL, value BLOB NOT NULL, PRIMARY KEY (path, name));
   `)
   const q = {
-    upsert: db.prepare(`INSERT INTO node (sid, parent, name, short, dir, attrs, ctime, mtime, atime) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(sid) DO UPDATE SET parent = excluded.parent, name = excluded.name, short = excluded.short, attrs = excluded.attrs,
+    upsert: db.prepare(`INSERT INTO node (sid, parent, name, short, dir, ord, attrs, ctime, mtime, atime) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(sid) DO UPDATE SET parent = excluded.parent, name = excluded.name, short = excluded.short, ord = excluded.ord, attrs = excluded.attrs,
       ctime = excluded.ctime, mtime = excluded.mtime, atime = excluded.atime`),
     subtree: db.prepare(`WITH RECURSIVE t(sid) AS (SELECT ? UNION ALL SELECT node.sid FROM node JOIN t ON node.parent = t.sid) SELECT sid FROM t`),
     delNode: db.prepare('DELETE FROM node WHERE sid = ?'),
@@ -68,7 +68,7 @@ function open(file) {
   }
 
   const ops = {
-    node: r => q.upsert.run(r.sid, r.parent, r.name, r.short, r.dir ? 1 : 0, r.attrs, r.ctime, r.mtime, r.atime),
+    node: r => q.upsert.run(r.sid, r.parent, r.name, r.short, r.dir ? 1 : 0, r.ord, r.attrs, r.ctime, r.mtime, r.atime),
     remove: sid => { for (const { sid: s } of q.subtree.all(sid)) { q.delChunks.run(s); q.delNode.run(s) } },
     data: write,
     size: resize,
@@ -87,7 +87,7 @@ function open(file) {
       const rows = q.nodes.all()
       if (!rows.length) return null
       const nodes = rows.map(r => {
-        const e = { sid: r.sid, parent: r.parent, name: r.name, short: r.short, dir: !!r.dir, attrs: r.attrs, ctime: r.ctime, mtime: r.mtime, atime: r.atime }
+        const e = { sid: r.sid, parent: r.parent, name: r.name, short: r.short, dir: !!r.dir, ord: r.ord, attrs: r.attrs, ctime: r.ctime, mtime: r.mtime, atime: r.atime }
         if (!r.dir) {
           const data = new Uint8Array(r.size)
           for (const c of q.chunks.all(r.sid)) { const off = c.idx * CHUNK; if (off < r.size) data.set(c.bytes.subarray(0, r.size - off), off) }
