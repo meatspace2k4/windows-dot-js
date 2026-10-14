@@ -71,12 +71,11 @@ function rotate(ang, x, y, z) {
   return [x * x * t + c, y * x * t + z * s, x * z * t - y * s, 0, x * y * t - z * s, y * y * t + c, y * z * t + x * s, 0,
     x * z * t + y * s, y * z * t - x * s, z * z * t + c, 0, 0, 0, 0, 1];
 }
+// normal matrix: transpose of the inverse of the upper 3x3 (column-major in and out)
 function inverse3T(m) {
-  // inverse-transpose of the upper 3x3, for normals
-  const a = m[0], b = m[1], c = m[2], d = m[4], e = m[5], f = m[6], g = m[8], h = m[9], i = m[10];
-  const A = e * i - f * h, B = -(d * i - f * g), C = d * h - e * g;
-  const det = a * A + b * B + c * C || 1;
-  return [A / det, -(b * i - c * h) / det, (b * f - c * e) / det, B / det, (a * i - c * g) / det, -(a * f - c * d) / det, C / det, -(a * h - b * g) / det, (a * e - b * d) / det];
+  const inv = invert4(m), out = new Array(9);
+  for (let c = 0; c < 3; c++) for (let r = 0; r < 3; r++) out[c * 3 + r] = inv[r * 4 + c];
+  return out;
 }
 function xform(m, v) { return [0, 1, 2, 3].map(r => m[r] * v[0] + m[4 + r] * v[1] + m[8 + r] * v[2] + m[12 + r] * v[3]); }
 function invert4(m) {
