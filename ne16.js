@@ -578,6 +578,24 @@ P.nativeChildren = function (parent) {
   walk(parent, 0);
   return out;
 };
+/** the items of the menu a popup menu window (#32768) shows: text, MF_ state, and a rectangle laid out as USER lays
+ *  out a plain popup (3-pixel frame, separators 9 pixels, the other items sharing the rest) */
+P.nativeMenu = function (hwnd) {
+  if (!this.wbufLin) this.nativeWindows();
+  const a = this.wbufLin, buf = u32(this.wbufSel << 16), u = (o, args) => this.user16(o, args).ax, s16 = o => (this.r16(a + o) << 16) >> 16;
+  const hm = u(111, [['w', hwnd], ['w', 0x1e1], ['w', 0], ['l', 0]]); if (!hm) return [];     // MN_GETHMENU
+  const n = (u(263, [['w', hm]]) << 16) >> 16; if (n <= 0) return [];                          // GetMenuItemCount
+  u(32, [['w', hwnd], ['l', buf]]);
+  const x = s16(0), y = s16(2), w = s16(4) - x, h = s16(6) - y;
+  const items = [];
+  for (let i = 0; i < n; i++) {
+    const st = u(250, [['w', hm], ['w', i], ['w', 0x400]]), l = u(161, [['w', hm], ['w', i], ['l', buf + 16], ['w', 160], ['w', 0x400]]);
+    items.push({ text: l ? this.readA(a + 16, l) : '', state: st, sep: !!(st & 0x800) });
+  }
+  const seps = items.filter(t => t.sep).length, ih = (h - 6 - 9 * seps) / Math.max(1, n - seps);
+  let cy = y + 3; for (const t of items) { const th = t.sep ? 9 : ih; Object.assign(t, { x: x + 3, y: Math.round(cy), w: w - 6, h: Math.round(th) }); cy += th; }
+  return items;
+};
 /** a key into USER's keybd_event (USER.289), as KEYBOARD.DRV reports one: AL = virtual key, AH = 80h on release,
  *  BL = scan code, BH = 1 for an extended key */
 P.keyEvent16 = function (vk, scan, up, ext = false) {
