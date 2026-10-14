@@ -132,7 +132,9 @@ P.neExport = function (m, key) {
   if (typeof key === 'string') { const o = m.names[key.toUpperCase()]; if (o === undefined) return 0; key = o; }
   return m.exports.get(key) || 0;
 };
-P.loadLibrary16 = function (name) {
+// `native`: also bring up the modules the JS personality stands in for (JS16) from their recompiled code, for a
+// session that runs native USER; otherwise those imports stay with the JS implementations
+P.loadLibrary16 = function (name, native = false) {
   this.init16();
   const base = name.toUpperCase().replace(/^.*\\/, '').replace(/\.(DLL|EXE|DRV)$/, '');
   if (base === 'KERNEL') return this.kernelModule();
@@ -144,7 +146,7 @@ P.loadLibrary16 = function (name) {
   const b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
   if (this.ne.has(sys.meta.name.toUpperCase())) return this.ne.get(sys.meta.name.toUpperCase());
   const rec = this.loadNE(sys.meta.name.toUpperCase(), sys.fileBytes || (sys.fileBytes = b64(sys.file)), sys.mod || (sys.mod = new WebAssembly.Module(b64(sys.wasm))), sys.meta);
-  for (const imp of sys.meta.imports || []) if (imp !== 'KERNEL') this.loadLibrary16(imp);
+  for (const imp of sys.meta.imports || []) if (imp !== 'KERNEL' && (native || !JS16.includes(imp))) this.loadLibrary16(imp, native);
   if (!this.initNE(rec)) { console.warn('[ne16]', base, 'LibEntry failed'); }
   return rec;
 };
@@ -218,13 +220,14 @@ P.tick16 = function () { if (this.timeLin) this.w32(this.timeLin, u32(this.now()
 P.api16 = function (eip) {
   this.tick16();
   const t = this.th16[(eip - L.T16) >> 2];
-  // an import of a module compiled later (GDI's of USER: each imports the other) reaches it here once it is
-  // loaded natively: the far call goes on into the export, which returns to the caller itself
-  if (t && t.native === undefined) {
+  // an import with no JS implementation, of a module compiled later (GDI's of USER: each imports the other), reaches
+  // the native module here once it is loaded: the far call goes on into the export, which returns to the caller
+  // itself. A JS implementation, where there is one, always answers.
+  if (t && !t.def && t.native === undefined) {
     const i = t.key.indexOf('.'), m = this.ne.get(t.key.slice(0, i)), k = t.key.slice(i + 1);
     t.native = (m && m.meta && this.neExport(m, k[0] === '#' ? +k.slice(1) : k)) || 0;
   }
-  if (t && t.native) { const sel = t.native >>> 16; this.seg('cs', sel); return u32(this.selBase(sel) + (t.native & 0xffff)); }
+  if (t && !t.def && t.native) { const sel = t.native >>> 16; this.seg('cs', sel); return u32(this.selBase(sel) + (t.native & 0xffff)); }
   if (!t || !t.def) { this.trapped = `unimplemented 16-bit import ${t ? t.key : eip.toString(16)}`; return LAYOUT.SENTINEL; }
   const [args, ret, fn] = t.def;
   if (window.W95TRACE16) window.W95TRACE16(t, this);
