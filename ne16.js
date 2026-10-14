@@ -1194,6 +1194,12 @@ def16('KERNEL', 482, 's', 'l', function (name) {          // LoadSystemLibrary32
   return m.base;
 });
 def16('KERNEL', 619, 'wxl', 'w', function () { return 1; });                // RegisterCBClient
+// IsSLThunklet: whether a far pointer addresses a 16-to-32 thunklet (push dword, push dword, jmp far), as KRNL386 checks
+def16('KERNEL', 612, 'x', 'w', function (sp) {
+  if (!(sp >>> 16) || !this.selValid(sp >>> 16)) return 0;
+  const a = this.lin(sp);
+  return this.r16(a) === 0x6866 && this.r16(a + 6) === 0x6866 && this.u8[a + 12] === 0xea ? 1 : 0;
+});
 // InitCBClient: the 32-bit glue routine (USER32's) that 16-to-32 callbacks of registered clients go through
 def16('KERNEL', 623, 'l', 'w', function (glue) { this.cbGlueLS = glue; return 1; });
 def16('KERNEL', 605, 'll', 'l', function (target, rel) { return this.slThunklet(target, rel); });   // AllocSLThunkletCallback
