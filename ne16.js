@@ -214,7 +214,9 @@ P.thunk16For = function (key) {
   return u32((L.THSEL << 16) | (4 * i));
 };
 const ARGBYTES = { w: 2, i: 2, l: 4, p: 4, s: 4, x: 4 };
+P.tick16 = function () { if (this.timeLin) this.w32(this.timeLin, u32(this.now() - this.t0 + 3600000)); };
 P.api16 = function (eip) {
+  this.tick16();
   const t = this.th16[(eip - L.T16) >> 2];
   // an import of a module compiled later (GDI's of USER: each imports the other) reaches it here once it is
   // loaded natively: the far call goes on into the export, which returns to the caller itself
@@ -436,11 +438,20 @@ const vxdApi = (id, name, fns) => {
     return this.retf16(0);
   });
 };
+vxdApi(0x0001, 'VMM', {
+  // asked once by USER's LibEntry, which keeps a value only when AH comes back 2 (meaning not established here);
+  // 0 takes USER's own branch for its absence
+  0x26d() { return 0; },
+});
 vxdApi(0x0009, 'REBOOT', {});
 vxdApi(0x000c, 'VMD', {});
 vxdApi(0x0017, 'SHELL', {});
 vxdApi(0x0037, 'VxD 37h', {});
-vxdApi(0x0442, 'VTDAPI', {});
+vxdApi(0x0442, 'VTDAPI', {
+  // a selector to the system time in milliseconds, which USER reads for message times (the VxD keeps it current;
+  // here it is refreshed whenever native code calls out)
+  9() { if (!this.timeLin) { this.timeLin = this.alloc(16); this.timeSel = this.allocSels(this.timeLin, 16); } this.tick16(); return this.timeSel; },
+});
 
 // the display VxD's driver interface (minivdd): registration, mode-change notifications and the display configuration
 P.displayConfig = function () {
