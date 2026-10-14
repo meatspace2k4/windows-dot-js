@@ -2644,7 +2644,9 @@ class NativeApp {
     this.kick();
   }
   feedKeys() {
-    for (; this.keyq && this.keyq.length && (this.keysFed || 0) < 16 && !this.proc.depth; this.keysFed = (this.keysFed || 0) + 1) {
+    if (!this.keyq || !this.keyq.length || this.proc.depth) return;
+    try { if (this.proc.user16(335).ax) return; } catch (e) { console.error(e); }   // GetInputState: USER has input not yet taken
+    for (; this.keyq.length && (this.keysFed || 0) < 16; this.keysFed = (this.keysFed || 0) + 1) {
       const [vk, sc, up] = this.keyq.shift();
       try { this.proc.keyEvent16(vk, sc & 0xff, up, sc > 0xff); } catch (err) { console.error(err); }
     }
