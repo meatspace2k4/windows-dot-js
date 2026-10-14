@@ -2480,7 +2480,7 @@ class NativeApp {
     clearTimeout(this.timer); this.timer = 0;
     if (!this.alive) return;
     const p = this.proc, t0 = performance.now();
-    try { for (let n = 0; this.alive && n < 4; n++) { p.stats.slices++; const live = p.slice(); p.timers16(); p.threads16(); if (!live) break; } }
+    try { for (let n = 0; this.alive && n < 4; n++) { p.stats.slices++; const live = p.slice(); p.timers16(); p.threads16(); p.systemPump(); if (!live) break; } }
     catch (e) { console.error(e); this.exited(-1, e.message); return; }
     p.stats.guestMs += performance.now() - t0;
     if (p.trapped && !p.failed) p.fail(p.trapped);

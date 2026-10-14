@@ -1509,16 +1509,40 @@ const ev16 = (p, h) => { const o = p.obj(h); return o && o.kind === 'event' ? o 
 def16('KERNEL', 457, 'll', 'l', function (manual, initial) { return this.newHandle({ kind: 'event', manual: !!manual, set: !!initial }); });   // CreateW32Event
 def16('KERNEL', 458, 'l', 'l', function (h) { const e = ev16(this, h); if (!e) return 0; e.set = true; return 1; });   // SetW32Event
 def16('KERNEL', 459, 'l', 'l', function (h) { const e = ev16(this, h); if (!e) return 0; e.set = false; return 1; });  // ResetW32Event
-def16('KERNEL', 460, 'll', 'l', function (h, ms) {                                                     // WaitForSingleObject
+// WaitForSingleObject: a thread waiting at its top level for an event that is not set gives up its slice (the other
+// threads, the system thread among them, run) and waits again when resumed; elsewhere the wait times out at once
+def16('KERNEL', 460, 'll', 'l', function (h, ms) {
   const e = ev16(this, h); if (!e) return 0xffffffff;
+  if (!e.set && ms && this.atThreadTop()) return YIELD;
   if (!e.set) return 0x102; if (!e.manual) e.set = false; return 0;
 });
+P.atThreadTop = function () { return this.thread16 ? this.depth === this.thread16.depth : this.depth === 0 && !this.inSystem(); };
+/** whether USER is running as the system thread: its start-up, and its message loop between slices (systemPump) */
+P.inSystem = function () { return this.user16Ready === false || !!this.sysPumping; };
+/**
+ * The system thread's message loop, which Windows 95 runs in its own thread: messages for the windows USER made at
+ * start-up (the desktop's among them), including the ones a program's thread sends and waits on. The host runs it
+ * between slices.
+ */
+P.systemPump = function () {
+  if (!this.user16Ready || this.depth || this.thread16 || this.sysPumping) return;
+  const sys = this.threadsById && this.threadsById.get(SYS_TID); if (!sys || !sys.queue) return;
+  if (!this.msgLin) { this.msgLin = this.alloc(32); this.msgSel = this.allocSels(this.msgLin, 32); }
+  const msg = u32(this.msgSel << 16);
+  this.sysPumping = true;
+  try {
+    for (let n = 0; n < 64; n++) {
+      if (!this.user16(109, [['l', msg], ['w', 0], ['w', 0], ['w', 0], ['w', 1]]).ax) break;   // PeekMessage, PM_REMOVE
+      this.user16(113, [['l', msg]]); this.user16(114, [['l', msg]]);                             // TranslateMessage, DispatchMessage
+    }
+  } finally { this.sysPumping = false; }
+};
 def16('KERNEL', 461, 'llll', 'l', function (n, ph, all, ms) {                                        // WaitForMultipleObjects
   const hs = [...Array(n)].map((_, i) => ev16(this, this.r32(this.lin(ph) + 4 * i)));
   if (all) { if (!hs.every(e => e && e.set)) return 0x102; for (const e of hs) if (!e.manual) e.set = false; return 0; }
   const i = hs.findIndex(e => e && e.set); if (i < 0) return 0x102; if (!hs[i].manual) hs[i].set = false; return i;
 });
-def16('KERNEL', 462, '', 'l', function () { return this.thread16 ? this.thread16.id : this.user16Ready === false ? SYS_TID : MAIN_TID; });       // GetCurrentThreadId (the main thread is the id KERNEL32 reports)
+def16('KERNEL', 462, '', 'l', function () { return this.thread16 ? this.thread16.id : this.inSystem() ? SYS_TID : MAIN_TID; });       // GetCurrentThreadId (the main thread is the id KERNEL32 reports)
 def16('KERNEL', 463, 'lw', 'w', function (tid, hq) { const t = thr(this, tid), old = t.queue || 0; t.queue = hq; return old; });   // SetThreadQueue
 def16('KERNEL', 464, 'l', 'w', function (tid) { return thr(this, tid).queue || 0; });                     // GetThreadQueue
 def16('KERNEL', 624, 'll', 'v', function (tid, hq) { thr(this, tid).queue = hq & 0xffff; });                 // SetFastQueue: the queue field (38h) of the thread
@@ -1528,7 +1552,7 @@ def16('KERNEL', 625, '', 'w', function () {
   const t = thr(this, 0); if (t.queue) return t.queue;
   const u = this.ne.get('USER'), ep = u && u.meta && this.neExport(u, 409);
   if (!ep) return 0;
-  const r = this.call16(ep >>> 16, ep & 0xffff, [['w', 0], ['w', this.thread16 || !this.user16Ready ? 4 : 5]]);   // 1: a Win32 thread (THDB flags bit 0), its own process record; USER's start-up is the system's
+  const r = this.call16(ep >>> 16, ep & 0xffff, [['w', 0], ['w', this.thread16 || this.inSystem() ? 4 : 5]]);   // 1: a Win32 thread (THDB flags bit 0), its own process record; USER's start-up is the system's
   return t.queue || r.ax;
 });
 // Get/SetProcessDword: a process's fields by the GPD_ offsets (0 user data, -4 flags, -8 parent, -12..-32 its
@@ -1537,7 +1561,7 @@ def16('KERNEL', 625, '', 'w', function () {
 const GPD = { 0: 0, '-4': 0, '-8': 0, '-12': 0, '-16': 0, '-20': 0, '-24': 0, '-28': 0, '-32': 0, '-36': 0, '-40': 0, '-44': 0x400, '-48': 0, '-52': 0, '-56': 0 };
 const pdw = (p, pid, off) => {
   if (!(off in GPD)) throw new GuestError(`GetProcessDword offset ${off}`);
-  pid = pid || (p.user16Ready === false ? 'system' : 0);   // USER's start-up runs as the system process, not the program's
+  pid = pid || (p.inSystem() ? 'system' : 0);   // USER's start-up runs as the system process, not the program's
   p.procDword = p.procDword || new Map(); if (!p.procDword.has(pid)) p.procDword.set(pid, { ...GPD }); return p.procDword.get(pid);
 };
 def16('KERNEL', 485, 'li', 'l', function (pid, off) { return pdw(this, pid, off)[off] >>> 0; });
@@ -1559,7 +1583,7 @@ def16('KERNEL', 479, 'l', 'v', function (h) { const e = ev16(this, h); if (e) e.
 const MAIN_TID = 0x51, SYS_TID = 0x41;   // the program's thread, and the system thread USER starts up on
 const thr = (p, tid) => {   // a thread's record by id (0 or the main thread's id: the current/main thread)
   p.threadsById = p.threadsById || new Map([[MAIN_TID, { id: MAIN_TID }]]);
-  const id = tid || (p.thread16 ? p.thread16.id : p.user16Ready === false ? SYS_TID : MAIN_TID);
+  const id = tid || (p.thread16 ? p.thread16.id : p.inSystem() ? SYS_TID : MAIN_TID);
   if (!p.threadsById.has(id)) p.threadsById.set(id, { id });
   return p.threadsById.get(id);
 };
