@@ -216,6 +216,13 @@ P.thunk16For = function (key) {
 const ARGBYTES = { w: 2, i: 2, l: 4, p: 4, s: 4, x: 4 };
 P.api16 = function (eip) {
   const t = this.th16[(eip - L.T16) >> 2];
+  // an import of a module compiled later (GDI's of USER: each imports the other) reaches it here once it is
+  // loaded natively: the far call goes on into the export, which returns to the caller itself
+  if (t && t.native === undefined) {
+    const i = t.key.indexOf('.'), m = this.ne.get(t.key.slice(0, i)), k = t.key.slice(i + 1);
+    t.native = (m && m.meta && this.neExport(m, k[0] === '#' ? +k.slice(1) : k)) || 0;
+  }
+  if (t && t.native) { const sel = t.native >>> 16; this.seg('cs', sel); return u32(this.selBase(sel) + (t.native & 0xffff)); }
   if (!t || !t.def) { this.trapped = `unimplemented 16-bit import ${t ? t.key : eip.toString(16)}`; return LAYOUT.SENTINEL; }
   const [args, ret, fn] = t.def;
   if (window.W95TRACE16) window.W95TRACE16(t, this);
