@@ -859,17 +859,37 @@ def('GDI32', 'SetBkColor', 2, function (hdc, c) { const dc = dcOf(this, hdc); co
 def('GDI32', 'SetBkMode', 2, function (hdc, m) { const dc = dcOf(this, hdc); const o = dc.bkMode; dc.bkMode = m; return o; });
 def('GDI32', 'SetTextColor', 2, function (hdc, c) { const dc = dcOf(this, hdc); const o = dc.text; dc.text = c; return o; });
 def('GDI32', 'SetTextAlign', 2, function (hdc, a) { const dc = dcOf(this, hdc); const o = dc.align; dc.align = a; return o; });
+// Win95 GDI scan-converts TrueType glyphs without smoothing: rasterize through a canvas,
+// then threshold coverage at 50% into solid pixels of the text color.
+const glyphCache = new Map();
+function textBitmap(fontCss, s, color) {
+  const key = fontCss + '\u0001' + s + '\u0001' + color;
+  let e = glyphCache.get(key);
+  if (e) return e;
+  if (glyphCache.size > 2000) glyphCache.clear();
+  const g = measureCtx(); g.font = fontCss;
+  const m = g.measureText(s), asc = Math.ceil(m.fontBoundingBoxAscent ?? 10), desc = Math.ceil(m.fontBoundingBoxDescent ?? 3);
+  const w = Math.max(1, Math.ceil(m.width)), h = Math.max(1, asc + desc);
+  const c = mkCanvas(w, h), cx = c.getContext('2d', { willReadFrequently: true });
+  cx.font = fontCss; cx.fillStyle = '#000'; cx.textBaseline = 'alphabetic'; cx.fillText(s, 0, asc);
+  const id = cx.getImageData(0, 0, w, h), d = id.data, [r, gg, b] = color;
+  for (let k = 0; k < d.length; k += 4) { const on = d[k + 3] >= 128; d[k] = r; d[k + 1] = gg; d[k + 2] = b; d[k + 3] = on ? 255 : 0; }
+  cx.putImageData(id, 0, 0);
+  e = { canvas: c, w, h, asc, desc, width: m.width };
+  glyphCache.set(key, e);
+  return e;
+}
 function drawText(p, dc, x, y, s, opaqueRect) {
   const g = dc.ctx; if (!g) return;
   if (opaqueRect) dc.fill(opaqueRect.l, opaqueRect.t, opaqueRect.r - opaqueRect.l, opaqueRect.b - opaqueRect.t, dc.bk);
   if (!s) return;
-  g.save(); g.font = dc.fontCss();
-  const m = g.measureText(s), asc = m.fontBoundingBoxAscent ?? Math.abs(dc.font.lf.height) * 0.8, desc = m.fontBoundingBoxDescent ?? Math.abs(dc.font.lf.height) * 0.2;
-  let tx = x; if ((dc.align & 6) === 6) tx -= m.width / 2; else if (dc.align & 2) tx -= m.width;
-  const top = dc.align & 24 ? (dc.align & 8 ? y - asc - desc : y - asc) : y;
-  if (dc.bkMode === 2 && !opaqueRect) { g.fillStyle = dc.color(dc.bk); g.fillRect(tx, top, m.width, asc + desc); }
-  g.fillStyle = dc.color(dc.text); g.textBaseline = 'alphabetic'; g.fillText(s, tx, top + asc);
-  g.restore();
+  const col = dc.color(dc.text).match(/\d+/g).map(Number);
+  const t = textBitmap(dc.fontCss(), s, col);
+  const ha = dc.align & 6, va = dc.align & 24;          // TA_CENTER=6, TA_RIGHT=2 ; TA_BASELINE=24, TA_BOTTOM=8, TA_TOP=0
+  const tx = Math.round(ha === 6 ? x - t.w / 2 : ha === 2 ? x - t.w : x);
+  const top = va === 24 ? y - t.asc : va === 8 ? y - t.h : y;
+  if (dc.bkMode === 2 && !opaqueRect) dc.fill(tx, top, t.w, t.h, dc.bk);
+  g.drawImage(t.canvas, tx, top);
 }
 def('GDI32', 'TextOutA', 5, function (hdc, x, y, s, n) { drawText(this, dcOf(this, hdc), x | 0, y | 0, this.readA(s, n)); return 1; });
 def('GDI32', 'ExtTextOutA', 8, function (hdc, x, y, opt, rc, s, n) {
