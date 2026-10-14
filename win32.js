@@ -9,7 +9,7 @@
 // heap, then per-module block lookup tables from 0x6000000
 const LAYOUT = { SENTINEL: 0xFFFFFFF0, THUNK: 0xFFFF0000, FPU: 0x10000, TIB: 0x11000, SCRATCH: 0x12000,
   STACK_LO: 0x100000, STACK_TOP: 0x3ffff0, HEAP: 0x02000000, HEAP_END: 0x06000000 };
-const YIELD = -1 >>> 0;
+const YIELD = Symbol('yield');   // returned by an API implementation to suspend the guest at depth 0
 const CPU_REGS = ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi', 'cf', 'pf', 'zf', 'sf', 'of', 'df', 'fs', 'ftop', 'fsw', 'fcw', 'eip'];
 const WM = { NULL: 0, CREATE: 1, DESTROY: 2, MOVE: 3, SIZE: 5, ACTIVATE: 6, SETFOCUS: 7, KILLFOCUS: 8, PAINT: 0xf, CLOSE: 0x10,
   QUIT: 0x12, ERASEBKGND: 0x14, SHOWWINDOW: 0x18, ACTIVATEAPP: 0x1c, SETCURSOR: 0x20, NCCREATE: 0x81, NCDESTROY: 0x82,
@@ -188,11 +188,12 @@ class Process {
     const t = this.thunks[(u32(eip) - LAYOUT.THUNK) >> 2];
     if (!t || !t.def) { this.trapped = `unimplemented import ${t ? t.dll + '!' + t.nm : u32(eip).toString(16)}`; return LAYOUT.SENTINEL; }
     const [nargs, fn] = t.def, sp = this.reg('esp');
+    if (window.W95TRACE) window.W95TRACE(t, this);
     const a = []; for (let i = 0; i < (nargs < 0 ? 8 : nargs); i++) a.push(this.r32(sp + 4 + 4 * i));
     let r;
     try { r = fn.apply(this, a); }
     catch (e) { if (e instanceof GuestError) { this.trapped = e.message; return LAYOUT.SENTINEL; } throw e; }
-    if (r === YIELD) return YIELD;
+    if (r === YIELD) return -1;
     if (this.exitCode !== null) return LAYOUT.SENTINEL;
     this.reg('eax', r === undefined ? 0 : r);
     const ret = this.r32(sp);
