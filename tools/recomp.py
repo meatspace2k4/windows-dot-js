@@ -154,11 +154,14 @@ def export_entries(pe):
     img = pe.image; n = u32(img, rva + 20); funcs = u32(img, rva + 28)
     return [pe.base + u32(img, funcs + 4 * i) for i in range(n) if u32(img, funcs + 4 * i)]
 
+FLOW = ('loop', 'loope', 'loopne', 'jcxz', 'jecxz', 'lcall', 'ljmp', 'int', 'into')
+def ends_block(ins):
+    g = ins.i.groups
+    return capstone.CS_GRP_JUMP in g or capstone.CS_GRP_CALL in g or ins.mn.startswith('ret') or ins.mn in FLOW
 def build_blocks(pe, insns, entries):
     starts = set(e for e in entries if e in insns)
     for ins in insns.values():
-        g = ins.i.groups
-        if capstone.CS_GRP_JUMP in g or capstone.CS_GRP_CALL in g or ins.mn.startswith('ret'):
+        if ends_block(ins):
             if ins.next in insns: starts.add(ins.next)
             t = imm_target(ins)
             if t is not None and t in insns: starts.add(t)
@@ -167,8 +170,7 @@ def build_blocks(pe, insns, entries):
         lst, a = [], s
         while a in insns:
             ins = insns[a]; lst.append(ins); a = ins.next
-            g = ins.i.groups
-            if capstone.CS_GRP_JUMP in g or capstone.CS_GRP_CALL in g or ins.mn.startswith('ret') or ins.mn in ('hlt', 'int3', 'ud2', 'int', 'iret', 'iretd'): break
+            if ends_block(ins) or ins.mn in ('hlt', 'int3', 'ud2', 'iret', 'iretd'): break
             if a in starts: break
         blocks[s] = lst
     return blocks
