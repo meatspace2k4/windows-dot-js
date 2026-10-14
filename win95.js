@@ -1092,7 +1092,7 @@ class FolderView {
     return out;
   }
   tbEnabled(id) {
-    const it = viewSelItem(this), real = it && it.info && !it.bin && !isRoot(it.path), ro = !this.src.path || this.src.readonly;
+    const it = viewSelItem(this), real = !!(it && it.info && !it.bin && !isRoot(it.path)), ro = !this.src.path || !!this.src.readonly;
     return { up: !!this.src.path || this.src !== MyComputer, cut: real && !ro, copy: !!real, paste: !ro && !!clip, undo: !!undoOp,
       delete: !!real && !ro, props: !!it || !!this.src.path }[id] ?? true;
   }
@@ -2755,7 +2755,8 @@ function elements() {
   render();
   const out = [], add = (role, name, r, o = {}) => out.push({ role, name: name ?? '', x: r.x, y: r.y, w: r.w, h: r.h, ...o });
   const label = s => amp(s || '')[0];
-  const cell = (c, o) => add('listitem', c.it.label, { x: Math.min(c.ix, c.lx), y: c.iy, w: Math.max(32, c.lw), h: c.ly + c.lines.length * 13 - c.iy }, o);
+  const cell = (c, o) => add('listitem', c.it.label, c.small ? { x: c.ix, y: c.iy, w: c.lx - c.ix + c.lw + 2, h: 16 }
+    : { x: Math.min(c.ix, c.lx), y: c.iy, w: Math.max(32, c.lw), h: c.ly + c.lines.length * 13 - c.iy }, o);
   for (const c of desk.cells) cell(c, { window: 'Desktop', selected: desk.selKey === c.it.key });
   for (const w of windows) {
     if (w.min) continue;
@@ -2765,7 +2766,11 @@ function elements() {
     for (const b of w.buttons()) add('pushbutton', { close: 'Close', max: 'Maximize', restore: 'Restore', min: 'Minimize' }[b.id], b, { ...win, disabled: !!b.disabled });
     for (const b of w.barItems()) add('menuitem', label(b.m.label), b, { ...win, menubar: true, open: w.barOpen === w.barItems().indexOf(b) });
     const body = w.body;
-    if (body instanceof FolderView) for (const c of body.cells) if (c.iy + 32 > body.inner.y && c.iy < body.inner.y + body.inner.h) cell(c, { ...win, selected: body.selKey === c.it.key });
+    if (body instanceof FolderView) {
+      for (const t of body.tbButtons()) add('pushbutton', t.b[2], t, { ...win, toolbar: true, disabled: !body.tbEnabled(t.b[3]), checked: t.b[3] === body.mode });
+      if (body.mode === 'details') { let hx = body.head.x; for (const c of DETAIL_COLS) { add('columnheader', c.label, { x: hx, y: body.head.y, w: c.w, h: body.head.h }, win); hx += c.w; } }
+      for (const c of body.cells) if (c.iy + 16 > body.inner.y && c.iy < body.inner.y + body.inner.h && c.ix + 16 > body.inner.x && c.ix < body.inner.x + body.inner.w) cell(c, { ...win, selected: body.selKey === c.it.key, view: body.mode });
+    }
     if (body instanceof Notepad && body.ta) add('document', w.title, body.ta, { ...win, value: body.lines.join('\r\n'), modified: body.modified });
     if (body instanceof DialogBody && body.r) {
       for (const c of body.c) {
@@ -2800,7 +2805,7 @@ function elements() {
   add('clock', clockStr(), L.tray, { window: 'Taskbar' });
   menus.forEach((m, d) => m.items.forEach((it, i) => {
     const r = m.rows[i]; if (it.sep) return;
-    add('menuitem', label(it.label), { x: m.x + 3, y: m.y + r.y, w: m.w - 6, h: r.h }, { window: 'Menu', depth: d, disabled: !!it.disabled, submenu: !!it.sub, hot: m.hover === i });
+    add('menuitem', label(it.label), { x: m.x + 3, y: m.y + r.y, w: m.w - 6, h: r.h }, { window: 'Menu', depth: d, disabled: !!it.disabled, submenu: !!it.sub, hot: m.hover === i, checked: !!it.check });
   }));
   // covered: a click at its centre would land on something drawn over it (a later window, the taskbar, a menu)
   const bar = { x: 0, y: L.y, w: W, h: TB }, above = [];
