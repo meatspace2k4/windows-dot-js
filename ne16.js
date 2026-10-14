@@ -1185,31 +1185,32 @@ P.qtThunk = function () {
   this.reg('esp', this.reg('esp') + 0);   // call16from32 adjusted ESP for the bytes the callee popped
   return ret;
 };
-/** call a 16:16 target with `n` argument bytes copied from the flat stack at `src`; returns via DX:AX into EAX/EDX */
+/**
+ * Call a 16:16 target whose `n` argument bytes sit on the flat stack at `src`. As on Windows 95 the 16-bit stack
+ * aliases the 32-bit one: SS:SP addresses the argument block in place, so anything the callee writes there is seen
+ * by the 32-bit side. `map` marks argument dwords holding flat pointers into the block (converted to SS:offset).
+ */
 P.call16from32 = function (target, src, n, map, ret32 = false) {
   const sel = target >>> 16, off = target & 0xffff;
   const save = { ebx: this.reg('ebx'), esi: this.reg('esi'), edi: this.reg('edi'), ebp: this.reg('ebp'), esp: this.reg('esp') };
-  // the 16-bit frame aliases the flat stack below the current ESP: copy the argument block down
   const lvl = this.stackLevel++; const ssel = L.STK + 8 * lvl;
-  const flat = (src - 0x100) & ~0xf, base = (flat - 0xff00) & ~0xf;
+  const base = (src - 0xf000) & ~0xf;
   this.setDesc(ssel, base, 0xffff, 0xf300); this.seg('ss', ssel);
-  let sp = flat - base - n;
-  this.u8.copyWithin(base + sp, src, src + n);
+  let sp = src - base;
   if (map) for (let i = 0; i < 32; i++) if (map & (1 << i)) {
-    const a = base + sp + 2 * i, p = this.r32(a);   // a pointer into the copied block becomes SS:offset
-    this.w32(a, u32((ssel << 16) | (p - src + sp)));
+    const a = src + 2 * i, ptr = this.r32(a);
+    this.w32(a, u32((ssel << 16) | (ptr - base)));
   }
   const sp0 = sp;
   if (ret32) { sp -= 4; this.w32(base + sp, L.SENT); sp -= 4; this.w32(base + sp, 0); }    // for a 0x66 lret
   else { sp -= 2; this.w16(base + sp, L.SENT); sp -= 2; this.w16(base + sp, 0); }
   this.reg('esp', sp); this.seg('ds', 0); this.seg('es', 0); this.seg('cs', sel);
-  this.cpu.ebp.value = lo16(this.cpu.ebp.value, sp + 4);
+  this.cpu.ebp.value = lo16(this.cpu.ebp.value, sp0 + n);
   this.depth++;
   const r = this.runAt(u32(this.selBase(sel) + off));
   this.depth--; this.stackLevel--;
   if (r !== 0 || this.trapped) throw new GuestError(this.trapped || `16-bit thunk target ${target.toString(16)} did not return`);
   const popped = ((this.cpu.esp.value & 0xffff) - sp0) & 0xffff;
-  if (map) this.u8.copyWithin(src, base + sp0, base + sp0 + n);
   const ax = this.cpu.eax.value & 0xffff, dx = this.cpu.edx.value & 0xffff;
   this.last16 = { eax: u32(this.cpu.eax.value), ebx: u32(this.cpu.ebx.value), ecx: u32(this.cpu.ecx.value) };
   if (ret32) this.reg('eax', this.last16.eax); else { this.reg('eax', ((dx << 16) | ax) >>> 0); this.reg('edx', dx); }
@@ -1223,6 +1224,7 @@ KR('#45', function () {          // Common32ThkLS: EAX = 16-bit common entry, CX
   const ret = pop32(this), n = (this.reg('edx') >>> 16) * 4;
   this.reg('edi', lo16(this.reg('edi'), this.reg('ecx')));
   const sp = this.reg('esp');
+  this.reg('esp', sp - 32);
   this.call16from32(this.reg('eax'), sp - 32, n + 32, 0, true);
   this.reg('esp', sp + (this.last16.ebx & 0xff));
   return ret;
