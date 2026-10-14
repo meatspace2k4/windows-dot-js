@@ -2463,6 +2463,7 @@ class NativeApp {
     try { this.proc = new W95Win32.Process(bytes, module, { ...prog.d.meta, name: prog.name.replace(/\.EXE$/, '') }, host, this.arg ? `${exe} ${this.arg}` : exe, dlls); }
     catch (e) { console.error(e); this.exited(-1, e.message); return false; }
     if (this.proc.trapped) { this.exited(-1, this.proc.trapped); return false; }
+    { const a = this.proc.scanout(); if (a.bpp) [this.sw, this.sh] = [a.w, a.h]; }   // the mode the display driver set
     this.cv = mkc(this.sw, this.sh); this.cx = this.cv.getContext('2d'); this.img = this.cx.createImageData(this.sw, this.sh);
     this.d32 = new Uint32Array(this.img.data.buffer); this.pal = new Uint32Array(256);
     try {
@@ -2531,7 +2532,12 @@ class NativeApp {
     if (!this.alive || !this.proc || this.proc.depth) return;
     const ax = Math.round(clamp(x, 0, this.sw - 1) * 65535 / (this.sw - 1)), ay = Math.round(clamp(y, 0, this.sh - 1) * 65535 / (this.sh - 1));
     const f = kind === 'down' ? (btn === 2 ? 8 : 2) : kind === 'up' ? (btn === 2 ? 16 : 4) : 1;
-    try { this.showCursor(true); this.proc.mouseEvent16(0x8001 | f, ax, ay); } catch (e) { console.error(e); }
+    try {
+      this.showCursor(true);
+      // the move first, as the mouse reports it before the button, so USER sees the button where the pointer is
+      if (f !== 1 && (ax !== this.ax || ay !== this.ay)) this.proc.mouseEvent16(0x8001, ax, ay);
+      this.proc.mouseEvent16(0x8001 | f, ax, ay); this.ax = ax; this.ay = ay;
+    } catch (e) { console.error(e); }
     this.kick();
   }
   showCursor(on) {
