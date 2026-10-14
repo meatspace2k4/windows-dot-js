@@ -1341,6 +1341,16 @@ P.start16 = function (sel, off, args) {
   this.depth++; if (this.thread16) this.thread16.depth = this.depth;
   return this.runAt(u32(this.selBase(sel) + off));
 };
+// the 32-bit modules from 16-bit code: LoadLibrary32 and GetProcAddress32 (by name, or by ordinal as a low word)
+def16('KERNEL', 452, 's', 'l', function (name) {
+  const n = (name || '').toUpperCase().replace(/^.*\\/, '').replace(/\.DLL$/, '');
+  const m = this.byName.get(n) || this.loadDll(n); return m ? m.base : 0;
+});
+def16('KERNEL', 453, 'lx', 'l', function (h, name) {
+  const m = this.modules.find(x => x.base === h); if (!m) return 0;
+  if (!(name >>> 16)) return (m.ordinals && m.ordinals.get(name & 0xffff)) || 0;
+  return m.exports.get(this.readA(this.lin(name))) || 0;
+});
 def16('KERNEL', 476, 'l', 'l', function (h) { return h; });                                            // ConvertToGlobalHandle: one process, so already global
 def16('KERNEL', 474, 'l', 'w', function (h) { return this.handles.delete(h) ? 1 : 0; });               // CloseW32Handle
 def16('KERNEL', 105, '', 'w', function () { return 0x0400; });                                         // GetExeVersion: system code expects Windows 4.0
