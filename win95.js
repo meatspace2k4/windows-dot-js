@@ -1873,5 +1873,5 @@ makeDisk();
 desk.src = new FsSource(DESKTOP_DIR);
 fs.on(() => dirty());
 Promise.all(ready).then(() => { resize(); kbd.focus(); dirty(); });
-window.win95 = { fs, render, openFolder, openPath, shellOpen, notepad, msgBox, runDialog, shutDownDialog, MyComputer, get windows() { return windows; }, get state() { return { menus: menus.length, menuSrc, modals: modals.length, cap: !!cap, drag: !!drag, screen, active: active && active.title }; } };
+window.win95 = { fs, render, properties, driveProps, openFolder, openPath, shellOpen, notepad, msgBox, runDialog, shutDownDialog, MyComputer, get windows() { return windows; }, get state() { return { menus: menus.length, menuSrc, modals: modals.length, cap: !!cap, drag: !!drag, screen, active: active && active.title }; } };
 })();
