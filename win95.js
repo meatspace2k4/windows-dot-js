@@ -1485,6 +1485,7 @@ function drawPie(cx, cy, rx, ry, depth, frac) {
 // Notepad is an EDIT control: one text, a caret and an anchor (the selection runs between them), tab stops every
 // eight columns, one level of undo, and word wrap to the window's width.
 let textClip = '';   // the clipboard's text, shared by every edit in the shell
+let clipOwner = null;   // the native program whose USER holds the clipboard now (NativeApp.clipHandoff)
 class Notepad {
   constructor() {
     this.t = ''; this.c = 0; this.a = 0; this.path = null; this.modified = false; this.wrap = false;
@@ -2532,7 +2533,40 @@ class NativeApp {
     if (p.trapped && !p.failed) p.fail(p.trapped);
     if (p.exitCode !== null || p.trapped) { this.exited(p.exitCode, p.trapped); return; }
     this.sync();
+    this.clipHandoff();
     this.timer = setTimeout(() => this.step(), this.keyq && this.keyq.length ? 0 : 16);
+  }
+  // one clipboard across programs: each process's USER keeps its own, so the text moves through the shell's when the
+  // keyboard moves: the program losing it leaves its CF_TEXT as the shell's text, the one gaining it is given that
+  clipHandoff() {
+    const mine = !!(active && active.native && active.app === this);
+    if (mine && clipOwner !== this) {
+      if (clipOwner && clipOwner.alive) clipOwner.clipOut();
+      clipOwner = this; this.clipIn();
+    } else if (!mine && clipOwner === this && !(active && active.native)) { this.clipOut(); clipOwner = null; }
+  }
+  clipOut() {
+    const p = this.proc; if (!p || p.depth) return;
+    try {
+      if (!p.user16(137, [['w', 0]]).ax) return;                                    // OpenClipboard
+      const h = p.user16(142, [['w', 1]]).ax, b = h && p.gblock(h);            // GetClipboardData(CF_TEXT)
+      if (b) { const t = p.readA(b.lin, b.size).replace(/\r\n/g, '\n'); textClip = this.clipText = t; }
+      p.user16(138);                                                                 // CloseClipboard
+    } catch (e) { console.error(e); }
+  }
+  clipIn() {
+    const p = this.proc; if (!p || p.depth || textClip === this.clipText) return;
+    try {
+      if (!p.user16(137, [['w', 0]]).ax) return;
+      p.user16(139);                                                                 // EmptyClipboard
+      if (textClip) {
+        const bytes = W95FS.encode(textClip.replace(/\r?\n/g, '\r\n')), h = p.globalAlloc16(0x2002, bytes.length + 1);
+        p.u8.set(bytes, p.gblock(h).lin); p.u8[p.gblock(h).lin + bytes.length] = 0;
+        p.user16(141, [['w', 1], ['w', h]]);                                         // SetClipboardData(CF_TEXT)
+      }
+      p.user16(138);
+      this.clipText = textClip;
+    } catch (e) { console.error(e); }
   }
   kick() { if (this.alive && this.timer) { clearTimeout(this.timer); this.timer = setTimeout(() => this.step(), 0); } }
   // the shell's windows for USER's: added, moved, retitled, closed, in USER's order, and USER's active window active
