@@ -616,7 +616,7 @@ def('KERNEL32', 'WideCharToMultiByte', 8, () => 0);
 def('KERNEL32', 'GetPriorityClass', 1, () => 0x20);
 def('KERNEL32', 'SetPriorityClass', 2, () => 1);
 def('KERNEL32', 'FindResourceA', 3, function (m, name, type) {
-  const r = this.findResource(this.resName(type), this.resName(name)); if (!r) return 0;
+  const r = this.findResource(this.resName(type), this.resName(name), this.moduleFor(m)); if (!r) return 0;
   return this.newHandle({ kind: 'res', ...r });
 });
 def('KERNEL32', 'LoadResource', 2, function (m, h) { return h; });
