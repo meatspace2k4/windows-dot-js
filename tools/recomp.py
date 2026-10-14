@@ -347,6 +347,7 @@ def emit_addr(f, m, seg=True):
             f.gg(SREG[sreg][1]).e(OPS['add'])
         return
     if seg and m.segment == X.X86_REG_FS: f.gg('fs').e(OPS['add'])
+    elif seg and m.segment == X.X86_REG_GS: f.gg('gsb').e(OPS['add'])
     elif seg and m.segment not in (0, X.X86_REG_DS, X.X86_REG_SS, X.X86_REG_ES, X.X86_REG_CS): raise Unsupported('segment')
 
 # ---- flag helpers. All take locals holding zero-extended operands/result.
@@ -466,6 +467,11 @@ class Translator:
                 s = Loc(f, ops[1], 2); load_sreg(f, ops[0].reg, lambda: s.read()); return
             if ops[1].type == X.X86_OP_REG and ops[1].reg in SREG:
                 Loc(f, ops[0]).write(lambda: f.gg(SREG[ops[1].reg][0])); return
+        # flat code: GS may hold a 16-bit selector; the others stay flat
+        if ops[0].type == X.X86_OP_REG and ops[0].reg == X.X86_REG_GS:
+            s = Loc(f, ops[1], 2); load_sreg(f, ops[0].reg, lambda: s.read()); return
+        if ops[1].type == X.X86_OP_REG and ops[1].reg == X.X86_REG_GS:
+            Loc(f, ops[0]).write(lambda: f.gg('gsel')); return
         if ops[0].type == X.X86_OP_REG and ops[0].reg in (X.X86_REG_ES, X.X86_REG_DS, X.X86_REG_FS, X.X86_REG_SS): return
         if ops[1].type == X.X86_OP_REG and ops[1].reg in (X.X86_REG_ES, X.X86_REG_DS, X.X86_REG_FS, X.X86_REG_SS, X.X86_REG_CS):
             Loc(f, ops[0]).write(lambda: f.c(0x23)); return
@@ -1281,7 +1287,7 @@ def build_ne(path, out, base, selbase, lookup, registry):
     json.dump(reg, open(registry, 'w'))
     meta = dict(kind='ne', name=ne.name, sha256=hashlib.sha256(data).hexdigest(), base=base, size=ne.size, selbase=selbase,
                 segs=[{k: sg[k] for k in ('num', 'sel', 'base', 'alloc', 'len', 'flags', 'bits', 'fileoff')} for sg in ne.segs],
-                autodata=ne.autodata, entry=[ne.entry_seg, ne.entry_off], exports=exports, names=ne.names, fixups=fixups,
+                autodata=ne.autodata, entry=[ne.entry_seg, ne.entry_off], imports=ne.mods, exports=exports, names=ne.names, fixups=fixups,
                 textLo=text_lo, textHi=text_hi, lookup=lookup, blocks=order, thunks=reg['thunks'],
                 layout=dict(sentinel=SENTINEL, thunkBase=THUNK_BASE, thunk16Base=THUNK16_BASE, thunk16Sel=THUNK16_SEL, ldt=LDT_BASE, fpuBase=FPU_BASE, pages=MEM_PAGES))
     json.dump(meta, open(out + '.json', 'w'))
