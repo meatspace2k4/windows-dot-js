@@ -1328,9 +1328,12 @@ P.threads16 = function () {
 /** a far call into 16-bit code that may yield: returns runAt's result (0 returned, 1 yielded) and leaves the
  *  CPU state as the code left it */
 P.start16 = function (sel, off, args) {
-  const lvl = this.stackLevel++, ssel = L.STK + 8 * lvl;
+  // a thread's stack gets a selector of its own (the per-level aliases are the main thread's, redefined as it calls)
   const flat = u32(this.cpu.esp.value), base = (flat - 0xfff0) & ~0xf;
-  this.setDesc(ssel, base, 0xffff, 0xf300); this.seg('ss', ssel);
+  let ssel;
+  if (this.thread16) ssel = this.thread16.ssel || (this.thread16.ssel = this.allocSels(base, 0x10000));
+  else { ssel = L.STK + 8 * this.stackLevel++; this.setDesc(ssel, base, 0xffff, 0xf300); }
+  this.seg('ss', ssel);
   let sp = flat - 16 - base;
   for (const [t, v] of args) { if (t === 'w') { sp -= 2; this.w16(base + sp, v); } else { sp -= 4; this.w32(base + sp, v); } }
   sp -= 2; this.w16(base + sp, L.SENT); sp -= 2; this.w16(base + sp, 0);
