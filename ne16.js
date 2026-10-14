@@ -151,6 +151,12 @@ P.loadLibrary16 = function (name, native = false) {
   if (!this.initNE(rec)) { console.warn('[ne16]', base, 'LibEntry failed'); }
   return rec;
 };
+/** start the native window system the way KRNL386 does: the drivers SYSTEM.INI's [boot] section names, in its
+ *  order (system, keyboard, mouse, display, comm), then GDI and USER; returns USER's module record */
+P.bootUser16 = function () {
+  for (const m of ['SYSTEM', 'KEYBOARD', 'MOUSE', 'DISPLAY', 'COMM', 'GDI']) this.loadLibrary16(m, true);
+  return this.loadLibrary16('USER', true);
+};
 /** a module from disk that has no code (fonts and other resource-only libraries) */
 P.loadNEFile = function (name) {
   const full = this.findFile16(/\.[^\\]*$/.test(name) ? name : name + '.DLL'); if (!full) return null;
