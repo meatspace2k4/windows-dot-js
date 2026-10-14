@@ -1,20 +1,26 @@
-// Read-only: where does a desktop Client module run?
+// Repro: a desktop Client module is documented to draw only ClientElements,
+// yet it runs in the desktop app's own document. This writes one benign,
+// visible element outside the module's region and reports where it landed.
 const G: any = globalThis as any
-const t = (f: () => unknown) => { try { return String(f()) } catch (e: any) { return 'throws ' + (e?.name ?? '') + ': ' + (e?.message ?? e) } }
 
 function probe() {
-  return {
-    href: t(() => G.location.href),
-    origin: t(() => G.origin),
-    isTop: t(() => G.top === G.self),
-    frameElement: t(() => G.frameElement),
-    parentDocument: t(() => G.parent.document.title),
-    topDocument: t(() => G.top.document.body.tagName),
-    viewport: t(() => G.innerWidth + 'x' + G.innerHeight),
-    bodyChildren: t(() => G.document.body.childElementCount),
-    cookie: t(() => G.document.cookie.length),
-    localStorage: t(() => typeof G.localStorage),
+  const out: Record<string, string> = {}
+  for (const k of ['document', 'window', 'OffscreenCanvas', 'WebGL2RenderingContext', 'WebAssembly'])
+    out[k] = typeof G[k]
+  try {
+    out.origin = String(G.location?.origin)
+    out.title = String(G.document?.title)
+    const el = G.document.createElement('div')
+    el.id = 'client-module-isolation-poc'
+    el.textContent = 'PoC: a plugin Client module wrote this into the host document'
+    el.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:2147483647;padding:6px;background:#c00;color:#fff;font:12px system-ui;text-align:center;pointer-events:none'
+    G.document.body.appendChild(el)
+    out.wroteOutsideRegion = String(G.document.getElementById('client-module-isolation-poc') === el)
+    setTimeout(() => el.remove(), 15000)
+  } catch (e: any) {
+    out.write = 'blocked: ' + e.message
   }
+  return out
 }
 
 export default function Probe(_p: unknown, s: any) {
