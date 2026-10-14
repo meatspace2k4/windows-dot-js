@@ -1369,6 +1369,15 @@ const res32 = (p, h32, id, type) => {
     const out = []; for (let o = 0; o + 8 <= data.length; o += 8) { out.push(data[o], data[o + 2], data[o + 3], data[o + 4], data[o + 5]); if (data[o] & 0x80) break; }
     data = new Uint8Array(out);
   }
+  if (type === 6) {   // RT_STRING: 16 strings of WORD length and UTF-16 text -> BYTE length and ANSI text
+    const out = [];
+    for (let o = 0, k = 0; k < 16 && o + 2 <= data.length; k++) {
+      const n = data[o] | data[o + 1] << 8, c = []; o += 2;
+      for (let j = 0; j < n && o + 1 < data.length; j++, o += 2) c.push(data[o] | data[o + 1] << 8);
+      const t = window.W95FS.encode(String.fromCharCode(...c)).subarray(0, 255); out.push(t.length, ...t);
+    }
+    data = new Uint8Array(out);
+  }
   if (type === 4) data = menu16(data);   // RT_MENU
   if (type === 5) data = dialog16(data); // RT_DIALOG
   return data;
