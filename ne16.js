@@ -528,6 +528,14 @@ P.mouseEvent16 = function (flags, x, y) {
   this.tick16(); this.call16(this.mouseProc.sel, this.mouseProc.off, [], { ax: flags, bx: x & 0xffff, cx: y & 0xffff, dx: 2, si: 0, di: 0 });
   return true;
 };
+/** a key into USER's keybd_event (USER.289), as KEYBOARD.DRV reports one: AL = virtual key, AH = 80h on release,
+ *  BL = scan code, BH = 1 for an extended key */
+P.keyEvent16 = function (vk, scan, up, ext = false) {
+  const u = this.ne && this.ne.get('USER'), ep = u && u.meta && this.neExport(u, 289);
+  if (!ep || this.depth) return false;
+  this.tick16(); this.call16(ep >>> 16, ep & 0xffff, [], { ax: (up ? 0x8000 : 0) | (vk & 0xff), bx: (ext ? 0x100 : 0) | (scan & 0xff), si: 0, di: 0 });
+  return true;
+};
 vxdApi(0x0017, 'SHELL', {});
 vxdApi(0x0037, 'VxD 37h', {});
 vxdApi(0x0442, 'VTDAPI', {
