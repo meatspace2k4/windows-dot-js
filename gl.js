@@ -732,7 +732,7 @@ gl('wglGetCurrentContext', '', function () { return this.glctx ? this.glrc : 0; 
 gl('wglGetCurrentDC', '', function () { return this.glctx ? this.glHdc : 0; });
 gl('wglShareLists', 'uu', function (c, a, b) { const A = this.obj(a), B = this.obj(b); if (A && B) B.ctx.lists = A.ctx.lists; return 1; });
 gl('wglGetProcAddress', 'p', () => 0);
-gl('wglSwapBuffers', 'u', function (c) { if (c) c.present(); return 1; });
+gl('wglSwapBuffers', 'u', function (c) { if (c) { c.present(); this.swapWait = true; } return 1; });
 
 // wglUseFontOutlines: one display list per character, built from the font's native TrueType outlines
 // (GetGlyphOutline, GGO_NATIVE) in em units, faces tessellated by GLU32, sides extruded toward -z.
@@ -859,7 +859,7 @@ def('GDI32', 'ChoosePixelFormat', 2, function () { return 1; });
 def('GDI32', 'SetPixelFormat', 3, function () { return 1; });
 def('GDI32', 'GetPixelFormat', 1, function () { return 1; });
 def('GDI32', 'DescribePixelFormat', 4, function (hdc, i, n, p) { if (p) writePFD(this, p); return 1; });
-def('GDI32', 'SwapBuffers', 1, function () { if (this.glctx) this.glctx.present(); return 1; });
+def('GDI32', 'SwapBuffers', 1, function () { if (this.glctx) { this.glctx.present(); this.swapWait = true; } return 1; });
 
 window.W95GL = { Context, E };
 })();
