@@ -1353,6 +1353,8 @@ def16('KERNEL', 453, 'lx', 'l', function (h, name) {
   if (!(name >>> 16)) return m.exports.get('#' + (name & 0xffff)) || 0;
   return m.exports.get(this.readA(this.lin(name))) || 0;
 });
+def16('KERNEL', 472, 'l', 'w', function (h32) { return h32 ? this.hinst16(h32) : 0; });   // MapHInstLS
+def16('KERNEL', 473, 'w', 'l', function (h16) { return this.hinst32(h16); });              // MapHInstSL
 def16('KERNEL', 476, 'l', 'l', function (h) { return h; });                                            // ConvertToGlobalHandle: one process, so already global
 def16('KERNEL', 474, 'l', 'w', function (h) { return this.handles.delete(h) ? 1 : 0; });               // CloseW32Handle
 def16('KERNEL', 105, '', 'w', function () { return 0x0400; });                                         // GetExeVersion: system code expects Windows 4.0
@@ -1550,7 +1552,20 @@ K('MapSLFix', 1, function (sp) { return this.lin(sp); });
 K('MapLS', 1, function (a) { return this.mapLS(a); });
 K('UnMapLS', 1, () => 0);
 KR('UnMapSLFixArray', function () { const r = ret32(this); this.reg('esp', this.reg('esp') + 8); return r; });
-K('MapHInstLS', 0, function () { return this.reg('eax'); });
+K('MapHInstLS', 0, function () { const h = this.reg('eax'); return this.nativeUser16() ? this.hinst16(h) : h; });
+K('MapHInstLS_PN', 0, function () { const h = this.reg('eax'); return h ? (this.nativeUser16() ? this.hinst16(h) : h) : 0; });
+/** whether this process runs the native USER.EXE (then Win32 module handles need 16-bit counterparts) */
+P.nativeUser16 = function () { const u = this.ne && this.ne.get('USER'); return !!(u && u.meta); };
+/** the 16-bit handle USER uses for a Win32 module (as Windows 95 gives each one), made on first use */
+P.hinst16 = function (h32) {
+  this.h16of = this.h16of || new Map(); this.h32of = this.h32of || new Map();
+  if (this.h16of.has(h32)) return this.h16of.get(h32);
+  const mdb = this.alloc(0x40); this.u8.set([0x4e, 0x45], mdb);
+  const sel = this.allocSels(mdb, 0x40);
+  this.h16of.set(h32, sel); this.h32of.set(sel & 0xfffe, h32);
+  return sel;
+};
+P.hinst32 = function (h16) { return (this.h32of && this.h32of.get(h16 & 0xfffe)) || 0; };
 KR('K32Thk1632Prolog', function () { return ret32(this); });
 KR('K32Thk1632Epilog', function () { return ret32(this); });
 K('#17', 0, () => 0);                                      // CommonUnimpStub
