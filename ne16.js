@@ -281,6 +281,20 @@ const INTS = {
     }
     this.trapped = `unhandled DPMI ${ax.toString(16)}`; return LAYOUT.SENTINEL;
   },
+  0x21(next) {     // DOS
+    const ah = (this.ax() >> 8) & 0xff, al = this.ax() & 0xff;
+    CF(this, 0);
+    switch (ah) {
+      case 0x30: this.ax(0x0007); this.cpu.ebx.value = lo16(this.cpu.ebx.value, 0xff00); this.cpu.ecx.value = lo16(this.cpu.ecx.value, 0); return;   // DOS 7.0
+      case 0x19: this.ax((this.ax() & 0xff00) | 2); return;        // current drive C:
+      case 0x2a: { const d = new Date(); this.cpu.ecx.value = lo16(this.cpu.ecx.value, d.getFullYear()); this.cpu.edx.value = lo16(this.cpu.edx.value, ((d.getMonth() + 1) << 8) | d.getDate()); this.ax((this.ax() & 0xff00) | d.getDay()); return; }
+      case 0x2c: { const d = new Date(); this.cpu.ecx.value = lo16(this.cpu.ecx.value, (d.getHours() << 8) | d.getMinutes()); this.cpu.edx.value = lo16(this.cpu.edx.value, (d.getSeconds() << 8) | Math.floor(d.getMilliseconds() / 10)); return; }
+      case 0x33: if (al === 6) { this.cpu.ebx.value = lo16(this.cpu.ebx.value, 0x0007); this.cpu.edx.value = lo16(this.cpu.edx.value, 0x1000); } return;   // true version 7.0, in HMA
+      case 0x44: if (al === 0) { this.cpu.edx.value = lo16(this.cpu.edx.value, 0x80); return; } break;
+      case 0x50: case 0x51: case 0x62: return;
+    }
+    this.trapped = `unhandled int 21h ax=${this.ax().toString(16)}`; return LAYOUT.SENTINEL;
+  },
   0x2f(next) {
     const ax = this.ax();
     if (ax === 0x1600) { this.ax(0x0004 | (0x00 << 8)); this.cpu.eax.value = lo16(this.cpu.eax.value, 0x0004); return; }  // Windows 4.00 enhanced mode
@@ -660,7 +674,7 @@ def16('KERNEL', 353, 'xpw', 'l', function (dsp, s, n) { const d = this.lin(dsp);
 def16('KERNEL', 87, 'pp', 'i', function (a, b) { const x = this.readA(a) || '', y = this.readA(b) || ''; return x < y ? -1 : x > y ? 1 : 0; });   // lstrcmp
 def16('KERNEL', 78, 'xx', 'l', function (start, cur) { return cur > start ? cur - 1 : start; });    // AnsiPrev
 def16('KERNEL', 348, 'ppl', 'v', function (d, s, n) { this.u8.copyWithin(d, s, s + n); });     // hmemcpy
-def16('KERNEL', 102, '', 'jmp', function () { return INTS[0x21] ? this.interrupt(0x21, this.retf16(0)) : this.retf16(0); });
+def16('KERNEL', 102, '', 'jmp', function () { const r = INTS[0x21].call(this); return r === LAYOUT.SENTINEL ? r : this.retf16(0); });   // DOS3Call
 
 // directories, profile, registry
 def16('KERNEL', 134, 'pw', 'w', function (b, n) { return W(this, b, 'C:\\WINDOWS', n); });
