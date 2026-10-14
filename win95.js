@@ -2525,13 +2525,14 @@ class NativeApp {
     clearTimeout(this.timer); this.timer = 0;
     if (!this.alive) return;
     const p = this.proc, t0 = performance.now();
+    this.keysFed = 0; this.feedKeys();
     try { for (let n = 0; this.alive && n < 4; n++) { p.stats.slices++; const live = p.slice(); p.timers16(); p.threads16(); p.systemPump(); if (!live) break; } }
     catch (e) { console.error(e); this.exited(-1, e.message); return; }
     p.stats.guestMs += performance.now() - t0;
     if (p.trapped && !p.failed) p.fail(p.trapped);
     if (p.exitCode !== null || p.trapped) { this.exited(p.exitCode, p.trapped); return; }
     this.sync();
-    this.timer = setTimeout(() => this.step(), 16);
+    this.timer = setTimeout(() => this.step(), this.keyq && this.keyq.length ? 0 : 16);
   }
   kick() { if (this.alive && this.timer) { clearTimeout(this.timer); this.timer = setTimeout(() => this.step(), 0); } }
   // the shell's windows for USER's: added, moved, retitled, closed, in USER's order, and USER's active window active
@@ -2593,8 +2594,17 @@ class NativeApp {
   key(e, up) {
     if (!this.alive || this.proc.depth) return;
     const vk = e.keyCode || 0, sc = SCAN[e.code] || 0; if (!vk || vk === 91 || vk === 93 || vk === 224) return;   // the Mac command keys stay with the host
-    try { this.proc.keyEvent16(vk, sc & 0xff, up, sc > 0xff); } catch (err) { console.error(err); }
+    // USER's system queue holds a limited number of events: a burst (fast or synthetic typing) goes in a few at a
+    // time between slices, so the program takes each batch off before the next arrives, as a keyboard buffer would
+    (this.keyq = this.keyq || []).push([vk, sc, up]);
+    this.feedKeys();
     this.kick();
+  }
+  feedKeys() {
+    for (; this.keyq && this.keyq.length && (this.keysFed || 0) < 16 && !this.proc.depth; this.keysFed = (this.keysFed || 0) + 1) {
+      const [vk, sc, up] = this.keyq.shift();
+      try { this.proc.keyEvent16(vk, sc & 0xff, up, sc > 0xff); } catch (err) { console.error(err); }
+    }
   }
   // text that arrives as characters (paste, IME, synthetic typing): each as the keys of a US keyboard that type it
   typeText(str) {
