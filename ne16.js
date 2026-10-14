@@ -1421,6 +1421,40 @@ def16('KERNEL', 602, '', 'jmp', function () {
   this.cpu.eax.value = lo16(this.cpu.eax.value, sel); if (sel) this.seg('ds', sel);
   return this.retf16(0);
 });
+// ---- what SHELL.DLL and COMMCTRL.DLL ask of KERNEL
+def16('KERNEL', 48, 'w', 'w', () => 1);                                                // GetModuleUsage
+def16('KERNEL', 51, 'xw', 'x', fp => fp);                                              // MakeProcInstance: protected mode needs no thunk
+def16('KERNEL', 52, 'x', 'v', () => {});                                               // FreeProcInstance
+def16('KERNEL', 65, 'ww', 'l', function (h, hr) {                                      // SizeofResource
+  const e = this.resHandles && this.resHandles[hr / 4 - 1]; if (!e) return 0;
+  return e.data ? e.data.length : e.r ? e.r.size || e.r.len || 0 : 0;
+});
+def16('KERNEL', 115, 'x', 'v', () => {});                                              // OutputDebugString
+def16('KERNEL', 131, '', 'l', function () {                                            // GetDOSEnvironment
+  if (!this.dosEnv) { const s = 'COMSPEC=C:\\COMMAND.COM\0PATH=C:\\WINDOWS;C:\\WINDOWS\\COMMAND\0TEMP=C:\\WINDOWS\\TEMP\0windir=C:\\WINDOWS\0\0';
+    const g = this.globalAlloc16(0, s.length + 16), a = this.gblock(g).lin; for (let i = 0; i < s.length; i++) this.u8[a + i] = s.charCodeAt(i); this.dosEnv = this.gsel(g); }
+  return u32(this.dosEnv << 16);
+});
+def16('KERNEL', 157, 'l', 'l', () => 0);                                              // GetCurPID
+def16('KERNEL', 166, 'sw', 'w', function (cmd, show) { return this.host && this.host.exec ? this.host.exec(cmd, show) : 2; });   // WinExec: 2 = file not found
+def16('KERNEL', 169, 'w', 'l', () => 0x01000000);                                     // GetFreeSpace: 16 MB
+def16('KERNEL', 328, '', 'jmp', function () { return this.retf16(0); });              // _DebugOutput (cdecl): kept only under a debugger
+// Catch / Throw: the registers a Throw goes back to, in the 9-word CATCHBUF (IP, CS, SP after Catch returns, BP, SI,
+// DI, DS, 0, SS); Catch returns 0, and returns again with Throw's value
+def16('KERNEL', 55, '', 'jmp', function () {
+  const ssb = u32(this.cpu.ssb.value), sp = this.cpu.esp.value & 0xffff, f = ssb + sp, buf = this.lin(this.r32(f + 4));
+  [this.r16(f), this.r16(f + 2), (sp + 8) & 0xffff, this.cpu.ebp.value & 0xffff, this.cpu.esi.value & 0xffff, this.cpu.edi.value & 0xffff,
+   this.cpu.ds.value & 0xffff, 0, this.cpu.ss.value & 0xffff].forEach((v, i) => this.w16(buf + 2 * i, v));
+  this.ax(0); return this.retf16(4);
+});
+def16('KERNEL', 56, '', 'jmp', function () {
+  const ssb = u32(this.cpu.ssb.value), f = ssb + (this.cpu.esp.value & 0xffff), v = this.r16(f + 4), buf = this.lin(this.r32(f + 6));
+  const w = i => this.r16(buf + 2 * i);
+  this.seg('ss', w(8)); this.cpu.esp.value = lo16(this.cpu.esp.value, w(2));
+  this.cpu.ebp.value = lo16(this.cpu.ebp.value, w(3)); this.cpu.esi.value = lo16(this.cpu.esi.value, w(4)); this.cpu.edi.value = lo16(this.cpu.edi.value, w(5));
+  this.seg('ds', w(6)); this.ax(v);
+  this.seg('cs', w(1)); return u32(this.selBase(w(1)) + w(0));
+});
 // KRNL386 seg1:7A28 (#365): adds `delta` (+1 or -1) to the lock count of the global block a selector belongs to; the
 // callback relays lock the caller's stack segment while 32-bit code holds pointers into it
 def16('KERNEL', 365, 'wi', 'v', function (sel, delta) {
