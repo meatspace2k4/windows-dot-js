@@ -1668,6 +1668,13 @@ const fontsReady = Promise.all(Object.entries(SV.fonts).map(([fam, data]) => {
   const f = new FontFace(fam, b64bytes(data)); document.fonts.add(f); return f.load().catch(() => null);
 }));
 async function sha256hex(b) { const h = await crypto.subtle.digest('SHA-256', b); return [...new Uint8Array(h)].map(x => x.toString(16).padStart(2, '0')).join(''); }
+// GDI.EXE, GDI32.DLL and the display driver run natively in a saver process when it needs them (outline fonts);
+// their modules are compiled once, off the main thread's synchronous path
+let sysCompile = null;
+function systemCompiled() {
+  const S = window.W95SYSTEM; if (!S) return Promise.resolve();
+  return sysCompile || (sysCompile = Promise.all([...Object.values(S.ne), ...Object.values(S.dlls)].map(async m => { m.mod = await WebAssembly.compile(b64bytes(m.wasm)); })));
+}
 function compiledSaver(sha) {
   for (const [name, s] of Object.entries(SV.savers)) {
     if (s.meta.sha256 !== sha) continue;
@@ -1687,7 +1694,7 @@ class SaverRun {
     try { bytes = fs.readFile(this.path); } catch (e) { msgBox('Display Properties', fsMsg(this.path, e), 'error'); return false; }
     const hit = compiledSaver(await sha256hex(bytes));
     if (!hit) { msgBox('Display Properties', `${basename(this.path)} has no recompiled code module.`, 'error'); this.alive = false; return false; }
-    const module = await hit.s.module; await fontsReady;
+    const module = await hit.s.module; await fontsReady; await systemCompiled();
     // Microsoft DLLs on C:\WINDOWS\SYSTEM that have recompiled modules run natively in the process
     const dlls = new Map();
     for (const [name, d] of Object.entries(SV.dlls || {})) {
