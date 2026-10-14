@@ -171,7 +171,7 @@ P.jsModule = function (name) {
   this.jsMods.set(name, rec); return rec;
 };
 P.kernelModule = function () { return this.jsModule('KERNEL'); };
-const JS16 = ['KERNEL', 'USER', 'KEYBOARD', 'SYSTEM'];
+const JS16 = ['KERNEL', 'USER', 'KEYBOARD', 'SYSTEM', 'VDD'];
 
 // ---------------------------------------------------------------- calling 16-bit code
 /** enter 16-bit code on an alias of the flat stack; args: [['w', v] | ['l', v]...] in Pascal order */
@@ -286,6 +286,23 @@ const INTS = {
       case 0x0502: return;
       case 0x0600: case 0x0601: case 0x0702: case 0x0703: return;
       case 0x0800: { /* physical address mapping: identity within guest memory */ return; }
+      case 0x0801: return;
+      case 0x0300: case 0x0302: {   // simulate real-mode interrupt: registers in the structure at ES:EDI
+        const st = this.lin((this.cpu.es.value << 16) | (this.cpu.edi.value & 0xffff)), vec = bx & 0xff;
+        const R = ['edi', 'esi', 'ebp', null, 'ebx', 'edx', 'ecx', 'eax'], save = {};
+        for (const r of ['eax', 'ebx', 'ecx', 'edx', 'esi', 'edi', 'ebp', 'es', 'ds', 'cf']) save[r] = this.cpu[r].value;
+        R.forEach((r, i) => { if (r) this.cpu[r].value = this.r32(st + 4 * i); });
+        this.cpu.es.value = this.r16(st + 0x22); this.cpu.ds.value = this.r16(st + 0x24); this.cpu.cf.value = this.r16(st + 0x20) & 1;
+        this.rmode = true; let r;
+        try { r = INTS[vec] ? INTS[vec].call(this, next) : (this.trapped = `unhandled real-mode int ${vec.toString(16)}h`, LAYOUT.SENTINEL); }
+        finally { this.rmode = false; }
+        R.forEach((rr, i) => { if (rr) this.w32(st + 4 * i, this.cpu[rr].value); });
+        this.w16(st + 0x20, (this.r16(st + 0x20) & ~1) | (this.cpu.cf.value & 1));
+        this.w16(st + 0x22, this.cpu.es.value);
+        for (const k of Object.keys(save)) this.cpu[k].value = save[k];
+        if (r === LAYOUT.SENTINEL) return r;
+        CF(this, 0); return;
+      }
     }
     this.trapped = `unhandled DPMI ${ax.toString(16)}`; return LAYOUT.SENTINEL;
   },
@@ -293,7 +310,8 @@ const INTS = {
     const ax = this.ax(), ah = ax >> 8, bl = this.cpu.ebx.value & 0xff;
     const v = this.video();
     const setBX = x => { this.cpu.ebx.value = lo16(this.cpu.ebx.value, x); }, setCX = x => { this.cpu.ecx.value = lo16(this.cpu.ecx.value, x); };
-    const esdi = () => this.lin((this.cpu.es.value << 16) | (this.cpu.edi.value & 0xffff));
+    const esdi = () => this.rmode ? ((this.cpu.es.value & 0xffff) << 4) + (this.cpu.edi.value & 0xffff) : this.lin((this.cpu.es.value << 16) | (this.cpu.edi.value & 0xffff));
+    const farp = a => this.rmode ? u32(((a >> 4) << 16) | (a & 0xf)) : this.mapLS(a);
     if (ah === 0x12 && bl === 0x10) { setBX(0x0003); setCX(0x0009); return; }        // EGA/VGA info: color, 256K
     if (ah === 0x1a && (ax & 0xff) === 0) { this.ax(0x001a); setBX(0x0008); return; } // display combination: VGA color
     if (ah === 0x0f) { this.ax(0x5000 | (v.mode < 0x100 ? v.mode : 0x13)); setBX(0); return; }
@@ -304,7 +322,7 @@ const INTS = {
       if (fn === 0x00) {
         const a = esdi(); const want2 = this.r32(a) === 0x32454256;   // 'VBE2'
         this.u8.fill(0, a, a + (want2 ? 512 : 256)); this.writeA(a, 'VESA'); this.w16(a + 4, 0x0200);
-        this.w32(a + 6, this.mapLS(v.oem)); this.w32(a + 10, 1); this.w32(a + 14, this.mapLS(v.list)); this.w16(a + 18, v.mem >> 16);
+        this.w32(a + 6, farp(v.oem)); this.w32(a + 10, 1); this.w32(a + 14, farp(v.list)); this.w16(a + 18, v.mem >> 16);
         this.ax(0x004f); return;
       }
       if (fn === 0x01) { const m = VBE_MODES[this.cpu.ecx.value & 0x1ff]; if (!m) { this.ax(0x014f); return; } this.vbeModeInfo(esdi(), m); this.ax(0x004f); return; }
@@ -317,7 +335,11 @@ const INTS = {
       if (fn === 0x09) { const n = this.cpu.ecx.value & 0xffff, first = this.cpu.edx.value & 0xffff, a = esdi(); for (let i = 0; i < n; i++) { const k = (first + i) * 3; v.dac[k + 2] = this.u8[a + 4 * i]; v.dac[k + 1] = this.u8[a + 4 * i + 1]; v.dac[k] = this.u8[a + 4 * i + 2]; } this.ax(0x004f); return; }
       this.ax(0x014f); return;
     }
-    this.trapped = `unhandled int 10h ax=${ax.toString(16)} bx=${(this.cpu.ebx.value & 0xffff).toString(16)}`; return LAYOUT.SENTINEL;
+    return;   // other BIOS extensions (Video7 6Fh etc.) are absent: registers come back unchanged
+  },
+  0x1a(next) {     // PCI BIOS: not present
+    if ((this.ax() >> 8) === 0xb1) { CF(this, 1); this.ax(0x8100 | (this.ax() & 0xff)); return; }
+    this.trapped = `unhandled int 1Ah ax=${this.ax().toString(16)}`; return LAYOUT.SENTINEL;
   },
   0x21(next) {     // DOS
     const ah = (this.ax() >> 8) & 0xff, al = this.ax() & 0xff;
@@ -339,7 +361,10 @@ const INTS = {
     const ax = this.ax();
     if (ax === 0x1600) { this.ax(0x0004 | (0x00 << 8)); this.cpu.eax.value = lo16(this.cpu.eax.value, 0x0004); return; }  // Windows 4.00 enhanced mode
     if (ax === 0x1683) { this.cpu.ebx.value = lo16(this.cpu.ebx.value, 1); return; }    // current VM id
-    if (ax === 0x1684) { this.cpu.edi.value = lo16(this.cpu.edi.value, 0); this.seg('es', 0); return; }   // no VxD API entry points
+    if (ax === 0x1684) {   // VxD protected-mode API entry points: only the VDD (device 0Ah) has one
+      const id = this.cpu.ebx.value & 0xffff, ep = id === 0x0a ? this.thunk16For('VDD.#0') : 0;
+      this.cpu.edi.value = lo16(this.cpu.edi.value, ep & 0xffff); this.seg('es', ep >>> 16); return;
+    }
     if (ax === 0x1686) { this.ax(0); return; }                                          // in protected mode
     if (ax === 0x1689 || ax === 0x1680) return;
     this.trapped = `unhandled int 2Fh ax=${ax.toString(16)}`; return LAYOUT.SENTINEL;
@@ -359,9 +384,11 @@ const VBE_MODES = {};
   .forEach(([n, w, h, bpp]) => { VBE_MODES[n] = { n, w, h, bpp: bpp === 15 ? 16 : bpp, depth: bpp }; });
 P.video = function () {
   if (this.vid) return this.vid;
+  this.init16();
   const mem = 4 << 20, fb = this.alloc(mem, true);
-  const oem = this.alloc(32); this.writeA(oem, 'Windows 95 VBE');
-  const ids = Object.keys(VBE_MODES).map(Number), list = this.alloc(2 * ids.length + 2);
+  const low = n => { const a = this.dosTop; this.dosTop += (n + 15) & ~15; return a; };
+  const oem = low(32); this.writeA(oem, 'Windows 95 VBE');
+  const ids = Object.keys(VBE_MODES).map(Number), list = low(2 * ids.length + 2);
   ids.forEach((n, i) => this.w16(list + 2 * i, n)); this.w16(list + 2 * ids.length, 0xffff);
   return (this.vid = { mem, fb, oem, list, mode: 3, cur: null, pitch: 0, dac: new Uint8Array(768) });
 };
@@ -375,6 +402,27 @@ P.vbeModeInfo = function (a, m) {
   if (masks) masks.forEach((x, i) => { this.u8[a + 0x1f + i] = x; });
   this.w32(a + 0x28, v.fb);
 };
+
+// the display VxD's driver interface (minivdd): registration, mode-change notifications and the display configuration
+P.displayConfig = function () {
+  const ini = (k, d) => { const v = winIni(this, 'SYSTEM.INI', 'display', k); return v === null ? d : parseInt(v, 10) || d; };
+  return { w: (this.host && this.host.width) || ini('x_resolution', 640), h: (this.host && this.host.height) || ini('y_resolution', 480), bpp: ini('BitsPerPixel', 8) };
+};
+def16('VDD', 0, '', 'jmp', function () {
+  const fn = u32(this.cpu.eax.value);
+  switch (fn) {
+    case 0x80: this.cpu.eax.value = this.cpu.ecx.value; break;          // VDD_DRIVER_REGISTER: VRAM the visible screen uses
+    case 0x81: case 0x82: case 0x83: case 0x84: case 0x86: case 0x87: case 0x88: case 0x89: this.cpu.eax.value = 0; break;
+    case 0x85: {                                                         // VDD_GET_DISPLAY_CONFIG -> DISPLAYINFO at ES:EDI
+      const a = this.lin((this.cpu.es.value << 16) | (this.cpu.edi.value & 0xffff)), n = Math.min(this.cpu.ecx.value & 0xffff, 0x4a), c = this.displayConfig();
+      this.u8.fill(0, a, a + n); this.w16(a, n); this.w32(a + 4, 1); this.writeA(a + 8, 'FRAMEBUF', 16);
+      this.w16(a + 0x18, c.w); this.w16(a + 0x1a, c.h); this.w16(a + 0x1c, 96); this.u8[a + 0x1e] = 1; this.u8[a + 0x1f] = c.bpp;
+      this.w16(a + 0x20, 60); this.w16(a + 0x22, 60);
+      this.cpu.eax.value = 0; break;
+    }
+  }
+  return this.retf16(0);
+});
 
 // ---------------------------------------------------------------- VGA ports (the display driver programs them directly)
 P.portIO = function (port, size, isIn) {
