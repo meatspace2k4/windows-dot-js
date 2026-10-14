@@ -16,6 +16,10 @@ function open() {
   win.loadFile(page)
 }
 
+// DevTools protocol on 127.0.0.1:9334 so Claude Code can drive the running shell
+app.commandLine.appendSwitch('remote-debugging-port', '9334')
+app.commandLine.appendSwitch('remote-debugging-address', '127.0.0.1')
+
 app.setName('Windows 95')
 app.setPath('userData', path.join(app.getPath('appData'), 'local.win95'))
 
