@@ -2593,7 +2593,7 @@ class NativeApp {
   }
   key(e, up) {
     if (!this.alive) return;
-    const vk = e.keyCode || 0, sc = SCAN[e.code] || 0; if (!vk || vk === 91 || vk === 93 || vk === 224) return;   // the Mac command keys stay with the host
+    const vk = e.keyCode || 0, sc = SCAN[e.code] || 0; if (vk === 91 || vk === 93 || vk === 224) return;   // the Mac command keys stay with the host
     // the modifiers as the event reports them: a Shift, Ctrl or Alt pressed or released while the page had no focus
     // (or one the browser reports only as a flag) reaches USER before the key it changes
     this.mods = this.mods || {};
@@ -2602,9 +2602,9 @@ class NativeApp {
       this.mods[m] = on; (this.keyq = this.keyq || []).push([m, SCAN[code] || 0, !on]);
     }
     if (vk === 16 || vk === 17 || vk === 18) this.mods[vk] = !up;
+    if (vk) (this.keyq = this.keyq || []).push([vk, sc, up]);
     // USER's system queue holds a limited number of events: a burst (fast or synthetic typing) goes in a few at a
     // time between slices, so the program takes each batch off before the next arrives, as a keyboard buffer would
-    (this.keyq = this.keyq || []).push([vk, sc, up]);
     this.feedKeys();
     this.kick();
   }
@@ -2613,6 +2613,13 @@ class NativeApp {
       const [vk, sc, up] = this.keyq.shift();
       try { this.proc.keyEvent16(vk, sc & 0xff, up, sc > 0xff); } catch (err) { console.error(err); }
     }
+  }
+  // Ctrl or Alt with a character the event names without its key (synthetic events): that key, pressed and released
+  // with the modifiers held, which are then let go
+  chord(e) {
+    const c = e.key.toUpperCase(), k = { keyCode: c.charCodeAt(0), code: (/\d/.test(c) ? 'Digit' : 'Key') + c, ctrlKey: e.ctrlKey, altKey: e.altKey, shiftKey: e.shiftKey };
+    this.key(k, false); this.key(k, true);
+    this.key({ keyCode: 0, ctrlKey: false, altKey: false, shiftKey: false }, true);
   }
   // text that arrives as characters (paste, IME, synthetic typing): each as the keys of a US keyboard that type it
   typeText(str) {
@@ -3176,9 +3183,9 @@ kbd.addEventListener('input', () => {
 });
 // the keys go to USER while one of a native program's windows is active and the shell has nothing open over it
 const nativeFocus = () => (!menus.length && !ren && !modal() && !fullSaver && screen === 'desktop' && active && active.native && active.app.alive ? active.app : null);
-window.addEventListener('keyup', e => { const a = nativeFocus(); if (a) { e.preventDefault(); a.key(e, true); } });
+window.addEventListener('keyup', e => { const a = nativeFocus(); if (a) { e.preventDefault(); if (e.keyCode) a.key(e, true); } });
 window.addEventListener('keydown', e => {
-  { const a = nativeFocus(); if (a) { lastInput = performance.now(); e.preventDefault(); if (!e.keyCode && e.key.length === 1) a.typeText(e.key); else a.key(e, false); return; } }
+  { const a = nativeFocus(); if (a) { lastInput = performance.now(); e.preventDefault(); if (!e.keyCode && e.key.length === 1 && (e.ctrlKey || e.altKey) && /^[a-z0-9]$/i.test(e.key)) a.chord(e); else if (!e.keyCode && e.key.length === 1) a.typeText(e.key); else a.key(e, false); return; } }
   // Option changes the character a Mac key types; Alt+letter means the letter on the key
   if (e.altKey && !e.ctrlKey && !e.metaKey && /^(Key[A-Z]|Digit\d)$/.test(e.code)) {
     e.preventDefault();
