@@ -1011,7 +1011,15 @@ def16('KERNEL', 197, 'w', 'w', function (h) { return this.gsel(h); });   // Glob
 def16('KERNEL', 198, 'w', 'w', function (h) { return 1; });         // GlobalUnfix
 def16('KERNEL', 230, 'w', 'w', function (h) { return this.gsel(h); });   // GlobalSmartPageLock
 def16('KERNEL', 231, 'w', 'w', function (h) { return this.gsel(h); });   // GlobalSmartPageUnlock
-def16('KERNEL', 138, 'w', 'l', function () { return 0x00100010; });       // GetHeapSpaces
+// GetHeapSpaces(hModule): LOWORD = bytes free in its DGROUP's local heap, HIWORD = the size it can have (64K), the
+// room the segment can still grow by counted as free
+def16('KERNEL', 138, 'w', 'l', function (hm) {
+  const m = this.neByHandle(hm), sel = m ? m.dgroup : hm, h = sel && this.lheaps.get(sel | 1);
+  if (!h) return 0;
+  const b = this.gblock(sel), size = b ? b.size : this.selLimit(sel) + 1;
+  let free = Math.max(0, 0xfff0 - size); for (const [, n] of h.free) free += n;
+  return u32((0xffff << 16) | Math.min(free, 0xffff));
+});
 def16('KERNEL', 191, 'w', 'w', function (h) { const b = this.gblock(h); return b ? ++b.plock || 1 : 0; });   // GlobalPageLock
 def16('KERNEL', 192, 'w', 'w', function (h) { const b = this.gblock(h); return b && b.plock ? --b.plock : 0; });
 def16('KERNEL', 111, 'w', 'l', function (h) { const b = this.gblock(h); if (!b) return 0; b.lock++; return u32(this.gsel(h) << 16); });   // GlobalWire
