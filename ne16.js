@@ -388,7 +388,12 @@ const INTS = {
     }
     this.trapped = `unhandled int 21h ax=${this.ax().toString(16)}`; return LAYOUT.SENTINEL;
   },
-  0x11() { this.ax(0x0023); },   // BIOS equipment list: a floppy drive (A:), a maths coprocessor, 80x25 colour display
+  0x11() { this.ax(0x0023); },
+  0x33() {   // the DOS mouse driver interface, as far as MOUSE.DRV asks it: 24h version, type (PS/2) and IRQ
+    const ax = this.ax();
+    if (ax === 0x24) { this.cpu.ebx.value = lo16(this.cpu.ebx.value, 0x0626); this.cpu.ecx.value = lo16(this.cpu.ecx.value, 0x0400); return; }
+    this.trapped = `unhandled int 33h ax=${ax.toString(16)}`; return LAYOUT.SENTINEL;
+  },   // BIOS equipment list: a floppy drive (A:), a maths coprocessor, 80x25 colour display
   0x2f(next) {
     const ax = this.ax();
     if (ax === 0x1600) { this.ax(0x0004 | (0x00 << 8)); this.cpu.eax.value = lo16(this.cpu.eax.value, 0x0004); return; }  // Windows 4.00 enhanced mode
@@ -459,7 +464,23 @@ vxdApi(0x0001, 'VMM', {
   0x26d() { return 0; },
 });
 vxdApi(0x0009, 'REBOOT', {});
-vxdApi(0x000c, 'VMD', {});
+vxdApi(0x000c, 'VMD', {
+  0() { return 0x400; },                                       // version 4.00
+  5() { this.cpu.edx.value = lo16(this.cpu.edx.value, 0); return 4; },   // mouse type: PS/2 (no serial port IRQ to claim)
+  // asked after the type; a zero answer sends MOUSE.DRV through a set-up of its own that this mouse does not need
+  // (an unconfirmed reading of the driver)
+  0x102() { return 1; },
+  // the event procedure MOUSE.DRV's Enable passes on (USER's mouse_event), or 0:0 from Disable
+  3() { const cx = this.cpu.ecx.value & 0xffff, dx = this.cpu.edx.value & 0xffff; this.mouseProc = cx || dx ? { sel: cx, off: dx } : null; return 0; },
+  0x101() { return 0; },
+});
+/** a pointer event into USER through the event procedure the mouse driver registered: flags as mouse_event takes
+ *  them (1 move, 2/4 left down/up, 8/16 right down/up, 0x8000 absolute), x and y 0..65535 when absolute */
+P.mouseEvent16 = function (flags, x, y) {
+  if (!this.mouseProc || this.depth) return false;
+  this.tick16(); this.call16(this.mouseProc.sel, this.mouseProc.off, [], { ax: flags, bx: x & 0xffff, cx: y & 0xffff, dx: 2, si: 0, di: 0 });
+  return true;
+};
 vxdApi(0x0017, 'SHELL', {});
 vxdApi(0x0037, 'VxD 37h', {});
 vxdApi(0x0442, 'VTDAPI', {
