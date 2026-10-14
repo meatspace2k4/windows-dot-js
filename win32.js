@@ -450,16 +450,17 @@ const REGISTRY = new Map([
   ['hkcu\\control panel\\desktop', new Map([['screensaveusepassword', 0]])],
   ['hkcu\\control panel\\colors', new Map()],
 ]);
-// the registry is saved with the disk; regOn hears every change
-const regSubs = new Set();
-const regOn = fn => { regSubs.add(fn); return () => regSubs.delete(fn); };
-const regChanged = () => { for (const f of regSubs) { try { f(); } catch (e) { console.error(e); } } };
-const b64 = u8 => { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode(...u8.subarray(i, i + 0x8000)); return btoa(s); };
-const regDump = () => [...REGISTRY].map(([k, m]) => [k, [...m].map(([n, v]) => [n, v && v.data ? { type: v.type, name: v.name, data: b64(v.data) } : v])]);
-const regRestore = list => {
+// Registry writes go through to a store when one is attached (regAttach): each key created or deleted and each value
+// set or deleted, as it happens. Values are numbers, strings, or { type, name, data } with the raw bytes.
+let regStore = null;
+const regChanged = op => { if (regStore) regStore.op(op); };
+const regAttach = store => {
+  regStore = store;
+  const held = store.load();
+  if (!held) { for (const [path, m] of REGISTRY) { store.op({ op: 'key', path }); for (const [name, value] of m) store.op({ op: 'set', path, name, value }); } return false; }
   REGISTRY.clear();
-  for (const [k, vals] of list) REGISTRY.set(k, new Map(vals.map(([n, v]) =>
-    [n, v && typeof v.data === 'string' ? { type: v.type, name: v.name, data: Uint8Array.from(atob(v.data), c => c.charCodeAt(0)) } : v])));
+  for (const [path, vals] of held) REGISTRY.set(path, new Map(vals));
+  return true;
 };
 const HKEY = { 0x80000000: 'hkcr', 0x80000001: 'hkcu', 0x80000002: 'hklm', 0x80000003: 'hku', 0x80000005: 'hkcc', 0x80000006: 'hkdd', 1: 'hkcr', 2: 'hkcu', 3: 'hklm' };
 
@@ -752,7 +753,7 @@ def('KERNEL32', 'GetNumberOfConsoleInputEvents', 2, () => 0);
 def('KERNEL32', 'OutputDebugStringA', 1, () => 0);
 
 // ADVAPI32: registry. Keys are lower-case paths under the root names; values keep their type and bytes.
-const regKey = (path, create) => { if (!REGISTRY.has(path)) { if (!create) return null; const parts = path.split('\\'); for (let k = 1; k <= parts.length; k++) { const q = parts.slice(0, k).join('\\'); if (!REGISTRY.has(q)) REGISTRY.set(q, new Map()); } regChanged(); } return REGISTRY.get(path); };
+const regKey = (path, create) => { if (!REGISTRY.has(path)) { if (!create) return null; const parts = path.split('\\'); for (let k = 1; k <= parts.length; k++) { const q = parts.slice(0, k).join('\\'); if (!REGISTRY.has(q)) { REGISTRY.set(q, new Map()); regChanged({ op: 'key', path: q }); } } } return REGISTRY.get(path); };
 const regPath = (p, hk, sub) => { const root = HKEY[hk] || (p.obj(hk) || {}).path; if (!root) return null; const s = sub ? (p.readA(sub) || '').toLowerCase().replace(/^\\+|\\+$/g, '') : ''; return s ? `${root}\\${s}` : root; };
 const regVal = v => typeof v === 'number' ? { type: 4, data: new Uint8Array(new Uint32Array([v]).buffer) } : typeof v === 'string' ? { type: 1, data: window.W95FS.encode(v + '\0') } : v;
 const regOpen = function (hk, sub, out, create) {
@@ -767,8 +768,8 @@ def('ADVAPI32', 'RegCreateKeyExA', 9, function (hk, sub, res, cls, opt, sam, sa,
   const r = regOpen.call(this, hk, sub, out, true); if (!r && disp) this.w32(disp, existed ? 2 : 1); return r;
 });
 def('ADVAPI32', 'RegCloseKey', 1, function (h) { if (!HKEY[h]) this.handles.delete(h); return 0; });
-def('ADVAPI32', 'RegDeleteKeyA', 2, function (hk, sub) { const path = regPath(this, hk, sub); if (!REGISTRY.has(path)) return 2; for (const k of [...REGISTRY.keys()]) if (k === path || k.startsWith(path + '\\')) REGISTRY.delete(k); regChanged(); return 0; });
-def('ADVAPI32', 'RegDeleteValueA', 2, function (hk, name) { const m = regKey(regPath(this, hk, 0)); if (!m) return 2; if (!m.delete((this.readA(name) || '').toLowerCase())) return 2; regChanged(); return 0; });
+def('ADVAPI32', 'RegDeleteKeyA', 2, function (hk, sub) { const path = regPath(this, hk, sub); if (!REGISTRY.has(path)) return 2; for (const k of [...REGISTRY.keys()]) if (k === path || k.startsWith(path + '\\')) REGISTRY.delete(k); regChanged({ op: 'delkey', path }); return 0; });
+def('ADVAPI32', 'RegDeleteValueA', 2, function (hk, name) { const path = regPath(this, hk, 0), m = regKey(path), n = (this.readA(name) || '').toLowerCase(); if (!m || !m.delete(n)) return 2; regChanged({ op: 'del', path, name: n }); return 0; });
 const regQuery = function (m, n, type, data, cb) {
   if (!m || !m.has(n)) return 2;
   const v = regVal(m.get(n)), size = v.data.length;
@@ -783,9 +784,11 @@ def('ADVAPI32', 'RegQueryValueExA', 6, function (hk, name, res, type, data, cb) 
 });
 def('ADVAPI32', 'RegQueryValueA', 4, function (hk, sub, data, cb) { return regQuery.call(this, regKey(regPath(this, hk, sub)), '', 0, data, cb); });
 def('ADVAPI32', 'RegSetValueExA', 6, function (hk, name, res, type, data, n) {
-  const m = regKey(regPath(this, hk, 0), true); m.set((this.readA(name) || '').toLowerCase(), { type, data: this.u8.slice(data, data + n), name: this.readA(name) || '' }); regChanged(); return 0;
+  const path = regPath(this, hk, 0), m = regKey(path, true), key = (this.readA(name) || '').toLowerCase();
+  const value = { type, data: this.u8.slice(data, data + n), name: this.readA(name) || '' };
+  m.set(key, value); regChanged({ op: 'set', path, name: key, value }); return 0;
 });
-def('ADVAPI32', 'RegSetValueA', 5, function (hk, sub, type, data, n) { const m = regKey(regPath(this, hk, sub), true); m.set('', { type: 1, data: window.W95FS.encode((this.readA(data) || '') + '\0') }); regChanged(); return 0; });
+def('ADVAPI32', 'RegSetValueA', 5, function (hk, sub, type, data, n) { const path = regPath(this, hk, sub), m = regKey(path, true), value = { type: 1, data: window.W95FS.encode((this.readA(data) || '') + '\0') }; m.set('', value); regChanged({ op: 'set', path, name: '', value }); return 0; });
 def('ADVAPI32', 'RegEnumKeyA', 4, function (hk, i, buf, n) {
   const path = regPath(this, hk, 0); const kids = [...REGISTRY.keys()].filter(k => k.startsWith(path + '\\') && !k.slice(path.length + 1).includes('\\'));
   if (i >= kids.length) return 259; this.writeA(buf, kids[i].slice(path.length + 1), n); return 0;
@@ -1506,5 +1509,5 @@ function peString(bytes, id) {
   } catch (_) { return null; }
 }
 
-window.W95Win32 = { regOn, regDump, regRestore, Process, API, LAYOUT, WM, YIELD, iniGet, iniSet, iniRead, peString, def, dcOf, GuestError, mkCanvas, dibOut };
+window.W95Win32 = { regAttach, Process, API, LAYOUT, WM, YIELD, iniGet, iniSet, iniRead, peString, def, dcOf, GuestError, mkCanvas, dibOut };
 })();

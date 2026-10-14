@@ -84,7 +84,6 @@ function wildRe(pattern) {
 
 // ---------------------------------------------------------------- nodes and volumes
 let inoSeq = 1;
-const IMG_MAGIC = [0x57, 0x39, 0x35, 0x44]; // 'W95D'
 class Node {
   constructor(name, dir, attrs = 0, t = Date.now()) {
     this.ino = inoSeq++; this.name = name; this.short = ''; this.dir = dir;
@@ -138,7 +137,8 @@ class FileSystem {
   setLabel(path, label) {
     const v = this.vol(this.split(path).drive); this.writable(v);
     if (label.length > 11 || BAD.test(label) || /[.+,;=[\]]/.test(label)) throw new FSError(E.INVALID_NAME, label);
-    v.label = label.toUpperCase(); this.emit('label', v.letter + ':\\');
+    v.label = label.toUpperCase(); if (v.store) v.store.label(v.label, v.serial);
+    this.emit('label', v.letter + ':\\');
   }
   // ---- change notification
   on(fn) { this.subs.add(fn); return () => this.subs.delete(fn); }
@@ -196,16 +196,52 @@ class FileSystem {
     n.name = name; n.short = shortFor(parent, name); n.parent = parent;
     parent.kids.set(name.toUpperCase(), n); parent.byShort.set(n.short, n);
     parent.mtime = Date.now(); this.setVol(n, parent.vol);
+    this.meta(n); this.meta(parent);
   }
   setVol(n, v) { n.vol = v; this.inodes.set(n.ino, n); if (n.dir) for (const k of n.kids.values()) this.setVol(k, v); }
   detach(n) {
     const p = n.parent; p.kids.delete(n.name.toUpperCase()); p.byShort.delete(n.short);
-    n.parent = null; p.mtime = Date.now();
+    n.parent = null; p.mtime = Date.now(); this.meta(p);
   }
   forget(n) {
+    if (n.sid !== undefined && n.vol && n.vol.store && n.parent === null) n.vol.store.remove(n.sid);
+    this.forgetTree(n);
+  }
+  forgetTree(n) {
     this.inodes.delete(n.ino);
-    if (n.dir) for (const k of n.kids.values()) this.forget(k);
+    if (n.dir) for (const k of n.kids.values()) this.forgetTree(k);
     else n.vol.used -= n.vol.alloc(n.size);
+  }
+  // ---- write-through: a volume with a store gets every change to its nodes and bytes as it happens.
+  // A store keeps nodes by a stable id (sid, the root is 0) and file bytes by offset; see attach().
+  stored(n) { return n.vol && n.vol.store && (n.parent || n === n.vol.root) ? n.vol.store : null; }
+  sidOf(n) { if (n.sid === undefined) n.sid = n === n.vol.root ? 0 : n.vol.nextSid++; return n.sid; }
+  meta(n) {
+    const s = this.stored(n); if (!s) return;
+    s.node({ sid: this.sidOf(n), parent: n.parent ? this.sidOf(n.parent) : -1, name: n.name, short: n.short, dir: n.dir,
+      attrs: n.attrs, ctime: n.ctime, mtime: n.mtime, atime: n.atime });
+  }
+  // a volume's store and what it already holds: true when it held a tree, false when it is empty (and now takes this one)
+  attach(letter, store) {
+    const v = this.vols.get(letter.toUpperCase()), r = v.root, held = store.load();
+    if (!held) { v.store = store; v.nextSid = 1; this.meta(r); store.label(v.label, v.serial); return false; }
+    for (const k of r.kids.values()) this.forgetTree(k);
+    r.kids.clear(); r.byShort.clear(); v.used = 0; v.store = store; v.nextSid = 1;
+    const bySid = new Map([[0, r]]);
+    for (const e of held.nodes) {
+      const n = e.sid === 0 ? r : new Node(e.name, e.dir, e.attrs, e.ctime);
+      n.sid = e.sid; n.ctime = e.ctime; n.mtime = e.mtime; n.atime = e.atime; v.nextSid = Math.max(v.nextSid, e.sid + 1);
+      if (!e.dir) { n.buf = e.data || new Uint8Array(0); n.size = n.buf.length; v.used += v.alloc(n.size); }
+      bySid.set(e.sid, n);
+    }
+    for (const e of held.nodes) {
+      if (e.sid === 0) continue;
+      const n = bySid.get(e.sid), p = bySid.get(e.parent);
+      n.short = e.short; n.parent = p; p.kids.set(n.name.toUpperCase(), n); p.byShort.set(n.short, n);
+    }
+    if (held.label !== undefined) { v.label = held.label; v.serial = held.serial; }
+    this.setVol(r, v); this.emit('mount', v.letter + ':\\');
+    return true;
   }
   busy(n) { if (n.opens) return true; if (n.dir) for (const k of n.kids.values()) if (this.busy(k)) return true; return false; }
   inside(a, b) { for (let p = a; p; p = p.parent) if (p === b) return true; return false; }
@@ -217,6 +253,7 @@ class FileSystem {
       const b = new Uint8Array(Math.max(size, n.buf.length * 2, 64)); b.set(n.buf.subarray(0, n.size)); n.buf = b;
     } else if (size < n.size) n.buf.fill(0, size, n.size);
     n.size = size;
+    const s = this.stored(n); if (s) s.size(this.sidOf(n), size);
   }
   info(n) {
     return {
@@ -313,7 +350,7 @@ class FileSystem {
     const fd = this.open(to, 'w');
     try { this.write(fd, src.buf.subarray(0, src.size)); } finally { this.close(fd); }
     const n = this.need(to); n.mtime = src.mtime; n.attrs = (src.attrs | ATTR.ARCHIVE) & ~ATTR.READONLY | (src.attrs & ATTR.READONLY);
-    return this.info(n);
+    this.meta(n); return this.info(n);
   }
   copyTree(src, to) {
     const dst = this.locate(to);
@@ -326,12 +363,12 @@ class FileSystem {
   setAttrs(path, attrs) {
     const n = this.need(path); this.writable(n.vol);
     n.attrs = (attrs & (ATTR.READONLY | ATTR.HIDDEN | ATTR.SYSTEM | ATTR.ARCHIVE)) | (n.dir ? ATTR.DIRECTORY : 0);
-    this.emit('attrib', this.pathOf(n));
+    this.meta(n); this.emit('attrib', this.pathOf(n));
   }
   setTimes(path, t) {
     const n = this.need(path); this.writable(n.vol);
     for (const k of ['ctime', 'mtime', 'atime']) if (t[k] !== undefined) n[k] = +t[k];
-    this.emit('attrib', this.pathOf(n));
+    this.meta(n); this.emit('attrib', this.pathOf(n));
   }
   // ---- handle I/O
   open(path, flags = 'r') {
@@ -347,7 +384,7 @@ class FileSystem {
     }
     if (f.write) { this.writable(n.vol); if (n.attrs & ATTR.READONLY) throw new FSError(E.ACCESS_DENIED, path); }
     if (f.read && n.absent) throw new FSError(E.READ_FAULT, path);
-    if (f.trunc && n.size) { this.resize(n, 0); n.mtime = Date.now(); }
+    if (f.trunc && n.size) { this.resize(n, 0); n.mtime = Date.now(); this.meta(n); }
     const fd = this.nextFd++;
     this.fds.set(fd, { n, pos: f.append ? n.size : 0, read: !!f.read, write: !!f.write, append: !!f.append });
     n.opens++; n.atime = Date.now();
@@ -370,7 +407,9 @@ class FileSystem {
     if (h.append) h.pos = n.size;
     const end = h.pos + b.length;
     if (end > n.size) this.resize(n, end);
-    n.buf.set(b, h.pos); h.pos = end; n.mtime = Date.now(); n.attrs |= ATTR.ARCHIVE;
+    n.buf.set(b, h.pos);
+    const st = this.stored(n); if (st) st.data(this.sidOf(n), h.pos, b.slice());
+    h.pos = end; n.mtime = Date.now(); n.attrs |= ATTR.ARCHIVE; this.meta(n);
     this.emit('write', this.pathOf(n));
     return b.length;
   }
@@ -383,7 +422,7 @@ class FileSystem {
   truncate(fd, len) {
     const h = this.handle(fd);
     if (!h.write) throw new FSError(E.ACCESS_DENIED, this.pathOf(h.n));
-    this.resize(h.n, len === undefined ? h.pos : len); h.n.mtime = Date.now(); this.emit('write', this.pathOf(h.n));
+    this.resize(h.n, len === undefined ? h.pos : len); h.n.mtime = Date.now(); this.meta(h.n); this.emit('write', this.pathOf(h.n));
   }
   fstat(fd) { return this.info(this.handle(fd).n); }
   close(fd) { const h = this.handle(fd); this.fds.delete(fd); h.n.opens--; }
@@ -395,40 +434,6 @@ class FileSystem {
     try { this.write(fd, data); } finally { this.close(fd); }
   }
   appendFile(path, data) { this.writeFile(path, data, { append: true }); }
-  // ---- disk image: one volume's tree, names, attributes, times and bytes, saved and restored across runs
-  dump(letter) {
-    const v = this.vols.get(letter.toUpperCase()), parts = []; let off = 0;
-    const walk = n => {
-      const e = [n.name, n.short, n.attrs, n.ctime, n.mtime, n.atime];
-      if (n.dir) e.push([...n.kids.values()].map(walk));
-      else { e.push(null, off, n.size); parts.push(n.buf.subarray(0, n.size)); off += n.size; }
-      return e;
-    };
-    const r = v.root, meta = new TextEncoder().encode(JSON.stringify({ label: v.label, serial: v.serial,
-      times: [r.ctime, r.mtime, r.atime], kids: [...r.kids.values()].map(walk) }));
-    const out = new Uint8Array(12 + meta.length + off), dv = new DataView(out.buffer);
-    out.set(IMG_MAGIC); dv.setUint32(4, 1, true); dv.setUint32(8, meta.length, true); out.set(meta, 12);
-    let at = 12 + meta.length; for (const b of parts) { out.set(b, at); at += b.length; }
-    return out;
-  }
-  restore(letter, img) {
-    const dv = new DataView(img.buffer, img.byteOffset, img.byteLength);
-    if (IMG_MAGIC.some((c, i) => img[i] !== c) || dv.getUint32(4, true) !== 1) throw new FSError(E.INVALID_PARAMETER, letter + ':\\');
-    const len = dv.getUint32(8, true), meta = JSON.parse(new TextDecoder().decode(img.subarray(12, 12 + len))), base = 12 + len;
-    const v = this.vols.get(letter.toUpperCase()), r = v.root;
-    for (const k of r.kids.values()) this.forget(k);
-    r.kids.clear(); r.byShort.clear(); v.used = 0;
-    const add = (parent, [name, short, attrs, ct, mt, at, kids, o, size]) => {
-      const n = new Node(name, !!kids, attrs, ct);
-      n.short = short; n.parent = parent; parent.kids.set(name.toUpperCase(), n); parent.byShort.set(short, n);
-      if (kids) kids.forEach(k => add(n, k));
-      else { n.buf = img.slice(base + o, base + o + size); n.size = size; v.used += v.alloc(size); }
-      n.mtime = mt; n.atime = at;
-    };
-    meta.kids.forEach(k => add(r, k));
-    [r.ctime, r.mtime, r.atime] = meta.times; v.label = meta.label; v.serial = meta.serial;
-    this.setVol(r, v); this.emit('mount', v.letter + ':\\');
-  }
   // ---- bulk load (bypasses read-only so CD images can be populated)
   load(letter, tree) {
     const v = this.vols.get(letter.toUpperCase());

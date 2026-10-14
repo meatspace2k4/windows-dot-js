@@ -19,27 +19,16 @@ function open() {
 app.setName('Windows 95')
 app.setPath('userData', path.join(app.getPath('appData'), 'local.win95'))
 
-// ---- saved state: one file, replaced atomically and flushed so a crash or power loss keeps the last good copy
-const stateFile = () => path.join(app.getPath('userData'), 'state.w95')
-function writeState(bytes) {
-  const tmp = stateFile() + '.tmp'
-  const fd = fs.openSync(tmp, 'w')
-  try { fs.writeSync(fd, Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength)); fs.fsyncSync(fd) } finally { fs.closeSync(fd) }
-  fs.renameSync(tmp, stateFile())
-}
-let writing = Promise.resolve()
-ipcMain.on('state-load', e => {
-  try { e.returnValue = new Uint8Array(fs.readFileSync(stateFile())) } catch { e.returnValue = null }
+// ---- C: and the registry, written through to SQLite as they change
+let store
+ipcMain.on('disk-load', e => { e.returnValue = store.loadDisk() })
+ipcMain.on('registry-load', e => { e.returnValue = store.loadRegistry() })
+ipcMain.on('store', (e, op, ...args) => {
+  try { store.apply(op, args) } catch (err) { console.error('store', op, err) }
 })
-ipcMain.handle('state-save', (e, bytes) => { writing = writing.then(() => writeState(bytes)).catch(err => console.error('state save:', err)); return writing })
-ipcMain.on('state-save-sync', (e, bytes) => {
-  try { writeState(bytes); e.returnValue = true } catch (err) { console.error('state save:', err); e.returnValue = false }
-})
-ipcMain.on('state-discard', e => {
-  try { fs.renameSync(stateFile(), stateFile() + '.unreadable-' + Date.now()) } catch {}
-  e.returnValue = true
-})
+app.on('will-quit', () => store && store.close())
 app.whenReady().then(() => {
+  store = require('./store').open(path.join(app.getPath('userData'), 'C.db'))
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     { role: 'appMenu' },
     { label: 'View', submenu: [{ role: 'togglefullscreen' }, { role: 'reload' }, { role: 'toggleDevTools' }] },
