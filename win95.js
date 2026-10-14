@@ -484,7 +484,7 @@ function drawMenu(m) {
     if (hot) fill(left, iy, rw, r.h, K.sel);
     if (it.icon) { const sz = start ? 32 : 16; icon(it.icon + sz, x + m.ix, iy + ((r.h - sz) >> 1)); }
     const color = hot ? (it.disabled ? K.sh : K.hl) : K.dk, ty = iy + ((r.h - 13) >> 1);
-    if (it.check) mglyph('check', x + 6, iy + ((r.h - 7) >> 1), color);
+    if (it.check) { const gl = it.radio ? 'bullet' : 'check', gh = A.glyphs[gl][1]; mglyph(gl, x + 6, iy + ((r.h - gh) >> 1), color); }
     if (it.disabled && !hot) textEmboss(it.label, x + m.tx, ty, it.bold); else text(it.label, x + m.tx, ty, color, it.bold);
     if (it.acc) { if (it.disabled && !hot) textEmboss(it.acc, x + m.ax, ty); else text(it.acc, x + m.ax, ty, color); }
     if (it.sub) mglyph('submenu', x + w - 3 - 6 - 4, iy + ((r.h - 7) >> 1), color);
