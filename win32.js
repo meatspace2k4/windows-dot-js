@@ -39,7 +39,7 @@ class Process {
     this.cpu = {};
     for (const n of CPU_REGS) this.cpu[n] = new WebAssembly.Global({ value: 'i32', mutable: true }, n === 'fcw' ? 0x37f : 0);
     this.depth = 0; this.exitCode = null; this.trapped = null; this.waiting = false; this.lastYield = 0;
-    this.t0 = host.now();
+    this.t0 = host.now(); this.busy = 0;
     this.thunks = []; this.thunkByName = new Map();
     this.handles = new Map(); this.nextHandle = 0x100;
     this.windows = new Map(); this.classes = new Map(); this.queue = []; this.timers = []; this.quit = null;
@@ -300,9 +300,13 @@ class Process {
     this.w32(p + 16, (this.now() - this.t0) | 0); const c = this.host.cursor(); this.w32(p + 20, c.x); this.w32(p + 24, c.y);
   }
   /** Earliest time something becomes deliverable, for the host scheduler. */
-  now() { return this.host.now(); }
+  /** Guest clock: real time, or later while the guest is still busy with work charged to it. */
+  now() { return Math.max(this.host.now(), this.busy); }
+  /** Charge ms of CPU time the original machine spent; the guest does not run again until it has elapsed. */
+  charge(ms) { if (ms > 0) this.busy = this.now() + ms; }
   ready() {
     if (this.exitCode !== null || this.trapped) return false;
+    if (this.host.now() < this.busy) return false;
     if (this.dlgDone) return true;
     if (this.modal) return false;
     if (!this.waiting) return true;
