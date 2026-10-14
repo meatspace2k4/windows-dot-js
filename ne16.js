@@ -389,6 +389,7 @@ const INTS = {
       case 0x44: if (al === 0) { this.cpu.edx.value = lo16(this.cpu.edx.value, 0x80); return; } break;
       case 0x50: case 0x51: case 0x62: return;
       case 0x35: { const v = ((this.dosVec = this.dosVec || {})[al]) || 0; this.seg('es', v >>> 16); this.cpu.ebx.value = lo16(this.cpu.ebx.value, v); return; }
+      case 0x0d: return;   // disk reset: nothing is buffered
       case 0x25: (this.dosVec = this.dosVec || {})[al] = u32((this.cpu.ds.value << 16) | (this.cpu.edx.value & 0xffff)); return;
     }
     this.trapped = `unhandled int 21h ax=${this.ax().toString(16)}`; return LAYOUT.SENTINEL;
@@ -410,6 +411,7 @@ const INTS = {
     if (ax === 0x1686) { this.ax(0); return; }                                          // in protected mode
     if (ax === 0x1689 || ax === 0x1680) return;
     if ((ax >> 8) === 0x40) return;    // VDD save/restore and critical-section notifications
+    if (ax === 0x4a32) return;         // boot progress to IO.SYS (USER reports start-up done; its answer is not read)
     this.trapped = `unhandled int 2Fh ax=${ax.toString(16)}`; return LAYOUT.SENTINEL;
   },
 };
