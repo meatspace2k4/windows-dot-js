@@ -459,8 +459,8 @@ def('KERNEL32', 'GetProcAddress', 2, function (h, name) {
 def('KERNEL32', 'RtlUnwind', 4, () => 0);
 def('KERNEL32', 'UnhandledExceptionFilter', 1, () => 1);
 def('KERNEL32', 'SetUnhandledExceptionFilter', 1, () => 0);
-def('KERNEL32', 'GetLastError', 0, () => 0);
-def('KERNEL32', 'SetLastError', 1, () => 0);
+def('KERNEL32', 'GetLastError', 0, function () { return this.lastError || 0; });
+def('KERNEL32', 'SetLastError', 1, function (e) { this.lastError = e; });
 def('KERNEL32', 'LocalAlloc', 2, function (f, n) { return this.alloc(n); });
 def('KERNEL32', 'LocalFree', 1, function (p) { this.free(p); return 0; });
 def('KERNEL32', 'GlobalAlloc', 2, function (f, n) { return this.alloc(n); });
@@ -537,6 +537,163 @@ def('KERNEL32', 'LoadResource', 2, function (m, h) { return h; });
 def('KERNEL32', 'LockResource', 1, function (h) { const r = this.obj(h); return r ? r.addr : 0; });
 def('KERNEL32', 'FreeResource', 1, () => 0);
 def('KERNEL32', 'SizeofResource', 2, function (m, h) { const r = this.obj(h); return r ? r.size : 0; });
+
+// threads, TLS, synchronization (one guest thread)
+def('KERNEL32', 'InitializeCriticalSection', 1, function (p) { this.u8.fill(0, p, p + 24); });
+def('KERNEL32', 'DeleteCriticalSection', 1, () => 0);
+def('KERNEL32', 'EnterCriticalSection', 1, () => 0);
+def('KERNEL32', 'LeaveCriticalSection', 1, () => 0);
+def('KERNEL32', 'GetCurrentThreadId', 0, () => 0x51);
+def('KERNEL32', 'GetCurrentProcessId', 0, () => 0x50);
+def('KERNEL32', 'GetCurrentThread', 0, () => 0xfffffffe);
+def('KERNEL32', 'TlsAlloc', 0, function () { this.tls = this.tls || []; this.tls.push(0); return this.tls.length - 1; });
+def('KERNEL32', 'TlsFree', 1, () => 1);
+def('KERNEL32', 'TlsGetValue', 1, function (i) { return (this.tls || [])[i] || 0; });
+def('KERNEL32', 'TlsSetValue', 2, function (i, v) { this.tls = this.tls || []; this.tls[i] = v; return 1; });
+def('KERNEL32', 'SetConsoleCtrlHandler', 2, () => 1);
+def('KERNEL32', 'SetErrorMode', 1, () => 0);
+def('KERNEL32', 'RaiseException', 4, function (code) { throw new GuestError(`exception ${u32(code).toString(16)}`); });
+def('KERNEL32', 'FatalAppExitA', 2, function (a, m) { throw new GuestError(`FatalAppExit: ${this.readA(m)}`); });
+def('KERNEL32', 'Beep', 2, () => 1);
+def('KERNEL32', 'HeapValidate', 3, () => 1);
+def('KERNEL32', 'HeapLock', 1, () => 1);
+def('KERNEL32', 'HeapUnlock', 1, () => 1);
+def('KERNEL32', 'HeapCompact', 2, () => 0);
+def('KERNEL32', 'HeapWalk', 2, () => 0);
+def('KERNEL32', 'LocalReAlloc', 3, function (p, n) { return this.realloc(p, n); });
+def('KERNEL32', 'GlobalReAlloc', 3, function (p, n) { return this.realloc(p, n); });
+def('KERNEL32', 'lstrlenW', 1, function (p) { return p ? this.readW(p).length : 0; });
+def('KERNEL32', 'lstrcpyW', 2, function (d, s) { const t = this.readW(s) || ''; for (let i = 0; i <= t.length; i++) this.w16(d + 2 * i, i < t.length ? t.charCodeAt(i) : 0); return d; });
+def('KERNEL32', 'GetUserDefaultLCID', 0, () => 0x409);
+def('KERNEL32', 'GetSystemDefaultLCID', 0, () => 0x409);
+def('KERNEL32', 'IsValidCodePage', 1, cp => (cp === 1252 || cp === 437 ? 1 : 0));
+def('KERNEL32', 'GetLocaleInfoW', 4, () => 0);
+def('KERNEL32', 'GetLocaleInfoA', 4, () => 0);
+def('KERNEL32', 'CompareStringW', 6, () => 2);
+def('KERNEL32', 'CompareStringA', 6, function (lc, f, a, na, b, nb) {
+  const x = this.readA(a, na < 0 ? 65536 : na) || '', y = this.readA(b, nb < 0 ? 65536 : nb) || '';
+  const ci = f & 1, X = ci ? x.toLowerCase() : x, Y = ci ? y.toLowerCase() : y; return X < Y ? 1 : X > Y ? 3 : 2;
+});
+def('KERNEL32', 'SetEnvironmentVariableA', 2, () => 1);
+def('KERNEL32', 'GetEnvironmentVariableA', 3, () => 0);
+const ftNow = () => BigInt(Date.now()) * 10000n + 116444736000000000n;
+def('KERNEL32', 'GetSystemTime', 1, function (p) {
+  const d = new Date(); [d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDay(), d.getUTCDate(), d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds(), d.getUTCMilliseconds()].forEach((v, i) => this.w16(p + 2 * i, v));
+});
+def('KERNEL32', 'GetSystemTimeAsFileTime', 1, function (p) { const t = ftNow(); this.w32(p, Number(t & 0xffffffffn)); this.w32(p + 4, Number(t >> 32n)); });
+def('KERNEL32', 'GetTimeZoneInformation', 1, function (p) { this.u8.fill(0, p, p + 172); this.w32(p, new Date().getTimezoneOffset()); return 0; });
+def('KERNEL32', 'FileTimeToSystemTime', 2, function (ft, st) {
+  const t = (BigInt(this.r32(ft + 4)) << 32n) | BigInt(this.r32(ft)), d = new Date(Number((t - 116444736000000000n) / 10000n));
+  [d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDay(), d.getUTCDate(), d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds(), d.getUTCMilliseconds()].forEach((v, i) => this.w16(st + 2 * i, v)); return 1;
+});
+def('KERNEL32', 'SystemTimeToFileTime', 2, function (st, ft) {
+  const ms = Date.UTC(this.r16(st), this.r16(st + 2) - 1, this.r16(st + 6), this.r16(st + 8), this.r16(st + 10), this.r16(st + 12), this.r16(st + 14));
+  const t = BigInt(ms) * 10000n + 116444736000000000n; this.w32(ft, Number(t & 0xffffffffn)); this.w32(ft + 4, Number(t >> 32n)); return 1;
+});
+def('KERNEL32', 'FileTimeToLocalFileTime', 2, function (a, b) { this.w32(b, this.r32(a)); this.w32(b + 4, this.r32(a + 4)); return 1; });
+
+// file I/O on the in-memory disk. Win32 handles wrap W95FS file descriptors.
+const FERR = e => (e && e.code) || 5;
+function fsCall(p, fn, fail = 0) {
+  try { const r = fn(); p.lastError = 0; return r; } catch (e) { if (!(e instanceof window.W95FS.FSError)) throw e; p.lastError = FERR(e); return fail; }
+}
+const fileOf = (p, h) => { const o = p.obj(h); return o && o.kind === 'file' ? o : null; };
+const writeFindData = (p, a, i) => {
+  p.u8.fill(0, a, a + 320); p.w32(a, i.attrs);
+  const ft = (o, ms) => { const t = BigInt(Math.round(ms)) * 10000n + 116444736000000000n; p.w32(a + o, Number(t & 0xffffffffn)); p.w32(a + o + 4, Number(t >> 32n)); };
+  ft(4, i.ctime); ft(12, i.atime); ft(20, i.mtime); p.w32(a + 32, i.size); p.writeA(a + 44, i.name, 260); p.writeA(a + 304, i.shortName || '', 14);
+};
+def('KERNEL32', 'CreateFileA', 7, function (name, access, share, sa, disp, flags) {
+  const path = this.readA(name); const write = !!(access & 0x40000000), read = !!(access & 0x80000000) || !write;
+  return fsCall(this, () => {
+    const exists = this.fs.exists(path);
+    if (disp === 1 && exists) throw new window.W95FS.FSError(80, path);           // CREATE_NEW
+    if ((disp === 3 || disp === 5) && !exists) throw new window.W95FS.FSError(2, path); // OPEN_EXISTING / TRUNCATE_EXISTING
+    if (exists && this.fs.stat(path).isDir) return this.newHandle({ kind: 'dirhandle', path });
+    const mode = disp === 2 || disp === 5 ? (read ? 'w+' : 'w') : !exists ? (read ? 'w+' : 'w') : write ? 'r+' : 'r';
+    return this.newHandle({ kind: 'file', fd: this.fs.open(path, mode), path });
+  }, 0xffffffff);
+});
+def('KERNEL32', 'CloseHandle', 1, function (h) { const f = fileOf(this, h); if (f) fsCall(this, () => this.fs.close(f.fd)); this.handles.delete(h); return 1; });
+def('KERNEL32', 'ReadFile', 5, function (h, buf, n, got) {
+  const f = fileOf(this, h); if (!f) return 0;
+  return fsCall(this, () => { const b = this.fs.read(f.fd, n); this.u8.set(b, buf); if (got) this.w32(got, b.length); return 1; });
+});
+def('KERNEL32', 'WriteFile', 5, function (h, buf, n, put) {
+  const f = fileOf(this, h); if (!f) { if (put) this.w32(put, n); return 1; }
+  return fsCall(this, () => { const k = this.fs.write(f.fd, this.u8.slice(buf, buf + n)); if (put) this.w32(put, k); return 1; });
+});
+def('KERNEL32', 'SetFilePointer', 4, function (h, lo, hip, how) { const f = fileOf(this, h); if (!f) return 0xffffffff; return fsCall(this, () => this.fs.seek(f.fd, lo | 0, how), 0xffffffff); });
+def('KERNEL32', 'GetFileSize', 2, function (h, hi) { const f = fileOf(this, h); if (hi) this.w32(hi, 0); return f ? this.fs.fstat(f.fd).size : 0xffffffff; });
+def('KERNEL32', 'SetEndOfFile', 1, function (h) { const f = fileOf(this, h); return f ? fsCall(this, () => (this.fs.truncate(f.fd), 1)) : 0; });
+def('KERNEL32', 'FlushFileBuffers', 1, () => 1);
+def('KERNEL32', 'LockFile', 5, () => 1);
+def('KERNEL32', 'UnlockFile', 5, () => 1);
+def('KERNEL32', 'GetFileInformationByHandle', 2, function (h, p) {
+  const f = fileOf(this, h); if (!f) return 0; const i = this.fs.fstat(f.fd); this.u8.fill(0, p, p + 52); this.w32(p, i.attrs); this.w32(p + 36, i.size); this.w32(p + 40, 1); return 1;
+});
+def('KERNEL32', 'SetFileTime', 4, () => 1);
+def('KERNEL32', 'GetFileAttributesA', 1, function (n) { return fsCall(this, () => this.fs.stat(this.readA(n)).attrs, 0xffffffff); });
+def('KERNEL32', 'SetFileAttributesA', 2, function (n, a) { return fsCall(this, () => (this.fs.setAttrs(this.readA(n), a), 1)); });
+def('KERNEL32', 'DeleteFileA', 1, function (n) { return fsCall(this, () => (this.fs.unlink(this.readA(n)), 1)); });
+def('KERNEL32', 'MoveFileA', 2, function (a, b) { return fsCall(this, () => (this.fs.rename(this.readA(a), this.readA(b)), 1)); });
+def('KERNEL32', 'CopyFileA', 3, function (a, b, fail) { return fsCall(this, () => (this.fs.copy(this.readA(a), this.readA(b), { overwrite: !fail }), 1)); });
+def('KERNEL32', 'CreateDirectoryA', 2, function (n) { return fsCall(this, () => (this.fs.mkdir(this.readA(n)), 1)); });
+def('KERNEL32', 'RemoveDirectoryA', 1, function (n) { return fsCall(this, () => (this.fs.rmdir(this.readA(n)), 1)); });
+def('KERNEL32', 'GetCurrentDirectoryA', 2, function (n, b) { return this.writeA(b, this.fs.cwd.replace(/\\$/, (m, o) => (o > 2 ? '' : m)), n); });
+def('KERNEL32', 'SetCurrentDirectoryA', 1, function (n) { return fsCall(this, () => (this.fs.chdir(this.readA(n)), 1)); });
+def('KERNEL32', 'GetDriveTypeA', 1, function (n) { const l = ((this.readA(n) || this.fs.cwd)[0] || 'C').toUpperCase(); const v = this.fs.vols.get(l); return !v ? 1 : { removable: 2, fixed: 3, cdrom: 5 }[v.kind] || 3; });
+def('KERNEL32', 'GetLogicalDrives', 0, function () { let m = 0; for (const v of this.fs.vols.values()) m |= 1 << (v.letter.charCodeAt(0) - 65); return m; });
+def('KERNEL32', 'GetDiskFreeSpaceA', 5, function (n, spc, bps, free, total) {
+  return fsCall(this, () => { const v = this.fs.statvfs(this.readA(n) || this.fs.cwd); const c = v.cluster;
+    if (spc) this.w32(spc, c / 512); if (bps) this.w32(bps, 512); if (free) this.w32(free, Math.floor(v.free / c)); if (total) this.w32(total, Math.floor(v.total / c)); return 1; });
+});
+def('KERNEL32', 'FindFirstFileA', 2, function (pat, data) {
+  const s = this.readA(pat); const dir = s.includes('\\') ? s.slice(0, s.lastIndexOf('\\')) || s.slice(0, 3) : this.fs.cwd, mask = s.slice(s.lastIndexOf('\\') + 1);
+  return fsCall(this, () => {
+    const list = this.fs.readdir(dir.length === 2 ? dir + '\\' : dir, mask);
+    if (!list.length) throw new window.W95FS.FSError(2, s);
+    writeFindData(this, data, list[0]); return this.newHandle({ kind: 'find', list, i: 1 });
+  }, 0xffffffff);
+});
+def('KERNEL32', 'FindNextFileA', 2, function (h, data) { const f = this.obj(h); if (!f || f.i >= f.list.length) { this.lastError = 18; return 0; } writeFindData(this, data, f.list[f.i++]); return 1; });
+def('KERNEL32', 'FindClose', 1, function (h) { this.handles.delete(h); return 1; });
+def('KERNEL32', 'SearchPathA', 6, function (path, file, ext, n, buf, part) {
+  const f = this.readA(file) + (ext && !/\.[^\\]*$/.test(this.readA(file)) ? this.readA(ext) : '');
+  for (const d of [this.readA(path), 'C:\\WINDOWS\\SYSTEM', 'C:\\WINDOWS', this.fs.cwd].filter(Boolean)) {
+    const full = window.W95FS.join(d, f); if (this.fs.exists(full)) { const r = this.fs.realpath(full); this.writeA(buf, r, n); if (part) this.w32(part, buf + r.lastIndexOf('\\') + 1); return r.length; }
+  }
+  return 0;
+});
+def('KERNEL32', 'CreateFileMappingA', 6, function (h) { const f = fileOf(this, h); return f ? this.newHandle({ kind: 'mapping', path: f.path }) : 0; });
+def('KERNEL32', 'MapViewOfFile', 5, function (h) {
+  const m = this.obj(h); if (!m) return 0;
+  return fsCall(this, () => { const b = this.fs.readFile(m.path); const p = this.alloc(b.length + 1); this.u8.set(b, p); return p; });
+});
+def('KERNEL32', 'UnmapViewOfFile', 1, function (p) { this.free(p); return 1; });
+def('KERNEL32', 'CreateFileW', 7, () => 0xffffffff);
+def('KERNEL32', 'GetFullPathNameA', 4, function (n, len, buf, part) {
+  const s = this.readA(n); const full = /^[a-z]:/i.test(s) ? s : window.W95FS.join(this.fs.cwd, s); this.writeA(buf, full, len);
+  if (part) this.w32(part, buf + full.lastIndexOf('\\') + 1); return full.length;
+});
+def('KERNEL32', 'SetStdHandle', 2, () => 1);
+def('KERNEL32', 'GetConsoleMode', 2, () => 0);
+def('KERNEL32', 'SetConsoleMode', 2, () => 0);
+def('KERNEL32', 'WriteConsoleA', 5, () => 1);
+def('KERNEL32', 'DuplicateHandle', 7, function (a, h, b, out) { if (out) this.w32(out, h); return 1; });
+def('KERNEL32', 'WaitForSingleObject', 2, () => 0);
+def('KERNEL32', 'GetExitCodeProcess', 2, () => 0);
+def('KERNEL32', 'CreateThread', 6, () => 0);
+def('KERNEL32', 'ExitThread', 1, function (c) { this.exitCode = c; this.host.exited(c); });
+def('KERNEL32', 'ResumeThread', 1, () => 0);
+def('KERNEL32', 'SetLocalTime', 1, () => 0);
+def('KERNEL32', 'CreatePipe', 4, () => 0);
+def('KERNEL32', 'CreateProcessA', 10, () => 0);
+def('KERNEL32', 'ReadConsoleA', 5, () => 0);
+def('KERNEL32', 'ReadConsoleInputA', 4, () => 0);
+def('KERNEL32', 'PeekConsoleInputA', 4, () => 0);
+def('KERNEL32', 'GetNumberOfConsoleInputEvents', 2, () => 0);
+def('KERNEL32', 'OutputDebugStringA', 1, () => 0);
 
 // ADVAPI32
 def('ADVAPI32', 'RegOpenKeyA', 3, function (hk, sub, out) {
