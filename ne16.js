@@ -171,7 +171,7 @@ P.jsModule = function (name) {
   this.jsMods.set(name, rec); return rec;
 };
 P.kernelModule = function () { return this.jsModule('KERNEL'); };
-const JS16 = ['KERNEL', 'USER', 'KEYBOARD', 'SYSTEM', 'VDD'];
+const JS16 = ['KERNEL', 'USER', 'KEYBOARD', 'SYSTEM', 'VDD', 'VFLATD'];
 
 // ---------------------------------------------------------------- calling 16-bit code
 /** enter 16-bit code on an alias of the flat stack; args: [['w', v] | ['l', v]...] in Pascal order */
@@ -373,11 +373,12 @@ const INTS = {
     if (ax === 0x1600) { this.ax(0x0004 | (0x00 << 8)); this.cpu.eax.value = lo16(this.cpu.eax.value, 0x0004); return; }  // Windows 4.00 enhanced mode
     if (ax === 0x1683) { this.cpu.ebx.value = lo16(this.cpu.ebx.value, 1); return; }    // current VM id
     if (ax === 0x1684) {   // VxD protected-mode API entry points: only the VDD (device 0Ah) has one
-      const id = this.cpu.ebx.value & 0xffff, ep = id === 0x0a ? this.thunk16For('VDD.#0') : 0;
+      const id = this.cpu.ebx.value & 0xffff, ep = id === 0x0a ? this.thunk16For('VDD.#0') : id === 0x11f ? this.thunk16For('VFLATD.#0') : 0;
       this.cpu.edi.value = lo16(this.cpu.edi.value, ep & 0xffff); this.seg('es', ep >>> 16); return;
     }
     if (ax === 0x1686) { this.ax(0); return; }                                          // in protected mode
     if (ax === 0x1689 || ax === 0x1680) return;
+    if ((ax >> 8) === 0x40) return;    // VDD save/restore and critical-section notifications
     this.trapped = `unhandled int 2Fh ax=${ax.toString(16)}`; return LAYOUT.SENTINEL;
   },
 };
@@ -443,7 +444,8 @@ const VRAM_SIZE = 1 << 20, WIN = 0xa0000;
 P.adapter = function () {
   if (this.et) return this.et;
   this.init16();
-  return (this.et = { vram: new Uint8Array(VRAM_SIZE), bank: 0, misc: 0x67, seq: new Uint8Array(256), gc: new Uint8Array(256), crtc: new Uint8Array(256),
+  const vramLin = this.alloc(VRAM_SIZE + 0x1000, true);
+  return (this.et = { vramLin, vram: this.u8.subarray(vramLin, vramLin + VRAM_SIZE), flat: false, bank: 0, misc: 0x67, seq: new Uint8Array(256), gc: new Uint8Array(256), crtc: new Uint8Array(256),
     attr: new Uint8Array(256), idx: { seq: 0, gc: 0, crtc: 0, attr: 0 }, flip: 0, dacW: 0, dacR: 0, dac: new Uint8Array(768), pelMask: 0xff,
     hicolor: 0, hidden: 0, status: 0, mode: 3, w: 720, h: 400, bpp: 0, pitch: 0, dirty: true });
 };
@@ -451,7 +453,8 @@ P.adapter = function () {
 P.setBank = function (b) {
   const a = this.adapter(); b &= 0x0f;
   if (b === a.bank) return;
-  const u8 = this.u8;
+  if (a.flat) { a.bank = b; return; }     // VFLATD presents VRAM linearly; the window is no longer the access path
+  const u8 = this.u8; a.vram = u8.subarray(a.vramLin, a.vramLin + VRAM_SIZE);
   a.vram.set(u8.subarray(WIN, WIN + 0x10000), a.bank << 16);
   u8.set(a.vram.subarray(b << 16, (b << 16) + 0x10000), WIN);
   a.bank = b; a.dirty = true;
@@ -459,9 +462,22 @@ P.setBank = function (b) {
 /** VRAM with the window flushed: what the CRTC scans out */
 P.scanout = function () {
   const a = this.adapter();
-  a.vram.set(this.u8.subarray(WIN, WIN + 0x10000), a.bank << 16);
+  a.vram = this.u8.subarray(a.vramLin, a.vramLin + VRAM_SIZE);
+  if (!a.flat) a.vram.set(this.u8.subarray(WIN, WIN + 0x10000), a.bank << 16);
   return a;
 };
+// VFLATD: the VxD that gives display drivers a linear view of banked VRAM. Register (DX=1): ES:DI = the driver's
+// bank-switch template (CX bytes), AX = size in 4K pages; returns AX = a selector for the flat framebuffer.
+def16('VFLATD', 0, '', 'jmp', function () {
+  const fn = this.cpu.edx.value & 0xffff, a = this.adapter();
+  if (fn === 1) {
+    if (!a.flat) { a.vram.set(this.u8.subarray(WIN, WIN + 0x10000), a.bank << 16); a.flat = true; }
+    if (!a.flatSel) a.flatSel = this.allocSels(a.vramLin, VRAM_SIZE);
+    this.ax(a.flatSel); this.cpu.edx.value = a.vramLin;
+  } else if (fn === 0) this.ax(0x0400);
+  else this.ax(0);
+  return this.retf16(0);
+});
 P.setVideoMode = function (mode, clear, hicolor) {
   const a = this.adapter(), m = ET_MODES[mode & 0x7f]; if (!m) return false;
   a.mode = mode & 0x7f; [a.w, a.h, a.bpp] = m; a.hicolor = hicolor || 0;
