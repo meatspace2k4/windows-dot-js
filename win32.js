@@ -1,0 +1,792 @@
+'use strict';
+// Win32 personality for statically recompiled guest code (see tools/recomp.py).
+// Loads a PE image from the in-memory file system into wasm linear memory,
+// binds its imports to JS implementations of the KERNEL32/USER32/GDI32 subset
+// the Windows 95 screen savers use, and runs the recompiled blocks. GDI output
+// goes to a Canvas 2D surface.
+(() => {
+const LAYOUT = { SENTINEL: 0xFFFFFFF0, THUNK: 0xFFFF0000, FPU: 0x10000, TIB: 0x11000, SCRATCH: 0x12000, LOOKUP: 0x100000,
+  STACK_LO: 0x200000, STACK_TOP: 0x3ffff0, HEAP: 0x02000000, HEAP_END: 0x07f00000 };
+const YIELD = -1 >>> 0;
+const WM = { NULL: 0, CREATE: 1, DESTROY: 2, MOVE: 3, SIZE: 5, ACTIVATE: 6, SETFOCUS: 7, KILLFOCUS: 8, PAINT: 0xf, CLOSE: 0x10,
+  QUIT: 0x12, ERASEBKGND: 0x14, SHOWWINDOW: 0x18, ACTIVATEAPP: 0x1c, SETCURSOR: 0x20, NCCREATE: 0x81, NCDESTROY: 0x82,
+  NCACTIVATE: 0x86, KEYDOWN: 0x100, KEYUP: 0x101, CHAR: 0x102, SYSKEYDOWN: 0x104, SYSCOMMAND: 0x112, TIMER: 0x113,
+  MOUSEMOVE: 0x200, LBUTTONDOWN: 0x201, LBUTTONUP: 0x202, RBUTTONDOWN: 0x204, MBUTTONDOWN: 0x207, INITDIALOG: 0x110, COMMAND: 0x111 };
+
+class GuestError extends Error {}
+
+// ---------------------------------------------------------------- small helpers
+const u32 = v => v >>> 0;
+const rgbOf = c => [c & 0xff, (c >>> 8) & 0xff, (c >>> 16) & 0xff];
+const css = ([r, g, b]) => `rgb(${r},${g},${b})`;
+
+// ---------------------------------------------------------------- process
+class Process {
+  /**
+   * file: Uint8Array of the .scr, module: compiled WebAssembly.Module, meta: recompiler metadata
+   * host: { fs, width, height, surface(hwnd, w, h) -> CanvasRenderingContext2D, now(), cursor() -> {x,y}, exited(code) }
+   */
+  constructor(file, module, meta, host, cmdline) {
+    this.file = file; this.meta = meta; this.host = host; this.fs = host.fs;
+    this.mem = new WebAssembly.Memory({ initial: meta.layout.pages, maximum: meta.layout.pages });
+    this.depth = 0; this.exitCode = null; this.trapped = null; this.waiting = false; this.lastYield = 0;
+    this.t0 = host.now();
+    this.thunks = []; this.thunkByName = new Map();
+    this.handles = new Map(); this.nextHandle = 0x100;
+    this.windows = new Map(); this.classes = new Map(); this.queue = []; this.timers = []; this.quit = null;
+    this.heapTop = LAYOUT.HEAP; this.freeList = new Map(); this.allocs = new Map();
+    this.load();
+    const math = { fsin: Math.sin, fcos: Math.cos, ftan: Math.tan, fatan2: Math.atan2, fexp2: x => Math.pow(2, x), flog2: Math.log2,
+      fmod: (a, b) => a % b, frem: (a, b) => a - b * Math.round(a / b), f80load: a => this.f80load(a), f80store: (a, v) => this.f80store(a, v) };
+    this.inst = new WebAssembly.Instance(module, { env: { mem: this.mem, api: e => this.api(e), trap: (e, c) => this.trap(e, c), ...math } });
+    this.x = this.inst.exports;
+    this.setupStack(cmdline);
+  }
+  get u8() { return new Uint8Array(this.mem.buffer); }
+  get dv() { return new DataView(this.mem.buffer); }
+  r32(a) { return this.dv.getUint32(a, true); }
+  w32(a, v) { this.dv.setUint32(a, v >>> 0, true); }
+  r16(a) { return this.dv.getUint16(a, true); }
+  w16(a, v) { this.dv.setUint16(a, v & 0xffff, true); }
+  r8(a) { return this.u8[a]; }
+  i32(a) { return this.dv.getInt32(a, true); }
+  readA(p, max = 65536) { if (!p) return null; const u = this.u8; let s = ''; for (let i = 0; i < max && u[p + i]; i++) s += String.fromCharCode(u[p + i]); return s; }
+  readW(p, max = 65536) { if (!p) return null; let s = ''; for (let i = 0; i < max; i++) { const c = this.r16(p + 2 * i); if (!c) break; s += String.fromCharCode(c); } return s; }
+  writeA(p, s, max) {
+    const b = window.W95FS.encode(s), n = max === undefined ? b.length : Math.min(b.length, max - 1);
+    this.u8.set(b.subarray(0, n), p); this.u8[p + n] = 0; return n;
+  }
+  reg(n, v) { if (v === undefined) return this.x[n].value >>> 0; this.x[n].value = v | 0; }
+
+  // ---- loading
+  load() {
+    const f = this.file, dv = new DataView(f.buffer, f.byteOffset, f.byteLength), u8 = this.u8;
+    const p = dv.getUint32(0x3c, true), opt = p + 24;
+    const base = dv.getUint32(opt + 28, true); this.base = base;
+    if (base !== this.meta.base) throw new GuestError('image base mismatch');
+    u8.set(f.subarray(0, dv.getUint32(opt + 60, true)), base);
+    const nsec = dv.getUint16(p + 6, true), shdr = opt + dv.getUint16(p + 20, true);
+    for (let i = 0; i < nsec; i++) {
+      const o = shdr + 40 * i, vs = dv.getUint32(o + 8, true), va = dv.getUint32(o + 12, true), rs = dv.getUint32(o + 16, true), ro = dv.getUint32(o + 20, true);
+      u8.fill(0, base + va, base + va + Math.max(vs, rs));
+      u8.set(f.subarray(ro, ro + Math.min(rs, vs || rs)), base + va);
+    }
+    this.rsrc = dv.getUint32(opt + 96 + 2 * 8, true);
+    const imp = dv.getUint32(opt + 96 + 8, true);
+    for (let d = base + imp; this.r32(d + 12); d += 20) {
+      const dll = this.readA(base + this.r32(d + 12)).toUpperCase().replace(/\.DLL$/, '');
+      const iat = base + this.r32(d + 16); let lut = base + (this.r32(d) || this.r32(d + 16));
+      for (let k = 0; ; k++, lut += 4) {
+        const v = this.r32(lut); if (!v) break;
+        const nm = v & 0x80000000 ? '#' + (v & 0xffff) : this.readA(base + v + 2);
+        this.w32(iat + 4 * k, this.thunkFor(dll, nm));
+      }
+    }
+    const look = new Uint32Array(this.mem.buffer, LAYOUT.LOOKUP, (this.meta.textHi - this.meta.textLo));
+    this.meta.blocks.forEach((a, i) => { look[a - this.meta.textLo] = i + 1; });
+    this.cmdPtr = 0;
+  }
+  thunkFor(dll, nm) {
+    const key = dll + '!' + nm;
+    if (this.thunkByName.has(key)) return this.thunkByName.get(key);
+    const def = (API[dll] || {})[nm];
+    const t = LAYOUT.THUNK + this.thunks.length * 4;
+    this.thunks.push({ dll, nm, def }); this.thunkByName.set(key, t);
+    return t;
+  }
+  setupStack(cmdline) {
+    const t = LAYOUT.TIB;
+    this.w32(t, 0xffffffff); this.w32(t + 4, LAYOUT.STACK_TOP); this.w32(t + 8, LAYOUT.STACK_LO); this.w32(t + 0x18, t);
+    this.x.fs.value = t;
+    this.cmdPtr = LAYOUT.SCRATCH; this.writeA(this.cmdPtr, cmdline);
+    this.reg('esp', LAYOUT.STACK_TOP);
+    this.push(LAYOUT.SENTINEL);
+    this.resumeEip = this.meta.entry;
+  }
+  push(v) { const sp = this.reg('esp') - 4; this.reg('esp', sp); this.w32(sp, v); }
+
+  // ---- execution
+  /** Run until the guest blocks for messages or exits. Returns false once the process has exited. */
+  slice() {
+    if (this.exitCode !== null || this.trapped) return false;
+    this.depth = 0; this.waiting = false; this.lastYield = this.host.now();
+    const r = this.x.run(this.resumeEip);
+    if (r === 1) { this.resumeEip = this.reg('eip'); return true; }
+    if (r === 2 || this.trapped) { this.fail(this.trapped || `bad address ${this.reg('eip').toString(16)}`); return false; }
+    if (this.exitCode === null) this.exitCode = this.reg('eax');
+    this.host.exited(this.exitCode); return false;
+  }
+  /** Call a guest function (stdcall) from inside an API implementation. */
+  call(addr, args) {
+    if (!addr) return 0;
+    const save = { esp: this.reg('esp'), eip: this.reg('eip') };
+    for (let i = args.length - 1; i >= 0; i--) this.push(args[i]);
+    this.push(LAYOUT.SENTINEL);
+    this.depth++;
+    const r = this.x.run(addr);
+    this.depth--;
+    if (r !== 0) throw new GuestError(this.trapped || 'guest callback did not return');
+    const ret = this.reg('eax');
+    this.reg('esp', save.esp); this.x.eip.value = save.eip;
+    return ret;
+  }
+  fail(why) {
+    this.trapped = why;
+    console.error(`[win32] ${this.meta.name || ''} stopped: ${why}`);
+    this.host.exited(-1, why);
+  }
+  trap(eip, code) {
+    this.trapped = `${['unsupported instruction', 'unsupported instruction', 'jump to unmapped address', 'breakpoint'][code] || 'trap'} at ${u32(eip).toString(16)}`;
+    if (code === 0) this.trapped = `divide by zero at ${u32(this.reg('eip')).toString(16)}`;
+  }
+  api(eip) {
+    const t = this.thunks[(u32(eip) - LAYOUT.THUNK) >> 2];
+    if (!t || !t.def) { this.trapped = `unimplemented import ${t ? t.dll + '!' + t.nm : u32(eip).toString(16)}`; return LAYOUT.SENTINEL; }
+    const [nargs, fn] = t.def, sp = this.reg('esp');
+    const a = []; for (let i = 0; i < (nargs < 0 ? 8 : nargs); i++) a.push(this.r32(sp + 4 + 4 * i));
+    let r;
+    try { r = fn.apply(this, a); }
+    catch (e) { if (e instanceof GuestError) { this.trapped = e.message; return LAYOUT.SENTINEL; } throw e; }
+    if (r === YIELD) return YIELD;
+    if (this.exitCode !== null) return LAYOUT.SENTINEL;
+    this.reg('eax', r === undefined ? 0 : r);
+    const ret = this.r32(sp);
+    this.reg('esp', sp + 4 + (nargs < 0 ? 0 : 4 * nargs));
+    return ret;
+  }
+  f80load(a) {
+    const lo = this.r32(a), hi = this.r32(a + 4), se = this.r16(a + 8);
+    const sign = se & 0x8000 ? -1 : 1, exp = se & 0x7fff;
+    if (!exp && !lo && !hi) return 0 * sign;
+    return sign * (hi * 4294967296 + lo) * Math.pow(2, exp - 16383 - 63);
+  }
+  f80store(a, v) {
+    const s = v < 0 || Object.is(v, -0) ? 0x8000 : 0; v = Math.abs(v);
+    if (v === 0) { this.w32(a, 0); this.w32(a + 4, 0); this.w16(a + 8, s); return; }
+    const e = Math.floor(Math.log2(v)); const m = v / Math.pow(2, e - 63);
+    this.w32(a, m % 4294967296); this.w32(a + 4, Math.floor(m / 4294967296)); this.w16(a + 8, s | (e + 16383));
+  }
+
+  // ---- heap
+  alloc(n, zero = true) {
+    n = (Math.max(n, 1) + 15) & ~15;
+    const list = this.freeList.get(n);
+    let p = list && list.length ? list.pop() : 0;
+    if (!p) { p = this.heapTop; this.heapTop += n; if (this.heapTop > LAYOUT.HEAP_END) throw new GuestError('out of memory'); }
+    this.allocs.set(p, n); if (zero) this.u8.fill(0, p, p + n);
+    return p;
+  }
+  free(p) { const n = this.allocs.get(p); if (!n) return false; this.allocs.delete(p); if (!this.freeList.has(n)) this.freeList.set(n, []); this.freeList.get(n).push(p); return true; }
+  realloc(p, n) { if (!p) return this.alloc(n); const old = this.allocs.get(p) || 0; if (n <= old) return p; const q = this.alloc(n, true); this.u8.copyWithin(q, p, p + old); this.free(p); return q; }
+
+  // ---- handles
+  newHandle(obj) { const h = this.nextHandle; this.nextHandle += 4; this.handles.set(h, obj); obj.h = h; return h; }
+  obj(h) { return this.handles.get(h) || STOCK.get(h) || null; }
+
+  // ---- resources
+  findResource(type, id) {
+    if (!this.rsrc) return null;
+    const root = this.base + this.rsrc;
+    const find = (dir, key) => {
+      const nn = this.r16(dir + 12), ni = this.r16(dir + 14);
+      for (let i = 0; i < nn + ni; i++) {
+        const e = dir + 16 + 8 * i, nm = this.r32(e), off = this.r32(e + 4);
+        let match;
+        if (nm & 0x80000000) { const s = root + (nm & 0x7fffffff); match = typeof key === 'string' && this.readW(s + 2, this.r16(s)).toUpperCase() === key.toUpperCase(); }
+        else match = key === undefined || nm === key;
+        if (match) return off;
+      }
+      return null;
+    };
+    let o = find(root, type); if (o === null || !(o & 0x80000000)) return null;
+    o = find(root + (o & 0x7fffffff), id); if (o === null || !(o & 0x80000000)) return null;
+    o = find(root + (o & 0x7fffffff)); if (o === null) return null;
+    const de = root + (o & 0x7fffffff);
+    return { addr: this.base + this.r32(de), size: this.r32(de + 4) };
+  }
+  resName(p) { return p >>> 16 ? this.readA(p) : p; }
+  loadString(id) {
+    const r = this.findResource(6, (id >> 4) + 1); if (!r) return null;
+    let a = r.addr;
+    for (let i = 0; i < (id & 15); i++) a += 2 + 2 * this.r16(a);
+    const n = this.r16(a); let s = '';
+    for (let i = 0; i < n; i++) s += String.fromCharCode(this.r16(a + 2 + 2 * i));
+    return s;
+  }
+
+  // ---- windows and messages
+  post(hwnd, msg, wp = 0, lp = 0) { this.queue.push({ hwnd, msg, wp: u32(wp), lp: u32(lp) }); }
+  sendMsg(hwnd, msg, wp = 0, lp = 0) {
+    const w = this.windows.get(hwnd); if (!w) return 0;
+    return this.call(w.proc, [hwnd, msg, u32(wp), u32(lp)]);
+  }
+  nextMessage(filter, remove) {
+    const now = this.host.now();
+    let i = this.queue.findIndex(m => !filter || m.hwnd === filter);
+    if (i >= 0) { const m = this.queue[i]; if (remove) this.queue.splice(i, 1); return m; }
+    if (this.quit !== null) return { hwnd: 0, msg: WM.QUIT, wp: this.quit, lp: 0 };
+    for (const w of this.windows.values()) if (w.dirty && (!filter || w.hwnd === filter)) { return { hwnd: w.hwnd, msg: WM.PAINT, wp: 0, lp: 0 }; }
+    for (const t of this.timers) if (now >= t.due && (!filter || t.hwnd === filter)) {
+      if (remove) t.due = now + Math.max(t.ms, 1);
+      return { hwnd: t.hwnd, msg: WM.TIMER, wp: t.id, lp: t.proc };
+    }
+    return null;
+  }
+  writeMsg(p, m) {
+    this.w32(p, m.hwnd); this.w32(p + 4, m.msg); this.w32(p + 8, m.wp); this.w32(p + 12, m.lp);
+    this.w32(p + 16, (this.host.now() - this.t0) | 0); const c = this.host.cursor(); this.w32(p + 20, c.x); this.w32(p + 24, c.y);
+  }
+  /** Earliest time something becomes deliverable, for the host scheduler. */
+  ready() {
+    if (this.exitCode !== null || this.trapped) return false;
+    if (!this.waiting) return true;
+    return !!this.nextMessage(0, false);
+  }
+  dispatchInput(msg, wp, lp) { for (const w of this.windows.values()) if (!w.parent || w.child) { this.post(w.hwnd, msg, wp, lp); break; } }
+}
+
+// ---------------------------------------------------------------- GDI objects
+class Pen { constructor(style, width, color) { this.kind = 'pen'; this.style = style; this.width = Math.max(1, width); this.color = color; } }
+class Brush { constructor(color, nul) { this.kind = 'brush'; this.color = color; this.nul = !!nul; } }
+class Font { constructor(lf) { this.kind = 'font'; this.lf = lf; } }
+class Palette { constructor(entries) { this.kind = 'palette'; this.entries = entries; } }
+class Bitmap { constructor(w, h) { this.kind = 'bitmap'; this.w = w; this.h = h; this.canvas = mkCanvas(Math.max(1, w), Math.max(1, h)); } }
+function mkCanvas(w, h) {
+  const c = typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(w, h) : Object.assign(document.createElement('canvas'), { width: w, height: h });
+  return c;
+}
+const STOCK = new Map();
+STOCK.set(0x8000 | 0, new Brush(0xffffff)); STOCK.set(0x8000 | 1, new Brush(0xc0c0c0)); STOCK.set(0x8000 | 2, new Brush(0x808080));
+STOCK.set(0x8000 | 3, new Brush(0x404040)); STOCK.set(0x8000 | 4, new Brush(0)); STOCK.set(0x8000 | 5, new Brush(0, true));
+STOCK.set(0x8000 | 6, new Pen(0, 1, 0xffffff)); STOCK.set(0x8000 | 7, new Pen(0, 1, 0)); STOCK.set(0x8000 | 8, new Pen(5, 1, 0));
+for (const i of [10, 11, 12, 13, 14, 16, 17]) STOCK.set(0x8000 | i, new Font({ height: -11, weight: 400, face: 'MS Sans Serif' }));
+STOCK.set(0x8000 | 15, new Palette(Array.from({ length: 20 }, (_, i) => [[0, 0, 0], [128, 0, 0], [0, 128, 0], [128, 128, 0], [0, 0, 128], [128, 0, 128], [0, 128, 128], [192, 192, 192],
+  [192, 220, 192], [166, 202, 240], [255, 251, 240], [160, 160, 164], [128, 128, 128], [255, 0, 0], [0, 255, 0], [255, 255, 0], [0, 0, 255], [255, 0, 255], [0, 255, 255], [255, 255, 255]][i])));
+for (const [h, o] of STOCK) o.h = h;
+
+class DC {
+  constructor(proc, ctx, w, h, hwnd) {
+    this.kind = 'dc'; this.proc = proc; this.ctx = ctx; this.w = w; this.h = h; this.hwnd = hwnd;
+    this.pen = STOCK.get(0x8007); this.brush = STOCK.get(0x8000); this.font = STOCK.get(0x800d); this.pal = STOCK.get(0x800f);
+    this.bitmap = null; this.text = 0; this.bk = 0xffffff; this.bkMode = 2; this.align = 0; this.x = 0; this.y = 0;
+    if (ctx) ctx.imageSmoothingEnabled = false;
+  }
+  color(c) {
+    c = u32(c);
+    if ((c >>> 24) === 1) { const e = this.pal.entries[c & 0xffff] || [0, 0, 0]; return css(e); }
+    return css(rgbOf(c));
+  }
+  // Win95 GDI lines are not antialiased: rasterize with Bresenham into 1px spans.
+  line(x0, y0, x1, y1) {
+    const p = this.pen; if (p.style === 5 || !this.ctx) return;
+    const g = this.ctx; g.fillStyle = this.color(p.color);
+    const wd = p.width, o = wd >> 1;
+    let dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1, err = dx + dy;
+    let x = x0, y = y0, runX = x, runY = y, len = 0;
+    const horiz = dx >= -dy;
+    const flush = () => { if (!len) return; if (horiz) g.fillRect(Math.min(runX, runX + (len - 1) * sx) - o, runY - o, len + wd - 1, wd); else g.fillRect(runX - o, Math.min(runY, runY + (len - 1) * sy) - o, wd, len + wd - 1); };
+    // end point excluded, like LineTo
+    while (!(x === x1 && y === y1)) {
+      if (!len) { runX = x; runY = y; }
+      len++;
+      const e2 = 2 * err; let mx = false, my = false;
+      if (e2 >= dy) { err += dy; x += sx; mx = true; }
+      if (e2 <= dx) { err += dx; y += sy; my = true; }
+      if ((horiz && my) || (!horiz && mx)) { flush(); len = 0; }
+    }
+    flush();
+  }
+  fill(x, y, w, h, color) { if (!this.ctx || w <= 0 || h <= 0) return; this.ctx.fillStyle = this.color(color); this.ctx.fillRect(x, y, w, h); }
+  fontCss() {
+    const lf = this.font.lf, size = Math.abs(lf.height || 13) * (lf.height > 0 ? 0.8 : 1);
+    const face = FONT_MAP[(lf.face || '').toLowerCase()] || lf.face || 'Arial';
+    return `${lf.italic ? 'italic ' : ''}${lf.weight >= 600 ? 'bold ' : ''}${Math.max(1, Math.round(size))}px "${face}", "Arial"`;
+  }
+}
+const FONT_MAP = { 'ms sans serif': 'W95 Arial', 'times new roman': 'W95 Times', arial: 'W95 Arial', 'courier new': 'W95 Courier', wingdings: 'W95 Wingdings', system: 'W95 Arial' };
+
+function dcOf(p, h) { const o = p.obj(h); if (!o || o.kind !== 'dc') throw new GuestError(`bad DC ${h}`); return o; }
+function readRect(p, a) { return { l: p.i32(a), t: p.i32(a + 4), r: p.i32(a + 8), b: p.i32(a + 12) }; }
+function writeRect(p, a, l, t, r, b) { p.w32(a, l); p.w32(a + 4, t); p.w32(a + 8, r); p.w32(a + 12, b); }
+function readLogFont(p, a) {
+  return { height: p.i32(a), width: p.i32(a + 4), escapement: p.i32(a + 8), weight: p.i32(a + 16), italic: p.r8(a + 20), underline: p.r8(a + 21),
+    charset: p.r8(a + 23), face: p.readA(a + 28, 32) };
+}
+function wsprintf(p, fmt, argp) {
+  let i = 0;
+  const next = () => { const v = p.r32(argp + 4 * i); i++; return v; };
+  return fmt.replace(/%([-#0 +]*)(\d*)(?:\.(\d+))?(h|l|ll)?([diuxXcsS%])/g, (m, flags, width, prec, len, t) => {
+    if (t === '%') return '%';
+    let s;
+    if (t === 'd' || t === 'i') s = String(next() | 0);
+    else if (t === 'u') s = String(next() >>> 0);
+    else if (t === 'x' || t === 'X') { s = (next() >>> 0).toString(16); if (t === 'X') s = s.toUpperCase(); if (flags.includes('#')) s = '0x' + s; }
+    else if (t === 'c') s = String.fromCharCode(next() & 0xff);
+    else s = p.readA(next()) ?? '(null)';
+    if (prec && 'sS'.includes(t)) s = s.slice(0, +prec);
+    if (width && s.length < +width) s = flags.includes('-') ? s.padEnd(+width) : s.padStart(+width, flags.includes('0') && !'sS'.includes(t) ? '0' : ' ');
+    return s;
+  });
+}
+
+// ---------------------------------------------------------------- INI files and registry on the in-memory FS
+function iniPath(file) {
+  const f = file || 'WIN.INI';
+  return /[\\:]/.test(f) ? f : 'C:\\WINDOWS\\' + f;
+}
+function iniRead(fs, file) {
+  const out = new Map(); let cur = null;
+  let text = ''; try { text = fs.readText(iniPath(file)); } catch (_) { return out; }
+  for (const raw of text.split(/\r?\n/)) {
+    const l = raw.trim(); let m;
+    if ((m = /^\[(.*)\]$/.exec(l))) { cur = m[1]; if (!out.has(cur.toLowerCase())) out.set(cur.toLowerCase(), { name: cur, keys: new Map() }); cur = out.get(cur.toLowerCase()); }
+    else if (cur && (m = /^([^=;]+?)\s*=\s*(.*)$/.exec(l))) cur.keys.set(m[1].toLowerCase(), { name: m[1], value: m[2] });
+  }
+  return out;
+}
+function iniGet(fs, file, sec, key) { const s = iniRead(fs, file).get((sec || '').toLowerCase()); const k = s && s.keys.get((key || '').toLowerCase()); return k ? k.value : null; }
+function iniSet(fs, file, sec, key, value) {
+  const ini = iniRead(fs, file); const sk = sec.toLowerCase();
+  if (!ini.has(sk)) ini.set(sk, { name: sec, keys: new Map() });
+  const s = ini.get(sk);
+  if (key === null) ini.delete(sk);
+  else if (value === null) s.keys.delete(key.toLowerCase());
+  else s.keys.set(key.toLowerCase(), { name: key, value });
+  let text = '';
+  for (const v of ini.values()) { text += `[${v.name}]\r\n`; for (const k of v.keys.values()) text += `${k.name}=${k.value}\r\n`; text += '\r\n'; }
+  fs.writeFile(iniPath(file), text);
+}
+const REGISTRY = new Map([
+  ['hkcu\\control panel\\desktop', new Map([['screensaveusepassword', 0]])],
+  ['hkcu\\control panel\\colors', new Map()],
+]);
+const HKEY = { 0x80000000: 'hkcr', 0x80000001: 'hkcu', 0x80000002: 'hklm', 0x80000003: 'hku' };
+
+// ---------------------------------------------------------------- API table: [argc, impl]; argc < 0 = cdecl varargs
+const API = {};
+const def = (dll, name, n, fn) => { (API[dll] = API[dll] || {})[name] = [n, fn]; };
+const TRUE = 1, FALSE = 0;
+
+// KERNEL32
+def('KERNEL32', 'GetCommandLineA', 0, function () { return this.cmdPtr; });
+def('KERNEL32', 'GetStartupInfoA', 1, function (p) { this.u8.fill(0, p, p + 68); this.w32(p, 68); });
+def('KERNEL32', 'GetModuleHandleA', 1, function (name) { return name ? 0 : this.base; });
+def('KERNEL32', 'GetModuleFileNameA', 3, function (h, buf, n) { return this.writeA(buf, this.host.path || 'C:\\WINDOWS\\SCRNSAVE.SCR', n); });
+def('KERNEL32', 'ExitProcess', 1, function (code) { this.exitCode = code; this.host.exited(code); return 0; });
+def('KERNEL32', 'TerminateProcess', 2, function (h, code) { this.exitCode = code; this.host.exited(code); return 1; });
+def('KERNEL32', 'GetCurrentProcess', 0, () => 0xffffffff);
+def('KERNEL32', 'GetTickCount', 0, function () { return (this.host.now() - this.t0 + 3600000) >>> 0; });
+def('KERNEL32', 'Sleep', 1, function () { return 0; });
+def('KERNEL32', 'GetVersion', 0, () => 0xc0000004);
+def('KERNEL32', 'GetVersionExA', 1, function (p) { this.w32(p + 4, 4); this.w32(p + 8, 0); this.w32(p + 12, 950); this.w32(p + 16, 1); this.writeA(p + 20, ' B'); return 1; });
+def('KERNEL32', 'LoadLibraryA', 1, function (n) { return 0x10000000 | (this.newHandle({ kind: 'module', name: (this.readA(n) || '').toUpperCase().replace(/\.DLL$/, '') }) & 0xffff); });
+def('KERNEL32', 'FreeLibrary', 1, () => 1);
+def('KERNEL32', 'GetProcAddress', 2, function (h, name) {
+  const m = this.obj(0x0000ffff & h) || { name: 'KERNEL32' };
+  const nm = name >>> 16 ? this.readA(name) : '#' + name;
+  return API[m.name] && API[m.name][nm] ? this.thunkFor(m.name, nm) : 0;
+});
+def('KERNEL32', 'RtlUnwind', 4, () => 0);
+def('KERNEL32', 'UnhandledExceptionFilter', 1, () => 1);
+def('KERNEL32', 'SetUnhandledExceptionFilter', 1, () => 0);
+def('KERNEL32', 'GetLastError', 0, () => 0);
+def('KERNEL32', 'SetLastError', 1, () => 0);
+def('KERNEL32', 'LocalAlloc', 2, function (f, n) { return this.alloc(n); });
+def('KERNEL32', 'LocalFree', 1, function (p) { this.free(p); return 0; });
+def('KERNEL32', 'GlobalAlloc', 2, function (f, n) { return this.alloc(n); });
+def('KERNEL32', 'GlobalFree', 1, function (p) { this.free(p); return 0; });
+def('KERNEL32', 'GlobalLock', 1, p => p);
+def('KERNEL32', 'GlobalUnlock', 1, () => 1);
+def('KERNEL32', 'HeapCreate', 3, () => 0x5000);
+def('KERNEL32', 'HeapDestroy', 1, () => 1);
+def('KERNEL32', 'GetProcessHeap', 0, () => 0x5000);
+def('KERNEL32', 'HeapAlloc', 3, function (h, f, n) { return this.alloc(n, true); });
+def('KERNEL32', 'HeapReAlloc', 4, function (h, f, p, n) { return this.realloc(p, n); });
+def('KERNEL32', 'HeapFree', 3, function (h, f, p) { return this.free(p) ? 1 : 0; });
+def('KERNEL32', 'HeapSize', 3, function (h, f, p) { return this.allocs.get(p) || 0; });
+def('KERNEL32', 'VirtualAlloc', 4, function (a, n) { return this.alloc(n, true); });
+def('KERNEL32', 'VirtualFree', 3, function (p) { this.free(p); return 1; });
+def('KERNEL32', 'lstrlenA', 1, function (p) { return p ? this.readA(p).length : 0; });
+def('KERNEL32', 'lstrcpyA', 2, function (d, s) { this.writeA(d, this.readA(s) || ''); return d; });
+def('KERNEL32', 'lstrcpynA', 3, function (d, s, n) { this.writeA(d, this.readA(s) || '', n); return d; });
+def('KERNEL32', 'lstrcatA', 2, function (d, s) { this.writeA(d, (this.readA(d) || '') + (this.readA(s) || '')); return d; });
+def('KERNEL32', 'lstrcmpiA', 2, function (a, b) { const x = (this.readA(a) || '').toLowerCase(), y = (this.readA(b) || '').toLowerCase(); return x < y ? -1 >>> 0 : x > y ? 1 : 0; });
+def('KERNEL32', 'lstrcmpA', 2, function (a, b) { const x = this.readA(a) || '', y = this.readA(b) || ''; return x < y ? -1 >>> 0 : x > y ? 1 : 0; });
+def('KERNEL32', 'GetPrivateProfileIntA', 4, function (sec, key, dflt, file) {
+  const v = iniGet(this.fs, this.readA(file), this.readA(sec), this.readA(key));
+  const n = v === null ? NaN : parseInt(v, 10);
+  return Number.isNaN(n) ? dflt : n;
+});
+def('KERNEL32', 'GetPrivateProfileStringA', 6, function (sec, key, dflt, buf, n, file) {
+  const v = iniGet(this.fs, this.readA(file), this.readA(sec), this.readA(key));
+  return this.writeA(buf, v === null ? (this.readA(dflt) || '') : v, n);
+});
+def('KERNEL32', 'WritePrivateProfileStringA', 4, function (sec, key, val, file) {
+  try { iniSet(this.fs, this.readA(file), this.readA(sec), key ? this.readA(key) : null, val ? this.readA(val) : null); return 1; } catch (_) { return 0; }
+});
+def('KERNEL32', 'GetPrivateProfileStructA', 5, function (sec, key, buf, n, file) {
+  const v = iniGet(this.fs, this.readA(file), this.readA(sec), this.readA(key));
+  if (!v || v.length !== 2 * n + 2) return 0;
+  let sum = 0;
+  for (let i = 0; i < n; i++) { const b = parseInt(v.substr(2 * i, 2), 16); this.u8[buf + i] = b; sum += b; }
+  return (sum & 0xff) === parseInt(v.substr(2 * n, 2), 16) ? 1 : 0;
+});
+def('KERNEL32', 'WritePrivateProfileStructA', 5, function (sec, key, buf, n, file) {
+  let s = '', sum = 0;
+  for (let i = 0; i < n; i++) { const b = this.u8[buf + i]; sum += b; s += b.toString(16).toUpperCase().padStart(2, '0'); }
+  s += (sum & 0xff).toString(16).toUpperCase().padStart(2, '0');
+  try { iniSet(this.fs, this.readA(file), this.readA(sec), this.readA(key), s); return 1; } catch (_) { return 0; }
+});
+def('KERNEL32', 'GetWindowsDirectoryA', 2, function (b, n) { return this.writeA(b, 'C:\\WINDOWS', n); });
+def('KERNEL32', 'GetLocalTime', 1, function (p) {
+  const d = new Date(); [d.getFullYear(), d.getMonth() + 1, d.getDay(), d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds(), d.getMilliseconds()].forEach((v, i) => this.w16(p + 2 * i, v));
+});
+def('KERNEL32', 'GetACP', 0, () => 1252);
+def('KERNEL32', 'GetOEMCP', 0, () => 437);
+def('KERNEL32', 'GetCPInfo', 2, function (cp, p) { this.u8.fill(0, p, p + 20); this.w32(p, 1); this.u8[p + 4] = 63; return 1; });
+def('KERNEL32', 'GetEnvironmentStrings', 0, function () { const p = this.alloc(32); this.writeA(p, 'windir=C:\\WINDOWS'); return p; });
+def('KERNEL32', 'GetEnvironmentStringsW', 0, () => 0);
+def('KERNEL32', 'FreeEnvironmentStringsA', 1, () => 1);
+def('KERNEL32', 'FreeEnvironmentStringsW', 1, () => 1);
+def('KERNEL32', 'GetStdHandle', 1, () => 0xffffffff);
+def('KERNEL32', 'GetFileType', 1, () => 0);
+def('KERNEL32', 'SetHandleCount', 1, n => n);
+def('KERNEL32', 'GetStringTypeA', 5, () => 0);
+def('KERNEL32', 'GetStringTypeW', 4, () => 0);
+def('KERNEL32', 'LCMapStringA', 6, () => 0);
+def('KERNEL32', 'LCMapStringW', 6, () => 0);
+def('KERNEL32', 'MultiByteToWideChar', 6, () => 0);
+def('KERNEL32', 'WideCharToMultiByte', 8, () => 0);
+def('KERNEL32', 'GetPriorityClass', 1, () => 0x20);
+def('KERNEL32', 'SetPriorityClass', 2, () => 1);
+def('KERNEL32', 'FindResourceA', 3, function (m, name, type) {
+  const r = this.findResource(this.resName(type), this.resName(name)); if (!r) return 0;
+  return this.newHandle({ kind: 'res', ...r });
+});
+def('KERNEL32', 'LoadResource', 2, function (m, h) { return h; });
+def('KERNEL32', 'LockResource', 1, function (h) { const r = this.obj(h); return r ? r.addr : 0; });
+def('KERNEL32', 'FreeResource', 1, () => 0);
+def('KERNEL32', 'SizeofResource', 2, function (m, h) { const r = this.obj(h); return r ? r.size : 0; });
+
+// ADVAPI32
+def('ADVAPI32', 'RegOpenKeyA', 3, function (hk, sub, out) {
+  const path = `${HKEY[hk] || (this.obj(hk) || {}).path}\\${(this.readA(sub) || '').toLowerCase()}`.replace(/\\$/, '');
+  if (!REGISTRY.has(path)) return 2;
+  this.w32(out, this.newHandle({ kind: 'key', path })); return 0;
+});
+def('ADVAPI32', 'RegOpenKeyExA', 5, function (hk, sub, opt, sam, out) { return API.ADVAPI32.RegOpenKeyA[1].call(this, hk, sub, out); });
+def('ADVAPI32', 'RegCloseKey', 1, () => 0);
+def('ADVAPI32', 'RegQueryValueExA', 6, function (hk, name, res, type, data, cb) {
+  const k = this.obj(hk); const m = k && REGISTRY.get(k.path); const n = (this.readA(name) || '').toLowerCase();
+  if (!m || !m.has(n)) return 2;
+  const v = m.get(n);
+  if (typeof v === 'number') { if (type) this.w32(type, 4); if (data) this.w32(data, v); if (cb) this.w32(cb, 4); }
+  else { if (type) this.w32(type, 1); if (data) this.writeA(data, v); if (cb) this.w32(cb, v.length + 1); }
+  return 0;
+});
+
+// USER32
+const SM = { 0: 'w', 1: 'h', 16: 'w', 17: 'h' };
+def('USER32', 'GetSystemMetrics', 1, function (i) {
+  if (SM[i]) return SM[i] === 'w' ? this.host.width : this.host.height;
+  return { 2: 16, 3: 16, 4: 18, 5: 1, 6: 1, 7: 3, 8: 3, 11: 32, 12: 32, 13: 32, 14: 32, 15: 18, 32: 4, 33: 4 }[i] || 0;
+});
+def('USER32', 'SystemParametersInfoA', 4, function (act, ui, pv) {
+  if (act === 14 && pv) this.w32(pv, this.host.saverTimeout || 600);
+  if (act === 16 && pv) this.w32(pv, 1);
+  return 1;
+});
+def('USER32', 'RegisterClassA', 1, function (p) {
+  const cls = { style: this.r32(p), proc: this.r32(p + 4), extra: this.r32(p + 12), icon: this.r32(p + 20), cursor: this.r32(p + 24), brush: this.r32(p + 28), name: this.resName(this.r32(p + 36)) };
+  this.classes.set(String(cls.name).toLowerCase(), cls); return 0xc000 + this.classes.size;
+});
+def('USER32', 'RegisterWindowMessageA', 1, function () { return 0xc100 + (this.nextHandle & 0xff); });
+def('USER32', 'CreateWindowExA', 12, function (ex, cls, title, style, x, y, w, h, parent, menu, inst, param) {
+  const c = this.classes.get(String(this.resName(cls)).toLowerCase());
+  if (!c) return 0;
+  const win = { kind: 'window', cls: c, proc: c.proc, style, ex, x: x | 0, y: y | 0, w: w | 0, h: h | 0, parent, child: !!(style & 0x40000000), dirty: true, title: this.readA(title) || '', extra: new Map() };
+  const hwnd = this.newHandle(win); win.hwnd = hwnd; this.windows.set(hwnd, win);
+  win.ctx = this.host.surface(hwnd, win.w, win.h, win);
+  const cs = this.alloc(48);
+  [param, inst, menu, parent, h, w, y, x, style, title, cls, ex].forEach((v, i) => this.w32(cs + 4 * i, v));
+  this.sendMsg(hwnd, WM.NCCREATE, 0, cs);
+  if ((this.sendMsg(hwnd, WM.CREATE, 0, cs) | 0) === -1) { this.windows.delete(hwnd); return 0; }
+  this.free(cs);
+  this.sendMsg(hwnd, WM.SIZE, 0, (win.h << 16) | (win.w & 0xffff));
+  if (style & 0x10000000) { this.sendMsg(hwnd, WM.SHOWWINDOW, 1, 0); this.sendMsg(hwnd, WM.ACTIVATEAPP, 1, 0); this.sendMsg(hwnd, WM.ACTIVATE, 1, 0); }
+  return hwnd;
+});
+def('USER32', 'DestroyWindow', 1, function (h) {
+  const w = this.windows.get(h); if (!w) return 0;
+  this.sendMsg(h, WM.DESTROY); this.sendMsg(h, WM.NCDESTROY);
+  this.windows.delete(h); this.timers = this.timers.filter(t => t.hwnd !== h);
+  this.host.destroyed && this.host.destroyed(h);
+  return 1;
+});
+def('USER32', 'ShowWindow', 2, () => 1);
+def('USER32', 'UpdateWindow', 1, () => 1);
+def('USER32', 'SetWindowPos', 7, () => 1);
+def('USER32', 'DefWindowProcA', 4, function (h, msg, wp, lp) {
+  const w = this.windows.get(h);
+  if (msg === WM.CLOSE) return API.USER32.DestroyWindow[1].call(this, h);
+  if (msg === WM.ERASEBKGND && w) { const dc = new DC(this, w.ctx, w.w, w.h, h); const b = this.obj(w.cls.brush); if (b && !b.nul) dc.fill(0, 0, w.w, w.h, b.color); return 1; }
+  if (msg === WM.NCCREATE || msg === WM.NCACTIVATE) return 1;
+  if (msg === WM.SETCURSOR) { this.host.setCursor && this.host.setCursor(w && w.cls.cursor); return 1; }
+  return 0;
+});
+def('USER32', 'GetMessageA', 4, function (p, hwnd) {
+  const m = this.nextMessage(hwnd, true);
+  if (!m) {
+    if (this.depth === 0) { this.waiting = true; return YIELD; }
+    this.writeMsg(p, { hwnd: 0, msg: 0, wp: 0, lp: 0 }); return 1;
+  }
+  this.writeMsg(p, m); return m.msg === WM.QUIT ? 0 : 1;
+});
+def('USER32', 'PeekMessageA', 5, function (p, hwnd, a, b, remove) {
+  if (this.depth === 0 && this.host.now() - this.lastYield > 15) { this.waiting = false; return YIELD; }
+  const m = this.nextMessage(hwnd, remove & 1);
+  if (!m) return 0;
+  this.writeMsg(p, m); return 1;
+});
+def('USER32', 'TranslateMessage', 1, () => 0);
+def('USER32', 'DispatchMessageA', 1, function (p) {
+  const h = this.r32(p), msg = this.r32(p + 4), wp = this.r32(p + 8), lp = this.r32(p + 12);
+  if (msg === WM.TIMER && lp) return this.call(lp, [h, msg, wp, this.r32(p + 16)]);
+  const w = this.windows.get(h); if (!w) return 0;
+  if (msg === WM.PAINT) {
+    const r = this.call(w.proc, [h, msg, wp, lp]);
+    w.dirty = false; return r;
+  }
+  return this.call(w.proc, [h, msg, wp, lp]);
+});
+def('USER32', 'SendMessageA', 4, function (h, msg, wp, lp) { return this.sendMsg(h, msg, wp, lp); });
+def('USER32', 'PostMessageA', 4, function (h, msg, wp, lp) { this.post(h, msg, wp, lp); return 1; });
+def('USER32', 'PostQuitMessage', 1, function (code) { this.quit = code; return 0; });
+def('USER32', 'SetTimer', 4, function (h, id, ms, proc) {
+  this.timers = this.timers.filter(t => !(t.hwnd === h && t.id === id));
+  this.timers.push({ hwnd: h, id: id || (0x7000 + this.timers.length), ms, proc, due: this.host.now() + ms }); return id || 1;
+});
+def('USER32', 'KillTimer', 2, function (h, id) { this.timers = this.timers.filter(t => !(t.hwnd === h && t.id === id)); return 1; });
+def('USER32', 'GetClientRect', 2, function (h, p) { const w = this.windows.get(h); writeRect(this, p, 0, 0, w ? w.w : this.host.width, w ? w.h : this.host.height); return 1; });
+def('USER32', 'GetWindowRect', 2, function (h, p) { const w = this.windows.get(h); if (w) writeRect(this, p, w.x, w.y, w.x + w.w, w.y + w.h); else writeRect(this, p, 0, 0, this.host.width, this.host.height); return 1; });
+def('USER32', 'GetDC', 1, function (h) {
+  const w = this.windows.get(h);
+  return this.newHandle(new DC(this, w ? w.ctx : this.host.surface(0, this.host.width, this.host.height), w ? w.w : this.host.width, w ? w.h : this.host.height, h));
+});
+def('USER32', 'ReleaseDC', 2, function (h, dc) { this.handles.delete(dc); return 1; });
+def('USER32', 'BeginPaint', 2, function (h, ps) {
+  const w = this.windows.get(h); const dc = API.USER32.GetDC[1].call(this, h);
+  this.u8.fill(0, ps, ps + 64); this.w32(ps, dc); this.w32(ps + 4, 1); writeRect(this, ps + 8, 0, 0, w ? w.w : 0, w ? w.h : 0);
+  if (w && w.erase !== false) this.sendMsg(h, WM.ERASEBKGND, dc, 0);
+  if (w) { w.dirty = false; w.erase = true; }
+  return dc;
+});
+def('USER32', 'EndPaint', 2, function (h, ps) { this.handles.delete(this.r32(ps)); return 1; });
+def('USER32', 'InvalidateRect', 3, function (h, r, erase) { const w = this.windows.get(h); if (w) { w.dirty = true; w.erase = !!erase; } return 1; });
+def('USER32', 'RedrawWindow', 4, function (h) { const w = this.windows.get(h); if (w) w.dirty = true; return 1; });
+def('USER32', 'GetUpdateRect', 3, function (h, r) { const w = this.windows.get(h); if (r && w) writeRect(this, r, 0, 0, w.w, w.h); return w && w.dirty ? 1 : 0; });
+def('USER32', 'ValidateRect', 2, function (h) { const w = this.windows.get(h); if (w) w.dirty = false; return 1; });
+def('USER32', 'FillRect', 3, function (hdc, r, br) {
+  const dc = dcOf(this, hdc), rc = readRect(this, r);
+  let b = this.obj(br); if (!b && br > 0 && br <= 31) b = new Brush(SYS_COLORS[br - 1] ?? 0);
+  if (b && !b.nul) dc.fill(rc.l, rc.t, rc.r - rc.l, rc.b - rc.t, b.color);
+  return 1;
+});
+def('USER32', 'GetCursorPos', 1, function (p) { const c = this.host.cursor(); this.w32(p, c.x); this.w32(p + 4, c.y); return 1; });
+def('USER32', 'SetCursor', 1, function (h) { this.host.setCursor && this.host.setCursor(h); return 0; });
+def('USER32', 'ShowCursor', 1, () => 0);
+def('USER32', 'LoadCursorA', 2, function (i, id) { return this.newHandle({ kind: 'cursor', id }); });
+def('USER32', 'LoadIconA', 2, function (i, id) { return this.newHandle({ kind: 'icon', id }); });
+def('USER32', 'FindWindowA', 2, () => 0);
+def('USER32', 'GetForegroundWindow', 0, function () { for (const h of this.windows.keys()) return h; return 0; });
+def('USER32', 'SetForegroundWindow', 1, () => 1);
+def('USER32', 'GetFocus', 0, function () { for (const h of this.windows.keys()) return h; return 0; });
+def('USER32', 'SetFocus', 1, () => 0);
+def('USER32', 'IsWindow', 1, function (h) { return this.windows.has(h) || h === this.host.previewParent ? 1 : 0; });
+def('USER32', 'GetParent', 1, function (h) { const w = this.windows.get(h); return w ? w.parent : 0; });
+def('USER32', 'LoadStringA', 4, function (inst, id, buf, n) { const s = this.loadString(id); if (s === null) { if (n) this.u8[buf] = 0; return 0; } return this.writeA(buf, s, n); });
+def('USER32', 'CharNextA', 1, function (p) { return this.u8[p] ? p + 1 : p; });
+def('USER32', 'CharUpperA', 1, function (p) { if (p >>> 16) { this.writeA(p, this.readA(p).toUpperCase()); return p; } return String.fromCharCode(p).toUpperCase().charCodeAt(0); });
+def('USER32', 'wsprintfA', -1, function (buf, fmt) { return this.writeA(buf, wsprintf(this, this.readA(fmt), this.reg('esp') + 12)); });
+def('USER32', 'MessageBeep', 1, () => 1);
+def('USER32', 'MessageBoxA', 4, function (h, text, cap) { console.warn('[win32] MessageBox:', this.readA(cap), this.readA(text)); return 1; });
+def('USER32', 'InflateRect', 3, function (p, dx, dy) { const r = readRect(this, p); writeRect(this, p, r.l - dx, r.t - dy, r.r + (dx | 0), r.b + (dy | 0)); return 1; });
+def('USER32', 'GetSysColor', 1, i => SYS_COLORS[i] ?? 0);
+def('USER32', 'SetSysColors', 3, () => 1);
+def('USER32', 'WinHelpA', 4, () => 1);
+def('USER32', 'ChangeDisplaySettingsA', 2, () => 0);
+def('USER32', 'GetWindowTextA', 3, function (h, buf, n) { const w = this.windows.get(h); return this.writeA(buf, w ? w.title : '', n); });
+def('USER32', 'SetWindowTextA', 2, function (h, s) { const w = this.windows.get(h); if (w) w.title = this.readA(s); return 1; });
+def('USER32', 'GetWindowLongA', 2, function (h, i) { const w = this.windows.get(h); return w ? (w.extra.get(i) || 0) : 0; });
+def('USER32', 'SetWindowLongA', 3, function (h, i, v) { const w = this.windows.get(h); if (!w) return 0; const o = w.extra.get(i) || 0; w.extra.set(i, v); return o; });
+def('USER32', 'DialogBoxParamA', 5, function () { return this.host.dialog ? this.host.dialog(this, ...arguments) : 0; });
+def('USER32', 'EndDialog', 2, () => 1);
+def('USER32', 'EnableWindow', 2, () => 0);
+def('COMCTL32', '#17', 0, () => 0);
+def('COMCTL32', 'InitCommonControls', 0, () => 0);
+def('COMDLG32', 'ChooseColorA', 1, () => 0);
+def('COMDLG32', 'ChooseFontA', 1, () => 0);
+def('COMDLG32', 'GetOpenFileNameA', 1, () => 0);
+const SYS_COLORS = [0xc0c0c0, 0x808000, 0x800000, 0x808080, 0xc0c0c0, 0xffffff, 0x000000, 0x000000, 0x000000, 0xffffff, 0xc0c0c0, 0xc0c0c0,
+  0x808080, 0x800000, 0xffffff, 0xc0c0c0, 0x808080, 0x808080, 0x000000, 0xc0c0c0, 0xffffff, 0x000000, 0xdfdfdf, 0x000000, 0xe1ffff];
+
+// GDI32
+def('GDI32', 'GetStockObject', 1, i => 0x8000 | i);
+def('GDI32', 'CreatePen', 3, function (s, w, c) { return this.newHandle(new Pen(s, w, c)); });
+def('GDI32', 'CreatePenIndirect', 1, function (p) { return this.newHandle(new Pen(this.r32(p), this.r32(p + 4), this.r32(p + 12))); });
+def('GDI32', 'CreateSolidBrush', 1, function (c) { return this.newHandle(new Brush(c)); });
+def('GDI32', 'CreateFontIndirectA', 1, function (p) { return this.newHandle(new Font(readLogFont(this, p))); });
+def('GDI32', 'CreateFontA', 14, function (h, w, esc, or, wt, it, ul, so, cs, op, cp, q, pf, face) {
+  return this.newHandle(new Font({ height: h | 0, width: w | 0, escapement: esc | 0, weight: wt, italic: it, underline: ul, charset: cs, face: this.readA(face) || '' }));
+});
+def('GDI32', 'SelectObject', 2, function (hdc, h) {
+  const dc = dcOf(this, hdc), o = this.obj(h); if (!o) return 0;
+  const slot = { pen: 'pen', brush: 'brush', font: 'font', bitmap: 'bitmap' }[o.kind]; if (!slot) return 0;
+  const old = dc[slot]; dc[slot] = o;
+  if (slot === 'bitmap') { dc.ctx = o.canvas.getContext('2d'); dc.ctx.imageSmoothingEnabled = false; dc.w = o.w; dc.h = o.h; }
+  return old ? old.h : 0;
+});
+def('GDI32', 'GetCurrentObject', 2, function (hdc, t) { const dc = dcOf(this, hdc); return ({ 1: dc.pen, 2: dc.brush, 6: dc.font, 7: dc.bitmap, 5: dc.pal }[t] || {}).h || 0; });
+def('GDI32', 'DeleteObject', 1, function (h) { if (!STOCK.has(h)) this.handles.delete(h); return 1; });
+def('GDI32', 'GetObjectType', 1, function (h) { const o = this.obj(h); return o ? { pen: 1, brush: 2, dc: 3, palette: 5, font: 6, bitmap: 7 }[o.kind] || 0 : 0; });
+def('GDI32', 'GetObjectA', 3, function (h, n, p) {
+  const o = this.obj(h); if (!o) return 0;
+  if (o.kind === 'palette') { if (p) this.w16(p, o.entries.length); return 2; }
+  if (o.kind === 'bitmap' && p) { this.u8.fill(0, p, p + n); this.w32(p + 4, o.w); this.w32(p + 8, o.h); this.w32(p + 12, o.w * 4); this.w16(p + 16, 1); this.w16(p + 18, 32); return 24; }
+  if (o.kind === 'font' && p) { this.u8.fill(0, p, p + n); this.w32(p, o.lf.height); this.w32(p + 16, o.lf.weight); this.writeA(p + 28, o.lf.face, 32); return 60; }
+  return 0;
+});
+def('GDI32', 'MoveToEx', 4, function (hdc, x, y, old) { const dc = dcOf(this, hdc); if (old) { this.w32(old, dc.x); this.w32(old + 4, dc.y); } dc.x = x | 0; dc.y = y | 0; return 1; });
+def('GDI32', 'LineTo', 3, function (hdc, x, y) { const dc = dcOf(this, hdc); dc.line(dc.x, dc.y, x | 0, y | 0); dc.x = x | 0; dc.y = y | 0; return 1; });
+def('GDI32', 'Polyline', 3, function (hdc, pts, n) {
+  const dc = dcOf(this, hdc);
+  for (let i = 1; i < n; i++) dc.line(this.i32(pts + 8 * (i - 1)), this.i32(pts + 8 * (i - 1) + 4), this.i32(pts + 8 * i), this.i32(pts + 8 * i + 4));
+  return 1;
+});
+// Bezier flattening by recursive subdivision to within half a pixel, then GDI lines.
+def('GDI32', 'PolyBezier', 3, function (hdc, pts, n) {
+  const dc = dcOf(this, hdc), P = i => [this.i32(pts + 8 * i), this.i32(pts + 8 * i + 4)];
+  let cur = P(0);
+  const seg = (a, b, c, d, depth) => {
+    const flat = Math.abs(a[0] + c[0] - 2 * b[0]) + Math.abs(a[1] + c[1] - 2 * b[1]) + Math.abs(b[0] + d[0] - 2 * c[0]) + Math.abs(b[1] + d[1] - 2 * c[1]);
+    if (flat <= 1 || depth > 10) { const e = [Math.round(d[0]), Math.round(d[1])]; dc.line(cur[0], cur[1], e[0], e[1]); cur = e; return; }
+    const m = (u, v) => [(u[0] + v[0]) / 2, (u[1] + v[1]) / 2];
+    const ab = m(a, b), bc = m(b, c), cd = m(c, d), abc = m(ab, bc), bcd = m(bc, cd), q = m(abc, bcd);
+    seg(a, ab, abc, q, depth + 1); seg(q, bcd, cd, d, depth + 1);
+  };
+  for (let i = 1; i + 2 < n; i += 3) seg(P(i - 1), P(i), P(i + 1), P(i + 2), 0);
+  return 1;
+});
+const ROP = { PATCOPY: 0xF00021, BLACKNESS: 0x42, WHITENESS: 0xFF0062, DSTINVERT: 0x550009, PATINVERT: 0x5A0049, SRCCOPY: 0xCC0020, SRCINVERT: 0x660046, SRCAND: 0x8800C6, SRCPAINT: 0xEE0086 };
+def('GDI32', 'PatBlt', 6, function (hdc, x, y, w, h, rop) {
+  const dc = dcOf(this, hdc); x |= 0; y |= 0; w |= 0; h |= 0;
+  if (w < 0) { x += w; w = -w; } if (h < 0) { y += h; h = -h; }
+  if (rop === ROP.BLACKNESS) dc.fill(x, y, w, h, 0);
+  else if (rop === ROP.WHITENESS) dc.fill(x, y, w, h, 0xffffff);
+  else if (rop === ROP.DSTINVERT || rop === ROP.PATINVERT) {
+    const g = dc.ctx; g.save(); g.globalCompositeOperation = 'difference';
+    g.fillStyle = rop === ROP.DSTINVERT ? '#fff' : dc.color(dc.brush.color); g.fillRect(x, y, w, h); g.restore();
+  } else if (!dc.brush.nul) dc.fill(x, y, w, h, dc.brush.color);
+  return 1;
+});
+def('GDI32', 'CreateCompatibleDC', 1, function (hdc) { const d = new DC(this, null, 1, 1, 0); return this.newHandle(d); });
+def('GDI32', 'CreateICA', 4, function () { return this.newHandle(new DC(this, null, this.host.width, this.host.height, 0)); });
+def('GDI32', 'CreateDCA', 4, function () { return this.newHandle(new DC(this, this.host.surface(0, this.host.width, this.host.height), this.host.width, this.host.height, 0)); });
+def('GDI32', 'DeleteDC', 1, function (h) { this.handles.delete(h); return 1; });
+def('GDI32', 'CreateBitmap', 5, function (w, h) { return this.newHandle(new Bitmap(w, h)); });
+def('GDI32', 'CreateCompatibleBitmap', 3, function (hdc, w, h) { return this.newHandle(new Bitmap(w, h)); });
+def('GDI32', 'BitBlt', 9, function (hd, x, y, w, h, hs, sx, sy, rop) {
+  const d = dcOf(this, hd);
+  if (!hs || rop !== ROP.SRCCOPY && rop !== ROP.SRCINVERT && rop !== ROP.SRCAND && rop !== ROP.SRCPAINT) return API.GDI32.PatBlt[1].call(this, hd, x, y, w, h, rop);
+  const s = dcOf(this, hs); if (!s.ctx || !d.ctx) return 1;
+  const g = d.ctx; g.save();
+  g.globalCompositeOperation = { [ROP.SRCINVERT]: 'xor', [ROP.SRCAND]: 'multiply', [ROP.SRCPAINT]: 'lighten' }[rop] || 'copy';
+  if (rop === ROP.SRCCOPY) { g.beginPath(); g.rect(x | 0, y | 0, w | 0, h | 0); g.clip(); }
+  g.drawImage(s.ctx.canvas, sx | 0, sy | 0, w | 0, h | 0, x | 0, y | 0, w | 0, h | 0);
+  g.restore(); return 1;
+});
+def('GDI32', 'StretchBlt', 11, function (hd, x, y, w, h, hs, sx, sy, sw, sh) {
+  const d = dcOf(this, hd), s = dcOf(this, hs); if (!s.ctx || !d.ctx) return 1;
+  d.ctx.drawImage(s.ctx.canvas, sx | 0, sy | 0, sw | 0, sh | 0, x | 0, y | 0, w | 0, h | 0); return 1;
+});
+def('GDI32', 'SetBkColor', 2, function (hdc, c) { const dc = dcOf(this, hdc); const o = dc.bk; dc.bk = c; return o; });
+def('GDI32', 'SetBkMode', 2, function (hdc, m) { const dc = dcOf(this, hdc); const o = dc.bkMode; dc.bkMode = m; return o; });
+def('GDI32', 'SetTextColor', 2, function (hdc, c) { const dc = dcOf(this, hdc); const o = dc.text; dc.text = c; return o; });
+def('GDI32', 'SetTextAlign', 2, function (hdc, a) { const dc = dcOf(this, hdc); const o = dc.align; dc.align = a; return o; });
+function drawText(p, dc, x, y, s, opaqueRect) {
+  const g = dc.ctx; if (!g) return;
+  if (opaqueRect) dc.fill(opaqueRect.l, opaqueRect.t, opaqueRect.r - opaqueRect.l, opaqueRect.b - opaqueRect.t, dc.bk);
+  if (!s) return;
+  g.save(); g.font = dc.fontCss();
+  const m = g.measureText(s), asc = m.fontBoundingBoxAscent ?? Math.abs(dc.font.lf.height) * 0.8, desc = m.fontBoundingBoxDescent ?? Math.abs(dc.font.lf.height) * 0.2;
+  let tx = x; if ((dc.align & 6) === 6) tx -= m.width / 2; else if (dc.align & 2) tx -= m.width;
+  const top = dc.align & 24 ? (dc.align & 8 ? y - asc - desc : y - asc) : y;
+  if (dc.bkMode === 2 && !opaqueRect) { g.fillStyle = dc.color(dc.bk); g.fillRect(tx, top, m.width, asc + desc); }
+  g.fillStyle = dc.color(dc.text); g.textBaseline = 'alphabetic'; g.fillText(s, tx, top + asc);
+  g.restore();
+}
+def('GDI32', 'TextOutA', 5, function (hdc, x, y, s, n) { drawText(this, dcOf(this, hdc), x | 0, y | 0, this.readA(s, n)); return 1; });
+def('GDI32', 'ExtTextOutA', 8, function (hdc, x, y, opt, rc, s, n) {
+  const dc = dcOf(this, hdc); const r = rc && (opt & 2) ? readRect(this, rc) : null;
+  drawText(this, dc, x | 0, y | 0, n ? this.readA(s, n) : '', r); return 1;
+});
+def('GDI32', 'GetTextExtentPointA', 4, function (hdc, s, n, sz) {
+  const dc = dcOf(this, hdc), g = measureCtx(); g.font = dc.fontCss(); const m = g.measureText(this.readA(s, n));
+  this.w32(sz, Math.ceil(m.width)); this.w32(sz + 4, Math.ceil((m.fontBoundingBoxAscent || 10) + (m.fontBoundingBoxDescent || 3))); return 1;
+});
+def('GDI32', 'GetTextExtentPoint32A', 4, function () { return API.GDI32.GetTextExtentPointA[1].apply(this, arguments); });
+def('GDI32', 'GetTextMetricsA', 2, function (hdc, p) {
+  const dc = dcOf(this, hdc), g = measureCtx(); g.font = dc.fontCss(); const m = g.measureText('Mg');
+  const asc = Math.ceil(m.fontBoundingBoxAscent || 10), desc = Math.ceil(m.fontBoundingBoxDescent || 3);
+  this.u8.fill(0, p, p + 53); this.w32(p, asc + desc); this.w32(p + 4, asc); this.w32(p + 8, desc);
+  this.w32(p + 20, Math.ceil(g.measureText('x').width)); this.w32(p + 24, Math.ceil(g.measureText('W').width)); this.w32(p + 28, dc.font.lf.weight || 400);
+  this.u8[p + 44] = 32; this.u8[p + 45] = 255; this.u8[p + 46] = 32; this.u8[p + 47] = 32; this.u8[p + 51] = 6; return 1;
+});
+def('GDI32', 'GetCharABCWidthsA', 4, function (hdc, a, b, p) {
+  const dc = dcOf(this, hdc), g = measureCtx(); g.font = dc.fontCss();
+  for (let c = a; c <= b; c++) { this.w32(p + 12 * (c - a), 0); this.w32(p + 12 * (c - a) + 4, Math.ceil(g.measureText(String.fromCharCode(c)).width)); this.w32(p + 12 * (c - a) + 8, 0); }
+  return 1;
+});
+def('GDI32', 'GetTextFaceA', 3, function (hdc, n, buf) { return this.writeA(buf, dcOf(this, hdc).font.lf.face || 'Arial', n); });
+def('GDI32', 'GetRasterizerCaps', 2, function (p) { this.w16(p, 4); this.w16(p + 2, 3); this.w16(p + 4, 0); return 1; });
+def('GDI32', 'GetDeviceCaps', 2, function (hdc, i) {
+  return { 2: 0x400, 4: 320, 6: 240, 8: this.host.width, 10: this.host.height, 12: 24, 14: 1, 24: -1, 38: 0x7e99, 88: 96, 90: 96, 104: 0, 106: 20, 108: 24 }[i] ?? 0;
+});
+let mctx = null;
+function measureCtx() { if (!mctx) mctx = mkCanvas(1, 1).getContext('2d'); return mctx; }
+// Palettes: logical palettes resolve PALETTEINDEX colors at draw time.
+def('GDI32', 'CreatePalette', 1, function (p) {
+  const n = this.r16(p + 2), e = [];
+  for (let i = 0; i < n; i++) e.push([this.r8(p + 4 + 4 * i), this.r8(p + 5 + 4 * i), this.r8(p + 6 + 4 * i)]);
+  return this.newHandle(new Palette(e));
+});
+def('GDI32', 'CreateHalftonePalette', 1, function () {
+  const e = []; for (let r = 0; r < 6; r++) for (let g = 0; g < 6; g++) for (let b = 0; b < 6; b++) e.push([r * 51, g * 51, b * 51]);
+  return this.newHandle(new Palette(e));
+});
+def('GDI32', 'SelectPalette', 3, function (hdc, h) { const dc = dcOf(this, hdc); const o = dc.pal; const p = this.obj(h); if (p) dc.pal = p; return o ? o.h : 0; });
+def('GDI32', 'RealizePalette', 1, function (hdc) { return dcOf(this, hdc).pal.entries.length; });
+def('GDI32', 'UnrealizeObject', 1, () => 1);
+def('GDI32', 'GetPaletteEntries', 4, function (h, start, n, p) {
+  const pal = this.obj(h); if (!pal) return 0;
+  if (!p) return pal.entries.length;
+  let k = 0; for (; k < n && start + k < pal.entries.length; k++) { const [r, g, b] = pal.entries[start + k]; this.u8[p + 4 * k] = r; this.u8[p + 4 * k + 1] = g; this.u8[p + 4 * k + 2] = b; this.u8[p + 4 * k + 3] = 0; }
+  return k;
+});
+def('GDI32', 'AnimatePalette', 4, function (h, start, n, p) {
+  const pal = this.obj(h); if (!pal) return 0;
+  for (let k = 0; k < n && start + k < pal.entries.length; k++) pal.entries[start + k] = [this.r8(p + 4 * k), this.r8(p + 4 * k + 1), this.r8(p + 4 * k + 2)];
+  return 1;
+});
+def('GDI32', 'GetNearestPaletteIndex', 2, function (h, c) {
+  const pal = this.obj(h); if (!pal) return 0; const [r, g, b] = rgbOf(c); let best = 0, bd = 1e9;
+  pal.entries.forEach(([pr, pg, pb], i) => { const d = (pr - r) ** 2 + (pg - g) ** 2 + (pb - b) ** 2; if (d < bd) { bd = d; best = i; } });
+  return best;
+});
+def('GDI32', 'GetSystemPaletteEntries', 4, function (hdc, s, n, p) { return API.GDI32.GetPaletteEntries[1].call(this, 0x800f, s, n, p); });
+def('GDI32', 'GetSystemPaletteUse', 1, () => 1);
+def('GDI32', 'SetSystemPaletteUse', 2, () => 1);
+def('GDI32', 'GdiFlush', 0, () => 1);
+
+window.W95Win32 = { Process, API, LAYOUT, WM, YIELD, iniGet, iniSet };
+})();
