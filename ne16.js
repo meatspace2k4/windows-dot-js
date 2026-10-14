@@ -5,7 +5,7 @@
 // everything else is the original 16-bit code. Also provides the KERNEL32 flat-thunk entry points that
 // GDI32.DLL uses to reach GDI.EXE and back.
 (() => {
-const { Process, API, LAYOUT, GuestError } = window.W95Win32;
+const { Process, API, LAYOUT, GuestError, YIELD } = window.W95Win32;
 const P = Process.prototype;
 
 const L = {
@@ -273,6 +273,7 @@ P.api16 = function (eip) {
   try { r = fn.apply(this, vals); }
   catch (e) { if (e instanceof GuestError) { this.trapped = e.message; return LAYOUT.SENTINEL; } throw e; }
   if (this.exitCode !== null) return LAYOUT.SENTINEL;
+  if (r === YIELD) return -1;   // a thread suspended in the call: it runs the call again when resumed
   if (ret === 'w') this.cpu.eax.value = lo16(this.cpu.eax.value, r | 0);
   else if (ret === 'l') { this.cpu.eax.value = r | 0; this.cpu.edx.value = lo16(this.cpu.edx.value, u32(r) >>> 16); }
   this.cpu.esp.value = lo16(this.cpu.esp.value, sp + 4 + total);
@@ -1246,18 +1247,18 @@ def16('KERNEL', 461, 'llll', 'l', function (n, ph, all, ms) {                   
   if (all) { if (!hs.every(e => e && e.set)) return 0x102; for (const e of hs) if (!e.manual) e.set = false; return 0; }
   const i = hs.findIndex(e => e && e.set); if (i < 0) return 0x102; if (!hs[i].manual) hs[i].set = false; return i;
 });
-def16('KERNEL', 462, '', 'l', function () { return 0x51; });                                           // GetCurrentThreadId, as KERNEL32 answers
-def16('KERNEL', 463, 'lw', 'w', function (tid, hq) { const old = this.threadQueue || 0; this.threadQueue = hq; return old; });   // SetThreadQueue
-def16('KERNEL', 464, 'l', 'w', function (tid) { return this.threadQueue || 0; });                     // GetThreadQueue
-def16('KERNEL', 624, 'll', 'v', function (tid, hq) { this.threadQueue = hq & 0xffff; });                 // SetFastQueue: the queue field (38h) of the thread
+def16('KERNEL', 462, '', 'l', function () { return this.thread16 ? this.thread16.id : MAIN_TID; });       // GetCurrentThreadId (the main thread is the id KERNEL32 reports)
+def16('KERNEL', 463, 'lw', 'w', function (tid, hq) { const t = thr(this, tid), old = t.queue || 0; t.queue = hq; return old; });   // SetThreadQueue
+def16('KERNEL', 464, 'l', 'w', function (tid) { return thr(this, tid).queue || 0; });                     // GetThreadQueue
+def16('KERNEL', 624, 'll', 'v', function (tid, hq) { thr(this, tid).queue = hq & 0xffff; });                 // SetFastQueue: the queue field (38h) of the thread
 // GetFastQueue: the current thread's queue, created when it has none by USER's InitThreadInput (USER.409), which KRNL386
 // keeps a pointer to and calls with (0, 4) for a 16-bit thread
 def16('KERNEL', 625, '', 'w', function () {
-  if (this.threadQueue) return this.threadQueue;
+  const t = thr(this, 0); if (t.queue) return t.queue;
   const u = this.ne.get('USER'), ep = u && u.meta && this.neExport(u, 409);
   if (!ep) return 0;
   const r = this.call16(ep >>> 16, ep & 0xffff, [['w', 0], ['w', 4]]);
-  return this.threadQueue || r.ax;
+  return t.queue || r.ax;
 });
 // Get/SetProcessDword: a process's fields by the GPD_ offsets (0 user data, -4 flags, -8 parent, -12..-32 its
 // STARTUPINFO, -36 PDB, -40 THDB, -44 expected Windows version, -48 hInstance, -52 load-done event, -56 app
@@ -1273,9 +1274,70 @@ def16('KERNEL', 484, 'lil', 'v', function (pid, off, v) { pdw(this, pid, off)[of
 // Win16Lock is held): one thread runs here, so a wait finds the event set or returns at once
 def16('KERNEL', 442, '', 'l', function () { return this.newHandle({ kind: 'event', manual: false, set: false }); });   // VWin32_EventCreate
 def16('KERNEL', 443, 'l', 'v', function (h) { this.handles.delete(h); });                                              // VWin32_EventDestroy
-def16('KERNEL', 450, 'l', 'v', function (h) { const e = ev16(this, h); if (e) e.set = false; });                     // VWin32_EventWait
+def16('KERNEL', 450, 'l', 'v', function (h) {                                                                         // VWin32_EventWait
+  const e = ev16(this, h); if (!e) return;
+  if (!e.set && this.thread16 && this.thread16.id !== MAIN_TID && this.depth === this.thread16.depth) { this.thread16.wait = e; return YIELD; }
+  e.set = false;
+});
 def16('KERNEL', 451, 'l', 'v', function (h) { const e = ev16(this, h); if (e) e.set = true; });                      // VWin32_EventSet
 def16('KERNEL', 479, 'l', 'v', function (h) { const e = ev16(this, h); if (e) e.set = true; });
+// ---- threads. One processor runs them one at a time: a thread created here starts when the scheduler next runs
+// (threads16, between slices of the main thread), runs until it waits on an event that is not set (then yields
+// in the wait, resuming there once the event is set), and ends when its procedure returns.
+const MAIN_TID = 0x51;
+const thr = (p, tid) => {   // a thread's record by id (0 or the main thread's id: the current/main thread)
+  p.threadsById = p.threadsById || new Map([[MAIN_TID, { id: MAIN_TID }]]);
+  const id = tid || (p.thread16 ? p.thread16.id : MAIN_TID);
+  if (!p.threadsById.has(id)) p.threadsById.set(id, { id });
+  return p.threadsById.get(id);
+};
+def16('KERNEL', 441, 'llllll', 'l', function (attr, stack, start, param, flags, ptid) {   // CreateThread16
+  thr(this, MAIN_TID);
+  const id = MAIN_TID + this.threadsById.size, t = thr(this, id);
+  Object.assign(t, { start, param, stack: Math.max(stack || 0, 0x4000), state: 'new', ctx: null, wait: null });
+  if (ptid) this.w32(this.lin(ptid), id);
+  return this.newHandle({ kind: 'thread', id });
+});
+const CTX = ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi', 'cf', 'pf', 'zf', 'sf', 'of', 'df', 'eip', 'cs', 'ds', 'es', 'ss', 'fsel', 'gsel', 'csb', 'dsb', 'esb', 'ssb', 'gsb'];
+P.saveCtx16 = function () { const c = {}; for (const r of CTX) c[r] = this.cpu[r].value; c.depth = this.depth; c.stackLevel = this.stackLevel; return c; };
+P.loadCtx16 = function (c) { for (const r of CTX) this.cpu[r].value = c[r]; this.depth = c.depth; this.stackLevel = c.stackLevel; };
+/** run the threads that can run; the host calls this between slices of the main thread */
+P.threads16 = function () {
+  if (!this.threadsById || this.thread16 || this.depth) return;
+  for (const t of this.threadsById.values()) {
+    if (t.id === MAIN_TID || t.state === 'done' || (t.state === 'waiting' && !(t.wait && t.wait.set))) continue;
+    const main = this.saveCtx16();
+    this.thread16 = t;
+    let r;
+    try {
+      if (t.state === 'new') {
+        // its own flat stack, then a far call of its procedure (it returns to the sentinel)
+        t.stackBase = this.alloc(t.stack); this.cpu.esp.value = t.stackBase + t.stack - 16; this.seg('ss', 0);
+        this.cpu.ssb.value = 0; this.depth = 0; this.stackLevel = main.stackLevel;
+        t.state = 'running';
+        r = this.start16(t.start >>> 16, t.start & 0xffff, [['l', t.param]]);
+      } else {
+        this.loadCtx16(t.ctx); t.state = 'running'; t.wait = null;
+        r = this.runAt(u32(this.cpu.eip.value));
+      }
+      if (r === 1) { t.ctx = this.saveCtx16(); t.state = 'waiting'; }
+      else { t.state = 'done'; if (r !== 0 && this.trapped) console.warn('[ne16] thread', t.id, this.trapped); }
+    } finally { this.thread16 = null; this.loadCtx16(main); }
+  }
+};
+/** a far call into 16-bit code that may yield: returns runAt's result (0 returned, 1 yielded) and leaves the
+ *  CPU state as the code left it */
+P.start16 = function (sel, off, args) {
+  const lvl = this.stackLevel++, ssel = L.STK + 8 * lvl;
+  const flat = u32(this.cpu.esp.value), base = (flat - 0xfff0) & ~0xf;
+  this.setDesc(ssel, base, 0xffff, 0xf300); this.seg('ss', ssel);
+  let sp = flat - 16 - base;
+  for (const [t, v] of args) { if (t === 'w') { sp -= 2; this.w16(base + sp, v); } else { sp -= 4; this.w32(base + sp, v); } }
+  sp -= 2; this.w16(base + sp, L.SENT); sp -= 2; this.w16(base + sp, 0);
+  this.cpu.esp.value = sp; this.seg('cs', sel);
+  this.depth++; if (this.thread16) this.thread16.depth = this.depth;
+  return this.runAt(u32(this.selBase(sel) + off));
+};
 def16('KERNEL', 476, 'l', 'l', function (h) { return h; });                                            // ConvertToGlobalHandle: one process, so already global
 def16('KERNEL', 474, 'l', 'w', function (h) { return this.handles.delete(h) ? 1 : 0; });               // CloseW32Handle
 def16('KERNEL', 105, '', 'w', function () { return 0x0400; });                                         // GetExeVersion: system code expects Windows 4.0
