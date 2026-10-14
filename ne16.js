@@ -154,6 +154,7 @@ P.loadLibrary16 = function (name, native = false, defer = false) {
 /** start the native window system the way KRNL386 does: the drivers SYSTEM.INI's [boot] section names, in its
  *  order (system, keyboard, mouse, display, comm), then GDI and USER; returns USER's module record */
 P.bootUser16 = function () {
+  if (this.user16Ready === undefined) this.user16Ready = false;
   for (const m of ['SYSTEM', 'KEYBOARD', 'MOUSE', 'DISPLAY', 'COMM', 'GDI']) this.loadLibrary16(m, true);
   // USER.EXE calls into USER32.DLL through flat thunks from its LibEntry on, and USER32 connects them when it loads,
   // naming USER.EXE: so USER's image first, then USER32, then USER's LibEntry
@@ -169,6 +170,7 @@ P.bootUser16 = function () {
     const pending = this.inits; this.inits = []; for (const m of pending) this.call(m.meta.entry, [m.base, 1, 0]);   // DllMain(DLL_PROCESS_ATTACH)
   }
   if (!user.inited) { user.inited = true; if (!this.initNE(user)) console.warn('[ne16] USER LibEntry failed'); }
+  this.user16Ready = true;
   return user;
 };
 /** a module from disk that has no code (fonts and other resource-only libraries) */
@@ -1516,17 +1518,17 @@ def16('KERNEL', 461, 'llll', 'l', function (n, ph, all, ms) {                   
   if (all) { if (!hs.every(e => e && e.set)) return 0x102; for (const e of hs) if (!e.manual) e.set = false; return 0; }
   const i = hs.findIndex(e => e && e.set); if (i < 0) return 0x102; if (!hs[i].manual) hs[i].set = false; return i;
 });
-def16('KERNEL', 462, '', 'l', function () { return this.thread16 ? this.thread16.id : MAIN_TID; });       // GetCurrentThreadId (the main thread is the id KERNEL32 reports)
+def16('KERNEL', 462, '', 'l', function () { return this.thread16 ? this.thread16.id : this.user16Ready === false ? SYS_TID : MAIN_TID; });       // GetCurrentThreadId (the main thread is the id KERNEL32 reports)
 def16('KERNEL', 463, 'lw', 'w', function (tid, hq) { const t = thr(this, tid), old = t.queue || 0; t.queue = hq; return old; });   // SetThreadQueue
 def16('KERNEL', 464, 'l', 'w', function (tid) { return thr(this, tid).queue || 0; });                     // GetThreadQueue
 def16('KERNEL', 624, 'll', 'v', function (tid, hq) { thr(this, tid).queue = hq & 0xffff; });                 // SetFastQueue: the queue field (38h) of the thread
 // GetFastQueue: the current thread's queue, created when it has none by USER's InitThreadInput (USER.409), which KRNL386
-// keeps a pointer to and calls with (0, 4) for a 16-bit thread
+// keeps a pointer to and calls with (0, 4 | 1 for a Win32 thread)
 def16('KERNEL', 625, '', 'w', function () {
   const t = thr(this, 0); if (t.queue) return t.queue;
   const u = this.ne.get('USER'), ep = u && u.meta && this.neExport(u, 409);
   if (!ep) return 0;
-  const r = this.call16(ep >>> 16, ep & 0xffff, [['w', 0], ['w', 4]]);
+  const r = this.call16(ep >>> 16, ep & 0xffff, [['w', 0], ['w', this.thread16 || !this.user16Ready ? 4 : 5]]);   // 1: a Win32 thread (THDB flags bit 0), its own process record; USER's start-up is the system's
   return t.queue || r.ax;
 });
 // Get/SetProcessDword: a process's fields by the GPD_ offsets (0 user data, -4 flags, -8 parent, -12..-32 its
@@ -1535,6 +1537,7 @@ def16('KERNEL', 625, '', 'w', function () {
 const GPD = { 0: 0, '-4': 0, '-8': 0, '-12': 0, '-16': 0, '-20': 0, '-24': 0, '-28': 0, '-32': 0, '-36': 0, '-40': 0, '-44': 0x400, '-48': 0, '-52': 0, '-56': 0 };
 const pdw = (p, pid, off) => {
   if (!(off in GPD)) throw new GuestError(`GetProcessDword offset ${off}`);
+  pid = pid || (p.user16Ready === false ? 'system' : 0);   // USER's start-up runs as the system process, not the program's
   p.procDword = p.procDword || new Map(); if (!p.procDword.has(pid)) p.procDword.set(pid, { ...GPD }); return p.procDword.get(pid);
 };
 def16('KERNEL', 485, 'li', 'l', function (pid, off) { return pdw(this, pid, off)[off] >>> 0; });
@@ -1553,10 +1556,10 @@ def16('KERNEL', 479, 'l', 'v', function (h) { const e = ev16(this, h); if (e) e.
 // ---- threads. One processor runs them one at a time: a thread created here starts when the scheduler next runs
 // (threads16, between slices of the main thread), runs until it waits on an event that is not set (then yields
 // in the wait, resuming there once the event is set), and ends when its procedure returns.
-const MAIN_TID = 0x51;
+const MAIN_TID = 0x51, SYS_TID = 0x41;   // the program's thread, and the system thread USER starts up on
 const thr = (p, tid) => {   // a thread's record by id (0 or the main thread's id: the current/main thread)
   p.threadsById = p.threadsById || new Map([[MAIN_TID, { id: MAIN_TID }]]);
-  const id = tid || (p.thread16 ? p.thread16.id : MAIN_TID);
+  const id = tid || (p.thread16 ? p.thread16.id : p.user16Ready === false ? SYS_TID : MAIN_TID);
   if (!p.threadsById.has(id)) p.threadsById.set(id, { id });
   return p.threadsById.get(id);
 };
