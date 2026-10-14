@@ -2515,26 +2515,12 @@ class NativeApp {
     try {
       // the cursor USER draws shows only while the mouse is over this program's windows; its windows stay above the taskbar
       this.proc.user16(71, [['w', 0]]);
-      this.workArea();
+      const p = this.proc, r = p.wbufLin || (p.nativeWindows(), p.wbufLin);
+      p.w16(r, 0); p.w16(r + 2, 0); p.w16(r + 4, this.sw); p.w16(r + 6, Math.min(this.sh, workH()));
+      p.user16(483, [['w', 47], ['w', 0], ['l', p.wbufSel << 16], ['w', 0]]);   // SPI_SETWORKAREA
     } catch (e) { console.error(e); }
     nativeApps.add(this);
     this.step(); return true;
-  }
-  // USER's work area: the part of the display mode the shell shows, above the taskbar. When the shell's size changes
-  // (the browser window resized), top-level windows that now reach past it come back inside, made smaller when they
-  // no longer fit, as Windows moves windows when the display shrinks
-  workArea(moveWindows = false) {
-    const p = this.proc; if (!p || p.depth) return;
-    const w = Math.min(this.sw, W), h = Math.min(this.sh, workH()), r = p.wbufLin || (p.nativeWindows(), p.wbufLin);
-    p.w16(r, 0); p.w16(r + 2, 0); p.w16(r + 4, w); p.w16(r + 6, h);
-    p.user16(483, [['w', 47], ['w', 0], ['l', p.wbufSel << 16], ['w', 0]]);   // SPI_SETWORKAREA
-    if (!moveWindows) return;
-    for (const n of p.nativeWindows().list) {
-      if (n.iconic || n.cls === '#32768' || (n.x + n.w <= w && n.y + n.h <= h)) continue;
-      const cw = Math.min(n.w, w), ch = Math.min(n.h, h), x = Math.max(0, Math.min(n.x, w - cw)), y = Math.max(0, Math.min(n.y, h - ch));
-      p.user16(232, [['w', n.hwnd], ['w', 0], ['w', x], ['w', y], ['w', cw], ['w', ch], ['w', 0x14]]);   // SetWindowPos: no z-order change, no activation
-    }
-    this.kick();
   }
   step() {
     clearTimeout(this.timer); this.timer = 0;
@@ -3300,7 +3286,6 @@ function resize() {
   cv.width = W; cv.height = H; cv.style.width = W * ZOOM + 'px'; cv.style.height = H * ZOOM + 'px';
   ctx.imageSmoothingEnabled = false;
   for (const w of windows) if (w.max) Object.assign(w, maxRect(w.b));
-  for (const a of nativeApps) try { a.workArea(true); } catch (e) { console.error(e); }
   closeMenus(); dirty();
 }
 window.addEventListener('resize', resize);

@@ -765,7 +765,13 @@ def('KERNEL32', 'SystemTimeToFileTime', 2, function (st, ft) {
   const ms = Date.UTC(this.r16(st), this.r16(st + 2) - 1, this.r16(st + 6), this.r16(st + 8), this.r16(st + 10), this.r16(st + 12), this.r16(st + 14));
   const t = BigInt(ms) * 10000n + 116444736000000000n; this.w32(ft, Number(t & 0xffffffffn)); this.w32(ft + 4, Number(t >> 32n)); return 1;
 });
-def('KERNEL32', 'FileTimeToLocalFileTime', 2, function (a, b) { this.w32(b, this.r32(a)); this.w32(b + 4, this.r32(a + 4)); return 1; });
+// UTC <-> local by the offset the host's clock is in at that moment (the offset GetTimeZoneInformation reports)
+const ftShift = (p, a, b, sign) => {
+  const t = ft64(p, a), ms = Number(t - 116444736000000000n) / 10000, off = new Date(ms).getTimezoneOffset();
+  ftPut(p, b, t + BigInt(sign * off * 60) * 10000000n); return 1;
+};
+def('KERNEL32', 'FileTimeToLocalFileTime', 2, function (a, b) { return ftShift(this, a, b, -1); });
+def('KERNEL32', 'LocalFileTimeToFileTime', 2, function (a, b) { return ftShift(this, a, b, 1); });
 
 // file I/O on the in-memory disk. Win32 handles wrap W95FS file descriptors.
 const FERR = e => (e && e.code) || 5;
