@@ -649,7 +649,8 @@ class Translator:
         f.c(ins.addr).c(3).e(0x10, uleb(IMP['trap'])); f.c(SENTINEL).e(RETURN); return True
     x_hlt = x_int3; x_ud2 = x_int3
     def x_int(self, f, ins, ops, live):
-        f.c(ins.addr).c(0x100 + (ops[0].imm & 0xff)).e(0x10, uleb(IMP['trap'])); f.c(SENTINEL).e(RETURN); return True
+        # the host services the interrupt and leaves the continuation (ins.next, or the sentinel) in the eip global
+        f.c(ins.next).c(0x100 + (ops[0].imm & 0xff)).e(0x10, uleb(IMP['trap'])); f.gg('eip').e(RETURN); return True
     def x_cli(self, f, ins, ops, live): return
     x_sti = x_cli
 
