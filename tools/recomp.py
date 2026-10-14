@@ -1378,6 +1378,13 @@ def decode_ne(ne, entries):
             if a is not None and k < 3:
                 sg = ne.seg_of(i.segbase); v = i.ops[0].imm & 0xffff
                 if v < sg['len'] and sg['base'] + v not in seen: todo.append(sg['base'] + v)
+        # far pointers into this segment pushed as arguments: `push cs; push imm16` (timer and enumeration callbacks)
+        for i in list(insns.values()):
+            if i.segbase is None or i.mn != 'push' or not i.ops or i.ops[0].type != X.X86_OP_IMM: continue
+            a = prev.get(i.addr)
+            if a is not None and insns[a].mn == 'push' and insns[a].i.op_str == 'cs':
+                sg = ne.seg_of(i.segbase); v = i.ops[0].imm & 0xffff
+                if v < sg['len'] and sg['base'] + v not in seen: todo.append(sg['base'] + v)
         for site, tsg in getattr(ne, 'selrefs', []):
             host = next((insns[a] for a in range(site - 1, site - 6, -1) if a in insns and insns[a].next > site), None)
             if host is None: continue

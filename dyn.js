@@ -345,6 +345,18 @@ function translate(p, lin, csb, d32) {
       else { pop(T, osz); for (const [k, n2] of [[0, 'cf'], [2, 'pf'], [6, 'zf'], [7, 'sf'], [10, 'df'], [11, 'of']]) f.lg(T).c(k).op('shr_u').c(1).op('and').gs(n2); }
       continue;
     }
+    if (b === 0xc8) {   // enter size, 0
+      const size = fetch16(), level = fetch() & 31; if (level) throw new Unsupported(`enter with nesting level ${level}`);
+      rdReg(5, osz); f.ls(T); push(T, osz);
+      f.gg('esp'); if (!ss32) f.c(0xffff).op('and'); f.ls(T); wrReg(5, osz, T);
+      if (ss32) f.gg('esp').c(size).op('sub').gs('esp');
+      else f.gg('esp').c(0xffff0000).op('and').gg('esp').c(size).op('sub').c(0xffff).op('and').op('or').gs('esp');
+      continue;
+    }
+    if (b === 0xc9) {   // leave
+      if (ss32) { rdReg(5, 4); f.gs('esp'); } else { f.gg('esp').c(0xffff0000).op('and'); rdReg(5, 2); f.op('or').gs('esp'); }
+      pop(T, osz); wrReg(5, osz, T); continue;
+    }
     throw new Unsupported(`opcode ${b.toString(16)}`);
   }
 }
