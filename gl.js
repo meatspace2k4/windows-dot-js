@@ -195,6 +195,10 @@ void main() {
 
 // ---------------------------------------------------------------- context
 const STRIDE = 15;  // pos4 nrm3 col4 tex4
+// Time Microsoft's software OPENGL32 took on the original machine for the work this ICD does in WebGL,
+// in ms per unit. It is charged to the guest's CPU clock when a frame is presented, alongside the
+// x86 instructions the translated code counts for itself.
+const COST = { vertex: 0.004, light: 0.006, tri: 0.03, clearPx: 0.00004, blitPx: 0.00006 };
 class Context {
   constructor(proc, dc) {
     this.p = proc;
@@ -210,6 +214,7 @@ class Context {
       g.enableVertexAttribArray(loc[n]); g.vertexAttribPointer(loc[n], sz, g.FLOAT, false, STRIDE * 4, off * 4);
     });
     g.pixelStorei(g.UNPACK_ALIGNMENT, 1);
+    this.cost = 0;
     this.reset(w, h);
   }
   program(o, i) {
@@ -330,7 +335,9 @@ class Context {
     if (geo.buf) g.bindBuffer(g.ARRAY_BUFFER, geo.buf);
     else { g.bindBuffer(g.ARRAY_BUFFER, this.vbo); g.bufferData(g.ARRAY_BUFFER, geo.data, g.STREAM_DRAW); }
     [['aPos', 4, 0], ['aNrm', 3, 4], ['aCol', 4, 7], ['aTex', 4, 11]].forEach(([n, sz, off], k) => g.vertexAttribPointer(k, sz, g.FLOAT, false, STRIDE * 4, off * 4));
-    g.drawArrays(geo.prim === 'tri' ? g.TRIANGLES : geo.prim === 'line' ? g.LINES : g.POINTS, 0, geo.data.length / STRIDE);
+    const n = geo.data.length / STRIDE, lights = on(E.LIGHTING) ? this.lights.filter((l, i) => on(E.LIGHT0 + i)).length : 0;
+    this.cost += n * (COST.vertex + lights * COST.light) + (geo.prim === 'tri' ? n / 3 * COST.tri : 0);
+    g.drawArrays(geo.prim === 'tri' ? g.TRIANGLES : geo.prim === 'line' ? g.LINES : g.POINTS, 0, n);
   }
   applyState() {
     const g = this.g, on = c => this.cap.has(c);
@@ -370,6 +377,8 @@ class Context {
   present() {
     const dc = this.dc; if (!dc || !dc.ctx) return;
     this.g.flush();
+    // glFinish, glFlush and SwapBuffers may all follow one frame: only the first after new work costs a blit
+    if (this.cost) { this.cost += this.canvas.width * this.canvas.height * COST.blitPx; this.p.charge(this.cost); this.cost = 0; }
     const g = dc.pre(); g.drawImage(this.canvas, 0, 0); dc.post(); dc.touch();
     if (dc.bitmap && dc.bitmap.dib) window.W95Win32.dibOut(this.p, dc.bitmap);
   }
@@ -595,6 +604,7 @@ OPS.clear = function (m) {
   const g = this.g; this.applyState();
   g.clearColor(...this.clearColor); g.clearDepth(this.clearDepth); g.depthMask(true);
   g.clear((m & E.COLOR_BUFFER_BIT ? g.COLOR_BUFFER_BIT : 0) | (m & E.DEPTH_BUFFER_BIT ? g.DEPTH_BUFFER_BIT : 0));
+  this.cost += this.canvas.width * this.canvas.height * COST.clearPx * (!!(m & E.COLOR_BUFFER_BIT) + !!(m & E.DEPTH_BUFFER_BIT));
 };
 gl('glViewport', 'iiii', function (c, x, y, w, h) { c.viewport = [x, y, w, h]; });
 gl('glScissor', 'iiii', function (c, x, y, w, h) { c.scissor = [x, y, w, h]; });

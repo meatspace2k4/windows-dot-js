@@ -307,6 +307,8 @@ class Process {
   /** Guest clock: real time, or the moment the original CPU would have finished the instructions retired so far. */
   now() { return Math.max(this.host.now(), this.cpuUntil); }
   /** Charge the guest instructions retired since the last call (counted by the translated code). */
+  /** Charge ms the original machine spent in code that is not translated (the OPENGL32 ICD). */
+  charge(ms) { if (ms > 0) this.cpuUntil = this.now() + ms; }
   account() {
     const v = this.cpu.icount.value, d = (v - this.icount) >>> 0; this.icount = v;
     if (d) this.cpuUntil = this.now() + d / INSN_PER_MS;
