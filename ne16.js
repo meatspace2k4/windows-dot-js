@@ -567,9 +567,11 @@ P.nativeChildren = function (parent) {
       const x = s16(0), y = s16(2), w = s16(4) - x, hh = s16(6) - y;
       const cl = u(58, [['w', h], ['l', buf + 0x180], ['w', 64]]), cls = cl ? this.readA(a + 0x180, cl) : '';
       const style = this.user16(135, [['w', h], ['w', 0xfff0]]).dxax;                                            // GetWindowLong(GWL_STYLE)
-      const askText = /^(edit|combobox)$/i.test(cls), tl = askText ? u(111, [['w', h], ['w', 0x0d], ['w', 160], ['l', buf + 16]])   // SendMessage WM_GETTEXT
-        : u(107, [['w', h], ['w', 0x0d], ['w', 160], ['l', buf + 16]]);
-      const text = tl ? this.readA(a + 16, tl) : '';
+      let text = '';
+      if (/^(edit|combobox)$/i.test(cls)) {   // SendMessage WM_GETTEXT, into a buffer the size of an edit's limit
+        if (!this.tbufLin) { this.tbufLin = this.alloc(0x10000); this.tbufSel = this.allocSels(this.tbufLin, 0x10000); }
+        const tl = u(111, [['w', h], ['w', 0x0d], ['w', 0xffff], ['l', u32(this.tbufSel << 16)]]); text = tl ? this.readA(this.tbufLin, tl) : '';
+      } else { const tl = u(107, [['w', h], ['w', 0x0d], ['w', 160], ['l', buf + 16]]); text = tl ? this.readA(a + 16, tl) : ''; }
       const c = { hwnd: h, parent: p, x, y, w, h: hh, cls, text, id: u(277, [['w', h]]), style, enabled: !!u(35, [['w', h]]), focused: h === focus, depth };
       if (/^button$/i.test(cls) && [2, 3, 4, 5, 6, 9].includes(style & 0x0f)) c.checked = u(111, [['w', h], ['w', 0x400], ['w', 0], ['l', 0]]);
       out.push(c); walk(h, depth + 1);
