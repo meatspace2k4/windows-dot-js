@@ -1078,7 +1078,13 @@ def16('KERNEL', 327, '', 'jmp', function () {    // HandleParamError: BX = error
 });
 def16('KERNEL', 435, 'w', 'w', () => 0x10);                                     // GetTaskFlags(hTask): every task here is Win32 (TDBF_WIN32)
 def16('KERNEL', 237, '', 'v', function () {});                                 // K237 nop
-def16('KERNEL', 447, '', 'v', function () {});                                 // WIN32_OldYield
+// WIN32_OldYield: USER's PeekMessage calls it when the queue is empty. A thread not inside a call JS made gives up
+// its slice once, so a loop polling PeekMessage (SHELL32's drag loop, for one) lets input and the other threads run.
+def16('KERNEL', 447, '', 'v', function () {
+  const t = thr(this, 0), top = this.thread16 ? this.depth === this.thread16.depth : this.depth === 0;
+  if (top && !t.yielded) { t.yielded = true; return YIELD; }
+  t.yielded = false;
+});
 def16('KERNEL', 471, '', 'l', function () { return this.inSystem && this.inSystem() ? SYS_PID : MAIN_PID; });   // GetCurrentProcessId: KERNEL32's ids
 def16('KEYBOARD', 100, 'w', 'v', function () {});                              // ScreenSwitchEnable
 
