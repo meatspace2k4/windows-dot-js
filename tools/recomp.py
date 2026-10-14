@@ -20,6 +20,9 @@ from capstone import x86_const as X
 # ---------------------------------------------------------------- layout shared with the JS runtime
 SENTINEL = 0xFFFFFFF0
 THUNK_BASE = 0xFFFF0000
+THUNK16_BASE = 0xFFFE0000      # 16-bit import thunks (selector THUNK16_SEL)
+THUNK16_SEL = 0xFFF7
+LDT_BASE = 0x00030000          # 8192 x {base u32, limit u32}, indexed by selector >> 3
 FPU_BASE = 0x00010000          # 8 x f64 registers
 LOOKUP_BYTES = 0x01000000     # per-module table (i32 per code byte: block id + 1) lives at a caller-chosen base
 MEM_PAGES = 2048               # 128 MiB
@@ -43,7 +46,9 @@ def name(s): b = s.encode(); return uleb(len(b)) + b
 I32, I64, F32, F64 = 0x7f, 0x7e, 0x7d, 0x7c
 
 G = {n: i for i, n in enumerate(['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi',
-                                  'cf', 'pf', 'zf', 'sf', 'of', 'df', 'fs', 'ftop', 'fsw', 'fcw', 'eip'])}
+                                  'cf', 'pf', 'zf', 'sf', 'of', 'df', 'fs', 'ftop', 'fsw', 'fcw', 'eip',
+                                  # segment selectors and their cached bases (segmented NE code)
+                                  'cs', 'ds', 'es', 'ss', 'fsel', 'gsel', 'csb', 'dsb', 'esb', 'ssb', 'gsb'])}
 REGS = ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi']
 
 # imported functions (index order matters)
@@ -102,7 +107,14 @@ class PE:
 
 # ---------------------------------------------------------------- discovery
 class Insn:
-    __slots__ = ('i', 'addr', 'size', 'next', 'mn', 'ops', 'prefix', 'live', 'id')
+    __slots__ = ('i', 'addr', 'size', 'next', 'mn', 'ops', 'prefix', 'live', 'id', 'segbase', 'bits', 'tgt', 'farsel')
+    def __init__(self): self.segbase = None; self.bits = 32; self.tgt = None; self.farsel = None
+
+def imm_target(ins):
+    """linear target of a direct branch, or None"""
+    if ins.tgt is not None: return ins.tgt
+    if ins.ops and ins.ops[0].type == X.X86_OP_IMM and ins.segbase is None: return ins.ops[0].imm & 0xffffffff
+    return None
 def decode_all(pe):
     md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32); md.detail = True
     insns, todo, seen_entries = {}, [pe.entry] if pe.entry else [], set()
@@ -123,9 +135,8 @@ def decode_all(pe):
                 if op.type == X.X86_OP_MEM and op.mem.base == 0 and op.mem.disp: data_refs.add(op.mem.disp & 0xffffffff)
             g = got.groups
             if capstone.CS_GRP_JUMP in g or capstone.CS_GRP_CALL in g:
-                if got.operands and got.operands[0].type == X.X86_OP_IMM:
-                    todo.append(got.operands[0].imm & 0xffffffff)
-            if ins.mn in ('jmp', 'ret', 'retf', 'hlt', 'int3', 'ud2') or ins.mn.startswith('iret'): return
+                if imm_target(ins) is not None: todo.append(imm_target(ins))
+            if ins.mn in ('jmp', 'ljmp', 'ret', 'retf', 'hlt', 'int3', 'ud2') or ins.mn.startswith('iret'): return
             a = ins.next
     while True:
         while todo:
@@ -149,16 +160,15 @@ def build_blocks(pe, insns, entries):
         g = ins.i.groups
         if capstone.CS_GRP_JUMP in g or capstone.CS_GRP_CALL in g or ins.mn.startswith('ret'):
             if ins.next in insns: starts.add(ins.next)
-            if ins.ops and ins.ops[0].type == X.X86_OP_IMM:
-                t = ins.ops[0].imm & 0xffffffff
-                if t in insns: starts.add(t)
+            t = imm_target(ins)
+            if t is not None and t in insns: starts.add(t)
     blocks = {}
     for s in sorted(starts):
         lst, a = [], s
         while a in insns:
             ins = insns[a]; lst.append(ins); a = ins.next
             g = ins.i.groups
-            if capstone.CS_GRP_JUMP in g or capstone.CS_GRP_CALL in g or ins.mn.startswith('ret') or ins.mn in ('hlt', 'int3', 'ud2'): break
+            if capstone.CS_GRP_JUMP in g or capstone.CS_GRP_CALL in g or ins.mn.startswith('ret') or ins.mn in ('hlt', 'int3', 'ud2', 'int', 'iret', 'iretd'): break
             if a in starts: break
         blocks[s] = lst
     return blocks
@@ -186,7 +196,8 @@ def flag_use_def(ins):
         return d, d
     if mn in ('rcl', 'rcr'): return CF, CF | OF
     if mn in ('bt', 'bts', 'btr', 'btc', 'clc', 'stc', 'cmc'): return (CF if mn == 'cmc' else 0), CF
-    if mn in ('lahf', 'pushfd', 'adc', 'sbb'): return ALLF, 0
+    if mn in ('lahf', 'pushfd', 'pushf', 'adc', 'sbb'): return ALLF, 0
+    if mn == 'popf': return 0, ALLF
     return 0, 0
 
 def liveness(blocks):
@@ -194,10 +205,10 @@ def liveness(blocks):
     for s, lst in blocks.items():
         last = lst[-1]; out = []
         g = last.i.groups
-        if last.mn == 'jmp' or capstone.CS_GRP_CALL in g or last.mn.startswith('ret'):
-            if last.mn == 'jmp' and last.ops[0].type == X.X86_OP_IMM: out.append(last.ops[0].imm & 0xffffffff)
+        if last.mn in ('jmp', 'ljmp') or capstone.CS_GRP_CALL in g or last.mn.startswith('ret'):
+            if last.mn == 'jmp' and imm_target(last) is not None: out.append(imm_target(last))
         elif capstone.CS_GRP_JUMP in g:
-            out += [last.ops[0].imm & 0xffffffff, last.next]
+            out += [imm_target(last), last.next]
         else: out.append(last.next)
         succ[s] = [t for t in out if t in blocks]
     live_in = {s: 0 for s in blocks}
@@ -299,6 +310,23 @@ class Loc:
         if sh: f.c(sh).e(OPS['shl'])
         f.e(OPS['or_']).gs(g)
 
+# ---- segmented (NE) mode. CUR is the instruction being translated.
+CUR = None
+def segmode(): return CUR is not None and CUR.segbase is not None
+def opsize(ins):
+    d = 4 if ins.bits == 32 else 2
+    return (6 - d) if ins.prefix[2] == 0x66 else d
+def addr16(ins): return ins.i.addr_size == 2
+SREG = {X.X86_REG_CS: ('cs', 'csb'), X.X86_REG_DS: ('ds', 'dsb'), X.X86_REG_ES: ('es', 'esb'), X.X86_REG_SS: ('ss', 'ssb'),
+        X.X86_REG_FS: ('fsel', 'fs'), X.X86_REG_GS: ('gsel', 'gsb')}
+SELBASE = {}   # selector -> linear base, known at build time
+def sel_base(f):
+    """selector on stack -> its linear base from the LDT in guest memory"""
+    f.c(3).e(OPS['shr_u']).c(3).e(OPS['shl']).c(LDT_BASE).e(OPS['add']).mem(0x28)
+def load_sreg(f, reg, val):
+    s, b = SREG[reg]; t = f.i(); val(); f.c(0xffff).e(OPS['and_']).ls(t)
+    f.lg(t).gs(s); f.lg(t); sel_base(f); f.gs(b)
+
 def emit_addr(f, m, seg=True):
     parts = 0
     if m.base:
@@ -312,6 +340,12 @@ def emit_addr(f, m, seg=True):
         f.c(m.disp)
         if parts: f.e(OPS['add'])
         parts += 1
+    if segmode():
+        if addr16(CUR): f.c(0xffff).e(OPS['and_'])
+        if seg:
+            sreg = m.segment or (X.X86_REG_SS if m.base in (X.X86_REG_BP, X.X86_REG_EBP, X.X86_REG_SP, X.X86_REG_ESP) else X.X86_REG_DS)
+            f.gg(SREG[sreg][1]).e(OPS['add'])
+        return
     if seg and m.segment == X.X86_REG_FS: f.gg('fs').e(OPS['add'])
     elif seg and m.segment not in (0, X.X86_REG_DS, X.X86_REG_SS, X.X86_REG_ES, X.X86_REG_CS): raise Unsupported('segment')
 
@@ -321,13 +355,20 @@ def set_szp(f, r, sz, live):
     if live & SF: f.lg(r).c(8 * sz - 1).e(OPS['shr_u']).c(1).e(OPS['and_']).gs('sf')
     if live & PF: f.lg(r).c(0xff).e(OPS['and_']).e(OPS['popcnt']).c(1).e(OPS['and_']).c(1).e(OPS['xor']).gs('pf')
 
-def push_val(f, val):
+def sp_adjust(f, delta):
+    if segmode():   # 16-bit stack: SP wraps within SS, the high half of ESP is preserved
+        f.gg('esp').c(~0xffff).e(OPS['and_']).gg('esp').c(delta).e(OPS['add']).c(0xffff).e(OPS['and_']).e(OPS['or_']).gs('esp')
+    else: f.gg('esp').c(delta).e(OPS['add']).gs('esp')
+def sp_addr(f):
+    if segmode(): f.gg('ssb').gg('esp').c(0xffff).e(OPS['and_']).e(OPS['add'])
+    else: f.gg('esp')
+def push_val(f, val, size=4):
     # the value is taken before ESP moves, so PUSH ESP stores the old ESP
     t = f.i(); val(); f.ls(t)
-    f.gg('esp').c(4).e(OPS['sub']).gs('esp')
-    f.gg('esp').lg(t).mem(0x36)
-def pop_to(f, t):
-    f.gg('esp').mem(0x28).ls(t); f.gg('esp').c(4).e(OPS['add']).gs('esp')
+    sp_adjust(f, -size)
+    sp_addr(f); f.lg(t).mem(STORE[size])
+def pop_to(f, t, size=4):
+    sp_addr(f); f.mem(LOAD[size]).ls(t); sp_adjust(f, size)
 
 def cond(f, c):
     """push i32 0/1 for condition code c"""
@@ -383,8 +424,9 @@ class Translator:
         f = Fn()
         if self.TRACE: f.c(start).e(0x10, uleb(IMP['btrace']))
         try:
+            global CUR
             for ins in lst:
-                f.ti = 0; f.tq = 0; f.td = 0
+                f.ti = 0; f.tq = 0; f.td = 0; CUR = ins
                 nxt = self.insn(f, ins)
                 if nxt is not None: return f
             f.c(lst[-1].next).e(RETURN)
@@ -404,7 +446,7 @@ class Translator:
         c = cond_of(mn)
         if c and mn.startswith('j'):
             cond(f, c); t = f.i(); f.ls(t)
-            f.c(ops[0].imm).c(ins.next).lg(t).e(SELECT).e(RETURN); return True
+            f.c(imm_target(ins)).c(ins.next).lg(t).e(SELECT).e(RETURN); return True
         if c and mn.startswith('set'):
             Loc(f, ops[0]).write(lambda: cond(f, c)); return
         if c and mn.startswith('cmov'):
@@ -414,10 +456,16 @@ class Translator:
         if mn.rstrip('bwd') in ('movs', 'stos', 'lods', 'scas', 'cmps') and len(mn) == 5:
             return self.string(f, ins, mn[:4], {'b': 1, 'w': 2, 'd': 4}[mn[4]], rep)
         if mn.startswith('f'): return self.fpu(f, ins, mn, ops)
+        if mn in ('lds', 'les', 'lss', 'lfs', 'lgs'): return self.lptr(f, ins, ops, {'lds': X.X86_REG_DS, 'les': X.X86_REG_ES, 'lss': X.X86_REG_SS, 'lfs': X.X86_REG_FS, 'lgs': X.X86_REG_GS}[mn])
         raise Unsupported(mn)
 
     # ---- data movement
     def x_mov(self, f, ins, ops, live):
+        if segmode():
+            if ops[0].type == X.X86_OP_REG and ops[0].reg in SREG:
+                s = Loc(f, ops[1], 2); load_sreg(f, ops[0].reg, lambda: s.read()); return
+            if ops[1].type == X.X86_OP_REG and ops[1].reg in SREG:
+                Loc(f, ops[0]).write(lambda: f.gg(SREG[ops[1].reg][0])); return
         if ops[0].type == X.X86_OP_REG and ops[0].reg in (X.X86_REG_ES, X.X86_REG_DS, X.X86_REG_FS, X.X86_REG_SS): return
         if ops[1].type == X.X86_OP_REG and ops[1].reg in (X.X86_REG_ES, X.X86_REG_DS, X.X86_REG_FS, X.X86_REG_SS, X.X86_REG_CS):
             Loc(f, ops[0]).write(lambda: f.c(0x23)); return
@@ -434,12 +482,59 @@ class Translator:
         a, b = Loc(f, ops[0]), Loc(f, ops[1]); t = f.i(); a.read(); f.ls(t)
         a.write(lambda: b.read()); b.write(lambda: f.lg(t))
     def x_push(self, f, ins, ops, live):
-        s = Loc(f, ops[0], 4)
-        if ops[0].type == X.X86_OP_IMM: push_val(f, lambda: f.c(ops[0].imm))
-        else: push_val(f, lambda: s.read())
+        sz = opsize(ins) if segmode() else 4
+        if ops[0].type == X.X86_OP_REG and ops[0].reg in SREG:
+            if segmode(): push_val(f, lambda: f.gg(SREG[ops[0].reg][0]), sz)
+            else: push_val(f, lambda: f.c(0x23))
+            return
+        s = Loc(f, ops[0], sz)
+        if ops[0].type == X.X86_OP_IMM: push_val(f, lambda: f.c(ops[0].imm), sz)
+        else: push_val(f, lambda: s.read(), sz)
     def x_pop(self, f, ins, ops, live):
-        t = f.i(); pop_to(f, t)
-        Loc(f, ops[0]).write(lambda: f.lg(t))
+        sz = opsize(ins) if segmode() else 4
+        t = f.i(); pop_to(f, t, sz)
+        if ops[0].type == X.X86_OP_REG and ops[0].reg in SREG:
+            if segmode(): load_sreg(f, ops[0].reg, lambda: f.lg(t))
+            return
+        Loc(f, ops[0], sz).write(lambda: f.lg(t))
+    def lptr(self, f, ins, ops, sreg):
+        d, m = Loc(f, ops[0]), Loc(f, ops[1], ops[0].size); sz = ops[0].size
+        t = f.i(); f.lg(m.addr).mem(LOAD[sz]).ls(t)
+        load_sreg(f, sreg, lambda: (f.lg(m.addr), f.c(sz), f.e(OPS['add']), f.mem(0x2f)))
+        d.write(lambda: f.lg(t))
+    def x_pushaw(self, f, ins, ops, live):
+        t = f.i(); f.gg('esp').ls(t)
+        for r in REGS: push_val(f, (lambda r=r: f.lg(t) if r == 'esp' else f.gg(r)), 2)
+    def x_popaw(self, f, ins, ops, live):
+        t = f.i()
+        for r in reversed(REGS):
+            pop_to(f, t, 2)
+            if r != 'esp': f.gg(r).c(~0xffff).e(OPS['and_']).lg(t).e(OPS['or_']).gs(r)
+    def x_pushf(self, f, ins, ops, live):
+        def v():
+            f.c(0x202).gg('cf').e(OPS['or_'])
+            for n, b in (('pf', 2), ('zf', 6), ('sf', 7), ('df', 10), ('of', 11)): f.gg(n).c(b).e(OPS['shl']).e(OPS['or_'])
+        push_val(f, v, opsize(ins) if segmode() else 2)
+    def x_popf(self, f, ins, ops, live):
+        t = f.i(); pop_to(f, t, opsize(ins) if segmode() else 2)
+        for n, b in (('cf', 0), ('pf', 2), ('zf', 6), ('sf', 7), ('df', 10), ('of', 11)): f.lg(t).c(b).e(OPS['shr_u']).c(1).e(OPS['and_']).gs(n)
+    def x_enter(self, f, ins, ops, live):
+        if ops[1].imm & 31: raise Unsupported('enter with nesting')
+        sz = opsize(ins) if segmode() else 4
+        push_val(f, lambda: f.gg('ebp'), sz)
+        if segmode() and sz == 2: f.gg('ebp').c(~0xffff).e(OPS['and_']).gg('esp').c(0xffff).e(OPS['and_']).e(OPS['or_']).gs('ebp')
+        else: f.gg('esp').gs('ebp')
+        sp_adjust(f, -ops[0].imm)
+    def x_xlatb(self, f, ins, ops, live):
+        m = ins.ops[0].mem if ins.ops else None
+        f.gg('eax').c(~0xff).e(OPS['and_'])
+        f.gg('ebx')
+        if segmode() and addr16(ins): f.c(0xffff).e(OPS['and_'])
+        f.gg('eax').c(0xff).e(OPS['and_']).e(OPS['add'])
+        if segmode():
+            if addr16(ins): f.c(0xffff).e(OPS['and_'])
+            f.gg(SREG[(m.segment if m and m.segment else X.X86_REG_DS)][1]).e(OPS['add'])
+        f.mem(0x2d).e(OPS['or_']).gs('eax')
     def x_pushal(self, f, ins, ops, live):
         t = f.i(); f.gg('esp').ls(t)
         for r in REGS: push_val(f, (lambda r=r: f.lg(t) if r == 'esp' else f.gg(r)))
@@ -459,7 +554,14 @@ class Translator:
         t = f.i(); pop_to(f, t)
         for n, b in (('cf', 0), ('pf', 2), ('zf', 6), ('sf', 7), ('df', 10), ('of', 11)): f.lg(t).c(b).e(OPS['shr_u']).c(1).e(OPS['and_']).gs(n)
     def x_leave(self, f, ins, ops, live):
-        t = f.i(); f.gg('ebp').gs('esp'); pop_to(f, t); f.lg(t).gs('ebp')
+        t = f.i()
+        if segmode():
+            sz = opsize(ins)
+            f.gg('esp').c(~0xffff).e(OPS['and_']).gg('ebp').c(0xffff).e(OPS['and_']).e(OPS['or_']).gs('esp'); pop_to(f, t, sz)
+            if sz == 2: f.gg('ebp').c(~0xffff).e(OPS['and_']).lg(t).e(OPS['or_']).gs('ebp')
+            else: f.lg(t).gs('ebp')
+            return
+        f.gg('ebp').gs('esp'); pop_to(f, t); f.lg(t).gs('ebp')
     def x_cdq(self, f, ins, ops, live): f.gg('eax').c(31).e(OPS['shr_s']).gs('edx')
     def x_cwde(self, f, ins, ops, live): f.gg('eax').c(16).e(OPS['shl']).c(16).e(OPS['shr_s']).gs('eax')
     def x_cbw(self, f, ins, ops, live):
@@ -483,26 +585,73 @@ class Translator:
         f.e(OPS['or_']).gs('eax')
 
     # ---- control flow
-    def target(self, f, op):
-        if op.type == X.X86_OP_IMM: f.c(op.imm)
+    def target(self, f, ins, op):
+        if imm_target(ins) is not None: f.c(imm_target(ins)); return
+        if segmode():
+            sz = opsize(ins); Loc(f, op, sz).read()
+            if sz == 2: f.c(0xffff).e(OPS['and_'])
+            f.c(ins.segbase).e(OPS['add'])
         else: Loc(f, op, 4).read()
-    def x_jmp(self, f, ins, ops, live): self.target(f, ops[0]); f.e(RETURN); return True
+    def x_jmp(self, f, ins, ops, live): self.target(f, ins, ops[0]); f.e(RETURN); return True
     def x_call(self, f, ins, ops, live):
-        t = f.i(); self.target(f, ops[0]); f.ls(t)
-        push_val(f, lambda: f.c(ins.next)); f.lg(t).e(RETURN); return True
+        t = f.i(); self.target(f, ins, ops[0]); f.ls(t)
+        if segmode(): push_val(f, lambda: f.c(ins.next - ins.segbase), opsize(ins))
+        else: push_val(f, lambda: f.c(ins.next))
+        f.lg(t).e(RETURN); return True
     def x_ret(self, f, ins, ops, live):
-        t = f.i(); pop_to(f, t)
+        t = f.i()
+        if segmode():
+            pop_to(f, t, opsize(ins))
+            if ops: sp_adjust(f, ops[0].imm)
+            f.lg(t).c(ins.segbase).e(OPS['add']).e(RETURN); return True
+        pop_to(f, t)
         if ops: f.gg('esp').c(ops[0].imm).e(OPS['add']).gs('esp')
         f.lg(t).e(RETURN); return True
+    # far control flow: CS:IP. Targets known at build time are resolved through SELBASE.
+    def far_dest(self, f, ins, ops, push_ret):
+        sz = opsize(ins); sel, off = f.i(), f.i()
+        if ops[0].type == X.X86_OP_IMM:
+            f.c(ops[0].imm & 0xffff).ls(sel); f.c(ops[1].imm).ls(off)
+        else:
+            m = Loc(f, ops[0], sz)
+            f.lg(m.addr).mem(LOAD[sz]).ls(off); f.lg(m.addr).c(sz).e(OPS['add']).mem(0x2f).ls(sel)
+        if push_ret:
+            push_val(f, lambda: f.gg('cs'), sz)
+            push_val(f, lambda: f.c(ins.next - ins.segbase), sz)
+        load_sreg(f, X.X86_REG_CS, lambda: f.lg(sel))
+        f.gg('csb').lg(off).e(OPS['add']).e(RETURN); return True
+    def x_lcall(self, f, ins, ops, live): return self.far_dest(f, ins, ops, True)
+    def x_ljmp(self, f, ins, ops, live): return self.far_dest(f, ins, ops, False)
+    def x_retf(self, f, ins, ops, live):
+        sz = opsize(ins); off, sel = f.i(), f.i()
+        pop_to(f, off, sz); pop_to(f, sel, sz)
+        if ops: sp_adjust(f, ops[0].imm)
+        load_sreg(f, X.X86_REG_CS, lambda: f.lg(sel))
+        f.gg('csb').lg(off).e(OPS['add']).e(RETURN); return True
+    def counter(self, f, ins):
+        """push CX or ECX per address size, and return a setter for its decremented value"""
+        if segmode() and addr16(ins): f.gg('ecx').c(0xffff).e(OPS['and_']); return True
+        f.gg('ecx'); return False
     def x_jecxz(self, f, ins, ops, live):
-        f.c(ops[0].imm).c(ins.next).gg('ecx').e(OPS['eqz']).e(SELECT).e(RETURN); return True
-    def x_loop(self, f, ins, ops, live):
-        f.gg('ecx').c(1).e(OPS['sub']).gs('ecx')
-        f.c(ops[0].imm).c(ins.next).gg('ecx').e(SELECT).e(RETURN); return True
+        f.c(imm_target(ins)).c(ins.next); self.counter(f, ins); f.e(OPS['eqz']).e(SELECT).e(RETURN); return True
+    x_jcxz = x_jecxz
+    def x_loop(self, f, ins, ops, live): return self.loopx(f, ins, None)
+    def x_loope(self, f, ins, ops, live): return self.loopx(f, ins, 'e')
+    def x_loopne(self, f, ins, ops, live): return self.loopx(f, ins, 'ne')
+    def loopx(self, f, ins, cc):
+        if segmode() and addr16(ins):
+            f.gg('ecx').c(~0xffff).e(OPS['and_']).gg('ecx').c(1).e(OPS['sub']).c(0xffff).e(OPS['and_']).e(OPS['or_']).gs('ecx')
+        else: f.gg('ecx').c(1).e(OPS['sub']).gs('ecx')
+        t = f.i(); self.counter(f, ins); f.c(0).e(OPS['ne'])
+        if cc: cond(f, cc); f.e(OPS['and_'])
+        f.ls(t); f.c(imm_target(ins)).c(ins.next).lg(t).e(SELECT).e(RETURN); return True
     def x_int3(self, f, ins, ops, live):
         f.c(ins.addr).c(3).e(0x10, uleb(IMP['trap'])); f.c(SENTINEL).e(RETURN); return True
     x_hlt = x_int3; x_ud2 = x_int3
-    def x_int(self, f, ins, ops, live): return self.x_int3(f, ins, ops, live)
+    def x_int(self, f, ins, ops, live):
+        f.c(ins.addr).c(0x100 + (ops[0].imm & 0xff)).e(0x10, uleb(IMP['trap'])); f.c(SENTINEL).e(RETURN); return True
+    def x_cli(self, f, ins, ops, live): return
+    x_sti = x_cli
 
     # ---- arithmetic
     def alu(self, f, ins, mn):
@@ -731,6 +880,7 @@ class Translator:
 
     # ---- string instructions
     def string(self, f, ins, kind, sz, rep):
+        if segmode(): return self.string_seg(f, ins, kind, sz, rep)
         step = f.i()
         f.c(-sz).c(sz).gg('df').e(SELECT).ls(step)      # DF=1 decrements
         def one():
@@ -765,6 +915,45 @@ class Translator:
             f.gg('zf')
             if rep == 0xf2: pass            # repne: stop when ZF=1
             else: f.e(OPS['eqz'])           # repe: stop when ZF=0
+            f.e(0x0d, uleb(1))
+        f.e(0x0c, uleb(0), 0x0b, 0x0b)
+
+    def string_seg(self, f, ins, kind, sz, rep):
+        a16 = addr16(ins); mask = 0xffff if a16 else 0xffffffff
+        srcop = next((o for o in ins.ops if o.type == X.X86_OP_MEM and o.mem.base in (X.X86_REG_SI, X.X86_REG_ESI)), None)
+        sseg = SREG[(srcop.mem.segment if srcop is not None and srcop.mem.segment else X.X86_REG_DS)][1]
+        step = f.i(); f.c(-sz).c(sz).gg('df').e(SELECT).ls(step)
+        idx = lambda r: (f.gg(r), f.c(mask), f.e(OPS['and_'])) if a16 else f.gg(r)
+        src = lambda: (idx('esi'), f.gg(sseg), f.e(OPS['add']))
+        dst = lambda: (idx('edi'), f.gg('esb'), f.e(OPS['add']))
+        def bump(r):
+            if a16: f.gg(r).c(~0xffff).e(OPS['and_']).gg(r).lg(step).e(OPS['add']).c(0xffff).e(OPS['and_']).e(OPS['or_']).gs(r)
+            else: f.gg(r).lg(step).e(OPS['add']).gs(r)
+        def one():
+            if kind == 'movs': dst(); src(); f.mem(LOAD[sz]).mem(STORE[sz]); bump('esi'); bump('edi')
+            elif kind == 'stos': dst(); f.gg('eax').mem(STORE[sz]); bump('edi')
+            elif kind == 'lods':
+                if sz == 4: src(); f.mem(0x28).gs('eax')
+                else: f.gg('eax').c(~MASK[sz]).e(OPS['and_']); src(); f.mem(LOAD[sz]).e(OPS['or_']).gs('eax')
+                bump('esi')
+            else:
+                a, b, r = f.i(), f.i(), f.i()
+                if kind == 'cmps': src(); f.mem(LOAD[sz]).ls(a); dst(); f.mem(LOAD[sz]).ls(b); bump('esi')
+                else: f.gg('eax').c(MASK[sz]).e(OPS['and_']).ls(a); dst(); f.mem(LOAD[sz]).ls(b)
+                bump('edi')
+                f.lg(a).lg(b).e(OPS['sub']).c(MASK[sz]).e(OPS['and_']).ls(r)
+                f.lg(a).lg(b).e(OPS['lt_u']).gs('cf')
+                f.lg(a).lg(b).e(OPS['xor']).lg(a).lg(r).e(OPS['xor']).e(OPS['and_']).c(8 * sz - 1).e(OPS['shr_u']).c(1).e(OPS['and_']).gs('of')
+                set_szp(f, r, sz, ALLF)
+        if not rep: one(); return
+        f.e(0x02, 0x40, 0x03, 0x40)
+        f.gg('ecx').c(mask).e(OPS['and_']).e(OPS['eqz']).e(0x0d, uleb(1))
+        one()
+        if a16: f.gg('ecx').c(~0xffff).e(OPS['and_']).gg('ecx').c(1).e(OPS['sub']).c(0xffff).e(OPS['and_']).e(OPS['or_']).gs('ecx')
+        else: f.gg('ecx').c(1).e(OPS['sub']).gs('ecx')
+        if kind in ('cmps', 'scas'):
+            f.gg('zf')
+            if rep != 0xf2: f.e(OPS['eqz'])
             f.e(0x0d, uleb(1))
         f.e(0x0c, uleb(0), 0x0b, 0x0b)
 
@@ -895,17 +1084,176 @@ class Translator:
         raise Unsupported(mn)
 
 # ---------------------------------------------------------------- module assembly
-def build(path, out, base=None, lookup=0x06000000):
-    data = open(path, 'rb').read()
-    pe = PE(data)
-    if base is not None and base != pe.base: pe.rebase(base)
-    insns, entries = decode_all(pe)
-    blocks = build_blocks(pe, insns, entries)
-    liveness(blocks)
-    tr = Translator(pe, blocks)
-    order = sorted(blocks)
-    bodies = [tr.block(s, blocks[s]) for s in order]
+# ---------------------------------------------------------------- NE (16-bit) modules
+class NE:
+    """An NE module laid out for execution: segment i at base + i*64K with LDT selector selbase + 8*i."""
+    def __init__(self, data, base, selbase):
+        self.data = d = data; n = u32(d, 0x3c); self.n = n
+        self.align = u16(d, n + 0x32); nseg = u16(d, n + 0x1c); self.autodata = u16(d, n + 0xe)
+        csip = u32(d, n + 0x14); self.entry_seg, self.entry_off = csip >> 16, csip & 0xffff
+        self.mods = []
+        for i in range(u16(d, n + 0x1e)):
+            q = n + u16(d, n + 0x2a) + u16(d, n + u16(d, n + 0x28) + 2 * i); self.mods.append(d[q + 1:q + 1 + d[q]].decode())
+        q = n + u16(d, n + 0x26); self.name = d[q + 1:q + 1 + d[q]].decode()
+        self.segs = []
+        for i in range(nseg):
+            o = n + u16(d, n + 0x22) + 8 * i
+            off, ln, fl, al = u16(d, o) << self.align, u16(d, o + 2) or 0x10000, u16(d, o + 4), u16(d, o + 6) or 0x10000
+            if not u16(d, o): ln = 0
+            sg = dict(num=i + 1, fileoff=off, len=ln, flags=fl, alloc=max(al, ln), base=base + 0x10000 * i, sel=selbase + 8 * i,
+                      bits=32 if fl & 0x2000 else 16, code=not fl & 1)
+            if i + 1 == self.autodata: sg['alloc'] = 0x10000          # DGROUP: local heap may grow to 64K
+            self.segs.append(sg)
+        self.entries = {}
+        p = n + u16(d, n + 4); ordn = 1
+        while True:
+            cnt, seg = d[p], d[p + 1]; p += 2
+            if cnt == 0: break
+            for _ in range(cnt):
+                if seg == 0: ordn += 1; continue
+                if seg == 0xff: self.entries[ordn] = (d[p + 3], u16(d, p + 4)); p += 6
+                else: self.entries[ordn] = (seg, u16(d, p + 1)); p += 3
+                ordn += 1
+        self.names = {}
+        for tab, absolute in ((n + u16(d, n + 0x26), False), (u32(d, n + 0x2c), True)):
+            q = tab; first = True
+            while q < len(d) and d[q]:
+                nm = d[q + 1:q + 1 + d[q]].decode('latin1'); o = u16(d, q + 1 + d[q]); q += 3 + d[q]
+                if not first: self.names[nm.upper()] = o
+                first = False
+        self.image = bytearray(0x10000 * nseg); self.base = base
+        for sg in self.segs:
+            if sg['len']: self.image[sg['base'] - base: sg['base'] - base + sg['len']] = d[sg['fileoff']: sg['fileoff'] + sg['len']]
+        for sg in self.segs: SELBASE[sg['sel']] = sg['base']
+        SELBASE[THUNK16_SEL] = THUNK16_BASE
+    def seg_of(self, lin):
+        for sg in self.segs:
+            if sg['base'] <= lin < sg['base'] + 0x10000: return sg
+        return None
+    def in_code(self, lin):
+        sg = self.seg_of(lin); return bool(sg and sg['code'] and lin - sg['base'] < sg['len'])
+    def export(self, key):
+        """(selector, offset) of an exported ordinal or name"""
+        if isinstance(key, str): key = self.names.get(key.upper())
+        e = self.entries.get(key)
+        if not e: return None
+        return self.segs[e[0] - 1]['sel'], e[1]
+    def relocate(self, resolve):
+        """apply NE relocations; returns (fixups [linear, size, value], far code targets)"""
+        d, fixups, targets = self.data, [], []
+        def put(lin, size, val):
+            o = lin - self.base
+            self.image[o:o + size] = (val & ((1 << (8 * size)) - 1)).to_bytes(size, 'little'); fixups.append([lin, size, val & ((1 << (8 * size)) - 1)])
+        for sg in self.segs:
+            if not sg['flags'] & 0x100 or not sg['len']: continue
+            r = sg['fileoff'] + sg['len']; cnt = u16(d, r); r += 2
+            for _ in range(cnt):
+                atype, rtype, off, a1, a2 = d[r], d[r + 1], u16(d, r + 2), u16(d, r + 4), u16(d, r + 6); r += 8
+                kind, additive = rtype & 3, bool(rtype & 4)
+                if kind == 3: continue                                  # OSFIXUP (FP emulation): no-op on a real FPU
+                if kind == 0:
+                    if a1 == 0xff: es, eo = self.entries[a2]; tsel, toff = self.segs[es - 1]['sel'], eo
+                    else: tsel, toff = self.segs[a1 - 1]['sel'], a2
+                    tsg = self.segs[(tsel - self.segs[0]['sel']) // 8]
+                    if tsg['code'] and atype in (3, 11): targets.append(tsg['base'] + toff)
+                else:
+                    mod = self.mods[a1 - 1]
+                    if kind == 1: key = a2
+                    else: q = self.n + u16(d, self.n + 0x2a) + a2; key = d[q + 1:q + 1 + d[q]].decode()
+                    tsel, toff = resolve(mod, key)
+                o = off
+                while True:
+                    lin = sg['base'] + o; cur = int.from_bytes(self.image[lin - self.base: lin - self.base + 4], 'little')
+                    nxt = cur & 0xffff
+                    if atype == 0: put(lin, 1, (cur & 0xff) + (toff if additive else 0) if additive else toff)
+                    elif atype == 2: put(lin, 2, ((cur & 0xffff) + tsel) if additive else tsel)
+                    elif atype == 5: put(lin, 2, ((cur & 0xffff) + toff) if additive else toff)
+                    elif atype == 13: put(lin, 4, ((cur & 0xffffffff) + toff) if additive else toff)
+                    elif atype == 3: put(lin, 2, ((cur & 0xffff) + toff) if additive else toff); put(lin + 2, 2, tsel)
+                    elif atype == 11: put(lin, 4, toff); put(lin + 4, 2, tsel)
+                    else: raise ValueError('reloc address type %d' % atype)
+                    if additive or nxt == 0xffff or nxt >= sg['len']: break
+                    o = nxt
+        return fixups, targets
 
+def decode_ne(ne, entries):
+    md = {16: capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_16), 32: capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)}
+    for m in md.values(): m.detail = True
+    insns, todo, seen = {}, list(entries), set()
+    def walk(start):
+        a = start
+        while a not in insns:
+            if not ne.in_code(a): return
+            sg = ne.seg_of(a); off = a - sg['base']
+            got = next(md[sg['bits']].disasm(bytes(ne.image[a - ne.base: a - ne.base + 16]), off, 1), None)
+            if got is None: return
+            ins = Insn(); ins.i = got; ins.addr = a; ins.size = got.size; ins.next = a + got.size
+            ins.mn = got.mnemonic.split()[-1]; ins.ops = got.operands; ins.prefix = got.prefix
+            ins.segbase = sg['base']; ins.bits = sg['bits']
+            g = got.groups
+            branch = ins.mn[0] == 'j' or ins.mn in ('call', 'lcall', 'loop', 'loope', 'loopne')
+            if branch and got.operands and got.operands[0].type == X.X86_OP_IMM:
+                if ins.mn in ('lcall', 'ljmp'):
+                    sel = got.operands[0].imm & 0xffff; ins.farsel = sel
+                    if sel in SELBASE: ins.tgt = SELBASE[sel] + (got.operands[1].imm & 0xffffffff)
+                else:
+                    ins.tgt = sg['base'] + (got.operands[0].imm & (0xffff if sg['bits'] == 16 and got.prefix[2] != 0x66 else 0xffffffff))
+            insns[a] = ins
+            if ins.tgt is not None: todo.append(ins.tgt)
+            if ins.mn in ('jmp', 'ljmp', 'ret', 'retf', 'hlt', 'int3', 'ud2', 'iret', 'iretd'): return
+            a = ins.next
+    while todo:
+        t = todo.pop()
+        if t not in seen: seen.add(t); walk(t)
+    return insns, seen
+
+def load_registry(path):
+    try: return json.load(open(path))
+    except (OSError, ValueError): return {'thunks': [], 'modules': {}}
+
+def build_ne(path, out, base, selbase, lookup, registry):
+    data = open(path, 'rb').read()
+    reg = load_registry(registry)
+    ne = NE(data, base, selbase)
+    for m in reg['modules'].values():
+        for sg in m['segs']: SELBASE[sg['sel']] = sg['base']
+    def resolve(mod, key):
+        m = reg['modules'].get(mod.upper())
+        if m:
+            k = str(key) if isinstance(key, int) else key.upper()
+            hit = m['exports'].get(k) or (m['names'].get(k) and m['exports'].get(str(m['names'][k])))
+            if hit: return tuple(hit)
+        tk = '%s.%s' % (mod.upper(), ('#%d' % key) if isinstance(key, int) else key.upper())
+        if tk not in reg['thunks']: reg['thunks'].append(tk)
+        return THUNK16_SEL, 4 * reg['thunks'].index(tk)
+    fixups, far_targets = ne.relocate(resolve)
+    entries = [ne.segs[s - 1]['base'] + o for s, o in ne.entries.values() if ne.segs[s - 1]['code']]
+    if ne.entry_seg: entries.append(ne.segs[ne.entry_seg - 1]['base'] + ne.entry_off)
+    entries += far_targets
+    insns, seen = decode_ne(ne, entries)
+    blocks = build_blocks(ne, insns, seen)
+    liveness(blocks)
+    tr = Translator(ne, blocks)
+    order = sorted(blocks)
+    bodies = [tr.block(st, blocks[st]) for st in order]
+    code = [sg for sg in ne.segs if sg['code'] and sg['len']]
+    text_lo, text_hi = min(sg['base'] for sg in code), max(sg['base'] + sg['len'] for sg in code)
+    mod = assemble(bodies, text_lo, text_hi, lookup)
+    open(out + '.wasm', 'wb').write(mod)
+    exports = {str(o): [ne.segs[s - 1]['sel'], off] for o, (s, off) in ne.entries.items()}
+    reg['modules'][ne.name.upper()] = {'segs': [{k: sg[k] for k in ('num', 'sel', 'base', 'alloc', 'len', 'flags', 'bits')} for sg in ne.segs],
+                                       'exports': exports, 'names': ne.names}
+    json.dump(reg, open(registry, 'w'))
+    meta = dict(kind='ne', name=ne.name, sha256=hashlib.sha256(data).hexdigest(), base=base, selbase=selbase,
+                segs=[{k: sg[k] for k in ('num', 'sel', 'base', 'alloc', 'len', 'flags', 'bits', 'fileoff')} for sg in ne.segs],
+                autodata=ne.autodata, entry=[ne.entry_seg, ne.entry_off], exports=exports, names=ne.names, fixups=fixups,
+                textLo=text_lo, textHi=text_hi, lookup=lookup, blocks=order, thunks=reg['thunks'],
+                layout=dict(sentinel=SENTINEL, thunkBase=THUNK_BASE, thunk16Base=THUNK16_BASE, thunk16Sel=THUNK16_SEL, ldt=LDT_BASE, fpuBase=FPU_BASE, pages=MEM_PAGES))
+    json.dump(meta, open(out + '.json', 'w'))
+    print('%s: %d insns, %d blocks, wasm %d bytes, %d fixups, %d thunks' % (ne.name, len(insns), len(blocks), len(mod), len(fixups), len(reg['thunks'])))
+    if tr.unsupported: print('  unsupported:', dict(sorted(tr.unsupported.items(), key=lambda kv: -kv[1])[:25]))
+
+def assemble(bodies, text_lo, text_hi, lookup):
     types = [((), (I32,)), ((I32,), (I32,))]
     for _, p, r in IMPORTS:
         if (tuple(p), tuple(r)) not in types: types.append((tuple(p), tuple(r)))
@@ -925,11 +1273,10 @@ def build(path, out, base=None, lookup=0x06000000):
     r = Fn(nparams=1); EIP = 0; ID = 1
     r.e(0x03, 0x40)                                         # loop
     r.lg(EIP).c(SENTINEL).e(OPS['eq']).e(0x04, 0x40).lg(EIP).gs('eip').c(0).e(RETURN).e(0x0b)
-    r.lg(EIP).c(THUNK_BASE).e(OPS['ge_u']).e(0x04, 0x40)
+    r.lg(EIP).c(THUNK16_BASE).e(OPS['ge_u']).e(0x04, 0x40)
     r.lg(EIP).gs('eip').lg(EIP).e(0x10, uleb(IMP['api'])).ls(EIP)
     r.lg(EIP).c(-1).e(OPS['eq']).e(0x04, 0x40).c(1).e(RETURN).e(0x0b)
     r.e(0x0c, uleb(1)).e(0x0b)                              # br loop
-    text_lo = min(pe.base + a for a, n in pe.code); text_hi = max(pe.base + a + n for a, n in pe.code)
     assert (text_hi - text_lo) * 4 <= LOOKUP_BYTES
     r.lg(EIP).c(text_lo).e(OPS['sub']).lt(ID).c(text_hi - text_lo).e(OPS['ge_u'])
     r.e(0x04, 0x40).lg(EIP).gs('eip').c(3).e(RETURN).e(0x0b)
@@ -943,6 +1290,21 @@ def build(path, out, base=None, lookup=0x06000000):
     code = vec([rbody] + [b.body() for b in bodies])
     mod = b'\0asm\x01\0\0\0' + sec(1, tsec) + sec(2, vec(imps)) + sec(3, fsec) + sec(4, vec([tbl])) + \
           sec(7, vec(exps)) + sec(9, elem) + sec(10, code)
+    return mod
+
+def build(path, out, base=None, lookup=0x06000000):
+    data = open(path, 'rb').read()
+    pe = PE(data)
+    if base is not None and base != pe.base: pe.rebase(base)
+    insns, entries = decode_all(pe)
+    blocks = build_blocks(pe, insns, entries)
+    liveness(blocks)
+    tr = Translator(pe, blocks)
+    order = sorted(blocks)
+    bodies = [tr.block(s, blocks[s]) for s in order]
+
+    text_lo = min(pe.base + a for a, n in pe.code); text_hi = max(pe.base + a + n for a, n in pe.code)
+    mod = assemble(bodies, text_lo, text_hi, lookup)
     open(out + '.wasm', 'wb').write(mod)
     meta = dict(sha256=hashlib.sha256(data).hexdigest(), base=pe.base, prefBase=pe.pref, entry=pe.entry, textLo=text_lo, textHi=text_hi,
                 lookup=lookup, blocks=order, layout=dict(sentinel=SENTINEL, thunkBase=THUNK_BASE, fpuBase=FPU_BASE, pages=MEM_PAGES))
@@ -953,6 +1315,9 @@ def build(path, out, base=None, lookup=0x06000000):
 if __name__ == '__main__':
     a = sys.argv[1:]; kw = {}
     if '--trace' in a: a.remove('--trace'); Translator.TRACE = True
+    reg = None
+    if '--registry' in a: k = a.index('--registry'); reg = a[k + 1]; del a[k:k + 2]
     while len(a) > 2:
         v = int(a.pop(), 0); k = a.pop().lstrip('-'); kw[k] = v
-    build(a[0], a[1], **kw)
+    if reg: build_ne(a[0], a[1], kw['base'], kw['selbase'], kw.get('lookup', 0x06000000), reg)
+    else: build(a[0], a[1], **kw)
