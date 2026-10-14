@@ -1601,7 +1601,7 @@ P.loadCtx16 = function (c) { for (const r of CTX) this.cpu[r].value = c[r]; this
 P.threads16 = function () {
   if (!this.threadsById || this.thread16 || this.depth) return;
   for (const t of this.threadsById.values()) {
-    if (t.id === MAIN_TID || t.state === 'done' || (t.state === 'waiting' && !(t.wait && t.wait.set))) continue;
+    if (t.id === MAIN_TID || !t.state || t.state === 'done' || (t.state === 'waiting' && !(t.wait && t.wait.set))) continue;
     const main = this.saveCtx16();
     this.thread16 = t;
     let r;
