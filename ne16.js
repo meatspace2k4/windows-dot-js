@@ -418,6 +418,34 @@ const INTS = {
       case 0x0d: return;   // disk reset: nothing is buffered
       case 0x25: (this.dosVec = this.dosVec || {})[al] = u32((this.cpu.ds.value << 16) | (this.cpu.edx.value & 0xffff)); return;
     }
+    // handle file calls, on the handles KERNEL's _lopen/OpenFile give out: BX handle, CX count, DS:DX buffer or name;
+    // CF and AX = error code on failure (2 not found, 5 denied, 6 bad handle)
+    if (!this.rmode && [0x3c, 0x3d, 0x3e, 0x3f, 0x40, 0x41, 0x42, 0x57].includes(ah)) {
+      const bx = this.cpu.ebx.value & 0xffff, cx = this.cpu.ecx.value & 0xffff, dx = this.cpu.edx.value & 0xffff;
+      const dsdx = () => this.lin((this.cpu.ds.value << 16) | dx), f = this.dosFiles.get(bx);
+      const fail = code => { CF(this, 1); this.ax(code); };
+      try {
+        switch (ah) {
+          case 0x3c: case 0x3d: {
+            const name = this.readA(dsdx()) || '', full = ah === 0x3c ? (/^[a-z]:\\/i.test(name) ? name : window.W95FS.join(this.fs.cwd, name)) : this.findFile16(name);
+            if (!full) return fail(2);
+            const h = this.dosOpen(full, ah === 0x3c ? 'w+' : (al & 3) === 0 ? 'r' : 'r+'); return h === 0xffff ? fail(this.lastError || 2) : this.ax(h);
+          }
+          case 0x3e: if (!f) return fail(6); this.fs.close(f.fd); this.dosFiles.delete(bx); return;
+          case 0x3f: { if (!f) return fail(6); const b = this.fs.read(f.fd, cx); this.u8.set(b, dsdx()); return this.ax(b.length); }
+          case 0x40: if (!f) return fail(6); return this.ax(this.fs.write(f.fd, this.u8.slice(dsdx(), dsdx() + cx)));
+          case 0x41: this.fs.unlink(this.readA(dsdx()) || ''); return;
+          case 0x57: {   // file dates: AL 0 written, 4 accessed, 6 created (CX time, DX date); the setters change nothing
+            if (!f) return fail(6); if (al & 1) return;
+            const i = this.fs.fstat(f.fd), d = new Date(al === 4 ? i.atime : al === 6 ? i.ctime : i.mtime);
+            this.cpu.ecx.value = lo16(this.cpu.ecx.value, al === 4 ? 0 : (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1));
+            this.cpu.edx.value = lo16(this.cpu.edx.value, ((Math.max(d.getFullYear(), 1980) - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate());
+            return;
+          }
+          case 0x42: { if (!f) return fail(6); const pos = this.fs.seek(f.fd, ((cx << 16) | dx) | 0, al); this.ax(pos & 0xffff); this.cpu.edx.value = lo16(this.cpu.edx.value, pos >>> 16); return; }
+        }
+      } catch (e) { if (e instanceof window.W95FS.FSError) return fail(e.code || 5); throw e; }
+    }
     this.trapped = `unhandled int 21h ax=${this.ax().toString(16)}`; return LAYOUT.SENTINEL;
   },
   0x11() { this.ax(0x0023); },
