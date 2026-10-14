@@ -1093,11 +1093,11 @@ def16('KERNEL', 180, 'xl', 'l', function (sp, d) { const s = sp >>> 16; this.w32
 def16('KERNEL', 357, 'x', 'l', function (sp) { return this.lin(sp); });              // MapSL
 def16('KERNEL', 358, 'l', 'l', function (a) { return this.mapLS(a); });              // MapLS
 def16('KERNEL', 359, 'x', 'v', function () {});                                      // UnMapLS
-def16('KERNEL', 613, '', 'jmp', function () {          // HugeMapLS: EAX = linear, ECX = size -> EAX = 16:16 (tiled selectors), ECX = handle
+def16('KERNEL', 613, '', 'jmp', function () {          // HugeMapLS: EAX = linear, ECX = size -> EAX and DX:AX = 16:16 (tiled selectors), ECX = handle
   const lin = u32(this.cpu.eax.value), n = u32(this.cpu.ecx.value); this.cpu.cf.value = 0;
-  if (!lin) { this.cpu.eax.value = 0; this.cpu.ecx.value = 0; return this.retf16(0); }
+  if (!lin) { this.cpu.eax.value = 0; this.cpu.ecx.value = 0; this.cpu.edx.value = lo16(this.cpu.edx.value, 0); return this.retf16(0); }
   const sel = this.allocSels(lin, Math.max(n, 1));
-  this.cpu.eax.value = (sel << 16) | 0; this.cpu.ecx.value = sel | (Math.ceil(Math.max(n, 1) / 0x10000) << 16);
+  this.cpu.eax.value = (sel << 16) | 0; this.cpu.edx.value = lo16(this.cpu.edx.value, sel); this.cpu.ecx.value = sel | (Math.ceil(Math.max(n, 1) / 0x10000) << 16);
   return this.retf16(0);
 });
 def16('KERNEL', 614, '', 'jmp', function () {          // HugeUnMapLS: ECX = the handle HugeMapLS returned
