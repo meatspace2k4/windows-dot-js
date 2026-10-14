@@ -544,7 +544,7 @@ P.nativeWindows = function () {
     if (!u(49, [['w', h]])) continue;                                                                                 // IsWindowVisible
     u(32, [['w', h], ['l', buf]]);                                                                                    // GetWindowRect
     const x = s16(0), y = s16(2), w = s16(4) - x, hh = s16(6) - y;
-    const tl = u(36, [['w', h], ['l', buf + 16], ['w', 160]]), title = tl ? this.readA(a + 16, tl) : '';               // GetWindowText
+    const tl = this.user16(107, [['w', h], ['w', 0x0d], ['w', 160], ['l', buf + 16]]).ax, title = tl ? this.readA(a + 16, tl) : '';   // DefWindowProc WM_GETTEXT: USER's own copy, no message sent
     const cl = u(58, [['w', h], ['l', buf + 0x180], ['w', 64]]), cls = cl ? this.readA(a + 0x180, cl) : '';          // GetClassName
     list.push({ hwnd: h, x, y, w, h: hh, title, cls, owner: u(262, [['w', h], ['w', 4]]), iconic: !!u(31, [['w', h]]) });   // GW_OWNER, IsIconic
   }
