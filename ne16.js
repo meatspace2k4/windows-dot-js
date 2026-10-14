@@ -816,7 +816,7 @@ K('#43', 5, function (thunk, thkbuf, len, dll16) {      // ThunkInitLS
 });
 K('#46', 5, function (thunk, thkbuf, len, dll16) {      // ThunkInitSL
   const td = this.thunkData16(this.readA(dll16), this.readA(thkbuf));
-  this.w32(this.lin(this.r32(td + 4)), thunk); return 0;
+  this.w32(this.lin(this.r32(td + 4)), thunk); return 1;
 });
 K('#41', 5, function (thunk, thkbuf, len, dll16) {      // ThunkInitLSF
   this.w32(thunk + 0x35, this.thunkFor('KERNEL32', '#90')); this.w32(thunk + 0x6d, this.thunkFor('KERNEL32', '#89'));
