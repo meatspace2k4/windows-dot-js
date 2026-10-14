@@ -10,6 +10,7 @@
 const LAYOUT = { SENTINEL: 0xFFFFFFF0, THUNK: 0xFFFF0000, FPU: 0x10000, TIB: 0x11000, SCRATCH: 0x12000,
   STACK_LO: 0x100000, STACK_TOP: 0x3ffff0, HEAP: 0x02000000, HEAP_END: 0x06000000 };
 const YIELD = Symbol('yield');   // returned by an API implementation to suspend the guest at depth 0
+const TICK_MS = 65536 * 1000 / 1193182;   // PIT channel 0 period, 54.925 ms
 const CPU_REGS = ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi', 'cf', 'pf', 'zf', 'sf', 'of', 'df', 'fs', 'ftop', 'fsw', 'fcw', 'eip'];
 const WM = { NULL: 0, CREATE: 1, DESTROY: 2, MOVE: 3, SIZE: 5, ACTIVATE: 6, SETFOCUS: 7, KILLFOCUS: 8, PAINT: 0xf, CLOSE: 0x10,
   QUIT: 0x12, ERASEBKGND: 0x14, SHOWWINDOW: 0x18, ACTIVATEAPP: 0x1c, SETCURSOR: 0x20, NCCREATE: 0x81, NCDESTROY: 0x82,
@@ -275,7 +276,7 @@ class Process {
     if (this.quit !== null) return { hwnd: 0, msg: WM.QUIT, wp: this.quit, lp: 0 };
     for (const w of this.windows.values()) if (w.dirty && (!filter || w.hwnd === filter)) { return { hwnd: w.hwnd, msg: WM.PAINT, wp: 0, lp: 0 }; }
     for (const t of this.timers) if (now >= t.due && (!filter || t.hwnd === filter)) {
-      if (remove) t.due = now + Math.max(t.ms, 1);
+      if (remove) { t.due += t.ms; if (t.due <= now) t.due = now + t.ms; }   // late ticks coalesce, as WM_TIMER does
       return { hwnd: t.hwnd, msg: WM.TIMER, wp: t.id, lp: t.proc };
     }
     return null;
@@ -816,7 +817,9 @@ def('USER32', 'PostMessageA', 4, function (h, msg, wp, lp) { this.post(h, msg, w
 def('USER32', 'PostQuitMessage', 1, function (code) { this.quit = code; return 0; });
 def('USER32', 'SetTimer', 4, function (h, id, ms, proc) {
   this.timers = this.timers.filter(t => !(t.hwnd === h && t.id === id));
-  this.timers.push({ hwnd: h, id: id || (0x7000 + this.timers.length), ms, proc, due: this.host.now() + ms }); return id || 1;
+  // Win95 USER timers run off the 18.2 Hz system tick: intervals round up to whole 54.925 ms ticks.
+  const q = Math.max(1, Math.ceil(ms / TICK_MS)) * TICK_MS;
+  this.timers.push({ hwnd: h, id: id || (0x7000 + this.timers.length), ms: q, proc, due: this.host.now() + q }); return id || 1;
 });
 def('USER32', 'KillTimer', 2, function (h, id) { this.timers = this.timers.filter(t => !(t.hwnd === h && t.id === id)); return 1; });
 def('USER32', 'GetClientRect', 2, function (h, p) {
