@@ -1271,6 +1271,18 @@ def16('THUNKLET', 1, '', 'jmp', function () {
   this.seg('cs', relay >>> 16);
   return u32(this.selBase(relay >>> 16) + (relay & 0xffff));
 });
+// CallProc32W (#517): calls a 32-bit stdcall function with `n` DWORD parameters pushed in Pascal order after
+// (n, conversion mask, proc); mask bit i converts the i-th parameter from the stack top from 16:16 to linear.
+// Returns the result in DX:AX and removes everything the caller pushed.
+def16('KERNEL', 517, '', 'jmp', function () {
+  const f = u32(this.cpu.ssb.value) + (this.cpu.esp.value & 0xffff);
+  const n = this.r32(f + 4) & 0x7fffffff, mask = this.r32(f + 8), proc = this.r32(f + 12);
+  const args = new Array(n);
+  for (let i = 0; i < n; i++) { const v = this.r32(f + 16 + 4 * i); args[n - 1 - i] = mask & (1 << i) ? this.lin(v) : v; }
+  const r = u32(this.callFlatFrom16(proc, args));
+  this.cpu.eax.value = r | 0; this.cpu.edx.value = lo16(this.cpu.edx.value, r >>> 16);
+  return this.retf16(12 + 4 * n);
+});
 // KRNL386 seg1:7A28 (#365): adds `delta` (+1 or -1) to the lock count of the global block a selector belongs to; the
 // callback relays lock the caller's stack segment while 32-bit code holds pointers into it
 def16('KERNEL', 365, 'wi', 'v', function (sel, delta) {
