@@ -3344,8 +3344,20 @@ const winInfo = w => ({ title: w.title, x: w.x, y: w.y, w: w.w, h: w.h, active: 
 const findWin = t => { const m = t instanceof RegExp ? w => t.test(w.title) : w => w.title === t; for (let i = windows.length - 1; i >= 0; i--) if (m(windows[i])) return windows[i]; return null; };
 const KEY_NAMES = { enter: 'Enter', esc: 'Escape', escape: 'Escape', tab: 'Tab', backspace: 'Backspace', delete: 'Delete', del: 'Delete',
   up: 'ArrowUp', down: 'ArrowDown', left: 'ArrowLeft', right: 'ArrowRight', home: 'Home', end: 'End', pageup: 'PageUp', pagedown: 'PageDown', space: ' ' };
+const NATIVE_VK = { enter: [13, 'Enter'], escape: [27, 'Escape'], esc: [27, 'Escape'], tab: [9, 'Tab'], backspace: [8, 'Backspace'],
+  delete: [46, 'Delete'], del: [46, 'Delete'], insert: [45, 'Insert'], home: [36, 'Home'], end: [35, 'End'], pageup: [33, 'PageUp'],
+  pagedown: [34, 'PageDown'], up: [38, 'ArrowUp'], down: [40, 'ArrowDown'], left: [37, 'ArrowLeft'], right: [39, 'ArrowRight'],
+  arrowup: [38, 'ArrowUp'], arrowdown: [40, 'ArrowDown'], arrowleft: [37, 'ArrowLeft'], arrowright: [39, 'ArrowRight'], space: [32, 'Space'] };
 function pressKey(spec) {
   const parts = spec.split('+'), name = parts.pop(), mods = new Set(parts.map(m => m.toLowerCase()));
+  const na = nativeFocus();
+  if (na) {   // a native program has the keyboard: the key as a PC keyboard sends it, with its modifiers held around it
+    const n = name.toLowerCase(), f = /^f(\d+)$/.exec(n);
+    const [vk, code] = NATIVE_VK[n] || (f ? [111 + +f[1], 'F' + f[1]] : [name.toUpperCase().charCodeAt(0), (/\d/.test(name) ? 'Digit' : 'Key') + name.toUpperCase()]);
+    const e = { keyCode: vk, code, shiftKey: mods.has('shift'), ctrlKey: mods.has('ctrl'), altKey: mods.has('alt') };
+    na.key(e, false); na.key(e, true); na.key({ keyCode: 0, shiftKey: false, ctrlKey: false, altKey: false }, true);
+    return;
+  }
   const key = KEY_NAMES[name.toLowerCase()] || (/^f\d+$/i.test(name) ? name.toUpperCase() : name);
   handleKey({ key, shiftKey: mods.has('shift'), ctrlKey: mods.has('ctrl'), altKey: mods.has('alt'), metaKey: mods.has('meta'), preventDefault() {} });
 }
