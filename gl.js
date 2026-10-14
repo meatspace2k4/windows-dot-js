@@ -369,6 +369,7 @@ class Context {
   // Copy the rendered frame into the window's current rectangle on its GDI surface.
   present() {
     const dc = this.dc; if (!dc || !dc.ctx) return;
+    if (this.p.stats) this.p.stats.presents++;
     this.g.flush();
     const g = dc.pre(); g.drawImage(this.canvas, 0, 0); dc.post(); dc.touch();
     if (dc.bitmap && dc.bitmap.dib) window.W95Win32.dibOut(this.p, dc.bitmap);

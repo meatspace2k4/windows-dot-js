@@ -39,6 +39,8 @@ class Process {
     this.cpu = {};
     for (const n of CPU_REGS) this.cpu[n] = new WebAssembly.Global({ value: 'i32', mutable: true }, n === 'fcw' ? 0x37f : 0);
     this.depth = 0; this.exitCode = null; this.trapped = null; this.waiting = false; this.lastYield = 0;
+    // counters a benchmark reads: timer messages taken, GL frames presented, time spent running guest code
+    this.stats = { timers: 0, presents: 0, slices: 0, guestMs: 0 };
     this.t0 = host.now();
     this.thunks = []; this.thunkByName = new Map();
     this.handles = new Map(); this.nextHandle = 0x100;
@@ -290,7 +292,7 @@ class Process {
     if (this.quit !== null) return { hwnd: 0, msg: WM.QUIT, wp: this.quit, lp: 0 };
     for (const w of this.windows.values()) if (w.dirty && (!filter || w.hwnd === filter)) { return { hwnd: w.hwnd, msg: WM.PAINT, wp: 0, lp: 0 }; }
     for (const t of this.timers) if (now >= t.due && (!filter || t.hwnd === filter)) {
-      if (remove) { t.due += t.ms; if (t.due <= now) t.due = now + t.ms; }   // late ticks coalesce, as WM_TIMER does
+      if (remove) { t.due += t.ms; if (t.due <= now) t.due = now + t.ms; this.stats.timers++; }   // late ticks coalesce, as WM_TIMER does
       return { hwnd: t.hwnd, msg: WM.TIMER, wp: t.id, lp: t.proc };
     }
     return null;

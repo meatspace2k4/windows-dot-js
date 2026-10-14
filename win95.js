@@ -1871,9 +1871,11 @@ class SaverRun {
     const step = () => {
       if (!this.alive) return;
       const p = this.proc;
-      try { for (let n = 0; this.alive && p.ready() && n < 4; n++) if (!p.slice()) break; }
+      const t0 = performance.now();
+      try { for (let n = 0; this.alive && p.ready() && n < 4; n++) { p.stats.slices++; if (!p.slice()) break; } }
       catch (e) { console.error(e); this.exited(-1, e.message); return; }
       // a guest that faulted or exited without reporting it must not leave its window up
+      p.stats.guestMs += performance.now() - t0;
       if (p.trapped && !p.failed) p.fail(p.trapped);
       if (p.exitCode !== null || p.trapped) { this.exited(p.exitCode, p.trapped); return; }
       if (this.mode === 'p') dirty();
@@ -2578,6 +2580,8 @@ const script = {
   stopSaver() { if (!fullSaver) return false; fullSaver.exited(0); return true; },
   screen() { return { width: W, height: H, taskbar: H - TB }; },
   screenshot() { render(); return cv.toDataURL('image/png'); },
+  // the running full-screen saver's counters since it started (timers, presents, slices, guestMs, ms)
+  saverStats() { const f = fullSaver; return f && f.proc ? { ...f.proc.stats, ms: performance.now() - f.proc.t0 } : null; },
   on(type, fn) { if (!listeners.has(type)) listeners.set(type, new Set()); listeners.get(type).add(fn); return () => listeners.get(type).delete(fn); },
   // resolves with the next event of this type that passes the test, or rejects after the timeout
   next(type, test = () => true, ms = 10000) {
