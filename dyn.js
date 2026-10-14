@@ -465,7 +465,9 @@ P.dynBlock = function (eip) {
   let c = this.dynCache.get(eip);
   if (c && c.bytes.every((v, i) => u8[eip + i] === v)) return c;
   const cs = this.cpu.cs.value & 0xffff, csb = u32(this.cpu.csb.value);
-  const d32 = !cs || !!(this.r32(ACC + (cs & 0xfff8)) & 0x400000);
+  // only code inside the current code segment: a stray jump (to 0, or past the segment) is the guest's fault, not code
+  if (!cs || !eip || eip < csb || eip - csb > this.selLimit(cs)) { this.trapped = `jump to unmapped address ${eip.toString(16)}`; return null; }
+  const d32 = !!(this.r32(ACC + (cs & 0xfff8)) & 0x400000);
   let t;
   try { t = translate(this, eip, csb, d32); }
   catch (e) { if (e instanceof Unsupported) { this.trapped = `run-time code at ${eip.toString(16)}: ${e.message}`; return null; } throw e; }
@@ -479,7 +481,8 @@ P.dynBlock = function (eip) {
 P.dynRun = function (eip) {
   for (let n = 0; ; n++) {
     const blk = this.dynBlock(eip); if (!blk) return null;
-    eip = u32(blk.run());
+    try { eip = u32(blk.run()); }
+    catch (e) { if (!(e instanceof WebAssembly.RuntimeError)) throw e; this.trapped = `run-time code at ${eip.toString(16)} (instruction at ${u32(this.cpu.eip.value).toString(16)}): ${e.message}`; return null; }
     if (eip === LAYOUT.SENTINEL || eip >= LAYOUT.THUNK16) return eip;
     if (this.modules.some(m => eip >= m.meta.textLo && eip < m.meta.textHi && this.hasBlock(m, eip))) return eip;
   }
