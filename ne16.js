@@ -134,10 +134,13 @@ P.loadLibrary16 = function (name) {
   const base = name.toUpperCase().replace(/^.*\\/, '').replace(/\.(DLL|EXE|DRV)$/, '');
   if (base === 'KERNEL') return this.kernelModule();
   if (this.ne.has(base)) return this.ne.get(base);
-  const sys = window.W95SYSTEM && window.W95SYSTEM.ne[base];
+  const all = (window.W95SYSTEM && window.W95SYSTEM.ne) || {};
+  const file = name.toUpperCase().replace(/^.*\\/, '');
+  const sys = all[base] || Object.values(all).find(s => s.fileName === file || s.fileName === file + '.DLL');
   if (!sys) return this.loadNEFile(name);
   const b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
-  const rec = this.loadNE(base, sys.fileBytes || (sys.fileBytes = b64(sys.file)), sys.mod || (sys.mod = new WebAssembly.Module(b64(sys.wasm))), sys.meta);
+  if (this.ne.has(sys.meta.name.toUpperCase())) return this.ne.get(sys.meta.name.toUpperCase());
+  const rec = this.loadNE(sys.meta.name.toUpperCase(), sys.fileBytes || (sys.fileBytes = b64(sys.file)), sys.mod || (sys.mod = new WebAssembly.Module(b64(sys.wasm))), sys.meta);
   for (const imp of sys.meta.imports || []) if (imp !== 'KERNEL') this.loadLibrary16(imp);
   if (!this.initNE(rec)) { console.warn('[ne16]', base, 'LibEntry failed'); }
   return rec;
@@ -290,8 +293,31 @@ const INTS = {
 };
 P.trapHook = function (e, code) {
   if (code < 0x100) return false;
+  if (code >= 0x1000000) { this.portIO(code & 0xffff, (code >> 16) & 7, !!(code & 0x800000)); return true; }
   this.cpu.eip.value = this.interrupt(code - 0x100, u32(e)) | 0;
   return true;
+};
+
+// ---------------------------------------------------------------- VGA ports (the display driver programs them directly)
+P.portIO = function (port, size, isIn) {
+  const v = this.vga || (this.vga = { dacW: 0, dacR: 0, dacC: 0, pal: new Uint8Array(768), regs: {}, retrace: 0, idx: {} });
+  const eax = this.cpu.eax.value;
+  if (!isIn) {
+    const val = size === 1 ? eax & 0xff : size === 2 ? eax & 0xffff : u32(eax);
+    if (port === 0x3c8) { v.dacW = (val & 0xff) * 3; return; }
+    if (port === 0x3c7) { v.dacR = (val & 0xff) * 3; return; }
+    if (port === 0x3c9) { v.pal[v.dacW % 768] = val & 0x3f; v.dacW++; return; }
+    if (size === 2) { v.idx[port] = val & 0xff; v.regs[`${port}:${val & 0xff}`] = val >> 8; return; }
+    if ([0x3c4, 0x3ce, 0x3d4, 0x3c0].includes(port)) { v.idx[port] = val; return; }
+    v.regs[`${port - 1}:${v.idx[port - 1]}`] = val; return;
+  }
+  let r = 0xff;
+  if (port === 0x3da) { v.retrace ^= 9; r = v.retrace; }
+  else if (port === 0x3c9) { r = v.pal[v.dacR % 768]; v.dacR++; }
+  else if ([0x3c5, 0x3cf, 0x3d5].includes(port)) r = v.regs[`${port - 1}:${v.idx[port - 1]}`] ?? 0;
+  else if (port === 0x3cc) r = 0x67;
+  const m = size === 1 ? 0xff : size === 2 ? 0xffff : 0xffffffff;
+  this.cpu.eax.value = (eax & ~m) | (r & m);
 };
 
 // ---------------------------------------------------------------- global heap
@@ -600,6 +626,7 @@ def16('KERNEL', 435, '', 'w', () => 0);                                        /
 def16('KERNEL', 237, '', 'v', function () {});                                 // K237 nop
 def16('KERNEL', 447, '', 'v', function () {});                                 // WIN32_OldYield
 def16('KERNEL', 471, '', 'l', () => 1);                                        // GetCurrentProcessId
+def16('KEYBOARD', 100, 'w', 'v', function () {});                              // ScreenSwitchEnable
 
 // selectors
 def16('KERNEL', 175, 'w', 'w', function (s) { if (!s) return this.allocSels(0, 1); return this.allocSels(this.selBase(s), this.selLimit(s) + 1, this.r32(L.ACC + (s & 0xfff8))); });

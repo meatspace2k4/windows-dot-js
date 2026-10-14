@@ -25,7 +25,7 @@ with tempfile.TemporaryDirectory() as tmp:
         subprocess.run([sys.executable, os.path.join(here, 'recomp.py'), p, base, '--base', hex(b), '--selbase', hex(sel),
                         '--lookup', hex(lk), '--registry', reg], check=True)
         meta = json.load(open(base + '.json'))
-        bundle['ne'][meta['name'].upper()] = {'file': b64(p), 'wasm': b64(base + '.wasm'), 'meta': meta}
+        bundle['ne'][meta['name'].upper()] = {'file': b64(p), 'fileName': f.upper(), 'wasm': b64(base + '.wasm'), 'meta': meta}
     bundle['thunks16'] = json.load(open(reg))['thunks']
     for f, b, lk in PE:
         p = os.path.join(src, f); base = os.path.join(tmp, f)

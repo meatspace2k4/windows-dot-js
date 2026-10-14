@@ -659,6 +659,14 @@ class Translator:
     def x_int(self, f, ins, ops, live):
         # the host services the interrupt and leaves the continuation (ins.next, or the sentinel) in the eip global
         f.c(ins.next).c(0x100 + (ops[0].imm & 0xff)).e(0x10, uleb(IMP['trap'])); f.gg('eip').e(RETURN); return True
+    # port I/O goes to the host: trap(next, 0x1000000 | in << 23 | size << 16 | port), data in AL/AX/EAX
+    def port_io(self, f, ins, port_op, size, is_in):
+        f.c(ins.next)
+        if port_op.type == X.X86_OP_IMM: f.c(0x1000000 | (is_in << 23) | (size << 16) | (port_op.imm & 0xff))
+        else: f.gg('edx').c(0xffff).e(OPS['and_']).c(0x1000000 | (is_in << 23) | (size << 16)).e(OPS['or_'])
+        f.e(0x10, uleb(IMP['trap']))
+    def x_in(self, f, ins, ops, live): self.port_io(f, ins, ops[1], ops[0].size, 1)
+    def x_out(self, f, ins, ops, live): self.port_io(f, ins, ops[0], ops[1].size, 0)
     def x_cli(self, f, ins, ops, live): return
     x_sti = x_cli
 
