@@ -688,10 +688,13 @@ def('KERNEL32', 'FindNextFileA', 2, function (h, data) { const f = this.obj(h); 
 def('KERNEL32', 'FindClose', 1, function (h) { this.handles.delete(h); return 1; });
 def('KERNEL32', 'SearchPathA', 6, function (path, file, ext, n, buf, part) {
   const f = this.readA(file) + (ext && !/\.[^\\]*$/.test(this.readA(file)) ? this.readA(ext) : '');
-  for (const d of [this.readA(path), 'C:\\WINDOWS\\SYSTEM', 'C:\\WINDOWS', this.fs.cwd].filter(Boolean)) {
-    const full = window.W95FS.join(d, f); if (this.fs.exists(full)) { const r = this.fs.realpath(full); this.writeA(buf, r, n); if (part) this.w32(part, buf + r.lastIndexOf('\\') + 1); return r.length; }
+  // an absolute name is only checked; a given path is the only place searched
+  const dirs = /^([a-z]:)?\\/i.test(f) ? [''] : path ? this.readA(path).split(';') : [this.fs.cwd, 'C:\\WINDOWS\\SYSTEM', 'C:\\WINDOWS'];
+  for (const d of dirs) {
+    const full = d ? window.W95FS.join(d, f) : f;
+    if (this.fs.exists(full)) { const r = this.fs.realpath(full); this.writeA(buf, r, n); if (part) this.w32(part, buf + r.lastIndexOf('\\') + 1); this.lastError = 0; return r.length; }
   }
-  return 0;
+  this.lastError = 2; return 0;
 });
 def('KERNEL32', 'CreateFileMappingA', 6, function (h) { const f = fileOf(this, h); return f ? this.newHandle({ kind: 'mapping', path: f.path }) : 0; });
 def('KERNEL32', 'MapViewOfFile', 5, function (h) {
