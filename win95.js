@@ -506,8 +506,11 @@ function makeDisk() {
   for (const e of ['SSERIFE.FON', 'VGAFIX.FON', 'VGASYS.FON', 'MARLETT.TTF', 'ARIAL.TTF', 'TIMES.TTF', 'COUR.TTF']) fs.writeFile(join(WINDIR, 'FONTS', e), exeStub());
   fs.writeFile('C:\\Program Files\\Accessories\\WORDPAD.EXE', exeStub());
   fs.writeFile(PROGRAMS + '\\Accessories\\Notepad.lnk', lnk(WINDIR + '\\NOTEPAD.EXE'));
-  // the CD's screen savers, byte for byte
-  for (const [name, s] of Object.entries((window.W95SAVERS || {}).savers || {})) fs.writeFile(join(WINDIR, name), Uint8Array.from(atob(s.scr), c => c.charCodeAt(0)));
+  // the CD's screen savers, byte for byte, under the long names APPLETS.INF gives them in LDID_SYS
+  const LONG = { 'BEZIER.SCR': 'Curves and Colors.scr', 'SSMARQUE.SCR': 'Scrolling Marquee.scr', 'SSMYST.SCR': 'Mystify Your Mind.scr',
+    'SCRNSAVE.SCR': 'Blank Screen.scr', 'SSFLYWIN.SCR': 'Flying Windows.scr', 'SSSTARS.SCR': 'Flying Through Space.scr' };
+  for (const [name, s] of Object.entries((window.W95SAVERS || {}).savers || {}))
+    fs.writeFile(join(WINDIR, 'SYSTEM', LONG[name] || name), Uint8Array.from(atob(s.scr), c => c.charCodeAt(0)));
   fs.writeFile(PROGRAMS + '\\Windows Explorer.lnk', lnk(WINDIR + '\\EXPLORER.EXE'));
   fs.chdir('C:\\');
 }
@@ -1747,8 +1750,10 @@ function listSavers() {
   for (const dir of [WINDIR, WINDIR + '\\SYSTEM']) {
     let ents = []; try { ents = fs.readdir(dir, '*.scr'); } catch (_) { continue; }
     for (const e of ents) {
-      let name = null; try { name = W95Win32.peString(fs.readFile(e.path), 1); } catch (_) { /* unreadable */ }
-      out.push({ path: e.path, name: name || dispName(e.name) });
+      // desk.cpl: long file names are shown as-is; 8.3 names use the saver's IDS_DESCRIPTION string
+      let name = null;
+      if (is83(e.name.toUpperCase())) try { name = W95Win32.peString(fs.readFile(e.path), 1); } catch (_) { /* unreadable */ }
+      out.push({ path: e.path, name: name || e.name.replace(/\.scr$/i, '') });
     }
   }
   return out.sort((a, b) => a.name.localeCompare(b.name));
@@ -2286,5 +2291,5 @@ makeDisk();
 desk.src = new FsSource(DESKTOP_DIR);
 fs.on(() => dirty());
 Promise.all(ready).then(() => { resize(); kbd.focus(); dirty(); });
-window.win95 = { fs, render, displayProperties, startFullSaver, get fullSaver() { return fullSaver; }, properties, driveProps, openFolder, openPath, shellOpen, notepad, msgBox, runDialog, shutDownDialog, MyComputer, get windows() { return windows; }, get state() { return { menus: menus.length, menuSrc, modals: modals.length, cap: !!cap, drag: !!drag, screen, active: active && active.title }; } };
+window.win95 = { fs, render, SaverRun, displayProperties, startFullSaver, get fullSaver() { return fullSaver; }, properties, driveProps, openFolder, openPath, shellOpen, notepad, msgBox, runDialog, shutDownDialog, MyComputer, get windows() { return windows; }, get state() { return { menus: menus.length, menuSrc, modals: modals.length, cap: !!cap, drag: !!drag, screen, active: active && active.title }; } };
 })();
