@@ -918,7 +918,7 @@ def('KERNEL32', 'FindFirstChangeNotificationA', 3, function () { return this.new
 def('KERNEL32', 'FindNextChangeNotification', 1, () => 1);
 def('KERNEL32', 'FindCloseChangeNotification', 1, function (h) { this.handles.delete(h); return 1; });
 // global atoms, shared by the process's modules
-const atomsOf = p => p.atoms || (p.atoms = { byName: new Map(), byId: new Map(), next: 0xc000 });
+const atomsOf = p => p.globalAtoms || (p.globalAtoms = { byName: new Map(), byId: new Map(), next: 0xc000 });
 def('KERNEL32', 'GlobalAddAtomA', 1, function (s) {
   if (!(s >>> 16)) return s & 0xffff;
   const t = atomsOf(this), k = (this.readA(s) || '').toUpperCase();
