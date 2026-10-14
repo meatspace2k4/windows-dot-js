@@ -1848,7 +1848,11 @@ def16('KERNEL', 132, '', 'l', function () { return 0x0c29; });                  
 def16('KERNEL', 1, 'w', 'v', function (code) { throw new GuestError(`FatalExit(${code})`); });
 def16('KERNEL', 22, 'w', 'w', function (h) { const b = this.gblock(h); return b ? (b.lock & 0xff) : 0; });   // GlobalFlags: the lock count
 // one task runs here, so yielding, task events and priorities have nothing to act on
-def16('KERNEL', 29, '', 'v', function () {});                                                          // Yield
+def16('KERNEL', 29, '', 'v', function () {                                                             // Yield: as OldYield (#447)
+  const t = thr(this, 0), top = this.thread16 ? this.depth === this.thread16.depth : this.depth === 0;
+  if (top && !t.yielded) { t.yielded = true; return YIELD; }
+  t.yielded = false;
+});
 def16('KERNEL', 117, '', 'v', function () {});                                                         // OldYield
 def16('KERNEL', 150, 'w', 'v', function () {});                                                        // DirectedYield
 // WaitEvent: the task sleeps until an event is posted to it. A thread that is not inside a call JS made gives up
