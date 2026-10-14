@@ -550,7 +550,7 @@ function unpackState(b) {
   return { registry: JSON.parse(new TextDecoder().decode(b.subarray(12, 12 + n))), disk: b.subarray(12 + n) };
 }
 // true when C: was set up fresh this run
-function boot() {
+function bootDisk() {
   const saved = host && host.load();
   if (saved) {
     try {
@@ -2381,7 +2381,7 @@ function resize() {
 window.addEventListener('resize', resize);
 setInterval(() => { blinkOn = !blinkOn; dirty(); }, 530);
 
-persistChanges(boot());
+persistChanges(bootDisk());
 desk.src = new FsSource(DESKTOP_DIR);
 fs.on(() => dirty());
 Promise.all(ready).then(() => { resize(); kbd.focus(); dirty(); });
