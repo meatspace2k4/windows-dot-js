@@ -2490,6 +2490,32 @@ function setupRegistry() {
 // Setup's multimedia: MOTOWN.INF's base (event labels and schemes, the MEDIA class, MediaResources), MMOPT.INF's sound
 // clips of a Typical install in C:\WINDOWS\MEDIA, SYSTEM.INI's [boot] drivers=mmsystem.dll, and the Windows Sound System
 // card WAVE.INF installs: a legacy *PNPB007 device whose software key is MEDIA\0000
+// The card's drivers as the media device loader records them once it has started the devnode: an entry under
+// MediaResources for each driver its class key lists (SOFTWAREKEY, DeviceID, DevNode, with the driver key's values) and
+// Drivers\MIGRATED=1, from which MMSYSTEM loads them. A disk whose entries are missing or lack those values (left by
+// an earlier setup) gets them written again; the devnode is the first in Enum, *PNPB007 (CONFIGMG's handle C1000000h)
+function mediaResources() {
+  const R = W95Win32, sw = 'hklm\\system\\currentcontrolset\\services\\class\\media\\0000', drv = sw + '\\drivers';
+  const res = 'hklm\\system\\currentcontrolset\\control\\mediaresources';
+  if (!R.regKids(drv).length) return;
+  const str = v => ({ type: 1, data: W95FS.encode(v + '\0') }), devnode = { type: 3, data: new Uint8Array([0, 0, 0, 0xc1]) };
+  const want = [];
+  for (const cls of R.regKids(drv)) for (const d of R.regKids(`${drv}\\${cls}`)) want.push([cls, d, `${res}\\${cls}\\${d}<0000>`]);
+  const ok = want.every(([, , k]) => R.regGet(k, 'softwarekey') !== undefined && R.regGet(k, 'devnode') !== undefined && R.regGet(k, 'driver') !== undefined)
+    && /^1/.test(W95FS.decode((R.regGet(drv, 'migrated') || { data: new Uint8Array(0) }).data));
+  if (ok) return;
+  for (const [cls, d, k] of want) {
+    R.regDel(k);
+    for (const [n, v] of R.regVals(`${drv}\\${cls}\\${d}`)) R.regSet(k, (v && v.name) || n, v);
+    R.regSet(k, 'softwarekey', str('System\\CurrentControlSet\\Services\\Class\\MEDIA\\0000'));
+    R.regSet(k, 'deviceid', str('ROOT\\*PNPB007\\0000'));
+    R.regSet(k, 'devnode', devnode);
+    R.regSet(k, 'active', str('1'));
+    if (cls === 'midi') R.regSet(k, 'mapperconfig', { type: 4, data: new Uint8Array([1, 0, 0, 0]) });
+  }
+  R.regSet(drv, 'devnode', devnode);
+  R.regSet(drv, 'migrated', str('1'));
+}
 function setupSound() {
   const S = window.W95SYSTEM || {}, infs = S.infs || {};
   if (!infs['MOTOWN.INF']) return;
@@ -2507,6 +2533,7 @@ function setupSound() {
   // Media Player checks that .avi is still its avifile type (MOTOWN.INF's HKCR,.avi,,,avifile, which OSR2 leaves to
   // ActiveMovie) and otherwise asks on every start to repair its settings
   if (W95Win32.regGet('hkcr\\.avi', '') === undefined) W95Win32.regSet('hkcr\\.avi', '', { type: 1, data: W95FS.encode('avifile\0') });
+  mediaResources();
   if (W95Win32.regGet('hkcu\\appevents\\eventlabels\\systemstart', '') !== undefined) return;
   infAddReg(infs['MOTOWN.INF'], 'mmsys.add.reg');
   if (infs['MMOPT.INF']) infAddReg(infs['MMOPT.INF'], 'mediaopt.reg');
@@ -2519,6 +2546,7 @@ function setupSound() {
   const str = v => ({ type: 1, data: W95FS.encode(v + '\0') }), desc = 'MS Windows Sound System Compatible';
   for (const [k, v] of [['DriverDesc', desc], ['ProviderName', 'Microsoft'], ['InfPath', 'WAVE.INF'], ['InfSection', 'PNPB007_Device']]) W95Win32.regSet(sw, k, str(v));
   for (const [k, v] of [['Class', 'MEDIA'], ['Driver', 'MEDIA\\0000'], ['DeviceDesc', desc], ['HardwareID', '*PNPB007'], ['Mfg', 'Microsoft']]) W95Win32.regSet(hw, k, str(v));
+  mediaResources();
 }
 
 // ---------------------------------------------------------------- Windows programs on the native USER
