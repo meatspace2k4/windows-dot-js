@@ -1986,6 +1986,9 @@ def16('KERNEL', 612, 'x', 'w', function (sp) {
 // InitCBClient: the 32-bit glue routine (USER32's) that 16-to-32 callbacks of registered clients go through
 def16('KERNEL', 623, 'l', 'w', function (glue) { this.cbGlueLS = glue; return 1; });
 def16('KERNEL', 605, 'll', 'l', function (target, rel) { return this.slThunklet(target, rel); });   // AllocSLThunkletCallback
+// FindSLThunkletCallback: the thunklet already made for this target and relay, else a new one (KRNL386 looks it up,
+// then allocates); thunklets here are the target itself, so both are the same
+def16('KERNEL', 610, 'll', 'l', function (target, rel) { return this.slThunklet(target, rel); });
 def16('KERNEL', 630, '', 'jmp', function () {                                 // C16ThkSL
   // the stub would load EDX from the 32-bit target table at [EDX + CX] and far-jump to the 16 -> 32 transition
   const target = this.r32(u32(this.cpu.edx.value + (this.cpu.ecx.value & 0xffff)));
