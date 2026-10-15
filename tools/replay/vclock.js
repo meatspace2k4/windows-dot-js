@@ -57,12 +57,15 @@
   // once at its start.
   const trackReq = r => { if (r && r.addEventListener) track(new Promise(ok => { r.addEventListener('success', ok, { once: true }); r.addEventListener('error', ok, { once: true }); r.addEventListener('blocked', ok, { once: true }); })); return r; };
   if (window.IDBFactory) { const o = IDBFactory.prototype.open; IDBFactory.prototype.open = function (...a) { return trackReq(o.apply(this, a)); }; }
+  // a transaction holds the clock until it has committed (or failed), so what it wrote is on disk at a fixed point
+  if (window.IDBDatabase) { const tr = IDBDatabase.prototype.transaction; IDBDatabase.prototype.transaction = function (...a) { const tx = tr.apply(this, a); track(new Promise(ok => { for (const e of ['complete', 'abort', 'error']) tx.addEventListener(e, ok, { once: true }); })); return tx; }; }
   for (const C of [window.IDBObjectStore, window.IDBIndex]) if (C) for (const m of ['get', 'getAll', 'getAllKeys', 'getKey', 'count', 'put', 'add', 'delete', 'clear', 'openCursor', 'openKeyCursor'])
     if (C.prototype[m]) { const f = C.prototype[m]; C.prototype[m] = function (...a) { return trackReq(f.apply(this, a)); }; }
   // no service worker: it would serve cached files from an earlier run
   if (navigator.serviceWorker) navigator.serviceWorker.register = () => new Promise(() => {});
   // host operations whose completion time is real: the clock waits for them
-  const track = p => { pending++; const done = () => { pending--; schedule(); }; p.then(done, done); return p; };
+  const idle = [];   // callbacks for when no tracked operation is outstanding
+  const track = p => { pending++; const done = () => { pending--; schedule(); if (!pending) for (const f of idle.splice(0)) f(); }; p.then(done, done); return p; };
   const wrap = (obj, name) => { const f = obj && obj[name]; if (typeof f === 'function') obj[name] = function (...a) { return track(f.apply(this, a)); }; };
   wrap(window, 'fetch'); wrap(window, 'createImageBitmap');
   wrap(WebAssembly, 'compile'); wrap(WebAssembly, 'instantiate'); wrap(WebAssembly, 'compileStreaming'); wrap(WebAssembly, 'instantiateStreaming');
@@ -85,7 +88,9 @@
   new MutationObserver(ms => { for (const m of ms) for (const n of m.addedNodes) if ((n.tagName === 'SCRIPT' && n.src) || (n.tagName === 'IMG' && n.getAttribute('src'))) track(new Promise(ok => { n.addEventListener('load', ok, { once: true }); n.addEventListener('error', ok, { once: true }); })); })
     .observe(document, { childList: true, subtree: true });
   let leaving = false; addEventListener('beforeunload', () => { leaving = true; }); addEventListener('pagehide', () => { leaving = true; });
-  const reload = Location.prototype.reload; try { Location.prototype.reload = function () { leaving = true; if (window.__replayReload) { window.__replayReload(location.href); return; } return reload.call(this); }; } catch (_) {}
+  // a reload waits for the page's outstanding host operations (its disk writes above all): unloading cuts them off at
+  // a point that depends on real time, and the next page boots from whatever had reached the disk
+  const reload = Location.prototype.reload; try { Location.prototype.reload = function () { leaving = true; const go = () => reload.call(this); if (pending) idle.push(go); else go(); }; } catch (_) {}
   // the page paints its first frame as soon as it has loaded, as it would in real time, without waiting for the
   // driver; the driver's next step waits for that frame (firstFrame) so the amount of time it covers is fixed
   // across a reload, the page shows the frame it left on until it paints its own: the raw pixels, kept in this tab's
