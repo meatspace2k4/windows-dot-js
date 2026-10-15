@@ -176,7 +176,7 @@ P.bootUser16 = function () {
       if (!this.dlls.has(k)) this.dlls.set(k, { file: x.fileBytes || (x.fileBytes = b64(x.file)), module: x.mod || (x.mod = new WebAssembly.Module(b64(x.wasm))), meta: x.meta });
     }
     this.loadDll('USER32');
-    const pending = this.inits; this.inits = []; for (const m of pending) this.call(m.meta.entry, [m.base, 1, 0]);   // DllMain(DLL_PROCESS_ATTACH)
+    this.runPendingInits();
   }
   if (!user.inited) { user.inited = true; if (!this.initNE(user)) console.warn('[ne16] USER LibEntry failed'); }
   this.user16Ready = true;
@@ -1792,9 +1792,13 @@ def16('KERNEL', 517, '', 'jmp', function () {
 def16('KERNEL', 535, 'll', 'v', function () {});
 def16('KERNEL', 536, 'll', 'v', function () {});
 // clipboard and DDE data between the 32-bit and 16-bit sides (KRNL386 seg3, #531/#532/#542). A GDI object's handle
-// (bitmap, palette, enhanced metafile and their display formats) is the same on both sides; memory is copied into a
-// new block of the other kind. 16-bit copies made here are remembered, and #542 frees only those.
+// (bitmap, palette, enhanced metafile and their display formats) is the same on both sides. Memory is copied: a Win32
+// block into a new 16-bit one (#531, as SetClipboardData hands it over), a 16-bit block into a new Win32 one (#532, as
+// GetClipboardData hands it out). Each 16-bit block remembers the Win32 block it came from or went to, which the
+// clipboard owns from then on; #542 (with the 16-bit handle, as USER empties or closes the clipboard) frees that Win32
+// block, and the 16-bit block stays
 const CLIP_GDI = new Set([2, 9, 0x0e, 0x82, 0x8e]), CLIP_MFP = new Set([3, 0x83]);
+const clip32 = p => p.clip32 || (p.clip32 = new Map());   // 16-bit selector -> its Win32 block
 def16('KERNEL', 531, '', 'jmp', function () {   // (fmt, hMem32, flag) -> a 16-bit global handle holding a copy
   const f = this.cpu.ssb.value + (this.cpu.esp.value & 0xffff), h = this.r32(f + 6), fmt = this.r16(f + 10);
   let r = 0;
@@ -1803,25 +1807,28 @@ def16('KERNEL', 531, '', 'jmp', function () {   // (fmt, hMem32, flag) -> a 16-b
     const n = this.allocs.get(h) || 0;
     r = this.globalAlloc16(0x2002, n);
     if (r && n) this.u8.copyWithin(this.gblock(r).lin, h, h + n);
-    if (r) (this.clipAlias = this.clipAlias || new Set()).add(this.gsel(r));
+    if (r) clip32(this).set(this.gsel(r), h);
   }
   this.cpu.eax.value = r; this.cpu.edx.value = 0;
   return this.retf16(8);
 });
-def16('KERNEL', 532, '', 'jmp', function () {   // (fmt, hMem16, flag) -> a 32-bit global handle holding a copy
+def16('KERNEL', 532, '', 'jmp', function () {   // (fmt, hMem16, flag) -> a Win32 block holding a copy
   const f = this.cpu.ssb.value + (this.cpu.esp.value & 0xffff), h = this.r16(f + 6), fmt = this.r16(f + 8);
   let r = 0;
   if (CLIP_GDI.has(fmt)) r = h;
   else if (!CLIP_MFP.has(fmt)) {
-    const b = this.gblock(h);
-    if (b) { r = this.alloc(b.size); this.u8.copyWithin(r, b.lin, b.lin + b.size); }
+    const b = this.gblock(h), sel = this.gsel(h), old = clip32(this).get(sel);
+    if (b) {
+      if (old) this.free(old);   // the copy handed out before: the clipboard's, replaced by this one
+      r = this.alloc(b.size); this.u8.copyWithin(r, b.lin, b.lin + b.size); clip32(this).set(sel, r);
+    }
   }
-  this.cpu.eax.value = r & 0xffff; this.cpu.edx.value = r >>> 16;
+  this.cpu.eax.value = r | 0; this.cpu.edx.value = r >>> 16;   // in EAX (USER's thunk returns it to USER32 as is) and DX:AX
   return this.retf16(6);
 });
-def16('KERNEL', 542, '', 'jmp', function () {   // (handle): free a 16-bit copy #531 made
-  const f = this.cpu.ssb.value + (this.cpu.esp.value & 0xffff), h = this.r32(f + 4) & 0xffff, sel = this.gsel(h);
-  if (h && this.clipAlias && this.clipAlias.has(sel)) { this.clipAlias.delete(sel); K16['KERNEL.#17'][2].call(this, h); }
+def16('KERNEL', 542, '', 'jmp', function () {   // (handle16): free the Win32 block that goes with a 16-bit block
+  const f = this.cpu.ssb.value + (this.cpu.esp.value & 0xffff), h = this.r32(f + 4) & 0xffff, sel = this.gsel(h), w = h && clip32(this).get(sel);
+  if (w) { clip32(this).delete(sel); this.free(w); }
   this.cpu.eax.value = 0;
   return this.retf16(4);
 });
@@ -2727,7 +2734,6 @@ P.modeSwitch = function (m) {
     this.seg('ss', s.ss);
   }
 };
-P.runPendingInits = function () { const pending = this.inits; this.inits = []; for (const m of pending) this.call(m.meta.entry, [m.base, 1, 0]); };
 
 // ---------------------------------------------------------------- native GDI behind the Win32 personality
 /** GDI.EXE, GDI32.DLL and the display driver, brought up on first use with the fonts WIN.INI lists; null without W95SYSTEM */

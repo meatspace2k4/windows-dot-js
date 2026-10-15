@@ -48,7 +48,10 @@ PE = [('gdi32.dll', 0x01D00000, 0x06C00000), ('user32.dll', 0x01D40000, 0x073400
       # the Multimedia and Sounds Control Panel applets (WIN95_02.CAB), which RUNDLL32 runs through SHELL32's Control_RunDLL
       ('mmsys.cpl', 0x01780000, 0x07A00000),
       # the 32-bit half of the audio compression manager, which MSACM.DLL thunks to (WIN95_02.CAB)
-      ('msacm32.dll', 0x017D0000, 0x07B80000)]
+      ('msacm32.dll', 0x017D0000, 0x07B80000),
+      # OLE (WIN95_02.CAB): SHELL32 puts files on the clipboard through it ("Shell IDList Array" data objects), with
+      # the RPC runtime and the C runtime it imports
+      ('ole32.dll', 0x01000000, 0x06300000), ('rpcrt4.dll', 0x010A0000, 0x06500000), ('msvcrt20.dll', 0x010E0000, 0x06600000)]
 # VxDs (ring-0 drivers), recompiled to run under the VMM in vmm.js: (file, load base, block-table base). MMDEVLDR is the
 # device loader of MEDIA devnodes; MSSNDSYS the Windows Sound System card's driver (WIN95_02.CAB)
 VXDS = [('mmdevldr.vxd', 0x01800000, 0x07C00000), ('mssndsys.vxd', 0x01810000, 0x07C40000),
