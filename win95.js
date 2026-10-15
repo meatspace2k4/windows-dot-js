@@ -513,11 +513,12 @@ const WIN_INI_FONTS = [['MS Sans Serif 8,10,12,14,18,24', 'SSERIFE.FON'], ['MS S
   ['Times New Roman (TrueType)', 'TIMES.TTF'], ['Times New Roman Bold (TrueType)', 'TIMESBD.TTF'], ['Times New Roman Bold Italic (TrueType)', 'TIMESBI.TTF'], ['Times New Roman Italic (TrueType)', 'TIMESI.TTF'],
   ['Symbol (TrueType)', 'SYMBOL.TTF'], ['Wingdings (TrueType)', 'WINGDING.TTF']];
 function mountDrives() {
-  fs.mount('A', { kind: 'removable', ready: false, total: 1457664, cluster: 512 });
+  fs.mount('A', { kind: 'removable', ready: true, total: 1457664, cluster: 512 });
   fs.mount('C', { kind: 'fixed', total: 536870912, cluster: 8192 });
   fs.mount('D', { kind: 'cdrom', label: window.W95CD.label, readonly: true, cluster: 2048, fsname: 'CDFS' });
   const b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
   const conv = e => (e[2] ? [e[0], e[1], e[2].map(conv)] : e[4] ? [e[0], e[1], null, e[3], b64(e[4])] : e);
+  fs.load('A', window.W95FLOPPY.tree.map(conv));
   fs.load('D', window.W95CD.tree.map(conv));
 }
 // Setup's first boot: C: as a fresh install leaves it
