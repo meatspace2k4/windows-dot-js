@@ -2555,7 +2555,9 @@ class NativeApp {
     const module = await prog.d.mod;
     const dlls = new Map();
     for (const [n, d] of Object.entries(S.dlls)) { d.bytes = d.bytes || b64bytes(d.file); dlls.set(n.replace(/\.DLL$/, ''), { file: d.bytes, module: d.mod, meta: d.meta }); }
-    [this.sw, this.sh] = [W, H];   // the screen's display mode
+    // the smallest display mode that covers the shell's screen (else the largest), so the whole desktop is on the
+    // program's screen: no window is cut off at its bottom edge and the pointer reaches every point
+    [this.sw, this.sh] = [...NATIVE_MODES].reverse().find(([w, h]) => w >= W && h >= H) || NATIVE_MODES[0];
     const host = {
       fs, width: this.sw, height: this.sh, path: this.path, now: () => performance.now(),
       cursor: () => ({ x: mouse.x, y: mouse.y }), surface: (h, w, hh) => mkc(w, hh).getContext('2d'), setCursor: () => {},
@@ -2573,7 +2575,7 @@ class NativeApp {
       // the cursor USER draws shows only while the mouse is over this program's windows; its windows stay above the taskbar
       this.proc.user16(71, [['w', 0]]);
       const p = this.proc, r = p.wbufLin || (p.nativeWindows(), p.wbufLin);
-      p.w16(r, 0); p.w16(r + 2, 0); p.w16(r + 4, this.sw); p.w16(r + 6, Math.min(this.sh, workH()));
+      p.w16(r, 0); p.w16(r + 2, 0); p.w16(r + 4, Math.min(this.sw, W)); p.w16(r + 6, Math.min(this.sh, workH()));
       p.user16(483, [['w', 47], ['w', 0], ['l', p.wbufSel << 16], ['w', 0]]);   // SPI_SETWORKAREA
     } catch (e) { console.error(e); }
     nativeApps.add(this);
@@ -3374,14 +3376,9 @@ function handleKey(e) {
 }
 
 // ---------------------------------------------------------------- boot
-// the screen is a display mode, as on the machine: the largest of the adapter's modes that fits the window (640x480 at
-// least), scaled to fill it; the programs' USER and the desktop around their windows then share one screen
 function resize() {
-  const vw = innerWidth / ZOOM, vh = innerHeight / ZOOM;
-  [W, H] = NATIVE_MODES.find(([w, h]) => w <= vw && h <= vh) || NATIVE_MODES[NATIVE_MODES.length - 1];
-  const k = Math.min(innerWidth / W, innerHeight / H);
-  cv.width = W; cv.height = H; cv.style.width = W * k + 'px'; cv.style.height = H * k + 'px';
-  cv.style.margin = `${Math.floor((innerHeight - H * k) / 2)}px auto 0`;
+  W = Math.max(320, Math.floor(innerWidth / ZOOM)); H = Math.max(240, Math.floor(innerHeight / ZOOM));
+  cv.width = W; cv.height = H; cv.style.width = W * ZOOM + 'px'; cv.style.height = H * ZOOM + 'px';
   ctx.imageSmoothingEnabled = false;
   for (const w of windows) if (w.max) Object.assign(w, maxRect(w.b));
   closeMenus(); dirty();
