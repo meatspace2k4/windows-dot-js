@@ -2466,6 +2466,18 @@ function infAddReg(text, section, hkr) {
   }
 }
 // what Setup puts in the registry for the shell (SHELL.INF), on a registry that has not had it
+// an INF's UpdateInis section: `file, section, old line, new line`; a new line key=value is set in that file's section
+// (only files `only` matches, when given). Lines that only delete an old entry are left
+function infUpdateInis(text, section, only) {
+  const lines = []; let cur = false;
+  for (const l of text.split(/\r?\n/)) { const m = l.match(/^\s*\[([^\]]+)\]/); if (m) { cur = m[1].trim().toLowerCase() === section.toLowerCase(); continue; } if (cur) lines.push(l); }
+  for (const l of lines) {
+    const f = l.replace(/;.*$/, '').split(',').map(x => x.trim().replace(/^"(.*)"$/, '$1'));
+    if (f.length < 4 || !f[0] || !f[3] || (only && !only.test(f[0]))) continue;
+    const eq = f[3].indexOf('='); if (eq <= 0) continue;
+    W95Win32.iniSet(fs, f[0].toUpperCase(), f[1], f[3].slice(0, eq).trim(), f[3].slice(eq + 1).trim());
+  }
+}
 function setupRegistry() {
   const inf = ((window.W95SYSTEM || {}).infs || {})['SHELL.INF']; if (!inf) return;
   if (W95Win32.regGet('hkcr\\clsid\\{20d04fe0-3aea-1069-a2d8-08002b30309d}\\inprocserver32', '') !== undefined) return;
@@ -2481,9 +2493,17 @@ function setupSound() {
   const media = join(WINDIR, 'MEDIA'); fs.mkdir(media, { recursive: true });
   const NAMES = { 'MSSOUND.WAV': 'The Microsoft Sound.wav' };   // MOTOWN.INF's RenameFiles\Media
   for (const [n, d] of Object.entries(S.media || {})) { const f = join(media, NAMES[n] || n.toLowerCase()); if (!fs.exists(f)) fs.writeFile(f, b64bytes(d)); }
+  // the MCI devices that play MIDI and wave files (MOTOWN.INF's MCISEQ and MCIWAVE) and Media Player (MPlay): their
+  // registry and SYSTEM.INI [mci] lines, and WIN.INI's [mci extensions] from the base install
+  if (W95Win32.regGet('hklm\\system\\currentcontrolset\\control\\mediaresources\\mci\\sequencer', 'Driver') === undefined) {
+    for (const sec of ['sequencer.Reg', 'waveaudio.Reg', 'MPlay.install.reg']) infAddReg(infs['MOTOWN.INF'], sec);
+    for (const sec of ['sequencer.inis', 'waveaudio.inis']) infUpdateInis(infs['MOTOWN.INF'], sec);
+    infUpdateInis(infs['MOTOWN.INF'], 'mmsys.inis', /^win\.ini$/i);
+  }
   if (W95Win32.regGet('hkcu\\appevents\\eventlabels\\systemstart', '') !== undefined) return;
   infAddReg(infs['MOTOWN.INF'], 'mmsys.add.reg');
   if (infs['MMOPT.INF']) infAddReg(infs['MMOPT.INF'], 'mediaopt.reg');
+
   const ini = W95Win32.iniGet(fs, 'SYSTEM.INI', 'boot', 'drivers');
   if (!ini || !/(^|[\s,])mmsystem\.dll/i.test(ini)) W95Win32.iniSet(fs, 'SYSTEM.INI', 'boot', 'drivers', ini ? `${ini} mmsystem.dll` : 'mmsystem.dll');
   const wave = infs['WAVE.INF']; if (!wave) return;

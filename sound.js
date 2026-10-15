@@ -89,11 +89,13 @@ const oplStatus = (p, o) => {
   return o.flags ? o.flags | 0x80 : 0;
 };
 P.oplIO = function (port, isIn, v) {
-  const o = opl(this), bank = (port - WSS.opl) >> 1;
+  // one address latch for both banks: an address write at 388h or 38Ah picks the register and its bank, and a data
+  // write at either data port goes to that register
+  const o = opl(this);
   if (isIn) return port === WSS.opl ? oplStatus(this, o) : 0xff;
   oplTime(this, o);
-  if (!(port & 1)) { o.idx[bank] = v; return 0; }
-  const r = o.idx[bank];
+  if (!(port & 1)) { o.idx = [v, (port - WSS.opl) >> 1]; return 0; }
+  const [r, bank] = o.idx;
   this.oplRender();   // the sound up to this moment comes from the registers as they were
   o.regs[bank][r] = v; fm(o).write(bank, r, v);
   if (bank === 0 && r === 4) {

@@ -2050,7 +2050,13 @@ def16('KERNEL', 461, 'llll', 'l', function (n, ph, all, ms) {                   
 });
 def16('KERNEL', 462, '', 'l', function () { return this.thread16 ? this.thread16.id : this.inSystem() ? SYS_TID : MAIN_TID; });       // GetCurrentThreadId (the main thread is the id KERNEL32 reports)
 def16('KERNEL', 463, 'lw', 'w', function (tid, hq) { const t = thr(this, tid), old = t.queue || 0; t.queue = hq; this.tibQueue(t); return old; });   // SetThreadQueue
-def16('KERNEL', 464, 'l', 'w', function (tid) { return thr(this, tid).queue || 0; });                     // GetThreadQueue
+// GetThreadQueue: a thread's queue; a task handle in place of the id (USER's PostAppMessage) gives that task's
+def16('KERNEL', 464, 'l', 'w', function (tid) {
+  const tasks = [...(this.threadsById || new Map()).values()], k = tid && tid <= 0xffff && tasks.find(t => t.tdb === tid);
+  if (k) return k.queue || 0;
+  if (tid && tid === this.tdb16) return this.r16(this.selBase(tid) + 0x20);
+  return thr(this, tid).queue || 0;
+});
 def16('KERNEL', 624, 'll', 'v', function (tid, hq) { const t = thr(this, tid); t.queue = hq & 0xffff; this.tibQueue(t); });   // SetFastQueue: the queue field (38h) of the thread
 // the program's thread keeps its queue in its TIB too (FS:[28h], USER32 reads it there), and TIB flags bit 0 marks it Win32
 /** the thread information block FS addresses in flat code: the running Win32 thread's own, else the program's */
@@ -2222,7 +2228,8 @@ def16('KERNEL', 150, 'w', 'v', function () { if (!this.atThreadTop()) this.threa
 // LoadLibrary loads it; a task (MMSYSTEM's MMTASK.TSK) gets an instance, a PSP with the command tail at 80h and a
 // thread of its own that starts at its entry point the way the Win16 loader starts a task (DS its DGROUP, ES its PSP,
 // DI its instance, BX its stack size, CX its heap size). Errors as LoadLibrary's
-def16('KERNEL', 45, 'sp', 'w', function (name, pb) {
+// AX the instance and, for a task, DX its task handle (as KRNL386 returns them; MMSYSTEM's mmTaskCreate takes DX)
+def16('KERNEL', 45, 'sp', 'l', function (name, pb) {
   const rec = this.loadLibrary16(name, true, true); if (!rec || !rec.meta) return this.loadError16(name);
   const hdr = rd.u32(rec.file, 0x3c), flags = rd.u16(rec.file, hdr + 0x0c);
   if (flags & 0x8000) { if (!rec.inited) { rec.inited = true; this.initNE(rec); } return rec.hInstance; }
@@ -2236,7 +2243,8 @@ def16('KERNEL', 45, 'sp', 'w', function (name, pb) {
   }
   const m = rec.meta, t = this.newThread(u32((m.segs[m.entry[0] - 1].sel << 16) | m.entry[1]), 0, 0x4000, false);
   t.task = { psp: pspSel, hInst: rec.hInstance, show, stack: rd.u16(rec.file, hdr + 0x12), heap: rd.u16(rec.file, hdr + 0x10), dgroup: rec.dgroup };
-  return rec.hInstance;
+  t.tdb = newTdb(this);
+  return u32((t.tdb << 16) | rec.hInstance);
 });
 // InitTask: the starting task's registers (AX 1, ES:BX its command tail, CX its stack, DX its show command, SI its
 // previous instance, DI its instance)
