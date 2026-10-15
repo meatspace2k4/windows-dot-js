@@ -3586,7 +3586,7 @@ function findEl(q) {
 // an element, a query for one, or plain coordinates, as the point a click lands on
 function target(a, b) {
   if (typeof a === 'number') return [a, b];
-  const e = a && 'x' in a && 'w' in a ? a : findEl(a);
+  const e = a && typeof a === 'object' && !(a instanceof RegExp) && 'x' in a && 'w' in a ? a : findEl(a);
   if (!e) throw new Error('no element matches ' + JSON.stringify(a, (k, v) => v instanceof RegExp ? String(v) : v));
   return [e.x + (e.w >> 1), e.y + (e.h >> 1)];
 }
