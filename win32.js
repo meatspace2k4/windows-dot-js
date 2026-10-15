@@ -706,6 +706,15 @@ def('KERNEL32', 'MulDiv', 3, function (a, b, c) {    // rounded (a*b)/c, -1 on o
   return q > 2147483647n || q < -2147483648n ? -1 : Number(q);
 });
 def('KERNEL32', 'GetPrivateProfileStringA', 6, function (sec, key, dflt, buf, n, file) {
+  if (!sec || !key) {   // a null section lists the sections, a null key the section's keys: each NUL-terminated, then a NUL
+    if (!n) return 0;
+    const ini = iniRead(this.fs, this.readA(file)), s = sec && ini.get(this.readA(sec).toLowerCase());
+    const names = sec ? (s ? [...s.keys.values()].map(k => k.name) : []) : [...ini.values()].map(v => v.name);
+    let o = 0;
+    for (const nm of names) { if (o + nm.length + 2 > n) break; this.writeA(buf + o, nm, nm.length + 1); o += nm.length + 1; }
+    this.u8[buf + o] = 0; if (!o && n > 1) this.u8[buf + 1] = 0;
+    return o;
+  }
   const v = iniGet(this.fs, this.readA(file), this.readA(sec), this.readA(key));
   return this.writeA(buf, v === null ? (this.readA(dflt) || '') : v, n);
 });

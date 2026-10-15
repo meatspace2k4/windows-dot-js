@@ -812,6 +812,9 @@ const TYPES = {
   lnk: { desc: 'Shortcut', icon: 'app', open: p => openLnk(p) },
   hlp: { desc: 'Help File', icon: 'help' }, scr: { desc: 'Screen Saver', icon: 'app' },
   cpl: { desc: 'Control Panel extension', icon: 'sysfile' },
+  // MIDI files open in Media Player (MOTOWN.INF: .mid and .rmi are midfile, opened by mplayer.exe %1)
+  mid: { desc: 'MIDI Sequence', icon: 'windoc', open: p => runExe(join(WINDIR, 'MPLAYER.EXE'), /\s/.test(p) ? `"${p}"` : p) },
+  rmi: { desc: 'MIDI Sequence', icon: 'windoc', open: p => runExe(join(WINDIR, 'MPLAYER.EXE'), /\s/.test(p) ? `"${p}"` : p) },
 };
 const EXE_ICON = { 'NOTEPAD.EXE': 'notepad', 'EXPLORER.EXE': 'explorer' };
 const isRoot = p => /^[A-Z]:\\$/i.test(p);
@@ -2501,6 +2504,9 @@ function setupSound() {
     for (const sec of ['sequencer.inis', 'waveaudio.inis']) infUpdateInis(infs['MOTOWN.INF'], sec);
     infUpdateInis(infs['MOTOWN.INF'], 'mmsys.inis', /^win\.ini$/i);
   }
+  // Media Player checks that .avi is still its avifile type (MOTOWN.INF's HKCR,.avi,,,avifile, which OSR2 leaves to
+  // ActiveMovie) and otherwise asks on every start to repair its settings
+  if (W95Win32.regGet('hkcr\\.avi', '') === undefined) W95Win32.regSet('hkcr\\.avi', '', { type: 1, data: W95FS.encode('avifile\0') });
   if (W95Win32.regGet('hkcu\\appevents\\eventlabels\\systemstart', '') !== undefined) return;
   infAddReg(infs['MOTOWN.INF'], 'mmsys.add.reg');
   if (infs['MMOPT.INF']) infAddReg(infs['MMOPT.INF'], 'mediaopt.reg');
