@@ -221,7 +221,7 @@ P.oplRender = function () {
   if (n > OPL_RATE / 4) n = Math.floor(OPL_RATE / 4);   // after a stall, a quarter second at most
   if (!f.active()) { f.t += n; return; }
   const L = new Float32Array(n), R = new Float32Array(n); f.render(L, R, n);
-  play(OPL_RATE, L, R, n);
+  play(this, OPL_RATE, L, R, n);
 };
 P.soundIO = function (port, size, isIn) {
   const eax = this.cpu.eax.value, v = eax & 0xff;
@@ -307,7 +307,7 @@ for (let i = 0; i < 256; i++) {
 // unchanged and in one continuous stream (no buffer started per batch, each start time landing between two samples),
 // and the browser converts the context's output to the device's rate. After the queue runs dry, output starts again
 // once LEAD seconds of samples are queued, or the first of them has waited that long
-const LEAD = 0.1, outs = new Map();
+const LEAD = 0.1;
 const WORKLET = `registerProcessor('w95-stream', class extends AudioWorkletProcessor {
   constructor(o) { super(); this.q = []; this.at = 0; this.n = 0; this.lead = o.processorOptions.lead; this.on = false; this.wait = 0;
     this.port.onmessage = e => { this.q.push(e.data); this.n += e.data[0].length; }; }
@@ -325,14 +325,16 @@ const WORKLET = `registerProcessor('w95-stream', class extends AudioWorkletProce
     return true;
   }
 });`;
-const out = rate => {
+// each machine has outputs of its own: two programs' samples never share a queue
+const out = (proc, rate) => {
   const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return null;
   rate = Math.min(Math.max(Math.round(rate), 3000), 768000);
+  const outs = proc.audioOuts || (proc.audioOuts = new Map());
   let a = outs.get(rate);
   if (!a) {
     let ctx; try { ctx = new AC({ sampleRate: rate }); } catch (_) { return null; }
     a = { ctx, node: null, pending: [], dry: 0 };
-    outs.set(rate, a); window.W95AUDIO = outs;   // (the page's outputs, for a look from the console)
+    outs.set(rate, a);
     const url = URL.createObjectURL(new Blob([WORKLET], { type: 'text/javascript' }));
     ctx.audioWorklet.addModule(url).then(() => {
       a.node = new AudioWorkletNode(ctx, 'w95-stream', { numberOfInputs: 0, outputChannelCount: [2], processorOptions: { lead: Math.round(LEAD * rate) } });
@@ -342,13 +344,23 @@ const out = rate => {
       a.pending = [];
     });
     const resume = () => { if (ctx.state === 'suspended') ctx.resume(); };
+    a.resume = resume;
     for (const t of ['pointerdown', 'keydown']) window.addEventListener(t, resume, true);
   }
   return a;
 };
+/** close the machine's outputs (its program has exited) */
+P.soundClose = function () {
+  for (const a of (this.audioOuts || new Map()).values()) {
+    for (const t of ['pointerdown', 'keydown']) window.removeEventListener(t, a.resume, true);
+    try { a.ctx.close(); } catch (_) { }
+  }
+  this.audioOuts = null;
+};
 /** queue n samples (L, R) on the output at `rate`; true if it had run dry while sounding since the last call */
-const play = (rate, L, R, n) => {
-  const a = out(rate); if (!a) return false;
+const play = (proc, rate, L, R, n) => {
+  if (proc.audioOuts === null) return false;   // closed
+  const a = out(proc, rate); if (!a) return false;
   const m = [Float32Array.from(L.subarray(0, n)), Float32Array.from(R.subarray(0, n))];
   if (a.node) a.node.port.postMessage(m, [m[0].buffer, m[1].buffer]); else a.pending.push(m);
   const dry = a.dry > 0; a.dry = 0; return dry;
@@ -388,6 +400,6 @@ P.soundRun = function (c) {
     if (end) break;
   }
   this.soundStats.frames += k;
-  if (k && play(rate, L, R, k)) this.soundStats.underruns = (this.soundStats.underruns || 0) + 1;
+  if (k && play(this, rate, L, R, k)) this.soundStats.underruns = (this.soundStats.underruns || 0) + 1;
 };
 })();

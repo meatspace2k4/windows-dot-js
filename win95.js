@@ -2791,6 +2791,7 @@ class NativeApp {
     if (!this.alive) return;
     if (clipOwner === this) { if (!why && this.proc && !this.proc.trapped) this.clipOut(); clipOwner = null; }   // what it copied outlives it
     this.alive = false; clearTimeout(this.timer); nativeApps.delete(this);
+    if (this.proc && this.proc.soundClose) this.proc.soundClose();
     for (const w of this.wins.values()) closeWin(w, true);
     this.wins.clear();
     emit('program.exit', { path: this.path, code, ...(why ? { why } : {}) });
