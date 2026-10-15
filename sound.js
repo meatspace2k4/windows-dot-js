@@ -302,40 +302,56 @@ for (let i = 0; i < 256; i++) {
   let u = ~i & 0xff, t = ((u & 0x0f) << 3) + 0x84; t <<= (u & 0x70) >> 4; ULAW[i] = ((u & 0x80) ? 0x84 - t : t - 0x84) / 32768;
   let a = i ^ 0x55, m = (a & 0x0f) << 4, e = (a & 0x70) >> 4; m = e ? (m + 0x108) << (e - 1) : m + 8; ALAW[i] = ((a & 0x80) ? m : -m) / 32768;
 }
-// Each source (the codec, the synthesizer) plays on an output context of its own running at the source's own rate, its
-// samples queued as they come in blocks of at least BLOCK frames, back to back on whole frames: the samples reach the
-// context unchanged and the browser converts the context's one continuous output to the device's rate
-const BLOCK = 2048, outs = new Map();
+// Each source (the codec, the synthesizer) plays on an output context of its own running at the source's own rate,
+// through one worklet node that takes the samples from a queue as the context renders: the samples reach the context
+// unchanged and in one continuous stream (no buffer started per batch, each start time landing between two samples),
+// and the browser converts the context's output to the device's rate. After the queue runs dry, output starts again
+// once LEAD seconds of samples are queued, or the first of them has waited that long
+const LEAD = 0.1, outs = new Map();
+const WORKLET = `registerProcessor('w95-stream', class extends AudioWorkletProcessor {
+  constructor(o) { super(); this.q = []; this.at = 0; this.n = 0; this.lead = o.processorOptions.lead; this.on = false; this.wait = 0;
+    this.port.onmessage = e => { this.q.push(e.data); this.n += e.data[0].length; }; }
+  process(_, outputs) {
+    const L = outputs[0][0], R = outputs[0][1] || outputs[0][0];
+    if (!this.on && this.n) { this.wait += L.length; if (this.n >= this.lead || this.wait >= this.lead) { this.on = true; this.wait = 0; } }   // a short sound starts after the lead too
+    let k = 0;
+    while (this.on && k < L.length && this.q.length) {
+      const [a, b] = this.q[0], m = Math.min(L.length - k, a.length - this.at);
+      L.set(a.subarray(this.at, this.at + m), k); R.set(b.subarray(this.at, this.at + m), k);
+      k += m; this.at += m; this.n -= m;
+      if (this.at === a.length) { this.q.shift(); this.at = 0; }
+    }
+    if (k < L.length) { if (this.on) this.port.postMessage(1); this.on = false; L.fill(0, k); R.fill(0, k); }   // ran dry
+    return true;
+  }
+});`;
 const out = rate => {
   const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return null;
   rate = Math.min(Math.max(Math.round(rate), 3000), 768000);
   let a = outs.get(rate);
   if (!a) {
-    try { a = { ctx: new AC({ sampleRate: rate }), L: [], R: [], at: 0, timer: 0, lead: 0.1 }; } catch (_) { return null; }
+    let ctx; try { ctx = new AC({ sampleRate: rate }); } catch (_) { return null; }
+    a = { ctx, node: null, pending: [], dry: 0 };
     outs.set(rate, a); window.W95AUDIO = outs;   // (the page's outputs, for a look from the console)
-    const resume = () => { if (a.ctx.state === 'suspended') a.ctx.resume(); };
+    const url = URL.createObjectURL(new Blob([WORKLET], { type: 'text/javascript' }));
+    ctx.audioWorklet.addModule(url).then(() => {
+      a.node = new AudioWorkletNode(ctx, 'w95-stream', { numberOfInputs: 0, outputChannelCount: [2], processorOptions: { lead: Math.round(LEAD * rate) } });
+      a.node.port.onmessage = () => { a.dry++; };
+      a.node.connect(ctx.destination);
+      for (const m of a.pending) a.node.port.postMessage(m, [m[0].buffer, m[1].buffer]);
+      a.pending = [];
+    });
+    const resume = () => { if (ctx.state === 'suspended') ctx.resume(); };
     for (const t of ['pointerdown', 'keydown']) window.addEventListener(t, resume, true);
   }
   return a;
 };
-/** queue n samples (L, R) on the output at `rate`; true if it had run dry while sounding (a stall) */
+/** queue n samples (L, R) on the output at `rate`; true if it had run dry while sounding since the last call */
 const play = (rate, L, R, n) => {
   const a = out(rate); if (!a) return false;
-  for (let i = 0; i < n; i++) { a.L.push(L[i]); a.R.push(R[i]); }
-  if (a.L.length >= BLOCK) return flush(a);
-  if (!a.timer) a.timer = setTimeout(() => { a.timer = 0; flush(a); }, 20);   // the tail of a sound
-  return false;
-};
-const flush = a => {
-  const n = a.L.length; if (!n) return false;
-  const sr = a.ctx.sampleRate, now = a.ctx.currentTime;
-  let dry = false;
-  // the queue ran out: start again ahead of now, half as far again when it ran out mid-sound (a stall), up to 400 ms
-  if (a.at / sr < now + 0.005) { dry = a.at > 0 && now - a.at / sr < 0.5; if (dry) a.lead = Math.min(0.4, a.lead * 1.5); a.at = Math.ceil((now + a.lead) * sr); }
-  const buf = a.ctx.createBuffer(2, n, sr); buf.copyToChannel(Float32Array.from(a.L), 0); buf.copyToChannel(Float32Array.from(a.R), 1);
-  const src = a.ctx.createBufferSource(); src.buffer = buf; src.connect(a.ctx.destination);
-  src.start(a.at / sr); a.at += n; a.L = []; a.R = [];
-  return dry;
+  const m = [Float32Array.from(L.subarray(0, n)), Float32Array.from(R.subarray(0, n))];
+  if (a.node) a.node.port.postMessage(m, [m[0].buffer, m[1].buffer]); else a.pending.push(m);
+  const dry = a.dry > 0; a.dry = 0; return dry;
 };
 P.sound16 = function () {
   if (!this.inSound) this.oplRender();
