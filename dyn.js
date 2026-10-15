@@ -223,6 +223,35 @@ function translate(p, lin, csb, d32) {
     if (b === 0x8d) { const o = modrm(); f.lg(A).gg(sbase(seg === null ? 3 : seg)).op('sub').ls(T); wrReg(o.reg, osz, T); continue; }   // lea: the offset
     if (b === 0x8f) { const o = modrm(); pop(T, osz); wr(o, osz, T); continue; }
     if (b === 0x90) continue;
+    if (b === 0x60) {   // pusha: AX CX DX BX, SP as it was, BP SI DI
+      rdReg(4, osz); f.ls(X);
+      for (const r of [0, 1, 2, 3]) { rdReg(r, osz); f.ls(T); push(T, osz); }
+      push(X, osz);
+      for (const r of [5, 6, 7]) { rdReg(r, osz); f.ls(T); push(T, osz); }
+      continue;
+    }
+    if (b === 0x61) {   // popa: DI SI BP, (SP skipped), BX DX CX AX
+      for (const r of [7, 6, 5]) { pop(T, osz); wrReg(r, osz, T); }
+      pop(T, osz);
+      for (const r of [3, 2, 1, 0]) { pop(T, osz); wrReg(r, osz, T); }
+      continue;
+    }
+    if (b === 0xcf) {   // iret: IP, CS, flags
+      pop(T, osz); pop(B, osz); pop(C, osz);
+      for (const [k, n2] of [[0, 'cf'], [2, 'pf'], [6, 'zf'], [7, 'sf'], [10, 'df'], [11, 'of']]) f.lg(C).c(k).op('shr_u').c(1).op('and').gs(n2);
+      loadSeg(1, B); f.lg(T).gg('csb').op('add').e(0x0f); return done(pc);
+    }
+    if (b === 0x9a) {   // call far ptr16:16/32
+      const off = osz === 4 ? fetch32() : fetch16(), sel = fetch16();
+      f.gg('cs').ls(T); push(T, osz); f.c(offOf(pc)).ls(T); push(T, osz);
+      f.c(sel).ls(T); loadSeg(1, T); f.gg('csb').c(off | 0).op('add').e(0x0f); return done(pc);
+    }
+    if ((b >= 0xe4 && b <= 0xe7) || (b >= 0xec && b <= 0xef)) {   // in / out, through the host's port I/O
+      const sz = b & 1 ? osz : 1, isIn = !(b & 2);
+      if (b < 0xe8) f.c(fetch()); else f.gg('edx').c(0xffff).op('and');
+      f.c(sz | (isIn ? 8 : 0)).e(0x10, 0);
+      continue;
+    }
     if (b > 0x90 && b < 0x98) { rdReg(0, osz); f.ls(B); rdReg(b & 7, osz); f.ls(C); wrReg(0, osz, C); wrReg(b & 7, osz, B); continue; }
     if (b === 0x98) { if (osz === 4) { f.gg('eax').c(16).op('shl').c(16).op('shr_s').gs('eax'); } else { f.gg('eax').c(24).op('shl').c(24).op('shr_s').ls(T); wrReg(0, 2, T); } continue; }
     if (b === 0x99) { if (osz === 4) f.gg('eax').c(31).op('shr_s').gs('edx'); else { f.gg('eax').c(16).op('shl').c(31).op('shr_s').ls(T); wrReg(2, 2, T); } continue; }
@@ -474,10 +503,11 @@ function strop(f, b, osz, asz, seg, rep, L, alu2, szp) {
 // ---------------------------------------------------------------- module assembly and the cache
 function assemble(fn) {
   const sec = (n, b) => [n, ...uleb(b.length), ...b];
-  const types = vec([[0x60, 0, 1, I32]]);
-  const imps = vec([[...str('env'), ...str('mem'), 0x02, 0x00, ...uleb(MEM_PAGES)], ...G.map(n => [...str('cpu'), ...str(n), 0x03, I32, 1])]);
+  const types = vec([[0x60, 0, 1, I32], [0x60, 2, I32, I32, 0]]);
+  const imps = vec([[...str('env'), ...str('mem'), 0x02, 0x00, ...uleb(MEM_PAGES)], ...G.map(n => [...str('cpu'), ...str(n), 0x03, I32, 1]),
+    [...str('env'), ...str('io'), 0x00, 1]]);   // function 0: port I/O (port, size | 8 for IN)
   const funcs = vec([[0]]);
-  const exps = vec([[...str('run'), 0x00, 0]]);
+  const exps = vec([[...str('run'), 0x00, 1]]);
   const code = vec([fn.body()]);
   return new Uint8Array([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0, ...sec(1, types), ...sec(2, imps), ...sec(3, funcs), ...sec(7, exps), ...sec(10, code)]);
 }
@@ -496,7 +526,7 @@ P.dynBlock = function (eip) {
   try { t = translate(this, eip, csb, d32); }
   catch (e) { if (e instanceof Unsupported) { this.trapped = `run-time code at ${eip.toString(16)}: ${e.message}`; return null; } throw e; }
   t.fn.e(0x0f);
-  const run = new WebAssembly.Instance(new WebAssembly.Module(assemble(t.fn)), { env: { mem: this.mem }, cpu: this.cpu }).exports.run;
+  const run = new WebAssembly.Instance(new WebAssembly.Module(assemble(t.fn)), { env: { mem: this.mem, io: (port, k) => this.portIO(port & 0xffff, k & 7, !!(k & 8)) }, cpu: this.cpu }).exports.run;
   c = { run, bytes: Array.from(u8.subarray(eip, eip + t.len)) };
   this.dynCache.set(eip, c);
   return c;

@@ -61,6 +61,7 @@ class Process {
     this.setupStack(cmdline);
     for (const m of this.inits) this.call(m.meta.entry, [m.base, 1, 0]);      // DllMain(DLL_PROCESS_ATTACH)
     this.inits = [];
+    if (host.boot && this.initApp16) this.initApp16();   // the program's start under the native USER (ne16.js)
   }
   get u8() { return new Uint8Array(this.mem.buffer); }
   get dv() { return new DataView(this.mem.buffer); }
@@ -214,6 +215,8 @@ class Process {
     if (code === 0) this.cpu.eip.value = LAYOUT.SENTINEL | 0;
   }
   api(eip) {
+    // debugging: window.W95WATCHDOG (ms) stops a slice that runs that long without returning to the host
+    if (window.W95WATCHDOG && (++this.wdCount & 1023) === 0 && this.now() - (this.lastYield || this.t0) > window.W95WATCHDOG) { this.trapped = `watchdog: guest ran ${Math.round(this.now() - (this.lastYield || this.t0))} ms in one slice`; return LAYOUT.SENTINEL; }
     if (u32(eip) < LAYOUT.THUNK) return this.api16(u32(eip));
     const t = this.thunks[(u32(eip) - LAYOUT.THUNK) >> 2];
     if (!t || !t.def) { this.trapped = `unimplemented import ${t ? t.dll + '!' + t.nm : u32(eip).toString(16)}`; return LAYOUT.SENTINEL; }
@@ -484,6 +487,11 @@ const regAttach = store => {
   return true;
 };
 // the shell's own registry reads and writes (Explorer's settings), through the same store as a program's
+/** the names of a key's subkeys, as stored (lower case) */
+const regKids = path => { path = path.toLowerCase(); return [...REGISTRY.keys()].filter(k => k.startsWith(path + '\\') && !k.slice(path.length + 1).includes('\\')).map(k => k.slice(path.length + 1)); };
+/** a key's values as [name, value] pairs, and a key removed with its subkeys */
+const regVals = path => [...(REGISTRY.get(path.toLowerCase()) || new Map()).entries()];
+const regDel = path => { path = path.toLowerCase(); let any = false; for (const k of [...REGISTRY.keys()]) if (k === path || k.startsWith(path + '\\')) { REGISTRY.delete(k); any = true; } if (any) regChanged({ op: 'delkey', path }); };
 const regGet = (path, name) => { const m = REGISTRY.get(path.toLowerCase()); return m ? m.get(name.toLowerCase()) : undefined; };
 const regSet = (path, name, value) => {
   path = path.toLowerCase(); const parts = path.split('\\');
@@ -528,7 +536,17 @@ def('KERNEL32', 'GetTickCount', 0, function () {
   if (t) t.preempt = false;
   return (this.now() - this.t0 + 3600000) >>> 0;
 });
-def('KERNEL32', 'Sleep', 1, function () { return 0; });
+// Sleep: a thread at its top level gives up the processor until the time is up (the call is made again when it
+// resumes, and returns once its wake-up time has passed); elsewhere it returns at once
+function sleep(ms) {
+  const t = this.thread16 || (this.mainSleep = this.mainSleep || {});
+  if (!(this.atThreadTop ? this.atThreadTop() : this.depth === 0)) { t.wake = 0; return 0; }
+  if (!t.wake) { t.wake = this.now() + (ms >>> 0 === 0xffffffff ? 1e12 : ms); return YIELD; }
+  if (this.now() < t.wake) return YIELD;
+  t.wake = 0; return 0;
+}
+def('KERNEL32', 'Sleep', 1, function (ms) { return sleep.call(this, ms); });
+def('KERNEL32', 'SleepEx', 2, function (ms) { return sleep.call(this, ms); });
 def('KERNEL32', 'GetVersion', 0, () => 0xc0000004);
 def('KERNEL32', 'GetVersionExA', 1, function (p) { this.w32(p + 4, 4); this.w32(p + 8, 0); this.w32(p + 12, 950); this.w32(p + 16, 1); this.writeA(p + 20, ' B'); return 1; });
 def('KERNEL32', 'LoadLibraryA', 1, function (n) {
@@ -839,6 +857,28 @@ def('KERNEL32', '_lwrite', 3, function (h, buf, n) {
   return fsCall(this, () => { if (!n) { this.fs.truncate(f.fd); return 0; } return this.fs.write(f.fd, this.u8.slice(buf, buf + n)); }, 0xffffffff);   // 0 bytes truncates there
 });
 def('KERNEL32', '_llseek', 3, function (h, off, how) { const f = fileOf(this, h); if (!f) return 0xffffffff; return fsCall(this, () => this.fs.seek(f.fd, off | 0, how), 0xffffffff); });
+// OpenFile: the Win16 open by name, filling an OFSTRUCT (length, fixed-disk flag, DOS error, date/time, full path).
+// A name without a directory is looked for as Windows does: current directory, WINDOWS, SYSTEM. OF_PARSE only fills
+// the path, OF_EXIST opens and closes, OF_DELETE deletes; the access bits (0 read, 1 write, 2 both) and OF_CREATE pick the mode
+def('KERNEL32', 'OpenFile', 3, function (name, of, style) {
+  const n = this.readA(name) || '', W = window.W95FS;
+  let path = /^([a-z]:)?\\/i.test(n) ? n : null;
+  if (!path && !(style & 0x1000)) for (const d of [this.fs.cwd, 'C:\\WINDOWS', 'C:\\WINDOWS\\SYSTEM']) { const f = W.join(d, n); if (this.fs.exists(f)) { path = f; break; } }
+  if (!path) path = W.join(this.fs.cwd, n);
+  const fill = (err, full) => { this.u8.fill(0, of, of + 136); this.u8[of] = 136; this.u8[of + 1] = 1; this.w16(of + 2, err); this.writeA(of + 8, full.toUpperCase(), 128); };
+  if (style & 0x100) { fill(0, path); return 0; }                                                     // OF_PARSE
+  try {
+    if (style & 0x200) { this.fs.unlink(path); fill(0, path); return 1; }                             // OF_DELETE
+    const full = this.fs.exists(path) ? this.fs.realpath(path) : path;
+    const acc = style & 3, mode = style & 0x1000 ? (acc ? 'w+' : 'w+') : acc ? 'r+' : 'r';
+    const fd = this.fs.open(full, mode); fill(0, full);
+    if (style & 0x4000) { this.fs.close(fd); return 1; }                                               // OF_EXIST
+    return this.newHandle({ kind: 'file', fd, path: full });
+  } catch (e) {
+    if (!(e instanceof W.FSError)) throw e;
+    fill(e.code || 2, path); this.lastError = e.code || 2; return 0xffffffff;
+  }
+});
 def('KERNEL32', 'LockFile', 5, () => 1);
 def('KERNEL32', 'UnlockFile', 5, () => 1);
 def('KERNEL32', 'GetFileInformationByHandle', 2, function (h, p) {
@@ -1099,11 +1139,12 @@ def('ADVAPI32', 'RegQueryValueExA', 6, function (hk, name, res, type, data, cb) 
 });
 def('ADVAPI32', 'RegQueryValueA', 4, function (hk, sub, data, cb) { return regQuery.call(this, regKey(regPath(this, hk, sub)), '', 0, data, cb); });
 def('ADVAPI32', 'RegSetValueExA', 6, function (hk, name, res, type, data, n) {
-  const path = regPath(this, hk, 0), m = regKey(path, true), key = (this.readA(name) || '').toLowerCase();
+  const path = regPath(this, hk, 0); if (!path) return 6;   // ERROR_INVALID_HANDLE
+  const m = regKey(path, true), key = (this.readA(name) || '').toLowerCase();
   const value = { type, data: this.u8.slice(data, data + n), name: this.readA(name) || '' };
   m.set(key, value); regChanged({ op: 'set', path, name: key, value }); return 0;
 });
-def('ADVAPI32', 'RegSetValueA', 5, function (hk, sub, type, data, n) { const path = regPath(this, hk, sub), m = regKey(path, true), value = { type: 1, data: window.W95FS.encode((this.readA(data) || '') + '\0') }; m.set('', value); regChanged({ op: 'set', path, name: '', value }); return 0; });
+def('ADVAPI32', 'RegSetValueA', 5, function (hk, sub, type, data, n) { const path = regPath(this, hk, sub); if (!path) return 6; const m = regKey(path, true), value = { type: 1, data: window.W95FS.encode((this.readA(data) || '') + '\0') }; m.set('', value); regChanged({ op: 'set', path, name: '', value }); return 0; });
 def('ADVAPI32', 'RegEnumKeyA', 4, function (hk, i, buf, n) {
   const path = regPath(this, hk, 0); const kids = [...REGISTRY.keys()].filter(k => k.startsWith(path + '\\') && !k.slice(path.length + 1).includes('\\'));
   if (i >= kids.length) return 259; this.writeA(buf, kids[i].slice(path.length + 1), n); return 0;
@@ -1824,5 +1865,5 @@ function peString(bytes, id) {
   } catch (_) { return null; }
 }
 
-window.W95Win32 = { regAttach, regGet, regSet, Process, API, LAYOUT, WM, YIELD, iniGet, iniSet, iniRead, peString, def, dcOf, GuestError, mkCanvas, dibOut };
+window.W95Win32 = { regAttach, regGet, regKids, regVals, regDel, regSet, Process, API, LAYOUT, WM, YIELD, iniGet, iniSet, iniRead, peString, def, dcOf, GuestError, mkCanvas, dibOut };
 })();

@@ -105,6 +105,66 @@ class PE:
         return any(a <= r < a + n for a, n in self.code)
     def u32va(self, va): return u32(self.image, va - self.base)
 
+class LE:
+    """A VxD (LE image) laid out the way PE is: its objects one after another from the load base, every internal
+    fixup applied, the code objects as code. Entry points are the procedures its DDB names (control, V86 API,
+    PM API) and its service table; an INT 20h is a VxDCall/VMMCall with the service's dword after it."""
+    VXD = True
+    def __init__(self, data, base=0x10000):
+        self.data = data; le = u32(data, 0x3c); assert data[le:le + 2] == b'LE'
+        self.pgsz = u32(data, le + 0x28); last = u32(data, le + 0x2c); objtab = le + u32(data, le + 0x40); nobj = u32(data, le + 0x44)
+        fpt = le + u32(data, le + 0x68); frt = le + u32(data, le + 0x6c); datapg = u32(data, le + 0x80); npages = u32(data, le + 0x14)
+        enttab = le + u32(data, le + 0x5c)
+        objs = []
+        for i in range(nobj):
+            vsize, ob, flags, pgidx, pgcnt, _ = struct.unpack_from('<6I', data, objtab + 24 * i)
+            objs.append(dict(vsize=vsize, flags=flags, pgidx=pgidx, pgcnt=pgcnt))
+        off = 0
+        for o in objs: o['rva'] = off; off += (o['vsize'] + 0xfff) & ~0xfff
+        self.size = off; self.image = bytearray(off); self.base = base; self.pref = base; self.relocs = []
+        for o in objs:
+            for k in range(o['pgcnt']):
+                pg = o['pgidx'] + k; n = self.pgsz if pg < npages else last; src = datapg + (pg - 1) * self.pgsz
+                self.image[o['rva'] + k * self.pgsz:o['rva'] + k * self.pgsz + n] = data[src:src + n]
+        for o in objs:
+            for k in range(o['pgcnt']):
+                pg = o['pgidx'] + k - 1; q, end = frt + u32(data, fpt + 4 * pg), frt + u32(data, fpt + 4 * pg + 4)
+                while q < end:
+                    src, fl = data[q], data[q + 1]; q += 2
+                    if src & 0x20: cnt = data[q]; q += 1; offs = None
+                    else: offs = [struct.unpack_from('<h', data, q)[0]]; q += 2
+                    assert fl & 3 == 0, 'import fixup in a VxD'
+                    if fl & 0x40: tobj = u16(data, q); q += 2
+                    else: tobj = data[q]; q += 1
+                    toff = 0
+                    if src & 0xf != 2:
+                        if fl & 0x10: toff = u32(data, q); q += 4
+                        else: toff = u16(data, q); q += 2
+                    if offs is None: offs = [struct.unpack_from('<h', data, q + 2 * i)[0] for i in range(cnt)]; q += 2 * cnt
+                    val = base + objs[tobj - 1]['rva'] + toff
+                    for so in offs:
+                        at = o['rva'] + k * self.pgsz + so
+                        if at < 0 or at + 4 > off: continue
+                        if src & 0xf == 7: struct.pack_into('<I', self.image, at, val & 0xffffffff); self.relocs.append(at)
+                        elif src & 0xf == 8: struct.pack_into('<i', self.image, at, s32(val - (base + at + 4)))
+                        elif src & 0xf == 5: struct.pack_into('<H', self.image, at, val & 0xffff)
+        self.objs = objs
+        self.code = [(o['rva'], o['vsize']) for o in objs if o['flags'] & 4]   # executable objects
+        # the DDB: the first entry of the first bundle
+        tobj = u16(data, enttab + 2); self.ddb = base + objs[tobj - 1]['rva'] + u32(data, enttab + 5)
+        d = self.ddb - base
+        self.vxd_id = u16(self.image, d + 6); self.vxd_name = bytes(self.image[d + 0xc:d + 0x14]).rstrip(b' \0').decode('latin1')
+        self.procs = dict(control=u32(self.image, d + 0x18), v86=u32(self.image, d + 0x1c), pm=u32(self.image, d + 0x20))
+        svc, nsvc = u32(self.image, d + 0x24), u32(self.image, d + 0x28)
+        self.services = [u32(self.image, svc - base + 4 * i) for i in range(nsvc)] if svc and nsvc else []
+        self.entry = 0
+    def entries(self): return [a for a in list(self.procs.values()) + self.services if a and self.in_code(a)]
+    def rebase(self, nb): raise ValueError('a VxD loads at the base given to LE()')
+    def in_code(self, va):
+        r = va - self.base
+        return any(a <= r < a + n for a, n in self.code)
+    def u32va(self, va): return u32(self.image, va - self.base)
+
 # ---------------------------------------------------------------- discovery
 class Insn:
     __slots__ = ('i', 'addr', 'size', 'next', 'mn', 'ops', 'prefix', 'live', 'id', 'segbase', 'bits', 'tgt', 'farsel')
@@ -118,7 +178,7 @@ def imm_target(ins):
 def decode_all(pe):
     md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32); md.detail = True
     insns, todo, seen_entries = {}, [pe.entry] if pe.entry else [], set()
-    todo += export_entries(pe)
+    todo += pe.entries() if getattr(pe, 'VXD', False) else export_entries(pe)
     reloc_vals = [pe.u32va(pe.base + r) for r in pe.relocs]
     data_refs = set()
     def walk(start):
@@ -130,6 +190,7 @@ def decode_all(pe):
             if got is None: return
             ins = Insn(); ins.i = got; ins.addr = a; ins.size = got.size; ins.next = a + got.size
             ins.mn = got.mnemonic.split()[-1]; ins.ops = got.operands; ins.prefix = got.prefix
+            if getattr(pe, 'VXD', False) and got.bytes[:2] == b'\xcd\x20': ins.size = 6; ins.next = a + 6   # VxDCall: the service dword follows
             insns[a] = ins
             for op in got.operands:
                 if op.type == X.X86_OP_MEM and op.mem.base == 0 and op.mem.disp: data_refs.add(op.mem.disp & 0xffffffff)
@@ -475,6 +536,8 @@ class Translator:
         if mn in ('add', 'sub', 'adc', 'sbb', 'cmp', 'and', 'or', 'xor', 'test'): return self.alu(f, ins, mn)
         if mn.rstrip('bwd') in ('movs', 'stos', 'lods', 'scas', 'cmps') and len(mn) == 5:
             return self.string(f, ins, mn[:4], {'b': 1, 'w': 2, 'd': 4}[mn[4]], rep)
+        if mn[:-1] in ('ins', 'outs') and mn[-1] in 'bwd':
+            return self.string(f, ins, mn[:-1], {'b': 1, 'w': 2, 'd': 4}[mn[-1]], rep)
         if mn.startswith('f'): return self.fpu(f, ins, mn, ops)
         if mn in ('lds', 'les', 'lss', 'lfs', 'lgs'): return self.lptr(f, ins, ops, {'lds': X.X86_REG_DS, 'les': X.X86_REG_ES, 'lss': X.X86_REG_SS, 'lfs': X.X86_REG_FS, 'lgs': X.X86_REG_GS}[mn])
         raise Unsupported(mn)
@@ -958,6 +1021,16 @@ class Translator:
         s.write(lambda: f.lg(a)); d.write(lambda: (f.lg(a), f.lg(b), f.e(OPS['add']), f.c(MASK[ops[0].size]), f.e(OPS['and_'])))
 
     # ---- string instructions
+    def port_elem(self, f, ins, kind, sz, addr):
+        """one element of INS/OUTS: the port in DX, the data through AL/AX/EAX as IN/OUT carry it, EAX kept"""
+        keep = f.i(); f.gg('eax').ls(keep)
+        if kind == 'outs':
+            if sz == 4: addr(); f.mem(0x28).gs('eax')
+            else: f.gg('eax').c(~MASK[sz]).e(OPS['and_']); addr(); f.mem(LOAD[sz]).e(OPS['or_']).gs('eax')
+        f.c(ins.next).gg('edx').c(0xffff).e(OPS['and_']).c(0x1000000 | ((kind == 'ins') << 23) | (sz << 16)).e(OPS['or_'])
+        f.e(0x10, uleb(IMP['trap']))
+        if kind == 'ins': addr(); f.gg('eax').mem(STORE[sz])
+        f.lg(keep).gs('eax')
     def string(self, f, ins, kind, sz, rep):
         if segmode(): return self.string_seg(f, ins, kind, sz, rep)
         step = f.i()
@@ -968,6 +1041,8 @@ class Translator:
                 f.gg('esi').lg(step).e(OPS['add']).gs('esi'); f.gg('edi').lg(step).e(OPS['add']).gs('edi')
             elif kind == 'stos':
                 f.gg('edi').gg('eax').mem(STORE[sz]); f.gg('edi').lg(step).e(OPS['add']).gs('edi')
+            elif kind == 'outs': self.port_elem(f, ins, kind, sz, lambda: f.gg('esi')); f.gg('esi').lg(step).e(OPS['add']).gs('esi')
+            elif kind == 'ins': self.port_elem(f, ins, kind, sz, lambda: f.gg('edi')); f.gg('edi').lg(step).e(OPS['add']).gs('edi')
             elif kind == 'lods':
                 if sz == 4: f.gg('esi').mem(0x28).gs('eax')
                 else: f.gg('eax').c(~MASK[sz]).e(OPS['and_']).gg('esi').mem(LOAD[sz]).e(OPS['or_']).gs('eax')
@@ -1011,6 +1086,8 @@ class Translator:
         def one():
             if kind == 'movs': dst(); src(); f.mem(LOAD[sz]).mem(STORE[sz]); bump('esi'); bump('edi')
             elif kind == 'stos': dst(); f.gg('eax').mem(STORE[sz]); bump('edi')
+            elif kind == 'outs': self.port_elem(f, ins, kind, sz, src); bump('esi')
+            elif kind == 'ins': self.port_elem(f, ins, kind, sz, dst); bump('edi')
             elif kind == 'lods':
                 if sz == 4: src(); f.mem(0x28).gs('eax')
                 else: f.gg('eax').c(~MASK[sz]).e(OPS['and_']); src(); f.mem(LOAD[sz]).e(OPS['or_']).gs('eax')
@@ -1541,12 +1618,36 @@ def build(path, out, base=None, lookup=0x06000000):
     print('%s: %d insns, %d blocks, wasm %d bytes' % (path.split('/')[-1], len(insns), len(blocks), len(mod)))
     if tr.unsupported: print('  unsupported:', tr.unsupported)
 
+def build_vxd(path, out, base, lookup):
+    """a VxD: its LE image at `base`, translated like a PE's code; the metadata names its DDB, procedures and services"""
+    data = open(path, 'rb').read()
+    pe = LE(data, base)
+    insns, entries = decode_all(pe)
+    blocks = build_blocks(pe, insns, entries)
+    liveness(blocks)
+    tr = Translator(pe, blocks)
+    order = sorted(blocks)
+    bodies = [tr.block(s, blocks[s]) for s in order]
+    text_lo = min(pe.base + a for a, n in pe.code); text_hi = max(pe.base + a + n for a, n in pe.code)
+    mod = assemble(bodies, text_lo, text_hi, lookup)
+    open(out + '.wasm', 'wb').write(mod)
+    meta = dict(sha256=hashlib.sha256(data).hexdigest(), base=pe.base, size=pe.size, vxd=True, id=pe.vxd_id, name=pe.vxd_name,
+                ddb=pe.ddb, procs=pe.procs, services=pe.services, textLo=text_lo, textHi=text_hi, lookup=lookup, blocks=order,
+                layout=dict(sentinel=SENTINEL, thunkBase=THUNK_BASE, fpuBase=FPU_BASE, pages=MEM_PAGES))
+    json.dump(meta, open(out + '.json', 'w'))
+    open(out + '.img', 'wb').write(bytes(pe.image))
+    print('%s (%s, VxD %xh): %d insns, %d blocks, wasm %d bytes' % (path.split('/')[-1], pe.vxd_name, pe.vxd_id, len(insns), len(blocks), len(mod)))
+    if tr.unsupported: print('  unsupported:', tr.unsupported)
+
 if __name__ == '__main__':
     a = sys.argv[1:]; kw = {}
     if '--trace' in a: a.remove('--trace'); Translator.TRACE = True
     reg = None
     if '--registry' in a: k = a.index('--registry'); reg = a[k + 1]; del a[k:k + 2]
+    if '--vxd' in a: a.remove('--vxd')
     while len(a) > 2:
         v = int(a.pop(), 0); k = a.pop().lstrip('-'); kw[k] = v
-    if reg: build_ne(a[0], a[1], kw['base'], kw['selbase'], kw.get('lookup', 0x06000000), reg)
+    if '--vxd' in sys.argv: a = [x for x in a if x != '--vxd']
+    if '--vxd' in sys.argv: build_vxd(a[0], a[1], kw['base'], kw.get('lookup', 0x06000000))
+    elif reg: build_ne(a[0], a[1], kw['base'], kw['selbase'], kw.get('lookup', 0x06000000), reg)
     else: build(a[0], a[1], **kw)

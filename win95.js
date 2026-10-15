@@ -538,7 +538,7 @@ function makeDisk(mounted) {
   txt('C:\\AUTOEXEC.BAT', '@ECHO OFF\nSET PATH=C:\\WINDOWS;C:\\WINDOWS\\COMMAND\nSET TEMP=C:\\WINDOWS\\TEMP\n');
   txt('C:\\CONFIG.SYS', 'DEVICE=C:\\WINDOWS\\HIMEM.SYS\nDOS=HIGH,UMB\nFILES=60\n');
   txt(WINDIR + '\\WIN.INI', '[windows]\nload=\nrun=\nNullPort=None\nScreenSaveActive=0\nScreenSaveTimeOut=900\n\n[Desktop]\nWallpaper=(None)\nTileWallpaper=0\nWallpaperStyle=0\n\n[intl]\nsCountry=United States\n\n[fonts]\n' + WIN_INI_FONTS.filter(([, f]) => sysFonts[f]).map(([n, f]) => `${n}=${f}\n`).join(''));
-  txt(WINDIR + '\\SYSTEM.INI', '[boot]\nshell=Explorer.exe\nSCRNSAVE.EXE=\nsystem.drv=system.drv\ndisplay.drv=pnpdrvr.drv\n\n[386Enh]\nmouse=*vmouse, msmouse.vxd\n\n[boot.description]\ndisplay.drv=Standard Display Adapter (VGA)\n');
+  txt(WINDIR + '\\SYSTEM.INI', '[boot]\nshell=Explorer.exe\nSCRNSAVE.EXE=\nsystem.drv=system.drv\ndisplay.drv=pnpdrvr.drv\ndrivers=mmsystem.dll\n\n[386Enh]\nmouse=*vmouse, msmouse.vxd\n\n[boot.description]\ndisplay.drv=Standard Display Adapter (VGA)\n');
   for (const e of ['NOTEPAD.EXE', 'EXPLORER.EXE', 'REGEDIT.EXE', 'CALC.EXE', 'WRITE.EXE', 'TASKMAN.EXE', 'PROGMAN.EXE', 'WINFILE.EXE', 'SOL.EXE'])
     fs.writeFile(join(WINDIR, e), exeStub());
   for (const e of ['USER.EXE', 'GDI.EXE', 'KRNL386.EXE', 'USER32.DLL', 'GDI32.DLL', 'KERNEL32.DLL', 'SHELL32.DLL', 'COMCTL32.DLL', 'VMM32.VXD'])
@@ -549,7 +549,7 @@ function makeDisk(mounted) {
   for (const [e, d] of Object.entries(sysFonts)) fs.writeFile(join(WINDIR, 'FONTS', e), b64(d));
   fs.writeFile('C:\\Program Files\\Accessories\\WORDPAD.EXE', exeStub());
   fs.writeFile(PROGRAMS + '\\Accessories\\Notepad.lnk', lnk(WINDIR + '\\NOTEPAD.EXE'));
-  installPrograms(); setupRegistry();
+  installPrograms(); setupRegistry(); setupSound();
   // the CD's screen savers, byte for byte, under the long names APPLETS.INF gives them in LDID_SYS
   const LONG = { 'BEZIER.SCR': 'Curves and Colors.scr', 'SSMARQUE.SCR': 'Scrolling Marquee.scr', 'SSMYST.SCR': 'Mystify Your Mind.scr',
     'SCRNSAVE.SCR': 'Blank Screen.scr', 'SSFLYWIN.SCR': 'Flying Windows.scr', 'SSSTARS.SCR': 'Flying Through Space.scr' };
@@ -792,7 +792,7 @@ function bootDisk() {
   mountDrives();
   W95Win32.regAttach(host.registry);
   if (!fs.attach('C', host.disk)) makeDisk(true);
-  installPrograms(); setupRegistry();
+  installPrograms(); setupRegistry(); setupSound();
   fs.chdir('C:\\');
 }
 
@@ -897,7 +897,8 @@ function runExe(path, arg) {
   const n = basename(path).toUpperCase();
   if (n === 'NOTEPAD.EXE') return runNotepad(arg ? resolveArg(arg) : null, path);
   if (n === 'EXPLORER.EXE') return arg ? openPath(resolveArg(arg)) : openFolder(MyComputer);
-  msgBox(dispName(basename(path)), `${path} is not a valid Windows application.`, 'error');
+  // any other program the system bundle carries runs natively
+  runNative(path, arg || '').then(ok => { if (!ok) msgBox(dispName(basename(path)), `${path} is not a valid Windows application.`, 'error'); });
 }
 // Notepad: the CD's NOTEPAD.EXE on the native USER when the system bundle has it, the shell's own otherwise
 function runNotepad(file, exe = join(WINDIR, 'NOTEPAD.EXE')) {
@@ -2433,7 +2434,7 @@ function win32Dialog(proc, d) {
 // ---------------------------------------------------------------- Setup's registry entries
 // The AddReg sections of the CD's Setup INF files, as Setup writes them: `root, key, name, flags, value` with
 // %strings% and %dirid% substituted; flag 1 makes the value binary (hex bytes), 2 leaves an existing value alone.
-function infAddReg(text, section) {
+function infAddReg(text, section, hkr) {
   const sec = {}; let cur = null;
   for (const l of text.split(/\r?\n/)) { const m = l.match(/^\s*\[([^\]]+)\]/); if (m) { cur = sec[m[1].trim().toLowerCase()] = []; continue; } if (cur) cur.push(l); }
   const fields = l => {   // comma-separated, "quoted" with "" for a quote, ; starts a comment outside quotes
@@ -2452,11 +2453,11 @@ function infAddReg(text, section) {
   for (const l of sec.strings || []) { const m = l.match(/^\s*([^=;\s][^=]*?)\s*=\s*(.*)$/); if (m) strings[m[1].toLowerCase()] = fields(m[2])[0]; }
   const dirs = { 10: WINDIR, 11: WINDIR + '\\SYSTEM', 17: WINDIR + '\\INF', 18: WINDIR + '\\HELP', 20: WINDIR + '\\FONTS', 24: 'C:\\', 25: WINDIR, 30: 'C:\\' };
   const subst = s => s.replace(/%([^%]*)%/g, (m, k) => (k === '' ? '%' : dirs[k] ?? strings[k.toLowerCase()] ?? m));
-  const ROOT = { HKCR: 'hkcr', HKCU: 'hkcu', HKLM: 'hklm', HKU: 'hku' };
+  const ROOT = { HKCR: 'hkcr', HKCU: 'hkcu', HKLM: 'hklm', HKU: 'hku', HKR: hkr };   // HKR: the device's own key, for a device INF
   for (const l of sec[section.toLowerCase()] || []) {
     if (!l.trim() || /^\s*;/.test(l)) continue;
     const f = fields(l), root = ROOT[(f[0] || '').toUpperCase()]; if (!root) continue;
-    const key = root + '\\' + subst(f[1] || ''), flags = parseInt(f[3] || '0', 16) || 0;
+    const sub = subst(f[1] || ''), key = sub ? root + '\\' + sub : root, flags = parseInt(f[3] || '0', 16) || 0;
     if (f.length < 3) { W95Win32.regSet(key, null); continue; }
     const name = subst(f[2] || '');
     if (flags & 2 && W95Win32.regGet(key, name) !== undefined) continue;
@@ -2469,6 +2470,26 @@ function setupRegistry() {
   const inf = ((window.W95SYSTEM || {}).infs || {})['SHELL.INF']; if (!inf) return;
   if (W95Win32.regGet('hkcr\\clsid\\{20d04fe0-3aea-1069-a2d8-08002b30309d}\\inprocserver32', '') !== undefined) return;
   infAddReg(inf, 'shell.reg');
+}
+// Setup's multimedia: MOTOWN.INF's base (event labels and schemes, the MEDIA class, MediaResources), MMOPT.INF's sound
+// clips of a Typical install in C:\WINDOWS\MEDIA, SYSTEM.INI's [boot] drivers=mmsystem.dll, and the Windows Sound System
+// card WAVE.INF installs: a legacy *PNPB007 device whose software key is MEDIA\0000
+function setupSound() {
+  const S = window.W95SYSTEM || {}, infs = S.infs || {};
+  if (!infs['MOTOWN.INF'] || W95Win32.regGet('hkcu\\appevents\\eventlabels\\systemstart', '') !== undefined) return;
+  const media = join(WINDIR, 'MEDIA'); fs.mkdir(media, { recursive: true });
+  const NAMES = { 'MSSOUND.WAV': 'The Microsoft Sound.wav' };   // MOTOWN.INF's RenameFiles\Media
+  for (const [n, d] of Object.entries(S.media || {})) fs.writeFile(join(media, NAMES[n] || n.toLowerCase()), b64bytes(d));
+  infAddReg(infs['MOTOWN.INF'], 'mmsys.add.reg');
+  if (infs['MMOPT.INF']) infAddReg(infs['MMOPT.INF'], 'mediaopt.reg');
+  const ini = W95Win32.iniGet(fs, 'SYSTEM.INI', 'boot', 'drivers');
+  if (!ini || !/(^|[\s,])mmsystem\.dll/i.test(ini)) W95Win32.iniSet(fs, 'SYSTEM.INI', 'boot', 'drivers', ini ? `${ini} mmsystem.dll` : 'mmsystem.dll');
+  const wave = infs['WAVE.INF']; if (!wave) return;
+  const sw = 'hklm\\system\\currentcontrolset\\services\\class\\media\\0000', hw = 'hklm\\enum\\root\\*pnpb007\\0000';
+  for (const sec of ['WAVE.AddReg', 'MIXER.AddReg', 'PNPB007.AddReg', 'WSS.AddReg']) infAddReg(wave, sec, sw);
+  const str = v => ({ type: 1, data: W95FS.encode(v + '\0') }), desc = 'MS Windows Sound System Compatible';
+  for (const [k, v] of [['DriverDesc', desc], ['ProviderName', 'Microsoft'], ['InfPath', 'WAVE.INF'], ['InfSection', 'PNPB007_Device']]) W95Win32.regSet(sw, k, str(v));
+  for (const [k, v] of [['Class', 'MEDIA'], ['Driver', 'MEDIA\\0000'], ['DeviceDesc', desc], ['HardwareID', '*PNPB007'], ['Mfg', 'Microsoft']]) W95Win32.regSet(hw, k, str(v));
 }
 
 // ---------------------------------------------------------------- Windows programs on the native USER
@@ -2534,7 +2555,7 @@ class NativeApp {
     const module = await prog.d.mod;
     const dlls = new Map();
     for (const [n, d] of Object.entries(S.dlls)) { d.bytes = d.bytes || b64bytes(d.file); dlls.set(n.replace(/\.DLL$/, ''), { file: d.bytes, module: d.mod, meta: d.meta }); }
-    [this.sw, this.sh] = NATIVE_MODES.find(([w, h]) => w <= W && h <= H) || NATIVE_MODES[NATIVE_MODES.length - 1];
+    [this.sw, this.sh] = [W, H];   // the screen's display mode
     const host = {
       fs, width: this.sw, height: this.sh, path: this.path, now: () => performance.now(),
       cursor: () => ({ x: mouse.x, y: mouse.y }), surface: (h, w, hh) => mkc(w, hh).getContext('2d'), setCursor: () => {},
@@ -2546,6 +2567,7 @@ class NativeApp {
     if (this.proc.trapped) { this.exited(-1, this.proc.trapped); return false; }
     { const a = this.proc.scanout(); if (a.bpp) [this.sw, this.sh] = [a.w, a.h]; }   // the mode the display driver set
     this.cv = mkc(this.sw, this.sh); this.cx = this.cv.getContext('2d'); this.img = this.cx.createImageData(this.sw, this.sh);
+    this.ov = mkc(this.sw, this.sh); this.ox = this.ov.getContext('2d'); this.oimg = this.ox.createImageData(this.sw, this.sh); this.o32 = new Uint32Array(this.oimg.data.buffer);
     this.d32 = new Uint32Array(this.img.data.buffer); this.pal = new Uint32Array(256);
     try {
       // the cursor USER draws shows only while the mouse is over this program's windows; its windows stay above the taskbar
@@ -2562,7 +2584,7 @@ class NativeApp {
     if (!this.alive) return;
     const p = this.proc, t0 = performance.now();
     this.keysFed = 0; this.feedKeys();
-    try { for (let n = 0; this.alive && n < 4; n++) { p.stats.slices++; const live = p.slice(); p.timers16(); p.threads16(); p.systemPump(); if (!live) break; } }
+    try { for (let n = 0; this.alive && n < 4; n++) { p.stats.slices++; const live = p.slice(); p.timers16(); p.threads16(); p.systemPump(); p.appy16(); if (p.sound16) p.sound16(); if (!live) break; } }
     catch (e) { console.error(e); this.exited(-1, e.message); return; }
     p.stats.guestMs += performance.now() - t0;
     if (p.trapped && !p.failed) p.fail(p.trapped);
@@ -2638,6 +2660,20 @@ class NativeApp {
       for (let y = y0; y < y1; y++) { const s = y * pitch, o = y * sw; for (let x = x0; x < x1; x++) d[o + x] = pal[v[s + x]]; }
       this.cx.putImageData(this.img, 0, 0, x0, y0, x1 - x0, y1 - y0);
     }
+    // the rest of its screen: what USER draws on its desktop (its cursor, a window's drag frame) over the desktop
+    // color, which is the shell's desktop showing through
+    // (GetSysColor(COLOR_BACKGROUND), at the DAC's 6 bits a component as the palette above has it)
+    const six = c => (c >> 2) << 2 | (c >> 2) >> 4;
+    let bg = 0; try { const c = this.proc.user16(180, [['w', 1]]); bg = 0xff000000 | six(c.dx & 0xff) << 16 | six(c.ax >> 8 & 0xff) << 8 | six(c.ax & 0xff); bg >>>= 0; } catch (e) { console.error(e); }
+    const o = this.o32, wins = [...this.wins.values()].filter(w => !w.min);
+    for (let y = 0; y < sh; y++) {
+      const s = y * pitch, r = y * sw, ins = wins.filter(w => y >= w.y && y < w.y + w.h);
+      for (let x = 0; x < sw; x++) {
+        const c = y < a.h && x < a.w ? pal[v[s + x]] : bg;
+        o[r + x] = c === bg || ins.some(w => x >= w.x && x < w.x + w.w) ? 0 : c;
+      }
+    }
+    this.ox.putImageData(this.oimg, 0, 0);
   }
   blit(w) {
     const x0 = Math.max(0, w.x), y0 = Math.max(0, w.y), x1 = Math.min(this.sw, w.x + w.w), y1 = Math.min(this.sh, w.y + w.h);
@@ -3077,7 +3113,29 @@ function render() {
     const tw = textW(tip.text) + 6, tx = clamp(tip.x, 0, W - tw), ty = tip.y;
     fill(tx, ty, tw, 17, K.tip); edge(tx, ty, tw, 17, K.dk, K.dk); text(tip.text, tx + 3, ty + 2);
   }
-  drawCursor(cursorAt(mouse.x, mouse.y));
+  const cur = cursorAt(mouse.x, mouse.y);
+  for (const a of nativeApps) if (a.ov && a.alive) ctx.drawImage(a.ov, 0, 0);
+  if (cur === 'none') { for (const a of nativeApps) if (a.cursorOn) drawSprite(a); }
+  else drawCursor(cur);
+}
+// the display adapter's hardware cursor: the sprite the program's display driver loaded and placed, overlaid on the
+// whole screen as the CRTC overlays it on scanout (2 bits a pixel: bit 1 keeps the screen, bit 0 inverts it)
+function drawSprite(app) {
+  let sp; try { sp = app.proc && app.proc.sprite(); } catch (e) { return; }
+  if (!sp) return;
+  const x = sp.x, y = sp.y, w = Math.min(64 - sp.px, W - x), h = Math.min(64 - sp.py, H - y);
+  if (w <= 0 || h <= 0 || x < 0 || y < 0) return;
+  const im = ctx.getImageData(x, y, w, h), d = im.data;
+  for (let j = 0; j < h; j++) {
+    const row = (sp.py + j) * sp.row;
+    for (let i = 0; i < w; i++) {
+      const p = sp.px + i, v = sp.bits[row + (p >> 2)] >> ((p & 3) * 2) & 3, o = (j * w + i) * 4;
+      if (v === 2) continue;
+      const and = v & 2 ? 0xff : 0, xor = v & 1 ? 0xff : 0;
+      d[o] = (d[o] & and) ^ xor; d[o + 1] = (d[o + 1] & and) ^ xor; d[o + 2] = (d[o + 2] & and) ^ xor;
+    }
+  }
+  ctx.putImageData(im, x, y);
 }
 function drawCursor(name) {
   if (name === 'none') return;
@@ -3316,9 +3374,14 @@ function handleKey(e) {
 }
 
 // ---------------------------------------------------------------- boot
+// the screen is a display mode, as on the machine: the largest of the adapter's modes that fits the window (640x480 at
+// least), scaled to fill it; the programs' USER and the desktop around their windows then share one screen
 function resize() {
-  W = Math.max(320, Math.floor(innerWidth / ZOOM)); H = Math.max(240, Math.floor(innerHeight / ZOOM));
-  cv.width = W; cv.height = H; cv.style.width = W * ZOOM + 'px'; cv.style.height = H * ZOOM + 'px';
+  const vw = innerWidth / ZOOM, vh = innerHeight / ZOOM;
+  [W, H] = NATIVE_MODES.find(([w, h]) => w <= vw && h <= vh) || NATIVE_MODES[NATIVE_MODES.length - 1];
+  const k = Math.min(innerWidth / W, innerHeight / H);
+  cv.width = W; cv.height = H; cv.style.width = W * k + 'px'; cv.style.height = H * k + 'px';
+  cv.style.margin = `${Math.floor((innerHeight - H * k) / 2)}px auto 0`;
   ctx.imageSmoothingEnabled = false;
   for (const w of windows) if (w.max) Object.assign(w, maxRect(w.b));
   closeMenus(); dirty();

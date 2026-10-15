@@ -121,6 +121,10 @@ P.initNE = function (rec) {
   const m = rec.meta; if (!m.entry[0]) return 1;
   const heap = rd.u16(rec.file, rd.u32(rec.file, 0x3c) + 0x10);
   const r = this.call16(m.segs[m.entry[0] - 1].sel, m.entry[1], [], { ds: rec.dgroup, di: rec.hInstance, cx: heap, es: 0, si: 0 });
+  // then, as KRNL386 does for a library that exports one, its DllEntryPoint(DLL_PROCESS_ATTACH, hInstance, DS, heap
+  // size, 0, 0) for the process that loaded it (MSACM.DLL makes its per-process instance there)
+  const dep = r.ax && this.neExport(rec, 'DLLENTRYPOINT');
+  if (dep) this.call16(dep >>> 16, dep & 0xffff, [['l', 1], ['w', rec.hInstance], ['w', rec.dgroup], ['w', heap], ['l', 0], ['w', 0]], { ds: rec.dgroup });
   return r.ax;
 };
 P.neByHandle = function (h) {
@@ -138,10 +142,13 @@ P.loadLibrary16 = function (name, native = false, defer = false) {
   this.init16();
   const base = name.toUpperCase().replace(/^.*\\/, '').replace(/\.(DLL|EXE|DRV)$/, '');
   if (base === 'KERNEL') return this.kernelModule();
-  if (this.ne.has(base)) return this.ne.get(base);
   const all = (window.W95SYSTEM && window.W95SYSTEM.ne) || {};
   const file = name.toUpperCase().replace(/^.*\\/, '');
-  const sys = all[base] || Object.values(all).find(s => s.fileName === file || s.fileName === file + '.DLL');
+  // a file name finds that file's module first (MSACM.DRV is the module MSACMMAP, not MSACM.DLL's MSACM)
+  const byFile = /\./.test(file) && Object.values(all).find(s => s.fileName === file);
+  if (byFile && this.ne.has(byFile.meta.name.toUpperCase())) return this.ne.get(byFile.meta.name.toUpperCase());
+  if (!byFile && this.ne.has(base)) return this.ne.get(base);
+  const sys = byFile || all[base] || Object.values(all).find(s => s.fileName === file || s.fileName === file + '.DLL');
   if (!sys) return this.loadNEFile(name);
   const b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
   if (this.ne.has(sys.meta.name.toUpperCase())) return this.ne.get(sys.meta.name.toUpperCase());
@@ -417,6 +424,7 @@ const INTS = {
         this.seg('es', v >>> 16); this.cpu.ebx.value = lo16(this.cpu.ebx.value, v); return; }
       case 0x0d: return;   // disk reset: nothing is buffered
       case 0x25: (this.dosVec = this.dosVec || {})[al] = u32((this.cpu.ds.value << 16) | (this.cpu.edx.value & 0xffff)); return;
+      case 0x4c: if (this.thread16 && this.thread16.task && this.depth === this.thread16.depth) { this.thread16.exitCode = al; return LAYOUT.SENTINEL; } break;   // a task's exit ends its thread
     }
     // handle file calls, on the handles KERNEL's _lopen/OpenFile give out: BX handle, CX count, DS:DX buffer or name;
     // CF and AX = error code on failure (2 not found, 5 denied, 6 bad handle)
@@ -466,6 +474,7 @@ const INTS = {
     }
     if (ax === 0x1686) { this.ax(0); return; }                                          // in protected mode
     if (ax === 0x1689 || ax === 0x1680) return;
+    if (ax === 0x160b) return;          // identify Windows-aware TSRs: none is loaded, so ES:DI comes back as it went in
     if ((ax >> 8) === 0x40) return;    // VDD save/restore and critical-section notifications
     if (ax === 0x4a32) return;         // boot progress to IO.SYS (USER reports start-up done; its answer is not read)
     this.trapped = `unhandled int 2Fh ax=${ax.toString(16)}`; return LAYOUT.SENTINEL;
@@ -548,6 +557,9 @@ vxdApi(0x000c, 'VMD', {
   // asked after the type; a zero answer sends MOUSE.DRV through a set-up of its own that this mouse does not need
   // (an unconfirmed reading of the driver)
   0x102() { return 1; },
+  // asked by USER's first-task start-up; a zero answer has USER rewrite the mouse's SYSTEM.INI entries for a mouse
+  // VMD has not set up (an unconfirmed reading of USER seg21:29E5), which this PS/2 mouse is not
+  0x103() { this.cpu.cf.value = 0; return 1; },
   // the event procedure MOUSE.DRV's Enable passes on (USER's mouse_event), or 0:0 from Disable
   3() { const cx = this.cpu.ecx.value & 0xffff, dx = this.cpu.edx.value & 0xffff; this.mouseProc = cx || dx ? { sel: cx, off: dx } : null; return 0; },
   0x101() { return 0; },
@@ -619,6 +631,22 @@ P.keyEvent16 = function (vk, scan, up, ext = false) {
 vxdApi(0x0017, 'SHELL', {});
 vxdApi(0x0037, 'VxD 37h', {});
 vxdApi(0x0442, 'VTDAPI', {
+  // MMSYSTEM's timer services (timeGetDevCaps, timeBeginPeriod/EndPeriod, timeGetTime, timeSetEvent/KillEvent):
+  // 0 the periods it can keep, ES:BX -> { ?, min ms, max ms } (dwords)
+  0() { const a = this.lin((this.cpu.es.value << 16) | (this.cpu.ebx.value & 0xffff)); this.w32(a + 4, 1); this.w32(a + 8, 0xffff); return 0; },
+  1() { return 0; },   // begin a minimum period (CX ms): every period is kept to the millisecond here
+  2() { return 0; },   // end it
+  // the system time in milliseconds, DX:AX (the same clock as the time selector of function 9)
+  4() { const t = u32(this.now() - this.t0 + 3600000); this.cpu.edx.value = lo16(this.cpu.edx.value, t >>> 16); if (this.sound16) this.sound16(); return t & 0xffff; },   // (code waiting on the clock lets the sound hardware run)
+  // a timer event, ES:BX -> { delay, resolution (words), far callback, dwUser, flags (bit 0 periodic) }: the callback
+  // gets (id, 0, dwUser, 0, 0) as TimeProc takes them, from timers16() like the periodic callbacks; AX = its id
+  5() {
+    const a = this.lin((this.cpu.es.value << 16) | (this.cpu.ebx.value & 0xffff));
+    const ms = Math.max(1, this.r16(a)), id = this.nextTimerEvent = ((this.nextTimerEvent || 0) % 0xfffe) + 1;
+    (this.vtdEvents = this.vtdEvents || new Map()).set(id, { id, ms, off: this.r16(a + 4), sel: this.r16(a + 6), user: this.r32(a + 8), periodic: !!(this.r16(a + 12) & 1), due: this.now() + ms });
+    return id;
+  },
+  6() { const id = this.cpu.ecx.value & 0xffff; return this.vtdEvents && this.vtdEvents.delete(id) ? 0 : 0x61; },   // kill one (TIMERR_NOCANDO)
   // a selector to the system time in milliseconds, which USER reads for message times (the VxD keeps it current;
   // here it is refreshed whenever native code calls out)
   9() { if (!this.timeLin) { this.timeLin = this.alloc(16); this.timeSel = this.allocSels(this.timeLin, 16); } this.tick16(); return this.timeSel; },
@@ -630,11 +658,185 @@ vxdApi(0x0442, 'VTDAPI', {
     return 1;
   },
 });
+// ---------------------------------------------------------------- Plug and Play
+// CONFIGMG's device tree as the registry's Enum branch records it: a devnode for each HKLM\Enum\<enumerator>\<device>\
+// <instance>, with its class and its driver (software key under Services\Class), and a handle as CONFIGMG hands them out
+// (a ring-0 address)
+const regStr = v => (v && v.type === 1 ? window.W95FS.decode(v.data).replace(/\0[\s\S]*$/, '') : typeof v === 'string' ? v : '');
+P.devnodes = function () {
+  if (this.devTree) return this.devTree;
+  const W = window.W95Win32, out = [];
+  for (const bus of W.regKids('hklm\\enum')) for (const dev of W.regKids(`hklm\\enum\\${bus}`)) for (const inst of W.regKids(`hklm\\enum\\${bus}\\${dev}`)) {
+    const key = `hklm\\enum\\${bus}\\${dev}\\${inst}`;
+    out.push({ handle: 0xc1000000 + 0x100 * out.length, id: `${bus}\\${dev}\\${inst}`.toUpperCase(), key, cls: regStr(W.regGet(key, 'Class')), driver: regStr(W.regGet(key, 'Driver')) });
+  }
+  return (this.devTree = out);
+};
+P.devnode = function (h) { return this.devnodes().find(d => d.handle === u32(h)) || null; };
+/** a devnode's software key (Services\Class\<driver>), or null */
+P.devSoftKey = function (dn) { return dn && dn.driver ? 'hklm\\system\\currentcontrolset\\services\\class\\' + dn.driver.toLowerCase() : null; };
+// MMDEVLDR, the device loader of MEDIA devnodes (DevLoader=mmdevldr.vxd in their software keys): it starts each one at
+// appy time, once MMSYSTEM.DLL is loaded, through MMSYSTEM's RING3_DEVLOADER(devnode, 1), which loads the drivers the
+// software key's Drivers subkeys name. The host runs this between slices, as the system's appy-time events run
+P.appy16 = function () {
+  if (this.depth || this.mmdevStarted || !this.user16Ready) return;
+  const mm = this.ne.get('MMSYSTEM'), ep = mm && mm.meta && this.neExport(mm, 2001); if (!ep) return;   // RING3_DEVLOADER
+  this.mmdevStarted = true;
+  for (const dn of this.devnodes()) {
+    const sw = this.devSoftKey(dn);
+    if (!sw || !/^mmdevldr\.vxd$/i.test(regStr(window.W95Win32.regGet(sw, 'DevLoader')))) continue;
+    this.mmdevMigrate(dn);
+    dn.started = true; this.tick16();
+    this.call16(ep >>> 16, ep & 0xffff, [['l', dn.handle], ['l', 1]]);
+  }
+};
+/** MMDEVLDR's migration of a devnode (VxD 30B28h): each driver its software key's Drivers\<class>\<driver> names gets an
+ *  entry MediaResources\<class>\<driver><<instance>> holding the driver key's values and subkeys, its SOFTWAREKEY,
+ *  DeviceID (the Enum key) and DevNode; a driver or class marked NotPresent=1 loses its entry. Drivers\DevNode and
+ *  MIGRATED=1 record it done; once migrated, only the entries' DevNode is brought up to date */
+P.mmdevMigrate = function (dn) {
+  const W = window.W95Win32, sw = this.devSoftKey(dn), drv = sw + '\\drivers', MR = 'hklm\\system\\currentcontrolset\\control\\mediaresources\\';
+  const dword = v => ({ type: 3, data: new Uint8Array(new Uint32Array([v]).buffer) }), str = v => ({ type: 1, data: window.W95FS.encode(v + '\0') });
+  const dnOf = v => (v && v.data && v.data.length >= 4 ? new DataView(v.data.buffer, v.data.byteOffset).getUint32(0, true) : null);
+  const migrated = regStr(W.regGet(drv, 'MIGRATED'))[0] === '1';
+  if (migrated && dnOf(W.regGet(drv, 'DevNode')) === dn.handle) return;
+  W.regSet(drv, 'DevNode', dword(dn.handle));
+  const inst = `<${dn.driver.split('\\').pop()}>`, copy = (from, to) => { for (const [n, v] of W.regVals(from)) W.regSet(to, (v && v.name) || n, v); for (const k of W.regKids(from)) copy(`${from}\\${k}`, `${to}\\${k}`); };
+  for (const cls of W.regKids(drv)) {
+    const ck = `${drv}\\${cls}`, present = regStr(W.regGet(ck, 'NotPresent'))[0] !== '1';
+    for (const d of W.regKids(ck)) {
+      const dk = `${ck}\\${d}`, entry = `${MR}${cls}\\${d}${inst}`;
+      if (migrated) { W.regSet(entry, 'DevNode', dword(dn.handle)); continue; }
+      if (!present || regStr(W.regGet(dk, 'NotPresent'))[0] === '1') { W.regDel(entry); continue; }
+      W.regSet(entry, 'SOFTWAREKEY', str(this.cmKey(dn, null, 1)));
+      W.regSet(entry, 'DeviceID', str(dn.id));
+      W.regSet(entry, 'DevNode', dword(dn.handle));
+      copy(dk, entry);
+    }
+  }
+  W.regSet(drv, 'MIGRATED', str('1'));
+};
+// MMDEVLDR's protected-mode API, function in DX, its arguments on the caller's stack (dwords, the far return already
+// taken), AX = 0 or an error with the carry set. 0 and 1 have it call MMSYSTEM at appy time again (nothing is pending
+// here); 2 (devnode, far WORD list, far count) lists a devnode's sub-devices, which these cards do not have
+const mmdevArgs = p => { const sp = p.cpu.ssb.value + (p.cpu.esp.value & 0xffff) + 4; return i => p.r32(sp + 4 * i); };
+def16('VXD', 0x44a, '', 'jmp', function () {
+  const f = this.cpu.edx.value & 0xffff, arg = mmdevArgs(this);
+  let r;
+  if (f === 0 || f === 1) r = 0;
+  else if (f === 2) { const n = this.lin(arg(2)); if (n) this.w32(n, 0); r = 0; }
+  else if (f === 3) { this.queueApc(arg(2) & 0xffff, arg(0), arg(1)); r = 0; }   // VWIN32_QueueUserApc(proc, data, ring-0 thread)
+  else if (f === 4) { const e = this.r0Event(arg(0)); this.signal(e); r = 0; }                 // VWIN32_SetWin32Event(ring-0 event)
+  else { this.trapped = `unimplemented MMDEVLDR (VxD 44Ah) API function ${f}`; return LAYOUT.SENTINEL; }
+  this.cpu.eax.value = lo16(this.cpu.eax.value, r); this.cpu.cf.value = r ? 1 : 0;
+  return this.retf16(0);
+});
+VXD_API[0x44a] = { name: 'MMDEVLDR', fns: {} };
+// MSSNDSYS.VXD's protected-mode API, which MSSNDSYS.DRV calls: DH a group, DL a function. The VxD keeps a record for each
+// card it started, as its CONFIG_START handler fills it from the devnode's resources (VxD 402ACh): 4 flags, 6 the
+// configuration port, 8 IRQ, 9/A playback and capture DMA channels, B the codec's version byte, C the VxD's version,
+// E the configuration register's ID bits, 10/14/18/1C its DMA buffer (linear address, physical address, -, size),
+// 20 a selector to the buffer, 22 the OPL3's port, 42 the codec's port, 4C the codec type (1: AD1848), 4E a second
+// codec's port (FFFFh: none), 52 more flags (40h: one DMA channel), 54 the devnode
+P.wssRecord = function (dn) {
+  this.wssRecs = this.wssRecs || new Map();
+  if (this.wssRecs.has(dn.handle)) return this.wssRecs.get(dn.handle);
+  const hw = this.cards && this.cards().find(c => c.devnode === dn.id && c.wss); if (!hw) return null;
+  const size = 0x4000, a = (this.dosTop + 0xffff) & ~0xffff;   // in conventional memory, within one 64K DMA page
+  if (a + size > 0xa0000) return null;
+  this.dosTop = a + size; this.u8.fill(0, a, a + size);
+  const r = new Uint8Array(0xba), dv = new DataView(r.buffer), w = hw.wss;
+  dv.setUint16(4, 0, true); dv.setUint16(6, w.cfg, true); r[8] = w.irq; r[9] = w.dma; r[0xa] = w.dma; r[0xb] = 0x0a;
+  dv.setUint16(0xc, 0x400, true); dv.setUint16(0xe, 4, true);
+  dv.setUint32(0x10, a, true); dv.setUint32(0x14, a, true); dv.setUint32(0x1c, size, true);
+  dv.setUint16(0x20, this.allocSels(a, size), true); dv.setUint16(0x22, 0, true);
+  dv.setUint16(0x42, w.codec, true); dv.setUint16(0x4c, 1, true); dv.setUint16(0x4e, 0xffff, true);
+  dv.setUint16(0x52, 0x40, true); dv.setUint32(0x54, dn.handle, true);
+  this.wssRecs.set(dn.handle, r); return r;
+};
+vxdApi(0x045f, 'MSSNDSYS', {});
+def16('VXD', 0x45f, '', 'jmp', function () {
+  const f = this.cpu.edx.value & 0xffff, ax = this.cpu.eax.value & 0xffff;
+  let r, ok = true;
+  if (f === 0) r = 0x400;                                                             // version
+  else if (f === 1) {                                                                 // a card's record, ES:BX -> { size, ... }; AX bit 0: the one of devnode ECX
+    const dn = ax & 1 ? this.devnode(this.cpu.ecx.value) : this.devnodes().find(d => this.wssRecord(d));
+    const rec = dn && this.wssRecord(dn), b = this.lin((this.cpu.es.value << 16) | (this.cpu.ebx.value & 0xffff)), n = b && this.r32(b);
+    if (!rec || !n || n > 0xba) { r = 0; ok = false; } else { this.u8.set(rec.subarray(0, n), b); r = 1; }
+  } else if (f === 2 || f === 3) r = 0;                                               // acquire / release the codec at port AX for this VM
+  // 200h links the driver with another by name (MSOPLMXD: the OPL synthesizer's mixer lines); with no such driver
+  // loaded there is no link: DX:AX = 0. 201h ends a link
+  else if (f === 0x200) { r = 0; ok = false; this.cpu.edx.value = lo16(this.cpu.edx.value, 0); }
+  else if (f === 0x201) r = 0;
+  // 6: the count left on the card's playback (BX 1) or capture DMA channel, as VDMAD_Get_Phys_Count reads it
+  else if (f === 6) { if (this.sound16) this.sound16(); const c = this.dmaCount ? this.dmaCount(this.cpu.ebx.value & 0xffff) : null; if (c === null) { r = 0xffff; ok = false; } else r = c; }
+  else { this.trapped = `unimplemented MSSNDSYS (VxD 45Fh) API function ${f.toString(16)}h`; return LAYOUT.SENTINEL; }
+  this.cpu.eax.value = lo16(this.cpu.eax.value, r); this.cpu.cf.value = ok ? 0 : 1;
+  return this.retf16(0);
+});
+// CONFIGMG's protected-mode API: the function (its service number) in AX, its arguments where the CONFIGMG.H helpers
+// leave them, on the caller's cdecl frame at SS:BP+4 (dwords; pointers 16:16); AX = the CONFIGRET. The resources a
+// devnode is given are the ones its card decodes (the emulated hardware's ports, IRQ and DMA channel, P.cards)
+const cmArgs = p => { const a = p.cpu.ssb.value + (p.cpu.ebp.value & 0xffff) + 4; return i => p.r32(a + 4 * i); };
+const CR = { SUCCESS: 0, INVALID_POINTER: 3, INVALID_DEVNODE: 5, NO_SUCH_DEVNODE: 0x0d, NO_MORE_LOG_CONF: 0x0e, BUFFER_SMALL: 0x1a, NO_SUCH_VALUE: 0x25, REGISTRY_ERROR: 0x13 };
+/** a devnode's registry key under HKLM (CM_REGISTRY_SOFTWARE: its driver's key; else its Enum key), with a subkey */
+P.cmKey = function (dn, sub, flags) {
+  const k = flags & 1 ? (dn.driver ? 'System\\CurrentControlSet\\Services\\Class\\' + dn.driver : null) : 'Enum\\' + dn.id;
+  return k && (sub ? `${k}\\${sub}` : k);
+};
+vxdApi(0x0033, 'CONFIGMG', {
+  0() { return 0x400; },   // Get_Version
+  // Locate_DevNode(far *dn, far device ID or NULL for the root, flags)
+  2() { const arg = cmArgs(this), id = arg(1) ? (this.readA(this.lin(arg(1))) || '').toUpperCase() : null; const dn = id && this.devnodes().find(d => d.id === id); if (!dn) return CR.NO_SUCH_DEVNODE; this.w32(this.lin(arg(0)), dn.handle); return CR.SUCCESS; },
+  // Get_Device_ID_Size(far *len, dn, flags), Get_Device_ID(dn, far buf, len, flags)
+  6() { const arg = cmArgs(this), dn = this.devnode(arg(1)); if (!dn) return CR.INVALID_DEVNODE; this.w32(this.lin(arg(0)), dn.id.length); return CR.SUCCESS; },
+  7() { const arg = cmArgs(this), dn = this.devnode(arg(0)); if (!dn) return CR.INVALID_DEVNODE; if (arg(2) <= dn.id.length) return CR.BUFFER_SMALL; this.writeA(this.lin(arg(1)), dn.id, arg(2)); return CR.SUCCESS; },
+  // Get_DevNode_Status(far *status, far *problem, dn, flags): started (DN_STARTED 8 | DN_DRIVER_LOADED 2 | DN_HAS_PROBLEM no)
+  0x36() { const arg = cmArgs(this), dn = this.devnode(arg(2)); if (!dn) return CR.INVALID_DEVNODE; this.w32(this.lin(arg(0)), 0x0a | (dn.started ? 0 : 0)); if (arg(1)) this.w32(this.lin(arg(1)), 0); return CR.SUCCESS; },
+  // Get_Alloc_Log_Conf(far CMCONFIG, dn, flags): the resources the devnode was given
+  0x3b() { const arg = cmArgs(this), dn = this.devnode(arg(1)); if (!dn) return CR.INVALID_DEVNODE; return this.cmConfig(dn, this.lin(arg(0))); },
+  // Get_DevNode_Key_Size(far *len, dn, far subkey, flags), Get_DevNode_Key(dn, far subkey, far buf, len, flags)
+  0x3c() { const arg = cmArgs(this), dn = this.devnode(arg(1)); if (!dn) return CR.INVALID_DEVNODE; const k = this.cmKey(dn, arg(2) && this.readA(this.lin(arg(2))), arg(3)); if (!k) return CR.REGISTRY_ERROR; this.w32(this.lin(arg(0)), k.length + 1); return CR.SUCCESS; },
+  0x3d() { const arg = cmArgs(this), dn = this.devnode(arg(0)); if (!dn) return CR.INVALID_DEVNODE; const k = this.cmKey(dn, arg(1) && this.readA(this.lin(arg(1))), arg(4)); if (!k) return CR.REGISTRY_ERROR; if (arg(3) <= k.length) return CR.BUFFER_SMALL; this.writeA(this.lin(arg(2)), k, arg(3)); return CR.SUCCESS; },
+  // Read_Registry_Value(dn, far subkey, far name, type, far buf, far *len, flags), Write_Registry_Value(dn, far subkey, far name, type, far buf, len, flags)
+  0x3e() {
+    const arg = cmArgs(this), dn = this.devnode(arg(0)); if (!dn) return CR.INVALID_DEVNODE;
+    const k = this.cmKey(dn, arg(1) && this.readA(this.lin(arg(1))), arg(6)); if (!k) return CR.REGISTRY_ERROR;
+    const v = window.W95Win32.regGet('hklm\\' + k, (arg(2) && this.readA(this.lin(arg(2)))) || ''); if (v === undefined) return CR.NO_SUCH_VALUE;
+    const data = typeof v === 'string' ? window.W95FS.encode(v + '\0') : typeof v === 'number' ? new Uint8Array(new Uint32Array([v]).buffer) : v.data;
+    const pn = this.lin(arg(5)), n = this.r32(pn); this.w32(pn, data.length); if (n < data.length) return CR.BUFFER_SMALL;
+    this.u8.set(data, this.lin(arg(4))); return CR.SUCCESS;
+  },
+  0x3f() {
+    const arg = cmArgs(this), dn = this.devnode(arg(0)); if (!dn) return CR.INVALID_DEVNODE;
+    const k = this.cmKey(dn, arg(1) && this.readA(this.lin(arg(1))), arg(6)); if (!k) return CR.REGISTRY_ERROR;
+    const b = this.lin(arg(4)), n = arg(5);
+    window.W95Win32.regSet('hklm\\' + k, (arg(2) && this.readA(this.lin(arg(2)))) || '', { type: arg(3), data: this.u8.slice(b, b + n) }); return CR.SUCCESS;
+  },
+});
+/** CMCONFIG for a devnode: memory windows (9), I/O ports (20), IRQs (7), DMA channels (7), as Config_Buff_s lays them out */
+P.cmConfig = function (dn, a) {
+  const hw = this.cards && this.cards().find(c => c.devnode === dn.id);
+  this.u8.fill(0, a, a + 0xd8);
+  if (!hw) return CR.NO_MORE_LOG_CONF;
+  const io = a + 2 + 36 + 36 + 18, irq = io + 2 + 40 + 40, dma = irq + 2 + 14;
+  this.w16(io, hw.io.length); hw.io.forEach(([b, n], i) => { this.w16(io + 2 + 2 * i, b); this.w16(io + 42 + 2 * i, n); });
+  this.w16(irq, hw.irq.length); hw.irq.forEach((n, i) => { this.u8[irq + 2 + i] = n; });
+  this.w16(dma, hw.dma.length); hw.dma.forEach((n, i) => { this.u8[dma + 2 + i] = n; });
+  return CR.SUCCESS;
+};
+
 /** call the VTDAPI periodic callbacks that are due; the host runs this between slices of guest code */
 P.timers16 = function () {
-  if (!this.vtdCallbacks || this.depth) return;
+  if (!(this.vtdCallbacks || this.vtdEvents) || this.depth) return;
+  this.vtdCallbacks = this.vtdCallbacks || [];
   const now = this.now();
   for (const c of this.vtdCallbacks) if (now >= c.due) { c.due = Math.max(c.due + c.ms, now); this.tick16(); this.call16(c.sel, c.off, []); }
+  for (const e of this.vtdEvents ? [...this.vtdEvents.values()] : []) {
+    if (now < e.due || !this.vtdEvents.has(e.id)) continue;
+    if (e.periodic) e.due = Math.max(e.due + e.ms, now); else this.vtdEvents.delete(e.id);
+    this.tick16(); this.call16(e.sel, e.off, [['w', e.id], ['w', 0], ['l', e.user], ['l', 0], ['l', 0]]);
+  }
 };
 
 // the display VxD's driver interface (minivdd): registration, mode-change notifications and the display configuration
@@ -658,9 +860,10 @@ def16('VDD', 0, '', 'jmp', function () {
   return this.retf16(0);
 });
 
-// ---------------------------------------------------------------- display adapter: Tseng ET4000 with a Sierra HiColor DAC
+// ---------------------------------------------------------------- display adapter: Tseng ET4000/W32p with a Sierra HiColor DAC
 // The register file the drivers probe and program, 1 MB of VRAM behind a 64K window at A0000h selected through the
-// segment select register (3CDh), and the Tseng video BIOS modes. FRAMEBUF.DRV + DIBENG drive it as they would the card.
+// segment select register (3CDh), the Tseng video BIOS modes, and the W32's hardware sprite (the CRTCB/sprite
+// registers behind the IMA port 217Ah/217Bh).
 const ET_MODES = { 0x03: [720, 400, 0], 0x13: [320, 200, 8], 0x2e: [640, 480, 8], 0x30: [800, 600, 8], 0x38: [1024, 768, 8] };
 const VRAM_SIZE = 1 << 20, WIN = 0xa0000;
 P.adapter = function () {
@@ -669,7 +872,7 @@ P.adapter = function () {
   const vramLin = this.alloc(VRAM_SIZE + 0x1000, true);
   return (this.et = { vramLin, vram: this.u8.subarray(vramLin, vramLin + VRAM_SIZE), flat: false, bank: 0, misc: 0x67, seq: new Uint8Array(256), gc: new Uint8Array(256), crtc: new Uint8Array(256),
     attr: new Uint8Array(256), idx: { seq: 0, gc: 0, crtc: 0, attr: 0 }, flip: 0, dacW: 0, dacR: 0, dac: new Uint8Array(768), pelMask: 0xff,
-    hicolor: 0, hidden: 0, status: 0, mode: 3, w: 720, h: 400, bpp: 0, pitch: 0, dirty: true });
+    hicolor: 0, hidden: 0, status: 0, mode: 3, w: 720, h: 400, bpp: 0, pitch: 0, dirty: true, ima: new Uint8Array(256), imaIdx: 0 });
 };
 /** move the window contents to VRAM and bring in another bank */
 P.setBank = function (b) {
@@ -689,6 +892,16 @@ P.scanout = function () {
   if (a.crtc[0x13]) a.pitch = (a.crtc[0x13] | ((a.crtc[0x3f] & 0x80) << 1)) * 8;   // CRTC offset register: bytes per scanline / 8
   return a;
 };
+/** the W32 hardware sprite as the CRTC overlays it: on (F7h bit 7), its screen position (E0h/E1h, E4h/E5h), the
+ *  preset into the 64x64 image where display starts (E2h, E6h), and the image in VRAM at the start address (E8h-EAh,
+ *  in dwords) with EBh quadwords per row, 2 bits a pixel, low bit first: bit 0 XOR, bit 1 AND (screen kept) */
+P.sprite = function () {
+  const a = this.adapter(), r = a.ima;
+  if (!(r[0xf7] & 0x80)) return null;
+  const start = ((r[0xea] & 0x0f) << 16 | r[0xe9] << 8 | r[0xe8]) * 4, row = (r[0xeb] || 2) * 8;
+  const vram = this.scanout().vram;
+  return { x: r[0xe1] << 8 | r[0xe0], y: r[0xe5] << 8 | r[0xe4], px: r[0xe2] & 0x3f, py: r[0xe6] & 0x3f, bits: vram.subarray(start, start + 64 * row), row };
+};
 // VFLATD: the VxD that gives display drivers a linear view of banked VRAM. Register (DX=1): ES:DI = the driver's
 // bank-switch template (CX bytes), AX = size in 4K pages; returns AX = a selector for the flat framebuffer.
 def16('VFLATD', 0, '', 'jmp', function () {
@@ -706,6 +919,14 @@ P.setVideoMode = function (mode, clear, hicolor) {
   a.mode = mode & 0x7f; [a.w, a.h, a.bpp] = m; a.hicolor = hicolor || 0;
   if (hicolor) a.bpp = hicolor;
   a.pitch = a.w * (a.bpp >> 3);
+  // the register values the BIOS loads for the mode: sequencer memory mode (chain-4 for the packed-pixel modes), the
+  // CRTC's horizontal and vertical display end (with their overflow bits in 07h and Tseng's 35h) and its offset
+  const vde = a.h - 1, off = a.bpp ? a.pitch >> 3 : a.w >> 3;
+  a.misc = 0x63; a.seq[4] = a.bpp ? 0x0e : 0x02;
+  a.crtc[0x01] = (a.w >> 3) - 1; a.crtc[0x12] = vde & 0xff;
+  a.crtc[0x07] = (a.crtc[0x07] & ~0x42) | ((vde >> 8 & 1) << 1) | ((vde >> 9 & 1) << 6);
+  a.crtc[0x35] = (a.crtc[0x35] & ~0x04) | ((vde >> 10 & 1) << 2);
+  a.crtc[0x13] = off & 0xff; a.crtc[0x3f] = (a.crtc[0x3f] & 0x7f) | ((off >> 8 & 1) << 7);
   if (clear) { a.vram.fill(0); this.u8.fill(0, WIN, WIN + 0x10000); }
   a.bank = 0; a.dirty = true;
   if (a.bpp === 8 && clear) for (let i = 0; i < 256; i++) { a.dac[3 * i] = a.dac[3 * i + 1] = a.dac[3 * i + 2] = 0; }
@@ -713,11 +934,12 @@ P.setVideoMode = function (mode, clear, hicolor) {
 };
 P.portIO = function (port, size, isIn) {
   if (window.W95PORTTRACE) window.W95PORTTRACE(port, size, isIn, this);
+  if (this.soundIO && this.soundIO(port, size, isIn)) return;   // the sound card, DMA and interrupt controllers (sound.js)
   const a = this.adapter(), eax = this.cpu.eax.value;
   if (port >= 0x3b0 && port <= 0x3bf && port !== 0x3bf && !(a.misc & 1) === false) port += 0x20;   // mono CRTC aliases
   if (!isIn) {
     let val = size === 1 ? eax & 0xff : size === 2 ? eax & 0xffff : u32(eax);
-    if (size === 2 && [0x3c4, 0x3ce, 0x3d4, 0x3c0].includes(port)) { this.portIO(port, 1, false); this.cpu.eax.value = (eax & ~0xff) | (val >> 8); this.portIO(port + 1, 1, false); this.cpu.eax.value = eax; return; }
+    if (size === 2 && [0x3c4, 0x3ce, 0x3d4, 0x3c0, 0x217a].includes(port)) { this.portIO(port, 1, false); this.cpu.eax.value = (eax & ~0xff) | (val >> 8); this.portIO(port + 1, 1, false); this.cpu.eax.value = eax; return; }
     val &= 0xff;
     switch (port) {
       case 0x3c2: a.misc = val; return;
@@ -734,6 +956,8 @@ P.portIO = function (port, size, isIn) {
       case 0x3c9: a.dac[a.dacW % 768] = val & 0x3f; a.dacW++; a.dirty = true; return;
       case 0x3cd: this.setBank(val & 0x0f); a.segsel = val; return;
       case 0x3bf: case 0x3d8: a.key = val; return;
+      case 0x217a: a.imaIdx = val; return;
+      case 0x217b: a.ima[a.imaIdx] = val; return;
     }
     return;
   }
@@ -748,7 +972,9 @@ P.portIO = function (port, size, isIn) {
     case 0x3d5: r = a.crtc[a.idx.crtc]; break;
     case 0x3c0: r = a.idx.attr; break;
     case 0x3c1: r = a.attr[a.idx.attr & 0x1f]; break;
-    case 0x3da: a.flip = 0; a.status ^= 9; r = a.status; break;
+    case 0x3da: a.flip = 0; a.status ^= 0x0b; r = a.status; break;   // display enable, vertical retrace and the blank bit toggle as the beam runs
+    case 0x217a: r = a.imaIdx; break;
+    case 0x217b: r = a.imaIdx === 0xec ? (a.ima[0xec] & 0x0f) | 0x30 : a.ima[a.imaIdx]; break;   // ECh's high nibble: the W32p revision
     case 0x3c6: a.hidden = a.hidden >= 4 ? 4 : a.hidden + 1; r = a.hidden === 4 ? a.hicolor : a.pelMask; break;   // four reads expose the Sierra command register
     case 0x3c8: r = a.dacW / 3 | 0; break;
     case 0x3c9: r = a.dac[a.dacR % 768]; a.dacR++; break;
@@ -1092,11 +1318,18 @@ def16('KERNEL', 184, 'l', 'l', function (n) {           // GlobalDOSAlloc: conve
 def16('KERNEL', 185, 'w', 'w', function (s) { const b = this.gblock(s); if (b) { this.ghandles.delete(this.gsel(s)); this.freeSels(this.gsel(s), b.n); } return 0; });
 
 def16('KERNEL', 36, '', 'w', function () { return this.currentTask(); });                 // GetCurrentTask
+def16('KERNEL', 501, 'w', 'w', function (v) { const old = this.k501 || 0; this.k501 = v & 0xff; return old; });   // (no name): KRNL386 swaps a byte of its data (19E3h) with the argument and returns the old one; MMSYSTEM sets 1 around loading a driver
+def16('KERNEL', 159, 'w', 'l', function (sel) { return K16['KERNEL.#21'][2].call(this, sel); });   // GlobalHandleNoRIP: GlobalHandle without the debug-system complaint
+def16('KERNEL', 122, '', 'w', () => 0);   // IsTaskLocked: no task has locked the system (LockCurrentTask)
+def16('KERNEL', 491, 'll', 'l', () => 1);   // RegisterServiceProcess: the task is left out of the task list; there is no task list to leave
+def16('KERNEL', 320, 'w', 'w', function (h) { return h && (h === this.currentTask() || [...(this.threadsById || new Map()).values()].some(t => t.tdb === h)) ? 1 : 0; });   // IsTask
+/** a task database: the process's (its Win32 threads share it), or a Win16 task's own (MMTASK.TSK); the queue at 20h,
+ *  'TD' at FAh */
+const newTdb = p => { const a = p.alloc(0x200); p.u8.fill(0, a, a + 0x200); p.w16(a + 0xfa, 0x4454); return p.allocSels(a, 0x200); };
 P.currentTask = function () {
-  if (this.tdb16) return this.tdb16;
-  const p = this.alloc(0x200); this.tdb16 = this.allocSels(p, 0x200);
-  this.w16(p + 0xfa, 0x4454);           // 'TD'
-  return this.tdb16;
+  const t = this.thread16;
+  if (t && t.task) { if (!t.tdb) { t.tdb = newTdb(this); this.w16(this.selBase(t.tdb) + 0x20, t.queue || 0); } return t.tdb; }
+  return this.tdb16 || (this.tdb16 = newTdb(this));
 };
 def16('KERNEL', 47, 's', 'w', function (name) {   // GetModuleHandle
   if (typeof name === 'number') { const m = this.neByHandle(name); return m ? m.hModule : 0; }
@@ -1120,7 +1353,15 @@ def16('KERNEL', 50, 'wx', 'l', function (h, name) {   // GetProcAddress
   }
   const m = this.neByHandle(h); return m ? this.neExport(m, key) : 0;
 });
-def16('KERNEL', 95, 's', 'w', function (name) { const m = this.loadLibrary16(name); return m ? m.hInstance : 2; });    // LoadLibrary
+/** LoadLibrary's error for a module it could not load, as KRNL386's LoadModule gives it: 2 not found, 21 a Win32 image
+ *  (which needs 32-bit Windows; SHELL32 tells 32-bit Control Panel files by it), 11 any other file */
+P.loadError16 = function (name) {
+  const full = this.findFile16(/\.[^\\]*$/.test(name) ? name : name + '.DLL'); if (!full) return 2;
+  let f; try { f = this.fs.readFile(full); } catch (_) { return 2; }
+  const n = f.length > 0x40 ? rd.u32(f, 0x3c) : 0;
+  return f[0] === 0x4d && f[1] === 0x5a && n + 2 < f.length && f[n] === 0x50 && f[n + 1] === 0x45 ? 21 : 11;
+};
+def16('KERNEL', 95, 's', 'w', function (name) { const m = this.loadLibrary16(name); return m ? m.hInstance : this.loadError16(name); });    // LoadLibrary
 def16('KERNEL', 96, 'w', 'v', function () {});                                                                     // FreeLibrary
 def16('KERNEL', 46, 'w', 'v', function () {});                                                                     // FreeModule
 def16('KERNEL', 93, 'x', 'l', function (fp) { const s = fp >>> 16; const b = this.gblock(s); return b ? u32((s << 16) | (s - 1)) : 0; });   // GetCodeHandle
@@ -1229,11 +1470,13 @@ def16('KERNEL', 128, 'sssxws', 'w', function (app, key, d, buf, n, f) { return p
 def16('KERNEL', 59, 'sss', 'w', function (app, key, v) { try { window.W95Win32.iniSet(this.fs, 'WIN.INI', app, key, v); return 1; } catch (_) { return 0; } });
 def16('KERNEL', 217, 'lpp', 'l', function (hk, sub, out) { return API.ADVAPI32.RegOpenKeyA[1].call(this, hk, sub, out); });
 def16('KERNEL', 218, 'lpp', 'l', function (hk, sub, out) { return API.ADVAPI32.RegCreateKeyA ? API.ADVAPI32.RegCreateKeyA[1].call(this, hk, sub, out) : API.ADVAPI32.RegOpenKeyA[1].call(this, hk, sub, out); });
-def16('KERNEL', 220, 'l', 'l', () => 0);
-def16('KERNEL', 221, 'lplpl', 'l', () => 0);
-def16('KERNEL', 222, 'lp', 'l', () => 2);
+def16('KERNEL', 219, 'lp', 'l', function (hk, sub) { return API.ADVAPI32.RegDeleteKeyA[1].call(this, hk, sub); });                // RegDeleteKey
+def16('KERNEL', 220, 'l', 'l', function (hk) { return API.ADVAPI32.RegCloseKey[1].call(this, hk); });                                // RegCloseKey
+def16('KERNEL', 221, 'lplpl', 'l', function (hk, sub, type, data, n) { return API.ADVAPI32.RegSetValueA[1].call(this, hk, sub, type, data, n); });   // RegSetValue
+def16('KERNEL', 222, 'lp', 'l', function (hk, name) { return API.ADVAPI32.RegDeleteValueA[1].call(this, hk, name); });             // RegDeleteValue
+def16('KERNEL', 223, 'llpppppp', 'l', function (hk, i, name, cbn, res, type, data, cb) { return API.ADVAPI32.RegEnumValueA[1].call(this, hk, i, name, cbn, res, type, data, cb); });   // RegEnumValue
 def16('KERNEL', 225, 'lppppp', 'l', function (hk, name, res, type, data, cb) { return API.ADVAPI32.RegQueryValueExA[1].call(this, hk, name, res, type, data, cb); });
-def16('KERNEL', 226, 'lpllpl', 'l', () => 0);
+def16('KERNEL', 226, 'lpllpl', 'l', function (hk, name, res, type, data, n) { return API.ADVAPI32.RegSetValueExA[1].call(this, hk, name, res, type, data, n); });   // RegSetValueEx
 def16('KERNEL', 227, 'l', 'l', () => 0);                                                              // RegFlushKey: the registry store writes through
 def16('KERNEL', 216, 'llpl', 'l', function (hk, i, buf, n) { return API.ADVAPI32.RegEnumKeyA[1].call(this, hk, i, buf, n); });   // RegEnumKey
 def16('KERNEL', 224, 'lppp', 'l', function (hk, sub, data, cb) { return API.ADVAPI32.RegQueryValueA[1].call(this, hk, sub, data, cb); });   // RegQueryValue
@@ -1260,7 +1503,15 @@ def16('KERNEL', 74, 'spw', 'w', function (name, of, style) {   // OpenFile
   const mode = style & OF.CREATE ? 'w+' : (style & 3) === 0 ? 'r' : 'r+';
   return this.dosOpen(full, mode);
 });
-def16('KERNEL', 360, 'spw', 'w', function (name, of, style) { return K16['KERNEL.#74'][2].call(this, name, of, style); });   // OpenFileEx
+// OpenFileEx: OpenFile with an OFSTRUCTEX (WORD size, BYTE fixed disk, WORD error, 4 reserved, a MAX_PATH path at 9)
+def16('KERNEL', 360, 'spw', 'w', function (name, of, style) {
+  const r = K16['KERNEL.#74'][2].call(this, name, 0, style), full = style & OF.CREATE ? (/^[a-z]:\\/i.test(name) ? name : window.W95FS.join(this.fs.cwd, name)) : this.findFile16(name);
+  if (of) {
+    this.u8.fill(0, of, of + 9 + 260); this.w16(of, 9 + 260); this.u8[of + 2] = 1;
+    if (full) W(this, of + 9, full.toUpperCase(), 260); else this.w16(of + 3, 2);
+  }
+  return r;
+});
 def16('KERNEL', 85, 'sw', 'w', function (name, mode) { const f = this.findFile16(name); return f ? this.dosOpen(f, (mode & 3) === 0 ? 'r' : 'r+') : 0xffff; });  // _lopen
 def16('KERNEL', 83, 'sw', 'w', function (name) { return this.dosOpen(/^[a-z]:\\/i.test(name) ? name : window.W95FS.join(this.fs.cwd, name), 'w+'); });   // _lcreat
 def16('KERNEL', 81, 'w', 'w', function (h) { const f = this.dosFiles.get(h); if (!f) return 0xffff; this.fs.close(f.fd); this.dosFiles.delete(h); return 0; });
@@ -1659,8 +1910,15 @@ def16('KERNEL', 631, '', 'jmp', function () {
   this.cpu.esp.value = lo16(this.cpu.esp.value, sp + 4 + nargs);
   this.seg('cs', cs); return u32(this.selBase(cs) + ip);
 });
-def16('KERNEL', 27, 'wpw', 'w', function (h, buf, n) { const m = this.neByHandle(h); return m ? W(this, buf, m.name, n) : 0; });   // GetModuleName
-def16('KERNEL', 219, 'w', 'w', () => 0);                                                                                       // PatchCodeHandle: nothing to patch
+/** the module a task handle stands for: a Win16 task's own (MMTASK), or the process's program, whose name is its file's */
+P.taskModuleName = function (h) {
+  h &= 0xffff; if (!h) return null;
+  const t = [...(this.threadsById || new Map()).values()].find(x => x.tdb === h);
+  if (t && t.task) { const m = this.neByHandle(t.task.hInst); return m ? m.name : null; }
+  if (h === this.tdb16 && this.exe) { const f = (this.host && this.host.path) || this.meta.name || ''; return f.replace(/^.*\\/, '').replace(/\.[^.]*$/, '').toUpperCase() || null; }
+  return null;
+};
+def16('KERNEL', 27, 'wpw', 'w', function (h, buf, n) { const m = this.neByHandle(h), name = m ? m.name : this.taskModuleName(h); return name ? W(this, buf, name, n) : 0; });   // GetModuleName (of a module, an instance or a task)
 // GetCodeInfo (#104): the SEGINFO of the module segment a code pointer is in (file sector, length, flags, allocation,
 // handle, alignment shift), with ES = the module, as KRNL386 leaves it; 0 when the pointer is in no module's segment
 def16('KERNEL', 104, '', 'jmp', function () {
@@ -1728,16 +1986,25 @@ const ev16 = (p, h) => {
   if (o.kind === 'thread') { const t = p.threadsById && p.threadsById.get(o.id); return { manual: true, get set() { return !t || t.state === 'done'; }, set set(_) {} }; }
   return null;
 };
+/** set an event and make the threads blocked on it runnable (they check their wait again when they run) */
+P.signal = function (e) { if (!e) return; e.set = true; this.wakeWaiters(e); };
+P.wakeWaiters = function (o) { if (o.waiters) { for (const t of o.waiters) t.blocked = false; o.waiters.clear(); } };
 def16('KERNEL', 457, 'll', 'l', function (manual, initial) { return this.newHandle({ kind: 'event', manual: !!manual, set: !!initial }); });   // CreateW32Event
-def16('KERNEL', 458, 'l', 'l', function (h) { const e = ev16(this, h); if (!e) return 0; e.set = true; return 1; });   // SetW32Event
+def16('KERNEL', 458, 'l', 'l', function (h) { const e = ev16(this, h); if (!e) return 0; this.signal(e); return 1; });   // SetW32Event
 def16('KERNEL', 459, 'l', 'l', function (h) { const e = ev16(this, h); if (!e) return 0; e.set = false; return 1; });  // ResetW32Event
 // WaitForSingleObject: a thread waiting at its top level for an event that is not set gives up its slice (the other
 // threads, the system thread among them, run) and waits again when resumed; elsewhere the wait times out at once
 def16('KERNEL', 460, 'll', 'l', function (h, ms) {
   const e = ev16(this, h); if (!e) return 0xffffffff;
   if (!e.set && ms && this.atThreadTop()) return YIELD;
+  if (!e.set && ms) this.waitNested(() => e.set);
   if (!e.set) return 0x102; if (!e.manual) e.set = false; return 0;
 });
+/** a wait inside a call (the waiting code cannot give up its slice): each other thread and task gets one turn, up to
+ *  its next wait, as the processor would pass to them; the caller then finds the object set or not */
+P.waitNested = function (done) {
+  if (!done()) this.threads16(true);
+};
 P.atThreadTop = function () { return this.thread16 ? this.depth === this.thread16.depth : this.depth === 0 && !this.inSystem(); };
 /** whether USER is running as the system thread: its start-up, and its message loop between slices (systemPump) */
 P.inSystem = function () { return this.user16Ready === false || !!this.sysPumping; };
@@ -1763,7 +2030,9 @@ P.systemPump = function () {
 def16('KERNEL', 461, 'llll', 'l', function (n, ph, all, ms) {                                        // WaitForMultipleObjects
   const hs = [...Array(n)].map((_, i) => ev16(this, this.r32(this.lin(ph) + 4 * i)));
   const ready = all ? hs.every(e => e && e.set) : hs.some(e => e && e.set);
-  if (!ready) return ms && this.atThreadTop() ? YIELD : 0x102;   // as #460: a thread at its top level gives up its slice
+  if (!ready && ms && this.atThreadTop()) return YIELD;   // as #460: a thread at its top level gives up its slice
+  if (!ready && ms) this.waitNested(() => (all ? hs.every(e => e && e.set) : hs.some(e => e && e.set)));
+  if (!(all ? hs.every(e => e && e.set) : hs.some(e => e && e.set))) return 0x102;
   if (all) { for (const e of hs) if (!e.manual) e.set = false; return 0; }
   const i = hs.findIndex(e => e && e.set); if (!hs[i].manual) hs[i].set = false; return i;
 });
@@ -1774,7 +2043,7 @@ def16('KERNEL', 624, 'll', 'v', function (tid, hq) { const t = thr(this, tid); t
 // the program's thread keeps its queue in its TIB too (FS:[28h], USER32 reads it there), and TIB flags bit 0 marks it Win32
 /** the thread information block FS addresses in flat code: the running Win32 thread's own, else the program's */
 P.tibFor = function () { return (this.thread16 && this.thread16.tib) || LAYOUT.TIB; };
-P.tibQueue = function (t) { if (t.tib) this.w16(t.tib + 0x28, t.queue || 0); if (t.id === MAIN_TID) { this.w16(LAYOUT.TIB + 0x28, t.queue || 0); this.w16(LAYOUT.TIB + 0x1c, this.r16(LAYOUT.TIB + 0x1c) | 1); } };
+P.tibQueue = function (t) { if (t.tib) this.w16(t.tib + 0x28, t.queue || 0); if (t.tdb) this.w16(this.selBase(t.tdb) + 0x20, t.queue || 0); if (t.id === MAIN_TID) { this.w16(LAYOUT.TIB + 0x28, t.queue || 0); this.w16(this.selBase(this.tdb16 || (this.tdb16 = newTdb(this))) + 0x20, t.queue || 0); this.w16(LAYOUT.TIB + 0x1c, this.r16(LAYOUT.TIB + 0x1c) | 1); } };
 // GetFastQueue: the current thread's queue, created when it has none by USER's InitThreadInput (USER.409), which KRNL386
 // keeps a pointer to and calls with (0, 4 | 1 for a Win32 thread)
 def16('KERNEL', 625, '', 'w', function () {
@@ -1804,8 +2073,8 @@ def16('KERNEL', 450, 'l', 'v', function (h) {                                   
   if (!e.set && this.thread16 && this.thread16.id !== MAIN_TID && this.depth === this.thread16.depth) { this.thread16.wait = e; return YIELD; }
   e.set = false;
 });
-def16('KERNEL', 451, 'l', 'v', function (h) { const e = ev16(this, h); if (e) e.set = true; });                      // VWin32_EventSet
-def16('KERNEL', 479, 'l', 'v', function (h) { const e = ev16(this, h); if (e) e.set = true; });
+def16('KERNEL', 451, 'l', 'v', function (h) { this.signal(ev16(this, h)); });                      // VWin32_EventSet
+def16('KERNEL', 479, 'l', 'v', function (h) { this.signal(ev16(this, h)); });
 // ---- threads. One processor runs them one at a time: a thread created here starts when the scheduler next runs
 // (threads16, between slices of the main thread), runs until it waits on an event that is not set (then yields
 // in the wait, resuming there once the event is set), and ends when its procedure returns.
@@ -1835,10 +2104,12 @@ const CTX = ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi', 'cf', 'pf',
 P.saveCtx16 = function () { const c = {}; for (const r of CTX) c[r] = this.cpu[r].value; c.depth = this.depth; c.stackLevel = this.stackLevel; return c; };
 P.loadCtx16 = function (c) { for (const r of CTX) this.cpu[r].value = c[r]; this.depth = c.depth; this.stackLevel = c.stackLevel; };
 /** run the threads that can run; the host calls this between slices of the main thread */
-P.threads16 = function () {
-  if (!this.threadsById || this.thread16 || this.depth) return;
-  for (const t of this.threadsById.values()) {
-    if (t.id === MAIN_TID || !t.state || t.state === 'done' || t.state === 'suspended' || (t.state === 'waiting' && t.wait && !t.wait.set)) continue;   // a thread that yielded with no event to wait for (in WaitEvent) runs again
+P.threads16 = function (nested = false) {
+  if (!this.threadsById || (!nested && (this.thread16 || this.depth)) || this.inThreads) return;
+  const caller = this.thread16;
+  this.inThreads = true;
+  try { for (const t of this.threadsById.values()) {
+    if (t === caller || t.blocked || (t.id === MAIN_TID && !caller) || (t.id === MAIN_TID && caller) || !t.state || t.state === 'done' || t.state === 'suspended' || (t.state === 'waiting' && t.wait && !t.wait.set)) continue;   // a thread that yielded with no event to wait for (in WaitEvent) runs again
     const main = this.saveCtx16();
     this.thread16 = t; t.sliceStart = this.now();
     let r;
@@ -1861,15 +2132,20 @@ P.threads16 = function () {
         t.stackBase = this.alloc(t.stack); this.cpu.esp.value = t.stackBase + t.stack - 16; this.seg('ss', 0);
         this.cpu.ssb.value = 0; this.depth = 0; this.stackLevel = main.stackLevel;
         t.state = 'running';
-        r = this.start16(t.start >>> 16, t.start & 0xffff, [['l', t.param]]);
+        if (t.task) {   // a task's start: no arguments, its registers as the loader sets them (KERNEL.45)
+          const k = t.task; this.seg('ds', k.dgroup); this.seg('es', k.psp);
+          for (const [r, v] of [['edi', k.hInst], ['esi', 0], ['ebx', k.stack], ['ecx', k.heap], ['eax', 0], ['edx', 0]]) this.cpu[r].value = v;
+        }
+        r = this.start16(t.start >>> 16, t.start & 0xffff, t.task ? [] : [['l', t.param]]);
       } else {
-        this.loadCtx16(t.ctx); t.state = 'running'; t.wait = null;
+        // it yielded at its top level, so it holds no 16-bit stack aliases: it takes them from the level in use now
+        this.loadCtx16(t.ctx); this.stackLevel = main.stackLevel; t.state = 'running'; t.wait = null;
         r = this.runAt(u32(this.cpu.eip.value));
       }
       if (r === 1) { t.ctx = this.saveCtx16(); t.state = 'waiting'; }
-      else { t.state = 'done'; if (r !== 0 && this.trapped) console.warn('[ne16] thread', t.id, this.trapped); }
-    } finally { this.thread16 = null; this.loadCtx16(main); }
-  }
+      else { t.state = 'done'; this.wakeWaiters(t); if (r !== 0 && this.trapped) console.warn('[ne16] thread', t.id, this.trapped); }
+    } finally { this.thread16 = caller; this.loadCtx16(main); }
+  } } finally { this.inThreads = false; }
 };
 /** a far call into 16-bit code that may yield: returns runAt's result (0 returned, 1 yielded) and leaves the
  *  CPU state as the code left it */
@@ -1923,15 +2199,46 @@ def16('KERNEL', 24, 'w', 'w', function (seg) { const s = segOf(this, seg), b = t
 def16('KERNEL', 29, '', 'v', function () {                                                             // Yield: as OldYield (#447)
   const t = thr(this, 0), top = this.thread16 ? this.depth === this.thread16.depth : this.depth === 0;
   if (top && !t.yielded) { t.yielded = true; return YIELD; }
+  if (!top) this.threads16(true);   // inside a call: the other tasks and threads run now, as Yield switches to them
   t.yielded = false;
 });
 def16('KERNEL', 117, '', 'v', function () {});                                                         // OldYield
-def16('KERNEL', 150, 'w', 'v', function () {});                                                        // DirectedYield
+def16('KERNEL', 150, 'w', 'v', function () { if (!this.atThreadTop()) this.threads16(true); });         // DirectedYield: inside a call, the other tasks run now (at the top level the host's scheduler runs them next)
 // WaitEvent: the task sleeps until an event is posted to it. A thread that is not inside a call JS made gives up
 // its slice once (timers, input and the other threads run) and the wait then ends; USER checks its queue again.
+// LoadModule(name, parameter block { environment, far command tail, far show command, - }): a library loads as
+// LoadLibrary loads it; a task (MMSYSTEM's MMTASK.TSK) gets an instance, a PSP with the command tail at 80h and a
+// thread of its own that starts at its entry point the way the Win16 loader starts a task (DS its DGROUP, ES its PSP,
+// DI its instance, BX its stack size, CX its heap size). Errors as LoadLibrary's
+def16('KERNEL', 45, 'sp', 'w', function (name, pb) {
+  const rec = this.loadLibrary16(name, true, true); if (!rec || !rec.meta) return this.loadError16(name);
+  const hdr = rd.u32(rec.file, 0x3c), flags = rd.u16(rec.file, hdr + 0x0c);
+  if (flags & 0x8000) { if (!rec.inited) { rec.inited = true; this.initNE(rec); } return rec.hInstance; }
+  const psp = this.alloc(0x100), pspSel = this.allocSels(psp, 0x100);
+  this.u8.fill(0, psp, psp + 0x100); this.w16(psp, 0x20cd);
+  let show = 1;
+  if (pb) {
+    const tail = this.lin(this.r32(pb + 2)), cs = this.lin(this.r32(pb + 6));
+    if (tail) { const n = Math.min(this.u8[tail], 126); this.u8[psp + 0x80] = n; this.u8.copyWithin(psp + 0x81, tail + 1, tail + 1 + n); this.u8[psp + 0x81 + n] = 0x0d; }
+    if (cs) show = this.r16(cs + 2);
+  }
+  const m = rec.meta, t = this.newThread(u32((m.segs[m.entry[0] - 1].sel << 16) | m.entry[1]), 0, 0x4000, false);
+  t.task = { psp: pspSel, hInst: rec.hInstance, show, stack: rd.u16(rec.file, hdr + 0x12), heap: rd.u16(rec.file, hdr + 0x10), dgroup: rec.dgroup };
+  return rec.hInstance;
+});
+// InitTask: the starting task's registers (AX 1, ES:BX its command tail, CX its stack, DX its show command, SI its
+// previous instance, DI its instance)
+def16('KERNEL', 91, '', 'jmp', function () {
+  const k = this.thread16 && this.thread16.task;
+  if (!k) { this.ax(0); return this.retf16(0); }
+  this.ax(1); this.seg('es', k.psp); this.cpu.ebx.value = lo16(this.cpu.ebx.value, 0x81); this.cpu.ecx.value = lo16(this.cpu.ecx.value, k.stack);
+  this.cpu.edx.value = lo16(this.cpu.edx.value, k.show); this.cpu.esi.value = lo16(this.cpu.esi.value, 0); this.cpu.edi.value = lo16(this.cpu.edi.value, k.hInst);
+  return this.retf16(0);
+});
 def16('KERNEL', 30, 'w', 'w', function () {
   const t = thr(this, 0), top = this.thread16 ? this.depth === this.thread16.depth : this.depth === 0;
   if (top && !t.slept) { t.slept = true; return YIELD; }
+  if (!top) this.threads16(true);   // inside a call: the other tasks run, as the wait would let them
   t.slept = false; return 0;
 });
 def16('KERNEL', 31, 'w', 'v', function () {});                                                         // PostEvent
@@ -2188,6 +2495,18 @@ P.hinst16 = function (h32) {
   this.h16of.set(h32, sel); this.h32of.set(sel & 0xfffe, h32);
   return sel;
 };
+/** KERNEL32 starting a Win32 program under the native USER: USER's InitApp (USER.5) for its task, as a 16-bit program
+ *  calls it itself. The first one also runs USER's first-task start-up: the installable drivers SYSTEM.INI's [boot]
+ *  drivers= names (MMSYSTEM.DLL) */
+P.initApp16 = function () {
+  if (!this.user16Ready || this.appInited16) return;
+  this.appInited16 = true;
+  this.user16(5, [['w', this.hinst16(this.exe.base)]]);
+  this.appy16();   // the system's devices are started by the time a program runs (MMDEVLDR's appy-time start)
+  // KERNEL32 then tells USER the GUI process has loaded: SignalProc32(USIG_PROCESS_LOADED, process id,
+  // USIG_FLAGS_WIN32 | USIG_FLAGS_GUI, 0). USER takes the sound devices' state there (and plays Open program)
+  if (this.ne.get('USER').meta && this.neExport(this.ne.get('USER'), 391)) this.user16(391, [['l', 0x600], ['l', MAIN_PID], ['l', 3], ['w', 0]]);
+};
 P.hinst32 = function (h16) { return (this.h32of && this.h32of.get(h16 & 0xfffe)) || 0; };
 KR('K32Thk1632Prolog', function () { return ret32(this); });
 // CallbackNN (NN = 12..64 argument bytes): calls the function in the last argument with the others, stdcall, as
@@ -2204,7 +2523,7 @@ K('#19', 1, function (h) {                                                      
   const g = this.globalAlloc16(0, n); this.u8.copyWithin(this.gblock(g).lin, h, h + n); return g;
 });
 K('#31', 1, function (h) { return K16['KERNEL.#17'][2].call(this, h & 0xffff); });                            // GlobalFree16
-K('#35', 1, function (name) { const m = this.loadLibrary16(this.readA(name) || '', true); return m ? (m.hInstance || m.hModule) : 0; });   // LoadLibrary16
+K('#35', 1, function (name) { const n = this.readA(name) || '', m = this.loadLibrary16(n, true); return m ? (m.hInstance || m.hModule) : this.loadError16(n); });   // LoadLibrary16
 K('#36', 1, () => 0);                                                                                          // FreeLibrary16
 K('#37', 2, function (h, name) {                                                                               // GetProcAddress16
   const m = this.neByHandle(h & 0xffff); if (!m || !m.meta) return 0;
@@ -2247,7 +2566,98 @@ K('#96', 0, () => 1);
 K('#97', 1, () => 0); K('#98', 1, () => 0);
 K('GetProcessFlags', 1, () => 0);
 K('ConvertToGlobalHandle', 1, h => h);
-K('OpenEventA', 3, () => 0); K('OpenMutexA', 3, () => 0); K('ReleaseMutex', 1, () => 1); K('SetEvent', 1, () => 1);
+K('OpenEventA', 3, () => 0); K('OpenMutexA', 3, () => 0); K('ReleaseMutex', 1, () => 1);
+// ---- Win32 waits, events and user APCs under the native USER, on the threads threads16 runs. A wait that cannot be
+// satisfied gives up the processor at the thread's top level and is made again when the thread resumes (until it is
+// satisfied or its time runs out); an alertable wait runs the thread's queued APCs first and returns
+// WAIT_IO_COMPLETION. Objects that are not waitable here count as signalled, as before. Outside a native-USER
+// session there is one thread, and a wait finds the object set or times out at once
+const native32 = p => p.nativeUser16 && p.nativeUser16();
+P.queueApc = function (tid, proc, data) { apcs(this, tid).push({ proc, data }); const t = this.threadsById && this.threadsById.get(tid); if (t && t.alertWait) t.blocked = false; };
+const apcs = (p, tid) => { p.apcQ = p.apcQ || new Map(); if (!p.apcQ.has(tid)) p.apcQ.set(tid, []); return p.apcQ.get(tid); };
+function wait32(hs, all, ms, alertable) {
+  const objs = hs.map(h => ev16(this, h)), top = native32(this) && this.atThreadTop();
+  const t = this.thread16 || (this.mainWait = this.mainWait || {});
+  if (alertable && native32(this)) {
+    const q = apcs(this, this.currentThreadId());
+    if (q.length) { t.wake = 0; for (const a of q.splice(0)) this.call(a.proc, [a.data]); return 0xc0; }   // WAIT_IO_COMPLETION
+  }
+  const isSet = e => !e || e.set;
+  const ready = all ? objs.every(isSet) : objs.some(isSet);
+  if (ready) {
+    t.wake = 0;
+    if (all) { for (const e of objs) if (e && !e.manual) e.set = false; return 0; }
+    const i = objs.findIndex(isSet); if (objs[i] && !objs[i].manual) objs[i].set = false; return i;
+  }
+  if (!ms || !top) { t.wake = 0; return 0x102; }
+  // a wait without end, in a thread: blocked until one of its objects is set, an APC arrives (alertable) or a thread
+  // it waits for ends; the scheduler does not run it until then, and it checks its wait again when it runs
+  if (ms === 0xffffffff && this.thread16) {
+    t.blocked = true; t.alertWait = alertable;
+    for (const h of hs) { const o = this.obj(h); if (o) (o.waiters = o.waiters || new Set()).add(t); const w = o && o.kind === 'thread' && this.threadsById && this.threadsById.get(o.id); if (w) (w.waiters = w.waiters || new Set()).add(t); }
+    return YIELD;
+  }
+  if (!t.wake) t.wake = ms === 0xffffffff ? Infinity : this.now() + ms;
+  else if (this.now() >= t.wake) { t.wake = 0; return 0x102; }
+  return YIELD;
+}
+K('WaitForSingleObject', 2, function (h, ms) { return wait32.call(this, [h], false, ms, false); });
+K('WaitForSingleObjectEx', 3, function (h, ms, al) { return wait32.call(this, [h], false, ms, !!al); });
+K('WaitForMultipleObjects', 4, function (n, ph, all, ms) { return wait32.call(this, [...Array(n)].map((_, i) => this.r32(ph + 4 * i)), !!all, ms, false); });
+K('WaitForMultipleObjectsEx', 5, function (n, ph, all, ms, al) { return wait32.call(this, [...Array(n)].map((_, i) => this.r32(ph + 4 * i)), !!all, ms, !!al); });
+K('SetEvent', 1, function (h) { this.signal(ev16(this, h)); return 1; });
+K('ResetEvent', 1, function (h) { const e = ev16(this, h); if (e) e.set = false; return 1; });
+K('PulseEvent', 1, function (h) { const e = ev16(this, h); if (e) { e.set = false; this.wakeWaiters(e); } return 1; });
+K('GetExitCodeThread', 2, function (h, p) {
+  const o = this.obj(h), t = o && o.kind === 'thread' && this.threadsById && this.threadsById.get(o.id);
+  if (p) this.w32(p, t && t.state !== 'done' ? 0x103 : (t && t.exitCode) || 0); return 1;   // STILL_ACTIVE while it runs
+});
+K('TerminateThread', 2, function (h, code) {
+  const o = this.obj(h), t = o && o.kind === 'thread' && this.threadsById && this.threadsById.get(o.id);
+  if (!t || t === this.thread16) return 0; t.state = 'done'; t.exitCode = code; return 1;
+});
+// OpenVxDHandle: the ring-0 handle VxDs signal a Win32 event by (VWIN32_SetWin32Event, MMDEVLDR's function 4)
+K('OpenVxDHandle', 1, function (h) { return ev16(this, h) ? u32(0xc4000000 | (h & 0xffffff)) : 0; });
+P.r0Event = function (r0) { return (u32(r0) & 0xff000000) === 0xc4000000 ? ev16(this, r0 & 0xffffff) : null; };
+// a Win32 thread's ring-0 handle (VMM Get_Cur_Thread_Handle), which VWIN32_QueueUserApc takes
+P.r0Thread = function (tid) { return u32(0xc5000000 | tid); };
+// devices opened by name (\\.\NAME): MMDEVLDR, which WINMM's threads talk to by DeviceIoControl; others are absent
+const VXD_FILES = { MMDEVLDR: 0x44a };
+const createFile = API.KERNEL32.CreateFileA[1];
+K('CreateFileA', 7, function (name, ...rest) {
+  const n = this.readA(name) || '', m = /^\\\\\.\\([^\\.]+)(\.vxd)?$/i.exec(n);
+  if (!m) return createFile.call(this, name, ...rest);
+  const id = VXD_FILES[m[1].toUpperCase()];
+  if (!id) { this.lastError = 2; return 0xffffffff; }
+  return this.newHandle({ kind: 'vxd', name: m[1].toUpperCase(), id });
+});
+const devIoctl = API.KERNEL32.DeviceIoControl[1];
+K('DeviceIoControl', 8, function (h, code, inb, nin, outb, nout, pret, ovl) {
+  const o = this.obj(h);
+  if (!o || o.kind !== 'vxd') return devIoctl.call(this, h, code, inb, nin, outb, nout, pret, ovl);
+  const out = v => { if (outb && nout >= 4) this.w32(outb, v); if (pret) this.w32(pret, 4); return 1; };
+  const arg = i => this.r32(inb + 4 * i);
+  switch (code) {   // MMDEVLDR's W32_DEVICEIOCONTROL (VxD 3015Ah)
+    case 0: return out(0x100);                                                       // version
+    case 1: return out(u32(arg(0) << 12));   // _LinPageLock(page, pages, flags): the locked region's linear address (the same memory: one address space here)
+    case 2: if (pret) this.w32(pret, 0); return 1;                                   // unlock them
+    case 3: return out(this.r0Thread(this.currentThreadId()));                        // the calling thread's ring-0 handle
+    case 4: this.queueApc(arg(2) & 0xffff, arg(0), arg(1)); return out(1);   // VWIN32_QueueUserApc(proc, data, thread)
+    case 5: if (!this.mmdevCount) { this.mmdevCount = this.alloc(4); this.w32(this.mmdevCount, this.devnodes().filter(d => d.started).length); } return out(this.mmdevCount);
+    case 6: return out(1);                                                           // close a ring-0 event handle
+    case 7: {                                                                        // _PageAllocate(pages, flags): { linear, handle, -, physical }
+      const n = arg(1) * 4096, a = this.alloc(n); this.u8.fill(0, a, a + n);
+      if (nout >= 16) { this.w32(outb, a); this.w32(outb + 4, a); this.w32(outb + 8, 0); this.w32(outb + 12, a); }
+      if (pret) this.w32(pret, 4); return 1;
+    }
+    case 8: return out(1);                                                           // _PageFree
+    case 9: {   // a device's state by its ID: 0 none, 1 started, 2 not started (3: disabled)
+      const id = (this.readA(inb) || '').toUpperCase(), dn = this.devnodes().find(d => d.id === id);
+      return out(!dn ? 0 : dn.started ? 1 : 2);
+    }
+  }
+  throw new GuestError(`MMDEVLDR DeviceIoControl ${code}`);
+});
 K('EnumResourceNamesA', 4, () => 0);
 
 /**
