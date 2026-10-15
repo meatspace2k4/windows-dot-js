@@ -155,7 +155,7 @@ class LE:
         d = self.ddb - base
         self.vxd_id = u16(self.image, d + 6); self.vxd_name = bytes(self.image[d + 0xc:d + 0x14]).rstrip(b' \0').decode('latin1')
         self.procs = dict(control=u32(self.image, d + 0x18), v86=u32(self.image, d + 0x1c), pm=u32(self.image, d + 0x20))
-        svc, nsvc = u32(self.image, d + 0x24), u32(self.image, d + 0x28)
+        svc, nsvc = u32(self.image, d + 0x30), u32(self.image, d + 0x34)   # DDB_Service_Table_Ptr, DDB_Service_Table_Size
         self.services = [u32(self.image, svc - base + 4 * i) for i in range(nsvc)] if svc and nsvc else []
         self.entry = 0
     def entries(self): return [a for a in list(self.procs.values()) + self.services if a and self.in_code(a)]

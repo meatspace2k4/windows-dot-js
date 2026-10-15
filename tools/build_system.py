@@ -70,10 +70,14 @@ with tempfile.TemporaryDirectory() as tmp:
         trace = ['--trace'] if f.upper() in os.environ.get('TRACE_NE', '').upper().split(',') else []
         subprocess.run([sys.executable, os.path.join(here, 'recomp.py'), p, base, '--base', hex(b), '--lookup', hex(lk)] + trace, check=True)
         bundle['dlls'][f.upper()] = {'file': b64(p), 'wasm': b64(base + '.wasm'), 'meta': json.load(open(base + '.json'))}
+    # the export names of KRNL386.EXE, which the personality's KERNEL answers for (GetProcAddress by name)
+    sys.path.insert(0, here); from neinfo import ne as neparse
+    bundle['names16'] = {'KERNEL': {v.upper(): k for k, v in neparse(os.path.join(src, 'krnl386.exe'))[4].items()}}
     bundle['vxds'] = {}
     for f, b, lk in VXDS:
         p = os.path.join(src, f); base = os.path.join(tmp, f)
-        subprocess.run([sys.executable, os.path.join(here, 'recomp.py'), p, base, '--vxd', '--base', hex(b), '--lookup', hex(lk)], check=True)
+        trace = ['--trace'] if f.upper() in os.environ.get('TRACE_NE', '').upper().split(',') else []
+        subprocess.run([sys.executable, os.path.join(here, 'recomp.py'), p, base, '--vxd', '--base', hex(b), '--lookup', hex(lk)] + trace, check=True)
         bundle['vxds'][f.upper()] = {'image': b64(base + '.img'), 'wasm': b64(base + '.wasm'), 'meta': json.load(open(base + '.json'))}
     for f, lk in PROGRAMS:
         p = os.path.join(src, f); base = os.path.join(tmp, f)

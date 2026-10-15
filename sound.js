@@ -6,10 +6,10 @@
 (function () {
 const P = window.W95Win32.Process.prototype;
 
-// the card as WAVE.INF's *PNPB007 factory configuration has it: configuration register 530h, codec 534h-537h, IRQ 7,
-// DMA channel 1. Its devnode is the one Setup made for it (win95.js setupSound)
-const WSS = { devnode: 'ROOT\\*PNPB007\\0000', cfg: 0x530, codec: 0x534, irq: 7, dma: 1 };
-P.cards = function () { return [{ devnode: WSS.devnode, io: [[WSS.cfg, 8]], irq: [WSS.irq], dma: [WSS.dma], wss: WSS }]; };
+// the card as WAVE.INF's *PNPB007 factory configuration has it: configuration register 530h, codec 534h-537h, the OPL3
+// synthesizer's ports 388h-38Bh, IRQ 7, DMA channel 1. Its devnode is the one Setup made for it (win95.js setupSound)
+const WSS = { devnode: 'ROOT\\*PNPB007\\0000', cfg: 0x530, codec: 0x534, opl: 0x388, irq: 7, dma: 1 };
+P.cards = function () { return [{ devnode: WSS.devnode, io: [[WSS.cfg, 8], [WSS.opl, 4]], irq: [WSS.irq], dma: [WSS.dma], wss: WSS }]; };
 
 // ---------------------------------------------------------------- 8259 interrupt controllers
 // the mask registers (21h, A1h) and in-service state; an interrupt is delivered to the vector the driver set for it
@@ -22,8 +22,23 @@ const FLAGS = ['cf', 'pf', 'af', 'zf', 'sf', 'of', 'df'];
 P.raiseIRQ = function (irq) {
   const c = pic(this);
   if (c.imr[irq >> 3] & (1 << (irq & 7)) || c.isr & (1 << irq) || this.inIRQ) return false;
-  const h = this.dosVec && this.dosVec[irqVector(irq)]; if (!h) return false;
-  c.isr |= 1 << irq; this.inIRQ = true;
+  // an IRQ a VxD virtualized (VPICD_Virtualize_IRQ) goes to its hardware interrupt procedure, which reflects it into
+  // the VM (VPICD_Set_Int_Request) and ends it (VPICD_Phys_EOI) as it sees fit
+  const v = this.vpicd && this.vpicd.byIrq.get(irq);
+  if (v) {
+    c.isr |= 1 << irq; this.inIRQ = true;
+    try { this.vxdCall(v.hw, { eax: v.handle, ebx: this.sysVM(), edx: v.ref }); } finally { this.inIRQ = false; }
+    if (v.request) { v.request = false; this.vmIRQ(irq); }
+    return true;
+  }
+  if (!this.dosVec || !this.dosVec[irqVector(irq)]) return false;
+  c.isr |= 1 << irq;
+  return this.vmIRQ(irq);
+};
+/** the VM's handler for an IRQ (the vector its driver set), run with an interrupt frame */
+P.vmIRQ = function (irq) {
+  const h = this.dosVec && this.dosVec[irqVector(irq)]; if (!h || this.inIRQ) return false;
+  this.inIRQ = true;
   const fl = FLAGS.filter(f => this.cpu[f]).map(f => [f, this.cpu[f].value]);
   this.tick16();
   try { this.call16(h >>> 16, h & 0xffff, [['w', 0x202]]); }   // an interrupt frame: IRET pops IP, CS and the flags
@@ -36,6 +51,10 @@ const DMA_PAGE = { 0x87: 0, 0x83: 1, 0x81: 2, 0x82: 3 };
 const dmac = p => p.dmac || (p.dmac = { ff: 0, ch: [0, 1, 2, 3].map(() => ({ base: 0, cur: 0, bcount: 0, count: 0, mode: 0, page: 0, masked: true, tc: false })) });
 /** the count register of the card's playback channel (the VxD's VDMAD_Get_Phys_Count) */
 P.dmaCount = function () { return dmac(this).ch[WSS.dma].count; };
+/** an 8237 channel's registers (VDMAD programs them from its virtual state) */
+P.dmaChannel = function (n) { return dmac(this).ch[n & 3]; };
+/** the 8259s' state (VPICD) */
+P.picState = function () { return pic(this); };
 /** n bytes from a DMA channel (memory to device); fewer when it is masked or reaches its end without auto-init */
 P.dmaRead = function (chn, n) {
   const d = dmac(this).ch[chn], out = new Uint8Array(n); let k = 0;
@@ -55,13 +74,42 @@ P.dmaRead = function (chn, n) {
 const XTAL = [24576000, 16934400], DIV = [3072, 1536, 896, 768, 448, 384, 512, 2560];
 const codec = p => p.ad1848 || (p.ad1848 = { idx: 0, mce: false, trd: false, regs: Uint8Array.from([0, 0, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0, 0, 0, 0, 0x0a, 0, 0, 0]), int: false, count: 0, frac: 0, last: 0, cfg: 0 });
 const rateOf = r8 => XTAL[r8 & 1] / DIV[(r8 >> 1) & 7];
+// ---------------------------------------------------------------- OPL3 (YMF262) at 388h-38Bh
+// The synthesizer's register file (two banks: 388h/389h and 38Ah/38Bh) and its two timers, as drivers detect the chip:
+// timer 1 counts in 80 us steps from register 2, timer 2 in 320 us steps from register 3; register 4 starts them
+// (bits 0, 1), masks them (bits 6, 5) and resets the flags (bit 7). The status port reads 80h (an interrupt) with 40h
+// (timer 1) and 20h (timer 2). Time runs on the bus: each access to the chip takes 1 us, as an ISA read does
+const opl = p => p.opl3 || (p.opl3 = { idx: [0, 0], regs: [new Uint8Array(256), new Uint8Array(256)], t: 0, start: [0, 0], flags: 0 });
+const oplTime = (p, o) => { o.t = Math.max(o.t + 0.001, p.now()); return o.t; };
+const oplStatus = (p, o) => {
+  const now = oplTime(p, o), r = o.regs[0][4];
+  [[1, 2, 0.08, 0x40, 0x40], [2, 3, 0.32, 0x20, 0x20]].forEach(([bit, reg, step, flag, mask], i) => {
+    if (r & bit && !(r & mask) && now - o.start[i] >= (256 - o.regs[0][reg]) * step) o.flags |= flag;
+  });
+  return o.flags ? o.flags | 0x80 : 0;
+};
+P.oplIO = function (port, isIn, v) {
+  const o = opl(this), bank = (port - WSS.opl) >> 1;
+  if (isIn) return port === WSS.opl ? oplStatus(this, o) : 0xff;
+  oplTime(this, o);
+  if (!(port & 1)) { o.idx[bank] = v; return 0; }
+  const r = o.idx[bank]; o.regs[bank][r] = v;
+  if (bank === 0 && r === 4) {
+    if (v & 0x80) o.flags = 0;
+    else { if (v & 1) o.start[0] = o.t; if (v & 2) o.start[1] = o.t; }
+  }
+  return 0;
+};
 P.soundIO = function (port, size, isIn) {
   const eax = this.cpu.eax.value, v = eax & 0xff;
   const ret = r => { this.cpu.eax.value = (eax & ~0xff) | (r & 0xff); return true; };
+  if (port >= WSS.opl && port < WSS.opl + 4) { const r = this.oplIO(port, isIn, v); return isIn ? ret(r) : true; }
   if (port >= WSS.cfg && port < WSS.cfg + 4) {
     const c = codec(this);
     if (!isIn) { if (port === WSS.cfg) c.cfg = v; return true; }
-    return ret(port === WSS.cfg + 3 ? 0x04 : 0xff);   // 533h: the card's ID (04h: a Windows Sound System card)
+    // 533h: the card's ID (04h: a Windows Sound System card), bit 6 set once an interrupt line is selected (bits 3-5 of
+    // the configuration register) and the card sees it, bit 7 clear (a 16-bit slot)
+    return ret(port === WSS.cfg + 3 ? 0x04 | (c.cfg & 0x38 ? 0x40 : 0) : 0xff);
   }
   if (port >= WSS.codec && port < WSS.codec + 4) {
     const c = codec(this), off = port - WSS.codec;
@@ -85,7 +133,17 @@ P.soundIO = function (port, size, isIn) {
     if (isIn) return ret(0);                                                                        // 537h: programmed I/O, unused
     return true;
   }
-  if (port === 0x20 || port === 0xa0) { if (!isIn && (v & 0x20)) { const c = pic(this), lo = port === 0x20 ? 0 : 8; for (let i = lo; i < lo + 8; i++) if (c.isr & (1 << i)) { c.isr &= ~(1 << i); break; } } return isIn ? ret(0) : true; }
+  if (port === 0x20 || port === 0xa0) {
+    if (!isIn && (v & 0x20)) {   // EOI: for an IRQ a VxD virtualized, its EOI procedure decides (VPICD_Phys_EOI)
+      const c = pic(this), lo = port === 0x20 ? 0 : 8;
+      for (let i = lo; i < lo + 8; i++) if (c.isr & (1 << i)) {
+        const vi = this.vpicd && this.vpicd.byIrq.get(i);
+        if (vi && vi.eoi) this.vxdCall(vi.eoi, { eax: vi.handle, ebx: this.sysVM() }); else c.isr &= ~(1 << i);
+        break;
+      }
+    }
+    return isIn ? ret(0) : true;
+  }
   if (port === 0x21 || port === 0xa1) { const c = pic(this), i = port === 0x21 ? 0 : 1; if (isIn) return ret(c.imr[i]); c.imr[i] = v; return true; }
   if (port <= 0x0f || port in DMA_PAGE) {
     const d = dmac(this);

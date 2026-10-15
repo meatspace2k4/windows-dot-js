@@ -1,12 +1,13 @@
 // Keeps the installed app running with no server: every file is cached on install.
-const CACHE = 'win95-v3';
+const CACHE = 'win95-v4';
 const FILES = ['./', 'index.html', 'manifest.webmanifest', 'icons/icon192.png', 'icons/icon512.png',
-  'assets.js', 'assets-shell.js', 'cdrom.js', 'fs.js', 'savers.js', 'win32.js', 'gl.js', 'shell32.js', 'system.js', 'ne16.js', 'sound.js', 'dyn.js', 'host-web.js', 'win95.js'];
+  'assets.js', 'assets-shell.js', 'cdrom.js', 'fs.js', 'savers.js', 'win32.js', 'gl.js', 'shell32.js', 'system.js', 'ne16.js', 'vmm.js', 'sound.js', 'dyn.js', 'host-web.js', 'win95.js'];
 
 self.addEventListener('install', e => e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES)).then(() => self.skipWaiting())));
 self.addEventListener('activate', e => e.waitUntil(caches.keys()
   .then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim())));
-// network first so edits show while the dev server runs; the cache when it doesn't
-self.addEventListener('fetch', e => e.respondWith(fetch(e.request)
+// network first so edits show while the dev server runs (revalidated, never a stale HTTP-cache copy); the cache when
+// it doesn't
+self.addEventListener('fetch', e => e.respondWith(fetch(e.request, { cache: 'no-cache' })
   .then(r => { if (r.ok) { const copy = r.clone(); caches.open(CACHE).then(c => c.put(e.request, copy)); } return r; })
   .catch(() => caches.match(e.request, { ignoreSearch: true }))));

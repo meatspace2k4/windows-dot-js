@@ -519,9 +519,11 @@ P.dynBlock = function (eip) {
   let c = this.dynCache.get(eip);
   if (c && c.bytes.every((v, i) => u8[eip + i] === v)) return c;
   const cs = this.cpu.cs.value & 0xffff, csb = u32(this.cpu.csb.value);
-  // only code inside the current code segment: a stray jump (to 0, or past the segment) is the guest's fault, not code
-  if (!cs || !eip || eip < csb || eip - csb > this.selLimit(cs)) { this.trapped = `jump to unmapped address ${eip.toString(16)}`; return null; }
-  const d32 = !!(this.r32(ACC + (cs & 0xfff8)) & 0x400000);
+  // only code inside the current code segment (flat 32-bit code, CS 0, as ring-0 VxD code runs: anywhere in memory):
+  // a stray jump (to 0, or past the segment) is the guest's fault, not code
+  const flat = !cs && !csb;
+  if (!eip || (flat ? eip >= u8.length : !cs || eip < csb || eip - csb > this.selLimit(cs))) { this.trapped = `jump to unmapped address ${eip.toString(16)}`; return null; }
+  const d32 = flat || !!(this.r32(ACC + (cs & 0xfff8)) & 0x400000);
   let t;
   try { t = translate(this, eip, csb, d32); }
   catch (e) { if (e instanceof Unsupported) { this.trapped = `run-time code at ${eip.toString(16)}: ${e.message}`; return null; } throw e; }

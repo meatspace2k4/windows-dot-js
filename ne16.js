@@ -679,7 +679,11 @@ P.devSoftKey = function (dn) { return dn && dn.driver ? 'hklm\\system\\currentco
 // appy time, once MMSYSTEM.DLL is loaded, through MMSYSTEM's RING3_DEVLOADER(devnode, 1), which loads the drivers the
 // software key's Drivers subkeys name. The host runs this between slices, as the system's appy-time events run
 P.appy16 = function () {
-  if (this.depth || this.mmdevStarted || !this.user16Ready) return;
+  if (this.depth) return;
+  if (this.vxdRunEvents) this.vxdRunEvents();
+  if (!this.user16Ready) return;
+  if (this.vxd && window.W95SYSTEM.vxds && window.W95SYSTEM.vxds['MMDEVLDR.VXD']) { this.vxdDevLoaders(); this.vxdAppy(); return; }   // the recompiled device loader (vmm.js)
+  if (this.mmdevStarted) return;
   const mm = this.ne.get('MMSYSTEM'), ep = mm && mm.meta && this.neExport(mm, 2001); if (!ep) return;   // RING3_DEVLOADER
   this.mmdevStarted = true;
   for (const dn of this.devnodes()) {
@@ -721,6 +725,7 @@ P.mmdevMigrate = function (dn) {
 // here); 2 (devnode, far WORD list, far count) lists a devnode's sub-devices, which these cards do not have
 const mmdevArgs = p => { const sp = p.cpu.ssb.value + (p.cpu.esp.value & 0xffff) + 4; return i => p.r32(sp + 4 * i); };
 def16('VXD', 0x44a, '', 'jmp', function () {
+  const v = this.vxdApiRoute && this.vxdApiRoute(0x44a); if (v) return this.vxdPmApi(v);   // the recompiled MMDEVLDR (vmm.js)
   const f = this.cpu.edx.value & 0xffff, arg = mmdevArgs(this);
   let r;
   if (f === 0 || f === 1) r = 0;
@@ -756,6 +761,7 @@ P.wssRecord = function (dn) {
 };
 vxdApi(0x045f, 'MSSNDSYS', {});
 def16('VXD', 0x45f, '', 'jmp', function () {
+  const v = this.vxdApiRoute && this.vxdApiRoute(0x45f); if (v) return this.vxdPmApi(v);   // the recompiled MSSNDSYS.VXD (vmm.js)
   const f = this.cpu.edx.value & 0xffff, ax = this.cpu.eax.value & 0xffff;
   let r, ok = true;
   if (f === 0) r = 0x400;                                                             // version
@@ -778,7 +784,7 @@ def16('VXD', 0x45f, '', 'jmp', function () {
 // leave them, on the caller's cdecl frame at SS:BP+4 (dwords; pointers 16:16); AX = the CONFIGRET. The resources a
 // devnode is given are the ones its card decodes (the emulated hardware's ports, IRQ and DMA channel, P.cards)
 const cmArgs = p => { const a = p.cpu.ssb.value + (p.cpu.ebp.value & 0xffff) + 4; return i => p.r32(a + 4 * i); };
-const CR = { SUCCESS: 0, INVALID_POINTER: 3, INVALID_DEVNODE: 5, NO_SUCH_DEVNODE: 0x0d, NO_MORE_LOG_CONF: 0x0e, BUFFER_SMALL: 0x1a, NO_SUCH_VALUE: 0x25, REGISTRY_ERROR: 0x13 };
+const CR = { SUCCESS: 0, INVALID_POINTER: 3, INVALID_DEVNODE: 5, NO_SUCH_DEVNODE: 0x0d, NO_MORE_LOG_CONF: 0x0e, NO_MORE_RES_DES: 0x0f, BUFFER_SMALL: 0x1a, NO_SUCH_VALUE: 0x25, REGISTRY_ERROR: 0x13 };
 /** a devnode's registry key under HKLM (CM_REGISTRY_SOFTWARE: its driver's key; else its Enum key), with a subkey */
 P.cmKey = function (dn, sub, flags) {
   const k = flags & 1 ? (dn.driver ? 'System\\CurrentControlSet\\Services\\Class\\' + dn.driver : null) : 'Enum\\' + dn.id;
@@ -934,6 +940,7 @@ P.setVideoMode = function (mode, clear, hicolor) {
 };
 P.portIO = function (port, size, isIn) {
   if (window.W95PORTTRACE) window.W95PORTTRACE(port, size, isIn, this);
+  if (this.vxdTrapIO && this.vxdTrapIO(port, size, isIn)) return;   // a port a VxD traps (vmm.js)
   if (this.soundIO && this.soundIO(port, size, isIn)) return;   // the sound card, DMA and interrupt controllers (sound.js)
   const a = this.adapter(), eax = this.cpu.eax.value;
   if (port >= 0x3b0 && port <= 0x3bf && port !== 0x3bf && !(a.misc & 1) === false) port += 0x20;   // mono CRTC aliases
@@ -1347,7 +1354,7 @@ def16('KERNEL', 50, 'wx', 'l', function (h, name) {   // GetProcAddress
   const key = name >>> 16 ? this.readA(this.lin(name)) : name & 0xffff;
   const js = [...(this.jsMods || new Map()).values()].find(m => m.hModule === (h & 0xffff));
   if (js) {
-    const ord = typeof key === 'number' ? key : (NAMES16[js.name] || {})[key.toUpperCase()];
+    const ord = typeof key === 'number' ? key : names16(js.name)[key.toUpperCase()];
     if (!ord || !K16[`${js.name}.#${ord}`]) { console.warn('[ne16] GetProcAddress', js.name, key); return 0; }
     return this.thunk16For(`${js.name}.#${ord}`);
   }
@@ -2629,12 +2636,16 @@ K('CreateFileA', 7, function (name, ...rest) {
   if (!m) return createFile.call(this, name, ...rest);
   const id = VXD_FILES[m[1].toUpperCase()];
   if (!id) { this.lastError = 2; return 0xffffffff; }
+  const vx = this.vxdById && this.vxdById(id);   // a recompiled VxD (vmm.js) is asked first (DIOC_OPEN)
+  if (vx) { const e = this.vxdIoctl(vx, 0, 0, 0, 0, 0, 0, 0); if (e) { this.lastError = e; return 0xffffffff; } }
   return this.newHandle({ kind: 'vxd', name: m[1].toUpperCase(), id });
 });
 const devIoctl = API.KERNEL32.DeviceIoControl[1];
 K('DeviceIoControl', 8, function (h, code, inb, nin, outb, nout, pret, ovl) {
   const o = this.obj(h);
   if (!o || o.kind !== 'vxd') return devIoctl.call(this, h, code, inb, nin, outb, nout, pret, ovl);
+  const vx = this.vxdById && this.vxdById(o.id);
+  if (vx) { const e = this.vxdIoctl(vx, code, inb, nin, outb, nout, pret, h); if (e) { this.lastError = e; return 0; } return 1; }   // the recompiled VxD (vmm.js)
   const out = v => { if (outb && nout >= 4) this.w32(outb, v); if (pret) this.w32(pret, 4); return 1; };
   const arg = i => this.r32(inb + 4 * i);
   switch (code) {   // MMDEVLDR's W32_DEVICEIOCONTROL (VxD 3015Ah)
@@ -2745,5 +2756,7 @@ P.nativeFontDC = function (font) {
 
 // names for GetProcAddress(KERNEL, "name")
 const NAMES16 = { KERNEL: {}, ...NAMES16_INIT };
-window.W95NE16 = { K16, NAMES16, L, def16 };
+/** a personality module's export names: the CD module's own (the system bundle's names16) and the ones listed here */
+const names16 = mod => ({ ...((window.W95SYSTEM && window.W95SYSTEM.names16) || {})[mod], ...NAMES16[mod] });
+window.W95NE16 = { K16, NAMES16, names16, L, def16, INTS, VXD_API, CR, regStr };
 })();
