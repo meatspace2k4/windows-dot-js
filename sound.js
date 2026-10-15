@@ -112,7 +112,9 @@ P.oplIO = function (port, isIn, v) {
 // can join four (register 104h). The output goes left and right as register C0h's bits 4 and 5 say (OPL3 mode, 105h)
 const OPL_RATE = 49716;
 const MULT = [0.5, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 10, 12, 12, 15, 15];
-const KSL_DB = [0, 24, 32, 37, 40, 43, 45, 47, 48, 50, 51, 52, 53, 54, 55, 56].map(x => x * 0.75 / 8 * 8 / 8);   // per-octave base levels (dB/8 units)
+// key-scale level: by the F-number's top 4 bits, in 0.75 dB steps at block 8, 6 dB less per block below; register
+// bits 6-7 take 0, 1/2, 1/4 or all of it (0, 3, 1.5, 6 dB per octave)
+const KSL_ROM = [0, 32, 40, 45, 48, 51, 53, 55, 56, 58, 59, 60, 61, 62, 63, 64];
 const OP_OF_SLOT = [0, 1, 2, 3, 4, 5, -1, -1, 6, 7, 8, 9, 10, 11, -1, -1, 12, 13, 14, 15, 16, 17];
 const CH_OPS = [[0, 3], [1, 4], [2, 5], [6, 9], [7, 10], [8, 11], [12, 15], [13, 16], [14, 17]];
 const wave = (w, ph) => {   // ph in cycles [0, 1)
@@ -171,7 +173,7 @@ class FM {
     else if (o.stage === 'decay') { const sl = o.sl === 15 ? 93 : o.sl * 3; if (o.dr) o.env += 96 * dt / (DECAY_MS(o.dr) / spd(o.dr)); if (o.env >= sl) { o.env = sl; o.stage = o.egt ? 'sustain' : 'release2'; } }
     else if (o.stage === 'release2' || o.stage === 'release') { const rr = o.rr; if (rr) o.env += 96 * dt / (DECAY_MS(rr) / spd(rr)); if (o.env >= 96) { o.env = 96; o.stage = 'off'; } }
     if (o.stage === 'off') return 0;
-    const oct = ch.block, ksl = o.ksl ? Math.max(0, (KSL_DB[ch.fnum >> 6] - 8 * (7 - oct)) * [0, 0.5, 0.25, 1][o.ksl] * 0.75) : 0;
+    const ksl = o.ksl ? Math.max(0, KSL_ROM[ch.fnum >> 6] * 0.75 - (8 - ch.block) * 6) * [0, 0.5, 0.25, 1][o.ksl] : 0;
     const att = o.env + o.tl * 0.75 + ksl + (o.am ? trem : 0);
     if (att >= 96) return 0;
     return wave(o.ws, ((o.phase + mod) % 1 + 1) % 1) * Math.pow(10, -att / 20);
