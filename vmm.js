@@ -36,11 +36,10 @@ P.vxdById = function (id) { for (const v of (this.vxds || new Map()).values()) i
 
 /** call flat ring-0 code at `addr` with the registers given; returns the registers and carry it left. It runs on the
  *  ring-0 stack, below whatever ring-0 frame is live */
-P.vxdCall = function (addr, regs = {}) {
+P.vxdCall = function (addr, regs = {}, at) {
   const save = {}; for (const r of GPR) save[r] = this.cpu[r].value; for (const [s, b] of SEGS) { save[s] = this.cpu[s].value; save[b] = this.cpu[b].value; }
   const savedEip = this.cpu.eip.value, savedCf = this.cpu.cf.value;
-  if (!this.r0Stack) { this.r0Stack = this.alloc(0x10000); this.r0Top = this.r0Stack + 0x10000 - 16; }
-  const top = this.r0Depth ? (u32(this.cpu.esp.value) - 0x100) & ~3 : this.r0Top;
+  const top = at !== undefined ? at : this.r0Free();
   for (const [s, b] of SEGS) { this.cpu[s].value = 0; if (s !== 'fsel') this.cpu[b].value = 0; }
   this.cpu.fs.value = this.tibFor ? this.tibFor() : this.cpu.fs.value;
   for (const r of GPR) if (r !== 'esp') this.cpu[r].value = u32(regs[r] || 0);
@@ -53,7 +52,30 @@ P.vxdCall = function (addr, regs = {}) {
   const out = { cf: this.cpu.cf.value & 1, zf: this.cpu.zf.value & 1 }; for (const k of GPR) out[k] = u32(this.cpu[k].value);
   for (const k of GPR) this.cpu[k].value = save[k]; for (const [s, b] of SEGS) { this.cpu[s].value = save[s]; this.cpu[b].value = save[b]; }
   this.cpu.eip.value = savedEip; this.cpu.cf.value = savedCf;
+  if (!this.r0Depth) this.vmIrqDeliver();
   return out;
+};
+/** the interrupts VxDs requested for the VM (VPICD_Set_Int_Request), taken as ring 0 returns to VM code */
+P.vmIrqDeliver = function () {
+  const by = this.vpicd && this.vpicd.byIrq; if (!by || this.inIRQ) return;
+  for (const [irq, e] of by) if (e.request) { e.request = false; this.vmIRQ(irq); }
+};
+/** where the next ring-0 frame starts: below the stack in use when ring-0 frames are live (ring-0 code's own, or
+ *  16-bit code it called on an alias of it), below the lowest live frame when VM code runs on its own stack in
+ *  between (nested execution), else at the top */
+P.r0Free = function () {
+  if (!this.r0Stack) { this.r0Stack = this.alloc(0x10000); this.r0Top = this.r0Stack + 0x10000 - 16; }
+  if (this.r0Depth) return (this.stackLin() - 0x100) & ~3;
+  return this.r0Low !== undefined ? this.r0Low : this.r0Top;
+};
+/** the linear address SS:ESP points at */
+P.stackLin = function () { const ss = this.cpu.ss.value & 0xffff; return ss ? u32(this.selBase(ss) + (this.cpu.esp.value & 0xffff)) : u32(this.cpu.esp.value); };
+/** run `fn` (VM code) from ring 0: the ring-0 frames down to the current ESP stay live while it runs */
+P.r0Out = function (fn) {
+  const low = this.r0Low, was = this.r0Depth;
+  if (this.r0Depth) this.r0Low = (this.stackLin() - 0x100) & ~3;
+  this.r0Depth = 0;
+  try { return fn(); } finally { this.r0Low = low; this.r0Depth = was; }
 };
 /** a system control message to a VxD's control procedure (EAX message, EBX VM handle, the rest as given) */
 P.vxdControl = function (v, msg, regs = {}) { return this.vxdCall(v.procs.control, { ebx: this.sysVM(), ...regs, eax: msg }); };
@@ -262,17 +284,12 @@ P.vxdAppy = function () {
 };
 /** call a cdecl ring-0 function with dword arguments */
 P.vxdCdecl = function (fn, args) {
-  if (!this.r0Stack) { this.r0Stack = this.alloc(0x10000); this.r0Top = this.r0Stack + 0x10000 - 16; }
-  const top = this.r0Depth ? (u32(this.cpu.esp.value) - 0x100) & ~3 : this.r0Top, frame = top - 4 * args.length - 64;
+  const frame = this.r0Free() - 4 * args.length - 64;
   args.forEach((a, i) => this.w32(frame + 4 * i, u32(a)));
   // the call pushes its return on top of the arguments: enter with ESP at the arguments
   return this.vxdCallAt(fn, frame);
 };
-P.vxdCallAt = function (addr, sp, regs = {}) {
-  const was = this.r0Depth; const save = this.r0Top;
-  this.r0Depth = 0; this.r0Top = sp;   // vxdCall starts its frame here
-  try { return this.vxdCall(addr, regs); } finally { this.r0Depth = was; this.r0Top = save; }
-};
+P.vxdCallAt = function (addr, sp, regs = {}) { return this.vxdCall(addr, regs, sp); };
 
 // ---- VWIN32: the Win32 side
 svc(VWIN32, 0x02, function (arg) { this.queueApc(arg(2) & 0xffffff, arg(0), arg(1)); return 1; });   // _VWIN32_QueueUserApc(proc, data, thread)
@@ -369,9 +386,7 @@ P.vxdTrapIO = function (port, size, isIn) {
 // Simulate_IO (EAX data, EBX VM, ECX type, EDX port): the access as the hardware would take it
 svc(VMM, 0x94, function () {
   const port = this.cpu.edx.value & 0xffff, type = this.cpu.ecx.value & 0xff, size = type & 0x10 ? 4 : type & 8 ? 2 : 1, isIn = !(type & 4);
-  const was = this.r0Depth; this.r0Depth = 0;
-  try { const h = this.ioHandlers && this.ioHandlers.get(port); const on = h && h.on; if (h) h.on = false; try { this.portIO(port, size, isIn); } finally { if (h) h.on = on; } }
-  finally { this.r0Depth = was; }
+  this.r0Out(() => { const h = this.ioHandlers && this.ioHandlers.get(port); const on = h && h.on; if (h) h.on = false; try { this.portIO(port, size, isIn); } finally { if (h) h.on = on; } });
 });
 
 // ---- VMM: boot log, formatting
@@ -621,8 +636,8 @@ svc(VMM, 0x4d, function () { const n = this.nest && this.nest[this.nest.length -
 svc(VMM, 0x48, function () { const n = this.nest && this.nest[this.nest.length - 1]; if (n) n.target = [this.cpu.ecx.value & 0xffff, this.cpu.edx.value & 0xffff]; });
 svc(VMM, 0x85, function () {
   const n = this.nest && this.nest[this.nest.length - 1]; if (!n || !n.target) return;
-  const was = this.r0Depth; this.r0Depth = 0; this.tick16();
-  try { this.vmFarCall(this.vmClient(), n.target[0], n.target[1], n.pushes); } finally { this.r0Depth = was; }
+  this.tick16();
+  this.r0Out(() => this.vmFarCall(this.vmClient(), n.target[0], n.target[1], n.pushes));
   n.target = null; n.pushes = [];
 });
 /** run a far call in the VM on its client registers (a Client_Reg_Struc): the words pushed and the return on the
@@ -693,7 +708,12 @@ P.vxdLoad = function (file) {
 /** call a VxD's protected-mode API for the 16-bit caller: its registers in a Client_Reg_Struc, the far return
  *  already taken (CS:EIP the return address, SS:ESP above it), as the VMM's API dispatch hands them over */
 P.vxdPmApi = function (v) {
-  const c = this.crs || (this.crs = this.alloc(0x60)), cpu = this.cpu;
+  // a client register structure per nested call: VM code the VxD runs (an interrupt it reflects) may call in again
+  const pool = this.crsPool || (this.crsPool = []), lvl = this.crsLevel = (this.crsLevel || 0) + 1;
+  const outer = this.crs, c = this.crs = pool[lvl] || (pool[lvl] = this.alloc(0x60)), cpu = this.cpu;
+  try { return this.vxdPmApiOn(v, c, cpu); } finally { this.crsLevel--; this.crs = outer; }
+};
+P.vxdPmApiOn = function (v, c, cpu) {
   const ss = cpu.ss.value & 0xffff, sp = cpu.esp.value & 0xffff, ssb = u32(cpu.ssb.value), ip = this.r16(ssb + sp), cs = this.r16(ssb + sp + 2);
   let fl = 0x202; for (const [r, b] of [['cf', 0], ['pf', 2], ['af', 4], ['zf', 6], ['sf', 7], ['df', 10], ['of', 11]]) if (cpu[r]) fl |= (cpu[r].value & 1) << b;
   const regs = [['edi', 0], ['esi', 4], ['ebp', 8], ['ebx', 0x10], ['edx', 0x14], ['ecx', 0x18], ['eax', 0x1c]];

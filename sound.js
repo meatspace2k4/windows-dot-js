@@ -28,7 +28,7 @@ P.raiseIRQ = function (irq) {
   if (v) {
     c.isr |= 1 << irq; this.inIRQ = true;
     try { this.vxdCall(v.hw, { eax: v.handle, ebx: this.sysVM(), edx: v.ref }); } finally { this.inIRQ = false; }
-    if (v.request) { v.request = false; this.vmIRQ(irq); }
+    if (!this.r0Depth) this.vmIrqDeliver();   // else as the ring-0 code it interrupted returns
     return true;
   }
   if (!this.dosVec || !this.dosVec[irqVector(irq)]) return false;
@@ -221,11 +221,7 @@ P.oplRender = function () {
   if (n > OPL_RATE / 4) n = Math.floor(OPL_RATE / 4);   // after a stall, a quarter second at most
   if (!f.active()) { f.t += n; return; }
   const L = new Float32Array(n), R = new Float32Array(n); f.render(L, R, n);
-  const a = out(); if (!a) return;
-  const buf = a.ctx.createBuffer(2, n, OPL_RATE); buf.copyToChannel(L, 0); buf.copyToChannel(R, 1);
-  const src = a.ctx.createBufferSource(); src.buffer = buf; src.connect(a.ctx.destination);
-  if (!a.fmNext || a.fmNext < a.ctx.currentTime + 0.005) a.fmNext = a.ctx.currentTime + 0.1;
-  src.start(a.fmNext); a.fmNext += n / OPL_RATE;
+  play(OPL_RATE, L, R, n);
 };
 P.soundIO = function (port, size, isIn) {
   const eax = this.cpu.eax.value, v = eax & 0xff;
@@ -248,6 +244,7 @@ P.soundIO = function (port, size, isIn) {
       if (isIn) return ret(c.idx === 11 ? c.regs[11] & ~0x20 : c.regs[c.idx]);
       if (c.idx === 12) { c.regs[12] = (c.regs[12] & 0x0f) | (v & 0xf0); return true; }
       if (c.idx === 11) return true;
+      this.sound16();   // the samples due up to this write play with the registers as they were
       const was = c.regs[c.idx]; c.regs[c.idx] = v;
       if (c.idx === 9 && (v & 1) && !(was & 1)) { c.count = (c.regs[14] << 8) | c.regs[15]; c.frac = 0; c.last = this.now(); }
       if (c.idx === 15 || c.idx === 14) c.count = (c.regs[14] << 8) | c.regs[15];
@@ -305,14 +302,40 @@ for (let i = 0; i < 256; i++) {
   let u = ~i & 0xff, t = ((u & 0x0f) << 3) + 0x84; t <<= (u & 0x70) >> 4; ULAW[i] = ((u & 0x80) ? 0x84 - t : t - 0x84) / 32768;
   let a = i ^ 0x55, m = (a & 0x0f) << 4, e = (a & 0x70) >> 4; m = e ? (m + 0x108) << (e - 1) : m + 8; ALAW[i] = ((a & 0x80) ? m : -m) / 32768;
 }
-let audio = null;
-const out = () => {
-  if (audio) return audio;
+// Each source (the codec, the synthesizer) plays on an output context of its own running at the source's own rate, its
+// samples queued as they come in blocks of at least BLOCK frames, back to back on whole frames: the samples reach the
+// context unchanged and the browser converts the context's one continuous output to the device's rate
+const BLOCK = 2048, outs = new Map();
+const out = rate => {
   const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return null;
-  audio = { ctx: new AC(), next: 0 }; window.W95AUDIO = audio;   // (the page's output, for a look from the console)
-  const resume = () => { if (audio.ctx.state === 'suspended') audio.ctx.resume(); };
-  for (const t of ['pointerdown', 'keydown']) window.addEventListener(t, resume, true);
-  return audio;
+  rate = Math.min(Math.max(Math.round(rate), 3000), 768000);
+  let a = outs.get(rate);
+  if (!a) {
+    try { a = { ctx: new AC({ sampleRate: rate }), L: [], R: [], at: 0, timer: 0, lead: 0.1 }; } catch (_) { return null; }
+    outs.set(rate, a); window.W95AUDIO = outs;   // (the page's outputs, for a look from the console)
+    const resume = () => { if (a.ctx.state === 'suspended') a.ctx.resume(); };
+    for (const t of ['pointerdown', 'keydown']) window.addEventListener(t, resume, true);
+  }
+  return a;
+};
+/** queue n samples (L, R) on the output at `rate`; true if it had run dry while sounding (a stall) */
+const play = (rate, L, R, n) => {
+  const a = out(rate); if (!a) return false;
+  for (let i = 0; i < n; i++) { a.L.push(L[i]); a.R.push(R[i]); }
+  if (a.L.length >= BLOCK) return flush(a);
+  if (!a.timer) a.timer = setTimeout(() => { a.timer = 0; flush(a); }, 20);   // the tail of a sound
+  return false;
+};
+const flush = a => {
+  const n = a.L.length; if (!n) return false;
+  const sr = a.ctx.sampleRate, now = a.ctx.currentTime;
+  let dry = false;
+  // the queue ran out: start again ahead of now, half as far again when it ran out mid-sound (a stall), up to 400 ms
+  if (a.at / sr < now + 0.005) { dry = a.at > 0 && now - a.at / sr < 0.5; if (dry) a.lead = Math.min(0.4, a.lead * 1.5); a.at = Math.ceil((now + a.lead) * sr); }
+  const buf = a.ctx.createBuffer(2, n, sr); buf.copyToChannel(Float32Array.from(a.L), 0); buf.copyToChannel(Float32Array.from(a.R), 1);
+  const src = a.ctx.createBufferSource(); src.buffer = buf; src.connect(a.ctx.destination);
+  src.start(a.at / sr); a.at += n; a.L = []; a.R = [];
+  return dry;
 };
 P.sound16 = function () {
   if (!this.inSound) this.oplRender();
@@ -333,7 +356,11 @@ P.soundRun = function (c) {
   // before the codec reads on: the samples due are taken a block at a time, the interrupt raised between blocks
   this.soundStats = this.soundStats || { frames: 0, irqs: 0 };
   let k = 0;
+  const v = this.vpicd && this.vpicd.byIrq.get(WSS.irq);
   while (k < frames && (c.regs[9] & 1)) {
+    // the last interrupt not yet handled (unacknowledged, or reflected to the VM and waiting for ring 0 to return
+    // there): the half its handler refills is not ready, so the frames still due wait for the next run
+    if ((c.int || (v && v.request)) && (c.regs[10] & 2)) { c.frac += frames - k; break; }
     let end = false;
     for (; k < frames; k++) {
       const b = this.dmaRead(WSS.dma, bps * ch); if (b.length < bps * ch) { end = true; break; }
@@ -345,14 +372,6 @@ P.soundRun = function (c) {
     if (end) break;
   }
   this.soundStats.frames += k;
-  const a = k && out();
-  if (a) {
-    const buf = a.ctx.createBuffer(2, k, Math.min(Math.max(rate, 3000), 768000));
-    buf.copyToChannel(L.subarray(0, k), 0); buf.copyToChannel(R.subarray(0, k), 1);
-    const src = a.ctx.createBufferSource(); src.buffer = buf; src.connect(a.ctx.destination);
-    // back to back with what is queued; only after the queue has run dry does it start again 100 ms ahead
-    if (a.next < a.ctx.currentTime + 0.005) a.next = a.ctx.currentTime + 0.1;
-    src.start(a.next); a.next += k / rate;
-  }
+  if (k && play(rate, L, R, k)) this.soundStats.underruns = (this.soundStats.underruns || 0) + 1;
 };
 })();
