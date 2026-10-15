@@ -27,7 +27,7 @@ P.vxd = function (file) {
   const run = new WebAssembly.Instance(mod, this.imports).exports.run;
   const look = new Uint32Array(this.mem.buffer, m.lookup, m.textHi - m.textLo);
   m.blocks.forEach((a, i) => { look[a - m.textLo] = i + 1; });
-  const rec = { kind: 'vxd', name: m.name.trim(), file: key, id: m.id, meta: m, run, ddb: m.ddb, procs: m.procs, base: m.base };
+  const rec = { kind: 'vxd', name: m.name.trim(), file: key, id: m.id, meta: m, run, ddb: m.ddb, procs: m.procs, base: m.base, clock: true };
   this.modules.push(rec); this.vxds.set(key, rec);
   return rec;
 };
@@ -344,9 +344,10 @@ svc(VMM, 0x0e, function () { const q = this.vxdEvents || (this.vxdEvents = []); 
 svc(VMM, 0x0f, function () { const q = this.vxdEvents || (this.vxdEvents = []); q.push({ fn: u32(this.cpu.esi.value), ref: u32(this.cpu.edx.value) }); this.cpu.esi.value = q.length; });   // Schedule_VM_Event
 /** run the events VxDs scheduled (EBX the VM, EDX the reference data, EBP the client registers) */
 P.vxdRunEvents = function () {
+  if (this.vxdRunTimeOuts) this.vxdRunTimeOuts();
   if (this.depth || !this.vxdEvents || !this.vxdEvents.length) return;
   const q = this.vxdEvents; this.vxdEvents = [];
-  for (const e of q) this.vxdCall(e.fn, { ebx: this.sysVM(), edx: e.ref, ebp: this.crs || (this.crs = this.alloc(0x60)) });
+  for (const e of q) this.vxdCall(e.fn, { ebx: this.sysVM(), edx: e.ref, ebp: this.vmClientIdle() });
 };
 
 // ---- VMM: I/O trapping. A VxD's handler for a port (Install_IO_Handler: ESI proc, EDX port) sees the VM's IN and OUT
@@ -564,6 +565,119 @@ svc(CONFIGMG, 0x3e, function (arg) {
   const n = this.r32(arg(5)); this.w32(arg(5), v.data.length); if (n < v.data.length) return CR.BUFFER_SMALL;
   if (arg(4)) this.u8.set(v.data, arg(4)); return CR.SUCCESS;
 });
+
+// ---- VMM: time. Get_System_Time: EAX the milliseconds since Windows started; Get_System_Time_Address: EAX the
+// address of that count, which the timer keeps current
+/** the system time, whole milliseconds since start: the clock time-outs and Get_System_Time share */
+P.sysTime = function () { return Math.floor(this.now() - this.t0); };
+svc(VMM, 0x3f, function () { this.cpu.eax.value = u32(this.sysTime()); });
+svc(VMM, 0x144, function () { if (!this.vmmTimeLin) this.vmmTimeLin = this.alloc(4); this.tick16(); this.cpu.eax.value = this.vmmTimeLin; });
+// time-outs: Set_Global_Time_Out / Set_VM_Time_Out / Set_Async_Time_Out (EAX ms, ESI callback, EDX ref): ESI the handle.
+// The callback gets EBX the VM, ECX how late it is, EDX the ref, EBP the client registers. Cancel_Time_Out (ESI)
+const timeOut = function () {
+  const q = this.vxdTimeOuts || (this.vxdTimeOuts = new Map()), h = this.alloc(8);
+  q.set(h, { fn: u32(this.cpu.esi.value), ref: u32(this.cpu.edx.value), due: this.sysTime() + u32(this.cpu.eax.value) });
+  this.cpu.esi.value = h; CF(this, false);
+};
+svc(VMM, 0x3c, timeOut); svc(VMM, 0x3d, timeOut); svc(VMM, 0xfe, timeOut);
+svc(VMM, 0x3e, function () { if (this.vxdTimeOuts) this.vxdTimeOuts.delete(u32(this.cpu.esi.value)); });
+// priority VM events: Call_Priority_VM_Event (EAX boost, EBX VM, ECX flags, EDX ref, ESI proc, EDI timeout): ESI the
+// handle; the procedure runs with the VM (EBX, EDX the ref, EBP the client registers). Cancel_Priority_VM_Event (ESI)
+svc(VMM, 0x14, function () {
+  const q = this.vxdEvents || (this.vxdEvents = []), h = this.alloc(8);
+  q.push({ fn: u32(this.cpu.esi.value), ref: u32(this.cpu.edx.value), handle: h }); this.cpu.esi.value = h;
+});
+svc(VMM, 0x15, function () { if (this.vxdEvents) this.vxdEvents = this.vxdEvents.filter(e => e.handle !== u32(this.cpu.esi.value)); });
+/** the time-outs that are due, run as the timer interrupt runs them */
+P.vxdRunTimeOuts = function () {
+  if (this.depth || !this.vxdTimeOuts || !this.vxdTimeOuts.size) return;
+  const now = this.sysTime();
+  for (const [h, t] of [...this.vxdTimeOuts]) {
+    if (now < t.due) continue;
+    this.vxdTimeOuts.delete(h); this.tick16();
+    this.vxdCall(t.fn, { ebx: this.sysVM(), ecx: u32(now - t.due), edx: t.ref, esi: h, ebp: this.vmClientIdle() });
+  }
+};
+/** the system VM's client registers as a VxD sees them between its slices: a Client_Reg_Struc */
+P.vmClient = function () { return this.crs || (this.crs = this.alloc(0x60)); };
+/** the client registers for an event or time-out run between slices: the VM stopped with its own 16-bit stack (SS:SP)
+ *  for VxDs to call into it on */
+P.vmClientIdle = function () {
+  const c = this.vmClient();
+  if (!this.vmStackSel) { const a = this.alloc(0x4000); this.vmStackSel = this.allocSels(a, 0x4000); }
+  this.u8.fill(0, c, c + 0x60);
+  this.w32(c + 0x2c, 0x202); this.w32(c + 0x30, 0x3ff0); this.w32(c + 0x34, this.vmStackSel);
+  return c;
+};
+
+// ---- VMM: running VM code from a VxD (nested execution). Begin_Nest_Exec; Simulate_Push (EAX: a word) and
+// Simulate_Far_Call (ECX segment, EDX offset) build the call; Resume_Exec runs it with the client registers until it
+// returns; End_Nest_Exec. Save_Client_State (EDI buffer) / Restore_Client_State (ESI buffer) copy the registers
+svc(VMM, 0x8d, function () { this.u8.copyWithin(u32(this.cpu.edi.value), this.vmClient(), this.vmClient() + 0x60); });
+svc(VMM, 0x8e, function () { this.u8.copyWithin(this.vmClient(), u32(this.cpu.esi.value), u32(this.cpu.esi.value) + 0x60); });
+svc(VMM, 0x83, function () { (this.nest = this.nest || []).push({ pushes: [], target: null }); });
+svc(VMM, 0x82, function () { (this.nest = this.nest || []).push({ pushes: [], target: null }); });   // Begin_Nest_V86_Exec
+svc(VMM, 0x4d, function () { const n = this.nest && this.nest[this.nest.length - 1]; if (n) n.pushes.push(['w', this.cpu.eax.value & 0xffff]); });
+svc(VMM, 0x48, function () { const n = this.nest && this.nest[this.nest.length - 1]; if (n) n.target = [this.cpu.ecx.value & 0xffff, this.cpu.edx.value & 0xffff]; });
+svc(VMM, 0x85, function () {
+  const n = this.nest && this.nest[this.nest.length - 1]; if (!n || !n.target) return;
+  const was = this.r0Depth; this.r0Depth = 0; this.tick16();
+  try { this.vmFarCall(this.vmClient(), n.target[0], n.target[1], n.pushes); } finally { this.r0Depth = was; }
+  n.target = null; n.pushes = [];
+});
+/** run a far call in the VM on its client registers (a Client_Reg_Struc): the words pushed and the return on the
+ *  client's own stack (SS:SP), the general and data segment registers from it; afterwards its registers hold what the
+ *  callee left, SP where its return left it */
+P.vmFarCall = function (c, cs, ip, pushes = []) {
+  const GP = ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi'], SG = [['cs', 'csb'], ['ds', 'dsb'], ['es', 'esb'], ['ss', 'ssb'], ['fsel', 'fs'], ['gsel', 'gsb']];
+  const save = {}; for (const r of GP) save[r] = this.cpu[r].value; for (const [s, b] of SG) { save[s] = this.cpu[s].value; save[b] = this.cpu[b].value; }
+  const savedEip = this.cpu.eip.value;
+  const ss = this.r16(c + 0x34), ssb = u32(this.selBase(ss));
+  let sp = this.r32(c + 0x30) & 0xffff;
+  for (const [, v] of pushes) { sp = (sp - 2) & 0xffff; this.w16(ssb + sp, v); }
+  sp = (sp - 2) & 0xffff; this.w16(ssb + sp, N.L.SENT); sp = (sp - 2) & 0xffff; this.w16(ssb + sp, 0);   // the return: the sentinel
+  const sel = s => (this.selValid(s) ? s : 0);
+  this.seg('ss', ss); this.cpu.esp.value = sp;
+  this.seg('ds', sel(this.r16(c + 0x3c))); this.seg('es', sel(this.r16(c + 0x38)));
+  for (const [r, o] of [['eax', 0x1c], ['ebx', 0x10], ['ecx', 0x18], ['edx', 0x14], ['esi', 4], ['edi', 0], ['ebp', 8]]) this.cpu[r].value = this.r32(c + o);
+  this.seg('cs', cs); this.depth++;
+  let r;
+  try { r = this.runAt(u32(this.selBase(cs) + ip)); } finally { this.depth--; }
+  if (r !== 0 || this.trapped) throw new W.GuestError(this.trapped || `VM call ${cs.toString(16)}:${ip.toString(16)} did not return`);
+  for (const [rg, o] of [['eax', 0x1c], ['ebx', 0x10], ['ecx', 0x18], ['edx', 0x14], ['esi', 4], ['edi', 0], ['ebp', 8]]) this.w32(c + o, u32(this.cpu[rg].value));
+  this.w32(c + 0x30, (this.r32(c + 0x30) & 0xffff0000 | (this.cpu.esp.value & 0xffff)) >>> 0);
+  for (const r2 of GP) this.cpu[r2].value = save[r2]; for (const [s2, b] of SG) { this.cpu[s2].value = save[s2]; this.cpu[b].value = save[b]; }
+  this.cpu.eip.value = savedEip;
+};
+svc(VMM, 0x86, function () { if (this.nest) this.nest.pop(); });
+
+// ---- VMM: odds and ends
+svc(VMM, 0x6e, function (arg) { const sel = arg(1) & 0xffff; return this.selValid(sel) ? u32(this.selBase(sel)) : 0xffffffff; });   // _SelectorMapFlat(VM, sel, flags)
+svc(VMM, 0x10c, function () { CF(this, false); });                                                   // Validate_Thread_Handle
+svc(VMM, 0xf3, function () { this.cpu.esp.value = u32(this.cpu.esp.value) + 4; });                     // _Trace_Out_Service (debug output): it takes its string off the stack
+svc(VWIN32, 0x0f, function (arg) { const e = this.r0Event(arg(0)); if (e) { this.signal(e); e.set = false; } return e ? 1 : 0; });   // _VWIN32_PulseWin32Event
+
+// ---- VTD: the timer. Get_Version: EAX; Get_Interrupt_Period: EAX the ms between ticks (1: the host's clock);
+// Begin/End_Min_Int_Period (EAX ms)
+const VTD = 5;
+svc(VTD, 0x00, function () { this.cpu.eax.value = 0x400; CF(this, false); });
+svc(VTD, 0x02, function () { this.cpu.eax.value = 1; });
+svc(VTD, 0x03, function () { CF(this, false); });
+svc(VTD, 0x04, function () { CF(this, false); });
+
+// ---------------------------------------------------------------- static VxDs
+// the ones VMM32 loads at boot (VTDAPI: the timer API for MMSYSTEM and WINMM), given Sys_Critical_Init, Device_Init
+// and Init_Complete before Windows starts
+const STATIC_VXDS = ['VTDAPI.VXD'];
+P.vxdBoot = function () {
+  if (this.vxdBooted) return; this.vxdBooted = true;
+  this.init16();
+  for (const f of STATIC_VXDS) {
+    const v = this.vxd(f); if (!v) continue;
+    v.inited = true;
+    for (const msg of [0, 1, 2]) { const r = this.vxdControl(v, msg); if (r.cf) { console.warn(`[vxd] ${f} failed system control ${msg}`); break; } }
+  }
+};
 
 /** a dynamically loadable VxD by file name, loaded and initialized (SYS_DYNAMIC_DEVICE_INIT) once */
 P.vxdLoad = function (file) {

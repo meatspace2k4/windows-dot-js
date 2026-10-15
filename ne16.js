@@ -98,7 +98,7 @@ P.loadNE = function (name, file, module, meta) {
   for (const [lin, size, val] of meta.fixups) { if (size === 1) u8[lin] = val; else if (size === 2) this.w16(lin, val); else this.w32(lin, val); }
   for (const [ord, [sel, off]] of Object.entries(meta.exports)) rec.exports.set(+ord, u32((sel << 16) | off));
   rec.run = new WebAssembly.Instance(module, this.imports).exports.run;
-  if (name === 'SYSTEM') rec.clock = true;
+  if (name === 'SYSTEM' || name === 'MMSYSTEM') rec.clock = true;   // they read the timer's counts from memory
   const look = new Uint32Array(this.mem.buffer, meta.lookup, meta.textHi - meta.textLo);
   meta.blocks.forEach((a, i) => { look[a - meta.textLo] = i + 1; });
   // module database: a copy of the NE header in its own segment (hModule)
@@ -163,6 +163,7 @@ P.loadLibrary16 = function (name, native = false, defer = false) {
  *  order (system, keyboard, mouse, display, comm), then GDI and USER; returns USER's module record */
 P.bootUser16 = function () {
   if (this.user16Ready === undefined) this.user16Ready = false;
+  if (this.vxdBoot) this.vxdBoot();   // the static VxDs, initialized before Windows starts (vmm.js)
   for (const m of ['SYSTEM', 'KEYBOARD', 'MOUSE', 'DISPLAY', 'COMM', 'GDI']) this.loadLibrary16(m, true);
   // USER.EXE calls into USER32.DLL through flat thunks from its LibEntry on, and USER32 connects them when it loads,
   // naming USER.EXE: so USER's image first, then USER32, then USER's LibEntry
@@ -247,7 +248,10 @@ P.thunk16For = function (key) {
   return u32((L.THSEL << 16) | (4 * i));
 };
 const ARGBYTES = { w: 2, i: 2, l: 4, p: 4, s: 4, x: 4 };
-P.tick16 = function () { if (this.timeLin) this.w32(this.timeLin, u32(this.now() - this.t0 + 3600000)); };
+P.tick16 = function () {
+  if (this.timeLin) this.w32(this.timeLin, u32(this.now() - this.t0 + 3600000));
+  if (this.vmmTimeLin) this.w32(this.vmmTimeLin, u32(this.sysTime()));   // VMM's system time (Get_System_Time_Address)
+};
 P.api16 = function (eip) {
   this.tick16();
   const t = this.th16[(eip - L.T16) >> 2];
@@ -535,6 +539,7 @@ const VXD_API = {};
 const vxdApi = (id, name, fns) => {
   VXD_API[id] = { name, fns };
   def16('VXD', id, '', 'jmp', function () {
+    const v = this.vxdApiRoute && this.vxdApiRoute(id); if (v) return this.vxdPmApi(v);   // the recompiled VxD (vmm.js)
     const f = this.cpu.eax.value & 0xffff, h = fns[f];
     if (!h) {
       const ret = this.cpu.ssb.value + (this.cpu.esp.value & 0xffff), m = this.neByHandle(this.r16(ret + 2));
@@ -2629,7 +2634,7 @@ P.r0Event = function (r0) { return (u32(r0) & 0xff000000) === 0xc4000000 ? ev16(
 // a Win32 thread's ring-0 handle (VMM Get_Cur_Thread_Handle), which VWIN32_QueueUserApc takes
 P.r0Thread = function (tid) { return u32(0xc5000000 | tid); };
 // devices opened by name (\\.\NAME): MMDEVLDR, which WINMM's threads talk to by DeviceIoControl; others are absent
-const VXD_FILES = { MMDEVLDR: 0x44a };
+const VXD_FILES = { MMDEVLDR: 0x44a, VTDAPI: 0x442 };
 const createFile = API.KERNEL32.CreateFileA[1];
 K('CreateFileA', 7, function (name, ...rest) {
   const n = this.readA(name) || '', m = /^\\\\\.\\([^\\.]+)(\.vxd)?$/i.exec(n);

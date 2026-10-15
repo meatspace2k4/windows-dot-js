@@ -115,6 +115,9 @@ class LE:
         self.pgsz = u32(data, le + 0x28); last = u32(data, le + 0x2c); objtab = le + u32(data, le + 0x40); nobj = u32(data, le + 0x44)
         fpt = le + u32(data, le + 0x68); frt = le + u32(data, le + 0x6c); datapg = u32(data, le + 0x80); npages = u32(data, le + 0x14)
         enttab = le + u32(data, le + 0x5c)
+        # the object page table: each logical page's page in the file (3 bytes, high byte first) and its type
+        opt = le + u32(data, le + 0x48)
+        filepage = [data[opt + 4 * i] << 16 | data[opt + 4 * i + 1] << 8 | data[opt + 4 * i + 2] for i in range(npages)]
         objs = []
         for i in range(nobj):
             vsize, ob, flags, pgidx, pgcnt, _ = struct.unpack_from('<6I', data, objtab + 24 * i)
@@ -124,11 +127,11 @@ class LE:
         self.size = off; self.image = bytearray(off); self.base = base; self.pref = base; self.relocs = []
         for o in objs:
             for k in range(o['pgcnt']):
-                pg = o['pgidx'] + k; n = self.pgsz if pg < npages else last; src = datapg + (pg - 1) * self.pgsz
+                fp = filepage[o['pgidx'] + k - 1]; n = self.pgsz if fp < npages else last; src = datapg + (fp - 1) * self.pgsz
                 self.image[o['rva'] + k * self.pgsz:o['rva'] + k * self.pgsz + n] = data[src:src + n]
         for o in objs:
             for k in range(o['pgcnt']):
-                pg = o['pgidx'] + k - 1; q, end = frt + u32(data, fpt + 4 * pg), frt + u32(data, fpt + 4 * pg + 4)
+                pg = filepage[o['pgidx'] + k - 1] - 1; q, end = frt + u32(data, fpt + 4 * pg), frt + u32(data, fpt + 4 * pg + 4)   # by the page's place in the file
                 while q < end:
                     src, fl = data[q], data[q + 1]; q += 2
                     if src & 0x20: cnt = data[q]; q += 1; offs = None
@@ -204,7 +207,8 @@ def decode_all(pe):
             t = todo.pop()
             if t not in seen_entries: seen_entries.add(t); walk(t)
         # relocated pointers into code that are not used as data operands are code entries
-        new = [v for v in reloc_vals if pe.in_code(v) and v not in seen_entries and v not in data_refs]
+        # (a VxD's code addresses are entries even when written to: VTDAPI patches a RET over its time-out callback)
+        new = [v for v in reloc_vals if pe.in_code(v) and v not in seen_entries and (v not in data_refs or getattr(pe, 'VXD', False))]
         if not new: break
         todo.extend(new)
     return insns, seen_entries
