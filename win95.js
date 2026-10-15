@@ -3056,10 +3056,40 @@ const APPLETS = [
   ['multimedia', 'Multimedia'], ['network', 'Network'], ['passwords', 'Passwords'], ['cplprinters', 'Printers'], ['regional', 'Regional Settings'],
   ['sounds', 'Sounds'], ['system', 'System'],
 ];
+// the strings of a PE image's string tables (RT_STRING), read from the file
+function peStrings(bytes) {
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), u16 = o => dv.getUint16(o, true), u32 = o => dv.getUint32(o, true);
+  const pe = u32(0x3c); if (u32(pe) !== 0x4550) return [];
+  const opt = pe + 24, nsec = u16(pe + 6), secs = opt + u16(pe + 20), rva = u32(opt + 112), out = [];
+  if (!rva) return out;
+  const off = r => { for (let i = 0; i < nsec; i++) { const h = secs + 40 * i, va = u32(h + 12), sz = Math.max(u32(h + 8), u32(h + 16)); if (r >= va && r < va + sz) return r - va + u32(h + 20); } return -1; };
+  const root = off(rva); if (root < 0) return out;
+  const kids = d => { const n = u16(d + 12) + u16(d + 14), e = []; for (let i = 0; i < n; i++) e.push([u32(d + 16 + 8 * i), u32(d + 20 + 8 * i)]); return e; };
+  for (const [type, t] of kids(root)) {
+    if (type !== 6 || !(t & 0x80000000)) continue;
+    for (const [, nm] of kids(root + (t & 0x7fffffff))) for (const [, lg] of kids(root + (nm & 0x7fffffff))) {
+      const leaf = root + (lg & 0x7fffffff); let o = off(u32(leaf)); const end = o + u32(leaf + 4);
+      while (o >= 0 && o + 2 <= end) { const n = u16(o); o += 2; let str = ''; for (let i = 0; i < n; i++) str += String.fromCharCode(u16(o + 2 * i)); o += 2 * n; if (str) out.push(str); }
+    }
+  }
+  return out;
+}
+// an applet the shell has no page for runs as Windows 95's Control Panel runs it: the .CPL in the system directory
+// whose strings name it, through RUNDLL32 on SHELL32's Control_RunDLL
 function openApplet(k, name) {
   if (k === 'display') return displayProperties();
   if (k === 'fonts') return openPath(WINDIR + '\\FONTS');
   if (k === 'cplprinters') return openFolder(Printers);
+  const sys = join(WINDIR, 'SYSTEM');
+  let cpl = null;
+  try {
+    for (const f of fs.readdir(sys)) {
+      if (f.isDir || !/\.cpl$/i.test(f.name)) continue;
+      try { if (peStrings(fs.readFile(join(sys, f.name))).some(t => t.replace(/&/g, '').toLowerCase() === name.toLowerCase())) { cpl = f.name; break; } } catch (e) { console.error(e); }
+    }
+  } catch (e) { console.error(e); }
+  if (cpl) return runNative(join(WINDIR, 'RUNDLL32.EXE'), `shell32.dll,Control_RunDLL ${cpl},${name}`)
+    .then(ok => { if (!ok) msgBox(name, `The ${name} applet is not implemented in this shell.`, 'info'); });
   msgBox(name, `The ${name} applet is not implemented in this shell.`, 'info');
 }
 ControlPanel.list = () => APPLETS.map(([k, n]) => ({ key: 'cpl:' + k, label: n, icon: 'cpl_' + k, virt: true, open: () => openApplet(k, n) }));
