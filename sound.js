@@ -93,12 +93,135 @@ P.oplIO = function (port, isIn, v) {
   if (isIn) return port === WSS.opl ? oplStatus(this, o) : 0xff;
   oplTime(this, o);
   if (!(port & 1)) { o.idx[bank] = v; return 0; }
-  const r = o.idx[bank]; o.regs[bank][r] = v;
+  const r = o.idx[bank];
+  this.oplRender();   // the sound up to this moment comes from the registers as they were
+  o.regs[bank][r] = v; fm(o).write(bank, r, v);
   if (bank === 0 && r === 4) {
     if (v & 0x80) o.flags = 0;
     else { if (v & 1) o.start[0] = o.t; if (v & 2) o.start[1] = o.t; }
   }
   return 0;
+};
+// ---------------------------------------------------------------- OPL3 synthesis
+// The YMF262's sound: 36 operators (18 per register bank) at the chip's 49716 Hz. An operator is a phase generator
+// (F-number, block, multiplier, vibrato) reading one of 8 waveforms, scaled by its envelope (attack, decay, sustain,
+// release, key scaling), total level, key-scale level and tremolo. A channel joins two operators by FM (the first
+// modulating the second) or by adding them, with feedback on the first; channel pairs 0-3, 1-4, 2-5 of either bank
+// can join four (register 104h). The output goes left and right as register C0h's bits 4 and 5 say (OPL3 mode, 105h)
+const OPL_RATE = 49716;
+const MULT = [0.5, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 10, 12, 12, 15, 15];
+const KSL_DB = [0, 24, 32, 37, 40, 43, 45, 47, 48, 50, 51, 52, 53, 54, 55, 56].map(x => x * 0.75 / 8 * 8 / 8);   // per-octave base levels (dB/8 units)
+const OP_OF_SLOT = [0, 1, 2, 3, 4, 5, -1, -1, 6, 7, 8, 9, 10, 11, -1, -1, 12, 13, 14, 15, 16, 17];
+const CH_OPS = [[0, 3], [1, 4], [2, 5], [6, 9], [7, 10], [8, 11], [12, 15], [13, 16], [14, 17]];
+const wave = (w, ph) => {   // ph in cycles [0, 1)
+  const s = Math.sin(2 * Math.PI * ph), half = ph < 0.5;
+  switch (w) {
+    case 0: return s;
+    case 1: return half ? s : 0;
+    case 2: return Math.abs(s);
+    case 3: return (ph % 0.5) < 0.25 ? Math.abs(s) : 0;
+    case 4: return half ? Math.sin(4 * Math.PI * ph) : 0;
+    case 5: return half ? Math.abs(Math.sin(4 * Math.PI * ph)) : 0;
+    case 6: return half ? 1 : -1;
+    default: { const x = half ? ph * 2 : (ph - 0.5) * 2; const e = Math.pow(2, -x * 8); return half ? e : -e; }
+  }
+};
+const ATTACK_MS = r => 2826 / Math.pow(2, r - 1), DECAY_MS = r => 39280 / Math.pow(2, r - 1);
+class FM {
+  constructor() {
+    this.ops = Array.from({ length: 36 }, () => ({ am: 0, vib: 0, egt: 0, ksr: 0, mult: 1, ksl: 0, tl: 0, ar: 0, dr: 0, sl: 0, rr: 0, ws: 0,
+      phase: 0, env: 96, stage: 'off', out: 0, prev: 0 }));
+    this.ch = Array.from({ length: 18 }, () => ({ fnum: 0, block: 0, key: false, fb: 0, cnt: 0, l: true, r: true }));
+    this.r104 = 0; this.opl3 = false; this.bd = 0; this.t = 0;
+  }
+  op(bank, slot) { const k = OP_OF_SLOT[slot]; return k < 0 ? null : this.ops[bank * 18 + k]; }
+  write(bank, r, v) {
+    const lo = r & 0x1f, hi = r & 0xe0;
+    if (bank === 1 && r === 4) { this.r104 = v & 0x3f; return; }
+    if (bank === 1 && r === 5) { this.opl3 = !!(v & 1); return; }
+    if (bank === 0 && r === 0xbd) { this.bd = v; return; }
+    if (hi === 0x20 || hi === 0x40 || hi === 0x60 || hi === 0x80 || hi === 0xe0) {
+      if (lo > 0x15) return; const o = this.op(bank, lo); if (!o) return;
+      if (hi === 0x20) { o.am = v >> 7; o.vib = (v >> 6) & 1; o.egt = (v >> 5) & 1; o.ksr = (v >> 4) & 1; o.mult = MULT[v & 15]; }
+      else if (hi === 0x40) { o.ksl = v >> 6; o.tl = v & 0x3f; }
+      else if (hi === 0x60) { o.ar = v >> 4; o.dr = v & 15; }
+      else if (hi === 0x80) { o.sl = v >> 4; o.rr = v & 15; }
+      else o.ws = v & (this.opl3 ? 7 : 3);
+      return;
+    }
+    const c = r & 0x0f, row = r & 0xf0; if (c > 8 || row < 0xa0 || row > 0xc0) return;
+    const ch = this.ch[bank * 9 + c];
+    if (row === 0xa0) ch.fnum = (ch.fnum & 0x300) | v;
+    else if (row === 0xb0) {
+      ch.fnum = (ch.fnum & 0xff) | ((v & 3) << 8); ch.block = (v >> 2) & 7;
+      const key = !!(v & 0x20);
+      if (key !== ch.key) { ch.key = key; for (const k of CH_OPS[c]) this.keyOp(this.ops[bank * 18 + k], key); }
+    } else { ch.cnt = v & 1; ch.fb = (v >> 1) & 7; ch.l = !!(v & 0x10); ch.r = !!(v & 0x20); }
+  }
+  keyOp(o, on) { if (on) { o.stage = 'attack'; o.phase = 0; } else if (o.stage !== 'off') o.stage = 'release'; }
+  /** one operator's next sample (-1..1), its phase moved on, with phase modulation `mod` (cycles) */
+  opSample(o, ch, mod, trem, vibf) {
+    const freq = ch.fnum * Math.pow(2, ch.block) * OPL_RATE / 1048576 * o.mult * (o.vib ? vibf : 1);
+    o.phase = (o.phase + freq / OPL_RATE) % 1;
+    // envelope, in dB of attenuation (0 loudest, 96 silent); key scaling speeds the rates up for higher notes
+    const rof = ((ch.block << 1) | (ch.fnum >> 9)) >> (o.ksr ? 0 : 2), spd = r => (r ? Math.pow(2, rof / 4) : 0), dt = 1000 / OPL_RATE;
+    if (o.stage === 'attack') { if (o.ar === 15) o.env = 0; else if (o.ar) { o.env -= 96 * dt / (ATTACK_MS(o.ar) / spd(o.ar)) * (1 + o.env / 24); } if (o.env <= 0) { o.env = 0; o.stage = 'decay'; } }
+    else if (o.stage === 'decay') { const sl = o.sl === 15 ? 93 : o.sl * 3; if (o.dr) o.env += 96 * dt / (DECAY_MS(o.dr) / spd(o.dr)); if (o.env >= sl) { o.env = sl; o.stage = o.egt ? 'sustain' : 'release2'; } }
+    else if (o.stage === 'release2' || o.stage === 'release') { const rr = o.rr; if (rr) o.env += 96 * dt / (DECAY_MS(rr) / spd(rr)); if (o.env >= 96) { o.env = 96; o.stage = 'off'; } }
+    if (o.stage === 'off') return 0;
+    const oct = ch.block, ksl = o.ksl ? Math.max(0, (KSL_DB[ch.fnum >> 6] - 8 * (7 - oct)) * [0, 0.5, 0.25, 1][o.ksl] * 0.75) : 0;
+    const att = o.env + o.tl * 0.75 + ksl + (o.am ? trem : 0);
+    if (att >= 96) return 0;
+    return wave(o.ws, ((o.phase + mod) % 1 + 1) % 1) * Math.pow(10, -att / 20);
+  }
+  /** `n` samples into L, R */
+  render(L, R, n) {
+    const amDepth = this.bd & 0x80 ? 4.8 : 1, vibDepth = this.bd & 0x40 ? 14 : 7;
+    for (let i = 0; i < n; i++, this.t++) {
+      const tt = this.t / OPL_RATE, trem = amDepth * (0.5 + 0.5 * Math.sin(2 * Math.PI * 3.7 * tt)), vibf = Math.pow(2, vibDepth / 1200 * Math.sin(2 * Math.PI * 6.1 * tt));
+      let l = 0, r = 0;
+      for (let b = 0; b < 2; b++) for (let c = 0; c < 9; c++) {
+        const idx = b * 9 + c, ch = this.ch[idx];
+        const pair = c < 3 && this.opl3 && (this.r104 >> (b * 3 + c)) & 1, second = c >= 3 && c < 6 && this.opl3 && (this.r104 >> (b * 3 + c - 3)) & 1;
+        if (second) continue;   // its operators play in the four-operator channel
+        const [k1, k2] = CH_OPS[c], o1 = this.ops[b * 18 + k1], o2 = this.ops[b * 18 + k2];
+        if (o1.stage === 'off' && o2.stage === 'off' && !pair) continue;
+        const fbm = ch.fb ? (o1.out + o1.prev) * 4 / Math.pow(2, 9 - ch.fb) : 0;
+        const s1 = this.opSample(o1, ch, fbm, trem, vibf); o1.prev = o1.out; o1.out = s1;
+        let v;
+        if (!pair) v = ch.cnt ? s1 + this.opSample(o2, ch, 0, trem, vibf) : this.opSample(o2, ch, s1 * 4, trem, vibf);
+        else {
+          const ch2 = this.ch[idx + 3], [k3, k4] = CH_OPS[c + 3], o3 = this.ops[b * 18 + k3], o4 = this.ops[b * 18 + k4];
+          const alg = ch.cnt | (ch2.cnt << 1);
+          if (alg === 0) { const a2 = this.opSample(o2, ch, s1 * 4, trem, vibf), a3 = this.opSample(o3, ch, a2 * 4, trem, vibf); v = this.opSample(o4, ch, a3 * 4, trem, vibf); }
+          else if (alg === 1) { const a2 = this.opSample(o2, ch, 0, trem, vibf), a3 = this.opSample(o3, ch, a2 * 4, trem, vibf); v = s1 + this.opSample(o4, ch, a3 * 4, trem, vibf); }
+          else if (alg === 2) { const a2 = this.opSample(o2, ch, s1 * 4, trem, vibf), a3 = this.opSample(o3, ch, 0, trem, vibf); v = a2 + this.opSample(o4, ch, a3 * 4, trem, vibf); }
+          else { const a2 = this.opSample(o2, ch, 0, trem, vibf), a3 = this.opSample(o3, ch, a2 * 4, trem, vibf); v = s1 + a3 + this.opSample(o4, ch, 0, trem, vibf); }
+        }
+        if (!this.opl3 || ch.l) l += v; if (!this.opl3 || ch.r) r += v;
+      }
+      L[i] += l * 0.12; R[i] += r * 0.12;
+    }
+  }
+  active() { return this.ops.some(o => o.stage !== 'off'); }
+}
+const fm = o => o.fm || (o.fm = new FM());
+/** the synthesizer's sound from where it last stopped up to now, queued for the page's audio output */
+P.oplRender = function () {
+  const o = this.opl3; if (!o || !o.fm) return;
+  const f = o.fm, now = this.now();
+  if (f.at === undefined) f.at = now;
+  let n = Math.floor((now - f.at) * OPL_RATE / 1000);
+  if (n <= 0) return;
+  f.at += n * 1000 / OPL_RATE;
+  if (n > OPL_RATE / 4) n = Math.floor(OPL_RATE / 4);   // after a stall, a quarter second at most
+  if (!f.active()) { f.t += n; return; }
+  const L = new Float32Array(n), R = new Float32Array(n); f.render(L, R, n);
+  const a = out(); if (!a) return;
+  const buf = a.ctx.createBuffer(2, n, OPL_RATE); buf.copyToChannel(L, 0); buf.copyToChannel(R, 1);
+  const src = a.ctx.createBufferSource(); src.buffer = buf; src.connect(a.ctx.destination);
+  if (!a.fmNext || a.fmNext < a.ctx.currentTime + 0.005) a.fmNext = a.ctx.currentTime + 0.1;
+  src.start(a.fmNext); a.fmNext += n / OPL_RATE;
 };
 P.soundIO = function (port, size, isIn) {
   const eax = this.cpu.eax.value, v = eax & 0xff;
@@ -188,6 +311,7 @@ const out = () => {
   return audio;
 };
 P.sound16 = function () {
+  if (!this.inSound) this.oplRender();
   const c = this.ad1848; if (!c || !(c.regs[9] & 1) || this.inIRQ || this.inSound) return;
   this.inSound = true;
   try { this.soundRun(c); } finally { this.inSound = false; }

@@ -29,7 +29,9 @@ NE = [('gdi.exe', 0x01C00000, 0x1007, 0x06A00000), ('dibeng.dll', 0x01E00000, 0x
       # MMSYSTEM's background task, which it starts with LoadModule (WIN95_02.CAB)
       ('mmtask.tsk', 0x017C0000, 0x187F, 0x07A80000),
       # the audio compression manager and the wave mapper MMSYSTEM opens for WAVE_MAPPER (WIN95_02.CAB)
-      ('msacm.dll', 0x01A80000, 0x188F, 0x07B00000), ('msacm.drv', 0x01AC0000, 0x18C7, 0x07B40000)]
+      ('msacm.dll', 0x01A80000, 0x188F, 0x07B00000), ('msacm.drv', 0x01AC0000, 0x18C7, 0x07B40000),
+      # the card's OPL3 synthesizer driver (Drivers\midi\msopl.drv) and the MIDI mapper MMSYSTEM opens for MIDI_MAPPER (WIN95_13.CAB)
+      ('msopl.drv', 0x01860000, 0x1907, 0x07D00000), ('midimap.drv', 0x01880000, 0x1947, 0x07D40000)]
 # Windows programs that run on the native USER (bootUser16): (file, block-table base); each loads at its own base
 PROGRAMS = [('notepad.exe', 0x06000000), ('rundll32.exe', 0x06100000)]
 # 32-bit system DLLs: (file, load base, block-table base)
@@ -47,7 +49,9 @@ PE = [('gdi32.dll', 0x01D00000, 0x06C00000), ('user32.dll', 0x01D40000, 0x073400
 # VxDs (ring-0 drivers), recompiled to run under the VMM in vmm.js: (file, load base, block-table base). MMDEVLDR is the
 # device loader of MEDIA devnodes; MSSNDSYS the Windows Sound System card's driver (WIN95_02.CAB)
 VXDS = [('mmdevldr.vxd', 0x01800000, 0x07C00000), ('mssndsys.vxd', 0x01810000, 0x07C40000),
-        ('vtdapi.vxd', 0x01820000, 0x07C80000), ('dsound.vxd', 0x01830000, 0x07CC0000)]
+        ('vtdapi.vxd', 0x01820000, 0x07C80000), ('dsound.vxd', 0x01830000, 0x07CC0000),
+        # the OPL3's VxD, which arbitrates the synthesizer's ports (WIN95_13.CAB)
+        ('msopl.vxd', 0x01840000, 0x07D80000)]
 # fonts a VGA install of Windows 95 puts in C:\WINDOWS\FONTS (WIN95_02.CAB)
 FONTS = ['vgasys.fon', 'vgafix.fon', 'vgaoem.fon', 'sserife.fon', 'serife.fon', 'coure.fon', 'smalle.fon', 'symbole.fon',
          'modern.fon', 'dosapp.fon', 'arial.ttf', 'arialbd.ttf', 'arialbi.ttf', 'ariali.ttf', 'cour.ttf', 'courbd.ttf',
@@ -87,7 +91,7 @@ with tempfile.TemporaryDirectory() as tmp:
 # the Setup INF files whose registry sections the shell applies (SHELL.INF: the shell's classes and folders)
 INFS = ['shell.inf', 'motown.inf', 'mmopt.inf', 'wave.inf']
 # the sounds Setup puts in C:\WINDOWS\MEDIA: MOTOWN.INF's start-up sound and MMOPT.INF's clips of a Typical install (WIN95_02.CAB)
-MEDIA = ['mssound.wav', 'chimes.wav', 'chord.wav', 'ding.wav', 'tada.wav']
+MEDIA = ['mssound.wav', 'chimes.wav', 'chord.wav', 'ding.wav', 'tada.wav', 'canyon.mid', 'passport.mid']
 bundle['media'] = {f.upper(): b64(os.path.join(src, f)) for f in MEDIA if os.path.exists(os.path.join(src, f))}
 bundle['infs'] = {f.upper(): open(os.path.join(src, f), 'rb').read().decode('latin1') for f in INFS if os.path.exists(os.path.join(src, f))}
 with open(out, 'w') as fh:

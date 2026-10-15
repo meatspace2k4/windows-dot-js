@@ -2476,10 +2476,12 @@ function setupRegistry() {
 // card WAVE.INF installs: a legacy *PNPB007 device whose software key is MEDIA\0000
 function setupSound() {
   const S = window.W95SYSTEM || {}, infs = S.infs || {};
-  if (!infs['MOTOWN.INF'] || W95Win32.regGet('hkcu\\appevents\\eventlabels\\systemstart', '') !== undefined) return;
+  if (!infs['MOTOWN.INF']) return;
+  // the media files, each one the disk lacks (a disk set up before the bundle carried it gets it too)
   const media = join(WINDIR, 'MEDIA'); fs.mkdir(media, { recursive: true });
   const NAMES = { 'MSSOUND.WAV': 'The Microsoft Sound.wav' };   // MOTOWN.INF's RenameFiles\Media
-  for (const [n, d] of Object.entries(S.media || {})) fs.writeFile(join(media, NAMES[n] || n.toLowerCase()), b64bytes(d));
+  for (const [n, d] of Object.entries(S.media || {})) { const f = join(media, NAMES[n] || n.toLowerCase()); if (!fs.exists(f)) fs.writeFile(f, b64bytes(d)); }
+  if (W95Win32.regGet('hkcu\\appevents\\eventlabels\\systemstart', '') !== undefined) return;
   infAddReg(infs['MOTOWN.INF'], 'mmsys.add.reg');
   if (infs['MMOPT.INF']) infAddReg(infs['MMOPT.INF'], 'mediaopt.reg');
   const ini = W95Win32.iniGet(fs, 'SYSTEM.INI', 'boot', 'drivers');

@@ -704,7 +704,11 @@ P.vxdPmApi = function (v) {
   for (const [r, o] of regs) cpu[r].value = this.r32(c + o);
   const nf = this.r32(c + 0x2c); for (const [r, b] of [['cf', 0], ['pf', 2], ['af', 4], ['zf', 6], ['sf', 7], ['df', 10], ['of', 11]]) if (cpu[r]) cpu[r].value = (nf >> b) & 1;
   this.seg('es', this.r16(c + 0x38)); this.seg('ds', this.r16(c + 0x3c));
-  return this.retf16(0);
+  // back to the client's CS:IP and SS:SP as the client registers have them (the return was taken on the way in,
+  // and VM code the VxD ran in between may have used the stack below it)
+  this.seg('ss', this.r16(c + 0x34)); this.cpu.esp.value = lo16(this.cpu.esp.value, this.r32(c + 0x30));
+  this.refreshSegs(); const rcs = this.r16(c + 0x28); this.seg('cs', rcs);
+  return u32(this.selBase(rcs) + (this.r32(c + 0x24) & 0xffff));
 };
 /** route device `id`'s protected-mode API to its recompiled VxD once it is loaded; the existing entry otherwise */
 P.vxdApiRoute = function (id) { const v = this.vxdById(id); return v && v.procs.pm ? v : null; };
