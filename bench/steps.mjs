@@ -52,11 +52,12 @@ export const STEPS = [
   },
   {
     name: 'network',
-    about: 'the network\'s process (MPREXE with the network VxDs under it): start-up to the card started, then 5 s idle: its guest CPU and the main thread\'s busy share',
+    about: 'the network\'s process (MPREXE with the network VxDs under it), as the shell starts it at boot: start-up to the card started, then 5 s idle: its guest CPU and the main thread\'s busy share',
     run: async () => {
       if (!win95.startNetwork) return { skipped: 'no network in this build' };
       await reset();
-      const t = performance.now(), a = await win95.startNetwork(), start_ms = +(performance.now() - t).toFixed(1);
+      // started as the shell boots (its logon dialog closed by reset): the time that start took
+      const a = await win95.startNetwork(), start_ms = +((a && a.startMs) || 0).toFixed(1);
       if (!a || !a.alive) throw new Error('the network process did not start: ' + (a && a.proc && a.proc.trapped));
       const card = a.proc.devnodes().find(d => d.id === 'ROOT\\NET\\0000');
       if (!card || !card.started) throw new Error('the network card did not start');

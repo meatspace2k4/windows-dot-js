@@ -889,7 +889,7 @@ const netLists = new Map();   // a container's key -> { items } once enumerated
 const NET_ICON = { 1: 'workgroup', 2: 'netserver', 3: 'netshare', 7: 'globe' };   // by RESOURCEDISPLAYTYPE
 /** the resources MPR has under `res` (null: the scope's top) */
 async function netEnum(scope, res) {
-  if (!await startNetwork()) return [];
+  if (!await netBoot()) return [];
   const p = netApp.proc, s = x => (x ? netStr(x) : 0), nr = res ? p.alloc(32) : 0, ph = p.alloc(4), out = [];
   if (res) { p.w32(nr, res.scope); p.w32(nr + 4, res.type); p.w32(nr + 8, res.disp); p.w32(nr + 12, res.usage); p.w32(nr + 16, 0); p.w32(nr + 20, s(res.remote)); p.w32(nr + 24, s(res.comment)); p.w32(nr + 28, s(res.provider)); }
   if (await netCall('WNetOpenEnumA', [scope, 0, 0, nr, ph]) !== 0) return out;
@@ -2167,7 +2167,7 @@ function shutdownSeq(restart) {
   }, 2600);
 }
 // The disk lives in memory, so it survives a restart but not a page reload.
-function boot() { screen = 'desktop'; ren = null; desk.selKey = null; active = null; dirty(); netBoot(); }
+function boot() { screen = 'desktop'; ren = null; desk.selKey = null; active = null; dirty(); netBootLater(); }
 
 // ---------------------------------------------------------------- desktop
 const SYS_ITEMS = () => [
@@ -2351,6 +2351,19 @@ let sysCompile = null;
 function systemCompiled() {
   const S = window.W95SYSTEM; if (!S) return Promise.resolve();
   return sysCompile || (sysCompile = Promise.all([...Object.values(S.ne), ...Object.values(S.dlls), ...Object.values(S.net || {})].map(async m => { m.mod = await WebAssembly.compile(b64bytes(m.wasm)); })));
+}
+// the network's ring-0 images (VxDs, NE2000.SYS) and DLLs: decoded and compiled before its process first starts, so
+// the start runs them rather than building them on the main thread
+const unb64 = async s => { try { return new Uint8Array(await (await fetch('data:application/octet-stream;base64,' + s)).arrayBuffer()); } catch (_) { return b64bytes(s); } };
+let netCompile = null;
+function netCompiled() {
+  const S = window.W95SYSTEM; if (!S) return Promise.resolve();
+  const job = async (d, from, to) => { if (!d[to] && d[from]) d[to] = await unb64(d[from]); if (!d.mod && d.wasm) d.mod = await WebAssembly.compile(await unb64(d.wasm)); };
+  return netCompile || (netCompile = Promise.all([
+    ...Object.values(S.vxds || {}).map(d => job(d, 'image', 'imgBytes')),
+    ...Object.values(S.drivers || {}).map(d => job(d, 'file', 'bytes')),
+    ...Object.values(S.net || {}).map(d => job(d, 'file', 'bytes')),
+  ]));
 }
 function compiledSaver(sha) {
   for (const [name, s] of Object.entries(SV.savers)) {
@@ -2976,22 +2989,33 @@ function syncNetDrives() {
   if (p) p.free(loc), p.free(buf), p.free(pn);
 }
 // MPR's Map Network Drive and Disconnect Network Drive dialogs (WNetConnectionDialog, WNetDisconnectDialog), for disks
-async function mapNetDrive() { if (await startNetwork()) { await netCall('WNetConnectionDialog', [0, 1]); syncNetDrives(); } }
-async function disconnectNetDrive() { if (await startNetwork()) { await netCall('WNetDisconnectDialog', [0, 1]); syncNetDrives(); } }
+async function mapNetDrive() { if (await netBoot()) { await netCall('WNetConnectionDialog', [0, 1]); syncNetDrives(); } }
+async function disconnectNetDrive() { if (await netBoot()) { await netCall('WNetDisconnectDialog', [0, 1]); syncNetDrives(); } }
 // a UNC path's share (\\server\share), reached through the redirector as a drive's is: none if it does not answer
 fs.uncBackend = unc => {
-  if (!netApp || !netApp.alive) return null;
+  if (!netApp || !netApp.alive) { netBoot(); return null; }   // not yet: the network starts for the next time
   const b = W95NetFS.backend(netApp, unc); try { b.space(); return b; } catch (_) { return null; }   // its root answers
 };
-let netBooting = null;
+// the network as the shell first needs it (Network Neighborhood, Map Network Drive, or connections to restore as it
+// boots): the process started, the logon (MPR's Enter Network Password), the remembered connections made again. Once
+// for each start of the network's process
+let netBooting = null, netUp = null;
 function netBoot() {
   if (!((window.W95SYSTEM || {}).net || {})['MPR.DLL']) return null;
+  if (netUp && netUp === netApp && netApp.alive) return Promise.resolve(netApp);
   return netBooting || (netBooting = (async () => {
-    if (!await startNetwork()) return;
+    const a = await startNetwork(); if (!a) return null;
     await netCall('WNetLogonA', [0, 0]);
     await netCall('WNetRestoreConnectionA', [0, 0]);
-    syncNetDrives();
+    syncNetDrives(); netUp = a; return a;
   })().finally(() => { netBooting = null; }));
+}
+/** connections MPR remembers (HKCU\Network\Persistent): the network starts as the shell boots to make them again */
+const netRemembered = () => W95Win32.regKids('hkcu\\network\\persistent').some(k => W95Win32.regGet('hkcu\\network\\persistent\\' + k, 'RemotePath') !== undefined);
+/** at boot, with connections to restore: once the desktop is drawn and the page has loaded */
+function netBootLater() {
+  const go = () => setTimeout(() => { if (netRemembered()) netBoot(); }, 100);   // after the desktop's first frames
+  if (document.readyState === 'complete') go(); else window.addEventListener('load', go, { once: true });
 }
 let netStarting = null;   // one start at a time: callers while it starts wait for it
 function startNetwork() {
@@ -3001,8 +3025,10 @@ function startNetwork() {
     const path = join(WINDIR, 'MPREXE.EXE');
     let bytes; try { bytes = fs.readFile(path); } catch (e) { return null; }
     const prog = await nativeProgram(bytes); if (!prog) return null;
+    await netCompiled();
     netApp = new NativeApp(path, '', { net: true }); fs.uncs.clear();
-    return (await netApp.start(bytes, prog)) ? netApp : null;
+    const t = performance.now(), ok = await netApp.start(bytes, prog); netApp.startMs = performance.now() - t;
+    return ok ? netApp : null;
   })().finally(() => { netStarting = null; }));
 }
 
@@ -3642,7 +3668,7 @@ window.addEventListener('resize', resize);
 setInterval(() => { blinkOn = !blinkOn; dirty(); }, 530);
 
 bootDisk();
-netBoot();
+netBootLater();
 loadTaskbar();
 desk.src = new FsSource(DESKTOP_DIR);
 fs.on(() => dirty());
