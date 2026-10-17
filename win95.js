@@ -550,7 +550,7 @@ function makeDisk(mounted) {
   for (const [e, d] of Object.entries(sysFonts)) fs.writeFile(join(WINDIR, 'FONTS', e), b64(d));
   fs.writeFile('C:\\Program Files\\Accessories\\WORDPAD.EXE', exeStub());
   fs.writeFile(PROGRAMS + '\\Accessories\\Notepad.lnk', lnk(WINDIR + '\\NOTEPAD.EXE'));
-  installPrograms(); setupRegistry(); setupSound();
+  installPrograms(); setupRegistry(); setupSound(); setupNetwork();
   // the CD's screen savers, byte for byte, under the long names APPLETS.INF gives them in LDID_SYS
   const LONG = { 'BEZIER.SCR': 'Curves and Colors.scr', 'SSMARQUE.SCR': 'Scrolling Marquee.scr', 'SSMYST.SCR': 'Mystify Your Mind.scr',
     'SCRNSAVE.SCR': 'Blank Screen.scr', 'SSFLYWIN.SCR': 'Flying Windows.scr', 'SSSTARS.SCR': 'Flying Through Space.scr' };
@@ -793,7 +793,7 @@ function bootDisk() {
   mountDrives();
   W95Win32.regAttach(host.registry);
   if (!fs.attach('C', host.disk)) makeDisk(true);
-  installPrograms(); setupRegistry(); setupSound();
+  installPrograms(); setupRegistry(); setupSound(); setupNetwork();
   fs.chdir('C:\\');
 }
 
@@ -2299,7 +2299,7 @@ async function sha256hex(b) { const h = await crypto.subtle.digest('SHA-256', b)
 let sysCompile = null;
 function systemCompiled() {
   const S = window.W95SYSTEM; if (!S) return Promise.resolve();
-  return sysCompile || (sysCompile = Promise.all([...Object.values(S.ne), ...Object.values(S.dlls)].map(async m => { m.mod = await WebAssembly.compile(b64bytes(m.wasm)); })));
+  return sysCompile || (sysCompile = Promise.all([...Object.values(S.ne), ...Object.values(S.dlls), ...Object.values(S.net || {})].map(async m => { m.mod = await WebAssembly.compile(b64bytes(m.wasm)); })));
 }
 function compiledSaver(sha) {
   for (const [name, s] of Object.entries(SV.savers)) {
@@ -2493,15 +2493,20 @@ function setupRegistry() {
 // The card's drivers as the media device loader records them once it has started the devnode: an entry under
 // MediaResources for each driver its class key lists (SOFTWAREKEY, DeviceID, DevNode, with the driver key's values) and
 // Drivers\MIGRATED=1, from which MMSYSTEM loads them. A disk whose entries are missing or lack those values (left by
-// an earlier setup) gets them written again; the devnode is the first in Enum, *PNPB007 (CONFIGMG's handle C1000000h)
+// an earlier setup, or naming the devnode by another handle) gets them written again
 function mediaResources() {
   const R = W95Win32, sw = 'hklm\\system\\currentcontrolset\\services\\class\\media\\0000', drv = sw + '\\drivers';
   const res = 'hklm\\system\\currentcontrolset\\control\\mediaresources';
   if (!R.regKids(drv).length) return;
-  const str = v => ({ type: 1, data: W95FS.encode(v + '\0') }), devnode = { type: 3, data: new Uint8Array([0, 0, 0, 0xc1]) };
+  // the card's devnode handle as CONFIGMG hands them out: C1000000h plus 100h for each ROOT devnode before it
+  let at = 0, idx = -1;
+  for (const b of R.regKids('hklm\\enum').filter(x => x.toLowerCase() === 'root')) for (const d of R.regKids(`hklm\\enum\\${b}`)) for (const i of R.regKids(`hklm\\enum\\${b}\\${d}`)) { if (`${b}\\${d}\\${i}`.toUpperCase() === 'ROOT\\*PNPB007\\0000') idx = at; at++; }
+  const h = (0xc1000000 + 0x100 * Math.max(idx, 0)) >>> 0;
+  const str = v => ({ type: 1, data: W95FS.encode(v + '\0') }), devnode = { type: 3, data: new Uint8Array([h & 0xff, h >> 8 & 0xff, h >> 16 & 0xff, h >>> 24]) };
   const want = [];
   for (const cls of R.regKids(drv)) for (const d of R.regKids(`${drv}\\${cls}`)) want.push([cls, d, `${res}\\${cls}\\${d}<0000>`]);
-  const ok = want.every(([, , k]) => R.regGet(k, 'softwarekey') !== undefined && R.regGet(k, 'devnode') !== undefined && R.regGet(k, 'driver') !== undefined)
+  const same = v => v && v.data && v.data.length === 4 && v.data.every((b, i) => b === devnode.data[i]);
+  const ok = want.every(([, , k]) => R.regGet(k, 'softwarekey') !== undefined && same(R.regGet(k, 'devnode')) && R.regGet(k, 'driver') !== undefined) && same(R.regGet(drv, 'devnode'))
     && /^1/.test(W95FS.decode((R.regGet(drv, 'migrated') || { data: new Uint8Array(0) }).data));
   if (ok) return;
   for (const [cls, d, k] of want) {
@@ -2549,6 +2554,44 @@ function setupSound() {
   mediaResources();
 }
 
+// Setup's network, as the Network control panel installs it (NETDI.DLL): an NE2000-compatible card (NETNOVEL.INF
+// *PNP80D6) at I/O 300h and IRQ 5, NetBEUI bound to it (NETTRANS.INF) and Client for Microsoft Networks bound to that
+// (NETCLI.INF, with the Microsoft Network provider MPR loads). Each component has its Enum devnode (the card a ROOT
+// one, the protocol and client the Network enumerator's) and its software key under Services\Class; Bindings subkeys
+// link them upward. The static VxDs NET.INF and NETCLI.INF add (NDIS, VNETBIOS, VNETSUP, VREDIR) and the machine's
+// name and workgroup (VNETSUP) complete it
+function setupNetwork() {
+  const R = W95Win32, infs = (window.W95SYSTEM || {}).infs || {};
+  if (!infs['NETNOVEL.INF'] || !infs['NETTRANS.INF'] || !infs['NETCLI.INF'] || !infs['NET.INF']) return;
+  if (R.regGet('hklm\\enum\\root\\net\\0000', 'Driver') !== undefined) return;
+  const str = v => ({ type: 1, data: W95FS.encode(v + '\0') }), bin = (...b) => ({ type: 3, data: Uint8Array.from(b) });
+  const cls = 'hklm\\system\\currentcontrolset\\services\\class\\';
+  const set = (k, o) => { for (const [n, v] of Object.entries(o)) R.regSet(k, n, typeof v === 'string' ? str(v) : v); };
+  // the card
+  infAddReg(infs['NET.INF'], 'ClassAddReg', cls + 'net'); infAddReg(infs['NETTRANS.INF'], 'NetTrans.AddReg', cls + 'nettrans'); infAddReg(infs['NETCLI.INF'], 'NetClientReg', cls + 'netclient');
+  infAddReg(infs['NETNOVEL.INF'], 'ne2000.ndi.reg', cls + 'net\\0000');
+  infAddReg(infs['NETNOVEL.INF'], 'NE2000.params.reg', cls + 'net\\0000');
+  set(cls + 'net\\0000', { DriverDesc: 'NE2000 Compatible', InfPath: 'NETNOVEL.INF', InfSection: '*pnp80d6.ndi', IOBaseAddress: '300', InterruptNumber: '5' });
+  set('hklm\\enum\\root\\net\\0000', { Class: 'Net', Driver: 'Net\\0000', DeviceDesc: 'NE2000 Compatible', HardwareID: '*PNP80D6', Mfg: 'Novell/Anthem', ConfigFlags: bin(0, 0, 0, 0) });
+  R.regSet('hklm\\enum\\root\\net\\0000\\bindings', 'NETBEUI\\0000', str(''));
+  // the protocol
+  infAddReg(infs['NETTRANS.INF'], 'NETBEUI.ndi.reg', cls + 'nettrans\\0000');
+  infAddReg(infs['NETTRANS.INF'], 'NETBEUI.AddReg', cls + 'nettrans\\0000');
+  set(cls + 'nettrans\\0000', { DriverDesc: 'NetBEUI', InfPath: 'NETTRANS.INF', InfSection: 'NETBEUI.ndi' });
+  set('hklm\\enum\\network\\netbeui\\0000', { Class: 'NetTrans', Driver: 'NetTrans\\0000', MasterCopy: 'Enum\\Network\\NETBEUI\\0000', DeviceDesc: 'NetBEUI', CompatibleIDs: 'NETBEUI', Mfg: 'Microsoft', ConfigFlags: bin(0x10, 0, 0, 0) });
+  R.regSet('hklm\\enum\\network\\netbeui\\0000\\bindings', 'VREDIR\\0000', str(''));
+  // the client and its provider
+  for (const sec of ['VREDIR.ndi.reg', 'VREDIR.AddReg', 'MSNP32.AddReg']) infAddReg(infs['NETCLI.INF'], sec, cls + 'netclient\\0000');
+  set(cls + 'netclient\\0000', { DriverDesc: 'Client for Microsoft Networks', InfPath: 'NETCLI.INF', InfSection: 'VREDIR.ndi' });
+  set('hklm\\enum\\network\\vredir\\0000', { Class: 'NetClient', Driver: 'NetClient\\0000', MasterCopy: 'Enum\\Network\\VREDIR\\0000', DeviceDesc: 'Client for Microsoft Networks', CompatibleIDs: 'VREDIR', Mfg: 'Microsoft', ConfigFlags: bin(0x10, 0, 0, 0) });
+  // the network's static VxDs and the machine's identity on it
+  for (const sec of ['NET_VNETBIOS.add.reg', 'NET_NDIS386.add.reg']) infAddReg(infs['NET.INF'], sec);
+  set('hklm\\system\\currentcontrolset\\services\\vxd\\vnetsup', { ComputerName: 'WIN95', Workgroup: 'WORKGROUP', Comment: '' });
+  set('hklm\\system\\currentcontrolset\\control\\computername\\computername', { ComputerName: 'WIN95' });
+  set('hklm\\network\\logon', { PrimaryProvider: 'Microsoft Network', LMLogon: bin(0, 0, 0, 0) });
+  mediaResources();   // the devnodes ahead of the sound card's in Enum's order have changed
+}
+
 // ---------------------------------------------------------------- Windows programs on the native USER
 // A program the system bundle carries (NOTEPAD.EXE) runs as Windows 95 runs it: its own code on USER32, USER.EXE, GDI
 // and the display driver, all recompiled, in a machine of its own whose screen is an ET4000 mode no larger than the
@@ -2572,7 +2615,7 @@ function installPrograms() {
   };
   for (const [name, d] of Object.entries(S.programs || {})) put(join(WINDIR, name), d.file);
   // the system modules the programs run on, in SYSTEM as Setup puts them (SHELL32 reads its icons from its file)
-  for (const [name, d] of Object.entries(S.dlls || {})) put(join(WINDIR, 'SYSTEM', name), d.file);
+  for (const [name, d] of Object.entries({ ...S.dlls, ...S.net, ...S.drivers })) put(join(WINDIR, 'SYSTEM', name), d.file);
   for (const d of Object.values(S.ne || {})) if (d.fileName) put(join(WINDIR, 'SYSTEM', d.fileName), d.file);
 }
 class NativeWin extends Win {
@@ -2604,19 +2647,19 @@ const SCAN = (() => {
   return t;
 })();
 class NativeApp {
-  constructor(path, arg) { this.path = path; this.arg = arg; this.alive = true; this.wins = new Map(); this.icon = EXE_ICON[basename(path).toUpperCase()] || 'app'; this.lastActive = 0; this.cursorOn = false; }
+  constructor(path, arg, o = {}) { this.path = path; this.arg = arg; this.net = !!o.net; this.alive = true; this.wins = new Map(); this.icon = EXE_ICON[basename(path).toUpperCase()] || 'app'; this.lastActive = 0; this.cursorOn = false; }
   async start(bytes, prog) {
     const S = window.W95SYSTEM;
     await systemCompiled();
     if (!prog.d.mod) prog.d.mod = WebAssembly.compile(b64bytes(prog.d.wasm));
     const module = await prog.d.mod;
     const dlls = new Map();
-    for (const [n, d] of Object.entries(S.dlls)) { d.bytes = d.bytes || b64bytes(d.file); dlls.set(n.replace(/\.DLL$/, ''), { file: d.bytes, module: d.mod, meta: d.meta }); }
+    for (const [n, d] of Object.entries({ ...S.dlls, ...(this.net ? S.net : {}) })) { d.bytes = d.bytes || b64bytes(d.file); dlls.set(n.replace(/\.DLL$/, ''), { file: d.bytes, module: d.mod, meta: d.meta }); }
     // the smallest display mode that covers the shell's screen (else the largest), so the whole desktop is on the
     // program's screen: no window is cut off at its bottom edge and the pointer reaches every point
     [this.sw, this.sh] = [...NATIVE_MODES].reverse().find(([w, h]) => w >= W && h >= H) || NATIVE_MODES[0];
     const host = {
-      fs, width: this.sw, height: this.sh, path: this.path, now: () => performance.now(),
+      fs, width: this.sw, height: this.sh, path: this.path, now: () => performance.now(), net: this.net,
       cursor: () => ({ x: mouse.x, y: mouse.y }), surface: (h, w, hh) => mkc(w, hh).getContext('2d'), setCursor: () => {},
       exited: (code, why) => this.exited(code, why), boot: p => p.bootUser16(),
     };
@@ -2643,7 +2686,7 @@ class NativeApp {
     if (!this.alive) return;
     const p = this.proc, t0 = performance.now();
     this.keysFed = 0; this.feedKeys();
-    try { for (let n = 0; this.alive && n < 4; n++) { p.stats.slices++; const live = p.slice(); p.timers16(); p.threads16(); p.systemPump(); p.appy16(); if (p.sound16) p.sound16(); if (!live) break; } }
+    try { for (let n = 0; this.alive && n < 4; n++) { p.stats.slices++; const live = p.slice(); p.timers16(); p.threads16(); p.systemPump(); p.appy16(); if (p.sound16) p.sound16(); if (p.lanPoll) p.lanPoll(); if (!live) break; } }
     catch (e) { console.error(e); this.exited(-1, e.message); return; }
     p.stats.guestMs += performance.now() - t0;
     if (p.trapped && !p.failed) p.fail(p.trapped);
@@ -2832,11 +2875,23 @@ function nativeAt(x, y) {
   for (const a of nativeApps) if (a.capture) return a;
   const w = winAt(x, y); return w && w.native ? w.app : null;
 }
-async function runNative(path, arg) {
+async function runNative(path, arg, o) {
   let bytes; try { bytes = fs.readFile(path); } catch (e) { return false; }
   const prog = await nativeProgram(bytes); if (!prog) return false;
-  const app = new NativeApp(path, arg);
+  const app = new NativeApp(path, arg, o);
   return app.start(bytes, prog);
+}
+// the network's process, which Windows 95 starts as it boots: MPREXE.EXE, with the network's VxDs at ring 0 under it
+// and the provider router's DLLs in it
+let netApp = null;
+async function startNetwork() {
+  if (netApp && netApp.alive) return netApp;
+  if (!((window.W95SYSTEM || {}).net || {})['MPR.DLL']) return null;
+  const path = join(WINDIR, 'MPREXE.EXE');
+  let bytes; try { bytes = fs.readFile(path); } catch (e) { return null; }
+  const prog = await nativeProgram(bytes); if (!prog) return null;
+  netApp = new NativeApp(path, '', { net: true });
+  return (await netApp.start(bytes, prog)) ? netApp : null;
 }
 
 class Win32DialogBody {
@@ -3693,5 +3748,5 @@ const script = {
   },
 };
 
-window.win95 = { ...script, get nativeApps() { return [...nativeApps]; }, fs, render, SaverRun, displayProperties, startFullSaver, get fullSaver() { return fullSaver; }, properties, driveProps, openFolder, openPath, shellOpen, notepad, msgBox, runDialog, shutDownDialog, MyComputer, get state() { return { menus: menus.length, menuSrc, modals: modals.length, cap: !!cap, drag: !!drag, screen, active: active && active.title }; } };
+window.win95 = { ...script, get nativeApps() { return [...nativeApps]; }, startNetwork, get netApp() { return netApp; }, fs, render, SaverRun, displayProperties, startFullSaver, get fullSaver() { return fullSaver; }, properties, driveProps, openFolder, openPath, shellOpen, notepad, msgBox, runDialog, shutDownDialog, MyComputer, get state() { return { menus: menus.length, menuSrc, modals: modals.length, cap: !!cap, drag: !!drag, screen, active: active && active.title }; } };
 })();

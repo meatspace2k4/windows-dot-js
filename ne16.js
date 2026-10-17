@@ -65,6 +65,70 @@ P.freeSels = function (sel, n = 1) {
 };
 /** segmented -> linear */
 P.lin = function (sp) { sp = u32(sp); return sp ? u32(this.selBase(sp >>> 16) + (sp & 0xffff)) : 0; };
+/** the DOS kernel's data in conventional memory, as DOS 7 lays it out: the critical-error and InDOS flags, the list
+ *  of lists (C:'s drive parameter block, the system file tables, the current-directory structures for A: to Z:, LASTDRIVE Z and
+ *  the NUL device's header), the swappable data area. A segment (`seg`) addresses all of it */
+P.dosData = function () {
+  if (this.dosD) return this.dosD;
+  const a = (this.dosTop + 15) & ~15, size = 0x1200; this.dosTop = a + size; this.u8.fill(0, a, a + size);
+  const seg = a >>> 4, off = x => x - a, far = (at, x) => { this.w16(at, off(x)); this.w16(at + 2, seg); };
+  const d = { seg, indos: a + 1, lol: a + 0x20, sft: a + 0x100, fcb: a + 0x240, cds: a + 0x340, sda: a + 0x1000 };
+  this.w16(d.lol - 2, 0xffff);                                  // first MCB: none walked
+  // the drive parameter blocks (DOS 7.1's, 3Dh bytes): the hard disk's, C:, on a block device whose header is IO.SYS's
+  d.dpb = a + 0xc40; d.blk = a + 0xc90; far(d.lol, d.dpb);
+  this.u8[d.dpb] = 2; this.w16(d.dpb + 2, 512); this.u8[d.dpb + 4] = 15; this.u8[d.dpb + 5] = 4; this.w16(d.dpb + 6, 32); this.u8[d.dpb + 8] = 2;
+  this.w16(d.dpb + 9, 512); far(d.dpb + 0x13, d.blk); this.u8[d.dpb + 0x17] = 0xf8; this.u8[d.dpb + 0x18] = 0xff; this.w32(d.dpb + 0x19, 0xffffffff);
+  this.w32(d.blk, 0xffffffff); this.w16(d.blk + 4, 0x0842); this.u8[d.blk + 10] = 1;
+  // the system file tables: DOS's first, its five entries (3Bh bytes each), and the FCB table of FCBS=4
+  far(d.lol + 4, d.sft); this.w32(d.sft, 0xffffffff); this.w16(d.sft + 4, 5);
+  this.w32(d.fcb, 0xffffffff); this.w16(d.fcb + 4, 4);
+  this.w32(d.lol + 8, 0xffffffff); this.w32(d.lol + 0xc, 0xffffffff); this.w16(d.lol + 0x10, 512);
+  this.w32(d.lol + 0x12, 0xffffffff); far(d.lol + 0x16, d.cds); far(d.lol + 0x1a, d.fcb);
+  this.u8[d.lol + 0x20] = 0; this.u8[d.lol + 0x21] = 26;        // block devices, LASTDRIVE
+  this.w32(d.lol + 0x22, 0xffffffff); this.w16(d.lol + 0x26, 0x8004); this.writeA(d.lol + 0x2c, 'NUL     ');
+  // CDS entries (58h bytes each): the path "X:\", flags (4000h physical for the drives the shell has), the root's length
+  for (let i = 0; i < 26; i++) {
+    const e = d.cds + 0x58 * i, l = String.fromCharCode(65 + i), has = this.fs && this.fs.vols && this.fs.vols.has(l);
+    this.writeA(e, l + ':\\'); this.w16(e + 0x43, has ? 0x4000 : 0); this.w32(e + 0x45, 0xffffffff); this.w16(e + 0x4f, 2);
+  }
+  return (this.dosD = d);
+};
+/** IFSHLP.SYS, the real-mode helper IO.SYS loads for the file system manager: its image in conventional memory (the
+ *  character device IFS$HLP$, its data block at offset 24h) and its entry point (offset 20Ch), which the personality
+ *  answers for as DOS's own real-mode code: function 0 the data block's address; 1 and 2 hook and unhook the real-mode
+ *  vectors it lists (flag 2 in its word at 1Ah, the caller's far pointer kept at 12h); 3 and 4 a printer port's
+ *  status word in the BIOS data area; 6 and 7 set and clear flag 1, 8 reads the flags */
+P.ifshlp = function () {
+  if (this.ifsHlp !== undefined) return this.ifsHlp;
+  const b64 = (window.W95SYSTEM.dos || {})['IFSHLP.SYS']; if (!b64) return (this.ifsHlp = null);
+  const img = Uint8Array.from(atob(b64), c => c.charCodeAt(0)), a = (this.dosTop + 15) & ~15;
+  this.dosTop = a + ((img.length + 0x100 + 15) & ~15); this.u8.set(img, a);
+  const seg = a >>> 4, w = o => this.r16(a + o), sw = (o, v) => this.w16(a + o, v);
+  const h = this.ifsHlp = { seg, lin: a, entry: 0x20c };
+  // its initialization (the device's INIT command) as it fills its data: its own segment, its far pointers to its
+  // hook stubs, its three request blocks, and DOS's critical-error/InDOS flags, list of lists and NUL device
+  const dd = this.dosData(), dos = dd.seg, rel = x => x - (dos << 4);
+  sw(0x14, seg); sw(0x48, 0xa50); sw(0x4a, seg); sw(0x1f4, 0x60f); sw(0x1f6, seg); sw(0x1ee, seg); sw(0x1ec, 0xac0);
+  for (let i = 0; i < 3; i++) { const r = 0x156 + 0x10 * i; this.u8[a + r] = 0xff; this.u8[a + r + 1] = 1; sw(0x4c + 2 * i, r); }
+  sw(0x24, rel(dd.indos) - 1); sw(0x26, dos); sw(0xa4e, dos);
+  sw(0x30, rel(dd.lol)); sw(0x32, dos); sw(0x20, rel(dd.lol) + 0x22); sw(0x22, dos);
+  (this.rmEntries = this.rmEntries || new Map()).set(u32((seg << 16) | 0x20c), (fn, arg) => {
+    switch (fn) {
+      case 0: return u32((seg << 16) | 0x24);
+      case 1: if (w(0x14) !== seg) return 1; sw(0x1a, w(0x1a) | 2); sw(0x12, arg & 0xffff); sw(0x14, arg >>> 16); this.u8[a + 0x34] = 3;
+        sw(0x40, 0xffff); sw(0x42, 0x7fff); sw(0x44, 0xffff); sw(0x46, 0x7fff); this.u8[a + 0x37] = 0; return 0;
+      case 2: case 5: if (w(0x14) === seg) return 1; sw(0x1a, w(0x1a) & ~2); sw(0x12, 0x1c); sw(0x14, seg); return 0;
+      case 3: case 4: { const at = 0x408 + 2 * (arg & 0xffff), v = this.r16(at); if (fn === 3 && v === 0) this.w16(at, 2); if (fn === 4 && v === 2) this.w16(at, 0); return 0; }
+      case 6: if (w(0x1a) & 1) return 1; sw(0x1a, w(0x1a) | 1); return 0;
+      case 7: if (!(w(0x1a) & 1)) return 1; sw(0x1a, w(0x1a) & ~1); return 0;
+      case 8: return w(0x1a);
+      default: return 1;
+    }
+  });
+  return h;
+};
+/** a segment register loaded with the DOS data's segment (in real mode) or a selector for it */
+P.seg16 = function (r, d) { if (this.rmode) this.cpu[r].value = d.seg; else this.seg(r, d.sel || (d.sel = this.allocSels(d.seg << 4, 0x1200))); };
 /** linear -> segmented via a shared 32K-aligned alias (MapLS) */
 P.mapLS = function (a) {
   a = u32(a); if (!(a >>> 16)) return a;
@@ -420,30 +484,66 @@ const INTS = {
       case 0x19: this.ax((this.ax() & 0xff00) | 2); return;        // current drive C:
       case 0x2a: { const d = new Date(); this.cpu.ecx.value = lo16(this.cpu.ecx.value, d.getFullYear()); this.cpu.edx.value = lo16(this.cpu.edx.value, ((d.getMonth() + 1) << 8) | d.getDate()); this.ax((this.ax() & 0xff00) | d.getDay()); return; }
       case 0x2c: { const d = new Date(); this.cpu.ecx.value = lo16(this.cpu.ecx.value, (d.getHours() << 8) | d.getMinutes()); this.cpu.edx.value = lo16(this.cpu.edx.value, (d.getSeconds() << 8) | Math.floor(d.getMilliseconds() / 10)); return; }
-      case 0x33: if (al === 6) { this.cpu.ebx.value = lo16(this.cpu.ebx.value, 0x0007); this.cpu.edx.value = lo16(this.cpu.edx.value, 0x1000); } return;   // true version 7.0, in HMA
+      case 0x33: if (al === 6) { this.cpu.ebx.value = lo16(this.cpu.ebx.value, 0x0007); this.cpu.edx.value = lo16(this.cpu.edx.value, 0x1000); } else if (al === 0) this.cpu.edx.value &= ~0xff; return;   // true version 7.0, in HMA; Ctrl+Break checking off
       case 0x44: if (al === 0) { this.cpu.edx.value = lo16(this.cpu.edx.value, 0x80); return; } break;
       case 0x50: case 0x51: case 0x62: return;
       case 0x35: {   // a vector nobody has set leads to the BIOS service behind it, where there is one
         const v = ((this.dosVec = this.dosVec || {})[al]) || (BIOS_INT[al] ? this.thunk16For(`BIOSINT.#${al}`) : 0);
         this.seg('es', v >>> 16); this.cpu.ebx.value = lo16(this.cpu.ebx.value, v); return; }
       case 0x0d: return;   // disk reset: nothing is buffered
+      // DOS's own data, which the file system manager reads as it takes over from DOS: the InDOS flag (34h: ES:BX),
+      // the list of lists (52h: ES:BX), the swappable data area (5D06h: DS:SI, CX and DX its sizes)
+      case 0x34: { const d = this.dosData(); this.seg16('es', d); this.cpu.ebx.value = lo16(this.cpu.ebx.value, d.indos - (d.seg << 4)); return; }
+      case 0x52: { const d = this.dosData(); this.seg16('es', d); this.cpu.ebx.value = lo16(this.cpu.ebx.value, d.lol - (d.seg << 4)); return; }
+      case 0x5d: if (al === 6) { const d = this.dosData(); this.seg16('ds', d); this.cpu.esi.value = lo16(this.cpu.esi.value, d.sda - (d.seg << 4)); this.cpu.ecx.value = lo16(this.cpu.ecx.value, 0x80); this.cpu.edx.value = lo16(this.cpu.edx.value, 0x18); return; } break;
+      case 0xea: return;   // a NetWare shell's function: none is loaded
+      // the machine name DOS keeps for the network (5E01h: CH 0 to clear it, CL its NetBIOS number, DS:DX the name
+      // padded to 15; 5E00h: copied to DS:DX, CH whether it is set, CL its number)
+      case 0x5e: if (al === 0 || al === 1) {
+        const at = this.rmode ? ((this.cpu.ds.value & 0xffff) << 4) + (this.cpu.edx.value & 0xffff) : this.lin((this.cpu.ds.value << 16) | (this.cpu.edx.value & 0xffff)), cx = this.cpu.ecx.value & 0xffff;
+        if (al === 1) { this.dosMachine = cx >> 8 ? { name: (this.readA(at, 15) || '').padEnd(15).slice(0, 15), num: cx & 0xff } : null; return; }
+        const m = this.dosMachine; this.writeA(at, m ? m.name : ''.padEnd(15), 16); this.cpu.ecx.value = lo16(this.cpu.ecx.value, m ? 0x100 | m.num : 0); return;
+      } break;
       case 0x25: (this.dosVec = this.dosVec || {})[al] = u32((this.cpu.ds.value << 16) | (this.cpu.edx.value & 0xffff)); return;
       case 0x4c: if (this.thread16 && this.thread16.task && this.depth === this.thread16.depth) { this.thread16.exitCode = al; return LAYOUT.SENTINEL; } break;   // a task's exit ends its thread
     }
     // handle file calls, on the handles KERNEL's _lopen/OpenFile give out: BX handle, CX count, DS:DX buffer or name;
     // CF and AX = error code on failure (2 not found, 5 denied, 6 bad handle)
-    if (!this.rmode && [0x3c, 0x3d, 0x3e, 0x3f, 0x40, 0x41, 0x42, 0x57].includes(ah)) {
-      const bx = this.cpu.ebx.value & 0xffff, cx = this.cpu.ecx.value & 0xffff, dx = this.cpu.edx.value & 0xffff;
-      const dsdx = () => this.lin((this.cpu.ds.value << 16) | dx), f = this.dosFiles.get(bx);
+    // (in real mode, as a VxD's nested execution calls DOS, a segment is a paragraph number)
+    if ([0x3c, 0x3d, 0x3e, 0x3f, 0x40, 0x41, 0x42, 0x57, 0x6c].includes(ah) || (ah === 0x44 && (al === 2 || al === 0) && this.dosFiles.get(this.cpu.ebx.value & 0xffff) && this.dosFiles.get(this.cpu.ebx.value & 0xffff).dev)) {
+      // (a VxD's call through Exec_VxD_Int: 32-bit offsets on a flat DS)
+      const flat = this.vxdFlat, off16 = r => (flat ? u32(this.cpu[r].value) : this.cpu[r].value & 0xffff);
+      const bx = this.cpu.ebx.value & 0xffff, cx = flat ? u32(this.cpu.ecx.value) : this.cpu.ecx.value & 0xffff, dx = off16('edx');
+      const at = off => (flat ? off : this.rmode ? ((this.cpu.ds.value & 0xffff) << 4) + off : this.lin((this.cpu.ds.value << 16) | off));
+      const dsdx = () => at(dx), f = this.dosFiles.get(bx);
       const fail = code => { CF(this, 1); this.ax(code); };
       try {
         switch (ah) {
           case 0x3c: case 0x3d: {
+            if (ah === 0x3d && /(^|\\)IFS\$HLP\$$/i.test(this.readA(dsdx()) || '') && this.ifshlp()) {   // the helper's character device
+              const hh = 0x7f00; this.dosFiles.set(hh, { dev: 'IFS$HLP$' }); return this.ax(hh);
+            }
             const name = this.readA(dsdx()) || '', full = ah === 0x3c ? (/^[a-z]:\\/i.test(name) ? name : window.W95FS.join(this.fs.cwd, name)) : this.findFile16(name);
             if (!full) return fail(2);
             const h = this.dosOpen(full, ah === 0x3c ? 'w+' : (al & 3) === 0 ? 'r' : 'r+'); return h === 0xffff ? fail(this.lastError || 2) : this.ax(h);
           }
-          case 0x3e: if (!f) return fail(6); this.fs.close(f.fd); this.dosFiles.delete(bx); return;
+          case 0x44: {   // a device's IOCTL: 0 its information (a character device), 2 read its control data (the helper:
+            // given its signature in the 8 bytes at DS:DX, its own and its entry point)
+            if (al === 0) { this.cpu.edx.value = lo16(this.cpu.edx.value, 0xc080); return; }
+            const b = dsdx(), hp = this.ifshlp();
+            if (cx !== 8 || this.r16(b) !== 0xe970 || this.r16(b + 2) !== 0x3735) return fail(1);
+            this.w16(b, 0x3735); this.w16(b + 2, 0xef70); this.w16(b + 4, hp.entry); this.w16(b + 6, hp.seg); return this.ax(8);
+          }
+          case 0x6c: {   // extended open: BX the mode, CX attributes, DX the action (low nibble if it exists: 1 open, 2
+            // replace; high nibble if not: 1 create), DS:SI the name; AX the handle, CX what was done (1 opened, 2 created, 3 replaced)
+            const name = this.readA(at(off16('esi'))) || '', found = this.findFile16(name);
+            const full = found || (/^[a-z]:\\/i.test(name) ? name : window.W95FS.join(this.fs.cwd, name));
+            const act = found ? dx & 0xf : (dx >> 4) & 0xf; if (!act) return fail(found ? 80 : 2);
+            const mode = !found || act === 2 ? 'w+' : (bx & 3) === 0 ? 'r' : 'r+';
+            const h = this.dosOpen(full, mode); if (h === 0xffff) return fail(this.lastError || 2);
+            this.cpu.ecx.value = lo16(this.cpu.ecx.value, !found ? 2 : act === 2 ? 3 : 1); return this.ax(h);
+          }
+          case 0x3e: if (!f) return fail(6); if (!f.dev) this.fs.close(f.fd); this.dosFiles.delete(bx); return;
           case 0x3f: { if (!f) return fail(6); const b = this.fs.read(f.fd, cx); this.u8.set(b, dsdx()); return this.ax(b.length); }
           case 0x40: if (!f) return fail(6); return this.ax(this.fs.write(f.fd, this.u8.slice(dsdx(), dsdx() + cx)));
           case 0x41: this.fs.unlink(this.readA(dsdx()) || ''); return;
@@ -454,7 +554,7 @@ const INTS = {
             this.cpu.edx.value = lo16(this.cpu.edx.value, ((Math.max(d.getFullYear(), 1980) - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate());
             return;
           }
-          case 0x42: { if (!f) return fail(6); const pos = this.fs.seek(f.fd, ((cx << 16) | dx) | 0, al); this.ax(pos & 0xffff); this.cpu.edx.value = lo16(this.cpu.edx.value, pos >>> 16); return; }
+          case 0x42: { if (!f) return fail(6); const pos = this.fs.seek(f.fd, (((this.cpu.ecx.value & 0xffff) << 16) | (this.cpu.edx.value & 0xffff)) | 0, al); this.ax(pos & 0xffff); this.cpu.edx.value = lo16(this.cpu.edx.value, pos >>> 16); return; }
         }
       } catch (e) { if (e instanceof window.W95FS.FSError) return fail(e.code || 5); throw e; }
     }
@@ -479,6 +579,8 @@ const INTS = {
     if (ax === 0x1686) { this.ax(0); return; }                                          // in protected mode
     if (ax === 0x1689 || ax === 0x1680) return;
     if (ax === 0x160b) return;          // identify Windows-aware TSRs: none is loaded, so ES:DI comes back as it went in
+    if (ax === 0x1607) return;          // device callout to real-mode software (a VxD asking for its TSR's API): none answers
+    if ([0x11, 0xb8, 0xb7, 0x58].includes(ax >> 8)) return;   // real-mode network redirector, network, APPEND and real-mode network extension checks: none is loaded (AL comes back as it went)
     if ((ax >> 8) === 0x40) return;    // VDD save/restore and critical-section notifications
     if (ax === 0x4a32) return;         // boot progress to IO.SYS (USER reports start-up done; its answer is not read)
     this.trapped = `unhandled int 2Fh ax=${ax.toString(16)}`; return LAYOUT.SENTINEL;
@@ -671,7 +773,9 @@ const regStr = v => (v && v.type === 1 ? window.W95FS.decode(v.data).replace(/\0
 P.devnodes = function () {
   if (this.devTree) return this.devTree;
   const W = window.W95Win32, out = [];
-  for (const bus of W.regKids('hklm\\enum')) for (const dev of W.regKids(`hklm\\enum\\${bus}`)) for (const inst of W.regKids(`hklm\\enum\\${bus}\\${dev}`)) {
+  // (only ROOT's: the devnodes of other enumerators, as the Network devnodes NDIS makes for the protocols and clients
+  // bound to a card, appear as their enumerator creates them, CONFIGMG's Create_DevNode)
+  for (const bus of W.regKids('hklm\\enum').filter(b => b.toLowerCase() === 'root')) for (const dev of W.regKids(`hklm\\enum\\${bus}`)) for (const inst of W.regKids(`hklm\\enum\\${bus}\\${dev}`)) {
     const key = `hklm\\enum\\${bus}\\${dev}\\${inst}`;
     out.push({ handle: 0xc1000000 + 0x100 * out.length, id: `${bus}\\${dev}\\${inst}`.toUpperCase(), key, cls: regStr(W.regGet(key, 'Class')), driver: regStr(W.regGet(key, 'Driver')) });
   }
@@ -687,6 +791,7 @@ P.appy16 = function () {
   if (this.depth) return;
   if (this.vxdRunEvents) this.vxdRunEvents();
   if (!this.user16Ready) return;
+  if (this.host && this.host.net) { this.vxdAppy(); return; }   // the network's process starts no media devices
   if (this.vxd && window.W95SYSTEM.vxds && window.W95SYSTEM.vxds['MMDEVLDR.VXD']) { this.vxdDevLoaders(); this.vxdAppy(); return; }   // the recompiled device loader (vmm.js)
   if (this.mmdevStarted) return;
   const mm = this.ne.get('MMSYSTEM'), ep = mm && mm.meta && this.neExport(mm, 2001); if (!ep) return;   // RING3_DEVLOADER
@@ -789,7 +894,7 @@ def16('VXD', 0x45f, '', 'jmp', function () {
 // leave them, on the caller's cdecl frame at SS:BP+4 (dwords; pointers 16:16); AX = the CONFIGRET. The resources a
 // devnode is given are the ones its card decodes (the emulated hardware's ports, IRQ and DMA channel, P.cards)
 const cmArgs = p => { const a = p.cpu.ssb.value + (p.cpu.ebp.value & 0xffff) + 4; return i => p.r32(a + 4 * i); };
-const CR = { SUCCESS: 0, INVALID_POINTER: 3, INVALID_DEVNODE: 5, NO_SUCH_DEVNODE: 0x0d, NO_MORE_LOG_CONF: 0x0e, NO_MORE_RES_DES: 0x0f, BUFFER_SMALL: 0x1a, NO_SUCH_VALUE: 0x25, REGISTRY_ERROR: 0x13 };
+const CR = { SUCCESS: 0, INVALID_POINTER: 3, INVALID_DEVNODE: 5, NO_SUCH_DEVNODE: 0x0d, NO_MORE_LOG_CONF: 0x0e, NO_MORE_RES_DES: 0x0f, BUFFER_SMALL: 0x1a, NO_SUCH_VALUE: 0x25, REGISTRY_ERROR: 0x1d, DLVXD_NOT_FOUND: 0x0c, FAILURE: 0x13 };
 /** a devnode's registry key under HKLM (CM_REGISTRY_SOFTWARE: its driver's key; else its Enum key), with a subkey */
 P.cmKey = function (dn, sub, flags) {
   const k = flags & 1 ? (dn.driver ? 'System\\CurrentControlSet\\Services\\Class\\' + dn.driver : null) : 'Enum\\' + dn.id;
@@ -947,6 +1052,7 @@ P.portIO = function (port, size, isIn) {
   if (window.W95PORTTRACE) window.W95PORTTRACE(port, size, isIn, this);
   if (this.vxdTrapIO && this.vxdTrapIO(port, size, isIn)) return;   // a port a VxD traps (vmm.js)
   if (this.soundIO && this.soundIO(port, size, isIn)) return;   // the sound card, DMA and interrupt controllers (sound.js)
+  if (this.nicIO && this.nicIO(port, size, isIn)) return;   // the network card (lan.js)
   const a = this.adapter(), eax = this.cpu.eax.value;
   if (port >= 0x3b0 && port <= 0x3bf && port !== 0x3bf && !(a.misc & 1) === false) port += 0x20;   // mono CRTC aliases
   if (!isIn) {
@@ -2647,10 +2753,24 @@ K('TerminateThread', 2, function (h, code) {
   if (!t || t === this.thread16) return 0; t.state = 'done'; t.exitCode = code; return 1;
 });
 // OpenVxDHandle: the ring-0 handle VxDs signal a Win32 event by (VWIN32_SetWin32Event, MMDEVLDR's function 4)
+/** the thread a ring-0 thread handle is (its control block's TCB_ThreadId) */
+P.r0Tid = function (h) { const m = this.thcbs; if (m) for (const [tid, a] of m) if (a === u32(h)) return tid; return u32(h) & 0xffffff; };
+K('QueueUserAPC', 3, function (fn, h, data) { const o = this.obj(h), tid = o && o.kind === 'thread' ? o.id : this.currentThreadId(); this.queueApc(tid, fn, data); return 1; });
+K('RegisterServiceProcess', 2, () => 1);   // a process that outlives the user's logon (MPREXE): nothing ends processes at logoff here
 K('OpenVxDHandle', 1, function (h) { return ev16(this, h) ? u32(0xc4000000 | (h & 0xffffff)) : 0; });
 P.r0Event = function (r0) { return (u32(r0) & 0xff000000) === 0xc4000000 ? ev16(this, r0 & 0xffffff) : null; };
 // a Win32 thread's ring-0 handle (VMM Get_Cur_Thread_Handle), which VWIN32_QueueUserApc takes
-P.r0Thread = function (tid) { return u32(0xc5000000 | tid); };
+/** a thread's ring-0 handle: its thread control block (TCB_Flags, TCB_Signature 'THCB' at 0Ch, TCB_ClientPtr at 10h,
+ *  TCB_VMHandle at 14h, TCB_ThreadId at 18h; the slots VxDs allocate follow from 100h) */
+P.r0Thread = function (tid) {
+  const m = this.thcbs || (this.thcbs = new Map());
+  if (!m.has(tid)) {
+    const a = this.alloc(0x1000); this.u8.fill(0, a, a + 0x1000);
+    this.w32(a + 0xc, 0x42434854); this.w32(a + 0x14, this.sysVM ? this.sysVM() : 0); this.w32(a + 0x10, this.sysVM ? this.r32(this.sysVM() + 8) : 0); this.w16(a + 0x18, tid & 0xffff);
+    m.set(tid, a);
+  }
+  return m.get(tid);
+};
 // devices opened by name (\\.\NAME): MMDEVLDR, which WINMM's threads talk to by DeviceIoControl; others are absent
 const VXD_FILES = { MMDEVLDR: 0x44a, VTDAPI: 0x442 };
 const createFile = API.KERNEL32.CreateFileA[1];

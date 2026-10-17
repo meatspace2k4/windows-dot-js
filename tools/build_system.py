@@ -36,7 +36,7 @@ NE = [('gdi.exe', 0x01C00000, 0x1007, 0x06A00000), ('dibeng.dll', 0x01E00000, 0x
       # wave files for Media Player and mciSendString (WIN95_13.CAB)
       ('mciseq.drv', 0x018A0000, 0x1987, 0x07DC0000), ('mciwave.drv', 0x018C0000, 0x19C7, 0x07E00000)]
 # Windows programs that run on the native USER (bootUser16): (file, block-table base); each loads at its own base
-PROGRAMS = [('notepad.exe', 0x06000000), ('rundll32.exe', 0x06100000), ('mplayer.exe', 0x06200000)]
+PROGRAMS = [('notepad.exe', 0x06000000), ('rundll32.exe', 0x06100000), ('mplayer.exe', 0x06200000), ('mprexe.exe', 0x05C90000)]
 # 32-bit system DLLs: (file, load base, block-table base)
 PE = [('gdi32.dll', 0x01D00000, 0x06C00000), ('user32.dll', 0x01D40000, 0x07340000), ('comdlg32.dll', 0x01D60000, 0x07380000),
       # the common controls and the shell, which COMDLG32's Explorer-style dialogs are built on (WIN95_02.CAB)
@@ -57,7 +57,20 @@ PE = [('gdi32.dll', 0x01D00000, 0x06C00000), ('user32.dll', 0x01D40000, 0x073400
 VXDS = [('mmdevldr.vxd', 0x01800000, 0x07C00000), ('mssndsys.vxd', 0x01810000, 0x07C40000),
         ('vtdapi.vxd', 0x01820000, 0x07C80000), ('dsound.vxd', 0x01830000, 0x07CC0000),
         # the OPL3's VxD, which arbitrates the synthesizer's ports (WIN95_13.CAB)
-        ('msopl.vxd', 0x01840000, 0x07D80000)]
+        ('msopl.vxd', 0x01840000, 0x07D80000),
+        # the network (WIN95_02.CAB, PERF from WIN95_06.CAB): the file system manager and its cache, network support,
+        # the Microsoft Networks redirector, NetBIOS, the NetBEUI protocol and the NDIS 3.1 wrapper
+        ('ifsmgr.vxd', 0x01200000, 0x05800000), ('vcache.vxd', 0x01230000, 0x058C0000), ('vnetsup.vxd', 0x01240000, 0x058E0000),
+        ('vredir.vxd', 0x01250000, 0x05900000), ('vnetbios.vxd', 0x01280000, 0x059A0000), ('netbeui.vxd', 0x01290000, 0x059C0000),
+        ('ndis.vxd', 0x012A0000, 0x05A00000), ('perf.vxd', 0x012C0000, 0x05A80000)]
+# NDIS miniports (PE images NDIS loads and links to its own exports): (file, load base, block-table base). NE2000.SYS
+# drives the NE2000-compatible card (NETNOVEL.INF *PNP80D6)
+DRIVERS = [('ne2000.sys', 0x012D0000, 0x05AC0000)]
+# the network's Win32 half (WIN95_02.CAB, MSPWL32 from WIN95_06.CAB), loaded by MPREXE.EXE, the process Windows 95
+# starts for it: the multiple provider router and its service, the Microsoft Networks provider and its LAN Manager
+# API, the password cache and the server API: (file, load base, block-table base)
+NET = [('mpr.dll', 0x01300000, 0x05AA0000), ('msnp32.dll', 0x01310000, 0x05AE0000), ('msnet32.dll', 0x01330000, 0x05B40000),
+       ('mprserv.dll', 0x01350000, 0x05B90000), ('mspwl32.dll', 0x01380000, 0x05C30000), ('svrapi.dll', 0x01390000, 0x05C70000)]
 # fonts a VGA install of Windows 95 puts in C:\WINDOWS\FONTS (WIN95_02.CAB)
 FONTS = ['vgasys.fon', 'vgafix.fon', 'vgaoem.fon', 'sserife.fon', 'serife.fon', 'coure.fon', 'smalle.fon', 'symbole.fon',
          'modern.fon', 'dosapp.fon', 'arial.ttf', 'arialbd.ttf', 'arialbi.ttf', 'ariali.ttf', 'cour.ttf', 'courbd.ttf',
@@ -90,15 +103,28 @@ with tempfile.TemporaryDirectory() as tmp:
         trace = ['--trace'] if f.upper() in os.environ.get('TRACE_NE', '').upper().split(',') else []
         subprocess.run([sys.executable, os.path.join(here, 'recomp.py'), p, base, '--vxd', '--base', hex(b), '--lookup', hex(lk)] + trace, check=True)
         bundle['vxds'][f.upper()] = {'image': b64(base + '.img'), 'wasm': b64(base + '.wasm'), 'meta': json.load(open(base + '.json'))}
+    bundle['drivers'] = {}
+    for f, b, lk in DRIVERS:
+        p = os.path.join(src, f); base = os.path.join(tmp, f)
+        subprocess.run([sys.executable, os.path.join(here, 'recomp.py'), p, base, '--base', hex(b), '--lookup', hex(lk)], check=True)
+        bundle['drivers'][f.upper()] = {'file': b64(p), 'wasm': b64(base + '.wasm'), 'meta': json.load(open(base + '.json'))}
+    bundle['net'] = {}
+    for f, b, lk in NET:
+        p = os.path.join(src, f); base = os.path.join(tmp, f)
+        subprocess.run([sys.executable, os.path.join(here, 'recomp.py'), p, base, '--base', hex(b), '--lookup', hex(lk)], check=True)
+        bundle['net'][f.upper()] = {'file': b64(p), 'wasm': b64(base + '.wasm'), 'meta': json.load(open(base + '.json'))}
     for f, lk in PROGRAMS:
         p = os.path.join(src, f); base = os.path.join(tmp, f)
         subprocess.run([sys.executable, os.path.join(here, 'recomp.py'), p, base, '--lookup', hex(lk)], check=True)
         bundle['programs'][f.upper()] = {'file': b64(p), 'wasm': b64(base + '.wasm'), 'meta': json.load(open(base + '.json'))}
 # the Setup INF files whose registry sections the shell applies (SHELL.INF: the shell's classes and folders)
-INFS = ['shell.inf', 'motown.inf', 'mmopt.inf', 'wave.inf']
+INFS = ['shell.inf', 'motown.inf', 'mmopt.inf', 'wave.inf', 'netnovel.inf', 'nettrans.inf', 'netcli.inf', 'net.inf', 'netdef.inf']
 # the sounds Setup puts in C:\WINDOWS\MEDIA: MOTOWN.INF's start-up sound and MMOPT.INF's clips of a Typical install (WIN95_02.CAB)
 MEDIA = ['mssound.wav', 'chimes.wav', 'chord.wav', 'ding.wav', 'tada.wav', 'canyon.mid', 'passport.mid']
 bundle['media'] = {f.upper(): b64(os.path.join(src, f)) for f in MEDIA if os.path.exists(os.path.join(src, f))}
+# the real-mode drivers IO.SYS loads before Windows: IFSHLP.SYS, the file system manager's helper (WIN95_22.CAB)
+DOS = ['ifshlp.sys']
+bundle['dos'] = {f.upper(): b64(os.path.join(src, f)) for f in DOS if os.path.exists(os.path.join(src, f))}
 bundle['infs'] = {f.upper(): open(os.path.join(src, f), 'rb').read().decode('latin1') for f in INFS if os.path.exists(os.path.join(src, f))}
 with open(out, 'w') as fh:
     fh.write('// Generated by tools/build_system.py from the Windows 95 system files.\nwindow.W95SYSTEM = ')
