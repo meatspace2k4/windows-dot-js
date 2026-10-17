@@ -13,7 +13,7 @@ const CRAWL = async () => {
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const frame = () => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
   // never pressed: they change files, settings or the session
-  const SKIP = /^(Shut Down\.\.\.|Delete|Empty Recycle Bin|Format\.\.\.|Rename|Cut|Paste( Shortcut)?|Undo.*|Restore|New|Exit|Close|OK|Cancel|Yes|No|Apply|Remove.*|Clear|Save|Save As\.\.\.|Open\.\.\.|Print|Page Setup\.\.\.|Create Shortcut|Sharing\.\.\.|Minimize All Windows|Cascade|Tile .*|Line up Icons|by .*|Select All|Time\/Date|Word Wrap|Copy|Send To)$/;
+  const SKIP = /^(Shut Down\.\.\.|Delete|Empty Recycle Bin|Format\.\.\.|Rename|Cut|Paste( Shortcut)?|Undo.*|Restore|New|Exit|Close|OK|Cancel|Yes|No|Apply|Remove.*|Clear|Save|Save As\.\.\.|Open\.\.\.|Print|Page Setup\.\.\.|Create Shortcut|Sharing\.\.\.|Minimize All Windows|Cascade|Tile .*|Line up Icons|by .*|Select All|Time\/Date|Word Wrap|Copy|Send To|Disconnect)$/;
   const found = [];
   let where = '';
   const off = win95.on('*', e => {
