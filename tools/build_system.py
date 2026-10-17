@@ -36,7 +36,9 @@ NE = [('gdi.exe', 0x01C00000, 0x1007, 0x06A00000), ('dibeng.dll', 0x01E00000, 0x
       # wave files for Media Player and mciSendString (WIN95_13.CAB)
       ('mciseq.drv', 0x018A0000, 0x1987, 0x07DC0000), ('mciwave.drv', 0x018C0000, 0x19C7, 0x07E00000)]
 # Windows programs that run on the native USER (bootUser16): (file, block-table base); each loads at its own base
-PROGRAMS = [('notepad.exe', 0x06000000), ('rundll32.exe', 0x06100000), ('mplayer.exe', 0x06200000), ('mprexe.exe', 0x05C90000)]
+PROGRAMS = [('notepad.exe', 0x06000000), ('rundll32.exe', 0x06100000), ('mplayer.exe', 0x06200000), ('mprexe.exe', 0x05C90000),
+            # Windows Help, which the shell's Help Topics and Start > Help run (WIN95_13.CAB)
+            ('winhlp32.exe', 0x06700000)]
 # 32-bit system DLLs: (file, load base, block-table base)
 PE = [('gdi32.dll', 0x01D00000, 0x06C00000), ('user32.dll', 0x01D40000, 0x07340000), ('comdlg32.dll', 0x01D60000, 0x07380000),
       # the common controls and the shell, which COMDLG32's Explorer-style dialogs are built on (WIN95_02.CAB)
@@ -51,7 +53,9 @@ PE = [('gdi32.dll', 0x01D00000, 0x06C00000), ('user32.dll', 0x01D40000, 0x073400
       ('msacm32.dll', 0x017D0000, 0x07B80000),
       # OLE (WIN95_02.CAB): SHELL32 puts files on the clipboard through it ("Shell IDList Array" data objects), with
       # the RPC runtime and the C runtime it imports
-      ('ole32.dll', 0x01000000, 0x06300000), ('rpcrt4.dll', 0x010A0000, 0x06500000), ('msvcrt20.dll', 0x010E0000, 0x06600000)]
+      ('ole32.dll', 0x01000000, 0x06300000), ('rpcrt4.dll', 0x010A0000, 0x06500000), ('msvcrt20.dll', 0x010E0000, 0x06600000),
+      # Windows Help's full-text search, which it loads for the Find tab (WIN95_13.CAB)
+      ('ftsrch.dll', 0x01400000, 0x06900000)]
 # VxDs (ring-0 drivers), recompiled to run under the VMM in vmm.js: (file, load base, block-table base). MMDEVLDR is the
 # device loader of MEDIA devnodes; MSSNDSYS the Windows Sound System card's driver (WIN95_02.CAB)
 VXDS = [('mmdevldr.vxd', 0x01800000, 0x07C00000), ('mssndsys.vxd', 0x01810000, 0x07C40000),
@@ -122,6 +126,9 @@ INFS = ['shell.inf', 'motown.inf', 'mmopt.inf', 'wave.inf', 'netnovel.inf', 'net
 # the sounds Setup puts in C:\WINDOWS\MEDIA: MOTOWN.INF's start-up sound and MMOPT.INF's clips of a Typical install (WIN95_02.CAB)
 MEDIA = ['mssound.wav', 'chimes.wav', 'chord.wav', 'ding.wav', 'tada.wav', 'canyon.mid', 'passport.mid']
 bundle['media'] = {f.upper(): b64(os.path.join(src, f)) for f in MEDIA if os.path.exists(os.path.join(src, f))}
+# the help files Setup puts in C:\WINDOWS\HELP: Windows' own topics and Notepad's, with their contents (WIN95_13.CAB)
+HELP = ['windows.hlp', 'windows.cnt', 'notepad.hlp', 'notepad.cnt']
+bundle['help'] = {f.upper(): b64(os.path.join(src, f)) for f in HELP if os.path.exists(os.path.join(src, f))}
 # the real-mode drivers IO.SYS loads before Windows: IFSHLP.SYS, the file system manager's helper (WIN95_22.CAB)
 DOS = ['ifshlp.sys']
 bundle['dos'] = {f.upper(): b64(os.path.join(src, f)) for f in DOS if os.path.exists(os.path.join(src, f))}

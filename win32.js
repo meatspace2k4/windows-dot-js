@@ -35,7 +35,10 @@ class Process {
    */
   constructor(file, module, meta, host, cmdline, dlls = new Map()) {
     this.meta = meta; this.host = host; this.fs = host.fs; this.dlls = dlls;
-    this.mem = new WebAssembly.Memory({ initial: meta.layout.pages, maximum: meta.layout.pages });
+    // host.vmPages more 64 KiB pages above the layout's, for the address space VirtualAlloc reserves (VMEM)
+    const pages = meta.layout.pages + (host.vmPages || 0);
+    this.mem = new WebAssembly.Memory({ initial: pages, maximum: pages });
+    this.vmLo = this.vmTop = meta.layout.pages * 0x10000;
     this.cpu = {};
     for (const n of CPU_REGS) this.cpu[n] = new WebAssembly.Global({ value: 'i32', mutable: true }, n === 'fcw' ? 0x37f : 0);
     this.depth = 0; this.exitCode = null; this.trapped = null; this.waiting = false; this.lastYield = 0;
@@ -680,8 +683,28 @@ def('KERNEL32', 'HeapAlloc', 3, function (h, f, n) { return this.alloc(n, true);
 def('KERNEL32', 'HeapReAlloc', 4, function (h, f, p, n) { return this.realloc(p, n); });
 def('KERNEL32', 'HeapFree', 3, function (h, f, p) { return this.free(p) ? 1 : 0; });
 def('KERNEL32', 'HeapSize', 3, function (h, f, p) { return this.allocs.get(p) || 0; });
-def('KERNEL32', 'VirtualAlloc', 4, function (a, n) { return this.alloc(n, true); });
-def('KERNEL32', 'VirtualFree', 3, function (p) { this.free(p); return 1; });
+// VirtualAlloc: a new region (MEM_RESERVE, or a commit with no address), zeroed, or pages committed inside one already
+// reserved (an address within it: the region's memory is there already, as it was left); VirtualFree releases a region
+// (MEM_RELEASE) or decommits pages, which stay in it
+// Regions start on 64 KiB boundaries, as Windows' do: in the process's address space above the layout's memory when
+// the host gave it some (released regions are reused by size), else from the heap
+const vregion = (p, a) => { for (const [b, r] of p.vregions || []) if (a >= b && a < b + r.size) return b; return 0; };
+def('KERNEL32', 'VirtualAlloc', 4, function (a, n, type) {
+  if (a && vregion(this, a)) return a & ~0xfff;
+  const size = (n + 0xffff) & ~0xffff, regions = this.vregions || (this.vregions = new Map()), end = this.mem.buffer.byteLength;
+  let b = 0, heap = null;
+  const spare = (this.vspare || []).findIndex(r => r.size >= size);
+  if (spare >= 0) { b = this.vspare.splice(spare, 1)[0].base; this.u8.fill(0, b, b + size); }
+  else if (this.vmTop + size <= end) { b = this.vmTop; this.vmTop += size; }
+  else { heap = this.alloc(size + 0xffff, true); b = (heap + 0xffff) & ~0xffff; }
+  regions.set(b, { size, heap });
+  return b;
+});
+def('KERNEL32', 'VirtualFree', 3, function (p, n, type) {
+  const r = type & 0x8000 && this.vregions && this.vregions.get(p);
+  if (r) { this.vregions.delete(p); if (r.heap) this.free(r.heap); else (this.vspare || (this.vspare = [])).push({ base: p, size: r.size }); }
+  return 1;
+});
 def('KERNEL32', 'lstrlenA', 1, function (p) { return p ? this.readA(p).length : 0; });
 def('KERNEL32', 'lstrcpyA', 2, function (d, s) { this.writeA(d, this.readA(s) || ''); return d; });
 def('KERNEL32', 'lstrcpynA', 3, function (d, s, n) { this.writeA(d, this.readA(s) || '', n); return d; });

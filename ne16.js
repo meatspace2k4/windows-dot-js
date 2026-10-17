@@ -744,7 +744,6 @@ P.keyEvent16 = function (vk, scan, up, ext = false) {
   return true;
 };
 vxdApi(0x0017, 'SHELL', {});
-vxdApi(0x0037, 'VxD 37h', {});
 vxdApi(0x0442, 'VTDAPI', {
   // MMSYSTEM's timer services (timeGetDevCaps, timeBeginPeriod/EndPeriod, timeGetTime, timeSetEvent/KillEvent):
   // 0 the periods it can keep, ES:BX -> { ?, min ms, max ms } (dwords)
@@ -2107,7 +2106,7 @@ def16('KERNEL', 365, 'wi', 'v', function (sel, delta) {
 // 16:16 SS:SP, makes EBX the flat address of that pair and EBP the flat BP (the relay word, client id high and index
 // low, at [EBP+2]), moves to the flat stack, and goes to the client's 32-bit relay for that index, which comes back
 // with `lss sp, [ebx]`.
-def16('KERNEL', 620, '', 'jmp', function () {
+function cbClientThunkSL() {
   const ss = this.cpu.ss.value & 0xffff, ssb = u32(this.cpu.ssb.value), n = this.cpu.esp.value & 0xffff;
   const sp = (n - 4) & 0xffff; this.w16(ssb + sp, n); this.w16(ssb + ((sp + 2) & 0xffff), ss);
   const ebx = u32(ssb + sp), ebp = u32(ebx + (((this.cpu.ebp.value & 0xffff) - sp) & 0xffff));
@@ -2119,6 +2118,32 @@ def16('KERNEL', 620, '', 'jmp', function () {
   this.cpu.fs.value = this.tibFor();
   this.cpu.esp.value = (ebx & ~3) | 0;
   return u32(relay);
+}
+def16('KERNEL', 620, '', 'jmp', function () { return cbClientThunkSL.call(this); });
+// CBClientThunkSLEx (#621, KRNL386 seg2:760F): the same relay for a callback whose 16-bit caller has its stack segment
+// locked while it runs. As KRNL386 does: 28h bytes more of frame, the caller's four dwords copied to its bottom, then
+// a return to the unlocking code (CBEXRET below) and the dword above them; on as CBClientThunkSL. Selectors here are
+// never moved, so the lock count KRNL386 keeps (seg1:7A28) has nothing to hold
+def16('KERNEL', 621, '', 'jmp', function () {
+  const ssb = u32(this.cpu.ssb.value), old = this.cpu.esp.value & 0xffff, sp = (old - 0x28) & 0xffff, at = o => ssb + (o & 0xffff);
+  const ret = this.thunk16For('KRNL.#1');
+  let si = old, di = sp;
+  for (let i = 0; i < 4; i++, si += 4, di += 4) this.w32(at(di), this.r32(at(si)));
+  this.w32(at(di), ret); di += 4;
+  for (let i = 0; i < 6; i++, di += 4) this.w32(at(di), 0);
+  this.w32(at(di), this.r32(at(si)));
+  this.cpu.esp.value = (this.cpu.esp.value & ~0xffff) | sp;
+  return cbClientThunkSL.call(this);
+});
+// CBClientThunkSLEx's return (KRNL386 seg2:7648): past the zero words to the caller's return address, which it returns
+// to, removing the 28h bytes of frame
+def16('KRNL', 1, '', 'jmp', function () {
+  const ssb = u32(this.cpu.ssb.value), sp = this.cpu.esp.value & 0xffff, at = o => ssb + (o & 0xffff);
+  let q = sp; while (!this.r16(at(q)) && q - sp < 0x28) q += 2;
+  const top = (sp + 0x24) & 0xffff;
+  this.w32(at(top), this.r32(at(q)));
+  this.cpu.esp.value = (this.cpu.esp.value & ~0xffff) | top;
+  return this.retf16(0);
 });
 // IsSLThunklet: whether a far pointer addresses a 16-to-32 thunklet (push dword, push dword, jmp far), as KRNL386 checks
 def16('KERNEL', 612, 'x', 'w', function (sp) {

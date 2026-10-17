@@ -550,7 +550,7 @@ function makeDisk(mounted) {
   for (const [e, d] of Object.entries(sysFonts)) fs.writeFile(join(WINDIR, 'FONTS', e), b64(d));
   fs.writeFile('C:\\Program Files\\Accessories\\WORDPAD.EXE', exeStub());
   fs.writeFile(PROGRAMS + '\\Accessories\\Notepad.lnk', lnk(WINDIR + '\\NOTEPAD.EXE'));
-  installPrograms(); setupRegistry(); setupSound(); setupNetwork();
+  installPrograms(); setupRegistry(); setupSound(); setupHelp(); setupNetwork();
   // the CD's screen savers, byte for byte, under the long names APPLETS.INF gives them in LDID_SYS
   const LONG = { 'BEZIER.SCR': 'Curves and Colors.scr', 'SSMARQUE.SCR': 'Scrolling Marquee.scr', 'SSMYST.SCR': 'Mystify Your Mind.scr',
     'SCRNSAVE.SCR': 'Blank Screen.scr', 'SSFLYWIN.SCR': 'Flying Windows.scr', 'SSSTARS.SCR': 'Flying Through Space.scr' };
@@ -793,7 +793,7 @@ function bootDisk() {
   mountDrives();
   W95Win32.regAttach(host.registry);
   if (!fs.attach('C', host.disk)) makeDisk(true);
-  installPrograms(); setupRegistry(); setupSound(); setupNetwork();
+  installPrograms(); setupRegistry(); setupSound(); setupHelp(); setupNetwork();
   fs.chdir('C:\\');
 }
 
@@ -816,7 +816,7 @@ const TYPES = {
   mid: { desc: 'MIDI Sequence', icon: 'windoc', open: p => runExe(join(WINDIR, 'MPLAYER.EXE'), /\s/.test(p) ? `"${p}"` : p) },
   rmi: { desc: 'MIDI Sequence', icon: 'windoc', open: p => runExe(join(WINDIR, 'MPLAYER.EXE'), /\s/.test(p) ? `"${p}"` : p) },
 };
-const EXE_ICON = { 'NOTEPAD.EXE': 'notepad', 'EXPLORER.EXE': 'explorer' };
+const EXE_ICON = { 'NOTEPAD.EXE': 'notepad', 'EXPLORER.EXE': 'explorer', 'WINHLP32.EXE': 'help' };
 const isRoot = p => /^[A-Z]:\\$/i.test(p);
 const inBin = p => /^C:\\RECYCLED(\\|$)/i.test(p);
 const num = n => n.toLocaleString('en-US');
@@ -835,6 +835,18 @@ function dispName(name, isDir) {
   return !isDir && TYPES[e] && n.length > e.length + 1 ? n.slice(0, -e.length - 1) : n;
 }
 const typeDesc = i => i.isDir ? 'Folder' : TYPES[extname(i.name)] ? TYPES[extname(i.name)].desc : extname(i.name) ? extname(i.name).toUpperCase() + ' File' : 'File';
+// the shell's own folders as a shortcut names them (its target the folder's class: ::{CLSID}), by item key
+const NS_CLSID = { 'sys:mc': '::{20D04FE0-3AEA-1069-A2D8-08002B30309D}', 'sys:net': '::{208D2C60-3AEA-1069-A2D7-08002B30309D}',
+  'sys:bin': '::{645FF040-5081-101B-9F08-00AA002F954E}', 'v:cp': '::{21EC2020-3AEA-1069-A2DD-08002B30309D}', 'v:pr': '::{2227A280-3AEA-1069-A2DE-08002B30309D}' };
+/** the namespace folder a ::{CLSID} target names: { key, label, icon, open } */
+const nsItem = t => {
+  const key = Object.keys(NS_CLSID).find(k => NS_CLSID[k].toUpperCase() === String(t || '').toUpperCase()); if (!key) return null;
+  return { 'sys:mc': { label: 'My Computer', icon: 'mycomputer', open: () => openFolder(MyComputer) },
+    'sys:net': { label: 'Network Neighborhood', icon: 'network', open: () => { Network.refresh(); openFolder(Network); } },
+    'sys:bin': { label: 'Recycle Bin', icon: 'recycle', open: () => openFolder(RecycleBin) },
+    'v:cp': { label: 'Control Panel', icon: 'controlpanel', open: () => openFolder(ControlPanel) },
+    'v:pr': { label: 'Printers', icon: 'printers', open: () => openFolder(Printers) } }[key];
+};
 function readLnk(p) { try { const m = /^Target=(.*)$/m.exec(fs.readText(p)); return m ? m[1].trim() : null; } catch (_) { return null; } }
 function driveIcon(l) { const v = fs.vols.get(l); return v.kind === 'removable' ? 'floppy' : v.kind === 'cdrom' ? 'cdrom' : v.kind === 'remote' ? 'netdrive' : 'hdd'; }
 // a network name as Windows 95 shows one: its first letter capital, the rest small
@@ -851,7 +863,7 @@ function driveLabel(l) {
 function iconFor(i, depth = 0) {
   if (i.isDir) return isRoot(i.path) ? driveIcon(i.drive) : 'folder';
   const e = extname(i.name);
-  if (e === 'lnk') { const t = readLnk(i.path); try { return t && depth < 4 ? iconFor(fs.stat(t), depth + 1) : 'app'; } catch (_) { return 'app'; } }
+  if (e === 'lnk') { const t = readLnk(i.path), ns = nsItem(t); if (ns) return ns.icon; try { return t && depth < 4 ? iconFor(fs.stat(t), depth + 1) : 'app'; } catch (_) { return 'app'; } }
   if (e === 'exe') return EXE_ICON[i.name.toUpperCase()] || 'app';
   return (TYPES[e] && TYPES[e].icon) || 'windoc';
 }
@@ -959,7 +971,8 @@ function runNotepad(file, exe = join(WINDIR, 'NOTEPAD.EXE')) {
 }
 const resolveArg = a => { a = a.trim().replace(/^"(.*)"$/, '$1'); return /^[a-z]:|^\\/i.test(a) ? a : join(fs.cwd, a); };
 function openLnk(path) {
-  const t = readLnk(path);
+  const t = readLnk(path), ns = nsItem(t);
+  if (ns) return ns.open();
   if (t && fs.exists(t)) return shellOpen(t);
   msgBox('Problem with Shortcut', `The item '${basename(t || path)}' that this shortcut refers to has been changed or moved, so this shortcut will no longer work properly.`, 'warning');
 }
@@ -1102,12 +1115,12 @@ function pasteInto(dir) {
 }
 function pasteShortcut(dir) { if (clip && dir) makeShortcut(clip.path, dir); }
 function makeShortcut(target, dir) {
-  const base = isRoot(target) ? driveLabel(target[0]) : dispName(basename(target), fs.stat(target).isDir);
+  const ns = nsItem(target), base = ns ? ns.label : isRoot(target) ? driveLabel(target[0]) : dispName(basename(target), fs.stat(target).isDir);
   let p; for (let k = 1; ; k++) { p = join(dir, `Shortcut${k > 1 ? ` (${k})` : ''} to ${base.replace(/[\\/:*?"<>|]/g, '')}.lnk`); if (!fs.exists(p)) break; }
   return fsTry('create', 'shortcut', () => fs.writeFile(p, lnk(target))) ? p : null;
 }
 function createShortcut(view, it) {
-  const target = it.path; if (!target) return;
+  const target = it.path || NS_CLSID[it.key]; if (!target) return;
   const dir = view.src.path;
   if (!dir || view.src.readonly) {
     return msgBox('Shortcut', 'Windows cannot create a shortcut here.\n\nDo you want the shortcut to be placed on the desktop instead?', 'question', ['&Yes', '&No'],
@@ -1188,7 +1201,7 @@ function itemMenu(view, it) {
   const net = !!((window.W95SYSTEM || {}).net || {})['MPR.DLL'];
   if (net && (it.key === 'sys:mc' || it.key === 'sys:net')) out.push({ label: 'Ma&p Network Drive...', fn: mapNetDrive }, { label: 'Dis&connect Network Drive...', fn: disconnectNetDrive }, { sep: true });
   if (net && it.drive && fs.vols.get(it.drive).remote) out.push({ label: 'Dis&connect', fn: () => netCall('WNetCancelConnection2A', [netStr(it.drive + ':'), 1, 0]).then(syncNetDrives) }, { sep: true });
-  out.push({ label: 'Create &Shortcut', disabled: !(real || it.drive), fn: () => createShortcut(view, it) });
+  out.push({ label: 'Create &Shortcut', disabled: !(real || it.drive || NS_CLSID[it.key]), fn: () => createShortcut(view, it) });
   if (real) out.push({ label: '&Delete', disabled: ro, fn: () => confirmDelete(it) }, { label: 'Rena&me', disabled: ro, fn: () => startRename(view, it) });
   out.push({ sep: true }, { label: 'P&roperties', fn: () => properties(it) });
   return out;
@@ -1492,7 +1505,7 @@ function openFolder(src) {
         ...viewModeItems(view), { sep: true },
         { label: 'Arrange &Icons', sub: arrangeItems(view) }, { label: 'Line &up Icons', disabled: view.mode === 'list' || view.mode === 'details', fn: () => view.lineUp() }, { sep: true },
         { label: '&Refresh', fn: () => view.refresh() }] },
-      { label: '&Help', items: [{ label: '&Help Topics', disabled: true }, { sep: true }, { label: '&About Windows 95', fn: aboutWin95 }] },
+      { label: '&Help', items: [{ label: '&Help Topics', disabled: !hasHelp(), fn: () => winHelp() }, { sep: true }, { label: '&About Windows 95', fn: aboutWin95 }] },
     ],
   }));
   return win;
@@ -1806,7 +1819,7 @@ function notepad(path) {
         { label: 'Time/&Date', acc: 'F5', fn: () => np.insert(timeDate()) }, { sep: true },
         { label: '&Word Wrap', check: np.wrap, fn: () => { np.wrap = !np.wrap; np.vl = null; np.left = 0; np.show(); } }] },
       { label: '&Search', items: () => [{ label: '&Find...', fn: () => findDialog(np) }, { label: 'Find &Next', acc: 'F3', fn: () => np.findNext() }] },
-      { label: '&Help', items: [{ label: '&Help Topics', disabled: true }, { sep: true }, { label: '&About Notepad', fn: () => msgBox('About Notepad', 'Microsoft Notepad\nWindows 95', 'info') }] },
+      { label: '&Help', items: [{ label: '&Help Topics', disabled: !hasHelp(), fn: () => winHelp('notepad.hlp') }, { sep: true }, { label: '&About Notepad', fn: () => msgBox('About Notepad', 'Microsoft Notepad\nWindows 95', 'info') }] },
     ],
   });
   return openWin(w);
@@ -2318,7 +2331,7 @@ function shutDownDialog() {
     ...radios,
     { type: 'button', label: '&Yes', x: bx, y: 118, w: 75, h: 23, def: true, fn: yes },
     { type: 'button', label: '&No', x: bx + 81, y: 118, w: 75, h: 23, cancel: true, fn: () => closeWin(win) },
-    { type: 'button', label: '&Help', x: bx + 162, y: 118, w: 75, h: 23, disabled: true },
+    { type: 'button', label: '&Help', x: bx + 162, y: 118, w: 75, h: 23, disabled: !hasHelp(), fn: () => winHelp() },
   ], { dim: true });
 }
 function shutdownSeq(restart) {
@@ -2747,6 +2760,16 @@ function mediaResources() {
   R.regSet(drv, 'devnode', devnode);
   R.regSet(drv, 'migrated', str('1'));
 }
+// the help files Setup puts in C:\WINDOWS\HELP, each one the disk lacks
+function setupHelp() {
+  const S = window.W95SYSTEM || {}, dir = join(WINDIR, 'HELP');
+  if (!Object.keys(S.help || {}).length) return;
+  fs.mkdir(dir, { recursive: true });
+  for (const [n, d] of Object.entries(S.help)) { const f = join(dir, n.toLowerCase()); if (!fs.exists(f)) fs.writeFile(f, b64bytes(d)); }
+}
+/** Windows Help (the recompiled WINHLP32.EXE) on a help file of C:\WINDOWS\HELP: with its contents file, Help Topics */
+const hasHelp = () => !!((window.W95SYSTEM || {}).programs || {})['WINHLP32.EXE'];
+function winHelp(file = 'windows.hlp') { closeMenus(); if (hasHelp()) runNative(join(WINDIR, 'WINHLP32.EXE'), join(WINDIR, 'HELP', file)); }
 function setupSound() {
   const S = window.W95SYSTEM || {}, infs = S.infs || {};
   if (!infs['MOTOWN.INF']) return;
@@ -2888,7 +2911,7 @@ class NativeApp {
     // program's screen: no window is cut off at its bottom edge and the pointer reaches every point
     [this.sw, this.sh] = [...NATIVE_MODES].reverse().find(([w, h]) => w >= W && h >= H) || NATIVE_MODES[0];
     const host = {
-      fs, width: this.sw, height: this.sh, path: this.path, now: () => performance.now(), net: this.net,
+      fs, width: this.sw, height: this.sh, path: this.path, now: () => performance.now(), net: this.net, vmPages: 2048,   // 128 MiB of address space to reserve
       cursor: () => ({ x: mouse.x, y: mouse.y }), surface: (h, w, hh) => mkc(w, hh).getContext('2d'), setCursor: () => {},
       exited: (code, why) => this.exited(code, why), boot: p => p.bootUser16(),
     };
@@ -3530,7 +3553,7 @@ const START = [
     { label: '&Files or Folders...', icon: 'findfiles', fn: () => findFiles() },
     { label: '&Computer...', icon: 'findcomp', disabled: !((window.W95SYSTEM || {}).net || {})['MPR.DLL'], fn: findComputer },
   ] },
-  { label: '&Help', icon: 'help', disabled: true },
+  { label: '&Help', icon: 'help', disabled: !hasHelp(), fn: () => winHelp() },
   { label: '&Run...', icon: 'run', fn: runDialog },
   { sep: true },
   { label: 'Sh&ut Down...', icon: 'shutdown', fn: shutDownDialog },
@@ -4052,5 +4075,5 @@ const script = {
   },
 };
 
-window.win95 = { ...script, get nativeApps() { return [...nativeApps]; }, startNetwork, netBoot, netCall, syncNetDrives, mapNetDrive, disconnectNetDrive, get netApp() { return netApp; }, fs, render, SaverRun, displayProperties, startFullSaver, get fullSaver() { return fullSaver; }, properties, driveProps, openFolder, openPath, shellOpen, notepad, msgBox, runDialog, findComputer, findFiles, shutDownDialog, MyComputer, get state() { return { menus: menus.length, menuSrc, modals: modals.length, cap: !!cap, drag: !!drag, screen, active: active && active.title }; } };
+window.win95 = { ...script, get nativeApps() { return [...nativeApps]; }, startNetwork, netBoot, netCall, syncNetDrives, mapNetDrive, disconnectNetDrive, get netApp() { return netApp; }, fs, render, SaverRun, displayProperties, startFullSaver, get fullSaver() { return fullSaver; }, properties, driveProps, openFolder, openPath, shellOpen, notepad, msgBox, runDialog, findComputer, findFiles, winHelp, shutDownDialog, MyComputer, get state() { return { menus: menus.length, menuSrc, modals: modals.length, cap: !!cap, drag: !!drag, screen, active: active && active.title }; } };
 })();
