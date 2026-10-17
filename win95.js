@@ -924,6 +924,7 @@ function netItem(r) {
   return { key, label, icon, virt: true, net: r, open: () => { if (sub.refresh) sub.refresh(); openFolder(sub); } };
 }
 const EntireNetwork = netFolder('net:entire', 'Entire Network', 'globe', 2, { scope: 2, type: 0, disp: 7, usage: 2, remote: '', comment: 'Entire Network', provider: '' });
+EntireNetwork.res = { scope: 2, type: 0, disp: 7, usage: 2, remote: '', comment: 'Entire Network', provider: '' };
 const Network = netFolder('net', 'Network Neighborhood', 'network', 5, null);
 EntireNetwork.refresh = () => netLists.delete('net:entire');
 const RecycleBin = virt('bin', 'Recycle Bin', 'recycle', () => binItems().map(e => ({
@@ -2134,6 +2135,77 @@ function runCommand(v) {
   for (const b of bases) for (const e of exts) if (fs.exists(b + e)) return shellOpen(fs.realpath(b + e), arg);
   if (/^[a-z]:\\?$/i.test(cmd)) { try { fs.stat(cmd); } catch (e) { return msgBox(cmd.toUpperCase(), fsMsg(cmd.toUpperCase(), e), 'error'); } }
   msgBox(v, `Cannot find the file '${v}' (or one of its components). Make sure the path and filename are correct and that all required libraries are available.`, 'error');
+}
+
+// Find: Computer. The computers the network's browse lists name (each workgroup's, through MPR's enumeration) whose
+// names match: a pattern with * or ? as a wildcard, else any name containing what was typed
+function findComputer() {
+  closeMenus();
+  const open = windows.find(w => w.title === 'Find: Computer'); if (open) return activate(open);
+  let win, found = [], sel = -1, status = '', run = 0;
+  const sb = new ScrollBar(true, () => dirty());
+  const edit = { type: 'edit', page: 0, x: 74, y: 40, w: 220, h: 21, value: '', caret: 0, combo: true, focus: true };
+  const match = name => {
+    const q = edit.value.trim().replace(/^\\+/, '').toUpperCase(); if (!q) return true;
+    if (!/[*?]/.test(q)) return name.toUpperCase().includes(q);
+    return new RegExp('^' + q.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.') + '$').test(name.toUpperCase());
+  };
+  const findNow = async () => {
+    const me = ++run; found = []; sel = -1; status = 'Searching...'; stop.disabled = false; dirty();
+    const groups = (await netEnum(2, EntireNetwork.res)).filter(r => r.disp === 1);
+    for (const g of groups) {
+      if (me !== run) return;
+      for (const r of await netEnum(2, g)) {
+        if (me !== run) return;
+        const name = r.remote.replace(/^\\+/, '');
+        if (r.disp === 2 && match(name) && !found.some(f => f.remote.toUpperCase() === r.remote.toUpperCase())) { found.push({ ...r, location: netCap(g.remote) }); dirty(); }
+      }
+    }
+    status = `${found.length} computer(s) found`; stop.disabled = true; dirty();
+  };
+  const stop = { type: 'button', x: 318, y: 38, w: 80, h: 23, label: 'St&op', disabled: true, fn: () => { run++; status = `${found.length} computer(s) found`; stop.disabled = true; } };
+  const openFound = r => netItem(r).open();
+  const list = {
+    type: 'custom', x: 0, y: 112, w: 410, h: 150,
+    draw(a, foc, w) {
+      field(a.x, a.y, a.w, a.h);
+      const inner = { x: a.x + 2, y: a.y + 2, w: a.w - 20, h: a.h - 4 }, hdr = 18, rows = Math.floor((inner.h - hdr) / 17), cols = [[0, 'Name', 130], [130, 'In Folder', 120], [250, 'Comment', inner.w - 250]];
+      for (const [cx, label, cw] of cols) { btnUp(inner.x + cx, inner.y, cw, hdr); text(label, inner.x + cx + 6, inner.y + 3, K.dk); }
+      sb.set(inner.x + inner.w, inner.y, inner.h, found.length, rows);
+      ctx.save(); ctx.beginPath(); ctx.rect(inner.x, inner.y + hdr, inner.w, inner.h - hdr); ctx.clip();
+      for (let i = sb.pos; i < Math.min(found.length, sb.pos + rows + 1); i++) {
+        const r = found[i], y = inner.y + hdr + (i - sb.pos) * 17 + 1, label = esc(netName(r)), tw = textW(label), on = i === sel && w.isActive;
+        icon('netserver16', inner.x + 2, y, on);
+        if (i === sel) fill(inner.x + 20, y + 1, tw + 4, 14, w.isActive ? K.sel : K.face);
+        text(label, inner.x + 22, y + 2, on ? K.hl : K.dk);
+        if (i === sel && foc) focusRect(inner.x + 20, y + 1, tw + 4, 14);
+        text(esc(r.location), inner.x + 136, y + 2, K.dk); text(esc(r.comment || ''), inner.x + 256, y + 2, K.dk);
+      }
+      ctx.restore(); sb.draw();
+      this.inner = { ...inner, y: inner.y + hdr, h: inner.h - hdr };
+    },
+    down(x, y, btn, dbl) {
+      if (sb.contains(x, y)) return sb.down(x, y);
+      const i = sb.pos + Math.floor((y - this.inner.y) / 17);
+      sel = i >= 0 && i < found.length && y >= this.inner.y ? i : -1;
+      if (dbl && sel >= 0) openFound(found[sel]);
+      return null;
+    },
+    key(e) {
+      if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && found.length) { sel = clamp(sel + (e.key === 'ArrowDown' ? 1 : -1), 0, found.length - 1); return true; }
+      if (e.key === 'Enter' && found[sel]) { openFound(found[sel]); return true; }
+      return false;
+    },
+  };
+  win = dialog('Find: Computer', 410, 282, [
+    { type: 'tabs', x: 6, y: 6, w: 300, h: 98, tabs: ['Computer Name'] },
+    { type: 'label', page: 0, text: '&Named:', amp: true, x: 18, y: 44 }, edit,
+    { type: 'button', x: 318, y: 10, w: 80, h: 23, label: 'F&ind Now', def: true, fn: findNow }, stop,
+    { type: 'button', x: 318, y: 66, w: 80, h: 23, label: 'Ne&w Search', fn: () => { run++; found = []; sel = -1; status = ''; edit.value = ''; edit.caret = 0; stop.disabled = true; } },
+    list,
+    { type: 'custom', x: 0, y: 264, w: 410, h: 18, draw: a => { btnDown(a.x, a.y, a.w, a.h); text(esc(status), a.x + 4, a.y + 3, K.dk); } },
+  ], { modal: false, noTask: false, icon: 'findcomp' });
+  return win;
 }
 
 function shutDownDialog() {
@@ -3366,7 +3438,7 @@ const START = [
   ] },
   { label: '&Find', icon: 'find', sub: [
     { label: '&Files or Folders...', icon: 'findfiles', disabled: true },
-    { label: '&Computer...', icon: 'findcomp', disabled: true },
+    { label: '&Computer...', icon: 'findcomp', disabled: !((window.W95SYSTEM || {}).net || {})['MPR.DLL'], fn: findComputer },
   ] },
   { label: '&Help', icon: 'help', disabled: true },
   { label: '&Run...', icon: 'run', fn: runDialog },
@@ -3890,5 +3962,5 @@ const script = {
   },
 };
 
-window.win95 = { ...script, get nativeApps() { return [...nativeApps]; }, startNetwork, netBoot, netCall, syncNetDrives, mapNetDrive, disconnectNetDrive, get netApp() { return netApp; }, fs, render, SaverRun, displayProperties, startFullSaver, get fullSaver() { return fullSaver; }, properties, driveProps, openFolder, openPath, shellOpen, notepad, msgBox, runDialog, shutDownDialog, MyComputer, get state() { return { menus: menus.length, menuSrc, modals: modals.length, cap: !!cap, drag: !!drag, screen, active: active && active.title }; } };
+window.win95 = { ...script, get nativeApps() { return [...nativeApps]; }, startNetwork, netBoot, netCall, syncNetDrives, mapNetDrive, disconnectNetDrive, get netApp() { return netApp; }, fs, render, SaverRun, displayProperties, startFullSaver, get fullSaver() { return fullSaver; }, properties, driveProps, openFolder, openPath, shellOpen, notepad, msgBox, runDialog, findComputer, shutDownDialog, MyComputer, get state() { return { menus: menus.length, menuSrc, modals: modals.length, cap: !!cap, drag: !!drag, screen, active: active && active.title }; } };
 })();
