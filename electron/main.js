@@ -38,6 +38,7 @@ let shares
 ipcMain.on('shares-list', e => { e.returnValue = shares.list() })
 ipcMain.on('share-op', (e, name, op, ...args) => { e.returnValue = shares.op(name, op, ...args) })
 ipcMain.on('host-name', e => { e.returnValue = os.hostname().split('.')[0] })
+ipcMain.on('user-name', e => { try { e.returnValue = os.userInfo().username } catch (_) { e.returnValue = '' } })
 async function shareFolder() {
   const r = await dialog.showOpenDialog({ title: 'Share a Folder', buttonLabel: 'Share', properties: ['openDirectory', 'createDirectory'] })
   if (!r.canceled && r.filePaths[0]) shares.add(r.filePaths[0])

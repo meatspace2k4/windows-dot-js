@@ -151,7 +151,8 @@ class FileSystem {
       let v = this.uncs.get(key);
       if (!v) {
         const b = this.uncBackend && this.uncBackend(unc); if (!b) throw new FSError(E.BAD_NETPATH, path);
-        v = { letter: null, unc, rootPath: unc + '\\', remote: b, kind: 'remote', ready: true, readonly: false, label: u[2], alloc: n => Math.ceil(n / 4096) * 4096 };
+        v = { letter: null, unc, rootPath: unc + '\\', remote: b, kind: 'remote', ready: true, readonly: false, label: u[2], cluster: 4096, total: 0, used: 0,
+          alloc: n => Math.ceil(n / 4096) * 4096, get free() { return Math.max(0, this.total - this.used); } };
         this.uncs.set(key, v);
       }
       for (const seg of u[3].split(/[\\/]+/)) { if (!seg || seg === '.') continue; if (seg === '..') parts.pop(); else parts.push(seg); }

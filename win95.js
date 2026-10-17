@@ -2627,8 +2627,11 @@ function setupSound() {
 function setupNetwork() {
   const R = W95Win32, infs = (window.W95SYSTEM || {}).infs || {};
   if (!infs['NETNOVEL.INF'] || !infs['NETTRANS.INF'] || !infs['NETCLI.INF'] || !infs['NET.INF']) return;
-  if (R.regGet('hklm\\enum\\root\\net\\0000', 'Driver') !== undefined) return;
   const str = v => ({ type: 1, data: W95FS.encode(v + '\0') }), bin = (...b) => ({ type: 3, data: Uint8Array.from(b) });
+  // the user name Setup asks for, which the logon offers (Network\Logon username): the host's account
+  const user = ((window.W95HOST && window.W95HOST.userName) || '').replace(/[^\w.\-$!#%&'(){}^~@]/g, '').slice(0, 20);
+  if (user && R.regGet('hklm\\network\\logon', 'username') === undefined) R.regSet('hklm\\network\\logon', 'username', str(user));
+  if (R.regGet('hklm\\enum\\root\\net\\0000', 'Driver') !== undefined) return;
   const cls = 'hklm\\system\\currentcontrolset\\services\\class\\';
   const set = (k, o) => { for (const [n, v] of Object.entries(o)) R.regSet(k, n, typeof v === 'string' ? str(v) : v); };
   // the card

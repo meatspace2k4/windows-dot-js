@@ -23,4 +23,5 @@ contextBridge.exposeInMainWorld('W95HOST', {
     op: (name, op, ...args) => ipcRenderer.sendSync('share-op', name, op, ...args),
   },
   computerName: ipcRenderer.sendSync('host-name'),
+  userName: ipcRenderer.sendSync('user-name'),   // the Mac's account: the name Setup gives the network logon
 })
