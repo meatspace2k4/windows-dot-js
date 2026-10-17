@@ -33,3 +33,29 @@ window.__testShare = function (name = 'PUBLIC') {
   };
   W95LANHOST.shares = [{ name, remark: 'test share', ops }]; window.__shareFs = F; return F;
 };
+// MPR's WNetAddConnection2A in the network's process: the local device (N:) to \\HOST\SHARE; its result
+window.__netUse = function (local, remote) {
+  const p = win95.netApp.proc, mpr = p.byName.get('MPR'), fn = mpr && mpr.exports.get('WNetAddConnection2A');
+  const nr = p.alloc(32), l = p.alloc(16), r = p.alloc(260);
+  p.u8.fill(0, nr, nr + 32); p.writeA(l, local); p.writeA(r, remote);
+  p.w32(nr + 4, 1); p.w32(nr + 16, l); p.w32(nr + 20, r);   // RESOURCETYPE_DISK, lpLocalName, lpRemoteName
+  const t = performance.now(), ret = p.call(fn, [nr, 0, 0, 0]);
+  return { ret, ms: +(performance.now() - t).toFixed(1), lastError: p.lastError };
+};
+// WNetLogonA(NULL, NULL) on a thread of the network's process: a stub `push 0; push 0; call [WNetLogonA]; ret 4`
+window.__netLogon = function () {
+  const p = win95.netApp.proc, fn = p.byName.get('MPR').exports.get('WNetLogonA'), a = p.alloc(32);
+  p.w32(a + 16, fn);
+  p.u8.set([0x6a, 0x00, 0x6a, 0x00, 0xff, 0x15, ...[0, 8, 16, 24].map(s => ((a + 16) >>> s) & 0xff), 0xc2, 0x04, 0x00], a);
+  return p.newThread(a, 0, 0x10000, true, false);
+};
+// the logon on a thread of the network's process, its dialog answered with OK (the user name it remembers, no password)
+window.__netLogonOk = async function () {
+  const t = __netLogon(), a = win95.netApp, t0 = performance.now();
+  while (t.state !== 'done' && performance.now() - t0 < 20000) {
+    const w = [...a.wins.values()].find(x => /Password/.test(x.title));
+    if (w) win95.click(w.x + w.w - 45, w.y + 37);   // its OK button
+    await new Promise(r => setTimeout(r, 500));
+  }
+  return t.state;
+};

@@ -17,4 +17,10 @@ contextBridge.exposeInMainWorld('W95HOST', {
     load: () => ipcRenderer.sendSync('registry-load'),
     op: op => send('reg', op),
   },
+  // the Mac's folders the LAN's file server shares, and their file operations (each { ok } or { err })
+  shares: {
+    list: () => ipcRenderer.sendSync('shares-list'),
+    op: (name, op, ...args) => ipcRenderer.sendSync('share-op', name, op, ...args),
+  },
+  computerName: ipcRenderer.sendSync('host-name'),
 })

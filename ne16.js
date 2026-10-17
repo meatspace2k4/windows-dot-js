@@ -2041,7 +2041,7 @@ def16('KERNEL', 490, 'w', 'w', function (v) { const o = this.k490 || 0; this.k49
 // For 'SL01' thunk data (16 -> 32 calls, VER.DLL to VERSION.DLL) the names are kept for C16ThkSL01 to find the 32-bit
 // half's target table by.
 def16('KERNEL', 651, 'sswlxsw', 'w', function (dll16, dll32, hinst, reason, td, name32) {
-  if (reason === 1 && td >>> 16 && this.readA(this.lin(td), 4) === 'SL01') (this.sl01 = this.sl01 || new Map()).set(this.lin(td), { dll32, name32 });
+  if (reason === 1 && td >>> 16 && this.readA(this.lin(td), 4) === 'SL01') { const sl = this.sl01 || (this.sl01 = new Map()); sl.set(this.lin(td), Object.assign(sl.get(this.lin(td)) || {}, { dll32, name32 })); }
   return 1;
 });
 // C16ThkSL01 (#631): a thunk-compiler stub's 16 -> 32 call. EDX = 16:16 of its ThunkDataSL16, CX = target number * 4,
@@ -2051,7 +2051,7 @@ def16('KERNEL', 651, 'sswlxsw', 'w', function (dll16, dll32, hinst, reason, td, 
 // target) gives, dropping the arguments, as for a 32-bit half that never connected.
 def16('KERNEL', 631, '', 'jmp', function () {
   const td = this.lin(u32(this.cpu.edx.value)), cx = this.cpu.ecx.value & 0xffff, rec = this.sl01 && this.sl01.get(td);
-  if (rec && !rec.mod) {
+  if (rec && !rec.mod && rec.dll32) {
     const m = this.loadDll(String(rec.dll32 || '').toUpperCase().replace(/^.*\\/, '').replace(/\.DLL$/, ''));
     const td32 = m && m.exports.get(rec.name32);
     if (td32) Object.assign(rec, { mod: m, table: u32(td32 + (this.r32(td32 + 0x20) | 0)) });
@@ -2535,7 +2535,15 @@ K('ThunkConnect32', 6, function (td, f16, m16, m32, hmod, reason) {
     this.lsRelays.set(u32(td + this.r32(td + 0x20)), { ft: true, get table() { return rel.bind(); } });
     return 1;
   }
-  if (magic === 'SL01') return 1;   // 16 -> 32: the 16-bit half connects from its side (ThunkConnect16) when it loads
+  // 16 -> 32: the 32-bit half's target table, for the 16-bit half (ThunkConnect16's record, made now if its half has
+  // not announced itself yet) to call through
+  if (magic === 'SL01') {
+    const t16 = find(); if (!t16) return 1;
+    const sl = this.sl01 || (this.sl01 = new Map()), rec = sl.get(t16) || {}; sl.set(t16, rec);
+    rec.mod = this.modules.find(x => x.base === hmod) || this.modules.find(x => td >= x.base && td < x.base + (x.size || 0x100000));
+    rec.table = u32(f16 + (this.r32(td + 0x20) | 0));   // the thunk compiler's table lies before the 16-bit half's name
+    return 1;
+  }
   const t16 = find(); if (!t16) return 0;
   if (this.r32(t16) !== this.r32(td) || this.r32(t16 + 4) !== this.r32(td + 4)) return 0;   // magic and checksum
   if (magic === 'LS01') {

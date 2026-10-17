@@ -1283,6 +1283,21 @@ def('ADVAPI32', 'RegEnumKeyA', 4, function (hk, i, buf, n) {
   const path = regPath(this, hk, 0); const kids = [...REGISTRY.keys()].filter(k => k.startsWith(path + '\\') && !k.slice(path.length + 1).includes('\\'));
   if (i >= kids.length) return 259; this.writeA(buf, kids[i].slice(path.length + 1), n); return 0;
 });
+def('ADVAPI32', 'RegFlushKey', 1, () => 0);                       // the registry store writes through
+def('ADVAPI32', 'RegConnectRegistryA', 3, () => 53);              // another computer's registry: ERROR_BAD_NETPATH
+// user profiles' hives (MPRSERV, when profiles are enabled): this machine keeps one user's settings
+def('ADVAPI32', 'RegLoadKeyA', 3, () => 1); def('ADVAPI32', 'RegUnLoadKeyA', 2, () => 1); def('ADVAPI32', 'RegSaveKeyA', 3, () => 1);
+def('ADVAPI32', 'RegRemapPreDefKey', 2, () => 0);
+// RegEnumKeyExA(key, index, name, *cchName, -, class, *cchClass, *lastWrite): the name and its length; no classes, no times
+def('ADVAPI32', 'RegEnumKeyExA', 8, function (hk, i, buf, pn, res, cls, pcls, ft) {
+  const path = regPath(this, hk, 0); const kids = [...REGISTRY.keys()].filter(k => k.startsWith(path + '\\') && !k.slice(path.length + 1).includes('\\'));
+  if (i >= kids.length) return 259;
+  const name = kids[i].slice(path.length + 1), n = this.r32(pn); if (n <= name.length) { this.w32(pn, name.length + 1); return 234; }
+  this.writeA(buf, name, n); this.w32(pn, name.length);
+  if (cls && pcls) { this.u8[cls] = 0; this.w32(pcls, 0); } else if (pcls) this.w32(pcls, 0);
+  if (ft) { this.w32(ft, 0); this.w32(ft + 4, 0); }
+  return 0;
+});
 def('ADVAPI32', 'RegEnumValueA', 8, function (hk, i, name, cbName, res, type, data, cb) {
   const m = regKey(regPath(this, hk, 0)); if (!m) return 2; const e = [...m.entries()][i]; if (!e) return 259;
   const nm = (e[1] && e[1].name) || e[0]; this.writeA(name, nm, this.r32(cbName)); this.w32(cbName, nm.length);

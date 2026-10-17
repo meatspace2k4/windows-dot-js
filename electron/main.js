@@ -1,4 +1,5 @@
-const { app, BrowserWindow, Menu, ipcMain } = require('electron')
+const { app, BrowserWindow, Menu, ipcMain, dialog } = require('electron')
+const os = require('os')
 const fs = require('fs')
 const path = require('path')
 
@@ -31,10 +32,22 @@ ipcMain.on('store', (e, op, ...args) => {
   try { store.apply(op, args) } catch (err) { console.error('store', op, err) }
 })
 app.on('will-quit', () => store && store.close())
+
+// ---- the Mac's folders, as the LAN's other computer serves them (shares.js)
+let shares
+ipcMain.on('shares-list', e => { e.returnValue = shares.list() })
+ipcMain.on('share-op', (e, name, op, ...args) => { e.returnValue = shares.op(name, op, ...args) })
+ipcMain.on('host-name', e => { e.returnValue = os.hostname().split('.')[0] })
+async function shareFolder() {
+  const r = await dialog.showOpenDialog({ title: 'Share a Folder', buttonLabel: 'Share', properties: ['openDirectory', 'createDirectory'] })
+  if (!r.canceled && r.filePaths[0]) shares.add(r.filePaths[0])
+}
 app.whenReady().then(() => {
   store = require('./store').open(path.join(app.getPath('userData'), 'C.db'))
+  shares = require('./shares').open(path.join(app.getPath('userData'), 'shares.json'))
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     { role: 'appMenu' },
+    { label: 'File', submenu: [{ label: 'Share a Folder…', click: shareFolder }] },
     { label: 'View', submenu: [{ role: 'togglefullscreen' }, { role: 'reload' }, { role: 'toggleDevTools' }] },
     { role: 'windowMenu' },
   ]))
