@@ -212,6 +212,14 @@ const ATTR = { RO: 1, HIDDEN: 2, SYSTEM: 4, DIR: 0x10, ARCHIVE: 0x20 };
 const attrsOf = st => (st.dir ? ATTR.DIR : ATTR.ARCHIVE) | (st.readonly ? ATTR.RO : 0) | (st.hidden ? ATTR.HIDDEN : 0);
 // a DOS pattern (* and ?, *.* everything) as a test on long names
 const wild = p => { if (!p || p === '*' || p === '*.*') return () => true; const r = new RegExp('^' + p.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.') + (p.includes('.') ? '' : '(\\..*)?') + '$', 'i'); return n => r.test(n); };
+// a core search's pattern against an 8.3 name as DOS compares them: both as 11-character FCB fields (name and
+// extension padded with spaces), '?' any character there including the padding, '*' the rest of its field as '?'
+const fcb = (n, pat) => {
+  const dot = n.lastIndexOf('.'), base = dot >= 0 && n !== '.' && n !== '..' ? n.slice(0, dot) : n, ext = dot >= 0 && n !== '.' && n !== '..' ? n.slice(dot + 1) : '';
+  const field = (f, w) => { let o = ''; for (const c of f.toUpperCase()) { if (o.length >= w) break; if (pat && c === '*') { o = o.padEnd(w, '?'); break; } o += c; } return o.padEnd(w, ' ').slice(0, w); };
+  return field(base, 8) + field(ext, 3);
+};
+const match83 = (pat, name) => { if (!pat || pat === '*.*' || pat === '*') return true; const p = fcb(pat, true), n = fcb(name, false); for (let i = 0; i < 11; i++) if (p[i] !== '?' && p[i] !== n[i]) return false; return true; };
 // 8.3 aliases for the core protocol's searches, as a FAT volume would give them (NAME~1.EXT)
 const short83 = (name, taken) => {
   const up = name.toUpperCase(), m = /^([^.]{1,8})(?:\.([^.]{0,3}))?$/.exec(up);
@@ -230,9 +238,11 @@ class SmbConnection {
       const wc = m[at], words = m.subarray(at + 1, at + 1 + 2 * wc), bc = le16(m, at + 1 + 2 * wc), bytes = m.subarray(at + 3 + 2 * wc, at + 3 + 2 * wc + bc);
       const req = { m, cmd, wc, w: i => le16(words, 2 * i), d: i => le32(words, 2 * i), words, bytes, bytesAt: at + 3 + 2 * wc, tid: le16(m, 24), pid: le16(m, 26), uid: le16(m, 28), mid: le16(m, 30), flags2: le16(m, 10) };
       const andx = ANDX.has(cmd) && wc ? words[0] : 0xff, andxOff = ANDX.has(cmd) && wc ? le16(words, 2) : 0;
+      if (host.smbTrace) host.smbTrace(cmd, req);
       try { out.begin(cmd); this.handle(req, out); }
       catch (e) {
         if (!(e instanceof SmbError)) { console.error('[lanhost] SMB', cmd.toString(16), e); e = new SmbError(ERR.SRV, 1); }
+        if (host.smbTrace) host.smbTrace(cmd, req, e);
         out.error(e.cls, e.code); break;
       }
       if (andx === 0xff) break;
@@ -298,7 +308,7 @@ const HANDLERS = {
     else { const s = shareList().find(x => x.name === share); if (!s) fail(ERR.SRV, E.invnetname); t = { name: s.name, ops: s.ops }; }
     if (!t.ipc && svc === 'IPC') fail(ERR.SRV, E.invnetname);
     const tid = this.nextTid++; this.trees.set(tid, t); o.h[24] = tid & 0xff; o.h[25] = tid >> 8;
-    o.put(W(0xff, 0, 1), str(t.ipc ? 'IPC' : 'A:', t.ipc ? '' : 'FAT'), true);
+    o.put(W(0xff, 0, 1), str(t.ipc ? 'IPC' : 'A:', t.ipc ? '' : 'NTFS'), true);   // a file system with long names
   },
   0x71(q, o) { this.trees.delete(q.tid); o.put(W()); },   // TREE_DISCONNECT
   0x2b(q, o) { o.put(W(1), q.bytes.slice()); },        // ECHO
@@ -371,7 +381,7 @@ const HANDLERS = {
       const p = this.path(q, name), i = p.lastIndexOf('\\'), dir = i < 0 ? '' : p.slice(0, i), pat = p.slice(i + 1) || '*.*';
       const all = this.op(t, x => x.list(dir)), taken = new Set();
       const ents = all.map(e => ({ ...e, short: short83(e.name, taken) })).map(e => { taken.add(e.short); return e; });
-      const hit = ents.filter(e => (wild(pat)(e.short) || wild(pat)(e.name)) && (!e.dir || sattr & ATTR.DIR) && (!e.hidden || sattr & ATTR.HIDDEN));
+      const hit = ents.filter(e => match83(pat, e.short) && (!e.dir || sattr & ATTR.DIR) && (!e.hidden || sattr & ATTR.HIDDEN));
       const id = this.nextSid++ & 0xff; st = { id, list: hit, at: 0 }; this.searches.set('core' + id, st);
     }
     if (!st || st.at >= st.list.length) fail(ERR.DOS, E.nofiles);

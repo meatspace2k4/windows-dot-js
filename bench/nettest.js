@@ -59,3 +59,12 @@ window.__netLogonOk = async function () {
   }
   return t.state;
 };
+// the network up with N: on \\HOST\PUBLIC (the test share): the process, the logon, the connection
+window.__netUp = async function () {
+  __testShare(); window.__smb = []; W95LANHOST.smbTrace = (cmd, q, e) => { const sub = cmd === 0x32 ? '/' + q.w(14).toString(16) : ''; __smb.push(cmd.toString(16) + sub + (e ? ' ERR ' + e.cls + '/' + e.code : '')); if (__smb.length > 500) __smb.shift(); };
+  const a = await win95.startNetwork(); await new Promise(r => setTimeout(r, 1000));
+  const lg = await __netLogonOk(); const use = __netUse('N:', '\\\\HOST\\PUBLIC');
+  return { alive: a.alive, logon: lg, use };
+};
+// IFSMGR's ring-0 file API in the network's process: EAX the function, the rest as given
+window.__r0 = regs => { const p = win95.netApp.proc, r = p.vxdCall(p.vxdService(0x40, 0x32), regs); return { eax: r.eax, cf: r.cf, ecx: r.ecx, edx: r.edx }; };

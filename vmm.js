@@ -183,8 +183,10 @@ svc(VMM, 0x79, function (arg) { this.freeSels(arg(1) & 0xffff); return 1; });
 svc(VMM, 0x76, function (arg) { const s = this.allocSels(descBase(arg(1), arg(0)), descLimit(arg(1), arg(0)) + 1); this.cpu.edx.value = 0; return s; });
 svc(VMM, 0x77, function (arg) { this.freeSels(arg(0) & 0xffff); return 1; });
 // Map_Flat: AH the offset of a segment register, AL of an offset register, in the client registers (EBP): EAX linear
+// Map_Flat (AH, AL: the offsets of a segment and an offset register in the client registers): the current VM's client
+// registers, through its control block (CB_Client_Pointer), whatever EBP holds
 svc(VMM, 0x1c, function () {
-  const ax = this.cpu.eax.value & 0xffff, c = u32(this.cpu.ebp.value), seg = this.r16(c + (ax >> 8)), off = (ax & 0xff) === 0xff ? 0 : this.r32(c + (ax & 0xff));
+  const ax = this.cpu.eax.value & 0xffff, c = this.r32(this.sysVM() + 8), seg = this.r16(c + (ax >> 8)), off = (ax & 0xff) === 0xff ? 0 : this.r32(c + (ax & 0xff));
   const cs = this.r16(c + 0x28), big = this.selValid(cs) && this.r32(N.L.ACC + (cs & 0xfff8)) & 0x400000;
   this.cpu.eax.value = u32(this.selBase(seg) + (big ? off : off & 0xffff));
 });
@@ -683,6 +685,7 @@ P.vmClient = function () { return this.crs || (this.crs = this.alloc(0x60)); };
 /** the client registers for an event or time-out run between slices: the VM stopped with its own 16-bit stack (SS:SP)
  *  for VxDs to call into it on */
 P.vmClientIdle = function () {
+  if (this.crsLevel > 0) return this.crs;   // a client's call is in progress (VM code called into a VxD): its registers, as they are
   const c = this.vmClient();
   if (!this.vmStackSel) { const a = this.alloc(0x4000); this.vmStackSel = this.allocSels(a, 0x4000); }
   this.u8.fill(0, c, c + 0x60);
@@ -956,7 +959,31 @@ svc(VMM, 0x159, function (arg) { const fmt = this.readA(arg(1)) || '', a = arg(2
 // ---- VMM: the VM's interrupts. Protected-mode and V86 vectors VxDs set or hook are kept; the VM's own code reaches
 // its interrupts through the personality (ne16 INTS), so a hook here sees only what a VxD reflects to it
 const vec = p => p.vxdVecs || (p.vxdVecs = { pm: new Map(), v86: new Map(), hooks: new Map() });
-svc(VMM, 0x44, function () { const v = vec(this).pm.get(this.cpu.eax.value & 0xff) || 0; this.cpu.ecx.value = lo16(this.cpu.ecx.value, v >>> 16); this.cpu.edx.value = v & 0xffff; });   // Get_PM_Int_Vector: CX:EDX
+// a vector no VxD has set leads to the personality's own handler for it (its DOS for 21h), as the VM's previous handler
+svc(VMM, 0x44, function () { const n = this.cpu.eax.value & 0xff, v = vec(this).pm.get(n) || (N.INTS[n] ? this.thunk16For(`PMINT.#${n}`) : 0); this.cpu.ecx.value = lo16(this.cpu.ecx.value, v >>> 16); this.cpu.edx.value = v & 0xffff; });   // Get_PM_Int_Vector: CX:EDX
+for (const n of [0x21, 0x2f, 0x25, 0x26, 0x2a, 0x5c]) def16('PMINT', n, '', 'jmp', function () {   // an interrupt frame: IP, CS, flags
+  const r = N.INTS[n] ? N.INTS[n].call(this, W.LAYOUT.SENTINEL - 16) : undefined;
+  if (r === W.LAYOUT.SENTINEL) return r;
+  const ssb = u32(this.cpu.ssb.value), sp = this.cpu.esp.value & 0xffff, ip = this.r16(ssb + sp), cs = this.r16(ssb + ((sp + 2) & 0xffff));
+  this.cpu.esp.value = lo16(this.cpu.esp.value, sp + 6); this.seg('cs', cs); return u32(this.selBase(cs) + ip);
+});
+/** INT 21h as VM code issues it in protected mode, through the handler the file system manager installed (its PM
+ *  vector): `regs` the registers, DS and ES a 64K transfer area (`vmXfer()`) whose offsets the pointers are; the
+ *  registers it returns (with CF) */
+P.vmXfer = function () { if (!this.xfer) { const a = this.alloc(0x10000); this.xfer = { lin: a, sel: this.allocSels(a, 0x10000) }; } return this.xfer; };
+P.vmInt21 = function (regs) {
+  const v = vec(this).pm.get(0x21); if (!v) throw new W.GuestError('no protected-mode INT 21h handler');
+  const x = this.vmXfer(), c = this.vmInt21Crs || (this.vmInt21Crs = this.alloc(0x60));
+  if (!this.vmStackSel) { const a = this.alloc(0x4000); this.vmStackSel = this.allocSels(a, 0x4000); }
+  this.u8.fill(0, c, c + 0x60);
+  for (const [r, o] of CRS_REGS) this.w32(c + o, u32(regs[r] || 0));
+  this.w32(c + 0x30, 0x3ff0); this.w32(c + 0x34, this.vmStackSel); this.w32(c + 0x38, x.sel); this.w32(c + 0x3c, x.sel);
+  this.tick16();
+  this.r0Out(() => this.vmFarCall(c, v >>> 16, v & 0xffff, [['w', 0x202]]));
+  const out = {}; for (const [r, o] of CRS_REGS) out[r] = this.r32(c + o);
+  out.cf = this.cpu.cf.value & 1;
+  return out;
+};
 svc(VMM, 0x45, function () { vec(this).pm.set(this.cpu.eax.value & 0xff, u32(((this.cpu.ecx.value & 0xffff) << 16) | (this.cpu.edx.value & 0xffff))); });
 svc(VMM, 0x42, function () { const v = vec(this).v86.get(this.cpu.eax.value & 0xff) || 0; this.cpu.ecx.value = lo16(this.cpu.ecx.value, v >>> 16); this.cpu.edx.value = v & 0xffff; });
 svc(VMM, 0x43, function () { vec(this).v86.set(this.cpu.eax.value & 0xff, u32(((this.cpu.ecx.value & 0xffff) << 16) | (this.cpu.edx.value & 0xffff))); });
