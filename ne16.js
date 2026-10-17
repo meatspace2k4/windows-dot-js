@@ -1191,10 +1191,31 @@ P.lget = function (h, size) {
   lrelease(h, end, nend - end);
   return lfind(h, size);
 };
+/** compact a local heap as KRNL386's LocalCompact does: each moveable block nobody has locked slides down over the free
+ *  range below it (its handle entry and back-pointer following it), so the free space gathers above the blocks that
+ *  stay put; true if anything moved */
+P.localCompact = function (h) {
+  const base = this.selBase(h.sel), byAddr = new Map([...h.handles].map(([ent, a]) => [a, ent]));
+  let moved = false;
+  for (let again = true; again;) {
+    again = false;
+    for (const a of [...h.blocks.keys()].sort((x, y) => x - y)) {
+      const ent = byAddr.get(a); if (ent === undefined || this.u8[base + ent + 3]) continue;   // fixed, or locked
+      const fi = h.free.findIndex(([fa, fn]) => fa + fn === a); if (fi < 0) continue;
+      const [fa] = h.free[fi], n = h.blocks.get(a);
+      this.u8.copyWithin(base + fa, base + a, base + a + n);
+      h.blocks.delete(a); h.blocks.set(fa, n); h.handles.set(ent, fa); byAddr.delete(a); byAddr.set(fa, ent);
+      this.w16(base + ent, fa + 2);
+      h.free.splice(fi, 1); lrelease(h, fa + n, a - fa);
+      moved = again = true;
+    }
+  }
+  return moved;
+};
 P.localAlloc = function (flags, size, sel) {
   const h = this.lheap(sel);
   const moveable = !!(flags & LMEM_MOVEABLE), want = Math.max(size, 1) + (moveable ? 2 : 0);
-  const a = this.lget(h, want); if (!a) return 0;
+  const a = this.lget(h, want) || (this.localCompact(h) && this.lget(h, want)); if (!a) return 0;
   let base = this.selBase(h.sel);
   h.blocks.set(a, (want + 3) & ~3);
   if (flags & LMEM_ZEROINIT || true) this.u8.fill(0, base + a, base + a + ((want + 3) & ~3));
@@ -1242,17 +1263,25 @@ P.localReAlloc = function (hl, size, flags, sel) {
     if (want < old) { h.blocks.set(a, want); lrelease(h, a + want, old - want); }
     return hl;
   }
-  // grow in place when the following range is free
-  const fi = h.free.findIndex(([fa, fn]) => fa === a + old && fn >= want - old);
-  if (fi >= 0) {
+  // grown in place when the range after it is free: as it is, once the segment has grown (the new room follows the
+  // heap's last block), and once the heap is compacted (the block may itself have moved down)
+  const inPlace = () => {
+    const at = mov ? h.handles.get(hl) : a, fi = h.free.findIndex(([fa, fn]) => fa === at + old && fn >= want - old);
+    if (fi < 0) return false;
     const [fa, fn] = h.free[fi]; if (fn === want - old) h.free.splice(fi, 1); else h.free[fi] = [fa + want - old, fn - want + old];
-    h.blocks.set(a, want); if (flags & LMEM_ZEROINIT) this.u8.fill(0, base + a + old, base + a + want); return hl;
-  }
+    h.blocks.set(at, want); base = this.selBase(h.sel); if (flags & LMEM_ZEROINIT) this.u8.fill(0, base + at + old, base + at + want);
+    return true;
+  };
+  if (inPlace()) return hl;
   if (!mov && !(flags & LMEM_MOVEABLE)) return 0;
-  const na = this.lget(h, want); if (!na) return 0;
+  let na = this.lget(h, want);
+  if (!na && inPlace()) return hl;
+  if (!na && this.localCompact(h)) { if (inPlace()) return hl; na = this.lget(h, want); }
+  if (!na) return 0;
   base = this.selBase(h.sel);
-  this.u8.copyWithin(base + na, base + a, base + a + old); if (flags & LMEM_ZEROINIT) this.u8.fill(0, base + na + old, base + na + want);
-  h.blocks.delete(a); lrelease(h, a, old); h.blocks.set(na, want);
+  const from = mov ? h.handles.get(hl) : a;
+  this.u8.copyWithin(base + na, base + from, base + from + old); if (flags & LMEM_ZEROINIT) this.u8.fill(0, base + na + old, base + na + want);
+  h.blocks.delete(from); lrelease(h, from, old); h.blocks.set(na, want);
   if (mov) { h.handles.set(hl, na); this.w16(base + hl, na + 2); this.w16(base + na, hl); return hl; }
   return na;
 };
@@ -1378,7 +1407,7 @@ def16('KERNEL', 9, 'w', 'w', function (h) { const lh = this.lheap(); if (lh.hand
 def16('KERNEL', 10, 'w', 'w', function (h) { return this.localSize(h); });
 def16('KERNEL', 11, 'w', 'w', function (p) { const lh = this.lheap(); const b = this.selBase(lh.sel); if ((p & 3) === 2 && lh.blocks.has(p - 2)) return this.r16(b + p - 2); return p; });   // LocalHandle
 def16('KERNEL', 12, 'w', 'w', function (h) { const lh = this.lheap(); return lh.handles.has(h & 0xffff) ? this.u8[this.selBase(lh.sel) + h + 3] | (this.u8[this.selBase(lh.sel) + h + 2] << 8) : 0; });  // LocalFlags
-def16('KERNEL', 13, 'w', 'w', function () { const lh = this.lheap(); return lh.free.reduce((m, f) => Math.max(m, f[1]), 0); });   // LocalCompact
+def16('KERNEL', 13, 'w', 'w', function () { const lh = this.lheap(); this.localCompact(lh); return lh.free.reduce((m, f) => Math.max(m, f[1]), 0); });   // LocalCompact
 def16('KERNEL', 121, 'ww', 'w', function () { const lh = this.lheap(); return lh.free.reduce((m, f) => Math.max(m, f[1]), 0); }); // LocalShrink
 
 def16('KERNEL', 15, 'wl', 'w', function (fl, n) { return this.globalAlloc16(fl, n); });
