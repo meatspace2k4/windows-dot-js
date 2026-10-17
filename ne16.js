@@ -581,7 +581,8 @@ const INTS = {
     if (ax === 0x1600) { this.ax(0x0004 | (0x00 << 8)); this.cpu.eax.value = lo16(this.cpu.eax.value, 0x0004); return; }  // Windows 4.00 enhanced mode
     if (ax === 0x1683) { this.cpu.ebx.value = lo16(this.cpu.ebx.value, 1); return; }    // current VM id
     if (ax === 0x1684) {   // VxD protected-mode API entry points: the VDD, VFLATD, and the VxDs USER calls (VXD_API)
-      const id = this.cpu.ebx.value & 0xffff, ep = id === 0x0a ? this.thunk16For('VDD.#0') : id === 0x11f ? this.thunk16For('VFLATD.#0') : VXD_API[id] ? this.thunk16For(`VXD.#${id}`) : 0;
+      const id = this.cpu.ebx.value & 0xffff, api = VXD_API[id], has = api && (id !== 0x37 || (this.vxdApiRoute && this.vxdApiRoute(id)));   // ENABLE's only when its VxD is loaded
+      const ep = id === 0x0a ? this.thunk16For('VDD.#0') : id === 0x11f ? this.thunk16For('VFLATD.#0') : has ? this.thunk16For(`VXD.#${id}`) : 0;
       this.cpu.edi.value = lo16(this.cpu.edi.value, ep & 0xffff); this.seg('es', ep >>> 16); return;
     }
     if (ax === 0x1686) { this.ax(0); return; }                                          // in protected mode
@@ -744,6 +745,7 @@ P.keyEvent16 = function (vk, scan, up, ext = false) {
   return true;
 };
 vxdApi(0x0017, 'SHELL', {});
+vxdApi(0x0037, 'ENABLE', {});   // Accessibility: the recompiled ENABLE.VXD answers when it is loaded
 vxdApi(0x0442, 'VTDAPI', {
   // MMSYSTEM's timer services (timeGetDevCaps, timeBeginPeriod/EndPeriod, timeGetTime, timeSetEvent/KillEvent):
   // 0 the periods it can keep, ES:BX -> { ?, min ms, max ms } (dwords)

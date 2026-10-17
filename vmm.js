@@ -1063,6 +1063,10 @@ svc(VWIN32, 0x1a, function () { console.warn('[vxd] VWIN32_SysErrorBox'); this.c
 // _SHELL_BroadcastSystemMessage: no window gets it here
 svc(SHELL, 0x03, function () { console.warn(`[vxd] SHELL_SYSMODAL_Message: ${this.readA(u32(this.cpu.edi.value)) || ''}: ${this.readA(u32(this.cpu.ecx.value)) || ''}`); this.cpu.eax.value = 1; });
 svc(SHELL, 0x10, function () { return 0; });
+// _SHELL_HookSystemBroadcast(callback, ref, order): a handle; _SHELL_UnhookSystemBroadcast(handle). The callbacks are
+// kept for the broadcasts the system sends (SHELL_BroadcastSystemMessage's)
+svc(SHELL, 0x11, function (arg) { const h = this.alloc(8); (this.sysbHooks || (this.sysbHooks = new Map())).set(h, { fn: arg(0), ref: arg(1), order: arg(2) }); return h; });
+svc(SHELL, 0x12, function (arg) { if (this.sysbHooks) this.sysbHooks.delete(u32(arg(0))); });
 // ---- CONFIGMG at ring 0, the rest the network's VxDs use
 svc(CONFIGMG, 0x09, function (arg) { const dn = this.cmNode(arg(1)); if (!dn) return CR.INVALID_DEVNODE; this.w32(arg(0), dn.priv || 0); return CR.SUCCESS; });   // Get_Private_DWord(*v, dn, flags)
 svc(CONFIGMG, 0x0a, function (arg) { const dn = this.cmNode(arg(0)); if (!dn) return CR.INVALID_DEVNODE; dn.priv = u32(arg(1)); return CR.SUCCESS; });         // Set_Private_DWord(dn, v, flags)
@@ -1094,7 +1098,7 @@ P.absentService = function (dev, n) { if (n !== 0) return false; this.cpu.eax.va
 // and Init_Complete before Windows starts. The network's process (host.net: MPREXE's) has the network's too: the file
 // system manager and its cache and PERF, which VMM32 carries, and each one a Services\VxD key names (StaticVxD), every
 // VxD given each message in turn in the order of their DDBs' Init_Order
-const STATIC_VXDS = ['VTDAPI.VXD'], VMM32_NET = ['IFSMGR.VXD', 'VCACHE.VXD', 'PERF.VXD'];
+const STATIC_VXDS = ['VTDAPI.VXD', 'ENABLE.VXD'], VMM32_NET = ['IFSMGR.VXD', 'VCACHE.VXD', 'PERF.VXD'];
 P.vxdStatics = function () {
   const files = [...STATIC_VXDS];
   if (this.host && this.host.net) {

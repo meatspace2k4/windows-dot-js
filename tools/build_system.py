@@ -62,6 +62,9 @@ VXDS = [('mmdevldr.vxd', 0x01800000, 0x07C00000), ('mssndsys.vxd', 0x01810000, 0
         ('vtdapi.vxd', 0x01820000, 0x07C80000), ('dsound.vxd', 0x01830000, 0x07CC0000),
         # the OPL3's VxD, which arbitrates the synthesizer's ports (WIN95_13.CAB)
         ('msopl.vxd', 0x01840000, 0x07D80000),
+        # Accessibility (ENABLE.INF, part of a Typical install, combined into VMM32): StickyKeys, FilterKeys and the
+        # rest, whose state USER reads through its protected-mode API (WIN95_02.CAB)
+        ('enable.vxd', 0x01850000, 0x069C0000),
         # the network (WIN95_02.CAB, PERF from WIN95_06.CAB): the file system manager and its cache, network support,
         # the Microsoft Networks redirector, NetBIOS, the NetBEUI protocol and the NDIS 3.1 wrapper
         ('ifsmgr.vxd', 0x01200000, 0x05800000), ('vcache.vxd', 0x01230000, 0x058C0000), ('vnetsup.vxd', 0x01240000, 0x058E0000),
