@@ -31,9 +31,56 @@ const reset = async () => {
   await frame();
 };
 const BENCH = 'C:\\\\BENCH';
+// the share of the main thread other work took over ms: a chain of message-channel tasks, each gap past 0.25 ms counted
+const load = ms => new Promise(done => {
+  const ch = new MessageChannel(), t0 = performance.now(); let last = t0, busy = 0, n = 0;
+  ch.port1.onmessage = () => {
+    const now = performance.now(), gap = now - last; if (gap > 0.25) busy += gap; last = now; n++;
+    if (now - t0 < ms) ch.port2.postMessage(0); else { ch.port1.close(); done({ busy_pct: +(100 * busy / (now - t0)).toFixed(2), tasks_per_s: +(n / ((now - t0) / 1000)).toFixed(0) }); }
+  };
+  ch.port2.postMessage(0);
+});
+// the guest time a native program used over ms, as a share of it
+const guestCpu = async (app, ms) => { const a = app.proc.stats.guestMs, t = performance.now(); await sleep(ms); return +(100 * (app.proc.stats.guestMs - a) / (performance.now() - t)).toFixed(2); };
 `;
 
 export const STEPS = [
+  {
+    name: 'idle.load',
+    about: 'the empty desktop for 5 s: the main thread\'s busy share and how many tasks it ran',
+    run: async () => { await reset(); return await load(5000); },
+  },
+  {
+    name: 'network',
+    about: 'the network\'s process (MPREXE with the network VxDs under it): start-up to the card started, then 5 s idle: its guest CPU and the main thread\'s busy share',
+    run: async () => {
+      if (!win95.startNetwork) return { skipped: 'no network in this build' };
+      await reset();
+      const t = performance.now(), a = await win95.startNetwork(), start_ms = +(performance.now() - t).toFixed(1);
+      if (!a || !a.alive) throw new Error('the network process did not start: ' + (a && a.proc && a.proc.trapped));
+      const card = a.proc.devnodes().find(d => d.id === 'ROOT\\NET\\0000');
+      if (!card || !card.started) throw new Error('the network card did not start');
+      await sleep(1000);
+      const [cpu, idle] = await Promise.all([guestCpu(a, 5000), load(5000)]);
+      return { start_ms, guest_cpu_pct: cpu, idle_busy_pct: idle.busy_pct, frames_sent: window.W95LAN ? window.W95LAN.frames : 0 };
+    },
+  },
+  {
+    name: 'midi',
+    about: 'CANYON.MID opened in Media Player through MCISEQ: start-up until the synthesizer is written, then its guest CPU for 4 s',
+    run: async () => {
+      await reset();
+      const before = new Set(win95.nativeApps), t = performance.now();
+      win95.shellOpen('C:\\WINDOWS\\MEDIA\\canyon.mid');
+      let app = null;
+      while (performance.now() - t < 20000) { app = win95.nativeApps.find(x => !before.has(x) && /MPLAYER/i.test(x.path)); if (app && app.proc && app.proc.opl3 && app.proc.opl3.regs.some(v => v)) break; await sleep(20); }
+      if (!app || !app.alive) throw new Error('Media Player did not start: ' + (app && app.proc && app.proc.trapped));
+      const start_ms = +(performance.now() - t).toFixed(1), cpu = await guestCpu(app, 4000);
+      for (const w of app.wins.values()) if (w.title) app.close(w);
+      await sleep(500); await reset();
+      return { start_ms, guest_cpu_pct: cpu };
+    },
+  },
   {
     name: 'render.idle',
     about: 'one full redraw of the empty desktop (JS time to issue the canvas drawing)',

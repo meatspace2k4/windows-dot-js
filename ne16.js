@@ -2771,13 +2771,15 @@ P.r0Thread = function (tid) {
   }
   return m.get(tid);
 };
-// devices opened by name (\\.\NAME): MMDEVLDR, which WINMM's threads talk to by DeviceIoControl; others are absent
+// devices opened by name (\\.\NAME): MMDEVLDR, which WINMM's threads talk to by DeviceIoControl, and any recompiled
+// VxD loaded by that name (VREDIR, IFSMGR, which MSNET32 asks); others are absent
 const VXD_FILES = { MMDEVLDR: 0x44a, VTDAPI: 0x442 };
 const createFile = API.KERNEL32.CreateFileA[1];
 K('CreateFileA', 7, function (name, ...rest) {
   const n = this.readA(name) || '', m = /^\\\\\.\\([^\\.]+)(\.vxd)?$/i.exec(n);
   if (!m) return createFile.call(this, name, ...rest);
-  const id = VXD_FILES[m[1].toUpperCase()];
+  const loaded = [...(this.vxds || new Map()).values()].find(v => v.inited && v.name.toUpperCase() === m[1].toUpperCase());   // any VxD loaded by that name
+  const id = VXD_FILES[m[1].toUpperCase()] || (loaded && loaded.id);
   if (!id) { this.lastError = 2; return 0xffffffff; }
   const vx = this.vxdById && this.vxdById(id);   // a recompiled VxD (vmm.js) is asked first (DIOC_OPEN)
   if (vx) { const e = this.vxdIoctl(vx, 0, 0, 0, 0, 0, 0, 0); if (e) { this.lastError = e; return 0xffffffff; } }
@@ -2796,7 +2798,7 @@ K('DeviceIoControl', 8, function (h, code, inb, nin, outb, nout, pret, ovl) {
     case 1: return out(u32(arg(0) << 12));   // _LinPageLock(page, pages, flags): the locked region's linear address (the same memory: one address space here)
     case 2: if (pret) this.w32(pret, 0); return 1;                                   // unlock them
     case 3: return out(this.r0Thread(this.currentThreadId()));                        // the calling thread's ring-0 handle
-    case 4: this.queueApc(arg(2) & 0xffff, arg(0), arg(1)); return out(1);   // VWIN32_QueueUserApc(proc, data, thread)
+    case 4: this.queueApc(this.r0Tid(arg(2)), arg(0), arg(1)); return out(1);   // VWIN32_QueueUserApc(proc, data, thread)
     case 5: if (!this.mmdevCount) { this.mmdevCount = this.alloc(4); this.w32(this.mmdevCount, this.devnodes().filter(d => d.started).length); } return out(this.mmdevCount);
     case 6: return out(1);                                                           // close a ring-0 event handle
     case 7: {                                                                        // _PageAllocate(pages, flags): { linear, handle, -, physical }

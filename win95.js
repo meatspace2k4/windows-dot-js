@@ -2752,6 +2752,10 @@ class NativeApp {
   }
   // the framebuffer under this program's windows, through the DAC, into the canvas they are drawn from
   paint() {
+    // a program with nothing on the screen (no window of its own, no capture: the network's MPREXE) shows nothing: its
+    // overlay is cleared once and the screen is not read
+    if (!this.wins.size && !this.capture) { if (!this.blank) { this.o32.fill(0); this.ox.putImageData(this.oimg, 0, 0); this.blank = true; } return; }
+    this.blank = false;
     const a = this.proc.scanout(); if (a.bpp !== 8) return;
     const pal = this.pal, dac = a.dac, v = a.vram, pitch = a.pitch || a.w, d = this.d32, sw = this.sw, sh = this.sh;
     for (let i = 0; i < 256; i++) { const r = dac[3 * i], g = dac[3 * i + 1], b = dac[3 * i + 2]; pal[i] = 0xff000000 | ((b << 2 | b >> 4) << 16) | ((g << 2 | g >> 4) << 8) | (r << 2 | r >> 4); }

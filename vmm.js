@@ -641,7 +641,15 @@ svc(CONFIGMG, 0x3e, function (arg) {
 // ---- VMM: time. Get_System_Time: EAX the milliseconds since Windows started; Get_System_Time_Address: EAX the
 // address of that count, which the timer keeps current
 /** the system time, whole milliseconds since start: the clock time-outs and Get_System_Time share */
-P.sysTime = function () { return Math.floor(this.now() - this.t0); };
+P.sysTime = function () { return Math.floor(this.now() - this.t0 + (this.timeSkew || 0)); };
+/** ring 0 waits with nothing to run but a time-out: the clock moves on to it (no more than 10 s), as the processor would
+ *  have idled until then; true if it did */
+P.r0Skip = function () {
+  if (!this.vxdTimeOuts || !this.vxdTimeOuts.size) return false;
+  const next = Math.min(...[...this.vxdTimeOuts.values()].map(t => t.due)), now = this.sysTime();
+  if (next <= now || next - now > 10000) return false;
+  this.timeSkew = (this.timeSkew || 0) + (next - now); return true;
+};
 svc(VMM, 0x3f, function () { this.cpu.eax.value = u32(this.sysTime()); });
 svc(VMM, 0x144, function () { if (!this.vmmTimeLin) this.vmmTimeLin = this.alloc(4); this.tick16(); this.cpu.eax.value = this.vmmTimeLin; });
 // time-outs: Set_Global_Time_Out / Set_VM_Time_Out / Set_Async_Time_Out (EAX ms, ESI callback, EDX ref): ESI the handle.
@@ -692,7 +700,10 @@ svc(VMM, 0x82, function () { (this.nest = this.nest || []).push({ pushes: [], ta
 svc(VMM, 0x4d, function () { const n = this.nest && this.nest[this.nest.length - 1]; if (n) n.pushes.push(['w', this.cpu.eax.value & 0xffff]); });
 svc(VMM, 0x48, function () { const n = this.nest && this.nest[this.nest.length - 1]; if (n) n.target = [this.cpu.ecx.value & 0xffff, this.cpu.edx.value & 0xffff]; });
 svc(VMM, 0x85, function () {
-  const n = this.nest && this.nest[this.nest.length - 1]; if (!n || !n.target) return;
+  const n = this.nest && this.nest[this.nest.length - 1];
+  // the VM runs for a moment with nothing called (IFSMgr_Yield): what the processor would take meanwhile runs, the
+  // interrupts and the time-outs and events that are due
+  if (!n || !n.target) { if (!this.r0Pump() && this.r0Skip()) this.r0Pump(); return; }
   this.tick16();
   // real-mode code the personality answers for (a DOS driver's entry, ne16 rmEntries): the words stay pushed on the
   // client's stack for the caller to pop, the function the last one pushed and a far pointer the two before it; DX:AX
@@ -815,9 +826,7 @@ P.r0Wait = function (done, what) {
   while (!done()) {
     if (this.trapped) throw new W.GuestError(this.trapped);
     if (this.r0Pump()) continue;
-    const next = this.vxdTimeOuts && this.vxdTimeOuts.size ? Math.min(...[...this.vxdTimeOuts.values()].map(t => t.due)) : Infinity;
-    if (next === Infinity || next - this.sysTime() > 5000 || performance.now() - t0 > 10000) throw new W.GuestError(`ring 0 deadlock: ${what} never comes`);
-    while (this.sysTime() < next) { /* the clock reaches the time-out */ }
+    if (!this.r0Skip() || performance.now() - t0 > 10000) throw new W.GuestError(`ring 0 deadlock: ${what} never comes`);
   }
 };
 
