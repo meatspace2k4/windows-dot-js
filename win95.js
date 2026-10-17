@@ -2137,6 +2137,96 @@ function runCommand(v) {
   msgBox(v, `Cannot find the file '${v}' (or one of its components). Make sure the path and filename are correct and that all required libraries are available.`, 'error');
 }
 
+// Find: All Files. Name & Location (a name, with * and ? as wildcards or else any name containing it; where to look,
+// My Computer for every drive; whether below it), Date Modified (all, or the last days), Advanced (text the file
+// holds). The search walks the folders a slice at a time, so the shell keeps running; results come as they are found
+function findFiles(lookIn) {
+  closeMenus();
+  const open = windows.find(w => w.title === 'Find: All Files'); if (open) return activate(open);
+  let win, found = [], sel = -1, status = '', run = 0;
+  const sb = new ScrollBar(true, () => dirty());
+  const named = { type: 'edit', page: 0, x: 84, y: 40, w: 280, h: 21, value: '', caret: 0, combo: true, focus: true };
+  const look = { type: 'edit', page: 0, x: 84, y: 68, w: 280, h: 21, value: lookIn || 'C:\\', caret: 0, combo: true };
+  const subs = { type: 'check', page: 0, label: 'Include &subfolders', checked: true, x: 18, y: 96 };
+  const allDates = { type: 'radio', page: 1, group: 'd', label: '&All files', checked: true, x: 18, y: 40 };
+  const lastDays = { type: 'radio', page: 1, group: 'd', label: 'during the pre&vious', checked: false, x: 18, y: 64 };
+  const days = { type: 'edit', page: 1, x: 150, y: 62, w: 40, h: 21, value: '1', caret: 1 };
+  const containing = { type: 'edit', page: 2, x: 120, y: 40, w: 244, h: 21, value: '', caret: 0 };
+  const nameTest = () => {
+    const q = named.value.trim().toUpperCase(); if (!q) return () => true;
+    if (!/[*?]/.test(q)) return n => n.toUpperCase().includes(q);
+    const re = new RegExp('^' + q.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.') + '$');
+    return n => re.test(n.toUpperCase());
+  };
+  const done = n => { status = `${n} file(s) found`; stop.disabled = true; dirty(); };
+  const findNow = async () => {
+    const me = ++run, test = nameTest(), text = containing.value.toUpperCase(), since = lastDays.checked ? Date.now() - Math.max(0, parseInt(days.value, 10) || 0) * 86400000 : 0;
+    const where = look.value.trim(), roots = /^my computer$/i.test(where) ? fs.volumes().filter(v => v.ready).map(v => v.root) : [where];
+    found = []; sel = -1; sb.pos = 0; status = 'Searching...'; stop.disabled = false; dirty();
+    const holds = i => { if (!text) return true; if (i.isDir || i.size > 4 << 20) return false; try { return W95FS.decode(fs.readFile(i.path)).toUpperCase().includes(text); } catch (_) { return false; } };
+    let n = 0;
+    const walk = async dir => {
+      let items; try { items = fs.readdir(dir); } catch (_) { return; }
+      for (const i of items) {
+        if (me !== run) return;
+        if ((test(i.name) || (i.shortName && test(i.shortName))) && (!since || i.mtime >= since) && holds(i)) { found.push(i); dirty(); }
+        if (++n % 200 === 0) { status = `Searching ${dir}`; await new Promise(r => setTimeout(r, 0)); if (me !== run) return; }
+        if (i.isDir && subs.checked && !inBin(i.path)) await walk(i.path);
+      }
+    };
+    for (const r of roots) { if (me !== run) return; try { if (!fs.stat(r).isDir) continue; } catch (e) { status = ''; return msgBox('Find', fsMsg(r, e), 'error'); } await walk(r); }
+    if (me === run) done(found.length);
+  };
+  const stop = { type: 'button', x: 388, y: 38, w: 80, h: 23, label: 'St&op', disabled: true, fn: () => { run++; done(found.length); } };
+  const openFound = i => (i.isDir ? openPath(i.path) : shellOpen(i.path));
+  const cols = [['Name', 130], ['In Folder', 120], ['Size', 50], ['Type', 80], ['Modified', 0]];
+  const list = {
+    type: 'custom', x: 0, y: 132, w: 480, h: 150,
+    draw(a, foc, w) {
+      field(a.x, a.y, a.w, a.h);
+      const inner = { x: a.x + 2, y: a.y + 2, w: a.w - 20, h: a.h - 4 }, hdr = 18, rows = Math.floor((inner.h - hdr) / 17);
+      let cx = 0; const xs = cols.map(([label, cw]) => { const x0 = cx, ww = cw || inner.w - cx; btnUp(inner.x + x0, inner.y, ww, hdr); text(label, inner.x + x0 + 6, inner.y + 3, K.dk); cx += ww; return x0; });
+      sb.set(inner.x + inner.w, inner.y, inner.h, found.length, rows);
+      ctx.save(); ctx.beginPath(); ctx.rect(inner.x, inner.y + hdr, inner.w, inner.h - hdr); ctx.clip();
+      for (let i = sb.pos; i < Math.min(found.length, sb.pos + rows + 1); i++) {
+        const f = found[i], y = inner.y + hdr + (i - sb.pos) * 17 + 1, label = esc(dispName(f.name, f.isDir)), tw = textW(label), on = i === sel && w.isActive;
+        icon(iconFor(f) + '16', inner.x + 2, y, on);
+        if (i === sel) fill(inner.x + 20, y + 1, Math.min(tw + 4, cols[0][1] - 20), 14, w.isActive ? K.sel : K.face);
+        ctx.save(); ctx.beginPath(); ctx.rect(inner.x, y, cols[0][1] - 2, 16); ctx.clip(); text(label, inner.x + 22, y + 2, on ? K.hl : K.dk); ctx.restore();
+        if (i === sel && foc) focusRect(inner.x + 20, y + 1, Math.min(tw + 4, cols[0][1] - 20), 14);
+        const cell = (k, v) => { ctx.save(); ctx.beginPath(); ctx.rect(inner.x + xs[k], y, (cols[k][1] || inner.w - xs[k]) - 2, 16); ctx.clip(); text(esc(v), inner.x + xs[k] + 6, y + 2, K.dk); ctx.restore(); };
+        cell(1, dirname(f.path)); cell(2, f.isDir ? '' : Math.max(1, Math.ceil(f.size / 1024)) + 'KB'); cell(3, typeDesc(f)); cell(4, fmtShort(f.mtime));
+      }
+      ctx.restore(); sb.draw();
+      this.inner = { ...inner, y: inner.y + hdr, h: inner.h - hdr };
+    },
+    down(x, y, btn, dbl) {
+      if (sb.contains(x, y)) return sb.down(x, y);
+      const i = sb.pos + Math.floor((y - this.inner.y) / 17);
+      sel = i >= 0 && i < found.length && y >= this.inner.y ? i : -1;
+      if (dbl && sel >= 0) openFound(found[sel]);
+      return null;
+    },
+    key(e) {
+      if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && found.length) { sel = clamp(sel + (e.key === 'ArrowDown' ? 1 : -1), 0, found.length - 1); return true; }
+      if (e.key === 'Enter' && found[sel]) { openFound(found[sel]); return true; }
+      return false;
+    },
+  };
+  win = dialog('Find: All Files', 480, 302, [
+    { type: 'tabs', x: 6, y: 6, w: 370, h: 118, tabs: ['Name && Location', 'Date Modified', 'Advanced'] },
+    { type: 'label', page: 0, text: '&Named:', amp: true, x: 18, y: 44 }, named,
+    { type: 'label', page: 0, text: '&Look in:', amp: true, x: 18, y: 72 }, look, subs,
+    { type: 'button', page: 0, x: 284, y: 94, w: 80, h: 23, label: '&Browse...', fn: () => browseFolder({ title: 'Select the folder to search in:', done: p => { if (p) { look.value = p; look.caret = p.length; } } }) },
+    allDates, lastDays, days, { type: 'label', page: 1, text: 'day(s)', x: 196, y: 66 },
+    { type: 'label', page: 2, text: '&Containing text:', amp: true, x: 18, y: 44 }, containing,
+    { type: 'button', x: 388, y: 10, w: 80, h: 23, label: 'F&ind Now', def: true, fn: findNow }, stop,
+    { type: 'button', x: 388, y: 66, w: 80, h: 23, label: 'Ne&w Search', fn: () => { run++; found = []; sel = -1; status = ''; named.value = ''; named.caret = 0; containing.value = ''; stop.disabled = true; } },
+    list,
+    { type: 'custom', x: 0, y: 284, w: 480, h: 18, draw: a => { btnDown(a.x, a.y, a.w, a.h); ctx.save(); ctx.beginPath(); ctx.rect(a.x, a.y, a.w, a.h); ctx.clip(); text(esc(status), a.x + 4, a.y + 3, K.dk); ctx.restore(); } },
+  ], { modal: false, noTask: false, icon: 'findfiles' });
+  return win;
+}
 // Find: Computer. The computers the network's browse lists name (each workgroup's, through MPR's enumeration) whose
 // names match: a pattern with * or ? as a wildcard, else any name containing what was typed
 function findComputer() {
@@ -3437,7 +3527,7 @@ const START = [
     { label: '&Taskbar...', icon: 'taskbar', fn: taskbarProperties },
   ] },
   { label: '&Find', icon: 'find', sub: [
-    { label: '&Files or Folders...', icon: 'findfiles', disabled: true },
+    { label: '&Files or Folders...', icon: 'findfiles', fn: () => findFiles() },
     { label: '&Computer...', icon: 'findcomp', disabled: !((window.W95SYSTEM || {}).net || {})['MPR.DLL'], fn: findComputer },
   ] },
   { label: '&Help', icon: 'help', disabled: true },
@@ -3962,5 +4052,5 @@ const script = {
   },
 };
 
-window.win95 = { ...script, get nativeApps() { return [...nativeApps]; }, startNetwork, netBoot, netCall, syncNetDrives, mapNetDrive, disconnectNetDrive, get netApp() { return netApp; }, fs, render, SaverRun, displayProperties, startFullSaver, get fullSaver() { return fullSaver; }, properties, driveProps, openFolder, openPath, shellOpen, notepad, msgBox, runDialog, findComputer, shutDownDialog, MyComputer, get state() { return { menus: menus.length, menuSrc, modals: modals.length, cap: !!cap, drag: !!drag, screen, active: active && active.title }; } };
+window.win95 = { ...script, get nativeApps() { return [...nativeApps]; }, startNetwork, netBoot, netCall, syncNetDrives, mapNetDrive, disconnectNetDrive, get netApp() { return netApp; }, fs, render, SaverRun, displayProperties, startFullSaver, get fullSaver() { return fullSaver; }, properties, driveProps, openFolder, openPath, shellOpen, notepad, msgBox, runDialog, findComputer, findFiles, shutDownDialog, MyComputer, get state() { return { menus: menus.length, menuSrc, modals: modals.length, cap: !!cap, drag: !!drag, screen, active: active && active.title }; } };
 })();
