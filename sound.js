@@ -342,7 +342,8 @@ const out = (proc, rate) => {
       a.node.connect(ctx.destination);
       for (const m of a.pending) a.node.port.postMessage(m, [m[0].buffer, m[1].buffer]);
       a.pending = [];
-    });
+    }).catch(() => { a.pending = []; })   // the program exited (its context closed) while the module was loading
+      .finally(() => URL.revokeObjectURL(url));
     const resume = () => { if (ctx.state === 'suspended') ctx.resume(); };
     a.resume = resume;
     for (const t of ['pointerdown', 'keydown']) window.addEventListener(t, resume, true);

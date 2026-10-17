@@ -1,0 +1,329 @@
+{
+  "env": {
+    "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Windows95/0.1.0 Chrome/152.0.7977.149 Electron/44.7.2 Safari/537.36",
+    "screen": {
+      "width": 640,
+      "height": 480,
+      "taskbar": 452
+    },
+    "dpr": 2,
+    "cores": 8,
+    "store": true,
+    "browser": "Chrome/152.0.7977.149",
+    "url": "file:///Users/johusha/Win95/electron/Windows%2095.app/Contents/Resources/app/web/index.html"
+  },
+  "results": {
+    "boot": {
+      "to_desktop_ms": 1022,
+      "dom_content_loaded_ms": 218.2,
+      "load_ms": 713.3
+    },
+    "idle.load": {
+      "busy_pct": 7.65,
+      "tasks_per_s": 378060
+    },
+    "network": {
+      "start_ms": 2523,
+      "guest_cpu_pct": 1.19,
+      "idle_busy_pct": 7.05,
+      "frames_sent": 9
+    },
+    "midi": {
+      "start_ms": 439.4,
+      "guest_cpu_pct": 3.28
+    },
+    "render.idle": {
+      "render": {
+        "n": 300,
+        "mean_ms": 0.012,
+        "p50_ms": 0,
+        "p95_ms": 0.1,
+        "max_ms": 0.4
+      }
+    },
+    "input.desktop-click": {
+      "sync": {
+        "n": 40,
+        "mean_ms": 0.358,
+        "p50_ms": 0.4,
+        "p95_ms": 0.6,
+        "max_ms": 1.2
+      },
+      "to_frame": {
+        "n": 40,
+        "mean_ms": 16.705,
+        "p50_ms": 16.6,
+        "p95_ms": 19.1,
+        "max_ms": 22.5
+      }
+    },
+    "input.pointer-move": {
+      "sync": {
+        "n": 60,
+        "mean_ms": 0.368,
+        "p50_ms": 0.3,
+        "p95_ms": 0.8,
+        "max_ms": 1
+      },
+      "to_frame": {
+        "n": 60,
+        "mean_ms": 16.742,
+        "p50_ms": 16.8,
+        "p95_ms": 19.1,
+        "max_ms": 21.9
+      }
+    },
+    "startmenu": {
+      "open": {
+        "sync": {
+          "n": 20,
+          "mean_ms": 0.625,
+          "p50_ms": 0.6,
+          "p95_ms": 2.6,
+          "max_ms": 2.6
+        },
+        "to_frame": {
+          "n": 20,
+          "mean_ms": 16.745,
+          "p50_ms": 16.8,
+          "p95_ms": 19.1,
+          "max_ms": 19.1
+        }
+      },
+      "programs": {
+        "sync": {
+          "n": 10,
+          "mean_ms": 1.37,
+          "p50_ms": 1.2,
+          "p95_ms": 4.5,
+          "max_ms": 4.5
+        },
+        "to_frame": {
+          "n": 10,
+          "mean_ms": 17.3,
+          "p50_ms": 16.7,
+          "p95_ms": 22.7,
+          "max_ms": 22.7
+        }
+      }
+    },
+    "folders": {
+      "c_root": {
+        "sync": {
+          "n": 5,
+          "mean_ms": 1.62,
+          "p50_ms": 1.5,
+          "p95_ms": 3.2,
+          "max_ms": 3.2
+        },
+        "to_frame": {
+          "n": 5,
+          "mean_ms": 16.6,
+          "p50_ms": 16.5,
+          "p95_ms": 18.2,
+          "max_ms": 18.2
+        }
+      },
+      "windows_system": {
+        "sync": {
+          "n": 5,
+          "mean_ms": 2.9,
+          "p50_ms": 2.9,
+          "p95_ms": 4.7,
+          "max_ms": 4.7
+        },
+        "to_frame": {
+          "n": 5,
+          "mean_ms": 17.02,
+          "p50_ms": 16.8,
+          "p95_ms": 18.2,
+          "max_ms": 18.2
+        }
+      },
+      "cd_win95": {
+        "sync": {
+          "n": 5,
+          "mean_ms": 4.74,
+          "p50_ms": 4.4,
+          "p95_ms": 6.6,
+          "max_ms": 6.6
+        },
+        "to_frame": {
+          "n": 5,
+          "mean_ms": 16.6,
+          "p50_ms": 16.2,
+          "p95_ms": 17.4,
+          "max_ms": 17.4
+        }
+      },
+      "my_computer": {
+        "sync": {
+          "n": 5,
+          "mean_ms": 0.82,
+          "p50_ms": 0.9,
+          "p95_ms": 1.1,
+          "max_ms": 1.1
+        },
+        "to_frame": {
+          "n": 5,
+          "mean_ms": 16.66,
+          "p50_ms": 17.1,
+          "p95_ms": 17.4,
+          "max_ms": 17.4
+        }
+      },
+      "render_four_open": {
+        "n": 100,
+        "mean_ms": 0.458,
+        "p50_ms": 0.3,
+        "p95_ms": 0.4,
+        "max_ms": 10.9
+      }
+    },
+    "window.drag": {
+      "sync": {
+        "n": 80,
+        "mean_ms": 0.627,
+        "p50_ms": 0.6,
+        "p95_ms": 1.3,
+        "max_ms": 1.3
+      },
+      "to_frame": {
+        "n": 80,
+        "mean_ms": 16.489,
+        "p50_ms": 16.6,
+        "p95_ms": 18.6,
+        "max_ms": 22.1
+      }
+    },
+    "notepad": {
+      "open": {
+        "to_window": {
+          "n": 5,
+          "mean_ms": 199.68,
+          "p50_ms": 186.9,
+          "p95_ms": 255.1,
+          "max_ms": 255.1
+        }
+      },
+      "type_1000_ms": 3715.7,
+      "per_key_ms": 3.7157,
+      "save_ms": 44.8,
+      "saved_bytes": 61000
+    },
+    "fs": {
+      "create_per_s": 18939.4,
+      "read_per_s": 416666.7,
+      "readdir_500_ms": 0.3,
+      "rename_per_s": 23474.2,
+      "delete_per_s": 113636.4
+    },
+    "display-properties": {
+      "open": {
+        "sync": {
+          "n": 5,
+          "mean_ms": 1,
+          "p50_ms": 0.8,
+          "p95_ms": 1.9,
+          "max_ms": 1.9
+        },
+        "to_frame": {
+          "n": 5,
+          "mean_ms": 121.48,
+          "p50_ms": 119.2,
+          "p95_ms": 159.4,
+          "max_ms": 159.4
+        }
+      },
+      "tab_switch": {
+        "sync": {
+          "n": 12,
+          "mean_ms": 0.25,
+          "p50_ms": 0.2,
+          "p95_ms": 0.6,
+          "max_ms": 0.6
+        },
+        "to_frame": {
+          "n": 12,
+          "mean_ms": 16.642,
+          "p50_ms": 16.6,
+          "p95_ms": 18.1,
+          "max_ms": 18.1
+        }
+      },
+      "window": {
+        "w": 398,
+        "h": 445
+      }
+    },
+    "savers": {
+      "Blank Screen": {
+        "startup_ms": null,
+        "timers_per_s": 0,
+        "gl_frames_per_s": 0,
+        "guest_cpu_pct": 0.02
+      },
+      "Curves and Colors": {
+        "startup_ms": 80.6,
+        "timers_per_s": 18.15,
+        "gl_frames_per_s": 0,
+        "guest_cpu_pct": 3.02
+      },
+      "Flying Through Space": {
+        "startup_ms": 68,
+        "timers_per_s": 18.16,
+        "gl_frames_per_s": 0,
+        "guest_cpu_pct": 0.82
+      },
+      "Flying Windows": {
+        "startup_ms": 74.7,
+        "timers_per_s": 18.15,
+        "gl_frames_per_s": 0,
+        "guest_cpu_pct": 4.78
+      },
+      "Mystify Your Mind": {
+        "startup_ms": 75.2,
+        "timers_per_s": 18.15,
+        "gl_frames_per_s": 0,
+        "guest_cpu_pct": 1.23
+      },
+      "SS3DFO": {
+        "startup_ms": 200.5,
+        "timers_per_s": 18.16,
+        "gl_frames_per_s": 36.32,
+        "guest_cpu_pct": 16.16
+      },
+      "SSFLWBOX": {
+        "startup_ms": 125,
+        "timers_per_s": 18.15,
+        "gl_frames_per_s": 54.44,
+        "guest_cpu_pct": 12.13
+      },
+      "SSMAZE": {
+        "startup_ms": 401.8,
+        "timers_per_s": 18.16,
+        "gl_frames_per_s": 18.16,
+        "guest_cpu_pct": 10.95
+      },
+      "SSPIPES": {
+        "startup_ms": 218.3,
+        "timers_per_s": 17.65,
+        "gl_frames_per_s": 35.46,
+        "guest_cpu_pct": 3.26
+      },
+      "SSTEXT3D": {
+        "startup_ms": 171.1,
+        "timers_per_s": 18.16,
+        "gl_frames_per_s": 54.49,
+        "guest_cpu_pct": 7.83
+      },
+      "Scrolling Marquee": {
+        "startup_ms": 72,
+        "timers_per_s": 18.16,
+        "gl_frames_per_s": 0,
+        "guest_cpu_pct": 0.49
+      }
+    }
+  },
+  "at": "2026-10-17T22:28:42.996Z"
+}
