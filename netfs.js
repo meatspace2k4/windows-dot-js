@@ -10,14 +10,16 @@ const fromFileTime = (lo, hi) => (lo === 0 && hi === 0 ? 0 : Math.round((hi * 42
 const dosDT = ms => { const d = new Date(ms), y = Math.max(1980, d.getFullYear());
   return { date: ((y - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate(), time: (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1) }; };
 
-/** the backend of drive `letter`, connected in `app`'s process (the network's) */
+/** the backend of drive `letter` (or of share `letter` when it is a UNC name, \\server\share), connected in `app`'s
+ *  process (the network's) */
 function backend(app, letter) {
-  const proc = () => { if (!app.alive || !app.proc) throw new FSError(21, letter + ':\\'); return app.proc; };
-  const full = rel => letter + ':\\' + rel;
+  const unc = letter.length > 1, root = unc ? letter + '\\' : letter + ':\\';
+  const proc = () => { if (!app.alive || !app.proc) throw new FSError(21, root); return app.proc; };
+  const full = rel => root + rel;
   // INT 21h: the registers, DS and ES the transfer area; an FSError with DOS's code when it sets carry
   const int21 = (regs, what) => {
     const p = proc(), r = p.vmInt21(regs);
-    if (r.cf) throw new FSError(r.eax & 0xffff, what || letter + ':\\');
+    if (r.cf) throw new FSError(r.eax & 0xffff, what || root);
     return r;
   };
   const put = (off, s) => { const p = proc(), x = p.vmXfer(); p.writeA(x.lin + off, s, 0x200); };
@@ -74,7 +76,16 @@ function backend(app, letter) {
     setAttrs: (rel, attrs) => { put(XFER_PATH, full(rel)); int21({ eax: 0x7143, ebx: 1, ecx: attrs, edx: XFER_PATH }, full(rel)); },
     setTime: (rel, ms) => { const t = dosDT(ms); put(XFER_PATH, full(rel)); int21({ eax: 0x7143, ebx: 3, ecx: t.time, edi: t.date, edx: XFER_PATH }, full(rel)); },
     // 36h: AX sectors a cluster, BX clusters free, CX bytes a sector, DX clusters (DL the drive, 1 for A:)
-    space: () => { const r = int21({ eax: 0x3600, edx: letter.charCodeAt(0) - 64 }); const c = (r.eax & 0xffff) * (r.ecx & 0xffff); return { total: c * (r.edx & 0xffff), free: c * (r.ebx & 0xffff) }; },
+    // a share's: 7303h (DS:DX its root, ES:DI the 44-byte ExtFreeSpace: sectors a cluster at 4, bytes a sector at 8,
+    // free clusters at 0Ch, clusters at 10h)
+    space: () => {
+      if (unc) {
+        const p = proc(), x = p.vmXfer().lin + XFER_FIND; put(XFER_PATH, root); p.w16(x, 44);
+        int21({ eax: 0x7303, ecx: 44, edx: XFER_PATH, edi: XFER_FIND });
+        const c = p.r32(x + 4) * p.r32(x + 8); return { total: c * p.r32(x + 0x10), free: c * p.r32(x + 0xc) };
+      }
+      const r = int21({ eax: 0x3600, edx: letter.charCodeAt(0) - 64 }); const c = (r.eax & 0xffff) * (r.ecx & 0xffff); return { total: c * (r.edx & 0xffff), free: c * (r.ebx & 0xffff) };
+    },
   };
 }
 window.W95NetFS = { backend };

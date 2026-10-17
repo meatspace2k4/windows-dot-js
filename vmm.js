@@ -105,6 +105,7 @@ INTS[0x20] = function (next) {
   if (!fn) { this.trapped = `unimplemented VxD service ${dev.toString(16)}h:${n.toString(16)}h at ${u32(next - 6).toString(16)}`; return W.LAYOUT.SENTINEL; }
   // a VxDJmp comes from a stub the caller called: its return address sits above the arguments
   const sp = u32(this.cpu.esp.value) + (jmp ? 4 : 0), arg = i => this.r32(sp + 4 * i);
+  this.svcSite = jmp ? this.r32(sp - 4) : u32(next) - 6;   // where it was called from, for a deadlock's report
   const r = fn.call(this, arg);
   if (r !== undefined) this.cpu.eax.value = u32(r);
   if (window.W95VXDRET) window.W95VXDRET(dev, n, this, arg, u32(this.cpu.eax.value));   // debugging: each service's result
@@ -645,11 +646,12 @@ svc(CONFIGMG, 0x3e, function (arg) {
 /** the system time, whole milliseconds since start: the clock time-outs and Get_System_Time share */
 P.sysTime = function () { return Math.floor(this.now() - this.t0 + (this.timeSkew || 0)); };
 /** ring 0 waits with nothing to run but a time-out: the clock moves on to it (no more than 10 s), as the processor would
- *  have idled until then; true if it did */
+ *  have idled until then; true if it did, or if one is already due */
 P.r0Skip = function () {
   if (!this.vxdTimeOuts || !this.vxdTimeOuts.size) return false;
   const next = Math.min(...[...this.vxdTimeOuts.values()].map(t => t.due)), now = this.sysTime();
-  if (next <= now || next - now > 10000) return false;
+  if (next <= now) return true;   // one came due since the pump looked: it runs next
+  if (next - now > 10000) return false;
   this.timeSkew = (this.timeSkew || 0) + (next - now); return true;
 };
 svc(VMM, 0x3f, function () { this.cpu.eax.value = u32(this.sysTime()); });
@@ -823,13 +825,25 @@ P.r0Pump = function () {
   }
   return ran;
 };
+/** a linear address as MODULE+offset, in the image that holds it */
+P.r0Where = function (a) {
+  a = u32(a || 0);
+  let best = null;   // the image that starts nearest below it
+  for (const m of this.modules || []) if (m.base && a >= m.base && (!best || m.base > best.base)) best = m;
+  return best && a - best.base < 0x100000 ? `${best.name}+${(a - best.base).toString(16)}` : a.toString(16);
+};
 /** wait at ring 0 until `done()`: what is pending runs, and the clock moves on to the next time-out when nothing else can */
 P.r0Wait = function (done, what) {
-  const t0 = performance.now();
+  const t0 = performance.now(), site = this.svcSite, frames = [];
+  // the callers, through the frame pointers, for a deadlock's report
+  for (let bp = u32(this.cpu.ebp.value), k = 0; k < 8 && bp && bp + 8 < this.u8.length; k++, bp = this.r32(bp)) frames.push(this.r0Where(this.r32(bp + 4)));
   while (!done()) {
     if (this.trapped) throw new W.GuestError(this.trapped);
     if (this.r0Pump()) continue;
-    if (!this.r0Skip() || performance.now() - t0 > 10000) throw new W.GuestError(`ring 0 deadlock: ${what} never comes`);
+    if (!this.r0Skip() || performance.now() - t0 > 10000) {
+      const next = this.vxdTimeOuts && this.vxdTimeOuts.size ? Math.min(...[...this.vxdTimeOuts.values()].map(t => t.due)) - this.sysTime() : null;
+      throw new W.GuestError(`ring 0 deadlock: ${what} never comes (waiting at ${this.r0Where(site)}, thread ${this.currentThreadId ? this.currentThreadId() : 0}; called from ${frames.join(' < ')}; next time-out ${next === null ? 'none' : next + ' ms'})`);
+    }
   }
 };
 

@@ -837,13 +837,15 @@ function dispName(name, isDir) {
 const typeDesc = i => i.isDir ? 'Folder' : TYPES[extname(i.name)] ? TYPES[extname(i.name)].desc : extname(i.name) ? extname(i.name).toUpperCase() + ' File' : 'File';
 function readLnk(p) { try { const m = /^Target=(.*)$/m.exec(fs.readText(p)); return m ? m[1].trim() : null; } catch (_) { return null; } }
 function driveIcon(l) { const v = fs.vols.get(l); return v.kind === 'removable' ? 'floppy' : v.kind === 'cdrom' ? 'cdrom' : v.kind === 'remote' ? 'netdrive' : 'hdd'; }
+// a network name as Windows 95 shows one: its first letter capital, the rest small
+const netCap = x => (x ? x[0].toUpperCase() + x.slice(1).toLowerCase() : x);
+const isUncRoot = p => /^\\\\[^\\]+\\[^\\]+\\?$/.test(p || '');
+/** a share as Windows 95 names one: Public on 'Host' */
+const shareLabel = unc => { const [, server = '', share = ''] = /^\\\\([^\\]*)\\([^\\]*)/.exec(unc) || []; return `${netCap(share)} on '${netCap(server)}'`; };
 function driveLabel(l) {
   const v = fs.vols.get(l);
   if (v.kind === 'removable') return `3\u00bd Floppy (${l}:)`;
-  if (v.kind === 'remote') {   // a share as Windows 95 names one: 'Public on 'Host' (N:)'
-    const cap = x => (x ? x[0].toUpperCase() + x.slice(1).toLowerCase() : x), [, server = '', share = ''] = /^\\\\([^\\]*)\\(.*)$/.exec(v.unc) || [];
-    return `${cap(share)} on '${cap(server)}' (${l}:)`;
-  }
+  if (v.kind === 'remote') return `${shareLabel(v.unc)} (${l}:)`;
   return (v.label ? v.label[0] + v.label.slice(1).toLowerCase() + ' ' : '') + `(${l}:)`;
 }
 function iconFor(i, depth = 0) {
@@ -862,9 +864,9 @@ class FsSource {
   constructor(path) { this.ino = fs.inoOf(path); this.id = 'fs:' + this.ino; }
   get path() { return fs.pathOfIno(this.ino); }
   get gone() { const p = this.path; return !p || inBin(p); }
-  get title() { const p = this.path; return isRoot(p) ? driveLabel(p[0]) : dispName(basename(p), true); }
-  get icon() { return isRoot(this.path) ? driveIcon(this.path[0]) : 'folder'; }
-  get readonly() { return fs.vols.get(this.path[0]).readonly; }
+  get title() { const p = this.path; return isRoot(p) ? driveLabel(p[0]) : isUncRoot(p) ? shareLabel(p) : dispName(basename(p), true); }
+  get icon() { return isRoot(this.path) ? driveIcon(this.path[0]) : isUncRoot(this.path) ? 'netshare' : 'folder'; }
+  get readonly() { return fs.statvfs(this.path).readonly; }
   list() {
     const all = fs.readdir(this.path).sort(byName);
     this.hidden = all.filter(i => i.hidden).length;
@@ -879,9 +881,51 @@ const MyComputer = virt('mycomputer', 'My Computer', 'mycomputer', () => [
   { key: 'v:cp', label: 'Control Panel', icon: 'controlpanel', virt: true, open: () => openFolder(ControlPanel) },
   { key: 'v:pr', label: 'Printers', icon: 'printers', virt: true, open: () => openFolder(Printers) },
 ]);
-const Network = virt('net', 'Network Neighborhood', 'network', () => [
-  { key: 'v:en', label: 'Entire Network', icon: 'globe', virt: true, open: () => msgBox('Entire Network', 'Unable to browse the network.\n\nThe network is not accessible.', 'error') },
-]);
+// the network as the Multiple Provider Router browses it (WNetOpenEnum, WNetEnumResource, on threads of the network's
+// process): Network Neighborhood is the workgroup's computers (the context's resources), Entire Network the
+// workgroups, a workgroup its computers, a computer its shares. What a folder lists comes as the provider answers; its
+// window shows it when it does
+const netLists = new Map();   // a container's key -> { items } once enumerated
+const NET_ICON = { 1: 'workgroup', 2: 'netserver', 3: 'netshare', 7: 'globe' };   // by RESOURCEDISPLAYTYPE
+/** the resources MPR has under `res` (null: the scope's top) */
+async function netEnum(scope, res) {
+  if (!await startNetwork()) return [];
+  const p = netApp.proc, s = x => (x ? netStr(x) : 0), nr = res ? p.alloc(32) : 0, ph = p.alloc(4), out = [];
+  if (res) { p.w32(nr, res.scope); p.w32(nr + 4, res.type); p.w32(nr + 8, res.disp); p.w32(nr + 12, res.usage); p.w32(nr + 16, 0); p.w32(nr + 20, s(res.remote)); p.w32(nr + 24, s(res.comment)); p.w32(nr + 28, s(res.provider)); }
+  if (await netCall('WNetOpenEnumA', [scope, 0, 0, nr, ph]) !== 0) return out;
+  const h = p.r32(ph), cnt = p.alloc(4), sz = p.alloc(4), buf = p.alloc(0x4000);
+  for (;;) {
+    p.w32(cnt, 0xffffffff); p.w32(sz, 0x4000);
+    if (await netCall('WNetEnumResourceA', [h, cnt, buf, sz]) !== 0) break;   // ERROR_NO_MORE_ITEMS, or what stops it
+    for (let i = 0, n = p.r32(cnt); i < n; i++) {
+      const a = buf + 32 * i, str = o => p.readA(p.r32(a + o)) || '';
+      out.push({ scope: 2, type: p.r32(a + 4), disp: p.r32(a + 8), usage: p.r32(a + 12), remote: str(20), comment: str(24), provider: str(28) });
+    }
+  }
+  await netCall('WNetCloseEnum', [h]);
+  for (const a of [nr, ph, cnt, sz, buf]) if (a) p.free(a);
+  return out;
+}
+/** a folder of the network: `res` the container (null: Network Neighborhood itself) */
+function netFolder(id, title, icon, scope, res) {
+  const f = virt(id, title, icon, () => {
+    const l = netLists.get(id);
+    if (!l) { netLists.set(id, { items: [] }); netEnum(scope, res).then(r => { netLists.set(id, { items: r }); fs.version++; dirty(); }); }
+    return (netLists.get(id).items).filter(r => r.disp !== 3 || r.type === 1).map(r => netItem(r));
+  });
+  f.refresh = () => netLists.delete(id);
+  return f;
+}
+const netName = r => (r.disp === 3 ? netCap(r.remote.split('\\').pop()) : r.disp === 2 ? netCap(r.remote.replace(/^\\+/, '')) : r.disp === 7 ? r.comment || 'Entire Network' : netCap(r.remote));
+function netItem(r) {
+  const key = 'net:' + (r.disp === 7 ? 'entire' : r.remote.toUpperCase()), icon = NET_ICON[r.disp] || 'network', label = netName(r);
+  if (r.disp === 3) return { key, label, icon, virt: true, net: r, open: () => openPath(r.remote) };   // a share: its files
+  const sub = r.disp === 7 ? EntireNetwork : netFolder(key, label, icon, 2, r);
+  return { key, label, icon, virt: true, net: r, open: () => { if (sub.refresh) sub.refresh(); openFolder(sub); } };
+}
+const EntireNetwork = netFolder('net:entire', 'Entire Network', 'globe', 2, { scope: 2, type: 0, disp: 7, usage: 2, remote: '', comment: 'Entire Network', provider: '' });
+const Network = netFolder('net', 'Network Neighborhood', 'network', 5, null);
+EntireNetwork.refresh = () => netLists.delete('net:entire');
 const RecycleBin = virt('bin', 'Recycle Bin', 'recycle', () => binItems().map(e => ({
   key: 'bin:' + e.file, label: dispName(basename(e.orig), e.info.isDir), icon: e.info.isDir ? 'folder' : iconFor({ ...e.info, name: basename(e.orig) }),
   bin: e, info: e.info, open: () => binProps(e),
@@ -2128,7 +2172,7 @@ function boot() { screen = 'desktop'; ren = null; desk.selKey = null; active = n
 // ---------------------------------------------------------------- desktop
 const SYS_ITEMS = () => [
   { key: 'sys:mc', label: 'My Computer', icon: 'mycomputer', virt: true, open: () => openFolder(MyComputer) },
-  { key: 'sys:net', label: 'Network Neighborhood', icon: 'network', virt: true, open: () => openFolder(Network) },
+  { key: 'sys:net', label: 'Network Neighborhood', icon: 'network', virt: true, open: () => { Network.refresh(); openFolder(Network); } },
   { key: 'sys:bin', label: 'Recycle Bin', icon: binItems().length ? 'recyclefull' : 'recycle', virt: true, open: () => openFolder(RecycleBin) },
 ];
 const desk = {
@@ -2934,6 +2978,11 @@ function syncNetDrives() {
 // MPR's Map Network Drive and Disconnect Network Drive dialogs (WNetConnectionDialog, WNetDisconnectDialog), for disks
 async function mapNetDrive() { if (await startNetwork()) { await netCall('WNetConnectionDialog', [0, 1]); syncNetDrives(); } }
 async function disconnectNetDrive() { if (await startNetwork()) { await netCall('WNetDisconnectDialog', [0, 1]); syncNetDrives(); } }
+// a UNC path's share (\\server\share), reached through the redirector as a drive's is: none if it does not answer
+fs.uncBackend = unc => {
+  if (!netApp || !netApp.alive) return null;
+  const b = W95NetFS.backend(netApp, unc); try { b.space(); return b; } catch (_) { return null; }   // its root answers
+};
 let netBooting = null;
 function netBoot() {
   if (!((window.W95SYSTEM || {}).net || {})['MPR.DLL']) return null;
@@ -2944,14 +2993,17 @@ function netBoot() {
     syncNetDrives();
   })().finally(() => { netBooting = null; }));
 }
-async function startNetwork() {
-  if (netApp && netApp.alive) return netApp;
-  if (!((window.W95SYSTEM || {}).net || {})['MPR.DLL']) return null;
-  const path = join(WINDIR, 'MPREXE.EXE');
-  let bytes; try { bytes = fs.readFile(path); } catch (e) { return null; }
-  const prog = await nativeProgram(bytes); if (!prog) return null;
-  netApp = new NativeApp(path, '', { net: true });
-  return (await netApp.start(bytes, prog)) ? netApp : null;
+let netStarting = null;   // one start at a time: callers while it starts wait for it
+function startNetwork() {
+  if (netApp && netApp.alive) return Promise.resolve(netApp);
+  return netStarting || (netStarting = (async () => {
+    if (!((window.W95SYSTEM || {}).net || {})['MPR.DLL']) return null;
+    const path = join(WINDIR, 'MPREXE.EXE');
+    let bytes; try { bytes = fs.readFile(path); } catch (e) { return null; }
+    const prog = await nativeProgram(bytes); if (!prog) return null;
+    netApp = new NativeApp(path, '', { net: true }); fs.uncs.clear();
+    return (await netApp.start(bytes, prog)) ? netApp : null;
+  })().finally(() => { netStarting = null; }));
 }
 
 class Win32DialogBody {
@@ -3809,5 +3861,5 @@ const script = {
   },
 };
 
-window.win95 = { ...script, get nativeApps() { return [...nativeApps]; }, startNetwork, netCall, syncNetDrives, mapNetDrive, disconnectNetDrive, get netApp() { return netApp; }, fs, render, SaverRun, displayProperties, startFullSaver, get fullSaver() { return fullSaver; }, properties, driveProps, openFolder, openPath, shellOpen, notepad, msgBox, runDialog, shutDownDialog, MyComputer, get state() { return { menus: menus.length, menuSrc, modals: modals.length, cap: !!cap, drag: !!drag, screen, active: active && active.title }; } };
+window.win95 = { ...script, get nativeApps() { return [...nativeApps]; }, startNetwork, netBoot, netCall, syncNetDrives, mapNetDrive, disconnectNetDrive, get netApp() { return netApp; }, fs, render, SaverRun, displayProperties, startFullSaver, get fullSaver() { return fullSaver; }, properties, driveProps, openFolder, openPath, shellOpen, notepad, msgBox, runDialog, shutDownDialog, MyComputer, get state() { return { menus: menus.length, menuSrc, modals: modals.length, cap: !!cap, drag: !!drag, screen, active: active && active.title }; } };
 })();

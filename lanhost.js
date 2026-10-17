@@ -92,6 +92,28 @@ function ui(src, nb) {
   if (cmd === NB.DATAGRAM || cmd === NB.DATAGRAM_BROADCAST) { if (host.datagram) host.datagram(src, nb.slice(28, 44), nb.slice(12, 28), nb.subarray(44)); }
 }
 
+// ---- the browser: this computer is the workgroup's master browser (WORKGROUP<1D>) and its only backup. A
+// GetBackupListRequest (opcode 9: count, token) on \MAILSLOT\BROWSE is answered with a GetBackupListResponse (10:
+// count, token, the backups' names) to the asker's name, as a mailslot write in a datagram; the asker then reads the
+// list of computers from a backup with NetServerEnum2 (see trans)
+const BROWSE = '\\MAILSLOT\\BROWSE';
+host.datagram = function (src, from, to, smb) {
+  if (smb.length < 36 || smb[0] !== 0xff || smb[1] !== 0x53 || smb[4] !== 0x25) return;   // a TRANSACTION
+  const wc = smb[32], w = i => le16(smb, 33 + 2 * i); if (wc < 17) return;
+  const name = dec(smb, 33 + 2 * wc + 2), data = smb.subarray(w(12), w(12) + w(11));
+  if (name.toUpperCase() !== BROWSE || !data.length) return;
+  const toWorkgroup = sameName(to, 0, nbName(host.workgroup, 0x1d)) || sameName(to, 0, nbName(host.workgroup, 0x1b));
+  if (data[0] === 9 && toWorkgroup) mailslot(src, from, BROWSE, concat([10, 1], data.subarray(2, 6), enc(host.name), [0]));
+};
+// a mailslot write (TRANSACTION, setup: 1 write, priority 1, class 2 unreliable) in a datagram to `toName`
+function mailslot(mac, toName, slot, data) {
+  const nm = concat(enc(slot), [0]), wc = 17, words = 33 + 2 * wc, dataOff = words + 2 + nm.length;
+  const h = new Uint8Array(32); h.set([0xff, 0x53, 0x4d, 0x42, 0x25]);
+  const p = concat(h, [wc], u16(0), u16(data.length), u16(0), u16(0), [0, 0], u16(0), u32b(0), u16(0), u16(0), u16(dataOff), u16(data.length), u16(dataOff),
+    [3, 0], u16(1), u16(1), u16(2), u16(nm.length + data.length), nm, data);
+  send(frame(mac, [0xf0, 0xf0, 0x03], concat(uiHeader(NB.DATAGRAM, 0, 0, 0, 0, toName, nbName(host.name, 0x00)), p)));
+}
+
 // ---------------------------------------------------------------- LLC type 2 links
 // one per remote station: V(S) and V(R), the I frames sent and not yet acknowledged, the NetBIOS sessions on it
 class Link {
@@ -513,9 +535,11 @@ SmbConnection.prototype.trans = function (q, o) {
     ret(0, [u16(level === 0 ? 16 : 26)], concat(level === 0 ? b.subarray(0, 16) : b, ...strings)); return;
   }
   if (api === 104) {   // NetServerEnum2: the computers this one knows of (itself, and those the browser heard)
-    const known = [{ name: host.name, comment: '' }, ...[...(host.peers || new Map()).values()]];
+    // after the level and the buffer's size: the types wanted; SV_TYPE_DOMAIN_ENUM asks for the workgroups instead
+    const types = le32(P, at + 4), domains = (types & 0x80000000) !== 0;
+    const known = domains ? [{ name: host.workgroup, comment: host.name }] : [{ name: host.name, comment: '' }, ...[...(host.peers || new Map()).values()]];
     const size = level === 1 ? 26 : 16, sp = fixed(known.length, size), recs = [];
-    for (const k of known) { const b = new Uint8Array(size); b.set(enc(k.name.slice(0, 15))); if (level === 1) { b[16] = 4; b.set(u32b(3), 18); b.set(u32b(sp(k.comment || '')), 22); } recs.push(b); }
+    for (const k of known) { const b = new Uint8Array(size); b.set(enc(k.name.slice(0, 15))); if (level === 1) { b[16] = 4; b.set(u32b(domains ? 0x80000000 : 3), 18); b.set(u32b(sp(k.comment || '')), 22); } recs.push(b); }
     ret(0, [u16(known.length), u16(known.length)], concat(...recs, ...strings)); return;
   }
   if (api === 63) {   // NetWkstaGetInfo, level 10: computer, user, domain

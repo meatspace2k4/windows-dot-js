@@ -62,9 +62,32 @@ window.__netLogonOk = async function () {
 // the network up with N: on \\HOST\PUBLIC (the test share): the process, the logon, the connection
 window.__netUp = async function () {
   __testShare(); window.__smb = []; W95LANHOST.smbTrace = (cmd, q, e) => { const sub = cmd === 0x32 ? '/' + q.w(14).toString(16) : ''; __smb.push(cmd.toString(16) + sub + (e ? ' ERR ' + e.cls + '/' + e.code : '')); if (__smb.length > 500) __smb.shift(); };
-  const a = await win95.startNetwork(); await new Promise(r => setTimeout(r, 1000));
-  const lg = await __netLogonOk(); const use = __netUse('N:', '\\\\HOST\\PUBLIC');
-  return { alive: a.alive, logon: lg, use };
+  // the shell's own start: the logon (its dialog answered with OK) and the connections it restores
+  const boot = win95.netBoot(); let done = false; boot.then(() => { done = true; });
+  for (const t0 = performance.now(); !done && performance.now() - t0 < 30000;) {
+    const a = win95.netApp, w = a && [...a.wins.values()].find(x => /Password/.test(x.title));
+    if (w) win95.click(w.x + w.w - 45, w.y + 37);   // its OK button
+    await new Promise(r => setTimeout(r, 500));
+  }
+  const a = win95.netApp, use = __netUse('N:', '\\\\HOST\\PUBLIC'); win95.syncNetDrives();
+  return { alive: a.alive, logon: done, use };
 };
 // IFSMGR's ring-0 file API in the network's process: EAX the function, the rest as given
 window.__r0 = regs => { const p = win95.netApp.proc, r = p.vxdCall(p.vxdService(0x40, 0x32), regs); return { eax: r.eax, cf: r.cf, ecx: r.ecx, edx: r.edx }; };
+
+// MPR's enumeration (WNetOpenEnumA scope, type 0, usage 0, below `nr`): every NETRESOURCE it gives
+window.__en = async function (scope, nr = 0) {
+  const p = win95.netApp.proc, ph = p.alloc(4), r = await win95.netCall('WNetOpenEnumA', [scope, 0, 0, nr, ph]);
+  if (r) return { open: r };
+  const h = p.r32(ph), res = [];
+  for (;;) {
+    const cnt = p.alloc(4), sz = p.alloc(4), buf = p.alloc(16384); p.w32(cnt, 0xffffffff); p.w32(sz, 16384);
+    const r2 = await win95.netCall('WNetEnumResourceA', [h, cnt, buf, sz]); if (r2) { if (r2 !== 259) res.push({ enumErr: r2 }); break; }
+    for (let i = 0, n = p.r32(cnt); i < n; i++) {
+      const a = buf + 32 * i, s = o => p.readA(p.r32(a + o));
+      res.push({ scope: p.r32(a), type: p.r32(a + 4), disp: p.r32(a + 8), usage: p.r32(a + 12), local: s(16), remote: s(20), comment: s(24), prov: s(28), nr: a });
+    }
+  }
+  await win95.netCall('WNetCloseEnum', [h]);
+  return res;
+};

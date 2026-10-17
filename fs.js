@@ -8,11 +8,11 @@ const E = {
   FILE_NOT_FOUND: 2, PATH_NOT_FOUND: 3, TOO_MANY_OPEN_FILES: 4, ACCESS_DENIED: 5, INVALID_HANDLE: 6,
   NOT_SAME_DEVICE: 17, WRITE_PROTECT: 19, NOT_READY: 21, READ_FAULT: 30, SHARING_VIOLATION: 32,
   FILE_EXISTS: 80, INVALID_PARAMETER: 87, DISK_FULL: 112, INVALID_NAME: 123, NEGATIVE_SEEK: 131,
-  DIR_NOT_EMPTY: 145, ALREADY_EXISTS: 183, DIRECTORY: 267,
+  DIR_NOT_EMPTY: 145, ALREADY_EXISTS: 183, DIRECTORY: 267, BAD_NETPATH: 53,
 };
 const MSG = {
   2: 'The system cannot find the file specified.', 3: 'The system cannot find the path specified.',
-  4: 'The system cannot open the file.', 5: 'Access is denied.', 6: 'The handle is invalid.',
+  4: 'The system cannot open the file.', 53: 'The network path was not found.', 5: 'Access is denied.', 6: 'The handle is invalid.',
   17: 'The system cannot move the file to a different disk drive.', 19: 'The media is write protected.',
   21: 'The device is not ready.', 30: 'The system cannot read from the specified device.',
   32: 'The process cannot access the file because it is being used by another process.',
@@ -114,18 +114,23 @@ const FLAGS = {
 
 const join = (a, ...b) => b.reduce((p, s) => (p.endsWith('\\') ? p : p + '\\') + s.replace(/^\\+/, ''), a);
 const basename = p => p.replace(/\\+$/, '').split('\\').pop();
-const dirname = p => { const s = p.replace(/\\+$/, ''); const i = s.lastIndexOf('\\'); return i <= 2 ? s.slice(0, 3) : s.slice(0, i); };
+const dirname = p => {
+  const s = p.replace(/\\+$/, ''), u = /^\\\\[^\\]+\\[^\\]+/.exec(s);   // a share's root (\\server\share) is its own
+  if (u) return s.length <= u[0].length ? u[0] : s.slice(0, Math.max(s.lastIndexOf('\\'), u[0].length));
+  const i = s.lastIndexOf('\\'); return i <= 2 ? s.slice(0, 3) : s.slice(0, i);
+};
 const extname = p => { const b = basename(p), i = b.lastIndexOf('.'); return i > 0 ? b.slice(i + 1).toLowerCase() : ''; };
 
 // ---------------------------------------------------------------- file system
 class FileSystem {
   constructor() {
     this.vols = new Map(); this.fds = new Map(); this.inodes = new Map();
-    this.nextFd = 3; this.cwd = 'C:\\'; this.version = 0; this.subs = new Set(); this.remoteInos = new Map(); this.remotePaths = new Map();
+    this.nextFd = 3; this.cwd = 'C:\\'; this.version = 0; this.subs = new Set(); this.remoteInos = new Map(); this.remotePaths = new Map(); this.uncs = new Map(); this.uncBackend = null;
   }
   // ---- volumes
   mount(letter, o = {}) {
     const v = new Volume(letter, o); this.vols.set(v.letter, v); this.inodes.set(v.root.ino, v.root);
+    v.rootPath = v.letter + ':\\';
     if (o.remote) { v.remote = o.remote; v.unc = o.unc || ''; v.kind = 'remote'; }
     this.emit('mount', v.letter + ':\\'); return v;
   }
@@ -137,20 +142,34 @@ class FileSystem {
   // ---- remote volumes: a drive whose files are another computer's. Its operations go to the volume's backend
   // (remote: { stat, list, open, read, write, truncate, size, close, mkdir, rmdir, unlink, rename, setAttrs, setTime,
   // space }, on paths relative to the drive's root), which throws FSErrors; nothing of it is kept here
+  //  A UNC path (\\server\share\...) is a share's without a drive letter: the backend for it comes from
+  // uncBackend(unc) (the network's, win95.js), kept while the share answers; a share nobody serves is a bad network path
   remoteAt(path) {
+    const u = typeof path === 'string' && /^[\\/]{2}([^\\/]+)[\\/]+([^\\/]+)(.*)$/.exec(path);
+    if (u) {
+      const unc = `\\\\${u[1]}\\${u[2]}`, key = unc.toUpperCase(), parts = [];
+      let v = this.uncs.get(key);
+      if (!v) {
+        const b = this.uncBackend && this.uncBackend(unc); if (!b) throw new FSError(E.BAD_NETPATH, path);
+        v = { letter: null, unc, rootPath: unc + '\\', remote: b, kind: 'remote', ready: true, readonly: false, label: u[2], alloc: n => Math.ceil(n / 4096) * 4096 };
+        this.uncs.set(key, v);
+      }
+      for (const seg of u[3].split(/[\\/]+/)) { if (!seg || seg === '.') continue; if (seg === '..') parts.pop(); else parts.push(seg); }
+      return { v, b: v.remote, rel: parts.join('\\'), path: v.rootPath + parts.join('\\') };
+    }
     let d; try { d = this.split(path); } catch (_) { return null; }
     const v = this.vols.get(d.drive); if (!v || !v.remote) return null;
-    return { v, b: v.remote, rel: d.parts.join('\\'), path: v.letter + ':\\' + d.parts.join('\\') };
+    return { v, b: v.remote, rel: d.parts.join('\\'), path: v.rootPath + d.parts.join('\\') };
   }
   rinfo(r, e) {
     const rel = r.rel, name = rel ? rel.split('\\').pop() : '';
-    const path = r.v.letter + ':\\' + rel, key = path.toUpperCase();
+    const path = r.v.rootPath + rel, key = path.toUpperCase();
     let ino = this.remoteInos.get(key); if (!ino) { ino = inoSeq++; this.remoteInos.set(key, ino); this.remotePaths.set(ino, path); }
     const a = e.attrs | 0;
     return {
-      name: rel ? e.name || name : r.v.letter + ':\\', shortName: rel ? e.short || '' : '', path, shortPath: path, isDir: !!e.dir, type: e.dir ? 'dir' : 'file',
+      name: rel ? e.name || name : r.v.rootPath, shortName: rel ? e.short || '' : '', path, shortPath: path, isDir: !!e.dir, type: e.dir ? 'dir' : 'file',
       size: e.dir ? 0 : e.size, alloc: e.dir ? 0 : r.v.alloc(e.size), attrs: a | (e.dir ? ATTR.DIRECTORY : 0), readonly: !!(a & ATTR.READONLY), hidden: !!(a & ATTR.HIDDEN),
-      system: !!(a & ATTR.SYSTEM), archive: !!(a & ATTR.ARCHIVE), ctime: e.ctime, mtime: e.mtime, atime: e.atime, ino, drive: r.v.letter, absent: false, open: false,
+      system: !!(a & ATTR.SYSTEM), archive: !!(a & ATTR.ARCHIVE), ctime: e.ctime, mtime: e.mtime, atime: e.atime, ino, drive: r.v.letter, unc: r.v.letter ? undefined : r.v.unc, absent: false, open: false,
     };
   }
   rstat(r) {
@@ -160,11 +179,11 @@ class FileSystem {
   }
   volInfo(v) {
     if (v.remote) { let sp = { total: 0, free: 0 }; try { sp = v.remote.space(); } catch (_) { /* the server cannot say */ } v.total = sp.total; v.used = sp.total - sp.free; }
-    return { letter: v.letter, root: v.letter + ':\\', label: v.label, kind: v.kind, readonly: v.readonly, ready: v.ready,
+    return { letter: v.letter, root: v.rootPath || v.letter + ':\\', label: v.label, kind: v.kind, readonly: v.readonly, ready: v.ready,
       total: v.total, used: v.used, free: v.free, cluster: v.cluster, fsname: v.fsname, serial: v.serial, unc: v.unc || '' };
   }
   volumes() { return [...this.vols.values()].sort((a, b) => a.letter.localeCompare(b.letter)).map(v => this.volInfo(v)); }
-  statvfs(path) { return this.volInfo(this.vol(this.split(path).drive)); }
+  statvfs(path) { const r = this.remoteAt(path); return this.volInfo(r ? r.v : this.vol(this.split(path).drive)); }
   setLabel(path, label) {
     const v = this.vol(this.split(path).drive); this.writable(v);
     if (label.length > 11 || BAD.test(label) || /[.+,;=[\]]/.test(label)) throw new FSError(E.INVALID_NAME, label);
@@ -181,6 +200,7 @@ class FileSystem {
   split(path) {
     if (typeof path !== 'string' || !path) throw new FSError(E.INVALID_PARAMETER, String(path));
     const p = path.replace(/\//g, '\\');
+    if (p.startsWith('\\\\')) throw new FSError(E.BAD_NETPATH, path);
     let drive, rest;
     const m = /^([A-Za-z]):(.*)$/.exec(p);
     if (m) {
@@ -296,7 +316,7 @@ class FileSystem {
   }
   // ---- queries
   stat(path) { const r = this.remoteAt(path); if (r) return this.rstat(r); return this.info(this.need(path)); }
-  exists(path) { const r = this.remoteAt(path); if (r) { try { return !r.rel || !!r.b.stat(r.rel); } catch (_) { return false; } } try { return !!this.locate(path).node; } catch (_) { return false; } }
+  exists(path) { let r; try { r = this.remoteAt(path); } catch (_) { return false; } if (r) { try { return !r.rel || !!r.b.stat(r.rel); } catch (_) { return false; } } try { return !!this.locate(path).node; } catch (_) { return false; } }
   realpath(path) { const r = this.remoteAt(path); if (r) return this.rstat(r).path; return this.pathOf(this.need(path)); }
   inoOf(path) { const r = this.remoteAt(path); if (r) return this.rstat(r).ino; return this.need(path).ino; }
   pathOfIno(ino) { if (this.remotePaths.has(ino)) return this.remotePaths.get(ino); const n = this.inodes.get(ino); return n && (n.parent || !n.vol || n === n.vol.root) ? this.pathOf(n) : null; }
@@ -328,11 +348,11 @@ class FileSystem {
   // ---- directory operations
   mkdir(path, o = {}) {
     if (o.recursive) {
-      const { drive, parts } = this.split(path); let cur = drive + ':\\';
+      const rm = this.remoteAt(path), { drive, parts } = rm ? { drive: null, parts: rm.rel ? rm.rel.split('\\') : [] } : this.split(path);
+      let cur = rm ? rm.v.rootPath : drive + ':\\';
       for (const p of parts) {
         cur = join(cur, p);
-        const r = this.locate(cur);
-        if (!r.node) this.mkdir(cur); else if (!r.node.dir) throw new FSError(E.ALREADY_EXISTS, cur);
+        if (!this.exists(cur)) this.mkdir(cur); else if (!this.stat(cur).isDir) throw new FSError(E.ALREADY_EXISTS, cur);
       }
       return this.stat(path);
     }
