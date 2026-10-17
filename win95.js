@@ -836,10 +836,14 @@ function dispName(name, isDir) {
 }
 const typeDesc = i => i.isDir ? 'Folder' : TYPES[extname(i.name)] ? TYPES[extname(i.name)].desc : extname(i.name) ? extname(i.name).toUpperCase() + ' File' : 'File';
 function readLnk(p) { try { const m = /^Target=(.*)$/m.exec(fs.readText(p)); return m ? m[1].trim() : null; } catch (_) { return null; } }
-function driveIcon(l) { const v = fs.vols.get(l); return v.kind === 'removable' ? 'floppy' : v.kind === 'cdrom' ? 'cdrom' : 'hdd'; }
+function driveIcon(l) { const v = fs.vols.get(l); return v.kind === 'removable' ? 'floppy' : v.kind === 'cdrom' ? 'cdrom' : v.kind === 'remote' ? 'netdrive' : 'hdd'; }
 function driveLabel(l) {
   const v = fs.vols.get(l);
   if (v.kind === 'removable') return `3\u00bd Floppy (${l}:)`;
+  if (v.kind === 'remote') {   // a share as Windows 95 names one: 'Public on 'Host' (N:)'
+    const cap = x => (x ? x[0].toUpperCase() + x.slice(1).toLowerCase() : x), [, server = '', share = ''] = /^\\\\([^\\]*)\\(.*)$/.exec(v.unc) || [];
+    return `${cap(share)} on '${cap(server)}' (${l}:)`;
+  }
   return (v.label ? v.label[0] + v.label.slice(1).toLowerCase() + ' ' : '') + `(${l}:)`;
 }
 function iconFor(i, depth = 0) {
@@ -1136,6 +1140,9 @@ function itemMenu(view, it) {
   out.push({ sep: true });
   if (real) out.push({ label: 'Cu&t', disabled: ro, fn: () => cutCopy(it, 'cut') }, { label: '&Copy', fn: () => cutCopy(it, 'copy') }, { sep: true });
   if (it.key === 'sys:bin') out.push({ label: 'Empty Recycle &Bin', disabled: !binItems().length, fn: emptyBin }, { sep: true });
+  const net = !!((window.W95SYSTEM || {}).net || {})['MPR.DLL'];
+  if (net && (it.key === 'sys:mc' || it.key === 'sys:net')) out.push({ label: 'Ma&p Network Drive...', fn: mapNetDrive }, { label: 'Dis&connect Network Drive...', fn: disconnectNetDrive }, { sep: true });
+  if (net && it.drive && fs.vols.get(it.drive).remote) out.push({ label: 'Dis&connect', fn: () => netCall('WNetCancelConnection2A', [netStr(it.drive + ':'), 1, 0]).then(syncNetDrives) }, { sep: true });
   out.push({ label: 'Create &Shortcut', disabled: !(real || it.drive), fn: () => createShortcut(view, it) });
   if (real) out.push({ label: '&Delete', disabled: ro, fn: () => confirmDelete(it) }, { label: 'Rena&me', disabled: ro, fn: () => startRename(view, it) });
   out.push({ sep: true }, { label: 'P&roperties', fn: () => properties(it) });
@@ -1189,7 +1196,7 @@ const SORTS = {
   date: (a, b) => ((b.info ? b.info.mtime : 0) - (a.info ? a.info.mtime : 0)) || SORTS.name(a, b),
 };
 function itemType(it) {
-  if (it.drive) { const v = fs.vols.get(it.drive); return { fixed: 'Local Disk', removable: '3½ Inch Floppy Disk', cdrom: 'CD-ROM Disc' }[v.kind]; }
+  if (it.drive) { const v = fs.vols.get(it.drive); return { fixed: 'Local Disk', removable: '3½ Inch Floppy Disk', cdrom: 'CD-ROM Disc', remote: 'Network Connection' }[v.kind]; }
   if (it.info) return typeDesc(it.info);
   return 'System Folder';
 }
@@ -1492,7 +1499,7 @@ function properties(it) {
 }
 function driveProps(l) {
   let v; try { v = fs.statvfs(l + ':\\'); } catch (e) { return msgBox(driveLabel(l), fsMsg(l + ':\\', e), 'error'); }
-  const kind = { fixed: 'Local Disk', removable: '3\u00bd Inch Floppy Disk', cdrom: 'CD-ROM Disk' }[v.kind];
+  const kind = { fixed: 'Local Disk', removable: '3\u00bd Inch Floppy Disk', cdrom: 'CD-ROM Disk', remote: 'Network Connection' }[v.kind];
   const label = { type: 'edit', x: 100, y: 18, w: 160, h: 21, value: v.label, caret: v.label.length, readonly: v.readonly };
   const swatch = (y, c) => ({ type: 'custom', x: 14, y, w: 13, h: 13, draw: a => { fill(a.x, a.y, 13, 13, c); edge(a.x, a.y, 13, 13, K.dk, K.dk); } });
   const pie = { type: 'custom', x: 100, y: 196, w: 160, h: 100, draw: a => drawPie(a.x + 80, a.y + 34, 70, 30, 12, v.total ? v.used / v.total : 0) };
@@ -2116,7 +2123,7 @@ function shutdownSeq(restart) {
   }, 2600);
 }
 // The disk lives in memory, so it survives a restart but not a page reload.
-function boot() { screen = 'desktop'; ren = null; desk.selKey = null; active = null; dirty(); }
+function boot() { screen = 'desktop'; ren = null; desk.selKey = null; active = null; dirty(); netBoot(); }
 
 // ---------------------------------------------------------------- desktop
 const SYS_ITEMS = () => [
@@ -2793,9 +2800,13 @@ class NativeApp {
     try {
       this.showCursor(true);
       // the move first, as the mouse reports it before the button, so USER sees the button where the pointer is
-      if (f !== 1 && (ax !== this.ax || ay !== this.ay)) this.proc.mouseEvent16(0x8001, ax, ay);
-      this.proc.mouseEvent16(0x8001 | f, ax, ay); this.ax = ax; this.ay = ay;
+      // behind keys still waiting to go in (a click after typing reaches the program after what was typed)
+      const ev = [];
+      if (f !== 1 && (ax !== this.ax || ay !== this.ay)) ev.push({ mouse: [0x8001, ax, ay] });
+      ev.push({ mouse: [0x8001 | f, ax, ay] }); this.ax = ax; this.ay = ay;
+      if (this.keyq && this.keyq.length) this.keyq.push(...ev); else for (const m of ev) this.proc.mouseEvent16(...m.mouse);
     } catch (e) { console.error(e); }
+    this.feedKeys();
     this.kick();
   }
   showCursor(on) {
@@ -2824,7 +2835,9 @@ class NativeApp {
     if (!this.keyq || !this.keyq.length || this.proc.depth) return;
     try { if (this.proc.user16(335).ax) return; } catch (e) { console.error(e); }   // GetInputState: USER has input not yet taken
     for (; this.keyq.length && (this.keysFed || 0) < 16; this.keysFed = (this.keysFed || 0) + 1) {
-      const [vk, sc, up] = this.keyq.shift();
+      const k = this.keyq.shift();
+      if (k.mouse) { try { this.proc.mouseEvent16(...k.mouse); } catch (err) { console.error(err); } continue; }
+      const [vk, sc, up] = k;
       try { this.proc.keyEvent16(vk, sc & 0xff, up, sc > 0xff); } catch (err) { console.error(err); }
     }
   }
@@ -2886,8 +2899,51 @@ async function runNative(path, arg, o) {
   return app.start(bytes, prog);
 }
 // the network's process, which Windows 95 starts as it boots: MPREXE.EXE, with the network's VxDs at ring 0 under it
-// and the provider router's DLLs in it
+// and the provider router's DLLs in it. As Windows 95 boots, the network logon follows (MPR's own Enter Network
+// Password dialog), then the connections to remember are made again; each drive MPR has connected is a drive of fs.js
+// whose files the redirector reaches (netfs.js)
 let netApp = null;
+const le32 = v => [v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, (v >>> 24) & 0xff];
+/** MPR's export `name` called on a thread of the network's process (its dialogs run there as the process's own),
+ *  with dword arguments; resolves to what it returns */
+function netCall(name, args = []) {
+  const p = netApp && netApp.alive ? netApp.proc : null, mpr = p && p.byName.get('MPR'), fn = mpr && mpr.exports.get(name);
+  if (!fn) return Promise.resolve(null);
+  const a = p.alloc(96), res = a + 88, ptr = a + 92, code = [];
+  for (let i = args.length - 1; i >= 0; i--) code.push(0x68, ...le32(args[i]));   // push imm32
+  code.push(0xff, 0x15, ...le32(ptr), 0xa3, ...le32(res), 0xc2, 0x04, 0x00);       // call [ptr]; mov [res], eax; ret 4
+  p.w32(ptr, fn); p.u8.set(code, a);
+  return new Promise(ok => { const t = p.newThread(a, 0, 0x10000, true, false); t.onDone = () => ok(p.r32(res)); netApp.kick(); });
+}
+/** a string in the network's process's memory */
+const netStr = s => { const p = netApp.proc, a = p.alloc(s.length + 1); p.writeA(a, s); return a; };
+/** fs.js's drives as MPR has them connected: one for each drive letter with a connection (WNetGetConnectionA), none for
+ *  one without */
+function syncNetDrives() {
+  const p = netApp && netApp.alive ? netApp.proc : null, fn = p && p.byName.get('MPR') && p.byName.get('MPR').exports.get('WNetGetConnectionA');
+  const loc = p && p.alloc(8), buf = p && p.alloc(264), pn = p && p.alloc(4);
+  for (let c = 65; c <= 90; c++) {
+    const L = String.fromCharCode(c), v = fs.vols.get(L); if (v && !v.remote) continue;
+    let unc = null;
+    if (fn) { p.writeA(loc, L + ':'); p.w32(pn, 260); try { if (p.call(fn, [loc, buf, pn]) === 0) unc = p.readA(buf); } catch (e) { console.error(e); } }
+    if (v && (!unc || v.unc.toUpperCase() !== unc.toUpperCase())) fs.unmount(L);
+    if (unc && (!v || v.unc.toUpperCase() !== unc.toUpperCase())) fs.mount(L, { remote: W95NetFS.backend(netApp, L), unc, label: unc.split('\\').pop() || '' });
+  }
+  if (p) p.free(loc), p.free(buf), p.free(pn);
+}
+// MPR's Map Network Drive and Disconnect Network Drive dialogs (WNetConnectionDialog, WNetDisconnectDialog), for disks
+async function mapNetDrive() { if (await startNetwork()) { await netCall('WNetConnectionDialog', [0, 1]); syncNetDrives(); } }
+async function disconnectNetDrive() { if (await startNetwork()) { await netCall('WNetDisconnectDialog', [0, 1]); syncNetDrives(); } }
+let netBooting = null;
+function netBoot() {
+  if (!((window.W95SYSTEM || {}).net || {})['MPR.DLL']) return null;
+  return netBooting || (netBooting = (async () => {
+    if (!await startNetwork()) return;
+    await netCall('WNetLogonA', [0, 0]);
+    await netCall('WNetRestoreConnectionA', [0, 0]);
+    syncNetDrives();
+  })().finally(() => { netBooting = null; }));
+}
 async function startNetwork() {
   if (netApp && netApp.alive) return netApp;
   if (!((window.W95SYSTEM || {}).net || {})['MPR.DLL']) return null;
@@ -3534,6 +3590,7 @@ window.addEventListener('resize', resize);
 setInterval(() => { blinkOn = !blinkOn; dirty(); }, 530);
 
 bootDisk();
+netBoot();
 loadTaskbar();
 desk.src = new FsSource(DESKTOP_DIR);
 fs.on(() => dirty());
@@ -3752,5 +3809,5 @@ const script = {
   },
 };
 
-window.win95 = { ...script, get nativeApps() { return [...nativeApps]; }, startNetwork, get netApp() { return netApp; }, fs, render, SaverRun, displayProperties, startFullSaver, get fullSaver() { return fullSaver; }, properties, driveProps, openFolder, openPath, shellOpen, notepad, msgBox, runDialog, shutDownDialog, MyComputer, get state() { return { menus: menus.length, menuSrc, modals: modals.length, cap: !!cap, drag: !!drag, screen, active: active && active.title }; } };
+window.win95 = { ...script, get nativeApps() { return [...nativeApps]; }, startNetwork, netCall, syncNetDrives, mapNetDrive, disconnectNetDrive, get netApp() { return netApp; }, fs, render, SaverRun, displayProperties, startFullSaver, get fullSaver() { return fullSaver; }, properties, driveProps, openFolder, openPath, shellOpen, notepad, msgBox, runDialog, shutDownDialog, MyComputer, get state() { return { menus: menus.length, menuSrc, modals: modals.length, cap: !!cap, drag: !!drag, screen, active: active && active.title }; } };
 })();

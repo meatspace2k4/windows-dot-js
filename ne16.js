@@ -2314,7 +2314,7 @@ P.threads16 = function (nested = false) {
         r = this.runAt(u32(this.cpu.eip.value));
       }
       if (r === 1) { t.ctx = this.saveCtx16(); t.state = 'waiting'; }
-      else { t.state = 'done'; this.wakeWaiters(t); if (r !== 0 && this.trapped) console.warn('[ne16] thread', t.id, this.trapped); }
+      else { t.state = 'done'; this.wakeWaiters(t); if (r !== 0 && this.trapped) console.warn('[ne16] thread', t.id, this.trapped); if (t.onDone) t.onDone(t); }   // onDone: the host's, for a thread it started
     } finally { this.thread16 = caller; this.loadCtx16(main); }
   } } finally { this.inThreads = false; }
 };
