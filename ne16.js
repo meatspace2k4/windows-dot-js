@@ -70,9 +70,11 @@ P.lin = function (sp) { sp = u32(sp); return sp ? u32(this.selBase(sp >>> 16) + 
  *  the NUL device's header), the swappable data area. A segment (`seg`) addresses all of it */
 P.dosData = function () {
   if (this.dosD) return this.dosD;
-  const a = (this.dosTop + 15) & ~15, size = 0x1200; this.dosTop = a + size; this.u8.fill(0, a, a + size);
+  const a = (this.dosTop + 15) & ~15, size = 0x1300; this.dosTop = a + size; this.u8.fill(0, a, a + size);
   const seg = a >>> 4, off = x => x - a, far = (at, x) => { this.w16(at, off(x)); this.w16(at + 2, seg); };
-  const d = { seg, indos: a + 1, lol: a + 0x20, sft: a + 0x100, fcb: a + 0x240, cds: a + 0x340, sda: a + 0x1000 };
+  // (the swappable data area begins with the critical-error flag, InDOS after it, as DOS's does: what the InDOS
+  // pointer is, minus one, is where its current PSP and DTA are found)
+  const d = { seg, indos: a + 0x1001, lol: a + 0x20, sft: a + 0x100, fcb: a + 0x240, cds: a + 0x340, sda: a + 0x1000 };
   this.w16(d.lol - 2, 0xffff);                                  // first MCB: none walked
   // the drive parameter blocks (DOS 7.1's, 3Dh bytes): the hard disk's, C:, on a block device whose header is IO.SYS's
   d.dpb = a + 0xc40; d.blk = a + 0xc90; far(d.lol, d.dpb);
@@ -91,6 +93,12 @@ P.dosData = function () {
     const e = d.cds + 0x58 * i, l = String.fromCharCode(65 + i), has = this.fs && this.fs.vols && this.fs.vols.has(l);
     this.writeA(e, l + ':\\'); this.w16(e + 0x43, has ? 0x4000 : 0); this.w32(e + 0x45, 0xffffffff); this.w16(e + 0x4f, 2);
   }
+  // the process's PSP (in conventional memory, after the data): INT 20h, its file table of 20 handles (all free) and
+  // the far pointer to it, the parent its own; the swappable area names it as the current PSP
+  d.psp = a + 0x1100; d.pspSeg = d.psp >>> 4;
+  this.w16(d.psp, 0x20cd); this.w16(d.psp + 2, 0x9fff); this.w16(d.psp + 0x16, d.pspSeg);
+  this.u8.fill(0xff, d.psp + 0x18, d.psp + 0x18 + 20); this.w16(d.psp + 0x32, 20); this.w16(d.psp + 0x34, 0x18); this.w16(d.psp + 0x36, d.pspSeg);
+  this.w16(d.sda + 0x10, d.pspSeg); this.w16(d.sda + 0x0c, 0x80); this.w16(d.sda + 0x0e, d.pspSeg); this.u8[d.sda + 0x16] = 2;   // PSP, DTA (PSP:80h), drive C:
   return (this.dosD = d);
 };
 /** IFSHLP.SYS, the real-mode helper IO.SYS loads for the file system manager: its image in conventional memory (the
@@ -128,7 +136,7 @@ P.ifshlp = function () {
   return h;
 };
 /** a segment register loaded with the DOS data's segment (in real mode) or a selector for it */
-P.seg16 = function (r, d) { if (this.rmode) this.cpu[r].value = d.seg; else this.seg(r, d.sel || (d.sel = this.allocSels(d.seg << 4, 0x1200))); };
+P.seg16 = function (r, d) { if (this.rmode) this.cpu[r].value = d.seg; else this.seg(r, d.sel || (d.sel = this.allocSels(d.seg << 4, 0x1300))); };
 /** linear -> segmented via a shared 32K-aligned alias (MapLS) */
 P.mapLS = function (a) {
   a = u32(a); if (!(a >>> 16)) return a;

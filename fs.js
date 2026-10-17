@@ -121,16 +121,47 @@ const extname = p => { const b = basename(p), i = b.lastIndexOf('.'); return i >
 class FileSystem {
   constructor() {
     this.vols = new Map(); this.fds = new Map(); this.inodes = new Map();
-    this.nextFd = 3; this.cwd = 'C:\\'; this.version = 0; this.subs = new Set();
+    this.nextFd = 3; this.cwd = 'C:\\'; this.version = 0; this.subs = new Set(); this.remoteInos = new Map(); this.remotePaths = new Map();
   }
   // ---- volumes
   mount(letter, o = {}) {
     const v = new Volume(letter, o); this.vols.set(v.letter, v); this.inodes.set(v.root.ino, v.root);
+    if (o.remote) { v.remote = o.remote; v.unc = o.unc || ''; v.kind = 'remote'; }
     this.emit('mount', v.letter + ':\\'); return v;
   }
+  unmount(letter) {
+    const v = this.vols.get(letter.toUpperCase()); if (!v) return;
+    for (const [fd, h] of this.fds) if (h.v === v) this.fds.delete(fd);
+    this.vols.delete(v.letter); this.emit('unmount', v.letter + ':\\');
+  }
+  // ---- remote volumes: a drive whose files are another computer's. Its operations go to the volume's backend
+  // (remote: { stat, list, open, read, write, truncate, size, close, mkdir, rmdir, unlink, rename, setAttrs, setTime,
+  // space }, on paths relative to the drive's root), which throws FSErrors; nothing of it is kept here
+  remoteAt(path) {
+    let d; try { d = this.split(path); } catch (_) { return null; }
+    const v = this.vols.get(d.drive); if (!v || !v.remote) return null;
+    return { v, b: v.remote, rel: d.parts.join('\\'), path: v.letter + ':\\' + d.parts.join('\\') };
+  }
+  rinfo(r, e) {
+    const rel = r.rel, name = rel ? rel.split('\\').pop() : '';
+    const path = r.v.letter + ':\\' + rel, key = path.toUpperCase();
+    let ino = this.remoteInos.get(key); if (!ino) { ino = inoSeq++; this.remoteInos.set(key, ino); this.remotePaths.set(ino, path); }
+    const a = e.attrs | 0;
+    return {
+      name: rel ? e.name || name : r.v.letter + ':\\', shortName: rel ? e.short || '' : '', path, shortPath: path, isDir: !!e.dir, type: e.dir ? 'dir' : 'file',
+      size: e.dir ? 0 : e.size, alloc: e.dir ? 0 : r.v.alloc(e.size), attrs: a | (e.dir ? ATTR.DIRECTORY : 0), readonly: !!(a & ATTR.READONLY), hidden: !!(a & ATTR.HIDDEN),
+      system: !!(a & ATTR.SYSTEM), archive: !!(a & ATTR.ARCHIVE), ctime: e.ctime, mtime: e.mtime, atime: e.atime, ino, drive: r.v.letter, absent: false, open: false,
+    };
+  }
+  rstat(r) {
+    if (!r.rel) return this.rinfo(r, { dir: true, size: 0, attrs: ATTR.DIRECTORY, ctime: 0, mtime: 0, atime: 0 });
+    const e = r.b.stat(r.rel); if (!e) throw new FSError(E.FILE_NOT_FOUND, r.path);
+    return this.rinfo(r, e);
+  }
   volInfo(v) {
+    if (v.remote) { let sp = { total: 0, free: 0 }; try { sp = v.remote.space(); } catch (_) { /* the server cannot say */ } v.total = sp.total; v.used = sp.total - sp.free; }
     return { letter: v.letter, root: v.letter + ':\\', label: v.label, kind: v.kind, readonly: v.readonly, ready: v.ready,
-      total: v.total, used: v.used, free: v.free, cluster: v.cluster, fsname: v.fsname, serial: v.serial };
+      total: v.total, used: v.used, free: v.free, cluster: v.cluster, fsname: v.fsname, serial: v.serial, unc: v.unc || '' };
   }
   volumes() { return [...this.vols.values()].sort((a, b) => a.letter.localeCompare(b.letter)).map(v => this.volInfo(v)); }
   statvfs(path) { return this.volInfo(this.vol(this.split(path).drive)); }
@@ -264,12 +295,19 @@ class FileSystem {
     };
   }
   // ---- queries
-  stat(path) { return this.info(this.need(path)); }
-  exists(path) { try { return !!this.locate(path).node; } catch (_) { return false; } }
-  realpath(path) { return this.pathOf(this.need(path)); }
-  inoOf(path) { return this.need(path).ino; }
-  pathOfIno(ino) { const n = this.inodes.get(ino); return n && (n.parent || !n.vol || n === n.vol.root) ? this.pathOf(n) : null; }
+  stat(path) { const r = this.remoteAt(path); if (r) return this.rstat(r); return this.info(this.need(path)); }
+  exists(path) { const r = this.remoteAt(path); if (r) { try { return !r.rel || !!r.b.stat(r.rel); } catch (_) { return false; } } try { return !!this.locate(path).node; } catch (_) { return false; } }
+  realpath(path) { const r = this.remoteAt(path); if (r) return this.rstat(r).path; return this.pathOf(this.need(path)); }
+  inoOf(path) { const r = this.remoteAt(path); if (r) return this.rstat(r).ino; return this.need(path).ino; }
+  pathOfIno(ino) { if (this.remotePaths.has(ino)) return this.remotePaths.get(ino); const n = this.inodes.get(ino); return n && (n.parent || !n.vol || n === n.vol.root) ? this.pathOf(n) : null; }
   readdir(path, pattern) {
+    const r = this.remoteAt(path);
+    if (r) {
+      const st = this.rstat(r); if (!st.isDir) throw new FSError(E.DIRECTORY, path);
+      const re = wildRe(pattern), base = r.rel ? r.rel + '\\' : '';
+      return r.b.list(r.rel).filter(e => e.name !== '.' && e.name !== '..' && (!re || re.test(e.name) || (e.short && re.test(e.short))))
+        .map(e => this.rinfo({ v: r.v, b: r.b, rel: base + e.name }, e));
+    }
     const n = this.need(path);
     if (!n.dir) throw new FSError(E.DIRECTORY, path);
     const re = wildRe(pattern);
@@ -277,11 +315,16 @@ class FileSystem {
   }
   du(path) {
     const out = { files: 0, dirs: 0, bytes: 0, alloc: 0 };
+    if (this.remoteAt(path)) {
+      const walk = p => { for (const i of this.readdir(p)) { if (i.isDir) { out.dirs++; walk(i.path); } else { out.files++; out.bytes += i.size; out.alloc += i.alloc; } } };
+      const st = this.stat(path); if (st.isDir) walk(path); else { out.files = 1; out.bytes = st.size; out.alloc = st.alloc; }
+      return out;
+    }
     const walk = n => { for (const k of n.kids.values()) { if (k.dir) { out.dirs++; walk(k); } else { out.files++; out.bytes += k.size; out.alloc += k.vol.alloc(k.size); } } };
     const n = this.need(path); if (n.dir) walk(n); else { out.files = 1; out.bytes = n.size; out.alloc = n.vol.alloc(n.size); }
     return out;
   }
-  chdir(path) { const n = this.need(path); if (!n.dir) throw new FSError(E.DIRECTORY, path); this.cwd = this.pathOf(n); }
+  chdir(path) { const r = this.remoteAt(path); if (r) { const st = this.rstat(r); if (!st.isDir) throw new FSError(E.DIRECTORY, path); this.cwd = st.path; return; } const n = this.need(path); if (!n.dir) throw new FSError(E.DIRECTORY, path); this.cwd = this.pathOf(n); }
   // ---- directory operations
   mkdir(path, o = {}) {
     if (o.recursive) {
@@ -293,6 +336,8 @@ class FileSystem {
       }
       return this.stat(path);
     }
+    const rm = this.remoteAt(path);
+    if (rm) { if (this.exists(path)) throw new FSError(E.ALREADY_EXISTS, path); cleanName(rm.rel.split('\\').pop() || '', path); rm.b.mkdir(rm.rel); this.emit('mkdir', rm.path); return this.rstat(rm); }
     const r = this.locate(path); this.writable(r.vol);
     if (r.node) throw new FSError(E.ALREADY_EXISTS, path);
     const name = cleanName(r.name, path), d = new Node(name, true, o.attrs || 0);
@@ -300,6 +345,13 @@ class FileSystem {
     return this.info(d);
   }
   rmdir(path, o = {}) {
+    const rm = this.remoteAt(path);
+    if (rm) {
+      if (!rm.rel) throw new FSError(E.ACCESS_DENIED, path);
+      if (!this.rstat(rm).isDir) throw new FSError(E.DIRECTORY, path);
+      if (o.recursive) for (const i of this.readdir(path)) { if (i.isDir) this.rmdir(i.path, o); else this.unlink(i.path); }
+      rm.b.rmdir(rm.rel); this.emit('rmdir', rm.path); return;
+    }
     const n = this.need(path);
     if (!n.dir) throw new FSError(E.DIRECTORY, path);
     if (!n.parent || n.attrs & ATTR.READONLY) throw new FSError(E.ACCESS_DENIED, path);
@@ -310,6 +362,8 @@ class FileSystem {
   }
   // ---- file operations
   unlink(path) {
+    const rm = this.remoteAt(path);
+    if (rm) { if (this.rstat(rm).isDir) throw new FSError(E.ACCESS_DENIED, path); rm.b.unlink(rm.rel); this.emit('unlink', rm.path); return; }
     const n = this.need(path);
     if (n.dir) throw new FSError(E.ACCESS_DENIED, path);
     this.writable(n.vol);
@@ -318,6 +372,16 @@ class FileSystem {
     const p = this.pathOf(n); this.detach(n); this.forget(n); this.emit('unlink', p);
   }
   rename(from, to, o = {}) {
+    const ra = this.remoteAt(from), rb = this.remoteAt(to);
+    if (ra || rb) {
+      if (ra && rb && ra.v === rb.v) {
+        const sameName = ra.path.toUpperCase() === rb.path.toUpperCase();
+        if (!sameName && this.exists(to)) { if (!o.overwrite || this.stat(to).isDir) throw new FSError(E.ALREADY_EXISTS, to); this.unlink(to); }
+        ra.b.rename(ra.rel, rb.rel); this.emit('rename', ra.path, rb.path); return this.rstat(rb);
+      }
+      if (this.stat(from).isDir) throw new FSError(E.NOT_SAME_DEVICE, to);
+      this.copy(from, to, { overwrite: o.overwrite }); this.unlink(from); return this.stat(to);
+    }
     const src = this.need(from), dst = this.locate(to);
     if (!src.parent) throw new FSError(E.ACCESS_DENIED, from);
     if (dst.vol !== src.vol) {
@@ -338,6 +402,14 @@ class FileSystem {
     return this.info(src);
   }
   copy(from, to, o = {}) {
+    if (this.remoteAt(from) || this.remoteAt(to)) {   // through the handles: either side may be another computer's
+      const st = this.stat(from);
+      if (st.isDir) { if (this.exists(to)) throw new FSError(E.ALREADY_EXISTS, to); this.mkdir(to); for (const i of this.readdir(from)) this.copy(i.path, join(to, i.name)); return this.stat(to); }
+      if (this.exists(to)) { const d = this.stat(to); if (d.isDir || o.overwrite === false || d.readonly) throw new FSError(d.isDir || d.readonly ? E.ACCESS_DENIED : E.FILE_EXISTS, to); }
+      this.writeFile(to, this.readFile(from));
+      try { this.setTimes(to, { mtime: st.mtime }); } catch (_) { /* the time is advice */ }
+      return this.stat(to);
+    }
     const src = this.need(from);
     if (src.dir) return this.copyTree(src, to);
     if (src.absent) throw new FSError(E.READ_FAULT, from);
@@ -361,11 +433,15 @@ class FileSystem {
     return this.stat(to);
   }
   setAttrs(path, attrs) {
+    const rm = this.remoteAt(path);
+    if (rm) { rm.b.setAttrs(rm.rel, attrs & (ATTR.READONLY | ATTR.HIDDEN | ATTR.SYSTEM | ATTR.ARCHIVE)); this.emit('attrib', rm.path); return; }
     const n = this.need(path); this.writable(n.vol);
     n.attrs = (attrs & (ATTR.READONLY | ATTR.HIDDEN | ATTR.SYSTEM | ATTR.ARCHIVE)) | (n.dir ? ATTR.DIRECTORY : 0);
     this.meta(n); this.emit('attrib', this.pathOf(n));
   }
   setTimes(path, t) {
+    const rm = this.remoteAt(path);
+    if (rm) { if (t.mtime !== undefined) rm.b.setTime(rm.rel, +t.mtime); this.emit('attrib', rm.path); return; }
     const n = this.need(path); this.writable(n.vol);
     for (const k of ['ctime', 'mtime', 'atime']) if (t[k] !== undefined) n[k] = +t[k];
     this.meta(n); this.emit('attrib', this.pathOf(n));
@@ -373,6 +449,19 @@ class FileSystem {
   // ---- handle I/O
   open(path, flags = 'r') {
     const f = FLAGS[flags]; if (!f) throw new FSError(E.INVALID_PARAMETER, flags);
+    const rm = this.remoteAt(path);
+    if (rm) {
+      if (this.fds.size >= 255) throw new FSError(E.TOO_MANY_OPEN_FILES, path);
+      const had = rm.rel && rm.b.stat(rm.rel);
+      if (had && had.dir) throw new FSError(E.ACCESS_DENIED, path);
+      if (had && f.excl) throw new FSError(E.FILE_EXISTS, path);
+      if (!had) { if (!f.create) throw new FSError(E.FILE_NOT_FOUND, path); cleanName(rm.rel.split('\\').pop() || '', path); }
+      const h = rm.b.open(rm.rel, { read: !!f.read, write: !!f.write, create: !!f.create, trunc: !!f.trunc });
+      const fd = this.nextFd++;
+      this.fds.set(fd, { remote: rm.b, v: rm.v, rh: h, rel: rm.rel, path: rm.path, pos: f.append ? rm.b.size(h) : 0, read: !!f.read, write: !!f.write, append: !!f.append });
+      if (!had || f.trunc) this.emit(!had ? 'create' : 'write', rm.path);
+      return fd;
+    }
     const r = this.locate(path); let n = r.node, created = false;
     if (n && n.dir) throw new FSError(E.ACCESS_DENIED, path);
     if (n && f.excl) throw new FSError(E.FILE_EXISTS, path);
@@ -393,7 +482,13 @@ class FileSystem {
   }
   handle(fd) { const h = this.fds.get(fd); if (!h) throw new FSError(E.INVALID_HANDLE, String(fd)); return h; }
   read(fd, len) {
-    const h = this.handle(fd), n = h.n;
+    const h = this.handle(fd);
+    if (h.remote) {
+      if (!h.read) throw new FSError(E.ACCESS_DENIED, h.path);
+      const want = len === undefined ? Math.max(0, h.remote.size(h.rh) - h.pos) : Math.max(0, len), b = h.remote.read(h.rh, h.pos, want);
+      h.pos += b.length; return b;
+    }
+    const n = h.n;
     if (!h.read) throw new FSError(E.ACCESS_DENIED, this.pathOf(n));
     if (h.pos >= n.size) return new Uint8Array(0);
     const end = len === undefined ? n.size : Math.min(n.size, h.pos + Math.max(0, len));
@@ -401,7 +496,14 @@ class FileSystem {
     return out;
   }
   write(fd, data) {
-    const h = this.handle(fd), n = h.n;
+    const h = this.handle(fd);
+    if (h.remote) {
+      if (!h.write) throw new FSError(E.ACCESS_DENIED, h.path);
+      const b = typeof data === 'string' ? encode(data) : data instanceof Uint8Array ? data : new Uint8Array(data);
+      if (h.append) h.pos = h.remote.size(h.rh);
+      h.remote.write(h.rh, h.pos, b); h.pos += b.length; this.emit('write', h.path); return b.length;
+    }
+    const n = h.n;
     if (!h.write) throw new FSError(E.ACCESS_DENIED, this.pathOf(n));
     const b = typeof data === 'string' ? encode(data) : data instanceof Uint8Array ? data : new Uint8Array(data);
     if (h.append) h.pos = n.size;
@@ -414,18 +516,19 @@ class FileSystem {
     return b.length;
   }
   seek(fd, offset, whence = 0) {
-    const h = this.handle(fd), base = whence === 1 ? h.pos : whence === 2 ? h.n.size : 0, p = base + offset;
-    if (p < 0) throw new FSError(E.NEGATIVE_SEEK, this.pathOf(h.n));
+    const h = this.handle(fd), base = whence === 1 ? h.pos : whence === 2 ? (h.remote ? h.remote.size(h.rh) : h.n.size) : 0, p = base + offset;
+    if (p < 0) throw new FSError(E.NEGATIVE_SEEK, h.remote ? h.path : this.pathOf(h.n));
     h.pos = p; return p;
   }
   tell(fd) { return this.handle(fd).pos; }
   truncate(fd, len) {
     const h = this.handle(fd);
+    if (h.remote) { if (!h.write) throw new FSError(E.ACCESS_DENIED, h.path); h.remote.truncate(h.rh, len === undefined ? h.pos : len); this.emit('write', h.path); return; }
     if (!h.write) throw new FSError(E.ACCESS_DENIED, this.pathOf(h.n));
     this.resize(h.n, len === undefined ? h.pos : len); h.n.mtime = Date.now(); this.meta(h.n); this.emit('write', this.pathOf(h.n));
   }
-  fstat(fd) { return this.info(this.handle(fd).n); }
-  close(fd) { const h = this.handle(fd); this.fds.delete(fd); h.n.opens--; }
+  fstat(fd) { const h = this.handle(fd); return h.remote ? this.stat(h.path) : this.info(h.n); }
+  close(fd) { const h = this.handle(fd); this.fds.delete(fd); if (h.remote) h.remote.close(h.rh); else h.n.opens--; }
   // ---- whole-file helpers
   readFile(path) { const fd = this.open(path, 'r'); try { return this.read(fd); } finally { this.close(fd); } }
   readText(path) { return decode(this.readFile(path)); }

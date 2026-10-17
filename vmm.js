@@ -913,7 +913,7 @@ svc(VMM, 0xb8, function () { CF(this, true); });                                
 svc(VMM, 0xbb, function () { this.cpu.eax.value = 0x0700; this.cpu.ebx.value = 0x10000; this.cpu.ecx.value = 0xfc; this.cpu.edx.value = 0x0026; });
 svc(VMM, 0x00, function () { this.cpu.eax.value = 0x0400; this.cpu.ecx.value = 0; CF(this, false); });   // Get_VMM_Version: 4.00
 svc(VMM, 0xcf, function () { this.cpu.eax.value = u32(this.sysTime()); });                             // Get_Last_Updated_System_Time
-svc(VMM, 0xb9, function () { this.cpu.eax.value = this.psp16 || 0; });                                // Get_PSP_Segment
+svc(VMM, 0xb9, function () { this.cpu.eax.value = this.dosData ? this.dosData().pspSeg : 0; });     // Get_PSP_Segment: DOS's current PSP
 
 // ---- VMM: memory the VMM accounts for (page counts) and V86 memory (conventional memory below 1 MB)
 svc(VMM, 0x59, function () { this.cpu.edx.value = 0x2000; return 0x2000; });                         // _PageGetAllocInfo: 32 MB free
