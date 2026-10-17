@@ -161,13 +161,28 @@ export const STEPS = [
       if (!win95.fs.exists(BENCH)) win95.fs.mkdir(BENCH);
       const line = 'The quick brown fox jumps over the lazy dog. 0123456789\r\n';
       win95.fs.writeFile(BENCH + '\\big.txt', line.repeat(Math.ceil(60000 / line.length)).slice(0, 60000));
-      const open = await measure(5, () => win95.run('notepad ' + BENCH + '\\big.txt'), () => win95.close(/Notepad$/));
-      win95.run('notepad ' + BENCH + '\\big.txt'); await frame();
+      // the native Notepad starts and closes on its own time: each open is timed to its window on screen
+      const until = async (ok, ms = 20000) => { const t0 = performance.now(); while (!ok() && performance.now() - t0 < ms) await sleep(5); return ok(); };
+      const opens = [];
+      for (let i = 0; i < 5; i++) {
+        const t0 = performance.now(); win95.run('notepad ' + BENCH + '\\big.txt');
+        if (!await until(() => win95.window('big - Notepad'))) throw new Error('Notepad did not open the file: ' + win95.windows().map(w => w.title).join(', '));
+        await frame(); opens.push(performance.now() - t0);
+        win95.close('big - Notepad'); await until(() => !win95.windows().length);
+      }
+      const open = { to_window: stat(opens) };
+      win95.run('notepad ' + BENCH + '\\big.txt'); await until(() => win95.window('big - Notepad')); await frame();
       // anything else on screen (a refusal, an error) would make the timings meaningless
       if (!win95.window('big - Notepad') || win95.windows().length !== 1) throw new Error('Notepad did not open the file: ' + win95.windows().map(w => w.title).join(', '));
-      const t = performance.now(); win95.type('x'.repeat(1000)); win95.render(); const type_ms = performance.now() - t;
-      await frame();
-      const s = performance.now(); win95.key('alt+f', 's'); win95.render(); const save_ms = performance.now() - s;
+      // the native Notepad takes typed keys as its USER's queue lets them in: typing ends when it has taken them all,
+      // saving when the file has its new size
+      const app = (win95.nativeApps || []).find(a => /NOTEPAD/i.test(a.path));
+      const t = performance.now(); win95.type('x'.repeat(1000));
+      while (app && app.keyq && app.keyq.length && performance.now() - t < 60000) await sleep(5);
+      await sleep(50); const type_ms = performance.now() - t;
+      const s = performance.now(); win95.key('alt+f', 's');
+      while (win95.fs.stat(BENCH + '\\big.txt').size === 60000 && performance.now() - s < 10000) await sleep(5);
+      const save_ms = performance.now() - s;
       const saved = win95.fs.stat(BENCH + '\\big.txt').size;
       if (saved !== 61000) throw new Error(`saved ${saved} bytes, expected 61000`);
       await reset();
@@ -183,7 +198,8 @@ export const STEPS = [
     run: async () => {
       await reset();
       const fs = win95.fs, data = new Uint8Array(1024).fill(65), n = 500;
-      if (!fs.exists(BENCH)) fs.mkdir(BENCH);
+      if (fs.exists(BENCH)) for (const i of fs.readdir(BENCH)) fs.unlink(i.path);   // what an earlier step left
+      else fs.mkdir(BENCH);
       const rate = (t, k = n) => +(k / (t / 1000)).toFixed(1);
       let t = performance.now(); for (let i = 0; i < n; i++) fs.writeFile(`${BENCH}\\File number ${i}.dat`, data); const create = performance.now() - t;
       t = performance.now(); for (let i = 0; i < n; i++) fs.readFile(`${BENCH}\\File number ${i}.dat`); const read = performance.now() - t;
