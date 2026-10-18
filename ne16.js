@@ -2417,10 +2417,30 @@ def16('KERNEL', 54, 'www', 'w', function (hInst, off, cb) {
   this.u8.copyWithin(this.selBase(this.cpu.ds.value & 0xffff) + off, this.selBase(hInst) + off, this.selBase(hInst) + off + n);
   return n;
 });
+/** whether a started process is idle, as WinExec waits for it to be before it returns (KERNEL32's WinExec: until the
+ *  process calls GetMessage, or a time-out): its main thread ended, or waits for input (WaitEvent, a wait on nothing
+ *  but its queue, or a plain object wait once its work is handed to another thread); a wait that pumps while holding
+ *  a handle is still start-up (the shell waiting on RUNONCE's "Windows is now setting up" screen) */
+P.processIdle = function (pc) {
+  const t = pc.main;
+  if (t.state === 'done' || t.state === 'hung' || pc.exitCode !== null) return true;
+  if (t.state !== 'waiting' || t.preempted) return false;
+  if (t.slept) return true;
+  const w = t.waitOn; return !!w && (!w.msg || !w.hs.length);
+};
 def16('KERNEL', 166, 'sw', 'w', function (cmd, show) {   // WinExec: the started program's instance, else its error (2 not found)
+  const t = this.thread16;
+  if (t && t.execWait) {   // the call resumed: the program it started earlier, waited for at the thread's top
+    const pc = t.execWait;
+    if (!this.processIdle(pc) && this.now() < t.execUntil) return YIELD;
+    t.execWait = null; return this.hinst16(pc.exe.base);
+  }
   const r = this.host && this.host.exec ? this.host.exec(cmd, show) : 2;
   if (typeof r !== 'object') return r;
   if (r.elsewhere) return 33;   // (a second instance, in a machine of its own)
+  // the new process runs as the caller gives up its slices (the machine goes on: its screen, its other threads),
+  // until it is idle or 60 s have passed; inside a call, where the caller cannot give up its slice, it runs here
+  if (t && this.atThreadTop()) { t.execWait = r; t.execUntil = this.now() + 60000; return YIELD; }
   this.runUntilIdle(r); return this.hinst16(r.exe.base);
 });
 def16('KERNEL', 169, 'w', 'l', () => 0x01000000);                                     // GetFreeSpace: 16 MB
@@ -2599,7 +2619,7 @@ const waitTop = (p, ms) => {
   else if (p.now() >= t.wake) { t.wake = 0; return 0x102; }
   return YIELD;
 };
-const waitDone = p => { const t = p.thread16 || p.mainWait; if (t) t.wake = 0; };
+const waitDone = p => { const t = p.thread16 || p.mainWait; if (t) { t.wake = 0; t.waitOn = null; } };
 def16('KERNEL', 460, 'll', 'l', function (h, ms) {
   const e = ev16(this, h); if (!e) return 0xffffffff;
   if (this.thread16) this.thread16.waitOn = { hs: [h], all: 0, ms };   // (for a probe)
@@ -2638,7 +2658,7 @@ P.systemPump = function () {
 def16('KERNEL', 461, 'llll', 'l', function (n, ph, all, ms) {                                        // WaitForMultipleObjects
   const hs = [...Array(n)].map((_, i) => ev16(this, this.r32(this.lin(ph) + 4 * i)));
   const ready = all ? hs.every(e => e && e.set) : hs.some(e => e && e.set);
-  if (this.thread16) this.thread16.waitOn = { hs: [...Array(n)].map((_, i) => this.r32(this.lin(ph) + 4 * i)), all, ms };   // (for a probe: what the thread waits on)
+  if (this.thread16) this.thread16.waitOn = { hs: [...Array(n)].map((_, i) => this.r32(this.lin(ph) + 4 * i)), all, ms, msg: true };   // (what the thread waits on: USER's MsgWaitForMultipleObjects, a wait that pumps)
   if (!ready && ms && this.atThreadTop()) return waitTop(this, ms);   // as #460: a thread at its top level gives up its slice
   if (!ready && ms) this.waitNested(() => (all ? hs.every(e => e && e.set) : hs.some(e => e && e.set)));
   waitDone(this);
@@ -2753,10 +2773,7 @@ P.imgUse = function (pc) {
 /** WinExec's start, as Win16's loader gives it: the new process runs until its main thread first waits for input
  *  (or ends), so it has made its windows by the time WinExec returns */
 P.runUntilIdle = function (pc, rounds = 500) {
-  const t = pc.main;
-  // waiting: in WaitEvent (the message wait: t.slept) or on an object not yet set
-  // (a task whose time ran out has not yielded: WinExec waits on for it)
-  for (let k = 0; k < rounds && t.state !== 'done' && t.state !== 'hung' && !(t.state === 'waiting' && (t.slept || (t.wait && !t.wait.set))) && !this.trapped; k++) this.threads16(true);
+  for (let k = 0; k < rounds && !this.processIdle(pc) && !this.trapped; k++) this.threads16(true);
 };
 /** a thread of a started process has ended: the process ends with its last thread (a thread returning from its
  *  start, the main one too, ends that thread only), unless ExitProcess ended it already */
