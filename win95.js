@@ -3076,7 +3076,6 @@ class NativeApp {
     try {
       this.proc = new W95Win32.Process(bytes, module, { ...prog.d.meta, name: prog.name.replace(/\.EXE$/, '') }, host, this.arg ? `${exe} ${this.arg}` : exe, dlls);
       this.proc.soundQuiet = this.quiet;   // (sound.js: the card's output off for the one sound)
-      this.proc.systemMachine = this.system;   // (vmm.js vxdAppy: its appy-time calls run on MSGSRV32's thread)
       if (this.system && !this.proc.trapped && !this.proc.startTask16('MSGSRV32.EXE')) throw new Error('MSGSRV32.EXE did not start');
     }
     catch (e) { console.error(e); this.exited(-1, e.message); return false; }

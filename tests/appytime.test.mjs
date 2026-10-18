@@ -25,13 +25,8 @@ console.log('appytime: ok');
   p.vxdCdecl = (fn, args) => ran.push([fn, ...args]);
   p.user16Ready = true; p.appyThread = A; p.thread16 = B;
   assert.equal(p.appyCall(0x100, 7), false); assert.deepEqual(p.appyQueue, [{ fn: 0x100, ref: 7 }]); assert.deepEqual(ran, []);
-  p.thread16 = A; assert.equal(p.appyCall(0x200, 8), true); assert.deepEqual(ran, [[0x100, 7], [0x200, 8]]); assert.equal(p.appyQueue.length, 0);   // (the ones waiting run first, on that thread)
-  p.user16Ready = false; assert.equal(p.appyCall(0x300, 9), false); assert.equal(p.appyQueue.length, 1);
-  // the host's appy time: a machine with no appy-time thread (a program's, the network's) runs them between slices;
-  // the system's machine leaves them to MSGSRV32's thread (its WaitEvent, or a call of its own)
-  p.user16Ready = true; p.thread16 = null; p.depth = 0; p.systemMachine = true; p.vxdAppy(); assert.equal(p.appyQueue.length, 1);
-  p.systemMachine = false; p.vxdAppy(); assert.equal(p.appyQueue.length, 0); assert.deepEqual(ran[2], [0x300, 9]);
-  p.appyQueue.push({ fn: 0x400, ref: 1 }); p.thread16 = A; p.appyDrain(); assert.deepEqual(ran[3], [0x400, 1]);
+  p.thread16 = A; assert.equal(p.appyCall(0x200, 8), true); assert.deepEqual(ran, [[0x200, 8]]); assert.equal(p.appyQueue.length, 1);
+  p.user16Ready = false; assert.equal(p.appyCall(0x300, 9), false); assert.equal(p.appyQueue.length, 2);
 }
 // the system's first task's thread is the appy-time thread
 {

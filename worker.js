@@ -129,7 +129,6 @@ class Machine {
     try {
       this.proc = new W.Process(this.bytes, prog.module, { ...prog.meta, name: prog.name.replace(/\.EXE$/, '') }, host, this.arg ? `${exe} ${this.arg}` : exe, dlls);
       this.proc.soundQuiet = !!this.quiet;   // (sound.js: the card's output off for the one sound)
-      this.proc.systemMachine = !!this.system;   // (vmm.js vxdAppy: its appy-time calls run on MSGSRV32's thread)
       if (this.trace) this.traceOn(this.trace);
       if (this.system && !this.proc.trapped && !this.startSystemTask()) throw new Error('MSGSRV32.EXE did not start');
     } catch (e) { console.error(e && e.stack ? e.stack : e); this.exited(-1, e.message); return; }
@@ -206,13 +205,17 @@ class Machine {
   startSystemTask() {
     const p = this.proc, S = self.W95SYSTEM || {}, items = W.regVals('hklm\\software\\microsoft\\windows\\currentversion\\runonce\\setup');
     const exe = items.length && (S.programs || {})['RUNONCE.EXE'] ? ['C:\\WINDOWS\\RUNONCE.EXE', 'C:\\WINDOWS\\SYSTEM\\RUNONCE.EXE'].find(f => fs.exists(f)) : null;
-    const sys = () => { if (!this.alive || p.trapped) return true; const ok = !!p.startTask16('MSGSRV32.EXE'); if (!ok) this.exited(-1, 'MSGSRV32.EXE did not start'); return ok; };
-    if (!exe) return sys();
+    if (!exe) return this.startMsgsrv();
     p.init16();
     const pc = this.spawnProgram(exe, '');
-    if (typeof pc !== 'object') return sys();
-    const was = pc.onExit; pc.onExit = code => { if (was) was(code); sys(); };
+    if (typeof pc !== 'object') return this.startMsgsrv();
+    const was = pc.onExit; pc.onExit = code => { if (was) was(code); this.sysPending = true; };   // (started from step(), between slices, as at a boot without Setup's items)
     return true;
+  }
+  startMsgsrv() {
+    const p = this.proc; if (!this.alive || p.trapped) return true;
+    const ok = !!p.startTask16('MSGSRV32.EXE'); if (!ok) this.exited(-1, 'MSGSRV32.EXE did not start');
+    return ok;
   }
   /** a diagnostic: the imports the threads whose name matches re call (the JS-implemented ones: KERNEL, USER's
    *  hooks, KERNEL32), with the time and, for WinExec and LoadModule, the command line; cmd 'trace' reads them */
@@ -222,6 +225,7 @@ class Machine {
     const arg = key => { if (!/KERNEL\.#(166|45)$/.test(key)) return ''; try { const f = p.cpu.ssb.value + (p.cpu.esp.value & 0xffff), s = p.r32(f + (key.endsWith('166') ? 6 : 8)); return p.readA(p.lin(s)) || ''; } catch (_) { return ''; } };
     self.W95TRACE16 = t => { const th = name(); if (log.length < 20000 && want.test(th)) log.push([Math.round(performance.now() - t0), th, t.key, arg(t.key)]); };
     self.W95TRACE = t => { const th = name(); if (log.length < 20000 && want.test(th)) log.push([Math.round(performance.now() - t0), th, t.dll + '!' + t.nm, '']); };
+    self.W95APPYTRACE = e => { if (log.length < 20000) log.push([Math.round(performance.now() - t0), name(), 'appy', (e.fn >>> 0).toString(16)]); };
   }
   ring0() { return !!(this.proc && this.proc.r0Runs && this.proc.r0Runs.length); }
   feedKeys() {
@@ -246,6 +250,7 @@ class Machine {
       return;
     }
     if (this.stopped) return;
+    if (this.sysPending && !p.depth && !p.thread16) { this.sysPending = false; if (!this.startMsgsrv()) return; }   // Setup's items done: the system's first task
     if (this.wantMode && !p.depth && !p.thread16 && !p.win16Held) {   // the mode the page asked for while a thread held USER: made now that none does
       const [w, h] = this.wantMode; this.wantMode = null; const r = this.setMode(w, h); if (r) post({ t: 'mode', r }); else this.wantMode = [w, h];
     }
