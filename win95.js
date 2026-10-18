@@ -2979,9 +2979,11 @@ class NativeApp {
   watchdog() {
     const p = this.proc, h = p.win16Held;
     if (!h) { this.wdFired = false; return; }
-    if (this.wdFired || performance.now() - h.since < WATCHDOG_MS || !p.vkdKey) return;
+    // (a hung thread by the clock; one still running by the processor time it has had, so a page whose timers the
+    // browser slows does not count its waits)
+    if (this.wdFired || (h.hung ? performance.now() - h.since : h.cpu) < WATCHDOG_MS || !p.vkdKey) return;
     this.wdFired = true;
-    console.warn(`[win95] ${basename(this.path)}: no answer for ${Math.round(performance.now() - h.since)} ms (${h.hung ? 'hung' : 'holding the Win16Lock'}): Ctrl+Alt+Del`);
+    console.warn(`[win95] ${basename(this.path)}: no answer for ${Math.round(h.hung ? performance.now() - h.since : h.cpu)} ms (${h.hung ? 'hung' : 'holding the Win16Lock'}): Ctrl+Alt+Del`);
     try { p.vkdKey(0x53, true, false, { ctrl: true, alt: true }); } catch (e) { console.error(e); }
   }
   // the keyboard as VKD sees it first: its hot keys (Ctrl+Alt+Del) and, in message mode, every key. True when it took it

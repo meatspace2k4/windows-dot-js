@@ -303,10 +303,14 @@ class Process {
   }
   /** the Win16Lock after a thread's run: a thread that gave up the processor in 16-bit code, or inside a system level it
    *  entered (_EnterSysLevel), keeps it, and no other thread enters 16-bit code until it lets it go; one that hung keeps
-   *  it for good. The host reads `win16Held` (who, since when, hung) */
+   *  it for good. The host reads `win16Held` (who, since when, the processor time it has run holding it, hung) */
   holdWin16(who, hung = false) {
     const holds = hung || (this.preempted && ((this.cpu.cs.value & 0xffff) !== 0 || this.sysLevel > 0));
-    if (holds) { if (!this.win16Held || this.win16Held.who !== who) this.win16Held = { who, since: this.now(), hung }; else if (hung) this.win16Held.hung = true; }
+    const ran = this.now() - this.runT0;   // the processor time it had in this run, holding the lock
+    if (holds) {
+      if (!this.win16Held || this.win16Held.who !== who) this.win16Held = { who, since: this.now(), hung, cpu: ran };
+      else { this.win16Held.cpu += ran; if (hung) this.win16Held.hung = true; }
+    }
     else if (this.win16Held && this.win16Held.who === who) this.win16Held = null;
   }
   /** a thread hung (HangError): it stays as it is, holding the Win16Lock, and the system is frozen behind it */
