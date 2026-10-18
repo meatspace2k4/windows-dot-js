@@ -533,7 +533,8 @@ class Translator:
         except Unsupported as e:
             key = '%s %s' % (ins.mn, ins.i.op_str) if 'reg' in str(e) or 'segment' in str(e) else ins.mn
             self.unsupported[key] = self.unsupported.get(key, 0) + 1
-            f = Fn(); f.c(ins.addr).c(1).e(0x10, uleb(IMP['trap'])); f.c(SENTINEL).e(RETURN)
+            # #UD at the instruction: the host dispatches the exception and leaves the continuation in the eip global
+            f = Fn(); f.c(ins.addr).c(1).e(0x10, uleb(IMP['trap'])); f.gg('eip').e(RETURN)
         return f
 
     # returns non-None when the block's terminating return has been emitted
@@ -763,8 +764,10 @@ class Translator:
         t = f.i(); self.counter(f, ins); f.c(0).e(OPS['ne'])
         if cc: cond(f, cc); f.e(OPS['and_'])
         f.ls(t); f.c(imm_target(ins)).c(ins.next).lg(t).e(SELECT).e(RETURN); return True
+    # the exceptions these raise, which the host dispatches (the continuation in the eip global): INT 3 #BP after the
+    # instruction, UD2 #UD, HLT outside ring 0 #GP (trap codes 3, 1, 4)
     def x_int3(self, f, ins, ops, live):
-        f.c(ins.addr).c(3).e(0x10, uleb(IMP['trap'])); f.c(SENTINEL).e(RETURN); return True
+        f.c(ins.next if ins.mn == 'int3' else ins.addr).c({'int3': 3, 'ud2': 1, 'hlt': 4}[ins.mn]).e(0x10, uleb(IMP['trap'])); f.gg('eip').e(RETURN); return True
     x_hlt = x_int3; x_ud2 = x_int3
     def x_int(self, f, ins, ops, live):
         # the host services the interrupt and leaves the continuation (ins.next, or the sentinel) in the eip global

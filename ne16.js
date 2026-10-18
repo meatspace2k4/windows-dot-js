@@ -2717,6 +2717,14 @@ P.threads16 = function (nested = false) {
         if (t.pc) this.pcThreadEnded(t); if (r !== 0 && this.trapped) console.warn('[ne16] thread', t.id, this.trapped); if (t.onDone) t.onDone(t);
       }   // onDone: the host's, for a thread it started
     } catch (e) {
+      if (e instanceof window.W95Win32.FaultError) {   // a processor exception nothing in it handled
+        t.state = 'done'; this.wakeWaiters(t);
+        // a program the system started ends alone (KERNEL32's fault dialog for it); the program this machine runs, or
+        // ring 0, takes the machine's answer
+        if (t.pc && this.noMain && e.fault.ring !== 0) { (this.pcFaults || (this.pcFaults = [])).push({ pc: t.pc, fault: e.fault, why: e.fault.why }); this.endProcess(t.pc, 0xffffffff); }
+        else this.faulted(e.fault);
+        return;
+      }
       if (!(e instanceof window.W95Win32.HangError)) throw e;
       t.state = 'hung'; this.hung(t, e);   // it stays where it hung, holding what it held
     } finally { this.thread16 = caller; this.loadCtx16(main); }

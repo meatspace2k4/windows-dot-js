@@ -173,6 +173,10 @@ DOS = ['ifshlp.sys',
        # the display's text mode shows (message mode's blue screens) (WIN95_12.CAB)
        'ega.cpi']
 bundle['dos'] = {f.upper(): b64(os.path.join(src, f)) for f in DOS if os.path.exists(os.path.join(src, f))}
+# files whose own text the system shows: KERNEL32.DLL's fault dialog and messages (Close Program, "This program has
+# performed an illegal operation"), and VWIN32.VXD's fatal-exception blue screen (WIN95_12.CAB)
+RES = ['kernel32.dll', 'vwin32.vxd']
+bundle['res'] = {f.upper(): b64(os.path.join(src, f)) for f in RES if os.path.exists(os.path.join(src, f))}
 bundle['infs'] = {f.upper(): open(os.path.join(src, f), 'rb').read().decode('latin1') for f in INFS if os.path.exists(os.path.join(src, f))}
 # every module's block table (an i32 per code byte at its lookup base) lives in one address space with the others':
 # two that overlap make a module dispatch through another's table once both are loaded

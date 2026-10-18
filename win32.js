@@ -30,6 +30,13 @@ class GuestError extends Error {}
 /** a thread that runs on and on inside a call the host made: the host takes its processor back, and the thread stays
  *  where it is, never to run again (as a thread spinning forever leaves it) */
 class HangError extends Error {}
+/** a processor exception nothing in the program handled (or one at ring 0): `fault` says what, where and the state the
+ *  processor was in, for the system's answer to it (KERNEL32's fault dialog, VWIN32's blue screen) */
+class FaultError extends Error { constructor(f) { super(f.why); this.fault = f; } }
+// the trap codes the recompiled code raises (0 #DE, 1 #UD, 2 no code at the address: #PF, 3 #BP, 4 #GP) as vectors, and
+// the Win32 exception code each is to a program's handlers
+const TRAP_VEC = [0, 6, 14, 3, 13];
+const EXC_CODE = { 0: 0xc0000094, 3: 0x80000003, 6: 0xc000001d, 13: 0xc0000005, 14: 0xc0000005 };
 
 // ---------------------------------------------------------------- small helpers
 const u32 = v => v >>> 0;
@@ -241,6 +248,14 @@ class Process {
     else { seen.stale = 0; if (seen.at.size > 4096) seen.at.clear(); seen.at.set(u32(eip), st); }
     return 0;
   }
+  /** no code at `at` the processor can run (nothing mapped there: #PF; an instruction run-time translation cannot
+   *  take: #UD): the exception's continuation, or null for a stop of the emulator's own (trapped) */
+  noCode(at) {
+    const t = this.trapped || '';
+    if (/^run-time code/.test(t)) { this.trapped = null; return this.raise(6, at); }
+    if (t && !/^jump to unmapped address/.test(t)) return null;
+    this.trapped = null; return this.raise(14, at, at);
+  }
   dispatch(eip) {
     for (;;) {
       eip >>>= 0;
@@ -253,14 +268,16 @@ class Process {
         const dyn = this.dynRun && this.dynRun(eip);   // code generated at run time (dyn.js)
         if (dyn === -1) return 1;   // its time was up
         if (dyn !== undefined && dyn !== null) { eip = dyn; continue; }
-        this.trapped = this.trapped || `jump to unmapped address ${eip.toString(16)}`; return 2;
+        const go = this.noCode(eip); if (go === null) return 2;
+        eip = go; continue;
       }
       if (this.modeSwitch && eip < LAYOUT.THUNK16) this.modeSwitch(m);
       if (m.clock) this.tick16();   // SYSTEM.DRV reads the time the timer VxD keeps current
       const r = m.run(eip);
       if (r === 2 && this.dynWant !== undefined) {   // no translated block there: code written at run time
         const at = this.dynWant; this.dynWant = undefined;
-        const dyn = this.dynRun(at); if (dyn === null) return 2;
+        const dyn = this.dynRun(at);
+        if (dyn === null) { const go = this.noCode(at); if (go === null) return 2; eip = go; continue; }
         if (dyn === -1) return 1;
         eip = dyn; continue;
       }
@@ -270,7 +287,7 @@ class Process {
   }
   /** Run until the guest blocks for messages or exits. Returns false once the process has exited. */
   slice() {
-    if (this.exitCode !== null) return false;
+    if (this.exitCode !== null || this.fault) return false;
     if (this.trapped) { this.fail(this.trapped); return false; }
     if (this.noMain) { if (this.userStack) this.userStack(); return true; }   // the system's process: its threads run (threads16)
     if (this.win16Held && this.win16Held.who !== 'main') return true;   // another thread holds the Win16Lock: this one waits for it
@@ -280,7 +297,10 @@ class Process {
     let r; this.preempted = 0;
     if (this.mainCtx) { this.loadFull(this.mainCtx); this.mainCtx = null; }   // where its time ran out, every register as it was
     try { r = this.runTop(this.resumeEip); }
-    catch (e) { if (!(e instanceof HangError)) throw e; this.hungMain = true; this.depth = 0; this.hung('main', e); return true; }
+    catch (e) {
+      if (e instanceof FaultError) { this.depth = 0; this.faulted(e.fault); return false; }
+      if (!(e instanceof HangError)) throw e; this.hungMain = true; this.depth = 0; this.hung('main', e); return true;
+    }
     if (r === 1) { this.resumeEip = this.reg('eip'); if (this.preempted) this.mainCtx = this.saveFull(); this.holdWin16('main'); return true; }
     this.holdWin16('main');
     if (r === 2 || this.trapped) { this.fail(this.trapped || `bad address ${this.reg('eip').toString(16)}`); return false; }
@@ -330,14 +350,56 @@ class Process {
     this.holdWin16(who, true);
     this.stuck = true;   // the host puts up the system's answer to it (win95.js NativeApp.step)
   }
+  /** a processor exception that ends the program (or, at ring 0, the system's answer first): the host reads `fault` */
+  faulted(f) {
+    if (this.fault) return;
+    this.fault = f;
+    console.error(`[win32] ${this.meta.name || ''} ${f.ring === 0 ? 'fatal exception' : 'fault'}: ${f.why} in ${f.module}`);
+  }
   fail(why) {
     if (this.failed) return;
     this.failed = true; this.trapped = why;
     console.error(`[win32] ${this.meta.name || ''} stopped: ${why}`);
     this.host.exited(-1, why);
   }
+  /** processor exception `n` at `eip` (cr2: the address a page fault was at), as Windows 95 takes one: at ring 0 it is
+   *  fatal (VWIN32's blue screen); in 16-bit code it goes to the client's exception handler (DPMI 0203h, KERNEL's),
+   *  in 32-bit code to the thread's structured handlers; one nothing handles ends the program (KERNEL32's fault
+   *  dialog). Returns where to go on (the handler's continuation); throws FaultError when nothing takes it */
+  raise(n, eip, cr2 = 0) {
+    const f = this.faultInfo(n, eip, cr2);
+    if (f.ring === 0) throw new FaultError(f);
+    if (f.seg) {
+      if (this.exception16 && this.exception16(n, eip)) return u32(this.cpu.eip.value);
+      throw new FaultError(f);
+    }
+    if (!this.r32(this.cpu.fs.value) || this.r32(this.cpu.fs.value) === 0xffffffff) throw new FaultError(f);
+    const r = sehDispatch(this, EXC_CODE[n] || 0xc0000005, eip, n === 14 || n === 13 ? [0, cr2] : [], f);
+    if (r === null) throw new FaultError(f);
+    return r;
+  }
+  /** the processor's state at an exception, as the fault dialog's details and the blue screen give it */
+  faultInfo(n, eip, cr2) {
+    const cs = this.cpu.cs.value & 0xffff, m = this.modules.find(x => x.meta && eip >= x.meta.textLo && eip < x.meta.textHi);
+    const ring = this.r0Depth > 0 || (m && m.kind === 'vxd') ? 0 : 3;
+    const regs = {}; for (const r of ['eax', 'ebx', 'ecx', 'edx', 'esi', 'edi', 'ebp', 'esp']) regs[r] = u32(this.cpu[r].value);
+    let flags = 0x202; for (const [r, b] of [['cf', 0], ['pf', 2], ['zf', 6], ['sf', 7], ['df', 10], ['of', 11]]) flags |= (this.cpu[r].value & 1) << b;
+    let module = '<unknown>', at = eip, sel = cs || (ring ? 0x137 : 0x28);
+    if (cs && this.neByHandle) {   // 16-bit: the module's file and the segment's number, the offset in it
+      const ne = this.neByHandle(cs); const sg = ne && ne.meta && ne.meta.segs && ne.meta.segs.findIndex(x => x.sel === (cs & ~7) || x.sel === cs);
+      if (ne) { module = (ne.fileName || ne.name + '.EXE').toUpperCase(); if (sg >= 0) sel = sg + 1; at = (eip - u32(this.selBase(cs))) >>> 0; }
+    } else if (m) module = m.kind === 'vxd' ? m.name : m === this.exe ? (this.pc && this.pc.path ? this.pc.path.replace(/^.*\\/, '') : (this.meta.name || 'EXE') + '.EXE').toUpperCase() : (m.file || m.name + '.DLL').toUpperCase();
+    const bytes = [], stack = [];
+    for (let i = 0; i < 16; i++) bytes.push(eip + i < this.u8.length ? this.u8[eip + i] : 0);
+    const sp = this.stackLin ? this.stackLin() : regs.esp;
+    for (let i = 0; i < 32; i++) stack.push(sp + 4 * i + 4 <= this.u8.length ? this.r32(sp + 4 * i) : 0);
+    const segs = {}; for (const r of ['ds', 'es', 'ss', 'fsel', 'gsel']) segs[r] = this.cpu[r].value & 0xffff;
+    return { n, eip, cr2, ring, seg: !!cs, cs: sel, module, offset: m && m.kind === 'vxd' ? eip - m.base : at, vxd: m && m.kind === 'vxd' ? m.name : null,
+      regs, flags, segs, bytes, stack, program: this.pc && this.pc.path ? this.pc.path : null, why: `exception ${n.toString(16)}h at ${eip.toString(16)}` };
+  }
   trap(eip, code) {
     if (code === 2 && this.dynRun) { this.dynWant = u32(eip); return; }
+    if (code <= 4) { this.cpu.eip.value = this.raise(TRAP_VEC[code], u32(eip), code === 2 ? u32(eip) : 0) | 0; return; }
     if (this.trapHook && this.trapHook(eip, code)) return;
     this.trapped = `${['divide error', 'unsupported instruction', 'jump to unmapped address', 'breakpoint'][code] || 'trap'} at ${u32(eip).toString(16)}`;
     if (code === 0) this.cpu.eip.value = LAYOUT.SENTINEL | 0;
@@ -351,7 +413,10 @@ class Process {
     }
     if (u32(eip) < LAYOUT.THUNK) return this.api16(u32(eip));
     const t = this.thunks[(u32(eip) - LAYOUT.THUNK) >> 2];
-    if (!t || !t.def) { this.trapped = `unimplemented import ${t ? t.dll + '!' + t.nm : u32(eip).toString(16)}`; return LAYOUT.SENTINEL; }
+    if (!t || !t.def) {   // a call into an import with nothing behind it: a page fault at its address, from where it was called
+      console.warn(`[win32] unimplemented import ${t ? t.dll + '!' + t.nm : u32(eip).toString(16)}`);
+      try { return this.raise(14, u32(eip), u32(eip)); } catch (e) { if (e instanceof FaultError) e.fault.import = t ? t.dll + '!' + t.nm : ''; throw e; }
+    }
     const [nargs, fn] = t.def, sp = this.reg('esp');
     if (window.W95TRACE) window.W95TRACE(t, this);
     if (nargs === 'regs') {   // register-convention entry: the implementation moves ESP and picks the continuation
@@ -739,25 +804,38 @@ function sehContext(p, at, eip, esp) {
   for (const [r, o] of Object.entries(CTX)) p.w32(at + o, p.reg(r));
   p.w32(at + 0xb8, eip); p.w32(at + 0xc4, esp); p.w32(at + 0xc0, 0x202);
 }
-def('KERNEL32', 'RaiseException', 'regs', function () {
-  const sp = u32(this.reg('esp')), ret = this.r32(sp), code = this.r32(sp + 4), flags = this.r32(sp + 8), n = Math.min(this.r32(sp + 12), 15), argv = this.r32(sp + 16);
-  const rec = (sp - 0x400) & ~15, ctx = rec + 0x60;
-  this.u8.fill(0, rec, rec + 0x50);
-  this.w32(rec, code); this.w32(rec + 4, flags & 1); this.w32(rec + 12, ret); this.w32(rec + 16, n);
-  for (let i = 0; i < n; i++) this.w32(rec + 20 + 4 * i, this.r32(argv + 4 * i));
-  sehContext(this, ctx, ret, sp + 20);
-  this.reg('esp', rec - 0x40);
-  const tib = this.cpu.fs.value, seen = [];
-  for (let f = this.r32(tib); f !== SEH_END && f; f = this.r32(f)) {
-    seen.push(u32(f).toString(16) + ':' + u32(this.r32(f + 4)).toString(16));
-    const r = sehCall(this, this.r32(f + 4), [rec, f, ctx, 0], sp);
+/** an exception (code, at `eip`, its parameters) through the thread's structured handlers, as KERNEL32 dispatches one:
+ *  the address to go on at (a handler continued it), SENTINEL when a handler took it and the program ran on past
+ *  here, null when none handled it */
+function sehDispatch(p, code, eip, params, fault, flags = 0) {
+  p.sehFault = fault;
+  const sp = u32(p.reg('esp')), rec = (sp - 0x400) & ~15, ctx = rec + 0x60, n = Math.min(params.length, 15);
+  p.u8.fill(0, rec, rec + 0x50);
+  p.w32(rec, code); p.w32(rec + 4, flags & 1); p.w32(rec + 12, eip); p.w32(rec + 16, n);
+  for (let i = 0; i < n; i++) p.w32(rec + 20 + 4 * i, params[i]);
+  sehContext(p, ctx, eip, sp);
+  p.reg('esp', rec - 0x40);
+  const tib = p.cpu.fs.value;
+  for (let f = p.r32(tib); f !== SEH_END && f; f = p.r32(f)) {
+    const r = sehCall(p, p.r32(f + 4), [rec, f, ctx, 0], sp);
     if (r === 'escaped') return LAYOUT.SENTINEL;
     if (r === 0) {   // continue execution where the context says
-      for (const [rg, o] of Object.entries(CTX)) this.reg(rg, this.r32(ctx + o));
-      this.reg('esp', this.r32(ctx + 0xc4)); return this.r32(ctx + 0xb8);
+      for (const [rg, o] of Object.entries(CTX)) p.reg(rg, p.r32(ctx + o));
+      p.reg('esp', p.r32(ctx + 0xc4)); return p.r32(ctx + 0xb8);
     }
   }
-  throw new GuestError(`unhandled exception ${u32(code).toString(16)} at ${u32(ret).toString(16)} (frames ${seen.join(' ') || 'none'}, TIB ${u32(tib).toString(16)})`);
+  p.reg('esp', sp);
+  return null;
+}
+def('KERNEL32', 'RaiseException', 'regs', function () {
+  const sp = u32(this.reg('esp')), ret = this.r32(sp), code = this.r32(sp + 4), flags = this.r32(sp + 8), n = Math.min(this.r32(sp + 12), 15), argv = this.r32(sp + 16);
+  const params = []; for (let i = 0; i < n; i++) params.push(this.r32(argv + 4 * i));
+  this.reg('esp', sp + 20);
+  const r = sehDispatch(this, code, ret, params, null, flags);
+  if (r !== null) return r;
+  // nothing handled it: KERNEL32's unhandled-exception path ends the program with its fault dialog
+  const f = this.faultInfo(0, ret, 0); f.code = code; f.why = `exception ${u32(code).toString(16)} at ${u32(ret).toString(16)}`;
+  throw new FaultError(f);
 });
 // RtlUnwind(target frame, target IP, record, return value): the handlers of the frames above the target are called
 // with the record marked unwinding (2; and 4 when there is no target: the whole chain), each frame taken off the chain
@@ -805,8 +883,17 @@ def('KERNEL32', 'RtlUnwind', 'regs', function () {
   for (const [r, x] of keep) this.reg(r, x);
   this.reg('eax', value); this.reg('esp', sp + 20); return ret;
 });
-def('KERNEL32', 'UnhandledExceptionFilter', 1, () => 1);
-def('KERNEL32', 'SetUnhandledExceptionFilter', 1, () => 0);
+// UnhandledExceptionFilter(EXCEPTION_POINTERS): the program's own top-level filter first (SetUnhandledExceptionFilter),
+// else KERNEL32's fault dialog for the exception being dispatched; EXCEPTION_EXECUTE_HANDLER (1): the program ends
+def('KERNEL32', 'UnhandledExceptionFilter', 1, function (ptrs) {
+  if (this.topFilter) { const r = this.call(this.topFilter, [ptrs]); if (r !== 0) return r; }
+  const rec = this.r32(ptrs), ctx = this.r32(ptrs + 4);
+  const f = this.sehFault && this.sehFault.eip === this.r32(rec + 12) ? this.sehFault : this.faultInfo(0, this.r32(rec + 12), 0);
+  if (!this.sehFault || f !== this.sehFault) { f.code = this.r32(rec); for (const [r, o] of Object.entries(CTX)) f.regs[r] = this.r32(ctx + o); }
+  if (this.host.faultDialog) this.host.faultDialog(f);
+  return 1;
+});
+def('KERNEL32', 'SetUnhandledExceptionFilter', 1, function (fn) { const was = this.topFilter || 0; this.topFilter = fn; return was; });
 def('KERNEL32', 'GetLastError', 0, function () { return this.lastError || 0; });
 def('KERNEL32', 'SetLastError', 1, function (e) { this.lastError = e; });
 def('KERNEL32', 'LocalAlloc', 2, function (f, n) { return this.alloc(n); });
@@ -2183,6 +2270,19 @@ def('GDI32', 'SetSystemPaletteUse', 2, () => 1);
 def('GDI32', 'GdiFlush', 0, () => 1);
 
 // Read a string resource straight from PE file bytes (used to list savers by description).
+/** a PE file's resource (type, id) as bytes, or null */
+function peResource(bytes, type, id) {
+  try {
+    const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), p = dv.getUint32(0x3c, true), opt = p + 24;
+    const nsec = dv.getUint16(p + 6, true), shdr = opt + dv.getUint16(p + 20, true), rsrc = dv.getUint32(opt + 96 + 16, true);
+    const off = rva => { for (let i = 0; i < nsec; i++) { const o = shdr + 40 * i, va = dv.getUint32(o + 12, true), sz = Math.max(dv.getUint32(o + 8, true), dv.getUint32(o + 16, true)); if (rva >= va && rva < va + sz) return rva - va + dv.getUint32(o + 20, true); } return -1; };
+    const root = off(rsrc);
+    const find = (dir, key) => { const n = dv.getUint16(dir + 12, true) + dv.getUint16(dir + 14, true); for (let i = 0; i < n; i++) { const e = dir + 16 + 8 * i; if (key === undefined || dv.getUint32(e, true) === key) return dv.getUint32(e + 4, true); } return null; };
+    let o = find(root, type); if (o === null) return null; o = find(root + (o & 0x7fffffff), id); if (o === null) return null; o = find(root + (o & 0x7fffffff));
+    const de = root + (o & 0x7fffffff), a = off(dv.getUint32(de, true));
+    return bytes.subarray(a, a + dv.getUint32(de + 4, true));
+  } catch (_) { return null; }
+}
 function peString(bytes, id) {
   try {
     const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), p = dv.getUint32(0x3c, true), opt = p + 24;
@@ -2203,5 +2303,5 @@ function peString(bytes, id) {
   } catch (_) { return null; }
 }
 
-window.W95Win32 = { regAttach, regGet, regKids, regVals, regDel, regSet, Process, API, LAYOUT, WM, YIELD, iniGet, iniSet, iniRead, peString, def, dcOf, GuestError, HangError, mkCanvas, dibOut };
+window.W95Win32 = { regAttach, regGet, regKids, regVals, regDel, regSet, Process, API, LAYOUT, WM, YIELD, iniGet, iniSet, iniRead, peString, peResource, def, dcOf, GuestError, HangError, FaultError, mkCanvas, dibOut };
 })();

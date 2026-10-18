@@ -2988,6 +2988,8 @@ class NativeApp {
       exited: (code, why) => this.exited(code, why), boot: p => p.bootUser16(), exec: (cmd, show) => this.exec(cmd, show),
       // the display in and out of message mode (a blue screen), and the machine's reset (the keyboard controller's)
       msgMode: on => { msgApp = on ? this : msgApp === this ? null : msgApp; dirty(); }, reset: () => machineReset(),
+      // KERNEL32's unhandled-exception filter: its fault dialog for this program (which then ends)
+      faultDialog: f => faultDialog(this.progName(), f),
     };
     const exe = /\s/.test(this.path) ? `"${this.path}"` : this.path;
     try {
@@ -3018,9 +3020,11 @@ class NativeApp {
     if (p.r0Runs && p.r0Runs.length) {
       try { p.r0Step(); } catch (e) { console.error(e); this.exited(-1, e.message); return; }
       if (msgApp === this) dirty();
+      if (!(p.r0Runs && p.r0Runs.length) && this.afterR0) { const go = this.afterR0; this.afterR0 = null; go(); }
       if (this.alive) this.timer = setTimeout(() => this.step(), 16);
       return;
     }
+    if (this.stopped) return;   // (its fault dialog is up: it ends when that closes)
     if (!p.win16Held && p.k32CloseRequest && p.k32CloseRequest()) closeProgram(this);   // REBOOT's APC: Close Program
     this.keysFed = 0; this.feedKeys();
     // while a thread holds the Win16Lock it gave up the processor in (or hung in), only it runs: USER's timers, the
@@ -3034,8 +3038,16 @@ class NativeApp {
         if (!live || p.preempted || p.win16Held) break;   // its time ran out: the page gets its turn
       }
     } catch (e) {
-      if (!(e instanceof W95Win32.HangError)) { console.error(e); this.exited(-1, e.message); return; }
-      p.hung('host', e); p.depth = 0;   // a call the host made into it never came back: the system is frozen behind it
+      if (e instanceof W95Win32.FaultError) { p.depth = 0; p.faulted(e.fault); }   // (in a call the host made)
+      else if (!(e instanceof W95Win32.HangError)) { console.error(e); this.exited(-1, e.message); return; }
+      else { p.hung('host', e); p.depth = 0; }   // a call the host made into it never came back: the system is frozen behind it
+    }
+    // a processor exception nothing handled: at ring 0 VWIN32's blue screen, then the program ends; else KERNEL32's
+    // fault dialog for it, and it ends when the dialog closes
+    if (p.fault && !this.faultTaken) {
+      this.faultTaken = true;
+      if (p.fault.ring === 0) { fatalException(this, p.fault); if (this.alive) this.timer = setTimeout(() => this.step(), 16); return; }
+      this.stopped = true; faultDialog(this.progName(), p.fault, () => this.exited(-1)); return;
     }
     p.stats.guestMs += performance.now() - t0;
     // a thread stuck for good, holding the Win16Lock: the system cannot answer, and REBOOT.VXD's Ctrl+Alt+Del handling
@@ -3049,13 +3061,16 @@ class NativeApp {
     // a program the system started that performed an illegal operation: it alone is shut down
     for (const f of (p.pcFaults || []).splice(0)) {
       f.pc.fault = true; emit('program.exit', { path: f.pc.path, code: -1, why: f.why });
-      msgBox(basename(f.pc.path), `This program has performed an illegal operation and will be shut down.\n\n${f.why}`, 'error');
+      if (f.fault) faultDialog(basename(f.pc.path).replace(/\.[^.]*$/, '').toUpperCase(), f.fault);
+      else msgBox(basename(f.pc.path), `This program has performed an illegal operation and will be shut down.\n\n${f.why}`, 'error');
     }
     if (p.trapped && !p.failed) p.fail(p.trapped);
     if (p.exitCode !== null || p.trapped) { this.exited(p.exitCode, p.trapped); return; }
     if (!p.win16Held) { this.sync(); this.clipHandoff(); }   // its windows as USER has them (not while USER is held)
     this.timer = setTimeout(() => this.step(), this.keyq && this.keyq.length ? 0 : 16);
   }
+  /** the program's module name, as KERNEL32's messages name it */
+  progName() { return basename(this.path).replace(/\.[^.]*$/, '').toUpperCase(); }
   /** ring-0 runs stopped mid-way (a blue screen up): the system takes nothing else until they are done */
   ring0() { return !!(this.proc && this.proc.r0Runs && this.proc.r0Runs.length); }
   // the keyboard as VKD sees it first: its hot keys (Ctrl+Alt+Del) and, in message mode, every key. True when it took it
@@ -3888,6 +3903,75 @@ function closeProgram(app) {
     { type: 'button', label: 'Cancel', x: px(141), y: py(136), w: px(62), h: py(14), cancel: true, fn: done },
   ], { noTask: true });
   state(3);
+}
+// ---------------------------------------------------------------- processor exceptions: the system's answers
+// KERNEL32.DLL's and VWIN32.VXD's own text (system.js res)
+let k32Bytes = null;
+const k32 = () => k32Bytes || (k32Bytes = window.W95SYSTEM && W95SYSTEM.res && W95SYSTEM.res['KERNEL32.DLL'] ? b64bytes(W95SYSTEM.res['KERNEL32.DLL']) : null);
+const k32Str = id => (k32() && W95Win32.peString(k32(), id)) || '';
+/** FormatMessage's inserts: %n, and %n!printf format! (d, x, with a width and a precision) */
+const fmtMsg = (fmt, args) => fmt.replace(/%(\d)(?:!([^!]*)!)?/g, (m, k, f) => {
+  const v = args[+k - 1]; if (v === undefined) return '';
+  if (!f || f === 's') return String(v);
+  const t = /x$/i.test(f) ? (v >>> 0).toString(16).toUpperCase() : String(v | 0), w = /\.?(\d+)/.exec(f);
+  return w ? t.padStart(+w[1], '0') : t;
+});
+// the message for each exception (KERNEL32's strings 106-113; 107 any other)
+const FAULT_MSG = { 0: 108, 6: 109, 0xb: 110, 0xc: 111, 0xd: 112, 0xe: 113 };
+/** the details KERNEL32 writes for a fault: what, where, the registers, the bytes at CS:EIP and the stack */
+function faultDetails(prog, f) {
+  const r = f.regs, sg = f.segs;
+  let t = fmtMsg(k32Str(FAULT_MSG[f.n] || 107), [prog, f.module, f.cs, f.offset, f.n]);
+  t += fmtMsg(k32Str(114), [r.eax, f.cs, f.offset, f.flags]) + fmtMsg(k32Str(115), [r.ebx, sg.ss, r.esp, r.ebp]);
+  t += fmtMsg(k32Str(116), [r.ecx, sg.ds, r.esi, sg.fsel]) + fmtMsg(k32Str(117), [r.edx, sg.es, r.edi, sg.gsel]);
+  t += k32Str(118) + f.bytes.map(b => fmtMsg(k32Str(120), [b])).join('');
+  t += k32Str(119); f.stack.forEach((d, i) => { t += fmtMsg(k32Str(122), [d]) + (i % 8 === 7 ? '\n' : ''); });
+  return t;
+}
+/** KERNEL32's fault dialog (its dialog 1, in dialog units): the program's name as the title, "This program has
+ *  performed an illegal operation and will be shut down", Close, and Details>> opening the details below it */
+function faultDialog(prog, f, done) {
+  const bu = dialogBaseUnits(), px = v => Math.round(v * bu.x / 4), py = v => Math.round(v * bu.y / 8);
+  const details = faultDetails(prog, f).replace(/\r/g, '');
+  const open = more => {
+    let win;
+    const close = () => { closeWin(win); if (done) done(); };
+    const ctrls = [
+      { type: 'icon', name: 'error', x: px(7), y: py(7) },
+      { type: 'label', text: wrap(k32Str(104), px(154)).join('\n'), x: px(35), y: py(7) },
+      { type: 'button', label: '&Close', x: px(208), y: py(7), w: px(50), h: py(14), def: true, cancel: true, fn: close },
+      { type: 'button', label: more ? '&Details<<' : '&Details>>', x: px(208), y: py(41), w: px(50), h: py(14), fn: () => { closeWin(win); open(!more); } },
+    ];
+    if (more) ctrls.push({ type: 'custom', x: px(7), y: py(63), w: px(251), h: py(82), draw: a => {
+      field(a.x, a.y, a.w, a.h); let y = a.y + 3;
+      for (const l of details.split('\n')) { if (y + 13 > a.y + a.h) break; text(esc(l), a.x + 3, y); y += 13; }
+    } });
+    win = dialog(prog, px(265), py(more ? 152 : 61), ctrls, { noTask: false });
+  };
+  open(false);
+}
+let vwin32Bytes = null;
+/** VWIN32's fatal-exception message (with its VxD form when the fault is in one), from VWIN32.VXD itself */
+function vwin32Text(inVxd) {
+  const b = vwin32Bytes || (vwin32Bytes = W95SYSTEM.res && W95SYSTEM.res['VWIN32.VXD'] ? b64bytes(W95SYSTEM.res['VWIN32.VXD']) : null); if (!b) return null;
+  const out = []; const key = [...'A fatal exception'].map(c => c.charCodeAt(0));
+  for (let i = 0; i < b.length - key.length; i++) {
+    if (key.every((c, k) => b[i + k] === c)) { let j = i; while (b[j]) j++; out.push(String.fromCharCode(...b.subarray(i, j))); i = j; }
+  }
+  return out.find(t => /in VXD/.test(t) === inVxd) || null;
+}
+/** a processor exception at ring 0: VWIN32's blue screen, shown by SHELL.VXD (SHELL_SYSMODAL_Message, MB_NOWINDOW);
+ *  when a key closes it the current application is terminated */
+function fatalException(app, f) {
+  const p = app.proc, fmt = vwin32Text(!!f.vxd), at = p.vxdService && p.vxdService(0x17, 3);
+  if (!fmt || !at) { app.exited(-1); return; }
+  // its inserts as VMM's message formatter takes them: %<insert><width>x, %<insert>s
+  const vals = [f.n, f.cs, f.eip, f.vxd ? `${f.vxd}(01) + ${(f.offset >>> 0).toString(16).toUpperCase().padStart(8, '0')}` : ''];
+  const msg = fmt.replace(/%(\d)(\d?)([xs])/g, (m, k, w, c) => c === 's' ? String(vals[+k - 1]) : (vals[+k - 1] >>> 0).toString(16).toUpperCase().padStart(+w || 0, '0'));
+  const a = p.alloc(msg.length + 1); p.writeA(a, msg);
+  app.afterR0 = () => app.exited(-1);   // the current application terminated
+  try { if (p.r0Start(at, { ebx: p.sysVM(), eax: 0x40001000, ecx: a, edi: 0, esi: 0, edx: 0 }) !== null) app.exited(-1); }
+  catch (e) { console.error(e); app.exited(-1); }
 }
 // the machine's reset (the keyboard controller's reset line): every program stops where it is, the screen goes dark
 // and Windows starts again; the disk keeps what was written to it
