@@ -219,15 +219,15 @@ class Machine {
   }
   /** a diagnostic: the imports the threads whose name matches re call (the JS-implemented ones: KERNEL, USER's
    *  hooks, KERNEL32), with the time and, for WinExec and LoadModule, the command line; cmd 'trace' reads them */
-  traceOn(re) {
-    const p = this.proc, want = new RegExp(re, 'i'), log = this.traceLog = [], t0 = performance.now();
+  traceOn(re, names) {
+    const p = this.proc, want = new RegExp(re, 'i'), only = names ? new RegExp(names, 'i') : null, log = this.traceLog = [], t0 = performance.now();
     const name = () => { const t = p.thread16; if (!t) return 'host'; const m = t.task && t.task.hInst && p.neByHandle(t.task.hInst); return (m && m.name) || (t.pc && t.pc.path) || String(t.id); };
     // (the command line of WinExec and LoadModule; the key of RegOpenKey, RegCreateKey, RegQueryValue, RegQueryValueEx)
     const STR = { 166: 6, 45: 8, 217: 8, 218: 8, 219: 12, 220: 20 };
     const arg = key => { const m = /KERNEL\.#(\d+)$/.exec(key), o = m && STR[m[1]]; if (!o) return ''; try { const f = p.cpu.ssb.value + (p.cpu.esp.value & 0xffff), s = p.r32(f + o); return s >>> 16 ? p.readA(p.lin(s)) || '' : ''; } catch (_) { return ''; } };
     const svm = p.setVideoMode; p.setVideoMode = function (mode, clear, hi) { log.push([Math.round(performance.now() - t0), name(), 'int10 mode', (mode & 0xff).toString(16) + (hi ? ' hicolor ' + hi : '')]); return svm.call(this, mode, clear, hi); };
-    self.W95TRACE16 = t => { const th = name(); if (log.length < 20000 && want.test(th)) log.push([Math.round(performance.now() - t0), th, t.key, arg(t.key)]); };
-    self.W95TRACE = t => { const th = name(); if (log.length < 20000 && want.test(th)) log.push([Math.round(performance.now() - t0), th, t.dll + '!' + t.nm, '']); };
+    self.W95TRACE16 = t => { const th = name(); if (log.length < 20000 && want.test(th) && (!only || only.test(t.key))) log.push([Math.round(performance.now() - t0), th, t.key, arg(t.key)]); };
+    self.W95TRACE = t => { const th = name(); if (log.length < 20000 && want.test(th) && (!only || only.test(t.dll + '!' + t.nm))) log.push([Math.round(performance.now() - t0), th, t.dll + '!' + t.nm, '']); };
     self.W95APPYTRACE = e => { if (log.length < 20000) log.push([Math.round(performance.now() - t0), name(), 'appy', (e.fn >>> 0).toString(16)]); };
   }
   ring0() { return !!(this.proc && this.proc.r0Runs && this.proc.r0Runs.length); }
@@ -495,7 +495,8 @@ class Machine {
     const mmd = []; { const m = p.ne && p.ne.get('MMSYSTEM'), dg = m && m.segs && m.segs.find(g => g.num === 13);
       if (dg && p.selValid(dg.sel)) { const b = p.selBase(dg.sel); for (let n = p.r16(b + 0x30a), k = 0; n && k < 32; n = p.r16(b + n + 0xc), k++) mmd.push({ type: p.u8[b + n + 0xa], flags: p.u8[b + n + 0xb], devs: p.r16(b + n + 6), name: p.readA(b + n + 0x12, 16) }); } }
     const cdc = p.ad1848 ? { regs: Array.from(p.ad1848.regs || []), t: p.ad1848.t } : null;
-    return { cdc, wss: p.wssRecs ? [...p.wssRecs.keys()] : null, mods16: p.ne ? [...p.ne.keys()] : [], mmd, sound: p.soundStats ? { ...p.soundStats, quiet: !!p.soundQuiet } : null, th16: (p.th16 || []).length, wins, threads, held: p.win16Held ? (p.win16Held.who === 'main' ? 'main' : p.win16Held.who && p.win16Held.who.id) : null, depth: p.depth,
+    const procs = [...(p.procs || new Map()).values()].map(pc => ({ pid: pc.pid, path: pc.path, cmd: pc.cmdPtr ? p.readA(pc.cmdPtr) : '', exit: pc.exitCode }));   // the processes started here, with their command lines
+    return { cdc, procs, wss: p.wssRecs ? [...p.wssRecs.keys()] : null, mods16: p.ne ? [...p.ne.keys()] : [], mmd, sound: p.soundStats ? { ...p.soundStats, quiet: !!p.soundQuiet } : null, th16: (p.th16 || []).length, wins, threads, held: p.win16Held ? (p.win16Held.who === 'main' ? 'main' : p.win16Held.who && p.win16Held.who.id) : null, depth: p.depth,
       main: { at: p.resumeEip ? where(p.resumeEip) : null, stack: stack(p.mainCtx) } };
   }
   // the page's requests: what a window gets done to it, and questions about the machine
@@ -544,7 +545,7 @@ class Machine {
       case 'netfs': { const b = self.W95NetFS.backend({ alive: true, proc: p }, args[0]); return b[args[1]](...(args[2] || [])); }
       case 'mode': { const r = this.setMode(args[0], args[1]); if (!r) this.wantMode = [args[0], args[1]]; return r; }   // (null: made once no thread holds USER, step())
       case 'probe': return this.probe();
-      case 'trace': { if (args[0] && !this.traceLog) this.traceOn(args[0]); const l = this.traceLog || []; return l.splice(0); }   // (the calls traced so far; a regexp starts a trace)
+      case 'trace': { if (args[0]) this.traceOn(args[0], args[1]); const l = this.traceLog || []; return l.splice(0); }   // (the calls traced so far; a thread regexp, and one for the import names, starts a trace)
       case 'kick': return;
       case 'exit': this.exited(args[0] || 0); return;
     }

@@ -1026,7 +1026,15 @@ def('KERNEL32', 'GetLocalTime', 1, function (p) {
 def('KERNEL32', 'GetACP', 0, () => 1252);
 def('KERNEL32', 'GetOEMCP', 0, () => 437);
 def('KERNEL32', 'GetCPInfo', 2, function (cp, p) { this.u8.fill(0, p, p + 20); this.w32(p, 1); this.u8[p + 4] = 63; return 1; });
-def('KERNEL32', 'GetEnvironmentStrings', 0, function () { const p = this.alloc(32); this.writeA(p, 'windir=C:\\WINDOWS'); return p; });
+// the process's environment, as AUTOEXEC.BAT and Windows leave it (the DOS side's, KERNEL's GetDOSEnvironment):
+// COMSPEC, PATH (the Windows folder and its COMMAND folder: where the shell finds programs named without a path,
+// for its shortcuts and its applets), TEMP and TMP, windir; SetEnvironmentVariable changes this process's copy
+const ENV0 = [['COMSPEC', 'C:\\COMMAND.COM'], ['PATH', 'C:\\WINDOWS;C:\\WINDOWS\\COMMAND'], ['TEMP', 'C:\\WINDOWS\\TEMP'], ['TMP', 'C:\\WINDOWS\\TEMP'], ['windir', 'C:\\WINDOWS']];
+const envOf = p => p.env32 || (p.env32 = new Map(ENV0.map(([k, v]) => [k.toUpperCase(), { name: k, value: v }])));
+def('KERNEL32', 'GetEnvironmentStrings', 0, function () {
+  const s = [...envOf(this).values()].map(e => `${e.name}=${e.value}`).join('\0') + '\0\0';
+  const p = this.alloc(s.length); for (let i = 0; i < s.length; i++) this.u8[p + i] = s.charCodeAt(i); return p;
+});
 def('KERNEL32', 'GetEnvironmentStringsW', 0, () => 0);
 def('KERNEL32', 'FreeEnvironmentStringsA', 1, () => 1);
 def('KERNEL32', 'FreeEnvironmentStringsW', 1, () => 1);
@@ -1188,8 +1196,19 @@ def('KERNEL32', 'CompareStringA', 6, function (lc, f, a, na, b, nb) {
   const x = this.readA(a, na < 0 ? 65536 : na) || '', y = this.readA(b, nb < 0 ? 65536 : nb) || '';
   const ci = f & 1, X = ci ? x.toLowerCase() : x, Y = ci ? y.toLowerCase() : y; return X < Y ? 1 : X > Y ? 3 : 2;
 });
-def('KERNEL32', 'SetEnvironmentVariableA', 2, () => 1);
-def('KERNEL32', 'GetEnvironmentVariableA', 3, () => 0);
+def('KERNEL32', 'SetEnvironmentVariableA', 2, function (name, value) {
+  const k = this.readA(name); if (!k) return 0;
+  if (value) envOf(this).set(k.toUpperCase(), { name: k, value: this.readA(value) }); else envOf(this).delete(k.toUpperCase());
+  return 1;
+});
+// GetEnvironmentVariableA: the value's length, copied when the buffer holds it with its NUL (else the size needed);
+// 0 and ERROR_ENVVAR_NOT_FOUND for a variable that is not set
+def('KERNEL32', 'GetEnvironmentVariableA', 3, function (name, buf, n) {
+  const e = envOf(this).get((this.readA(name) || '').toUpperCase());
+  if (!e) { this.lastError = 203; return 0; }
+  if (!buf || n <= e.value.length) return e.value.length + 1;
+  this.writeA(buf, e.value, n); return e.value.length;
+});
 const ftNow = () => BigInt(Date.now()) * 10000n + 116444736000000000n;
 def('KERNEL32', 'GetSystemTime', 1, function (p) {
   const d = new Date(); [d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDay(), d.getUTCDate(), d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds(), d.getUTCMilliseconds()].forEach((v, i) => this.w16(p + 2 * i, v));
@@ -1466,8 +1485,7 @@ def('KERNEL32', 'GetVolumeInformationA', 8, function (root, name, nn, serial, ma
 def('KERNEL32', 'SetVolumeLabelA', 2, function (root, name) { return fsCall(this, () => (this.fs.setLabel(((this.readA(root) || this.fs.cwd)[0] || 'C').toUpperCase(), this.readA(name) || ''), 1)); });
 def('KERNEL32', 'GetShortPathNameA', 3, function (l, s, n) { const r = fsCall(this, () => this.fs.stat(this.readA(l)).shortPath, null); if (r === null) return 0; return this.writeA(s, r, n); });   // (the path's 8.3 form, as stat gives it; a path that is not there fails)
 def('KERNEL32', 'ExpandEnvironmentStringsA', 3, function (src, dst, n) {
-  const env = { WINDIR: 'C:\\WINDOWS', SYSTEMROOT: 'C:\\WINDOWS', TEMP: 'C:\\WINDOWS\\TEMP', TMP: 'C:\\WINDOWS\\TEMP', PATH: 'C:\\WINDOWS;C:\\WINDOWS\\COMMAND' };
-  const r = (this.readA(src) || '').replace(/%([^%]+)%/g, (m, k) => env[k.toUpperCase()] ?? m);
+  const env = envOf(this), r = (this.readA(src) || '').replace(/%([^%]+)%/g, (m, k) => { const e = env.get(k.toUpperCase()); return e ? e.value : k.toUpperCase() === 'SYSTEMROOT' ? 'C:\\WINDOWS' : m; });
   if (n) this.writeA(dst, r, n); return r.length + 1;
 });
 def('KERNEL32', 'RtlZeroMemory', 2, function (p, n) { this.u8.fill(0, p, p + n); });
