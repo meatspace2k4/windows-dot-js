@@ -252,7 +252,28 @@ P.bootUser16 = function () {
   }
   if (!user.inited) { user.inited = true; if (!this.initNE(user)) console.warn('[ne16] USER LibEntry failed'); }
   this.user16Ready = true;
+  this.userStack();
   return user;
+};
+// USER's window stack: the word at DGROUP:194h counts the top-level windows USER has placed at CW_USEDEFAULT, each one
+// a caption and frame down and right of the last (USER seg 11, 16E4h). Windows 95 has one USER, so one count for every
+// program; each process here boots its own USER, so the processes share the count: what any of them last stepped it
+// to is what the next one starts from
+const STACK = 0x194, stackUsers = new Set(); let stackN = 0;
+P.userStack = function () {
+  const user = this.ne.get('USER');
+  if (!user || !user.inited) return;
+  if (!stackUsers.has(this)) {   // this USER.EXE's (inc word ptr [194h] where it places a window)
+    const s = user.meta.segs[10], at = s && s.base + 0x17a1;
+    if (!s || this.u8[at] !== 0xff || this.u8[at + 1] !== 0x06 || this.r16(at + 2) !== STACK) return;
+    stackUsers.add(this); this.stackSet = this.r16(this.selBase(user.dgroup) + STACK);   // its own start, not a step
+  }
+  for (const p of stackUsers) {
+    const v = p.r16(p.selBase(p.ne.get('USER').dgroup) + STACK);
+    if (v !== p.stackSet) { stackN = v; p.stackSet = v; }
+    if (p.exitCode !== null || p.trapped) stackUsers.delete(p);
+  }
+  if (this.stackSet !== stackN) { this.w16(this.selBase(user.dgroup) + STACK, stackN); this.stackSet = stackN; }
 };
 /** a module from disk that has no code (fonts and other resource-only libraries) */
 P.loadNEFile = function (name) {

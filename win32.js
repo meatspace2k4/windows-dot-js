@@ -216,6 +216,7 @@ class Process {
     if (this.exitCode !== null) return false;
     if (this.trapped) { this.fail(this.trapped); return false; }
     this.depth = 0; this.waiting = false; this.lastYield = this.now();
+    if (this.userStack) this.userStack();
     const r = this.runAt(this.resumeEip);
     if (r === 1) { this.resumeEip = this.reg('eip'); return true; }
     if (r === 2 || this.trapped) { this.fail(this.trapped || `bad address ${this.reg('eip').toString(16)}`); return false; }
