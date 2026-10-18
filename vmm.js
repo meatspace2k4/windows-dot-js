@@ -1027,7 +1027,8 @@ P.r0Wait = function (done, what) {
     if (this.r0Pump()) continue;
     if (!this.r0Skip() || performance.now() - t0 > 10000) {
       const next = this.vxdTimeOuts && this.vxdTimeOuts.size ? Math.min(...[...this.vxdTimeOuts.values()].map(t => t.due)) - this.sysTime() : null;
-      throw new W.GuestError(`ring 0 deadlock: ${what} never comes (waiting at ${this.r0Where(site)}, thread ${this.currentThreadId ? this.currentThreadId() : 0}; called from ${frames.join(' < ')}; next time-out ${next === null ? 'none' : next + ' ms'})`);
+      // proven: nothing pending can end the wait, so the system is stuck there (the host's answer: win32.js hung)
+      throw new W.HangError(`ring 0 deadlock: ${what} never comes (waiting at ${this.r0Where(site)}, thread ${this.currentThreadId ? this.currentThreadId() : 0}; called from ${frames.join(' < ')}; next time-out ${next === null ? 'none' : next + ' ms'})`);
     }
   }
 };
