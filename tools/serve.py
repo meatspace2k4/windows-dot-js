@@ -23,6 +23,8 @@ class H(http.server.SimpleHTTPRequestHandler):
         self.send_response(206); self.send_header('Content-Type', self.guess_type(path))
         self.send_header('Content-Range', f'bytes {lo}-{hi}/{size}'); self.send_header('Content-Length', str(hi - lo + 1))
         self.send_header('Accept-Ranges', 'bytes'); self.end_headers(); return f
+    def end_headers(self):   # (scripts revalidate on every load: an edited one is never run stale)
+        self.send_header('Cache-Control', 'no-cache'); super().end_headers()
     def copyfile(self, src, dst):
         n = getattr(self, 'range_left', None)
         if n is None: return super().copyfile(src, dst)
@@ -32,4 +34,5 @@ class H(http.server.SimpleHTTPRequestHandler):
             dst.write(b); n -= len(b)
         self.range_left = None
 
-http.server.ThreadingHTTPServer(('127.0.0.1', a.port), H).serve_forever()
+class S(http.server.ThreadingHTTPServer): request_queue_size = 128   # (a cold load asks for every script at once)
+S(('127.0.0.1', a.port), H).serve_forever()
