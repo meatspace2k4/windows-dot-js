@@ -2349,8 +2349,8 @@ P.spawn = function (file, module, meta, path, cmdline) {
 P.runUntilIdle = function (pc, rounds = 500) {
   const t = pc.main;
   // waiting: in WaitEvent (the message wait: t.slept) or on an object not yet set
-  // (or its time ran out: preempted, as the new task gives up the processor)
-  for (let k = 0; k < rounds && t.state !== 'done' && t.state !== 'hung' && !(t.state === 'waiting' && (t.slept || t.preempted || (t.wait && !t.wait.set))) && !this.trapped; k++) this.threads16(true);
+  // (a task whose time ran out has not yielded: WinExec waits on for it)
+  for (let k = 0; k < rounds && t.state !== 'done' && t.state !== 'hung' && !(t.state === 'waiting' && (t.slept || (t.wait && !t.wait.set))) && !this.trapped; k++) this.threads16(true);
 };
 /** a thread of a started process has ended: the process ends with its last thread (a thread returning from its
  *  start, the main one too, ends that thread only), unless ExitProcess ended it already */
