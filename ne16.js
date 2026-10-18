@@ -2392,11 +2392,13 @@ def16('KERNEL', 631, '', 'jmp', function () {
   this.cpu.esp.value = lo16(this.cpu.esp.value, sp + 4 + nargs);
   this.seg('cs', cs); return u32(this.selBase(cs) + ip);
 });
-/** the module a task handle stands for: a Win16 task's own (MMTASK), or the process's program, whose name is its file's */
+/** the module a task handle stands for: a Win16 task's own (MMTASK), or a process's program (this machine's, or one
+ *  started in it: MMSYSTEM's PlaySound asks for the caller's), whose name is its file's */
 P.taskModuleName = function (h) {
   h &= 0xffff; if (!h) return null;
   const t = [...(this.threadsById || new Map()).values()].find(x => x.tdb === h);
   if (t && t.task) { const m = this.neByHandle(t.task.hInst); return m ? m.name : null; }
+  if (t && t.pc) return t.pc.path.replace(/^.*\\/, '').replace(/\.[^.]*$/, '').toUpperCase() || null;
   if (h === this.tdb16 && this.exe) { const f = (this.host && this.host.path) || this.meta.name || ''; return f.replace(/^.*\\/, '').replace(/\.[^.]*$/, '').toUpperCase() || null; }
   return null;
 };
