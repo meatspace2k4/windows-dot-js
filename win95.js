@@ -4092,7 +4092,7 @@ function render() {
   }
   const cur = cursorAt(mouse.x, mouse.y);
   for (const a of nativeApps) if (a.ov && a.alive) ctx.drawImage(a.ov, 0, 0);
-  if (cur === 'none') { for (const a of nativeApps) if (a.cursorOn) drawSprite(a); }
+  if (cur === 'none') { const na = nativeAt(mouse.x, mouse.y); if (na) drawSprite(na); }
   else drawCursor(cur);
 }
 // the display adapter's hardware cursor: the sprite the program's display driver loaded and placed, overlaid on the
@@ -4291,7 +4291,7 @@ function drawCursor(name) {
 const SIZE_CUR = { n: 'sizens', s: 'sizens', e: 'sizewe', w: 'sizewe', nw: 'sizenwse', se: 'sizenwse', ne: 'sizenesw', sw: 'sizenesw' };
 function cursorAt(x, y) {
   if (drag) return drag.cursor;
-  for (const a of nativeApps) if (a.cursorOn) return 'none';   // USER draws its own
+  { const na = nativeAt(x, y); if (na && na.cursorOn) return 'none'; }   // USER draws its own, in the machine the pointer is in (or that holds the capture)
   if (menus.length && menuAt(x, y) >= 0) return 'arrow';
   if (onTaskbar(x, y)) return 'arrow';
   const w = winAt(x, y);
