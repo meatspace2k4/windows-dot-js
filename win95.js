@@ -3391,6 +3391,7 @@ class RemoteApp extends NativeApp {
         if (this.started) this.started(true); return;
       case 'lan': if (window.W95LAN && this.lanStation) W95LAN.send(this.lanStation, m.frame); return;
       case 'frame': this.frame(m); return;
+      case 'held': this.held = m.held; this.stats = m.stats; return;
       case 'text': this.txt = m.txt; if (msgApp === this) dirty(); return;
       case 'msgMode': msgApp = m.on ? this : msgApp === this ? null : msgApp; this.r0 = m.on; dirty(); return;
       case 'reset': machineReset(); return;
@@ -4462,7 +4463,7 @@ kbd.addEventListener('input', () => {
 const nativeFocus = () => (!menus.length && !ren && !modal() && !fullSaver && screen === 'desktop' && active && active.native && active.app.alive ? active.app : null);
 // the keyboard reaches VKD before anything: the system in message mode (a blue screen) takes every key, and a hot key
 // goes to the native system with the focus, else to one that is frozen, else to any
-const vkdApp = () => msgApp || nativeFocus() || [...nativeApps].find(a => a.alive && a.proc && a.proc.win16Held && !a.net) || [...nativeApps].find(a => a.alive && !a.net);
+const vkdApp = () => msgApp || nativeFocus() || [...nativeApps].find(a => a.alive && a.proc && a.proc.win16Held) || [...nativeApps].find(a => a.alive && !a.net);
 window.addEventListener('keyup', e => { const v = vkdApp(); if (v && v.vkd(e, true)) { e.preventDefault(); return; } const a = nativeFocus(); if (a) { e.preventDefault(); if (e.keyCode) a.key(e, true); } });
 window.addEventListener('keydown', e => {
   { const v = vkdApp(); if (v && v.vkd(e, false)) { e.preventDefault(); return; } }

@@ -250,6 +250,7 @@ class Machine {
     if (p.trapped && !p.failed) p.fail(p.trapped);
     if (p.exitCode !== null || p.trapped) { this.exited(p.exitCode, p.trapped); return; }
     if (!p.win16Held) { this.syncCursor(); this.frame(); }
+    else post({ t: 'held', held: { hung: p.win16Held.hung }, stats: { ...p.stats } });   // (no USER while a thread holds the lock: the page learns it is held)
     this.timer = setTimeout(() => this.step(), this.keyq.length ? 0 : 16);
   }
   kick() { if (this.alive && this.timer) { clearTimeout(this.timer); this.timer = setTimeout(() => this.step(), 0); } }
