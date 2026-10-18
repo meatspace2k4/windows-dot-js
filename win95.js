@@ -2367,6 +2367,7 @@ function shutDownDialog() {
 }
 function shutdownSeq(restart) {
   [...windows].forEach(w => closeWin(w, true)); closeMenus();
+  shutDownCleanly();
   screen = 'logow'; dirty();
   setTimeout(() => {
     if (restart) { screen = 'black'; dirty(); setTimeout(boot, 1200); } else { screen = 'logos'; dirty(); }
@@ -3518,6 +3519,12 @@ async function runNative(path, arg, o = {}) {
 // as the desktop comes up. USER's first-task start-up loads the installable drivers for it (MMSYSTEM, the card's), so
 // sound starts once, with the system, and MSGSRV32 plays SystemStart. The programs the shell runs start in it
 let sysApp = null, sysStarting = null;
+// SystemStart plays when Windows starts after it was shut down (Shut Down, Restart): a page reloaded or a window closed
+// with Windows running is no shutdown, and the start after it is quiet. The record is this browser's (a first start
+// has none, and plays)
+const SHUTDOWN = 'w95.shutdown';
+const cleanStart = (() => { let v = null; try { v = localStorage.getItem(SHUTDOWN); localStorage.setItem(SHUTDOWN, 'running'); } catch (_) { /* no storage: every start plays */ } return v !== 'running'; })();
+function shutDownCleanly() { try { localStorage.setItem(SHUTDOWN, 'clean'); } catch (_) { /* no storage */ } }
 function startSystem() {
   if (window.W95SYSTEMVM === false) return Promise.resolve(null);
   if (sysApp && sysApp.alive) return Promise.resolve(sysApp);
@@ -3532,6 +3539,7 @@ function startSystem() {
       for (let i = 0; i < 200 && a.alive && !(await a.cmd('systemStarted')); i++) await new Promise(r => setTimeout(r, 25));
       return a;
     }
+    if (!cleanStart) return a;   // (not told: no SystemStart; the shell it would start is this page)
     const p = a.proc, task = [...(p.threadsById || new Map()).values()].find(t => t.task && t.task.hInst && p.neByHandle(t.task.hInst) && p.neByHandle(t.task.hInst).name === 'MSGSRV32');
     for (let i = 0; i < 200 && a.alive && task && !(task.state === 'waiting' && task.slept); i++) await new Promise(r => setTimeout(r, 25));
     if (a.alive && task) {
