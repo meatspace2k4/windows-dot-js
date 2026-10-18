@@ -18,6 +18,8 @@ function open() {
 }
 
 // DevTools protocol on 127.0.0.1:9334 so Claude Code can drive the running shell
+// the machines run in workers on shared memory (SharedArrayBuffer), which a file: page gets with this feature
+app.commandLine.appendSwitch('enable-features', 'SharedArrayBuffer')
 app.commandLine.appendSwitch('remote-debugging-port', '9334')
 app.commandLine.appendSwitch('remote-debugging-address', '127.0.0.1')
 

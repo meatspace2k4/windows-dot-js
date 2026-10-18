@@ -1,7 +1,7 @@
 // Keeps the installed app running with no server: every file is cached on install.
 const CACHE = 'win95-v5';
 const FILES = ['./', 'index.html', 'manifest.webmanifest', 'icons/icon192.png', 'icons/icon512.png',
-  'assets.js', 'assets-shell.js', 'cdrom.js', 'floppy.js', 'fs.js', 'savers.js', 'win32.js', 'gl.js', 'shell32.js', 'system.js', 'ne16.js', 'vmm.js', 'sound.js', 'lan.js', 'lanhost.js', 'netfs.js', 'dyn.js', 'host-web.js', 'win95.js'];
+  'assets.js', 'assets-shell.js', 'cdrom.js', 'floppy.js', 'fs.js', 'savers.js', 'win32.js', 'gl.js', 'shell32.js', 'system.js', 'ne16.js', 'vmm.js', 'sound.js', 'lan.js', 'lanhost.js', 'netfs.js', 'dyn.js', 'host-web.js', 'win95.js', 'bridge.js', 'worker.js'];
 
 self.addEventListener('install', e => e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES)).then(() => self.skipWaiting())));
 self.addEventListener('activate', e => e.waitUntil(caches.keys()

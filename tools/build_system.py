@@ -4,6 +4,8 @@ shared table of 16-bit import thunks, and the font files. Usage: build_system.py
 import base64, json, os, subprocess, sys, tempfile
 src, out = sys.argv[1], sys.argv[2]
 here = os.path.dirname(os.path.abspath(__file__))
+# the modules import the machine's memory as shared: each machine runs in a worker and the page reads its framebuffer
+os.environ['RECOMP_SHARED'] = '1'
 b64 = lambda p: base64.b64encode(open(p, 'rb').read()).decode()
 # NE modules, in dependency order: (file, load base, first selector, block-table base)
 NE = [('gdi.exe', 0x01C00000, 0x1007, 0x06A00000), ('dibeng.dll', 0x01E00000, 0x1207, 0x06D00000),

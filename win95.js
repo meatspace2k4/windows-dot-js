@@ -2984,6 +2984,7 @@ class NativeApp {
     [this.sw, this.sh] = [...NATIVE_MODES].reverse().find(([w, h]) => w >= W && h >= H) || NATIVE_MODES[0];
     const host = {
       fs, width: this.sw, height: this.sh, path: this.path, now: () => performance.now(), net: this.net, vmPages: 2048,   // 128 MiB of address space to reserve
+      shared: true,   // (the system's modules take shared memory: the machines in workers share theirs with the page)
       cursor: () => ({ x: mouse.x, y: mouse.y }), surface: (h, w, hh) => mkc(w, hh).getContext('2d'), setCursor: () => {},
       exited: (code, why) => this.exited(code, why), boot: p => p.bootUser16(), exec: (cmd, show) => this.exec(cmd, show),
       // the display in and out of message mode (a blue screen), and the machine's reset (the keyboard controller's)
@@ -3310,6 +3311,187 @@ class NativeApp {
     dirty();
   }
 }
+// ---------------------------------------------------------------- a machine in a worker (worker.js)
+// The program's machine runs in a worker of its own, so nothing it does holds the page: it draws into its memory,
+// which the page shares and reads the screen from; the page sends it the keys and the mouse through its input ring
+// (bridge.js) and asks it for what is done to its windows; it calls the page's file system synchronously (the page
+// answers here). The page draws USER's windows from what the machine reports after each of its steps.
+const machineWorkers = new Set();
+W95Win32.regWatch(o => { for (const a of machineWorkers) a.worker.postMessage({ t: 'regop', o }); });
+class RemoteApp extends NativeApp {
+  constructor(path, arg, o = {}) { super(path, arg, o); this.remote = true; this.calls = new Map(); this.nextCall = 1; this.stats = { slices: 0, guestMs: 0 }; this.held = null; }
+  // what the shell's older code reads of a machine (its counters; a program that has not exited)
+  get proc() { return { stats: this.stats, exitCode: this.alive ? null : 0, trapped: null, depth: 0, win16Held: this.held, r0Runs: this.r0 ? [1] : [], txt: this.txt }; }
+  start(bytes, prog) {
+    [this.sw, this.sh] = [...NATIVE_MODES].reverse().find(([w, h]) => w >= W && h >= H) || NATIVE_MODES[0];
+    this.ring = W95Bridge.newRing(); this.rpcSab = new SharedArrayBuffer(16 + W95Bridge.RPC_BYTES);
+    this.worker = new Worker('worker.js'); machineWorkers.add(this);
+    this.worker.onmessage = e => this.message(e.data);
+    this.worker.onerror = e => { console.error('[worker]', e.message); this.exited(-1, e.message); };
+    this.worker.postMessage({ t: 'start', rpc: this.rpcSab, registry: W95Win32.regDump(), o: {
+      path: this.path, arg: this.arg, net: this.net, system: this.system, sw: this.sw, sh: this.sh, shellW: W, workH: workH(), ring: this.ring,
+      bytes: bytes || null, prog: prog ? { name: prog.name, meta: prog.d.meta } : null } });
+    return new Promise(ok => { this.started = ok; });
+  }
+  /** a request to the machine; resolves to its answer */
+  cmd(name, args = []) {
+    if (!this.alive) return Promise.resolve(null);
+    const id = this.nextCall++;
+    return new Promise(ok => { this.calls.set(id, ok); this.worker.postMessage({ t: 'cmd', id, name, args }); });
+  }
+  message(m) {
+    switch (m.t) {
+      case 'rpc': this.serve(m); return;
+      case 'started':
+        this.mem = m.mem; [this.sw, this.sh] = [m.sw, m.sh];
+        this.cv = mkc(this.sw, this.sh); this.cx = this.cv.getContext('2d'); this.img = this.cx.createImageData(this.sw, this.sh);
+        this.ov = mkc(this.sw, this.sh); this.ox = this.ov.getContext('2d'); this.oimg = this.ox.createImageData(this.sw, this.sh); this.o32 = new Uint32Array(this.oimg.data.buffer);
+        this.d32 = new Uint32Array(this.img.data.buffer); this.pal = new Uint32Array(256);
+        nativeApps.add(this); if (this.started) this.started(true); return;
+      case 'frame': this.frame(m); return;
+      case 'text': this.txt = m.txt; if (msgApp === this) dirty(); return;
+      case 'msgMode': msgApp = m.on ? this : msgApp === this ? null : msgApp; this.r0 = m.on; dirty(); return;
+      case 'reset': machineReset(); return;
+      case 'audio': if (window.W95Sound) W95Sound.play(this, m.rate, m.l, m.r); return;
+      case 'regop': W95Win32.regApply(m.o); return;
+      case 'closeProgram': closeProgram(this); return;
+      case 'fault': faultDialog(this.progName(), m.f, () => this.exited(-1)); return;
+      case 'faultDialog': faultDialog(this.progName(), m.f); return;
+      case 'pcFault':
+        emit('program.exit', { path: m.path, code: -1, why: m.why });
+        if (m.f) faultDialog(basename(m.path).replace(/\.[^.]*$/, '').toUpperCase(), m.f);
+        else msgBox(basename(m.path), `This program has performed an illegal operation and will be shut down.\n\n${m.why}`, 'error');
+        return;
+      case 'emit': emit(m.ev, m.data); return;
+      case 'shell': { const f = window.W95SHELL[m.fn]; if (typeof f === 'function') try { f(...m.args); } catch (e) { console.error(e); } return; }
+      case 'reply': { const ok = this.calls.get(m.id); this.calls.delete(m.id); if (m.error) console.error('[machine]', m.error); if (ok) ok(m.value); return; }
+      case 'exited': this.exited(m.code, m.why); if (this.started) this.started(false); return;
+    }
+  }
+  /** the machine's synchronous call into the page (bridge.js): the file system, and what only the page has */
+  serve(m) {
+    let v;
+    try {
+      if (m.target === 'fs') {
+        if (m.method === 'getCwd') v = fs.cwd;
+        else if (m.method === 'setCwd') { fs.cwd = m.args[0]; v = null; }
+        else if (m.method === 'vols') v = [...fs.vols.values()].map(x => ({ letter: x.letter, kind: x.kind, label: x.label, remote: !!x.remote, unc: x.unc || '' }));
+        else v = fs[m.method](...m.args);
+      } else if (m.target === 'host') {
+        if (m.method === 'fatalText') v = fatalText(m.args[0]);
+      }
+    } catch (e) { v = e instanceof Error ? e : new Error(String(e)); }
+    W95Bridge.answer(this.rpcSab, v === undefined ? null : v);
+  }
+  // USER's windows as the machine reported them: the shell's windows for them, its screen, its cursor
+  frame(m) {
+    this.snap = m; this.stats = m.stats; this.held = m.held; this.capture = m.capture; this.cursorOn = m.cursorOn;
+    const seen = new Set();
+    for (const n of m.list) {
+      let w = this.wins.get(n.hwnd);
+      if (!w) { w = new NativeWin(this, n); this.wins.set(n.hwnd, w); windows.push(w); if (!w.noTask) tasks.push(w); }
+      else w.set(n);
+      seen.add(n.hwnd);
+    }
+    for (const [h, w] of this.wins) if (!seen.has(h)) { this.wins.delete(h); closeWin(w, true); }
+    const order = m.list.map(n => this.wins.get(n.hwnd)).reverse(), slots = [];
+    windows.forEach((w, i) => { if (w.app === this) slots.push(i); });
+    slots.forEach((i, k) => { windows[i] = order[k]; });
+    if (m.active !== this.lastActive) {
+      this.lastActive = m.active;
+      const w = this.wins.get(m.active); if (w && !w.min) { this.syncing = true; activate(w); this.syncing = false; }
+    }
+    this.clipHandoff();
+    this.paint(); dirty();
+  }
+  iconOf(n) { return n && n.prog ? EXE_ICON[n.prog] || 'app' : this.icon; }
+  // the framebuffer under this program's windows, through the DAC, from the machine's memory
+  paint() {
+    const m = this.snap; if (!m || !this.mem) return;
+    if (!this.wins.size && !this.capture) { if (!this.blank) { this.o32.fill(0); this.ox.putImageData(this.oimg, 0, 0); this.blank = true; } return; }
+    this.blank = false;
+    const a = m.scan; if (a.bpp !== 8) return;
+    const v = new Uint8Array(this.mem, a.vram, Math.min(a.pitch * a.h, this.mem.byteLength - a.vram));
+    const pal = this.pal, dac = m.dac, pitch = a.pitch, d = this.d32, sw = this.sw, sh = this.sh;
+    for (let i = 0; i < 256; i++) { const r = dac[3 * i], g = dac[3 * i + 1], b = dac[3 * i + 2]; pal[i] = 0xff000000 | ((b << 2 | b >> 4) << 16) | ((g << 2 | g >> 4) << 8) | (r << 2 | r >> 4); }
+    for (const w of this.wins.values()) {
+      if (w.min || w.transparent) continue;
+      const x0 = Math.max(0, w.x), y0 = Math.max(0, w.y), x1 = Math.min(sw, a.w, w.x + w.w), y1 = Math.min(sh, a.h, w.y + w.h);
+      if (x1 <= x0 || y1 <= y0) continue;
+      for (let y = y0; y < y1; y++) { const s = y * pitch, o = y * sw; for (let x = x0; x < x1; x++) d[o + x] = pal[v[s + x]]; }
+      this.cx.putImageData(this.img, 0, 0, x0, y0, x1 - x0, y1 - y0);
+    }
+    const six = c => (c >> 2) << 2 | (c >> 2) >> 4, c = m.bg;
+    const bg = (0xff000000 | six(c >> 16 & 0xff) << 16 | six(c >> 8 & 0xff) << 8 | six(c & 0xff)) >>> 0;
+    const o = this.o32, wins = [...this.wins.values()].filter(w => !w.min && !w.transparent);
+    for (let y = 0; y < sh; y++) {
+      const s = y * pitch, r = y * sw, ins = wins.filter(w => y >= w.y && y < w.y + w.h);
+      for (let x = 0; x < sw; x++) {
+        const cc = y < a.h && x < a.w ? pal[v[s + x]] : bg;
+        o[r + x] = cc === bg || ins.some(w => x >= w.x && x < w.x + w.w) ? 0 : cc;
+      }
+    }
+    this.ox.putImageData(this.oimg, 0, 0);
+  }
+  /** the W32 sprite (USER's cursor) as the machine reported it, its image in the shared memory */
+  sprite() { const s = this.snap && this.snap.sprite; return s && this.mem ? { ...s, bits: new Uint8Array(this.mem, s.at, 64 * s.row) } : null; }
+  // the mouse and the keys: into the machine's input ring, which it takes as interrupts
+  pointer(kind, x, y, btn = 0) {
+    if (!this.alive || !this.ring) return;
+    const f = kind === 'down' ? (btn === 2 ? 8 : 2) : kind === 'up' ? (btn === 2 ? 16 : 4) : 1;
+    W95Bridge.ringPut(this.ring, W95Bridge.MOUSE, f, Math.round(x), Math.round(y));
+    this.kick();
+  }
+  showCursor(on) { if (on !== this.cursorOn && this.alive) this.cmd('showCursor', [on]); }
+  key(e, up) { this.ringKey(e, up, true); }
+  ringKey(e, up, toUser) {
+    if (!this.alive || !this.ring) return;
+    const vk = e.keyCode || 0; if (vk === 91 || vk === 93 || vk === 224) return;   // the Mac command keys stay with the host
+    let sc = SCAN[e.code] || 0;
+    if (e.code === 'Backspace' && e.ctrlKey && e.altKey) sc = 0x153;   // a Mac's Delete key: Ctrl+Alt+Del
+    const a = (sc & 0x1ff) | (up ? 0x200 : 0) | (toUser ? 0x400 : 0), b = (e.shiftKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.altKey ? 4 : 0);
+    W95Bridge.ringPut(this.ring, W95Bridge.KEY, a, b, vk);
+    this.kick();
+  }
+  // VKD's first look at a key the program does not have the focus for: Ctrl+Alt+Del, and every key in message mode
+  vkd(e, up) {
+    if (!this.alive) return false;
+    const cad = e.ctrlKey && e.altKey && (e.code === 'Delete' || e.code === 'Backspace' || e.code === 'NumpadDecimal');
+    if (msgApp !== this && !cad) return false;
+    this.ringKey(e, up, false); return true;
+  }
+  feedKeys() {}
+  ring0() { return !!this.r0; }
+  kick() { if (this.worker) this.worker.postMessage({ t: 'kick' }); }
+  focus(w) { this.cmd('focus', [w.hwnd, !!w.min]); }
+  minimize(w) { this.cmd('minimize', [w.hwnd]); }
+  close(w) { this.cmd('close', [w.hwnd]); }
+  // one clipboard across machines: USER's CF_TEXT leaves with the keyboard, the shell's text arrives with it
+  clipHandoff() {
+    const mine = !!(active && active.native && active.app === this);
+    if (mine && clipOwner !== this) {
+      if (clipOwner && clipOwner.alive && clipOwner.clipOut) clipOwner.clipOut();
+      clipOwner = this; if (textClip !== this.clipText) { this.cmd('clipIn', [textClip]); this.clipText = textClip; }
+    } else if (!mine && clipOwner === this && !(active && active.native)) { this.clipOut(); clipOwner = null; }
+  }
+  clipOut() { this.cmd('clipOut').then(t => { if (t !== null && t !== undefined) textClip = this.clipText = t; }); }
+  clipIn() {}
+  spawnProgram(file, arg) { return this.cmd('spawn', [file, arg]); }
+  exited(code, why) {
+    if (!this.alive) return;
+    this.alive = false; nativeApps.delete(this); machineWorkers.delete(this);
+    if (clipOwner === this) clipOwner = null;
+    if (window.W95Sound) W95Sound.close(this);
+    for (const w of this.wins.values()) closeWin(w, true);
+    this.wins.clear();
+    if (msgApp === this) msgApp = null;
+    for (const ok of this.calls.values()) ok(null); this.calls.clear();
+    setTimeout(() => this.worker.terminate(), 0);
+    emit('program.exit', { path: this.path, code, ...(why ? { why } : {}) });
+    if (why) msgBox(basename(this.path), `This program has performed an illegal operation and will be shut down.\n\n${why}`, 'error');
+    dirty();
+  }
+}
 // the native program whose window is under the point, or that holds USER's capture
 function nativeAt(x, y) {
   for (const a of nativeApps) if (a.capture) return a;
@@ -3322,9 +3504,13 @@ async function runNative(path, arg, o = {}) {
   // instance of a program (whose image's place there is taken) gets a machine of its own
   if (!o.net) {
     const sys = await startSystem();
-    if (sys) { const r = sys.spawnProgram(path, arg); if (typeof r === 'object') return true; if (r !== 8) return false; }
+    if (sys) {
+      let r = sys.spawnProgram(path, arg); if (r && r.then) r = await r;
+      if (r && (r.ok || (typeof r === 'object' && !('err' in r)))) return true;
+      const err = r && typeof r === 'object' ? r.err : r; if (err !== 8) return false;
+    }
   }
-  const app = new NativeApp(path, arg, o);
+  const app = o.net || !window.SharedArrayBuffer ? new NativeApp(path, arg, o) : new RemoteApp(path, arg, o);   // (a machine in a worker: the network's stays on the page, which its drives call into)
   return app.start(bytes, prog);
 }
 // ---------------------------------------------------------------- the system
@@ -3337,11 +3523,15 @@ function startSystem() {
   if (sysApp && sysApp.alive) return Promise.resolve(sysApp);
   return sysStarting || (sysStarting = (async () => {
     const S = window.W95SYSTEM || {}; if (!(S.ne || {}).MSGSRV32 || !Object.keys(S.programs || {}).length) return null;
-    const a = new NativeApp(join(WINDIR, 'SYSTEM', 'MSGSRV32.EXE'), '', { system: true });
+    const a = new (window.SharedArrayBuffer ? RemoteApp : NativeApp)(join(WINDIR, 'SYSTEM', 'MSGSRV32.EXE'), '', { system: true });
     if (!(await a.start(null, null))) return null;
     sysApp = a;
     // KERNEL32, its start done, tells the message server so (SHELL_PostMessage of 501h to MSGSRV32's window): it plays
     // SystemStart and starts the shell. Once MSGSRV32 waits for messages
+    if (a.remote) {   // (the machine posts it when MSGSRV32 waits for messages)
+      for (let i = 0; i < 200 && a.alive && !(await a.cmd('systemStarted')); i++) await new Promise(r => setTimeout(r, 25));
+      return a;
+    }
     const p = a.proc, task = [...(p.threadsById || new Map()).values()].find(t => t.task && t.task.hInst && p.neByHandle(t.task.hInst) && p.neByHandle(t.task.hInst).name === 'MSGSRV32');
     for (let i = 0; i < 200 && a.alive && task && !(task.state === 'waiting' && task.slept); i++) await new Promise(r => setTimeout(r, 25));
     if (a.alive && task) {
@@ -3775,7 +3965,8 @@ const START = [
 // ---------------------------------------------------------------- render
 function render() {
   rafPending = false;
-  if (msgApp && msgApp.proc && msgApp.proc.txt) { drawTextScreen(msgApp.proc.txt); return; }
+  const txt = msgApp && (msgApp.remote ? msgApp.txt : msgApp.proc && msgApp.proc.txt);
+  if (txt) { drawTextScreen(txt); return; }
   if (screen !== 'desktop') {
     fill(0, 0, W, H, '#000');
     const im = screen === 'logow' ? IMG.logow : screen === 'logos' ? IMG.logos : null;
@@ -3806,7 +3997,7 @@ function render() {
 // the display adapter's hardware cursor: the sprite the program's display driver loaded and placed, overlaid on the
 // whole screen as the CRTC overlays it on scanout (2 bits a pixel: bit 1 keeps the screen, bit 0 inverts it)
 function drawSprite(app) {
-  let sp; try { sp = app.proc && app.proc.sprite(); } catch (e) { return; }
+  let sp; try { sp = app.remote ? app.sprite() : app.proc && app.proc.sprite(); } catch (e) { return; }
   if (!sp) return;
   const x = sp.x, y = sp.y, w = Math.min(64 - sp.px, W - x), h = Math.min(64 - sp.py, H - y);
   if (w <= 0 || h <= 0 || x < 0 || y < 0) return;
@@ -3862,13 +4053,19 @@ function drawTextScreen(t) {
 // every task, the ones whose system does not answer marked; End Task ends the selected one, Shut Down opens Shut Down
 // Windows. KERNEL32 tells REBOOT the dialog is coming (2), up (3: Ctrl+Alt+Del again restarts) and gone (0)
 function closeProgram(app) {
-  const p = app.proc, state = n => { try { p.k32CloseState(n); } catch (e) { console.error(e); } };
+  const p = app.proc, state = n => { try { if (app.remote) app.cmd('closeState', [n]); else p.k32CloseState(n); } catch (e) { console.error(e); } };
   state(2);
   if (windows.some(w => w.title === 'Close Program')) { state(3); return; }
   const bu = dialogBaseUnits(), px = v => Math.round(v * bu.x / 4), py = v => Math.round(v * bu.y / 8);
   // [Not responding]: USER's own test (USER32's IsHungThread: the thread's queue has not been read for its hung-app
   // time) on the thread that owns the window
+  // (a machine in a worker answers for its windows when asked: its answers arrive as the dialog is up)
+  const hungRemote = new Map();
+  for (const m of new Set(windows.filter(w => w.native && w.app && w.app.remote).map(w => w.app))) {
+    const ws = [...m.wins.values()]; m.cmd('hung', [ws.map(w => w.hwnd)]).then(f => { if (f) ws.forEach((w, i) => hungRemote.set(w, f[i])); dirty(); });
+  }
   const hung = w => {
+    if (w.native && w.app && w.app.remote) return !!hungRemote.get(w);
     const q = w.native && w.app && w.app.proc, u = q && q.byName && q.byName.get('USER32'), x = u && u.exports;
     const tid = x && x.get('GetWindowThreadProcessId'), hung = x && x.get('IsHungThread');
     if (!tid || !hung || q.depth || (q.r0Runs && q.r0Runs.length)) return false;
@@ -3962,12 +4159,16 @@ function vwin32Text(inVxd) {
 }
 /** a processor exception at ring 0: VWIN32's blue screen, shown by SHELL.VXD (SHELL_SYSMODAL_Message, MB_NOWINDOW);
  *  when a key closes it the current application is terminated */
-function fatalException(app, f) {
-  const p = app.proc, fmt = vwin32Text(!!f.vxd), at = p.vxdService && p.vxdService(0x17, 3);
-  if (!fmt || !at) { app.exited(-1); return; }
-  // its inserts as VMM's message formatter takes them: %<insert><width>x, %<insert>s
+/** VWIN32's fatal-exception message for fault `f`, its inserts as VMM's message formatter takes them (%<insert><width>x,
+ *  %<insert>s) */
+function fatalText(f) {
+  const fmt = vwin32Text(!!f.vxd); if (!fmt) return null;
   const vals = [f.n, f.cs, f.eip, f.vxd ? `${f.vxd}(01) + ${(f.offset >>> 0).toString(16).toUpperCase().padStart(8, '0')}` : ''];
-  const msg = fmt.replace(/%(\d)(\d?)([xs])/g, (m, k, w, c) => c === 's' ? String(vals[+k - 1]) : (vals[+k - 1] >>> 0).toString(16).toUpperCase().padStart(+w || 0, '0'));
+  return fmt.replace(/%(\d)(\d?)([xs])/g, (m, k, w, c) => c === 's' ? String(vals[+k - 1]) : (vals[+k - 1] >>> 0).toString(16).toUpperCase().padStart(+w || 0, '0'));
+}
+function fatalException(app, f) {
+  const p = app.proc, msg = fatalText(f), at = p.vxdService && p.vxdService(0x17, 3);
+  if (!msg || !at) { app.exited(-1); return; }
   const a = p.alloc(msg.length + 1); p.writeA(a, msg);
   app.afterR0 = () => app.exited(-1);   // the current application terminated
   try { if (p.r0Start(at, { ebx: p.sysVM(), eax: 0x40001000, ecx: a, edi: 0, esi: 0, edx: 0 }) !== null) app.exited(-1); }

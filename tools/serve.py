@@ -24,7 +24,10 @@ class H(http.server.SimpleHTTPRequestHandler):
         self.send_header('Content-Range', f'bytes {lo}-{hi}/{size}'); self.send_header('Content-Length', str(hi - lo + 1))
         self.send_header('Accept-Ranges', 'bytes'); self.end_headers(); return f
     def end_headers(self):   # (scripts revalidate on every load: an edited one is never run stale)
-        self.send_header('Cache-Control', 'no-cache'); super().end_headers()
+        self.send_header('Cache-Control', 'no-cache')
+        # cross-origin isolated, for the shared memory the machines' workers run on (SharedArrayBuffer)
+        self.send_header('Cross-Origin-Opener-Policy', 'same-origin'); self.send_header('Cross-Origin-Embedder-Policy', 'require-corp')
+        super().end_headers()
     def copyfile(self, src, dst):
         n = getattr(self, 'range_left', None)
         if n is None: return super().copyfile(src, dst)

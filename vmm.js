@@ -900,6 +900,7 @@ svc(VMM, 0x85, function () {
   // interrupts and the time-outs and events that are due
   if (!n || !n.target) {
     if (this.msgMode && this.r0Stop()) return;   // a blue screen waiting for its key: the page's turn
+    if (this.msgMode && this.msgWait) this.msgWait();   // (in a worker: its keys and its screen meanwhile)
     if (!this.r0Pump() && this.r0Skip()) this.r0Pump(); return;
   }
   this.tick16();

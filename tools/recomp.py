@@ -1588,7 +1588,10 @@ def assemble(bodies, text_lo, text_hi, lookup):
     tidx = {t: i for i, t in enumerate(types)}
     sec = lambda n, b: bytes([n]) + uleb(len(b)) + b
     tsec = vec([b'\x60' + vec([bytes([x]) for x in p]) + vec([bytes([x]) for x in r]) for p, r in types])
-    imps = [name('env') + name('mem') + b'\x02\x00' + uleb(MEM_PAGES)]
+    # the guest's memory; shared (and so with a maximum, the 4 GiB a 32-bit address reaches) for a machine that runs in a
+    # worker, whose memory the page reads too (the system's modules: RECOMP_SHARED, set by build_system.py)
+    shared = os.environ.get('RECOMP_SHARED') == '1'
+    imps = [name('env') + name('mem') + (b'\x02\x03' + uleb(MEM_PAGES) + uleb(65536) if shared else b'\x02\x00' + uleb(MEM_PAGES))]
     imps += [name('cpu') + name(n) + bytes([0x03, I32, 1]) for n in G]
     imps += [name('env') + name(n) + b'\x00' + uleb(tidx[(tuple(p), tuple(r))]) for n, p, r in IMPORTS]
     nfuncs = 1 + len(bodies)

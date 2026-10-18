@@ -388,6 +388,7 @@ P.soundClose = function () {
 };
 /** queue n samples (L, R) on the output at `rate`; true if it had run dry while sounding since the last call */
 const play = (proc, rate, L, R, n) => {
+  if (window.W95AudioSink) return window.W95AudioSink(proc, rate, L, R, n);   // a machine in a worker: to the page's output
   if (proc.audioOuts === null) return false;   // closed
   const a = out(proc, rate); if (!a) return false;
   const m = [Float32Array.from(L.subarray(0, n)), Float32Array.from(R.subarray(0, n))];
@@ -395,6 +396,8 @@ const play = (proc, rate, L, R, n) => {
   const dry = a.dry > 0; a.dry = 0; return dry;
 };
 system();   // as the machine starts
+// a machine in a worker plays through here: its samples (the page's output, its streams keyed by `k`)
+window.W95Sound = { play: (k, rate, L, R) => play(k, rate, L, R, L.length), close: k => P.soundClose.call(k) };
 P.sound16 = function () {
   if (!this.inSound) this.oplRender();
   const c = this.ad1848; if (!c || !(c.regs[9] & 1) || this.inIRQ || this.inSound) return;

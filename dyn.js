@@ -505,10 +505,10 @@ function strop(f, b, osz, asz, seg, rep, L, alu2, szp) {
 }
 
 // ---------------------------------------------------------------- module assembly and the cache
-function assemble(fn) {
+function assemble(fn, shared) {
   const sec = (n, b) => [n, ...uleb(b.length), ...b];
   const types = vec([[0x60, 0, 1, I32], [0x60, 2, I32, I32, 0]]);
-  const imps = vec([[...str('env'), ...str('mem'), 0x02, 0x00, ...uleb(MEM_PAGES)], ...G.map(n => [...str('cpu'), ...str(n), 0x03, I32, 1]),
+  const imps = vec([[...str('env'), ...str('mem'), 0x02, ...(shared ? [0x03, ...uleb(MEM_PAGES), ...uleb(65536)] : [0x00, ...uleb(MEM_PAGES)])], ...G.map(n => [...str('cpu'), ...str(n), 0x03, I32, 1]),
     [...str('env'), ...str('io'), 0x00, 1],     // function 0: port I/O (port, size | 8 for IN)
     [...str('env'), ...str('trap'), 0x00, 1]]);   // function 1: an interrupt (continuation, 100h + n)
   const funcs = vec([[0]]);
@@ -533,7 +533,7 @@ P.dynBlock = function (eip) {
   try { t = translate(this, eip, csb, d32); }
   catch (e) { if (e instanceof Unsupported) { this.trapped = `run-time code at ${eip.toString(16)}: ${e.message}`; return null; } throw e; }
   t.fn.e(0x0f);
-  const run = new WebAssembly.Instance(new WebAssembly.Module(assemble(t.fn)), { env: { mem: this.mem, io: (port, k) => this.portIO(port & 0xffff, k & 7, !!(k & 8)), trap: (e, c) => this.trap(e, c) }, cpu: this.cpu }).exports.run;
+  const run = new WebAssembly.Instance(new WebAssembly.Module(assemble(t.fn, typeof SharedArrayBuffer !== 'undefined' && this.mem.buffer instanceof SharedArrayBuffer)), { env: { mem: this.mem, io: (port, k) => this.portIO(port & 0xffff, k & 7, !!(k & 8)), trap: (e, c) => this.trap(e, c) }, cpu: this.cpu }).exports.run;
   c = { run, bytes: Array.from(u8.subarray(eip, eip + t.len)) };
   this.dynCache.set(eip, c);
   return c;

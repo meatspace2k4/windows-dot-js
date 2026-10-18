@@ -55,7 +55,7 @@ class Process {
     this.meta = meta; this.host = host; this.fs = host.fs; this.dlls = dlls;
     // host.vmPages more 64 KiB pages above the layout's, for the address space VirtualAlloc reserves (VMEM)
     const pages = meta.layout.pages + (host.vmPages || 0);
-    this.mem = new WebAssembly.Memory({ initial: pages, maximum: pages });
+    this.mem = new WebAssembly.Memory({ initial: pages, maximum: pages, shared: !!host.shared });   // (shared: a machine in a worker, whose screen the page reads)
     this.vmLo = this.vmTop = meta.layout.pages * 0x10000;
     this.cpu = {};
     for (const n of CPU_REGS) this.cpu[n] = new WebAssembly.Global({ value: 'i32', mutable: true }, n === 'fcw' ? 0x37f : n === 'budget' ? BUDGET : 0);
@@ -238,6 +238,7 @@ class Process {
   /** the dispatcher's question when the block budget runs out: 1 to give the processor back to the host here */
   tick(eip) {
     this.cpu.budget.value = BUDGET;
+    if (this.inputPoll && !this.inPoll) { this.inPoll = true; try { this.inputPoll(); } finally { this.inPoll = false; } }   // interrupts: the keyboard's and the mouse's
     if (this.runLevel === this.yieldLevel && !this.noPreempt) {
       if (this.now() - this.runT0 < SLICE_MS) return 0;
       this.preempted = u32(eip); return 1;
@@ -673,8 +674,9 @@ const REGISTRY = new Map([
 ]);
 // Registry writes go through to a store when one is attached (regAttach): each key created or deleted and each value
 // set or deleted, as it happens. Values are numbers, strings, or { type, name, data } with the raw bytes.
-let regStore = null;
-const regChanged = op => { if (regStore) regStore.op(op); };
+let regStore = null, regQuiet = false;
+const regWatchers = new Set();   // the page's: each change, for the machines' copies in their workers
+const regChanged = op => { if (regQuiet) return; if (regStore) regStore.op(op); for (const f of regWatchers) f(op); };
 // each key's name as it was created (RegEnumKey gives it back so: SPOOLSS finds its "Windows 4.0" environment by a
 // case-sensitive compare); the registry's paths themselves are lower case
 const KEYNAME = new Map();
@@ -697,6 +699,19 @@ const regAttach = store => {
   REGISTRY.clear(); KEYNAME.clear();
   for (const [path, vals, name] of held) { REGISTRY.set(path, new Map(vals)); if (name) KEYNAME.set(path, name); }
   return true;
+};
+/** the registry as it is now, in the form a store's load gives it ([path, values, name]), for a machine in a worker */
+const regDump = () => [...REGISTRY].map(([path, m]) => [path, [...m], KEYNAME.get(path) || null]);
+/** a change another copy of the registry made (a machine's in its worker, or the page's): applied here, and passed on
+ *  to this copy's store unless `quiet` */
+const regApply = (o, quiet) => {
+  const was = regQuiet; if (quiet) regQuiet = true;
+  try {
+    if (o.op === 'key') { regMake(o.path, null); if (o.name) KEYNAME.set(o.path, o.name); }
+    else if (o.op === 'set') regSet(o.path, o.name, o.value);
+    else if (o.op === 'del') { const m = REGISTRY.get(o.path); if (m) m.delete(o.name); regChanged(o); }
+    else if (o.op === 'delkey') regDel(o.path);
+  } finally { regQuiet = was; }
 };
 // the shell's own registry reads and writes (Explorer's settings), through the same store as a program's
 /** the names of a key's subkeys, as stored (lower case) */
@@ -1000,7 +1015,7 @@ def('KERNEL32', 'SetHandleCount', 1, n => n);
 // character types (CT_CTYPE1: upper 1, lower 2, digit 4, space 8, punct 10h, control 20h, blank 40h, xdigit 80h, alpha 100h)
 def('KERNEL32', 'GetStringTypeA', 5, function (lc, type, src, n, out) {
   const len = n === 0xffffffff || n === -1 ? this.readA(src).length + 1 : n;
-  const t = new TextDecoder('windows-1252').decode(this.u8.subarray(src, src + len));
+  const t = new TextDecoder('windows-1252').decode(this.u8.slice(src, src + len));
   for (let i = 0; i < t.length; i++) {
     const c = t[i], up = c !== c.toLowerCase(), lo = c !== c.toUpperCase(); let v = 0;
     if (up) v |= 0x101; if (lo) v |= 0x102; if (/[0-9]/.test(c)) v |= 0x84; if (/[a-f]/i.test(c)) v |= 0x80;
@@ -1015,7 +1030,7 @@ def('KERNEL32', 'GetStringTypeW', 4, () => 0);
 // output size asks for the size needed
 def('KERNEL32', 'LCMapStringA', 6, function (lc, fl, src, n, dst, max) {
   const len = n === 0xffffffff || n === -1 ? this.readA(src).length + 1 : n;
-  let t = new TextDecoder('windows-1252').decode(this.u8.subarray(src, src + len));
+  let t = new TextDecoder('windows-1252').decode(this.u8.slice(src, src + len));
   if (fl & 0x100) t = t.toLowerCase(); else if (fl & 0x600) t = t.toUpperCase();
   const b = window.W95FS.encode(t); if (!max) return b.length;
   const k = Math.min(b.length, max); this.u8.set(b.subarray(0, k), dst); return k;
@@ -1023,7 +1038,7 @@ def('KERNEL32', 'LCMapStringA', 6, function (lc, fl, src, n, dst, max) {
 def('KERNEL32', 'LCMapStringW', 6, () => 0);
 // code page 1252 <-> UTF-16; a zero output size asks for the size needed
 def('KERNEL32', 'MultiByteToWideChar', 6, function (cp, fl, src, n, dst, max) {
-  const len = n === 0xffffffff || n === -1 ? this.readA(src).length + 1 : n, b = this.u8.subarray(src, src + len);
+  const len = n === 0xffffffff || n === -1 ? this.readA(src).length + 1 : n, b = this.u8.slice(src, src + len);
   const t = new TextDecoder('windows-1252').decode(b);
   if (!max) return t.length;
   const k = Math.min(t.length, max); for (let i = 0; i < k; i++) this.w16(dst + 2 * i, t.charCodeAt(i));
@@ -2303,5 +2318,5 @@ function peString(bytes, id) {
   } catch (_) { return null; }
 }
 
-window.W95Win32 = { regAttach, regGet, regKids, regVals, regDel, regSet, Process, API, LAYOUT, WM, YIELD, iniGet, iniSet, iniRead, peString, peResource, def, dcOf, GuestError, HangError, FaultError, mkCanvas, dibOut };
+window.W95Win32 = { regAttach, regGet, regKids, regVals, regDel, regSet, regDump, regApply, regWatch: f => regWatchers.add(f), Process, API, LAYOUT, WM, YIELD, iniGet, iniSet, iniRead, peString, peResource, def, dcOf, GuestError, HangError, FaultError, mkCanvas, dibOut };
 })();
