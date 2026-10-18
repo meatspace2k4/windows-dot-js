@@ -533,7 +533,7 @@ P.dynBlock = function (eip) {
   try { t = translate(this, eip, csb, d32); }
   catch (e) { if (e instanceof Unsupported) { this.trapped = `run-time code at ${eip.toString(16)}: ${e.message}`; return null; } throw e; }
   t.fn.e(0x0f);
-  const run = new WebAssembly.Instance(new WebAssembly.Module(assemble(t.fn, typeof SharedArrayBuffer !== 'undefined' && this.mem.buffer instanceof SharedArrayBuffer)), { env: { mem: this.mem, io: (port, k) => this.portIO(port & 0xffff, k & 7, !!(k & 8)), trap: (e, c) => this.trap(e, c) }, cpu: this.cpu }).exports.run;
+  const run = new WebAssembly.Instance(new WebAssembly.Module(assemble(t.fn, Object.prototype.toString.call(this.mem.buffer) === '[object SharedArrayBuffer]')), { env: { mem: this.mem, io: (port, k) => this.portIO(port & 0xffff, k & 7, !!(k & 8)), trap: (e, c) => this.trap(e, c) }, cpu: this.cpu }).exports.run;
   c = { run, bytes: Array.from(u8.subarray(eip, eip + t.len)) };
   this.dynCache.set(eip, c);
   return c;
