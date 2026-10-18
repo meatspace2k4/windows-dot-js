@@ -2989,6 +2989,10 @@ function bootMode(w, h) {
   const str = v => ({ type: 1, data: W95FS.encode(v + '\0') });
   for (const k of ['hkcc\\display\\settings', 'hklm\\config\\0001\\display\\settings']) { W95Win32.regSet(k, 'Resolution', str(`${w},${h}`)); W95Win32.regSet(k, 'BitsPerPixel', str('8')); }
 }
+// the app's window is the monitor: its content takes the size of the mode the system's machine is in, at the page's
+// pixels, so the screen fills it with nothing around (the display driver sets the resolutions of its table and no
+// other, so the window follows the mode, not the mode the window). A browser page has no window to size
+function fitWindow(w, h) { const s = window.W95HOST && window.W95HOST.screen; if (s) s.fit(w * ZOOM, h * ZOOM); }
 // the system's machine follows the page: once its viewport holds another of the adapter's modes (the display driver,
 // FRAMEBUF.DRV, sets the resolutions of its own table and no other), the machine is asked for it; a mode it did not
 // take is not asked for again until the viewport changes
@@ -3450,6 +3454,7 @@ class RemoteApp extends NativeApp {
     this.cv = mkc(sw, sh); this.cx = this.cv.getContext('2d'); this.img = this.cx.createImageData(sw, sh);
     this.ov = mkc(sw, sh); this.ox = this.ov.getContext('2d'); this.oimg = this.ox.createImageData(sw, sh); this.o32 = new Uint32Array(this.oimg.data.buffer);
     this.d32 = new Uint32Array(this.img.data.buffer); this.blank = false;
+    if (this.system) fitWindow(sw, sh);
     resize();
   }
   /** a request to the machine; resolves to its answer */
@@ -3466,6 +3471,7 @@ class RemoteApp extends NativeApp {
         this.cv = mkc(this.sw, this.sh); this.cx = this.cv.getContext('2d'); this.img = this.cx.createImageData(this.sw, this.sh);
         this.ov = mkc(this.sw, this.sh); this.ox = this.ov.getContext('2d'); this.oimg = this.ox.createImageData(this.sw, this.sh); this.o32 = new Uint32Array(this.oimg.data.buffer);
         this.d32 = new Uint32Array(this.img.data.buffer); this.pal = new Uint32Array(256);
+        if (this.system) fitWindow(this.sw, this.sh);
         nativeApps.add(this);
         if (this.net) { this.lanStation = { rx: frame => { if (this.alive) W95Bridge.framePut(this.lanRing, frame); } }; this.lanDetach = window.W95LAN && W95LAN.attach(this.lanStation); for (const a of machineWorkers) if (a !== this) netLink(a); }
         else netLink(this);

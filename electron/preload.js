@@ -24,6 +24,8 @@ contextBridge.exposeInMainWorld('W95HOST', {
   },
   // the disc in the CD drive: the CD image chosen with File > Insert CD Image, a byte range at a time (null with none)
   cd: { read: (sector, length) => ipcRenderer.sendSync('cd-read', sector, length) },
+  // the window is the monitor: its content takes the size of the display mode the system's machine is in
+  screen: { fit: (width, height) => ipcRenderer.send('fit-window', width, height) },
   computerName: ipcRenderer.sendSync('host-name'),
   userName: ipcRenderer.sendSync('user-name'),   // the Mac's account: the name Setup gives the network logon
 })

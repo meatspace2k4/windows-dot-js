@@ -40,6 +40,15 @@ let shares
 ipcMain.on('shares-list', e => { e.returnValue = shares.list() })
 ipcMain.on('share-op', (e, name, op, ...args) => { e.returnValue = shares.op(name, op, ...args) })
 ipcMain.on('host-name', e => { e.returnValue = os.hostname().split('.')[0] })
+// the window is the monitor: its content is the size of the display mode the system's machine is in (the page asks
+// as the mode is set, and after a resize once the machine holds the largest mode the window held), unless the
+// window is full screen or maximized, where the screen is centered in it
+ipcMain.on('fit-window', (e, width, height) => {
+  const win = BrowserWindow.fromWebContents(e.sender)
+  if (!win || win.isFullScreen() || win.isMaximized() || !(width > 0 && height > 0)) return
+  const [w, h] = win.getContentSize()
+  if (w !== width || h !== height) win.setContentSize(Math.round(width), Math.round(height), true)
+})
 ipcMain.on('user-name', e => { try { e.returnValue = os.userInfo().username } catch (_) { e.returnValue = '' } })
 // ---- the CD drive's disc: an ISO 9660 image the person chose, remembered in cdrom.json; the page checks its label
 let cdImage = null, cdFd = null

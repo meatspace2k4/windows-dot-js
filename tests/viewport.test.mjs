@@ -53,4 +53,14 @@ const cut = (w, a, b, keep = true) => { const i = w.indexOf(a); assert.ok(i >= 0
   e2.set(b); e2.syncMode(); await settle(); e2.syncMode(); await settle();
   assert.deepEqual(got, [[640, 480]]); assert.deepEqual(b.modeRefused, [[640, 480]]); assert.deepEqual([b.sw, b.sh], [800, 600]);
 }
+// the app's window is the monitor: the page asks the host to size the window's content to the system machine's mode
+// as the machine starts and whenever its screen size is set; the preload carries the request, the main process sizes
+// the window unless it is full screen or maximized
+{
+  const w = src('win95.js'), pre = src('electron/preload.js'), main = src('electron/main.js');
+  assert.ok(/function fitWindow\(w, h\) \{ const s = window\.W95HOST && window\.W95HOST\.screen; if \(s\) s\.fit\(w \* ZOOM, h \* ZOOM\); \}/.test(w));
+  assert.equal((w.match(/if \(this\.system\) fitWindow\(/g) || []).length, 2);
+  assert.ok(/screen: \{ fit: \(width, height\) => ipcRenderer\.send\('fit-window', width, height\) \}/.test(pre));
+  assert.ok(/ipcMain\.on\('fit-window'/.test(main) && /win\.isFullScreen\(\) \|\| win\.isMaximized\(\)/.test(main) && /win\.setContentSize\(Math\.round\(width\), Math\.round\(height\), true\)/.test(main));
+}
 console.log('viewport: ok');
