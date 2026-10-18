@@ -1484,6 +1484,7 @@ def16('KERNEL', 320, 'w', 'w', function (h) { return h && (h === this.currentTas
 const newTdb = p => { const a = p.alloc(0x200); p.u8.fill(0, a, a + 0x200); p.w16(a + 0xfa, 0x4454); return p.allocSels(a, 0x200); };
 P.currentTask = function () {
   const t = this.thread16;
+  if (t && t.pc) { t.tdb = t.pc.tdb; return t.pc.tdb; }
   if (t && t.task) { if (!t.tdb) { t.tdb = newTdb(this); this.w16(this.selBase(t.tdb) + 0x20, t.queue || 0); } return t.tdb; }
   return this.tdb16 || (this.tdb16 = newTdb(this));
 };
@@ -1546,7 +1547,7 @@ def16('KERNEL', 447, '', 'v', function () {
   if (top && !t.yielded) { t.yielded = true; return YIELD; }
   t.yielded = false;
 });
-def16('KERNEL', 471, '', 'l', function () { return this.inSystem && this.inSystem() ? SYS_PID : MAIN_PID; });   // GetCurrentProcessId: KERNEL32's ids
+def16('KERNEL', 471, '', 'l', function () { return this.thread16 && this.thread16.pc ? this.thread16.pc.pid : this.inSystem && this.inSystem() ? SYS_PID : MAIN_PID; });   // GetCurrentProcessId: KERNEL32's ids
 def16('KEYBOARD', 100, 'w', 'v', function () {});                              // ScreenSwitchEnable
 
 // selectors
@@ -2024,7 +2025,11 @@ def16('KERNEL', 131, '', 'l', function () {                                     
   return u32(this.dosEnv << 16);
 });
 def16('KERNEL', 157, 'l', 'l', () => 0);                                              // GetCurPID
-def16('KERNEL', 166, 'sw', 'w', function (cmd, show) { return this.host && this.host.exec ? this.host.exec(cmd, show) : 2; });   // WinExec: 2 = file not found
+def16('KERNEL', 166, 'sw', 'w', function (cmd, show) {   // WinExec: the started program's instance, else its error (2 not found)
+  const r = this.host && this.host.exec ? this.host.exec(cmd, show) : 2;
+  if (typeof r !== 'object') return r;
+  this.runUntilIdle(r); return this.hinst16(r.exe.base);
+});
 def16('KERNEL', 169, 'w', 'l', () => 0x01000000);                                     // GetFreeSpace: 16 MB
 def16('KERNEL', 328, '', 'jmp', function () { return this.retf16(0); });              // _DebugOutput (cdecl): kept only under a debugger
 // Catch / Throw: the registers a Throw goes back to, in the 9-word CATCHBUF (IP, CS, SP after Catch returns, BP, SI,
@@ -2257,7 +2262,7 @@ def16('KERNEL', 625, '', 'w', function () {
 const GPD = { 0: 0, '-4': 0, '-8': 0, '-12': 0, '-16': 0, '-20': 0, '-24': 0, '-28': 0, '-32': 0, '-36': 0, '-40': 0, '-44': 0x400, '-48': 0, '-52': 0, '-56': 0 };
 const pdw = (p, pid, off) => {
   if (!(off in GPD)) throw new GuestError(`GetProcessDword offset ${off}`);
-  pid = pid || (p.inSystem() ? SYS_PID : MAIN_PID);   // USER's start-up runs as the system process, not the program's
+  pid = pid || (p.thread16 && p.thread16.pc ? p.thread16.pc.pid : p.inSystem() ? SYS_PID : MAIN_PID);   // USER's start-up runs as the system process, not the program's
   p.procDword = p.procDword || new Map(); if (!p.procDword.has(pid)) p.procDword.set(pid, { ...GPD }); return p.procDword.get(pid);
 };
 def16('KERNEL', 485, 'li', 'l', function (pid, off) { return pdw(this, pid, off)[off] >>> 0; });
@@ -2288,7 +2293,57 @@ P.newThread = function (start, param, stack, flat, suspended) {
   thr(this, MAIN_TID);
   const id = MAIN_TID + this.threadsById.size, t = thr(this, id);
   Object.assign(t, { start, param, stack: Math.max(stack || 0, 0x10000), state: suspended ? 'suspended' : 'new', flat, ctx: null, wait: null });
+  if (this.thread16 && this.thread16.pc) t.pc = this.thread16.pc;   // a thread of the process that creates it
   return t;
+};
+// ---- processes a program starts (WinExec, CreateProcess): another program's image in this address space (each
+// program is built at a base of its own) under the same window system, as Windows 95 runs every process on one USER.
+// Its main thread starts as KERNEL32 starts a process's: a task of its own, USER's InitApp for it, USER told the GUI
+// process has loaded (SignalProc32), then its entry point
+let nextPid = 0x60;
+P.spawn = function (file, module, meta, path, cmdline) {
+  const pc = { pid: nextPid, path, exitCode: null, tdb: newTdb(this), started: false };
+  nextPid += 4;
+  pc.exe = this.loadImage(file, module, meta, 'EXE');
+  pc.cmdPtr = this.alloc(cmdline.length + 1); this.writeA(pc.cmdPtr, cmdline);
+  this.inits = [];   // its DLLs attach to it as its main thread starts (pcStart)
+  const t = this.newThread(meta.entry, 0, 0x100000, true, false); t.pc = pc; t.tdb = pc.tdb; pc.main = t;
+  (this.procs || (this.procs = new Map())).set(pc.pid, pc);
+  return pc;
+};
+/** WinExec's start, as Win16's loader gives it: the new process runs until its main thread first waits for input
+ *  (or ends), so it has made its windows by the time WinExec returns */
+P.runUntilIdle = function (pc, rounds = 500) {
+  const t = pc.main;
+  // waiting: in WaitEvent (the message wait: t.slept) or on an object not yet set
+  for (let k = 0; k < rounds && t.state !== 'done' && !(t.state === 'waiting' && (t.slept || (t.wait && !t.wait.set))) && !this.trapped; k++) this.threads16(true);
+};
+/** a thread of a started process has ended: the process ends with its last thread (a thread returning from its
+ *  start, the main one too, ends that thread only), unless ExitProcess ended it already */
+P.pcThreadEnded = function (t) {
+  const pc = t.pc; if (pc.exitCode !== null) return;
+  if (![...this.threadsById.values()].some(x => x.pc === pc && x.state && x.state !== 'done')) this.endProcess(pc, t.exitCode || 0);
+};
+/** a started process's end (ExitProcess, or its last thread): its threads stop */
+P.endProcess = function (pc, code) {
+  if (pc.exitCode !== null) return;
+  pc.exitCode = code >>> 0;
+  for (const t of (this.threadsById || new Map()).values()) if (t.pc === pc && t !== this.thread16 && t.state !== 'done') { t.state = 'done'; this.wakeWaiters(t); }
+  if (this.thread16 && this.thread16.pc === pc) this.thread16.exitCode = code >>> 0;
+  if (this.procs) this.procs.delete(pc.pid);
+  if (pc.onExit) pc.onExit(pc.exitCode);
+};
+// USER hears of a process as KERNEL32 tells it (SignalProc32: USIG_PROCESS_CREATE 100h, USIG_PROCESS_INIT 200h,
+// USIG_THREAD_INIT 10h for its thread, then USIG_PROCESS_LOADED 600h and USIG_PROCESS_RUNNING 500h once its DLLs are
+// attached; flags Win32 and GUI): its per-process state, its global classes among it, is made there
+P.pcStart = function (pc) {
+  pc.started = true;
+  const u = this.ne.get('USER'), sig = u && u.meta && this.neExport(u, 391), h = this.hinst16(pc.exe.base);
+  const signal = (s, id) => { if (sig) this.user16(391, [['l', s], ['l', id], ['l', 3], ['w', h]]); };
+  signal(0x100, pc.pid); signal(0x200, pc.pid); signal(0x10, pc.main.id);
+  for (const m of this.importClosure(pc.exe)) if (m !== pc.exe) this.attach(m);   // DllMain(DLL_PROCESS_ATTACH) of each DLL its image uses, dependencies first
+  this.user16(5, [['w', h]]);   // InitApp
+  signal(0x600, pc.pid); signal(0x500, pc.pid);
 };
 P.currentThreadId = function () { return this.thread16 ? this.thread16.id : this.inSystem && this.inSystem() ? SYS_TID : MAIN_TID; };
 def16('KERNEL', 441, 'llllll', 'l', function (attr, stack, start, param, flags, ptid) {   // CreateThread16
@@ -2298,7 +2353,7 @@ def16('KERNEL', 441, 'llllll', 'l', function (attr, stack, start, param, flags, 
   if (ptid) this.w32(this.lin(ptid), id);
   return this.newHandle({ kind: 'thread', id });
 });
-const CTX = ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi', 'cf', 'pf', 'zf', 'sf', 'of', 'df', 'eip', 'cs', 'ds', 'es', 'ss', 'fsel', 'gsel', 'csb', 'dsb', 'esb', 'ssb', 'gsb'];
+const CTX = ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi', 'cf', 'pf', 'zf', 'sf', 'of', 'df', 'eip', 'cs', 'ds', 'es', 'ss', 'fsel', 'gsel', 'csb', 'dsb', 'esb', 'ssb', 'fs', 'gsb'];   // fs: FS's base (the TIB in flat code)
 P.saveCtx16 = function () { const c = {}; for (const r of CTX) c[r] = this.cpu[r].value; c.depth = this.depth; c.stackLevel = this.stackLevel; return c; };
 P.loadCtx16 = function (c) { for (const r of CTX) this.cpu[r].value = c[r]; this.depth = c.depth; this.stackLevel = c.stackLevel; };
 /** run the threads that can run; the host calls this between slices of the main thread */
@@ -2323,8 +2378,10 @@ P.threads16 = function (nested = false) {
         this.cpu.fs.value = t.tib; this.depth = 0; t.depth = 0; this.stackLevel = main.stackLevel;
         let esp = t.stackBase + t.stack - 16; esp -= 4; this.w32(esp, t.param); esp -= 4; this.w32(esp, LAYOUT.SENTINEL);
         this.cpu.esp.value = esp; t.state = 'running';
+        if (t.pc && !t.pc.started) this.pcStart(t.pc);
         r = this.runAt(u32(t.start));
         if (r === 0 && t.exitCode === undefined) t.exitCode = u32(this.cpu.eax.value);
+        if (r !== 1 && t.pc) { t.state = 'done'; this.pcThreadEnded(t); }
       } else if (t.state === 'new') {
         // its own flat stack, then a far call of its procedure (it returns to the sentinel)
         t.stackBase = this.alloc(t.stack); this.cpu.esp.value = t.stackBase + t.stack - 16; this.seg('ss', 0);
@@ -2341,7 +2398,7 @@ P.threads16 = function (nested = false) {
         r = this.runAt(u32(this.cpu.eip.value));
       }
       if (r === 1) { t.ctx = this.saveCtx16(); t.state = 'waiting'; }
-      else { t.state = 'done'; this.wakeWaiters(t); if (r !== 0 && this.trapped) console.warn('[ne16] thread', t.id, this.trapped); if (t.onDone) t.onDone(t); }   // onDone: the host's, for a thread it started
+      else { t.state = 'done'; this.wakeWaiters(t); if (t.pc) this.pcThreadEnded(t); if (r !== 0 && this.trapped) console.warn('[ne16] thread', t.id, this.trapped); if (t.onDone) t.onDone(t); }   // onDone: the host's, for a thread it started
     } finally { this.thread16 = caller; this.loadCtx16(main); }
   } } finally { this.inThreads = false; }
 };
@@ -2737,7 +2794,33 @@ K('#37', 2, function (h, name) {                                                
   const m = this.neByHandle(h & 0xffff); if (!m || !m.meta) return 0;
   return this.neExport(m, name >>> 16 ? this.readA(name) : name & 0xffff) || 0;
 });
-K('#91', 1, function (buf) { this.writeA(buf, ''); });                                                       // PK16FNF: no prefix for 16-bit file names
+K('#91', 1, function (buf) { this.writeA(buf, ''); });
+// K32WOW*: the 16-bit memory and handles a Win32 program reaches through WOW32.DLL (whose exports jump here), as
+// WinHelp reads the request block a 16-bit WinHelp call hands it. Far pointers are selector:offset; handles of USER and
+// GDI objects are the same 16-bit values on both sides
+const segptr = (p, h) => (p.gblock(h) ? (p.gsel(h) << 16) >>> 0 : 0);
+K('#60', 1, function (h) { return segptr(this, h); });                                                                      // WOWGlobalLock16
+K('#61', 1, function (h) { return this.gblock(h) ? 1 : 0; });                                                               // WOWGlobalUnlock16
+K('#65', 2, function (h, pcb) { const b = this.gblock(h); if (pcb) this.w32(pcb, b ? b.size : 0); return segptr(this, h); });   // WOWGlobalLockSize16
+K('#59', 2, function (flags, n) { return this.globalAlloc16(flags & 0xffff, n); });                                         // WOWGlobalAlloc16
+K('#62', 1, function (h) { return K16['KERNEL.#17'][2].call(this, h & 0xffff); });                                         // WOWGlobalFree16
+K('#63', 3, function (flags, n, ph) { const h = this.globalAlloc16(flags & 0xffff, n); if (ph) this.w16(ph, h); return segptr(this, h); });   // WOWGlobalAllocLock16
+K('#64', 1, function (vp) { return K16['KERNEL.#17'][2].call(this, vp >>> 16) ? 0 : 1; });                                 // WOWGlobalUnlockFree16
+K('#56', 3, function (vp, n, pm) { return pm ? this.lin(vp) : ((vp >>> 16) << 4) + (vp & 0xffff); });                     // WOWGetVDMPointer
+K('#68', 3, function (vp, n, pm) { return pm ? this.lin(vp) : ((vp >>> 16) << 4) + (vp & 0xffff); });                     // WOWGetVDMPointerFix
+K('#69', 1, () => 0);                                                                                                       // WOWGetVDMPointerUnfix
+K('#57', 2, function (h) { return h & 0xffff; });                                                                           // WOWHandle32
+K('#58', 2, function (h) { return h & 0xffff; });                                                                           // WOWHandle16
+K('#66', 0, () => 0);                                                                                                       // WOWYield16: the host's scheduler runs the others between slices
+K('#67', 1, () => 0);                                                                                                       // WOWDirectedYield16
+// WOWCallback16(16:16 function, dword): the function called with the dword (Pascal), DX:AX back; WOWCallback16Ex
+// (function, flags, argument bytes, arguments, return code): the arguments as words or dwords as given, Pascal or C
+K('#54', 2, function (fn, arg) { return this.call16(fn >>> 16, fn & 0xffff, [['l', arg]]).dxax >>> 0; });
+K('#55', 5, function (fn, flags, cb, pargs, pret) {
+  const n = cb >>> 2, args = []; for (let i = 0; i < n; i++) args.push(['l', this.r32(pargs + 4 * i)]);
+  if (!(flags & 1)) args.reverse();   // WCB16_PASCAL (0): the first argument pushed first
+  const r = this.call16(fn >>> 16, fn & 0xffff, args).dxax >>> 0; if (pret) this.w32(pret, r); return 1;
+});                                                       // PK16FNF: no prefix for 16-bit file names
 KR('K32Thk1632Epilog', function () { return ret32(this); });
 K('#17', 0, () => 0);                                      // CommonUnimpStub
 K('#18', 2, function (pid, off) { return pdw(this, pid, off | 0)[off | 0] >>> 0; });   // GetProcessDword
@@ -2774,7 +2857,7 @@ K('#96', 0, () => 1);
 K('#97', 1, () => 0); K('#98', 1, () => 0);
 K('GetProcessFlags', 1, () => 0);
 K('ConvertToGlobalHandle', 1, h => h);
-K('OpenEventA', 3, () => 0); K('OpenMutexA', 3, () => 0); K('ReleaseMutex', 1, () => 1);
+K('ReleaseMutex', 1, () => 1);   // one processor runs every thread here: a mutex has no one to keep out
 // ---- Win32 waits, events and user APCs under the native USER, on the threads threads16 runs. A wait that cannot be
 // satisfied gives up the processor at the thread's top level and is made again when the thread resumes (until it is
 // satisfied or its time runs out); an alertable wait runs the thread's queued APCs first and returns
@@ -2796,6 +2879,16 @@ function wait32(hs, all, ms, alertable) {
     t.wake = 0;
     if (all) { for (const e of objs) if (e && !e.manual) e.set = false; return 0; }
     const i = objs.findIndex(isSet); if (objs[i] && !objs[i].manual) objs[i].set = false; return i;
+  }
+  // inside a call (the waiting code cannot give up its slice): the other threads and processes each get a turn, as
+  // the wait would let them run, and the objects are looked at again
+  if (ms && !top && this.waitNested) {
+    this.waitNested(() => (all ? objs.every(isSet) : objs.some(isSet)));
+    if (all ? objs.every(isSet) : objs.some(isSet)) {
+      t.wake = 0;
+      if (all) { for (const e of objs) if (e && !e.manual) e.set = false; return 0; }
+      const i = objs.findIndex(isSet); if (objs[i] && !objs[i].manual) objs[i].set = false; return i;
+    }
   }
   if (!ms || !top) { t.wake = 0; return 0x102; }
   // a wait without end, in a thread: blocked until one of its objects is set, an APC arrives (alertable) or a thread
@@ -2850,7 +2943,9 @@ const createFile = API.KERNEL32.CreateFileA[1];
 K('CreateFileA', 7, function (name, ...rest) {
   const n = this.readA(name) || '', m = /^\\\\\.\\([^\\.]+)(\.vxd)?$/i.exec(n);
   if (!m) return createFile.call(this, name, ...rest);
-  const loaded = [...(this.vxds || new Map()).values()].find(v => v.inited && v.name.toUpperCase() === m[1].toUpperCase());   // any VxD loaded by that name
+  let loaded = [...(this.vxds || new Map()).values()].find(v => v.inited && v.name.toUpperCase() === m[1].toUpperCase());   // any VxD loaded by that name
+  // else a dynamic VxD of that name, loaded as VWIN32 loads it for the open (SYS_DYNAMIC_DEVICE_INIT)
+  if (!loaded && !VXD_FILES[m[1].toUpperCase()] && this.vxdLoad && ((window.W95SYSTEM || {}).vxds || {})[m[1].toUpperCase() + '.VXD']) loaded = this.vxdLoad(m[1].toUpperCase() + '.VXD');
   const id = VXD_FILES[m[1].toUpperCase()] || (loaded && loaded.id);
   if (!id) { this.lastError = 2; return 0xffffffff; }
   const vx = this.vxdById && this.vxdById(id);   // a recompiled VxD (vmm.js) is asked first (DIOC_OPEN)

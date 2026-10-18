@@ -65,6 +65,13 @@ class Process {
     this.runPendingInits();
     if (host.boot && this.initApp16) this.initApp16();   // the program's start under the native USER (ne16.js)
   }
+  // ---- processes: the program this one was started for (pc0), and those it starts (spawn), each with its image,
+  // command line, file and id. The running thread's process is the current one; outside any thread, pc0
+  get pc() { const t = this.thread16; return (t && t.pc) || this.pc0 || (this.pc0 = { pid: 0x50 }); }
+  get exe() { return this.pc.exe; }
+  set exe(v) { (this.pc0 || (this.pc0 = { pid: 0x50 })).exe = v; }
+  get cmdPtr() { return this.pc.cmdPtr; }
+  set cmdPtr(v) { (this.pc0 || (this.pc0 = { pid: 0x50 })).cmdPtr = v; }
   get u8() { return new Uint8Array(this.mem.buffer); }
   get dv() { return new DataView(this.mem.buffer); }
   r32(a) { return this.dv.getUint32(a, true); }
@@ -101,7 +108,7 @@ class Process {
         o += sz;
       }
     }
-    const rec = { name, base, size: dv.getUint32(opt + 56, true), meta, rsrc: dir(2), exports: new Map(), run: null };
+    const rec = { name, base, pref, size: dv.getUint32(opt + 56, true), meta, rsrc: dir(2), exports: new Map(), run: null, deps: [] };
     this.modules.push(rec); this.byName.set(name, rec);
     const ex = dir(0);
     if (ex) {
@@ -112,7 +119,7 @@ class Process {
     for (let d = base + dir(1); dir(1) && this.r32(d + 12); d += 20) {
       const dll = this.readA(base + this.r32(d + 12)).toUpperCase().replace(/\.DLL$/, '');
       const iat = base + this.r32(d + 16); let lut = base + (this.r32(d) || this.r32(d + 16));
-      const native = this.loadDll(dll);
+      const native = this.loadDll(dll); if (native && !rec.deps.includes(native)) rec.deps.push(native);
       for (let k = 0; ; k++, lut += 4) {
         const v = this.r32(lut); if (!v) break;
         const nm = v & 0x80000000 ? '#' + (v & 0xffff) : this.readA(base + v + 2);
@@ -123,7 +130,7 @@ class Process {
     rec.run = new WebAssembly.Instance(module, this.imports).exports.run;
     const look = new Uint32Array(this.mem.buffer, meta.lookup, meta.textHi - meta.textLo);
     meta.blocks.forEach((a, i) => { look[a - meta.textLo] = i + 1; });
-    if (name !== 'EXE' && meta.entry) this.inits.push(rec);
+    if (name !== 'EXE' && meta.entry) { this.inits.push(rec); (this.initOrder || (this.initOrder = [])).push(rec); }
     return rec;
   }
   loadDll(name) {
@@ -131,7 +138,10 @@ class Process {
     const d = this.dlls.get(name); if (!d) return null;
     return this.loadImage(d.file, d.module, d.meta, name);
   }
-  moduleFor(h) { return this.modules.find(m => m.base === h) || this.exe; }
+  /** a module handle as the running process sees it: its program at the base the program's header prefers (where
+   *  every Windows 95 process has its own, in its private arena), which here may be elsewhere in the shared space */
+  hmod(h) { const e = this.exe; return e && e.pref && h === e.pref && e.base !== e.pref ? e.base : h; }
+  moduleFor(h) { h = this.hmod(h); return this.modules.find(m => m.base === h) || this.exe; }
   thunkFor(dll, nm) {
     const key = dll + '!' + nm;
     if (this.thunkByName.has(key)) return this.thunkByName.get(key);
@@ -156,10 +166,22 @@ class Process {
    *  every process: until then its clipboard and drag and drop calls fail */
   runPendingInits() {
     const pending = this.inits; this.inits = [];
-    for (const m of pending) {
-      this.call(m.meta.entry, [m.base, 1, 0]);
-      const ole = m.name === 'SHELL32' && m.exports.get('#151'); if (ole) this.call(ole, [2]);
-    }
+    for (const m of pending) this.attach(m);
+  }
+  /** DllMain(DLL_PROCESS_ATTACH) of a DLL for the current process, once: each process attaches to every DLL it uses,
+   *  as Windows 95 attaches them, though the image is loaded once in this address space */
+  /** the DLLs a module imports, and theirs, dependencies first (the order DllMain runs in) */
+  importClosure(m, out = [], seen = new Set()) {
+    if (seen.has(m)) return out; seen.add(m);
+    for (const d of m.deps || []) this.importClosure(d, out, seen);
+    out.push(m); return out;
+  }
+  attach(m) {
+    const pc = this.pc, done = pc.attached || (pc.attached = new Set());
+    if (done.has(m) || !m.meta || !m.meta.entry || m.clock) return;
+    done.add(m);
+    this.call(m.meta.entry, [m.base, 1, 0]);
+    const ole = m.name === 'SHELL32' && m.exports.get('#151'); if (ole) this.call(ole, [2]);
   }
 
   // ---- execution
@@ -229,7 +251,11 @@ class Process {
   }
   api(eip) {
     // debugging: window.W95WATCHDOG (ms) stops a slice that runs that long without returning to the host
-    if (window.W95WATCHDOG && (++this.wdCount & 1023) === 0 && this.now() - (this.lastYield || this.t0) > window.W95WATCHDOG) { this.trapped = `watchdog: guest ran ${Math.round(this.now() - (this.lastYield || this.t0))} ms in one slice`; return LAYOUT.SENTINEL; }
+    if (window.W95WATCHDOG && (++this.wdCount & 1023) === 0 && this.now() - (this.lastYield || this.t0) > window.W95WATCHDOG) {
+      const ret = this.r32(this.reg('esp')), t = u32(eip) < LAYOUT.THUNK ? null : this.thunks[(u32(eip) - LAYOUT.THUNK) >> 2], m = this.modules.find(x => x.size && ret >= x.base && ret < x.base + x.size);
+      this.trapped = `watchdog: guest ran ${Math.round(this.now() - (this.lastYield || this.t0))} ms in one slice (calling ${t ? t.dll + '!' + t.nm : u32(eip).toString(16)} from ${m ? (m === this.exe || m.name === 'EXE' ? (this.pc.path || 'EXE') : m.name) + '+' + (ret - m.base).toString(16) : ret.toString(16)}, thread ${this.thread16 ? this.thread16.id : 'main'})`;
+      return LAYOUT.SENTINEL;
+    }
     if (u32(eip) < LAYOUT.THUNK) return this.api16(u32(eip));
     const t = this.thunks[(u32(eip) - LAYOUT.THUNK) >> 2];
     if (!t || !t.def) { this.trapped = `unimplemented import ${t ? t.dll + '!' + t.nm : u32(eip).toString(16)}`; return LAYOUT.SENTINEL; }
@@ -527,10 +553,16 @@ def('KERNEL32', 'GetModuleHandleA', 1, function (name) {
   const m = this.byName.get((this.readA(name) || '').toUpperCase().replace(/\.DLL$/, '')); return m ? m.base : 0;
 });
 def('KERNEL32', 'GetModuleFileNameA', 3, function (h, buf, n) {
-  const m = h && this.modules.find(x => x.base === h && x !== this.exe && x.kind !== 'ne');   // a DLL: its file in SYSTEM
-  return this.writeA(buf, m ? `C:\\WINDOWS\\SYSTEM\\${m.name}.DLL` : this.host.path || 'C:\\WINDOWS\\SCRNSAVE.SCR', n);
+  h = this.hmod(h);
+  const m = h && this.modules.find(x => x.base === h && x !== this.exe && x.kind !== 'ne');   // a DLL: its file in SYSTEM; another program: its file
+  const other = m && m.name === 'EXE' && [this.pc0, ...(this.procs || new Map()).values()].find(x => x && x.exe === m);
+  return this.writeA(buf, other ? other.path || this.host.path : m ? `C:\\WINDOWS\\SYSTEM\\${m.name}.DLL` : this.pc.path || this.host.path || 'C:\\WINDOWS\\SCRNSAVE.SCR', n);
 });
-def('KERNEL32', 'ExitProcess', 1, function (code) { this.exitCode = code; this.host.exited(code); return 0; });
+def('KERNEL32', 'ExitProcess', 'regs', function () {
+  const code = this.r32(this.reg('esp') + 4), pc = this.pc;
+  if (pc !== this.pc0) { this.endProcess(pc, code); return LAYOUT.SENTINEL; }   // a process this one started: its threads end
+  this.exitCode = code; this.host.exited(code); return LAYOUT.SENTINEL;
+});
 def('KERNEL32', 'TerminateProcess', 2, function (h, code) { this.exitCode = code; this.host.exited(code); return 1; });
 def('KERNEL32', 'GetCurrentProcess', 0, () => 0xffffffff);
 def('KERNEL32', 'DisableThreadLibraryCalls', 1, () => 1);
@@ -553,7 +585,7 @@ def('KERNEL32', 'GetTickCount', 0, function () {
 // resumes, and returns once its wake-up time has passed); elsewhere it returns at once
 function sleep(ms) {
   const t = this.thread16 || (this.mainSleep = this.mainSleep || {});
-  if (!(this.atThreadTop ? this.atThreadTop() : this.depth === 0)) { t.wake = 0; return 0; }
+  if (!(this.atThreadTop ? this.atThreadTop() : this.depth === 0)) { t.wake = 0; if (ms && this.threads16) this.threads16(true); return 0; }   // inside a call: the others get a turn
   if (!t.wake) { t.wake = this.now() + (ms >>> 0 === 0xffffffff ? 1e12 : ms); return YIELD; }
   if (this.now() < t.wake) return YIELD;
   t.wake = 0; return 0;
@@ -565,14 +597,14 @@ def('KERNEL32', 'GetVersionExA', 1, function (p) { this.w32(p + 4, 4); this.w32(
 def('KERNEL32', 'LoadLibraryA', 1, function (n) {
   const name = (this.readA(n) || '').toUpperCase().replace(/^.*\\/, '').replace(/\.DLL$/, '');
   const native = this.loadDll(name);
-  if (native) { this.runPendingInits(); return native.base; }
+  if (native) { this.runPendingInits(); this.attach(native); return native.base; }
   if (!API[name]) { this.lastError = 126; return 0; }   // ERROR_MOD_NOT_FOUND: neither a system DLL here nor one implemented in JS
   return 0x10000000 | (this.newHandle({ kind: 'module', name }) & 0xffff);
 });
 def('KERNEL32', 'FreeLibrary', 1, () => 1);
 def('KERNEL32', 'GetProcAddress', 2, function (h, name) {
   const nm = name >>> 16 ? this.readA(name) : '#' + name;
-  const native = this.modules.find(x => x.base === h);
+  const native = this.modules.find(x => x.base === this.hmod(h));
   if (native) return native.exports.get(nm) || 0;
   const m = this.obj(0x0000ffff & h) || { name: 'KERNEL32' };
   return API[m.name] && API[m.name][nm] ? this.thunkFor(m.name, nm) : 0;
@@ -866,7 +898,7 @@ def('KERNEL32', 'DeleteCriticalSection', 1, () => 0);
 def('KERNEL32', 'EnterCriticalSection', 1, () => 0);
 def('KERNEL32', 'LeaveCriticalSection', 1, () => 0);
 def('KERNEL32', 'GetCurrentThreadId', 0, function () { return this.currentThreadId ? this.currentThreadId() : 0x51; });
-def('KERNEL32', 'GetCurrentProcessId', 0, () => 0x50);
+def('KERNEL32', 'GetCurrentProcessId', 0, function () { return this.pc.pid; });
 def('KERNEL32', 'GetCurrentThread', 0, () => 0xfffffffe);
 // TLS slots are the process's; the values are each thread's (a thread the scheduler runs keeps its own)
 const tlsOf = p => (p.thread16 && p.thread16.flat ? (p.thread16.tls = p.thread16.tls || []) : (p.tls = p.tls || []));
@@ -1103,7 +1135,19 @@ def('KERNEL32', 'ResumeThread', 1, function (h) {
 });
 def('KERNEL32', 'SetLocalTime', 1, () => 0);
 def('KERNEL32', 'CreatePipe', 4, () => 0);
-def('KERNEL32', 'CreateProcessA', 10, () => 0);
+// WinExec / CreateProcessA: a program the host runs, started in this address space (ne16.js P.spawn); CreateProcess
+// fills PROCESS_INFORMATION (process and thread handles, their ids)
+def('KERNEL32', 'WinExec', 2, function (cmd, show) {
+  const r = this.host.exec ? this.host.exec(this.readA(cmd) || '', show) : 2;
+  // the new process runs as the caller waits (Sleep, waits), when its Win16Lock is let go, as Windows 95 lets it
+  return typeof r === 'object' ? 33 : r;
+});
+def('KERNEL32', 'CreateProcessA', 10, function (app, cmd, pa, ta, inherit, flags, env, dir, si, pi) {
+  const line = this.readA(cmd) || this.readA(app) || '', r = this.host.exec ? this.host.exec(app && cmd ? `"${this.readA(app)}" ${line.replace(/^\s*("[^"]*"|\S+)\s*/, '')}` : line, 1) : 2;
+  if (typeof r !== 'object') { this.lastError = r === 11 ? 193 : r; return 0; }
+  if (pi) { this.w32(pi, this.newHandle({ kind: 'process', pid: r.pid })); this.w32(pi + 4, this.newHandle({ kind: 'thread', id: r.main.id })); this.w32(pi + 8, r.pid); this.w32(pi + 12, r.main.id); }
+  return 1;
+});
 def('KERNEL32', 'ReadConsoleA', 5, () => 0);
 // ---- what SHELL32.DLL and COMCTL32.DLL need of KERNEL32 beyond the above
 const ft64 = (p, a) => (BigInt(p.r32(a + 4)) << 32n) | BigInt(p.r32(a));
@@ -1228,6 +1272,7 @@ def('KERNEL32', 'WaitForMultipleObjects', 4, function (n, hs, all, ms) {
   return 0x102;
 });
 def('KERNEL32', 'CreateMutexA', 3, function (sa, owned, name) { return named(this, name, () => ({ kind: 'mutex', owned: !!owned })); });
+def('KERNEL32', 'OpenMutexA', 3, function (access, inherit, name) { return openNamed(this, name, 'mutex'); });
 def('KERNEL32', 'MakeCriticalSectionGlobal', 1, () => 0);
 def('KERNEL32', 'WaitForSingleObjectEx', 3, function (h, ms) { return API.KERNEL32.WaitForSingleObject[1].call(this, h, ms); });
 // change notifications: nothing changes the disk while a guest waits on one, so they never fire

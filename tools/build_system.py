@@ -35,10 +35,14 @@ NE = [('gdi.exe', 0x01C00000, 0x1007, 0x06A00000), ('dibeng.dll', 0x01E00000, 0x
       # the MCI sequencer and waveaudio devices (MOTOWN.INF's MCISEQ and MCIWAVE, SYSTEM.INI [mci]) that play MIDI and
       # wave files for Media Player and mciSendString (WIN95_13.CAB)
       ('mciseq.drv', 0x018A0000, 0x1987, 0x07DC0000), ('mciwave.drv', 0x018C0000, 0x19C7, 0x07E00000)]
-# Windows programs that run on the native USER (bootUser16): (file, block-table base); each loads at its own base
-PROGRAMS = [('notepad.exe', 0x06000000), ('rundll32.exe', 0x06100000), ('mplayer.exe', 0x06200000), ('mprexe.exe', 0x05C90000),
+# Windows programs that run on the native USER (bootUser16): (file, load base, block-table base). Each has a base of
+# its own, so programs one starts (WinExec, CreateProcess) share its address space and its window system
+PROGRAMS = [('notepad.exe', 0x00400000, 0x06000000), ('rundll32.exe', 0x00410000, 0x06100000), ('mplayer.exe', 0x00420000, 0x06200000),
+            ('mprexe.exe', 0x00500000, 0x05C90000),
             # Windows Help, which the shell's Help Topics and Start > Help run (WIN95_13.CAB)
-            ('winhlp32.exe', 0x06700000)]
+            ('winhlp32.exe', 0x00450000, 0x06700000),
+            # the print spooler WINSPOOL.DRV starts and talks to (WIN95_27.CAB)
+            ('spool32.exe', 0x004A0000, 0x06BA0000)]
 # 32-bit system DLLs: (file, load base, block-table base)
 PE = [('gdi32.dll', 0x01D00000, 0x06C00000), ('user32.dll', 0x01D40000, 0x07340000), ('comdlg32.dll', 0x01D60000, 0x07380000),
       # the common controls and the shell, which COMDLG32's Explorer-style dialogs are built on (WIN95_02.CAB)
@@ -55,7 +59,12 @@ PE = [('gdi32.dll', 0x01D00000, 0x06C00000), ('user32.dll', 0x01D40000, 0x073400
       # the RPC runtime and the C runtime it imports
       ('ole32.dll', 0x01000000, 0x06300000), ('rpcrt4.dll', 0x010A0000, 0x06500000), ('msvcrt20.dll', 0x010E0000, 0x06600000),
       # Windows Help's full-text search, which it loads for the Find tab (WIN95_13.CAB)
-      ('ftsrch.dll', 0x01400000, 0x06900000)]
+      ('ftsrch.dll', 0x01400000, 0x06900000),
+      # printing (WIN95_27.CAB): the spooler's client the common dialogs load, and the spooler's router SPOOL32 runs
+      ('winspool.drv', 0x01460000, 0x06B00000), ('spoolss.dll', 0x01480000, 0x06B40000),
+      # the Win32 side of 16-bit memory and handles (WOWGlobalLock16 and the rest), which WinHelp reads a 16-bit
+      # WinHelp call's request through (WIN95_27.CAB)
+      ('wow32.dll', 0x014A0000, 0x06BC0000)]
 # VxDs (ring-0 drivers), recompiled to run under the VMM in vmm.js: (file, load base, block-table base). MMDEVLDR is the
 # device loader of MEDIA devnodes; MSSNDSYS the Windows Sound System card's driver (WIN95_02.CAB)
 VXDS = [('mmdevldr.vxd', 0x01800000, 0x07C00000), ('mssndsys.vxd', 0x01810000, 0x07C40000),
@@ -65,6 +74,8 @@ VXDS = [('mmdevldr.vxd', 0x01800000, 0x07C00000), ('mssndsys.vxd', 0x01810000, 0
         # Accessibility (ENABLE.INF, part of a Typical install, combined into VMM32): StickyKeys, FilterKeys and the
         # rest, whose state USER reads through its protected-mode API (WIN95_02.CAB)
         ('enable.vxd', 0x01850000, 0x069C0000),
+        # the print spooler's VxD (dynamic: SPOOL32 opens \\.\spooler), which takes printing from MS-DOS programs (WIN95_09.CAB)
+        ('spooler.vxd', 0x014C0000, 0x06BD0000),
         # the network (WIN95_02.CAB, PERF from WIN95_06.CAB): the file system manager and its cache, network support,
         # the Microsoft Networks redirector, NetBIOS, the NetBEUI protocol and the NDIS 3.1 wrapper
         ('ifsmgr.vxd', 0x01200000, 0x05800000), ('vcache.vxd', 0x01230000, 0x058C0000), ('vnetsup.vxd', 0x01240000, 0x058E0000),
@@ -120,9 +131,9 @@ with tempfile.TemporaryDirectory() as tmp:
         p = os.path.join(src, f); base = os.path.join(tmp, f)
         subprocess.run([sys.executable, os.path.join(here, 'recomp.py'), p, base, '--base', hex(b), '--lookup', hex(lk)], check=True)
         bundle['net'][f.upper()] = {'file': b64(p), 'wasm': b64(base + '.wasm'), 'meta': json.load(open(base + '.json'))}
-    for f, lk in PROGRAMS:
+    for f, b, lk in PROGRAMS:
         p = os.path.join(src, f); base = os.path.join(tmp, f)
-        subprocess.run([sys.executable, os.path.join(here, 'recomp.py'), p, base, '--lookup', hex(lk)], check=True)
+        subprocess.run([sys.executable, os.path.join(here, 'recomp.py'), p, base, '--base', hex(b), '--lookup', hex(lk)], check=True)
         bundle['programs'][f.upper()] = {'file': b64(p), 'wasm': b64(base + '.wasm'), 'meta': json.load(open(base + '.json'))}
 # the Setup INF files whose registry sections the shell applies (SHELL.INF: the shell's classes and folders)
 INFS = ['shell.inf', 'motown.inf', 'mmopt.inf', 'wave.inf', 'netnovel.inf', 'nettrans.inf', 'netcli.inf', 'net.inf', 'netdef.inf']

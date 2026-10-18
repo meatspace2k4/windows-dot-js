@@ -2865,7 +2865,8 @@ function installPrograms() {
     if (cur && !(cur.length === stub.length && cur.every((b, i) => b === stub[i]))) return;
     fs.writeFile(path, b64bytes(b64));
   };
-  for (const [name, d] of Object.entries(S.programs || {})) put(join(WINDIR, name), d.file);
+  const IN_SYSTEM = new Set(['SPOOL32.EXE']);   // the programs Setup puts in SYSTEM rather than the Windows folder
+  for (const [name, d] of Object.entries(S.programs || {})) put(join(WINDIR, IN_SYSTEM.has(name) ? 'SYSTEM' : '', name), d.file);
   // the system modules the programs run on, in SYSTEM as Setup puts them (SHELL32 reads its icons from its file)
   for (const [name, d] of Object.entries({ ...S.dlls, ...S.net, ...S.drivers })) put(join(WINDIR, 'SYSTEM', name), d.file);
   for (const d of Object.values(S.ne || {})) if (d.fileName) put(join(WINDIR, 'SYSTEM', d.fileName), d.file);
@@ -2913,7 +2914,7 @@ class NativeApp {
     const host = {
       fs, width: this.sw, height: this.sh, path: this.path, now: () => performance.now(), net: this.net, vmPages: 2048,   // 128 MiB of address space to reserve
       cursor: () => ({ x: mouse.x, y: mouse.y }), surface: (h, w, hh) => mkc(w, hh).getContext('2d'), setCursor: () => {},
-      exited: (code, why) => this.exited(code, why), boot: p => p.bootUser16(),
+      exited: (code, why) => this.exited(code, why), boot: p => p.bootUser16(), exec: (cmd, show) => this.exec(cmd, show),
     };
     const exe = /\s/.test(this.path) ? `"${this.path}"` : this.path;
     try { this.proc = new W95Win32.Process(bytes, module, { ...prog.d.meta, name: prog.name.replace(/\.EXE$/, '') }, host, this.arg ? `${exe} ${this.arg}` : exe, dlls); }
@@ -2946,6 +2947,28 @@ class NativeApp {
     this.sync();
     this.clipHandoff();
     this.timer = setTimeout(() => this.step(), this.keyq && this.keyq.length ? 0 : 16);
+  }
+  // WinExec and CreateProcess from the program: a program the system runs starts in this one's address space, on its
+  // window system (P.spawn). An instance handle (above 31) on success, else WinExec's error: 2 not found, 11 not a
+  // program this system runs, 8 its image's place already taken here (a second instance of the same program)
+  exec(cmd, show) {
+    const S = window.W95SYSTEM || {}, p = this.proc;
+    const m = /^\s*(?:"([^"]+)"|(\S+))\s*(.*)$/.exec(cmd || ''); if (!m) return 2;
+    let path = m[1] || m[2]; const arg = m[3];
+    if (!extname(path)) path += '.exe';
+    const file = (/^[a-z]:|^\\/i.test(path) ? [path] : [join(WINDIR, path), join(WINDIR, 'SYSTEM', path), join(fs.cwd, path)]).find(f => fs.exists(f));
+    if (!file) return 2;
+    const name = basename(file).toUpperCase(), d = (S.programs || {})[name]; if (!d) return 11;
+    const live = (p.pc0 && p.pc0.exe && p.pc0.exe.base === d.meta.base) || [...(p.procs || new Map()).values()].some(x => x.exe.base === d.meta.base);
+    if (live) return 8;
+    p.modules = p.modules.filter(x => x.base !== d.meta.base);   // an ended process's image: loaded afresh
+    let pc;
+    try {
+      const mod = d.modSync || (d.modSync = new WebAssembly.Module(b64bytes(d.wasm)));
+      pc = p.spawn(fs.readFile(file), mod, { ...d.meta, name: name.replace(/\.EXE$/, '') }, fs.realpath(file), arg ? `${fs.realpath(file)} ${arg}` : fs.realpath(file));
+    } catch (e) { console.error(e); return 8; }
+    this.kick();
+    return pc;
   }
   // one clipboard across programs: each process's USER keeps its own, so the text moves through the shell's when the
   // keyboard moves: the program losing it leaves its CF_TEXT as the shell's text, the one gaining it is given that
