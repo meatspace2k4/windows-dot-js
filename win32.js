@@ -181,7 +181,16 @@ class Process {
     if (done.has(m) || !m.meta || !m.meta.entry || m.clock) return;
     done.add(m);
     this.call(m.meta.entry, [m.base, 1, 0]);
-    const ole = m.name === 'SHELL32' && m.exports.get('#151'); if (ole) this.call(ole, [2]);
+    const ole = m.name === 'SHELL32' && m.exports.get('#151');
+    if (ole) { this.shellNotifyList(m); this.call(ole, [2]); }
+  }
+  /** SHELL32's change notification clients (a DSA of 0x18-byte entries in its shared data), which SHLoadOLE walks to
+   *  tell each that OLE is loaded. On Windows 95 Explorer's registration made it before any process loads OLE; here
+   *  each process has its own copy of SHELL32's data, so a process gets the empty list Explorer's own would hold */
+  shellNotifyList(m) {
+    const at = m.base + 0x18045, slot = this.u8[at] === 0xa1 && this.r32(at + 1);   // mov eax, [list]
+    const dsa = this.byName.get('COMCTL32') && this.byName.get('COMCTL32').exports.get('#320');      // DSA_Create
+    if (slot && dsa && !this.r32(slot)) this.w32(slot, this.call(dsa, [0x18, 8]));
   }
 
   // ---- execution

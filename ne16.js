@@ -714,6 +714,15 @@ P.user16 = function (ord, args = []) {
   if (!ep) throw new GuestError(`USER.${ord} is not loaded`);
   return this.call16(ep >>> 16, ep & 0xffff, args);
 };
+/** fn run as the task of the started process that owns a window (as its main thread), the way that process's own
+ *  calls for the window run: USER's SetActiveWindow activates only a window of the calling task */
+P.asWindowTask = function (hwnd, fn) {
+  const task = this.thread16 ? 0 : this.user16(224, [['w', hwnd]]).ax;                                 // GetWindowTask
+  const pc = task && this.procs && [...this.procs.values()].find(c => c.tdb === task && c.main && c.main.state !== 'done');
+  if (!pc) return fn();
+  this.thread16 = pc.main;
+  try { return fn(); } finally { this.thread16 = null; }
+};
 /** the native USER's visible top-level windows, topmost first, with their screen rectangles, owners, classes and
  *  titles; and the active window and the window holding the mouse capture */
 P.nativeWindows = function () {
@@ -728,7 +737,10 @@ P.nativeWindows = function () {
     const cl = u(58, [['w', h], ['l', buf + 0x180], ['w', 64]]), cls = cl ? this.readA(a + 0x180, cl) : '';          // GetClassName
     list.push({ hwnd: h, x, y, w, h: hh, title, cls, owner: u(262, [['w', h], ['w', 4]]), iconic: !!u(31, [['w', h]]) });   // GW_OWNER, IsIconic
   }
-  return { list, active: u(60), capture: u(236) };                                                                    // GetActiveWindow, GetCapture
+  // the active window: the foreground window when it is one of these (another started process's window is not the
+  // active window of the task calling here), else the calling task's
+  const fg = u(608);                                                                                                  // GetForegroundWindow
+  return { list, active: list.some(w => w.hwnd === fg) ? fg : u(60), capture: u(236) };                              // GetActiveWindow, GetCapture
 };
 /** the visible descendants of a native window, front to back as USER links them: rectangle, class, text, control id,
  *  style and enabled state. Edits and combo boxes are asked for their text (WM_GETTEXT); buttons for their check
@@ -2382,7 +2394,7 @@ P.threads16 = function (nested = false) {
   if (!this.threadsById || (!nested && (this.thread16 || this.depth)) || this.inThreads) return;
   const caller = this.thread16;
   this.inThreads = true;
-  try { for (const t of this.threadsById.values()) {
+  try { for (const t of [...this.threadsById.values()]) {   // the threads there are as the pass starts: one created in it starts in the next
     if (t === caller || t.blocked || (t.id === MAIN_TID && !caller) || (t.id === MAIN_TID && caller) || !t.state || t.state === 'done' || t.state === 'suspended' || (t.state === 'waiting' && t.wait && !t.wait.set)) continue;   // a thread that yielded with no event to wait for (in WaitEvent) runs again
     const main = this.saveCtx16();
     this.thread16 = t; t.sliceStart = this.now();

@@ -3138,7 +3138,14 @@ class NativeApp {
     }
   }
   focus(w) {
-    try { if (w.min) this.proc.user16(42, [['w', w.hwnd], ['w', 9]]); else this.proc.user16(59, [['w', w.hwnd]]); } catch (e) { console.error(e); }   // ShowWindow SW_RESTORE, SetActiveWindow
+    // as the task that owns it (a window of a process this program started is that process's): restored, or made
+    // active and brought to the top
+    try {
+      this.proc.asWindowTask(w.hwnd, () => {
+        if (w.min) this.proc.user16(42, [['w', w.hwnd], ['w', 9]]);                                     // ShowWindow SW_RESTORE
+        else { this.proc.user16(59, [['w', w.hwnd]]); this.proc.user16(45, [['w', w.hwnd]]); }          // SetActiveWindow, BringWindowToTop
+      });
+    } catch (e) { console.error(e); }
     this.kick();
   }
   minimize(w) { try { this.proc.user16(42, [['w', w.hwnd], ['w', 6]]); } catch (e) { console.error(e); } this.kick(); }   // SW_MINIMIZE
