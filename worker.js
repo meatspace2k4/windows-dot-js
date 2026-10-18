@@ -222,7 +222,10 @@ class Machine {
   traceOn(re) {
     const p = this.proc, want = new RegExp(re, 'i'), log = this.traceLog = [], t0 = performance.now();
     const name = () => { const t = p.thread16; if (!t) return 'host'; const m = t.task && t.task.hInst && p.neByHandle(t.task.hInst); return (m && m.name) || (t.pc && t.pc.path) || String(t.id); };
-    const arg = key => { if (!/KERNEL\.#(166|45)$/.test(key)) return ''; try { const f = p.cpu.ssb.value + (p.cpu.esp.value & 0xffff), s = p.r32(f + (key.endsWith('166') ? 6 : 8)); return p.readA(p.lin(s)) || ''; } catch (_) { return ''; } };
+    // (the command line of WinExec and LoadModule; the key of RegOpenKey, RegCreateKey, RegQueryValue, RegQueryValueEx)
+    const STR = { 166: 6, 45: 8, 217: 8, 218: 8, 219: 12, 220: 20 };
+    const arg = key => { const m = /KERNEL\.#(\d+)$/.exec(key), o = m && STR[m[1]]; if (!o) return ''; try { const f = p.cpu.ssb.value + (p.cpu.esp.value & 0xffff), s = p.r32(f + o); return s >>> 16 ? p.readA(p.lin(s)) || '' : ''; } catch (_) { return ''; } };
+    const svm = p.setVideoMode; p.setVideoMode = function (mode, clear, hi) { log.push([Math.round(performance.now() - t0), name(), 'int10 mode', (mode & 0xff).toString(16) + (hi ? ' hicolor ' + hi : '')]); return svm.call(this, mode, clear, hi); };
     self.W95TRACE16 = t => { const th = name(); if (log.length < 20000 && want.test(th)) log.push([Math.round(performance.now() - t0), th, t.key, arg(t.key)]); };
     self.W95TRACE = t => { const th = name(); if (log.length < 20000 && want.test(th)) log.push([Math.round(performance.now() - t0), th, t.dll + '!' + t.nm, '']); };
     self.W95APPYTRACE = e => { if (log.length < 20000) log.push([Math.round(performance.now() - t0), name(), 'appy', (e.fn >>> 0).toString(16)]); };
