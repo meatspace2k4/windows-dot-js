@@ -939,8 +939,8 @@ const netLists = new Map();   // a container's key -> { items } once enumerated
 const NET_ICON = { 1: 'workgroup', 2: 'netserver', 3: 'netshare', 7: 'globe' };   // by RESOURCEDISPLAYTYPE
 /** the resources MPR has under `res` (null: the scope's top) */
 async function netEnum(scope, res) {
-  if (netApp && netApp.remote) return (netApp.alive && await netApp.cmd('netEnum', [scope, res])) || [];
   if (!await netBoot()) return [];
+  if (netApp.remote) return (netApp.alive && await netApp.cmd('netEnum', [scope, res])) || [];
   const p = netApp.proc, s = x => (x ? netStr(x) : 0), nr = res ? p.alloc(32) : 0, ph = p.alloc(4), out = [];
   if (res) { p.w32(nr, res.scope); p.w32(nr + 4, res.type); p.w32(nr + 8, res.disp); p.w32(nr + 12, res.usage); p.w32(nr + 16, 0); p.w32(nr + 20, s(res.remote)); p.w32(nr + 24, s(res.comment)); p.w32(nr + 28, s(res.provider)); }
   if (await netCall('WNetOpenEnumA', [scope, 0, 0, nr, ph]) !== 0) return out;
