@@ -63,5 +63,29 @@ const ringTake = ring => {
 };
 const newRing = () => new Int32Array(new SharedArrayBuffer(16 + 16 * RING));
 
-self.W95Bridge = { RPC_BYTES, answer, take, ringPut, ringTake, newRing, KEY: 1, MOUSE: 2 };
+// ---------------------------------------------------------------- frames for a machine's network card: a byte ring
+// [head, tail] then the bytes, each frame its length (2 bytes) and itself; the card takes them as they arrive, while
+// ring 0 waits for them too
+const FRAMES = 1 << 20;
+const newFrames = () => new SharedArrayBuffer(8 + FRAMES);
+function framePut(sab, frame) {
+  const ctl = new Int32Array(sab, 0, 2), d = new Uint8Array(sab, 8), n = frame.length + 2;
+  const h = Atomics.load(ctl, 0), t = Atomics.load(ctl, 1), free = (t - h - 1 + FRAMES) % FRAMES;
+  if (n > free) return false;   // full: dropped, as a card's buffer overflows
+  const put = (k, v) => { d[(h + k) % FRAMES] = v; };
+  put(0, frame.length & 0xff); put(1, frame.length >> 8);
+  for (let i = 0; i < frame.length; i++) put(2 + i, frame[i]);
+  Atomics.store(ctl, 0, (h + n) % FRAMES); Atomics.notify(ctl, 0); return true;
+}
+function frameTake(sab) {
+  const ctl = new Int32Array(sab, 0, 2), d = new Uint8Array(sab, 8);
+  const t = Atomics.load(ctl, 1); if (t === Atomics.load(ctl, 0)) return null;
+  const n = d[t] | (d[(t + 1) % FRAMES] << 8), f = new Uint8Array(n);
+  for (let i = 0; i < n; i++) f[i] = d[(t + 2 + i) % FRAMES];
+  Atomics.store(ctl, 1, (t + 2 + n) % FRAMES); return f;
+}
+/** wait (in a worker) up to `ms` for a frame to arrive */
+function frameWait(sab, ms) { const ctl = new Int32Array(sab, 0, 2), h = Atomics.load(ctl, 0); if (h !== Atomics.load(ctl, 1)) return true; return Atomics.wait(ctl, 0, h, ms) !== 'timed-out'; }
+
+self.W95Bridge = { RPC_BYTES, answer, take, ringPut, ringTake, newRing, newFrames, framePut, frameTake, frameWait, KEY: 1, MOUSE: 2 };
 })();

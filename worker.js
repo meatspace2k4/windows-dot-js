@@ -5,7 +5,10 @@
 // page synchronously (bridge.js), and takes the page's input from its ring between instructions, as interrupts. Nothing
 // the guest does here, a loop that never ends included, holds the page.
 self.window = self;
-importScripts('bridge.js', 'fs.js', 'win32.js', 'gl.js', 'shell32.js', 'system.js', 'ne16.js', 'vmm.js', 'sound.js', 'lan.js', 'dyn.js');
+// the Ethernet segment as this worker has it: its own stations (the card, in the network's machine), and the rest of the
+// segment on the page (the other computer, lanhost.js; other machines' cards), frames passing both ways
+self.W95LAN = { stations: new Set(), frames: 0 };
+importScripts('bridge.js', 'fs.js', 'win32.js', 'gl.js', 'shell32.js', 'system.js', 'ne16.js', 'vmm.js', 'sound.js', 'lan.js', 'netfs.js', 'dyn.js');
 const B = self.W95Bridge, W = self.W95Win32, { FSError, join, basename, extname } = self.W95FS;
 const b64bytes = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
 const post = (m, tr) => self.postMessage(m, tr || []);
@@ -23,16 +26,69 @@ function rpc(target, method, args = []) {
   if (r instanceof Error) throw r;
   return r;
 }
-// the file system, the page's: each call made there (its errors thrown here as they were there)
+// the network's drives and shares, as this machine reaches them: through the network's machine (its redirector), in a
+// worker of its own, called synchronously over a channel the page set up between the two (netLink); a file system of
+// their own here (fs.js's remote volumes), whose descriptors are numbered apart from the page's
+let netLink = null;
+function netCall(key, op, args) {
+  if (!netLink) throw new FSError(53, key);   // no network: the network path was not found
+  const ctl = new Int32Array(netLink.sab, 0, 4);
+  Atomics.store(ctl, 0, 1);
+  netLink.port.postMessage({ key, op, args });
+  while (Atomics.load(ctl, 0) === 1) Atomics.wait(ctl, 0, 1);
+  const r = B.take(netLink.sab, mkErr); Atomics.store(ctl, 0, 0);
+  if (r instanceof Error) throw r;
+  return r;
+}
+const netBackend = key => new Proxy({}, { get: (_, op) => (...args) => netCall(key, op, args) });
+const rfs = new self.W95FS.FileSystem();
+rfs.nextFd = 0x10000000;
+rfs.uncBackend = unc => { if (!netLink) return null; const b = netBackend(unc); try { b.space(); return b; } catch (_) { return null; } };
+const REMOTE_FD = 0x10000000;
+const remotePath = p => { try { return typeof p === 'string' && !!rfs.remoteAt(p); } catch (_) { return /^[\\/]{2}/.test(p); } };
+// the file system, the page's: each call made there (its errors thrown here as they were there); the network's paths
+// and descriptors here
+const pathOps = new Set(['exists', 'stat', 'readdir', 'readFile', 'writeFile', 'open', 'unlink', 'mkdir', 'rmdir', 'realpath', 'setAttrs', 'statvfs', 'chdir', 'resolve', 'shortPath', 'setLabel', 'truncate']);
+const fdOps = new Set(['read', 'write', 'close', 'seek', 'fstat', 'ftruncate']);
 const fs = new Proxy({}, {
   get(_, k) {
     if (k === 'cwd') return rpc('fs', 'getCwd');
-    if (k === 'vols') return new Map(rpc('fs', 'vols').map(v => [v.letter, v]));
-    return (...args) => rpc('fs', k, args);
+    if (k === 'vols') { const m = new Map(rpc('fs', 'vols').map(v => [v.letter, v])); for (const v of rfs.vols.values()) m.set(v.letter, { letter: v.letter, kind: 'remote', label: v.label, remote: true, unc: v.unc }); return m; }
+    return (...args) => {
+      if (pathOps.has(k) && remotePath(args[0])) return rfs[k](...args);
+      if (fdOps.has(k) && args[0] >= REMOTE_FD) return rfs[k](...args);
+      if ((k === 'rename' || k === 'copy') && (remotePath(args[0]) || remotePath(args[1]))) {
+        if (remotePath(args[0]) && remotePath(args[1])) return rfs[k](...args);
+        const data = remotePath(args[0]) ? rfs.readFile(args[0]) : rpc('fs', 'readFile', [args[0]]);
+        if (remotePath(args[1])) rfs.writeFile(args[1], data); else rpc('fs', 'writeFile', [args[1], data]);
+        if (k === 'rename') { if (remotePath(args[0])) rfs.unlink(args[0]); else rpc('fs', 'unlink', [args[0]]); }
+        return;
+      }
+      return rpc('fs', k, args);
+    };
   },
   set(_, k, v) { if (k === 'cwd') rpc('fs', 'setCwd', [v]); return true; },
 });
 self.W95SHELL = new Proxy({}, { get(_, k) { return k === 'fs' ? fs : (...args) => { post({ t: 'shell', fn: k, args: JSON.parse(JSON.stringify(args.filter(a => typeof a !== 'object' || a === null || a.constructor === Object))) }); return true; }; } });
+
+// ---------------------------------------------------------------- the segment: frames to and from the page's part of it
+const LAN = self.W95LAN, lanSend = LAN.send, pageSide = { rx() {} };
+LAN.send = (from, frame) => { lanSend(from, frame); if (from !== pageSide) post({ t: 'lan', frame: frame.slice() }); };
+// the page's frames arrive in a ring the card takes them from as it is polled, ring 0 waiting for them included
+let lanRing = null;
+const lanDrain = () => { let f, any = false; while (lanRing && (f = B.frameTake(lanRing))) { lanSend(pageSide, f); any = true; } return any; };
+const lanPoll0 = W.Process.prototype.lanPoll;
+if (lanPoll0) W.Process.prototype.lanPoll = function () { lanDrain(); return lanPoll0.call(this); };
+// ring 0 waiting with nothing to run: real time passes until a frame or the next time-out comes (the page answers the
+// network in its own time, which the clock must not run past)
+W.Process.prototype.r0Idle = function () {
+  const due = this.vxdTimeOuts && this.vxdTimeOuts.size ? Math.min(...[...this.vxdTimeOuts.values()].map(t => t.due)) - this.sysTime() : null;
+  if (due !== null && due <= 0) return true;
+  const ms = due === null ? 200 : Math.min(due, 50);
+  const got = lanRing ? B.frameWait(lanRing, ms) : (Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms), false);
+  if (machine) machine.poll();
+  return got || due !== null;
+};
 
 // ---------------------------------------------------------------- the registry: this machine's copy of the page's
 const regStore = { held: null, load() { return this.held; }, op(o) { post({ t: 'regop', o }); } };
@@ -264,6 +320,45 @@ class Machine {
       p.user16(138);
     } catch (e) { console.error(e); }
   }
+  /** MPR's export `name` called on a new thread of this process, with dword (or string) arguments; its result */
+  netCall(name, args = []) {
+    const p = this.proc, mpr = p.byName.get('MPR'), fn = mpr && mpr.exports.get(name); if (!fn) return Promise.resolve(null);
+    const le32 = v => [v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, (v >>> 24) & 0xff];
+    const a = p.alloc(96), res = a + 88, ptr = a + 92, code = [];
+    const vals = args.map(v => (typeof v === 'string' ? (() => { const s = p.alloc(v.length + 1); p.writeA(s, v); return s; })() : v));
+    for (let i = vals.length - 1; i >= 0; i--) code.push(0x68, ...le32(vals[i]));   // push imm32
+    code.push(0xff, 0x15, ...le32(ptr), 0xa3, ...le32(res), 0xc2, 0x04, 0x00);       // call [ptr]; mov [res], eax; ret 4
+    p.w32(ptr, fn); p.u8.set(code, a);
+    return new Promise(ok => { const t = p.newThread(a, 0, 0x10000, true, false); t.onDone = () => ok(p.r32(res)); this.kick(); });
+  }
+  /** WNetOpenEnum / WNetEnumResource: the resources at a scope (under one, `res`) */
+  async netEnum(scope, res) {
+    const p = this.proc, s = x => (x ? (() => { const a = p.alloc(x.length + 1); p.writeA(a, x); return a; })() : 0), nr = res ? p.alloc(32) : 0, ph = p.alloc(4), out = [];
+    if (res) { p.w32(nr, res.scope); p.w32(nr + 4, res.type); p.w32(nr + 8, res.disp); p.w32(nr + 12, res.usage); p.w32(nr + 16, 0); p.w32(nr + 20, s(res.remote)); p.w32(nr + 24, s(res.comment)); p.w32(nr + 28, s(res.provider)); }
+    if (await this.netCall('WNetOpenEnumA', [scope, 0, 0, nr, ph]) !== 0) return out;
+    const h = p.r32(ph), cnt = p.alloc(4), sz = p.alloc(4), buf = p.alloc(0x4000);
+    for (;;) {
+      p.w32(cnt, 0xffffffff); p.w32(sz, 0x4000);
+      if (await this.netCall('WNetEnumResourceA', [h, cnt, buf, sz]) !== 0) break;
+      for (let i = 0, n = p.r32(cnt); i < n; i++) {
+        const a = buf + 32 * i, str = o => p.readA(p.r32(a + o)) || '';
+        out.push({ scope: 2, type: p.r32(a + 4), disp: p.r32(a + 8), usage: p.r32(a + 12), remote: str(20), comment: str(24), provider: str(28) });
+      }
+    }
+    await this.netCall('WNetCloseEnum', [h]);
+    return out;
+  }
+  /** each drive letter MPR has connected, with its share (WNetGetConnectionA) */
+  netConnections() {
+    const p = this.proc, fn = p.byName.get('MPR') && p.byName.get('MPR').exports.get('WNetGetConnectionA'); if (!fn) return [];
+    const loc = p.alloc(8), buf = p.alloc(264), pn = p.alloc(4), out = [];
+    for (let c = 65; c <= 90; c++) {
+      const L = String.fromCharCode(c); p.writeA(loc, L + ':'); p.w32(pn, 260);
+      try { if (p.call(fn, [loc, buf, pn]) === 0) out.push({ letter: L, unc: p.readA(buf) }); } catch (e) { console.error(e); }
+    }
+    p.free(loc); p.free(buf); p.free(pn);
+    return out;
+  }
   exited(code, why) {
     if (!this.alive) return;
     this.alive = false; clearTimeout(this.timer);
@@ -292,6 +387,12 @@ class Machine {
         const h = p.taskWindows(task.tdb)[0]; if (h) p.shellPostMessage(h, 0x501, 0, 0); return true;
       }
       case 'trayPost': p.post(...args); return;
+      // the network's machine: MPR's exports called on a thread of its own (its dialogs run there), its enumerations,
+      // the drives it has connected, and a drive's or share's files (netfs.js) for the page and for other machines
+      case 'netCall': return this.netCall(args[0], args[1]);
+      case 'netEnum': return this.netEnum(args[0], args[1]);
+      case 'netConnections': return this.netConnections();
+      case 'netfs': { const b = self.W95NetFS.backend({ alive: true, proc: p }, args[0]); return b[args[1]](...(args[2] || [])); }
       case 'kick': return;
       case 'exit': this.exited(args[0] || 0); return;
     }
@@ -303,13 +404,27 @@ let machine = null;
 self.onmessage = e => {
   const m = e.data;
   if (m.t === 'start') {
-    rpcSab = m.rpc; regStore.held = m.registry; W.regAttach(regStore);
+    rpcSab = m.rpc; lanRing = m.o.lan || null; regStore.held = m.registry; W.regAttach(regStore);
     machine = new Machine(m.o); machine.start().catch(err => { console.error(err); post({ t: 'exited', code: -1, why: String(err && err.message || err) }); });
   } else if (m.t === 'cmd') {
+    const reply = (value, error) => { if (m.id) post({ t: 'reply', id: m.id, value: value === undefined ? null : value, error }); };
     let value, error = null;
     try { value = machine && machine.alive ? machine.cmd(m.name, m.args || []) : undefined; } catch (err) { console.error(err); error = String(err.message || err); }
-    if (m.id) post({ t: 'reply', id: m.id, value: value === undefined ? null : value, error });
+    if (value && typeof value.then === 'function') value.then(v => reply(v, null), err => reply(null, String(err && err.message || err)));
+    else reply(value, error);
     if (machine) machine.kick();
+  } else if (m.t === 'lan') lanSend(pageSide, m.frame);   // a frame from the rest of the segment
+  else if (m.t === 'netport') {   // (the network's machine) another machine's channel for its network files
+    const sab = m.sab;
+    m.port.onmessage = e => {
+      let v; const { key, op, args } = e.data;
+      try { v = self.W95NetFS.backend({ alive: !!(machine && machine.alive), proc: machine && machine.proc }, key)[op](...args); } catch (err) { v = err; }
+      B.answer(sab, v === undefined ? null : v);
+    };
+  } else if (m.t === 'netlink') netLink = m.port ? { port: m.port, sab: m.sab } : null;   // the network's machine, or none
+  else if (m.t === 'netmounts') {   // the drives the network has connected, as this machine's
+    for (const v of [...rfs.vols.values()]) if (!m.list.some(x => x.letter === v.letter && x.unc.toUpperCase() === v.unc.toUpperCase())) rfs.unmount(v.letter);
+    for (const x of m.list) if (!rfs.vols.has(x.letter)) rfs.mount(x.letter, { remote: netBackend(x.letter), unc: x.unc, label: x.unc.split('\\').pop() || '' });
   } else if (m.t === 'regop') W.regApply(m.o, true);
   else if (m.t === 'kick') { if (machine) machine.kick(); }
 };

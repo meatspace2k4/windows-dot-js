@@ -932,6 +932,7 @@ const netLists = new Map();   // a container's key -> { items } once enumerated
 const NET_ICON = { 1: 'workgroup', 2: 'netserver', 3: 'netshare', 7: 'globe' };   // by RESOURCEDISPLAYTYPE
 /** the resources MPR has under `res` (null: the scope's top) */
 async function netEnum(scope, res) {
+  if (netApp && netApp.remote) return (netApp.alive && await netApp.cmd('netEnum', [scope, res])) || [];
   if (!await netBoot()) return [];
   const p = netApp.proc, s = x => (x ? netStr(x) : 0), nr = res ? p.alloc(32) : 0, ph = p.alloc(4), out = [];
   if (res) { p.w32(nr, res.scope); p.w32(nr + 4, res.type); p.w32(nr + 8, res.disp); p.w32(nr + 12, res.usage); p.w32(nr + 16, 0); p.w32(nr + 20, s(res.remote)); p.w32(nr + 24, s(res.comment)); p.w32(nr + 28, s(res.provider)); }
@@ -3318,6 +3319,16 @@ class NativeApp {
 // (bridge.js) and asks it for what is done to its windows; it calls the page's file system synchronously (the page
 // answers here). The page draws USER's windows from what the machine reports after each of its steps.
 const machineWorkers = new Set();
+/** a channel from machine `a` to the network's machine, for the network's files it opens (worker.js netCall): the
+ *  network's machine answers on `a`'s block, which `a` waits on */
+function netLink(a) {
+  const n = netApp && netApp.alive && netApp.remote ? netApp : null; if (!n || a === n || a.net) return;
+  const ch = new MessageChannel(), sab = new SharedArrayBuffer(16 + W95Bridge.RPC_BYTES);
+  n.worker.postMessage({ t: 'netport', port: ch.port2, sab }, [ch.port2]);
+  a.worker.postMessage({ t: 'netlink', port: ch.port1, sab }, [ch.port1]);
+  a.worker.postMessage({ t: 'netmounts', list: netMounts });
+}
+let netMounts = [];   // the drives the network has connected: { letter, unc }
 W95Win32.regWatch(o => { for (const a of machineWorkers) a.worker.postMessage({ t: 'regop', o }); });
 class RemoteApp extends NativeApp {
   constructor(path, arg, o = {}) { super(path, arg, o); this.remote = true; this.calls = new Map(); this.nextCall = 1; this.stats = { slices: 0, guestMs: 0 }; this.held = null; }
@@ -3326,11 +3337,12 @@ class RemoteApp extends NativeApp {
   start(bytes, prog) {
     [this.sw, this.sh] = [...NATIVE_MODES].reverse().find(([w, h]) => w >= W && h >= H) || NATIVE_MODES[0];
     this.ring = W95Bridge.newRing(); this.rpcSab = new SharedArrayBuffer(16 + W95Bridge.RPC_BYTES);
+    if (this.net) this.lanRing = W95Bridge.newFrames();   // (the frames for its network card)
     this.worker = new Worker('worker.js'); machineWorkers.add(this);
     this.worker.onmessage = e => this.message(e.data);
     this.worker.onerror = e => { console.error('[worker]', e.message); this.exited(-1, e.message); };
     this.worker.postMessage({ t: 'start', rpc: this.rpcSab, registry: W95Win32.regDump(), o: {
-      path: this.path, arg: this.arg, net: this.net, system: this.system, sw: this.sw, sh: this.sh, shellW: W, workH: workH(), ring: this.ring,
+      path: this.path, arg: this.arg, net: this.net, system: this.system, sw: this.sw, sh: this.sh, shellW: W, workH: workH(), ring: this.ring, lan: this.lanRing || null,
       bytes: bytes || null, prog: prog ? { name: prog.name, meta: prog.d.meta } : null } });
     return new Promise(ok => { this.started = ok; });
   }
@@ -3348,7 +3360,11 @@ class RemoteApp extends NativeApp {
         this.cv = mkc(this.sw, this.sh); this.cx = this.cv.getContext('2d'); this.img = this.cx.createImageData(this.sw, this.sh);
         this.ov = mkc(this.sw, this.sh); this.ox = this.ov.getContext('2d'); this.oimg = this.ox.createImageData(this.sw, this.sh); this.o32 = new Uint32Array(this.oimg.data.buffer);
         this.d32 = new Uint32Array(this.img.data.buffer); this.pal = new Uint32Array(256);
-        nativeApps.add(this); if (this.started) this.started(true); return;
+        nativeApps.add(this);
+        if (this.net) { this.lanStation = { rx: frame => { if (this.alive) W95Bridge.framePut(this.lanRing, frame); } }; this.lanDetach = window.W95LAN && W95LAN.attach(this.lanStation); for (const a of machineWorkers) if (a !== this) netLink(a); }
+        else netLink(this);
+        if (this.started) this.started(true); return;
+      case 'lan': if (window.W95LAN && this.lanStation) W95LAN.send(this.lanStation, m.frame); return;
       case 'frame': this.frame(m); return;
       case 'text': this.txt = m.txt; if (msgApp === this) dirty(); return;
       case 'msgMode': msgApp = m.on ? this : msgApp === this ? null : msgApp; this.r0 = m.on; dirty(); return;
@@ -3481,6 +3497,8 @@ class RemoteApp extends NativeApp {
   exited(code, why) {
     if (!this.alive) return;
     this.alive = false; nativeApps.delete(this); machineWorkers.delete(this);
+    if (this.lanDetach) this.lanDetach();
+    if (this.net) for (const a of machineWorkers) a.worker.postMessage({ t: 'netlink', port: null });
     if (clipOwner === this) clipOwner = null;
     if (window.W95Sound) W95Sound.close(this);
     for (const w of this.wins.values()) closeWin(w, true);
@@ -3560,9 +3578,41 @@ function systemBootLater() {
 // whose files the redirector reaches (netfs.js)
 let netApp = null;
 const le32 = v => [v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, (v >>> 24) & 0xff];
+/** a network drive's (or share's) files as the shell sees them while the network's machine runs in its worker: the
+ *  page cannot wait on the machine, so what the shell lists comes from the folders the machine has listed for it,
+ *  asked for as the shell first looks and shown when they arrive (fs.js's version: the views refresh). A change the
+ *  shell makes goes to the machine and shows when it is done. The files' contents are the programs' to read (each
+ *  machine reaches the network's machine itself); the shell's own reads of them are refused */
+function netCache(app, key) {
+  const lists = new Map(), stats = new Map(), asked = new Map(); let space = { total: 0, free: 0 }, spaceAt = 0;
+  const call = (op, args) => app.alive ? app.cmd('netfs', [key, op, args]) : Promise.resolve(null);
+  const refresh = () => { fs.version++; dirty(); };
+  const list = rel => {
+    const t = asked.get(rel); if (t && performance.now() - t < 2000) return;
+    asked.set(rel, performance.now());
+    call('list', [rel]).then(r => {
+      if (!Array.isArray(r)) return;
+      lists.set(rel, r); for (const e of r) stats.set((rel ? rel + '\\' : '') + e.name.toUpperCase(), e); refresh();
+    });
+  };
+  const later = (op, args, then) => call(op, args).then(() => { if (then) then(); refresh(); });
+  const parent = rel => rel.split('\\').slice(0, -1).join('\\');
+  return {
+    stat: rel => { if (!rel) return { dir: true, size: 0, attrs: 0x10, ctime: 0, mtime: 0, atime: 0, name: '' }; const e = stats.get(rel.toUpperCase()); if (!e) list(parent(rel)); return e || null; },
+    list: rel => { list(rel); return lists.get(rel) || []; },
+    open: (rel) => { throw new W95FS.FSError(5, rel); },
+    read: () => new Uint8Array(0), write: () => { throw new W95FS.FSError(5, key); }, truncate: () => {}, size: () => 0, close: () => {},
+    mkdir: rel => later('mkdir', [rel], () => list(parent(rel))), rmdir: rel => later('rmdir', [rel], () => list(parent(rel))),
+    unlink: rel => later('unlink', [rel], () => { stats.delete(rel.toUpperCase()); asked.delete(parent(rel)); list(parent(rel)); }),
+    rename: (a, b) => later('rename', [a, b], () => { stats.delete(a.toUpperCase()); asked.delete(parent(a)); asked.delete(parent(b)); list(parent(a)); list(parent(b)); }),
+    setAttrs: (rel, a) => later('setAttrs', [rel, a]), setTime: (rel, ms) => later('setTime', [rel, ms]),
+    space: () => { if (performance.now() - spaceAt > 5000) { spaceAt = performance.now(); call('space', []).then(r => { if (r) { space = r; refresh(); } }); } return space; },
+  };
+}
 /** MPR's export `name` called on a thread of the network's process (its dialogs run there as the process's own),
  *  with dword arguments; resolves to what it returns */
 function netCall(name, args = []) {
+  if (netApp && netApp.remote) return netApp.alive ? netApp.cmd('netCall', [name, args]) : Promise.resolve(null);
   const p = netApp && netApp.alive ? netApp.proc : null, mpr = p && p.byName.get('MPR'), fn = mpr && mpr.exports.get(name);
   if (!fn) return Promise.resolve(null);
   const a = p.alloc(96), res = a + 88, ptr = a + 92, code = [];
@@ -3572,10 +3622,23 @@ function netCall(name, args = []) {
   return new Promise(ok => { const t = p.newThread(a, 0, 0x10000, true, false); t.onDone = () => ok(p.r32(res)); netApp.kick(); });
 }
 /** a string in the network's process's memory */
-const netStr = s => { const p = netApp.proc, a = p.alloc(s.length + 1); p.writeA(a, s); return a; };
+const netStr = s => { if (netApp.remote) return s; const p = netApp.proc, a = p.alloc(s.length + 1); p.writeA(a, s); return a; };   // (a string itself for the network's machine in its worker)
 /** fs.js's drives as MPR has them connected: one for each drive letter with a connection (WNetGetConnectionA), none for
  *  one without */
 function syncNetDrives() {
+  if (netApp && netApp.remote) {   // (from the network's machine in its worker: the shell's drives, and each machine's)
+    if (!netApp.alive) return Promise.resolve();
+    return netApp.cmd('netConnections').then(list => {
+      list = list || [];
+      for (let c = 65; c <= 90; c++) {
+        const L = String.fromCharCode(c), v = fs.vols.get(L); if (v && !v.remote) continue;
+        const x = list.find(y => y.letter === L), unc = x && x.unc;
+        if (v && (!unc || v.unc.toUpperCase() !== unc.toUpperCase())) fs.unmount(L);
+        if (unc && (!v || v.unc.toUpperCase() !== unc.toUpperCase())) fs.mount(L, { remote: netCache(netApp, L), unc, label: unc.split('\\').pop() || '' });
+      }
+      netMounts = list; for (const a of machineWorkers) if (!a.net) a.worker.postMessage({ t: 'netmounts', list });
+    });
+  }
   const p = netApp && netApp.alive ? netApp.proc : null, fn = p && p.byName.get('MPR') && p.byName.get('MPR').exports.get('WNetGetConnectionA');
   const loc = p && p.alloc(8), buf = p && p.alloc(264), pn = p && p.alloc(4);
   for (let c = 65; c <= 90; c++) {
@@ -3588,11 +3651,12 @@ function syncNetDrives() {
   if (p) p.free(loc), p.free(buf), p.free(pn);
 }
 // MPR's Map Network Drive and Disconnect Network Drive dialogs (WNetConnectionDialog, WNetDisconnectDialog), for disks
-async function mapNetDrive() { if (await netBoot()) { await netCall('WNetConnectionDialog', [0, 1]); syncNetDrives(); } }
-async function disconnectNetDrive() { if (await netBoot()) { await netCall('WNetDisconnectDialog', [0, 1]); syncNetDrives(); } }
+async function mapNetDrive() { if (await netBoot()) { await netCall('WNetConnectionDialog', [0, 1]); await syncNetDrives(); } }
+async function disconnectNetDrive() { if (await netBoot()) { await netCall('WNetDisconnectDialog', [0, 1]); await syncNetDrives(); } }
 // a UNC path's share (\\server\share), reached through the redirector as a drive's is: none if it does not answer
 fs.uncBackend = unc => {
   if (!netApp || !netApp.alive) { netBoot(); return null; }   // not yet: the network starts for the next time
+  if (netApp.remote) return netCache(netApp, unc);
   const b = W95NetFS.backend(netApp, unc); try { b.space(); return b; } catch (_) { return null; }   // its root answers
 };
 // the network as the shell first needs it (Network Neighborhood, Map Network Drive, or connections to restore as it
@@ -3606,7 +3670,7 @@ function netBoot() {
     const a = await startNetwork(); if (!a) return null;
     await netCall('WNetLogonA', [0, 0]);
     await netCall('WNetRestoreConnectionA', [0, 0]);
-    syncNetDrives(); netUp = a; return a;
+    await syncNetDrives(); netUp = a; return a;
   })().finally(() => { netBooting = null; }));
 }
 /** connections MPR remembers (HKCU\Network\Persistent): the network starts as the shell boots to make them again */
@@ -3624,8 +3688,8 @@ function startNetwork() {
     const path = join(WINDIR, 'MPREXE.EXE');
     let bytes; try { bytes = fs.readFile(path); } catch (e) { return null; }
     const prog = await nativeProgram(bytes); if (!prog) return null;
-    await netCompiled();
-    netApp = new NativeApp(path, '', { net: true }); fs.uncs.clear();
+    if (!window.SharedArrayBuffer) await netCompiled();
+    netApp = new (window.SharedArrayBuffer ? RemoteApp : NativeApp)(path, '', { net: true }); fs.uncs.clear();
     const t = performance.now(), ok = await netApp.start(bytes, prog); netApp.startMs = performance.now() - t;
     return ok ? netApp : null;
   })().finally(() => { netStarting = null; }));

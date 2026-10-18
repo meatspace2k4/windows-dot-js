@@ -1035,6 +1035,7 @@ P.r0Wait = function (done, what) {
   while (!done()) {
     if (this.trapped) throw new W.GuestError(this.trapped);
     if (this.r0Pump()) continue;
+    if (this.r0Idle && performance.now() - t0 <= 10000 && this.r0Idle()) continue;   // (in a worker: real time, the page's frames)
     if (!this.r0Skip() || performance.now() - t0 > 10000) {
       const next = this.vxdTimeOuts && this.vxdTimeOuts.size ? Math.min(...[...this.vxdTimeOuts.values()].map(t => t.due)) - this.sysTime() : null;
       // proven: nothing pending can end the wait, so the system is stuck there (the host's answer: win32.js hung)
