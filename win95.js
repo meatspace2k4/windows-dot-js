@@ -572,7 +572,7 @@ function makeDisk(mounted) {
   for (const [e, d] of Object.entries(sysFonts)) fs.writeFile(join(WINDIR, 'FONTS', e), b64(d));
   fs.writeFile('C:\\Program Files\\Accessories\\WORDPAD.EXE', exeStub());
   fs.writeFile(PROGRAMS + '\\Accessories\\Notepad.lnk', lnk(WINDIR + '\\NOTEPAD.EXE'));
-  installPrograms(); setupRegistry(); setupSound(); setupHelp(); setupNetwork(); setupPorts(); setupPrinting();
+  installPrograms(); setupFonts(); setupRegistry(); setupSound(); setupHelp(); setupNetwork(); setupPorts(); setupPrinting();
   // the CD's screen savers, byte for byte, under the long names APPLETS.INF gives them in LDID_SYS
   const LONG = { 'BEZIER.SCR': 'Curves and Colors.scr', 'SSMARQUE.SCR': 'Scrolling Marquee.scr', 'SSMYST.SCR': 'Mystify Your Mind.scr',
     'SCRNSAVE.SCR': 'Blank Screen.scr', 'SSFLYWIN.SCR': 'Flying Windows.scr', 'SSSTARS.SCR': 'Flying Through Space.scr' };
@@ -815,7 +815,7 @@ function bootDisk() {
   mountDrives();
   W95Win32.regAttach(host.registry);
   if (!fs.attach('C', host.disk)) makeDisk(true);
-  installPrograms(); setupRegistry(); setupSound(); setupHelp(); setupNetwork(); setupPorts(); setupPrinting();
+  installPrograms(); setupFonts(); setupRegistry(); setupSound(); setupHelp(); setupNetwork(); setupPorts(); setupPrinting();
   fs.chdir('C:\\');
 }
 
@@ -2842,6 +2842,12 @@ function setupPrinting() {
   if (R.regGet('hklm\\system\\currentcontrolset\\control\\print\\environments\\windows 4.0', 'Directory') === undefined) {
     infAddReg(infs['MSPRINT.INF'], 'Environment_Reg'); infUpdateInis(infs['MSPRINT.INF'], 'Environment_Ini');
   }
+}
+// the fonts Setup copies to C:\WINDOWS\FONTS, each one the disk lacks (a disk made without one, Marlett's among them,
+// draws USER's caption buttons and scroll arrows as letters)
+function setupFonts() {
+  const sysFonts = (window.W95SYSTEM || {}).fonts || {}, dir = join(WINDIR, 'FONTS');
+  for (const [e, d] of Object.entries(sysFonts)) { const f = join(dir, e); if (!fs.exists(f)) fs.writeFile(f, b64bytes(d)); }
 }
 // the printer port Setup's detection finds and installs (MSPORTS.INF *PNP0400, LptPort): its ROOT devnode at I/O 378h
 // and IRQ 7 (parallel.js) named LPT1, and its software key under the Ports class with VCOMM its device loader, LPT.VXD

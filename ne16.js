@@ -771,6 +771,21 @@ P.asWindowTask = function (hwnd, fn) {
   this.thread16 = pc.main;
   try { return fn(); } finally { this.thread16 = null; }
 };
+/** the thread whose cursor is on the screen: USER keeps a cursor show count per thread (in its data, at the thread's
+ *  record a queue names at 10h) and shows or hides the cursor (ShowCursor) only for the thread that owns it, the one
+ *  whose record its C04h holds. Null: the main thread, which JS calls run as */
+P.cursorOwnerThread = function () {
+  const u = this.ne.get('USER'); if (!u || !u.dgroup) return null;
+  const owner = this.r16(this.selBase(u.dgroup) + 0xc04); if (!owner) return null;
+  const rec = q => (q && this.selValid(q) ? this.r16(this.selBase(q) + 0x10) : 0);
+  return [...(this.threadsById || new Map()).values()].find(t => t.state && t.state !== 'done' && t.queue && rec(t.queue) === owner) || null;
+};
+/** fn run as thread t (null: as the main thread) */
+P.asThread = function (t, fn) {
+  if (!t || this.thread16 || t.state === 'done') return fn();
+  this.thread16 = t;
+  try { return fn(); } finally { this.thread16 = null; }
+};
 /** the native USER's visible top-level windows, topmost first, with their screen rectangles, owners, classes and
  *  titles; and the active window and the window holding the mouse capture */
 P.nativeWindows = function () {

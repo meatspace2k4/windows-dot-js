@@ -181,9 +181,16 @@ class Machine {
     this.keyq.push({ mouse: [0x8001 | f, ax, ay] }); this.ax = ax; this.ay = ay;
     if (!this.cursorOn) this.showCursor(true);
   }
+  // USER's cursor shown or hidden as the pointer comes onto the machine's windows or leaves them for the shell's. Its
+  // show count is a thread's (ShowCursor): the thread whose cursor is on the screen hides it, and the same thread shows
+  // it again (its count back where it was)
   showCursor(on) {
     const p = this.proc; if (on === this.cursorOn || !p || p.win16Held || this.ring0()) return;
-    this.cursorOn = on; try { p.user16(71, [['w', on ? 1 : 0]]); } catch (e) { console.error(e); }
+    this.cursorOn = on;
+    try {
+      if (!on) this.cursorThread = p.cursorOwnerThread();
+      p.asThread(this.cursorThread, () => p.user16(71, [['w', on ? 1 : 0]]));
+    } catch (e) { console.error(e); }
   }
   ring0() { return !!(this.proc && this.proc.r0Runs && this.proc.r0Runs.length); }
   feedKeys() {
