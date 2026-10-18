@@ -2728,7 +2728,7 @@ P.start16 = function (sel, off, args) {
   // a thread's stack gets a selector of its own (the per-level aliases are the main thread's, redefined as it calls);
   // a Win16 task's is in its own DGROUP, above its data and local heap, as the loader places it (SS = DS: its
   // exported functions take DS from SS)
-  const k = this.thread16 && this.thread16.task && window.W95TASKSTACK ? this.thread16.task : null;
+  const k = this.thread16 && this.thread16.task && this.thread16.task.dgStack ? this.thread16.task : null;
   const flat = u32(this.cpu.esp.value), base = k ? this.selBase(k.dgroup) : (flat - 0xfff0) & ~0xf;
   let ssel;
   if (k) ssel = k.dgroup;
@@ -2807,6 +2807,9 @@ def16('KERNEL', 45, 'sp', 'l', function (name, pb) {
   // its DGROUP: the data, then the local heap, then the stack (SP its top)
   const dg = m.segs[m.autodata - 1], data = dg ? (Math.max(dg.minalloc || 0, dg.len || 0) + 15) & ~15 : 0;
   Object.assign(t.task, { heapLo: data, heapHi: data + t.task.heap, sp: Math.min(0xfff0, (data + t.task.heap + Math.max(t.task.stack, 0x1000) + 15) & ~15) });
+  // the module's one DGROUP holds the stack of its first live task only: a second instance (MMSYSTEM starts MMTASK
+  // more than once) keeps a stack of its own, as this loader gives each module one DGROUP, not one per instance
+  t.task.dgStack = ![...this.threadsById.values()].some(x => x !== t && x.task && x.task.dgStack && x.task.dgroup === rec.dgroup && x.state !== 'done');
   t.tdb = newTdb(this);
   return u32((t.tdb << 16) | rec.hInstance);
 });
@@ -2824,7 +2827,7 @@ def16('KERNEL', 91, '', 'jmp', function () {
   const k = this.thread16 && this.thread16.task;
   if (!k) { this.ax(0); return this.retf16(0); }
   // the task's local heap and its stack's bounds in its DGROUP's header (pStackTop, pStackMin, pStackBottom)
-  if (!k.inited && window.W95TASKSTACK) {
+  if (!k.inited && k.dgStack) {
     k.inited = true; const ds = this.selBase(k.dgroup);
     if (k.heap && !this.lheaps.has(k.dgroup | 1)) this.localInit(k.dgroup, k.heapLo, k.heapHi);
     this.w16(ds + 0x0a, k.heapHi); this.w16(ds + 0x0c, k.sp); this.w16(ds + 0x0e, k.sp);
