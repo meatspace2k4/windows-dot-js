@@ -3615,14 +3615,16 @@ const le32 = v => [v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, (v >>> 24) & 0
  *  machine reaches the network's machine itself); the shell's own reads of them are refused */
 function netCache(app, key) {
   const lists = new Map(), stats = new Map(), asked = new Map(); let space = { total: 0, free: 0 }, spaceAt = 0;
-  const call = (op, args) => app.alive ? app.cmd('netfs', [key, op, args]) : Promise.resolve(null);
+  const call = (op, args) => (app.alive ? app.cmd('netfs', [key, op, args]) : Promise.resolve(null)).catch(e => { console.warn('[net]', key, op, e && e.message); return null; });   // (a machine gone, or an error there: no answer)
   const refresh = () => { fs.version++; dirty(); };
   // (by the path in capitals, as the file system's names compare)
   const list = rel => {
     const k = rel.toUpperCase(), t = asked.get(k); if (t && performance.now() - t < 2000) return;
     asked.set(k, performance.now());
     call('list', [rel]).then(r => {
-      if (!Array.isArray(r)) return;
+      if (!Array.isArray(r)) { if (!lists.has(k)) { lists.set(k, []); refresh(); } return; }   // (a folder that cannot be listed holds nothing)
+      const pre = k ? k + '\\' : '';   // (what the folder no longer holds goes)
+      for (const p of [...stats.keys()]) if (p.startsWith(pre) && !p.slice(pre.length).includes('\\')) stats.delete(p);
       lists.set(k, r); for (const e of r) stats.set(((rel ? rel + '\\' : '') + e.name).toUpperCase(), e); refresh();
     });
   };
@@ -3675,7 +3677,7 @@ function syncNetDrives() {
         if (unc && (!v || v.unc.toUpperCase() !== unc.toUpperCase())) fs.mount(L, { remote: netCache(netApp, L), unc, label: unc.split('\\').pop() || '' });
       }
       netMounts = list; for (const a of machineWorkers) if (!a.net) a.worker.postMessage({ t: 'netmounts', list });
-    });
+    }).catch(e => console.warn('[net] connections', e && e.message));   // (the network's machine gone: the drives stay as they were)
   }
   const p = netApp && netApp.alive ? netApp.proc : null, fn = p && p.byName.get('MPR') && p.byName.get('MPR').exports.get('WNetGetConnectionA');
   const loc = p && p.alloc(8), buf = p && p.alloc(264), pn = p && p.alloc(4);
