@@ -916,9 +916,15 @@ const Printers = virt('printers', 'Printers', 'printers', () => [
   { key: 'pr:add', label: 'Add Printer', icon: 'addprinter', virt: true, open: addPrinter },
   ...W95Win32.regKids(PRINTERS_KEY).map(n => {
     const val = v => W95FS.decode(((W95Win32.regGet(PRINTERS_KEY + '\\' + n, v) || {}).data) || new Uint8Array(0)).replace(/\0.*$/, '');
-    return { key: 'pr:' + n, label: val('Name') || n, icon: val('Port').startsWith('\\\\') ? 'netprinter' : 'printer', virt: true, open: () => {} };
+    return { key: 'pr:' + n, label: val('Name') || n, icon: val('Port').startsWith('\\\\') ? 'netprinter' : 'printer', virt: true, open: () => printerWindow(val('Name') || n) };
   }),
 ]);
+// a printer's window (its queue: Printer, Document, Pause Printing, Purge Print Documents), SHELL32's, in the system
+async function printerWindow(name) {
+  closeMenus();
+  const sys = await startSystem();
+  if (sys && sys.remote) await sys.cmd('printerWindow', [join(WINDIR, 'RUNDLL32.EXE'), name]);
+}
 function addPrinter() { closeMenus(); runNative(join(WINDIR, 'RUNDLL32.EXE'), 'shell32.dll,SHHelpShortcuts_RunDLL AddPrinter'); }
 const MyComputer = virt('mycomputer', 'My Computer', 'mycomputer', () => [
   ...fs.volumes().map(v => ({ key: 'drv:' + v.letter, label: driveLabel(v.letter), icon: driveIcon(v.letter), drive: v.letter, path: v.root, open: () => openPath(v.root) })),

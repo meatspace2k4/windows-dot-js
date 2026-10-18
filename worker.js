@@ -315,6 +315,27 @@ class Machine {
     } catch (e) { console.error(e); }
   }
   /** MPR's export `name` called on a new thread of this process, with dword (or string) arguments; its result */
+  /** a printer's window, as SHELL32's Printers folder opens it: its command block { 0 (open), the printer's name } in
+   *  COMCTL32's shared heap (Alloc, #71; the window frees it, #73) and RUNDLL32 SHELL32,PrintersGetCommand_RunDLL on its
+   *  address */
+  printerWindow(rundll, name) {
+    const p = this.proc; let cc = p.byName.get('COMCTL32');
+    if (!cc && (cc = p.loadDll('COMCTL32'))) { p.runPendingInits(); p.attach(cc); }   // (as Explorer has it loaded, under SHELL32)
+    const alloc = cc && cc.exports.get('#71'); if (!alloc) return Promise.resolve(false);
+    const le32 = v => [v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, (v >>> 24) & 0xff];
+    const a = p.alloc(32), res = a + 24, ptr = a + 28, size = 12 + name.length + 1;
+    p.u8.set([0x68, ...le32(size), 0xff, 0x15, ...le32(ptr), 0xa3, ...le32(res), 0xc2, 0x04, 0x00], a);   // push size; call [ptr]; mov [res], eax; ret 4
+    p.w32(ptr, alloc);
+    return new Promise(ok => {
+      const t = p.newThread(a, 0, 0x10000, true, false);
+      t.onDone = () => {
+        const blk = p.r32(res); if (!blk) return ok(false);
+        p.w32(blk, 0); p.w32(blk + 4, blk + 12); p.w32(blk + 8, 0); p.writeA(blk + 12, name);
+        setTimeout(() => ok(typeof this.spawnProgram(rundll, `SHELL32,PrintersGetCommand_RunDLL ${blk >>> 0}`) === 'object'), 0);   // (from the top level, as 'spawn' starts a program)
+      };
+      this.kick();
+    });
+  }
   netCall(name, args = []) {
     const p = this.proc, mpr = p.byName.get('MPR'), fn = mpr && mpr.exports.get(name); if (!fn) return Promise.resolve(null);
     const le32 = v => [v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, (v >>> 24) & 0xff];
@@ -384,6 +405,7 @@ class Machine {
       case 'trayPost': p.post(...args); return;
       // the network's machine: MPR's exports called on a thread of its own (its dialogs run there), its enumerations,
       // the drives it has connected, and a drive's or share's files (netfs.js) for the page and for other machines
+      case 'printerWindow': return this.printerWindow(args[0], args[1]);
       case 'netCall': return this.netCall(args[0], args[1]);
       case 'netEnum': return this.netEnum(args[0], args[1]);
       case 'netConnections': return this.netConnections();
