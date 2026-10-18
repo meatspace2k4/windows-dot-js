@@ -1096,8 +1096,8 @@ def16('VDD', 0, '', 'jmp', function () {
 // The register file the drivers probe and program, 1 MB of VRAM behind a 64K window at A0000h selected through the
 // segment select register (3CDh), the Tseng video BIOS modes, and the W32's hardware sprite (the CRTCB/sprite
 // registers behind the IMA port 217Ah/217Bh).
-const ET_MODES = { 0x03: [720, 400, 0], 0x13: [320, 200, 8], 0x2e: [640, 480, 8], 0x30: [800, 600, 8], 0x38: [1024, 768, 8] };
-const VRAM_SIZE = 1 << 20, WIN = 0xa0000;
+const ET_MODES = { 0x03: [720, 400, 0], 0x13: [320, 200, 8], 0x2e: [640, 480, 8], 0x2f: [640, 400, 8], 0x30: [800, 600, 8], 0x38: [1024, 768, 8], 0x3d: [1280, 1024, 8] };
+const VRAM_SIZE = 2 << 20, WIN = 0xa0000;   // (a W32p with 2 MB: 1280x1024 at 8 bits fits)
 P.adapter = function () {
   if (this.et) return this.et;
   this.init16();
@@ -1589,7 +1589,7 @@ def16('KERNEL', 501, 'w', 'w', function (v) { const old = this.k501 || 0; this.k
 def16('KERNEL', 159, 'w', 'l', function (sel) { return K16['KERNEL.#21'][2].call(this, sel); });   // GlobalHandleNoRIP: GlobalHandle without the debug-system complaint
 def16('KERNEL', 122, '', 'w', () => 0);   // IsTaskLocked: no task has locked the system (LockCurrentTask)
 def16('KERNEL', 491, 'll', 'l', () => 1);   // RegisterServiceProcess: the task is left out of the task list; there is no task list to leave
-def16('KERNEL', 320, 'w', 'w', function (h) { return h && (h === this.currentTask() || [...(this.threadsById || new Map()).values()].some(t => t.tdb === h)) ? 1 : 0; });   // IsTask
+def16('KERNEL', 320, 'w', 'w', function (h) { return h && (h === this.currentTask() || [...(this.threadsById || new Map()).values()].some(t => t.tdb === h && t.state !== 'done')) ? 1 : 0; });   // IsTask (an ended task is none: MMSYSTEM waits for MMTASK's end so as Windows exits)
 /** a task database: the process's (its Win32 threads share it), or a Win16 task's own (MMTASK.TSK); the queue at 20h,
  *  'TD' at FAh */
 const newTdb = p => { const a = p.alloc(0x200); p.u8.fill(0, a, a + 0x200); p.w16(a + 0xfa, 0x4454); return p.allocSels(a, 0x200); };
@@ -1604,6 +1604,8 @@ def16('KERNEL', 47, 's', 'w', function (name) {   // GetModuleHandle
   const n = (name || '').toUpperCase().replace(/^.*\\/, '').replace(/\.(DLL|EXE|DRV)$/, '');
   const m = this.ne.get(n);
   if (JS16.includes(n) && !(m && m.meta)) return this.jsModule(n).hModule;   // natively loaded only in a native-USER session
+  // a program's module goes with its last task (MMSYSTEM waits for MMTASK's to go as Windows exits)
+  if (m && m.taskModule && ![...(this.threadsById || new Map()).values()].some(t => t.task && t.task.mod === m && t.state !== 'done')) return 0;
   return m ? m.hModule : 0;
 });
 def16('KERNEL', 133, 'w', 'w', function (h) {   // GetExePtr (a Win32 module's 16-bit handle is its own module)
@@ -1639,6 +1641,15 @@ def16('KERNEL', 107, 'w', 'w', function (m) { const o = this.errMode16 || 0; thi
 def16('KERNEL', 147, 'l', 'v', function (e) { this.lastError = e; });
 def16('KERNEL', 148, '', 'l', function () { return this.lastError || 0; });
 def16('KERNEL', 361, '', 'v', function () {});                                                         // PIGLET_361: KRNL386's entry is a bare RETF
+// ThunkTerminateProcess (KRNL386's thunk 18h into KERNEL32), which USER's ExitWindows calls after a Win32 thread's
+// windows took WM_ENDSESSION(TRUE) (USER seg16 B64h): the process ends with the rest as the machine ends at ExitKernel,
+// which follows, so nothing is done here ahead of it. UNCONFIRMED: which process KERNEL32 ends here is not read from
+// its code (the call names none; it is not the caller's, whose thread goes on to ExitKernel)
+def16('KERNEL', 362, 'lw', 'v', function () {});
+// BUNNY_351: KRNL386 calls VWIN32's protected-mode API, function 0Dh (KRNL386 seg1 DB9h), as USER's ExitWindows
+// finishes (USER seg16 14FDh), before the session's end. VWIN32 is this personality's: the Win32 side ends with the
+// machine. UNCONFIRMED: what VWIN32's function 0Dh does is not read from its code
+def16('KERNEL', 351, '', 'v', function () {});
 def16('KERNEL', 323, 'w', 'w', function () { return 0; });                                    // IsRomModule: no module runs from ROM
 def16('KERNEL', 324, 'wx', 'v', function (code) { console.warn('[KERNEL] LogError', code.toString(16)); });
 def16('KERNEL', 327, '', 'jmp', function () {    // HandleParamError: BX = error, CX:AX = parameter; errors unwind to the handler at [BP-2]
@@ -1745,7 +1756,7 @@ def16('KERNEL', 128, 'sssxws', 'w', function (app, key, d, buf, n, f) { return p
 // each ending in a null, the list in another), a section written whole (WritePrivateProfileSection)
 const multiSz = (p, buf, n, items) => { let o = 0; for (const t of items) { if (o + t.length + 2 > n) break; W(p, buf + o, t); o += t.length + 1; } p.u8[buf + o] = 0; if (!o) p.u8[buf + 1] = 0; return o; };
 def16('KERNEL', 143, 'pws', 'w', function (buf, n, f) { if (!n) return 0; return multiSz(this, buf, n, [...window.W95Win32.iniRead(this.fs, f || 'WIN.INI').values()].map(x => x.name)); });
-def16('KERNEL', 418, 'spws', 'w', function (app, buf, n, f) { if (!n) return 0; const sec = window.W95Win32.iniRead(this.fs, f || 'WIN.INI').get((app || '').toLowerCase()); return multiSz(this, buf, n, sec ? [...sec.keys.values()].map(k => `${k.name}=${k.value}`) : []); });
+def16('KERNEL', 418, 'spws', 'w', function (app, buf, n, f) { if (!n) return 0; const sec = window.W95Win32.iniRead(this.fs, f || 'WIN.INI').get((app || '').toLowerCase()); return multiSz(this, buf, n, sec ? sec.lines.map(k => (k.raw !== undefined ? k.raw : `${k.name}=${k.value}`)) : []); });
 def16('KERNEL', 416, 'sps', 'w', function (app, lines, f) {
   try { for (let a = lines; a && this.u8[a]; ) { const l = this.readA(a); a += l.length + 1; const i = l.indexOf('='); if (i > 0) window.W95Win32.iniSet(this.fs, f || 'WIN.INI', app, l.slice(0, i).trim(), l.slice(i + 1).trim()); } return 1; } catch (_) { return 0; }
 });
@@ -2158,7 +2169,7 @@ def16('KERNEL', 568, 'llw', 'l', function (target, relay, owner) {
   const ls = this.lsThunklets && this.lsThunklets.get(u32(target));
   if (ls && ls.relay === u32(relay)) return ls.target;
   const key = `${u32(target)}:${u32(relay)}`; if (this.thunklets.has(key)) return this.thunklets.get(key);
-  if (!this.thunkletSeg || this.thunkletSeg.used + 16 > 0x10000) {
+  if (!this.thunkletSeg || this.thunkletSeg.used + 17 > 0x10000) {
     const lin = this.alloc(0x10000); this.thunkletSeg = { lin, sel: this.allocSels(lin, 0x10000, 0xfb00), used: 0 };
   }
   const t = this.thunkletSeg, off = t.used, a = t.lin + off, glue = this.thunk16For('THUNKLET.#1');
@@ -2179,7 +2190,7 @@ def16('KERNEL', 561, 'll', 'l', function (target, relay) {
   const sl = this.slThunklets && this.slThunklets.get(u32(target));
   if (sl && sl.relay === u32(relay)) return sl.target;
   for (const [a, t] of this.lsThunklets) if (t.target === u32(target) && t.relay === u32(relay)) return a;
-  const a = this.alloc(16);
+  const a = this.alloc(17);   // (17 bytes: the jump's displacement ends at +17)
   this.u8.set([0x90, 0x68], a); this.w32(a + 2, target); this.u8.set([0x90, 0x68], a + 6); this.w32(a + 8, relay);
   this.u8[a + 12] = 0xe9; this.w32(a + 13, u32((this.cbGlueLS || 0) - (a + 17)));
   this.lsThunklets.set(a, { target: u32(target), relay: u32(relay) });
@@ -2303,6 +2314,52 @@ def16('KERNEL', 542, '', 'jmp', function () {   // (handle16): free the Win32 bl
   this.cpu.eax.value = 0;
   return this.retf16(4);
 });
+// DDE data between the sides, as USER passes a DDE message's block to a window of the other side (KRNL386 seg3:0DA2
+// #533, a Win32 block into a 16-bit one; seg3:0E71 #534, a 16-bit block into a Win32 one; GRPCONV's Program Manager
+// DDE to the shell): the block copied, as #531/#532 copy clipboard data. For WM_DDE_EXECUTE and WM_DDE_ACK (3E8h, 3E4h)
+// a block that came across already is given back as its other side's, so the ACK carries the EXECUTE's own handle.
+// (KRNL386 converts a METAFILEPICT's handle inside WM_DDE_DATA and WM_DDE_POKE blocks too; none are sent here)
+const DDE_SAME = new Set([0x3e8, 0x3e4]);
+def16('KERNEL', 533, '', 'jmp', function () {   // (hMem32: dword, msg: word) -> hMem16
+  const f = this.cpu.ssb.value + (this.cpu.esp.value & 0xffff), h = this.r32(f + 4), msg = this.r16(f + 8);
+  let r = 0;
+  if (h) {
+    const had = DDE_SAME.has(msg) ? [...clip32(this)].find(([, w]) => w === h) : null;
+    if (had) r = this.globalHandleOf(had[0]);
+    if (!r) {
+      const n = this.allocs.get(h) || 0;
+      r = this.globalAlloc16(0x2002, n);
+      if (r && n) this.u8.copyWithin(this.gblock(r).lin, h, h + n);
+      if (r) clip32(this).set(this.gsel(r), h);
+    }
+  }
+  this.cpu.eax.value = r; this.cpu.edx.value = 0;
+  return this.retf16(6);
+});
+// KRNL386 seg3:0F80 (#537): whether a 16-bit block holds a DDE execute command ("[command]", with the ']' ending the
+// string: a '[' first and a "]\0" word somewhere after it, in a block of three bytes or more that is not discarded)
+def16('KERNEL', 537, '', 'jmp', function () {   // (word, hMem16: word) -> 1 or 0
+  const f = this.cpu.ssb.value + (this.cpu.esp.value & 0xffff), h = this.r16(f + 6), b = h && this.gblock(h);
+  let r = 0;
+  if (b && b.size >= 3 && this.u8[b.lin] === 0x5b) for (let i = 1; i < b.size - 2; i++) if (this.u8[b.lin + i] === 0x5d && this.u8[b.lin + i + 1] === 0) { r = 1; break; }
+  this.cpu.eax.value = r;
+  return this.retf16(4);
+});
+def16('KERNEL', 534, '', 'jmp', function () {   // (hMem16: word, msg: word) -> a Win32 block, in EAX and DX:AX
+  const f = this.cpu.ssb.value + (this.cpu.esp.value & 0xffff), h = this.r16(f + 4), msg = this.r16(f + 6);
+  let r = 0;
+  const b = h && this.gblock(h), sel = b && this.gsel(h);
+  if (b) {
+    const old = clip32(this).get(sel);
+    if (old && DDE_SAME.has(msg)) r = old;
+    else {
+      if (old) this.free(old);
+      r = this.alloc(b.size); this.u8.copyWithin(r, b.lin, b.lin + b.size); clip32(this).set(sel, r);
+    }
+  }
+  this.cpu.eax.value = r | 0; this.cpu.edx.value = r >>> 16;
+  return this.retf16(4);
+});
 // KRNL386 seg2:7A70 (#618): the size in bytes of a Win32 dialog template, DLGTEMPLATE or DLGTEMPLATEEX (signature
 // FFFF0001), as USER needs it to copy one; items are DWORD-aligned
 def16('KERNEL', 618, 'x', 'w', function (sp) {
@@ -2351,6 +2408,15 @@ def16('KERNEL', 131, '', 'l', function () {                                     
   return u32(this.dosEnv << 16);
 });
 def16('KERNEL', 157, 'l', 'l', () => 0);                                              // GetCurPID
+// GetNumTasks: the tasks running, a Win32 process's among them (each has its task database)
+def16('KERNEL', 152, '', 'w', function () { return Math.max(1, new Set([...(this.threadsById || new Map()).values()].filter(t => t.tdb && t.state && t.state !== 'done').map(t => t.tdb)).size); });
+// GetInstanceData: cb bytes at the same offset of another instance's DGROUP into the caller's (DS); the count copied
+def16('KERNEL', 54, 'www', 'w', function (hInst, off, cb) {
+  if (!this.selValid(hInst) || !cb) return 0;
+  const n = Math.min(cb, Math.max(0, this.selLimit(hInst) + 1 - off), Math.max(0, this.selLimit(this.cpu.ds.value & 0xffff) + 1 - off));
+  this.u8.copyWithin(this.selBase(this.cpu.ds.value & 0xffff) + off, this.selBase(hInst) + off, this.selBase(hInst) + off + n);
+  return n;
+});
 def16('KERNEL', 166, 'sw', 'w', function (cmd, show) {   // WinExec: the started program's instance, else its error (2 not found)
   const r = this.host && this.host.exec ? this.host.exec(cmd, show) : 2;
   if (typeof r !== 'object') return r;
@@ -2510,6 +2576,10 @@ const ev16 = (p, h) => {
   const o = p.obj(h); if (!o) return null;
   if (o.kind === 'event') return o;
   if (o.kind === 'thread') { const t = p.threadsById && p.threadsById.get(o.id); return { manual: true, get set() { return !t || t.state === 'done'; }, set set(_) {} }; }
+  if (o.kind === 'process') return { manual: true, get set() { return !(p.procs && p.procs.has(o.pid)); }, set set(_) {} };   // (signalled once the process has ended)
+  // a semaphore: signalled while its count is above zero; a wait it satisfies takes one (MPR's request queue, which
+  // MPREXE's server threads wait on through USER's MsgWaitForMultipleObjects)
+  if (o.kind === 'semaphore') return { manual: false, get set() { return o.count > 0; }, set set(v) { if (!v && o.count > 0) o.count--; } };
   return null;
 };
 /** set an event and make the threads blocked on it runnable (they check their wait again when they run) */
@@ -2520,10 +2590,22 @@ def16('KERNEL', 458, 'l', 'l', function (h) { const e = ev16(this, h); if (!e) r
 def16('KERNEL', 459, 'l', 'l', function (h) { const e = ev16(this, h); if (!e) return 0; e.set = false; return 1; });  // ResetW32Event
 // WaitForSingleObject: a thread waiting at its top level for an event that is not set gives up its slice (the other
 // threads, the system thread among them, run) and waits again when resumed; elsewhere the wait times out at once
+/** a wait at a thread's top level for an object not yet set: the thread gives up its slice until it is set, or until
+ *  the time-out (ms, INFINITE for none) has run out (WAIT_TIMEOUT then); 0 once ready */
+const waitTop = (p, ms) => {
+  const t = p.thread16 || (p.mainWait = p.mainWait || {});
+  if (ms === 0xffffffff) return YIELD;
+  if (!t.wake) t.wake = p.now() + ms;
+  else if (p.now() >= t.wake) { t.wake = 0; return 0x102; }
+  return YIELD;
+};
+const waitDone = p => { const t = p.thread16 || p.mainWait; if (t) t.wake = 0; };
 def16('KERNEL', 460, 'll', 'l', function (h, ms) {
   const e = ev16(this, h); if (!e) return 0xffffffff;
-  if (!e.set && ms && this.atThreadTop()) return YIELD;
+  if (this.thread16) this.thread16.waitOn = { hs: [h], all: 0, ms };   // (for a probe)
+  if (!e.set && ms && this.atThreadTop()) return waitTop(this, ms);
   if (!e.set && ms) this.waitNested(() => e.set);
+  waitDone(this);
   if (!e.set) return 0x102; if (!e.manual) e.set = false; return 0;
 });
 /** a wait inside a call (the waiting code cannot give up its slice): each other thread and task gets one turn, up to
@@ -2556,8 +2638,10 @@ P.systemPump = function () {
 def16('KERNEL', 461, 'llll', 'l', function (n, ph, all, ms) {                                        // WaitForMultipleObjects
   const hs = [...Array(n)].map((_, i) => ev16(this, this.r32(this.lin(ph) + 4 * i)));
   const ready = all ? hs.every(e => e && e.set) : hs.some(e => e && e.set);
-  if (!ready && ms && this.atThreadTop()) return YIELD;   // as #460: a thread at its top level gives up its slice
+  if (this.thread16) this.thread16.waitOn = { hs: [...Array(n)].map((_, i) => this.r32(this.lin(ph) + 4 * i)), all, ms };   // (for a probe: what the thread waits on)
+  if (!ready && ms && this.atThreadTop()) return waitTop(this, ms);   // as #460: a thread at its top level gives up its slice
   if (!ready && ms) this.waitNested(() => (all ? hs.every(e => e && e.set) : hs.some(e => e && e.set)));
+  waitDone(this);
   if (!(all ? hs.every(e => e && e.set) : hs.some(e => e && e.set))) return 0x102;
   if (all) { for (const e of hs) if (!e.manual) e.set = false; return 0; }
   const i = hs.findIndex(e => e && e.set); if (!hs[i].manual) hs[i].set = false; return i;
@@ -2582,17 +2666,27 @@ def16('KERNEL', 625, '', 'w', function () {
   const t = thr(this, 0); if (t.queue) return t.queue;
   const u = this.ne.get('USER'), ep = u && u.meta && this.neExport(u, 409);
   if (!ep) return 0;
-  const r = this.call16(ep >>> 16, ep & 0xffff, [['w', 0], ['w', this.thread16 || this.inSystem() ? 4 : 5]]);   // 1: a Win32 thread (THDB flags bit 0), its own process record; USER's start-up is the system's
+  // 1: a Win32 thread (THDB flags bit 0): the program's main thread and every thread of a Win32 process (USER gives its
+  // queue an event, which a sent message, a reply or input sets); a Win16 task's and USER's start-up's are the system's
+  const t16 = this.thread16, win32 = t16 ? !t16.task && !!(t16.flat || t16.pc) : !this.inSystem();
+  const r = this.call16(ep >>> 16, ep & 0xffff, [['w', 0], ['w', win32 ? 5 : 4]]);
   return t.queue || r.ax;
 });
 // Get/SetProcessDword: a process's fields by the GPD_ offsets (0 user data, -4 flags, -8 parent, -12..-32 its
 // STARTUPINFO, -36 PDB, -40 THDB, -44 expected Windows version, -48 hInstance, -52 load-done event, -56 app
-// compatibility flags). Nothing is set until someone sets it, but the version, which is 4.0.
+// compatibility flags). Nothing is set until someone sets it, but the version, which is 4.0, and the instance.
 const GPD = { 0: 0, '-4': 0, '-8': 0, '-12': 0, '-16': 0, '-20': 0, '-24': 0, '-28': 0, '-32': 0, '-36': 0, '-40': 0, '-44': 0x400, '-48': 0, '-52': 0, '-56': 0 };
 const pdw = (p, pid, off) => {
   if (!(off in GPD)) throw new GuestError(`GetProcessDword offset ${off}`);
   pid = pid || (p.thread16 && p.thread16.pc ? p.thread16.pc.pid : p.inSystem() ? SYS_PID : MAIN_PID);   // USER's start-up runs as the system process, not the program's
-  p.procDword = p.procDword || new Map(); if (!p.procDword.has(pid)) p.procDword.set(pid, { ...GPD }); return p.procDword.get(pid);
+  p.procDword = p.procDword || new Map();
+  if (!p.procDword.has(pid)) {
+    // the process's instance (-48), as KERNEL32 keeps it: its program's 16-bit alias (ShellExecute answers with it for a
+    // DDE server's process)
+    const pc = p.procs && p.procs.get(pid), exe = pc ? pc.exe : pid === MAIN_PID ? p.exe : null;
+    p.procDword.set(pid, { ...GPD, '-48': exe ? p.hinst16(exe.base) : 0 });
+  }
+  return p.procDword.get(pid);
 };
 def16('KERNEL', 485, 'li', 'l', function (pid, off) { return pdw(this, pid, off)[off] >>> 0; });
 def16('KERNEL', 484, 'lil', 'v', function (pid, off, v) { pdw(this, pid, off)[off] = v; });
@@ -2677,6 +2771,7 @@ P.endProcess = function (pc, code) {
   for (const t of (this.threadsById || new Map()).values()) if (t.pc === pc && t !== this.thread16 && t.state !== 'done') { t.state = 'done'; this.wakeWaiters(t); if (this.win16Held && this.win16Held.who === t) this.win16Held = null; }
   if (this.thread16 && this.thread16.pc === pc) this.thread16.exitCode = code >>> 0;
   if (this.procs) this.procs.delete(pc.pid);
+  this.wakeWaiters(pc);   // (the threads waiting on its process handle)
   const g = pc.exe && pc.exe.inst; if (g) { g.bufs.delete(pc); if (g.cur === pc) g.cur = null; }   // (its copy of a shared image's data goes)
   if (pc.onExit) pc.onExit(pc.exitCode);
 };
@@ -2702,14 +2797,17 @@ def16('KERNEL', 441, 'llllll', 'l', function (attr, stack, start, param, flags, 
 });
 P.saveCtx16 = function () { return this.saveFull(); };   // (a thread's time can run out between any two blocks: all of it)
 P.loadCtx16 = function (c) { this.loadFull(c); };
-/** run the threads that can run; the host calls this between slices of the main thread */
-P.threads16 = function (nested = false) {
-  if (!this.threadsById || (!nested && (this.thread16 || this.depth)) || this.inThreads) return;
-  const caller = this.thread16;
-  this.inThreads = true;
-  try { for (const t of [...this.threadsById.values()]) {   // the threads there are as the pass starts: one created in it starts in the next
-    if (t === caller || t.blocked || (t.id === MAIN_TID && !caller) || (t.id === MAIN_TID && caller) || !t.state || t.state === 'done' || t.state === 'hung' || t.state === 'suspended' || (t.state === 'waiting' && t.wait && !t.wait.set)) continue;   // a thread that yielded with no event to wait for (in WaitEvent) runs again
-    if (this.win16Held && this.win16Held.who !== t) continue;   // another thread holds the Win16Lock
+/** run the threads that can run; the host calls this between slices of the main thread. Inside a thread's run
+ *  (nested: a Yield or a wait inside a call, or with `only` a task its creator's LoadModule hands the processor to) the
+ *  other threads each get a slice of their own, as the processor passes to them, and the caller's run goes on as it
+ *  was (its context, its image, what the processor was stopped for); the threads up the nesting are left alone */
+P.threads16 = function (nested = false, only = null) {
+  if (!this.threadsById || (!nested && (this.thread16 || this.depth)) || (this.threadsNest || 0) >= 4) return;
+  const caller = this.thread16, wasIn = this.inThreads, wasPreempted = this.preempted, t0 = this.runT0;
+  this.inThreads = true; this.threadsNest = (this.threadsNest || 0) + 1; if (caller) this.runT0 = this.now();
+  try { for (const t of only ? [only] : [...this.threadsById.values()]) {   // the threads there are as the pass starts: one created in it starts in the next
+    if (t === caller || t.state === 'running' || t.blocked || (t.id === MAIN_TID && !caller) || (t.id === MAIN_TID && caller) || !t.state || t.state === 'done' || t.state === 'hung' || t.state === 'suspended' || (t.state === 'waiting' && t.wait && !t.wait.set)) continue;   // a thread that yielded with no event to wait for (in WaitEvent) runs again
+    if (this.win16Held && this.win16Held.who !== t && !(caller && this.win16Held.who === caller)) continue;   // another thread holds the Win16Lock (a caller that yields hands its own over)
     const main = this.saveCtx16();
     this.thread16 = t; t.sliceStart = this.now(); this.preempted = 0; if (t.pc) this.imgUse(t.pc);
     let r;
@@ -2767,7 +2865,7 @@ P.threads16 = function (nested = false) {
       if (!(e instanceof window.W95Win32.HangError)) throw e;
       t.state = 'hung'; this.hung(t, e);   // it stays where it hung, holding what it held
     } finally { this.thread16 = caller; this.loadCtx16(main); }
-  } } finally { this.inThreads = false; }
+  } } finally { this.inThreads = wasIn; this.threadsNest--; if (caller) { this.preempted = wasPreempted; this.runT0 = t0; if (caller.pc) this.imgUse(caller.pc); } }
 };
 /** a far call into 16-bit code that may yield: returns runAt's result (0 returned, 1 yielded) and leaves the
  *  CPU state as the code left it */
@@ -2845,11 +2943,13 @@ def16('KERNEL', 45, 'sp', 'l', function (name, pb) {
   let show = 1;
   if (pb) {
     const tail = this.lin(this.r32(pb + 2)), cs = this.lin(this.r32(pb + 6));
-    if (tail) { const n = Math.min(this.u8[tail], 126); this.u8[psp + 0x80] = n; this.u8.copyWithin(psp + 0x81, tail + 1, tail + 1 + n); this.u8[psp + 0x81 + n] = 0x0d; }
+    // (the tail a Windows task's InitTask hands it, ES:BX: null-terminated, as KERNEL leaves it for WinMain's lpCmdLine)
+    if (tail) { const n = Math.min(this.u8[tail], 126); this.u8[psp + 0x80] = n; this.u8.copyWithin(psp + 0x81, tail + 1, tail + 1 + n); this.u8[psp + 0x81 + n] = 0; }
     if (cs) show = this.r16(cs + 2);
   }
   const m = rec.meta, t = this.newThread(u32((m.segs[m.entry[0] - 1].sel << 16) | m.entry[1]), 0, 0x4000, false);
-  t.task = { psp: pspSel, hInst: rec.hInstance, show, stack: rd.u16(rec.file, hdr + 0x12), heap: rd.u16(rec.file, hdr + 0x10), dgroup: rec.dgroup };
+  t.task = { psp: pspSel, hInst: rec.hInstance, show, stack: rd.u16(rec.file, hdr + 0x12), heap: rd.u16(rec.file, hdr + 0x10), dgroup: rec.dgroup, mod: rec };
+  rec.taskModule = true;
   // its DGROUP: the data, then the local heap, then the stack (SP its top)
   const dg = m.segs[m.autodata - 1], data = dg ? (Math.max(dg.minalloc || 0, dg.len || 0) + 15) & ~15 : 0;
   Object.assign(t.task, { heapLo: data, heapHi: data + t.task.heap, sp: Math.min(0xfff0, (data + t.task.heap + Math.max(t.task.stack, 0x1000) + 15) & ~15) });
@@ -2857,6 +2957,11 @@ def16('KERNEL', 45, 'sp', 'l', function (name, pb) {
   // more than once) keeps a stack of its own, as this loader gives each module one DGROUP, not one per instance
   t.task.dgStack = ![...this.threadsById.values()].some(x => x !== t && x.task && x.task.dgStack && x.task.dgroup === rec.dgroup && x.state !== 'done');
   t.tdb = newTdb(this);
+  // one event posted, as KERNEL starts a task: its first WaitEvent returns at once
+  t.events = 1;
+  // a task another task starts runs before LoadModule returns, until it first waits for a message or yields, as
+  // KERNEL's start of a task yields to it (MMSYSTEM's sound task has its queue before PlaySound signals it)
+  if (this.thread16 || this.depth) for (let k = 0; k < 500 && t.state !== 'done' && t.state !== 'hung' && !(t.state === 'waiting' && (t.slept || t.yielded || (t.wait && !t.wait.set))) && !this.trapped; k++) this.threads16(true, t);
   return u32((t.tdb << 16) | rec.hInstance);
 });
 /** a task's top-level windows, hidden ones too, front to back */
@@ -2865,8 +2970,24 @@ P.taskWindows = function (task) {
   for (let h = u(262, [['w', u(286)], ['w', 5]]), n = 0; h && n < 512; h = u(262, [['w', h], ['w', 2]]), n++) if (u(224, [['w', h]]) === task) out.push(h);   // GW_CHILD, GW_HWNDNEXT, GetWindowTask
   return out;
 };
+/** a Windows program of the system bundle's 16-bit modules started as WinExec starts one: LoadModule with its command
+ *  tail and show command (LOADPARMS). Its instance, else LoadModule's error */
+P.winExec16 = function (name, tail = '', show = 1) {
+  this.init16();
+  const a = this.alloc(0x120), sel = this.allocSels(a, 0x120), t = String(tail).slice(0, 126);
+  this.u8[a + 0x20] = t.length; for (let i = 0; i < t.length; i++) this.u8[a + 0x21 + i] = t.charCodeAt(i) & 0xff; this.u8[a + 0x21 + t.length] = 0x0d;
+  this.w16(a + 0x10, 2); this.w16(a + 0x12, show);                                       // the show block: 2, nCmdShow
+  this.w16(a, 0); this.w32(a + 2, u32((sel << 16) | 0x20)); this.w32(a + 6, u32((sel << 16) | 0x10)); this.w32(a + 10, 0);
+  let r; try { r = K16['KERNEL.#45'][2].call(this, name, a); } finally { this.freeSels(sel); this.free(a); }   // (the tail is the task's PSP's now)
+  return r > 32 ? r & 0xffff : r;
+};
 /** a 16-bit task started as KERNEL's LoadModule starts one (the system's first task, MSGSRV32.EXE): its task handle */
-P.startTask16 = function (name) { this.init16(); const r = K16['KERNEL.#45'][2].call(this, name, 0); return r > 32 ? r >>> 16 : 0; };
+/** the system's first task (MSGSRV32.EXE), started as the system comes up: its thread is the appy-time thread (vmm.js appyCall) */
+P.startTask16 = function (name) {
+  this.init16(); const r = K16['KERNEL.#45'][2].call(this, name, 0); if (r <= 32) return 0;
+  this.appyThread = [...this.threadsById.values()].find(t => t.tdb === r >>> 16) || null;
+  return r >>> 16;
+};
 // InitTask: the starting task's registers (AX 1, ES:BX its command tail, CX its stack, DX its show command, SI its
 // previous instance, DI its instance)
 def16('KERNEL', 91, '', 'jmp', function () {
@@ -2884,11 +3005,23 @@ def16('KERNEL', 91, '', 'jmp', function () {
 });
 def16('KERNEL', 30, 'w', 'w', function () {
   const t = thr(this, 0), top = this.thread16 ? this.depth === this.thread16.depth : this.depth === 0;
+  if (t.events > 0) { t.events--; t.slept = false; return 0; }   // an event posted to the task (PostEvent, its start): no wait
   if (top && !t.slept) { t.slept = true; return YIELD; }
   if (!top) this.threads16(true);   // inside a call: the other tasks run, as the wait would let them
   t.slept = false; return 0;
 });
-def16('KERNEL', 31, 'w', 'v', function () {});                                                         // PostEvent
+// PostEvent: a Win16 task's next WaitEvent returns at once (an event counted on the task); a Win32 thread of the task
+// waits on its queue's event instead (USER's MsgWaitForMultipleObjects adds it when the queue is woken by PostEvent,
+// as USER's SetWakeBit2 does for such a queue), which is set
+def16('KERNEL', 31, 'w', 'v', function (h) {
+  const task = h || this.currentTask();
+  for (const t of (this.threadsById || new Map()).values()) {
+    if (t.tdb !== task || !t.state || t.state === 'done') continue;
+    if (t.task) t.events = (t.events || 0) + 1;   // a Win16 task's next WaitEvent returns at once
+    if (!t.queue || !this.selValid(t.queue)) continue;
+    const e = ev16(this, this.r32(this.selBase(t.queue) + 0xc)); if (e) this.signal(e);
+  }
+});
 def16('KERNEL', 32, 'wi', 'w', function () { return 0; });                                             // SetPriority
 def16('KERNEL', 33, 'w', 'w', function () { return 0; });                                              // LockCurrentTask
 def16('KERNEL', 49, 'wpi', 'w', function (h, buf, n) {                                                 // GetModuleFileName
@@ -3214,6 +3347,10 @@ K('#55', 5, function (fn, flags, cb, pargs, pret) {
 KR('K32Thk1632Epilog', function () { return ret32(this); });
 K('#17', 0, () => 0);                                      // CommonUnimpStub
 K('#18', 2, function (pid, off) { return pdw(this, pid, off | 0)[off | 0] >>> 0; });   // GetProcessDword
+// the daylight-saving check Explorer makes at start and on each WM_TIMECHANGE: a nonzero answer when KERNEL32 has just
+// moved the clock across the zone's transition (Explorer then broadcasts the time change). The host's clock already
+// carries the zone's offset, so KERNEL32 never moves it
+K('#99', 1, () => 0);
 K('#23', 1, () => 0);                                      // GDIReallyCares (marks a handle's object as one GDI tracks)
 K('#38', 0, () => 0); K('#39', 0, () => 0);
 KR('#33', function () { return ret32(this); });    // frees 16-bit blocks a thread queued for release (thread flag 20h); none are queued here
@@ -3259,6 +3396,7 @@ P.queueApc = function (tid, proc, data) { apcs(this, tid).push({ proc, data }); 
 const apcs = (p, tid) => { p.apcQ = p.apcQ || new Map(); if (!p.apcQ.has(tid)) p.apcQ.set(tid, []); return p.apcQ.get(tid); };
 function wait32(hs, all, ms, alertable) {
   const objs = hs.map(h => ev16(this, h)), top = native32(this) && this.atThreadTop();
+  if (this.thread16) this.thread16.waitOn = { hs, all, ms };   // (for a probe)
   const t = this.thread16 || (this.mainWait = this.mainWait || {});
   if (alertable && native32(this)) {
     const q = apcs(this, this.currentThreadId());
@@ -3286,7 +3424,7 @@ function wait32(hs, all, ms, alertable) {
   // it waits for ends; the scheduler does not run it until then, and it checks its wait again when it runs
   if (ms === 0xffffffff && this.thread16) {
     t.blocked = true; t.alertWait = alertable;
-    for (const h of hs) { const o = this.obj(h); if (o) (o.waiters = o.waiters || new Set()).add(t); const w = o && o.kind === 'thread' && this.threadsById && this.threadsById.get(o.id); if (w) (w.waiters = w.waiters || new Set()).add(t); }
+    for (const h of hs) { const o = this.obj(h); if (o) (o.waiters = o.waiters || new Set()).add(t); const w = o && (o.kind === 'thread' ? this.threadsById && this.threadsById.get(o.id) : o.kind === 'process' ? this.procs && this.procs.get(o.pid) : null); if (w) (w.waiters = w.waiters || new Set()).add(t); }
     return YIELD;
   }
   if (!t.wake) t.wake = ms === 0xffffffff ? Infinity : this.now() + ms;
@@ -3297,6 +3435,29 @@ K('WaitForSingleObject', 2, function (h, ms) { return wait32.call(this, [h], fal
 K('WaitForSingleObjectEx', 3, function (h, ms, al) { return wait32.call(this, [h], false, ms, !!al); });
 K('WaitForMultipleObjects', 4, function (n, ph, all, ms) { return wait32.call(this, [...Array(n)].map((_, i) => this.r32(ph + 4 * i)), !!all, ms, false); });
 K('WaitForMultipleObjectsEx', 5, function (n, ph, all, ms, al) { return wait32.call(this, [...Array(n)].map((_, i) => this.r32(ph + 4 * i)), !!all, ms, !!al); });
+// critical sections, owned by a thread (recursively) until it leaves them as often as it entered: one another thread
+// owns blocks the caller, which gives up the processor at its top level and enters once the owner has left (MPR's
+// client and MPREXE's server hand each request over by them, made global). Inside a call that cannot give up its
+// slice the other threads each get a turn first, and the section is then taken as it is
+const crit = (p, cs) => { p.critSecs = p.critSecs || new Map(); if (!p.critSecs.has(cs)) p.critSecs.set(cs, { owner: 0, count: 0, waiters: new Set() }); return p.critSecs.get(cs); };
+K('EnterCriticalSection', 1, function (cs) {
+  const c = crit(this, cs), tid = this.currentThreadId();
+  if (c.owner && c.owner !== tid && !(this.threadsById && this.threadsById.get(c.owner) && this.threadsById.get(c.owner).state === 'done')) {
+    if (this.thread16 && native32(this) && this.atThreadTop()) { c.waiters.add(this.thread16); this.thread16.blocked = true; return YIELD; }
+    if (this.waitNested) this.waitNested(() => !c.owner);
+  }
+  if (c.owner !== tid) { c.owner = tid; c.count = 0; }
+  c.count++;
+});
+K('LeaveCriticalSection', 1, function (cs) {
+  const c = crit(this, cs); if (c.owner !== this.currentThreadId()) return;
+  if (--c.count > 0) return;
+  c.owner = 0; for (const t of c.waiters) t.blocked = false; c.waiters.clear();
+});
+const critInit = function (cs) { this.u8.fill(0, cs, cs + 24); if (this.critSecs) this.critSecs.delete(cs); };
+K('InitializeCriticalSection', 1, critInit);
+K('ReinitializeCriticalSection', 1, critInit);
+K('DeleteCriticalSection', 1, function (cs) { if (this.critSecs) this.critSecs.delete(cs); });
 K('SetEvent', 1, function (h) { this.signal(ev16(this, h)); return 1; });
 K('ResetEvent', 1, function (h) { const e = ev16(this, h); if (e) e.set = false; return 1; });
 K('PulseEvent', 1, function (h) { const e = ev16(this, h); if (e) { e.set = false; this.wakeWaiters(e); } return 1; });

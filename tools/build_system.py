@@ -49,7 +49,9 @@ NE = [('gdi.exe', 0x01C00000, 0x1007, 0x06A00000), ('dibeng.dll', 0x01E00000, 0x
       ('unidrv.dll', 0x01190000, 0x1C27, 0x06010000), ('tty.drv', 0x011E0000, 0x1CCF, 0x06110000),
       # the system's first task, which Windows 95 starts as it boots (WIN95_12.CAB): USER's first-task start-up loads
       # the installable drivers (MMSYSTEM, the sound card's) for it, and it plays SystemStart and starts the shell
-      ('msgsrv32.exe', 0x01570000, 0x1CEF, 0x06130000)]
+      ('msgsrv32.exe', 0x01570000, 0x1CEF, 0x06130000),
+      # Program Manager, which GRPCONV starts to make Setup's program groups through its DDE (WIN95_17.CAB)
+      ('progman.exe', 0x01580000, 0x1CFF, 0x07FA0000)]
 # the NE modules above that Setup leaves on the CD: a module of these loads only when its file is on the disk
 ON_DISK = {'unidrv.dll', 'tty.drv'}
 # Windows programs that run on the native USER (bootUser16): (file, load base, block-table base). Each has a base of
@@ -59,7 +61,13 @@ PROGRAMS = [('notepad.exe', 0x00400000, 0x06000000), ('rundll32.exe', 0x00410000
             # Windows Help, which the shell's Help Topics and Start > Help run (WIN95_13.CAB)
             ('winhlp32.exe', 0x00450000, 0x06700000),
             # the print spooler WINSPOOL.DRV starts and talks to (WIN95_27.CAB)
-            ('spool32.exe', 0x004A0000, 0x06BA0000)]
+            ('spool32.exe', 0x004A0000, 0x06BA0000),
+            # the shell: the desktop, the taskbar, and the folder and Exploring windows (CabinetWClass, ExploreWClass) (WIN95_17.CAB)
+            ('explorer.exe', 0x004B0000, 0x05F00000),
+            # the items Setup leaves to the first start (RunOnce\Setup, which RUNONCE runs; WIN95_16.CAB), the Start
+            # menu's programs Setup lists in SETUP.INI, made links then (grpconv -s), the taskbar's notification-area
+            # applets, and the Welcome screen (WIN95_17.CAB, SYSTRAY from WIN95_11.CAB)
+            ('runonce.exe', 0x00530000, 0x07FD0000), ('grpconv.exe', 0x004F0000, 0x07F60000), ('systray.exe', 0x00510000, 0x07F80000), ('welcome.exe', 0x00520000, 0x07F90000)]
 # 32-bit system DLLs: (file, load base, block-table base)
 PE = [('gdi32.dll', 0x01D00000, 0x06C00000), ('user32.dll', 0x01D40000, 0x07340000), ('comdlg32.dll', 0x01D60000, 0x07380000),
       # the common controls and the shell, which COMDLG32's Explorer-style dialogs are built on (WIN95_02.CAB)
@@ -161,7 +169,9 @@ with tempfile.TemporaryDirectory() as tmp:
         subprocess.run([sys.executable, os.path.join(here, 'recomp.py'), p, base, '--base', hex(b), '--lookup', hex(lk)], check=True)
         bundle['programs'][f.upper()] = {'file': b64(p), 'wasm': b64(base + '.wasm'), 'meta': json.load(open(base + '.json'))}
 # the Setup INF files whose registry sections the shell applies (SHELL.INF: the shell's classes and folders)
-INFS = ['shell.inf', 'msports.inf', 'motown.inf', 'mmopt.inf', 'wave.inf', 'netnovel.inf', 'nettrans.inf', 'netcli.inf', 'net.inf', 'netdef.inf',
+INFS = ['shell.inf', 
+        # the base install's (PRECOPY1.CAB): its UpdateInis lines for SETUP.INI, the Start menu GRPCONV makes
+        'setupc.inf', 'msports.inf', 'motown.inf', 'mmopt.inf', 'wave.inf', 'netnovel.inf', 'nettrans.inf', 'netcli.inf', 'net.inf', 'netdef.inf',
         # the printer drivers' INFs the Add Printer wizard lists (PRECOPY2.CAB)
         'msprint.inf', 'msprint2.inf',
         # where each file of the CD's cabinets is, which Setup's engine copies from (PRECOPY2.CAB)

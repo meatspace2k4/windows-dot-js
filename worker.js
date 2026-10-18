@@ -103,7 +103,7 @@ self.W95AudioSink = (proc, rate, L, R, n) => {
 const NATIVE = { exec: null };
 class Machine {
   constructor(o) {
-    Object.assign(this, o); this.keyq = []; this.mods = {}; this.ax = -1; this.ay = -1; this.cursorOn = false; this.mouse = { x: -100, y: -100 };
+    Object.assign(this, o); this.keyq = []; this.mouseq = []; this.mods = {}; this.ax = -1; this.ay = -1; this.cursorOn = false; this.mouse = { x: -100, y: -100 };
     this.ring = o.ring; this.pending = new Map(); this.alive = true;
   }
   async start() {
@@ -128,12 +128,13 @@ class Machine {
     const exe = /\s/.test(this.path) ? `"${this.path}"` : this.path;
     try {
       this.proc = new W.Process(this.bytes, prog.module, { ...prog.meta, name: prog.name.replace(/\.EXE$/, '') }, host, this.arg ? `${exe} ${this.arg}` : exe, dlls);
+      this.proc.soundQuiet = !!this.quiet;   // (sound.js: the card's output off for the one sound)
       if (this.system && !this.proc.trapped && !this.proc.startTask16('MSGSRV32.EXE')) throw new Error('MSGSRV32.EXE did not start');
-    } catch (e) { console.error(e); this.exited(-1, e.message); return; }
+    } catch (e) { console.error(e && e.stack ? e.stack : e); this.exited(-1, e.message); return; }
     if (this.proc.trapped) { this.exited(-1, this.proc.trapped); return; }
     const p = this.proc;
     { const a = p.scanout(); if (a.bpp) [this.sw, this.sh] = [a.w, a.h]; }
-    try {
+    if (!this.system) try {   // (the system's machine is the screen: its work area is its shell's to set, the taskbar's)
       const r = p.wbufLin || (p.nativeWindows(), p.wbufLin);
       p.w16(r, 0); p.w16(r + 2, 0); p.w16(r + 4, Math.min(this.sw, this.shellW)); p.w16(r + 6, Math.min(this.sh, this.workH));
       p.user16(483, [['w', 47], ['w', 0], ['l', p.wbufSel << 16], ['w', 0]]);   // SPI_SETWORKAREA
@@ -176,8 +177,25 @@ class Machine {
     this.mouse = { x, y };
     const ax = Math.round(Math.max(0, Math.min(this.sw - 1, x)) * 65535 / (this.sw - 1)), ay = Math.round(Math.max(0, Math.min(this.sh - 1, y)) * 65535 / (this.sh - 1));
     const f = kind;
-    if (f !== 1 && (ax !== this.ax || ay !== this.ay)) this.keyq.push({ mouse: [0x8001, ax, ay] });
-    this.keyq.push({ mouse: [0x8001 | f, ax, ay] }); this.ax = ax; this.ay = ay;
+    const q = this.mouseq, last = q[q.length - 1];
+    if (f !== 1 && (ax !== this.ax || ay !== this.ay)) q.push([0x8001, ax, ay]);
+    if (f === 1 && last && last[0] === 0x8001) q[q.length - 1] = [0x8001, ax, ay];   // (moves the machine has not had yet: the latest)
+    else q.push([0x8001 | f, ax, ay]);
+    this.ax = ax; this.ay = ay;
+  }
+  /** the mouse into USER's mouse_event as the mouse driver's interrupt reports it: whatever the programs are doing
+   *  (USER moves the cursor there, and queues the move for them), only not inside a call the host made or while ring 0
+   *  has the processor */
+  feedMouse() {
+    const p = this.proc;
+    if (!this.mouseq.length || p.depth || this.ring0()) return;
+    for (const m of this.mouseq.splice(0)) try { p.mouseEvent16(...m); } catch (e) { console.error(e); }
+  }
+  /** the screen's mode, DAC and cursor sprite for the page, which shows the screen from the shared memory */
+  postScan() {
+    const p = this.proc, a = p.scanout(), sp = p.sprite ? p.sprite() : null;
+    post({ t: 'scan', scan: { w: a.w, h: a.h, pitch: a.pitch || a.w, bpp: a.bpp, vram: a.vram.byteOffset }, dac: Uint8Array.from(a.dac),
+      sprite: sp ? { x: sp.x, y: sp.y, px: sp.px, py: sp.py, row: sp.row, at: sp.bits.byteOffset } : null });
   }
   ring0() { return !!(this.proc && this.proc.r0Runs && this.proc.r0Runs.length); }
   feedKeys() {
@@ -186,7 +204,7 @@ class Machine {
     try { if (p.user16(335).ax) return; } catch (e) { console.error(e); }   // GetInputState: USER has input not yet taken
     for (let n = 0; this.keyq.length && n < 16; n++) {
       const k = this.keyq.shift();
-      try { if (k.mouse) p.mouseEvent16(...k.mouse); else p.keyEvent16(k[0], k[1] & 0xff, k[2], k[1] > 0xff); } catch (e) { console.error(e); }
+      try { p.keyEvent16(k[0], k[1] & 0xff, k[2], k[1] > 0xff); } catch (e) { console.error(e); }
     }
   }
   step() {
@@ -195,7 +213,7 @@ class Machine {
     const p = this.proc, t0 = performance.now();
     this.poll();
     if (p.r0Runs && p.r0Runs.length) {
-      try { p.r0Step(); } catch (e) { console.error(e); this.exited(-1, e.message); return; }
+      try { p.r0Step(); } catch (e) { console.error(e && e.stack ? e.stack : e); this.exited(-1, e.message); return; }
       this.sendText();
       if (!(p.r0Runs && p.r0Runs.length) && this.afterR0) { const go = this.afterR0; this.afterR0 = null; go(); }
       if (this.alive) this.timer = setTimeout(() => this.step(), 16);
@@ -203,9 +221,10 @@ class Machine {
     }
     if (this.stopped) return;
     if (!p.win16Held && p.k32CloseRequest && p.k32CloseRequest()) post({ t: 'closeProgram' });   // REBOOT's APC: Close Program
-    this.feedKeys();
+    this.feedMouse(); this.feedKeys();
     try {
       for (let n = 0; this.alive && n < 4; n++) {
+        if (n) { this.poll(); this.feedMouse(); this.postScan(); }
         p.stats.slices++; const live = p.slice();
         if (!p.win16Held) { p.timers16(); p.threads16(); p.systemPump(); p.appy16(); }
         else { p.threads16(); if (p.vxdRunTimeOuts) p.vxdRunTimeOuts(); }
@@ -214,7 +233,7 @@ class Machine {
       }
     } catch (e) {
       if (e instanceof W.FaultError) { p.depth = 0; p.faulted(e.fault); }
-      else if (!(e instanceof W.HangError)) { console.error(e); this.exited(-1, e.message); return; }
+      else if (!(e instanceof W.HangError)) { console.error(e && e.stack ? e.stack : e); this.exited(-1, e.message); return; }
       else { p.hung('host', e); p.depth = 0; }
     }
     p.stats.guestMs += performance.now() - t0;
@@ -227,7 +246,7 @@ class Machine {
     if (p.trapped && !p.failed) p.fail(p.trapped);
     if (p.exitCode !== null || p.trapped) { this.exited(p.exitCode, p.trapped); return; }
     if (!p.win16Held) this.frame();
-    else post({ t: 'held', held: { hung: p.win16Held.hung }, stats: { ...p.stats } });   // (no USER while a thread holds the lock: the page learns it is held)
+    else { post({ t: 'held', held: { hung: p.win16Held.hung }, stats: { ...p.stats } }); this.postScan(); }   // (no USER while a thread holds the lock: the page learns it is held, and has the screen)
     this.timer = setTimeout(() => this.step(), this.keyq.length ? 0 : 16);
   }
   kick() { if (this.alive && this.timer) { clearTimeout(this.timer); this.timer = setTimeout(() => this.step(), 0); } }
@@ -244,7 +263,7 @@ class Machine {
   /** what the page draws: USER's windows, the screen's mode and palette, the cursor sprite, the text screen */
   frame() {
     const p = this.proc;
-    let nw; try { nw = p.nativeWindows(); } catch (e) { console.error(e); this.exited(-1, e.message); return; }
+    let nw; try { nw = p.nativeWindows(); } catch (e) { console.error(e && e.stack ? e.stack : e); this.exited(-1, e.message); return; }
     const a = p.scanout(), sp = p.sprite ? p.sprite() : null;
     let bg = 0; try { const c = p.user16(180, [['w', 1]]); bg = (c.dx & 0xff) << 16 | (c.ax & 0xffff); } catch (e) { console.error(e); }
     for (const w of nw.list) { const pc = w.task && [...(p.procs || new Map()).values()].find(c => c.tdb === w.task); w.prog = pc ? basename(pc.path).toUpperCase() : null; }
@@ -259,13 +278,15 @@ class Machine {
     this.txtGen = t.gen; post({ t: 'text', txt: { cols: t.cols, rows: t.rows, ch: t.ch.slice(), at: t.at.slice(), cur: t.cur, gen: t.gen } });
   }
   // WinExec and CreateProcess from the program: a program the system runs starts in this machine (P.spawn)
-  exec(cmd) {
+  exec(cmd, show) {
     const m = /^\s*(?:"([^"]+)"|(\S+))\s*(.*)$/.exec(cmd || ''); if (!m) return 2;
     let path = m[1] || m[2]; const arg = m[3];
     if (!extname(path)) path += '.exe';
-    if (this.system && /^explorer\.exe$/i.test(basename(path))) return 0x21;   // the shell SYSTEM.INI names: the page, running
     const file = (/^[a-z]:|^\\/i.test(path) ? [path] : [join('C:\\WINDOWS', path), join('C:\\WINDOWS\\SYSTEM', path), join(fs.cwd, path)]).find(f => fs.exists(f));
     if (!file) return 2;
+    // a Windows (16-bit) program of the system's: a task of this machine's, as KERNEL's WinExec starts one
+    const ne = Object.values((self.W95SYSTEM || {}).ne || {}).find(d => d.fileName === basename(file).toUpperCase() && /\.EXE$/.test(d.fileName));
+    if (ne) return this.proc.winExec16(ne.fileName, arg || '', show === undefined ? 1 : show);
     const r = this.spawnProgram(file, arg);
     // a second instance of a program: its image's place here is taken, so it starts in a machine of its own, as the
     // page starts one (runNative); this process gets no handle on it
@@ -379,7 +400,87 @@ class Machine {
     this.alive = false; clearTimeout(this.timer);
     post({ t: 'exited', code, why: why || null });
   }
+  /** debugging: each thread (its state, its task's or process's name, what it waits on, where it stopped as a module
+   *  and offset) and who holds the Win16Lock */
+  probe() {
+    const p = this.proc, S = self.W95SYSTEM || {};
+    this.probe.whereOf = lin => where(lin);
+    const segs = []; for (const d of Object.values(S.ne || {})) for (const g of (d.meta && d.meta.segs) || []) segs.push([d.meta.name, g.num, g.base, g.len]);
+    const where = lin => {
+      lin = lin >>> 0;
+      const T16 = self.W95NE16.L.T16, th = lin >= T16 && lin < T16 + 0x10000 && p.th16 && p.th16[(lin - T16) >> 2];
+      if (th) return `thunk ${th.key}`;
+      const L32 = self.W95Win32.LAYOUT, t32 = L32 && lin >= L32.THUNK && p.thunks && p.thunks[(lin - L32.THUNK) >> 2];
+      if (t32) return `${t32.dll}!${t32.nm}`;
+      for (const [n, num, b, l] of segs) if (lin >= b && lin < b + l) return `${n} ${num}:${(lin - b).toString(16)}`;
+      for (const m of p.modules || []) if (m.base && lin >= m.base && lin < m.base + (m.size || 0)) return `${m.name || '?'}+${(lin - m.base).toString(16)}`;
+      return lin.toString(16);
+    };
+    const stack = (ctx) => {   // far return addresses on a 16-bit stack, innermost first
+      if (!ctx || !ctx.ss) return [];
+      const out = [], base = p.selBase(ctx.ss), sp = ctx.esp & 0xffff;
+      for (let o = sp; o < Math.min(sp + 0x3000, 0xfffe) && out.length < 60; o += 2) {
+        const off = p.r16(base + o), sel = p.r16(base + o + 2); if (sel < 0x100 || !p.selValid || !p.selValid(sel)) continue;
+        const w = where(p.selBase(sel) + off); if (/ \d+:/.test(w)) out.push(`${o.toString(16)} ${w}`);
+      }
+      return out;
+    };
+    const frames = (ctx) => {   // the BP chain: each frame's return (far when a code selector follows the offset, else near in the caller's segment)
+      if (!ctx || !ctx.ss) return [];
+      const base = p.selBase(ctx.ss), out = []; let bp = ctx.ebp & 0xfffe, cs = p.r16(base + (ctx.esp & 0xffff) + 2);
+      out.push(`ret ${where(p.selBase(cs) + p.r16(base + (ctx.esp & 0xffff)))}`);   // (the thunk's caller: a far call)
+      for (let n = 0; n < 40 && bp && bp < 0xfffc; n++) {
+        const next = p.r16(base + bp) & 0xfffe, ip = p.r16(base + bp + 2), sel = p.r16(base + bp + 4);
+        const far = sel >= 0x100 && p.selValid(sel) && / \d+:/.test(where(p.selBase(sel) + ip));
+        if (far) cs = sel;
+        const w = where(p.selBase(cs) + ip); out.push(`${bp.toString(16)} ${w}${far ? '' : ' (near)'}`);
+        if (next <= bp) break; bp = next;
+      }
+      return out;
+    };
+    const name = t => (t.task && t.task.hInst && p.neByHandle(t.task.hInst) ? p.neByHandle(t.task.hInst).name : t.pc && t.pc.path) || '';
+    const threads = [...(p.threadsById || new Map()).values()].map(t => ({ id: t.id, tdb: t.tdb, state: t.state, name: name(t), wait: t.wait ? t.wait.kind || 'object' : null, waitOn: t.waitOn ? { ...t.waitOn, objs: t.waitOn.hs.map(h => { const o = p.obj(h); return o ? { kind: o.kind, set: o.set, count: o.count, id: o.id, pid: o.pid, name: o.name, site: o.site ? where(o.site) : undefined } : h; }) } : null,
+      at: t.ctx ? where(t.ctx.eip) : null, stack: stack(t.ctx), frames: frames(t.ctx), regs: t.ctx ? { cs: t.ctx.cs, ss: t.ctx.ss, bp: t.ctx.ebp, sp: t.ctx.esp } : null,
+      raw: t.ctx && t.ctx.ss && p.selValid(t.ctx.ss) ? (() => { const b = p.selBase(t.ctx.ss), sp = t.ctx.esp & 0xffff, o = []; for (let i = sp; i < Math.min(0xfffe, sp + 0x400); i += 2) o.push(p.r16(b + i).toString(16)); return { sp: sp.toString(16), words: o.join(' ') }; })() : null,
+      queue: t.queue && p.selValid(t.queue) ? (q => ({ q: t.queue, task: p.r16(q + 2), flags: p.r16(q + 0x14), wake: p.r16(q + 0x48), changed: p.r16(q + 0x4a), mask: p.r16(q + 0x4c), ev: p.r32(q + 0xc) }))(p.selBase(t.queue)) : null }));
+    // every top-level window, hidden ones too, with its task (a window whose task has ended answers no message)
+    const wins = [];
+    if (!p.depth) {
+      if (!p.wbufLin) { p.wbufLin = p.alloc(0x200); p.wbufSel = p.allocSels(p.wbufLin, 0x200); }
+      const u = (o, args) => p.user16(o, args).ax, buf = (p.wbufSel << 16) >>> 0;
+      for (let h = u(262, [['w', u(286)], ['w', 5]]), n = 0; h && n < 256; h = u(262, [['w', h], ['w', 2]]), n++) {
+        const cl = u(58, [['w', h], ['l', buf + 0x180], ['w', 64]]);
+        const x = p.byName && p.byName.get('USER32') && p.byName.get('USER32').exports, gt = x && x.get('GetWindowThreadProcessId');
+        wins.push({ h, cls: cl ? p.readA(p.wbufLin + 0x180, cl) : '', task: u(224, [['w', h]]), vis: !!u(49, [['w', h]]), tid: gt ? p.call(gt, [h, 0]) : null });
+      }
+    }
+    // MMSYSTEM's installed drivers (its list at DGROUP 30Ah: next at +0Ch, type at +0Ah, flags at +0Bh, devices at +6)
+    const mmd = []; { const m = p.ne && p.ne.get('MMSYSTEM'), dg = m && m.segs && m.segs.find(g => g.num === 13);
+      if (dg && p.selValid(dg.sel)) { const b = p.selBase(dg.sel); for (let n = p.r16(b + 0x30a), k = 0; n && k < 32; n = p.r16(b + n + 0xc), k++) mmd.push({ type: p.u8[b + n + 0xa], flags: p.u8[b + n + 0xb], devs: p.r16(b + n + 6), name: p.readA(b + n + 0x12, 16) }); } }
+    const cdc = p.ad1848 ? { regs: Array.from(p.ad1848.regs || []), t: p.ad1848.t } : null;
+    return { cdc, wss: p.wssRecs ? [...p.wssRecs.keys()] : null, mods16: p.ne ? [...p.ne.keys()] : [], mmd, sound: p.soundStats ? { ...p.soundStats, quiet: !!p.soundQuiet } : null, th16: (p.th16 || []).length, wins, threads, held: p.win16Held ? (p.win16Held.who === 'main' ? 'main' : p.win16Held.who && p.win16Held.who.id) : null, depth: p.depth,
+      main: { at: p.resumeEip ? where(p.resumeEip) : null, stack: stack(p.mainCtx) } };
+  }
   // the page's requests: what a window gets done to it, and questions about the machine
+  /** the display mode changed to w by h at the page's request (its viewport holds another of the adapter's modes): the
+   *  display configuration the mini-VDD reports becomes it, and USER's ChangeDisplaySettings makes the change as a
+   *  Display Properties change does (the driver re-enabled in the new mode, the desktop resized, WM_DISPLAYCHANGE to
+   *  every window). The machine's screen size after it, with USER's answer; null while a thread holds USER */
+  setMode(w, h, fields = 0x180000, flags = 0x80000000) {
+    const p = this.proc; if (!p || p.depth || p.thread16 || p.win16Held) return null;
+    p.host.width = w; p.host.height = h;
+    // a DEVMODE (its 4.0 form, 7Ch bytes) naming the mode: dmFields DM_PELSWIDTH and DM_PELSHEIGHT (naming the depth too, or
+  // the registry update flag, has USER answer DISP_CHANGE_RESTART); the change made now, as QuickRes asks for it (flag 80000000h)
+    const dm = p.alloc(0x7c), sel = p.allocSels(dm, 0x7c);
+    p.w16(dm + 32, 0x400); p.w16(dm + 36, 0x7c); p.w32(dm + 40, fields);
+    p.w32(dm + 104, 8); p.w32(dm + 108, w); p.w32(dm + 112, h);
+    let r;
+    try { r = p.user16(620, [['l', sel << 16], ['l', flags]]).dxax | 0; }   // ChangeDisplaySettings(lpDevMode, flags)
+    catch (e) { console.error(e); r = -1; }   // (DISP_CHANGE_FAILED: the machine stays as it is)
+    finally { p.freeSels(sel); p.free(dm); }
+    const a = p.scanout(); if (a.bpp) [this.sw, this.sh] = [a.w, a.h];
+    return { r, sw: this.sw, sh: this.sh };
+  }
   cmd(name, args) {
     const p = this.proc, u = (o, a) => p.user16(o, a);
     switch (name) {
@@ -395,12 +496,6 @@ class Machine {
         const x = p.byName && p.byName.get('USER32') && p.byName.get('USER32').exports, tid = x && x.get('GetWindowThreadProcessId'), hung = x && x.get('IsHungThread');
         return args[0].map(h => (tid && hung && !p.depth ? !!p.call(hung, [p.call(tid, [h, 0])]) : false));
       }
-      case 'systemStarted': {   // KERNEL32 tells MSGSRV32 its start is done (SHELL_PostMessage of 501h)
-        const task = [...(p.threadsById || new Map()).values()].find(t => t.task && t.task.hInst && p.neByHandle(t.task.hInst) && p.neByHandle(t.task.hInst).name === 'MSGSRV32');
-        if (!task || !(task.state === 'waiting' && task.slept)) return false;
-        // (quiet: SystemStart plays with the card's output off, as after an unclean shutdown; sound.js soundQuiet)
-        const h = p.taskWindows(task.tdb)[0]; if (h) { p.soundQuiet = !!args[0]; p.shellPostMessage(h, 0x501, 0, 0); } return true;
-      }
       case 'trayPost': p.post(...args); return;
       // the network's machine: MPR's exports called on a thread of its own (its dialogs run there), its enumerations,
       // the drives it has connected, and a drive's or share's files (netfs.js) for the page and for other machines
@@ -409,6 +504,8 @@ class Machine {
       case 'netEnum': return this.netEnum(args[0], args[1]);
       case 'netConnections': return this.netConnections();
       case 'netfs': { const b = self.W95NetFS.backend({ alive: true, proc: p }, args[0]); return b[args[1]](...(args[2] || [])); }
+      case 'mode': return this.setMode(args[0], args[1]);
+      case 'probe': return this.probe();
       case 'kick': return;
       case 'exit': this.exited(args[0] || 0); return;
     }

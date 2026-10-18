@@ -401,7 +401,15 @@ svc(VMM, 0x155, function () { return ERR.SUCCESS; });                           
 // ---- SHELL: appy time, the moments the system VM's Windows can be called into (the host's slices once USER runs)
 svc(SHELL, 0x0d, function () { return this.user16Ready ? 1 : 0; });                                  // _SHELL_QueryAppyTimeAvailable
 // _SHELL_CallAtAppyTime(pfn, refData, flags, timeout): the callback (cdecl, refData) runs at the next appy time
-svc(SHELL, 0x0e, function (arg) { (this.appyQueue = this.appyQueue || []).push({ fn: arg(0), ref: arg(1) }); return this.appyQueue.length; });
+svc(SHELL, 0x0e, function (arg) { return this.appyCall(arg(0), arg(1)) ? 1 : this.appyQueue.length; });
+/** an appy-time call: queued for the host's next appy time, unless the appy-time thread itself (MSGSRV32's: SHELL's
+ *  appy-time server) makes it with Windows up, when it runs at once on that thread, as SHELL runs it (MSGSRV32's
+ *  start-up has MMDEVLDR queue the devices' start inside DriverProc 800h, and finds the card's drivers loaded when it
+ *  plays SystemStart after it). True when it ran */
+P.appyCall = function (fn, ref) {
+  if (this.user16Ready && this.thread16 && this.thread16 === this.appyThread) { this.vxdCdecl(fn, [ref]); return true; }
+  (this.appyQueue = this.appyQueue || []).push({ fn, ref }); return false;
+};
 // _SHELL_CallDll(dll, proc, cbArgs, args): the 16-bit DLL's export called with the argument block as its PASCAL
 // frame (the block is the stack image, last argument first); EAX its DX:AX
 svc(SHELL, 0x18, function (arg) {
@@ -1363,7 +1371,7 @@ svc(CONFIGMG, 0x33, function (arg) {
   return CR.SUCCESS;
 });
 // Call_At_Appy_Time(pfn, refData, flags): as _SHELL_CallAtAppyTime
-svc(CONFIGMG, 0x4e, function (arg) { (this.appyQueue = this.appyQueue || []).push({ fn: arg(0), ref: arg(1) }); return CR.SUCCESS; });
+svc(CONFIGMG, 0x4e, function (arg) { this.appyCall(arg(0), arg(1)); return CR.SUCCESS; });
 svc(CONFIGMG, 0x54, function () { return CR.FAILURE; });                                              // Call_Enumerator_Function: none registered
 svc(CONFIGMG, 0x58, function () { return CR.SUCCESS; });                                            // Broadcast_Device_Change_Message
 // ---- IOS, the block-device subsystem: IOS_Requestor_Service (an ISP: ISP_func, ISP_result): no block devices are
@@ -1408,9 +1416,12 @@ P.vxdBoot = function () {
   }
   this.vxdInitState = 0x40000000;
   this.k32RebootInit();
-  // the devnodes whose device loader is a static VxD (DevLoader=*name: NDIS for the network's, VCOMM for the ports),
-  // started as CONFIGMG starts them at boot
+  // the devnodes, started as CONFIGMG starts them at boot: those whose device loader is a static VxD (DevLoader=*name:
+  // NDIS for the network's, VCOMM for the ports), then those whose loader it loads (MMDEVLDR for the MEDIA devnodes,
+  // whose API MMSYSTEM calls as MSGSRV32 has it start its devices, DriverProc 800h); not the network's machine's, whose
+  // process starts no media devices
   this.vxdDevLoaders(true);
+  if (!(this.host && this.host.net) && window.W95SYSTEM.vxds && window.W95SYSTEM.vxds['MMDEVLDR.VXD']) this.vxdDevLoaders();
 };
 
 /** a dynamically loadable VxD by file name, loaded and initialized (SYS_DYNAMIC_DEVICE_INIT) once */
@@ -1430,8 +1441,10 @@ P.vxdPmApi = function (v) {
   // a client register structure per nested call: VM code the VxD runs (an interrupt it reflects) may call in again
   const pool = this.crsPool || (this.crsPool = []), lvl = this.crsLevel = (this.crsLevel || 0) + 1;
   const outer = this.crs, c = this.crs = pool[lvl] || (pool[lvl] = this.alloc(0x60)), cpu = this.cpu;
-  this.w32(this.sysVM() + 8, c);   // CB_Client_Pointer: the registers of the client being served
-  try { return this.vxdPmApiOn(v, c, cpu); } finally { this.crsLevel--; this.crs = outer; this.w32(this.sysVM() + 8, this.vmClient()); }
+  // CB_Client_Pointer and the calling thread's (its TCB's): the registers of the client being served
+  const th = this.r0Thread(this.currentThreadId()), thWas = this.r32(th + 0x10);
+  this.w32(this.sysVM() + 8, c); this.w32(th + 0x10, c);
+  try { return this.vxdPmApiOn(v, c, cpu); } finally { this.crsLevel--; this.crs = outer; this.w32(this.sysVM() + 8, this.vmClient()); this.w32(th + 0x10, thWas); }
 };
 P.vxdPmApiOn = function (v, c, cpu) {
   const ss = cpu.ss.value & 0xffff, sp = cpu.esp.value & 0xffff, ssb = u32(cpu.ssb.value), ip = this.r16(ssb + sp), cs = this.r16(ssb + sp + 2);
