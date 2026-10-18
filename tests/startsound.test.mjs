@@ -37,13 +37,16 @@ for (const [record, opts, heard] of [
 // Shut Down leaves the record a clean one: the next start is heard
 { const p = page('running'); p.shutDownCleanly(); assert.equal(p.record(), 'clean'); }
 
-// the boot's Setup passes run without the Start menu one: no SETUP.INI, no GRPCONV RunOnce (no "Start Menu Shortcuts"
-// dialog for the sound to play behind); the pass itself is kept
+// the boot's Setup passes include the Start menu one, and it leaves GRPCONV to Setup's RunOnce (RunOnce\Setup, run by
+// RUNONCE's "Windows is now setting up" screen before the shell's desktop), not to the shell's own RunOnce: the shell,
+// and SystemStart with it, come after Setup's screen
 {
   const boots = w.split('\n').filter(l => /installPrograms\(\); setupFonts\(\);/.test(l));
   assert.equal(boots.length, 2);
-  for (const l of boots) assert.ok(!/\bsetupStartMenu\(\)/.test(l.replace(/\/\/.*$/, '')), l);
-  assert.ok(/^function setupStartMenu\(\) \{/m.test(w));
+  for (const l of boots) assert.ok(/\bsetupStartMenu\(\);/.test(l), l);
+  const body = cut('function setupStartMenu() {', "str('runonce.exe'));\n}");
+  assert.ok(/regSet\(ro \+ '\\\\setup', 'Programs on the Start menu'/.test(body) && /regSet\(ro, 'Wrapper', str\('runonce\.exe'\)\)/.test(body));
+  assert.ok(!/regSet\(ro, 'GrpConv'/.test(body));
 }
 // the system's start waits on nothing of the shell's: startSystem is called from the boot (systemBootLater), not from a
 // RunOnce or GRPCONV

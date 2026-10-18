@@ -39,7 +39,7 @@ function run(lnkBytes, withGrpconv = true) {
   new Function('window', 'fs', 'W95FS', 'W95Win32', `
     const WINDIR = 'C:\\\\WINDOWS', PROGRAMS = 'C:\\\\WINDOWS\\\\Start Menu\\\\Programs', join = (...a) => a.filter(Boolean).join('\\\\');
     ${cut('function infParse(text) {', '\n  return { sec, fields, subst };\n}')}
-    ${cut('function setupStartMenu() {', "grpconv.exe') + ' -s'));\n}")}
+    ${cut('function setupStartMenu() {', "str('runonce.exe'));\n}")}
     setupStartMenu();`)(env.window, env.fs, env.W95FS, env.W95Win32);
   return { files, reg, ini: files.has('C:\\WINDOWS\\SETUP.INI') ? new TextDecoder().decode(files.get('C:\\WINDOWS\\SETUP.INI')) : null };
 }
@@ -50,7 +50,8 @@ function run(lnkBytes, withGrpconv = true) {
   assert.equal(r.ini, '[progman.groups]\r\ngroup1="StartUp"\r\ngroup0=\r\ngroup4=Accessories\r\n\r\n' +
     '[group1]\r\n"PenPal"\r\n\r\n[group0]\r\n"Windows Explorer", "Explorer.exe /n,/e,C:\\", EXPLORER.EXE, 1,,,Wexplore\r\n\r\n' +
     '[group4]\r\n"Notepad", NOTEPAD.EXE\r\n');
-  assert.deepEqual(r.reg, [['hklm\\software\\microsoft\\windows\\currentversion\\runonce', 'GrpConv', 'C:\\WINDOWS\\grpconv.exe -s\0']]);   // (the shell's RunOnce, not Setup's screen)
+  assert.deepEqual(r.reg, [['hklm\\software\\microsoft\\windows\\currentversion\\runonce\\setup', 'Programs on the Start menu', 'C:\\WINDOWS\\grpconv.exe -s\0'],
+    ['hklm\\software\\microsoft\\windows\\currentversion\\runonce', 'Wrapper', 'runonce.exe\0']]);
   assert.ok(!/maxbps/.test(r.ini));   // (other files' lines are not SETUP.INI's)
 }
 // the page's own old shortcut (text) is no shell link: made again

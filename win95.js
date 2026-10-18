@@ -571,7 +571,7 @@ function makeDisk(mounted) {
   for (const e of ['SSERIFE.FON', 'VGAFIX.FON', 'VGASYS.FON', 'MARLETT.TTF', 'ARIAL.TTF', 'TIMES.TTF', 'COUR.TTF']) if (!sysFonts[e]) fs.writeFile(join(WINDIR, 'FONTS', e), exeStub());
   for (const [e, d] of Object.entries(sysFonts)) fs.writeFile(join(WINDIR, 'FONTS', e), b64(d));
   fs.writeFile('C:\\Program Files\\Accessories\\WORDPAD.EXE', exeStub());
-  installPrograms(); setupFonts(); setupRegistry(); setupSound(); setupHelp(); setupNetwork(); setupPorts(); setupPrinting();   // (setupStartMenu: not run; the demo cold starts at the shell, Setup's Start menu pass is theatre here)
+  installPrograms(); setupFonts(); setupRegistry(); setupSound(); setupHelp(); setupNetwork(); setupPorts(); setupPrinting(); setupStartMenu();
   // the CD's screen savers, byte for byte, under the long names APPLETS.INF gives them in LDID_SYS
   const LONG = { 'BEZIER.SCR': 'Curves and Colors.scr', 'SSMARQUE.SCR': 'Scrolling Marquee.scr', 'SSMYST.SCR': 'Mystify Your Mind.scr',
     'SCRNSAVE.SCR': 'Blank Screen.scr', 'SSFLYWIN.SCR': 'Flying Windows.scr', 'SSSTARS.SCR': 'Flying Through Space.scr' };
@@ -813,7 +813,7 @@ function bootDisk() {
   mountDrives();
   W95Win32.regAttach(host.registry);
   if (!fs.attach('C', host.disk)) makeDisk(true);
-  installPrograms(); setupFonts(); setupRegistry(); setupSound(); setupHelp(); setupNetwork(); setupPorts(); setupPrinting();   // (setupStartMenu: not run; the demo cold starts at the shell)
+  installPrograms(); setupFonts(); setupRegistry(); setupSound(); setupHelp(); setupNetwork(); setupPorts(); setupPrinting(); setupStartMenu();
   fs.chdir('C:\\');
 }
 
@@ -2789,10 +2789,10 @@ function setupStartMenu() {
     if (at >= 0) lines[at] = line; else lines.push(line);
   }
   fs.writeFile(join(WINDIR, 'SETUP.INI'), W95FS.encode([...out.values()].map(v => `[${v.name}]\r\n${v.lines.join('\r\n')}\r\n`).join('\r\n')));
-  // GRPCONV -s as a RunOnce entry of the shell's: the shell runs it once at its first start (not SETUPC.INF's
-  // RunOnce\Setup item, whose RUNONCE wrapper shows Setup's "Windows is now setting up" screen)
+  // SETUPC.INF's RunOnce\Setup item, and the wrapper SETUPX adds for a RunOnce\Setup with items: RUNONCE, which runs them
   const str = v => ({ type: 1, data: W95FS.encode(v + '\0') }), ro = 'hklm\\software\\microsoft\\windows\\currentversion\\runonce';
-  W95Win32.regSet(ro, 'GrpConv', str(join(WINDIR, 'grpconv.exe') + ' -s'));
+  W95Win32.regSet(ro + '\\setup', 'Programs on the Start menu', str(join(WINDIR, 'grpconv.exe') + ' -s'));
+  W95Win32.regSet(ro, 'Wrapper', str('runonce.exe'));
 }
 // Setup's registration of the copy (CurrentVersion: RegisteredOwner, RegisteredOrganization, ProductId): MSGSRV32
 // checks them as Windows starts and, missing, runs the first-run screens instead. The owner is the name the network
@@ -3426,7 +3426,8 @@ class RemoteApp extends NativeApp {
     if (this.modeBusy) return this.modeBusy;
     return (this.modeBusy = (async () => {
       let r = null;
-      for (let k = 0; k < 50 && this.alive && !r; k++) { r = await this.cmd('mode', [w, h]); if (!r) await new Promise(f => setTimeout(f, 100)); }
+      // (asked again every 100 ms while a thread holds USER, however long: the shell's start holds it for seconds)
+      while (this.alive && !r) { r = await this.cmd('mode', [w, h]); if (!r) await new Promise(f => setTimeout(f, 100)); }
       if (!r) return;
       if (r.sw !== w || r.sh !== h) (this.modeRefused = this.modeRefused || []).push([w, h]);   // (not taken: not asked for again at this viewport size)
       if (r.sw !== this.sw || r.sh !== this.sh) this.screenSized(r.sw, r.sh);
