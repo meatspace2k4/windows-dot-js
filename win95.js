@@ -3173,7 +3173,7 @@ class NativeApp {
     const pal = this.pal, dac = a.dac, v = a.vram, pitch = a.pitch || a.w, d = this.d32, sw = this.sw, sh = this.sh;
     for (let i = 0; i < 256; i++) { const r = dac[3 * i], g = dac[3 * i + 1], b = dac[3 * i + 2]; pal[i] = 0xff000000 | ((b << 2 | b >> 4) << 16) | ((g << 2 | g >> 4) << 8) | (r << 2 | r >> 4); }
     for (const w of this.wins.values()) {
-      if (w.min) continue;
+      if (w.min || w.transparent) continue;
       const x0 = Math.max(0, w.x), y0 = Math.max(0, w.y), x1 = Math.min(sw, a.w, w.x + w.w), y1 = Math.min(sh, a.h, w.y + w.h);
       if (x1 <= x0 || y1 <= y0) continue;
       for (let y = y0; y < y1; y++) { const s = y * pitch, o = y * sw; for (let x = x0; x < x1; x++) d[o + x] = pal[v[s + x]]; }
@@ -3184,7 +3184,7 @@ class NativeApp {
     // (GetSysColor(COLOR_BACKGROUND), at the DAC's 6 bits a component as the palette above has it)
     const six = c => (c >> 2) << 2 | (c >> 2) >> 4;
     let bg = 0; try { const c = this.proc.user16(180, [['w', 1]]); bg = 0xff000000 | six(c.dx & 0xff) << 16 | six(c.ax >> 8 & 0xff) << 8 | six(c.ax & 0xff); bg >>>= 0; } catch (e) { console.error(e); }
-    const o = this.o32, wins = [...this.wins.values()].filter(w => !w.min);
+    const o = this.o32, wins = [...this.wins.values()].filter(w => !w.min && !w.transparent);   // (a WS_EX_TRANSPARENT window draws nothing: what is under it shows)
     for (let y = 0; y < sh; y++) {
       const s = y * pitch, r = y * sw, ins = wins.filter(w => y >= w.y && y < w.y + w.h);
       for (let x = 0; x < sw; x++) {
