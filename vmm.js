@@ -731,7 +731,7 @@ svc(VDMAD, 0x13, function () { CF(this, false); });                             
 svc(VDMAD, 0x14, function () { CF(this, false); });                                                  // Enable_Translation
 svc(VDMAD, 0x18, function () { const d = dmaOf(this); this.dmaChannel(d.ch).masked = true; });        // Phys_Mask_Channel
 svc(VDMAD, 0x19, function () { const d = dmaOf(this); this.dmaChannel(d.ch).masked = false; });       // Phys_Unmask_Channel
-svc(VDMAD, 0x1c, function () { const d = dmaOf(this); if (this.sound16) this.sound16(); this.cpu.ecx.value = this.dmaChannel(d.ch).count; });   // Get_Phys_Count
+svc(VDMAD, 0x1c, function () { const d = dmaOf(this); if (this.sound16) this.sound16(true); this.cpu.ecx.value = this.dmaChannel(d.ch).count; });   // Get_Phys_Count
 svc(VDMAD, 0x1e, function () { this.cpu.eax.value = 0xfff; });                                       // Get_Max_Phys_Page: 16 MB
 svc(VDMAD, 0x1f, function () { CF(this, false); });                                                  // Set_Channel_Callbacks
 svc(VDMAD, 0x21, function () { const d = dmaOf(this); d.virt.count = u32(this.cpu.ecx.value); });     // Set_Virt_Count

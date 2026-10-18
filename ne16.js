@@ -975,7 +975,7 @@ def16('VXD', 0x45f, '', 'jmp', function () {
   else if (f === 0x200) { r = 0; ok = false; this.cpu.edx.value = lo16(this.cpu.edx.value, 0); }
   else if (f === 0x201) r = 0;
   // 6: the count left on the card's playback (BX 1) or capture DMA channel, as VDMAD_Get_Phys_Count reads it
-  else if (f === 6) { if (this.sound16) this.sound16(); const c = this.dmaCount ? this.dmaCount(this.cpu.ebx.value & 0xffff) : null; if (c === null) { r = 0xffff; ok = false; } else r = c; }
+  else if (f === 6) { if (this.sound16) this.sound16(true); const c = this.dmaCount ? this.dmaCount(this.cpu.ebx.value & 0xffff) : null; if (c === null) { r = 0xffff; ok = false; } else r = c; }
   else { this.trapped = `unimplemented MSSNDSYS (VxD 45Fh) API function ${f.toString(16)}h`; return LAYOUT.SENTINEL; }
   this.cpu.eax.value = lo16(this.cpu.eax.value, r); this.cpu.cf.value = ok ? 0 : 1;
   return this.retf16(0);
