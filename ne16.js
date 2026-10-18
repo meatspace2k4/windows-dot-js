@@ -785,7 +785,7 @@ P.asThread = function (t, fn) {
   if (!t || this.thread16 || t.state === 'done') return fn();
   // (as the thread's task, on a stack of the call's own: a Win16 task's stack in its DGROUP holds its own frames,
   // where it stopped)
-  this.thread16 = t; this.asTask = true;
+  this.thread16 = t; this.asTask = true; if (t.pc) this.imgUse(t.pc);
   try { return fn(); } finally { this.thread16 = null; this.asTask = false; }
 };
 /** the native USER's visible top-level windows, topmost first, with their screen rectangles, owners, classes and
@@ -2642,12 +2642,28 @@ let nextPid = 0x60;
 P.spawn = function (file, module, meta, path, cmdline) {
   const pc = { pid: nextPid, path, exitCode: null, tdb: newTdb(this), started: false };
   nextPid += 4;
-  pc.exe = this.loadImage(file, module, meta, 'EXE');
+  // a second instance of a program already running here: one image, as code, with each process's own copy of its
+  // data (as each Win32 process has its own address space), the running one's put by as the new one's is laid out;
+  // the copy in place is the one of the process whose thread runs (imgUse)
+  const live = [...(this.procs || new Map()).values()].find(x => x.exe.base === meta.base && x.exitCode === null);
+  if (live) {
+    const rec = live.exe, g = rec.inst || (rec.inst = { cur: live, bufs: new Map() }), exe0 = this.byName.get('EXE');
+    if (g.cur) g.bufs.set(g.cur, this.u8.slice(rec.base, rec.base + rec.size));
+    const fresh = this.loadImage(file, module, meta, 'EXE');
+    this.modules = this.modules.filter(m => m !== fresh); if (exe0) this.byName.set('EXE', exe0);
+    pc.exe = rec; g.cur = pc;
+  } else pc.exe = this.loadImage(file, module, meta, 'EXE');
   pc.cmdPtr = this.alloc(cmdline.length + 1); this.writeA(pc.cmdPtr, cmdline);
   this.inits = [];   // its DLLs attach to it as its main thread starts (pcStart)
   const t = this.newThread(meta.entry, 0, 0x100000, true, false); t.pc = pc; t.tdb = pc.tdb; pc.main = t;
   (this.procs || (this.procs = new Map())).set(pc.pid, pc);
   return pc;
+};
+/** the image data of process pc in place, when its image is shared with another instance (spawn) */
+P.imgUse = function (pc) {
+  const rec = pc && pc.exe, g = rec && rec.inst; if (!g || g.cur === pc || !g.bufs.has(pc)) return;
+  if (g.cur) g.bufs.set(g.cur, this.u8.slice(rec.base, rec.base + rec.size));
+  this.u8.set(g.bufs.get(pc), rec.base); g.bufs.delete(pc); g.cur = pc;
 };
 /** WinExec's start, as Win16's loader gives it: the new process runs until its main thread first waits for input
  *  (or ends), so it has made its windows by the time WinExec returns */
@@ -2670,6 +2686,7 @@ P.endProcess = function (pc, code) {
   for (const t of (this.threadsById || new Map()).values()) if (t.pc === pc && t !== this.thread16 && t.state !== 'done') { t.state = 'done'; this.wakeWaiters(t); if (this.win16Held && this.win16Held.who === t) this.win16Held = null; }
   if (this.thread16 && this.thread16.pc === pc) this.thread16.exitCode = code >>> 0;
   if (this.procs) this.procs.delete(pc.pid);
+  const g = pc.exe && pc.exe.inst; if (g) { g.bufs.delete(pc); if (g.cur === pc) g.cur = null; }   // (its copy of a shared image's data goes)
   if (pc.onExit) pc.onExit(pc.exitCode);
 };
 // USER hears of a process as KERNEL32 tells it (SignalProc32: USIG_PROCESS_CREATE 100h, USIG_PROCESS_INIT 200h,
@@ -2703,7 +2720,7 @@ P.threads16 = function (nested = false) {
     if (t === caller || t.blocked || (t.id === MAIN_TID && !caller) || (t.id === MAIN_TID && caller) || !t.state || t.state === 'done' || t.state === 'hung' || t.state === 'suspended' || (t.state === 'waiting' && t.wait && !t.wait.set)) continue;   // a thread that yielded with no event to wait for (in WaitEvent) runs again
     if (this.win16Held && this.win16Held.who !== t) continue;   // another thread holds the Win16Lock
     const main = this.saveCtx16();
-    this.thread16 = t; t.sliceStart = this.now(); this.preempted = 0;
+    this.thread16 = t; t.sliceStart = this.now(); this.preempted = 0; if (t.pc) this.imgUse(t.pc);
     let r;
     try {
       if (t.state === 'new' && t.flat) {

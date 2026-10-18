@@ -297,9 +297,9 @@ class Machine {
   spawnProgram(file, arg) {
     const S = self.W95SYSTEM || {}, p = this.proc;
     const name = basename(file).toUpperCase(), d = (S.programs || {})[name]; if (!d) return 11;
-    const live = (p.pc0 && p.pc0.exe && p.pc0.exe.base === d.meta.base) || [...(p.procs || new Map()).values()].some(x => x.exe.base === d.meta.base);
-    if (live) return 8;
-    p.modules = p.modules.filter(x => x.base !== d.meta.base);
+    if (p.pc0 && p.pc0.exe && p.pc0.exe.base === d.meta.base) return 8;   // (the machine's own program: one instance)
+    const live = [...(p.procs || new Map()).values()].some(x => x.exe.base === d.meta.base);   // (then the instances share its image: P.spawn)
+    if (!live) p.modules = p.modules.filter(x => x.base !== d.meta.base);
     let pc;
     try {
       const mod = d.modSync || (d.modSync = new WebAssembly.Module(b64bytes(d.wasm))), real = fs.realpath(file);
