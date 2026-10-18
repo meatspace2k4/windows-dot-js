@@ -134,7 +134,7 @@ class Machine {
     const p = this.proc;
     { const a = p.scanout(); if (a.bpp) [this.sw, this.sh] = [a.w, a.h]; }
     try {
-      p.user16(71, [['w', 0]]);
+      this.cursorOn = true; this.showCursor(false);   // (USER shows its cursor at the screen's centre as it starts: hidden until the pointer comes)
       const r = p.wbufLin || (p.nativeWindows(), p.wbufLin);
       p.w16(r, 0); p.w16(r + 2, 0); p.w16(r + 4, Math.min(this.sw, this.shellW)); p.w16(r + 6, Math.min(this.sh, this.workH));
       p.user16(483, [['w', 47], ['w', 0], ['l', p.wbufSel << 16], ['w', 0]]);   // SPI_SETWORKAREA
@@ -192,6 +192,16 @@ class Machine {
       p.asThread(this.cursorThread, () => p.user16(71, [['w', on ? 1 : 0]]));
     } catch (e) { console.error(e); }
   }
+  /** the cursor kept hidden while the pointer is on the shell: when another thread comes to own it (its count shown),
+   *  the thread that hid it shows it again and the new owner hides it */
+  syncCursor() {
+    const p = this.proc; if (this.cursorOn || !p || p.win16Held || this.ring0()) return;
+    const o = p.cursorOwnerThread(); if (o === this.cursorThread) return;
+    try {
+      p.asThread(this.cursorThread, () => p.user16(71, [['w', 1]]));
+      this.cursorThread = o; p.asThread(o, () => p.user16(71, [['w', 0]]));
+    } catch (e) { console.error(e); }
+  }
   ring0() { return !!(this.proc && this.proc.r0Runs && this.proc.r0Runs.length); }
   feedKeys() {
     const p = this.proc;
@@ -239,7 +249,7 @@ class Machine {
     for (const f of (p.pcFaults || []).splice(0)) { f.pc.fault = true; post({ t: 'pcFault', path: f.pc.path, why: f.why, f: f.fault || null }); }
     if (p.trapped && !p.failed) p.fail(p.trapped);
     if (p.exitCode !== null || p.trapped) { this.exited(p.exitCode, p.trapped); return; }
-    if (!p.win16Held) this.frame();
+    if (!p.win16Held) { this.syncCursor(); this.frame(); }
     this.timer = setTimeout(() => this.step(), this.keyq.length ? 0 : 16);
   }
   kick() { if (this.alive && this.timer) { clearTimeout(this.timer); this.timer = setTimeout(() => this.step(), 0); } }

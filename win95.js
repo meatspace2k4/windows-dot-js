@@ -3304,9 +3304,12 @@ class NativeApp {
       else if (SYM[ch]) [vk, shift] = SYM[ch];
       else continue;
       const c = code[vk] || (vk >= 65 && vk <= 90 ? 'Key' + String.fromCharCode(vk) : vk >= 48 && vk <= 57 ? 'Digit' + String.fromCharCode(vk) : '');
-      if (shift) this.key({ keyCode: 16, code: 'ShiftLeft' }, false);
-      this.key({ keyCode: vk, code: c }, false); this.key({ keyCode: vk, code: c }, true);
-      if (shift) this.key({ keyCode: 16, code: 'ShiftLeft' }, true);
+      // (each key with the Shift state it is pressed under, as a keyboard's events carry it: the machine follows the
+      // modifiers a key reports)
+      const sh = !!shift;
+      if (sh) this.key({ keyCode: 16, code: 'ShiftLeft', shiftKey: true }, false);
+      this.key({ keyCode: vk, code: c, shiftKey: sh }, false); this.key({ keyCode: vk, code: c, shiftKey: sh }, true);
+      if (sh) this.key({ keyCode: 16, code: 'ShiftLeft', shiftKey: false }, true);
     }
   }
   focus(w) {

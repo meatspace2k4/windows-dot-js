@@ -783,8 +783,10 @@ P.cursorOwnerThread = function () {
 /** fn run as thread t (null: as the main thread) */
 P.asThread = function (t, fn) {
   if (!t || this.thread16 || t.state === 'done') return fn();
-  this.thread16 = t;
-  try { return fn(); } finally { this.thread16 = null; }
+  // (as the thread's task, on a stack of the call's own: a Win16 task's stack in its DGROUP holds its own frames,
+  // where it stopped)
+  this.thread16 = t; this.asTask = true;
+  try { return fn(); } finally { this.thread16 = null; this.asTask = false; }
 };
 /** the native USER's visible top-level windows, topmost first, with their screen rectangles, owners, classes and
  *  titles; and the active window and the window holding the mouse capture */
@@ -2764,11 +2766,11 @@ P.start16 = function (sel, off, args) {
   // a thread's stack gets a selector of its own (the per-level aliases are the main thread's, redefined as it calls);
   // a Win16 task's is in its own DGROUP, above its data and local heap, as the loader places it (SS = DS: its
   // exported functions take DS from SS)
-  const k = this.thread16 && this.thread16.task && this.thread16.task.dgStack ? this.thread16.task : null;
+  const k = !this.asTask && this.thread16 && this.thread16.task && this.thread16.task.dgStack ? this.thread16.task : null;
   const flat = u32(this.cpu.esp.value), base = k ? this.selBase(k.dgroup) : (flat - 0xfff0) & ~0xf;
   let ssel;
   if (k) ssel = k.dgroup;
-  else if (this.thread16) ssel = this.thread16.ssel || (this.thread16.ssel = this.allocSels(base, 0x10000));
+  else if (this.thread16 && !this.asTask) ssel = this.thread16.ssel || (this.thread16.ssel = this.allocSels(base, 0x10000));
   else { ssel = L.STK + 8 * this.stackLevel++; this.setDesc(ssel, base, 0xffff, 0xf300); }
   this.seg('ss', ssel);
   let sp = k ? k.sp : flat - 16 - base;
