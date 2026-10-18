@@ -510,7 +510,8 @@ class Machine {
   // the registry update flag, has USER answer DISP_CHANGE_RESTART); the change made now, as QuickRes asks for it (flag 80000000h)
     const dm = p.alloc(0x7c), sel = p.allocSels(dm, 0x7c);
     p.w16(dm + 32, 0x400); p.w16(dm + 36, 0x7c); p.w32(dm + 40, fields);
-    p.w32(dm + 104, 8); p.w32(dm + 108, w); p.w32(dm + 112, h);
+    const slot = p.displaySlot ? p.displaySlot(w, h) : { w, h };   // (a size the driver does not list: its custom mode's entry, ne16.js)
+    p.w32(dm + 104, 8); p.w32(dm + 108, slot.w); p.w32(dm + 112, slot.h);
     let r;
     try { r = p.user16(620, [['l', sel << 16], ['l', flags]]).dxax | 0; }   // ChangeDisplaySettings(lpDevMode, flags)
     catch (e) { console.error(e); r = -1; }   // (DISP_CHANGE_FAILED: the machine stays as it is)

@@ -1074,7 +1074,29 @@ P.timers16 = function () {
 // the display VxD's driver interface (minivdd): registration, mode-change notifications and the display configuration
 P.displayConfig = function () {
   const ini = (k, d) => { const v = winIni(this, 'SYSTEM.INI', 'display', k); return v === null ? d : parseInt(v, 10) || d; };
-  return { w: (this.host && this.host.width) || ini('x_resolution', 640), h: (this.host && this.host.height) || ini('y_resolution', 480), bpp: ini('BitsPerPixel', 8) };
+  const w = (this.host && this.host.width) || ini('x_resolution', 640), h = (this.host && this.host.height) || ini('y_resolution', 480);
+  return { ...this.displaySlot(w, h), bpp: ini('BitsPerPixel', 8) };
+};
+// the display driver's own list of resolutions; a size not on it is the configured size of the adapter's custom mode
+const FB_SIZES = [[320, 200], [320, 240], [512, 384], [640, 400], [640, 480], [800, 600], [1024, 768], [1280, 1024], [1600, 1200]];
+/** the size the display driver is told for a configured w by h: its own when it is one of its list; otherwise the
+ *  driver's 1024x768 entry stands for the custom size (its scan line of 1024 bytes and its 1 MB are the most the
+ *  driver's own memory count allows), and the driver's records for that entry are made to say w by h, so the driver
+ *  enables, and GDI's desktop is, the configured size */
+P.displaySlot = function (w, h) {
+  if (FB_SIZES.some(([x, y]) => x === w && y === h) || w > 1024 || h > 1024) { this.customMode = null; return { w, h }; }
+  this.customMode = [w, h]; this.customEntry(w, h);
+  return { w: 1024, h: 768 };
+};
+P.customEntry = function (w, h) {
+  const m = this.ne && this.ne.get('DISPLAY'), sg = m && m.segs && m.segs.find(g => g.num === 2); if (!sg) return false;
+  const b = sg.base, t = b + 0xe15 + 4 * 6, g = b + 0x199a;
+  if (this.r16(b + 0xe15) !== 320 || (!this.customPatched && this.r16(g + 8) !== 1024)) return false;   // (another display driver: nothing to do)
+  this.customPatched = true;
+  this.w16(t, w); this.w16(t + 2, h);
+  const X = Math.round(w * 254 / 640), Y = Math.round(h * 127 / 480);
+  for (const [o, v] of [[8, w], [0xa, h], [0x34, w], [0x36, -h], [0x3c, w], [0x3e, -h], [0x44, X], [0x46, -X], [0x4c, Y], [0x4e, -Y], [0x54, Y], [0x56, -Y]]) this.w16(g + o, v & 0xffff);
+  return true;
 };
 def16('VDD', 0, '', 'jmp', function () {
   const fn = u32(this.cpu.eax.value);
@@ -1149,6 +1171,7 @@ def16('VFLATD', 0, '', 'jmp', function () {
 P.setVideoMode = function (mode, clear, hicolor) {
   const a = this.adapter(), m = ET_MODES[mode & 0x7f]; if (!m) return false;
   a.mode = mode & 0x7f; [a.w, a.h, a.bpp] = m; a.hicolor = hicolor || 0;
+  if (a.mode === 0x38 && this.customMode && !hicolor) [a.w, a.h] = this.customMode;   // the adapter's custom mode: the configured size (displaySlot)
   if (hicolor) a.bpp = hicolor;
   a.pitch = a.w * (a.bpp >> 3);
   // the register values the BIOS loads for the mode: sequencer memory mode (chain-4 for the packed-pixel modes), the

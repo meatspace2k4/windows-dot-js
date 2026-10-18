@@ -2984,10 +2984,11 @@ function setupNetwork() {
 // from the machine's framebuffer and kept in USER's order; the mouse goes to USER while it is over one of them or USER
 // holds the capture (menus, dragging), and the keys while one of them is the active window.
 const nativeApps = new Set();
-const NATIVE_MODES = [[1280, 1024], [1024, 768], [800, 600], [640, 480], [640, 400]];   // (the adapter's 8-bit modes the display driver's table has)
-// the display mode for a machine: the largest the page shows whole at its own pixels (the page is the monitor
-// EXPLORER.EXE's screen is shown on), else 640x480
-const nativeMode = () => NATIVE_MODES.find(([w, h]) => w * ZOOM <= innerWidth && h * ZOOM <= innerHeight) || [640, 480];
+// the display mode for the system's machine: the page's viewport at its own pixels (the page is the monitor
+// EXPLORER.EXE's screen is shown on), the width in whole 8-pixel character clocks; 640x480 at the least, 1024 on a
+// side at most (the display driver's longest scan line and its memory count: ne16.js displaySlot). A viewport larger
+// than that gets a 1024-wide or 1024-tall screen, centered
+const nativeMode = () => [Math.max(640, Math.min(1024, Math.floor(innerWidth / ZOOM) & ~7)), Math.max(480, Math.min(1024, Math.floor(innerHeight / ZOOM)))];
 // the mode the system's machine boots in, as Display Properties leaves it for the display driver: Display\Settings
 // under the current configuration (Resolution "w,h", BitsPerPixel), read by FRAMEBUF.DRV as it is enabled; the one
 // the page's viewport holds, so no change is needed once the shell is up
