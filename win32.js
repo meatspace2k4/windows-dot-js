@@ -67,6 +67,8 @@ class Process {
       this.cpu.fs.value = t; this.reg('esp', LAYOUT.STACK_TOP); this.push(LAYOUT.SENTINEL);
       host.boot(this);
     }
+    // the system's process (no image: its first task is a 16-bit one, and programs start in it): nothing of its own runs
+    if (!file) { this.noMain = true; return; }
     this.exe = this.loadImage(file, module, meta, 'EXE');
     this.base = this.exe.base;
     this.setupStack(cmdline);
@@ -262,6 +264,7 @@ class Process {
   slice() {
     if (this.exitCode !== null) return false;
     if (this.trapped) { this.fail(this.trapped); return false; }
+    if (this.noMain) { if (this.userStack) this.userStack(); return true; }   // the system's process: its threads run (threads16)
     if (this.win16Held && this.win16Held.who !== 'main') return true;   // another thread holds the Win16Lock: this one waits for it
     if (this.hungMain) return true;   // the main thread hung: it never runs again
     this.depth = 0; this.waiting = false; this.lastYield = this.now();

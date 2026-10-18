@@ -2373,7 +2373,7 @@ function shutdownSeq(restart) {
   }, 2600);
 }
 // The disk lives in memory, so it survives a restart but not a page reload.
-function boot() { screen = 'desktop'; ren = null; desk.selKey = null; active = null; dirty(); netBootLater(); }
+function boot() { screen = 'desktop'; ren = null; desk.selKey = null; active = null; dirty(); systemBootLater(); netBootLater(); }
 
 // ---------------------------------------------------------------- desktop
 const SYS_ITEMS = () => [
@@ -2752,7 +2752,18 @@ function infUpdateInis(text, section, only) {
     W95Win32.iniSet(fs, f[0].toUpperCase(), f[1], f[3].slice(0, eq).trim(), f[3].slice(eq + 1).trim());
   }
 }
+// Setup's registration of the copy (CurrentVersion: RegisteredOwner, RegisteredOrganization, ProductId): MSGSRV32
+// checks them as Windows starts and, missing, runs the first-run screens instead. The owner is the name the network
+// logon is given; this copy has no organization and an OEM product id
+function setupRegistration() {
+  const cv = 'hklm\\software\\microsoft\\windows\\currentversion', str = v => ({ type: 1, data: W95FS.encode(v + '\0') });
+  const owner = ((window.W95HOST && window.W95HOST.userName) || '').slice(0, 48) || 'Windows 95 User';
+  if (W95Win32.regGet(cv, 'RegisteredOwner') === undefined) W95Win32.regSet(cv, 'RegisteredOwner', str(owner));
+  if (W95Win32.regGet(cv, 'RegisteredOrganization') === undefined) W95Win32.regSet(cv, 'RegisteredOrganization', str(''));
+  if (W95Win32.regGet(cv, 'ProductId') === undefined) W95Win32.regSet(cv, 'ProductId', str('00000-OEM-0000000-00000'));
+}
 function setupRegistry() {
+  setupRegistration();
   const inf = ((window.W95SYSTEM || {}).infs || {})['SHELL.INF']; if (!inf) return;
   if (W95Win32.regGet('hkcr\\clsid\\{20d04fe0-3aea-1069-a2d8-08002b30309d}\\inprocserver32', '') !== undefined) return;
   infAddReg(inf, 'shell.reg');
@@ -2926,14 +2937,15 @@ function installPrograms() {
 }
 class NativeWin extends Win {
   constructor(app, n) {
-    super({ resizable: false, maximizable: false, icon: app.icon });
+    super({ resizable: false, maximizable: false, icon: app.iconOf(n) });
     this.app = app; this.hwnd = n.hwnd; this.native = true;
     this.noTask = !!n.owner || n.cls === '#32768' || !n.title;
     this.minimizable = !this.noTask;
     this.set(n);
   }
-  set(n) { Object.assign(this, { x: n.x, y: n.y, w: n.w, h: n.h, title: n.title, min: n.iconic, cls: n.cls }); }
-  draw() { this.app.blit(this); }
+  set(n) { Object.assign(this, { x: n.x, y: n.y, w: n.w, h: n.h, title: n.title, min: n.iconic, cls: n.cls, transparent: !!(n.ex & 0x20) }); }
+  // a WS_EX_TRANSPARENT window (MPR's MPRTransparentDesktop behind the logon) shows what is under it
+  draw() { if (!this.transparent) this.app.blit(this); }
   hit(px, py) { return inR(this, px, py) ? 'native' : null; }
   buttons() { return []; }
   barItems() { return []; }
@@ -2954,10 +2966,12 @@ const SCAN = (() => {
 })();
 const WATCHDOG_MS = 5000;   // a Win16Lock held this long with no answer: the watchdog's Ctrl+Alt+Del
 class NativeApp {
-  constructor(path, arg, o = {}) { this.path = path; this.arg = arg; this.net = !!o.net; this.alive = true; this.wins = new Map(); this.icon = EXE_ICON[basename(path).toUpperCase()] || 'app'; this.lastActive = 0; this.cursorOn = false; }
+  constructor(path, arg, o = {}) { this.path = path; this.arg = arg; this.net = !!o.net; this.system = !!o.system; this.alive = true; this.wins = new Map(); this.icon = EXE_ICON[basename(path).toUpperCase()] || 'app'; this.lastActive = 0; this.cursorOn = false; }
   async start(bytes, prog) {
     const S = window.W95SYSTEM;
     await systemCompiled();
+    // the system's machine has no image of its own: its layout is any program's
+    if (!prog) prog = { name: 'MSGSRV32.EXE', d: { meta: Object.values(S.programs)[0].meta, mod: Promise.resolve(null) } };
     if (!prog.d.mod) prog.d.mod = WebAssembly.compile(b64bytes(prog.d.wasm));
     const module = await prog.d.mod;
     const dlls = new Map();
@@ -2977,7 +2991,10 @@ class NativeApp {
       msgMode: on => { msgApp = on ? this : msgApp === this ? null : msgApp; dirty(); }, reset: () => machineReset(),
     };
     const exe = /\s/.test(this.path) ? `"${this.path}"` : this.path;
-    try { this.proc = new W95Win32.Process(bytes, module, { ...prog.d.meta, name: prog.name.replace(/\.EXE$/, '') }, host, this.arg ? `${exe} ${this.arg}` : exe, dlls); }
+    try {
+      this.proc = new W95Win32.Process(bytes, module, { ...prog.d.meta, name: prog.name.replace(/\.EXE$/, '') }, host, this.arg ? `${exe} ${this.arg}` : exe, dlls);
+      if (this.system && !this.proc.trapped && !this.proc.startTask16('MSGSRV32.EXE')) throw new Error('MSGSRV32.EXE did not start');
+    }
     catch (e) { console.error(e); this.exited(-1, e.message); return false; }
     if (this.proc.trapped) { this.exited(-1, this.proc.trapped); return false; }
     { const a = this.proc.scanout(); if (a.bpp) [this.sw, this.sh] = [a.w, a.h]; }   // the mode the display driver set
@@ -3023,6 +3040,11 @@ class NativeApp {
       p.hung('host', e); p.depth = 0;   // a call the host made into it never came back: the system is frozen behind it
     }
     p.stats.guestMs += performance.now() - t0;
+    // a program the system started that performed an illegal operation: it alone is shut down
+    for (const f of (p.pcFaults || []).splice(0)) {
+      f.pc.fault = true; emit('program.exit', { path: f.pc.path, code: -1, why: f.why });
+      msgBox(basename(f.pc.path), `This program has performed an illegal operation and will be shut down.\n\n${f.why}`, 'error');
+    }
     if (p.trapped && !p.failed) p.fail(p.trapped);
     if (p.exitCode !== null || p.trapped) { this.exited(p.exitCode, p.trapped); return; }
     if (!p.win16Held) { this.sync(); this.clipHandoff(); }   // its windows as USER has them (not while USER is held)
@@ -3051,16 +3073,28 @@ class NativeApp {
     if (!sc) return false;
     try { return p.vkdKey(sc & 0xff, sc > 0xff, up, { shift: e.shiftKey, ctrl: e.ctrlKey, alt: e.altKey }); } catch (err) { console.error(err); return false; }
   }
+  /** a window's icon: its program's (in the system's machine, the program of the process whose task made it) */
+  iconOf(n) {
+    const pc = n && n.task && this.proc && [...(this.proc.procs || new Map()).values()].find(c => c.tdb === n.task);
+    return pc ? EXE_ICON[basename(pc.path).toUpperCase()] || 'app' : this.icon;
+  }
   // WinExec and CreateProcess from the program: a program the system runs starts in this one's address space, on its
   // window system (P.spawn). An instance handle (above 31) on success, else WinExec's error: 2 not found, 11 not a
   // program this system runs, 8 its image's place already taken here (a second instance of the same program)
   exec(cmd, show) {
-    const S = window.W95SYSTEM || {}, p = this.proc;
     const m = /^\s*(?:"([^"]+)"|(\S+))\s*(.*)$/.exec(cmd || ''); if (!m) return 2;
     let path = m[1] || m[2]; const arg = m[3];
     if (!extname(path)) path += '.exe';
+    // the shell SYSTEM.INI names (shell=Explorer.exe), which MSGSRV32 starts: the shell is this page, already running
+    if (this.system && /^explorer\.exe$/i.test(basename(path))) return 0x21;
     const file = (/^[a-z]:|^\\/i.test(path) ? [path] : [join(WINDIR, path), join(WINDIR, 'SYSTEM', path), join(fs.cwd, path)]).find(f => fs.exists(f));
     if (!file) return 2;
+    return this.spawnProgram(file, arg);
+  }
+  /** a program the system bundle carries, started in this machine: its process, or WinExec's error (11 not one this
+   *  system runs, 8 its image's place already taken here: a second instance of the same program) */
+  spawnProgram(file, arg) {
+    const S = window.W95SYSTEM || {}, p = this.proc;
     const name = basename(file).toUpperCase(), d = (S.programs || {})[name]; if (!d) return 11;
     const live = (p.pc0 && p.pc0.exe && p.pc0.exe.base === d.meta.base) || [...(p.procs || new Map()).values()].some(x => x.exe.base === d.meta.base);
     if (live) return 8;
@@ -3070,6 +3104,7 @@ class NativeApp {
       const mod = d.modSync || (d.modSync = new WebAssembly.Module(b64bytes(d.wasm)));
       pc = p.spawn(fs.readFile(file), mod, { ...d.meta, name: name.replace(/\.EXE$/, '') }, fs.realpath(file), arg ? `${fs.realpath(file)} ${arg}` : fs.realpath(file));
     } catch (e) { console.error(e); return 8; }
+    pc.onExit = code => { if (!pc.fault) emit('program.exit', { path: pc.path, code }); };
     this.kick();
     return pc;
   }
@@ -3270,11 +3305,46 @@ function nativeAt(x, y) {
   for (const a of nativeApps) if (a.capture) return a;
   const w = winAt(x, y); return w && w.native ? w.app : null;
 }
-async function runNative(path, arg, o) {
+async function runNative(path, arg, o = {}) {
   let bytes; try { bytes = fs.readFile(path); } catch (e) { return false; }
   const prog = await nativeProgram(bytes); if (!prog) return false;
+  // in the system's machine, as Windows 95 runs every program on its one USER and its one set of drivers; a second
+  // instance of a program (whose image's place there is taken) gets a machine of its own
+  if (!o.net) {
+    const sys = await startSystem();
+    if (sys) { const r = sys.spawnProgram(path, arg); if (typeof r === 'object') return true; if (r !== 8) return false; }
+  }
   const app = new NativeApp(path, arg, o);
   return app.start(bytes, prog);
+}
+// ---------------------------------------------------------------- the system
+// Windows 95's system: one machine (one USER, one MMSYSTEM, one sound card) whose first task is MSGSRV32.EXE, started
+// as the desktop comes up. USER's first-task start-up loads the installable drivers for it (MMSYSTEM, the card's), so
+// sound starts once, with the system, and MSGSRV32 plays SystemStart. The programs the shell runs start in it
+let sysApp = null, sysStarting = null;
+function startSystem() {
+  if (!window.W95SYSTEMVM) return Promise.resolve(null);   // (in progress: MSGSRV32 waits in SHELL's API for its messages)
+  if (sysApp && sysApp.alive) return Promise.resolve(sysApp);
+  return sysStarting || (sysStarting = (async () => {
+    const S = window.W95SYSTEM || {}; if (!(S.ne || {}).MSGSRV32 || !Object.keys(S.programs || {}).length) return null;
+    const a = new NativeApp(join(WINDIR, 'SYSTEM', 'MSGSRV32.EXE'), '', { system: true });
+    if (!(await a.start(null, null))) return null;
+    sysApp = a;
+    // KERNEL32, its start done, tells the message server so (SHELL_PostMessage of 501h to MSGSRV32's window): it plays
+    // SystemStart and starts the shell. Once MSGSRV32 waits for messages
+    const p = a.proc, task = [...(p.threadsById || new Map()).values()].find(t => t.task && t.task.hInst && p.neByHandle(t.task.hInst) && p.neByHandle(t.task.hInst).name === 'MSGSRV32');
+    for (let i = 0; i < 200 && a.alive && task && !(task.state === 'waiting' && task.slept); i++) await new Promise(r => setTimeout(r, 25));
+    if (a.alive && task) {
+      try { const h = p.taskWindows(task.tdb)[0]; if (h) p.user16(110, [['w', h], ['w', 0x501], ['w', 0], ['l', 0]]); } catch (e) { console.error(e); }   // PostMessage
+      a.kick();
+    }
+    return a;
+  })().finally(() => { sysStarting = null; }));
+}
+/** at boot: once the desktop is drawn and the page has loaded */
+function systemBootLater() {
+  const go = () => setTimeout(() => startSystem(), 50);
+  if (document.readyState === 'complete') go(); else window.addEventListener('load', go, { once: true });
 }
 // the network's process, which Windows 95 starts as it boots: MPREXE.EXE, with the network's VxDs at ring 0 under it
 // and the provider router's DLLs in it. As Windows 95 boots, the network logon follows (MPR's own Enter Network
@@ -4077,6 +4147,7 @@ window.addEventListener('resize', resize);
 setInterval(() => { blinkOn = !blinkOn; dirty(); }, 530);
 
 bootDisk();
+systemBootLater();
 netBootLater();
 loadTaskbar();
 desk.src = new FsSource(DESKTOP_DIR);
@@ -4296,5 +4367,5 @@ const script = {
   },
 };
 
-window.win95 = { ...script, get nativeApps() { return [...nativeApps]; }, startNetwork, netBoot, netCall, syncNetDrives, mapNetDrive, disconnectNetDrive, get netApp() { return netApp; }, fs, render, SaverRun, displayProperties, startFullSaver, get fullSaver() { return fullSaver; }, properties, driveProps, openFolder, openPath, shellOpen, notepad, msgBox, runDialog, findComputer, findFiles, winHelp, shutDownDialog, MyComputer, get state() { return { menus: menus.length, menuSrc, modals: modals.length, cap: !!cap, drag: !!drag, screen, active: active && active.title }; } };
+window.win95 = { ...script, get nativeApps() { return [...nativeApps]; }, startSystem, get sysApp() { return sysApp; }, startNetwork, netBoot, netCall, syncNetDrives, mapNetDrive, disconnectNetDrive, get netApp() { return netApp; }, fs, render, SaverRun, displayProperties, startFullSaver, get fullSaver() { return fullSaver; }, properties, driveProps, openFolder, openPath, shellOpen, notepad, msgBox, runDialog, findComputer, findFiles, winHelp, shutDownDialog, MyComputer, get state() { return { menus: menus.length, menuSrc, modals: modals.length, cap: !!cap, drag: !!drag, screen, active: active && active.title }; } };
 })();

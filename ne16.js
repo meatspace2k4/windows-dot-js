@@ -635,7 +635,10 @@ const INTS = {
     if (ax === 0x1600) { this.ax(0x0004 | (0x00 << 8)); this.cpu.eax.value = lo16(this.cpu.eax.value, 0x0004); return; }  // Windows 4.00 enhanced mode
     if (ax === 0x1683) { this.cpu.ebx.value = lo16(this.cpu.ebx.value, 1); return; }    // current VM id
     if (ax === 0x1684) {   // VxD protected-mode API entry points: the VDD, VFLATD, and the VxDs USER calls (VXD_API)
-      const id = this.cpu.ebx.value & 0xffff, api = VXD_API[id], has = api && (id !== 0x37 || (this.vxdApiRoute && this.vxdApiRoute(id)));   // ENABLE's only when its VxD is loaded
+      const id = this.cpu.ebx.value & 0xffff, routed = this.vxdApiRoute && this.vxdApiRoute(id);
+      // a loaded VxD with a protected-mode API (SHELL's, which MSGSRV32 calls) answers for itself
+      if (!VXD_API[id] && routed) { vxdApi(id, routed.name || `VxD ${id.toString(16)}h`, {}); VXD_API[id].routedOnly = true; }
+      const api = VXD_API[id], has = api && ((id !== 0x37 && !api.routedOnly) || routed);   // ENABLE's only when its VxD is loaded
       const ep = id === 0x0a ? this.thunk16For('VDD.#0') : id === 0x11f ? this.thunk16For('VFLATD.#0') : has ? this.thunk16For(`VXD.#${id}`) : 0;
       this.cpu.edi.value = lo16(this.cpu.edi.value, ep & 0xffff); this.seg('es', ep >>> 16); return;
     }
@@ -780,7 +783,7 @@ P.nativeWindows = function () {
     const x = s16(0), y = s16(2), w = s16(4) - x, hh = s16(6) - y;
     const tl = this.user16(107, [['w', h], ['w', 0x0d], ['w', 160], ['l', buf + 16]]).ax, title = tl ? this.readA(a + 16, tl) : '';   // DefWindowProc WM_GETTEXT: USER's own copy, no message sent
     const cl = u(58, [['w', h], ['l', buf + 0x180], ['w', 64]]), cls = cl ? this.readA(a + 0x180, cl) : '';          // GetClassName
-    list.push({ hwnd: h, x, y, w, h: hh, title, cls, owner: u(262, [['w', h], ['w', 4]]), iconic: !!u(31, [['w', h]]) });   // GW_OWNER, IsIconic
+    list.push({ hwnd: h, x, y, w, h: hh, title, cls, owner: u(262, [['w', h], ['w', 4]]), iconic: !!u(31, [['w', h]]), task: u(224, [['w', h]]), ex: this.user16(135, [['w', h], ['w', 0xffec]]).dxax });   // GW_OWNER, IsIconic, GetWindowTask, GWL_EXSTYLE
   }
   // the active window: the foreground window when it is one of these (another started process's window is not the
   // active window of the task calling here), else the calling task's
@@ -2706,7 +2709,13 @@ P.threads16 = function (nested = false) {
       }
       t.preempted = r === 1 && !!this.preempted; this.holdWin16(t);
       if (r === 1) { t.ctx = this.saveCtx16(); t.state = 'waiting'; }
-      else { t.state = 'done'; this.wakeWaiters(t); if (t.pc) this.pcThreadEnded(t); if (r !== 0 && this.trapped) console.warn('[ne16] thread', t.id, this.trapped); if (t.onDone) t.onDone(t); }   // onDone: the host's, for a thread it started
+      else {
+        t.state = 'done'; this.wakeWaiters(t);
+        // a fault in a program the system started ends that program, as Windows 95 closes the one program that
+        // performed an illegal operation; the system and the other programs go on
+        if (r !== 0 && this.trapped && t.pc && this.noMain) { (this.pcFaults || (this.pcFaults = [])).push({ pc: t.pc, why: this.trapped }); this.trapped = null; this.endProcess(t.pc, 0xffffffff); }
+        if (t.pc) this.pcThreadEnded(t); if (r !== 0 && this.trapped) console.warn('[ne16] thread', t.id, this.trapped); if (t.onDone) t.onDone(t);
+      }   // onDone: the host's, for a thread it started
     } catch (e) {
       if (!(e instanceof window.W95Win32.HangError)) throw e;
       t.state = 'hung'; this.hung(t, e);   // it stays where it hung, holding what it held
@@ -2716,13 +2725,17 @@ P.threads16 = function (nested = false) {
 /** a far call into 16-bit code that may yield: returns runAt's result (0 returned, 1 yielded) and leaves the
  *  CPU state as the code left it */
 P.start16 = function (sel, off, args) {
-  // a thread's stack gets a selector of its own (the per-level aliases are the main thread's, redefined as it calls)
-  const flat = u32(this.cpu.esp.value), base = (flat - 0xfff0) & ~0xf;
+  // a thread's stack gets a selector of its own (the per-level aliases are the main thread's, redefined as it calls);
+  // a Win16 task's is in its own DGROUP, above its data and local heap, as the loader places it (SS = DS: its
+  // exported functions take DS from SS)
+  const k = this.thread16 && this.thread16.task && window.W95TASKSTACK ? this.thread16.task : null;
+  const flat = u32(this.cpu.esp.value), base = k ? this.selBase(k.dgroup) : (flat - 0xfff0) & ~0xf;
   let ssel;
-  if (this.thread16) ssel = this.thread16.ssel || (this.thread16.ssel = this.allocSels(base, 0x10000));
+  if (k) ssel = k.dgroup;
+  else if (this.thread16) ssel = this.thread16.ssel || (this.thread16.ssel = this.allocSels(base, 0x10000));
   else { ssel = L.STK + 8 * this.stackLevel++; this.setDesc(ssel, base, 0xffff, 0xf300); }
   this.seg('ss', ssel);
-  let sp = flat - 16 - base;
+  let sp = k ? k.sp : flat - 16 - base;
   for (const [t, v] of args) { if (t === 'w') { sp -= 2; this.w16(base + sp, v); } else { sp -= 4; this.w32(base + sp, v); } }
   sp -= 2; this.w16(base + sp, L.SENT); sp -= 2; this.w16(base + sp, 0);
   this.cpu.esp.value = sp; this.seg('cs', sel);
@@ -2791,14 +2804,31 @@ def16('KERNEL', 45, 'sp', 'l', function (name, pb) {
   }
   const m = rec.meta, t = this.newThread(u32((m.segs[m.entry[0] - 1].sel << 16) | m.entry[1]), 0, 0x4000, false);
   t.task = { psp: pspSel, hInst: rec.hInstance, show, stack: rd.u16(rec.file, hdr + 0x12), heap: rd.u16(rec.file, hdr + 0x10), dgroup: rec.dgroup };
+  // its DGROUP: the data, then the local heap, then the stack (SP its top)
+  const dg = m.segs[m.autodata - 1], data = dg ? (Math.max(dg.minalloc || 0, dg.len || 0) + 15) & ~15 : 0;
+  Object.assign(t.task, { heapLo: data, heapHi: data + t.task.heap, sp: Math.min(0xfff0, (data + t.task.heap + Math.max(t.task.stack, 0x1000) + 15) & ~15) });
   t.tdb = newTdb(this);
   return u32((t.tdb << 16) | rec.hInstance);
 });
+/** a task's top-level windows, hidden ones too, front to back */
+P.taskWindows = function (task) {
+  const u = (o, args) => this.user16(o, args).ax, out = [];
+  for (let h = u(262, [['w', u(286)], ['w', 5]]), n = 0; h && n < 512; h = u(262, [['w', h], ['w', 2]]), n++) if (u(224, [['w', h]]) === task) out.push(h);   // GW_CHILD, GW_HWNDNEXT, GetWindowTask
+  return out;
+};
+/** a 16-bit task started as KERNEL's LoadModule starts one (the system's first task, MSGSRV32.EXE): its task handle */
+P.startTask16 = function (name) { this.init16(); const r = K16['KERNEL.#45'][2].call(this, name, 0); return r > 32 ? r >>> 16 : 0; };
 // InitTask: the starting task's registers (AX 1, ES:BX its command tail, CX its stack, DX its show command, SI its
 // previous instance, DI its instance)
 def16('KERNEL', 91, '', 'jmp', function () {
   const k = this.thread16 && this.thread16.task;
   if (!k) { this.ax(0); return this.retf16(0); }
+  // the task's local heap and its stack's bounds in its DGROUP's header (pStackTop, pStackMin, pStackBottom)
+  if (!k.inited && window.W95TASKSTACK) {
+    k.inited = true; const ds = this.selBase(k.dgroup);
+    if (k.heap && !this.lheaps.has(k.dgroup | 1)) this.localInit(k.dgroup, k.heapLo, k.heapHi);
+    this.w16(ds + 0x0a, k.heapHi); this.w16(ds + 0x0c, k.sp); this.w16(ds + 0x0e, k.sp);
+  }
   this.ax(1); this.seg('es', k.psp); this.cpu.ebx.value = lo16(this.cpu.ebx.value, 0x81); this.cpu.ecx.value = lo16(this.cpu.ecx.value, k.stack);
   this.cpu.edx.value = lo16(this.cpu.edx.value, k.show); this.cpu.esi.value = lo16(this.cpu.esi.value, 0); this.cpu.edi.value = lo16(this.cpu.edi.value, k.hInst);
   return this.retf16(0);

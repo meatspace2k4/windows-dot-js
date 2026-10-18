@@ -44,7 +44,10 @@ NE = [('gdi.exe', 0x01C00000, 0x1007, 0x06A00000), ('dibeng.dll', 0x01E00000, 0x
       ('setup4.dll', 0x01510000, 0x1BCF, 0x06E80000), ('sysdm.cpl', 0x01530000, 0x1BDF, 0x070C0000),
       # printer drivers MSPRINT.INF installs from the CD (WIN95_27.CAB): the universal driver and the Generic / Text Only
       # minidriver on it. Setup leaves them on the CD; each loads once the Add Printer wizard has copied its file
-      ('unidrv.dll', 0x01190000, 0x1C27, 0x06010000), ('tty.drv', 0x011E0000, 0x1CCF, 0x06110000)]
+      ('unidrv.dll', 0x01190000, 0x1C27, 0x06010000), ('tty.drv', 0x011E0000, 0x1CCF, 0x06110000),
+      # the system's first task, which Windows 95 starts as it boots (WIN95_12.CAB): USER's first-task start-up loads
+      # the installable drivers (MMSYSTEM, the sound card's) for it, and it plays SystemStart and starts the shell
+      ('msgsrv32.exe', 0x01570000, 0x1CEF, 0x06130000)]
 # the NE modules above that Setup leaves on the CD: a module of these loads only when its file is on the disk
 ON_DISK = {'unidrv.dll', 'tty.drv'}
 # Windows programs that run on the native USER (bootUser16): (file, load base, block-table base). Each has a base of
