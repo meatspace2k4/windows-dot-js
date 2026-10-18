@@ -2964,7 +2964,6 @@ const SCAN = (() => {
   [[7, 0x47], [8, 0x48], [9, 0x49], [4, 0x4b], [5, 0x4c], [6, 0x4d], [1, 0x4f], [2, 0x50], [3, 0x51], [0, 0x52]].forEach(([n, c]) => { t['Numpad' + n] = c; });
   return t;
 })();
-const WATCHDOG_MS = 5000;   // a Win16Lock held this long with no answer: the watchdog's Ctrl+Alt+Del
 class NativeApp {
   constructor(path, arg, o = {}) { this.path = path; this.arg = arg; this.net = !!o.net; this.system = !!o.system; this.alive = true; this.wins = new Map(); this.icon = EXE_ICON[basename(path).toUpperCase()] || 'app'; this.lastActive = 0; this.cursorOn = false; }
   async start(bytes, prog) {
@@ -3022,7 +3021,6 @@ class NativeApp {
       if (this.alive) this.timer = setTimeout(() => this.step(), 16);
       return;
     }
-    this.watchdog();
     if (!p.win16Held && p.k32CloseRequest && p.k32CloseRequest()) closeProgram(this);   // REBOOT's APC: Close Program
     this.keysFed = 0; this.feedKeys();
     // while a thread holds the Win16Lock it gave up the processor in (or hung in), only it runs: USER's timers, the
@@ -3040,6 +3038,14 @@ class NativeApp {
       p.hung('host', e); p.depth = 0;   // a call the host made into it never came back: the system is frozen behind it
     }
     p.stats.guestMs += performance.now() - t0;
+    // a thread stuck for good, holding the Win16Lock: the system cannot answer, and REBOOT.VXD's Ctrl+Alt+Del handling
+    // says so on its blue screen (the first press asks KERNEL32 for Close Program, which cannot come; the second finds
+    // the request unanswered: "System is busy"). Ctrl+Alt+Del there restarts the machine; any other key goes back
+    if (p.stuck) {
+      p.stuck = false;
+      for (let k = 0; k < 2; k++) try { p.vkdKey(0x53, true, false, { ctrl: true, alt: true }); } catch (e) { console.error(e); }
+      if (msgApp === this) dirty();
+    }
     // a program the system started that performed an illegal operation: it alone is shut down
     for (const f of (p.pcFaults || []).splice(0)) {
       f.pc.fault = true; emit('program.exit', { path: f.pc.path, code: -1, why: f.why });
@@ -3052,19 +3058,6 @@ class NativeApp {
   }
   /** ring-0 runs stopped mid-way (a blue screen up): the system takes nothing else until they are done */
   ring0() { return !!(this.proc && this.proc.r0Runs && this.proc.r0Runs.length); }
-  // a system frozen behind a thread that holds the Win16Lock (hung, or running on in 16-bit code) for WATCHDOG_MS: the
-  // watchdog presses Ctrl+Alt+Del for whoever is not there to, and Windows' own REBOOT.VXD takes it from there (the
-  // Close Program request, then its blue screen when the system does not answer)
-  watchdog() {
-    const p = this.proc, h = p.win16Held;
-    if (!h) { this.wdFired = false; return; }
-    // (a hung thread by the clock; one still running by the processor time it has had, so a page whose timers the
-    // browser slows does not count its waits)
-    if (this.wdFired || (h.hung ? performance.now() - h.since : h.cpu) < WATCHDOG_MS || !p.vkdKey) return;
-    this.wdFired = true;
-    console.warn(`[win95] ${basename(this.path)}: no answer for ${Math.round(h.hung ? performance.now() - h.since : h.cpu)} ms (${h.hung ? 'hung' : 'holding the Win16Lock'}): Ctrl+Alt+Del`);
-    try { p.vkdKey(0x53, true, false, { ctrl: true, alt: true }); } catch (e) { console.error(e); }
-  }
   // the keyboard as VKD sees it first: its hot keys (Ctrl+Alt+Del) and, in message mode, every key. True when it took it
   vkd(e, up) {
     const p = this.proc; if (!p || !p.vkdKey || !this.alive) return false;
@@ -3200,7 +3193,9 @@ class NativeApp {
   }
   // the mouse: absolute moves and button changes into USER's mouse_event, as the mouse driver reports them
   pointer(kind, x, y, btn = 0) {
-    if (!this.alive || !this.proc || this.proc.depth || this.proc.win16Held || this.ring0()) return;   // (a held Win16Lock, ring 0 busy: USER takes no input)
+    // (the mouse driver reports to USER at interrupt time, a thread holding the Win16Lock or not; not while ring 0 has
+    // the machine in message mode)
+    if (!this.alive || !this.proc || this.proc.depth || this.ring0()) return;
     const ax = Math.round(clamp(x, 0, this.sw - 1) * 65535 / (this.sw - 1)), ay = Math.round(clamp(y, 0, this.sh - 1) * 65535 / (this.sh - 1));
     const f = kind === 'down' ? (btn === 2 ? 8 : 2) : kind === 'up' ? (btn === 2 ? 16 : 4) : 1;
     try {
@@ -3238,7 +3233,7 @@ class NativeApp {
     this.kick();
   }
   feedKeys() {
-    if (!this.keyq || !this.keyq.length || this.proc.depth || this.proc.win16Held || this.ring0()) return;
+    if (!this.keyq || !this.keyq.length || this.proc.depth || this.ring0()) return;   // (the keyboard driver's, at interrupt time too)
     try { if (this.proc.user16(335).ax) return; } catch (e) { console.error(e); }   // GetInputState: USER has input not yet taken
     for (; this.keyq.length && (this.keysFed || 0) < 16; this.keysFed = (this.keysFed || 0) + 1) {
       const k = this.keyq.shift();
@@ -3856,7 +3851,14 @@ function closeProgram(app) {
   state(2);
   if (windows.some(w => w.title === 'Close Program')) { state(3); return; }
   const bu = dialogBaseUnits(), px = v => Math.round(v * bu.x / 4), py = v => Math.round(v * bu.y / 8);
-  const hung = w => w.native && w.app && w.app.proc && w.app.proc.win16Held;
+  // [Not responding]: USER's own test (USER32's IsHungThread: the thread's queue has not been read for its hung-app
+  // time) on the thread that owns the window
+  const hung = w => {
+    const q = w.native && w.app && w.app.proc, u = q && q.byName && q.byName.get('USER32'), x = u && u.exports;
+    const tid = x && x.get('GetWindowThreadProcessId'), hung = x && x.get('IsHungThread');
+    if (!tid || !hung || q.depth || (q.r0Runs && q.r0Runs.length)) return false;
+    try { return !!q.call(hung, [q.call(tid, [w.hwnd, 0])]); } catch (e) { console.error(e); return false; }
+  };
   const tasks = () => windows.filter(w => !w.noTask && w.title && w.title !== 'Close Program');
   let sel = 0, win;
   const done = () => { closeWin(win); state(0); };
