@@ -152,7 +152,7 @@ P.r0Out = function (fn) {
 };
 /** a system control message to a VxD's control procedure (EAX message, EBX VM handle, the rest as given) */
 P.vxdControl = function (v, msg, regs = {}) { return this.vxdCall(v.procs.control, { ebx: this.sysVM(), ebp: this.r32(this.sysVM() + 8), ...regs, eax: msg }); };   // EBP the VM's client registers
-const SYS_DYNAMIC_DEVICE_INIT = 0x1b, PNP_NEW_DEVNODE = 0x22, W32_DEVICEIOCONTROL = 0x23;
+const SYS_DYNAMIC_DEVICE_INIT = 0x1b, SYS_DYNAMIC_DEVICE_EXIT = 0x1c, PNP_NEW_DEVNODE = 0x22, W32_DEVICEIOCONTROL = 0x23;
 const DLVXD_LOAD_DEVLOADER = 1;
 
 /** the system VM's control block (the VM handle VxDs are given) */
@@ -580,7 +580,20 @@ P.vxdDeviceInfo = function (v) {
   this.w32(oi, v.base); this.w32(oi + 4, v.meta.size || 0x10000);
   return a;
 };
-svc(VXDLDR, 0x02, function () { CF(this, false); this.cpu.eax.value = 0; });
+// UnloadDevice (EBX device id, or -1 for the name at EDX): a VxD LoadDevice loaded drops one load; at none it gets
+// SYS_DYNAMIC_DEVICE_EXIT and, agreeing, is gone (its image back as the file has it), so the next LoadDevice starts
+// it afresh with SYS_DYNAMIC_DEVICE_INIT (VCOMM unloads a port driver when its last port closes, and loads it again
+// on the next open). A device the loader did not load is not its to unload (VXDLDR_ERR_NO_SUCH_DEVICE, 8)
+svc(VXDLDR, 0x02, function () {
+  const id = this.cpu.ebx.value & 0xffff, name = id === 0xffff ? (this.readA(u32(this.cpu.edx.value)) || '').toUpperCase().replace(/^.*\\/, '') : null;
+  const v = [...(this.vxds || new Map()).values()].find(x => x.inited && x.devInfo && (name ? x.file === name || x.file === name + '.VXD' || x.name.toUpperCase() === name : x.id === id));
+  if (!v) { this.cpu.eax.value = 8; CF(this, true); return; }
+  const n = this.u8[v.devInfo + 4]; if (n > 1) { this.u8[v.devInfo + 4] = n - 1; this.cpu.eax.value = 0; CF(this, false); return; }
+  if (this.vxdControl(v, SYS_DYNAMIC_DEVICE_EXIT).cf) { this.cpu.eax.value = 9; CF(this, true); return; }   // VXDLDR_ERR_DEVICE_UNLOADABLE
+  this.u8[v.devInfo + 4] = 0; v.inited = false;
+  const d = window.W95SYSTEM.vxds[v.file]; if (d && d.imgBytes) this.u8.set(d.imgBytes, v.meta.base);
+  this.cpu.eax.value = 0; CF(this, false);
+});
 
 // ---- PELDR: PE images at ring 0 (the NDIS miniports). _PELDR_AddExportTable(*ht, module, nFuncs, nNames, ordBase,
 // names, ordinals, addrs, list): a module name other images import from (NDIS.SYS, HAL); _PELDR_LoadModuleEx(*hl,

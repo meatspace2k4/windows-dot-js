@@ -2160,6 +2160,7 @@ def16('KERNEL', 619, 'wxl', 'w', function (id, relay16, relay32) {         // Re
 // A target that is itself an LS thunklet with this relay is the 16-bit function it wraps (KRNL386 seg3:1D42), so a
 // procedure handed out to 32-bit code and given back (SetWindowLong of the old window procedure) is the original one.
 def16('KERNEL', 568, 'llw', 'l', function (target, relay, owner) {
+  if (!target) return 0;   // a NULL procedure stays NULL (KRNL386 seg3:1DFD), as a callback USER32 passes none of
   this.thunklets = this.thunklets || new Map();
   const ls = this.lsThunklets && this.lsThunklets.get(u32(target));
   if (ls && ls.relay === u32(relay)) return ls.target;
@@ -2180,6 +2181,7 @@ def16('KERNEL', 568, 'llw', 'l', function (target, relay, owner) {
 // routine InitCBClient registered (USER32's), which calls the target through the relay. Run by dataCode.
 // (and, as KRNL386 seg3:1CEF does, an SL thunklet with this relay given back is the 32-bit function it wraps)
 def16('KERNEL', 561, 'll', 'l', function (target, relay) {
+  if (!target) return 0;   // (KRNL386 seg3:1DAB)
   this.lsThunklets = this.lsThunklets || new Map();
   const sl = this.slThunklets && this.slThunklets.get(u32(target));
   if (sl && sl.relay === u32(relay)) return sl.target;
@@ -2662,7 +2664,7 @@ P.pcThreadEnded = function (t) {
 P.endProcess = function (pc, code) {
   if (pc.exitCode !== null) return;
   pc.exitCode = code >>> 0;
-  for (const t of (this.threadsById || new Map()).values()) if (t.pc === pc && t !== this.thread16 && t.state !== 'done') { t.state = 'done'; this.wakeWaiters(t); }
+  for (const t of (this.threadsById || new Map()).values()) if (t.pc === pc && t !== this.thread16 && t.state !== 'done') { t.state = 'done'; this.wakeWaiters(t); if (this.win16Held && this.win16Held.who === t) this.win16Held = null; }
   if (this.thread16 && this.thread16.pc === pc) this.thread16.exitCode = code >>> 0;
   if (this.procs) this.procs.delete(pc.pid);
   if (pc.onExit) pc.onExit(pc.exitCode);
@@ -2743,6 +2745,7 @@ P.threads16 = function (nested = false) {
     } catch (e) {
       if (e instanceof window.W95Win32.FaultError) {   // a processor exception nothing in it handled
         t.state = 'done'; this.wakeWaiters(t);
+        if (this.win16Held && this.win16Held.who === t) this.win16Held = null;   // (an ended thread's Win16Lock is let go, as its task's end releases it)
         // a program the system started ends alone (KERNEL32's fault dialog for it); the program this machine runs, or
         // ring 0, takes the machine's answer
         if (t.pc && this.noMain && e.fault.ring !== 0) { (this.pcFaults || (this.pcFaults = [])).push({ pc: t.pc, fault: e.fault, why: e.fault.why }); this.endProcess(t.pc, 0xffffffff); }

@@ -112,8 +112,9 @@ function translate(p, lin, csb, d32) {
         if (!(mod === 0 && rm === 6)) { for (const r of R16) f.gg(r).op('add'); if (rm === 2 || rm === 3 || rm === 6) defSeg = 2; }
         f.c(0xffff).op('and');
       }
-      f.gg(sbase(seg === null ? defSeg : seg)).op('add').ls(A);
-      return { reg, mem: true };
+      const sr = seg === null ? defSeg : seg;
+      f.gg(sbase(sr)).op('add').ls(A);
+      return { reg, mem: true, sr };
     };
     const rdReg = (r, sz) => {
       if (sz === 1) { f.gg(G[r & 3]); if (r & 4) f.c(8).op('shr_u'); f.c(0xff).op('and'); }
@@ -220,7 +221,7 @@ function translate(p, lin, csb, d32) {
     }
     if (b === 0x8c) { const o = modrm(); f.gg(SEG[o.reg][0]).ls(T); wr(o, o.isReg ? osz : 2, T); continue; }
     if (b === 0x8e) { const o = modrm(); rd(o, 2); f.ls(T); loadSeg(o.reg, T); continue; }
-    if (b === 0x8d) { const o = modrm(); f.lg(A).gg(sbase(seg === null ? 3 : seg)).op('sub').ls(T); wrReg(o.reg, osz, T); continue; }   // lea: the offset
+    if (b === 0x8d) { const o = modrm(); f.lg(A).gg(sbase(o.sr)).op('sub').ls(T); wrReg(o.reg, osz, T); continue; }   // lea: the offset (less the base its address added: SS's for BP and SP)
     if (b === 0x8f) { const o = modrm(); pop(T, osz); wr(o, osz, T); continue; }
     if (b === 0x90) continue;
     if (b === 0x60) {   // pusha: AX CX DX BX, SP as it was, BP SI DI
@@ -369,6 +370,12 @@ function translate(p, lin, csb, d32) {
           if (kind === 2) f.c(-1).op('xor').op('and'); else f.op(kind === 1 ? 'or' : 'xor');
           f.ls(T); wr(o, osz, T);
         }
+        continue;
+      }
+      if (b2 === 0x02 || b2 === 0x03) {   // lar / lsl, as the recompiled ones: the access word (ACC) or limit (LDT +4) of the selector's descriptor, ZF when it is in use
+        const o = modrm(); rd(o, 2); f.c(0xfff8).op('and').ls(T);
+        f.lg(T).c(LDT + 4).op('add').ld(4).lg(T).c(LDT).op('add').ld(4).op('or').c(0).op('ne').gs('zf');
+        f.gg('zf').if_(); f.lg(T).c(b2 === 0x02 ? ACC : LDT + 4).op('add').ld(4).ls(R); wrReg(o.reg, osz, R); f.end();
         continue;
       }
       throw new Unsupported(`0f ${b2.toString(16)}`);
