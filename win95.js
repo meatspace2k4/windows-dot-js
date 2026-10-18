@@ -3535,11 +3535,11 @@ function startSystem() {
     sysApp = a;
     // KERNEL32, its start done, tells the message server so (SHELL_PostMessage of 501h to MSGSRV32's window): it plays
     // SystemStart and starts the shell. Once MSGSRV32 waits for messages
+    if (!cleanStart) return a;   // (not told: no SystemStart; the shell it would start is this page)
     if (a.remote) {   // (the machine posts it when MSGSRV32 waits for messages)
       for (let i = 0; i < 200 && a.alive && !(await a.cmd('systemStarted')); i++) await new Promise(r => setTimeout(r, 25));
       return a;
     }
-    if (!cleanStart) return a;   // (not told: no SystemStart; the shell it would start is this page)
     const p = a.proc, task = [...(p.threadsById || new Map()).values()].find(t => t.task && t.task.hInst && p.neByHandle(t.task.hInst) && p.neByHandle(t.task.hInst).name === 'MSGSRV32');
     for (let i = 0; i < 200 && a.alive && task && !(task.state === 'waiting' && task.slept); i++) await new Promise(r => setTimeout(r, 25));
     if (a.alive && task) {
