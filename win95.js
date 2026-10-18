@@ -3719,8 +3719,8 @@ function startNetwork() {
     const path = join(WINDIR, 'MPREXE.EXE');
     let bytes; try { bytes = fs.readFile(path); } catch (e) { return null; }
     const prog = await nativeProgram(bytes); if (!prog) return null;
-    if (!window.SharedArrayBuffer) await netCompiled();
-    netApp = new (window.SharedArrayBuffer ? RemoteApp : NativeApp)(path, '', { net: true }); fs.uncs.clear();
+    await netCompiled();
+    netApp = new NativeApp(path, '', { net: true }); fs.uncs.clear();   // (on the page: the shell reaches its drives synchronously, as it did before 5d295d0)
     const t = performance.now(), ok = await netApp.start(bytes, prog); netApp.startMs = performance.now() - t;
     return ok ? netApp : null;
   })().finally(() => { netStarting = null; }));
