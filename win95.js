@@ -2947,6 +2947,9 @@ function setupNetwork() {
 // holds the capture (menus, dragging), and the keys while one of them is the active window.
 const nativeApps = new Set();
 const NATIVE_MODES = [[1024, 768], [800, 600], [640, 480]];
+// the display mode for a machine: the smallest that covers the shell's screen; when none does (a tall, narrow page),
+// the largest the screen holds, so no window runs past the page's edge (else the smallest)
+const nativeMode = () => [...NATIVE_MODES].reverse().find(([w, h]) => w >= W && h >= H) || NATIVE_MODES.find(([w, h]) => w <= W && h <= H) || NATIVE_MODES[2];
 async function nativeProgram(bytes) {
   const progs = (window.W95SYSTEM || {}).programs || {}, sha = await sha256hex(bytes);
   for (const [name, d] of Object.entries(progs)) if (d.meta.sha256 === sha) return { name, d };
@@ -3010,9 +3013,7 @@ class NativeApp {
     if (!this.net) for (const [n, d] of Object.entries(S.net || {})) dlls.set(n.replace(/\.DLL$/, ''), {
       get file() { return d.bytes || (d.bytes = b64bytes(d.file)); }, meta: d.meta,
       get module() { return d.mod instanceof WebAssembly.Module ? d.mod : (d.modSync || (d.modSync = new WebAssembly.Module(b64bytes(d.wasm)))); } });
-    // the smallest display mode that covers the shell's screen (else the largest), so the whole desktop is on the
-    // program's screen: no window is cut off at its bottom edge and the pointer reaches every point
-    [this.sw, this.sh] = [...NATIVE_MODES].reverse().find(([w, h]) => w >= W && h >= H) || NATIVE_MODES[0];
+    [this.sw, this.sh] = nativeMode();
     const host = {
       fs, width: this.sw, height: this.sh, path: this.path, now: () => performance.now(), net: this.net, vmPages: 2048,   // 128 MiB of address space to reserve
       shared: true,   // (the system's modules take shared memory: the machines in workers share theirs with the page)
@@ -3359,7 +3360,7 @@ class RemoteApp extends NativeApp {
   // what the shell's older code reads of a machine (its counters; a program that has not exited)
   get proc() { return { stats: this.stats, exitCode: this.alive ? null : 0, trapped: null, depth: 0, win16Held: this.held, r0Runs: this.r0 ? [1] : [], txt: this.txt }; }
   start(bytes, prog) {
-    [this.sw, this.sh] = [...NATIVE_MODES].reverse().find(([w, h]) => w >= W && h >= H) || NATIVE_MODES[0];
+    [this.sw, this.sh] = nativeMode();
     this.ring = W95Bridge.newRing(); this.rpcSab = new SharedArrayBuffer(16 + W95Bridge.RPC_BYTES);
     if (this.net) this.lanRing = W95Bridge.newFrames();   // (the frames for its network card)
     this.worker = new Worker('worker.js'); machineWorkers.add(this);
