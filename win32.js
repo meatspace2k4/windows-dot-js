@@ -246,7 +246,7 @@ class Process {
    *  take: #UD): the exception's continuation, or null for a stop of the emulator's own (trapped) */
   noCode(at) {
     const t = this.trapped || '';
-    if (/^run-time code/.test(t)) { this.trapped = null; return this.raise(6, at); }
+    if (/^run-time code/.test(t)) { console.warn(`[win32] ${t}`); this.trapped = null; return this.raise(6, at); }   // (an emulator gap: named)
     if (t && !/^jump to unmapped address/.test(t)) return null;
     this.trapped = null; return this.raise(14, at, at);
   }
@@ -381,7 +381,7 @@ class Process {
     if (cs && this.neByHandle) {   // 16-bit: the module's file and the segment's number, the offset in it
       const ne = this.neByHandle(cs); const sg = ne && ne.meta && ne.meta.segs && ne.meta.segs.findIndex(x => x.sel === (cs & ~7) || x.sel === cs);
       if (ne) { module = (ne.fileName || ne.name + '.EXE').toUpperCase(); if (sg >= 0) sel = sg + 1; at = (eip - u32(this.selBase(cs))) >>> 0; }
-    } else if (m) module = m.kind === 'vxd' ? m.name : m === this.exe ? (this.pc && this.pc.path ? this.pc.path.replace(/^.*\\/, '') : (this.meta.name || 'EXE') + '.EXE').toUpperCase() : (m.file || m.name + '.DLL').toUpperCase();
+    } else if (m) module = m.kind === 'vxd' ? m.name : m === this.exe ? (this.pc && this.pc.path ? this.pc.path.replace(/^.*\\/, '') : (this.meta.name || 'EXE') + '.EXE').toUpperCase() : (typeof m.file === 'string' ? m.file : m.name + '.DLL').toUpperCase();   // (a DLL's file is its image's bytes)
     const bytes = [], stack = [];
     for (let i = 0; i < 16; i++) bytes.push(eip + i < this.u8.length ? this.u8[eip + i] : 0);
     const sp = this.stackLin ? this.stackLin() : regs.esp;
@@ -392,6 +392,7 @@ class Process {
   }
   trap(eip, code) {
     if (code === 2 && this.dynRun) { this.dynWant = u32(eip); return; }
+    if (code === 1) console.warn(`[win32] unsupported instruction at ${u32(eip).toString(16)} (cs ${(this.cpu.cs.value & 0xffff).toString(16)})`);   // (an emulator gap: named)
     if (code <= 4) { this.cpu.eip.value = this.raise(TRAP_VEC[code], u32(eip), code === 2 ? u32(eip) : 0) | 0; return; }
     if (this.trapHook && this.trapHook(eip, code)) return;
     this.trapped = `${['divide error', 'unsupported instruction', 'jump to unmapped address', 'breakpoint'][code] || 'trap'} at ${u32(eip).toString(16)}`;
@@ -1425,7 +1426,7 @@ def('KERNEL32', 'GetVolumeInformationA', 8, function (root, name, nn, serial, ma
   });
 });
 def('KERNEL32', 'SetVolumeLabelA', 2, function (root, name) { return fsCall(this, () => (this.fs.setLabel(((this.readA(root) || this.fs.cwd)[0] || 'C').toUpperCase(), this.readA(name) || ''), 1)); });
-def('KERNEL32', 'GetShortPathNameA', 3, function (l, s, n) { const r = fsCall(this, () => this.fs.shortPath ? this.fs.shortPath(this.readA(l)) : this.readA(l), null); if (r === null) return 0; return this.writeA(s, r, n); });
+def('KERNEL32', 'GetShortPathNameA', 3, function (l, s, n) { const r = fsCall(this, () => this.fs.stat(this.readA(l)).shortPath, null); if (r === null) return 0; return this.writeA(s, r, n); });   // (the path's 8.3 form, as stat gives it; a path that is not there fails)
 def('KERNEL32', 'ExpandEnvironmentStringsA', 3, function (src, dst, n) {
   const env = { WINDIR: 'C:\\WINDOWS', SYSTEMROOT: 'C:\\WINDOWS', TEMP: 'C:\\WINDOWS\\TEMP', TMP: 'C:\\WINDOWS\\TEMP', PATH: 'C:\\WINDOWS;C:\\WINDOWS\\COMMAND' };
   const r = (this.readA(src) || '').replace(/%([^%]+)%/g, (m, k) => env[k.toUpperCase()] ?? m);
