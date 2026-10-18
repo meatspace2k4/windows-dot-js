@@ -261,7 +261,7 @@ P.bootUser16 = function () {
 // to is what the next one starts from
 const STACK = 0x194, stackUsers = new Set(); let stackN = 0;
 P.userStack = function () {
-  const user = this.ne.get('USER');
+  const user = this.ne && this.ne.get('USER');   // (a screen saver's process has no native USER)
   if (!user || !user.inited) return;
   if (!stackUsers.has(this)) {   // this USER.EXE's (inc word ptr [194h] where it places a window)
     const s = user.meta.segs[10], at = s && s.base + 0x17a1;
@@ -2349,7 +2349,8 @@ P.spawn = function (file, module, meta, path, cmdline) {
 P.runUntilIdle = function (pc, rounds = 500) {
   const t = pc.main;
   // waiting: in WaitEvent (the message wait: t.slept) or on an object not yet set
-  for (let k = 0; k < rounds && t.state !== 'done' && !(t.state === 'waiting' && (t.slept || (t.wait && !t.wait.set))) && !this.trapped; k++) this.threads16(true);
+  // (or its time ran out: preempted, as the new task gives up the processor)
+  for (let k = 0; k < rounds && t.state !== 'done' && t.state !== 'hung' && !(t.state === 'waiting' && (t.slept || t.preempted || (t.wait && !t.wait.set))) && !this.trapped; k++) this.threads16(true);
 };
 /** a thread of a started process has ended: the process ends with its last thread (a thread returning from its
  *  start, the main one too, ends that thread only), unless ExitProcess ended it already */
@@ -2386,18 +2387,18 @@ def16('KERNEL', 441, 'llllll', 'l', function (attr, stack, start, param, flags, 
   if (ptid) this.w32(this.lin(ptid), id);
   return this.newHandle({ kind: 'thread', id });
 });
-const CTX = ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi', 'cf', 'pf', 'zf', 'sf', 'of', 'df', 'eip', 'cs', 'ds', 'es', 'ss', 'fsel', 'gsel', 'csb', 'dsb', 'esb', 'ssb', 'fs', 'gsb'];   // fs: FS's base (the TIB in flat code)
-P.saveCtx16 = function () { const c = {}; for (const r of CTX) c[r] = this.cpu[r].value; c.depth = this.depth; c.stackLevel = this.stackLevel; return c; };
-P.loadCtx16 = function (c) { for (const r of CTX) this.cpu[r].value = c[r]; this.depth = c.depth; this.stackLevel = c.stackLevel; };
+P.saveCtx16 = function () { return this.saveFull(); };   // (a thread's time can run out between any two blocks: all of it)
+P.loadCtx16 = function (c) { this.loadFull(c); };
 /** run the threads that can run; the host calls this between slices of the main thread */
 P.threads16 = function (nested = false) {
   if (!this.threadsById || (!nested && (this.thread16 || this.depth)) || this.inThreads) return;
   const caller = this.thread16;
   this.inThreads = true;
   try { for (const t of [...this.threadsById.values()]) {   // the threads there are as the pass starts: one created in it starts in the next
-    if (t === caller || t.blocked || (t.id === MAIN_TID && !caller) || (t.id === MAIN_TID && caller) || !t.state || t.state === 'done' || t.state === 'suspended' || (t.state === 'waiting' && t.wait && !t.wait.set)) continue;   // a thread that yielded with no event to wait for (in WaitEvent) runs again
+    if (t === caller || t.blocked || (t.id === MAIN_TID && !caller) || (t.id === MAIN_TID && caller) || !t.state || t.state === 'done' || t.state === 'hung' || t.state === 'suspended' || (t.state === 'waiting' && t.wait && !t.wait.set)) continue;   // a thread that yielded with no event to wait for (in WaitEvent) runs again
+    if (this.win16Held && this.win16Held.who !== t) continue;   // another thread holds the Win16Lock
     const main = this.saveCtx16();
-    this.thread16 = t; t.sliceStart = this.now();
+    this.thread16 = t; t.sliceStart = this.now(); this.preempted = 0;
     let r;
     try {
       if (t.state === 'new' && t.flat) {
@@ -2412,7 +2413,7 @@ P.threads16 = function (nested = false) {
         let esp = t.stackBase + t.stack - 16; esp -= 4; this.w32(esp, t.param); esp -= 4; this.w32(esp, LAYOUT.SENTINEL);
         this.cpu.esp.value = esp; t.state = 'running';
         if (t.pc && !t.pc.started) this.pcStart(t.pc);
-        r = this.runAt(u32(t.start));
+        r = this.runTop(u32(t.start));
         if (r === 0 && t.exitCode === undefined) t.exitCode = u32(this.cpu.eax.value);
         if (r !== 1 && t.pc) { t.state = 'done'; this.pcThreadEnded(t); }
       } else if (t.state === 'new') {
@@ -2428,10 +2429,14 @@ P.threads16 = function (nested = false) {
       } else {
         // it yielded at its top level, so it holds no 16-bit stack aliases: it takes them from the level in use now
         this.loadCtx16(t.ctx); this.stackLevel = main.stackLevel; t.state = 'running'; t.wait = null;
-        r = this.runAt(u32(this.cpu.eip.value));
+        r = this.runTop(u32(this.cpu.eip.value));
       }
+      t.preempted = r === 1 && !!this.preempted; this.holdWin16(t);
       if (r === 1) { t.ctx = this.saveCtx16(); t.state = 'waiting'; }
       else { t.state = 'done'; this.wakeWaiters(t); if (t.pc) this.pcThreadEnded(t); if (r !== 0 && this.trapped) console.warn('[ne16] thread', t.id, this.trapped); if (t.onDone) t.onDone(t); }   // onDone: the host's, for a thread it started
+    } catch (e) {
+      if (!(e instanceof window.W95Win32.HangError)) throw e;
+      t.state = 'hung'; this.hung(t, e);   // it stays where it hung, holding what it held
     } finally { this.thread16 = caller; this.loadCtx16(main); }
   } } finally { this.inThreads = false; }
 };
@@ -2449,7 +2454,7 @@ P.start16 = function (sel, off, args) {
   sp -= 2; this.w16(base + sp, L.SENT); sp -= 2; this.w16(base + sp, 0);
   this.cpu.esp.value = sp; this.seg('cs', sel);
   this.depth++; if (this.thread16) this.thread16.depth = this.depth;
-  return this.runAt(u32(this.selBase(sel) + off));
+  return this.runTop(u32(this.selBase(sel) + off));
 };
 // the 32-bit modules from 16-bit code: LoadLibrary32 and GetProcAddress32 (by name, or by ordinal as a low word)
 def16('KERNEL', 452, 's', 'l', function (name) {
@@ -2865,8 +2870,10 @@ K('#48', 1, function (p) { if (p) this.w32(p, 0); return 0; });   // ReleaseThun
 // (a block USER32 writes into). One thread runs here, so the lock has nothing to exclude.
 K('#93', 1, function (pp) { if (!this.win16Lock) this.win16Lock = this.alloc(0x40); this.w32(pp, this.win16Lock); return 0; });   // GetpWin16Lock
 K('#92', 0, function () { if (!this.pk16SysVar) this.pk16SysVar = this.alloc(0x40); return this.pk16SysVar; });            // GetPK16SysVar
-K('#86', 1, () => 0);                                                                                                        // _EnterSysLevel
-K('#97', 1, () => 0);                                                                                                        // _LeaveSysLevel
+// _EnterSysLevel / _LeaveSysLevel: the levels a thread holds (the Win16Lock among them), which it keeps when its time
+// runs out there (holdWin16)
+K('#86', 1, function () { this.sysLevel = (this.sysLevel || 0) + 1; return 0; });
+K('#97', 1, function () { this.sysLevel = Math.max(0, (this.sysLevel || 0) - 1); return 0; });
 K('#49', 1, () => 0);                                      // RestoreThunkLock
 K('#51', 0, () => 0);
 // W32S_BackTo32 (KERNEL32 #51), as USER32's thunklet relays use it under native USER: entered by a jump with [ESP] the
@@ -2884,10 +2891,9 @@ API.KERNEL32['#51'] = ['regs', function () {
 }];
 K('#68', 3, function (sp) { return this.lin(sp); });      // K32WOWGetVDMPointerFix
 K('#69', 1, () => 0);
-K('#86', 1, () => 0);
 K('#93', 1, function (p) { if (p) this.w32(p, 0); return 0; });   // GetpWin16Lock
 K('#96', 0, () => 1);
-K('#97', 1, () => 0); K('#98', 1, () => 0);
+K('#98', 1, () => 0);
 K('GetProcessFlags', 1, () => 0);
 K('ConvertToGlobalHandle', 1, h => h);
 K('ReleaseMutex', 1, () => 1);   // one processor runs every thread here: a mutex has no one to keep out

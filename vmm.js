@@ -55,6 +55,79 @@ P.vxdCall = function (addr, regs = {}, at) {
   if (!this.r0Depth) this.vmIrqDeliver();
   return out;
 };
+/** ring-0 work the host starts (a time-out, a hot key, an event) as a run that can stop and go on later, as a ring-0
+ *  thread would: a VxD that blocks (_BlockOnID) until another's work signals it, a blue screen (message mode) waiting
+ *  for a key with nothing else running. The page keeps drawing and taking keys meanwhile. It returns the registers it
+ *  left, or null when it stopped: r0Runs holds the stopped ones, which the host resumes (r0Step) as they can go on */
+P.r0Start = function (addr, regs = {}) {
+  const outer = this.saveFull(), top = this.r0Free();
+  for (const [s, b] of SEGS) { this.cpu[s].value = 0; if (s !== 'fsel') this.cpu[b].value = 0; }
+  this.cpu.fs.value = this.tibFor ? this.tibFor() : this.cpu.fs.value;
+  for (const r of GPR) if (r !== 'esp') this.cpu[r].value = u32(regs[r] || 0);
+  this.cpu.esp.value = top; this.push(W.LAYOUT.SENTINEL);
+  this.depth++;
+  return this.r0Run({ outer, eip: addr });
+};
+P.r0Run = function (s) {
+  this.r0Depth = (this.r0Depth || 0) + 1; this.preempted = 0; this.r0StopReady = null;
+  let r;
+  try { r = this.runTop(s.eip); }
+  catch (e) { this.r0Depth--; this.loadFull(s.outer); this.r0LowSet(); throw e; }
+  this.r0Depth--;
+  if (r === 1 && !this.trapped) {   // it waits (R0WAIT, until `ready`), or its time ran out: kept as it is, the host's state put back
+    s.ctx = this.saveFull(); s.eip = u32(this.cpu.eip.value);
+    s.wait = !this.preempted; s.cont = this.r0Cont; s.ready = s.wait ? this.r0StopReady || (() => true) : () => true;
+    (this.r0Runs || (this.r0Runs = [])).push(s); this.r0LowSet();
+    this.loadFull(s.outer); return null;
+  }
+  this.r0LowSet();
+  const out = { cf: this.cpu.cf.value & 1, zf: this.cpu.zf.value & 1 }; for (const k of GPR) out[k] = u32(this.cpu[k].value);
+  this.loadFull(s.outer);
+  if (r !== 0 || this.trapped) throw new W.GuestError(this.trapped || `VxD call did not return (${r})`);
+  if (!this.r0Depth) this.vmIrqDeliver();
+  return out;
+};
+/** new ring-0 frames go below every stopped run's */
+P.r0LowSet = function () {
+  const runs = this.r0Runs || [];
+  if (!runs.length) { if (this.r0LowBase !== undefined) { this.r0Low = this.r0LowBase; this.r0LowBase = undefined; } return; }
+  if (this.r0LowBase === undefined) this.r0LowBase = this.r0Low;
+  this.r0Low = (Math.min(...runs.map(x => u32(x.ctx.esp))) - 0x100) & ~3;
+};
+/** the host's turn while ring-0 runs are stopped: events scheduled meanwhile start (as runs of their own), else the
+ *  newest run that can go on goes on until it ends or stops again. True while any is still stopped */
+P.r0Step = function () {
+  const runs = this.r0Runs || [];
+  if (!runs.length) return false;
+  if (this.vxdEvents && this.vxdEvents.length) {
+    const e = this.vxdEvents.shift();
+    this.r0Start(e.fn, { ebx: this.sysVM(), edx: e.ref, ebp: this.vmClientIdle(), esi: e.handle || 0 });
+    return !!(this.r0Runs && this.r0Runs.length);
+  }
+  for (let i = runs.length - 1; i >= 0; i--) {
+    const s = runs[i]; if (!s.ready()) continue;
+    runs.splice(i, 1);
+    s.outer = this.saveFull(); this.loadFull(s.ctx);
+    this.r0Go = s.wait; this.r0Cont = s.cont;
+    this.r0Run(s); break;
+  }
+  return !!(this.r0Runs && this.r0Runs.length);
+};
+/** a callback VKD makes at interrupt time (a hot key): as ring-0 work the host starts */
+P.r0Callback = function (fn, regs) {
+  if (this.depth) return this.vxdCall(fn, { ...regs, ebp: this.vmClientIdle() });
+  return this.r0Start(fn, { ...regs, ebp: this.vmClientIdle() });
+};
+// R0WAIT: where a ring-0 run that waits stops (run returns 1 there) and goes on when resumed, at r0Cont
+W.API.VMMSVC = W.API.VMMSVC || {};
+W.API.VMMSVC.R0WAIT = ['regs', function () { if (this.r0Go) { this.r0Go = false; return this.r0Cont; } return -1; }];
+/** stop the ring-0 run here (a service that waits, until `ready()`): it goes on after the service when the host
+ *  resumes it. Only a run the host started that can stop (r0Start) stops; false otherwise */
+P.r0Stop = function (ready) {
+  if (this.runLevel !== this.yieldLevel || !this.r0Depth) return false;
+  this.r0StopAt = this.thunkFor('VMMSVC', 'R0WAIT'); this.r0StopReady = ready || null;
+  return true;
+};
 /** the interrupts VxDs requested for the VM (VPICD_Set_Int_Request), taken as ring 0 returns to VM code */
 P.vmIrqDeliver = function () {
   const by = this.vpicd && this.vpicd.byIrq; if (!by || this.inIRQ) return;
@@ -106,11 +179,14 @@ INTS[0x20] = function (next) {
   // a VxDJmp comes from a stub the caller called: its return address sits above the arguments
   const sp = u32(this.cpu.esp.value) + (jmp ? 4 : 0), arg = i => this.r32(sp + 4 * i);
   this.svcSite = jmp ? this.r32(sp - 4) : u32(next) - 6;   // where it was called from, for a deadlock's report
+  this.r0StopAt = 0;
   const r = fn.call(this, arg);
   if (r !== undefined) this.cpu.eax.value = u32(r);
   if (window.W95VXDRET) window.W95VXDRET(dev, n, this, arg, u32(this.cpu.eax.value));   // debugging: each service's result
-  if (jmp) { const ret = this.r32(u32(this.cpu.esp.value)); this.cpu.esp.value = u32(this.cpu.esp.value) + 4; return ret; }   // VxDJmp: back to the caller's caller
-  return next;
+  let back = next;
+  if (jmp) { back = this.r32(u32(this.cpu.esp.value)); this.cpu.esp.value = u32(this.cpu.esp.value) + 4; }   // VxDJmp: back to the caller's caller
+  if (this.r0StopAt) { const at = this.r0StopAt; this.r0StopAt = 0; this.r0Cont = back; return at; }   // the service waits there (r0Stop)
+  return back;
 };
 const CF = (p, on) => { p.cpu.cf.value = on ? 1 : 0; };
 /** a loaded VxD's service, from its DDB's service table (DDB_Service_Table_Ptr/Size) */
@@ -142,6 +218,57 @@ svc(VMM, 0x03, function () { this.cpu.ebx.value = this.sysVM(); });             
 svc(VMM, 0x04, function () { ZF(this, u32(this.cpu.ebx.value) === this.sysVM()); });                  // Test_Sys_VM_Handle
 svc(VMM, 0x05, function () { CF(this, u32(this.cpu.ebx.value) !== this.sysVM()); });                  // Validate_VM_Handle
 svc(VMM, 0x108, function () { this.cpu.edi.value = this.r0Thread(this.currentThreadId()); });          // Get_Cur_Thread_Handle
+svc(VMM, 0x02, function () { ZF(this, u32(this.cpu.ebx.value) === this.sysVM()); });                  // Test_Cur_VM_Handle: the system VM runs
+svc(VMM, 0x109, function () { ZF(this, u32(this.cpu.edi.value) === this.r0Thread(this.currentThreadId())); });   // Test_Cur_Thread_Handle
+// the system VM is the only one, always running, always the one with the focus, at its usual priorities
+svc(VMM, 0x2b, function () { CF(this, true); });                                                      // Suspend_VM: the system VM cannot be
+svc(VMM, 0x2c, function () { CF(this, false); });                                                     // Resume_VM
+svc(VMM, 0x30, function () { this.cpu.ebx.value = this.sysVM(); });                                   // Get_Execution_Focus
+svc(VMM, 0x31, function () { CF(this, false); });                                                     // Set_Execution_Focus
+svc(VMM, 0x32, function () { this.cpu.eax.value = 0; this.cpu.ecx.value = 100; this.cpu.edx.value = 50; this.cpu.esi.value = 100; });   // Get_Time_Slice_Priority
+svc(VMM, 0x33, function () { CF(this, false); });                                                     // Set_Time_Slice_Priority
+svc(VMM, 0x37, function () {});                                                                       // Adjust_Execution_Time
+svc(VMM, 0x40, function () { this.cpu.eax.value = this.sysTime(); this.cpu.edx.value = 0; });          // Get_VM_Exec_Time
+svc(VMM, 0xd0, function () { this.cpu.eax.value = this.sysTime(); });                                  // Get_Last_Updated_VM_Exec_Time
+svc(VMM, 0x114, function () {});                                                                      // Adjust_Thread_Exec_Priority
+svc(VMM, 0x163, function () {});                                                                      // Set_Inversion_Pri
+svc(VMM, 0x166, function () { return 8; });                                                           // Get_Thread_Win32_Pri: normal
+svc(VMM, 0x21, function () { if (this.vxdCrit) this.vxdCrit--; });                                   // End_Crit_And_Suspend
+// Get_Crit_Section_Status: EBX the owner, ECX its claims (none but the VxDs' own here)
+svc(VMM, 0x29, function () { const n = this.vxdCrit || 0; this.cpu.ecx.value = n; this.cpu.ebx.value = n ? this.sysVM() : 0; CF(this, false); });
+svc(VMM, 0x09, function () { CF(this, false); });                                                     // Install_V86_Break_Point: no V86 code reaches it
+svc(VMM, 0xbd, function () {});                                                                       // Set_System_Exit_Code
+svc(VMM, 0xdb, function () { CF(this, true); });                                                      // Get_Name_Of_Ugly_TSR: none loaded
+svc(VMM, 0xe0, function () { this.cpu.eax.value = 0; this.cpu.edx.value = 0; CF(this, false); });     // GetSetDetailedVMError: none
+svc(VMM, 0x142, function () { this.cpu.eax.value = 0; });                                              // Get_Set_Real_DOS_PSP
+svc(VMM, 0x18, function () { CF(this, false); });                                                     // Hook_NMI_Event: no NMI comes
+svc(VMM, 0xe9, function () { CF(this, false); });                                                     // Hook_Invalid_Page_Fault: every page is present
+// Close_VM (EBX VM, EAX flags): the system VM's is the machine's end
+svc(VMM, 0xec, function () { if (this.host && this.host.reset) this.host.reset(); throw new W.GuestError('the system VM was closed'); });
+svc(VMM, 0x2f, function () { throw new W.GuestError('Crash_Cur_VM'); });
+// the page tables: one address space, every page mapped to itself. _CopyPageTable(page, n, buf, flags): the entries
+// (present, writable, user); _ModifyPageBits, _MapIntoV86, _PhysIntoV86: the mapping stays as it is
+svc(VMM, 0x61, function (arg) { for (let i = 0; i < arg(1); i++) this.w32(arg(2) + 4 * i, u32((arg(0) + i) * 0x1000 | 7)); return 1; });
+svc(VMM, 0x60, function () { return 1; }); svc(VMM, 0x5d, function () { return 1; }); svc(VMM, 0x5e, function () { return 1; });
+// VMM_GetDDBList: the first DDB, each one's DDB_Next the one loaded after it
+svc(VMM, 0x13f, function () {
+  const vs = [...(this.vxds || new Map()).values()].filter(v => v.inited);
+  vs.forEach((v, i) => this.w32(v.ddb, vs[i + 1] ? vs[i + 1].ddb : 0));
+  this.cpu.eax.value = vs.length ? vs[0].ddb : 0;
+});
+// _GetVxDName(addr, buf): the name of the VxD whose image holds the address ("VMM" for the VMM's own)
+svc(VMM, 0x17e, function (arg) {
+  const a = u32(arg(0)), v = [...(this.vxds || new Map()).values()].find(x => a >= x.meta.base && a < x.meta.base + x.meta.size);
+  this.writeA(arg(1), v ? v.name : 'VMM'); return arg(1);
+});
+svc(VMM, 0x18e, function (arg) { const a = (this.readA(arg(0)) || '').toLowerCase(), b = (this.readA(arg(1)) || '').toLowerCase(); return a < b ? -1 : a > b ? 1 : 0; });   // _lstrcmpi
+// _GetDescriptor(selector, VM, flags): EAX the low dword, EDX the high
+svc(VMM, 0x7b, function (arg) {
+  const sel = arg(0) & 0xfff8, base = this.r32(N.L.LDT + sel); let lim = this.r32(N.L.LDT + sel + 4), g = 0;
+  if (lim > 0xfffff) { lim >>>= 12; g = 0x800000; }
+  this.cpu.edx.value = u32((base & 0xff000000) | ((base >>> 16) & 0xff) | (this.r32(N.L.ACC + sel) & 0x40ff00) | g | (lim & 0xf0000));
+  return u32((base & 0xffff) << 16 | (lim & 0xffff));
+});
 svc(VMM, 0xb5, function () { CF(this, true); });                                                      // Get_Environment_String: none set
 
 // ---- VMM: memory
@@ -480,13 +607,66 @@ svc(VXDLDR, 0x0a, function (arg) { const m = [...(this.peMods || new Map()).valu
 svc(VXDLDR, 0x0e, function () { return 0; });
 svc(VXDLDR, 0x10, function () { return 0; });                                                        // _PELDR_InitCompleted
 
-// ---- VKD: hot keys. Define_Hot_Key (AL scan code, AH extended, EBX shift-state mask, CL flags, ESI callback, EDX ref):
-// EAX the handle. The keyboard reaches Windows through its own driver, so these never fire
+// ---- VKD: the keyboard as the VMM's keyboard device sees it. The keys reach Windows through its own driver; VKD sees
+// each one first (P.vkdKey): a hot key a VxD defined calls it back, and in message mode (a blue screen) the keys go
+// to the message-key queue instead. Define_Hot_Key (AL scan code, AH extended: FFh either, EBX the shift states that
+// must be down (low word) among the ones compared (high word), CL flags (1 call on press), ESI callback, EDX ref): EAX
+// the handle. VKD's shift state: 02h/200h left/right Shift, 04h/400h Ctrl, 08h/800h Alt, and 01h, 80h, 100h either one.
+// A local hot key (CL 80h) works in the VMs it is enabled for (Local_Enable_Hot_Key): SHELL's are for MS-DOS
+// programs' VMs, and the system VM gets none of them
 const VKD = 0x0d;
-svc(VKD, 0x01, function () { this.cpu.eax.value = this.alloc(16); CF(this, false); });
-svc(VKD, 0x02, function () { CF(this, false); });   // Remove_Hot_Key
-svc(VKD, 0x03, function () { CF(this, false); });   // Local_Enable_Hot_Key
-svc(VKD, 0x04, function () { CF(this, false); });   // Local_Disable_Hot_Key
+svc(VKD, 0x01, function () {
+  const h = this.alloc(16), hk = { scan: this.cpu.eax.value & 0xff, ext: (this.cpu.eax.value >> 8) & 0xff, want: this.cpu.ebx.value & 0xffff,
+    mask: (this.cpu.ebx.value >>> 16) & 0xffff, flags: this.cpu.ecx.value & 0xf || 0xf, fn: u32(this.cpu.esi.value), ref: u32(this.cpu.edx.value), on: !(this.cpu.ecx.value & 0x80) };
+  (this.hotKeys || (this.hotKeys = new Map())).set(h, hk); this.cpu.eax.value = h; CF(this, false);
+});
+svc(VKD, 0x02, function () { if (this.hotKeys) this.hotKeys.delete(u32(this.cpu.eax.value)); CF(this, false); });   // Remove_Hot_Key
+const hotKey = p => p.hotKeys && p.hotKeys.get(u32(p.cpu.eax.value));
+svc(VKD, 0x03, function () { const k = hotKey(this); if (k && u32(this.cpu.ebx.value) === this.sysVM()) k.on = true; CF(this, false); });    // Local_Enable_Hot_Key (EAX, EBX VM)
+svc(VKD, 0x04, function () { const k = hotKey(this); if (k && u32(this.cpu.ebx.value) === this.sysVM()) k.on = false; CF(this, false); });   // Local_Disable_Hot_Key
+svc(VKD, 0x07, function () { CF(this, false); });   // Force_Keys: the keys go to the VM (none here takes them)
+svc(VKD, 0x08, function () { this.cpu.ebx.value = this.sysVM(); });   // Get_Kbd_Owner: the system VM
+svc(VKD, 0x09, function () { CF(this, false); });   // Define_Paste_Mode
+svc(VKD, 0x0a, function () { CF(this, true); });    // Start_Paste: nothing to paste into
+svc(VKD, 0x0b, function () { CF(this, false); });   // Cancel_Paste
+// Get_Msg_Key / Peek_Msg_Key: AL the scan code, AH the modifiers (02h Shift, 04h Ctrl, 08h Alt, 80h extended); ZF set
+// when the queue is empty. Flush_Msg_Key_Queue empties it
+svc(VKD, 0x0c, function () { const k = this.msgKeys && this.msgKeys.shift(); ZF(this, !k); if (k) this.cpu.eax.value = lo16(this.cpu.eax.value, k); });
+svc(VKD, 0x0d, function () { const k = this.msgKeys && this.msgKeys[0]; ZF(this, !k); if (k) this.cpu.eax.value = lo16(this.cpu.eax.value, k); });
+svc(VKD, 0x0e, function () { this.msgKeys = []; });
+/** a key as the keyboard reports it (set 1 scan code, extended, released) with the shift states held: a hot key's
+ *  callback (on press, as Define_Hot_Key asked), else in message mode the message-key queue. True when VKD took it */
+P.vkdKey = function (scan, ext, up, mods) {
+  const ss = (mods.shift ? 0x03 : 0) | (mods.ctrl ? 0x84 : 0) | (mods.alt ? 0x108 : 0);
+  for (const [h, k] of this.hotKeys || []) {
+    if (!k.on || k.scan !== scan || (k.ext !== 0xff && !!k.ext !== !!ext) || (ss & k.mask) !== k.want) continue;
+    if (!up && (k.flags & 1)) this.r0Callback(k.fn, { eax: scan | (ext ? 0x100 : 0), ebx: h, ecx: 0, edx: k.ref, esi: 0 });
+    return true;
+  }
+  if (!this.msgMode) return false;
+  if (!up) (this.msgKeys || (this.msgKeys = [])).push(scan | ((mods.shift ? 2 : 0) | (mods.ctrl ? 4 : 0) | (mods.alt ? 8 : 0) | (ext ? 0x80 : 0)) << 8);
+  return true;
+};
+
+// ---- VDD: the display in message mode, the text screen system-modal messages are written on (a blue screen): the
+// VDD puts the adapter in its 80x25 text mode on Begin_Message_Mode and back on End_Message_Mode. Msg_ClrScrn (EAX the
+// background): EAX columns, EDX rows; Msg_ForColor / Msg_BakColor (EAX the color); Msg_TextOut (ESI text, ECX length,
+// EAX row, EDX column); Msg_SetCursPos (EAX row, EDX column)
+const VDD = 0x0a;
+P.textScreen = function () { return this.txt || (this.txt = { cols: 80, rows: 25, ch: new Uint8Array(2000), at: new Uint8Array(2000), fg: 7, bg: 0, cur: [0, 0], gen: 0 }); };
+svc(VDD, 0x00, function () { this.cpu.eax.value = 0x400; CF(this, false); });   // VDD_Get_Version
+svc(VDD, 0x01, function () {});                                                  // VDD_PIF_State
+svc(VDD, 0x02, function () { CF(this, true); });                                 // VDD_Get_GrabRtn: no screen grabs
+svc(VDD, 0x04, function () {});                                                  // VDD_Set_VMType
+svc(VDD, 0x07, function () { const t = this.textScreen(); t.bg = this.cpu.eax.value & 0xf; t.ch.fill(0x20); t.at.fill(t.bg << 4 | t.fg); t.gen++; this.cpu.eax.value = t.cols; this.cpu.edx.value = t.rows; });
+svc(VDD, 0x08, function () { this.textScreen().fg = this.cpu.eax.value & 0xf; });
+svc(VDD, 0x09, function () { this.textScreen().bg = this.cpu.eax.value & 0xf; });
+svc(VDD, 0x0a, function () {
+  const t = this.textScreen(), row = u32(this.cpu.eax.value), col = u32(this.cpu.edx.value), a = u32(this.cpu.esi.value), n = u32(this.cpu.ecx.value);
+  for (let i = 0; i < n && col + i < t.cols && row < t.rows; i++) { const o = row * t.cols + col + i; t.ch[o] = this.u8[a + i]; t.at[o] = t.bg << 4 | t.fg; }
+  t.gen++;
+});
+svc(VDD, 0x0b, function () { const t = this.textScreen(); t.cur = [u32(this.cpu.eax.value), u32(this.cpu.edx.value)]; t.gen++; });
 
 // ---- VPICD: the interrupt controllers. Virtualize_IRQ (EDI VPICD_IRQ_Descriptor): EAX the IRQ handle
 const vpicd = p => p.vpicd || (p.vpicd = { byIrq: new Map(), byHandle: new Map() });
@@ -674,12 +854,14 @@ svc(VMM, 0x14, function () {
 svc(VMM, 0x15, function () { if (this.vxdEvents) this.vxdEvents = this.vxdEvents.filter(e => e.handle !== u32(this.cpu.esi.value)); });
 /** the time-outs that are due, run as the timer interrupt runs them */
 P.vxdRunTimeOuts = function () {
-  if (this.depth || !this.vxdTimeOuts || !this.vxdTimeOuts.size) return;
+  if (this.depth || (this.r0Runs && this.r0Runs.length) || !this.vxdTimeOuts || !this.vxdTimeOuts.size) return;
   const now = this.sysTime();
   for (const [h, t] of [...this.vxdTimeOuts]) {
     if (now < t.due) continue;
     this.vxdTimeOuts.delete(h); this.tick16();
-    this.vxdCall(t.fn, { ebx: this.sysVM(), ecx: u32(now - t.due), edx: t.ref, esi: h, ebp: this.vmClientIdle() });
+    const regs = { ebx: this.sysVM(), ecx: u32(now - t.due), edx: t.ref, esi: h, ebp: this.vmClientIdle() };
+    if (this.runLevel) this.vxdCall(t.fn, regs);
+    else if (this.r0Start(t.fn, regs) === null) return;   // it stopped (blocked, a blue screen): the rest once it is done
   }
 };
 /** the system VM's client registers as a VxD sees them between its slices: a Client_Reg_Struc */
@@ -708,7 +890,10 @@ svc(VMM, 0x85, function () {
   const n = this.nest && this.nest[this.nest.length - 1];
   // the VM runs for a moment with nothing called (IFSMgr_Yield): what the processor would take meanwhile runs, the
   // interrupts and the time-outs and events that are due
-  if (!n || !n.target) { if (!this.r0Pump() && this.r0Skip()) this.r0Pump(); return; }
+  if (!n || !n.target) {
+    if (this.msgMode && this.r0Stop()) return;   // a blue screen waiting for its key: the page's turn
+    if (!this.r0Pump() && this.r0Skip()) this.r0Pump(); return;
+  }
   this.tick16();
   // real-mode code the personality answers for (a DOS driver's entry, ne16 rmEntries): the words stay pushed on the
   // client's stack for the caller to pop, the function the last one pushed and a far pointer the two before it; DX:AX
@@ -860,6 +1045,7 @@ svc(VMM, 0x28, function () { const s = sems(this).get(u32(this.cpu.eax.value)); 
 svc(VMM, 0xfa, function (arg) {
   const ids = this.r0Ids || (this.r0Ids = new Map()), id = u32(arg(0)), w = { woke: false };
   (ids.get(id) || ids.set(id, []).get(id)).push(w);
+  if (this.r0Stop(() => w.woke)) return 0;   // a ring-0 run the host started: it waits off the host's stack
   this.r0Wait(() => w.woke, `_SignalID ${id.toString(16)}`); return 0;
 });
 svc(VMM, 0x127, function (arg) { const ids = this.r0Ids, l = ids && ids.get(u32(arg(0))); if (l) { for (const w of l) w.woke = true; ids.delete(u32(arg(0))); } });
@@ -922,7 +1108,15 @@ svc(VMM, 0xb1, profNum(v => (/^(1|on|yes|true)$/i.test(v) ? 0xffffffff : /^(0|of
 const lin = (p, k, s) => p[k] || (p[k] = (() => { const a = p.alloc(s.length + 1); p.writeA(a, s); return a; })());
 svc(VMM, 0xb7, function () { this.cpu.edx.value = lin(this, 'cfgDirLin', 'C:\\WINDOWS\\'); });
 svc(VMM, 0xb6, function () { this.cpu.edx.value = lin(this, 'execPathLin', 'C:\\WINDOWS\\SYSTEM\\VMM32.VXD'); this.cpu.ecx.value = 'C:\\WINDOWS\\SYSTEM\\'.length; });
-svc(VMM, 0xb8, function () { CF(this, true); });                                                    // OpenFile: no such file
+// OpenFile (EDX the name, EDI a buffer for the path found): the file found as DOS searches for it (the current
+// directory, the Windows and system directories, the path), opened for reading: EAX its DOS handle
+svc(VMM, 0xb8, function () {
+  const name = this.readA(u32(this.cpu.edx.value)) || '', full = this.findFile16 && this.findFile16(name);
+  const h = full ? this.dosOpen(full, 'r') : 0xffff;
+  if (h === 0xffff) { CF(this, true); return; }
+  if (u32(this.cpu.edi.value)) this.writeA(u32(this.cpu.edi.value), full.toUpperCase());
+  this.cpu.eax.value = h; CF(this, false);
+});
 // Get_Machine_Info: EAX the DOS version (7.0), EBX the machine's flags (an ISA 486), ECX the BIOS model, EDX the equipment word
 svc(VMM, 0xbb, function () { this.cpu.eax.value = 0x0700; this.cpu.ebx.value = 0x10000; this.cpu.ecx.value = 0xfc; this.cpu.edx.value = 0x0026; });
 svc(VMM, 0x00, function () { this.cpu.eax.value = 0x0400; this.cpu.ecx.value = 0; CF(this, false); });   // Get_VMM_Version: 4.00
@@ -959,16 +1153,60 @@ svc(VMM, 0x146, function () {
 // System_Control (EAX message, EBX VM, the rest as given): the message to every initialized VxD in turn
 svc(VMM, 0x93, function () {
   const regs = { eax: u32(this.cpu.eax.value), ebx: u32(this.cpu.ebx.value), ecx: u32(this.cpu.ecx.value), edx: u32(this.cpu.edx.value), esi: u32(this.cpu.esi.value), edi: u32(this.cpu.edi.value) };
+  // the devices that are the VMM's own here: the display enters and leaves message mode (VDD), and Reboot_Processor
+  // pulses the keyboard controller's reset line (VKD): the machine restarts
+  if (regs.eax === 0x10) { this.msgMode = true; this.msgKeys = []; if (this.host && this.host.msgMode) this.host.msgMode(true); }
+  if (regs.eax === 0x11 || regs.eax === 0x2b) { this.msgMode = false; if (this.host && this.host.msgMode) this.host.msgMode(false); }
+  if (regs.eax === 0x12) { if (this.host && this.host.reset) this.host.reset(); throw new W.GuestError('the processor was reset'); }
   for (const v of [...(this.vxds || new Map()).values()].filter(x => x.inited)) { const r = this.vxdCall(v.procs.control, regs); if (r.cf) { CF(this, true); return; } }
   CF(this, false);
 });
-svc(VMM, 0x129, function () { CF(this, false); });                                                  // _Register_Win32_Services
+// _Register_Win32_Services(ddb, table): the services ring-3 code calls by VxDCall (device << 16 | number) through
+// VWIN32: the table's count, then { procedure, argument count } from +8
+svc(VMM, 0x129, function (arg) { (this.w32Svcs || (this.w32Svcs = new Map())).set(this.r16(arg(0) + 6), u32(arg(1))); CF(this, false); });
+/** a VxD's Win32 service called as KERNEL32 calls one (the ring-3 arguments after two dwords of VWIN32's) */
+P.w32Svc = function (dev, n, args) {
+  const t = this.w32Svcs && this.w32Svcs.get(dev); if (!t || n >= this.r32(t)) return null;
+  return this.vxdCdecl(this.r32(t + 8 + 8 * n), [0, 0, ...args]);
+};
+// KERNEL32's Ctrl+Alt+Del: at start-up it gives REBOOT (Win32 service 0) the APC that puts up Close Program and the
+// thread to run it on, and reports the dialog's state (service 1: 0 none, 2 coming, 3 up); REBOOT queues the APC on
+// Ctrl+Alt+Del and shows its blue screen when the dialog does not come within its time
+const REBOOT = 9, K32_TID = 0x3c;
+P.k32RebootInit = function () {
+  if (!this.w32Svcs || !this.w32Svcs.has(REBOOT)) return;
+  this.w32Svc(REBOOT, 0, [this.thunkFor('KERNEL32', '__CloseProgram'), this.r0Thread(K32_TID)]);
+  this.w32Svc(REBOOT, 1, [0]);
+};
+P.k32CloseState = function (n) { this.w32Svc(REBOOT, 1, [n]); };
+/** the Close Program request REBOOT queued (its APC on KERNEL32's thread), taken once */
+P.k32CloseRequest = function () { const q = this.apcQ && this.apcQ.get(K32_TID); return !!(q && q.length && q.splice(0).length); };
 svc(VMM, 0x176, function () { return 1; });                                                          // _RegCreateDynKey: unsupported (ERROR_INVALID_FUNCTION)
 // fatal errors stop the machine
 svc(VMM, 0xbe, function () { throw new W.GuestError(`VxD fatal error: ${this.readA(u32(this.cpu.esi.value)) || ''}`); });
 svc(VMM, 0xbf, function () { throw new W.GuestError('VxD fatal memory error'); });
-// _LocalizeStackSprintf(buf, fmt, args): _Sprintf with the arguments in an array
-svc(VMM, 0x159, function (arg) { const fmt = this.readA(arg(1)) || '', a = arg(2); let k = 0; const out = fmt.replace(/%([-0]?)(\d*)(l?)([dusxXc%])/g, (m, fl, w, l, c) => { if (c === '%') return '%'; const v = this.r32(a + 4 * k++); let t = c === 's' ? this.readA(v) || '' : c === 'c' ? String.fromCharCode(v & 0xff) : c === 'd' ? String(v | 0) : c === 'u' ? String(u32(v)) : u32(v).toString(16); if (c === 'X') t = t.toUpperCase(); return w ? (fl === '-' ? t.padEnd(+w) : t.padStart(+w, fl === '0' ? '0' : ' ')) : t; }); this.writeA(arg(0), out, out.length + 1); return out.length; });
+// _LocalizeStackSprintf(table, id, inserts...): message `id` (its low 12 bits; 1-based) of a VxD's message table (a
+// dword count, the strings' base, a word, then each message's offset from the base: message n's at +0Ah + 2n), its
+// inserts (%1 .. %9, with an optional !printf format!) filled from the arguments that follow. The text goes on the
+// caller's stack, below its arguments: ESP comes back pointing at a dword that is how far to move it to drop the text
+// and the arguments (the caller's ADD ESP, [ESP]), the text after it; EAX the text
+svc(VMM, 0x159, function () {
+  const sp = u32(this.cpu.esp.value), tab = this.r32(sp), id = this.r32(sp + 4) & 0xfff;
+  const n = this.r32(tab), base = this.r32(tab + 4);
+  const fmt = id >= 1 && id <= n ? this.readA(u32(base + this.r16(tab + 0xa + 2 * id))) || '' : '';
+  let args = 2;
+  const text = fmt.replace(/%(\d)(?:!([^!]*)!)?/g, (m, k, f) => {
+    k = +k; if (!k) return m; args = Math.max(args, k + 2);
+    const v = this.r32(sp + 4 + 4 * k), c = f ? f.slice(-1) : 's';
+    if (c === 's') return this.readA(v) || '';
+    const w = f && /\.?(\d+)/.exec(f), t = c === 'd' ? String(v | 0) : c === 'u' ? String(u32(v)) : c === 'c' ? String.fromCharCode(v & 0xff) : u32(v).toString(16);
+    return w ? t.padStart(+w[1], '0') : t;
+  });
+  const len = (text.length + 1 + 3) & ~3, nsp = sp - len - 4;
+  this.writeA(nsp + 4, text, text.length + 1);
+  this.w32(nsp, sp + 4 * args - nsp);
+  this.cpu.esp.value = nsp; this.cpu.eax.value = nsp + 4;
+});
 
 // ---- VMM: the VM's interrupts. Protected-mode and V86 vectors VxDs set or hook are kept; the VM's own code reaches
 // its interrupts through the personality (ne16 INTS), so a hook here sees only what a VxD reflects to it
@@ -1049,7 +1287,7 @@ svc(VTD, 0x08, function () {
 });
 // ---- VKD: Get_Version and the hot-key services the file system manager uses (the keyboard is Windows' own driver)
 svc(VKD, 0x00, function () { this.cpu.eax.value = 0x400; CF(this, false); });
-for (const n of [5, 6, 8]) svc(VKD, n, function () { CF(this, false); });
+for (const n of [5, 6]) svc(VKD, n, function () { CF(this, false); });   // Reflect_Hot_Key, Cancel_Hot_Key_State
 // ---- VPICD_Get_IRQ_Complete_Status (EAX handle): as Get_Complete_Status
 svc(VPICD, 0x0b, function () { this.cpu.ecx.value = irqStatus(this); CF(this, !(this.cpu.ecx.value & 8)); });
 // ---- VWIN32
@@ -1059,9 +1297,8 @@ svc(VWIN32, 0x10, function (arg) { const e = this.r0Event(arg(0)); if (e) e.set 
 // _VWIN32_QueueKernelAPC(pfn, thread, data, flags): the ring-0 procedure called with the data when the thread next runs
 svc(VWIN32, 0x19, function (arg) { (this.kernelApcs = this.kernelApcs || []).push({ fn: arg(0), data: arg(2) }); return 1; });
 svc(VWIN32, 0x1a, function () { console.warn('[vxd] VWIN32_SysErrorBox'); this.cpu.eax.value = 0; });
-// ---- SHELL: SHELL_SYSMODAL_Message (EBX VM, EAX flags, ECX message, EDI caption): EAX the answer (IDOK);
-// _SHELL_BroadcastSystemMessage: no window gets it here
-svc(SHELL, 0x03, function () { console.warn(`[vxd] SHELL_SYSMODAL_Message: ${this.readA(u32(this.cpu.edi.value)) || ''}: ${this.readA(u32(this.cpu.ecx.value)) || ''}`); this.cpu.eax.value = 1; });
+// ---- SHELL: SHELL_SYSMODAL_Message is the recompiled SHELL.VXD's (its blue screen when Windows cannot show the
+// message); _SHELL_BroadcastSystemMessage: no window gets it here
 svc(SHELL, 0x10, function () { return 0; });
 // _SHELL_HookSystemBroadcast(callback, ref, order): a handle; _SHELL_UnhookSystemBroadcast(handle). The callbacks are
 // kept for the broadcasts the system sends (SHELL_BroadcastSystemMessage's)
@@ -1091,14 +1328,17 @@ svc(IOS, 0x00, function () { this.cpu.eax.value = 0x400; CF(this, false); });
 svc(IOS, 0x08, function (arg) { this.w16(arg(0) + 2, 0x10); });   // IORS_INVALID_COMMAND
 // ---- a service of a device that is not loaded: its Get_Version (service 0) answers CF set, as the VMM's default
 // handler does, so a VxD can ask whether another one is there
-P.absentService = function (dev, n) { if (n !== 0) return false; this.cpu.eax.value = 0; CF(this, true); return true; };
+P.absentService = function (dev, n) {
+  if (dev === 0x40 && n === 0x6f) { this.cpu.eax.value = 1; return true; }   // IFSMgr's volume lock query with no IFSMgr: no lock to report
+  if (n !== 0) return false; this.cpu.eax.value = 0; CF(this, true); return true;
+};
 
 // ---------------------------------------------------------------- static VxDs
 // the ones VMM32 loads at boot (VTDAPI: the timer API for MMSYSTEM and WINMM), given Sys_Critical_Init, Device_Init
 // and Init_Complete before Windows starts. The network's process (host.net: MPREXE's) has the network's too: the file
 // system manager and its cache and PERF, which VMM32 carries, and each one a Services\VxD key names (StaticVxD), every
 // VxD given each message in turn in the order of their DDBs' Init_Order
-const STATIC_VXDS = ['VTDAPI.VXD', 'ENABLE.VXD'], VMM32_NET = ['IFSMGR.VXD', 'VCACHE.VXD', 'PERF.VXD'];
+const STATIC_VXDS = ['VTDAPI.VXD', 'ENABLE.VXD', 'SHELL.VXD', 'REBOOT.VXD'], VMM32_NET = ['IFSMGR.VXD', 'VCACHE.VXD', 'PERF.VXD'];
 P.vxdStatics = function () {
   const files = [...STATIC_VXDS];
   if (this.host && this.host.net) {
@@ -1122,6 +1362,7 @@ P.vxdBoot = function () {
     if (r.cf) { console.warn(`[vxd] ${v.file} failed system control ${msg}`); failed.add(v); v.inited = false; }
   }
   this.vxdInitState = 0x40000000;
+  this.k32RebootInit();
   // the devnodes whose device loader is a static VxD (DevLoader=*name: NDIS for the network's), started as CONFIGMG
   // starts them at boot
   if (this.host && this.host.net) this.vxdDevLoaders(true);

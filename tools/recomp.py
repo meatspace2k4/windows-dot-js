@@ -48,14 +48,20 @@ I32, I64, F32, F64 = 0x7f, 0x7e, 0x7d, 0x7c
 G = {n: i for i, n in enumerate(['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi',
                                   'cf', 'pf', 'zf', 'sf', 'of', 'df', 'fs', 'ftop', 'fsw', 'fcw', 'eip',
                                   # segment selectors and their cached bases (segmented NE code)
-                                  'cs', 'ds', 'es', 'ss', 'fsel', 'gsel', 'csb', 'dsb', 'esb', 'ssb', 'gsb'])}
+                                  'cs', 'ds', 'es', 'ss', 'fsel', 'gsel', 'csb', 'dsb', 'esb', 'ssb', 'gsb',
+                                  # blocks left before the dispatcher asks the host whether to go on (tick)
+                                  'budget'])}
 REGS = ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi']
 
 # imported functions (index order matters)
 IMPORTS = [('api', [I32], [I32]), ('trap', [I32, I32], []),
            ('fsin', [F64], [F64]), ('fcos', [F64], [F64]), ('ftan', [F64], [F64]), ('fatan2', [F64, F64], [F64]),
            ('fexp2', [F64], [F64]), ('flog2', [F64], [F64]), ('fmod', [F64, F64], [F64]), ('frem', [F64, F64], [F64]),
-           ('f80load', [I32], [F64]), ('f80store', [I32, F64], []), ('btrace', [I32], [])]
+           ('f80load', [I32], [F64]), ('f80store', [I32, F64], []), ('btrace', [I32], []),
+           # the host's turn when the block budget runs out: nonzero to stop here (run returns 1, EIP in the eip global)
+           ('tick', [I32], [I32]),
+           # a store into the module's own instructions (code that patches itself): the host drops the translation there
+           ('smc', [I32], [])]
 IMP = {n: i for i, (n, _, _) in enumerate(IMPORTS)}
 NIMP = len(IMPORTS)
 
@@ -375,7 +381,14 @@ class Loc:
     def write(self, val):
         f, op, sz = self.f, self.op, self.size
         if op.type == X.X86_OP_MEM:
-            f.lg(self.addr); val(); f.mem(STORE[sz]); return
+            f.lg(self.addr); val(); f.mem(STORE[sz])
+            # a fixed address inside this module's instructions: code that patches itself (a VxD rewriting a call
+            # into a VxDCall), whose block the host translates again from what is there now
+            m = op.mem
+            if not segmode() and not m.base and not m.index and m.segment in (0, X.X86_REG_DS) and \
+               any((m.disp + k) & 0xffffffff in CODE_BYTES for k in range(sz)):
+                f.c(m.disp).e(0x10, uleb(IMP['smc']))
+            return
         g, rs, sh = reginfo(op.reg)
         if rs == 4: val(); f.gs(g); return
         f.gg(g).c(~(MASK[rs] << sh)).e(OPS['and_'])
@@ -383,6 +396,8 @@ class Loc:
         if sh: f.c(sh).e(OPS['shl'])
         f.e(OPS['or_']).gs(g)
 
+# the addresses of every byte of the flat module's decoded instructions (Loc.write: stores that patch code)
+CODE_BYTES = frozenset()
 # ---- segmented (NE) mode. CUR is the instruction being translated.
 CUR = None
 def segmode(): return CUR is not None and CUR.segbase is not None
@@ -1587,6 +1602,9 @@ def assemble(bodies, text_lo, text_hi, lookup):
     r.lg(EIP).gs('eip').lg(EIP).e(0x10, uleb(IMP['api'])).ls(EIP)
     r.lg(EIP).c(-1).e(OPS['eq']).e(0x04, 0x40).c(1).e(RETURN).e(0x0b)
     r.e(0x0c, uleb(1)).e(0x0b)                              # br loop
+    # the block budget: when it runs out the host may take the processor back here (a time slice ends)
+    r.gg('budget').c(1).e(OPS['sub']).gs('budget').gg('budget').c(0).e(OPS['le_s']).e(0x04, 0x40)
+    r.lg(EIP).gs('eip').lg(EIP).e(0x10, uleb(IMP['tick'])).e(0x04, 0x40).c(1).e(RETURN).e(0x0b).e(0x0b)
     assert (text_hi - text_lo) * 4 <= LOOKUP_BYTES
     r.lg(EIP).c(text_lo).e(OPS['sub']).lt(ID).c(text_hi - text_lo).e(OPS['ge_u'])
     r.e(0x04, 0x40).lg(EIP).gs('eip').c(3).e(RETURN).e(0x0b)
@@ -1607,6 +1625,7 @@ def build(path, out, base=None, lookup=0x06000000):
     pe = PE(data)
     if base is not None and base != pe.base: pe.rebase(base)
     insns, entries = decode_all(pe)
+    global CODE_BYTES; CODE_BYTES = frozenset(a for i in insns.values() for a in range(i.addr, i.next))
     blocks = build_blocks(pe, insns, entries)
     liveness(blocks)
     tr = Translator(pe, blocks)
@@ -1627,6 +1646,7 @@ def build_vxd(path, out, base, lookup):
     data = open(path, 'rb').read()
     pe = LE(data, base)
     insns, entries = decode_all(pe)
+    global CODE_BYTES; CODE_BYTES = frozenset(a for i in insns.values() for a in range(i.addr, i.next))
     blocks = build_blocks(pe, insns, entries)
     liveness(blocks)
     tr = Translator(pe, blocks)

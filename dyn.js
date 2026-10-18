@@ -246,6 +246,10 @@ function translate(p, lin, csb, d32) {
       f.gg('cs').ls(T); push(T, osz); f.c(offOf(pc)).ls(T); push(T, osz);
       f.c(sel).ls(T); loadSeg(1, T); f.gg('csb').c(off | 0).op('add').e(0x0f); return done(pc);
     }
+    if (b === 0xcd) {   // int n, which the host services (the continuation in the eip global); INT 20h's service dword follows it
+      const v = fetch(); if (v === 0x20) pc += 4;
+      f.c(pc | 0).c(0x100 + v).e(0x10, 1); f.gg('eip').e(0x0f); return done(pc);
+    }
     if ((b >= 0xe4 && b <= 0xe7) || (b >= 0xec && b <= 0xef)) {   // in / out, through the host's port I/O
       const sz = b & 1 ? osz : 1, isIn = !(b & 2);
       if (b < 0xe8) f.c(fetch()); else f.gg('edx').c(0xffff).op('and');
@@ -505,9 +509,10 @@ function assemble(fn) {
   const sec = (n, b) => [n, ...uleb(b.length), ...b];
   const types = vec([[0x60, 0, 1, I32], [0x60, 2, I32, I32, 0]]);
   const imps = vec([[...str('env'), ...str('mem'), 0x02, 0x00, ...uleb(MEM_PAGES)], ...G.map(n => [...str('cpu'), ...str(n), 0x03, I32, 1]),
-    [...str('env'), ...str('io'), 0x00, 1]]);   // function 0: port I/O (port, size | 8 for IN)
+    [...str('env'), ...str('io'), 0x00, 1],     // function 0: port I/O (port, size | 8 for IN)
+    [...str('env'), ...str('trap'), 0x00, 1]]);   // function 1: an interrupt (continuation, 100h + n)
   const funcs = vec([[0]]);
-  const exps = vec([[...str('run'), 0x00, 1]]);
+  const exps = vec([[...str('run'), 0x00, 2]]);
   const code = vec([fn.body()]);
   return new Uint8Array([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0, ...sec(1, types), ...sec(2, imps), ...sec(3, funcs), ...sec(7, exps), ...sec(10, code)]);
 }
@@ -528,7 +533,7 @@ P.dynBlock = function (eip) {
   try { t = translate(this, eip, csb, d32); }
   catch (e) { if (e instanceof Unsupported) { this.trapped = `run-time code at ${eip.toString(16)}: ${e.message}`; return null; } throw e; }
   t.fn.e(0x0f);
-  const run = new WebAssembly.Instance(new WebAssembly.Module(assemble(t.fn)), { env: { mem: this.mem, io: (port, k) => this.portIO(port & 0xffff, k & 7, !!(k & 8)) }, cpu: this.cpu }).exports.run;
+  const run = new WebAssembly.Instance(new WebAssembly.Module(assemble(t.fn)), { env: { mem: this.mem, io: (port, k) => this.portIO(port & 0xffff, k & 7, !!(k & 8)), trap: (e, c) => this.trap(e, c) }, cpu: this.cpu }).exports.run;
   c = { run, bytes: Array.from(u8.subarray(eip, eip + t.len)) };
   this.dynCache.set(eip, c);
   return c;
@@ -536,6 +541,7 @@ P.dynBlock = function (eip) {
 /** run run-time code from `eip` until control reaches translated module code (or the sentinel); the next address */
 P.dynRun = function (eip) {
   for (let n = 0; ; n++) {
+    if ((n & 0xfff) === 0xfff) { this.cpu.eip.value = eip; if (this.tick(eip)) return -1; }   // the processor's time, as the dispatcher asks
     const blk = this.dynBlock(eip); if (!blk) return null;
     try { eip = u32(blk.run()); }
     catch (e) { if (!(e instanceof WebAssembly.RuntimeError)) throw e; this.trapped = `run-time code at ${eip.toString(16)} (instruction at ${u32(this.cpu.eip.value).toString(16)}): ${e.message}`; return null; }

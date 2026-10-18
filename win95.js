@@ -2899,6 +2899,7 @@ const SCAN = (() => {
   [[7, 0x47], [8, 0x48], [9, 0x49], [4, 0x4b], [5, 0x4c], [6, 0x4d], [1, 0x4f], [2, 0x50], [3, 0x51], [0, 0x52]].forEach(([n, c]) => { t['Numpad' + n] = c; });
   return t;
 })();
+const WATCHDOG_MS = 5000;   // a Win16Lock held this long with no answer: the watchdog's Ctrl+Alt+Del
 class NativeApp {
   constructor(path, arg, o = {}) { this.path = path; this.arg = arg; this.net = !!o.net; this.alive = true; this.wins = new Map(); this.icon = EXE_ICON[basename(path).toUpperCase()] || 'app'; this.lastActive = 0; this.cursorOn = false; }
   async start(bytes, prog) {
@@ -2915,6 +2916,8 @@ class NativeApp {
       fs, width: this.sw, height: this.sh, path: this.path, now: () => performance.now(), net: this.net, vmPages: 2048,   // 128 MiB of address space to reserve
       cursor: () => ({ x: mouse.x, y: mouse.y }), surface: (h, w, hh) => mkc(w, hh).getContext('2d'), setCursor: () => {},
       exited: (code, why) => this.exited(code, why), boot: p => p.bootUser16(), exec: (cmd, show) => this.exec(cmd, show),
+      // the display in and out of message mode (a blue screen), and the machine's reset (the keyboard controller's)
+      msgMode: on => { msgApp = on ? this : msgApp === this ? null : msgApp; dirty(); }, reset: () => machineReset(),
     };
     const exe = /\s/.test(this.path) ? `"${this.path}"` : this.path;
     try { this.proc = new W95Win32.Process(bytes, module, { ...prog.d.meta, name: prog.name.replace(/\.EXE$/, '') }, host, this.arg ? `${exe} ${this.arg}` : exe, dlls); }
@@ -2938,15 +2941,56 @@ class NativeApp {
     clearTimeout(this.timer); this.timer = 0;
     if (!this.alive) return;
     const p = this.proc, t0 = performance.now();
+    // ring-0 work that stopped (blocked, or a blue screen waiting for its key) goes on, and nothing else runs meanwhile
+    if (p.r0Runs && p.r0Runs.length) {
+      try { p.r0Step(); } catch (e) { console.error(e); this.exited(-1, e.message); return; }
+      if (msgApp === this) dirty();
+      if (this.alive) this.timer = setTimeout(() => this.step(), 16);
+      return;
+    }
+    this.watchdog();
+    if (!p.win16Held && p.k32CloseRequest && p.k32CloseRequest()) closeProgram(this);   // REBOOT's APC: Close Program
     this.keysFed = 0; this.feedKeys();
-    try { for (let n = 0; this.alive && n < 4; n++) { p.stats.slices++; const live = p.slice(); p.timers16(); p.threads16(); p.systemPump(); p.appy16(); if (p.sound16) p.sound16(); if (p.lanPoll) p.lanPoll(); if (!live) break; } }
-    catch (e) { console.error(e); this.exited(-1, e.message); return; }
+    // while a thread holds the Win16Lock it gave up the processor in (or hung in), only it runs: USER's timers, the
+    // system thread, appy time and the other threads wait for it; the VMM's time-outs still come (ring 0)
+    try {
+      for (let n = 0; this.alive && n < 4; n++) {
+        p.stats.slices++; const live = p.slice();
+        if (!p.win16Held) { p.timers16(); p.threads16(); p.systemPump(); p.appy16(); }
+        else { p.threads16(); if (p.vxdRunTimeOuts) p.vxdRunTimeOuts(); }
+        if (p.sound16) p.sound16(); if (p.lanPoll) p.lanPoll();
+        if (!live || p.preempted || p.win16Held) break;   // its time ran out: the page gets its turn
+      }
+    } catch (e) {
+      if (!(e instanceof W95Win32.HangError)) { console.error(e); this.exited(-1, e.message); return; }
+      p.hung('host', e); p.depth = 0;   // a call the host made into it never came back: the system is frozen behind it
+    }
     p.stats.guestMs += performance.now() - t0;
     if (p.trapped && !p.failed) p.fail(p.trapped);
     if (p.exitCode !== null || p.trapped) { this.exited(p.exitCode, p.trapped); return; }
-    this.sync();
-    this.clipHandoff();
+    if (!p.win16Held) { this.sync(); this.clipHandoff(); }   // its windows as USER has them (not while USER is held)
     this.timer = setTimeout(() => this.step(), this.keyq && this.keyq.length ? 0 : 16);
+  }
+  /** ring-0 runs stopped mid-way (a blue screen up): the system takes nothing else until they are done */
+  ring0() { return !!(this.proc && this.proc.r0Runs && this.proc.r0Runs.length); }
+  // a system frozen behind a thread that holds the Win16Lock (hung, or running on in 16-bit code) for WATCHDOG_MS: the
+  // watchdog presses Ctrl+Alt+Del for whoever is not there to, and Windows' own REBOOT.VXD takes it from there (the
+  // Close Program request, then its blue screen when the system does not answer)
+  watchdog() {
+    const p = this.proc, h = p.win16Held;
+    if (!h) { this.wdFired = false; return; }
+    if (this.wdFired || performance.now() - h.since < WATCHDOG_MS || !p.vkdKey) return;
+    this.wdFired = true;
+    console.warn(`[win95] ${basename(this.path)}: no answer for ${Math.round(performance.now() - h.since)} ms (${h.hung ? 'hung' : 'holding the Win16Lock'}): Ctrl+Alt+Del`);
+    try { p.vkdKey(0x53, true, false, { ctrl: true, alt: true }); } catch (e) { console.error(e); }
+  }
+  // the keyboard as VKD sees it first: its hot keys (Ctrl+Alt+Del) and, in message mode, every key. True when it took it
+  vkd(e, up) {
+    const p = this.proc; if (!p || !p.vkdKey || !this.alive) return false;
+    let sc = SCAN[e.code] || 0;
+    if (e.code === 'Backspace' && e.ctrlKey && e.altKey) sc = 0x153;   // a Mac's Delete key: Ctrl+Alt+Del
+    if (!sc) return false;
+    try { return p.vkdKey(sc & 0xff, sc > 0xff, up, { shift: e.shiftKey, ctrl: e.ctrlKey, alt: e.altKey }); } catch (err) { console.error(err); return false; }
   }
   // WinExec and CreateProcess from the program: a program the system runs starts in this one's address space, on its
   // window system (P.spawn). An instance handle (above 31) on success, else WinExec's error: 2 not found, 11 not a
@@ -3062,7 +3106,7 @@ class NativeApp {
   }
   // the mouse: absolute moves and button changes into USER's mouse_event, as the mouse driver reports them
   pointer(kind, x, y, btn = 0) {
-    if (!this.alive || !this.proc || this.proc.depth) return;
+    if (!this.alive || !this.proc || this.proc.depth || this.proc.win16Held || this.ring0()) return;   // (a held Win16Lock, ring 0 busy: USER takes no input)
     const ax = Math.round(clamp(x, 0, this.sw - 1) * 65535 / (this.sw - 1)), ay = Math.round(clamp(y, 0, this.sh - 1) * 65535 / (this.sh - 1));
     const f = kind === 'down' ? (btn === 2 ? 8 : 2) : kind === 'up' ? (btn === 2 ? 16 : 4) : 1;
     try {
@@ -3078,7 +3122,7 @@ class NativeApp {
     this.kick();
   }
   showCursor(on) {
-    if (on === this.cursorOn || !this.alive) return;
+    if (on === this.cursorOn || !this.alive || this.proc.win16Held || this.ring0()) return;
     this.cursorOn = on; try { this.proc.user16(71, [['w', on ? 1 : 0]]); } catch (e) { console.error(e); }
     this.kick();
   }
@@ -3100,7 +3144,7 @@ class NativeApp {
     this.kick();
   }
   feedKeys() {
-    if (!this.keyq || !this.keyq.length || this.proc.depth) return;
+    if (!this.keyq || !this.keyq.length || this.proc.depth || this.proc.win16Held || this.ring0()) return;
     try { if (this.proc.user16(335).ax) return; } catch (e) { console.error(e); }   // GetInputState: USER has input not yet taken
     for (; this.keyq.length && (this.keysFed || 0) < 16; this.keysFed = (this.keysFed || 0) + 1) {
       const k = this.keyq.shift();
@@ -3592,6 +3636,7 @@ const START = [
 // ---------------------------------------------------------------- render
 function render() {
   rafPending = false;
+  if (msgApp && msgApp.proc && msgApp.proc.txt) { drawTextScreen(msgApp.proc.txt); return; }
   if (screen !== 'desktop') {
     fill(0, 0, W, H, '#000');
     const im = screen === 'logow' ? IMG.logow : screen === 'logos' ? IMG.logos : null;
@@ -3637,6 +3682,89 @@ function drawSprite(app) {
     }
   }
   ctx.putImageData(im, x, y);
+}
+// ---------------------------------------------------------------- the display in text mode (message mode's blue screens)
+// 80x25 characters in 9x16 cells, as the VGA shows its text mode, in the 8x16 code page 437 font from the CD's EGA.CPI
+// (column 9 repeats column 8 for the line-drawing characters C0h-DFh); the 16 text colors; the cursor blinking
+const TEXT_RGB = [0x000000, 0x0000aa, 0x00aa00, 0x00aaaa, 0xaa0000, 0xaa00aa, 0xaa5500, 0xaaaaaa, 0x555555, 0x5555ff, 0x55ff55, 0x55ffff, 0xff5555, 0xff55ff, 0xffff55, 0xffffff];
+let msgApp = null, textFont = null, textCv = null;
+function cpiFont(b, cp = 437, h = 16) {
+  const v = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  let e = v.getUint32(0x13, true) + 2;
+  for (let n = v.getUint16(e - 2, true); n-- > 0; e = v.getUint32(e + 2, true)) {
+    if (v.getUint16(e + 16, true) !== cp) continue;
+    const info = v.getUint32(e + 24, true); let f = info + 6;
+    for (let k = v.getUint16(info + 2, true); k-- > 0; f += 6 + v.getUint16(f + 4, true) * b[f]) if (b[f] === h && b[f + 1] === 8) return b.subarray(f + 6, f + 6 + 256 * h);
+  }
+  return null;
+}
+function drawTextScreen(t) {
+  if (!textFont) { const d = window.W95SYSTEM && W95SYSTEM.dos && W95SYSTEM.dos['EGA.CPI']; if (d) textFont = cpiFont(b64bytes(d)); }
+  if (!textCv) textCv = mkc(720, 400);
+  const tx = textCv.getContext('2d'), im = tx.createImageData(720, 400), px = new Uint32Array(im.data.buffer);
+  const rgb = c => 0xff000000 | (c & 0xff) << 16 | (c & 0xff00) | (c >>> 16 & 0xff);
+  const blink = (performance.now() >> 9) & 1;
+  for (let r = 0; r < t.rows; r++) for (let c = 0; c < t.cols; c++) {
+    const o = r * t.cols + c, ch = t.ch[o], at = t.at[o], fg = rgb(TEXT_RGB[at & 15]), bg = rgb(TEXT_RGB[at >> 4 & 15]);
+    const cur = blink && t.cur[0] === r && t.cur[1] === c;
+    for (let y = 0; y < 16; y++) {
+      let bits = textFont ? textFont[ch * 16 + y] : 0;
+      if (cur && y >= 14) bits = 0xff;
+      const nine = ch >= 0xc0 && ch <= 0xdf ? bits & 1 : 0, row = (r * 16 + y) * 720 + c * 9;
+      for (let x = 0; x < 8; x++) px[row + x] = bits & (0x80 >> x) ? fg : bg;
+      px[row + 8] = nine ? fg : bg;
+    }
+  }
+  tx.putImageData(im, 0, 0);
+  ctx.imageSmoothingEnabled = true; ctx.drawImage(textCv, 0, 0, W, H); ctx.imageSmoothingEnabled = false;
+  if (msgApp) setTimeout(dirty, 250);   // the cursor's blink
+}
+// KERNEL32's Close Program (its dialog 2, in dialog units, and its strings), which REBOOT's APC puts up on Ctrl+Alt+Del:
+// every task, the ones whose system does not answer marked; End Task ends the selected one, Shut Down opens Shut Down
+// Windows. KERNEL32 tells REBOOT the dialog is coming (2), up (3: Ctrl+Alt+Del again restarts) and gone (0)
+function closeProgram(app) {
+  const p = app.proc, state = n => { try { p.k32CloseState(n); } catch (e) { console.error(e); } };
+  state(2);
+  if (windows.some(w => w.title === 'Close Program')) { state(3); return; }
+  const bu = dialogBaseUnits(), px = v => Math.round(v * bu.x / 4), py = v => Math.round(v * bu.y / 8);
+  const hung = w => w.native && w.app && w.app.proc && w.app.proc.win16Held;
+  const tasks = () => windows.filter(w => !w.noTask && w.title && w.title !== 'Close Program');
+  let sel = 0, win;
+  const done = () => { closeWin(win); state(0); };
+  const endTask = () => {
+    const w = tasks()[sel]; if (!w) return;
+    done();
+    if (w.native && w.app) w.app.exited(-1); else closeWin(w, true);
+  };
+  const list = {
+    type: 'custom', x: px(7), y: py(7), w: px(196), h: py(92), focus: true,
+    draw: a => {
+      btnDown(a.x, a.y, a.w, a.h, '#fff');
+      tasks().forEach((w, i) => {
+        const y = a.y + 2 + i * 13; if (y + 13 > a.y + a.h - 2) return;
+        if (i === sel) fill(a.x + 2, y, a.w - 4, 13, K.sel);
+        text(esc(w.title + (hung(w) ? ' [Not responding]' : '')), a.x + 4, y, i === sel ? '#fff' : K.dk);
+      });
+    },
+    down: (x, y, btn, dbl, a) => { const i = Math.floor((y - a.y - 2) / 13); if (i >= 0 && i < tasks().length) sel = i; if (dbl) endTask(); },
+    key: e => { const n = tasks().length; if (e.key === 'ArrowDown') { sel = Math.min(n - 1, sel + 1); return true; } if (e.key === 'ArrowUp') { sel = Math.max(0, sel - 1); return true; } return false; },
+  };
+  win = dialog('Close Program', px(210), py(157), [
+    list,
+    { type: 'label', text: wrap('WARNING: Pressing CTRL+ALT+DEL again will restart your computer. You will lose unsaved information in all programs that are running.', px(189)).join('\n'), x: px(7), y: py(101) },
+    { type: 'button', label: '&End Task', x: px(7), y: py(136), w: px(62), h: py(14), def: true, fn: endTask },
+    { type: 'button', label: '&Shut Down', x: px(73), y: py(136), w: px(62), h: py(14), fn: () => { done(); shutDownDialog(); } },
+    { type: 'button', label: 'Cancel', x: px(141), y: py(136), w: px(62), h: py(14), cancel: true, fn: done },
+  ], { noTask: true });
+  state(3);
+}
+// the machine's reset (the keyboard controller's reset line): every program stops where it is, the screen goes dark
+// and Windows starts again; the disk keeps what was written to it
+function machineReset() {
+  msgApp = null;
+  for (const a of [...nativeApps]) a.exited(-1);
+  [...windows].forEach(w => closeWin(w, true)); closeMenus();
+  screen = 'black'; dirty(); setTimeout(boot, 1200);
 }
 function drawCursor(name) {
   if (name === 'none') return;
@@ -3815,8 +3943,12 @@ kbd.addEventListener('input', () => {
 });
 // the keys go to USER while one of a native program's windows is active and the shell has nothing open over it
 const nativeFocus = () => (!menus.length && !ren && !modal() && !fullSaver && screen === 'desktop' && active && active.native && active.app.alive ? active.app : null);
-window.addEventListener('keyup', e => { const a = nativeFocus(); if (a) { e.preventDefault(); if (e.keyCode) a.key(e, true); } });
+// the keyboard reaches VKD before anything: the system in message mode (a blue screen) takes every key, and a hot key
+// goes to the native system with the focus, else to one that is frozen, else to any
+const vkdApp = () => msgApp || nativeFocus() || [...nativeApps].find(a => a.alive && a.proc && a.proc.win16Held && !a.net) || [...nativeApps].find(a => a.alive && !a.net);
+window.addEventListener('keyup', e => { const v = vkdApp(); if (v && v.vkd(e, true)) { e.preventDefault(); return; } const a = nativeFocus(); if (a) { e.preventDefault(); if (e.keyCode) a.key(e, true); } });
 window.addEventListener('keydown', e => {
+  { const v = vkdApp(); if (v && v.vkd(e, false)) { e.preventDefault(); return; } }
   { const a = nativeFocus(); if (a) { lastInput = performance.now(); e.preventDefault(); if (!e.keyCode && e.key.length === 1 && (e.ctrlKey || e.altKey) && /^[a-z0-9]$/i.test(e.key)) a.chord(e); else if (!e.keyCode && e.key.length === 1) a.typeText(e.key); else a.key(e, false); return; } }
   // Option changes the character a Mac key types; Alt+letter means the letter on the key
   if (e.altKey && !e.ctrlKey && !e.metaKey && /^(Key[A-Z]|Digit\d)$/.test(e.code)) {

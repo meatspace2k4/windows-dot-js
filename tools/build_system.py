@@ -80,7 +80,10 @@ VXDS = [('mmdevldr.vxd', 0x01800000, 0x07C00000), ('mssndsys.vxd', 0x01810000, 0
         # the Microsoft Networks redirector, NetBIOS, the NetBEUI protocol and the NDIS 3.1 wrapper
         ('ifsmgr.vxd', 0x01200000, 0x05800000), ('vcache.vxd', 0x01230000, 0x058C0000), ('vnetsup.vxd', 0x01240000, 0x058E0000),
         ('vredir.vxd', 0x01250000, 0x05900000), ('vnetbios.vxd', 0x01280000, 0x059A0000), ('netbeui.vxd', 0x01290000, 0x059C0000),
-        ('ndis.vxd', 0x012A0000, 0x05A00000), ('perf.vxd', 0x012C0000, 0x05A80000)]
+        ('ndis.vxd', 0x012A0000, 0x05A00000), ('perf.vxd', 0x012C0000, 0x05A80000),
+        # the shell's ring-0 half, whose system-modal messages show on the blue screen when Windows cannot show them,
+        # and Ctrl+Alt+Del's: the Close Program request, and the blue screens of a system that does not answer (WIN95_12.CAB)
+        ('shell.vxd', 0x018E0000, 0x07E20000), ('reboot.vxd', 0x01900000, 0x07E80000)]
 # NDIS miniports (PE images NDIS loads and links to its own exports): (file, load base, block-table base). NE2000.SYS
 # drives the NE2000-compatible card (NETNOVEL.INF *PNP80D6)
 DRIVERS = [('ne2000.sys', 0x012D0000, 0x05AC0000)]
@@ -144,7 +147,10 @@ bundle['media'] = {f.upper(): b64(os.path.join(src, f)) for f in MEDIA if os.pat
 HELP = ['windows.hlp', 'windows.cnt', 'notepad.hlp', 'notepad.cnt']
 bundle['help'] = {f.upper(): b64(os.path.join(src, f)) for f in HELP if os.path.exists(os.path.join(src, f))}
 # the real-mode drivers IO.SYS loads before Windows: IFSHLP.SYS, the file system manager's helper (WIN95_22.CAB)
-DOS = ['ifshlp.sys']
+DOS = ['ifshlp.sys',
+       # the code-page fonts of the EGA and VGA text modes (C:\WINDOWS\COMMAND\EGA.CPI), whose 8x16 code page 437 font
+       # the display's text mode shows (message mode's blue screens) (WIN95_12.CAB)
+       'ega.cpi']
 bundle['dos'] = {f.upper(): b64(os.path.join(src, f)) for f in DOS if os.path.exists(os.path.join(src, f))}
 bundle['infs'] = {f.upper(): open(os.path.join(src, f), 'rb').read().decode('latin1') for f in INFS if os.path.exists(os.path.join(src, f))}
 # every module's block table (an i32 per code byte at its lookup base) lives in one address space with the others':

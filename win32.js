@@ -12,13 +12,20 @@ const LAYOUT = { SENTINEL: 0xFFFFFFF0, THUNK: 0xFFFF0000, THUNK16: 0xFFFE0000, F
 const YIELD = Symbol('yield');   // returned by an API implementation to suspend the guest at depth 0
 const TICK_MS = 65536 * 1000 / 1193182;   // PIT channel 0 period, 54.925 ms
 const CPU_REGS = ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi', 'cf', 'pf', 'zf', 'sf', 'of', 'df', 'fs', 'ftop', 'fsw', 'fcw', 'eip',
-  'cs', 'ds', 'es', 'ss', 'fsel', 'gsel', 'csb', 'dsb', 'esb', 'ssb', 'gsb'];
+  'cs', 'ds', 'es', 'ss', 'fsel', 'gsel', 'csb', 'dsb', 'esb', 'ssb', 'gsb', 'budget'];
+// the processor is the host's: every BUDGET blocks the dispatcher asks it (tick) whether the guest goes on. A run that
+// can give up the processor (a thread at its top level) does after SLICE_MS; one inside a call the host made cannot,
+// and after HANG_MS of it the thread is hung: it never comes back (HangError takes the host's stack back from it)
+const BUDGET = 0x4000, SLICE_MS = 40, HANG_MS = 3000;
 const WM = { NULL: 0, CREATE: 1, DESTROY: 2, MOVE: 3, SIZE: 5, ACTIVATE: 6, SETFOCUS: 7, KILLFOCUS: 8, PAINT: 0xf, CLOSE: 0x10,
   QUIT: 0x12, ERASEBKGND: 0x14, SHOWWINDOW: 0x18, ACTIVATEAPP: 0x1c, SETCURSOR: 0x20, NCCREATE: 0x81, NCDESTROY: 0x82,
   NCACTIVATE: 0x86, KEYDOWN: 0x100, KEYUP: 0x101, CHAR: 0x102, SYSKEYDOWN: 0x104, SYSCOMMAND: 0x112, TIMER: 0x113,
   MOUSEMOVE: 0x200, LBUTTONDOWN: 0x201, LBUTTONUP: 0x202, RBUTTONDOWN: 0x204, MBUTTONDOWN: 0x207, INITDIALOG: 0x110, COMMAND: 0x111 };
 
 class GuestError extends Error {}
+/** a thread that runs on and on inside a call the host made: the host takes its processor back, and the thread stays
+ *  where it is, never to run again (as a thread spinning forever leaves it) */
+class HangError extends Error {}
 
 // ---------------------------------------------------------------- small helpers
 const u32 = v => v >>> 0;
@@ -40,7 +47,8 @@ class Process {
     this.mem = new WebAssembly.Memory({ initial: pages, maximum: pages });
     this.vmLo = this.vmTop = meta.layout.pages * 0x10000;
     this.cpu = {};
-    for (const n of CPU_REGS) this.cpu[n] = new WebAssembly.Global({ value: 'i32', mutable: true }, n === 'fcw' ? 0x37f : 0);
+    for (const n of CPU_REGS) this.cpu[n] = new WebAssembly.Global({ value: 'i32', mutable: true }, n === 'fcw' ? 0x37f : n === 'budget' ? BUDGET : 0);
+    this.runLevel = 0; this.yieldLevel = -1;
     this.depth = 0; this.exitCode = null; this.trapped = null; this.waiting = false; this.lastYield = 0;
     // counters a benchmark reads: timer messages taken, GL frames presented, time spent running guest code
     this.stats = { timers: 0, presents: 0, slices: 0, guestMs: 0 };
@@ -51,7 +59,7 @@ class Process {
     this.heapTop = LAYOUT.HEAP; this.freeList = new Map(); this.allocs = new Map();
     const math = { fsin: Math.sin, fcos: Math.cos, ftan: Math.tan, fatan2: Math.atan2, fexp2: x => Math.pow(2, x), flog2: Math.log2,
       fmod: (a, b) => a % b, frem: (a, b) => a - b * Math.round(a / b), f80load: a => this.f80load(a), f80store: (a, v) => this.f80store(a, v), btrace: e => { if (window.W95BTRACE) window.W95BTRACE(e >>> 0); } };
-    this.imports = { env: { mem: this.mem, api: e => this.api(e), trap: (e, c) => this.trap(e, c), ...math }, cpu: this.cpu };
+    this.imports = { env: { mem: this.mem, api: e => this.api(e), trap: (e, c) => this.trap(e, c), tick: e => this.tick(e), smc: a => this.smc(a), ...math }, cpu: this.cpu };
     this.modules = []; this.byName = new Map(); this.inits = [];
     // a host that runs the native window system brings it up first, as Windows is up before any program starts
     if (host.boot) {
@@ -196,6 +204,34 @@ class Process {
   // ---- execution
   /** Dispatch across modules until the sentinel (0), a yield (1) or a fault (2). */
   runAt(eip) {
+    if (this.runLevel++ === 0) this.runT0 = this.now();   // the host's processor is the guest's from here
+    try { return this.dispatch(eip); } finally { this.runLevel--; }
+  }
+  /** run at `eip` as a thread's top level: a run that can give up the processor when its time is up (1) */
+  runTop(eip) {
+    const was = this.yieldLevel; this.yieldLevel = this.runLevel + 1;
+    try { return this.runAt(eip); } finally { this.yieldLevel = was; }
+  }
+  /** a module's code written over (code that patches itself): the block holding the address is translated again from
+   *  what is there now, at run time (dyn.js), from here on */
+  smc(a) {
+    a = u32(a);
+    const m = this.modules.find(x => x.meta && x.meta.lookup && a >= x.meta.textLo && a < x.meta.textHi); if (!m) return;
+    const bl = m.meta.blocks; let lo = 0, hi = bl.length - 1, at = -1;
+    while (lo <= hi) { const mid = (lo + hi) >> 1; if (bl[mid] <= a) { at = mid; lo = mid + 1; } else hi = mid - 1; }
+    const look = new Uint32Array(this.mem.buffer, m.meta.lookup, m.meta.textHi - m.meta.textLo);
+    for (let i = Math.max(0, at); i < bl.length && bl[i] < a + 4; i++) look[bl[i] - m.meta.textLo] = 0;
+  }
+  /** the dispatcher's question when the block budget runs out: 1 to give the processor back to the host here */
+  tick(eip) {
+    this.cpu.budget.value = BUDGET;
+    const ran = this.now() - this.runT0;
+    if (ran < SLICE_MS) return 0;
+    if (this.runLevel === this.yieldLevel && !this.noPreempt) { this.preempted = u32(eip); return 1; }
+    if (ran > HANG_MS && !this.noPreempt) throw new HangError(`hung at ${this.where ? this.where(u32(eip)) : u32(eip).toString(16)}`);
+    return 0;
+  }
+  dispatch(eip) {
     for (;;) {
       eip >>>= 0;
       if (eip === LAYOUT.SENTINEL) return 0;
@@ -205,6 +241,7 @@ class Process {
         const next = this.dataCode && this.dataCode(eip);
         if (next !== undefined && next !== null) { eip = next; continue; }
         const dyn = this.dynRun && this.dynRun(eip);   // code generated at run time (dyn.js)
+        if (dyn === -1) return 1;   // its time was up
         if (dyn !== undefined && dyn !== null) { eip = dyn; continue; }
         this.trapped = this.trapped || `jump to unmapped address ${eip.toString(16)}`; return 2;
       }
@@ -214,6 +251,7 @@ class Process {
       if (r === 2 && this.dynWant !== undefined) {   // no translated block there: code written at run time
         const at = this.dynWant; this.dynWant = undefined;
         const dyn = this.dynRun(at); if (dyn === null) return 2;
+        if (dyn === -1) return 1;
         eip = dyn; continue;
       }
       if (r !== 3) return r;
@@ -224,10 +262,16 @@ class Process {
   slice() {
     if (this.exitCode !== null) return false;
     if (this.trapped) { this.fail(this.trapped); return false; }
+    if (this.win16Held && this.win16Held.who !== 'main') return true;   // another thread holds the Win16Lock: this one waits for it
+    if (this.hungMain) return true;   // the main thread hung: it never runs again
     this.depth = 0; this.waiting = false; this.lastYield = this.now();
     if (this.userStack) this.userStack();
-    const r = this.runAt(this.resumeEip);
-    if (r === 1) { this.resumeEip = this.reg('eip'); return true; }
+    let r; this.preempted = 0;
+    if (this.mainCtx) { this.loadFull(this.mainCtx); this.mainCtx = null; }   // where its time ran out, every register as it was
+    try { r = this.runTop(this.resumeEip); }
+    catch (e) { if (!(e instanceof HangError)) throw e; this.hungMain = true; this.hung('main', e); return true; }
+    if (r === 1) { this.resumeEip = this.reg('eip'); if (this.preempted) this.mainCtx = this.saveFull(); this.holdWin16('main'); return true; }
+    this.holdWin16('main');
     if (r === 2 || this.trapped) { this.fail(this.trapped || `bad address ${this.reg('eip').toString(16)}`); return false; }
     if (this.exitCode === null) this.exitCode = this.reg('eax');
     this.host.exited(this.exitCode); return false;
@@ -246,6 +290,29 @@ class Process {
     const ret = this.reg('eax');
     this.reg('esp', save.esp); this.cpu.eip.value = save.eip;
     return ret;
+  }
+  /** the whole processor state, for a thread stopped between any two blocks (its flags and FPU stack live) */
+  saveFull() {
+    const c = {}; for (const r of CPU_REGS) if (r !== 'budget') c[r] = this.cpu[r].value;
+    c.fpu = this.u8.slice(LAYOUT.FPU, LAYOUT.FPU + 64); c.depth = this.depth; c.stackLevel = this.stackLevel; c.sysLevel = this.sysLevel || 0;
+    return c;
+  }
+  loadFull(c) {
+    for (const r of CPU_REGS) if (r !== 'budget') this.cpu[r].value = c[r];
+    this.u8.set(c.fpu, LAYOUT.FPU); this.depth = c.depth; this.stackLevel = c.stackLevel; this.sysLevel = c.sysLevel;
+  }
+  /** the Win16Lock after a thread's run: a thread that gave up the processor in 16-bit code, or inside a system level it
+   *  entered (_EnterSysLevel), keeps it, and no other thread enters 16-bit code until it lets it go; one that hung keeps
+   *  it for good. The host reads `win16Held` (who, since when, hung) */
+  holdWin16(who, hung = false) {
+    const holds = hung || (this.preempted && ((this.cpu.cs.value & 0xffff) !== 0 || this.sysLevel > 0));
+    if (holds) { if (!this.win16Held || this.win16Held.who !== who) this.win16Held = { who, since: this.now(), hung }; else if (hung) this.win16Held.hung = true; }
+    else if (this.win16Held && this.win16Held.who === who) this.win16Held = null;
+  }
+  /** a thread hung (HangError): it stays as it is, holding the Win16Lock, and the system is frozen behind it */
+  hung(who, e) {
+    console.warn(`[win32] ${typeof who === 'string' ? who : 'thread ' + who.id} ${e.message}`);
+    this.holdWin16(who, true);
   }
   fail(why) {
     if (this.failed) return;
@@ -2097,5 +2164,5 @@ function peString(bytes, id) {
   } catch (_) { return null; }
 }
 
-window.W95Win32 = { regAttach, regGet, regKids, regVals, regDel, regSet, Process, API, LAYOUT, WM, YIELD, iniGet, iniSet, iniRead, peString, def, dcOf, GuestError, mkCanvas, dibOut };
+window.W95Win32 = { regAttach, regGet, regKids, regVals, regDel, regSet, Process, API, LAYOUT, WM, YIELD, iniGet, iniSet, iniRead, peString, def, dcOf, GuestError, HangError, mkCanvas, dibOut };
 })();
