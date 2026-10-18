@@ -72,7 +72,7 @@ P.dmaRead = function (chn, n) {
 // 9 interface configuration (bit 0 playback enable), 10 pin control (bit 1 interrupt enable), 11 test and
 // initialisation (bit 5 auto-calibration in progress), 12 version (0Ah: AD1848), 14/15 the base count
 const XTAL = [24576000, 16934400], DIV = [3072, 1536, 896, 768, 448, 384, 512, 2560];
-const codec = p => p.ad1848 || (p.ad1848 = { idx: 0, mce: false, trd: false, regs: Uint8Array.from([0, 0, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0, 0, 0, 0, 0x0a, 0, 0, 0]), int: false, count: 0, frac: 0, last: 0, cfg: 0 });
+const codec = p => p.ad1848 || (p.ad1848 = { idx: 0, mce: false, trd: false, regs: Uint8Array.from([0, 0, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0, 0, 0, 0, 0x0a, 0, 0, 0]), int: false, count: 0, frac: 0, last: p.now(), t: p.now(), cfg: 0 });
 const rateOf = r8 => XTAL[r8 & 1] / DIV[(r8 >> 1) & 7];
 // ---------------------------------------------------------------- OPL3 (YMF262) at 388h-38Bh
 // The synthesizer's register file (two banks: 388h/389h and 38Ah/38Bh) and its two timers, as drivers detect the chip:
@@ -244,14 +244,15 @@ P.soundIO = function (port, size, isIn) {
       if (isIn) return ret(c.idx === 11 ? c.regs[11] & ~0x20 : c.regs[c.idx]);
       if (c.idx === 12) { c.regs[12] = (c.regs[12] & 0x0f) | (v & 0xf0); return true; }
       if (c.idx === 11) return true;
-      this.sound16();   // the samples due up to this write play with the registers as they were
+      this.sound16(true);   // the samples due up to this write play with the registers as they were
       const was = c.regs[c.idx]; c.regs[c.idx] = v;
-      if (c.idx === 9 && (v & 1) && !(was & 1)) { c.count = (c.regs[14] << 8) | c.regs[15]; c.frac = 0; c.last = this.now(); c.start = c.last + START_MS; }
+      if (c.idx === 9 && !(v & 1) && (was & 1)) this.soundQuiet = false;   // the sound played unheard is over
+      if (c.idx === 9 && (v & 1) && !(was & 1)) { c.count = (c.regs[14] << 8) | c.regs[15]; c.frac = 0; c.last = c.t; }
       if (c.idx === 15 || c.idx === 14) c.count = (c.regs[14] << 8) | c.regs[15];
       return true;
     }
     if (off === 2) {   // status: INT, PRDY; a write clears INT. A driver polling it sees the codec move on
-      if (isIn) { this.sound16(); return ret((c.int ? 1 : 0) | 0x02); }
+      if (isIn) { this.sound16(true); return ret((c.int ? 1 : 0) | 0x02); }
       c.int = false; return true;
     }
     if (isIn) return ret(0);                                                                        // 537h: programmed I/O, unused
@@ -271,7 +272,7 @@ P.soundIO = function (port, size, isIn) {
   if (port === 0x21 || port === 0xa1) { const c = pic(this), i = port === 0x21 ? 0 : 1; if (isIn) return ret(c.imr[i]); c.imr[i] = v; return true; }
   if (port <= 0x0f || port in DMA_PAGE) {
     const d = dmac(this);
-    if (isIn) this.sound16();   // a driver reading the DMA counters sees them move
+    if (isIn) this.sound16(true);   // a driver reading the DMA counters sees them move
     if (port in DMA_PAGE) { const ch = d.ch[DMA_PAGE[port]]; if (isIn) return ret(ch.page); ch.page = v; return true; }
     if (port < 8) {
       const ch = d.ch[port >> 1], cnt = port & 1, hi = d.ff; d.ff ^= 1;
@@ -398,19 +399,22 @@ const play = (proc, rate, L, R, n) => {
 system();   // as the machine starts
 // a machine in a worker plays through here: its samples (the page's output, its streams keyed by `k`)
 window.W95Sound = { play: (k, rate, L, R) => play(k, rate, L, R, L.length), close: k => P.soundClose.call(k) };
-P.sound16 = function () {
+// The codec's clock. A port access the guest makes (a codec register, its status, a DMA counter) takes an ISA I/O cycle,
+// about a microsecond, on the card: inside a run of guest code the codec moves on by that much per access, however long
+// the recompiled code takes between them. Between runs (the host's turn) and when the guest reads the time of day it
+// catches up with the clock on the wall. So a driver that enables playback and turns it down a few register writes
+// later (MSSNDSYS as it starts) plays the microseconds it would on the card, not the time the emulation took
+const BUS_MS = 0.001;
+P.sound16 = function (bus = false) {
   if (!this.inSound) this.oplRender();
-  const c = this.ad1848; if (!c || !(c.regs[9] & 1) || this.inIRQ || this.inSound) return;
+  const c = this.ad1848; if (!c) return;
+  c.t = bus ? c.t + BUS_MS : Math.max(c.t, this.now());
+  if (!(c.regs[9] & 1) || this.inIRQ || this.inSound) return;
   this.inSound = true;
   try { this.soundRun(c); } finally { this.inSound = false; }
 };
-// The codec starts converting a few samples' time after playback is enabled. A driver that enables and disables it
-// within that time (MSSNDSYS's check as it starts: microseconds on the card, about a millisecond of register writes
-// here) plays nothing, rather than the buffer it has not filled, which clicks
-const START_MS = 3;
 P.soundRun = function (c) {
-  if (c.start && this.now() < c.start) { c.last = this.now(); return; }
-  const now = this.now(), rate = rateOf(c.regs[8]), dt = Math.min(now - c.last, 250); c.last = now;
+  const now = c.t, rate = rateOf(c.regs[8]), dt = Math.min(now - c.last, 250); c.last = now;
   c.frac += rate * dt / 1000; let frames = Math.floor(c.frac); c.frac -= frames;
   if (frames <= 0) return;
   const stereo = !!(c.regs[8] & 0x10), fmt = (c.regs[8] >> 5) & 3, bps = fmt === 2 ? 2 : 1, ch = stereo ? 2 : 1;
@@ -438,6 +442,7 @@ P.soundRun = function (c) {
     if (end) break;
   }
   this.soundStats.frames += k;
-  if (k && play(this, rate, L, R, k)) this.soundStats.underruns = (this.soundStats.underruns || 0) + 1;
+  // (soundQuiet: the card's output off for one sound, which still plays to the guest: the DMA, the interrupts)
+  if (k && !this.soundQuiet && play(this, rate, L, R, k)) this.soundStats.underruns = (this.soundStats.underruns || 0) + 1;
 };
 })();

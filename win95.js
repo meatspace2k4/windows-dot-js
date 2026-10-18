@@ -3530,7 +3530,7 @@ async function runNative(path, arg, o = {}) {
 // as the desktop comes up. USER's first-task start-up loads the installable drivers for it (MMSYSTEM, the card's), so
 // sound starts once, with the system, and MSGSRV32 plays SystemStart. The programs the shell runs start in it
 let sysApp = null, sysStarting = null, firstRun = false;   // firstRun: Setup built C: as this page started (makeDisk)
-// SystemStart plays when Windows starts after it was shut down (Shut Down, Restart), and on its first run (Setup has
+// SystemStart is heard when Windows starts after it was shut down (Shut Down, Restart), and on its first run (Setup has
 // just built C:): a page reloaded or a window closed with Windows running is no shutdown, and the start after it is
 // quiet. The shutdown record is this browser's (a start with none plays)
 const SHUTDOWN = 'w95.shutdown';
@@ -3546,15 +3546,17 @@ function startSystem() {
     sysApp = a;
     // KERNEL32, its start done, tells the message server so (SHELL_PostMessage of 501h to MSGSRV32's window): it plays
     // SystemStart and starts the shell. Once MSGSRV32 waits for messages
-    if (!cleanStart && !firstRun) return a;   // (not told: no SystemStart; the shell it would start is this page)
+    // after a start that was no shutdown, MSGSRV32 is still told (it starts the shell and its start-up checks there) but
+    // its SystemStart is not heard
+    const quiet = !cleanStart && !firstRun;
     if (a.remote) {   // (the machine posts it when MSGSRV32 waits for messages)
-      for (let i = 0; i < 200 && a.alive && !(await a.cmd('systemStarted')); i++) await new Promise(r => setTimeout(r, 25));
+      for (let i = 0; i < 200 && a.alive && !(await a.cmd('systemStarted', [quiet])); i++) await new Promise(r => setTimeout(r, 25));
       return a;
     }
     const p = a.proc, task = [...(p.threadsById || new Map()).values()].find(t => t.task && t.task.hInst && p.neByHandle(t.task.hInst) && p.neByHandle(t.task.hInst).name === 'MSGSRV32');
     for (let i = 0; i < 200 && a.alive && task && !(task.state === 'waiting' && task.slept); i++) await new Promise(r => setTimeout(r, 25));
     if (a.alive && task) {
-      try { const h = p.taskWindows(task.tdb)[0]; if (h) p.shellPostMessage(h, 0x501, 0, 0); } catch (e) { console.error(e); }
+      try { const h = p.taskWindows(task.tdb)[0]; if (h) { p.soundQuiet = quiet; p.shellPostMessage(h, 0x501, 0, 0); } } catch (e) { console.error(e); }
       a.kick();
     }
     return a;

@@ -378,7 +378,8 @@ class Machine {
       case 'systemStarted': {   // KERNEL32 tells MSGSRV32 its start is done (SHELL_PostMessage of 501h)
         const task = [...(p.threadsById || new Map()).values()].find(t => t.task && t.task.hInst && p.neByHandle(t.task.hInst) && p.neByHandle(t.task.hInst).name === 'MSGSRV32');
         if (!task || !(task.state === 'waiting' && task.slept)) return false;
-        const h = p.taskWindows(task.tdb)[0]; if (h) p.shellPostMessage(h, 0x501, 0, 0); return true;
+        // (quiet: SystemStart plays with the card's output off, as after an unclean shutdown; sound.js soundQuiet)
+        const h = p.taskWindows(task.tdb)[0]; if (h) { p.soundQuiet = !!args[0]; p.shellPostMessage(h, 0x501, 0, 0); } return true;
       }
       case 'trayPost': p.post(...args); return;
       // the network's machine: MPR's exports called on a thread of its own (its dialogs run there), its enumerations,
