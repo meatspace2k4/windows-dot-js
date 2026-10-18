@@ -939,6 +939,7 @@ const netLists = new Map();   // a container's key -> { items } once enumerated
 const NET_ICON = { 1: 'workgroup', 2: 'netserver', 3: 'netshare', 7: 'globe' };   // by RESOURCEDISPLAYTYPE
 /** the resources MPR has under `res` (null: the scope's top) */
 async function netEnum(scope, res) {
+  if (window.W95HOST && window.W95HOST.shares) return hostEnum(res);   // the host's folders: the network is the host computer and its shares
   if (!await netBoot()) return [];
   if (netApp.remote) return (netApp.alive && await netApp.cmd('netEnum', [scope, res])) || [];
   const p = netApp.proc, s = x => (x ? netStr(x) : 0), nr = res ? p.alloc(32) : 0, ph = p.alloc(4), out = [];
@@ -3662,7 +3663,7 @@ function syncNetDrives() {
     return netApp.cmd('netConnections').then(list => {
       list = list || [];
       for (let c = 65; c <= 90; c++) {
-        const L = String.fromCharCode(c), v = fs.vols.get(L); if (v && !v.remote) continue;
+        const L = String.fromCharCode(c), v = fs.vols.get(L); if (v && (!v.remote || v.host)) continue;
         const x = list.find(y => y.letter === L), unc = x && x.unc;
         if (v && (!unc || v.unc.toUpperCase() !== unc.toUpperCase())) fs.unmount(L);
         if (unc && (!v || v.unc.toUpperCase() !== unc.toUpperCase())) fs.mount(L, { remote: netCache(netApp, L), unc, label: unc.split('\\').pop() || '' });
@@ -3673,7 +3674,7 @@ function syncNetDrives() {
   const p = netApp && netApp.alive ? netApp.proc : null, fn = p && p.byName.get('MPR') && p.byName.get('MPR').exports.get('WNetGetConnectionA');
   const loc = p && p.alloc(8), buf = p && p.alloc(264), pn = p && p.alloc(4);
   for (let c = 65; c <= 90; c++) {
-    const L = String.fromCharCode(c), v = fs.vols.get(L); if (v && !v.remote) continue;
+    const L = String.fromCharCode(c), v = fs.vols.get(L); if (v && (!v.remote || v.host)) continue;
     let unc = null;
     if (fn) { p.writeA(loc, L + ':'); p.w32(pn, 260); try { if (p.call(fn, [loc, buf, pn]) === 0) unc = p.readA(buf); } catch (e) { console.error(e); } }
     if (v && (!unc || v.unc.toUpperCase() !== unc.toUpperCase())) fs.unmount(L);
@@ -3686,6 +3687,10 @@ async function mapNetDrive() { if (await netBoot()) { await netCall('WNetConnect
 async function disconnectNetDrive() { if (await netBoot()) { await netCall('WNetDisconnectDialog', [0, 1]); await syncNetDrives(); } }
 // a UNC path's share (\\server\share), reached through the redirector as a drive's is: none if it does not answer
 fs.uncBackend = unc => {
+  if (window.W95HOST && window.W95HOST.shares) {   // a share of the host's: its folder, directly
+    const m = /^\\\\([^\\]+)\\([^\\]+)/.exec(unc); if (!m || m[1].toUpperCase() !== hostName()) return null;
+    try { return (window.W95HOST.shares.list() || []).some(s => s.name.toUpperCase() === m[2].toUpperCase()) ? hostBackend(m[2]) : null; } catch (e) { return null; }
+  }
   if (!netApp || !netApp.alive) { netBoot(); return null; }   // not yet: the network starts for the next time
   if (netApp.remote) return netCache(netApp, unc);
   const b = W95NetFS.backend(netApp, unc); try { b.space(); return b; } catch (_) { return null; }   // its root answers
@@ -3703,6 +3708,59 @@ function netBoot() {
     await netCall('WNetRestoreConnectionA', [0, 0]);
     await syncNetDrives(); netUp = a; return a;
   })().finally(() => { netBooting = null; }));
+}
+// ---------------------------------------------------------------- the host's folders as network drives
+// The folders the host shares (the app's shares.js, the dev server's /__share) are drives of their own in fs.js, as
+// network drives on the host computer (\\COMPUTER\SHARE): each operation goes to the host synchronously. No network
+// stack runs for them; every machine reaches them through the page's file system
+const HOST_ERR = { ENOENT: 2, ENOTDIR: 3, EACCES: 5, EPERM: 5, EEXIST: 80, ENOTEMPTY: 145, EISDIR: 5 };
+function hostBackend(name) {
+  const H = window.W95HOST.shares, handles = new Map(); let nextH = 1;
+  const op = (o, path, ...args) => { const r = H.op(name, o, ...args); if (!r || r.err) throw new W95FS.FSError(HOST_ERR[r && r.err] || 31, path); return r.ok; };
+  const ent = (e, n) => e && ({ name: n !== undefined ? n : e.name, dir: !!e.dir, size: e.dir ? 0 : e.size || 0, attrs: (e.dir ? 0x10 : 0x20) | (e.readonly ? 1 : 0) | (e.hidden ? 2 : 0),
+    ctime: e.ctime || 0, mtime: e.mtime || 0, atime: e.atime || 0 });
+  const rel = h => { const r = handles.get(h); if (r === undefined) throw new W95FS.FSError(6, name); return r; };
+  return {
+    stat: r => { if (!r) return { dir: true, size: 0, attrs: 0x10, ctime: 0, mtime: 0, atime: 0, name: '' }; return ent(op('stat', r, r), r.split('\\').pop()) || null; },
+    list: r => op('list', r, r).map(e => ent(e)),
+    open: (r, f) => {
+      const there = !!op('stat', r, r);
+      if (!there) { if (!f.create) throw new W95FS.FSError(2, r); op('create', r, r, false); }
+      else if (f.trunc) op('truncate', r, r, 0);
+      const h = nextH++; handles.set(h, r); return h;
+    },
+    read: (h, pos, n) => { const out = new Uint8Array(n); let got = 0; while (got < n) { const b = op('read', rel(h), rel(h), pos + got, n - got); if (!b || !b.length) break; out.set(b, got); got += b.length; } return out.subarray(0, got); },
+    write: (h, pos, b) => op('write', rel(h), rel(h), pos, b),
+    truncate: (h, n) => op('truncate', rel(h), rel(h), n),
+    size: h => { const e = op('stat', rel(h), rel(h)); return e ? e.size || 0 : 0; },
+    close: h => { handles.delete(h); },
+    mkdir: r => op('mkdir', r, r), rmdir: r => op('rmdir', r, r), unlink: r => op('unlink', r, r), rename: (a, b) => op('rename', a, a, b),
+    setAttrs: () => {}, setTime: (r, ms) => op('times', r, r, ms),
+    space: () => op('space', name) || { total: 0, free: 0 },
+  };
+}
+/** the host's network as MPR enumerates one: the workgroup, the host computer in it, its shares */
+const hostName = () => (window.W95HOST.computerName || 'HOST').toUpperCase().replace(/[^A-Z0-9!@#$%^&()\-_'{}.~]/g, '').slice(0, 15) || 'HOST';
+function hostEnum(res) {
+  const pc = { scope: 2, type: 3, disp: 2, usage: 2, remote: '\\\\' + hostName(), comment: '', provider: 'Microsoft Network' };
+  if (!res) return [{ scope: 2, type: 0, disp: 7, usage: 2, remote: '', comment: 'Entire Network', provider: '' }, pc];
+  if (res.disp === 7) return [{ scope: 2, type: 3, disp: 1, usage: 2, remote: 'WORKGROUP', comment: '', provider: 'Microsoft Network' }];
+  if (res.disp === 1) return [pc];
+  if (res.disp === 2) { let l = []; try { l = window.W95HOST.shares.list() || []; } catch (e) { console.error(e); } return l.map(s => ({ scope: 2, type: 1, disp: 3, usage: 5, remote: pc.remote + '\\' + s.name.toUpperCase(), comment: s.remark || '', provider: 'Microsoft Network' })); }
+  return [];
+}
+/** the host's shares mounted as network drives, from E: on (the first letters free after the disks and the CD) */
+function mountHostShares() {
+  const H = window.W95HOST && window.W95HOST.shares; if (!H) return;
+  let list = []; try { list = H.list() || []; } catch (e) { console.error(e); return; }
+  const host = hostName();
+  let c = 69;   // E:
+  for (const s of list) {
+    while (c <= 90 && fs.vols.has(String.fromCharCode(c))) c++;
+    if (c > 90) break;
+    const L = String.fromCharCode(c), unc = `\\\\${host}\\${s.name.toUpperCase()}`;
+    const v = fs.mount(L, { remote: hostBackend(s.name), unc, label: s.name.toUpperCase() }); v.host = true;
+  }
 }
 /** connections MPR remembers (HKCU\Network\Persistent): the network starts as the shell boots to make them again */
 const netRemembered = () => W95Win32.regKids('hkcu\\network\\persistent').some(k => W95Win32.regGet('hkcu\\network\\persistent\\' + k, 'RemotePath') !== undefined);
@@ -4537,6 +4595,7 @@ window.addEventListener('resize', resize);
 setInterval(() => { blinkOn = !blinkOn; dirty(); }, 530);
 
 bootDisk();
+mountHostShares();
 systemBootLater();
 netBootLater();
 loadTaskbar();
