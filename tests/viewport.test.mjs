@@ -40,11 +40,14 @@ const cut = (w, a, b, keep = true) => { const i = w.indexOf(a); assert.ok(i >= 0
   const env = (iw, ih) => S(iw, ih, 1, canvas, () => resizes++, f => f());
   assert.deepEqual(env(1024, 768).mode(), [1024, 768]); assert.deepEqual(env(1000, 768).mode(), [800, 600]); assert.deepEqual(env(100, 100).mode(), [640, 480]);
   const settle = async () => { for (let i = 0; i < 8; i++) await new Promise(f => setImmediate(f)); };
-  // the largest mode the viewport holds; the machine busy once, then in that mode
-  const asked = [], answers = [null, { r: 0, sw: 800, sh: 600 }];
-  const e = env(900, 700), a = new e.RemoteApp({ alive: true, sw: 1024, sh: 768, cmd: async (n, args) => { asked.push([n, ...args]); return answers.shift(); } });
+  // the largest mode the viewport holds, asked for once; a thread holding USER, the machine answers null and makes
+  // the change when none does (its 'mode' message), the canvases following then
+  const asked = [];
+  const e = env(900, 700), a = new e.RemoteApp({ alive: true, sw: 1024, sh: 768, cmd: async (n, args) => { asked.push([n, ...args]); return null; } });
   e.set(a); e.syncMode(); await settle();
-  assert.deepEqual(asked, [['mode', 800, 600], ['mode', 800, 600]]); assert.deepEqual([a.sw, a.sh], [800, 600]); assert.equal(resizes, 1); assert.ok(a.cv && a.img);
+  assert.deepEqual(asked, [['mode', 800, 600]]); assert.deepEqual([a.sw, a.sh], [1024, 768]); assert.ok(a.modeBusy && a.modeDone);
+  a.modeDone({ r: 0, sw: 800, sh: 600 }); await settle();
+  assert.deepEqual(asked, [['mode', 800, 600]]); assert.deepEqual([a.sw, a.sh], [800, 600]); assert.equal(resizes, 1); assert.ok(a.cv && a.img); assert.equal(a.modeBusy, null);
   // a mode the driver did not take is not asked for again
   const e2 = env(700, 500), got = [], b = new e2.RemoteApp({ alive: true, sw: 800, sh: 600, cmd: async (n, args) => { got.push(args); return { r: -2, sw: 800, sh: 600 }; } });
   e2.set(b); e2.syncMode(); await settle(); e2.syncMode(); await settle();

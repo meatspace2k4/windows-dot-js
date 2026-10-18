@@ -37,16 +37,36 @@ for (const [record, opts, heard] of [
 // Shut Down leaves the record a clean one: the next start is heard
 { const p = page('running'); p.shutDownCleanly(); assert.equal(p.record(), 'clean'); }
 
-// the boot's Setup passes include the Start menu one, and it leaves GRPCONV to Setup's RunOnce (RunOnce\Setup, run by
-// RUNONCE's "Windows is now setting up" screen before the shell's desktop), not to the shell's own RunOnce: the shell,
-// and SystemStart with it, come after Setup's screen
+// the boot's Setup passes include the Start menu one, and it leaves GRPCONV to Setup's RunOnce (RunOnce\Setup), not
+// to the shell's own RunOnce: the machine runs Setup's items under RUNONCE before its message server starts, so the
+// shell, and SystemStart with it, come after Setup's screen
 {
   const boots = w.split('\n').filter(l => /installPrograms\(\); setupFonts\(\);/.test(l));
   assert.equal(boots.length, 2);
   for (const l of boots) assert.ok(/\bsetupStartMenu\(\);/.test(l), l);
-  const body = cut('function setupStartMenu() {', "str('runonce.exe'));\n}");
-  assert.ok(/regSet\(ro \+ '\\\\setup', 'Programs on the Start menu'/.test(body) && /regSet\(ro, 'Wrapper', str\('runonce\.exe'\)\)/.test(body));
-  assert.ok(!/regSet\(ro, 'GrpConv'/.test(body));
+  const body = cut('function setupStartMenu() {', "grpconv.exe') + ' -s'));\n}");
+  assert.ok(/regSet\(ro \+ '\\\\setup', 'Programs on the Start menu'/.test(body));
+  assert.ok(!/regSet\(ro, 'GrpConv'/.test(body) && !/'Wrapper'/.test(body));
+}
+// the machine: with Setup's items left, RUNONCE runs first and MSGSRV32 starts when it has ended; with none, MSGSRV32
+// starts at once
+{
+  const src = readFileSync(new URL('../worker.js', import.meta.url), 'utf8');
+  const i = src.indexOf('  startSystemTask() {'); assert.ok(i >= 0);
+  const M = new Function('W', 'self', 'fs', `return class {\n${src.slice(i, src.indexOf('\n  }\n', i) + 4)}\n}`);
+  const run = (items, runonce) => {
+    const started = [], spawned = [], exits = [];
+    const W = { regVals: () => items }, self = { W95SYSTEM: { programs: runonce ? { 'RUNONCE.EXE': {} } : {} } }, fs = { exists: f => f === 'C:\\WINDOWS\\RUNONCE.EXE' };
+    const m = new (M(W, self, fs))(); let pc = null;
+    Object.assign(m, { alive: true, proc: { trapped: null, init16() { exits.push('init16'); }, startTask16(n) { started.push(n); return 0x1234; } }, spawnProgram(f) { spawned.push(f); return (pc = { onExit: c => exits.push(c) }); }, exited: (c, why) => exits.push(['exited', why]) });
+    const r = m.startSystemTask();
+    return { r, started, spawned, exits, pc };
+  };
+  const a = run([['programs on the start menu', {}]], true);
+  assert.deepEqual([a.r, a.spawned, a.started, a.exits], [true, ['C:\\WINDOWS\\RUNONCE.EXE'], [], ['init16']]);
+  a.pc.onExit(0); assert.deepEqual(a.started, ['MSGSRV32.EXE']); assert.deepEqual(a.exits, ['init16', 0]);
+  const b = run([], true); assert.deepEqual([b.r, b.spawned, b.started], [true, [], ['MSGSRV32.EXE']]);
+  const c = run([['x', {}]], false); assert.deepEqual([c.r, c.spawned, c.started], [true, [], ['MSGSRV32.EXE']]);
 }
 // the system's start waits on nothing of the shell's: startSystem is called from the boot (systemBootLater), not from a
 // RunOnce or GRPCONV

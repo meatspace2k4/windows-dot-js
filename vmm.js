@@ -407,8 +407,15 @@ svc(SHELL, 0x0e, function (arg) { return this.appyCall(arg(0), arg(1)) ? 1 : thi
  *  start-up has MMDEVLDR queue the devices' start inside DriverProc 800h, and finds the card's drivers loaded when it
  *  plays SystemStart after it). True when it ran */
 P.appyCall = function (fn, ref) {
-  if (this.user16Ready && this.thread16 && this.thread16 === this.appyThread) { this.vxdCdecl(fn, [ref]); return true; }
+  if (this.user16Ready && this.thread16 && this.thread16 === this.appyThread) { this.appyDrain(); this.vxdCdecl(fn, [ref]); return true; }
   (this.appyQueue = this.appyQueue || []).push({ fn, ref }); return false;
+};
+/** the appy-time calls waiting, run on the thread that calls (the appy-time thread's: MSGSRV32's, inline from a call
+ *  of its own or as it waits for a message), in the order they were asked for */
+P.appyDrain = function () {
+  if (!this.appyQueue || !this.appyQueue.length) return;
+  const q = this.appyQueue; this.appyQueue = [];
+  for (const e of q) { if (window.W95APPYTRACE) window.W95APPYTRACE(e); this.vxdCdecl(e.fn, [e.ref]); }
 };
 // _SHELL_CallDll(dll, proc, cbArgs, args): the 16-bit DLL's export called with the argument block as its PASCAL
 // frame (the block is the stack image, last argument first); EAX its DX:AX
@@ -427,9 +434,11 @@ svc(SHELL, 0x18, function (arg) {
 });
 /** run the appy-time callbacks VxDs scheduled: the host calls this between slices */
 P.vxdAppy = function () {
-  if (this.depth || !this.user16Ready || !this.appyQueue || !this.appyQueue.length) return;
-  const q = this.appyQueue; this.appyQueue = [];
-  for (const e of q) { if (window.W95APPYTRACE) window.W95APPYTRACE(e); this.vxdCdecl(e.fn, [e.ref]); }
+  if (this.depth || !this.user16Ready || this.thread16) return;
+  // the system's machine has an appy-time thread (MSGSRV32's, once it runs): its calls run there and nowhere else, as
+  // Windows runs them (the media drivers they load belong to that task); a machine without one runs them here
+  if (this.systemMachine) return;
+  this.appyDrain();
 };
 /** _SHELL_PostMessage(hwnd, message, wParam, lParam, callback, reference): a message posted through SHELL.VXD (service
  *  17h:6), as KERNEL32 tells MSGSRV32's window its start is done (501h); false with no SHELL loaded */

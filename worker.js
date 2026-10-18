@@ -129,7 +129,9 @@ class Machine {
     try {
       this.proc = new W.Process(this.bytes, prog.module, { ...prog.meta, name: prog.name.replace(/\.EXE$/, '') }, host, this.arg ? `${exe} ${this.arg}` : exe, dlls);
       this.proc.soundQuiet = !!this.quiet;   // (sound.js: the card's output off for the one sound)
-      if (this.system && !this.proc.trapped && !this.proc.startTask16('MSGSRV32.EXE')) throw new Error('MSGSRV32.EXE did not start');
+      this.proc.systemMachine = !!this.system;   // (vmm.js vxdAppy: its appy-time calls run on MSGSRV32's thread)
+      if (this.trace) this.traceOn(this.trace);
+      if (this.system && !this.proc.trapped && !this.startSystemTask()) throw new Error('MSGSRV32.EXE did not start');
     } catch (e) { console.error(e && e.stack ? e.stack : e); this.exited(-1, e.message); return; }
     if (this.proc.trapped) { this.exited(-1, this.proc.trapped); return; }
     const p = this.proc;
@@ -197,6 +199,30 @@ class Machine {
     post({ t: 'scan', scan: { w: a.w, h: a.h, pitch: a.pitch || a.w, bpp: a.bpp, vram: a.vram.byteOffset }, dac: Uint8Array.from(a.dac),
       sprite: sp ? { x: sp.x, y: sp.y, px: sp.px, py: sp.py, row: sp.row, at: sp.bits.byteOffset } : null });
   }
+  /** the system's first task, MSGSRV32 (its message server: the drivers, SystemStart, then the shell). On the start
+   *  after Setup, the items Setup left to it (RunOnce\Setup: GRPCONV's Start menu) run first, under RUNONCE's
+   *  "Windows 95 Setup" screen on USER's bare desktop, as Setup's first-run screens run them before the shell;
+   *  MSGSRV32 starts when RUNONCE has ended, so the shell and SystemStart come after the screen. False if it cannot start */
+  startSystemTask() {
+    const p = this.proc, S = self.W95SYSTEM || {}, items = W.regVals('hklm\\software\\microsoft\\windows\\currentversion\\runonce\\setup');
+    const exe = items.length && (S.programs || {})['RUNONCE.EXE'] ? ['C:\\WINDOWS\\RUNONCE.EXE', 'C:\\WINDOWS\\SYSTEM\\RUNONCE.EXE'].find(f => fs.exists(f)) : null;
+    const sys = () => { if (!this.alive || p.trapped) return true; const ok = !!p.startTask16('MSGSRV32.EXE'); if (!ok) this.exited(-1, 'MSGSRV32.EXE did not start'); return ok; };
+    if (!exe) return sys();
+    p.init16();
+    const pc = this.spawnProgram(exe, '');
+    if (typeof pc !== 'object') return sys();
+    const was = pc.onExit; pc.onExit = code => { if (was) was(code); sys(); };
+    return true;
+  }
+  /** a diagnostic: the imports the threads whose name matches re call (the JS-implemented ones: KERNEL, USER's
+   *  hooks, KERNEL32), with the time and, for WinExec and LoadModule, the command line; cmd 'trace' reads them */
+  traceOn(re) {
+    const p = this.proc, want = new RegExp(re, 'i'), log = this.traceLog = [], t0 = performance.now();
+    const name = () => { const t = p.thread16; if (!t) return 'host'; const m = t.task && t.task.hInst && p.neByHandle(t.task.hInst); return (m && m.name) || (t.pc && t.pc.path) || String(t.id); };
+    const arg = key => { if (!/KERNEL\.#(166|45)$/.test(key)) return ''; try { const f = p.cpu.ssb.value + (p.cpu.esp.value & 0xffff), s = p.r32(f + (key.endsWith('166') ? 6 : 8)); return p.readA(p.lin(s)) || ''; } catch (_) { return ''; } };
+    self.W95TRACE16 = t => { const th = name(); if (log.length < 20000 && want.test(th)) log.push([Math.round(performance.now() - t0), th, t.key, arg(t.key)]); };
+    self.W95TRACE = t => { const th = name(); if (log.length < 20000 && want.test(th)) log.push([Math.round(performance.now() - t0), th, t.dll + '!' + t.nm, '']); };
+  }
   ring0() { return !!(this.proc && this.proc.r0Runs && this.proc.r0Runs.length); }
   feedKeys() {
     const p = this.proc;
@@ -220,6 +246,9 @@ class Machine {
       return;
     }
     if (this.stopped) return;
+    if (this.wantMode && !p.depth && !p.thread16 && !p.win16Held) {   // the mode the page asked for while a thread held USER: made now that none does
+      const [w, h] = this.wantMode; this.wantMode = null; const r = this.setMode(w, h); if (r) post({ t: 'mode', r }); else this.wantMode = [w, h];
+    }
     if (!p.win16Held && p.k32CloseRequest && p.k32CloseRequest()) post({ t: 'closeProgram' });   // REBOOT's APC: Close Program
     this.feedMouse(); this.feedKeys();
     try {
@@ -504,8 +533,9 @@ class Machine {
       case 'netEnum': return this.netEnum(args[0], args[1]);
       case 'netConnections': return this.netConnections();
       case 'netfs': { const b = self.W95NetFS.backend({ alive: true, proc: p }, args[0]); return b[args[1]](...(args[2] || [])); }
-      case 'mode': return this.setMode(args[0], args[1]);
+      case 'mode': { const r = this.setMode(args[0], args[1]); if (!r) this.wantMode = [args[0], args[1]]; return r; }   // (null: made once no thread holds USER, step())
       case 'probe': return this.probe();
+      case 'trace': { if (args[0] && !this.traceLog) this.traceOn(args[0]); const l = this.traceLog || []; return l.splice(0); }   // (the calls traced so far; a regexp starts a trace)
       case 'kick': return;
       case 'exit': this.exited(args[0] || 0); return;
     }

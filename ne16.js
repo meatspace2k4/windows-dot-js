@@ -3022,6 +3022,7 @@ def16('KERNEL', 91, '', 'jmp', function () {
 });
 def16('KERNEL', 30, 'w', 'w', function () {
   const t = thr(this, 0), top = this.thread16 ? this.depth === this.thread16.depth : this.depth === 0;
+  if (top && this.thread16 && this.thread16 === this.appyThread && this.appyDrain) this.appyDrain();   // appy time: the calls VxDs asked for run on this thread (MSGSRV32's) as it waits for a message
   if (t.events > 0) { t.events--; t.slept = false; return 0; }   // an event posted to the task (PostEvent, its start): no wait
   if (top && !t.slept) { t.slept = true; return YIELD; }
   if (!top) this.threads16(true);   // inside a call: the other tasks run, as the wait would let them

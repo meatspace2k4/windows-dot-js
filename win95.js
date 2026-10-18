@@ -2789,10 +2789,10 @@ function setupStartMenu() {
     if (at >= 0) lines[at] = line; else lines.push(line);
   }
   fs.writeFile(join(WINDIR, 'SETUP.INI'), W95FS.encode([...out.values()].map(v => `[${v.name}]\r\n${v.lines.join('\r\n')}\r\n`).join('\r\n')));
-  // SETUPC.INF's RunOnce\Setup item, and the wrapper SETUPX adds for a RunOnce\Setup with items: RUNONCE, which runs them
+  // SETUPC.INF's RunOnce\Setup item: run under RUNONCE's "Windows 95 Setup" screen before the system's message server
+  // starts (worker.js startSystemTask), as Setup's first-run screens run it, before the shell and SystemStart
   const str = v => ({ type: 1, data: W95FS.encode(v + '\0') }), ro = 'hklm\\software\\microsoft\\windows\\currentversion\\runonce';
   W95Win32.regSet(ro + '\\setup', 'Programs on the Start menu', str(join(WINDIR, 'grpconv.exe') + ' -s'));
-  W95Win32.regSet(ro, 'Wrapper', str('runonce.exe'));
 }
 // Setup's registration of the copy (CurrentVersion: RegisteredOwner, RegisteredOrganization, ProductId): MSGSRV32
 // checks them as Windows starts and, missing, runs the first-run screens instead. The owner is the name the network
@@ -2982,6 +2982,13 @@ const NATIVE_MODES = [[1280, 1024], [1024, 768], [800, 600], [640, 480], [640, 4
 // the display mode for a machine: the largest the page shows whole at its own pixels (the page is the monitor
 // EXPLORER.EXE's screen is shown on), else 640x480
 const nativeMode = () => NATIVE_MODES.find(([w, h]) => w * ZOOM <= innerWidth && h * ZOOM <= innerHeight) || [640, 480];
+// the mode the system's machine boots in, as Display Properties leaves it for the display driver: Display\Settings
+// under the current configuration (Resolution "w,h", BitsPerPixel), read by FRAMEBUF.DRV as it is enabled; the one
+// the page's viewport holds, so no change is needed once the shell is up
+function bootMode(w, h) {
+  const str = v => ({ type: 1, data: W95FS.encode(v + '\0') });
+  for (const k of ['hkcc\\display\\settings', 'hklm\\config\\0001\\display\\settings']) { W95Win32.regSet(k, 'Resolution', str(`${w},${h}`)); W95Win32.regSet(k, 'BitsPerPixel', str('8')); }
+}
 // the system's machine follows the page: once its viewport holds another of the adapter's modes (the display driver,
 // FRAMEBUF.DRV, sets the resolutions of its own table and no other), the machine is asked for it; a mode it did not
 // take is not asked for again until the viewport changes
@@ -3054,7 +3061,7 @@ class NativeApp {
     if (!this.net) for (const [n, d] of Object.entries(S.net || {})) dlls.set(n.replace(/\.DLL$/, ''), {
       get file() { return d.bytes || (d.bytes = b64bytes(d.file)); }, meta: d.meta,
       get module() { return d.mod instanceof WebAssembly.Module ? d.mod : (d.modSync || (d.modSync = new WebAssembly.Module(b64bytes(d.wasm)))); } });
-    [this.sw, this.sh] = nativeMode();
+    [this.sw, this.sh] = nativeMode(); if (this.system) bootMode(this.sw, this.sh);
     const host = {
       fs, width: this.sw, height: this.sh, path: this.path, now: () => performance.now(), net: this.net, vmPages: 2048,   // 128 MiB of address space to reserve
       shared: true,   // (the system's modules take shared memory: the machines in workers share theirs with the page)
@@ -3069,6 +3076,7 @@ class NativeApp {
     try {
       this.proc = new W95Win32.Process(bytes, module, { ...prog.d.meta, name: prog.name.replace(/\.EXE$/, '') }, host, this.arg ? `${exe} ${this.arg}` : exe, dlls);
       this.proc.soundQuiet = this.quiet;   // (sound.js: the card's output off for the one sound)
+      this.proc.systemMachine = this.system;   // (vmm.js vxdAppy: its appy-time calls run on MSGSRV32's thread)
       if (this.system && !this.proc.trapped && !this.proc.startTask16('MSGSRV32.EXE')) throw new Error('MSGSRV32.EXE did not start');
     }
     catch (e) { console.error(e); this.exited(-1, e.message); return false; }
@@ -3409,7 +3417,7 @@ class RemoteApp extends NativeApp {
   // what the shell's older code reads of a machine (its counters; a program that has not exited)
   get proc() { return { stats: this.stats, exitCode: this.alive ? null : 0, trapped: null, depth: 0, win16Held: this.held, r0Runs: this.r0 ? [1] : [], txt: this.txt }; }
   start(bytes, prog) {
-    [this.sw, this.sh] = nativeMode();
+    [this.sw, this.sh] = nativeMode(); if (this.system) bootMode(this.sw, this.sh);
     this.ring = W95Bridge.newRing(); this.rpcSab = new SharedArrayBuffer(16 + W95Bridge.RPC_BYTES);
     if (this.net) this.lanRing = W95Bridge.newFrames();   // (the frames for its network card)
     this.worker = new Worker('worker.js'); machineWorkers.add(this);
@@ -3417,21 +3425,26 @@ class RemoteApp extends NativeApp {
     this.worker.onerror = e => { console.error('[worker]', e.message); this.exited(-1, e.message); };
     this.worker.postMessage({ t: 'start', rpc: this.rpcSab, registry: W95Win32.regDump(), o: {
       path: this.path, arg: this.arg, net: this.net, system: this.system, quiet: this.quiet, sw: this.sw, sh: this.sh, shellW: W, workH: workH(), ring: this.ring, lan: this.lanRing || null,
-      bytes: bytes || null, prog: prog ? { name: prog.name, meta: prog.d.meta } : null } });
+      bytes: bytes || null, prog: prog ? { name: prog.name, meta: prog.d.meta } : null,
+      trace: new URLSearchParams(location.search).get('trace') } });   // (?trace=MSGSRV32: the imports that thread calls, read back with cmd 'trace')
     return new Promise(ok => { this.started = ok; });
   }
   /** the machine's display mode changed to w by h (the page's viewport holds another mode): asked of the machine once
    *  no thread holds USER; the page's canvases for its screen follow the mode it is in after the change */
   async setMode(w, h) {
     if (this.modeBusy) return this.modeBusy;
-    return (this.modeBusy = (async () => {
-      let r = null;
-      // (asked again every 100 ms while a thread holds USER, however long: the shell's start holds it for seconds)
-      while (this.alive && !r) { r = await this.cmd('mode', [w, h]); if (!r) await new Promise(f => setTimeout(f, 100)); }
-      if (!r) return;
-      if (r.sw !== w || r.sh !== h) (this.modeRefused = this.modeRefused || []).push([w, h]);   // (not taken: not asked for again at this viewport size)
-      if (r.sw !== this.sw || r.sh !== this.sh) this.screenSized(r.sw, r.sh);
-    })().finally(() => { this.modeBusy = null; }));
+    return (this.modeBusy = new Promise(done => {
+      this.modeDone = r => { this.modeDone = null; if (r) this.modeTaken(w, h, r); done(); };
+      // the machine answers at once when no thread holds USER; otherwise it makes the change as soon as none does and
+      // tells (its 'mode' message)
+      this.cmd('mode', [w, h]).then(r => { if (r && this.modeDone) this.modeDone(r); });
+    }).finally(() => { this.modeBusy = null; }));
+  }
+  /** the machine's answer to a mode asked for: the mode it is in now; one it did not take is not asked for again at
+   *  this viewport size */
+  modeTaken(w, h, r) {
+    if (r.sw !== w || r.sh !== h) (this.modeRefused = this.modeRefused || []).push([w, h]);
+    if (r.sw !== this.sw || r.sh !== this.sh) this.screenSized(r.sw, r.sh);
   }
   screenSized(sw, sh) {
     [this.sw, this.sh] = [sw, sh];
@@ -3463,6 +3476,7 @@ class RemoteApp extends NativeApp {
       case 'held': this.held = m.held; this.stats = m.stats; return;
       // the screen's mode, DAC and the cursor sprite, as often as the machine runs, its window list or not (USER held)
       case 'scan': this.scr = m; this.followMode(m); dirty(); return;
+      case 'mode': if (this.modeDone) this.modeDone(m.r); return;   // (a mode asked for while a thread held USER, made now)
       case 'text': this.txt = m.txt; if (msgApp === this) dirty(); return;
       case 'msgMode': msgApp = m.on ? this : msgApp === this ? null : msgApp; this.r0 = m.on; dirty(); return;
       case 'reset': machineReset(); return;
