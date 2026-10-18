@@ -51,7 +51,10 @@ NE = [('gdi.exe', 0x01C00000, 0x1007, 0x06A00000), ('dibeng.dll', 0x01E00000, 0x
       # the installable drivers (MMSYSTEM, the sound card's) for it, and it plays SystemStart and starts the shell
       ('msgsrv32.exe', 0x01570000, 0x1CEF, 0x06130000),
       # Program Manager, which GRPCONV starts to make Setup's program groups through its DDE (WIN95_17.CAB)
-      ('progman.exe', 0x01580000, 0x1CFF, 0x07FA0000)]
+      ('progman.exe', 0x01580000, 0x1CFF, 0x07FA0000),
+      # the tool helper library (WIN95_02.CAB), which the Display applet's pages load, and those pages: Background,
+      # Screen Saver, Appearance and Settings, which DESK.CPL shows (WIN95_02.CAB)
+      ('toolhelp.dll', 0x01FC0000, 0x1D47, 0x06800000), ('deskcp16.dll', 0x01F80000, 0x1D57, 0x06840000)]
 # the NE modules above that Setup leaves on the CD: a module of these loads only when its file is on the disk
 ON_DISK = {'unidrv.dll', 'tty.drv'}
 # Windows programs that run on the native USER (bootUser16): (file, load base, block-table base). Each has a base of
@@ -78,6 +81,8 @@ PE = [('gdi32.dll', 0x01D00000, 0x06C00000), ('user32.dll', 0x01D40000, 0x073400
       ('winmm.dll', 0x01760000, 0x079C0000),
       # the Multimedia and Sounds Control Panel applets (WIN95_02.CAB), which RUNDLL32 runs through SHELL32's Control_RunDLL
       ('mmsys.cpl', 0x01780000, 0x07A00000),
+      # the Display applet (WIN95_22.CAB): desktop Properties and Control Panel's Display, its pages in DESKCP16.DLL
+      ('desk.cpl', 0x01F60000, 0x068C0000),
       # the 32-bit half of the audio compression manager, which MSACM.DLL thunks to (WIN95_02.CAB)
       ('msacm32.dll', 0x017D0000, 0x07B80000),
       # OLE (WIN95_02.CAB): SHELL32 puts files on the clipboard through it ("Shell IDList Array" data objects), with

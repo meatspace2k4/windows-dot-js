@@ -571,7 +571,7 @@ function makeDisk(mounted) {
   for (const e of ['SSERIFE.FON', 'VGAFIX.FON', 'VGASYS.FON', 'MARLETT.TTF', 'ARIAL.TTF', 'TIMES.TTF', 'COUR.TTF']) if (!sysFonts[e]) fs.writeFile(join(WINDIR, 'FONTS', e), exeStub());
   for (const [e, d] of Object.entries(sysFonts)) fs.writeFile(join(WINDIR, 'FONTS', e), b64(d));
   fs.writeFile('C:\\Program Files\\Accessories\\WORDPAD.EXE', exeStub());
-  installPrograms(); setupFonts(); setupRegistry(); setupSound(); setupHelp(); setupNetwork(); setupPorts(); setupPrinting(); setupStartMenu();
+  installPrograms(); setupFonts(); setupRegistry(); setupDisplay(); setupSound(); setupHelp(); setupNetwork(); setupPorts(); setupPrinting(); setupStartMenu();
   // the CD's screen savers, byte for byte, under the long names APPLETS.INF gives them in LDID_SYS
   const LONG = { 'BEZIER.SCR': 'Curves and Colors.scr', 'SSMARQUE.SCR': 'Scrolling Marquee.scr', 'SSMYST.SCR': 'Mystify Your Mind.scr',
     'SCRNSAVE.SCR': 'Blank Screen.scr', 'SSFLYWIN.SCR': 'Flying Windows.scr', 'SSSTARS.SCR': 'Flying Through Space.scr' };
@@ -813,7 +813,7 @@ function bootDisk() {
   mountDrives();
   W95Win32.regAttach(host.registry);
   if (!fs.attach('C', host.disk)) makeDisk(true);
-  installPrograms(); setupFonts(); setupRegistry(); setupSound(); setupHelp(); setupNetwork(); setupPorts(); setupPrinting(); setupStartMenu();
+  installPrograms(); setupFonts(); setupRegistry(); setupDisplay(); setupSound(); setupHelp(); setupNetwork(); setupPorts(); setupPrinting(); setupStartMenu();
   fs.chdir('C:\\');
 }
 
@@ -2897,6 +2897,12 @@ function setupPorts() {
 /** Windows Help (the recompiled WINHLP32.EXE) on a help file of C:\WINDOWS\HELP: with its contents file, Help Topics */
 const hasHelp = () => !!((window.W95SYSTEM || {}).programs || {})['WINHLP32.EXE'];
 function winHelp(file = 'windows.hlp') { closeMenus(); if (hasHelp()) runNative(join(WINDIR, 'WINHLP32.EXE'), join(WINDIR, 'HELP', file)); }
+// the display: a start after one whose display driver could not enable finds USER's note of it in SYSTEM.INI
+// (*DisplayFallback=1), which sends the next start down the VGA fallback path; this machine's adapter and driver are
+// always the same, so the note is cleared before each start
+function setupDisplay() {
+  if (W95Win32.iniGet(fs, 'SYSTEM.INI', 'boot', '*DisplayFallback') !== null) W95Win32.iniSet(fs, 'SYSTEM.INI', 'boot', '*DisplayFallback', null);
+}
 function setupSound() {
   const S = window.W95SYSTEM || {}, infs = S.infs || {};
   if (!infs['MOTOWN.INF']) return;

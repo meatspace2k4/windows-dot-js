@@ -2937,6 +2937,14 @@ const segOf = (p, seg) => ((seg & 0xffff) === 0xffff ? p.cpu.ds.value : seg) & 0
 def16('KERNEL', 23, 'w', 'w', function (seg) { const s = segOf(this, seg), b = this.gblock(s); if (!b) return 0; b.lock = (b.lock || 0) + 1; return this.gsel(s); });
 def16('KERNEL', 24, 'w', 'w', function (seg) { const s = segOf(this, seg), b = this.gblock(s); if (!b) return 0; if (b.lock) b.lock--; return b.lock ? this.gsel(s) : 0; });   // 0 once unlocked
 // one task runs here, so yielding, task events and priorities have nothing to act on
+// GlobalMasterHandle: DX:AX the selector of KERNEL's global heap information block (the Burgermaster), which TOOLHELP
+// reads to walk the global heap; this KERNEL keeps its heap in its own tables, so the block is empty: an arena of no
+// entries, whose counts read zero
+def16('KERNEL', 28, '', 'l', function () {
+  if (!this.masterSel) { const a = this.alloc(0x10000); this.u8.fill(0, a, a + 0x10000); this.masterSel = this.allocSels(a, 0x10000); }
+  return (this.masterSel << 16) | this.masterSel;
+});
+def16('KERNEL', 202, 'l', 'l', () => 0);                                                               // RegisterPtrace: no debugger
 def16('KERNEL', 29, '', 'v', function () {                                                             // Yield: as OldYield (#447)
   const t = thr(this, 0), top = this.thread16 ? this.depth === this.thread16.depth : this.depth === 0;
   if (top && !t.yielded) { t.yielded = true; return YIELD; }
