@@ -544,6 +544,7 @@ function mountDrives() {
 }
 // Setup's first boot: C: as a fresh install leaves it
 function makeDisk(mounted) {
+  firstRun = true;
   if (!mounted) mountDrives();
   const b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
   const sysFonts = (window.W95SYSTEM || {}).fonts || {};
@@ -3528,10 +3529,10 @@ async function runNative(path, arg, o = {}) {
 // Windows 95's system: one machine (one USER, one MMSYSTEM, one sound card) whose first task is MSGSRV32.EXE, started
 // as the desktop comes up. USER's first-task start-up loads the installable drivers for it (MMSYSTEM, the card's), so
 // sound starts once, with the system, and MSGSRV32 plays SystemStart. The programs the shell runs start in it
-let sysApp = null, sysStarting = null;
-// SystemStart plays when Windows starts after it was shut down (Shut Down, Restart): a page reloaded or a window closed
-// with Windows running is no shutdown, and the start after it is quiet. The record is this browser's (a first start
-// has none, and plays)
+let sysApp = null, sysStarting = null, firstRun = false;   // firstRun: Setup built C: as this page started (makeDisk)
+// SystemStart plays when Windows starts after it was shut down (Shut Down, Restart), and on its first run (Setup has
+// just built C:): a page reloaded or a window closed with Windows running is no shutdown, and the start after it is
+// quiet. The shutdown record is this browser's (a start with none plays)
 const SHUTDOWN = 'w95.shutdown';
 const cleanStart = (() => { let v = null; try { v = localStorage.getItem(SHUTDOWN); localStorage.setItem(SHUTDOWN, 'running'); } catch (_) { /* no storage: every start plays */ } return v !== 'running'; })();
 function shutDownCleanly() { try { localStorage.setItem(SHUTDOWN, 'clean'); } catch (_) { /* no storage */ } }
@@ -3545,7 +3546,7 @@ function startSystem() {
     sysApp = a;
     // KERNEL32, its start done, tells the message server so (SHELL_PostMessage of 501h to MSGSRV32's window): it plays
     // SystemStart and starts the shell. Once MSGSRV32 waits for messages
-    if (!cleanStart) return a;   // (not told: no SystemStart; the shell it would start is this page)
+    if (!cleanStart && !firstRun) return a;   // (not told: no SystemStart; the shell it would start is this page)
     if (a.remote) {   // (the machine posts it when MSGSRV32 waits for messages)
       for (let i = 0; i < 200 && a.alive && !(await a.cmd('systemStarted')); i++) await new Promise(r => setTimeout(r, 25));
       return a;
