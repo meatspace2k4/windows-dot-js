@@ -3036,8 +3036,7 @@ class NativeApp {
     this.ov = mkc(this.sw, this.sh); this.ox = this.ov.getContext('2d'); this.oimg = this.ox.createImageData(this.sw, this.sh); this.o32 = new Uint32Array(this.oimg.data.buffer);
     this.d32 = new Uint32Array(this.img.data.buffer); this.pal = new Uint32Array(256);
     try {
-      // the cursor USER draws shows only while the mouse is over this program's windows; its windows stay above the taskbar
-      this.proc.user16(71, [['w', 0]]);
+      // its windows stay above the taskbar
       const p = this.proc, r = p.wbufLin || (p.nativeWindows(), p.wbufLin);
       p.w16(r, 0); p.w16(r + 2, 0); p.w16(r + 4, Math.min(this.sw, W)); p.w16(r + 6, Math.min(this.sh, workH()));
       p.user16(483, [['w', 47], ['w', 0], ['l', p.wbufSel << 16], ['w', 0]]);   // SPI_SETWORKAREA
@@ -3239,7 +3238,6 @@ class NativeApp {
     const ax = Math.round(clamp(x, 0, this.sw - 1) * 65535 / (this.sw - 1)), ay = Math.round(clamp(y, 0, this.sh - 1) * 65535 / (this.sh - 1));
     const f = kind === 'down' ? (btn === 2 ? 8 : 2) : kind === 'up' ? (btn === 2 ? 16 : 4) : 1;
     try {
-      this.showCursor(true);
       // the move first, as the mouse reports it before the button, so USER sees the button where the pointer is
       // behind keys still waiting to go in (a click after typing reaches the program after what was typed)
       const ev = [];
@@ -3248,11 +3246,6 @@ class NativeApp {
       if (this.keyq && this.keyq.length) this.keyq.push(...ev); else for (const m of ev) this.proc.mouseEvent16(...m.mouse);
     } catch (e) { console.error(e); }
     this.feedKeys();
-    this.kick();
-  }
-  showCursor(on) {
-    if (on === this.cursorOn || !this.alive || this.proc.win16Held || this.ring0()) return;
-    this.cursorOn = on; try { this.proc.user16(71, [['w', on ? 1 : 0]]); } catch (e) { console.error(e); }
     this.kick();
   }
   key(e, up) {
@@ -3487,7 +3480,6 @@ class RemoteApp extends NativeApp {
     W95Bridge.ringPut(this.ring, W95Bridge.MOUSE, f, Math.round(x), Math.round(y));
     this.kick();
   }
-  showCursor(on) { if (on !== this.cursorOn && this.alive) this.cmd('showCursor', [on]); }
   key(e, up) { this.ringKey(e, up, true); }
   ringKey(e, up, toUser) {
     if (!this.alive || !this.ring) return;
@@ -4302,7 +4294,7 @@ function drawCursor(name) {
 const SIZE_CUR = { n: 'sizens', s: 'sizens', e: 'sizewe', w: 'sizewe', nw: 'sizenwse', se: 'sizenwse', ne: 'sizenesw', sw: 'sizenesw' };
 function cursorAt(x, y) {
   if (drag) return drag.cursor;
-  { const na = nativeAt(x, y); if (na && na.cursorOn) return 'none'; }   // USER draws its own, in the machine the pointer is in (or that holds the capture)
+  if (nativeAt(x, y)) return 'none';   // one pointer: over a machine's window (or while it holds the capture) it is that machine's USER's cursor, as its display adapter has it
   if (menus.length && menuAt(x, y) >= 0) return 'arrow';
   if (onTaskbar(x, y)) return 'arrow';
   const w = winAt(x, y);
@@ -4419,7 +4411,6 @@ cv.addEventListener('pointermove', e => {
   const [x, y] = pos(e); if (x !== mouse.x || y !== mouse.y) lastInput = performance.now(); mouse = { x, y };
   if (tbar.autohide && !cap) { if (y >= H - 2 || (tbar.shown > 0 && y >= barTop())) slideTaskbar(true); else if (!(menuSrc && menuSrc.kind === 'start')) slideTaskbar(false); }
   const na = !cap && !menus.length && !modal() ? nativeAt(x, y) : null;
-  for (const a of nativeApps) if (a !== na && !(cap && cap.native === a)) a.showCursor(false);
   if (cap && cap.move) cap.move(x, y);
   else if (na) na.pointer('move', x, y);
   else if (menus.length) {

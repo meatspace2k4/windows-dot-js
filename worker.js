@@ -134,7 +134,6 @@ class Machine {
     const p = this.proc;
     { const a = p.scanout(); if (a.bpp) [this.sw, this.sh] = [a.w, a.h]; }
     try {
-      this.cursorOn = true; this.showCursor(false);   // (USER shows its cursor at the screen's centre as it starts: hidden until the pointer comes)
       const r = p.wbufLin || (p.nativeWindows(), p.wbufLin);
       p.w16(r, 0); p.w16(r + 2, 0); p.w16(r + 4, Math.min(this.sw, this.shellW)); p.w16(r + 6, Math.min(this.sh, this.workH));
       p.user16(483, [['w', 47], ['w', 0], ['l', p.wbufSel << 16], ['w', 0]]);   // SPI_SETWORKAREA
@@ -179,28 +178,6 @@ class Machine {
     const f = kind;
     if (f !== 1 && (ax !== this.ax || ay !== this.ay)) this.keyq.push({ mouse: [0x8001, ax, ay] });
     this.keyq.push({ mouse: [0x8001 | f, ax, ay] }); this.ax = ax; this.ay = ay;
-    if (!this.cursorOn) this.showCursor(true);
-  }
-  // USER's cursor shown or hidden as the pointer comes onto the machine's windows or leaves them for the shell's. Its
-  // show count is a thread's (ShowCursor): the thread whose cursor is on the screen hides it, and the same thread shows
-  // it again (its count back where it was)
-  showCursor(on) {
-    const p = this.proc; if (on === this.cursorOn || !p || p.win16Held || this.ring0()) return;
-    this.cursorOn = on;
-    try {
-      if (!on) this.cursorThread = p.cursorOwnerThread();
-      p.asThread(this.cursorThread, () => p.user16(71, [['w', on ? 1 : 0]]));
-    } catch (e) { console.error(e); }
-  }
-  /** the cursor kept hidden while the pointer is on the shell: when another thread comes to own it (its count shown),
-   *  the thread that hid it shows it again and the new owner hides it */
-  syncCursor() {
-    const p = this.proc; if (this.cursorOn || !p || p.win16Held || this.ring0()) return;
-    const o = p.cursorOwnerThread(); if (o === this.cursorThread) return;
-    try {
-      p.asThread(this.cursorThread, () => p.user16(71, [['w', 1]]));
-      this.cursorThread = o; p.asThread(o, () => p.user16(71, [['w', 0]]));
-    } catch (e) { console.error(e); }
   }
   ring0() { return !!(this.proc && this.proc.r0Runs && this.proc.r0Runs.length); }
   feedKeys() {
@@ -249,7 +226,7 @@ class Machine {
     for (const f of (p.pcFaults || []).splice(0)) { f.pc.fault = true; post({ t: 'pcFault', path: f.pc.path, why: f.why, f: f.fault || null }); }
     if (p.trapped && !p.failed) p.fail(p.trapped);
     if (p.exitCode !== null || p.trapped) { this.exited(p.exitCode, p.trapped); return; }
-    if (!p.win16Held) { this.syncCursor(); this.frame(); }
+    if (!p.win16Held) this.frame();
     else post({ t: 'held', held: { hung: p.win16Held.hung }, stats: { ...p.stats } });   // (no USER while a thread holds the lock: the page learns it is held)
     this.timer = setTimeout(() => this.step(), this.keyq.length ? 0 : 16);
   }
@@ -409,7 +386,6 @@ class Machine {
       case 'focus': { const [hwnd, min] = args; p.asWindowTask(hwnd, () => { if (min) u(42, [['w', hwnd], ['w', 9]]); else { u(59, [['w', hwnd]]); u(45, [['w', hwnd]]); } }); return; }
       case 'minimize': u(42, [['w', args[0]], ['w', 6]]); return;
       case 'close': u(110, [['w', args[0]], ['w', 0x10], ['w', 0], ['l', 0]]); return;
-      case 'showCursor': this.showCursor(args[0]); return;
       case 'clipOut': return this.clipOut();
       case 'clipIn': this.clipIn(args[0]); return;
       case 'closeState': p.k32CloseState(args[0]); return;
