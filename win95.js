@@ -3617,24 +3617,25 @@ function netCache(app, key) {
   const lists = new Map(), stats = new Map(), asked = new Map(); let space = { total: 0, free: 0 }, spaceAt = 0;
   const call = (op, args) => app.alive ? app.cmd('netfs', [key, op, args]) : Promise.resolve(null);
   const refresh = () => { fs.version++; dirty(); };
+  // (by the path in capitals, as the file system's names compare)
   const list = rel => {
-    const t = asked.get(rel); if (t && performance.now() - t < 2000) return;
-    asked.set(rel, performance.now());
+    const k = rel.toUpperCase(), t = asked.get(k); if (t && performance.now() - t < 2000) return;
+    asked.set(k, performance.now());
     call('list', [rel]).then(r => {
       if (!Array.isArray(r)) return;
-      lists.set(rel, r); for (const e of r) stats.set((rel ? rel + '\\' : '') + e.name.toUpperCase(), e); refresh();
+      lists.set(k, r); for (const e of r) stats.set(((rel ? rel + '\\' : '') + e.name).toUpperCase(), e); refresh();
     });
   };
   const later = (op, args, then) => call(op, args).then(() => { if (then) then(); refresh(); });
   const parent = rel => rel.split('\\').slice(0, -1).join('\\');
   return {
     stat: rel => { if (!rel) return { dir: true, size: 0, attrs: 0x10, ctime: 0, mtime: 0, atime: 0, name: '' }; const e = stats.get(rel.toUpperCase()); if (!e) list(parent(rel)); return e || null; },
-    list: rel => { list(rel); return lists.get(rel) || []; },
+    list: rel => { list(rel); return lists.get(rel.toUpperCase()) || []; },
     open: (rel) => { throw new W95FS.FSError(5, rel); },
     read: () => new Uint8Array(0), write: () => { throw new W95FS.FSError(5, key); }, truncate: () => {}, size: () => 0, close: () => {},
     mkdir: rel => later('mkdir', [rel], () => list(parent(rel))), rmdir: rel => later('rmdir', [rel], () => list(parent(rel))),
-    unlink: rel => later('unlink', [rel], () => { stats.delete(rel.toUpperCase()); asked.delete(parent(rel)); list(parent(rel)); }),
-    rename: (a, b) => later('rename', [a, b], () => { stats.delete(a.toUpperCase()); asked.delete(parent(a)); asked.delete(parent(b)); list(parent(a)); list(parent(b)); }),
+    unlink: rel => later('unlink', [rel], () => { stats.delete(rel.toUpperCase()); asked.delete(parent(rel).toUpperCase()); list(parent(rel)); }),
+    rename: (a, b) => later('rename', [a, b], () => { stats.delete(a.toUpperCase()); asked.delete(parent(a).toUpperCase()); asked.delete(parent(b).toUpperCase()); list(parent(a)); list(parent(b)); }),
     setAttrs: (rel, a) => later('setAttrs', [rel, a]), setTime: (rel, ms) => later('setTime', [rel, ms]),
     space: () => { if (performance.now() - spaceAt > 5000) { spaceAt = performance.now(); call('space', []).then(r => { if (r) { space = r; refresh(); } }); } return space; },
   };

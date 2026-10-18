@@ -2761,6 +2761,7 @@ P.threads16 = function (nested = false) {
         // performed an illegal operation; the system and the other programs go on
         if (r !== 0 && this.trapped && t.pc && this.noMain) { (this.pcFaults || (this.pcFaults = [])).push({ pc: t.pc, why: this.trapped }); this.trapped = null; this.endProcess(t.pc, 0xffffffff); }
         if (t.pc) this.pcThreadEnded(t); if (r !== 0 && this.trapped) console.warn('[ne16] thread', t.id, this.trapped); if (t.onDone) t.onDone(t);
+        if (t.flat && t.stackBase) { this.free(t.stackBase); this.free(t.tib); t.stackBase = t.tib = 0; }   // (its stack and thread information block go with it)
       }   // onDone: the host's, for a thread it started
     } catch (e) {
       if (e instanceof window.W95Win32.FaultError) {   // a processor exception nothing in it handled

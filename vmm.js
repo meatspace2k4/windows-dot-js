@@ -289,14 +289,15 @@ svc(VMM, 0x53, function (arg) {
     this.cpu.edx.value = lo; return lo;
   }
   const a = this.alloc(n + 4096); const p = (a + 4095) & ~4095; this.u8.fill(0, p, p + n);
+  (this.pageAllocs || (this.pageAllocs = new Map())).set(p, a);   // (the block it is in, for _PageFree)
   if (arg(6)) this.w32(arg(6), p);
   this.cpu.edx.value = p; return p;
 });
-svc(VMM, 0x55, function () { return 1; });                                                            // _PageFree
+svc(VMM, 0x55, function (arg) { const a = this.pageAllocs && this.pageAllocs.get(u32(arg(0))); if (a) { this.pageAllocs.delete(u32(arg(0))); this.free(a); } return 1; });   // _PageFree(hMem, flags)
 svc(VMM, 0x63, function (arg) { return u32(arg(0) << 12); });                                         // _LinPageLock: the region's linear address
 svc(VMM, 0x64, function () { return 1; });                                                            // _LinPageUnLock
 svc(VMM, 0x4f, function (arg) { const a = this.alloc(Math.max(arg(0), 1)); this.u8.fill(0, a, a + Math.max(arg(0), 1)); return a; });   // _HeapAllocate
-svc(VMM, 0x51, function () { return 1; });                                                            // _HeapFree
+svc(VMM, 0x51, function (arg) { this.free(u32(arg(0))); return 1; });                                  // _HeapFree(hAddress, flags)
 
 // ---- VMM: selectors. _BuildDescriptorDWORDs(base, limit, type, size, flags) -> EAX low, EDX high dword
 svc(VMM, 0x7a, function (arg) {
@@ -873,8 +874,10 @@ svc(VMM, 0x3f, function () { this.cpu.eax.value = u32(this.sysTime()); });
 svc(VMM, 0x144, function () { if (!this.vmmTimeLin) this.vmmTimeLin = this.alloc(4); this.tick16(); this.cpu.eax.value = this.vmmTimeLin; });
 // time-outs: Set_Global_Time_Out / Set_VM_Time_Out / Set_Async_Time_Out (EAX ms, ESI callback, EDX ref): ESI the handle.
 // The callback gets EBX the VM, ECX how late it is, EDX the ref, EBP the client registers. Cancel_Time_Out (ESI)
+// A time-out's or an event's handle is the VMM's token for it, no memory (the network's VxDs set thousands a minute)
+const r0Handle = p => { p.r0Tokens = ((p.r0Tokens || 0) + 8) & 0x0ffffff8; return u32(0xf0000000 | p.r0Tokens || 8); };
 const timeOut = function () {
-  const q = this.vxdTimeOuts || (this.vxdTimeOuts = new Map()), h = this.alloc(8);
+  const q = this.vxdTimeOuts || (this.vxdTimeOuts = new Map()), h = r0Handle(this);
   q.set(h, { fn: u32(this.cpu.esi.value), ref: u32(this.cpu.edx.value), due: this.sysTime() + u32(this.cpu.eax.value) });
   this.cpu.esi.value = h; CF(this, false);
 };
@@ -883,7 +886,7 @@ svc(VMM, 0x3e, function () { if (this.vxdTimeOuts) this.vxdTimeOuts.delete(u32(t
 // priority VM events: Call_Priority_VM_Event (EAX boost, EBX VM, ECX flags, EDX ref, ESI proc, EDI timeout): ESI the
 // handle; the procedure runs with the VM (EBX, EDX the ref, EBP the client registers). Cancel_Priority_VM_Event (ESI)
 svc(VMM, 0x14, function () {
-  const q = this.vxdEvents || (this.vxdEvents = []), h = this.alloc(8);
+  const q = this.vxdEvents || (this.vxdEvents = []), h = r0Handle(this);
   q.push({ fn: u32(this.cpu.esi.value), ref: u32(this.cpu.edx.value), handle: h }); this.cpu.esi.value = h;
 });
 svc(VMM, 0x15, function () { if (this.vxdEvents) this.vxdEvents = this.vxdEvents.filter(e => e.handle !== u32(this.cpu.esi.value)); });
@@ -1111,7 +1114,7 @@ svc(VMM, 0x36, function () { this.cpu.eax.value = 20; this.cpu.ecx.value = 1; th
 // events: Cancel_Global_Event (ESI); Call_Restricted_Event (EAX boost, EBX VM, ECX flags, EDX ref, ESI proc, EDI
 // time-out): ESI the handle, the procedure run when the VM can take it; Cancel_Restricted_Event (ESI)
 svc(VMM, 0x12, function () { if (this.vxdEvents) this.vxdEvents = this.vxdEvents.filter((e, i) => e.handle !== u32(this.cpu.esi.value) && i + 1 !== u32(this.cpu.esi.value)); });
-svc(VMM, 0x15a, function () { const q = this.vxdEvents || (this.vxdEvents = []), h = this.alloc(8); q.push({ fn: u32(this.cpu.esi.value), ref: u32(this.cpu.edx.value), handle: h }); this.cpu.esi.value = h; });
+svc(VMM, 0x15a, function () { const q = this.vxdEvents || (this.vxdEvents = []), h = r0Handle(this); q.push({ fn: u32(this.cpu.esi.value), ref: u32(this.cpu.edx.value), handle: h }); this.cpu.esi.value = h; });
 svc(VMM, 0x15b, function () { if (this.vxdEvents) this.vxdEvents = this.vxdEvents.filter(e => e.handle !== u32(this.cpu.esi.value)); });
 // Call_When_Idle (ESI proc): run when the system is idle, until it returns carry clear; Cancel_Call_When_Idle (ESI)
 svc(VMM, 0x3a, function () { (this.vxdIdle = this.vxdIdle || []).push(u32(this.cpu.esi.value)); CF(this, false); });

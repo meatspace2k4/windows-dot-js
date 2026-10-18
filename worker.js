@@ -366,7 +366,7 @@ class Machine {
     for (let i = vals.length - 1; i >= 0; i--) code.push(0x68, ...le32(vals[i]));   // push imm32
     code.push(0xff, 0x15, ...le32(ptr), 0xa3, ...le32(res), 0xc2, 0x04, 0x00);       // call [ptr]; mov [res], eax; ret 4
     p.w32(ptr, fn); p.u8.set(code, a);
-    return new Promise(ok => { const t = p.newThread(a, 0, 0x10000, true, false); t.onDone = () => ok(p.r32(res)); this.kick(); });
+    return new Promise(ok => { const t = p.newThread(a, 0, 0x10000, true, false); t.onDone = () => { const r = p.r32(res); p.free(a); for (let i = 0; i < vals.length; i++) if (typeof args[i] === 'string') p.free(vals[i]); ok(r); }; this.kick(); });
   }
   /** WNetOpenEnum / WNetEnumResource: the resources at a scope (under one, `res`) */
   async netEnum(scope, res) {
@@ -383,6 +383,7 @@ class Machine {
       }
     }
     await this.netCall('WNetCloseEnum', [h]);
+    p.free(cnt); p.free(sz); p.free(buf); p.free(ph); if (nr) { for (const o of [20, 24, 28]) if (p.r32(nr + o)) p.free(p.r32(nr + o)); p.free(nr); }
     return out;
   }
   /** each drive letter MPR has connected, with its share (WNetGetConnectionA) */
