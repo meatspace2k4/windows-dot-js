@@ -15,12 +15,9 @@ const CPU_REGS = ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi', 'cf', 
   'cs', 'ds', 'es', 'ss', 'fsel', 'gsel', 'csb', 'dsb', 'esb', 'ssb', 'gsb', 'budget'];
 // the processor is the host's: every BUDGET blocks the dispatcher asks it (tick) whether the guest goes on. A run that
 // can give up the processor (a thread at its top level) does after SLICE_MS; one inside a call the host made cannot,
-// and if it is caught in a loop it is stuck: it never comes back (HangError takes the host's stack back from it). Caught
-// means proven, not timed: nothing else runs while it does, so code that keeps arriving at the same places with the
-// same registers (STUCK_TICKS budget checks in a row each finding a state it has already been in there) has nothing
-// that could ever change what it does next
-const BUDGET = 0x4000, SLICE_MS = 40, STUCK_TICKS = 64;
-const STATE = ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi', 'cf', 'pf', 'zf', 'sf', 'of', 'df', 'cs', 'ds', 'es', 'ss', 'fs', 'ftop'];
+// and runs on, as a processor would: its machine is a worker's (worker.js), so it holds nothing but that machine, whose
+// interrupts (the keys, the mouse, the timer) still come at each check
+const BUDGET = 0x4000, SLICE_MS = 40;
 const WM = { NULL: 0, CREATE: 1, DESTROY: 2, MOVE: 3, SIZE: 5, ACTIVATE: 6, SETFOCUS: 7, KILLFOCUS: 8, PAINT: 0xf, CLOSE: 0x10,
   QUIT: 0x12, ERASEBKGND: 0x14, SHOWWINDOW: 0x18, ACTIVATEAPP: 0x1c, SETCURSOR: 0x20, NCCREATE: 0x81, NCDESTROY: 0x82,
   NCACTIVATE: 0x86, KEYDOWN: 0x100, KEYUP: 0x101, CHAR: 0x102, SYSKEYDOWN: 0x104, SYSCOMMAND: 0x112, TIMER: 0x113,
@@ -217,7 +214,7 @@ class Process {
   // ---- execution
   /** Dispatch across modules until the sentinel (0), a yield (1) or a fault (2). */
   runAt(eip) {
-    if (this.runLevel++ === 0) { this.runT0 = this.now(); this.loopSeen = null; }   // the host's processor is the guest's from here
+    if (this.runLevel++ === 0) this.runT0 = this.now();   // the host's processor is the guest's from here
     try { return this.dispatch(eip); } finally { this.runLevel--; }
   }
   /** run at `eip` as a thread's top level: a run that can give up the processor when its time is up (1) */
@@ -243,11 +240,7 @@ class Process {
       if (this.now() - this.runT0 < SLICE_MS) return 0;
       this.preempted = u32(eip); return 1;
     }
-    // inside a call the host made it cannot stop: the state it is in, by where it is
-    const seen = this.loopSeen || (this.loopSeen = { at: new Map(), stale: 0 }), st = STATE.map(r => this.cpu[r].value).join(',');
-    if (seen.at.get(u32(eip)) === st) { if (++seen.stale >= STUCK_TICKS && !this.noPreempt) throw new HangError(`stuck in a loop at ${this.where ? this.where(u32(eip)) : u32(eip).toString(16)}`); }
-    else { seen.stale = 0; if (seen.at.size > 4096) seen.at.clear(); seen.at.set(u32(eip), st); }
-    return 0;
+    return 0;   // (inside a call the host made it cannot stop: it runs on)
   }
   /** no code at `at` the processor can run (nothing mapped there: #PF; an instruction run-time translation cannot
    *  take: #UD): the exception's continuation, or null for a stop of the emulator's own (trapped) */
@@ -349,7 +342,6 @@ class Process {
   hung(who, e) {
     console.warn(`[win32] ${typeof who === 'string' ? who : 'thread ' + who.id} ${e.message}`);
     this.holdWin16(who, true);
-    this.stuck = true;   // the host puts up the system's answer to it (win95.js NativeApp.step)
   }
   /** a processor exception that ends the program (or, at ring 0, the system's answer first): the host reads `fault` */
   faulted(f) {

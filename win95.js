@@ -3053,14 +3053,6 @@ class NativeApp {
       this.stopped = true; faultDialog(this.progName(), p.fault, () => this.exited(-1)); return;
     }
     p.stats.guestMs += performance.now() - t0;
-    // a thread stuck for good, holding the Win16Lock: the system cannot answer, and REBOOT.VXD's Ctrl+Alt+Del handling
-    // says so on its blue screen (the first press asks KERNEL32 for Close Program, which cannot come; the second finds
-    // the request unanswered: "System is busy"). Ctrl+Alt+Del there restarts the machine; any other key goes back
-    if (p.stuck) {
-      p.stuck = false;
-      for (let k = 0; k < 2; k++) try { p.vkdKey(0x53, true, false, { ctrl: true, alt: true }); } catch (e) { console.error(e); }
-      if (msgApp === this) dirty();
-    }
     // a program the system started that performed an illegal operation: it alone is shut down
     for (const f of (p.pcFaults || []).splice(0)) {
       f.pc.fault = true; emit('program.exit', { path: f.pc.path, code: -1, why: f.why });

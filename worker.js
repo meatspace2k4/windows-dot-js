@@ -157,7 +157,6 @@ class Machine {
       try { p.vxdRunTimeOuts(); } catch (e) { console.error(e); } finally { p.depth = d; this.inTimer = false; }
     }
     while ((r = B.ringTake(this.ring))) {
-      if (p.loopSeen) p.loopSeen.stale = 0;   // input arrived: a loop waiting for it is not stuck
       if (r[0] === B.KEY) {
         const scan = r[1] & 0xff, ext = !!(r[1] & 0x100), up = !!(r[1] & 0x200), toUser = !!(r[1] & 0x400), mods = { shift: !!(r[2] & 1), ctrl: !!(r[2] & 2), alt: !!(r[2] & 4) };
         let taken = false; try { taken = scan && p.vkdKey ? p.vkdKey(scan, ext, up, mods) : false; } catch (e) { console.error(e); }
@@ -229,11 +228,6 @@ class Machine {
       this.faultTaken = true;
       if (p.fault.ring === 0) { this.fatal(p.fault); if (this.alive) this.timer = setTimeout(() => this.step(), 16); return; }
       this.stopped = true; post({ t: 'fault', f: p.fault }); return;
-    }
-    if (p.stuck) {
-      p.stuck = false;
-      for (let k = 0; k < 2; k++) try { p.vkdKey(0x53, true, false, { ctrl: true, alt: true }); } catch (e) { console.error(e); }
-      this.sendText();
     }
     for (const f of (p.pcFaults || []).splice(0)) { f.pc.fault = true; post({ t: 'pcFault', path: f.pc.path, why: f.why, f: f.fault || null }); }
     if (p.trapped && !p.failed) p.fail(p.trapped);
