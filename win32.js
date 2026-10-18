@@ -1050,8 +1050,9 @@ def('KERNEL32', 'FindResourceA', 3, function (m, name, type) {
   const r = this.findResource(this.resName(type), this.resName(name), this.moduleFor(m)); if (!r) return 0;
   return this.newHandle({ kind: 'res', ...r });
 });
-def('KERNEL32', 'LoadResource', 2, function (m, h) { return h; });
-def('KERNEL32', 'LockResource', 1, function (h) { const r = this.obj(h); return r ? r.addr : 0; });
+// a loaded resource is its data's address, as on Win32 (code hands LoadResource's result on without LockResource)
+def('KERNEL32', 'LoadResource', 2, function (m, h) { const r = this.obj(h); return r && r.kind === 'res' ? r.addr : 0; });
+def('KERNEL32', 'LockResource', 1, function (h) { const r = this.obj(h); return r && r.kind === 'res' ? r.addr : h; });
 def('KERNEL32', 'FreeResource', 1, () => 0);
 def('KERNEL32', 'SizeofResource', 2, function (m, h) { const r = this.obj(h); return r ? r.size : 0; });
 
