@@ -1184,8 +1184,42 @@ const writeFindData = (p, a, i) => {
   const ft = (o, ms) => { const t = BigInt(Math.round(ms)) * 10000n + 116444736000000000n; p.w32(a + o, Number(t & 0xffffffffn)); p.w32(a + o + 4, Number(t >> 32n)); };
   ft(4, i.ctime); ft(12, i.atime); ft(20, i.mtime); p.w32(a + 32, i.size); p.writeA(a + 44, i.name, 260); p.writeA(a + 304, i.shortName || '', 14);
 };
+// the communications ports (COM1-9, LPT1-9, or \\.\ before one): KERNEL32 serves them through VCOMM's Win32 services,
+// each port's own driver (LPT.VXD, SERIAL.VXD) under it. The service a stub VWIN32 calls is given the client registers
+// it answers in (EAX, EDX) and the calling VM. VCOMM Win32 services: 1 OpenComm(name), 2 SetupComm, 3 EscapeCommFunction,
+// 4 GetCommMask, 5 GetCommProperties, 6 GetCommState, 7 GetCommTimeouts, 8 PurgeComm, 9 SetCommMask, 10 SetCommState,
+// 11 SetCommTimeouts, 12 TransmitCommChar, 14 GetCommModemStatus, 15 WriteComm, 16 ReadComm, 17 ClearCommError,
+// 18 CloseComm
+const VCOMM = 0x2b, COMM_NAME = /^(?:\\\\\.\\)?((?:COM|LPT)[1-9]):?$/i;
+function vcomm(p, n, args) {
+  const t = p.w32Svcs && p.w32Svcs.get(VCOMM); if (!t || n >= p.r32(t)) return null;
+  const crs = p.vcommCrs || (p.vcommCrs = p.alloc(0x60));
+  return p.vxdCdecl(p.r32(t + 8 + 8 * n), [crs, p.sysVM(), ...args]).eax >>> 0;
+}
+const commOf = (p, h) => { const o = p.obj(h); return o && o.kind === 'comm' ? o : null; };
+const commCall = (n, nargs) => function (h, ...a) { const c = commOf(this, h); if (!c) { this.lastError = 6; return 0; } const r = vcomm(this, n, [c.vh, ...a.slice(0, nargs)]); return r ? 1 : 0; };
+def('KERNEL32', 'SetupComm', 3, commCall(2, 2));
+def('KERNEL32', 'EscapeCommFunction', 2, commCall(3, 1));
+def('KERNEL32', 'GetCommMask', 2, commCall(4, 1));
+def('KERNEL32', 'GetCommProperties', 2, commCall(5, 1));
+def('KERNEL32', 'GetCommState', 2, commCall(6, 1));
+def('KERNEL32', 'GetCommTimeouts', 2, commCall(7, 1));
+def('KERNEL32', 'PurgeComm', 2, commCall(8, 1));
+def('KERNEL32', 'SetCommMask', 2, commCall(9, 1));
+def('KERNEL32', 'SetCommState', 2, commCall(10, 1));
+def('KERNEL32', 'SetCommTimeouts', 2, commCall(11, 1));
+def('KERNEL32', 'TransmitCommChar', 2, commCall(12, 1));
+def('KERNEL32', 'GetCommModemStatus', 2, commCall(14, 1));
+def('KERNEL32', 'ClearCommError', 3, commCall(17, 2));
 def('KERNEL32', 'CreateFileA', 7, function (name, access, share, sa, disp, flags) {
   const path = this.readA(name); const write = !!(access & 0x40000000), read = !!(access & 0x80000000) || !write;
+  const cm = COMM_NAME.exec(path || '');
+  if (cm) {   // a port: VCOMM opens it (its driver loaded as the port is first opened)
+    const s = this.alloc(8); this.writeA(s, cm[1].toUpperCase());
+    const vh = vcomm(this, 1, [s]);
+    if (vh === null || vh >= 0xfffffff6) { this.lastError = vh === 0xfffffffe ? 5 : 2; return 0xffffffff; }   // IE_OPEN (in use): access denied
+    this.lastError = 0; return this.newHandle({ kind: 'comm', vh, path: cm[1].toUpperCase() });
+  }
   return fsCall(this, () => {
     const exists = this.fs.exists(path);
     if (disp === 1 && exists) throw new window.W95FS.FSError(80, path);           // CREATE_NEW
@@ -1195,12 +1229,21 @@ def('KERNEL32', 'CreateFileA', 7, function (name, access, share, sa, disp, flags
     return this.newHandle({ kind: 'file', fd: this.fs.open(path, mode), path });
   }, 0xffffffff);
 });
-def('KERNEL32', 'CloseHandle', 1, function (h) { const f = fileOf(this, h); if (f) fsCall(this, () => this.fs.close(f.fd)); this.handles.delete(h); return 1; });
+def('KERNEL32', 'CloseHandle', 1, function (h) { const f = fileOf(this, h); if (f) fsCall(this, () => this.fs.close(f.fd)); const c = commOf(this, h); if (c) vcomm(this, 18, [c.vh]); this.handles.delete(h); return 1; });
 def('KERNEL32', 'ReadFile', 5, function (h, buf, n, got) {
   const f = fileOf(this, h); if (!f) return 0;
   return fsCall(this, () => { const b = this.fs.read(f.fd, n); this.u8.set(b, buf); if (got) this.w32(got, b.length); return 1; });
 });
-def('KERNEL32', 'WriteFile', 5, function (h, buf, n, put) {
+def('KERNEL32', 'WriteFile', 5, function (h, buf, n, put, ovl) {
+  const c = commOf(this, h);
+  if (c) {   // WriteComm: the request completes into the OVERLAPPED's InternalHigh; a write without one waits for it
+    const pw = put || this.alloc(4), o = ovl || this.commOvl || (this.commOvl = this.alloc(20));
+    this.w32(pw, 0); if (!ovl) this.w32(o + 4, 0xffffffff);
+    const r = vcomm(this, 15, [c.vh, buf, n, pw, 0, o]);
+    for (let i = 0; r && !ovl && this.r32(o + 4) === 0xffffffff && i < 100000; i++) if (!this.r0Pump() && !(this.r0Skip && this.r0Skip())) break;
+    if (!ovl && this.r32(o + 4) !== 0xffffffff) this.w32(pw, this.r32(o + 4));
+    return r ? 1 : 0;
+  }
   const f = fileOf(this, h); if (!f) { if (put) this.w32(put, n); return 1; }
   return fsCall(this, () => { const k = this.fs.write(f.fd, this.u8.slice(buf, buf + n)); if (put) this.w32(put, k); return 1; });
 });
@@ -1524,6 +1567,13 @@ const regOpen = function (hk, sub, out, create) {
   const path = regPath(this, hk, sub), given = regPath(this, hk, sub, true); if (!path || !regKey(path, create, given)) return 2;
   if (out) this.w32(out, this.newHandle({ kind: 'key', path, given })); return 0;
 };
+// GetUserNameA: the name the user logged on with (Network\Logon username, as the logon leaves it); TRUE and the length
+// with its null, or ERROR_INSUFFICIENT_BUFFER with the length needed
+def('ADVAPI32', 'GetUserNameA', 2, function (buf, pn) {
+  const v = regGet('hklm\\network\\logon', 'username'), name = v === undefined ? '' : typeof v === 'string' ? v : window.W95FS.decode(v.data || new Uint8Array(0)).replace(/\0.*$/, '');
+  if (this.r32(pn) <= name.length) { this.w32(pn, name.length + 1); this.lastError = 122; return 0; }
+  this.writeA(buf, name); this.w32(pn, name.length + 1); return 1;
+});
 def('ADVAPI32', 'RegOpenKeyA', 3, function (hk, sub, out) { return regOpen.call(this, hk, sub, out, false); });
 def('ADVAPI32', 'RegOpenKeyExA', 5, function (hk, sub, opt, sam, out) { return regOpen.call(this, hk, sub, out, false); });
 def('ADVAPI32', 'RegCreateKeyA', 3, function (hk, sub, out) { return regOpen.call(this, hk, sub, out, true); });

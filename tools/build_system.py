@@ -102,7 +102,10 @@ VXDS = [('mmdevldr.vxd', 0x01800000, 0x07C00000), ('mssndsys.vxd', 0x01810000, 0
         ('ndis.vxd', 0x012A0000, 0x05A00000), ('perf.vxd', 0x012C0000, 0x05A80000),
         # the shell's ring-0 half, whose system-modal messages show on the blue screen when Windows cannot show them,
         # and Ctrl+Alt+Del's: the Close Program request, and the blue screens of a system that does not answer (WIN95_12.CAB)
-        ('shell.vxd', 0x018E0000, 0x07E20000), ('reboot.vxd', 0x01900000, 0x07E80000)]
+        ('shell.vxd', 0x018E0000, 0x07E20000), ('reboot.vxd', 0x01900000, 0x07E80000),
+        # the parallel port (WIN95_02.CAB): the communications VxD that serves ports to KERNEL32's comm calls and loads
+        # each port's driver, the printer port's driver, and the enumerator of what is plugged into it
+        ('vcomm.vxd', 0x01920000, 0x07EC0000), ('lpt.vxd', 0x01940000, 0x07F00000), ('lptenum.vxd', 0x01960000, 0x07F40000)]
 # NDIS miniports (PE images NDIS loads and links to its own exports): (file, load base, block-table base). NE2000.SYS
 # drives the NE2000-compatible card (NETNOVEL.INF *PNP80D6)
 DRIVERS = [('ne2000.sys', 0x012D0000, 0x05AC0000)]
@@ -158,7 +161,7 @@ with tempfile.TemporaryDirectory() as tmp:
         subprocess.run([sys.executable, os.path.join(here, 'recomp.py'), p, base, '--base', hex(b), '--lookup', hex(lk)], check=True)
         bundle['programs'][f.upper()] = {'file': b64(p), 'wasm': b64(base + '.wasm'), 'meta': json.load(open(base + '.json'))}
 # the Setup INF files whose registry sections the shell applies (SHELL.INF: the shell's classes and folders)
-INFS = ['shell.inf', 'motown.inf', 'mmopt.inf', 'wave.inf', 'netnovel.inf', 'nettrans.inf', 'netcli.inf', 'net.inf', 'netdef.inf',
+INFS = ['shell.inf', 'msports.inf', 'motown.inf', 'mmopt.inf', 'wave.inf', 'netnovel.inf', 'nettrans.inf', 'netcli.inf', 'net.inf', 'netdef.inf',
         # the printer drivers' INFs the Add Printer wizard lists (PRECOPY2.CAB)
         'msprint.inf', 'msprint2.inf',
         # where each file of the CD's cabinets is, which Setup's engine copies from (PRECOPY2.CAB)

@@ -572,7 +572,7 @@ function makeDisk(mounted) {
   for (const [e, d] of Object.entries(sysFonts)) fs.writeFile(join(WINDIR, 'FONTS', e), b64(d));
   fs.writeFile('C:\\Program Files\\Accessories\\WORDPAD.EXE', exeStub());
   fs.writeFile(PROGRAMS + '\\Accessories\\Notepad.lnk', lnk(WINDIR + '\\NOTEPAD.EXE'));
-  installPrograms(); setupRegistry(); setupSound(); setupHelp(); setupNetwork(); setupPrinting();
+  installPrograms(); setupRegistry(); setupSound(); setupHelp(); setupNetwork(); setupPorts(); setupPrinting();
   // the CD's screen savers, byte for byte, under the long names APPLETS.INF gives them in LDID_SYS
   const LONG = { 'BEZIER.SCR': 'Curves and Colors.scr', 'SSMARQUE.SCR': 'Scrolling Marquee.scr', 'SSMYST.SCR': 'Mystify Your Mind.scr',
     'SCRNSAVE.SCR': 'Blank Screen.scr', 'SSFLYWIN.SCR': 'Flying Windows.scr', 'SSSTARS.SCR': 'Flying Through Space.scr' };
@@ -815,7 +815,7 @@ function bootDisk() {
   mountDrives();
   W95Win32.regAttach(host.registry);
   if (!fs.attach('C', host.disk)) makeDisk(true);
-  installPrograms(); setupRegistry(); setupSound(); setupHelp(); setupNetwork(); setupPrinting();
+  installPrograms(); setupRegistry(); setupSound(); setupHelp(); setupNetwork(); setupPorts(); setupPrinting();
   fs.chdir('C:\\');
 }
 
@@ -2842,6 +2842,19 @@ function setupPrinting() {
   if (R.regGet('hklm\\system\\currentcontrolset\\control\\print\\environments\\windows 4.0', 'Directory') === undefined) {
     infAddReg(infs['MSPRINT.INF'], 'Environment_Reg'); infUpdateInis(infs['MSPRINT.INF'], 'Environment_Ini');
   }
+}
+// the printer port Setup's detection finds and installs (MSPORTS.INF *PNP0400, LptPort): its ROOT devnode at I/O 378h
+// and IRQ 7 (parallel.js) named LPT1, and its software key under the Ports class with VCOMM its device loader, LPT.VXD
+// its port driver and LPTENUM.VXD the enumerator of what is plugged into it
+function setupPorts() {
+  const R = W95Win32, inf = ((window.W95SYSTEM || {}).infs || {})['MSPORTS.INF']; if (!inf) return;
+  const hw = 'hklm\\enum\\root\\*pnp0400\\0000', cls = 'hklm\\system\\currentcontrolset\\services\\class\\ports', sw = cls + '\\0000';
+  if (R.regGet(hw, 'Driver') !== undefined) return;
+  const str = v => ({ type: 1, data: W95FS.encode(v + '\0') });
+  infAddReg(inf, 'PortsClass.AddReg', cls);
+  infAddReg(inf, 'LptPort.AddReg', sw);
+  for (const [k, v] of [['DriverDesc', 'Printer Port'], ['ProviderName', 'Microsoft'], ['InfPath', 'MSPORTS.INF'], ['InfSection', 'LptPort']]) R.regSet(sw, k, str(v));
+  for (const [k, v] of [['Class', 'Ports'], ['Driver', 'Ports\\0000'], ['DeviceDesc', 'Printer Port'], ['HardwareID', '*PNP0400'], ['Mfg', '(Standard port types)'], ['PortName', 'LPT1']]) R.regSet(hw, k, str(v));
 }
 /** Windows Help (the recompiled WINHLP32.EXE) on a help file of C:\WINDOWS\HELP: with its contents file, Help Topics */
 const hasHelp = () => !!((window.W95SYSTEM || {}).programs || {})['WINHLP32.EXE'];

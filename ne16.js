@@ -1161,6 +1161,7 @@ P.portIO = function (port, size, isIn) {
   if (this.vxdTrapIO && this.vxdTrapIO(port, size, isIn)) return;   // a port a VxD traps (vmm.js)
   if (this.soundIO && this.soundIO(port, size, isIn)) return;   // the sound card, DMA and interrupt controllers (sound.js)
   if (this.nicIO && this.nicIO(port, size, isIn)) return;   // the network card (lan.js)
+  if (this.lptIO && this.lptIO(port, size, isIn)) return;   // the printer port (parallel.js)
   const a = this.adapter(), eax = this.cpu.eax.value;
   if (port >= 0x3b0 && port <= 0x3bf && port !== 0x3bf && !(a.misc & 1) === false) port += 0x20;   // mono CRTC aliases
   if (!isIn) {
@@ -1629,6 +1630,7 @@ def16('KERNEL', 354, 'w', 'l', function () { return 0; });                      
 def16('KERNEL', 107, 'w', 'w', function (m) { const o = this.errMode16 || 0; this.errMode16 = m; return o; });     // SetErrorMode
 def16('KERNEL', 147, 'l', 'v', function (e) { this.lastError = e; });
 def16('KERNEL', 148, '', 'l', function () { return this.lastError || 0; });
+def16('KERNEL', 361, '', 'v', function () {});                                                         // PIGLET_361: KRNL386's entry is a bare RETF
 def16('KERNEL', 323, 'w', 'w', function () { return 0; });                                    // IsRomModule: no module runs from ROM
 def16('KERNEL', 324, 'wx', 'v', function (code) { console.warn('[KERNEL] LogError', code.toString(16)); });
 def16('KERNEL', 327, '', 'jmp', function () {    // HandleParamError: BX = error, CX:AX = parameter; errors unwind to the handler at [BP-2]

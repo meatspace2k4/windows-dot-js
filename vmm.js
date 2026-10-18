@@ -756,13 +756,25 @@ svc(CONFIGMG, 0x05, function (arg) {                                            
 svc(CONFIGMG, 0x0b, function (arg) {
   const parent = this.cmNode(arg(2)); if (!parent) return CR.INVALID_DEVNODE;
   const id = (this.readA(arg(1)) || '').toUpperCase(), have = this.devnodes().find(d => d.id === id);
-  if (have) { this.w32(arg(0), have.handle); return 0x10; }   // CR_ALREADY_SUCH_DEVNODE
+  if (have) { have.mark = true; this.w32(arg(0), have.handle); return 0x10; }   // CR_ALREADY_SUCH_DEVNODE (and it is found again: marked)
   const key = 'hklm\\enum\\' + id.toLowerCase(); W.regSet(key, null);
-  const dn = { handle: 0xc1000000 + 0x100 * this.devnodes().length, id, key, cls: regStr(W.regGet(key, 'Class')), driver: regStr(W.regGet(key, 'Driver')), parent, children: [], created: true };
+  const dn = { handle: 0xc1000000 + 0x100 * this.devnodes().length, id, key, cls: regStr(W.regGet(key, 'Class')), driver: regStr(W.regGet(key, 'Driver')), parent, children: [], created: true, mark: true };
   this.devnodes().push(dn); (parent.children = parent.children || []).push(dn);
   this.w32(arg(0), dn.handle); return CR.SUCCESS;
 });
+// Reset_Children_Marks(dn, flags) and Remove_Unmarked_Children(dn, flags): an enumerator's pass over a devnode's
+// children, those it finds again (Create_DevNode) marked and the rest removed
+svc(CONFIGMG, 0x35, function (arg) { const dn = this.cmNode(arg(0)); if (!dn) return CR.INVALID_DEVNODE; for (const c of dn.children || []) c.mark = false; return CR.SUCCESS; });
+svc(CONFIGMG, 0x37, function (arg) {
+  const dn = this.cmNode(arg(0)); if (!dn) return CR.INVALID_DEVNODE;
+  const gone = (dn.children || []).filter(c => !c.mark); dn.children = (dn.children || []).filter(c => c.mark);
+  const all = this.devnodes(); for (const c of gone) { const i = all.indexOf(c); if (i >= 0) all.splice(i, 1); }
+  return CR.SUCCESS;
+});
 svc(CONFIGMG, 0x0f, function (arg) { const dn = this.cmNode(arg(0)); if (!dn) return CR.INVALID_DEVNODE; dn.enumerator = arg(1); return CR.SUCCESS; });   // Register_Enumerator
+// Get/Set_Device_Driver_Private_DWord(dn, *dword | dword, flags): the DWORD a devnode's driver keeps with it
+svc(CONFIGMG, 0x48, function (arg) { const dn = this.cmNode(arg(0)); if (!dn) return CR.INVALID_DEVNODE; this.w32(arg(1), dn.priv || 0); return CR.SUCCESS; });
+svc(CONFIGMG, 0x49, function (arg) { const dn = this.cmNode(arg(0)); if (!dn) return CR.INVALID_DEVNODE; dn.priv = u32(arg(1)); return CR.SUCCESS; });
 // Get_Bus_Info(dn, *busType, *size, info, flags): root-enumerated cards sit on no bus
 svc(CONFIGMG, 0x44, function (arg) { const dn = this.cmNode(arg(0)); if (!dn) return CR.INVALID_DEVNODE; if (arg(1)) this.w32(arg(1), 0); if (arg(2)) this.w32(arg(2), 0); return CR.SUCCESS; });
 
@@ -772,6 +784,8 @@ svc(CONFIGMG, 0x44, function (arg) { const dn = this.cmNode(arg(0)); if (!dn) re
 const RES = { IO: 2, DMA: 3, IRQ: 4 };
 const cmObjs = p => p.cmObjs || (p.cmObjs = new Map());
 const cmObj = (p, o) => { const h = p.alloc(8); o.handle = h; cmObjs(p).set(h, o); return o; };
+// a resource descriptor: its handle is the address of its data, as CONFIGMG's are (VCOMM reads an IO_DES's base there)
+const cmRd = (p, lc, rid, data) => { const h = p.alloc(Math.max(8, data.length)); p.u8.set(data, h); const o = { kind: 'rd', lc, rid, data, handle: h }; cmObjs(p).set(h, o); return o; };
 P.cmLogConfs = function (dn, type) {
   dn.lcs = dn.lcs || {};
   if (dn.lcs[type]) return dn.lcs[type];
@@ -779,9 +793,9 @@ P.cmLogConfs = function (dn, type) {
   const hw = this.cards && this.cards().find(c => c.devnode === dn.id);
   if (hw && type !== 4) {
     const lc = cmObj(this, { kind: 'lc', dn, type, res: [] }); list.push(lc);
-    for (const [b, n] of hw.io) { const d = new Uint8Array(12), v = new DataView(d.buffer); v.setUint16(2, 12, true); v.setUint16(4, b, true); v.setUint16(6, b + n - 1, true); d[10] = 0xff; lc.res.push(cmObj(this, { kind: 'rd', lc, rid: RES.IO, data: d })); }
-    for (const q of hw.irq) { const d = new Uint8Array(8), v = new DataView(d.buffer); v.setUint16(2, q, true); v.setUint16(4, 1 << q, true); lc.res.push(cmObj(this, { kind: 'rd', lc, rid: RES.IRQ, data: d })); }
-    for (const c of hw.dma) { const d = Uint8Array.from([0, c, 1 << c, 0]); lc.res.push(cmObj(this, { kind: 'rd', lc, rid: RES.DMA, data: d })); }
+    for (const [b, n] of hw.io) { const d = new Uint8Array(12), v = new DataView(d.buffer); v.setUint16(2, 12, true); v.setUint16(4, b, true); v.setUint16(6, b + n - 1, true); d[10] = 0xff; lc.res.push(cmRd(this, lc, RES.IO, d)); }
+    for (const q of hw.irq) { const d = new Uint8Array(8), v = new DataView(d.buffer); v.setUint16(2, q, true); v.setUint16(4, 1 << q, true); lc.res.push(cmRd(this, lc, RES.IRQ, d)); }
+    for (const c of hw.dma) { const d = Uint8Array.from([0, c, 1 << c, 0]); lc.res.push(cmRd(this, lc, RES.DMA, d)); }
   }
   return list;
 };
@@ -804,7 +818,7 @@ svc(CONFIGMG, 0x1b, function (arg) {                                            
 });
 svc(CONFIGMG, 0x1c, function (arg) {                                                                  // Add_Res_Des(*rd, lc, resource, data, len, flags)
   const lc = cmObjs(this).get(u32(arg(1))); if (!lc || lc.kind !== 'lc') return 7;
-  const rd = cmObj(this, { kind: 'rd', lc, rid: arg(2) & 0x7fff, data: this.u8.slice(arg(3), arg(3) + arg(4)) }); lc.res.push(rd);
+  const rd = cmRd(this, lc, arg(2) & 0x7fff, this.u8.slice(arg(3), arg(3) + arg(4))); lc.res.push(rd);
   if (arg(0)) this.w32(arg(0), rd.handle); return CR.SUCCESS;
 });
 // Get_Next_Res_Des(*rd, log conf or res des, resource type (0 all), *resource, flags)
@@ -983,6 +997,9 @@ svc(VMM, 0x8f, function () {
 });
 
 // ---- VMM: odds and ends
+// Install_Exception_Handler(ESI: the VxD's Exception_Handler_Struc, a chain of code ranges with where a fault in each
+// recovers): kept for a fault in ring-0 code to consult
+svc(VMM, 0xef, function () { (this.r0ExcHandlers || (this.r0ExcHandlers = [])).push(u32(this.cpu.esi.value)); CF(this, false); });
 svc(VMM, 0x6d, function () { return 0x000f; });                                                        // _GetAppFlatDSAlias: the ring-3 flat data selector (FLATDS, base 0, 4G)
 svc(VMM, 0x6e, function (arg) { const sel = arg(1) & 0xffff; return this.selValid(sel) ? u32(this.selBase(sel)) : 0xffffffff; });   // _SelectorMapFlat(VM, sel, flags)
 svc(VMM, 0x10c, function () { CF(this, false); });                                                   // Validate_Thread_Handle
@@ -1350,7 +1367,7 @@ P.absentService = function (dev, n) {
 // and Init_Complete before Windows starts. The network's process (host.net: MPREXE's) has the network's too: the file
 // system manager and its cache and PERF, which VMM32 carries, and each one a Services\VxD key names (StaticVxD), every
 // VxD given each message in turn in the order of their DDBs' Init_Order
-const STATIC_VXDS = ['VTDAPI.VXD', 'ENABLE.VXD', 'SHELL.VXD', 'REBOOT.VXD'], VMM32_NET = ['IFSMGR.VXD', 'VCACHE.VXD', 'PERF.VXD'];
+const STATIC_VXDS = ['VTDAPI.VXD', 'ENABLE.VXD', 'SHELL.VXD', 'REBOOT.VXD', 'VCOMM.VXD'], VMM32_NET = ['IFSMGR.VXD', 'VCACHE.VXD', 'PERF.VXD'];
 P.vxdStatics = function () {
   const files = [...STATIC_VXDS];
   if (this.host && this.host.net) {
@@ -1375,9 +1392,9 @@ P.vxdBoot = function () {
   }
   this.vxdInitState = 0x40000000;
   this.k32RebootInit();
-  // the devnodes whose device loader is a static VxD (DevLoader=*name: NDIS for the network's), started as CONFIGMG
-  // starts them at boot
-  if (this.host && this.host.net) this.vxdDevLoaders(true);
+  // the devnodes whose device loader is a static VxD (DevLoader=*name: NDIS for the network's, VCOMM for the ports),
+  // started as CONFIGMG starts them at boot
+  this.vxdDevLoaders(true);
 };
 
 /** a dynamically loadable VxD by file name, loaded and initialized (SYS_DYNAMIC_DEVICE_INIT) once */
@@ -1439,6 +1456,7 @@ P.vxdDevLoaders = function (statics) {
     if (dn.created) continue;
     const sw = this.devSoftKey(dn), dl = sw && regStr(W.regGet(sw, 'DevLoader'));
     if (!dl || dl.startsWith('*') !== !!statics) continue;
+    if (statics && ![...(this.vxds || new Map()).values()].some(x => x.inited && x.name.toUpperCase() === dl.slice(1).toUpperCase())) continue;   // (its VxD is another machine's: NDIS is the network's)
     this.cmProcess(dn);
   }
 };
@@ -1466,6 +1484,14 @@ P.cmStart = function (dn) {
   if (dn.started) return;
   if (dn.handler) { dn.started = true; const r = this.vxdCdecl(dn.handler, [CONFIG_START, CONFIG_START_FIRST_START, dn.handle, dn.ref || 0, 0]); dn.started = (r.eax & 0xffff) <= 1; }
   else dn.started = true;
+  if (dn.started) this.cmDynData(dn);
   for (const c of dn.children || []) if (c.handler) this.cmStart(c);
+};
+/** a started devnode in HKEY_DYN_DATA\Config Manager\Enum, as CONFIGMG lists the live ones (key: the devnode handle):
+ *  its hardware key, status and problem, which SPOOLSS walks for the ports (Class Ports, PortName) */
+P.cmDynData = function (dn) {
+  const k = 'hkdd\\config manager\\enum\\' + (dn.handle >>> 0).toString(16).toUpperCase().padStart(8, '0'), dw = v => ({ type: 4, data: new Uint8Array([v & 0xff, v >> 8 & 0xff, v >> 16 & 0xff, v >>> 24]) });
+  W.regSet(k, 'HardWareKey', { type: 1, data: window.W95FS.encode(dn.id + '\0') });
+  W.regSet(k, 'Status', dw(0x0a | 8)); W.regSet(k, 'Problem', dw(0));
 };
 })();
