@@ -97,7 +97,7 @@ class PE:
                 e = u16(self.image, o + 8 + 2 * k)
                 if e >> 12 == 3: self.relocs.append(page + (e & 0xfff))
             o += blk
-        self.code = [(va, max(vs, rs)) for nm, va, vs, ro, rs, ch in self.secs if ch & 0x20000000]
+        self.code = [(va, max(vs, rs)) for nm, va, vs, ro, rs, ch in self.secs if ch & 0x20000020]   # executable, or marked as code only (MSPRINT2's .text)
         self.pref = self.base
     def rebase(self, nb):
         delta = (nb - self.base) & 0xffffffff

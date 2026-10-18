@@ -213,7 +213,7 @@ P.neExport = function (m, key) {
 P.loadLibrary16 = function (name, native = false, defer = false) {
   this.init16();
   const base = name.toUpperCase().replace(/^.*\\/, '').replace(/\.(DLL|EXE|DRV)$/, '');
-  if (base === 'KERNEL') return this.kernelModule();
+  if (base === 'KERNEL' || base === 'KRNL386') return this.kernelModule();   // KRNL386.EXE is the module KERNEL's file
   const all = (window.W95SYSTEM && window.W95SYSTEM.ne) || {};
   const file = name.toUpperCase().replace(/^.*\\/, '');
   // a file name finds that file's module first (MSACM.DRV is the module MSACMMAP, not MSACM.DLL's MSACM)
@@ -222,6 +222,7 @@ P.loadLibrary16 = function (name, native = false, defer = false) {
   if (!byFile && this.ne.has(base)) return this.ne.get(base);
   const sys = byFile || all[base] || Object.values(all).find(s => s.fileName === file || s.fileName === file + '.DLL');
   if (!sys) return this.loadNEFile(name);
+  if (sys.onDisk && !this.findFile16(/\\/.test(name) ? name : sys.fileName)) return null;   // a module Setup leaves on the CD: once installed
   const b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
   if (this.ne.has(sys.meta.name.toUpperCase())) return this.ne.get(sys.meta.name.toUpperCase());
   const rec = this.loadNE(sys.meta.name.toUpperCase(), sys.fileBytes || (sys.fileBytes = b64(sys.file)), sys.mod || (sys.mod = new WebAssembly.Module(b64(sys.wasm))), sys.meta);
@@ -250,7 +251,12 @@ P.bootUser16 = function () {
     this.loadDll('USER32');
     this.runPendingInits();
   }
-  if (!user.inited) { user.inited = true; if (!this.initNE(user)) console.warn('[ne16] USER LibEntry failed'); }
+  if (!user.inited) {
+    user.inited = true; if (!this.initNE(user)) console.warn('[ne16] USER LibEntry failed');
+    // FinalUserInit (#400), as KRNL386 calls it once USER is up: GDI's FinalGdiInit takes the USER entry points GDI
+    // calls through (LoadString, GetActiveWindow and the rest, which its print-to-file prompt uses)
+    if (this.neExport(user, 400)) this.user16(400);
+  }
   this.user16Ready = true;
   this.userStack();
   return user;
@@ -495,6 +501,7 @@ const INTS = {
     }
     return;   // other BIOS extensions (Video7 6Fh etc.) are absent: registers come back unchanged
   },
+  0x12() { this.ax(640); },   // BIOS conventional memory size, in K
   0x1a(next) {     // BIOS clock; no PCI BIOS
     const ah = this.ax() >> 8;
     if (ah === 0x00) {
@@ -510,12 +517,20 @@ const INTS = {
     CF(this, 0);
     switch (ah) {
       case 0x30: this.ax(0x0007); this.cpu.ebx.value = lo16(this.cpu.ebx.value, 0xff00); this.cpu.ecx.value = lo16(this.cpu.ecx.value, 0); return;   // DOS 7.0
-      case 0x19: this.ax((this.ax() & 0xff00) | 2); return;        // current drive C:
+      case 0x19: this.ax((this.ax() & 0xff00) | (this.fs.cwd.toUpperCase().charCodeAt(0) - 65)); return;        // the current drive
       case 0x2a: { const d = new Date(); this.cpu.ecx.value = lo16(this.cpu.ecx.value, d.getFullYear()); this.cpu.edx.value = lo16(this.cpu.edx.value, ((d.getMonth() + 1) << 8) | d.getDate()); this.ax((this.ax() & 0xff00) | d.getDay()); return; }
       case 0x2c: { const d = new Date(); this.cpu.ecx.value = lo16(this.cpu.ecx.value, (d.getHours() << 8) | d.getMinutes()); this.cpu.edx.value = lo16(this.cpu.edx.value, (d.getSeconds() << 8) | Math.floor(d.getMilliseconds() / 10)); return; }
       case 0x33: if (al === 6) { this.cpu.ebx.value = lo16(this.cpu.ebx.value, 0x0007); this.cpu.edx.value = lo16(this.cpu.edx.value, 0x1000); } else if (al === 0) this.cpu.edx.value &= ~0xff; return;   // true version 7.0, in HMA; Ctrl+Break checking off
       case 0x44: if (al === 0) { this.cpu.edx.value = lo16(this.cpu.edx.value, 0x80); return; } break;
       case 0x50: case 0x51: case 0x62: return;
+      // the redirector's list of redirected devices (5F02h, BX the index): the drives MPR connects are the network
+      // process's; none is redirected through DOS here, so the list is empty (18, no more entries)
+      case 0x5f: if (al === 2) { CF(this, 1); this.ax(18); this.dosError = 18; return; } break;
+      // the last call's extended error (BX 0): AX the code, BH its class, BL the suggested action, CH where it happened
+      case 0x59: {
+        const e = this.dosError || 0, cls = [2, 3, 15, 18].includes(e) ? 8 : e === 5 ? 3 : e ? 13 : 0;
+        this.ax(e); this.cpu.ebx.value = lo16(this.cpu.ebx.value, (cls << 8) | (e ? (e === 5 ? 3 : 4) : 0)); this.cpu.ecx.value = lo16(this.cpu.ecx.value, ((e ? 2 : 0) << 8) | (this.cpu.ecx.value & 0xff)); return;
+      }
       case 0x35: {   // a vector nobody has set leads to the BIOS service behind it, where there is one
         const v = ((this.dosVec = this.dosVec || {})[al]) || (BIOS_INT[al] ? this.thunk16For(`BIOSINT.#${al}`) : 0);
         this.seg('es', v >>> 16); this.cpu.ebx.value = lo16(this.cpu.ebx.value, v); return; }
@@ -524,6 +539,13 @@ const INTS = {
       // the list of lists (52h: ES:BX), the swappable data area (5D06h: DS:SI, CX and DX its sizes)
       case 0x34: { const d = this.dosData(); this.seg16('es', d); this.cpu.ebx.value = lo16(this.cpu.ebx.value, d.indos - (d.seg << 4)); return; }
       case 0x52: { const d = this.dosData(); this.seg16('es', d); this.cpu.ebx.value = lo16(this.cpu.ebx.value, d.lol - (d.seg << 4)); return; }
+      // a drive's parameter block (DL, 0 the current drive): C:'s is the one DOS keeps; a CD-ROM's or a network drive's
+      // has none (AL FFh), as the file system that owns it answers instead
+      case 0x32: {
+        const dl = this.cpu.edx.value & 0xff, L = dl ? String.fromCharCode(64 + dl) : this.fs.cwd[0].toUpperCase(), v = this.fs.vols.get(L);
+        if (!v || L !== 'C') { this.ax((this.ax() & 0xff00) | 0xff); return; }
+        const d = this.dosData(); this.seg16('ds', d); this.cpu.ebx.value = lo16(this.cpu.ebx.value, d.dpb - (d.seg << 4)); this.ax(this.ax() & 0xff00); return;
+      }
       case 0x5d: if (al === 6) { const d = this.dosData(); this.seg16('ds', d); this.cpu.esi.value = lo16(this.cpu.esi.value, d.sda - (d.seg << 4)); this.cpu.ecx.value = lo16(this.cpu.ecx.value, 0x80); this.cpu.edx.value = lo16(this.cpu.edx.value, 0x18); return; } break;
       case 0xea: return;   // a NetWare shell's function: none is loaded
       // the machine name DOS keeps for the network (5E01h: CH 0 to clear it, CL its NetBIOS number, DS:DX the name
@@ -536,16 +558,22 @@ const INTS = {
       case 0x25: (this.dosVec = this.dosVec || {})[al] = u32((this.cpu.ds.value << 16) | (this.cpu.edx.value & 0xffff)); return;
       case 0x4c: if (this.thread16 && this.thread16.task && this.depth === this.thread16.depth) { this.thread16.exitCode = al; return LAYOUT.SENTINEL; } break;   // a task's exit ends its thread
     }
+    // names and directories, as DOS 7 answers them, with its long-name functions (AH=71h, the same calls with long
+    // names): CF and AX = error code on failure
+    if (ah === 0x71 || [0x0e, 0x1a, 0x2f, 0x36, 0x39, 0x3a, 0x3b, 0x41, 0x43, 0x47, 0x4e, 0x4f, 0x56].includes(ah)) {
+      const lfn = ah === 0x71, fn = lfn ? al : ah, r = this.dosNames(fn, lfn);
+      if (r !== false) return r;
+    }
     // handle file calls, on the handles KERNEL's _lopen/OpenFile give out: BX handle, CX count, DS:DX buffer or name;
     // CF and AX = error code on failure (2 not found, 5 denied, 6 bad handle)
     // (in real mode, as a VxD's nested execution calls DOS, a segment is a paragraph number)
-    if ([0x3c, 0x3d, 0x3e, 0x3f, 0x40, 0x41, 0x42, 0x57, 0x6c].includes(ah) || (ah === 0x44 && (al === 2 || al === 0) && this.dosFiles.get(this.cpu.ebx.value & 0xffff) && this.dosFiles.get(this.cpu.ebx.value & 0xffff).dev)) {
+    if ([0x3c, 0x3d, 0x3e, 0x3f, 0x40, 0x41, 0x42, 0x57, 0x5b, 0x6c].includes(ah) || (ah === 0x44 && (al === 2 || al === 0) && this.dosFiles.get(this.cpu.ebx.value & 0xffff) && this.dosFiles.get(this.cpu.ebx.value & 0xffff).dev)) {
       // (a VxD's call through Exec_VxD_Int: 32-bit offsets on a flat DS)
       const flat = this.vxdFlat, off16 = r => (flat ? u32(this.cpu[r].value) : this.cpu[r].value & 0xffff);
       const bx = this.cpu.ebx.value & 0xffff, cx = flat ? u32(this.cpu.ecx.value) : this.cpu.ecx.value & 0xffff, dx = off16('edx');
       const at = off => (flat ? off : this.rmode ? ((this.cpu.ds.value & 0xffff) << 4) + off : this.lin((this.cpu.ds.value << 16) | off));
       const dsdx = () => at(dx), f = this.dosFiles.get(bx);
-      const fail = code => { CF(this, 1); this.ax(code); };
+      const fail = code => { CF(this, 1); this.ax(code); this.dosError = code; };
       try {
         switch (ah) {
           case 0x3c: case 0x3d: {
@@ -555,6 +583,11 @@ const INTS = {
             const name = this.readA(dsdx()) || '', full = ah === 0x3c ? (/^[a-z]:\\/i.test(name) ? name : window.W95FS.join(this.fs.cwd, name)) : this.findFile16(name);
             if (!full) return fail(2);
             const h = this.dosOpen(full, ah === 0x3c ? 'w+' : (al & 3) === 0 ? 'r' : 'r+'); return h === 0xffff ? fail(this.lastError || 2) : this.ax(h);
+          }
+          case 0x5b: {   // create a new file: one already there is an error (80)
+            const name = this.readA(dsdx()) || '', full = this.dosFull(name);
+            if (this.fs.exists(full)) return fail(80);
+            const h = this.dosOpen(full, 'wx+'); return h === 0xffff ? fail(this.lastError || 5) : this.ax(h);
           }
           case 0x44: {   // a device's IOCTL: 0 its information (a character device), 2 read its control data (the helper:
             // given its signature in the 8 bytes at DS:DX, its own and its entry point)
@@ -607,6 +640,18 @@ const INTS = {
       this.cpu.edi.value = lo16(this.cpu.edi.value, ep & 0xffff); this.seg('es', ep >>> 16); return;
     }
     if (ax === 0x1686) { this.ax(0); return; }                                          // in protected mode
+    // MSCDEX's interface, which the CD-ROM file system answers: 1500h the CD-ROM drives (BX how many, CX the first, 0
+    // for A:), 150Bh whether drive CX is one (AX nonzero, BX ADADh), 150Ch the version (BX 2.21), 150Dh their letters
+    if ((ax >> 8) === 0x15 && [0x00, 0x0b, 0x0c, 0x0d].includes(ax & 0xff)) {
+      const cds = [...this.fs.vols.values()].filter(v => v.kind === 'cdrom').map(v => v.letter.charCodeAt(0) - 65).sort((a, b) => a - b);
+      const reg = (r, v) => { this.cpu[r].value = lo16(this.cpu[r].value, v); };
+      switch (ax & 0xff) {
+        case 0x00: reg('ebx', cds.length); if (cds.length) reg('ecx', cds[0]); return;
+        case 0x0b: reg('ebx', 0xadad); this.ax(cds.includes(this.cpu.ecx.value & 0xffff) ? 0x5ad8 : 0); return;
+        case 0x0c: reg('ebx', 0x0215); return;
+        case 0x0d: { const at = this.rmode ? ((this.cpu.es.value & 0xffff) << 4) + (this.cpu.ebx.value & 0xffff) : this.lin(((this.cpu.es.value & 0xffff) << 16) | (this.cpu.ebx.value & 0xffff)); cds.forEach((c, i) => { this.u8[at + i] = c; }); return; }
+      }
+    }
     if (ax === 0x1689 || ax === 0x1680) return;
     if (ax === 0x160b) return;          // identify Windows-aware TSRs: none is loaded, so ES:DI comes back as it went in
     if (ax === 0x1607) return;          // device callout to real-mode software (a VxD asking for its TSR's API): none answers
@@ -939,11 +984,29 @@ const cmArgs = p => { const a = p.cpu.ssb.value + (p.cpu.ebp.value & 0xffff) + 4
 const CR = { SUCCESS: 0, INVALID_POINTER: 3, INVALID_DEVNODE: 5, NO_SUCH_DEVNODE: 0x0d, NO_MORE_LOG_CONF: 0x0e, NO_MORE_RES_DES: 0x0f, BUFFER_SMALL: 0x1a, NO_SUCH_VALUE: 0x25, REGISTRY_ERROR: 0x1d, DLVXD_NOT_FOUND: 0x0c, FAILURE: 0x13 };
 /** a devnode's registry key under HKLM (CM_REGISTRY_SOFTWARE: its driver's key; else its Enum key), with a subkey */
 P.cmKey = function (dn, sub, flags) {
-  const k = flags & 1 ? (dn.driver ? 'System\\CurrentControlSet\\Services\\Class\\' + dn.driver : null) : 'Enum\\' + dn.id;
+  const drv = dn.driver || (dn.key ? regStr(window.W95Win32.regGet(dn.key, 'Driver')) : '');   // (a devnode made since boot: as Setup has written it)
+  const k = flags & 1 ? (drv ? 'System\\CurrentControlSet\\Services\\Class\\' + drv : null) : 'Enum\\' + dn.id;
   return k && (sub ? `${k}\\${sub}` : k);
 };
 vxdApi(0x0033, 'CONFIGMG', {
   0() { return 0x400; },   // Get_Version
+  // Lock(flags), Unlock(): the tree held against changes while a caller walks it; nothing here changes it meanwhile
+  0x16() { return CR.SUCCESS; }, 0x17() { return CR.SUCCESS; },
+  // Create_DevNode(far *dn, far device ID, parent, flags): a devnode for a device Setup installs (Root\Printer\0000
+  // for a printer), its Enum key made; 10h for an ID the tree has
+  0x0b() {
+    const arg = cmArgs(this), id = (this.readA(this.lin(arg(1))) || '').toUpperCase(); if (!id) return CR.INVALID_POINTER;
+    const all = this.devnodes(); if (all.some(d => d.id === id)) return 0x10;   // CR_ALREADY_SUCH_DEVNODE
+    const key = 'hklm\\enum\\' + id.toLowerCase(), dn = { handle: 0xc1000000 + 0x100 * all.length, id, key, cls: '', driver: '' };
+    all.push(dn); window.W95Win32.regSet('hklm\\Enum\\' + id, null);
+    this.w32(this.lin(arg(0)), dn.handle); return CR.SUCCESS;
+  },
+  // Setup_DevNode(dn, flags), Reenumerate_DevNode(dn, flags), Disable_DevNode, Enable_DevNode: a printer's devnode has
+  // no driver to start or stop; its software key says what it is
+  0x34() { const arg = cmArgs(this); return this.devnode(arg(0)) ? CR.SUCCESS : CR.INVALID_DEVNODE; },
+  0x33() { const arg = cmArgs(this); return this.devnode(arg(0)) ? CR.SUCCESS : CR.INVALID_DEVNODE; },
+  0x40() { const arg = cmArgs(this); return this.devnode(arg(0)) ? CR.SUCCESS : CR.INVALID_DEVNODE; },
+  0x41() { const arg = cmArgs(this); return this.devnode(arg(0)) ? CR.SUCCESS : CR.INVALID_DEVNODE; },
   // Locate_DevNode(far *dn, far device ID or NULL for the root, flags)
   2() { const arg = cmArgs(this), id = arg(1) ? (this.readA(this.lin(arg(1))) || '').toUpperCase() : null; const dn = id && this.devnodes().find(d => d.id === id); if (!dn) return CR.NO_SUCH_DEVNODE; this.w32(this.lin(arg(0)), dn.handle); return CR.SUCCESS; },
   // Get_Device_ID_Size(far *len, dn, flags), Get_Device_ID(dn, far buf, len, flags)
@@ -1440,6 +1503,9 @@ const winIni = (p, file, sec, key) => { const { iniGet } = iniApi(); return iniG
 
 def16('KERNEL', 2, 'w', 'v', function (code) { this.exitCode = code; this.host.exited(code); });                        // ExitKernel
 def16('KERNEL', 3, '', 'w', () => 0x4f4);                                                                              // GetVersion (3.95)
+// GetVersionEx(far OSVERSIONINFO): 4.0 build 950, Windows (KERNEL32's GetVersionExA answers the same); SETUPX takes the
+// export's presence for an installed system rather than Setup's
+def16('KERNEL', 149, 'l', 'w', function (fp) { const p = this.lin(fp); if (!p || this.r32(p) < 148) return 0; this.w32(p + 4, 4); this.w32(p + 8, 0); this.w32(p + 12, 950); this.w32(p + 16, 1); this.writeA(p + 20, ' B'); return 1; });
 def16('KERNEL', 4, 'www', 'w', function (sel, start, end) { const r = this.localInit(sel, start, end); this.cpu.ecx.value = lo16(this.cpu.ecx.value, r); return r; });
 def16('KERNEL', 5, 'ww', 'w', function (fl, n) { const h = this.localAlloc(fl, n); this.cpu.ecx.value = lo16(this.cpu.ecx.value, h); return h; });   // also in CX
 def16('KERNEL', 6, 'www', 'w', function (h, n, fl) { return this.localReAlloc(h, n, fl); });
@@ -1551,7 +1617,7 @@ P.loadError16 = function (name) {
   const n = f.length > 0x40 ? rd.u32(f, 0x3c) : 0;
   return f[0] === 0x4d && f[1] === 0x5a && n + 2 < f.length && f[n] === 0x50 && f[n + 1] === 0x45 ? 21 : 11;
 };
-def16('KERNEL', 95, 's', 'w', function (name) { const m = this.loadLibrary16(name); return m ? m.hInstance : this.loadError16(name); });    // LoadLibrary
+def16('KERNEL', 95, 's', 'w', function (name) { const m = this.loadLibrary16(name); return m ? m.hInstance || m.hModule : this.loadError16(name); });    // LoadLibrary (KERNEL's: its module handle)
 def16('KERNEL', 96, 'w', 'v', function () {});                                                                     // FreeLibrary
 def16('KERNEL', 46, 'w', 'v', function () {});                                                                     // FreeModule
 def16('KERNEL', 93, 'x', 'l', function (fp) { const s = fp >>> 16; const b = this.gblock(s); return b ? u32((s << 16) | (s - 1)) : 0; });   // GetCodeHandle
@@ -1657,6 +1723,44 @@ const profStr = function (file, app, key, d, buf, n) {
 };
 def16('KERNEL', 58, 'sssxw', 'w', function (app, key, d, buf, n) { return profStr.call(this, 'WIN.INI', app, key, d, this.lin(buf), n); });
 def16('KERNEL', 128, 'sssxws', 'w', function (app, key, d, buf, n, f) { return profStr.call(this, f, app, key, d, this.lin(buf), n); });
+// a profile's sections (GetPrivateProfileSectionNames), one section's lines (GetPrivateProfileSection, as key=value,
+// each ending in a null, the list in another), a section written whole (WritePrivateProfileSection)
+const multiSz = (p, buf, n, items) => { let o = 0; for (const t of items) { if (o + t.length + 2 > n) break; W(p, buf + o, t); o += t.length + 1; } p.u8[buf + o] = 0; if (!o) p.u8[buf + 1] = 0; return o; };
+def16('KERNEL', 143, 'pws', 'w', function (buf, n, f) { if (!n) return 0; return multiSz(this, buf, n, [...window.W95Win32.iniRead(this.fs, f || 'WIN.INI').values()].map(x => x.name)); });
+def16('KERNEL', 418, 'spws', 'w', function (app, buf, n, f) { if (!n) return 0; const sec = window.W95Win32.iniRead(this.fs, f || 'WIN.INI').get((app || '').toLowerCase()); return multiSz(this, buf, n, sec ? [...sec.keys.values()].map(k => `${k.name}=${k.value}`) : []); });
+def16('KERNEL', 416, 'sps', 'w', function (app, lines, f) {
+  try { for (let a = lines; a && this.u8[a]; ) { const l = this.readA(a); a += l.length + 1; const i = l.indexOf('='); if (i > 0) window.W95Win32.iniSet(this.fs, f || 'WIN.INI', app, l.slice(0, i).trim(), l.slice(i + 1).trim()); } return 1; } catch (_) { return 0; }
+});
+// KRNL386's Win32-style directory calls for 16-bit code: GetCurrentDirectory(size, buffer) (the length, or the size
+// needed), SetCurrentDirectory, and FindFirstFile / FindNextFile / FindClose on a WIN32_FIND_DATA (FILETIMEs, the long
+// name and the 8.3 one), with a 16-bit search handle (FFFFh for none)
+def16('KERNEL', 411, 'lp', 'l', function (n, buf) { const c = this.fs.cwd; if (n <= c.length) return c.length + 1; this.writeA(buf, c, n); return c.length; });
+def16('KERNEL', 412, 's', 'w', function (d) { try { this.fs.chdir(this.dosFull(d)); return 1; } catch (_) { this.lastError = 3; return 0; } });
+P.findData16 = function (a, e) {
+  const ft = (o, ms) => { const v = (BigInt(Math.round(ms)) + FT_EPOCH) * 10000n; this.w32(a + o, Number(v & 0xffffffffn)); this.w32(a + o + 4, Number(v >> 32n)); };
+  this.u8.fill(0, a, a + 318); this.w32(a, e.attrs | (e.isDir ? 0x10 : 0));
+  ft(4, e.ctime); ft(12, e.atime); ft(20, e.mtime); this.w32(a + 32, e.size);
+  this.writeA(a + 44, e.name, 260); if (e.shortName && e.shortName !== e.name) this.writeA(a + 304, e.shortName, 14);
+};
+def16('KERNEL', 413, 'sp', 'w', function (pat, data) {
+  const full = this.dosFull(pat), i = full.lastIndexOf('\\'), dir = i <= 2 ? full.slice(0, 3) : full.slice(0, i), mask = full.slice(i + 1) || '*';
+  let list; try { list = this.fs.readdir(dir, mask === '*.*' ? '*' : mask); } catch (_) { list = []; }
+  if (!list.length) { this.lastError = 2; return 0xffff; }
+  this.findData16(data, list[0]);
+  this.finds16 = this.finds16 || new Map(); const h = 0x4800 + (this.findNext16 = ((this.findNext16 || 0) + 1) & 0x3ff); this.finds16.set(h, { list, i: 1 }); return h;
+});
+def16('KERNEL', 414, 'wp', 'w', function (h, data) { const f = this.finds16 && this.finds16.get(h); if (!f || f.i >= f.list.length) { this.lastError = 18; return 0; } this.findData16(data, f.list[f.i++]); return 1; });
+def16('KERNEL', 415, 'w', 'w', function (h) { return this.finds16 && this.finds16.delete(h) ? 1 : 0; });
+// GetFileAttributes: the attributes, -1 for a name that is not there
+def16('KERNEL', 420, 's', 'l', function (name) { const f = this.findFile16(name) || (name && this.fs.exists(this.dosFull(name)) ? this.dosFull(name) : null); if (!f) { this.lastError = this.dosError = 2; return 0xffffffff; } const i = this.fs.stat(f); return i.attrs | (i.isDir ? 0x10 : 0); });
+// GetDriveType(0 for A:): 2 removable, 3 fixed, 4 remote (Win16 reports CD-ROM drives as remote), 0 no such drive
+def16('KERNEL', 136, 'w', 'w', function (d) { const v = this.fs.vols.get(String.fromCharCode(65 + (d & 0xff))); return !v ? 0 : v.kind === 'removable' ? 2 : v.kind === 'fixed' ? 3 : 4; });
+// GlobalCompact: the largest free block the global heap could give (its arena here grows on demand)
+def16('KERNEL', 25, 'l', 'l', () => 0x00ff0000);
+// IsDBCSLeadByte: no byte leads a double-byte character in code page 1252
+def16('KERNEL', 207, 'w', 'w', () => 0);
+// FatalAppExit(action, message): the program ends with the message
+def16('KERNEL', 137, 'ws', 'v', function (a, msg) { throw new GuestError(`FatalAppExit: ${msg || ''}`); });
 def16('KERNEL', 59, 'sss', 'w', function (app, key, v) { try { window.W95Win32.iniSet(this.fs, 'WIN.INI', app, key, v); return 1; } catch (_) { return 0; } });
 def16('KERNEL', 217, 'lpp', 'l', function (hk, sub, out) { return API.ADVAPI32.RegOpenKeyA[1].call(this, hk, sub, out); });
 def16('KERNEL', 218, 'lpp', 'l', function (hk, sub, out) { return API.ADVAPI32.RegCreateKeyA ? API.ADVAPI32.RegCreateKeyA[1].call(this, hk, sub, out) : API.ADVAPI32.RegOpenKeyA[1].call(this, hk, sub, out); });
@@ -1673,6 +1777,100 @@ def16('KERNEL', 224, 'lppp', 'l', function (hk, sub, data, cb) { return API.ADVA
 
 // files (DOS handles over the in-memory FS)
 const OF = { READ: 0, WRITE: 1, READWRITE: 2, PARSE: 0x100, DELETE: 0x200, CREATE: 0x1000, EXIST: 0x4000 };
+/** a DOS name as a full path: relative to the current directory (or a drive's root), . and .. folded */
+P.dosFull = function (name) {
+  const W = window.W95FS; let p = String(name || '').replace(/\//g, '\\');
+  if (/^[a-z]:\\/i.test(p) || p.startsWith('\\\\')) { /* full */ } else if (/^[a-z]:/i.test(p)) p = W.join(p.slice(0, 2) + '\\', p.slice(2));
+  else if (p.startsWith('\\')) p = this.fs.cwd.slice(0, 2) + p; else p = W.join(this.fs.cwd, p);
+  const unc = p.startsWith('\\\\'), parts = p.split('\\').filter((x, i) => x !== '' || i === 0), out = [];
+  for (const x of parts) { if (x === '.') continue; if (x === '..') { if (out.length > 1) out.pop(); continue; } out.push(x); }
+  return unc ? '\\' + out.join('\\') : out.length === 1 ? out[0] + '\\' : out.join('\\');
+};
+// DOS's name and directory functions (fn: AH, or AL of the long-name call 71h); false for one not answered here
+const FT_EPOCH = 11644473600000n;
+P.dosNames = function (fn, lfn) {
+  const W = window.W95FS, flat = this.vxdFlat;
+  const off16 = r => (flat ? u32(this.cpu[r].value) : this.cpu[r].value & 0xffff);
+  const at = (seg, off) => (flat ? off : this.rmode ? ((this.cpu[seg].value & 0xffff) << 4) + off : this.lin((this.cpu[seg].value << 16) | off));
+  const dsdx = () => at('ds', off16('edx')), dssi = () => at('ds', off16('esi')), esdi = () => at('es', off16('edi'));
+  const fail = code => { CF(this, 1); this.ax(code); this.dosError = code; };
+  const reg = (r, v) => { this.cpu[r].value = lo16(this.cpu[r].value, v); };
+  const cx = this.cpu.ecx.value & 0xffff, bl = this.cpu.ebx.value & 0xff;
+  const dosTime = ms => { const d = new Date(ms); return [(d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1), ((Math.max(d.getFullYear(), 1980) - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate()]; };
+  const fileTime = (a, ms) => { const v = (BigInt(Math.round(ms)) + FT_EPOCH) * 10000n; this.w32(a, Number(v & 0xffffffffn)); this.w32(a + 4, Number(v >> 32n)); };
+  // a search: the names in the folder matching the pattern, with the attributes allowed (CL) and required (CH, long names)
+  const search = (pat, allow, need) => {
+    const full = this.dosFull(pat), i = full.lastIndexOf('\\'), dir = i <= 2 ? full.slice(0, 3) : full.slice(0, i), mask = full.slice(i + 1) || '*.*';
+    const ok = e => { const a = e.attrs | (e.isDir ? 0x10 : 0); return !(a & 0x16 & ~allow) && (a & need) === need; };
+    return this.fs.readdir(dir, mask === '*.*' ? '*' : mask).filter(ok);
+  };
+  try {
+    switch (fn) {
+      case 0x0e: { const d = String.fromCharCode(65 + (this.cpu.edx.value & 0xff)); if (this.fs.vols.has(d)) { try { this.fs.chdir(d + ':\\'); } catch (_) { } } this.ax((this.ax() & 0xff00) | 26); return; }
+      case 0x1a: this.dta = at('ds', off16('edx')); this.dtaFar = [this.cpu.ds.value & 0xffff, off16('edx')]; return;
+      case 0x2f: { const [sg, o] = this.dtaFar || [0, 0]; if (this.rmode) this.cpu.es.value = sg; else this.seg('es', sg); reg('ebx', o); return; }
+      case 0x36: {   // free space: AX sectors a cluster, BX free clusters, CX bytes a sector, DX clusters
+        const dl = this.cpu.edx.value & 0xff, d = dl ? String.fromCharCode(64 + dl) : this.fs.cwd[0];
+        let v; try { v = this.fs.statvfs(d + ':\\'); } catch (_) { this.ax(0xffff); return; }
+        const spc = Math.max(1, Math.round((v.cluster || 4096) / 512)), cl = spc * 512;
+        this.ax(spc); reg('ebx', Math.min(0xffff, Math.floor(v.free / cl))); reg('ecx', 512); reg('edx', Math.min(0xffff, Math.floor(v.total / cl))); return;
+      }
+      case 0x39: this.fs.mkdir(this.dosFull(this.readA(dsdx()))); return;
+      case 0x3a: this.fs.rmdir(this.dosFull(this.readA(dsdx()))); return;
+      case 0x3b: this.fs.chdir(this.dosFull(this.readA(dsdx()))); return;
+      case 0x41: this.fs.unlink(this.dosFull(this.readA(dsdx()))); return;
+      case 0x43: {   // attributes: AL (long names: BL) 0 get into CX, 1 set from CX; long names' other forms change nothing
+        const op = lfn ? bl : this.ax() & 0xff, f = this.dosFull(this.readA(dsdx()));
+        if (op === 0) { const i = this.fs.stat(f); reg('ecx', i.attrs | (i.isDir ? 0x10 : 0)); this.ax(i.attrs | (i.isDir ? 0x10 : 0)); return; }
+        if (op === 1) { this.fs.setAttrs(f, cx); return; }
+        this.fs.stat(f); reg('ecx', 0); reg('edi', 0); return;
+      }
+      case 0x47: {   // the current directory of drive DL (0 the current one), without its drive and first backslash, at DS:SI
+        const dl = this.cpu.edx.value & 0xff, d = dl ? String.fromCharCode(64 + dl) : this.fs.cwd[0];
+        const cur = this.fs.cwd[0].toUpperCase() === d.toUpperCase() ? this.fs.cwd : d + ':\\';
+        let path = cur.slice(3); if (!lfn) { try { path = this.fs.stat(cur).shortPath.slice(3); } catch (_) { } }
+        this.writeA(dssi(), path, lfn ? 260 : 64); this.ax(0x0100); return;
+      }
+      case 0x4e: case 0x4f: {
+        if (!lfn) {   // the DTA's search: 21 bytes of state (here an index into this machine's searches), then the entry
+          const dta = this.dta; if (!dta) return fail(18);
+          let s;
+          if (fn === 0x4e) { s = { list: search(this.readA(dsdx()), cx & 0xff, 0), i: 0 }; (this.dosFinds = this.dosFinds || []).push(s); this.w16(dta, this.dosFinds.length - 1); this.w16(dta + 2, 0x5346); }
+          else { s = this.r16(dta + 2) === 0x5346 && (this.dosFinds || [])[this.r16(dta)]; if (!s) return fail(18); }
+          const e = s.list[s.i++]; if (!e) return fail(18);
+          const [t, d] = dosTime(e.mtime);
+          this.u8[dta + 21] = e.attrs | (e.isDir ? 0x10 : 0); this.w16(dta + 22, t); this.w16(dta + 24, d); this.w32(dta + 26, e.size);
+          this.writeA(dta + 30, (e.shortName || e.name).toUpperCase(), 13); this.ax(0); return;
+        }
+        // long names: 4Eh CL allowed, CH required, DS:DX the pattern, SI the time format, ES:DI the WIN32_FIND_DATA; AX a
+        // handle for 4Fh (BX) and A1h
+        let s, h;
+        if (fn === 0x4e) { s = { list: search(this.readA(dsdx()), cx & 0xff, cx >> 8), i: 0 }; if (!s.list.length) return fail(2); this.lfnFinds = this.lfnFinds || new Map(); h = 0x4600 + (this.lfnNext = ((this.lfnNext || 0) + 1) & 0xff); this.lfnFinds.set(h, s); }
+        else { h = this.cpu.ebx.value & 0xffff; s = this.lfnFinds && this.lfnFinds.get(h); if (!s) return fail(6); }
+        const e = s.list[s.i++]; if (!e) return fail(18);
+        const a = esdi(), dos = (this.cpu.esi.value & 0xffff) === 1;
+        this.u8.fill(0, a, a + 318); this.w32(a, e.attrs | (e.isDir ? 0x10 : 0));
+        for (const [o, ms] of [[4, e.ctime], [12, e.atime], [20, e.mtime]]) { if (dos) { const [t, d] = dosTime(ms); this.w16(a + o, t); this.w16(a + o + 2, d); } else fileTime(a + o, ms); }
+        this.w32(a + 32, e.size); this.writeA(a + 44, e.name, 260); if (e.shortName && e.shortName !== e.name) this.writeA(a + 304, e.shortName, 14);
+        this.ax(fn === 0x4e ? h : 0); return;
+      }
+      case 0xa1: if (this.lfnFinds) this.lfnFinds.delete(this.cpu.ebx.value & 0xffff); return;
+      case 0x56: { const from = this.dosFull(this.readA(dsdx())), to = this.dosFull(this.readA(esdi())); this.fs.rename(from, to); return; }
+      case 0x60: {   // the full name of DS:SI at ES:DI: CL 0 as given (expanded), 1 its short form, 2 its long form
+        const full = this.dosFull(this.readA(dssi())), how = cx & 0xff;
+        let out = full;
+        if (how === 1 || how === 2) { const i = this.fs.stat(full); out = how === 1 ? i.shortPath : i.path; }
+        this.writeA(esdi(), how === 1 ? out.toUpperCase() : out, 261); this.ax(0); return;
+      }
+      case 0xa0: {   // the volume's file system: DS:DX its root, ES:DI the name (CX long), BX flags, CX longest name, DX longest path
+        const root = this.dosFull(this.readA(dsdx())).slice(0, 3); let v; try { v = this.fs.statvfs(root); } catch (_) { return fail(15); }
+        if (cx) this.writeA(esdi(), v.fsname || 'FAT', cx);
+        reg('ebx', 0x4006); reg('ecx', 255); reg('edx', 260); return;
+      }
+    }
+  } catch (e) { if (e instanceof W.FSError) return fail(e.code || 5); throw e; }
+  return false;
+};
 P.findFile16 = function (name) {
   if (/^[a-z]:\\/i.test(name) || name.startsWith('\\')) return this.fs.exists(name) ? this.fs.realpath(name) : null;
   for (const d of [this.fs.cwd, 'C:\\WINDOWS', 'C:\\WINDOWS\\SYSTEM']) { const f = window.W95FS.join(d, name); if (this.fs.exists(f)) return this.fs.realpath(f); }
@@ -1680,12 +1878,12 @@ P.findFile16 = function (name) {
 };
 P.dosOpen = function (path, mode) {
   try { const fd = this.fs.open(path, mode); const h = this.nextDosFile++; this.dosFiles.set(h, { fd, path }); return h; }
-  catch (e) { if (e instanceof window.W95FS.FSError) { this.lastError = e.code || 2; return 0xffff; } throw e; }
+  catch (e) { if (e instanceof window.W95FS.FSError) { this.lastError = this.dosError = e.code || 2; return 0xffff; } throw e; }
 };
 def16('KERNEL', 74, 'spw', 'w', function (name, of, style) {   // OpenFile
   const full = style & OF.CREATE ? (/^[a-z]:\\/i.test(name) ? name : window.W95FS.join(this.fs.cwd, name)) : this.findFile16(name);
   if (of) { this.u8.fill(0, of, of + 136); this.u8[of] = 136; this.u8[of + 1] = 1; }
-  if (!full) { if (of) this.w16(of + 2, 2); return 0xffff; }
+  if (!full) { if (of) this.w16(of + 2, 2); this.lastError = this.dosError = 2; return 0xffff; }
   if (of) W(this, of + 8, full.toUpperCase(), 128);
   if (style & OF.PARSE) return 0;
   if (style & OF.DELETE) { try { this.fs.unlink(full); return 1; } catch (_) { return 0xffff; } }
@@ -1702,7 +1900,7 @@ def16('KERNEL', 360, 'spw', 'w', function (name, of, style) {
   }
   return r;
 });
-def16('KERNEL', 85, 'sw', 'w', function (name, mode) { const f = this.findFile16(name); return f ? this.dosOpen(f, (mode & 3) === 0 ? 'r' : 'r+') : 0xffff; });  // _lopen
+def16('KERNEL', 85, 'sw', 'w', function (name, mode) { const f = this.findFile16(name); if (!f) { this.lastError = this.dosError = 2; return 0xffff; } return this.dosOpen(f, (mode & 3) === 0 ? 'r' : 'r+'); });  // _lopen (a name not found: error 2, as INT 21h 59h then reports)
 def16('KERNEL', 83, 'sw', 'w', function (name) { return this.dosOpen(/^[a-z]:\\/i.test(name) ? name : window.W95FS.join(this.fs.cwd, name), 'w+'); });   // _lcreat
 def16('KERNEL', 81, 'w', 'w', function (h) { const f = this.dosFiles.get(h); if (!f) return 0xffff; this.fs.close(f.fd); this.dosFiles.delete(h); return 0; });
 const lread = function (h, buf, n) { const f = this.dosFiles.get(h); if (!f) return 0xffffffff; const b = this.fs.read(f.fd, n); this.u8.set(b, buf); return b.length; };
@@ -1716,18 +1914,63 @@ def16('KERNEL', 146, 's', 'w', function (n) { try { this.fs.unlink(n); return 1;
 def16('KERNEL', 92, 'w', 'w', function () { return 0x80 | 0x43; });
 def16('KERNEL', 97, 'wswp', 'w', function (drv, pre, uniq, buf) { const u = uniq || ((Date.now() & 0xffff) | 1); W(this, buf, `C:\\WINDOWS\\TEMP\\~${(pre || 'TMP').slice(0, 3)}${u.toString(16).toUpperCase().padStart(4, '0')}.TMP`); return u; });
 
-// atoms (local to DS)
+// atoms (local to DS), as KRNL386 keeps them in the local heap: DS:[8] the table (a count, then that many chain
+// heads), each atom's entry a fixed block { next, usage count, length byte, the name } on a 4-byte boundary, the atom
+// C000h | entry >> 2. Programs reach into the entries (SETUPX's string table counts its own references in the usage
+// word, finds an entry at atom << 2). A DS with no local heap keeps its atoms in a table here
 P.atomTable = function () { const s = this.cpu.ds.value | 1; if (!this.atoms.has(s)) this.atoms.set(s, { byName: new Map(), byId: new Map(), next: 0xc000 }); return this.atoms.get(s); };
 const atomKey = s => typeof s === 'number' ? null : s.toUpperCase();
-def16('KERNEL', 68, 'w', 'w', function () { this.atomTable(); return 1; });
-def16('KERNEL', 70, 's', 'w', function (s) {
-  if (typeof s === 'number') return s; if (s && s[0] === '#') return parseInt(s.slice(1), 10) & 0xffff;
-  const t = this.atomTable(), k = atomKey(s); let a = t.byName.get(k);
-  if (!a) { a = { id: t.next++, name: s, n: 0 }; t.byName.set(k, a); t.byId.set(a.id, a); } a.n++; return a.id;
+const atomHash = (s, n) => { let h = 0; for (let i = 0; i < s.length; i++) h = (h ^ (s.toUpperCase().charCodeAt(i) + i)) & 0xffff; return h % n; };
+/** the DS's atom table's offset (made with 37 chains the first time), or 0 when the DS has no local heap */
+P.latoms = function (n = 37) {
+  const ds = this.cpu.ds.value & 0xffff; if (!this.lheaps.has(ds | 1)) return 0;
+  const base = this.selBase(ds); let t = this.r16(base + 8);
+  if (!t || !this.lheap(ds).blocks.has(t)) {
+    t = this.localAlloc(0x40, 2 + 2 * n, ds); if (!t) return 0;
+    this.w16(this.selBase(ds) + t, n); this.w16(this.selBase(ds) + 8, t);
+  }
+  return t;
+};
+/** an atom's entry offset for its name in the DS's table, and the chain head's offset */
+P.latomFind = function (t, s) {
+  const base = this.selBase(this.cpu.ds.value & 0xffff), n = this.r16(base + t), head = t + 2 + 2 * atomHash(s, n), k = s.toUpperCase();
+  for (let e = this.r16(base + head); e; e = this.r16(base + e)) if (this.u8[base + e + 4] === s.length && this.readA(base + e + 5, s.length).toUpperCase() === k) return { e, head };
+  return { e: 0, head };
+};
+const intAtom = s => (typeof s === 'number' ? s : s && s[0] === '#' ? parseInt(s.slice(1), 10) & 0xffff : null);
+def16('KERNEL', 68, 'w', 'w', function (n) { if (this.lheaps.has((this.cpu.ds.value & 0xffff) | 1)) { const base = this.selBase(this.cpu.ds.value & 0xffff); if (!this.r16(base + 8)) return this.latoms(n || 37) ? 1 : 0; return 1; } this.atomTable(); return 1; });   // InitAtomTable
+def16('KERNEL', 70, 's', 'w', function (s) {   // AddAtom
+  const i = intAtom(s); if (i !== null) return i;
+  const t = this.latoms();
+  if (!t) { const tb = this.atomTable(), k = atomKey(s); let a = tb.byName.get(k); if (!a) { a = { id: tb.next++, name: s, n: 0 }; tb.byName.set(k, a); tb.byId.set(a.id, a); } a.n++; return a.id; }
+  s = s.slice(0, 255);
+  const f = this.latomFind(t, s); let base = this.selBase(this.cpu.ds.value & 0xffff);
+  if (f.e) { this.w16(base + f.e + 2, (this.r16(base + f.e + 2) + 1) & 0xffff); return 0xc000 | (f.e >> 2); }
+  const e = this.localAlloc(0x40, 6 + s.length, this.cpu.ds.value & 0xffff); if (!e || (e & 3)) return 0;
+  base = this.selBase(this.cpu.ds.value & 0xffff);
+  this.w16(base + e, this.r16(base + f.head)); this.w16(base + e + 2, 1); this.u8[base + e + 4] = s.length; this.writeA(base + e + 5, s, s.length + 1);
+  this.w16(base + f.head, e);
+  return 0xc000 | (e >> 2);
 });
-def16('KERNEL', 69, 's', 'w', function (s) { if (typeof s === 'number') return s; const a = this.atomTable().byName.get(atomKey(s)); return a ? a.id : 0; });
-def16('KERNEL', 71, 'w', 'w', function (id) { const t = this.atomTable(), a = t.byId.get(id); if (a && !--a.n) { t.byId.delete(id); t.byName.delete(atomKey(a.name)); } return 0; });
-def16('KERNEL', 72, 'wpw', 'w', function (id, buf, n) { if (id < 0xc000) return W(this, buf, '#' + id, n); const a = this.atomTable().byId.get(id); return a ? W(this, buf, a.name, n) : 0; });
+def16('KERNEL', 69, 's', 'w', function (s) {   // FindAtom
+  const i = intAtom(s); if (i !== null) return i;
+  const t = this.latoms(); if (!t) { const a = this.atomTable().byName.get(atomKey(s)); return a ? a.id : 0; }
+  const f = this.latomFind(t, s.slice(0, 255)); return f.e ? 0xc000 | (f.e >> 2) : 0;
+});
+def16('KERNEL', 71, 'w', 'w', function (id) {   // DeleteAtom: 0 once done
+  if (id < 0xc000) return 0;
+  const t = this.latoms(); if (!t) { const tb = this.atomTable(), a = tb.byId.get(id); if (a && !--a.n) { tb.byId.delete(id); tb.byName.delete(atomKey(a.name)); } return 0; }
+  const base = this.selBase(this.cpu.ds.value & 0xffff), e = (id & 0x3fff) << 2, n = this.r16(base + e + 2);
+  if (n > 1) { this.w16(base + e + 2, n - 1); return 0; }
+  const s = this.readA(base + e + 5, this.u8[base + e + 4]), head = t + 2 + 2 * atomHash(s, this.r16(base + t));
+  for (let at = head, x = this.r16(base + at); x; at = x, x = this.r16(base + x)) if (x === e) { this.w16(base + at, this.r16(base + e)); this.localFree(e, this.cpu.ds.value & 0xffff); return 0; }
+  return id;
+});
+def16('KERNEL', 72, 'wpw', 'w', function (id, buf, n) {   // GetAtomName
+  if (id < 0xc000) return W(this, buf, '#' + id, n);
+  const t = this.latoms(); if (!t) { const a = this.atomTable().byId.get(id); return a ? W(this, buf, a.name, n) : 0; }
+  const base = this.selBase(this.cpu.ds.value & 0xffff), e = (id & 0x3fff) << 2; return W(this, buf, this.readA(base + e + 5, this.u8[base + e + 4]), n);
+});
 
 // resources in NE modules
 P.neResources = function (m) {
@@ -1957,6 +2200,36 @@ def16('KERNEL', 517, '', 'jmp', function () {
     return this.retf16(12 + 4 * n);
   };
   // on the flat alias of the 16-bit stack, as KRNL386's 16 -> 32 callbacks run
+  for (const [s, b] of SEGS) { this.cpu[s].value = 0; if (s !== 'fsel') this.cpu[b].value = 0; }
+  this.cpu.fs.value = this.tibFor();
+  let esp = f & ~3;
+  for (let i = n - 1; i >= 0; i--) { esp -= 4; this.w32(esp, args[i]); }
+  esp -= 4; this.w32(esp, this.thunkFor('KERNEL32', '__Ret32.' + this.retToken(save)));
+  this.cpu.esp.value = esp;
+  return proc;
+});
+// the generic thunks' module calls (#513-#515): a Win32 library loaded, freed and its exports found from 16-bit code,
+// as KERNEL32's LoadLibraryExA, FreeLibrary and GetProcAddress do
+def16('KERNEL', 513, 'sll', 'l', function (name) { const n = this.alloc(name.length + 1); this.writeA(n, name); try { return API.KERNEL32.LoadLibraryA[1].call(this, n); } finally { this.free(n); } });
+def16('KERNEL', 514, 'l', 'w', () => 1);
+def16('KERNEL', 515, 'lx', 'l', function (h, name) {
+  if (!(name >>> 16)) return API.KERNEL32.GetProcAddress[1].call(this, h, name & 0xffff);
+  const s = this.readA(this.lin(name)), n = this.alloc(s.length + 1); this.writeA(n, s);
+  try { return API.KERNEL32.GetProcAddress[1].call(this, h, n); } finally { this.free(n); }
+});
+// _CallProcEx32W (#518): CallProc32W's C form: (n, conversion mask, proc, then the n parameters in order), bit i of the
+// mask converting the i-th from 16:16 to linear; the caller removes the arguments
+def16('KERNEL', 518, '', 'jmp', function () {
+  const ssb = u32(this.cpu.ssb.value), f = ssb + (this.cpu.esp.value & 0xffff);
+  const n = this.r32(f + 4) & 0x7fffffff, mask = this.r32(f + 8), proc = this.r32(f + 12);
+  const args = []; for (let i = 0; i < n; i++) { const v = this.r32(f + 16 + 4 * i); args.push(mask & (1 << i) ? this.lin(v) : v); }
+  const save = {}; for (const r of GPR) save[r] = this.cpu[r].value; for (const [s, b] of SEGS) { save[s] = this.cpu[s].value; save[b] = this.cpu[b].value; }
+  save.done = function (c) {
+    const r = u32(this.cpu.eax.value); if (window.W95CP32) window.W95CP32(proc, args, r);
+    for (const g of GPR) this.cpu[g].value = c[g]; for (const [s, b] of SEGS) { this.cpu[s].value = c[s]; this.cpu[b].value = c[b]; }
+    this.cpu.eax.value = r | 0; this.cpu.edx.value = lo16(this.cpu.edx.value, r >>> 16);
+    return this.retf16(0);
+  };
   for (const [s, b] of SEGS) { this.cpu[s].value = 0; if (s !== 'fsel') this.cpu[b].value = 0; }
   this.cpu.fs.value = this.tibFor();
   let esp = f & ~3;
@@ -2543,7 +2816,7 @@ def16('KERNEL', 49, 'wpi', 'w', function (h, buf, n) {                          
   const m = this.neByHandle(h), f = m && m.fileName ? `C:\\WINDOWS\\SYSTEM\\${m.fileName}` : m && m.path ? m.path : (this.host && this.host.path) || '';
   return W(this, buf, f, n);
 });
-def16('KERNEL', 73, 'w', 'w', function (id) { return this.atomTable().byId.has(id) ? id : 0; });     // GetAtomHandle
+def16('KERNEL', 73, 'w', 'w', function (id) { if (id < 0xc000) return 0; if (this.latoms()) return (id & 0x3fff) << 2; return this.atomTable().byId.has(id) ? id : 0; });     // GetAtomHandle: the atom's entry
 def16('KERNEL', 129, 'ssss', 'w', function (app, key, v, f) {                                         // WritePrivateProfileString
   try { window.W95Win32.iniSet(this.fs, f, app, key === null ? null : key, v); return 1; } catch (_) { return 0; }
 });

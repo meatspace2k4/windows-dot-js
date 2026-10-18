@@ -598,12 +598,27 @@ const REGISTRY = new Map([
 // set or deleted, as it happens. Values are numbers, strings, or { type, name, data } with the raw bytes.
 let regStore = null;
 const regChanged = op => { if (regStore) regStore.op(op); };
+// each key's name as it was created (RegEnumKey gives it back so: SPOOLSS finds its "Windows 4.0" environment by a
+// case-sensitive compare); the registry's paths themselves are lower case
+const KEYNAME = new Map();
+/** create the keys along `path` (lower case) that are missing, each named from `orig` (the same path as given) */
+const regMake = (path, orig) => {
+  const parts = path.split('\\'), names = String(orig || '').split('\\');
+  for (let k = 1; k <= parts.length; k++) {
+    const q = parts.slice(0, k).join('\\'); if (REGISTRY.has(q)) continue;
+    REGISTRY.set(q, new Map());
+    const name = names.length === parts.length && names[k - 1].toLowerCase() === parts[k - 1] && names[k - 1] !== parts[k - 1] ? names[k - 1] : null;
+    if (name) KEYNAME.set(q, name);
+    regChanged(name ? { op: 'key', path: q, name } : { op: 'key', path: q });
+  }
+};
+const keyName = (path, k) => KEYNAME.get(k) || k.slice(path.length + 1);
 const regAttach = store => {
   regStore = store;
   const held = store.load();
   if (!held) { for (const [path, m] of REGISTRY) { store.op({ op: 'key', path }); for (const [name, value] of m) store.op({ op: 'set', path, name, value }); } return false; }
-  REGISTRY.clear();
-  for (const [path, vals] of held) REGISTRY.set(path, new Map(vals));
+  REGISTRY.clear(); KEYNAME.clear();
+  for (const [path, vals, name] of held) { REGISTRY.set(path, new Map(vals)); if (name) KEYNAME.set(path, name); }
   return true;
 };
 // the shell's own registry reads and writes (Explorer's settings), through the same store as a program's
@@ -611,11 +626,10 @@ const regAttach = store => {
 const regKids = path => { path = path.toLowerCase(); return [...REGISTRY.keys()].filter(k => k.startsWith(path + '\\') && !k.slice(path.length + 1).includes('\\')).map(k => k.slice(path.length + 1)); };
 /** a key's values as [name, value] pairs, and a key removed with its subkeys */
 const regVals = path => [...(REGISTRY.get(path.toLowerCase()) || new Map()).entries()];
-const regDel = path => { path = path.toLowerCase(); let any = false; for (const k of [...REGISTRY.keys()]) if (k === path || k.startsWith(path + '\\')) { REGISTRY.delete(k); any = true; } if (any) regChanged({ op: 'delkey', path }); };
+const regDel = path => { path = path.toLowerCase(); let any = false; for (const k of [...REGISTRY.keys()]) if (k === path || k.startsWith(path + '\\')) { REGISTRY.delete(k); KEYNAME.delete(k); any = true; } if (any) regChanged({ op: 'delkey', path }); };
 const regGet = (path, name) => { const m = REGISTRY.get(path.toLowerCase()); return m ? m.get(name.toLowerCase()) : undefined; };
 const regSet = (path, name, value) => {
-  path = path.toLowerCase(); const parts = path.split('\\');
-  for (let k = 1; k <= parts.length; k++) { const q = parts.slice(0, k).join('\\'); if (!REGISTRY.has(q)) { REGISTRY.set(q, new Map()); regChanged({ op: 'key', path: q }); } }
+  const orig = path; path = path.toLowerCase(); regMake(path, orig);
   if (name === null) return;   // the key alone
   REGISTRY.get(path).set(name.toLowerCase(), value); regChanged({ op: 'set', path, name: name.toLowerCase(), value });
 };
@@ -1391,12 +1405,18 @@ def('KERNEL32', 'GetNumberOfConsoleInputEvents', 2, () => 0);
 def('KERNEL32', 'OutputDebugStringA', 1, () => 0);
 
 // ADVAPI32: registry. Keys are lower-case paths under the root names; values keep their type and bytes.
-const regKey = (path, create) => { if (!REGISTRY.has(path)) { if (!create) return null; const parts = path.split('\\'); for (let k = 1; k <= parts.length; k++) { const q = parts.slice(0, k).join('\\'); if (!REGISTRY.has(q)) { REGISTRY.set(q, new Map()); regChanged({ op: 'key', path: q }); } } } return REGISTRY.get(path); };
-const regPath = (p, hk, sub) => { const root = HKEY[hk] || (p.obj(hk) || {}).path; if (!root) return null; const s = sub ? (p.readA(sub) || '').toLowerCase().replace(/^\\+|\\+$/g, '') : ''; return s ? `${root}\\${s}` : root; };
+const regKey = (path, create, orig) => { if (!REGISTRY.has(path)) { if (!create) return null; regMake(path, orig); } return REGISTRY.get(path); };
+/** the key a handle and subkey name: its path (lower case), or with `asGiven` the same path with the subkey's case */
+const regPath = (p, hk, sub, asGiven) => {
+  const root = HKEY[hk] || (p.obj(hk) || {}).path; if (!root) return null;
+  const given = sub ? (p.readA(sub) || '').replace(/^\\+|\\+$/g, '') : '';
+  const base = asGiven && !HKEY[hk] ? (p.obj(hk) || {}).given || root : root;
+  return given ? `${asGiven ? base : root}\\${asGiven ? given : given.toLowerCase()}` : asGiven ? base : root;
+};
 const regVal = v => typeof v === 'number' ? { type: 4, data: new Uint8Array(new Uint32Array([v]).buffer) } : typeof v === 'string' ? { type: 1, data: window.W95FS.encode(v + '\0') } : v;
 const regOpen = function (hk, sub, out, create) {
-  const path = regPath(this, hk, sub); if (!path || !regKey(path, create)) return 2;
-  if (out) this.w32(out, this.newHandle({ kind: 'key', path })); return 0;
+  const path = regPath(this, hk, sub), given = regPath(this, hk, sub, true); if (!path || !regKey(path, create, given)) return 2;
+  if (out) this.w32(out, this.newHandle({ kind: 'key', path, given })); return 0;
 };
 def('ADVAPI32', 'RegOpenKeyA', 3, function (hk, sub, out) { return regOpen.call(this, hk, sub, out, false); });
 def('ADVAPI32', 'RegOpenKeyExA', 5, function (hk, sub, opt, sam, out) { return regOpen.call(this, hk, sub, out, false); });
@@ -1406,7 +1426,7 @@ def('ADVAPI32', 'RegCreateKeyExA', 9, function (hk, sub, res, cls, opt, sam, sa,
   const r = regOpen.call(this, hk, sub, out, true); if (!r && disp) this.w32(disp, existed ? 2 : 1); return r;
 });
 def('ADVAPI32', 'RegCloseKey', 1, function (h) { if (!HKEY[h]) this.handles.delete(h); return 0; });
-def('ADVAPI32', 'RegDeleteKeyA', 2, function (hk, sub) { const path = regPath(this, hk, sub); if (!REGISTRY.has(path)) return 2; for (const k of [...REGISTRY.keys()]) if (k === path || k.startsWith(path + '\\')) REGISTRY.delete(k); regChanged({ op: 'delkey', path }); return 0; });
+def('ADVAPI32', 'RegDeleteKeyA', 2, function (hk, sub) { const path = regPath(this, hk, sub); if (!REGISTRY.has(path)) return 2; for (const k of [...REGISTRY.keys()]) if (k === path || k.startsWith(path + '\\')) { REGISTRY.delete(k); KEYNAME.delete(k); } regChanged({ op: 'delkey', path }); return 0; });
 def('ADVAPI32', 'RegDeleteValueA', 2, function (hk, name) { const path = regPath(this, hk, 0), m = regKey(path), n = (this.readA(name) || '').toLowerCase(); if (!m || !m.delete(n)) return 2; regChanged({ op: 'del', path, name: n }); return 0; });
 const regQuery = function (m, n, type, data, cb) {
   if (!m || !m.has(n)) return 2;
@@ -1424,13 +1444,16 @@ def('ADVAPI32', 'RegQueryValueA', 4, function (hk, sub, data, cb) { return regQu
 def('ADVAPI32', 'RegSetValueExA', 6, function (hk, name, res, type, data, n) {
   const path = regPath(this, hk, 0); if (!path) return 6;   // ERROR_INVALID_HANDLE
   const m = regKey(path, true), key = (this.readA(name) || '').toLowerCase();
-  const value = { type, data: this.u8.slice(data, data + n), name: this.readA(name) || '' };
+  // a string is kept as the string and its null, whatever count comes with it, as Windows 95's registry keeps one
+  // (SPOOLSS gives a printer's "EMF" datatype a count of 2)
+  const bytes = type === 1 && data ? window.W95FS.encode((this.readA(data) || '') + '\0') : this.u8.slice(data, data + n);
+  const value = { type, data: bytes, name: this.readA(name) || '' };
   m.set(key, value); regChanged({ op: 'set', path, name: key, value }); return 0;
 });
-def('ADVAPI32', 'RegSetValueA', 5, function (hk, sub, type, data, n) { const path = regPath(this, hk, sub); if (!path) return 6; const m = regKey(path, true), value = { type: 1, data: window.W95FS.encode((this.readA(data) || '') + '\0') }; m.set('', value); regChanged({ op: 'set', path, name: '', value }); return 0; });
+def('ADVAPI32', 'RegSetValueA', 5, function (hk, sub, type, data, n) { const path = regPath(this, hk, sub); if (!path) return 6; const m = regKey(path, true, regPath(this, hk, sub, true)), value = { type: 1, data: window.W95FS.encode((this.readA(data) || '') + '\0') }; m.set('', value); regChanged({ op: 'set', path, name: '', value }); return 0; });
 def('ADVAPI32', 'RegEnumKeyA', 4, function (hk, i, buf, n) {
   const path = regPath(this, hk, 0); const kids = [...REGISTRY.keys()].filter(k => k.startsWith(path + '\\') && !k.slice(path.length + 1).includes('\\'));
-  if (i >= kids.length) return 259; this.writeA(buf, kids[i].slice(path.length + 1), n); return 0;
+  if (i >= kids.length) return 259; this.writeA(buf, keyName(path, kids[i]), n); return 0;
 });
 def('ADVAPI32', 'RegFlushKey', 1, () => 0);                       // the registry store writes through
 def('ADVAPI32', 'RegConnectRegistryA', 3, () => 53);              // another computer's registry: ERROR_BAD_NETPATH
@@ -1441,7 +1464,7 @@ def('ADVAPI32', 'RegRemapPreDefKey', 2, () => 0);
 def('ADVAPI32', 'RegEnumKeyExA', 8, function (hk, i, buf, pn, res, cls, pcls, ft) {
   const path = regPath(this, hk, 0); const kids = [...REGISTRY.keys()].filter(k => k.startsWith(path + '\\') && !k.slice(path.length + 1).includes('\\'));
   if (i >= kids.length) return 259;
-  const name = kids[i].slice(path.length + 1), n = this.r32(pn); if (n <= name.length) { this.w32(pn, name.length + 1); return 234; }
+  const name = keyName(path, kids[i]), n = this.r32(pn); if (n <= name.length) { this.w32(pn, name.length + 1); return 234; }
   this.writeA(buf, name, n); this.w32(pn, name.length);
   if (cls && pcls) { this.u8[cls] = 0; this.w32(pcls, 0); } else if (pcls) this.w32(pcls, 0);
   if (ft) { this.w32(ft, 0); this.w32(ft + 4, 0); }

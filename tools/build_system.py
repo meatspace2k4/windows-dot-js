@@ -18,8 +18,9 @@ NE = [('gdi.exe', 0x01C00000, 0x1007, 0x06A00000), ('dibeng.dll', 0x01E00000, 0x
       ('commdlg.dll', 0x01B50000, 0x15E7, 0x07400000),
       # the shell's 16-bit half, which SHELL32.DLL thunks to (PRECOPY1.CAB)
       ('shell.dll', 0x01B80000, 0x1647, 0x07480000),
-      # the 16-bit common controls COMCTL32.DLL thunks to (PRECOPY1.CAB)
-      ('commctrl.dll', 0x01BA0000, 0x16B7, 0x074C0000),
+      # the 16-bit common controls COMCTL32.DLL thunks to and SYSDM's property sheets use: Setup installs it from
+      # KOMMCTRL.DLL (SETUPC.INF; PRECOPY1.CAB's COMMCTRL.DLL is Setup's own smaller one)
+      ('commctrl.dll', 0x015A0000, 0x16B7, 0x05E00000),
       # the LZ decompression library VER.DLL opens files through (PRECOPY1.CAB)
       ('lzexpand.dll', 0x01BE0000, 0x1757, 0x07880000),
       # the version-information library VERSION.DLL thunks to, which file Properties loads (Setup installs WIN95_12.CAB's ver.new as it)
@@ -34,7 +35,18 @@ NE = [('gdi.exe', 0x01C00000, 0x1007, 0x06A00000), ('dibeng.dll', 0x01E00000, 0x
       ('msopl.drv', 0x01860000, 0x1907, 0x07D00000), ('midimap.drv', 0x01880000, 0x1947, 0x07D40000),
       # the MCI sequencer and waveaudio devices (MOTOWN.INF's MCISEQ and MCIWAVE, SYSTEM.INI [mci]) that play MIDI and
       # wave files for Media Player and mciSendString (WIN95_13.CAB)
-      ('mciseq.drv', 0x018A0000, 0x1987, 0x07DC0000), ('mciwave.drv', 0x018C0000, 0x19C7, 0x07E00000)]
+      ('mciseq.drv', 0x018A0000, 0x1987, 0x07DC0000), ('mciwave.drv', 0x018C0000, 0x19C7, 0x07E00000),
+      # the Setup engine (INF files, copying from the source disks, the registry), and the Add Printer wizard's 16-bit
+      # half, which installs printer drivers through it (PRECOPY2.CAB)
+      ('setupx.dll', 0x01130000, 0x1A17, 0x05CA0000), ('msprint.dll', 0x014E0000, 0x1B97, 0x06E20000),
+      # Setup's device installer, which the wizard runs for the Printer class (SYSDM.CPL's InstallDevice_Rundll), and
+      # the Setup helpers it imports (WIN95_27.CAB, WIN95_09.CAB)
+      ('setup4.dll', 0x01510000, 0x1BCF, 0x06E80000), ('sysdm.cpl', 0x01530000, 0x1BDF, 0x070C0000),
+      # printer drivers MSPRINT.INF installs from the CD (WIN95_27.CAB): the universal driver and the Generic / Text Only
+      # minidriver on it. Setup leaves them on the CD; each loads once the Add Printer wizard has copied its file
+      ('unidrv.dll', 0x01190000, 0x1C27, 0x06010000), ('tty.drv', 0x011E0000, 0x1CCF, 0x06110000)]
+# the NE modules above that Setup leaves on the CD: a module of these loads only when its file is on the disk
+ON_DISK = {'unidrv.dll', 'tty.drv'}
 # Windows programs that run on the native USER (bootUser16): (file, load base, block-table base). Each has a base of
 # its own, so programs one starts (WinExec, CreateProcess) share its address space and its window system
 PROGRAMS = [('notepad.exe', 0x00400000, 0x06000000), ('rundll32.exe', 0x00410000, 0x06100000), ('mplayer.exe', 0x00420000, 0x06200000),
@@ -64,7 +76,9 @@ PE = [('gdi32.dll', 0x01D00000, 0x06C00000), ('user32.dll', 0x01D40000, 0x073400
       ('winspool.drv', 0x01460000, 0x06B20000), ('spoolss.dll', 0x01480000, 0x06B40000),
       # the Win32 side of 16-bit memory and handles (WOWGlobalLock16 and the rest), which WinHelp reads a 16-bit
       # WinHelp call's request through (WIN95_27.CAB)
-      ('wow32.dll', 0x014A0000, 0x06BC0000)]
+      ('wow32.dll', 0x014A0000, 0x06BC0000),
+      # the Add Printer wizard, which the Printers folder runs (SHELL32 calls its PrinterSetup32), thunking to MSPRINT.DLL (PRECOPY2.CAB)
+      ('msprint2.dll', 0x01500000, 0x070A0000)]
 # VxDs (ring-0 drivers), recompiled to run under the VMM in vmm.js: (file, load base, block-table base). MMDEVLDR is the
 # device loader of MEDIA devnodes; MSSNDSYS the Windows Sound System card's driver (WIN95_02.CAB)
 VXDS = [('mmdevldr.vxd', 0x01800000, 0x07C00000), ('mssndsys.vxd', 0x01810000, 0x07C40000),
@@ -108,7 +122,7 @@ with tempfile.TemporaryDirectory() as tmp:
         subprocess.run([sys.executable, os.path.join(here, 'recomp.py'), p, base, '--base', hex(b), '--selbase', hex(sel),
                         '--lookup', hex(lk), '--registry', reg] + trace, check=True)
         meta = json.load(open(base + '.json'))
-        bundle['ne'][meta['name'].upper()] = {'file': b64(p), 'fileName': f.upper(), 'wasm': b64(base + '.wasm'), 'meta': meta}
+        bundle['ne'][meta['name'].upper()] = {'file': b64(p), 'fileName': f.upper(), 'wasm': b64(base + '.wasm'), 'meta': meta, **({'onDisk': True} if f in ON_DISK else {})}
     bundle['thunks16'] = json.load(open(reg))['thunks']
     for f, b, lk in PE:
         p = os.path.join(src, f); base = os.path.join(tmp, f)
@@ -139,7 +153,11 @@ with tempfile.TemporaryDirectory() as tmp:
         subprocess.run([sys.executable, os.path.join(here, 'recomp.py'), p, base, '--base', hex(b), '--lookup', hex(lk)], check=True)
         bundle['programs'][f.upper()] = {'file': b64(p), 'wasm': b64(base + '.wasm'), 'meta': json.load(open(base + '.json'))}
 # the Setup INF files whose registry sections the shell applies (SHELL.INF: the shell's classes and folders)
-INFS = ['shell.inf', 'motown.inf', 'mmopt.inf', 'wave.inf', 'netnovel.inf', 'nettrans.inf', 'netcli.inf', 'net.inf', 'netdef.inf']
+INFS = ['shell.inf', 'motown.inf', 'mmopt.inf', 'wave.inf', 'netnovel.inf', 'nettrans.inf', 'netcli.inf', 'net.inf', 'netdef.inf',
+        # the printer drivers' INFs the Add Printer wizard lists (PRECOPY2.CAB)
+        'msprint.inf', 'msprint2.inf',
+        # where each file of the CD's cabinets is, which Setup's engine copies from (PRECOPY2.CAB)
+        'layout.inf', 'layout1.inf']
 # the sounds Setup puts in C:\WINDOWS\MEDIA: MOTOWN.INF's start-up sound and MMOPT.INF's clips of a Typical install (WIN95_02.CAB)
 MEDIA = ['mssound.wav', 'chimes.wav', 'chord.wav', 'ding.wav', 'tada.wav', 'canyon.mid', 'passport.mid']
 bundle['media'] = {f.upper(): b64(os.path.join(src, f)) for f in MEDIA if os.path.exists(os.path.join(src, f))}

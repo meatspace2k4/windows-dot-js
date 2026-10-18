@@ -22,6 +22,8 @@ contextBridge.exposeInMainWorld('W95HOST', {
     list: () => ipcRenderer.sendSync('shares-list'),
     op: (name, op, ...args) => ipcRenderer.sendSync('share-op', name, op, ...args),
   },
+  // the disc in the CD drive: the CD image chosen with File > Insert CD Image, a byte range at a time (null with none)
+  cd: { read: (sector, length) => ipcRenderer.sendSync('cd-read', sector, length) },
   computerName: ipcRenderer.sendSync('host-name'),
   userName: ipcRenderer.sendSync('user-name'),   // the Mac's account: the name Setup gives the network logon
 })

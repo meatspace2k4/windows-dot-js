@@ -132,6 +132,7 @@ class FileSystem {
     const v = new Volume(letter, o); this.vols.set(v.letter, v); this.inodes.set(v.root.ino, v.root);
     v.rootPath = v.letter + ':\\';
     if (o.remote) { v.remote = o.remote; v.unc = o.unc || ''; v.kind = 'remote'; }
+    if (o.disc) v.disc = o.disc;   // where a CD's file bodies are read: { read(sector, length) }
     this.emit('mount', v.letter + ':\\'); return v;
   }
   unmount(letter) {
@@ -433,7 +434,7 @@ class FileSystem {
     }
     const src = this.need(from);
     if (src.dir) return this.copyTree(src, to);
-    if (src.absent) throw new FSError(E.READ_FAULT, from);
+    if (src.absent && !this.fetch(src)) throw new FSError(E.READ_FAULT, from);
     const dst = this.locate(to); this.writable(dst.vol);
     if (dst.node) {
       if (dst.node === src || dst.node.dir) throw new FSError(E.ACCESS_DENIED, to);
@@ -493,7 +494,7 @@ class FileSystem {
       const name = cleanName(r.name, path); n = new Node(name, false, ATTR.ARCHIVE); this.link(r.parent, n, name); created = true;
     }
     if (f.write) { this.writable(n.vol); if (n.attrs & ATTR.READONLY) throw new FSError(E.ACCESS_DENIED, path); }
-    if (f.read && n.absent) throw new FSError(E.READ_FAULT, path);
+    if (f.read && n.absent && !this.fetch(n)) throw new FSError(E.READ_FAULT, path);
     if (f.trunc && n.size) { this.resize(n, 0); n.mtime = Date.now(); this.meta(n); }
     const fd = this.nextFd++;
     this.fds.set(fd, { n, pos: f.append ? n.size : 0, read: !!f.read, write: !!f.write, append: !!f.append });
@@ -558,16 +559,24 @@ class FileSystem {
     try { this.write(fd, data); } finally { this.close(fd); }
   }
   appendFile(path, data) { this.writeFile(path, data, { append: true }); }
+  /** a file whose bytes are on the volume's disc (a CD's, by the first sector of its extent), read in as it is first
+   *  opened; false with no disc in the drive or one that does not answer */
+  fetch(n) {
+    const disc = n.vol && n.vol.disc; if (!disc || n.sector === undefined) return false;
+    let b = null; try { b = disc.read(n.sector, n.size); } catch (e) { console.error(e); }
+    if (!b || b.length !== n.size) return false;
+    n.buf = b; n.absent = false; return true;
+  }
   // ---- bulk load (bypasses read-only so CD images can be populated)
   load(letter, tree) {
     const v = this.vols.get(letter.toUpperCase());
     const add = (parent, e) => {
-      const [name, t, kids, size, bytes] = e, dir = Array.isArray(kids);
+      const [name, t, kids, size, bytes, sector] = e, dir = Array.isArray(kids);
       const n = new Node(name, dir, dir ? 0 : ATTR.READONLY, t);
       this.link(parent, n, name); n.ctime = n.mtime = n.atime = t;
       if (dir) { kids.forEach(k => add(n, k)); n.mtime = t; }
       else if (bytes) { n.buf = bytes; n.size = bytes.length; v.used += v.alloc(n.size); }
-      else { n.size = size; n.absent = true; v.used += v.alloc(size); }
+      else { n.size = size; n.absent = true; if (sector !== undefined) n.sector = sector; v.used += v.alloc(size); }
     };
     tree.forEach(e => add(v.root, e));
     if (v.readonly) v.total = Math.max(v.total, v.used);

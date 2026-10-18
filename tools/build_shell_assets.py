@@ -39,6 +39,10 @@ img = {
     'workgroup16': png('msnp32_ico_WRKGRP_ICON_16x16_4.png'), 'workgroup32': png('msnp32_ico_WRKGRP_ICON_32x32_4.png'),
     'netserver16': png('msnp32_ico_SERVER_ICON_16x16_4.png'), 'netserver32': png('msnp32_ico_SERVER_ICON_32x32_4.png'),
     'netshare16': png('msnp32_ico_FOLDER_ICON_16x16_4.png'), 'netshare32': png('msnp32_ico_FOLDER_ICON_32x32_4.png'),
+    # the Printers folder (SHELL32): Add Printer, a printer, a printer on the network
+    'addprinter16': png('shell32_ico_139_16x16_4.png'), 'addprinter32': png('shell32_ico_139_32x32_4.png'),
+    'printer16': png('shell32_ico_17_16x16_4.png'), 'printer32': png('shell32_ico_17_32x32_4.png'),
+    'netprinter16': png('shell32_ico_140_16x16_4.png'), 'netprinter32': png('shell32_ico_140_32x32_4.png'),
 }
 # Marlett's menu bullet, for the chosen item of a group (View > Large Icons ...); drawn as the shell draws its others
 glyphs = {}

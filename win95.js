@@ -512,10 +512,31 @@ const WIN_INI_FONTS = [['MS Sans Serif 8,10,12,14,18,24', 'SSERIFE.FON'], ['MS S
   ['Courier New (TrueType)', 'COUR.TTF'], ['Courier New Bold (TrueType)', 'COURBD.TTF'], ['Courier New Bold Italic (TrueType)', 'COURBI.TTF'], ['Courier New Italic (TrueType)', 'COURI.TTF'],
   ['Times New Roman (TrueType)', 'TIMES.TTF'], ['Times New Roman Bold (TrueType)', 'TIMESBD.TTF'], ['Times New Roman Bold Italic (TrueType)', 'TIMESBI.TTF'], ['Times New Roman Italic (TrueType)', 'TIMESI.TTF'],
   ['Symbol (TrueType)', 'SYMBOL.TTF'], ['Wingdings (TrueType)', 'WINGDING.TTF']];
+// the disc in the CD drive: the image of the CD whose tree cdrom.js has, read a sector range at a time. The app's host
+// reads the image the person chose (File > Insert CD Image); a plain browser reads cdrom.iso from the server, which
+// must answer byte ranges. An image whose label and size are not the tree's is no disc
+function cdDisc() {
+  const want = window.W95CD || {}, host = window.W95HOST && window.W95HOST.cd;
+  const label = b => String.fromCharCode(...b.subarray(40, 72)).trim();
+  const ok = b => !!b && b.length === 2048 && String.fromCharCode(...b.subarray(1, 6)) === 'CD001' && label(b) === want.label;
+  if (host) return { read: (sector, len) => { if (!len) return new Uint8Array(0); const b = host.read(sector, len); return b ? new Uint8Array(b) : null; } };
+  const get = (at, len) => {
+    const x = new XMLHttpRequest(); x.open('GET', 'cdrom.iso', false);
+    x.setRequestHeader('Range', `bytes=${at}-${at + len - 1}`); x.overrideMimeType('text/plain; charset=x-user-defined');
+    x.send(); if (x.status !== 206 || x.responseText.length !== len) return null;
+    const t = x.responseText, b = new Uint8Array(len); for (let i = 0; i < len; i++) b[i] = t.charCodeAt(i) & 0xff; return b;
+  };
+  let present;
+  return { read(sector, len) {
+    if (!len) return new Uint8Array(0);
+    if (present === undefined) { try { present = ok(get(16 * 2048, 2048)); } catch (_) { present = false; } }
+    return present ? get(sector * 2048, len) : null;
+  } };
+}
 function mountDrives() {
   fs.mount('A', { kind: 'removable', ready: true, total: 1457664, cluster: 512 });
   fs.mount('C', { kind: 'fixed', total: 536870912, cluster: 8192 });
-  fs.mount('D', { kind: 'cdrom', label: window.W95CD.label, readonly: true, cluster: 2048, fsname: 'CDFS' });
+  fs.mount('D', { kind: 'cdrom', label: window.W95CD.label, readonly: true, cluster: 2048, fsname: 'CDFS', disc: cdDisc() });
   const b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
   const conv = e => (e[2] ? [e[0], e[1], e[2].map(conv)] : e[4] ? [e[0], e[1], null, e[3], b64(e[4])] : e);
   fs.load('A', window.W95FLOPPY.tree.map(conv));
@@ -550,7 +571,7 @@ function makeDisk(mounted) {
   for (const [e, d] of Object.entries(sysFonts)) fs.writeFile(join(WINDIR, 'FONTS', e), b64(d));
   fs.writeFile('C:\\Program Files\\Accessories\\WORDPAD.EXE', exeStub());
   fs.writeFile(PROGRAMS + '\\Accessories\\Notepad.lnk', lnk(WINDIR + '\\NOTEPAD.EXE'));
-  installPrograms(); setupRegistry(); setupSound(); setupHelp(); setupNetwork();
+  installPrograms(); setupRegistry(); setupSound(); setupHelp(); setupNetwork(); setupPrinting();
   // the CD's screen savers, byte for byte, under the long names APPLETS.INF gives them in LDID_SYS
   const LONG = { 'BEZIER.SCR': 'Curves and Colors.scr', 'SSMARQUE.SCR': 'Scrolling Marquee.scr', 'SSMYST.SCR': 'Mystify Your Mind.scr',
     'SCRNSAVE.SCR': 'Blank Screen.scr', 'SSFLYWIN.SCR': 'Flying Windows.scr', 'SSSTARS.SCR': 'Flying Through Space.scr' };
@@ -793,7 +814,7 @@ function bootDisk() {
   mountDrives();
   W95Win32.regAttach(host.registry);
   if (!fs.attach('C', host.disk)) makeDisk(true);
-  installPrograms(); setupRegistry(); setupSound(); setupHelp(); setupNetwork();
+  installPrograms(); setupRegistry(); setupSound(); setupHelp(); setupNetwork(); setupPrinting();
   fs.chdir('C:\\');
 }
 
@@ -887,7 +908,17 @@ class FsSource {
 }
 const virt = (id, title, icon, list) => ({ id, title, icon, list, readonly: true, path: null, gone: false });
 const ControlPanel = virt('cp', 'Control Panel', 'controlpanel', () => []);
-const Printers = virt('printers', 'Printers', 'printers', () => []);
+// the Printers folder: Add Printer, which runs SHELL32's (MSPRINT2's wizard, through RUNDLL32 as SHHelpShortcuts_RunDLL
+// starts it), and each printer the spooler has, as SPOOLSS keeps them under Control\Print\Printers
+const PRINTERS_KEY = 'hklm\\system\\currentcontrolset\\control\\print\\printers';
+const Printers = virt('printers', 'Printers', 'printers', () => [
+  { key: 'pr:add', label: 'Add Printer', icon: 'addprinter', virt: true, open: addPrinter },
+  ...W95Win32.regKids(PRINTERS_KEY).map(n => {
+    const val = v => W95FS.decode(((W95Win32.regGet(PRINTERS_KEY + '\\' + n, v) || {}).data) || new Uint8Array(0)).replace(/\0.*$/, '');
+    return { key: 'pr:' + n, label: val('Name') || n, icon: val('Port').startsWith('\\\\') ? 'netprinter' : 'printer', virt: true, open: () => {} };
+  }),
+]);
+function addPrinter() { closeMenus(); runNative(join(WINDIR, 'RUNDLL32.EXE'), 'shell32.dll,SHHelpShortcuts_RunDLL AddPrinter'); }
 const MyComputer = virt('mycomputer', 'My Computer', 'mycomputer', () => [
   ...fs.volumes().map(v => ({ key: 'drv:' + v.letter, label: driveLabel(v.letter), icon: driveIcon(v.letter), drive: v.letter, path: v.root, open: () => openPath(v.root) })),
   { key: 'v:cp', label: 'Control Panel', icon: 'controlpanel', virt: true, open: () => openFolder(ControlPanel) },
@@ -2767,6 +2798,28 @@ function setupHelp() {
   fs.mkdir(dir, { recursive: true });
   for (const [n, d] of Object.entries(S.help)) { const f = join(dir, n.toLowerCase()); if (!fs.exists(f)) fs.writeFile(f, b64bytes(d)); }
 }
+// what Setup leaves for installing from the CD (the Add Printer wizard's drivers): the INF files in C:\WINDOWS\INF (the
+// printer drivers' lists, and LAYOUT.INF, which says which of the CD's cabinets holds each file), the CD's Windows
+// folder as the source Setup's engine copies from, SetupFlags as a local install leaves them (SUF_SBSCOPYOK, files
+// may be copied into the Windows folders, which no server shares; the first boot done) and MSPRINT.INF's Printer
+// class, whose installer is MSPRINT.DLL
+function setupPrinting() {
+  const R = W95Win32, infs = (window.W95SYSTEM || {}).infs || {}, dir = join(WINDIR, 'INF');
+  if (!infs['MSPRINT.INF']) return;
+  fs.mkdir(dir, { recursive: true });
+  for (const [n, t] of Object.entries(infs)) { const f = join(dir, n); if (!fs.exists(f)) fs.writeFile(f, Uint8Array.from(t, c => c.charCodeAt(0))); }
+  const cv = 'hklm\\software\\microsoft\\windows\\currentversion', str = v => ({ type: 1, data: W95FS.encode(v + '\0') });
+  if (R.regGet(cv + '\\setup', 'SourcePath') === undefined) R.regSet(cv + '\\setup', 'SourcePath', str('D:\\WIN95\\'));   // LDID_SRCPATH
+  if (R.regGet(cv, 'DevicePath') === undefined) R.regSet(cv, 'DevicePath', str(dir));
+  if (R.regGet(cv, 'SetupFlags') === undefined) R.regSet(cv, 'SetupFlags', { type: 3, data: new Uint8Array([0, 1, 0, 0]) });
+  const cls = 'hklm\\system\\currentcontrolset\\services\\class\\printer';
+  if (R.regGet(cls, 'Installer') === undefined) infAddReg(infs['MSPRINT.INF'], 'ClassAddReg', cls);
+  // the spooler's environment, monitors, printers and providers keys, and WIN.INI's spooler lines (MSPRINT.INF
+  // [Environment]), which SPOOLSS reads as it starts
+  if (R.regGet('hklm\\system\\currentcontrolset\\control\\print\\environments\\windows 4.0', 'Directory') === undefined) {
+    infAddReg(infs['MSPRINT.INF'], 'Environment_Reg'); infUpdateInis(infs['MSPRINT.INF'], 'Environment_Ini');
+  }
+}
 /** Windows Help (the recompiled WINHLP32.EXE) on a help file of C:\WINDOWS\HELP: with its contents file, Help Topics */
 const hasHelp = () => !!((window.W95SYSTEM || {}).programs || {})['WINHLP32.EXE'];
 function winHelp(file = 'windows.hlp') { closeMenus(); if (hasHelp()) runNative(join(WINDIR, 'WINHLP32.EXE'), join(WINDIR, 'HELP', file)); }
@@ -2869,7 +2922,7 @@ function installPrograms() {
   for (const [name, d] of Object.entries(S.programs || {})) put(join(WINDIR, IN_SYSTEM.has(name) ? 'SYSTEM' : '', name), d.file);
   // the system modules the programs run on, in SYSTEM as Setup puts them (SHELL32 reads its icons from its file)
   for (const [name, d] of Object.entries({ ...S.dlls, ...S.net, ...S.drivers })) put(join(WINDIR, 'SYSTEM', name), d.file);
-  for (const d of Object.values(S.ne || {})) if (d.fileName) put(join(WINDIR, 'SYSTEM', d.fileName), d.file);
+  for (const d of Object.values(S.ne || {})) if (d.fileName && !d.onDisk) put(join(WINDIR, 'SYSTEM', d.fileName), d.file);   // (a printer driver: as the Add Printer wizard copies it)
 }
 class NativeWin extends Win {
   constructor(app, n) {
@@ -2909,6 +2962,10 @@ class NativeApp {
     const module = await prog.d.mod;
     const dlls = new Map();
     for (const [n, d] of Object.entries({ ...S.dlls, ...(this.net ? S.net : {}) })) { d.bytes = d.bytes || b64bytes(d.file); dlls.set(n.replace(/\.DLL$/, ''), { file: d.bytes, module: d.mod, meta: d.meta }); }
+    // the network's DLLs for a program that imports them (MSPRINT2's MPR): compiled as one is first loaded
+    if (!this.net) for (const [n, d] of Object.entries(S.net || {})) dlls.set(n.replace(/\.DLL$/, ''), {
+      get file() { return d.bytes || (d.bytes = b64bytes(d.file)); }, meta: d.meta,
+      get module() { return d.mod instanceof WebAssembly.Module ? d.mod : (d.modSync || (d.modSync = new WebAssembly.Module(b64bytes(d.wasm)))); } });
     // the smallest display mode that covers the shell's screen (else the largest), so the whole desktop is on the
     // program's screen: no window is cut off at its bottom edge and the pointer reaches every point
     [this.sw, this.sh] = [...NATIVE_MODES].reverse().find(([w, h]) => w >= W && h >= H) || NATIVE_MODES[0];
