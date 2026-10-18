@@ -246,7 +246,7 @@ P.soundIO = function (port, size, isIn) {
       if (c.idx === 11) return true;
       this.sound16();   // the samples due up to this write play with the registers as they were
       const was = c.regs[c.idx]; c.regs[c.idx] = v;
-      if (c.idx === 9 && (v & 1) && !(was & 1)) { c.count = (c.regs[14] << 8) | c.regs[15]; c.frac = 0; c.last = this.now(); }
+      if (c.idx === 9 && (v & 1) && !(was & 1)) { c.count = (c.regs[14] << 8) | c.regs[15]; c.frac = 0; c.last = this.now(); c.start = c.last + START_MS; }
       if (c.idx === 15 || c.idx === 14) c.count = (c.regs[14] << 8) | c.regs[15];
       return true;
     }
@@ -404,7 +404,12 @@ P.sound16 = function () {
   this.inSound = true;
   try { this.soundRun(c); } finally { this.inSound = false; }
 };
+// The codec starts converting a few samples' time after playback is enabled. A driver that enables and disables it
+// within that time (MSSNDSYS's check as it starts: microseconds on the card, about a millisecond of register writes
+// here) plays nothing, rather than the buffer it has not filled, which clicks
+const START_MS = 3;
 P.soundRun = function (c) {
+  if (c.start && this.now() < c.start) { c.last = this.now(); return; }
   const now = this.now(), rate = rateOf(c.regs[8]), dt = Math.min(now - c.last, 250); c.last = now;
   c.frac += rate * dt / 1000; let frames = Math.floor(c.frac); c.frac -= frames;
   if (frames <= 0) return;
