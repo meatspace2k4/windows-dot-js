@@ -2361,6 +2361,7 @@ def16('KERNEL', 157, 'l', 'l', () => 0);                                        
 def16('KERNEL', 166, 'sw', 'w', function (cmd, show) {   // WinExec: the started program's instance, else its error (2 not found)
   const r = this.host && this.host.exec ? this.host.exec(cmd, show) : 2;
   if (typeof r !== 'object') return r;
+  if (r.elsewhere) return 33;   // (a second instance, in a machine of its own)
   this.runUntilIdle(r); return this.hinst16(r.exe.base);
 });
 def16('KERNEL', 169, 'w', 'l', () => 0x01000000);                                     // GetFreeSpace: 16 MB

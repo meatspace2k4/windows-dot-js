@@ -278,7 +278,11 @@ class Machine {
     if (this.system && /^explorer\.exe$/i.test(basename(path))) return 0x21;   // the shell SYSTEM.INI names: the page, running
     const file = (/^[a-z]:|^\\/i.test(path) ? [path] : [join('C:\\WINDOWS', path), join('C:\\WINDOWS\\SYSTEM', path), join(fs.cwd, path)]).find(f => fs.exists(f));
     if (!file) return 2;
-    return this.spawnProgram(file, arg);
+    const r = this.spawnProgram(file, arg);
+    // a second instance of a program: its image's place here is taken, so it starts in a machine of its own, as the
+    // page starts one (runNative); this process gets no handle on it
+    if (r === 8 && this.system) { rpc('host', 'runApart', [file, arg]); return { elsewhere: true }; }
+    return r;
   }
   spawnProgram(file, arg) {
     const S = self.W95SYSTEM || {}, p = this.proc;

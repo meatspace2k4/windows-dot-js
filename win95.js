@@ -3414,9 +3414,11 @@ class RemoteApp extends NativeApp {
         if (m.method === 'getCwd') v = fs.cwd;
         else if (m.method === 'setCwd') { fs.cwd = m.args[0]; v = null; }
         else if (m.method === 'vols') v = [...fs.vols.values()].map(x => ({ letter: x.letter, kind: x.kind, label: x.label, remote: !!x.remote, unc: x.unc || '' }));
+        else if (typeof fs[m.method] !== 'function') throw new Error(`the file system has no ${m.method}`);
         else v = fs[m.method](...m.args);
       } else if (m.target === 'host') {
         if (m.method === 'fatalText') v = fatalText(m.args[0]);
+        else if (m.method === 'runApart') { runNative(m.args[0], m.args[1] || '', { apart: true }); v = true; }   // (it starts as the page goes on)
       }
     } catch (e) { v = e instanceof Error ? e : new Error(String(e)); }
     W95Bridge.answer(this.rpcSab, v === undefined ? null : v);
@@ -3542,7 +3544,7 @@ async function runNative(path, arg, o = {}) {
   const prog = await nativeProgram(bytes); if (!prog) return false;
   // in the system's machine, as Windows 95 runs every program on its one USER and its one set of drivers; a second
   // instance of a program (whose image's place there is taken) gets a machine of its own
-  if (!o.net) {
+  if (!o.net && !o.apart) {
     const sys = await startSystem();
     if (sys) {
       let r = sys.spawnProgram(path, arg); if (r && r.then) r = await r;
