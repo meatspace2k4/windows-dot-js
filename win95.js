@@ -2370,6 +2370,9 @@ function shutDownDialog() {
 function shutdownSeq(restart) {
   [...windows].forEach(w => closeWin(w, true)); closeMenus();
   shutDownCleanly();
+  // the machines stop as Windows does (the system's, the network's, the programs'): a restart boots them afresh
+  for (const a of new Set([...nativeApps, sysApp, netApp])) if (a && a.alive) a.exited(0);
+  if (restart) { rebooted = true; try { localStorage.setItem(SHUTDOWN, 'running'); } catch (_) { /* no storage */ } }   // (Windows runs again)
   screen = 'logow'; dirty();
   setTimeout(() => {
     if (restart) { screen = 'black'; dirty(); setTimeout(boot, 1200); } else { screen = 'logos'; dirty(); }
@@ -3529,7 +3532,7 @@ async function runNative(path, arg, o = {}) {
 // Windows 95's system: one machine (one USER, one MMSYSTEM, one sound card) whose first task is MSGSRV32.EXE, started
 // as the desktop comes up. USER's first-task start-up loads the installable drivers for it (MMSYSTEM, the card's), so
 // sound starts once, with the system, and MSGSRV32 plays SystemStart. The programs the shell runs start in it
-let sysApp = null, sysStarting = null, firstRun = false;   // firstRun: Setup built C: as this page started (makeDisk)
+let sysApp = null, sysStarting = null, firstRun = false, rebooted = false;   // firstRun: Setup built C: as this page started (makeDisk); rebooted: Restart in it
 // SystemStart is heard when Windows starts after it was shut down (Shut Down, Restart), and on its first run (Setup has
 // just built C:): a page reloaded or a window closed with Windows running is no shutdown, and the start after it is
 // quiet. The shutdown record is this browser's (a start with none plays)
@@ -3548,7 +3551,7 @@ function startSystem() {
     // SystemStart and starts the shell. Once MSGSRV32 waits for messages
     // after a start that was no shutdown, MSGSRV32 is still told (it starts the shell and its start-up checks there) but
     // its SystemStart is not heard
-    const quiet = !cleanStart && !firstRun;
+    const quiet = !cleanStart && !firstRun && !rebooted;
     if (a.remote) {   // (the machine posts it when MSGSRV32 waits for messages)
       for (let i = 0; i < 200 && a.alive && !(await a.cmd('systemStarted', [quiet])); i++) await new Promise(r => setTimeout(r, 25));
       return a;
