@@ -3333,7 +3333,7 @@ async function runNative(path, arg, o = {}) {
 // sound starts once, with the system, and MSGSRV32 plays SystemStart. The programs the shell runs start in it
 let sysApp = null, sysStarting = null;
 function startSystem() {
-  if (!window.W95SYSTEMVM) return Promise.resolve(null);   // (in progress: MSGSRV32 waits in SHELL's API for its messages)
+  if (window.W95SYSTEMVM === false) return Promise.resolve(null);
   if (sysApp && sysApp.alive) return Promise.resolve(sysApp);
   return sysStarting || (sysStarting = (async () => {
     const S = window.W95SYSTEM || {}; if (!(S.ne || {}).MSGSRV32 || !Object.keys(S.programs || {}).length) return null;
@@ -3345,7 +3345,7 @@ function startSystem() {
     const p = a.proc, task = [...(p.threadsById || new Map()).values()].find(t => t.task && t.task.hInst && p.neByHandle(t.task.hInst) && p.neByHandle(t.task.hInst).name === 'MSGSRV32');
     for (let i = 0; i < 200 && a.alive && task && !(task.state === 'waiting' && task.slept); i++) await new Promise(r => setTimeout(r, 25));
     if (a.alive && task) {
-      try { const h = p.taskWindows(task.tdb)[0]; if (h) p.user16(110, [['w', h], ['w', 0x501], ['w', 0], ['l', 0]]); } catch (e) { console.error(e); }   // PostMessage
+      try { const h = p.taskWindows(task.tdb)[0]; if (h) p.shellPostMessage(h, 0x501, 0, 0); } catch (e) { console.error(e); }
       a.kick();
     }
     return a;

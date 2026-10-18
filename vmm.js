@@ -159,7 +159,9 @@ const DLVXD_LOAD_DEVLOADER = 1;
 P.sysVM = function () {
   if (!this.vmcb) {   // CB_VM_Status, CB_High_Linear, CB_Client_Pointer (the client registers), CB_VMID, CB_Signature
     this.vmcb = this.alloc(0x4000);
-    this.w32(this.vmcb + 8, this.vmClient()); this.w32(this.vmcb + 0xc, 1); this.w32(this.vmcb + 0x10, 0x62634d56);
+    // the system VM runs Windows, a protected-mode application: VMStat_PM_Exec | VMStat_PM_App (SHELL takes MSGSRV32's
+    // API calls only from it)
+    this.w32(this.vmcb, 0x60); this.w32(this.vmcb + 8, this.vmClient()); this.w32(this.vmcb + 0xc, 1); this.w32(this.vmcb + 0x10, 0x62634d56);
   }
   return this.vmcb;
 };
@@ -419,6 +421,12 @@ P.vxdAppy = function () {
   if (this.depth || !this.user16Ready || !this.appyQueue || !this.appyQueue.length) return;
   const q = this.appyQueue; this.appyQueue = [];
   for (const e of q) { if (window.W95APPYTRACE) window.W95APPYTRACE(e); this.vxdCdecl(e.fn, [e.ref]); }
+};
+/** _SHELL_PostMessage(hwnd, message, wParam, lParam, callback, reference): a message posted through SHELL.VXD (service
+ *  17h:6), as KERNEL32 tells MSGSRV32's window its start is done (501h); false with no SHELL loaded */
+P.shellPostMessage = function (hwnd, msg, wParam, lParam) {
+  const fn = this.vxdService(SHELL, 6); if (!fn) return false;
+  return !!(this.vxdCdecl(fn, [hwnd, msg, wParam, lParam, 0, 0]).eax);
 };
 /** call a cdecl ring-0 function with dword arguments */
 P.vxdCdecl = function (fn, args) {
@@ -974,6 +982,7 @@ svc(VMM, 0x8f, function () {
 });
 
 // ---- VMM: odds and ends
+svc(VMM, 0x6d, function () { return 0x000f; });                                                        // _GetAppFlatDSAlias: the ring-3 flat data selector (FLATDS, base 0, 4G)
 svc(VMM, 0x6e, function (arg) { const sel = arg(1) & 0xffff; return this.selValid(sel) ? u32(this.selBase(sel)) : 0xffffffff; });   // _SelectorMapFlat(VM, sel, flags)
 svc(VMM, 0x10c, function () { CF(this, false); });                                                   // Validate_Thread_Handle
 svc(VMM, 0xf3, function () { this.cpu.esp.value = u32(this.cpu.esp.value) + 4; });                     // _Trace_Out_Service (debug output): it takes its string off the stack

@@ -1629,6 +1629,7 @@ def16('KERNEL', 354, 'w', 'l', function () { return 0; });                      
 def16('KERNEL', 107, 'w', 'w', function (m) { const o = this.errMode16 || 0; this.errMode16 = m; return o; });     // SetErrorMode
 def16('KERNEL', 147, 'l', 'v', function (e) { this.lastError = e; });
 def16('KERNEL', 148, '', 'l', function () { return this.lastError || 0; });
+def16('KERNEL', 323, 'w', 'w', function () { return 0; });                                    // IsRomModule: no module runs from ROM
 def16('KERNEL', 324, 'wx', 'v', function (code) { console.warn('[KERNEL] LogError', code.toString(16)); });
 def16('KERNEL', 327, '', 'jmp', function () {    // HandleParamError: BX = error, CX:AX = parameter; errors unwind to the handler at [BP-2]
   const err = this.cpu.ebx.value & 0xffff, ssb = this.cpu.ssb.value >>> 0, sp = this.cpu.esp.value & 0xffff;
@@ -1644,11 +1645,15 @@ def16('KERNEL', 435, 'w', 'w', () => 0x10);                                     
 def16('KERNEL', 237, '', 'v', function () {});                                 // K237 nop
 // WIN32_OldYield: USER's PeekMessage calls it when the queue is empty. A thread not inside a call JS made gives up
 // its slice once, so a loop polling PeekMessage (SHELL32's drag loop, for one) lets input and the other threads run.
-def16('KERNEL', 447, '', 'v', function () {
+function oldYield() {
   const t = thr(this, 0), top = this.thread16 ? this.depth === this.thread16.depth : this.depth === 0;
   if (top && !t.yielded) { t.yielded = true; return YIELD; }
   t.yielded = false;
-});
+}
+def16('KERNEL', 447, '', 'v', oldYield);
+// OldYield: the same for a Win16 task (USER's PeekMessage calls it when the queue is empty, as for MSGSRV32 polling
+// while MMTASK plays its sound)
+def16('KERNEL', 117, '', 'v', oldYield);
 def16('KERNEL', 471, '', 'l', function () { return this.thread16 && this.thread16.pc ? this.thread16.pc.pid : this.inSystem && this.inSystem() ? SYS_PID : MAIN_PID; });   // GetCurrentProcessId: KERNEL32's ids
 def16('KEYBOARD', 100, 'w', 'v', function () {});                              // ScreenSwitchEnable
 
@@ -2464,7 +2469,7 @@ def16('KRNL', 1, '', 'jmp', function () {
 // IsSLThunklet: whether a far pointer addresses a 16-to-32 thunklet (push dword, push dword, jmp far), as KRNL386 checks
 def16('KERNEL', 612, 'x', 'w', function (sp) {
   if (!(sp >>> 16) || !this.selValid(sp >>> 16)) return 0;
-  const a = this.lin(sp);
+  const a = this.lin(sp) >>> 0; if (a + 13 > this.u8.length) return 0;   // (a JS entry point's selector: no code there)
   return this.r16(a) === 0x6866 && this.r16(a + 6) === 0x6866 && this.u8[a + 12] === 0xea ? 1 : 0;
 });
 // InitCBClient: the 32-bit glue routine (USER32's) that 16-to-32 callbacks of registered clients go through
@@ -2789,7 +2794,6 @@ def16('KERNEL', 29, '', 'v', function () {                                      
   if (!top) this.threads16(true);   // inside a call: the other tasks and threads run now, as Yield switches to them
   t.yielded = false;
 });
-def16('KERNEL', 117, '', 'v', function () {});                                                         // OldYield
 def16('KERNEL', 150, 'w', 'v', function () { if (!this.atThreadTop()) this.threads16(true); });         // DirectedYield: inside a call, the other tasks run now (at the top level the host's scheduler runs them next)
 // WaitEvent: the task sleeps until an event is posted to it. A thread that is not inside a call JS made gives up
 // its slice once (timers, input and the other threads run) and the wait then ends; USER checks its queue again.
