@@ -571,7 +571,7 @@ function makeDisk(mounted) {
   for (const e of ['SSERIFE.FON', 'VGAFIX.FON', 'VGASYS.FON', 'MARLETT.TTF', 'ARIAL.TTF', 'TIMES.TTF', 'COUR.TTF']) if (!sysFonts[e]) fs.writeFile(join(WINDIR, 'FONTS', e), exeStub());
   for (const [e, d] of Object.entries(sysFonts)) fs.writeFile(join(WINDIR, 'FONTS', e), b64(d));
   fs.writeFile('C:\\Program Files\\Accessories\\WORDPAD.EXE', exeStub());
-  installPrograms(); setupFonts(); setupRegistry(); setupSound(); setupHelp(); setupNetwork(); setupPorts(); setupPrinting(); setupStartMenu();
+  installPrograms(); setupFonts(); setupRegistry(); setupSound(); setupHelp(); setupNetwork(); setupPorts(); setupPrinting();   // (setupStartMenu: not run; the demo cold starts at the shell, Setup's Start menu pass is theatre here)
   // the CD's screen savers, byte for byte, under the long names APPLETS.INF gives them in LDID_SYS
   const LONG = { 'BEZIER.SCR': 'Curves and Colors.scr', 'SSMARQUE.SCR': 'Scrolling Marquee.scr', 'SSMYST.SCR': 'Mystify Your Mind.scr',
     'SCRNSAVE.SCR': 'Blank Screen.scr', 'SSFLYWIN.SCR': 'Flying Windows.scr', 'SSSTARS.SCR': 'Flying Through Space.scr' };
@@ -813,7 +813,7 @@ function bootDisk() {
   mountDrives();
   W95Win32.regAttach(host.registry);
   if (!fs.attach('C', host.disk)) makeDisk(true);
-  installPrograms(); setupFonts(); setupRegistry(); setupSound(); setupHelp(); setupNetwork(); setupPorts(); setupPrinting(); setupStartMenu();
+  installPrograms(); setupFonts(); setupRegistry(); setupSound(); setupHelp(); setupNetwork(); setupPorts(); setupPrinting();   // (setupStartMenu: not run; the demo cold starts at the shell)
   fs.chdir('C:\\');
 }
 
