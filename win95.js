@@ -2940,7 +2940,7 @@ function bootMode(w, h) {
   W95Win32.iniSet(fs, 'SYSTEM.INI', 'display', 'BitsPerPixel', String(BOOT_BPP));   // (the display VxD's configuration, ne16.js displayConfig)
 }
 // high color: the screen the system's machine boots in (the page scans 8, 16, 24 and 32 bits a pixel out)
-const BOOT_BPP = 8, SCAN_BPP = new Set([8, 16, 24, 32]);
+const BOOT_BPP = 16, SCAN_BPP = new Set([8, 16, 24, 32]);
 /** the size the system's machine boots at: the page's, at 256 colors; above them the largest of the display driver's
  *  sizes that fits the page and the 1 MB FRAMEBUF.DRV counts (its bank probe stops at 16 banks), so the size it sets is
  *  the size USER and GDI are told */
