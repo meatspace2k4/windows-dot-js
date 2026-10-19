@@ -2669,7 +2669,15 @@ class SaverRun {
     this.ctx2d = c.getContext('2d', { alpha: false });
     const pos = e => { const r = c.getBoundingClientRect(); return [Math.floor((e.clientX - r.left) * W / r.width), Math.floor((e.clientY - r.top) * H / r.height)]; };
     const WM = W95Win32.WM;
-    c.addEventListener('pointermove', e => { [this.mx, this.my] = pos(e); this.proc && this.proc.dispatchInput(WM.MOUSEMOVE, 0, (this.my << 16) | this.mx); });
+    // the mouse: the pointer settling after the click that started the saver (Preview, the Start menu) is not a
+    // move; one is dispatched once the saver has been up a moment and the pointer has gone a few pixels
+    this.shown = performance.now(); let lx = this.mx, ly = this.my;
+    c.addEventListener('pointermove', e => {
+      [this.mx, this.my] = pos(e);
+      if (performance.now() - this.shown < 1000) { lx = this.mx; ly = this.my; return; }
+      if (Math.abs(this.mx - lx) + Math.abs(this.my - ly) < 3) return;
+      lx = this.mx; ly = this.my; this.proc && this.proc.dispatchInput(WM.MOUSEMOVE, 0, (this.my << 16) | this.mx);
+    });
     c.addEventListener('pointerdown', e => { e.preventDefault(); [this.mx, this.my] = pos(e); this.proc && this.proc.dispatchInput(e.button === 2 ? WM.RBUTTONDOWN : WM.LBUTTONDOWN, 0, (this.my << 16) | this.mx); });
     c.addEventListener('contextmenu', e => e.preventDefault());
   }
@@ -4740,6 +4748,9 @@ bootDisk();
 mountHostShares();
 systemBootLater();
 netBootLater();
+// the modules a saver or a program on the page links to, compiled once the system is up, so the first screen saver
+// (Preview, the idle start) comes up at once instead of after the compile
+setTimeout(() => systemCompiled().catch(() => {}), 25000);
 loadTaskbar();
 desk.src = new FsSource(DESKTOP_DIR);
 fs.on(() => dirty());
