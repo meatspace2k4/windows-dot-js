@@ -1618,8 +1618,10 @@ def16('KERNEL', 320, 'w', 'w', function (h) { return h && (h === this.currentTas
 const newTdb = p => { const a = p.alloc(0x200); p.u8.fill(0, a, a + 0x200); p.w16(a + 0xfa, 0x4454); return p.allocSels(a, 0x200); };
 P.currentTask = function () {
   const t = this.thread16;
-  if (t && t.pc) { t.tdb = t.pc.tdb; return t.pc.tdb; }
+  // a Win16 task (LoadModule: MMTASK) is a task of its own, whoever started it: MCISEQ's task tells the driver its
+  // handle (mmGetCurrentTask) and the driver posts the sequencer's commands to it (PostAppMessage)
   if (t && t.task) { if (!t.tdb) { t.tdb = newTdb(this); this.w16(this.selBase(t.tdb) + 0x20, t.queue || 0); } return t.tdb; }
+  if (t && t.pc) { t.tdb = t.pc.tdb; return t.pc.tdb; }
   return this.tdb16 || (this.tdb16 = newTdb(this));
 };
 def16('KERNEL', 47, 's', 'w', function (name) {   // GetModuleHandle

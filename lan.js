@@ -51,7 +51,8 @@ P.lanPoll = function () {
 };
 P.nicIrq = function (n) {
   if (!(n.isr & n.imr & 0x7f)) return false;
-  return !!(this.raiseIRQ && this.raiseIRQ(NIC.irq));
+  const up = !!(this.raiseIRQ && this.raiseIRQ(NIC.irq)); if (up) this.lanIrqs = (this.lanIrqs || 0) + 1;   // (counted for the probe)
+  return up;
 };
 // receive: the destination filter (station, broadcast with AB, multicast with AM through the hash filter, or all with
 // PRO), then the frame into the ring from CURR: a 4-byte header (status, next page, length) and the frame, wrapping

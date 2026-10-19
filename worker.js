@@ -45,7 +45,9 @@ const rfs = new self.W95FS.FileSystem();
 rfs.nextFd = 0x10000000;
 rfs.uncBackend = unc => { if (!netLink) return null; const b = netBackend(unc); try { b.space(); return b; } catch (_) { return null; } };
 const REMOTE_FD = 0x10000000;
-const remotePath = p => { try { return typeof p === 'string' && !!rfs.remoteAt(p); } catch (_) { return /^[\\/]{2}/.test(p); } };
+// a UNC path the network's machine does not reach (no network yet, or the host's own share, \\COMPUTER\SHARE) is the
+// page's file system's, which has the host's shares directly (win95.js fs.uncBackend)
+const remotePath = p => { try { return typeof p === 'string' && !!rfs.remoteAt(p); } catch (_) { return false; } };
 // the file system, the page's: each call made there (its errors thrown here as they were there); the network's paths
 // and descriptors here
 const pathOps = new Set(['exists', 'stat', 'readdir', 'readFile', 'writeFile', 'open', 'unlink', 'mkdir', 'rmdir', 'realpath', 'setAttrs', 'statvfs', 'chdir', 'resolve', 'shortPath', 'setLabel', 'truncate']);
@@ -527,7 +529,10 @@ class Machine {
     const cdc = p.ad1848 ? { regs: Array.from(p.ad1848.regs || []), t: p.ad1848.t } : null;
     const procs = [...(p.procs || new Map()).values()].map(pc => ({ pid: pc.pid, path: pc.path, cmd: pc.cmdPtr ? p.readA(pc.cmdPtr) : '', exit: pc.exitCode }));   // the processes started here, with their command lines
     const smNetwork = p.depth || p.thread16 ? null : (() => { try { return p.user16(179, [['w', 63]]).ax; } catch (_) { return null; } })();   // GetSystemMetrics(SM_NETWORK)
-    return { cdc, procs, smNetwork, wss: p.wssRecs ? [...p.wssRecs.keys()] : null, mods16: p.ne ? [...p.ne.keys()] : [], mmd, sound: p.soundStats ? { ...p.soundStats, quiet: !!p.soundQuiet } : null, th16: (p.th16 || []).length, wins, threads, held: p.win16Held ? (p.win16Held.who === 'main' ? 'main' : p.win16Held.who && p.win16Held.who.id) : null, depth: p.depth,
+    // the network card: its registers, the frames waiting at it, the ring's unread bytes (lan.js, the page's segment)
+    const nic = p.nic ? { cr: p.nic.cr, isr: p.nic.isr, imr: p.nic.imr, rcr: p.nic.rcr, inbox: p.nic.inbox.length, mac: [...p.nic.par].map(x => x.toString(16).padStart(2, '0')).join(':'), curr: p.nic.curr, bnry: p.nic.bnry,
+      ring: lanRing ? (() => { const c = new Int32Array(lanRing, 0, 2); return (Atomics.load(c, 0) - Atomics.load(c, 1) + (1 << 20)) % (1 << 20); })() : null, irqs: p.lanIrqs || 0 } : null;
+    return { nic, cdc, procs, smNetwork, wss: p.wssRecs ? [...p.wssRecs.keys()] : null, mods16: p.ne ? [...p.ne.keys()] : [], mmd, sound: p.soundStats ? { ...p.soundStats, quiet: !!p.soundQuiet } : null, th16: (p.th16 || []).length, wins, threads, held: p.win16Held ? (p.win16Held.who === 'main' ? 'main' : p.win16Held.who && p.win16Held.who.id) : null, depth: p.depth,
       main: { at: p.resumeEip ? where(p.resumeEip) : null, stack: stack(p.mainCtx) } };
   }
   // the page's requests: what a window gets done to it, and questions about the machine

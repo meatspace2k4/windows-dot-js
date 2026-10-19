@@ -15,8 +15,10 @@ const le16 = (b, o) => b[o] | (b[o + 1] << 8), le32 = (b, o) => (b[o] | (b[o + 1
 // ---------------------------------------------------------------- the station
 const MAC = Uint8Array.from([0x02, 0x00, 0x4c, 0x41, 0x4e, 0x01]);
 const NETBIOS_FUNCTIONAL = [0x03, 0x00, 0x00, 0x00, 0x00, 0x01];
+// the computer's name: the host's (W95HOST.computerName, which the page learns after this script loads), as the page
+// names the host's shares (\\COMPUTER\SHARE in win95.js hostName): one name on the segment and in the file system
 const host = window.W95LANHOST = {
-  name: ((window.W95HOST && window.W95HOST.computerName) || 'HOST').toUpperCase().replace(/[^A-Z0-9!@#$%^&()\-_'{}.~]/g, '').slice(0, 15) || 'HOST',
+  get name() { return ((window.W95HOST && window.W95HOST.computerName) || 'HOST').toUpperCase().replace(/[^A-Z0-9!@#$%^&()\-_'{}.~]/g, '').slice(0, 15) || 'HOST'; },
   workgroup: 'WORKGROUP', mac: MAC, links: new Map(), trace: null,
 };
 const names = () => [nbName(host.name, 0x20), nbName(host.name, 0x00), nbName(host.name, 0x03)];

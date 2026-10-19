@@ -2572,14 +2572,22 @@ const fontsReady = Promise.all(Object.entries(SV.fonts).map(([fam, data]) => {
 async function sha256hex(b) { const h = await crypto.subtle.digest('SHA-256', b); return [...new Uint8Array(h)].map(x => x.toString(16).padStart(2, '0')).join(''); }
 // GDI.EXE, GDI32.DLL and the display driver run natively in a saver process when it needs them (outline fonts);
 // their modules are compiled once, off the main thread's synchronous path
-let sysCompile = null;
-function systemCompiled() {
-  const S = window.W95SYSTEM; if (!S) return Promise.resolve();
-  return sysCompile || (sysCompile = Promise.all([...Object.values(S.ne), ...Object.values(S.dlls), ...Object.values(S.net || {})].map(async m => { m.mod = await WebAssembly.compile(b64bytes(m.wasm)); })));
-}
 // the network's ring-0 images (VxDs, NE2000.SYS) and DLLs: decoded and compiled before its process first starts, so
 // the start runs them rather than building them on the main thread
 const unb64 = async s => { try { return new Uint8Array(await (await fetch('data:application/octet-stream;base64,' + s)).arrayBuffer()); } catch (_) { return b64bytes(s); } };
+/** a bundled module's compiled code (d.wasm, base64), decoded and compiled off the main thread, once */
+const wasmOf = d => d.module || (d.module = unb64(d.wasm).then(b => WebAssembly.compile(b)));
+let sysCompile = null;
+function systemCompiled() {
+  const S = window.W95SYSTEM; if (!S) return Promise.resolve();
+  return sysCompile || (sysCompile = Promise.all([...Object.values(S.ne), ...Object.values(S.dlls), ...Object.values(S.net || {})].map(async m => { m.mod = await wasmOf(m); })));
+}
+// the screen savers' modules and the DLLs they link to (OPENGL32, GLU32), compiled with the system's, so the first
+// saver (Preview, the idle start) starts at once
+let saverCompile = null;
+function saversCompiled() {
+  return saverCompile || (saverCompile = Promise.all([...Object.values(SV.savers || {}), ...Object.values(SV.dlls || {})].map(d => wasmOf(d).catch(() => null))));
+}
 let netCompile = null;
 function netCompiled() {
   const S = window.W95SYSTEM; if (!S) return Promise.resolve();
@@ -2593,7 +2601,7 @@ function netCompiled() {
 function compiledSaver(sha) {
   for (const [name, s] of Object.entries(SV.savers)) {
     if (s.meta.sha256 !== sha) continue;
-    if (!s.module) s.module = WebAssembly.compile(b64bytes(s.wasm));
+    wasmOf(s);
     return { name, s };
   }
   return null;
@@ -2615,8 +2623,7 @@ class SaverRun {
     for (const [name, d] of Object.entries(SV.dlls || {})) {
       let file; try { file = fs.readFile(join(WINDIR, 'SYSTEM', name)); } catch (_) { continue; }
       if (await sha256hex(file) !== d.meta.sha256) continue;
-      if (!d.module) d.module = WebAssembly.compile(b64bytes(d.wasm));
-      dlls.set(name.replace(/\.DLL$/, ''), { file, module: await d.module, meta: d.meta });
+      dlls.set(name.replace(/\.DLL$/, ''), { file, module: await wasmOf(d), meta: d.meta });
     }
     if (!this.alive) return false;
     if (this.mode === 's') this.overlay();
@@ -4750,7 +4757,8 @@ systemBootLater();
 netBootLater();
 // the modules a saver or a program on the page links to, compiled once the system is up, so the first screen saver
 // (Preview, the idle start) comes up at once instead of after the compile
-setTimeout(() => systemCompiled().catch(() => {}), 25000);
+const warmSavers = () => systemCompiled().catch(() => {}).then(saversCompiled);
+setTimeout(warmSavers, 25000);
 loadTaskbar();
 desk.src = new FsSource(DESKTOP_DIR);
 fs.on(() => dirty());
