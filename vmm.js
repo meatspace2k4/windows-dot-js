@@ -1191,7 +1191,14 @@ svc(VMM, 0xa8, function (arg) { return v86(this, arg(0)); });                   
 // _Allocate_Temp_V86_Data_Area(n, flags): one temporary area, which _Free_Temp_V86_Data_Area gives back
 svc(VMM, 0xa9, function (arg) { if (!this.tempV86) this.tempV86 = v86(this, 0x10000); return arg(0) <= 0x10000 ? this.tempV86 : 0; });
 svc(VMM, 0xaa, function () { return 1; });
-svc(VMM, 0x11d, function (arg) { const n = arg(1) * 4096, a = this.alloc(n + 4096); return (a + 4095) & ~4095; });   // _PageReserve(page, n, flags): the linear address
+// _PageReserve(page, n, flags): linear address space, not memory (the pages are committed later, _PageCommit): from
+// the region VirtualAlloc reserves in (VMEM, above the layout), as a reservation; the heap only when that is full
+// (VCACHE reserves 30 MB at boot, which took most of the 56 MB heap)
+svc(VMM, 0x11d, function (arg) {
+  const n = arg(1) * 4096, size = (n + 0xffff) & ~0xffff, end = this.mem.buffer.byteLength;
+  if (this.vmTop !== undefined && this.vmTop + size <= end) { const b = this.vmTop; this.vmTop += size; (this.vregions || (this.vregions = new Map())).set(b, { size, heap: null }); return b; }
+  const a = this.alloc(n + 4096); return (a + 4095) & ~4095;
+});
 svc(VMM, 0x11e, function (arg) { const a = arg(0) * 4096; this.u8.fill(0, a, a + arg(1) * 4096); return 1; });   // _PageCommit(page, n, ...)
 svc(VMM, 0x17d, function (arg) { this.u8.copyWithin(arg(0), arg(1), arg(1) + arg(2)); return arg(0); });   // _lmemcpy
 // Map_Lin_To_VM_Addr (EAX linear, ECX limit): CX:EDX a selector to it and offset 0
