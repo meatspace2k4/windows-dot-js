@@ -2770,7 +2770,7 @@ P.newThread = function (start, param, stack, flat, suspended) {
 // process has loaded (SignalProc32), then its entry point
 let nextPid = 0x60;
 P.spawn = function (file, module, meta, path, cmdline) {
-  const pc = { pid: nextPid, path, exitCode: null, tdb: newTdb(this), started: false };
+  const pc = { pid: nextPid, path, exitCode: null, tdb: newTdb(this), started: false, parent: (this.thread16 && this.thread16.pc) || null };   // (parent: the process whose thread starts it)
   nextPid += 4;
   // a second instance of a program already running here: one image, as code, with each process's own copy of its
   // data (as each Win32 process has its own address space), the running one's put by as the new one's is laid out;

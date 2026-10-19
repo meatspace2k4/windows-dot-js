@@ -2689,7 +2689,10 @@ class SaverRun {
     c.addEventListener('contextmenu', e => e.preventDefault());
   }
   key(e) { if (this.proc) this.proc.dispatchInput(W95Win32.WM.KEYDOWN, e.keyCode || 0, 0); }
-  stop() { this.alive = false; if (this.proc) trayDrop(this.proc); if (this.el) this.el.remove(); if (fullSaver === this) fullSaver = null; }
+  stop(code = 0) {
+    this.alive = false; if (this.proc) trayDrop(this.proc); if (this.el) this.el.remove(); if (fullSaver === this) fullSaver = null;
+    if (this.o.onExit && !this.ended) { this.ended = true; this.o.onExit(code); }   // (the machine that started it: its process ends)
+  }
   exited(code, why) {
     if (!this.alive) return;
     this.stop(); lastInput = performance.now(); dirty();
@@ -2811,14 +2814,13 @@ function setupStartMenu() {
     if (at >= 0) lines[at] = line; else lines.push(line);
   }
   fs.writeFile(join(WINDIR, 'SETUP.INI'), W95FS.encode([...out.values()].map(v => `[${v.name}]\r\n${v.lines.join('\r\n')}\r\n`).join('\r\n')));
-  // SETUPC.INF's RunOnce\Setup item, and the wrapper SETUPX adds for a RunOnce\Setup with items: RUNONCE, which the
-  // shell runs as it starts (its "Windows 95 Setup" screen over the desktop), before its own programs. GRPCONV makes
-  // the Start menu through the shell (it looks for the shell's module, ten seconds, then gives up and writes none), so
-  // the shell is up first; SystemStart follows, as WinExec gives the shell back only once it is idle, which it is not
-  // while it waits on RUNONCE
+  // SETUPC.INF's RunOnce\Setup item: run under RUNONCE's "Windows 95 Setup" screen before the system's message server
+  // starts (worker.js startSystemTask), before SystemStart and the shell. (GRPCONV makes the Start menu through the
+  // shell's DDE: it looks for the shell for ten seconds and, without it, writes no links, so this item runs again at
+  // the next start; with the shell first, SystemStart, which MSGSRV32 plays before it starts the shell, came before
+  // the screen)
   const str = v => ({ type: 1, data: W95FS.encode(v + '\0') }), ro = 'hklm\\software\\microsoft\\windows\\currentversion\\runonce';
   W95Win32.regSet(ro + '\\setup', 'Programs on the Start menu', str(join(WINDIR, 'grpconv.exe') + ' -s'));
-  W95Win32.regSet(ro, 'Wrapper', str('runonce.exe'));
 }
 // Setup's registration of the copy (CurrentVersion: RegisteredOwner, RegisteredOrganization, ProductId): MSGSRV32
 // checks them as Windows starts and, missing, runs the first-run screens instead. The owner is the name the network
@@ -3558,7 +3560,11 @@ class RemoteApp extends NativeApp {
         if (m.method === 'fatalText') v = fatalText(m.args[0]);
         else if (m.method === 'runApart') { runNative(m.args[0], m.args[1] || '', { apart: true }); v = true; }   // (it starts as the page goes on)
         // a screen saver a program starts (Display Properties' Preview and Settings, the shell): it runs on the page, as the savers do here
-        else if (m.method === 'saver') { if (m.args[1] === 'c') new SaverRun(m.args[0], 'c').start(); else startFullSaver(m.args[0]); v = true; }
+        else if (m.method === 'saver') {   // (its process in the machine ends when the saver does: saverExit, the applet's handle to it)
+          const pid = m.args[2], onExit = code => { if (pid && this.alive) this.worker.postMessage({ t: 'saverExit', pid, code: code | 0 }); };
+          if (m.args[1] === 'c') { const run = new SaverRun(m.args[0], 'c', { onExit }); run.start().then(ok => { if (!ok) run.stop(); }); } else startFullSaver(m.args[0], { onExit });
+          v = true;
+        }
       }
     } catch (e) { v = e instanceof Error ? e : new Error(String(e)); }
     W95Bridge.answer(this.rpcSab, v === undefined ? null : v);

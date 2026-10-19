@@ -204,11 +204,21 @@ class Machine {
    *  after Setup, the items Setup left to it (RunOnce\Setup: GRPCONV's Start menu) run first, under RUNONCE's
    *  "Windows 95 Setup" screen on USER's bare desktop, as Setup's first-run screens run them before the shell;
    *  MSGSRV32 starts when RUNONCE has ended, so the shell and SystemStart come after the screen. False if it cannot start */
-  /** the system's first task, MSGSRV32 (its message server: the drivers, the shell, SystemStart). Setup's items
-   *  (RunOnce\Setup: GRPCONV's Start menu) the shell runs itself as it starts, through the RunOnce wrapper Setup
-   *  leaves (RUNONCE's "Windows 95 Setup" screen), as GRPCONV makes the Start menu through the shell; SystemStart
-   *  comes after, since WinExec gives the shell back once it is idle, which it is not while it waits on RUNONCE */
-  startSystemTask() { return this.startMsgsrv(); }
+  /** the system's first task, MSGSRV32 (its message server: the drivers, SystemStart, then the shell). On the start
+   *  after Setup, the items Setup left to it (RunOnce\Setup: GRPCONV's Start menu) run first, under RUNONCE's
+   *  "Windows 95 Setup" screen on USER's bare desktop; MSGSRV32 starts when RUNONCE has ended, so SystemStart (which
+   *  MSGSRV32 plays before it starts the shell) and the shell come after the screen. False if it cannot start */
+  startSystemTask() {
+    const p = this.proc, S = self.W95SYSTEM || {}, items = W.regVals('hklm\\software\\microsoft\\windows\\currentversion\\runonce\\setup');
+    const exe = items.length && (S.programs || {})['RUNONCE.EXE'] ? ['C:\\WINDOWS\\RUNONCE.EXE', 'C:\\WINDOWS\\SYSTEM\\RUNONCE.EXE'].find(f => fs.exists(f)) : null;
+    if (!exe) return this.startMsgsrv();
+    p.init16();
+    this.loadMpr();   // (before Setup's items: SHELL32 builds its desktop's items once in this address space, and RUNONCE is its first user)
+    const pc = this.spawnProgram(exe, '');
+    if (typeof pc !== 'object') return this.startMsgsrv();
+    const was = pc.onExit; pc.onExit = code => { if (was) was(code); this.sysPending = true; };   // (started from step(), between slices, as at a boot without Setup's items)
+    return true;
+  }
   /** with a network client installed (NetworkProvider\Order), the Multiple Provider Router comes up before the system's
    *  first task, as Windows loads it at boot: USER's network functions connect to it (SM_NETWORK, which puts Network
    *  Neighborhood on the shell's desktop), and it starts the network's process, MPREXE. Once */
@@ -346,7 +356,20 @@ class Machine {
     if (!file) return 2;
     // a screen saver (Display Properties' Preview and Settings, the shell's idle start): the savers run on the page,
     // in a machine of their own; /s shows it, /c its settings; /p (the dialog's small monitor) is not drawn here
-    if (/\.scr$/i.test(file)) { const mode = /^\s*\/c/i.test(arg || '') ? 'c' : /^\s*\/p/i.test(arg || '') ? 'p' : 's'; if (mode !== 'p') rpc('host', 'saver', [file, mode]); return { elsewhere: true }; }
+    // (the small preview in Display Properties' monitor, /p hwnd, draws in a child window of the applet's, which a
+    // saver on the page has not: it does not start, as a saver that cannot run, and the applet goes on without it;
+    // told it had started, the applet spun looking for the child window, and Preview and Settings did nothing more)
+    // A saver started with /s or /c:0 is a process of this machine (the applet keeps its handle and knows the preview
+    // has ended by it: told nothing had started, it took the preview to be running still and did nothing at the next
+    // Preview); the process ends when the page says the saver has (saverExit)
+    if (/\.scr$/i.test(file)) {
+      const mode = /^\s*\/c/i.test(arg || '') ? 'c' : /^\s*\/p/i.test(arg || '') ? 'p' : 's'; if (mode === 'p') return 2;
+      const p = this.proc, pid = (this.saverPid = (this.saverPid || 0x7000) + 4);
+      const pc = { pid, path: file, exitCode: null, exe: { base: 0 }, main: { id: 0, state: 'done' }, tdb: 0, cmdPtr: 0, saver: true };
+      (p.procs || (p.procs = new Map())).set(pid, pc);
+      rpc('host', 'saver', [file, mode, pid]);
+      return pc;
+    }
     // a Windows (16-bit) program of the system's: a task of this machine's, as KERNEL's WinExec starts one
     const ne = Object.values((self.W95SYSTEM || {}).ne || {}).find(d => d.fileName === basename(file).toUpperCase() && /\.EXE$/.test(d.fileName));
     if (ne) return this.proc.winExec16(ne.fileName, arg || '', show === undefined ? 1 : show);
@@ -610,4 +633,7 @@ self.onmessage = e => {
     for (const x of m.list) if (!rfs.vols.has(x.letter)) rfs.mount(x.letter, { remote: netBackend(x.letter), unc: x.unc, label: x.unc.split('\\').pop() || '' });
   } else if (m.t === 'regop') W.regApply(m.o, true);
   else if (m.t === 'kick') { if (machine) machine.kick(); }
+  else if (m.t === 'saverExit') {   // a screen saver started here and run on the page has ended: its process here ends (the applet's handle to it)
+    const p = machine && machine.proc, pc = p && p.procs && p.procs.get(m.pid); if (pc) p.endProcess(pc, m.code >>> 0); if (machine) machine.kick();
+  }
 };

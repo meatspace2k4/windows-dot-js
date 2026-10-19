@@ -70,7 +70,10 @@ PROGRAMS = [('notepad.exe', 0x00400000, 0x06000000), ('rundll32.exe', 0x00410000
             # the items Setup leaves to the first start (RunOnce\Setup, which RUNONCE runs; WIN95_16.CAB), the Start
             # menu's programs Setup lists in SETUP.INI, made links then (grpconv -s), the taskbar's notification-area
             # applets, and the Welcome screen (WIN95_17.CAB, SYSTRAY from WIN95_11.CAB)
-            ('runonce.exe', 0x00530000, 0x07FD0000), ('grpconv.exe', 0x004F0000, 0x07F60000), ('systray.exe', 0x00510000, 0x07F80000), ('welcome.exe', 0x00520000, 0x07F90000)]
+            ('runonce.exe', 0x00530000, 0x07FD0000), ('grpconv.exe', 0x004F0000, 0x07F60000), ('systray.exe', 0x00510000, 0x07F80000), ('welcome.exe', 0x00520000, 0x07F90000),
+            # the CD's AutoPlay program (D:\AUTORUN\AUTORUN.EXE, AUTORUN.INF's open=), which the shell runs when the
+            # disc's icon is opened; copied from the disc into SYS_DIR for the build
+            ('autorun.exe', 0x00540000, 0x07FE0000)]
 # 32-bit system DLLs: (file, load base, block-table base)
 PE = [('gdi32.dll', 0x01D00000, 0x06C00000), ('user32.dll', 0x01D40000, 0x07340000), ('comdlg32.dll', 0x01D60000, 0x07380000),
       # the common controls and the shell, which COMDLG32's Explorer-style dialogs are built on (WIN95_02.CAB)
