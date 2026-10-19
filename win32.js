@@ -749,7 +749,8 @@ def('KERNEL32', 'GetModuleFileNameA', 3, function (h, buf, n) {
   h = this.hmod(h);
   const m = h && this.modules.find(x => x.base === h && x !== this.exe && x.kind !== 'ne');   // a DLL: its file in SYSTEM; another program: its file
   const other = m && m.name === 'EXE' && [this.pc0, ...(this.procs || new Map()).values()].find(x => x && x.exe === m);
-  return this.writeA(buf, other ? other.path || this.host.path : m ? `C:\\WINDOWS\\SYSTEM\\${m.name}.DLL` : this.pc.path || this.host.path || 'C:\\WINDOWS\\SCRNSAVE.SCR', n);
+  // (a module named with its own extension, DESK.CPL or WINSPOOL.DRV, is that file; the others are .DLL)
+  return this.writeA(buf, other ? other.path || this.host.path : m ? `C:\\WINDOWS\\SYSTEM\\${/\.[A-Z0-9]{1,3}$/i.test(m.name) ? m.name : m.name + '.DLL'}` : this.pc.path || this.host.path || 'C:\\WINDOWS\\SCRNSAVE.SCR', n);
 });
 def('KERNEL32', 'ExitProcess', 'regs', function () {
   const code = this.r32(this.reg('esp') + 4), pc = this.pc;

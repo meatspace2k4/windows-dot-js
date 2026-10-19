@@ -316,6 +316,7 @@ class Machine {
   }
   // WinExec and CreateProcess from the program: a program the system runs starts in this machine (P.spawn)
   exec(cmd, show) {
+    if (this.traceLog) this.traceLog.push([Math.round(performance.now()), 'host', 'exec', `${cmd} (show ${show})`]);   // (a trace: every program start, with its command line)
     const m = /^\s*(?:"([^"]+)"|(\S+))\s*(.*)$/.exec(cmd || ''); if (!m) return 2;
     let path = m[1] || m[2]; const arg = m[3];
     if (!extname(path)) path += '.exe';
