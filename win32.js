@@ -1360,6 +1360,14 @@ def('KERNEL32', 'GetCurrentDirectoryA', 2, function (n, b) { return this.writeA(
 def('KERNEL32', 'SetCurrentDirectoryA', 1, function (n) { return fsCall(this, () => (this.fs.chdir(this.readA(n)), 1)); });
 def('KERNEL32', 'GetDriveTypeA', 1, function (n) { const l = ((this.readA(n) || this.fs.cwd)[0] || 'C').toUpperCase(); const v = this.fs.vols.get(l); return !v ? 1 : { removable: 2, fixed: 3, cdrom: 5 }[v.kind] || 3; });
 def('KERNEL32', 'GetLogicalDrives', 0, function () { let m = 0; for (const v of this.fs.vols.values()) m |= 1 << (v.letter.charCodeAt(0) - 65); return m; });
+// GetLogicalDriveStringsA: the drives' root paths, each null-terminated, then a null ("A:\0C:\0D:\0" with backslashes);
+// the length needed when the buffer is too small (LINKINFO asks with none first)
+def('KERNEL32', 'GetLogicalDriveStringsA', 2, function (n, buf) {
+  const s = [...this.fs.vols.keys()].sort().map(l => `${l}:\\\0`).join('');
+  if (!buf || n < s.length + 1) return s.length + 1;
+  for (let i = 0; i < s.length; i++) this.u8[buf + i] = s.charCodeAt(i); this.u8[buf + s.length] = 0;
+  return s.length;
+});
 def('KERNEL32', 'GetDiskFreeSpaceA', 5, function (n, spc, bps, free, total) {
   return fsCall(this, () => { const v = this.fs.statvfs(this.readA(n) || this.fs.cwd); const c = v.cluster;
     if (spc) this.w32(spc, c / 512); if (bps) this.w32(bps, 512); if (free) this.w32(free, Math.floor(v.free / c)); if (total) this.w32(total, Math.floor(v.total / c)); return 1; });

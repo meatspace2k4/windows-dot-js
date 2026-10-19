@@ -2983,6 +2983,10 @@ function setupNetwork() {
   const order = 'hklm\\system\\currentcontrolset\\control\\networkprovider\\order';
   const providers = () => R.regVals(order).map(([n]) => n).filter(n => n !== 'providerorder').map(n => n.toUpperCase());
   const setOrder = () => { const p = providers(); if (p.length && R.regGet(order, 'ProviderOrder') === undefined) R.regSet(order, 'ProviderOrder', str(p.join(','))); };
+  // the primary network logon is Windows Logon: one logon form (Welcome to Windows), whose name and password the
+  // network client then logs on with, instead of the client's Enter Network Password before it
+  const logon = 'hklm\\network\\logon', primary = W95FS.decode(((R.regGet(logon, 'PrimaryProvider') || {}).data) || new Uint8Array(0)).replace(/\0.*$/, '');
+  if (primary === '' || primary === 'Microsoft Network') R.regSet(logon, 'PrimaryProvider', str('Windows Logon'));
   if (R.regGet('hklm\\enum\\root\\net\\0000', 'Driver') !== undefined) { setOrder(); return; }
   const cls = 'hklm\\system\\currentcontrolset\\services\\class\\';
   const set = (k, o) => { for (const [n, v] of Object.entries(o)) R.regSet(k, n, typeof v === 'string' ? str(v) : v); };
@@ -3007,7 +3011,7 @@ function setupNetwork() {
   for (const sec of ['NET_VNETBIOS.add.reg', 'NET_NDIS386.add.reg']) infAddReg(infs['NET.INF'], sec);
   set('hklm\\system\\currentcontrolset\\services\\vxd\\vnetsup', { ComputerName: 'WIN95', Workgroup: 'WORKGROUP', Comment: '' });
   set('hklm\\system\\currentcontrolset\\control\\computername\\computername', { ComputerName: 'WIN95' });
-  set('hklm\\network\\logon', { PrimaryProvider: 'Microsoft Network', LMLogon: bin(0, 0, 0, 0) });
+  set('hklm\\network\\logon', { LMLogon: bin(0, 0, 0, 0) });
   setOrder();
   mediaResources();   // the devnodes ahead of the sound card's in Enum's order have changed
 }
