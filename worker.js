@@ -8,7 +8,7 @@ self.window = self;
 // the Ethernet segment as this worker has it: its own stations (the card, in the network's machine), and the rest of the
 // segment on the page (the other computer, lanhost.js; other machines' cards), frames passing both ways
 self.W95LAN = { stations: new Set(), frames: 0 };
-importScripts('bridge.js', 'fs.js', 'win32.js', 'gl.js', 'shell32.js', 'system.js', 'ne16.js', 'vmm.js', 'sound.js', 'lan.js', 'parallel.js', 'netfs.js', 'dyn.js');
+importScripts('bridge.js', 'fs.js', 'win32.js', 'gl.js', 'shell32.js', 'system.js', 'ne16.js', 'vmm.js', 'sound.js', 'lan.js', 'parallel.js', 'netfs.js', 'dyn.js', 'savers.js', 'saver-runtime.js');
 const B = self.W95Bridge, W = self.W95Win32, { FSError, join, basename, extname } = self.W95FS;
 const b64bytes = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
 const post = (m, tr) => self.postMessage(m, tr || []);
@@ -106,11 +106,14 @@ const NATIVE = { exec: null };
 class Machine {
   constructor(o) {
     Object.assign(this, o); this.keyq = []; this.mouseq = []; this.mods = {}; this.ax = -1; this.ay = -1; this.cursorOn = false; this.mouse = { x: -100, y: -100 };
-    this.ring = o.ring; this.pending = new Map(); this.alive = true;
+    this.ring = o.ring; this.pending = new Map(); this.alive = true; this.savers = new Map();
   }
   async start() {
     const S = self.W95SYSTEM;
     await Promise.all([...Object.values(S.ne), ...Object.values(S.dlls), ...Object.values(S.net || {})].map(async m => { if (!m.mod) m.mod = await WebAssembly.compile(b64bytes(m.wasm)); }));
+    if (self.fonts && typeof FontFace === 'function') await Promise.all(Object.entries((self.W95SAVERS || {}).fonts || {}).map(async ([family, data]) => {
+      try { const font = await new FontFace(family, b64bytes(data)).load(); self.fonts.add(font); } catch (_) { /* bundled font unavailable in this worker */ }
+    }));
     let prog = this.prog;
     if (!prog) prog = { name: 'MSGSRV32.EXE', meta: Object.values(S.programs)[0].meta, module: null };
     else prog.module = await WebAssembly.compile(b64bytes(S.programs[prog.name].wasm));
@@ -119,16 +122,28 @@ class Machine {
     if (!this.net) for (const [n, d] of Object.entries(S.net || {})) dlls.set(n.replace(/\.DLL$/, ''), {
       get file() { return d.bytes || (d.bytes = b64bytes(d.file)); }, meta: d.meta,
       get module() { return d.mod instanceof WebAssembly.Module ? d.mod : (d.modSync || (d.modSync = new WebAssembly.Module(b64bytes(d.wasm)))); } });
+    for (const [n, d] of Object.entries((self.W95SAVERS || {}).dlls || {})) {
+      let file; try { file = fs.readFile(`C:\\WINDOWS\\SYSTEM\\${n}`); } catch (_) { continue; }
+      const bundled = b64bytes(d.file);
+      if (file.length !== bundled.length || file.some((b, i) => b !== bundled[i])) continue;
+      dlls.set(n.replace(/\.DLL$/, ''), { file, module: new WebAssembly.Module(b64bytes(d.wasm)), meta: d.meta });
+    }
+    this.saverDlls = new Map([...dlls].filter(([n]) => ['CRTDLL', 'GLU32'].includes(n)));
     const m = this;
     const host = {
       fs, width: this.sw, height: this.sh, path: this.path, now: () => performance.now(), net: this.net, lan: !!(this.system && lanRing), system: !!this.system, vmPages: 2048, shared: true,   // (lan: the network stack and its card, as the system's machine has them; system: the Win16 tasks' process is its own)
-      cursor: () => ({ x: m.mouse.x, y: m.mouse.y }), surface: (h, w, hh) => new OffscreenCanvas(Math.max(1, w), Math.max(1, hh)).getContext('2d'), setCursor: () => {},
+      cursor: () => ({ x: m.mouse.x, y: m.mouse.y }), surface: (h, w, hh, win, pc) => {
+        const canvas = new OffscreenCanvas(Math.max(1, w), Math.max(1, hh));
+        if (!h) m.w32DesktopSurface = { canvas, w: canvas.width, h: canvas.height, pc, version: 1 };
+        return canvas.getContext('2d');
+      }, surfaceChanged: (h, pc) => { if (!h && m.w32DesktopSurface && m.w32DesktopSurface.pc === pc) m.w32DesktopSurface.version++; }, setCursor: () => {},
       exited: (code, why) => m.exited(code, why), boot: p => p.bootUser16(), exec: (cmd, show) => m.exec(cmd, show),
       msgMode: on => { m.msg = on; post({ t: 'msgMode', on }); m.sendText(true); }, reset: () => post({ t: 'reset' }),
       faultDialog: f => post({ t: 'faultDialog', f }),
     };
     const exe = /\s/.test(this.path) ? `"${this.path}"` : this.path;
     try {
+      if (this.system) { host.vmTop = 0x0a000000; host.vmPages = 2048; }
       this.proc = new W.Process(this.bytes, prog.module, { ...prog.meta, name: prog.name.replace(/\.EXE$/, '') }, host, this.arg ? `${exe} ${this.arg}` : exe, dlls);
       this.proc.soundQuiet = !!this.quiet;   // (sound.js: the card's output off for the one sound)
       if (this.trace) this.traceOn(this.trace);
@@ -164,7 +179,17 @@ class Machine {
         const scan = r[1] & 0xff, ext = !!(r[1] & 0x100), up = !!(r[1] & 0x200), toUser = !!(r[1] & 0x400), mods = { shift: !!(r[2] & 1), ctrl: !!(r[2] & 2), alt: !!(r[2] & 4) };
         let taken = false; try { taken = scan && p.vkdKey ? p.vkdKey(scan, ext, up, mods) : false; } catch (e) { console.error(e); }
         if (!taken && toUser && r[3]) this.queueKey(r[3], scan | (ext ? 0x100 : 0), up, mods);
-      } else if (r[0] === B.MOUSE) this.queueMouse(r[1], r[2], r[3]);
+        if (!taken && toUser) p.dispatchInput(up ? W.WM.KEYUP : W.WM.KEYDOWN, r[3] || scan, 0);
+        if (!up) this.stopFullSavers();
+      } else if (r[0] === B.MOUSE) {
+        this.queueMouse(r[1], r[2], r[3]);
+        if (r[1] & 1) this.stopFullSavers();
+        p.dispatchInput(W.WM.MOUSEMOVE, 0, (r[3] << 16) | r[2]);
+        if (r[1] & 2) p.dispatchInput(W.WM.LBUTTONDOWN, 0, (r[3] << 16) | r[2]);
+        if (r[1] & 4) p.dispatchInput(W.WM.LBUTTONUP, 0, (r[3] << 16) | r[2]);
+        if (r[1] & 8) p.dispatchInput(W.WM.RBUTTONDOWN, 0, (r[3] << 16) | r[2]);
+        if (r[1] & 16) p.dispatchInput(W.WM.RBUTTONUP, 0, (r[3] << 16) | r[2]);
+      }
     }
   }
   queueKey(vk, sc, up, mods) {
@@ -174,6 +199,11 @@ class Machine {
     }
     if (vk === 16 || vk === 17 || vk === 18) this.mods[vk] = !up;
     this.keyq.push([vk, sc, up]);
+  }
+  stopFullSavers() {
+    // (a saver on the machine's own USER has the input itself and ends as its own code decides: scrnsave.lib lets the
+    // pointer settle and ignores small moves)
+    for (const proc of [...this.savers.values()]) if (proc.saverMode === 's' && !proc.nativeGdi) this.endSaver(proc.pid, 0);
   }
   // the mouse: absolute moves and button changes into USER's mouse_event, as the mouse driver reports them
   queueMouse(kind, x, y) {
@@ -197,7 +227,7 @@ class Machine {
   /** the screen's mode, DAC and cursor sprite for the page, which shows the screen from the shared memory */
   postScan() {
     const p = this.proc, a = p.scanout(), sp = p.sprite ? p.sprite() : null;
-    post({ t: 'scan', scan: { w: a.w, h: a.h, pitch: a.pitch || a.w, bpp: a.bpp, vram: a.vram.byteOffset }, dac: Uint8Array.from(a.dac),
+    post({ t: 'scan', scan: { w: a.w, h: a.h, pitch: a.pitch || a.w, bpp: a.bpp, dacMode: a.hicolor, vram: a.vram.byteOffset }, dac: Uint8Array.from(a.dac),
       sprite: sp ? { x: sp.x, y: sp.y, px: sp.px, py: sp.py, row: sp.row, at: sp.bits.byteOffset } : null });
   }
   /** the system's first task, MSGSRV32 (its message server: the drivers, SystemStart, then the shell). On the start
@@ -348,10 +378,21 @@ class Machine {
     const a = p.scanout(), sp = p.sprite ? p.sprite() : null;
     let bg = 0; try { const c = p.user16(180, [['w', 1]]); bg = (c.dx & 0xff) << 16 | (c.ax & 0xffff); } catch (e) { console.error(e); }
     for (const w of nw.list) { const pc = w.task && [...(p.procs || new Map()).values()].find(c => c.tdb === w.task); w.prog = pc ? basename(pc.path).toUpperCase() : null; }
-    post({ t: 'frame', list: nw.list, active: nw.active, capture: nw.capture, cursorOn: this.cursorOn,
-      scan: { w: a.w, h: a.h, pitch: a.pitch || a.w, bpp: a.bpp, vram: a.vram.byteOffset }, dac: Uint8Array.from(a.dac), bg,
+    const pixels = [], win32 = [];
+    const addWin32Windows = (proc, preview = false) => { for (const w of proc.windows.values()) {
+      if (w.kind !== 'window' || (w.child && !w.previewChild) || (!(w.style & 0x10000000) && !w.hostPreview) || !w.ctx) continue;
+      const [x, y] = proc.absPos(w);
+      let data;
+      try { data = new Uint8ClampedArray(w.ctx.getImageData(0, 0, w.w, w.h).data); } catch (_) { continue; }
+      pixels.push(data.buffer); w._postedSurfaceVersion = w.surfaceVersion;
+      win32.push({ hwnd: w.hwnd, key: `w32:${w.hwnd}`, win32: true, x, y, w: w.w, h: w.h,
+        title: w.title || '', cls: w.cls && w.cls.name || '', owner: 0, ownerPid: w.pc && w.pc.pid || 0, iconic: false, task: 0, ex: w.ex || 0, parent: w.parent || 0, preview: !!w.previewChild || preview, pixels: data });
+    } };
+    addWin32Windows(p);
+    post({ t: 'frame', list: [...nw.list, ...win32], active: nw.active, capture: nw.capture, cursorOn: this.cursorOn,
+      scan: { w: a.w, h: a.h, pitch: a.pitch || a.w, bpp: a.bpp, dacMode: a.hicolor, vram: a.vram.byteOffset }, dac: Uint8Array.from(a.dac), bg,
       sprite: sp ? { x: sp.x, y: sp.y, px: sp.px, py: sp.py, row: sp.row, at: sp.bits.byteOffset } : null,
-      stats: { ...p.stats }, held: p.win16Held ? { hung: p.win16Held.hung } : null });
+      stats: { ...p.stats }, held: p.win16Held ? { hung: p.win16Held.hung } : null }, pixels);
     this.clip();
   }
   sendText(force) {
@@ -366,27 +407,14 @@ class Machine {
     if (!extname(path)) path += '.exe';
     const file = (/^[a-z]:|^\\/i.test(path) ? [path] : [join('C:\\WINDOWS', path), join('C:\\WINDOWS\\SYSTEM', path), join(fs.cwd, path)]).find(f => fs.exists(f));
     if (!file) return 2;
-    // a screen saver (Display Properties' Preview and Settings, the shell's idle start): the savers run on the page,
-    // in a machine of their own; /s shows it, /c its settings; /p (the dialog's small monitor) is not drawn here
-    // (the small preview in Display Properties' monitor, /p hwnd, runs on the page too, drawn over the monitor window;
-    // its process here ends when the applet ends it)
-    // A saver started with /s or /c:0 is a process of this machine (the applet keeps its handle and knows the preview
-    // has ended by it: told nothing had started, it took the preview to be running still and did nothing at the next
-    // Preview); the process ends when the page says the saver has (saverExit)
-    if (/\.scr$/i.test(file)) {
-      const mode = /^\s*\/c/i.test(arg || '') ? 'c' : /^\s*\/p/i.test(arg || '') ? 'p' : 's';
-      const hwnd = mode === 'p' ? parseInt((/\/p\s*:?\s*(\d+)/i.exec(arg || '') || [])[1] || '0', 10) : 0;   // (the applet's monitor window the small preview draws in)
-      const p = this.proc, pid = (this.saverPid = (this.saverPid || 0x7000) + 4);
-      const pc = { pid, path: file, exitCode: null, exe: { base: 0 }, main: { id: 0, state: 'done' }, tdb: 0, cmdPtr: 0, saver: true };
-      (p.procs || (p.procs = new Map())).set(pid, pc);
-      pc.onExit = () => post({ t: 'saverStop', pid });   // ended from here (the applet's TerminateProcess as another saver is picked): the page stops it
-      rpc('host', 'saver', [file, mode, pid, hwnd]);
-      return pc;
-    }
     // a Windows (16-bit) program of the system's: a task of this machine's, as KERNEL's WinExec starts one
     const ne = Object.values((self.W95SYSTEM || {}).ne || {}).find(d => d.fileName === basename(file).toUpperCase() && /\.EXE$/.test(d.fileName));
     if (ne) return this.proc.winExec16(ne.fileName, arg || '', show === undefined ? 1 : show);
     const r = this.spawnProgram(file, arg);
+    // WinExec's NE scheduler expects a process record with a 16-bit main thread. SCRs
+    // are advanced independently as Win32 processes, so report successful launch
+    // without handing that scheduler an incompatible process object.
+    if (/\.SCR$/i.test(file) && r && typeof r === 'object') return r;
     // a second instance of a program: its image's place here is taken, so it starts in a machine of its own, as the
     // page starts one (runNative); this process gets no handle on it
     if (r === 8 && this.system) { rpc('host', 'runApart', [file, arg]); return { elsewhere: true }; }
@@ -394,6 +422,7 @@ class Machine {
   }
   spawnProgram(file, arg) {
     const S = self.W95SYSTEM || {}, p = this.proc;
+    if (/\.SCR$/i.test(file)) return this.spawnSaver(file, arg || '');
     const name = basename(file).toUpperCase(), d = (S.programs || {})[name]; if (!d) return 11;
     if (p.pc0 && p.pc0.exe && p.pc0.exe.base === d.meta.base) return 8;   // (the machine's own program: one instance)
     const live = [...(p.procs || new Map()).values()].some(x => x.exe.base === d.meta.base);   // (then the instances share its image: P.spawn)
@@ -406,6 +435,75 @@ class Machine {
     pc.onExit = code => { if (!pc.fault) post({ t: 'emit', ev: 'program.exit', data: { path: pc.path, code } }); };
     this.kick();
     return pc;
+  }
+  async spawnSaverAsync(file, arg) {
+    const savers = (self.W95SAVERS || {}).savers || {};
+    const hit = self.W95SaverRuntime.findSaver(file, savers);
+    if (!hit) return 11;
+    const [name, d] = hit, bytes = fs.readFile(file);
+    if (!await self.W95SaverRuntime.matchesImage(bytes, d)) return 11;
+    const mod = await self.W95SaverRuntime.compileModule(d);
+    return this.spawnSaver(file, arg, mod, name, bytes);
+  }
+  spawnSaver(file, arg, compiledModule = null, bundleName = null, imageBytes = null) {
+    const p = this.proc, bytes = imageBytes || fs.readFile(file), savers = (self.W95SAVERS || {}).savers || {};
+    // (by its long name: Display Properties starts it by the short one, 3DFLYI~1.SCR)
+    const hit = bundleName ? [bundleName, savers[bundleName]] : self.W95SaverRuntime.findSaver(fs.realpath(file), savers);
+    if (!hit) return 11;
+    const [name, d] = hit;
+    for (const run of [...this.savers.values()]) p.endProcess(run, 0);
+    const mode = /^\s*\/p\b/i.test(arg) ? 'p' : /^\s*\/c\b/i.test(arg) ? 'c' : 's';
+    // with the machine's own USER32 (the system's), the saver runs on it as Windows runs one: the command line its
+    // starter gave (/p hwnd: Display Properties' monitor window, which the saver's window is a child of; /c:hwnd),
+    // its windows USER's, drawn by GDI on the screen
+    const u32 = p.byName && p.byName.get('USER32'), isWin = u32 && u32.exports.get('IsWindow');
+    const named = mode === 'p' ? parseInt((/\/p\s*:?\s*(\d+)/i.exec(arg) || [])[1] || '0', 10) : 0;
+    const native = !!isWin && (mode !== 'p' || (named > 0 && !!p.call(isWin, [named])));
+    const real = fs.realpath(file), cmdline = native ? `"${real}" ${arg.trim() || '/s'}` : `"${real}" ${mode === 'p' ? '/p' : mode === 'c' ? '/c:0' : '/s'}`;
+    try {
+      const mod = compiledModule || d.modSync || (d.modSync = new WebAssembly.Module(b64bytes(d.wasm)));
+      const rebound = [];
+      for (const dll of native ? [] : ['USER32', 'GDI32', 'OPENGL32', 'GLU32']) {
+        const native = p.loadDll(dll), api = W.API[dll];
+        if (!native || !api) continue;
+        for (const fn of Object.keys(api)) {
+          const address = native.exports.get(fn);
+          if (!address) continue;
+          rebound.push([native, fn, address]); native.exports.set(fn, p.thunkFor(dll, fn));
+        }
+      }
+      let pc;
+      try { pc = p.spawn(bytes, mod, { ...d.meta, name: name.replace(/\.SCR$/, '') }, real, cmdline); }
+      finally { for (const [native, fn, address] of rebound) native.exports.set(fn, address); }
+      const run = { pid: pc.pid, path: real, mode, pc, previewHwnd: 0 };
+      pc.onExit = code => {
+        this.savers.delete(pc.pid);
+        post({ t: 'emit', ev: 'program.exit', data: { path: pc.path, mode, code,
+          ...(pc.trapped || pc.main && pc.main.fault ? { why: pc.trapped || pc.main.fault.why } : {}),
+          threadExit: pc.main && pc.main.exitCode, ...(pc.exitDebug ? { exitDebug: pc.exitDebug } : {}),
+          ...(pc.commandLineSeen ? { commandLineSeen: pc.commandLineSeen } : {}),
+          ...(pc.versionInfoSeen ? { versionInfoSeen: pc.versionInfoSeen, saverPlatformFlag: p.r32(pc.exe.base + 0x19980) } : {}),
+          ...(pc.messageDebug ? { messageDebug: pc.messageDebug } : {}),
+          ...(pc.user32Calls ? { user32Calls: pc.user32Calls } : {}),
+          ...(pc.isWindowCalls ? { isWindowCalls: pc.isWindowCalls } : {}) } });
+      };
+      if (mode === 'p' && !native) {
+        const parent = self.W95SaverRuntime.createPreviewWindow(152, 104);
+        parent.hwnd = p.newHandle(parent); run.previewHwnd = parent.hwnd;
+        p.windows.set(parent.hwnd, parent);
+        const previewCmd = `"${real}" /p ${parent.hwnd}`;
+        pc.cmdPtr = p.alloc(previewCmd.length + 1); p.writeA(pc.cmdPtr, previewCmd);
+      }
+      pc.previewHwnd = run.previewHwnd;
+      if (mode === 'p' && !native) pc.previewKey = `w32:${run.previewHwnd}`;
+      pc.saverMode = mode; pc.nativeGdi = native;
+      this.savers.set(run.pid, pc); this.kick();
+      return pc;
+    } catch (e) { console.error(e); return 8; }
+  }
+  endSaver(pid, code = 0) {
+    const run = this.savers.get(pid); if (!run) return false;
+    this.proc.endProcess(run, code); return true;
   }
   // one clipboard across machines: the shell's text is given to USER when the page says this machine has the
   // keyboard, and USER's CF_TEXT taken back when it loses it (clipIn / clipOut commands)
@@ -562,7 +660,7 @@ class Machine {
     // the network card: its registers, the frames waiting at it, the ring's unread bytes (lan.js, the page's segment)
     const nic = p.nic ? { cr: p.nic.cr, isr: p.nic.isr, imr: p.nic.imr, rcr: p.nic.rcr, inbox: p.nic.inbox.length, mac: [...p.nic.par].map(x => x.toString(16).padStart(2, '0')).join(':'), curr: p.nic.curr, bnry: p.nic.bnry,
       ring: lanRing ? (() => { const c = new Int32Array(lanRing, 0, 2); return (Atomics.load(c, 0) - Atomics.load(c, 1) + (1 << 20)) % (1 << 20); })() : null, irqs: p.lanIrqs || 0 } : null;
-    return { nic, bigAllocs: p.bigAllocs || [], heapMB: ((p.heapTop || 0) - 0x2000000) >> 20, cdc, procs, smNetwork, wss: p.wssRecs ? [...p.wssRecs.keys()] : null, mods16: p.ne ? [...p.ne.keys()] : [], mmd, sound: p.soundStats ? { ...p.soundStats, quiet: !!p.soundQuiet } : null, th16: (p.th16 || []).length, wins, threads, held: p.win16Held ? (p.win16Held.who === 'main' ? 'main' : p.win16Held.who && p.win16Held.who.id) : null, depth: p.depth,
+    return { nic, jsDlls: p.jsDlls ? Object.fromEntries(p.jsDlls) : null, nullJumps: p.nullJumps || [], thunkFails: p.thunkFails || [], thunkConns: p.thunkConns || [],bigAllocs: p.bigAllocs || [], heapMB: ((p.heapTop || 0) - 0x2000000) >> 20, cdc, procs, smNetwork, wss: p.wssRecs ? [...p.wssRecs.keys()] : null, mods16: p.ne ? [...p.ne.keys()] : [], mmd, sound: p.soundStats ? { ...p.soundStats, quiet: !!p.soundQuiet } : null, th16: (p.th16 || []).length, wins, threads, held: p.win16Held ? (p.win16Held.who === 'main' ? 'main' : p.win16Held.who && p.win16Held.who.id) : null, depth: p.depth,
       main: { at: p.resumeEip ? where(p.resumeEip) : null, stack: stack(p.mainCtx) } };
   }
   // the page's requests: what a window gets done to it, and questions about the machine
@@ -595,7 +693,12 @@ class Machine {
       case 'clipOut': return this.clipOut();
       case 'clipIn': this.clipIn(args[0]); return;
       case 'closeState': p.k32CloseState(args[0]); return;
-      case 'spawn': { const r = this.spawnProgram(args[0], args[1]); return typeof r === 'object' ? { ok: true } : { err: r }; }
+      case 'spawn': {
+        const result = r => typeof r === 'object' ? { ok: true, pid: r.pid, ...(r.previewKey ? { previewHwnd: r.previewHwnd, previewKey: r.previewKey } : {}) } : { err: r };
+        return /\.SCR$/i.test(args[0] || '') ? this.spawnSaverAsync(args[0], args[1] || '').then(result) : result(this.spawnProgram(args[0], args[1]));
+      }
+      case 'endProcess': { const p = this.proc, pc = p.procs && p.procs.get(args[0]); if (pc) p.endProcess(pc, args[1] || 0); return pc ? true : this.endSaver(args[0], args[1] || 0); }
+      case 'closeWin32': return this.proc.sendMsg(args[0], W.WM.CLOSE);
       case 'children': return p.depth ? null : p.nativeChildren(args[0]);
       case 'hung': {   // USER32's IsHungThread for the thread that owns each window
         const x = p.byName && p.byName.get('USER32') && p.byName.get('USER32').exports, tid = x && x.get('GetWindowThreadProcessId'), hung = x && x.get('IsHungThread');
@@ -611,13 +714,6 @@ class Machine {
       case 'netfs': { const b = self.W95NetFS.backend({ alive: true, proc: p }, args[0]); return b[args[1]](...(args[2] || [])); }
       case 'mode': { const r = this.setMode(args[0], args[1]); if (!r) this.wantMode = [args[0], args[1]]; return r; }   // (null: made once no thread holds USER, step())
       case 'probe': return this.probe();
-      case 'winRect': {   // a window's rectangle on the screen (the applet's monitor, which a small preview on the page lies over)
-        const p = this.proc; if (p.depth || p.thread16) return null;
-        if (!this.rectBuf) { const a = p.alloc(16); this.rectBuf = { a, far: p.mapLS(a) }; }
-        p.user16(32, [['w', args[0]], ['l', this.rectBuf.far]]);   // GetWindowRect
-        const a = this.rectBuf.a, r = [p.r16(a), p.r16(a + 2), p.r16(a + 4), p.r16(a + 6)].map(v => (v << 16) >> 16);
-        return { l: r[0], t: r[1], w: r[2] - r[0], h: r[3] - r[1] };
-      }
       case 'trace': { if (args[0]) this.traceOn(args[0], args[1]); const l = this.traceLog || []; return l.splice(0); }   // (the calls traced so far; a thread regexp, and one for the import names, starts a trace)
       case 'kick': return;
       case 'exit': this.exited(args[0] || 0); return;
@@ -653,7 +749,4 @@ self.onmessage = e => {
     for (const x of m.list) if (!rfs.vols.has(x.letter)) rfs.mount(x.letter, { remote: netBackend(x.letter), unc: x.unc, label: x.unc.split('\\').pop() || '' });
   } else if (m.t === 'regop') W.regApply(m.o, true);
   else if (m.t === 'kick') { if (machine) machine.kick(); }
-  else if (m.t === 'saverExit') {   // a screen saver started here and run on the page has ended: its process here ends (the applet's handle to it)
-    const p = machine && machine.proc, pc = p && p.procs && p.procs.get(m.pid); if (pc) p.endProcess(pc, m.code >>> 0); if (machine) machine.kick();
-  }
 };

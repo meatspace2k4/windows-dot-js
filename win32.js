@@ -21,7 +21,7 @@ const BUDGET = 0x4000, SLICE_MS = 40;
 const WM = { NULL: 0, CREATE: 1, DESTROY: 2, MOVE: 3, SIZE: 5, ACTIVATE: 6, SETFOCUS: 7, KILLFOCUS: 8, PAINT: 0xf, CLOSE: 0x10,
   QUIT: 0x12, ERASEBKGND: 0x14, SHOWWINDOW: 0x18, ACTIVATEAPP: 0x1c, SETCURSOR: 0x20, NCCREATE: 0x81, NCDESTROY: 0x82,
   NCACTIVATE: 0x86, KEYDOWN: 0x100, KEYUP: 0x101, CHAR: 0x102, SYSKEYDOWN: 0x104, SYSCOMMAND: 0x112, TIMER: 0x113,
-  MOUSEMOVE: 0x200, LBUTTONDOWN: 0x201, LBUTTONUP: 0x202, RBUTTONDOWN: 0x204, MBUTTONDOWN: 0x207, INITDIALOG: 0x110, COMMAND: 0x111 };
+  MOUSEMOVE: 0x200, LBUTTONDOWN: 0x201, LBUTTONUP: 0x202, RBUTTONDOWN: 0x204, RBUTTONUP: 0x205, MBUTTONDOWN: 0x207, MBUTTONUP: 0x208, INITDIALOG: 0x110, COMMAND: 0x111 };
 
 class GuestError extends Error {}
 /** a thread that runs on and on inside a call the host made: the host takes its processor back, and the thread stays
@@ -53,7 +53,7 @@ class Process {
     // host.vmPages more 64 KiB pages above the layout's, for the address space VirtualAlloc reserves (VMEM)
     const pages = meta.layout.pages + (host.vmPages || 0);
     this.mem = new WebAssembly.Memory({ initial: pages, maximum: pages, shared: !!host.shared });   // (shared: a machine in a worker, whose screen the page reads)
-    this.vmLo = this.vmTop = meta.layout.pages * 0x10000;
+    this.vmLo = this.vmTop = host.vmTop || meta.layout.pages * 0x10000;
     this.cpu = {};
     for (const n of CPU_REGS) this.cpu[n] = new WebAssembly.Global({ value: 'i32', mutable: true }, n === 'fcw' ? 0x37f : n === 'budget' ? BUDGET : 0);
     this.runLevel = 0; this.yieldLevel = -1;
@@ -138,6 +138,7 @@ class Process {
       const dll = this.readA(base + this.r32(d + 12)).toUpperCase().replace(/\.DLL$/, '');
       const iat = base + this.r32(d + 16); let lut = base + (this.r32(d) || this.r32(d + 16));
       const native = this.loadDll(dll); if (native && !rec.deps.includes(native)) rec.deps.push(native);
+      if (!native && API[dll]) (this.jsImported || (this.jsImported = new Set())).add(dll);   // (a DLL implemented here that an image imports is loaded: GetModuleHandle finds it)
       for (let k = 0; ; k++, lut += 4) {
         const v = this.r32(lut); if (!v) break;
         const nm = v & 0x80000000 ? '#' + (v & 0xffff) : this.readA(base + v + 2);
@@ -159,6 +160,12 @@ class Process {
   /** a module handle as the running process sees it: its program at the base the program's header prefers (where
    *  every Windows 95 process has its own, in its private arena), which here may be elsewhere in the shared space */
   hmod(h) { const e = this.exe; return e && e.pref && h === e.pref && e.base !== e.pref ? e.base : h; }
+  /** the module handle of a DLL implemented here (OPENGL32), one per name: LoadLibrary's and GetModuleHandle's */
+  jsDll(name) {
+    const m = this.jsDlls || (this.jsDlls = new Map());
+    if (!m.has(name)) m.set(name, 0x10000000 | (this.newHandle({ kind: 'module', name }) & 0xffff));
+    return m.get(name);
+  }
   moduleFor(h) { h = this.hmod(h); return this.modules.find(m => m.base === h) || this.exe; }
   thunkFor(dll, nm) {
     const key = dll + '!' + nm;
@@ -257,6 +264,7 @@ class Process {
       if (this.runHook) this.runHook(eip);   // debugging: set from the page to watch every dispatch
       const m = eip >= LAYOUT.THUNK16 ? this.modules[0] : this.modules.find(x => eip >= x.meta.textLo && eip < x.meta.textHi);
       if (!m) {
+        if (eip < 0x10000) (this.nullJumps || (this.nullJumps = [])).push({ at: eip, from: this.lastBlock >>> 0, cs: this.cpu.cs ? this.cpu.cs.value & 0xffff : null });
         const next = this.dataCode && this.dataCode(eip);
         if (next !== undefined && next !== null) { eip = next; continue; }
         const dyn = this.dynRun && this.dynRun(eip);   // code generated at run time (dyn.js)
@@ -268,6 +276,7 @@ class Process {
       if (this.modeSwitch && eip < LAYOUT.THUNK16) this.modeSwitch(m);
       if (m.clock) this.tick16();   // SYSTEM.DRV reads the time the timer VxD keeps current
       let r;
+      this.lastBlock = eip;
       try { r = m.run(eip); } catch (e) {
         // an access past the end of memory (a pointer that is no address the machine has): a page fault where the guest
         // made it, for its own handlers or its fault dialog, as the processor raises one; not the machine's end
@@ -426,6 +435,9 @@ class Process {
       catch (e) { if (e instanceof GuestError) { this.trapped = e.message; return LAYOUT.SENTINEL; } throw e; }
     }
     const a = []; for (let i = 0; i < (nargs < 0 ? 8 : nargs); i++) a.push(this.r32(sp + 4 + 4 * i));
+    const pc = this.thread16 && this.thread16.pc;
+    if (pc && /\.SCR$/i.test(pc.path || '') && t.dll === 'USER32' && /^(IsWindow|GetForegroundWindow|GetParent|GetClientRect|GetDC|CreateWindowExA|GetSystemMetrics|ChangeDisplaySettingsA)$/.test(t.nm))
+      (pc.user32Calls || (pc.user32Calls = [])).push({ name: t.nm, args: a.slice(0, 4) });
     let r;
     try { r = fn.apply(this, a); }
     catch (e) { if (e instanceof GuestError) { this.trapped = e.message; return LAYOUT.SENTINEL; } throw e; }
@@ -541,7 +553,15 @@ class Process {
     if (!this.waiting) return true;
     return !!this.nextMessage(0, false);
   }
-  dispatchInput(msg, wp, lp) { for (const w of this.windows.values()) if (!w.parent || w.child) { this.post(w.hwnd, msg, wp, lp); break; } }
+  dispatchInput(msg, wp, lp) {
+    for (const w of this.windows.values()) if (!w.noInput && (!w.parent || w.child)) {
+      if ([WM.MOUSEMOVE, WM.LBUTTONDOWN, WM.LBUTTONUP, WM.RBUTTONDOWN, WM.RBUTTONUP, WM.MBUTTONDOWN, WM.MBUTTONUP].includes(msg)) {
+        const [x, y] = this.absPos(w), sx = lp & 0xffff, sy = lp >>> 16;
+        lp = (((sy - y) & 0xffff) << 16) | ((sx - x) & 0xffff);
+      }
+      this.post(w.hwnd, msg, wp, lp); break;
+    }
+  }
 }
 
 // ---------------------------------------------------------------- GDI objects
@@ -584,14 +604,21 @@ class DC {
     return v;
   }
   color(c) { return css(this.rgb(c)); }
-  touch() { if (this.bitmap) this.bitmap.ver++; }
+  touch() {
+    if (this.bitmap) this.bitmap.ver++;
+    else {
+      const w = this.win();
+      if (w) for (let v = w; v; v = v.parentWin) v.surfaceVersion = (v.surfaceVersion || 0) + 1;
+      else if (!this.hwnd && this.proc.host.surfaceChanged) this.proc.host.surfaceChanged(0, this.proc.pc);
+    }
+  }
   // Window DCs draw relative to the window's screen position and are clipped to it.
   win() { return !this.bitmap && this.hwnd ? this.proc.windows.get(this.hwnd) : null; }
   origin() { const w = this.win(); return w ? this.proc.absPos(w) : [0, 0]; }
   pre() {
     const g = this.ctx, w = this.win();
     if (!w || !w.parentWin) { g.setTransform(1, 0, 0, 1, 0, 0); return g; }
-    const [x, y] = this.proc.absPos(w);
+    const [x, y] = w.previewChild ? [0, 0] : this.proc.absPos(w);
     g.save(); g.setTransform(1, 0, 0, 1, x, y); g.beginPath(); g.rect(0, 0, w.w, w.h); g.clip(); this.clipped = true;
     return g;
   }
@@ -748,11 +775,19 @@ const def = (dll, name, n, fn) => { (API[dll] = API[dll] || {})[name] = [n, fn];
 const TRUE = 1, FALSE = 0;
 
 // KERNEL32
-def('KERNEL32', 'GetCommandLineA', 0, function () { return this.cmdPtr; });
+def('KERNEL32', 'GetCommandLineA', 0, function () {
+  const pc = this.thread16 && this.thread16.pc, ptr = this.cmdPtr;
+  if (pc && /\.SCR$/i.test(pc.path || '')) pc.commandLineSeen = this.readA(ptr);
+  return ptr;
+});
 def('KERNEL32', 'GetStartupInfoA', 1, function (p) { this.u8.fill(0, p, p + 68); this.w32(p, 68); });
 def('KERNEL32', 'GetModuleHandleA', 1, function (name) {
   if (!name) return this.exe.base;
-  const m = this.byName.get((this.readA(name) || '').toUpperCase().replace(/\.DLL$/, '')); return m ? m.base : 0;
+  const n = (this.readA(name) || '').toUpperCase().replace(/^.*\\/, '').replace(/\.DLL$/, ''), m = this.byName.get(n);
+  // (a DLL implemented here is loaded once an image imported it or LoadLibrary loaded it: GDI32's ChoosePixelFormat
+  // and SwapBuffers find OPENGL32 by GetModuleHandle, and give up without it)
+  if (m) return m.base;
+  return (this.jsDlls && this.jsDlls.get(n)) || (this.jsImported && this.jsImported.has(n) ? this.jsDll(n) : 0);
 });
 def('KERNEL32', 'GetModuleFileNameA', 3, function (h, buf, n) {
   h = this.hmod(h);
@@ -763,7 +798,14 @@ def('KERNEL32', 'GetModuleFileNameA', 3, function (h, buf, n) {
 });
 def('KERNEL32', 'ExitProcess', 'regs', function () {
   const code = this.r32(this.reg('esp') + 4), pc = this.pc;
-  if (pc !== this.pc0) { this.endProcess(pc, code); return LAYOUT.SENTINEL; }   // a process this one started: its threads end
+  if (pc !== this.pc0) {
+    const esp = this.reg('esp'), ret = this.r32(esp);
+    pc.exitDebug = { code, cmd: this.readA(pc.cmdPtr), eip: this.reg('eip'), esp, ret,
+      retBytes: Array.from(this.u8.slice(ret, ret + 24), b => b.toString(16).padStart(2, '0')).join(''),
+      stack: Array.from({ length: 8 }, (_, i) => this.r32(esp + 4 + i * 4)),
+      modules: this.modules.map(m => ({ name: m.name, base: m.base, size: m.size })) };
+    this.endProcess(pc, code); return LAYOUT.SENTINEL;
+  }   // a process this one started: its threads end
   this.exitCode = code; this.host.exited(code); return LAYOUT.SENTINEL;
 });
 def('KERNEL32', 'TerminateProcess', 2, function (h, code) { this.exitCode = code; this.host.exited(code); return 1; });
@@ -796,7 +838,12 @@ function sleep(ms) {
 def('KERNEL32', 'Sleep', 1, function (ms) { return sleep.call(this, ms); });
 def('KERNEL32', 'SleepEx', 2, function (ms) { return sleep.call(this, ms); });
 def('KERNEL32', 'GetVersion', 0, () => 0xc0000004);
-def('KERNEL32', 'GetVersionExA', 1, function (p) { this.w32(p + 4, 4); this.w32(p + 8, 0); this.w32(p + 12, 950); this.w32(p + 16, 1); this.writeA(p + 20, ' B'); return 1; });
+def('KERNEL32', 'GetVersionExA', 1, function (p) {
+  this.w32(p + 4, 4); this.w32(p + 8, 0); this.w32(p + 12, 950); this.w32(p + 16, 1); this.writeA(p + 20, ' B');
+  const pc = this.thread16 && this.thread16.pc;
+  if (pc && /\.SCR$/i.test(pc.path || '')) pc.versionInfoSeen = { size: this.r32(p), major: this.r32(p + 4), minor: this.r32(p + 8), build: this.r32(p + 12), platform: this.r32(p + 16) };
+  return 1;
+});
 def('KERNEL32', 'LoadLibraryA', 1, function (n) {
   const name = (this.readA(n) || '').toUpperCase().replace(/^.*\\/, '').replace(/\.DLL$/, '');
   const native = this.loadDll(name);
@@ -805,7 +852,7 @@ def('KERNEL32', 'LoadLibraryA', 1, function (n) {
   // shell's thread had attached WINMM, so WINMM's thunks to MMSYSTEM were not connected and it crashed in them)
   if (native) { this.runPendingInits(); for (const m of this.importClosure(native)) this.attach(m); return native.base; }
   if (!API[name]) { this.lastError = 126; return 0; }   // ERROR_MOD_NOT_FOUND: neither a system DLL here nor one implemented in JS
-  return 0x10000000 | (this.newHandle({ kind: 'module', name }) & 0xffff);
+  return this.jsDll(name);
 });
 def('KERNEL32', 'FreeLibrary', 1, () => 1);
 def('KERNEL32', 'GetProcAddress', 2, function (h, name) {
@@ -957,7 +1004,7 @@ def('KERNEL32', 'VirtualAlloc', 4, function (a, n, type) {
   if (spare >= 0) { b = this.vspare.splice(spare, 1)[0].base; this.u8.fill(0, b, b + size); }
   else if (this.vmTop + size <= end) { b = this.vmTop; this.vmTop += size; }
   else { heap = this.alloc(size + 0xffff, true); b = (heap + 0xffff) & ~0xffff; }
-  regions.set(b, { size, heap });
+  regions.set(b, { size, heap, pc: this.pc || null });   // (pc: the process it is reserved for; it goes when that process ends)
   return b;
 });
 def('KERNEL32', 'VirtualFree', 3, function (p, n, type) {
@@ -1758,10 +1805,15 @@ def('USER32', 'RegisterWindowMessageA', 1, function () { return 0xc100 + (this.n
 def('USER32', 'CreateWindowExA', 12, function (ex, cls, title, style, x, y, w, h, parent, menu, inst, param) {
   const c = this.classes.get(String(this.resName(cls)).toLowerCase());
   if (!c) return 0;
-  const win = { kind: 'window', cls: c, proc: c.proc, style, ex, x: x | 0, y: y | 0, w: w | 0, h: h | 0, parent, child: !!(style & 0x40000000), dirty: true, title: this.readA(title) || '', extra: new Map() };
+  const win = { kind: 'window', cls: c, proc: c.proc, pc: this.pc, style, ex, x: x | 0, y: y | 0, w: w | 0, h: h | 0, parent, child: !!(style & 0x40000000), dirty: true, surfaceVersion: 1, title: this.readA(title) || '', extra: new Map() };
   const hwnd = this.newHandle(win); win.hwnd = hwnd; this.windows.set(hwnd, win);
-  const pw = win.child ? this.windows.get(parent) : null;
-  if (pw) { win.parentWin = pw; win.ctx = pw.ctx; } else win.ctx = this.host.surface(hwnd, win.w, win.h, win);
+  const parentWindow = this.windows.get(parent);
+  const pw = parentWindow && (win.child || parentWindow.hostPreview) ? parentWindow : null;
+  if (pw && pw.hostPreview) {
+    win.parentWin = pw; win.child = true; win.previewChild = true;
+    win.ctx = this.host.surface(hwnd, win.w, win.h, win, this.pc);
+  } else if (pw) { win.parentWin = pw; win.ctx = pw.ctx; }
+  else win.ctx = this.host.surface(hwnd, win.w, win.h, win, this.pc);
   const cs = this.alloc(48);
   [param, inst, menu, parent, h, w, y, x, style, title, cls, ex].forEach((v, i) => this.w32(cs + 4 * i, v));
   this.sendMsg(hwnd, WM.NCCREATE, 0, cs);
@@ -1773,6 +1825,8 @@ def('USER32', 'CreateWindowExA', 12, function (ex, cls, title, style, x, y, w, h
 });
 def('USER32', 'DestroyWindow', 1, function (h) {
   const w = this.windows.get(h); if (!w) return 0;
+  for (const child of [...this.windows.values()]) if (child.parent === h) API.USER32.DestroyWindow[1].call(this, child.hwnd);
+  if (w.parentWin && w.parentWin.hostPreview) w.parentWin.surfaceVersion++;
   this.sendMsg(h, WM.DESTROY); this.sendMsg(h, WM.NCDESTROY);
   this.windows.delete(h); this.timers = this.timers.filter(t => t.hwnd !== h);
   this.host.destroyed && this.host.destroyed(h);
@@ -1784,7 +1838,10 @@ function moveWindow(p, h, x, y, w, hh, flags) {
   const win = p.windows.get(h); if (!win || win.kind === 'control') return 1;
   const sized = !(flags & 1) && (w !== win.w || hh !== win.h), moved = !(flags & 2) && (x !== win.x || y !== win.y);
   if (!(flags & 2)) { win.x = x | 0; win.y = y | 0; }
-  if (!(flags & 1)) { win.w = w | 0; win.h = hh | 0; }
+  if (!(flags & 1)) {
+    win.w = w | 0; win.h = hh | 0;
+    if (sized && win.previewChild) win.surfaceVersion++;
+  }
   if (moved) p.sendMsg(h, WM.MOVE, 0, ((win.y & 0xffff) << 16) | (win.x & 0xffff));
   if (sized) p.sendMsg(h, WM.SIZE, 0, ((win.h & 0xffff) << 16) | (win.w & 0xffff));
   return 1;
@@ -1802,6 +1859,8 @@ def('USER32', 'DefWindowProcA', 4, function (h, msg, wp, lp) {
 });
 def('USER32', 'GetMessageA', 4, function (p, hwnd) {
   const m = this.nextMessage(hwnd, true);
+  const pc = this.pc;
+  if (pc && /\.SCR$/i.test(pc.path || '')) (pc.messageDebug || (pc.messageDebug = [])).push({ api: 'GetMessageA', msg: m && m.msg, hwnd: m && m.hwnd, quit: this.quit, queue: this.queue.length });
   if (!m) {
     if (this.depth === 0) { this.waiting = true; return YIELD; }
     this.writeMsg(p, { hwnd: 0, msg: 0, wp: 0, lp: 0 }); return 1;
@@ -1827,7 +1886,11 @@ def('USER32', 'DispatchMessageA', 1, function (p) {
 });
 def('USER32', 'SendMessageA', 4, function (h, msg, wp, lp) { return this.sendMsg(h, msg, wp, lp); });
 def('USER32', 'PostMessageA', 4, function (h, msg, wp, lp) { this.post(h, msg, wp, lp); return 1; });
-def('USER32', 'PostQuitMessage', 1, function (code) { this.quit = code; return 0; });
+def('USER32', 'PostQuitMessage', 1, function (code) {
+  const pc = this.pc;
+  if (pc && /\.SCR$/i.test(pc.path || '')) (pc.messageDebug || (pc.messageDebug = [])).push({ api: 'PostQuitMessage', code });
+  this.quit = code; return 0;
+});
 def('USER32', 'SetTimer', 4, function (h, id, ms, proc) {
   this.timers = this.timers.filter(t => !(t.hwnd === h && t.id === id));
   // Win95 USER timers run off the 18.2 Hz system tick: intervals round up to whole 54.925 ms ticks.
@@ -1839,7 +1902,6 @@ def('USER32', 'SetTimer', 4, function (h, id, ms, proc) {
 def('USER32', 'KillTimer', 2, function (h, id) { this.timers = this.timers.filter(t => !(t.hwnd === h && t.id === id)); return 1; });
 def('USER32', 'GetClientRect', 2, function (h, p) {
   const w = this.windows.get(h);
-  if (!w && h && h === this.host.previewParent) { writeRect(this, p, 0, 0, this.host.previewW, this.host.previewH); return 1; }
   writeRect(this, p, 0, 0, w ? w.w : this.host.width, w ? w.h : this.host.height); return 1;
 });
 def('USER32', 'GetWindowRect', 2, function (h, p) {
@@ -1850,7 +1912,7 @@ def('USER32', 'GetWindowRect', 2, function (h, p) {
 });
 def('USER32', 'GetDC', 1, function (h) {
   const w = this.windows.get(h);
-  return this.newHandle(new DC(this, w ? w.ctx : this.host.surface(0, this.host.width, this.host.height), w ? w.w : this.host.width, w ? w.h : this.host.height, h));
+  return this.newHandle(new DC(this, w ? w.ctx : this.host.surface(0, this.host.width, this.host.height, null, this.pc), w ? w.w : this.host.width, w ? w.h : this.host.height, h));
 });
 def('USER32', 'ReleaseDC', 2, function (h, dc) { this.handles.delete(dc); return 1; });
 def('USER32', 'BeginPaint', 2, function (h, ps) {
@@ -1881,7 +1943,11 @@ def('USER32', 'GetForegroundWindow', 0, function () { for (const h of this.windo
 def('USER32', 'SetForegroundWindow', 1, () => 1);
 def('USER32', 'GetFocus', 0, function () { for (const h of this.windows.keys()) return h; return 0; });
 def('USER32', 'SetFocus', 1, () => 0);
-def('USER32', 'IsWindow', 1, function (h) { return this.windows.has(h) || h === this.host.previewParent ? 1 : 0; });
+def('USER32', 'IsWindow', 1, function (h) {
+  const pc = this.thread16 && this.thread16.pc;
+  if (pc && /\.SCR$/i.test(pc.path || '')) (pc.isWindowCalls || (pc.isWindowCalls = [])).push({ h, found: this.windows.has(h), keys: [...this.windows.keys()] });
+  return this.windows.has(h) ? 1 : 0;
+});
 def('USER32', 'GetParent', 1, function (h) { const w = this.windows.get(h); return w ? w.parent : 0; });
 def('USER32', 'LoadStringA', 4, function (inst, id, buf, n) { const s = this.loadString(id, this.moduleFor(inst)); if (s === null) { if (n) this.u8[buf] = 0; return 0; } return this.writeA(buf, s, n); });
 def('USER32', 'CharNextA', 1, function (p) { return this.u8[p] ? p + 1 : p; });

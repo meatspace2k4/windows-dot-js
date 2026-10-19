@@ -199,7 +199,8 @@ class Context {
   constructor(proc, dc) {
     this.p = proc;
     const w = Math.max(1, dc.w), h = Math.max(1, dc.h);
-    this.canvas = document.createElement('canvas'); this.canvas.width = w; this.canvas.height = h;
+    this.canvas = typeof OffscreenCanvas === 'function' ? new OffscreenCanvas(w, h) : document.createElement('canvas');
+    this.canvas.width = w; this.canvas.height = h;
     const g = this.g = this.canvas.getContext('webgl2', { antialias: false, depth: true, stencil: false, alpha: false, preserveDrawingBuffer: true, premultipliedAlpha: false });
     if (!g) throw new GuestError('WebGL2 is not available');
     this.progs = { smooth: this.program('out', 'in'), flat: this.program('flat out', 'flat in') };
@@ -368,12 +369,62 @@ class Context {
   }
   // Copy the rendered frame into the window's current rectangle on its GDI surface.
   present() {
-    const dc = this.dc; if (!dc || !dc.ctx) return;
+    const dc = this.dc; if (!dc) return;
+    if (dc.native) { this.presentNative(dc); return; }
+    if (!dc.ctx) return;
     if (this.p.stats) this.p.stats.presents++;
     this.g.flush();
     const g = dc.pre(); g.drawImage(this.canvas, 0, 0); dc.post(); dc.touch();
     if (dc.bitmap && dc.bitmap.dib) window.W95Win32.dibOut(this.p, dc.bitmap);
   }
+  /** a DC of the machine's own GDI (the saver's window, a child of Display Properties' monitor or the full screen):
+   *  the frame goes to it as a generic OpenGL's does, a 32-bit bottom-up DIB through GDI32's SetDIBitsToDevice */
+  presentNative(dc) {
+    const p = this.p, g = this.g, w = this.canvas.width, h = this.canvas.height;
+    if (this.p.stats) this.p.stats.presents++;
+    g.flush();
+    // at 8 bits the frame is 3-3-2 indices into the palette the program realized from the pixel format (DIB_PAL_COLORS,
+    // the color table the identity); deeper, 32-bit RGB
+    const pal = dc.bpp <= 8, stride = pal ? (w + 3) & ~3 : w * 4, head = pal ? 40 + 512 : 40;
+    if (!dc.bits || dc.bw !== w || dc.bh !== h) {
+      if (dc.bits) p.free(dc.bits);
+      dc.bits = p.alloc(head + stride * h); dc.bw = w; dc.bh = h; dc.rgba = new Uint8Array(w * h * 4);
+      p.u8.fill(0, dc.bits, dc.bits + head);
+      p.w32(dc.bits, 40); p.w32(dc.bits + 4, w); p.w32(dc.bits + 8, h); p.w16(dc.bits + 12, 1); p.w16(dc.bits + 14, pal ? 8 : 32);   // BITMAPINFOHEADER, BI_RGB
+      if (pal) { p.w32(dc.bits + 32, 256); for (let i = 0; i < 256; i++) p.w16(dc.bits + 40 + 2 * i, i); }
+    }
+    g.readPixels(0, 0, w, h, g.RGBA, g.UNSIGNED_BYTE, dc.rgba);   // (rows bottom-up, as the DIB's)
+    const src = dc.rgba, out = dc.bits + head, u8 = p.u8;
+    if (pal) for (let y = 0; y < h; y++) for (let x = 0, s = y * w * 4, o = out + y * stride; x < w; x++, s += 4) u8[o + x] = (src[s] >> 5) | ((src[s + 1] >> 5) << 3) | ((src[s + 2] >> 6) << 6);
+    else for (let i = 0; i < w * h * 4; i += 4) { u8[out + i] = src[i + 2]; u8[out + i + 1] = src[i + 1]; u8[out + i + 2] = src[i]; u8[out + i + 3] = 0; }
+    nativeCall(p, 'GDI32', 'SetDIBitsToDevice', [dc.hdc, 0, 0, w, h, 0, 0, 0, h, out, dc.bits, pal ? 1 : 0]);   // DIB_PAL_COLORS, DIB_RGB_COLORS
+    nativeSize(p, dc);
+  }
+}
+/** a call into the machine's own USER32 or GDI32 (null: the process has none) */
+function nativeCall(p, dll, name, args) {
+  const m = p.byName && p.byName.get(dll), a = m && m.exports && m.exports.get(name);
+  if (!a) throw new GuestError(`${dll} has no ${name}`);
+  return p.call(a, args);
+}
+/** the DC a context draws to: one of this process's GDI (win32.js), or one of the machine's own GDI32 (its client
+ *  area's size from the window it belongs to) */
+function glDC(p, hdc) {
+  if (!(p.pc && p.pc.nativeGdi)) return dcOf(p, hdc);   // (a process on the machine's GDI32: worker.js spawnSaver)
+  const known = (p.glNativeDCs || (p.glNativeDCs = new Map())).get(hdc); if (known) return known;
+  const hwnd = nativeCall(p, 'USER32', 'WindowFromDC', [hdc]);
+  // (the client area's size, as fitDrawable reads a DC's window: taken again with each frame presented)
+  const dc = { native: true, hdc, hwnd, pc: p.pc, w: 1, h: 1, bpp: dcDepth(p, hdc), win() { return { w: this.w, h: this.h }; } };
+  nativeSize(p, dc);
+  p.glNativeDCs.set(hdc, dc);
+  return dc;
+}
+/** a GDI32 DC's window's client size, through USER32's GetClientRect */
+function nativeSize(p, dc) {
+  if (!dc.hwnd) return;
+  const r = p.alloc(16);
+  if (nativeCall(p, 'USER32', 'GetClientRect', [dc.hwnd, r])) { dc.w = Math.max(1, (p.r32(r + 8) - p.r32(r)) | 0); dc.h = Math.max(1, (p.r32(r + 12) - p.r32(r + 4)) | 0); }
+  p.free(r);
 }
 
 // ---------------------------------------------------------------- operations (also replayed from display lists)
@@ -719,16 +770,33 @@ gl('glColorMask', 'uuuu', function (c, r, g, b, a) { c.g.colorMask(!!r, !!g, !!b
 
 // ---------------------------------------------------------------- wgl and pixel formats
 gl('wglCreateContext', 'u', function (c, hdc) {
-  const dc = dcOf(this, hdc);
-  const ctx = new Context(this, dc); ctx.dc = dc;
+  const dc = glDC(this, hdc);
+  const ctx = new Context(this, dc); ctx.dc = dc; ctx.pc = this.pc || null;
+  (this.glContexts || (this.glContexts = new Set())).add(ctx);   // (released with wglDeleteContext, or as its process ends)
   return this.newHandle({ kind: 'glrc', ctx });
 });
 gl('wglMakeCurrent', 'uu', function (c, hdc, h) {
   if (!h) { this.glctx = null; return 1; }
   const o = this.obj(h); if (!o) return 0;
-  this.glctx = o.ctx; o.ctx.dc = dcOf(this, hdc); this.glHdc = hdc; this.glrc = h; return 1;
+  this.glctx = o.ctx; o.ctx.dc = glDC(this, hdc); this.glHdc = hdc; this.glrc = h; return 1;
 });
-gl('wglDeleteContext', 'u', function (c, h) { const o = this.obj(h); if (o && this.glctx === o.ctx) this.glctx = null; this.handles.delete(h); return 1; });
+// the pixel-format entries the machine's own GDI32 asks the driver for (its ChoosePixelFormat, SetPixelFormat,
+// DescribePixelFormat, GetPixelFormat and SwapBuffers load OPENGL32 and call these)
+gl('wglChoosePixelFormat', 'up', () => 1);
+gl('wglSetPixelFormat', 'uup', () => 1);
+gl('wglGetPixelFormat', 'u', () => 1);
+gl('wglDescribePixelFormat', 'uuup', function (c, hdc, i, n, p) { if (p) writePFD(this, p, dcDepth(this, hdc)); return 1; });
+gl('wglDeleteContext', 'u', function (c, h) {
+  const o = this.obj(h); if (o && this.glctx === o.ctx) this.glctx = null;
+  if (o && o.ctx) releaseContext(this, o.ctx);
+  this.handles.delete(h); return 1;
+});
+/** a context's GPU context goes back to the browser (it keeps only a few alive: the oldest is lost past that) */
+function releaseContext(p, ctx) {
+  if (p.glContexts) p.glContexts.delete(ctx);
+  const lose = ctx.g && ctx.g.getExtension && ctx.g.getExtension('WEBGL_lose_context'); if (lose) lose.loseContext();
+  ctx.g = null;
+}
 gl('wglGetCurrentContext', '', function () { return this.glctx ? this.glrc : 0; });
 gl('wglGetCurrentDC', '', function () { return this.glctx ? this.glHdc : 0; });
 gl('wglShareLists', 'uu', function (c, a, b) { const A = this.obj(a), B = this.obj(b); if (A && B) B.ctx.lists = A.ctx.lists; return 1; });
@@ -766,13 +834,26 @@ function glyphContours(p, buf, size, em, dev) {
 }
 gl('wglUseFontOutlinesA', 'uuuuffip', function (c, hdc, first, count, base, dev, ext, format, gmf) {
   if (!c) return 0;
-  const font = dcOf(this, hdc).font, n = this.nativeFontDC && this.nativeFontDC(font); if (!n) return 0;
+  const dc = glDC(this, hdc);
+  // the machine's own GDI's DC: its font is the one selected there; a DC of this process's: the native counterpart
+  const font = dc.native ? null : dc.font, n = dc.native ? { call: (nm, a) => nativeCall(this, 'GDI32', nm, a), hdc } : this.nativeFontDC && this.nativeFontDC(font);
+  if (!n) return 0;
   const otm = this.alloc(256); n.call('GetOutlineTextMetricsA', [n.hdc, 256, otm]);
   const em = this.r32(otm + 92) || 2048; this.free(otm);
   // the outlines are taken from the same face at one pixel per font unit
-  const big = { kind: 'font', lf: { ...font.lf, height: -em }, raw: font.raw && font.raw.slice() };
-  if (big.raw) new DataView(big.raw.buffer).setInt32(0, -em, true);
-  this.nativeFontDC(big);
+  let big = null, restore;
+  if (dc.native) {
+    const lf = this.alloc(60); this.u8.fill(0, lf, lf + 60);
+    n.call('GetObjectA', [n.call('GetCurrentObject', [hdc, 6]), 60, lf]); this.w32(lf, -em);   // OBJ_FONT
+    const hbig = n.call('CreateFontIndirectA', [lf]); this.free(lf);
+    const old = n.call('SelectObject', [hdc, hbig]);
+    restore = () => { n.call('SelectObject', [hdc, old]); n.call('DeleteObject', [hbig]); };
+  } else {
+    big = { kind: 'font', lf: { ...font.lf, height: -em }, raw: font.raw && font.raw.slice() };
+    if (big.raw) new DataView(big.raw.buffer).setInt32(0, -em, true);
+    this.nativeFontDC(big);
+    restore = () => { const hbig = this.nfonts.get(big); this.nfonts.delete(big); this.nativeFontDC(font); n.call('DeleteObject', [hbig]); };
+  }
   if (!(dev > 0)) dev = 1 / em;
   let glu = this.byName.get('GLU32');
   if (!glu) { glu = this.loadDll('GLU32'); if (this.runPendingInits) this.runPendingInits(); }
@@ -844,23 +925,29 @@ gl('wglUseFontOutlinesA', 'uuuuffip', function (c, hdc, first, count, base, dev,
   }
   if (tess) G('gluDeleteTess', [tess]);
   this.free(gm); this.free(mat);
-  const hbig = this.nfonts.get(big); this.nfonts.delete(big);
-  this.nativeFontDC(font); n.call('DeleteObject', [hbig]);
+  restore();
   return ok;
 });
 
 const PFD_FLAGS = 0x4 | 0x20 | 0x1 | 0x400;   // DRAW_TO_WINDOW | SUPPORT_OPENGL | DOUBLEBUFFER | SWAP_COPY
-function writePFD(p, a) {
+/** the pixel format, at the DC's depth as the generic implementation describes it (a saver takes the format whose
+ *  cColorBits is the screen's BITSPIXEL * PLANES): at 8 bits RGB 3-3-2 with PFD_NEED_PALETTE, the palette the program
+ *  makes from the shifts and realizes in its window's DC */
+function writePFD(p, a, bpp = 24) {
   p.u8.fill(0, a, a + 40);
-  p.w16(a, 40); p.w16(a + 2, 1); p.w32(a + 4, PFD_FLAGS); p.u8[a + 8] = 0; p.u8[a + 9] = 24;
-  p.u8[a + 10] = 8; p.u8[a + 11] = 16; p.u8[a + 12] = 8; p.u8[a + 13] = 8; p.u8[a + 14] = 8; p.u8[a + 15] = 0;
+  const pal = bpp <= 8;
+  p.w16(a, 40); p.w16(a + 2, 1); p.w32(a + 4, PFD_FLAGS | (pal ? 0x80 : 0)); p.u8[a + 8] = 0; p.u8[a + 9] = pal ? 8 : 24;
+  if (pal) { p.u8[a + 10] = 3; p.u8[a + 11] = 0; p.u8[a + 12] = 3; p.u8[a + 13] = 3; p.u8[a + 14] = 2; p.u8[a + 15] = 6; }
+  else { p.u8[a + 10] = 8; p.u8[a + 11] = 16; p.u8[a + 12] = 8; p.u8[a + 13] = 8; p.u8[a + 14] = 8; p.u8[a + 15] = 0; }
   p.u8[a + 23] = 16; p.u8[a + 26] = 0;
 }
+/** a DC's depth: BITSPIXEL * PLANES, from the machine's GDI32 for its DCs */
+const dcDepth = (p, hdc) => (p.pc && p.pc.nativeGdi ? nativeCall(p, 'GDI32', 'GetDeviceCaps', [hdc, 12]) * nativeCall(p, 'GDI32', 'GetDeviceCaps', [hdc, 14]) : 24);
 def('GDI32', 'ChoosePixelFormat', 2, function () { return 1; });
 def('GDI32', 'SetPixelFormat', 3, function () { return 1; });
 def('GDI32', 'GetPixelFormat', 1, function () { return 1; });
-def('GDI32', 'DescribePixelFormat', 4, function (hdc, i, n, p) { if (p) writePFD(this, p); return 1; });
+def('GDI32', 'DescribePixelFormat', 4, function (hdc, i, n, p) { if (p) writePFD(this, p, dcDepth(this, hdc)); return 1; });
 def('GDI32', 'SwapBuffers', 1, function () { if (this.glctx) this.glctx.present(); return 1; });
 
-window.W95GL = { Context, E };
+window.W95GL = { Context, E, releaseContext };
 })();

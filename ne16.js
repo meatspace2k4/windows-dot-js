@@ -1171,12 +1171,12 @@ def16('VFLATD', 0, '', 'jmp', function () {
 P.setVideoMode = function (mode, clear, hicolor) {
   const a = this.adapter(), m = ET_MODES[mode & 0x7f]; if (!m) return false;
   a.mode = mode & 0x7f; [a.w, a.h, a.bpp] = m; a.hicolor = hicolor || 0;
-  if (a.mode === 0x38 && this.customMode && !hicolor) [a.w, a.h] = this.customMode;   // the adapter's custom mode: the configured size (displaySlot)
+  if (a.mode === 0x38 && this.customMode) [a.w, a.h] = this.customMode;   // the adapter's custom mode: the configured size (displaySlot), at any depth
   if (hicolor) a.bpp = hicolor;
   a.pitch = a.w * (a.bpp >> 3);
   // the register values the BIOS loads for the mode: sequencer memory mode (chain-4 for the packed-pixel modes), the
   // CRTC's horizontal and vertical display end (with their overflow bits in 07h and Tseng's 35h) and its offset
-  const vde = a.h - 1, off = a.bpp ? a.pitch >> 3 : a.w >> 3;
+  const vde = a.h - 1, off = a.bpp ? (a.pitch + 7) >> 3 : a.w >> 3;   // (the offset register counts 8 bytes: a line is never shorter than its pixels)
   a.misc = 0x63; a.seq[4] = a.bpp ? 0x0e : 0x02;
   a.crtc[0x01] = (a.w >> 3) - 1; a.crtc[0x12] = vde & 0xff;
   a.crtc[0x07] = (a.crtc[0x07] & ~0x42) | ((vde >> 8 & 1) << 1) | ((vde >> 9 & 1) << 6);
@@ -1552,6 +1552,7 @@ def16('KERNEL', 11, 'w', 'w', function (p) { const lh = this.lheap(); const b = 
 def16('KERNEL', 12, 'w', 'w', function (h) { const lh = this.lheap(); return lh.handles.has(h & 0xffff) ? this.u8[this.selBase(lh.sel) + h + 3] | (this.u8[this.selBase(lh.sel) + h + 2] << 8) : 0; });  // LocalFlags
 def16('KERNEL', 13, 'w', 'w', function () { const lh = this.lheap(); this.localCompact(lh); return lh.free.reduce((m, f) => Math.max(m, f[1]), 0); });   // LocalCompact
 def16('KERNEL', 121, 'ww', 'w', function () { const lh = this.lheap(); return lh.free.reduce((m, f) => Math.max(m, f[1]), 0); }); // LocalShrink
+def16('KERNEL', 161, '', 'w', function () { const lh = this.lheap(); return Math.min(0xffff, lh.free.reduce((s, f) => s + f[1], 0)); });   // LocalCountFree: the free bytes in DS's local heap
 
 def16('KERNEL', 15, 'wl', 'w', function (fl, n) { return this.globalAlloc16(fl, n); });
 def16('KERNEL', 16, 'wlw', 'w', function (h, n, fl) {   // GlobalReAlloc
@@ -2447,7 +2448,8 @@ def16('KERNEL', 54, 'www', 'w', function (hInst, off, cb) {
  *  but its queue, or a plain object wait once its work is handed to another thread); a wait that pumps while holding
  *  a handle is still start-up (the shell waiting on RUNONCE's "Windows is now setting up" screen) */
 P.processIdle = function (pc) {
-  const t = pc.main;
+  const t = pc && pc.main;
+  if (!t) return true;
   if (t.state === 'done' || t.state === 'hung' || pc.exitCode !== null) return true;
   if (t.state !== 'waiting' || t.preempted) return false;
   if (t.slept) return true;
@@ -2814,8 +2816,30 @@ P.pcThreadEnded = function (t) {
 P.endProcess = function (pc, code) {
   if (pc.exitCode !== null) return;
   pc.exitCode = code >>> 0;
-  for (const t of (this.threadsById || new Map()).values()) if (t.pc === pc && t !== this.thread16 && t.state !== 'done') { t.state = 'done'; this.wakeWaiters(t); if (this.win16Held && this.win16Held.who === t) this.win16Held = null; }
+  for (const t of (this.threadsById || new Map()).values()) if (t.pc === pc && t !== this.thread16 && t.state !== 'done') {
+    t.state = 'done'; this.wakeWaiters(t); if (this.win16Held && this.win16Held.who === t) this.win16Held = null;
+    if (t.flat && t.stackBase) { this.free(t.stackBase); this.free(t.tib); t.stackBase = t.tib = 0; }   // (its stack and thread information block go with it)
+  }
+  // the address space it reserved (VirtualAlloc) goes with it, as its private arena does on Windows 95
+  for (const [b, r] of this.vregions || new Map()) if (r.pc === pc) { this.vregions.delete(b); if (r.heap) this.free(r.heap); else (this.vspare || (this.vspare = [])).push({ base: b, size: r.size }); }
+  for (const [h, dc] of this.glNativeDCs || new Map()) if (dc.pc === pc) { if (dc.bits) this.free(dc.bits); this.glNativeDCs.delete(h); }   // (gl.js: its frames' DIBs)
+  for (const ctx of [...(this.glContexts || [])]) if (ctx.pc === pc) { if (this.glctx === ctx) this.glctx = null; window.W95GL.releaseContext(this, ctx); }   // (and its GPU contexts)
   if (this.thread16 && this.thread16.pc === pc) this.thread16.exitCode = code >>> 0;
+  const destroy = window.W95Win32 && window.W95Win32.API.USER32.DestroyWindow;
+  if (destroy) for (const w of [...(this.windows || new Map()).values()]) if (w.pc === pc && (!w.parentWin || w.parentWin.pc !== pc)) {
+    try { destroy[1].call(this, w.hwnd); } catch (_) { /* process teardown continues */ }
+  }
+  if (this.w32DesktopSurface && this.w32DesktopSurface.pc === pc) this.w32DesktopSurface = null;
+  // USER hears of its end as KERNEL32 tells it (SignalProc32: USIG_THREAD_EXIT 20h for each thread, USIG_PROCESS_EXIT
+  // 300h, USIG_PROCESS_DESTROY 400h): the windows and queues of its threads go there
+  if (pc.started && pc.exe) {
+    const u = this.ne && this.ne.get('USER'), sig = u && u.meta && this.neExport(u, 391), h = this.hinst16(pc.exe.base);
+    if (sig) try {
+      const signal = (s, id) => this.user16(391, [['l', s], ['l', id], ['l', 3], ['w', h]]);
+      for (const t of (this.threadsById || new Map()).values()) if (t.pc === pc) signal(0x20, t.id);
+      signal(0x300, pc.pid); signal(0x400, pc.pid);
+    } catch (e) { console.error(e); }
+  }
   if (this.procs) this.procs.delete(pc.pid);
   this.wakeWaiters(pc);   // (the threads waiting on its process handle)
   const g = pc.exe && pc.exe.inst; if (g) { g.bufs.delete(pc); if (g.cur === pc) g.cur = null; }   // (its copy of a shared image's data goes)
@@ -2894,7 +2918,7 @@ P.threads16 = function (nested = false, only = null) {
         t.state = 'done'; this.wakeWaiters(t);
         // a fault in a program the system started ends that program, as Windows 95 closes the one program that
         // performed an illegal operation; the system and the other programs go on
-        if (r !== 0 && this.trapped && t.pc && this.noMain) { (this.pcFaults || (this.pcFaults = [])).push({ pc: t.pc, why: this.trapped }); this.trapped = null; this.endProcess(t.pc, 0xffffffff); }
+        if (r !== 0 && this.trapped && t.pc && this.noMain) { t.pc.trapped = this.trapped; (this.pcFaults || (this.pcFaults = [])).push({ pc: t.pc, why: this.trapped }); this.trapped = null; this.endProcess(t.pc, 0xffffffff); }
         if (t.pc) this.pcThreadEnded(t); if (r !== 0 && this.trapped) console.warn('[ne16] thread', t.id, this.trapped); if (t.onDone) t.onDone(t);
         if (t.flat && t.stackBase) { this.free(t.stackBase); this.free(t.tib); t.stackBase = t.tib = 0; }   // (its stack and thread information block go with it)
       }   // onDone: the host's, for a thread it started
@@ -2904,12 +2928,15 @@ P.threads16 = function (nested = false, only = null) {
         if (this.win16Held && this.win16Held.who === t) this.win16Held = null;   // (an ended thread's Win16Lock is let go, as its task's end releases it)
         // a program the system started ends alone (KERNEL32's fault dialog for it); the program this machine runs, or
         // ring 0, takes the machine's answer
-        if (t.pc && this.noMain && e.fault.ring !== 0) { (this.pcFaults || (this.pcFaults = [])).push({ pc: t.pc, fault: e.fault, why: e.fault.why }); this.endProcess(t.pc, 0xffffffff); }
+        if (t.pc && this.noMain && e.fault.ring !== 0) { t.pc.fault = e.fault; t.pc.main.fault = e.fault; (this.pcFaults || (this.pcFaults = [])).push({ pc: t.pc, fault: e.fault, why: e.fault.why }); this.endProcess(t.pc, 0xffffffff); }
         else this.faulted(e.fault);
         return;
       }
       if (!(e instanceof window.W95Win32.HangError)) throw e;
-      t.state = 'hung'; this.hung(t, e);   // it stays where it hung, holding what it held
+      if (t.pc && t.pc.saverMode) {
+        t.state = 'done'; t.pc.trapped = e.message;
+        this.endProcess(t.pc, 0xffffffff);   // a saver must not hold the system's process-wide Win16 lock
+      } else { t.state = 'hung'; this.hung(t, e); }   // it stays where it hung, holding what it held
     } finally { this.thread16 = caller; this.loadCtx16(main); }
   } } finally { this.inThreads = wasIn; this.threadsNest--; if (caller) { this.preempted = wasPreempted; this.runT0 = t0; if (caller.pc) this.imgUse(caller.pc); } }
 };
@@ -3203,6 +3230,9 @@ K('ThunkConnect32', 6, function (td, f16, m16, m32, hmod, reason) {
     const rel = { ft: false, table: 0, bind: () => { if (!rel.table) { const t16 = find(); if (!t16) throw new GuestError(`thunk to ${name}: no ${f16name}`); rel.table = this.lin(this.r32(t16 + 8)); this.w32(td + 8, rel.table); } return rel.table; } };
     this.lsRelays.set(u32(td + this.r32(td + 0x1c)), rel);
     this.lsRelays.set(u32(td + this.r32(td + 0x20)), { ft: true, get table() { return rel.bind(); } });
+    // a 16-bit half already loaded (USER, GDI, KERNEL) is bound now: the 32-bit side's own code reads the target table
+    // straight from its data (USER32's CreateWindowExA), not only through the relays
+    const loaded = this.ne && this.ne.get(name.replace(/\.(EXE|DRV)$/, '')); if (loaded && loaded.meta) rel.bind();
     return 1;
   }
   // 16 -> 32: the 32-bit half's target table, for the 16-bit half (ThunkConnect16's record, made now if its half has
@@ -3215,10 +3245,13 @@ K('ThunkConnect32', 6, function (td, f16, m16, m32, hmod, reason) {
     return 1;
   }
   const who = () => (this.thread16 && this.thread16.pc && this.thread16.pc.path) || (this.thread16 ? 'thread ' + this.thread16.id : 'main');
-  const t16 = find(); if (!t16) { console.warn('[ne16] ThunkConnect32', this.readA(m32), magic, 'no', name, f16name, 'in', who()); return 0; }
-  if (this.r32(t16) !== this.r32(td) || this.r32(t16 + 4) !== this.r32(td + 4)) { console.warn('[ne16] ThunkConnect32', this.readA(m32), magic, name, f16name, 'checksum', this.r32(td + 4).toString(16), this.r32(t16 + 4).toString(16), 'td', td.toString(16), 'in', who()); return 0; }   // magic and checksum
+  // (a connect that fails is kept for the probe too: the worker's console does not reach the page)
+  const failed = why => { (this.thunkFails || (this.thunkFails = [])).push({ dll: this.readA(m32), to: name, f16: f16name, why, who: who() }); return 0; };
+  const t16 = find(); if (!t16) { console.warn('[ne16] ThunkConnect32', this.readA(m32), magic, 'no', name, f16name, 'in', who()); return failed('no 16-bit half'); }
+  if (this.r32(t16) !== this.r32(td) || this.r32(t16 + 4) !== this.r32(td + 4)) { console.warn('[ne16] ThunkConnect32', this.readA(m32), magic, name, f16name, 'checksum', this.r32(td + 4).toString(16), this.r32(t16 + 4).toString(16), 'td', td.toString(16), 'in', who()); return failed(`checksum ${this.r32(td + 4).toString(16)} ${this.r32(t16 + 4).toString(16)}`); }   // magic and checksum
   if (magic === 'LS01') {
     const table = this.lin(this.r32(t16 + 8)); this.w32(td + 8, table);
+    (this.thunkConns || (this.thunkConns = [])).push({ dll: this.readA(m32), to: name, td, far: this.r32(t16 + 8), table, who: who() });   // (for the probe)
     this.lsRelays = this.lsRelays || new Map();
     this.lsRelays.set(u32(td + this.r32(td + 0x1c)), { ft: false, table });
     this.lsRelays.set(u32(td + this.r32(td + 0x20)), { ft: true, table });
@@ -3298,7 +3331,9 @@ P.return16to32 = function (rec) {
   for (const [s, b] of SEGS) { this.cpu[s].value = 0; if (s !== 'fsel') this.cpu[b].value = 0; }
   this.cpu.fs.value = this.tibFor();
   this.reg('esp', rec.esp + popped);
-  return u32(rec.done.call(this, rec));
+  const to = u32(rec.done.call(this, rec));
+  if (to < 0x10000) (this.nullJumps || (this.nullJumps = [])).push({ ret16: true, to, esp: rec.esp, popped, sp: this.cpu.esp.value & 0xffff, sp0: rec.sp0, ss: this.cpu.ss.value & 0xffff, ssel: rec.ssel, ret32: rec.ret32 });   // (diagnostic: a thunk's way back that goes nowhere)
+  return to;
 };
 KR('#45', function () {          // Common32ThkLS: EAX = 16-bit common entry, CX = target*4 (into DI), EDX.hi = dword args
   const ret = pop32(this), n = (this.reg('edx') >>> 16) * 4, edi = this.reg('edi');

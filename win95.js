@@ -2566,12 +2566,7 @@ function sysMenu(w, x, y, above) {
 // its SHA-256 to the recompiled module, and executes it through win32.js.
 const SV = window.W95SAVERS || { savers: {}, fonts: {} };
 const b64bytes = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
-const fontsReady = Promise.all(Object.entries(SV.fonts).map(([fam, data]) => {
-  const f = new FontFace(fam, b64bytes(data)); document.fonts.add(f); return f.load().catch(() => null);
-}));
 async function sha256hex(b) { const h = await crypto.subtle.digest('SHA-256', b); return [...new Uint8Array(h)].map(x => x.toString(16).padStart(2, '0')).join(''); }
-// GDI.EXE, GDI32.DLL and the display driver run natively in a saver process when it needs them (outline fonts);
-// their modules are compiled once, off the main thread's synchronous path
 // the network's ring-0 images (VxDs, NE2000.SYS) and DLLs: decoded and compiled before its process first starts, so
 // the start runs them rather than building them on the main thread
 const unb64 = async s => { try { return new Uint8Array(await (await fetch('data:application/octet-stream;base64,' + s)).arrayBuffer()); } catch (_) { return b64bytes(s); } };
@@ -2581,12 +2576,6 @@ let sysCompile = null;
 function systemCompiled() {
   const S = window.W95SYSTEM; if (!S) return Promise.resolve();
   return sysCompile || (sysCompile = Promise.all([...Object.values(S.ne), ...Object.values(S.dlls), ...Object.values(S.net || {})].map(async m => { m.mod = await wasmOf(m); })));
-}
-// the screen savers' modules and the DLLs they link to (OPENGL32, GLU32), compiled with the system's, so the first
-// saver (Preview, the idle start) starts at once
-let saverCompile = null;
-function saversCompiled() {
-  return saverCompile || (saverCompile = Promise.all([...Object.values(SV.savers || {}), ...Object.values(SV.dlls || {})].map(d => wasmOf(d).catch(() => null))));
 }
 let netCompile = null;
 function netCompiled() {
@@ -2598,130 +2587,26 @@ function netCompiled() {
     ...Object.values(S.net || {}).map(d => job(d, 'file', 'bytes')),
   ]));
 }
-function compiledSaver(sha) {
-  for (const [name, s] of Object.entries(SV.savers)) {
-    if (s.meta.sha256 !== sha) continue;
-    wasmOf(s);
-    return { name, s };
-  }
-  return null;
-}
 const mkc = (w, h) => Object.assign(document.createElement('canvas'), { width: Math.max(1, w), height: Math.max(1, h) });
-const PREVIEW_HWND = 0x7ff0;
 let fullSaver = null, lastInput = performance.now();
-const saverRuns = new Map();   // the savers a machine started, by the pid of their process there (saverStop ends them)
-
-class SaverRun {
-  constructor(path, mode, o = {}) { this.path = path; this.mode = mode; this.o = o; this.alive = true; this.canvas = null; this.mx = mouse.x; this.my = mouse.y; }
-  async start() {
-    let bytes;
-    try { bytes = fs.readFile(this.path); } catch (e) { msgBox('Display Properties', fsMsg(this.path, e), 'error'); return false; }
-    const hit = compiledSaver(await sha256hex(bytes));
-    if (!hit) { msgBox('Display Properties', `${basename(this.path)} has no recompiled code module.`, 'error'); this.alive = false; return false; }
-    const module = await hit.s.module; await fontsReady; await systemCompiled();
-    // Microsoft DLLs on C:\WINDOWS\SYSTEM that have recompiled modules run natively in the process
-    const dlls = new Map();
-    for (const [name, d] of Object.entries(SV.dlls || {})) {
-      let file; try { file = fs.readFile(join(WINDIR, 'SYSTEM', name)); } catch (_) { continue; }
-      if (await sha256hex(file) !== d.meta.sha256) continue;
-      dlls.set(name.replace(/\.DLL$/, ''), { file, module: await wasmOf(d), meta: d.meta });
-    }
-    if (!this.alive) return false;
-    if (this.mode === 's') this.overlay();
-    if (this.mode === 'p') {
-      if (this.o.rect) {   // the applet's monitor window: the preview is its size and lies over it on the screen
-        let r = null; try { r = await this.o.rect(); } catch (_) { r = null; }
-        if (!r || !(r.w > 0 && r.h > 0)) { this.alive = false; return false; }
-        this.o.w = r.w; this.o.h = r.h; this.canvas = mkc(r.w, r.h); this.overlayAt(r);
-      } else this.canvas = mkc(this.o.w, this.o.h);
-    }
-    const host = {
-      fs, width: W, height: H, path: this.path, now: () => performance.now(),
-      cursor: () => (this.mode === 's' ? { x: this.mx, y: this.my } : { x: mouse.x, y: mouse.y }),
-      previewParent: this.mode === 'p' ? PREVIEW_HWND : 0, previewW: this.o.w, previewH: this.o.h,
-      surface: (hwnd, w, h) => this.surface(w, h),
-      exited: (code, why) => this.exited(code, why),
-      setCursor: () => {},
-      dialog: (proc, d) => win32Dialog(proc, d),
-      closeDialog: d => { if (d.ui) closeWin(d.ui, true); dirty(); },
-    };
-    const exe = /\s/.test(this.path) ? `"${this.path}"` : this.path;
-    const cmd = this.mode === 's' ? `${exe} /s` : this.mode === 'p' ? `${exe} /p ${PREVIEW_HWND}` : `${exe} /c:0`;
-    try { this.proc = new W95Win32.Process(bytes, module, { ...hit.s.meta, name: hit.name }, host, cmd, dlls); }
-    catch (e) { console.error(e); this.exited(-1, e.message); return false; }
-    this.loop(); return true;
-  }
-  surface(w, h) {
-    if (this.mode === 'p') return this.canvas.getContext('2d');
-    if (this.mode === 's') return this.ctx2d;
-    return mkc(w, h).getContext('2d');
-  }
-  loop() {
-    const step = () => {
-      if (!this.alive) return;
-      const p = this.proc;
-      const t0 = performance.now();
-      try { for (let n = 0; this.alive && p.ready() && n < 4; n++) { p.stats.slices++; if (!p.slice()) break; } }
-      catch (e) { console.error(e); this.exited(-1, e.message); return; }
-      // a guest that faulted or exited without reporting it must not leave its window up
-      p.stats.guestMs += performance.now() - t0;
-      if (p.trapped && !p.failed) p.fail(p.trapped);
-      if (p.exitCode !== null || p.trapped) { this.exited(p.exitCode, p.trapped); return; }
-      if (this.mode === 'p') dirty();
-      // guest time is driven by its own timers and message loop
-      const p2 = this.proc, now = performance.now();
-      const next = p2 && p2.waiting ? Math.min(...p2.timers.map(t => t.due), now + 50) : now;
-      setTimeout(step, Math.max(0, next - now));
-    };
-    setTimeout(step, 0);
-  }
-  overlay() {
-    const c = this.el = mkc(W, H);
-    // over the screen (the machine's, centered in the page when the page is larger than its mode: the same place)
-    c.style.cssText = `position:fixed;left:${cv.style.marginLeft || '0px'};top:${cv.style.marginTop || '0px'};width:${W * ZOOM}px;height:${H * ZOOM}px;image-rendering:pixelated;cursor:none;z-index:10;background:#000`;
-    document.body.appendChild(c);
-    this.ctx2d = c.getContext('2d', { alpha: false });
-    const pos = e => { const r = c.getBoundingClientRect(); return [Math.floor((e.clientX - r.left) * W / r.width), Math.floor((e.clientY - r.top) * H / r.height)]; };
-    const WM = W95Win32.WM;
-    // the mouse: the pointer settling after the click that started the saver (Preview, the Start menu) is not a
-    // move; one is dispatched once the saver has been up a moment and the pointer has gone a few pixels
-    this.shown = performance.now(); let lx = this.mx, ly = this.my;
-    c.addEventListener('pointermove', e => {
-      [this.mx, this.my] = pos(e);
-      if (performance.now() - this.shown < 1000) { lx = this.mx; ly = this.my; return; }
-      if (Math.abs(this.mx - lx) + Math.abs(this.my - ly) < 3) return;
-      lx = this.mx; ly = this.my; this.proc && this.proc.dispatchInput(WM.MOUSEMOVE, 0, (this.my << 16) | this.mx);
-    });
-    c.addEventListener('pointerdown', e => { e.preventDefault(); [this.mx, this.my] = pos(e); this.proc && this.proc.dispatchInput(e.button === 2 ? WM.RBUTTONDOWN : WM.LBUTTONDOWN, 0, (this.my << 16) | this.mx); });
-    c.addEventListener('contextmenu', e => e.preventDefault());
-  }
-  /** the small preview's canvas over the applet's monitor window (r: its rectangle on the machine's screen), kept over
-   *  it as the applet moves (the window asked again now and then while the preview runs) */
-  overlayAt(r) {
-    const c = this.el = this.canvas;
-    const place = q => { c.style.cssText = `position:fixed;left:${(parseFloat(cv.style.marginLeft) || 0) + q.l * ZOOM}px;top:${(parseFloat(cv.style.marginTop) || 0) + q.t * ZOOM}px;width:${q.w * ZOOM}px;height:${q.h * ZOOM}px;image-rendering:pixelated;pointer-events:none;z-index:9`; };
-    place(r); document.body.appendChild(c);
-    this.follow = setInterval(async () => { if (!this.alive) return; let q = null; try { q = await this.o.rect(); } catch (_) { q = null; } if (!this.alive) return; if (!q || !(q.w > 0 && q.h > 0)) { this.stop(0); return; } place(q); }, 400);
-  }
-  key(e) { if (this.proc) this.proc.dispatchInput(W95Win32.WM.KEYDOWN, e.keyCode || 0, 0); }
-  stop(code = 0) {
-    this.alive = false; if (this.follow) { clearInterval(this.follow); this.follow = 0; } if (this.proc) trayDrop(this.proc); if (this.el) this.el.remove(); if (fullSaver === this) fullSaver = null;
-    if (this.o.onExit && !this.ended) { this.ended = true; this.o.onExit(code); }   // (the machine that started it: its process ends)
-  }
-  exited(code, why) {
-    if (!this.alive) return;
-    this.stop(); lastInput = performance.now(); dirty();
-    emit('program.exit', { path: this.path, mode: this.mode, code: code ?? null, ...(why ? { why } : {}) });
-    if (why) msgBox(basename(this.path), `${basename(this.path)} stopped: ${why}`, 'error', ['OK'], null, { noTask: false, modal: false });
-  }
+async function startSaverProcess(path, arg) {
+  const app = sysApp || await startSystem();
+  if (!app || !app.alive || !app.remote) return null;
+  const result = await app.spawnProgram(path, arg);
+  return result && result.pid ? { app, pid: result.pid, path } : null;
 }
-/** the full-screen saver started (the idle start, Preview, the Start menu); o.onExit(code) hears it end, or that it
- *  did not start (another is up, no path, no module): the machine's process for it ends then */
-function startFullSaver(path, o = {}) {
-  if (fullSaver || !path) { if (o.onExit) o.onExit(1); return; }
+function stopSaverProcess(run) {
+  if (run && run.pid && run.app && run.app.alive) run.app.cmd('endProcess', [run.pid, 0]);
+}
+/** A screen saver is a process on the system machine; its normal USER32 windows are composed with the machine's windows. */
+function startFullSaver(path) {
+  if (fullSaver || !path) return;
   closeMenus();
-  const run = fullSaver = new SaverRun(path, 's', o);
-  run.start().then(ok => { if (!ok) run.stop(1); });
+  const run = fullSaver = { path, pid: 0, app: null };
+  startSaverProcess(path, '/s').then(p => {
+    if (fullSaver !== run) { stopSaverProcess(p); return; }
+    if (p) Object.assign(run, p); else fullSaver = null;
+  }).catch(e => { console.error(e); if (fullSaver === run) fullSaver = null; });
 }
 function saverIni() {
   const g = (f, s, k) => W95Win32.iniGet(fs, f, s, k);
@@ -3051,7 +2936,24 @@ const nativeMode = () => [Math.max(640, Math.min(1024, Math.floor(innerWidth / Z
 // the page's viewport holds, so no change is needed once the shell is up
 function bootMode(w, h) {
   const str = v => ({ type: 1, data: W95FS.encode(v + '\0') });
-  for (const k of ['hkcc\\display\\settings', 'hklm\\config\\0001\\display\\settings']) { W95Win32.regSet(k, 'Resolution', str(`${w},${h}`)); W95Win32.regSet(k, 'BitsPerPixel', str('8')); }
+  for (const k of ['hkcc\\display\\settings', 'hklm\\config\\0001\\display\\settings']) { W95Win32.regSet(k, 'Resolution', str(`${w},${h}`)); W95Win32.regSet(k, 'BitsPerPixel', str(String(BOOT_BPP))); }
+  W95Win32.iniSet(fs, 'SYSTEM.INI', 'display', 'BitsPerPixel', String(BOOT_BPP));   // (the display VxD's configuration, ne16.js displayConfig)
+}
+// true color: the screen the system's machine boots in (the page scans 8, 16, 24 and 32 bits a pixel out)
+const BOOT_BPP = 8, SCAN_BPP = new Set([8, 16, 24, 32]);
+/** one pixel of a scanned-out screen, as the canvas's 32-bit ABGR: through the DAC at 8 bits, else the pixel's own
+ *  RGB (16: 5-6-5 when the Sierra DAC's command register says so (E0h), else 5-5-5; 24 and 32: B, G, R in memory) */
+function scanPx(a, v, pal, s, x) {
+  switch (a.bpp) {
+    case 8: return pal[v[s + x]];
+    case 16: {
+      const i = s + 2 * x, c = v[i] | v[i + 1] << 8;
+      if ((a.dacMode & 0xe0) === 0xe0) { const r = c >> 11, g = c >> 5 & 63, b = c & 31; return (0xff000000 | (b << 3 | b >> 2) << 16 | (g << 2 | g >> 4) << 8 | (r << 3 | r >> 2)) >>> 0; }
+      const r = c >> 10 & 31, g = c >> 5 & 31, b = c & 31; return (0xff000000 | (b << 3 | b >> 2) << 16 | (g << 3 | g >> 2) << 8 | (r << 3 | r >> 2)) >>> 0;
+    }
+    case 24: { const i = s + 3 * x; return (0xff000000 | v[i] << 16 | v[i + 1] << 8 | v[i + 2]) >>> 0; }
+    default: { const i = s + 4 * x; return (0xff000000 | v[i] << 16 | v[i + 1] << 8 | v[i + 2]) >>> 0; }
+  }
 }
 // the app's window is the monitor: its content takes the size of the mode the system's machine is in, at the page's
 // pixels, so the screen fills it with nothing around (the display driver sets the resolutions of its table and no
@@ -3088,14 +2990,21 @@ function installPrograms() {
 class NativeWin extends Win {
   constructor(app, n) {
     super({ resizable: false, maximizable: false, icon: app.iconOf(n) });
-    this.app = app; this.hwnd = n.hwnd; this.native = true;
+    this.app = app; this.hwnd = n.key || n.hwnd; this.guestHwnd = n.hwnd; this.ownerPid = n.ownerPid || 0; this.win32 = !!n.win32; this.native = true;
     this.noTask = !!n.owner || n.cls === '#32768' || !n.title;
     this.minimizable = !this.noTask;
     this.set(n);
   }
-  set(n) { Object.assign(this, { x: n.x, y: n.y, w: n.w, h: n.h, title: n.title, min: n.iconic, cls: n.cls, transparent: !!(n.ex & 0x20) }); }
+  set(n) {
+    Object.assign(this, { x: n.x, y: n.y, w: n.w, h: n.h, title: n.title, min: n.iconic, cls: n.cls, transparent: !!(n.ex & 0x20), preview: !!n.preview, guestParent: n.parent || 0 });
+    if (n.pixels) {
+      if (!this.surface || this.surface.width !== n.w || this.surface.height !== n.h) { this.surface = mkc(n.w, n.h); this.surfaceCtx = this.surface.getContext('2d'); }
+      const image = this.surfaceCtx.createImageData(n.w, n.h); image.data.set(n.pixels); this.surfaceCtx.putImageData(image, 0, 0);
+      if (this.preview && windows.some(w => w.title === 'Display Properties')) dirty();
+    }
+  }
   // a WS_EX_TRANSPARENT window (MPR's MPRTransparentDesktop behind the logon) shows what is under it
-  draw() { if (!this.transparent) this.app.blit(this); }
+  draw() { if (!this.transparent && !this.preview) this.app.blit(this); }
   hit(px, py) { return inR(this, px, py) ? 'native' : null; }
   buttons() { return []; }
   barItems() { return []; }
@@ -3320,14 +3229,14 @@ class NativeApp {
     // overlay is cleared once and the screen is not read
     if (!this.wins.size && !this.capture) { if (!this.blank) { this.o32.fill(0); this.ox.putImageData(this.oimg, 0, 0); this.blank = true; } return; }
     this.blank = false;
-    const a = this.proc.scanout(); if (a.bpp !== 8) return;
+    const a = this.proc.scanout(); if (!SCAN_BPP.has(a.bpp)) return;
     const pal = this.pal, dac = a.dac, v = a.vram, pitch = a.pitch || a.w, d = this.d32, sw = this.sw, sh = this.sh;
     for (let i = 0; i < 256; i++) { const r = dac[3 * i], g = dac[3 * i + 1], b = dac[3 * i + 2]; pal[i] = 0xff000000 | ((b << 2 | b >> 4) << 16) | ((g << 2 | g >> 4) << 8) | (r << 2 | r >> 4); }
     for (const w of this.wins.values()) {
       if (w.min || w.transparent) continue;
       const x0 = Math.max(0, w.x), y0 = Math.max(0, w.y), x1 = Math.min(sw, a.w, w.x + w.w), y1 = Math.min(sh, a.h, w.y + w.h);
       if (x1 <= x0 || y1 <= y0) continue;
-      for (let y = y0; y < y1; y++) { const s = y * pitch, o = y * sw; for (let x = x0; x < x1; x++) d[o + x] = pal[v[s + x]]; }
+      for (let y = y0; y < y1; y++) { const s = y * pitch, o = y * sw; for (let x = x0; x < x1; x++) d[o + x] = scanPx(a, v, pal, s, x); }
       this.cx.putImageData(this.img, 0, 0, x0, y0, x1 - x0, y1 - y0);
     }
     // the rest of its screen: what USER draws on its desktop (its cursor, a window's drag frame) over the desktop
@@ -3339,24 +3248,25 @@ class NativeApp {
     for (let y = 0; y < sh; y++) {
       const s = y * pitch, r = y * sw, ins = wins.filter(w => y >= w.y && y < w.y + w.h);
       for (let x = 0; x < sw; x++) {
-        const c = y < a.h && x < a.w ? pal[v[s + x]] : bg;
+        const c = y < a.h && x < a.w ? scanPx(a, v, pal, s, x) : bg;
         o[r + x] = c === bg || ins.some(w => x >= w.x && x < w.x + w.w) ? 0 : c;
       }
     }
     this.ox.putImageData(this.oimg, 0, 0);
   }
   /** the screen as the display adapter scans it out now: its mode, VRAM and DAC */
-  screenNow() { const a = this.proc.scanout(); return { w: a.w, h: a.h, pitch: a.pitch || a.w, bpp: a.bpp, vram: a.vram, dac: a.dac }; }
+  screenNow() { const a = this.proc.scanout(); return { w: a.w, h: a.h, pitch: a.pitch || a.w, bpp: a.bpp, dacMode: a.hicolor, vram: a.vram, dac: a.dac }; }
   /** the whole screen into the page's canvas, through the DAC (the page as the machine's monitor) */
   scanToCanvas() {
     const a = this.screenNow(); fill(0, 0, W, H, '#000');
-    if (!a || a.bpp !== 8 || !this.d32) return;
+    if (!a || !SCAN_BPP.has(a.bpp) || !this.d32) return;
     const pal = this.pal, dac = a.dac, v = a.vram, d = this.d32, sw = this.sw, w = Math.min(sw, a.w), h = Math.min(this.sh, a.h);
     for (let i = 0; i < 256; i++) { const r = dac[3 * i], g = dac[3 * i + 1], b = dac[3 * i + 2]; pal[i] = 0xff000000 | ((b << 2 | b >> 4) << 16) | ((g << 2 | g >> 4) << 8) | (r << 2 | r >> 4); }
-    for (let y = 0; y < h; y++) { const s = y * a.pitch, o = y * sw; for (let x = 0; x < w; x++) d[o + x] = pal[v[s + x]]; }
+    for (let y = 0; y < h; y++) { const s = y * a.pitch, o = y * sw; for (let x = 0; x < w; x++) d[o + x] = scanPx(a, v, pal, s, x); }
     this.cx.putImageData(this.img, 0, 0, 0, 0, w, h); ctx.drawImage(this.cv, 0, 0, w, h, 0, 0, w, h);
   }
   blit(w) {
+    if (w.win32) { if (w.surface) ctx.drawImage(w.surface, w.x, w.y, w.w, w.h); return; }
     const x0 = Math.max(0, w.x), y0 = Math.max(0, w.y), x1 = Math.min(this.sw, w.x + w.w), y1 = Math.min(this.sh, w.y + w.h);
     if (x1 > x0 && y1 > y0) ctx.drawImage(this.cv, x0, y0, x1 - x0, y1 - y0, x0, y0, x1 - x0, y1 - y0);
   }
@@ -3562,11 +3472,12 @@ class RemoteApp extends NativeApp {
         if (m.f) faultDialog(basename(m.path).replace(/\.[^.]*$/, '').toUpperCase(), m.f);
         else msgBox(basename(m.path), `This program has performed an illegal operation and will be shut down.\n\n${m.why}`, 'error', ['OK'], null, { noTask: false, modal: false });
         return;
-      case 'emit': emit(m.ev, m.data); return;
+      case 'emit':
+        if (m.ev === 'program.exit' && fullSaver && String(fullSaver.path).toUpperCase() === String(m.data.path).toUpperCase()) { fullSaver = null; lastInput = performance.now(); }
+        emit(m.ev, m.data); return;
       case 'shell': { const f = window.W95SHELL[m.fn]; if (typeof f === 'function') try { f(...m.args); } catch (e) { console.error(e); } return; }
       case 'reply': { const ok = this.calls.get(m.id); this.calls.delete(m.id); if (m.error) console.error('[machine]', m.error); if (ok) ok(m.value); return; }
       case 'exited': this.exited(m.code, m.why, true); if (this.started) this.started(false); return;
-      case 'saverStop': { const run = saverRuns.get(m.pid); saverRuns.delete(m.pid); if (run) run.stop(0); return; }   // the machine ended the saver's process (the applet picked another)
     }
   }
   /** the machine's synchronous call into the page (bridge.js): the file system, and what only the page has */
@@ -3582,17 +3493,6 @@ class RemoteApp extends NativeApp {
       } else if (m.target === 'host') {
         if (m.method === 'fatalText') v = fatalText(m.args[0]);
         else if (m.method === 'runApart') { runNative(m.args[0], m.args[1] || '', { apart: true }); v = true; }   // (it starts as the page goes on)
-        // a screen saver a program starts (Display Properties' Preview and Settings, the shell): it runs on the page, as the savers do here
-        else if (m.method === 'saver') {   // (its process in the machine ends when the saver does: saverExit, the applet's handle to it)
-          const [file, mode, pid, hwnd] = m.args, onExit = code => { saverRuns.delete(pid); if (pid && this.alive) this.worker.postMessage({ t: 'saverExit', pid, code: code | 0 }); };
-          if (mode === 's') startFullSaver(file, { onExit });
-          else {   // the saver's settings (/c), or the small preview in the applet's monitor (/p hwnd), over that window on the screen
-            const run = new SaverRun(file, mode, { onExit, hwnd, rect: () => this.cmd('winRect', [hwnd]) });
-            if (pid) saverRuns.set(pid, run);
-            run.start().then(ok => { if (!ok) run.stop(1); });
-          }
-          v = true;
-        }
       }
     } catch (e) { v = e instanceof Error ? e : new Error(String(e)); }
     W95Bridge.answer(this.rpcSab, v === undefined ? null : v);
@@ -3602,16 +3502,16 @@ class RemoteApp extends NativeApp {
    *  Properties) */
   followMode(m) { const s = m && m.scan; if (s && s.bpp && (s.w !== this.sw || s.h !== this.sh)) this.screenSized(s.w, s.h); }
   frame(m) {
-    this.snap = this.scr = m; this.stats = m.stats; this.held = m.held; this.capture = m.capture; this.cursorOn = m.cursorOn; this.followMode(m);
-    const seen = new Set();
+    this.snap = this.scr = m; this.stats = m.stats; this.held = m.held; this.capture = m.capture; this.cursorOn = m.cursorOn; this.followMode(m);    const seen = new Set();
     for (const n of m.list) {
-      let w = this.wins.get(n.hwnd);
-      if (!w) { w = new NativeWin(this, n); this.wins.set(n.hwnd, w); windows.push(w); if (!w.noTask) tasks.push(w); }
+      const key = n.key || n.hwnd;
+      let w = this.wins.get(key);
+      if (!w) { w = new NativeWin(this, n); this.wins.set(key, w); windows.push(w); if (!w.noTask) tasks.push(w); }
       else w.set(n);
-      seen.add(n.hwnd);
+      seen.add(key);
     }
     for (const [h, w] of this.wins) if (!seen.has(h)) { this.wins.delete(h); closeWin(w, true); }
-    const order = m.list.map(n => this.wins.get(n.hwnd)).reverse(), slots = [];
+    const order = m.list.map(n => this.wins.get(n.key || n.hwnd)).reverse(), slots = [];
     windows.forEach((w, i) => { if (w.app === this) slots.push(i); });
     slots.forEach((i, k) => { windows[i] = order[k]; });
     if (m.active !== this.lastActive) {
@@ -3632,7 +3532,7 @@ class RemoteApp extends NativeApp {
     const m = this.snap; if (!m || !this.mem) return;
     if (!this.wins.size && !this.capture) { if (!this.blank) { this.o32.fill(0); this.ox.putImageData(this.oimg, 0, 0); this.blank = true; } return; }
     this.blank = false;
-    const a = m.scan; if (a.bpp !== 8) return;
+    const a = m.scan; if (!SCAN_BPP.has(a.bpp)) return;
     const v = new Uint8Array(this.mem, a.vram, Math.min(a.pitch * a.h, this.mem.byteLength - a.vram));
     const pal = this.pal, dac = m.dac, pitch = a.pitch, d = this.d32, sw = this.sw, sh = this.sh;
     for (let i = 0; i < 256; i++) { const r = dac[3 * i], g = dac[3 * i + 1], b = dac[3 * i + 2]; pal[i] = 0xff000000 | ((b << 2 | b >> 4) << 16) | ((g << 2 | g >> 4) << 8) | (r << 2 | r >> 4); }
@@ -3640,7 +3540,7 @@ class RemoteApp extends NativeApp {
       if (w.min || w.transparent) continue;
       const x0 = Math.max(0, w.x), y0 = Math.max(0, w.y), x1 = Math.min(sw, a.w, w.x + w.w), y1 = Math.min(sh, a.h, w.y + w.h);
       if (x1 <= x0 || y1 <= y0) continue;
-      for (let y = y0; y < y1; y++) { const s = y * pitch, o = y * sw; for (let x = x0; x < x1; x++) d[o + x] = pal[v[s + x]]; }
+      for (let y = y0; y < y1; y++) { const s = y * pitch, o = y * sw; for (let x = x0; x < x1; x++) d[o + x] = scanPx(a, v, pal, s, x); }
       this.cx.putImageData(this.img, 0, 0, x0, y0, x1 - x0, y1 - y0);
     }
     const six = c => (c >> 2) << 2 | (c >> 2) >> 4, c = m.bg;
@@ -3649,7 +3549,7 @@ class RemoteApp extends NativeApp {
     for (let y = 0; y < sh; y++) {
       const s = y * pitch, r = y * sw, ins = wins.filter(w => y >= w.y && y < w.y + w.h);
       for (let x = 0; x < sw; x++) {
-        const cc = y < a.h && x < a.w ? pal[v[s + x]] : bg;
+        const cc = y < a.h && x < a.w ? scanPx(a, v, pal, s, x) : bg;
         o[r + x] = cc === bg || ins.some(w => x >= w.x && x < w.x + w.w) ? 0 : cc;
       }
     }
@@ -3684,9 +3584,9 @@ class RemoteApp extends NativeApp {
   feedKeys() {}
   ring0() { return !!this.r0; }
   kick() { if (this.worker) this.worker.postMessage({ t: 'kick' }); }
-  focus(w) { this.cmd('focus', [w.hwnd, !!w.min]); }
-  minimize(w) { this.cmd('minimize', [w.hwnd]); }
-  close(w) { this.cmd('close', [w.hwnd]); }
+  focus(w) { if (!w.win32) this.cmd('focus', [w.hwnd, !!w.min]); }
+  minimize(w) { if (!w.win32) this.cmd('minimize', [w.hwnd]); }
+  close(w) { this.cmd(w.win32 ? 'closeWin32' : 'close', w.win32 ? [w.guestHwnd, w.ownerPid] : [w.hwnd]); }
   // one clipboard across machines: USER's CF_TEXT leaves with the keyboard, the shell's text arrives with it
   clipHandoff() {
     const mine = !!(active && active.native && active.app === this);
@@ -3860,9 +3760,10 @@ async function mapNetDrive() { if (await netBoot()) { await netCall('WNetConnect
 async function disconnectNetDrive() { if (await netBoot()) { await netCall('WNetDisconnectDialog', [0, 1]); await syncNetDrives(); } }
 // a UNC path's share (\\server\share), reached through the redirector as a drive's is: none if it does not answer
 fs.uncBackend = unc => {
-  if (window.W95HOST && window.W95HOST.shares) {   // a share of the host's: its folder, directly (fs.js), not the redirector
+  const hostShares = getHostShares();
+  if (hostShares) {   // a share of the host's: its folder, directly (fs.js), not the redirector
     const m = /^\\\\([^\\]+)\\([^\\]+)/.exec(unc);
-    if (m && m[1].toUpperCase() === hostName()) { try { return (window.W95HOST.shares.list() || []).some(s => s.name.toUpperCase() === m[2].toUpperCase()) ? hostBackend(m[2]) : null; } catch (e) { return null; } }
+    if (m && m[1].toUpperCase() === hostName()) { try { return (hostShares.list() || []).some(s => s.name.toUpperCase() === m[2].toUpperCase()) ? hostBackend(m[2]) : null; } catch (e) { return null; } }
   }
   if (!netApp || !netApp.alive) { netBoot(); return null; }   // not yet: the network starts for the next time
   if (netApp.remote) return netCache(netApp, unc);
@@ -3924,10 +3825,20 @@ function legalShares(H) {
     },
   };
 }
-if (window.W95HOST && window.W95HOST.shares && !window.W95HOST.shares.legal) { window.W95HOST.shares = Object.assign(legalShares(window.W95HOST.shares), { legal: true }); }
+let hostSharesWrap = null;
+function getHostShares() {
+  const base = window.W95HOST && window.W95HOST.shares;
+  if (!base) return null;
+  if (base.legal) return base;
+  if (hostSharesWrap && hostSharesWrap.base === base) return hostSharesWrap.wrap;
+  const wrap = Object.assign(legalShares(base), { legal: true });
+  hostSharesWrap = { base, wrap };
+  return wrap;
+}
 window.W95LegalShares = legalShares;   // (for the tests)
 function hostBackend(name) {
-  const H = window.W95HOST.shares, handles = new Map(); let nextH = 1;
+  const H = getHostShares(), handles = new Map(); let nextH = 1;
+  if (!H) return null;
   const op = (o, path, ...args) => { const r = H.op(name, o, ...args); if (!r || r.err) throw new W95FS.FSError(HOST_ERR[r && r.err] || 31, path); return r.ok; };
   const ent = (e, n) => e && ({ name: n !== undefined ? n : e.name, dir: !!e.dir, size: e.dir ? 0 : e.size || 0, attrs: (e.dir ? 0x10 : 0x20) | (e.readonly ? 1 : 0) | (e.hidden ? 2 : 0),
     ctime: e.ctime || 0, mtime: e.mtime || 0, atime: e.atime || 0 });
@@ -3954,7 +3865,7 @@ function hostBackend(name) {
 const hostName = () => ((window.W95HOST && window.W95HOST.computerName) || 'HOST').toUpperCase().replace(/[^A-Z0-9!@#$%^&()\-_'{}.~]/g, '').slice(0, 15) || 'HOST';
 /** the host's shares mounted as network drives, from E: on (the first letters free after the disks and the CD) */
 function mountHostShares() {
-  const H = window.W95HOST && window.W95HOST.shares; if (!H) return;
+  const H = getHostShares(); if (!H) return;
   let list = []; try { list = H.list() || []; } catch (e) { console.error(e); return; }
   const host = hostName();
   let c = 69;   // E:
@@ -4194,12 +4105,20 @@ function displayProperties() {
   const ini = saverIni();
   let cur = Math.max(0, savers.findIndex(s => s.path && ini.path && s.path.toUpperCase() === ini.path.toUpperCase()));
   if (!ini.active) cur = 0;
-  let preview = null, win;
-  const restartPreview = () => {
-    if (preview) preview.stop(); preview = null;
-    const s = savers[cur];
-    if (s.path) { preview = new SaverRun(s.path, 'p', { w: 152, h: 104 }); preview.start(); }
-    settingsBtn.disabled = previewBtn.disabled = !s.path; dirty();
+  let previewRun = null, previewWindowKey = '', previewWindowHwnd = 0, previewGeneration = 0, win;
+  const restartPreview = async () => {
+    const generation = ++previewGeneration, old = previewRun;
+    previewRun = null; previewWindowKey = ''; previewWindowHwnd = 0; stopSaverProcess(old);
+    const s = savers[cur]; settingsBtn.disabled = previewBtn.disabled = !s.path; dirty();
+    if (!s.path) return;
+    const app = sysApp || await startSystem();
+    if (generation !== previewGeneration || !app || !app.alive || !app.remote) return;
+    const result = await app.spawnProgram(s.path, '/p 0x7ff0');
+    if (generation !== previewGeneration) { if (result && result.pid) app.cmd('endProcess', [result.pid, 0]); return; }
+    if (result && result.pid) {
+      previewRun = { app, pid: result.pid, path: s.path }; previewWindowKey = result.previewKey || ''; previewWindowHwnd = result.previewHwnd || 0;
+      dirty();
+    }
   };
   const combo = { type: 'edit', page: 1, x: 22, y: 256, w: 170, h: 21, value: savers[cur].name, combo: true, readonly: true,
     onDrop: a => openPopup(savers.map((s, i) => ({ label: esc(s.name), check: i === cur, fn: () => { cur = i; combo.value = s.name; restartPreview(); } })), a.x, a.y + a.h) };
@@ -4219,13 +4138,14 @@ function displayProperties() {
       wait.value = String(clamp((parseInt(wait.value, 10) || 1) + (up ? 1 : -1), 1, 60));
       return { up: () => { this.pressed = 0; dirty(); } };
     } };
-  const settingsBtn = { type: 'button', page: 1, x: 202, y: 255, w: 75, h: 23, label: 'Se&ttings...', fn: () => { const s = savers[cur]; if (s.path) new SaverRun(s.path, 'c').start(); } };
+  const settingsBtn = { type: 'button', page: 1, x: 202, y: 255, w: 75, h: 23, label: 'Se&ttings...', fn: () => { const s = savers[cur]; if (s.path) startSaverProcess(s.path, '/c:0'); } };
   const previewBtn = { type: 'button', page: 1, x: 284, y: 255, w: 75, h: 23, label: 'Pre&view', fn: () => { const s = savers[cur]; if (s.path) startFullSaver(s.path); } };
   const monitor = { type: 'custom', x: 104, y: 40, w: 184, h: 170,
     draw(a) {
       icon('monitor', a.x, a.y);
       if (body.page === 1) {
-        if (preview && preview.canvas) ctx.drawImage(preview.canvas, a.x + 16, a.y + 17);
+        const guestWindow = sysApp && previewWindowHwnd && [...sysApp.wins.values()].find(w => w.preview && w.guestParent === previewWindowHwnd);
+        if (guestWindow && guestWindow.surface) { fill(a.x + 16, a.y + 17, 152, 104, K.desk); ctx.drawImage(guestWindow.surface, a.x + 16, a.y + 17, 152, 104); }
         else fill(a.x + 16, a.y + 17, 152, 104, K.desk);
       }
     } };
@@ -4254,7 +4174,9 @@ function displayProperties() {
     { type: 'button', x: 312, y: 390, w: 75, h: 23, label: '&Apply', fn: apply },
   ], { modal: false, noTask: false });
   const body = win.body; body.page = 1;
-  body.onClose = () => { if (preview) preview.stop(); preview = null; };
+  body.onClose = () => {
+    ++previewGeneration; stopSaverProcess(previewRun); previewRun = null; previewWindowKey = ''; previewWindowHwnd = 0;
+  };
   win.icon = 'cpl_display';
   restartPreview();
   return win;
@@ -4352,7 +4274,7 @@ function render() {
   if (sa) sa.scanToCanvas(); else drawDesktop();
   const m = modal();
   if (!sa && !tbar.ontop) drawTaskbar();
-  for (const w of windows) if (!(sa && w.app === sa) && !w.min && !(m && m.dim && w === m)) w.draw();
+  for (const w of windows) if (!(sa && w.app === sa && !w.win32) && !w.min && !(m && m.dim && w === m)) w.draw();
   if (!sa && tbar.ontop) drawTaskbar();
   if (m && m.dim) { ctx.fillStyle = PAT.dim; ctx.fillRect(0, 0, W, H); m.draw(); }
   for (const mm of menus) drawMenu(mm);
@@ -4580,7 +4502,7 @@ function cursorAt(x, y) {
 // the taskbar takes a point when it is on top, or when no window covers it there
 const onTaskbar = (x, y) => !monApp() && y >= barTop() && (tbar.ontop || !winAt(x, y));
 // (the system's machine's windows are its screen, under the page's own: a point on none of the page's is the machine's)
-function winAt(x, y) { const sa = monApp(); for (let i = windows.length - 1; i >= 0; i--) if (windows[i].app !== sa && !windows[i].min && inR(windows[i], x, y)) return windows[i]; return null; }
+function winAt(x, y) { const sa = monApp(); for (let i = windows.length - 1; i >= 0; i--) if ((windows[i].app !== sa || windows[i].win32) && !windows[i].min && inR(windows[i], x, y)) return windows[i]; return null; }
 /** the system's machine while it runs: the page is then its monitor, its whole screen what the page shows (the desktop,
  *  the taskbar and every window on it are the shell's SYSTEM.INI names, EXPLORER.EXE, as the machine draws them) */
 let monitor = false;   // (the page shows the machine's screen: resize)
@@ -4738,7 +4660,7 @@ kbd.addEventListener('input', () => {
 });
 // the keys go to USER while one of a native program's windows is active and the shell has nothing open over it
 // (or, the system's machine being the screen, while no window of the page's own is active)
-const nativeFocus = () => (!menus.length && !ren && !modal() && !fullSaver && screen === 'desktop' ? (active && active.native && active.app.alive ? active.app : !(active && windows.includes(active)) ? monApp() : null) : null);
+const nativeFocus = () => (!menus.length && !ren && !modal() && screen === 'desktop' ? (fullSaver && fullSaver.app && fullSaver.app.alive ? fullSaver.app : active && active.native && active.app.alive ? active.app : !(active && windows.includes(active)) ? monApp() : null) : null);
 // the keyboard reaches VKD before anything: the system in message mode (a blue screen) takes every key, and a hot key
 // goes to the native system with the focus, else to one that is frozen, else to any
 const vkdApp = () => msgApp || nativeFocus() || [...nativeApps].find(a => a.alive && a.proc && a.proc.win16Held) || [...nativeApps].find(a => a.alive && !a.net);
@@ -4757,7 +4679,6 @@ window.addEventListener('keydown', e => {
 });
 function handleKey(e) {
   lastInput = performance.now();
-  if (fullSaver) { fullSaver.key(e); if (e.preventDefault) e.preventDefault(); return; }
   if (screen !== 'desktop') return;
   let handled = false;
   if (menus.length) {
@@ -4821,8 +4742,6 @@ function resize() {
     cv.width = W; cv.height = H; cv.style.width = W * ZOOM + 'px'; cv.style.height = H * ZOOM + 'px'; cv.style.marginLeft = cv.style.marginTop = '0';
   }
   ctx.imageSmoothingEnabled = false;
-  // a full-screen saver's canvas stays over the screen as the page is resized or the mode changes
-  if (fullSaver && fullSaver.el) Object.assign(fullSaver.el.style, { left: cv.style.marginLeft || '0px', top: cv.style.marginTop || '0px', width: W * ZOOM + 'px', height: H * ZOOM + 'px' });
   for (const w of windows) if (w.max) Object.assign(w, maxRect(w.b));
   closeMenus(); dirty();
 }
@@ -4833,10 +4752,6 @@ bootDisk();
 mountHostShares();
 systemBootLater();
 netBootLater();
-// the modules a saver or a program on the page links to, compiled once the system is up, so the first screen saver
-// (Preview, the idle start) comes up at once instead of after the compile
-const warmSavers = () => systemCompiled().catch(() => {}).then(saversCompiled);
-setTimeout(warmSavers, 25000);
 loadTaskbar();
 desk.src = new FsSource(DESKTOP_DIR);
 fs.on(() => dirty());
@@ -4883,7 +4798,7 @@ fs.on(e => emit('fs.' + e.op, { path: e.path, ...(e.path2 ? { path2: e.path2 } :
 // Drives the shell through the same input paths a person uses: pointer events on the screen canvas in screen
 // pixels, keys through the shell's key handler. Documented in SCRIPTING.md.
 function pointer(type, x, y, button = 0) {
-  const el = fullSaver && fullSaver.el ? fullSaver.el : cv, r = el.getBoundingClientRect();
+  const el = cv, r = el.getBoundingClientRect();
   el.dispatchEvent(new PointerEvent(type, { clientX: r.left + (x + 0.5) * r.width / W, clientY: r.top + (y + 0.5) * r.height / H,
     button, buttons: type === 'pointerup' ? 0 : 1 << (button === 2 ? 1 : 0), pointerId: 1, pointerType: 'mouse', bubbles: true, cancelable: true }));
 }
@@ -5040,11 +4955,10 @@ const script = {
   run(cmd) { runCommand(cmd); dirty(); },
   open(path) { openPath(path); dirty(); },
   saver(path) { startFullSaver(path); },
-  stopSaver() { if (!fullSaver) return false; fullSaver.exited(0); return true; },
+  stopSaver() { if (!fullSaver || !fullSaver.pid) return false; stopSaverProcess(fullSaver); fullSaver = null; return true; },
   screen() { return { width: W, height: H, taskbar: barTop() }; },
   screenshot() { render(); return cv.toDataURL('image/png'); },
-  // the running full-screen saver's counters since it started (timers, presents, slices, guestMs, ms)
-  saverStats() { const f = fullSaver; return f && f.proc ? { ...f.proc.stats, ms: performance.now() - f.proc.t0 } : null; },
+  saverStats() { return null; },
   on(type, fn) { if (!listeners.has(type)) listeners.set(type, new Set()); listeners.get(type).add(fn); return () => listeners.get(type).delete(fn); },
   // resolves with the next event of this type that passes the test, or rejects after the timeout
   next(type, test = () => true, ms = 10000) {
@@ -5055,5 +4969,5 @@ const script = {
   },
 };
 
-window.win95 = { ...script, get nativeApps() { return [...nativeApps]; }, startSystem, get sysApp() { return sysApp; }, startNetwork, netBoot, netCall, syncNetDrives, mapNetDrive, disconnectNetDrive, get netApp() { return netApp; }, fs, render, SaverRun, displayProperties, startFullSaver, get fullSaver() { return fullSaver; }, properties, driveProps, openFolder, openPath, shellOpen, notepad, msgBox, runDialog, findComputer, findFiles, winHelp, shutDownDialog, MyComputer, get state() { return { menus: menus.length, menuSrc, modals: modals.length, cap: !!cap, drag: !!drag, screen, active: active && active.title }; } };
+window.win95 = { ...script, get nativeApps() { return [...nativeApps]; }, startSystem, get sysApp() { return sysApp; }, startNetwork, netBoot, netCall, syncNetDrives, mapNetDrive, disconnectNetDrive, get netApp() { return netApp; }, fs, render, displayProperties, startFullSaver, get fullSaver() { return fullSaver; }, properties, driveProps, openFolder, openPath, shellOpen, notepad, msgBox, runDialog, findComputer, findFiles, winHelp, shutDownDialog, MyComputer, get state() { return { menus: menus.length, menuSrc, modals: modals.length, cap: !!cap, drag: !!drag, screen, active: active && active.title }; } };
 })();

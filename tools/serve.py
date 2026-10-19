@@ -5,7 +5,7 @@ sectors at a time), with cdrom.iso the CD image given by --iso.
 """
 import argparse, base64, http.server, json, os, re, shutil, socket
 
-ap = argparse.ArgumentParser(); ap.add_argument('port', type=int); ap.add_argument('--iso'); a = ap.parse_args()
+ap = argparse.ArgumentParser(); ap.add_argument('port', type=int); ap.add_argument('--iso'); ap.add_argument('--host', default='127.0.0.1'); a = ap.parse_args()
 root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # the Mac's folders the LAN's other computer serves (lanhost.js), as the app's shares.js serves them: the home folder as
@@ -102,4 +102,5 @@ class H(http.server.SimpleHTTPRequestHandler):
         self.range_left = None
 
 class S(http.server.ThreadingHTTPServer): request_queue_size = 128   # (a cold load asks for every script at once)
-S(('127.0.0.1', a.port), H).serve_forever()
+srv = S((a.host, a.port), H)
+srv.serve_forever()
