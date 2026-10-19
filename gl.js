@@ -796,7 +796,7 @@ gl('wglMakeCurrent', 'uu', function (c, hdc, h) {
 gl('wglChoosePixelFormat', 'up', () => 1);
 gl('wglSetPixelFormat', 'uup', () => 1);
 gl('wglGetPixelFormat', 'u', () => 1);
-gl('wglDescribePixelFormat', 'uuup', function (c, hdc, i, n, p) { if (p) writePFD(this, p, dcDepth(this, hdc)); return 1; });
+gl('wglDescribePixelFormat', 'uuup', function (c, hdc, i, n, p) { if (p) writePFD(this, p, dcDepth(this, hdc), i); return PFD_FORMATS.length; });
 gl('wglDeleteContext', 'u', function (c, h) {
   const o = this.obj(h); if (o && this.glctx === o.ctx) this.glctx = null;
   if (o && o.ctx) releaseContext(this, o.ctx);
@@ -940,16 +940,18 @@ gl('wglUseFontOutlinesA', 'uuuuffip', function (c, hdc, first, count, base, dev,
   return ok;
 });
 
-const PFD_FLAGS = 0x4 | 0x20 | 0x1 | 0x400;   // DRAW_TO_WINDOW | SUPPORT_OPENGL | DOUBLEBUFFER | SWAP_COPY
-/** the pixel format, at the DC's depth as the generic implementation describes it (a saver takes the format whose
- *  cColorBits is the screen's BITSPIXEL * PLANES): at 8 bits RGB 3-3-2 with PFD_NEED_PALETTE, the palette the program
- *  makes from the shifts and realizes in its window's DC */
-function writePFD(p, a, bpp = 24) {
+// the formats, as the generic implementation lists them for the DC's depth: 1, a double-buffered window format; 2, a
+// single-buffered one that also draws to a bitmap (3D Maze draws into a DIB section and blits it)
+const PFD_FORMATS = [0x4 | 0x20 | 0x1 | 0x400 | 0x40, 0x4 | 0x8 | 0x20 | 0x40];   // DRAW_TO_WINDOW, DRAW_TO_BITMAP, SUPPORT_OPENGL, DOUBLEBUFFER, SWAP_COPY, GENERIC_FORMAT
+/** pixel format i (1-based), at the DC's depth as the generic implementation describes it (a saver takes the format
+ *  whose cColorBits is the screen's BITSPIXEL * PLANES): at 8 bits RGB 3-3-2 with PFD_NEED_PALETTE, the palette the
+ *  program makes from the shifts and realizes in its window's DC; at 16, 5-5-5; deeper, 8-8-8 */
+function writePFD(p, a, bpp = 24, i = 1) {
   p.u8.fill(0, a, a + 40);
-  const pal = bpp <= 8;
-  p.w16(a, 40); p.w16(a + 2, 1); p.w32(a + 4, PFD_FLAGS | (pal ? 0x80 : 0)); p.u8[a + 8] = 0; p.u8[a + 9] = pal ? 8 : 24;
-  if (pal) { p.u8[a + 10] = 3; p.u8[a + 11] = 0; p.u8[a + 12] = 3; p.u8[a + 13] = 3; p.u8[a + 14] = 2; p.u8[a + 15] = 6; }
-  else { p.u8[a + 10] = 8; p.u8[a + 11] = 16; p.u8[a + 12] = 8; p.u8[a + 13] = 8; p.u8[a + 14] = 8; p.u8[a + 15] = 0; }
+  const pal = bpp <= 8, flags = PFD_FORMATS[Math.min(Math.max(i, 1), PFD_FORMATS.length) - 1];
+  p.w16(a, 40); p.w16(a + 2, 1); p.w32(a + 4, flags | (pal ? 0x80 : 0)); p.u8[a + 8] = 0; p.u8[a + 9] = pal ? 8 : bpp === 16 ? 16 : bpp;
+  const bits = pal ? [3, 0, 3, 3, 2, 6] : bpp === 16 ? [5, 10, 5, 5, 5, 0] : [8, 16, 8, 8, 8, 0];
+  bits.forEach((v, k) => { p.u8[a + 10 + k] = v; });
   p.u8[a + 23] = 16; p.u8[a + 26] = 0;
 }
 /** a DC's depth: BITSPIXEL * PLANES, from the machine's GDI32 for its DCs */
@@ -957,7 +959,7 @@ const dcDepth = (p, hdc) => (p.pc && p.pc.nativeGdi ? nativeCall(p, 'GDI32', 'Ge
 def('GDI32', 'ChoosePixelFormat', 2, function () { return 1; });
 def('GDI32', 'SetPixelFormat', 3, function () { return 1; });
 def('GDI32', 'GetPixelFormat', 1, function () { return 1; });
-def('GDI32', 'DescribePixelFormat', 4, function (hdc, i, n, p) { if (p) writePFD(this, p, dcDepth(this, hdc)); return 1; });
+def('GDI32', 'DescribePixelFormat', 4, function (hdc, i, n, p) { if (p) writePFD(this, p, dcDepth(this, hdc), i); return PFD_FORMATS.length; });
 def('GDI32', 'SwapBuffers', 1, function () { if (this.glctx) this.glctx.present(); return 1; });
 
 window.W95GL = { Context, E, releaseContext };

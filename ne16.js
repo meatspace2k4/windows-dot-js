@@ -3459,7 +3459,9 @@ K('#92', 0, function () { if (!this.pk16SysVar) this.pk16SysVar = this.alloc(0x4
 // _EnterSysLevel / _LeaveSysLevel: the levels a thread holds (the Win16Lock among them), which it keeps when its time
 // runs out there (holdWin16)
 K('#86', 1, function () { this.sysLevel = (this.sysLevel || 0) + 1; return 0; });
-K('#97', 1, function () { this.sysLevel = Math.max(0, (this.sysLevel || 0) - 1); return 0; });
+// (EAX is the caller's across both, as KERNEL32's own keep it: GDI32 takes the lock around an object's lookup and
+// returns the result it has in EAX straight after leaving: GetObjectType)
+K('#97', 1, function () { this.sysLevel = Math.max(0, (this.sysLevel || 0) - 1); return this.reg('eax'); });
 K('#49', 1, () => 0);                                      // RestoreThunkLock
 K('#51', 0, () => 0);
 // W32S_BackTo32 (KERNEL32 #51), as USER32's thunklet relays use it under native USER: entered by a jump with [ESP] the
@@ -3479,7 +3481,7 @@ K('#68', 3, function (sp) { return this.lin(sp); });      // K32WOWGetVDMPointer
 K('#69', 1, () => 0);
 K('#93', 1, function (p) { if (p) this.w32(p, 0); return 0; });   // GetpWin16Lock
 K('#96', 0, () => 1);
-K('#98', 1, () => 0);
+K('#98', 1, function () { return this.reg('eax'); });
 K('GetProcessFlags', 1, () => 0);
 K('ConvertToGlobalHandle', 1, h => h);
 K('ReleaseMutex', 1, () => 1);   // one processor runs every thread here: a mutex has no one to keep out

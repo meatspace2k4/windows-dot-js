@@ -80,6 +80,18 @@ assert.deepEqual([...u8.slice(pfd + 10, pfd + 16)], [3, 0, 3, 3, 2, 6], 'red 3@0
 // a memory DC (3D Maze draws into a DIB section): its size is its bitmap's, not 1x1
 assert.equal(GL.wglMakeCurrent[1].call(p, 0x600, 0x77), 1);
 assert.deepEqual([p.glctx.dc.w, p.glctx.dc.h, p.glctx.dc.hwnd], [800, 600, 0]);
+// the formats GDI32's DescribePixelFormat forwards on a 16-bit screen: two, both 16 bits 5-5-5; the second
+// single-buffered and drawing to a bitmap (3D Maze's choice: it requires cColorBits == the screen's depth)
+{
+  const caps = p.call; p.call = (addr, args) => (addr === ADDR.GetDeviceCaps ? (args[1] === 12 ? 16 : 1) : caps(addr, args));
+  const pfd = p.alloc(40);
+  assert.equal(GL.wglDescribePixelFormat[1].call(p, 0x5d6, 1, 40, pfd), 2, 'two formats');
+  assert.equal(u8[pfd + 9], 16); assert.deepEqual([...u8.slice(pfd + 10, pfd + 16)], [5, 10, 5, 5, 5, 0]);
+  assert.equal(p.r32(pfd + 4) & 0x9, 0x1, 'format 1: double-buffered, to a window');
+  GL.wglDescribePixelFormat[1].call(p, 0x5d6, 2, 40, pfd);
+  assert.equal(p.r32(pfd + 4) & 0x9, 0x8, 'format 2: single-buffered, to a bitmap');
+  p.call = caps;
+}
 // a process on the JS personality keeps its own DCs
 const q = { ...p, pc: {}, obj: h => (h === 0x77 ? { kind: 'glrc', ctx: {} } : h === 0x99 ? { kind: 'dc', w: 5, h: 5 } : null) };
 assert.equal(GL.wglMakeCurrent[1].call(q, 0x99, 0x77), 1);
