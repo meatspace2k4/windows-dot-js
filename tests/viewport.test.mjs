@@ -59,7 +59,6 @@ const cut = (w, a, b, keep = true) => { const i = w.indexOf(a); assert.ok(i >= 0
 // 1 MB (its bank probe stops at 16 banks)
 {
   const w = src('win95.js');
-  assert.match(w, /const BOOT_BPP = 16,/);
   const B = new Function('innerWidth', 'innerHeight', 'ZOOM', `const BOOT_BPP = 16;\n${cut(w, 'const nativeMode = ', '\n')}\n${cut(w, 'function bootSize() {', '\n}\n')}\nreturn bootSize();`);
   assert.deepEqual(B(913, 765, 1), [800, 600]);
   assert.deepEqual(B(1280, 1000, 1), [800, 600], '1024x768 at 16 bits is more than 1 MB');

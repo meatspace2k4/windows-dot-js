@@ -138,7 +138,7 @@ class Process {
       const dll = this.readA(base + this.r32(d + 12)).toUpperCase().replace(/\.DLL$/, '');
       const iat = base + this.r32(d + 16); let lut = base + (this.r32(d) || this.r32(d + 16));
       const native = this.loadDll(dll); if (native && !rec.deps.includes(native)) rec.deps.push(native);
-      if (!native && API[dll]) (this.jsImported || (this.jsImported = new Set())).add(dll);   // (a DLL implemented here that an image imports is loaded: GetModuleHandle finds it)
+      if (!native && STAND_IN.has(dll)) (this.jsImported || (this.jsImported = new Set())).add(dll);   // (a stand-in for a DLL file that an image imports is loaded: GetModuleHandle finds it)
       for (let k = 0; ; k++, lut += 4) {
         const v = this.r32(lut); if (!v) break;
         const nm = v & 0x80000000 ? '#' + (v & 0xffff) : this.readA(base + v + 2);
@@ -771,6 +771,10 @@ const HKEY = { 0x80000000: 'hkcr', 0x80000001: 'hkcu', 0x80000002: 'hklm', 0x800
 
 // ---------------------------------------------------------------- API table: [argc, impl]; argc < 0 = cdecl varargs
 const API = {};
+// the DLLs implemented here in place of a DLL file a program can find by name (gl.js: OPENGL32, the installable client
+// driver GDI32's pixel-format calls look up with GetModuleHandle); the personality's own (KERNEL32, ADVAPI32, ...) are
+// not found that way, as before
+const STAND_IN = new Set();
 const def = (dll, name, n, fn) => { (API[dll] = API[dll] || {})[name] = [n, fn]; };
 const TRUE = 1, FALSE = 0;
 
@@ -1004,7 +1008,10 @@ def('KERNEL32', 'VirtualAlloc', 4, function (a, n, type) {
   if (spare >= 0) { b = this.vspare.splice(spare, 1)[0].base; this.u8.fill(0, b, b + size); }
   else if (this.vmTop + size <= end) { b = this.vmTop; this.vmTop += size; }
   else { heap = this.alloc(size + 0xffff, true); b = (heap + 0xffff) & ~0xffff; }
-  regions.set(b, { size, heap, pc: this.pc || null });   // (pc: the process it is reserved for; it goes when that process ends)
+  // (pc: the process whose own program reserved it, the caller's return address in its image: it goes when that
+  // process ends. What a DLL reserves (SHELL32's, DESK.CPL's) is the DLL's, kept: the DLLs are one copy here, shared)
+  const pc = this.pc, e = pc && pc.exe, ret = this.r32(this.reg('esp'));
+  regions.set(b, { size, heap, pc: e && ret >= e.base && ret < e.base + (e.size || 0) ? pc : null });
   return b;
 });
 def('KERNEL32', 'VirtualFree', 3, function (p, n, type) {
@@ -2519,5 +2526,5 @@ function peString(bytes, id) {
   } catch (_) { return null; }
 }
 
-window.W95Win32 = { regAttach, regGet, regKids, regVals, regDel, regSet, regDump, regApply, regWatch: f => regWatchers.add(f), Process, API, LAYOUT, WM, YIELD, iniGet, iniSet, iniRead, peString, peResource, def, dcOf, GuestError, HangError, FaultError, mkCanvas, dibOut };
+window.W95Win32 = { regAttach, regGet, regKids, regVals, regDel, regSet, regDump, regApply, regWatch: f => regWatchers.add(f), Process, API, STAND_IN, LAYOUT, WM, YIELD, iniGet, iniSet, iniRead, peString, peResource, def, dcOf, GuestError, HangError, FaultError, mkCanvas, dibOut };
 })();

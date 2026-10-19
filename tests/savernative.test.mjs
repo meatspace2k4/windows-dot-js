@@ -16,17 +16,19 @@ for (const n of ['wglChoosePixelFormat', 'wglSetPixelFormat', 'wglGetPixelFormat
 const mem = new ArrayBuffer(1 << 20), u8 = new Uint8Array(mem), dv = new DataView(mem);
 let top = 0x1000;
 const calls = [];
-const ADDR = { WindowFromDC: 0x100, GetClientRect: 0x104, SetDIBitsToDevice: 0x200, GetDeviceCaps: 0x204 };
+const ADDR = { WindowFromDC: 0x100, GetClientRect: 0x104, SetDIBitsToDevice: 0x200, GetDeviceCaps: 0x204, GetCurrentObject: 0x208, GetObjectA: 0x20c };
 const exp = names => ({ exports: new Map(names.map(n => [n, ADDR[n]])) });
 const p = {
   u8, dv, pc: { nativeGdi: true },
-  byName: new Map([['USER32', exp(['WindowFromDC', 'GetClientRect'])], ['GDI32', exp(['SetDIBitsToDevice', 'GetDeviceCaps'])]]),
+  byName: new Map([['USER32', exp(['WindowFromDC', 'GetClientRect'])], ['GDI32', exp(['SetDIBitsToDevice', 'GetDeviceCaps', 'GetCurrentObject', 'GetObjectA'])]]),
   alloc(n) { const a = top; top += (n + 15) & ~15; return a; }, free() {},
   r32: a => dv.getUint32(a, true), w32: (a, v) => dv.setUint32(a, v >>> 0, true), w16: (a, v) => dv.setUint16(a, v, true),
   obj: h => (h === 0x77 ? { kind: 'glrc', ctx: {} } : null),
   call(addr, args) {
     calls.push([addr, args]);
-    if (addr === ADDR.WindowFromDC) return 0x2a4;
+    if (addr === ADDR.WindowFromDC) return args[0] === 0x600 ? 0 : 0x2a4;   // (0x600: a DC USER names no window for)
+    if (addr === ADDR.GetCurrentObject) return args[0] === 0x600 && args[1] === 7 ? 0x3c0 : 0;   // (the DIB section selected)
+    if (addr === ADDR.GetObjectA) { if (args[0] !== 0x3c0) return 0; dv.setInt32(args[2] + 4, 800, true); dv.setInt32(args[2] + 8, 600, true); return 24; }
     if (addr === ADDR.GetClientRect) { dv.setInt32(args[1] + 8, 152, true); dv.setInt32(args[1] + 12, 112, true); return 1; }
     if (addr === ADDR.GetDeviceCaps) return args[1] === 12 ? 8 : 1;   // (a 256-color screen: BITSPIXEL 8, PLANES 1)
     return 1;
@@ -65,6 +67,19 @@ GL.wglDescribePixelFormat[1].call(p, 0x5d6, 1, 40, pfd);
 assert.equal(u8[pfd + 9], 8); assert.ok(p.r32(pfd + 4) & 0x80, 'PFD_NEED_PALETTE');
 assert.deepEqual([...u8.slice(pfd + 10, pfd + 16)], [3, 0, 3, 3, 2, 6], 'red 3@0, green 3@3, blue 2@6');
 
+// (a 16-bit screen: a 16-bit 5-5-5 DIB, the screen's own format, so GDI copies it)
+{
+  const dc16 = { native: true, hdc: 0x5e0, hwnd: 0x2a4, bpp: 16, w: 2, h: 2, win() { return { w: 2, h: 2 }; } };
+  calls.length = 0; ctx.presentNative(dc16);
+  const [, a16] = calls.find(c => c[0] === ADDR.SetDIBitsToDevice);
+  assert.equal(dv.getUint16(dc16.bits + 14, true), 16); assert.equal(a16[11], 0, 'DIB_RGB_COLORS');
+  const c555 = (r, g, b) => (r >> 3) << 10 | (g >> 3) << 5 | b >> 3;
+  assert.deepEqual([dv.getUint16(dc16.bits + 40, true), dv.getUint16(dc16.bits + 42, true)], [c555(10, 20, 30), c555(40, 50, 60)], 'row 0: 5-5-5');
+  assert.deepEqual([dv.getUint16(dc16.bits + 44, true), dv.getUint16(dc16.bits + 46, true)], [c555(70, 80, 90), c555(100, 110, 120)], 'row 1 at the 4-byte stride');
+}
+// a memory DC (3D Maze draws into a DIB section): its size is its bitmap's, not 1x1
+assert.equal(GL.wglMakeCurrent[1].call(p, 0x600, 0x77), 1);
+assert.deepEqual([p.glctx.dc.w, p.glctx.dc.h, p.glctx.dc.hwnd], [800, 600, 0]);
 // a process on the JS personality keeps its own DCs
 const q = { ...p, pc: {}, obj: h => (h === 0x77 ? { kind: 'glrc', ctx: {} } : h === 0x99 ? { kind: 'dc', w: 5, h: 5 } : null) };
 assert.equal(GL.wglMakeCurrent[1].call(q, 0x99, 0x77), 1);

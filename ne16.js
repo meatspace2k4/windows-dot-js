@@ -1552,6 +1552,12 @@ def16('KERNEL', 11, 'w', 'w', function (p) { const lh = this.lheap(); const b = 
 def16('KERNEL', 12, 'w', 'w', function (h) { const lh = this.lheap(); return lh.handles.has(h & 0xffff) ? this.u8[this.selBase(lh.sel) + h + 3] | (this.u8[this.selBase(lh.sel) + h + 2] << 8) : 0; });  // LocalFlags
 def16('KERNEL', 13, 'w', 'w', function () { const lh = this.lheap(); this.localCompact(lh); return lh.free.reduce((m, f) => Math.max(m, f[1]), 0); });   // LocalCompact
 def16('KERNEL', 121, 'ww', 'w', function () { const lh = this.lheap(); return lh.free.reduce((m, f) => Math.max(m, f[1]), 0); }); // LocalShrink
+// LocalHeapSize: the bytes DS's local heap spans, from its heap info block (DS:6 points to it: the first byte at +6, the
+// last block's at +0Ah, as localInit writes them)
+def16('KERNEL', 162, '', 'w', function () {
+  this.lheap(); const base = this.selBase(this.cpu.ds.value & 0xffff), info = this.r16(base + 6);
+  return (this.r16(base + info + 0xa) + 4 - this.r16(base + info + 6)) & 0xffff;
+});
 def16('KERNEL', 161, '', 'w', function () { const lh = this.lheap(); return Math.min(0xffff, lh.free.reduce((s, f) => s + f[1], 0)); });   // LocalCountFree: the free bytes in DS's local heap
 
 def16('KERNEL', 15, 'wl', 'w', function (fl, n) { return this.globalAlloc16(fl, n); });

@@ -2940,7 +2940,7 @@ function bootMode(w, h) {
   W95Win32.iniSet(fs, 'SYSTEM.INI', 'display', 'BitsPerPixel', String(BOOT_BPP));   // (the display VxD's configuration, ne16.js displayConfig)
 }
 // high color: the screen the system's machine boots in (the page scans 8, 16, 24 and 32 bits a pixel out)
-const BOOT_BPP = 16, SCAN_BPP = new Set([8, 16, 24, 32]);
+const BOOT_BPP = 8, SCAN_BPP = new Set([8, 16, 24, 32]);
 /** the size the system's machine boots at: the page's, at 256 colors; above them the largest of the display driver's
  *  sizes that fits the page and the 1 MB FRAMEBUF.DRV counts (its bank probe stops at 16 banks), so the size it sets is
  *  the size USER and GDI are told */
@@ -2950,6 +2950,15 @@ function bootSize() {
 }
 /** one pixel of a scanned-out screen, as the canvas's 32-bit ABGR: through the DAC at 8 bits, else the pixel's own
  *  RGB (16: 5-6-5 when the Sierra DAC's command register says so (E0h), else 5-5-5; 24 and 32: B, G, R in memory) */
+/** a row of a scanned-out screen (x0..x1 of the line at byte s) into d from o: one tight loop for each depth */
+function scanRow(a, v, pal, d, o, s, x0, x1) {
+  if (a.bpp === 8) { for (let x = x0; x < x1; x++) d[o + x] = pal[v[s + x]]; return; }
+  if (a.bpp === 16 && (a.dacMode & 0xe0) !== 0xe0) {
+    for (let x = x0, i = s + 2 * x0; x < x1; x++, i += 2) { const c = v[i] | v[i + 1] << 8, r = c >> 10 & 31, g = c >> 5 & 31, b = c & 31; d[o + x] = 0xff000000 | (b << 3 | b >> 2) << 16 | (g << 3 | g >> 2) << 8 | (r << 3 | r >> 2); }
+    return;
+  }
+  for (let x = x0; x < x1; x++) d[o + x] = scanPx(a, v, pal, s, x);
+}
 function scanPx(a, v, pal, s, x) {
   switch (a.bpp) {
     case 8: return pal[v[s + x]];
@@ -3243,7 +3252,7 @@ class NativeApp {
       if (w.min || w.transparent) continue;
       const x0 = Math.max(0, w.x), y0 = Math.max(0, w.y), x1 = Math.min(sw, a.w, w.x + w.w), y1 = Math.min(sh, a.h, w.y + w.h);
       if (x1 <= x0 || y1 <= y0) continue;
-      for (let y = y0; y < y1; y++) { const s = y * pitch, o = y * sw; for (let x = x0; x < x1; x++) d[o + x] = scanPx(a, v, pal, s, x); }
+      for (let y = y0; y < y1; y++) scanRow(a, v, pal, d, y * sw, y * pitch, x0, x1);
       this.cx.putImageData(this.img, 0, 0, x0, y0, x1 - x0, y1 - y0);
     }
     // the rest of its screen: what USER draws on its desktop (its cursor, a window's drag frame) over the desktop
@@ -3255,7 +3264,7 @@ class NativeApp {
     for (let y = 0; y < sh; y++) {
       const s = y * pitch, r = y * sw, ins = wins.filter(w => y >= w.y && y < w.y + w.h);
       for (let x = 0; x < sw; x++) {
-        const c = y < a.h && x < a.w ? scanPx(a, v, pal, s, x) : bg;
+        const c = y < a.h && x < a.w ? (a.bpp === 8 ? pal[v[s + x]] : scanPx(a, v, pal, s, x)) : bg;
         o[r + x] = c === bg || ins.some(w => x >= w.x && x < w.x + w.w) ? 0 : c;
       }
     }
@@ -3269,7 +3278,7 @@ class NativeApp {
     if (!a || !SCAN_BPP.has(a.bpp) || !this.d32) return;
     const pal = this.pal, dac = a.dac, v = a.vram, d = this.d32, sw = this.sw, w = Math.min(sw, a.w), h = Math.min(this.sh, a.h);
     for (let i = 0; i < 256; i++) { const r = dac[3 * i], g = dac[3 * i + 1], b = dac[3 * i + 2]; pal[i] = 0xff000000 | ((b << 2 | b >> 4) << 16) | ((g << 2 | g >> 4) << 8) | (r << 2 | r >> 4); }
-    for (let y = 0; y < h; y++) { const s = y * a.pitch, o = y * sw; for (let x = 0; x < w; x++) d[o + x] = scanPx(a, v, pal, s, x); }
+    for (let y = 0; y < h; y++) scanRow(a, v, pal, d, y * sw, y * a.pitch, 0, w);
     this.cx.putImageData(this.img, 0, 0, 0, 0, w, h); ctx.drawImage(this.cv, 0, 0, w, h, 0, 0, w, h);
   }
   blit(w) {
@@ -3547,7 +3556,7 @@ class RemoteApp extends NativeApp {
       if (w.min || w.transparent) continue;
       const x0 = Math.max(0, w.x), y0 = Math.max(0, w.y), x1 = Math.min(sw, a.w, w.x + w.w), y1 = Math.min(sh, a.h, w.y + w.h);
       if (x1 <= x0 || y1 <= y0) continue;
-      for (let y = y0; y < y1; y++) { const s = y * pitch, o = y * sw; for (let x = x0; x < x1; x++) d[o + x] = scanPx(a, v, pal, s, x); }
+      for (let y = y0; y < y1; y++) scanRow(a, v, pal, d, y * sw, y * pitch, x0, x1);
       this.cx.putImageData(this.img, 0, 0, x0, y0, x1 - x0, y1 - y0);
     }
     const six = c => (c >> 2) << 2 | (c >> 2) >> 4, c = m.bg;
@@ -3556,7 +3565,7 @@ class RemoteApp extends NativeApp {
     for (let y = 0; y < sh; y++) {
       const s = y * pitch, r = y * sw, ins = wins.filter(w => y >= w.y && y < w.y + w.h);
       for (let x = 0; x < sw; x++) {
-        const cc = y < a.h && x < a.w ? scanPx(a, v, pal, s, x) : bg;
+        const cc = y < a.h && x < a.w ? (a.bpp === 8 ? pal[v[s + x]] : scanPx(a, v, pal, s, x)) : bg;
         o[r + x] = cc === bg || ins.some(w => x >= w.x && x < w.x + w.w) ? 0 : cc;
       }
     }

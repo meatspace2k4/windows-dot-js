@@ -5,6 +5,7 @@
 // in shaders following the GL 1.1 equations; display lists keep their geometry in GPU buffers.
 (() => {
 const { def, dcOf, GuestError } = window.W95Win32;
+window.W95Win32.STAND_IN.add('OPENGL32');   // (in place of opengl32.dll: GDI32 finds it by name)
 
 // ---------------------------------------------------------------- argument decoding
 // sig: one char per parameter: i = int32, u = uint32, f = float, d = double, p = pointer
@@ -385,17 +386,23 @@ class Context {
     g.flush();
     // at 8 bits the frame is 3-3-2 indices into the palette the program realized from the pixel format (DIB_PAL_COLORS,
     // the color table the identity); deeper, 32-bit RGB
-    const pal = dc.bpp <= 8, stride = pal ? (w + 3) & ~3 : w * 4, head = pal ? 40 + 512 : 40;
+    // the DIB is the screen's own format, so GDI copies it rather than converting every pixel in the display driver's
+    // code: at 8 bits 3-3-2 indices into the palette the program realized (DIB_PAL_COLORS, the color table the
+    // identity); at 16 bits 5-5-5 (BI_RGB); deeper, 32-bit RGB
+    const pal = dc.bpp <= 8, hi = dc.bpp === 16, Bpp = pal ? 1 : hi ? 2 : 4, stride = (w * Bpp + 3) & ~3, head = pal ? 40 + 512 : 40;
     if (!dc.bits || dc.bw !== w || dc.bh !== h) {
       if (dc.bits) p.free(dc.bits);
       dc.bits = p.alloc(head + stride * h); dc.bw = w; dc.bh = h; dc.rgba = new Uint8Array(w * h * 4);
       p.u8.fill(0, dc.bits, dc.bits + head);
-      p.w32(dc.bits, 40); p.w32(dc.bits + 4, w); p.w32(dc.bits + 8, h); p.w16(dc.bits + 12, 1); p.w16(dc.bits + 14, pal ? 8 : 32);   // BITMAPINFOHEADER, BI_RGB
+      p.w32(dc.bits, 40); p.w32(dc.bits + 4, w); p.w32(dc.bits + 8, h); p.w16(dc.bits + 12, 1); p.w16(dc.bits + 14, Bpp * 8);   // BITMAPINFOHEADER, BI_RGB
       if (pal) { p.w32(dc.bits + 32, 256); for (let i = 0; i < 256; i++) p.w16(dc.bits + 40 + 2 * i, i); }
     }
     g.readPixels(0, 0, w, h, g.RGBA, g.UNSIGNED_BYTE, dc.rgba);   // (rows bottom-up, as the DIB's)
     const src = dc.rgba, out = dc.bits + head, u8 = p.u8;
     if (pal) for (let y = 0; y < h; y++) for (let x = 0, s = y * w * 4, o = out + y * stride; x < w; x++, s += 4) u8[o + x] = (src[s] >> 5) | ((src[s + 1] >> 5) << 3) | ((src[s + 2] >> 6) << 6);
+    else if (hi) for (let y = 0; y < h; y++) for (let x = 0, s = y * w * 4, o = out + y * stride; x < w; x++, s += 4) {
+      const c = (src[s] >> 3) << 10 | (src[s + 1] >> 3) << 5 | src[s + 2] >> 3; u8[o + 2 * x] = c & 0xff; u8[o + 2 * x + 1] = c >> 8;
+    }
     else for (let i = 0; i < w * h * 4; i += 4) { u8[out + i] = src[i + 2]; u8[out + i + 1] = src[i + 1]; u8[out + i + 2] = src[i]; u8[out + i + 3] = 0; }
     nativeCall(p, 'GDI32', 'SetDIBitsToDevice', [dc.hdc, 0, 0, w, h, 0, 0, 0, h, out, dc.bits, pal ? 1 : 0]);   // DIB_PAL_COLORS, DIB_RGB_COLORS
     nativeSize(p, dc);
@@ -421,9 +428,13 @@ function glDC(p, hdc) {
 }
 /** a GDI32 DC's window's client size, through USER32's GetClientRect */
 function nativeSize(p, dc) {
-  if (!dc.hwnd) return;
-  const r = p.alloc(16);
-  if (nativeCall(p, 'USER32', 'GetClientRect', [dc.hwnd, r])) { dc.w = Math.max(1, (p.r32(r + 8) - p.r32(r)) | 0); dc.h = Math.max(1, (p.r32(r + 12) - p.r32(r + 4)) | 0); }
+  const r = p.alloc(24);
+  if (dc.hwnd) {   // the window's client area
+    if (nativeCall(p, 'USER32', 'GetClientRect', [dc.hwnd, r])) { dc.w = Math.max(1, (p.r32(r + 8) - p.r32(r)) | 0); dc.h = Math.max(1, (p.r32(r + 12) - p.r32(r + 4)) | 0); }
+  } else {         // a memory DC (PFD_DRAW_TO_BITMAP: 3D Maze draws into a DIB section it then blits): its bitmap's size
+    const bm = nativeCall(p, 'GDI32', 'GetCurrentObject', [dc.hdc, 7]);   // OBJ_BITMAP
+    if (bm && nativeCall(p, 'GDI32', 'GetObjectA', [bm, 24, r])) { dc.w = Math.max(1, p.r32(r + 4) | 0); dc.h = Math.max(1, Math.abs(p.r32(r + 8) | 0)); }   // BITMAP bmWidth, bmHeight
+  }
   p.free(r);
 }
 
