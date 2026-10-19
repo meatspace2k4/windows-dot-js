@@ -214,6 +214,12 @@ class Machine {
   }
   startMsgsrv() {
     const p = this.proc; if (!this.alive || p.trapped) return true;
+    // with a network client installed (NetworkProvider\Order), the Multiple Provider Router comes up before the
+    // system's first task, as Windows loads it at boot: USER's network functions connect to it (SM_NETWORK, which
+    // puts Network Neighborhood on the shell's desktop), and it starts the network's process, MPREXE
+    if (W.regGet('hklm\\system\\currentcontrolset\\control\\networkprovider\\order', 'ProviderOrder') !== undefined) {
+      try { p.init16(); const m = p.loadDll('MPR'); if (m) { p.runPendingInits(); p.attach(m); } } catch (e) { console.error(e); }
+    }
     const ok = !!p.startTask16('MSGSRV32.EXE'); if (!ok) this.exited(-1, 'MSGSRV32.EXE did not start');
     return ok;
   }
@@ -223,11 +229,21 @@ class Machine {
     const p = this.proc, want = new RegExp(re, 'i'), only = names ? new RegExp(names, 'i') : null, log = this.traceLog = [], t0 = performance.now();
     const name = () => { const t = p.thread16; if (!t) return 'host'; const m = t.task && t.task.hInst && p.neByHandle(t.task.hInst); return (m && m.name) || (t.pc && t.pc.path) || String(t.id); };
     // (the command line of WinExec and LoadModule; the key of RegOpenKey, RegCreateKey, RegQueryValue, RegQueryValueEx)
-    const STR = { 166: 6, 45: 8, 217: 8, 218: 8, 219: 12, 220: 20 };
-    const arg = key => { const m = /KERNEL\.#(\d+)$/.exec(key), o = m && STR[m[1]]; if (!o) return ''; try { const f = p.cpu.ssb.value + (p.cpu.esp.value & 0xffff), s = p.r32(f + o); return s >>> 16 ? p.readA(p.lin(s)) || '' : ''; } catch (_) { return ''; } };
+    const STR = { 166: 6, 45: 8, 217: 8, 218: 8, 219: 12, 220: 20, 95: 6, 97: 14, 127: 10, 128: 14 };   // (and the key of GetProfileInt/String, GetPrivateProfileInt/String)
+    const arg = key => {
+      const m = /KERNEL\.#(\d+)$/.exec(key), o = m && STR[m[1]];
+      try {
+        const f = p.cpu.ssb.value + (p.cpu.esp.value & 0xffff);
+        if (m && /^(533|534|537)$/.test(m[1])) return [4, 6, 8, 10].map(k => p.r16(f + k).toString(16)).join(' ');   // (the DDE conversions: their stack words)
+        if (!o) return '';
+        const s = p.r32(f + o); return s >>> 16 ? p.readA(p.lin(s)) || '' : '';
+      } catch (_) { return ''; }
+    };
     const svm = p.setVideoMode; p.setVideoMode = function (mode, clear, hi) { log.push([Math.round(performance.now() - t0), name(), 'int10 mode', (mode & 0xff).toString(16) + (hi ? ' hicolor ' + hi : '')]); return svm.call(this, mode, clear, hi); };
     self.W95TRACE16 = t => { const th = name(); if (log.length < 20000 && want.test(th) && (!only || only.test(t.key))) log.push([Math.round(performance.now() - t0), th, t.key, arg(t.key)]); };
-    self.W95TRACE = t => { const th = name(); if (log.length < 20000 && want.test(th) && (!only || only.test(t.dll + '!' + t.nm))) log.push([Math.round(performance.now() - t0), th, t.dll + '!' + t.nm, '']); };
+    // (the key or value name of the registry calls: the second argument on a stdcall frame at entry)
+    const arg32 = t => { if (!/^Reg(Open|Create|Query|Enum)/.test(t.nm)) return ''; try { const s = p.r32(p.reg('esp') + 8); return s > 0x10000 && s < p.u8.length ? p.readA(s) || '' : String(s); } catch (_) { return ''; } };
+    self.W95TRACE = t => { const th = name(); if (log.length < 20000 && want.test(th) && (!only || only.test(t.dll + '!' + t.nm))) log.push([Math.round(performance.now() - t0), th, t.dll + '!' + t.nm, arg32(t)]); };
     self.W95APPYTRACE = e => { if (log.length < 20000) log.push([Math.round(performance.now() - t0), name(), 'appy', (e.fn >>> 0).toString(16)]); };
   }
   ring0() { return !!(this.proc && this.proc.r0Runs && this.proc.r0Runs.length); }
@@ -322,6 +338,9 @@ class Machine {
     if (!extname(path)) path += '.exe';
     const file = (/^[a-z]:|^\\/i.test(path) ? [path] : [join('C:\\WINDOWS', path), join('C:\\WINDOWS\\SYSTEM', path), join(fs.cwd, path)]).find(f => fs.exists(f));
     if (!file) return 2;
+    // a screen saver (Display Properties' Preview and Settings, the shell's idle start): the savers run on the page,
+    // in a machine of their own; /s shows it, /c its settings; /p (the dialog's small monitor) is not drawn here
+    if (/\.scr$/i.test(file)) { const mode = /^\s*\/c/i.test(arg || '') ? 'c' : /^\s*\/p/i.test(arg || '') ? 'p' : 's'; if (mode !== 'p') rpc('host', 'saver', [file, mode]); return { elsewhere: true }; }
     // a Windows (16-bit) program of the system's: a task of this machine's, as KERNEL's WinExec starts one
     const ne = Object.values((self.W95SYSTEM || {}).ne || {}).find(d => d.fileName === basename(file).toUpperCase() && /\.EXE$/.test(d.fileName));
     if (ne) return this.proc.winExec16(ne.fileName, arg || '', show === undefined ? 1 : show);
@@ -497,7 +516,8 @@ class Machine {
       if (dg && p.selValid(dg.sel)) { const b = p.selBase(dg.sel); for (let n = p.r16(b + 0x30a), k = 0; n && k < 32; n = p.r16(b + n + 0xc), k++) mmd.push({ type: p.u8[b + n + 0xa], flags: p.u8[b + n + 0xb], devs: p.r16(b + n + 6), name: p.readA(b + n + 0x12, 16) }); } }
     const cdc = p.ad1848 ? { regs: Array.from(p.ad1848.regs || []), t: p.ad1848.t } : null;
     const procs = [...(p.procs || new Map()).values()].map(pc => ({ pid: pc.pid, path: pc.path, cmd: pc.cmdPtr ? p.readA(pc.cmdPtr) : '', exit: pc.exitCode }));   // the processes started here, with their command lines
-    return { cdc, procs, wss: p.wssRecs ? [...p.wssRecs.keys()] : null, mods16: p.ne ? [...p.ne.keys()] : [], mmd, sound: p.soundStats ? { ...p.soundStats, quiet: !!p.soundQuiet } : null, th16: (p.th16 || []).length, wins, threads, held: p.win16Held ? (p.win16Held.who === 'main' ? 'main' : p.win16Held.who && p.win16Held.who.id) : null, depth: p.depth,
+    const smNetwork = p.depth || p.thread16 ? null : (() => { try { return p.user16(179, [['w', 63]]).ax; } catch (_) { return null; } })();   // GetSystemMetrics(SM_NETWORK)
+    return { cdc, procs, smNetwork, wss: p.wssRecs ? [...p.wssRecs.keys()] : null, mods16: p.ne ? [...p.ne.keys()] : [], mmd, sound: p.soundStats ? { ...p.soundStats, quiet: !!p.soundQuiet } : null, th16: (p.th16 || []).length, wins, threads, held: p.win16Held ? (p.win16Held.who === 'main' ? 'main' : p.win16Held.who && p.win16Held.who.id) : null, depth: p.depth,
       main: { at: p.resumeEip ? where(p.resumeEip) : null, stack: stack(p.mainCtx) } };
   }
   // the page's requests: what a window gets done to it, and questions about the machine

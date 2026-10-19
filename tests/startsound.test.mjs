@@ -56,7 +56,7 @@ for (const [record, opts, heard] of [
   const M = new Function('W', 'self', 'fs', `return class {\n${src.slice(i, src.indexOf('\n  }\n', j) + 4)}\n}`);
   const run = (items, runonce) => {
     const started = [], spawned = [], exits = [];
-    const W = { regVals: () => items }, self = { W95SYSTEM: { programs: runonce ? { 'RUNONCE.EXE': {} } : {} } }, fs = { exists: f => f === 'C:\\WINDOWS\\RUNONCE.EXE' };
+    const W = { regVals: () => items, regGet: () => undefined }, self = { W95SYSTEM: { programs: runonce ? { 'RUNONCE.EXE': {} } : {} } }, fs = { exists: f => f === 'C:\\WINDOWS\\RUNONCE.EXE' };
     const m = new (M(W, self, fs))(); let pc = null;
     Object.assign(m, { alive: true, proc: { trapped: null, init16() { exits.push('init16'); }, startTask16(n) { started.push(n); return 0x1234; } }, spawnProgram(f) { spawned.push(f); return (pc = { onExit: c => exits.push(c) }); }, exited: (c, why) => exits.push(['exited', why]) });
     const r = m.startSystemTask();
