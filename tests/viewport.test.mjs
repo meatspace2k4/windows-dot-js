@@ -31,7 +31,8 @@ const cut = (w, a, b, keep = true) => { const i = w.indexOf(a); assert.ok(i >= 0
 // canvases remade for the size the machine answers with; a mode USER did not take not asked for again
 {
   const w = src('win95.js');
-  const page = `const NATIVE_MODES = [[1024, 768], [800, 600], [640, 480]];\n${cut(w, 'const nativeMode = ', '\n')}\n${cut(w, 'function syncMode() {', '\n}\n')}\n`
+  // (at 256 colors, the size the machine is asked for is the viewport's: bootSize; the high-color sizes are below)
+  const page = `const NATIVE_MODES = [[1024, 768], [800, 600], [640, 480]];\nconst BOOT_BPP = 8;\n${cut(w, 'const nativeMode = ', '\n')}\n${cut(w, 'function bootSize() {', '\n}\n')}\n${cut(w, 'function syncMode() {', '\n}\n')}\n`
     + `class RemoteApp {\n${cut(w, '  async setMode(w, h) {', '  /** a request to the machine', false)}\n constructor(a) { Object.assign(this, a); } }\n`
     + `return { syncMode, RemoteApp, set: v => { sysApp = v; }, mode: nativeMode };`;
   let resizes = 0;
@@ -53,6 +54,16 @@ const cut = (w, a, b, keep = true) => { const i = w.indexOf(a); assert.ok(i >= 0
   const e2 = env(700, 500), got = [], b = new e2.RemoteApp({ alive: true, sw: 800, sh: 600, cmd: async (n, args) => { got.push(args); return { r: -2, sw: 800, sh: 600 }; } });
   e2.set(b); e2.syncMode(); await settle(); e2.syncMode(); await settle();
   assert.deepEqual(got, [[700, 500]]); assert.deepEqual(b.modeRefused, [[700, 500]]); assert.deepEqual([b.sw, b.sh], [800, 600]);
+}
+// above 256 colors the machine boots at the largest of the driver's sizes that fits the viewport and FRAMEBUF.DRV's
+// 1 MB (its bank probe stops at 16 banks)
+{
+  const w = src('win95.js');
+  assert.match(w, /const BOOT_BPP = 16,/);
+  const B = new Function('innerWidth', 'innerHeight', 'ZOOM', `const BOOT_BPP = 16;\n${cut(w, 'const nativeMode = ', '\n')}\n${cut(w, 'function bootSize() {', '\n}\n')}\nreturn bootSize();`);
+  assert.deepEqual(B(913, 765, 1), [800, 600]);
+  assert.deepEqual(B(1280, 1000, 1), [800, 600], '1024x768 at 16 bits is more than 1 MB');
+  assert.deepEqual(B(700, 520, 1), [640, 480]);
 }
 // the app's window is the monitor: the page asks the host to size the window's content to the system machine's mode
 // as the machine starts and whenever its screen size is set; the preload carries the request, the main process sizes

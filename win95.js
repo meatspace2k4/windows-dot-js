@@ -2939,8 +2939,15 @@ function bootMode(w, h) {
   for (const k of ['hkcc\\display\\settings', 'hklm\\config\\0001\\display\\settings']) { W95Win32.regSet(k, 'Resolution', str(`${w},${h}`)); W95Win32.regSet(k, 'BitsPerPixel', str(String(BOOT_BPP))); }
   W95Win32.iniSet(fs, 'SYSTEM.INI', 'display', 'BitsPerPixel', String(BOOT_BPP));   // (the display VxD's configuration, ne16.js displayConfig)
 }
-// true color: the screen the system's machine boots in (the page scans 8, 16, 24 and 32 bits a pixel out)
-const BOOT_BPP = 8, SCAN_BPP = new Set([8, 16, 24, 32]);
+// high color: the screen the system's machine boots in (the page scans 8, 16, 24 and 32 bits a pixel out)
+const BOOT_BPP = 16, SCAN_BPP = new Set([8, 16, 24, 32]);
+/** the size the system's machine boots at: the page's, at 256 colors; above them the largest of the display driver's
+ *  sizes that fits the page and the 1 MB FRAMEBUF.DRV counts (its bank probe stops at 16 banks), so the size it sets is
+ *  the size USER and GDI are told */
+function bootSize() {
+  const [w, h] = nativeMode(); if (BOOT_BPP <= 8) return [w, h];
+  return [[1024, 768], [800, 600], [640, 480]].find(([x, y]) => x <= w && y <= h && x * y * (BOOT_BPP >> 3) <= 1 << 20) || [640, 480];
+}
 /** one pixel of a scanned-out screen, as the canvas's 32-bit ABGR: through the DAC at 8 bits, else the pixel's own
  *  RGB (16: 5-6-5 when the Sierra DAC's command register says so (E0h), else 5-5-5; 24 and 32: B, G, R in memory) */
 function scanPx(a, v, pal, s, x) {
@@ -2964,7 +2971,7 @@ function fitWindow(w, h) { const s = window.W95HOST && window.W95HOST.screen; if
 // take is not asked for again until the viewport changes
 function syncMode() {
   const a = sysApp; if (!a || !a.alive || !a.setMode) return;
-  const [w, h] = nativeMode();
+  const [w, h] = bootSize();
   if ((w === a.sw && h === a.sh) || (a.modeRefused || []).some(([x, y]) => x === w && y === h)) return;
   a.setMode(w, h).then(() => { if (a.alive) syncMode(); });
 }
@@ -3038,7 +3045,7 @@ class NativeApp {
     if (!this.net) for (const [n, d] of Object.entries(S.net || {})) dlls.set(n.replace(/\.DLL$/, ''), {
       get file() { return d.bytes || (d.bytes = b64bytes(d.file)); }, meta: d.meta,
       get module() { return d.mod instanceof WebAssembly.Module ? d.mod : (d.modSync || (d.modSync = new WebAssembly.Module(b64bytes(d.wasm)))); } });
-    [this.sw, this.sh] = nativeMode(); if (this.system) bootMode(this.sw, this.sh);
+    [this.sw, this.sh] = this.system ? bootSize() : nativeMode(); if (this.system) bootMode(this.sw, this.sh);
     const host = {
       fs, width: this.sw, height: this.sh, path: this.path, now: () => performance.now(), net: this.net, vmPages: 2048,   // 128 MiB of address space to reserve
       shared: true,   // (the system's modules take shared memory: the machines in workers share theirs with the page)
@@ -3394,7 +3401,7 @@ class RemoteApp extends NativeApp {
   // what the shell's older code reads of a machine (its counters; a program that has not exited)
   get proc() { return { stats: this.stats, exitCode: this.alive ? null : 0, trapped: null, depth: 0, win16Held: this.held, r0Runs: this.r0 ? [1] : [], txt: this.txt }; }
   start(bytes, prog) {
-    [this.sw, this.sh] = nativeMode(); if (this.system) bootMode(this.sw, this.sh);
+    [this.sw, this.sh] = this.system ? bootSize() : nativeMode(); if (this.system) bootMode(this.sw, this.sh);
     this.ring = W95Bridge.newRing(); this.rpcSab = new SharedArrayBuffer(16 + W95Bridge.RPC_BYTES);
     if (this.net || this.system) this.lanRing = W95Bridge.newFrames();   // (the frames for its network card: the network's machine, and the system's, which runs the network stack)
     this.worker = new Worker('worker.js'); machineWorkers.add(this);
