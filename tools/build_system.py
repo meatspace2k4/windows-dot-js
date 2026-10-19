@@ -74,6 +74,9 @@ PROGRAMS = [('notepad.exe', 0x00400000, 0x06000000), ('rundll32.exe', 0x00410000
             # the CD's AutoPlay program (D:\AUTORUN\AUTORUN.EXE, AUTORUN.INF's open=), which the shell runs when the
             # disc's icon is opened; copied from the disc into SYS_DIR for the build
             ('autorun.exe', 0x00540000, 0x07FE0000)]
+# Program Manager (WIN95_17.CAB): GRPCONV starts it hidden and makes Setup's groups through its DDE (then converts
+# them to the Start menu's links), so Setup's "Programs on the Start menu" completes before the shell is up
+NE.append(('progman.exe', 0x01F40000, 0x1D97, 0x07FF0000))
 # 32-bit system DLLs: (file, load base, block-table base)
 PE = [('gdi32.dll', 0x01D00000, 0x06C00000), ('user32.dll', 0x01D40000, 0x07340000), ('comdlg32.dll', 0x01D60000, 0x07380000),
       # the common controls and the shell, which COMDLG32's Explorer-style dialogs are built on (WIN95_02.CAB)

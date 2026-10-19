@@ -2729,7 +2729,9 @@ const pdw = (p, pid, off) => {
     // the process's instance (-48), as KERNEL32 keeps it: its program's 16-bit alias (ShellExecute answers with it for a
     // DDE server's process)
     const pc = p.procs && p.procs.get(pid), exe = pc ? pc.exe : pid === MAIN_PID ? p.exe : null;
-    p.procDword.set(pid, { ...GPD, '-48': exe ? p.hinst16(exe.base) : 0 });
+    // the system process is the Win16 tasks' (MSGSRV32, PROGMAN): fWin16Process (8) in its flags, as KERNEL32 marks
+    // the process Win16 programs run in (GRPCONV asks it of the process behind a Progman window)
+    p.procDword.set(pid, { ...GPD, '-4': pid === SYS_PID ? 8 : 0, '-48': exe ? p.hinst16(exe.base) : 0 });
   }
   return p.procDword.get(pid);
 };
@@ -2998,6 +3000,7 @@ def16('KERNEL', 45, 'sp', 'l', function (name, pb) {
     if (cs) show = this.r16(cs + 2);
   }
   const m = rec.meta, t = this.newThread(u32((m.segs[m.entry[0] - 1].sel << 16) | m.entry[1]), 0, 0x4000, false);
+  t.pc = null;   // a Win16 task is the Win16 process's (the system's), whoever starts it (GRPCONV's PROGMAN), not a thread of its starter
   t.task = { psp: pspSel, hInst: rec.hInstance, show, stack: rd.u16(rec.file, hdr + 0x12), heap: rd.u16(rec.file, hdr + 0x10), dgroup: rec.dgroup, mod: rec };
   rec.taskModule = true;
   // its DGROUP: the data, then the local heap, then the stack (SP its top)
