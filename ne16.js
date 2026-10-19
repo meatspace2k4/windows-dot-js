@@ -1130,7 +1130,7 @@ P.adapter = function () {
 };
 /** move the window contents to VRAM and bring in another bank */
 P.setBank = function (b) {
-  const a = this.adapter(); b &= 0x0f;
+  const a = this.adapter(); b &= (VRAM_SIZE >> 16) - 1;   // (the W32's banks reach all its memory: segment select 2 adds their high bits)
   if (b === a.bank) return;
   if (a.flat) { a.bank = b; return; }     // VFLATD presents VRAM linearly; the window is no longer the access path
   const u8 = this.u8; a.vram = u8.subarray(a.vramLin, a.vramLin + VRAM_SIZE);
@@ -1212,7 +1212,10 @@ P.portIO = function (port, size, isIn) {
       case 0x3c7: a.dacR = val * 3; return;
       case 0x3c8: a.dacW = val * 3; a.hidden = 0; return;
       case 0x3c9: a.dac[a.dacW % 768] = val & 0x3f; a.dacW++; a.dirty = true; return;
-      case 0x3cd: this.setBank(val & 0x0f); a.segsel = val; return;
+      case 0x3cd: this.setBank((val & 0x0f) | ((a.segsel2 || 0) & 3) << 4); a.segsel = val; return;
+      // the W32's segment select 2: the bank's high bits (1-0 for writes, 5-4 for reads), past the first megabyte; the
+      // Tseng driver tells a W32 from an ET4000 by it keeping what is written
+      case 0x3cb: a.segsel2 = val & 0x33; this.setBank(((a.segsel === undefined ? a.bank : a.segsel) & 0x0f) | (val & 3) << 4); return;
       case 0x3bf: case 0x3d8: a.key = val; return;
       case 0x217a: a.imaIdx = val; return;
       case 0x217b: a.ima[a.imaIdx] = val; return;
@@ -1237,6 +1240,7 @@ P.portIO = function (port, size, isIn) {
     case 0x3c8: r = a.dacW / 3 | 0; break;
     case 0x3c9: r = a.dac[a.dacR % 768]; a.dacR++; break;
     case 0x3cd: r = a.segsel === undefined ? (a.bank | (a.bank << 4)) : a.segsel; break;
+    case 0x3cb: r = a.segsel2 || 0; break;
     case 0x3c2: r = 0x10; break;
   }
   if (port !== 0x3c6) a.hidden = 0;

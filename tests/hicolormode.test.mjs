@@ -17,4 +17,15 @@ assert.deepEqual([a.w, a.h, a.bpp], [913, 765, 16], '16-bit custom mode at the c
 assert.ok(a.pitch >= 913 * 2 && a.pitch % 8 === 0, `a scan line holds its pixels (pitch ${a.pitch})`);
 assert.equal(p.setVideoMode(0x38, true, 0), true);
 assert.deepEqual([p.scanout().w, p.scanout().h, p.scanout().bpp], [913, 765, 8], '8-bit custom mode unchanged');
+// the W32's segment select 2 (3CBh) keeps what is written (the Tseng driver's W32 check) and adds the bank's high
+// bits, so the banks reach past the first megabyte
+{
+  const out = (port, v) => { p.cpu.eax.value = v; p.portIO(port, 1, false); };
+  const inp = port => { p.cpu.eax.value = 0; p.portIO(port, 1, true); return p.cpu.eax.value & 0xff; };
+  p.cpu = { eax: { value: 0 } };
+  out(0x3cb, 0x11); assert.equal(inp(0x3cb), 0x11);
+  out(0x3cb, 0x22); assert.equal(inp(0x3cb), 0x22, 'what is written is kept');
+  out(0x3cb, 0x01); out(0x3cd, 0x33);
+  assert.equal(p.adapter().bank, 0x13, 'bank 13h: 3 from 3CDh, 1 from 3CBh');
+}
 console.log('hicolormode: ok');
