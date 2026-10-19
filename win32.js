@@ -454,8 +454,17 @@ class Process {
     n = (Math.max(n, 1) + 15) & ~15;
     const list = this.freeList.get(n);
     let p = list && list.length ? list.pop() : 0;
-    if (!p) { p = this.heapTop; this.heapTop += n; if (this.heapTop > LAYOUT.HEAP_END) throw new GuestError('out of memory'); }
+    if (!p) {
+      p = this.heapTop; this.heapTop += n;
+      if (this.heapTop > LAYOUT.HEAP_END) {   // (the report says what holds the heap: live blocks by size, and what idles on the free lists)
+        const by = new Map(); let live = 0; for (const [, s] of this.allocs) { by.set(s, (by.get(s) || 0) + s); live += s; }
+        let idle = 0; for (const [s, l] of this.freeList) idle += s * l.length;
+        const top = [...by].sort((a, b) => b[1] - a[1]).slice(0, 6).map(([s, t]) => `${s}x${t / s}`).join(' ');
+        throw new GuestError(`out of memory: ${(live >> 20)} MB live in ${this.allocs.size} blocks (${top}), ${idle >> 20} MB idle on the free lists; big blocks: ${(this.bigAllocs || []).join(' | ')}`);
+      }
+    }
     this.allocs.set(p, n); if (zero) this.u8.fill(0, p, p + n);
+    if (n >= 8 << 20) (this.bigAllocs || (this.bigAllocs = [])).push(`${n} bytes at ${p.toString(16)}: ${(new Error().stack || '').split('\n').slice(2, 7).map(s => s.trim()).join(' < ')}`);   // (who takes a block of 8 MB or more: the out-of-memory report)
     return p;
   }
   free(p) { const n = this.allocs.get(p); if (!n) return false; this.allocs.delete(p); if (!this.freeList.has(n)) this.freeList.set(n, []); this.freeList.get(n).push(p); return true; }

@@ -561,7 +561,7 @@ class Machine {
     // the network card: its registers, the frames waiting at it, the ring's unread bytes (lan.js, the page's segment)
     const nic = p.nic ? { cr: p.nic.cr, isr: p.nic.isr, imr: p.nic.imr, rcr: p.nic.rcr, inbox: p.nic.inbox.length, mac: [...p.nic.par].map(x => x.toString(16).padStart(2, '0')).join(':'), curr: p.nic.curr, bnry: p.nic.bnry,
       ring: lanRing ? (() => { const c = new Int32Array(lanRing, 0, 2); return (Atomics.load(c, 0) - Atomics.load(c, 1) + (1 << 20)) % (1 << 20); })() : null, irqs: p.lanIrqs || 0 } : null;
-    return { nic, cdc, procs, smNetwork, wss: p.wssRecs ? [...p.wssRecs.keys()] : null, mods16: p.ne ? [...p.ne.keys()] : [], mmd, sound: p.soundStats ? { ...p.soundStats, quiet: !!p.soundQuiet } : null, th16: (p.th16 || []).length, wins, threads, held: p.win16Held ? (p.win16Held.who === 'main' ? 'main' : p.win16Held.who && p.win16Held.who.id) : null, depth: p.depth,
+    return { nic, bigAllocs: p.bigAllocs || [], heapMB: ((p.heapTop || 0) - 0x2000000) >> 20, cdc, procs, smNetwork, wss: p.wssRecs ? [...p.wssRecs.keys()] : null, mods16: p.ne ? [...p.ne.keys()] : [], mmd, sound: p.soundStats ? { ...p.soundStats, quiet: !!p.soundQuiet } : null, th16: (p.th16 || []).length, wins, threads, held: p.win16Held ? (p.win16Held.who === 'main' ? 'main' : p.win16Held.who && p.win16Held.who.id) : null, depth: p.depth,
       main: { at: p.resumeEip ? where(p.resumeEip) : null, stack: stack(p.mainCtx) } };
   }
   // the page's requests: what a window gets done to it, and questions about the machine
