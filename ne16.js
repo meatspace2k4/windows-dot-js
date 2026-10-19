@@ -3214,8 +3214,9 @@ K('ThunkConnect32', 6, function (td, f16, m16, m32, hmod, reason) {
     rec.table = u32(f16 + (this.r32(td + 0x20) | 0));   // the thunk compiler's table lies before the 16-bit half's name
     return 1;
   }
-  const t16 = find(); if (!t16) { console.warn('[ne16] ThunkConnect32', this.readA(m32), magic, 'no', name, f16name); return 0; }
-  if (this.r32(t16) !== this.r32(td) || this.r32(t16 + 4) !== this.r32(td + 4)) { console.warn('[ne16] ThunkConnect32', this.readA(m32), magic, name, f16name, 'checksum', this.r32(td + 4).toString(16), this.r32(t16 + 4).toString(16)); return 0; }   // magic and checksum
+  const who = () => (this.thread16 && this.thread16.pc && this.thread16.pc.path) || (this.thread16 ? 'thread ' + this.thread16.id : 'main');
+  const t16 = find(); if (!t16) { console.warn('[ne16] ThunkConnect32', this.readA(m32), magic, 'no', name, f16name, 'in', who()); return 0; }
+  if (this.r32(t16) !== this.r32(td) || this.r32(t16 + 4) !== this.r32(td + 4)) { console.warn('[ne16] ThunkConnect32', this.readA(m32), magic, name, f16name, 'checksum', this.r32(td + 4).toString(16), this.r32(t16 + 4).toString(16), 'td', td.toString(16), 'in', who()); return 0; }   // magic and checksum
   if (magic === 'LS01') {
     const table = this.lin(this.r32(t16 + 8)); this.w32(td + 8, table);
     this.lsRelays = this.lsRelays || new Map();
