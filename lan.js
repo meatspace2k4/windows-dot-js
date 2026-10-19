@@ -9,7 +9,7 @@
 const P = window.W95Win32.Process.prototype;
 const NIC = { devnode: 'ROOT\\NET\\0000', io: 0x300, irq: 5 };
 const cards0 = P.cards;
-P.cards = function () { const c = cards0 ? cards0.call(this) : []; return this.host && this.host.net ? [...c, { devnode: NIC.devnode, io: [[NIC.io, 0x20]], irq: [NIC.irq], dma: [], nic: NIC }] : c; };
+P.cards = function () { const c = cards0 ? cards0.call(this) : []; return this.host && (this.host.net || this.host.lan) ? [...c, { devnode: NIC.devnode, io: [[NIC.io, 0x20]], irq: [NIC.irq], dma: [], nic: NIC }] : c; };
 
 // ---------------------------------------------------------------- the segment
 // stations: { mac (6 bytes), rx(frame) }; a frame goes to every other station, which keeps what its filter takes
@@ -92,7 +92,7 @@ const dataPort = (n, isIn, size, v) => {
   return out;
 };
 P.nicIO = function (port, size, isIn) {
-  if (port < NIC.io || port >= NIC.io + 0x20 || !(this.host && this.host.net)) return false;
+  if (port < NIC.io || port >= NIC.io + 0x20 || !(this.host && (this.host.net || this.host.lan))) return false;
   const n = nic(this), r = port - NIC.io, eax = this.cpu.eax.value, v = eax & (size === 1 ? 0xff : size === 2 ? 0xffff : 0xffffffff);
   const ret = x => { const m = size === 1 ? 0xff : size === 2 ? 0xffff : 0xffffffff; this.cpu.eax.value = ((eax & ~m) | (x & m)) >>> 0; };
   if (r >= 0x10 && r < 0x18) { if (isIn) ret(dataPort(n, true, size)); else dataPort(n, false, size, v); return true; }

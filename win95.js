@@ -3442,7 +3442,7 @@ class RemoteApp extends NativeApp {
   start(bytes, prog) {
     [this.sw, this.sh] = nativeMode(); if (this.system) bootMode(this.sw, this.sh);
     this.ring = W95Bridge.newRing(); this.rpcSab = new SharedArrayBuffer(16 + W95Bridge.RPC_BYTES);
-    if (this.net) this.lanRing = W95Bridge.newFrames();   // (the frames for its network card)
+    if (this.net || this.system) this.lanRing = W95Bridge.newFrames();   // (the frames for its network card: the network's machine, and the system's, which runs the network stack)
     this.worker = new Worker('worker.js'); machineWorkers.add(this);
     this.worker.onmessage = e => this.message(e.data);
     this.worker.onerror = e => { console.error('[worker]', e.message); this.exited(-1, e.message); };
@@ -3493,7 +3493,9 @@ class RemoteApp extends NativeApp {
         this.d32 = new Uint32Array(this.img.data.buffer); this.pal = new Uint32Array(256);
         if (this.system) fitWindow(this.sw, this.sh);
         nativeApps.add(this);
-        if (this.net) { this.lanStation = { rx: frame => { if (this.alive) W95Bridge.framePut(this.lanRing, frame); } }; this.lanDetach = window.W95LAN && W95LAN.attach(this.lanStation); for (const a of machineWorkers) if (a !== this) netLink(a); }
+        // a machine with a network card (the network's, and the system's, which has the network stack as Windows does): a station on the page's segment
+        if (this.lanRing) { this.lanStation = { rx: frame => { if (this.alive) W95Bridge.framePut(this.lanRing, frame); } }; this.lanDetach = window.W95LAN && W95LAN.attach(this.lanStation); }
+        if (this.net) { for (const a of machineWorkers) if (a !== this) netLink(a); }
         else netLink(this);
         if (this.started) this.started(true); return;
       case 'lan': if (window.W95LAN && this.lanStation) W95LAN.send(this.lanStation, m.frame); return;

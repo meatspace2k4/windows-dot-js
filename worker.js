@@ -119,7 +119,7 @@ class Machine {
       get module() { return d.mod instanceof WebAssembly.Module ? d.mod : (d.modSync || (d.modSync = new WebAssembly.Module(b64bytes(d.wasm)))); } });
     const m = this;
     const host = {
-      fs, width: this.sw, height: this.sh, path: this.path, now: () => performance.now(), net: this.net, vmPages: 2048, shared: true,
+      fs, width: this.sw, height: this.sh, path: this.path, now: () => performance.now(), net: this.net, lan: !!(this.system && lanRing), vmPages: 2048, shared: true,   // (lan: the network stack and its card, as the system's machine has them)
       cursor: () => ({ x: m.mouse.x, y: m.mouse.y }), surface: (h, w, hh) => new OffscreenCanvas(Math.max(1, w), Math.max(1, hh)).getContext('2d'), setCursor: () => {},
       exited: (code, why) => m.exited(code, why), boot: p => p.bootUser16(), exec: (cmd, show) => m.exec(cmd, show),
       msgMode: on => { m.msg = on; post({ t: 'msgMode', on }); m.sendText(true); }, reset: () => post({ t: 'reset' }),
@@ -207,19 +207,29 @@ class Machine {
     const exe = items.length && (S.programs || {})['RUNONCE.EXE'] ? ['C:\\WINDOWS\\RUNONCE.EXE', 'C:\\WINDOWS\\SYSTEM\\RUNONCE.EXE'].find(f => fs.exists(f)) : null;
     if (!exe) return this.startMsgsrv();
     p.init16();
+    this.loadMpr();   // (before Setup's items: SHELL32 builds its desktop's items once in this address space, and RUNONCE is its first user)
     const pc = this.spawnProgram(exe, '');
     if (typeof pc !== 'object') return this.startMsgsrv();
     const was = pc.onExit; pc.onExit = code => { if (was) was(code); this.sysPending = true; };   // (started from step(), between slices, as at a boot without Setup's items)
     return true;
   }
+  /** with a network client installed (NetworkProvider\Order), the Multiple Provider Router comes up before the system's
+   *  first task, as Windows loads it at boot: USER's network functions connect to it (SM_NETWORK, which puts Network
+   *  Neighborhood on the shell's desktop), and it starts the network's process, MPREXE. Once */
+  loadMpr() {
+    const p = this.proc; if (this.mprLoaded) return; this.mprLoaded = true;
+    if (W.regGet('hklm\\system\\currentcontrolset\\control\\networkprovider\\order', 'ProviderOrder') === undefined) return;
+    try {
+      p.init16(); const m = p.loadDll('MPR'); if (m) { p.runPendingInits(); p.attach(m); }
+      // the network's process, started as KERNEL32 starts it at boot and run to its first wait: it is its start that
+      // connects USER's network functions (SM_NETWORK), which the shell reads when it first lays out the desktop
+      const exe = ['C:\\WINDOWS\\SYSTEM\\MPREXE.EXE', 'C:\\WINDOWS\\MPREXE.EXE'].find(f => fs.exists(f));
+      if (exe) { const pc = this.spawnProgram(exe, ''); if (typeof pc === 'object') p.runUntilIdle(pc, 4000); }
+    } catch (e) { console.error(e); }
+  }
   startMsgsrv() {
     const p = this.proc; if (!this.alive || p.trapped) return true;
-    // with a network client installed (NetworkProvider\Order), the Multiple Provider Router comes up before the
-    // system's first task, as Windows loads it at boot: USER's network functions connect to it (SM_NETWORK, which
-    // puts Network Neighborhood on the shell's desktop), and it starts the network's process, MPREXE
-    if (W.regGet('hklm\\system\\currentcontrolset\\control\\networkprovider\\order', 'ProviderOrder') !== undefined) {
-      try { p.init16(); const m = p.loadDll('MPR'); if (m) { p.runPendingInits(); p.attach(m); } } catch (e) { console.error(e); }
-    }
+    this.loadMpr();
     const ok = !!p.startTask16('MSGSRV32.EXE'); if (!ok) this.exited(-1, 'MSGSRV32.EXE did not start');
     return ok;
   }

@@ -1394,7 +1394,7 @@ P.absentService = function (dev, n) {
 const STATIC_VXDS = ['VTDAPI.VXD', 'ENABLE.VXD', 'SHELL.VXD', 'REBOOT.VXD', 'VCOMM.VXD'], VMM32_NET = ['IFSMGR.VXD', 'VCACHE.VXD', 'PERF.VXD'];
 P.vxdStatics = function () {
   const files = [...STATIC_VXDS];
-  if (this.host && this.host.net) {
+  if (this.host && (this.host.net || this.host.lan)) {   // (the network's process, and the system's machine, which has the network stack as Windows does)
     files.push(...VMM32_NET);
     const k = 'hklm\\system\\currentcontrolset\\services\\vxd';
     for (const d of W.regKids(k)) for (const f of regStr(W.regGet(`${k}\\${d}`, 'StaticVxD')).split(',').map(x => x.trim().toUpperCase()).filter(Boolean)) if (!files.includes(f)) files.push(f);
