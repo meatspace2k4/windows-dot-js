@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """PreToolUse/PostToolUse guard for the Win95 checkout: rules on what the agent does, none on what the code looks like."""
-import json, os, re, subprocess, sys
+import json, os, re, subprocess, sys, time
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 STATE = os.path.join(REPO, '.git', 'claude-guard')
@@ -28,12 +28,27 @@ def state_file(sid):
     return os.path.join(STATE, re.sub(r'[^\w-]', '_', sid or 'none') + '.json')
 
 
-def touched(sid):
+def load(sid):
     try:
         with open(state_file(sid)) as f:
-            return set(json.load(f))
+            s = json.load(f)
+        return s if isinstance(s, dict) else {'files': s, 'edit': 0, 'test': 0}
     except (OSError, ValueError):
-        return set()
+        return {'files': [], 'edit': 0, 'test': 0}
+
+
+def save(sid, s):
+    with open(state_file(sid), 'w') as f:
+        json.dump(s, f)
+
+
+def touched(sid):
+    return set(load(sid)['files'])
+
+
+def untested(sid):
+    s = load(sid)
+    return s['edit'] > s['test'] and any(git_dirty(os.path.relpath(p, REPO)) for p in s['files'])
 
 
 def git_dirty(path):
@@ -69,6 +84,8 @@ def check_bash(cmd):
         out('deny', 'Restarting or rebuilding the app. The person does that.')
     if re.search(r"\bgit\s+(add\s+(-A|--all|\.(\s|$)|-u)|commit\s+(-[a-zA-Z]*a\b|--all))", c):
         out('deny', 'Whole-tree staging. Stage only this session\'s own hunks.')
+    if re.search(r"\bgit\s+(commit|push)\b", c) and untested(SID):
+        out('deny', 'Files edited since the last passing node tests/ run. Run the tests on this change first.')
     if re.search(r"\bgit\s+(restore|revert|clean|stash(?!\s+(list|show)))\b", c) or \
             re.search(r"\bgit\s+reset\b.*--(hard|merge|keep)", c) or \
             re.search(r"\bgit\s+(checkout|switch)\s+(?!-b\s|-B\s|-c\s)", c):
@@ -88,21 +105,36 @@ def check_file(ti, sid):
         out('deny', f'{rel} holds uncommitted edits from another writer. Do not stack on them.')
 
 
-def post(ti, sid):
-    path = os.path.abspath(ti.get('file_path') or ti.get('notebook_path') or '')
-    if in_repo(path):
-        s = touched(sid)
-        s.add(path)
-        with open(state_file(sid), 'w') as f:
-            json.dump(sorted(s), f)
+def post(tool, ti, sid):
+    s = load(sid)
+    if tool == 'Bash':
+        if re.match(r"\s*(cd\s+\S+\s*&&\s*)?node\s+(--test\s+)?tests/\S+", ti.get('command', '')):
+            s['test'] = time.time()
+    else:
+        path = os.path.abspath(ti.get('file_path') or ti.get('notebook_path') or '')
+        if not in_repo(path) or path.startswith(os.path.join(REPO, '.claude') + os.sep):
+            return
+        s['files'] = sorted(set(s['files']) | {path})
+        s['edit'] = time.time()
+    save(sid, s)
+
+
+SID = ''
 
 
 def main():
+    global SID
     d = json.load(sys.stdin)
     tool, ti, sid = d.get('tool_name', ''), d.get('tool_input') or {}, d.get('session_id', '')
-    if d.get('hook_event_name') == 'PostToolUse':
-        if tool in ('Edit', 'Write', 'NotebookEdit'):
-            post(ti, sid)
+    SID = sid
+    ev = d.get('hook_event_name')
+    if ev == 'Stop':
+        if not d.get('stop_hook_active') and untested(sid):
+            print(json.dumps({'decision': 'block', 'reason': 'Files edited since the last passing node tests/ run. Run the tests on this change before ending the turn.'}))
+        return
+    if ev == 'PostToolUse':
+        if tool in ('Bash', 'Edit', 'Write', 'NotebookEdit'):
+            post(tool, ti, sid)
     elif tool == 'Bash':
         check_bash(ti.get('command', ''))
     elif tool in ('Edit', 'Write', 'NotebookEdit'):
