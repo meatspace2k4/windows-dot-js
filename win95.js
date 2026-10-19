@@ -3865,6 +3865,44 @@ function netBoot() {
 // the page's file system, not the redirector. The network stack (MPR, the redirector, the card) still runs for
 // Network Neighborhood and for the connections it makes itself
 const HOST_ERR = { ENOENT: 2, ENOTDIR: 3, EACCES: 5, EPERM: 5, EEXIST: 80, ENOTEMPTY: 145, EISDIR: 5 };
+// The host's file names Windows cannot spell (a name with " * : < > ? | or a control character: the home folder's
+// "music" with its quotes) are shown under a legal alias, each such character an underscore (~2, ~3 on a clash within
+// the folder), and the alias is turned back into the name on every operation, as an SMB server mangles such names;
+// a folder's aliases are learned as it is listed, which Explorer and the redirector do before they open anything in it
+function legalShares(H) {
+  const BAD = /[\\/:*?"<>|\x00-\x1f]/g, known = new Map();   // share\folder -> Map(alias upper -> name)
+  const folderKey = (share, path) => share.toUpperCase() + '|' + path.replace(/^[\\]+|[\\]+$/g, '').toUpperCase();
+  const alias = (names, name) => {
+    if (!BAD.test(name)) { BAD.lastIndex = 0; return name; }
+    BAD.lastIndex = 0; const base = name.replace(BAD, '_'); let a = base;
+    for (let n = 2; names.has(a.toUpperCase()); n++) a = `${base}~${n}`;
+    return a;
+  };
+  const real = (share, path) => {   // a path of aliases to the host's path
+    const parts = String(path || '').split('\\'), out = [];
+    for (let i = 0; i < parts.length; i++) {   // (folders are keyed by the path of aliases, as the caller spells it)
+      const dir = known.get(folderKey(share, parts.slice(0, i).join('\\'))), r = dir && dir.get(parts[i].toUpperCase());
+      out.push(r !== undefined ? r : parts[i]);
+    }
+    return out.join('\\');
+  };
+  return {
+    list: () => H.list(),
+    op: (share, op, ...args) => {
+      if (op === 'space') return H.op(share, op, ...args);
+      const a = args.slice(); if (typeof a[0] === 'string') a[0] = real(share, a[0]); if (op === 'rename' && typeof a[1] === 'string') a[1] = real(share, a[1]);
+      const r = H.op(share, op, ...a);
+      if (op === 'list' && r && Array.isArray(r.ok)) {
+        const dir = new Map(), names = new Set(r.ok.map(e => e.name.toUpperCase()));
+        for (const e of r.ok) { const al = alias(names, e.name); if (al !== e.name) { names.add(al.toUpperCase()); dir.set(al.toUpperCase(), e.name); e.name = al; } }
+        known.set(folderKey(share, args[0] || ''), dir);
+      }
+      return r;
+    },
+  };
+}
+if (window.W95HOST && window.W95HOST.shares && !window.W95HOST.shares.legal) { window.W95HOST.shares = Object.assign(legalShares(window.W95HOST.shares), { legal: true }); }
+window.W95LegalShares = legalShares;   // (for the tests)
 function hostBackend(name) {
   const H = window.W95HOST.shares, handles = new Map(); let nextH = 1;
   const op = (o, path, ...args) => { const r = H.op(name, o, ...args); if (!r || r.err) throw new W95FS.FSError(HOST_ERR[r && r.err] || 31, path); return r.ok; };
