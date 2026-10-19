@@ -204,17 +204,11 @@ class Machine {
    *  after Setup, the items Setup left to it (RunOnce\Setup: GRPCONV's Start menu) run first, under RUNONCE's
    *  "Windows 95 Setup" screen on USER's bare desktop, as Setup's first-run screens run them before the shell;
    *  MSGSRV32 starts when RUNONCE has ended, so the shell and SystemStart come after the screen. False if it cannot start */
-  startSystemTask() {
-    const p = this.proc, S = self.W95SYSTEM || {}, items = W.regVals('hklm\\software\\microsoft\\windows\\currentversion\\runonce\\setup');
-    const exe = items.length && (S.programs || {})['RUNONCE.EXE'] ? ['C:\\WINDOWS\\RUNONCE.EXE', 'C:\\WINDOWS\\SYSTEM\\RUNONCE.EXE'].find(f => fs.exists(f)) : null;
-    if (!exe) return this.startMsgsrv();
-    p.init16();
-    this.loadMpr();   // (before Setup's items: SHELL32 builds its desktop's items once in this address space, and RUNONCE is its first user)
-    const pc = this.spawnProgram(exe, '');
-    if (typeof pc !== 'object') return this.startMsgsrv();
-    const was = pc.onExit; pc.onExit = code => { if (was) was(code); this.sysPending = true; };   // (started from step(), between slices, as at a boot without Setup's items)
-    return true;
-  }
+  /** the system's first task, MSGSRV32 (its message server: the drivers, the shell, SystemStart). Setup's items
+   *  (RunOnce\Setup: GRPCONV's Start menu) the shell runs itself as it starts, through the RunOnce wrapper Setup
+   *  leaves (RUNONCE's "Windows 95 Setup" screen), as GRPCONV makes the Start menu through the shell; SystemStart
+   *  comes after, since WinExec gives the shell back once it is idle, which it is not while it waits on RUNONCE */
+  startSystemTask() { return this.startMsgsrv(); }
   /** with a network client installed (NetworkProvider\Order), the Multiple Provider Router comes up before the system's
    *  first task, as Windows loads it at boot: USER's network functions connect to it (SM_NETWORK, which puts Network
    *  Neighborhood on the shell's desktop), and it starts the network's process, MPREXE. Once */

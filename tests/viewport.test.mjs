@@ -38,8 +38,8 @@ const cut = (w, a, b, keep = true) => { const i = w.indexOf(a); assert.ok(i >= 0
   const S = new Function('innerWidth', 'innerHeight', 'ZOOM', 'mkc', 'resize', 'setTimeout', `let sysApp = null;\n${page}`);
   const canvas = () => ({ getContext: () => ({ createImageData: (x, y) => ({ data: new Uint8ClampedArray(4 * x * y) }) }) });
   const env = (iw, ih) => S(iw, ih, 1, canvas, () => resizes++, f => f());
-  // the mode is the viewport itself 640x480 at the least, 1024 on a side at most
-  assert.deepEqual(env(1024, 768).mode(), [1024, 768]); assert.deepEqual(env(1003, 777).mode(), [1003, 777]); assert.deepEqual(env(100, 100).mode(), [640, 480]); assert.deepEqual(env(3000, 2000).mode(), [1024, 1024]);
+  // the mode is the viewport itself 640x480 at the least, 1024 wide and 960 high at most (the driver's megabyte)
+  assert.deepEqual(env(1024, 768).mode(), [1024, 768]); assert.deepEqual(env(1003, 777).mode(), [1003, 777]); assert.deepEqual(env(100, 100).mode(), [640, 480]); assert.deepEqual(env(3000, 2000).mode(), [1024, 960]);
   const settle = async () => { for (let i = 0; i < 8; i++) await new Promise(f => setImmediate(f)); };
   // the largest mode the viewport holds, asked for once; a thread holding USER, the machine answers null and makes
   // the change when none does (its 'mode' message), the canvases following then

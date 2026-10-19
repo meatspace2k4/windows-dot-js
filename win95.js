@@ -2811,10 +2811,14 @@ function setupStartMenu() {
     if (at >= 0) lines[at] = line; else lines.push(line);
   }
   fs.writeFile(join(WINDIR, 'SETUP.INI'), W95FS.encode([...out.values()].map(v => `[${v.name}]\r\n${v.lines.join('\r\n')}\r\n`).join('\r\n')));
-  // SETUPC.INF's RunOnce\Setup item: run under RUNONCE's "Windows 95 Setup" screen before the system's message server
-  // starts (worker.js startSystemTask), as Setup's first-run screens run it, before the shell and SystemStart
+  // SETUPC.INF's RunOnce\Setup item, and the wrapper SETUPX adds for a RunOnce\Setup with items: RUNONCE, which the
+  // shell runs as it starts (its "Windows 95 Setup" screen over the desktop), before its own programs. GRPCONV makes
+  // the Start menu through the shell (it looks for the shell's module, ten seconds, then gives up and writes none), so
+  // the shell is up first; SystemStart follows, as WinExec gives the shell back only once it is idle, which it is not
+  // while it waits on RUNONCE
   const str = v => ({ type: 1, data: W95FS.encode(v + '\0') }), ro = 'hklm\\software\\microsoft\\windows\\currentversion\\runonce';
   W95Win32.regSet(ro + '\\setup', 'Programs on the Start menu', str(join(WINDIR, 'grpconv.exe') + ' -s'));
+  W95Win32.regSet(ro, 'Wrapper', str('runonce.exe'));
 }
 // Setup's registration of the copy (CurrentVersion: RegisteredOwner, RegisteredOrganization, ProductId): MSGSRV32
 // checks them as Windows starts and, missing, runs the first-run screens instead. The owner is the name the network
@@ -3016,7 +3020,9 @@ const nativeApps = new Set();
 // the display mode for the system's machine: the page's viewport at its own pixels (the page is the monitor
 // EXPLORER.EXE's screen is shown on); 640x480 at the least, 1024 on a side at most (the display driver's longest scan
 // line and its memory count: ne16.js displaySlot). A viewport larger than that gets a 1024-wide or 1024-tall screen, centered
-const nativeMode = () => [Math.max(640, Math.min(1024, Math.floor(innerWidth / ZOOM))), Math.max(480, Math.min(1024, Math.floor(innerHeight / ZOOM)))];
+// (the custom mode has the driver's 1024-byte scan lines in the 1 MB its memory count finds, so 960 lines at most: a
+// mode of a full megabyte, 1024 by 1024, the driver refuses and falls back from)
+const nativeMode = () => [Math.max(640, Math.min(1024, Math.floor(innerWidth / ZOOM))), Math.max(480, Math.min(960, Math.floor(innerHeight / ZOOM)))];
 // the mode the system's machine boots in, as Display Properties leaves it for the display driver: Display\Settings
 // under the current configuration (Resolution "w,h", BitsPerPixel), read by FRAMEBUF.DRV as it is enabled; the one
 // the page's viewport holds, so no change is needed once the shell is up
