@@ -800,7 +800,10 @@ def('KERNEL32', 'GetVersionExA', 1, function (p) { this.w32(p + 4, 4); this.w32(
 def('KERNEL32', 'LoadLibraryA', 1, function (n) {
   const name = (this.readA(n) || '').toUpperCase().replace(/^.*\\/, '').replace(/\.DLL$/, '');
   const native = this.loadDll(name);
-  if (native) { this.runPendingInits(); this.attach(native); return native.base; }
+  // the process attaches to the library and to every DLL it uses, dependencies first, as Windows 95's LoadLibrary
+  // does (a DLL another process loaded is attached to this one too: RUNDLL32 ran MMSYS.CPL on WINMM before the
+  // shell's thread had attached WINMM, so WINMM's thunks to MMSYSTEM were not connected and it crashed in them)
+  if (native) { this.runPendingInits(); for (const m of this.importClosure(native)) this.attach(m); return native.base; }
   if (!API[name]) { this.lastError = 126; return 0; }   // ERROR_MOD_NOT_FOUND: neither a system DLL here nor one implemented in JS
   return 0x10000000 | (this.newHandle({ kind: 'module', name }) & 0xffff);
 });
