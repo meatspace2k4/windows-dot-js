@@ -571,15 +571,17 @@ function makeDisk(mounted) {
   for (const e of ['SSERIFE.FON', 'VGAFIX.FON', 'VGASYS.FON', 'MARLETT.TTF', 'ARIAL.TTF', 'TIMES.TTF', 'COUR.TTF']) if (!sysFonts[e]) fs.writeFile(join(WINDIR, 'FONTS', e), exeStub());
   for (const [e, d] of Object.entries(sysFonts)) fs.writeFile(join(WINDIR, 'FONTS', e), b64(d));
   fs.writeFile('C:\\Program Files\\Accessories\\WORDPAD.EXE', exeStub());
-  installPrograms(); setupFonts(); setupRegistry(); setupDisplay(); setupSound(); setupHelp(); setupNetwork(); setupPorts(); setupPrinting(); setupStartMenu();
-  // the CD's screen savers, byte for byte, under the long names APPLETS.INF gives them in LDID_SYS
+  installPrograms(); setupFonts(); setupRegistry(); setupDisplay(); setupSavers(); setupSound(); setupHelp(); setupNetwork(); setupPorts(); setupPrinting(); setupStartMenu();
+  fs.chdir('C:\\');
+}
+// the CD's screen savers, byte for byte, under the long names APPLETS.INF gives them in LDID_SYS, and the DLLs they
+// use; each one the disk lacks (a disk made before the bundle carried them gets them too)
+function setupSavers() {
   const LONG = { 'BEZIER.SCR': 'Curves and Colors.scr', 'SSMARQUE.SCR': 'Scrolling Marquee.scr', 'SSMYST.SCR': 'Mystify Your Mind.scr',
     'SCRNSAVE.SCR': 'Blank Screen.scr', 'SSFLYWIN.SCR': 'Flying Windows.scr', 'SSSTARS.SCR': 'Flying Through Space.scr' };
-  for (const [name, s] of Object.entries((window.W95SAVERS || {}).savers || {}))
-    fs.writeFile(join(WINDIR, 'SYSTEM', LONG[name] || name), Uint8Array.from(atob(s.scr), c => c.charCodeAt(0)));
-  for (const [name, d] of Object.entries((window.W95SAVERS || {}).dlls || {}))
-    fs.writeFile(join(WINDIR, 'SYSTEM', name), Uint8Array.from(atob(d.file), c => c.charCodeAt(0)));
-  fs.chdir('C:\\');
+  const put = (p, b64s) => { if (!fs.exists(p)) fs.writeFile(p, Uint8Array.from(atob(b64s), c => c.charCodeAt(0))); };
+  for (const [name, s] of Object.entries((window.W95SAVERS || {}).savers || {})) put(join(WINDIR, 'SYSTEM', LONG[name] || name), s.scr);
+  for (const [name, d] of Object.entries((window.W95SAVERS || {}).dlls || {})) put(join(WINDIR, 'SYSTEM', name), d.file);
 }
 
 // ---------------------------------------------------------------- notification area
@@ -813,7 +815,7 @@ function bootDisk() {
   mountDrives();
   W95Win32.regAttach(host.registry);
   if (!fs.attach('C', host.disk)) makeDisk(true);
-  installPrograms(); setupFonts(); setupRegistry(); setupDisplay(); setupSound(); setupHelp(); setupNetwork(); setupPorts(); setupPrinting(); setupStartMenu();
+  installPrograms(); setupFonts(); setupRegistry(); setupDisplay(); setupSavers(); setupSound(); setupHelp(); setupNetwork(); setupPorts(); setupPrinting(); setupStartMenu();
   fs.chdir('C:\\');
 }
 
@@ -2657,7 +2659,8 @@ class SaverRun {
   }
   overlay() {
     const c = this.el = mkc(W, H);
-    c.style.cssText = `position:fixed;left:0;top:0;width:${W * ZOOM}px;height:${H * ZOOM}px;image-rendering:pixelated;cursor:none;z-index:10;background:#000`;
+    // over the screen (the machine's, centered in the page when the page is larger than its mode: the same place)
+    c.style.cssText = `position:fixed;left:${cv.style.marginLeft || '0px'};top:${cv.style.marginTop || '0px'};width:${W * ZOOM}px;height:${H * ZOOM}px;image-rendering:pixelated;cursor:none;z-index:10;background:#000`;
     document.body.appendChild(c);
     this.ctx2d = c.getContext('2d', { alpha: false });
     const pos = e => { const r = c.getBoundingClientRect(); return [Math.floor((e.clientX - r.left) * W / r.width), Math.floor((e.clientY - r.top) * H / r.height)]; };
@@ -4660,6 +4663,8 @@ function resize() {
     cv.width = W; cv.height = H; cv.style.width = W * ZOOM + 'px'; cv.style.height = H * ZOOM + 'px'; cv.style.marginLeft = cv.style.marginTop = '0';
   }
   ctx.imageSmoothingEnabled = false;
+  // a full-screen saver's canvas stays over the screen as the page is resized or the mode changes
+  if (fullSaver && fullSaver.el) Object.assign(fullSaver.el.style, { left: cv.style.marginLeft || '0px', top: cv.style.marginTop || '0px', width: W * ZOOM + 'px', height: H * ZOOM + 'px' });
   for (const w of windows) if (w.max) Object.assign(w, maxRect(w.b));
   closeMenus(); dirty();
 }
