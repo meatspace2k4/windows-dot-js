@@ -121,7 +121,7 @@ class Machine {
       get module() { return d.mod instanceof WebAssembly.Module ? d.mod : (d.modSync || (d.modSync = new WebAssembly.Module(b64bytes(d.wasm)))); } });
     const m = this;
     const host = {
-      fs, width: this.sw, height: this.sh, path: this.path, now: () => performance.now(), net: this.net, lan: !!(this.system && lanRing), vmPages: 2048, shared: true,   // (lan: the network stack and its card, as the system's machine has them)
+      fs, width: this.sw, height: this.sh, path: this.path, now: () => performance.now(), net: this.net, lan: !!(this.system && lanRing), system: !!this.system, vmPages: 2048, shared: true,   // (lan: the network stack and its card, as the system's machine has them; system: the Win16 tasks' process is its own)
       cursor: () => ({ x: m.mouse.x, y: m.mouse.y }), surface: (h, w, hh) => new OffscreenCanvas(Math.max(1, w), Math.max(1, hh)).getContext('2d'), setCursor: () => {},
       exited: (code, why) => m.exited(code, why), boot: p => p.bootUser16(), exec: (cmd, show) => m.exec(cmd, show),
       msgMode: on => { m.msg = on; post({ t: 'msgMode', on }); m.sendText(true); }, reset: () => post({ t: 'reset' }),
@@ -245,12 +245,15 @@ class Machine {
     const p = this.proc, want = new RegExp(re, 'i'), only = names ? new RegExp(names, 'i') : null, log = this.traceLog = [], t0 = performance.now();
     const name = () => { const t = p.thread16; if (!t) return 'host'; const m = t.task && t.task.hInst && p.neByHandle(t.task.hInst); return (m && m.name) || (t.pc && t.pc.path) || String(t.id); };
     // (the command line of WinExec and LoadModule; the key of RegOpenKey, RegCreateKey, RegQueryValue, RegQueryValueEx)
-    const STR = { 166: 6, 45: 8, 217: 8, 218: 8, 219: 12, 220: 20, 95: 6, 97: 14, 127: 10, 128: 14 };   // (and the key of GetProfileInt/String, GetPrivateProfileInt/String)
+    const STR = { 166: 6, 45: 8, 217: 8, 218: 8, 219: 12, 220: 20, 95: 6, 97: 14, 127: 10, 128: 14, 70: 4, 69: 4 };   // (AddAtom, FindAtom: the name)   // (and the key of GetProfileInt/String, GetPrivateProfileInt/String)
     const arg = key => {
       const m = /KERNEL\.#(\d+)$/.exec(key), o = m && STR[m[1]];
       try {
         const f = p.cpu.ssb.value + (p.cpu.esp.value & 0xffff);
         if (m && /^(533|534|537)$/.test(m[1])) return [4, 6, 8, 10].map(k => p.r16(f + k).toString(16)).join(' ');   // (the DDE conversions: their stack words)
+        if (m && m[1] === '18') { const h = p.r16(f + 4), b = p.gblock && p.gblock(h); let t = ''; try { t = b ? ' "' + (p.readA(b.lin, 60) || '').replace(/[^\x20-\x7e]/g, '.') + '"' : ''; } catch (_) {} return 'h' + h.toString(16) + t; }   // (GlobalLock: the block's text)
+        if (m && /^(71|72)$/.test(m[1])) return 'atom ' + p.r16(f + (m[1] === '72' ? 10 : 4)).toString(16) + ' ds ' + (p.cpu.ds.value & 0xffff).toString(16);   // (DeleteAtom, GetAtomName: the atom, and whose table)
+        if (m && /^(69|70)$/.test(m[1])) { const sp = p.r32(f + 4); return (sp >>> 16 ? p.readA(p.lin(sp)) : '#' + (sp & 0xffff)) + ' ds ' + (p.cpu.ds.value & 0xffff).toString(16); }
         if (!o) return '';
         const s = p.r32(f + o); return s >>> 16 ? p.readA(p.lin(s)) || '' : '';
       } catch (_) { return ''; }
@@ -258,7 +261,16 @@ class Machine {
     const svm = p.setVideoMode; p.setVideoMode = function (mode, clear, hi) { log.push([Math.round(performance.now() - t0), name(), 'int10 mode', (mode & 0xff).toString(16) + (hi ? ' hicolor ' + hi : '')]); return svm.call(this, mode, clear, hi); };
     self.W95TRACE16 = t => { const th = name(); if (log.length < 20000 && want.test(th) && (!only || only.test(t.key))) log.push([Math.round(performance.now() - t0), th, t.key, arg(t.key)]); };
     // (the key or value name of the registry calls: the second argument on a stdcall frame at entry)
-    const arg32 = t => { if (!/^Reg(Open|Create|Query|Enum)/.test(t.nm)) return ''; try { const s = p.r32(p.reg('esp') + 8); return s > 0x10000 && s < p.u8.length ? p.readA(s) || '' : String(s); } catch (_) { return ''; } };
+    const arg32 = t => {
+      try {
+        if (t.nm === '#18') return `pid ${p.r32(p.reg('esp') + 4).toString(16)} off ${p.r32(p.reg('esp') + 8) | 0}`;   // (GetProcessDword)
+        if (/^Global(Add|Find)AtomA$/.test(t.nm)) { const sp = p.r32(p.reg('esp') + 4); return sp >>> 16 ? p.readA(sp) || '' : '#' + sp; }
+        if (/^(LoadLibraryA|GetPrivateProfileSectionA|GetPrivateProfileStringA|FindFirstFileA|CreateFileA|GetFileAttributesA|DeleteFileA|MoveFileA|GetModuleHandleA|WritePrivateProfileStringA)$/.test(t.nm)) { const sp = p.r32(p.reg('esp') + 4); return sp > 0x10000 && sp < p.u8.length ? p.readA(sp) || '' : String(sp); }
+        if (t.nm === 'GetProcAddress') { const sp = p.r32(p.reg('esp') + 8); return sp > 0x10000 && sp < p.u8.length ? p.readA(sp) || '' : '#' + sp; }
+        if (!/^Reg(Open|Create|Query|Enum)/.test(t.nm)) return '';
+        const s = p.r32(p.reg('esp') + 8); return s > 0x10000 && s < p.u8.length ? p.readA(s) || '' : String(s);
+      } catch (_) { return ''; }
+    };
     self.W95TRACE = t => { const th = name(); if (log.length < 20000 && want.test(th) && (!only || only.test(t.dll + '!' + t.nm))) log.push([Math.round(performance.now() - t0), th, t.dll + '!' + t.nm, arg32(t)]); };
     self.W95APPYTRACE = e => { if (log.length < 20000) log.push([Math.round(performance.now() - t0), name(), 'appy', (e.fn >>> 0).toString(16)]); };
   }
@@ -610,7 +622,7 @@ let machine = null;
 self.onmessage = e => {
   const m = e.data;
   if (m.t === 'start') {
-    rpcSab = m.rpc; lanRing = m.o.lan || null; regStore.held = m.registry; W.regAttach(regStore);
+    rpcSab = m.rpc; lanRing = m.o.lan || null; regStore.held = m.registry; W.regAttach(regStore); if (m.o.exp) Object.assign(self, m.o.exp);
     machine = new Machine(m.o); machine.start().catch(err => { console.error(err); post({ t: 'exited', code: -1, why: String(err && err.message || err) }); });
   } else if (m.t === 'cmd') {
     const reply = (value, error) => { if (m.id) post({ t: 'reply', id: m.id, value: value === undefined ? null : value, error }); };

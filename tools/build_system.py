@@ -51,7 +51,8 @@ NE = [('gdi.exe', 0x01C00000, 0x1007, 0x06A00000), ('dibeng.dll', 0x01E00000, 0x
       # the installable drivers (MMSYSTEM, the sound card's) for it, and it plays SystemStart and starts the shell
       ('msgsrv32.exe', 0x01570000, 0x1CEF, 0x06130000),
       # Program Manager, which GRPCONV starts to make Setup's program groups through its DDE (WIN95_17.CAB)
-      ('progman.exe', 0x01580000, 0x1CFF, 0x07FA0000),
+      # (its image after MSGSRV32's, which it overlapped at 01580000h)
+      ('progman.exe', 0x015E0000, 0x1CFF, 0x07FA0000),
       # the tool helper library (WIN95_02.CAB), which the Display applet's pages load, and those pages: Background,
       # Screen Saver, Appearance and Settings, which DESK.CPL shows (WIN95_02.CAB)
       ('toolhelp.dll', 0x01FC0000, 0x1D47, 0x06800000), ('deskcp16.dll', 0x01F80000, 0x1D57, 0x06840000)]
@@ -74,9 +75,6 @@ PROGRAMS = [('notepad.exe', 0x00400000, 0x06000000), ('rundll32.exe', 0x00410000
             # the CD's AutoPlay program (D:\AUTORUN\AUTORUN.EXE, AUTORUN.INF's open=), which the shell runs when the
             # disc's icon is opened; copied from the disc into SYS_DIR for the build
             ('autorun.exe', 0x00540000, 0x07FE0000)]
-# Program Manager (WIN95_17.CAB): GRPCONV starts it hidden and makes Setup's groups through its DDE (then converts
-# them to the Start menu's links), so Setup's "Programs on the Start menu" completes before the shell is up
-NE.append(('progman.exe', 0x01F40000, 0x1D97, 0x07FF0000))
 # 32-bit system DLLs: (file, load base, block-table base)
 PE = [('gdi32.dll', 0x01D00000, 0x06C00000), ('user32.dll', 0x01D40000, 0x07340000), ('comdlg32.dll', 0x01D60000, 0x07380000),
       # the common controls and the shell, which COMDLG32's Explorer-style dialogs are built on (WIN95_02.CAB)
@@ -102,7 +100,10 @@ PE = [('gdi32.dll', 0x01D00000, 0x06C00000), ('user32.dll', 0x01D40000, 0x073400
       # WinHelp call's request through (WIN95_27.CAB)
       ('wow32.dll', 0x014A0000, 0x06BC0000),
       # the Add Printer wizard, which the Printers folder runs (SHELL32 calls its PrinterSetup32), thunking to MSPRINT.DLL (PRECOPY2.CAB)
-      ('msprint2.dll', 0x01500000, 0x070A0000)]
+      ('msprint2.dll', 0x01500000, 0x070A0000),
+      # the link-tracking library a shell link is saved with (WIN95_16.CAB): GRPCONV loads it for each Start menu item it
+      # makes from SETUP.INI, and without it made none, so Setup ran again at every start
+      ('linkinfo.dll', 0x01E50000, 0x06C80000)]
 # VxDs (ring-0 drivers), recompiled to run under the VMM in vmm.js: (file, load base, block-table base). MMDEVLDR is the
 # device loader of MEDIA devnodes; MSSNDSYS the Windows Sound System card's driver (WIN95_02.CAB)
 VXDS = [('mmdevldr.vxd', 0x01800000, 0x07C00000), ('mssndsys.vxd', 0x01810000, 0x07C40000),
@@ -211,6 +212,29 @@ tables = sorted((m['meta']['lookup'], m['meta']['lookup'] + 4 * (m['meta']['text
                 for name, m in group.items() if isinstance(m, dict) and isinstance(m.get('meta'), dict) and 'lookup' in m['meta'])
 for (a0, a1, an), (b0, b1, bn) in zip(tables, tables[1:]):
     if b0 < a1: sys.exit(f'block tables overlap: {an} {a0:#x}-{a1:#x} and {bn} {b0:#x}-{b1:#x}')
+# the tables lie below the layout's end (the address space is 128 MB: a table past it is written out of bounds)
+for a0, a1, an in tables:
+    if a1 > 0x08000000: sys.exit(f'block table past the address space: {an} {a0:#x}-{a1:#x}')
+# a 16-bit module's segments have LDT selectors selbase + 8*i: two modules sharing a selector corrupt each other's
+# segments once both are loaded (and the static selectors lie below the dynamic ones, 2007h on)
+sels = sorted((m['meta']['selbase'], m['meta']['selbase'] + 8 * len(m['meta']['segs']), name) for name, m in bundle['ne'].items())
+for (a0, a1, an), (b0, b1, bn) in zip(sels, sels[1:]):
+    if b0 < a1: sys.exit(f'selectors overlap: {an} {a0:#x}-{a1:#x} and {bn} {b0:#x}-{b1:#x}')
+for a0, a1, an in sels:
+    if a1 > 0x2007: sys.exit(f'selectors reach the dynamic ones: {an} {a0:#x}-{a1:#x}')
+# every image has an address range of its own: a 16-bit module's segments (what the file holds; the room a data
+# segment may grow into, 64 KB for a DGROUP, only warned of, as USER's drivers are packed closer than that), 32-bit
+# DLLs and programs (PROGMAN's code lay over MSGSRV32's stack, at the top of its DGROUP)
+images = []
+for name, m in bundle['ne'].items():
+    for g in m['meta']['segs']: images.append((g['base'], g['base'] + g.get('len', 0), g['base'] + max(g.get('alloc', 0), g.get('len', 0)), f"{name} seg{g['num']}"))
+for group in (bundle['dlls'], bundle['programs'], bundle.get('net', {}), bundle.get('drivers', {})):
+    for name, m in group.items():
+        if isinstance(m.get('meta'), dict) and 'base' in m['meta'] and 'size' in m['meta']: images.append((m['meta']['base'], m['meta']['base'] + m['meta']['size'], m['meta']['base'] + m['meta']['size'], name))
+images.sort()
+for (a0, a1, a2, an), (b0, b1, b2, bn) in zip(images, images[1:]):
+    if b0 < a1: sys.exit(f'images overlap: {an} {a0:#x}-{a1:#x} and {bn} {b0:#x}-{b1:#x}')
+    if b0 < a2: print(f'  note: {an} may grow to {a2:#x}, over {bn} at {b0:#x}')
 with open(out, 'w') as fh:
     fh.write('// Generated by tools/build_system.py from the Windows 95 system files.\nwindow.W95SYSTEM = ')
     json.dump(bundle, fh, separators=(',', ':')); fh.write(';\n')

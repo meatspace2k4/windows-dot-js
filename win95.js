@@ -3472,7 +3472,8 @@ class RemoteApp extends NativeApp {
     this.worker.postMessage({ t: 'start', rpc: this.rpcSab, registry: W95Win32.regDump(), o: {
       path: this.path, arg: this.arg, net: this.net, system: this.system, quiet: this.quiet, sw: this.sw, sh: this.sh, shellW: W, workH: workH(), ring: this.ring, lan: this.lanRing || null,
       bytes: bytes || null, prog: prog ? { name: prog.name, meta: prog.d.meta } : null,
-      trace: new URLSearchParams(location.search).get('trace') } });   // (?trace=MSGSRV32: the imports that thread calls, read back with cmd 'trace')
+      trace: new URLSearchParams(location.search).get('trace'),   // (?trace=MSGSRV32: the imports that thread calls, read back with cmd 'trace')
+      exp: Object.fromEntries(new URLSearchParams(location.search).getAll('exp').map(x => x.split('=')).map(([k, v]) => [k, v === 'false' ? false : v === 'true' ? true : v])) } });   // (?exp=NAME=false: a switch in the machine, for an experiment)
     return new Promise(ok => { this.started = ok; });
   }
   /** the machine's display mode changed to w by h (the page's viewport holds another mode): asked of the machine once

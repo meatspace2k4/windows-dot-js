@@ -2729,9 +2729,11 @@ const pdw = (p, pid, off) => {
     // the process's instance (-48), as KERNEL32 keeps it: its program's 16-bit alias (ShellExecute answers with it for a
     // DDE server's process)
     const pc = p.procs && p.procs.get(pid), exe = pc ? pc.exe : pid === MAIN_PID ? p.exe : null;
-    // the system process is the Win16 tasks' (MSGSRV32, PROGMAN): fWin16Process (8) in its flags, as KERNEL32 marks
-    // the process Win16 programs run in (GRPCONV asks it of the process behind a Progman window)
-    p.procDword.set(pid, { ...GPD, '-4': pid === SYS_PID ? 8 : 0, '-48': exe ? p.hinst16(exe.base) : 0 });
+    // the Win16 tasks' process (MSGSRV32, PROGMAN: GetCurrentProcessId from their threads is the system's, or the
+    // machine's own where the machine is the system's and has no program) has fWin16Process (8) in its flags, as
+    // KERNEL32 marks the process Win16 programs run in (GRPCONV asks it of the process behind a Progman window)
+    const win16 = pid === SYS_PID || (pid === MAIN_PID && !!(p.host && p.host.system));
+    p.procDword.set(pid, { ...GPD, '-4': win16 ? 8 : 0, '-48': exe ? p.hinst16(exe.base) : 0 });
   }
   return p.procDword.get(pid);
 };
@@ -3000,7 +3002,7 @@ def16('KERNEL', 45, 'sp', 'l', function (name, pb) {
     if (cs) show = this.r16(cs + 2);
   }
   const m = rec.meta, t = this.newThread(u32((m.segs[m.entry[0] - 1].sel << 16) | m.entry[1]), 0, 0x4000, false);
-  t.pc = null;   // a Win16 task is the Win16 process's (the system's), whoever starts it (GRPCONV's PROGMAN), not a thread of its starter
+  if (self.W95_TASK_OWN_PC !== false) t.pc = null;   // a Win16 task is the Win16 process's (the system's), whoever starts it (GRPCONV's PROGMAN), not a thread of its starter
   t.task = { psp: pspSel, hInst: rec.hInstance, show, stack: rd.u16(rec.file, hdr + 0x12), heap: rd.u16(rec.file, hdr + 0x10), dgroup: rec.dgroup, mod: rec };
   rec.taskModule = true;
   // its DGROUP: the data, then the local heap, then the stack (SP its top)
@@ -3212,8 +3214,8 @@ K('ThunkConnect32', 6, function (td, f16, m16, m32, hmod, reason) {
     rec.table = u32(f16 + (this.r32(td + 0x20) | 0));   // the thunk compiler's table lies before the 16-bit half's name
     return 1;
   }
-  const t16 = find(); if (!t16) return 0;
-  if (this.r32(t16) !== this.r32(td) || this.r32(t16 + 4) !== this.r32(td + 4)) return 0;   // magic and checksum
+  const t16 = find(); if (!t16) { console.warn('[ne16] ThunkConnect32', this.readA(m32), magic, 'no', name, f16name); return 0; }
+  if (this.r32(t16) !== this.r32(td) || this.r32(t16 + 4) !== this.r32(td + 4)) { console.warn('[ne16] ThunkConnect32', this.readA(m32), magic, name, f16name, 'checksum', this.r32(td + 4).toString(16), this.r32(t16 + 4).toString(16)); return 0; }   // magic and checksum
   if (magic === 'LS01') {
     const table = this.lin(this.r32(t16 + 8)); this.w32(td + 8, table);
     this.lsRelays = this.lsRelays || new Map();
