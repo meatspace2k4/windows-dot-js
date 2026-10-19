@@ -2609,6 +2609,7 @@ function compiledSaver(sha) {
 const mkc = (w, h) => Object.assign(document.createElement('canvas'), { width: Math.max(1, w), height: Math.max(1, h) });
 const PREVIEW_HWND = 0x7ff0;
 let fullSaver = null, lastInput = performance.now();
+const saverRuns = new Map();   // the savers a machine started, by the pid of their process there (saverStop ends them)
 
 class SaverRun {
   constructor(path, mode, o = {}) { this.path = path; this.mode = mode; this.o = o; this.alive = true; this.canvas = null; this.mx = mouse.x; this.my = mouse.y; }
@@ -2627,7 +2628,13 @@ class SaverRun {
     }
     if (!this.alive) return false;
     if (this.mode === 's') this.overlay();
-    if (this.mode === 'p') this.canvas = mkc(this.o.w, this.o.h);
+    if (this.mode === 'p') {
+      if (this.o.rect) {   // the applet's monitor window: the preview is its size and lies over it on the screen
+        let r = null; try { r = await this.o.rect(); } catch (_) { r = null; }
+        if (!r || !(r.w > 0 && r.h > 0)) { this.alive = false; return false; }
+        this.o.w = r.w; this.o.h = r.h; this.canvas = mkc(r.w, r.h); this.overlayAt(r);
+      } else this.canvas = mkc(this.o.w, this.o.h);
+    }
     const host = {
       fs, width: W, height: H, path: this.path, now: () => performance.now(),
       cursor: () => (this.mode === 's' ? { x: this.mx, y: this.my } : { x: mouse.x, y: mouse.y }),
@@ -2688,9 +2695,17 @@ class SaverRun {
     c.addEventListener('pointerdown', e => { e.preventDefault(); [this.mx, this.my] = pos(e); this.proc && this.proc.dispatchInput(e.button === 2 ? WM.RBUTTONDOWN : WM.LBUTTONDOWN, 0, (this.my << 16) | this.mx); });
     c.addEventListener('contextmenu', e => e.preventDefault());
   }
+  /** the small preview's canvas over the applet's monitor window (r: its rectangle on the machine's screen), kept over
+   *  it as the applet moves (the window asked again now and then while the preview runs) */
+  overlayAt(r) {
+    const c = this.el = this.canvas;
+    const place = q => { c.style.cssText = `position:fixed;left:${(parseFloat(cv.style.marginLeft) || 0) + q.l * ZOOM}px;top:${(parseFloat(cv.style.marginTop) || 0) + q.t * ZOOM}px;width:${q.w * ZOOM}px;height:${q.h * ZOOM}px;image-rendering:pixelated;pointer-events:none;z-index:9`; };
+    place(r); document.body.appendChild(c);
+    this.follow = setInterval(async () => { if (!this.alive) return; let q = null; try { q = await this.o.rect(); } catch (_) { q = null; } if (!this.alive) return; if (!q || !(q.w > 0 && q.h > 0)) { this.stop(0); return; } place(q); }, 400);
+  }
   key(e) { if (this.proc) this.proc.dispatchInput(W95Win32.WM.KEYDOWN, e.keyCode || 0, 0); }
   stop(code = 0) {
-    this.alive = false; if (this.proc) trayDrop(this.proc); if (this.el) this.el.remove(); if (fullSaver === this) fullSaver = null;
+    this.alive = false; if (this.follow) { clearInterval(this.follow); this.follow = 0; } if (this.proc) trayDrop(this.proc); if (this.el) this.el.remove(); if (fullSaver === this) fullSaver = null;
     if (this.o.onExit && !this.ended) { this.ended = true; this.o.onExit(code); }   // (the machine that started it: its process ends)
   }
   exited(code, why) {
@@ -2700,11 +2715,13 @@ class SaverRun {
     if (why) msgBox(basename(this.path), `${basename(this.path)} stopped: ${why}`, 'error', ['OK'], null, { noTask: false, modal: false });
   }
 }
-function startFullSaver(path) {
-  if (fullSaver || !path) return;
+/** the full-screen saver started (the idle start, Preview, the Start menu); o.onExit(code) hears it end, or that it
+ *  did not start (another is up, no path, no module): the machine's process for it ends then */
+function startFullSaver(path, o = {}) {
+  if (fullSaver || !path) { if (o.onExit) o.onExit(1); return; }
   closeMenus();
-  fullSaver = new SaverRun(path, 's');
-  fullSaver.start();
+  const run = fullSaver = new SaverRun(path, 's', o);
+  run.start().then(ok => { if (!ok) run.stop(1); });
 }
 function saverIni() {
   const g = (f, s, k) => W95Win32.iniGet(fs, f, s, k);
@@ -3549,6 +3566,7 @@ class RemoteApp extends NativeApp {
       case 'shell': { const f = window.W95SHELL[m.fn]; if (typeof f === 'function') try { f(...m.args); } catch (e) { console.error(e); } return; }
       case 'reply': { const ok = this.calls.get(m.id); this.calls.delete(m.id); if (m.error) console.error('[machine]', m.error); if (ok) ok(m.value); return; }
       case 'exited': this.exited(m.code, m.why, true); if (this.started) this.started(false); return;
+      case 'saverStop': { const run = saverRuns.get(m.pid); saverRuns.delete(m.pid); if (run) run.stop(0); return; }   // the machine ended the saver's process (the applet picked another)
     }
   }
   /** the machine's synchronous call into the page (bridge.js): the file system, and what only the page has */
@@ -3566,8 +3584,13 @@ class RemoteApp extends NativeApp {
         else if (m.method === 'runApart') { runNative(m.args[0], m.args[1] || '', { apart: true }); v = true; }   // (it starts as the page goes on)
         // a screen saver a program starts (Display Properties' Preview and Settings, the shell): it runs on the page, as the savers do here
         else if (m.method === 'saver') {   // (its process in the machine ends when the saver does: saverExit, the applet's handle to it)
-          const pid = m.args[2], onExit = code => { if (pid && this.alive) this.worker.postMessage({ t: 'saverExit', pid, code: code | 0 }); };
-          if (m.args[1] === 'c') { const run = new SaverRun(m.args[0], 'c', { onExit }); run.start().then(ok => { if (!ok) run.stop(); }); } else startFullSaver(m.args[0], { onExit });
+          const [file, mode, pid, hwnd] = m.args, onExit = code => { saverRuns.delete(pid); if (pid && this.alive) this.worker.postMessage({ t: 'saverExit', pid, code: code | 0 }); };
+          if (mode === 's') startFullSaver(file, { onExit });
+          else {   // the saver's settings (/c), or the small preview in the applet's monitor (/p hwnd), over that window on the screen
+            const run = new SaverRun(file, mode, { onExit, hwnd, rect: () => this.cmd('winRect', [hwnd]) });
+            if (pid) saverRuns.set(pid, run);
+            run.start().then(ok => { if (!ok) run.stop(1); });
+          }
           v = true;
         }
       }

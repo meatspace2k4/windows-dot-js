@@ -368,18 +368,19 @@ class Machine {
     if (!file) return 2;
     // a screen saver (Display Properties' Preview and Settings, the shell's idle start): the savers run on the page,
     // in a machine of their own; /s shows it, /c its settings; /p (the dialog's small monitor) is not drawn here
-    // (the small preview in Display Properties' monitor, /p hwnd, draws in a child window of the applet's, which a
-    // saver on the page has not: it does not start, as a saver that cannot run, and the applet goes on without it;
-    // told it had started, the applet spun looking for the child window, and Preview and Settings did nothing more)
+    // (the small preview in Display Properties' monitor, /p hwnd, runs on the page too, drawn over the monitor window;
+    // its process here ends when the applet ends it)
     // A saver started with /s or /c:0 is a process of this machine (the applet keeps its handle and knows the preview
     // has ended by it: told nothing had started, it took the preview to be running still and did nothing at the next
     // Preview); the process ends when the page says the saver has (saverExit)
     if (/\.scr$/i.test(file)) {
-      const mode = /^\s*\/c/i.test(arg || '') ? 'c' : /^\s*\/p/i.test(arg || '') ? 'p' : 's'; if (mode === 'p') return 2;
+      const mode = /^\s*\/c/i.test(arg || '') ? 'c' : /^\s*\/p/i.test(arg || '') ? 'p' : 's';
+      const hwnd = mode === 'p' ? parseInt((/\/p\s*:?\s*(\d+)/i.exec(arg || '') || [])[1] || '0', 10) : 0;   // (the applet's monitor window the small preview draws in)
       const p = this.proc, pid = (this.saverPid = (this.saverPid || 0x7000) + 4);
       const pc = { pid, path: file, exitCode: null, exe: { base: 0 }, main: { id: 0, state: 'done' }, tdb: 0, cmdPtr: 0, saver: true };
       (p.procs || (p.procs = new Map())).set(pid, pc);
-      rpc('host', 'saver', [file, mode, pid]);
+      pc.onExit = () => post({ t: 'saverStop', pid });   // ended from here (the applet's TerminateProcess as another saver is picked): the page stops it
+      rpc('host', 'saver', [file, mode, pid, hwnd]);
       return pc;
     }
     // a Windows (16-bit) program of the system's: a task of this machine's, as KERNEL's WinExec starts one
@@ -610,6 +611,13 @@ class Machine {
       case 'netfs': { const b = self.W95NetFS.backend({ alive: true, proc: p }, args[0]); return b[args[1]](...(args[2] || [])); }
       case 'mode': { const r = this.setMode(args[0], args[1]); if (!r) this.wantMode = [args[0], args[1]]; return r; }   // (null: made once no thread holds USER, step())
       case 'probe': return this.probe();
+      case 'winRect': {   // a window's rectangle on the screen (the applet's monitor, which a small preview on the page lies over)
+        const p = this.proc; if (p.depth || p.thread16) return null;
+        if (!this.rectBuf) { const a = p.alloc(16); this.rectBuf = { a, far: p.mapLS(a) }; }
+        p.user16(32, [['w', args[0]], ['l', this.rectBuf.far]]);   // GetWindowRect
+        const a = this.rectBuf.a, r = [p.r16(a), p.r16(a + 2), p.r16(a + 4), p.r16(a + 6)].map(v => (v << 16) >> 16);
+        return { l: r[0], t: r[1], w: r[2] - r[0], h: r[3] - r[1] };
+      }
       case 'trace': { if (args[0]) this.traceOn(args[0], args[1]); const l = this.traceLog || []; return l.splice(0); }   // (the calls traced so far; a thread regexp, and one for the import names, starts a trace)
       case 'kick': return;
       case 'exit': this.exited(args[0] || 0); return;
