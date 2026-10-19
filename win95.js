@@ -4232,7 +4232,7 @@ function openApplet(k, name) {
       try { if (peStrings(fs.readFile(join(sys, f.name))).some(t => t.replace(/&/g, '').toLowerCase() === name.toLowerCase())) { cpl = f.name; break; } } catch (e) { console.error(e); }
     }
   } catch (e) { console.error(e); }
-  if (cpl) return runNative(join(WINDIR, 'RUNDLL32.EXE'), `shell32.dll,Control_RunDLL ${cpl},${name}`)
+  if (cpl) return runNative(join(WINDIR, 'RUNDLL32.EXE'), `shell32.dll,Control_RunDLL ${cpl}`)
     .then(ok => { if (!ok) msgBox(name, `The ${name} applet is not implemented in this shell.`, 'info'); });
   msgBox(name, `The ${name} applet is not implemented in this shell.`, 'info');
 }
