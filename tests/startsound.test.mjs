@@ -13,7 +13,7 @@ function page(record, { firstRun = false, rebooted = false } = {}) {
   const started = [];
   class App { constructor(path, arg, o) { Object.assign(this, { path, arg, ...o }); } async start() { started.push(this); return true; } }
   const S = new Function('localStorage', 'window', 'RemoteApp', 'NativeApp', 'join', 'WINDIR', 'firstRun', 'rebooted', `
-    let sysApp = null, sysStarting = null;
+    let sysApp = null, sysStarting = null; const bootLogoEnd = () => {};   // (the start-up screen: the page's drawing)
     ${cut('const SHUTDOWN = ', '\n')}
     ${cut('const cleanStart = ', '\n')}
     ${cut('function shutDownCleanly() {', '\n')}
@@ -71,5 +71,5 @@ for (const [record, opts, heard] of [
 }
 // the system's start waits on nothing of the shell's: startSystem is called from the boot (systemBootLater), not from a
 // RunOnce or GRPCONV
-assert.ok(/function systemBootLater\(\) \{\n  const go = \(\) => setTimeout\(\(\) => startSystem\(\), 50\);/.test(w));
+assert.ok(/function systemBootLater\(\) \{\n  bootLogoStart\(\);\n  const go = \(\) => setTimeout\(\(\) => startSystem\(\), 50\);/.test(w));
 console.log('startsound: ok');
