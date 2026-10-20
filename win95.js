@@ -4402,6 +4402,8 @@ function render() {
   const sa = monApp();
   if (!!sa !== monitor) resize();
   if (sa) sa.scanToCanvas(); else drawDesktop();
+  // a screen saver running full screen on the machine is topmost: the shell's own windows, menus and tips stay under it
+  if (sa && sa.snap && sa.snap.list.some(n => /^WindowsScreenSaverClass$/i.test(n.cls || '') && !n.preview)) { const na = pointerApp(mouse.x, mouse.y); if (na) drawSprite(na); return; }
   const m = modal();
   if (!sa && !tbar.ontop) drawTaskbar();
   for (const w of windows) if (!(sa && w.app === sa && !w.win32) && !w.min && !(m && m.dim && w === m)) w.draw();
