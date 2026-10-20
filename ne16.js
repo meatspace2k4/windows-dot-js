@@ -12,7 +12,7 @@ const L = {
   LDT: 0x30000, ACC: 0x40000,                      // {base, limit} per selector; access rights at +0x10000
   FLATDS: 0x000F, FLATCS: 0x0017, SENT: 0x001F,    // fixed selectors (SENT: far returns here end a call16)
   STK: 0x0027, NSTK: 24,                           // 16-bit stack aliases of the flat stack, one per nesting level
-  DYN: 0x400,                                      // first LDT index handed out dynamically
+  DYN: 0x600,                                      // first LDT index handed out dynamically (below it, the recompiled modules' selectors: to 2FFFh)
   THSEL: 0xFFF7, T16: 0xFFFE0000, INT: 0xFFFD0000,
 };
 const u32 = v => v >>> 0;

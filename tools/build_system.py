@@ -227,12 +227,12 @@ for (a0, a1, an), (b0, b1, bn) in zip(tables, tables[1:]):
 for a0, a1, an in tables:
     if a1 > 0x08000000: sys.exit(f'block table past the address space: {an} {a0:#x}-{a1:#x}')
 # a 16-bit module's segments have LDT selectors selbase + 8*i: two modules sharing a selector corrupt each other's
-# segments once both are loaded (and the static selectors lie below the dynamic ones, 2007h on)
+# segments once both are loaded (and the static selectors lie below the dynamic ones, 3007h on: ne16.js L.DYN)
 sels = sorted((m['meta']['selbase'], m['meta']['selbase'] + 8 * len(m['meta']['segs']), name) for name, m in bundle['ne'].items())
 for (a0, a1, an), (b0, b1, bn) in zip(sels, sels[1:]):
     if b0 < a1: sys.exit(f'selectors overlap: {an} {a0:#x}-{a1:#x} and {bn} {b0:#x}-{b1:#x}')
 for a0, a1, an in sels:
-    if a1 > 0x2007: sys.exit(f'selectors reach the dynamic ones: {an} {a0:#x}-{a1:#x}')
+    if a1 > 0x3007: sys.exit(f'selectors reach the dynamic ones: {an} {a0:#x}-{a1:#x}')
 # every image has an address range of its own: a 16-bit module's segments (what the file holds; the room a data
 # segment may grow into, 64 KB for a DGROUP, only warned of, as USER's drivers are packed closer than that), 32-bit
 # DLLs and programs (PROGMAN's code lay over MSGSRV32's stack, at the top of its DGROUP)

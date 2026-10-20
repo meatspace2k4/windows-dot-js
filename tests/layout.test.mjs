@@ -1,5 +1,5 @@
 // The system bundle's layout: every 16-bit module's LDT selectors (selbase + 8 per segment) are its own and lie below
-// the dynamic ones (2007h on), no two images share an address range, and every block table (an i32 per code byte at
+// the dynamic ones (3007h on), no two images share an address range, and every block table (an i32 per code byte at
 // its lookup base) lies apart from the others' and below the 128 MB address space. A module placed over another's
 // selectors or table shows up as faults in the other module once both are loaded (PROGMAN over DESKCP16's selectors
 // took GDI32 and the shell down). The check reads system.js when it is built (it is generated from the CD: skipped
@@ -18,7 +18,8 @@ const overlaps = (ranges, what) => {
 };
 const ne = Object.entries(S.ne);
 overlaps(ne.map(([n, m]) => [m.meta.selbase, m.meta.selbase + 8 * m.meta.segs.length, n]), 'selectors');
-for (const [n, m] of ne) assert.ok(m.meta.selbase + 8 * m.meta.segs.length <= 0x2007, `${n}'s selectors reach the dynamic ones`);
+const DYN = 8 * Number(/DYN: (0x[0-9a-f]+)/.exec(readFileSync(new URL('../ne16.js', import.meta.url), 'utf8'))[1]) | 7;   // (the first dynamic selector, ne16.js L.DYN)
+for (const [n, m] of ne) assert.ok(m.meta.selbase + 8 * m.meta.segs.length <= DYN, `${n}'s selectors reach the dynamic ones`);
 // images: a 16-bit module's segments as the file holds them (PROGMAN's code lay over MSGSRV32's DGROUP, whose top is
 // its stack), 32-bit DLLs and programs whole
 const images = [];
