@@ -60,12 +60,24 @@ class Unsupported extends Error {}
 const MASK = { 1: 0xff, 2: 0xffff, 4: -1 };
 const COND = ['o', 'no', 'b', 'ae', 'e', 'ne', 'be', 'a', 's', 'ns', 'p', 'np', 'l', 'ge', 'le', 'g'];
 
+/** the device memory range (linear start, size) the module holding linear `lin` writes as registers, if it does */
+function mmioRange(p, lin) {
+  for (const m of p.ne ? p.ne.values() : []) {
+    const meta = m && m.meta;
+    if (meta && meta.mmio && lin >= meta.base && lin < meta.base + meta.size) return meta.mmio;
+  }
+  return null;
+}
 /** translate the block at linear `lin` (code segment base `csb`, 32-bit default when `d32`) */
 function translate(p, lin, csb, d32) {
   const u8 = p.u8;
   const f = new Fn();
-  const T = f.loc(), A = f.loc(), B = f.loc(), R = f.loc(), C = f.loc(), X = f.loc(), K = f.loc();   // scratch locals
+  const T = f.loc(), A = f.loc(), B = f.loc(), R = f.loc(), C = f.loc(), X = f.loc(), K = f.loc(), D = f.loc();   // scratch locals
   const W = f.loc64();
+  // code of a module that writes a device's registers (its build's mmio range, recomp.py --mmio): each store that
+  // lands there goes to the host after it is made, as the module's translated code sends it
+  const mm = mmioRange(p, lin);
+  const dev = (a, sz) => { if (mm) f.lg(a).c(mm[0]).op('sub').c(mm[1]).op('lt_u').if_().lg(a).c(0x2000000 | sz).e(0x10, 1).end(); };
   let pc = lin, n = 0;
   const fetch = () => u8[pc++];
   const fetch16 = () => { const v = u8[pc] | (u8[pc + 1] << 8); pc += 2; return v; };
@@ -127,7 +139,7 @@ function translate(p, lin, csb, d32) {
       f.gg(g).c(~(0xff << sh)).op('and').lg(loc).c(0xff).op('and'); if (sh) f.c(sh).op('shl'); f.op('or').gs(g);
     };
     const rd = (o, sz) => { if (o.isReg) rdReg(o.rm, sz); else f.lg(A).ld(sz); };
-    const wr = (o, sz, loc) => { if (o.isReg) wrReg(o.rm, sz, loc); else f.lg(A).lg(loc).st(sz); };
+    const wr = (o, sz, loc) => { if (o.isReg) wrReg(o.rm, sz, loc); else { f.lg(A).lg(loc).st(sz); dev(A, sz); } };
     const imm = sz => sz === 1 ? fetch() : sz === 2 ? fetch16() : fetch32();
     // ---- flags
     const bits = sz => sz * 8;
@@ -265,11 +277,11 @@ function translate(p, lin, csb, d32) {
     if (b >= 0xa0 && b <= 0xa3) {   // mov al/eax, moffs
       const sz = b & 1 ? osz : 1, off = asz === 4 ? fetch32() : fetch16();
       f.c(off).gg(sbase(seg === null ? 3 : seg)).op('add').ls(A);
-      if (b & 2) { rdReg(0, sz); f.ls(T); f.lg(A).lg(T).st(sz); } else { f.lg(A).ld(sz).ls(T); wrReg(0, sz, T); }
+      if (b & 2) { rdReg(0, sz); f.ls(T); f.lg(A).lg(T).st(sz); dev(A, sz); } else { f.lg(A).ld(sz).ls(T); wrReg(0, sz, T); }
       continue;
     }
     if (b === 0xa8 || b === 0xa9) { const sz = b & 1 ? osz : 1; rdReg(0, sz); f.c(imm(sz)).op('and').ls(R); f.c(0).gs('cf'); f.c(0).gs('of'); szp(sz); continue; }
-    if ((b >= 0xa4 && b <= 0xa7) || (b >= 0xaa && b <= 0xaf)) { strop(f, b, osz, asz, seg, rep, { T, A, B, C, R, X }, alu2, szp); continue; }
+    if ((b >= 0xa4 && b <= 0xa7) || (b >= 0xaa && b <= 0xaf)) { strop(f, b, osz, asz, seg, rep, { T, A, B, C, R, X, D }, alu2, szp, dev); continue; }
     if (b >= 0xb0 && b < 0xb8) { f.c(fetch()).ls(T); wrReg(b & 7, 1, T); continue; }
     if (b >= 0xb8 && b < 0xc0) { f.c(osz === 4 ? fetch32() : fetch16()).ls(T); wrReg(b & 7, osz, T); continue; }
     if (b === 0xc0 || b === 0xc1 || (b >= 0xd0 && b <= 0xd3)) {
@@ -483,8 +495,8 @@ function muldiv(f, op, sz, o, rd, L, rdReg, wrReg) {
 }
 
 // string instructions, with rep / repe / repne
-function strop(f, b, osz, asz, seg, rep, L, alu2, szp) {
-  const { T, A, B, C, R } = L, sz = b & 1 ? osz : 1;
+function strop(f, b, osz, asz, seg, rep, L, alu2, szp, dev) {
+  const { T, A, B, C, R, D } = L, sz = b & 1 ? osz : 1;
   const idx = r => { f.gg(r); if (asz === 2) f.c(0xffff).op('and'); };
   const step = r => {   // r += df ? -sz : sz, within the address size
     f.gg(r).c(-sz).c(sz).gg('df').e(0x1b).op('add');
@@ -494,8 +506,8 @@ function strop(f, b, osz, asz, seg, rep, L, alu2, szp) {
   const srcBase = seg === null ? 'dsb' : ['esb', 'csb', 'ssb', 'dsb', 'fs', 'gsb'][seg];
   const kind = b <= 0xa5 ? 'movs' : b <= 0xa7 ? 'cmps' : b <= 0xab ? 'stos' : b <= 0xad ? 'lods' : 'scas';
   const body = () => {
-    if (kind === 'movs') { f.gg('esb'); idx('edi'); f.op('add'); f.gg(srcBase); idx('esi'); f.op('add').ld(sz).st(sz); step('esi'); step('edi'); }
-    else if (kind === 'stos') { f.gg('esb'); idx('edi'); f.op('add').gg('eax').st(sz); step('edi'); }
+    if (kind === 'movs') { f.gg('esb'); idx('edi'); f.op('add').lt(D); f.gg(srcBase); idx('esi'); f.op('add').ld(sz).st(sz); dev(D, sz); step('esi'); step('edi'); }
+    else if (kind === 'stos') { f.gg('esb'); idx('edi'); f.op('add').lt(D).gg('eax').st(sz); dev(D, sz); step('edi'); }
     else if (kind === 'lods') { f.gg(srcBase); idx('esi'); f.op('add').ld(sz).ls(T); if (sz === 4) f.lg(T).gs('eax'); else f.gg('eax').c(sz === 2 ? 0xffff0000 : 0xffffff00).op('and').lg(T).op('or').gs('eax'); step('esi'); }
     else if (kind === 'scas') { f.gg('eax').ls(B); f.gg('esb'); idx('edi'); f.op('add').ld(sz).ls(C); alu2(7, sz); step('edi'); }
     else { f.gg(srcBase); idx('esi'); f.op('add').ld(sz).ls(B); f.gg('esb'); idx('edi'); f.op('add').ld(sz).ls(C); alu2(7, sz); step('esi'); step('edi'); }

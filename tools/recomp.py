@@ -1588,7 +1588,7 @@ def build_ne(path, out, base, selbase, lookup, registry):
     meta = dict(kind='ne', name=ne.name, sha256=hashlib.sha256(data).hexdigest(), base=base, size=ne.size, selbase=selbase,
                 segs=[{k: sg[k] for k in ('num', 'sel', 'base', 'alloc', 'minalloc', 'len', 'flags', 'bits', 'fileoff')} for sg in ne.segs],
                 autodata=ne.autodata, entry=[ne.entry_seg, ne.entry_off], imports=ne.mods, exports=exports, names=ne.names, fixups=fixups,
-                textLo=text_lo, textHi=text_hi, lookup=lookup, blocks=order, thunks=reg['thunks'],
+                textLo=text_lo, textHi=text_hi, lookup=lookup, blocks=order, thunks=reg['thunks'], **({'mmio': list(MMIO)} if MMIO else {}),
                 layout=dict(sentinel=SENTINEL, thunkBase=THUNK_BASE, thunk16Base=THUNK16_BASE, thunk16Sel=THUNK16_SEL, ldt=LDT_BASE, fpuBase=FPU_BASE, pages=MEM_PAGES))
     json.dump(meta, open(out + '.json', 'w'))
     print('%s: %d insns, %d blocks, wasm %d bytes, %d fixups, %d thunks' % (ne.name, len(insns), len(blocks), len(mod), len(fixups), len(reg['thunks'])))
