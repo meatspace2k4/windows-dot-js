@@ -93,7 +93,9 @@ PROGRAMS = [('notepad.exe', 0x00400000, 0x06000000), ('rundll32.exe', 0x00410000
             ('runonce.exe', 0x00530000, 0x07FD0000), ('grpconv.exe', 0x004F0000, 0x07F60000), ('systray.exe', 0x00510000, 0x07F80000), ('welcome.exe', 0x00520000, 0x07F90000),
             # the CD's AutoPlay program (D:\AUTORUN\AUTORUN.EXE, AUTORUN.INF's open=), which the shell runs when the
             # disc's icon is opened; copied from the disc into SYS_DIR for the build
-            ('autorun.exe', 0x00540000, 0x07FE0000)]
+            ('autorun.exe', 0x00540000, 0x07FE0000),
+            # the Accessories: Calculator (WIN95_02.CAB)
+            ('calc.exe', 0x00570000, 0x06C90000)]
 # 32-bit system DLLs: (file, load base, block-table base)
 PE = [('gdi32.dll', 0x01D00000, 0x06C00000), ('user32.dll', 0x01D40000, 0x07340000), ('comdlg32.dll', 0x01D60000, 0x07380000),
       # the common controls and the shell, which COMDLG32's Explorer-style dialogs are built on (WIN95_02.CAB)
@@ -210,7 +212,9 @@ INFS = ['shell.inf',
         # the printer drivers' INFs the Add Printer wizard lists (PRECOPY2.CAB)
         'msprint.inf', 'msprint2.inf',
         # where each file of the CD's cabinets is, which Setup's engine copies from (PRECOPY2.CAB)
-        'layout.inf', 'layout1.inf']
+        'layout.inf', 'layout1.inf',
+        # the Accessories' components, whose links Setup adds to the Start menu (WIN95_02.CAB)
+        'applets.inf']
 # the sounds Setup puts in C:\WINDOWS\MEDIA: MOTOWN.INF's start-up sound and MMOPT.INF's clips of a Typical install (WIN95_02.CAB)
 MEDIA = ['mssound.wav', 'chimes.wav', 'chord.wav', 'ding.wav', 'tada.wav', 'canyon.mid', 'passport.mid']
 bundle['media'] = {f.upper(): b64(os.path.join(src, f)) for f in MEDIA if os.path.exists(os.path.join(src, f))}
@@ -220,7 +224,7 @@ if os.path.exists(os.path.join(src, 'logo2_0.sys')): bundle['logo'] = b64(os.pat
 BITMAPS = ['bamboo.bmp', 'bubbles.bmp', 'circles.bmp', 'egypt.bmp', 'halftone.bmp', 'hounds.bmp', 'pstripe.bmp', 'pyramid2.bmp', 'redtile.bmp', 'rivets2.bmp', 'thatch2.bmp']
 bundle['bitmaps'] = {f.upper(): b64(os.path.join(src, f)) for f in BITMAPS if os.path.exists(os.path.join(src, f))}
 # the help files Setup puts in C:\WINDOWS\HELP: Windows' own topics and Notepad's, with their contents (WIN95_13.CAB)
-HELP = ['windows.hlp', 'windows.cnt', 'notepad.hlp', 'notepad.cnt']
+HELP = ['windows.hlp', 'windows.cnt', 'notepad.hlp', 'notepad.cnt', 'calc.hlp', 'calc.cnt']
 bundle['help'] = {f.upper(): b64(os.path.join(src, f)) for f in HELP if os.path.exists(os.path.join(src, f))}
 # the real-mode drivers IO.SYS loads before Windows: IFSHLP.SYS, the file system manager's helper (WIN95_22.CAB)
 DOS = ['ifshlp.sys',

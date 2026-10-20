@@ -2699,21 +2699,37 @@ function infUpdateInis(text, section, only) {
 }
 // the Start menu as Setup leaves it: SETUPC.INF's UpdateInis lines for SETUP.INI (the folders under Programs in
 // [progman.groups], each one's links in its own section) and GRPCONV run once at the next start (-s, by RUNONCE) to
-// make them the Start Menu's folders and shell links. A Start menu whose Windows Explorer link is not yet a shell link gets them
+// make them the Start Menu's folders and shell links, with the links of the Accessories the system has (APPLETS.INF's
+// <component>.links, each component whose program is here: Calculator). A Start menu whose Windows Explorer link is
+// not yet a shell link gets them, and one that lacks a link of an accessory here
 function setupStartMenu() {
-  const inf = ((window.W95SYSTEM || {}).infs || {})['SETUPC.INF']; if (!inf || !(window.W95SYSTEM.programs || {})['GRPCONV.EXE']) return;
-  let cur = null; try { cur = fs.readFile(PROGRAMS + '\\Windows Explorer.lnk'); } catch (_) { /* none yet */ }
-  if (cur && cur[0] === 0x4c && cur[1] === 0) return;   // ('L': a shell link's header)
-  const { sec, fields, subst } = infParse(inf), out = new Map();
-  for (const name of ['winbase.inis', 'winother.links']) for (const l of sec[name] || []) {
-    if (!l.trim() || /^\s*;/.test(l)) continue;
-    const f = fields(l); if (!/^setup\.ini$/i.test(f[0]) || !f[1] || !f[3]) continue;
-    const section = f[1].toLowerCase(), line = subst(f[3]);
-    if (!out.has(section)) out.set(section, { name: f[1], lines: [] });
-    const lines = out.get(section).lines, eq = section === 'progman.groups' ? line.indexOf('=') : -1;
-    const at = eq > 0 ? lines.findIndex(x => x.slice(0, eq + 1).toLowerCase() === line.slice(0, eq + 1).toLowerCase()) : lines.indexOf(line);
-    if (at >= 0) lines[at] = line; else lines.push(line);
+  const S = window.W95SYSTEM || {}, infs = S.infs || {}, inf = infs['SETUPC.INF']; if (!inf || !(S.programs || {})['GRPCONV.EXE']) return;
+  const applets = infs['APPLETS.INF'] ? infParse(infs['APPLETS.INF']) : null;
+  // the accessories' sections: each <name>.links whose links are all to programs the system has, with the link's name
+  const accessories = [];
+  if (applets) for (const [name, lines] of Object.entries(applets.sec)) {
+    if (!/\.links$/.test(name) || /remove/.test(name)) continue;
+    const links = lines.map(l => applets.fields(l)).filter(f => /^setup\.ini$/i.test(f[0]) && f[1] && !/^progman\.groups$/i.test(f[1]) && f[3])
+      .map(f => applets.fields(applets.subst(f[3])));
+    if (links.length && links.every(k => (S.programs || {})[(k[1] || '').toUpperCase()])) accessories.push({ name, links });
   }
+  let cur = null; try { cur = fs.readFile(PROGRAMS + '\\Windows Explorer.lnk'); } catch (_) { /* none yet */ }
+  const missing = accessories.some(a => a.links.some(k => !fs.exists(join(PROGRAMS, 'Accessories', k[0] + '.lnk'))));
+  if (cur && cur[0] === 0x4c && cur[1] === 0 && !missing) return;   // ('L': a shell link's header)
+  const out = new Map();
+  const add = ({ sec, fields, subst }, names) => {
+    for (const name of names) for (const l of sec[name] || []) {
+      if (!l.trim() || /^\s*;/.test(l)) continue;
+      const f = fields(l); if (!/^setup\.ini$/i.test(f[0]) || !f[1] || !f[3]) continue;
+      const section = f[1].toLowerCase(), line = subst(f[3]);
+      if (!out.has(section)) out.set(section, { name: f[1], lines: [] });
+      const lines = out.get(section).lines, eq = section === 'progman.groups' ? line.indexOf('=') : -1;
+      const at = eq > 0 ? lines.findIndex(x => x.slice(0, eq + 1).toLowerCase() === line.slice(0, eq + 1).toLowerCase()) : lines.indexOf(line);
+      if (at >= 0) lines[at] = line; else lines.push(line);
+    }
+  };
+  add(infParse(inf), ['winbase.inis', 'winother.links']);
+  if (applets) add(applets, accessories.map(a => a.name));
   fs.writeFile(join(WINDIR, 'SETUP.INI'), W95FS.encode([...out.values()].map(v => `[${v.name}]\r\n${v.lines.join('\r\n')}\r\n`).join('\r\n')));
   // SETUPC.INF's RunOnce\Setup item: run under RUNONCE's "Windows 95 Setup" screen before the system's message server
   // starts (worker.js startSystemTask), before SystemStart and the shell. (GRPCONV makes the Start menu through the

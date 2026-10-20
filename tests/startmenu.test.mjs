@@ -28,12 +28,29 @@ WinExplorer_ShortDESC = "Wexplore"
 APPS_DESC       = "Accessories"
 Notepad_DESC    = "Notepad"
 `;
-function run(lnkBytes, withGrpconv = true) {
-  const files = new Map(), reg = [];
+// APPLETS.INF's component sections: Calculator's links (its program in the bundle), Paint's (not)
+const APPLETS = `[Calc.links]
+setup.ini, progman.groups,, "group4=%APPS_DESC%"         ;creates folder
+setup.ini, group4,, """%Calc_Desc%"", CALC.EXE,,, calc,,%Calc_ShortDesc%"  ;creates link
+
+[Calc.links.remove]
+setup.ini, group4,, """%Calc_Desc%"""
+
+[MSPaint.links]
+setup.ini, group4,, """%MSPaint_Desc%"", MSPAINT.EXE"
+
+[Strings]
+APPS_DESC = "Accessories"
+Calc_Desc = "Calculator"
+Calc_ShortDesc = "Calc"
+MSPaint_Desc = "Paint"
+`;
+function run(lnkBytes, withGrpconv = true, o = {}) {
+  const files = new Map(o.files || []), reg = [];
   if (lnkBytes) files.set('C:\\WINDOWS\\Start Menu\\Programs\\Windows Explorer.lnk', lnkBytes);
   const env = {
-    window: { W95SYSTEM: { infs: { 'SETUPC.INF': INF }, programs: withGrpconv ? { 'GRPCONV.EXE': {} } : {} } },
-    fs: { readFile: p => { if (!files.has(p)) throw new Error('ENOENT'); return files.get(p); }, writeFile: (p, d) => files.set(p, d) },
+    window: { W95SYSTEM: { infs: { 'SETUPC.INF': INF, ...(o.applets ? { 'APPLETS.INF': APPLETS } : {}) }, programs: { ...(withGrpconv ? { 'GRPCONV.EXE': {} } : {}), ...(o.calc ? { 'CALC.EXE': {} } : {}) } } },
+    fs: { readFile: p => { if (!files.has(p)) throw new Error('ENOENT'); return files.get(p); }, writeFile: (p, d) => files.set(p, d), exists: p => files.has(p) },
     W95FS: { encode: s => new TextEncoder().encode(s) }, W95Win32: { regSet: (k, n, v) => reg.push([k, n, new TextDecoder().decode(v.data)]) },
   };
   new Function('window', 'fs', 'W95FS', 'W95Win32', `
@@ -59,4 +76,14 @@ assert.ok(run(new TextEncoder().encode('[Shortcut]\r\nTarget=C:\\WINDOWS\\EXPLOR
 { const r = run(Uint8Array.of(0x4c, 0, 0, 0, 1, 0x14, 2, 0)); assert.equal(r.ini, null); assert.deepEqual(r.reg, []); }
 // no GRPCONV in the system bundle: nothing to make the links with
 { const r = run(null, false); assert.equal(r.ini, null); assert.deepEqual(r.reg, []); }
+// an accessory the system has: its links from APPLETS.INF, in its folder; one whose program is not here, none
+const LNK = Uint8Array.of(0x4c, 0, 0, 0, 1, 0x14, 2, 0), CALC = 'C:\\WINDOWS\\Start Menu\\Programs\\Accessories\\Calculator.lnk';
+{
+  const r = run(null, true, { applets: true, calc: true });
+  assert.ok(r.ini.endsWith('[group4]\r\n"Notepad", NOTEPAD.EXE\r\n"Calculator", CALC.EXE,,, calc,,Calc\r\n'));
+  assert.ok(!/Paint/.test(r.ini));
+}
+// a made Start menu without the accessory's link: made again, with it; with it: left alone
+assert.ok(/Calculator/.test(run(LNK, true, { applets: true, calc: true }).ini));
+assert.equal(run(LNK, true, { applets: true, calc: true, files: [[CALC, LNK]] }).ini, null);
 console.log('startmenu: ok');
