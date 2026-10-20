@@ -78,7 +78,7 @@ def check_bash(cmd):
             r"write_text|write_bytes|shutil\.|os\.(remove|rename|replace|unlink)|open\([^)]*['\"][wax+]", c) \
             and not re.search(r"/tmp/|scratchpad", c):
         out('deny', 'A script that writes files. Use the Edit or Write tool.')
-    if re.search(r"--headless|Google Chrome|chromium|puppeteer|playwright|serve\.py", c):
+    if re.search(r"--headless|Contents/MacOS/(Google Chrome|Chromium)|\b(puppeteer|playwright)\b|\bpython3?\s+(-\S+\s+)*\S*serve\.py|tests/machine/run", c):
         out('deny', 'Own browser or server. Use the built-in preview and the page already running.')
     if re.search(r"\b(pkill|killall)\b|electron/build\.sh|open\s+-a|Windows 95\.app", c):
         out('deny', 'Restarting or rebuilding the app. The person does that.')
@@ -92,6 +92,19 @@ def check_bash(cmd):
         out('ask', 'Reverts tracked files or switches the branch of the shared checkout. Only on the person\'s request.')
     if re.search(r"\.claude/projects/[^/\s]+/memory/", c) and not re.match(r"\s*(cat|ls|grep|head|tail)\b", cmd):
         out('deny', 'Memory files are not written.')
+
+
+def check_url(ti):
+    m = re.match(r"\s*(?:https?://)?(localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0)(?::(\d+))?", ti.get('url') or '')
+    if not m:
+        return
+    try:
+        with open(os.path.join(REPO, '.claude', 'launch.json')) as f:
+            ports = {str(c.get('port')) for c in json.load(f).get('configurations', [])}
+    except (OSError, ValueError):
+        return
+    if (m.group(2) or '80') not in ports:
+        out('deny', f'Port {m.group(2)} is not the preview from .claude/launch.json ({", ".join(sorted(ports))}). Test on the page that serves this checkout.')
 
 
 def check_file(ti, sid):
@@ -139,6 +152,9 @@ def main():
         check_bash(ti.get('command', ''))
     elif tool in ('Edit', 'Write', 'NotebookEdit'):
         check_file(ti, sid)
+    elif tool.startswith('mcp__Claude_Browser__'):
+        for t in ([a.get('input') or {} for a in ti.get('actions') or []] if tool.endswith('browser_batch') else [ti]):
+            check_url(t)
 
 
 if __name__ == '__main__':
