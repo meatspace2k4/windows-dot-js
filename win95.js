@@ -2832,7 +2832,7 @@ function winHelp(file = 'windows.hlp') { closeMenus(); if (hasHelp()) runNative(
 // always the same, so the note is cleared before each start
 function setupDisplay() {
   if (W95Win32.iniGet(fs, 'SYSTEM.INI', 'boot', '*DisplayFallback') !== null) W95Win32.iniSet(fs, 'SYSTEM.INI', 'boot', '*DisplayFallback', null);
-  setupDisplayDevices();
+  setupDisplayDevices(); setupFontSize();
 }
 // the display adapter and monitor Setup's detection finds and installs: the Tseng ET4000/W32 (MSDISP.INF *PNP0912,
 // TsengW32: TSENG.DRV with its mini-VDD TSENG.VXD) as a ROOT devnode under the Display class, and the monitor the
@@ -2851,6 +2851,16 @@ function setupDisplayDevices() {
   infAddReg(mon, '1280', cls + 'monitor\\0000');
   set(cls + 'monitor\\0000', { DriverDesc: 'Super VGA 1280x1024', ProviderName: 'Microsoft', InfPath: 'MONITOR.INF', InfSection: '1280.Install' });
   set('hklm\\enum\\monitor\\default_monitor\\0001', { Class: 'Monitor', Driver: 'Monitor\\0000', DeviceDesc: 'Super VGA 1280x1024', HardwareID: 'Monitor\\Default_Monitor', Mfg: '(Standard monitor types)' });
+}
+// the font sizes Display Properties offers (FONTS.INF's MS_FONTSIZE_AddReg: Small Fonts at 96 dpi, Large at 120),
+// and the one the profile has, as the display's class installer records it: Small Fonts' system font files and DPI
+function setupFontSize() {
+  const R = W95Win32, inf = ((window.W95SYSTEM || {}).infs || {})['FONTS.INF']; if (!inf) return;
+  if (R.regGet('hklm\\software\\microsoft\\windows\\currentversion\\fontsize\\96', 'Description') !== undefined) return;
+  infAddReg(inf, 'MS_FONTSIZE_AddReg');
+  const str = v => ({ type: 1, data: W95FS.encode(v + '\0') });
+  const small = { 'fonts.fon': 'vgasys.fon', 'fixedfon.fon': 'vgafix.fon', 'oemfonts.fon': 'vgaoem.fon', DPILogicalX: '96', DPILogicalY: '96', DPIPhysicalX: '96', DPIPhysicalY: '96' };
+  for (const k of ['hkcc\\display\\settings', 'hklm\\config\\0001\\display\\settings']) for (const [n, v] of Object.entries(small)) R.regSet(k, n, str(v));
 }
 function setupSound() {
   const S = window.W95SYSTEM || {}, infs = S.infs || {};
