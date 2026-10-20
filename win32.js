@@ -6,9 +6,9 @@
 // goes to a Canvas 2D surface.
 (() => {
 // guest address space: low runtime area, stack, images at 0x400000/0x1000000, native DLLs from 0x1800000,
-// heap, then per-module block lookup tables from 0x5800000
+// heap, then per-module block lookup tables from 0x5600000
 const LAYOUT = { SENTINEL: 0xFFFFFFF0, THUNK: 0xFFFF0000, THUNK16: 0xFFFE0000, FPU: 0x10000, TIB: 0x11000, SCRATCH: 0x12000,
-  STACK_LO: 0x100000, STACK_TOP: 0x3ffff0, HEAP: 0x02000000, HEAP_END: 0x05800000 };
+  STACK_LO: 0x100000, STACK_TOP: 0x3ffff0, HEAP: 0x02000000, HEAP_END: 0x05600000 };
 const YIELD = Symbol('yield');   // returned by an API implementation to suspend the guest at depth 0
 const TICK_MS = 65536 * 1000 / 1193182;   // PIT channel 0 period, 54.925 ms
 const CPU_REGS = ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi', 'cf', 'pf', 'zf', 'sf', 'of', 'df', 'fs', 'ftop', 'fsw', 'fcw', 'eip',
@@ -1522,6 +1522,14 @@ def('KERNEL32', 'CreatePipe', 4, () => 0);
 def('KERNEL32', 'WinExec', 2, function (cmd, show) {
   const r = this.host.exec ? this.host.exec(this.readA(cmd) || '', show) : 2;
   // the new process runs as the caller waits (Sleep, waits), when its Win16Lock is let go, as Windows 95 lets it
+  return typeof r === 'object' ? 33 : r;
+});
+// LoadModule(lpModuleName, LOADPARMS32 *): the module started as WinExec starts one, with the command tail the
+// parameter block holds (lpCmdLine, a length byte then the text) and its show command (lpCmdShow: 2, nCmdShow)
+def('KERNEL32', 'LoadModule', 2, function (name, parms) {
+  const tailPtr = parms ? this.r32(parms + 4) : 0, showPtr = parms ? this.r32(parms + 8) : 0;
+  const tail = tailPtr ? this.readA(tailPtr + 1, this.u8[tailPtr]) || '' : '', show = showPtr ? this.r16(showPtr + 2) : 1;
+  const mod = this.readA(name) || '', r = this.host.exec ? this.host.exec(`"${mod}"${tail.trim() ? ' ' + tail.trim() : ''}`, show) : 2;
   return typeof r === 'object' ? 33 : r;
 });
 def('KERNEL32', 'CreateProcessA', 10, function (app, cmd, pa, ta, inherit, flags, env, dir, si, pi) {

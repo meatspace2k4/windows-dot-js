@@ -3083,9 +3083,9 @@ function installPrograms() {
     fs.writeFile(path, b64bytes(b64));
   };
   const IN_SYSTEM = new Set(['SPOOL32.EXE', 'SYSTRAY.EXE', 'MPREXE.EXE']);   // the programs Setup puts in SYSTEM rather than the Windows folder (COPY.INF: LDID 11; MPR starts MPREXE from there)
-  for (const [name, d] of Object.entries(S.programs || {})) put(join(WINDIR, IN_SYSTEM.has(name) ? 'SYSTEM' : '', name), d.file);
+  for (const [name, d] of Object.entries(S.programs || {})) if (!d.onCD) put(join(WINDIR, IN_SYSTEM.has(name) ? 'SYSTEM' : '', name), d.file);   // (one the CD runs from the disc: Hover!)
   // the system modules the programs run on, in SYSTEM as Setup puts them (SHELL32 reads its icons from its file)
-  for (const [name, d] of Object.entries({ ...S.dlls, ...S.net, ...S.drivers })) put(join(WINDIR, 'SYSTEM', name), d.file);
+  for (const [name, d] of Object.entries({ ...S.dlls, ...S.net, ...S.drivers })) if (!d.onCD) put(join(WINDIR, 'SYSTEM', name), d.file);
   for (const d of Object.values(S.ne || {})) if (d.fileName && !d.onDisk) put(join(WINDIR, d.fileName === 'PROGMAN.EXE' ? '' : 'SYSTEM', d.fileName), d.file);   // (a printer driver: as the Add Printer wizard copies it; Program Manager in the Windows folder, COPY.INF)
 }
 class NativeWin extends Win {

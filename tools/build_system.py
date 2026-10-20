@@ -95,7 +95,11 @@ PROGRAMS = [('notepad.exe', 0x00400000, 0x06000000), ('rundll32.exe', 0x00410000
             # disc's icon is opened; copied from the disc into SYS_DIR for the build
             ('autorun.exe', 0x00540000, 0x07FE0000),
             # the Accessories: Calculator (WIN95_02.CAB)
-            ('calc.exe', 0x00570000, 0x06C90000)]
+            ('calc.exe', 0x00570000, 0x06C90000),
+            # the CD's Hover! (FUNSTUFF\HOVER), run from the CD; its code's block table where the heap stops
+            ('hover.exe', 0x00600000, 0x05600000)]
+# the programs and DLLs above that run from the CD: not installed on C:, their files read from the disc
+ON_CD = {'hover.exe', 'dashres.dll', 'hoverhlp.dll'}
 # 32-bit system DLLs: (file, load base, block-table base)
 PE = [('gdi32.dll', 0x01D00000, 0x06C00000), ('user32.dll', 0x01D40000, 0x07340000), ('comdlg32.dll', 0x01D60000, 0x07380000),
       # the common controls and the shell, which COMDLG32's Explorer-style dialogs are built on (WIN95_02.CAB)
@@ -124,7 +128,9 @@ PE = [('gdi32.dll', 0x01D00000, 0x06C00000), ('user32.dll', 0x01D40000, 0x073400
       ('msprint2.dll', 0x01500000, 0x070A0000),
       # the link-tracking library a shell link is saved with (WIN95_16.CAB): GRPCONV loads it for each Start menu item it
       # makes from SETUP.INI, and without it made none, so Setup ran again at every start
-      ('linkinfo.dll', 0x01E50000, 0x06C80000)]
+      ('linkinfo.dll', 0x01E50000, 0x06C80000),
+      # Hover!'s libraries, on the CD beside it (FUNSTUFF\HOVER): its art and its help's resources
+      ('dashres.dll', 0x00700000, 0x064B0000), ('hoverhlp.dll', 0x00800000, 0x064B4000)]
 # VxDs (ring-0 drivers), recompiled to run under the VMM in vmm.js: (file, load base, block-table base). MMDEVLDR is the
 # device loader of MEDIA devnodes; MSSNDSYS the Windows Sound System card's driver (WIN95_02.CAB)
 VXDS = [('mmdevldr.vxd', 0x01800000, 0x07C00000), ('mssndsys.vxd', 0x01810000, 0x07C40000),
@@ -179,7 +185,7 @@ with tempfile.TemporaryDirectory() as tmp:
         p = os.path.join(src, f); base = os.path.join(tmp, f)
         trace = ['--trace'] if f.upper() in os.environ.get('TRACE_NE', '').upper().split(',') else []
         subprocess.run([sys.executable, os.path.join(here, 'recomp.py'), p, base, '--base', hex(b), '--lookup', hex(lk)] + trace, check=True)
-        bundle['dlls'][f.upper()] = {'file': b64(p), 'wasm': b64(base + '.wasm'), 'meta': json.load(open(base + '.json'))}
+        bundle['dlls'][f.upper()] = {'file': b64(p), 'wasm': b64(base + '.wasm'), 'meta': json.load(open(base + '.json')), **({'onCD': True} if f in ON_CD else {})}
     # the export names of KRNL386.EXE, which the personality's KERNEL answers for (GetProcAddress by name)
     sys.path.insert(0, here); from neinfo import ne as neparse
     bundle['names16'] = {'KERNEL': {v.upper(): k for k, v in neparse(os.path.join(src, 'krnl386.exe'))[4].items()}}
@@ -202,7 +208,8 @@ with tempfile.TemporaryDirectory() as tmp:
     for f, b, lk in PROGRAMS:
         p = os.path.join(src, f); base = os.path.join(tmp, f)
         subprocess.run([sys.executable, os.path.join(here, 'recomp.py'), p, base, '--base', hex(b), '--lookup', hex(lk)], check=True)
-        bundle['programs'][f.upper()] = {'file': b64(p), 'wasm': b64(base + '.wasm'), 'meta': json.load(open(base + '.json'))}
+        # (a program run from the CD: its file is the disc's)
+        bundle['programs'][f.upper()] = {**({'onCD': True} if f in ON_CD else {'file': b64(p)}), 'wasm': b64(base + '.wasm'), 'meta': json.load(open(base + '.json'))}
 # the Setup INF files whose registry sections the shell applies (SHELL.INF: the shell's classes and folders)
 INFS = ['shell.inf', 
         # the base install's (PRECOPY1.CAB): its UpdateInis lines for SETUP.INI, the Start menu GRPCONV makes
