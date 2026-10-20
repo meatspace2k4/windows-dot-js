@@ -3332,6 +3332,7 @@ class NativeApp {
   }
   // the framebuffer under this program's windows, through the DAC, into the canvas they are drawn from
   paint() {
+    if (monApp() === this) return;   // (the monitor: drawn whole by scanToCanvas, as RemoteApp's paint says)
     // a program with nothing on the screen (no window of its own, no capture: the network's MPREXE) shows nothing: its
     // overlay is cleared once and the screen is not read
     if (!this.wins.size && !this.capture) { if (!this.blank) { this.o32.fill(0); this.ox.putImageData(this.oimg, 0, 0); this.blank = true; } return; }
@@ -3637,6 +3638,9 @@ class RemoteApp extends NativeApp {
   }
   // the framebuffer under this program's windows, through the DAC, from the machine's memory
   paint() {
+    // (the machine that is the monitor is drawn whole from its screen, scanToCanvas: its windows' canvases and its
+    // overlay are never shown, and making them reads every pixel of the screen on every frame)
+    if (monApp() === this) return;
     const m = this.snap; if (!m || !this.mem) return;
     if (!this.wins.size && !this.capture) { if (!this.blank) { this.o32.fill(0); this.ox.putImageData(this.oimg, 0, 0); this.blank = true; } return; }
     this.blank = false;
@@ -4428,23 +4432,26 @@ function render() {
 }
 // the display adapter's hardware cursor: the sprite the program's display driver loaded and placed, overlaid on the
 // whole screen as the CRTC overlays it on scanout (2 bits a pixel: bit 1 keeps the screen, bit 0 inverts it), a
-// column of it to each pixel clock (cpp of them to a screen pixel at high color)
+// column of it to each pixel clock (cpp of them to a screen pixel at high color). The screen under it, for the pixels
+// that invert it, comes from the machine's scanned screen, never read back from the page's canvas (a read back makes
+// every later draw of the screen a copy through main memory, slower the larger the screen)
+const spriteCv = mkc(64, 64), spriteCx = spriteCv.getContext('2d'), spriteImg = spriteCx.createImageData(64, 64), sprite32 = new Uint32Array(spriteImg.data.buffer);
 function drawSprite(app) {
   let sp; try { sp = app.remote ? app.sprite() : app.proc && app.proc.sprite(); } catch (e) { return; }
   if (!sp) return;
   const cpp = sp.cpp || 1, x = sp.x, y = sp.y, w = Math.min(Math.floor((64 - sp.px) / cpp), W - x), h = Math.min(64 - sp.py, H - y);
   if (w <= 0 || h <= 0 || x < 0 || y < 0) return;
-  const im = ctx.getImageData(x, y, w, h), d = im.data;
+  const scr = app.d32, sw = app.sw || 0, sh = app.sh || 0;
   for (let j = 0; j < h; j++) {
     const row = (sp.py + j) * sp.row;
     for (let i = 0; i < w; i++) {
-      const p = sp.px + i * cpp, v = sp.bits[row + (p >> 2)] >> ((p & 3) * 2) & 3, o = (j * w + i) * 4;
-      if (v === 2) continue;
-      const and = v & 2 ? 0xff : 0, xor = v & 1 ? 0xff : 0;
-      d[o] = (d[o] & and) ^ xor; d[o + 1] = (d[o + 1] & and) ^ xor; d[o + 2] = (d[o + 2] & and) ^ xor;
+      const p = sp.px + i * cpp, v = sp.bits[row + (p >> 2)] >> ((p & 3) * 2) & 3;
+      sprite32[j * 64 + i] = v === 2 ? 0 : v === 0 ? 0xff000000 : v === 1 ? 0xffffffff
+        : scr && x + i < sw && y + j < sh ? (0xff000000 | ~scr[(y + j) * sw + x + i]) >>> 0 : 0xffffffff;
     }
   }
-  ctx.putImageData(im, x, y);
+  spriteCx.putImageData(spriteImg, 0, 0, 0, 0, w, h);
+  ctx.drawImage(spriteCv, 0, 0, w, h, x, y, w, h);
 }
 // ---------------------------------------------------------------- the display in text mode (message mode's blue screens)
 // 80x25 characters in 9x16 cells, as the VGA shows its text mode, in the 8x16 code page 437 font from the CD's EGA.CPI

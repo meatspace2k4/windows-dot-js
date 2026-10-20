@@ -354,6 +354,8 @@ const system = () => {
   if (sys) return sys;
   const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return (sys = { ctx: null });
   let ctx; try { ctx = new AC({ latencyHint: 'interactive' }); } catch (_) { return (sys = { ctx: null }); }
+  // (a page that is not a secure context, plain http from another machine, has no audioWorklet: no sound)
+  if (!ctx.audioWorklet) { try { ctx.close(); } catch (_) {} return (sys = { ctx: null }); }
   const url = URL.createObjectURL(new Blob([WORKLET], { type: 'text/javascript' }));
   sys = { ctx, ok: false };
   sys.ready = ctx.audioWorklet.addModule(url).then(() => { sys.ok = true; }).catch(() => {}).finally(() => URL.revokeObjectURL(url));
