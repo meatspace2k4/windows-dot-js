@@ -2687,15 +2687,14 @@ function infAddReg(text, section, hkr) {
 }
 // what Setup puts in the registry for the shell (SHELL.INF), on a registry that has not had it
 // an INF's UpdateInis section: `file, section, old line, new line`; a new line key=value is set in that file's section
-// (only files `only` matches, when given). Lines that only delete an old entry are left
+// (only files `only` matches, when given), the INF's %strings% put in. Lines that only delete an old entry are left
 function infUpdateInis(text, section, only) {
-  const lines = []; let cur = false;
-  for (const l of text.split(/\r?\n/)) { const m = l.match(/^\s*\[([^\]]+)\]/); if (m) { cur = m[1].trim().toLowerCase() === section.toLowerCase(); continue; } if (cur) lines.push(l); }
-  for (const l of lines) {
-    const f = l.replace(/;.*$/, '').split(',').map(x => x.trim().replace(/^"(.*)"$/, '$1'));
+  const { sec, fields, subst } = infParse(text);
+  for (const l of sec[section.toLowerCase()] || []) {
+    const f = fields(l);
     if (f.length < 4 || !f[0] || !f[3] || (only && !only.test(f[0]))) continue;
-    const eq = f[3].indexOf('='); if (eq <= 0) continue;
-    W95Win32.iniSet(fs, f[0].toUpperCase(), f[1], f[3].slice(0, eq).trim(), f[3].slice(eq + 1).trim());
+    const line = subst(f[3]), eq = line.indexOf('='); if (eq <= 0) continue;
+    W95Win32.iniSet(fs, f[0].toUpperCase(), f[1], line.slice(0, eq).trim(), line.slice(eq + 1).trim());
   }
 }
 // the Start menu as Setup leaves it: SETUPC.INF's UpdateInis lines for SETUP.INI (the folders under Programs in
@@ -2832,7 +2831,14 @@ function winHelp(file = 'windows.hlp') { closeMenus(); if (hasHelp()) runNative(
 // always the same, so the note is cleared before each start
 function setupDisplay() {
   if (W95Win32.iniGet(fs, 'SYSTEM.INI', 'boot', '*DisplayFallback') !== null) W95Win32.iniSet(fs, 'SYSTEM.INI', 'boot', '*DisplayFallback', null);
-  setupDisplayDevices(); setupFontSize();
+  setupDisplayDevices(); setupFontSize(); setupPatterns();
+}
+// the desktop patterns Display Properties' Background page lists: SHELL.INF's patterns.inis, CONTROL.INI's [Patterns]
+// ("(None)" and the named 8x8 bitmaps), on a disk that has none
+function setupPatterns() {
+  const inf = ((window.W95SYSTEM || {}).infs || {})['SHELL.INF']; if (!inf) return;
+  if (W95Win32.iniRead(fs, 'CONTROL.INI').get('patterns')) return;
+  infUpdateInis(inf, 'patterns.inis');
 }
 // the display adapter and monitor Setup's detection finds and installs: the Tseng ET4000/W32 (MSDISP.INF *PNP0912,
 // TsengW32: TSENG.DRV with its mini-VDD TSENG.VXD) as a ROOT devnode under the Display class, and the monitor the
