@@ -3104,6 +3104,9 @@ P.spawn = function (file, module, meta, path, cmdline) {
     const fresh = this.loadImage(file, module, meta, 'EXE');
     this.modules = this.modules.filter(m => m !== fresh); if (exe0) this.byName.set('EXE', exe0);
     pc.exe = rec; g.cur = pc;
+    // the thread that started it goes on with its own process's data in place (the shell starting Explorer from the
+    // Start menu), the new instance's put by until its own thread runs
+    const by = this.thread16 && this.thread16.pc; if (by && by !== pc && by.exe === rec) this.imgUse(by);
   } else pc.exe = this.loadImage(file, module, meta, 'EXE');
   pc.cmdPtr = this.alloc(cmdline.length + 1); this.writeA(pc.cmdPtr, cmdline);
   this.inits = [];   // its DLLs attach to it as its main thread starts (pcStart)
