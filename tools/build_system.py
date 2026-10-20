@@ -48,6 +48,8 @@ NE = [('gdi.exe', 0x01C00000, 0x1007, 0x06A00000), ('dibeng.dll', 0x01E00000, 0x
       # printer drivers MSPRINT.INF installs from the CD (WIN95_27.CAB): the universal driver and the Generic / Text Only
       # minidriver on it. Setup leaves them on the CD; each loads once the Add Printer wizard has copied its file
       ('unidrv.dll', 0x01190000, 0x1C27, 0x06010000), ('tty.drv', 0x011E0000, 0x1CCF, 0x06110000),
+      # the icon library UNIDRV's property pages load first (MSPRINT.INF's UNIDRV files, WIN95_20.CAB)
+      ('iconlib.dll', 0x01CD0000, 0x20C7, 0x07C20000),
       # the system's first task, which Windows 95 starts as it boots (WIN95_12.CAB): USER's first-task start-up loads
       # the installable drivers (MMSYSTEM, the sound card's) for it, and it plays SystemStart and starts the shell
       ('msgsrv32.exe', 0x01570000, 0x1CEF, 0x06130000),
@@ -66,7 +68,7 @@ NE = [('gdi.exe', 0x01C00000, 0x1007, 0x06A00000), ('dibeng.dll', 0x01E00000, 0x
       # VGA.DRV, MODES\4\800,600 SUPERVGA.DRV) (WIN95_02.CAB); their module name is DISPLAY too
       ('vga.drv', 0x01C60000, 0x2007, 0x06260000), ('supervga.drv', 0x01C90000, 0x2067, 0x07180000)]
 # the NE modules above that Setup leaves on the CD: a module of these loads only when its file is on the disk
-ON_DISK = {'unidrv.dll', 'tty.drv'}
+ON_DISK = {'unidrv.dll', 'tty.drv', 'iconlib.dll'}
 # the device memory a module writes as registers (recomp.py --mmio LO:SIZE): the Tseng driver's W32 MMU and
 # accelerator at B8000h-BFFFFh (its apertures, then the ACL registers at 7F00h-7FFFh)
 # the display drivers: the one a mode's settings name loads as DISPLAY (ne16.js displayDriverFile), so USER, built
