@@ -2932,12 +2932,17 @@ const nativeApps = new Set();
 // mode of a full megabyte, 1024 by 1024, the driver refuses and falls back from)
 const nativeMode = () => [Math.max(640, Math.min(1024, Math.floor(innerWidth / ZOOM))), Math.max(480, Math.min(960, Math.floor(innerHeight / ZOOM)))];
 // the mode the system's machine boots in, as Display Properties leaves it for the display driver: Display\Settings
-// under the current configuration (Resolution "w,h", BitsPerPixel), read by FRAMEBUF.DRV as it is enabled; the one
+// under the current configuration (Resolution "w,h", BitsPerPixel), read by the display driver as it is enabled; the one
 // the page's viewport holds, so no change is needed once the shell is up
 function bootMode(w, h) {
   const str = v => ({ type: 1, data: W95FS.encode(v + '\0') });
   for (const k of ['hkcc\\display\\settings', 'hklm\\config\\0001\\display\\settings']) { W95Win32.regSet(k, 'Resolution', str(`${w},${h}`)); W95Win32.regSet(k, 'BitsPerPixel', str(String(BOOT_BPP))); }
   W95Win32.iniSet(fs, 'SYSTEM.INI', 'display', 'BitsPerPixel', String(BOOT_BPP));   // (the display VxD's configuration, ne16.js displayConfig)
+  // the hardware profile CONFIGMG starts in, as it records it at boot (Control\IDConfigDB): the one Setup made,
+  // 0001, which Device Manager's Hardware Profiles page lists by its friendly name
+  const idc = 'hklm\\system\\currentcontrolset\\control\\idconfigdb';
+  if (W95Win32.regGet(idc, 'CurrentConfig') === undefined) W95Win32.regSet(idc, 'CurrentConfig', str('0001'));
+  if (W95Win32.regGet(idc, 'FriendlyName0001') === undefined) W95Win32.regSet(idc, 'FriendlyName0001', str('Original Configuration'));
 }
 // high color: the screen the system's machine boots in (the page scans 8, 16, 24 and 32 bits a pixel out)
 const BOOT_BPP = 16, SCAN_BPP = new Set([8, 16, 24, 32]);

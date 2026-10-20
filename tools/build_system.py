@@ -56,7 +56,10 @@ NE = [('gdi.exe', 0x01C00000, 0x1007, 0x06A00000), ('dibeng.dll', 0x01E00000, 0x
       ('progman.exe', 0x015E0000, 0x1CFF, 0x07FA0000),
       # the tool helper library (WIN95_02.CAB), which the Display applet's pages load, and those pages: Background,
       # Screen Saver, Appearance and Settings, which DESK.CPL shows (WIN95_02.CAB)
-      ('toolhelp.dll', 0x01FC0000, 0x1D47, 0x06800000), ('deskcp16.dll', 0x01F80000, 0x1D57, 0x06840000)]
+      ('toolhelp.dll', 0x01FC0000, 0x1D47, 0x06800000), ('deskcp16.dll', 0x01F80000, 0x1D57, 0x06840000),
+      # the class installers Device Manager loads for a device's property pages (its class key's Installer): the
+      # multimedia devices' (WIN95_02.CAB) and the network's (PRECOPY1.CAB)
+      ('mmci.dll', 0x01970000, 0x1E17, 0x07160000), ('netdi.dll', 0x019A0000, 0x1E27, 0x06138000)]
 # the NE modules above that Setup leaves on the CD: a module of these loads only when its file is on the disk
 ON_DISK = {'unidrv.dll', 'tty.drv'}
 # the device memory a module writes as registers (recomp.py --mmio LO:SIZE): the Tseng driver's W32 MMU and

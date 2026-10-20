@@ -521,7 +521,7 @@ const INTS = {
       case 0x2a: { const d = new Date(); this.cpu.ecx.value = lo16(this.cpu.ecx.value, d.getFullYear()); this.cpu.edx.value = lo16(this.cpu.edx.value, ((d.getMonth() + 1) << 8) | d.getDate()); this.ax((this.ax() & 0xff00) | d.getDay()); return; }
       case 0x2c: { const d = new Date(); this.cpu.ecx.value = lo16(this.cpu.ecx.value, (d.getHours() << 8) | d.getMinutes()); this.cpu.edx.value = lo16(this.cpu.edx.value, (d.getSeconds() << 8) | Math.floor(d.getMilliseconds() / 10)); return; }
       case 0x33: if (al === 6) { this.cpu.ebx.value = lo16(this.cpu.ebx.value, 0x0007); this.cpu.edx.value = lo16(this.cpu.edx.value, 0x1000); } else if (al === 0) this.cpu.edx.value &= ~0xff; return;   // true version 7.0, in HMA; Ctrl+Break checking off
-      case 0x44: if (al === 0) { this.cpu.edx.value = lo16(this.cpu.edx.value, 0x80); return; } break;
+      case 0x44: if (al === 0) { this.cpu.edx.value = lo16(this.cpu.edx.value, 0x80); return; } if (al === 0x0d) return this.blockIoctl(); break;
       case 0x50: case 0x51: case 0x62: return;
       // the redirector's list of redirected devices (5F02h, BX the index): the drives MPR connects are the network
       // process's; none is redirected through DOS here, so the list is empty (18, no more entries)
@@ -620,7 +620,7 @@ const INTS = {
         }
       } catch (e) { if (e instanceof window.W95FS.FSError) return fail(e.code || 5); throw e; }
     }
-    this.trapped = `unhandled int 21h ax=${this.ax().toString(16)}`; return LAYOUT.SENTINEL;
+    this.trapped = `unhandled int 21h ax=${this.ax().toString(16)} bx=${(this.cpu.ebx.value & 0xffff).toString(16)} cx=${(this.cpu.ecx.value & 0xffff).toString(16)}`; return LAYOUT.SENTINEL;
   },
   0x11() { this.ax(0x0023); },
   0x41() {},   // the kernel debugger's interface: no debugger is present, so every notification goes unheard
@@ -663,6 +663,23 @@ const INTS = {
     if (ax === 0x4a32) return;         // boot progress to IO.SYS (USER reports start-up done; its answer is not read)
     this.trapped = `unhandled int 2Fh ax=${ax.toString(16)}`; return LAYOUT.SENTINEL;
   },
+};
+/** INT 21h 440Dh, a block device's generic IOCTL (BL the drive, 0 the current one; CH 08h, CL the request): Get Drive
+ *  Map Info (6Fh), the DRIVE_MAP_INFO at DS:DX, which says a drive runs under a protected-mode driver (1), on a physical
+ *  drive (2), ejectable by software (8), its INT 13h unit and the logical drives sharing it; a drive with no block
+ *  device (a network drive's, none) is not valid (15), and another request is not one this DOS has (1) */
+P.blockIoctl = function () {
+  const fail = e => { CF(this, 1); this.ax(e); this.dosError = e; };
+  const bl = this.cpu.ebx.value & 0xff, cx = this.cpu.ecx.value & 0xffff;
+  const L = bl ? String.fromCharCode(64 + bl) : this.fs.cwd[0].toUpperCase(), v = this.fs.vols.get(L);
+  if (!v || v.kind === 'remote') return fail(15);
+  if (cx !== 0x086f) return fail(1);
+  const a = this.lin(((this.cpu.ds.value & 0xffff) << 16) | (this.cpu.edx.value & 0xffff)), n = this.u8[a];
+  const fixed = v.kind === 'fixed', unit = fixed ? 0x80 : v.kind === 'removable' ? 0 : 0xff;
+  const info = new Uint8Array(16), dv = new DataView(info.buffer);
+  info[0] = n; info[1] = 16; info[2] = 1 | 2 | (v.kind === 'cdrom' ? 8 : 0); info[3] = unit;
+  dv.setUint32(4, 1 << (L.charCodeAt(0) - 65), true); dv.setUint32(8, fixed ? 63 : 0, true);
+  this.u8.set(info.subarray(0, Math.max(2, Math.min(n || 16, 16))), a); this.u8[a] = n;
 };
 P.trapHook = function (e, code) {
   if (code === 0) return this.exception16(0, u32(e));
@@ -993,6 +1010,9 @@ def16('VXD', 0x45f, '', 'jmp', function () {
 // leave them, on the caller's cdecl frame at SS:BP+4 (dwords; pointers 16:16); AX = the CONFIGRET. The resources a
 // devnode is given are the ones its card decodes (the emulated hardware's ports, IRQ and DMA channel, P.cards)
 const cmArgs = p => { const a = p.cpu.ssb.value + (p.cpu.ebp.value & 0xffff) + 4; return i => p.r32(a + 4 * i); };
+/** a CONFIGMG API call made as ring-0 code makes it (vmm.js): the arguments at the indexes in far, 16:16 pointers
+ *  here, flat there (a null pointer stays null) */
+const cmFar = (p, n, far) => { const arg = cmArgs(p); return p.cmService(n, i => far.includes(i) ? (arg(i) ? p.lin(arg(i)) : 0) : arg(i)); };
 const CR = { SUCCESS: 0, INVALID_POINTER: 3, INVALID_DEVNODE: 5, NO_SUCH_DEVNODE: 0x0d, NO_MORE_LOG_CONF: 0x0e, NO_MORE_RES_DES: 0x0f, BUFFER_SMALL: 0x1a, NO_SUCH_VALUE: 0x25, REGISTRY_ERROR: 0x1d, DLVXD_NOT_FOUND: 0x0c, FAILURE: 0x13 };
 /** a devnode's registry key under HKLM (CM_REGISTRY_SOFTWARE: its driver's key; else its Enum key), with a subkey */
 P.cmKey = function (dn, sub, flags) {
@@ -1009,8 +1029,9 @@ vxdApi(0x0033, 'CONFIGMG', {
   0x0b() {
     const arg = cmArgs(this), id = (this.readA(this.lin(arg(1))) || '').toUpperCase(); if (!id) return CR.INVALID_POINTER;
     const all = this.devnodes(); if (all.some(d => d.id === id)) return 0x10;   // CR_ALREADY_SUCH_DEVNODE
-    const key = 'hklm\\enum\\' + id.toLowerCase(), dn = { handle: 0xc1000000 + 0x100 * all.length, id, key, cls: '', driver: '' };
-    all.push(dn); window.W95Win32.regSet('hklm\\Enum\\' + id, null);
+    const parent = this.cmNode(arg(2)) || this.cmTree();
+    const key = 'hklm\\enum\\' + id.toLowerCase(), dn = { handle: 0xc1000000 + 0x100 * all.length, id, key, cls: '', driver: '', parent, children: [] };
+    all.push(dn); (parent.children = parent.children || []).push(dn); window.W95Win32.regSet('hklm\\Enum\\' + id, null);
     this.w32(this.lin(arg(0)), dn.handle); return CR.SUCCESS;
   },
   // Setup_DevNode(dn, flags), Reenumerate_DevNode(dn, flags), Disable_DevNode, Enable_DevNode: a printer's devnode has
@@ -1020,12 +1041,36 @@ vxdApi(0x0033, 'CONFIGMG', {
   0x40() { const arg = cmArgs(this); return this.devnode(arg(0)) ? CR.SUCCESS : CR.INVALID_DEVNODE; },
   0x41() { const arg = cmArgs(this); return this.devnode(arg(0)) ? CR.SUCCESS : CR.INVALID_DEVNODE; },
   // Locate_DevNode(far *dn, far device ID or NULL for the root, flags)
-  2() { const arg = cmArgs(this), id = arg(1) ? (this.readA(this.lin(arg(1))) || '').toUpperCase() : null; const dn = id && this.devnodes().find(d => d.id === id); if (!dn) return CR.NO_SUCH_DEVNODE; this.w32(this.lin(arg(0)), dn.handle); return CR.SUCCESS; },
+  2() { const arg = cmArgs(this), id = arg(1) ? (this.readA(this.lin(arg(1))) || '').toUpperCase() : null; const dn = id ? this.devnodes().find(d => d.id === id) : this.cmTree(); if (!dn) return CR.NO_SUCH_DEVNODE; this.w32(this.lin(arg(0)), dn.handle); return CR.SUCCESS; },
+  // Get_Parent, Get_Child, Get_Sibling(far *dn, dn, flags): the tree vmm.js keeps (the root, HTREE\ROOT\0, over the
+  // ROOT-enumerated devnodes and those their enumerators make)
+  3() { const arg = cmArgs(this), dn = this.cmNode(arg(1)); if (!dn) return CR.INVALID_DEVNODE; if (!dn.parent) return CR.NO_SUCH_DEVNODE; this.w32(this.lin(arg(0)), dn.parent.handle); return CR.SUCCESS; },
+  4() { const arg = cmArgs(this), dn = this.cmNode(arg(1)); if (!dn) return CR.INVALID_DEVNODE; const c = (dn.children || [])[0]; if (!c) return CR.NO_SUCH_DEVNODE; this.w32(this.lin(arg(0)), c.handle); return CR.SUCCESS; },
+  5() {
+    const arg = cmArgs(this), dn = this.cmNode(arg(1)); if (!dn || !dn.parent) return CR.INVALID_DEVNODE;
+    const sib = dn.parent.children, n = sib[sib.indexOf(dn) + 1]; if (!n) return CR.NO_SUCH_DEVNODE; this.w32(this.lin(arg(0)), n.handle); return CR.SUCCESS;
+  },
+  // the logical configurations and their resource descriptors, as CONFIGMG gives them to ring-0 callers (vmm.js), the
+  // pointers here 16:16: Add_Empty_Log_Conf(far *lc, dn, priority, flags), Get_First_Log_Conf(far *lc, dn, flags),
+  // Get_Next_Log_Conf(far *lc, lc, flags), Add_Res_Des(far *rd, lc, resource, far data, len, flags),
+  // Get_Next_Res_Des(far *rd, lc or rd, resource, far *resource, flags), Get_Res_Des_Data_Size(far *len, rd, flags),
+  // Get_Res_Des_Data(rd, far buf, len, flags)
+  0x18() { return cmFar(this, 0x18, [0]); }, 0x1a() { return cmFar(this, 0x1a, [0]); }, 0x1b() { return cmFar(this, 0x1b, [0]); },
+  0x1c() { return cmFar(this, 0x1c, [0, 3]); }, 0x1f() { return cmFar(this, 0x1f, [0, 3]); }, 0x21() { return cmFar(this, 0x21, [0]); },
+  0x22() { return cmFar(this, 0x22, [1]); },
   // Get_Device_ID_Size(far *len, dn, flags), Get_Device_ID(dn, far buf, len, flags)
-  6() { const arg = cmArgs(this), dn = this.devnode(arg(1)); if (!dn) return CR.INVALID_DEVNODE; this.w32(this.lin(arg(0)), dn.id.length); return CR.SUCCESS; },
-  7() { const arg = cmArgs(this), dn = this.devnode(arg(0)); if (!dn) return CR.INVALID_DEVNODE; if (arg(2) <= dn.id.length) return CR.BUFFER_SMALL; this.writeA(this.lin(arg(1)), dn.id, arg(2)); return CR.SUCCESS; },
+  6() { const arg = cmArgs(this), dn = this.cmNode(arg(1)); if (!dn) return CR.INVALID_DEVNODE; this.w32(this.lin(arg(0)), dn.id.length); return CR.SUCCESS; },
+  7() { const arg = cmArgs(this), dn = this.cmNode(arg(0)); if (!dn) return CR.INVALID_DEVNODE; if (arg(2) <= dn.id.length) return CR.BUFFER_SMALL; this.writeA(this.lin(arg(1)), dn.id, arg(2)); return CR.SUCCESS; },
+  // Get_HW_Prof_Flags(far device ID, config (0: the current one), far *flags, flags): the device's CSConfigFlags in
+  // the configuration's Enum key (CSCONFIGFLAG_DISABLED 1, _REMOVED 2, _DO_NOT_CREATE 4), none when it has none
+  0x4a() {
+    const arg = cmArgs(this), id = arg(0) ? this.readA(this.lin(arg(0))) || '' : ''; if (!id) return CR.INVALID_POINTER;
+    const cfg = String(arg(1) || 1).padStart(4, '0'), v = window.W95Win32.regGet(`hklm\\config\\${cfg}\\enum\\${id.toLowerCase()}`, 'CSConfigFlags');
+    this.w32(this.lin(arg(2)), typeof v === 'number' ? v : v && v.data && v.data.length >= 4 ? new DataView(v.data.buffer, v.data.byteOffset).getUint32(0, true) : 0);
+    return CR.SUCCESS;
+  },
   // Get_DevNode_Status(far *status, far *problem, dn, flags): started (DN_STARTED 8 | DN_DRIVER_LOADED 2 | DN_HAS_PROBLEM no)
-  0x36() { const arg = cmArgs(this), dn = this.devnode(arg(2)); if (!dn) return CR.INVALID_DEVNODE; this.w32(this.lin(arg(0)), 0x0a | (dn.started ? 0 : 0)); if (arg(1)) this.w32(this.lin(arg(1)), 0); return CR.SUCCESS; },
+  0x36() { const arg = cmArgs(this), dn = this.cmNode(arg(2)); if (!dn) return CR.INVALID_DEVNODE; this.w32(this.lin(arg(0)), 0x0a | (dn.started ? 0 : 0)); if (arg(1)) this.w32(this.lin(arg(1)), 0); return CR.SUCCESS; },
   // Get_Alloc_Log_Conf(far CMCONFIG, dn, flags): the resources the devnode was given
   0x3b() { const arg = cmArgs(this), dn = this.devnode(arg(1)); if (!dn) return CR.INVALID_DEVNODE; return this.cmConfig(dn, this.lin(arg(0))); },
   // Get_DevNode_Key_Size(far *len, dn, far subkey, flags), Get_DevNode_Key(dn, far subkey, far buf, len, flags)

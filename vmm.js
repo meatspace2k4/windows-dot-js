@@ -768,6 +768,8 @@ P.cmTree = function () {
   return root;
 };
 P.cmNode = function (h) { this.cmTree(); return u32(h) === ROOT_DN ? this.cmRoot : this.devnode(h); };
+/** CONFIGMG service n as ring-0 code calls it, with the arguments arg(i) gives (flat pointers); its CONFIGRET */
+P.cmService = function (n, arg) { const fn = SVC[CONFIGMG << 16 | n]; if (!fn) throw new W.GuestError(`unimplemented CONFIGMG service ${n.toString(16)}h`); return u32(fn.call(this, arg)); };
 svc(CONFIGMG, 0x03, function (arg) { const dn = this.cmNode(arg(1)); if (!dn) return CR.INVALID_DEVNODE; if (!dn.parent) return CR.NO_SUCH_DEVNODE; this.w32(arg(0), dn.parent.handle); return CR.SUCCESS; });   // Get_Parent
 svc(CONFIGMG, 0x04, function (arg) { const dn = this.cmNode(arg(1)); if (!dn) return CR.INVALID_DEVNODE; const c = (dn.children || [])[0]; if (!c) return CR.NO_SUCH_DEVNODE; this.w32(arg(0), c.handle); return CR.SUCCESS; });   // Get_Child
 svc(CONFIGMG, 0x05, function (arg) {                                                                  // Get_Sibling
