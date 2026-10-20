@@ -1143,41 +1143,54 @@ P.timers16 = function () {
 P.displayConfig = function () {
   const ini = (k, d) => { const v = winIni(this, 'SYSTEM.INI', 'display', k); return v === null ? d : parseInt(v, 10) || d; };
   const w = (this.host && this.host.width) || ini('x_resolution', 640), h = (this.host && this.host.height) || ini('y_resolution', 480);
-  return { ...this.displaySlot(w, h), bpp: ini('BitsPerPixel', 8) };
+  // the depth as Windows records it for the current configuration (Display\Settings, which a change in Display
+  // Properties rewrites before USER re-enables the driver); the display VxD's own setting without one
+  const reg = parseInt(regStr(window.W95Win32.regGet('hkcc\\display\\settings', 'BitsPerPixel')), 10), bpp = reg || ini('BitsPerPixel', 8);
+  return { ...this.displaySlot(w, h, bpp), bpp };
 };
 // the display driver's own list of resolutions; a size not on it is the configured size of the adapter's custom mode
 const FB_SIZES = [[320, 200], [320, 240], [512, 384], [640, 400], [640, 480], [800, 600], [1024, 768], [1280, 1024], [1600, 1200]];
-/** the size the display driver is told for a configured w by h: its own when it is one of its list; otherwise the
- *  driver's 1024x768 entry stands for the custom size (its scan line of 1024 bytes and its 1 MB are the most the
- *  driver's own memory count allows), and the driver's records for that entry are made to say w by h, so the driver
- *  enables, and GDI's desktop is, the configured size */
-P.displaySlot = function (w, h) {
-  if (FB_SIZES.some(([x, y]) => x === w && y === h) || w > 1024 || h > 1024) { this.customMode = null; return { w, h }; }
-  this.customMode = [w, h]; this.customEntry(w, h);
-  return { w: 1024, h: 768 };
+// the driver's entry that stands for the custom size at a depth: its largest the depth has a mode for (TSENG.DRV's
+// 24-bit modes stop at 800x600, BIOS mode 30h), the entry's index in its resolution tables and its BIOS mode
+const CUSTOM_SLOTS = [{ i: 6, w: 1024, h: 768, mode: 0x38 }, { i: 5, w: 800, h: 600, mode: 0x30 }];
+/** the size the display driver is told for a configured w by h at bpp bits: its own when it is one of its list;
+ *  otherwise its largest entry for the depth stands for the custom size, and the driver's records for that entry are
+ *  made to say w by h, so the driver enables, and GDI's desktop is, the configured size */
+P.displaySlot = function (w, h, bpp = 8) {
+  if (FB_SIZES.some(([x, y]) => x === w && y === h) || w > 1024 || h > 1024) { this.customMode = null; this.customRestore(); return { w, h }; }
+  const slot = CUSTOM_SLOTS[bpp >= 24 ? 1 : 0];
+  this.customMode = { w, h, mode: slot.mode }; this.customEntry(w, h, slot);
+  return { w: slot.w, h: slot.h };
 };
+/** the display driver's records as it has them, back (customEntry saved them before changing any) */
+P.customRestore = function () { for (const [a, bytes] of (this.customRecs && this.customRecs.saved) || []) this.u8.set(bytes, a); };
 /** the offsets in [b, b + n) where the words run as given (null: any word) */
 const findWords = (u8, b, n, words) => {
   const out = [];
   for (let o = b; o + 2 * words.length <= b + n; o++) if (words.every((v, i) => v === null || (u8[o + 2 * i] | u8[o + 2 * i + 1] << 8) === v)) out.push(o);
   return out;
 };
-/** the display driver's records for its 1024x768 entry, found by what they hold in its second segment: the resolution
- *  tables it looks the configured size up in and sets the mode from (320x200 first), its GDIINFO for the entry (GDI 4.0,
- *  208 by 156 mm, 1024x768), and the scan line lengths of each depth where the driver keeps them (TSENG.DRV: a flags
- *  and length pair for each entry, 8 entries to a depth: 8 bits 320, 320, 512 ... 1280, then 16 bits twice those) */
-P.customEntry = function (w, h) {
+/** the display driver's records for an entry (slot: its index and size, 1024x768 unless given), found by what they
+ *  hold in its second segment before any is changed: the resolution tables it looks the configured size up in and
+ *  sets the mode from (320x200 first), its GDIINFO for each entry (GDI 4.0, 208 by 156 mm, the entry's size), and the
+ *  scan line lengths of each depth where the driver keeps them (TSENG.DRV: a flags and length pair for each entry, 8
+ *  entries to a depth: 8 bits 320, 320, 512 ... 1280, then 16 bits twice those) */
+P.customEntry = function (w, h, slot = CUSTOM_SLOTS[0]) {
   const m = this.ne && this.ne.get('DISPLAY'), sg = m && m.segs && m.segs.find(g => g.num === 2); if (!sg) return false;
   if (!this.customRecs) {
     const b = sg.base, n = sg.len || 0x10000;
-    this.customRecs = { tables: findWords(this.u8, b, n, [320, 200, 320, 240, 512, 384, 640, 400, 640, 480, 800, 600, 1024, 768]).map(o => o + 4 * 6),
-      gdi: findWords(this.u8, b, n, [0x400, 1, 208, 156, 1024, 768])[0],
+    this.customRecs = { tables: findWords(this.u8, b, n, [320, 200, 320, 240, 512, 384, 640, 400, 640, 480, 800, 600, 1024, 768]),
+      gdi: new Map(CUSTOM_SLOTS.map(s => [s.i, findWords(this.u8, b, n, [0x400, 1, 208, 156, s.w, s.h])[0]])),
       pitch: findWords(this.u8, b, n, [320, 320, 512, 640, 640, 800, 1024, 1280, 640, 640, 1024, 1280, 1280, 1600, 2048].flatMap(l => [null, l]))[0] };
+    // (the records as the driver has them, to put back before another entry stands for the custom size, or none does)
+    const r = this.customRecs, keep = (a, n) => [a, this.u8.slice(a, a + n)];
+    r.saved = [...r.tables.map(t => keep(t, 4 * 8)), ...[...r.gdi.values()].filter(g => g !== undefined).map(g => keep(g, 0x58)), ...(r.pitch !== undefined ? [keep(r.pitch, 32 * 4)] : [])];
   }
-  const { tables, gdi, pitch } = this.customRecs;
+  const { tables, pitch } = this.customRecs, gdi = this.customRecs.gdi.get(slot.i);
   if (!tables.length || gdi === undefined) return false;   // (another display driver: nothing to do)
-  for (const t of tables) { this.w16(t, w); this.w16(t + 2, h); }
-  if (pitch !== undefined) for (let px = 1; px <= 4; px++) this.w16(pitch + 32 * (px - 1) + 4 * 6 + 2, (w * px + 7) & ~7);   // (a scan line the CRTC's offset register holds: 8-byte units)
+  this.customRestore();
+  for (const t of tables) { this.w16(t + 4 * slot.i, w); this.w16(t + 4 * slot.i + 2, h); }
+  if (pitch !== undefined) for (let px = 1; px <= 4; px++) this.w16(pitch + 32 * (px - 1) + 4 * slot.i + 2, (w * px + 7) & ~7);   // (a scan line the CRTC's offset register holds: 8-byte units)
   const X = Math.round(w * 254 / 640), Y = Math.round(h * 127 / 480);
   for (const [o, v] of [[8, w], [0xa, h], [0x34, w], [0x36, -h], [0x3c, w], [0x3e, -h], [0x44, X], [0x46, -X], [0x4c, Y], [0x4e, -Y], [0x54, Y], [0x56, -Y]]) this.w16(gdi + o, v & 0xffff);
   return true;
@@ -1350,7 +1363,7 @@ def16('VFLATD', 0, '', 'jmp', function () {
 P.setVideoMode = function (mode, clear, hicolor) {
   const a = this.adapter(), m = ET_MODES[mode & 0x7f]; if (!m) return false;
   a.mode = mode & 0x7f; [a.w, a.h, a.bpp] = m; a.hicolor = hicolor || 0;
-  if (a.mode === 0x38 && this.customMode) [a.w, a.h] = this.customMode;   // the adapter's custom mode: the configured size (displaySlot), at any depth
+  if (this.customMode && a.mode === this.customMode.mode) [a.w, a.h] = [this.customMode.w, this.customMode.h];   // the adapter's custom mode: the configured size (displaySlot), in the entry that stands for it at the depth
   if (hicolor) a.bpp = hicolor;
   a.pitch = a.w * (a.bpp >> 3);
   // the register values the BIOS loads for the mode: sequencer memory mode (chain-4 for the packed-pixel modes), the
@@ -1861,6 +1874,17 @@ def16('KERNEL', 361, '', 'v', function () {});                                  
 // which follows, so nothing is done here ahead of it. UNCONFIRMED: which process KERNEL32 ends here is not read from
 // its code (the call names none; it is not the caller's, whose thread goes on to ExitKernel)
 def16('KERNEL', 362, 'lw', 'v', function () {});
+// ExitProcess(WORD code): USER's ExitWindows calls it in a thread whose own window took WM_ENDSESSION(TRUE) (USER
+// seg16 B56h): the thread's process ends, its other threads with it (endProcess), and the thread itself unwinds as
+// KERNEL32's ExitThread ends one, while the thread that runs ExitWindows goes on to ExitKernel. The system's own
+// task (MSGSRV32, as Display Properties restarts Windows) takes the message in a call from that thread's SendMessage:
+// that call ends, and the system ends at ExitKernel; only at its own top level does its exit end the machine
+def16('KERNEL', 466, '', 'jmp', function () {
+  const code = this.r16(this.cpu.ssb.value + (this.cpu.esp.value & 0xffff) + 4), t = this.thread16;
+  if (!t) { if (!this.depth) { this.exitCode = code; this.host.exited(code); } return LAYOUT.SENTINEL; }
+  if (t.pc) this.endProcess(t.pc, code);
+  t.exitCode = code; return LAYOUT.SENTINEL;
+});
 // BUNNY_351: KRNL386 calls VWIN32's protected-mode API, function 0Dh (KRNL386 seg1 DB9h), as USER's ExitWindows
 // finishes (USER seg16 14FDh), before the session's end. VWIN32 is this personality's: the Win32 side ends with the
 // machine. UNCONFIRMED: what VWIN32's function 0Dh does is not read from its code

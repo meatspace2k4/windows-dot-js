@@ -14,10 +14,12 @@ const cut = (w, a, b, keep = true) => { const i = w.indexOf(a); assert.ok(i >= 0
     depth: 0, thread16: null, win16Held: null, host: { width: 1024, height: 768 },
     alloc: () => 0x1000, allocSels: () => 0x77, free: a => freed.push(a), freeSels: s => freed.push(s),
     w16: (a, v) => mem.setUint16(a, v, true), w32: (a, v) => mem.setUint32(a, v >>> 0, true),
-    user16: (o, args) => { calls.push([o, args]); return { dxax: 0 }; }, scanout: () => ({ w: 800, h: 600, bpp: 8 }), displaySlot: (w, h) => ({ w, h }),
+    user16: (o, args) => { calls.push([o, args]); return { dxax: 0 }; }, scanout: () => ({ w: 800, h: 600, bpp: 8 }),
+    displayConfig: () => ({ bpp: 16 }), displaySlot: (w, h, bpp) => { p.slotBpp = bpp; return { w, h }; },
   };
   const m = new M(); m.proc = p; m.sw = 1024; m.sh = 768;
   assert.deepEqual(m.setMode(800, 600), { r: 0, sw: 800, sh: 600 });
+  assert.equal(p.slotBpp, 16, 'the driver\'s entry for the size at the configured depth');
   assert.deepEqual([p.host.width, p.host.height], [800, 600]); assert.deepEqual([m.sw, m.sh], [800, 600]);
   assert.deepEqual(calls, [[620, [['l', 0x770000], ['l', 0x80000000]]]]); assert.deepEqual(freed, [0x77, 0x1000]);
   assert.equal(mem.getUint16(0x1000 + 36, true), 0x7c); assert.equal(mem.getUint32(0x1000 + 40, true), 0x180000);
@@ -32,7 +34,7 @@ const cut = (w, a, b, keep = true) => { const i = w.indexOf(a); assert.ok(i >= 0
 {
   const w = src('win95.js');
   // (at 256 colors, the size the machine is asked for is the viewport's: bootSize; the high-color sizes are below)
-  const page = `const NATIVE_MODES = [[1024, 768], [800, 600], [640, 480]];\nconst BOOT_BPP = 8;\n${cut(w, 'const nativeMode = ', '\n')}\n${cut(w, 'function bootSize() {', '\n}\n')}\n${cut(w, 'function syncMode() {', '\n}\n')}\n`
+  const page = `const NATIVE_MODES = [[1024, 768], [800, 600], [640, 480]];\nconst BOOT_BPP = 8, bootBpp = () => BOOT_BPP;\n${cut(w, 'const nativeMode = ', '\n')}\n${cut(w, 'function bootSize() {', '\n}\n')}\n${cut(w, 'function syncMode() {', '\n}\n')}\n`
     + `class RemoteApp {\n${cut(w, '  async setMode(w, h) {', '  /** a request to the machine', false)}\n constructor(a) { Object.assign(this, a); } }\n`
     + `return { syncMode, RemoteApp, set: v => { sysApp = v; }, mode: nativeMode };`;
   let resizes = 0;
@@ -58,7 +60,7 @@ const cut = (w, a, b, keep = true) => { const i = w.indexOf(a); assert.ok(i >= 0
 // at high color the machine boots at the viewport's size too: the W32's 4 MB holds the largest custom mode
 {
   const w = src('win95.js');
-  const B = (bpp, ...a) => new Function('innerWidth', 'innerHeight', 'ZOOM', `const BOOT_BPP = ${bpp};\n${cut(w, 'const nativeMode = ', '\n')}\n${cut(w, 'function bootSize() {', '\n}\n')}\nreturn bootSize();`)(...a);
+  const B = (bpp, ...a) => new Function('innerWidth', 'innerHeight', 'ZOOM', `const bootBpp = () => ${bpp};\n${cut(w, 'const nativeMode = ', '\n')}\n${cut(w, 'function bootSize() {', '\n}\n')}\nreturn bootSize();`)(...a);
   assert.deepEqual(B(16, 913, 765, 1), [913, 765]);
   assert.deepEqual(B(16, 1280, 1000, 1), [1024, 960]);
   assert.deepEqual(B(16, 700, 520, 1), [700, 520]);

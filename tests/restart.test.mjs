@@ -87,6 +87,19 @@ function guest() {
 }
 // the thunks USER's ExitWindows reaches: ThunkTerminateProcess (#362) and BUNNY_351
 assert.ok(K16['KERNEL.#362'] && K16['KERNEL.#351']);
+// ExitProcess (#466), which USER calls where a thread's own window took WM_ENDSESSION(TRUE): MSGSRV32's, as Display
+// Properties restarts Windows, in a call from the restarting thread's SendMessage. That call ends and the machine
+// goes on to ExitKernel (EW_RESTARTWINDOWS); at the system task's own top level its exit is the machine's. A Win32
+// thread's process ends with it
+{
+  const exit = K16['KERNEL.#466'][2], ended = [];
+  const g = Object.assign(guest(), { cpu: { ssb: { value: 0 }, esp: { value: 0x200 } }, thread16: null, depth: 1, exitCode: null, host: { exited: c => ended.push(c) } });
+  g.w16(0x204, 7);
+  assert.equal(exit.call(g), W.LAYOUT.SENTINEL); assert.deepEqual([ended, g.exitCode], [[], null], 'the SendMessage call ends, not the machine');
+  g.depth = 0; exit.call(g); assert.deepEqual([ended, g.exitCode], [[7], 7], 'at the top level the machine ends');
+  const pc = {}, t = { pc }, procs = []; Object.assign(g, { thread16: t, depth: 2, endProcess: (p, c) => procs.push([p, c]) });
+  assert.equal(exit.call(g), W.LAYOUT.SENTINEL); assert.deepEqual([procs, t.exitCode], [[[pc, 7]], 7], 'a Win32 thread\'s process ends, and the thread');
+}
 
 // MPREXE in SYSTEM, as COPY.INF puts it (LDID 11), where MPR starts it from GetSystemDirectory
 {

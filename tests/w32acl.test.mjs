@@ -82,7 +82,7 @@ assert.equal(sels.length, 1, 'the same selector each time');
   const RES = [320, 200, 320, 240, 512, 384, 640, 400, 640, 480, 800, 600, 1024, 768, 1280, 1024];
   put(0x3ee, RES); put(0x1b06, RES);
   [[320, 320, 512, 640, 640, 800, 1024, 1280], [640, 640, 1024, 1280, 1280, 1600, 2048, 2560]].forEach((ls, g) => put(0x496 + 32 * g, ls.flatMap(l => [0xe000, l])));
-  put(0x1a1a, [0x400, 1, 208, 156, 1024, 768]);
+  put(0x1a1a, [0x400, 1, 208, 156, 1024, 768]); put(0x19ac, [0x400, 1, 208, 156, 800, 600]);
   const q = Object.create(P);
   Object.defineProperty(q, 'u8', { value: mem });
   Object.assign(q, { r16: p.r16, w16: (a, v) => dv.setUint16(a, v, true), ne: new Map([['DISPLAY', { segs: [{ num: 1, base: 0x5f0000 }, { num: 2, base: b, len: 0x2000 }] }]]) });
@@ -92,6 +92,16 @@ assert.equal(sels.length, 1, 'the same selector each time');
   assert.deepEqual([q.r16(b + 0x496 + 26), q.r16(b + 0x496 + 32 + 26)], [800, 1600], 'the scan line at 8 and 16 bits');
   q.displaySlot(913, 765);
   assert.deepEqual([q.r16(b + 0x3ee + 24), q.r16(b + 0x496 + 32 + 26)], [913, 1832], 'a second size patches the same records (913 x 2 to 8 bytes)');
+  // at 24 bits the driver's modes stop at 800x600 (BIOS mode 30h): that entry takes the size, and 1024x768's records
+  // are the driver's own again
+  assert.deepEqual(q.displaySlot(913, 520, 24), { w: 800, h: 600 });
+  assert.deepEqual(q.customMode, { w: 913, h: 520, mode: 0x30 });
+  assert.deepEqual([q.r16(b + 0x3ee + 20), q.r16(b + 0x3ee + 22), q.r16(b + 0x1b06 + 20)], [913, 520, 913], 'the 800x600 entry');
+  assert.deepEqual([q.r16(b + 0x3ee + 24), q.r16(b + 0x3ee + 26), q.r16(b + 0x1a1a + 8)], [1024, 768, 1024], '1024x768 as the driver has it');
+  assert.equal(q.r16(b + 0x496 + 64 + 22), (913 * 3 + 7) & ~7, 'the 24-bit scan line of the 800x600 entry');
+  assert.equal(q.r16(b + 0x19ac + 8), 913, 'its GDIINFO');
+  q.displaySlot(800, 600, 24);
+  assert.deepEqual([q.customMode, q.r16(b + 0x3ee + 20), q.r16(b + 0x19ac + 8)], [null, 800, 800], 'a listed size: the driver\'s records unchanged');
 }
 // VDD 85h, the display configuration USER reads before a mode change: the display devnode and the driver its
 // software key names (USER restarts Windows for a mode whose driver differs from the loaded one's file)

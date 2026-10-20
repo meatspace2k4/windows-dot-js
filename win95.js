@@ -2847,6 +2847,8 @@ function setupDisplayDevices() {
   infAddReg(disp, 'TsengW32.AddReg', cls + 'display\\0000');
   set(cls + 'display\\0000', { DriverDesc: 'Tseng Labs ET4000/W32', ProviderName: 'Microsoft', InfPath: 'MSDISP.INF', InfSection: 'TsengW32' });
   set(hw, { Class: 'Display', Driver: 'Display\\0000', DeviceDesc: 'Tseng Labs ET4000/W32', HardwareID: '*PNP0912', Mfg: 'Tseng Labs' });
+  // the configuration's depth as the adapter is installed: High Color (a disk set up before it, at 256 colors, too)
+  for (const k of ['hkcc\\display\\settings', 'hklm\\config\\0001\\display\\settings']) R.regSet(k, 'BitsPerPixel', str(String(BOOT_BPP)));
   infAddReg(mon, 'ClassAddReg', cls + 'monitor');
   infAddReg(mon, '1280', cls + 'monitor\\0000');
   set(cls + 'monitor\\0000', { DriverDesc: 'Super VGA 1280x1024', ProviderName: 'Microsoft', InfPath: 'MONITOR.INF', InfSection: '1280.Install' });
@@ -2964,9 +2966,9 @@ const nativeMode = () => [Math.max(640, Math.min(1024, Math.floor(innerWidth / Z
 // under the current configuration (Resolution "w,h", BitsPerPixel), read by the display driver as it is enabled; the one
 // the page's viewport holds, so no change is needed once the shell is up
 function bootMode(w, h) {
-  const str = v => ({ type: 1, data: W95FS.encode(v + '\0') });
-  for (const k of ['hkcc\\display\\settings', 'hklm\\config\\0001\\display\\settings']) { W95Win32.regSet(k, 'Resolution', str(`${w},${h}`)); W95Win32.regSet(k, 'BitsPerPixel', str(String(BOOT_BPP))); }
-  W95Win32.iniSet(fs, 'SYSTEM.INI', 'display', 'BitsPerPixel', String(BOOT_BPP));   // (the display VxD's configuration, ne16.js displayConfig)
+  const str = v => ({ type: 1, data: W95FS.encode(v + '\0') }), bpp = bootBpp();
+  for (const k of ['hkcc\\display\\settings', 'hklm\\config\\0001\\display\\settings']) { W95Win32.regSet(k, 'Resolution', str(`${w},${h}`)); W95Win32.regSet(k, 'BitsPerPixel', str(String(bpp))); }
+  W95Win32.iniSet(fs, 'SYSTEM.INI', 'display', 'BitsPerPixel', String(bpp));   // (the display VxD's configuration, ne16.js displayConfig)
   // the hardware profile CONFIGMG starts in, as it records it at boot (Control\IDConfigDB): the one Setup made,
   // 0001, which Device Manager's Hardware Profiles page lists by its friendly name
   const idc = 'hklm\\system\\currentcontrolset\\control\\idconfigdb';
@@ -2975,11 +2977,18 @@ function bootMode(w, h) {
 }
 // high color: the screen the system's machine boots in (the page scans 8, 16, 24 and 32 bits a pixel out)
 const BOOT_BPP = 16, SCAN_BPP = new Set([8, 16, 24, 32]);
+/** the depth the system's machine boots in: Windows' own setting for the configuration (Display\Settings'
+ *  BitsPerPixel, which Display Properties rewrites and Setup sets to High Color as it installs the adapter,
+ *  setupDisplayDevices); High Color without one */
+function bootBpp() {
+  const v = W95Win32.regGet('hkcc\\display\\settings', 'BitsPerPixel'), reg = parseInt(v && v.data ? W95FS.decode(v.data) : v, 10);
+  return SCAN_BPP.has(reg) ? reg : BOOT_BPP;
+}
 /** the size the system's machine boots at: the page's, when its screen and the display driver's off-screen caches fit
  *  the adapter's 4 MB (TSENG.DRV counts the W32's memory through its segment selects); else the largest of the
  *  driver's sizes that fits */
 function bootSize() {
-  const [w, h] = nativeMode(), fits = (x, y) => x * y * (BOOT_BPP >> 3) + 0x10000 <= 4 << 20;
+  const [w, h] = nativeMode(), bpp = bootBpp(), fits = (x, y) => x * y * (bpp >> 3) + 0x10000 <= 4 << 20;
   if (fits(w, h)) return [w, h];
   return [[1024, 768], [800, 600], [640, 480]].find(([x, y]) => x <= w && y <= h && fits(x, y)) || [640, 480];
 }

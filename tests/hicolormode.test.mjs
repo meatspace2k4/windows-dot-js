@@ -10,7 +10,7 @@ const P = window.W95Win32.Process.prototype;
 const mem = new Uint8Array(8 << 20);
 const p = Object.create(P);
 Object.defineProperty(p, 'u8', { value: mem });
-Object.assign(p, { init16() {}, alloc: () => 0x100000, customMode: [913, 765] });
+Object.assign(p, { init16() {}, alloc: () => 0x100000, customMode: { w: 913, h: 765, mode: 0x38 } });
 assert.equal(p.setVideoMode(0x38, true, 16), true);
 const a = p.scanout();
 assert.deepEqual([a.w, a.h, a.bpp], [913, 765, 16], '16-bit custom mode at the configured size');
