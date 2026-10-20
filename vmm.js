@@ -664,13 +664,24 @@ svc(VKD, 0x0b, function () { CF(this, false); });   // Cancel_Paste
 svc(VKD, 0x0c, function () { const k = this.msgKeys && this.msgKeys.shift(); ZF(this, !k); if (k) this.cpu.eax.value = lo16(this.cpu.eax.value, k); });
 svc(VKD, 0x0d, function () { const k = this.msgKeys && this.msgKeys[0]; ZF(this, !k); if (k) this.cpu.eax.value = lo16(this.cpu.eax.value, k); });
 svc(VKD, 0x0e, function () { this.msgKeys = []; });
+// Cancel_Hot_Key_State: the hot key's keys go on as they are. Reflect_Hot_Key (EBX the VM, CL the shift state): the
+// callback hands the key it was called for on to the VM as an ordinary key (IFSMGR's Ctrl+C, which only notes the
+// break), and its release with it
+svc(VKD, 0x05, function () { CF(this, false); });
+svc(VKD, 0x06, function () { this.hotReflected = true; CF(this, false); });
 /** a key as the keyboard reports it (set 1 scan code, extended, released) with the shift states held: a hot key's
- *  callback (on press, as Define_Hot_Key asked), else in message mode the message-key queue. True when VKD took it */
+ *  callback (on press, as Define_Hot_Key asked), else in message mode the message-key queue. True when VKD took it;
+ *  a hot key its callback reflected goes on, its press and its release */
 P.vkdKey = function (scan, ext, up, mods) {
   const ss = (mods.shift ? 0x03 : 0) | (mods.ctrl ? 0x84 : 0) | (mods.alt ? 0x108 : 0);
   for (const [h, k] of this.hotKeys || []) {
     if (!k.on || k.scan !== scan || (k.ext !== 0xff && !!k.ext !== !!ext) || (ss & k.mask) !== k.want) continue;
-    if (!up && (k.flags & 1)) this.r0Callback(k.fn, { eax: scan | (ext ? 0x100 : 0), ebx: h, ecx: 0, edx: k.ref, esi: 0 });
+    if (up && k.reflected) { k.reflected = false; return false; }
+    if (!up && (k.flags & 1)) {
+      this.hotReflected = false;
+      this.r0Callback(k.fn, { eax: scan | (ext ? 0x100 : 0), ebx: h, ecx: 0, edx: k.ref, esi: 0 });
+      if (this.hotReflected) { k.reflected = true; return false; }
+    }
     return true;
   }
   if (!this.msgMode) return false;
@@ -1349,9 +1360,8 @@ svc(VTD, 0x08, function () {
   const d = new Date(), mid = new Date(d.getFullYear(), d.getMonth(), d.getDate());
   this.cpu.eax.value = u32(d - mid); this.cpu.edx.value = Math.floor((Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) - Date.UTC(1980, 0, 1)) / 86400000);
 });
-// ---- VKD: Get_Version and the hot-key services the file system manager uses (the keyboard is Windows' own driver)
+// ---- VKD: Get_Version (the keyboard is Windows' own driver)
 svc(VKD, 0x00, function () { this.cpu.eax.value = 0x400; CF(this, false); });
-for (const n of [5, 6]) svc(VKD, n, function () { CF(this, false); });   // Reflect_Hot_Key, Cancel_Hot_Key_State
 // ---- VPICD_Get_IRQ_Complete_Status (EAX handle): as Get_Complete_Status
 svc(VPICD, 0x0b, function () { this.cpu.ecx.value = irqStatus(this); CF(this, !(this.cpu.ecx.value & 8)); });
 // ---- VWIN32
