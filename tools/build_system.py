@@ -212,6 +212,9 @@ INFS = ['shell.inf',
 # the sounds Setup puts in C:\WINDOWS\MEDIA: MOTOWN.INF's start-up sound and MMOPT.INF's clips of a Typical install (WIN95_02.CAB)
 MEDIA = ['mssound.wav', 'chimes.wav', 'chord.wav', 'ding.wav', 'tada.wav', 'canyon.mid', 'passport.mid']
 bundle['media'] = {f.upper(): b64(os.path.join(src, f)) for f in MEDIA if os.path.exists(os.path.join(src, f))}
+# the wallpapers Setup puts in C:\WINDOWS: SHELL.INF's basebitmaps (WIN95_02.CAB)
+BITMAPS = ['bamboo.bmp', 'bubbles.bmp', 'circles.bmp', 'egypt.bmp', 'halftone.bmp', 'hounds.bmp', 'pstripe.bmp', 'pyramid2.bmp', 'redtile.bmp', 'rivets2.bmp', 'thatch2.bmp']
+bundle['bitmaps'] = {f.upper(): b64(os.path.join(src, f)) for f in BITMAPS if os.path.exists(os.path.join(src, f))}
 # the help files Setup puts in C:\WINDOWS\HELP: Windows' own topics and Notepad's, with their contents (WIN95_13.CAB)
 HELP = ['windows.hlp', 'windows.cnt', 'notepad.hlp', 'notepad.cnt']
 bundle['help'] = {f.upper(): b64(os.path.join(src, f)) for f in HELP if os.path.exists(os.path.join(src, f))}

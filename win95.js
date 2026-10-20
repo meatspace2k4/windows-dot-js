@@ -2831,7 +2831,15 @@ function winHelp(file = 'windows.hlp') { closeMenus(); if (hasHelp()) runNative(
 // always the same, so the note is cleared before each start
 function setupDisplay() {
   if (W95Win32.iniGet(fs, 'SYSTEM.INI', 'boot', '*DisplayFallback') !== null) W95Win32.iniSet(fs, 'SYSTEM.INI', 'boot', '*DisplayFallback', null);
-  setupDisplayDevices(); setupFontSize(); setupPatterns();
+  setupDisplayDevices(); setupFontSize(); setupPatterns(); setupWallpapers();
+}
+// the wallpapers the Background page lists: SHELL.INF's basebitmaps, each in C:\WINDOWS by the name its addreg line
+// renames it to (RenameFiles\Win: bamboo.bmp to "Straw Mat.bmp"), each one the disk lacks
+function setupWallpapers() {
+  const S = window.W95SYSTEM || {}, inf = (S.infs || {})['SHELL.INF']; if (!inf || !S.bitmaps) return;
+  const { sec, fields, subst } = infParse(inf), names = {};
+  for (const l of sec['basebitmaps.addreg'] || []) { const f = fields(l); if (f[2] && f[4]) names[f[2].toUpperCase()] = subst(f[4]); }
+  for (const [n, d] of Object.entries(S.bitmaps)) { const f = join(WINDIR, names[n] || n.toLowerCase()); if (!fs.exists(f)) fs.writeFile(f, b64bytes(d)); }
 }
 // the desktop patterns Display Properties' Background page lists: SHELL.INF's patterns.inis, CONTROL.INI's [Patterns]
 // ("(None)" and the named 8x8 bitmaps), on a disk that has none

@@ -22,4 +22,16 @@ assert.deepEqual(ini && ini.lines.map(e => [e.name, e.value]), [['(None)', '(Non
 files.set('C:\\WINDOWS\\CONTROL.INI', '[Patterns]\r\nMine=1 2 3 4 5 6 7 8\r\n');
 setupPatterns();
 assert.deepEqual([...window.W95Win32.iniRead(fs, 'CONTROL.INI').get('patterns').keys.keys()], ['mine'], 'a disk with its own is left');
+
+// the wallpapers: SHELL.INF's basebitmaps in C:\WINDOWS by the long names its addreg lines rename them to
+const BMP = '[basebitmaps.addreg]\r\nHKLM,%KEY_RENAME%\\Win,,,%25%\r\nHKLM,%KEY_RENAME%\\Win,bamboo.bmp,,"%BAMBOO_BMP%.bmp"\r\n\r\n[Strings]\r\nKEY_RENAME="Software\\Microsoft\\Windows\\CurrentVersion\\RenameFiles"\r\nBAMBOO_BMP      = "Straw Mat"\r\n';
+const disk = new Map(), dfs = { exists: p => disk.has(p), writeFile: (p, d) => disk.set(p, d) };
+const setupWallpapers = new Function('fs', 'WINDIR', 'join', 'b64bytes', `${fn('infParse')}\n${fn('setupWallpapers')}\nreturn setupWallpapers;`)(
+  dfs, 'C:\\WINDOWS', window.W95FS.join, s => Uint8Array.from(atob(s), c => c.charCodeAt(0)));
+window.W95SYSTEM = { infs: { 'SHELL.INF': BMP }, bitmaps: { 'BAMBOO.BMP': btoa('BMx'), 'CIRCLES.BMP': btoa('BMy') } };
+setupWallpapers();
+assert.deepEqual([...disk.keys()].sort(), ['C:\\WINDOWS\\Straw Mat.bmp', 'C:\\WINDOWS\\circles.bmp'], 'renamed by its line; one without a line by its own name');
+assert.equal(new TextDecoder().decode(disk.get('C:\\WINDOWS\\Straw Mat.bmp')), 'BMx');
+disk.set('C:\\WINDOWS\\Straw Mat.bmp', 'mine'); setupWallpapers();
+assert.equal(disk.get('C:\\WINDOWS\\Straw Mat.bmp'), 'mine', 'a file the disk has is left');
 console.log('patterns: ok');
