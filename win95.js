@@ -4306,17 +4306,18 @@ function render() {
   else drawCursor(cur);
 }
 // the display adapter's hardware cursor: the sprite the program's display driver loaded and placed, overlaid on the
-// whole screen as the CRTC overlays it on scanout (2 bits a pixel: bit 1 keeps the screen, bit 0 inverts it)
+// whole screen as the CRTC overlays it on scanout (2 bits a pixel: bit 1 keeps the screen, bit 0 inverts it), a
+// column of it to each pixel clock (cpp of them to a screen pixel at high color)
 function drawSprite(app) {
   let sp; try { sp = app.remote ? app.sprite() : app.proc && app.proc.sprite(); } catch (e) { return; }
   if (!sp) return;
-  const x = sp.x, y = sp.y, w = Math.min(64 - sp.px, W - x), h = Math.min(64 - sp.py, H - y);
+  const cpp = sp.cpp || 1, x = sp.x, y = sp.y, w = Math.min(Math.floor((64 - sp.px) / cpp), W - x), h = Math.min(64 - sp.py, H - y);
   if (w <= 0 || h <= 0 || x < 0 || y < 0) return;
   const im = ctx.getImageData(x, y, w, h), d = im.data;
   for (let j = 0; j < h; j++) {
     const row = (sp.py + j) * sp.row;
     for (let i = 0; i < w; i++) {
-      const p = sp.px + i, v = sp.bits[row + (p >> 2)] >> ((p & 3) * 2) & 3, o = (j * w + i) * 4;
+      const p = sp.px + i * cpp, v = sp.bits[row + (p >> 2)] >> ((p & 3) * 2) & 3, o = (j * w + i) * 4;
       if (v === 2) continue;
       const and = v & 2 ? 0xff : 0, xor = v & 1 ? 0xff : 0;
       d[o] = (d[o] & and) ^ xor; d[o + 1] = (d[o + 1] & and) ^ xor; d[o + 2] = (d[o + 2] & and) ^ xor;

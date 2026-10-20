@@ -1173,13 +1173,15 @@ P.scanout = function () {
 };
 /** the W32 hardware sprite as the CRTC overlays it: on (F7h bit 7), its screen position (E0h/E1h, E4h/E5h), the
  *  preset into the 64x64 image where display starts (E2h, E6h), and the image in VRAM at the start address (E8h-EAh,
- *  in dwords) with EBh quadwords per row, 2 bits a pixel, low bit first: bit 0 XOR, bit 1 AND (screen kept) */
+ *  in dwords) with EBh quadwords per row, 2 bits a pixel, low bit first: bit 0 XOR, bit 1 AND (screen kept). The
+ *  sprite counts the CRTC's pixel clocks, as many to a screen pixel as its bytes at high color (cpp): the X position,
+ *  the X preset and the image's columns are clocks there (TSENG.DRV doubles them at 16 bits) */
 P.sprite = function () {
   const a = this.adapter(), r = a.ima;
   if (!(r[0xf7] & 0x80)) return null;
   const start = ((r[0xea] & 0x0f) << 16 | r[0xe9] << 8 | r[0xe8]) * 4, row = (r[0xeb] || 2) * 8;
-  const vram = this.scanout().vram;
-  return { x: r[0xe1] << 8 | r[0xe0], y: r[0xe5] << 8 | r[0xe4], px: r[0xe2] & 0x3f, py: r[0xe6] & 0x3f, bits: vram.subarray(start, start + 64 * row), row };
+  const vram = this.scanout().vram, cpp = a.bpp > 8 ? a.bpp >> 3 : 1;
+  return { x: Math.floor((r[0xe1] << 8 | r[0xe0]) / cpp), y: r[0xe5] << 8 | r[0xe4], px: r[0xe2] & 0x3f, py: r[0xe6] & 0x3f, cpp, bits: vram.subarray(start, start + 64 * row), row };
 };
 // The W32's MMU and accelerator (ACL), memory-mapped at B8000h, which the Tseng driver reaches through the selector VDD
 // service 83h gives it: three 8K apertures (0000h, 2000h, 4000h) onto VRAM at the base addresses in 7F00h-7F0Bh, an

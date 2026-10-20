@@ -28,4 +28,15 @@ assert.deepEqual([p.scanout().w, p.scanout().h, p.scanout().bpp], [913, 765, 8],
   out(0x3cb, 0x01); out(0x3cd, 0x33);
   assert.equal(p.adapter().bank, 0x13, 'bank 13h: 3 from 3CDh, 1 from 3CBh');
 }
+// at 16 bits the W32's sprite counts pixel clocks, two to a pixel: TSENG.DRV puts the arrow at x 513 as 1026, with
+// its image's columns doubled; the sprite is at pixel 513, two columns to a pixel
+{
+  p.setVideoMode(0x38, true, 16);
+  const r = p.adapter().ima;
+  r[0xf7] = 0x80; r[0xe0] = 1026 & 0xff; r[0xe1] = 1026 >> 8; r[0xe4] = 30; r[0xe5] = 0; r[0xe2] = 0; r[0xe6] = 31;
+  const sp = p.sprite();
+  assert.deepEqual([sp.x, sp.y, sp.px, sp.py, sp.cpp], [513, 30, 0, 31, 2]);
+  p.setVideoMode(0x38, true, 0);
+  assert.deepEqual([p.sprite().x, p.sprite().cpp], [1026, 1], 'at 8 bits a clock is a pixel');
+}
 console.log('hicolormode: ok');
