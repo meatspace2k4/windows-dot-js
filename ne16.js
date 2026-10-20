@@ -1077,6 +1077,18 @@ vxdApi(0x0033, 'CONFIGMG', {
     this.w32(this.lin(arg(2)), typeof v === 'number' ? v : v && v.data && v.data.length >= 4 ? new DataView(v.data.buffer, v.data.byteOffset).getUint32(0, true) : 0);
     return CR.SUCCESS;
   },
+  // Get_Hardware_Profile_Info(index (FFFFFFFFh: the current one), far HWPROFILEINFO, flags): the profile's number, its
+  // friendly name (80 bytes) and flags, from the profiles CONFIGMG recorded at boot (Control\IDConfigDB); past the
+  // last, CR_NO_MORE_HW_PROFILES (35h)
+  0x52() {
+    const arg = cmArgs(this), W = window.W95Win32, idc = 'hklm\\system\\currentcontrolset\\control\\idconfigdb';
+    const all = W.regVals(idc).map(([n]) => /^friendlyname(\d{4})$/.exec(n)).filter(Boolean).map(m => +m[1]).sort((x, y) => x - y);
+    const cur = parseInt(regStr(W.regGet(idc, 'CurrentConfig')) || '1', 10), i = u32(arg(0));
+    const n = i === 0xffffffff ? cur : all[i]; if (n === undefined || !all.includes(n)) return 0x35;
+    const a = this.lin(arg(1)); this.u8.fill(0, a, a + 88);
+    this.w32(a, n); this.writeA(a + 4, regStr(W.regGet(idc, 'FriendlyName' + String(n).padStart(4, '0'))), 80); this.w32(a + 84, 0);
+    return CR.SUCCESS;
+  },
   // Get_DevNode_Status(far *status, far *problem, dn, flags): started (DN_STARTED 8 | DN_DRIVER_LOADED 2 | DN_HAS_PROBLEM no)
   0x36() { const arg = cmArgs(this), dn = this.cmNode(arg(2)); if (!dn) return CR.INVALID_DEVNODE; this.w32(this.lin(arg(0)), 0x0a | (dn.started ? 0 : 0)); if (arg(1)) this.w32(this.lin(arg(1)), 0); return CR.SUCCESS; },
   // Get_Alloc_Log_Conf(far CMCONFIG, dn, flags): the resources the devnode was given
@@ -1184,8 +1196,12 @@ def16('VDD', 0, '', 'jmp', function () {
     }
     case 0x81: case 0x82: case 0x84: case 0x86: case 0x87: case 0x88: case 0x89: this.cpu.eax.value = 0; break;
     case 0x85: {                                                         // VDD_GET_DISPLAY_CONFIG -> DISPLAYINFO at ES:EDI
+      // (the display's devnode and the driver its software key names, DEFAULT\drv: USER restarts Windows for a mode
+      // whose driver is not the one loaded; with no devnode, the loaded driver's file)
       const a = this.lin((this.cpu.es.value << 16) | (this.cpu.edi.value & 0xffff)), n = Math.min(this.cpu.ecx.value & 0xffff, 0x4a), c = this.displayConfig();
-      this.u8.fill(0, a, a + n); this.w16(a, n); this.w32(a + 4, 1); this.writeA(a + 8, 'FRAMEBUF', 16);
+      const dn = this.devnodes().find(d => /^display$/i.test(d.cls)), sw = this.devSoftKey(dn), m = this.ne && this.ne.get('DISPLAY');
+      const drv = (sw && regStr(window.W95Win32.regGet(sw + '\\default', 'drv'))) || (m && m.fileName) || 'DISPLAY';
+      this.u8.fill(0, a, a + n); this.w16(a, n); this.w32(a + 4, dn ? dn.handle : 0); this.writeA(a + 8, drv, 16);
       this.w16(a + 0x18, c.w); this.w16(a + 0x1a, c.h); this.w16(a + 0x1c, 96); this.u8[a + 0x1e] = 1; this.u8[a + 0x1f] = c.bpp;
       this.w16(a + 0x20, 60); this.w16(a + 0x22, 60);
       this.cpu.eax.value = 0; break;

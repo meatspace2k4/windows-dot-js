@@ -48,6 +48,16 @@ assert.equal(cm(7, first, far(0x40), 64, 0), 0); assert.equal(p.readA(BASE + 0x4
 str(0x80, 'ROOT\\*PNPB003\\0000'); assert.equal(cm(0x4a, far(0x80), 0, far(OUT), 0), 0); assert.equal(p.r32(BASE + OUT), 1, 'disabled in profile 0001');
 str(0x80, 'ROOT\\*PNP0400\\0000'); cm(0x4a, far(0x80), 0, far(OUT), 0); assert.equal(p.r32(BASE + OUT), 0);
 
+// Get_Hardware_Profile_Info(index, far HWPROFILEINFO, flags): the current profile (FFFFFFFFh) and the first by index,
+// 0001 "Original Configuration"; past the last, CR_NO_MORE_HW_PROFILES
+W.regSet('hklm\\system\\currentcontrolset\\control\\idconfigdb', 'CurrentConfig', '0001');
+W.regSet('hklm\\system\\currentcontrolset\\control\\idconfigdb', 'FriendlyName0001', 'Original Configuration');
+for (const i of [0xffffffff, 0]) {
+  assert.equal(cm(0x52, i, far(0x400), 0), 0);
+  assert.equal(p.r32(BASE + 0x400), 1); assert.equal(p.readA(BASE + 0x404), 'Original Configuration');
+}
+assert.equal(cm(0x52, 1, far(0x400), 0), 0x35);
+
 // the printer port's resources: its first allocated configuration, an I/O descriptor 378h-37Ah, then its IRQ
 assert.equal(cm(0x1a, far(OUT), first, 2), 0, 'Get_First_Log_Conf'); const lc = p.r32(BASE + OUT);
 assert.equal(cm(0x1f, far(OUT), lc, 0, far(OUT + 4), 0), 0, 'Get_Next_Res_Des'); const rd = p.r32(BASE + OUT);

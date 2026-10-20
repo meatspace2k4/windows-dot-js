@@ -93,4 +93,21 @@ assert.equal(sels.length, 1, 'the same selector each time');
   q.displaySlot(913, 765);
   assert.deepEqual([q.r16(b + 0x3ee + 24), q.r16(b + 0x496 + 32 + 26)], [913, 1832], 'a second size patches the same records (913 x 2 to 8 bytes)');
 }
+// VDD 85h, the display configuration USER reads before a mode change: the display devnode and the driver its
+// software key names (USER restarts Windows for a mode whose driver differs from the loaded one's file)
+{
+  const W = window.W95Win32, sw = 'hklm\\system\\currentcontrolset\\services\\class\\display\\0000';
+  W.regSet('hklm\\enum\\root\\*pnp0912\\0000', 'Class', 'Display'); W.regSet('hklm\\enum\\root\\*pnp0912\\0000', 'Driver', 'Display\\0000');
+  W.regSet(sw + '\\default', 'drv', 'tseng.drv');
+  const q = Object.create(P);
+  Object.defineProperty(q, 'u8', { value: mem });
+  Object.assign(q, { r16: p.r16, r32: p.r32, w16: (a, v) => dv.setUint16(a, v, true), w32: (a, v) => dv.setUint32(a, v >>> 0, true), retf16: () => 0,
+    lin: a => 0x700000 + (a & 0xffff), displayConfig: () => ({ w: 913, h: 520, bpp: 16 }), ne: new Map([['DISPLAY', { fileName: 'TSENG.DRV' }]]) });
+  q.cpu = Object.fromEntries(Object.entries({ eax: 0x85, es: 0, edi: 0, ecx: 0x32, edx: 0, ebx: 1 }).map(([k, v]) => [k, { value: v }]));
+  q.thunk16Def('VDD.#0').def[2].call(q);
+  const dn = q.devnodes().find(d => d.id === 'ROOT\\*PNP0912\\0000');
+  assert.equal(q.r32(0x700004), dn.handle, 'diDevNodeHandle: the display\'s devnode');
+  assert.equal(q.readA(0x700008), 'tseng.drv', 'diDriverName: its DEFAULT\\drv');
+  assert.deepEqual([q.r16(0x700018), q.r16(0x70001a), mem[0x70001f]], [913, 520, 16]);
+}
 console.log('w32acl: ok');
