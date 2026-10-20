@@ -61,12 +61,20 @@ NE = [('gdi.exe', 0x01C00000, 0x1007, 0x06A00000), ('dibeng.dll', 0x01E00000, 0x
       # multimedia devices' (WIN95_02.CAB) and the network's (PRECOPY1.CAB)
       ('mmci.dll', 0x01970000, 0x1E17, 0x07160000), ('netdi.dll', 0x019A0000, 0x1E27, 0x06138000),
       # the driver files a display, port or network device's Driver page lists (its class's EnumDriverStack) (WIN95_02.CAB)
-      ('enumfile.dll', 0x019E0000, 0x1FF7, 0x07170000)]
+      ('enumfile.dll', 0x019E0000, 0x1FF7, 0x07170000),
+      # the 16-color drivers the display's software key names for its 4-bit modes (MSDISP.INF TsengW32: MODES\4\640,480
+      # VGA.DRV, MODES\4\800,600 SUPERVGA.DRV) (WIN95_02.CAB); their module name is DISPLAY too
+      ('vga.drv', 0x01C60000, 0x2007, 0x06260000), ('supervga.drv', 0x01C90000, 0x2067, 0x07180000)]
 # the NE modules above that Setup leaves on the CD: a module of these loads only when its file is on the disk
 ON_DISK = {'unidrv.dll', 'tty.drv'}
 # the device memory a module writes as registers (recomp.py --mmio LO:SIZE): the Tseng driver's W32 MMU and
 # accelerator at B8000h-BFFFFh (its apertures, then the ACL registers at 7F00h-7FFFh)
-MMIO = {'tseng.drv': '0xb8000:0x8000'}
+# the display drivers: the one a mode's settings name loads as DISPLAY (ne16.js displayDriverFile), so USER, built
+# after them, imports DISPLAY through thunks the loaded driver answers (recomp.py --unlinked)
+DISPLAY_DRIVERS = {'tseng.drv', 'vga.drv', 'supervga.drv'}
+MMIO = {'tseng.drv': '0xb8000:0x8000',
+        # the 16-color drivers' VGA memory: planar, each access through the graphics controller (ne16.js vgaRead/vgaWrite)
+        'vga.drv': '0xa0000:0x10000', 'supervga.drv': '0xa0000:0x10000'}
 # Windows programs that run on the native USER (bootUser16): (file, load base, block-table base). Each has a base of
 # its own, so programs one starts (WinExec, CreateProcess) share its address space and its window system
 PROGRAMS = [('notepad.exe', 0x00400000, 0x06000000), ('rundll32.exe', 0x00410000, 0x06100000), ('mplayer.exe', 0x00420000, 0x06200000),
@@ -157,9 +165,11 @@ with tempfile.TemporaryDirectory() as tmp:
         p = os.path.join(src, f); base = os.path.join(tmp, f)
         trace = ['--trace'] if f.upper() in os.environ.get('TRACE_NE', '').upper().split(',') else []
         subprocess.run([sys.executable, os.path.join(here, 'recomp.py'), p, base, '--base', hex(b), '--selbase', hex(sel),
-                        '--lookup', hex(lk), '--registry', reg] + (['--mmio', MMIO[f]] if f in MMIO else []) + trace, check=True)
+                        '--lookup', hex(lk), '--registry', reg] + (['--mmio', MMIO[f]] if f in MMIO else []) + (['--unlinked'] if f in DISPLAY_DRIVERS else []) + trace, check=True)
         meta = json.load(open(base + '.json'))
-        bundle['ne'][meta['name'].upper()] = {'file': b64(p), 'fileName': f.upper(), 'wasm': b64(base + '.wasm'), 'meta': meta, **({'onDisk': True} if f in ON_DISK else {})}
+        # (keyed by module name; a second module of a name, another display driver, by its file's)
+        key = meta['name'].upper() if meta['name'].upper() not in bundle['ne'] else f.upper().split('.')[0]
+        bundle['ne'][key] = {'file': b64(p), 'fileName': f.upper(), 'wasm': b64(base + '.wasm'), 'meta': meta, **({'onDisk': True} if f in ON_DISK else {})}
     bundle['thunks16'] = json.load(open(reg))['thunks']
     for f, b, lk in PE:
         p = os.path.join(src, f); base = os.path.join(tmp, f)

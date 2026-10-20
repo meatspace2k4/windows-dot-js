@@ -2976,7 +2976,9 @@ function bootMode(w, h) {
   if (W95Win32.regGet(idc, 'FriendlyName0001') === undefined) W95Win32.regSet(idc, 'FriendlyName0001', str('Original Configuration'));
 }
 // high color: the screen the system's machine boots in (the page scans 8, 16, 24 and 32 bits a pixel out)
-const BOOT_BPP = 16, SCAN_BPP = new Set([8, 16, 24, 32]);
+const BOOT_BPP = 16, SCAN_BPP = new Set([4, 8, 16, 24, 32]);
+/** the bytes of VRAM a screen of a's mode reads: its lines, or the four 64K planes of a 16-color mode */
+const scanBytes = a => (a.bpp === 4 ? 0x40000 : a.pitch * a.h);
 /** the depth the system's machine boots in: Windows' own setting for the configuration (Display\Settings'
  *  BitsPerPixel, which Display Properties rewrites and Setup sets to High Color as it installs the adapter,
  *  setupDisplayDevices); High Color without one */
@@ -2989,6 +2991,7 @@ function bootBpp() {
  *  driver's sizes that fits */
 function bootSize() {
   const [w, h] = nativeMode(), bpp = bootBpp(), fits = (x, y) => x * y * (bpp >> 3) + 0x10000 <= 4 << 20;
+  if (bpp === 4) return [[800, 600], [640, 480]].find(([x, y]) => x <= w && y <= h) || [640, 480];   // (16 colors: VGA.DRV's 640x480 or SUPERVGA.DRV's 800x600, no other)
   if (fits(w, h)) return [w, h];
   return [[1024, 768], [800, 600], [640, 480]].find(([x, y]) => x <= w && y <= h && fits(x, y)) || [640, 480];
 }
@@ -2997,6 +3000,14 @@ function bootSize() {
 /** a row of a scanned-out screen (x0..x1 of the line at byte s) into d from o: one tight loop for each depth */
 function scanRow(a, v, pal, d, o, s, x0, x1) {
   if (a.bpp === 8) { for (let x = x0; x < x1; x++) d[o + x] = pal[v[s + x]]; return; }
+  if (a.bpp === 4) {   // (a pixel's four bits from the four planes, 64K apart, high bit first; through the attribute palette to the DAC)
+    const at = a.attr, wide = at[0x10] & 0x80, m = wide ? 0x0f : 0x3f, sel = wide ? (at[0x14] & 0x0f) << 4 : (at[0x14] & 0x0c) << 4;
+    for (let x = x0; x < x1; x++) {
+      const i = s + (x >> 3), b = 7 - (x & 7);
+      d[o + x] = pal[(at[(v[i] >> b & 1) | (v[i + 0x10000] >> b & 1) << 1 | (v[i + 0x20000] >> b & 1) << 2 | (v[i + 0x30000] >> b & 1) << 3] & m) | sel];
+    }
+    return;
+  }
   if (a.bpp === 16 && (a.dacMode & 0xe0) !== 0xe0) {
     for (let x = x0, i = s + 2 * x0; x < x1; x++, i += 2) { const c = v[i] | v[i + 1] << 8, r = c >> 10 & 31, g = c >> 5 & 31, b = c & 31; d[o + x] = 0xff000000 | (b << 3 | b >> 2) << 16 | (g << 3 | g >> 2) << 8 | (r << 3 | r >> 2); }
     return;
@@ -3315,7 +3326,7 @@ class NativeApp {
     this.ox.putImageData(this.oimg, 0, 0);
   }
   /** the screen as the display adapter scans it out now: its mode, VRAM and DAC */
-  screenNow() { const a = this.proc.scanout(); return { w: a.w, h: a.h, pitch: a.pitch || a.w, bpp: a.bpp, dacMode: a.hicolor, vram: a.vram, dac: a.dac }; }
+  screenNow() { const a = this.proc.scanout(); return { w: a.w, h: a.h, pitch: a.pitch || a.w, bpp: a.bpp, dacMode: a.hicolor, attr: a.attr, vram: a.vram, dac: a.dac }; }
   /** the whole screen into the page's canvas, through the DAC (the page as the machine's monitor) */
   scanToCanvas() {
     const a = this.screenNow(); fill(0, 0, W, H, '#000');
@@ -3585,7 +3596,7 @@ class RemoteApp extends NativeApp {
   // (the screen as the machine last reported its mode and DAC, VRAM read where it is in the shared memory)
   screenNow() {
     const m = this.scr || this.snap; if (!m || !m.scan || !this.mem) return null; const a = m.scan;
-    return { ...a, vram: new Uint8Array(this.mem, a.vram, Math.max(0, Math.min(a.pitch * a.h, this.mem.byteLength - a.vram))), dac: m.dac };
+    return { ...a, vram: new Uint8Array(this.mem, a.vram, Math.max(0, Math.min(scanBytes(a), this.mem.byteLength - a.vram))), dac: m.dac };
   }
   // the framebuffer under this program's windows, through the DAC, from the machine's memory
   paint() {
@@ -3593,7 +3604,7 @@ class RemoteApp extends NativeApp {
     if (!this.wins.size && !this.capture) { if (!this.blank) { this.o32.fill(0); this.ox.putImageData(this.oimg, 0, 0); this.blank = true; } return; }
     this.blank = false;
     const a = m.scan; if (!SCAN_BPP.has(a.bpp)) return;
-    const v = new Uint8Array(this.mem, a.vram, Math.min(a.pitch * a.h, this.mem.byteLength - a.vram));
+    const v = new Uint8Array(this.mem, a.vram, Math.min(scanBytes(a), this.mem.byteLength - a.vram));
     const pal = this.pal, dac = m.dac, pitch = a.pitch, d = this.d32, sw = this.sw, sh = this.sh;
     for (let i = 0; i < 256; i++) { const r = dac[3 * i], g = dac[3 * i + 1], b = dac[3 * i + 2]; pal[i] = 0xff000000 | ((b << 2 | b >> 4) << 16) | ((g << 2 | g >> 4) << 8) | (r << 2 | r >> 4); }
     for (const w of this.wins.values()) {

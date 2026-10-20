@@ -370,6 +370,7 @@ class Loc:
             if signed and sz < 4 and v & (1 << (8 * sz - 1)): v -= 1 << (8 * sz)
             return f.c(v)
         if op.type == X.X86_OP_MEM:
+            mmio_load(f, self.addr, sz)
             return f.lg(self.addr).mem((LOADS if signed else LOAD)[sz])
         g, rs, sh = reginfo(op.reg)
         f.gg(g)
@@ -402,11 +403,15 @@ CODE_BYTES = frozenset()
 # a device's memory-mapped registers the module writes (--mmio LO:SIZE, linear): each store that lands there goes to
 # the host after it is made, trap(address, 0x2000000 | size)
 MMIO = None
-def mmio_store(f, addr, sz):
+UNLINKED = False   # (--unlinked: build_ne leaves the module out of the registry the modules after it link against)
+def mmio_store(f, addr, sz, code=0x2000000):
     if not MMIO: return
     lo, n = MMIO
     f.lg(addr).c(lo).e(OPS['sub']).c(n).e(OPS['lt_u']).e(0x04, 0x40)
-    f.lg(addr).c(0x2000000 | sz).e(0x10, uleb(IMP['trap'])).e(0x0b)
+    f.lg(addr).c(code | sz).e(0x10, uleb(IMP['trap'])).e(0x0b)
+# ... and each load from there asks the host first, trap(address, 0x3000000 | size): the device puts what the read
+# returns there (a VGA's read mode, loading its latches) before the load takes it
+def mmio_load(f, addr, sz): mmio_store(f, addr, sz, 0x3000000)
 # ---- segmented (NE) mode. CUR is the instruction being translated.
 CUR = None
 def segmode(): return CUR is not None and CUR.segbase is not None
@@ -646,15 +651,18 @@ class Translator:
         if segmode() and sz == 2: f.gg('ebp').c(~0xffff).e(OPS['and_']).gg('esp').c(0xffff).e(OPS['and_']).e(OPS['or_']).gs('ebp')
         else: f.gg('esp').gs('ebp')
         sp_adjust(f, -ops[0].imm)
+    # the table is DS:[BX + AL], or the segment a prefix names (capstone gives the instruction no operand to carry it)
+    PREFIX_SEG = {0x26: X.X86_REG_ES, 0x2e: X.X86_REG_CS, 0x36: X.X86_REG_SS, 0x3e: X.X86_REG_DS, 0x64: X.X86_REG_FS, 0x65: X.X86_REG_GS}
     def x_xlatb(self, f, ins, ops, live):
         m = ins.ops[0].mem if ins.ops else None
+        seg = m.segment if m and m.segment else self.PREFIX_SEG.get(ins.prefix[1], X.X86_REG_DS)
         f.gg('eax').c(~0xff).e(OPS['and_'])
         f.gg('ebx')
         if segmode() and addr16(ins): f.c(0xffff).e(OPS['and_'])
         f.gg('eax').c(0xff).e(OPS['and_']).e(OPS['add'])
         if segmode():
             if addr16(ins): f.c(0xffff).e(OPS['and_'])
-            f.gg(SREG[(m.segment if m and m.segment else X.X86_REG_DS)][1]).e(OPS['add'])
+            f.gg(SREG[seg][1]).e(OPS['add'])
         f.mem(0x2d).e(OPS['or_']).gs('eax')
     def x_pushal(self, f, ins, ops, live):
         t = f.i(); f.gg('esp').ls(t)
@@ -1115,22 +1123,26 @@ class Translator:
             if a16: f.gg(r).c(~0xffff).e(OPS['and_']).gg(r).lg(step).e(OPS['add']).c(0xffff).e(OPS['and_']).e(OPS['or_']).gs(r)
             else: f.gg(r).lg(step).e(OPS['add']).gs(r)
         d = f.i() if MMIO and kind in ('movs', 'stos') else None
+        s = f.i() if MMIO and kind in ('movs', 'lods', 'cmps', 'scas') else None
         def store(val):
             if d is None: dst(); val(); f.mem(STORE[sz]); return
             dst(); f.ls(d); f.lg(d); val(); f.mem(STORE[sz]); mmio_store(f, d, sz)
+        def load(addr):
+            if s is None: addr(); f.mem(LOAD[sz]); return
+            addr(); f.ls(s); mmio_load(f, s, sz); f.lg(s).mem(LOAD[sz])
         def one():
-            if kind == 'movs': store(lambda: (src(), f.mem(LOAD[sz]))); bump('esi'); bump('edi')
+            if kind == 'movs': store(lambda: load(src)); bump('esi'); bump('edi')
             elif kind == 'stos': store(lambda: f.gg('eax')); bump('edi')
             elif kind == 'outs': self.port_elem(f, ins, kind, sz, src); bump('esi')
             elif kind == 'ins': self.port_elem(f, ins, kind, sz, dst); bump('edi')
             elif kind == 'lods':
-                if sz == 4: src(); f.mem(0x28).gs('eax')
-                else: f.gg('eax').c(~MASK[sz]).e(OPS['and_']); src(); f.mem(LOAD[sz]).e(OPS['or_']).gs('eax')
+                if sz == 4: load(src); f.gs('eax')
+                else: f.gg('eax').c(~MASK[sz]).e(OPS['and_']); load(src); f.e(OPS['or_']).gs('eax')
                 bump('esi')
             else:
                 a, b, r = f.i(), f.i(), f.i()
-                if kind == 'cmps': src(); f.mem(LOAD[sz]).ls(a); dst(); f.mem(LOAD[sz]).ls(b); bump('esi')
-                else: f.gg('eax').c(MASK[sz]).e(OPS['and_']).ls(a); dst(); f.mem(LOAD[sz]).ls(b)
+                if kind == 'cmps': load(src); f.ls(a); load(dst); f.ls(b); bump('esi')
+                else: f.gg('eax').c(MASK[sz]).e(OPS['and_']).ls(a); load(dst); f.ls(b)
                 bump('edi')
                 f.lg(a).lg(b).e(OPS['sub']).c(MASK[sz]).e(OPS['and_']).ls(r)
                 f.lg(a).lg(b).e(OPS['lt_u']).gs('cf')
@@ -1582,8 +1594,11 @@ def build_ne(path, out, base, selbase, lookup, registry):
     open(out + '.wasm', 'wb').write(mod)
     exports = {str(o): [ne.segs[s - 1]['sel'], off] for o, (s, off) in ne.entries.items()}
     meta_size = ne.size
-    reg['modules'][ne.name.upper()] = {'segs': [{k: sg[k] for k in ('num', 'sel', 'base', 'alloc', 'len', 'flags', 'bits')} for sg in ne.segs],
-                                       'exports': exports, 'names': ne.names}
+    # (a module another file may stand in for at run time, as the display driver for a mode: left out, so the modules
+    # built after it import it through thunks the loaded one answers, ne16.js api16)
+    if not UNLINKED:
+        reg['modules'][ne.name.upper()] = {'segs': [{k: sg[k] for k in ('num', 'sel', 'base', 'alloc', 'len', 'flags', 'bits')} for sg in ne.segs],
+                                           'exports': exports, 'names': ne.names}
     json.dump(reg, open(registry, 'w'))
     meta = dict(kind='ne', name=ne.name, sha256=hashlib.sha256(data).hexdigest(), base=base, size=ne.size, selbase=selbase,
                 segs=[{k: sg[k] for k in ('num', 'sel', 'base', 'alloc', 'minalloc', 'len', 'flags', 'bits', 'fileoff')} for sg in ne.segs],
@@ -1688,6 +1703,7 @@ if __name__ == '__main__':
     reg = None
     if '--registry' in a: k = a.index('--registry'); reg = a[k + 1]; del a[k:k + 2]
     if '--mmio' in a: k = a.index('--mmio'); MMIO = tuple(int(v, 0) for v in a[k + 1].split(':')); del a[k:k + 2]
+    if '--unlinked' in a: a.remove('--unlinked'); UNLINKED = True
     if '--vxd' in a: a.remove('--vxd')
     while len(a) > 2:
         v = int(a.pop(), 0); k = a.pop().lstrip('-'); kw[k] = v

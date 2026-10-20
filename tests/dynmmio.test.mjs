@@ -17,14 +17,17 @@ const run = mmio => {
     'cs', 'ds', 'es', 'ss', 'fsel', 'gsel', 'csb', 'dsb', 'esb', 'ssb', 'gsb', 'budget']) p.cpu[n] = new WebAssembly.Global({ value: 'i32', mutable: true }, 0);
   p.ne = new Map([['DISPLAY', { meta: { base: 0x200000, size: 0x1000, ...(mmio ? { mmio: [0xb8000, 0x8000] } : {}) } }]]);
   const calls = []; p.trap = (e, c) => calls.push([e >>> 0, c]);
-  // mov edi, 0BC000h; mov al, 7; stosb; mov byte [0BFF36h], 1; mov byte [100000h], 2; jmp 300000h
+  // mov edi, 0BC000h; mov al, 7; stosb; mov byte [0BFF36h], 1; mov byte [100000h], 2; mov al, [0BC010h]; jmp 300000h
   p.u8.set([0xbf, 0x00, 0xc0, 0x0b, 0x00, 0xb0, 0x07, 0xaa, 0xc6, 0x05, 0x36, 0xff, 0x0b, 0x00, 0x01, 0xc6, 0x05, 0x00, 0x00, 0x10, 0x00, 0x02,
-    0xe9, ...new Uint8Array(new Int32Array([0x300000 - (0x200000 + 27)]).buffer)], 0x200000);
+    0xa0, 0x10, 0xc0, 0x0b, 0x00, 0xe9, ...new Uint8Array(new Int32Array([0x300000 - (0x200000 + 32)]).buffer)], 0x200000);
+  p.u8[0xbc010] = 0;
+  p.trap = (e, c) => { calls.push([e >>> 0, c]); if (c === 0x3000001) p.u8[e >>> 0] = 0x5a; };   // (the device puts what the read returns there)
   const next = p.dynBlock(0x200000).run() >>> 0;
   assert.equal(next, 0x300000);
   assert.deepEqual([p.u8[0xbc000], p.u8[0xbff36], p.u8[0x100000]], [7, 1, 2], 'the stores are made');
-  return calls;
+  return [calls, p.cpu.eax.value & 0xff];
 };
-assert.deepEqual(run(true), [[0xbc000, 0x2000001], [0xbff36, 0x2000001]], 'the two in the device range go to the host, after they are made');
-assert.deepEqual(run(false), [], 'a module without one: none');
+assert.deepEqual(run(true), [[[0xbc000, 0x2000001], [0xbff36, 0x2000001], [0xbc010, 0x3000001]], 0x5a],
+  'the two stores in the device range go to the host after they are made, the load before, and takes what the device put there');
+assert.deepEqual(run(false), [[], 0], 'a module without one: none');
 console.log('dynmmio: ok');

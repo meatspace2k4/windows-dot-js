@@ -60,13 +60,17 @@ class Unsupported extends Error {}
 const MASK = { 1: 0xff, 2: 0xffff, 4: -1 };
 const COND = ['o', 'no', 'b', 'ae', 'e', 'ne', 'be', 'a', 's', 'ns', 'p', 'np', 'l', 'ge', 'le', 'g'];
 
-/** the device memory range (linear start, size) the module holding linear `lin` writes as registers, if it does */
+/** the device memory range (linear start, size) the module holding linear `lin` writes as registers, if it does; for
+ *  code in no module's image (a display driver's blits compiled onto the stack: VGA.DRV's), the range of the loaded
+ *  module that has one, the display driver that compiled it */
 function mmioRange(p, lin) {
+  let other = null;
   for (const m of p.ne ? p.ne.values() : []) {
-    const meta = m && m.meta;
-    if (meta && meta.mmio && lin >= meta.base && lin < meta.base + meta.size) return meta.mmio;
+    const meta = m && m.meta; if (!meta) continue;
+    if (lin >= meta.base && lin < meta.base + meta.size) return meta.mmio || null;
+    if (meta.mmio && !other) other = meta.mmio;
   }
-  return null;
+  return p.modules && p.modules.some(m => m.base && lin >= m.base && lin < m.base + (m.size || 0)) ? null : other;
 }
 /** translate the block at linear `lin` (code segment base `csb`, 32-bit default when `d32`) */
 function translate(p, lin, csb, d32) {
@@ -77,7 +81,8 @@ function translate(p, lin, csb, d32) {
   // code of a module that writes a device's registers (its build's mmio range, recomp.py --mmio): each store that
   // lands there goes to the host after it is made, as the module's translated code sends it
   const mm = mmioRange(p, lin);
-  const dev = (a, sz) => { if (mm) f.lg(a).c(mm[0]).op('sub').c(mm[1]).op('lt_u').if_().lg(a).c(0x2000000 | sz).e(0x10, 1).end(); };
+  const dev = (a, sz, code = 0x2000000) => { if (mm) f.lg(a).c(mm[0]).op('sub').c(mm[1]).op('lt_u').if_().lg(a).c(code | sz).e(0x10, 1).end(); };
+  const devLoad = (a, sz) => dev(a, sz, 0x3000000);   // (and its loads from there ask the host first, as recomp.py's do)
   let pc = lin, n = 0;
   const fetch = () => u8[pc++];
   const fetch16 = () => { const v = u8[pc] | (u8[pc + 1] << 8); pc += 2; return v; };
@@ -138,7 +143,7 @@ function translate(p, lin, csb, d32) {
       const sh = r & 4 ? 8 : 0, g = G[r & 3];
       f.gg(g).c(~(0xff << sh)).op('and').lg(loc).c(0xff).op('and'); if (sh) f.c(sh).op('shl'); f.op('or').gs(g);
     };
-    const rd = (o, sz) => { if (o.isReg) rdReg(o.rm, sz); else f.lg(A).ld(sz); };
+    const rd = (o, sz) => { if (o.isReg) rdReg(o.rm, sz); else { devLoad(A, sz); f.lg(A).ld(sz); } };
     const wr = (o, sz, loc) => { if (o.isReg) wrReg(o.rm, sz, loc); else { f.lg(A).lg(loc).st(sz); dev(A, sz); } };
     const imm = sz => sz === 1 ? fetch() : sz === 2 ? fetch16() : fetch32();
     // ---- flags
@@ -277,7 +282,7 @@ function translate(p, lin, csb, d32) {
     if (b >= 0xa0 && b <= 0xa3) {   // mov al/eax, moffs
       const sz = b & 1 ? osz : 1, off = asz === 4 ? fetch32() : fetch16();
       f.c(off).gg(sbase(seg === null ? 3 : seg)).op('add').ls(A);
-      if (b & 2) { rdReg(0, sz); f.ls(T); f.lg(A).lg(T).st(sz); dev(A, sz); } else { f.lg(A).ld(sz).ls(T); wrReg(0, sz, T); }
+      if (b & 2) { rdReg(0, sz); f.ls(T); f.lg(A).lg(T).st(sz); dev(A, sz); } else { devLoad(A, sz); f.lg(A).ld(sz).ls(T); wrReg(0, sz, T); }
       continue;
     }
     if (b === 0xa8 || b === 0xa9) { const sz = b & 1 ? osz : 1; rdReg(0, sz); f.c(imm(sz)).op('and').ls(R); f.c(0).gs('cf'); f.c(0).gs('of'); szp(sz); continue; }
@@ -496,7 +501,8 @@ function muldiv(f, op, sz, o, rd, L, rdReg, wrReg) {
 
 // string instructions, with rep / repe / repne
 function strop(f, b, osz, asz, seg, rep, L, alu2, szp, dev) {
-  const { T, A, B, C, R, D } = L, sz = b & 1 ? osz : 1;
+  const { T, A, B, C, R, D, X } = L, sz = b & 1 ? osz : 1;
+  const ld = () => { f.ls(X); dev(X, sz, 0x3000000); f.lg(X).ld(sz); };   // (the address on the stack: the load, a device's asked first)
   const idx = r => { f.gg(r); if (asz === 2) f.c(0xffff).op('and'); };
   const step = r => {   // r += df ? -sz : sz, within the address size
     f.gg(r).c(-sz).c(sz).gg('df').e(0x1b).op('add');
@@ -506,11 +512,11 @@ function strop(f, b, osz, asz, seg, rep, L, alu2, szp, dev) {
   const srcBase = seg === null ? 'dsb' : ['esb', 'csb', 'ssb', 'dsb', 'fs', 'gsb'][seg];
   const kind = b <= 0xa5 ? 'movs' : b <= 0xa7 ? 'cmps' : b <= 0xab ? 'stos' : b <= 0xad ? 'lods' : 'scas';
   const body = () => {
-    if (kind === 'movs') { f.gg('esb'); idx('edi'); f.op('add').lt(D); f.gg(srcBase); idx('esi'); f.op('add').ld(sz).st(sz); dev(D, sz); step('esi'); step('edi'); }
+    if (kind === 'movs') { f.gg('esb'); idx('edi'); f.op('add').lt(D); f.gg(srcBase); idx('esi'); f.op('add'); ld(); f.st(sz); dev(D, sz); step('esi'); step('edi'); }
     else if (kind === 'stos') { f.gg('esb'); idx('edi'); f.op('add').lt(D).gg('eax').st(sz); dev(D, sz); step('edi'); }
-    else if (kind === 'lods') { f.gg(srcBase); idx('esi'); f.op('add').ld(sz).ls(T); if (sz === 4) f.lg(T).gs('eax'); else f.gg('eax').c(sz === 2 ? 0xffff0000 : 0xffffff00).op('and').lg(T).op('or').gs('eax'); step('esi'); }
-    else if (kind === 'scas') { f.gg('eax').ls(B); f.gg('esb'); idx('edi'); f.op('add').ld(sz).ls(C); alu2(7, sz); step('edi'); }
-    else { f.gg(srcBase); idx('esi'); f.op('add').ld(sz).ls(B); f.gg('esb'); idx('edi'); f.op('add').ld(sz).ls(C); alu2(7, sz); step('esi'); step('edi'); }
+    else if (kind === 'lods') { f.gg(srcBase); idx('esi'); f.op('add'); ld(); f.ls(T); if (sz === 4) f.lg(T).gs('eax'); else f.gg('eax').c(sz === 2 ? 0xffff0000 : 0xffffff00).op('and').lg(T).op('or').gs('eax'); step('esi'); }
+    else if (kind === 'scas') { f.gg('eax').ls(B); f.gg('esb'); idx('edi'); f.op('add'); ld(); f.ls(C); alu2(7, sz); step('edi'); }
+    else { f.gg(srcBase); idx('esi'); f.op('add'); ld(); f.ls(B); f.gg('esb'); idx('edi'); f.op('add'); ld(); f.ls(C); alu2(7, sz); step('esi'); step('edi'); }
   };
   if (!rep) { body(); return; }
   // while (count) { body; count--; stop on zf for repe/repne with cmps/scas }

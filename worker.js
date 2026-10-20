@@ -227,7 +227,7 @@ class Machine {
   /** the screen's mode, DAC and cursor sprite for the page, which shows the screen from the shared memory */
   postScan() {
     const p = this.proc, a = p.scanout(), sp = p.sprite ? p.sprite() : null;
-    post({ t: 'scan', scan: { w: a.w, h: a.h, pitch: a.pitch || a.w, bpp: a.bpp, dacMode: a.hicolor, vram: a.vram.byteOffset }, dac: Uint8Array.from(a.dac),
+    post({ t: 'scan', scan: { w: a.w, h: a.h, pitch: a.pitch || a.w, bpp: a.bpp, dacMode: a.hicolor, attr: Array.from(a.attr.subarray(0, 0x15)), vram: a.vram.byteOffset }, dac: Uint8Array.from(a.dac),
       sprite: sp ? { x: sp.x, y: sp.y, px: sp.px, py: sp.py, cpp: sp.cpp, row: sp.row, at: sp.bits.byteOffset } : null });
   }
   /** the system's first task, MSGSRV32 (its message server: the drivers, SystemStart, then the shell). On the start
@@ -390,7 +390,7 @@ class Machine {
     } };
     addWin32Windows(p);
     post({ t: 'frame', list: [...nw.list, ...win32], active: nw.active, capture: nw.capture, cursorOn: this.cursorOn,
-      scan: { w: a.w, h: a.h, pitch: a.pitch || a.w, bpp: a.bpp, dacMode: a.hicolor, vram: a.vram.byteOffset }, dac: Uint8Array.from(a.dac), bg,
+      scan: { w: a.w, h: a.h, pitch: a.pitch || a.w, bpp: a.bpp, dacMode: a.hicolor, attr: Array.from(a.attr.subarray(0, 0x15)), vram: a.vram.byteOffset }, dac: Uint8Array.from(a.dac), bg,
       sprite: sp ? { x: sp.x, y: sp.y, px: sp.px, py: sp.py, cpp: sp.cpp, row: sp.row, at: sp.bits.byteOffset } : null,
       stats: { ...p.stats }, held: p.win16Held ? { hung: p.win16Held.hung } : null }, pixels);
     this.clip();

@@ -237,7 +237,7 @@ P.loadLibrary16 = function (name, native = false, defer = false) {
 P.bootUser16 = function () {
   if (this.user16Ready === undefined) this.user16Ready = false;
   if (this.vxdBoot) this.vxdBoot();   // the static VxDs, initialized before Windows starts (vmm.js)
-  for (const m of ['SYSTEM', 'KEYBOARD', 'MOUSE', 'DISPLAY', 'COMM', 'GDI']) this.loadLibrary16(m, true);
+  for (const m of ['SYSTEM', 'KEYBOARD', 'MOUSE', this.displayDriverFile(), 'COMM', 'GDI']) this.loadLibrary16(m, true);
   // USER.EXE calls into USER32.DLL through flat thunks from its LibEntry on, and USER32 connects them when it loads,
   // naming USER.EXE: so USER's image first, then USER32, then USER's LibEntry
   const user = this.ne.get('USER') || this.loadLibrary16('USER', true, true);
@@ -480,7 +480,8 @@ const INTS = {
       this.ax(ok ? 0x0010 : 0x0000); return;
     }
     if (ax === 0x10f1) { this.ax(0x0010); setBX(0x0003); return; }   // DAC type: Sierra 15/16-bit capable
-    if (ah === 0x10 || ah === 0x11 || ah === 0x01 || ah === 0x02) return;
+    if (ah === 0x10) { this.biosPalette(); return; }
+    if (ah === 0x11 || ah === 0x01 || ah === 0x02) return;
     if (ah === 0x4f) {
       const fn = ax & 0xff;
       if (fn === 0x00) {
@@ -684,6 +685,7 @@ P.blockIoctl = function () {
 P.trapHook = function (e, code) {
   if (code === 0) return this.exception16(0, u32(e));
   if (code < 0x100) return false;
+  if (code >= 0x3000000) { this.mmioRead(u32(e), code & 0xff); return true; }
   if (code >= 0x2000000) { this.mmioWrite(u32(e), code & 0xff); return true; }
   if (code >= 0x1000000) { this.portIO(code & 0xffff, (code >> 16) & 7, !!(code & 0x800000)); return true; }
   this.cpu.eip.value = this.interrupt(code - 0x100, u32(e)) | 0;
@@ -716,6 +718,34 @@ P.vbeModeInfo = function (a, m) {
   this.w32(a + 0x28, v.fb);
 };
 
+/** INT 10h AH=10h, the VGA BIOS's palette: the attribute controller's 16 palette registers (00h one, BL to BH; 02h all
+ *  and the overscan from ES:DX; 07h, 09h read them), the overscan (01h, 08h), blink or intensity (03h), the color
+ *  page (13h, 1Ah), the DAC's registers (10h one: BX, red DH, green CH, blue CL; 12h a block from ES:DX, BX first, CX
+ *  of them; 15h, 17h read them), its mask (18h, 19h) and the sum to gray (1Bh) */
+P.biosPalette = function () {
+  const a = this.adapter(), al = this.ax() & 0xff, bx = this.cpu.ebx.value & 0xffff, bl = bx & 0xff, bh = bx >> 8, cx = this.cpu.ecx.value & 0xffff;
+  const esdx = () => this.rmode ? ((this.cpu.es.value & 0xffff) << 4) + (this.cpu.edx.value & 0xffff) : this.lin(((this.cpu.es.value & 0xffff) << 16) | (this.cpu.edx.value & 0xffff));
+  const setBH = v => { this.cpu.ebx.value = lo16(this.cpu.ebx.value, (v & 0xff) << 8 | bl); };
+  switch (al) {
+    case 0x00: if (bl < 0x15) a.attr[bl] = bh; break;
+    case 0x01: a.attr[0x11] = bh; break;
+    case 0x02: { const p = esdx(); for (let i = 0; i < 16; i++) a.attr[i] = this.u8[p + i]; a.attr[0x11] = this.u8[p + 16]; break; }
+    case 0x03: a.attr[0x10] = (a.attr[0x10] & ~8) | (bl & 1) << 3; break;
+    case 0x07: setBH(a.attr[bl & 0x1f]); break;
+    case 0x08: setBH(a.attr[0x11]); break;
+    case 0x09: { const p = esdx(); for (let i = 0; i < 16; i++) this.u8[p + i] = a.attr[i]; this.u8[p + 16] = a.attr[0x11]; break; }
+    case 0x10: { const k = 3 * (bx & 0xff); a.dac[k] = (this.cpu.edx.value >> 8) & 0x3f; a.dac[k + 1] = (cx >> 8) & 0x3f; a.dac[k + 2] = cx & 0x3f; break; }
+    case 0x12: { const p = esdx(); for (let i = 0; i < cx && bx + i < 256; i++) for (let c = 0; c < 3; c++) a.dac[3 * (bx + i) + c] = this.u8[p + 3 * i + c] & 0x3f; break; }
+    case 0x13: if (bl === 0) a.attr[0x10] = (a.attr[0x10] & 0x7f) | (bh & 1) << 7; else a.attr[0x14] = bh & 0x0f; break;
+    case 0x15: { const k = 3 * (bx & 0xff); this.cpu.edx.value = lo16(this.cpu.edx.value, a.dac[k] << 8 | (this.cpu.edx.value & 0xff)); this.cpu.ecx.value = lo16(this.cpu.ecx.value, a.dac[k + 1] << 8 | a.dac[k + 2]); break; }
+    case 0x17: { const p = esdx(); for (let i = 0; i < cx && bx + i < 256; i++) for (let c = 0; c < 3; c++) this.u8[p + 3 * i + c] = a.dac[3 * (bx + i) + c]; break; }
+    case 0x18: a.pelMask = bl; break;
+    case 0x19: this.cpu.ebx.value = lo16(this.cpu.ebx.value, (bx & 0xff00) | a.pelMask); break;
+    case 0x1a: this.cpu.ebx.value = lo16(this.cpu.ebx.value, (a.attr[0x14] & 0x0f) << 8 | (a.attr[0x10] >> 7)); break;
+    case 0x1b: for (let i = 0; i < cx && bx + i < 256; i++) { const k = 3 * (bx + i), y = Math.round(0.3 * a.dac[k] + 0.59 * a.dac[k + 1] + 0.11 * a.dac[k + 2]); a.dac[k] = a.dac[k + 1] = a.dac[k + 2] = y; } break;
+  }
+  a.dirty = true;
+};
 // BIOS services reached through interrupt vectors a driver saved and calls with pushf + far call (KEYBOARD.DRV's
 // INT 16h and INT 09h): they return as an interrupt handler that keeps its flags does (RETF 2)
 const BIOS_INT = { 0x09: true, 0x16: true };
@@ -1148,6 +1178,14 @@ P.displayConfig = function () {
   const reg = parseInt(regStr(window.W95Win32.regGet('hkcc\\display\\settings', 'BitsPerPixel')), 10), bpp = reg || ini('BitsPerPixel', 8);
   return { ...this.displaySlot(w, h, bpp), bpp };
 };
+/** the display driver for the configured mode, as USER's loader (PNPDRVR) finds it: the display devnode's software
+ *  key names one for the depth and size (MODES\<bpp>\<w>,<h>: TSENG's 16-color modes are VGA.DRV's and
+ *  SUPERVGA.DRV's) or else its own (DEFAULT\drv); with no devnode, the DISPLAY module the build has */
+P.displayDriverFile = function () {
+  const W = window.W95Win32, dn = this.devnodes().find(d => /^display$/i.test(d.cls)), sw = this.devSoftKey(dn); if (!sw) return 'DISPLAY';
+  const c = this.displayConfig();
+  return (regStr(W.regGet(`${sw}\\modes\\${c.bpp}\\${c.w},${c.h}`, 'drv')) || regStr(W.regGet(sw + '\\default', 'drv')) || 'DISPLAY').toUpperCase();
+};
 // the display driver's own list of resolutions; a size not on it is the configured size of the adapter's custom mode
 const FB_SIZES = [[320, 200], [320, 240], [512, 384], [640, 400], [640, 480], [800, 600], [1024, 768], [1280, 1024], [1600, 1200]];
 // the driver's entry that stands for the custom size at a depth: its largest the depth has a mode for (TSENG.DRV's
@@ -1212,8 +1250,7 @@ def16('VDD', 0, '', 'jmp', function () {
       // (the display's devnode and the driver its software key names, DEFAULT\drv: USER restarts Windows for a mode
       // whose driver is not the one loaded; with no devnode, the loaded driver's file)
       const a = this.lin((this.cpu.es.value << 16) | (this.cpu.edi.value & 0xffff)), n = Math.min(this.cpu.ecx.value & 0xffff, 0x4a), c = this.displayConfig();
-      const dn = this.devnodes().find(d => /^display$/i.test(d.cls)), sw = this.devSoftKey(dn), m = this.ne && this.ne.get('DISPLAY');
-      const drv = (sw && regStr(window.W95Win32.regGet(sw + '\\default', 'drv'))) || (m && m.fileName) || 'DISPLAY';
+      const dn = this.devnodes().find(d => /^display$/i.test(d.cls)), drv = this.displayDriverFile().toLowerCase();
       this.u8.fill(0, a, a + n); this.w16(a, n); this.w32(a + 4, dn ? dn.handle : 0); this.writeA(a + 8, drv, 16);
       this.w16(a + 0x18, c.w); this.w16(a + 0x1a, c.h); this.w16(a + 0x1c, 96); this.u8[a + 0x1e] = 1; this.u8[a + 0x1f] = c.bpp;
       this.w16(a + 0x20, 60); this.w16(a + 0x22, 60);
@@ -1227,7 +1264,13 @@ def16('VDD', 0, '', 'jmp', function () {
 // The register file the drivers probe and program, 1 MB of VRAM behind a 64K window at A0000h selected through the
 // segment select register (3CDh), the Tseng video BIOS modes, and the W32's hardware sprite (the CRTCB/sprite
 // registers behind the IMA port 217Ah/217Bh).
-const ET_MODES = { 0x03: [720, 400, 0], 0x13: [320, 200, 8], 0x2e: [640, 480, 8], 0x2f: [640, 400, 8], 0x30: [800, 600, 8], 0x38: [1024, 768, 8], 0x3d: [1280, 1024, 8] };
+const ET_MODES = { 0x03: [720, 400, 0], 0x13: [320, 200, 8], 0x2e: [640, 480, 8], 0x2f: [640, 400, 8], 0x30: [800, 600, 8], 0x38: [1024, 768, 8], 0x3d: [1280, 1024, 8],
+  // the 16-color planar modes: the VGA's 640x480 (12h, VGA.DRV's) and the 800x600 ones (Tseng's 29h, VESA's 6Ah)
+  0x12: [640, 480, 4], 0x29: [800, 600, 4], 0x6a: [800, 600, 4] };
+// the 16-color modes' attribute palette as the BIOS loads it (the EGA's colors), and the DAC's first 64 entries: the
+// EGA's 64 colors, each of red, green and blue at 0, 1/3 (secondary bit), 2/3 (primary bit) or full
+const EGA_ATTR = [0, 1, 2, 3, 4, 5, 0x14, 7, 0x38, 0x39, 0x3a, 0x3b, 0x3c, 0x3d, 0x3e, 0x3f];
+const egaDac = i => [(i >> 2 & 1) * 0x2a + (i >> 5 & 1) * 0x15, (i >> 1 & 1) * 0x2a + (i >> 4 & 1) * 0x15, (i & 1) * 0x2a + (i >> 3 & 1) * 0x15];
 // the card as MSDISP.INF's VGA.LogConfig gives the W32 (*PNP0912) its resources: the VGA's ports 3B0h-3BBh and
 // 3C0h-3DFh, its memory windows A0000h-AFFFFh and B8000h-BFFFFh (the W32's MMU there) and the video BIOS at C0000h.
 // Its devnode is the one Setup made for it (win95.js setupDisplay); the network's machine has no display
@@ -1245,7 +1288,7 @@ P.adapter = function () {
 P.setBank = function (b) {
   const a = this.adapter(); b &= (VRAM_SIZE >> 16) - 1;   // (the W32's banks reach all its memory: segment select 2 adds their high bits)
   if (b === a.bank) return;
-  if (a.flat) { a.bank = b; return; }     // VFLATD presents VRAM linearly; the window is no longer the access path
+  if (a.flat || a.planar) { a.bank = b; return; }     // VFLATD presents VRAM linearly; the window is no longer the access path (nor is it in the planar modes: each access goes through the graphics controller, vgaRead/vgaWrite)
   const u8 = this.u8; a.vram = u8.subarray(a.vramLin, a.vramLin + VRAM_SIZE);
   a.vram.set(u8.subarray(WIN, WIN + 0x10000), a.bank << 16);
   u8.set(a.vram.subarray(b << 16, (b << 16) + 0x10000), WIN);
@@ -1255,8 +1298,8 @@ P.setBank = function (b) {
 P.scanout = function () {
   const a = this.adapter();
   a.vram = this.u8.subarray(a.vramLin, a.vramLin + VRAM_SIZE);
-  if (!a.flat) a.vram.set(this.u8.subarray(WIN, WIN + 0x10000), a.bank << 16);
-  if (a.crtc[0x13]) a.pitch = (a.crtc[0x13] | ((a.crtc[0x3f] & 0x80) << 1)) * 8;   // CRTC offset register: bytes per scanline / 8
+  if (!a.flat && !a.planar) a.vram.set(this.u8.subarray(WIN, WIN + 0x10000), a.bank << 16);
+  if (a.crtc[0x13]) a.pitch = (a.crtc[0x13] | ((a.crtc[0x3f] & 0x80) << 1)) * (a.planar ? 2 : 8);   // CRTC offset register: bytes per scanline / 8 (/ 2 a plane's in the planar modes)
   return a;
 };
 /** the W32 hardware sprite as the CRTC overlays it: on (F7h bit 7), its screen position (E0h/E1h, E4h/E5h), the
@@ -1278,6 +1321,7 @@ P.sprite = function () {
 // once they are made (recomp.py --mmio); an operation runs to completion at once, so the status (7F36h) reads idle.
 const MMU = 0xb8000;
 P.mmioWrite = function (lin, size) {
+  if (lin >= WIN && lin < WIN + 0x10000) return this.vgaWrite(lin, size);
   const a = this.adapter(), off = lin - MMU, u8 = this.u8;
   if (off >= 0x7f00) { u8[MMU + 0x7f36] = 0; return; }
   if (off >= 0x6000) return;
@@ -1288,6 +1332,49 @@ P.mmioWrite = function (lin, size) {
     else { this.aclRun(a.acl); a.acl = null; }
   } else for (let i = 0; i < size; i++) vram[(dst + i) & (VRAM_SIZE - 1)] = u8[lin + i];
   if (!a.flat) u8.set(vram.subarray(a.bank << 16, (a.bank << 16) + 0x10000), WIN);
+  a.dirty = true;
+};
+/** a load from device memory, before it is made (recomp.py mmio_load): the VGA's window in the planar modes puts the
+ *  read's result there; the W32's registers read as they are kept */
+P.mmioRead = function (lin, size) { if (lin >= WIN && lin < WIN + 0x10000) this.vgaRead(lin, size); };
+// The VGA's graphics controller in the 16-color planar modes: the four planes are VRAM's first four 64K (plane p at
+// p * 10000h), each byte of the A0000h window one byte of each plane. A read loads the four latches and returns, in
+// read mode 0 (GC 5 bit 3 clear), the plane GC 4 selects, in read mode 1 the bits whose color matches GC 2 in the
+// planes GC 7 cares about. A write goes to the planes the sequencer's map mask (SEQ 2) enables, as write mode
+// (GC 5 bits 1-0) says: 0 the byte rotated (GC 3 bits 2-0), or set/reset's (GC 0) where GC 1 enables it, then the
+// logical operation with the latches (GC 3 bits 4-3: replace, AND, OR, XOR) and the bit mask (GC 8: latch bits kept
+// where clear); 1 the latches as they are; 2 the byte's low four bits, a plane each, through the operation and mask;
+// 3 set/reset through the operation, the rotated byte ANDed with the bit mask the mask. Outside the planar modes
+// the window is RAM, banked into VRAM (setBank)
+P.vgaRead = function (lin, size) {
+  const a = this.adapter(); if (!a.planar) return;
+  const v = a.vram, g = a.gc, l = a.latch || (a.latch = new Uint8Array(4));
+  for (let i = 0; i < size; i++) {
+    const off = lin + i - WIN;
+    for (let p = 0; p < 4; p++) l[p] = v[p << 16 | off];
+    let r;
+    if (g[5] & 8) { r = 0xff; for (let p = 0; p < 4; p++) if (g[7] >> p & 1) r &= ~(l[p] ^ (g[2] >> p & 1 ? 0xff : 0)); }
+    else r = l[g[4] & 3];
+    this.u8[lin + i] = r & 0xff;
+  }
+};
+P.vgaWrite = function (lin, size) {
+  const a = this.adapter(); if (!a.planar) return;
+  const v = a.vram, g = a.gc, l = a.latch || (a.latch = new Uint8Array(4)), mode = g[5] & 3, rot = g[3] & 7, fn = g[3] >> 3 & 3, mask = g[8], mm = a.seq[2];
+  const alu = (d, q) => (fn === 0 ? d : fn === 1 ? d & q : fn === 2 ? d | q : d ^ q);
+  for (let i = 0; i < size; i++) {
+    const off = lin + i - WIN, b = this.u8[lin + i], r = ((b >> rot) | (b << (8 - rot))) & 0xff;
+    for (let p = 0; p < 4; p++) {
+      if (!(mm >> p & 1)) continue;
+      const q = l[p], sr = g[0] >> p & 1 ? 0xff : 0;
+      let d;
+      if (mode === 1) d = q;
+      else if (mode === 2) d = (alu(b >> p & 1 ? 0xff : 0, q) & mask) | (q & ~mask);
+      else if (mode === 3) { const m = r & mask; d = (alu(sr, q) & m) | (q & ~m); }
+      else d = (alu(g[1] >> p & 1 ? sr : r, q) & mask) | (q & ~mask);
+      v[p << 16 | off] = d & 0xff;
+    }
+  }
   a.dirty = true;
 };
 // raster operation r (the ternary ROP code) on pattern, source and destination bytes
@@ -1365,11 +1452,18 @@ P.setVideoMode = function (mode, clear, hicolor) {
   a.mode = mode & 0x7f; [a.w, a.h, a.bpp] = m; a.hicolor = hicolor || 0;
   if (this.customMode && a.mode === this.customMode.mode) [a.w, a.h] = [this.customMode.w, this.customMode.h];   // the adapter's custom mode: the configured size (displaySlot), in the entry that stands for it at the depth
   if (hicolor) a.bpp = hicolor;
-  a.pitch = a.w * (a.bpp >> 3);
-  // the register values the BIOS loads for the mode: sequencer memory mode (chain-4 for the packed-pixel modes), the
-  // CRTC's horizontal and vertical display end (with their overflow bits in 07h and Tseng's 35h) and its offset
-  const vde = a.h - 1, off = a.bpp ? (a.pitch + 7) >> 3 : a.w >> 3;   // (the offset register counts 8 bytes: a line is never shorter than its pixels)
-  a.misc = 0x63; a.seq[4] = a.bpp ? 0x0e : 0x02;
+  a.planar = a.bpp === 4;
+  a.pitch = a.planar ? a.w >> 3 : a.w * (a.bpp >> 3);
+  // the register values the BIOS loads for the mode: sequencer memory mode (chain-4 for the packed-pixel modes; the
+  // 16-color modes' four planes each at the same address, odd/even off), the CRTC's horizontal and vertical display
+  // end (with their overflow bits in 07h and Tseng's 35h) and its offset
+  const vde = a.h - 1, off = a.planar ? a.pitch >> 1 : a.bpp ? (a.pitch + 7) >> 3 : a.w >> 3;   // (the offset register counts 8 bytes, words in the planar modes: a line is never shorter than its pixels)
+  a.misc = 0x63; a.seq[4] = a.planar ? 0x06 : a.bpp ? 0x0e : 0x02;
+  if (a.planar) {   // (all four planes written, write mode 0, no set/reset, every bit; the EGA's palette)
+    a.seq[2] = 0x0f; a.gc.fill(0, 0, 9); a.gc[6] = 0x05; a.gc[7] = 0x0f; a.gc[8] = 0xff; a.latch = new Uint8Array(4);
+    EGA_ATTR.forEach((v, i) => { a.attr[i] = v; }); a.attr[0x10] = 0x01; a.attr[0x12] = 0x0f; a.attr[0x14] = 0;
+    for (let i = 0; i < 64; i++) a.dac.set(egaDac(i), 3 * i);
+  }
   a.crtc[0x01] = (a.w >> 3) - 1; a.crtc[0x12] = vde & 0xff;
   a.crtc[0x07] = (a.crtc[0x07] & ~0x42) | ((vde >> 8 & 1) << 1) | ((vde >> 9 & 1) << 6);
   a.crtc[0x35] = (a.crtc[0x35] & ~0x04) | ((vde >> 10 & 1) << 2);
