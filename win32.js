@@ -749,7 +749,11 @@ const regDump = () => [...REGISTRY].map(([path, m]) => [path, [...m], KEYNAME.ge
 const regApply = (o, quiet) => {
   const was = regQuiet; if (quiet) regQuiet = true;
   try {
-    if (o.op === 'key') { regMake(o.path, null); if (o.name) KEYNAME.set(o.path, o.name); }
+    if (o.op === 'key') {   // (its name with it, to this copy's store too: the case a later load gives back)
+      const had = REGISTRY.has(o.path);
+      regMake(o.path, o.name ? o.path.slice(0, o.path.length - o.name.length) + o.name : null);
+      if (o.name) { KEYNAME.set(o.path, o.name); if (had) regChanged(o); }
+    }
     else if (o.op === 'set') regSet(o.path, o.name, o.value);
     else if (o.op === 'del') { const m = REGISTRY.get(o.path); if (m) m.delete(o.name); regChanged(o); }
     else if (o.op === 'delkey') regDel(o.path);
