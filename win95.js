@@ -2832,6 +2832,25 @@ function winHelp(file = 'windows.hlp') { closeMenus(); if (hasHelp()) runNative(
 // always the same, so the note is cleared before each start
 function setupDisplay() {
   if (W95Win32.iniGet(fs, 'SYSTEM.INI', 'boot', '*DisplayFallback') !== null) W95Win32.iniSet(fs, 'SYSTEM.INI', 'boot', '*DisplayFallback', null);
+  setupDisplayDevices();
+}
+// the display adapter and monitor Setup's detection finds and installs: the Tseng ET4000/W32 (MSDISP.INF *PNP0912,
+// TsengW32: TSENG.DRV with its mini-VDD TSENG.VXD) as a ROOT devnode under the Display class, and the monitor the
+// adapter enumerates (MONITOR.INF's class install makes Monitor\Default_Monitor\0001) as Super VGA 1280x1024, the
+// generic type that takes the adapter's largest mode
+function setupDisplayDevices() {
+  const R = W95Win32, infs = (window.W95SYSTEM || {}).infs || {}, disp = infs['MSDISP.INF'], mon = infs['MONITOR.INF']; if (!disp || !mon) return;
+  const hw = 'hklm\\enum\\root\\*pnp0912\\0000', cls = 'hklm\\system\\currentcontrolset\\services\\class\\';
+  if (R.regGet(hw, 'Driver') !== undefined) return;
+  const str = v => ({ type: 1, data: W95FS.encode(v + '\0') }), set = (k, o) => { for (const [n, v] of Object.entries(o)) R.regSet(k, n, str(v)); };
+  infAddReg(disp, 'ClassAddReg', cls + 'display');
+  infAddReg(disp, 'TsengW32.AddReg', cls + 'display\\0000');
+  set(cls + 'display\\0000', { DriverDesc: 'Tseng Labs ET4000/W32', ProviderName: 'Microsoft', InfPath: 'MSDISP.INF', InfSection: 'TsengW32' });
+  set(hw, { Class: 'Display', Driver: 'Display\\0000', DeviceDesc: 'Tseng Labs ET4000/W32', HardwareID: '*PNP0912', Mfg: 'Tseng Labs' });
+  infAddReg(mon, 'ClassAddReg', cls + 'monitor');
+  infAddReg(mon, '1280', cls + 'monitor\\0000');
+  set(cls + 'monitor\\0000', { DriverDesc: 'Super VGA 1280x1024', ProviderName: 'Microsoft', InfPath: 'MONITOR.INF', InfSection: '1280.Install' });
+  set('hklm\\enum\\monitor\\default_monitor\\0001', { Class: 'Monitor', Driver: 'Monitor\\0000', DeviceDesc: 'Super VGA 1280x1024', HardwareID: 'Monitor\\Default_Monitor', Mfg: '(Standard monitor types)' });
 }
 function setupSound() {
   const S = window.W95SYSTEM || {}, infs = S.infs || {};

@@ -9,7 +9,8 @@ const P = window.W95Win32.Process.prototype;
 // the card as WAVE.INF's *PNPB007 factory configuration has it: configuration register 530h, codec 534h-537h, the OPL3
 // synthesizer's ports 388h-38Bh, IRQ 7, DMA channel 1. Its devnode is the one Setup made for it (win95.js setupSound)
 const WSS = { devnode: 'ROOT\\*PNPB007\\0000', cfg: 0x530, codec: 0x534, opl: 0x388, irq: 7, dma: 1 };
-P.cards = function () { return [{ devnode: WSS.devnode, io: [[WSS.cfg, 8], [WSS.opl, 4]], irq: [WSS.irq], dma: [WSS.dma], wss: WSS }]; };
+const cards0 = P.cards;
+P.cards = function () { return [...(cards0 ? cards0.call(this) : []), { devnode: WSS.devnode, io: [[WSS.cfg, 8], [WSS.opl, 4]], irq: [WSS.irq], dma: [WSS.dma], wss: WSS }]; };
 
 // ---------------------------------------------------------------- 8259 interrupt controllers
 // the mask registers (21h, A1h) and in-service state; an interrupt is delivered to the vector the driver set for it

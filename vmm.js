@@ -805,7 +805,7 @@ svc(CONFIGMG, 0x44, function (arg) { const dn = this.cmNode(arg(0)); if (!dn) re
 // ---- CONFIGMG: logical configurations (BASIC 0, FILTERED 1, ALLOC 2, BOOT 3, FORCED 4) of resource descriptors.
 // A card's requirements and assignment are the resources it decodes (P.cards): an IO_DES per port range, an IRQ_DES,
 // a DMA_DES, the same in each list
-const RES = { IO: 2, DMA: 3, IRQ: 4 };
+const RES = { MEM: 1, IO: 2, DMA: 3, IRQ: 4 };
 const cmObjs = p => p.cmObjs || (p.cmObjs = new Map());
 const cmObj = (p, o) => { const h = p.alloc(8); o.handle = h; cmObjs(p).set(h, o); return o; };
 // a resource descriptor: its handle is the address of its data, as CONFIGMG's are (VCOMM reads an IO_DES's base there)
@@ -817,6 +817,8 @@ P.cmLogConfs = function (dn, type) {
   const hw = this.cards && this.cards().find(c => c.devnode === dn.id);
   if (hw && type !== 4) {
     const lc = cmObj(this, { kind: 'lc', dn, type, res: [] }); list.push(lc);
+    // (a MEM_DES: count 0, MType_Range 14h, the window's first and last byte)
+    for (const [b, n] of hw.mem || []) { const d = new Uint8Array(16), v = new DataView(d.buffer); v.setUint16(2, 0x14, true); v.setUint32(4, b, true); v.setUint32(8, b + n - 1, true); lc.res.push(cmRd(this, lc, RES.MEM, d)); }
     for (const [b, n] of hw.io) { const d = new Uint8Array(12), v = new DataView(d.buffer); v.setUint16(2, 12, true); v.setUint16(4, b, true); v.setUint16(6, b + n - 1, true); d[10] = 0xff; lc.res.push(cmRd(this, lc, RES.IO, d)); }
     for (const q of hw.irq) { const d = new Uint8Array(8), v = new DataView(d.buffer); v.setUint16(2, q, true); v.setUint16(4, 1 << q, true); lc.res.push(cmRd(this, lc, RES.IRQ, d)); }
     for (const c of hw.dma) { const d = Uint8Array.from([0, c, 1 << c, 0]); lc.res.push(cmRd(this, lc, RES.DMA, d)); }

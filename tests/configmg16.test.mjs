@@ -67,6 +67,24 @@ assert.equal(p.r32(BASE + 0x204), 1 << 2, 'its drive map: C:');
 assert.equal(ioctl(5, 0x086f), 15, 'E:, a network drive');
 assert.equal(ioctl(3, 0x0860), 1, 'Get Device Parameters is not answered here');
 
+// the display adapter (ne16.js's card: VGA.LogConfig's windows and ports) under the Display class, and the monitor it
+// enumerates as its child: its memory descriptors come first, A0000h-AFFFFh
+{
+  const q = Object.create(P);
+  Object.defineProperty(q, 'u8', { value: mem });
+  Object.assign(q, { alloc: p.alloc, free() {}, r16: p.r16, r32: p.r32, w16: p.w16, w32: p.w32, host: {} });
+  W.regSet('hklm\\enum\\root\\*pnp0912\\0000', 'Class', 'Display');
+  W.regSet('hklm\\enum\\monitor\\default_monitor\\0001', 'Class', 'Monitor'); W.regSet('hklm\\enum\\monitor\\default_monitor\\0001', 'Driver', 'Monitor\\0000');
+  const disp = q.devnodes().find(d => d.id === 'ROOT\\*PNP0912\\0000'), monitor = q.devnodes().find(d => d.id === 'MONITOR\\DEFAULT_MONITOR\\0001');
+  assert.ok(disp && monitor && monitor.parent === disp && disp.children.includes(monitor), 'the monitor is the adapter\'s child');
+  assert.equal(q.cmTree().children.includes(monitor), false, 'and not the root\'s');
+  const lc0 = q.cmLogConfs(disp, 2)[0], rd0 = lc0.res[0];
+  assert.equal(rd0.rid, 1, 'ResType_Mem first');
+  assert.deepEqual([q.r32(rd0.handle + 4), q.r32(rd0.handle + 8)], [0xa0000, 0xaffff]);
+  assert.deepEqual(lc0.res.map(r => r.rid), [1, 1, 1, 2, 2], 'three windows, then the VGA\'s two port ranges');
+  assert.deepEqual(q.cards.call({ host: { net: true } }), [], 'the network\'s machine has no display');
+}
+
 // GetDriveType: a network drive is DRIVE_REMOTE
 str(0x300, 'E:\\'); assert.equal(W.API.KERNEL32.GetDriveTypeA[1].call(p, BASE + 0x300), 4);
 str(0x300, 'C:\\'); assert.equal(W.API.KERNEL32.GetDriveTypeA[1].call(p, BASE + 0x300), 3);

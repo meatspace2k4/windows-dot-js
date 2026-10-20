@@ -191,6 +191,8 @@ with tempfile.TemporaryDirectory() as tmp:
 INFS = ['shell.inf', 
         # the base install's (PRECOPY1.CAB): its UpdateInis lines for SETUP.INI, the Start menu GRPCONV makes
         'setupc.inf', 'msports.inf', 'motown.inf', 'mmopt.inf', 'wave.inf', 'netnovel.inf', 'nettrans.inf', 'netcli.inf', 'net.inf', 'netdef.inf',
+        # the display adapter's and the monitor's (PRECOPY1.CAB)
+        'msdisp.inf', 'monitor.inf',
         # the printer drivers' INFs the Add Printer wizard lists (PRECOPY2.CAB)
         'msprint.inf', 'msprint2.inf',
         # where each file of the CD's cabinets is, which Setup's engine copies from (PRECOPY2.CAB)

@@ -895,6 +895,14 @@ P.devnodes = function () {
     const key = `hklm\\enum\\${bus}\\${dev}\\${inst}`;
     out.push({ handle: 0xc1000000 + 0x100 * out.length, id: `${bus}\\${dev}\\${inst}`.toUpperCase(), key, cls: regStr(W.regGet(key, 'Class')), driver: regStr(W.regGet(key, 'Driver')) });
   }
+  // the monitor, which the display adapter enumerates (Enum\Monitor): a child of the adapter's devnode
+  const display = out.find(d => /^display$/i.test(d.cls));
+  if (display) for (const dev of W.regKids('hklm\\enum\\monitor')) for (const inst of W.regKids(`hklm\\enum\\monitor\\${dev}`)) {
+    const key = `hklm\\enum\\monitor\\${dev}\\${inst}`;
+    if (!W.regGet(key, 'Driver')) continue;
+    const dn = { handle: 0xc1000000 + 0x100 * out.length, id: `MONITOR\\${dev}\\${inst}`.toUpperCase(), key, cls: regStr(W.regGet(key, 'Class')), driver: regStr(W.regGet(key, 'Driver')), parent: display, children: [] };
+    out.push(dn); (display.children = display.children || []).push(dn);
+  }
   return (this.devTree = out);
 };
 P.devnode = function (h) { return this.devnodes().find(d => d.handle === u32(h)) || null; };
@@ -1092,12 +1100,14 @@ vxdApi(0x0033, 'CONFIGMG', {
     window.W95Win32.regSet('hklm\\' + k, (arg(2) && this.readA(this.lin(arg(2)))) || '', { type: arg(3), data: this.u8.slice(b, b + n) }); return CR.SUCCESS;
   },
 });
-/** CMCONFIG for a devnode: memory windows (9), I/O ports (20), IRQs (7), DMA channels (7), as Config_Buff_s lays them out */
+/** CMCONFIG for a devnode: memory windows (9: bases, lengths, attributes), I/O ports (20), IRQs (7), DMA channels (7),
+ *  as Config_Buff_s lays them out */
 P.cmConfig = function (dn, a) {
   const hw = this.cards && this.cards().find(c => c.devnode === dn.id);
   this.u8.fill(0, a, a + 0xd8);
   if (!hw) return CR.NO_MORE_LOG_CONF;
-  const io = a + 2 + 36 + 36 + 18, irq = io + 2 + 40 + 40, dma = irq + 2 + 14;
+  const io = a + 2 + 36 + 36 + 18, irq = io + 2 + 40 + 40, dma = irq + 2 + 14, mem = hw.mem || [];
+  this.w16(a, mem.length); mem.forEach(([b, n], i) => { this.w32(a + 2 + 4 * i, b); this.w32(a + 38 + 4 * i, n); });
   this.w16(io, hw.io.length); hw.io.forEach(([b, n], i) => { this.w16(io + 2 + 2 * i, b); this.w16(io + 42 + 2 * i, n); });
   this.w16(irq, hw.irq.length); hw.irq.forEach((n, i) => { this.u8[irq + 2 + i] = n; });
   this.w16(dma, hw.dma.length); hw.dma.forEach((n, i) => { this.u8[dma + 2 + i] = n; });
@@ -1189,6 +1199,10 @@ def16('VDD', 0, '', 'jmp', function () {
 // segment select register (3CDh), the Tseng video BIOS modes, and the W32's hardware sprite (the CRTCB/sprite
 // registers behind the IMA port 217Ah/217Bh).
 const ET_MODES = { 0x03: [720, 400, 0], 0x13: [320, 200, 8], 0x2e: [640, 480, 8], 0x2f: [640, 400, 8], 0x30: [800, 600, 8], 0x38: [1024, 768, 8], 0x3d: [1280, 1024, 8] };
+// the card as MSDISP.INF's VGA.LogConfig gives the W32 (*PNP0912) its resources: the VGA's ports 3B0h-3BBh and
+// 3C0h-3DFh, its memory windows A0000h-AFFFFh and B8000h-BFFFFh (the W32's MMU there) and the video BIOS at C0000h.
+// Its devnode is the one Setup made for it (win95.js setupDisplay); the network's machine has no display
+P.cards = function () { return this.host && this.host.net ? [] : [{ devnode: 'ROOT\\*PNP0912\\0000', io: [[0x3b0, 0x0c], [0x3c0, 0x20]], irq: [], dma: [], mem: [[0xa0000, 0x10000], [0xb8000, 0x8000], [0xc0000, 0x8000]] }]; };
 const VRAM_SIZE = 4 << 20, WIN = 0xa0000;   // (a W32p with 4 MB: the largest custom mode at 16 bits, with the driver's off-screen caches, fits)
 P.adapter = function () {
   if (this.et) return this.et;
