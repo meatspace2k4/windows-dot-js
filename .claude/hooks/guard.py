@@ -132,6 +132,30 @@ def post(tool, ti, sid):
     save(sid, s)
 
 
+def last_tool(path):
+    """the name of the last tool the assistant called since the person's last prompt, or None"""
+    last = None
+    try:
+        with open(path) as f:
+            for line in f:
+                try:
+                    e = json.loads(line)
+                except ValueError:
+                    continue
+                c = (e.get('message') or {}).get('content')
+                if e.get('type') == 'user' and not e.get('isMeta') and (isinstance(c, str) or (
+                        isinstance(c, list) and any(isinstance(x, dict) and x.get('type') == 'text' for x in c)
+                        and not any(isinstance(x, dict) and x.get('type') == 'tool_result' for x in c))):
+                    last = None
+                elif e.get('type') == 'assistant' and isinstance(c, list):
+                    for x in c:
+                        if isinstance(x, dict) and x.get('type') == 'tool_use':
+                            last = x.get('name')
+    except (OSError, TypeError):
+        return 'AskUserQuestion'
+    return last
+
+
 SID = ''
 
 
@@ -142,8 +166,10 @@ def main():
     SID = sid
     ev = d.get('hook_event_name')
     if ev == 'Stop':
-        if not d.get('stop_hook_active') and untested(sid):
+        if untested(sid):
             print(json.dumps({'decision': 'block', 'reason': 'Files edited since the last passing node tests/ run. Run the tests on this change before ending the turn.'}))
+        elif last_tool(d.get('transcript_path')) != 'AskUserQuestion':
+            print(json.dumps({'decision': 'block', 'reason': 'A turn ends only on a blocker raised with AskUserQuestion. Not for updates, summaries or reports. Keep working.'}))
         return
     if ev == 'PostToolUse':
         if tool in ('Bash', 'Edit', 'Write', 'NotebookEdit'):
