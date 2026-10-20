@@ -214,6 +214,8 @@ INFS = ['shell.inf',
 # the sounds Setup puts in C:\WINDOWS\MEDIA: MOTOWN.INF's start-up sound and MMOPT.INF's clips of a Typical install (WIN95_02.CAB)
 MEDIA = ['mssound.wav', 'chimes.wav', 'chord.wav', 'ding.wav', 'tada.wav', 'canyon.mid', 'passport.mid']
 bundle['media'] = {f.upper(): b64(os.path.join(src, f)) for f in MEDIA if os.path.exists(os.path.join(src, f))}
+# the start-up screen IO.SYS shows while Windows loads: the CD's LOGO.SYS (WIN95_02.CAB logo2_0.sys), 320x400 at 8 bits
+if os.path.exists(os.path.join(src, 'logo2_0.sys')): bundle['logo'] = b64(os.path.join(src, 'logo2_0.sys'))
 # the wallpapers Setup puts in C:\WINDOWS: SHELL.INF's basebitmaps (WIN95_02.CAB)
 BITMAPS = ['bamboo.bmp', 'bubbles.bmp', 'circles.bmp', 'egypt.bmp', 'halftone.bmp', 'hounds.bmp', 'pstripe.bmp', 'pyramid2.bmp', 'redtile.bmp', 'rivets2.bmp', 'thatch2.bmp']
 bundle['bitmaps'] = {f.upper(): b64(os.path.join(src, f)) for f in BITMAPS if os.path.exists(os.path.join(src, f))}

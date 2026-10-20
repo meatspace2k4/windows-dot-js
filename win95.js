@@ -3587,6 +3587,7 @@ class RemoteApp extends NativeApp {
    *  Properties) */
   followMode(m) { const s = m && m.scan; if (s && s.bpp && (s.w !== this.sw || s.h !== this.sh)) this.screenSized(s.w, s.h); }
   frame(m) {
+    if (this.system && bootLogo.on && m.list.length) bootLogoEnd();   // (Windows has a window up: the start-up screen goes)
     this.snap = this.scr = m; this.stats = m.stats; this.held = m.held; this.capture = m.capture; this.cursorOn = m.cursorOn; this.followMode(m);    const seen = new Set();
     for (const n of m.list) {
       const key = n.key || n.hwnd;
@@ -3742,13 +3743,40 @@ function startSystem() {
     // its SystemStart is not heard (quiet)
     const quiet = !cleanStart && !firstRun && !rebooted;
     const a = new (window.SharedArrayBuffer ? RemoteApp : NativeApp)(join(WINDIR, 'SYSTEM', 'MSGSRV32.EXE'), '', { system: true, quiet });
-    if (!(await a.start(null, null))) return null;
-    sysApp = a;
+    if (!(await a.start(null, null))) { bootLogoEnd(); return null; }
+    sysApp = a; if (!a.remote) bootLogoEnd();
     return a;
   })().finally(() => { sysStarting = null; }));
 }
+// The start-up screen while the system's machine boots, as IO.SYS shows it until Windows' display driver takes the
+// screen: the CD's LOGO.SYS (320x400, 8 bits, shown at 4:3), its bottom band (palette entries 236-255) rotating. It
+// stays until the machine has a window on screen (Setup's, the logon's, the shell's)
+const bootLogo = { on: false, img: null, pal: null, px: null, timer: 0 };
+function bootLogoStart() {
+  const s = (window.W95SYSTEM || {}).logo; if (!s || window.W95SYSTEMVM === false) return;
+  if (!bootLogo.px) {
+    const b = b64bytes(s), dv = new DataView(b.buffer), off = dv.getUint32(10, true), w = dv.getInt32(18, true), h = dv.getInt32(22, true);
+    bootLogo.pal = Array.from({ length: 256 }, (_, i) => [b[54 + 4 * i + 2], b[54 + 4 * i + 1], b[54 + 4 * i]]);
+    bootLogo.px = new Uint8Array(w * h);
+    for (let y = 0; y < h; y++) bootLogo.px.set(b.subarray(off + (h - 1 - y) * w, off + (h - y) * w), y * w);   // (bottom-up rows)
+    bootLogo.w = w; bootLogo.h = h; bootLogo.cv = mkc(w, h); bootLogo.img = bootLogo.cv.getContext('2d').createImageData(w, h);
+  }
+  bootLogo.on = true; bootLogo.t0 = performance.now();
+  clearInterval(bootLogo.timer); bootLogo.timer = setInterval(dirty, 60);
+}
+function bootLogoEnd() { if (!bootLogo.on) return; bootLogo.on = false; clearInterval(bootLogo.timer); dirty(); }
+function drawBootLogo() {
+  const L = bootLogo, d = L.img.data, step = Math.floor((performance.now() - L.t0) / 60) % 20;
+  const pal = L.pal.map((c, i) => (i >= 236 ? L.pal[236 + (i - 236 + step) % 20] : c));
+  for (let i = 0; i < L.px.length; i++) { const c = pal[L.px[i]]; d[4 * i] = c[0]; d[4 * i + 1] = c[1]; d[4 * i + 2] = c[2]; d[4 * i + 3] = 255; }
+  L.cv.getContext('2d').putImageData(L.img, 0, 0);
+  fill(0, 0, W, H, '#000');
+  const s = Math.min(W / 4, H / 3), dw = Math.round(s * 4), dh = Math.round(s * 3);
+  ctx.imageSmoothingEnabled = false; ctx.drawImage(L.cv, (W - dw) >> 1, (H - dh) >> 1, dw, dh);
+}
 /** at boot: once the desktop is drawn and the page has loaded */
 function systemBootLater() {
+  bootLogoStart();
   const go = () => setTimeout(() => startSystem(), 50);
   if (document.readyState === 'complete') go(); else window.addEventListener('load', go, { once: true });
 }
@@ -4342,6 +4370,7 @@ function render() {
   rafPending = false;
   const txt = msgApp && (msgApp.remote ? msgApp.txt : msgApp.proc && msgApp.proc.txt);
   if (txt) { drawTextScreen(txt); return; }
+  if (bootLogo.on && screen === 'desktop') { drawBootLogo(); return; }
   if (screen !== 'desktop') {
     fill(0, 0, W, H, '#000');
     const im = screen === 'logow' ? IMG.logow : screen === 'logos' ? IMG.logos : null;
