@@ -256,6 +256,15 @@ P.bootUser16 = function () {
     // FinalUserInit (#400), as KRNL386 calls it once USER is up: GDI's FinalGdiInit takes the USER entry points GDI
     // calls through (LoadString, GetActiveWindow and the rest, which its print-to-file prompt uses)
     if (this.neExport(user, 400)) this.user16(400);
+    // the fonts WIN.INI's [fonts] lists, each added (GDI's AddFontResource) as Windows starts: by its name in the Fonts
+    // folder, or the path given. (Without them a face asked for by name is mapped to another: Flying Windows' Wingdings
+    // logo became a dot)
+    const gdi = this.ne.get('GDI'), add = gdi && this.neExport(gdi, 119);
+    const fonts = add && window.W95Win32.iniRead(this.fs, 'WIN.INI').get('fonts');
+    for (const { value } of fonts ? fonts.keys.values() : []) {
+      const path = /[\\:]/.test(value) ? value : 'C:\\WINDOWS\\FONTS\\' + value, s = this.alloc(path.length + 1);
+      this.writeA(s, path); this.call16(add >>> 16, add & 0xffff, [['l', this.mapLS(s)]]); this.free(s);
+    }
   }
   this.user16Ready = true;
   this.userStack();
