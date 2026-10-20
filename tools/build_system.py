@@ -50,6 +50,10 @@ NE = [('gdi.exe', 0x01C00000, 0x1007, 0x06A00000), ('dibeng.dll', 0x01E00000, 0x
       ('unidrv.dll', 0x01190000, 0x1C27, 0x06010000), ('tty.drv', 0x011E0000, 0x1CCF, 0x06110000),
       # the icon library UNIDRV's property pages load first (MSPRINT.INF's UNIDRV files, WIN95_20.CAB)
       ('iconlib.dll', 0x01CD0000, 0x20C7, 0x07C20000),
+      # Video for Windows (MOTOWN.INF's MCIAVI, WIN95_02.CAB): the MCI driver that plays .AVI files ([mci] avivideo),
+      # the 16-bit video library it draws and decompresses through, and the display control interface that imports
+      ('dciman.dll', 0x01660000, 0x2157, 0x071A8000), ('msvideo.dll', 0x01630000, 0x20FF, 0x06E84000),
+      ('mciavi.drv', 0x01610000, 0x20D7, 0x06DB8000),
       # the system's first task, which Windows 95 starts as it boots (WIN95_12.CAB): USER's first-task start-up loads
       # the installable drivers (MMSYSTEM, the sound card's) for it, and it plays SystemStart and starts the shell
       ('msgsrv32.exe', 0x01570000, 0x1CEF, 0x06130000),
@@ -130,7 +134,10 @@ PE = [('gdi32.dll', 0x01D00000, 0x06C00000), ('user32.dll', 0x01D40000, 0x073400
       # makes from SETUP.INI, and without it made none, so Setup ran again at every start
       ('linkinfo.dll', 0x01E50000, 0x06C80000),
       # Hover!'s libraries, on the CD beside it (FUNSTUFF\HOVER): its art and its help's resources
-      ('dashres.dll', 0x00700000, 0x064B0000), ('hoverhlp.dll', 0x00800000, 0x064B4000)]
+      ('dashres.dll', 0x00700000, 0x064B0000), ('hoverhlp.dll', 0x00800000, 0x064B4000),
+      # Video for Windows' 32-bit half, which MSVIDEO.DLL thunks to, the Cinepak codec ([drivers32] vidc.CVID) and the
+      # display control interface (WIN95_02.CAB)
+      ('dciman32.dll', 0x01DB0000, 0x073B8000), ('msvfw32.dll', 0x01D10000, 0x065A8000), ('iccvid.dll', 0x01D90000, 0x066B4000)]
 # VxDs (ring-0 drivers), recompiled to run under the VMM in vmm.js: (file, load base, block-table base). MMDEVLDR is the
 # device loader of MEDIA devnodes; MSSNDSYS the Windows Sound System card's driver (WIN95_02.CAB)
 VXDS = [('mmdevldr.vxd', 0x01800000, 0x07C00000), ('mssndsys.vxd', 0x01810000, 0x07C40000),

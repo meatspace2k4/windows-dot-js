@@ -323,7 +323,9 @@ P.call16 = function (sel, off, args = [], regs = {}) {
   save.eip = this.cpu.eip.value;
   const lvl = this.stackLevel++; if (lvl >= L.NSTK) throw new GuestError('16-bit stack nesting too deep');
   const ssel = L.STK + 8 * lvl;
-  const flat = (this.cpu.ss.value & 0xffff) ? u32(this.cpu.ssb.value + (this.cpu.esp.value & 0xffff)) : u32(this.cpu.esp.value);
+  // (the stack in use: a 16-bit one by SS:SP; the flat one by ESP, with SS null or the flat selector, as a Win32
+  // thread's LoadLibrary16 has it: DCIMAN32 loading DCIMAN, whose start-up runs here)
+  const ss = this.cpu.ss.value & 0xffff, flat = ss && ss !== L.FLATDS ? u32(this.cpu.ssb.value + (this.cpu.esp.value & 0xffff)) : u32(this.cpu.esp.value);
   const base = (flat - 0xfff0) & ~0xf;
   this.setDesc(ssel, base, 0xffff, 0xf300); this.seg('ss', ssel);
   let sp = flat - 16 - base;

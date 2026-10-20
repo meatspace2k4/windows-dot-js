@@ -2911,6 +2911,12 @@ function setupSound() {
   // Media Player checks that .avi is still its avifile type (MOTOWN.INF's HKCR,.avi,,,avifile, which OSR2 leaves to
   // ActiveMovie) and otherwise asks on every start to repair its settings
   if (W95Win32.regGet('hkcr\\.avi', '') === undefined) W95Win32.regSet('hkcr\\.avi', '', { type: 1, data: W95FS.encode('avifile\0') });
+  // the video device that plays .avi files (MOTOWN.INF's MCIAVI: [mci] avivideo=mciavi.drv) and the Cinepak codec
+  // the CD's videos are in (VIDC.CVID: [drivers32] vidc.CVID=iccvid.dll), on a disk that lacks them
+  if ((S.ne || {}).MCIAVI && W95Win32.regGet('hklm\\system\\currentcontrolset\\control\\mediaresources\\mci\\avivideo', 'Driver') === undefined) {
+    for (const sec of ['avivideo.Reg', 'cvid.Reg']) infAddReg(infs['MOTOWN.INF'], sec);
+    for (const sec of ['avivideo.inis', 'cvid.inis']) infUpdateInis(infs['MOTOWN.INF'], sec);
+  }
   mediaResources();
   if (W95Win32.regGet('hkcu\\appevents\\eventlabels\\systemstart', '') !== undefined) return;
   infAddReg(infs['MOTOWN.INF'], 'mmsys.add.reg');
