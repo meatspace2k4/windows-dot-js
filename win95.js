@@ -2941,12 +2941,13 @@ function bootMode(w, h) {
 }
 // high color: the screen the system's machine boots in (the page scans 8, 16, 24 and 32 bits a pixel out)
 const BOOT_BPP = 16, SCAN_BPP = new Set([8, 16, 24, 32]);
-/** the size the system's machine boots at: the page's, at 256 colors; above them the largest of the display driver's
- *  sizes that fits the page and the 1 MB FRAMEBUF.DRV counts (its bank probe stops at 16 banks), so the size it sets is
- *  the size USER and GDI are told */
+/** the size the system's machine boots at: the page's, when its screen and the display driver's off-screen caches fit
+ *  the adapter's 4 MB (TSENG.DRV counts the W32's memory through its segment selects); else the largest of the
+ *  driver's sizes that fits */
 function bootSize() {
-  const [w, h] = nativeMode(); if (BOOT_BPP <= 8) return [w, h];
-  return [[1024, 768], [800, 600], [640, 480]].find(([x, y]) => x <= w && y <= h && x * y * (BOOT_BPP >> 3) <= 1 << 20) || [640, 480];
+  const [w, h] = nativeMode(), fits = (x, y) => x * y * (BOOT_BPP >> 3) + 0x10000 <= 4 << 20;
+  if (fits(w, h)) return [w, h];
+  return [[1024, 768], [800, 600], [640, 480]].find(([x, y]) => x <= w && y <= h && fits(x, y)) || [640, 480];
 }
 /** one pixel of a scanned-out screen, as the canvas's 32-bit ABGR: through the DAC at 8 bits, else the pixel's own
  *  RGB (16: 5-6-5 when the Sierra DAC's command register says so (E0h), else 5-5-5; 24 and 32: B, G, R in memory) */

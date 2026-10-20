@@ -9,7 +9,8 @@ os.environ['RECOMP_SHARED'] = '1'
 b64 = lambda p: base64.b64encode(open(p, 'rb').read()).decode()
 # NE modules, in dependency order: (file, load base, first selector, block-table base)
 NE = [('gdi.exe', 0x01C00000, 0x1007, 0x06A00000), ('dibeng.dll', 0x01E00000, 0x1207, 0x06D00000),
-      ('framebuf.drv', 0x01E80000, 0x1307, 0x06E00000),
+      # the display driver for the adapter the machine has, the Tseng ET4000/W32 (the CD's TSENG.DRV)
+      ('tseng.drv', 0x01E80000, 0x1307, 0x06E00000),
       # USER's drivers and DDEML before USER, so its calls into them link directly
       # (first selectors spaced by segment count: SYSTEM 2, KEYBOARD 10, MOUSE 2, COMM 3, DDEML 3)
       ('system.drv', 0x01B00000, 0x1507, 0x07200000), ('keyboard.drv', 0x01B10000, 0x1527, 0x07240000),
@@ -58,6 +59,9 @@ NE = [('gdi.exe', 0x01C00000, 0x1007, 0x06A00000), ('dibeng.dll', 0x01E00000, 0x
       ('toolhelp.dll', 0x01FC0000, 0x1D47, 0x06800000), ('deskcp16.dll', 0x01F80000, 0x1D57, 0x06840000)]
 # the NE modules above that Setup leaves on the CD: a module of these loads only when its file is on the disk
 ON_DISK = {'unidrv.dll', 'tty.drv'}
+# the device memory a module writes as registers (recomp.py --mmio LO:SIZE): the Tseng driver's W32 MMU and
+# accelerator at B8000h-BFFFFh (its apertures, then the ACL registers at 7F00h-7FFFh)
+MMIO = {'tseng.drv': '0xb8000:0x8000'}
 # Windows programs that run on the native USER (bootUser16): (file, load base, block-table base). Each has a base of
 # its own, so programs one starts (WinExec, CreateProcess) share its address space and its window system
 PROGRAMS = [('notepad.exe', 0x00400000, 0x06000000), ('rundll32.exe', 0x00410000, 0x06100000), ('mplayer.exe', 0x00420000, 0x06200000),
@@ -148,7 +152,7 @@ with tempfile.TemporaryDirectory() as tmp:
         p = os.path.join(src, f); base = os.path.join(tmp, f)
         trace = ['--trace'] if f.upper() in os.environ.get('TRACE_NE', '').upper().split(',') else []
         subprocess.run([sys.executable, os.path.join(here, 'recomp.py'), p, base, '--base', hex(b), '--selbase', hex(sel),
-                        '--lookup', hex(lk), '--registry', reg] + trace, check=True)
+                        '--lookup', hex(lk), '--registry', reg] + (['--mmio', MMIO[f]] if f in MMIO else []) + trace, check=True)
         meta = json.load(open(base + '.json'))
         bundle['ne'][meta['name'].upper()] = {'file': b64(p), 'fileName': f.upper(), 'wasm': b64(base + '.wasm'), 'meta': meta, **({'onDisk': True} if f in ON_DISK else {})}
     bundle['thunks16'] = json.load(open(reg))['thunks']

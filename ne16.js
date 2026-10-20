@@ -667,6 +667,7 @@ const INTS = {
 P.trapHook = function (e, code) {
   if (code === 0) return this.exception16(0, u32(e));
   if (code < 0x100) return false;
+  if (code >= 0x2000000) { this.mmioWrite(u32(e), code & 0xff); return true; }
   if (code >= 0x1000000) { this.portIO(code & 0xffff, (code >> 16) & 7, !!(code & 0x800000)); return true; }
   this.cpu.eip.value = this.interrupt(code - 0x100, u32(e)) | 0;
   return true;
@@ -1088,21 +1089,45 @@ P.displaySlot = function (w, h) {
   this.customMode = [w, h]; this.customEntry(w, h);
   return { w: 1024, h: 768 };
 };
+/** the offsets in [b, b + n) where the words run as given (null: any word) */
+const findWords = (u8, b, n, words) => {
+  const out = [];
+  for (let o = b; o + 2 * words.length <= b + n; o++) if (words.every((v, i) => v === null || (u8[o + 2 * i] | u8[o + 2 * i + 1] << 8) === v)) out.push(o);
+  return out;
+};
+/** the display driver's records for its 1024x768 entry, found by what they hold in its second segment: the resolution
+ *  tables it looks the configured size up in and sets the mode from (320x200 first), its GDIINFO for the entry (GDI 4.0,
+ *  208 by 156 mm, 1024x768), and the scan line lengths of each depth where the driver keeps them (TSENG.DRV: a flags
+ *  and length pair for each entry, 8 entries to a depth: 8 bits 320, 320, 512 ... 1280, then 16 bits twice those) */
 P.customEntry = function (w, h) {
   const m = this.ne && this.ne.get('DISPLAY'), sg = m && m.segs && m.segs.find(g => g.num === 2); if (!sg) return false;
-  const b = sg.base, t = b + 0xe15 + 4 * 6, g = b + 0x199a;
-  if (this.r16(b + 0xe15) !== 320 || (!this.customPatched && this.r16(g + 8) !== 1024)) return false;   // (another display driver: nothing to do)
-  this.customPatched = true;
-  this.w16(t, w); this.w16(t + 2, h);
+  if (!this.customRecs) {
+    const b = sg.base, n = sg.len || 0x10000;
+    this.customRecs = { tables: findWords(this.u8, b, n, [320, 200, 320, 240, 512, 384, 640, 400, 640, 480, 800, 600, 1024, 768]).map(o => o + 4 * 6),
+      gdi: findWords(this.u8, b, n, [0x400, 1, 208, 156, 1024, 768])[0],
+      pitch: findWords(this.u8, b, n, [320, 320, 512, 640, 640, 800, 1024, 1280, 640, 640, 1024, 1280, 1280, 1600, 2048].flatMap(l => [null, l]))[0] };
+  }
+  const { tables, gdi, pitch } = this.customRecs;
+  if (!tables.length || gdi === undefined) return false;   // (another display driver: nothing to do)
+  for (const t of tables) { this.w16(t, w); this.w16(t + 2, h); }
+  if (pitch !== undefined) for (let px = 1; px <= 4; px++) this.w16(pitch + 32 * (px - 1) + 4 * 6 + 2, (w * px + 7) & ~7);   // (a scan line the CRTC's offset register holds: 8-byte units)
   const X = Math.round(w * 254 / 640), Y = Math.round(h * 127 / 480);
-  for (const [o, v] of [[8, w], [0xa, h], [0x34, w], [0x36, -h], [0x3c, w], [0x3e, -h], [0x44, X], [0x46, -X], [0x4c, Y], [0x4e, -Y], [0x54, Y], [0x56, -Y]]) this.w16(g + o, v & 0xffff);
+  for (const [o, v] of [[8, w], [0xa, h], [0x34, w], [0x36, -h], [0x3c, w], [0x3e, -h], [0x44, X], [0x46, -X], [0x4c, Y], [0x4e, -Y], [0x54, Y], [0x56, -Y]]) this.w16(gdi + o, v & 0xffff);
   return true;
 };
 def16('VDD', 0, '', 'jmp', function () {
   const fn = u32(this.cpu.eax.value);
   switch (fn) {
     case 0x80: this.cpu.eax.value = this.cpu.ecx.value; break;          // VDD_DRIVER_REGISTER: VRAM the visible screen uses
-    case 0x81: case 0x82: case 0x83: case 0x84: case 0x86: case 0x87: case 0x88: case 0x89: this.cpu.eax.value = 0; break;
+    case 0x83: {                                                         // the W32's MMU and accelerator at EDX (B8000h): a selector for them in EDX
+      const a = this.adapter();
+      if (u32(this.cpu.edx.value) === MMU) {
+        if (!a.mmuSel) { this.u8.fill(0, MMU, MMU + 0x8000); a.mmuSel = this.allocSels(MMU, 0x8000); }
+        this.cpu.edx.value = a.mmuSel;
+      }
+      this.cpu.eax.value = 0; break;
+    }
+    case 0x81: case 0x82: case 0x84: case 0x86: case 0x87: case 0x88: case 0x89: this.cpu.eax.value = 0; break;
     case 0x85: {                                                         // VDD_GET_DISPLAY_CONFIG -> DISPLAYINFO at ES:EDI
       const a = this.lin((this.cpu.es.value << 16) | (this.cpu.edi.value & 0xffff)), n = Math.min(this.cpu.ecx.value & 0xffff, 0x4a), c = this.displayConfig();
       this.u8.fill(0, a, a + n); this.w16(a, n); this.w32(a + 4, 1); this.writeA(a + 8, 'FRAMEBUF', 16);
@@ -1119,7 +1144,7 @@ def16('VDD', 0, '', 'jmp', function () {
 // segment select register (3CDh), the Tseng video BIOS modes, and the W32's hardware sprite (the CRTCB/sprite
 // registers behind the IMA port 217Ah/217Bh).
 const ET_MODES = { 0x03: [720, 400, 0], 0x13: [320, 200, 8], 0x2e: [640, 480, 8], 0x2f: [640, 400, 8], 0x30: [800, 600, 8], 0x38: [1024, 768, 8], 0x3d: [1280, 1024, 8] };
-const VRAM_SIZE = 2 << 20, WIN = 0xa0000;   // (a W32p with 2 MB: 1280x1024 at 8 bits fits)
+const VRAM_SIZE = 4 << 20, WIN = 0xa0000;   // (a W32p with 4 MB: the largest custom mode at 16 bits, with the driver's off-screen caches, fits)
 P.adapter = function () {
   if (this.et) return this.et;
   this.init16();
@@ -1155,6 +1180,83 @@ P.sprite = function () {
   const start = ((r[0xea] & 0x0f) << 16 | r[0xe9] << 8 | r[0xe8]) * 4, row = (r[0xeb] || 2) * 8;
   const vram = this.scanout().vram;
   return { x: r[0xe1] << 8 | r[0xe0], y: r[0xe5] << 8 | r[0xe4], px: r[0xe2] & 0x3f, py: r[0xe6] & 0x3f, bits: vram.subarray(start, start + 64 * row), row };
+};
+// The W32's MMU and accelerator (ACL), memory-mapped at B8000h, which the Tseng driver reaches through the selector VDD
+// service 83h gives it: three 8K apertures (0000h, 2000h, 4000h) onto VRAM at the base addresses in 7F00h-7F0Bh, an
+// aperture in accelerator mode when its bit in the MMU control register (7F13h) is set, where a write starts an
+// operation whose destination is that address, and the ACL registers from 7F30h. The driver's stores there come here
+// once they are made (recomp.py --mmio); an operation runs to completion at once, so the status (7F36h) reads idle.
+const MMU = 0xb8000;
+P.mmioWrite = function (lin, size) {
+  const a = this.adapter(), off = lin - MMU, u8 = this.u8;
+  if (off >= 0x7f00) { u8[MMU + 0x7f36] = 0; return; }
+  if (off >= 0x6000) return;
+  const ap = off >> 13, dst = (this.r32(MMU + 0x7f00 + 4 * ap) + (off & 0x1fff)) & (VRAM_SIZE - 1), vram = this.scanout().vram;
+  if (u8[MMU + 0x7f13] & (1 << ap)) {
+    if (!a.acl) a.acl = this.aclStart(vram, dst);
+    if (a.acl.cpuMix) { let v = 0; for (let i = size - 1; i >= 0; i--) v = v * 256 + u8[lin + i]; this.aclMix(a, v, 8 * size); }
+    else { this.aclRun(a.acl); a.acl = null; }
+  } else for (let i = 0; i < size; i++) vram[(dst + i) & (VRAM_SIZE - 1)] = u8[lin + i];
+  if (!a.flat) u8.set(vram.subarray(a.bank << 16, (a.bank << 16) + 0x10000), WIN);
+  a.dirty = true;
+};
+// raster operation r (the ternary ROP code) on pattern, source and destination bytes
+const rop3 = (r, p, s, d) => {
+  if (r === 0xf0) return p; if (r === 0xcc) return s; if (r === 0xaa) return d;
+  let v = 0;
+  for (let k = 0; k < 8; k++) if (r >> k & 1) v |= (k & 4 ? p : ~p) & (k & 2 ? s : ~s) & (k & 1 ? d : ~d);
+  return v & 0xff;
+};
+// pattern and source wrap (7F90h, 7F92h): bits 0-2 the width in bytes (7: none), bits 4-6 the lines (4 and up: none)
+const WRAP_X = [1, 1, 4, 8, 16, 32, 64, 0], WRAP_Y = [1, 2, 4, 8, 0, 0, 0, 0];
+/** where an operand's bytes come from as the operation walks: its address (7F80h pattern, 7F84h source), Y offset
+ *  (bytes a line - 1) and wrap. A wrapped operand starts at its address's place in the wrap block */
+const aclOperand = (addr, yoff, wrap) => {
+  const wx = WRAP_X[wrap & 7], wy = WRAP_Y[wrap >> 4 & 7], stride = yoff + 1;
+  const x0 = wx ? addr % wx : 0, base = addr - x0;
+  const y0 = wx && wy ? Math.floor(base / wx) % wy : 0, back = wx && wy ? base - (base % (wx * wy)) : base;
+  return (x, y) => {
+    const cx = wx ? (((x0 + x) % wx) + wx) % wx : x;
+    return wy ? back + ((((y0 + y) % wy) + wy) % wy) * stride + cx : base + y * stride + cx;
+  };
+};
+/** an ACL operation onto VRAM at dst as its registers program it: X count + 1 bytes (7F98h) by Y count + 1 lines
+ *  (7F9Ah), each byte a raster operation of the pattern, source and destination bytes, walking down or up and right or
+ *  left as the X/Y direction register (7F8Fh) says, lines apart by the destination Y offset + 1 (7F8Ch). The routing
+ *  control (7F9Ch) says what the CPU feeds it: nothing (0), when every byte takes the foreground operation (7F9Fh), or
+ *  the mix (2), a bit for each byte through the accelerator aperture, set for the foreground operation and clear for
+ *  the background one (7F9Eh) */
+P.aclStart = function (vram, dst) {
+  const R = MMU + 0x7f00, u8 = this.u8, M = VRAM_SIZE - 1, routing = u8[R + 0x9c];
+  if (routing & 0x0f & ~2) console.warn(`[w32] ACL routing ${routing.toString(16)}h: CPU data other than the mix`);
+  const dir = u8[R + 0x8f];
+  return { vram, dst, cpuMix: (routing & 7) === 2, x: 0, y: 0,
+    pat: aclOperand(this.r32(R + 0x80) & M, this.r16(R + 0x88), u8[R + 0x90]),
+    src: aclOperand(this.r32(R + 0x84) & M, this.r16(R + 0x8a), u8[R + 0x92]),
+    dstride: this.r16(R + 0x8c) + 1, xs: dir & 1 ? -1 : 1, ys: dir & 2 ? -1 : 1,
+    w: this.r16(R + 0x98) + 1, h: this.r16(R + 0x9a) + 1, fg: u8[R + 0x9f], bg: u8[R + 0x9e] };
+};
+/** the byte at the operation's place, by raster operation r */
+const aclByte = (op, r) => {
+  const { vram, xs, ys, x, y } = op, M = VRAM_SIZE - 1, d = (op.dst + ys * y * op.dstride + xs * x) & M;
+  const p = ((r >> 4) ^ r) & 0x0f ? vram[op.pat(xs * x, ys * y) & M] : 0, s = ((r >> 2) ^ r) & 0x33 ? vram[op.src(xs * x, ys * y) & M] : 0;
+  vram[d] = rop3(r, p, s, vram[d]);
+};
+/** an operation the CPU feeds nothing, run whole */
+P.aclRun = function (op) {
+  for (op.y = 0; op.y < op.h; op.y++) for (op.x = 0; op.x < op.w; op.x++) aclByte(op, op.fg);
+};
+/** n bits of mix data the CPU wrote (low bit first), a byte of the operation each: the line's end drops the rest of
+ *  the write, and the last line's ends the operation */
+P.aclMix = function (a, v, n) {
+  const op = a.acl;
+  for (let i = 0; i < n; i++, v = Math.floor(v / 2)) {
+    aclByte(op, v % 2 ? op.fg : op.bg);
+    if (++op.x < op.w) continue;
+    op.x = 0;
+    if (++op.y >= op.h) a.acl = null;
+    return;
+  }
 };
 // VFLATD: the VxD that gives display drivers a linear view of banked VRAM. Register (DX=1): ES:DI = the driver's
 // bank-switch template (CX bytes), AX = size in 4K pages; returns AX = a selector for the flat framebuffer.

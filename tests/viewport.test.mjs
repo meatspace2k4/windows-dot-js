@@ -55,14 +55,14 @@ const cut = (w, a, b, keep = true) => { const i = w.indexOf(a); assert.ok(i >= 0
   e2.set(b); e2.syncMode(); await settle(); e2.syncMode(); await settle();
   assert.deepEqual(got, [[700, 500]]); assert.deepEqual(b.modeRefused, [[700, 500]]); assert.deepEqual([b.sw, b.sh], [800, 600]);
 }
-// above 256 colors the machine boots at the largest of the driver's sizes that fits the viewport and FRAMEBUF.DRV's
-// 1 MB (its bank probe stops at 16 banks)
+// at high color the machine boots at the viewport's size too: the W32's 4 MB holds the largest custom mode
 {
   const w = src('win95.js');
-  const B = new Function('innerWidth', 'innerHeight', 'ZOOM', `const BOOT_BPP = 16;\n${cut(w, 'const nativeMode = ', '\n')}\n${cut(w, 'function bootSize() {', '\n}\n')}\nreturn bootSize();`);
-  assert.deepEqual(B(913, 765, 1), [800, 600]);
-  assert.deepEqual(B(1280, 1000, 1), [800, 600], '1024x768 at 16 bits is more than 1 MB');
-  assert.deepEqual(B(700, 520, 1), [640, 480]);
+  const B = (bpp, ...a) => new Function('innerWidth', 'innerHeight', 'ZOOM', `const BOOT_BPP = ${bpp};\n${cut(w, 'const nativeMode = ', '\n')}\n${cut(w, 'function bootSize() {', '\n}\n')}\nreturn bootSize();`)(...a);
+  assert.deepEqual(B(16, 913, 765, 1), [913, 765]);
+  assert.deepEqual(B(16, 1280, 1000, 1), [1024, 960]);
+  assert.deepEqual(B(16, 700, 520, 1), [700, 520]);
+  assert.deepEqual(B(32, 1280, 1000, 1), [1024, 960]);
 }
 // the app's window is the monitor: the page asks the host to size the window's content to the system machine's mode
 // as the machine starts and whenever its screen size is set; the preload carries the request, the main process sizes

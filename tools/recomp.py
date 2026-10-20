@@ -388,6 +388,7 @@ class Loc:
             if not segmode() and not m.base and not m.index and m.segment in (0, X.X86_REG_DS) and \
                any((m.disp + k) & 0xffffffff in CODE_BYTES for k in range(sz)):
                 f.c(m.disp).e(0x10, uleb(IMP['smc']))
+            mmio_store(f, self.addr, sz)
             return
         g, rs, sh = reginfo(op.reg)
         if rs == 4: val(); f.gs(g); return
@@ -398,6 +399,14 @@ class Loc:
 
 # the addresses of every byte of the flat module's decoded instructions (Loc.write: stores that patch code)
 CODE_BYTES = frozenset()
+# a device's memory-mapped registers the module writes (--mmio LO:SIZE, linear): each store that lands there goes to
+# the host after it is made, trap(address, 0x2000000 | size)
+MMIO = None
+def mmio_store(f, addr, sz):
+    if not MMIO: return
+    lo, n = MMIO
+    f.lg(addr).c(lo).e(OPS['sub']).c(n).e(OPS['lt_u']).e(0x04, 0x40)
+    f.lg(addr).c(0x2000000 | sz).e(0x10, uleb(IMP['trap'])).e(0x0b)
 # ---- segmented (NE) mode. CUR is the instruction being translated.
 CUR = None
 def segmode(): return CUR is not None and CUR.segbase is not None
@@ -1105,9 +1114,13 @@ class Translator:
         def bump(r):
             if a16: f.gg(r).c(~0xffff).e(OPS['and_']).gg(r).lg(step).e(OPS['add']).c(0xffff).e(OPS['and_']).e(OPS['or_']).gs(r)
             else: f.gg(r).lg(step).e(OPS['add']).gs(r)
+        d = f.i() if MMIO and kind in ('movs', 'stos') else None
+        def store(val):
+            if d is None: dst(); val(); f.mem(STORE[sz]); return
+            dst(); f.ls(d); f.lg(d); val(); f.mem(STORE[sz]); mmio_store(f, d, sz)
         def one():
-            if kind == 'movs': dst(); src(); f.mem(LOAD[sz]).mem(STORE[sz]); bump('esi'); bump('edi')
-            elif kind == 'stos': dst(); f.gg('eax').mem(STORE[sz]); bump('edi')
+            if kind == 'movs': store(lambda: (src(), f.mem(LOAD[sz]))); bump('esi'); bump('edi')
+            elif kind == 'stos': store(lambda: f.gg('eax')); bump('edi')
             elif kind == 'outs': self.port_elem(f, ins, kind, sz, src); bump('esi')
             elif kind == 'ins': self.port_elem(f, ins, kind, sz, dst); bump('edi')
             elif kind == 'lods':
@@ -1674,6 +1687,7 @@ if __name__ == '__main__':
     if '--trace' in a: a.remove('--trace'); Translator.TRACE = True
     reg = None
     if '--registry' in a: k = a.index('--registry'); reg = a[k + 1]; del a[k:k + 2]
+    if '--mmio' in a: k = a.index('--mmio'); MMIO = tuple(int(v, 0) for v in a[k + 1].split(':')); del a[k:k + 2]
     if '--vxd' in a: a.remove('--vxd')
     while len(a) > 2:
         v = int(a.pop(), 0); k = a.pop().lstrip('-'); kw[k] = v
