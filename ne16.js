@@ -3059,6 +3059,13 @@ const pdw = (p, pid, off) => {
 };
 def16('KERNEL', 485, 'li', 'l', function (pid, off) { return pdw(this, pid, off)[off] >>> 0; });
 def16('KERNEL', 484, 'lil', 'v', function (pid, off, v) { pdw(this, pid, off)[off] = v; });
+// MapProcessHandle: the id of the process a handle names (GetCurrentProcess's the caller's); an id is taken as it is
+def16('KERNEL', 483, 'l', 'l', function (h) {
+  if (h === 0xffffffff) return this.thread16 && this.thread16.pc ? this.thread16.pc.pid : this.inSystem() ? SYS_PID : MAIN_PID;
+  if (h === SYS_PID || h === MAIN_PID || (this.procs && this.procs.has(h))) return h;
+  const o = this.obj(h); if (o && o.kind === 'process') return o.pid;
+  this.lastError = 6; return 0;   // ERROR_INVALID_HANDLE
+});
 // VWIN32's events as KRNL386 reaches them (VWin32_EventCreate .. EventSet, and 479, which sets one unless the
 // Win16Lock is held): one thread runs here, so a wait finds the event set or returns at once
 def16('KERNEL', 442, '', 'l', function () { return this.newHandle({ kind: 'event', manual: false, set: false }); });   // VWin32_EventCreate
