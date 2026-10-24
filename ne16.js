@@ -326,7 +326,7 @@ P.call16 = function (sel, off, args = [], regs = {}) {
   // (the stack in use: a 16-bit one by SS:SP; the flat one by ESP, with SS null or the flat selector, as a Win32
   // thread's LoadLibrary16 has it: DCIMAN32 loading DCIMAN, whose start-up runs here)
   const ss = this.cpu.ss.value & 0xffff, flat = ss && ss !== L.FLATDS ? u32(this.cpu.ssb.value + (this.cpu.esp.value & 0xffff)) : u32(this.cpu.esp.value);
-  const base = (flat - 0xfff0) & ~0xf;
+  const base = Math.max(0, flat - 0xfff0) & ~0xf;   // (64 KB below the stack top, and not below 0 for a stack low in memory)
   this.setDesc(ssel, base, 0xffff, 0xf300); this.seg('ss', ssel);
   let sp = flat - 16 - base;
   for (const [t, v] of args) { if (t === 'w') { sp -= 2; this.w16(base + sp, v); } else { sp -= 4; this.w32(base + sp, v); } }
@@ -3195,7 +3195,10 @@ P.endProcess = function (pc, code) {
     const u = this.ne && this.ne.get('USER'), sig = u && u.meta && this.neExport(u, 391), h = this.hinst16(pc.exe.base);
     if (sig) try {
       const signal = (s, id) => this.user16(391, [['l', s], ['l', id], ['l', 3], ['w', h]]);
-      for (const t of (this.threadsById || new Map()).values()) if (t.pc === pc) signal(0x20, t.id);
+      // (each thread's end on that thread, as KERNEL32 signals it from the exiting thread: USER destroys its windows
+      // there, and its DestroyWindow goes on only for a window of the current thread's queue)
+      const by = this.thread16;
+      for (const t of (this.threadsById || new Map()).values()) if (t.pc === pc) { this.thread16 = t; try { signal(0x20, t.id); } finally { this.thread16 = by; } }
       signal(0x300, pc.pid); signal(0x400, pc.pid);
     } catch (e) { console.error(e); }
   }

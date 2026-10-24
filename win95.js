@@ -839,8 +839,9 @@ const TYPES = {
   hlp: { desc: 'Help File', icon: 'help' }, scr: { desc: 'Screen Saver', icon: 'app' },
   cpl: { desc: 'Control Panel extension', icon: 'sysfile' },
   // MIDI files open in Media Player (MOTOWN.INF: .mid and .rmi are midfile, opened by mplayer.exe %1)
-  mid: { desc: 'MIDI Sequence', icon: 'windoc', open: p => runExe(join(WINDIR, 'MPLAYER.EXE'), /\s/.test(p) ? `"${p}"` : p) },
-  rmi: { desc: 'MIDI Sequence', icon: 'windoc', open: p => runExe(join(WINDIR, 'MPLAYER.EXE'), /\s/.test(p) ? `"${p}"` : p) },
+  // (their default verb is play: MOTOWN.INF's HKCR,midfile\shell,,,play and its command mplayer.exe /play /close %1)
+  mid: { desc: 'MIDI Sequence', icon: 'windoc', open: p => runExe(join(WINDIR, 'MPLAYER.EXE'), '/play /close ' + (/\s/.test(p) ? `"${p}"` : p)) },
+  rmi: { desc: 'MIDI Sequence', icon: 'windoc', open: p => runExe(join(WINDIR, 'MPLAYER.EXE'), '/play /close ' + (/\s/.test(p) ? `"${p}"` : p)) },
 };
 const EXE_ICON = { 'NOTEPAD.EXE': 'notepad', 'EXPLORER.EXE': 'explorer', 'WINHLP32.EXE': 'help' };
 const isRoot = p => /^[A-Z]:\\$/i.test(p);
@@ -2905,18 +2906,19 @@ function setupSound() {
   // registry and SYSTEM.INI [mci] lines, and WIN.INI's [mci extensions] from the base install
   if (W95Win32.regGet('hklm\\system\\currentcontrolset\\control\\mediaresources\\mci\\sequencer', 'Driver') === undefined) {
     for (const sec of ['sequencer.Reg', 'waveaudio.Reg', 'MPlay.install.reg']) infAddReg(infs['MOTOWN.INF'], sec);
-    for (const sec of ['sequencer.inis', 'waveaudio.inis']) infUpdateInis(infs['MOTOWN.INF'], sec);
     infUpdateInis(infs['MOTOWN.INF'], 'mmsys.inis', /^win\.ini$/i);
   }
+  // (the [mci] lines on a disk that lacks them, whatever the registry holds: the registry and the disk are kept apart,
+  // and a disk made new under a registry that had the devices got none, so Media Player found no MCI devices)
+  if (!W95Win32.iniGet(fs, 'SYSTEM.INI', 'mci', 'sequencer')) for (const sec of ['sequencer.inis', 'waveaudio.inis']) infUpdateInis(infs['MOTOWN.INF'], sec);
   // Media Player checks that .avi is still its avifile type (MOTOWN.INF's HKCR,.avi,,,avifile, which OSR2 leaves to
   // ActiveMovie) and otherwise asks on every start to repair its settings
   if (W95Win32.regGet('hkcr\\.avi', '') === undefined) W95Win32.regSet('hkcr\\.avi', '', { type: 1, data: W95FS.encode('avifile\0') });
   // the video device that plays .avi files (MOTOWN.INF's MCIAVI: [mci] avivideo=mciavi.drv) and the Cinepak codec
   // the CD's videos are in (VIDC.CVID: [drivers32] vidc.CVID=iccvid.dll), on a disk that lacks them
-  if ((S.ne || {}).MCIAVI && W95Win32.regGet('hklm\\system\\currentcontrolset\\control\\mediaresources\\mci\\avivideo', 'Driver') === undefined) {
+  if ((S.ne || {}).MCIAVI && W95Win32.regGet('hklm\\system\\currentcontrolset\\control\\mediaresources\\mci\\avivideo', 'Driver') === undefined)
     for (const sec of ['avivideo.Reg', 'cvid.Reg']) infAddReg(infs['MOTOWN.INF'], sec);
-    for (const sec of ['avivideo.inis', 'cvid.inis']) infUpdateInis(infs['MOTOWN.INF'], sec);
-  }
+  if ((S.ne || {}).MCIAVI && !W95Win32.iniGet(fs, 'SYSTEM.INI', 'mci', 'avivideo')) for (const sec of ['avivideo.inis', 'cvid.inis']) infUpdateInis(infs['MOTOWN.INF'], sec);
   mediaResources();
   if (W95Win32.regGet('hkcu\\appevents\\eventlabels\\systemstart', '') !== undefined) return;
   infAddReg(infs['MOTOWN.INF'], 'mmsys.add.reg');

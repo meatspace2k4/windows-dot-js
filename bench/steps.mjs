@@ -68,18 +68,16 @@ export const STEPS = [
   },
   {
     name: 'midi',
-    about: 'CANYON.MID opened in Media Player through MCISEQ: start-up until the synthesizer is written, then its guest CPU for 4 s',
+    about: 'CANYON.MID opened as the shell opens it (Media Player in the system machine, /play): until its title says it is playing',
     run: async () => {
       await reset();
-      const before = new Set(win95.nativeApps), t = performance.now();
+      const t = performance.now(), playing = () => win95.windows().find(w => /canyon - Media Player \(playing\)/i.test(w.title));
       win95.shellOpen('C:\\WINDOWS\\MEDIA\\canyon.mid');
-      let app = null;
-      while (performance.now() - t < 20000) { app = win95.nativeApps.find(x => !before.has(x) && /MPLAYER/i.test(x.path)); if (app && app.proc && app.proc.opl3 && app.proc.opl3.regs.some(v => v)) break; await sleep(20); }
-      if (!app || !app.alive) throw new Error('Media Player did not start: ' + (app && app.proc && app.proc.trapped));
-      const start_ms = +(performance.now() - t).toFixed(1), cpu = await guestCpu(app, 4000);
-      for (const w of app.wins.values()) if (w.title) app.close(w);
-      await sleep(500); await reset();
-      return { start_ms, guest_cpu_pct: cpu };
+      while (!playing() && performance.now() - t < 20000) await sleep(20);
+      if (!playing()) throw new Error('canyon.mid did not play: ' + JSON.stringify(win95.windows().map(w => w.title)));
+      const play_ms = +(performance.now() - t).toFixed(1);
+      win95.close(playing().title); await sleep(500); await reset();
+      return { play_ms };
     },
   },
   {
