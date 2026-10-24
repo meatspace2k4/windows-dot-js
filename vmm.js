@@ -90,9 +90,11 @@ P.r0Run = function (s) {
 /** new ring-0 frames go below every stopped run's */
 P.r0LowSet = function () {
   const runs = this.r0Runs || [];
-  if (!runs.length) { if (this.r0LowBase !== undefined) { this.r0Low = this.r0LowBase; this.r0LowBase = undefined; } return; }
-  if (this.r0LowBase === undefined) this.r0LowBase = this.r0Low;
-  this.r0Low = (Math.min(...runs.map(x => u32(x.ctx.esp))) - 0x100) & ~3;
+  // (the low as it was before any run stopped, kept while any is, and put back once none is: the top, when none was
+  // set. A low kept from runs now gone put frames under a stack in use)
+  if (!runs.length) { if (this.r0LowHeld) { this.r0Low = this.r0LowBase; this.r0LowHeld = false; } return; }
+  if (!this.r0LowHeld) { this.r0LowHeld = true; this.r0LowBase = this.r0Low; }
+  this.r0Low = (Math.min(...runs.map(x => this.stackLinOf(x.ctx.ss, x.ctx.ssb, x.ctx.esp))) - 0x100) & ~3;   // (each run's stack where it is: a 16-bit one through its selector)
 };
 /** the host's turn while ring-0 runs are stopped: events scheduled meanwhile start (as runs of their own), else the
  *  newest run that can go on goes on until it ends or stops again. True while any is still stopped */
@@ -144,7 +146,14 @@ P.r0Free = function () {
   return this.r0Low !== undefined ? this.r0Low : this.r0Top;
 };
 /** the linear address SS:ESP points at */
-P.stackLin = function () { const ss = this.cpu.ss.value & 0xffff; return ss ? u32(this.selBase(ss) + (this.cpu.esp.value & 0xffff)) : u32(this.cpu.esp.value); };
+P.stackLin = function () { return this.stackLinOf(this.cpu.ss.value, this.cpu.ssb.value, this.cpu.esp.value); };
+/** the linear address of a stack by its SS, SS's base and ESP: ESP itself for a flat stack (SS null, the flat selector
+ *  as 16-bit code that jumped into a 32-bit module has it, or a 32-bit stack segment), the base and SP for a 16-bit one */
+P.stackLinOf = function (ss, ssb, esp) {
+  ss &= 0xffff;
+  if (!ss || ss === N.L.FLATDS || this.r32(N.L.ACC + (ss & 0xfff8)) & 0x400000) return u32(esp);
+  return u32(ssb + (esp & 0xffff));
+};
 /** run `fn` (VM code) from ring 0: the ring-0 frames down to the current ESP stay live while it runs */
 P.r0Out = function (fn) {
   const low = this.r0Low, was = this.r0Depth;
