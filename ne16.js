@@ -49,6 +49,8 @@ P.setDesc = function (sel, base, limit, acc = 0xf300) {
 P.selBase = function (sel) { return this.r32(L.LDT + (sel & 0xfff8)); };
 P.selLimit = function (sel) { return this.r32(L.LDT + (sel & 0xfff8) + 4); };
 P.selValid = function (sel) { return (sel & 0xfff8) && this.selUsed[(sel & 0xfff8) >> 3]; };
+/** whether CS is a 16-bit code segment (its descriptor's D bit clear); flat code runs with CS 0 or a 32-bit one */
+P.code16 = function () { const cs = this.cpu.cs ? this.cpu.cs.value & 0xffff : 0; return !!cs && !!this.selValid(cs) && !(this.r32(L.ACC + (cs & 0xfff8)) & 0x400000); };
 /** n consecutive selectors (stepping by __AHINCR) covering [base, base+size) */
 P.allocSels = function (base, size, acc = 0xf300) {
   const n = Math.max(1, Math.ceil(size / 0x10000));
@@ -162,6 +164,7 @@ P.loadNE = function (name, file, module, meta) {
   const u8 = this.u8;
   const rec = { name, kind: 'ne', base: meta.base, meta, file, segs: meta.segs, exports: new Map(), names: meta.names, run: null };
   for (const sg of meta.segs) {
+    this.smcRange(sg.base, sg.base + Math.max(sg.alloc, 1), rec);   // (a module whose image this overlays runs what is here now)
     u8.fill(0, sg.base, sg.base + Math.max(sg.alloc, 1));
     if (sg.len) u8.set(file.subarray(sg.fileoff, sg.fileoff + sg.len), sg.base);
     const limit = sg.num === meta.autodata ? 0xffff : Math.max(sg.alloc, 1) - 1;

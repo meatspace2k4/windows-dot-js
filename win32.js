@@ -239,6 +239,14 @@ class Process {
     const look = new Uint32Array(this.mem.buffer, m.meta.lookup, m.meta.textHi - m.meta.textLo);
     for (let i = Math.max(0, at); i < bl.length && bl[i] < a + 4; i++) look[bl[i] - m.meta.textLo] = 0;
   }
+  /** code written over from `lo` to `hi` by a module loaded there (`keep`): every other module's translations of the
+   *  range drop, so what runs there is what is in memory now (dyn.js), as a processor runs what is there */
+  smcRange(lo, hi, keep) {
+    for (const m of this.modules) {
+      if (m === keep || !m.meta || !m.meta.lookup || hi <= m.meta.textLo || lo >= m.meta.textHi) continue;
+      new Uint32Array(this.mem.buffer, m.meta.lookup, m.meta.textHi - m.meta.textLo).fill(0, Math.max(lo, m.meta.textLo) - m.meta.textLo, Math.min(hi, m.meta.textHi) - m.meta.textLo);
+    }
+  }
   /** the dispatcher's question when the block budget runs out: 1 to give the processor back to the host here */
   tick(eip) {
     this.cpu.budget.value = BUDGET;
@@ -262,7 +270,10 @@ class Process {
       eip >>>= 0;
       if (eip === LAYOUT.SENTINEL) return 0;
       if (this.runHook) this.runHook(eip);   // debugging: set from the page to watch every dispatch
-      const m = eip >= LAYOUT.THUNK16 ? this.modules[0] : this.modules.find(x => eip >= x.meta.textLo && eip < x.meta.textHi);
+      let m = eip >= LAYOUT.THUNK16 ? this.modules[0] : this.modules.find(x => eip >= x.meta.textLo && eip < x.meta.textHi);
+      // (CS gives the mode: under a 16-bit code selector the code is a 16-bit module's, never a flat module's
+      // translation of the same address, as of a module loaded over another's image; with none, the bytes there)
+      if (m && m.kind !== 'ne' && eip < LAYOUT.THUNK16 && this.code16 && this.code16()) m = this.modules.find(x => x.kind === 'ne' && eip >= x.meta.textLo && eip < x.meta.textHi);
       if (!m) {
         if (eip < 0x10000) (this.nullJumps || (this.nullJumps = [])).push({ at: eip, from: this.lastBlock >>> 0, cs: this.cpu.cs ? this.cpu.cs.value & 0xffff : null });
         const next = this.dataCode && this.dataCode(eip);
