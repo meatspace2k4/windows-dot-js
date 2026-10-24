@@ -191,6 +191,7 @@ INTS[0x20] = function (next) {
   this.svcSite = jmp ? this.r32(sp - 4) : u32(next) - 6;   // where it was called from, for a deadlock's report
   this.r0StopAt = 0;
   const r = fn.call(this, arg);
+  if (this.trapped) return W.LAYOUT.SENTINEL;   // (the service stopped the machine, naming why)
   if (r !== undefined) this.cpu.eax.value = u32(r);
   if (window.W95VXDRET) window.W95VXDRET(dev, n, this, arg, u32(this.cpu.eax.value));   // debugging: each service's result
   let back = next;
@@ -1372,7 +1373,12 @@ svc(VWIN32, 0x0d, function () { return 0xc6000000 | 1; });                      
 svc(VWIN32, 0x10, function (arg) { const e = this.r0Event(arg(0)); if (e) e.set = false; return e ? 1 : 0; });   // _VWIN32_ResetWin32Event
 // _VWIN32_QueueKernelAPC(pfn, thread, data, flags): the ring-0 procedure called with the data when the thread next runs
 svc(VWIN32, 0x19, function (arg) { (this.kernelApcs = this.kernelApcs || []).push({ fn: arg(0), data: arg(2) }); return 1; });
-svc(VWIN32, 0x1a, function () { console.warn('[vxd] VWIN32_SysErrorBox'); this.cpu.eax.value = 0; });
+// _VWIN32_SysErrorBox(EBX the VSEB: response, buttons 3, 2, 1, caption, text): no box shows here, so no answer is
+// given; it stops, naming the box
+svc(VWIN32, 0x1a, function () {
+  const b = u32(this.cpu.ebx.value);
+  this.trapped = `VWIN32_SysErrorBox: ${this.readA(this.r32(b + 12)) || ''}: ${this.readA(this.r32(b + 16)) || ''}`;
+});
 // ---- SHELL: SHELL_SYSMODAL_Message is the recompiled SHELL.VXD's (its blue screen when Windows cannot show the
 // message); _SHELL_BroadcastSystemMessage: no window gets it here
 svc(SHELL, 0x10, function () { return 0; });
