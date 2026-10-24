@@ -1007,6 +1007,7 @@ function runExe(path, arg) {
   if (n === 'NOTEPAD.EXE') return runNotepad(arg ? resolveArg(arg) : null, path);
   if (n === 'EXPLORER.EXE') return arg ? openPath(resolveArg(arg)) : openFolder(MyComputer);
   // any other program the system bundle carries runs natively
+  if (!fs.exists(path)) return msgBox(dispName(basename(path)), `Cannot find the file '${path}' (or one of its components). Make sure the path and filename are correct and that all required libraries are available.`, 'error');
   runNative(path, arg || '').then(ok => { if (!ok) msgBox(dispName(basename(path)), `${path} is not a valid Windows application.`, 'error'); });
 }
 // Notepad: the CD's NOTEPAD.EXE on the native USER when the system bundle has it, the shell's own otherwise
@@ -3753,7 +3754,7 @@ function nativeAt(x, y) {
   const w = winAt(x, y); return w ? (w.native ? w.app : null) : monApp();
 }
 async function runNative(path, arg, o = {}) {
-  let bytes; try { bytes = fs.readFile(path); } catch (e) { return false; }
+  let bytes; try { bytes = fs.readFile(path); } catch (e) { if (!(e instanceof FSError)) throw e; return false; }
   const prog = await nativeProgram(bytes); if (!prog) return false;
   // in the system's machine, as Windows 95 runs every program on its one USER and its one set of drivers; a second
   // instance of a program (whose image's place there is taken) gets a machine of its own
