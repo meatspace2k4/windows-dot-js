@@ -281,6 +281,10 @@ class Machine {
       try {
         const f = p.cpu.ssb.value + (p.cpu.esp.value & 0xffff);
         if (m && /^(533|534|537)$/.test(m[1])) return [4, 6, 8, 10].map(k => p.r16(f + k).toString(16)).join(' ');   // (the DDE conversions: their stack words)
+        if (m && /^(484|485)$/.test(m[1])) { const o = m[1] === '484' ? 8 : 4; return `pid ${p.r32(f + o + 2).toString(16)} off ${(p.r16(f + o) << 16) >> 16}`; }   // (Get/SetProcessDword: the process and the field)
+        if (m && /^(458|459|460)$/.test(m[1])) return 'h ' + p.r32(f + (m[1] === '460' ? 8 : 4)).toString(16);   // (Set/ResetW32Event, WaitForSingleObject: the handle)
+        if (m && m[1] === '457') return 'manual ' + p.r32(f + 8) + ' set ' + p.r32(f + 4) + ' -> h ' + ((p.nextHandle || 0) >>> 0).toString(16);   // (CreateW32Event)
+        if (m && m[1] === '461') { const n = p.r32(f + 16), ph = p.lin(p.r32(f + 12)); return [...Array(Math.min(n, 8))].map((_, i) => p.r32(ph + 4 * i).toString(16)).join(' ') + ' ms ' + p.r32(f + 4); }   // (WaitForMultipleObjects: the handles)
         if (m && m[1] === '18') { const h = p.r16(f + 4), b = p.gblock && p.gblock(h); let t = ''; try { t = b ? ' "' + (p.readA(b.lin, 60) || '').replace(/[^\x20-\x7e]/g, '.') + '"' : ''; } catch (_) {} return 'h' + h.toString(16) + t; }   // (GlobalLock: the block's text)
         if (m && /^(71|72)$/.test(m[1])) return 'atom ' + p.r16(f + (m[1] === '72' ? 10 : 4)).toString(16) + ' ds ' + (p.cpu.ds.value & 0xffff).toString(16);   // (DeleteAtom, GetAtomName: the atom, and whose table)
         if (m && /^(69|70)$/.test(m[1])) { const sp = p.r32(f + 4); return (sp >>> 16 ? p.readA(p.lin(sp)) : '#' + (sp & 0xffff)) + ' ds ' + (p.cpu.ds.value & 0xffff).toString(16); }
@@ -294,6 +298,11 @@ class Machine {
     const arg32 = t => {
       try {
         if (t.nm === '#18') return `pid ${p.r32(p.reg('esp') + 4).toString(16)} off ${p.r32(p.reg('esp') + 8) | 0}`;   // (GetProcessDword)
+        if (/^Global(Alloc|ReAlloc|Lock|Unlock|Free|Size)$/.test(t.nm)) {   // (the block's handle, sizes and flags, and its text)
+          const a = k => p.r32(p.reg('esp') + 4 * k) >>> 0, h = t.nm === 'GlobalAlloc' ? 0 : a(1);
+          const txt = h > 0x10000 && h < p.u8.length ? ' "' + (p.readA(h, 48) || '').replace(/[^\x20-\x7e]/g, '.') + '"' : '';
+          return t.nm === 'GlobalAlloc' ? `flags ${a(1).toString(16)} n ${a(2)}` : t.nm === 'GlobalReAlloc' ? `h ${h.toString(16)} n ${a(2)} flags ${a(3).toString(16)}${txt}` : `h ${h.toString(16)}${txt}`;
+        }
         if (/^Global(Add|Find)AtomA$/.test(t.nm)) { const sp = p.r32(p.reg('esp') + 4); return sp >>> 16 ? p.readA(sp) || '' : '#' + sp; }
         if (/^(LoadLibraryA|GetPrivateProfileSectionA|GetPrivateProfileStringA|FindFirstFileA|CreateFileA|GetFileAttributesA|DeleteFileA|MoveFileA|GetModuleHandleA|WritePrivateProfileStringA)$/.test(t.nm)) { const sp = p.r32(p.reg('esp') + 4); return sp > 0x10000 && sp < p.u8.length ? p.readA(sp) || '' : String(sp); }
         if (t.nm === 'GetProcAddress') { const sp = p.r32(p.reg('esp') + 8); return sp > 0x10000 && sp < p.u8.length ? p.readA(sp) || '' : '#' + sp; }
