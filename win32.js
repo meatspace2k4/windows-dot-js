@@ -534,6 +534,14 @@ class Process {
     return { addr: mod.base + this.r32(de), size: this.r32(de + 4) };
   }
   resName(p) { return p >>> 16 ? this.readA(p) : p; }
+  /** the names of a module's resources of a type (a string name as its text, an id as itself); null without that type */
+  resourceNames(type, mod = this.exe) {
+    if (!mod.rsrc) return null;
+    const root = mod.base + mod.rsrc, entries = d => [...Array(this.r16(d + 12) + this.r16(d + 14))].map((_, i) => [this.r32(d + 16 + 8 * i), this.r32(d + 20 + 8 * i)]);
+    const name = nm => { if (!(nm & 0x80000000)) return nm; const s = root + (nm & 0x7fffffff); return this.readW(s + 2, this.r16(s)); };
+    const t = entries(root).find(([nm]) => { const n = name(nm); return typeof type === 'string' ? typeof n === 'string' && n.toUpperCase() === type.toUpperCase() : n === type; });
+    return t && t[1] & 0x80000000 ? entries(root + (t[1] & 0x7fffffff)).map(([nm]) => name(nm)) : null;
+  }
   loadString(id, mod = this.exe) {
     const r = this.findResource(6, (id >> 4) + 1, mod); if (!r) return null;
     let a = r.addr;
@@ -1194,6 +1202,18 @@ def('KERNEL32', 'FindResourceA', 3, function (m, name, type) {
 def('KERNEL32', 'LoadResource', 2, function (m, h) { const r = this.obj(h); return r && r.kind === 'res' ? r.addr : 0; });
 def('KERNEL32', 'LockResource', 1, function (h) { const r = this.obj(h); return r && r.kind === 'res' ? r.addr : h; });
 def('KERNEL32', 'FreeResource', 1, () => 0);
+// EnumResourceNamesA(module, type, fn, lParam): fn(module, type, name, lParam) for each name of the type, a string name
+// as its text, until fn returns FALSE; a type the module lacks is ERROR_RESOURCE_TYPE_NOT_FOUND
+def('KERNEL32', 'EnumResourceNamesA', 4, function (m, type, fn, lp) {
+  const mod = this.moduleFor(m), names = this.resourceNames(this.resName(type), mod);
+  if (!names) { this.lastError = 1813; return 0; }
+  for (const n of names) {
+    const a = typeof n === 'string' ? this.alloc(n.length + 1) : n; if (typeof n === 'string') this.writeA(a, n);
+    const go = this.call(fn, [mod.base, type, a, lp]); if (typeof n === 'string') this.free(a);
+    if (!go) break;
+  }
+  return 1;
+});
 def('KERNEL32', 'SizeofResource', 2, function (m, h) { const r = this.obj(h); return r ? r.size : 0; });
 
 // threads, TLS, synchronization (one guest thread)

@@ -4029,7 +4029,6 @@ K('DeviceIoControl', 8, function (h, code, inb, nin, outb, nout, pret, ovl) {
   }
   throw new GuestError(`MMDEVLDR DeviceIoControl ${code}`);
 });
-K('EnumResourceNamesA', 4, () => 0);
 
 /**
  * The thunk compiler's LSF relay code sits in the 32-bit DLL's data (ThunkInitLSF layout):
