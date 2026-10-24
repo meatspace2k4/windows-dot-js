@@ -3146,7 +3146,7 @@ P.spawn = function (file, module, meta, path, cmdline) {
   if (live) {
     const rec = live.exe, g = rec.inst || (rec.inst = { cur: live, bufs: new Map() }), exe0 = this.byName.get('EXE');
     if (g.cur) g.bufs.set(g.cur, this.u8.slice(rec.base, rec.base + rec.size));
-    const fresh = this.loadImage(file, module, meta, 'EXE');
+    const fresh = this.loadImage(file, module, meta, 'EXE', rec);
     this.modules = this.modules.filter(m => m !== fresh); if (exe0) this.byName.set('EXE', exe0);
     pc.exe = rec; g.cur = pc;
     // the thread that started it goes on with its own process's data in place (the shell starting Explorer from the
@@ -3191,21 +3191,21 @@ P.endProcess = function (pc, code) {
   if (this.thread16 && this.thread16.pc === pc) this.thread16.exitCode = code >>> 0;
   const destroy = window.W95Win32 && window.W95Win32.API.USER32.DestroyWindow;
   if (destroy) for (const w of [...(this.windows || new Map()).values()]) if (w.pc === pc && (!w.parentWin || w.parentWin.pc !== pc)) {
-    try { destroy[1].call(this, w.hwnd); } catch (_) { /* process teardown continues */ }
+    destroy[1].call(this, w.hwnd);
   }
   if (this.w32DesktopSurface && this.w32DesktopSurface.pc === pc) this.w32DesktopSurface = null;
   // USER hears of its end as KERNEL32 tells it (SignalProc32: USIG_THREAD_EXIT 20h for each thread, USIG_PROCESS_EXIT
   // 300h, USIG_PROCESS_DESTROY 400h): the windows and queues of its threads go there
   if (pc.started && pc.exe) {
     const u = this.ne && this.ne.get('USER'), sig = u && u.meta && this.neExport(u, 391), h = this.hinst16(pc.exe.base);
-    if (sig) try {
+    if (sig) {
       const signal = (s, id) => this.user16(391, [['l', s], ['l', id], ['l', 3], ['w', h]]);
       // (each thread's end on that thread, as KERNEL32 signals it from the exiting thread: USER destroys its windows
       // there, and its DestroyWindow goes on only for a window of the current thread's queue)
       const by = this.thread16;
       for (const t of (this.threadsById || new Map()).values()) if (t.pc === pc) { this.thread16 = t; try { signal(0x20, t.id); } finally { this.thread16 = by; } }
       signal(0x300, pc.pid); signal(0x400, pc.pid);
-    } catch (e) { console.error(e); }
+    }
   }
   if (this.procs) this.procs.delete(pc.pid);
   this.wakeWaiters(pc);   // (the threads waiting on its process handle)

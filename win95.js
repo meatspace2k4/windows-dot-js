@@ -1011,7 +1011,11 @@ function runExe(path, arg) {
 }
 // Notepad: the CD's NOTEPAD.EXE on the native USER when the system bundle has it, the shell's own otherwise
 function runNotepad(file, exe = join(WINDIR, 'NOTEPAD.EXE')) {
-  runNative(exe, file ? (/\s/.test(file) ? `"${file}"` : file) : '').then(ok => { if (!ok) notepad(file); });
+  const native = !!((window.W95SYSTEM || {}).programs || {})['NOTEPAD.EXE'];
+  runNative(exe, file ? (/\s/.test(file) ? `"${file}"` : file) : '').then(ok => {
+    if (ok) return;
+    if (native) msgBox(dispName(basename(exe)), `${exe} is not a valid Windows application.`, 'error'); else notepad(file);
+  });
 }
 const resolveArg = a => { a = a.trim().replace(/^"(.*)"$/, '$1'); return /^[a-z]:|^\\/i.test(a) ? a : join(fs.cwd, a); };
 function openLnk(path) {
@@ -3192,11 +3196,11 @@ class NativeApp {
       return;
     }
     if (this.stopped) return;   // (its fault dialog is up: it ends when that closes)
-    if (!p.win16Held && p.k32CloseRequest && p.k32CloseRequest()) closeProgram(this);   // REBOOT's APC: Close Program
-    this.keysFed = 0; this.feedKeys();
     // while a thread holds the Win16Lock it gave up the processor in (or hung in), only it runs: USER's timers, the
     // system thread, appy time and the other threads wait for it; the VMM's time-outs still come (ring 0)
     try {
+      if (!p.win16Held && p.k32CloseRequest && p.k32CloseRequest()) closeProgram(this);   // REBOOT's APC: Close Program
+      this.keysFed = 0; this.feedKeys();
       for (let n = 0; this.alive && n < 4; n++) {
         p.stats.slices++; const live = p.slice();
         if (!p.win16Held) { p.timers16(); p.threads16(); p.systemPump(); p.appy16(); }
@@ -3204,11 +3208,7 @@ class NativeApp {
         if (p.sound16) p.sound16(); if (p.lanPoll) p.lanPoll();
         if (!live || p.preempted || p.win16Held) break;   // its time ran out: the page gets its turn
       }
-    } catch (e) {
-      if (e instanceof W95Win32.FaultError) { p.depth = 0; p.faulted(e.fault); }   // (in a call the host made)
-      else if (!(e instanceof W95Win32.HangError)) { console.error(e); this.exited(-1, e.message); return; }
-      else { p.hung('host', e); p.depth = 0; }   // a call the host made into it never came back: the system is frozen behind it
-    }
+    } catch (e) { if (!this.caught(e)) return; }
     // a processor exception nothing handled: at ring 0 VWIN32's blue screen, then the program ends; else KERNEL32's
     // fault dialog for it, and it ends when the dialog closes
     if (p.fault && !this.faultTaken) {
@@ -3229,6 +3229,15 @@ class NativeApp {
     else dirty();   // (its screen, as it is drawn meanwhile)
     this.timer = setTimeout(() => this.step(), this.keyq && this.keyq.length ? 0 : 16);
   }
+  /** what the machine ran for a step or the page's input threw: a processor exception is its fault (in a call the host
+   *  made; its blue screen at ring 0, taken by the next step), a call that never came back a hang (the system frozen
+   *  behind it), anything else the machine's end. False once it has ended */
+  caught(e) {
+    const p = this.proc;
+    if (e instanceof W95Win32.FaultError) { p.depth = 0; p.faulted(e.fault); this.kick(); return true; }
+    if (e instanceof W95Win32.HangError) { p.hung('host', e); p.depth = 0; return true; }
+    console.error(e); this.exited(-1, e.message); return false;
+  }
   /** the program's module name, as KERNEL32's messages name it */
   progName() { return basename(this.path).replace(/\.[^.]*$/, '').toUpperCase(); }
   /** ring-0 runs stopped mid-way (a blue screen up): the system takes nothing else until they are done */
@@ -3239,7 +3248,7 @@ class NativeApp {
     let sc = SCAN[e.code] || 0;
     if (e.code === 'Backspace' && e.ctrlKey && e.altKey) sc = 0x153;   // a Mac's Delete key: Ctrl+Alt+Del
     if (!sc) return false;
-    try { return p.vkdKey(sc & 0xff, sc > 0xff, up, { shift: e.shiftKey, ctrl: e.ctrlKey, alt: e.altKey }); } catch (err) { console.error(err); return false; }
+    try { return p.vkdKey(sc & 0xff, sc > 0xff, up, { shift: e.shiftKey, ctrl: e.ctrlKey, alt: e.altKey }); } catch (err) { this.caught(err); return true; }
   }
   /** a window's icon: its program's (in the system's machine, the program of the process whose task made it) */
   iconOf(n) {
@@ -3268,11 +3277,8 @@ class NativeApp {
     if (p.pc0 && p.pc0.exe && p.pc0.exe.base === d.meta.base) return 8;   // (the machine's own program: one instance)
     const live = [...(p.procs || new Map()).values()].some(x => x.exe.base === d.meta.base);   // (then the instances share its image: P.spawn)
     if (!live) p.modules = p.modules.filter(x => x.base !== d.meta.base);   // an ended process's image: loaded afresh
-    let pc;
-    try {
-      const mod = d.modSync || (d.modSync = new WebAssembly.Module(b64bytes(d.wasm)));
-      pc = p.spawn(fs.readFile(file), mod, { ...d.meta, name: name.replace(/\.EXE$/, '') }, fs.realpath(file), arg ? `${fs.realpath(file)} ${arg}` : fs.realpath(file));
-    } catch (e) { console.error(e); return 8; }
+    const mod = d.modSync || (d.modSync = new WebAssembly.Module(b64bytes(d.wasm)));
+    const pc = p.spawn(fs.readFile(file), mod, { ...d.meta, name: name.replace(/\.EXE$/, '') }, fs.realpath(file), arg ? `${fs.realpath(file)} ${arg}` : fs.realpath(file));
     pc.onExit = code => { if (!pc.fault) emit('program.exit', { path: pc.path, code }); };
     this.kick();
     return pc;
@@ -3394,8 +3400,8 @@ class NativeApp {
       if (f !== 1 && (ax !== this.ax || ay !== this.ay)) ev.push({ mouse: [0x8001, ax, ay] });
       ev.push({ mouse: [0x8001 | f, ax, ay] }); this.ax = ax; this.ay = ay;
       if (this.keyq && this.keyq.length) this.keyq.push(...ev); else for (const m of ev) this.proc.mouseEvent16(...m.mouse);
-    } catch (e) { console.error(e); }
-    this.feedKeys();
+      this.feedKeys();
+    } catch (e) { if (!this.caught(e)) return; }
     this.kick();
   }
   key(e, up) {
@@ -3412,17 +3418,17 @@ class NativeApp {
     if (vk) (this.keyq = this.keyq || []).push([vk, sc, up]);
     // USER's system queue holds a limited number of events: a burst (fast or synthetic typing) goes in a few at a
     // time between slices, so the program takes each batch off before the next arrives, as a keyboard buffer would
-    this.feedKeys();
+    try { this.feedKeys(); } catch (e) { if (!this.caught(e)) return; }
     this.kick();
   }
   feedKeys() {
     if (!this.keyq || !this.keyq.length || this.proc.depth || this.ring0()) return;   // (the keyboard driver's, at interrupt time too)
-    try { if (this.proc.user16(335).ax) return; } catch (e) { console.error(e); }   // GetInputState: USER has input not yet taken
+    if (this.proc.user16(335).ax) return;   // GetInputState: USER has input not yet taken
     for (; this.keyq.length && (this.keysFed || 0) < 16; this.keysFed = (this.keysFed || 0) + 1) {
       const k = this.keyq.shift();
-      if (k.mouse) { try { this.proc.mouseEvent16(...k.mouse); } catch (err) { console.error(err); } continue; }
+      if (k.mouse) { this.proc.mouseEvent16(...k.mouse); continue; }
       const [vk, sc, up] = k;
-      try { this.proc.keyEvent16(vk, sc & 0xff, up, sc > 0xff); } catch (err) { console.error(err); }
+      this.proc.keyEvent16(vk, sc & 0xff, up, sc > 0xff);
     }
   }
   // Ctrl or Alt with a character the event names without its key (synthetic events): that key, pressed and released

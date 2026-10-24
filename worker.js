@@ -172,12 +172,12 @@ class Machine {
     // the processor (a guest running on inside a call still gets them, as a hung Windows still runs REBOOT's)
     if (p.depth && !p.r0Depth && !p.vxdCrit && p.vxdTimeOuts && p.vxdTimeOuts.size && !this.inTimer) {
       this.inTimer = true; const d = p.depth; p.depth = 0;
-      try { p.vxdRunTimeOuts(); } catch (e) { console.error(e); } finally { p.depth = d; this.inTimer = false; }
+      try { p.vxdRunTimeOuts(); } finally { p.depth = d; this.inTimer = false; }
     }
     while ((r = B.ringTake(this.ring))) {
       if (r[0] === B.KEY) {
         const scan = r[1] & 0xff, ext = !!(r[1] & 0x100), up = !!(r[1] & 0x200), toUser = !!(r[1] & 0x400), mods = { shift: !!(r[2] & 1), ctrl: !!(r[2] & 2), alt: !!(r[2] & 4) };
-        let taken = false; try { taken = scan && p.vkdKey ? p.vkdKey(scan, ext, up, mods) : false; } catch (e) { console.error(e); }
+        const taken = scan && p.vkdKey ? p.vkdKey(scan, ext, up, mods) : false;
         if (!taken && toUser && r[3]) this.queueKey(r[3], scan | (ext ? 0x100 : 0), up, mods);
         if (!taken && toUser) p.dispatchInput(up ? W.WM.KEYUP : W.WM.KEYDOWN, r[3] || scan, 0);
         if (!up) this.stopFullSavers();
@@ -222,7 +222,7 @@ class Machine {
   feedMouse() {
     const p = this.proc;
     if (!this.mouseq.length || p.depth || this.ring0()) return;
-    for (const m of this.mouseq.splice(0)) try { p.mouseEvent16(...m); } catch (e) { console.error(e); }
+    for (const m of this.mouseq.splice(0)) p.mouseEvent16(...m);
   }
   /** the screen's mode, DAC and cursor sprite for the page, which shows the screen from the shared memory */
   postScan() {
@@ -255,13 +255,11 @@ class Machine {
   loadMpr() {
     const p = this.proc; if (this.mprLoaded) return; this.mprLoaded = true;
     if (W.regGet('hklm\\system\\currentcontrolset\\control\\networkprovider\\order', 'ProviderOrder') === undefined) return;
-    try {
-      p.init16(); const m = p.loadDll('MPR'); if (m) { p.runPendingInits(); p.attach(m); }
-      // the network's process, started as KERNEL32 starts it at boot and run to its first wait: it is its start that
-      // connects USER's network functions (SM_NETWORK), which the shell reads when it first lays out the desktop
-      const exe = ['C:\\WINDOWS\\SYSTEM\\MPREXE.EXE', 'C:\\WINDOWS\\MPREXE.EXE'].find(f => fs.exists(f));
-      if (exe) { const pc = this.spawnProgram(exe, ''); if (typeof pc === 'object') p.runUntilIdle(pc, 4000); }
-    } catch (e) { console.error(e); }
+    p.init16(); const m = p.loadDll('MPR'); if (m) { p.runPendingInits(); p.attach(m); }
+    // the network's process, started as KERNEL32 starts it at boot and run to its first wait: it is its start that
+    // connects USER's network functions (SM_NETWORK), which the shell reads when it first lays out the desktop
+    const exe = ['C:\\WINDOWS\\SYSTEM\\MPREXE.EXE', 'C:\\WINDOWS\\MPREXE.EXE'].find(f => fs.exists(f));
+    if (exe) { const pc = this.spawnProgram(exe, ''); if (typeof pc === 'object') p.runUntilIdle(pc, 4000); }
   }
   startMsgsrv() {
     const p = this.proc; if (!this.alive || p.trapped) return true;
@@ -319,17 +317,17 @@ class Machine {
   feedKeys() {
     const p = this.proc;
     if (!this.keyq.length || p.depth || this.ring0()) return;   // (the keyboard and mouse drivers report at interrupt time)
-    try { if (p.user16(335).ax) return; } catch (e) { console.error(e); }   // GetInputState: USER has input not yet taken
+    if (p.user16(335).ax) return;   // GetInputState: USER has input not yet taken
     for (let n = 0; this.keyq.length && n < 16; n++) {
       const k = this.keyq.shift();
-      try { p.keyEvent16(k[0], k[1] & 0xff, k[2], k[1] > 0xff); } catch (e) { console.error(e); }
+      p.keyEvent16(k[0], k[1] & 0xff, k[2], k[1] > 0xff);
     }
   }
   step() {
     clearTimeout(this.timer); this.timer = 0;
     if (!this.alive) return;
     const p = this.proc, t0 = performance.now();
-    this.poll();
+    try { this.poll(); } catch (e) { if (!this.caught(e)) return; }
     if (p.r0Runs && p.r0Runs.length) {
       try { p.r0Step(); } catch (e) { console.error(e && e.stack ? e.stack : e); this.exited(-1, e.message); return; }
       this.sendText();
@@ -338,13 +336,13 @@ class Machine {
       return;
     }
     if (this.stopped) return;
-    if (this.sysPending && !p.depth && !p.thread16) { this.sysPending = false; if (!this.startMsgsrv()) return; }   // Setup's items done: the system's first task
-    if (this.wantMode && !p.depth && !p.thread16 && !p.win16Held) {   // the mode the page asked for while a thread held USER: made now that none does
-      const [w, h] = this.wantMode; this.wantMode = null; const r = this.setMode(w, h); if (r) post({ t: 'mode', r }); else this.wantMode = [w, h];
-    }
-    if (!p.win16Held && p.k32CloseRequest && p.k32CloseRequest()) post({ t: 'closeProgram' });   // REBOOT's APC: Close Program
-    this.feedMouse(); this.feedKeys();
     try {
+      if (this.sysPending && !p.depth && !p.thread16) { this.sysPending = false; if (!this.startMsgsrv()) return; }   // Setup's items done: the system's first task
+      if (this.wantMode && !p.depth && !p.thread16 && !p.win16Held) {   // the mode the page asked for while a thread held USER: made now that none does
+        const [w, h] = this.wantMode; this.wantMode = null; const r = this.setMode(w, h); if (r) post({ t: 'mode', r }); else this.wantMode = [w, h];
+      }
+      if (!p.win16Held && p.k32CloseRequest && p.k32CloseRequest()) post({ t: 'closeProgram' });   // REBOOT's APC: Close Program
+      this.feedMouse(); this.feedKeys();
       for (let n = 0; this.alive && n < 4; n++) {
         if (n) { this.poll(); this.feedMouse(); this.postScan(); }
         p.stats.slices++; const live = p.slice();
@@ -353,11 +351,7 @@ class Machine {
         if (p.sound16) p.sound16(); if (p.lanPoll) p.lanPoll();
         if (!live || p.preempted || p.win16Held) break;
       }
-    } catch (e) {
-      if (e instanceof W.FaultError) { p.depth = 0; p.faulted(e.fault); }
-      else if (!(e instanceof W.HangError)) { console.error(e && e.stack ? e.stack : e); this.exited(-1, e.message); return; }
-      else { p.hung('host', e); p.depth = 0; }
-    }
+    } catch (e) { if (!this.caught(e)) return; }
     p.stats.guestMs += performance.now() - t0;
     if (p.fault && !this.faultTaken) {
       this.faultTaken = true;
@@ -370,6 +364,14 @@ class Machine {
     if (!p.win16Held) this.frame();
     else { post({ t: 'held', held: { hung: p.win16Held.hung }, stats: { ...p.stats } }); this.postScan(); }   // (no USER while a thread holds the lock: the page learns it is held, and has the screen)
     this.timer = setTimeout(() => this.step(), this.keyq.length ? 0 : 16);
+  }
+  /** what a step ran threw: a processor exception is the machine's fault (its blue screen at ring 0), a hang the
+   *  host's, anything else the machine's end. False once it has ended */
+  caught(e) {
+    const p = this.proc;
+    if (e instanceof W.FaultError) { p.depth = 0; p.faulted(e.fault); return true; }
+    if (e instanceof W.HangError) { p.hung('host', e); p.depth = 0; return true; }
+    console.error(e && e.stack ? e.stack : e); this.exited(-1, e.message); return false;
   }
   kick() { if (this.alive && this.timer) { clearTimeout(this.timer); this.timer = setTimeout(() => this.step(), 0); } }
   /** VWIN32's blue screen for a fault at ring 0 (its text from the page), then the current application ends */
@@ -438,11 +440,8 @@ class Machine {
     if (p.pc0 && p.pc0.exe && p.pc0.exe.base === d.meta.base) return 8;   // (the machine's own program: one instance)
     const live = [...(p.procs || new Map()).values()].some(x => x.exe.base === d.meta.base);   // (then the instances share its image: P.spawn)
     if (!live) p.modules = p.modules.filter(x => x.base !== d.meta.base);
-    let pc;
-    try {
-      const mod = d.modSync || (d.modSync = new WebAssembly.Module(b64bytes(d.wasm))), real = fs.realpath(file);
-      pc = p.spawn(fs.readFile(file), mod, { ...d.meta, name: name.replace(/\.EXE$/, '') }, real, arg ? `${real} ${arg}` : real);
-    } catch (e) { console.error(e); return 8; }
+    const mod = d.modSync || (d.modSync = new WebAssembly.Module(b64bytes(d.wasm))), real = fs.realpath(file);
+    const pc = p.spawn(fs.readFile(file), mod, { ...d.meta, name: name.replace(/\.EXE$/, '') }, real, arg ? `${real} ${arg}` : real);
     pc.onExit = code => { if (!pc.fault) post({ t: 'emit', ev: 'program.exit', data: { path: pc.path, code } }); };
     this.kick();
     return pc;

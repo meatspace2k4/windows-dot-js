@@ -107,11 +107,12 @@ class Process {
   reg(n, v) { if (v === undefined) return this.cpu[n].value >>> 0; this.cpu[n].value = v | 0; }
 
   // ---- loading: map sections, relocate, bind imports, instantiate the recompiled module
-  loadImage(f, module, meta, name) {
+  loadImage(f, module, meta, name, inPlaceOf) {
     const dv = new DataView(f.buffer, f.byteOffset, f.byteLength), u8 = this.u8;
     const p = dv.getUint32(0x3c, true), opt = p + 24, pref = dv.getUint32(opt + 28, true), base = meta.base;
-    // (its image is its own: one laid over a loaded module's is a build fault, not something to run)
-    const over = this.imageAt(base, base + dv.getUint32(opt + 56, true));
+    // (its image is its own: one laid over a loaded module's is a build fault, not something to run; inPlaceOf, a
+    // second instance's, is laid over the running one's own, its data put by first (P.spawn))
+    const over = this.imageAt(base, base + dv.getUint32(opt + 56, true), inPlaceOf);
     if (over) throw new GuestError(`${name} at ${base.toString(16)} lies over ${over.name}'s image`);
     u8.set(f.subarray(0, dv.getUint32(opt + 60, true)), base);
     const nsec = dv.getUint16(p + 6, true), shdr = opt + dv.getUint16(p + 20, true);
@@ -243,8 +244,9 @@ class Process {
     for (let i = Math.max(0, at); i < bl.length && bl[i] < a + 4; i++) look[bl[i] - m.meta.textLo] = 0;
   }
   /** the loaded module whose image lies anywhere from `lo` to `hi`, or null */
-  imageAt(lo, hi) {
+  imageAt(lo, hi, except) {
     return this.modules.find(m => {
+      if (m === except) return false;
       const b = m.base !== undefined ? m.base : m.meta && m.meta.base; if (b === undefined) return false;
       const e = Math.max(b + (m.size || (m.meta && m.meta.size) || 0), (m.meta && m.meta.textHi) || 0);
       return lo < e && b < hi;
