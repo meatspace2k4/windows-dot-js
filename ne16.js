@@ -223,26 +223,33 @@ P.loadLibrary16 = function (name, native = false, defer = false) {
   const file = name.toUpperCase().replace(/^.*\\/, '');
   // a file name finds that file's module first (MSACM.DRV is the module MSACMMAP, not MSACM.DLL's MSACM)
   const byFile = /\./.test(file) && Object.values(all).find(s => s.fileName === file);
-  if (byFile && this.ne.has(byFile.meta.name.toUpperCase())) return this.ne.get(byFile.meta.name.toUpperCase());
-  if (!byFile && this.ne.has(base)) return this.ne.get(base);
+  const had = k => { const m = this.ne.get(k); return m.failed ? null : m; };   // (one its LibEntry refused: refused again)
+  if (byFile && this.ne.has(byFile.meta.name.toUpperCase())) return had(byFile.meta.name.toUpperCase());
+  if (!byFile && this.ne.has(base)) return had(base);
   const sys = byFile || all[base] || Object.values(all).find(s => s.fileName === file || s.fileName === file + '.DLL');
   if (!sys) return this.loadNEFile(name);
   if (sys.onDisk && !this.findFile16(/\\/.test(name) ? name : sys.fileName)) return null;   // a module Setup leaves on the CD: once installed
   const b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
-  if (this.ne.has(sys.meta.name.toUpperCase())) return this.ne.get(sys.meta.name.toUpperCase());
+  if (this.ne.has(sys.meta.name.toUpperCase())) return had(sys.meta.name.toUpperCase());
   const rec = this.loadNE(sys.meta.name.toUpperCase(), sys.fileBytes || (sys.fileBytes = b64(sys.file)), sys.mod || (sys.mod = new WebAssembly.Module(b64(sys.wasm))), sys.meta);
   rec.fileName = sys.fileName;
   for (const imp of sys.meta.imports || []) if (imp !== 'KERNEL' && (native || !JS16.includes(imp))) this.loadLibrary16(imp, native);
-  if (defer) return rec;   // the caller runs LibEntry (initNE) once what it needs is in place
-  if (!this.initNE(rec)) { console.warn('[ne16]', base, 'LibEntry failed'); }
-  return rec;
+  if (defer) return rec;   // the caller runs LibEntry (libEntry) once what it needs is in place
+  return this.libEntry(rec) ? rec : null;
+};
+/** a library's LibEntry, once: one that returns 0 refused to load, as the Win16 loader takes it (each later load of
+ *  it is refused too: loadLibrary16 null, LoadLibrary's error 20). True when it took */
+P.libEntry = function (rec) {
+  if (!rec.inited) { rec.inited = true; if (!this.initNE(rec)) rec.failed = true; }
+  return !rec.failed;
 };
 /** start the native window system the way KRNL386 does: the drivers SYSTEM.INI's [boot] section names, in its
  *  order (system, keyboard, mouse, display, comm), then GDI and USER; returns USER's module record */
 P.bootUser16 = function () {
   if (this.user16Ready === undefined) this.user16Ready = false;
   if (this.vxdBoot) this.vxdBoot();   // the static VxDs, initialized before Windows starts (vmm.js)
-  for (const m of ['SYSTEM', 'KEYBOARD', 'MOUSE', this.displayDriverFile(), 'COMM', 'GDI']) this.loadLibrary16(m, true);
+  // (without a mouse or a serial port Windows starts all the same; without any of the others it cannot)
+  for (const m of ['SYSTEM', 'KEYBOARD', 'MOUSE', this.displayDriverFile(), 'COMM', 'GDI']) if (!this.loadLibrary16(m, true) && m !== 'MOUSE' && m !== 'COMM') throw new GuestError(`${m} did not load: Windows cannot start`);
   // USER.EXE calls into USER32.DLL through flat thunks from its LibEntry on, and USER32 connects them when it loads,
   // naming USER.EXE: so USER's image first, then USER32, then USER's LibEntry
   const user = this.ne.get('USER') || this.loadLibrary16('USER', true, true);
@@ -257,7 +264,7 @@ P.bootUser16 = function () {
     this.runPendingInits();
   }
   if (!user.inited) {
-    user.inited = true; if (!this.initNE(user)) console.warn('[ne16] USER LibEntry failed');
+    if (!this.libEntry(user)) throw new GuestError('USER\'s LibEntry refused it: Windows cannot start');
     // FinalUserInit (#400), as KRNL386 calls it once USER is up: GDI's FinalGdiInit takes the USER entry points GDI
     // calls through (LoadString, GetActiveWindow and the rest, which its print-to-file prompt uses)
     if (this.neExport(user, 400)) this.user16(400);
@@ -1987,6 +1994,8 @@ def16('KERNEL', 50, 'wx', 'l', function (h, name) {   // GetProcAddress
 /** LoadLibrary's error for a module it could not load, as KRNL386's LoadModule gives it: 2 not found, 21 a Win32 image
  *  (which needs 32-bit Windows; SHELL32 tells 32-bit Control Panel files by it), 11 any other file */
 P.loadError16 = function (name) {
+  const k = name.toUpperCase().replace(/^.*\\/, ''), m = [...this.ne.values()].find(x => x.name === k.replace(/\.[^.]*$/, '') || x.fileName === k);
+  if (m && m.failed) return 20;   // (its LibEntry refused it)
   const full = this.findFile16(/\.[^\\]*$/.test(name) ? name : name + '.DLL'); if (!full) return 2;
   let f; try { f = this.fs.readFile(full); } catch (_) { return 2; }
   const n = f.length > 0x40 ? rd.u32(f, 0x3c) : 0;
@@ -3385,7 +3394,7 @@ def16('KERNEL', 150, 'w', 'v', function () { if (!this.atThreadTop()) this.threa
 def16('KERNEL', 45, 'sp', 'l', function (name, pb) {
   const rec = this.loadLibrary16(name, true, true); if (!rec || !rec.meta) return this.loadError16(name);
   const hdr = rd.u32(rec.file, 0x3c), flags = rd.u16(rec.file, hdr + 0x0c);
-  if (flags & 0x8000) { if (!rec.inited) { rec.inited = true; this.initNE(rec); } return rec.hInstance; }
+  if (flags & 0x8000) return this.libEntry(rec) ? rec.hInstance : 20;
   const psp = this.alloc(0x100), pspSel = this.allocSels(psp, 0x100);
   this.u8.fill(0, psp, psp + 0x100); this.w16(psp, 0x20cd);
   let show = 1;
