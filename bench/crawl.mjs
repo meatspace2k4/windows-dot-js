@@ -4,16 +4,17 @@
 // guest programs that failed. Items that would change or destroy data are not pressed (see SKIP).
 //
 //   node bench/crawl.mjs [endpoint]      default http://127.0.0.1:9334
-import { connect } from './runner.mjs';
+import { connect, DESTRUCTIVE } from './runner.mjs';
+
+// never pressed: they change files, settings or the session, or end or rearrange what the crawl is walking
+const SKIP = new RegExp(DESTRUCTIVE.source.replace(/\)\$$/, '') + '|New|Exit|Close|OK|Cancel|Yes|No|Apply|Open\\.\\.\\.|Page Setup\\.\\.\\.|Create Shortcut|Minimize All Windows|Cascade|Tile .*|Line up Icons|by .*|Select All|Time\\/Date|Word Wrap|Copy|Send To)$');
 
 const endpoint = process.argv[2] || 'http://127.0.0.1:9334';
 
 // runs in the page
-const CRAWL = async () => {
+const CRAWL = async SKIP => {
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const frame = () => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
-  // never pressed: they change files, settings or the session
-  const SKIP = /^(Shut Down\.\.\.|Delete|Empty Recycle Bin|Format\.\.\.|Rename|Cut|Paste( Shortcut)?|Undo.*|Restore|New|Exit|Close|OK|Cancel|Yes|No|Apply|Remove.*|Clear|Save|Save As\.\.\.|Open\.\.\.|Print|Page Setup\.\.\.|Create Shortcut|Sharing\.\.\.|Minimize All Windows|Cascade|Tile .*|Line up Icons|by .*|Select All|Time\/Date|Word Wrap|Copy|Send To)$/;
   const found = [];
   let where = '';
   const off = win95.on('*', e => {
@@ -120,7 +121,7 @@ const CRAWL = async () => {
 };
 
 const c = await connect(endpoint);
-const r = await c.evaluate(`(${CRAWL.toString()})()`, 900000);
+const r = await c.evaluate(`(${CRAWL.toString()})(${SKIP})`, 900000);
 c.close();
 const groups = new Map();
 for (const f of r.found) { const k = `${f.kind}\u0000${f.what}`; const g = groups.get(k) || { ...f, at: [] }; g.at.push(f.where); groups.set(k, g); }

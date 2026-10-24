@@ -31,9 +31,57 @@ const reset = async () => {
   await frame();
 };
 const BENCH = 'C:\\\\BENCH';
+// the share of the main thread other work took over ms: a chain of message-channel tasks, each gap past 0.25 ms counted
+const load = ms => new Promise(done => {
+  const ch = new MessageChannel(), t0 = performance.now(); let last = t0, busy = 0, n = 0;
+  ch.port1.onmessage = () => {
+    const now = performance.now(), gap = now - last; if (gap > 0.25) busy += gap; last = now; n++;
+    if (now - t0 < ms) ch.port2.postMessage(0); else { ch.port1.close(); done({ busy_pct: +(100 * busy / (now - t0)).toFixed(2), tasks_per_s: +(n / ((now - t0) / 1000)).toFixed(0) }); }
+  };
+  ch.port2.postMessage(0);
+});
+// the guest time a native program used over ms, as a share of it
+const guestCpu = async (app, ms) => { const a = app.proc.stats.guestMs, t = performance.now(); await sleep(ms); return +(100 * (app.proc.stats.guestMs - a) / (performance.now() - t)).toFixed(2); };
 `;
 
 export const STEPS = [
+  {
+    name: 'idle.load',
+    about: 'the empty desktop for 5 s: the main thread\'s busy share and how many tasks it ran',
+    run: async () => { await reset(); return await load(5000); },
+  },
+  {
+    name: 'network',
+    about: 'the network\'s process (MPREXE with the network VxDs under it), as the shell starts it at boot: start-up to the card started, then 5 s idle: its guest CPU and the main thread\'s busy share',
+    run: async () => {
+      if (!win95.startNetwork) return { skipped: 'no network in this build' };
+      await reset();
+      // started as the shell boots (its logon dialog closed by reset): the time that start took
+      const a = await win95.startNetwork(), start_ms = +((a && a.startMs) || 0).toFixed(1);
+      if (!a || !a.alive) throw new Error('the network process did not start: ' + (a && a.proc && a.proc.trapped));
+      const card = a.proc.devnodes().find(d => d.id === 'ROOT\\NET\\0000');
+      if (!card || !card.started) throw new Error('the network card did not start');
+      await sleep(1000);
+      const [cpu, idle] = await Promise.all([guestCpu(a, 5000), load(5000)]);
+      return { start_ms, guest_cpu_pct: cpu, idle_busy_pct: idle.busy_pct, frames_sent: window.W95LAN ? window.W95LAN.frames : 0 };
+    },
+  },
+  {
+    name: 'midi',
+    about: 'CANYON.MID opened in Media Player through MCISEQ: start-up until the synthesizer is written, then its guest CPU for 4 s',
+    run: async () => {
+      await reset();
+      const before = new Set(win95.nativeApps), t = performance.now();
+      win95.shellOpen('C:\\WINDOWS\\MEDIA\\canyon.mid');
+      let app = null;
+      while (performance.now() - t < 20000) { app = win95.nativeApps.find(x => !before.has(x) && /MPLAYER/i.test(x.path)); if (app && app.proc && app.proc.opl3 && app.proc.opl3.regs.some(v => v)) break; await sleep(20); }
+      if (!app || !app.alive) throw new Error('Media Player did not start: ' + (app && app.proc && app.proc.trapped));
+      const start_ms = +(performance.now() - t).toFixed(1), cpu = await guestCpu(app, 4000);
+      for (const w of app.wins.values()) if (w.title) app.close(w);
+      await sleep(500); await reset();
+      return { start_ms, guest_cpu_pct: cpu };
+    },
+  },
   {
     name: 'render.idle',
     about: 'one full redraw of the empty desktop (JS time to issue the canvas drawing)',
@@ -114,13 +162,28 @@ export const STEPS = [
       if (!win95.fs.exists(BENCH)) win95.fs.mkdir(BENCH);
       const line = 'The quick brown fox jumps over the lazy dog. 0123456789\r\n';
       win95.fs.writeFile(BENCH + '\\big.txt', line.repeat(Math.ceil(60000 / line.length)).slice(0, 60000));
-      const open = await measure(5, () => win95.run('notepad ' + BENCH + '\\big.txt'), () => win95.close(/Notepad$/));
-      win95.run('notepad ' + BENCH + '\\big.txt'); await frame();
+      // the native Notepad starts and closes on its own time: each open is timed to its window on screen
+      const until = async (ok, ms = 20000) => { const t0 = performance.now(); while (!ok() && performance.now() - t0 < ms) await sleep(5); return ok(); };
+      const opens = [];
+      for (let i = 0; i < 5; i++) {
+        const t0 = performance.now(); win95.run('notepad ' + BENCH + '\\big.txt');
+        if (!await until(() => win95.window('big - Notepad'))) throw new Error('Notepad did not open the file: ' + win95.windows().map(w => w.title).join(', '));
+        await frame(); opens.push(performance.now() - t0);
+        win95.close('big - Notepad'); await until(() => !win95.windows().length);
+      }
+      const open = { to_window: stat(opens) };
+      win95.run('notepad ' + BENCH + '\\big.txt'); await until(() => win95.window('big - Notepad')); await frame();
       // anything else on screen (a refusal, an error) would make the timings meaningless
       if (!win95.window('big - Notepad') || win95.windows().length !== 1) throw new Error('Notepad did not open the file: ' + win95.windows().map(w => w.title).join(', '));
-      const t = performance.now(); win95.type('x'.repeat(1000)); win95.render(); const type_ms = performance.now() - t;
-      await frame();
-      const s = performance.now(); win95.key('alt+f', 's'); win95.render(); const save_ms = performance.now() - s;
+      // the native Notepad takes typed keys as its USER's queue lets them in: typing ends when it has taken them all,
+      // saving when the file has its new size
+      const app = (win95.nativeApps || []).find(a => /NOTEPAD/i.test(a.path));
+      const t = performance.now(); win95.type('x'.repeat(1000));
+      while (app && app.keyq && app.keyq.length && performance.now() - t < 60000) await sleep(5);
+      await sleep(50); const type_ms = performance.now() - t;
+      const s = performance.now(); win95.key('alt+f', 's');
+      while (win95.fs.stat(BENCH + '\\big.txt').size === 60000 && performance.now() - s < 10000) await sleep(5);
+      const save_ms = performance.now() - s;
       const saved = win95.fs.stat(BENCH + '\\big.txt').size;
       if (saved !== 61000) throw new Error(`saved ${saved} bytes, expected 61000`);
       await reset();
@@ -136,7 +199,8 @@ export const STEPS = [
     run: async () => {
       await reset();
       const fs = win95.fs, data = new Uint8Array(1024).fill(65), n = 500;
-      if (!fs.exists(BENCH)) fs.mkdir(BENCH);
+      if (fs.exists(BENCH)) for (const i of fs.readdir(BENCH)) fs.unlink(i.path);   // what an earlier step left
+      else fs.mkdir(BENCH);
       const rate = (t, k = n) => +(k / (t / 1000)).toFixed(1);
       let t = performance.now(); for (let i = 0; i < n; i++) fs.writeFile(`${BENCH}\\File number ${i}.dat`, data); const create = performance.now() - t;
       t = performance.now(); for (let i = 0; i < n; i++) fs.readFile(`${BENCH}\\File number ${i}.dat`); const read = performance.now() - t;

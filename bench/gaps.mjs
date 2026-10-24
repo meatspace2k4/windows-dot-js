@@ -20,30 +20,14 @@ const body = src.slice(0, src.indexOf('// ---- replay')) + '\nexport { PRELUDE, 
 const mod = join(mkdtempSync(join(tmpdir(), 'w95gaps-')), 'replay.mjs');
 writeFileSync(mod, body.replace(/^#!.*\n/, ''));
 const { PRELUDE, STEPS, runAll } = await import(pathToFileURL(mod).href);
-const { connect } = await import('./runner.mjs');
+const { connect, capture } = await import('./runner.mjs');
 
 // a second connection that only listens
 const cap = await connect(endpoint);
 let step = 'setup';
 const found = [];
-const add = (kind, detail) => found.push({ step, kind, detail });
 const seen = new Map();   // how many shell events arrived per step, so an empty result can be told from a deaf one
-cap.onEvent = d => {
-  if (d.method === 'Runtime.bindingCalled') seen.set(step, (seen.get(step) || 0) + 1);
-  if (d.method === 'Runtime.exceptionThrown') add('exception', d.params.exceptionDetails.exception?.description?.split('\n').slice(0, 2).join(' ') || d.params.exceptionDetails.text);
-  else if (d.method === 'Runtime.consoleAPICalled' && (d.params.type === 'error' || d.params.type === 'warning'))
-    add('console.' + d.params.type, d.params.args.map(a => a.value ?? a.description ?? '').join(' ').split('\n')[0]);
-  else if (d.method === 'Runtime.bindingCalled' && d.params.name === '__w95event') {
-    const e = JSON.parse(d.params.payload);
-    if (e.type === 'key.unhandled') add('key unhandled', `${e.key} in ${e.target}`);
-    else if (e.type === 'menu.noop') add('menu item does nothing', e.label);
-    else if (e.type === 'button.noop') add('button does nothing', e.label);
-    else if (e.type === 'program.exit' && e.why) add('program failed', `${e.path}: ${e.why}`);
-    else if (e.type === 'window.open' && e.message && /error|warning/.test(e.message.type || '')) add(`${e.message.type} box`, `${e.title}: ${e.message.text.replace(/\s+/g, ' ')}`);
-  }
-};
-await cap.call('Runtime.enable');
-await cap.call('Runtime.addBinding', { name: '__w95event' });
+await capture(cap, (kind, detail) => found.push({ step, kind, detail }), () => seen.set(step, (seen.get(step) || 0) + 1));
 
 await runAll(endpoint, PRELUDE, STEPS.filter(s => !skip.includes(s.name)), m => { step = m.replace(/ \.\.\.$/, ''); process.stderr.write(m + '\n'); });
 await new Promise(r => setTimeout(r, 500));

@@ -48,14 +48,20 @@ I32, I64, F32, F64 = 0x7f, 0x7e, 0x7d, 0x7c
 G = {n: i for i, n in enumerate(['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi',
                                   'cf', 'pf', 'zf', 'sf', 'of', 'df', 'fs', 'ftop', 'fsw', 'fcw', 'eip',
                                   # segment selectors and their cached bases (segmented NE code)
-                                  'cs', 'ds', 'es', 'ss', 'fsel', 'gsel', 'csb', 'dsb', 'esb', 'ssb', 'gsb'])}
+                                  'cs', 'ds', 'es', 'ss', 'fsel', 'gsel', 'csb', 'dsb', 'esb', 'ssb', 'gsb',
+                                  # blocks left before the dispatcher asks the host whether to go on (tick)
+                                  'budget'])}
 REGS = ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi']
 
 # imported functions (index order matters)
 IMPORTS = [('api', [I32], [I32]), ('trap', [I32, I32], []),
            ('fsin', [F64], [F64]), ('fcos', [F64], [F64]), ('ftan', [F64], [F64]), ('fatan2', [F64, F64], [F64]),
            ('fexp2', [F64], [F64]), ('flog2', [F64], [F64]), ('fmod', [F64, F64], [F64]), ('frem', [F64, F64], [F64]),
-           ('f80load', [I32], [F64]), ('f80store', [I32, F64], []), ('btrace', [I32], [])]
+           ('f80load', [I32], [F64]), ('f80store', [I32, F64], []), ('btrace', [I32], []),
+           # the host's turn when the block budget runs out: nonzero to stop here (run returns 1, EIP in the eip global)
+           ('tick', [I32], [I32]),
+           # a store into the module's own instructions (code that patches itself): the host drops the translation there
+           ('smc', [I32], [])]
 IMP = {n: i for i, (n, _, _) in enumerate(IMPORTS)}
 NIMP = len(IMPORTS)
 
@@ -91,7 +97,7 @@ class PE:
                 e = u16(self.image, o + 8 + 2 * k)
                 if e >> 12 == 3: self.relocs.append(page + (e & 0xfff))
             o += blk
-        self.code = [(va, max(vs, rs)) for nm, va, vs, ro, rs, ch in self.secs if ch & 0x20000000]
+        self.code = [(va, max(vs, rs)) for nm, va, vs, ro, rs, ch in self.secs if ch & 0x20000020]   # executable, or marked as code only (MSPRINT2's .text)
         self.pref = self.base
     def rebase(self, nb):
         delta = (nb - self.base) & 0xffffffff
@@ -100,6 +106,69 @@ class PE:
             struct.pack_into('<I', self.image, r, v)
         if self.entry: self.entry = (self.entry - self.base + nb) & 0xffffffff
         self.base = nb
+    def in_code(self, va):
+        r = va - self.base
+        return any(a <= r < a + n for a, n in self.code)
+    def u32va(self, va): return u32(self.image, va - self.base)
+
+class LE:
+    """A VxD (LE image) laid out the way PE is: its objects one after another from the load base, every internal
+    fixup applied, the code objects as code. Entry points are the procedures its DDB names (control, V86 API,
+    PM API) and its service table; an INT 20h is a VxDCall/VMMCall with the service's dword after it."""
+    VXD = True
+    def __init__(self, data, base=0x10000):
+        self.data = data; le = u32(data, 0x3c); assert data[le:le + 2] == b'LE'
+        self.pgsz = u32(data, le + 0x28); last = u32(data, le + 0x2c); objtab = le + u32(data, le + 0x40); nobj = u32(data, le + 0x44)
+        fpt = le + u32(data, le + 0x68); frt = le + u32(data, le + 0x6c); datapg = u32(data, le + 0x80); npages = u32(data, le + 0x14)
+        enttab = le + u32(data, le + 0x5c)
+        # the object page table: each logical page's page in the file (3 bytes, high byte first) and its type
+        opt = le + u32(data, le + 0x48)
+        filepage = [data[opt + 4 * i] << 16 | data[opt + 4 * i + 1] << 8 | data[opt + 4 * i + 2] for i in range(npages)]
+        objs = []
+        for i in range(nobj):
+            vsize, ob, flags, pgidx, pgcnt, _ = struct.unpack_from('<6I', data, objtab + 24 * i)
+            objs.append(dict(vsize=vsize, flags=flags, pgidx=pgidx, pgcnt=pgcnt))
+        off = 0
+        for o in objs: o['rva'] = off; off += (o['vsize'] + 0xfff) & ~0xfff
+        self.size = off; self.image = bytearray(off); self.base = base; self.pref = base; self.relocs = []
+        for o in objs:
+            for k in range(o['pgcnt']):
+                fp = filepage[o['pgidx'] + k - 1]; n = self.pgsz if fp < npages else last; src = datapg + (fp - 1) * self.pgsz
+                self.image[o['rva'] + k * self.pgsz:o['rva'] + k * self.pgsz + n] = data[src:src + n]
+        for o in objs:
+            for k in range(o['pgcnt']):
+                pg = filepage[o['pgidx'] + k - 1] - 1; q, end = frt + u32(data, fpt + 4 * pg), frt + u32(data, fpt + 4 * pg + 4)   # by the page's place in the file
+                while q < end:
+                    src, fl = data[q], data[q + 1]; q += 2
+                    if src & 0x20: cnt = data[q]; q += 1; offs = None
+                    else: offs = [struct.unpack_from('<h', data, q)[0]]; q += 2
+                    assert fl & 3 == 0, 'import fixup in a VxD'
+                    if fl & 0x40: tobj = u16(data, q); q += 2
+                    else: tobj = data[q]; q += 1
+                    toff = 0
+                    if src & 0xf != 2:
+                        if fl & 0x10: toff = u32(data, q); q += 4
+                        else: toff = u16(data, q); q += 2
+                    if offs is None: offs = [struct.unpack_from('<h', data, q + 2 * i)[0] for i in range(cnt)]; q += 2 * cnt
+                    val = base + objs[tobj - 1]['rva'] + toff
+                    for so in offs:
+                        at = o['rva'] + k * self.pgsz + so
+                        if at < 0 or at + 4 > off: continue
+                        if src & 0xf == 7: struct.pack_into('<I', self.image, at, val & 0xffffffff); self.relocs.append(at)
+                        elif src & 0xf == 8: struct.pack_into('<i', self.image, at, s32(val - (base + at + 4)))
+                        elif src & 0xf == 5: struct.pack_into('<H', self.image, at, val & 0xffff)
+        self.objs = objs
+        self.code = [(o['rva'], o['vsize']) for o in objs if o['flags'] & 4]   # executable objects
+        # the DDB: the first entry of the first bundle
+        tobj = u16(data, enttab + 2); self.ddb = base + objs[tobj - 1]['rva'] + u32(data, enttab + 5)
+        d = self.ddb - base
+        self.vxd_id = u16(self.image, d + 6); self.vxd_name = bytes(self.image[d + 0xc:d + 0x14]).rstrip(b' \0').decode('latin1')
+        self.procs = dict(control=u32(self.image, d + 0x18), v86=u32(self.image, d + 0x1c), pm=u32(self.image, d + 0x20))
+        svc, nsvc = u32(self.image, d + 0x30), u32(self.image, d + 0x34)   # DDB_Service_Table_Ptr, DDB_Service_Table_Size
+        self.services = [u32(self.image, svc - base + 4 * i) for i in range(nsvc)] if svc and nsvc else []
+        self.entry = 0
+    def entries(self): return [a for a in list(self.procs.values()) + self.services if a and self.in_code(a)]
+    def rebase(self, nb): raise ValueError('a VxD loads at the base given to LE()')
     def in_code(self, va):
         r = va - self.base
         return any(a <= r < a + n for a, n in self.code)
@@ -118,7 +187,7 @@ def imm_target(ins):
 def decode_all(pe):
     md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32); md.detail = True
     insns, todo, seen_entries = {}, [pe.entry] if pe.entry else [], set()
-    todo += export_entries(pe)
+    todo += pe.entries() if getattr(pe, 'VXD', False) else export_entries(pe)
     reloc_vals = [pe.u32va(pe.base + r) for r in pe.relocs]
     data_refs = set()
     def walk(start):
@@ -130,6 +199,7 @@ def decode_all(pe):
             if got is None: return
             ins = Insn(); ins.i = got; ins.addr = a; ins.size = got.size; ins.next = a + got.size
             ins.mn = got.mnemonic.split()[-1]; ins.ops = got.operands; ins.prefix = got.prefix
+            if getattr(pe, 'VXD', False) and got.bytes[:2] == b'\xcd\x20': ins.size = 6; ins.next = a + 6   # VxDCall: the service dword follows
             insns[a] = ins
             for op in got.operands:
                 if op.type == X.X86_OP_MEM and op.mem.base == 0 and op.mem.disp: data_refs.add(op.mem.disp & 0xffffffff)
@@ -143,7 +213,8 @@ def decode_all(pe):
             t = todo.pop()
             if t not in seen_entries: seen_entries.add(t); walk(t)
         # relocated pointers into code that are not used as data operands are code entries
-        new = [v for v in reloc_vals if pe.in_code(v) and v not in seen_entries and v not in data_refs]
+        # (a VxD's code addresses are entries even when written to: VTDAPI patches a RET over its time-out callback)
+        new = [v for v in reloc_vals if pe.in_code(v) and v not in seen_entries and (v not in data_refs or getattr(pe, 'VXD', False))]
         if not new: break
         todo.extend(new)
     return insns, seen_entries
@@ -299,6 +370,7 @@ class Loc:
             if signed and sz < 4 and v & (1 << (8 * sz - 1)): v -= 1 << (8 * sz)
             return f.c(v)
         if op.type == X.X86_OP_MEM:
+            mmio_load(f, self.addr, sz)
             return f.lg(self.addr).mem((LOADS if signed else LOAD)[sz])
         g, rs, sh = reginfo(op.reg)
         f.gg(g)
@@ -310,7 +382,15 @@ class Loc:
     def write(self, val):
         f, op, sz = self.f, self.op, self.size
         if op.type == X.X86_OP_MEM:
-            f.lg(self.addr); val(); f.mem(STORE[sz]); return
+            f.lg(self.addr); val(); f.mem(STORE[sz])
+            # a fixed address inside this module's instructions: code that patches itself (a VxD rewriting a call
+            # into a VxDCall), whose block the host translates again from what is there now
+            m = op.mem
+            if not segmode() and not m.base and not m.index and m.segment in (0, X.X86_REG_DS) and \
+               any((m.disp + k) & 0xffffffff in CODE_BYTES for k in range(sz)):
+                f.c(m.disp).e(0x10, uleb(IMP['smc']))
+            mmio_store(f, self.addr, sz)
+            return
         g, rs, sh = reginfo(op.reg)
         if rs == 4: val(); f.gs(g); return
         f.gg(g).c(~(MASK[rs] << sh)).e(OPS['and_'])
@@ -318,9 +398,27 @@ class Loc:
         if sh: f.c(sh).e(OPS['shl'])
         f.e(OPS['or_']).gs(g)
 
+# the addresses of every byte of the flat module's decoded instructions (Loc.write: stores that patch code)
+CODE_BYTES = frozenset()
+# a device's memory-mapped registers the module writes (--mmio LO:SIZE, linear): each store that lands there goes to
+# the host after it is made, trap(address, 0x2000000 | size)
+MMIO = None
+UNLINKED = False   # (--unlinked: build_ne leaves the module out of the registry the modules after it link against)
+def mmio_store(f, addr, sz, code=0x2000000):
+    if not MMIO: return
+    lo, n = MMIO
+    f.lg(addr).c(lo).e(OPS['sub']).c(n).e(OPS['lt_u']).e(0x04, 0x40)
+    f.lg(addr).c(code | sz).e(0x10, uleb(IMP['trap'])).e(0x0b)
+# ... and each load from there asks the host first, trap(address, 0x3000000 | size): the device puts what the read
+# returns there (a VGA's read mode, loading its latches) before the load takes it
+def mmio_load(f, addr, sz): mmio_store(f, addr, sz, 0x3000000)
 # ---- segmented (NE) mode. CUR is the instruction being translated.
 CUR = None
 def segmode(): return CUR is not None and CUR.segbase is not None
+# flat code that has just loaded a 16-bit SS (USER32's callback relays: `lss sp, [ebx]` then a 16-bit retf back into
+# USER.EXE) addresses the stack as SS:SP for the rest of that block
+STK16 = False
+def stack16(): return segmode() or STK16
 def opsize(ins):
     d = 4 if ins.bits == 32 else 2
     return (6 - d) if ins.prefix[2] == 0x66 else d
@@ -334,6 +432,11 @@ def sel_base(f):
 def load_sreg(f, reg, val):
     s, b = SREG[reg]; t = f.i(); val(); f.c(0xffff).e(OPS['and_']).ls(t)
     f.lg(t).gs(s); f.lg(t); sel_base(f); f.gs(b)
+
+def load_sreg_flat(f, reg, val):
+    """flat code loading ES or GS: an LDT selector (TI bit) gets its base, the flat ones (GDT) base 0"""
+    s, b = SREG[reg]; t = f.i(); val(); f.c(0xffff).e(OPS['and_']).ls(t)
+    f.lg(t).gs(s); f.lg(t); sel_base(f); f.c(0); f.lg(t).c(4).e(OPS['and_']); f.e(SELECT); f.gs(b)
 
 def emit_addr(f, m, seg=True):
     parts = 0
@@ -356,6 +459,7 @@ def emit_addr(f, m, seg=True):
         return
     if seg and m.segment == X.X86_REG_FS: f.gg('fs').e(OPS['add'])
     elif seg and m.segment == X.X86_REG_GS: f.gg('gsb').e(OPS['add'])
+    elif seg and m.segment == X.X86_REG_ES: f.gg('esb').e(OPS['add'])   # flat code that loaded a 16-bit selector (USER32)
     elif seg and m.segment not in (0, X.X86_REG_DS, X.X86_REG_SS, X.X86_REG_ES, X.X86_REG_CS): raise Unsupported('segment')
 
 # ---- flag helpers. All take locals holding zero-extended operands/result.
@@ -365,11 +469,11 @@ def set_szp(f, r, sz, live):
     if live & PF: f.lg(r).c(0xff).e(OPS['and_']).e(OPS['popcnt']).c(1).e(OPS['and_']).c(1).e(OPS['xor']).gs('pf')
 
 def sp_adjust(f, delta):
-    if segmode():   # 16-bit stack: SP wraps within SS, the high half of ESP is preserved
+    if stack16():   # 16-bit stack: SP wraps within SS, the high half of ESP is preserved
         f.gg('esp').c(~0xffff).e(OPS['and_']).gg('esp').c(delta).e(OPS['add']).c(0xffff).e(OPS['and_']).e(OPS['or_']).gs('esp')
     else: f.gg('esp').c(delta).e(OPS['add']).gs('esp')
 def sp_addr(f):
-    if segmode(): f.gg('ssb').gg('esp').c(0xffff).e(OPS['and_']).e(OPS['add'])
+    if stack16(): f.gg('ssb').gg('esp').c(0xffff).e(OPS['and_']).e(OPS['add'])
     else: f.gg('esp')
 def push_val(f, val, size=4):
     # the value is taken before ESP moves, so PUSH ESP stores the old ESP
@@ -433,7 +537,8 @@ class Translator:
         f = Fn()
         if self.TRACE: f.c(start).e(0x10, uleb(IMP['btrace']))
         try:
-            global CUR
+            global CUR, STK16
+            STK16 = False
             for ins in lst:
                 f.ti = 0; f.tq = 0; f.td = 0; CUR = ins
                 nxt = self.insn(f, ins)
@@ -442,7 +547,8 @@ class Translator:
         except Unsupported as e:
             key = '%s %s' % (ins.mn, ins.i.op_str) if 'reg' in str(e) or 'segment' in str(e) else ins.mn
             self.unsupported[key] = self.unsupported.get(key, 0) + 1
-            f = Fn(); f.c(ins.addr).c(1).e(0x10, uleb(IMP['trap'])); f.c(SENTINEL).e(RETURN)
+            # #UD at the instruction: the host dispatches the exception and leaves the continuation in the eip global
+            f = Fn(); f.c(ins.addr).c(1).e(0x10, uleb(IMP['trap'])); f.gg('eip').e(RETURN)
         return f
 
     # returns non-None when the block's terminating return has been emitted
@@ -464,6 +570,8 @@ class Translator:
         if mn in ('add', 'sub', 'adc', 'sbb', 'cmp', 'and', 'or', 'xor', 'test'): return self.alu(f, ins, mn)
         if mn.rstrip('bwd') in ('movs', 'stos', 'lods', 'scas', 'cmps') and len(mn) == 5:
             return self.string(f, ins, mn[:4], {'b': 1, 'w': 2, 'd': 4}[mn[4]], rep)
+        if mn[:-1] in ('ins', 'outs') and mn[-1] in 'bwd':
+            return self.string(f, ins, mn[:-1], {'b': 1, 'w': 2, 'd': 4}[mn[-1]], rep)
         if mn.startswith('f'): return self.fpu(f, ins, mn, ops)
         if mn in ('lds', 'les', 'lss', 'lfs', 'lgs'): return self.lptr(f, ins, ops, {'lds': X.X86_REG_DS, 'les': X.X86_REG_ES, 'lss': X.X86_REG_SS, 'lfs': X.X86_REG_FS, 'lgs': X.X86_REG_GS}[mn])
         raise Unsupported(mn)
@@ -475,9 +583,9 @@ class Translator:
                 s = Loc(f, ops[1], 2); load_sreg(f, ops[0].reg, lambda: s.read()); return
             if ops[1].type == X.X86_OP_REG and ops[1].reg in SREG:
                 Loc(f, ops[0]).write(lambda: f.gg(SREG[ops[1].reg][0])); return
-        # flat code: GS may hold a 16-bit selector; the others stay flat
-        if ops[0].type == X.X86_OP_REG and ops[0].reg == X.X86_REG_GS:
-            s = Loc(f, ops[1], 2); load_sreg(f, ops[0].reg, lambda: s.read()); return
+        # flat code: GS and ES may hold a 16-bit selector; the others stay flat
+        if ops[0].type == X.X86_OP_REG and ops[0].reg in (X.X86_REG_GS, X.X86_REG_ES):
+            s = Loc(f, ops[1], 2); load_sreg_flat(f, ops[0].reg, lambda: s.read()); return
         if ops[1].type == X.X86_OP_REG and ops[1].reg == X.X86_REG_GS:
             Loc(f, ops[0]).write(lambda: f.gg('gsel')); return
         if ops[0].type == X.X86_OP_REG and ops[0].reg in (X.X86_REG_ES, X.X86_REG_DS, X.X86_REG_FS, X.X86_REG_SS): return
@@ -509,14 +617,17 @@ class Translator:
         sz = opsize(ins)
         t = f.i(); pop_to(f, t, sz)
         if ops[0].type == X.X86_OP_REG and ops[0].reg in SREG:
-            if segmode() or ops[0].reg == X.X86_REG_GS: load_sreg(f, ops[0].reg, lambda: f.lg(t))
+            if segmode(): load_sreg(f, ops[0].reg, lambda: f.lg(t))
+            elif ops[0].reg in (X.X86_REG_GS, X.X86_REG_ES): load_sreg_flat(f, ops[0].reg, lambda: f.lg(t))
             return
         Loc(f, ops[0], sz).write(lambda: f.lg(t))
     def lptr(self, f, ins, ops, sreg):
+        global STK16
         d, m = Loc(f, ops[0]), Loc(f, ops[1], ops[0].size); sz = ops[0].size
         t = f.i(); f.lg(m.addr).mem(LOAD[sz]).ls(t)
         load_sreg(f, sreg, lambda: (f.lg(m.addr), f.c(sz), f.e(OPS['add']), f.mem(0x2f)))
         d.write(lambda: f.lg(t))
+        if sreg == X.X86_REG_SS and sz == 2 and not segmode(): STK16 = True
     def x_pushaw(self, f, ins, ops, live):
         t = f.i(); f.gg('esp').ls(t)
         for r in REGS: push_val(f, (lambda r=r: f.lg(t) if r == 'esp' else f.gg(r)), 2)
@@ -540,15 +651,18 @@ class Translator:
         if segmode() and sz == 2: f.gg('ebp').c(~0xffff).e(OPS['and_']).gg('esp').c(0xffff).e(OPS['and_']).e(OPS['or_']).gs('ebp')
         else: f.gg('esp').gs('ebp')
         sp_adjust(f, -ops[0].imm)
+    # the table is DS:[BX + AL], or the segment a prefix names (capstone gives the instruction no operand to carry it)
+    PREFIX_SEG = {0x26: X.X86_REG_ES, 0x2e: X.X86_REG_CS, 0x36: X.X86_REG_SS, 0x3e: X.X86_REG_DS, 0x64: X.X86_REG_FS, 0x65: X.X86_REG_GS}
     def x_xlatb(self, f, ins, ops, live):
         m = ins.ops[0].mem if ins.ops else None
+        seg = m.segment if m and m.segment else self.PREFIX_SEG.get(ins.prefix[1], X.X86_REG_DS)
         f.gg('eax').c(~0xff).e(OPS['and_'])
         f.gg('ebx')
         if segmode() and addr16(ins): f.c(0xffff).e(OPS['and_'])
         f.gg('eax').c(0xff).e(OPS['and_']).e(OPS['add'])
         if segmode():
             if addr16(ins): f.c(0xffff).e(OPS['and_'])
-            f.gg(SREG[(m.segment if m and m.segment else X.X86_REG_DS)][1]).e(OPS['add'])
+            f.gg(SREG[seg][1]).e(OPS['add'])
         f.mem(0x2d).e(OPS['or_']).gs('eax')
     def x_pushal(self, f, ins, ops, live):
         t = f.i(); f.gg('esp').ls(t)
@@ -667,8 +781,10 @@ class Translator:
         t = f.i(); self.counter(f, ins); f.c(0).e(OPS['ne'])
         if cc: cond(f, cc); f.e(OPS['and_'])
         f.ls(t); f.c(imm_target(ins)).c(ins.next).lg(t).e(SELECT).e(RETURN); return True
+    # the exceptions these raise, which the host dispatches (the continuation in the eip global): INT 3 #BP after the
+    # instruction, UD2 #UD, HLT outside ring 0 #GP (trap codes 3, 1, 4)
     def x_int3(self, f, ins, ops, live):
-        f.c(ins.addr).c(3).e(0x10, uleb(IMP['trap'])); f.c(SENTINEL).e(RETURN); return True
+        f.c(ins.next if ins.mn == 'int3' else ins.addr).c({'int3': 3, 'ud2': 1, 'hlt': 4}[ins.mn]).e(0x10, uleb(IMP['trap'])); f.gg('eip').e(RETURN); return True
     x_hlt = x_int3; x_ud2 = x_int3
     def x_int(self, f, ins, ops, live):
         # the host services the interrupt and leaves the continuation (ins.next, or the sentinel) in the eip global
@@ -944,6 +1060,16 @@ class Translator:
         s.write(lambda: f.lg(a)); d.write(lambda: (f.lg(a), f.lg(b), f.e(OPS['add']), f.c(MASK[ops[0].size]), f.e(OPS['and_'])))
 
     # ---- string instructions
+    def port_elem(self, f, ins, kind, sz, addr):
+        """one element of INS/OUTS: the port in DX, the data through AL/AX/EAX as IN/OUT carry it, EAX kept"""
+        keep = f.i(); f.gg('eax').ls(keep)
+        if kind == 'outs':
+            if sz == 4: addr(); f.mem(0x28).gs('eax')
+            else: f.gg('eax').c(~MASK[sz]).e(OPS['and_']); addr(); f.mem(LOAD[sz]).e(OPS['or_']).gs('eax')
+        f.c(ins.next).gg('edx').c(0xffff).e(OPS['and_']).c(0x1000000 | ((kind == 'ins') << 23) | (sz << 16)).e(OPS['or_'])
+        f.e(0x10, uleb(IMP['trap']))
+        if kind == 'ins': addr(); f.gg('eax').mem(STORE[sz])
+        f.lg(keep).gs('eax')
     def string(self, f, ins, kind, sz, rep):
         if segmode(): return self.string_seg(f, ins, kind, sz, rep)
         step = f.i()
@@ -954,6 +1080,8 @@ class Translator:
                 f.gg('esi').lg(step).e(OPS['add']).gs('esi'); f.gg('edi').lg(step).e(OPS['add']).gs('edi')
             elif kind == 'stos':
                 f.gg('edi').gg('eax').mem(STORE[sz]); f.gg('edi').lg(step).e(OPS['add']).gs('edi')
+            elif kind == 'outs': self.port_elem(f, ins, kind, sz, lambda: f.gg('esi')); f.gg('esi').lg(step).e(OPS['add']).gs('esi')
+            elif kind == 'ins': self.port_elem(f, ins, kind, sz, lambda: f.gg('edi')); f.gg('edi').lg(step).e(OPS['add']).gs('edi')
             elif kind == 'lods':
                 if sz == 4: f.gg('esi').mem(0x28).gs('eax')
                 else: f.gg('eax').c(~MASK[sz]).e(OPS['and_']).gg('esi').mem(LOAD[sz]).e(OPS['or_']).gs('eax')
@@ -994,17 +1122,27 @@ class Translator:
         def bump(r):
             if a16: f.gg(r).c(~0xffff).e(OPS['and_']).gg(r).lg(step).e(OPS['add']).c(0xffff).e(OPS['and_']).e(OPS['or_']).gs(r)
             else: f.gg(r).lg(step).e(OPS['add']).gs(r)
+        d = f.i() if MMIO and kind in ('movs', 'stos') else None
+        s = f.i() if MMIO and kind in ('movs', 'lods', 'cmps', 'scas') else None
+        def store(val):
+            if d is None: dst(); val(); f.mem(STORE[sz]); return
+            dst(); f.ls(d); f.lg(d); val(); f.mem(STORE[sz]); mmio_store(f, d, sz)
+        def load(addr):
+            if s is None: addr(); f.mem(LOAD[sz]); return
+            addr(); f.ls(s); mmio_load(f, s, sz); f.lg(s).mem(LOAD[sz])
         def one():
-            if kind == 'movs': dst(); src(); f.mem(LOAD[sz]).mem(STORE[sz]); bump('esi'); bump('edi')
-            elif kind == 'stos': dst(); f.gg('eax').mem(STORE[sz]); bump('edi')
+            if kind == 'movs': store(lambda: load(src)); bump('esi'); bump('edi')
+            elif kind == 'stos': store(lambda: f.gg('eax')); bump('edi')
+            elif kind == 'outs': self.port_elem(f, ins, kind, sz, src); bump('esi')
+            elif kind == 'ins': self.port_elem(f, ins, kind, sz, dst); bump('edi')
             elif kind == 'lods':
-                if sz == 4: src(); f.mem(0x28).gs('eax')
-                else: f.gg('eax').c(~MASK[sz]).e(OPS['and_']); src(); f.mem(LOAD[sz]).e(OPS['or_']).gs('eax')
+                if sz == 4: load(src); f.gs('eax')
+                else: f.gg('eax').c(~MASK[sz]).e(OPS['and_']); load(src); f.e(OPS['or_']).gs('eax')
                 bump('esi')
             else:
                 a, b, r = f.i(), f.i(), f.i()
-                if kind == 'cmps': src(); f.mem(LOAD[sz]).ls(a); dst(); f.mem(LOAD[sz]).ls(b); bump('esi')
-                else: f.gg('eax').c(MASK[sz]).e(OPS['and_']).ls(a); dst(); f.mem(LOAD[sz]).ls(b)
+                if kind == 'cmps': load(src); f.ls(a); load(dst); f.ls(b); bump('esi')
+                else: f.gg('eax').c(MASK[sz]).e(OPS['and_']).ls(a); load(dst); f.ls(b)
                 bump('edi')
                 f.lg(a).lg(b).e(OPS['sub']).c(MASK[sz]).e(OPS['and_']).ls(r)
                 f.lg(a).lg(b).e(OPS['lt_u']).gs('cf')
@@ -1378,6 +1516,13 @@ def decode_ne(ne, entries):
             if a is not None and k < 3:
                 sg = ne.seg_of(i.segbase); v = i.ops[0].imm & 0xffff
                 if v < sg['len'] and sg['base'] + v not in seen: todo.append(sg['base'] + v)
+        # far pointers into this segment pushed as arguments: `push cs; push imm16` (timer and enumeration callbacks)
+        for i in list(insns.values()):
+            if i.segbase is None or i.mn != 'push' or not i.ops or i.ops[0].type != X.X86_OP_IMM: continue
+            a = prev.get(i.addr)
+            if a is not None and insns[a].mn == 'push' and insns[a].i.op_str == 'cs':
+                sg = ne.seg_of(i.segbase); v = i.ops[0].imm & 0xffff
+                if v < sg['len'] and sg['base'] + v not in seen: todo.append(sg['base'] + v)
         for site, tsg in getattr(ne, 'selrefs', []):
             host = next((insns[a] for a in range(site - 1, site - 6, -1) if a in insns and insns[a].next > site), None)
             if host is None: continue
@@ -1400,10 +1545,11 @@ def decode_ne(ne, entries):
 
 # KERNEL constants imported as relocations (__AHSHIFT, __AHINCR, __WINFLAGS, __FLATDS)
 FLATDS_SEL = 0x000F
+FLATCS_SEL = 0x0017              # KERNEL's __FLATCS: the flat 32-bit code selector (ne16.js L.FLATCS)
 # selectors for fixed real-mode memory (__A000H and friends): LDT index 0x20.. (ne16.js creates them)
 REALMODE_SELS = {183: (0x0107, 0x00000), 193: (0x010F, 0x00400), 174: (0x0117, 0xA0000), 181: (0x011F, 0xB0000), 182: (0x0127, 0xB8000),
                  195: (0x012F, 0xC0000), 179: (0x0137, 0xD0000), 190: (0x013F, 0xE0000), 194: (0x0147, 0xF0000), 173: (0x0147, 0xF0000)}
-KERNEL_EQUATES = {113: 3, 114: 8, 178: 0x0C29, 455: FLATDS_SEL, **{o: s for o, (s, b) in REALMODE_SELS.items()}}
+KERNEL_EQUATES = {113: 3, 114: 8, 178: 0x0C29, 454: FLATCS_SEL, 455: FLATDS_SEL, **{o: s for o, (s, b) in REALMODE_SELS.items()}}
 
 def load_registry(path):
     try: return json.load(open(path))
@@ -1448,13 +1594,16 @@ def build_ne(path, out, base, selbase, lookup, registry):
     open(out + '.wasm', 'wb').write(mod)
     exports = {str(o): [ne.segs[s - 1]['sel'], off] for o, (s, off) in ne.entries.items()}
     meta_size = ne.size
-    reg['modules'][ne.name.upper()] = {'segs': [{k: sg[k] for k in ('num', 'sel', 'base', 'alloc', 'len', 'flags', 'bits')} for sg in ne.segs],
-                                       'exports': exports, 'names': ne.names}
+    # (a module another file may stand in for at run time, as the display driver for a mode: left out, so the modules
+    # built after it import it through thunks the loaded one answers, ne16.js api16)
+    if not UNLINKED:
+        reg['modules'][ne.name.upper()] = {'segs': [{k: sg[k] for k in ('num', 'sel', 'base', 'alloc', 'len', 'flags', 'bits')} for sg in ne.segs],
+                                           'exports': exports, 'names': ne.names}
     json.dump(reg, open(registry, 'w'))
     meta = dict(kind='ne', name=ne.name, sha256=hashlib.sha256(data).hexdigest(), base=base, size=ne.size, selbase=selbase,
                 segs=[{k: sg[k] for k in ('num', 'sel', 'base', 'alloc', 'minalloc', 'len', 'flags', 'bits', 'fileoff')} for sg in ne.segs],
                 autodata=ne.autodata, entry=[ne.entry_seg, ne.entry_off], imports=ne.mods, exports=exports, names=ne.names, fixups=fixups,
-                textLo=text_lo, textHi=text_hi, lookup=lookup, blocks=order, thunks=reg['thunks'],
+                textLo=text_lo, textHi=text_hi, lookup=lookup, blocks=order, thunks=reg['thunks'], **({'mmio': list(MMIO)} if MMIO else {}),
                 layout=dict(sentinel=SENTINEL, thunkBase=THUNK_BASE, thunk16Base=THUNK16_BASE, thunk16Sel=THUNK16_SEL, ldt=LDT_BASE, fpuBase=FPU_BASE, pages=MEM_PAGES))
     json.dump(meta, open(out + '.json', 'w'))
     print('%s: %d insns, %d blocks, wasm %d bytes, %d fixups, %d thunks' % (ne.name, len(insns), len(blocks), len(mod), len(fixups), len(reg['thunks'])))
@@ -1467,7 +1616,10 @@ def assemble(bodies, text_lo, text_hi, lookup):
     tidx = {t: i for i, t in enumerate(types)}
     sec = lambda n, b: bytes([n]) + uleb(len(b)) + b
     tsec = vec([b'\x60' + vec([bytes([x]) for x in p]) + vec([bytes([x]) for x in r]) for p, r in types])
-    imps = [name('env') + name('mem') + b'\x02\x00' + uleb(MEM_PAGES)]
+    # the guest's memory; shared (and so with a maximum, the 4 GiB a 32-bit address reaches) for a machine that runs in a
+    # worker, whose memory the page reads too (the system's modules: RECOMP_SHARED, set by build_system.py)
+    shared = os.environ.get('RECOMP_SHARED') == '1'
+    imps = [name('env') + name('mem') + (b'\x02\x03' + uleb(MEM_PAGES) + uleb(65536) if shared else b'\x02\x00' + uleb(MEM_PAGES))]
     imps += [name('cpu') + name(n) + bytes([0x03, I32, 1]) for n in G]
     imps += [name('env') + name(n) + b'\x00' + uleb(tidx[(tuple(p), tuple(r))]) for n, p, r in IMPORTS]
     nfuncs = 1 + len(bodies)
@@ -1484,6 +1636,9 @@ def assemble(bodies, text_lo, text_hi, lookup):
     r.lg(EIP).gs('eip').lg(EIP).e(0x10, uleb(IMP['api'])).ls(EIP)
     r.lg(EIP).c(-1).e(OPS['eq']).e(0x04, 0x40).c(1).e(RETURN).e(0x0b)
     r.e(0x0c, uleb(1)).e(0x0b)                              # br loop
+    # the block budget: when it runs out the host may take the processor back here (a time slice ends)
+    r.gg('budget').c(1).e(OPS['sub']).gs('budget').gg('budget').c(0).e(OPS['le_s']).e(0x04, 0x40)
+    r.lg(EIP).gs('eip').lg(EIP).e(0x10, uleb(IMP['tick'])).e(0x04, 0x40).c(1).e(RETURN).e(0x0b).e(0x0b)
     assert (text_hi - text_lo) * 4 <= LOOKUP_BYTES
     r.lg(EIP).c(text_lo).e(OPS['sub']).lt(ID).c(text_hi - text_lo).e(OPS['ge_u'])
     r.e(0x04, 0x40).lg(EIP).gs('eip').c(3).e(RETURN).e(0x0b)
@@ -1504,6 +1659,7 @@ def build(path, out, base=None, lookup=0x06000000):
     pe = PE(data)
     if base is not None and base != pe.base: pe.rebase(base)
     insns, entries = decode_all(pe)
+    global CODE_BYTES; CODE_BYTES = frozenset(a for i in insns.values() for a in range(i.addr, i.next))
     blocks = build_blocks(pe, insns, entries)
     liveness(blocks)
     tr = Translator(pe, blocks)
@@ -1519,12 +1675,39 @@ def build(path, out, base=None, lookup=0x06000000):
     print('%s: %d insns, %d blocks, wasm %d bytes' % (path.split('/')[-1], len(insns), len(blocks), len(mod)))
     if tr.unsupported: print('  unsupported:', tr.unsupported)
 
+def build_vxd(path, out, base, lookup):
+    """a VxD: its LE image at `base`, translated like a PE's code; the metadata names its DDB, procedures and services"""
+    data = open(path, 'rb').read()
+    pe = LE(data, base)
+    insns, entries = decode_all(pe)
+    global CODE_BYTES; CODE_BYTES = frozenset(a for i in insns.values() for a in range(i.addr, i.next))
+    blocks = build_blocks(pe, insns, entries)
+    liveness(blocks)
+    tr = Translator(pe, blocks)
+    order = sorted(blocks)
+    bodies = [tr.block(s, blocks[s]) for s in order]
+    text_lo = min(pe.base + a for a, n in pe.code); text_hi = max(pe.base + a + n for a, n in pe.code)
+    mod = assemble(bodies, text_lo, text_hi, lookup)
+    open(out + '.wasm', 'wb').write(mod)
+    meta = dict(sha256=hashlib.sha256(data).hexdigest(), base=pe.base, size=pe.size, vxd=True, id=pe.vxd_id, name=pe.vxd_name,
+                ddb=pe.ddb, procs=pe.procs, services=pe.services, textLo=text_lo, textHi=text_hi, lookup=lookup, blocks=order,
+                layout=dict(sentinel=SENTINEL, thunkBase=THUNK_BASE, fpuBase=FPU_BASE, pages=MEM_PAGES))
+    json.dump(meta, open(out + '.json', 'w'))
+    open(out + '.img', 'wb').write(bytes(pe.image))
+    print('%s (%s, VxD %xh): %d insns, %d blocks, wasm %d bytes' % (path.split('/')[-1], pe.vxd_name, pe.vxd_id, len(insns), len(blocks), len(mod)))
+    if tr.unsupported: print('  unsupported:', tr.unsupported)
+
 if __name__ == '__main__':
     a = sys.argv[1:]; kw = {}
     if '--trace' in a: a.remove('--trace'); Translator.TRACE = True
     reg = None
     if '--registry' in a: k = a.index('--registry'); reg = a[k + 1]; del a[k:k + 2]
+    if '--mmio' in a: k = a.index('--mmio'); MMIO = tuple(int(v, 0) for v in a[k + 1].split(':')); del a[k:k + 2]
+    if '--unlinked' in a: a.remove('--unlinked'); UNLINKED = True
+    if '--vxd' in a: a.remove('--vxd')
     while len(a) > 2:
         v = int(a.pop(), 0); k = a.pop().lstrip('-'); kw[k] = v
-    if reg: build_ne(a[0], a[1], kw['base'], kw['selbase'], kw.get('lookup', 0x06000000), reg)
+    if '--vxd' in sys.argv: a = [x for x in a if x != '--vxd']
+    if '--vxd' in sys.argv: build_vxd(a[0], a[1], kw['base'], kw.get('lookup', 0x06000000))
+    elif reg: build_ne(a[0], a[1], kw['base'], kw['selbase'], kw.get('lookup', 0x06000000), reg)
     else: build(a[0], a[1], **kw)

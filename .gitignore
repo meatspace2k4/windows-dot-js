@@ -4,10 +4,19 @@
 /assets.js
 /assets-shell.js
 /cdrom.js
+/floppy.js
 # built apps and dependencies
 electron/node_modules/
 electron/Windows 95.app/
 mac/Windows 95.app/
+mac/assets/
 __pycache__/
 .DS_Store
 .claude/settings.local.json
+
+# replay and history-rebuild runs
+tools/replay/runs/
+tools/replay/cache/
+tools/replay/browser/
+tools/history/R*/
+tools/history/*.pkl

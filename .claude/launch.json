@@ -4,7 +4,12 @@
     {
       "name": "win95",
       "runtimeExecutable": "python3",
-      "runtimeArgs": ["-m", "http.server", "8095", "--bind", "127.0.0.1"],
+      "runtimeArgs": [
+        "tools/serve.py",
+        "8095",
+        "--iso",
+        "/Users/johusha/Downloads/Windows 95/Win95 OSR2.ISO"
+      ],
       "port": 8095
     }
   ]

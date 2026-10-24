@@ -5,19 +5,27 @@ src, fonts, out = sys.argv[1], sys.argv[2], sys.argv[3]
 here = os.path.dirname(os.path.abspath(__file__))
 b64 = lambda p: base64.b64encode(open(p, 'rb').read()).decode()
 bundle = {'savers': {}, 'fonts': {}, 'dlls': {}}
-# Microsoft DLLs that run natively inside saver processes: (file, load base, block-table base)
-DLLS = [('crtdll.dll', 0x01800000, 0x06800000), ('glu32.dll', 0x01900000, 0x06900000)]
+# Saver images start above the fixed 128 MiB runtime layout; their lookup tables occupy a separate
+# reserved range above that. The worker's saver VM arena starts after both ranges.
+IMAGE_BASE = 0x08000000
+LOOKUP_BASE = 0x09000000
+SLOT = 0x00100000
+# Microsoft DLLs that run natively inside saver processes: file name and slot index.
+DLLS = [('crtdll.dll', 11), ('glu32.dll', 12)]
 names = sys.argv[4].split(',') if len(sys.argv) > 4 else sorted(f[:-4] for f in os.listdir(src) if f.lower().endswith('.scr'))
 with tempfile.TemporaryDirectory() as tmp:
-    for n in names:
-        scr = os.path.join(src, n + '.scr'); base = os.path.join(tmp, n)
-        subprocess.run([sys.executable, os.path.join(here, 'recomp.py'), scr, base, '--lookup', '0x06000000'], check=True)
+    modules = [(n, os.path.join(src, n + '.scr'), i) for i, n in enumerate(names)]
+    modules.extend((f, os.path.join(src, f), i) for f, i in DLLS)
+    for n, image, slot in modules:
+        base = os.path.join(tmp, n)
+        env = dict(os.environ, RECOMP_SHARED='1')
+        subprocess.run([sys.executable, os.path.join(here, 'recomp.py'), image, base, '--base', hex(IMAGE_BASE + slot * SLOT),
+                        '--lookup', hex(LOOKUP_BASE + slot * SLOT)], check=True, env=env)
         meta = json.load(open(base + '.json'))
-        bundle['savers'][n.upper() + '.SCR'] = {'scr': b64(scr), 'wasm': b64(base + '.wasm'), 'meta': meta}
-    for f, b, lk in DLLS:
-        src_f = os.path.join(src, f); base = os.path.join(tmp, f)
-        subprocess.run([sys.executable, os.path.join(here, 'recomp.py'), src_f, base, '--base', hex(b), '--lookup', hex(lk)], check=True)
-        bundle['dlls'][f.upper()] = {'file': b64(src_f), 'wasm': b64(base + '.wasm'), 'meta': json.load(open(base + '.json'))}
+        if image.lower().endswith('.scr'):
+            bundle['savers'][n.upper() + '.SCR'] = {'scr': b64(image), 'wasm': b64(base + '.wasm'), 'meta': meta}
+        else:
+            bundle['dlls'][os.path.basename(image).upper()] = {'file': b64(image), 'wasm': b64(base + '.wasm'), 'meta': meta}
 for fam, f in {'W95 Wingdings': 'wingding.ttf', 'W95 Times': 'times.ttf', 'W95 Arial': 'arial.ttf', 'W95 Courier': 'cour.ttf'}.items():
     bundle['fonts'][fam] = b64(os.path.join(fonts, f))
 with open(out, 'w') as fh:

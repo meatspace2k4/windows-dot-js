@@ -18,6 +18,18 @@
     db.createObjectStore('regval', { keyPath: ['path', 'name'] });
   };
 
+  // the dev server's shares (tools/serve.py /__share), asked synchronously as the app's preload asks its main process
+  const share = (op, name, args) => {
+    const x = new XMLHttpRequest(); x.open('POST', '__share', false); x.setRequestHeader('Content-Type', 'application/json');
+    const enc = v => (v instanceof Uint8Array ? { $b64: btoa(Array.from(v, c => String.fromCharCode(c)).join('')) } : v);
+    try { x.send(JSON.stringify({ op, name, args: (args || []).map(enc) })); } catch (e) { return null; }
+    if (x.status !== 200) return null;
+    const r = JSON.parse(x.responseText), dec = v => (v && v.$b64 !== undefined ? Uint8Array.from(atob(v.$b64), c => c.charCodeAt(0)) : v);
+    return r && r.ok !== undefined ? { ok: dec(r.ok) } : r;
+  };
+  const shares = { list: () => share('$list') || [], op: (name, op, ...args) => share(op, name, args) || { err: 'EIO' } };
+  const computerName = share('$host') || undefined;
+
   function host(db, disk, registry) {
     const run = (stores, fn) => {
       const tx = db.transaction(stores, 'readwrite', { durability: 'strict' });
@@ -26,6 +38,7 @@
     };
     const chunks = (sid, from = 0) => IDBKeyRange.bound([sid, from], [sid, Infinity]);
     return {
+      shares, computerName,
       disk: {
         load: () => disk,
         node: r => run(['node'], async node => {
@@ -68,8 +81,8 @@
       registry: {
         load: () => registry,
         op: o => run(['regkey', 'regval'], async (regkey, regval) => {
-          if (o.op === 'key') regkey.put({ path: o.path });
-          else if (o.op === 'set') { regkey.put({ path: o.path }); regval.put({ path: o.path, name: o.name, value: o.value }); }
+          if (o.op === 'key') { const old = await req(regkey.get(o.path)), name = (old && old.name) || o.name; regkey.put(name ? { path: o.path, name } : { path: o.path }); }
+          else if (o.op === 'set') { if (!await req(regkey.get(o.path))) regkey.put({ path: o.path }); regval.put({ path: o.path, name: o.name, value: o.value }); }
           else if (o.op === 'del') regval.delete([o.path, o.name]);
           else if (o.op === 'delkey') {
             const inside = k => k === o.path || k.startsWith(o.path + '\\');
@@ -106,9 +119,9 @@
     const keys = await req(st('regkey').getAll()), vals = await req(st('regval').getAll());
     let registry = null;
     if (keys.length) {
-      const by = new Map(keys.map(k => [k.path, []]));
+      const by = new Map(keys.map(k => [k.path, []])), names = new Map(keys.map(k => [k.path, k.name]));
       for (const v of vals) (by.get(v.path) || by.set(v.path, []).get(v.path)).push([v.name, v.value]);
-      registry = [...by];
+      registry = [...by].map(([path, v]) => [path, v, names.get(path)]);
     }
     return { disk, registry };
   }

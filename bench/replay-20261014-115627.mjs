@@ -83,8 +83,6 @@ const STEPS = [
       win95.fs.unlink(BENCH + '\\big.txt'); win95.fs.rmdir(BENCH);
       // opening the file put it on Start > Documents; take it off again
       for (const i of win95.fs.readdir('C:\\WINDOWS\\Recent')) if (/^Target=C:\\BENCH\\/im.test(win95.fs.readText(i.path))) win95.fs.unlink(i.path);
-      // opening the file put it on Start > Documents; take it off again
-      for (const i of win95.fs.readdir('C:\\WINDOWS\\Recent')) if (/^Target=C:\\BENCH\\/im.test(win95.fs.readText(i.path))) win95.fs.unlink(i.path);
       return { open, type_1000_ms: +type_ms.toFixed(3), per_key_ms: +(type_ms / 1000).toFixed(4), save_ms: +save_ms.toFixed(3), saved_bytes: saved };
     } },
   { name: "fs", about: "file system with write-through: 500 files of 1 KB created, read, renamed, deleted",

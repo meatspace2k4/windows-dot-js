@@ -17,6 +17,8 @@ function open(file) {
     CREATE TABLE IF NOT EXISTS regkey (path TEXT PRIMARY KEY);
     CREATE TABLE IF NOT EXISTS regval (path TEXT NOT NULL, name TEXT NOT NULL, value BLOB NOT NULL, PRIMARY KEY (path, name));
   `)
+  // a key's name as created (its path is lower case), added to stores made before it was kept
+  if (!db.prepare('PRAGMA table_info(regkey)').all().some(c => c.name === 'name')) db.exec('ALTER TABLE regkey ADD COLUMN name TEXT')
   const q = {
     upsert: db.prepare(`INSERT INTO node (sid, parent, name, short, dir, ord, attrs, ctime, mtime, atime) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(sid) DO UPDATE SET parent = excluded.parent, name = excluded.name, short = excluded.short, ord = excluded.ord, attrs = excluded.attrs,
@@ -34,11 +36,12 @@ function open(file) {
     setVol: db.prepare('INSERT OR REPLACE INTO volume (k, v) VALUES (?, ?)'),
     vol: db.prepare('SELECT v FROM volume WHERE k = ?'),
     addKey: db.prepare('INSERT OR IGNORE INTO regkey (path) VALUES (?)'),
+    addNamedKey: db.prepare('INSERT INTO regkey (path, name) VALUES (?, ?) ON CONFLICT(path) DO UPDATE SET name = COALESCE(regkey.name, excluded.name)'),
     delKeys: db.prepare(`DELETE FROM regkey WHERE path = ? OR substr(path, 1, length(?) + 1) = ? || '\\'`),
     delKeyVals: db.prepare(`DELETE FROM regval WHERE path = ? OR substr(path, 1, length(?) + 1) = ? || '\\'`),
     setVal: db.prepare('INSERT OR REPLACE INTO regval (path, name, value) VALUES (?, ?, ?)'),
     delVal: db.prepare('DELETE FROM regval WHERE path = ? AND name = ?'),
-    keys: db.prepare('SELECT path FROM regkey ORDER BY path'),
+    keys: db.prepare('SELECT path, name FROM regkey ORDER BY path'),
     vals: db.prepare('SELECT name, value FROM regval WHERE path = ?'),
   }
   const tx = fn => { db.exec('BEGIN IMMEDIATE'); try { fn(); db.exec('COMMIT') } catch (e) { db.exec('ROLLBACK'); throw e } }
@@ -74,7 +77,7 @@ function open(file) {
     size: resize,
     label: (label, serial) => { q.setVol.run('label', label); q.setVol.run('serial', serial) },
     reg: o => {
-      if (o.op === 'key') q.addKey.run(o.path)
+      if (o.op === 'key') { if (o.name) q.addNamedKey.run(o.path, o.name); else q.addKey.run(o.path) }
       else if (o.op === 'delkey') { q.delKeys.run(o.path, o.path, o.path); q.delKeyVals.run(o.path, o.path, o.path) }
       else if (o.op === 'set') { q.addKey.run(o.path); q.setVal.run(o.path, o.name, v8.serialize(o.value)) }
       else if (o.op === 'del') q.delVal.run(o.path, o.name)
@@ -101,7 +104,7 @@ function open(file) {
     loadRegistry() {
       const keys = q.keys.all()
       if (!keys.length) return null
-      return keys.map(({ path }) => [path, q.vals.all(path).map(r => [r.name, v8.deserialize(r.value)])])
+      return keys.map(({ path, name }) => [path, q.vals.all(path).map(r => [r.name, v8.deserialize(r.value)]), name || undefined])
     },
     close: () => db.close(),
   }
