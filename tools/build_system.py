@@ -12,10 +12,11 @@ NE = [('gdi.exe', 0x01C00000, 0x1007, 0x06A00000), ('dibeng.dll', 0x01E00000, 0x
       # the display driver for the adapter the machine has, the Tseng ET4000/W32 (the CD's TSENG.DRV)
       ('tseng.drv', 0x01E80000, 0x1307, 0x06E00000),
       # USER's drivers and DDEML before USER, so its calls into them link directly
-      # (first selectors spaced by segment count: SYSTEM 2, KEYBOARD 10, MOUSE 2, COMM 3, DDEML 3)
-      ('system.drv', 0x01B00000, 0x1507, 0x07200000), ('keyboard.drv', 0x01B10000, 0x1527, 0x07240000),
-      ('mouse.drv', 0x01B20000, 0x1587, 0x07280000), ('comm.drv', 0x01B30000, 0x15A7, 0x072C0000),
-      ('ddeml.dll', 0x01B40000, 0x15C7, 0x07300000),
+      # (first selectors spaced by segment count: SYSTEM 2, KEYBOARD 10, MOUSE 2, COMM 3, DDEML 3; images 128 KB apart,
+      # each larger than the 64 KB they had, which laid every one over the next)
+      ('system.drv', 0x00900000, 0x1507, 0x07200000), ('keyboard.drv', 0x00920000, 0x1527, 0x07240000),
+      ('mouse.drv', 0x00940000, 0x1587, 0x07280000), ('comm.drv', 0x00960000, 0x15A7, 0x072C0000),
+      ('ddeml.dll', 0x00980000, 0x15C7, 0x07300000),
       ('user.exe', 0x01A00000, 0x1407, 0x06F00000),
       # the common dialogs: COMDLG32.DLL is a thunk layer over this (Setup installs WIN95_02.CAB's commdlg.new as it)
       ('commdlg.dll', 0x01B50000, 0x15E7, 0x07400000),
@@ -31,7 +32,8 @@ NE = [('gdi.exe', 0x01C00000, 0x1007, 0x06A00000), ('dibeng.dll', 0x01E00000, 0x
       # the multimedia system WINMM.DLL thunks to, and the Windows Sound System driver it loads for the card (WIN95_02.CAB)
       ('mmsystem.dll', 0x01700000, 0x17D7, 0x07900000), ('mssndsys.drv', 0x01740000, 0x1847, 0x07980000),
       # MMSYSTEM's background task, which it starts with LoadModule (WIN95_02.CAB)
-      ('mmtask.tsk', 0x017C0000, 0x187F, 0x07A80000),
+      # (its image, 10080h bytes, ran 80h into MSACM32.DLL's at 017D0000h)
+      ('mmtask.tsk', 0x009A0000, 0x187F, 0x07A80000),
       # the audio compression manager and the wave mapper MMSYSTEM opens for WAVE_MAPPER (WIN95_02.CAB)
       ('msacm.dll', 0x01A80000, 0x188F, 0x07B00000), ('msacm.drv', 0x01AC0000, 0x18C7, 0x07B40000),
       # the card's OPL3 synthesizer driver (Drivers\midi\msopl.drv) and the MIDI mapper MMSYSTEM opens for MIDI_MAPPER (WIN95_13.CAB)
@@ -270,9 +272,9 @@ for (a0, a1, an), (b0, b1, bn) in zip(sels, sels[1:]):
     if b0 < a1: sys.exit(f'selectors overlap: {an} {a0:#x}-{a1:#x} and {bn} {b0:#x}-{b1:#x}')
 for a0, a1, an in sels:
     if a1 > 0x3007: sys.exit(f'selectors reach the dynamic ones: {an} {a0:#x}-{a1:#x}')
-# every image has an address range of its own: a 16-bit module's segments (what the file holds; the room a data
-# segment may grow into, 64 KB for a DGROUP, only warned of, as USER's drivers are packed closer than that), 32-bit
-# DLLs and programs (PROGMAN's code lay over MSGSRV32's stack, at the top of its DGROUP)
+# every image has an address range of its own: a 16-bit module's segments (what the file holds, and the room a data
+# segment may grow into, 64 KB for a DGROUP), 32-bit DLLs and programs (PROGMAN's code lay over MSGSRV32's stack, at
+# the top of its DGROUP)
 images = []
 for name, m in bundle['ne'].items():
     for g in m['meta']['segs']: images.append((g['base'], g['base'] + g.get('len', 0), g['base'] + max(g.get('alloc', 0), g.get('len', 0)), f"{name} seg{g['num']}"))
@@ -290,7 +292,7 @@ images.sort()
 held = grown = None   # (start, end, name) of the image reaching furthest so far, by its contents and by its growth
 for b0, b1, b2, bn in images:
     if held and b0 < held[1]: sys.exit(f'images overlap: {held[2]} {held[0]:#x}-{held[1]:#x} and {bn} {b0:#x}-{b1:#x}')
-    if grown and b0 < grown[1]: print(f'  note: {grown[2]} may grow to {grown[1]:#x}, over {bn} at {b0:#x}')
+    if grown and b0 < grown[1]: sys.exit(f'images overlap: {grown[2]} grows to {grown[1]:#x}, over {bn} at {b0:#x}')
     if not held or b1 > held[1]: held = (b0, b1, bn)
     if not grown or b2 > grown[1]: grown = (b0, b2, bn)
 with open(out, 'w') as fh:

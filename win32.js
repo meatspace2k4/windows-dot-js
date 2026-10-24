@@ -110,6 +110,9 @@ class Process {
   loadImage(f, module, meta, name) {
     const dv = new DataView(f.buffer, f.byteOffset, f.byteLength), u8 = this.u8;
     const p = dv.getUint32(0x3c, true), opt = p + 24, pref = dv.getUint32(opt + 28, true), base = meta.base;
+    // (its image is its own: one laid over a loaded module's is a build fault, not something to run)
+    const over = this.imageAt(base, base + dv.getUint32(opt + 56, true));
+    if (over) throw new GuestError(`${name} at ${base.toString(16)} lies over ${over.name}'s image`);
     u8.set(f.subarray(0, dv.getUint32(opt + 60, true)), base);
     const nsec = dv.getUint16(p + 6, true), shdr = opt + dv.getUint16(p + 20, true);
     for (let i = 0; i < nsec; i++) {
@@ -239,13 +242,13 @@ class Process {
     const look = new Uint32Array(this.mem.buffer, m.meta.lookup, m.meta.textHi - m.meta.textLo);
     for (let i = Math.max(0, at); i < bl.length && bl[i] < a + 4; i++) look[bl[i] - m.meta.textLo] = 0;
   }
-  /** code written over from `lo` to `hi` by a module loaded there (`keep`): every other module's translations of the
-   *  range drop, so what runs there is what is in memory now (dyn.js), as a processor runs what is there */
-  smcRange(lo, hi, keep) {
-    for (const m of this.modules) {
-      if (m === keep || !m.meta || !m.meta.lookup || hi <= m.meta.textLo || lo >= m.meta.textHi) continue;
-      new Uint32Array(this.mem.buffer, m.meta.lookup, m.meta.textHi - m.meta.textLo).fill(0, Math.max(lo, m.meta.textLo) - m.meta.textLo, Math.min(hi, m.meta.textHi) - m.meta.textLo);
-    }
+  /** the loaded module whose image lies anywhere from `lo` to `hi`, or null */
+  imageAt(lo, hi) {
+    return this.modules.find(m => {
+      const b = m.base !== undefined ? m.base : m.meta && m.meta.base; if (b === undefined) return false;
+      const e = Math.max(b + (m.size || (m.meta && m.meta.size) || 0), (m.meta && m.meta.textHi) || 0);
+      return lo < e && b < hi;
+    }) || null;
   }
   /** the dispatcher's question when the block budget runs out: 1 to give the processor back to the host here */
   tick(eip) {
@@ -270,10 +273,18 @@ class Process {
       eip >>>= 0;
       if (eip === LAYOUT.SENTINEL) return 0;
       if (this.runHook) this.runHook(eip);   // debugging: set from the page to watch every dispatch
-      let m = eip >= LAYOUT.THUNK16 ? this.modules[0] : this.modules.find(x => eip >= x.meta.textLo && eip < x.meta.textHi);
-      // (CS gives the mode: under a 16-bit code selector the code is a 16-bit module's, never a flat module's
-      // translation of the same address, as of a module loaded over another's image; with none, the bytes there)
-      if (m && m.kind !== 'ne' && eip < LAYOUT.THUNK16 && this.code16 && this.code16()) m = this.modules.find(x => x.kind === 'ne' && eip >= x.meta.textLo && eip < x.meta.textHi);
+      const m = eip >= LAYOUT.THUNK16 ? this.modules[0] : this.modules.find(x => eip >= x.meta.textLo && eip < x.meta.textHi);
+      // a translation is of its segment's mode (a 32-bit module's: 32-bit; a 16-bit module's: its segment's, GDI's
+      // USE32 ones among them): run under a CS of the other one, it is not the code a processor would run there, and
+      // the emulator stops, naming it
+      if (m && eip < LAYOUT.THUNK16 && this.code16) {
+        const sg = m.kind === 'ne' && m.segs.find(s => eip >= s.base && eip < s.base + Math.max(s.alloc, s.len || 0));
+        const want16 = m.kind === 'ne' && !!sg && sg.bits !== 32, is16 = this.code16();
+        if (want16 !== is16) {
+          this.trapped = `${is16 ? '16' : '32'}-bit CS ${(this.cpu.cs.value & 0xffff).toString(16)} at ${eip.toString(16)}, in ${m.name || '?'}'s ${want16 ? '16' : '32'}-bit code`;
+          return 2;
+        }
+      }
       if (!m) {
         if (eip < 0x10000) (this.nullJumps || (this.nullJumps = [])).push({ at: eip, from: this.lastBlock >>> 0, cs: this.cpu.cs ? this.cpu.cs.value & 0xffff : null });
         const next = this.dataCode && this.dataCode(eip);
@@ -790,7 +801,12 @@ const API = {};
 // driver GDI32's pixel-format calls look up with GetModuleHandle); the personality's own (KERNEL32, ADVAPI32, ...) are
 // not found that way, as before
 const STAND_IN = new Set();
-const def = (dll, name, n, fn) => { (API[dll] = API[dll] || {})[name] = [n, fn]; };
+// (each defined once: a second definition replaced the first without a word. `js` marks them as this single-thread
+// personality's, which ne16.js's KERNEL32 may replace with its threaded ones)
+const def = (dll, name, n, fn) => {
+  const t = API[dll] = API[dll] || {}; if (t[name]) throw new Error(`${dll}!${name} defined twice`);
+  t[name] = Object.assign([n, fn], { js: true });
+};
 const TRUE = 1, FALSE = 0;
 
 // KERNEL32

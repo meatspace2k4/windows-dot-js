@@ -163,8 +163,10 @@ P.loadNE = function (name, file, module, meta) {
   this.init16();
   const u8 = this.u8;
   const rec = { name, kind: 'ne', base: meta.base, meta, file, segs: meta.segs, exports: new Map(), names: meta.names, run: null };
+  // (its image is its own: one laid over a loaded module's is a build fault, not something to run)
+  const over = this.imageAt(meta.base, meta.base + meta.size);
+  if (over) throw new GuestError(`${name} at ${meta.base.toString(16)} lies over ${over.name}'s image`);
   for (const sg of meta.segs) {
-    this.smcRange(sg.base, sg.base + Math.max(sg.alloc, 1), rec);   // (a module whose image this overlays runs what is here now)
     u8.fill(0, sg.base, sg.base + Math.max(sg.alloc, 1));
     if (sg.len) u8.set(file.subarray(sg.fileoff, sg.fileoff + sg.len), sg.base);
     const limit = sg.num === meta.autodata ? 0xffff : Math.max(sg.alloc, 1) - 1;
@@ -353,7 +355,7 @@ P.call16 = function (sel, off, args = [], regs = {}) {
 // ---------------------------------------------------------------- 16-bit API dispatch
 const NAMES16_INIT = {};
 const K16 = {};   // 'MODULE.#ord' -> [args, ret, fn]   args: w word, i int16, l dword, p segptr->linear, s segptr->string, x raw segptr
-const def16 = (mod, ord, args, ret, fn) => { K16[`${mod}.#${ord}`] = [args, ret, fn]; };
+const def16 = (mod, ord, args, ret, fn) => { const k = `${mod}.#${ord}`; if (K16[k]) throw new Error(`${k} defined twice`); K16[k] = [args, ret, fn]; };
 P.thunk16Def = function (key) { return { key, def: K16[key] }; };
 P.thunk16For = function (key) {
   let i = this.th16.findIndex(t => t.key === key);
@@ -1060,7 +1062,7 @@ P.wssRecord = function (dn) {
   dv.setUint16(0x52, 0x40, true); dv.setUint32(0x54, dn.handle, true);
   this.wssRecs.set(dn.handle, r); return r;
 };
-vxdApi(0x045f, 'MSSNDSYS', {});
+VXD_API[0x045f] = { name: 'MSSNDSYS', fns: {} };   // (its entry point is its own, below: the function is in DX)
 def16('VXD', 0x45f, '', 'jmp', function () {
   const v = this.vxdApiRoute && this.vxdApiRoute(0x45f); if (v) return this.vxdPmApi(v);   // the recompiled MSSNDSYS.VXD (vmm.js)
   const f = this.cpu.edx.value & 0xffff, ax = this.cpu.eax.value & 0xffff;
@@ -3553,8 +3555,10 @@ P.callFlatFrom16 = function (addr, args) {
   }
 };
 // ---------------------------------------------------------------- KERNEL32 thunk services used by GDI32.DLL
-const K = (name, n, fn) => { API.KERNEL32[name] = [n, fn]; };
-const KR = (name, fn) => { API.KERNEL32[name] = ['regs', fn]; };
+// (each defined once here; one win32.js defines too is the single-thread personality's, which this one, with its threads,
+// tasks and Win16Lock, replaces)
+const K = (name, n, fn) => { const o = API.KERNEL32[name]; if (o && !o.js) throw new Error(`KERNEL32!${name} defined twice`); API.KERNEL32[name] = [n, fn]; };
+const KR = (name, fn) => K(name, 'regs', fn);
 const ret32 = p => { const sp = p.reg('esp'), r = p.r32(sp); p.reg('esp', sp + 4); return r; };
 const push32 = (p, v) => { const sp = p.reg('esp') - 4; p.reg('esp', sp); p.w32(sp, v); };
 const pop32 = p => { const sp = p.reg('esp'), v = p.r32(sp); p.reg('esp', sp + 4); return v; };
@@ -3840,9 +3844,6 @@ API.KERNEL32['#51'] = ['regs', function () {
   this.reg('esp', sp);
   return target;
 }];
-K('#68', 3, function (sp) { return this.lin(sp); });      // K32WOWGetVDMPointerFix
-K('#69', 1, () => 0);
-K('#93', 1, function (p) { if (p) this.w32(p, 0); return 0; });   // GetpWin16Lock
 K('#96', 0, () => 1);
 K('#98', 1, function () { return this.reg('eax'); });
 K('GetProcessFlags', 1, () => 0);

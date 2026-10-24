@@ -22,6 +22,9 @@ P.vxd = function (file) {
   const d = window.W95SYSTEM && window.W95SYSTEM.vxds && window.W95SYSTEM.vxds[key]; if (!d) return null;
   const b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
   const m = d.meta, img = d.imgBytes || (d.imgBytes = b64(d.image));
+  // (its image is its own: one laid over a loaded module's is a build fault, not something to run)
+  const over = this.imageAt(m.base, m.base + Math.max(img.length, m.size || 0));
+  if (over) throw new W.GuestError(`${key} at ${m.base.toString(16)} lies over ${over.name}'s image`);
   this.u8.set(img, m.base);
   const mod = d.mod || (d.mod = new WebAssembly.Module(b64(d.wasm)));
   const run = new WebAssembly.Instance(mod, this.imports).exports.run;
@@ -168,7 +171,7 @@ P.sysVM = function () {
 
 // ---------------------------------------------------------------- INT 20h: VxDCall / VxDJmp
 const SVC = {};   // (device << 16 | service) -> fn(p): register services read and write p.cpu; C services use arg(i)
-const svc = (dev, n, fn) => { SVC[dev << 16 | n] = fn; };
+const svc = (dev, n, fn) => { if (SVC[dev << 16 | n]) throw new Error(`VxD service ${dev.toString(16)}:${n.toString(16)} defined twice`); SVC[dev << 16 | n] = fn; };
 INTS[0x20] = function (next) {
   const d = this.r32(u32(next) - 4), dev = d >>> 16, n = d & 0x7fff, jmp = d & 0x8000, fn = SVC[dev << 16 | n];
   if (window.W95VXDTRACE) window.W95VXDTRACE(dev, n, this, u32(next) - 6);   // debugging: every VxDCall
