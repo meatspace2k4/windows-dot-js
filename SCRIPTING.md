@@ -86,6 +86,14 @@ await call('Runtime.addBinding', { name: '__w95event' })
 
 The binding stays registered across page reloads.
 
+## Exploring
+
+`node bench/explore.mjs [endpoint] [--minutes 10] [--depth 12]` drives the system with these calls only, clicking
+elements `elements()` lists and pressing keys, and reports what went wrong on the way (as `gaps.mjs` does) with the
+path of inputs that led to each finding. It writes `bench/results/explore-<stamp>.json` and, per finding, a replay
+`bench/repro-<stamp>-<n>.mjs` that `gaps.mjs` runs as it is: a fix is done when that replay shows the finding no
+more and the last bench replay shows nothing worse.
+
 ## Example
 
 ```js

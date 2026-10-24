@@ -904,8 +904,11 @@ function sehDispatch(p, code, eip, params, fault, flags = 0) {
   for (let i = 0; i < n; i++) p.w32(rec + 20 + 4 * i, params[i]);
   sehContext(p, ctx, eip, sp);
   p.reg('esp', rec - 0x40);
-  const tib = p.cpu.fs.value;
-  for (let f = p.r32(tib); f !== SEH_END && f; f = p.r32(f)) {
+  // a frame off the thread's stack (the TIB's top and limit; past the end of memory) ends the chain, as KERNEL32
+  // takes it: what the frames before it did not handle is not handled
+  const tib = p.cpu.fs.value, end = p.mem.buffer.byteLength, top = p.r32(tib + 4), limit = p.r32(tib + 8);
+  const onStack = f => f + 8 <= end && !(top > limit && (f < limit || f + 8 > top));
+  for (let f = p.r32(tib); f !== SEH_END && f && onStack(f); f = p.r32(f)) {
     const r = sehCall(p, p.r32(f + 4), [rec, f, ctx, 0], sp);
     if (r === 'escaped') return LAYOUT.SENTINEL;
     if (r === 0) {   // continue execution where the context says
@@ -1537,6 +1540,9 @@ def('KERNEL32', 'CreateProcessA', 10, function (app, cmd, pa, ta, inherit, flags
   if (typeof r !== 'object' && r <= 32) { this.lastError = r === 11 ? 193 : r; return 0; }
   if (typeof r === 'number' || r.elsewhere) { if (pi) this.u8.fill(0, pi, pi + 16); return 1; }   // (a 16-bit program's task, or a second instance in a machine of its own: no handles here)
   if (pi) { this.w32(pi, this.newHandle({ kind: 'process', pid: r.pid })); this.w32(pi + 4, this.newHandle({ kind: 'thread', id: r.main.id })); this.w32(pi + 8, r.pid); this.w32(pi + 12, r.main.id); }
+  // it returns once the new process is loaded, as Windows 95's waits for its load-done event: its main thread has
+  // attached its DLLs and USER has its per-process data (WaitForInputIdle, which callers ask next, reads it)
+  if (this.threads16 && r.main) for (let k = 0; k < 50 && !r.started && r.exitCode === null && !this.trapped; k++) this.threads16(true, r.main);
   return 1;
 });
 def('KERNEL32', 'ReadConsoleA', 5, () => 0);

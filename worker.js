@@ -281,6 +281,10 @@ class Machine {
       try {
         const f = p.cpu.ssb.value + (p.cpu.esp.value & 0xffff);
         if (m && /^(533|534|537)$/.test(m[1])) return [4, 6, 8, 10].map(k => p.r16(f + k).toString(16)).join(' ');   // (the DDE conversions: their stack words)
+        if (m && /^(484|485)$/.test(m[1])) { const o = m[1] === '484' ? 8 : 4; return `pid ${p.r32(f + o + 2).toString(16)} off ${(p.r16(f + o) << 16) >> 16}`; }   // (Get/SetProcessDword: the process and the field)
+        if (m && /^(458|459|460)$/.test(m[1])) return 'h ' + p.r32(f + (m[1] === '460' ? 8 : 4)).toString(16);   // (Set/ResetW32Event, WaitForSingleObject: the handle)
+        if (m && m[1] === '457') return 'manual ' + p.r32(f + 8) + ' set ' + p.r32(f + 4) + ' -> h ' + ((p.nextHandle || 0) >>> 0).toString(16);   // (CreateW32Event)
+        if (m && m[1] === '461') { const n = p.r32(f + 16), ph = p.lin(p.r32(f + 12)); return [...Array(Math.min(n, 8))].map((_, i) => p.r32(ph + 4 * i).toString(16)).join(' ') + ' ms ' + p.r32(f + 4); }   // (WaitForMultipleObjects: the handles)
         if (m && m[1] === '18') { const h = p.r16(f + 4), b = p.gblock && p.gblock(h); let t = ''; try { t = b ? ' "' + (p.readA(b.lin, 60) || '').replace(/[^\x20-\x7e]/g, '.') + '"' : ''; } catch (_) {} return 'h' + h.toString(16) + t; }   // (GlobalLock: the block's text)
         if (m && /^(71|72)$/.test(m[1])) return 'atom ' + p.r16(f + (m[1] === '72' ? 10 : 4)).toString(16) + ' ds ' + (p.cpu.ds.value & 0xffff).toString(16);   // (DeleteAtom, GetAtomName: the atom, and whose table)
         if (m && /^(69|70)$/.test(m[1])) { const sp = p.r32(f + 4); return (sp >>> 16 ? p.readA(p.lin(sp)) : '#' + (sp & 0xffff)) + ' ds ' + (p.cpu.ds.value & 0xffff).toString(16); }
@@ -294,6 +298,11 @@ class Machine {
     const arg32 = t => {
       try {
         if (t.nm === '#18') return `pid ${p.r32(p.reg('esp') + 4).toString(16)} off ${p.r32(p.reg('esp') + 8) | 0}`;   // (GetProcessDword)
+        if (/^Global(Alloc|ReAlloc|Lock|Unlock|Free|Size)$/.test(t.nm)) {   // (the block's handle, sizes and flags, and its text)
+          const a = k => p.r32(p.reg('esp') + 4 * k) >>> 0, h = t.nm === 'GlobalAlloc' ? 0 : a(1);
+          const txt = h > 0x10000 && h < p.u8.length ? ' "' + (p.readA(h, 48) || '').replace(/[^\x20-\x7e]/g, '.') + '"' : '';
+          return t.nm === 'GlobalAlloc' ? `flags ${a(1).toString(16)} n ${a(2)}` : t.nm === 'GlobalReAlloc' ? `h ${h.toString(16)} n ${a(2)} flags ${a(3).toString(16)}${txt}` : `h ${h.toString(16)}${txt}`;
+        }
         if (/^Global(Add|Find)AtomA$/.test(t.nm)) { const sp = p.r32(p.reg('esp') + 4); return sp >>> 16 ? p.readA(sp) || '' : '#' + sp; }
         if (/^(LoadLibraryA|GetPrivateProfileSectionA|GetPrivateProfileStringA|FindFirstFileA|CreateFileA|GetFileAttributesA|DeleteFileA|MoveFileA|GetModuleHandleA|WritePrivateProfileStringA)$/.test(t.nm)) { const sp = p.r32(p.reg('esp') + 4); return sp > 0x10000 && sp < p.u8.length ? p.readA(sp) || '' : String(sp); }
         if (t.nm === 'GetProcAddress') { const sp = p.r32(p.reg('esp') + 8); return sp > 0x10000 && sp < p.u8.length ? p.readA(sp) || '' : '#' + sp; }
@@ -301,7 +310,9 @@ class Machine {
         const s = p.r32(p.reg('esp') + 8); return s > 0x10000 && s < p.u8.length ? p.readA(s) || '' : String(s);
       } catch (_) { return ''; }
     };
-    self.W95TRACE = t => { const th = name(); if (log.length < 20000 && want.test(th) && (!only || only.test(t.dll + '!' + t.nm))) log.push([Math.round(performance.now() - t0), th, t.dll + '!' + t.nm, arg32(t)]); };
+    // (and where the call came from: the module and offset of its return address)
+    const caller = () => { try { const a = p.r32(p.reg('esp')) >>> 0, m = (p.modules || []).find(x => x.base && a >= x.base && a < x.base + (x.size || 0)); return m ? `${m.name}+${(a - m.base).toString(16)}` : a.toString(16); } catch (_) { return ''; } };
+    self.W95TRACE = t => { const th = name(); if (log.length < 20000 && want.test(th) && (!only || only.test(t.dll + '!' + t.nm))) log.push([Math.round(performance.now() - t0), th, t.dll + '!' + t.nm, arg32(t), caller()]); };
     self.W95APPYTRACE = e => { if (log.length < 20000) log.push([Math.round(performance.now() - t0), name(), 'appy', (e.fn >>> 0).toString(16)]); };
   }
   ring0() { return !!(this.proc && this.proc.r0Runs && this.proc.r0Runs.length); }
@@ -663,7 +674,8 @@ class Machine {
     const dmod = p.ne && p.ne.get('DISPLAY'), dseg = dmod && dmod.segs && dmod.segs[dmod.segs.length - 1], dsb = dseg && p.selValid(dseg.sel) ? p.selBase(dseg.sel) : 0;
     const display = dsb ? { sel: dseg.sel, chip81e: p.r16(dsb + 0x81e), bpp2d: p.r16(dsb + 0x2d), mem7a: p.r32(dsb + 0x7a), w: [...p.u8.slice(dsb, dsb + 0x40)].map(b => b.toString(16).padStart(2, '0')).join('') } : null;
     const metrics = p.depth || p.thread16 ? null : (() => { try { return [0, 1, 4].map(i => p.user16(179, [['w', i]]).ax); } catch (e) { return e.message; } })();   // GetSystemMetrics: CXSCREEN, CYSCREEN, CYCAPTION
-    return { metrics, display, nic, jsDlls: p.jsDlls ? Object.fromEntries(p.jsDlls) : null, nullJumps: p.nullJumps || [], thunkFails: p.thunkFails || [], thunkConns: p.thunkConns || [], gl: [...(p.glContexts || [])].map(c => ({ w: c.canvas && c.canvas.width, h: c.canvas && c.canvas.height, lost: !c.g || c.g.isContextLost(), err: c.g ? c.g.getError() : null, dc: c.dc ? { native: !!c.dc.native, bpp: c.dc.bpp, w: c.dc.w, h: c.dc.h, hwnd: c.dc.hwnd, hdc: c.dc.hdc, gdi: c.dc.native ? (() => {
+    return { metrics, display, nic, jsDlls: p.jsDlls ? Object.fromEntries(p.jsDlls) : null, nullJumps: (p.nullJumps || []).map(j => ({ ...j, fromIn: j.from !== undefined ? where(j.from) : undefined })),
+      mods32: (p.modules || []).filter(m => m.meta && m.meta.textHi).map(m => [m.name, m.base >>> 0, m.meta.textLo >>> 0, m.meta.textHi >>> 0]), thunkFails: p.thunkFails || [], thunkConns: p.thunkConns || [], gl: [...(p.glContexts || [])].map(c => ({ w: c.canvas && c.canvas.width, h: c.canvas && c.canvas.height, lost: !c.g || c.g.isContextLost(), err: c.g ? c.g.getError() : null, dc: c.dc ? { native: !!c.dc.native, bpp: c.dc.bpp, w: c.dc.w, h: c.dc.h, hwnd: c.dc.hwnd, hdc: c.dc.hdc, gdi: c.dc.native ? (() => {
       const g = p.byName.get('GDI32'), f = n => g.exports.get(n), r = p.alloc(32); try {
         const bm = p.call(f('GetCurrentObject'), [c.dc.hdc, 7]), got = bm ? p.call(f('GetObjectA'), [bm, 24, r]) : 0, type = p.call(f('GetObjectType'), [c.dc.hdc]);
         const gdi16 = p.ne && p.ne.get('GDI'), segs = gdi16 && gdi16.segs ? gdi16.segs.map(s => ({ num: s.num, sel: s.sel, base: s.base, alloc: s.alloc, lim: p.selValid(s.sel) ? p.selLimit(s.sel) : null, now: p.selValid(s.sel) ? p.selBase(s.sel) : null })) : null;
@@ -727,6 +739,17 @@ class Machine {
       case 'netfs': { const b = self.W95NetFS.backend({ alive: true, proc: p }, args[0]); return b[args[1]](...(args[2] || [])); }
       case 'mode': { const r = this.setMode(args[0], args[1]); if (!r) this.wantMode = [args[0], args[1]]; return r; }   // (null: made once no thread holds USER, step())
       case 'probe': return this.probe();
+      // (offsets in a module, by name: EAX each time execution comes to one from another module, as a call into
+      // another DLL returns there; into the trace's log; no offsets ends it)
+      case 'watch': {
+        const [name, offs] = args, want = new Set(offs || []), log = this.traceLog || (this.traceLog = []);
+        if (!want.size) { p.runHook = null; return true; }
+        p.runHook = eip => {
+          const m = p.modules.find(x => x.name === name && eip >= x.base && eip < x.base + (x.size || 0));
+          if (m && want.has(eip - m.base)) log.push([Math.round(performance.now()), p.thread16 && p.thread16.pc ? p.thread16.pc.path : 'host', 'watch', `${name}+${(eip - m.base).toString(16)}`, `eax ${(p.reg('eax') >>> 0).toString(16)}`]);
+        };
+        return true;
+      }
       case 'trace': { if (args[0]) this.traceOn(args[0], args[1]); const l = this.traceLog || []; return l.splice(0); }   // (the calls traced so far; a thread regexp, and one for the import names, starts a trace)
       case 'kick': return;
       case 'exit': this.exited(args[0] || 0); return;

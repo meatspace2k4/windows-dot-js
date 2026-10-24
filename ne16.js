@@ -878,10 +878,33 @@ P.nativeChildren = function (parent) {
       } else { const tl = u(107, [['w', h], ['w', 0x0d], ['w', 160], ['l', buf + 16]]); text = tl ? this.readA(a + 16, tl) : ''; }
       const c = { hwnd: h, parent: p, x, y, w, h: hh, cls, text, id: u(277, [['w', h]]), style, enabled: !!u(35, [['w', h]]), focused: h === focus, depth };
       if (/^button$/i.test(cls) && [2, 3, 4, 5, 6, 9].includes(style & 0x0f)) c.checked = u(111, [['w', h], ['w', 0x400], ['w', 0], ['l', 0]]);
+      if (/^SysTabControl32$/i.test(cls)) c.items = this.tabItems(h, x, y);
       out.push(c); walk(h, depth + 1);
     }
   };
   walk(parent, 0);
+  return out;
+};
+/** a tab control's tabs (COMCTL32's, in a 32-bit program: Explorer's task switcher), each its rectangle on screen (the
+ *  control at x, y), its text and whether it is the selected one, from the control's own messages with flat buffers
+ *  (a message past WM_USER goes to the 32-bit window with lParam as it is). A tab without text (Explorer's task
+ *  buttons draw themselves) is named by the window its lParam holds */
+P.tabItems = function (h, x, y) {
+  const a = this.wbufLin, buf = u32(this.wbufSel << 16), send = (m, wp, lp) => this.user16(111, [['w', h], ['w', m], ['w', wp], ['l', lp]]).dxax | 0;
+  const n = Math.min(send(0x1304, 0, 0), 64), sel = send(0x130b, 0, 0), out = [];   // TCM_GETITEMCOUNT, TCM_GETCURSEL
+  const rc = a + 0x100, it = a + 0x110, txt = a + 0x140;
+  for (let i = 0; i < n; i++) {
+    if (!send(0x130a, i, rc)) continue;   // TCM_GETITEMRECT
+    const s16 = o => (this.r16(rc + o) << 16) >> 16, l = s16(0), t = s16(4);
+    this.u8.fill(0, it, it + 28); this.w32(it, 1 | 8); this.w32(it + 12, txt); this.w32(it + 16, 64); this.u8[txt] = 0;   // TCIF_TEXT | TCIF_PARAM
+    send(0x1305, i, it);   // TCM_GETITEMA
+    let text = this.readA(txt, 64);
+    const wnd = this.r32(it + 24) & 0xffff;
+    if (!text && wnd && this.user16(47, [['w', wnd]]).ax) {   // IsWindow: GetWindowText of the window the tab stands for
+      const tl = this.user16(36, [['w', wnd], ['l', buf + 0x40], ['w', 160]]).ax; text = tl ? this.readA(a + 0x40, tl) : '';
+    }
+    out.push({ x: x + l, y: y + t, w: s16(8) - l, h: s16(12) - t, text, selected: i === sel });
+  }
   return out;
 };
 /** a key into USER's keybd_event (USER.289), as KEYBOARD.DRV reports one: AL = virtual key, AH = 80h on release,
@@ -3059,6 +3082,13 @@ const pdw = (p, pid, off) => {
 };
 def16('KERNEL', 485, 'li', 'l', function (pid, off) { return pdw(this, pid, off)[off] >>> 0; });
 def16('KERNEL', 484, 'lil', 'v', function (pid, off, v) { pdw(this, pid, off)[off] = v; });
+// MapProcessHandle: the id of the process a handle names (GetCurrentProcess's the caller's); an id is taken as it is
+def16('KERNEL', 483, 'l', 'l', function (h) {
+  if (h === 0xffffffff) return this.thread16 && this.thread16.pc ? this.thread16.pc.pid : this.inSystem() ? SYS_PID : MAIN_PID;
+  if (h === SYS_PID || h === MAIN_PID || (this.procs && this.procs.has(h))) return h;
+  const o = this.obj(h); if (o && o.kind === 'process') return o.pid;
+  this.lastError = 6; return 0;   // ERROR_INVALID_HANDLE
+});
 // VWIN32's events as KRNL386 reaches them (VWin32_EventCreate .. EventSet, and 479, which sets one unless the
 // Win16Lock is held): one thread runs here, so a wait finds the event set or returns at once
 def16('KERNEL', 442, '', 'l', function () { return this.newHandle({ kind: 'event', manual: false, set: false }); });   // VWin32_EventCreate
@@ -3627,8 +3657,12 @@ P.qtThunk = function () {
  */
 P.enter16from32 = function (target, src, n, map, ret32, done) {
   const sel = target >>> 16, off = target & 0xffff;
-  const base = (src - 0xf000) & ~0xf, ssel = this.stackSel(base);
-  const rec = { ebx: this.reg('ebx'), esi: this.reg('esi'), edi: this.reg('edi'), ebp: this.reg('ebp'), esp: this.reg('esp'), ret32, done, ssel };
+  // a Win16 task's flat stack is in its DGROUP (CallProc32W runs the 32-bit side there): the callback's SS is the
+  // DGROUP itself, as Windows keeps a task's stack (its code takes DS from SS), not another selector for that memory
+  const k = this.thread16 && this.thread16.task && this.thread16.task.dgStack ? this.thread16.task : null, dgb = k ? this.selBase(k.dgroup) : 0;
+  const inDg = !!k && src >= dgb + 0x100 && src < dgb + this.selLimit(k.dgroup);
+  const base = inDg ? dgb : (src - 0xf000) & ~0xf, ssel = inDg ? k.dgroup : this.stackSel(base);
+  const rec = { ebx: this.reg('ebx'), esi: this.reg('esi'), edi: this.reg('edi'), ebp: this.reg('ebp'), esp: this.reg('esp'), ret32, done, ssel: inDg ? 0 : ssel };
   this.seg('ss', ssel);
   let sp = src - base;
   if (map) for (let i = 0; i < 32; i++) if (map & (1 << i)) {
