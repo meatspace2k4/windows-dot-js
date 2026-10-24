@@ -5001,8 +5001,11 @@ function nativeEls(kids, win) {
     const role = k === 'button' ? (bs === 7 ? 'grouping' : [2, 3, 5, 6].includes(bs) ? 'checkbutton' : [4, 9].includes(bs) ? 'radiobutton' : 'pushbutton')
       : k === 'edit' ? 'text-edit' : k === 'static' ? 'text' : k === 'combobox' ? 'combobox' : k === 'listbox' ? 'list'
       : k === 'scrollbar' ? 'scrollbar' : /listview/i.test(k) ? 'list' : /toolbar/i.test(k) ? 'toolbar' : 'client';
-    add(role, label(c.text), c, { ...win, cls: c.cls, id: c.id, hwnd: c.hwnd, disabled: !c.enabled, focused: c.focused,
+    // (the taskbar's Start button is a bitmap button, BS_BITMAP, with no window text: named as Windows' accessibility names it)
+    const name = win.window === 'Taskbar' && role === 'pushbutton' && !c.text && (c.style & 0x80) ? 'Start' : label(c.text);
+    add(role, name, c, { ...win, cls: c.cls, id: c.id, hwnd: c.hwnd, disabled: !c.enabled, focused: c.focused,
       ...(c.checked !== undefined ? { checked: !!c.checked } : {}), ...(role === 'text-edit' || role === 'combobox' ? { value: c.text } : {}) });
+    if (role === 'list' && c.items) for (const it of c.items) add('listitem', it.text, it, { ...win, selected: !!it.selected });   // (a list view's items: the desktop's icons, a folder's files)
   }
   return out;
 }

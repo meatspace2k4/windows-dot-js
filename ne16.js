@@ -879,10 +879,29 @@ P.nativeChildren = function (parent) {
       const c = { hwnd: h, parent: p, x, y, w, h: hh, cls, text, id: u(277, [['w', h]]), style, enabled: !!u(35, [['w', h]]), focused: h === focus, depth };
       if (/^button$/i.test(cls) && [2, 3, 4, 5, 6, 9].includes(style & 0x0f)) c.checked = u(111, [['w', h], ['w', 0x400], ['w', 0], ['l', 0]]);
       if (/^SysTabControl32$/i.test(cls)) c.items = this.tabItems(h, x, y);
+      if (/^SysListView32$/i.test(cls)) c.items = this.listItems(h, x, y);
       out.push(c); walk(h, depth + 1);
     }
   };
   walk(parent, 0);
+  return out;
+};
+/** a list view's items (COMCTL32's, in a 32-bit program: the desktop's icons, a folder window's files), each its
+ *  bounds on screen (the control at x, y), its label and whether it is selected, from the control's own messages
+ *  with flat buffers (as tabItems) */
+P.listItems = function (h, x, y) {
+  const a = this.wbufLin, send = (m, wp, lp) => this.user16(111, [['w', h], ['w', m], ['w', wp], ['l', lp]]).dxax | 0;
+  const n = Math.min(send(0x1004, 0, 0), 256), out = [];   // LVM_GETITEMCOUNT
+  const rc = a + 0x100, it = a + 0x110, txt = a + 0x140;
+  for (let i = 0; i < n; i++) {
+    this.w32(rc, 0);   // LVIR_BOUNDS
+    if (!send(0x100e, i, rc)) continue;   // LVM_GETITEMRECT
+    const s32 = o => this.r32(rc + o) | 0, l = s32(0), t = s32(4);
+    this.u8.fill(0, it, it + 36); this.w32(it, 1); this.w32(it + 4, i); this.w32(it + 20, txt); this.w32(it + 24, 64); this.u8[txt] = 0;   // LVIF_TEXT, pszText, cchTextMax
+    const len = send(0x102d, i, it);   // LVM_GETITEMTEXTA
+    const text = len > 0 ? this.readA(txt, Math.min(len, 63)) : '';
+    out.push({ x: x + l, y: y + t, w: s32(8) - l, h: s32(12) - t, text, selected: !!(send(0x102c, i, 2) & 2) });   // LVM_GETITEMSTATE, LVIS_SELECTED
+  }
   return out;
 };
 /** a tab control's tabs (COMCTL32's, in a 32-bit program: Explorer's task switcher), each its rectangle on screen (the

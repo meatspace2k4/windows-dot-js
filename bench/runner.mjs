@@ -23,6 +23,12 @@ export async function connect(endpoint) {
   return Object.assign(api, { call, evaluate, version, url: page.url, close: () => ws.close() });
 }
 
+// the shell is up, evaluated in the page: with the system's machine built in (W95SYSTEM) that is the machine's
+// Explorer with its desktop window (Progman, "Program Manager") on the screen; the page's own desktop, shown a second
+// after a reload while the machine boots, is not it
+export const SHELL_READY = `typeof win95 === 'object' && win95.state.screen === 'desktop' && document.fonts.status === 'loaded'
+  && (typeof W95SYSTEM !== 'object' || (!!win95.sysApp && win95.sysApp.alive && win95.windows().some(w => w.title === 'Program Manager')))`;
+
 // boot: reload the page and time it until the shell has drawn its desktop
 async function boot(c) {
   const t0 = Date.now();
@@ -31,7 +37,7 @@ async function boot(c) {
   for (;;) {
     await new Promise(r => setTimeout(r, 10));
     let ready = false;
-    try { ready = await c.evaluate(`typeof win95 === 'object' && win95.state.screen === 'desktop' && document.fonts.status === 'loaded'`); } catch (_) { /* page still loading */ }
+    try { ready = await c.evaluate(SHELL_READY); } catch (_) { /* page still loading */ }
     if (ready) break;
     if (Date.now() - t0 > 60000) throw new Error('shell did not boot within 60 s');
   }

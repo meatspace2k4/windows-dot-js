@@ -725,6 +725,12 @@ class Machine {
       case 'endProcess': { const p = this.proc, pc = p.procs && p.procs.get(args[0]); if (pc) p.endProcess(pc, args[1] || 0); return pc ? true : this.endSaver(args[0], args[1] || 0); }
       case 'closeWin32': return this.proc.sendMsg(args[0], W.WM.CLOSE);
       case 'children': return p.depth ? null : p.nativeChildren(args[0]);
+      case 'user16': {   // a diagnostic: USER.ord called with args, each ['w'|'l', v] or ['buf', n] (a buffer the call fills, returned as bytes)
+        if (p.depth) return null;
+        const bufs = [], a = args[1].map(x => { if (x[0] !== 'buf') return x; const lin = p.alloc(x[1]), sel = p.allocSels(lin, x[1]); bufs.push({ lin, sel, n: x[1] }); return ['l', (sel << 16) >>> 0]; });
+        try { const r = p.user16(args[0], a); return { ax: r.ax, dxax: r.dxax, bufs: bufs.map(b => Array.from(p.u8.subarray(b.lin, b.lin + b.n))) }; }
+        finally { for (const b of bufs) { p.freeSels(b.sel); p.free(b.lin); } }
+      }
       case 'hung': {   // USER32's IsHungThread for the thread that owns each window
         const x = p.byName && p.byName.get('USER32') && p.byName.get('USER32').exports, tid = x && x.get('GetWindowThreadProcessId'), hung = x && x.get('IsHungThread');
         return args[0].map(h => (tid && hung && !p.depth ? !!p.call(hung, [p.call(tid, [h, 0])]) : false));

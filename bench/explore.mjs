@@ -14,7 +14,7 @@
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { connect, capture, DESTRUCTIVE, replaySource } from './runner.mjs';
+import { connect, capture, DESTRUCTIVE, replaySource, SHELL_READY } from './runner.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2), opt = (k, d) => { const i = argv.indexOf('--' + k); if (i < 0) return d; const v = argv[i + 1]; argv.splice(i, 2); return v; };
@@ -72,7 +72,7 @@ async function reload() {
   const t0 = Date.now();
   for (;;) {
     await new Promise(r => setTimeout(r, 50));
-    let ok = false; try { ok = await c.evaluate(`typeof win95 === 'object' && win95.state.screen === 'desktop'`); } catch (_) { /* loading */ }
+    let ok = false; try { ok = await c.evaluate(SHELL_READY); } catch (_) { /* loading */ }
     if (ok) break;
     if (Date.now() - t0 > 90000) throw new Error('the system did not come up within 90 s');
   }
