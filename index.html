@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Windows 95</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon192.png">
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
+  canvas { display: block; image-rendering: pixelated; image-rendering: crisp-edges; cursor: none; outline: none; touch-action: none; }
+</style>
+</head>
+<body>
+<canvas id="screen" tabindex="0"></canvas>
+<script src="assets.js"></script>
+<script src="cdrom.js"></script>
+<script src="fs.js"></script>
+<script src="savers.js"></script>
+<script src="win32.js"></script>
+<script src="gl.js"></script>
+<script src="shell32.js"></script>
+<script src="system.js"></script>
+<script src="ne16.js"></script>
+<script src="host-web.js"></script>
+<script>if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js');</script>
+</body>
+</html>

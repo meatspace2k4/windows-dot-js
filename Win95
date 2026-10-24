@@ -1,0 +1,8 @@
+#!/bin/sh
+# Opens the bundled shell in its own Chrome app window and profile.
+WEB="$(cd "$(dirname "$0")/../Resources/web" && pwd)"
+PROFILE="$HOME/Library/Application Support/Windows 95"
+mkdir -p "$PROFILE"
+exec "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+  --user-data-dir="$PROFILE" --no-first-run --no-default-browser-check \
+  --app="file://$WEB/index.html" --window-size=640,480
