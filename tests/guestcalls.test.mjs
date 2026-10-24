@@ -4,9 +4,10 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-const src = readFileSync(new URL('../win95.js', import.meta.url), 'utf8');
-const lines = src.split('\n');
-const guest = /\bp\.call\(|q\.call\(|nativeChildren\(|k32CloseState\(|\.user16\(|keyEvent16\(|mouseEvent16\(|vkdKey\(/;
-const swallowed = lines.map((l, i) => [i + 1, l]).filter(([, l]) => guest.test(l) && /catch \(\w+\) \{ console\.error\(\w+\);( return[^}]*;)? \}/.test(l));
-assert.deepEqual(swallowed.map(([n, l]) => `${n}: ${l.trim().slice(0, 100)}`), [], 'no guest call on the page ends in a console line');
+const guest = /\bp\.call\(|q\.call\(|nativeChildren\(|k32CloseState\(|\.user16\(|keyEvent16\(|mouseEvent16\(|vkdKey\(|vxdRunTimeOuts\(|nativeWindows\(/;
+for (const file of ['win95.js', 'worker.js']) {
+  const lines = readFileSync(new URL('../' + file, import.meta.url), 'utf8').split('\n');
+  const swallowed = lines.map((l, i) => [i + 1, l]).filter(([, l]) => guest.test(l) && /catch \(\w+\) \{ console\.error\([^)]*\);( return[^}]*;)? \}/.test(l));
+  assert.deepEqual(swallowed.map(([n, l]) => `${n}: ${l.trim().slice(0, 100)}`), [], `${file}: no guest call ends in a console line`);
+}
 console.log('guestcalls: ok');
