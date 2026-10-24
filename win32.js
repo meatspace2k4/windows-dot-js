@@ -268,7 +268,9 @@ class Process {
     const t = this.trapped || '';
     if (/^run-time code/.test(t)) { console.warn(`[win32] ${t}`); this.trapped = null; return this.raise(6, at); }   // (an emulator gap: named)
     if (t && !/^jump to unmapped address/.test(t)) return null;
-    this.trapped = null; return this.raise(14, at, at);
+    this.trapped = null;
+    if (this.dynFault !== undefined) { const i = this.dynFault; this.dynFault = undefined; return this.raise(14, i, 0xffffffff); }   // (run-time code's access past memory: at its instruction, dynRun)
+    return this.raise(14, at, at);
   }
   dispatch(eip) {
     for (;;) {

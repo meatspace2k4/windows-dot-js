@@ -78,7 +78,8 @@ class H(http.server.SimpleHTTPRequestHandler):
 
     def __init__(self, *x, **k): super().__init__(*x, directory=root, **k)
     def translate_path(self, p):
-        if a.iso and p.split('?')[0] == '/cdrom.iso': return a.iso
+        # (the page asks for cdrom.iso beside itself: a checkout under the project folder, a worktree, asks for it there)
+        if a.iso and p.split('?')[0].endswith('/cdrom.iso'): return a.iso
         return super().translate_path(p)
     def send_head(self):
         m = re.match(r'bytes=(\d+)-(\d*)$', self.headers.get('Range', ''))

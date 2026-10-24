@@ -569,7 +569,14 @@ P.dynRun = function (eip) {
     if ((n & 0xfff) === 0xfff) { this.cpu.eip.value = eip; if (this.tick(eip)) return -1; }   // the processor's time, as the dispatcher asks
     const blk = this.dynBlock(eip); if (!blk) return null;
     try { eip = u32(blk.run()); }
-    catch (e) { if (!(e instanceof WebAssembly.RuntimeError)) throw e; this.trapped = `run-time code at ${eip.toString(16)} (instruction at ${u32(this.cpu.eip.value).toString(16)}): ${e.message}`; return null; }
+    catch (e) {
+      if (!(e instanceof WebAssembly.RuntimeError)) throw e;
+      // an access past the end of memory: the processor's page fault at the instruction that made it (noCode), as in
+      // a module's translated block; any other trap is the emulator's to name
+      if (/out of bounds/.test(e.message)) { this.dynFault = u32(this.cpu.eip.value); this.trapped = `jump to unmapped address ${eip.toString(16)}`; const r = n => (this.cpu[n] ? u32(this.cpu[n].value).toString(16) : '?');
+        console.warn(`[win32] run-time code at ${eip.toString(16)}: memory access out of bounds at ${this.dynFault.toString(16)} (cs ${r('cs')} ds ${r('ds')}+${r('dsb')} es ${r('es')}+${r('esb')} ss ${r('ss')}+${r('ssb')} esi ${r('esi')} edi ${r('edi')} ebx ${r('ebx')} ecx ${r('ecx')})`); return null; }
+      this.trapped = `run-time code at ${eip.toString(16)} (instruction at ${u32(this.cpu.eip.value).toString(16)}): ${e.message}`; return null;
+    }
     if (eip === LAYOUT.SENTINEL || eip >= LAYOUT.THUNK16) return eip;
     if (this.modules.some(m => eip >= m.meta.textLo && eip < m.meta.textHi && this.hasBlock(m, eip))) return eip;
   }
