@@ -4594,6 +4594,7 @@ function faultDialog(prog, f, done) {
       for (const l of details.split('\n')) { if (y + 13 > a.y + a.h) break; text(esc(l), a.x + 3, y); y += 13; }
     } });
     win = dialog(prog, px(265), py(more ? 152 : 61), ctrls, { noTask: false, modal: false });   // (the faulting program's own: the others go on taking input)
+    win.message = { type: 'error', text: details.split(/\n\s*\n|\nRegisters:|\nEAX=/)[0] };   // (what faulted and where, for scripts: window.open)
   };
   open(false);
 }
