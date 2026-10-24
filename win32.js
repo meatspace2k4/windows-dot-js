@@ -1540,6 +1540,9 @@ def('KERNEL32', 'CreateProcessA', 10, function (app, cmd, pa, ta, inherit, flags
   if (typeof r !== 'object' && r <= 32) { this.lastError = r === 11 ? 193 : r; return 0; }
   if (typeof r === 'number' || r.elsewhere) { if (pi) this.u8.fill(0, pi, pi + 16); return 1; }   // (a 16-bit program's task, or a second instance in a machine of its own: no handles here)
   if (pi) { this.w32(pi, this.newHandle({ kind: 'process', pid: r.pid })); this.w32(pi + 4, this.newHandle({ kind: 'thread', id: r.main.id })); this.w32(pi + 8, r.pid); this.w32(pi + 12, r.main.id); }
+  // it returns once the new process is loaded, as Windows 95's waits for its load-done event: its main thread has
+  // attached its DLLs and USER has its per-process data (WaitForInputIdle, which callers ask next, reads it)
+  if (this.threads16 && r.main) for (let k = 0; k < 50 && !r.started && r.exitCode === null && !this.trapped; k++) this.threads16(true, r.main);
   return 1;
 });
 def('KERNEL32', 'ReadConsoleA', 5, () => 0);
