@@ -3634,8 +3634,12 @@ P.qtThunk = function () {
  */
 P.enter16from32 = function (target, src, n, map, ret32, done) {
   const sel = target >>> 16, off = target & 0xffff;
-  const base = (src - 0xf000) & ~0xf, ssel = this.stackSel(base);
-  const rec = { ebx: this.reg('ebx'), esi: this.reg('esi'), edi: this.reg('edi'), ebp: this.reg('ebp'), esp: this.reg('esp'), ret32, done, ssel };
+  // a Win16 task's flat stack is in its DGROUP (CallProc32W runs the 32-bit side there): the callback's SS is the
+  // DGROUP itself, as Windows keeps a task's stack (its code takes DS from SS), not another selector for that memory
+  const k = this.thread16 && this.thread16.task && this.thread16.task.dgStack ? this.thread16.task : null, dgb = k ? this.selBase(k.dgroup) : 0;
+  const inDg = !!k && src >= dgb + 0x100 && src < dgb + this.selLimit(k.dgroup);
+  const base = inDg ? dgb : (src - 0xf000) & ~0xf, ssel = inDg ? k.dgroup : this.stackSel(base);
+  const rec = { ebx: this.reg('ebx'), esi: this.reg('esi'), edi: this.reg('edi'), ebp: this.reg('ebp'), esp: this.reg('esp'), ret32, done, ssel: inDg ? 0 : ssel };
   this.seg('ss', ssel);
   let sp = src - base;
   if (map) for (let i = 0; i < 32; i++) if (map & (1 << i)) {
