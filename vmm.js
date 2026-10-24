@@ -172,12 +172,17 @@ P.sysVM = function () {
 // ---------------------------------------------------------------- INT 20h: VxDCall / VxDJmp
 const SVC = {};   // (device << 16 | service) -> fn(p): register services read and write p.cpu; C services use arg(i)
 const svc = (dev, n, fn) => { if (SVC[dev << 16 | n]) throw new Error(`VxD service ${dev.toString(16)}:${n.toString(16)} defined twice`); SVC[dev << 16 | n] = fn; };
+// the services of a loaded VxD the VMM here answers in its place: SHELL's appy time (the host's slices once USER runs,
+// in place of SHELL's own server in MSGSRV32), its 16-bit DLL calls on it, and its system broadcasts
+const TAKEN = new Set([0x0d, 0x0e, 0x18, 0x10, 0x11, 0x12].map(n => 0x17 << 16 | n));
 INTS[0x20] = function (next) {
   const d = this.r32(u32(next) - 4), dev = d >>> 16, n = d & 0x7fff, jmp = d & 0x8000, fn = SVC[dev << 16 | n];
   if (window.W95VXDTRACE) window.W95VXDTRACE(dev, n, this, u32(next) - 6);   // debugging: every VxDCall
-  // a hooked service (Hook_Device_Service), or one a loaded VxD provides (its DDB's service table): entered as the
-  // VMM enters it, by a call (VxDCall: the return to after the dword pushed) or a jump (VxDJmp)
-  const to = (this.svcHooks && this.svcHooks.get(dev << 16 | n)) || (!fn && this.vxdService(dev, n));
+  // a hooked service (Hook_Device_Service), or one a loaded VxD provides (its DDB's service table, over one written
+  // here unless the VMM here takes it over: TAKEN): entered as the VMM enters it, by a call (VxDCall: the return to
+  // after the dword pushed) or a jump (VxDJmp)
+  const own = (!fn || !TAKEN.has(dev << 16 | n)) && this.vxdService(dev, n);
+  const to = (this.svcHooks && this.svcHooks.get(dev << 16 | n)) || own;
   if (to) { if (!jmp) { const sp = u32(this.cpu.esp.value) - 4; this.w32(sp, u32(next)); this.cpu.esp.value = sp; } return to; }
   if (!fn && !this.vxdById(dev) && this.absentService(dev, n)) { if (jmp) { const ret = this.r32(u32(this.cpu.esp.value)); this.cpu.esp.value = u32(this.cpu.esp.value) + 4; return ret; } return next; }
   if (!fn) { this.trapped = `unimplemented VxD service ${dev.toString(16)}h:${n.toString(16)}h at ${u32(next - 6).toString(16)}`; return W.LAYOUT.SENTINEL; }
@@ -565,12 +570,6 @@ svc(VMM, 0x174, function (arg) {
     return w ? (fl === '-' ? t.padEnd(+w) : t.padStart(+w, fl === '0' ? '0' : ' ')) : t;
   });
   this.writeA(arg(0), out, out.length + 1); return out.length;
-});
-
-// ---- SHELL_Message(EBX VM, EAX flags, ECX message, EDI caption, ESI callback, EDX ref): shown, answered OK (1)
-svc(SHELL, 0x04, function () {
-  const t = this.readA(u32(this.cpu.ecx.value)) || '', cap = this.readA(u32(this.cpu.edi.value)) || '';
-  console.warn(`[vxd] SHELL_Message: ${cap}: ${t}`); this.cpu.eax.value = 1; CF(this, false);
 });
 
 // ---- VXDLDR: LoadDevice (EDX file name, EAX flags: 1 send it SYS_DYNAMIC_DEVICE_INIT): EAX the DDB, EDX the device
