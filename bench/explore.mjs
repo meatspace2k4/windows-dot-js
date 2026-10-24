@@ -14,7 +14,7 @@
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { connect, capture, DESTRUCTIVE, replaySource, SHELL_READY } from './runner.mjs';
+import { connect, capture, DESTRUCTIVE, replaySource, SHELL_READY, homeTargets } from './runner.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2), opt = (k, d) => { const i = argv.indexOf('--' + k); if (i < 0) return d; const v = argv[i + 1]; argv.splice(i, 2); return v; };
@@ -56,7 +56,14 @@ if (!window.__xp) {
     await settle();
     return {};
   };
-  window.__xp = { obs, act, settle };
+  // back to the bare desktop without a reload: menus closed, then every window above the desktop closed as its close
+  // box would, top first
+  const home = async targets => {
+    for (let i = 0; i < 3; i++) { win95.key('esc'); await sleep(120); }
+    for (const t of targets(win95.windows())) { win95.close(t); await settle(); }
+    await settle(1000, 10000);
+  };
+  window.__xp = { obs, act, settle, home };
 }
 `;
 
@@ -125,13 +132,21 @@ const deadline = Date.now() + MINUTES * 60000;
 await reload();
 note(pending, []);
 let o = await page(`window.__xp.obs()`), path = [], cur = touch(o, path);
+const root = stateKey(o);
+// back to the bare desktop: by closing what is open (no reboot of the machine), by a reload when that does not get there
+const home = async () => {
+  await page(`window.__xp.home(${homeTargets.toString()})`);
+  const now = await page(`window.__xp.obs()`);
+  if (stateKey(now) === root) return;
+  await reload();
+};
 while (Date.now() < deadline) {
   const a = path.length < DEPTH ? inputs(o).find(x => !cur.tried.has(sig(x))) : null;
   if (!a) {
-    // back to a state with inputs left: reload, then its path again
+    // back to a state with inputs left: the bare desktop, then its path again
     const next = [...states.entries()].filter(([, s]) => s.untried > 0 && s.path.length < DEPTH).sort((x, y) => x[1].path.length - y[1].path.length)[0];
     if (!next) break;
-    await reload();
+    await home();
     let lost = false;
     for (const b of next[1].path) if ((await step(b)).missing) { lost = true; break; }
     o = await page(`window.__xp.obs()`);

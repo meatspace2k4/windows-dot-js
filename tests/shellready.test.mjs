@@ -3,7 +3,11 @@
 // a reload, six seconds before the machine's Explorer takes the screen, and the explorer's clicks and keys went to
 // the page's placeholder shell, whose states vanished under it mid-walk.
 import assert from 'node:assert/strict';
-import { SHELL_READY } from '../bench/runner.mjs';
+import { SHELL_READY, homeTargets } from '../bench/runner.mjs';
+
+// back to the bare desktop without a reload: the windows to close, top first, never the desktop or the taskbar
+assert.deepEqual(homeTargets([{ title: 'Program Manager' }, { title: '' }, { title: 'Welcome' }, { title: 'My Computer' }, { title: 'Notepad', minimized: true }]), ['My Computer', 'Welcome']);
+assert.deepEqual(homeTargets([{ title: 'Program Manager' }, { title: '' }]), []);
 
 const ready = (win95, system = true, fonts = 'loaded') => new Function('win95', 'document', 'W95SYSTEM', 'return ' + SHELL_READY)(win95, { fonts: { status: fonts } }, system ? {} : undefined);
 const page = (screen, sysApp, wins = []) => ({ state: { screen }, sysApp, windows: () => wins.map(title => ({ title })) });

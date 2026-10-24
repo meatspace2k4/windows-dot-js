@@ -29,6 +29,11 @@ export async function connect(endpoint) {
 export const SHELL_READY = `typeof win95 === 'object' && win95.state.screen === 'desktop' && document.fonts.status === 'loaded'
   && (typeof W95SYSTEM !== 'object' || (!!win95.sysApp && win95.sysApp.alive && win95.windows().some(w => w.title === 'Program Manager')))`;
 
+// the windows to close to get back to the bare desktop, top first: everything but Explorer's desktop window (Progman,
+// "Program Manager") and its taskbar (no title); a driver closes them instead of reloading the page, which boots the
+// machine again
+export const homeTargets = wins => wins.filter(w => w.title && w.title !== 'Program Manager' && !w.minimized).map(w => w.title).reverse();
+
 // boot: reload the page and time it until the shell has drawn its desktop
 async function boot(c) {
   const t0 = Date.now();
