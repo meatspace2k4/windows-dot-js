@@ -26,4 +26,8 @@ assert.equal(call(4), 0x7040, 'SHELL_Message: SHELL.VXD\'s own');
 assert.equal(dv.getUint32(0x8000 - 4, true), 0x1006, '... entered by a call, back to after the VxDCall');
 assert.equal(call(3), 0x7030, 'SHELL_SYSMODAL_Message: SHELL.VXD\'s own');
 assert.equal(call(0x0d), 0x1006, '_SHELL_QueryAppyTimeAvailable: the VMM here takes it over');
+// (the system's broadcasts: SHELL.VXD's own, delivered through appy time and _SHELL_CallDll; the stand-in dropped them)
+assert.equal(call(0x10), 0x7100, '_SHELL_BroadcastSystemMessage: SHELL.VXD\'s own');
+assert.equal(call(0x11), 0x7110, '_SHELL_HookSystemBroadcast: SHELL.VXD\'s own');
+assert.equal(call(0x12), 0x7120, '_SHELL_UnhookSystemBroadcast: SHELL.VXD\'s own');
 console.log('vxdshadow: ok');

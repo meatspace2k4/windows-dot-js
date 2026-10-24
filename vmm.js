@@ -173,8 +173,8 @@ P.sysVM = function () {
 const SVC = {};   // (device << 16 | service) -> fn(p): register services read and write p.cpu; C services use arg(i)
 const svc = (dev, n, fn) => { if (SVC[dev << 16 | n]) throw new Error(`VxD service ${dev.toString(16)}:${n.toString(16)} defined twice`); SVC[dev << 16 | n] = fn; };
 // the services of a loaded VxD the VMM here answers in its place: SHELL's appy time (the host's slices once USER runs,
-// in place of SHELL's own server in MSGSRV32), its 16-bit DLL calls on it, and its system broadcasts
-const TAKEN = new Set([0x0d, 0x0e, 0x18, 0x10, 0x11, 0x12].map(n => 0x17 << 16 | n));
+// in place of SHELL's own server in MSGSRV32) and its 16-bit DLL calls on it
+const TAKEN = new Set([0x0d, 0x0e, 0x18].map(n => 0x17 << 16 | n));
 INTS[0x20] = function (next) {
   const d = this.r32(u32(next) - 4), dev = d >>> 16, n = d & 0x7fff, jmp = d & 0x8000, fn = SVC[dev << 16 | n];
   if (window.W95VXDTRACE) window.W95VXDTRACE(dev, n, this, u32(next) - 6);   // debugging: every VxDCall
@@ -1380,13 +1380,8 @@ svc(VWIN32, 0x1a, function () {
   const b = u32(this.cpu.ebx.value);
   this.trapped = `VWIN32_SysErrorBox: ${this.readA(this.r32(b + 12)) || ''}: ${this.readA(this.r32(b + 16)) || ''}`;
 });
-// ---- SHELL: SHELL_SYSMODAL_Message is the recompiled SHELL.VXD's (its blue screen when Windows cannot show the
-// message); _SHELL_BroadcastSystemMessage: no window gets it here
-svc(SHELL, 0x10, function () { return 0; });
-// _SHELL_HookSystemBroadcast(callback, ref, order): a handle; _SHELL_UnhookSystemBroadcast(handle). The callbacks are
-// kept for the broadcasts the system sends (SHELL_BroadcastSystemMessage's)
-svc(SHELL, 0x11, function (arg) { const h = this.alloc(8); (this.sysbHooks || (this.sysbHooks = new Map())).set(h, { fn: arg(0), ref: arg(1), order: arg(2) }); return h; });
-svc(SHELL, 0x12, function (arg) { if (this.sysbHooks) this.sysbHooks.delete(u32(arg(0))); });
+// ---- SHELL: SHELL_Message, SHELL_SYSMODAL_Message (its blue screen when Windows cannot show the message) and the
+// system broadcasts and their hooks are the recompiled SHELL.VXD's
 // ---- CONFIGMG at ring 0, the rest the network's VxDs use
 svc(CONFIGMG, 0x09, function (arg) { const dn = this.cmNode(arg(1)); if (!dn) return CR.INVALID_DEVNODE; this.w32(arg(0), dn.priv || 0); return CR.SUCCESS; });   // Get_Private_DWord(*v, dn, flags)
 svc(CONFIGMG, 0x0a, function (arg) { const dn = this.cmNode(arg(0)); if (!dn) return CR.INVALID_DEVNODE; dn.priv = u32(arg(1)); return CR.SUCCESS; });         // Set_Private_DWord(dn, v, flags)
