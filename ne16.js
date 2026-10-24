@@ -1254,15 +1254,22 @@ P.customEntry = function (w, h, slot = CUSTOM_SLOTS[0]) {
     this.customRecs = { tables: findWords(this.u8, b, n, [320, 200, 320, 240, 512, 384, 640, 400, 640, 480, 800, 600, 1024, 768]),
       gdi: new Map(CUSTOM_SLOTS.map(s => [s.i, findWords(this.u8, b, n, [0x400, 1, 208, 156, s.w, s.h])[0]])),
       pitch: findWords(this.u8, b, n, [320, 320, 512, 640, 640, 800, 1024, 1280, 640, 640, 1024, 1280, 1280, 1600, 2048].flatMap(l => [null, l]))[0] };
+    // (and the description of each depth's screen in its data segment, which the DIB engine draws by: width, height,
+    // bytes a line and bits a pixel, as dwords; TSENG.DRV: 1024x768 at 8 and 16 bits, 800x600 at 8, 16 and 24)
+    const r = this.customRecs;
+    r.desc = new Map(CUSTOM_SLOTS.map(s => [s.i, m.segs.filter(g => g.flags & 1).flatMap(g => [1, 2, 3, 4].flatMap(px =>
+      findWords(this.u8, g.base, g.len || 0, [s.w, 0, s.h, 0, s.w * px, 0, 8 * px, 0]).map(at => ({ at, px }))))]));
     // (the records as the driver has them, to put back before another entry stands for the custom size, or none does)
-    const r = this.customRecs, keep = (a, n) => [a, this.u8.slice(a, a + n)];
-    r.saved = [...r.tables.map(t => keep(t, 4 * 8)), ...[...r.gdi.values()].filter(g => g !== undefined).map(g => keep(g, 0x58)), ...(r.pitch !== undefined ? [keep(r.pitch, 32 * 4)] : [])];
+    const keep = (a, n) => [a, this.u8.slice(a, a + n)];
+    r.saved = [...r.tables.map(t => keep(t, 4 * 8)), ...[...r.gdi.values()].filter(g => g !== undefined).map(g => keep(g, 0x58)), ...(r.pitch !== undefined ? [keep(r.pitch, 32 * 4)] : []),
+      ...[...r.desc.values()].flat().map(x => keep(x.at, 12))];
   }
   const { tables, pitch } = this.customRecs, gdi = this.customRecs.gdi.get(slot.i);
   if (!tables.length || gdi === undefined) return false;   // (another display driver: nothing to do)
   this.customRestore();
   for (const t of tables) { this.w16(t + 4 * slot.i, w); this.w16(t + 4 * slot.i + 2, h); }
   if (pitch !== undefined) for (let px = 1; px <= 4; px++) this.w16(pitch + 32 * (px - 1) + 4 * slot.i + 2, (w * px + 7) & ~7);   // (a scan line the CRTC's offset register holds: 8-byte units)
+  for (const { at, px } of this.customRecs.desc.get(slot.i) || []) { this.w32(at, w); this.w32(at + 4, h); this.w32(at + 8, (w * px + 7) & ~7); }
   const X = Math.round(w * 254 / 640), Y = Math.round(h * 127 / 480);
   for (const [o, v] of [[8, w], [0xa, h], [0x34, w], [0x36, -h], [0x3c, w], [0x3e, -h], [0x44, X], [0x46, -X], [0x4c, Y], [0x4e, -Y], [0x54, Y], [0x56, -Y]]) this.w16(gdi + o, v & 0xffff);
   return true;
