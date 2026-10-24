@@ -739,6 +739,17 @@ class Machine {
       case 'netfs': { const b = self.W95NetFS.backend({ alive: true, proc: p }, args[0]); return b[args[1]](...(args[2] || [])); }
       case 'mode': { const r = this.setMode(args[0], args[1]); if (!r) this.wantMode = [args[0], args[1]]; return r; }   // (null: made once no thread holds USER, step())
       case 'probe': return this.probe();
+      // (offsets in a module, by name: EAX each time execution comes to one from another module, as a call into
+      // another DLL returns there; into the trace's log; no offsets ends it)
+      case 'watch': {
+        const [name, offs] = args, want = new Set(offs || []), log = this.traceLog || (this.traceLog = []);
+        if (!want.size) { p.runHook = null; return true; }
+        p.runHook = eip => {
+          const m = p.modules.find(x => x.name === name && eip >= x.base && eip < x.base + (x.size || 0));
+          if (m && want.has(eip - m.base)) log.push([Math.round(performance.now()), p.thread16 && p.thread16.pc ? p.thread16.pc.path : 'host', 'watch', `${name}+${(eip - m.base).toString(16)}`, `eax ${(p.reg('eax') >>> 0).toString(16)}`]);
+        };
+        return true;
+      }
       case 'trace': { if (args[0]) this.traceOn(args[0], args[1]); const l = this.traceLog || []; return l.splice(0); }   // (the calls traced so far; a thread regexp, and one for the import names, starts a trace)
       case 'kick': return;
       case 'exit': this.exited(args[0] || 0); return;
