@@ -13,3 +13,10 @@ mac/assets/
 __pycache__/
 .DS_Store
 .claude/settings.local.json
+
+# replay and history-rebuild runs
+tools/replay/runs/
+tools/replay/cache/
+tools/replay/browser/
+tools/history/R*/
+tools/history/*.pkl

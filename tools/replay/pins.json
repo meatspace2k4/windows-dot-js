@@ -1,0 +1,1512 @@
+[
+{
+"kind": "pin",
+"t": "2026-10-14T04:52:38.118Z",
+"rel": ".claude/launch.json",
+"from": "/Users/johusha/Win95-tmp-backup/pins/13370d9c-8fc9-49c5-91ec-17e7b0c29e2c__1d9a47abfe41f892@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T04:52:38.118Z",
+"rel": ".claude/launch.json",
+"from": "/Users/johusha/Win95-tmp-backup/pins/2305d7fe-a678-4e4f-a45c-3b4a26c91f1f__1d9a47abfe41f892@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T04:52:38.118Z",
+"rel": ".claude/launch.json",
+"from": "/Users/johusha/Win95-tmp-backup/pins/985053b8-357f-4344-938e-c165372a5214__1d9a47abfe41f892@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T04:52:38.118Z",
+"rel": ".claude/launch.json",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a0b916ef-6374-4f2c-98a5-a3db283a3d4d__1d9a47abfe41f892@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T04:52:38.118Z",
+"rel": ".claude/launch.json",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a9a557c2-6bc5-4990-8d3d-332462b487b9__1d9a47abfe41f892@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T04:52:38.118Z",
+"rel": ".claude/launch.json",
+"from": "/Users/johusha/Win95-tmp-backup/pins/b6425d4a-62b1-4159-9250-ed0f1dd4e7d2__1d9a47abfe41f892@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T04:52:38.118Z",
+"rel": ".claude/launch.json",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c289926e-e82e-4cb1-938a-de8763ed0f76__1d9a47abfe41f892@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T04:52:38.118Z",
+"rel": ".claude/launch.json",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c618fcab-dc64-4792-8999-01cb074cf3d8__1d9a47abfe41f892@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T04:52:38.118Z",
+"rel": ".claude/launch.json",
+"from": "/Users/johusha/Win95-tmp-backup/pins/cd7af6b4-dc1a-4498-ac51-0f293a4a9593__1d9a47abfe41f892@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T04:52:38.118Z",
+"rel": "index.html",
+"from": "/Users/johusha/Win95-tmp-backup/pins/13370d9c-8fc9-49c5-91ec-17e7b0c29e2c__c531ed25638331fe@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T04:52:38.118Z",
+"rel": "index.html",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c289926e-e82e-4cb1-938a-de8763ed0f76__c531ed25638331fe@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T04:52:38.118Z",
+"rel": "win95.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/13370d9c-8fc9-49c5-91ec-17e7b0c29e2c__4bc56b57f6d2fb47@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T04:52:38.118Z",
+"rel": "win95.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c289926e-e82e-4cb1-938a-de8763ed0f76__4bc56b57f6d2fb47@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T05:38:41.728Z",
+"rel": "fs.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/13370d9c-8fc9-49c5-91ec-17e7b0c29e2c__860da0fea3c74390@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T05:38:41.728Z",
+"rel": "fs.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/2305d7fe-a678-4e4f-a45c-3b4a26c91f1f__860da0fea3c74390@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T05:38:41.728Z",
+"rel": "fs.js",
+"from": "/Users/johusha/.claude/file-history/a9a557c2-6bc5-4990-8d3d-332462b487b9/860da0fea3c74390@v2",
+"missing": true
+},
+{
+"kind": "pin",
+"t": "2026-10-14T05:38:41.728Z",
+"rel": "fs.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c289926e-e82e-4cb1-938a-de8763ed0f76__860da0fea3c74390@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T05:38:41.728Z",
+"rel": "index.html",
+"from": "/Users/johusha/Win95-tmp-backup/pins/13370d9c-8fc9-49c5-91ec-17e7b0c29e2c__c531ed25638331fe@v3"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T05:38:41.728Z",
+"rel": "index.html",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c289926e-e82e-4cb1-938a-de8763ed0f76__c531ed25638331fe@v3"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T05:38:41.728Z",
+"rel": "tools/recomp.py",
+"from": "/Users/johusha/Win95-tmp-backup/pins/13370d9c-8fc9-49c5-91ec-17e7b0c29e2c__9f57280f4e175538@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T05:38:41.728Z",
+"rel": "tools/recomp.py",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c289926e-e82e-4cb1-938a-de8763ed0f76__9f57280f4e175538@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T05:38:41.728Z",
+"rel": "win32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/13370d9c-8fc9-49c5-91ec-17e7b0c29e2c__89848d338fe2a6ea@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T05:38:41.728Z",
+"rel": "win32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c289926e-e82e-4cb1-938a-de8763ed0f76__89848d338fe2a6ea@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T05:38:41.728Z",
+"rel": "win95.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/13370d9c-8fc9-49c5-91ec-17e7b0c29e2c__4bc56b57f6d2fb47@v3"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T05:38:41.728Z",
+"rel": "win95.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c289926e-e82e-4cb1-938a-de8763ed0f76__4bc56b57f6d2fb47@v3"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T06:23:25.581Z",
+"rel": "gl.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/13370d9c-8fc9-49c5-91ec-17e7b0c29e2c__966e6a7a3c838daf@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T06:23:25.581Z",
+"rel": "gl.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c289926e-e82e-4cb1-938a-de8763ed0f76__966e6a7a3c838daf@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T06:23:25.581Z",
+"rel": "index.html",
+"from": "/Users/johusha/Win95-tmp-backup/pins/13370d9c-8fc9-49c5-91ec-17e7b0c29e2c__c531ed25638331fe@v4"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T06:23:25.581Z",
+"rel": "index.html",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c289926e-e82e-4cb1-938a-de8763ed0f76__c531ed25638331fe@v4"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T06:23:25.582Z",
+"rel": "tools/recomp.py",
+"from": "/Users/johusha/Win95-tmp-backup/pins/13370d9c-8fc9-49c5-91ec-17e7b0c29e2c__9f57280f4e175538@v3"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T06:23:25.582Z",
+"rel": "tools/recomp.py",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c289926e-e82e-4cb1-938a-de8763ed0f76__9f57280f4e175538@v3"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T06:23:25.582Z",
+"rel": "win32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/13370d9c-8fc9-49c5-91ec-17e7b0c29e2c__89848d338fe2a6ea@v3"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T06:23:25.582Z",
+"rel": "win32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c289926e-e82e-4cb1-938a-de8763ed0f76__89848d338fe2a6ea@v3"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T06:23:25.582Z",
+"rel": "win95.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/13370d9c-8fc9-49c5-91ec-17e7b0c29e2c__4bc56b57f6d2fb47@v4"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T06:23:25.582Z",
+"rel": "win95.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c289926e-e82e-4cb1-938a-de8763ed0f76__4bc56b57f6d2fb47@v4"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T06:24:26.107Z",
+"rel": "win95.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c289926e-e82e-4cb1-938a-de8763ed0f76__4bc56b57f6d2fb47@v5"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T06:24:26.108Z",
+"rel": "win32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c289926e-e82e-4cb1-938a-de8763ed0f76__89848d338fe2a6ea@v4"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T09:38:50.818Z",
+"rel": "tools/build_system.py",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c289926e-e82e-4cb1-938a-de8763ed0f76__3788edbcc5557118@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T09:38:50.819Z",
+"rel": "ne16.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c289926e-e82e-4cb1-938a-de8763ed0f76__5bf8f4787beedd4e@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T09:38:50.819Z",
+"rel": "tools/recomp.py",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c289926e-e82e-4cb1-938a-de8763ed0f76__9f57280f4e175538@v4"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T09:38:50.819Z",
+"rel": "win32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c289926e-e82e-4cb1-938a-de8763ed0f76__89848d338fe2a6ea@v5"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T09:58:22.709Z",
+"rel": "win32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c289926e-e82e-4cb1-938a-de8763ed0f76__89848d338fe2a6ea@v6"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T09:58:22.710Z",
+"rel": "gl.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c289926e-e82e-4cb1-938a-de8763ed0f76__966e6a7a3c838daf@v3"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T09:58:22.710Z",
+"rel": "tools/recomp.py",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c289926e-e82e-4cb1-938a-de8763ed0f76__9f57280f4e175538@v5"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T09:58:22.710Z",
+"rel": "win95.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c289926e-e82e-4cb1-938a-de8763ed0f76__4bc56b57f6d2fb47@v6"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T09:58:22.711Z",
+"rel": "index.html",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c289926e-e82e-4cb1-938a-de8763ed0f76__c531ed25638331fe@v5"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T09:58:22.711Z",
+"rel": "ne16.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c289926e-e82e-4cb1-938a-de8763ed0f76__5bf8f4787beedd4e@v3"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T10:04:32.735Z",
+"rel": "gl.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c289926e-e82e-4cb1-938a-de8763ed0f76__966e6a7a3c838daf@v4"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T10:04:32.735Z",
+"rel": "win95.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c289926e-e82e-4cb1-938a-de8763ed0f76__4bc56b57f6d2fb47@v7"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T10:04:32.736Z",
+"rel": "win32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c289926e-e82e-4cb1-938a-de8763ed0f76__89848d338fe2a6ea@v7"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T10:05:43.961Z",
+"rel": "gl.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c289926e-e82e-4cb1-938a-de8763ed0f76__966e6a7a3c838daf@v5"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T10:05:43.961Z",
+"rel": "win32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c289926e-e82e-4cb1-938a-de8763ed0f76__89848d338fe2a6ea@v8"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T10:05:43.961Z",
+"rel": "win95.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c289926e-e82e-4cb1-938a-de8763ed0f76__4bc56b57f6d2fb47@v8"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T10:14:10.643Z",
+"rel": "win32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c289926e-e82e-4cb1-938a-de8763ed0f76__89848d338fe2a6ea@v9"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T10:21:55.651Z",
+"rel": "win32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c289926e-e82e-4cb1-938a-de8763ed0f76__89848d338fe2a6ea@v10"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T10:21:55.651Z",
+"rel": "win95.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c289926e-e82e-4cb1-938a-de8763ed0f76__4bc56b57f6d2fb47@v9"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T10:22:48.293Z",
+"rel": "win95.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c289926e-e82e-4cb1-938a-de8763ed0f76__4bc56b57f6d2fb47@v10"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T10:22:48.294Z",
+"rel": "win32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c289926e-e82e-4cb1-938a-de8763ed0f76__89848d338fe2a6ea@v11"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T10:25:04.236Z",
+"rel": "gl.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/13370d9c-8fc9-49c5-91ec-17e7b0c29e2c__966e6a7a3c838daf@v3"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T10:25:04.236Z",
+"rel": "gl.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/2305d7fe-a678-4e4f-a45c-3b4a26c91f1f__966e6a7a3c838daf@v3"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T10:25:04.236Z",
+"rel": "tools/recomp.py",
+"from": "/Users/johusha/Win95-tmp-backup/pins/13370d9c-8fc9-49c5-91ec-17e7b0c29e2c__9f57280f4e175538@v4"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T10:25:04.236Z",
+"rel": "tools/recomp.py",
+"from": "/Users/johusha/Win95-tmp-backup/pins/2305d7fe-a678-4e4f-a45c-3b4a26c91f1f__9f57280f4e175538@v4"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T10:25:04.236Z",
+"rel": "win95.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/13370d9c-8fc9-49c5-91ec-17e7b0c29e2c__4bc56b57f6d2fb47@v5"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T10:25:04.236Z",
+"rel": "win95.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/2305d7fe-a678-4e4f-a45c-3b4a26c91f1f__4bc56b57f6d2fb47@v5"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T10:25:04.237Z",
+"rel": "index.html",
+"from": "/Users/johusha/Win95-tmp-backup/pins/13370d9c-8fc9-49c5-91ec-17e7b0c29e2c__c531ed25638331fe@v5"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T10:25:04.237Z",
+"rel": "index.html",
+"from": "/Users/johusha/Win95-tmp-backup/pins/2305d7fe-a678-4e4f-a45c-3b4a26c91f1f__c531ed25638331fe@v5"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T10:25:04.237Z",
+"rel": "index.html",
+"from": "/Users/johusha/.claude/file-history/a9a557c2-6bc5-4990-8d3d-332462b487b9/c531ed25638331fe@v5",
+"missing": true
+},
+{
+"kind": "pin",
+"t": "2026-10-14T10:25:04.237Z",
+"rel": "win32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/13370d9c-8fc9-49c5-91ec-17e7b0c29e2c__89848d338fe2a6ea@v4"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T10:25:04.237Z",
+"rel": "win32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/2305d7fe-a678-4e4f-a45c-3b4a26c91f1f__89848d338fe2a6ea@v4"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T10:45:42.161Z",
+"rel": "win32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/13370d9c-8fc9-49c5-91ec-17e7b0c29e2c__89848d338fe2a6ea@v5"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T10:45:42.161Z",
+"rel": "win32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/2305d7fe-a678-4e4f-a45c-3b4a26c91f1f__89848d338fe2a6ea@v5"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T10:51:01.808Z",
+"rel": "tools/recomp.py",
+"from": "/Users/johusha/Win95-tmp-backup/pins/13370d9c-8fc9-49c5-91ec-17e7b0c29e2c__9f57280f4e175538@v5"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T10:51:01.808Z",
+"rel": "tools/recomp.py",
+"from": "/Users/johusha/Win95-tmp-backup/pins/2305d7fe-a678-4e4f-a45c-3b4a26c91f1f__9f57280f4e175538@v5"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T10:51:01.808Z",
+"rel": "win32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/13370d9c-8fc9-49c5-91ec-17e7b0c29e2c__89848d338fe2a6ea@v6"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T10:51:01.808Z",
+"rel": "win32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/2305d7fe-a678-4e4f-a45c-3b4a26c91f1f__89848d338fe2a6ea@v6"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T10:51:01.808Z",
+"rel": "win95.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/13370d9c-8fc9-49c5-91ec-17e7b0c29e2c__4bc56b57f6d2fb47@v6"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T10:51:01.808Z",
+"rel": "win95.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/2305d7fe-a678-4e4f-a45c-3b4a26c91f1f__4bc56b57f6d2fb47@v6"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T10:53:32.972Z",
+"rel": "gl.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/13370d9c-8fc9-49c5-91ec-17e7b0c29e2c__966e6a7a3c838daf@v4"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T10:53:32.972Z",
+"rel": "gl.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/2305d7fe-a678-4e4f-a45c-3b4a26c91f1f__966e6a7a3c838daf@v4"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T10:53:32.972Z",
+"rel": "win32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/13370d9c-8fc9-49c5-91ec-17e7b0c29e2c__89848d338fe2a6ea@v7"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T10:53:32.972Z",
+"rel": "win32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/2305d7fe-a678-4e4f-a45c-3b4a26c91f1f__89848d338fe2a6ea@v7"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T10:56:30.259Z",
+"rel": "win32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/13370d9c-8fc9-49c5-91ec-17e7b0c29e2c__89848d338fe2a6ea@v8"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T10:56:30.259Z",
+"rel": "win32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/2305d7fe-a678-4e4f-a45c-3b4a26c91f1f__89848d338fe2a6ea@v8"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T10:58:43.465Z",
+"rel": "gl.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/13370d9c-8fc9-49c5-91ec-17e7b0c29e2c__966e6a7a3c838daf@v5"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T10:58:43.465Z",
+"rel": "gl.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/2305d7fe-a678-4e4f-a45c-3b4a26c91f1f__966e6a7a3c838daf@v5"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T10:58:43.465Z",
+"rel": "gl.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a9a557c2-6bc5-4990-8d3d-332462b487b9__966e6a7a3c838daf@v5"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T10:58:43.465Z",
+"rel": "win32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/13370d9c-8fc9-49c5-91ec-17e7b0c29e2c__89848d338fe2a6ea@v9"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T10:58:43.465Z",
+"rel": "win32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/2305d7fe-a678-4e4f-a45c-3b4a26c91f1f__89848d338fe2a6ea@v9"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T10:58:43.465Z",
+"rel": "win32.js",
+"from": "/Users/johusha/.claude/file-history/a9a557c2-6bc5-4990-8d3d-332462b487b9/89848d338fe2a6ea@v9",
+"missing": true
+},
+{
+"kind": "pin",
+"t": "2026-10-14T10:58:43.466Z",
+"rel": "tools/recomp.py",
+"from": "/Users/johusha/Win95-tmp-backup/pins/13370d9c-8fc9-49c5-91ec-17e7b0c29e2c__9f57280f4e175538@v6"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T10:58:43.466Z",
+"rel": "tools/recomp.py",
+"from": "/Users/johusha/Win95-tmp-backup/pins/2305d7fe-a678-4e4f-a45c-3b4a26c91f1f__9f57280f4e175538@v6"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T10:58:43.466Z",
+"rel": "tools/recomp.py",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a9a557c2-6bc5-4990-8d3d-332462b487b9__9f57280f4e175538@v6"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T10:58:43.466Z",
+"rel": "win95.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/13370d9c-8fc9-49c5-91ec-17e7b0c29e2c__4bc56b57f6d2fb47@v7"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T10:58:43.466Z",
+"rel": "win95.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/2305d7fe-a678-4e4f-a45c-3b4a26c91f1f__4bc56b57f6d2fb47@v7"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T10:58:43.466Z",
+"rel": "win95.js",
+"from": "/Users/johusha/.claude/file-history/a9a557c2-6bc5-4990-8d3d-332462b487b9/4bc56b57f6d2fb47@v7",
+"missing": true
+},
+{
+"kind": "pin",
+"t": "2026-10-14T11:18:31.061Z",
+"rel": "index.html",
+"from": "/Users/johusha/.claude/file-history/a9a557c2-6bc5-4990-8d3d-332462b487b9/c531ed25638331fe@v6",
+"missing": true
+},
+{
+"kind": "pin",
+"t": "2026-10-14T11:22:03.970Z",
+"rel": "fs.js",
+"from": "/Users/johusha/.claude/file-history/a9a557c2-6bc5-4990-8d3d-332462b487b9/860da0fea3c74390@v3",
+"missing": true
+},
+{
+"kind": "pin",
+"t": "2026-10-14T11:22:03.970Z",
+"rel": "win32.js",
+"from": "/Users/johusha/.claude/file-history/a9a557c2-6bc5-4990-8d3d-332462b487b9/89848d338fe2a6ea@v10",
+"missing": true
+},
+{
+"kind": "pin",
+"t": "2026-10-14T11:22:03.970Z",
+"rel": "win95.js",
+"from": "/Users/johusha/.claude/file-history/a9a557c2-6bc5-4990-8d3d-332462b487b9/4bc56b57f6d2fb47@v8",
+"missing": true
+},
+{
+"kind": "pin",
+"t": "2026-10-14T11:24:24.036Z",
+"rel": "win95.js",
+"from": "/Users/johusha/.claude/file-history/a9a557c2-6bc5-4990-8d3d-332462b487b9/4bc56b57f6d2fb47@v9",
+"missing": true
+},
+{
+"kind": "pin",
+"t": "2026-10-14T11:30:20.758Z",
+"rel": "win95.js",
+"from": "/Users/johusha/.claude/file-history/a9a557c2-6bc5-4990-8d3d-332462b487b9/4bc56b57f6d2fb47@v10",
+"missing": true
+},
+{
+"kind": "pin",
+"t": "2026-10-14T11:30:20.759Z",
+"rel": "fs.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/985053b8-357f-4344-938e-c165372a5214__860da0fea3c74390@v4"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T11:30:20.759Z",
+"rel": "fs.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a0b916ef-6374-4f2c-98a5-a3db283a3d4d__860da0fea3c74390@v4"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T11:30:20.759Z",
+"rel": "fs.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a9a557c2-6bc5-4990-8d3d-332462b487b9__860da0fea3c74390@v4"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T11:30:20.759Z",
+"rel": "fs.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/b6425d4a-62b1-4159-9250-ed0f1dd4e7d2__860da0fea3c74390@v4"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T11:30:20.759Z",
+"rel": "fs.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c618fcab-dc64-4792-8999-01cb074cf3d8__860da0fea3c74390@v4"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T11:30:20.759Z",
+"rel": "fs.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/cd7af6b4-dc1a-4498-ac51-0f293a4a9593__860da0fea3c74390@v4"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T11:30:20.759Z",
+"rel": "win32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a9a557c2-6bc5-4990-8d3d-332462b487b9__89848d338fe2a6ea@v11"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T11:40:08.380Z",
+"rel": "SCRIPTING.md",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a9a557c2-6bc5-4990-8d3d-332462b487b9__d3552ff8c93ab5b3@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T11:40:08.380Z",
+"rel": "win95.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a9a557c2-6bc5-4990-8d3d-332462b487b9__4bc56b57f6d2fb47@v11"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T11:40:08.381Z",
+"rel": "host-web.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/985053b8-357f-4344-938e-c165372a5214__009cb9020d8f5f52@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T11:40:08.381Z",
+"rel": "host-web.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a0b916ef-6374-4f2c-98a5-a3db283a3d4d__009cb9020d8f5f52@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T11:40:08.381Z",
+"rel": "host-web.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a9a557c2-6bc5-4990-8d3d-332462b487b9__009cb9020d8f5f52@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T11:40:08.381Z",
+"rel": "host-web.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/b6425d4a-62b1-4159-9250-ed0f1dd4e7d2__009cb9020d8f5f52@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T11:40:08.381Z",
+"rel": "host-web.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c618fcab-dc64-4792-8999-01cb074cf3d8__009cb9020d8f5f52@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T11:40:08.381Z",
+"rel": "host-web.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/cd7af6b4-dc1a-4498-ac51-0f293a4a9593__009cb9020d8f5f52@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T11:40:08.381Z",
+"rel": "index.html",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a9a557c2-6bc5-4990-8d3d-332462b487b9__c531ed25638331fe@v7"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T11:40:08.381Z",
+"rel": "shell32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a9a557c2-6bc5-4990-8d3d-332462b487b9__2ab08d1c8e1d1f7c@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T11:42:38.681Z",
+"rel": "win95.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a9a557c2-6bc5-4990-8d3d-332462b487b9__4bc56b57f6d2fb47@v12"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T11:42:38.682Z",
+"rel": "SCRIPTING.md",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a9a557c2-6bc5-4990-8d3d-332462b487b9__d3552ff8c93ab5b3@v3"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T11:45:05.774Z",
+"rel": "SCRIPTING.md",
+"from": "/Users/johusha/Win95-tmp-backup/pins/985053b8-357f-4344-938e-c165372a5214__d3552ff8c93ab5b3@v4"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T11:45:05.774Z",
+"rel": "SCRIPTING.md",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a0b916ef-6374-4f2c-98a5-a3db283a3d4d__d3552ff8c93ab5b3@v4"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T11:45:05.774Z",
+"rel": "SCRIPTING.md",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a9a557c2-6bc5-4990-8d3d-332462b487b9__d3552ff8c93ab5b3@v4"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T11:45:05.774Z",
+"rel": "SCRIPTING.md",
+"from": "/Users/johusha/Win95-tmp-backup/pins/b6425d4a-62b1-4159-9250-ed0f1dd4e7d2__d3552ff8c93ab5b3@v4"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T11:45:05.774Z",
+"rel": "SCRIPTING.md",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c618fcab-dc64-4792-8999-01cb074cf3d8__d3552ff8c93ab5b3@v4"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T11:45:05.774Z",
+"rel": "SCRIPTING.md",
+"from": "/Users/johusha/Win95-tmp-backup/pins/cd7af6b4-dc1a-4498-ac51-0f293a4a9593__d3552ff8c93ab5b3@v4"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T11:45:05.775Z",
+"rel": "win95.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a9a557c2-6bc5-4990-8d3d-332462b487b9__4bc56b57f6d2fb47@v13"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T11:59:17.212Z",
+"rel": "bench/bench.mjs",
+"from": "/Users/johusha/Win95-tmp-backup/pins/985053b8-357f-4344-938e-c165372a5214__12b4de85c3ff5e9b@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T11:59:17.212Z",
+"rel": "bench/bench.mjs",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a0b916ef-6374-4f2c-98a5-a3db283a3d4d__12b4de85c3ff5e9b@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T11:59:17.212Z",
+"rel": "bench/bench.mjs",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a9a557c2-6bc5-4990-8d3d-332462b487b9__12b4de85c3ff5e9b@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T11:59:17.212Z",
+"rel": "bench/bench.mjs",
+"from": "/Users/johusha/Win95-tmp-backup/pins/b6425d4a-62b1-4159-9250-ed0f1dd4e7d2__12b4de85c3ff5e9b@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T11:59:17.212Z",
+"rel": "bench/bench.mjs",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c618fcab-dc64-4792-8999-01cb074cf3d8__12b4de85c3ff5e9b@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T11:59:17.212Z",
+"rel": "bench/bench.mjs",
+"from": "/Users/johusha/Win95-tmp-backup/pins/cd7af6b4-dc1a-4498-ac51-0f293a4a9593__12b4de85c3ff5e9b@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T11:59:17.212Z",
+"rel": "bench/runner.mjs",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a9a557c2-6bc5-4990-8d3d-332462b487b9__8522d92f1259642c@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T11:59:17.212Z",
+"rel": "bench/steps.mjs",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a9a557c2-6bc5-4990-8d3d-332462b487b9__f43b3785628e30a9@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T11:59:17.212Z",
+"rel": "gl.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/985053b8-357f-4344-938e-c165372a5214__966e6a7a3c838daf@v6"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T11:59:17.212Z",
+"rel": "gl.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a0b916ef-6374-4f2c-98a5-a3db283a3d4d__966e6a7a3c838daf@v6"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T11:59:17.212Z",
+"rel": "gl.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a9a557c2-6bc5-4990-8d3d-332462b487b9__966e6a7a3c838daf@v6"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T11:59:17.212Z",
+"rel": "gl.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/b6425d4a-62b1-4159-9250-ed0f1dd4e7d2__966e6a7a3c838daf@v6"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T11:59:17.212Z",
+"rel": "gl.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c618fcab-dc64-4792-8999-01cb074cf3d8__966e6a7a3c838daf@v6"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T11:59:17.212Z",
+"rel": "gl.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/cd7af6b4-dc1a-4498-ac51-0f293a4a9593__966e6a7a3c838daf@v6"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T11:59:17.212Z",
+"rel": "win32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a9a557c2-6bc5-4990-8d3d-332462b487b9__89848d338fe2a6ea@v12"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T11:59:17.212Z",
+"rel": "win95.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a9a557c2-6bc5-4990-8d3d-332462b487b9__4bc56b57f6d2fb47@v14"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T12:00:40.309Z",
+"rel": "bench/steps.mjs",
+"from": "/Users/johusha/Win95-tmp-backup/pins/985053b8-357f-4344-938e-c165372a5214__f43b3785628e30a9@v3"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T12:00:40.309Z",
+"rel": "bench/steps.mjs",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a0b916ef-6374-4f2c-98a5-a3db283a3d4d__f43b3785628e30a9@v3"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T12:00:40.309Z",
+"rel": "bench/steps.mjs",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a9a557c2-6bc5-4990-8d3d-332462b487b9__f43b3785628e30a9@v3"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T12:00:40.309Z",
+"rel": "bench/steps.mjs",
+"from": "/Users/johusha/Win95-tmp-backup/pins/b6425d4a-62b1-4159-9250-ed0f1dd4e7d2__f43b3785628e30a9@v3"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T12:00:40.309Z",
+"rel": "bench/steps.mjs",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c618fcab-dc64-4792-8999-01cb074cf3d8__f43b3785628e30a9@v3"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T12:00:40.309Z",
+"rel": "bench/steps.mjs",
+"from": "/Users/johusha/Win95-tmp-backup/pins/cd7af6b4-dc1a-4498-ac51-0f293a4a9593__f43b3785628e30a9@v3"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T12:05:51.929Z",
+"rel": "bench/gaps.mjs",
+"from": "/Users/johusha/Win95-tmp-backup/pins/985053b8-357f-4344-938e-c165372a5214__ab487f3056fbcc75@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T12:05:51.929Z",
+"rel": "bench/gaps.mjs",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a0b916ef-6374-4f2c-98a5-a3db283a3d4d__ab487f3056fbcc75@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T12:05:51.929Z",
+"rel": "bench/gaps.mjs",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a9a557c2-6bc5-4990-8d3d-332462b487b9__ab487f3056fbcc75@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T12:05:51.929Z",
+"rel": "bench/gaps.mjs",
+"from": "/Users/johusha/Win95-tmp-backup/pins/b6425d4a-62b1-4159-9250-ed0f1dd4e7d2__ab487f3056fbcc75@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T12:05:51.929Z",
+"rel": "bench/gaps.mjs",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c618fcab-dc64-4792-8999-01cb074cf3d8__ab487f3056fbcc75@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T12:05:51.929Z",
+"rel": "bench/gaps.mjs",
+"from": "/Users/johusha/Win95-tmp-backup/pins/cd7af6b4-dc1a-4498-ac51-0f293a4a9593__ab487f3056fbcc75@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T12:05:51.929Z",
+"rel": "win95.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a9a557c2-6bc5-4990-8d3d-332462b487b9__4bc56b57f6d2fb47@v15"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T12:05:51.930Z",
+"rel": "bench/runner.mjs",
+"from": "/Users/johusha/Win95-tmp-backup/pins/985053b8-357f-4344-938e-c165372a5214__8522d92f1259642c@v3"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T12:05:51.930Z",
+"rel": "bench/runner.mjs",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a0b916ef-6374-4f2c-98a5-a3db283a3d4d__8522d92f1259642c@v3"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T12:05:51.930Z",
+"rel": "bench/runner.mjs",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a9a557c2-6bc5-4990-8d3d-332462b487b9__8522d92f1259642c@v3"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T12:05:51.930Z",
+"rel": "bench/runner.mjs",
+"from": "/Users/johusha/Win95-tmp-backup/pins/b6425d4a-62b1-4159-9250-ed0f1dd4e7d2__8522d92f1259642c@v3"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T12:05:51.930Z",
+"rel": "bench/runner.mjs",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c618fcab-dc64-4792-8999-01cb074cf3d8__8522d92f1259642c@v3"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T12:05:51.930Z",
+"rel": "bench/runner.mjs",
+"from": "/Users/johusha/Win95-tmp-backup/pins/cd7af6b4-dc1a-4498-ac51-0f293a4a9593__8522d92f1259642c@v3"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T12:24:10.033Z",
+"rel": "bench/crawl.mjs",
+"from": "/Users/johusha/Win95-tmp-backup/pins/985053b8-357f-4344-938e-c165372a5214__408e7bc27c90a185@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T12:24:10.033Z",
+"rel": "bench/crawl.mjs",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a0b916ef-6374-4f2c-98a5-a3db283a3d4d__408e7bc27c90a185@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T12:24:10.033Z",
+"rel": "bench/crawl.mjs",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a9a557c2-6bc5-4990-8d3d-332462b487b9__408e7bc27c90a185@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T12:24:10.033Z",
+"rel": "bench/crawl.mjs",
+"from": "/Users/johusha/Win95-tmp-backup/pins/b6425d4a-62b1-4159-9250-ed0f1dd4e7d2__408e7bc27c90a185@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T12:24:10.033Z",
+"rel": "bench/crawl.mjs",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c618fcab-dc64-4792-8999-01cb074cf3d8__408e7bc27c90a185@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T12:24:10.033Z",
+"rel": "bench/crawl.mjs",
+"from": "/Users/johusha/Win95-tmp-backup/pins/cd7af6b4-dc1a-4498-ac51-0f293a4a9593__408e7bc27c90a185@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T12:24:10.033Z",
+"rel": "index.html",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a9a557c2-6bc5-4990-8d3d-332462b487b9__c531ed25638331fe@v8"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T12:24:10.034Z",
+"rel": "win32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a9a557c2-6bc5-4990-8d3d-332462b487b9__89848d338fe2a6ea@v13"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T12:24:10.034Z",
+"rel": "win95.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a9a557c2-6bc5-4990-8d3d-332462b487b9__4bc56b57f6d2fb47@v16"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T15:10:10.658Z",
+"rel": "win32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a9a557c2-6bc5-4990-8d3d-332462b487b9__89848d338fe2a6ea@v14"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T15:10:10.659Z",
+"rel": "dyn.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a9a557c2-6bc5-4990-8d3d-332462b487b9__c6a4d10c6380b11d@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T15:10:10.659Z",
+"rel": "index.html",
+"from": "/Users/johusha/Win95-tmp-backup/pins/985053b8-357f-4344-938e-c165372a5214__c531ed25638331fe@v9"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T15:10:10.659Z",
+"rel": "index.html",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a0b916ef-6374-4f2c-98a5-a3db283a3d4d__c531ed25638331fe@v9"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T15:10:10.659Z",
+"rel": "index.html",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a9a557c2-6bc5-4990-8d3d-332462b487b9__c531ed25638331fe@v9"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T15:10:10.659Z",
+"rel": "index.html",
+"from": "/Users/johusha/Win95-tmp-backup/pins/b6425d4a-62b1-4159-9250-ed0f1dd4e7d2__c531ed25638331fe@v9"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T15:10:10.659Z",
+"rel": "index.html",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c618fcab-dc64-4792-8999-01cb074cf3d8__c531ed25638331fe@v9"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T15:10:10.659Z",
+"rel": "index.html",
+"from": "/Users/johusha/Win95-tmp-backup/pins/cd7af6b4-dc1a-4498-ac51-0f293a4a9593__c531ed25638331fe@v9"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T15:10:10.659Z",
+"rel": "tools/recomp.py",
+"from": "/Users/johusha/Win95-tmp-backup/pins/985053b8-357f-4344-938e-c165372a5214__9f57280f4e175538@v7"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T15:10:10.659Z",
+"rel": "tools/recomp.py",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a0b916ef-6374-4f2c-98a5-a3db283a3d4d__9f57280f4e175538@v7"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T15:10:10.659Z",
+"rel": "tools/recomp.py",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a9a557c2-6bc5-4990-8d3d-332462b487b9__9f57280f4e175538@v7"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T15:10:10.659Z",
+"rel": "tools/recomp.py",
+"from": "/Users/johusha/Win95-tmp-backup/pins/b6425d4a-62b1-4159-9250-ed0f1dd4e7d2__9f57280f4e175538@v7"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T15:10:10.659Z",
+"rel": "tools/recomp.py",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c618fcab-dc64-4792-8999-01cb074cf3d8__9f57280f4e175538@v7"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T15:10:10.659Z",
+"rel": "tools/recomp.py",
+"from": "/Users/johusha/Win95-tmp-backup/pins/cd7af6b4-dc1a-4498-ac51-0f293a4a9593__9f57280f4e175538@v7"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T15:10:10.659Z",
+"rel": "win95.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/985053b8-357f-4344-938e-c165372a5214__4bc56b57f6d2fb47@v17"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T15:10:10.659Z",
+"rel": "win95.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a0b916ef-6374-4f2c-98a5-a3db283a3d4d__4bc56b57f6d2fb47@v17"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T15:10:10.659Z",
+"rel": "win95.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a9a557c2-6bc5-4990-8d3d-332462b487b9__4bc56b57f6d2fb47@v17"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T15:10:10.659Z",
+"rel": "win95.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/b6425d4a-62b1-4159-9250-ed0f1dd4e7d2__4bc56b57f6d2fb47@v17"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T15:10:10.659Z",
+"rel": "win95.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c618fcab-dc64-4792-8999-01cb074cf3d8__4bc56b57f6d2fb47@v17"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T16:23:41.404Z",
+"rel": "shell32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/985053b8-357f-4344-938e-c165372a5214__2ab08d1c8e1d1f7c@v3"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T16:23:41.404Z",
+"rel": "shell32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a0b916ef-6374-4f2c-98a5-a3db283a3d4d__2ab08d1c8e1d1f7c@v3"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T16:23:41.404Z",
+"rel": "shell32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a9a557c2-6bc5-4990-8d3d-332462b487b9__2ab08d1c8e1d1f7c@v3"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T16:23:41.404Z",
+"rel": "shell32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/b6425d4a-62b1-4159-9250-ed0f1dd4e7d2__2ab08d1c8e1d1f7c@v3"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T16:23:41.404Z",
+"rel": "shell32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c618fcab-dc64-4792-8999-01cb074cf3d8__2ab08d1c8e1d1f7c@v3"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T16:23:41.404Z",
+"rel": "shell32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/cd7af6b4-dc1a-4498-ac51-0f293a4a9593__2ab08d1c8e1d1f7c@v3"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T16:23:41.404Z",
+"rel": "win32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/985053b8-357f-4344-938e-c165372a5214__89848d338fe2a6ea@v15"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T16:23:41.404Z",
+"rel": "win32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a0b916ef-6374-4f2c-98a5-a3db283a3d4d__89848d338fe2a6ea@v15"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T16:23:41.404Z",
+"rel": "win32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a9a557c2-6bc5-4990-8d3d-332462b487b9__89848d338fe2a6ea@v15"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T16:23:41.404Z",
+"rel": "win32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/b6425d4a-62b1-4159-9250-ed0f1dd4e7d2__89848d338fe2a6ea@v15"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T16:23:41.404Z",
+"rel": "win32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c618fcab-dc64-4792-8999-01cb074cf3d8__89848d338fe2a6ea@v15"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T18:51:08.269Z",
+"rel": "dyn.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/985053b8-357f-4344-938e-c165372a5214__c6a4d10c6380b11d@v3"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T18:51:08.269Z",
+"rel": "dyn.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a0b916ef-6374-4f2c-98a5-a3db283a3d4d__c6a4d10c6380b11d@v3"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T18:51:08.269Z",
+"rel": "dyn.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a9a557c2-6bc5-4990-8d3d-332462b487b9__c6a4d10c6380b11d@v3"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T18:51:08.269Z",
+"rel": "dyn.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/b6425d4a-62b1-4159-9250-ed0f1dd4e7d2__c6a4d10c6380b11d@v3"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T18:51:08.269Z",
+"rel": "dyn.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c618fcab-dc64-4792-8999-01cb074cf3d8__c6a4d10c6380b11d@v3"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T18:51:08.269Z",
+"rel": "dyn.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/cd7af6b4-dc1a-4498-ac51-0f293a4a9593__c6a4d10c6380b11d@v3"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T19:09:14.086Z",
+"rel": "win32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/985053b8-357f-4344-938e-c165372a5214__89848d338fe2a6ea@v16"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T19:09:14.086Z",
+"rel": "win32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a0b916ef-6374-4f2c-98a5-a3db283a3d4d__89848d338fe2a6ea@v16"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T19:09:14.086Z",
+"rel": "win32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a9a557c2-6bc5-4990-8d3d-332462b487b9__89848d338fe2a6ea@v16"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T19:09:14.086Z",
+"rel": "win32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/b6425d4a-62b1-4159-9250-ed0f1dd4e7d2__89848d338fe2a6ea@v16"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T19:09:14.086Z",
+"rel": "win32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c618fcab-dc64-4792-8999-01cb074cf3d8__89848d338fe2a6ea@v16"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T19:12:40.099Z",
+"rel": "win95.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/985053b8-357f-4344-938e-c165372a5214__4bc56b57f6d2fb47@v18"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T19:20:29.823Z",
+"rel": "win95.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a0b916ef-6374-4f2c-98a5-a3db283a3d4d__4bc56b57f6d2fb47@v18"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T19:48:40.958Z",
+"rel": "win95.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/985053b8-357f-4344-938e-c165372a5214__4bc56b57f6d2fb47@v19"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T20:25:04.751Z",
+"rel": "win32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a9a557c2-6bc5-4990-8d3d-332462b487b9__89848d338fe2a6ea@v17"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T20:25:04.751Z",
+"rel": "win32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c618fcab-dc64-4792-8999-01cb074cf3d8__89848d338fe2a6ea@v17"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T20:25:04.751Z",
+"rel": "win95.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a9a557c2-6bc5-4990-8d3d-332462b487b9__4bc56b57f6d2fb47@v18"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T20:25:04.751Z",
+"rel": "win95.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c618fcab-dc64-4792-8999-01cb074cf3d8__4bc56b57f6d2fb47@v18"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T20:54:00.794Z",
+"rel": "win32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/985053b8-357f-4344-938e-c165372a5214__89848d338fe2a6ea@v17"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T21:21:17.945Z",
+"rel": "win95.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a9a557c2-6bc5-4990-8d3d-332462b487b9__4bc56b57f6d2fb47@v19"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T21:21:17.945Z",
+"rel": "win95.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c618fcab-dc64-4792-8999-01cb074cf3d8__4bc56b57f6d2fb47@v19"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T21:21:17.946Z",
+"rel": "win32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a9a557c2-6bc5-4990-8d3d-332462b487b9__89848d338fe2a6ea@v18"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T21:21:17.946Z",
+"rel": "win32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/c618fcab-dc64-4792-8999-01cb074cf3d8__89848d338fe2a6ea@v18"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T21:27:43.993Z",
+"rel": "win32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a9a557c2-6bc5-4990-8d3d-332462b487b9__89848d338fe2a6ea@v19"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T21:27:43.993Z",
+"rel": "win95.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a9a557c2-6bc5-4990-8d3d-332462b487b9__4bc56b57f6d2fb47@v20"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T21:41:32.446Z",
+"rel": "win32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/985053b8-357f-4344-938e-c165372a5214__89848d338fe2a6ea@v18"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T22:01:30.462Z",
+"rel": "win95.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a9a557c2-6bc5-4990-8d3d-332462b487b9__4bc56b57f6d2fb47@v21"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T22:01:30.462Z",
+"rel": "win95.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/cd7af6b4-dc1a-4498-ac51-0f293a4a9593__4bc56b57f6d2fb47@v21"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T22:01:30.463Z",
+"rel": "win32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a9a557c2-6bc5-4990-8d3d-332462b487b9__89848d338fe2a6ea@v20"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T22:01:30.463Z",
+"rel": "win32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/cd7af6b4-dc1a-4498-ac51-0f293a4a9593__89848d338fe2a6ea@v20"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T22:05:07.639Z",
+"rel": "win95.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/985053b8-357f-4344-938e-c165372a5214__4bc56b57f6d2fb47@v20"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T22:05:07.640Z",
+"rel": "win32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/985053b8-357f-4344-938e-c165372a5214__89848d338fe2a6ea@v19"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T22:47:44.910Z",
+"rel": "win95.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/985053b8-357f-4344-938e-c165372a5214__4bc56b57f6d2fb47@v21"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T22:57:01.272Z",
+"rel": "win32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/985053b8-357f-4344-938e-c165372a5214__89848d338fe2a6ea@v20"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T22:57:01.272Z",
+"rel": "win95.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/985053b8-357f-4344-938e-c165372a5214__4bc56b57f6d2fb47@v22"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T23:01:12.764Z",
+"rel": "win32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/985053b8-357f-4344-938e-c165372a5214__89848d338fe2a6ea@v21"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T23:17:04.014Z",
+"rel": "index.html",
+"from": "/Users/johusha/Win95-tmp-backup/pins/cd7af6b4-dc1a-4498-ac51-0f293a4a9593__c531ed25638331fe@v10"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T23:17:04.014Z",
+"rel": "sound.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/cd7af6b4-dc1a-4498-ac51-0f293a4a9593__6e5596757f7403f5@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T23:17:04.015Z",
+"rel": "win32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/cd7af6b4-dc1a-4498-ac51-0f293a4a9593__89848d338fe2a6ea@v21"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T23:17:04.015Z",
+"rel": "win95.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/cd7af6b4-dc1a-4498-ac51-0f293a4a9593__4bc56b57f6d2fb47@v22"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T23:32:25.437Z",
+"rel": "sound.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a9a557c2-6bc5-4990-8d3d-332462b487b9__6e5596757f7403f5@v2"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T23:32:25.437Z",
+"rel": "win95.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a9a557c2-6bc5-4990-8d3d-332462b487b9__4bc56b57f6d2fb47@v22"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T23:32:25.438Z",
+"rel": "index.html",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a9a557c2-6bc5-4990-8d3d-332462b487b9__c531ed25638331fe@v10"
+},
+{
+"kind": "pin",
+"t": "2026-10-14T23:32:25.439Z",
+"rel": "win32.js",
+"from": "/Users/johusha/Win95-tmp-backup/pins/a9a557c2-6bc5-4990-8d3d-332462b487b9__89848d338fe2a6ea@v21"
+},
+{
+"kind": "inject",
+"t": "2026-10-14T11:17:41.455Z",
+"rel": "icons/icon192.png",
+"commit": "bdef06f6b1a4b937fc9c9308e18c707cfa079a69"
+},
+{
+"kind": "inject",
+"t": "2026-10-14T11:17:41.455Z",
+"rel": "icons/icon512.png",
+"commit": "bdef06f6b1a4b937fc9c9308e18c707cfa079a69"
+},
+{
+"kind": "inject",
+"t": "2026-10-14T11:18:51.145Z",
+"rel": "electron/package-lock.json",
+"commit": "0fa0995b5456d0b4a4da4332245f9ef50d470eea"
+},
+{
+"kind": "inject",
+"t": "2026-10-14T11:54:53.588Z",
+"rel": "bench/replay-20261014-115627.mjs",
+"commit": "fe810b3e83cac40234f34c086ff5525ffa0a7525"
+},
+{
+"kind": "inject",
+"t": "2026-10-14T11:54:53.588Z",
+"rel": "bench/results/20261014-115627.json",
+"commit": "fe810b3e83cac40234f34c086ff5525ffa0a7525"
+}
+]
