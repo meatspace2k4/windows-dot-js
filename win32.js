@@ -2008,7 +2008,8 @@ def('USER32', 'CharNextA', 1, function (p) { return this.u8[p] ? p + 1 : p; });
 def('USER32', 'CharUpperA', 1, function (p) { if (p >>> 16) { this.writeA(p, this.readA(p).toUpperCase()); return p; } return String.fromCharCode(p).toUpperCase().charCodeAt(0); });
 def('USER32', 'wsprintfA', -1, function (buf, fmt) { return this.writeA(buf, wsprintf(this, this.readA(fmt), this.reg('esp') + 12)); });
 def('USER32', 'MessageBeep', 1, () => 1);
-def('USER32', 'MessageBoxA', 4, function (h, text, cap) { console.warn('[win32] MessageBox:', this.readA(cap), this.readA(text)); return 1; });
+// (this USER32 shows no box, so no answer is given: it stops, naming the box)
+def('USER32', 'MessageBoxA', 4, function (h, text, cap) { throw new GuestError(`MessageBoxA: ${this.readA(cap) || ''}: ${this.readA(text) || ''}`); });
 def('USER32', 'InflateRect', 3, function (p, dx, dy) { const r = readRect(this, p); writeRect(this, p, r.l - dx, r.t - dy, r.r + (dx | 0), r.b + (dy | 0)); return 1; });
 def('USER32', 'GetSysColor', 1, i => SYS_COLORS[i] ?? 0);
 def('USER32', 'SetSysColors', 3, () => 1);
