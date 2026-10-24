@@ -472,7 +472,8 @@ svc(CONFIGMG, 0x02, function (arg) {                                            
 svc(CONFIGMG, 0x0e, function (arg) { const dn = this.devnode(arg(0)); if (!dn) return CR.INVALID_DEVNODE; dn.handler = arg(1); dn.ref = arg(2); this.cmStart(dn); return CR.SUCCESS; });
 svc(CONFIGMG, 0x36, function (arg) {                                                                  // Get_DevNode_Status(*status, *problem, dn, flags)
   const dn = this.devnode(arg(2)); if (!dn) return CR.INVALID_DEVNODE;
-  this.w32(arg(0), 0x0a | (dn.started ? 8 : 0)); if (arg(1)) this.w32(arg(1), 0); return CR.SUCCESS;
+  // DN_STARTED | DN_DRIVER_LOADED, or DN_HAS_PROBLEM and its problem for one whose loader is missing or refused it
+  this.w32(arg(0), dn.problem ? 0x400 : 0x0a); if (arg(1)) this.w32(arg(1), dn.problem || 0); return CR.SUCCESS;
 });
 svc(CONFIGMG, 0x3d, function (arg) {                                                                  // Get_DevNode_Key(dn, subkey, buf, len, flags)
   const dn = this.devnode(arg(0)); if (!dn) return CR.INVALID_DEVNODE;
@@ -1526,9 +1527,10 @@ P.cmProcess = function (dn) {
   const sw = this.devSoftKey(dn), dl = sw && regStr(W.regGet(sw, 'DevLoader'));
   if (dl) {
     const v = dl.startsWith('*') ? [...(this.vxds || new Map()).values()].find(x => x.inited && x.name.toUpperCase() === dl.slice(1).toUpperCase()) : this.vxdLoad(dl);
-    if (!v) { console.warn(`[vxd] ${dn.id}: no device loader ${dl}`); return; }
+    // (no loader, or one that refuses it: the devnode's problem, as Device Manager shows it)
+    if (!v) { dn.problem = 8; return; }   // CM_PROB_DEVLOADER_NOT_FOUND
     const r = this.vxdControl(v, PNP_NEW_DEVNODE, { ebx: dn.handle, edx: DLVXD_LOAD_DEVLOADER });
-    if (r.eax && !dn.handler) { console.warn(`[vxd] ${dl} PNP_NEW_DEVNODE ${dn.id}: ${r.eax.toString(16)}`); return; }   // a CONFIGRET in EAX
+    if (r.eax && !dn.handler) { dn.problem = 2; return; }   // a CONFIGRET in EAX: CM_PROB_DEVLOADER_FAILED
   }
   this.cmStart(dn);
   if (dn.started && dn.enumerator) this.vxdCdecl(dn.enumerator, [CONFIG_ENUMERATE, 0, dn.handle, dn.handle, 0]);

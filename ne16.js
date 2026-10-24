@@ -1165,8 +1165,9 @@ vxdApi(0x0033, 'CONFIGMG', {
     this.w32(a, n); this.writeA(a + 4, regStr(W.regGet(idc, 'FriendlyName' + String(n).padStart(4, '0'))), 80); this.w32(a + 84, 0);
     return CR.SUCCESS;
   },
-  // Get_DevNode_Status(far *status, far *problem, dn, flags): started (DN_STARTED 8 | DN_DRIVER_LOADED 2 | DN_HAS_PROBLEM no)
-  0x36() { const arg = cmArgs(this), dn = this.cmNode(arg(2)); if (!dn) return CR.INVALID_DEVNODE; this.w32(this.lin(arg(0)), 0x0a | (dn.started ? 0 : 0)); if (arg(1)) this.w32(this.lin(arg(1)), 0); return CR.SUCCESS; },
+  // Get_DevNode_Status(far *status, far *problem, dn, flags): started (DN_STARTED 8 | DN_DRIVER_LOADED 2), or
+  // DN_HAS_PROBLEM and its problem for one whose loader is missing or refused it (vmm.js cmProcess)
+  0x36() { const arg = cmArgs(this), dn = this.cmNode(arg(2)); if (!dn) return CR.INVALID_DEVNODE; this.w32(this.lin(arg(0)), dn.problem ? 0x400 : 0x0a); if (arg(1)) this.w32(this.lin(arg(1)), dn.problem || 0); return CR.SUCCESS; },
   // Get_Alloc_Log_Conf(far CMCONFIG, dn, flags): the resources the devnode was given
   0x3b() { const arg = cmArgs(this), dn = this.devnode(arg(1)); if (!dn) return CR.INVALID_DEVNODE; return this.cmConfig(dn, this.lin(arg(0))); },
   // Get_DevNode_Key_Size(far *len, dn, far subkey, flags), Get_DevNode_Key(dn, far subkey, far buf, len, flags)
