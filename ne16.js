@@ -2957,6 +2957,14 @@ def16('KERNEL', 630, '', 'jmp', function () {                                 //
 def16('KERNEL', 340, 's', 'v', function () {});                                  // DiagOutput: boot-log text, kept only under a debugger
 def16('KERNEL', 480, '', 'v', function () {});                                   // _EnterWin16Lock: one thread runs here, so nothing to exclude
 def16('KERNEL', 481, '', 'v', function () {});                                   // _LeaveWin16Lock
+// GetpWin16Lock: a far pointer to the Win16Lock's SYSLEVEL, which DCIMAN's start-up keeps for its _EnterSysLevel and
+// _LeaveSysLevel around the display driver's DCI calls; entering and leaving it are as the Win16Lock's (480, 481)
+def16('KERNEL', 449, '', 'l', function () {
+  if (!this.win16LockSeg) { const a = this.alloc(0x40); this.u8.fill(0, a, a + 0x40); this.win16LockSeg = u32(this.allocSels(a, 0x40) << 16); }
+  return this.win16LockSeg;
+});
+def16('KERNEL', 439, 'l', 'v', function () {});                                  // _EnterSysLevel
+def16('KERNEL', 440, 'l', 'v', function () {});                                  // _LeaveSysLevel
 // KRNL386's bridges to Win32 events and threads (each a thunk into KERNEL32 in the real KERNEL). One thread runs
 // here: a wait finds an event signalled or times out at once, and the thread id is the one KERNEL32 reports.
 // a waitable object: an event, or a thread, which is signalled once it has ended (it stays signalled)
