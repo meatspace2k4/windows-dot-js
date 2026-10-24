@@ -904,8 +904,11 @@ function sehDispatch(p, code, eip, params, fault, flags = 0) {
   for (let i = 0; i < n; i++) p.w32(rec + 20 + 4 * i, params[i]);
   sehContext(p, ctx, eip, sp);
   p.reg('esp', rec - 0x40);
-  const tib = p.cpu.fs.value;
-  for (let f = p.r32(tib); f !== SEH_END && f; f = p.r32(f)) {
+  // a frame off the thread's stack (the TIB's top and limit; past the end of memory) ends the chain, as KERNEL32
+  // takes it: what the frames before it did not handle is not handled
+  const tib = p.cpu.fs.value, end = p.mem.buffer.byteLength, top = p.r32(tib + 4), limit = p.r32(tib + 8);
+  const onStack = f => f + 8 <= end && !(top > limit && (f < limit || f + 8 > top));
+  for (let f = p.r32(tib); f !== SEH_END && f && onStack(f); f = p.r32(f)) {
     const r = sehCall(p, p.r32(f + 4), [rec, f, ctx, 0], sp);
     if (r === 'escaped') return LAYOUT.SENTINEL;
     if (r === 0) {   // continue execution where the context says
