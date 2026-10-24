@@ -91,3 +91,58 @@ export function print(rows) {
   console.log(w.map(n => '-'.repeat(n)).join('  '));
   for (const r of rows) console.log(line(r));
 }
+
+// controls that change or destroy files, settings or the session: no automated driver presses them
+export const DESTRUCTIVE = /^(Shut Down\.\.\.|Delete|Empty Recycle Bin|Format\.\.\.|Rename|Cut|Paste( Shortcut)?|Undo.*|Restore|Remove.*|Clear|Save|Save As\.\.\.|Print|Sharing\.\.\.|Disconnect.*|Restart.*|Log Off.*)$/;
+
+// what went wrong while the page ran, as gaps.mjs and explore.mjs report it, on a connection of its own with the
+// __w95event binding registered: add(kind, detail) for each finding, onEvent(event) for every shell event
+export async function capture(c, add, onEvent = () => {}) {
+  c.onEvent = d => {
+    if (d.method === 'Runtime.exceptionThrown') add('exception', d.params.exceptionDetails.exception?.description?.split('\n').slice(0, 2).join(' ') || d.params.exceptionDetails.text);
+    else if (d.method === 'Runtime.consoleAPICalled' && (d.params.type === 'error' || d.params.type === 'warning'))
+      add('console.' + d.params.type, d.params.args.map(a => a.value ?? a.description ?? '').join(' ').split('\n')[0]);
+    else if (d.method === 'Runtime.bindingCalled' && d.params.name === '__w95event') {
+      const e = JSON.parse(d.params.payload);
+      onEvent(e);
+      if (e.type === 'key.unhandled') add('key unhandled', `${e.key} in ${e.target}`);
+      else if (e.type === 'menu.noop') add('menu item does nothing', e.label);
+      else if (e.type === 'button.noop') add('button does nothing', e.label);
+      else if (e.type === 'program.exit' && e.why) add('program failed', `${e.path}: ${e.why}`);
+      else if (e.type === 'window.open' && e.message && /error|warning/.test(e.message.type || '')) add(`${e.message.type} box`, `${e.title}: ${e.message.text.replace(/\s+/g, ' ')}`);
+    }
+  };
+  await c.call('Runtime.enable');
+  await c.call('Runtime.addBinding', { name: '__w95event' });
+}
+
+// a self-contained replay script: the steps (each run a function or the source of one), the runner's code without its
+// exports, and a recorded run as the baseline
+export function replaySource({ title, usage, prelude, steps, recorded, runnerSrc }) {
+  const runner = runnerSrc.replace(/^export /gm, '');
+  const st = steps.map(s => `  { name: ${JSON.stringify(s.name)}, about: ${JSON.stringify(s.about || '')},\n    run: ${typeof s.run === 'string' ? s.run : s.run.toString()} },`).join('\n');
+  return `#!/usr/bin/env node
+// ${title}
+//
+//   node ${usage} [endpoint]     default http://127.0.0.1:9334 (the app's control port)
+//
+// Runs the recorded steps against a running shell and prints each metric next to the value recorded here.
+// --record prints this run's results as JSON instead.
+
+const PRELUDE = ${JSON.stringify(prelude)};
+
+const STEPS = [
+${st}
+];
+
+const RECORDED = ${JSON.stringify(recorded, null, 2)};
+
+// ---- runner (bench/runner.mjs)
+${runner}
+// ---- replay
+const endpoint = process.argv.slice(2).find(a => !a.startsWith('--')) || 'http://127.0.0.1:9334';
+const now = await runAll(endpoint, PRELUDE, STEPS, m => process.stderr.write(m + '\\n'));
+if (process.argv.includes('--record')) console.log(JSON.stringify(now, null, 2));
+else { console.log(\`recorded \${RECORDED.at} on \${RECORDED.env.browser}; now \${now.at} on \${now.env.browser}\\n\`); print(table(now.results, RECORDED.results)); }
+`;
+}
