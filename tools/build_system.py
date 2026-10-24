@@ -52,8 +52,10 @@ NE = [('gdi.exe', 0x01C00000, 0x1007, 0x06A00000), ('dibeng.dll', 0x01E00000, 0x
       ('iconlib.dll', 0x01CD0000, 0x20C7, 0x07C20000),
       # Video for Windows (MOTOWN.INF's MCIAVI, WIN95_02.CAB): the MCI driver that plays .AVI files ([mci] avivideo),
       # the 16-bit video library it draws and decompresses through, and the display control interface that imports
-      ('dciman.dll', 0x01660000, 0x2157, 0x071A8000), ('msvideo.dll', 0x01630000, 0x20FF, 0x06E84000),
-      ('mciavi.drv', 0x01610000, 0x20D7, 0x06DB8000),
+      # (their images clear of SHELL32.DLL's, 01600000h-01662000h: at 01610000h and 01630000h MCIAVI and MSVIDEO lay
+      # inside it, and their code ran as SHELL32's)
+      ('dciman.dll', 0x01EA0000, 0x2157, 0x071A8000), ('msvideo.dll', 0x013C0000, 0x20FF, 0x06E84000),
+      ('mciavi.drv', 0x013A0000, 0x20D7, 0x06DB8000),
       # the system's first task, which Windows 95 starts as it boots (WIN95_12.CAB): USER's first-task start-up loads
       # the installable drivers (MMSYSTEM, the sound card's) for it, and it plays SystemStart and starts the shell
       ('msgsrv32.exe', 0x01570000, 0x1CEF, 0x06130000),
