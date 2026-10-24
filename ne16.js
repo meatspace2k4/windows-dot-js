@@ -3175,6 +3175,19 @@ P.pcThreadEnded = function (t) {
 P.endProcess = function (pc, code) {
   if (pc.exitCode !== null) return;
   pc.exitCode = code >>> 0;
+  // USER hears of its end as KERNEL32 tells it (SignalProc32: USIG_THREAD_EXIT 20h for each thread, USIG_PROCESS_EXIT
+  // 300h, USIG_PROCESS_DESTROY 400h): the windows and queues of its threads go there. A thread's end is signalled on
+  // that thread while it still is one (its stack and information block not yet freed), as KERNEL32 signals it from
+  // the exiting thread: USER's DestroyWindow goes on only for a window of the current thread's queue
+  const u = pc.started && pc.exe && this.ne && this.ne.get('USER'), sig = u && u.meta && this.neExport(u, 391), h = sig && this.hinst16(pc.exe.base);
+  const signal = (s, id) => this.user16(391, [['l', s], ['l', id], ['l', 3], ['w', h]]);
+  if (sig) try {
+    const by = this.thread16;
+    for (const t of (this.threadsById || new Map()).values()) if (t.pc === pc) {
+      if (t.state === 'done' && t !== by) { signal(0x20, t.id); continue; }   // (one that ended already: its queue is the one USER finds by its id)
+      this.thread16 = t; try { signal(0x20, t.id); } finally { this.thread16 = by; }
+    }
+  } catch (e) { console.error(e); }
   for (const t of (this.threadsById || new Map()).values()) if (t.pc === pc && t !== this.thread16 && t.state !== 'done') {
     t.state = 'done'; this.wakeWaiters(t); if (this.win16Held && this.win16Held.who === t) this.win16Held = null;
     if (t.flat && t.stackBase) { this.free(t.stackBase); this.free(t.tib); t.stackBase = t.tib = 0; }   // (its stack and thread information block go with it)
@@ -3189,19 +3202,7 @@ P.endProcess = function (pc, code) {
     try { destroy[1].call(this, w.hwnd); } catch (_) { /* process teardown continues */ }
   }
   if (this.w32DesktopSurface && this.w32DesktopSurface.pc === pc) this.w32DesktopSurface = null;
-  // USER hears of its end as KERNEL32 tells it (SignalProc32: USIG_THREAD_EXIT 20h for each thread, USIG_PROCESS_EXIT
-  // 300h, USIG_PROCESS_DESTROY 400h): the windows and queues of its threads go there
-  if (pc.started && pc.exe) {
-    const u = this.ne && this.ne.get('USER'), sig = u && u.meta && this.neExport(u, 391), h = this.hinst16(pc.exe.base);
-    if (sig) try {
-      const signal = (s, id) => this.user16(391, [['l', s], ['l', id], ['l', 3], ['w', h]]);
-      // (each thread's end on that thread, as KERNEL32 signals it from the exiting thread: USER destroys its windows
-      // there, and its DestroyWindow goes on only for a window of the current thread's queue)
-      const by = this.thread16;
-      for (const t of (this.threadsById || new Map()).values()) if (t.pc === pc) { this.thread16 = t; try { signal(0x20, t.id); } finally { this.thread16 = by; } }
-      signal(0x300, pc.pid); signal(0x400, pc.pid);
-    } catch (e) { console.error(e); }
-  }
+  if (sig) try { signal(0x300, pc.pid); signal(0x400, pc.pid); } catch (e) { console.error(e); }
   if (this.procs) this.procs.delete(pc.pid);
   this.wakeWaiters(pc);   // (the threads waiting on its process handle)
   const g = pc.exe && pc.exe.inst; if (g) { g.bufs.delete(pc); if (g.cur === pc) g.cur = null; }   // (its copy of a shared image's data goes)
