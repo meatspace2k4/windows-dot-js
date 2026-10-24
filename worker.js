@@ -156,7 +156,7 @@ class Machine {
       const r = p.wbufLin || (p.nativeWindows(), p.wbufLin);
       p.w16(r, 0); p.w16(r + 2, 0); p.w16(r + 4, Math.min(this.sw, this.shellW)); p.w16(r + 6, Math.min(this.sh, this.workH));
       p.user16(483, [['w', 47], ['w', 0], ['l', p.wbufSel << 16], ['w', 0]]);   // SPI_SETWORKAREA
-    } catch (e) { console.error(e); }
+    } catch (e) { if (!this.caught(e)) return; }
     // interrupts: the page's input as the machine reaches an instruction boundary (the budget's check), and while ring 0
     // waits in message mode
     p.inputPoll = () => this.poll();
@@ -373,6 +373,14 @@ class Machine {
     if (e instanceof W.HangError) { p.hung('host', e); p.depth = 0; return true; }
     console.error(e && e.stack ? e.stack : e); this.exited(-1, e.message); return false;
   }
+  /** a command from the page: the guest code it runs answers to the machine as a step's does (caught); the page is
+   *  answered with the error too */
+  runCmd(name, args) {
+    try {
+      const v = this.cmd(name, args);
+      return v && typeof v.then === 'function' ? v.catch(e => { this.caught(e); throw e; }) : v;
+    } catch (e) { this.caught(e); throw e; }
+  }
   kick() { if (this.alive && this.timer) { clearTimeout(this.timer); this.timer = setTimeout(() => this.step(), 0); } }
   /** VWIN32's blue screen for a fault at ring 0 (its text from the page), then the current application ends */
   fatal(f) {
@@ -387,9 +395,9 @@ class Machine {
   /** what the page draws: USER's windows, the screen's mode and palette, the cursor sprite, the text screen */
   frame() {
     const p = this.proc;
-    let nw; try { nw = p.nativeWindows(); } catch (e) { console.error(e && e.stack ? e.stack : e); this.exited(-1, e.message); return; }
+    let nw; try { nw = p.nativeWindows(); } catch (e) { this.caught(e); return; }
     const a = p.scanout(), sp = p.sprite ? p.sprite() : null;
-    let bg = 0; try { const c = p.user16(180, [['w', 1]]); bg = (c.dx & 0xff) << 16 | (c.ax & 0xffff); } catch (e) { console.error(e); }
+    let bg = 0; try { const c = p.user16(180, [['w', 1]]); bg = (c.dx & 0xff) << 16 | (c.ax & 0xffff); } catch (e) { if (!this.caught(e)) return; }
     for (const w of nw.list) { const pc = w.task && [...(p.procs || new Map()).values()].find(c => c.tdb === w.task); w.prog = pc ? basename(pc.path).toUpperCase() : null; }
     const pixels = [], win32 = [];
     const addWin32Windows = (proc, preview = false) => { for (const w of proc.windows.values()) {
@@ -470,7 +478,7 @@ class Machine {
     const named = mode === 'p' ? parseInt((/\/p\s*:?\s*(\d+)/i.exec(arg) || [])[1] || '0', 10) : 0;
     const native = !!isWin && (mode !== 'p' || (named > 0 && !!p.call(isWin, [named])));
     const real = fs.realpath(file), cmdline = native ? `"${real}" ${arg.trim() || '/s'}` : `"${real}" ${mode === 'p' ? '/p' : mode === 'c' ? '/c:0' : '/s'}`;
-    try {
+    {
       const mod = compiledModule || d.modSync || (d.modSync = new WebAssembly.Module(b64bytes(d.wasm)));
       const rebound = [];
       for (const dll of native ? [] : ['USER32', 'GDI32', 'OPENGL32', 'GLU32']) {
@@ -509,7 +517,7 @@ class Machine {
       pc.saverMode = mode; pc.nativeGdi = native;
       this.savers.set(run.pid, pc); this.kick();
       return pc;
-    } catch (e) { console.error(e); return 8; }
+    }
   }
   endSaver(pid, code = 0) {
     const run = this.savers.get(pid); if (!run) return false;
@@ -526,20 +534,18 @@ class Machine {
       const h = p.user16(142, [['w', 1]]).ax, b = h && p.gblock(h);
       const t = b ? p.readA(b.lin, b.size).replace(/\r\n/g, '\n') : null;
       p.user16(138); return t;
-    } catch (e) { console.error(e); return null; } finally { p.exitCode = code; }
+    } finally { p.exitCode = code; }
   }
   clipIn(text) {
     const p = this.proc; if (!p || p.depth) return;
-    try {
-      if (!p.user16(137, [['w', 0]]).ax) return;
-      p.user16(139);
-      if (text) {
-        const bytes = self.W95FS.encode(text.replace(/\r?\n/g, '\r\n')), h = p.globalAlloc16(0x2002, bytes.length + 1);
-        p.u8.set(bytes, p.gblock(h).lin); p.u8[p.gblock(h).lin + bytes.length] = 0;
-        p.user16(141, [['w', 1], ['w', h]]);
-      }
-      p.user16(138);
-    } catch (e) { console.error(e); }
+    if (!p.user16(137, [['w', 0]]).ax) return;
+    p.user16(139);
+    if (text) {
+      const bytes = self.W95FS.encode(text.replace(/\r?\n/g, '\r\n')), h = p.globalAlloc16(0x2002, bytes.length + 1);
+      p.u8.set(bytes, p.gblock(h).lin); p.u8[p.gblock(h).lin + bytes.length] = 0;
+      p.user16(141, [['w', 1], ['w', h]]);
+    }
+    p.user16(138);
   }
   /** MPR's export `name` called on a new thread of this process, with dword (or string) arguments; its result */
   /** a printer's window, as SHELL32's Printers folder opens it: its command block { 0 (open), the printer's name } in
@@ -597,7 +603,7 @@ class Machine {
     const loc = p.alloc(8), buf = p.alloc(264), pn = p.alloc(4), out = [];
     for (let c = 65; c <= 90; c++) {
       const L = String.fromCharCode(c); p.writeA(loc, L + ':'); p.w32(pn, 260);
-      try { if (p.call(fn, [loc, buf, pn]) === 0) out.push({ letter: L, unc: p.readA(buf) }); } catch (e) { console.error(e); }
+      if (p.call(fn, [loc, buf, pn]) === 0) out.push({ letter: L, unc: p.readA(buf) });
     }
     p.free(loc); p.free(buf); p.free(pn);
     return out;
@@ -703,7 +709,6 @@ class Machine {
     p.w32(dm + 104, 8); p.w32(dm + 108, slot.w); p.w32(dm + 112, slot.h);
     let r;
     try { r = p.user16(620, [['l', sel << 16], ['l', flags]]).dxax | 0; }   // ChangeDisplaySettings(lpDevMode, flags)
-    catch (e) { console.error(e); r = -1; }   // (DISP_CHANGE_FAILED: the machine stays as it is)
     finally { p.freeSels(sel); p.free(dm); }
     const a = p.scanout(); if (a.bpp) [this.sw, this.sh] = [a.w, a.h];
     return { r, sw: this.sw, sh: this.sh };
@@ -766,7 +771,7 @@ self.onmessage = e => {
   } else if (m.t === 'cmd') {
     const reply = (value, error) => { if (m.id) post({ t: 'reply', id: m.id, value: value === undefined ? null : value, error }); };
     let value, error = null;
-    try { value = machine && machine.alive ? machine.cmd(m.name, m.args || []) : undefined; } catch (err) { console.error(err); error = String(err.message || err); }
+    try { value = machine && machine.alive ? machine.runCmd(m.name, m.args || []) : undefined; } catch (err) { error = String(err.message || err); }
     if (value && typeof value.then === 'function') value.then(v => reply(v, null), err => reply(null, String(err && err.message || err)));
     else reply(value, error);
     if (machine) machine.kick();

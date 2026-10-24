@@ -7,12 +7,17 @@ import { readFileSync } from 'node:fs';
 const src = readFileSync(new URL('../win95.js', import.meta.url), 'utf8');
 const c0 = src.indexOf('class NativeApp {'), c1 = src.indexOf('\n}\n', c0);
 const cls = src.slice(c0, c1);
-const method = name => { const i = cls.indexOf(`\n  ${name}(`); assert.ok(i >= 0, name); return cls.slice(i + 1, cls.indexOf('\n  }\n', i) + 4); };
+const method = name => {
+  const i = cls.indexOf(`\n  ${name}(`); assert.ok(i >= 0, name);
+  const line = cls.slice(i + 1, cls.indexOf('\n', i + 1)).replace(/\/\/.*$/, '');   // (a method on one line)
+  if ((line.match(/\{/g) || []).length === (line.match(/\}/g) || []).length) return line;
+  return cls.slice(i + 1, cls.indexOf('\n  }\n', i) + 4);
+};
 class FaultError extends Error { constructor(fault) { super(fault.why); this.fault = fault; } }
 class HangError extends Error {}
 const SCAN = { KeyA: 0x1e, Delete: 0x53 };
 const M = new Function('W95Win32', 'SCAN', 'performance', 'setTimeout', 'clearTimeout', 'clamp', 'dirty', 'closeProgram', 'fatalException', 'faultDialog', 'emit', 'msgBox', 'basename',
-  `return class {\n${['step', 'caught', 'vkd', 'key', 'feedKeys', 'pointer', 'ring0', 'progName', 'kick'].map(method).join('\n')}\n}`);
+  `return class {\n${['step', 'caught', 'vkd', 'key', 'feedKeys', 'pointer', 'ring0', 'progName', 'kick', 'focus', 'minimize', 'close', 'clipIn', 'clipOut'].map(method).join('\n')}\n}`);
 const mk = proc => {
   const seen = [];
   const m = new (M({ FaultError, HangError }, SCAN, { now: () => 0 }, () => 1, () => {}, (v, a, b) => Math.max(a, Math.min(b, v)), () => {}, () => {},
@@ -33,4 +38,15 @@ const r0 = why => { throw new FaultError({ ring: 0, why }); };
 { const p = proc({ vkdKey: () => r0('page fault in VKD') }), [m, seen] = mk(p);
   m.vkd({ code: 'Delete', ctrlKey: true, altKey: true }, false); m.step();
   assert.deepEqual(seen, [['fatal', 'page fault in VKD']], 'a fault in VKD\'s hot key is the machine\'s fault'); }
+for (const [what, run] of [['restoring a window', m => m.focus({ hwnd: 0x40, min: true })], ['minimizing one', m => m.minimize({ hwnd: 0x40 })],
+  ['closing one', m => m.close({ hwnd: 0x40 })], ['taking the clipboard\'s text', m => m.clipOut()], ['handing it the clipboard\'s', m => { globalThis.textClip = ''; m.clipText = 'old'; m.clipIn(); }]]) {
+  const p = proc({ user16: () => r0(`page fault in USER ${what}`), asWindowTask: (h, fn) => fn() }), [m, seen] = mk(p);
+  run(m); m.step();
+  assert.deepEqual(seen, [['fatal', `page fault in USER ${what}`]], `a fault in USER ${what} is the machine's fault`);
+}
+{ // as the program ends (its clipboard's text kept): the program's fault dialog, the machine already going
+  const p = proc({ user16: () => { throw new FaultError({ ring: 3, why: 'page fault in USER at exit' }); } }), [m, seen] = mk(p);
+  m.alive = false; m.clipOut();
+  assert.deepEqual(seen, [['dialog', 'page fault in USER at exit']], 'a fault as it ends is its fault dialog');
+}
 console.log('pagefaults: ok');

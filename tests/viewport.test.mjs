@@ -25,8 +25,9 @@ const cut = (w, a, b, keep = true) => { const i = w.indexOf(a); assert.ok(i >= 0
   assert.equal(mem.getUint16(0x1000 + 36, true), 0x7c); assert.equal(mem.getUint32(0x1000 + 40, true), 0x180000);
   assert.deepEqual([104, 108, 112].map(o => mem.getUint32(0x1000 + o, true)), [8, 800, 600]);
   p.win16Held = { who: {} }; assert.equal(m.setMode(640, 480), null);
-  p.win16Held = null; p.user16 = () => { throw new Error('trapped'); }; const err = console.error; console.error = () => {};
-  try { assert.equal(m.setMode(640, 480).r, -1); } finally { console.error = err; }
+  // (an error in USER's ChangeDisplaySettings is the machine's to answer, its DEVMODE freed: not a mode refused)
+  p.win16Held = null; p.user16 = () => { throw new Error('trapped'); }; freed.length = 0;
+  assert.throws(() => m.setMode(640, 480), /trapped/); assert.deepEqual(freed, [0x77, 0x1000]);
 }
 
 // the page: the mode the viewport holds, asked for when it differs from the machine's; a busy machine asked again; the

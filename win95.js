@@ -3179,7 +3179,7 @@ class NativeApp {
       const p = this.proc, r = p.wbufLin || (p.nativeWindows(), p.wbufLin);
       p.w16(r, 0); p.w16(r + 2, 0); p.w16(r + 4, Math.min(this.sw, W)); p.w16(r + 6, Math.min(this.sh, workH()));
       p.user16(483, [['w', 47], ['w', 0], ['l', p.wbufSel << 16], ['w', 0]]);   // SPI_SETWORKAREA
-    } catch (e) { console.error(e); }
+    } catch (e) { if (!this.caught(e)) return false; }
     nativeApps.add(this);
     this.step(); return true;
   }
@@ -3234,6 +3234,7 @@ class NativeApp {
    *  behind it), anything else the machine's end. False once it has ended */
   caught(e) {
     const p = this.proc;
+    if (e instanceof W95Win32.FaultError && !this.alive) { p.depth = 0; faultDialog(this.progName(), e.fault); return false; }   // (as it ends: its own dialog, no step to take it)
     if (e instanceof W95Win32.FaultError) { p.depth = 0; p.faulted(e.fault); this.kick(); return true; }
     if (e instanceof W95Win32.HangError) { p.hung('host', e); p.depth = 0; return true; }
     console.error(e); this.exited(-1, e.message); return false;
@@ -3300,7 +3301,7 @@ class NativeApp {
       const h = p.user16(142, [['w', 1]]).ax, b = h && p.gblock(h);            // GetClipboardData(CF_TEXT)
       if (b) { const t = p.readA(b.lin, b.size).replace(/\r\n/g, '\n'); textClip = this.clipText = t; }
       p.user16(138);                                                                 // CloseClipboard
-    } catch (e) { console.error(e); } finally { p.exitCode = code; }
+    } catch (e) { p.exitCode = code; this.caught(e); } finally { p.exitCode = code; }
   }
   clipIn() {
     const p = this.proc; if (!p || p.depth || textClip === this.clipText) return;
@@ -3314,7 +3315,7 @@ class NativeApp {
       }
       p.user16(138);
       this.clipText = textClip;
-    } catch (e) { console.error(e); }
+    } catch (e) { this.caught(e); }
   }
   kick() { if (this.alive && this.timer) { clearTimeout(this.timer); this.timer = setTimeout(() => this.step(), 0); } }
   // the shell's windows for USER's: added, moved, retitled, closed, in USER's order, and USER's active window active
@@ -3359,7 +3360,7 @@ class NativeApp {
     // color, which is the shell's desktop showing through
     // (GetSysColor(COLOR_BACKGROUND), at the DAC's 6 bits a component as the palette above has it)
     const six = c => (c >> 2) << 2 | (c >> 2) >> 4;
-    let bg = 0; try { const c = this.proc.user16(180, [['w', 1]]); bg = 0xff000000 | six(c.dx & 0xff) << 16 | six(c.ax >> 8 & 0xff) << 8 | six(c.ax & 0xff); bg >>>= 0; } catch (e) { console.error(e); }
+    let bg = 0; try { const c = this.proc.user16(180, [['w', 1]]); bg = 0xff000000 | six(c.dx & 0xff) << 16 | six(c.ax >> 8 & 0xff) << 8 | six(c.ax & 0xff); bg >>>= 0; } catch (e) { if (!this.caught(e)) return; }
     const o = this.o32, wins = [...this.wins.values()].filter(w => !w.min && !w.transparent);   // (a WS_EX_TRANSPARENT window draws nothing: what is under it shows)
     for (let y = 0; y < sh; y++) {
       const s = y * pitch, r = y * sw, ins = wins.filter(w => y >= w.y && y < w.y + w.h);
@@ -3470,11 +3471,11 @@ class NativeApp {
         if (w.min) this.proc.user16(42, [['w', w.hwnd], ['w', 9]]);                                     // ShowWindow SW_RESTORE
         else { this.proc.user16(59, [['w', w.hwnd]]); this.proc.user16(45, [['w', w.hwnd]]); }          // SetActiveWindow, BringWindowToTop
       });
-    } catch (e) { console.error(e); }
+    } catch (e) { this.caught(e); }
     this.kick();
   }
-  minimize(w) { try { this.proc.user16(42, [['w', w.hwnd], ['w', 6]]); } catch (e) { console.error(e); } this.kick(); }   // SW_MINIMIZE
-  close(w) { try { this.proc.user16(110, [['w', w.hwnd], ['w', 0x10], ['w', 0], ['l', 0]]); } catch (e) { console.error(e); } this.kick(); }   // PostMessage WM_CLOSE
+  minimize(w) { try { this.proc.user16(42, [['w', w.hwnd], ['w', 6]]); } catch (e) { this.caught(e); } this.kick(); }   // SW_MINIMIZE
+  close(w) { try { this.proc.user16(110, [['w', w.hwnd], ['w', 0x10], ['w', 0], ['l', 0]]); } catch (e) { this.caught(e); } this.kick(); }   // PostMessage WM_CLOSE
   exited(code, why, own) {
     if (!this.alive) return;
     if (clipOwner === this) { if (!why && this.proc && !this.proc.trapped) this.clipOut(); clipOwner = null; }   // what it copied outlives it
