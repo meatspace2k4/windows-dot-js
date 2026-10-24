@@ -2984,6 +2984,7 @@ def16('KERNEL', 440, 'l', 'v', function () {});                                 
 // here: a wait finds an event signalled or times out at once, and the thread id is the one KERNEL32 reports.
 // a waitable object: an event, or a thread, which is signalled once it has ended (it stays signalled)
 const ev16 = (p, h) => {
+  if (u32(h) >= 0xfffffffe) return { manual: true, set: false };   // GetCurrentProcess, GetCurrentThread: the caller's own, never signalled to it
   const o = p.obj(h); if (!o) return null;
   if (o.kind === 'event') return o;
   if (o.kind === 'thread') { const t = p.threadsById && p.threadsById.get(o.id); return { manual: true, get set() { return !t || t.state === 'done'; }, set set(_) {} }; }
@@ -2991,6 +2992,14 @@ const ev16 = (p, h) => {
   // a semaphore: signalled while its count is above zero; a wait it satisfies takes one (MPR's request queue, which
   // MPREXE's server threads wait on through USER's MsgWaitForMultipleObjects)
   if (o.kind === 'semaphore') return { manual: false, get set() { return o.count > 0; }, set set(v) { if (!v && o.count > 0) o.count--; } };
+  // a mutex: signalled while no thread holds it (or one that ended holds it: abandoned), or for the thread that does;
+  // a wait it satisfies takes it for the waiting thread, once more each time (ReleaseMutex gives each back)
+  if (o.kind === 'mutex') {
+    const me = p.currentThreadId(), t = o.owner && p.threadsById && p.threadsById.get(o.owner);
+    const held = () => !!o.owner && o.owner !== me && !(t && t.state === 'done');
+    return { manual: false, get set() { return !held(); }, set set(v) { if (!v) { if (o.owner !== me) { o.owner = me; o.count = 0; } o.count++; } } };
+  }
+  if (o.kind === 'file' || o.kind === 'comm') return { manual: true, set: true };   // (no I/O is ever pending on one)
   return null;
 };
 /** set an event and make the threads blocked on it runnable (they check their wait again when they run) */
@@ -3858,7 +3867,20 @@ K('#96', 0, () => 1);
 K('#98', 1, function () { return this.reg('eax'); });
 K('GetProcessFlags', 1, () => 0);
 K('ConvertToGlobalHandle', 1, h => h);
-K('ReleaseMutex', 1, () => 1);   // one processor runs every thread here: a mutex has no one to keep out
+// a mutex is its owner's (ev16): created owned, by the creating thread; released by the owner only (ERROR_NOT_OWNER),
+// once for each time it took it, and free when the last is given back
+const createMutex = API.KERNEL32.CreateMutexA[1];
+K('CreateMutexA', 3, function (sa, owned, name) {
+  const h = createMutex.call(this, sa, owned, name), o = this.obj(h);
+  if (o && owned && this.lastError !== 183) { o.owner = this.currentThreadId(); o.count = 1; }   // (not an existing one)
+  return h;
+});
+K('ReleaseMutex', 1, function (h) {
+  const o = this.obj(h); if (!o || o.kind !== 'mutex') { this.lastError = 6; return 0; }
+  if (o.owner !== this.currentThreadId()) { this.lastError = 288; return 0; }
+  if (--o.count === 0) { o.owner = null; this.wakeWaiters(o); }
+  return 1;
+});
 // ---- Win32 waits, events and user APCs under the native USER, on the threads threads16 runs. A wait that cannot be
 // satisfied gives up the processor at the thread's top level and is made again when the thread resumes (until it is
 // satisfied or its time runs out); an alertable wait runs the thread's queued APCs first and returns
@@ -3869,6 +3891,7 @@ P.queueApc = function (tid, proc, data) { apcs(this, tid).push({ proc, data }); 
 const apcs = (p, tid) => { p.apcQ = p.apcQ || new Map(); if (!p.apcQ.has(tid)) p.apcQ.set(tid, []); return p.apcQ.get(tid); };
 function wait32(hs, all, ms, alertable) {
   const objs = hs.map(h => ev16(this, h)), top = native32(this) && this.atThreadTop();
+  if (objs.some(e => !e)) { this.lastError = 6; return 0xffffffff; }   // (a handle nothing can wait on: WAIT_FAILED)
   if (this.thread16) this.thread16.waitOn = { hs, all, ms };   // (for a probe)
   const t = this.thread16 || (this.mainWait = this.mainWait || {});
   if (alertable && native32(this)) {
