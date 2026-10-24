@@ -3908,7 +3908,7 @@ function syncNetDrives() {
   for (let c = 65; c <= 90; c++) {
     const L = String.fromCharCode(c), v = fs.vols.get(L); if (v && (!v.remote || v.host)) continue;
     let unc = null;
-    if (fn) { p.writeA(loc, L + ':'); p.w32(pn, 260); try { if (p.call(fn, [loc, buf, pn]) === 0) unc = p.readA(buf); } catch (e) { console.error(e); } }
+    if (fn) { p.writeA(loc, L + ':'); p.w32(pn, 260); try { if (p.call(fn, [loc, buf, pn]) === 0) unc = p.readA(buf); } catch (e) { if (!netApp.caught(e)) return; } }
     if (v && (!unc || v.unc.toUpperCase() !== unc.toUpperCase())) fs.unmount(L);
     if (unc && (!v || v.unc.toUpperCase() !== unc.toUpperCase())) fs.mount(L, { remote: W95NetFS.backend(netApp, L), unc, label: unc.split('\\').pop() || '' });
   }
@@ -4513,7 +4513,7 @@ function drawTextScreen(t) {
 // every task, the ones whose system does not answer marked; End Task ends the selected one, Shut Down opens Shut Down
 // Windows. KERNEL32 tells REBOOT the dialog is coming (2), up (3: Ctrl+Alt+Del again restarts) and gone (0)
 function closeProgram(app) {
-  const p = app.proc, state = n => { try { if (app.remote) app.cmd('closeState', [n]); else p.k32CloseState(n); } catch (e) { console.error(e); } };
+  const p = app.proc, state = n => { try { if (app.remote) app.cmd('closeState', [n]); else p.k32CloseState(n); } catch (e) { app.caught(e); } };   // (a machine in a worker answers for its own: runCmd)
   state(2);
   if (windows.some(w => w.title === 'Close Program')) { state(3); return; }
   const bu = dialogBaseUnits(), px = v => Math.round(v * bu.x / 4), py = v => Math.round(v * bu.y / 8);
@@ -4529,7 +4529,7 @@ function closeProgram(app) {
     const q = w.native && w.app && w.app.proc, u = q && q.byName && q.byName.get('USER32'), x = u && u.exports;
     const tid = x && x.get('GetWindowThreadProcessId'), hung = x && x.get('IsHungThread');
     if (!tid || !hung || q.depth || (q.r0Runs && q.r0Runs.length)) return false;
-    try { return !!q.call(hung, [q.call(tid, [w.hwnd, 0])]); } catch (e) { console.error(e); return false; }
+    try { return !!q.call(hung, [q.call(tid, [w.hwnd, 0])]); } catch (e) { w.app.caught(e); return false; }
   };
   const tasks = () => windows.filter(w => !w.noTask && w.title && w.title !== 'Close Program');
   let sel = 0, win;
@@ -5027,7 +5027,7 @@ function elements() {
     add('titlebar', w.title, w.capR, win);
     for (const b of w.buttons()) add('pushbutton', { close: 'Close', max: 'Maximize', restore: 'Restore', min: 'Minimize' }[b.id], b, { ...win, disabled: !!b.disabled });
     if (w.native && w.app.alive && w.app.proc && !w.app.proc.depth) {   // the controls USER keeps for a native window
-      let kids = []; try { kids = w.app.proc.nativeChildren(w.hwnd); } catch (e) { console.error(e); }
+      let kids = []; try { kids = w.app.proc.nativeChildren(w.hwnd); } catch (e) { w.app.caught(e); }
       out.push(...nativeEls(kids, win));
     }
     for (const b of w.barItems()) add('menuitem', label(b.m.label), b, { ...win, menubar: true, open: w.barOpen === w.barItems().indexOf(b) });
