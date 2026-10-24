@@ -3500,7 +3500,7 @@ W95Win32.regWatch(o => { for (const a of machineWorkers) a.worker.postMessage({ 
 class RemoteApp extends NativeApp {
   constructor(path, arg, o = {}) { super(path, arg, o); this.remote = true; this.calls = new Map(); this.nextCall = 1; this.stats = { slices: 0, guestMs: 0 }; this.held = null; }
   // what the shell's older code reads of a machine (its counters; a program that has not exited)
-  get proc() { return { stats: this.stats, exitCode: this.alive ? null : 0, trapped: null, depth: 0, win16Held: this.held, r0Runs: this.r0 ? [1] : [], txt: this.txt }; }
+  get proc() { return { stats: this.stats, exitCode: this.alive ? null : 0, trapped: null, depth: 0, win16Held: this.held, r0Runs: this.r0 ? [1] : [], txt: this.txt, nativeChildren: h => this.children(h) }; }
   start(bytes, prog) {
     [this.sw, this.sh] = this.system ? bootSize() : nativeMode(); if (this.system) bootMode(this.sw, this.sh);
     this.ring = W95Bridge.newRing(); this.rpcSab = new SharedArrayBuffer(16 + W95Bridge.RPC_BYTES);
@@ -3539,6 +3539,16 @@ class RemoteApp extends NativeApp {
     this.d32 = new Uint32Array(this.img.data.buffer); this.blank = false;
     if (this.system) fitWindow(sw, sh);
     resize();
+  }
+  /** the controls USER keeps for a native window, as the machine last reported them (none before its first answer);
+   *  each look asks again, one question at a time per window */
+  children(hwnd) {
+    if (!this.kids) { this.kids = new Map(); this.kidsAsked = new Set(); }
+    if (!this.kidsAsked.has(hwnd)) {
+      this.kidsAsked.add(hwnd);
+      this.cmd('children', [hwnd]).then(r => { this.kidsAsked.delete(hwnd); if (r) this.kids.set(hwnd, r); else this.kids.delete(hwnd); });
+    }
+    return this.kids.get(hwnd) || [];
   }
   /** a request to the machine; resolves to its answer */
   cmd(name, args = []) {
