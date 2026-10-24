@@ -4984,10 +4984,29 @@ function pressKey(spec) {
 // pixels, state and value, front-most last. Geometry is current as of a fresh redraw.
 const ROLE_W32 = { push: 'pushbutton', check: 'checkbutton', radio: 'radiobutton', group: 'grouping', static: 'text', edit: 'text-edit',
   combo: 'combobox', list: 'list', slider: 'slider', updown: 'spinbutton' };
+const label = s => amp(s || '')[0];
+/** a native window's controls (USER's window tree, as the machine reports it) as elements; a tab control's tabs each
+ *  as a pushbutton. Explorer's tray (Shell_TrayWnd: its task switcher among them) is the Taskbar, as the page's own
+ *  taskbar is named when that one is drawn: its Start button, its task buttons, its clock */
+function nativeEls(kids, win) {
+  const out = [], add = (role, name, r, o = {}) => out.push({ role, name: name ?? '', x: r.x, y: r.y, w: r.w, h: r.h, ...o });
+  if (kids.some(c => c.cls === 'MSTaskSwWClass')) win = { ...win, window: 'Taskbar' };
+  for (const c of kids) {
+    const bs = c.style & 0x0f, k = c.cls.toLowerCase();
+    if (k === 'traynotifywnd' || k === 'mstaskswwclass') continue;   // (holders of the clock and the tabs, listed for themselves)
+    if (k === 'trayclockwclass') { add('clock', c.text, c, win); continue; }
+    if (k === 'systabcontrol32' && c.items) { for (const t of c.items) add('pushbutton', label(t.text), t, { ...win, pressed: !!t.selected }); continue; }
+    const role = k === 'button' ? (bs === 7 ? 'grouping' : [2, 3, 5, 6].includes(bs) ? 'checkbutton' : [4, 9].includes(bs) ? 'radiobutton' : 'pushbutton')
+      : k === 'edit' ? 'text-edit' : k === 'static' ? 'text' : k === 'combobox' ? 'combobox' : k === 'listbox' ? 'list'
+      : k === 'scrollbar' ? 'scrollbar' : /listview/i.test(k) ? 'list' : /toolbar/i.test(k) ? 'toolbar' : 'client';
+    add(role, label(c.text), c, { ...win, cls: c.cls, id: c.id, hwnd: c.hwnd, disabled: !c.enabled, focused: c.focused,
+      ...(c.checked !== undefined ? { checked: !!c.checked } : {}), ...(role === 'text-edit' || role === 'combobox' ? { value: c.text } : {}) });
+  }
+  return out;
+}
 function elements() {
   render();
   const out = [], add = (role, name, r, o = {}) => out.push({ role, name: name ?? '', x: r.x, y: r.y, w: r.w, h: r.h, ...o });
-  const label = s => amp(s || '')[0];
   const cell = (c, o) => add('listitem', c.it.label, c.small ? { x: c.ix, y: c.iy, w: c.lx - c.ix + c.lw + 2, h: 16 }
     : { x: Math.min(c.ix, c.lx), y: c.iy, w: Math.max(32, c.lw), h: c.ly + c.lines.length * 13 - c.iy }, o);
   for (const c of desk.cells) cell(c, { window: 'Desktop', selected: desk.selKey === c.it.key });
@@ -4999,14 +5018,7 @@ function elements() {
     for (const b of w.buttons()) add('pushbutton', { close: 'Close', max: 'Maximize', restore: 'Restore', min: 'Minimize' }[b.id], b, { ...win, disabled: !!b.disabled });
     if (w.native && w.app.alive && w.app.proc && !w.app.proc.depth) {   // the controls USER keeps for a native window
       let kids = []; try { kids = w.app.proc.nativeChildren(w.hwnd); } catch (e) { console.error(e); }
-      for (const c of kids) {
-        const bs = c.style & 0x0f, k = c.cls.toLowerCase();
-        const role = k === 'button' ? (bs === 7 ? 'grouping' : [2, 3, 5, 6].includes(bs) ? 'checkbutton' : [4, 9].includes(bs) ? 'radiobutton' : 'pushbutton')
-          : k === 'edit' ? 'text-edit' : k === 'static' ? 'text' : k === 'combobox' ? 'combobox' : k === 'listbox' ? 'list'
-          : k === 'scrollbar' ? 'scrollbar' : /listview/i.test(k) ? 'list' : /toolbar/i.test(k) ? 'toolbar' : 'client';
-        add(role, label(c.text), c, { ...win, cls: c.cls, id: c.id, hwnd: c.hwnd, disabled: !c.enabled, focused: c.focused,
-          ...(c.checked !== undefined ? { checked: !!c.checked } : {}), ...(role === 'text-edit' || role === 'combobox' ? { value: c.text } : {}) });
-      }
+      out.push(...nativeEls(kids, win));
     }
     for (const b of w.barItems()) add('menuitem', label(b.m.label), b, { ...win, menubar: true, open: w.barOpen === w.barItems().indexOf(b) });
     const body = w.body;
@@ -5049,21 +5061,26 @@ function elements() {
       }
     }
   }
-  const L = taskLayout();
-  add('pushbutton', 'Start', L.start, { window: 'Taskbar', pressed: !!(menuSrc && menuSrc.kind === 'start') });
-  for (const b of L.btns) add('pushbutton', b.t.title, b, { window: 'Taskbar', pressed: b.t === active && !b.t.min });
-  for (const i of L.icons) add('icon', i.t.tip, i, { window: 'Taskbar' });
-  if (tbar.clock) add('clock', clockStr(), L.tray, { window: 'Taskbar' });
+  // the page's own taskbar, while it is the one drawn (once Explorer is the shell, its tray is: a native window above)
+  let bar = null;
+  if (!monApp()) {
+    const L = taskLayout();
+    add('pushbutton', 'Start', L.start, { window: 'Taskbar', pressed: !!(menuSrc && menuSrc.kind === 'start') });
+    for (const b of L.btns) add('pushbutton', b.t.title, b, { window: 'Taskbar', pressed: b.t === active && !b.t.min });
+    for (const i of L.icons) add('icon', i.t.tip, i, { window: 'Taskbar' });
+    if (tbar.clock) add('clock', clockStr(), L.tray, { window: 'Taskbar' });
+    bar = { x: 0, y: L.y, w: W, h: TB };
+  }
   menus.forEach((m, d) => m.items.forEach((it, i) => {
     const r = m.rows[i]; if (it.sep) return;
     add('menuitem', label(it.label), { x: m.x + 3, y: m.y + r.y, w: m.w - 6, h: r.h }, { window: 'Menu', depth: d, disabled: !!it.disabled, submenu: !!it.sub, hot: m.hover === i, checked: !!it.check });
   }));
   // covered: a click at its centre would land on something drawn over it (a later window, the taskbar, a menu)
-  const bar = { x: 0, y: L.y, w: W, h: TB }, above = [];
+  const above = [];
   for (let i = out.length - 1; i >= 0; i--) {
     const e = out[i], cx = e.x + (e.w >> 1), cy = e.y + (e.h >> 1);
     if (e.window === 'Menu') { above.push(e); continue; }
-    e.covered = above.some(a => inR(a, cx, cy)) || (e.window !== 'Taskbar' && inR(bar, cx, cy));
+    e.covered = above.some(a => inR(a, cx, cy)) || (!!bar && e.window !== 'Taskbar' && inR(bar, cx, cy));
     if (e.role === 'window') above.push(e);
   }
   return out;

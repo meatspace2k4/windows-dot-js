@@ -878,10 +878,33 @@ P.nativeChildren = function (parent) {
       } else { const tl = u(107, [['w', h], ['w', 0x0d], ['w', 160], ['l', buf + 16]]); text = tl ? this.readA(a + 16, tl) : ''; }
       const c = { hwnd: h, parent: p, x, y, w, h: hh, cls, text, id: u(277, [['w', h]]), style, enabled: !!u(35, [['w', h]]), focused: h === focus, depth };
       if (/^button$/i.test(cls) && [2, 3, 4, 5, 6, 9].includes(style & 0x0f)) c.checked = u(111, [['w', h], ['w', 0x400], ['w', 0], ['l', 0]]);
+      if (/^SysTabControl32$/i.test(cls)) c.items = this.tabItems(h, x, y);
       out.push(c); walk(h, depth + 1);
     }
   };
   walk(parent, 0);
+  return out;
+};
+/** a tab control's tabs (COMCTL32's, in a 32-bit program: Explorer's task switcher), each its rectangle on screen (the
+ *  control at x, y), its text and whether it is the selected one, from the control's own messages with flat buffers
+ *  (a message past WM_USER goes to the 32-bit window with lParam as it is). A tab without text (Explorer's task
+ *  buttons draw themselves) is named by the window its lParam holds */
+P.tabItems = function (h, x, y) {
+  const a = this.wbufLin, buf = u32(this.wbufSel << 16), send = (m, wp, lp) => this.user16(111, [['w', h], ['w', m], ['w', wp], ['l', lp]]).dxax | 0;
+  const n = Math.min(send(0x1304, 0, 0), 64), sel = send(0x130b, 0, 0), out = [];   // TCM_GETITEMCOUNT, TCM_GETCURSEL
+  const rc = a + 0x100, it = a + 0x110, txt = a + 0x140;
+  for (let i = 0; i < n; i++) {
+    if (!send(0x130a, i, rc)) continue;   // TCM_GETITEMRECT
+    const s16 = o => (this.r16(rc + o) << 16) >> 16, l = s16(0), t = s16(4);
+    this.u8.fill(0, it, it + 28); this.w32(it, 1 | 8); this.w32(it + 12, txt); this.w32(it + 16, 64); this.u8[txt] = 0;   // TCIF_TEXT | TCIF_PARAM
+    send(0x1305, i, it);   // TCM_GETITEMA
+    let text = this.readA(txt, 64);
+    const wnd = this.r32(it + 24) & 0xffff;
+    if (!text && wnd && this.user16(47, [['w', wnd]]).ax) {   // IsWindow: GetWindowText of the window the tab stands for
+      const tl = this.user16(36, [['w', wnd], ['l', buf + 0x40], ['w', 160]]).ax; text = tl ? this.readA(a + 0x40, tl) : '';
+    }
+    out.push({ x: x + l, y: y + t, w: s16(8) - l, h: s16(12) - t, text, selected: i === sel });
+  }
   return out;
 };
 /** a key into USER's keybd_event (USER.289), as KEYBOARD.DRV reports one: AL = virtual key, AH = 80h on release,
