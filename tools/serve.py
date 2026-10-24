@@ -5,7 +5,10 @@ sectors at a time), with cdrom.iso the CD image given by --iso.
 """
 import argparse, base64, http.server, json, os, re, shutil, socket
 
-ap = argparse.ArgumentParser(); ap.add_argument('port', type=int); ap.add_argument('--iso'); ap.add_argument('--host', default='127.0.0.1'); a = ap.parse_args()
+ap = argparse.ArgumentParser(); ap.add_argument('port', type=int); ap.add_argument('--iso'); ap.add_argument('--host', default='127.0.0.1')
+# HTTPS with this certificate and key: a page from another computer is a secure context only over HTTPS, and only a
+# secure context has the shared memory the machines run on (SharedArrayBuffer) and the sound's AudioWorklet
+ap.add_argument('--cert'); ap.add_argument('--key'); a = ap.parse_args()
 root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # the Mac's folders the LAN's other computer serves (lanhost.js), as the app's shares.js serves them: the home folder as
@@ -103,4 +106,8 @@ class H(http.server.SimpleHTTPRequestHandler):
 
 class S(http.server.ThreadingHTTPServer): request_queue_size = 128   # (a cold load asks for every script at once)
 srv = S((a.host, a.port), H)
+if a.cert:
+    import ssl
+    tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER); tls.load_cert_chain(a.cert, a.key)
+    srv.socket = tls.wrap_socket(srv.socket, server_side=True)
 srv.serve_forever()
