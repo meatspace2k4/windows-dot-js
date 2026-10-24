@@ -99,7 +99,9 @@ P.r0LowSet = function () {
 P.r0Step = function () {
   const runs = this.r0Runs || [];
   if (!runs.length) return false;
-  if (this.vxdEvents && this.vxdEvents.length) {
+  // (a run whose time ran out is ring-0 code in progress: it goes on first, as nothing interrupts ring 0 with more of
+  // it; events start once every stopped run is one that waits)
+  if (this.vxdEvents && this.vxdEvents.length && runs.every(s => s.wait)) {
     const e = this.vxdEvents.shift();
     this.r0Start(e.fn, { ebx: this.sysVM(), edx: e.ref, ebp: this.vmClientIdle(), esi: e.handle || 0 });
     return !!(this.r0Runs && this.r0Runs.length);
@@ -524,6 +526,7 @@ P.vxdRunEvents = function () {
   if (this.depth) return;
   if (this.kernelApcs && this.kernelApcs.length) { const k = this.kernelApcs; this.kernelApcs = []; for (const a of k) this.vxdCdecl(a.fn, [a.data]); }
   if (!this.vxdEvents || !this.vxdEvents.length) return;
+  if ((this.r0Runs || []).some(s => !s.wait)) return;   // (ring-0 code in progress, its time out: it goes on first, r0Step)
   const q = this.vxdEvents; this.vxdEvents = [];
   for (const e of q) this.vxdCall(e.fn, { ebx: this.sysVM(), edx: e.ref, ebp: this.vmClientIdle() });
 };
