@@ -301,7 +301,9 @@ class Machine {
         const s = p.r32(p.reg('esp') + 8); return s > 0x10000 && s < p.u8.length ? p.readA(s) || '' : String(s);
       } catch (_) { return ''; }
     };
-    self.W95TRACE = t => { const th = name(); if (log.length < 20000 && want.test(th) && (!only || only.test(t.dll + '!' + t.nm))) log.push([Math.round(performance.now() - t0), th, t.dll + '!' + t.nm, arg32(t)]); };
+    // (and where the call came from: the module and offset of its return address)
+    const caller = () => { try { const a = p.r32(p.reg('esp')) >>> 0, m = (p.modules || []).find(x => x.base && a >= x.base && a < x.base + (x.size || 0)); return m ? `${m.name}+${(a - m.base).toString(16)}` : a.toString(16); } catch (_) { return ''; } };
+    self.W95TRACE = t => { const th = name(); if (log.length < 20000 && want.test(th) && (!only || only.test(t.dll + '!' + t.nm))) log.push([Math.round(performance.now() - t0), th, t.dll + '!' + t.nm, arg32(t), caller()]); };
     self.W95APPYTRACE = e => { if (log.length < 20000) log.push([Math.round(performance.now() - t0), name(), 'appy', (e.fn >>> 0).toString(16)]); };
   }
   ring0() { return !!(this.proc && this.proc.r0Runs && this.proc.r0Runs.length); }
