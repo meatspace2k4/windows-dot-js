@@ -3353,6 +3353,11 @@ P.threads16 = function (nested = false, only = null) {
         this.loadCtx16(t.ctx); this.stackLevel = main.stackLevel; t.state = 'running'; t.wait = null;
         r = this.runTop(u32(this.cpu.eip.value));
       }
+      // a thread that stopped in a Win32 wait (blocked on an object, an event, a timed wait) gave up the processor
+      // there; its time did not run out, though it may have earlier in the run, inside a call that could not stop: it
+      // lets the Win16Lock go, as a Win32 wait releases the Win16Mutex. Kept, the lock was held by a thread the
+      // scheduler does not run until its wait ends, and nothing could end it: the shell hung with the hourglass
+      if (r === 1 && (t.blocked || t.wait || t.wake)) this.preempted = 0;
       t.preempted = r === 1 && !!this.preempted; this.holdWin16(t);
       if (r === 1) { t.ctx = this.saveCtx16(); t.state = 'waiting'; }
       else {
