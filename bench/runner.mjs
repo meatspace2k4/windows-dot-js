@@ -104,7 +104,7 @@ export function print(rows) {
 }
 
 // controls that change or destroy files, settings or the session: no automated driver presses them
-export const DESTRUCTIVE = /^(Shut Down\.\.\.|Delete|Empty Recycle Bin|Format\.\.\.|Rename|Cut|Paste( Shortcut)?|Undo.*|Restore|Remove.*|Clear|Save|Save As\.\.\.|Print|Sharing\.\.\.|Disconnect.*|Restart.*|Log Off.*)$/;
+export const DESTRUCTIVE = /^(Shut Down\.\.\.|Delete|Empty Recycle Bin|Format\.\.\.|Rename|Cut|Paste( Shortcut)?|Undo.*|Restore|Remove.*|Clear|Save|Save As\.\.\.|Print|Sharing\.\.\.|Disconnect.*|Restart.*|Log Off.*|Create Shortcut(\(s\) Here)?|New|Send To|Set as Wallpaper|Install)$/;
 
 // what went wrong while the page ran, as gaps.mjs and explore.mjs report it, on a connection of its own with the
 // __w95event binding registered: add(kind, detail) for each finding, onEvent(event) for every shell event

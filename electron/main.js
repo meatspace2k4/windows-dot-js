@@ -75,7 +75,10 @@ async function shareFolder() {
 app.whenReady().then(() => {
   store = require('./store').open(path.join(app.getPath('userData'), 'C.db'))
   shares = require('./shares').open(path.join(app.getPath('userData'), 'shares.json'))
-  try { cdOpen(JSON.parse(fs.readFileSync(cdFile(), 'utf8')).image) } catch (_) { /* no disc */ }
+  // the disc in the drive: the one the person inserted (cdrom.json), else the one the app was built with (cd.json,
+  // the project's cdrom.iso, the same disc serve.py serves the page)
+  const image = f => { try { return JSON.parse(fs.readFileSync(f, 'utf8')).image || null } catch (_) { return null } }
+  cdOpen(image(cdFile()) || image(path.join(__dirname, 'cd.json')))
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     { role: 'appMenu' },
     { label: 'File', submenu: [{ label: 'Share a Folder…', click: shareFolder }, { label: 'Insert CD Image…', click: insertCD }] },
