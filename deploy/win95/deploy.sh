@@ -330,6 +330,32 @@ require_deploy_signature() {
     log_info "Deploy signature: commit ${DEPLOY_COMMIT} (HEAD ${head_sha:0:12}), sig ${DEPLOY_SIG}"
 }
 
+# Every generated bundle starts with the provenance line its generator wrote (tools/provenance.py): the tool files
+# that made it and a hash of their bytes. A bundle the checkout's tools would not make (built before a change to its
+# generator or the recompiler, or with no provenance at all) is not shipped: rebuild it first.
+require_current_bundles() {
+    local f line files want have bad=0
+    for f in "${GENERATED[@]}"; do
+        [[ "$f" == assets.js ]] && continue   # (hand-assembled from extract.py's output: no generator)
+        line="$(head -n 1 "$REPO_ROOT/$f")"
+        if [[ "$line" != "// tools: "*" sha256="* ]]; then
+            log_error "$f has no provenance line: built before tools/provenance.py. Rebuild it."
+            bad=1; continue
+        fi
+        files="${line#// tools: }"; files="${files%% sha256=*}"; want="${line##* sha256=}"
+        have="$(cd "$REPO_ROOT" && python3 tools/provenance.py "$files")"
+        if [[ "$have" != "$want" ]]; then
+            log_error "$f was built by other tools than this checkout's (${files}). Rebuild it."
+            bad=1
+        fi
+    done
+    if [[ $bad -ne 0 ]]; then
+        log_error "Stale generated bundles. Nothing was built."
+        exit 1
+    fi
+    log_info "Generated bundles match this checkout's tools."
+}
+
 # Copy one file into the staging tree: a real copy, never a link. Big generated files (system.js is ~140 MB, the CD
 # image ~600 MB) are cloned where the filesystem can (APFS clonefile, a reflink on Linux), a plain copy otherwise.
 stage_file() {
@@ -366,6 +392,7 @@ build_staging() {
         log_error "Generate them (tools/build_*.py, extract.py) or copy them from $INPUTS_DIR. Nothing was built."
         exit 1
     fi
+    require_current_bundles
     log_info "Copying site files..."
     for f in "$REPO_ROOT/"*.js; do
         stage_file "$f" "$STAGING_DIR/site/$(basename "$f")"
