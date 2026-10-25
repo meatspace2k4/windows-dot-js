@@ -3,3 +3,8 @@
 
 PI_HOST="aircheck-pi.local"   # an mDNS name survives DHCP changes
 PI_USER="jpark"
+
+# The Pi reproduced on this machine: a folder laid out as the Pi's filesystem. Set it (and leave PI_HOST unset) to
+# deploy there instead: <PI_ROOT>/home/<PI_USER>/win95/site and win95-dev/site, served by the LaunchAgent
+# app.funstuff.win95 at http://win95.localhost:8770 and http://win95-dev.localhost:8770.
+# PI_ROOT="$HOME/pi-local"

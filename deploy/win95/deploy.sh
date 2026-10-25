@@ -3,8 +3,8 @@
 # Deploy Windows 95 to the Pi as "win95", the process deploy/dustytrails/deploy_to_pi.sh (mobileair) uses for
 # dustytrails: a signed build, stamped into the page and into every asset's ?v=, staged locally and rsynced.
 #
-# Target: the Pi in deploy.config (PI_HOST, PI_USER)
-# Service: win95 (win95_server.py on 127.0.0.1:8768, reached through cloudflared)
+# Target: the Pi in deploy.config (PI_HOST, PI_USER), or its reproduction on this machine (PI_ROOT)
+# Service: win95 (win95_server.py on 127.0.0.1:8770, reached through cloudflared)
 #   win95.funstuff.app      ~/win95/site        (production)
 #   win95-dev.funstuff.app  ~/win95-dev/site    (dev; the same service, chosen by Host)
 #
@@ -19,7 +19,7 @@ set -euo pipefail
 # Configuration
 # ─────────────────────────────────────────────────────────────────────────────
 SERVICE_NAME="win95"
-SITE_PORT="8768"
+SITE_PORT="8770"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -65,6 +65,12 @@ else
     exit 1
 fi
 
+# PI_ROOT: a folder on this machine laid out as the Pi's filesystem (<PI_ROOT>/home/<PI_USER>/win95 ...). With it,
+# every step that would ssh or rsync to the Pi acts on that folder instead, and the service is a LaunchAgent in place
+# of the systemd unit. Same build, same stamps, same targets, same gates.
+PI_ROOT="${PI_ROOT:-}"
+[[ -n "$PI_ROOT" && -z "${PI_HOST:-}" ]] && PI_HOST="localhost"
+
 if [[ -z "${PI_HOST:-}" || -z "${PI_USER:-}" ]]; then
     if [[ "$BUILD_ONLY" == "1" ]]; then
         PI_HOST="build-only-placeholder.invalid"
@@ -77,9 +83,27 @@ if [[ -z "${PI_HOST:-}" || -z "${PI_USER:-}" ]]; then
 fi
 
 PI_TARGET="${PI_USER}@${PI_HOST}"
-INSTALL_DIR="/home/${PI_USER}/win95"
-DEV_INSTALL_DIR="/home/${PI_USER}/win95-dev"
-INPUTS_DIR="/home/${PI_USER}/win95-deploy-inputs"
+set_paths() {
+    INSTALL_DIR="${PI_ROOT}/home/${PI_USER}/win95"
+    DEV_INSTALL_DIR="${PI_ROOT}/home/${PI_USER}/win95-dev"
+    INPUTS_DIR="${PI_ROOT}/home/${PI_USER}/win95-deploy-inputs"
+}
+set_paths
+if [[ -n "$PI_ROOT" ]]; then
+    SITE_URL="http://win95.localhost:${SITE_PORT}/"; DEV_URL="http://win95-dev.localhost:${SITE_PORT}/"
+else
+    SITE_URL="https://win95.funstuff.app/"; DEV_URL="https://win95-dev.funstuff.app/"
+fi
+LAUNCH_LABEL="app.funstuff.win95"
+LAUNCH_PLIST="${HOME}/Library/LaunchAgents/${LAUNCH_LABEL}.plist"
+
+# The Pi: a shell command there, and an rsync destination there (ssh to PI_TARGET, or PI_ROOT on this machine).
+on_pi() {
+    if [[ -n "$PI_ROOT" ]]; then bash -c "$1"; else ssh -o ConnectTimeout=5 "$PI_TARGET" "$1"; fi
+}
+pi_dest() {
+    if [[ -n "$PI_ROOT" ]]; then printf '%s' "$1"; else printf '%s:%s' "$PI_TARGET" "$1"; fi
+}
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -212,11 +236,7 @@ while [[ $# -gt 0 ]]; do
         --commit) DEPLOY_COMMIT="$2"; shift 2 ;;
         --version) DEPLOY_VERSION="$2"; shift 2 ;;
         --host) PI_HOST="$2"; PI_TARGET="${PI_USER}@${PI_HOST}"; shift 2 ;;
-        --user)
-            PI_USER="$2"; PI_TARGET="${PI_USER}@${PI_HOST}"
-            INSTALL_DIR="/home/${PI_USER}/win95"; DEV_INSTALL_DIR="/home/${PI_USER}/win95-dev"
-            INPUTS_DIR="/home/${PI_USER}/win95-deploy-inputs"
-            shift 2 ;;
+        --user) PI_USER="$2"; PI_TARGET="${PI_USER}@${PI_HOST}"; set_paths; shift 2 ;;
         -h|--help)
             echo "Usage: $0 --commit <short-sha> --version <ver> [OPTIONS]"
             echo ""
@@ -370,23 +390,32 @@ build_staging() {
 # ─────────────────────────────────────────────────────────────────────────────
 deploy_files() {
     require_real_pi_config
-    log_step "Deploying to $PI_TARGET:$INSTALL_DIR..."
+    log_step "Deploying to $(pi_dest "$INSTALL_DIR")..."
+    require_pi
+    if [[ "${DRY_RUN:-0}" == "1" ]]; then
+        log_warn "DRY RUN — rsync --dry-run: previewing changes, writing nothing."
+        rsync -av --dry-run --itemize-changes --delete "$STAGING_DIR/site/" "$(pi_dest "$INSTALL_DIR/site/")"
+        rsync -av --dry-run --itemize-changes "$STAGING_DIR/win95_server.py" "$(pi_dest "$INSTALL_DIR/")"
+        return 0
+    fi
+    on_pi "mkdir -p '$INSTALL_DIR/site'"
+    # --delete is safe: site/ is created and owned by this script and holds nothing hand-placed.
+    rsync -av --delete "$STAGING_DIR/site/" "$(pi_dest "$INSTALL_DIR/site/")"
+    rsync -av "$STAGING_DIR/win95_server.py" "$(pi_dest "$INSTALL_DIR/")"
+    log_info "Files deployed to $(pi_dest "$INSTALL_DIR")"
+}
 
-    if ! ssh -o ConnectTimeout=5 "$PI_TARGET" "echo 'SSH OK'" &>/dev/null; then
+# The Pi answers (ssh), or PI_ROOT is a folder laid out as the Pi's home.
+require_pi() {
+    if [[ -n "$PI_ROOT" ]]; then
+        if [[ ! -d "$PI_ROOT/home/$PI_USER" ]]; then
+            log_error "PI_ROOT $PI_ROOT has no home/$PI_USER (create the Pi's home there first)"
+            exit 1
+        fi
+    elif ! ssh -o ConnectTimeout=5 "$PI_TARGET" "echo 'SSH OK'" &>/dev/null; then
         log_error "Cannot connect to $PI_TARGET"
         exit 1
     fi
-    if [[ "${DRY_RUN:-0}" == "1" ]]; then
-        log_warn "DRY RUN — rsync --dry-run: previewing changes, writing nothing."
-        rsync -avz --dry-run --itemize-changes --delete "$STAGING_DIR/site/" "$PI_TARGET:$INSTALL_DIR/site/"
-        rsync -avz --dry-run --itemize-changes "$STAGING_DIR/win95_server.py" "$PI_TARGET:$INSTALL_DIR/"
-        return 0
-    fi
-    ssh "$PI_TARGET" "mkdir -p '$INSTALL_DIR/site'"
-    # --delete is safe: site/ is created and owned by this script and holds nothing hand-placed.
-    rsync -avz --delete "$STAGING_DIR/site/" "$PI_TARGET:$INSTALL_DIR/site/"
-    rsync -avz "$STAGING_DIR/win95_server.py" "$PI_TARGET:$INSTALL_DIR/"
-    log_info "Files deployed to $PI_TARGET:$INSTALL_DIR"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -400,12 +429,8 @@ deploy_files() {
 # ─────────────────────────────────────────────────────────────────────────────
 deploy_dev_files() {
     require_real_pi_config
-    log_step "Deploying SITE ONLY to $PI_TARGET:$DEV_INSTALL_DIR/site..."
-
-    if ! ssh -o ConnectTimeout=5 "$PI_TARGET" "echo 'SSH OK'" &>/dev/null; then
-        log_error "Cannot connect to $PI_TARGET"
-        exit 1
-    fi
+    log_step "Deploying SITE ONLY to $(pi_dest "$DEV_INSTALL_DIR/site")..."
+    require_pi
     local src="$STAGING_DIR/site"
     if find "$src" -maxdepth 1 -name '*.py' | grep -q .; then
         log_error "Staged site dir contains .py files — refusing a dev deploy."
@@ -418,12 +443,12 @@ deploy_dev_files() {
     fi
     if [[ "${DRY_RUN:-0}" == "1" ]]; then
         log_warn "DRY RUN — previewing the dev site sync, writing nothing."
-        rsync -avz --dry-run --itemize-changes --delete "$src/" "$PI_TARGET:$DEV_INSTALL_DIR/site/"
+        rsync -av --dry-run --itemize-changes --delete "$src/" "$(pi_dest "$DEV_INSTALL_DIR/site/")"
         return 0
     fi
-    ssh "$PI_TARGET" "mkdir -p '$DEV_INSTALL_DIR/site'"
-    rsync -avz --delete "$src/" "$PI_TARGET:$DEV_INSTALL_DIR/site/"
-    log_info "Dev site deployed to $PI_TARGET:$DEV_INSTALL_DIR/site"
+    on_pi "mkdir -p '$DEV_INSTALL_DIR/site'"
+    rsync -av --delete "$src/" "$(pi_dest "$DEV_INSTALL_DIR/site/")"
+    log_info "Dev site deployed to $(pi_dest "$DEV_INSTALL_DIR/site")"
     log_info "Production install at $INSTALL_DIR was not touched."
     log_info "No service restart needed — files are read per request."
 }
@@ -437,17 +462,39 @@ deploy_dev_files() {
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-60}"
 HEALTH_INTERVAL="${HEALTH_INTERVAL:-1}"
 
+# The service's state and restart count: systemd on the Pi, the LaunchAgent under PI_ROOT.
+service_active() {
+    if [[ -n "$PI_ROOT" ]]; then
+        launchctl print "gui/$(id -u)/${LAUNCH_LABEL}" 2>/dev/null | grep -q 'state = running' && echo active || echo inactive
+    else
+        on_pi "systemctl is-active ${SERVICE_NAME}" 2>/dev/null | tr -d '[:space:]' || true
+    fi
+}
+service_restarts() {
+    if [[ -n "$PI_ROOT" ]]; then
+        launchctl print "gui/$(id -u)/${LAUNCH_LABEL}" 2>/dev/null | sed -n 's/^[[:space:]]*runs = \([0-9]*\)$/\1/p' | head -1
+    else
+        on_pi "systemctl show ${SERVICE_NAME} -p NRestarts --value" 2>/dev/null | tr -dc '0-9' || true
+    fi
+}
+service_log() {
+    if [[ -n "$PI_ROOT" ]]; then
+        tail -n 30 "$INSTALL_DIR/win95.log" 2>/dev/null || echo '(log unavailable)'
+    else
+        on_pi "journalctl -u ${SERVICE_NAME} -n 30 --no-pager 2>/dev/null || echo '(journal unavailable)'"
+    fi
+}
+
 wait_for_service_health() {
     require_real_pi_config
     local url="http://127.0.0.1:${SITE_PORT}/ (probed on the Pi)"
     log_step "Health check: waiting up to ${HEALTH_TIMEOUT}s for $SERVICE_NAME on $url"
     local restarts_before
-    restarts_before="$(ssh -o ConnectTimeout=5 "$PI_TARGET" "systemctl show ${SERVICE_NAME} -p NRestarts --value" 2>/dev/null || true)"
-    restarts_before="$(printf '%s' "$restarts_before" | tr -dc '0-9')"
+    restarts_before="$(service_restarts)"
+    # (launchd counts the first start as a run; systemd's NRestarts does not)
 
-    local probe_out
-    probe_out="$(ssh -o ConnectTimeout=5 "$PI_TARGET" \
-        "HEALTH_PORT=${SITE_PORT} HEALTH_DEADLINE=${HEALTH_TIMEOUT} HEALTH_INTERVAL=${HEALTH_INTERVAL} bash -s" 2>/dev/null <<'REMOTE_PROBE'
+    local probe_out probe_env="HEALTH_PORT=${SITE_PORT} HEALTH_DEADLINE=${HEALTH_TIMEOUT} HEALTH_INTERVAL=${HEALTH_INTERVAL}"
+    probe_out="$(if [[ -n "$PI_ROOT" ]]; then env $probe_env bash -s; else ssh -o ConnectTimeout=5 "$PI_TARGET" "$probe_env bash -s"; fi 2>/dev/null <<'REMOTE_PROBE'
 set -u
 if ! command -v curl >/dev/null 2>&1; then echo "NOCURL 000 0"; exit 0; fi
 start=$(date +%s); deadline=$(( start + HEALTH_DEADLINE )); code=000
@@ -466,8 +513,8 @@ REMOTE_PROBE
     if [[ -n "$line" ]]; then kind="${line%% *}"; code="$(echo "$line" | cut -d' ' -f2)"; fi
 
     local active restarts_after problems=""
-    active="$(ssh -o ConnectTimeout=5 "$PI_TARGET" "systemctl is-active ${SERVICE_NAME}" 2>/dev/null | tr -d '[:space:]' || true)"
-    restarts_after="$(ssh -o ConnectTimeout=5 "$PI_TARGET" "systemctl show ${SERVICE_NAME} -p NRestarts --value" 2>/dev/null | tr -dc '0-9' || true)"
+    active="$(service_active)"
+    restarts_after="$(service_restarts)"
     case "$kind" in
         NOCURL) problems="${problems}
 HTTP probe COULD NOT RUN: curl is not installed on the Pi." ;;
@@ -477,7 +524,7 @@ HTTP probe COULD NOT RUN: no result line came back over ssh from ${PI_TARGET}." 
 ${url} never returned 200 within ${HEALTH_TIMEOUT}s (last HTTP status: ${code})" ;;
     esac
     [[ "$active" == "active" ]] || problems="${problems}
-systemctl is-active reports '${active:-unknown}', expected 'active'"
+the service reports '${active:-unknown}', expected 'active'"
     if [[ -n "$restarts_before" && -n "$restarts_after" ]] && (( 10#$restarts_after > 10#$restarts_before )); then
         problems="${problems}
 NRestarts climbed ${restarts_before} -> ${restarts_after} during the probe window — the unit is restart-looping"
@@ -486,7 +533,7 @@ NRestarts climbed ${restarts_before} -> ${restarts_after} during the probe windo
         log_error "Health check FAILED for ${SERVICE_NAME}:"
         local p
         while IFS= read -r p; do [[ -n "$p" ]] && log_error "  - $p"; done <<< "$problems"
-        ssh -o ConnectTimeout=5 "$PI_TARGET" "journalctl -u ${SERVICE_NAME} -n 30 --no-pager 2>/dev/null || echo '(journal unavailable)'" 2>&1 | sed 's/^/        /' || true
+        service_log 2>&1 | sed 's/^/        /' || true
         log_error "The new files are on the Pi and were NOT rolled back."
         exit 1
     fi
@@ -503,8 +550,46 @@ run_remote_script_tty() {
     ssh -t "$PI_TARGET" "bash '$remote_path'; rc=\$?; rm -f '$remote_path'; exit \$rc"
 }
 
+# PI_ROOT: the service is a LaunchAgent running the same server from the same install dir, in place of the unit.
+setup_local_service() {
+    log_step "Setting up the LaunchAgent ${LAUNCH_LABEL} for ${INSTALL_DIR}..."
+    mkdir -p "$INPUTS_DIR" "$DEV_INSTALL_DIR/site" "$(dirname "$LAUNCH_PLIST")"
+    local py; py="$(command -v python3)"
+    cat > "$LAUNCH_PLIST.tmp" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>${LAUNCH_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${py}</string>
+    <string>${INSTALL_DIR}/win95_server.py</string>
+    <string>--host</string><string>127.0.0.1</string>
+    <string>--port</string><string>${SITE_PORT}</string>
+  </array>
+  <key>WorkingDirectory</key><string>${INSTALL_DIR}</string>
+  <key>EnvironmentVariables</key><dict><key>PYTHONUNBUFFERED</key><string>1</string></dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>StandardOutPath</key><string>${INSTALL_DIR}/win95.log</string>
+  <key>StandardErrorPath</key><string>${INSTALL_DIR}/win95.log</string>
+</dict>
+</plist>
+PLIST
+    mv "$LAUNCH_PLIST.tmp" "$LAUNCH_PLIST"
+    local dom="gui/$(id -u)"
+    launchctl bootout "$dom/${LAUNCH_LABEL}" 2>/dev/null || true
+    launchctl bootstrap "$dom" "$LAUNCH_PLIST"
+    launchctl kickstart -k "$dom/${LAUNCH_LABEL}"
+    log_info "Service setup complete!"
+    wait_for_service_health
+}
+
 setup_service() {
     require_real_pi_config
+    if [[ -n "$PI_ROOT" ]]; then setup_local_service; return; fi
     log_step "Setting up service on Pi..."
     local svc_tmp; svc_tmp="$(mktemp)"
     sed -e "s|__USER__|${PI_USER}|g" "$SCRIPT_DIR/win95.service" > "$svc_tmp"
@@ -560,8 +645,8 @@ main() {
         echo "  Windows 95 DEV deploy — site only, production untouched"
         echo "═══════════════════════════════════════════════════════════════════"
         echo ""
-        echo "  Target:  $PI_TARGET"
-        echo "  Dev dir: $DEV_INSTALL_DIR/site  (served at win95-dev.funstuff.app)"
+        echo "  Target:  ${PI_ROOT:-$PI_TARGET}"
+        echo "  Dev dir: $DEV_INSTALL_DIR/site  (served at ${DEV_URL})"
         echo "  Prod:    $INSTALL_DIR  (NOT written)"
         echo "  Service: $SERVICE_NAME  (NOT restarted)"
         echo ""
@@ -569,7 +654,7 @@ main() {
         deploy_dev_files
         echo ""
         echo -e "${GREEN}Dev deploy complete!${NC}"
-        echo "  Dev:       https://win95-dev.funstuff.app/"
+        echo "  Dev:       ${DEV_URL}"
         echo "  Title bar: [DEV ${DEPLOY_SIG}]"
         echo ""
         return 0
@@ -586,7 +671,7 @@ main() {
     echo "  Windows 95 PRODUCTION Deployment"
     echo "═══════════════════════════════════════════════════════════════════"
     echo ""
-    echo "  Target:  $PI_TARGET"
+    echo "  Target:  ${PI_ROOT:-$PI_TARGET}"
     echo "  Install: $INSTALL_DIR"
     echo "  Service: $SERVICE_NAME"
     echo ""
@@ -605,8 +690,9 @@ main() {
     fi
     echo ""
     echo -e "${GREEN}Deployment complete!${NC}"
-    echo "  Site:    https://win95.funstuff.app/"
-    echo "  Logs:    ssh -t $PI_TARGET 'journalctl -u $SERVICE_NAME -f'"
+    echo "  Site:    ${SITE_URL}"
+    if [[ -n "$PI_ROOT" ]]; then echo "  Logs:    tail -f $INSTALL_DIR/win95.log"
+    else echo "  Logs:    ssh -t $PI_TARGET 'journalctl -u $SERVICE_NAME -f'"; fi
     echo ""
 }
 

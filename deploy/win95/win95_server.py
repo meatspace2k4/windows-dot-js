@@ -2,18 +2,19 @@
 """The Pi's Windows 95 server: the deployed site over HTTP, answering byte ranges (the CD drive reads cdrom.iso a few
 sectors at a time), cross-origin isolated for the machines' shared memory. Reached only through cloudflared.
 
-    python3 win95_server.py --host 127.0.0.1 --port 8768
+    python3 win95_server.py --host 127.0.0.1 --port 8770
 
-Serves <install>/site to every Host but DEV_HOST, which gets the dev tree beside the install (<install>-dev/site).
+Serves <install>/site to every Host but DEV_HOSTS, which get the dev tree beside the install (<install>-dev/site).
 Unlike tools/serve.py there is no /__share: nothing outside the site tree is reachable.
 """
 import argparse, http.server, os, re
 from pathlib import Path
 
-# Hostname that is served the dev site instead of the production one. A constant, never a parameter or an env var:
-# anything that can be set from outside can be set to the production hostname, which would hand the dev site to
-# production. Changing staging's address is a code change.
-DEV_HOST = "win95-dev.funstuff.app"
+# Hostnames that are served the dev site instead of the production one: the Pi's, and the same name on this machine
+# (a PI_ROOT install, win95-dev.localhost:8770). Constants, never a parameter or an env var: anything that can be set
+# from outside can be set to the production hostname, which would hand the dev site to production. Changing staging's
+# address is a code change.
+DEV_HOSTS = ("win95-dev.funstuff.app", "win95-dev.localhost")
 
 BASE = Path(__file__).resolve().parent
 PROD_SITE = BASE / "site"
@@ -24,7 +25,7 @@ def site_for(host):
     """The site root for a request's Host. A missing or half-synced dev tree falls back to production, so a failed
     dev deploy degrades to the live site instead of a broken page."""
     host = (host or "").split(":")[0].strip().lower()
-    if host == DEV_HOST and (DEV_SITE / "index.html").exists():
+    if host in DEV_HOSTS and (DEV_SITE / "index.html").exists():
         return DEV_SITE
     return PROD_SITE
 
@@ -95,6 +96,6 @@ class S(http.server.ThreadingHTTPServer):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", default="127.0.0.1")
-    ap.add_argument("--port", type=int, default=8768)
+    ap.add_argument("--port", type=int, default=8770)
     a = ap.parse_args()
     S((a.host, a.port), H).serve_forever()
