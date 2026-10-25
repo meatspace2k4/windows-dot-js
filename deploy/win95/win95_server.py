@@ -5,9 +5,9 @@ sectors at a time), cross-origin isolated for the machines' shared memory. Reach
     python3 win95_server.py --host 127.0.0.1 --port 8770
 
 Serves <install>/site to every Host but DEV_HOSTS, which get the dev tree beside the install (<install>-dev/site).
-Unlike tools/serve.py there is no /__share: nothing outside the site tree is reachable.
+/__share answers as tools/serve.py's with no folders shared: nothing outside the site tree is reachable.
 """
-import argparse, http.server, os, re
+import argparse, http.server, json, os, re, socket
 from pathlib import Path
 
 # Hostnames that are served the dev site instead of the production one: the Pi's, and the same name on this machine
@@ -85,7 +85,23 @@ class H(http.server.SimpleHTTPRequestHandler):
         self.range_left = None
 
     def do_POST(self):
-        self.send_error(405)
+        # /__share as tools/serve.py answers it, with no folders shared: the host's name, an empty list, and no share
+        # by any name (the page learns its computer's name here, as on the dev server and in the app)
+        if self.path.split("?")[0] != "/__share":
+            self.send_error(404)
+            return
+        try:
+            q = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        except ValueError:
+            q = {}
+        op = q.get("op")
+        r = socket.gethostname().split(".")[0] if op == "$host" else [] if op == "$list" else {"err": "ENOENT"}
+        b = json.dumps(r).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(b)))
+        self.end_headers()
+        self.wfile.write(b)
 
 
 class S(http.server.ThreadingHTTPServer):

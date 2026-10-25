@@ -84,7 +84,9 @@ try {
   assert.equal(x.headers.get('cache-control'), 'no-store, max-age=0');
   x = await get('/../win95_server.py', 'win95.funstuff.app');
   assert.equal(x.status, 404); await x.text();
-  x = await get('/__share', 'win95.funstuff.app', { method: 'POST', body: '{"op":"$list"}' });
-  assert.equal(x.status, 405); await x.text();
+  x = await get('/__share', 'win95.funstuff.app', { method: 'POST', body: '{"op":"$list"}', headers: { 'Content-Length': '14' } });
+  assert.equal(x.status, 200); assert.deepEqual(JSON.parse(await x.text()), []);
+  x = await get('/__share', 'win95.funstuff.app', { method: 'POST', body: '{"op":"read","name":"HOME","args":["x",0,9]}', headers: { 'Content-Length': '43' } });
+  assert.deepEqual(JSON.parse(await x.text()), { err: 'ENOENT' });
 } finally { srv.kill(); }
 console.log('deploy: ok');
