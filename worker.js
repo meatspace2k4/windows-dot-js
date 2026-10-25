@@ -167,6 +167,18 @@ class Machine {
   }
   /** the input ring: keys through VKD first (its hot keys, message mode's keys), the rest queued for USER */
   poll() {
+    const p = this.proc, cpu = p.cpu;
+    // in the middle of a run (the budget's check) on a stack of its own, as vmIRQ takes the VM's interrupts: the time-outs
+    // and the input it runs build their frames below SS:SP, and the code it stopped keeps its own stack. On the
+    // interrupted code's, a first start's WELCOME blitting on DIBENG's 4Ah-byte blit stack had its line count at SS:0
+    // and DIBENG's compiled blit below it written over: the hourglass, the crawl, then the freeze
+    if (!p.runLevel || this.inPollStack || !cpu.ss) return this.pollIn();
+    const st = { ss: cpu.ss.value, ssb: cpu.ssb.value, esp: cpu.esp.value };
+    if (!this.pollStack) this.pollStack = p.alloc(0x10000);
+    cpu.ss.value = 0; cpu.ssb.value = 0; cpu.esp.value = this.pollStack + 0x10000 - 16; this.inPollStack = true;
+    try { return this.pollIn(); } finally { cpu.ss.value = st.ss; cpu.ssb.value = st.ssb; cpu.esp.value = st.esp; this.inPollStack = false; }
+  }
+  pollIn() {
     const p = this.proc; let r;
     // the timer's interrupt: the VMM's global time-outs that are due run now, unless ring 0 or its critical section has
     // the processor (a guest running on inside a call still gets them, as a hung Windows still runs REBOOT's)
