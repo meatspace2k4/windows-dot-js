@@ -3969,6 +3969,16 @@ function wait32(hs, all, ms, alertable) {
   else if (this.now() >= t.wake) { t.wake = 0; return 0x102; }
   return YIELD;
 }
+// SleepEx alertable: the thread's queued APCs run first and it returns WAIT_IO_COMPLETION, as the waits do (a wave's
+// completion routine, itself run as an APC, sleeps alertably for the buffers still to complete: their APCs run here)
+const sleep32 = API.KERNEL32.SleepEx[1];
+K('SleepEx', 2, function (ms, alertable) {
+  if (alertable && native32(this)) {
+    const q = apcs(this, this.currentThreadId());
+    if (q.length) { const t = this.thread16 || (this.mainSleep = this.mainSleep || {}); t.wake = 0; for (const a of q.splice(0)) this.call(a.proc, [a.data]); return 0xc0; }
+  }
+  return sleep32.call(this, ms, alertable);
+});
 K('WaitForSingleObject', 2, function (h, ms) { return wait32.call(this, [h], false, ms, false); });
 K('WaitForSingleObjectEx', 3, function (h, ms, al) { return wait32.call(this, [h], false, ms, !!al); });
 K('WaitForMultipleObjects', 4, function (n, ph, all, ms) { return wait32.call(this, [...Array(n)].map((_, i) => this.r32(ph + 4 * i)), !!all, ms, false); });
