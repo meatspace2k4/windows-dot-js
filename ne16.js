@@ -396,7 +396,7 @@ P.api16 = function (eip) {
   try { r = fn.apply(this, vals); }
   catch (e) { if (e instanceof GuestError) { this.trapped = e.message; return LAYOUT.SENTINEL; } throw e; }
   if (this.exitCode !== null) return LAYOUT.SENTINEL;
-  if (r === YIELD) return -1;   // a thread suspended in the call: it runs the call again when resumed
+  if (r === YIELD) { this.preempted = 0; return -1; }   // a thread suspended in the call: it runs the call again when resumed (it stopped there, not where its time ran out)
   if (ret === 'w') this.cpu.eax.value = lo16(this.cpu.eax.value, r | 0);
   else if (ret === 'l') { this.cpu.eax.value = r | 0; this.cpu.edx.value = lo16(this.cpu.edx.value, u32(r) >>> 16); }
   this.cpu.esp.value = lo16(this.cpu.esp.value, sp + 4 + total);
@@ -3369,11 +3369,11 @@ P.threads16 = function (nested = false, only = null) {
         this.loadCtx16(t.ctx); this.stackLevel = main.stackLevel; t.state = 'running'; t.wait = null;
         r = this.runTop(u32(this.cpu.eip.value));
       }
-      // a thread that stopped in a Win32 wait (blocked on an object, an event, a timed wait) gave up the processor
-      // there; its time did not run out, though it may have earlier in the run, inside a call that could not stop: it
-      // lets the Win16Lock go, as a Win32 wait releases the Win16Mutex. Kept, the lock was held by a thread the
-      // scheduler does not run until its wait ends, and nothing could end it: the shell hung with the hourglass
-      if (r === 1 && (t.blocked || t.wait || t.wake)) this.preempted = 0;
+      // a thread that stopped in a wait gave up the processor there (the call's YIELD clears what its time running out
+      // earlier in the run left) and lets the Win16Lock go; one whose time ran out in code keeps it. Its wait flags do
+      // not say which: a thread whose last wait left `wake` set and that then ran out of time inside DIBENG's blit let
+      // the lock go, another thread blitted on DIBENG's one blit stack (its line count at SS:0 run down to 0), and
+      // WELCOME's blit went on from 0: `dec dword ss:[0]` 4 billion times, the hourglass at the first start
       t.preempted = r === 1 && !!this.preempted; this.holdWin16(t);
       if (r === 1) { t.ctx = this.saveCtx16(); t.state = 'waiting'; }
       else {

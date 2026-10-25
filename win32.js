@@ -444,7 +444,7 @@ class Process {
     let r;
     try { r = fn.apply(this, a); }
     catch (e) { if (e instanceof GuestError) { this.trapped = e.message; return LAYOUT.SENTINEL; } throw e; }
-    if (r === YIELD) return -1;
+    if (r === YIELD) { this.preempted = 0; return -1; }   // (stopped in the call, not where its time ran out)
     if (this.exitCode !== null) return LAYOUT.SENTINEL;
     this.reg('eax', r === undefined ? 0 : r);
     const ret = this.r32(sp);

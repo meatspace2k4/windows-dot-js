@@ -16,11 +16,18 @@ function machine(run) {
   });
   return { p, t };
 }
-// time runs out inside a call, then the thread blocks in a wait at its top: no lock kept
+// time runs out inside a call, then the thread blocks in a wait at its top (the wait's YIELD): no lock kept
 {
-  const { p, t } = machine((q, th) => { q.preempted = 1; th.blocked = true; return 1; });
+  const { p, t } = machine((q, th) => { q.preempted = 1; th.blocked = true; q.preempted = 0; return 1; });
   p.threads16();
   assert.equal(p.win16Held, null); assert.equal(t.blocked, true); assert.equal(t.preempted, false);
+}
+// a wait left `wake` set, then time runs out in 16-bit code (DIBENG's blit): the lock is kept, or another thread blits
+// on DIBENG's one blit stack and this one's line count goes from 0
+{
+  const { p, t } = machine((q, th) => { th.wake = 5000; q.preempted = 1; return 1; });
+  p.threads16();
+  assert.equal(p.win16Held && p.win16Held.who, t); assert.equal(t.preempted, true);
 }
 // time runs out in 16-bit code with no wait: the lock is kept until the thread goes on
 {
