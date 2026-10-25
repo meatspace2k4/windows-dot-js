@@ -835,8 +835,7 @@ P.asWindowTask = function (hwnd, fn) {
   const task = this.thread16 ? 0 : this.user16(224, [['w', hwnd]]).ax;                                 // GetWindowTask
   const pc = task && this.procs && [...this.procs.values()].find(c => c.tdb === task && c.main && c.main.state !== 'done');
   if (!pc) return fn();
-  this.thread16 = pc.main;
-  try { return fn(); } finally { this.thread16 = null; }
+  return this.asThread(pc.main, fn);   // (on a stack of the call's own: the task's holds its frames where it stopped)
 };
 /** fn run as thread t (null: as the main thread) */
 P.asThread = function (t, fn) {
