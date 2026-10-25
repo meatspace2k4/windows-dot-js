@@ -56,17 +56,9 @@ P.vmIRQ = function (irq) {
   const fl = FLAGS.filter(f => this.cpu[f]).map(f => [f, this.cpu[f].value]), ie = this.cpu.if && this.cpu.if.value;
   this.tick16();
   // an interrupt frame: IRET pops IP, CS and the flags (IF set in them: interrupts enabled again as the handler
-  // returns); the handler itself starts with interrupts disabled, as the processor clears IF taking the interrupt
-  if (this.cpu.if) this.cpu.if.value = 0;
-  // on a stack of its own, as Windows reflects a hardware interrupt to the VM's handler on its locked stack, never
-  // the interrupted code's: frames below the code's SS:ESP wrote over what it keeps there (DIBENG runs a compiled blit
-  // on a 40h-byte stack with the line count at SS:0; the sound card's interrupt there left WELCOME blitting for good)
-  const st = this.cpu.ss && { ss: this.cpu.ss.value, ssb: this.cpu.ssb.value, esp: this.cpu.esp.value };
-  if (st && !this.irqStack && this.alloc) this.irqStack = this.alloc(0x4000);
-  if (st && this.irqStack) { this.cpu.ss.value = 0; this.cpu.ssb.value = 0; this.cpu.esp.value = this.irqStack + 0x4000 - 16; }
-  try { this.call16(h >>> 16, h & 0xffff, [['w', 0x202]]); }
+  // returns); the handler runs as an interrupt (ne16.js asInterrupt): interrupts disabled, on the interrupt stack
+  try { this.asInterrupt(() => this.call16(h >>> 16, h & 0xffff, [['w', 0x202]])); }
   finally {
-    if (st) { this.cpu.ss.value = st.ss; this.cpu.ssb.value = st.ssb; this.cpu.esp.value = st.esp; }
     this.inIRQ = false; for (const [f, v] of fl) this.cpu[f].value = v; if (this.cpu.if) this.cpu.if.value = ie;
   }
   return true;

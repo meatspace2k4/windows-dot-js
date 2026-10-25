@@ -1055,6 +1055,7 @@ svc(VMM, 0x85, function () {
  *  client's own stack (SS:SP), the general and data segment registers from it; afterwards its registers hold what the
  *  callee left, SP where its return left it */
 P.vmFarCall = function (c, cs, ip, pushes = []) {
+  this.offInterrupt(`VM call ${cs.toString(16)}:${ip.toString(16)}`);
   const GP = ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi'], SG = [['cs', 'csb'], ['ds', 'dsb'], ['es', 'esb'], ['ss', 'ssb'], ['fsel', 'fs'], ['gsel', 'gsb']];
   const save = {}; for (const r of GP) save[r] = this.cpu[r].value; for (const [s, b] of SG) { save[s] = this.cpu[s].value; save[b] = this.cpu[b].value; }
   const savedEip = this.cpu.eip.value;

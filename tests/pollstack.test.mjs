@@ -1,7 +1,7 @@
-// The machine's poll (the budget's check, mid-run) runs the VMM's time-outs and the page's input on a stack of its own:
-// on the interrupted code's SS:SP their frames went below it. Sampled at a frozen first start: WELCOME blitting on
-// DIBENG's 4Ah-byte blit stack (SS 129Fh, SP 40h) had 305F:0934 (its own CS:IP) at SS:3Ch, zeros down to SS:4 and its
-// line count at SS:0 at FF78F0F7h: the hourglass, the crawl, then the freeze before WELCOME's window
+// The machine's poll in the middle of a run (the budget's check) is an interrupt: it runs through the process's
+// asInterrupt (its own stack, its own client registers: tests/interrupt.test.mjs), never on the stopped code's SS:SP.
+// Sampled at a frozen first start: WELCOME blitting on DIBENG's 4Ah-byte blit stack (SS 129Fh, SP 40h) had 305F:0934
+// (its own CS:IP) at SS:3Ch, zeros down to SS:4 and its line count at SS:0 counting down from 0.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 const w = readFileSync(new URL('../worker.js', import.meta.url), 'utf8');
@@ -12,35 +12,17 @@ const Poll = new Function(`return class { ${w.slice(i, j)} }`)();
 const mk = runLevel => {
   const cpu = { ss: { value: 0x129f }, ssb: { value: 0x1e40360 }, esp: { value: 0x40 }, cs: { value: 0x305f }, eip: { value: 0x1e3db54 } }, seen = [];
   const m = new Poll();
-  m.proc = { cpu, runLevel, alloc: n => { seen.push(['alloc', n]); return 0x3000000; } };
-  m.pollIn = function () { seen.push(['in', cpu.ss.value, cpu.ssb.value, cpu.esp.value]); cpu.esp.value -= 0x40; return 'ran'; };
-  return { m, cpu, seen };
+  m.proc = { cpu, runLevel, asInterrupt(fn) { seen.push('interrupt'); this.inInterrupt = true; try { return fn(); } finally { this.inInterrupt = false; } } };
+  m.pollIn = function () { seen.push(m.proc.inInterrupt ? 'in, as an interrupt' : 'in'); return 'ran'; };
+  return { m, seen };
 };
-// mid-run: the poll's code runs on its own flat stack, and the interrupted code's SS:SP come back as they were
-{
-  const { m, cpu, seen } = mk(1);
-  assert.equal(m.poll(), 'ran');
-  assert.deepEqual(seen, [['alloc', 0x10000], ['in', 0, 0, 0x3000000 + 0x10000 - 16]]);
-  assert.deepEqual([cpu.ss.value, cpu.ssb.value, cpu.esp.value], [0x129f, 0x1e40360, 0x40], 'SS:SP as the blit left them');
-  m.poll(); assert.equal(seen.filter(s => s[0] === 'alloc').length, 1, 'one stack, kept');
-}
-// a poll inside the poll (msgWait in ring 0 it ran) stays on the poll's stack
-{
-  const { m, cpu, seen } = mk(1);
-  m.pollIn = function () { seen.push(['in', cpu.esp.value]); if (seen.length < 3) { cpu.esp.value -= 0x100; this.poll(); } return 'ran'; };
-  m.poll();
-  assert.deepEqual(seen.slice(1).map(s => s[1]), [0x300fff0, 0x300fef0], 'the inner poll goes on below the outer one');
-  assert.equal(cpu.esp.value, 0x40);
-}
-// between slices (no run in progress): nothing to keep, the poll runs where it is
-{
-  const { m, seen } = mk(0);
-  m.poll();
-  assert.deepEqual(seen, [['in', 0x129f, 0x1e40360, 0x40]]);
-}
+// mid-run: an interrupt
+{ const { m, seen } = mk(1); assert.equal(m.poll(), 'ran'); assert.deepEqual(seen, ['interrupt', 'in, as an interrupt']); }
+// between slices (no run in progress): nothing stopped, the poll runs as it is
+{ const { m, seen } = mk(0); m.poll(); assert.deepEqual(seen, ['in']); }
 // the log (cmd 'pollLog'): a mid-run poll that ran a time-out, with the run it stopped and the stack it was on
 {
-  const { m, cpu } = mk(1), p = m.proc;
+  const { m } = mk(1), p = m.proc;
   p.sysTime = () => 5000; p.selValid = () => true; p.selLimit = () => 0x49;
   p.vxdTimeOuts = new Map([[0xf0000008, { fn: 0x1820049, due: 4990 }], [0xf0000010, { fn: 0x1820049, due: 9000 }]]);
   p.modules = [{ kind: 'vxd', name: 'VTDAPI', base: 0x1820000, meta: { size: 0x5000 } }];

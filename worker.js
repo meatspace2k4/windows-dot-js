@@ -168,19 +168,11 @@ class Machine {
   /** the input ring: keys through VKD first (its hot keys, message mode's keys), the rest queued for USER */
   poll() {
     const p = this.proc, cpu = p.cpu;
-    // in the middle of a run (the budget's check) on a stack of its own, as vmIRQ takes the VM's interrupts: the time-outs
-    // and the input it runs build their frames below SS:SP, and the code it stopped keeps its own stack. On the
-    // interrupted code's, a first start's WELCOME blitting on DIBENG's 4Ah-byte blit stack had its line count at SS:0
-    // and DIBENG's compiled blit below it written over: the hourglass, the crawl, then the freeze
-    if (!p.runLevel || this.inPollStack || !cpu.ss) return this.pollIn();
+    // in the middle of a run (the budget's check) it is an interrupt (ne16.js asInterrupt)
+    if (!p.runLevel || !cpu.ss) return this.pollIn();
     const st = { ss: cpu.ss.value, ssb: cpu.ssb.value, esp: cpu.esp.value };
-    if (!this.pollStack) this.pollStack = p.alloc(0x10000);
     const due = this.pollDue(), ins = this.pollInputs || 0, at = { eip: cpu.eip.value >>> 0, cs: cpu.cs.value & 0xffff };
-    cpu.ss.value = 0; cpu.ssb.value = 0; cpu.esp.value = this.pollStack + 0x10000 - 16; this.inPollStack = true;
-    try { return this.pollIn(); } finally {
-      cpu.ss.value = st.ss; cpu.ssb.value = st.ssb; cpu.esp.value = st.esp; this.inPollStack = false;
-      this.pollNote(st, at, due, (this.pollInputs || 0) - ins);
-    }
+    try { return p.asInterrupt(() => this.pollIn()); } finally { this.pollNote(st, at, due, (this.pollInputs || 0) - ins); }
   }
   /** the VMM time-outs due now: [handle, callback] */
   pollDue() { const p = this.proc; if (!p.vxdTimeOuts || !p.vxdTimeOuts.size) return []; const now = p.sysTime(); return [...p.vxdTimeOuts].filter(([, t]) => t.due <= now).map(([h, t]) => [h, t.fn]); }
