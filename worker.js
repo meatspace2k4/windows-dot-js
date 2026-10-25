@@ -368,7 +368,12 @@ class Machine {
     if (p.trapped && !p.failed) p.fail(p.trapped);
     if (p.exitCode !== null || p.trapped) { this.exited(p.exitCode, p.trapped); return; }
     if (!p.win16Held) this.frame();
-    else { post({ t: 'held', held: { hung: p.win16Held.hung }, stats: { ...p.stats } }); this.postScan(); }   // (no USER while a thread holds the lock: the page learns it is held, and has the screen)
+    else {   // (who holds it: the main thread, or a thread with its id, program, state, what it waits on, where it stopped)
+      const w = p.win16Held.who, t = typeof w === 'object' ? w : null, cs = t && t.ctx ? t.ctx.cs & 0xffff : null;
+      const who = t ? { id: t.id, path: t.pc ? t.pc.path : null, state: t.state, blocked: !!t.blocked, wait: t.wait ? { set: !!t.wait.set } : null,
+        preempted: !!t.preempted, cs, ip: t.ctx ? (t.ctx.eip >>> 0) : null } : w;
+      post({ t: 'held', held: { hung: p.win16Held.hung, who, since: p.win16Held.since }, stats: { ...p.stats } }); this.postScan();
+    }   // (no USER while a thread holds the lock: the page learns it is held, and has the screen)
     this.timer = setTimeout(() => this.step(), this.keyq.length ? 0 : 16);
   }
   kick() { if (this.alive && this.timer) { clearTimeout(this.timer); this.timer = setTimeout(() => this.step(), 0); } }
