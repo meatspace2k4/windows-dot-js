@@ -3302,6 +3302,9 @@ P.loadCtx16 = function (c) { this.loadFull(c); };
  *  other threads each get a slice of their own, as the processor passes to them, and the caller's run goes on as it
  *  was (its context, its image, what the processor was stopped for); the threads up the nesting are left alone */
 P.threads16 = function (nested = false, only = null) {
+  // a wait inside a call is code waiting: the sound card plays on and interrupts as the clock on the wall says
+  // (between slices the host lets it run; a wait on a wave's end made inside a call would otherwise never see it)
+  if (nested && this.sound16) this.sound16();
   if (!this.threadsById || (!nested && (this.thread16 || this.depth)) || (this.threadsNest || 0) >= 4) return;
   const caller = this.thread16, wasIn = this.inThreads, wasPreempted = this.preempted, t0 = this.runT0;
   this.inThreads = true; this.threadsNest = (this.threadsNest || 0) + 1; if (caller) this.runT0 = this.now();
