@@ -38,7 +38,10 @@ P.vxdById = function (id) { for (const v of (this.vxds || new Map()).values()) i
  *  ring-0 stack, below whatever ring-0 frame is live */
 P.vxdCall = function (addr, regs = {}, at) {
   const save = {}; for (const r of GPR) save[r] = this.cpu[r].value; for (const [s, b] of SEGS) { save[s] = this.cpu[s].value; save[b] = this.cpu[b].value; }
-  const savedEip = this.cpu.eip.value, savedCf = this.cpu.cf.value;
+  // (and the interrupt flag: ring-0 code runs with interrupts as it sets them, and the return to the caller takes the
+  // caller's back, as the VMM's return to a VM restores its flags; a VxD that left them disabled held the sound card's
+  // interrupt for good, and a wait on a wave's end never ended)
+  const savedEip = this.cpu.eip.value, savedCf = this.cpu.cf.value, savedIf = this.cpu.if ? this.cpu.if.value : 1;
   const top = at !== undefined ? at : this.r0Free();
   for (const [s, b] of SEGS) { this.cpu[s].value = 0; if (s !== 'fsel') this.cpu[b].value = 0; }
   this.cpu.fs.value = this.tibFor ? this.tibFor() : this.cpu.fs.value;
@@ -47,7 +50,7 @@ P.vxdCall = function (addr, regs = {}, at) {
   this.r0Depth = (this.r0Depth || 0) + 1; this.depth++;
   let r;
   try { r = this.runAt(addr); }
-  finally { this.depth--; this.r0Depth--; }
+  finally { this.depth--; this.r0Depth--; if (this.cpu.if) this.cpu.if.value = savedIf; }
   if (r !== 0 || this.trapped) throw new W.GuestError(this.trapped || `VxD call ${u32(addr).toString(16)} did not return (${r} at ${this.reg('eip').toString(16)})`);
   const out = { cf: this.cpu.cf.value & 1, zf: this.cpu.zf.value & 1 }; for (const k of GPR) out[k] = u32(this.cpu[k].value);
   for (const k of GPR) this.cpu[k].value = save[k]; for (const [s, b] of SEGS) { this.cpu[s].value = save[s]; this.cpu[b].value = save[b]; }
