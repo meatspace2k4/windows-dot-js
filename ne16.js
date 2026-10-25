@@ -3303,7 +3303,19 @@ def16('KERNEL', 441, 'llllll', 'l', function (attr, stack, start, param, flags, 
   return this.newHandle({ kind: 'thread', id });
 });
 P.saveCtx16 = function () { return this.saveFull(); };   // (a thread's time can run out between any two blocks: all of it)
-P.loadCtx16 = function (c) { this.loadFull(c); };
+P.loadCtx16 = function (c) { this.loadFull(c); this.rebaseGlobals(); };
+/** a stopped thread going on: a segment register holding a global block's selector takes the block's base as its
+ *  descriptor has it now, as reloading the register on a task switch does. GlobalReAlloc moves a block that grows past
+ *  its memory, and a thread stopped with the old base (DIBENG's blit stack segment, its line count at SS:0) ran on in
+ *  memory the block had left: the count was never reached, and WELCOME blitted for good at the first start. The
+ *  per-call stack aliases keep the base they were saved with (another call redefines them) */
+P.rebaseGlobals = function () {
+  if (!this.ghandles) return;
+  for (const [s, b] of SEGS) {
+    const v = this.cpu[s].value & 0xffff; if (!(v & 0xfff8) || (s === 'fsel')) continue;
+    if (this.gblock(v)) this.cpu[b].value = this.selBase(v);
+  }
+};
 /** run the threads that can run; the host calls this between slices of the main thread. Inside a thread's run
  *  (nested: a Yield or a wait inside a call, or with `only` a task its creator's LoadModule hands the processor to) the
  *  other threads each get a slice of their own, as the processor passes to them, and the caller's run goes on as it

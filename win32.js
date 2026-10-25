@@ -309,7 +309,7 @@ class Process {
     this.depth = 0; this.waiting = false; this.lastYield = this.now();
     if (this.userStack) this.userStack();
     let r; this.preempted = 0;
-    if (this.mainCtx) { this.loadFull(this.mainCtx); this.mainCtx = null; }   // where its time ran out, every register as it was
+    if (this.mainCtx) { this.loadFull(this.mainCtx); this.mainCtx = null; if (this.rebaseGlobals) this.rebaseGlobals(); }   // where its time ran out, every register as it was (a global block's segment at the block's base now)
     try { r = this.runTop(this.resumeEip); }
     catch (e) {
       if (e instanceof FaultError) { this.depth = 0; this.faulted(e.fault); return false; }
