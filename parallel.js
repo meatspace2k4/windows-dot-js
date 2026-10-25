@@ -11,7 +11,7 @@
 const P = window.W95Win32.Process.prototype;
 const LPT = { devnode: 'ROOT\\*PNP0400\\0000', io: 0x378, irq: 0 }, QUIET_MS = 3000, DIR = 'C:\\PRINTOUT';
 const cards0 = P.cards;
-P.cards = function () { const c = cards0 ? cards0.call(this) : []; return this.host && this.host.net ? c : [...c, { devnode: LPT.devnode, io: [[LPT.io, 3]], irq: LPT.irq ? [LPT.irq] : [], dma: [], lpt: LPT }]; };
+P.cards = function () { const c = cards0 ? cards0.call(this) : []; return [...c, { devnode: LPT.devnode, io: [[LPT.io, 3]], irq: LPT.irq ? [LPT.irq] : [], dma: [], lpt: LPT }]; };
 const port = p => p.lpt || (p.lpt = { data: 0, ctl: 0x0c, job: [], timer: 0 });
 // the status lines of a ready printer: not busy (BUSY# high), ACK# high, paper in (PE low), on line (SELECT), no error
 const STATUS = 0x80 | 0x40 | 0x10 | 0x08 | 0x04 | 0x03;
@@ -29,7 +29,7 @@ P.lptFlush = function () {
   } catch (e) { console.error('[lpt]', e); }
 };
 P.lptIO = function (port0, size, isIn) {
-  if (port0 < LPT.io || port0 > LPT.io + 2 || (this.host && this.host.net)) return false;
+  if (port0 < LPT.io || port0 > LPT.io + 2) return false;
   const s = port(this), off = port0 - LPT.io, ret = v => { this.cpu.eax.value = (this.cpu.eax.value & ~0xff) | (v & 0xff); return true; };
   if (off === 0) { if (isIn) return ret(s.data); s.data = this.cpu.eax.value & 0xff; return true; }
   if (off === 1) return isIn ? ret(STATUS) : true;

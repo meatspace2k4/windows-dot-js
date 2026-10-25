@@ -1,8 +1,8 @@
-// netCache (win95.js): the shell's view of a network drive the network's machine answers for, asynchronously
+// netCache (win95.js): the shell's view of a network drive the system's machine answers for, asynchronously
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 const src = readFileSync(new URL('../win95.js', import.meta.url), 'utf8');
-const start = src.indexOf('function netCache(app, key) {'), end = src.indexOf('\n/** MPR', start);
+const start = src.indexOf('function netCache(app, key) {'), end = src.indexOf('\n/** a network path read', start);
 assert.ok(start > 0 && end > start, 'netCache found');
 const fsStub = { version: 0 };
 const W95FS = { FSError: class extends Error { constructor(c, p) { super(p); this.code = c; } } };

@@ -1073,7 +1073,6 @@ P.appy16 = function () {
   if (this.depth) return;
   if (this.vxdRunEvents) this.vxdRunEvents();
   if (!this.user16Ready) return;
-  if (this.host && this.host.net) { this.vxdAppy(); return; }   // the network's process starts no media devices
   if (this.vxd && window.W95SYSTEM.vxds && window.W95SYSTEM.vxds['MMDEVLDR.VXD']) { this.vxdDevLoaders(); this.vxdAppy(); return; }   // the recompiled device loader (vmm.js)
   if (this.mmdevStarted) return;
   const mm = this.ne.get('MMSYSTEM'), ep = mm && mm.meta && this.neExport(mm, 2001); if (!ep) return;   // RING3_DEVLOADER
@@ -1408,8 +1407,8 @@ const EGA_ATTR = [0, 1, 2, 3, 4, 5, 0x14, 7, 0x38, 0x39, 0x3a, 0x3b, 0x3c, 0x3d,
 const egaDac = i => [(i >> 2 & 1) * 0x2a + (i >> 5 & 1) * 0x15, (i >> 1 & 1) * 0x2a + (i >> 4 & 1) * 0x15, (i & 1) * 0x2a + (i >> 3 & 1) * 0x15];
 // the card as MSDISP.INF's VGA.LogConfig gives the W32 (*PNP0912) its resources: the VGA's ports 3B0h-3BBh and
 // 3C0h-3DFh, its memory windows A0000h-AFFFFh and B8000h-BFFFFh (the W32's MMU there) and the video BIOS at C0000h.
-// Its devnode is the one Setup made for it (win95.js setupDisplay); the network's machine has no display
-P.cards = function () { return this.host && this.host.net ? [] : [{ devnode: 'ROOT\\*PNP0912\\0000', io: [[0x3b0, 0x0c], [0x3c0, 0x20]], irq: [], dma: [], mem: [[0xa0000, 0x10000], [0xb8000, 0x8000], [0xc0000, 0x8000]] }]; };
+// Its devnode is the one Setup made for it (win95.js setupDisplay)
+P.cards = function () { return [{ devnode: 'ROOT\\*PNP0912\\0000', io: [[0x3b0, 0x0c], [0x3c0, 0x20]], irq: [], dma: [], mem: [[0xa0000, 0x10000], [0xb8000, 0x8000], [0xc0000, 0x8000]] }]; };
 const VRAM_SIZE = 4 << 20, WIN = 0xa0000;   // (a W32p with 4 MB: the largest custom mode at 16 bits, with the driver's off-screen caches, fits)
 P.adapter = function () {
   if (this.et) return this.et;

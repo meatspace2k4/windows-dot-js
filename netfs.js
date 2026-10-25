@@ -1,6 +1,6 @@
 'use strict';
 // A network drive's files, for fs.js: each operation is the INT 21h call Windows 95's KERNEL32 makes for it (the long
-// file name API), run in the network's process through the file system manager's handler, which gives it to the
+// file name API), run in the system's machine through the file system manager's handler, which gives it to the
 // redirector (VREDIR) for a drive it has connected. Paths and data pass through the process's transfer area.
 (function () {
 const { FSError } = window.W95FS;
@@ -11,7 +11,7 @@ const dosDT = ms => { const d = new Date(ms), y = Math.max(1980, d.getFullYear()
   return { date: ((y - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate(), time: (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1) }; };
 
 /** the backend of drive `letter` (or of share `letter` when it is a UNC name, \\server\share), connected in `app`'s
- *  process (the network's) */
+ *  process (the system's machine's) */
 function backend(app, letter) {
   const unc = letter.length > 1, root = unc ? letter + '\\' : letter + ':\\';
   const proc = () => { if (!app.alive || !app.proc) throw new FSError(21, root); return app.proc; };
@@ -39,7 +39,7 @@ function backend(app, letter) {
     return out;
   };
   const seek = (h, pos) => int21({ eax: 0x4200, ebx: h, ecx: (pos / 65536) >>> 0, edx: pos & 0xffff });
-  return {
+  const b = {
     stat: rel => { if (!rel) return { dir: true, size: 0, attrs: 0x10, ctime: 0, mtime: 0, atime: 0, name: '' }; return search(full(rel), true)[0] || null; },
     list: rel => search(full(rel ? rel + '\\*.*' : '*.*'), false),
     // 716Ch: BX the access (0 read, 1 write, 2 both) with sharing allowed, CX the attributes, DX what to do (low
@@ -86,7 +86,11 @@ function backend(app, letter) {
       }
       const r = int21({ eax: 0x3600, edx: letter.charCodeAt(0) - 64 }); const c = (r.eax & 0xffff) * (r.ecx & 0xffff); return { total: c * (r.edx & 0xffff), free: c * (r.ebx & 0xffff) };
     },
+    // a whole file, read or written in one request (the page's copy of a file it opens: win95.js netCache)
+    readAll: rel => { const h = b.open(rel, { read: true }); try { return b.read(h, 0, b.size(h)); } finally { b.close(h); } },
+    writeAll: (rel, data) => { const h = b.open(rel, { write: true, create: true, trunc: true }); try { b.write(h, 0, data); } finally { b.close(h); } },
   };
+  return b;
 }
 window.W95NetFS = { backend };
 })();

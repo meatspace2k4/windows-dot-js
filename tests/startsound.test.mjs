@@ -53,11 +53,11 @@ for (const [record, opts, heard] of [
 {
   const src = readFileSync(new URL('../worker.js', import.meta.url), 'utf8');
   const i = src.indexOf('  startSystemTask() {'), j = src.indexOf('  startMsgsrv() {'); assert.ok(i >= 0 && j > i);
-  const M = new Function('W', 'self', 'fs', `return class {\n${src.slice(i, src.indexOf('\n  }\n', j) + 4)}\n}`);
+  const M = new Function('W', 'self', 'fs', 'post', `return class {\n${src.slice(i, src.indexOf('\n  }\n', j) + 4)}\n}`);
   const run = (items, runonce) => {
     const started = [], spawned = [], exits = [];
     const W = { regVals: () => items, regGet: () => undefined }, self = { W95SYSTEM: { programs: runonce ? { 'RUNONCE.EXE': {} } : {} } }, fs = { exists: f => f === 'C:\\WINDOWS\\RUNONCE.EXE' };
-    const m = new (M(W, self, fs))(); let pc = null;
+    const m = new (M(W, self, fs, () => {}))(); let pc = null;
     Object.assign(m, { alive: true, proc: { trapped: null, init16() { exits.push('init16'); }, startTask16(n) { started.push(n); return 0x1234; } }, spawnProgram(f) { spawned.push(f); return (pc = { onExit: c => exits.push(c) }); }, exited: (c, why) => exits.push(['exited', why]) });
     const r = m.startSystemTask();
     return { r, started, spawned, exits, pc, m };

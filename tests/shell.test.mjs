@@ -19,7 +19,7 @@ const make = new Function('env', `
   ${cut('const onTaskbar =', ';')}
   ${cut('function winAt(x, y) {', '\n')}
   let monitor = false;
-  const monApp = ${cut('() => (sysApp && sysApp.alive', ';')}
+  ${cut('const monApp = () =>', ';')}
   ${cut('function nativeAt(x, y) {', '\n}')}
   const nativeFocus = ${cut("() => (!menus.length && !ren", ';')}
   return { winAt: (x, y) => (sync(), winAt(x, y)), monApp: () => (sync(), monApp()), onTaskbar: (x, y) => (sync(), onTaskbar(x, y)),

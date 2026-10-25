@@ -1443,13 +1443,13 @@ P.absentService = function (dev, n) {
 
 // ---------------------------------------------------------------- static VxDs
 // the ones VMM32 loads at boot (VTDAPI: the timer API for MMSYSTEM and WINMM), given Sys_Critical_Init, Device_Init
-// and Init_Complete before Windows starts. The network's process (host.net: MPREXE's) has the network's too: the file
-// system manager and its cache and PERF, which VMM32 carries, and each one a Services\VxD key names (StaticVxD), every
-// VxD given each message in turn in the order of their DDBs' Init_Order
+// and Init_Complete before Windows starts. The system's machine (host.lan) has the network's too: the file system
+// manager and its cache and PERF, which VMM32 carries, and each one a Services\VxD key names (StaticVxD), every VxD
+// given each message in turn in the order of their DDBs' Init_Order
 const STATIC_VXDS = ['VTDAPI.VXD', 'ENABLE.VXD', 'SHELL.VXD', 'REBOOT.VXD', 'VCOMM.VXD'], VMM32_NET = ['IFSMGR.VXD', 'VCACHE.VXD', 'PERF.VXD'];
 P.vxdStatics = function () {
   const files = [...STATIC_VXDS];
-  if (this.host && (this.host.net || this.host.lan)) {   // (the network's process, and the system's machine, which has the network stack as Windows does)
+  if (this.host && this.host.lan) {   // (the system's machine, which has the network stack as Windows does)
     files.push(...VMM32_NET);
     const k = 'hklm\\system\\currentcontrolset\\services\\vxd';
     for (const d of W.regKids(k)) for (const f of regStr(W.regGet(`${k}\\${d}`, 'StaticVxD')).split(',').map(x => x.trim().toUpperCase()).filter(Boolean)) if (!files.includes(f)) files.push(f);
@@ -1473,10 +1473,9 @@ P.vxdBoot = function () {
   this.k32RebootInit();
   // the devnodes, started as CONFIGMG starts them at boot: those whose device loader is a static VxD (DevLoader=*name:
   // NDIS for the network's, VCOMM for the ports), then those whose loader it loads (MMDEVLDR for the MEDIA devnodes,
-  // whose API MMSYSTEM calls as MSGSRV32 has it start its devices, DriverProc 800h); not the network's machine's, whose
-  // process starts no media devices
+  // whose API MMSYSTEM calls as MSGSRV32 has it start its devices, DriverProc 800h)
   this.vxdDevLoaders(true);
-  if (!(this.host && this.host.net) && window.W95SYSTEM.vxds && window.W95SYSTEM.vxds['MMDEVLDR.VXD']) this.vxdDevLoaders();
+  if (window.W95SYSTEM.vxds && window.W95SYSTEM.vxds['MMDEVLDR.VXD']) this.vxdDevLoaders();
 };
 
 /** a dynamically loadable VxD by file name, loaded and initialized (SYS_DYNAMIC_DEVICE_INIT) once */

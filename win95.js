@@ -928,7 +928,7 @@ const Printers = virt('printers', 'Printers', 'printers', () => [
 async function printerWindow(name) {
   closeMenus();
   const sys = await startSystem();
-  if (sys && sys.remote) await sys.cmd('printerWindow', [join(WINDIR, 'RUNDLL32.EXE'), name]);
+  if (sys) await sys.cmd('printerWindow', [join(WINDIR, 'RUNDLL32.EXE'), name]);
 }
 function addPrinter() { closeMenus(); runNative(join(WINDIR, 'RUNDLL32.EXE'), 'shell32.dll,SHHelpShortcuts_RunDLL AddPrinter'); }
 const MyComputer = virt('mycomputer', 'My Computer', 'mycomputer', () => [
@@ -944,23 +944,8 @@ const netLists = new Map();   // a container's key -> { items } once enumerated
 const NET_ICON = { 1: 'workgroup', 2: 'netserver', 3: 'netshare', 7: 'globe' };   // by RESOURCEDISPLAYTYPE
 /** the resources MPR has under `res` (null: the scope's top) */
 async function netEnum(scope, res) {
-  if (!await netBoot()) return [];
-  if (netApp.remote) return (netApp.alive && await netApp.cmd('netEnum', [scope, res])) || [];
-  const p = netApp.proc, s = x => (x ? netStr(x) : 0), nr = res ? p.alloc(32) : 0, ph = p.alloc(4), out = [];
-  if (res) { p.w32(nr, res.scope); p.w32(nr + 4, res.type); p.w32(nr + 8, res.disp); p.w32(nr + 12, res.usage); p.w32(nr + 16, 0); p.w32(nr + 20, s(res.remote)); p.w32(nr + 24, s(res.comment)); p.w32(nr + 28, s(res.provider)); }
-  if (await netCall('WNetOpenEnumA', [scope, 0, 0, nr, ph]) !== 0) return out;
-  const h = p.r32(ph), cnt = p.alloc(4), sz = p.alloc(4), buf = p.alloc(0x4000);
-  for (;;) {
-    p.w32(cnt, 0xffffffff); p.w32(sz, 0x4000);
-    if (await netCall('WNetEnumResourceA', [h, cnt, buf, sz]) !== 0) break;   // ERROR_NO_MORE_ITEMS, or what stops it
-    for (let i = 0, n = p.r32(cnt); i < n; i++) {
-      const a = buf + 32 * i, str = o => p.readA(p.r32(a + o)) || '';
-      out.push({ scope: 2, type: p.r32(a + 4), disp: p.r32(a + 8), usage: p.r32(a + 12), remote: str(20), comment: str(24), provider: str(28) });
-    }
-  }
-  await netCall('WNetCloseEnum', [h]);
-  for (const a of [nr, ph, cnt, sz, buf]) if (a) p.free(a);
-  return out;
+  const a = await netBoot(); if (!a || !a.alive) return [];
+  return (await a.cmd('netEnum', [scope, res])) || [];
 }
 /** a folder of the network: `res` the container (null: Network Neighborhood itself) */
 function netFolder(id, title, icon, scope, res) {
@@ -1137,8 +1122,10 @@ function confirmDelete(it, perm) {
 let clip = null;
 function cutCopy(it, mode) { if (it.info && !isRoot(it.path)) clip = { mode, path: it.path }; }
 function sameDir(a, b) { try { return fs.realpath(a).toUpperCase() === fs.realpath(b).toUpperCase(); } catch (_) { return false; } }
-function pasteInto(dir) {
+async function pasteInto(dir) {
   if (!clip || !dir) return;
+  await Promise.all([netReady(clip.path), netReady(dir, false)]);   // (a network file or folder: as the system's machine has it)
+  if (!clip) return;
   const src = clip.path; if (!fs.exists(src)) { clip = null; return; }
   const i = fs.stat(src), name = dispName(i.name, i.isDir);
   let dst = join(dir, i.name);
@@ -1244,7 +1231,7 @@ function itemMenu(view, it) {
   if (it.key === 'sys:bin') out.push({ label: 'Empty Recycle &Bin', disabled: !binItems().length, fn: emptyBin }, { sep: true });
   const net = !!((window.W95SYSTEM || {}).net || {})['MPR.DLL'];
   if (net && (it.key === 'sys:mc' || it.key === 'sys:net')) out.push({ label: 'Ma&p Network Drive...', fn: mapNetDrive }, { label: 'Dis&connect Network Drive...', fn: disconnectNetDrive }, { sep: true });
-  if (net && it.drive && fs.vols.get(it.drive).remote) out.push({ label: 'Dis&connect', fn: () => netCall('WNetCancelConnection2A', [netStr(it.drive + ':'), 1, 0]).then(syncNetDrives) }, { sep: true });
+  if (net && it.drive && fs.vols.get(it.drive).remote) out.push({ label: 'Dis&connect', fn: () => netCall('WNetCancelConnection2A', [it.drive + ':', 1, 0]).then(syncNetDrives) }, { sep: true });
   out.push({ label: 'Create &Shortcut', disabled: !(real || it.drive || NS_CLSID[it.key]), fn: () => createShortcut(view, it) });
   if (real) out.push({ label: '&Delete', disabled: ro, fn: () => confirmDelete(it) }, { label: 'Rena&me', disabled: ro, fn: () => startRename(view, it) });
   out.push({ sep: true }, { label: 'P&roperties', fn: () => properties(it) });
@@ -1796,7 +1783,8 @@ class Notepad {
     this.c = c; if (!shift) this.a = c; this.typing = false; this.show(); return true;
   }
   // ---- file I/O
-  load(path) {
+  load(path, read) {
+    if (!read && netPath(path)) { netReady(path).then(() => this.load(path, true)); return true; }   // (a network file: read from the system's machine first)
     let i; try { i = fs.stat(path); } catch (e) { msgBox('Notepad', `${path}\n${e.message}`, 'warning'); return false; }
     if (i.size > 65535) { msgBox('Notepad', `The file ${dispName(i.name)} is too large for Notepad.\n\nUse another editor to edit the file.`, 'warning'); return false; }
     let t; try { t = fs.readText(i.path); } catch (e) { msgBox('Notepad', `${i.path}\n${e.message}`, 'warning'); return false; }
@@ -2381,8 +2369,8 @@ function shutDownDialog() {
 function shutdownSeq(restart) {
   [...windows].forEach(w => closeWin(w, true)); closeMenus();
   shutDownCleanly();
-  // the machines stop as Windows does (the system's, the network's, the programs'): a restart boots them afresh
-  for (const a of new Set([...nativeApps, sysApp, netApp])) if (a && a.alive) a.exited(0);
+  // the machines stop as Windows does (the system's, the programs'): a restart boots them afresh
+  for (const a of new Set([...nativeApps, sysApp])) if (a && a.alive) a.exited(0);
   if (restart) { rebooted = true; try { localStorage.setItem(SHUTDOWN, 'running'); } catch (_) { /* no storage */ } }   // (Windows runs again)
   screen = 'logow'; dirty();
   setTimeout(() => {
@@ -2460,7 +2448,7 @@ function deskDrop(it, x, y) {
   if (!t) return false;
   if (t.it.key === 'sys:bin') { confirmDelete(it); return true; }
   if (it.info && t.it.path && (t.it.drive || (t.it.info && t.it.info.isDir))) {
-    fsTry('move', it.label, () => moveAny(it.path, join(t.it.path, it.info.name))); return true;
+    netReady(t.it.path, false).then(() => fsTry('move', it.label, () => moveAny(it.path, join(t.it.path, it.info.name)))); return true;
   }
   return false;
 }
@@ -2568,31 +2556,11 @@ function sysMenu(w, x, y, above) {
 const SV = window.W95SAVERS || { savers: {}, fonts: {} };
 const b64bytes = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
 async function sha256hex(b) { const h = await crypto.subtle.digest('SHA-256', b); return [...new Uint8Array(h)].map(x => x.toString(16).padStart(2, '0')).join(''); }
-// the network's ring-0 images (VxDs, NE2000.SYS) and DLLs: decoded and compiled before its process first starts, so
-// the start runs them rather than building them on the main thread
-const unb64 = async s => { try { return new Uint8Array(await (await fetch('data:application/octet-stream;base64,' + s)).arrayBuffer()); } catch (_) { return b64bytes(s); } };
-/** a bundled module's compiled code (d.wasm, base64), decoded and compiled off the main thread, once */
-const wasmOf = d => d.module || (d.module = unb64(d.wasm).then(b => WebAssembly.compile(b)));
-let sysCompile = null;
-function systemCompiled() {
-  const S = window.W95SYSTEM; if (!S) return Promise.resolve();
-  return sysCompile || (sysCompile = Promise.all([...Object.values(S.ne), ...Object.values(S.dlls), ...Object.values(S.net || {})].map(async m => { m.mod = await wasmOf(m); })));
-}
-let netCompile = null;
-function netCompiled() {
-  const S = window.W95SYSTEM; if (!S) return Promise.resolve();
-  const job = async (d, from, to) => { if (!d[to] && d[from]) d[to] = await unb64(d[from]); if (!d.mod && d.wasm) d.mod = await WebAssembly.compile(await unb64(d.wasm)); };
-  return netCompile || (netCompile = Promise.all([
-    ...Object.values(S.vxds || {}).map(d => job(d, 'image', 'imgBytes')),
-    ...Object.values(S.drivers || {}).map(d => job(d, 'file', 'bytes')),
-    ...Object.values(S.net || {}).map(d => job(d, 'file', 'bytes')),
-  ]));
-}
 const mkc = (w, h) => Object.assign(document.createElement('canvas'), { width: Math.max(1, w), height: Math.max(1, h) });
 let fullSaver = null, lastInput = performance.now();
 async function startSaverProcess(path, arg) {
   const app = sysApp || await startSystem();
-  if (!app || !app.alive || !app.remote) return null;
+  if (!app || !app.alive) return null;
   const result = await app.spawnProgram(path, arg);
   return result && result.pid ? { app, pid: result.pid, path } : null;
 }
@@ -3133,239 +3101,9 @@ const SCAN = (() => {
   return t;
 })();
 class NativeApp {
-  constructor(path, arg, o = {}) { this.path = path; this.arg = arg; this.net = !!o.net; this.system = !!o.system; this.quiet = !!o.quiet; this.alive = true; this.wins = new Map(); this.icon = EXE_ICON[basename(path).toUpperCase()] || 'app'; this.lastActive = 0; this.cursorOn = false; }
-  async start(bytes, prog) {
-    const S = window.W95SYSTEM;
-    await systemCompiled();
-    // the system's machine has no image of its own: its layout is any program's
-    if (!prog) prog = { name: 'MSGSRV32.EXE', d: { meta: Object.values(S.programs)[0].meta, mod: Promise.resolve(null) } };
-    if (!prog.d.mod) prog.d.mod = WebAssembly.compile(b64bytes(prog.d.wasm));
-    const module = await prog.d.mod;
-    const dlls = new Map();
-    for (const [n, d] of Object.entries({ ...S.dlls, ...(this.net ? S.net : {}) })) { d.bytes = d.bytes || b64bytes(d.file); dlls.set(n.replace(/\.DLL$/, ''), { file: d.bytes, module: d.mod, meta: d.meta }); }
-    // the network's DLLs for a program that imports them (MSPRINT2's MPR): compiled as one is first loaded
-    if (!this.net) for (const [n, d] of Object.entries(S.net || {})) dlls.set(n.replace(/\.DLL$/, ''), {
-      get file() { return d.bytes || (d.bytes = b64bytes(d.file)); }, meta: d.meta,
-      get module() { return d.mod instanceof WebAssembly.Module ? d.mod : (d.modSync || (d.modSync = new WebAssembly.Module(b64bytes(d.wasm)))); } });
-    [this.sw, this.sh] = this.system ? bootSize() : nativeMode(); if (this.system) bootMode(this.sw, this.sh);
-    const host = {
-      fs, width: this.sw, height: this.sh, path: this.path, now: () => performance.now(), net: this.net, vmPages: 2048,   // 128 MiB of address space to reserve
-      shared: true,   // (the system's modules take shared memory: the machines in workers share theirs with the page)
-      cursor: () => ({ x: mouse.x, y: mouse.y }), surface: (h, w, hh) => mkc(w, hh).getContext('2d'), setCursor: () => {},
-      exited: (code, why) => this.exited(code, why, true), boot: p => p.bootUser16(), exec: (cmd, show) => this.exec(cmd, show),
-      // the display in and out of message mode (a blue screen), and the machine's reset (the keyboard controller's)
-      msgMode: on => { msgApp = on ? this : msgApp === this ? null : msgApp; dirty(); }, reset: () => machineReset(),
-      // KERNEL32's unhandled-exception filter: its fault dialog for this program (which then ends)
-      faultDialog: f => faultDialog(this.progName(), f),
-    };
-    const exe = /\s/.test(this.path) ? `"${this.path}"` : this.path;
-    try {
-      this.proc = new W95Win32.Process(bytes, module, { ...prog.d.meta, name: prog.name.replace(/\.EXE$/, '') }, host, this.arg ? `${exe} ${this.arg}` : exe, dlls);
-      this.proc.soundQuiet = this.quiet;   // (sound.js: the card's output off for the one sound)
-      if (this.system && !this.proc.trapped && !this.proc.startTask16('MSGSRV32.EXE')) throw new Error('MSGSRV32.EXE did not start');
-    }
-    catch (e) { console.error(e); this.exited(-1, e.message); return false; }
-    if (this.proc.trapped) { this.exited(-1, this.proc.trapped); return false; }
-    { const a = this.proc.scanout(); if (a.bpp) [this.sw, this.sh] = [a.w, a.h]; }   // the mode the display driver set
-    this.cv = mkc(this.sw, this.sh); this.cx = this.cv.getContext('2d'); this.img = this.cx.createImageData(this.sw, this.sh);
-    this.ov = mkc(this.sw, this.sh); this.ox = this.ov.getContext('2d'); this.oimg = this.ox.createImageData(this.sw, this.sh); this.o32 = new Uint32Array(this.oimg.data.buffer);
-    this.d32 = new Uint32Array(this.img.data.buffer); this.pal = new Uint32Array(256);
-    if (!this.system) try {
-      // its windows stay above the taskbar (the system's machine is the screen: its work area is its shell's to set)
-      const p = this.proc, r = p.wbufLin || (p.nativeWindows(), p.wbufLin);
-      p.w16(r, 0); p.w16(r + 2, 0); p.w16(r + 4, Math.min(this.sw, W)); p.w16(r + 6, Math.min(this.sh, workH()));
-      p.user16(483, [['w', 47], ['w', 0], ['l', p.wbufSel << 16], ['w', 0]]);   // SPI_SETWORKAREA
-    } catch (e) { console.error(e); }
-    nativeApps.add(this);
-    this.step(); return true;
-  }
-  step() {
-    clearTimeout(this.timer); this.timer = 0;
-    if (!this.alive) return;
-    const p = this.proc, t0 = performance.now();
-    // ring-0 work that stopped (blocked, or a blue screen waiting for its key) goes on, and nothing else runs meanwhile
-    if (p.r0Runs && p.r0Runs.length) {
-      try { p.r0Step(); } catch (e) { console.error(e); this.exited(-1, e.message); return; }
-      if (msgApp === this) dirty();
-      if (!(p.r0Runs && p.r0Runs.length) && this.afterR0) { const go = this.afterR0; this.afterR0 = null; go(); }
-      if (this.alive) this.timer = setTimeout(() => this.step(), 16);
-      return;
-    }
-    if (this.stopped) return;   // (its fault dialog is up: it ends when that closes)
-    if (!p.win16Held && p.k32CloseRequest && p.k32CloseRequest()) closeProgram(this);   // REBOOT's APC: Close Program
-    this.keysFed = 0; this.feedKeys();
-    // while a thread holds the Win16Lock it gave up the processor in (or hung in), only it runs: USER's timers, the
-    // system thread, appy time and the other threads wait for it; the VMM's time-outs still come (ring 0)
-    try {
-      for (let n = 0; this.alive && n < 4; n++) {
-        p.stats.slices++; const live = p.slice();
-        if (!p.win16Held) { p.timers16(); p.systemPump(); p.appy16(); p.threads16(); }
-        else { p.threads16(); if (p.vxdRunTimeOuts) p.vxdRunTimeOuts(); }
-        if (p.sound16) p.sound16(); if (p.lanPoll) p.lanPoll();
-        if (!live || p.preempted || p.win16Held) break;   // its time ran out: the page gets its turn
-      }
-    } catch (e) {
-      if (e instanceof W95Win32.FaultError) { p.depth = 0; p.faulted(e.fault); }   // (in a call the host made)
-      else if (!(e instanceof W95Win32.HangError)) { console.error(e); this.exited(-1, e.message); return; }
-      else { p.hung('host', e); p.depth = 0; }   // a call the host made into it never came back: the system is frozen behind it
-    }
-    // a processor exception nothing handled: at ring 0 VWIN32's blue screen, then the program ends; else KERNEL32's
-    // fault dialog for it, and it ends when the dialog closes
-    if (p.fault && !this.faultTaken) {
-      this.faultTaken = true;
-      if (p.fault.ring === 0) { fatalException(this, p.fault); if (this.alive) this.timer = setTimeout(() => this.step(), 16); return; }
-      this.stopped = true; faultDialog(this.progName(), p.fault, () => this.exited(-1)); return;
-    }
-    p.stats.guestMs += performance.now() - t0;
-    // a program the system started that performed an illegal operation: it alone is shut down
-    for (const f of (p.pcFaults || []).splice(0)) {
-      f.pc.fault = true; emit('program.exit', { path: f.pc.path, code: -1, why: f.why });
-      if (f.fault) faultDialog(basename(f.pc.path).replace(/\.[^.]*$/, '').toUpperCase(), f.fault);
-      else msgBox(basename(f.pc.path), `This program has performed an illegal operation and will be shut down.\n\n${f.why}`, 'error', ['OK'], null, { noTask: false, modal: false });
-    }
-    if (p.trapped && !p.failed) p.fail(p.trapped);
-    if (p.exitCode !== null || p.trapped) { this.exited(p.exitCode, p.trapped); return; }
-    if (!p.win16Held) { this.sync(); this.clipHandoff(); }   // its windows as USER has them (not while USER is held)
-    else dirty();   // (its screen, as it is drawn meanwhile)
-    this.timer = setTimeout(() => this.step(), this.keyq && this.keyq.length ? 0 : 16);
-  }
+  constructor(path, arg, o = {}) { this.path = path; this.arg = arg; this.system = !!o.system; this.quiet = !!o.quiet; this.alive = true; this.wins = new Map(); this.icon = EXE_ICON[basename(path).toUpperCase()] || 'app'; this.lastActive = 0; this.cursorOn = false; }
   /** the program's module name, as KERNEL32's messages name it */
   progName() { return basename(this.path).replace(/\.[^.]*$/, '').toUpperCase(); }
-  /** ring-0 runs stopped mid-way (a blue screen up): the system takes nothing else until they are done */
-  ring0() { return !!(this.proc && this.proc.r0Runs && this.proc.r0Runs.length); }
-  // the keyboard as VKD sees it first: its hot keys (Ctrl+Alt+Del) and, in message mode, every key. True when it took it
-  vkd(e, up) {
-    const p = this.proc; if (!p || !p.vkdKey || !this.alive) return false;
-    let sc = SCAN[e.code] || 0;
-    if (e.code === 'Backspace' && e.ctrlKey && e.altKey) sc = 0x153;   // a Mac's Delete key: Ctrl+Alt+Del
-    if (!sc) return false;
-    try { return p.vkdKey(sc & 0xff, sc > 0xff, up, { shift: e.shiftKey, ctrl: e.ctrlKey, alt: e.altKey }); } catch (err) { console.error(err); return false; }
-  }
-  /** a window's icon: its program's (in the system's machine, the program of the process whose task made it) */
-  iconOf(n) {
-    const pc = n && n.task && this.proc && [...(this.proc.procs || new Map()).values()].find(c => c.tdb === n.task);
-    return pc ? EXE_ICON[basename(pc.path).toUpperCase()] || 'app' : this.icon;
-  }
-  // WinExec and CreateProcess from the program: a program the system runs starts in this one's address space, on its
-  // window system (P.spawn). An instance handle (above 31) on success, else WinExec's error: 2 not found, 11 not a
-  // program this system runs, 8 its image's place already taken here (a second instance of the same program)
-  exec(cmd, show) {
-    const m = /^\s*(?:"([^"]+)"|(\S+))\s*(.*)$/.exec(cmd || ''); if (!m) return 2;
-    let path = m[1] || m[2]; const arg = m[3];
-    if (!extname(path)) path += '.exe';
-    const file = (/^[a-z]:|^\\/i.test(path) ? [path] : [join(WINDIR, path), join(WINDIR, 'SYSTEM', path), join(fs.cwd, path)]).find(f => fs.exists(f));
-    if (!file) return 2;
-    // a Windows (16-bit) program of the system's: a task of this machine's, as KERNEL's WinExec starts one
-    const ne = Object.values((window.W95SYSTEM || {}).ne || {}).find(d => d.fileName === basename(file).toUpperCase() && /\.EXE$/.test(d.fileName));
-    if (ne) return this.proc.winExec16(ne.fileName, arg || '', show === undefined ? 1 : show);
-    return this.spawnProgram(file, arg);
-  }
-  /** a program the system bundle carries, started in this machine: its process, or WinExec's error (11 not one this
-   *  system runs, 8 its image's place already taken here: a second instance of the same program) */
-  spawnProgram(file, arg) {
-    const S = window.W95SYSTEM || {}, p = this.proc;
-    const name = basename(file).toUpperCase(), d = (S.programs || {})[name]; if (!d) return 11;
-    if (p.pc0 && p.pc0.exe && p.pc0.exe.base === d.meta.base) return 8;   // (the machine's own program: one instance)
-    const live = [...(p.procs || new Map()).values()].some(x => x.exe.base === d.meta.base);   // (then the instances share its image: P.spawn)
-    if (!live) p.modules = p.modules.filter(x => x.base !== d.meta.base);   // an ended process's image: loaded afresh
-    let pc;
-    try {
-      const mod = d.modSync || (d.modSync = new WebAssembly.Module(b64bytes(d.wasm)));
-      pc = p.spawn(fs.readFile(file), mod, { ...d.meta, name: name.replace(/\.EXE$/, '') }, fs.realpath(file), arg ? `${fs.realpath(file)} ${arg}` : fs.realpath(file));
-    } catch (e) { console.error(e); return 8; }
-    pc.onExit = code => { if (!pc.fault) emit('program.exit', { path: pc.path, code }); };
-    this.kick();
-    return pc;
-  }
-  // one clipboard across programs: each process's USER keeps its own, so the text moves through the shell's when the
-  // keyboard moves: the program losing it leaves its CF_TEXT as the shell's text, the one gaining it is given that
-  clipHandoff() {
-    const mine = !!(active && active.native && active.app === this);
-    if (mine && clipOwner !== this) {
-      if (clipOwner && clipOwner.alive) clipOwner.clipOut();
-      clipOwner = this; this.clipIn();
-    } else if (!mine && clipOwner === this && !(active && active.native)) { this.clipOut(); clipOwner = null; }
-  }
-  clipOut() {
-    const p = this.proc; if (!p || p.depth) return;
-    const code = p.exitCode; p.exitCode = null;   // called as the program exits too: its USER still holds the data
-    try {
-      if (!p.user16(137, [['w', 0]]).ax) return;                                    // OpenClipboard
-      const h = p.user16(142, [['w', 1]]).ax, b = h && p.gblock(h);            // GetClipboardData(CF_TEXT)
-      if (b) { const t = p.readA(b.lin, b.size).replace(/\r\n/g, '\n'); textClip = this.clipText = t; }
-      p.user16(138);                                                                 // CloseClipboard
-    } catch (e) { console.error(e); } finally { p.exitCode = code; }
-  }
-  clipIn() {
-    const p = this.proc; if (!p || p.depth || textClip === this.clipText) return;
-    try {
-      if (!p.user16(137, [['w', 0]]).ax) return;
-      p.user16(139);                                                                 // EmptyClipboard
-      if (textClip) {
-        const bytes = W95FS.encode(textClip.replace(/\r?\n/g, '\r\n')), h = p.globalAlloc16(0x2002, bytes.length + 1);
-        p.u8.set(bytes, p.gblock(h).lin); p.u8[p.gblock(h).lin + bytes.length] = 0;
-        p.user16(141, [['w', 1], ['w', h]]);                                         // SetClipboardData(CF_TEXT)
-      }
-      p.user16(138);
-      this.clipText = textClip;
-    } catch (e) { console.error(e); }
-  }
-  kick() { if (this.alive && this.timer) { clearTimeout(this.timer); this.timer = setTimeout(() => this.step(), 0); } }
-  // the shell's windows for USER's: added, moved, retitled, closed, in USER's order, and USER's active window active
-  sync() {
-    let nw; try { nw = this.proc.nativeWindows(); } catch (e) { console.error(e); this.exited(-1, e.message); return; }
-    const seen = new Set();
-    for (const n of nw.list) {
-      let w = this.wins.get(n.hwnd);
-      if (!w) { w = new NativeWin(this, n); this.wins.set(n.hwnd, w); windows.push(w); if (!w.noTask) tasks.push(w); }
-      else w.set(n);
-      seen.add(n.hwnd);
-    }
-    for (const [h, w] of this.wins) if (!seen.has(h)) { this.wins.delete(h); closeWin(w, true); }
-    const order = nw.list.map(n => this.wins.get(n.hwnd)).reverse(), slots = [];
-    windows.forEach((w, i) => { if (w.app === this) slots.push(i); });
-    slots.forEach((i, k) => { windows[i] = order[k]; });
-    this.capture = nw.capture;
-    if (nw.active !== this.lastActive) {
-      this.lastActive = nw.active;
-      const w = this.wins.get(nw.active); if (w && !w.min) { this.syncing = true; activate(w); this.syncing = false; }
-    }
-    this.paint(); dirty();
-  }
-  // the framebuffer under this program's windows, through the DAC, into the canvas they are drawn from
-  paint() {
-    if (monApp() === this) return;   // (the monitor: drawn whole by scanToCanvas, as RemoteApp's paint says)
-    // a program with nothing on the screen (no window of its own, no capture: the network's MPREXE) shows nothing: its
-    // overlay is cleared once and the screen is not read
-    if (!this.wins.size && !this.capture) { if (!this.blank) { this.o32.fill(0); this.ox.putImageData(this.oimg, 0, 0); this.blank = true; } return; }
-    this.blank = false;
-    const a = this.proc.scanout(); if (!SCAN_BPP.has(a.bpp)) return;
-    const pal = this.pal, dac = a.dac, v = a.vram, pitch = a.pitch || a.w, d = this.d32, sw = this.sw, sh = this.sh;
-    for (let i = 0; i < 256; i++) { const r = dac[3 * i], g = dac[3 * i + 1], b = dac[3 * i + 2]; pal[i] = 0xff000000 | ((b << 2 | b >> 4) << 16) | ((g << 2 | g >> 4) << 8) | (r << 2 | r >> 4); }
-    for (const w of this.wins.values()) {
-      if (w.min || w.transparent) continue;
-      const x0 = Math.max(0, w.x), y0 = Math.max(0, w.y), x1 = Math.min(sw, a.w, w.x + w.w), y1 = Math.min(sh, a.h, w.y + w.h);
-      if (x1 <= x0 || y1 <= y0) continue;
-      for (let y = y0; y < y1; y++) scanRow(a, v, pal, d, y * sw, y * pitch, x0, x1);
-      this.cx.putImageData(this.img, 0, 0, x0, y0, x1 - x0, y1 - y0);
-    }
-    // the rest of its screen: what USER draws on its desktop (its cursor, a window's drag frame) over the desktop
-    // color, which is the shell's desktop showing through
-    // (GetSysColor(COLOR_BACKGROUND), at the DAC's 6 bits a component as the palette above has it)
-    const six = c => (c >> 2) << 2 | (c >> 2) >> 4;
-    let bg = 0; try { const c = this.proc.user16(180, [['w', 1]]); bg = 0xff000000 | six(c.dx & 0xff) << 16 | six(c.ax >> 8 & 0xff) << 8 | six(c.ax & 0xff); bg >>>= 0; } catch (e) { console.error(e); }
-    const o = this.o32, wins = [...this.wins.values()].filter(w => !w.min && !w.transparent);   // (a WS_EX_TRANSPARENT window draws nothing: what is under it shows)
-    for (let y = 0; y < sh; y++) {
-      const s = y * pitch, r = y * sw, ins = wins.filter(w => y >= w.y && y < w.y + w.h);
-      for (let x = 0; x < sw; x++) {
-        const c = y < a.h && x < a.w ? (a.bpp === 8 ? pal[v[s + x]] : scanPx(a, v, pal, s, x)) : bg;
-        o[r + x] = c === bg || ins.some(w => x >= w.x && x < w.x + w.w) ? 0 : c;
-      }
-    }
-    this.ox.putImageData(this.oimg, 0, 0);
-  }
-  /** the screen as the display adapter scans it out now: its mode, VRAM and DAC */
-  screenNow() { const a = this.proc.scanout(); return { w: a.w, h: a.h, pitch: a.pitch || a.w, bpp: a.bpp, dacMode: a.hicolor, attr: a.attr, vram: a.vram, dac: a.dac }; }
   /** the whole screen into the page's canvas, through the DAC (the page as the machine's monitor) */
   scanToCanvas() {
     const a = this.screenNow(); fill(0, 0, W, H, '#000');
@@ -3379,51 +3117,6 @@ class NativeApp {
     if (w.win32) { if (w.surface) ctx.drawImage(w.surface, w.x, w.y, w.w, w.h); return; }
     const x0 = Math.max(0, w.x), y0 = Math.max(0, w.y), x1 = Math.min(this.sw, w.x + w.w), y1 = Math.min(this.sh, w.y + w.h);
     if (x1 > x0 && y1 > y0) ctx.drawImage(this.cv, x0, y0, x1 - x0, y1 - y0, x0, y0, x1 - x0, y1 - y0);
-  }
-  // the mouse: absolute moves and button changes into USER's mouse_event, as the mouse driver reports them
-  pointer(kind, x, y, btn = 0) {
-    // (the mouse driver reports to USER at interrupt time, a thread holding the Win16Lock or not; not while ring 0 has
-    // the machine in message mode)
-    if (!this.alive || !this.proc || this.proc.depth || this.ring0()) return;
-    const ax = Math.round(clamp(x, 0, this.sw - 1) * 65535 / (this.sw - 1)), ay = Math.round(clamp(y, 0, this.sh - 1) * 65535 / (this.sh - 1));
-    const f = kind === 'down' ? (btn === 2 ? 8 : 2) : kind === 'up' ? (btn === 2 ? 16 : 4) : 1;
-    try {
-      // the move first, as the mouse reports it before the button, so USER sees the button where the pointer is
-      // behind keys still waiting to go in (a click after typing reaches the program after what was typed)
-      const ev = [];
-      if (f !== 1 && (ax !== this.ax || ay !== this.ay)) ev.push({ mouse: [0x8001, ax, ay] });
-      ev.push({ mouse: [0x8001 | f, ax, ay] }); this.ax = ax; this.ay = ay;
-      if (this.keyq && this.keyq.length) this.keyq.push(...ev); else for (const m of ev) this.proc.mouseEvent16(...m.mouse);
-    } catch (e) { console.error(e); }
-    this.feedKeys();
-    this.kick();
-  }
-  key(e, up) {
-    if (!this.alive) return;
-    const vk = e.keyCode || 0, sc = SCAN[e.code] || 0; if (vk === 91 || vk === 93 || vk === 224) return;   // the Mac command keys stay with the host
-    // the modifiers as the event reports them: a Shift, Ctrl or Alt pressed or released while the page had no focus
-    // (or one the browser reports only as a flag) reaches USER before the key it changes
-    this.mods = this.mods || {};
-    for (const [m, on, code] of [[16, e.shiftKey, 'ShiftLeft'], [17, e.ctrlKey, 'ControlLeft'], [18, e.altKey, 'AltLeft']]) {
-      if (m === vk || on === undefined || !!this.mods[m] === !!on) continue;
-      this.mods[m] = on; (this.keyq = this.keyq || []).push([m, SCAN[code] || 0, !on]);
-    }
-    if (vk === 16 || vk === 17 || vk === 18) this.mods[vk] = !up;
-    if (vk) (this.keyq = this.keyq || []).push([vk, sc, up]);
-    // USER's system queue holds a limited number of events: a burst (fast or synthetic typing) goes in a few at a
-    // time between slices, so the program takes each batch off before the next arrives, as a keyboard buffer would
-    this.feedKeys();
-    this.kick();
-  }
-  feedKeys() {
-    if (!this.keyq || !this.keyq.length || this.proc.depth || this.ring0()) return;   // (the keyboard driver's, at interrupt time too)
-    try { if (this.proc.inputPending()) return; } catch (e) { console.error(e); }   // USER has input not yet taken
-    for (; this.keyq.length && (this.keysFed || 0) < 16; this.keysFed = (this.keysFed || 0) + 1) {
-      const k = this.keyq.shift();
-      if (k.mouse) { try { this.proc.mouseEvent16(...k.mouse); } catch (err) { console.error(err); } continue; }
-      const [vk, sc, up] = k;
-      try { this.proc.keyEvent16(vk, sc & 0xff, up, sc > 0xff); } catch (err) { console.error(err); }
-    }
   }
   // Ctrl or Alt with a character the event names without its key (synthetic events): that key, pressed and released
   // with the modifiers held, which are then let go
@@ -3456,31 +3149,6 @@ class NativeApp {
       if (sh) this.key({ keyCode: 16, code: 'ShiftLeft', shiftKey: false }, true);
     }
   }
-  focus(w) {
-    // as the task that owns it (a window of a process this program started is that process's): restored, or made
-    // active and brought to the top
-    try {
-      this.proc.asWindowTask(w.hwnd, () => {
-        if (w.min) this.proc.user16(42, [['w', w.hwnd], ['w', 9]]);                                     // ShowWindow SW_RESTORE
-        else { this.proc.user16(59, [['w', w.hwnd]]); this.proc.user16(45, [['w', w.hwnd]]); }          // SetActiveWindow, BringWindowToTop
-      });
-    } catch (e) { console.error(e); }
-    this.kick();
-  }
-  minimize(w) { try { this.proc.user16(42, [['w', w.hwnd], ['w', 6]]); } catch (e) { console.error(e); } this.kick(); }   // SW_MINIMIZE
-  close(w) { try { this.proc.user16(110, [['w', w.hwnd], ['w', 0x10], ['w', 0], ['l', 0]]); } catch (e) { console.error(e); } this.kick(); }   // PostMessage WM_CLOSE
-  exited(code, why, own) {
-    if (!this.alive) return;
-    if (clipOwner === this) { if (!why && this.proc && !this.proc.trapped) this.clipOut(); clipOwner = null; }   // what it copied outlives it
-    this.alive = false; clearTimeout(this.timer); nativeApps.delete(this);
-    if (this.proc && this.proc.soundClose) this.proc.soundClose();
-    for (const w of this.wins.values()) closeWin(w, true);
-    this.wins.clear();
-    emit('program.exit', { path: this.path, code, ...(why ? { why } : {}) });
-    if (why) msgBox(basename(this.path), `This program has performed an illegal operation and will be shut down.\n\n${why}`, 'error', ['OK'], null, { noTask: false, modal: false });
-    dirty();
-    if (own && this.system && !why) systemEnded(code);
-  }
 }
 // ---------------------------------------------------------------- a machine in a worker (worker.js)
 // The program's machine runs in a worker of its own, so nothing it does holds the page: it draws into its memory,
@@ -3488,10 +3156,10 @@ class NativeApp {
 // (bridge.js) and asks it for what is done to its windows; it calls the page's file system synchronously (the page
 // answers here). The page draws USER's windows from what the machine reports after each of its steps.
 const machineWorkers = new Set();
-/** a channel from machine `a` to the network's machine, for the network's files it opens (worker.js netCall): the
- *  network's machine answers on `a`'s block, which `a` waits on */
-function netLink(a) {
-  const n = netApp && netApp.alive && netApp.remote ? netApp : null; if (!n || a === n || a.net) return;
+/** a channel from machine `a` to the system's machine `n`, which has the network stack, for the network's files `a`
+ *  opens (worker.js netCall): `n` answers on `a`'s block, which `a` waits on */
+function netLink(a, n = sysApp) {
+  if (!n || !n.alive || a === n) return;
   const ch = new MessageChannel(), sab = new SharedArrayBuffer(16 + W95Bridge.RPC_BYTES);
   n.worker.postMessage({ t: 'netport', port: ch.port2, sab }, [ch.port2]);
   a.worker.postMessage({ t: 'netlink', port: ch.port1, sab }, [ch.port1]);
@@ -3500,18 +3168,18 @@ function netLink(a) {
 let netMounts = [];   // the drives the network has connected: { letter, unc }
 W95Win32.regWatch(o => { for (const a of machineWorkers) a.worker.postMessage({ t: 'regop', o }); });
 class RemoteApp extends NativeApp {
-  constructor(path, arg, o = {}) { super(path, arg, o); this.remote = true; this.calls = new Map(); this.nextCall = 1; this.stats = { slices: 0, guestMs: 0 }; this.held = null; }
+  constructor(path, arg, o = {}) { super(path, arg, o); this.calls = new Map(); this.nextCall = 1; this.stats = { slices: 0, guestMs: 0 }; this.held = null; }
   // what the shell's older code reads of a machine (its counters; a program that has not exited)
   get proc() { return { stats: this.stats, exitCode: this.alive ? null : 0, trapped: null, depth: 0, win16Held: this.held, r0Runs: this.r0 ? [1] : [], txt: this.txt, nativeChildren: h => this.children(h) }; }
   start(bytes, prog) {
     [this.sw, this.sh] = this.system ? bootSize() : nativeMode(); if (this.system) bootMode(this.sw, this.sh);
     this.ring = W95Bridge.newRing(); this.rpcSab = new SharedArrayBuffer(16 + W95Bridge.RPC_BYTES);
-    if (this.net || this.system) this.lanRing = W95Bridge.newFrames();   // (the frames for its network card: the network's machine, and the system's, which runs the network stack)
+    if (this.system) this.lanRing = W95Bridge.newFrames();   // (the frames for its network card: the system's machine runs the network stack)
     this.worker = new Worker('worker.js'); machineWorkers.add(this);
     this.worker.onmessage = e => this.message(e.data);
     this.worker.onerror = e => { console.error('[worker]', e.message); this.exited(-1, e.message); };
     this.worker.postMessage({ t: 'start', rpc: this.rpcSab, registry: W95Win32.regDump(), o: {
-      path: this.path, arg: this.arg, net: this.net, system: this.system, quiet: this.quiet, sw: this.sw, sh: this.sh, shellW: W, workH: workH(), ring: this.ring, lan: this.lanRing || null,
+      path: this.path, arg: this.arg, system: this.system, quiet: this.quiet, sw: this.sw, sh: this.sh, shellW: W, workH: workH(), ring: this.ring, lan: this.lanRing || null,
       bytes: bytes || null, prog: prog ? { name: prog.name, meta: prog.d.meta } : null,
       trace: new URLSearchParams(location.search).get('trace'),   // (?trace=MSGSRV32: the imports that thread calls, read back with cmd 'trace')
       exp: Object.fromEntries(new URLSearchParams(location.search).getAll('exp').map(x => x.split('=')).map(([k, v]) => [k, v === 'false' ? false : v === 'true' ? true : v])) } });   // (?exp=NAME=false: a switch in the machine, for an experiment)
@@ -3552,6 +3220,8 @@ class RemoteApp extends NativeApp {
     }
     return this.kids.get(hwnd) || [];
   }
+  /** whether the system's machine has MPR loaded, once it has come to that (worker.js loadMpr) */
+  mprLoaded() { return this.mprUp !== undefined ? Promise.resolve(this.mprUp) : new Promise(ok => { this.mprReady = ok; }); }
   /** a request to the machine; resolves to its answer */
   cmd(name, args = []) {
     if (!this.alive) return Promise.resolve(null);
@@ -3568,11 +3238,13 @@ class RemoteApp extends NativeApp {
         this.d32 = new Uint32Array(this.img.data.buffer); this.pal = new Uint32Array(256);
         if (this.system) fitWindow(this.sw, this.sh);
         nativeApps.add(this);
-        // a machine with a network card (the network's, and the system's, which has the network stack as Windows does): a station on the page's segment
+        // the system's machine has the network stack and its card, as Windows does: a station on the page's segment
         if (this.lanRing) { this.lanStation = { rx: frame => { if (this.alive) W95Bridge.framePut(this.lanRing, frame); } }; this.lanDetach = window.W95LAN && W95LAN.attach(this.lanStation); }
-        if (this.net) { for (const a of machineWorkers) if (a !== this) netLink(a); }
+        if (this.system) { for (const a of machineWorkers) if (a !== this) netLink(a, this); }
         else netLink(this);
         if (this.started) this.started(true); return;
+      // MPR loaded in the system's machine (or no network client): the shell's network calls go ahead (netBoot)
+      case 'mpr': this.mprUp = m.up; if (this.mprReady) { this.mprReady(m.up); this.mprReady = null; } return;
       case 'lan': if (window.W95LAN && this.lanStation) W95LAN.send(this.lanStation, m.frame); return;
       case 'frame': this.frame(m); return;
       case 'held': this.held = m.held; this.stats = m.stats; return;
@@ -3726,13 +3398,14 @@ class RemoteApp extends NativeApp {
     if (!this.alive) return;
     this.alive = false; nativeApps.delete(this); machineWorkers.delete(this);
     if (this.lanDetach) this.lanDetach();
-    if (this.net) for (const a of machineWorkers) a.worker.postMessage({ t: 'netlink', port: null });
+    if (this.system) for (const a of machineWorkers) a.worker.postMessage({ t: 'netlink', port: null });
     if (clipOwner === this) clipOwner = null;
     if (window.W95Sound) W95Sound.close(this);
     for (const w of this.wins.values()) closeWin(w, true);
     this.wins.clear();
     if (msgApp === this) msgApp = null;
     for (const ok of this.calls.values()) ok(null); this.calls.clear();
+    if (this.mprReady) { this.mprReady(false); this.mprReady = null; }
     setTimeout(() => this.worker.terminate(), 0);
     emit('program.exit', { path: this.path, code, ...(why ? { why } : {}) });
     if (why) msgBox(basename(this.path), `This program has performed an illegal operation and will be shut down.\n\n${why}`, 'error', ['OK'], null, { noTask: false, modal: false });
@@ -3746,11 +3419,12 @@ function nativeAt(x, y) {
   const w = winAt(x, y); return w ? (w.native ? w.app : null) : monApp();
 }
 async function runNative(path, arg, o = {}) {
+  await netReady(path);   // (a program on a network drive: its file as the system's machine reads it)
   let bytes; try { bytes = fs.readFile(path); } catch (e) { return false; }
   const prog = await nativeProgram(bytes); if (!prog) return false;
   // in the system's machine, as Windows 95 runs every program on its one USER and its one set of drivers; a second
   // instance of a program (whose image's place there is taken) gets a machine of its own
-  if (!o.net && !o.apart) {
+  if (!o.apart) {
     const sys = await startSystem();
     if (sys) {
       let r = sys.spawnProgram(path, arg); if (r && r.then) r = await r;
@@ -3758,8 +3432,7 @@ async function runNative(path, arg, o = {}) {
       const err = r && typeof r === 'object' ? r.err : r; if (err !== 8) return false;
     }
   }
-  const app = o.net || !window.SharedArrayBuffer ? new NativeApp(path, arg, o) : new RemoteApp(path, arg, o);   // (a machine in a worker: the network's stays on the page, which its drives call into)
-  return app.start(bytes, prog);
+  return new RemoteApp(path, arg, o).start(bytes, prog);
 }
 // ---------------------------------------------------------------- the system
 // Windows 95's system: one machine (one USER, one MMSYSTEM, one sound card) whose first task is MSGSRV32.EXE, started
@@ -3780,9 +3453,9 @@ function startSystem() {
     // MSGSRV32's start-up plays SystemStart and starts the shell SYSTEM.INI names; after a start that was no shutdown
     // its SystemStart is not heard (quiet)
     const quiet = !cleanStart && !firstRun && !rebooted;
-    const a = new (window.SharedArrayBuffer ? RemoteApp : NativeApp)(join(WINDIR, 'SYSTEM', 'MSGSRV32.EXE'), '', { system: true, quiet });
+    const a = new RemoteApp(join(WINDIR, 'SYSTEM', 'MSGSRV32.EXE'), '', { system: true, quiet });
     if (!(await a.start(null, null))) { bootLogoEnd(); return null; }
-    sysApp = a; if (!a.remote) bootLogoEnd();
+    sysApp = a;
     return a;
   })().finally(() => { sysStarting = null; }));
 }
@@ -3818,34 +3491,64 @@ function systemBootLater() {
   const go = () => setTimeout(() => startSystem(), 50);
   if (document.readyState === 'complete') go(); else window.addEventListener('load', go, { once: true });
 }
-// the network's process, which Windows 95 starts as it boots: MPREXE.EXE, with the network's VxDs at ring 0 under it
-// and the provider router's DLLs in it. As Windows 95 boots, the network logon follows (MPR's own Enter Network
-// Password dialog), then the connections to remember are made again; each drive MPR has connected is a drive of fs.js
-// whose files the redirector reaches (netfs.js)
-let netApp = null;
-const le32 = v => [v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, (v >>> 24) & 0xff];
-/** a network drive's (or share's) files as the shell sees them while the network's machine runs in its worker: the
- *  page cannot wait on the machine, so what the shell lists comes from the folders the machine has listed for it,
- *  asked for as the shell first looks and shown when they arrive (fs.js's version: the views refresh). A change the
- *  shell makes goes to the machine and shows when it is done. The files' contents are the programs' to read (each
- *  machine reaches the network's machine itself); the shell's own reads of them are refused */
+// the network's process, MPREXE.EXE, runs in the system's machine with the network's VxDs at ring 0 under it and the
+// provider router's DLLs in it, started as Windows 95 boots (worker.js loadMpr). The network logon follows as the shell
+// first needs the network (MPR's own Enter Network Password dialog), then the connections to remember are made again;
+// each drive MPR has connected is a drive of fs.js whose files the system's machine's redirector reaches (netfs.js)
+const netMachine = () => (sysApp && sysApp.alive ? sysApp : null);
+/** a network drive's (or share's) files as the shell sees them: the page cannot wait on the system's machine, so what
+ *  the shell lists comes from the folders the machine has listed for it, asked for as the shell first looks and shown
+ *  when they arrive (fs.js's version: the views refresh). A file the shell opens is its copy of the file, read whole
+ *  from the machine beforehand (netReady); one not read yet is not ready, and is asked for. What the shell writes goes
+ *  to the machine as the file is closed; its changes show when the machine has made them */
 function netCache(app, key) {
-  const lists = new Map(), stats = new Map(), asked = new Map(); let space = { total: 0, free: 0 }, spaceAt = 0;
+  const lists = new Map(), stats = new Map(), asked = new Map(), files = new Map(), reading = new Map(), handles = new Map();
+  let space = { total: 0, free: 0 }, spaceAt = 0, nextH = 1;
   const call = (op, args) => (app.alive ? app.cmd('netfs', [key, op, args]) : Promise.resolve(null)).catch(e => { console.warn('[net]', key, op, e && e.message); return null; });   // (a machine gone, or an error there: no answer)
   const refresh = () => { fs.version++; dirty(); };
+  const parent = rel => rel.split('\\').slice(0, -1).join('\\');
   // (by the path in capitals, as the file system's names compare)
-  const list = rel => {
-    const k = rel.toUpperCase(), t = asked.get(k); if (t && performance.now() - t < 2000) return;
-    asked.set(k, performance.now());
-    call('list', [rel]).then(r => {
-      if (!Array.isArray(r)) { if (!lists.has(k)) { lists.set(k, []); refresh(); } return; }   // (a folder that cannot be listed holds nothing)
-      const pre = k ? k + '\\' : '';   // (what the folder no longer holds goes)
-      for (const p of [...stats.keys()]) if (p.startsWith(pre) && !p.slice(pre.length).includes('\\')) stats.delete(p);
-      lists.set(k, r); for (const e of r) stats.set(((rel ? rel + '\\' : '') + e.name).toUpperCase(), e); refresh();
+  const listNow = rel => {
+    const k = rel.toUpperCase(); asked.set(k, performance.now());
+    return call('list', [rel]).then(r => {
+      if (!Array.isArray(r)) { if (!lists.has(k)) { lists.set(k, []); refresh(); } return lists.get(k); }   // (a folder that cannot be listed holds nothing)
+      const pre = k ? k + '\\' : '', old = new Map();   // (what the folder no longer holds goes; a file changed there is read afresh)
+      for (const p of [...stats.keys()]) if (p.startsWith(pre) && !p.slice(pre.length).includes('\\')) { old.set(p, stats.get(p)); stats.delete(p); }
+      for (const e of r) {
+        const p = ((rel ? rel + '\\' : '') + e.name).toUpperCase(), o = old.get(p);
+        if (o && (o.size !== e.size || o.mtime !== e.mtime)) files.delete(p);
+        stats.set(p, e);
+      }
+      for (const p of old.keys()) if (!stats.has(p)) files.delete(p);
+      lists.set(k, r); refresh(); return r;
     });
   };
+  const list = rel => { const t = asked.get(rel.toUpperCase()); if (!t || performance.now() - t >= 2000) listNow(rel); };
+  const readFile = rel => {
+    const k = rel.toUpperCase(); if (files.has(k)) return Promise.resolve(files.get(k));
+    if (!reading.has(k)) reading.set(k, call('readAll', [rel]).then(b => { reading.delete(k); if (b instanceof Uint8Array) files.set(k, b); return files.get(k) || null; }));
+    return reading.get(k);
+  };
+  // a file, or a folder and everything in it (only what it lists: `deep` false), read into the shell's copy
+  const ready = async (rel, deep = true) => {
+    if (rel && !stats.has(rel.toUpperCase())) await listNow(parent(rel));
+    const e = rel ? stats.get(rel.toUpperCase()) : { dir: true }; if (!e) return;
+    if (!e.dir) { await readFile(rel); return; }
+    const l = (await listNow(rel)) || [];
+    if (deep) for (const x of l) await ready((rel ? rel + '\\' : '') + x.name);
+  };
   const later = (op, args, then) => call(op, args).then(() => { if (then) then(); refresh(); });
-  const parent = rel => rel.split('\\').slice(0, -1).join('\\');
+  // what the shell changes shows in its copy at once, so what it does next sees it (a copy into a folder it just
+  // made); the folder's listing from the machine follows
+  const addTo = (prel, e) => { const pk = prel.toUpperCase(), l = lists.get(pk); if (l) lists.set(pk, [...l.filter(x => x.name.toUpperCase() !== e.name.toUpperCase()), e]); };
+  const drop = rel => {
+    const k = rel.toUpperCase(), pk = parent(rel).toUpperCase(), name = rel.split('\\').pop().toUpperCase();
+    for (const m of [stats, files, lists]) for (const p of [...m.keys()]) if (p === k || p.startsWith(k + '\\')) m.delete(p);
+    const l = lists.get(pk); if (l) lists.set(pk, l.filter(x => x.name.toUpperCase() !== name));
+  };
+  const done = rel => () => { asked.delete(parent(rel).toUpperCase()); list(parent(rel)); };
+  const handle = h => { const o = handles.get(h); if (!o) throw new W95FS.FSError(6, key); return o; };
+  const grow = (o, n) => { if (n > o.data.length) { const d = new Uint8Array(n); d.set(o.data); o.data = d; } };
   return {
     // a path whose folder has not been listed yet is taken as a folder until the listing says what it is (a path the
     // shell opens before it has looked in its parent: a share's subfolder named in a UNC path or typed in Run)
@@ -3856,55 +3559,64 @@ function netCache(app, key) {
       return lists.has(parent(rel).toUpperCase()) ? null : { dir: true, size: 0, attrs: 0x10, ctime: 0, mtime: 0, atime: 0, name: rel.split('\\').pop() };
     },
     list: rel => { list(rel); return lists.get(rel.toUpperCase()) || []; },
-    open: (rel) => { throw new W95FS.FSError(5, rel); },
-    read: () => new Uint8Array(0), write: () => { throw new W95FS.FSError(5, key); }, truncate: () => {}, size: () => 0, close: () => {},
-    mkdir: rel => later('mkdir', [rel], () => list(parent(rel))), rmdir: rel => later('rmdir', [rel], () => list(parent(rel))),
-    unlink: rel => later('unlink', [rel], () => { stats.delete(rel.toUpperCase()); asked.delete(parent(rel).toUpperCase()); list(parent(rel)); }),
-    rename: (a, b) => later('rename', [a, b], () => { stats.delete(a.toUpperCase()); asked.delete(parent(a).toUpperCase()); asked.delete(parent(b).toUpperCase()); list(parent(a)); list(parent(b)); }),
+    ready,
+    // (fs.js has seen the file there, or is creating it)
+    open: (rel, f) => {
+      const k = rel.toUpperCase(), there = stats.get(k);
+      let data;
+      if (f.trunc || !there) data = new Uint8Array(0);
+      else if (files.has(k)) data = f.write ? files.get(k).slice() : files.get(k);
+      else { readFile(rel).then(refresh); throw new W95FS.FSError(21, rel); }   // (not read yet: not ready until it is)
+      const h = nextH++; handles.set(h, { rel, k, data, dirty: !!f.write && (!!f.trunc || !there) }); return h;
+    },
+    read: (h, pos, n) => handle(h).data.slice(pos, pos + n),
+    write: (h, pos, b) => { const o = handle(h); grow(o, pos + b.length); o.data.set(b, pos); o.dirty = true; },
+    truncate: (h, n) => { const o = handle(h); if (n < o.data.length) o.data = o.data.slice(0, n); else grow(o, n); o.dirty = true; },
+    size: h => handle(h).data.length,
+    close: h => {
+      const o = handles.get(h); handles.delete(h); if (!o || !o.dirty) return;
+      const now = Date.now(), e = { attrs: 0x20, ctime: now, short: '', ...(stats.get(o.k) || {}), name: o.rel.split('\\').pop(), dir: false, size: o.data.length, mtime: now, atime: now };
+      files.set(o.k, o.data); stats.set(o.k, e); addTo(parent(o.rel), e);
+      later('writeAll', [o.rel, o.data], done(o.rel));
+    },
+    mkdir: rel => {
+      const now = Date.now(), e = { dir: true, size: 0, attrs: 0x10, ctime: now, mtime: now, atime: now, name: rel.split('\\').pop(), short: '' };
+      stats.set(rel.toUpperCase(), e); lists.set(rel.toUpperCase(), []); addTo(parent(rel), e);
+      later('mkdir', [rel], done(rel));
+    },
+    rmdir: rel => { drop(rel); later('rmdir', [rel], done(rel)); },
+    unlink: rel => { drop(rel); later('unlink', [rel], done(rel)); },
+    rename: (a, b) => {
+      const e = stats.get(a.toUpperCase()), data = files.get(a.toUpperCase());
+      drop(a); drop(b);
+      if (e) { const m = { ...e, name: b.split('\\').pop() }; stats.set(b.toUpperCase(), m); addTo(parent(b), m); if (data) files.set(b.toUpperCase(), data); }
+      later('rename', [a, b], () => { done(a)(); done(b)(); });
+    },
     setAttrs: (rel, a) => later('setAttrs', [rel, a]), setTime: (rel, ms) => later('setTime', [rel, ms]),
     space: () => { if (performance.now() - spaceAt > 5000) { spaceAt = performance.now(); call('space', []).then(r => { if (r) { space = r; refresh(); } }); } return space; },
   };
 }
-/** MPR's export `name` called on a thread of the network's process (its dialogs run there as the process's own),
- *  with dword arguments; resolves to what it returns */
-function netCall(name, args = []) {
-  if (netApp && netApp.remote) return netApp.alive ? netApp.cmd('netCall', [name, args]) : Promise.resolve(null);
-  const p = netApp && netApp.alive ? netApp.proc : null, mpr = p && p.byName.get('MPR'), fn = mpr && mpr.exports.get(name);
-  if (!fn) return Promise.resolve(null);
-  const a = p.alloc(96), res = a + 88, ptr = a + 92, code = [];
-  for (let i = args.length - 1; i >= 0; i--) code.push(0x68, ...le32(args[i]));   // push imm32
-  code.push(0xff, 0x15, ...le32(ptr), 0xa3, ...le32(res), 0xc2, 0x04, 0x00);       // call [ptr]; mov [res], eax; ret 4
-  p.w32(ptr, fn); p.u8.set(code, a);
-  return new Promise(ok => { const t = p.newThread(a, 0, 0x10000, true, false); t.onDone = () => ok(p.r32(res)); netApp.kick(); });
-}
-/** a string in the network's process's memory */
-const netStr = s => { if (netApp.remote) return s; const p = netApp.proc, a = p.alloc(s.length + 1); p.writeA(a, s); return a; };   // (a string itself for the network's machine in its worker)
+/** a network path read into the shell's copy (netCache) for the shell's own reads of it that follow; at once for any
+ *  other path */
+const netReady = (path, deep = true) => { let r = null; try { r = fs.remoteAt(path); } catch (_) { /* not a path */ } return r && r.b.ready ? r.b.ready(r.rel, deep) : Promise.resolve(); };
+const netPath = path => { try { const r = fs.remoteAt(path); return !!(r && r.b.ready); } catch (_) { return false; } };
+/** MPR's export `name` called on a thread of the system's machine (its dialogs run there as the process's own), with
+ *  dword or string arguments; resolves to what it returns */
+function netCall(name, args = []) { const a = netMachine(); return a ? a.cmd('netCall', [name, args]) : Promise.resolve(null); }
 /** fs.js's drives as MPR has them connected: one for each drive letter with a connection (WNetGetConnectionA), none for
- *  one without */
+ *  one without; the other machines' drives follow */
 function syncNetDrives() {
-  if (netApp && netApp.remote) {   // (from the network's machine in its worker: the shell's drives, and each machine's)
-    if (!netApp.alive) return Promise.resolve();
-    return netApp.cmd('netConnections').then(list => {
-      list = list || [];
-      for (let c = 65; c <= 90; c++) {
-        const L = String.fromCharCode(c), v = fs.vols.get(L); if (v && (!v.remote || v.host)) continue;   // (a host share's drive is the page's, not MPR's)
-        const x = list.find(y => y.letter === L), unc = x && x.unc;
-        if (v && (!unc || v.unc.toUpperCase() !== unc.toUpperCase())) fs.unmount(L);
-        if (unc && (!v || v.unc.toUpperCase() !== unc.toUpperCase())) fs.mount(L, { remote: netCache(netApp, L), unc, label: unc.split('\\').pop() || '' });
-      }
-      netMounts = list; for (const a of machineWorkers) if (!a.net) a.worker.postMessage({ t: 'netmounts', list });
-    }).catch(e => console.warn('[net] connections', e && e.message));   // (the network's machine gone: the drives stay as they were)
-  }
-  const p = netApp && netApp.alive ? netApp.proc : null, fn = p && p.byName.get('MPR') && p.byName.get('MPR').exports.get('WNetGetConnectionA');
-  const loc = p && p.alloc(8), buf = p && p.alloc(264), pn = p && p.alloc(4);
-  for (let c = 65; c <= 90; c++) {
-    const L = String.fromCharCode(c), v = fs.vols.get(L); if (v && (!v.remote || v.host)) continue;
-    let unc = null;
-    if (fn) { p.writeA(loc, L + ':'); p.w32(pn, 260); try { if (p.call(fn, [loc, buf, pn]) === 0) unc = p.readA(buf); } catch (e) { console.error(e); } }
-    if (v && (!unc || v.unc.toUpperCase() !== unc.toUpperCase())) fs.unmount(L);
-    if (unc && (!v || v.unc.toUpperCase() !== unc.toUpperCase())) fs.mount(L, { remote: W95NetFS.backend(netApp, L), unc, label: unc.split('\\').pop() || '' });
-  }
-  if (p) p.free(loc), p.free(buf), p.free(pn);
+  const a = netMachine(); if (!a) return Promise.resolve();
+  return a.cmd('netConnections').then(list => {
+    list = list || [];
+    for (let c = 65; c <= 90; c++) {
+      const L = String.fromCharCode(c), v = fs.vols.get(L); if (v && (!v.remote || v.host)) continue;   // (a host share's drive is the page's, not MPR's)
+      const x = list.find(y => y.letter === L), unc = x && x.unc;
+      if (v && (!unc || v.unc.toUpperCase() !== unc.toUpperCase())) fs.unmount(L);
+      if (unc && (!v || v.unc.toUpperCase() !== unc.toUpperCase())) fs.mount(L, { remote: netCache(a, L), unc, label: unc.split('\\').pop() || '' });
+    }
+    netMounts = list; for (const m of machineWorkers) m.worker.postMessage({ t: 'netmounts', list });
+  }).catch(e => console.warn('[net] connections', e && e.message));   // (the system's machine gone: the drives stay as they were)
 }
 // MPR's Map Network Drive and Disconnect Network Drive dialogs (WNetConnectionDialog, WNetDisconnectDialog), for disks
 async function mapNetDrive() { if (await netBoot()) { await netCall('WNetConnectionDialog', [0, 1]); await syncNetDrives(); } }
@@ -3916,22 +3628,22 @@ fs.uncBackend = unc => {
     const m = /^\\\\([^\\]+)\\([^\\]+)/.exec(unc);
     if (m && m[1].toUpperCase() === hostName()) { try { return (hostShares.list() || []).some(s => s.name.toUpperCase() === m[2].toUpperCase()) ? hostBackend(m[2]) : null; } catch (e) { return null; } }
   }
-  if (!netApp || !netApp.alive) { netBoot(); return null; }   // not yet: the network starts for the next time
-  if (netApp.remote) return netCache(netApp, unc);
-  const b = W95NetFS.backend(netApp, unc); try { b.space(); return b; } catch (_) { return null; }   // its root answers
+  const a = netMachine();
+  if (!a || netUp !== a) { netBoot(); return null; }   // not yet: the network is up for the next time
+  return netCache(a, unc);
 };
 // the network as the shell first needs it (Network Neighborhood, Map Network Drive, or connections to restore as it
-// boots): the process started, the logon (MPR's Enter Network Password), the remembered connections made again. Once
-// for each start of the network's process
+// boots): MPR up in the system's machine, the logon (MPR's Enter Network Password), the remembered connections made
+// again. Once for each start of the system's machine
 let netBooting = null, netUp = null;
 function netBoot() {
   if (!((window.W95SYSTEM || {}).net || {})['MPR.DLL']) return null;
-  if (netUp && netUp === netApp && netApp.alive) return Promise.resolve(netApp);
+  if (netUp && netUp === sysApp && netUp.alive) return Promise.resolve(netUp);
   return netBooting || (netBooting = (async () => {
-    const a = await startNetwork(); if (!a) return null;
+    const a = await startSystem(); if (!a || !(await a.mprLoaded())) return null;
     await netCall('WNetLogonA', [0, 0]);
     await netCall('WNetRestoreConnectionA', [0, 0]);
-    await syncNetDrives(); netUp = a; return a;
+    await syncNetDrives(); netUp = a; fs.uncs.clear(); return a;   // (a share asked for before: reached now)
   })().finally(() => { netBooting = null; }));
 }
 // ---------------------------------------------------------------- the host's folders as network drives
@@ -4027,30 +3739,13 @@ function mountHostShares() {
     const v = fs.mount(L, { remote: hostBackend(s.name), unc, label: s.name.toUpperCase() }); v.host = true;
   }
 }
-/** connections MPR remembers (HKCU\Network\Persistent): the network's machine starts as the shell boots to make them
- *  again; otherwise it starts when the shell first needs it (the system's own MPR and MPREXE run regardless) */
+/** connections MPR remembers (HKCU\Network\Persistent): the shell logs on as it boots to make them again; otherwise
+ *  when it first needs the network */
 const netRemembered = () => W95Win32.regKids('hkcu\\network\\persistent').some(k => W95Win32.regGet('hkcu\\network\\persistent\\' + k, 'RemotePath') !== undefined);
 /** at boot, with connections to restore: once the desktop is drawn and the page has loaded */
 function netBootLater() {
   const go = () => setTimeout(() => { if (netRemembered()) netBoot(); }, 100);   // after the desktop's first frames
   if (document.readyState === 'complete') go(); else window.addEventListener('load', go, { once: true });
-}
-let netStarting = null;   // one start at a time: callers while it starts wait for it
-function startNetwork() {
-  if (netApp && netApp.alive) return Promise.resolve(netApp);
-  return netStarting || (netStarting = (async () => {
-    if (!((window.W95SYSTEM || {}).net || {})['MPR.DLL']) return null;
-    const path = join(WINDIR, 'SYSTEM', 'MPREXE.EXE');
-    let bytes; try { bytes = fs.readFile(path); } catch (e) { return null; }
-    const prog = await nativeProgram(bytes); if (!prog) return null;
-    // on the page, as before 5d295d0: the shell reads and writes a network drive synchronously through the redirector
-    // (a worker can only answer it later, so its files could only be listed); programs in the other machines reach the
-    // drive through the page's file system
-    await netCompiled();
-    netApp = new NativeApp(path, '', { net: true }); fs.uncs.clear();
-    const t = performance.now(), ok = await netApp.start(bytes, prog); netApp.startMs = performance.now() - t;
-    return ok ? netApp : null;
-  })().finally(() => { netStarting = null; }));
 }
 
 class Win32DialogBody {
@@ -4263,7 +3958,7 @@ function displayProperties() {
     const s = savers[cur]; settingsBtn.disabled = previewBtn.disabled = !s.path; dirty();
     if (!s.path) return;
     const app = sysApp || await startSystem();
-    if (generation !== previewGeneration || !app || !app.alive || !app.remote) return;
+    if (generation !== previewGeneration || !app || !app.alive) return;
     const result = await app.spawnProgram(s.path, '/p 0x7ff0');
     if (generation !== previewGeneration) { if (result && result.pid) app.cmd('endProcess', [result.pid, 0]); return; }
     if (result && result.pid) {
@@ -4406,7 +4101,7 @@ const START = [
 // ---------------------------------------------------------------- render
 function render() {
   rafPending = false;
-  const txt = msgApp && (msgApp.remote ? msgApp.txt : msgApp.proc && msgApp.proc.txt);
+  const txt = msgApp && msgApp.txt;
   if (txt) { drawTextScreen(txt); return; }
   if (bootLogo.on && screen === 'desktop') { drawBootLogo(); return; }
   if (screen !== 'desktop') {
@@ -4449,7 +4144,7 @@ function render() {
 // every later draw of the screen a copy through main memory, slower the larger the screen)
 const spriteCv = mkc(64, 64), spriteCx = spriteCv.getContext('2d'), spriteImg = spriteCx.createImageData(64, 64), sprite32 = new Uint32Array(spriteImg.data.buffer);
 function drawSprite(app) {
-  let sp; try { sp = app.remote ? app.sprite() : app.proc && app.proc.sprite(); } catch (e) { return; }
+  let sp; try { sp = app.sprite(); } catch (e) { return; }
   if (!sp) return;
   const cpp = sp.cpp || 1, x = sp.x, y = sp.y, w = Math.min(Math.floor((64 - sp.px) / cpp), W - x), h = Math.min(64 - sp.py, H - y);
   if (w <= 0 || h <= 0 || x < 0 || y < 0) return;
@@ -4505,7 +4200,7 @@ function drawTextScreen(t) {
 // every task, the ones whose system does not answer marked; End Task ends the selected one, Shut Down opens Shut Down
 // Windows. KERNEL32 tells REBOOT the dialog is coming (2), up (3: Ctrl+Alt+Del again restarts) and gone (0)
 function closeProgram(app) {
-  const p = app.proc, state = n => { try { if (app.remote) app.cmd('closeState', [n]); else p.k32CloseState(n); } catch (e) { console.error(e); } };
+  const state = n => { try { app.cmd('closeState', [n]); } catch (e) { console.error(e); } };
   state(2);
   if (windows.some(w => w.title === 'Close Program')) { state(3); return; }
   const bu = dialogBaseUnits(), px = v => Math.round(v * bu.x / 4), py = v => Math.round(v * bu.y / 8);
@@ -4513,16 +4208,10 @@ function closeProgram(app) {
   // time) on the thread that owns the window
   // (a machine in a worker answers for its windows when asked: its answers arrive as the dialog is up)
   const hungRemote = new Map();
-  for (const m of new Set(windows.filter(w => w.native && w.app && w.app.remote).map(w => w.app))) {
+  for (const m of new Set(windows.filter(w => w.native && w.app).map(w => w.app))) {
     const ws = [...m.wins.values()]; m.cmd('hung', [ws.map(w => w.hwnd)]).then(f => { if (f) ws.forEach((w, i) => hungRemote.set(w, f[i])); dirty(); });
   }
-  const hung = w => {
-    if (w.native && w.app && w.app.remote) return !!hungRemote.get(w);
-    const q = w.native && w.app && w.app.proc, u = q && q.byName && q.byName.get('USER32'), x = u && u.exports;
-    const tid = x && x.get('GetWindowThreadProcessId'), hung = x && x.get('IsHungThread');
-    if (!tid || !hung || q.depth || (q.r0Runs && q.r0Runs.length)) return false;
-    try { return !!q.call(hung, [q.call(tid, [w.hwnd, 0])]); } catch (e) { console.error(e); return false; }
-  };
+  const hung = w => !!hungRemote.get(w);
   const tasks = () => windows.filter(w => !w.noTask && w.title && w.title !== 'Close Program');
   let sel = 0, win;
   const done = () => { closeWin(win); state(0); };
@@ -4610,22 +4299,12 @@ function vwin32Text(inVxd) {
   }
   return out.find(t => /in VXD/.test(t) === inVxd) || null;
 }
-/** a processor exception at ring 0: VWIN32's blue screen, shown by SHELL.VXD (SHELL_SYSMODAL_Message, MB_NOWINDOW);
- *  when a key closes it the current application is terminated */
 /** VWIN32's fatal-exception message for fault `f`, its inserts as VMM's message formatter takes them (%<insert><width>x,
  *  %<insert>s) */
 function fatalText(f) {
   const fmt = vwin32Text(!!f.vxd); if (!fmt) return null;
   const vals = [f.n, f.cs, f.eip, f.vxd ? `${f.vxd}(01) + ${(f.offset >>> 0).toString(16).toUpperCase().padStart(8, '0')}` : ''];
   return fmt.replace(/%(\d)(\d?)([xs])/g, (m, k, w, c) => c === 's' ? String(vals[+k - 1]) : (vals[+k - 1] >>> 0).toString(16).toUpperCase().padStart(+w || 0, '0'));
-}
-function fatalException(app, f) {
-  const p = app.proc, msg = fatalText(f), at = p.vxdService && p.vxdService(0x17, 3);
-  if (!msg || !at) { app.exited(-1); return; }
-  const a = p.alloc(msg.length + 1); p.writeA(a, msg);
-  app.afterR0 = () => app.exited(-1);   // the current application terminated
-  try { if (p.r0Start(at, { ebx: p.sysVM(), eax: 0x40001000, ecx: a, edi: 0, esi: 0, edx: 0 }) !== null) app.exited(-1); }
-  catch (e) { console.error(e); app.exited(-1); }
 }
 // the machine's reset (the keyboard controller's reset line): every program stops where it is, the screen goes dark
 // and Windows starts again; the disk keeps what was written to it
@@ -4822,7 +4501,7 @@ kbd.addEventListener('input', () => {
 const nativeFocus = () => (!menus.length && !ren && !modal() && screen === 'desktop' ? (fullSaver && fullSaver.app && fullSaver.app.alive ? fullSaver.app : active && active.native && active.app.alive ? active.app : !(active && windows.includes(active)) ? monApp() : null) : null);
 // the keyboard reaches VKD before anything: the system in message mode (a blue screen) takes every key, and a hot key
 // goes to the native system with the focus, else to one that is frozen, else to any
-const vkdApp = () => msgApp || nativeFocus() || [...nativeApps].find(a => a.alive && a.proc && a.proc.win16Held) || [...nativeApps].find(a => a.alive && !a.net);
+const vkdApp = () => msgApp || nativeFocus() || [...nativeApps].find(a => a.alive && a.proc && a.proc.win16Held) || [...nativeApps].find(a => a.alive);
 window.addEventListener('keyup', e => { const v = vkdApp(); if (v && v.vkd(e, true)) { e.preventDefault(); return; } const a = nativeFocus(); if (a) { e.preventDefault(); if (e.keyCode) a.key(e, true); } });
 window.addEventListener('keydown', e => {
   { const v = vkdApp(); if (v && v.vkd(e, false)) { e.preventDefault(); return; } }
@@ -5155,5 +4834,5 @@ const script = {
   },
 };
 
-window.win95 = { ...script, get nativeApps() { return [...nativeApps]; }, startSystem, get sysApp() { return sysApp; }, startNetwork, netBoot, netCall, syncNetDrives, mapNetDrive, disconnectNetDrive, get netApp() { return netApp; }, fs, render, displayProperties, startFullSaver, get fullSaver() { return fullSaver; }, properties, driveProps, openFolder, openPath, shellOpen, notepad, msgBox, runDialog, findComputer, findFiles, winHelp, shutDownDialog, MyComputer, get state() { return { menus: menus.length, menuSrc, modals: modals.length, cap: !!cap, drag: !!drag, screen, active: active && active.title }; } };
+window.win95 = { ...script, get nativeApps() { return [...nativeApps]; }, startSystem, get sysApp() { return sysApp; }, netBoot, netCall, syncNetDrives, mapNetDrive, disconnectNetDrive, fs, render, displayProperties, startFullSaver, get fullSaver() { return fullSaver; }, properties, driveProps, openFolder, openPath, shellOpen, notepad, msgBox, runDialog, findComputer, findFiles, winHelp, shutDownDialog, MyComputer, get state() { return { menus: menus.length, menuSrc, modals: modals.length, cap: !!cap, drag: !!drag, screen, active: active && active.title }; } };
 })();

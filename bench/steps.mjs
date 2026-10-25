@@ -56,18 +56,13 @@ export const STEPS = [
   },
   {
     name: 'network',
-    about: 'the network\'s process (MPREXE with the network VxDs under it), as the shell starts it at boot: start-up to the card started, then 5 s idle: its guest CPU and the main thread\'s busy share',
+    about: 'the network as the system\'s machine has it (MPR, MPREXE and the network VxDs, loaded as it boots), then 5 s idle: the system machine\'s guest CPU and the main thread\'s busy share',
     run: async () => {
-      if (!win95.startNetwork) return { skipped: 'no network in this build' };
-      await reset();
-      // started as the shell boots (its logon dialog closed by reset): the time that start took
-      const a = await win95.startNetwork(), start_ms = +((a && a.startMs) || 0).toFixed(1);
-      if (!a || !a.alive) throw new Error('the network process did not start: ' + (a && a.proc && a.proc.trapped));
-      const card = a.proc.devnodes().find(d => d.id === 'ROOT\\NET\\0000');
-      if (!card || !card.started) throw new Error('the network card did not start');
-      await sleep(1000);
+      const a = win95.sysApp; if (!a || !a.alive) throw new Error('the system\'s machine is not running');
+      if (!(await a.mprLoaded())) return { skipped: 'no network client installed' };
+      await reset(); await sleep(1000);
       const [cpu, idle] = await Promise.all([guestCpu(a, 5000), load(5000)]);
-      return { start_ms, guest_cpu_pct: cpu, idle_busy_pct: idle.busy_pct, frames_sent: window.W95LAN ? window.W95LAN.frames : 0 };
+      return { guest_cpu_pct: cpu, idle_busy_pct: idle.busy_pct, frames_sent: window.W95LAN ? window.W95LAN.frames : 0 };
     },
   },
   {

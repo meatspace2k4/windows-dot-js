@@ -92,7 +92,6 @@ assert.equal(ioctl(3, 0x0860), 1, 'Get Device Parameters is not answered here');
   assert.equal(rd0.rid, 1, 'ResType_Mem first');
   assert.deepEqual([q.r32(rd0.handle + 4), q.r32(rd0.handle + 8)], [0xa0000, 0xaffff]);
   assert.deepEqual(lc0.res.map(r => r.rid), [1, 1, 1, 2, 2], 'three windows, then the VGA\'s two port ranges');
-  assert.deepEqual(q.cards.call({ host: { net: true } }), [], 'the network\'s machine has no display');
 }
 
 // GetDriveType: a network drive is DRIVE_REMOTE

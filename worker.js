@@ -5,7 +5,7 @@
 // page synchronously (bridge.js), and takes the page's input from its ring between instructions, as interrupts. Nothing
 // the guest does here, a loop that never ends included, holds the page.
 self.window = self;
-// the Ethernet segment as this worker has it: its own stations (the card, in the network's machine), and the rest of the
+// the Ethernet segment as this worker has it: its own stations (the card, in the system's machine), and the rest of the
 // segment on the page (the other computer, lanhost.js; other machines' cards), frames passing both ways
 self.W95LAN = { stations: new Set(), frames: 0 };
 importScripts('bridge.js', 'fs.js', 'win32.js', 'gl.js', 'shell32.js', 'system.js', 'ne16.js', 'vmm.js', 'sound.js', 'lan.js', 'parallel.js', 'netfs.js', 'dyn.js', 'savers.js', 'saver-runtime.js');
@@ -26,9 +26,10 @@ function rpc(target, method, args = []) {
   if (r instanceof Error) throw r;
   return r;
 }
-// the network's drives and shares, as this machine reaches them: through the network's machine (its redirector), in a
-// worker of its own, called synchronously over a channel the page set up between the two (netLink); a file system of
-// their own here (fs.js's remote volumes), whose descriptors are numbered apart from the page's
+// the network's drives and shares, as this machine reaches them: through the system's machine (its redirector), in a
+// worker of its own, called synchronously over a channel the page set up between the two (netLink); the system's
+// machine itself through its own (ownNet). A file system of their own here (fs.js's remote volumes), whose descriptors
+// are numbered apart from the page's
 let netLink = null;
 function netCall(key, op, args) {
   if (!netLink) throw new FSError(53, key);   // no network: the network path was not found
@@ -41,11 +42,13 @@ function netCall(key, op, args) {
   return r;
 }
 const netBackend = key => new Proxy({}, { get: (_, op) => (...args) => netCall(key, op, args) });
+const ownNet = key => self.W95NetFS.backend({ get alive() { return !!(machine && machine.alive); }, get proc() { return machine && machine.proc; } }, key);
+const netOf = key => (machine && machine.system ? ownNet(key) : netLink ? netBackend(key) : null);
 const rfs = new self.W95FS.FileSystem();
 rfs.nextFd = 0x10000000;
-rfs.uncBackend = unc => { if (!netLink) return null; const b = netBackend(unc); try { b.space(); return b; } catch (_) { return null; } };
+rfs.uncBackend = unc => { const b = netOf(unc); if (!b) return null; try { b.space(); return b; } catch (_) { return null; } };
 const REMOTE_FD = 0x10000000;
-// a UNC path the network's machine does not reach (no network yet, or the host's own share, \\COMPUTER\SHARE) is the
+// a UNC path the system's machine does not reach (no network yet, or the host's own share, \\COMPUTER\SHARE) is the
 // page's file system's, which has the host's shares directly (win95.js fs.uncBackend)
 const remotePath = p => { try { return typeof p === 'string' && !!rfs.remoteAt(p); } catch (_) { return false; } };
 // the file system, the page's: each call made there (its errors thrown here as they were there); the network's paths
@@ -118,8 +121,8 @@ class Machine {
     if (!prog) prog = { name: 'MSGSRV32.EXE', meta: Object.values(S.programs)[0].meta, module: null };
     else prog.module = await WebAssembly.compile(b64bytes(S.programs[prog.name].wasm));
     const dlls = new Map();
-    for (const [n, d] of Object.entries({ ...S.dlls, ...(this.net ? S.net : {}) })) { d.bytes = d.bytes || b64bytes(d.file); dlls.set(n.replace(/\.DLL$/, ''), { file: d.bytes, module: d.mod, meta: d.meta }); }
-    if (!this.net) for (const [n, d] of Object.entries(S.net || {})) dlls.set(n.replace(/\.DLL$/, ''), {
+    for (const [n, d] of Object.entries(S.dlls)) { d.bytes = d.bytes || b64bytes(d.file); dlls.set(n.replace(/\.DLL$/, ''), { file: d.bytes, module: d.mod, meta: d.meta }); }
+    for (const [n, d] of Object.entries(S.net || {})) dlls.set(n.replace(/\.DLL$/, ''), {
       get file() { return d.bytes || (d.bytes = b64bytes(d.file)); }, meta: d.meta,
       get module() { return d.mod instanceof WebAssembly.Module ? d.mod : (d.modSync || (d.modSync = new WebAssembly.Module(b64bytes(d.wasm)))); } });
     for (const [n, d] of Object.entries((self.W95SAVERS || {}).dlls || {})) {
@@ -131,7 +134,7 @@ class Machine {
     this.saverDlls = new Map([...dlls].filter(([n]) => ['CRTDLL', 'GLU32'].includes(n)));
     const m = this;
     const host = {
-      fs, width: this.sw, height: this.sh, path: this.path, now: () => performance.now(), net: this.net, lan: !!(this.system && lanRing), system: !!this.system, vmPages: 2048, shared: true,   // (lan: the network stack and its card, as the system's machine has them; system: the Win16 tasks' process is its own)
+      fs, width: this.sw, height: this.sh, path: this.path, now: () => performance.now(), lan: !!(this.system && lanRing), system: !!this.system, vmPages: 2048, shared: true,   // (lan: the network stack and its card, as the system's machine has them; system: the Win16 tasks' process is its own)
       cursor: () => ({ x: m.mouse.x, y: m.mouse.y }), surface: (h, w, hh, win, pc) => {
         const canvas = new OffscreenCanvas(Math.max(1, w), Math.max(1, hh));
         if (!h) m.w32DesktopSurface = { canvas, w: canvas.width, h: canvas.height, pc, version: 1 };
@@ -260,7 +263,7 @@ class Machine {
    *  Neighborhood on the shell's desktop), and it starts the network's process, MPREXE. Once */
   loadMpr() {
     const p = this.proc; if (this.mprLoaded) return; this.mprLoaded = true;
-    if (W.regGet('hklm\\system\\currentcontrolset\\control\\networkprovider\\order', 'ProviderOrder') === undefined) return;
+    if (W.regGet('hklm\\system\\currentcontrolset\\control\\networkprovider\\order', 'ProviderOrder') === undefined) { post({ t: 'mpr', up: false }); return; }
     try {
       p.init16(); const m = p.loadDll('MPR'); if (m) { p.runPendingInits(); p.attach(m); }
       // the network's process, started as KERNEL32 starts it at boot and run to its first wait: it is its start that
@@ -268,6 +271,7 @@ class Machine {
       const exe = ['C:\\WINDOWS\\SYSTEM\\MPREXE.EXE', 'C:\\WINDOWS\\MPREXE.EXE'].find(f => fs.exists(f));
       if (exe) { const pc = this.spawnProgram(exe, ''); if (typeof pc === 'object') p.runUntilIdle(pc, 4000); }
     } catch (e) { console.error(e); }
+    post({ t: 'mpr', up: !!p.byName.get('MPR') });   // (the shell's network waits for it: win95.js netBoot)
   }
   startMsgsrv() {
     const p = this.proc; if (!this.alive || p.trapped) return true;
@@ -763,13 +767,13 @@ class Machine {
         return args[0].map(h => (tid && hung && !p.depth ? !!p.call(hung, [p.call(tid, [h, 0])]) : false));
       }
       case 'trayPost': p.post(...args); return;
-      // the network's machine: MPR's exports called on a thread of its own (its dialogs run there), its enumerations,
-      // the drives it has connected, and a drive's or share's files (netfs.js) for the page and for other machines
+      // the network as the system's machine has it: MPR's exports called on a thread of its own (its dialogs run there),
+      // its enumerations, the drives it has connected, and a drive's or share's files (netfs.js) for the page
       case 'printerWindow': return this.printerWindow(args[0], args[1]);
       case 'netCall': return this.netCall(args[0], args[1]);
       case 'netEnum': return this.netEnum(args[0], args[1]);
       case 'netConnections': return this.netConnections();
-      case 'netfs': { const b = self.W95NetFS.backend({ alive: true, proc: p }, args[0]); return b[args[1]](...(args[2] || [])); }
+      case 'netfs': return ownNet(args[0])[args[1]](...(args[2] || []));
       case 'mode': { const r = this.setMode(args[0], args[1]); if (!r) this.wantMode = [args[0], args[1]]; return r; }   // (null: made once no thread holds USER, step())
       case 'probe': return this.probe();
       // (offsets in a module, by name: EAX each time execution comes to one from another module, as a call into
@@ -805,17 +809,17 @@ self.onmessage = e => {
     else reply(value, error);
     if (machine) machine.kick();
   } else if (m.t === 'lan') lanSend(pageSide, m.frame);   // a frame from the rest of the segment
-  else if (m.t === 'netport') {   // (the network's machine) another machine's channel for its network files
+  else if (m.t === 'netport') {   // (the system's machine) another machine's channel for its network files
     const sab = m.sab;
     m.port.onmessage = e => {
       let v; const { key, op, args } = e.data;
-      try { v = self.W95NetFS.backend({ alive: !!(machine && machine.alive), proc: machine && machine.proc }, key)[op](...args); } catch (err) { v = err; }
+      try { v = ownNet(key)[op](...args); } catch (err) { v = err; }
       B.answer(sab, v === undefined ? null : v);
     };
-  } else if (m.t === 'netlink') netLink = m.port ? { port: m.port, sab: m.sab } : null;   // the network's machine, or none
+  } else if (m.t === 'netlink') netLink = m.port ? { port: m.port, sab: m.sab } : null;   // the system's machine, or none
   else if (m.t === 'netmounts') {   // the drives the network has connected, as this machine's
     for (const v of [...rfs.vols.values()]) if (!m.list.some(x => x.letter === v.letter && x.unc.toUpperCase() === v.unc.toUpperCase())) rfs.unmount(v.letter);
-    for (const x of m.list) if (!rfs.vols.has(x.letter)) rfs.mount(x.letter, { remote: netBackend(x.letter), unc: x.unc, label: x.unc.split('\\').pop() || '' });
+    for (const x of m.list) if (!rfs.vols.has(x.letter)) rfs.mount(x.letter, { remote: netOf(x.letter), unc: x.unc, label: x.unc.split('\\').pop() || '' });
   } else if (m.t === 'regop') W.regApply(m.o, true);
   else if (m.t === 'kick') { if (machine) machine.kick(); }
 };
