@@ -1965,7 +1965,7 @@ def16('KERNEL', 16, 'wlw', 'w', function (h, n, fl) {   // GlobalReAlloc
   const sel = this.gsel(h);
   if (n > b.size) {
     const cap = (this.allocs.get(b.lin) || 0) - 16;
-    if (n > cap) { const nl = this.alloc(n + 16, true); this.u8.copyWithin(nl, b.lin, b.lin + b.size); b.lin = nl; }
+    if (n > cap) { const old = b.lin, nl = this.alloc(n + 16, true); this.u8.copyWithin(nl, b.lin, b.lin + b.size); b.lin = nl; this.moveAliases(old, b.size, nl); }
     else this.u8.fill(0, b.lin + b.size, b.lin + n);
   }
   b.size = n;
@@ -3315,11 +3315,24 @@ P.rebaseGlobals = function () {
   if (!this.ghandles) return;
   for (const [s, b] of SEGS) {
     const v = this.cpu[s].value & 0xffff; if (!(v & 0xfff8) || (s === 'fsel')) continue;
-    if (!this.gblock(v)) continue;
     const old = u32(this.cpu[b].value), now = u32(this.selBase(v));
+    if (old === now || !(this.gblock(v) || (this.moves || []).some(m => old >= m.old && old < m.old + m.size && now === old - m.old + m.now))) continue;
     this.cpu[b].value = now;
-    if (s === 'cs' && old !== now) this.cpu.eip.value = u32(this.cpu.eip.value) - old + now;
+    if (s === 'cs') this.cpu.eip.value = u32(this.cpu.eip.value) - old + now;
   }
+};
+/** a global block moved from `old` to `now` (GlobalReAlloc past its memory): every selector onto it moves with it, as
+ *  the descriptors onto one block follow it. An alias (AllocCStoDSAlias, PrestoChangoSelector, a selector set to its
+ *  base) left at the old base splits the block in two: DIBENG writes its blit's line count through one selector and
+ *  reads it through SS on the other, reads 0, and the blit's `dec dword ss:[0]` loop runs 4 billion times (WELCOME's
+ *  hourglass at the first start); the moves are kept for threads stopped with a base the block has left */
+P.moveAliases = function (old, size, now) {
+  for (let i = 1; i < 8192; i++) {
+    if (!this.selUsed[i]) continue;
+    const a = L.LDT + 8 * i, base = this.r32(a);
+    if (base >= old && base < old + size) this.w32(a, base - old + now);
+  }
+  (this.moves || (this.moves = [])).push({ old, size, now }); if (this.moves.length > 256) this.moves.shift();
 };
 /** run the threads that can run; the host calls this between slices of the main thread. Inside a thread's run
  *  (nested: a Yield or a wait inside a call, or with `only` a task its creator's LoadModule hands the processor to) the
