@@ -177,7 +177,7 @@ stamp_build_meta() {
 #
 # A browser that keeps a cached copy of one script and fetches a new copy of
 # another runs a mix of two builds. Stamp every script URL with this deploy's
-# signature: the page's <script src>, the machine's new Worker('worker.js'),
+# signature: the page's <script src>, host-web.js's win95.js, the machine's new Worker('worker.js'),
 # the worker's importScripts list and the service worker's registration, and
 # name the service worker's cache after it, so a new build replaces the cache
 # rather than layering on it.
@@ -195,6 +195,8 @@ cache_bust_site() {
 
     patch_file "$site/index.html" \
         's|(<script src="[A-Za-z0-9_./-]+\.js)(?:\?v=[A-Za-z0-9_.+-]*)?"|$1?$ENV{CB}"|g; s|register\(\x27sw\.js(?:\?v=[A-Za-z0-9_.+-]*)?\x27\)|register(\x27sw.js?$ENV{CB}\x27)|g'
+    patch_file "$site/host-web.js" \
+        's|\.src = \x27win95\.js(?:\?v=[A-Za-z0-9_.+-]*)?\x27|.src = \x27win95.js?$ENV{CB}\x27|g'
     patch_file "$site/win95.js" \
         's|new Worker\(\x27worker\.js(?:\?v=[A-Za-z0-9_.+-]*)?\x27\)|new Worker(\x27worker.js?$ENV{CB}\x27)|g'
     patch_file "$site/worker.js" \
@@ -208,6 +210,7 @@ cache_bust_site() {
     [[ "$n" == "0" ]] || { log_error "index.html: $n <script src> without ?${cb}"; bad=1; }
     grep -qF "register('sw.js?${cb}')" "$site/index.html" || { log_error "index.html: sw.js registration not stamped"; bad=1; }
     grep -qF "new Worker('worker.js?${cb}')" "$site/win95.js" || { log_error "win95.js: new Worker('worker.js') not stamped"; bad=1; }
+    grep -qF ".src = 'win95.js?${cb}'" "$site/host-web.js" || { log_error "host-web.js: win95.js load not stamped"; bad=1; }
     n="$(grep -E '^importScripts\(' "$site/worker.js" | grep -oE "'[^']+\.js[^']*'" | grep -vcF "?${cb}'" || true)"
     [[ "$n" == "0" ]] || { log_error "worker.js: $n importScripts entries without ?${cb}"; bad=1; }
     grep -qF "const CACHE = 'win95-${DEPLOY_SIG}';" "$site/sw.js" || { log_error "sw.js: cache name not stamped"; bad=1; }
@@ -372,7 +375,7 @@ build_staging() {
     stage_file "$REPO_ROOT/$CD_IMAGE" "$STAGING_DIR/site/$CD_IMAGE"
 
     # The scripts the stamps rewrite are copies, never links into the working tree.
-    for f in index.html win95.js worker.js sw.js; do
+    for f in index.html host-web.js win95.js worker.js sw.js; do
         cp "$REPO_ROOT/$f" "$STAGING_DIR/site/$f.fresh" && mv "$STAGING_DIR/site/$f.fresh" "$STAGING_DIR/site/$f"
     done
 
