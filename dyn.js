@@ -547,21 +547,24 @@ function assemble(fn, shared) {
 P.dynBlock = function (eip) {
   this.dynCache = this.dynCache || new Map();
   const u8 = this.u8;
-  let c = this.dynCache.get(eip);
-  if (c && c.bytes.every((v, i) => u8[eip + i] === v)) return c;
   const cs = this.cpu.cs.value & 0xffff, csb = u32(this.cpu.csb.value);
   // only code inside the current code segment (flat 32-bit code, CS 0, as ring-0 VxD code runs: anywhere in memory):
   // a stray jump (to 0, or past the segment) is the guest's fault, not code
   const flat = !cs && !csb;
   if (!eip || (flat ? eip >= u8.length : !cs || eip < csb || eip - csb > this.selLimit(cs))) { this.trapped = `jump to unmapped address ${eip.toString(16)}`; return null; }
   const d32 = flat || !!(this.r32(ACC + (cs & 0xfff8)) & 0x400000);
+  // (a translation holds the code segment's base and its operand size: the same bytes run through another segment, or
+  // as 16-bit code where they ran as 32-bit, are another block. DIBENG compiles 16- and 32-bit blits into one buffer)
+  const key = `${eip}:${csb}:${d32 ? 32 : 16}`;
+  let c = this.dynCache.get(key);
+  if (c && c.bytes.every((v, i) => u8[eip + i] === v)) return c;
   let t;
   try { t = translate(this, eip, csb, d32); }
   catch (e) { if (e instanceof Unsupported) { this.trapped = `run-time code at ${eip.toString(16)}: ${e.message}`; return null; } throw e; }
   t.fn.e(0x0f);
   const run = new WebAssembly.Instance(new WebAssembly.Module(assemble(t.fn, Object.prototype.toString.call(this.mem.buffer) === '[object SharedArrayBuffer]')), { env: { mem: this.mem, io: (port, k) => this.portIO(port & 0xffff, k & 7, !!(k & 8)), trap: (e, c) => this.trap(e, c) }, cpu: this.cpu }).exports.run;
   c = { run, bytes: Array.from(u8.subarray(eip, eip + t.len)) };
-  this.dynCache.set(eip, c);
+  this.dynCache.set(key, c);
   return c;
 };
 /** run run-time code from `eip` until control reaches translated module code (or the sentinel); the next address */
