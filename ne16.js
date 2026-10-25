@@ -821,6 +821,14 @@ P.user16 = function (ord, args = []) {
   if (!ep) throw new GuestError(`USER.${ord} is not loaded`);
   return this.call16(ep >>> 16, ep & 0xffff, args);
 };
+/** whether USER holds keyboard or mouse input no program has taken yet: the host feeds the next hardware events only
+ *  then. Hardware input wakes the queue of the task in the foreground, so GetInputState is asked as that task (asked
+ *  as the system, it answers for the system thread's queue, which the input never reaches: the host fed on while the
+ *  program typed into still had keys to take, and the queue let some fall) */
+P.inputPending = function () {
+  const fg = this.user16(608).ax;                                                                     // GetForegroundWindow
+  return !!this.asWindowTask(fg, () => this.user16(335).ax);                                          // GetInputState
+};
 /** fn run as the task of the started process that owns a window (as its main thread), the way that process's own
  *  calls for the window run: USER's SetActiveWindow activates only a window of the calling task */
 P.asWindowTask = function (hwnd, fn) {

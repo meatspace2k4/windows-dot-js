@@ -21,11 +21,15 @@ const measure = async (n, act, undo) => {
   }
   return { sync: stat(sync), to_frame: stat(shown) };
 };
+// Explorer's own windows, there as long as it runs: its desktop (Progman, "Program Manager") and its taskbar (no title)
+const shellWin = w => !w.title || w.title === 'Program Manager';
+const opened = () => win95.windows().filter(w => !shellWin(w));
+const top = () => opened().at(-1);
 const reset = async () => {
   win95.stopSaver();
-  for (let k = 0; k < 20 && (win95.menus().length || win95.windows().length); k++) {
+  for (let k = 0; k < 20 && (win95.menus().length || opened().length); k++) {
     if (win95.menus().length) { win95.key('esc'); continue; }
-    const w = win95.windows().at(-1);
+    const w = top();
     if (w.modal && /^Notepad$|Save/.test(w.title)) win95.key('alt+n'); else win95.close(w.title);
   }
   await frame();
@@ -127,7 +131,7 @@ export const STEPS = [
       await reset();
       const out = {};
       for (const [k, p] of [['c_root', 'C:\\'], ['windows_system', 'C:\\WINDOWS\\SYSTEM'], ['cd_win95', 'D:\\WIN95']]) {
-        out[k] = await measure(5, () => win95.open(p), () => win95.close(win95.windows().at(-1).title));
+        out[k] = await measure(5, () => win95.open(p), () => win95.close(top().title));
       }
       out.my_computer = await measure(5, () => win95.dblclick(37, 25), () => win95.close('My Computer'));
       win95.dblclick(37, 25); for (const p of ['C:\\', 'C:\\WINDOWS\\SYSTEM', 'D:\\WIN95']) win95.open(p);
@@ -144,7 +148,7 @@ export const STEPS = [
     run: async () => {
       await reset();
       win95.open('C:\\'); await frame();
-      const w = win95.window('C:\\') || win95.windows().at(-1);
+      const w = win95.window('C:\\') || top();
       let x = w.x + 60, y = w.y + 10;
       win95.down(x, y); await frame();
       const r = await measure(80, i => { x += i % 2 ? 3 : -2; y += 1; win95.move(x, y); });
@@ -167,12 +171,12 @@ export const STEPS = [
         const t0 = performance.now(); win95.run('notepad ' + BENCH + '\\big.txt');
         if (!await until(() => win95.window('big - Notepad'))) throw new Error('Notepad did not open the file: ' + win95.windows().map(w => w.title).join(', '));
         await frame(); opens.push(performance.now() - t0);
-        win95.close('big - Notepad'); await until(() => !win95.windows().length);
+        win95.close('big - Notepad'); await until(() => !win95.window('big - Notepad'));
       }
       const open = { to_window: stat(opens) };
       win95.run('notepad ' + BENCH + '\\big.txt'); await until(() => win95.window('big - Notepad')); await frame();
       // anything else on screen (a refusal, an error) would make the timings meaningless
-      if (!win95.window('big - Notepad') || win95.windows().length !== 1) throw new Error('Notepad did not open the file: ' + win95.windows().map(w => w.title).join(', '));
+      if (!win95.window('big - Notepad') || opened().length !== 1) throw new Error('Notepad did not open the file: ' + win95.windows().map(w => w.title).join(', '));
       // the native Notepad takes typed keys as its USER's queue lets them in: typing ends when it has taken them all,
       // saving when the file has its new size
       const app = (win95.nativeApps || []).find(a => /NOTEPAD/i.test(a.path));
@@ -232,9 +236,11 @@ export const STEPS = [
       for (const path of list) {
         const name = path.split('\\').pop().replace(/\.scr$/i, '');
         let failed = null; const off = win95.on('program.exit', e => { if (e.why) failed = e.why; });
+        // the counts are the machine's (the saver is one of its processes): started once they move past what they were
+        const z = (win95.sysApp && win95.sysApp.stats) || { timers: 0, presents: 0 };
         const t0 = performance.now(); win95.saver(path);
         let first = null;
-        while (performance.now() - t0 < 15000 && !failed) { const s = win95.saverStats(); if (s && (s.timers || s.presents)) { first = performance.now() - t0; break; } await sleep(5); }
+        while (performance.now() - t0 < 15000 && !failed) { const s = win95.saverStats(); if (s && (s.timers > z.timers || s.presents > z.presents)) { first = performance.now() - t0; break; } await sleep(5); }
         const a = win95.saverStats(); const ta = performance.now();
         if (!failed && a) await sleep(6000);
         const b = win95.saverStats(), dt = (performance.now() - ta) / 1000;

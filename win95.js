@@ -3417,7 +3417,7 @@ class NativeApp {
   }
   feedKeys() {
     if (!this.keyq || !this.keyq.length || this.proc.depth || this.ring0()) return;   // (the keyboard driver's, at interrupt time too)
-    try { if (this.proc.user16(335).ax) return; } catch (e) { console.error(e); }   // GetInputState: USER has input not yet taken
+    try { if (this.proc.inputPending()) return; } catch (e) { console.error(e); }   // USER has input not yet taken
     for (; this.keyq.length && (this.keysFed || 0) < 16; this.keysFed = (this.keysFed || 0) + 1) {
       const k = this.keyq.shift();
       if (k.mouse) { try { this.proc.mouseEvent16(...k.mouse); } catch (err) { console.error(err); } continue; }
@@ -5142,7 +5142,9 @@ const script = {
   stopSaver() { if (!fullSaver || !fullSaver.pid) return false; stopSaverProcess(fullSaver); fullSaver = null; return true; },
   screen() { return { width: W, height: H, taskbar: barTop() }; },
   screenshot() { render(); return cv.toDataURL('image/png'); },
-  saverStats() { return null; },
+  // the machine the saver runs on, as its last frame reported it (the saver is a process of the system's machine, so
+  // the counts are the machine's: its timers, its GL frames, its guest time; the bench takes differences while it runs)
+  saverStats() { const a = fullSaver && fullSaver.pid && fullSaver.app; return a && a.alive && a.stats ? { ...a.stats } : null; },
   on(type, fn) { if (!listeners.has(type)) listeners.set(type, new Set()); listeners.get(type).add(fn); return () => listeners.get(type).delete(fn); },
   // resolves with the next event of this type that passes the test, or rejects after the timeout
   next(type, test = () => true, ms = 10000) {
