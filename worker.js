@@ -175,8 +175,27 @@ class Machine {
     if (!p.runLevel || this.inPollStack || !cpu.ss) return this.pollIn();
     const st = { ss: cpu.ss.value, ssb: cpu.ssb.value, esp: cpu.esp.value };
     if (!this.pollStack) this.pollStack = p.alloc(0x10000);
+    const due = this.pollDue(), ins = this.pollInputs || 0, at = { eip: cpu.eip.value >>> 0, cs: cpu.cs.value & 0xffff };
     cpu.ss.value = 0; cpu.ssb.value = 0; cpu.esp.value = this.pollStack + 0x10000 - 16; this.inPollStack = true;
-    try { return this.pollIn(); } finally { cpu.ss.value = st.ss; cpu.ssb.value = st.ssb; cpu.esp.value = st.esp; this.inPollStack = false; }
+    try { return this.pollIn(); } finally {
+      cpu.ss.value = st.ss; cpu.ssb.value = st.ssb; cpu.esp.value = st.esp; this.inPollStack = false;
+      this.pollNote(st, at, due, (this.pollInputs || 0) - ins);
+    }
+  }
+  /** the VMM time-outs due now: [handle, callback] */
+  pollDue() { const p = this.proc; if (!p.vxdTimeOuts || !p.vxdTimeOuts.size) return []; const now = p.sysTime(); return [...p.vxdTimeOuts].filter(([, t]) => t.due <= now).map(([h, t]) => [h, t.fn]); }
+  /** a diagnostic (cmd 'pollLog'): each mid-run poll that ran guest code, the run it stopped (thread, CS:EIP, SS:SP and
+   *  the stack segment's limit) and what it ran (the time-outs by their VxD and offset, the input events) */
+  pollNote(st, at, due, inputs) {
+    const p = this.proc, ran = due.filter(([h]) => !p.vxdTimeOuts || !p.vxdTimeOuts.has(h));
+    if (!ran.length && !inputs) return;
+    const where = a => { const m = (p.modules || []).find(x => x.kind === 'vxd' && a >= x.base && a < x.base + x.meta.size); return m ? `${m.name}+${(a - m.base).toString(16)}` : a.toString(16); };
+    const t = p.thread16, ss = st.ss & 0xffff;
+    const who = t ? `${t.id}${t.task && t.task.mod ? ' ' + t.task.mod.name : t.pc && t.pc.path ? ' ' + String(t.pc.path).split('\\').pop() : ''}` : 'main';
+    const log = this.pollLog || (this.pollLog = []);
+    log.push({ ms: Math.round(p.sysTime()), who, at: `${at.cs.toString(16)}:${at.eip.toString(16)}`, ss: ss.toString(16), sp: (st.esp & 0xffff).toString(16),
+      ssLimit: ss && p.selValid && p.selValid(ss) ? p.selLimit(ss) : null, timeouts: ran.map(([, fn]) => where(fn)), inputs });
+    if (log.length > 4000) log.splice(0, log.length - 4000);
   }
   pollIn() {
     const p = this.proc; let r;
@@ -187,6 +206,7 @@ class Machine {
       try { p.vxdRunTimeOuts(); } catch (e) { console.error(e); } finally { p.depth = d; this.inTimer = false; }
     }
     while ((r = B.ringTake(this.ring))) {
+      this.pollInputs = (this.pollInputs || 0) + 1;
       if (r[0] === B.KEY) {
         const scan = r[1] & 0xff, ext = !!(r[1] & 0x100), up = !!(r[1] & 0x200), toUser = !!(r[1] & 0x400), mods = { shift: !!(r[2] & 1), ctrl: !!(r[2] & 2), alt: !!(r[2] & 4) };
         let taken = false; try { taken = scan && p.vkdKey ? p.vkdKey(scan, ext, up, mods) : false; } catch (e) { console.error(e); }
@@ -778,6 +798,7 @@ class Machine {
       case 'netfs': { const b = self.W95NetFS.backend({ alive: true, proc: p }, args[0]); return b[args[1]](...(args[2] || [])); }
       case 'mode': { const r = this.setMode(args[0], args[1]); if (!r) this.wantMode = [args[0], args[1]]; return r; }   // (null: made once no thread holds USER, step())
       case 'probe': return this.probe();
+      case 'pollLog': return (this.pollLog || []).splice(0);   // a diagnostic: the mid-run polls that ran guest code (pollNote)
       // (offsets in a module, by name: EAX each time execution comes to one from another module, as a call into
       // another DLL returns there; into the trace's log; no offsets ends it)
       case 'watch': {
