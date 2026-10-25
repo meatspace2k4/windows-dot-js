@@ -725,6 +725,22 @@ class Machine {
       case 'endProcess': { const p = this.proc, pc = p.procs && p.procs.get(args[0]); if (pc) p.endProcess(pc, args[1] || 0); return pc ? true : this.endSaver(args[0], args[1] || 0); }
       case 'closeWin32': return this.proc.sendMsg(args[0], W.WM.CLOSE);
       case 'children': return p.depth ? null : p.nativeChildren(args[0]);
+      case 'peek': return Array.from(p.u8.subarray(args[0], args[0] + Math.min(args[1], 4096)));   // a diagnostic: memory bytes
+      case 'menuscan': {   // a diagnostic: every menu handle USER has (IsMenu over the handle range), its item count and first item, and whether USER32's GetMenuItemRect places its first item in the window given
+        if (p.depth) return null;
+        const u16 = (o, a) => p.user16(o, a).ax, x32 = p.byName && p.byName.get('USER32'), rectFn = x32 && x32.exports && x32.exports.get('GetMenuItemRect'), out = [], buf = p.alloc(256), sel = p.allocSels(buf, 256);
+        try {
+          for (let h = 4; h < 0x8000; h += 4) {
+            if (!u16(358, [['w', h]])) continue;
+            const n = u16(263, [['w', h]]), tl = n ? u16(161, [['w', h], ['w', 0], ['l', (sel << 16) >>> 0], ['w', 128], ['w', 0x400]]) : 0;
+            let rect = null;
+            if (args[0] && rectFn) { p.u8.fill(0, buf + 128, buf + 144); if (p.call(rectFn, [args[0], h, 0, buf + 128])) rect = [0, 4, 8, 12].map(o => p.r32(buf + 128 + o) | 0); }
+            out.push([h, n, tl ? p.readA(buf, tl) : '', rect]);
+          }
+        } finally { p.freeSels(sel); p.free(buf); }
+        return { rectFn: !!rectFn, menus: out };
+      }
+      case 'userdata': { const u = p.ne && p.ne.get('USER'), g = u && u.meta.segs.find(s => s.num === u.meta.autodata); return g ? (g.sel ? p.selBase(g.sel) : g.base) : 0; }   // a diagnostic: USER's data segment's address, where it is now (its heap grew and moved it)
       case 'user16': {   // a diagnostic: USER.ord called with args, each ['w'|'l', v] or ['buf', n] (a buffer the call fills, returned as bytes)
         if (p.depth) return null;
         const bufs = [], a = args[1].map(x => { if (x[0] !== 'buf') return x; const lin = p.alloc(x[1]), sel = p.allocSels(lin, x[1]); bufs.push({ lin, sel, n: x[1] }); return ['l', (sel << 16) >>> 0]; });

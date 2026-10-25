@@ -42,6 +42,18 @@ assert.deepEqual(desk.filter(e => e.role === 'listitem').map(e => [e.name, e.x, 
   [['My Computer', 4, 2, 68, 50, false, 'Program Manager'], ['Network Neighborhood', 4, 77, 68, 62, true, 'Program Manager']]);
 assert.ok(desk.some(e => e.role === 'list' && e.hwnd === 184));
 
+// a popup menu's items (the machine's #32768 window): menu items under 'Menu' at the menu's depth, with their
+// submenu, disabled and checked states; a separator is left out; the accelerator after a tab is not the name
+const menu = nativeEls([
+  { cls: 'menuitem', text: '&Programs', style: 0x10, ...r(4, 300, 150, 19), id: 0, hwnd: 500, enabled: true, submenu: true, separator: false, checked: false },
+  { cls: 'menuitem', text: '', style: 0x800, ...r(4, 319, 150, 9), id: 1, hwnd: 500, enabled: true, submenu: false, separator: true, checked: false },
+  { cls: 'menuitem', text: '&Run...\tCtrl+R', style: 0, ...r(4, 328, 150, 19), id: 2, hwnd: 500, enabled: true, submenu: false, separator: false, checked: false },
+  { cls: 'menuitem', text: '&Undo', style: 3, ...r(4, 347, 150, 19), id: 3, hwnd: 500, enabled: false, submenu: false, separator: false, checked: true },
+], { window: '', menuDepth: 1 });
+assert.deepEqual(menu.map(e => [e.role, e.name, e.window, e.depth, e.submenu, e.disabled, e.checked, e.y]),
+  [['menuitem', 'Programs', 'Menu', 1, true, false, false, 300], ['menuitem', 'Run...', 'Menu', 1, false, false, false, 328], ['menuitem', 'Undo', 'Menu', 1, false, true, true, 347]]);
+assert.match(cut('function elements()', '\n}\n'), /w\.cls === '#32768'\) win\.menuDepth = menuDepth\+\+/);
+
 // the page's own taskbar is listed only while it is the one drawn
 const el = cut('function elements()', '\n}\n');
 assert.match(el, /if \(!monApp\(\)\) \{[^}]*const L = taskLayout\(\);/);

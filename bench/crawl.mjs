@@ -27,9 +27,12 @@ const CRAWL = async SKIP => {
   window.addEventListener('error', onErr);
   const reset = async () => {
     win95.stopSaver();
-    for (let k = 0; k < 30 && (win95.menus().length || win95.windows().length); k++) {
-      if (win95.menus().length) { win95.key('esc'); continue; }
-      const w = win95.windows().at(-1);
+    // (Explorer's desktop window, 'Program Manager', and its taskbar, untitled, stay; a popup menu of the machine's is
+    // an untitled window too, closed by Escape)
+    const open = () => win95.windows().filter(w => w.title !== 'Program Manager' && !w.minimized);
+    for (let k = 0; k < 30 && (win95.menus().length || open().length); k++) {
+      if (win95.menus().length || open().some(w => !w.title)) { win95.key('esc'); await frame(); if (!win95.menus().length && !open().some(w => w.title)) break; continue; }
+      const w = open().at(-1);
       if (w.modal && w.message) { win95.key('esc'); if (win95.windows().at(-1)?.title === w.title) win95.key('enter'); }
       else if (w.modal && /^Notepad$/.test(w.title)) win95.key('alt+n');
       else win95.close(w.title);
@@ -64,14 +67,16 @@ const CRAWL = async SKIP => {
   await crawlMenu('Taskbar menu', async () => win95.click(s.width >> 1, s.taskbar + 15, { button: 'right' }));
   // each desktop icon: open it, then every menu bar menu of its window, then its item menus
   await reset();
-  for (const icon of win95.elements({ role: 'listitem', window: 'Desktop' })) {
-    await crawlMenu(`Desktop icon ${icon.name} (right-click)`, async () => win95.click(win95.find({ role: 'listitem', window: 'Desktop', name: icon.name }), { button: 'right' }));
+  // (the desktop's icons: the page's own under 'Desktop'; Explorer's, the items of its desktop window's list view)
+  const DESK = /^(Desktop|Program Manager)$/;
+  for (const icon of win95.elements({ role: 'listitem', window: DESK })) {
+    await crawlMenu(`Desktop icon ${icon.name} (right-click)`, async () => win95.click(win95.find({ role: 'listitem', window: DESK, name: icon.name }), { button: 'right' }));
     await reset();
-    where = `open ${icon.name}`; win95.dblclick(win95.find({ role: 'listitem', window: 'Desktop', name: icon.name })); await sleep(200);
-    const w = win95.windows().at(-1); if (!w) continue;
+    where = `open ${icon.name}`; win95.dblclick(win95.find({ role: 'listitem', window: DESK, name: icon.name })); await sleep(200);
+    const w = win95.windows().filter(x => x.title && x.title !== 'Program Manager').at(-1); if (!w) continue;
     for (const bar of win95.elements({ window: w.title, menubar: true })) {
       await crawlMenu(`${w.title} > ${bar.name}`, async () => {
-        if (!win95.window(w.title)) { win95.dblclick(win95.find({ role: 'listitem', window: 'Desktop', name: icon.name })); await sleep(200); }
+        if (!win95.window(w.title)) { win95.dblclick(win95.find({ role: 'listitem', window: DESK, name: icon.name })); await sleep(200); }
         win95.click(win95.find({ window: w.title, menubar: true, name: bar.name }));
       });
     }

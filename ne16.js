@@ -863,6 +863,8 @@ P.nativeWindows = function () {
 P.nativeChildren = function (parent) {
   if (!this.wbufLin) this.nativeWindows();
   const a = this.wbufLin, buf = u32(this.wbufSel << 16), u = (o, args) => this.user16(o, args).ax, s16 = o => (this.r16(a + o) << 16) >> 16;
+  const pl = u(58, [['w', parent], ['l', buf + 0x180], ['w', 64]]);
+  if (pl && this.readA(a + 0x180, pl) === '#32768') return this.menuItems(parent);   // a popup menu's window: its items, which are no windows
   const out = [], focus = u(23);   // GetFocus
   const walk = (p, depth) => {
     for (let h = u(262, [['w', p], ['w', 5]]), n = 0; h && n < 512; h = u(262, [['w', h], ['w', 2]]), n++) {
@@ -884,6 +886,45 @@ P.nativeChildren = function (parent) {
     }
   };
   walk(parent, 0);
+  return out;
+};
+/** a popup menu's items (the Start menu, a context menu, a menu bar's dropped menu: USER's #32768 window), each its
+ *  text, its state and its rectangle on screen: the menu handle from the window (MN_GETHMENU), the items by position
+ *  (GetMenuItemCount, GetMenuString, GetMenuState), the rectangles from USER32's GetMenuItemRect, or laid out at the
+ *  menu's item height when that is not there */
+P.menuItems = function (h) {
+  const a = this.wbufLin, buf = u32(this.wbufSel << 16), u = (o, args) => this.user16(o, args).ax, s16 = o => (this.r16(a + o) << 16) >> 16;
+  const x32 = this.byName && this.byName.get('USER32'), rectFn = x32 && x32.exports && x32.exports.get('GetMenuItemRect');
+  u(32, [['w', h], ['l', buf]]); const wx = s16(0), wy = s16(2), ww = s16(4) - wx, wh = s16(6) - wy;   // GetWindowRect
+  const rc = a + 0x100;
+  // an item's rectangle on screen, as USER32 places it for the menu shown in this window; null for a menu it does not show there
+  const rect = (hm, i) => {
+    if (!rectFn) return null;
+    this.u8.fill(0, rc, rc + 16); if (!this.call(rectFn, [h, hm, i, rc])) return null;
+    const l = this.r32(rc) | 0, t = this.r32(rc + 4) | 0, r = { x: l, y: t, w: (this.r32(rc + 8) | 0) - l, h: (this.r32(rc + 12) | 0) - t };
+    return r.w > 0 && r.h > 0 && l >= wx && t >= wy && l < wx + ww && t < wy + wh ? r : null;
+  };
+  // the menu: what the window answers (MN_GETHMENU), else, as this USER does not answer it, the menu handle whose
+  // items USER32 places in this window, with the most items (the handles are few: a scan of the range is quick)
+  let hm = this.user16(111, [['w', h], ['w', 0x1e1], ['w', 0], ['l', 0]]).ax;
+  const known = this.menuOf && this.menuOf.get(h);
+  if (!hm && known && u(358, [['w', known]]) && rect(known, 0)) hm = known;   // (IsMenu: the one found before, still shown here)
+  if (!hm && rectFn) {
+    let best = 0, bestN = 0;
+    for (let m = 4; m < 0x8000; m += 4) { if (!u(358, [['w', m]])) continue; const n = u(263, [['w', m]]); if (n > bestN && rect(m, 0)) { best = m; bestN = n; } }
+    hm = best; if (hm) (this.menuOf || (this.menuOf = new Map())).set(h, hm);
+  }
+  if (!hm) return [];
+  const n = Math.min(u(263, [['w', hm]]), 64), out = [];   // GetMenuItemCount
+  let y = wy + 3;
+  for (let i = 0; i < n; i++) {
+    const fl = u(250, [['w', hm], ['w', i], ['w', 0x400]]);   // GetMenuState, MF_BYPOSITION
+    const tl = u(161, [['w', hm], ['w', i], ['l', buf + 16], ['w', 128], ['w', 0x400]]), text = tl ? this.readA(a + 16, tl) : '';   // GetMenuString (none for an owner-drawn item: Explorer's Start menu draws its own)
+    const separator = !!(fl & 0x800);
+    const r = rect(hm, i) || { x: wx + 3, y, w: ww - 6, h: separator ? 9 : 19 };
+    y = r.y + r.h;
+    out.push({ hwnd: h, parent: h, cls: 'menuitem', text, ...r, id: i, style: fl, enabled: !(fl & 3), checked: !!(fl & 8), submenu: !!(fl & 0x10), separator, ownerdraw: !!(fl & 0x100), focused: false, depth: 0 });
+  }
   return out;
 };
 /** a list view's items (COMCTL32's, in a 32-bit program: the desktop's icons, a folder window's files), each its

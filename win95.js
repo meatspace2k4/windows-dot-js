@@ -4995,6 +4995,9 @@ function nativeEls(kids, win) {
   if (kids.some(c => c.cls === 'MSTaskSwWClass')) win = { ...win, window: 'Taskbar' };
   for (const c of kids) {
     const bs = c.style & 0x0f, k = c.cls.toLowerCase();
+    // a popup menu's items (the Start menu, a context menu): as the page's own menus are listed, under 'Menu' with the
+    // menu's depth; a separator is no item
+    if (k === 'menuitem') { if (!c.separator) add('menuitem', label(c.text.split('\t')[0]), c, { window: 'Menu', depth: win.menuDepth || 0, disabled: !c.enabled, submenu: !!c.submenu, checked: !!c.checked }); continue; }
     if (k === 'traynotifywnd' || k === 'mstaskswwclass') continue;   // (holders of the clock and the tabs, listed for themselves)
     if (k === 'trayclockwclass') { add('clock', c.text, c, win); continue; }
     if (k === 'systabcontrol32' && c.items) { for (const t of c.items) add('pushbutton', label(t.text), t, { ...win, pressed: !!t.selected }); continue; }
@@ -5015,9 +5018,11 @@ function elements() {
   const cell = (c, o) => add('listitem', c.it.label, c.small ? { x: c.ix, y: c.iy, w: c.lx - c.ix + c.lw + 2, h: 16 }
     : { x: Math.min(c.ix, c.lx), y: c.iy, w: Math.max(32, c.lw), h: c.ly + c.lines.length * 13 - c.iy }, o);
   for (const c of desk.cells) cell(c, { window: 'Desktop', selected: desk.selKey === c.it.key });
+  let menuDepth = 0;   // (the machine's popup menus, bottom to top: the Start menu, then its submenus)
   for (const w of windows) {
     if (w.min) continue;
     const win = { window: w.title };
+    if (w.native && w.cls === '#32768') win.menuDepth = menuDepth++;
     add('window', w.title, w, { active: w.isActive, modal: modals.includes(w), maximized: !!w.max });
     add('titlebar', w.title, w.capR, win);
     for (const b of w.buttons()) add('pushbutton', { close: 'Close', max: 'Maximize', restore: 'Restore', min: 'Minimize' }[b.id], b, { ...win, disabled: !!b.disabled });
