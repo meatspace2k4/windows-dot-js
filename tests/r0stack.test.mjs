@@ -39,15 +39,25 @@ p.seg('ss', SEL16); p.cpu.esp.value = 0x00ab7f00;
 assert.equal(p.r0Free(), (0x200000 + 0x7f00 - 0x100) & ~3, 'below a 16-bit stack');
 p.r0Depth = 0;
 
-// new frames below every stopped run's stack (r0LowSet): each run's stack by its own SS
-p.seg('ss', 0); p.cpu.esp.value = 0x3000000;
-const ctx = (ss, esp) => ({ ss, ssb: ss === SEL16 ? 0x200000 : 0, esp });
-p.r0Runs = [{ ctx: ctx(L.FLATDS, 0x0a3c8040) }]; p.r0LowSet();
-assert.equal(p.r0Low, (0x0a3c8040 - 0x100) & ~3, 'a run stopped on the flat stack with SS the flat selector');
-p.r0Runs = [{ ctx: ctx(SEL16, 0x00ab7f00) }]; p.r0LowSet();
-assert.equal(p.r0Low, (0x200000 + 0x7f00 - 0x100) & ~3, 'a run stopped on a 16-bit stack');
-p.r0Runs = [{ ctx: ctx(0, 0x3002000) }, { ctx: ctx(SEL16, 0x00ab7f00) }]; p.r0LowSet();
-assert.equal(p.r0Low, (0x200000 + 0x7f00 - 0x100) & ~3, 'the lowest of them');
-p.r0Runs = []; p.r0LowSet();
-assert.equal(p.r0Free(), p.r0Top, 'none stopped: the top');
+// a ring-0 run (r0Start) has a stack of its own, whatever runs are stopped and wherever they stopped: a run stopped in
+// VM code it called has a 16-bit SS:SP, and frames placed below that landed in VxD images (VTDAPI's event saved the
+// client registers over its own code at VTDAPI+186h). A run that ends gives its stack to the next
+{
+  let next = 0x3400000; const tops = [];
+  p.alloc = n => { const a = next; next += n; return a; };
+  p.saveFull = () => ({}); p.loadFull = () => {}; p.tibFor = null; p.r0Runs = []; p.vmIrqDeliver = () => {};
+  p.cpu.cf = { value: 0 }; p.cpu.zf = { value: 0 };
+  p.seg('ss', SEL16); p.cpu.esp.value = 0x7f00;
+  // the first run stops in VM code on a 16-bit stack
+  p.runTop = function () { tops.push(this.cpu.esp.value); this.seg('ss', SEL16); this.cpu.esp.value = 0x00ab7f00; return 1; };
+  assert.equal(p.r0Start(0x1820049), null); p.depth = 0;
+  // the next run's frames: its own stack, not below the stopped run's SS:SP (200000h + 7F00h)
+  p.runTop = function () { tops.push(this.cpu.esp.value); return 0; };
+  p.r0Start(0x18200ba); p.depth = 0;
+  assert.equal(tops[0], 0x3400000 + 0x10000 - 16 - 4, "the first run's stack");
+  assert.equal(tops[1], 0x3410000 + 0x10000 - 16 - 4, 'the second its own, not under the stopped run');
+  p.r0Start(0x18200ba); p.depth = 0;
+  assert.equal(tops[2], tops[1], 'an ended run gives its stack to the next');
+  assert.equal(p.r0Runs.length, 1);
+}
 console.log('r0stack: ok');

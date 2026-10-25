@@ -62,42 +62,38 @@ P.vxdCall = function (addr, regs = {}, at) {
  *  thread would: a VxD that blocks (_BlockOnID) until another's work signals it, a blue screen (message mode) waiting
  *  for a key with nothing else running. The page keeps drawing and taking keys meanwhile. It returns the registers it
  *  left, or null when it stopped: r0Runs holds the stopped ones, which the host resumes (r0Step) as they can go on */
+// Each run has a ring-0 stack of its own, as a ring-0 thread has: a run that stops keeps its frames where they are,
+// and no other ring-0 frame is placed by where a stopped run's SS:ESP points. Placed below the lowest stopped run's
+// SS:ESP (stackLinOf of its saved registers, which for a run stopped in VM code it called is the VM's segment and
+// SP), a time-out's frames landed in VxD images: VTDAPI's event saved the client registers over its own
+// VxDCall Begin_Nest_Exec (f0f1h:f8h at VTDAPI+186h), NDIS's Get_System_Time read device FFh
 P.r0Start = function (addr, regs = {}) {
-  const outer = this.saveFull(), top = this.r0Free();
+  const outer = this.saveFull(), stack = (this.r0Stacks || (this.r0Stacks = [])).pop() || this.alloc(0x10000);
   for (const [s, b] of SEGS) { this.cpu[s].value = 0; if (s !== 'fsel') this.cpu[b].value = 0; }
   this.cpu.fs.value = this.tibFor ? this.tibFor() : this.cpu.fs.value;
   for (const r of GPR) if (r !== 'esp') this.cpu[r].value = u32(regs[r] || 0);
-  this.cpu.esp.value = top; this.push(W.LAYOUT.SENTINEL);
+  this.cpu.esp.value = stack + 0x10000 - 16; this.push(W.LAYOUT.SENTINEL);
   this.depth++;
-  return this.r0Run({ outer, eip: addr });
+  return this.r0Run({ outer, eip: addr, stack });
 };
 P.r0Run = function (s) {
   this.r0Depth = (this.r0Depth || 0) + 1; this.preempted = 0; this.r0StopReady = null;
   let r;
   try { r = this.runTop(s.eip); }
-  catch (e) { this.r0Depth--; this.loadFull(s.outer); this.r0LowSet(); throw e; }
+  catch (e) { this.r0Depth--; this.loadFull(s.outer); this.r0Stacks.push(s.stack); throw e; }
   this.r0Depth--;
   if (r === 1 && !this.trapped) {   // it waits (R0WAIT, until `ready`), or its time ran out: kept as it is, the host's state put back
     s.ctx = this.saveFull(); s.eip = u32(this.cpu.eip.value);
     s.wait = !this.preempted; s.cont = this.r0Cont; s.ready = s.wait ? this.r0StopReady || (() => true) : () => true;
-    (this.r0Runs || (this.r0Runs = [])).push(s); this.r0LowSet();
+    (this.r0Runs || (this.r0Runs = [])).push(s);
     this.loadFull(s.outer); return null;
   }
-  this.r0LowSet();
+  this.r0Stacks.push(s.stack);   // (its stack free for the next run)
   const out = { cf: this.cpu.cf.value & 1, zf: this.cpu.zf.value & 1 }; for (const k of GPR) out[k] = u32(this.cpu[k].value);
   this.loadFull(s.outer);
   if (r !== 0 || this.trapped) throw new W.GuestError(this.trapped || `VxD call did not return (${r})`);
   if (!this.r0Depth) this.vmIrqDeliver();
   return out;
-};
-/** new ring-0 frames go below every stopped run's */
-P.r0LowSet = function () {
-  const runs = this.r0Runs || [];
-  // (the low as it was before any run stopped, kept while any is, and put back once none is: the top, when none was
-  // set. A low kept from runs now gone put frames under a stack in use)
-  if (!runs.length) { if (this.r0LowHeld) { this.r0Low = this.r0LowBase; this.r0LowHeld = false; } return; }
-  if (!this.r0LowHeld) { this.r0LowHeld = true; this.r0LowBase = this.r0Low; }
-  this.r0Low = (Math.min(...runs.map(x => this.stackLinOf(x.ctx.ss, x.ctx.ssb, x.ctx.esp))) - 0x100) & ~3;   // (each run's stack where it is: a 16-bit one through its selector)
 };
 /** the host's turn while ring-0 runs are stopped: events scheduled meanwhile start (as runs of their own), else the
  *  newest run that can go on goes on until it ends or stops again. True while any is still stopped */
