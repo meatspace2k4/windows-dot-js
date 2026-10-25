@@ -35,6 +35,7 @@ const srcs = [...page.matchAll(/<script src="([^"]+)"/g)].map(m => m[1]);
 assert.ok(srcs.length > 10 && srcs.every(s => s.endsWith(cb)), srcs.join(' '));
 assert.ok(page.includes(`register('sw.js${cb}')`));
 assert.ok(readFileSync(join(site, 'win95.js'), 'utf8').includes(`new Worker('worker.js${cb}')`));
+assert.ok(readFileSync(join(site, 'host-web.js'), 'utf8').includes(`.src = 'win95.js${cb}'`));
 const imports = readFileSync(join(site, 'worker.js'), 'utf8').split('\n').find(l => l.startsWith('importScripts('));
 assert.ok([...imports.matchAll(/'([^']+)'/g)].every(m => m[1].endsWith(cb)), imports);
 assert.ok(readFileSync(join(site, 'sw.js'), 'utf8').includes(`const CACHE = 'win95-${sig}';`));
