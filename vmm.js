@@ -1008,7 +1008,21 @@ P.vmClientIdle = function () {
 // returns; End_Nest_Exec. Save_Client_State (EDI buffer) / Restore_Client_State (ESI buffer) copy the registers
 svc(VMM, 0x8d, function () { this.u8.copyWithin(u32(this.cpu.edi.value), this.vmClient(), this.vmClient() + 0x60); });
 svc(VMM, 0x8e, function () { this.u8.copyWithin(this.vmClient(), u32(this.cpu.esi.value), u32(this.cpu.esi.value) + 0x60); });
-svc(VMM, 0x83, function () { (this.nest = this.nest || []).push({ pushes: [], target: null }); });
+// Begin_Nest_Exec puts a protected-mode client on the VM's locked stack (unless it is on it already) and End_Nest_Exec
+// gives it its own back, as the VMM's do: a VxD builds its call under the client's SS:SP. On the stack of the code it
+// interrupted, VTDAPI's timer event wrote its callback's frame (and MMSYSTEM's callback ran) under WELCOME's SS:SP on
+// DIBENG's 4Ah-byte blit stack: the line count at SS:0 written over, the blit's `dec dword ss:[0]` loop from 0, the
+// first start's freeze
+svc(VMM, 0x83, function () {
+  const c = this.vmClient(), n = { pushes: [], target: null }, st = this.vmLockedStack();
+  if ((this.r16(c + 0x34) & 0xffff) !== st.sel) { n.client = [this.r32(c + 0x30), this.r32(c + 0x34)]; this.w32(c + 0x30, st.sp); this.w32(c + 0x34, st.sel); }
+  (this.nest = this.nest || []).push(n);
+});
+/** the VM's locked protected-mode stack (the selector and its top), where nested execution and events run its code */
+P.vmLockedStack = function () {
+  if (!this.vmStackSel) { const a = this.alloc(0x4000); this.vmStackSel = this.allocSels(a, 0x4000); }
+  return { sel: this.vmStackSel, sp: 0x3ff0 };
+};
 svc(VMM, 0x82, function () { (this.nest = this.nest || []).push({ pushes: [], target: null, v86: true }); });   // Begin_Nest_V86_Exec
 svc(VMM, 0x4d, function () { const n = this.nest && this.nest[this.nest.length - 1]; if (n) n.pushes.push(['w', this.cpu.eax.value & 0xffff]); });
 svc(VMM, 0x48, function () { const n = this.nest && this.nest[this.nest.length - 1]; if (n) n.target = [this.cpu.ecx.value & 0xffff, this.cpu.edx.value & 0xffff]; });
@@ -1061,7 +1075,10 @@ P.vmFarCall = function (c, cs, ip, pushes = []) {
   for (const r2 of GP) this.cpu[r2].value = save[r2]; for (const [s2, b] of SG) { this.cpu[s2].value = save[s2]; this.cpu[b].value = save[b]; }
   this.cpu.eip.value = savedEip;
 };
-svc(VMM, 0x86, function () { if (this.nest) this.nest.pop(); });
+svc(VMM, 0x86, function () {   // End_Nest_Exec: the client back on its own stack, if Begin_Nest_Exec moved it
+  const n = this.nest && this.nest.pop();
+  if (n && n.client) { const c = this.vmClient(); this.w32(c + 0x30, n.client[0]); this.w32(c + 0x34, n.client[1]); }
+});
 // Exec_Int (EAX the interrupt, EBX the VM): the interrupt run in the VM (its client registers, CB_Client_Pointer): the interrupt run in the VM inside a nested execution
 // block, on the client's registers: what the personality answers for it (its INT 21h, 2Fh, ...), in real mode when
 // the block is a V86 one (Begin_Nest_V86_Exec), its results left in the client registers
