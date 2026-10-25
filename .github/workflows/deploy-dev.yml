@@ -1,0 +1,68 @@
+name: Deploy dev
+
+# Ships a commit's site to win95-dev.funstuff.app from the self-hosted runner
+# on the Pi. Never add a pull_request trigger here: this runner sits on the
+# production host.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag or sha to deploy
+        required: true
+        default: main
+      version:
+        description: Version <MAJOR>-<M><I>, e.g. 0-01 (empty = keep the version live on dev)
+        required: false
+  push:
+    branches: ['claude/**']
+
+concurrency:
+  group: deploy-dev-win95
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, pi]
+    timeout-minutes: 20
+    env:
+      INPUTS_DIR: /home/jpark/win95-deploy-inputs
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.sha }}
+
+      # deploy.config, the bundles generated from the CD and the CD image are
+      # untracked; they live in a fixed folder on the Pi and are copied into
+      # the checkout (files, never links).
+      - name: Copy untracked deploy inputs
+        run: |
+          cp "$INPUTS_DIR/deploy.config" deploy/win95/deploy.config
+          n=0
+          for f in system.js savers.js assets.js assets-shell.js cdrom.js floppy.js cdrom.iso; do
+            if [ -f "$INPUTS_DIR/$f" ]; then cp --reflink=auto "$INPUTS_DIR/$f" "$f"; n=$((n + 1)); fi
+          done
+          echo "copied $n generated inputs"
+
+      - name: Resolve version
+        id: ver
+        env:
+          IN_VERSION: ${{ inputs.version }}
+        run: |
+          v="$IN_VERSION"
+          if [ -z "$v" ]; then
+            v=$(grep -oE 'build-sig" content="[0-9]+-[0-9][0-9]\+' /home/jpark/win95-dev/site/index.html 2>/dev/null \
+                | head -1 | grep -oE '[0-9]+-[0-9][0-9]')
+          fi
+          if ! [[ "$v" =~ ^[0-9]+-[0-9][0-9]$ ]]; then
+            echo "::error::No usable version (got '$v'); dispatch with a version input."
+            exit 1
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy to dev
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: ./deploy/win95/deploy.sh --commit "$(git rev-parse --short=7 HEAD)" --version "$VERSION"

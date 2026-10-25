@@ -3,6 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="build-channel" content="dev" />
+<meta name="build-sig" content="local" />
+<meta name="build-version" content="local" />
+<meta name="build-commit" content="" />
+<meta name="build-date" content="" />
 <title>Windows 95</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icons/icon192.png">
@@ -33,6 +38,44 @@
 <script src="dyn.js"></script>
 <script src="bridge.js"></script>
 <script src="host-web.js"></script>
-<script>if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js');</script>
+<script>
+// Build metadata (<meta name="build-*">), written by deploy/win95/deploy.sh stamp_build_meta; the source copy, which
+// localhost serves, reads as a dev build of the working tree. A dev build (localhost or win95-dev) shows the DEVELOPER
+// banner and the [DEV <sig>] title and runs without the service worker, so it never runs a cached copy; only a prod
+// build installs it. All of it is written as text (textContent / document.title), never parsed as HTML.
+(function initBuildMetadata() {
+  const meta = n => { const el = document.querySelector(`meta[name="build-${n}"]`); return el ? String(el.getAttribute('content') || '') : ''; };
+  const b = Object.freeze({ channel: meta('channel'), sig: meta('sig'), version: meta('version'), commit: meta('commit'), date: meta('date') });
+  window.__BUILD__ = b;
+  const sw = 'serviceWorker' in navigator && location.protocol !== 'file:';
+  if (b.channel !== 'dev') {
+    if (sw) navigator.serviceWorker.register('sw.js');
+    return;
+  }
+  if (sw) navigator.serviceWorker.getRegistrations().then(rs => rs.forEach(r => r.unregister())).catch(() => {});
+  if (self.caches) caches.keys().then(ks => ks.forEach(k => caches.delete(k))).catch(() => {});
+
+  document.title = `[DEV ${b.sig}] ${document.title}`;
+  const banner = document.createElement('div');
+  banner.id = 'devBanner';
+  banner.textContent = `DEVELOPER ${b.sig}`;
+  banner.style.cssText = 'position:fixed;top:0;left:50%;transform:translateX(-50%);z-index:2147483647;pointer-events:none;background:#ff3b30;color:#fff;font:700 12px/1.7 ui-monospace,Menlo,monospace;padding:2px 12px;border-radius:0 0 6px 6px;letter-spacing:.04em;white-space:nowrap';
+  document.body.prepend(banner);
+
+  // Deployed dev only: every 20 s fetch the page past the browser cache and reload when a newer dev deploy is being
+  // served (its build-sig differs). The working tree has no deploys to wait for, so localhost skips it.
+  if (b.sig === 'local') return;
+  setInterval(() => {
+    fetch(location.pathname + '?devcheck=' + Date.now(), { cache: 'no-store', credentials: 'same-origin' })
+      .then(r => r.text())
+      .then(html => {
+        const el = new DOMParser().parseFromString(html, 'text/html').querySelector('meta[name="build-sig"]');
+        const sig = el ? el.getAttribute('content') : null;
+        if (sig && sig !== b.sig) location.reload();
+      })
+      .catch(() => {});
+  }, 20000);
+})();
+</script>
 </body>
 </html>

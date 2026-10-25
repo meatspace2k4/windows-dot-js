@@ -5,6 +5,10 @@
 /assets-shell.js
 /cdrom.js
 /floppy.js
+/cdrom.iso
+# deploy: per-machine config and the staged build
+deploy/*/deploy.config
+deploy/*/.staging/
 # built apps and dependencies
 electron/node_modules/
 electron/Windows 95.app/

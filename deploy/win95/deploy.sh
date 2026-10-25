@@ -1,0 +1,613 @@
+#!/usr/bin/env bash
+#
+# Deploy Windows 95 to the Pi as "win95", the process deploy/dustytrails/deploy_to_pi.sh (mobileair) uses for
+# dustytrails: a signed build, stamped into the page and into every asset's ?v=, staged locally and rsynced.
+#
+# Target: the Pi in deploy.config (PI_HOST, PI_USER)
+# Service: win95 (win95_server.py on 127.0.0.1:8768, reached through cloudflared)
+#   win95.funstuff.app      ~/win95/site        (production)
+#   win95-dev.funstuff.app  ~/win95-dev/site    (dev; the same service, chosen by Host)
+#
+# Usage:
+#   ./deploy.sh --commit <sha> --version <ver>                          # DEV (default): front end only
+#   W95_ALLOW_PROD=1 ./deploy.sh --prod --commit <sha> --version <ver>  # production: files + service
+#   ./deploy.sh --build-only                                            # stage only, nothing shipped
+
+set -euo pipefail
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Configuration
+# ─────────────────────────────────────────────────────────────────────────────
+SERVICE_NAME="win95"
+SITE_PORT="8768"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+STAGING_DIR="$SCRIPT_DIR/.staging"
+
+# Deploy signature. Every deploy (dev or prod) MUST be invoked with:
+#   --commit <short sha>   the commit being shipped; verified against .git/HEAD
+#                          by reading the files directly (this script never
+#                          runs git: a deploy command must not carry a git call)
+#   --version <ver>        <MAJOR>-<M><I>, e.g. 0-01 (= v0.0.1), 1-11 (= v1.1.1)
+# The signature is  <version>+<commit>  (e.g. 0-01+e2189dc). It becomes every
+# asset's ?v= cache-bust, the service worker's cache name AND the dev title bar
+# text "[DEV 0-01+e2189dc]", so what a browser shows is, by construction, the
+# commit that was typed and verified for that deploy. Only --build-only may run
+# without them; it then stamps ?v= with the clock and ships nothing.
+DEPLOY_COMMIT=""
+DEPLOY_VERSION=""
+DEPLOY_SIG=""
+
+# Generated from the Windows 95 CD and gitignored (tools/build_*.py, extract.py): a checkout has none of them. They
+# come from the working tree on the Mac, and from ~/win95-deploy-inputs (copied into the checkout) on the runner.
+GENERATED=(system.js savers.js assets.js assets-shell.js cdrom.js floppy.js)
+CD_IMAGE="cdrom.iso"
+
+BUILD_ONLY=0
+for _arg in "$@"; do
+    if [[ "$_arg" == "--build-only" ]]; then
+        BUILD_ONLY=1
+    fi
+done
+unset _arg
+
+PI_CONFIG_PLACEHOLDER=0
+
+if [[ -f "$SCRIPT_DIR/deploy.config" ]]; then
+    # shellcheck source=deploy.config.example
+    source "$SCRIPT_DIR/deploy.config"
+elif [[ "$BUILD_ONLY" == "1" ]]; then
+    echo -e "\033[1;33m[WARN]\033[0m deploy.config not found — continuing because --build-only was given."
+else
+    echo -e "\033[0;31m[ERROR]\033[0m deploy.config not found."
+    echo -e "        Copy deploy.config.example to deploy.config and fill in your values."
+    exit 1
+fi
+
+if [[ -z "${PI_HOST:-}" || -z "${PI_USER:-}" ]]; then
+    if [[ "$BUILD_ONLY" == "1" ]]; then
+        PI_HOST="build-only-placeholder.invalid"
+        PI_USER="build-only-placeholder"
+        PI_CONFIG_PLACEHOLDER=1
+    else
+        echo -e "\033[0;31m[ERROR]\033[0m deploy.config must set PI_HOST and PI_USER"
+        exit 1
+    fi
+fi
+
+PI_TARGET="${PI_USER}@${PI_HOST}"
+INSTALL_DIR="/home/${PI_USER}/win95"
+DEV_INSTALL_DIR="/home/${PI_USER}/win95-dev"
+INPUTS_DIR="/home/${PI_USER}/win95-deploy-inputs"
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
+log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
+log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+log_step() { echo -e "${BLUE}[STEP]${NC} $1"; }
+
+require_real_pi_config() {
+    if [[ "${PI_CONFIG_PLACEHOLDER:-0}" == "1" ]]; then
+        log_error "PI_HOST/PI_USER are --build-only placeholders (no deploy.config found)."
+        log_error "This operation contacts the Pi and requires a real deploy.config."
+        exit 1
+    fi
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Build metadata, stamped at build time
+# index.html carries <meta name="build-*"> tags; the source copy (what
+# localhost serves) reads as a dev build of the working tree. The staged copy
+# gets this build's values: channel (dev | prod), sig (<ver>+<sha>), version
+# (2-37 -> 2.3.7), commit, date. index.html reads them as text for the dev
+# banner and the [DEV <sig>] title (dev channel only). Values are
+# regex-validated here (and in require_deploy_signature), so only digits,
+# dots, dashes, plus signs and hex reach the page.
+# ─────────────────────────────────────────────────────────────────────────────
+stamp_build_meta() {
+    local idx="$STAGING_DIR/site/index.html"
+    local channel="dev" sig version commit="" date
+    [[ "${PROD_DEPLOY:-0}" == "1" ]] && channel="prod"
+    date="$(date -u +%Y-%m-%d)"
+    if [[ -n "$DEPLOY_VERSION" && -n "$DEPLOY_COMMIT" ]]; then
+        local major="${DEPLOY_VERSION%%-*}" mi="${DEPLOY_VERSION#*-}"
+        version="${major}.${mi:0:1}.${mi:1:1}"
+        commit="${DEPLOY_COMMIT:0:7}"
+        sig="$DEPLOY_SIG"
+    else
+        version="build-$(date -u +%Y%m%dT%H%MZ)"
+        sig="$version"
+    fi
+    local v
+    for v in "$channel" "$sig" "$version" "$commit" "$date"; do
+        if ! [[ "$v" =~ ^[A-Za-z0-9.+-]*$ ]]; then
+            log_error "Build metadata value '$v' has characters outside [A-Za-z0-9.+-]. Refusing to build."
+            exit 1
+        fi
+    done
+    local tmp="$idx.tmp"
+    B_CHANNEL="$channel" B_SIG="$sig" B_VERSION="$version" B_COMMIT="$commit" B_DATE="$date" \
+        perl -pe '
+            s/(<meta name="build-channel" content=")[^"]*(")/$1$ENV{B_CHANNEL}$2/;
+            s/(<meta name="build-sig" content=")[^"]*(")/$1$ENV{B_SIG}$2/;
+            s/(<meta name="build-version" content=")[^"]*(")/$1$ENV{B_VERSION}$2/;
+            s/(<meta name="build-commit" content=")[^"]*(")/$1$ENV{B_COMMIT}$2/;
+            s/(<meta name="build-date" content=")[^"]*(")/$1$ENV{B_DATE}$2/;
+        ' "$idx" > "$tmp" && mv "$tmp" "$idx"
+    if ! grep -qF "<meta name=\"build-channel\" content=\"${channel}\" />" "$idx" \
+        || ! grep -qF "<meta name=\"build-sig\" content=\"${sig}\" />" "$idx"; then
+        log_error "Build metadata was not stamped into the staged index.html. Refusing to build."
+        exit 1
+    fi
+    log_info "Build metadata: ${channel} ${sig} (version ${version}${commit:+, ${commit}}, ${date})"
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Cache busting: every script URL carries this deploy's signature
+#
+# A browser that keeps a cached copy of one script and fetches a new copy of
+# another runs a mix of two builds. Stamp every script URL with this deploy's
+# signature: the page's <script src>, the machine's new Worker('worker.js'),
+# the worker's importScripts list and the service worker's registration, and
+# name the service worker's cache after it, so a new build replaces the cache
+# rather than layering on it.
+# ─────────────────────────────────────────────────────────────────────────────
+cache_bust_site() {
+    log_info "Stamping every script URL with ?v=${DEPLOY_SIG}..."
+    local site="$STAGING_DIR/site" cb="v=${DEPLOY_SIG}"
+
+    patch_file() {
+        local file="$1"
+        shift
+        local tmp="${file}.tmp"
+        CB="$cb" SIG="$DEPLOY_SIG" perl -pe "$@" "$file" > "$tmp" && mv "$tmp" "$file"
+    }
+
+    patch_file "$site/index.html" \
+        's|(<script src="[A-Za-z0-9_./-]+\.js)(?:\?v=[A-Za-z0-9_.+-]*)?"|$1?$ENV{CB}"|g; s|register\(\x27sw\.js(?:\?v=[A-Za-z0-9_.+-]*)?\x27\)|register(\x27sw.js?$ENV{CB}\x27)|g'
+    patch_file "$site/win95.js" \
+        's|new Worker\(\x27worker\.js(?:\?v=[A-Za-z0-9_.+-]*)?\x27\)|new Worker(\x27worker.js?$ENV{CB}\x27)|g'
+    patch_file "$site/worker.js" \
+        'if (/^importScripts\(/) { s|\x27([A-Za-z0-9_.-]+\.js)(?:\?v=[A-Za-z0-9_.+-]*)?\x27|\x27$1?$ENV{CB}\x27|g }'
+    patch_file "$site/sw.js" \
+        's|^const CACHE = .*;$|const CACHE = \x27win95-$ENV{SIG}\x27;|'
+
+    # Every script reference must now carry the signature; a missed one would run a cached copy.
+    local bad=0 n
+    n="$(grep -oE '<script src="[^"]+"' "$site/index.html" | grep -vcF "?${cb}\"" || true)"
+    [[ "$n" == "0" ]] || { log_error "index.html: $n <script src> without ?${cb}"; bad=1; }
+    grep -qF "register('sw.js?${cb}')" "$site/index.html" || { log_error "index.html: sw.js registration not stamped"; bad=1; }
+    grep -qF "new Worker('worker.js?${cb}')" "$site/win95.js" || { log_error "win95.js: new Worker('worker.js') not stamped"; bad=1; }
+    n="$(grep -E '^importScripts\(' "$site/worker.js" | grep -oE "'[^']+\.js[^']*'" | grep -vcF "?${cb}'" || true)"
+    [[ "$n" == "0" ]] || { log_error "worker.js: $n importScripts entries without ?${cb}"; bad=1; }
+    grep -qF "const CACHE = 'win95-${DEPLOY_SIG}';" "$site/sw.js" || { log_error "sw.js: cache name not stamped"; bad=1; }
+    if [[ $bad -ne 0 ]]; then
+        log_error "Cache busting incomplete. Refusing to build."
+        exit 1
+    fi
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Parse arguments
+# ─────────────────────────────────────────────────────────────────────────────
+DRY_RUN=0
+PROD_DEPLOY=0
+FILES_ONLY=0
+SETUP_ONLY=0
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --build-only) BUILD_ONLY=1; shift ;;
+        --dry-run) DRY_RUN=1; shift ;;
+        --dev) shift ;;
+        --prod) PROD_DEPLOY=1; shift ;;
+        --files-only) FILES_ONLY=1; shift ;;
+        --setup-only) SETUP_ONLY=1; shift ;;
+        --commit) DEPLOY_COMMIT="$2"; shift 2 ;;
+        --version) DEPLOY_VERSION="$2"; shift 2 ;;
+        --host) PI_HOST="$2"; PI_TARGET="${PI_USER}@${PI_HOST}"; shift 2 ;;
+        --user)
+            PI_USER="$2"; PI_TARGET="${PI_USER}@${PI_HOST}"
+            INSTALL_DIR="/home/${PI_USER}/win95"; DEV_INSTALL_DIR="/home/${PI_USER}/win95-dev"
+            INPUTS_DIR="/home/${PI_USER}/win95-deploy-inputs"
+            shift 2 ;;
+        -h|--help)
+            echo "Usage: $0 --commit <short-sha> --version <ver> [OPTIONS]"
+            echo ""
+            echo "Required for any deploy (dev or prod):"
+            echo "  --commit SHA        Short hash of the commit being shipped. Verified against the"
+            echo "                      checkout's .git/HEAD (read as files; this script never runs git)."
+            echo "                      Get it with:  git rev-parse --short HEAD"
+            echo "  --version VER       <MAJOR>-<M><I>. MAJOR any integer; dash; then EXACTLY two digits,"
+            echo "                      minor and iteration, one digit each, concatenated (not added)."
+            echo "                        0-01 = v0.0.1    1-11 = v1.1.1    1-1 / 1-111 / 1.1.1 = invalid"
+            echo "                      The signature is <ver>+<sha>, e.g. 0-01+e2189dc; it becomes every"
+            echo "                      script's ?v= and the dev title bar: [DEV 0-01+e2189dc]"
+            echo ""
+            echo "Target (default is DEV):"
+            echo "  (none) / --dev      Site files only -> /home/<user>/win95-dev/site, served at"
+            echo "                      win95-dev.funstuff.app by the SAME service. No restart."
+            echo "  --prod              Production files + service. ALSO requires W95_ALLOW_PROD=1."
+            echo ""
+            echo "Options:"
+            echo "  --build-only        Build the staging dir only: no ssh/rsync/service, no deploy.config needed"
+            echo "  --dry-run           Preview the file sync (rsync --dry-run) for the chosen target; writes nothing"
+            echo "  --files-only        (--prod) Only sync files, don't touch the service"
+            echo "  --setup-only        (--prod) Only set up the service (assumes files already deployed)"
+            echo "  --host HOST         Override PI_HOST from deploy.config"
+            echo "  --user USER         Override PI_USER from deploy.config"
+            exit 0
+            ;;
+        *) log_error "Unknown argument: $1"; exit 1 ;;
+    esac
+done
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Deploy signature check (--commit / --version)
+# ─────────────────────────────────────────────────────────────────────────────
+resolve_head_sha() {
+    local gd="$REPO_ROOT/.git"
+    if [[ -f "$gd" ]]; then
+        gd="$(sed -n 's/^gitdir: //p' "$gd")"
+        [[ "$gd" == /* ]] || gd="$REPO_ROOT/$gd"
+    fi
+    [[ -f "$gd/HEAD" ]] || return 1
+    local head; head="$(cat "$gd/HEAD")"
+    if [[ "$head" != ref:* ]]; then
+        echo "$head"; return 0
+    fi
+    local ref="${head#ref: }"
+    local common="$gd"
+    if [[ -f "$gd/commondir" ]]; then
+        common="$(cat "$gd/commondir")"
+        [[ "$common" == /* ]] || common="$gd/$common"
+    fi
+    if [[ -f "$common/$ref" ]]; then cat "$common/$ref"; return 0; fi
+    if [[ -f "$gd/$ref" ]]; then cat "$gd/$ref"; return 0; fi
+    if [[ -f "$common/packed-refs" ]]; then
+        local line; line="$(grep " ${ref}\$" "$common/packed-refs" | head -n1)"
+        [[ -n "$line" ]] && { echo "${line%% *}"; return 0; }
+    fi
+    return 1
+}
+
+require_deploy_signature() {
+    if [[ -z "$DEPLOY_COMMIT" || -z "$DEPLOY_VERSION" ]]; then
+        log_error "A deploy needs BOTH --commit <short-sha> and --version <ver>. Nothing was done."
+        log_error "  commit:   git rev-parse --short HEAD"
+        log_error "  version:  <MAJOR>-<M><I>, e.g. 0-01 (v0.0.1)"
+        exit 1
+    fi
+    if ! [[ "$DEPLOY_COMMIT" =~ ^[0-9a-f]{7,40}$ ]]; then
+        log_error "--commit '$DEPLOY_COMMIT' is not a hex sha of 7-40 chars. Nothing was done."
+        exit 1
+    fi
+    if ! [[ "$DEPLOY_VERSION" =~ ^[0-9]+-[0-9][0-9]$ ]]; then
+        log_error "--version '$DEPLOY_VERSION' must be <MAJOR>-<M><I>: e.g. 0-01 (v0.0.1), 1-11 (v1.1.1). Nothing was done."
+        log_error "MAJOR is any integer; after the dash EXACTLY two digits: minor then iteration, one digit each."
+        exit 1
+    fi
+    DEPLOY_SIG="${DEPLOY_VERSION}+${DEPLOY_COMMIT}"
+    local head_sha
+    if ! head_sha="$(resolve_head_sha)"; then
+        log_error "Could not resolve HEAD from $REPO_ROOT/.git. Nothing was done."
+        exit 1
+    fi
+    if [[ "$head_sha" != "$DEPLOY_COMMIT"* ]]; then
+        log_error "--commit $DEPLOY_COMMIT does not match the checkout's HEAD (${head_sha:0:12})."
+        log_error "You are not deploying what you think you are. Nothing was done."
+        exit 1
+    fi
+    log_info "Deploy signature: commit ${DEPLOY_COMMIT} (HEAD ${head_sha:0:12}), sig ${DEPLOY_SIG}"
+}
+
+# Copy one file into the staging tree: a real copy, never a link. Big generated files (system.js is ~140 MB, the CD
+# image ~600 MB) are cloned where the filesystem can (APFS clonefile, a reflink on Linux), a plain copy otherwise.
+stage_file() {
+    local src="$1" dst="$2"
+    if [[ -L "$src" ]]; then
+        log_error "$src is a symlink; deploy inputs are copied files. Refusing to build."
+        exit 1
+    fi
+    cp -c "$src" "$dst" 2>/dev/null || cp --reflink=auto "$src" "$dst" 2>/dev/null || cp "$src" "$dst"
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 1: Build/stage files locally
+# ─────────────────────────────────────────────────────────────────────────────
+build_staging() {
+    if [[ -z "$DEPLOY_SIG" ]]; then
+        DEPLOY_SIG="$(date +%s)"
+    fi
+    log_step "Building staging directory..."
+
+    rm -rf "$STAGING_DIR"
+    mkdir -p "$STAGING_DIR/site/icons"
+
+    # The served tree: ALL top-level .js by glob (an explicit list silently drops new files), the page, its manifest
+    # and icons, the generated bundles and the CD image. No tests, tools, bench, electron or mac.
+    local f missing=0
+    for f in "${GENERATED[@]}" "$CD_IMAGE"; do
+        if [[ ! -e "$REPO_ROOT/$f" ]]; then
+            log_error "Missing generated input: $REPO_ROOT/$f"
+            missing=1
+        fi
+    done
+    if [[ $missing -ne 0 ]]; then
+        log_error "Generate them (tools/build_*.py, extract.py) or copy them from $INPUTS_DIR. Nothing was built."
+        exit 1
+    fi
+    log_info "Copying site files..."
+    for f in "$REPO_ROOT/"*.js; do
+        stage_file "$f" "$STAGING_DIR/site/$(basename "$f")"
+    done
+    cp "$REPO_ROOT/index.html" "$REPO_ROOT/manifest.webmanifest" "$STAGING_DIR/site/"
+    cp "$REPO_ROOT/icons/"*.png "$STAGING_DIR/site/icons/"
+    stage_file "$REPO_ROOT/$CD_IMAGE" "$STAGING_DIR/site/$CD_IMAGE"
+
+    # The scripts the stamps rewrite are copies, never links into the working tree.
+    for f in index.html win95.js worker.js sw.js; do
+        cp "$REPO_ROOT/$f" "$STAGING_DIR/site/$f.fresh" && mv "$STAGING_DIR/site/$f.fresh" "$STAGING_DIR/site/$f"
+    done
+
+    cache_bust_site
+    stamp_build_meta
+
+    # Server and unit, outside the served tree
+    cp "$SCRIPT_DIR/win95_server.py" "$SCRIPT_DIR/win95.service" "$STAGING_DIR/"
+
+    log_info "Staging complete: $(du -sh "$STAGING_DIR" | cut -f1)"
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 2: Deploy files to Pi (production)
+# ─────────────────────────────────────────────────────────────────────────────
+deploy_files() {
+    require_real_pi_config
+    log_step "Deploying to $PI_TARGET:$INSTALL_DIR..."
+
+    if ! ssh -o ConnectTimeout=5 "$PI_TARGET" "echo 'SSH OK'" &>/dev/null; then
+        log_error "Cannot connect to $PI_TARGET"
+        exit 1
+    fi
+    if [[ "${DRY_RUN:-0}" == "1" ]]; then
+        log_warn "DRY RUN — rsync --dry-run: previewing changes, writing nothing."
+        rsync -avz --dry-run --itemize-changes --delete "$STAGING_DIR/site/" "$PI_TARGET:$INSTALL_DIR/site/"
+        rsync -avz --dry-run --itemize-changes "$STAGING_DIR/win95_server.py" "$PI_TARGET:$INSTALL_DIR/"
+        return 0
+    fi
+    ssh "$PI_TARGET" "mkdir -p '$INSTALL_DIR/site'"
+    # --delete is safe: site/ is created and owned by this script and holds nothing hand-placed.
+    rsync -avz --delete "$STAGING_DIR/site/" "$PI_TARGET:$INSTALL_DIR/site/"
+    rsync -avz "$STAGING_DIR/win95_server.py" "$PI_TARGET:$INSTALL_DIR/"
+    log_info "Files deployed to $PI_TARGET:$INSTALL_DIR"
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 2-dev: site-only sync to the dev tree (the default)
+#
+# win95-dev.funstuff.app is NOT a second deployment: the same win95 service
+# resolves a different site root when the Host header is DEV_HOST. So this
+# ships static files and nothing else: source is ALWAYS $STAGING_DIR/site/
+# (no .py in it), destination is ALWAYS $DEV_INSTALL_DIR/site/, and there is
+# no service setup or restart: the running service reads files per request.
+# ─────────────────────────────────────────────────────────────────────────────
+deploy_dev_files() {
+    require_real_pi_config
+    log_step "Deploying SITE ONLY to $PI_TARGET:$DEV_INSTALL_DIR/site..."
+
+    if ! ssh -o ConnectTimeout=5 "$PI_TARGET" "echo 'SSH OK'" &>/dev/null; then
+        log_error "Cannot connect to $PI_TARGET"
+        exit 1
+    fi
+    local src="$STAGING_DIR/site"
+    if find "$src" -maxdepth 1 -name '*.py' | grep -q .; then
+        log_error "Staged site dir contains .py files — refusing a dev deploy."
+        exit 1
+    fi
+    if ! grep -qF '<meta name="build-channel" content="dev" />' "$src/index.html" \
+        || ! grep -qF "<meta name=\"build-sig\" content=\"${DEPLOY_SIG}\" />" "$src/index.html"; then
+        log_error "Staged index.html is not stamped as dev build ${DEPLOY_SIG}. Refusing to ship."
+        exit 1
+    fi
+    if [[ "${DRY_RUN:-0}" == "1" ]]; then
+        log_warn "DRY RUN — previewing the dev site sync, writing nothing."
+        rsync -avz --dry-run --itemize-changes --delete "$src/" "$PI_TARGET:$DEV_INSTALL_DIR/site/"
+        return 0
+    fi
+    ssh "$PI_TARGET" "mkdir -p '$DEV_INSTALL_DIR/site'"
+    rsync -avz --delete "$src/" "$PI_TARGET:$DEV_INSTALL_DIR/site/"
+    log_info "Dev site deployed to $PI_TARGET:$DEV_INSTALL_DIR/site"
+    log_info "Production install at $INSTALL_DIR was not touched."
+    log_info "No service restart needed — files are read per request."
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Health gate — did the service actually come back? Probed ON THE PI over
+# ssh against 127.0.0.1 (the service binds loopback only), one ssh for the
+# whole poll loop, with the restart counter checked for a restart loop.
+# Detect and report only — no rollback.
+# ─────────────────────────────────────────────────────────────────────────────
+HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-60}"
+HEALTH_INTERVAL="${HEALTH_INTERVAL:-1}"
+
+wait_for_service_health() {
+    require_real_pi_config
+    local url="http://127.0.0.1:${SITE_PORT}/ (probed on the Pi)"
+    log_step "Health check: waiting up to ${HEALTH_TIMEOUT}s for $SERVICE_NAME on $url"
+    local restarts_before
+    restarts_before="$(ssh -o ConnectTimeout=5 "$PI_TARGET" "systemctl show ${SERVICE_NAME} -p NRestarts --value" 2>/dev/null || true)"
+    restarts_before="$(printf '%s' "$restarts_before" | tr -dc '0-9')"
+
+    local probe_out
+    probe_out="$(ssh -o ConnectTimeout=5 "$PI_TARGET" \
+        "HEALTH_PORT=${SITE_PORT} HEALTH_DEADLINE=${HEALTH_TIMEOUT} HEALTH_INTERVAL=${HEALTH_INTERVAL} bash -s" 2>/dev/null <<'REMOTE_PROBE'
+set -u
+if ! command -v curl >/dev/null 2>&1; then echo "NOCURL 000 0"; exit 0; fi
+start=$(date +%s); deadline=$(( start + HEALTH_DEADLINE )); code=000
+while : ; do
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:${HEALTH_PORT}/" 2>/dev/null || true)
+    [ -n "$code" ] || code=000
+    [ "$code" = "200" ] && break
+    [ "$(date +%s)" -ge "$deadline" ] && break
+    sleep "$HEALTH_INTERVAL"
+done
+echo "PROBE $code $(( $(date +%s) - start ))"
+REMOTE_PROBE
+)" || true
+    local line kind="NORESULT" code="000"
+    line="$(printf '%s\n' "$probe_out" | grep -E '^(PROBE|NOCURL) ' | tail -1)" || true
+    if [[ -n "$line" ]]; then kind="${line%% *}"; code="$(echo "$line" | cut -d' ' -f2)"; fi
+
+    local active restarts_after problems=""
+    active="$(ssh -o ConnectTimeout=5 "$PI_TARGET" "systemctl is-active ${SERVICE_NAME}" 2>/dev/null | tr -d '[:space:]' || true)"
+    restarts_after="$(ssh -o ConnectTimeout=5 "$PI_TARGET" "systemctl show ${SERVICE_NAME} -p NRestarts --value" 2>/dev/null | tr -dc '0-9' || true)"
+    case "$kind" in
+        NOCURL) problems="${problems}
+HTTP probe COULD NOT RUN: curl is not installed on the Pi." ;;
+        NORESULT) problems="${problems}
+HTTP probe COULD NOT RUN: no result line came back over ssh from ${PI_TARGET}." ;;
+        *) [[ "$code" == "200" ]] || problems="${problems}
+${url} never returned 200 within ${HEALTH_TIMEOUT}s (last HTTP status: ${code})" ;;
+    esac
+    [[ "$active" == "active" ]] || problems="${problems}
+systemctl is-active reports '${active:-unknown}', expected 'active'"
+    if [[ -n "$restarts_before" && -n "$restarts_after" ]] && (( 10#$restarts_after > 10#$restarts_before )); then
+        problems="${problems}
+NRestarts climbed ${restarts_before} -> ${restarts_after} during the probe window — the unit is restart-looping"
+    fi
+    if [[ -n "$problems" ]]; then
+        log_error "Health check FAILED for ${SERVICE_NAME}:"
+        local p
+        while IFS= read -r p; do [[ -n "$p" ]] && log_error "  - $p"; done <<< "$problems"
+        ssh -o ConnectTimeout=5 "$PI_TARGET" "journalctl -u ${SERVICE_NAME} -n 30 --no-pager 2>/dev/null || echo '(journal unavailable)'" 2>&1 | sed 's/^/        /' || true
+        log_error "The new files are on the Pi and were NOT rolled back."
+        exit 1
+    fi
+    log_info "Health check passed: ${SERVICE_NAME} is active and served 200 at ${url}."
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 3: Setup service on Pi (production)
+# ─────────────────────────────────────────────────────────────────────────────
+run_remote_script_tty() {
+    local local_path="$1" name="$2"
+    local remote_path="/tmp/win95-${name}-$$.sh"
+    scp -q "$local_path" "$PI_TARGET:$remote_path" || return 1
+    ssh -t "$PI_TARGET" "bash '$remote_path'; rc=\$?; rm -f '$remote_path'; exit \$rc"
+}
+
+setup_service() {
+    require_real_pi_config
+    log_step "Setting up service on Pi..."
+    local svc_tmp; svc_tmp="$(mktemp)"
+    sed -e "s|__USER__|${PI_USER}|g" "$SCRIPT_DIR/win95.service" > "$svc_tmp"
+    scp -q "$svc_tmp" "$PI_TARGET:$INSTALL_DIR/win95.service"
+    rm -f "$svc_tmp"
+
+    log_info "Installing systemd service (may prompt for password)..."
+    local sudo_tmp; sudo_tmp="$(mktemp)"
+    cat > "$sudo_tmp" <<REMOTE_SUDO
+set -e
+mkdir -p "$INPUTS_DIR" "$DEV_INSTALL_DIR/site"
+sudo cp "$INSTALL_DIR/win95.service" /etc/systemd/system/win95.service
+sudo systemctl daemon-reload
+sudo systemctl enable win95
+sudo systemctl restart win95
+SUDOERS_LINE="${PI_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl daemon-reload, /usr/bin/systemctl restart win95, /usr/bin/systemctl start win95, /usr/bin/systemctl stop win95, /usr/bin/systemctl status win95 *, /usr/bin/journalctl -u win95 *"
+echo "\$SUDOERS_LINE" | sudo tee /etc/sudoers.d/win95-deploy > /dev/null
+sudo chmod 440 /etc/sudoers.d/win95-deploy
+sleep 2
+sudo systemctl status win95 --no-pager || true
+REMOTE_SUDO
+    run_remote_script_tty "$sudo_tmp" "deploy_service"
+    rm -f "$sudo_tmp"
+    log_info "Service setup complete!"
+    wait_for_service_health
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Main
+# ─────────────────────────────────────────────────────────────────────────────
+main() {
+    if [[ "$BUILD_ONLY" == "1" ]]; then
+        echo ""
+        echo "═══════════════════════════════════════════════════════════════════"
+        echo "  Windows 95 BUILD ONLY — staging build, nothing is deployed"
+        echo "═══════════════════════════════════════════════════════════════════"
+        echo ""
+        if [[ -n "$DEPLOY_COMMIT" || -n "$DEPLOY_VERSION" ]]; then require_deploy_signature; fi
+        build_staging
+        log_info "Build-only complete. Staged tree: $STAGING_DIR"
+        return 0
+    fi
+
+    if [[ "$PROD_DEPLOY" != "1" ]]; then
+        if [[ "$FILES_ONLY" == "1" || "$SETUP_ONLY" == "1" ]]; then
+            log_error "--files-only / --setup-only act on the PRODUCTION install and service."
+            log_error "They require --prod (and W95_ALLOW_PROD=1). Nothing was done."
+            exit 1
+        fi
+        require_deploy_signature
+        echo ""
+        echo "═══════════════════════════════════════════════════════════════════"
+        echo "  Windows 95 DEV deploy — site only, production untouched"
+        echo "═══════════════════════════════════════════════════════════════════"
+        echo ""
+        echo "  Target:  $PI_TARGET"
+        echo "  Dev dir: $DEV_INSTALL_DIR/site  (served at win95-dev.funstuff.app)"
+        echo "  Prod:    $INSTALL_DIR  (NOT written)"
+        echo "  Service: $SERVICE_NAME  (NOT restarted)"
+        echo ""
+        build_staging
+        deploy_dev_files
+        echo ""
+        echo -e "${GREEN}Dev deploy complete!${NC}"
+        echo "  Dev:       https://win95-dev.funstuff.app/"
+        echo "  Title bar: [DEV ${DEPLOY_SIG}]"
+        echo ""
+        return 0
+    fi
+
+    if [[ "${W95_ALLOW_PROD:-}" != "1" ]]; then
+        log_error "--prod given but W95_ALLOW_PROD is not 1. Production deploy refused; nothing was done."
+        log_error "Run:  W95_ALLOW_PROD=1 $0 --prod --commit <sha> --version <ver> [flags]"
+        exit 1
+    fi
+    require_deploy_signature
+    echo ""
+    echo "═══════════════════════════════════════════════════════════════════"
+    echo "  Windows 95 PRODUCTION Deployment"
+    echo "═══════════════════════════════════════════════════════════════════"
+    echo ""
+    echo "  Target:  $PI_TARGET"
+    echo "  Install: $INSTALL_DIR"
+    echo "  Service: $SERVICE_NAME"
+    echo ""
+    if [[ "$DRY_RUN" == "1" ]]; then
+        build_staging
+        deploy_files
+    elif [[ "$SETUP_ONLY" == "1" ]]; then
+        setup_service
+    elif [[ "$FILES_ONLY" == "1" ]]; then
+        build_staging
+        deploy_files
+    else
+        build_staging
+        deploy_files
+        setup_service
+    fi
+    echo ""
+    echo -e "${GREEN}Deployment complete!${NC}"
+    echo "  Site:    https://win95.funstuff.app/"
+    echo "  Logs:    ssh -t $PI_TARGET 'journalctl -u $SERVICE_NAME -f'"
+    echo ""
+}
+
+main
