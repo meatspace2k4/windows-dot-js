@@ -11,6 +11,16 @@
         "/Users/johusha/Downloads/Windows 95/Win95 OSR2.ISO"
       ],
       "port": 8095
+    },
+    {
+      "name": "win95-dev (local Pi)",
+      "url": "http://win95-dev.localhost:8770",
+      "port": 8770
+    },
+    {
+      "name": "win95 (local Pi)",
+      "url": "http://win95.localhost:8770",
+      "port": 8770
     }
   ]
 }
