@@ -3356,7 +3356,7 @@ P.threads16 = function (nested = false, only = null) {
       // did not run out, though it may have earlier in the run, inside a call that could not stop: it lets the Win16Lock
       // go, as a Win32 wait releases the Win16Mutex. Kept, the lock was held by a thread the scheduler does not run until
       // its wait ends, and nothing could end it: the shell hung with the hourglass at the first start
-      if (r === 1 && (t.blocked || t.wait || t.wake || t.slept || t.yielded)) this.preempted = 0;
+      if (r === 1 && (t.blocked || t.wait || t.wake)) this.preempted = 0;
       t.preempted = r === 1 && !!this.preempted; this.holdWin16(t);
       if (r === 1) { t.ctx = this.saveCtx16(); t.state = 'waiting'; }
       else {
