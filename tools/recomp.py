@@ -50,7 +50,10 @@ G = {n: i for i, n in enumerate(['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi'
                                   # segment selectors and their cached bases (segmented NE code)
                                   'cs', 'ds', 'es', 'ss', 'fsel', 'gsel', 'csb', 'dsb', 'esb', 'ssb', 'gsb',
                                   # blocks left before the dispatcher asks the host whether to go on (tick)
-                                  'budget'])}
+                                  'budget',
+                                  # the interrupt flag: CLI clears it, STI sets it, POPF and IRET take it from the
+                                  # flags word; the host holds the hardware's interrupts while it is clear (sound.js)
+                                  'if'])}
 REGS = ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi']
 
 # imported functions (index order matters)
@@ -638,12 +641,12 @@ class Translator:
             if r != 'esp': f.gg(r).c(~0xffff).e(OPS['and_']).lg(t).e(OPS['or_']).gs(r)
     def x_pushf(self, f, ins, ops, live):
         def v():
-            f.c(0x202).gg('cf').e(OPS['or_'])
-            for n, b in (('pf', 2), ('zf', 6), ('sf', 7), ('df', 10), ('of', 11)): f.gg(n).c(b).e(OPS['shl']).e(OPS['or_'])
+            f.c(0x2).gg('cf').e(OPS['or_'])
+            for n, b in (('pf', 2), ('zf', 6), ('sf', 7), ('if', 9), ('df', 10), ('of', 11)): f.gg(n).c(b).e(OPS['shl']).e(OPS['or_'])
         push_val(f, v, opsize(ins) if segmode() else 2)
     def x_popf(self, f, ins, ops, live):
         t = f.i(); pop_to(f, t, opsize(ins) if segmode() else 2)
-        for n, b in (('cf', 0), ('pf', 2), ('zf', 6), ('sf', 7), ('df', 10), ('of', 11)): f.lg(t).c(b).e(OPS['shr_u']).c(1).e(OPS['and_']).gs(n)
+        for n, b in (('cf', 0), ('pf', 2), ('zf', 6), ('sf', 7), ('if', 9), ('df', 10), ('of', 11)): f.lg(t).c(b).e(OPS['shr_u']).c(1).e(OPS['and_']).gs(n)
     def x_enter(self, f, ins, ops, live):
         if ops[1].imm & 31: raise Unsupported('enter with nesting')
         sz = opsize(ins) if segmode() else 4
@@ -676,12 +679,12 @@ class Translator:
     x_popad = x_popal
     def x_pushfd(self, f, ins, ops, live):
         def v():
-            f.c(0x202).gg('cf').e(OPS['or_'])
-            for n, b in (('pf', 2), ('zf', 6), ('sf', 7), ('df', 10), ('of', 11)): f.gg(n).c(b).e(OPS['shl']).e(OPS['or_'])
+            f.c(0x2).gg('cf').e(OPS['or_'])
+            for n, b in (('pf', 2), ('zf', 6), ('sf', 7), ('if', 9), ('df', 10), ('of', 11)): f.gg(n).c(b).e(OPS['shl']).e(OPS['or_'])
         push_val(f, v)
     def x_popfd(self, f, ins, ops, live):
         t = f.i(); pop_to(f, t)
-        for n, b in (('cf', 0), ('pf', 2), ('zf', 6), ('sf', 7), ('df', 10), ('of', 11)): f.lg(t).c(b).e(OPS['shr_u']).c(1).e(OPS['and_']).gs(n)
+        for n, b in (('cf', 0), ('pf', 2), ('zf', 6), ('sf', 7), ('if', 9), ('df', 10), ('of', 11)): f.lg(t).c(b).e(OPS['shr_u']).c(1).e(OPS['and_']).gs(n)
     def x_leave(self, f, ins, ops, live):
         t = f.i()
         if segmode():
@@ -764,6 +767,14 @@ class Translator:
         if ops: sp_adjust(f, ops[0].imm)
         load_sreg(f, X.X86_REG_CS, lambda: f.lg(sel))
         f.gg('csb').lg(off).e(OPS['add']).e(RETURN); return True
+    # iret: IP, CS and the flags (an interrupt handler's return; the host's interrupt frame pushes them, vmIRQ)
+    def x_iret(self, f, ins, ops, live):
+        sz = opsize(ins); off, sel, fl = f.i(), f.i(), f.i()
+        pop_to(f, off, sz); pop_to(f, sel, sz); pop_to(f, fl, sz)
+        for n, b in (('cf', 0), ('pf', 2), ('zf', 6), ('sf', 7), ('if', 9), ('df', 10), ('of', 11)): f.lg(fl).c(b).e(OPS['shr_u']).c(1).e(OPS['and_']).gs(n)
+        load_sreg(f, X.X86_REG_CS, lambda: f.lg(sel))
+        f.gg('csb').lg(off).e(OPS['add']).e(RETURN); return True
+    x_iretd = x_iret
     def counter(self, f, ins):
         """push CX or ECX per address size, and return a setter for its decremented value"""
         if segmode() and addr16(ins): f.gg('ecx').c(0xffff).e(OPS['and_']); return True
@@ -797,8 +808,8 @@ class Translator:
         f.e(0x10, uleb(IMP['trap']))
     def x_in(self, f, ins, ops, live): self.port_io(f, ins, ops[1], ops[0].size, 1)
     def x_out(self, f, ins, ops, live): self.port_io(f, ins, ops[0], ops[1].size, 0)
-    def x_cli(self, f, ins, ops, live): return
-    x_sti = x_cli
+    def x_cli(self, f, ins, ops, live): f.c(0).gs('if')
+    def x_sti(self, f, ins, ops, live): f.c(1).gs('if')
 
     # ---- arithmetic
     def alu(self, f, ins, mn):

@@ -13,7 +13,8 @@ const u32 = v => v >>> 0;
 // layout shared with tools/recomp.py
 const LDT = 0x30000, ACC = 0x40000, MEM_PAGES = 2048;
 const G = ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi', 'cf', 'pf', 'zf', 'sf', 'of', 'df', 'fs', 'ftop', 'fsw', 'fcw', 'eip',
-  'cs', 'ds', 'es', 'ss', 'fsel', 'gsel', 'csb', 'dsb', 'esb', 'ssb', 'gsb'];
+  'cs', 'ds', 'es', 'ss', 'fsel', 'gsel', 'csb', 'dsb', 'esb', 'ssb', 'gsb',
+  'if'];   // the interrupt flag (win32.js CPU_REGS): CLI, STI, PUSHF, POPF and IRET here keep it
 const GI = Object.fromEntries(G.map((n, i) => [n, i]));
 const SEG = [['es', 'esb'], ['cs', 'csb'], ['ss', 'ssb'], ['ds', 'dsb'], ['fsel', 'fs'], ['gsel', 'gsb']];   // by sreg number
 const I32 = 0x7f, I64 = 0x7e;
@@ -256,7 +257,7 @@ function translate(p, lin, csb, d32) {
     }
     if (b === 0xcf) {   // iret: IP, CS, flags
       pop(T, osz); pop(B, osz); pop(C, osz);
-      for (const [k, n2] of [[0, 'cf'], [2, 'pf'], [6, 'zf'], [7, 'sf'], [10, 'df'], [11, 'of']]) f.lg(C).c(k).op('shr_u').c(1).op('and').gs(n2);
+      for (const [k, n2] of [[0, 'cf'], [2, 'pf'], [6, 'zf'], [7, 'sf'], [9, 'if'], [10, 'df'], [11, 'of']]) f.lg(C).c(k).op('shr_u').c(1).op('and').gs(n2);
       loadSeg(1, B); f.lg(T).gg('csb').op('add').e(0x0f); return done(pc);
     }
     if (b === 0x9a) {   // call far ptr16:16/32
@@ -330,7 +331,7 @@ function translate(p, lin, csb, d32) {
     if (b === 0xf5) { f.gg('cf').op('eqz').gs('cf'); continue; }
     if (b === 0xf8 || b === 0xf9) { f.c(b & 1).gs('cf'); continue; }
     if (b === 0xfc || b === 0xfd) { f.c(b & 1).gs('df'); continue; }
-    if (b === 0xfa || b === 0xfb) continue;   // cli / sti: no interrupts arrive inside a block
+    if (b === 0xfa || b === 0xfb) { f.c(b & 1).gs('if'); continue; }   // cli / sti: the interrupt flag (interrupts arrive between blocks, when it is set)
     if (b === 0xf6 || b === 0xf7) {
       const sz = b & 1 ? osz : 1, o = modrm();
       if (o.reg <= 1) { rd(o, sz); f.c(imm(sz)).op('and').ls(R); f.c(0).gs('cf'); f.c(0).gs('of'); szp(sz); continue; }
@@ -399,8 +400,8 @@ function translate(p, lin, csb, d32) {
     }
     if (b === 0xd7) { f.gg(sbase(seg === null ? 3 : seg)).gg('ebx'); if (asz === 2) f.c(0xffff).op('and'); f.gg('eax').c(0xff).op('and').op('add').op('add').ld(1).ls(T); wrReg(0, 1, T); continue; }
     if (b === 0x9c || b === 0x9d) {   // pushf / popf: the flags the translated code keeps
-      if (b === 0x9c) { f.gg('cf').gg('pf').c(2).op('shl').op('or').gg('zf').c(6).op('shl').op('or').gg('sf').c(7).op('shl').op('or').gg('df').c(10).op('shl').op('or').gg('of').c(11).op('shl').op('or').c(0x202).op('or').ls(T); push(T, osz); }
-      else { pop(T, osz); for (const [k, n2] of [[0, 'cf'], [2, 'pf'], [6, 'zf'], [7, 'sf'], [10, 'df'], [11, 'of']]) f.lg(T).c(k).op('shr_u').c(1).op('and').gs(n2); }
+      if (b === 0x9c) { f.gg('cf').gg('pf').c(2).op('shl').op('or').gg('zf').c(6).op('shl').op('or').gg('sf').c(7).op('shl').op('or').gg('if').c(9).op('shl').op('or').gg('df').c(10).op('shl').op('or').gg('of').c(11).op('shl').op('or').c(0x2).op('or').ls(T); push(T, osz); }
+      else { pop(T, osz); for (const [k, n2] of [[0, 'cf'], [2, 'pf'], [6, 'zf'], [7, 'sf'], [9, 'if'], [10, 'df'], [11, 'of']]) f.lg(T).c(k).op('shr_u').c(1).op('and').gs(n2); }
       continue;
     }
     if (b === 0xc8) {   // enter size, 0

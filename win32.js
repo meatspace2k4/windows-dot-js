@@ -12,7 +12,10 @@ const LAYOUT = { SENTINEL: 0xFFFFFFF0, THUNK: 0xFFFF0000, THUNK16: 0xFFFE0000, F
 const YIELD = Symbol('yield');   // returned by an API implementation to suspend the guest at depth 0
 const TICK_MS = 65536 * 1000 / 1193182;   // PIT channel 0 period, 54.925 ms
 const CPU_REGS = ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi', 'cf', 'pf', 'zf', 'sf', 'of', 'df', 'fs', 'ftop', 'fsw', 'fcw', 'eip',
-  'cs', 'ds', 'es', 'ss', 'fsel', 'gsel', 'csb', 'dsb', 'esb', 'ssb', 'gsb', 'budget'];
+  'cs', 'ds', 'es', 'ss', 'fsel', 'gsel', 'csb', 'dsb', 'esb', 'ssb', 'gsb', 'budget',
+  // the interrupt flag (IF): cleared by CLI, set by STI, popped by POPF and IRET (dyn.js); the hardware's interrupts
+  // wait while it is clear, as the processor holds them (sound.js raiseIRQ, vmm.js vmIrqDeliver)
+  'if'];
 // the processor is the host's: every BUDGET blocks the dispatcher asks it (tick) whether the guest goes on. A run that
 // can give up the processor (a thread at its top level) does after SLICE_MS; one inside a call the host made cannot,
 // and runs on, as a processor would: its machine is a worker's (worker.js), so it holds nothing but that machine, whose
@@ -55,7 +58,7 @@ class Process {
     this.mem = new WebAssembly.Memory({ initial: pages, maximum: pages, shared: !!host.shared });   // (shared: a machine in a worker, whose screen the page reads)
     this.vmLo = this.vmTop = host.vmTop || meta.layout.pages * 0x10000;
     this.cpu = {};
-    for (const n of CPU_REGS) this.cpu[n] = new WebAssembly.Global({ value: 'i32', mutable: true }, n === 'fcw' ? 0x37f : n === 'budget' ? BUDGET : 0);
+    for (const n of CPU_REGS) this.cpu[n] = new WebAssembly.Global({ value: 'i32', mutable: true }, n === 'fcw' ? 0x37f : n === 'budget' ? BUDGET : n === 'if' ? 1 : 0);
     this.runLevel = 0; this.yieldLevel = -1;
     this.depth = 0; this.exitCode = null; this.trapped = null; this.waiting = false; this.lastYield = 0;
     // counters a benchmark reads: timer messages taken, GL frames presented, time spent running guest code

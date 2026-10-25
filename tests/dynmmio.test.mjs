@@ -14,7 +14,7 @@ const run = mmio => {
   Object.defineProperty(p, 'u8', { value: new Uint8Array(mem.buffer) });
   p.cpu = {};
   for (const n of ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi', 'cf', 'pf', 'zf', 'sf', 'of', 'df', 'fs', 'ftop', 'fsw', 'fcw', 'eip',
-    'cs', 'ds', 'es', 'ss', 'fsel', 'gsel', 'csb', 'dsb', 'esb', 'ssb', 'gsb', 'budget']) p.cpu[n] = new WebAssembly.Global({ value: 'i32', mutable: true }, 0);
+    'cs', 'ds', 'es', 'ss', 'fsel', 'gsel', 'csb', 'dsb', 'esb', 'ssb', 'gsb', 'budget', 'if']) p.cpu[n] = new WebAssembly.Global({ value: 'i32', mutable: true }, n === 'if' ? 1 : 0);
   p.ne = new Map([['DISPLAY', { meta: { base: 0x200000, size: 0x1000, ...(mmio ? { mmio: [0xb8000, 0x8000] } : {}) } }]]);
   const calls = []; p.trap = (e, c) => calls.push([e >>> 0, c]);
   // mov edi, 0BC000h; mov al, 7; stosb; mov byte [0BFF36h], 1; mov byte [100000h], 2; mov al, [0BC010h]; jmp 300000h

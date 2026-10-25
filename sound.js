@@ -15,14 +15,19 @@ P.cards = function () { return [...(cards0 ? cards0.call(this) : []), { devnode:
 // ---------------------------------------------------------------- 8259 interrupt controllers
 // the mask registers (21h, A1h) and in-service state; an interrupt is delivered to the vector the driver set for it
 // (INT 21h AH=25h: 08h-0Fh for IRQ 0-7, 70h-77h for IRQ 8-15) once nothing of its level is in service
-const pic = p => p.pic || (p.pic = { imr: [0, 0], isr: 0 });
+const pic = p => p.pic || (p.pic = { imr: [0, 0], isr: 0, irr: 0 });
 const irqVector = irq => (irq < 8 ? 8 + irq : 0x68 + irq);
 // It can arrive between slices or while native code polls the hardware or the clock (sound16 from soundIO and VTDAPI),
-// as an interrupt arrives between two instructions: the code it interrupts gets its registers and flags back
+// as an interrupt arrives between two instructions: the code it interrupts gets its registers and flags back. While
+// the code running has interrupts disabled (CLI: the processor's interrupt flag, cpu.if, dyn.js) the request waits at
+// the controller and is taken once interrupts are enabled again (STI, POPF, IRET), as the processor holds it
 const FLAGS = ['cf', 'pf', 'af', 'zf', 'sf', 'of', 'df'];
+const intsOff = p => p.cpu.if && !(p.cpu.if.value & 1);
 P.raiseIRQ = function (irq) {
   const c = pic(this);
   if (c.imr[irq >> 3] & (1 << (irq & 7)) || c.isr & (1 << irq) || this.inIRQ) return false;
+  if (intsOff(this)) { c.irr |= 1 << irq; return false; }
+  c.irr &= ~(1 << irq);
   // an IRQ a VxD virtualized (VPICD_Virtualize_IRQ) goes to its hardware interrupt procedure, which reflects it into
   // the VM (VPICD_Set_Int_Request) and ends it (VPICD_Phys_EOI) as it sees fit
   const v = this.vpicd && this.vpicd.byIrq.get(irq);
@@ -36,14 +41,25 @@ P.raiseIRQ = function (irq) {
   c.isr |= 1 << irq;
   return this.vmIRQ(irq);
 };
+/** the interrupts held while interrupts were disabled, delivered now that the code enabled them: true if one was */
+P.irqPending = function () {
+  const c = pic(this);
+  if (!c.irr || intsOff(this) || this.inIRQ) return false;
+  let ran = false;
+  for (let irq = 0; irq < 16 && c.irr; irq++) if (c.irr & (1 << irq)) { c.irr &= ~(1 << irq); if (this.raiseIRQ(irq)) ran = true; }
+  return ran;
+};
 /** the VM's handler for an IRQ (the vector its driver set), run with an interrupt frame */
 P.vmIRQ = function (irq) {
   const h = this.dosVec && this.dosVec[irqVector(irq)]; if (!h || this.inIRQ) return false;
   this.inIRQ = true;
-  const fl = FLAGS.filter(f => this.cpu[f]).map(f => [f, this.cpu[f].value]);
+  const fl = FLAGS.filter(f => this.cpu[f]).map(f => [f, this.cpu[f].value]), ie = this.cpu.if && this.cpu.if.value;
   this.tick16();
-  try { this.call16(h >>> 16, h & 0xffff, [['w', 0x202]]); }   // an interrupt frame: IRET pops IP, CS and the flags
-  finally { this.inIRQ = false; for (const [f, v] of fl) this.cpu[f].value = v; }
+  // an interrupt frame: IRET pops IP, CS and the flags (IF set in them: interrupts enabled again as the handler
+  // returns); the handler itself starts with interrupts disabled, as the processor clears IF taking the interrupt
+  if (this.cpu.if) this.cpu.if.value = 0;
+  try { this.call16(h >>> 16, h & 0xffff, [['w', 0x202]]); }
+  finally { this.inIRQ = false; for (const [f, v] of fl) this.cpu[f].value = v; if (this.cpu.if) this.cpu.if.value = ie; }
   return true;
 };
 
@@ -413,6 +429,7 @@ window.W95Sound = { play: (k, rate, L, R) => play(k, rate, L, R, L.length), clos
 const BUS_MS = 0.001;
 P.sound16 = function (bus = false) {
   if (!this.inSound) this.oplRender();
+  this.irqPending();   // an interrupt held while the code had interrupts disabled, now that it enabled them
   const c = this.ad1848; if (!c) return;
   c.t = bus ? c.t + BUS_MS : Math.max(c.t, this.now());
   if (!(c.regs[9] & 1) || this.inIRQ || this.inSound) return;
@@ -432,11 +449,12 @@ P.soundRun = function (c) {
   // before the codec reads on: the samples due are taken a block at a time, the interrupt raised between blocks
   this.soundStats = this.soundStats || { frames: 0, irqs: 0 };
   let k = 0;
-  const v = this.vpicd && this.vpicd.byIrq.get(WSS.irq);
+  const v = this.vpicd && this.vpicd.byIrq.get(WSS.irq), p = pic(this);
   while (k < frames && (c.regs[9] & 1)) {
-    // the last interrupt not yet handled (unacknowledged, or reflected to the VM and waiting for ring 0 to return
-    // there): the half its handler refills is not ready, so the frames still due wait for the next run
-    if ((c.int || (v && v.request)) && (c.regs[10] & 2)) { c.frac += frames - k; break; }
+    // the last interrupt not yet handled (unacknowledged, held at the controller while interrupts are disabled, or
+    // reflected to the VM and waiting for ring 0 to return there): the half its handler refills is not ready, so the
+    // frames still due wait for the next run
+    if ((c.int || (v && v.request) || (p.irr & (1 << WSS.irq))) && (c.regs[10] & 2)) { c.frac += frames - k; break; }
     let end = false;
     for (; k < frames; k++) {
       const b = this.dmaRead(WSS.dma, bps * ch); if (b.length < bps * ch) { end = true; break; }

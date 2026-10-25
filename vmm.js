@@ -135,6 +135,7 @@ P.r0Stop = function (ready) {
 /** the interrupts VxDs requested for the VM (VPICD_Set_Int_Request), taken as ring 0 returns to VM code */
 P.vmIrqDeliver = function () {
   const by = this.vpicd && this.vpicd.byIrq; if (!by || this.inIRQ) return;
+  if (this.cpu.if && !(this.cpu.if.value & 1)) return;   // the VM has interrupts disabled: taken as it enables them (sound16's pass)
   for (const [irq, e] of by) if (e.request) { e.request = false; this.vmIRQ(irq); }
 };
 /** where the next ring-0 frame starts: below the stack in use when ring-0 frames are live (ring-0 code's own, or
@@ -1340,14 +1341,14 @@ P.vxdCallBack = function (cb, key) {
   this.w32(this.sysVM() + 8, c);
   try {
     const at = this.thunk16For(key);
-    let fl = 0x202; for (const [r, b] of [['cf', 0], ['pf', 2], ['af', 4], ['zf', 6], ['sf', 7], ['df', 10], ['of', 11]]) if (cpu[r]) fl |= (cpu[r].value & 1) << b;
+    let fl = 0x2; for (const [r, b] of [['cf', 0], ['pf', 2], ['af', 4], ['zf', 6], ['sf', 7], ['if', 9], ['df', 10], ['of', 11]]) if (cpu[r]) fl |= (cpu[r].value & 1) << b; else if (r === 'if') fl |= 0x200;
     const regs = [['edi', 0], ['esi', 4], ['ebp', 8], ['ebx', 0x10], ['edx', 0x14], ['ecx', 0x18], ['eax', 0x1c]];
     for (const [r, o] of regs) this.w32(c + o, u32(cpu[r].value));
     this.w32(c + 0x24, at & 0xffff); this.w32(c + 0x28, at >>> 16); this.w32(c + 0x2c, fl); this.w32(c + 0x30, cpu.esp.value & 0xffff); this.w32(c + 0x34, cpu.ss.value & 0xffff);
     this.w32(c + 0x38, cpu.es.value & 0xffff); this.w32(c + 0x3c, cpu.ds.value & 0xffff); this.w32(c + 0x40, cpu.fsel.value & 0xffff); this.w32(c + 0x44, cpu.gsel.value & 0xffff);
     this.vxdCall(cb.fn, { ebx: this.sysVM(), edx: cb.ref, ebp: c });
     for (const [r, o] of regs) cpu[r].value = this.r32(c + o);
-    const nf = this.r32(c + 0x2c); for (const [r, b] of [['cf', 0], ['pf', 2], ['af', 4], ['zf', 6], ['sf', 7], ['df', 10], ['of', 11]]) if (cpu[r]) cpu[r].value = (nf >> b) & 1;
+    const nf = this.r32(c + 0x2c); for (const [r, b] of [['cf', 0], ['pf', 2], ['af', 4], ['zf', 6], ['sf', 7], ['if', 9], ['df', 10], ['of', 11]]) if (cpu[r]) cpu[r].value = (nf >> b) & 1;
     this.seg('es', this.r16(c + 0x38)); this.seg('ds', this.r16(c + 0x3c));
     this.seg('ss', this.r16(c + 0x34)); this.cpu.esp.value = lo16(this.cpu.esp.value, this.r32(c + 0x30));
     this.refreshSegs(); const rcs = this.r16(c + 0x28); this.seg('cs', rcs);
@@ -1481,14 +1482,14 @@ P.vxdPmApi = function (v) {
 };
 P.vxdPmApiOn = function (v, c, cpu) {
   const ss = cpu.ss.value & 0xffff, sp = cpu.esp.value & 0xffff, ssb = u32(cpu.ssb.value), ip = this.r16(ssb + sp), cs = this.r16(ssb + sp + 2);
-  let fl = 0x202; for (const [r, b] of [['cf', 0], ['pf', 2], ['af', 4], ['zf', 6], ['sf', 7], ['df', 10], ['of', 11]]) if (cpu[r]) fl |= (cpu[r].value & 1) << b;
+  let fl = 0x2; for (const [r, b] of [['cf', 0], ['pf', 2], ['af', 4], ['zf', 6], ['sf', 7], ['if', 9], ['df', 10], ['of', 11]]) if (cpu[r]) fl |= (cpu[r].value & 1) << b; else if (r === 'if') fl |= 0x200;
   const regs = [['edi', 0], ['esi', 4], ['ebp', 8], ['ebx', 0x10], ['edx', 0x14], ['ecx', 0x18], ['eax', 0x1c]];
   for (const [r, o] of regs) this.w32(c + o, u32(cpu[r].value));
   this.w32(c + 0x24, ip); this.w32(c + 0x28, cs); this.w32(c + 0x2c, fl); this.w32(c + 0x30, sp + 4); this.w32(c + 0x34, ss);
   this.w32(c + 0x38, cpu.es.value & 0xffff); this.w32(c + 0x3c, cpu.ds.value & 0xffff); this.w32(c + 0x40, cpu.fsel.value & 0xffff); this.w32(c + 0x44, cpu.gsel.value & 0xffff);
   this.vxdCall(v.procs.pm, { ebx: this.sysVM(), ebp: c });
   for (const [r, o] of regs) cpu[r].value = this.r32(c + o);
-  const nf = this.r32(c + 0x2c); for (const [r, b] of [['cf', 0], ['pf', 2], ['af', 4], ['zf', 6], ['sf', 7], ['df', 10], ['of', 11]]) if (cpu[r]) cpu[r].value = (nf >> b) & 1;
+  const nf = this.r32(c + 0x2c); for (const [r, b] of [['cf', 0], ['pf', 2], ['af', 4], ['zf', 6], ['sf', 7], ['if', 9], ['df', 10], ['of', 11]]) if (cpu[r]) cpu[r].value = (nf >> b) & 1;
   this.seg('es', this.r16(c + 0x38)); this.seg('ds', this.r16(c + 0x3c));
   // back to the client's CS:IP and SS:SP as the client registers have them (the return was taken on the way in,
   // and VM code the VxD ran in between may have used the stack below it)
