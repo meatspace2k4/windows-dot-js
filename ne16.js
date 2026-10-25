@@ -3308,12 +3308,17 @@ P.loadCtx16 = function (c) { this.loadFull(c); this.rebaseGlobals(); };
  *  descriptor has it now, as reloading the register on a task switch does. GlobalReAlloc moves a block that grows past
  *  its memory, and a thread stopped with the old base (DIBENG's blit stack segment, its line count at SS:0) ran on in
  *  memory the block had left: the count was never reached, and WELCOME blitted for good at the first start. The
- *  per-call stack aliases keep the base they were saved with (another call redefines them) */
+ *  per-call stack aliases keep the base they were saved with (another call redefines them). EIP is linear here: CS's
+ *  block moved (DIBENG grows the buffer it compiles blits into), the thread goes on at the same offset in the block,
+ *  not at the address the block left (a jump there is a page fault: "exception eh" at the old address) */
 P.rebaseGlobals = function () {
   if (!this.ghandles) return;
   for (const [s, b] of SEGS) {
     const v = this.cpu[s].value & 0xffff; if (!(v & 0xfff8) || (s === 'fsel')) continue;
-    if (this.gblock(v)) this.cpu[b].value = this.selBase(v);
+    if (!this.gblock(v)) continue;
+    const old = u32(this.cpu[b].value), now = u32(this.selBase(v));
+    this.cpu[b].value = now;
+    if (s === 'cs' && old !== now) this.cpu.eip.value = u32(this.cpu.eip.value) - old + now;
   }
 };
 /** run the threads that can run; the host calls this between slices of the main thread. Inside a thread's run

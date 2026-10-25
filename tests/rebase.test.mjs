@@ -8,9 +8,9 @@ for (const f of ['fs.js', 'win32.js', 'ne16.js']) new Function(readFileSync(new 
 const P = window.W95Win32.Process.prototype;
 
 const p = Object.create(P), bases = new Map([[0x129f, 0x4901e4], [0x50, 0x777000]]);
-p.cpu = Object.fromEntries(['cs', 'ds', 'es', 'ss', 'fsel', 'gsel', 'csb', 'dsb', 'esb', 'ssb', 'fs', 'gsb'].map(n => [n, { value: 0 }]));
+p.cpu = Object.fromEntries(['cs', 'ds', 'es', 'ss', 'fsel', 'gsel', 'csb', 'dsb', 'esb', 'ssb', 'fs', 'gsb', 'eip'].map(n => [n, { value: 0 }]));
 Object.assign(p, {
-  ghandles: new Map([[0x129f, { lin: 0x4901e4, size: 0x50, n: 1 }]]),
+  ghandles: new Map([[0x129f, { lin: 0x4901e4, size: 0x50, n: 1 }], [0x2007, { lin: 0x5c0000, size: 0x2000, n: 1 }]]),
   gsel: h => h | 1, gblock(h) { return this.ghandles.get(h & 0xffff); }, selBase: s => bases.get(s & 0xffff) || 0,
   loadFull(c) { for (const [k, v] of Object.entries(c)) this.cpu[k].value = v; },
 });
@@ -18,4 +18,9 @@ Object.assign(p, {
 p.loadCtx16({ ss: 0x129f, ssb: 0x300000, ds: 0x50, dsb: 0x123000 });
 assert.equal(p.cpu.ssb.value, 0x4901e4);   // the block's base now
 assert.equal(p.cpu.dsb.value, 0x123000);   // not a global block: as saved
+// stopped in code in a block (DIBENG's blit buffer) that grew and moved: the same offset in the block where it is now
+bases.set(0x2007, 0x5c0000);
+p.loadCtx16({ cs: 0x2007, csb: 0x1b00000, eip: 0x1b0017c, ss: 0, ssb: 0 });
+assert.equal(p.cpu.csb.value, 0x5c0000);
+assert.equal(p.cpu.eip.value, 0x5c017c);
 console.log('rebase: ok');
