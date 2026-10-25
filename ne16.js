@@ -3427,7 +3427,11 @@ P.threads16 = function (nested = false, only = null) {
         this.endProcess(t.pc, 0xffffffff);   // a saver must not hold the system's process-wide Win16 lock
       } else { t.state = 'hung'; this.hung(t, e); }   // it stays where it hung, holding what it held
     } finally { this.thread16 = caller; this.loadCtx16(main); }
-  } } finally { this.inThreads = wasIn; this.threadsNest--; if (caller) { this.preempted = wasPreempted; this.runT0 = t0; if (caller.pc) this.imgUse(caller.pc); } }
+  }
+  // the lock the caller handed over comes back before it goes on: a thread whose time ran out in 16-bit code (inside
+  // DIBENG's blit) holds it, and runs until it lets go, as the caller waits for the Win16Mutex
+  for (let k = 0, h; caller && (h = this.win16Held && this.win16Held.who) && typeof h === 'object' && h !== caller && h.state === 'waiting' && k < 1000 && !this.trapped; k++) this.threads16(true, h);
+  } finally { this.inThreads = wasIn; this.threadsNest--; if (caller) { this.preempted = wasPreempted; this.runT0 = t0; if (caller.pc) this.imgUse(caller.pc); } }
 };
 /** a far call into 16-bit code that may yield: returns runAt's result (0 returned, 1 yielded) and leaves the
  *  CPU state as the code left it */

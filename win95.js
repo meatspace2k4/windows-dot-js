@@ -3199,7 +3199,7 @@ class NativeApp {
     try {
       for (let n = 0; this.alive && n < 4; n++) {
         p.stats.slices++; const live = p.slice();
-        if (!p.win16Held) { p.timers16(); p.threads16(); p.systemPump(); p.appy16(); }
+        if (!p.win16Held) { p.timers16(); p.systemPump(); p.appy16(); p.threads16(); }
         else { p.threads16(); if (p.vxdRunTimeOuts) p.vxdRunTimeOuts(); }
         if (p.sound16) p.sound16(); if (p.lanPoll) p.lanPoll();
         if (!live || p.preempted || p.win16Held) break;   // its time ran out: the page gets its turn
