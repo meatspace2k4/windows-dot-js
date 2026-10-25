@@ -1,0 +1,100 @@
+#!/usr/bin/env python3
+"""The Pi's Windows 95 server: the deployed site over HTTP, answering byte ranges (the CD drive reads cdrom.iso a few
+sectors at a time), cross-origin isolated for the machines' shared memory. Reached only through cloudflared.
+
+    python3 win95_server.py --host 127.0.0.1 --port 8768
+
+Serves <install>/site to every Host but DEV_HOST, which gets the dev tree beside the install (<install>-dev/site).
+Unlike tools/serve.py there is no /__share: nothing outside the site tree is reachable.
+"""
+import argparse, http.server, os, re
+from pathlib import Path
+
+# Hostname that is served the dev site instead of the production one. A constant, never a parameter or an env var:
+# anything that can be set from outside can be set to the production hostname, which would hand the dev site to
+# production. Changing staging's address is a code change.
+DEV_HOST = "win95-dev.funstuff.app"
+
+BASE = Path(__file__).resolve().parent
+PROD_SITE = BASE / "site"
+DEV_SITE = BASE.parent / (BASE.name + "-dev") / "site"
+
+
+def site_for(host):
+    """The site root for a request's Host. A missing or half-synced dev tree falls back to production, so a failed
+    dev deploy degrades to the live site instead of a broken page."""
+    host = (host or "").split(":")[0].strip().lower()
+    if host == DEV_HOST and (DEV_SITE / "index.html").exists():
+        return DEV_SITE
+    return PROD_SITE
+
+
+class H(http.server.SimpleHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, format, *args):
+        pass
+
+    def translate_path(self, p):
+        root = site_for(self.headers.get("Host"))
+        rel = [x for x in re.split(r"/+", p.split("?", 1)[0].split("#", 1)[0]) if x and x not in (".", "..")]
+        return str(root.joinpath(*rel)) if rel else str(root)
+
+    def send_head(self):
+        m = re.match(r"bytes=(\d+)-(\d*)$", self.headers.get("Range", ""))
+        path = self.translate_path(self.path)
+        if not m or not os.path.isfile(path):
+            return super().send_head()
+        size = os.path.getsize(path)
+        lo = int(m[1])
+        hi = min(int(m[2]) if m[2] else size - 1, size - 1)
+        if lo > hi:
+            self.send_error(416)
+            return None
+        f = open(path, "rb")
+        f.seek(lo)
+        self.range_left = hi - lo + 1
+        self.send_response(206)
+        self.send_header("Content-Type", self.guess_type(path))
+        self.send_header("Content-Range", f"bytes {lo}-{hi}/{size}")
+        self.send_header("Content-Length", str(hi - lo + 1))
+        self.send_header("Accept-Ranges", "bytes")
+        self.end_headers()
+        return f
+
+    def end_headers(self):
+        # The page revalidates (the edge may keep it for its s-maxage); every other file carries the deploy's ?v=
+        # and is never kept by a browser: a new deploy is always a new URL, and an old one is never served stale.
+        page = self.path.split("?", 1)[0] in ("/", "/index.html")
+        self.send_header("Cache-Control", "public, no-cache, s-maxage=60" if page else "no-store, max-age=0")
+        self.send_header("Cross-Origin-Opener-Policy", "same-origin")
+        self.send_header("Cross-Origin-Embedder-Policy", "require-corp")
+        super().end_headers()
+
+    def copyfile(self, src, dst):
+        n = getattr(self, "range_left", None)
+        if n is None:
+            return super().copyfile(src, dst)
+        while n > 0:
+            b = src.read(min(n, 1 << 20))
+            if not b:
+                break
+            dst.write(b)
+            n -= len(b)
+        self.range_left = None
+
+    def do_POST(self):
+        self.send_error(405)
+
+
+class S(http.server.ThreadingHTTPServer):
+    request_queue_size = 128   # (a cold load asks for every script at once)
+    daemon_threads = True
+
+
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--host", default="127.0.0.1")
+    ap.add_argument("--port", type=int, default=8768)
+    a = ap.parse_args()
+    S((a.host, a.port), H).serve_forever()

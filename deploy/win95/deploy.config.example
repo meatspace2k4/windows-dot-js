@@ -1,0 +1,5 @@
+# Personal deployment configuration for win95
+# Copy to deploy.config (gitignored) and customize for your environment.
+
+PI_HOST="aircheck-pi.local"   # an mDNS name survives DHCP changes
+PI_USER="jpark"

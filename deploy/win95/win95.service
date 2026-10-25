@@ -1,0 +1,34 @@
+[Unit]
+Description=Windows 95 (win95.funstuff.app, win95-dev.funstuff.app)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+Group=__USER__
+WorkingDirectory=/home/__USER__/win95
+
+Environment="PYTHONUNBUFFERED=1"
+
+# Loopback only: reached through cloudflared
+ExecStart=/usr/bin/python3 /home/__USER__/win95/win95_server.py --host 127.0.0.1 --port 8768
+
+Restart=always
+RestartSec=10
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+
+# Resource limits (a static file server)
+MemoryMax=128M
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=win95
+
+[Install]
+WantedBy=multi-user.target
