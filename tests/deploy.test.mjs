@@ -74,6 +74,10 @@ try {
   assert.equal(x.headers.get('cross-origin-embedder-policy'), 'require-corp');
   x = await get('/', 'win95-dev.funstuff.app');
   assert.match(await x.text(), /content="dev"/);
+  x = await get('/', 'win95-dev.localhost:8770');
+  assert.match(await x.text(), /content="dev"/);
+  x = await get('/', 'win95.localhost:8770');
+  assert.match(await x.text(), /content="prod"/);
   x = await get('/a.js?v=1', 'win95.funstuff.app', { headers: { Range: 'bytes=2-4' } });
   assert.equal(x.status, 206); assert.equal(await x.text(), '234');
   assert.equal(x.headers.get('cache-control'), 'no-store, max-age=0');
