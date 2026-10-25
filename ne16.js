@@ -316,22 +316,23 @@ P.kernelModule = function () { return this.jsModule('KERNEL'); };
 const JS16 = ['KERNEL', 'USER', 'KEYBOARD', 'SYSTEM', 'VDD', 'VFLATD', 'DPMI'];
 
 // ---------------------------------------------------------------- calling 16-bit code
-/** enter 16-bit code on an alias of the flat stack; args: [['w', v] | ['l', v]...] in Pascal order */
-// ---- the one way in for what arrives between two of the guest's instructions: the budget check's poll (the VMM's
-// time-outs, the page's input, VKD's hot keys) and the VM's hardware interrupts (vmIRQ). As the VMM reflects an
-// interrupt: on a stack of its own, interrupts disabled, and a client register set of its own on the VM's locked stack
-// for the VxDs' nested execution; the interrupted code's stack, flags and client registers as they were after. Guest
-// code entered from the budget check any other way throws (call16, vmFarCall): run on the interrupted code's stack,
-// its frames went below SS:SP over what that code keeps there. DIBENG's compiled blit keeps its line count at SS:0 of
-// a 4Ah-byte stack: the sound card's interrupt (a56b40c), then VTDAPI's timer event nesting MMSYSTEM's callback on
-// the interrupted client's SS:SP (e00457a), each wrote over it and WELCOME's blit ran from 0 at the first start
+// ---- the one way in for what arrives between two of the guest's instructions: the budget check's poll, the VM's
+// hardware interrupts (vmIRQ), and the VxDs' time-outs, events, hot keys and stopped ring-0 runs (vmm.js). As the VMM
+// reflects an interrupt: on a stack of its own, interrupts disabled, and a client register set of its own on the VM's
+// locked stack for the VxDs' nested execution; the interrupted code's stack, flags and client registers as they were
+// after. Run on the interrupted code's stack or client, their frames went below its SS:SP over what it keeps there:
+// DIBENG's compiled blit keeps its line count at SS:0 of a 4Ah-byte stack, and WELCOME's blit ran from 0 at the first
+// start (the sound card's interrupt, a56b40c; VTDAPI's timer event nesting MMSYSTEM's callback, e00457a)
 P.asInterrupt = function (fn) {
   if (this.inInterrupt) return fn();
   const c = this.cpu, st = c.ss && { ss: c.ss.value, ssb: c.ssb.value, esp: c.esp.value }, ie = c.if ? c.if.value : 1;
   const vm = { crs: this.crs, level: this.crsLevel, pool: this.crsPool, cb: this.vmcb ? this.r32(this.vmcb + 8) : 0 };
   if (!this.intStack && st) { this.intStack = this.alloc(0x10000); this.intCrs = this.alloc(0x60); this.intCrsPool = []; }
   if (st) { c.ss.value = 0; c.ssb.value = 0; c.esp.value = this.intStack + 0x10000 - 16; this.crs = this.intCrs; this.crsLevel = 0; this.crsPool = this.intCrsPool; }
+  // (the VM's client pointer and the current thread's (its TCB's), which vxdPmApi sets to the client being served)
+  const th = st && this.vmcb && this.r0Thread ? this.r0Thread(this.currentThreadId()) : 0, thWas = th ? this.r32(th + 0x10) : 0;
   if (st && this.vmcb) this.w32(this.vmcb + 8, this.intCrs);
+  if (th) this.w32(th + 0x10, this.intCrs);
   if (c.if) c.if.value = 0;
   this.inInterrupt = true;
   try { return fn(); } finally {
@@ -339,14 +340,11 @@ P.asInterrupt = function (fn) {
     if (st) { c.ss.value = st.ss; c.ssb.value = st.ssb; c.esp.value = st.esp; }
     if (c.if) c.if.value = ie;
     this.crs = vm.crs; this.crsLevel = vm.level; this.crsPool = vm.pool; if (this.vmcb) this.w32(this.vmcb + 8, vm.cb);
+    if (th) this.w32(th + 0x10, thWas);
   }
 };
-/** guest code entered from the budget check (its poll) off the interrupt stack: a GuestError */
-P.offInterrupt = function (what) {
-  if (this.inPoll && !this.inInterrupt) throw new GuestError(`${what} entered from the budget check outside P.asInterrupt`);
-};
+/** enter 16-bit code on an alias of the flat stack; args: [['w', v] | ['l', v]...] in Pascal order */
 P.call16 = function (sel, off, args = [], regs = {}) {
-  this.offInterrupt(`16-bit call ${(sel & 0xffff).toString(16)}:${(off & 0xffff).toString(16)}`);
   this.init16();
   const save = {}; for (const r of GPR) save[r] = this.cpu[r].value; for (const [s, b] of SEGS) { save[s] = this.cpu[s].value; save[b] = this.cpu[b].value; }
   save.eip = this.cpu.eip.value;

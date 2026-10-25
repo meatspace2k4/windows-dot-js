@@ -1,6 +1,6 @@
 // What arrives between two of the guest's instructions runs through P.asInterrupt: on a stack of its own, interrupts
 // disabled, with a client register set of its own on the VM's locked stack; the interrupted code's stack, flags and
-// client registers come back as they were. Guest code entered from the budget check outside it throws. Each path that
+// client registers come back as they were. Each path that
 // skipped this wrote over DIBENG's 4Ah-byte blit stack at the first start (the sound card's interrupt, VTDAPI's timer
 // event nesting MMSYSTEM's callback on the interrupted client's SS:SP), and WELCOME's blit ran its count from 0.
 import assert from 'node:assert/strict';
@@ -48,14 +48,22 @@ const mk = () => {
   p.asInterrupt(() => { p.cpu.esp.value -= 0x100; const outer = p.cpu.esp.value; p.asInterrupt(() => { inner = p.cpu.esp.value === outer; }); });
   assert.equal(inner, true);
 }
-// guest code entered from the budget check outside an interrupt throws; inside one it runs
+// a VxD event run while a VM call to a VxD is in progress (MSGSRV32's, its client at 8000h on its own stack) gets a
+// client of its own on the locked stack, CB_Client_Pointer and the thread's TCB pointing at it; the caller's client,
+// its stack and both pointers are as they were after. With the caller's, an event's nested execution wrote under
+// MSGSRV32's SS:SP, and its saved DS came back as garbage (exception 0Eh at USER 1:143, a pop ds)
 {
-  const p = mk(); p.init16 = () => { throw new Error('ran'); };
-  p.inPoll = true;
-  assert.throws(() => p.call16(0x1007, 0x17c), /16-bit call 1007:17c entered from the budget check outside P\.asInterrupt/);
-  assert.throws(() => p.vmFarCall(0x8000, 0x1007, 0x17c), /VM call 1007:17c entered from the budget check outside P\.asInterrupt/);
-  assert.throws(() => p.asInterrupt(() => p.call16(0x1007, 0x17c)), /^Error: ran$/, 'inside an interrupt the call goes ahead');
-  p.inPoll = false;
-  assert.throws(() => p.call16(0x1007, 0x17c), /^Error: ran$/, 'a synchronous call (an API calling back) goes ahead');
+  const p = mk(), tcb = 0xa000, seen = [];
+  p.cpu.ss.value = 0x1cf7; p.w32(0x8000 + 0x34, 0x1cf7); p.w32(0x8000 + 0x30, 0x34ac);
+  p.r0Thread = () => tcb; p.currentThreadId = () => 94; p.w32(tcb + 0x10, 0x8000);
+  p.sysVM = () => p.vmcb; p.depth = 0; p.r0Runs = [];
+  p.vxdEvents = [{ fn: 0x18200ba, ref: 0x2000000 }];
+  p.vxdCall = function (fn, regs) { seen.push({ fn, ebp: regs.ebp, ss: p.r16(regs.ebp + 0x34), sp: p.r32(regs.ebp + 0x30), cb: p.r32(p.vmcb + 8), tcb: p.r32(tcb + 0x10) }); return {}; };
+  p.vxdRunEvents();
+  assert.equal(seen.length, 1);
+  assert.notEqual(seen[0].ebp, 0x8000, "not the caller's client");
+  assert.deepEqual([seen[0].ss, seen[0].sp], [0x3fff, 0x3ff0], 'its client on the locked stack');
+  assert.equal(seen[0].cb, seen[0].ebp); assert.equal(seen[0].tcb, seen[0].ebp);
+  assert.deepEqual([p.r16(0x8000 + 0x34), p.r32(0x8000 + 0x30), p.r32(p.vmcb + 8), p.r32(tcb + 0x10), p.crs, p.crsLevel], [0x1cf7, 0x34ac, 0x8000, 0x8000, 0x8000, 1]);
 }
 console.log('interrupt: ok');

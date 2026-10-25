@@ -14,7 +14,7 @@ const order = [];
 const mk = () => {
   const p = Object.create(P);
   Object.assign(p, {
-    saveFull: () => ({}), loadFull() {}, sysVM: () => 1, vmClientIdle: () => 0,
+    cpu: {}, saveFull: () => ({}), loadFull() {}, sysVM: () => 1, vmClientIdle: () => 0,
     r0Start(fn) { order.push('event ' + fn.toString(16)); return null; },
     r0Run(s) { order.push('resume ' + s.name); return null; },
   });

@@ -28,54 +28,8 @@ P.vxd = function (file) {
   const look = new Uint32Array(this.mem.buffer, m.lookup, m.textHi - m.textLo);
   m.blocks.forEach((a, i) => { look[a - m.textLo] = i + 1; });
   const rec = { kind: 'vxd', name: m.name.trim(), file: key, id: m.id, meta: m, run, ddb: m.ddb, procs: m.procs, base: m.base, clock: true };
-  rec.watch = this.vxdWatch(img);
   this.modules.push(rec); this.vxds.set(key, rec);
   return rec;
-};
-// VxD code the guest writes over. A VxD's image mixes its code and data, so what is watched is its VxDCall sites
-// (INT 20h and the service's dword, device below 1000h): VTDAPI's `VxDCall Get_System_Time` read 0FFF7F3Fh as its
-// service at the first start, written there by something nothing names. Each site is compared after every top-level
-// run (a slice, a thread's turn, a ring-0 run) and when a VxD call traps; the first change in a VxD is reported with
-// the run that made it. A VxD's own patch of its code (smc) is what it is meant to be from then on
-P.vxdWatch = function (img) {
-  const sites = [];
-  for (let i = 0; i + 6 <= img.length; i++) if (img[i] === 0xcd && img[i + 1] === 0x20 && img[i + 5] < 0x10) sites.push(i);
-  return { sites: Int32Array.from(sites), cur: img.slice(), hit: null };
-};
-/** what is running: the thread (its task or program) or ring 0, and where it is */
-P.runWho = function () {
-  const t = this.thread16, at = `${(this.cpu.cs.value & 0xffff).toString(16)}:${u32(this.cpu.eip.value).toString(16)}`;
-  const name = t ? `thread ${t.id}${t.task && t.task.mod ? ' (' + t.task.mod.name + ')' : t.pc && t.pc.path ? ' (' + String(t.pc.path).split('\\').pop() + ')' : ''}` : 'the main thread';
-  return `${this.r0Depth ? 'ring 0 in ' : ''}${name} at ${at}`;
-};
-P.vxdCodeCheck = function () {
-  if (!this.vxds) return;
-  for (const v of this.vxds.values()) {
-    const w = v.watch; if (!w || w.hit) continue;
-    const u8 = this.u8, b = v.base, cur = w.cur, s = w.sites;
-    for (let k = 0; k < s.length; k++) {
-      const i = s[k];
-      if (u8[b + i] === cur[i] && u8[b + i + 1] === cur[i + 1] && u8[b + i + 2] === cur[i + 2] && u8[b + i + 3] === cur[i + 3] && u8[b + i + 4] === cur[i + 4] && u8[b + i + 5] === cur[i + 5]) continue;
-      const hex = a => Array.from(a, x => x.toString(16).padStart(2, '0')).join(' ');
-      w.hit = `${v.name}+${i.toString(16)} (${u32(b + i).toString(16)}): ${hex(cur.subarray(i, i + 6))} written as ${hex(u8.subarray(b + i, b + i + 6))}, by ${this.runWho()} or before`;
-      console.error('VxD code written: ' + w.hit);
-      break;
-    }
-  }
-};
-// (checked as each top-level run ends; a VxD's own patch, smc, is taken as its code from then on)
-const runTop0 = P.runTop, smc0 = P.smc;
-P.runTop = function (eip) { try { return runTop0.call(this, eip); } finally { if (this.vxds) this.vxdCodeCheck(); } };
-P.smc = function (a) {
-  a = u32(a);
-  const v = this.vxds && [...this.vxds.values()].find(x => x.watch && a >= x.base && a < x.base + x.watch.cur.length);
-  if (v) v.watch.cur.set(this.u8.subarray(a, Math.min(a + 4, v.base + v.watch.cur.length)), a - v.base);
-  return smc0.call(this, a);
-};
-/** the report of a write over the VxD code at `a`, if one was seen */
-P.vxdWriteAt = function (a) {
-  for (const v of (this.vxds || new Map()).values()) if (v.watch && v.watch.hit && a >= v.base && a < v.base + v.meta.size) return v.watch.hit;
-  return null;
 };
 /** the loaded VxD with device id `id` */
 P.vxdById = function (id) { for (const v of (this.vxds || new Map()).values()) if (v.id === id && v.inited) return v; return null; };
@@ -147,7 +101,8 @@ P.r0LowSet = function () {
 };
 /** the host's turn while ring-0 runs are stopped: events scheduled meanwhile start (as runs of their own), else the
  *  newest run that can go on goes on until it ends or stops again. True while any is still stopped */
-P.r0Step = function () {
+P.r0Step = function () { return this.asInterrupt(() => this.r0StepIn()); };
+P.r0StepIn = function () {
   const runs = this.r0Runs || [];
   if (!runs.length) return false;
   // (a run whose time ran out is ring-0 code in progress: it goes on first, as nothing interrupts ring 0 with more of
@@ -168,8 +123,7 @@ P.r0Step = function () {
 };
 /** a callback VKD makes at interrupt time (a hot key): as ring-0 work the host starts */
 P.r0Callback = function (fn, regs) {
-  if (this.depth) return this.vxdCall(fn, { ...regs, ebp: this.vmClientIdle() });
-  return this.r0Start(fn, { ...regs, ebp: this.vmClientIdle() });
+  return this.asInterrupt(() => (this.depth ? this.vxdCall(fn, { ...regs, ebp: this.vmClientIdle() }) : this.r0Start(fn, { ...regs, ebp: this.vmClientIdle() })));
 };
 // R0WAIT: where a ring-0 run that waits stops (run returns 1 there) and goes on when resumed, at r0Cont
 W.API.VMMSVC = W.API.VMMSVC || {};
@@ -238,10 +192,7 @@ INTS[0x20] = function (next) {
   const to = (this.svcHooks && this.svcHooks.get(dev << 16 | n)) || (!fn && this.vxdService(dev, n));
   if (to) { if (!jmp) { const sp = u32(this.cpu.esp.value) - 4; this.w32(sp, u32(next)); this.cpu.esp.value = sp; } return to; }
   if (!fn && !this.vxdById(dev) && this.absentService(dev, n)) { if (jmp) { const ret = this.r32(u32(this.cpu.esp.value)); this.cpu.esp.value = u32(this.cpu.esp.value) + 4; return ret; } return next; }
-  if (!fn) {
-    this.vxdCodeCheck(); const w = this.vxdWriteAt(u32(next - 6));
-    this.trapped = `unimplemented VxD service ${dev.toString(16)}h:${n.toString(16)}h at ${u32(next - 6).toString(16)}${w ? '; VxD code written: ' + w : ''}`; return W.LAYOUT.SENTINEL;
-  }
+  if (!fn) { this.trapped = `unimplemented VxD service ${dev.toString(16)}h:${n.toString(16)}h at ${u32(next - 6).toString(16)}`; return W.LAYOUT.SENTINEL; }
   // a VxDJmp comes from a stub the caller called: its return address sits above the arguments
   const sp = u32(this.cpu.esp.value) + (jmp ? 4 : 0), arg = i => this.r32(sp + 4 * i);
   this.svcSite = jmp ? this.r32(sp - 4) : u32(next) - 6;   // where it was called from, for a deadlock's report
@@ -583,7 +534,8 @@ svc(VMM, 0x3b, function () { this.cpu.ebx.value = this.sysVM(); });             
 svc(VMM, 0x0e, function () { const q = this.vxdEvents || (this.vxdEvents = []); q.push({ fn: u32(this.cpu.esi.value), ref: u32(this.cpu.edx.value) }); this.cpu.esi.value = q.length; });
 svc(VMM, 0x0f, function () { const q = this.vxdEvents || (this.vxdEvents = []); q.push({ fn: u32(this.cpu.esi.value), ref: u32(this.cpu.edx.value) }); this.cpu.esi.value = q.length; });   // Schedule_VM_Event
 /** run the events VxDs scheduled (EBX the VM, EDX the reference data, EBP the client registers) */
-P.vxdRunEvents = function () {
+P.vxdRunEvents = function () { return this.asInterrupt(() => this.vxdRunEventsIn()); };
+P.vxdRunEventsIn = function () {
   if (this.vxdRunTimeOuts) this.vxdRunTimeOuts();
   if (this.depth) return;
   if (this.kernelApcs && this.kernelApcs.length) { const k = this.kernelApcs; this.kernelApcs = []; for (const a of k) this.vxdCdecl(a.fn, [a.data]); }
@@ -665,7 +617,7 @@ svc(VXDLDR, 0x02, function () {
   const n = this.u8[v.devInfo + 4]; if (n > 1) { this.u8[v.devInfo + 4] = n - 1; this.cpu.eax.value = 0; CF(this, false); return; }
   if (this.vxdControl(v, SYS_DYNAMIC_DEVICE_EXIT).cf) { this.cpu.eax.value = 9; CF(this, true); return; }   // VXDLDR_ERR_DEVICE_UNLOADABLE
   this.u8[v.devInfo + 4] = 0; v.inited = false;
-  const d = window.W95SYSTEM.vxds[v.file]; if (d && d.imgBytes) { this.u8.set(d.imgBytes, v.meta.base); v.watch = this.vxdWatch(d.imgBytes); }
+  const d = window.W95SYSTEM.vxds[v.file]; if (d && d.imgBytes) this.u8.set(d.imgBytes, v.meta.base);
   this.cpu.eax.value = 0; CF(this, false);
 });
 
@@ -981,6 +933,9 @@ svc(VMM, 0x15, function () { if (this.vxdEvents) this.vxdEvents = this.vxdEvents
 /** the time-outs that are due, run as the timer interrupt runs them */
 P.vxdRunTimeOuts = function () {
   if (this.depth || (this.r0Runs && this.r0Runs.length) || !this.vxdTimeOuts || !this.vxdTimeOuts.size) return;
+  return this.asInterrupt(() => this.vxdRunTimeOutsIn());
+};
+P.vxdRunTimeOutsIn = function () {
   const now = this.sysTime();
   for (const [h, t] of [...this.vxdTimeOuts]) {
     if (now < t.due) continue;
@@ -1055,7 +1010,6 @@ svc(VMM, 0x85, function () {
  *  client's own stack (SS:SP), the general and data segment registers from it; afterwards its registers hold what the
  *  callee left, SP where its return left it */
 P.vmFarCall = function (c, cs, ip, pushes = []) {
-  this.offInterrupt(`VM call ${cs.toString(16)}:${ip.toString(16)}`);
   const GP = ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi'], SG = [['cs', 'csb'], ['ds', 'dsb'], ['es', 'esb'], ['ss', 'ssb'], ['fsel', 'fs'], ['gsel', 'gsb']];
   const save = {}; for (const r of GP) save[r] = this.cpu[r].value; for (const [s, b] of SG) { save[s] = this.cpu[s].value; save[b] = this.cpu[b].value; }
   const savedEip = this.cpu.eip.value;
@@ -1141,7 +1095,8 @@ svc(VTD, 0x04, function () { CF(this, false); });
 // VMM's scheduler would let it: what can still run does (the hardware's interrupts, the events and time-outs that
 // are due, the idle callbacks) until what it waits for happens. A wait nothing can end is the guest's deadlock
 /** run what is pending at ring 0 once: true if anything ran */
-P.r0Pump = function () {
+P.r0Pump = function () { return this.asInterrupt(() => this.r0PumpIn()); };
+P.r0PumpIn = function () {
   let ran = false;
   if (this.kernelApcs && this.kernelApcs.length) { const q = this.kernelApcs; this.kernelApcs = []; ran = true; for (const a of q) this.vxdCdecl(a.fn, [a.data]); }
   if (this.lanPoll && this.lanPoll()) ran = true;   // the network card's interrupt (lan.js)
