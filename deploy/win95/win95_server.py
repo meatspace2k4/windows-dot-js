@@ -7,8 +7,99 @@ sectors at a time), cross-origin isolated for the machines' shared memory. Reach
 Serves <install>/site to every Host but DEV_HOSTS, which get the dev tree beside the install (<install>-dev/site).
 /__share answers as tools/serve.py's with no folders shared: nothing outside the site tree is reachable.
 """
-import argparse, http.server, json, os, re, socket
+import argparse, base64, http.server, json, os, re, shutil, socket
 from pathlib import Path
+
+# Hostnames that get the home folder as the LAN's other computer's HOME share, as the dev server (tools/serve.py) and
+# the app give it: names only this machine resolves (the PI_ROOT install). Constants, as DEV_HOSTS: a Host the public
+# reaches through cloudflared never gets a share
+LOCAL_HOSTS = ("win95.localhost", "win95-dev.localhost")
+PROTECTED = {"desktop", "documents", "downloads", "library"}   # (the folders macOS asks permission for: not shared)
+SHARES = [{"name": "HOME", "path": os.path.expanduser("~"), "home": True}]
+ERRNO = {2: "ENOENT", 20: "ENOTDIR", 13: "EACCES", 1: "EACCES", 17: "EEXIST", 66: "ENOTEMPTY", 39: "ENOTEMPTY", 21: "EISDIR"}
+
+
+def resolve(sh, rel):
+    """a share's path for `rel`, refused outside the share's folder (tools/serve.py's)"""
+    root = os.path.realpath(sh["path"])
+    parts = [x for x in re.split(r"[\\/]+", rel or "") if x and x != "."]
+    if ".." in parts:
+        raise PermissionError(13, "outside the share")
+    if sh.get("home") and parts and parts[0].lower() in PROTECTED:
+        raise FileNotFoundError(2, "not shared")
+    full = os.path.join(root, *parts)
+    probe = full
+    while probe != root and not os.path.exists(probe):
+        probe = os.path.dirname(probe)
+    real = os.path.realpath(probe)
+    if real != root and not real.startswith(root + os.sep):
+        raise PermissionError(13, "outside the share")
+    return full
+
+
+def info(full, st):
+    import stat as S
+    d = S.S_ISDIR(st.st_mode)
+    return {"size": 0 if d else st.st_size, "dir": d, "mtime": st.st_mtime * 1000, "ctime": getattr(st, "st_birthtime", st.st_ctime) * 1000,
+            "atime": st.st_atime * 1000, "readonly": not (st.st_mode & 0o200), "hidden": os.path.basename(full).startswith(".")}
+
+
+def share_op(sh, op, *a):
+    """an operation on a share, as tools/serve.py answers it"""
+    import stat as S
+    if op == "stat":
+        f = resolve(sh, a[0])
+        try:
+            return info(f, os.stat(f))
+        except (FileNotFoundError, NotADirectoryError):
+            return None
+    if op == "list":
+        d, out = resolve(sh, a[0]), []
+        for n in os.listdir(d):
+            if sh.get("home") and not re.sub(r"[\\/]", "", a[0] or "") and n.lower() in PROTECTED:
+                continue
+            try:
+                st = os.stat(os.path.join(d, n))
+            except OSError:
+                continue
+            if S.S_ISREG(st.st_mode) or S.S_ISDIR(st.st_mode):
+                out.append({"name": n, **info(os.path.join(d, n), st)})
+        return out
+    if op == "read":
+        with open(resolve(sh, a[0]), "rb") as f:
+            f.seek(a[1])
+            return {"$b64": base64.b64encode(f.read(max(0, min(a[2], 1 << 20)))).decode()}
+    if op == "write":
+        with open(resolve(sh, a[0]), "r+b") as f:
+            f.seek(a[1])
+            f.write(base64.b64decode(a[2]["$b64"]))
+        return None
+    if op == "truncate":
+        os.truncate(resolve(sh, a[0]), a[1])
+        return None
+    if op == "create":
+        open(resolve(sh, a[0]), "xb" if len(a) > 1 and a[1] else "wb").close()
+        return None
+    if op == "mkdir":
+        os.mkdir(resolve(sh, a[0]))
+        return None
+    if op == "rmdir":
+        os.rmdir(resolve(sh, a[0]))
+        return None
+    if op == "unlink":
+        os.unlink(resolve(sh, a[0]))
+        return None
+    if op == "rename":
+        os.rename(resolve(sh, a[0]), resolve(sh, a[1]))
+        return None
+    if op == "times":
+        t = a[1] / 1000
+        os.utime(resolve(sh, a[0]), (t, t))
+        return None
+    if op == "space":
+        u = shutil.disk_usage(sh["path"])
+        return {"total": u.total, "free": u.free}
+    raise FileNotFoundError(2, op)
 
 # Hostnames that are served the dev site instead of the production one: the Pi's, and the same name on this machine
 # (a PI_ROOT install, win95-dev.localhost:8770). Constants, never a parameter or an env var: anything that can be set
@@ -95,7 +186,21 @@ class H(http.server.SimpleHTTPRequestHandler):
         except ValueError:
             q = {}
         op = q.get("op")
-        r = socket.gethostname().split(".")[0] if op == "$host" else [] if op == "$list" else {"err": "ENOENT"}
+        host = (self.headers.get("Host") or "").split(":")[0].strip().lower()
+        shares = SHARES if host in LOCAL_HOSTS and self.client_address[0] in ("127.0.0.1", "::1") else []
+        if op == "$host":
+            r = socket.gethostname().split(".")[0]
+        elif op == "$list":
+            r = [{"name": x["name"], "remark": ""} for x in shares if os.path.isdir(x["path"])]
+        else:
+            sh = next((x for x in shares if x["name"].upper() == str(q.get("name", "")).upper()), None)
+            if not sh:
+                r = {"err": "ENOENT"}
+            else:
+                try:
+                    r = {"ok": share_op(sh, op, *q.get("args", []))}
+                except OSError as e:
+                    r = {"err": ERRNO.get(e.errno, "EIO")}
         b = json.dumps(r).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")

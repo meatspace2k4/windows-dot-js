@@ -20,7 +20,7 @@
 
   // the dev server's shares (tools/serve.py /__share), asked synchronously as the app's preload asks its main process;
   // a deployed page doesn't ask
-  const local = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
+  const local = /^(localhost|127\.0\.0\.1|\[::1\])$|\.localhost$/.test(location.hostname);   // (a *.localhost name is this machine too: the PI_ROOT install's win95.localhost, win95-dev.localhost)
   const share = (op, name, args) => {
     if (!local) return null;
     const x = new XMLHttpRequest(); x.open('POST', '__share', false); x.setRequestHeader('Content-Type', 'application/json');
