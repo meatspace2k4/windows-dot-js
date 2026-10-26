@@ -1378,8 +1378,12 @@ P.customEntry = function (w, h, slot = CUSTOM_SLOTS[0]) {
   if (!tables.length || gdi === undefined) return false;   // (another display driver: nothing to do)
   this.customRestore();
   for (const t of tables) { this.w16(t + 4 * slot.i, w); this.w16(t + 4 * slot.i + 2, h); }
-  if (pitch !== undefined) for (let px = 1; px <= 4; px++) this.w16(pitch + 32 * (px - 1) + 4 * slot.i + 2, (w * px + 7) & ~7);   // (a scan line the CRTC's offset register holds: 8-byte units)
-  for (const { at, px } of this.customRecs.desc.get(slot.i) || []) { this.w32(at, w); this.w32(at + 4, h); this.w32(at + 8, (w * px + 7) & ~7); }
+  // (a scan line the CRTC's offset register holds: 8-byte units. The driver keeps the cursor's 1K image just past the
+  // screen, at h scan lines, and writes it through the 64K window without changing bank part way: a line long enough
+  // that the image ends in the bank it starts in)
+  const line = px => { let l = (w * px + 7) & ~7; while (((h * l) & 0xffff) > 0xfc00) l += 8; return l; };
+  if (pitch !== undefined) for (let px = 1; px <= 4; px++) this.w16(pitch + 32 * (px - 1) + 4 * slot.i + 2, line(px));
+  for (const { at, px } of this.customRecs.desc.get(slot.i) || []) { this.w32(at, w); this.w32(at + 4, h); this.w32(at + 8, line(px)); }
   const X = Math.round(w * 254 / 640), Y = Math.round(h * 127 / 480);
   for (const [o, v] of [[8, w], [0xa, h], [0x34, w], [0x36, -h], [0x3c, w], [0x3e, -h], [0x44, X], [0x46, -X], [0x4c, Y], [0x4e, -Y], [0x54, Y], [0x56, -Y]]) this.w16(gdi + o, v & 0xffff);
   return true;
