@@ -27,12 +27,51 @@ app.setName('Windows 95')
 app.setPath('userData', path.join(app.getPath('appData'), 'local.win95'))
 
 // ---- C: and the registry, written through to SQLite as they change
-let store
-ipcMain.on('disk-load', e => { e.returnValue = store.loadDisk() })
+let store, swapping = false
+const dbFile = () => path.join(app.getPath('userData'), 'C.db')
+// (while an imported session replaces this one, the page that is going away writes nothing into it; the page loaded
+// after asks for its disk first, and writes go through again)
+ipcMain.on('disk-load', e => { swapping = false; e.returnValue = store.loadDisk() })
 ipcMain.on('registry-load', e => { e.returnValue = store.loadRegistry() })
 ipcMain.on('store', (e, op, ...args) => {
+  if (swapping) return
   try { store.apply(op, args) } catch (err) { console.error('store', op, err) }
 })
+// ---- a session to continue on another computer: C: and the registry (the Claude program's sessions in it), as one file
+const stamp = () => new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')
+async function exportSession() {
+  const r = await dialog.showSaveDialog({ title: 'Export Session', buttonLabel: 'Export', defaultPath: path.join(app.getPath('documents'), `Windows 95 ${stamp()}.w95session`),
+    filters: [{ name: 'Windows 95 sessions', extensions: ['w95session'] }] })
+  if (r.canceled || !r.filePath) return
+  try {
+    fs.rmSync(r.filePath, { force: true })   // (VACUUM INTO writes a new file only; the save dialog asked about replacing it)
+    store.exportTo(r.filePath)
+    dialog.showMessageBox({ type: 'info', message: 'Session exported', detail: `${r.filePath}\n\nOpen it on the other computer with File > Import Session.` })
+  } catch (err) { dialog.showErrorBox('Export Session', `The session was not exported: ${err.message}`) }
+}
+async function importSession() {
+  const r = await dialog.showOpenDialog({ title: 'Import Session', buttonLabel: 'Import', properties: ['openFile'], filters: [{ name: 'Windows 95 sessions', extensions: ['w95session', 'db'] }] })
+  if (r.canceled || !r.filePaths[0]) return
+  const file = r.filePaths[0], why = require('./store').check(file)
+  if (why) { dialog.showErrorBox('Import Session', `${path.basename(file)} cannot be imported: ${why}.`); return }
+  const backup = path.join(app.getPath('userData'), `C ${stamp()} before import.db`)
+  const ok = await dialog.showMessageBox({ type: 'warning', buttons: ['Import', 'Cancel'], defaultId: 0, cancelId: 1, message: 'Replace this computer\'s Windows 95 with the imported session?',
+    detail: `C:, the registry and the Claude program's sessions are replaced by those in ${path.basename(file)}, and Windows 95 starts again from them. What is here now is kept in\n${backup}` })
+  if (ok.response !== 0) return
+  swapping = true
+  try {
+    store.exportTo(backup)                                   // (the state now, kept before it is replaced)
+    store.close()
+    for (const f of [dbFile(), dbFile() + '-wal', dbFile() + '-shm']) fs.rmSync(f, { force: true })
+    fs.copyFileSync(file, dbFile())
+  } catch (err) {
+    try { if (fs.existsSync(backup) && !fs.existsSync(dbFile())) fs.copyFileSync(backup, dbFile()) } catch (_) {}   // (the state before, back in place)
+    dialog.showErrorBox('Import Session', `The session was not imported: ${err.message}. The state before is in ${backup}.`)
+  } finally {
+    store = require('./store').open(dbFile())
+    for (const w of BrowserWindow.getAllWindows()) w.webContents.reloadIgnoringCache()
+  }
+}
 app.on('will-quit', () => store && store.close())
 
 // ---- the Mac's folders, as the LAN's other computer serves them (shares.js)
@@ -73,7 +112,7 @@ async function shareFolder() {
   if (!r.canceled && r.filePaths[0]) shares.add(r.filePaths[0])
 }
 app.whenReady().then(() => {
-  store = require('./store').open(path.join(app.getPath('userData'), 'C.db'))
+  store = require('./store').open(dbFile())
   shares = require('./shares').open(path.join(app.getPath('userData'), 'shares.json'))
   // the disc in the drive: the one the person inserted (cdrom.json), else the one the app was built with (cd.json,
   // the project's cdrom.iso, the same disc serve.py serves the page)
@@ -81,7 +120,8 @@ app.whenReady().then(() => {
   cdOpen(image(cdFile()) || image(path.join(__dirname, 'cd.json')))
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     { role: 'appMenu' },
-    { label: 'File', submenu: [{ label: 'Share a Folder…', click: shareFolder }, { label: 'Insert CD Image…', click: insertCD }] },
+    { label: 'File', submenu: [{ label: 'Share a Folder…', click: shareFolder }, { label: 'Insert CD Image…', click: insertCD }, { type: 'separator' },
+      { label: 'Export Session…', click: exportSession }, { label: 'Import Session…', click: importSession }] },
     { label: 'View', submenu: [{ role: 'togglefullscreen' }, { role: 'reload' }, { role: 'toggleDevTools' }] },
     { role: 'windowMenu' },
   ]))

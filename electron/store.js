@@ -106,8 +106,25 @@ function open(file) {
       if (!keys.length) return null
       return keys.map(({ path, name }) => [path, q.vals.all(path).map(r => [r.name, v8.deserialize(r.value)]), name || undefined])
     },
+    // a copy of the whole store as it stands, consistent while it is in use (SQLite's VACUUM INTO): a session to
+    // continue on another computer
+    exportTo: file => db.prepare('VACUUM INTO ?').run(file),
     close: () => db.close(),
   }
 }
 
-module.exports = { open }
+// whether a file is a store this app wrote (its tables, a C: and a registry in it), before it replaces this one's
+function check(file) {
+  let db
+  try {
+    db = new DatabaseSync(file, { readOnly: true })
+    const tables = new Set(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map(r => r.name))
+    for (const t of ['node', 'chunk', 'volume', 'regkey', 'regval']) if (!tables.has(t)) return `it has no ${t} table`
+    const nodes = db.prepare('SELECT COUNT(*) AS n FROM node').get().n, keys = db.prepare('SELECT COUNT(*) AS n FROM regkey').get().n
+    if (!nodes || !keys) return 'its C: or its registry is empty'
+    return null
+  } catch (err) { return `it is not a Windows 95 session (${err.message})` }
+  finally { if (db) db.close() }
+}
+
+module.exports = { open, check }
