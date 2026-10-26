@@ -136,26 +136,28 @@ def page_text(html_s, base):
     """a web page as the Claude program's Browser pane shows it: its title, its text in lines, its links numbered"""
     import html.parser, urllib.parse
     class P(html.parser.HTMLParser):
-        def __init__(s): super().__init__(convert_charrefs=True); s.out, s.title, s.links, s.skip, s.intitle, s.href = [], '', [], 0, False, None
+        def __init__(s): super().__init__(convert_charrefs=True); s.out, s.title, s.links, s.skip, s.intitle, s.href, s.pre = [], '', [], 0, False, None, 0
         def handle_starttag(s, t, a):
+            if t == 'pre': s.pre += 1
             if t in ('script', 'style', 'noscript', 'svg', 'template'): s.skip += 1
             elif t == 'title': s.intitle = True
             elif t == 'a': s.href = dict(a).get('href')
-            if t in ('p', 'div', 'br', 'li', 'tr', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'section', 'article', 'header', 'footer', 'pre', 'blockquote'): s.out.append('\n')
+            if t in ('p', 'div', 'br', 'li', 'tr', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'section', 'article', 'header', 'footer', 'pre', 'blockquote', 'dl', 'dt', 'dd', 'ul', 'ol', 'table', 'hr'): s.out.append('\n')
             if t == 'li': s.out.append('* ')
         def handle_endtag(s, t):
+            if t == 'pre' and s.pre: s.pre -= 1
             if t in ('script', 'style', 'noscript', 'svg', 'template') and s.skip: s.skip -= 1
             elif t == 'title': s.intitle = False
             elif t == 'a' and s.href:
                 if len(s.links) < 300: s.links.append(urllib.parse.urljoin(base, s.href)); s.out.append(f' [{len(s.links)}]')
                 s.href = None
-            if t in ('p', 'div', 'li', 'tr', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'pre', 'blockquote'): s.out.append('\n')
+            if t in ('p', 'div', 'li', 'tr', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'pre', 'blockquote', 'dl', 'dt', 'dd', 'ul', 'ol', 'table'): s.out.append('\n')
         def handle_data(s, d):
             if s.skip: return
             if s.intitle: s.title += d; return
-            s.out.append(d)
+            s.out.append(d.replace('\n', '\x00').replace(' ', '\x01') if s.pre else re.sub(r'\s+', ' ', d))   # (a browser's whitespace: runs of it one space, but in <pre>)
     p = P(); p.feed(html_s)
-    text = re.sub(r'[ \t\r\f\v]+', ' ', ''.join(p.out)); text = re.sub(r' *\n[ \n]*', '\n\n', text).strip()
+    text = re.sub(r'[ \t\r\f\v]+', ' ', ''.join(p.out)); text = re.sub(r' *\n[ \n]*', '\n\n', text).replace('\x00', '\n').replace('\x01', ' ').strip()
     return {'title': p.title.strip(), 'text': text[:200000], 'links': p.links}
 def fetch_page(h, q):
     import urllib.request, urllib.error
