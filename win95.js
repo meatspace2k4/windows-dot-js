@@ -1006,6 +1006,18 @@ const DOS_KEYS = { Enter: 0x1c0d, Backspace: 0x0e08, Escape: 0x011b, Tab: 0x0f09
 const DOS_SCAN = '1234567890-=..qwertyuiop[]..asdfghjkl;\'`.\\zxcvbnm,./';   // (the scan codes of the main keys, from 02h)
 let dosFont = null;
 const dosMachines = new Set();   // (the MS-DOS machines running: win95.dos)
+const consoles = new Map();      // (a console's id -> the MS-DOS machine that is the console: a console program's output goes there)
+// a Windows program an MS-DOS machine runs: started in the system's machine, a console program with that machine as
+// its console (its output: conOut; the lines typed: conIn; its end: conExit)
+function dosWinExec(m) {
+  return async (path, tail, id) => {
+    if (id) consoles.set(id, m);
+    const sys = await startSystem(); if (!sys) { if (id) { consoles.delete(id); m.conDone(); } return; }
+    let r = sys.spawnProgram(path, tail, id ? { console: id } : undefined); if (r && r.then) r = await r;
+    if (id && !(r && (r.ok || (typeof r === 'object' && !('err' in r))))) { consoles.delete(id); m.conWrite(`Cannot run ${path}\r\n`); m.conDone(); }
+  };
+}
+const dosConIn = (id, text) => { if (sysApp && sysApp.worker) sysApp.worker.postMessage({ t: 'conIn', id, text }); };
 // a machine booted to run `program` with `args` (its drives Windows' own: v86.js takeDrives)
 function dosMachine(program, args, o = {}) {
   const V = window.W95V86, D = window.W95DOS, bytes = s => b64bytes(s);
@@ -1013,7 +1025,8 @@ function dosMachine(program, args, o = {}) {
   const msdos = '[Paths]\r\nWinDir=C:\\WINDOWS\r\nWinBootDir=C:\\WINDOWS\r\nHostWinBootDrv=C\r\n[Options]\r\nBootGUI=0\r\nLogo=0\r\n' + Array(20).fill(';' + 'x'.repeat(68)).join('\r\n') + '\r\n';
   const files = [{ name: 'IO.SYS', data: bytes(D.files['IO.SYS']), attr: 7 }, { name: 'MSDOS.SYS', data: W95FS.encode(msdos), attr: 7 },
     ...Object.keys(D.files).filter(p => p !== 'IO.SYS').map(p => ({ path: p, data: bytes(D.files[p]) }))];
-  const m = V.machine({ disk: V.fat16(bytes(D.boot), files, 16), program, args, fs, ...o });
+  const m = V.machine({ disk: V.fat16(bytes(D.boot), files, 16), program, args, fs, conIn: dosConIn, ...o });
+  m.o.winExec = dosWinExec(m);
   m.v86Clock(); m.v86Boot();
   return m;
 }
@@ -1062,6 +1075,7 @@ function dosBox(program, args) {
       if (e.ctrlKey && e.key.length === 1 && /[a-z]/i.test(e.key)) { m.keys.push(((DOS_SCAN.indexOf(e.key.toLowerCase()) + 2) << 8) | (e.key.toUpperCase().charCodeAt(0) - 64)); m.halted = false; return true; }
       const k = DOS_KEYS[e.key] || (e.key.length === 1 ? ((Math.max(0, DOS_SCAN.indexOf(e.key.toLowerCase())) + 2) << 8) | (e.key.charCodeAt(0) & 0xff) : 0);
       if (!k) return false;
+      if (m.conKey(k)) { dirty(); return true; }   // (a console program has the box: its line input)
       m.keys.push(k); m.halted = false; return true;
     },
     onClose() { clearInterval(timer); dosMachines.delete(m); },
@@ -3402,6 +3416,10 @@ class RemoteApp extends NativeApp {
       // MPR loaded in the system's machine (or no network client): the shell's network calls go ahead (netBoot)
       case 'mpr': this.mprUp = m.up; if (this.mprReady) { this.mprReady(m.up); this.mprReady = null; } return;
       case 'session': sessionCommand(m.op); return;   // (Export or Import Session, from the Start menu: SESSION.DLL)
+      // a console program's output, and its end, to the MS-DOS machine that is its console
+      case 'conOut': { const c = consoles.get(m.id); if (c) { c.conWrite(m.text); dirty(); } return; }
+      case 'conMode': { const c = consoles.get(m.id); if (c && c.conWait) c.conWait.mode = m.mode; return; }
+      case 'conExit': { const c = consoles.get(m.id); if (c) { consoles.delete(m.id); c.conDone(); } return; }
       case 'ccdTurn': emit('ccd.reply', { session: m.session, text: m.text, error: m.error, stopped: !!m.stopped }); if (m.kind) emit('ccd.notify', { kind: m.kind, session: m.session }); return;   // (a turn of the Claude program's ended)
       case 'ccdCard': { const ccd = window.win95 && window.win95.ccd; if (ccd) ccd.cardAnswer(m.task, m.label); return; }   // (a card's button, pressed in the Claude program)
       case 'ccdAnswer': { const f = this.ccdAsks && this.ccdAsks.get(m.id); if (f) { this.ccdAsks.delete(m.id); f(!!m.yes); } return; }
@@ -3568,7 +3586,7 @@ class RemoteApp extends NativeApp {
   }
   clipOut() { this.cmd('clipOut').then(t => { if (t !== null && t !== undefined) textClip = this.clipText = t; }); }
   clipIn() {}
-  spawnProgram(file, arg) { return this.cmd('spawn', [file, arg]); }
+  spawnProgram(file, arg, o) { return this.cmd('spawn', o ? [file, arg, o] : [file, arg]); }
   exited(code, why, own) {
     if (!this.alive) return;
     this.alive = false; nativeApps.delete(this); machineWorkers.delete(this);
@@ -3620,8 +3638,9 @@ async function runNative(path, arg, o = {}) {
 function exeKind(b) {
   if (b.length < 2 || b[0] !== 0x4d || b[1] !== 0x5a) return 'dos';
   const at = b.length >= 0x40 ? (b[0x3c] | b[0x3d] << 8 | b[0x3e] << 16 | b[0x3f] << 24) >>> 0 : 0;
-  // (a new-format header: its offset past the MZ header's relocations, as an old program's 3Ch is part of its code)
-  if ((b[0x18] | b[0x19] << 8) >= 0x40 && at && at + 2 <= b.length) {
+  // (a new-format header: the signature at the offset 3Ch gives, as Windows' loader tells them; a Win32 program's MS-DOS
+  // stub may be a whole DOS program, its relocations where an old one's are: XCOPY32.EXE's is XCOPY)
+  if (at >= 0x40 && at + 2 <= b.length) {
     if (b[at] === 0x50 && b[at + 1] === 0x45) return 'pe';
     if (b[at] === 0x4e && b[at + 1] === 0x45) return 'ne';
   }

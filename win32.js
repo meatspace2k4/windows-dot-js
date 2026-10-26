@@ -791,6 +791,13 @@ const def = (dll, name, n, fn) => { (API[dll] = API[dll] || {})[name] = [n, fn];
 const TRUE = 1, FALSE = 0;
 
 // KERNEL32
+// the command line in Unicode, as Windows 95's KERNEL32 keeps a copy of it for each process
+def('KERNEL32', 'GetCommandLineW', 0, function () {
+  const pc = this.pc; if (pc.cmdPtrW) return pc.cmdPtrW;
+  const s = this.readA(this.cmdPtr) || '', w = this.alloc(2 * s.length + 2);
+  for (let i = 0; i < s.length; i++) this.w16(w + 2 * i, s.charCodeAt(i)); this.w16(w + 2 * s.length, 0);
+  return (pc.cmdPtrW = w);
+});
 def('KERNEL32', 'GetCommandLineA', 0, function () {
   const pc = this.thread16 && this.thread16.pc, ptr = this.cmdPtr;
   if (pc && /\.SCR$/i.test(pc.path || '')) pc.commandLineSeen = this.readA(ptr);
@@ -1123,8 +1130,8 @@ def('KERNEL32', 'GetEnvironmentStrings', 0, function () {
 def('KERNEL32', 'GetEnvironmentStringsW', 0, () => 0);
 def('KERNEL32', 'FreeEnvironmentStringsA', 1, () => 1);
 def('KERNEL32', 'FreeEnvironmentStringsW', 1, () => 1);
-def('KERNEL32', 'GetStdHandle', 1, () => 0xffffffff);
-def('KERNEL32', 'GetFileType', 1, () => 0);
+def('KERNEL32', 'GetStdHandle', 1, function (n) { const c = conHandles(this); if (!c) return 0xffffffff; return { 0xfffffff6: c[0], 0xfffffff5: c[1], 0xfffffff4: c[2] }[n >>> 0] || 0xffffffff; });
+def('KERNEL32', 'GetFileType', 1, function (h) { return conOf(this, h) ? 2 : fileOf(this, h) ? 1 : 0; });   // FILE_TYPE_CHAR, FILE_TYPE_DISK
 def('KERNEL32', 'SetHandleCount', 1, n => n);
 // character types (CT_CTYPE1: upper 1, lower 2, digit 4, space 8, punct 10h, control 20h, blank 40h, xdigit 80h, alpha 100h)
 def('KERNEL32', 'GetStringTypeA', 5, function (lc, type, src, n, out) {
@@ -1373,11 +1380,37 @@ def('KERNEL32', 'CreateFileA', 7, function (name, access, share, sa, disp, flags
   }, 0xffffffff);
 });
 def('KERNEL32', 'CloseHandle', 1, function (h) { const f = fileOf(this, h); if (f) fsCall(this, () => this.fs.close(f.fd)); const c = commOf(this, h); if (c) vcomm(this, 18, [c.vh]); this.handles.delete(h); return 1; });
+// ---- consoles: a Win32 console program's, which an MS-DOS machine's window is (a DOS box is a console, as CONAGENT makes
+// one in Windows 95); the process's console is the one it was started with (pc.console, worker.js spawnProgram), its
+// standard handles console handles. What it writes goes to the page (host.console), what is typed comes back in lines
+// (conIn) and a read waits for one as a thread waits (YIELD: the machine's other threads run on)
+const conOf = (p, h) => { const o = p.obj(h); return o && o.kind === 'con' ? o : null; };
+const conHandles = p => {
+  const pc = p.pc; if (!pc || pc.console === undefined || pc.console === null) return null;
+  return pc.conH || (pc.conH = ['in', 'out', 'err'].map(io => p.newHandle({ kind: 'con', io, console: pc.console })));
+};
+const conWrite = (p, o, buf, n) => { const s = String.fromCharCode(...p.u8.subarray(buf, buf + n)); if (p.host.console) p.host.console(o.console, s); return n; };
+const conRead = (p, o, buf, n, got) => {
+  const q = p.conIn && p.conIn.get(o.console) || '';
+  const inMode = (p.pc && p.pc.conH && (p.obj(p.pc.conH[0]) || {}).mode);
+  if (inMode !== undefined && !(inMode & 2) && q) {   // (no line input: what keys have come, at once)
+    const k = Math.min(n, q.length); for (let i = 0; i < k; i++) p.u8[buf + i] = q.charCodeAt(i) & 0xff;
+    p.conIn.set(o.console, q.slice(k)); if (got) p.w32(got, k); return 1;
+  }
+  const nl = q.indexOf('\n');
+  if (nl < 0) { if (p.host.consoleExited && p.host.consoleExited(o.console)) { if (got) p.w32(got, 0); return 1; } return p.atThreadTop && p.atThreadTop() ? YIELD : (p.threads16 && p.threads16(true), YIELD); }
+  const line = q.slice(0, nl + 1).replace(/\n$/, '\r\n'), k = Math.min(n, line.length);
+  for (let i = 0; i < k; i++) p.u8[buf + i] = line.charCodeAt(i) & 0xff;
+  p.conIn.set(o.console, line.length > k ? line.slice(k).replace(/\r\n$/, '\n') + q.slice(nl + 1) : q.slice(nl + 1));
+  if (got) p.w32(got, k); return 1;
+};
 def('KERNEL32', 'ReadFile', 5, function (h, buf, n, got) {
+  const co = conOf(this, h); if (co) return conRead(this, co, buf, n, got);
   const f = fileOf(this, h); if (!f) return 0;
   return fsCall(this, () => { const b = this.fs.read(f.fd, n); this.u8.set(b, buf); if (got) this.w32(got, b.length); return 1; });
 });
 def('KERNEL32', 'WriteFile', 5, function (h, buf, n, put, ovl) {
+  const co = conOf(this, h); if (co) { conWrite(this, co, buf, n); if (put) this.w32(put, n); return 1; }
   const c = commOf(this, h);
   if (c) {   // WriteComm: the request completes into the OVERLAPPED's InternalHigh; a write without one waits for it
     const pw = put || this.alloc(4), o = ovl || this.commOvl || (this.commOvl = this.alloc(20));
@@ -1399,8 +1432,11 @@ const lfile = (p, path, mode) => fsCall(p, () => p.newHandle({ kind: 'file', fd:
 def('KERNEL32', '_lopen', 2, function (name, mode) { const m = mode & 3; return lfile(this, this.readA(name), m === 0 ? 'r' : 'r+'); });
 def('KERNEL32', '_lcreat', 2, function (name, attr) { return lfile(this, this.readA(name), 'w+'); });
 def('KERNEL32', '_lclose', 1, function (h) { const f = fileOf(this, h); if (!f) return 0xffffffff; fsCall(this, () => this.fs.close(f.fd)); this.handles.delete(h); return 0; });
-def('KERNEL32', '_lread', 3, function (h, buf, n) { const f = fileOf(this, h); if (!f) return 0xffffffff; return fsCall(this, () => { const b = this.fs.read(f.fd, n); this.u8.set(b, buf); return b.length; }, 0xffffffff); });
+def('KERNEL32', '_lread', 3, function (h, buf, n) {
+  const co = conOf(this, h); if (co) { const g = this.scratch4 || (this.scratch4 = this.alloc(4)), r = conRead(this, co, buf, n, g); return r === YIELD ? r : this.r32(g); }   // (the console: XCOPY32 reads its answers so)
+  const f = fileOf(this, h); if (!f) return 0xffffffff; return fsCall(this, () => { const b = this.fs.read(f.fd, n); this.u8.set(b, buf); return b.length; }, 0xffffffff); });
 def('KERNEL32', '_lwrite', 3, function (h, buf, n) {
+  const co = conOf(this, h); if (co) return conWrite(this, co, buf, n);   // (the console: XCOPY32 writes so)
   const f = fileOf(this, h); if (!f) return 0xffffffff;
   return fsCall(this, () => { if (!n) { this.fs.truncate(f.fd); return 0; } return this.fs.write(f.fd, this.u8.slice(buf, buf + n)); }, 0xffffffff);   // 0 bytes truncates there
 });
@@ -1505,9 +1541,10 @@ def('KERNEL32', 'GetFullPathNameA', 4, function (n, len, buf, part) {
   if (part) this.w32(part, buf + full.lastIndexOf('\\') + 1); return full.length;
 });
 def('KERNEL32', 'SetStdHandle', 2, () => 1);
-def('KERNEL32', 'GetConsoleMode', 2, () => 0);
-def('KERNEL32', 'SetConsoleMode', 2, () => 0);
-def('KERNEL32', 'WriteConsoleA', 5, () => 1);
+def('KERNEL32', 'GetConsoleMode', 2, function (h, p) { const o = conOf(this, h); if (!o) return 0; this.w32(p, o.io === 'in' ? (o.mode === undefined ? 7 : o.mode) : 3); return 1; });   // (line input, echo, processed input; processed output, wrap)
+// (the input's mode to the console's window, which edits and echoes the line as it says: ENABLE_LINE_INPUT 2, ENABLE_ECHO_INPUT 4)
+def('KERNEL32', 'SetConsoleMode', 2, function (h, mode) { const o = conOf(this, h); if (!o) return 0; if (o.io === 'in') { o.mode = mode; if (this.host.consoleMode) this.host.consoleMode(o.console, mode); } return 1; });
+def('KERNEL32', 'WriteConsoleA', 5, function (h, buf, n, put) { const o = conOf(this, h); if (!o) return 0; conWrite(this, o, buf, n); if (put) this.w32(put, n); return 1; });
 def('KERNEL32', 'DuplicateHandle', 7, function (a, h, b, out) { if (out) this.w32(out, h); return 1; });
 def('KERNEL32', 'WaitForSingleObject', 2, () => 0);
 def('KERNEL32', 'GetExitCodeProcess', 2, () => 0);
@@ -1556,7 +1593,27 @@ def('KERNEL32', 'CreateProcessA', 10, function (app, cmd, pa, ta, inherit, flags
   if (this.threads16 && r.main) for (let k = 0; k < 50 && !r.started && r.exitCode === null && !this.trapped; k++) this.threads16(true, r.main);
   return 1;
 });
-def('KERNEL32', 'ReadConsoleA', 5, () => 0);
+def('KERNEL32', 'ReadConsoleA', 5, function (h, buf, n, got) { const o = conOf(this, h); return o ? conRead(this, o, buf, n, got) : 0; });
+// the console's screen: 80 x 25, as the MS-DOS window has it (the cursor where the text has come to is the page's)
+def('KERNEL32', 'GetConsoleScreenBufferInfo', 2, function (h, p) {
+  if (!conOf(this, h)) return 0;
+  for (const [o, v] of [[0, 80], [2, 25], [4, 0], [6, 24], [8, 7], [10, 0], [12, 0], [14, 79], [16, 24], [18, 80], [20, 25]]) this.w16(p + o, v);
+  return 1;
+});
+def('KERNEL32', 'AllocConsole', 0, function () { return conHandles(this) ? 0 : 0; });   // (a process without one: none here to make)
+def('KERNEL32', 'FreeConsole', 0, () => 1);
+def('KERNEL32', 'SetConsoleTitleA', 1, () => 1);
+// the file functions' code page: a console program asks for the OEM one (its names typed in the console's); file names
+// here are the same in both
+def('KERNEL32', 'SetFileApisToOEM', 0, function () { this.fileApisOem = true; });
+def('KERNEL32', 'SetFileApisToANSI', 0, function () { this.fileApisOem = false; });
+def('KERNEL32', 'AreFileApisANSI', 0, function () { return this.fileApisOem ? 0 : 1; });
+def('KERNEL32', 'GetConsoleCP', 0, () => 437);          // (the console's code page: EGA.CPI's 437, as the window shows it)
+def('KERNEL32', 'GetConsoleOutputCP', 0, () => 437);
+def('KERNEL32', 'SetConsoleTextAttribute', 2, function (h) { return conOf(this, h) ? 1 : 0; });
+def('KERNEL32', 'SetConsoleCursorPosition', 2, function (h) { return conOf(this, h) ? 1 : 0; });
+def('KERNEL32', 'GetConsoleCursorInfo', 2, function (h, p) { if (!conOf(this, h)) return 0; this.w32(p, 25); this.w32(p + 4, 1); return 1; });
+def('KERNEL32', 'FlushConsoleInputBuffer', 1, function (h) { const o = conOf(this, h); if (o && this.conIn) this.conIn.set(o.console, ''); return o ? 1 : 0; });
 // ---- what SHELL32.DLL and COMCTL32.DLL need of KERNEL32 beyond the above
 const ft64 = (p, a) => (BigInt(p.r32(a + 4)) << 32n) | BigInt(p.r32(a));
 const ftPut = (p, a, t) => { p.w32(a, Number(t & 0xffffffffn)); p.w32(a + 4, Number((t >> 32n) & 0xffffffffn)); };

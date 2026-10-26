@@ -88,11 +88,13 @@ P.v86Boot = function () {
 // ---------------------------------------------------------------- running
 /** run up to `n` blocks; 'idle' when the machine waits (HLT, a key), 'trap' with this.trapped set when it faulted */
 P.v86Run = function (n = 20000) {
+  if (this.conWait) return 'idle';   // (its EXEC waits for the Windows console program it started: conDone)
   let eip = u32(this.cpu.eip.value);
   for (let k = 0; k < n; k++) {
     this.cpu.eip.value = eip; this.v86Interrupts();   // (an interrupt pushes where the code is now)
     if (this.halted) { this.cpu.eip.value = eip; return 'idle'; }
     if (this.irqTaken) { this.irqTaken = false; eip = u32(this.cpu.eip.value); }
+    if (this.conWait) { this.cpu.eip.value = eip; return 'idle'; }
     const blk = this.dynBlock(eip);
     if (!blk) { this.cpu.eip.value = eip; return 'trap'; }
     try { eip = u32(blk.run()); }
@@ -174,6 +176,48 @@ HOOK[0x21] = function (next) {
   }
   return HOOK21.call(this, next);
 };
+// A Windows program the box's DOS runs (EXEC of a PE or NE file) is Windows', as Windows 95 takes such an EXEC over:
+// the host starts it (o.winExec), a console program with this machine as its console (its output written to the
+// screen, the lines typed sent to it) and the EXEC waiting until it ends; a program with windows returns at once
+const HOOK21W = HOOK[0x21];
+HOOK[0x21] = function (next) {
+  if (this.ah() === 0x4b && this.al() === 0 && this.boxReturn && this.o.winExec && this.o.fs) {
+    const name = ascii(this, this.lin(this.cpu.ds.value, this.r('dx')) - this.v86); let f = null;
+    try { f = this.o.fs.readFile(name); } catch (_) { /* DOS answers */ }
+    const at = f && f.length > 0x40 && f[0] === 0x4d && f[1] === 0x5a ? (f[0x3c] | f[0x3d] << 8 | f[0x3e] << 16) : 0;   // (by the signature at the new header, as Windows' loader tells them)
+    const kind = at && at + 0x5e < f.length ? (f[at] === 0x50 && f[at + 1] === 0x45 ? 'pe' : f[at] === 0x4e && f[at + 1] === 0x45 ? 'ne' : null) : null;
+    if (kind) {
+      const pb = this.lin(this.cpu.es.value, this.r('bx')) - this.v86, t = this.lin(this.m16(pb + 4), this.m16(pb + 2)) - this.v86;
+      let tail = ''; for (let i = 0; i < this.m8(t); i++) tail += String.fromCharCode(this.m8(t + 1 + i));
+      const cons = kind === 'pe' && (f[at + 24 + 68] | f[at + 24 + 69] << 8) === 3;   // (the CUI subsystem)
+      const id = cons ? (this.conId = this.conId || `con${Math.random().toString(36).slice(2, 8)}`) : null;
+      if (cons) { this.conWait = { id, line: '' }; this.halted = true; }
+      this.o.winExec(this.o.fs.realpath(name), tail.trim(), id);
+      this.cpu.cf.value = 0; this.w('ax', 0); return true;
+    }
+  }
+  return HOOK21W.call(this, next);
+};
+/** what a console program writes, on the screen as the BIOS writes text (and kept, for a command run with no window) */
+P.conWrite = function (s) {
+  const ax = this.cpu.eax.value;
+  for (const c of s) { this.cpu.eax.value = 0x0e00 | (c.charCodeAt(0) & 0xff); BIOS[0x10].call(this); }
+  this.cpu.eax.value = ax;
+  if (this.o.capture) { this.out = (this.out || '') + s; if (this.out.length > 200000) this.out = this.out.slice(-150000); }
+};
+/** a key typed while a console program has the box: the line edited as a console's line input does (echoed), and sent
+ *  with Enter (o.conIn); false when no program has it */
+P.conKey = function (k) {
+  const w = this.conWait; if (!w) return false;
+  const ch = k & 0xff, mode = w.mode === undefined ? 7 : w.mode, echo = mode & 4;
+  if (!(mode & 2)) { if (ch) { if (echo) this.conWrite(ch === 13 ? '\r\n' : String.fromCharCode(ch)); this.o.conIn(w.id, ch === 13 ? '\r\n' : String.fromCharCode(ch)); } return true; }   // (raw: each key as it comes)
+  if (ch === 13) { if (echo) this.conWrite('\r\n'); const l = w.line; w.line = ''; this.o.conIn(w.id, `${l}\n`); }
+  else if (ch === 8) { if (w.line) { w.line = w.line.slice(0, -1); if (echo) this.conWrite('\b \b'); } }
+  else if (ch >= 32) { w.line += String.fromCharCode(ch); if (echo) this.conWrite(String.fromCharCode(ch)); }
+  return true;
+};
+/** the console program has ended: the EXEC that waited for it returns */
+P.conDone = function () { this.conWait = null; this.halted = false; };
 // what the box's program writes to the console, kept for a command run with no window (dosRun): INT 21h's character
 // and string output, and writes to a handle whose file is the console (a character device that is the standard
 // output, by the process's handle table and DOS's file table: not what a command redirects to a file)

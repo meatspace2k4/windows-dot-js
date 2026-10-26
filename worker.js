@@ -143,6 +143,8 @@ class Machine {
       exited: (code, why) => m.exited(code, why), boot: p => p.bootUser16(), exec: (cmd, show) => m.exec(cmd, show),
       msgMode: on => { m.msg = on; post({ t: 'msgMode', on }); m.sendText(true); }, reset: () => post({ t: 'reset' }),
       faultDialog: f => post({ t: 'faultDialog', f }),
+      console: (id, text) => post({ t: 'conOut', id, text }),   // (a console program's output, to its MS-DOS window: KERNEL32 WriteFile)
+      consoleMode: (id, mode) => post({ t: 'conMode', id, mode }),   // (and its input's mode: line input, echo)
     };
     const exe = /\s/.test(this.path) ? `"${this.path}"` : this.path;
     try {
@@ -480,7 +482,7 @@ class Machine {
     if (r === 8 && this.system) { rpc('host', 'runApart', [file, arg]); return { elsewhere: true }; }
     return r;
   }
-  spawnProgram(file, arg) {
+  spawnProgram(file, arg, o = {}) {
     const S = self.W95SYSTEM || {}, p = this.proc;
     if (/\.SCR$/i.test(file)) return this.spawnSaver(file, arg || '');
     const name = basename(file).toUpperCase(), d = (S.programs || {})[name] || this.dynProgram(file);
@@ -496,7 +498,9 @@ class Machine {
       const mod = d.dynamic ? null : d.modSync || (d.modSync = new WebAssembly.Module(b64bytes(d.wasm))), real = fs.realpath(file);
       pc = p.spawn(fs.readFile(file), mod, { ...d.meta, name: name.replace(/\.EXE$/, '') }, real, arg ? `${real} ${arg}` : real);
     } catch (e) { console.error(e); return 8; }
-    pc.onExit = code => { if (!pc.fault) post({ t: 'emit', ev: 'program.exit', data: { path: pc.path, code } }); };
+    // (its console: the MS-DOS machine's window it was started from, o.console, told when the program ends)
+    if (o.console !== undefined) pc.console = o.console;
+    pc.onExit = code => { if (!pc.fault) post({ t: 'emit', ev: 'program.exit', data: { path: pc.path, code } }); if (pc.console !== undefined) post({ t: 'conExit', id: pc.console, code: code >>> 0 }); };
     this.kick();
     return pc;
   }
@@ -505,7 +509,7 @@ class Machine {
   // as it runs (dyn.js); null when it is no Win32 program or has no room
   isNE(file) {
     let f; try { f = fs.readFile(file); } catch (_) { return false; }
-    if (f.length < 0x40 || f[0] !== 0x4d || f[1] !== 0x5a || (f[0x18] | f[0x19] << 8) < 0x40) return false;
+    if (f.length < 0x40 || f[0] !== 0x4d || f[1] !== 0x5a) return false;
     const at = (f[0x3c] | f[0x3d] << 8 | f[0x3e] << 16 | f[0x3f] << 24) >>> 0; return at + 2 <= f.length && f[at] === 0x4e && f[at + 1] === 0x45;
   }
   dynProgram(file) {
@@ -794,7 +798,7 @@ class Machine {
       case 'closeState': p.k32CloseState(args[0]); return;
       case 'spawn': {
         const result = r => typeof r === 'object' ? { ok: true, pid: r.pid, ...(r.previewKey ? { previewHwnd: r.previewHwnd, previewKey: r.previewKey } : {}) } : { err: r };
-        return /\.SCR$/i.test(args[0] || '') ? this.spawnSaverAsync(args[0], args[1] || '').then(result) : result(this.spawnProgram(args[0], args[1]));
+        return /\.SCR$/i.test(args[0] || '') ? this.spawnSaverAsync(args[0], args[1] || '').then(result) : result(this.spawnProgram(args[0], args[1], args[2] || {}));
       }
       case 'endProcess': { const p = this.proc, pc = p.procs && p.procs.get(args[0]); if (pc) p.endProcess(pc, args[1] || 0); return pc ? true : this.endSaver(args[0], args[1] || 0); }
       case 'closeWin32': return this.proc.sendMsg(args[0], W.WM.CLOSE);
@@ -882,6 +886,7 @@ self.onmessage = e => {
     for (const v of [...rfs.vols.values()]) if (!m.list.some(x => x.letter === v.letter && x.unc.toUpperCase() === v.unc.toUpperCase())) rfs.unmount(v.letter);
     for (const x of m.list) if (!rfs.vols.has(x.letter)) rfs.mount(x.letter, { remote: netOf(x.letter), unc: x.unc, label: x.unc.split('\\').pop() || '' });
   } else if (m.t === 'regop') W.regApply(m.o, true);
+  else if (m.t === 'conIn' && machine && machine.proc) { const p = machine.proc, c = p.conIn || (p.conIn = new Map()); c.set(m.id, (c.get(m.id) || '') + m.text); machine.kick && machine.kick(); }   // (a line typed in a console program's window)
   else if (m.t === 'ccdReply' && self.W95ClaudeReply) self.W95ClaudeReply(m);   // (a tool's answer for the Claude program: claude-app.js)
   else if (m.t === 'ccdAsk') { if (self.W95ClaudeAsk) self.W95ClaudeAsk(m); else post({ t: 'ccdAnswer', id: m.id, yes: false }); }   // (and a tool's question for it)
   else if (m.t === 'kick') { if (machine) machine.kick(); }
