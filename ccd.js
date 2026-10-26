@@ -161,13 +161,23 @@
       const v = R.regGet(KEY, name); if (!v) return dflt;
       try { return JSON.parse(typeof v === 'string' ? v : FS.decode(v.data).replace(/\0.*$/, '')); } catch (_) { return dflt; }
     };
-    const save = name => { R.regSet(KEY, name, { type: 1, data: FS.encode(JSON.stringify(st[name]) + '\0') }); if (name === 'sessions') rawSessions = R.regGet(KEY, name); };
-    // the sessions as the registry has them now: the Claude program (claude-app.js) writes them too, from its machine
-    let rawSessions = R.regGet(KEY, 'sessions');
+    const save = name => {
+      R.regSet(KEY, name, { type: 1, data: FS.encode(JSON.stringify(st[name]) + '\0') });
+      if (name === 'sessions') rawSessions = R.regGet(KEY, name); if (name === 'view') rawView = R.regGet(KEY, name);
+    };
+    // the sessions and the view as the registry has them now: the Claude program (claude-app.js) writes them too
+    let rawSessions = R.regGet(KEY, 'sessions'), rawView = R.regGet(KEY, 'view');
     const sync = () => {
-      const v = R.regGet(KEY, 'sessions'); if (v === rawSessions || !v) return;
-      rawSessions = v; st.sessions = load('sessions', st.sessions);
-      self = st.sessions.find(s => s.id === self.id) || st.sessions.find(s => s.self) || self;
+      const v = R.regGet(KEY, 'sessions');
+      if (v && v !== rawSessions) {
+        rawSessions = v; st.sessions = load('sessions', st.sessions);
+        self = st.sessions.find(s => s.id === self.id) || st.sessions.find(s => s.self) || self;
+      }
+      const w = R.regGet(KEY, 'view');
+      if (w && w !== rawView) {
+        rawView = w; st.view = load('view', st.view);
+        sidebarCollapsed = !!(st.view.ui && st.view.ui.sidebarCollapsed); panesOpen = (st.view.ui && st.view.ui.panes) || [];
+      }
     };
     const st = {
       sessions: load('sessions', []), groups: load('groups', []), cards: load('cards', []),

@@ -11,7 +11,8 @@ import base64, json, os, struct, subprocess, sys, tempfile
 here = os.path.dirname(os.path.abspath(__file__)); root = os.path.dirname(here)
 BASE = 0x00570000      # its load base: a program base of its own (build_system.py PROGRAMS), the image's preferred base too
 LOOKUP = 0x07FF0000    # its block table, past the other programs'
-IMPORTS = [('CLAUDE.DLL', ['Start', 'Handle', 'Answer']), ('USER32.dll', ['GetMessageA', 'IsDialogMessageA', 'TranslateMessage', 'DispatchMessageA', 'DefWindowProcA', 'MessageBoxA']),
+IMPORTS = [('CLAUDE.DLL', ['Start', 'Handle', 'Answer']), ('USER32.dll', ['GetMessageA', 'IsDialogMessageA', 'TranslateMessage', 'DispatchMessageA', 'DefWindowProcA', 'MessageBoxA',
+                                                                           'TrackPopupMenu', 'DestroyMenu']),
            ('KERNEL32.dll', ['ExitProcess'])]
 TEXT_RVA, IDATA_RVA, ALIGN, FALIGN = 0x1000, 0x2000, 0x1000, 0x200
 
@@ -65,11 +66,20 @@ def text(iat):
     emit(0x55, 0x89, 0xE5, 0x83, 0xEC, 0x04)            # push ebp; mov ebp, esp; sub esp, 4
     # WM_APP+1 (text in wp, caption in lp): a question of the app's (an approval), asked as a program asks one, with
     # MessageBoxA (Yes, No); the answer goes to CLAUDE.DLL's Answer
-    emit(0x81, 0x7D, 0x0C); code.extend(struct.pack('<I', 0x8001)); jcc(0x85, 'handle')   # cmp dword [ebp+12], 8001h; jne handle
+    emit(0x81, 0x7D, 0x0C); code.extend(struct.pack('<I', 0x8001)); jcc(0x85, 'popup')    # cmp dword [ebp+12], 8001h; jne popup
     emit(0x6A, 0x24, 0xFF, 0x75, 0x14, 0xFF, 0x75, 0x10, 0xFF, 0x75, 0x08)   # push MB_YESNO|MB_ICONQUESTION; push lp; push wp; push hwnd
     call('MessageBoxA')
     emit(0x50); call('Answer')                           # Answer(IDYES / IDNO)
     emit(0x31, 0xC0, 0xC9, 0xC2, 0x10, 0x00)            # xor eax, eax; leave; ret 16
+    # WM_APP+2 (the menu in wp, the screen point at [lp], [lp+4]): a shortcut menu of the app's (a session's), tracked as
+    # a program tracks one; its choice arrives as WM_COMMAND, and the menu is destroyed after
+    label['popup'] = len(code)
+    emit(0x81, 0x7D, 0x0C); code.extend(struct.pack('<I', 0x8002)); jcc(0x85, 'handle')
+    emit(0x8B, 0x45, 0x14)                               # mov eax, [ebp+20]
+    emit(0x6A, 0x00, 0xFF, 0x75, 0x08, 0x6A, 0x00, 0xFF, 0x70, 0x04, 0xFF, 0x30, 0x6A, 0x02, 0xFF, 0x75, 0x10)   # push 0; push hwnd; push 0; push y; push x; push TPM_RIGHTBUTTON; push menu
+    call('TrackPopupMenu')
+    emit(0xFF, 0x75, 0x10); call('DestroyMenu')
+    emit(0x31, 0xC0, 0xC9, 0xC2, 0x10, 0x00)
     label['handle'] = len(code)
     emit(0x8D, 0x45, 0xFC, 0x50)                         # lea eax, [ebp-4]; push eax (&result)
     for off in (0x14, 0x10, 0x0C, 0x08): emit(0xFF, 0x75, off)   # push lp, wp, msg, hwnd
