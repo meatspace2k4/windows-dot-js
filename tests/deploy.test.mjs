@@ -1,6 +1,6 @@
 // deploy/win95/deploy.sh: a signed build stamps the page's build-* tags and every script URL with <ver>+<sha>, refuses
 // a wrong commit, a malformed version and an unaffirmed --prod; win95_server.py serves the dev tree to its DEV_HOST
-// only, answers byte ranges, keeps assets out of the browser's cache, and has no /__share
+// only, answers byte ranges, keeps assets out of the browser's cache, and shares its own folder read-only to the public
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
@@ -51,6 +51,7 @@ mkdirSync(join(inst, 'site'), { recursive: true }); mkdirSync(join(dev, 'site'),
 writeFileSync(join(inst, 'win95_server.py'), readFileSync(join(root, 'deploy/win95/win95_server.py')));
 writeFileSync(join(inst, 'site/index.html'), '<meta name="build-channel" content="prod" />');
 writeFileSync(join(inst, 'site/a.js'), '0123456789');
+mkdirSync(join(inst, 'share')); writeFileSync(join(inst, 'share/README.TXT'), 'hello world');
 writeFileSync(join(dev, 'site/index.html'), '<meta name="build-channel" content="dev" />');
 const port = 20000 + Math.floor(Math.random() * 20000);
 const srv = spawn('python3', [join(inst, 'win95_server.py'), '--port', String(port)], { stdio: 'ignore' });
@@ -84,9 +85,15 @@ try {
   assert.equal(x.headers.get('cache-control'), 'no-store, max-age=0');
   x = await get('/../win95_server.py', 'win95.funstuff.app');
   assert.equal(x.status, 404); await x.text();
-  x = await get('/__share', 'win95.funstuff.app', { method: 'POST', body: '{"op":"$list"}', headers: { 'Content-Length': '14' } });
-  assert.equal(x.status, 200); assert.deepEqual(JSON.parse(await x.text()), []);
-  x = await get('/__share', 'win95.funstuff.app', { method: 'POST', body: '{"op":"read","name":"HOME","args":["x",0,9]}', headers: { 'Content-Length': '43' } });
-  assert.deepEqual(JSON.parse(await x.text()), { err: 'ENOENT' });
+  const post = (host, o) => { const body = JSON.stringify(o); return get('/__share', host, { method: 'POST', body, headers: { 'Content-Length': String(Buffer.byteLength(body)) } }).then(async y => JSON.parse(await y.text())); };
+  // the public names: the install's share folder, read-only; never the home folder
+  assert.deepEqual(await post('win95.funstuff.app', { op: '$list' }), [{ name: 'PUBLIC', remark: '' }]);
+  assert.deepEqual(await post('win95.funstuff.app', { op: 'read', name: 'HOME', args: ['x', 0, 9] }), { err: 'ENOENT' });
+  assert.deepEqual(await post('win95.funstuff.app', { op: 'read', name: 'PUBLIC', args: ['README.TXT', 0, 5] }), { ok: { $b64: Buffer.from('hello').toString('base64') } });
+  assert.equal((await post('win95.funstuff.app', { op: 'stat', name: 'PUBLIC', args: ['README.TXT'] })).ok.readonly, true);
+  for (const [op, args] of [['write', ['README.TXT', 0, { $b64: 'eA==' }]], ['create', ['new.txt']], ['unlink', ['README.TXT']], ['mkdir', ['d']], ['rename', ['README.TXT', 'x']]])
+    assert.deepEqual(await post('win95.funstuff.app', { op, name: 'PUBLIC', args }), { err: 'EACCES' }, op);
+  assert.equal(readFileSync(join(inst, 'share/README.TXT'), 'utf8'), 'hello world');
+  assert.deepEqual(await post('win95.funstuff.app', { op: 'read', name: 'PUBLIC', args: ['../win95_server.py', 0, 5] }), { err: 'EACCES' });
 } finally { srv.kill(); }
 console.log('deploy: ok');

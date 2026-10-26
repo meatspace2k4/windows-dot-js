@@ -5,7 +5,8 @@ sectors at a time), cross-origin isolated for the machines' shared memory. Reach
     python3 win95_server.py --host 127.0.0.1 --port 8770
 
 Serves <install>/site to every Host but DEV_HOSTS, which get the dev tree beside the install (<install>-dev/site).
-/__share answers as tools/serve.py's with no folders shared: nothing outside the site tree is reachable.
+/__share answers as tools/serve.py's: the public names get the install's share folder, read-only; this machine's own
+names (LOCAL_HOSTS) the home folder.
 """
 import argparse, base64, http.server, json, os, re, shutil, socket
 from pathlib import Path
@@ -16,6 +17,10 @@ from pathlib import Path
 LOCAL_HOSTS = ("win95.localhost", "win95-dev.localhost")
 PROTECTED = {"desktop", "documents", "downloads", "library"}   # (the folders macOS asks permission for: not shared)
 SHARES = [{"name": "HOME", "path": os.path.expanduser("~"), "home": True}]
+# Every other Host (the public names) gets the install's own share folder, which deploy.sh fills from deploy/win95/share,
+# read-only: nothing from the public reaches this machine's files outside it, and nothing in it can be changed
+PUBLIC_SHARES = [{"name": "PUBLIC", "path": str(Path(__file__).resolve().parent / "share"), "readonly": True}]
+WRITES = {"write", "truncate", "create", "mkdir", "rmdir", "unlink", "rename", "times"}
 ERRNO = {2: "ENOENT", 20: "ENOTDIR", 13: "EACCES", 1: "EACCES", 17: "EEXIST", 66: "ENOTEMPTY", 39: "ENOTEMPTY", 21: "EISDIR"}
 
 
@@ -37,20 +42,23 @@ def resolve(sh, rel):
     return full
 
 
-def info(full, st):
+def info(full, st, ro=False):
     import stat as S
     d = S.S_ISDIR(st.st_mode)
     return {"size": 0 if d else st.st_size, "dir": d, "mtime": st.st_mtime * 1000, "ctime": getattr(st, "st_birthtime", st.st_ctime) * 1000,
-            "atime": st.st_atime * 1000, "readonly": not (st.st_mode & 0o200), "hidden": os.path.basename(full).startswith(".")}
+            "atime": st.st_atime * 1000, "readonly": ro or not (st.st_mode & 0o200), "hidden": os.path.basename(full).startswith(".")}
 
 
 def share_op(sh, op, *a):
     """an operation on a share, as tools/serve.py answers it"""
     import stat as S
+    ro = bool(sh.get("readonly"))
+    if ro and op in WRITES:
+        raise PermissionError(13, "read-only share")
     if op == "stat":
         f = resolve(sh, a[0])
         try:
-            return info(f, os.stat(f))
+            return info(f, os.stat(f), ro)
         except (FileNotFoundError, NotADirectoryError):
             return None
     if op == "list":
@@ -63,7 +71,7 @@ def share_op(sh, op, *a):
             except OSError:
                 continue
             if S.S_ISREG(st.st_mode) or S.S_ISDIR(st.st_mode):
-                out.append({"name": n, **info(os.path.join(d, n), st)})
+                out.append({"name": n, **info(os.path.join(d, n), st, ro)})
         return out
     if op == "read":
         with open(resolve(sh, a[0]), "rb") as f:
@@ -176,8 +184,8 @@ class H(http.server.SimpleHTTPRequestHandler):
         self.range_left = None
 
     def do_POST(self):
-        # /__share as tools/serve.py answers it, with no folders shared: the host's name, an empty list, and no share
-        # by any name (the page learns its computer's name here, as on the dev server and in the app)
+        # /__share as tools/serve.py answers it: the host's name, the shares' list, and an operation on one (the page
+        # learns its computer's name here, as on the dev server and in the app)
         if self.path.split("?")[0] != "/__share":
             self.send_error(404)
             return
@@ -187,7 +195,7 @@ class H(http.server.SimpleHTTPRequestHandler):
             q = {}
         op = q.get("op")
         host = (self.headers.get("Host") or "").split(":")[0].strip().lower()
-        shares = SHARES if host in LOCAL_HOSTS and self.client_address[0] in ("127.0.0.1", "::1") else []
+        shares = SHARES if host in LOCAL_HOSTS and self.client_address[0] in ("127.0.0.1", "::1") else PUBLIC_SHARES
         if op == "$host":
             r = socket.gethostname().split(".")[0]
         elif op == "$list":

@@ -411,6 +411,8 @@ build_staging() {
 
     # Server and unit, outside the served tree
     cp "$SCRIPT_DIR/win95_server.py" "$SCRIPT_DIR/win95.service" "$STAGING_DIR/"
+    # The public names' share (win95_server.py PUBLIC_SHARES), outside the served tree too
+    rm -rf "$STAGING_DIR/share" && cp -R "$SCRIPT_DIR/share" "$STAGING_DIR/share"
 
     log_info "Staging complete: $(du -sh "$STAGING_DIR" | cut -f1)"
 }
@@ -426,11 +428,13 @@ deploy_files() {
         log_warn "DRY RUN — rsync --dry-run: previewing changes, writing nothing."
         rsync -av --dry-run --itemize-changes --delete "$STAGING_DIR/site/" "$(pi_dest "$INSTALL_DIR/site/")"
         rsync -av --dry-run --itemize-changes "$STAGING_DIR/win95_server.py" "$(pi_dest "$INSTALL_DIR/")"
+        rsync -av --dry-run --itemize-changes --delete "$STAGING_DIR/share/" "$(pi_dest "$INSTALL_DIR/share/")"
         return 0
     fi
-    on_pi "mkdir -p '$INSTALL_DIR/site'"
-    # --delete is safe: site/ is created and owned by this script and holds nothing hand-placed.
+    on_pi "mkdir -p '$INSTALL_DIR/site' '$INSTALL_DIR/share'"
+    # --delete is safe: site/ and share/ are created and owned by this script and hold nothing hand-placed.
     rsync -av --delete "$STAGING_DIR/site/" "$(pi_dest "$INSTALL_DIR/site/")"
+    rsync -av --delete "$STAGING_DIR/share/" "$(pi_dest "$INSTALL_DIR/share/")"
     rsync -av "$STAGING_DIR/win95_server.py" "$(pi_dest "$INSTALL_DIR/")"
     log_info "Files deployed to $(pi_dest "$INSTALL_DIR")"
 }
