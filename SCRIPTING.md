@@ -26,7 +26,8 @@ Dialogs take mnemonics as Windows 95 does: `key('alt+n')` presses `&No`, and the
 (`{ name, role, window }`, strings or RegExps) in place of coordinates. Then they return a promise:
 
 - the element is looked up as its machine shows it now (a native window's controls are asked of the machine afresh),
-  waited for up to 5 s until it is there;
+  waited for up to 5 s until it is there; an element from an earlier listing that is a native window's control is
+  found by its window (`hwnd`), so an edit whose text has changed since is still the same element;
 - a native list view's item (a desktop icon, a folder window's file) is selected (`click`) or opened (`dblclick`) by
   its list view itself, as Enter opens the selection, wherever it is on screen; anything else gets the pointer input
   at its centre;

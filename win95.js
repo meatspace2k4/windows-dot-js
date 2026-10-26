@@ -4809,8 +4809,10 @@ function findEl(q, all = elements()) {
   return null;
 }
 const qText = q => JSON.stringify(q, (k, v) => v instanceof RegExp ? String(v) : v);
-// an element object from an earlier listing names the element it was (its geometry may have moved since)
-const asQuery = q => (q && typeof q === 'object' && !(q instanceof RegExp) && 'x' in q && 'w' in q ? { name: q.name, role: q.role, ...(q.window ? { window: q.window } : {}) } : q);
+// an element object from an earlier listing names the element it was (its geometry may have moved since); a native
+// control is the same window whatever its text is now (an edit's name is its text, which typing changes)
+const asQuery = q => (q && typeof q === 'object' && !(q instanceof RegExp) && 'x' in q && 'w' in q
+  ? q.hwnd && q.list === undefined ? { hwnd: q.hwnd, role: q.role, ...(q.window ? { window: q.window } : {}) } : { name: q.name, role: q.role, ...(q.window ? { window: q.window } : {}) } : q);
 /** the elements with every native window's controls as its machine answers now (elements gives the last answer) */
 async function elementsNow() {
   await Promise.all(windows.filter(w => w.native && !w.min && w.app && w.app.alive && w.app.childrenNow).map(w => w.app.childrenNow(w.hwnd).catch(() => null)));
