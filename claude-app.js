@@ -18,9 +18,9 @@
   const MODES = [['default', 'Ask permissions'], ['acceptEdits', 'Edit automatically'], ['plan', 'Plan mode'], ['auto', 'Auto'], ['bypassPermissions', 'Bypass permissions']];
   const VIEWS = ['normal', 'thinking', 'verbose'], PANES = ['plan', 'diff', 'tasks', 'files'];
   // menu commands past the bar's first ones: models 300+, efforts 310+, modes 320+, views 330+, panes 340+, the rest below
-  const CMD = { EXPORT: 203, ATTACH: 204, COPY_REPLY: 210, FORK: 211, REWIND: 212, CHAPTER: 213, FIND: 214, RENAME: 215, USAGE: 402, TERMINAL: 352, SIDEBAR: 350, HIDE_NESTED: 391, CLOSE_PANE: 351, BACK: 360, FORWARD: 361, PREV: 362, NEXT_SESSION: 363, PIN: 370, ARCHIVE: 371,
+  const CMD = { EXPORT: 203, ATTACH: 204, COPY_REPLY: 210, FORK: 211, REWIND: 212, CHAPTER: 213, FIND: 214, RENAME: 215, USAGE: 402, TERMINAL: 352, STOP: 372, SIDEBAR: 350, HIDE_NESTED: 391, CLOSE_PANE: 351, BACK: 360, FORWARD: 361, PREV: 362, NEXT_SESSION: 363, PIN: 370, ARCHIVE: 371,
     CTX_PIN: 501, CTX_UNREAD: 502, CTX_ARCHIVE: 503, CTX_DELETE: 504, CTX_EXPORT: 505, CTX_UNGROUP: 599, CTX_GROUP: 600 };
-  const app = { hwnd: 0, kid: {}, menu: 0, shown: null, dirty: false, bufs: new Map(), rows: [], raw: null, rawView: null, size: [560, 400], attach: [], ofn: null };
+  const app = { hwnd: 0, kid: {}, menu: 0, shown: null, dirty: false, bufs: new Map(), rows: [], raw: null, rawView: null, size: [560, 400], attach: [], ofn: null, aborts: {}, stopping: {}, queue: {}, nextSay: null };
 
   // ---------------------------------------------------------------- the sessions (the scripting API's records)
   const load = () => { const v = regGet(KEY, 'sessions'); if (!v) return []; try { return JSON.parse(typeof v === 'string' ? v : FS.decode(v.data).replace(/\0.*$/, '')); } catch (_) { return []; } };
@@ -157,6 +157,7 @@
     check(CMD.SIDEBAR, !v.sidebarCollapsed); check(CMD.PIN, s && s.pinned); check(CMD.HIDE_NESTED, v.hideNested);
     const sv = sideView(); GROUP_BY.forEach(([k], i) => check(380 + i, (sv.group_by === 'custom' ? 'none' : sv.group_by) === k));
     SORT_BY.forEach(([k], i) => check(385 + i, sv.sort_by === k)); STATUS.forEach(([k], i) => check(388 + i, sv.status === k));
+    enable(CMD.STOP, s && s.state === 'working'); text(p, app.kid[ID.SEND], 'send', s && s.state === 'working' ? 'S&top' : '&Send');   // (Send is Stop while Claude works; typing queues a message instead)
     enable(CMD.BACK, nav.back.length); enable(CMD.FORWARD, nav.fwd.length); enable(CMD.CLOSE_PANE, (v.panes || []).length);
     U(p, 'DrawMenuBar', [app.hwnd]);
     layout(p, ...app.size);
@@ -259,13 +260,18 @@
   }
   // one request: Claude's text into the conversation as it arrives; its whole message kept with it for the next request
   async function ask(sid, s) {
-    let got = '', msgId = null, result = null;
+    let got = '', msgId = null, result = null, thought = '', thId = null;
+    // (the thinking's summary, in the conversation before the reply: shown in the Thinking and Verbose views)
+    const think = () => update(sid, x => {
+      if (!thId) { thId = id('msg'); x.transcript.push({ uuid: thId, t: Date.now(), role: 'thinking', text: thought }); }
+      const m = x.transcript.find(y => y.uuid === thId); if (m) m.text = thought;
+    });
     const put = (blocks) => update(sid, x => {
       if (!msgId) { msgId = id('msg'); x.transcript.push({ uuid: msgId, t: Date.now(), role: 'assistant', text: got }); }
       const m = x.transcript.find(y => y.uuid === msgId); if (m) { m.text = got; if (blocks) m.blocks = blocks; }
     });
     try {
-      const r = await fetch('__claude', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: s.model, effort: s.effort, messages: history(s), tools: toolDefs || [] }) });
+      const r = await fetch('__claude', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: s.model, effort: s.effort, messages: history(s), tools: toolDefs || [] }), signal: (app.aborts[sid] = new AbortController()).signal });
       if (!r.ok) return { error: `Not connected: this page's server has no Claude API (HTTP ${r.status}).` };
       const rd = r.body.getReader(), dec = new TextDecoder(); let buf = '';
       for (;;) {
@@ -274,6 +280,7 @@
         for (let i; (i = buf.indexOf('\n')) >= 0; buf = buf.slice(i + 1)) {
           const ev = JSON.parse(buf.slice(0, i));
           if (ev.t === 'text') { got += ev.d; put(); app.dirty = true; }
+          else if (ev.t === 'thinking') { thought += ev.d; think(); app.dirty = true; }
           else if (ev.t === 'error') return { error: ev.e };
           else if (ev.t === 'done') {
             // (a message whose content came back empty while text streamed, or one stopped short: kept as text, and said)
@@ -287,7 +294,7 @@
           }
         }
       }
-    } catch (e) { return { error: `Not connected: ${e.message}` }; }
+    } catch (e) { return e.name === 'AbortError' ? { stopped: true } : { error: `Not connected: ${e.message}` }; }
     return result || { error: 'The reply ended early.' };
   }
   // the turn: requests until Claude stops asking for tools; each tool it asks for run on the page as this session's call
@@ -297,24 +304,35 @@
     for (let k = 0; k < 24; k++) {
       const s = load().find(x => x.id === sid); if (!s) return;
       const r = await ask(sid, s);
+      if (r.stopped) break;
       if (r.error) { failed = r.error; break; }
       if (r.stop !== 'tool_use') break;
       const results = [];
       for (const b of r.content.filter(x => x.type === 'tool_use')) {
-        const out = await page(b.name, b.input, sid);
+        // (stopped between tools: the rest are answered as not run, so the conversation stays one the API takes)
+        const out = app.stopping[sid] ? { error: 'Not run: the user stopped the turn.' } : await page(b.name, b.input, sid);
         results.push({ type: 'tool_result', tool_use_id: b.id, content: out.error ? `Error: ${out.error}` : typeof out.result === 'string' ? out.result : JSON.stringify(out.result === undefined ? null : out.result), ...(out.error ? { is_error: true } : {}) });
         app.dirty = true;
       }
       update(sid, x => x.transcript.push({ uuid: id('msg'), t: Date.now(), role: 'results', text: '', blocks: results }));
+      if (app.stopping[sid]) break;
     }
-    const fin = update(sid, x => { if (failed) x.transcript.push({ uuid: id('msg'), t: Date.now(), role: 'system', text: failed }); x.state = failed ? 'failed' : x.next && x.next.blocked ? 'waiting' : 'idle'; });
-    app.notify = fin && fin.next && fin.next.ask ? 'question' : 'task_complete';   // (told on the window's timer: notifyNow)
+    const stopped = !!app.stopping[sid]; delete app.stopping[sid]; delete app.aborts[sid];
+    const fin = update(sid, x => {
+      if (failed) x.transcript.push({ uuid: id('msg'), t: Date.now(), role: 'system', text: failed });
+      if (stopped) x.transcript.push({ uuid: id('msg'), t: Date.now(), role: 'system', text: 'Stopped.' });
+      x.state = failed ? 'failed' : x.next && x.next.blocked ? 'waiting' : 'idle';
+    });
+    if (!stopped) app.notify = fin && fin.next && fin.next.ask ? 'question' : 'task_complete';   // (told on the window's timer)
+    // (a message sent while Claude worked: its turn now, from the window's timer)
+    if ((app.queue[sid] || []).length) app.nextSay = { sid, text: app.queue[sid].shift() };
     app.dirty = true;
   }
   // a message of the user's into the session, and the turn that answers it
-  function say(p, t) {
-    let s = current(); if (!s) { const l = load(); s = fresh(); l.push(s); save(l); app.shown = s.id; }
-    if (s.state === 'working') return;
+  function say(p, t, sid) {
+    let s = sid ? load().find(x => x.id === sid) : current(); if (!s) { const l = load(); s = fresh(); l.push(s); save(l); app.shown = s.id; }
+    // (sent while Claude works: queued, as the app queues it, and sent when the turn ends)
+    if (s.state === 'working') { (app.queue[s.id] = app.queue[s.id] || []).push(t); app.note = `Queued: sent when Claude finishes (${app.queue[s.id].length} waiting).`; showAll(p); return; }
     // (the files attached go with it: named in the conversation, their text in the message Claude gets)
     const att = app.attach.splice(0), shown_ = att.length ? `${t}\n${att.map(a => `[Attached: ${a.path}]`).join('\n')}` : t;
     const blocks = att.length ? [{ type: 'text', text: t }, ...att.map(a => ({ type: 'text', text: `<attachment path="${a.path}">\n${a.text}\n</attachment>` }))] : undefined;
@@ -323,8 +341,15 @@
   }
   function send(p) {
     const e = app.kid[ID.PROMPT], b = sz(p, 'prompt-in', ' '.repeat(4096));
-    U(p, 'GetWindowTextA', [e, b, 4096]); const t = p.readA(b).trim(); if (!t) return;
+    U(p, 'GetWindowTextA', [e, b, 4096]); const t = p.readA(b).trim();
+    if (!t) { const s = current(); if (s && s.state === 'working') stop(p, s.id); return; }   // (Send, with nothing typed while Claude works: Stop)
     text(p, e, 'prompt-clear', ''); say(p, t);
+  }
+  // Stop: the request in progress ended, the tools not yet run answered as not run; the queue dropped
+  function stop(p, sid) {
+    app.stopping[sid] = true; app.queue[sid] = [];
+    const a = app.aborts[sid]; if (a) a.abort();
+    app.note = 'Stopping...'; showAll(p);
   }
   // a next-step button: its message is the user's answer (the app's: ccd.js answer)
   function answer(p, i) {
@@ -360,7 +385,7 @@
       [VIEWS.map((x, i) => [330 + i, `${x[0].toUpperCase()}${x.slice(1)}`]), '&Transcript View'], [0, null],
       ...PANES.map((x, i) => [340 + i, PANE_TITLE[x]]), [CMD.TERMINAL, 'Ter&minal (MS-DOS Prompt)'], [CMD.CLOSE_PANE, 'C&lose Pane']]), '&View');
     sub(pop([[CMD.BACK, '&Back'], [CMD.FORWARD, '&Forward'], [0, null], [CMD.PREV, '&Previous Session'], [CMD.NEXT_SESSION, '&Next Session']]), '&Go');
-    sub(pop([[MODES.map(([, n], i) => [320 + i, n]), 'Permission &Mode'], [0, null], [CMD.PIN, '&Pinned'], [CMD.ARCHIVE, '&Archive']]), '&Session');
+    sub(pop([[MODES.map(([, n], i) => [320 + i, n]), 'Permission &Mode'], [0, null], [CMD.STOP, 'S&top'], [0, null], [CMD.PIN, '&Pinned'], [CMD.ARCHIVE, '&Archive']]), '&Session');
     sub(pop(MODELS.map(([, n], i) => [300 + i, n])), 'M&odel');
     sub(pop(EFFORTS.map((e, i) => [310 + i, `${e[0].toUpperCase()}${e.slice(1)}`])), 'Effor&t');
     sub(pop([[CMD.USAGE, '&Usage'], [0, null], [ID.ABOUT, '&About Claude']]), '&Help');
@@ -405,6 +430,7 @@
         if (st.draw_attention_on_notifications !== false) U(p, 'FlashWindow', [h, 1]);
       }
     }
+    if (msg === WM.TIMER && app.nextSay) { const q = app.nextSay; app.nextSay = null; say(p, q.text, q.sid); }
     if (msg === WM.TIMER) {
       if (app.dirty || regGet(KEY, 'sessions') !== app.raw || regGet(KEY, 'view') !== app.rawView || regGet(KEY, 'cards') !== app.rawCards) { app.dirty = false; showAll(p); }
       if (!asking && asks.length) { asking = asks.shift(); U(p, 'PostMessageA', [h, 0x8001, sz(p, 'ask-text', asking.text), sz(p, 'ask-title', asking.title || 'Claude')]); }
@@ -514,6 +540,7 @@
     if (c === CMD.PREV || c === CMD.NEXT_SESSION) { const ids = app.rows.filter(r => r.sid).map(r => r.sid), k = ids.indexOf(sid); if (ids.length) go(ids[(k + (c === CMD.PREV ? -1 : 1) + ids.length) % ids.length]); return redraw(); }
     // Session: the mode, the pin, archiving (the app's tools, which ask as the app asks)
     if (c >= 320 && c < 320 + MODES.length) { if (sid) update(sid, x => { x.permissionMode = MODES[c - 320][0]; }); return redraw(); }
+    if (c === CMD.STOP && s && s.state === 'working') { stop(p, sid); return done(); }
     if (c === CMD.PIN && sid) { update(sid, x => { x.pinned = !x.pinned; }); return redraw(); }
     if (c === CMD.ARCHIVE && sid) { page('ccd_session_mgmt__archive_session', { session_id: sid }, sid); return done(); }
     if (c === CMD.EXPORT && sid) { page('ccd_session_mgmt__export_transcript', { session_id: sid }, sid).then(r => { app.note = r.error ? r.error : `Exported to ${JSON.parse(r.result).path}`; app.dirty = true; }); return done(); }
