@@ -2831,8 +2831,10 @@ function setupStartMenu() {
   const claude = !!(S.programs || {})['CLAUDE.EXE'];   // (the Claude program: a folder of its own under Programs, claude-exe.js)
   // (Export and Import Session: RUNDLL32 running SESSION.DLL's entries, session-dll.js, in System Tools)
   const session = !!(S.programs || {})['RUNDLL32.EXE'], tools = join(PROGRAMS, 'Accessories', 'System Tools');
+  // (an optional component Setup installs: its INF's links, Clipboard Viewer's in Accessories)
+  const DOS = window.W95DOS, clip = DOS && DOS.infs && DOS.infs['CLIP.INF'] && fs.exists(join(WINDIR, 'CLIPBRD.EXE')) ? infParse(DOS.infs['CLIP.INF']) : null;
   const missing = accessories.some(a => a.links.some(k => !fs.exists(join(PROGRAMS, 'Accessories', k[0] + '.lnk')))) || (claude && !fs.exists(join(PROGRAMS, 'Claude', 'Claude.lnk')))
-    || (session && !fs.exists(join(tools, 'Export Session.lnk')));
+    || (session && !fs.exists(join(tools, 'Export Session.lnk'))) || (clip && !fs.exists(join(PROGRAMS, 'Accessories', 'Clipboard Viewer.lnk')));
   if (cur && cur[0] === 0x4c && cur[1] === 0 && !missing) return;   // ('L': a shell link's header)
   const out = new Map();
   const add = ({ sec, fields, subst }, names) => {
@@ -2848,6 +2850,7 @@ function setupStartMenu() {
   };
   add(infParse(inf), ['winbase.inis', 'winother.links']);
   if (applets) add(applets, accessories.map(a => a.name));
+  if (clip) add(clip, ['clipbrd.links']);
   if (claude) { out.set('progman.groups', out.get('progman.groups') || { name: 'progman.groups', lines: [] }); out.get('progman.groups').lines.push('group90=Claude'); out.set('group90', { name: 'group90', lines: ['"Claude", CLAUDE.EXE'] }); }
   if (session) {
     const groups = out.get('progman.groups') || out.set('progman.groups', { name: 'progman.groups', lines: [] }).get('progman.groups');
@@ -3232,6 +3235,11 @@ function installPrograms() {
   if (DOS && DOS.command) { fs.mkdir(join(WINDIR, 'COMMAND'), { recursive: true }); for (const [n, d] of Object.entries(DOS.command)) put(join(WINDIR, 'COMMAND', n), d); }
   // the Windows 3.x runtime libraries, in SYSTEM (WIN87EM, NDDEAPI, OLE, WINSOCK: tools/build_dos.py)
   if (DOS && DOS.system) for (const [n, d] of Object.entries(DOS.system)) put(join(WINDIR, 'SYSTEM', n), d);
+  // Setup's optional components (Clipboard Viewer, CLIP.INF): their programs in the Windows folder, their help in HELP,
+  // and the OptionalComponents value Add/Remove Programs reads to show one installed
+  if (DOS && DOS.windows) for (const [n, d] of Object.entries(DOS.windows)) put(join(WINDIR, n), d);
+  if (DOS && DOS.help) { fs.mkdir(join(WINDIR, 'HELP'), { recursive: true }); for (const [n, d] of Object.entries(DOS.help)) put(join(WINDIR, 'HELP', n), d); }
+  if (DOS && DOS.infs && DOS.infs['CLIP.INF']) W95Win32.regSet('hklm\\software\\microsoft\\windows\\currentversion\\setup\\optionalcomponents\\clipbrd', 'Installed', { type: 1, data: W95FS.encode('1\0') });
 }
 class NativeWin extends Win {
   constructor(app, n) {
