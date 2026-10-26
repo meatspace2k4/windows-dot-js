@@ -115,7 +115,7 @@ transcript and next-step box. What the app asks the user about is asked in a mes
 | Server | Tools | In Windows 95 |
 | --- | --- | --- |
 | `turn` | `update_plan`, `wrap_up` | the Claude window's task list and next-step box; its buttons are real buttons, so `click({ name })` presses one |
-| `session` | `start_session`, `dismiss_task`, `hand_off_to_session`, `mark_chapter`, `read_widget_context`, `list_start_targets`, `move_to_cloud` | sessions are records; a proposal or offer is a message box (Start / Dismiss, New session / Do it here); places are the drives; no cloud |
+| `session` | `start_session`, `dismiss_task`, `hand_off_to_session`, `mark_chapter`, `read_widget_context`, `list_start_targets`, `move_to_cloud` | sessions are records; a proposal or offer is a message box (Start / Dismiss, New session / Do it here), or, for a session of CLAUDE.EXE's, a card under its conversation; places are the drives; no cloud |
 | `session_mgmt` | `list_sessions`, `get_session`, `list_events`, `search_session_transcripts`, `archive_session`, `unarchive_session`, `delete_session`, `clear_session`, `stop_session`, `detach_session`, `set_session_title`, `set_session_model`, `set_session_effort`, `set_session_fast_mode`, `set_session_permission_mode`, `set_session_output_style`, `set_remote_control`, `send_message`, `export_transcript`, `get_usage` | the records and their transcripts; an export is `C:\My Documents\<title>.TXT` |
 | `sidebar` | `list_groups`, `create_group`, `rename_group`, `delete_group`, `list_sections`, `create_section`, `rename_section`, `delete_section`, `move_sessions`, `set_pinned`, `set_unread`, `mark_completed`, `set_view` | the Claude window's sidebar |
 | `view` | `show_pane`, `close_pane`, `get_layout`, `set_transcript_view` | `file` is Notepad, `terminal` an MS-DOS Prompt, `plan` the Claude window, `tasks` Close Program; `diff`, `pr`, `artifact` have none |
@@ -132,6 +132,13 @@ transcript and next-step box. What the app asks the user about is asked in a mes
 | `ccd.answer(i = 0)` | presses the next-step box's button `i` |
 | `ccd.tools()` | the servers and their tools |
 | `ccd.state()` | the records: sessions, groups, cards, settings, view |
+| `ccd.toolDefs()` | the tools as the Claude API takes them: every `ccd_<server>__<tool>`, and `files__read_file`, `files__list_directory`, `files__write_file`, `files__edit_file` |
+| `ccd.callAs(session, name, args)` | runs a tool by that name for the session, as CLAUDE.EXE's Claude does |
+| `ccd.cardAnswer(task_id, label)` | answers a card with its button's label, as CLAUDE.EXE's card buttons do |
+
+The `files__*` tools work on C: only, the system's own disk: a path on another drive, a network drive or a share (a
+remote volume, whatever its letter) is refused. Writing and editing follow the session's permission mode: Plan mode
+refuses, Ask permissions asks in a message box, the others write.
 
 | Event | Fields | When |
 | --- | --- | --- |

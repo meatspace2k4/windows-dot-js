@@ -74,7 +74,8 @@ SYSTEM = ('You are Claude, talking with the user through the Claude desktop app 
           'Answer in plain text: the window shows no Markdown.')
 TOOLS_NOTE = (' You have the Claude desktop app\'s own tools (the ccd_* tools), acting on this Windows 95 system: its sessions, '
               'their task lists and next-step box, the sidebar, panes, windows, settings and folders. Use them when the user asks '
-              'for something they do; a tool the app would ask the user about shows a message box, and its result says what they chose.')
+              'for something they do; a tool the app would ask the user about shows a message box, and its result says what they chose. '
+              'The files__* tools read, list, write and edit files on the C: drive only.')
 def setting(env, path):
     if os.environ.get(env): return os.environ[env]
     try:

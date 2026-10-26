@@ -19,6 +19,8 @@ function load() {
       volumes: () => [{ root: 'C:\\', label: 'WIN95', kind: 'fixed', total: 100, used: 40 }, { root: 'D:\\', kind: 'cdrom', total: 0, used: 0 }],
       exists: p => p === 'C:\\' || p === 'C:\\WINDOWS' || p === 'C:\\README.TXT' || files.has(p),
       stat: p => ({ isDir: !/\.TXT$/i.test(p) }), mkdir: p => files.set(p, null), writeFile: (p, d) => files.set(p, d),
+      vols: new Map([['C', { kind: 'fixed' }], ['E', { kind: 'remote', remote: {} }]]), remoteAt: p => (/^(E:|\\\\)/i.test(p) ? {} : null),
+      realpath: p => p, readText: p => files.get(p) || '', readdir: () => [{ name: 'WINDOWS', isDir: true }, { name: 'README.TXT', isDir: false, size: 5 }],
     },
     emit: (type, data) => events.push({ type, ...data }), dirty: () => {},
     dialog: (title, w, h, ctrls) => { const win = { title, ctrls }; dialogs.push(win); wins.push(win); return win; },
@@ -152,6 +154,17 @@ assert.equal(JSON.parse(await ccd.pr.get_status()).pr, null);
 p = ccd.directory.change_directory({ path: 'C:\\WINDOWS' }); await tick(); boxes.at(-1).press('Yes');
 assert.match(await p, /works in C:\\WINDOWS/);
 assert.deepEqual(plain(JSON.parse(await ccd.connectors.session_connectors_status()).map(c => c.name)),['shares', 'cd', 'network', 'sound']);
+
+// the files tools (the Claude program's): C: only, writes asked in Ask permissions
+assert.ok(ccd.toolDefs().some(d => d.name === 'files__edit_file'));
+assert.match(await ccd.callAs(null, 'files__list_directory', { path: 'C:\\' }), /\[dir\] WINDOWS/);
+for (const path of ['D:\\SETUP.EXE', 'E:\\X.TXT', '\\\\HOST\\PUBLIC\\X.TXT', 'X.TXT']) await rejects(ccd.callAs(null, 'files__read_file', { path }), /not on C:/);
+p = ccd.callAs(null, 'files__write_file', { path: 'C:\\NOTE.TXT', content: 'a\nb' }); await tick(); assert.match(boxes.at(-1).msg, /create C:\\NOTE\.TXT/); boxes.at(-1).press('Yes');
+assert.match(await p, /Wrote/); assert.equal(files.get('C:\\NOTE.TXT'), 'a\r\nb');
+p = ccd.callAs(null, 'files__edit_file', { path: 'C:\\NOTE.TXT', old_string: 'b', new_string: 'c' }); await tick(); boxes.at(-1).press('No');
+await rejects(p, /Not allowed/); assert.equal(files.get('C:\\NOTE.TXT'), 'a\r\nb');
+assert.match(await ccd.callAs(null, 'files__read_file', { path: 'C:\\NOTE.TXT' }), /^1\ta\n2\tb$/);
+files.delete('C:\\NOTE.TXT');
 
 // the records last: a new page reads them back from the registry
 ({ ccd } = load());

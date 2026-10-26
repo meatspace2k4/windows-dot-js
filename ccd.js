@@ -627,6 +627,57 @@
       return s;
     }
 
+    // ---------------------------------------------------------------- the files of C: (the system's own disk), for the
+    // Claude program's Claude: read, list, write and edit there only; never another drive, a network drive or a share
+    // (a remote or host volume), whatever the path says. Writing follows the session's permission mode: Plan mode
+    // refuses, Ask permissions asks, the others write.
+    const onC = path => {
+      const p = String(path || '').replace(/\//g, '\\'), fs = ui.fs, v = fs.vols && fs.vols.get('C');
+      if (!/^c:\\/i.test(p)) not(`Only the C: drive's files: ${p || '(no path)'} is not on C:.`);
+      if (!v || v.remote || v.host || v.kind !== 'fixed' || fs.remoteAt(p)) not('C: is not the system\'s own disk here.');
+      if (fs.exists(p) && !/^c:\\/i.test(fs.realpath(p))) not(`${p} is not on C:.`);
+      return p;
+    };
+    const mayWrite = async (what, p) => {
+      const m = self.permissionMode;
+      if (m === 'plan') not('Plan mode: no files are written. Present the plan first.');
+      if (m === 'default' && !(await approve(`Claude wants to ${what} ${p}. Allow it?`))) not(`Not allowed: ${what} ${p}.`);
+    };
+    const changed = (op, p) => { const c = self.changes = self.changes || []; if (!c.some(x => x.path === p && x.op === op)) c.push({ op, path: p }); save('sessions'); ui.dirty(); };
+    const FILES = {
+      files__read_file(a) {
+        const p = onC(a.path), st_ = ui.fs.stat(p); if (st_.isDir) not(`${p} is a folder: list_directory lists it.`);
+        const lines = ui.fs.readText(p).split(/\r?\n/), from = Math.max(1, a.offset || 1), n = Math.min(a.limit || 2000, 2000);
+        return lines.slice(from - 1, from - 1 + n).map((l, i) => `${from + i}\t${l}`).join('\n') || '(empty file)';
+      },
+      files__list_directory(a) {
+        const p = onC(a.path || 'C:\\');
+        return ui.fs.readdir(p, a.pattern).map(e => `${e.isDir ? '[dir] ' : ''}${e.name}${e.isDir ? '' : `  ${e.size}`}`).join('\n') || '(empty folder)';
+      },
+      async files__write_file(a) {
+        const p = onC(a.path); if (typeof a.content !== 'string') not('content: the file\'s text.');
+        await mayWrite(ui.fs.exists(p) ? 'overwrite' : 'create', p);
+        ui.fs.writeFile(p, a.content.replace(/\r?\n/g, '\r\n')); changed('write', p);
+        return `Wrote ${p}.`;
+      },
+      async files__edit_file(a) {
+        const p = onC(a.path), t = ui.fs.readText(p), k = t.split(a.old_string).length - 1;
+        if (!a.old_string || !k) not(`old_string is not in ${p}.`);
+        if (k > 1 && !a.replace_all) not(`old_string is in ${p} ${k} times: give more of it, or replace_all.`);
+        await mayWrite('edit', p);
+        const out = a.replace_all ? t.split(a.old_string).join(a.new_string) : t.replace(a.old_string, () => a.new_string);
+        ui.fs.writeFile(p, out); changed('write', p);
+        return `Edited ${p}.`;
+      },
+    };
+    const S_ = (props, req) => ({ type: 'object', properties: props, required: req });
+    const FILE_DEFS = [
+      { name: 'files__read_file', description: 'Read a text file on the C: drive (the system\'s own disk), its lines numbered. Other drives, network drives and shares are refused.', input_schema: S_({ path: { type: 'string', description: 'C:\\...' }, offset: { type: 'integer' }, limit: { type: 'integer' } }, ['path']) },
+      { name: 'files__list_directory', description: 'List a folder on the C: drive (folders marked [dir], files with their sizes).', input_schema: S_({ path: { type: 'string' }, pattern: { type: 'string', description: 'a wildcard, such as *.TXT' } }, ['path']) },
+      { name: 'files__write_file', description: 'Write a text file on the C: drive, replacing it if it is there. The session\'s permission mode decides whether the user is asked.', input_schema: S_({ path: { type: 'string' }, content: { type: 'string' } }, ['path', 'content']) },
+      { name: 'files__edit_file', description: 'Replace old_string with new_string in a text file on the C: drive (old_string must be in it once, unless replace_all).', input_schema: S_({ path: { type: 'string' }, old_string: { type: 'string' }, new_string: { type: 'string' }, replace_all: { type: 'boolean' } }, ['path', 'old_string', 'new_string']) },
+    ];
+
     // ---------------------------------------------------------------- the tools
     class CcdError extends Error {}
     const not = what => { throw new CcdError(what); };
@@ -1013,10 +1064,18 @@
     });
     // the tools as the Claude API takes them (the Claude program offers them to Claude: claude-app.js), and a call made
     // for a session, as that session's own ("self")
-    api.toolDefs = () => Object.entries(SCHEMA).flatMap(([server, tools]) => Object.entries(tools).map(([tool, sc]) => ({
+    api.toolDefs = () => [...Object.entries(SCHEMA).flatMap(([server, tools]) => Object.entries(tools).map(([tool, sc]) => ({
       name: `ccd_${server}__${tool}`, description: DESC[server][tool], input_schema: inputSchema(server, tool, sc),
-    })));
+    }))), ...FILE_DEFS];
     api.callAs = async (sid, name, args) => {
+      if (FILES[name]) {
+        sync(); const was = self; self = byId(sid) || self; quiet = true; let result, error;
+        try { return (result = await FILES[name](args || {})); } catch (e) { error = e.message; throw e; }
+        finally {
+          said(self, 'tool', `files.${name.slice(7)}${error ? ' (refused)' : ''}`, { detail: `${JSON.stringify(args)}\n${error || String(result).slice(0, 300)}`.slice(0, 600) }); save('sessions'); ui.dirty();
+          self = st.sessions.find(s => s.id === was.id) || was; quiet = false;
+        }
+      }
       const m = /^ccd_(\w+?)__(\w+)$/.exec(name); if (!m || !api[m[1]] || !api[m[1]][m[2]]) throw new CcdError(`No tool ${name}.`);
       sync(); const was = self; self = byId(sid) || self; quiet = true;
       try { return await api[m[1]][m[2]](args || {}); } finally { self = st.sessions.find(s => s.id === was.id) || was; quiet = false; }
