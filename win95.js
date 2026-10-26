@@ -991,7 +991,13 @@ function runExe(path, arg) {
   const n = basename(path).toUpperCase();
   if (n === 'NOTEPAD.EXE') return runNotepad(arg ? resolveArg(arg) : null, path);
   // an MS-DOS program (COMMAND.COM: the MS-DOS Prompt) runs in an MS-DOS machine
-  if (window.W95V86 && window.W95DOS) { let b = null; try { b = fs.readFile(path); } catch (_) { /* below */ } if (n === 'COMMAND.COM' || (b && exeKind(b) === 'dos')) return dosBox(n === 'COMMAND.COM' ? 'C:\\COMMAND.COM' : path, arg); }
+  if (window.W95V86 && window.W95DOS) {
+    let b = null; try { b = fs.readFile(path); } catch (_) { /* below */ }
+    if (n === 'COMMAND.COM' || (b && exeKind(b) === 'dos')) return dosBox(n === 'COMMAND.COM' ? 'C:\\COMMAND.COM' : path, arg);
+    // a Win32 console program: in an MS-DOS window that is its console (COMMAND.COM /C runs it there; the window goes
+    // when it ends), as Windows 95 gives one a console
+    if (b && exeKind(b) === 'pe') { const at = b[0x3c] | b[0x3d] << 8 | b[0x3e] << 16; if ((b[at + 92] | b[at + 93] << 8) === 3) { let sp = path; try { sp = fs.stat(path).shortPath; } catch (_) { /* as given */ } return dosBox('C:\\COMMAND.COM', `/C ${sp}${arg ? ` ${arg}` : ''}`); } }
+  }
   if (n === 'EXPLORER.EXE') return arg ? openPath(resolveArg(arg)) : openFolder(MyComputer);
   // any other program the system bundle carries runs natively
   runNative(path, arg || '').then(ok => { if (!ok) msgBox(dispName(basename(path)), `${path} is not a valid Windows application.`, 'error'); });
