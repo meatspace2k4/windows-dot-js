@@ -75,7 +75,7 @@ SYSTEM = ('You are Claude, talking with the user through the Claude desktop app 
 TOOLS_NOTE = (' You have the Claude desktop app\'s own tools (the ccd_* tools), acting on this Windows 95 system: its sessions, '
               'their task lists and next-step box, the sidebar, panes, windows, settings and folders. Use them when the user asks '
               'for something they do; a tool the app would ask the user about shows a message box, and its result says what they chose. '
-              'Read, Write, Edit, Glob and Grep are Claude Code\'s file tools, on the C: drive only.')
+              'Read, Write, Edit, Glob and Grep are Claude Code\'s file tools, on the C: drive only; Bash runs MS-DOS commands.')
 def setting(env, path):
     if os.environ.get(env): return os.environ[env]
     try:

@@ -688,6 +688,20 @@
     const textOf = e => { if (e.size > 4 << 20) return null; const t = ui.fs.readText(e.path); return t.includes('\0') ? null : t; };
     const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
     const FILES = {
+      // Bash: the command run as COMMAND.COM /C runs it, in an MS-DOS machine of Windows 95's (the session's folder
+      // its current one), what it writes to the screen the answer; asked as Claude Code asks, by permission mode
+      async Bash(a) {
+        if (!ui.dosRun) not('There is no MS-DOS here to run a command in.');
+        const cmd = String(a.command || '').trim(); if (!cmd) not('command: the command to run.');
+        if (cmd.length > 125) not(`The MS-DOS command line takes 127 characters at most; this one has ${cmd.length}. Run a shorter command, or write a batch file with Write and run that.`);
+        const m = self.permissionMode;
+        if ((m === 'default' || m === 'acceptEdits' || m === 'plan') && !(await approve(`Claude wants to run this MS-DOS command:\n\n${cmd}\n\nAllow it?`))) not(`Permission to run ${cmd} was denied.`);
+        const ms = Math.min(Math.max(1000, a.timeout || 120000), 600000), r = await ui.dosRun(cmd, ms, self.cwd);
+        let out = (r.output || '').replace(/\s+$/, '').replace(/^(\s*\n)+/, '');   // (COMMAND.COM's blank line before what it runs) if (out.length > 30000) out = `${out.slice(0, 30000)}\n... (output truncated)`;
+        if (r.error) not(`${out ? `${out}\n` : ''}The MS-DOS machine stopped: ${r.error}`);
+        if (r.timedOut) return `${out ? `${out}\n` : ''}Command timed out after ${Math.round(ms / 1000)}s`;
+        return out || '(no output)';
+      },
       Read(a) {
         const p = onC(abs(a.file_path));
         if (!ui.fs.exists(p)) not('File does not exist.');
@@ -748,6 +762,7 @@
     };
     const S_ = (props, req) => ({ type: 'object', properties: props, required: req });
     const FILE_DEFS = [
+      { name: 'Bash', description: 'Runs a command in MS-DOS (COMMAND.COM /C) in a machine of this Windows 95, its drives C: and D: Windows\' own, starting in the session\'s folder, and returns what it writes to the screen. The command line is MS-DOS\'s: 127 characters at most, no && or pipes to Unix tools; DIR, TYPE, COPY, REN, DEL, MD, SET, the programs in C:\\WINDOWS\\COMMAND (MEM, FIND, SORT, MORE, XCOPY, ATTRIB, FC, DEBUG, ...) and any MS-DOS program, with | and > as DOS has them. The session\'s permission mode decides whether the user is asked.', input_schema: S_({ command: { type: 'string', description: 'The MS-DOS command to run' }, description: { type: 'string', description: 'What the command does, in 5-10 words' }, timeout: { type: 'integer', description: 'Milliseconds before it is stopped (default 120000, at most 600000)' } }, ['command']) },
       { name: 'Read', description: 'Reads a file from the C: drive (the system\'s own disk). file_path is absolute (C:\\...) or relative to the session\'s folder. Reads up to 2000 lines from offset, in cat -n format with line numbers starting at 1. Other drives, network drives and shares are refused.', input_schema: S_({ file_path: { type: 'string', description: 'The path of the file to read' }, offset: { type: 'integer', description: 'The line number to start reading from' }, limit: { type: 'integer', description: 'The number of lines to read' } }, ['file_path']) },
       { name: 'Write', description: 'Writes a file on the C: drive, overwriting it if it is there. An existing file must be Read first in this session. The session\'s permission mode decides whether the user is asked.', input_schema: S_({ file_path: { type: 'string', description: 'The path of the file to write' }, content: { type: 'string', description: 'The content to write to the file' } }, ['file_path', 'content']) },
       { name: 'Edit', description: 'Performs exact string replacement in a file on the C: drive. The file must be Read first in this session. old_string must be unique in the file unless replace_all is true.', input_schema: S_({ file_path: { type: 'string', description: 'The path of the file to modify' }, old_string: { type: 'string', description: 'The text to replace' }, new_string: { type: 'string', description: 'The text to replace it with (must be different from old_string)' }, replace_all: { type: 'boolean', description: 'Replace all occurrences of old_string (default false)' } }, ['file_path', 'old_string', 'new_string']) },

@@ -165,6 +165,7 @@ const SDA = { DTA: 0x0c, FN1: 0x9e, FN2: 0x11e, SDB: 0x19e, DIRENT: 0x1b3, SATTR
 const HOOK21 = HOOK[0x21];
 HOOK[0x21] = function (next) {
   if (this.ah() === 0x52 && !this.lol) this.want52 = next;   // (its answer, ES:BX, read as the call returns: v86Run)
+  if (this.o.capture && this.boxReturn) this.captureOut();
   // (the drives taken as the shell is run, once DOS has its drive table from CONFIG.SYS: IO.SYS's own EXECs of
   // WINBOOT.SYS and IO.SYS come before it; and again should DOS make the table anew)
   if (this.lol && this.o.fs) {
@@ -173,6 +174,23 @@ HOOK[0x21] = function (next) {
   }
   return HOOK21.call(this, next);
 };
+// what the box's program writes to the console, kept for a command run with no window (dosRun): INT 21h's character
+// and string output, and writes to a handle whose file is the console (a character device that is the standard
+// output, by the process's handle table and DOS's file table: not what a command redirects to a file)
+P.captureOut = function () {
+  const ah = this.ah(), put = s => { this.out = (this.out || '') + s; if (this.out.length > 200000) this.out = this.out.slice(-150000); };
+  if (ah === 0x02 || (ah === 0x06 && (this.cpu.edx.value & 0xff) !== 0xff)) { put(String.fromCharCode(this.cpu.edx.value & 0xff)); return; }
+  if (ah === 0x09) { const a = this.lin(this.cpu.ds.value, this.r('dx')) - this.v86; let s = ''; for (let i = 0; i < 4096 && this.m8(a + i) !== 0x24; i++) s += String.fromCharCode(this.m8(a + i)); put(s); return; }
+  if (ah !== 0x40 || !this.lol || !this.sda) return;
+  const psp = this.m16(this.sda + 0x10), jft = this.lin(this.m16(psp * 16 + 0x36), this.m16(psp * 16 + 0x34)) - this.v86, h = this.r('bx');
+  if (h >= this.m16(psp * 16 + 0x32)) return;
+  let k = this.m8(jft + h); if (k === 0xff) return;
+  for (let t = this.lin(this.m16(this.lol + 6), this.m16(this.lol + 4)) - this.v86, n = 0; t && n < 64; n++) {   // (the SFT blocks: next, count, entries of 3Bh)
+    const cnt = this.m16(t + 4);
+    if (k < cnt) { const dev = this.m16(t + 6 + k * 0x3b + 5); if ((dev & 0x82) === 0x82) { const a = this.lin(this.cpu.ds.value, this.r('dx')) - this.v86; let s = ''; for (let i = 0; i < this.r('cx'); i++) s += String.fromCharCode(this.m8(a + i)); put(s); } return; }
+    k -= cnt; const nx = this.m32(t); if ((nx & 0xffff) === 0xffff) return; t = this.lin(nx >>> 16, nx & 0xffff) - this.v86;
+  }
+};
 P.takeDrives = function () {
   this.drivesTaken = true; this.cdsAt = this.m32(this.lol + 0x16);
   const lol = this.lol, cds =this.lin(this.m16(lol + 0x18), this.m16(lol + 0x16)) - this.v86, last = this.m8(lol + 0x21);
@@ -180,7 +198,10 @@ P.takeDrives = function () {
   for (const v of this.o.fs.volumes()) {
     const d = v.letter.charCodeAt(0) - 65; if (d < 2 || d >= last || v.kind === 'remote') continue;
     const e = cds + d * 0x58;
-    const path = `${v.letter}:\\`; for (let i = 0; i < 67; i++) this.s8(e + i, i < path.length ? path.charCodeAt(i) : 0);
+    // (its current folder: the root, or the one the machine was started in, o.cwd, as CD leaves it in the CDS)
+    let path = `${v.letter}:\\`; const cwd = this.o.cwd && this.o.cwd.toUpperCase().replace(/\\+$/, '');
+    if (cwd && cwd[0] === v.letter && cwd.length > 2) { try { path = this.o.fs.stat(cwd).shortPath.toUpperCase(); } catch (_) { /* the root */ } }
+    for (let i = 0; i < 67; i++) this.s8(e + i, i < path.length ? path.charCodeAt(i) : 0);
     this.s16(e + 0x43, 0xc000);   // (network, physical: a redirected drive)
     this.s16(e + 0x4f, 2);        // (the root's backslash)
   }

@@ -1006,15 +1006,39 @@ const DOS_KEYS = { Enter: 0x1c0d, Backspace: 0x0e08, Escape: 0x011b, Tab: 0x0f09
 const DOS_SCAN = '1234567890-=..qwertyuiop[]..asdfghjkl;\'`.\\zxcvbnm,./';   // (the scan codes of the main keys, from 02h)
 let dosFont = null;
 const dosMachines = new Set();   // (the MS-DOS machines running: win95.dos)
-function dosBox(program, args) {
+// a machine booted to run `program` with `args` (its drives Windows' own: v86.js takeDrives)
+function dosMachine(program, args, o = {}) {
   const V = window.W95V86, D = window.W95DOS, bytes = s => b64bytes(s);
   try { program = fs.stat(program).shortPath; } catch (_) { /* (DOS's own name for it: its 8.3 path) */ }
-  if (!dosFont) { const d = window.W95SYSTEM && W95SYSTEM.dos && W95SYSTEM.dos['EGA.CPI']; if (d) dosFont = cpiFont(b64bytes(d), 437, 14); }
   const msdos = '[Paths]\r\nWinDir=C:\\WINDOWS\r\nWinBootDir=C:\\WINDOWS\r\nHostWinBootDrv=C\r\n[Options]\r\nBootGUI=0\r\nLogo=0\r\n' + Array(20).fill(';' + 'x'.repeat(68)).join('\r\n') + '\r\n';
   const files = [{ name: 'IO.SYS', data: bytes(D.files['IO.SYS']), attr: 7 }, { name: 'MSDOS.SYS', data: W95FS.encode(msdos), attr: 7 },
     ...Object.keys(D.files).filter(p => p !== 'IO.SYS').map(p => ({ path: p, data: bytes(D.files[p]) }))];
-  const m = V.machine({ disk: V.fat16(bytes(D.boot), files, 16), program, args, fs });   // (its drives Windows' own: v86.js takeDrives)
+  const m = V.machine({ disk: V.fat16(bytes(D.boot), files, 16), program, args, fs, ...o });
   m.v86Clock(); m.v86Boot();
+  return m;
+}
+// a command run as COMMAND.COM /C runs it, in a machine of its own with no window: what it writes to the console (from
+// the box's start: the boot's lines are not its) and how it ended. Claude's Bash tool (ccd.js) runs commands here
+function dosRun(command, timeout = 120000, cwd = null) {
+  return new Promise(done => {
+    const m = dosMachine('C:\\COMMAND.COM', `/C ${command}`, { capture: true, cwd }), t0 = performance.now();
+    dosMachines.add(m);
+    const end = r => { clearInterval(timer); dosMachines.delete(m); done({ output: (m.out || '').replace(/\r\n?/g, '\n'), ...r }); };
+    const timer = setInterval(() => {
+      const s0 = performance.now();
+      while (performance.now() - s0 < 10) {
+        const st = m.v86Run(4000);
+        if (st === 'idle') { m.halted = false; break; }
+        if (st === 'exit') { end({ exited: true }); return; }
+        if (st === 'trap') { end({ error: m.trapped || 'the machine stopped' }); return; }
+      }
+      if (performance.now() - t0 > timeout) end({ timedOut: true });
+    }, 4);
+  });
+}
+function dosBox(program, args) {
+  if (!dosFont) { const d = window.W95SYSTEM && W95SYSTEM.dos && W95SYSTEM.dos['EGA.CPI']; if (d) dosFont = cpiFont(b64bytes(d), 437, 14); }
+  const m = dosMachine(program, args);
   const cv = mkc(640, 350), tx = cv.getContext('2d'), im = tx.createImageData(640, 350), px = new Uint32Array(im.data.buffer);
   const rgb = c => 0xff000000 | (c & 0xff) << 16 | (c & 0xff00) | (c >>> 16 & 0xff);
   let win = null, timer = 0, failed = null;
@@ -5048,7 +5072,7 @@ const script = {
 // the Claude desktop app's tools (ccd.js), made on first use: the registry they keep their records in is loaded by then
 let ccdApi = null;
 const ccdUi = () => ({
-  W95Win32, fs, emit, dirty, dialog, msgBox, openWin, closeWin, activate, notepad, runCommand, openPath, netBoot,
+  W95Win32, fs, emit, dirty, dialog, msgBox, openWin, closeWin, activate, notepad, runCommand, openPath, netBoot, dosRun: window.W95V86 && window.W95DOS ? dosRun : null,
   windows: () => windows, screen: script.screen, key: script.key, netUp: () => !!(netUp && netUp.alive), icon: 'app',
   holdSaver: on => { saverHeld = !!on; if (on) lastInput = performance.now(); },
   gfx: { K, fill, field, text, esc, wrap, textW, ellipsis, btnUp, btnDown, focusRect, clip: (x, y, w, h, f) => { ctx.save(); ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip(); try { f(); } finally { ctx.restore(); } } },

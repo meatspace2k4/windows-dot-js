@@ -155,7 +155,18 @@ CLAUDE.EXE's Claude has Claude Code's own tools besides the app's, with Claude C
 Each request starts with a system reminder, as Claude Code's do: `C:\WINDOWS\CLAUDE\CLAUDE.MD` (the user's own
 instructions), each `CLAUDE.MD` from the root down to the session's folder (the project's), the memory Claude keeps in
 `C:\WINDOWS\CLAUDE\MEMORY` (its index, `MEMORY.MD`), and the skills. Claude writes these with its own tools, so what it
-writes there shapes its next request. There is no `Bash`: Windows 95 here has no MS-DOS to run a command in.
+writes there shapes its next request.
+- `Bash` runs an MS-DOS command as `COMMAND.COM /C` runs it, in an MS-DOS machine with no window (v86.js: the CD's
+  IO.SYS and COMMAND.COM on Windows' own C: and D:), starting in the session's folder, and answers with what it wrote
+  to the console. The command line is MS-DOS's: 127 characters at most.
+
+## MS-DOS
+
+The MS-DOS Prompt, and any MS-DOS program opened, runs in a virtual-8086 machine (v86.js) that boots the CD's own
+MS-DOS 7 (IO.SYS, COMMAND.COM; `tools/build_dos.py` writes them, with the programs Setup puts in
+C:\WINDOWS\COMMAND, as msdos.js) and runs its code through the run-time translator in V86 mode. Its C: and D: are
+Windows' own, as IFSMgr makes them: DOS network drives answered from fs.js. `win95.dos` lists the machines running;
+each has `keys` (scan code << 8 | character, typed into its keyboard), `out` and its memory through `m8`/`m16`.
 
 | Event | Fields | When |
 | --- | --- | --- |
