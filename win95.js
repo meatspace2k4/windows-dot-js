@@ -990,9 +990,72 @@ function shellOpen(path, arg) {
 function runExe(path, arg) {
   const n = basename(path).toUpperCase();
   if (n === 'NOTEPAD.EXE') return runNotepad(arg ? resolveArg(arg) : null, path);
+  // an MS-DOS program (COMMAND.COM: the MS-DOS Prompt) runs in an MS-DOS machine
+  if (window.W95V86 && window.W95DOS) { let b = null; try { b = fs.readFile(path); } catch (_) { /* below */ } if (n === 'COMMAND.COM' || (b && exeKind(b) === 'dos')) return dosBox(n === 'COMMAND.COM' ? 'C:\\COMMAND.COM' : path, arg); }
   if (n === 'EXPLORER.EXE') return arg ? openPath(resolveArg(arg)) : openFolder(MyComputer);
   // any other program the system bundle carries runs natively
   runNative(path, arg || '').then(ok => { if (!ok) msgBox(dispName(basename(path)), `${path} is not a valid Windows application.`, 'error'); });
+}
+// The MS-DOS Prompt: a virtual-8086 machine (v86.js) that boots the CD's MS-DOS (IO.SYS, COMMAND.COM: msdos.js) from a
+// disk of its own and runs the program in it; its 80 x 25 text screen drawn in the window in the CD's EGA.CPI 8 x 14
+// font, the keys typed into it going to its keyboard. The machine runs in slices on the page's timer; the window
+// closes when its program ends
+const DOS_KEYS = { Enter: 0x1c0d, Backspace: 0x0e08, Escape: 0x011b, Tab: 0x0f09, ArrowUp: 0x4800, ArrowDown: 0x5000, ArrowLeft: 0x4b00, ArrowRight: 0x4d00,
+  Home: 0x4700, End: 0x4f00, PageUp: 0x4900, PageDown: 0x5100, Insert: 0x5200, Delete: 0x5300, F1: 0x3b00, F2: 0x3c00, F3: 0x3d00, F4: 0x3e00, F5: 0x3f00,
+  F6: 0x4000, F7: 0x4100, F8: 0x4200, F9: 0x4300, F10: 0x4400 };
+const DOS_SCAN = '1234567890-=..qwertyuiop[]..asdfghjkl;\'`.\\zxcvbnm,./';   // (the scan codes of the main keys, from 02h)
+let dosFont = null;
+function dosBox(program, args) {
+  const V = window.W95V86, D = window.W95DOS, bytes = s => b64bytes(s);
+  if (!dosFont) { const d = window.W95SYSTEM && W95SYSTEM.dos && W95SYSTEM.dos['EGA.CPI']; if (d) dosFont = cpiFont(b64bytes(d), 437, 14); }
+  const msdos = '[Paths]\r\nWinDir=C:\\WINDOWS\r\nWinBootDir=C:\\WINDOWS\r\nHostWinBootDrv=C\r\n[Options]\r\nBootGUI=0\r\nLogo=0\r\n' + Array(20).fill(';' + 'x'.repeat(68)).join('\r\n') + '\r\n';
+  const files = [{ name: 'IO.SYS', data: bytes(D.files['IO.SYS']), attr: 7 }, { name: 'MSDOS.SYS', data: W95FS.encode(msdos), attr: 7 },
+    ...Object.keys(D.files).filter(p => p !== 'IO.SYS').map(p => ({ path: p, data: bytes(D.files[p]) }))];
+  const m = V.machine({ disk: V.fat16(bytes(D.boot), files, 16), program, args });
+  m.v86Clock(); m.v86Boot();
+  const cv = mkc(640, 350), tx = cv.getContext('2d'), im = tx.createImageData(640, 350), px = new Uint32Array(im.data.buffer);
+  const rgb = c => 0xff000000 | (c & 0xff) << 16 | (c & 0xff00) | (c >>> 16 & 0xff);
+  let win = null, timer = 0, failed = null;
+  const paint = () => {
+    const blink = (performance.now() >> 9) & 1, cur = [m.m8(0x451), m.m8(0x450)];
+    for (let r = 0; r < 25; r++) for (let c = 0; c < 80; c++) {
+      const a = 0xb8000 + (r * 80 + c) * 2, ch = m.m8(a), at = m.m8(a + 1), fg = rgb(TEXT_RGB[at & 15]), bg = rgb(TEXT_RGB[at >> 4 & 15]);
+      const isCur = blink && cur[0] === r && cur[1] === c;
+      for (let y = 0; y < 14; y++) {
+        let bits = dosFont ? dosFont[ch * 14 + y] : 0; if (isCur && y >= 12) bits = 0xff;
+        const row = (r * 14 + y) * 640 + c * 8;
+        for (let x = 0; x < 8; x++) px[row + x] = bits & (0x80 >> x) ? fg : bg;
+      }
+    }
+    tx.putImageData(im, 0, 0);
+  };
+  const body = {
+    draw(cr) { paint(); ctx.drawImage(cv, 0, 0, Math.min(640, cr.w), Math.min(350, cr.h), cr.x, cr.y, Math.min(640, cr.w), Math.min(350, cr.h)); },
+    down() { return true; },
+    key(e) {
+      if (e.ctrlKey && e.key.length === 1 && /[a-z]/i.test(e.key)) { m.keys.push(((DOS_SCAN.indexOf(e.key.toLowerCase()) + 2) << 8) | (e.key.toUpperCase().charCodeAt(0) - 64)); m.halted = false; return true; }
+      const k = DOS_KEYS[e.key] || (e.key.length === 1 ? ((Math.max(0, DOS_SCAN.indexOf(e.key.toLowerCase())) + 2) << 8) | (e.key.charCodeAt(0) & 0xff) : 0);
+      if (!k) return false;
+      m.keys.push(k); m.halted = false; return true;
+    },
+    onClose() { clearInterval(timer); },
+    machine: m,
+  };
+  win = openWin(new Win({ title: 'MS-DOS Prompt', icon: 'app', x: 60, y: 40, w: 640 + 6, h: 350 + 6 + 19, resizable: false, maximizable: false, body }));
+  // the machine's time: slices of the page's, a few milliseconds each, while it has work (an idle machine waits)
+  timer = setInterval(() => {
+    if (failed) return;
+    const t0 = performance.now();
+    while (performance.now() - t0 < 8) {
+      const st = m.v86Run(4000);
+      if (st === 'idle') { m.halted = false; break; }
+      if (st === 'exit') { closeWin(win, true); return; }
+      if (st === 'trap') { failed = m.trapped || 'the machine stopped'; console.error('[dos]', failed); msgBox('MS-DOS Prompt', `This program has performed an illegal operation and will be shut down.\n\n${failed}`, 'error'); break; }
+    }
+    dirty();
+  }, 15);
+  emit('dos.start', { program, args: args || '' });
+  return win;
 }
 // Notepad: the CD's NOTEPAD.EXE on the native USER when the system bundle has it, the shell's own otherwise
 function runNotepad(file, exe = join(WINDIR, 'NOTEPAD.EXE')) {
@@ -2206,7 +2269,9 @@ function runCommand(v) {
   let cmd = v, arg = '';
   const q = /^"([^"]*)"\s*(.*)$/.exec(v);
   if (q) { cmd = q[1]; arg = q[2]; } else if (!fs.exists(v)) { const m = /^(\S+)\s+(.*)$/.exec(v); if (m) { cmd = m[1]; arg = m[2]; } }
-  const bases = /^[a-z]:|^\\/i.test(cmd) ? [cmd] : [join(WINDIR, cmd), join(WINDIR, 'COMMAND', cmd), join(fs.cwd, cmd)];
+  // (where Windows looks for a program named without its folder: the current folder, the Windows folder, SYSTEM, then
+  // the PATH AUTOEXEC.BAT sets, C:\WINDOWS\COMMAND among it, and the root)
+  const bases = /^[a-z]:|^\\/i.test(cmd) ? [cmd] : [join(fs.cwd, cmd), join(WINDIR, cmd), join(WINDIR, 'SYSTEM', cmd), join(WINDIR, 'COMMAND', cmd), join('C:\\', cmd)];
   const exts = extname(cmd) ? [''] : ['', '.exe', '.com', '.bat'];
   for (const b of bases) for (const e of exts) if (fs.exists(b + e)) return shellOpen(fs.realpath(b + e), arg);
   if (/^[a-z]:\\?$/i.test(cmd)) { try { fs.stat(cmd); } catch (e) { return msgBox(cmd.toUpperCase(), fsMsg(cmd.toUpperCase(), e), 'error'); } }
@@ -3111,6 +3176,8 @@ function installPrograms() {
   // the system modules the programs run on, in SYSTEM as Setup puts them (SHELL32 reads its icons from its file)
   for (const [name, d] of Object.entries({ ...S.dlls, ...S.net, ...S.drivers })) if (!d.onCD) put(join(WINDIR, 'SYSTEM', name), d.file);
   for (const d of Object.values(S.ne || {})) if (d.fileName && !d.onDisk) put(join(WINDIR, d.fileName === 'PROGMAN.EXE' ? '' : 'SYSTEM', d.fileName), d.file);   // (a printer driver: as the Add Printer wizard copies it; Program Manager in the Windows folder, COPY.INF)
+  // MS-DOS's command interpreter, where Setup puts it: the root's (IO.SYS starts it) and the Windows folder's
+  const DOS = window.W95DOS; if (DOS) for (const p of ['C:\\COMMAND.COM', join(WINDIR, 'COMMAND.COM')]) put(p, DOS.files['COMMAND.COM']);
 }
 class NativeWin extends Win {
   constructor(app, n) {
@@ -3495,7 +3562,9 @@ function nativeAt(x, y) {
 async function runNative(path, arg, o = {}) {
   await netReady(path);   // (a program on a network drive: its file as the system's machine reads it)
   let bytes; try { bytes = fs.readFile(path); } catch (e) { return false; }
-  const prog = await nativeProgram(bytes); if (!prog) return false;
+  // (a Win32 program the bundle does not carry runs too: the system's machine maps it and translates its code as it
+  // runs; worker.js dynProgram)
+  const prog = await nativeProgram(bytes); if (!prog && exeKind(bytes) !== 'pe') return false;
   // in the system's machine, as Windows 95 runs every program on its one USER and its one set of drivers; a second
   // instance of a program (whose image's place there is taken) gets a machine of its own
   if (!o.apart) {
@@ -3506,7 +3575,20 @@ async function runNative(path, arg, o = {}) {
       const err = r && typeof r === 'object' ? r.err : r; if (err !== 8) return false;
     }
   }
+  if (!prog) return false;
   return new RemoteApp(path, arg, o).start(bytes, prog);
+}
+/** what an executable file is: 'pe' (Win32), 'ne' (Win16), 'dos' (an MS-DOS program: an MZ image with neither, or a
+ *  .COM's bare code), as the loader tells them by their headers */
+function exeKind(b) {
+  if (b.length < 2 || b[0] !== 0x4d || b[1] !== 0x5a) return 'dos';
+  const at = b.length >= 0x40 ? (b[0x3c] | b[0x3d] << 8 | b[0x3e] << 16 | b[0x3f] << 24) >>> 0 : 0;
+  // (a new-format header: its offset past the MZ header's relocations, as an old program's 3Ch is part of its code)
+  if ((b[0x18] | b[0x19] << 8) >= 0x40 && at && at + 2 <= b.length) {
+    if (b[at] === 0x50 && b[at + 1] === 0x45) return 'pe';
+    if (b[at] === 0x4e && b[at + 1] === 0x45) return 'ne';
+  }
+  return 'dos';
 }
 // ---------------------------------------------------------------- the system
 // Windows 95's system: one machine (one USER, one MMSYSTEM, one sound card) whose first task is MSGSRV32.EXE, started

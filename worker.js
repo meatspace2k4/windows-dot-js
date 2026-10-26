@@ -483,18 +483,34 @@ class Machine {
   spawnProgram(file, arg) {
     const S = self.W95SYSTEM || {}, p = this.proc;
     if (/\.SCR$/i.test(file)) return this.spawnSaver(file, arg || '');
-    const name = basename(file).toUpperCase(), d = (S.programs || {})[name]; if (!d) return 11;
+    const name = basename(file).toUpperCase(), d = (S.programs || {})[name] || this.dynProgram(file); if (!d) return 11;
     if (p.pc0 && p.pc0.exe && p.pc0.exe.base === d.meta.base) return 8;   // (the machine's own program: one instance)
     const live = [...(p.procs || new Map()).values()].some(x => x.exe.base === d.meta.base);   // (then the instances share its image: P.spawn)
     if (!live) p.modules = p.modules.filter(x => x.base !== d.meta.base);
     let pc;
     try {
-      const mod = d.modSync || (d.modSync = new WebAssembly.Module(b64bytes(d.wasm))), real = fs.realpath(file);
+      const mod = d.dynamic ? null : d.modSync || (d.modSync = new WebAssembly.Module(b64bytes(d.wasm))), real = fs.realpath(file);
       pc = p.spawn(fs.readFile(file), mod, { ...d.meta, name: name.replace(/\.EXE$/, '') }, real, arg ? `${real} ${arg}` : real);
     } catch (e) { console.error(e); return 8; }
     pc.onExit = code => { if (!pc.fault) post({ t: 'emit', ev: 'program.exit', data: { path: pc.path, code } }); };
     this.kick();
     return pc;
+  }
+  // a Win32 program the bundle does not carry: its image as the loader maps one (the base its header prefers when
+  // nothing is there, else, when it can be relocated, in the arena the bundle's images leave free), its code translated
+  // as it runs (dyn.js); null when it is no Win32 program or has no room
+  dynProgram(file) {
+    let f; try { f = fs.readFile(file); } catch (_) { return null; }
+    const dv = new DataView(f.buffer, f.byteOffset, f.byteLength);
+    if (f.length < 0x40 || dv.getUint16(0, true) !== 0x5a4d) return null;
+    const pe = dv.getUint32(0x3c, true); if (pe + 0x78 > f.length || dv.getUint32(pe, true) !== 0x4550) return null;
+    const opt = pe + 24, pref = dv.getUint32(opt + 28, true), size = dv.getUint32(opt + 56, true), ep = dv.getUint32(opt + 16, true);
+    const relocs = !(dv.getUint16(pe + 22, true) & 1) && dv.getUint32(opt + 96 + 5 * 8 + 4, true) > 0;
+    const p = this.proc, free = (a, n) => a >= 0x400000 && a + n <= 0x02000000 && !p.modules.some(m => a < m.base + m.size && m.base < a + n);
+    let base = free(pref, size) ? pref : 0;
+    for (let a = 0x00620000; !base && relocs && a + size <= 0x00b00000; a += 0x10000) if (free(a, size)) base = a;
+    if (!base) { console.warn(`[spawn] ${file}: no room for its image at ${pref.toString(16)} (${relocs ? 'relocatable' : 'no relocations'})`); return null; }
+    return { dynamic: true, meta: { base, entry: base + ep, textLo: 0, textHi: 0, blocks: [], size } };
   }
   async spawnSaverAsync(file, arg) {
     const savers = (self.W95SAVERS || {}).savers || {};

@@ -73,8 +73,14 @@ function mmioRange(p, lin) {
   }
   return p.modules && p.modules.some(m => m.base && lin >= m.base && lin < m.base + (m.size || 0)) ? null : other;
 }
-/** translate the block at linear `lin` (code segment base `csb`, 32-bit default when `d32`) */
-function translate(p, lin, csb, d32) {
+/** translate the block at linear `lin` (code segment base `csb`, 32-bit default when `d32`); `v86` is the linear
+ *  base of a virtual-8086 machine's first megabyte when the code is that machine's: a segment register's base is then
+ *  v86 + 16 * its value, INT goes through the machine's own interrupt vectors, and the BIOS's ROM calls the host */
+function translate(p, lin, csb, d32, v86) {
+  const vm = v86 !== undefined && v86 !== null;
+  // (a V86 machine's FLAGS bits 12-14, IOPL and NT, which a 386 keeps as written and the translated code keeps no
+  // global for: a word of the machine's own, past its first megabyte and the 64K above it)
+  const XFLAGS = vm ? (v86 + 0x110000) | 0 : 0;
   const u8 = p.u8;
   const f = new Fn();
   const T = f.loc(), A = f.loc(), B = f.loc(), R = f.loc(), C = f.loc(), X = f.loc(), K = f.loc(), D = f.loc();   // scratch locals
@@ -180,7 +186,7 @@ function translate(p, lin, csb, d32) {
       if (c & 1) f.op('eqz');
     };
     // ---- stack (SS's B bit picks ESP or SP)
-    const ss32 = !!(p.r32(ACC + (p.cpu.ss.value & 0xfff8)) & 0x400000) || !(p.cpu.ss.value & 0xffff);
+    const ss32 = !vm && (!!(p.r32(ACC + (p.cpu.ss.value & 0xfff8)) & 0x400000) || !(p.cpu.ss.value & 0xffff));
     const push = (loc, sz) => {
       if (ss32) { f.gg('esp').c(sz).op('sub').gs('esp'); f.gg('ssb').gg('esp').op('add').lg(loc).st(sz); }
       else { f.gg('esp').c(0xffff0000).op('and').gg('esp').c(sz).op('sub').c(0xffff).op('and').op('or').gs('esp'); f.gg('ssb').gg('esp').c(0xffff).op('and').op('add').lg(loc).st(sz); }
@@ -192,7 +198,23 @@ function translate(p, lin, csb, d32) {
     const loadSeg = (sreg, loc) => {   // selector in local -> selector and base globals
       const [sel, base] = SEG[sreg];
       f.lg(loc).c(0xffff).op('and').gs(sel);
+      if (vm) { f.lg(loc).c(0xffff).op('and').c(4).op('shl').c(v86 | 0).op('add').gs(base); return; }   // (V86: the paragraph)
       f.lg(loc).c(0xfff8).op('and').c(LDT).op('add').ld(4).gs(base);
+    };
+    // the flags as a word: CF PF AF(0) ZF SF TF(0) IF DF OF, bit 1 set
+    const flagsWord = loc => { f.gg('cf').gg('pf').c(2).op('shl').op('or').gg('zf').c(6).op('shl').op('or').gg('sf').c(7).op('shl').op('or').gg('if').c(9).op('shl').op('or').gg('df').c(10).op('shl').op('or').gg('of').c(11).op('shl').op('or').c(0x2).op('or').ls(loc); };
+    // a real-mode interrupt in a V86 machine: FLAGS, CS and IP pushed, IF cleared, CS:IP from the vector at 0:4n
+    const realInt = (n, next) => {
+      // (a vector the host hooks, as the VMM's Hook_V86_Int_Chain: the host sees the interrupt first, and takes it,
+      // the code going on at the eip global, when it sets the word after XFLAGS)
+      if (p.v86Hooks && p.v86Hooks.has(n)) {
+        f.c(next | 0).c(0x400 + n).e(0x10, 1);
+        f.c(XFLAGS + 2).ld(2).if_().c(XFLAGS + 2).c(0).st(2).gg('eip').e(0x0f).end();
+      }
+      flagsWord(T); f.lg(T).c(XFLAGS).ld(2).op('or').ls(T); push(T, 2); f.gg('cs').ls(T); push(T, 2); f.c(u32(next - csb) & 0xffff).ls(T); push(T, 2);
+      f.c(0).gs('if');
+      f.c((v86 + n * 4 + 2) | 0).ld(2).ls(B); loadSeg(1, B);
+      f.c((v86 + n * 4) | 0).ld(2).gg('csb').op('add').e(0x0f);
     };
     const offOf = ln => u32(ln - csb);   // a linear address within this code segment, as an offset
     // ---- the instruction
@@ -258,12 +280,44 @@ function translate(p, lin, csb, d32) {
     if (b === 0xcf) {   // iret: IP, CS, flags
       pop(T, osz); pop(B, osz); pop(C, osz);
       for (const [k, n2] of [[0, 'cf'], [2, 'pf'], [6, 'zf'], [7, 'sf'], [9, 'if'], [10, 'df'], [11, 'of']]) f.lg(C).c(k).op('shr_u').c(1).op('and').gs(n2);
+      if (vm) f.c(XFLAGS).lg(C).c(0x7000).op('and').st(2);
       loadSeg(1, B); f.lg(T).gg('csb').op('add').e(0x0f); return done(pc);
     }
     if (b === 0x9a) {   // call far ptr16:16/32
       const off = osz === 4 ? fetch32() : fetch16(), sel = fetch16();
       f.gg('cs').ls(T); push(T, osz); f.c(offOf(pc)).ls(T); push(T, osz);
       f.c(sel).ls(T); loadSeg(1, T); f.gg('csb').c(off | 0).op('add').e(0x0f); return done(pc);
+    }
+    if (vm && (b === 0xcd || b === 0xcc || b === 0xce)) {   // int n, int 3, into: through the machine's own vectors
+      const v = b === 0xcd ? fetch() : b === 0xcc ? 3 : 4;
+      if (b === 0xce) { f.gg('of').if_(); realInt(4, pc); f.end(); return done(pc); }
+      realInt(v, pc); return done(pc);
+    }
+    if (vm && b === 0x0f && u8[pc] === 0xff) {   // 0F FF n: the BIOS ROM's call to the host (service n), then on at the eip global
+      pc++; const v = fetch(); f.c(pc | 0).c(0x200 + v).e(0x10, 1); f.gg('eip').e(0x0f); return done(pc);
+    }
+    if (vm && b === 0xf4) { f.c(pc | 0).c(0x300).e(0x10, 1); f.gg('eip').e(0x0f); return done(pc); }   // hlt: the host waits for an interrupt
+    if (b === 0x27 || b === 0x2f) {   // daa / das
+      const sub = b === 0x2f; f.gg('eax').c(0xff).op('and').ls(B); f.gg('cf').ls(C);
+      // low nibble > 9 (AF is not kept: taken as clear): adjust by 6; then above 99h or carry: by 60h, CF set
+      f.lg(B).c(0xf).op('and').c(9).op('gt_u').if_().lg(B).c(6).op(sub ? 'sub' : 'add').c(0xff).op('and').ls(B).end();
+      f.lg(B).c(sub ? 0x99 : 0x9f).op('gt_u').lg(C).op('or').ls(X);
+      f.lg(X).if_().lg(B).c(0x60).op(sub ? 'sub' : 'add').c(0xff).op('and').ls(B).end();
+      f.lg(X).gs('cf'); f.lg(B).ls(R); szp(1); wrReg(0, 1, B); continue;
+    }
+    if (b === 0x37 || b === 0x3f) {   // aaa / aas: AL's low nibble > 9 adjusts AH and AL, CF set
+      const sub = b === 0x3f; f.gg('eax').c(0xf).op('and').c(9).op('gt_u').ls(X);
+      f.lg(X).if_();
+      f.gg('eax').c(0xff).op('and').c(6).op(sub ? 'sub' : 'add').c(0xf).op('and').ls(T);
+      f.gg('eax').c(8).op('shr_u').c(1).op(sub ? 'sub' : 'add').c(0xff).op('and').c(8).op('shl').lg(T).op('or').ls(T); wrReg(0, 2, T);
+      f.else_(); f.gg('eax').c(0xf).op('and').ls(T); wrReg(0, 1, T); f.end();
+      f.lg(X).gs('cf'); continue;
+    }
+    if (b === 0xd4 || b === 0xd5) {   // aam n / aad n
+      const n = fetch() || 10;
+      if (b === 0xd4) { f.gg('eax').c(0xff).op('and').ls(B); f.lg(B).c(n).op('div_u').c(8).op('shl').lg(B).c(n).op('rem_u').op('or').ls(T); }
+      else f.gg('eax').c(8).op('shr_u').c(0xff).op('and').c(n).op('mul').gg('eax').c(0xff).op('and').op('add').c(0xff).op('and').ls(T);
+      wrReg(0, 2, T); f.lg(T).c(0xff).op('and').ls(R); szp(1); continue;
     }
     if (b === 0xcd) {   // int n, which the host services (the continuation in the eip global); INT 20h's service dword follows it
       const v = fetch(); if (v === 0x20) pc += 4;
@@ -390,6 +444,13 @@ function translate(p, lin, csb, d32) {
         }
         continue;
       }
+      if (b2 === 0xbc || b2 === 0xbd) {   // bsf / bsr: the lowest / highest set bit's index, ZF when the source is 0 (the destination left)
+        const o = modrm(); rd(o, osz); f.ls(B); f.lg(B).op('eqz').gs('zf');
+        f.lg(B).if_();
+        if (b2 === 0xbc) f.lg(B).e(0x68).ls(T); else f.c(31).lg(B).op('clz').op('sub').ls(T);   // ctz; 31 - clz
+        wrReg(o.reg, osz, T); f.end(); continue;
+      }
+      if (vm && b2 === 0x01 && ((u8[pc] >> 3) & 7) === 4) { const o = modrm(); f.c(0xfff0).ls(T); wr(o, 2, T); continue; }   // smsw: real mode (PE clear), as a 386 shows it
       if (b2 === 0x02 || b2 === 0x03) {   // lar / lsl, as the recompiled ones: the access word (ACC) or limit (LDT +4) of the selector's descriptor, ZF when it is in use
         const o = modrm(); rd(o, 2); f.c(0xfff8).op('and').ls(T);
         f.lg(T).c(LDT + 4).op('add').ld(4).lg(T).c(LDT).op('add').ld(4).op('or').c(0).op('ne').gs('zf');
@@ -400,8 +461,8 @@ function translate(p, lin, csb, d32) {
     }
     if (b === 0xd7) { f.gg(sbase(seg === null ? 3 : seg)).gg('ebx'); if (asz === 2) f.c(0xffff).op('and'); f.gg('eax').c(0xff).op('and').op('add').op('add').ld(1).ls(T); wrReg(0, 1, T); continue; }
     if (b === 0x9c || b === 0x9d) {   // pushf / popf: the flags the translated code keeps
-      if (b === 0x9c) { f.gg('cf').gg('pf').c(2).op('shl').op('or').gg('zf').c(6).op('shl').op('or').gg('sf').c(7).op('shl').op('or').gg('if').c(9).op('shl').op('or').gg('df').c(10).op('shl').op('or').gg('of').c(11).op('shl').op('or').c(0x2).op('or').ls(T); push(T, osz); }
-      else { pop(T, osz); for (const [k, n2] of [[0, 'cf'], [2, 'pf'], [6, 'zf'], [7, 'sf'], [9, 'if'], [10, 'df'], [11, 'of']]) f.lg(T).c(k).op('shr_u').c(1).op('and').gs(n2); }
+      if (b === 0x9c) { flagsWord(T); if (vm) f.lg(T).c(XFLAGS).ld(2).op('or').ls(T); push(T, osz); }
+      else { pop(T, osz); for (const [k, n2] of [[0, 'cf'], [2, 'pf'], [6, 'zf'], [7, 'sf'], [9, 'if'], [10, 'df'], [11, 'of']]) f.lg(T).c(k).op('shr_u').c(1).op('and').gs(n2); if (vm) f.c(XFLAGS).lg(T).c(0x7000).op('and').st(2); }
       continue;
     }
     if (b === 0xc8) {   // enter size, 0
@@ -550,16 +611,17 @@ P.dynBlock = function (eip) {
   const cs = this.cpu.cs.value & 0xffff, csb = u32(this.cpu.csb.value);
   // only code inside the current code segment (flat 32-bit code, CS 0, as ring-0 VxD code runs: anywhere in memory):
   // a stray jump (to 0, or past the segment) is the guest's fault, not code
-  const flat = !cs && !csb;
-  if (!eip || (flat ? eip >= u8.length : !cs || eip < csb || eip - csb > this.selLimit(cs))) { this.trapped = `jump to unmapped address ${eip.toString(16)}`; return null; }
-  const d32 = flat || !!(this.r32(ACC + (cs & 0xfff8)) & 0x400000);
+  const vm = this.v86 !== undefined && this.v86 !== null;   // (a virtual-8086 machine's code: any segment value is one)
+  const flat = !vm && !cs && !csb;
+  if (vm ? eip >= u8.length : !eip || (flat ? eip >= u8.length : !cs || eip < csb || eip - csb > this.selLimit(cs))) { this.trapped = `jump to unmapped address ${eip.toString(16)}`; return null; }
+  const d32 = !vm && (flat || !!(this.r32(ACC + (cs & 0xfff8)) & 0x400000));
   // (a translation holds the code segment's base and its operand size: the same bytes run through another segment, or
   // as 16-bit code where they ran as 32-bit, are another block. DIBENG compiles 16- and 32-bit blits into one buffer)
-  const key = `${eip}:${csb}:${d32 ? 32 : 16}`;
+  const key = `${eip}:${csb}:${d32 ? 32 : 16}${vm ? 'v' : ''}`;
   let c = this.dynCache.get(key);
   if (c && c.bytes.every((v, i) => u8[eip + i] === v)) return c;
   let t;
-  try { t = translate(this, eip, csb, d32); }
+  try { t = translate(this, eip, csb, d32, vm ? this.v86 : null); }
   catch (e) { if (e instanceof Unsupported) { this.trapped = `run-time code at ${eip.toString(16)}: ${e.message}`; return null; } throw e; }
   t.fn.e(0x0f);
   const run = new WebAssembly.Instance(new WebAssembly.Module(assemble(t.fn, Object.prototype.toString.call(this.mem.buffer) === '[object SharedArrayBuffer]')), { env: { mem: this.mem, io: (port, k) => this.portIO(port & 0xffff, k & 7, !!(k & 8)), trap: (e, c) => this.trap(e, c) }, cpu: this.cpu }).exports.run;

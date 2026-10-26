@@ -149,9 +149,13 @@ class Process {
         this.w32(iat + 4 * k, addr || this.thunkFor(dll, nm));
       }
     }
-    rec.run = new WebAssembly.Instance(module, this.imports).exports.run;
-    const look = new Uint32Array(this.mem.buffer, meta.lookup, meta.textHi - meta.textLo);
-    meta.blocks.forEach((a, i) => { look[a - meta.textLo] = i + 1; });
+    // (an image nothing was recompiled for, a program the system bundle does not carry: no module, its code translated
+    // as it runs, dyn.js, as the dispatcher sends any address outside a translated module's text there)
+    if (module) {
+      rec.run = new WebAssembly.Instance(module, this.imports).exports.run;
+      const look = new Uint32Array(this.mem.buffer, meta.lookup, meta.textHi - meta.textLo);
+      meta.blocks.forEach((a, i) => { look[a - meta.textLo] = i + 1; });
+    }
     if (name !== 'EXE' && meta.entry) { this.inits.push(rec); (this.initOrder || (this.initOrder = [])).push(rec); }
     return rec;
   }
