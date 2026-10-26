@@ -26,7 +26,10 @@ function load() {
     closeWin: w => { wins = wins.filter(x => x !== w); }, activate: () => {}, notepad: p => wins.push({ title: `${p} - Notepad` }),
     runCommand: () => wins.push({ title: 'MS-DOS Prompt' }), openPath: p => wins.push({ title: p }), netBoot: async () => {},
     windows: () => wins, screen: () => ({ width: 640, height: 480 }), key: () => {}, netUp: () => false, holdSaver: on => { ui.held = on; },
-    gfx: {}, icon: 'app',
+    gfx: {}, icon: 'app', popup: () => {}, on: () => {},
+    DialogBody: class { constructor(c) { this.c = c; } key() { return false; } },
+    Win: class { constructor(o) { Object.assign(this, o); } },
+    openWin: w => { dialogs.push({ title: w.title, ctrls: w.body.c, menu: w.menu }); wins.push(w); return w; },
   };
   return { ccd: window.W95Ccd(ui), ui, events, boxes, dialogs, files, wins: () => wins };
 }
@@ -73,7 +76,8 @@ assert.deepEqual(plain(ccd.state().sessions[0].plan.map(p => p.status)), ['compl
 
 // the next-step box: its buttons are the window's, pressed by name; the answer is ccd.answer and the user's message
 assert.match(await ccd.turn.wrap_up({ recap: 'Done.', ask: 'Deploy it?', actions: [{ label: 'Deploy', message: 'Deploy to production.' }, { label: 'Not now' }], blocked: true }), /^Shown in the next-step box/);
-const btns = dialogs[0].ctrls.filter(c => c.type === 'button');
+const btns = dialogs[0].ctrls.filter(c => c.type === 'button' && c.w === 106);   // (the next-step box's)
+assert.deepEqual(plain(dialogs[0].menu.map(m => m.label)), ['&File', '&Edit', '&View', '&Go', '&Window', '&Help'], 'the app\'s menu bar');
 assert.deepEqual(plain(btns.map(b => [b.label, b.hidden])), [['Deploy', false], ['Not now', false]]);
 assert.equal(ccd.state().sessions[0].state, 'waiting');
 btns[0].fn();
@@ -133,8 +137,11 @@ assert.equal(JSON.parse(await ccd.sidebar.set_view({ sort_by: 'alpha' })).sort_b
 
 // panes, windows, host, directory, connectors, pr
 assert.match(await ccd.view.show_pane({ pane: 'file', path: 'C:\\README.TXT' }), /in Notepad/);
-assert.match(await ccd.view.close_pane({ pane: 'file' }), /Closed the file pane/);
-assert.match(await ccd.view.show_pane({ pane: 'diff' }), /no diff pane/);
+assert.match(await ccd.view.show_pane({ pane: 'diff' }), /Showing the Changes pane/);
+assert.match(await ccd.view.show_pane({ pane: 'plan' }), /Showing the Plan pane/);
+assert.deepEqual(plain(JSON.parse(await ccd.view.get_layout()).open_panes), ['diff', 'plan']);
+assert.match(await ccd.view.close_pane({ pane: 'diff' }), /Closed the Changes pane/);
+assert.match(await ccd.view.show_pane({ pane: 'pr' }), /no pr pane/);
 assert.match(await ccd.window.set_sidebar_collapsed({ collapsed: true }), /collapsed/);
 assert.equal(dialogs[0].ctrls[0].hidden, true, 'the sidebar hides');
 assert.match(await ccd.host.request_keep_awake({ until: 'turn_end', reason: 'build' }), /screen saver/); assert.equal(ui.held, true);

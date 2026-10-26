@@ -4896,7 +4896,8 @@ const ccdUi = () => ({
   W95Win32, fs, emit, dirty, dialog, msgBox, openWin, closeWin, activate, notepad, runCommand, openPath, netBoot,
   windows: () => windows, screen: script.screen, key: script.key, netUp: () => !!(netUp && netUp.alive), icon: 'app',
   holdSaver: on => { saverHeld = !!on; if (on) lastInput = performance.now(); },
-  gfx: { K, fill, field, text, esc, wrap, textW, ellipsis, btnUp, btnDown, focusRect },
+  gfx: { K, fill, field, text, esc, wrap, textW, ellipsis, btnUp, btnDown, focusRect, clip: (x, y, w, h, f) => { ctx.save(); ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip(); try { f(); } finally { ctx.restore(); } } },
+  Win, DialogBody, popup: openPopup, on: script.on,
 });
 window.win95 = { ...script, get ccd() { return ccdApi || (ccdApi = window.W95Ccd ? window.W95Ccd(ccdUi()) : null); }, get nativeApps() { return [...nativeApps]; }, startSystem, get sysApp() { return sysApp; }, netBoot, netCall, syncNetDrives, mapNetDrive, disconnectNetDrive, fs, render, displayProperties, startFullSaver, get fullSaver() { return fullSaver; }, properties, driveProps, openFolder, openPath, shellOpen, notepad, msgBox, runDialog, findComputer, findFiles, winHelp, shutDownDialog, MyComputer, get state() { return { menus: menus.length, menuSrc, modals: modals.length, cap: !!cap, drag: !!drag, screen, active: active && active.title }; } };
 })();

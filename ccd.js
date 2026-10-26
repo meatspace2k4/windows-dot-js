@@ -143,8 +143,22 @@
     };
 
     // ---------------------------------------------------------------- the Claude window
-    let win = null;
-    const W = 600, H = 400, SIDE = 176;
+    // Laid out as the app's Code tab is (its rendered page: the sidebar; the chat column with the session header,
+    // the transcript and the composer over its footer; the panes stacked at the right), at Windows 95's scale
+    let win = null, body = null;
+    const CR = () => (body && body.r ? body.r : { x: 0, y: 0, w: 640, h: 420 });
+    const SBW = 172, HEAD = 30, PROMPT = 28, FOOT = 24;
+    let panesOpen = [], tscroll = 0, navBack = [], navFwd = [], railOpen = false;
+    const sideW = () => (sidebarCollapsed ? 0 : SBW);
+    // (the chat column takes a third of what the sidebar leaves, as the app's, but never under 300 pixels)
+    const paneX = () => (panesOpen.length ? Math.min(CR().w - 160, sideW() + Math.max(300, Math.round((CR().w - sideW()) * 0.34))) : CR().w);
+    const chatX = () => sideW() + 4, chatW = () => paneX() - sideW() - 8;
+    const cur = () => byId(shown) || self;
+    const boxH = () => (cur().next ? (cur().next.ask ? 78 : 50) : 0);   // (recap; question; buttons)
+    const MODE_LABEL = { default: 'Ask permissions', acceptEdits: 'Edit automatically', plan: 'Plan mode', auto: 'Auto', bypassPermissions: 'Bypass permissions' };
+    const PANE_TITLE = { terminal: 'Terminal', diff: 'Changes', preview: 'Preview', files: 'Files', side_chat: 'Side Chat', plan: 'Plan', tasks: 'Tasks' };
+    const ago = t => { const s = (now() - t) / 1000; return s < 60 ? 'Just now' : s < 3600 ? `${Math.floor(s / 60)}m ago` : s < 86400 ? `${Math.floor(s / 3600)}h ago` : new Date(t).toLocaleDateString(); };
+    const popup = (items, x, y) => ui.popup(items, x, y);
     const visibleSessions = () => {
       let l = st.sessions.filter(s => (st.view.status === 'all' ? true : st.view.status === 'archived' ? s.archived : !s.archived));
       const by = { recency: (a, b) => b.active - a.active, alpha: (a, b) => a.title.localeCompare(b.title), created: (a, b) => b.created - a.created }[st.view.sort_by || 'recency'];
@@ -153,80 +167,305 @@
       const head = t => rows.push({ label: t, depth: 0, path: null, head: true });
       if (pinned.length) { head('Pinned'); pinned.forEach(s => rows.push({ label: s.title, depth: 1, path: s.id, s })); }
       for (const g of st.groups) { const in_ = rest.filter(s => s.group === g.id); if (in_.length) { head(g.name); in_.forEach(s => rows.push({ label: s.title, depth: 1, path: s.id, s })); } }
-      head('Sessions'); rest.filter(s => !s.group || !st.groups.some(g => g.id === s.group)).forEach(s => rows.push({ label: s.title, depth: 1, path: s.id, s }));
+      head('Recents'); rest.filter(s => !s.group || !st.groups.some(g => g.id === s.group)).forEach(s => rows.push({ label: s.title, depth: 1, path: s.id, s }));
       return rows;
     };
     const DOT = { working: '#0000a8', waiting: '#a8a800', failed: '#a80000', idle: null };
+    // the sidebar: New session, the pinned sessions, each group's, the recents (the filter at their heading), the
+    // account at its foot; a row's menu on the right button. Its rows are the elements tree's outline items
+    const sessionMenu = s => [
+      { label: s.pinned ? 'Unpin' : 'Pin', fn: () => api.sidebar.set_pinned({ session_id: s.id, pinned: !s.pinned }) },
+      { label: s.unread ? 'Mark as read' : 'Mark as unread', fn: () => api.sidebar.set_unread({ session_id: s.id, unread: !s.unread }) },
+      { label: 'Rename...', fn: () => renameDialog(s) },
+      { label: 'Move to group', sub: [...st.groups.map(g => ({ label: g.name, check: s.group === g.id, fn: () => api.sidebar.move_sessions({ session_ids: [s.id], group_id: g.id }) })), { label: 'Ungrouped', check: !s.group, fn: () => api.sidebar.move_sessions({ session_ids: [s.id], section_id: 'sessions' }) }] },
+      { sep: true },
+      { label: 'Export transcript', fn: () => api.session_mgmt.export_transcript({ session_id: s.id }) },
+      { label: s.archived ? 'Unarchive' : 'Archive', disabled: s === self, fn: () => (s.archived ? api.session_mgmt.unarchive_session({ session_id: s.id }) : api.session_mgmt.archive_session({ session_id: s.id })).catch(() => {}) },
+      { label: 'Delete', disabled: s === self, fn: () => api.session_mgmt.delete_session({ session_ids: [s.id] }).catch(() => {}) },
+    ];
+    const filterMenu = () => [
+      { label: 'Group by', sub: ['none', 'date', 'state', 'custom'].map(v => ({ label: v[0].toUpperCase() + v.slice(1), check: st.view.group_by === v, fn: () => api.sidebar.set_view({ group_by: v }) })) },
+      { label: 'Sort by', sub: [['recency', 'Recent activity'], ['alpha', 'Name'], ['created', 'Date created']].map(([v, l]) => ({ label: l, check: st.view.sort_by === v, fn: () => api.sidebar.set_view({ sort_by: v }) })) },
+      { label: 'Show', sub: [['active', 'Active'], ['archived', 'Archived'], ['all', 'All']].map(([v, l]) => ({ label: l, check: st.view.status === v, fn: () => api.sidebar.set_view({ status: v }) })) },
+      { sep: true }, { label: 'New group...', fn: () => nameDialog('New Group', '', n => api.sidebar.create_group({ name: n })) },
+    ];
     const sidebar = {
-      type: 'custom', x: 6, y: 6, w: SIDE, h: H - 12, list: [], top: 0, sel: null, open: new Set(),
+      type: 'custom', x: 0, y: 0, get w() { return SBW - 2; }, get h() { return CR().h; }, list: [], top: 0, sel: null, open: new Set(),
       get hidden() { return sidebarCollapsed; },
       draw(a, foc, w) {
         const g = ui.gfx; g.field(a.x, a.y, a.w, a.h);
-        this.inner = { x: a.x + 2, y: a.y + 2, w: a.w - 4, h: a.h - 4 }; this.list = visibleSessions(); this.sel = shown;
+        this.inner = { x: a.x + 2, y: a.y + 2, w: a.w - 4, h: a.h - 4 - 24 };
+        this.list = [{ label: 'New session', depth: 0, path: '@new' }, ...visibleSessions()]; this.sel = shown;
+        const fit = Math.floor(this.inner.h / 17); this.top = Math.max(0, Math.min(this.top, this.list.length - fit));
         this.list.forEach((r, i) => {
-          const y = this.inner.y + (i - this.top) * 17 + 1; if (y + 16 > this.inner.y + this.inner.h) return;
-          if (r.head) { g.text(g.esc(r.label), this.inner.x + 4, y + 2, g.K.sh, true); return; }
+          const y = this.inner.y + (i - this.top) * 17 + 1; if (y < this.inner.y || y + 16 > this.inner.y + this.inner.h) return;
+          if (r.head) { g.text(g.esc(r.label), this.inner.x + 4, y + 2, g.K.sh, true); if (r.label === 'Recents') g.text('...', this.inner.x + this.inner.w - 18, y + 1, g.K.sh, true); return; }
+          if (r.path === '@new') { g.text('+', this.inner.x + 8, y + 2, g.K.dk, true); g.text('New session', this.inner.x + 22, y + 2, g.K.dk); return; }
           const on = r.path === shown, lbl = g.ellipsis(g.esc(r.label), this.inner.w - 40), tx = this.inner.x + 2 + r.depth * 19;
           const dot = r.s.unread ? '#0000ff' : DOT[r.s.state];
           if (dot) g.fill(tx + 4, y + 5, 6, 6, dot);
           if (on) g.fill(tx + 18, y + 1, g.textW(lbl) + 4, 14, w.isActive ? g.K.sel : g.K.face);
           g.text(lbl, tx + 20, y + 2, on && w.isActive ? g.K.hl : r.s.archived ? g.K.sh : g.K.dk);
         });
+        const uy = a.y + a.h - 24;
+        g.btnUp(a.x + 2, uy, a.w - 4, 22); g.text(g.ellipsis(g.esc((window.W95HOST && window.W95HOST.userName) || 'User'), a.w - 40), a.x + 8, uy + 4);
+        this.userR = { x: a.x + 2, y: uy, w: a.w - 4, h: 22 };
       },
-      down(x, y) { const i = this.top + Math.floor((y - this.inner.y) / 17), r = this.list[i]; if (r && r.path) { show(r.path); const s = byId(r.path); if (s.unread) { s.unread = false; save('sessions'); } } return null; },
+      down(x, y, btn, dbl, a) {
+        if (this.userR && y >= this.userR.y) { popup([{ label: 'Settings...', fn: settingsDialog }, { label: 'Keyboard Shortcuts', fn: shortcutsBox }, { sep: true }, { label: 'About Claude', fn: aboutBox }], x, this.userR.y); return null; }
+        const i = this.top + Math.floor((y - this.inner.y) / 17), r = this.list[i]; if (!r) return null;
+        if (r.head) { if (r.label === 'Recents') popup(filterMenu(), x, y); return null; }
+        if (r.path === '@new') { newSession(); return null; }
+        if (btn === 2) { popup(sessionMenu(r.s), x, y); return null; }
+        show(r.path); if (r.s.unread) { r.s.unread = false; save('sessions'); }
+        return null;
+      },
       key(e) {
-        const ids = this.list.filter(r => r.path).map(r => r.path), k = ids.indexOf(shown);
+        const ids = this.list.filter(r => r.path && r.path !== '@new').map(r => r.path), k = ids.indexOf(shown);
         if (e.key === 'ArrowDown' && k < ids.length - 1) { show(ids[k + 1]); return true; }
         if (e.key === 'ArrowUp' && k > 0) { show(ids[k - 1]); return true; }
         return false;
       },
     };
-    const BOX = 92;   // the next-step box's height
-    const pane = {
-      type: 'custom', get x() { return sidebarCollapsed ? 6 : SIDE + 12; }, y: 6, get w() { return W - this.x - 6; }, h: H - 12 - BOX - 6,
+    // ---- the session header: the sidebar's button, back and forward, the session's title (its menu), the session
+    // rail (its chapters) and the view options
+    const hb = (label, x, fn, o = {}) => ({ type: 'button', label, get x() { return x(); }, y: 4, w: o.w || 22, h: 22, fn, ...o });
+    const viewMenu = () => [
+      { label: 'Transcript view', sub: ['normal', 'thinking', 'verbose'].map(v => ({ label: v[0].toUpperCase() + v.slice(1), check: cur().view === v, fn: () => { cur().view = v; save('sessions'); ui.dirty(); } })) },
+      { sep: true },
+      ...['terminal', 'diff', 'preview', 'files', 'side_chat', 'plan', 'tasks'].map(p => ({ label: `${panesOpen.includes(p) ? 'Hide' : 'Show'} ${PANE_TITLE[p]}`, fn: () => togglePane(p) })),
+      { label: 'Close Pane', disabled: !panesOpen.length, fn: () => closePane() },
+    ];
+    const titleCtl = {
+      type: 'custom', get x() { return sideW() + 108; }, y: 4, get w() { return Math.max(40, chatW() - 108 - 64); }, h: 22,
+      draw(a) { const g = ui.gfx; g.text(g.ellipsis(g.esc(cur().title), a.w - 16, true), a.x + 4, a.y + 5, g.K.dk, true); g.text('v', a.x + a.w - 10, a.y + 5, g.K.sh); },
+      down(x) { popup([...st.sessions.filter(s => !s.archived).slice(-12).reverse().map(s => ({ label: s.title.replace(/&/g, '&&').slice(0, 48), check: s.id === shown, fn: () => show(s.id) })), { sep: true }, { label: 'Rename...', fn: () => renameDialog(cur()) }, { label: 'New Session', fn: newSession }], x, this.y + 26 + CR().y); return null; },
+    };
+    const header = [
+      hb('Sidebar', () => sideW() + 4, () => setSidebar(!sidebarCollapsed), { w: 52 }),
+      hb('<', () => sideW() + 58, () => goBack(), { get disabled() { return !navBack.length; } }),
+      hb('>', () => sideW() + 82, () => goFwd(), { get disabled() { return !navFwd.length; } }),
+      titleCtl,
+      hb('Rail', () => paneX() - 4 - 30 - 30, () => { railOpen = !railOpen; ui.dirty(); }, { w: 28 }),
+      hb('View', () => paneX() - 4 - 30, () => popup(viewMenu(), sideW() + chatW() - 120, HEAD + CR().y), { w: 30 }),
+    ];
+    // ---- the transcript: the user's messages as bubbles at the right, Claude's as text, tool calls as one row each
+    // (their input too in the verbose view), chapters as dividers; each message with its actions; the task list and
+    // the working line at the end
+    const transcript = {
+      type: 'custom', get x() { return chatX(); }, y: HEAD, get w() { return chatW(); }, get h() { return CR().h - HEAD - PROMPT - FOOT - boxH() - 10; }, hits: [],
       draw(a) {
-        const g = ui.gfx, s = byId(shown) || self; g.field(a.x, a.y, a.w, a.h);
-        let y = a.y + 6; const x = a.x + 8, tw = a.w - 16;
-        const line = (t, o = {}) => { for (const l of g.wrap(g.esc(t), tw - (o.indent || 0))) { if (y + 13 > a.y + a.h - 4) return; g.text(l, x + (o.indent || 0), y, o.color || g.K.dk, !!o.bold); y += 13; } };
-        line(s.title, { bold: true }); line(`${s.state}${s.archived ? ', archived' : ''} \u00b7 ${s.cwd}`, { color: g.K.sh }); y += 4;
+        const g = ui.gfx, s = cur(), tw = a.w - 24; g.field(a.x, a.y, a.w, a.h);
+        const blocks = [];   // { h, draw(y) } from the top
+        const act = (labels, fns) => ({ h: 16, draw: y => { let x = a.x + 10; labels.forEach((l, k) => { const w = g.textW(l); g.text(l, x, y + 1, g.K.sh); hit(x, y, w, 14, fns[k]); x += w + 12; }); } });
+        for (const [i, m] of s.transcript.entries()) {
+          if (m.role === 'tool' && s.view === 'normal' && m.quiet) continue;
+          if (m.role === 'thinking' && s.view === 'normal') continue;
+          if (m.role === 'user') {
+            const lines = g.wrap(g.esc(m.text), Math.round(tw * 0.75) - 16), bw = Math.min(Math.round(tw * 0.75), Math.max(...lines.map(l => g.textW(l))) + 16);
+            blocks.push({ h: lines.length * 13 + 10, msg: i, draw: y => { const bx = a.x + a.w - 12 - bw; g.fill(bx, y, bw, lines.length * 13 + 8, '#ffffe1'); g.fill(bx, y, bw, 1, g.K.sh); g.fill(bx, y + lines.length * 13 + 7, bw, 1, g.K.sh); g.fill(bx, y, 1, lines.length * 13 + 8, g.K.sh); g.fill(bx + bw - 1, y, 1, lines.length * 13 + 8, g.K.sh); lines.forEach((l, k) => g.text(l, bx + 8, y + 4 + k * 13)); } });
+            blocks.push(act(['Copy', 'Rewind'], [() => copy(m.text), () => rewind(s, i)]));
+          } else if (m.role === 'assistant') {
+            const lines = g.wrap(g.esc(m.text), tw);
+            blocks.push({ h: lines.length * 13 + 4, msg: i, draw: y => lines.forEach((l, k) => g.text(l, a.x + 10, y + k * 13)) });
+            blocks.push(act(['Copy', 'Fork', 'Pin', 'Read aloud', ago(m.t)], [() => copy(m.text), () => fork(s, i), () => pinChapter(s, i), () => readAloud(m.text), () => {}]));
+          } else if (m.role === 'chapter') {
+            blocks.push({ h: 22, msg: i, chapter: m.text, draw: y => { const t = g.esc(m.text), w = g.textW(t, true), cx = a.x + (a.w - w) / 2; g.fill(a.x + 10, y + 9, cx - a.x - 16, 1, g.K.sh); g.fill(cx + w + 6, y + 9, a.x + a.w - 16 - cx - w - 6, 1, g.K.sh); g.text(t, cx, y + 3, g.K.sh, true); } });
+          } else if (m.role === 'tool' || m.role === 'thinking') {
+            const t = g.ellipsis(g.esc(`${m.role === 'thinking' ? 'Thinking' : '>'} ${m.text}`), tw - 8), more = s.view === 'verbose' && m.detail ? g.wrap(g.esc(m.detail), tw - 20).slice(0, 8) : [];
+            blocks.push({ h: 17 + more.length * 13, msg: i, draw: y => { g.btnUp(a.x + 8, y, tw, 16); g.text(t, a.x + 12, y + 2, g.K.sh); more.forEach((l, k) => g.text(l, a.x + 18, y + 18 + k * 13, g.K.sh)); } });
+          } else blocks.push({ h: 15, msg: i, draw: y => g.text(g.ellipsis(g.esc(m.text), tw), a.x + 10, y, g.K.sh) });
+          blocks.push({ h: 6, draw: () => {} });
+        }
         if (s.plan.length) {
-          line('Tasks', { bold: true });
-          for (const p of s.plan) line(`${p.status === 'completed' ? '[x]' : p.status === 'in_progress' ? '[>]' : '[ ]'} ${p.content}${p.session ? ` (${p.session})` : ''}`, { indent: 6 });
-          y += 4;
+          const done = s.plan.filter(p => p.status === 'completed').length;
+          blocks.push({ h: 16, draw: y => g.text(`Tasks  ${done}/${s.plan.length}`, a.x + 10, y, g.K.dk, true) });
+          for (const p of s.plan) blocks.push({ h: 14, draw: y => { const mark = p.status === 'completed' ? '[x]' : p.status === 'in_progress' ? '[>]' : '[ ]'; g.text(g.ellipsis(g.esc(`${mark} ${p.content}${p.session ? ` (${p.session})` : ''}`), tw - 10), a.x + 18, y, p.status === 'completed' ? g.K.sh : g.K.dk, p.status === 'in_progress'); } });
+          blocks.push({ h: 6, draw: () => {} });
         }
-        const msgs = s.transcript.filter(m => s.view !== 'normal' || m.role !== 'tool');
-        if (msgs.length) {
-          line('Transcript', { bold: true });
-          const fit = Math.max(1, Math.floor((a.y + a.h - y) / 14));
-          for (const m of msgs.slice(-fit)) line(m.role === 'chapter' ? `\u2014 ${m.text} \u2014` : `${m.role}: ${m.text}`, { indent: 6, color: m.role === 'chapter' ? g.K.sh : g.K.dk, bold: m.role === 'chapter' });
+        if (s.state === 'working') blocks.push({ h: 18, draw: y => g.text(`Working\u2026  ${Math.round((now() - s.active) / 1000)}s`, a.x + 10, y + 2, '#0000a8') });
+        if (!blocks.length) blocks.push({ h: 16, draw: y => g.text('Type a message to start.', a.x + 10, y, g.K.sh) });
+        // from the bottom, scrolled up by tscroll pixels
+        const total = blocks.reduce((n, b) => n + b.h, 0), view = a.h - 8;
+        tscroll = Math.max(0, Math.min(tscroll, total - view)); this.total = total;
+        let y = a.y + 4 + (total > view ? view - total + tscroll : 0);
+        this.hits = []; this.marks = [];
+        const hit = (x, y2, w, h, fn) => this.hits.push({ x, y: y2, w, h, fn });
+        ui.gfx.clip(a.x + 2, a.y + 2, a.w - 4, a.h - 4, () => { for (const b of blocks) { if (b.chapter) this.marks.push({ title: b.chapter, off: y - a.y }); if (y + b.h > a.y && y < a.y + a.h) b.draw(y); y += b.h; } });
+        if (railOpen) {   // the session rail: the chapters, each a place to go to
+          const rw = 140, rx = a.x + a.w - rw - 4; g.btnUp(rx, a.y + 4, rw, Math.min(a.h - 8, 20 + this.marks.length * 15));
+          g.text('Chapters', rx + 6, a.y + 7, g.K.dk, true);
+          this.marks.forEach((m, k) => { const ty = a.y + 22 + k * 15; g.text(g.ellipsis(g.esc(m.title), rw - 12), rx + 6, ty); hit(rx, ty, rw, 15, () => { tscroll += m.off - 20; railOpen = false; }); });
+          if (!this.marks.length) g.text('No chapters', rx + 6, a.y + 22, g.K.sh);
         }
+        if (tscroll > 0) { const jx = a.x + a.w - 110, jy = a.y + a.h - 24; g.btnUp(jx, jy, 96, 18); g.text('Jump to latest', jx + 8, jy + 3); hit(jx, jy, 96, 18, () => { tscroll = 0; }); }
+      },
+      down(x, y) { const h = this.hits.find(r => x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h); if (h) { h.fn(); ui.dirty(); } return null; },
+      key(e) {
+        const page = Math.max(40, this.h - 40);
+        if (e.key === 'PageUp' || e.key === 'ArrowUp') { tscroll += e.key === 'PageUp' ? page : 26; return true; }
+        if (e.key === 'PageDown' || e.key === 'ArrowDown') { tscroll = Math.max(0, tscroll - (e.key === 'PageDown' ? page : 26)); return true; }
+        if (e.key === 'End') { tscroll = 0; return true; }
+        return false;
       },
     };
+    // ---- the next-step box (its recap and question; its one or two buttons below)
     const box = {
-      // (its height stops above its buttons, so a press there reaches them: it is drawn the whole BOX high)
-      type: 'custom', get x() { return pane.x; }, y: H - 6 - BOX, get w() { return pane.w; }, h: BOX - 36,
+      // (its height stops above its buttons, so a press there reaches them: it is drawn the whole box high)
+      type: 'custom', get x() { return chatX(); }, get y() { return CR().h - FOOT - PROMPT - 6 - boxH(); }, get w() { return chatW(); }, get h() { return Math.max(0, boxH() - 28); },
+      get hidden() { return !cur().next; },
       draw(a) {
-        const g = ui.gfx, s = byId(shown) || self, n = s.next; g.btnUp(a.x, a.y, a.w, BOX);
-        if (!n) { g.text('No next step', a.x + 8, a.y + 8, g.K.sh); return; }
-        let y = a.y + 6;
-        for (const l of g.wrap(g.esc(n.recap), a.w - 16).slice(0, n.ask ? 3 : 5)) { g.text(l, a.x + 8, y); y += 13; }
-        if (n.ask) g.text(g.ellipsis(g.esc(n.ask), a.w - 16, true), a.x + 8, y + 2, g.K.dk, true);
+        const g = ui.gfx, n = cur().next; if (!n) return; g.btnUp(a.x, a.y, a.w, boxH() - 2);
+        let y = a.y + 5;
+        for (const l of g.wrap(g.esc(n.recap), a.w - 16).slice(0, n.ask ? 2 : 3)) { g.text(l, a.x + 8, y); y += 13; }
+        if (n.ask) g.text(g.ellipsis(g.esc(n.ask), a.w - 16, true), a.x + 8, a.y + 34, g.K.dk, true);
       },
     };
-    // the next-step box's buttons and a card's: real buttons, so win95.click({ name }) presses them
+    // the next-step box's buttons: real buttons, so win95.click({ name }) presses them
     const actBtn = i => ({
-      type: 'button', h: 23, get x() { return box.x + box.w - 8 - (2 - i) * 112 + (this.solo ? 112 : 0); }, y: H - 6 - 31, w: 106, label: '',
-      get hidden() { const n = (byId(shown) || self).next; return !(n && n.actions && n.actions[i]); },
-      get solo() { const n = (byId(shown) || self).next; return i === 0 && !!(n && n.actions && n.actions.length === 1); },
-      fn: () => answer(byId(shown) || self, i),
+      type: 'button', h: 23, get x() { const n = cur().next, k = n && n.actions ? n.actions.length : 0; return chatX() + chatW() - 8 - (k - i) * 112; }, get y() { return CR().h - FOOT - PROMPT - 6 - 29; }, w: 106, label: '',
+      get hidden() { const n = cur().next; return !(n && n.actions && n.actions[i]); },
+      fn: () => answer(cur(), i),
     });
     const btns = [actBtn(0), actBtn(1)];
-    const refreshLabels = () => { const n = (byId(shown) || self).next; btns.forEach((b, i) => { b.label = n && n.actions && n.actions[i] ? (n.actions[i].label || n.actions[i].action || 'OK').replace(/&/g, '&&') : ''; b.def = i === 0; }); };
-    function show(id) { shown = id; refreshLabels(); if (win) ui.dirty(); }
+    // ---- the composer: Add, the prompt, Send; under it the permission mode, the model and effort, the usage
+    const prompt = { type: 'edit', get x() { return chatX() + 28; }, get y() { return CR().h - FOOT - PROMPT; }, get w() { return chatW() - 28 - 56; }, h: 24, value: '', caret: 0, focus: true };
+    const placeholder = { type: 'custom', get x() { return prompt.x; }, get y() { return prompt.y; }, w: 0, h: 0, draw: a => { if (!prompt.value) ui.gfx.text(cur().state === 'working' ? 'Enter to send, it is queued for later' : 'Type / for commands', a.x + 4, a.y + 6, ui.gfx.K.sh); } };
+    const addBtn = { type: 'button', label: '+', get x() { return chatX(); }, get y() { return prompt.y; }, w: 24, h: 24, fn: () => popup([
+      { label: 'Add folder...', fn: () => api.directory.request_directory({}).catch(() => {}) },
+      { label: 'Plan mode', check: cur().permissionMode === 'plan', fn: () => setMode(cur().permissionMode === 'plan' ? 'default' : 'plan') },
+      { sep: true }, { label: 'Clear conversation', fn: () => send('/clear') },
+    ], chatX() + CR().x, prompt.y + CR().y - 70) };
+    const sendBtn = { type: 'button', label: 'Send', def: true, get x() { return chatX() + chatW() - 52; }, get y() { return prompt.y; }, w: 52, h: 24, fn: () => send(prompt.value) };
+    const modeBtn = { type: 'button', get label() { return MODE_LABEL[cur().permissionMode] || cur().permissionMode; }, get x() { return chatX(); }, get y() { return CR().h - FOOT + 1; }, w: 118, h: 21,
+      fn: () => popup(Object.entries(MODE_LABEL).map(([m, l]) => ({ label: l, check: cur().permissionMode === m, fn: () => setMode(m) })), chatX() + CR().x, CR().h - FOOT - 100 + CR().y) };
+    const MODELS = [['claude-opus-5-5', 'Opus 5.5'], ['claude-sonnet-5-5', 'Sonnet 5.5'], ['claude-haiku-5-5', 'Haiku 5.5'], ['claude-fable-5-1', 'Fable 5.1']];
+    const modelName = id => (MODELS.find(m => m[0] === id) || [id, id])[1];
+    const modelCtl = {
+      type: 'custom', get x() { return chatX() + chatW() - 190; }, get y() { return CR().h - FOOT + 1; }, w: 160, h: 21,
+      draw(a) { const g = ui.gfx, s = cur(), t = `${modelName(s.model)}  ${s.effort[0].toUpperCase()}${s.effort.slice(1)}`; g.text(t, a.x + a.w - g.textW(t) - 4, a.y + 4, g.K.dk); },
+      down(x) { const s = cur(); popup([...MODELS.map(([id, n]) => ({ label: n, check: s.model === id, fn: () => { s.model = id; save('sessions'); } })), { sep: true }, ...E.effort.map(e => ({ label: `${e[0].toUpperCase()}${e.slice(1)} effort`, check: s.effort === e, fn: () => { s.effort = e; save('sessions'); } }))], x + CR().x, CR().h - FOOT - 160 + CR().y); return null; },
+    };
+    const usageCtl = {
+      type: 'custom', get x() { return chatX() + chatW() - 26; }, get y() { return CR().h - FOOT + 3; }, w: 22, h: 18,
+      draw(a) { const g = ui.gfx, p = Math.min(1, usage(cur()).percent / 100); g.field(a.x, a.y + 2, a.w, 12); g.fill(a.x + 2, a.y + 4, Math.round((a.w - 4) * p), 8, p > 0.8 ? '#a80000' : '#0000a8'); },
+      down() { const u = usage(cur()); ui.msgBox('Usage', `Context: ${u.tokens} tokens (${u.percent}% of the window).\nPlan limits: not applicable in Windows 95.`, 'info'); return null; },
+    };
+    // ---- the panes, stacked at the right, each with its header (its title; Open in, Copy, Expand, Close)
+    const panes = {
+      type: 'custom', get x() { return paneX(); }, y: 0, get w() { return CR().w - paneX(); }, get h() { return CR().h; }, hits: [],
+      get hidden() { return !panesOpen.length; },
+      draw(a) {
+        const g = ui.gfx; this.hits = []; const hit = (x, y, w, h, fn) => this.hits.push({ x, y, w, h, fn });
+        const ph = Math.floor(a.h / panesOpen.length);
+        panesOpen.forEach((p, k) => {
+          const y0 = a.y + k * ph, h = k === panesOpen.length - 1 ? a.h - k * ph : ph - 2;
+          g.btnUp(a.x, y0, a.w, 24); g.text(PANE_TITLE[p], a.x + 8, y0 + 5, g.K.dk, true);
+          let bx = a.x + a.w - 4;   // (right to left: Close, Expand, Copy)
+          for (const [l, fn] of [['x', () => closePane(p)], ['^', () => { panesOpen = [p]; }], ['Copy', () => copy(paneText(p).join('\n'))]]) {
+            const bw = g.textW(l) + 10; bx -= bw + 2; g.btnUp(bx, y0 + 3, bw, 18); g.text(l, bx + 5, y0 + 5); hit(bx, y0 + 3, bw, 18, fn);
+          }
+          g.field(a.x, y0 + 25, a.w, h - 25);
+          ui.gfx.clip(a.x + 2, y0 + 27, a.w - 4, h - 29, () => paneText(p).forEach((l, i) => { const ty = y0 + 30 + i * 14; g.text(g.ellipsis(g.esc(l), a.w - 16), a.x + 8, ty, i === 0 && p !== 'plan' ? g.K.sh : g.K.dk); if (paneAct[p]) hit(a.x, ty, a.w, 14, () => paneAct[p](i)); }));
+        });
+      },
+      down(x, y) { const h = this.hits.find(r => x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h); if (h) { h.fn(); ui.dirty(); } return null; },
+    };
+    const filesOf = s => { try { return ui.fs.readdir(s.cwd).map(e => (typeof e === 'string' ? e : e.name)); } catch (_) { return []; } };
+    function paneText(p) {
+      const s = cur();
+      if (p === 'plan') return s.plan.length ? s.plan.map(t => `${t.status === 'completed' ? '[x]' : t.status === 'in_progress' ? '[>]' : '[ ]'} ${t.content}`) : ['No plan for this session.'];
+      if (p === 'tasks') { const kids = st.sessions.filter(x => x.startedBy === s.id); return [`${kids.length} session(s) started here`, ...kids.map(x => `${x.title}  (${x.state})`), ...st.cards.map(c => `Card: ${c.title}`)]; }
+      if (p === 'files') return [s.cwd, ...filesOf(s)];
+      if (p === 'diff') return [(s.changes || []).length ? `${s.changes.length} file(s) changed` : 'No changes', ...(s.changes || []).map(c => `${c.op}  ${c.path}`)];
+      if (p === 'terminal') return ['MS-DOS Prompt runs in its own window.', 'Open it'];
+      if (p === 'preview') return ['The screen is the preview: its windows', ...ui.windows().filter(w => !w.min && w !== win).map(w => w.title || '(untitled)')];
+      if (p === 'side_chat') return ['Side chat', ...s.transcript.filter(m => m.side).map(m => `${m.role}: ${m.text}`)];
+      return [];
+    }
+    const paneAct = {
+      files: i => { const s = cur(), f = filesOf(s)[i - 1]; if (f) ui.openPath(`${s.cwd.replace(/\\$/, '')}\\${f}`); },
+      diff: i => { const c = (cur().changes || [])[i - 1]; if (c && ui.fs.exists(c.path)) ui.openPath(c.path); },
+      terminal: i => { if (i === 1) ui.runCommand('COMMAND.COM'); },
+      preview: i => { const w = ui.windows().filter(x => !x.min && x !== win)[i - 1]; if (w) ui.activate(w); },
+    };
+    function togglePane(p) { if (panesOpen.includes(p)) closePane(p); else { panesOpen = [...panesOpen.filter(x => x !== p), p].slice(-2); if (p === 'terminal') ui.runCommand('COMMAND.COM'); } ui.dirty(); }
+    function closePane(p) { panesOpen = p ? panesOpen.filter(x => x !== p) : panesOpen.slice(0, -1); ui.dirty(); }
+    function setSidebar(collapsed) { sidebarCollapsed = collapsed; ui.dirty(); }
+    function setMode(m) { const s = cur(); s.permissionMode = m; save('sessions'); ui.dirty(); }
+    const usage = s => { const tokens = s.transcript.reduce((n, m) => n + Math.ceil(m.text.length / 4), 0); return { tokens, percent: +(tokens / 2e3).toFixed(1) }; };
+    const copy = t => { try { navigator.clipboard.writeText(t); } catch (_) { /* no clipboard here */ } ui.emit('ccd.copy', { text: t }); };
+    const readAloud = t => { try { speechSynthesis.speak(new SpeechSynthesisUtterance(t)); } catch (_) { /* no speech here */ } };
+    function fork(s, i) { const f = fresh({ title: `${s.title} (fork)`, startedBy: s.id, cwd: s.cwd, transcript: s.transcript.slice(0, i + 1).map(m => ({ ...m })) }); st.sessions.push(f); save('sessions'); show(f.id); }
+    function pinChapter(s, i) { nameDialog('Pin as chapter', '', t => { s.transcript.splice(i + 1, 0, { uuid: uid('msg'), t: now(), role: 'chapter', text: t }); s.chapters.push({ title: t, t: now() }); save('sessions'); ui.dirty(); }); }
+    async function rewind(s, i) { if (!await approve('Rewind the conversation to this message? The messages after it are removed.')) return; prompt.value = s.transcript[i].text; prompt.caret = prompt.value.length; s.transcript = s.transcript.slice(0, i); save('sessions'); ui.dirty(); }
+    function newSession() { const s = fresh({ title: 'New session', cwd: self.cwd }); st.sessions.push(s); save('sessions'); show(s.id); openWindow(); return s; }
+    function send(text) {
+      const s = cur(), t = String(text || '').trim(); if (!t) return;
+      prompt.value = ''; prompt.caret = 0; tscroll = 0;
+      if (t === '/clear') { s.transcript = []; s.plan = []; s.next = null; save('sessions'); ui.dirty(); return; }
+      if (t === '/compact') { said(s, 'system', 'Conversation compacted.'); save('sessions'); ui.dirty(); return; }
+      said(s, 'user', t); s.state = 'working'; s.next = null; if (s.title === 'New session') s.title = t.slice(0, 48);
+      save('sessions'); refreshLabels(); ui.dirty();
+      ui.emit('ccd.prompt', { session: s.id, text: t });
+    }
+    function goBack() { if (!navBack.length) return; navFwd.push(shown); shown = navBack.pop(); refreshLabels(); ui.dirty(); }
+    function goFwd() { if (!navFwd.length) return; navBack.push(shown); shown = navFwd.pop(); refreshLabels(); ui.dirty(); }
+    function step(d) { const ids = st.sessions.filter(s => !s.archived).map(s => s.id), k = ids.indexOf(shown); if (ids.length) show(ids[(k + d + ids.length) % ids.length]); }
+    // small dialogs: a name, Rename, Settings, the shortcuts, About
+    function nameDialog(title, value, ok) {
+      let w; const edit = { type: 'edit', x: 12, y: 12, w: 256, h: 21, value, caret: value.length, focus: true, all: true };
+      const done = v => { ui.closeWin(w, true); if (v !== null && v.trim()) ok(v.trim()); };
+      w = ui.dialog(title, 280, 74, [edit, { type: 'button', label: 'OK', x: 112, y: 42, w: 75, h: 23, def: true, fn: () => done(edit.value) }, { type: 'button', label: 'Cancel', x: 193, y: 42, w: 75, h: 23, cancel: true, fn: () => done(null) }], { modal: true });
+    }
+    const renameDialog = s => nameDialog('Rename Session', s.title, t => api.session_mgmt.set_session_title({ session_id: s.id, title: t }));
+    function settingsDialog() {
+      let w; const keys = Object.keys(SETTINGS).filter(k => /true \| false/.test(SETTINGS[k].accepts));
+      const checks = keys.map((k, i) => ({ type: 'check', label: SETTINGS[k].does.replace(/^./, c => c.toUpperCase()), x: 12, y: 12 + i * 20, checked: !!setting(k) }));
+      w = ui.dialog('Claude Code Settings', 420, 52 + keys.length * 20, [...checks,
+        { type: 'button', label: 'OK', x: 252, y: 22 + keys.length * 20, w: 75, h: 23, def: true, fn: () => { keys.forEach((k, i) => { st.settings[k] = !!checks[i].checked; }); save('settings'); ui.closeWin(w, true); } },
+        { type: 'button', label: 'Cancel', x: 333, y: 22 + keys.length * 20, w: 75, h: 23, cancel: true, fn: () => ui.closeWin(w, true) }], { modal: true });
+    }
+    const SHORTCUTS = [['Ctrl+N', 'New session'], ['Ctrl+B', 'Show or hide the sidebar'], ['Ctrl+K', 'Command palette'], ['Ctrl+F', 'Find'], ['Ctrl+Shift+[  ]', 'Previous, next session'], ['Ctrl+Shift+D', 'Changes'], ['Ctrl+Shift+P', 'Preview'], ['Ctrl+Shift+F', 'Files'], ['Ctrl+;', 'Side chat'], ['Ctrl+\\', 'Close pane'], ['Ctrl+W', 'Close window']];
+    const shortcutsBox = () => ui.msgBox('Keyboard Shortcuts', SHORTCUTS.map(([k, d]) => `${k}\t${d}`).join('\n'), 'info');
+    const aboutBox = () => ui.msgBox('About Claude', 'Claude\nThe desktop app\'s Code tab, in Windows 95.', 'info');
+    function findDialog() {
+      nameDialog('Find', '', q => {
+        const s = cur(), i = s.transcript.findIndex(m => m.text.toLowerCase().includes(q.toLowerCase()));
+        if (i < 0) { ui.msgBox('Find', `Cannot find "${q}"`, 'info'); return; }
+        // scrolled so the message is the one at the bottom
+        const after = s.transcript.slice(i + 1).reduce((n, m) => n + 13 * Math.ceil(m.text.length / 60) + 22, 0); tscroll = after; ui.dirty();
+      });
+    }
+    // the command palette: the menus' commands by name
+    const COMMANDS = () => [['New Session', newSession], ['Show/Hide Sidebar', () => setSidebar(!sidebarCollapsed)], ...['terminal', 'diff', 'preview', 'files', 'side_chat', 'plan', 'tasks'].map(p => [`Toggle ${PANE_TITLE[p]}`, () => togglePane(p)]),
+      ['Close Pane', () => closePane()], ['Previous Session', () => step(-1)], ['Next Session', () => step(1)], ['Find...', findDialog], ['Settings...', settingsDialog], ['Keyboard Shortcuts', shortcutsBox], ['Rename Session...', () => renameDialog(cur())], ['Export Transcript', () => api.session_mgmt.export_transcript({ session_id: shown })]];
+    function palette() { nameDialog('Command Palette', '', q => { const c = COMMANDS().find(([n]) => n.toLowerCase().includes(q.toLowerCase())); if (c) c[1](); else ui.msgBox('Command Palette', `No command matches "${q}"`, 'info'); }); }
+    // the menu bar, as the app's (File, Edit, View, Go, Window, Help)
+    const MENU = [
+      { label: '&File', items: () => [{ label: 'New &Session', acc: 'Ctrl+N', fn: newSession }, { label: 'New Session in New &Window', fn: () => api.window.open_session_in({ session_id: newSession().id, target: 'window' }).catch(() => {}) }, { label: 'New Side &Chat', fn: () => togglePane('side_chat') }, { sep: true },
+        { label: 'Close &Pane', acc: 'Ctrl+\\', disabled: !panesOpen.length, fn: () => closePane() }, { label: 'E&xport Transcript', fn: () => api.session_mgmt.export_transcript({ session_id: shown }) }, { sep: true }, { label: '&Close Window', acc: 'Ctrl+W', fn: () => ui.closeWin(win) }] },
+      { label: '&Edit', items: () => [{ label: '&Find...', acc: 'Ctrl+F', fn: findDialog }, { label: 'Copy &Last Message', fn: () => { const m = [...cur().transcript].reverse().find(x => x.role === 'assistant'); if (m) copy(m.text); } }] },
+      { label: '&View', items: () => [{ label: '&Command Palette...', acc: 'Ctrl+K', fn: palette }, { label: `${sidebarCollapsed ? 'Show' : 'Hide'} Side&bar`, acc: 'Ctrl+B', fn: () => setSidebar(!sidebarCollapsed) }, { sep: true }, ...viewMenu()] },
+      { label: '&Go', items: () => [{ label: '&Back', disabled: !navBack.length, fn: goBack }, { label: '&Forward', disabled: !navFwd.length, fn: goFwd }, { sep: true }, { label: '&Search...', fn: findDialog }, { label: '&Previous Session', acc: 'Ctrl+Shift+[', fn: () => step(-1) }, { label: '&Next Session', acc: 'Ctrl+Shift+]', fn: () => step(1) }] },
+      { label: '&Window', items: () => [...st.sessions.filter(s => !s.archived).slice(-9).map((s, i) => ({ label: `&${i + 1} ${s.title.replace(/&/g, '&&').slice(0, 40)}`, check: s.id === shown, fn: () => show(s.id) }))] },
+      { label: '&Help', items: () => [{ label: '&Keyboard Shortcuts', acc: 'Ctrl+/', fn: shortcutsBox }, { label: '&Settings...', fn: settingsDialog }, { sep: true }, { label: '&About Claude', fn: aboutBox }] },
+    ];
+    const KEYS = {
+      'ctrl+n': newSession, 'ctrl+b': () => setSidebar(!sidebarCollapsed), 'ctrl+k': palette, 'ctrl+f': findDialog, 'ctrl+\\': () => closePane(), 'ctrl+w': () => ui.closeWin(win),
+      'ctrl+shift+[': () => step(-1), 'ctrl+shift+]': () => step(1), 'ctrl+shift+{': () => step(-1), 'ctrl+shift+}': () => step(1), 'ctrl+shift+d': () => togglePane('diff'), 'ctrl+shift+p': () => togglePane('preview'), 'ctrl+shift+f': () => togglePane('files'), 'ctrl+;': () => togglePane('side_chat'), 'ctrl+/': shortcutsBox,
+    };
+    const refreshLabels = () => { const n = cur().next; btns.forEach((b, i) => { b.label = n && n.actions && n.actions[i] ? (n.actions[i].label || n.actions[i].action || 'OK').replace(/&/g, '&&') : ''; }); };
+    function show(id) { if (id !== shown) { navBack.push(shown); navFwd = []; } shown = id; tscroll = 0; refreshLabels(); if (win) ui.dirty(); }
     function openWindow(focus = true) {
       refreshLabels();
       if (win && ui.windows().includes(win)) { if (focus) ui.activate(win); ui.dirty(); return win; }
-      win = ui.dialog('Claude', W, H, [sidebar, pane, box, ...btns], { modal: false, noTask: false, icon: ui.icon || null });
+      body = new ui.DialogBody([sidebar, ...header, transcript, box, ...btns, addBtn, prompt, placeholder, sendBtn, modeBtn, modelCtl, usageCtl, panes]);
+      const keyOf = e => `${e.ctrlKey || e.metaKey ? 'ctrl+' : ''}${e.shiftKey && e.key.length !== 1 ? 'shift+' : e.shiftKey && (e.ctrlKey || e.metaKey) ? 'shift+' : ''}${e.key.toLowerCase()}`;
+      const keyBase = body.key.bind(body);
+      body.key = e => { const f = KEYS[keyOf(e)]; if (f) { f(); ui.dirty(); return true; } return keyBase(e); };
+      const sz = ui.screen(), w = Math.min(sz.width - 20, 760), h = Math.min(sz.height - 50, 520);
+      win = ui.openWin(new ui.Win({ x: Math.max(0, (sz.width - w) >> 1), y: Math.max(0, (sz.height - 30 - h) >> 1), w, h, title: 'Claude', icon: ui.icon || null, minW: 420, minH: 300, menu: MENU, body }));
       win.ccd = true; return win;
     }
     function answer(s, i) {
@@ -488,31 +727,26 @@
         const { sections, ...v } = st.view; return JSON.stringify({ ...v, ...(a.section_id ? { section_shown: true } : {}) });
       },
     };
-    // panes: what each opens in Windows 95, kept so close_pane can close it
-    const panes = new Map();
-    const openedWin = (before) => ui.windows().find(w => !before.includes(w)) || null;
+    // panes: the Claude window's, as the app's (a file is the Files pane's file, opened in Notepad)
+    const PANE_OF = { diff: 'diff', file: 'files', terminal: 'terminal', tasks: 'tasks', plan: 'plan', preview: 'preview' };
     T.view = {
       show_pane(a) {
-        const before = ui.windows().slice();
         if (a.pane === 'file') {
           if (!a.path) not('path is required for the file pane.');
           if (!ui.fs.exists(a.path)) not(`${a.path} does not exist.`);
-          ui.notepad(a.path); panes.set('file', openedWin(before)); return `Opened ${a.path}${a.line ? ` at line ${a.line}` : ''} in Notepad.`;
+          ui.notepad(a.path); return `Opened ${a.path}${a.line ? ` at line ${a.line}` : ''} in Notepad.`;
         }
-        if (a.pane === 'terminal') { ui.runCommand('COMMAND.COM'); panes.set('terminal', openedWin(before)); return 'Opened an MS-DOS Prompt.'; }
-        if (a.pane === 'plan') { show(self.id); openWindow(); panes.set('plan', win); return 'Showing the plan in the Claude window.'; }
-        if (a.pane === 'tasks') { ui.key('ctrl+alt+delete'); return 'Showing the running programs (Close Program).'; }
-        if (a.pane === 'preview') { window.focus(); return 'The Windows 95 screen is in front.'; }
-        return `There is no ${a.pane} pane in Windows 95: nothing shown.`;
+        const p = PANE_OF[a.pane]; if (!p) return `There is no ${a.pane} pane in Windows 95: nothing shown.`;
+        show(self.id); openWindow(false); if (!panesOpen.includes(p)) togglePane(p);
+        return `Showing the ${PANE_TITLE[p]} pane.`;
       },
       close_pane(a) {
-        const w = panes.get(a.pane); panes.delete(a.pane);
-        if (!w || !ui.windows().includes(w)) return `The ${a.pane} pane is not open: nothing to close.`;
-        ui.closeWin(w); return `Closed the ${a.pane} pane.`;
+        const p = PANE_OF[a.pane]; if (!p || !panesOpen.includes(p)) return `The ${a.pane} pane is not open: nothing to close.`;
+        closePane(p); return `Closed the ${PANE_TITLE[p]} pane.`;
       },
       get_layout() {
         const open = win && ui.windows().includes(win);
-        return JSON.stringify({ views: open ? [{ where: splits.length ? 'split' : 'main', window: 'Claude' }] : [], open_panes: [...panes].filter(([, w]) => w && ui.windows().includes(w)).map(([k]) => k), popped_out_panes: [], transcript_view: self.view });
+        return JSON.stringify({ views: open ? [{ where: splits.length ? 'split' : 'main', window: 'Claude' }] : [], open_panes: open ? panesOpen.slice() : [], popped_out_panes: [], transcript_view: self.view });
       },
       set_transcript_view(a) {
         const s = a.session_id ? need(a.session_id) : self; if (s !== self && s.startedBy !== self.id) not('Only this session or a side session it started.');
@@ -630,12 +864,20 @@
             result = await T[server][tool](args);
           } catch (e) { if (!(e instanceof CcdError)) throw e; error = e.message; }
           ui.emit(`ccd.${server}.${tool}`, { args, result: error ? null : result, error });
+          if (server !== 'turn') { said(self, 'tool', `${server}.${tool}${error ? ' (refused)' : ''}`, { detail: `${JSON.stringify(args)}\n${error || (typeof result === 'string' ? result : '')}`.slice(0, 600) }); save('sessions'); ui.dirty(); }
           if (error) throw new CcdError(error);
           return result;
         };
       }
     }
+    // the Changes pane: the files changed while the session works
+    if (ui.on) ui.on('fs', e => {
+      if (self.state !== 'working' || !/^fs\.(write|create|unlink|mkdir|rmdir|rename)$/.test(e.type)) return;
+      const c = self.changes = self.changes || [], op = e.type.slice(3);
+      if (!c.some(x => x.path === e.path && x.op === op)) { c.push({ op, path: e.path }); if (c.length > 200) c.shift(); }
+    });
     api.open = () => openWindow();
+    api.send = text => send(text);
     api.answer = (i = 0) => answer(byId(shown) || self, i);
     api.Error = CcdError;
     api.state = () => JSON.parse(JSON.stringify(st));
