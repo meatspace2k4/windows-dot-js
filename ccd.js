@@ -1089,6 +1089,8 @@
     api.answer = (i = 0) => answer(byId(shown) || self, i);
     // a file's text for the Claude program to attach to a prompt (File > Attach File): C: only, as the files tools read
     api.readC = path => ui.fs.readText(onC(path));
+    // (feedback the Claude program's user wrote, added to a file of C:'s: Help > Send Feedback)
+    api.appendC = (path, text) => { const p = onC(path); ui.fs.writeFile(p, (ui.fs.exists(p) ? ui.fs.readText(p) : '') + text.replace(/\r?\n/g, '\r\n')); return p; };
     // a card's button pressed in the Claude program (a card no call waits for any more, kept from before: Start starts it)
     api.cardAnswer = (taskId, label) => {
       sync(); const f = cardWaits.get(taskId), card = st.cards.find(c => c.task_id === taskId);

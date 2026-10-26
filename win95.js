@@ -3268,6 +3268,7 @@ class RemoteApp extends NativeApp {
         const ccd = window.win95 && window.win95.ccd;
         if (!ccd) { back({ error: 'The Claude app\'s tools are not loaded.' }); return; }
         if (m.name === '@defs') { back({ result: ccd.toolDefs() }); return; }   // (the tools themselves, as the API takes them)
+        if (m.name === '@appendC') { try { back({ result: ccd.appendC(m.args.path, m.args.text) }); } catch (e) { back({ error: e.message }); } return; }   // (feedback written)
         if (m.name === '@readC') { try { back({ result: ccd.readC(m.args.path) }); } catch (e) { back({ error: e.message }); } return; }   // (a file attached to a prompt)
         // what the tools ask the user, asked in the program's own message box (its answer: 'ccdAnswer')
         const asks = this.ccdAsks || (this.ccdAsks = new Map());

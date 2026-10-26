@@ -109,6 +109,7 @@ def claude(h, q):
     effort = q.get('effort') if q.get('effort') in EFFORTS else 'medium'
     h.send_response(200); h.send_header('Content-Type', 'application/x-ndjson'); h.send_header('Cache-Control', 'no-store'); h.end_headers()
     key = api_key()
+    if q.get('info'): line({'t': 'info', 'key': bool(key), 'workspace': bool(workspace_id())}); return   # (the account menu: whether there is a key and a workspace, never either)
     if not key: line({'t': 'error', 'e': f'No API key: set ANTHROPIC_API_KEY or put the key in {KEY_FILE}'}); return
     try:
         ws = workspace_id()

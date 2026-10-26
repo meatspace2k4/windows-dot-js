@@ -18,7 +18,7 @@
   const MODES = [['default', 'Ask permissions'], ['acceptEdits', 'Edit automatically'], ['plan', 'Plan mode'], ['auto', 'Auto'], ['bypassPermissions', 'Bypass permissions']];
   const VIEWS = ['normal', 'thinking', 'verbose'], PANES = ['plan', 'diff', 'tasks', 'files', 'preview'];
   // menu commands past the bar's first ones: models 300+, efforts 310+, modes 320+, views 330+, panes 340+, the rest below
-  const CMD = { EXPORT: 203, ATTACH: 204, COPY_REPLY: 210, FORK: 211, REWIND: 212, CHAPTER: 213, FIND: 214, RENAME: 215, USAGE: 402, TERMINAL: 352, STOP: 372, SETTINGS: 205, SUGGEST: 216, SIDEBAR: 350, HIDE_NESTED: 391, CLOSE_PANE: 351, BACK: 360, FORWARD: 361, PREV: 362, NEXT_SESSION: 363, PIN: 370, ARCHIVE: 371,
+  const CMD = { EXPORT: 203, ATTACH: 204, COPY_REPLY: 210, FORK: 211, REWIND: 212, CHAPTER: 213, FIND: 214, RENAME: 215, USAGE: 402, TERMINAL: 352, STOP: 372, SETTINGS: 205, SUGGEST: 216, ACCOUNT: 403, FEEDBACK: 404, SIDEBAR: 350, HIDE_NESTED: 391, CLOSE_PANE: 351, BACK: 360, FORWARD: 361, PREV: 362, NEXT_SESSION: 363, PIN: 370, ARCHIVE: 371,
     CTX_PIN: 501, CTX_UNREAD: 502, CTX_ARCHIVE: 503, CTX_DELETE: 504, CTX_EXPORT: 505, CTX_UNGROUP: 599, CTX_GROUP: 600 };
   const app = { hwnd: 0, kid: {}, menu: 0, shown: null, dirty: false, bufs: new Map(), rows: [], raw: null, rawView: null, size: [560, 400], attach: [], ofn: null, aborts: {}, stopping: {}, queue: {}, nextSay: null };
 
@@ -294,6 +294,20 @@
     if (id_ === 1 || id_ === 2) { app.settingsOpen = false; U(p, 'EndDialog', [h, id_ === 1 ? 1 : 0]); return 1; }
     return 0;
   });
+  const FEEDBACK_FILE = 'C:\\My Documents\\Claude Feedback.TXT';
+  def('CLAUDE', 'FeedbackProc', 4, function (h, msg, wp) {
+    const p = this;
+    if (msg === 0x110) return 1;
+    if (msg !== 0x111) return 0;
+    const id_ = wp & 0xffff;
+    if (id_ === 1) {
+      const b = sz(p, 'feedback-in', ' '.repeat(8192)); U(p, 'GetDlgItemTextA', [h, 100, b, 8192]); const t = p.readA(b).trim(), s = current();
+      if (t) page('@appendC', { path: FEEDBACK_FILE, text: `${new Date().toISOString()}  ${s ? `${s.title} (${modelName(s.model)}, ${s.effort})` : ''}\n${t}\n\n` })
+        .then(r => { app.note = r.error ? `Feedback not saved: ${r.error}` : `Feedback saved to ${FEEDBACK_FILE}.`; app.dirty = true; });
+    }
+    if (id_ === 1 || id_ === 2) { app.feedbackOpen = false; U(p, 'EndDialog', [h, id_ === 1 ? 1 : 0]); return 1; }
+    return 0;
+  });
   def('CLAUDE', 'Answer', 1, function (r) { if (asking) post({ t: 'ccdAnswer', id: asking.id, yes: r === 6 }); asking = null; return 0; });   // (IDYES)
 
   // ---------------------------------------------------------------- the reply: the Claude API through the page's server
@@ -474,7 +488,8 @@
     sub(pop([[MODES.map(([, n], i) => [320 + i, n]), 'Permission &Mode'], [0, null], [CMD.STOP, 'S&top'], [0, null], [CMD.PIN, '&Pinned'], [CMD.ARCHIVE, '&Archive']]), '&Session');
     sub(pop(MODELS.map(([, n], i) => [300 + i, n])), 'M&odel');
     sub(pop(EFFORTS.map((e, i) => [310 + i, `${e[0].toUpperCase()}${e.slice(1)}`])), 'Effor&t');
-    sub(pop([[CMD.USAGE, '&Usage'], [0, null], [ID.ABOUT, '&About Claude']]), '&Help');
+    sub(pop([[CMD.ACCOUNT, '&Account'], [0, null], [CMD.SETTINGS, '&Settings...'], [CMD.USAGE, '&Usage']]), 'A&ccount');   // (the app's user menu)
+    sub(pop([[CMD.FEEDBACK, 'Send &Feedback...'], [0, null], [ID.ABOUT, '&About Claude']]), '&Help');
     app.menu = bar;
     const h = U(p, 'CreateWindowExA', [0, cls, sz(p, 'title', 'Claude'), 0x10CF0000, 0x80000000, 0x80000000, 560, 400, 0, bar, inst, 0]);
     if (!h) return 0;
@@ -613,6 +628,20 @@
       p.writeA(o.file, '');
       for (const [k, v] of [[0, 76], [4, h], [12, filter], [24, 1], [28, o.file], [32, 260], [44, sz(p, 'ofn-dir', (current() || {}).cwd || 'C:\\')], [48, sz(p, 'ofn-title', 'Attach File')], [52, 0x1000 | 0x800 | 0x4]]) p.w32(o.at + k, v);   // OFN_FILEMUSTEXIST, OFN_PATHMUSTEXIST, OFN_HIDEREADONLY
       U(p, 'PostMessageA', [h, 0x8003, 0, o.at]); return done();
+    }
+    if (c === CMD.ACCOUNT) {   // who the program talks to Claude as: the API key and workspace of this machine's server (whether set, never what)
+      fetch('__claude', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ info: true }) })
+        .then(r => (r.ok ? r.text() : Promise.reject(new Error(`HTTP ${r.status}`)))).then(t => JSON.parse(t.split('\n')[0]))
+        .then(i => { app.note = `Account: the Claude API through this machine's server  ·  API key ${i.key ? 'set' : 'not set'}  ·  workspace ${i.workspace ? 'set' : 'not set'}  ·  no plan limits`; }, e => { app.note = `Account: this page's server has no Claude API (${e.message}).`; })
+        .then(() => { app.dirty = true; });
+      return done();
+    }
+    if (c === CMD.FEEDBACK && !app.feedbackOpen) {   // Send Feedback: a dialog of the program's (WM_APP+4), what is written added to a file on C:
+      app.feedbackOpen = true; app.tplFeedback = app.tplFeedback || dialogTemplate(p, 'Send Feedback', 240, 132, [
+        [0x50000000, 0x0082, 7, 7, 226, 8, -1, '&What worked, or what did not:'],
+        [0x50A11044, 0x0081, 7, 18, 226, 88, 100, ''],                          // EDIT: WS_BORDER|WS_VSCROLL|WS_TABSTOP, ES_MULTILINE|ES_AUTOVSCROLL|ES_WANTRETURN
+        [0x50010001, 0x0080, 129, 111, 50, 14, 1, '&Send'], [0x50010000, 0x0080, 183, 111, 50, 14, 2, 'Cancel']]);
+      U(p, 'PostMessageA', [h, 0x8004, app.tplFeedback, p.thunkFor('CLAUDE', 'FeedbackProc')]); return done();
     }
     if (c === CMD.USAGE) {   // the app's usage meter: what this session's requests used, as the API counted it
       const u = (current() || {}).usage, n = x => x.toLocaleString('en-US');
