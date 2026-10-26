@@ -2913,8 +2913,10 @@ function setupNetwork() {
   const R = W95Win32, infs = (window.W95SYSTEM || {}).infs || {};
   if (!infs['NETNOVEL.INF'] || !infs['NETTRANS.INF'] || !infs['NETCLI.INF'] || !infs['NET.INF']) return;
   const str = v => ({ type: 1, data: W95FS.encode(v + '\0') }), bin = (...b) => ({ type: 3, data: Uint8Array.from(b) });
-  // the user name Setup asks for, which the logon offers (Network\Logon username): the host's account
-  const user = ((window.W95HOST && window.W95HOST.userName) || '').replace(/[^\w.\-$!#%&'(){}^~@]/g, '').slice(0, 20);
+  // the user name Setup asks for, which the logon offers (Network\Logon username): the host's account, or, on a page
+  // that has none (a browser's), a name of its own, as the copy's registered owner has one (setupRegistration): with
+  // none, the logon offered an empty name, OK refused it, and Cancel left the network client logged off
+  const user = ((window.W95HOST && window.W95HOST.userName) || 'User').replace(/[^\w.\-$!#%&'(){}^~@]/g, '').slice(0, 20) || 'User';
   if (user && R.regGet('hklm\\network\\logon', 'username') === undefined) R.regSet('hklm\\network\\logon', 'username', str(user));
   // the providers MPR calls, in order (NetworkProvider\Order's ProviderOrder): the network device installer composes
   // it from the names the clients' INF sections leave under that key (MSNP32); with none, MPR has no network, and
@@ -4605,6 +4607,11 @@ Promise.all(ready).then(() => { resize(); kbd.focus(); dirty(); });
 // Window, menu and screen saver events come from comparing the shell's state after each change; file system
 // events come straight from the file system.
 const listeners = new Map();
+// there is no user to authenticate: the network logon is accepted with the name Setup gave it and no password as it
+// comes up (and its confirmation of the new, empty password the first time), so the network client is logged on and
+// the logon does not ask again
+const AUTO_LOGON = new Set(['Enter Windows Password', 'Set Windows Password', 'Enter Network Password']);
+listeners.set('window.open', new Set([e => { if (AUTO_LOGON.has(e.title)) setTimeout(() => { const w = findWin(e.title); if (w) { activate(w); pressKey('enter'); } }, 0); }]));
 function emit(type, data = {}) {
   const ev = { type, ...data, t: Date.now() };
   for (const k of [type, type.split('.')[0], '*']) for (const fn of listeners.get(k) || []) { try { fn(ev); } catch (e) { console.error(e); } }
