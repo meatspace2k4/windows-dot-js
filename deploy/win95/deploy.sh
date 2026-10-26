@@ -611,6 +611,8 @@ PLIST
     mv "$LAUNCH_PLIST.tmp" "$LAUNCH_PLIST"
     local dom="gui/$(id -u)"
     launchctl bootout "$dom/${LAUNCH_LABEL}" 2>/dev/null || true
+    # (bootout returns before the service is gone; bootstrapping it while it is still there fails with error 5)
+    while launchctl print "$dom/${LAUNCH_LABEL}" >/dev/null 2>&1; do sleep 0.2; done
     launchctl bootstrap "$dom" "$LAUNCH_PLIST"
     launchctl kickstart -k "$dom/${LAUNCH_LABEL}"
     log_info "Service setup complete!"
