@@ -114,8 +114,8 @@ await rejects(ccd.session.move_to_cloud({ summary: 's' }), /no cloud/);
 assert.match(await ccd.session_mgmt.send_message({ session_id: kid, message: 'Use TTY.DRV' }), /delivery: queued/);
 assert.match(await ccd.session_mgmt.list_events({ session_id: kid }), /From Windows 95: Use TTY.DRV/);
 assert.equal(JSON.parse((await ccd.session_mgmt.search_session_transcripts({ query: 'tty.drv' })).split('\n\n').slice(1).join('\n\n'))[0].sessionId, kid);
-const ex = JSON.parse(await ccd.session_mgmt.export_transcript({ session_id: kid }));
-assert.equal(ex.path, 'C:\\My Documents\\Fix the printer.TXT'); assert.match(files.get(ex.path), /Fix SPOOL32/);
+const ex = await ccd.session_mgmt.export_transcript({ session_id: kid });
+assert.match(ex, /^Exported "Fix the printer"'s transcript "Fix the printer" to C:\\My Documents\\Fix the printer\.TXT \(\d+ KB, \d+ bytes\)/); assert.match(files.get('C:\\My Documents\\Fix the printer.TXT'), /Fix SPOOL32/);
 
 // approvals: declined refuses and changes nothing; approved acts
 await ccd.session_mgmt.stop_session({ session_id: kid });
@@ -141,18 +141,19 @@ assert.match(await ccd.sidebar.move_sessions({ session_ids: ['self', kid], group
 assert.equal(JSON.parse(await ccd.sidebar.list_groups())[0].session_count, 3);   // (this session and the two it started)
 await ccd.sidebar.set_pinned({ session_id: 'self', pinned: true });
 assert.equal(JSON.parse(await ccd.sidebar.list_sections()).find(s => s.id === 'pinned').session_count, 1);
-assert.equal(JSON.parse(await ccd.sidebar.set_view({ sort_by: 'alpha' })).sort_by, 'alpha');
+{ const v = JSON.parse(await ccd.sidebar.set_view({ sort_by: 'alpha' })); assert.equal(v.changed, 1); assert.equal(v.view.sort_by, 'alpha'); }   // (the app's answer: changed, view)
 
 // panes, windows, host, directory, connectors, pr
 assert.match(await ccd.view.show_pane({ pane: 'file', path: 'C:\\README.TXT' }), /in Notepad/);
-assert.match(await ccd.view.show_pane({ pane: 'diff' }), /Showing the Changes pane/);
-assert.match(await ccd.view.show_pane({ pane: 'plan' }), /Showing the Plan pane/);
+assert.match(await ccd.view.show_pane({ pane: 'diff' }), /^Showing the diff pane\.\n\{"views"/);
+assert.match(await ccd.view.show_pane({ pane: 'plan' }), /^Showing the plan pane\./);
 assert.deepEqual(plain(JSON.parse(await ccd.view.get_layout()).open_panes), ['diff', 'plan']);
-assert.match(await ccd.view.close_pane({ pane: 'diff' }), /Closed the Changes pane/);
-assert.match(await ccd.view.show_pane({ pane: 'pr' }), /no pr pane/);
+assert.match(await ccd.view.close_pane({ pane: 'diff' }), /^Closed the diff pane\./);
+await rejects(ccd.view.show_pane({ pane: 'pr' }), /The pull request pane isn't available in this app/);
 assert.match(await ccd.window.set_sidebar_collapsed({ collapsed: true }), /collapsed/);
 assert.equal(dialogs[0].ctrls[0].hidden, true, 'the sidebar hides');
-assert.match(await ccd.host.request_keep_awake({ until: 'turn_end', reason: 'build' }), /screen saver/); assert.equal(ui.held, true);
+assert.match(await ccd.host.request_keep_awake({ until: 'turn_end', reason: 'build' }), /already keeps this computer awake/);   // (the settings hold it through a turn)
+assert.match(await ccd.host.request_keep_awake({ until: 'session_idle', reason: 'build' }), /screen saver/); assert.equal(ui.held, true);
 assert.equal(JSON.parse(await ccd.host.get_storage_usage()).free_bytes, 60);
 await rejects(ccd.host.sync_with_base_branch({}), /no worktree/);
 await rejects(ccd.pr.bind_pr({ url: 'https://github.com/a/b/pull/1' }), /No pull request/);

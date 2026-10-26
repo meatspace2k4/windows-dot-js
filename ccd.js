@@ -869,8 +869,8 @@
         s.detached = true; s.startedBy = null; save('sessions'); return `"${s.title}" is a top-level session now.`;
       },
       set_session_title(a) { const s = need(a.session_id), was = s.title; s.title = String(a.title); save('sessions'); ui.dirty(); return `Renamed session ${s.id} to "${s.title}" (was "${was}").`; },
-      set_session_model(a) { const s = need(a.session_id); if (s === self) not('Refused for this session: ask the user to pick the model in the model menu.'); s.model = a.model; save('sessions'); return `"${s.title}" uses ${a.model} from its next turn.`; },
-      set_session_effort(a) { const s = need(a.session_id); if (s === self) not('Refused for this session.'); s.effort = a.effort; save('sessions'); return `"${s.title}" runs at ${a.effort} effort from its next turn.`; },
+      set_session_model(a) { const s = need(a.session_id); if (s === self) not('Refusing to change this session\'s own model or effort; ask the user to pick it in the model menu.'); s.model = a.model; save('sessions'); return `"${s.title}" uses ${a.model} from its next turn.`; },
+      set_session_effort(a) { const s = need(a.session_id); if (s === self) not('Refusing to change this session\'s own model or effort; ask the user to pick it in the model menu.'); s.effort = a.effort; save('sessions'); return `"${s.title}" runs at ${a.effort} effort from its next turn.`; },
       set_session_fast_mode(a) { const s = need(a.session_id); s.fastMode = a.enabled ? 'on' : 'off'; save('sessions'); return `Fast mode ${s.fastMode} for "${s.title}".`; },
       async set_session_permission_mode(a) {
         const s = need(a.session_id), order = E.mode;
@@ -895,7 +895,8 @@
         try { if (!ui.fs.exists(dir)) ui.fs.mkdir(dir); } catch (_) { /* the drive will say */ }
         const body = s.transcript.map(m => `${new Date(m.t).toISOString()} ${m.role}: ${m.text}`).join('\r\n') + '\r\n';
         ui.fs.writeFile(`${dir}\\${name}`, body);
-        return JSON.stringify({ path: `${dir}\\${name}`, size: body.length });
+        const kb = body.length < 1 << 20 ? `${Math.max(1, Math.round(body.length / 1024))} KB` : `${Math.round(body.length / (1 << 20))} MB`;
+        return `Exported ${s === self ? 'this session\'s' : `"${s.title}"'s`} transcript "${s.title}" to ${dir}\\${name} (${kb}, ${body.length} bytes). The file holds the conversation transcript; nothing was uploaded.`;
       },
       get_usage(a) {
         // (the context the session's last request used, as the API counted it when the Claude program sent it; else estimated)
@@ -916,9 +917,9 @@
     T.sidebar = {
       list_groups() { return JSON.stringify(st.groups.map((g, i) => ({ id: g.id, name: g.name, session_count: st.sessions.filter(s => s.group === g.id).length, order: i }))); },
       create_group(a) { const g = { id: uid('grp'), name: String(a.name).slice(0, 200) }; st.groups.push(g); save('groups'); ui.dirty(); return JSON.stringify({ id: g.id, name: g.name }); },
-      create_section(a) { return T.sidebar.create_group(a); },
+      create_section(a) { const g = JSON.parse(T.sidebar.create_group(a)); return JSON.stringify({ id: g.id, kind: 'manual', name: g.name }); },
       rename_group(a) { const g = st.groups.find(x => x.id === a.group_id); if (!g) not(`No group ${a.group_id}.`); g.name = String(a.name).slice(0, 200); save('groups'); ui.dirty(); return `Renamed the group to "${g.name}".`; },
-      rename_section(a) { if (builtins.some(b => b.id === a.section_id)) not('Built-in sections cannot be renamed.'); return T.sidebar.rename_group({ group_id: a.section_id, name: a.name }); },
+      rename_section(a) { if (builtins.some(b => b.id === a.section_id)) not('Built-in sections cannot be renamed.'); return T.sidebar.rename_group({ group_id: a.section_id, name: a.name }).replace('the group', 'the section'); },
       async delete_group(a) {
         const g = st.groups.find(x => x.id === a.group_id); if (!g) not(`No group ${a.group_id}.`);
         if (!await approve(`Delete the group "${g.name}"? Its sessions move back to Sessions.`)) not('The user declined: the group stays.');
@@ -926,7 +927,7 @@
         st.groups = st.groups.filter(x => x !== g); st.sessions.forEach(s => { if (s.group === g.id) s.group = null; }); save('groups'); save('sessions'); ui.dirty();
         return `Deleted the group; ${n} session(s) moved back to Ungrouped.`;
       },
-      delete_section(a) { if (builtins.some(b => b.id === a.section_id)) not('Built-in sections cannot be deleted.'); return T.sidebar.delete_group({ group_id: a.section_id }); },
+      async delete_section(a) { if (builtins.some(b => b.id === a.section_id)) not('Built-in sections cannot be deleted.'); return (await T.sidebar.delete_group({ group_id: a.section_id })).replace('the group', 'the section').replace('Ungrouped', 'Sessions'); },
       list_sections() {
         const v = st.view.sections || {}, sec = (o, i) => ({ ...o, order: i, session_count: o.id === 'pinned' ? st.sessions.filter(s => s.pinned).length : o.id === 'sessions' ? st.sessions.filter(s => !s.group).length : o.id === 'routines' ? 0 : st.sessions.filter(s => s.group === o.id).length,
           group_by: (v[o.id] || {}).group_by || 'none', sort_by: (v[o.id] || {}).sort_by || 'recency', ascending: false, collapsed: false, shown: true });
@@ -950,12 +951,16 @@
       },
       mark_completed(a) { const s = need(a.session_id); if (s.state === 'waiting' || s.state === 'failed') s.state = 'idle'; s.unread = false; save('sessions'); ui.dirty(); return 'Marked the session completed.'; },
       set_view(a) {
+        let changed = 0;
         if (a.section_id && a.section_id !== 'sessions') {
+          changed = ['group_by', 'sort_by'].filter(k => a[k] !== undefined && ((st.view.sections || {})[a.section_id] || {})[k] !== a[k]).length;
           if (a.status !== undefined || a.last_activity !== undefined) not('status and last_activity are refused with a section_id.');
           st.view.sections = { ...st.view.sections, [a.section_id]: { ...(st.view.sections || {})[a.section_id], ...(a.group_by ? { group_by: a.group_by } : {}), ...(a.sort_by ? { sort_by: a.sort_by } : {}) } };
-        } else for (const k of ['group_by', 'status', 'sort_by', 'last_activity']) if (a[k] !== undefined) st.view[k] = a[k];
+        } else for (const k of ['group_by', 'status', 'sort_by', 'last_activity']) if (a[k] !== undefined && st.view[k] !== a[k]) { st.view[k] = a[k]; changed++; }
         save('view'); ui.dirty();
-        const { sections, ...v } = st.view; return JSON.stringify({ ...v, ...(a.section_id ? { section_shown: true } : {}) });
+        // (as the app answers: how many settings changed, and the view as it stands)
+        const v = { group_by: st.view.group_by, status: st.view.status, sort_by: st.view.sort_by, last_activity: st.view.last_activity || 0 };
+        return JSON.stringify({ changed, view: a.section_id && a.section_id !== 'sessions' ? { ...st.view.sections[a.section_id] } : v, ...(a.section_id ? { section_shown: true } : {}) }, null, 2);
       },
     };
     // panes: the Claude window's, as the app's (a file is the Files pane's file, opened in Notepad)
@@ -967,13 +972,14 @@
           if (!ui.fs.exists(a.path)) not(`${a.path} does not exist.`);
           ui.notepad(a.path); return `Opened ${a.path}${a.line ? ` at line ${a.line}` : ''} in Notepad.`;
         }
-        const p = PANE_OF[a.pane]; if (!p) return `There is no ${a.pane} pane in Windows 95: nothing shown.`;
+        // (as the app answers: what it did, then the layout as get_layout gives it)
+        const p = PANE_OF[a.pane]; if (!p) not(`The ${a.pane === 'pr' ? 'pull request' : a.pane} pane isn't available in this app.\n${T.view.get_layout()}`);
         show(self.id); openWindow(false); if (!panesOpen.includes(p)) togglePane(p);
-        return `Showing the ${PANE_TITLE[p]} pane.`;
+        return `Showing the ${a.pane} pane.\n${T.view.get_layout()}`;
       },
       close_pane(a) {
-        const p = PANE_OF[a.pane]; if (!p || !panesOpen.includes(p)) return `The ${a.pane} pane is not open: nothing to close.`;
-        closePane(p); return `Closed the ${PANE_TITLE[p]} pane.`;
+        const p = PANE_OF[a.pane]; if (p && panesOpen.includes(p)) closePane(p);
+        return `Closed the ${a.pane} pane.\n${T.view.get_layout()}`;
       },
       get_layout() {
         sync();
@@ -986,7 +992,8 @@
       },
       set_transcript_view(a) {
         const s = a.session_id ? need(a.session_id) : self; if (s !== self && s.startedBy !== self.id) not('Only this session or a side session it started.');
-        s.view = a.view; save('sessions'); ui.dirty(); return `"${s.title}" shows the ${a.view} view.`;
+        s.view = a.view; save('sessions'); ui.dirty();
+        return `${s === self ? 'This session\'s' : `"${s.title}"'s`} conversation now shows the ${a.view} view.${s === self ? `\n${T.view.get_layout()}` : ''}`;
       },
     };
     T.window = {
@@ -1021,7 +1028,7 @@
         const [x] = splits.splice(i, 1); ui.closeWin(x.win, true); return 'Closed the split pane.';
       },
       set_sidebar_collapsed(a) {
-        if (sidebarCollapsed === !!a.collapsed) return `The sidebar is already ${a.collapsed ? 'collapsed' : 'expanded'}.`;
+        if (sidebarCollapsed === !!a.collapsed) return `No change: the sidebar is already ${a.collapsed ? 'collapsed' : 'expanded'}.`;
         setSidebar(!!a.collapsed); return `Sidebar ${a.collapsed ? 'collapsed' : 'expanded'}.`;
       },
     };
@@ -1078,9 +1085,13 @@
       reveal_path(a) {
         if (!ui.fs.exists(a.path)) not(`${a.path} does not exist.`);
         const st_ = ui.fs.stat(a.path), dir = st_.isDir ? a.path : a.path.replace(/\\[^\\]*$/, '') || a.path;
-        ui.openPath(dir); return `Showed ${a.path} in its folder.`;
+        ui.openPath(dir); return `Revealed ${a.path} in Explorer.`;
       },
-      request_keep_awake(a) { keepAwake = { until: a.until, reason: a.reason }; ui.holdSaver(true); return `Holding off the screen saver until ${a.until === 'turn_end' ? 'this turn ends' : 'the session goes quiet'}.`; },
+      request_keep_awake(a) {
+        // (a turn's hold the settings already give, as the app says it; one past the turn is taken)
+        if (a.until === 'turn_end' && setting('keep_awake_while_working')) return 'The app already keeps this computer awake while this session works, under the user\'s current settings, so nothing changed and nothing was asked. That follows their settings, so it stops if they turn it off. For work that must outlast this turn, call again with `until: "session_idle"`.';
+        keepAwake = { until: a.until, reason: a.reason }; ui.holdSaver(true); return `Holding off the screen saver until ${a.until === 'turn_end' ? 'this turn ends' : 'the session goes quiet'}.`;
+      },
       get_storage_usage() {
         // (as the app reports it: the sessions' records and transcripts kept in the registry, no worktrees, the program's
         // own file, and the free space on C:, the disk that holds them)
