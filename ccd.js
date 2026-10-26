@@ -856,31 +856,35 @@
         if (s.state === 'working' || s.pinned) not(`"${s.title}" is ${s.pinned ? 'pinned' : 'working'}: not cleared.`);
         if (!await approve(`Clear the conversation of "${s.title}"?`)) not('The user declined: nothing was cleared.');
         s.transcript = []; s.plan = []; s.chapters = []; s.next = null; save('sessions'); ui.dirty();
-        return s === self ? 'This session is cleared once this turn ends.' : `Cleared "${s.title}".`;
+        return s === self ? 'This session is cleared once this turn ends.' : `Cleared session ${s.id} ("${s.title}"): its conversation now starts over empty (folder, model and settings kept).`;
       },
       stop_session(a) {
         const s = need(a.session_id); if (s === self) not('Not for this session: end your own turn by finishing your reply.');
         if (s.state !== 'working') return `"${s.title}" is ${s.archived ? 'archived' : 'idle'}: left alone.`;
-        s.state = 'idle'; save('sessions'); ui.dirty(); ui.emit('ccd.session.stop', { session: s.id }); return `Stopped "${s.title}".`;
+        s.state = 'idle'; save('sessions'); ui.dirty(); ui.emit('ccd.session.stop', { session: s.id }); return `Stopped session ${s.id} ("${s.title}")'s current turn. It stays open; anything already queued there runs next.`;
       },
       detach_session(a) {
         const s = need(a.session_id);
         if (!(s.startedBy === self.id || (s === self && s.startedBy))) not('Only a session this session started, or "self" when it is a side session.');
-        s.detached = true; s.startedBy = null; save('sessions'); return `"${s.title}" is a top-level session now.`;
+        s.detached = true; s.startedBy = null; save('sessions');
+        return `Session ${s.id} ("${s.title}") is now a top-level session. It no longer nests under this session, is not archived along with it, and you are no longer told when its turns end or woken when it finishes.`;
       },
       set_session_title(a) { const s = need(a.session_id), was = s.title; s.title = String(a.title); save('sessions'); ui.dirty(); return `Renamed session ${s.id} to "${s.title}" (was "${was}").`; },
-      set_session_model(a) { const s = need(a.session_id); if (s === self) not('Refusing to change this session\'s own model or effort; ask the user to pick it in the model menu.'); s.model = a.model; save('sessions'); return `"${s.title}" uses ${a.model} from its next turn.`; },
-      set_session_effort(a) { const s = need(a.session_id); if (s === self) not('Refusing to change this session\'s own model or effort; ask the user to pick it in the model menu.'); s.effort = a.effort; save('sessions'); return `"${s.title}" runs at ${a.effort} effort from its next turn.`; },
+      set_session_model(a) { const s = need(a.session_id); if (s === self) not('Refusing to change this session\'s own model or effort; ask the user to pick it in the model menu.'); s.model = a.model; save('sessions'); return `Session ${s.id} ("${s.title}") will use "${a.model}" from its next turn on.`; },
+      set_session_effort(a) { const s = need(a.session_id); if (s === self) not('Refusing to change this session\'s own model or effort; ask the user to pick it in the model menu.'); s.effort = a.effort; save('sessions'); return `Session ${s.id} ("${s.title}") will run at ${a.effort} effort from its next turn on.`; },
       set_session_fast_mode(a) { const s = need(a.session_id); s.fastMode = a.enabled ? 'on' : 'off'; save('sessions'); return `Fast mode ${s.fastMode} for "${s.title}".`; },
       async set_session_permission_mode(a) {
         const s = need(a.session_id), order = E.mode;
         if (order.indexOf(a.mode) > order.indexOf(s.permissionMode) && !await approve(`Let "${s.title}" run in ${a.mode} mode?`)) not('The user declined: the permission mode is unchanged.');
-        s.permissionMode = a.mode; save('sessions'); return `"${s.title}" is in ${a.mode} mode.`;
+        const was = s.permissionMode, name = m => ({ default: 'Manual', acceptEdits: 'Accept edits', plan: 'Plan', auto: 'Auto', bypassPermissions: 'Bypass permissions' }[m] || m);
+        s.permissionMode = a.mode; save('sessions');
+        return `Session ${s.id} ("${s.title}") now runs in ${name(a.mode)} mode (${a.mode}), from ${name(was)} ("${was}") to ${name(a.mode)} (${a.mode}). It applies from its next turn on.`;
       },
       async set_session_output_style(a) {
         const s = need(a.session_id);
         if (!await approve(`Switch "${s.title}" from the ${s.outputStyle} output style to ${a.style}?`)) not('The user declined: the output style is unchanged.');
-        s.outputStyle = a.style; save('sessions'); return `"${s.title}" writes in the ${a.style} style from its next turn.`;
+        const was = s.outputStyle; s.outputStyle = a.style; save('sessions');
+        return `Session ${s.id} ("${s.title}") uses the "${a.style}" output style from its next turn on (it was "${was}"). The user sees it under Output style in the session's menu and can change it back there.`;
       },
       set_remote_control(a) { const s = need(a.session_id); s.remoteControlState = a.enabled ? 'unavailable' : 'off'; save('sessions'); return a.enabled ? 'unavailable: Windows 95 has no claude.ai link.' : 'off'; },
       send_message(a) {
@@ -888,7 +892,7 @@
         said(s, 'user', `From ${self.title}: ${a.message}`); s.unread = true; save('sessions'); ui.dirty();
         const id = uid('m'), how = s.state === 'working' ? 'queued' : 'delivered';
         ui.emit('ccd.message', { to: s.id, from: self.id, message: a.message, message_id: id });
-        return `${how === 'delivered' ? `"${s.title}" has started a turn on your message.` : `Queued behind "${s.title}"'s current work.`} (delivery: ${how}; message_id: ${id})`;
+        return `${how === 'delivered' ? `Message delivered to session ${s.id} ("${s.title}"); its turn has started on it.` : `Message queued for session ${s.id} ("${s.title}"); it runs when that session's current work finishes.`} (delivery: ${how}; message_id: ${id})`;
       },
       export_transcript(a) {
         const s = need(a.session_id), dir = 'C:\\My Documents', name = `${s.title.replace(/[\\/:*?"<>|]/g, '_').slice(0, 60) || 'Session'}.TXT`;
@@ -1018,14 +1022,15 @@
         // split and window: a second Claude window showing that session, beside this one for split
         const o = openWindow(), half = Math.floor(ui.screen().width / 2);
         const other = ui.msgBox(s.title, `${s.state} \u00b7 ${s.cwd}\n\n${s.transcript.slice(-8).map(m => `${m.role}: ${m.text}`).join('\n') || '(no messages yet)'}`, null, ['Close'], () => { splits = splits.filter(x => x.win !== other); }, { modal: false });
-        if (a.target === 'split') { o.x = 0; o.y = 0; other.x = half; other.y = 0; }
+        if (a.target === 'split') { if (o) { o.x = 0; o.y = 0; } other.x = half; other.y = 0; }   // (no page window when CLAUDE.EXE is the one open: the other goes at the right)
         splits.push({ session: s.id, win: other }); ui.dirty();
-        return `Opened "${s.title}" ${a.target === 'split' ? 'in split view beside this session' : 'in a window of its own'}.`;
+        return a.target === 'split' ? `Opened session ${s.id} in a split pane (pane ${splits.length}) beside this one. close_split removes it again; the user can also rearrange or close it.`
+          : `Opened session ${s.id} in a window of its own. The user can move or close it.`;
       },
       close_split(a) {
         const i = a.session_id ? splits.findIndex(x => x.session === (byId(a.session_id) || {}).id) : splits.length - 1;
         if (i < 0) return 'No split pane of yours is open.';
-        const [x] = splits.splice(i, 1); ui.closeWin(x.win, true); return 'Closed the split pane.';
+        const [x] = splits.splice(i, 1); ui.closeWin(x.win, true); return `Closed the split pane (pane ${i + 1}); the session in it keeps running and stays in the sidebar.`;
       },
       set_sidebar_collapsed(a) {
         if (sidebarCollapsed === !!a.collapsed) return `No change: the sidebar is already ${a.collapsed ? 'collapsed' : 'expanded'}.`;
