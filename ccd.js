@@ -201,7 +201,10 @@
     });
 
     // ---------------------------------------------------------------- asking the user (the app's approval cards)
-    const ask = (title, msg, buttons = ['Yes', 'No']) => new Promise(ok => ui.msgBox(title, msg, 'question', buttons, b => ok(b)));
+    // (a call from the Claude program asks in the program's own message box: api.asker, set by the page for it)
+    const ask = (title, msg, buttons = ['Yes', 'No']) => (quiet && api.asker && buttons.join() === 'Yes,No'
+      ? api.asker(title, msg).then(yes => (yes ? 'Yes' : 'No'))
+      : new Promise(ok => ui.msgBox(title, msg, 'question', buttons, b => ok(b))));
     const approve = async (what) => (await ask('Claude', what)) === 'Yes';
     // Browse for Folder: a folder typed or kept, OK or Cancel (null)
     const pickFolder = start => new Promise(ok => {

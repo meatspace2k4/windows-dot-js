@@ -145,6 +145,11 @@
   const pending = new Map(); let nextCall = 1, toolDefs = null;
   self.W95ClaudeReply = m => { const f = pending.get(m.id); if (f) { pending.delete(m.id); f(m); } };
   const page = (name, args, session) => new Promise(ok => { const k = nextCall++; pending.set(k, ok); post({ t: 'ccd', id: k, name, args, session }); });
+  // a tool's question (an approval): asked one at a time in the program's message box (CLAUDE.EXE's WndProc on WM_APP+1),
+  // posted from the window's timer; with no window to ask in, the answer is No
+  const asks = []; let asking = null;
+  self.W95ClaudeAsk = m => { if (!app.hwnd) post({ t: 'ccdAnswer', id: m.id, yes: false }); else asks.push(m); };
+  def('CLAUDE', 'Answer', 1, function (r) { if (asking) post({ t: 'ccdAnswer', id: asking.id, yes: r === 6 }); asking = null; return 0; });   // (IDYES)
 
   // ---------------------------------------------------------------- the reply: the Claude API through the page's server
   // The conversation as the API takes it: each turn's blocks as they came (thinking and tool use, unchanged), the user's
@@ -277,7 +282,11 @@
     if (h !== app.hwnd) return 0;
     if (msg === WM.SIZE) { layout(p, lp & 0xffff, lp >>> 16); return done(); }
     // (the timer: what the reply and the app's tools have written since, shown)
-    if (msg === WM.TIMER) { if (app.dirty || regGet(KEY, 'sessions') !== app.raw || regGet(KEY, 'view') !== app.rawView) { app.dirty = false; showAll(p); } return done(); }
+    if (msg === WM.TIMER) {
+      if (app.dirty || regGet(KEY, 'sessions') !== app.raw || regGet(KEY, 'view') !== app.rawView) { app.dirty = false; showAll(p); }
+      if (!asking && asks.length) { asking = asks.shift(); U(p, 'PostMessageA', [h, 0x8001, sz(p, 'ask-text', asking.text), sz(p, 'ask-title', asking.title || 'Claude')]); }
+      return done();
+    }
     if (msg === WM.DESTROY) { U(p, 'KillTimer', [h, 1]); app.hwnd = 0; app.kid = {}; U(p, 'PostQuitMessage', [0]); return done(); }
     if (msg !== WM.COMMAND) return 0;
     const c = wp & 0xffff, note = wp >>> 16;

@@ -857,5 +857,6 @@ self.onmessage = e => {
     for (const x of m.list) if (!rfs.vols.has(x.letter)) rfs.mount(x.letter, { remote: netOf(x.letter), unc: x.unc, label: x.unc.split('\\').pop() || '' });
   } else if (m.t === 'regop') W.regApply(m.o, true);
   else if (m.t === 'ccdReply' && self.W95ClaudeReply) self.W95ClaudeReply(m);   // (a tool's answer for the Claude program: claude-app.js)
+  else if (m.t === 'ccdAsk') { if (self.W95ClaudeAsk) self.W95ClaudeAsk(m); else post({ t: 'ccdAnswer', id: m.id, yes: false }); }   // (and a tool's question for it)
   else if (m.t === 'kick') { if (machine) machine.kick(); }
 };
