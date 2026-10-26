@@ -45,7 +45,8 @@
     const lines = [];
     for (const m of s.transcript) {
       if (m.role === 'user') lines.push(`You:\n${m.text}`);
-      else if (m.role === 'assistant') lines.push(`Claude:\n${m.text}`);
+      else if (m.role === 'assistant' && m.text) lines.push(`Claude:\n${m.text}`);
+      else if (m.role === 'tool') lines.push(`  > ${m.text}`);
       else if (m.role === 'chapter') lines.push(`--- ${m.text} ---`);
       else if (m.role === 'system') lines.push(`[${m.text}]`);
     }
@@ -76,37 +77,68 @@
     mv(ID.STATUS, pad, h - foot + 2, w - 2 * pad, foot - 4);
   }
 
+  // ---------------------------------------------------------------- the app's tools, which run on the page (ccd.js)
+  const pending = new Map(); let nextCall = 1, toolDefs = null;
+  self.W95ClaudeReply = m => { const f = pending.get(m.id); if (f) { pending.delete(m.id); f(m); } };
+  const page = (name, args, session) => new Promise(ok => { const k = nextCall++; pending.set(k, ok); post({ t: 'ccd', id: k, name, args, session }); });
+
   // ---------------------------------------------------------------- the reply: the Claude API through the page's server
-  async function reply(sid) {
-    const s = load().find(x => x.id === sid); if (!s) return;
-    const messages = [];
+  // The conversation as the API takes it: each turn's blocks as they came (thinking and tool use, unchanged), the user's
+  // text, and the tools' results as the user's turn after them
+  const blocksOf = m => m.blocks || (m.text ? [{ type: 'text', text: m.text }] : []);
+  function history(s) {
+    const out = [];
     for (const m of s.transcript) {
-      if (m.role !== 'user' && m.role !== 'assistant') continue;
-      const last = messages[messages.length - 1];
-      if (last && last.role === m.role) last.content += `\n\n${m.text}`; else messages.push({ role: m.role, content: m.text });
+      const role = m.role === 'user' || m.role === 'results' ? 'user' : m.role === 'assistant' && !m.box ? 'assistant' : null;
+      const b = role ? blocksOf(m) : []; if (!b.length) continue;
+      const last = out[out.length - 1];
+      if (last && last.role === role) last.content.push(...b); else out.push({ role, content: b.slice() });
     }
-    let got = '', msgId = null, failed = null;
-    const put = () => update(sid, x => {
+    while (out.length && out[0].role !== 'user') out.shift();
+    return out;
+  }
+  // one request: Claude's text into the conversation as it arrives; its whole message kept with it for the next request
+  async function ask(sid, s) {
+    let got = '', msgId = null, result = null;
+    const put = (blocks) => update(sid, x => {
       if (!msgId) { msgId = id('msg'); x.transcript.push({ uuid: msgId, t: Date.now(), role: 'assistant', text: got }); }
-      else { const m = x.transcript.find(y => y.uuid === msgId); if (m) m.text = got; }
+      const m = x.transcript.find(y => y.uuid === msgId); if (m) { m.text = got; if (blocks) m.blocks = blocks; }
     });
     try {
-      const r = await fetch('__claude', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: s.model, effort: s.effort, messages }) });
-      if (!r.ok) failed = `Not connected: this page's server has no Claude API (HTTP ${r.status}).`;
-      else {
-        const rd = r.body.getReader(), dec = new TextDecoder(); let buf = '';
-        for (;;) {
-          const { value, done } = await rd.read(); if (done) break;
-          buf += dec.decode(value, { stream: true });
-          for (let i; (i = buf.indexOf('\n')) >= 0; buf = buf.slice(i + 1)) {
-            const ev = JSON.parse(buf.slice(0, i));
-            if (ev.t === 'text') { got += ev.d; put(); app.dirty = true; }
-            else if (ev.t === 'error') failed = ev.e;
-          }
+      const r = await fetch('__claude', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: s.model, effort: s.effort, messages: history(s), tools: toolDefs || [] }) });
+      if (!r.ok) return { error: `Not connected: this page's server has no Claude API (HTTP ${r.status}).` };
+      const rd = r.body.getReader(), dec = new TextDecoder(); let buf = '';
+      for (;;) {
+        const { value, done } = await rd.read(); if (done) break;
+        buf += dec.decode(value, { stream: true });
+        for (let i; (i = buf.indexOf('\n')) >= 0; buf = buf.slice(i + 1)) {
+          const ev = JSON.parse(buf.slice(0, i));
+          if (ev.t === 'text') { got += ev.d; put(); app.dirty = true; }
+          else if (ev.t === 'error') return { error: ev.e };
+          else if (ev.t === 'done') { put(ev.content); result = { stop: ev.stop, content: ev.content || [] }; }
         }
       }
-    } catch (e) { failed = `Not connected: ${e.message}`; }
-    update(sid, x => { if (failed) x.transcript.push({ uuid: id('msg'), t: Date.now(), role: 'system', text: failed }); x.state = failed ? 'failed' : 'idle'; });
+    } catch (e) { return { error: `Not connected: ${e.message}` }; }
+    return result || { error: 'The reply ended early.' };
+  }
+  // the turn: requests until Claude stops asking for tools; each tool it asks for run on the page as this session's call
+  async function reply(sid) {
+    let failed = null;
+    if (!toolDefs) { const r = await page('@defs'); toolDefs = r.result || []; }
+    for (let k = 0; k < 24; k++) {
+      const s = load().find(x => x.id === sid); if (!s) return;
+      const r = await ask(sid, s);
+      if (r.error) { failed = r.error; break; }
+      if (r.stop !== 'tool_use') break;
+      const results = [];
+      for (const b of r.content.filter(x => x.type === 'tool_use')) {
+        const out = await page(b.name, b.input, sid);
+        results.push({ type: 'tool_result', tool_use_id: b.id, content: out.error ? `Error: ${out.error}` : typeof out.result === 'string' ? out.result : JSON.stringify(out.result === undefined ? null : out.result), ...(out.error ? { is_error: true } : {}) });
+        app.dirty = true;
+      }
+      update(sid, x => x.transcript.push({ uuid: id('msg'), t: Date.now(), role: 'results', text: '', blocks: results }));
+    }
+    update(sid, x => { if (failed) x.transcript.push({ uuid: id('msg'), t: Date.now(), role: 'system', text: failed }); x.state = failed ? 'failed' : x.next && x.next.blocked ? 'waiting' : 'idle'; });
     app.dirty = true;
   }
   function send(p) {

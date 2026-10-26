@@ -85,6 +85,74 @@
     prompt_suggestions: { v: true, accepts: 'true | false', does: 'suggest a next prompt when a turn ends' },
   };
 
+  // ---------------------------------------------------------------- the tools as Claude is given them
+  // each tool's parameters: name:type (s string, n number, b boolean, a array of strings, n[] array of numbers, items and
+  // actions their objects, v any); required ones and enums from SCHEMA
+  const PARAMS = {
+    turn: { update_plan: 'items:items scope advance:b done:n[] start:n', wrap_up: 'recap ask actions:actions blocked:b' },
+    session: { start_session: 'title initiation prompt background context name cwd proposal_id permission_mode effort model target', dismiss_task: 'task_id reason',
+      hand_off_to_session: 'title remaining_plan', mark_chapter: 'title summary', read_widget_context: 'tool_name', list_start_targets: '', move_to_cloud: 'summary' },
+    session_mgmt: { list_sessions: 'include_archived:b limit:n linked:b group', get_session: 'session_id', list_events: 'session_id limit:n before_uuid',
+      search_session_transcripts: 'query include_archived:b limit:n', archive_session: 'session_id reason', unarchive_session: 'session_id',
+      delete_session: 'session_ids:a reason force_worktree_cleanup:b', clear_session: 'session_id', stop_session: 'session_id', detach_session: 'session_id',
+      set_session_title: 'session_id title', set_session_model: 'session_id model', set_session_effort: 'session_id effort', set_session_fast_mode: 'session_id enabled:b',
+      set_session_permission_mode: 'session_id mode', set_session_output_style: 'session_id style', set_remote_control: 'session_id enabled:b',
+      send_message: 'session_id message', export_transcript: 'session_id', get_usage: 'session_id' },
+    sidebar: { list_groups: '', create_group: 'name', rename_group: 'group_id name', delete_group: 'group_id', list_sections: '', create_section: 'name',
+      rename_section: 'section_id name', delete_section: 'section_id', move_sessions: 'session_ids:a group_id section_id', set_pinned: 'session_id pinned:b',
+      set_unread: 'session_id unread:b', mark_completed: 'session_id', set_view: 'group_by status sort_by last_activity:n section_id' },
+    view: { show_pane: 'pane path line:n', close_pane: 'pane', get_layout: '', set_transcript_view: 'view session_id' },
+    window: { get_window_layout: '', open_session_in: 'session_id target', close_split: 'session_id', set_sidebar_collapsed: 'collapsed:b' },
+    settings: { get_settings: '', set_setting: 'key value:v' },
+    pr: { get_status: 'session_id', bind_pr: 'url', unbind_pr: 'url', set_auto_merge: 'enabled:b url merge_method', set_monitor: 'auto_fix:b auto_archive_on_close:b url' },
+    host: { open_in_editor: 'path line:n', reveal_path: 'path', request_keep_awake: 'until reason', get_storage_usage: '', sync_with_base_branch: 'base abort:b',
+      clean_up_worktrees: 'older_than_days:n', discard_kept_worktree: 'session_id' },
+    directory: { change_directory: 'path', request_directory: 'path' },
+    connectors: { session_connectors_status: '', set_session_connector_enabled: 'connector enabled:b', reconnect_session_connector: 'server' },
+  };
+  const DESC = {
+    turn: { update_plan: 'Keep this session\'s task list: {items, scope} sets the whole plan (scope "first_task", "continuation" or "new_task"); {advance: true} completes the step in progress and starts the next; {done: [n], start: n} by 1-based number.',
+      wrap_up: 'End the turn with the next-step box: a short recap of what is now true; with a pending decision, one question (ask) and 1 or 2 buttons (actions: {label, message}). The button the user presses comes back as their next message.' },
+    session: { start_session: 'Start a separate session for a task: initiation "user_asked" starts it now (prompt and background, 80+ characters, required); "own_initiative" proposes it as a card; "offer" asks the user New session or Do it here and waits. proposal_id starts a card.',
+      dismiss_task: 'Withdraw a proposal card (task_id) the user has not started.', hand_off_to_session: 'Move the current task to a new session with the remaining plan.',
+      mark_chapter: 'Mark the start of a new chapter in this session\'s transcript.', read_widget_context: 'Read the Claude window\'s state (tool_name "claude").',
+      list_start_targets: 'List where a session can start: this computer\'s drives.', move_to_cloud: 'Move this session to the cloud (refused: Windows 95 has none).' },
+    session_mgmt: { list_sessions: 'List the other sessions.', get_session: 'One session\'s metadata ("self" for this one).', list_events: 'Read another session\'s transcript.',
+      search_session_transcripts: 'Search the sessions\' transcripts.', archive_session: 'Archive a session (the user is asked).', unarchive_session: 'Restore an archived session.',
+      delete_session: 'Delete sessions for good (the user is asked).', clear_session: 'Clear a session\'s conversation (the user is asked).', stop_session: 'Stop another session\'s turn.',
+      detach_session: 'Move a session this one started to top level.', set_session_title: 'Rename a session.', set_session_model: 'Set another session\'s model.',
+      set_session_effort: 'Set another session\'s effort.', set_session_fast_mode: 'Turn fast mode on or off for a session.', set_session_permission_mode: 'Set a session\'s permission mode (a higher one asks the user).',
+      set_session_output_style: 'Set a session\'s output style (the user is asked).', set_remote_control: 'Remote Control for a session (unavailable in Windows 95).',
+      send_message: 'Send a message to another session.', export_transcript: 'Export a session\'s transcript to C:\\My Documents.', get_usage: 'Context usage for a session.' },
+    sidebar: { list_groups: 'List the sidebar\'s groups.', create_group: 'Create a sidebar group.', rename_group: 'Rename a group.', delete_group: 'Delete a group (the user is asked).',
+      list_sections: 'List the sidebar\'s sections.', create_section: 'Create a section.', rename_section: 'Rename a section.', delete_section: 'Delete a section (the user is asked).',
+      move_sessions: 'File sessions under a group (group_id, or section_id "sessions" for none).', set_pinned: 'Pin or unpin a session.', set_unread: 'Mark a session read or unread.',
+      mark_completed: 'Mark a session\'s needs-input dot completed.', set_view: 'How the sidebar lists sessions.' },
+    view: { show_pane: 'Show a pane of the Claude window: plan, diff (Changes), tasks, terminal (MS-DOS Prompt), preview; file opens path in Notepad.', close_pane: 'Close a pane.',
+      get_layout: 'Where this session is on screen and its open panes.', set_transcript_view: 'Normal, thinking or verbose transcript view.' },
+    window: { get_window_layout: 'The windows open on the Windows 95 screen.', open_session_in: 'Show a session: focus, split or a window of its own.', close_split: 'Close a split you opened.',
+      set_sidebar_collapsed: 'Collapse or expand the Claude window\'s sidebar.' },
+    settings: { get_settings: 'The app\'s preferences.', set_setting: 'Change one preference (the user is asked).' },
+    pr: { get_status: 'The session\'s pull request (none in Windows 95).', bind_pr: 'Bind a PR (none in Windows 95).', unbind_pr: 'Unbind a PR.', set_auto_merge: 'Auto-merge (none).', set_monitor: 'CI monitor (none).' },
+    host: { open_in_editor: 'Open a file in Notepad.', reveal_path: 'Show a file or folder in its folder window.', request_keep_awake: 'Hold off the screen saver.',
+      get_storage_usage: 'The drives\' space.', sync_with_base_branch: 'Merge the base branch (no git in Windows 95).', clean_up_worktrees: 'Remove idle worktrees (none).',
+      discard_kept_worktree: 'Discard a kept worktree (none).' },
+    directory: { change_directory: 'Move this session to another folder (the user is asked).', request_directory: 'Ask for access to a folder; without a path the user picks one.' },
+    connectors: { session_connectors_status: 'The page\'s hosts as connectors: shares, cd, network, sound.', set_session_connector_enabled: 'Turn a connector on or off for the session.',
+      reconnect_session_connector: 'Reconnect a connector.' },
+  };
+  const TYPE = { s: { type: 'string' }, n: { type: 'number' }, b: { type: 'boolean' }, a: { type: 'array', items: { type: 'string' } }, 'n[]': { type: 'array', items: { type: 'number' } }, v: {},
+    items: { type: 'array', items: { type: 'object', properties: { content: { type: 'string' }, status: { type: 'string', enum: ['pending', 'in_progress', 'completed'] }, session: { type: 'string' } }, required: ['content', 'status'] } },
+    actions: { type: 'array', items: { type: 'object', properties: { label: { type: 'string' }, message: { type: 'string' }, action: { type: 'string' } } } } };
+  function inputSchema(server, tool, sc) {
+    const properties = {};
+    for (const p of (PARAMS[server][tool] || '').split(/\s+/).filter(Boolean)) {
+      const [name, t = 's'] = p.split(':');
+      properties[name] = sc.enums && sc.enums[name] ? { type: 'string', enum: sc.enums[name] } : { ...TYPE[t] };
+    }
+    return { type: 'object', properties, ...(sc.req && sc.req.length ? { required: sc.req } : {}) };
+  }
+
   window.W95Ccd = function (ui) {
     const KEY = 'hkcu\\software\\claude\\code';
     const R = ui.W95Win32, FS = window.W95FS;
@@ -93,7 +161,14 @@
       const v = R.regGet(KEY, name); if (!v) return dflt;
       try { return JSON.parse(typeof v === 'string' ? v : FS.decode(v.data).replace(/\0.*$/, '')); } catch (_) { return dflt; }
     };
-    const save = name => R.regSet(KEY, name, { type: 1, data: FS.encode(JSON.stringify(st[name]) + '\0') });
+    const save = name => { R.regSet(KEY, name, { type: 1, data: FS.encode(JSON.stringify(st[name]) + '\0') }); if (name === 'sessions') rawSessions = R.regGet(KEY, name); };
+    // the sessions as the registry has them now: the Claude program (claude-app.js) writes them too, from its machine
+    let rawSessions = R.regGet(KEY, 'sessions');
+    const sync = () => {
+      const v = R.regGet(KEY, 'sessions'); if (v === rawSessions || !v) return;
+      rawSessions = v; st.sessions = load('sessions', st.sessions);
+      self = st.sessions.find(s => s.id === self.id) || st.sessions.find(s => s.self) || self;
+    };
     const st = {
       sessions: load('sessions', []), groups: load('groups', []), cards: load('cards', []),
       settings: load('settings', {}), view: load('view', { group_by: 'none', status: 'active', sort_by: 'recency', last_activity: 0, sections: {} }),
@@ -193,6 +268,7 @@
       type: 'custom', x: 0, y: 0, get w() { return SBW - 2; }, get h() { return CR().h; }, list: [], top: 0, sel: null, open: new Set(),
       get hidden() { return sidebarCollapsed; },
       draw(a, foc, w) {
+        sync();
         const g = ui.gfx; g.field(a.x, a.y, a.w, a.h);
         this.inner = { x: a.x + 2, y: a.y + 2, w: a.w - 4, h: a.h - 4 - 24 };
         this.list = [{ label: 'New session', depth: 0, path: '@new' }, ...visibleSessions()]; this.sel = shown;
@@ -493,7 +569,9 @@
     };
     const refreshLabels = () => { const n = cur().next; btns.forEach((b, i) => { b.label = n && n.actions && n.actions[i] ? (n.actions[i].label || n.actions[i].action || 'OK').replace(/&/g, '&&') : ''; }); };
     function show(id) { if (id !== shown) { navBack.push(shown); navFwd = []; } shown = id; tscroll = 0; refreshLabels(); if (win) ui.dirty(); }
+    let quiet = false;   // (a call from the Claude program: the page's window is not opened for it)
     function openWindow(focus = true) {
+      if (quiet && !(win && ui.windows().includes(win))) return null;
       refreshLabels();
       if (win && ui.windows().includes(win)) { if (focus) ui.activate(win); ui.dirty(); return win; }
       body = new ui.DialogBody([sidebar, ...header, transcript, box, ...btns, addBtn, prompt, placeholder, sendBtn, modeBtn, modelCtl, usageCtl, panes]);
@@ -562,7 +640,7 @@
         s.plan.forEach(p => { if (p.status !== 'completed') p.status = 'completed'; });
         s.next = { recap: a.recap, ask: a.ask || null, actions: a.ask ? a.actions || [{ label: 'OK' }] : null, blocked: !!a.blocked };
         s.state = a.blocked ? 'waiting' : 'idle';
-        said(s, 'assistant', a.recap);
+        said(s, 'assistant', a.recap, { box: true });   // (shown in the transcript; not a turn of Claude's to send back)
         save('sessions'); show(s.id); openWindow(false);
         notify(a.ask ? 'question' : 'task_complete');
         if (keepAwake && keepAwake.until === 'turn_end') { keepAwake = null; ui.holdSaver(false); }
@@ -894,6 +972,7 @@
       for (const [tool, sc] of Object.entries(tools)) {
         api[server][tool] = async (args = {}) => {
           let result, error = null;
+          sync();
           try {
             for (const k of sc.req || []) if (args[k] === undefined || args[k] === null || args[k] === '') not(`${k} is required.`);
             for (const [k, vs] of Object.entries(sc.enums || {})) if (args[k] !== undefined && !vs.includes(args[k])) not(`${k} must be one of ${vs.map(v => JSON.stringify(v)).join(', ')}.`);
@@ -912,6 +991,16 @@
       const c = self.changes = self.changes || [], op = e.type.slice(3);
       if (!c.some(x => x.path === e.path && x.op === op)) { c.push({ op, path: e.path }); if (c.length > 200) c.shift(); }
     });
+    // the tools as the Claude API takes them (the Claude program offers them to Claude: claude-app.js), and a call made
+    // for a session, as that session's own ("self")
+    api.toolDefs = () => Object.entries(SCHEMA).flatMap(([server, tools]) => Object.entries(tools).map(([tool, sc]) => ({
+      name: `ccd_${server}__${tool}`, description: DESC[server][tool], input_schema: inputSchema(server, tool, sc),
+    })));
+    api.callAs = async (sid, name, args) => {
+      const m = /^ccd_(\w+?)__(\w+)$/.exec(name); if (!m || !api[m[1]] || !api[m[1]][m[2]]) throw new CcdError(`No tool ${name}.`);
+      sync(); const was = self; self = byId(sid) || self; quiet = true;
+      try { return await api[m[1]][m[2]](args || {}); } finally { self = st.sessions.find(s => s.id === was.id) || was; quiet = false; }
+    };
     api.open = () => openWindow();
     api.send = text => send(text);
     api.answer = (i = 0) => answer(byId(shown) || self, i);

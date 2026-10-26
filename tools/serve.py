@@ -72,6 +72,9 @@ MODELS = {'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fa
 EFFORTS = {'low', 'medium', 'high', 'xhigh', 'max'}
 SYSTEM = ('You are Claude, talking with the user through the Claude desktop app recreated inside Windows 95. '
           'Answer in plain text: the window shows no Markdown.')
+TOOLS_NOTE = (' You have the Claude desktop app\'s own tools (the ccd_* tools), acting on this Windows 95 system: its sessions, '
+              'their task lists and next-step box, the sidebar, panes, windows, settings and folders. Use them when the user asks '
+              'for something they do; a tool the app would ask the user about shows a message box, and its result says what they chose.')
 def setting(env, path):
     if os.environ.get(env): return os.environ[env]
     try:
@@ -85,10 +88,22 @@ def local_request(h):
     return (h.client_address[0] in ('127.0.0.1', '::1') and (host in ('localhost', '127.0.0.1', '::1') or host.endswith('.localhost'))
             and (origin is None or re.sub(r'^https?://', '', origin).rsplit(':', 1)[0].strip('[]').lower() == host)
             and (h.headers.get('Content-Type') or '').startswith('application/json'))
+TOOL_NAME = re.compile(r'^[a-zA-Z0-9_-]{1,64}$')
+def tools_of(q):
+    """the page's tools (the Claude app's own, ccd.js), checked: a name, a description and an object schema each"""
+    out = []
+    for t in (q.get('tools') or [])[:128]:
+        if isinstance(t, dict) and TOOL_NAME.match(str(t.get('name', ''))) and isinstance(t.get('input_schema'), dict) and t['input_schema'].get('type') == 'object':
+            out.append({'name': t['name'], 'description': str(t.get('description', ''))[:2000], 'input_schema': t['input_schema']})
+    return out
+def content_of(c):
+    """a message's content: text, or its blocks as the API gave them (thinking and tool use passed back unchanged)"""
+    return c if isinstance(c, list) and all(isinstance(b, dict) and b.get('type') for b in c) else str(c)
 def claude(h, q):
     import anthropic   # (only this endpoint needs it)
     line = lambda o: (h.wfile.write((json.dumps(o) + '\n').encode()), h.wfile.flush())
-    msgs = [{'role': m['role'], 'content': str(m['content'])} for m in q.get('messages', []) if m.get('role') in ('user', 'assistant') and m.get('content')]
+    msgs = [{'role': m['role'], 'content': content_of(m['content'])} for m in q.get('messages', []) if m.get('role') in ('user', 'assistant') and m.get('content')]
+    tools = tools_of(q)
     model = q.get('model') if q.get('model') in MODELS else 'claude-opus-5-5'
     effort = q.get('effort') if q.get('effort') in EFFORTS else 'medium'
     h.send_response(200); h.send_header('Content-Type', 'application/x-ndjson'); h.send_header('Cache-Control', 'no-store'); h.end_headers()
@@ -98,14 +113,17 @@ def claude(h, q):
         ws = workspace_id()
         client = anthropic.Anthropic(api_key=key, default_headers={'anthropic-workspace-id': ws} if ws else None)
         # a refusal is answered by another model the server picks (server-side fallback), not ended
-        with client.beta.messages.stream(model=model, max_tokens=64000, system=SYSTEM, messages=msgs,
+        extra = {'tools': tools} if tools else {}
+        with client.beta.messages.stream(model=model, max_tokens=64000, system=SYSTEM + (TOOLS_NOTE if tools else ''), messages=msgs,
                                          thinking={'type': 'adaptive', 'display': 'summarized'}, output_config={'effort': effort},
-                                         betas=['server-side-fallback-2026-07-01'], extra_body={'fallbacks': 'default'}) as stream:
+                                         betas=['server-side-fallback-2026-07-01'], extra_body={'fallbacks': 'default'}, **extra) as stream:
             for ev in stream:
                 if ev.type == 'content_block_delta' and ev.delta.type == 'text_delta': line({'t': 'text', 'd': ev.delta.text})
                 elif ev.type == 'content_block_delta' and ev.delta.type == 'thinking_delta': line({'t': 'thinking', 'd': ev.delta.thinking})
             m = stream.get_final_message()
-        line({'t': 'done', 'stop': m.stop_reason, 'model': m.model, 'in': m.usage.input_tokens, 'out': m.usage.output_tokens})
+        # the whole message, for the next request of a tool loop (its blocks go back as they came)
+        line({'t': 'done', 'stop': m.stop_reason, 'model': m.model, 'in': m.usage.input_tokens, 'out': m.usage.output_tokens,
+              'content': [b.model_dump(exclude_none=True) for b in m.content]})
     except anthropic.AuthenticationError: line({'t': 'error', 'e': 'The API key was refused (401)'})
     except anthropic.RateLimitError: line({'t': 'error', 'e': 'Rate limited (429): try again shortly'})
     except anthropic.APIStatusError as e: line({'t': 'error', 'e': f'API error {e.status_code}: {e.message}'})

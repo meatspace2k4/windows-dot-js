@@ -3260,6 +3260,15 @@ class RemoteApp extends NativeApp {
         if (this.started) this.started(true); return;
       // MPR loaded in the system's machine (or no network client): the shell's network calls go ahead (netBoot)
       case 'mpr': this.mprUp = m.up; if (this.mprReady) { this.mprReady(m.up); this.mprReady = null; } return;
+      // a tool the Claude program's Claude used (claude-app.js): run here, where the app's tools are (ccd.js), its answer sent back
+      case 'ccd': {
+        const back = o => { if (this.worker) this.worker.postMessage({ t: 'ccdReply', id: m.id, ...o }); };
+        const ccd = window.win95 && window.win95.ccd;
+        if (!ccd) { back({ error: 'The Claude app\'s tools are not loaded.' }); return; }
+        if (m.name === '@defs') { back({ result: ccd.toolDefs() }); return; }   // (the tools themselves, as the API takes them)
+        ccd.callAs(m.session, m.name, m.args).then(result => back({ result }), e => back({ error: String(e && e.message || e) }));
+        return;
+      }
       case 'lan': if (window.W95LAN && this.lanStation) W95LAN.send(this.lanStation, m.frame); return;
       case 'frame': this.frame(m); return;
       case 'held': this.held = m.held; this.stats = m.stats; return;
