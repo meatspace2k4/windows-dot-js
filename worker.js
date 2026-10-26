@@ -266,12 +266,46 @@ class Machine {
     if (W.regGet('hklm\\system\\currentcontrolset\\control\\networkprovider\\order', 'ProviderOrder') === undefined) { post({ t: 'mpr', up: false }); return; }
     try {
       p.init16(); const m = p.loadDll('MPR'); if (m) { p.runPendingInits(); p.attach(m); }
+      this.blankPasswordList();
       // the network's process, started as KERNEL32 starts it at boot and run to its first wait: it is its start that
       // connects USER's network functions (SM_NETWORK), which the shell reads when it first lays out the desktop
       const exe = ['C:\\WINDOWS\\SYSTEM\\MPREXE.EXE', 'C:\\WINDOWS\\MPREXE.EXE'].find(f => fs.exists(f));
       if (exe) { const pc = this.spawnProgram(exe, ''); if (typeof pc === 'object') p.runUntilIdle(pc, 4000); }
     } catch (e) { console.error(e); }
     post({ t: 'mpr', up: !!p.byName.get('MPR') });   // (the shell's network waits for it: win95.js netBoot)
+  }
+  /** there is no user to authenticate: the logon's user has a password list with an empty password before MPREXE logs
+   *  on, so Windows Logon opens it with no password and asks nothing (Enter Windows Password, Set Windows Password),
+   *  and the network client is logged on. MSPWL32 makes it, as Set Windows Password does; a list there already is kept */
+  blankPasswordList() {
+    // (the name upper-cased, as MPRSERV opens the list with it: under the name as typed, it opened as a wrong password)
+    const p = this.proc, v = W.regGet('hklm\\network\\logon', 'username'), user = v && W95FS.decode(v.data).replace(/\0.*$/, '').toUpperCase();
+    if (!user) return;
+    const m = p.loadDll('MSPWL32'); if (!m) return;
+    p.runPendingInits(); p.attach(m);
+    const name = p.alloc(264);
+    // (GetCacheFileName fails while system.ini's [Password Lists] names no list for the user)
+    if (this.call32(m.exports.get('GetCacheFileName'), [user, name, 260]) !== 0 || !fs.exists(p.readA(name))) {
+      const h = p.alloc(4), r = this.call32(m.exports.get('CreatePasswordCache'), [h, user, '']);
+      if (r === 0) this.call32(m.exports.get('ClosePasswordCache'), [p.r32(h), 1]);
+      p.free(h);
+    }
+    p.free(name);
+  }
+  /** a flat function of the system's process called on a thread of its own, run to its return before this returns */
+  call32(fn, args) {
+    const p = this.proc; if (!fn) return null;
+    const le32 = v => [v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, (v >>> 24) & 0xff];
+    const a = p.alloc(96), res = a + 88, ptr = a + 92, code = [];
+    const vals = args.map(v => (typeof v === 'string' ? (() => { const s = p.alloc(v.length + 1); p.writeA(s, v); return s; })() : v));
+    for (let i = vals.length - 1; i >= 0; i--) code.push(0x68, ...le32(vals[i]));   // push imm32
+    code.push(0xff, 0x15, ...le32(ptr), 0xa3, ...le32(res), 0xc2, 0x04, 0x00);       // call [ptr]; mov [res], eax; ret 4
+    p.w32(ptr, fn); p.u8.set(code, a);
+    let done = false; const t = p.newThread(a, 0, 0x10000, true, false); t.onDone = () => { done = true; };
+    for (let k = 0; k < 2000 && !done && !p.trapped; k++) p.threads16(true);
+    const r = done ? p.r32(res) : null;
+    p.free(a); for (let i = 0; i < vals.length; i++) if (typeof args[i] === 'string') p.free(vals[i]);
+    return r;
   }
   startMsgsrv() {
     const p = this.proc; if (!this.alive || p.trapped) return true;
