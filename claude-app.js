@@ -18,7 +18,7 @@
   const MODES = [['default', 'Ask permissions'], ['acceptEdits', 'Edit automatically'], ['plan', 'Plan mode'], ['auto', 'Auto'], ['bypassPermissions', 'Bypass permissions']];
   const VIEWS = ['normal', 'thinking', 'verbose'], PANES = ['plan', 'diff', 'tasks', 'files'];
   // menu commands past the bar's first ones: models 300+, efforts 310+, modes 320+, views 330+, panes 340+, the rest below
-  const CMD = { EXPORT: 203, ATTACH: 204, COPY_REPLY: 210, FORK: 211, REWIND: 212, CHAPTER: 213, FIND: 214, RENAME: 215, USAGE: 402, TERMINAL: 352, STOP: 372, SIDEBAR: 350, HIDE_NESTED: 391, CLOSE_PANE: 351, BACK: 360, FORWARD: 361, PREV: 362, NEXT_SESSION: 363, PIN: 370, ARCHIVE: 371,
+  const CMD = { EXPORT: 203, ATTACH: 204, COPY_REPLY: 210, FORK: 211, REWIND: 212, CHAPTER: 213, FIND: 214, RENAME: 215, USAGE: 402, TERMINAL: 352, STOP: 372, SETTINGS: 205, SIDEBAR: 350, HIDE_NESTED: 391, CLOSE_PANE: 351, BACK: 360, FORWARD: 361, PREV: 362, NEXT_SESSION: 363, PIN: 370, ARCHIVE: 371,
     CTX_PIN: 501, CTX_UNREAD: 502, CTX_ARCHIVE: 503, CTX_DELETE: 504, CTX_EXPORT: 505, CTX_UNGROUP: 599, CTX_GROUP: 600 };
   const app = { hwnd: 0, kid: {}, menu: 0, shown: null, dirty: false, bufs: new Map(), rows: [], raw: null, rawView: null, size: [560, 400], attach: [], ofn: null, aborts: {}, stopping: {}, queue: {}, nextSay: null };
 
@@ -241,6 +241,42 @@
     if (id_ === 1 || id_ === 2) { app.renaming = null; U(p, 'EndDialog', [h, id_ === 1 ? 1 : 0]); return 1; }
     return 0;
   });
+  // Settings: the app's settings a Windows 95 session acts on, each a check box (all or none for a notification); the
+  // days after which an inactive session is archived. OK sets the ones changed through set_setting, which asks as the
+  // app asks
+  const SETTING_BOXES = [['task_complete_notifications', 'Notify me when a session &finishes'], ['question_notifications', 'Notify me when a session asks a &question'],
+    ['permission_request_notifications', 'Notify me when a session asks for &permission'], ['notification_sound', '&Beep with a notification'],
+    ['draw_attention_on_notifications', 'F&lash the taskbar button with a notification'], ['keep_awake_while_working', 'Hold off the screen &saver while a session works'],
+    ['prompt_suggestions', 'Suggest a &next prompt when a turn ends']];
+  const on = v => v === true || v === 'all';
+  function settingsTemplate(p) {
+    const items = SETTING_BOXES.map(([, l], i) => [0x50010003, 0x0080, 10, 8 + 12 * i, 210, 10, 200 + i, l]);   // BS_AUTOCHECKBOX, WS_TABSTOP
+    const y = 8 + 12 * SETTING_BOXES.length + 6;
+    items.push([0x50000000, 0x0082, 10, y + 2, 140, 8, -1, '&Archive sessions inactive (days, 0: never):'], [0x50812080, 0x0081, 160, y, 30, 12, 300, ''],   // ES_NUMBER
+      [0x50010001, 0x0080, 116, y + 22, 50, 14, 1, 'OK'], [0x50010000, 0x0080, 170, y + 22, 50, 14, 2, 'Cancel']);
+    return dialogTemplate(p, 'Claude Settings', 230, y + 42, items);
+  }
+  def('CLAUDE', 'SettingsProc', 4, function (h, msg, wp) {
+    const p = this, cur = app.settingsNow || {};
+    if (msg === 0x110) {
+      SETTING_BOXES.forEach(([k], i) => U(p, 'CheckDlgButton', [h, 200 + i, on((cur[k] || {}).value) ? 1 : 0]));
+      U(p, 'SetDlgItemInt', [h, 300, (cur.auto_archive_inactive_days || {}).value || 0, 0]);
+      return 1;
+    }
+    if (msg !== 0x111) return 0;
+    const id_ = wp & 0xffff;
+    if (id_ === 1) {
+      const changes = [];
+      SETTING_BOXES.forEach(([k], i) => {
+        const was = (cur[k] || {}).value, now = U(p, 'IsDlgButtonChecked', [h, 200 + i]) === 1;
+        if (on(was) !== now) changes.push([k, typeof was === 'string' ? (now ? 'all' : 'none') : now]);
+      });
+      const days = U(p, 'GetDlgItemInt', [h, 300, 0, 0]); if (days !== ((cur.auto_archive_inactive_days || {}).value || 0)) changes.push(['auto_archive_inactive_days', days]);
+      (async () => { for (const [key, value] of changes) { const r = await page('ccd_settings__set_setting', { key, value }, (current() || {}).id); if (r.error) app.note = `Not changed: ${r.error}`; } app.dirty = true; })();
+    }
+    if (id_ === 1 || id_ === 2) { app.settingsOpen = false; U(p, 'EndDialog', [h, id_ === 1 ? 1 : 0]); return 1; }
+    return 0;
+  });
   def('CLAUDE', 'Answer', 1, function (r) { if (asking) post({ t: 'ccdAnswer', id: asking.id, yes: r === 6 }); asking = null; return 0; });   // (IDYES)
 
   // ---------------------------------------------------------------- the reply: the Claude API through the page's server
@@ -377,7 +413,7 @@
       return m;
     };
     const sub = (m, l) => U(p, 'AppendMenuA', [bar, 0x10, m, sz(p, `bar-${l}`, l)]);
-    sub(pop([[ID.NEW, '&New Session'], [CMD.ATTACH, '&Attach File...'], [0, null], [CMD.EXPORT, '&Export Transcript'], [0, null], [ID.EXIT, 'E&xit']]), '&File');
+    sub(pop([[ID.NEW, '&New Session'], [CMD.ATTACH, '&Attach File...'], [0, null], [CMD.SETTINGS, 'Se&ttings...'], [0, null], [CMD.EXPORT, '&Export Transcript'], [0, null], [ID.EXIT, 'E&xit']]), '&File');
     sub(pop([[CMD.COPY_REPLY, '&Copy Message'], [CMD.FIND, '&Find Next (the prompt\'s text)'], [0, null],
       [CMD.FORK, 'F&ork from Here'], [CMD.REWIND, '&Rewind to Here'], [CMD.CHAPTER, '&Pin as Chapter'], [0, null], [CMD.RENAME, 'Re&name Session...']]), '&Edit');
     sub(pop([[CMD.SIDEBAR, 'Side&bar'], [GROUP_BY.map(([, l], i) => [380 + i, l]), '&Group Sessions By'], [SORT_BY.map(([, l], i) => [385 + i, l]), '&Sort Sessions By'],
@@ -418,7 +454,13 @@
   // Handle(hwnd, msg, wp, lp, &result): 1 with the result written for a message that is Claude's, else 0 (the program's
   // WndProc passes those to DefWindowProcA itself). Nothing here waits on messages of its own (no DefWindowProcA, no
   // MessageBoxA: a call from here runs to its end without giving the processor back)
+  // (a fault of this library's is said in the window's status line, not the system's: the window procedure runs in the
+  // system's own machine, whose MSGSRV32 a thrown error would end)
   def('CLAUDE', 'Handle', 5, function (h, msg, wp, lp, res) {
+    try { return handle.call(this, h, msg, wp, lp, res); }
+    catch (e) { console.error(e); try { if (app.kid[ID.STATUS]) text(this, app.kid[ID.STATUS], 'status', `Claude: ${e.message}`); } catch (_) {} return 0; }
+  });
+  function handle(h, msg, wp, lp, res) {
     const p = this, done = (v = 0) => { p.w32(res, v); return 1; };
     if (h !== app.hwnd) return 0;
     if (msg === WM.SIZE) { layout(p, lp & 0xffff, lp >>> 16); return done(); }
@@ -430,6 +472,7 @@
         if (st.draw_attention_on_notifications !== false) U(p, 'FlashWindow', [h, 1]);
       }
     }
+    if (msg === WM.TIMER && app.wantDialog) { const [t, proc] = app.wantDialog; app.wantDialog = null; U(p, 'PostMessageA', [h, 0x8004, t, p.thunkFor('CLAUDE', proc)]); }   // (a dialog whose contents came from the page)
     if (msg === WM.TIMER && app.nextSay) { const q = app.nextSay; app.nextSay = null; say(p, q.text, q.sid); }
     if (msg === WM.TIMER) {
       if (app.dirty || regGet(KEY, 'sessions') !== app.raw || regGet(KEY, 'view') !== app.rawView || regGet(KEY, 'cards') !== app.rawCards) { app.dirty = false; showAll(p); }
@@ -463,6 +506,14 @@
     if (c === ID.SEND || c === 1) { send(p); return done(); }                         // (IDOK: Enter in the prompt)
     if (c === ID.NEW) { newSession(p); return done(); }
     if (c === ID.EXIT) { U(p, 'PostMessageA', [h, WM.CLOSE, 0, 0]); return done(); }
+    if (c === CMD.SETTINGS && !app.settingsOpen) {   // the settings as get_settings has them, then the dialog (WM_APP+4)
+      app.settingsOpen = true; app.tplSettings = app.tplSettings || settingsTemplate(p);
+      page('ccd_settings__get_settings', {}, (current() || {}).id).then(r => {
+        try { app.settingsNow = JSON.parse(r.result).settings; } catch (_) { app.settingsNow = {}; }
+        app.wantDialog = [app.tplSettings, 'SettingsProc'];
+      });
+      return done();
+    }
     if (c === CMD.ATTACH && !app.ofn) {   // the Open dialog, run by the program's WndProc (WM_APP+3): its answer comes to Opened
       const o = app.ofn = { at: p.alloc(76), file: p.alloc(260) };
       const filter = sz(p, 'ofn-filter', 'Text Files (*.txt)\0*.TXT\0All Files (*.*)\0*.*\0\0');
@@ -564,5 +615,5 @@
       showAll(p); return done();
     }
     return 0;
-  });
+  }
 })();
