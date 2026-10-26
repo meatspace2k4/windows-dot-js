@@ -3083,7 +3083,21 @@ P.signal = function (e) { if (!e) return; e.set = true; this.wakeWaiters(e); };
 P.wakeWaiters = function (o) { if (o.waiters) { for (const t of o.waiters) t.blocked = false; o.waiters.clear(); } };
 def16('KERNEL', 457, 'll', 'l', function (manual, initial) { return this.newHandle({ kind: 'event', manual: !!manual, set: !!initial }); });   // CreateW32Event
 def16('KERNEL', 458, 'l', 'l', function (h) { const e = ev16(this, h); if (!e) return 0; this.signal(e); return 1; });   // SetW32Event
-def16('KERNEL', 459, 'l', 'l', function (h) { const e = ev16(this, h); if (!e) return 0; e.set = false; return 1; });  // ResetW32Event
+// ResetW32Event. USER sleeps a Win32 thread's queue by arming its wake mask, resetting the queue's event and waiting on
+// it; a thread that sends or posts to the queue in between clears the mask and sets the event, and the reset then took
+// that wake away: the queue slept for good with the mask clear and the message waiting (Explorer's thread with a
+// SendMessage pending, the busy pointer for good). A queue USER has woken keeps its event set
+def16('KERNEL', 459, 'l', 'l', function (h) { const e = ev16(this, h); if (!e) return 0; if (!this.queueWoken(h)) e.set = false; return 1; });
+/** whether `h` is the event of a thread's queue that USER has woken since it was armed: its wake mask (4Ch) cleared by
+ *  the waker, its wake bits (48h) set */
+P.queueWoken = function (h) {
+  for (const t of (this.threadsById || new Map()).values()) {
+    if (!t.queue || !this.selValid(t.queue)) continue;
+    const q = this.selBase(t.queue); if (this.r32(q + 0xc) !== u32(h)) continue;
+    return !this.r16(q + 0x4c) && !!this.r16(q + 0x48);
+  }
+  return false;
+};
 // WaitForSingleObject: a thread waiting at its top level for an event that is not set gives up its slice (the other
 // threads, the system thread among them, run) and waits again when resumed; elsewhere the wait times out at once
 /** a wait at a thread's top level for an object not yet set: the thread gives up its slice until it is set, or until
@@ -3270,6 +3284,18 @@ P.runUntilIdle = function (pc, rounds = 500) {
 P.pcThreadEnded = function (t) {
   const pc = t.pc; if (pc.exitCode !== null) return;
   if (![...this.threadsById.values()].some(x => x.pc === pc && x.state && x.state !== 'done')) this.endProcess(pc, t.exitCode || 0);
+  else this.threadExitUser(t);
+};
+/** USER told of the end of one thread of a process that goes on, as KERNEL32 tells it from the exiting thread
+ *  (SignalProc32, USIG_THREAD_EXIT): the thread's windows and queue go, and what was sent to it is answered. Told only
+ *  as a whole process ended, an Explorer folder window's thread that ended left its queue behind, and the folder's
+ *  window never filled (the busy pointer for good) */
+P.threadExitUser = function (t) {
+  const pc = t.pc, u = pc && pc.started && pc.exe && this.ne && this.ne.get('USER'), sig = u && u.meta && this.neExport(u, 391);
+  if (!sig || !t.queue || t.userExited) return;
+  t.userExited = true;
+  const by = this.thread16; this.thread16 = t;
+  try { this.user16(391, [['l', 0x20], ['l', t.id], ['l', 3], ['w', this.hinst16(pc.exe.base)]]); } catch (e) { console.error(e); } finally { this.thread16 = by; }
 };
 /** a started process's end (ExitProcess, or its last thread): its threads stop */
 P.endProcess = function (pc, code) {
