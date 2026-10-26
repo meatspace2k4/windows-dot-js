@@ -312,6 +312,9 @@ P.loadNEFile = function (name) {
  *  imports by ordinal or by name, chains and additive ones; an import reaches a native or JS module through the 16-bit
  *  import thunks, another such module at its export), its entry table its exports; its code translated as it runs
  *  (dyn.js: no module's text is there, the dispatcher sends it there) */
+// KERNEL's exports that are constants, as tools/recomp.py resolves them: __AHSHIFT, __AHINCR, __WINFLAGS, __FLATCS,
+// __FLATDS, and the selectors of fixed real-mode memory (__0000H, __0040H, __A000H ... __F000H, __ROMBIOS)
+const KERNEL_EQUATES = { 113: 3, 114: 8, 178: 0x0c29, 454: L.FLATCS, 455: L.FLATDS, 183: 0x107, 193: 0x10f, 174: 0x117, 181: 0x11f, 182: 0x127, 195: 0x12f, 179: 0x137, 190: 0x13f, 194: 0x147, 173: 0x147 };
 P.loadNEDynamic = function (key, file) {
   const n = rd.u32(file, 0x3c), h = o => rd.u16(file, n + o), shift = h(0x32) || 9;
   const nseg = h(0x1c), segt = n + h(0x22), autodata = h(0x0e);
@@ -319,7 +322,7 @@ P.loadNEDynamic = function (key, file) {
   // names: the resident table (its first entry the module's name) and the non-resident one, each name -> ordinal
   const names = {}; let modName = key.replace(/^.*\\/, '').replace(/\.[^.]*$/, '');
   for (const [at, end] of [[n + h(0x26), n + h(0x28)], [rd.u32(file, n + 0x2c), rd.u32(file, n + 0x2c) + h(0x20)]]) {
-    for (let p = at, first = true; p < end && file[p]; p += 3 + file[p], first = false) { const s = pstr(p).toUpperCase(); if (first && at === n + h(0x26)) modName = s; else names[s] = rd.u16(file, p + 1 + file[p]); }
+    for (let p = at, first = true; p < end && file[p]; p += 3 + file[p], first = false) { const s = pstr(p).toUpperCase(); if (first && at === n + h(0x26)) modName = s.replace(/\0+$/, ''); else names[s] = rd.u16(file, p + 1 + file[p]); }
   }
   const name = modName.toUpperCase();
   if (this.ne.has(name)) return this.ne.get(name);
@@ -359,6 +362,7 @@ P.loadNEDynamic = function (key, file) {
     const m = mod === 'KERNEL' ? null : this.loadLibrary16(mod, true);
     if (!m && mod !== 'KERNEL' && !JS16.includes(mod)) throw Object.assign(new Error(`${mod}.DLL could not be loaded`), { missing16: this.missing16 || `${mod}.DLL` });   // (a DLL of its own that did not load: neither does it)
     if (typeof ord === 'string') ord = (m && m.names && m.names[ord.toUpperCase()]) || (names16(mod) || {})[ord.toUpperCase()] || 0;
+    if (mod === 'KERNEL' && KERNEL_EQUATES[ord] !== undefined) { const c = KERNEL_EQUATES[ord]; return u32(c << 16 | c); }   // (its constants: the value at a segment or an offset fixup)
     if (m && m.meta && m.meta.dynamic) { if (!m.inited && m !== rec) { m.inited = true; this.initNE(m); } return m.exports.get(ord) || 0; }   // (its LibEntry run as it is loaded)
     return this.thunk16For(`${m && m.kind !== 'js' ? m.name : mod}.#${ord}`);
   };
@@ -2127,6 +2131,7 @@ def16('KERNEL', 20, 'w', 'l', function (h) { const b = this.gblock(h); return b 
 def16('KERNEL', 21, 'w', 'l', function (s) { const b = this.gblock(s); if (!b) return 0; const sel = this.gsel(s); return u32(((b.flags & GMEM_MOVEABLE ? sel - 1 : sel) & 0xffff) | (sel << 16)); });  // GlobalHandle
 def16('KERNEL', 197, 'w', 'w', function (h) { return this.gsel(h); });   // GlobalFix
 def16('KERNEL', 198, 'w', 'w', function (h) { return 1; });         // GlobalUnfix
+def16('KERNEL', 199, 'w', 'w', function (n) { return Math.min(n, 255); });   // SetHandleCount: the task's file handles, up to 255
 def16('KERNEL', 230, 'w', 'w', function (h) { return this.gsel(h); });   // GlobalSmartPageLock
 def16('KERNEL', 231, 'w', 'w', function (h) { return this.gsel(h); });   // GlobalSmartPageUnlock
 // GetHeapSpaces(hModule): LOWORD = bytes free in its DGROUP's local heap, HIWORD = the size it can have (64K), the
@@ -2146,6 +2151,7 @@ def16('KERNEL', 177, 'ww', 'w', function (src, dst) {    // PrestoChangoSelector
   const acc = this.r32(L.ACC + (src & 0xfff8)); this.setDesc(dst, this.selBase(src), this.selLimit(src), acc ^ 0x0800); this.refreshSegs(); return dst;
 });
 def16('KERNEL', 170, 'w', 'w', function (s) { return this.allocSels(this.selBase(s), this.selLimit(s) + 1, 0xf300); });   // AllocCStoDSAlias
+def16('KERNEL', 171, 'w', 'w', function (s) { return this.allocSels(this.selBase(s), this.selLimit(s) + 1, 0xfb00); });   // AllocDStoCSAlias
 def16('KERNEL', 184, 'l', 'l', function (n) {           // GlobalDOSAlloc: conventional memory, DX = paragraph, AX = selector
   n = (u32(n) + 15) & ~15; if (this.dosTop + n > 0xa0000) return 0;
   const lin = this.dosTop; this.dosTop += n; this.u8.fill(0, lin, lin + n);
@@ -2155,6 +2161,7 @@ def16('KERNEL', 184, 'l', 'l', function (n) {           // GlobalDOSAlloc: conve
 def16('KERNEL', 185, 'w', 'w', function (s) { const b = this.gblock(s); if (b) { this.ghandles.delete(this.gsel(s)); this.freeSels(this.gsel(s), b.n); } return 0; });
 
 def16('KERNEL', 36, '', 'w', function () { return this.currentTask(); });                 // GetCurrentTask
+def16('KERNEL', 37, '', 'w', function () { const t = this.thread16; return (t && t.task && t.task.psp) || 0; });   // GetCurrentPDB: the task's PSP
 def16('KERNEL', 501, 'w', 'w', function (v) { const old = this.k501 || 0; this.k501 = v & 0xff; return old; });   // (no name): KRNL386 swaps a byte of its data (19E3h) with the argument and returns the old one; MMSYSTEM sets 1 around loading a driver
 def16('KERNEL', 159, 'w', 'l', function (sel) { return K16['KERNEL.#21'][2].call(this, sel); });   // GlobalHandleNoRIP: GlobalHandle without the debug-system complaint
 def16('KERNEL', 122, '', 'w', () => 0);   // IsTaskLocked: no task has locked the system (LockCurrentTask)
@@ -2207,7 +2214,7 @@ def16('KERNEL', 95, 's', 'w', function (name) { const m = this.loadLibrary16(nam
 def16('KERNEL', 96, 'w', 'v', function () {});                                                                     // FreeLibrary
 def16('KERNEL', 46, 'w', 'v', function () {});                                                                     // FreeModule
 def16('KERNEL', 93, 'x', 'l', function (fp) { const s = fp >>> 16; const b = this.gblock(s); return b ? u32((s << 16) | (s - 1)) : 0; });   // GetCodeHandle
-def16('KERNEL', 167, 'w', 'w', function () { return 0x400; });                                                     // GetExpWinVer
+def16('KERNEL', 167, 'w', 'w', function (h) { const m = this.neByHandle(h), f = m && m.file; return f ? rd.u16(f, rd.u32(f, 0x3c) + 0x3e) || 0x400 : 0x400; });   // GetExpWinVer: the version of Windows the module's header expects (USER holds a 3.0 program to 3.0's rules)
 def16('KERNEL', 354, 'w', 'l', function () { return 0; });                                                         // GetAppCompatFlags
 def16('KERNEL', 107, 'w', 'w', function (m) { const o = this.errMode16 || 0; this.errMode16 = m; return o; });     // SetErrorMode
 def16('KERNEL', 147, 'l', 'v', function (e) { this.lastError = e; });
@@ -2239,6 +2246,10 @@ def16('KERNEL', 327, '', 'jmp', function () {    // HandleParamError: BX = error
   const err = this.cpu.ebx.value & 0xffff, ssb = this.cpu.ssb.value >>> 0, sp = this.cpu.esp.value & 0xffff;
   const ip = this.r16(ssb + sp), cs = this.r16(ssb + sp + 2);
   if (window.W95PARAMERR) window.W95PARAMERR(err, cs, ip, this);
+  // (in the machine's fault log as the debug KERNEL reports one: the error, the parameter, the caller; cmd 'faults')
+  const fm = this.neByHandle(cs), ps = this.cpu.ecx.value & 0xffff, pm = this.neByHandle(ps), pg = pm && pm.segs && pm.segs.find(s => (s.sel | 1) === (ps | 1)), gh = this.ghandles && this.ghandles.get(ps | 1);
+  (this.faultLog || (this.faultLog = [])).push({ why: `parameter error ${err.toString(16)}, parameter ${(ps << 16 | (this.cpu.eax.value & 0xffff)).toString(16)} (${pm ? `${pm.name} segment ${pg ? `${pg.num}, flags ${pg.flags.toString(16)}` : '?'}` : gh ? `a global block of ${gh.size} bytes${gh.code ? ', code' : ''}` : 'no module'})`, at: `${fm ? fm.name : cs.toString(16)} ${cs.toString(16)}:${ip.toString(16)}` });
+  if (this.faultLog.length > 50) this.faultLog.shift();
   if (err & 0x8000) return this.retf16(0);
   const bp = this.cpu.ebp.value & 0xffff, nbp = this.r16(ssb + bp) & 0xfffe, handler = this.r16(ssb + ((bp - 2) & 0xffff));
   this.cpu.esp.value = lo16(this.cpu.esp.value, bp + 2); this.cpu.ebp.value = lo16(this.cpu.ebp.value, nbp);   // frame popped: SP at the return address
@@ -2699,6 +2710,11 @@ def16('KERNEL', 61, 'ww', 'w', function (h, hr) {               // LoadResource
 });
 def16('KERNEL', 62, 'w', 'l', function (h) { const b = this.gblock(h); return b ? u32(this.gsel(h) << 16) : 0; });   // LockResource
 def16('KERNEL', 63, 'w', 'w', () => 0);
+def16('KERNEL', 64, 'ww', 'w', function (h, hr) {               // AccessResource: the module's file opened for reading at the resource
+  const e = this.resHandles && this.resHandles[hr / 4 - 1]; if (!e || !e.m || !e.m.path) return 0xffff;
+  const fh = this.dosOpen(e.m.path, 'r'), f = this.dosFiles.get(fh); if (f) this.fs.seek(f.fd, e.r.off, 0);
+  return fh;
+});
 
 // USER services the 16-bit system modules call (the window manager itself is JS)
 def16('USER', 176, 'wwpi', 'i', function (hInst, id, buf, n) {     // LoadString from an NE module's RT_STRING blocks
