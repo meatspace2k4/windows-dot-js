@@ -1005,13 +1005,15 @@ const DOS_KEYS = { Enter: 0x1c0d, Backspace: 0x0e08, Escape: 0x011b, Tab: 0x0f09
   F6: 0x4000, F7: 0x4100, F8: 0x4200, F9: 0x4300, F10: 0x4400 };
 const DOS_SCAN = '1234567890-=..qwertyuiop[]..asdfghjkl;\'`.\\zxcvbnm,./';   // (the scan codes of the main keys, from 02h)
 let dosFont = null;
+const dosMachines = new Set();   // (the MS-DOS machines running: win95.dos)
 function dosBox(program, args) {
   const V = window.W95V86, D = window.W95DOS, bytes = s => b64bytes(s);
+  try { program = fs.stat(program).shortPath; } catch (_) { /* (DOS's own name for it: its 8.3 path) */ }
   if (!dosFont) { const d = window.W95SYSTEM && W95SYSTEM.dos && W95SYSTEM.dos['EGA.CPI']; if (d) dosFont = cpiFont(b64bytes(d), 437, 14); }
   const msdos = '[Paths]\r\nWinDir=C:\\WINDOWS\r\nWinBootDir=C:\\WINDOWS\r\nHostWinBootDrv=C\r\n[Options]\r\nBootGUI=0\r\nLogo=0\r\n' + Array(20).fill(';' + 'x'.repeat(68)).join('\r\n') + '\r\n';
   const files = [{ name: 'IO.SYS', data: bytes(D.files['IO.SYS']), attr: 7 }, { name: 'MSDOS.SYS', data: W95FS.encode(msdos), attr: 7 },
     ...Object.keys(D.files).filter(p => p !== 'IO.SYS').map(p => ({ path: p, data: bytes(D.files[p]) }))];
-  const m = V.machine({ disk: V.fat16(bytes(D.boot), files, 16), program, args });
+  const m = V.machine({ disk: V.fat16(bytes(D.boot), files, 16), program, args, fs });   // (its drives Windows' own: v86.js takeDrives)
   m.v86Clock(); m.v86Boot();
   const cv = mkc(640, 350), tx = cv.getContext('2d'), im = tx.createImageData(640, 350), px = new Uint32Array(im.data.buffer);
   const rgb = c => 0xff000000 | (c & 0xff) << 16 | (c & 0xff00) | (c >>> 16 & 0xff);
@@ -1038,9 +1040,10 @@ function dosBox(program, args) {
       if (!k) return false;
       m.keys.push(k); m.halted = false; return true;
     },
-    onClose() { clearInterval(timer); },
+    onClose() { clearInterval(timer); dosMachines.delete(m); },
     machine: m,
   };
+  dosMachines.add(m);
   win = openWin(new Win({ title: 'MS-DOS Prompt', icon: 'app', x: 60, y: 40, w: 640 + 6, h: 350 + 6 + 19, resizable: false, maximizable: false, body }));
   // the machine's time: slices of the page's, a few milliseconds each, while it has work (an idle machine waits)
   timer = setInterval(() => {
@@ -3178,6 +3181,10 @@ function installPrograms() {
   for (const d of Object.values(S.ne || {})) if (d.fileName && !d.onDisk) put(join(WINDIR, d.fileName === 'PROGMAN.EXE' ? '' : 'SYSTEM', d.fileName), d.file);   // (a printer driver: as the Add Printer wizard copies it; Program Manager in the Windows folder, COPY.INF)
   // MS-DOS's command interpreter, where Setup puts it: the root's (IO.SYS starts it) and the Windows folder's
   const DOS = window.W95DOS; if (DOS) for (const p of ['C:\\COMMAND.COM', join(WINDIR, 'COMMAND.COM')]) put(p, DOS.files['COMMAND.COM']);
+  // and WIN.COM, which IO.SYS's shell runs to start Windows (Setup builds it from WIN.CNF)
+  if (DOS && DOS.files['WINDOWS\\WIN.COM']) put(join(WINDIR, 'WIN.COM'), DOS.files['WINDOWS\\WIN.COM']);
+  // the MS-DOS programs, in C:\WINDOWS\COMMAND (LDID_COMMAND)
+  if (DOS && DOS.command) { fs.mkdir(join(WINDIR, 'COMMAND'), { recursive: true }); for (const [n, d] of Object.entries(DOS.command)) put(join(WINDIR, 'COMMAND', n), d); }
 }
 class NativeWin extends Win {
   constructor(app, n) {
@@ -5047,5 +5054,5 @@ const ccdUi = () => ({
   gfx: { K, fill, field, text, esc, wrap, textW, ellipsis, btnUp, btnDown, focusRect, clip: (x, y, w, h, f) => { ctx.save(); ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip(); try { f(); } finally { ctx.restore(); } } },
   Win, DialogBody, popup: openPopup, on: script.on,
 });
-window.win95 = { ...script, get ccd() { return ccdApi || (ccdApi = window.W95Ccd ? window.W95Ccd(ccdUi()) : null); }, get nativeApps() { return [...nativeApps]; }, startSystem, get sysApp() { return sysApp; }, netBoot, netCall, syncNetDrives, mapNetDrive, disconnectNetDrive, fs, render, displayProperties, startFullSaver, get fullSaver() { return fullSaver; }, properties, driveProps, openFolder, openPath, shellOpen, notepad, msgBox, runDialog, findComputer, findFiles, winHelp, shutDownDialog, MyComputer, get state() { return { menus: menus.length, menuSrc, modals: modals.length, cap: !!cap, drag: !!drag, screen, active: active && active.title }; } };
+window.win95 = { ...script, get ccd() { return ccdApi || (ccdApi = window.W95Ccd ? window.W95Ccd(ccdUi()) : null); }, get nativeApps() { return [...nativeApps]; }, get dos() { return [...dosMachines]; }, startSystem, get sysApp() { return sysApp; }, netBoot, netCall, syncNetDrives, mapNetDrive, disconnectNetDrive, fs, render, displayProperties, startFullSaver, get fullSaver() { return fullSaver; }, properties, driveProps, openFolder, openPath, shellOpen, notepad, msgBox, runDialog, findComputer, findFiles, winHelp, shutDownDialog, MyComputer, get state() { return { menus: menus.length, menuSrc, modals: modals.length, cap: !!cap, drag: !!drag, screen, active: active && active.title }; } };
 })();

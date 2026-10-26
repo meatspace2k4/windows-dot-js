@@ -350,7 +350,7 @@ function translate(p, lin, csb, d32, v86) {
       continue;
     }
     if (b === 0xa8 || b === 0xa9) { const sz = b & 1 ? osz : 1; rdReg(0, sz); f.c(imm(sz)).op('and').ls(R); f.c(0).gs('cf'); f.c(0).gs('of'); szp(sz); continue; }
-    if ((b >= 0xa4 && b <= 0xa7) || (b >= 0xaa && b <= 0xaf)) { strop(f, b, osz, asz, seg, rep, { T, A, B, C, R, X, D }, alu2, szp, dev); continue; }
+    if ((b >= 0xa4 && b <= 0xa7) || (b >= 0xaa && b <= 0xaf) || (b >= 0x6c && b <= 0x6f)) { strop(f, b, osz, asz, seg, rep, { T, A, B, C, R, X, D }, alu2, szp, dev); continue; }
     if (b >= 0xb0 && b < 0xb8) { f.c(fetch()).ls(T); wrReg(b & 7, 1, T); continue; }
     if (b >= 0xb8 && b < 0xc0) { f.c(osz === 4 ? fetch32() : fetch16()).ls(T); wrReg(b & 7, osz, T); continue; }
     if (b === 0xc0 || b === 0xc1 || (b >= 0xd0 && b <= 0xd3)) {
@@ -726,9 +726,13 @@ function strop(f, b, osz, asz, seg, rep, L, alu2, szp, dev) {
     f.gs(r);
   };
   const srcBase = seg === null ? 'dsb' : ['esb', 'csb', 'ssb', 'dsb', 'fs', 'gsb'][seg];
-  const kind = b <= 0xa5 ? 'movs' : b <= 0xa7 ? 'cmps' : b <= 0xab ? 'stos' : b <= 0xad ? 'lods' : 'scas';
+  const kind = b === 0x6c || b === 0x6d ? 'ins' : b === 0x6e || b === 0x6f ? 'outs' : b <= 0xa5 ? 'movs' : b <= 0xa7 ? 'cmps' : b <= 0xab ? 'stos' : b <= 0xad ? 'lods' : 'scas';
   const body = () => {
-    if (kind === 'movs') { f.gg('esb'); idx('edi'); f.op('add').lt(D); f.gg(srcBase); idx('esi'); f.op('add'); ld(); f.st(sz); dev(D, sz); step('esi'); step('edi'); }
+    // ins / outs: a port's value to ES:(E)DI, or DS:(E)SI's to the port, through the host's port I/O (which reads
+    // and writes EAX: EAX kept around it)
+    if (kind === 'ins') { f.gg('eax').ls(X); f.gg('edx').c(0xffff).op('and').c(sz | 8).e(0x10, 0); f.gg('esb'); idx('edi'); f.op('add').gg('eax').st(sz); f.lg(X).gs('eax'); step('edi'); }
+    else if (kind === 'outs') { f.gg('eax').ls(X); f.gg(srcBase); idx('esi'); f.op('add').ld(sz).gs('eax'); f.gg('edx').c(0xffff).op('and').c(sz).e(0x10, 0); f.lg(X).gs('eax'); step('esi'); }
+    else if (kind === 'movs') { f.gg('esb'); idx('edi'); f.op('add').lt(D); f.gg(srcBase); idx('esi'); f.op('add'); ld(); f.st(sz); dev(D, sz); step('esi'); step('edi'); }
     else if (kind === 'stos') { f.gg('esb'); idx('edi'); f.op('add').lt(D).gg('eax').st(sz); dev(D, sz); step('edi'); }
     else if (kind === 'lods') { f.gg(srcBase); idx('esi'); f.op('add'); ld(); f.ls(T); if (sz === 4) f.lg(T).gs('eax'); else f.gg('eax').c(sz === 2 ? 0xffff0000 : 0xffffff00).op('and').lg(T).op('or').gs('eax'); step('esi'); }
     else if (kind === 'scas') { f.gg('eax').ls(B); f.gg('esb'); idx('edi'); f.op('add'); ld(); f.ls(C); alu2(7, sz); step('edi'); }

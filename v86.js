@@ -35,6 +35,7 @@ const M = { machine, V86_BASE };
 P.lin = function (seg, off) { return this.v86 + (((seg & 0xffff) << 4) + (off & 0xffff)); };
 P.m8 = function (a) { return this.u8[this.v86 + a]; };
 P.m16 = function (a) { return this.dv.getUint16(this.v86 + a, true); };
+P.m32 = function (a) { return this.dv.getUint32(this.v86 + a, true); };
 P.s8 = function (a, v) { this.u8[this.v86 + a] = v; };
 P.s16 = function (a, v) { this.dv.setUint16(this.v86 + a, v & 0xffff, true); };
 P.s32 = function (a, v) { this.dv.setUint32(this.v86 + a, v >>> 0, true); };
@@ -98,6 +99,7 @@ P.v86Run = function (n = 20000) {
     catch (e) { if (!(e instanceof WebAssembly.RuntimeError)) throw e; this.trapped = `${e.message} at ${(eip - this.v86).toString(16)}`; return 'trap'; }
     if (this.halted) { this.cpu.eip.value = eip; return 'idle'; }
     if (eip === this.boxReturn) { this.cpu.eip.value = eip; this.exited = true; return 'exit'; }   // (the box's program has ended)
+    if (eip === this.want52) { this.want52 = 0; this.lol = this.lin(this.cpu.es.value, this.r('bx')) - this.v86; }   // (DOS's List of Lists, as INT 21h AH=52h answers)
   }
   this.cpu.eip.value = eip; return 'run';
 };
@@ -106,7 +108,8 @@ P.v86Run = function (n = 20000) {
 P.v86Interrupts = function () {
   const now = Date.now();
   if (now - this.ticksAt >= 55) { this.ticksAt = now; this.irq |= 1; }
-  if (this.keys.length && !(this.irq & 2) && !this.kbdBusy) { const k = this.keys.shift(); this.port60Key = k; this.port60 = k >> 8; this.irq |= 2; this.kbdBusy = true; }   // (a key: its scan code << 8 | its character)
+  const queued = ((this.m16(0x41c) - this.m16(0x41a) + 32) % 32) >> 1;   // (the BIOS's buffer: keys wait in the host's while it is nearly full, none lost)
+  if (this.keys.length && !(this.irq & 2) && !this.kbdBusy && queued < 12) { const k = this.keys.shift(); this.port60Key = k; this.port60 = k >> 8; this.irq |= 2; this.kbdBusy = true; }   // (a key: its scan code << 8 | its character)
   if (!this.irq || !this.cpu.if.value) return;
   const n = this.irq & 1 ? 0 : 1; this.irq &= ~(1 << n);
   this.halted = false;
@@ -146,7 +149,159 @@ HOOK[0x21] = function (next) {
   this.sreg('ds', ROM >> 4); this.w('dx', 0x3000);
   const pb = this.lin(this.cpu.es.value, this.r('bx')) - this.v86; this.s16(pb + 2, 0x3100); this.s16(pb + 4, ROM >> 4);
   this.boxReturn = next;
+  // (the box's window shows its program from a clear screen, as a DOS box opens: the boot's lines gone)
+  for (let i = 0; i < 4000; i += 2) { this.s8(0xb8000 + i, 0x20); this.s8(0xb8001 + i, 0x07); }
+  this.s8(0x450, 0); this.s8(0x451, 0); this.dirty = true;
   return false;
+};
+
+// ---------------------------------------------------------------- the drives Windows has: IFSMgr's part
+// As IFSMgr takes the VM's drives over, the machine's C: and D: (and each drive Windows has) are DOS network drives
+// whose calls come to the redirector interface (INT 2Fh AH=11h) and are answered from Windows' own file system
+// (o.fs, fs.js): DOS routes every file call on them there, its own EXEC's reads among them. DOS's tables are found as
+// DOS gives them: the List of Lists from INT 21h AH=52h (IO.SYS asks for it as it starts), its Swappable Data Area at
+// 320h in the same segment (MS-DOS 5 and later); the drives are taken at the first EXEC, the shell's
+const SDA = { DTA: 0x0c, FN1: 0x9e, FN2: 0x11e, SDB: 0x19e, DIRENT: 0x1b3, SATTR: 0x24d, XACTION: 0x2dd, XATTR: 0x2df, XMODE: 0x2e1 };
+const HOOK21 = HOOK[0x21];
+HOOK[0x21] = function (next) {
+  if (this.ah() === 0x52 && !this.lol) this.want52 = next;   // (its answer, ES:BX, read as the call returns: v86Run)
+  // (the drives taken as the shell is run, once DOS has its drive table from CONFIG.SYS: IO.SYS's own EXECs of
+  // WINBOOT.SYS and IO.SYS come before it; and again should DOS make the table anew)
+  if (this.lol && this.o.fs) {
+    if (!this.drivesTaken && this.ah() === 0x4b && this.al() === 0 && /COMMAND\.COM$/i.test(ascii(this, this.lin(this.cpu.ds.value, this.r('dx')) - this.v86))) this.takeDrives();
+    else if (this.drivesTaken && this.m32(this.lol + 0x16) !== this.cdsAt) this.takeDrives();
+  }
+  return HOOK21.call(this, next);
+};
+P.takeDrives = function () {
+  this.drivesTaken = true; this.cdsAt = this.m32(this.lol + 0x16);
+  const lol = this.lol, cds =this.lin(this.m16(lol + 0x18), this.m16(lol + 0x16)) - this.v86, last = this.m8(lol + 0x21);
+  this.sda = lol - 0x26 + 0x320;   // (the List of Lists is at DOS's data segment:0026h, the SDA at :0320h)
+  for (const v of this.o.fs.volumes()) {
+    const d = v.letter.charCodeAt(0) - 65; if (d < 2 || d >= last || v.kind === 'remote') continue;
+    const e = cds + d * 0x58;
+    const path = `${v.letter}:\\`; for (let i = 0; i < 67; i++) this.s8(e + i, i < path.length ? path.charCodeAt(i) : 0);
+    this.s16(e + 0x43, 0xc000);   // (network, physical: a redirected drive)
+    this.s16(e + 0x4f, 2);        // (the root's backslash)
+  }
+  this.redir = this.redir || new Map(); this.nextRedir = this.nextRedir || 1; this.searches = this.searches || new Map();
+  this.v86Hooks.add(0x2f);
+};
+const ascii = (p, a, n = 128) => { let s = ''; for (let i = 0; i < n && p.m8(a + i); i++) s += String.fromCharCode(p.m8(a + i)); return s; };
+const dosDate = t => { const d = new Date(t || 0); return { time: (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1), date: Math.max(0, d.getFullYear() - 1980) << 9 | ((d.getMonth() + 1) << 5) | d.getDate() }; };
+const fcbName = n => { const [b, e = ''] = n.toUpperCase().split('.'); return (b.padEnd(8).slice(0, 8) + e.padEnd(3).slice(0, 3)); };
+// a pattern in the 8.3 form DOS keeps (? for each position), matched against a short name
+const match11 = (pat, name) => { const n = fcbName(name); for (let i = 0; i < 11; i++) if (pat[i] !== '?' && pat[i] !== n[i]) return false; return true; };
+const toPat = s => { const [b, e = ''] = s.toUpperCase().split('.'), f = (x, w) => { let o = ''; for (const c of x) { if (c === '*') { o = o.padEnd(w, '?'); break; } o += c; } return o.padEnd(w).slice(0, w); }; return f(b, 8) + f(e, 3); };
+HOOK[0x2f] = function () {
+  if (this.ah() !== 0x11 || !this.redir) return false;
+  const fs = this.o.fs, al = this.al(), sda = this.sda, fn1 = () => ascii(this, sda + SDA.FN1), fn2 = () => ascii(this, sda + SDA.FN2);
+  // (taken before the INT: its answer in the flags and registers as they are, its caller's word argument at SS:SP)
+  const note = s => { const l = this.rlog; if (l && l.length) l[l.length - 1] += ` -> ${s}`; };
+  const ok = () => { this.cpu.cf.value = 0; note('ok'); return true; };
+  const fail = code => { this.w('ax', code); this.cpu.cf.value = 1; note(`error ${code}`); return true; };
+  const ours = p => /^[A-Z]:/i.test(p) && fs.vols && fs.vols.has(p[0].toUpperCase()) && !(fs.vols.get(p[0].toUpperCase()).remote);
+  const err = e => fail(e && e.code && e.code < 0x100 ? e.code : 5);
+  const sft = () => this.lin(this.cpu.es.value, this.r('di')) - this.v86;
+  const stackArg = () => this.m16(this.lin(this.cpu.ss.value, this.r('sp')) - this.v86);
+  const dta = () => this.lin(this.m16(sda + SDA.DTA + 2), this.m16(sda + SDA.DTA)) - this.v86;
+  const fill = (s, path, mode, id) => {   // an SFT for a file opened: its mode, attributes, the drive (remote), times, size, position, name
+    const st = fs.stat(path), { time, date } = dosDate(st.mtime);
+    this.s16(s + 2, mode); this.s8(s + 4, st.attrs & 0x3f); this.s16(s + 5, 0x8040 | (path.charCodeAt(0) - 65));
+    this.s32(s + 7, 0); this.s16(s + 0x0b, id); this.s16(s + 0x0d, time); this.s16(s + 0x0f, date); this.s32(s + 0x11, st.size); this.s32(s + 0x15, 0);
+    [...fcbName(st.shortName || st.name)].forEach((c, i) => this.s8(s + 0x20 + i, c.charCodeAt(0)));
+  };
+  const open = (path, mode, how) => {
+    const id = this.nextRedir++, fd = fs.open(path, how); this.redir.set(id, { fd, path }); fill(sft(), path, mode, id); return id;
+  };
+  const file = () => this.redir.get(this.m16(sft() + 0x0b));
+  // (a diagnostic: the calls and how each was answered, the last 100)
+  const log = this.rlog || (this.rlog = []); log.push(`11${al.toString(16).padStart(2, '0')} ${fn1().slice(0, 60)} cx=${this.r('cx').toString(16)}`); if (log.length > 100) log.shift();
+  try {
+    switch (al) {
+      case 0x00: this.setAL(0xff); this.cpu.cf.value = 0; return true;                          // installed
+      case 0x01: { const p = fn1(); if (!ours(p)) return false; fs.rmdir(p); return ok(); }      // rmdir
+      case 0x03: { const p = fn1(); if (!ours(p)) return false; fs.mkdir(p); return ok(); }      // mkdir
+      case 0x05: { const p = fn1(); if (!ours(p)) return false; if (!fs.exists(p) || !fs.stat(p).isDir) return fail(3); return ok(); }   // chdir
+      case 0x06: { const f = file(), s = sft(); if (f) { const n = this.m16(s); if (n) this.s16(s, n - 1); if (n <= 1) { fs.close(f.fd); this.redir.delete(this.m16(s + 0x0b)); } } return ok(); }   // close
+      case 0x07: return ok();                                                                // commit
+      case 0x08: case 0x09: {                                                                 // read / write at the SFT's position
+        const f = file(), s = sft(); if (!f) return fail(6);
+        const n = this.r('cx'), at = dta(), pos = this.dv.getUint32(this.v86 + s + 0x15, true);
+        fs.seek(f.fd, pos);
+        if (al === 0x08) { const b = fs.read(f.fd, n); this.u8.set(b, this.v86 + at); this.w('cx', b.length); this.s32(s + 0x15, pos + b.length); }
+        else if (!n) { fs.truncate(f.fd, pos); this.s32(s + 0x11, pos); }
+        else { fs.write(f.fd, this.u8.slice(this.v86 + at, this.v86 + at + n)); this.s32(s + 0x15, pos + n); this.s32(s + 0x11, Math.max(this.dv.getUint32(this.v86 + s + 0x11, true), pos + n)); }
+        return ok();
+      }
+      case 0x0a: case 0x0b: return ok();                                                      // lock / unlock
+      case 0x0c: {                                                                            // disk space: 32K clusters of 512-byte sectors, as FAT16 counts them
+        const v = fs.statvfs(`${String.fromCharCode(65 + (this.m8(this.lin(this.cpu.es.value, this.r('di')) - this.v86) - 65))}:\\`);
+        const cl = 32768, tot = Math.min(0xffff, Math.floor((v.total || 0) / cl)), fr = Math.min(0xffff, Math.floor((v.free !== undefined ? v.free : (v.total || 0) - (v.used || 0)) / cl));
+        this.w('ax', 64); this.w('bx', tot); this.w('cx', 512); this.w('dx', fr); return ok();
+      }
+      case 0x0e: { const p = fn1(); if (!ours(p)) return false; fs.setAttrs(p, stackArg() & 0x27); return ok(); }   // set attributes
+      case 0x0f: {                                                                            // get attributes, size, time
+        const p = fn1(); if (!ours(p)) return false; if (!fs.exists(p)) return fail(2);
+        const st = fs.stat(p), { time, date } = dosDate(st.mtime);
+        this.w('ax', (st.attrs & 0x3f) | (st.isDir ? 0x10 : 0)); this.w('bx', st.size >>> 16); this.w('di', st.size); this.w('cx', time); this.w('dx', date); return ok();
+      }
+      case 0x11: { const p = fn1(), q = fn2(); if (!ours(p)) return false; fs.rename(p, q); return ok(); }            // rename
+      case 0x13: {                                                                            // delete (a pattern deletes each file it matches)
+        const p = fn1(); if (!ours(p)) return false;
+        const dir = p.slice(0, p.lastIndexOf('\\')) || p.slice(0, 3), pat = toPat(p.slice(p.lastIndexOf('\\') + 1));
+        const hit = fs.readdir(dir.length === 2 ? dir + '\\' : dir).filter(e => !e.isDir && match11(pat, e.shortName || e.name));
+        if (!hit.length) return fail(2); for (const e of hit) fs.unlink(e.path); return ok();
+      }
+      case 0x16: {                                                                            // open: the mode on the stack
+        const p = fn1(); if (!ours(p)) return false; if (!fs.exists(p) || fs.stat(p).isDir) return fail(2);
+        const mode = stackArg() & 0xff; open(p, mode, (mode & 3) === 0 ? 'r' : 'r+'); return ok();
+      }
+      case 0x17: { const p = fn1(); if (!ours(p)) return false; open(p, 2, 'w+'); if (stackArg() & 0x27) fs.setAttrs(p, stackArg() & 0x27); return ok(); }   // create
+      case 0x2e: {                                                                            // extended open / create (21h AX=6C00h)
+        const p = fn1(); if (!ours(p)) return false;
+        const act = this.m16(sda + SDA.XACTION), mode = this.m16(sda + SDA.XMODE) & 0xff, had = fs.exists(p);
+        if (had && fs.stat(p).isDir) return fail(5);
+        if (had && (act & 0xf) === 0) return fail(80); if (!had && !(act & 0x10)) return fail(2);
+        const how = !had ? 'w+' : (act & 0xf) === 2 ? 'w+' : (mode & 3) === 0 ? 'r' : 'r+';
+        open(p, mode, how); this.w('cx', !had ? 2 : (act & 0xf) === 2 ? 3 : 1); return ok();
+      }
+      case 0x1b: case 0x1c: {                                                                 // find first / next: the SDA's search block and entry
+        let st;
+        if (al === 0x1b) {
+          const p = fn1(); if (!ours(p)) return false;
+          const dir = p.slice(0, p.lastIndexOf('\\')), want = this.m8(sda + SDA.SATTR), pat = toPat(p.slice(p.lastIndexOf('\\') + 1));
+          if (!fs.exists(dir.length === 2 ? dir + '\\' : dir)) return fail(3);
+          let list;
+          if (want === 8) {   // (a search for the volume label alone, as DIR makes one: the label, the only entry)
+            const lb = (fs.statvfs(p.slice(0, 3)).label || '').toUpperCase(); if (!lb) return fail(18);
+            list = [{ name: lb, label: lb, attrs: 8, size: 0, mtime: Date.now() }];
+          } else {
+            list = fs.readdir(dir.length === 2 ? dir + '\\' : dir).filter(e => match11(pat, e.shortName || e.name) && (!(e.attrs & 0x16) || (e.attrs & 0x16 & want)) && (!e.isDir || (want & 0x10)));
+            if (dir.length > 2) for (const dot of ['..', '.']) if (match11(pat, dot) && (want & 0x10)) list.unshift({ name: dot, shortName: dot, isDir: true, attrs: 0x10, size: 0, mtime: 0 });   // (. and .., as a FAT folder lists them)
+          }
+          const id = this.nextRedir++; st = { list, i: 0 }; this.searches.set(id, st);
+          const sdb = sda + SDA.SDB; this.s8(sdb, 0x80 | (p.charCodeAt(0) - 65)); [...pat].forEach((c, k) => this.s8(sdb + 1 + k, c.charCodeAt(0))); this.s8(sdb + 0x0c, want); this.s16(sdb + 0x0d, id); this.s16(sdb + 0x0f, 0);
+          if (this.searches.size > 64) this.searches.delete(this.searches.keys().next().value);
+        } else {
+          const sdb = this.lin(this.cpu.es.value, this.r('di')) - this.v86; st = this.searches.get(this.m16(sdb + 0x0d));
+          if (!st) return fail(18);
+        }
+        const e = st.list[st.i++]; if (!e) return fail(18);
+        const de = sda + SDA.DIRENT, { time, date } = dosDate(e.mtime), n = e.label ? e.label.padEnd(11).slice(0, 11) : e.name === '.' || e.name === '..' ? e.name.padEnd(11) : fcbName(e.shortName || e.name);
+        [...n].forEach((c, k) => this.s8(de + k, c.charCodeAt(0))); this.s8(de + 11, (e.attrs & 0x3f) | (e.isDir ? 0x10 : 0));
+        for (let k = 12; k < 22; k++) this.s8(de + k, 0); this.s16(de + 22, time); this.s16(de + 24, date); this.s16(de + 26, 0); this.s32(de + 28, e.size || 0);
+        return ok();
+      }
+      case 0x1d: case 0x22: return ok();                                                      // close all, process ended
+      case 0x21: {                                                                            // seek from the end
+        const f = file(), s = sft(); if (!f) return fail(6);
+        const size = fs.fstat(f.fd).size, p = Math.max(0, size + ((this.r('cx') << 16 | this.r('dx')) | 0));
+        this.s32(s + 0x15, p); this.w('dx', p >>> 16); this.w('ax', p); return ok();
+      }
+      default: return false;
+    }
+  } catch (e) { note(String(e.message || e)); return err(e); }
 };
 
 // ---------------------------------------------------------------- the ports
