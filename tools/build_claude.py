@@ -12,7 +12,7 @@ here = os.path.dirname(os.path.abspath(__file__)); root = os.path.dirname(here)
 BASE = 0x00570000      # its load base: a program base of its own (build_system.py PROGRAMS), the image's preferred base too
 LOOKUP = 0x07FF0000    # its block table, past the other programs'
 IMPORTS = [('CLAUDE.DLL', ['Start', 'Handle', 'Answer', 'Opened']), ('USER32.dll', ['GetMessageA', 'IsDialogMessageA', 'TranslateMessage', 'DispatchMessageA', 'DefWindowProcA', 'MessageBoxA',
-                                                                           'TrackPopupMenu', 'DestroyMenu']),
+                                                                           'TrackPopupMenu', 'DestroyMenu', 'DialogBoxIndirectParamA']),
            ('COMDLG32.dll', ['GetOpenFileNameA']), ('KERNEL32.dll', ['ExitProcess'])]
 TEXT_RVA, IDATA_RVA, ALIGN, FALIGN = 0x1000, 0x2000, 0x1000, 0x200
 
@@ -88,9 +88,16 @@ def text(iat):
     # WM_APP+3 (an OPENFILENAME at lp): a file to attach to the prompt, chosen in the system's Open dialog (COMDLG32's
     # GetOpenFileNameA, a modal loop of its own); whether one was chosen goes to CLAUDE.DLL's Opened
     label['open'] = len(code)
-    emit(0x81, 0x7D, 0x0C); code.extend(struct.pack('<I', 0x8003)); jcc(0x85, 'handle')
+    emit(0x81, 0x7D, 0x0C); code.extend(struct.pack('<I', 0x8003)); jcc(0x85, 'dialog')
     emit(0xFF, 0x75, 0x14); call('GetOpenFileNameA')     # push lp; GetOpenFileNameA(lp)
     emit(0x50); call('Opened')                           # Opened(chosen)
+    emit(0x31, 0xC0, 0xC9, 0xC2, 0x10, 0x00)
+    # WM_APP+4 (a dialog template at wp, its dialog procedure at lp: CLAUDE.DLL's): a dialog of the program's (Rename
+    # Session), shown modally as a program shows one; what it answers, its procedure keeps
+    label['dialog'] = len(code)
+    emit(0x81, 0x7D, 0x0C); code.extend(struct.pack('<I', 0x8004)); jcc(0x85, 'handle')
+    emit(0x6A, 0x00, 0xFF, 0x75, 0x14, 0xFF, 0x75, 0x08, 0xFF, 0x75, 0x10, 0x6A, 0x00)   # push 0; push dlgproc; push hwnd; push template; push 0 (hInstance)
+    call('DialogBoxIndirectParamA')
     emit(0x31, 0xC0, 0xC9, 0xC2, 0x10, 0x00)
     label['handle'] = len(code)
     emit(0x8D, 0x45, 0xFC, 0x50)                         # lea eax, [ebp-4]; push eax (&result)

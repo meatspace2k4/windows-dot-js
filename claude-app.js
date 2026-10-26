@@ -216,6 +216,30 @@
     });
     return 0;
   });
+  // a dialog template (DLGTEMPLATE, its items DLGITEMTEMPLATE: [style, class atom, x, y, cx, cy, id, text]) in the
+  // program's memory, in dialog units, with the system's 8-point MS Sans Serif
+  function dialogTemplate(p, title, cx, cy, items) {
+    const b = [], w16 = v => b.push(v & 0xff, (v >> 8) & 0xff), w32 = v => { w16(v & 0xffff); w16((v >>> 16) & 0xffff); }, str = s => { for (const ch of s) w16(ch.charCodeAt(0)); w16(0); }, align = () => { while (b.length & 3) b.push(0); };
+    w32(0x80C800C0); w32(0); w16(items.length); w16(0); w16(0); w16(cx); w16(cy);   // WS_POPUP|WS_CAPTION|WS_SYSMENU|DS_MODALFRAME|DS_SETFONT
+    w16(0); w16(0); str(title); w16(8); str('MS Sans Serif');
+    for (const [style, cls, x, y, ix, iy, id_, t] of items) { align(); w32(style); w32(0); w16(x); w16(y); w16(ix); w16(iy); w16(id_ & 0xffff); w16(0xffff); w16(cls); str(t); w16(0); }
+    const at = p.alloc(b.length + 4); p.u8.set(b, at); return at;
+  }
+  def('CLAUDE', 'RenameProc', 4, function (h, msg, wp) {
+    const p = this, s = load().find(x => x.id === app.renaming);
+    if (msg === 0x110) {   // WM_INITDIALOG: the session's name, selected
+      U(p, 'SetDlgItemTextA', [h, 100, sz(p, 'rename', s ? s.title : '')]);
+      return 1;   // (the focus to the first control that takes it, the name, its text selected)
+    }
+    if (msg !== 0x111) return 0;
+    const id_ = wp & 0xffff;
+    if (id_ === 1) {
+      const b = sz(p, 'rename-in', ' '.repeat(256)); U(p, 'GetDlgItemTextA', [h, 100, b, 256]); const t = p.readA(b).trim();
+      if (t && s) { update(s.id, x => { x.title = t.slice(0, 80); }); app.dirty = true; }
+    }
+    if (id_ === 1 || id_ === 2) { app.renaming = null; U(p, 'EndDialog', [h, id_ === 1 ? 1 : 0]); return 1; }
+    return 0;
+  });
   def('CLAUDE', 'Answer', 1, function (r) { if (asking) post({ t: 'ccdAnswer', id: asking.id, yes: r === 6 }); asking = null; return 0; });   // (IDYES)
 
   // ---------------------------------------------------------------- the reply: the Claude API through the page's server
@@ -330,7 +354,7 @@
     const sub = (m, l) => U(p, 'AppendMenuA', [bar, 0x10, m, sz(p, `bar-${l}`, l)]);
     sub(pop([[ID.NEW, '&New Session'], [CMD.ATTACH, '&Attach File...'], [0, null], [CMD.EXPORT, '&Export Transcript'], [0, null], [ID.EXIT, 'E&xit']]), '&File');
     sub(pop([[CMD.COPY_REPLY, '&Copy Message'], [CMD.FIND, '&Find Next (the prompt\'s text)'], [0, null],
-      [CMD.FORK, 'F&ork from Here'], [CMD.REWIND, '&Rewind to Here'], [CMD.CHAPTER, '&Pin as Chapter'], [0, null], [CMD.RENAME, 'Re&name Session (to the prompt\'s text)']]), '&Edit');
+      [CMD.FORK, 'F&ork from Here'], [CMD.REWIND, '&Rewind to Here'], [CMD.CHAPTER, '&Pin as Chapter'], [0, null], [CMD.RENAME, 'Re&name Session...']]), '&Edit');
     sub(pop([[CMD.SIDEBAR, 'Side&bar'], [GROUP_BY.map(([, l], i) => [380 + i, l]), '&Group Sessions By'], [SORT_BY.map(([, l], i) => [385 + i, l]), '&Sort Sessions By'],
       [STATUS.map(([, l], i) => [388 + i, l]), 'Sho&w Sessions'], [CMD.HIDE_NESTED, '&Hide Nested Sessions'], [0, null],
       [VIEWS.map((x, i) => [330 + i, `${x[0].toUpperCase()}${x.slice(1)}`]), '&Transcript View'], [0, null],
@@ -443,9 +467,13 @@
       U(p, 'SendMessageA', [select(at.from + at.head, at.to), 0x301, 0, 0]); app.note = `Copied the message (${s.transcript[at.k].role === 'user' ? 'yours' : 'Claude\'s'}).`;   // WM_COPY: the edit control's own clipboard copy
       return redraw();
     }
-    if (c === CMD.RENAME && s) {
-      const name = promptText(); if (!name) { app.note = 'Type the new name in the prompt, then Edit > Rename Session.'; return redraw(); }
-      update(sid, x => { x.title = name.slice(0, 80); }); text(p, app.kid[ID.PROMPT], 'prompt-clear', ''); return redraw();
+    if (c === CMD.RENAME && s && !app.renaming) {   // Rename Session: a dialog of the program's (WM_APP+4: DialogBoxIndirectParamA), answered in RenameProc
+      app.renaming = s.id; app.tpl = app.tpl || dialogTemplate(p, 'Rename Session', 212, 62, [
+        [0x50000000, 0x0082, 7, 9, 198, 8, -1, 'Session &name:'],                  // STATIC
+        [0x50810080, 0x0081, 7, 20, 198, 12, 100, ''],                             // EDIT: WS_BORDER, WS_TABSTOP, ES_AUTOHSCROLL
+        [0x50010001, 0x0080, 101, 41, 50, 14, 1, 'OK'],                           // BUTTON: BS_DEFPUSHBUTTON, WS_TABSTOP
+        [0x50010000, 0x0080, 155, 41, 50, 14, 2, 'Cancel']]);
+      U(p, 'PostMessageA', [h, 0x8004, app.tpl, p.thunkFor('CLAUDE', 'RenameProc')]); return done();
     }
     if (c === CMD.FIND && s) {
       const q = promptText(), t = ansi(convo(s)), e = app.kid[ID.CONVO];
