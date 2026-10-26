@@ -31,7 +31,7 @@ const S = make(env);
   const keep = env.windows; env.windows = [];
   env.list = [{ role: 'listitem', name: 'Network Neighborhood', window: 'Program Manager', x: 2, y: 75, w: 71, h: 66, covered: true }];
   env.winAt = () => ({ title: 'Developer' });
-  await assert.rejects(S.resolveEl({ name: 'Network Neighborhood' }, 100), /covered by 'Developer'/);
+  await assert.rejects(S.actOn({ name: 'Network Neighborhood' }, () => {}, null), /covered by 'Developer'/);
   env.list = [{ role: 'listitem', name: 'Entire Network', window: 'Network Neighborhood', x: 0, y: 0, w: 10, h: 10 }];
   await assert.rejects(S.resolveEl({ name: 'home', window: 'Network Neighborhood' }, 100), /no element matches .*'Entire Network'/);
   env.windows = keep;
@@ -44,7 +44,8 @@ const S = make(env);
   const sent = [];
   await S.actOn({ name: 'home' }, (x, y) => sent.push([x, y]), { open: true });
   await S.actOn({ name: 'home' }, (x, y) => sent.push([x, y]), { open: false });
-  assert.deepEqual(cmds, [['listItem', 0x2a4, 3, true], ['listItem', 0x2a4, 3, false]]);
+  env.list[0].covered = true; await S.actOn({ name: 'home' }, (x, y) => sent.push([x, y]), { open: true }); env.list[0].covered = false;   // (covered: still the list view's)
+  assert.deepEqual(cmds, [['listItem', 0x2a4, 3, true], ['listItem', 0x2a4, 3, false], ['listItem', 0x2a4, 3, true]]);
   assert.deepEqual(sent, [], 'no pointer input');
   // anything else (a right-click, a button): the pointer at its centre
   await S.actOn({ name: 'home' }, (x, y) => sent.push([x, y]), null);

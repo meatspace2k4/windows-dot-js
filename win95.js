@@ -4794,29 +4794,29 @@ async function elementsNow() {
   await Promise.all(windows.filter(w => w.native && !w.min && w.app && w.app.alive && w.app.childrenNow).map(w => w.app.childrenNow(w.hwnd).catch(() => null)));
   return elements();
 }
-/** the element a query names, current and uncovered: waited for up to `ms`, else an error saying what is there */
+/** the element a query names, as its machine shows it now: waited for up to `ms`, else an error saying what is there */
 async function resolveEl(q, ms = 5000) {
   q = asQuery(q);
   const t0 = performance.now();
   let e = null, all = [];
   for (;;) {
     all = await elementsNow(); e = findEl(q, all);
-    if (e && !e.covered) return e;
+    if (e) return e;
     if (performance.now() - t0 >= ms) break;
     await new Promise(r => setTimeout(r, 50));
   }
-  if (e) { const cx = e.x + (e.w >> 1), cy = e.y + (e.h >> 1), over = winAt(cx, cy); throw new Error(`${qText(q)} is covered by ${over ? `'${over.title}'` : 'the taskbar'}`); }
   const win = q && typeof q === 'object' && q.window, there = win ? all.filter(x => x.window === win && x.name).map(x => x.name) : [];
   throw new Error(`no element matches ${qText(q)} within ${ms} ms${win ? `; '${win}' has ${there.length ? there.map(n => `'${n}'`).join(', ') : 'none named'}` : ''}`);
 }
-/** the pointer input `send` makes at the centre of the element `q` names, once it is there and uncovered. A native
- *  list view's item (a desktop icon, a folder window's file) is selected, or opened (`item.open`), by its list view
- *  itself (listItem): its rectangle runs the column's width, and a click at its middle fell beside its label.
- *  Resolves with the element */
+/** the input for the element `q` names. A native list view's item (a desktop icon, a folder window's file) is
+ *  selected, or opened (`item.open`), by its list view itself (listItem), wherever it is on screen; anything else gets
+ *  the pointer input `send` makes at its centre, which must not be covered. Resolves with the element */
 async function actOn(q, send, item) {
   const e = await resolveEl(q), w = item && e.list && windows.find(x => x.native && x.title === e.window && x.app);
   if (w) { await w.app.cmd('listItem', [e.list, e.index, !!item.open]); return e; }
-  send(e.x + (e.w >> 1), e.y + (e.h >> 1));
+  const cx = e.x + (e.w >> 1), cy = e.y + (e.h >> 1);
+  if (e.covered) { const over = winAt(cx, cy); throw new Error(`${qText(asQuery(q))} is covered by ${over ? `'${over.title}'` : 'the taskbar'}`); }
+  send(cx, cy);
   return e;
 }
 // an element, a query for one, or plain coordinates, as the point a click lands on
