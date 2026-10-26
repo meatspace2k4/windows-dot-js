@@ -18,7 +18,7 @@
   const MODES = [['default', 'Ask permissions'], ['acceptEdits', 'Edit automatically'], ['plan', 'Plan mode'], ['auto', 'Auto'], ['bypassPermissions', 'Bypass permissions']];
   const VIEWS = ['normal', 'thinking', 'verbose'], PANES = ['plan', 'diff', 'tasks', 'files'];
   // menu commands past the bar's first ones: models 300+, efforts 310+, modes 320+, views 330+, panes 340+, the rest below
-  const CMD = { EXPORT: 203, SIDEBAR: 350, CLOSE_PANE: 351, BACK: 360, FORWARD: 361, PREV: 362, NEXT_SESSION: 363, PIN: 370, ARCHIVE: 371,
+  const CMD = { EXPORT: 203, COPY_REPLY: 210, FORK: 211, REWIND: 212, CHAPTER: 213, FIND: 214, SIDEBAR: 350, CLOSE_PANE: 351, BACK: 360, FORWARD: 361, PREV: 362, NEXT_SESSION: 363, PIN: 370, ARCHIVE: 371,
     CTX_PIN: 501, CTX_UNREAD: 502, CTX_ARCHIVE: 503, CTX_DELETE: 504, CTX_EXPORT: 505, CTX_UNGROUP: 599, CTX_GROUP: 600 };
   const app = { hwnd: 0, kid: {}, menu: 0, shown: null, dirty: false, bufs: new Map(), rows: [], raw: null, rawView: null, size: [560, 400] };
 
@@ -275,12 +275,14 @@
     };
     const sub = (m, l) => U(p, 'AppendMenuA', [bar, 0x10, m, sz(p, `bar-${l}`, l)]);
     sub(pop([[ID.NEW, '&New Session'], [0, null], [CMD.EXPORT, '&Export Transcript'], [0, null], [ID.EXIT, 'E&xit']]), '&File');
+    sub(pop([[CMD.COPY_REPLY, '&Copy Last Reply'], [CMD.FIND, '&Find Next (the prompt\'s text)'], [0, null],
+      [CMD.FORK, 'F&ork Session Here'], [CMD.REWIND, '&Rewind Last Turn'], [CMD.CHAPTER, '&Mark Chapter (named by the prompt)']]), '&Edit');
     sub(pop([[CMD.SIDEBAR, 'Side&bar'], [VIEWS.map((x, i) => [330 + i, `${x[0].toUpperCase()}${x.slice(1)}`]), '&Transcript View'], [0, null],
       ...PANES.map((x, i) => [340 + i, PANE_TITLE[x]]), [CMD.CLOSE_PANE, 'C&lose Pane']]), '&View');
     sub(pop([[CMD.BACK, '&Back'], [CMD.FORWARD, '&Forward'], [0, null], [CMD.PREV, '&Previous Session'], [CMD.NEXT_SESSION, '&Next Session']]), '&Go');
     sub(pop([[MODES.map(([, n], i) => [320 + i, n]), 'Permission &Mode'], [0, null], [CMD.PIN, '&Pinned'], [CMD.ARCHIVE, '&Archive']]), '&Session');
     sub(pop(MODELS.map(([, n], i) => [300 + i, n])), 'M&odel');
-    sub(pop(EFFORTS.map((e, i) => [310 + i, `${e[0].toUpperCase()}${e.slice(1)}`])), '&Effort');
+    sub(pop(EFFORTS.map((e, i) => [310 + i, `${e[0].toUpperCase()}${e.slice(1)}`])), 'E&ffort');
     sub(pop([[ID.ABOUT, '&About Claude']]), '&Help');
     app.menu = bar;
     const h = U(p, 'CreateWindowExA', [0, cls, sz(p, 'title', 'Claude'), 0x10CF0000, 0x80000000, 0x80000000, 560, 400, 0, bar, inst, 0]);
@@ -350,6 +352,35 @@
     if (c === ID.ABOUT) { text(p, app.kid[ID.STATUS], 'status', 'Claude for Windows 95: the Claude desktop app, as a program of the system.'); return done(); }
     if (c === ID.ANSWER0 || c === ID.ANSWER1) { answer(p, c - ID.ANSWER0); return done(); }
     const s = current(), sid = s && s.id, redraw = () => { showAll(p); return done(); };
+    // Edit: a message's actions (copy, fork, rewind, a chapter) and finding in the conversation
+    const promptText = () => { const b = sz(p, 'prompt-in', ' '.repeat(4096)); U(p, 'GetWindowTextA', [app.kid[ID.PROMPT], b, 4096]); return p.readA(b).trim(); };
+    const select = (a, b_) => { const e = app.kid[ID.CONVO]; U(p, 'SendMessageA', [e, 0xB1, a, b_]); U(p, 'SendMessageA', [e, 0xB7, 0, 0]); return e; };   // EM_SETSEL, EM_SCROLLCARET
+    if (c === CMD.COPY_REPLY && s) {
+      const m = [...s.transcript].reverse().find(x => x.role === 'assistant' && x.text), t = ansi(convo(s)), at = m ? t.lastIndexOf(ansi(m.text)) : -1;
+      if (at >= 0) { U(p, 'SendMessageA', [select(at, at + ansi(m.text).length), 0x301, 0, 0]); app.note = 'Copied the last reply.'; }   // WM_COPY: the edit control's own clipboard copy
+      return redraw();
+    }
+    if (c === CMD.FIND && s) {
+      const q = promptText(), t = ansi(convo(s)), e = app.kid[ID.CONVO];
+      if (!q) { app.note = 'Type what to find in the prompt, then Edit > Find Next.'; return redraw(); }
+      const from = U(p, 'SendMessageA', [e, 0xB0, 0, 0]) >>> 16, k = t.toLowerCase().indexOf(q.toLowerCase(), from), at = k >= 0 ? k : t.toLowerCase().indexOf(q.toLowerCase());   // EM_GETSEL: after the selection
+      if (at < 0) { app.note = `Cannot find "${q}".`; text(p, app.kid[ID.STATUS], 'status', app.note); app.note = null; return done(); }
+      select(at, at + q.length); U(p, 'SetFocus', [e]); return done();
+    }
+    if (c === CMD.FORK && s) {
+      const l = load(), f = { ...fresh(), title: `${s.title} (fork)`, startedBy: s.id, cwd: s.cwd, model: s.model, effort: s.effort, transcript: s.transcript.map(m => ({ ...m })), plan: s.plan.map(x => ({ ...x })) };
+      l.push(f); save(l); go(f.id); return redraw();
+    }
+    if (c === CMD.REWIND && s && s.state !== 'working') {
+      const k = s.transcript.map(m => m.role).lastIndexOf('user'); if (k < 0) return done();
+      const was = s.transcript[k].text; update(sid, x => { x.transcript = x.transcript.slice(0, k); x.next = null; });
+      const e = app.kid[ID.PROMPT], n = ansi(was).length; text(p, e, 'prompt-rewind', was); U(p, 'SendMessageA', [e, 0xB1, n, n]); U(p, 'SetFocus', [e]); return redraw();
+    }
+    if (c === CMD.CHAPTER && s) {
+      const name = promptText() || `Chapter ${(s.chapters || []).length + 1}`;
+      update(sid, x => { x.transcript.push({ uuid: id('msg'), t: Date.now(), role: 'chapter', text: name }); (x.chapters = x.chapters || []).push({ title: name, t: Date.now() }); });
+      text(p, app.kid[ID.PROMPT], 'prompt-clear', ''); return redraw();
+    }
     // View: the sidebar, the transcript view, the panes
     if (c === CMD.SIDEBAR) { setUi(u => { u.sidebarCollapsed = !u.sidebarCollapsed; }); return redraw(); }
     if (c >= 330 && c < 330 + VIEWS.length) { if (sid) update(sid, x => { x.view = VIEWS[c - 330]; }); return redraw(); }
