@@ -2685,7 +2685,8 @@ function setupStartMenu() {
     if (links.length && links.every(k => (S.programs || {})[(k[1] || '').toUpperCase()])) accessories.push({ name, links });
   }
   let cur = null; try { cur = fs.readFile(PROGRAMS + '\\Windows Explorer.lnk'); } catch (_) { /* none yet */ }
-  const missing = accessories.some(a => a.links.some(k => !fs.exists(join(PROGRAMS, 'Accessories', k[0] + '.lnk'))));
+  const claude = !!(S.programs || {})['CLAUDE.EXE'];   // (the Claude program: a folder of its own under Programs, claude-exe.js)
+  const missing = accessories.some(a => a.links.some(k => !fs.exists(join(PROGRAMS, 'Accessories', k[0] + '.lnk')))) || (claude && !fs.exists(join(PROGRAMS, 'Claude', 'Claude.lnk')));
   if (cur && cur[0] === 0x4c && cur[1] === 0 && !missing) return;   // ('L': a shell link's header)
   const out = new Map();
   const add = ({ sec, fields, subst }, names) => {
@@ -2701,6 +2702,7 @@ function setupStartMenu() {
   };
   add(infParse(inf), ['winbase.inis', 'winother.links']);
   if (applets) add(applets, accessories.map(a => a.name));
+  if (claude) { out.set('progman.groups', out.get('progman.groups') || { name: 'progman.groups', lines: [] }); out.get('progman.groups').lines.push('group90=Claude'); out.set('group90', { name: 'group90', lines: ['"Claude", CLAUDE.EXE'] }); }
   fs.writeFile(join(WINDIR, 'SETUP.INI'), W95FS.encode([...out.values()].map(v => `[${v.name}]\r\n${v.lines.join('\r\n')}\r\n`).join('\r\n')));
   // SETUPC.INF's RunOnce\Setup item: run under RUNONCE's "Windows 95 Setup" screen before the system's message server
   // starts (worker.js startSystemTask), before SystemStart and the shell. (GRPCONV makes the Start menu through the
