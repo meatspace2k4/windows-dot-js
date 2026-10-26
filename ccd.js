@@ -636,6 +636,7 @@
       });
     }
     const dropCard = id => { st.cards = st.cards.filter(c => c.task_id !== id); save('cards'); cardWaits.delete(id); const w = cardWins.get(id); if (w) { ui.closeWin(w, true); cardWins.delete(id); } };
+    const started = s => `Started session "${s.title}" (session_id: ${s.id}, name: ${s.name}). It runs on its own; you get a note here when its turn ends. Don't repeat the introduction: at most one line on how you'll report back, then end your turn — do not wait for it.`;
     function startFrom(card, o = {}) {
       const s = fresh({ title: card.title, name: card.name || slug(card.title), startedBy: self.id, state: 'working', cwd: card.cwd || self.cwd, ...o });
       if (card.prompt) said(s, 'user', card.prompt);
@@ -741,7 +742,7 @@
         if (a.proposal_id) {
           const card = st.cards.find(c => c.task_id === a.proposal_id); if (!card) not(`No proposal ${a.proposal_id}: it was started, dismissed or has expired.`);
           dropCard(card.task_id); const s = startFrom({ ...card, ...(a.prompt ? { prompt: a.prompt } : {}) });
-          return `Started "${s.title}" (session_id: ${s.id}, name: ${s.name}).`;
+          return started(s);
         }
         if (!a.initiation) not('initiation is required unless proposal_id is set.');
         if (!a.title) not('title is required unless proposal_id is set.');
@@ -758,18 +759,18 @@
         if (!a.prompt) not('prompt (the brief) is required for "user_asked" and "own_initiative".');
         if ((a.context || 'fresh') === 'fresh' && (!a.background || a.background.length < 80)) not('background: at least 80 characters, required with context "fresh".');
         const card = { task_id: uid('task'), kind: a.initiation, title: a.title, name: a.name, prompt: a.prompt, background: a.background, cwd: a.cwd, created: now(), expires: now() + 7 * 864e5 };
-        if (a.initiation === 'user_asked') { const s = startFrom(card, a.permission_mode ? { permissionMode: a.permission_mode } : {}); return `Started "${s.title}" (session_id: ${s.id}, name: ${s.name}).`; }
+        if (a.initiation === 'user_asked') { const s = startFrom(card, a.permission_mode ? { permissionMode: a.permission_mode } : {}); return started(s); }
         st.cards.push(card); save('cards');
         cardBox(card, ['Start', 'Dismiss']).then(b => {
           ui.emit('ccd.answer', { card: card.task_id, label: b, message: b });
           if (!st.cards.some(c => c.task_id === card.task_id)) return;
           dropCard(card.task_id); if (b === 'Start') startFrom(card);
         });
-        return `Proposed "${card.title}" as a card the user can start (task_id: ${card.task_id}); it expires in 7 days.`;
+        return `Proposed "${card.title}" (task_id: ${card.task_id}). The user sees a card and nothing runs until they start it — with a click, or by telling you (then call start_session with proposal_id ${card.task_id} and nothing else). It expires in 7 days unless started; dismiss_task withdraws it sooner if it goes stale. Don't wait for it and don't repeat the introduction; carry on with what you were doing.`;
       },
       dismiss_task(a) {
         if (!st.cards.some(c => c.task_id === a.task_id)) not(`No proposal ${a.task_id} waiting: it was started, answered or dismissed already.`);
-        dropCard(a.task_id); return `Dismissed${a.reason ? `: ${a.reason}` : '.'}`;
+        dropCard(a.task_id); return `Task ${a.task_id} withdrawn — the chip is no longer shown to the user. Continue your current work.`;
       },
       hand_off_to_session(a) {
         const s = startFrom({ title: a.title, prompt: `Remaining plan:\n${a.remaining_plan}` }, { transcript: self.transcript.slice() });
@@ -834,9 +835,9 @@
         s.archived = true; s.state = 'idle';
         for (const x of st.sessions) if (x.startedBy === s.id && !x.detached && x.state !== 'working') x.archived = true;
         save('sessions'); ui.dirty();
-        return s === self ? 'Archived this session: the conversation ends here.' : `Archived "${s.title}".`;
+        return s === self ? 'Archived this session: the conversation ends here.' : `Archived session ${s.id} ("${s.title}").`;
       },
-      unarchive_session(a) { const s = need(a.session_id); if (!s.archived) not(`"${s.title}" is not archived.`); s.archived = false; save('sessions'); ui.dirty(); return `Restored "${s.title}".`; },
+      unarchive_session(a) { const s = need(a.session_id); if (!s.archived) not(`"${s.title}" is not archived.`); s.archived = false; save('sessions'); ui.dirty(); return `Unarchived session ${s.id} ("${s.title}"). It is back in the session list; its next message resumes the conversation where it left off.`; },
       async delete_session(a) {
         const ids = a.session_ids; if (!Array.isArray(ids) || !ids.length || ids.length > 25) not('session_ids: 1 to 25 sessions.');
         const ss = ids.map(need); if (ss.includes(self)) not('This session cannot be deleted.');
@@ -844,7 +845,10 @@
         if (go.length && !await approve(`Delete ${go.length} session(s) for good?\n\n${go.map(s => s.title).join('\n')}${a.reason ? `\n\n${a.reason}` : ''}`)) not('The user declined: nothing was deleted.');
         for (const s of go) for (const x of st.sessions) if (x.startedBy === s.id && x.state !== 'working') x.archived = true;
         st.sessions = st.sessions.filter(s => !go.includes(s)); save('sessions'); ui.dirty();
-        return JSON.stringify({ deleted: go.map(s => s.id), skipped: skip.map(s => ({ sessionId: s.id, why: s.state === 'working' ? 'working' : s.pinned ? 'pinned' : 'open on screen' })) });
+        // (as the app says it: what was deleted, by id and title, then what was skipped and why)
+        const why = s => (s.state === 'working' ? 'it is working' : s.pinned ? 'it is pinned' : 'it is open on screen');
+        return [go.length ? `Deleted ${go.length} session${go.length === 1 ? '' : 's'}: ${go.map(s => `${s.id} ("${s.title}")`).join(', ')}.` : 'Deleted nothing.',
+          ...skip.map(s => `Skipped ${s.id} ("${s.title}"): ${why(s)}.`)].join('\n');
       },
       async clear_session(a) {
         const s = need(a.session_id);
@@ -864,7 +868,7 @@
         if (!(s.startedBy === self.id || (s === self && s.startedBy))) not('Only a session this session started, or "self" when it is a side session.');
         s.detached = true; s.startedBy = null; save('sessions'); return `"${s.title}" is a top-level session now.`;
       },
-      set_session_title(a) { const s = need(a.session_id); s.title = String(a.title); save('sessions'); ui.dirty(); return `Renamed to "${s.title}".`; },
+      set_session_title(a) { const s = need(a.session_id), was = s.title; s.title = String(a.title); save('sessions'); ui.dirty(); return `Renamed session ${s.id} to "${s.title}" (was "${was}").`; },
       set_session_model(a) { const s = need(a.session_id); if (s === self) not('Refused for this session: ask the user to pick the model in the model menu.'); s.model = a.model; save('sessions'); return `"${s.title}" uses ${a.model} from its next turn.`; },
       set_session_effort(a) { const s = need(a.session_id); if (s === self) not('Refused for this session.'); s.effort = a.effort; save('sessions'); return `"${s.title}" runs at ${a.effort} effort from its next turn.`; },
       set_session_fast_mode(a) { const s = need(a.session_id); s.fastMode = a.enabled ? 'on' : 'off'; save('sessions'); return `Fast mode ${s.fastMode} for "${s.title}".`; },
@@ -911,15 +915,16 @@
     const builtins = [{ id: 'pinned', kind: 'pinned', name: '' }, { id: 'routines', kind: 'routines', name: '' }, { id: 'sessions', kind: 'sessions', name: '' }];
     T.sidebar = {
       list_groups() { return JSON.stringify(st.groups.map((g, i) => ({ id: g.id, name: g.name, session_count: st.sessions.filter(s => s.group === g.id).length, order: i }))); },
-      create_group(a) { const g = { id: uid('grp'), name: String(a.name).slice(0, 200) }; st.groups.push(g); save('groups'); ui.dirty(); return JSON.stringify({ id: g.id }); },
+      create_group(a) { const g = { id: uid('grp'), name: String(a.name).slice(0, 200) }; st.groups.push(g); save('groups'); ui.dirty(); return JSON.stringify({ id: g.id, name: g.name }); },
       create_section(a) { return T.sidebar.create_group(a); },
-      rename_group(a) { const g = st.groups.find(x => x.id === a.group_id); if (!g) not(`No group ${a.group_id}.`); g.name = String(a.name).slice(0, 200); save('groups'); ui.dirty(); return `Renamed to "${g.name}".`; },
+      rename_group(a) { const g = st.groups.find(x => x.id === a.group_id); if (!g) not(`No group ${a.group_id}.`); g.name = String(a.name).slice(0, 200); save('groups'); ui.dirty(); return `Renamed the group to "${g.name}".`; },
       rename_section(a) { if (builtins.some(b => b.id === a.section_id)) not('Built-in sections cannot be renamed.'); return T.sidebar.rename_group({ group_id: a.section_id, name: a.name }); },
       async delete_group(a) {
         const g = st.groups.find(x => x.id === a.group_id); if (!g) not(`No group ${a.group_id}.`);
         if (!await approve(`Delete the group "${g.name}"? Its sessions move back to Sessions.`)) not('The user declined: the group stays.');
+        const n = st.sessions.filter(s => s.group === g.id).length;
         st.groups = st.groups.filter(x => x !== g); st.sessions.forEach(s => { if (s.group === g.id) s.group = null; }); save('groups'); save('sessions'); ui.dirty();
-        return `Deleted "${g.name}".`;
+        return `Deleted the group; ${n} session(s) moved back to Ungrouped.`;
       },
       delete_section(a) { if (builtins.some(b => b.id === a.section_id)) not('Built-in sections cannot be deleted.'); return T.sidebar.delete_group({ group_id: a.section_id }); },
       list_sections() {
@@ -930,12 +935,20 @@
       move_sessions(a) {
         const to = a.section_id === 'sessions' ? null : a.section_id || a.group_id || null;
         if (to && !st.groups.some(g => g.id === to)) not(`No group ${to}.`);
-        const ss = a.session_ids.map(need); ss.forEach(s => { s.group = to; if (to && s.pinned) s.pinned = false; });
+        const ss = a.session_ids.map(need);
+        // (a session started from another moves with its parent, as the app's nested sessions do)
+        const nested = ss.find(s => s.startedBy && byId(s.startedBy) && !ss.some(x => x.id === s.startedBy));
+        if (nested) not(`Session ${nested.id} is nested under ${nested.startedBy}, and nested sessions move with their parent. Nothing was moved. Call move_sessions again naming ${nested.startedBy} (you may include ${nested.id}) to move them together.`);
+        for (const s of [...ss]) for (const k of st.sessions) if (k.startedBy === s.id && !ss.includes(k)) ss.push(k);
+        ss.forEach(s => { s.group = to; if (to && s.pinned) s.pinned = false; });
         save('sessions'); ui.dirty(); return `Moved ${ss.length} session(s) to ${to ? `"${st.groups.find(g => g.id === to).name}"` : 'Ungrouped'}.`;
       },
-      set_pinned(a) { const s = need(a.session_id); s.pinned = !!a.pinned; save('sessions'); ui.dirty(); return `${a.pinned ? 'Pinned' : 'Unpinned'} "${s.title}".`; },
-      set_unread(a) { const s = need(a.session_id); s.unread = !!a.unread; save('sessions'); ui.dirty(); return `"${s.title}" is ${a.unread ? 'unread' : 'read'}.`; },
-      mark_completed(a) { const s = need(a.session_id); if (s.state === 'waiting' || s.state === 'failed') s.state = 'idle'; s.unread = false; save('sessions'); ui.dirty(); return `"${s.title}" reads as completed.`; },
+      set_pinned(a) { const s = need(a.session_id); s.pinned = !!a.pinned; save('sessions'); ui.dirty(); return `Session ${a.pinned ? 'pinned' : 'unpinned'}.`; },
+      set_unread(a) {
+        const s = need(a.session_id), was = !!s.unread; s.unread = !!a.unread; save('sessions'); ui.dirty();
+        return was === !!a.unread ? `The session was already ${a.unread ? 'unread' : 'read'}.` : `Marked the session ${a.unread ? 'unread' : 'read'}.`;
+      },
+      mark_completed(a) { const s = need(a.session_id); if (s.state === 'waiting' || s.state === 'failed') s.state = 'idle'; s.unread = false; save('sessions'); ui.dirty(); return 'Marked the session completed.'; },
       set_view(a) {
         if (a.section_id && a.section_id !== 'sessions') {
           if (a.status !== undefined || a.last_activity !== undefined) not('status and last_activity are refused with a section_id.');

@@ -99,13 +99,13 @@ await rejects(ccd.session.start_session({ initiation: 'user_asked', title: 'x', 
 r = await ccd.session.start_session({ initiation: 'own_initiative', title: 'Tidy fonts', prompt: 'Tidy.', background: 'y'.repeat(80) });
 const task = /task_id: (task_\w+)/.exec(r)[1];
 assert.equal(boxes.at(-1).title, 'Suggested task');
-assert.match(await ccd.session.dismiss_task({ task_id: task, reason: 'done here' }), /Dismissed: done here/);
+assert.match(await ccd.session.dismiss_task({ task_id: task, reason: 'done here' }), /^Task task_\w+ withdrawn — the chip is no longer shown to the user/);
 const offer = ccd.session.start_session({ initiation: 'offer', title: 'Port DOOM' });
 await tick(); let settled = false; offer.then(() => { settled = true; }); await tick();
 assert.equal(settled, false, 'an offer waits for the user'); assert.deepEqual(plain(boxes.at(-1).buttons),['New session', 'Do it here']);
 boxes.at(-1).press('New session');
 const card = /proposal_id "(task_\w+)"/.exec(await offer)[1];
-assert.match(await ccd.session.start_session({ proposal_id: card, prompt: 'Port it.' }), /Started "Port DOOM"/);
+assert.match(await ccd.session.start_session({ proposal_id: card, prompt: 'Port it.' }), /^Started session "Port DOOM" \(session_id: \S+, name: \S+\)\. It runs on its own/);
 assert.equal(JSON.parse(await ccd.session_mgmt.list_sessions({ linked: true })).length, 2);
 assert.match(await ccd.session.mark_chapter({ title: 'Verification' }), /Chapter "Verification"/);
 await rejects(ccd.session.move_to_cloud({ summary: 's' }), /no cloud/);
@@ -123,7 +123,7 @@ let p = ccd.session_mgmt.archive_session({ session_id: kid }); await tick();
 boxes.at(-1).press('No'); await rejects(p, /declined/);
 assert.equal(JSON.parse(await ccd.session_mgmt.get_session({ session_id: kid })).isArchived, false);
 p = ccd.session_mgmt.archive_session({ session_id: kid }); await tick(); boxes.at(-1).press('Yes');
-assert.match(await p, /Archived "Fix the printer"/);
+assert.match(await p, /^Archived session \S+ \("Fix the printer"\)\.$/);
 p = ccd.settings.set_setting({ key: 'notification_sound', value: 'none' }); await tick(); boxes.at(-1).press('Yes');
 assert.match(await p, /notification_sound is "none"/);
 await rejects(ccd.settings.set_setting({ key: 'notification_sound', value: 'none' }), /already "none"/);
@@ -136,8 +136,9 @@ await rejects(ccd.settings.set_setting({ key: 'branch_prefix', value: 'main' }),
 
 // the sidebar
 const g = JSON.parse(await ccd.sidebar.create_group({ name: 'Printing' })).id;
-await ccd.sidebar.move_sessions({ session_ids: [kid], group_id: g });
-assert.equal(JSON.parse(await ccd.sidebar.list_groups())[0].session_count, 1);
+await rejects(ccd.sidebar.move_sessions({ session_ids: [kid], group_id: g }), /nested sessions move with their parent\. Nothing was moved/);   // (as the app refuses it)
+assert.match(await ccd.sidebar.move_sessions({ session_ids: ['self', kid], group_id: g }), /Moved/);
+assert.equal(JSON.parse(await ccd.sidebar.list_groups())[0].session_count, 3);   // (this session and the two it started)
 await ccd.sidebar.set_pinned({ session_id: 'self', pinned: true });
 assert.equal(JSON.parse(await ccd.sidebar.list_sections()).find(s => s.id === 'pinned').session_count, 1);
 assert.equal(JSON.parse(await ccd.sidebar.set_view({ sort_by: 'alpha' })).sort_by, 'alpha');

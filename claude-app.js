@@ -20,7 +20,7 @@
   // menu commands past the bar's first ones: models 300+, efforts 310+, modes 320+, views 330+, panes 340+, the rest below
   const CMD = { EXPORT: 203, ATTACH: 204, COPY_REPLY: 210, FORK: 211, REWIND: 212, CHAPTER: 213, FIND: 214, RENAME: 215, USAGE: 402, TERMINAL: 352, STOP: 372, SETTINGS: 205, SUGGEST: 216, ACCOUNT: 403, FEEDBACK: 404, SIDEBAR: 350, HIDE_NESTED: 391, CLOSE_PANE: 351, BACK: 360, FORWARD: 361, PREV: 362, NEXT_SESSION: 363, PIN: 370, ARCHIVE: 371,
     CTX_PIN: 501, CTX_UNREAD: 502, CTX_ARCHIVE: 503, CTX_DELETE: 504, CTX_EXPORT: 505, CTX_UNGROUP: 599, CTX_GROUP: 600 };
-  const app = { hwnd: 0, kid: {}, menu: 0, shown: null, dirty: false, bufs: new Map(), rows: [], raw: null, rawView: null, size: [560, 400], attach: [], ofn: null, aborts: {}, stopping: {}, queue: {}, nextSay: null };
+  const app = { hwnd: 0, kid: {}, menu: 0, shown: null, dirty: false, bufs: new Map(), rows: [], raw: null, rawView: null, size: [560, 400], attach: [], ofn: null, aborts: {}, stopping: {}, queue: {}, nextSay: null, running: new Set() };
 
   // ---------------------------------------------------------------- the sessions (the scripting API's records)
   const load = () => { const v = regGet(KEY, 'sessions'); if (!v) return []; try { return JSON.parse(typeof v === 'string' ? v : FS.decode(v.data).replace(/\0.*$/, '')); } catch (_) { return []; } };
@@ -367,6 +367,10 @@
   }
   // the turn: requests until Claude stops asking for tools; each tool it asks for run on the page as this session's call
   async function reply(sid) {
+    if (app.running.has(sid)) return; app.running.add(sid);
+    try { await turn(sid); } finally { app.running.delete(sid); }
+  }
+  async function turn(sid) {
     let failed = null;
     if (!toolDefs) { const r = await page('@defs'); toolDefs = r.result || []; }
     for (let k = 0; k < 24; k++) {
@@ -395,6 +399,15 @@
     if (!stopped && !failed && fin && !(app.queue[sid] || []).length && record('settings', {}).prompt_suggestions !== false) suggest(fin);
     // (a message sent while Claude worked: its turn now, from the window's timer)
     if ((app.queue[sid] || []).length) app.nextSay = { sid, text: app.queue[sid].shift() };
+    // (a session another started: its turn's end is told to that session, which goes on, as the app tells it)
+    if (fin && fin.startedBy && !stopped) {
+      const last = [...fin.transcript].reverse().find(m => m.role === 'assistant' && m.text), parent = load().find(x => x.id === fin.startedBy);
+      if (parent && !parent.archived) {
+        const note = `<side-sessions-event>\nSession "${fin.title}" (${fin.id}) ended its turn${failed ? `, failed: ${failed}` : ''}. Its latest report:\n${(last ? last.text : '(no reply)').slice(0, 400)}\n</side-sessions-event>`;
+        if (parent.state === 'working' || app.running.has(parent.id)) (app.queue[parent.id] = app.queue[parent.id] || []).push(note);
+        else app.nextSay = app.nextSay || { sid: parent.id, text: note };
+      }
+    }
     app.dirty = true;
   }
   // the prompt suggestion the app offers when a turn ends: the next thing the user is likely to send, asked of a small
@@ -542,6 +555,10 @@
     }
     if (msg === WM.TIMER && app.wantDialog) { const [t, proc] = app.wantDialog; app.wantDialog = null; U(p, 'PostMessageA', [h, 0x8004, t, p.thunkFor('CLAUDE', proc)]); }   // (a dialog whose contents came from the page)
     if (msg === WM.TIMER && app.nextSay) { const q = app.nextSay; app.nextSay = null; say(p, q.text, q.sid); }
+    // (a session waiting on a prompt nothing is answering, as one start_session started is: its turn runs, as the app runs it)
+    if (msg === WM.TIMER) for (const s of load()) {
+      if (s.state === 'working' && !s.archived && !app.running.has(s.id) && s.transcript.length && s.transcript[s.transcript.length - 1].role === 'user') { reply(s.id); app.dirty = true; }
+    }
     if (msg === WM.TIMER) {
       if (app.dirty || regGet(KEY, 'sessions') !== app.raw || regGet(KEY, 'view') !== app.rawView || regGet(KEY, 'cards') !== app.rawCards) { app.dirty = false; showAll(p); }
       if (!asking && asks.length) { asking = asks.shift(); U(p, 'PostMessageA', [h, 0x8001, sz(p, 'ask-text', asking.text), sz(p, 'ask-title', asking.title || 'Claude')]); }
