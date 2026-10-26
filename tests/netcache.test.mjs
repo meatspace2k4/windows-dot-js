@@ -30,4 +30,11 @@ c.list('');
 await tick();
 assert.deepEqual(c.list('').map(e => e.name), ['Win95', 'readme.txt']);
 assert.equal(c.stat('README.TXT').size, 3);
+
+// the shell's network comes up without a second logon: the system's machine logged on as it booted, and netBoot asks
+// it only to restore the remembered connections (a WNetLogonA there put Enter Windows Password up again)
+{
+  const i = src.indexOf('function netBoot() {'), body = src.slice(i, src.indexOf('\n}\n', i));
+  assert.ok(i > 0 && !/WNetLogonA/.test(body) && /WNetRestoreConnectionA/.test(body));
+}
 console.log('netcache: ok');

@@ -3492,9 +3492,8 @@ function systemBootLater() {
   if (document.readyState === 'complete') go(); else window.addEventListener('load', go, { once: true });
 }
 // the network's process, MPREXE.EXE, runs in the system's machine with the network's VxDs at ring 0 under it and the
-// provider router's DLLs in it, started as Windows 95 boots (worker.js loadMpr). The network logon follows as the shell
-// first needs the network (MPR's own Enter Network Password dialog), then the connections to remember are made again;
-// each drive MPR has connected is a drive of fs.js whose files the system's machine's redirector reaches (netfs.js)
+// provider router's DLLs in it, started as Windows 95 boots (worker.js loadMpr), and logged on there as Windows starts;
+// the connections to remember are made again as the shell first needs the network; each drive MPR has connected is a drive of fs.js whose files the system's machine's redirector reaches (netfs.js)
 const netMachine = () => (sysApp && sysApp.alive ? sysApp : null);
 /** a network drive's (or share's) files as the shell sees them: the page cannot wait on the system's machine, so what
  *  the shell lists comes from the folders the machine has listed for it, asked for as the shell first looks and shown
@@ -3633,15 +3632,14 @@ fs.uncBackend = unc => {
   return netCache(a, unc);
 };
 // the network as the shell first needs it (Network Neighborhood, Map Network Drive, or connections to restore as it
-// boots): MPR up in the system's machine, the logon (MPR's Enter Network Password), the remembered connections made
-// again. Once for each start of the system's machine
+// boots): MPR up in the system's machine, which logged on as it booted, and the remembered connections made again.
+// Once for each start of the system's machine
 let netBooting = null, netUp = null;
 function netBoot() {
   if (!((window.W95SYSTEM || {}).net || {})['MPR.DLL']) return null;
   if (netUp && netUp === sysApp && netUp.alive) return Promise.resolve(netUp);
   return netBooting || (netBooting = (async () => {
     const a = await startSystem(); if (!a || !(await a.mprLoaded())) return null;
-    await netCall('WNetLogonA', [0, 0]);
     await netCall('WNetRestoreConnectionA', [0, 0]);
     await syncNetDrives(); netUp = a; fs.uncs.clear(); return a;   // (a share asked for before: reached now)
   })().finally(() => { netBooting = null; }));

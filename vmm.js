@@ -1320,9 +1320,12 @@ svc(VMM, 0x159, function () {
 // ---- VMM: the VM's interrupts. Protected-mode and V86 vectors VxDs set or hook are kept; the VM's own code reaches
 // its interrupts through the personality (ne16 INTS), so a hook here sees only what a VxD reflects to it
 const vec = p => p.vxdVecs || (p.vxdVecs = { pm: new Map(), v86: new Map(), hooks: new Map() });
-// a vector no VxD has set leads to the personality's own handler for it (its DOS for 21h), as the VM's previous handler
-svc(VMM, 0x44, function () { const n = this.cpu.eax.value & 0xff, v = vec(this).pm.get(n) || (N.INTS[n] ? this.thunk16For(`PMINT.#${n}`) : 0); this.cpu.ecx.value = lo16(this.cpu.ecx.value, v >>> 16); this.cpu.edx.value = v & 0xffff; });   // Get_PM_Int_Vector: CX:EDX
-for (const n of [0x21, 0x2f, 0x25, 0x26, 0x2a, 0x5c]) def16('PMINT', n, '', 'jmp', function () {   // an interrupt frame: IP, CS, flags
+// a vector no VxD has set leads to the personality's own handler for it (its DOS for 21h), as the VM's previous handler;
+// one the personality has none for (NetBIOS's 5Ch: no real-mode NetBIOS under the redirector) returns as it came, an
+// IRET, not a jump to 0:0 for the VxD that chains to it (VNETBIOS's, for the calls it passes on)
+const PMINTS = [0x21, 0x2f, 0x25, 0x26, 0x2a, 0x5c];
+svc(VMM, 0x44, function () { const n = this.cpu.eax.value & 0xff, v = vec(this).pm.get(n) || (N.INTS[n] || PMINTS.includes(n) ? this.thunk16For(`PMINT.#${n}`) : 0); this.cpu.ecx.value = lo16(this.cpu.ecx.value, v >>> 16); this.cpu.edx.value = v & 0xffff; });   // Get_PM_Int_Vector: CX:EDX
+for (const n of PMINTS) def16('PMINT', n, '', 'jmp', function () {   // an interrupt frame: IP, CS, flags
   const r = N.INTS[n] ? N.INTS[n].call(this, W.LAYOUT.SENTINEL - 16) : undefined;
   if (r === W.LAYOUT.SENTINEL) return r;
   const ssb = u32(this.cpu.ssb.value), sp = this.cpu.esp.value & 0xffff, ip = this.r16(ssb + sp), cs = this.r16(ssb + ((sp + 2) & 0xffff));
