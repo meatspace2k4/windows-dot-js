@@ -18,7 +18,7 @@
   const MODES = [['default', 'Ask permissions'], ['acceptEdits', 'Edit automatically'], ['plan', 'Plan mode'], ['auto', 'Auto'], ['bypassPermissions', 'Bypass permissions']];
   const VIEWS = ['normal', 'thinking', 'verbose'], PANES = ['plan', 'diff', 'tasks', 'files'];
   // menu commands past the bar's first ones: models 300+, efforts 310+, modes 320+, views 330+, panes 340+, the rest below
-  const CMD = { EXPORT: 203, ATTACH: 204, COPY_REPLY: 210, FORK: 211, REWIND: 212, CHAPTER: 213, FIND: 214, RENAME: 215, USAGE: 402, SIDEBAR: 350, HIDE_NESTED: 391, CLOSE_PANE: 351, BACK: 360, FORWARD: 361, PREV: 362, NEXT_SESSION: 363, PIN: 370, ARCHIVE: 371,
+  const CMD = { EXPORT: 203, ATTACH: 204, COPY_REPLY: 210, FORK: 211, REWIND: 212, CHAPTER: 213, FIND: 214, RENAME: 215, USAGE: 402, TERMINAL: 352, SIDEBAR: 350, HIDE_NESTED: 391, CLOSE_PANE: 351, BACK: 360, FORWARD: 361, PREV: 362, NEXT_SESSION: 363, PIN: 370, ARCHIVE: 371,
     CTX_PIN: 501, CTX_UNREAD: 502, CTX_ARCHIVE: 503, CTX_DELETE: 504, CTX_EXPORT: 505, CTX_UNGROUP: 599, CTX_GROUP: 600 };
   const app = { hwnd: 0, kid: {}, menu: 0, shown: null, dirty: false, bufs: new Map(), rows: [], raw: null, rawView: null, size: [560, 400], attach: [], ofn: null };
 
@@ -334,7 +334,7 @@
     sub(pop([[CMD.SIDEBAR, 'Side&bar'], [GROUP_BY.map(([, l], i) => [380 + i, l]), '&Group Sessions By'], [SORT_BY.map(([, l], i) => [385 + i, l]), '&Sort Sessions By'],
       [STATUS.map(([, l], i) => [388 + i, l]), 'Sho&w Sessions'], [CMD.HIDE_NESTED, '&Hide Nested Sessions'], [0, null],
       [VIEWS.map((x, i) => [330 + i, `${x[0].toUpperCase()}${x.slice(1)}`]), '&Transcript View'], [0, null],
-      ...PANES.map((x, i) => [340 + i, PANE_TITLE[x]]), [CMD.CLOSE_PANE, 'C&lose Pane']]), '&View');
+      ...PANES.map((x, i) => [340 + i, PANE_TITLE[x]]), [CMD.TERMINAL, 'Ter&minal (MS-DOS Prompt)'], [CMD.CLOSE_PANE, 'C&lose Pane']]), '&View');
     sub(pop([[CMD.BACK, '&Back'], [CMD.FORWARD, '&Forward'], [0, null], [CMD.PREV, '&Previous Session'], [CMD.NEXT_SESSION, '&Next Session']]), '&Go');
     sub(pop([[MODES.map(([, n], i) => [320 + i, n]), 'Permission &Mode'], [0, null], [CMD.PIN, '&Pinned'], [CMD.ARCHIVE, '&Archive']]), '&Session');
     sub(pop(MODELS.map(([, n], i) => [300 + i, n])), 'M&odel');
@@ -478,6 +478,7 @@
     if (c === CMD.HIDE_NESTED) { setUi(u => { u.hideNested = !u.hideNested; }); return redraw(); }
     if (c >= 330 && c < 330 + VIEWS.length) { if (sid) update(sid, x => { x.view = VIEWS[c - 330]; }); return redraw(); }
     if (c >= 340 && c < 340 + PANES.length) { togglePane(PANES[c - 340]); return redraw(); }
+    if (c === CMD.TERMINAL) { page('ccd_view__show_pane', { pane: 'terminal' }, sid); return done(); }   // (the app's Terminal pane: the system's MS-DOS Prompt, as show_pane opens it)
     if (c === CMD.CLOSE_PANE) { setUi(u => { u.panes = u.panes.slice(0, -1); }); return redraw(); }
     // Go: back, forward, the sessions in order
     if (c === CMD.BACK && nav.back.length) { nav.fwd.push(sid); go(nav.back.pop(), 'nav'); return redraw(); }
