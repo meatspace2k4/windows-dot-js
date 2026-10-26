@@ -18,7 +18,7 @@
   const MODES = [['default', 'Ask permissions'], ['acceptEdits', 'Edit automatically'], ['plan', 'Plan mode'], ['auto', 'Auto'], ['bypassPermissions', 'Bypass permissions']];
   const VIEWS = ['normal', 'thinking', 'verbose'], PANES = ['plan', 'diff', 'tasks', 'files'];
   // menu commands past the bar's first ones: models 300+, efforts 310+, modes 320+, views 330+, panes 340+, the rest below
-  const CMD = { EXPORT: 203, COPY_REPLY: 210, FORK: 211, REWIND: 212, CHAPTER: 213, FIND: 214, SIDEBAR: 350, CLOSE_PANE: 351, BACK: 360, FORWARD: 361, PREV: 362, NEXT_SESSION: 363, PIN: 370, ARCHIVE: 371,
+  const CMD = { EXPORT: 203, COPY_REPLY: 210, FORK: 211, REWIND: 212, CHAPTER: 213, FIND: 214, RENAME: 215, SIDEBAR: 350, HIDE_NESTED: 391, CLOSE_PANE: 351, BACK: 360, FORWARD: 361, PREV: 362, NEXT_SESSION: 363, PIN: 370, ARCHIVE: 371,
     CTX_PIN: 501, CTX_UNREAD: 502, CTX_ARCHIVE: 503, CTX_DELETE: 504, CTX_EXPORT: 505, CTX_UNGROUP: 599, CTX_GROUP: 600 };
   const app = { hwnd: 0, kid: {}, menu: 0, shown: null, dirty: false, bufs: new Map(), rows: [], raw: null, rawView: null, size: [560, 400] };
 
@@ -31,12 +31,15 @@
     created: Date.now(), active: Date.now(), model: 'claude-opus-5-5', effort: 'medium', permissionMode: 'default', outputStyle: 'default', fastMode: 'off',
     remoteControlState: 'off', cwd: 'C:\\', transcript: [], plan: [], chapters: [], next: null, view: 'normal', connectorsOff: [] });
   const update = (sid, f) => { const list = load(), s = list.find(x => x.id === sid); if (s) { f(s); s.active = Date.now(); save(list); } return s; };
-  const current = () => { const l = sessions(); return l.find(s => s.id === app.shown) || l[0] || null; };
+  const current = () => { const l = load(); return l.find(s => s.id === app.shown) || l.find(s => !s.archived) || null; };   // (the shown one may be archived: Show Archived)
   // the sidebar's groups and the Claude window's view (its panes, its sidebar), as the app's tools leave them (ccd.js)
   const record = (name, dflt) => { const v = regGet(KEY, name); if (!v) return dflt; try { return JSON.parse(typeof v === 'string' ? v : FS.decode(v.data).replace(/\0.*$/, '')); } catch (_) { return dflt; } };
   const ui = () => (record('view', {}).ui || {});
   const card = s => (s ? record('cards', []).find(c => c.session === s.id && c.buttons && c.buttons.length === 2) : null);   // (its oldest card)
   const setUi = f => { const v = record('view', {}); v.ui = { sidebarCollapsed: false, panes: [], ...(v.ui || {}) }; f(v.ui); regSet(KEY, 'view', { type: 1, data: FS.encode(JSON.stringify(v) + '\0') }); };
+  const setView = (k, x) => { const v = record('view', {}); v[k] = x; regSet(KEY, 'view', { type: 1, data: FS.encode(JSON.stringify(v) + '\0') }); };
+  const GROUP_BY = [['none', 'None'], ['date', 'Date'], ['state', 'State'], ['project', 'Folder']], SORT_BY = [['recency', 'Recent Activity'], ['alpha', 'Name'], ['created', 'Date Created']],
+    STATUS = [['active', '&Active'], ['archived', 'A&rchived'], ['all', 'A&ll']];
   const togglePane = x => setUi(u => { u.panes = u.panes.includes(x) ? u.panes.filter(y => y !== x) : [...u.panes.filter(y => y !== x), x].slice(-2); });
   // the sessions shown, in order, for Back and Forward (as the app's Go menu)
   const nav = { back: [], fwd: [] };
@@ -61,29 +64,50 @@
   // summaries too), verbose (each tool call's input and answer too)
   const convo = s => {
     if (!s) return 'Choose File > New Session to start.';
-    const lines = [], view = s.view || 'normal';
-    for (const m of s.transcript) {
-      if (m.role === 'user') lines.push(`You:\n${m.text}`);
-      else if (m.role === 'assistant' && m.text) lines.push(`Claude:\n${m.text}`);
-      else if (m.role === 'tool') lines.push(`  > ${m.text}${view === 'verbose' && m.detail ? `\n    ${m.detail.replace(/\n/g, '\n    ')}` : ''}`);
-      else if (m.role === 'thinking' && view !== 'normal' && m.text) lines.push(`  (thinking) ${m.text}`);
-      else if (m.role === 'chapter') lines.push(`---------- ${m.text} ----------`);
-      else if (m.role === 'system') lines.push(`[${m.text}]`);
-    }
-    if (s.state === 'working') lines.push('Claude is thinking...');
+    const lines = [], view = s.view || 'normal', spans = [];
+    let at = 0;   // (where each message is in the text the conversation shows: msgAt)
+    const put = (t, k) => { if (lines.length) at += 4; const n = ansi(t).length; if (k !== undefined) spans.push({ k, from: at, to: at + n, head: k === undefined ? 0 : t.indexOf('\n') + 2 }); at += n; lines.push(t); };
+    s.transcript.forEach((m, k) => {
+      if (m.role === 'user') put(`You:\n${m.text}`, k);
+      else if (m.role === 'assistant' && m.text) put(`Claude:\n${m.text}`, k);
+      else if (m.role === 'tool') put(`  > ${m.text}${view === 'verbose' && m.detail ? `\n    ${m.detail.replace(/\n/g, '\n    ')}` : ''}`);
+      else if (m.role === 'thinking' && view !== 'normal' && m.text) put(`  (thinking) ${m.text}`);
+      else if (m.role === 'chapter') put(`---------- ${m.text} ----------`);
+      else if (m.role === 'system') put(`[${m.text}]`);
+    });
+    if (s.state === 'working') put('Claude is thinking...');
+    convo.spans = { sid: s.id, spans };
     return lines.join('\n\n') || 'Type a message below and press Send.';
   };
   const modeName = m => (MODES.find(x => x[0] === m) || [m, m])[1];
   const status = s => (s ? `${modeName(s.permissionMode)}  \u00b7  ${modelName(s.model)}  \u00b7  ${s.effort[0].toUpperCase()}${s.effort.slice(1)} effort  \u00b7  ${s.state === 'working' ? 'Working' : s.state === 'waiting' ? 'Waiting for you' : s.state === 'failed' ? 'Not connected' : 'Ready'}  \u00b7  ${s.cwd}` : '');
   // the sessions list as the sidebar lists them: pinned first, each group under its heading, then the rest; a dot for one
   // that is working or unread
+  // the sidebar's view (the app's Group and sort: set_view), as the scripting API keeps it
+  const sideView = () => ({ group_by: 'none', status: 'active', sort_by: 'recency', last_activity: 0, ...record('view', {}) });
+  const DAY = 864e5;
+  const dateGroup = t => { const d0 = new Date(); d0.setHours(0, 0, 0, 0); const a = d0.getTime() - t; return t >= d0.getTime() ? 'Today' : a < DAY ? 'Yesterday' : a < 7 * DAY ? 'Previous 7 Days' : a < 30 * DAY ? 'Previous 30 Days' : 'Older'; };
+  const stateGroup = s => (s.state === 'working' ? 'Working' : s.state === 'waiting' ? 'Needs input' : s.state === 'failed' ? 'Failed' : 'Idle');
   function rows() {
-    const l = sessions(), groups = record('groups', []), out = [], add = (s, d = '   ') => out.push({ label: `${d}${s.state === 'working' ? '* ' : s.unread ? 'o ' : ''}${s.title}`, sid: s.id });
-    const pinned = l.filter(s => s.pinned), rest = l.filter(s => !s.pinned);
+    const v = sideView(), hide = !!ui().hideNested, all = load(), groups = record('groups', []), out = [];
+    const l = all.filter(s => (v.status === 'all' ? true : v.status === 'archived' ? s.archived : !s.archived) && (!v.last_activity || s.pinned || Date.now() - s.active <= v.last_activity * DAY));
+    const by = { recency: (a, b) => b.active - a.active, alpha: (a, b) => a.title.localeCompare(b.title), created: (a, b) => b.created - a.created }[v.sort_by] || ((a, b) => b.active - a.active);
+    l.sort(by);
+    // a session started from another that is listed is nested under it (Hide Nested Sessions leaves it out)
+    const listed = new Set(l.map(s => s.id)), kids = s => l.filter(k => k.startedBy === s.id), top = l.filter(s => !s.startedBy || !listed.has(s.startedBy));
+    const add = (s, d = '   ') => {
+      out.push({ label: `${d}${s.state === 'working' ? '* ' : s.unread ? 'o ' : s.state === 'waiting' ? '? ' : ''}${s.title}`, sid: s.id });
+      if (!hide) kids(s).forEach(k => add(k, `${d}   `));
+    };
+    const pinned = top.filter(s => s.pinned), rest = top.filter(s => !s.pinned);
     if (pinned.length) { out.push({ label: 'Pinned' }); pinned.forEach(s => add(s)); }
     for (const g of groups) { const in_ = rest.filter(s => s.group === g.id); if (in_.length) { out.push({ label: g.name }); in_.forEach(s => add(s)); } }
     const loose = rest.filter(s => !s.group || !groups.some(g => g.id === s.group));
-    if (loose.length) { out.push({ label: 'Recents' }); loose.forEach(s => add(s)); }
+    const head = { date: s => dateGroup(s.active), state: stateGroup, project: s => s.cwd || 'C:\\' }[v.group_by];
+    if (!head) { if (loose.length) { out.push({ label: v.status === 'archived' ? 'Archived' : 'Recents' }); loose.forEach(s => add(s)); } return out; }
+    const heads = []; for (const s of loose) { const h = head(s); if (!heads.includes(h)) heads.push(h); }
+    if (v.group_by === 'date') heads.sort((a, b) => ['Today', 'Yesterday', 'Previous 7 Days', 'Previous 30 Days', 'Older'].indexOf(a) - ['Today', 'Yesterday', 'Previous 7 Days', 'Previous 30 Days', 'Older'].indexOf(b));
+    for (const h of heads) { out.push({ label: h }); loose.filter(s => head(s) === h).forEach(s => add(s)); }
     return out;
   }
   function showSessions(p) {
@@ -130,7 +154,9 @@
     MODES.forEach(([m], i) => check(320 + i, s && s.permissionMode === m));
     VIEWS.forEach((x, i) => check(330 + i, s && (s.view || 'normal') === x));
     PANES.forEach((x, i) => check(340 + i, (v.panes || []).includes(x)));
-    check(CMD.SIDEBAR, !v.sidebarCollapsed); check(CMD.PIN, s && s.pinned);
+    check(CMD.SIDEBAR, !v.sidebarCollapsed); check(CMD.PIN, s && s.pinned); check(CMD.HIDE_NESTED, v.hideNested);
+    const sv = sideView(); GROUP_BY.forEach(([k], i) => check(380 + i, (sv.group_by === 'custom' ? 'none' : sv.group_by) === k));
+    SORT_BY.forEach(([k], i) => check(385 + i, sv.sort_by === k)); STATUS.forEach(([k], i) => check(388 + i, sv.status === k));
     enable(CMD.BACK, nav.back.length); enable(CMD.FORWARD, nav.fwd.length); enable(CMD.CLOSE_PANE, (v.panes || []).length);
     U(p, 'DrawMenuBar', [app.hwnd]);
     layout(p, ...app.size);
@@ -242,7 +268,8 @@
       }
       update(sid, x => x.transcript.push({ uuid: id('msg'), t: Date.now(), role: 'results', text: '', blocks: results }));
     }
-    update(sid, x => { if (failed) x.transcript.push({ uuid: id('msg'), t: Date.now(), role: 'system', text: failed }); x.state = failed ? 'failed' : x.next && x.next.blocked ? 'waiting' : 'idle'; });
+    const fin = update(sid, x => { if (failed) x.transcript.push({ uuid: id('msg'), t: Date.now(), role: 'system', text: failed }); x.state = failed ? 'failed' : x.next && x.next.blocked ? 'waiting' : 'idle'; });
+    app.notify = fin && fin.next && fin.next.ask ? 'question' : 'task_complete';   // (told on the window's timer: notifyNow)
     app.dirty = true;
   }
   // a message of the user's into the session, and the turn that answers it
@@ -284,9 +311,11 @@
     };
     const sub = (m, l) => U(p, 'AppendMenuA', [bar, 0x10, m, sz(p, `bar-${l}`, l)]);
     sub(pop([[ID.NEW, '&New Session'], [0, null], [CMD.EXPORT, '&Export Transcript'], [0, null], [ID.EXIT, 'E&xit']]), '&File');
-    sub(pop([[CMD.COPY_REPLY, '&Copy Last Reply'], [CMD.FIND, '&Find Next (the prompt\'s text)'], [0, null],
-      [CMD.FORK, 'F&ork Session Here'], [CMD.REWIND, '&Rewind Last Turn'], [CMD.CHAPTER, '&Mark Chapter (named by the prompt)']]), '&Edit');
-    sub(pop([[CMD.SIDEBAR, 'Side&bar'], [VIEWS.map((x, i) => [330 + i, `${x[0].toUpperCase()}${x.slice(1)}`]), '&Transcript View'], [0, null],
+    sub(pop([[CMD.COPY_REPLY, '&Copy Message'], [CMD.FIND, '&Find Next (the prompt\'s text)'], [0, null],
+      [CMD.FORK, 'F&ork from Here'], [CMD.REWIND, '&Rewind to Here'], [CMD.CHAPTER, '&Pin as Chapter'], [0, null], [CMD.RENAME, 'Re&name Session (to the prompt\'s text)']]), '&Edit');
+    sub(pop([[CMD.SIDEBAR, 'Side&bar'], [GROUP_BY.map(([, l], i) => [380 + i, l]), '&Group Sessions By'], [SORT_BY.map(([, l], i) => [385 + i, l]), '&Sort Sessions By'],
+      [STATUS.map(([, l], i) => [388 + i, l]), 'Sho&w Sessions'], [CMD.HIDE_NESTED, '&Hide Nested Sessions'], [0, null],
+      [VIEWS.map((x, i) => [330 + i, `${x[0].toUpperCase()}${x.slice(1)}`]), '&Transcript View'], [0, null],
       ...PANES.map((x, i) => [340 + i, PANE_TITLE[x]]), [CMD.CLOSE_PANE, 'C&lose Pane']]), '&View');
     sub(pop([[CMD.BACK, '&Back'], [CMD.FORWARD, '&Forward'], [0, null], [CMD.PREV, '&Previous Session'], [CMD.NEXT_SESSION, '&Next Session']]), '&Go');
     sub(pop([[MODES.map(([, n], i) => [320 + i, n]), 'Permission &Mode'], [0, null], [CMD.PIN, '&Pinned'], [CMD.ARCHIVE, '&Archive']]), '&Session');
@@ -327,6 +356,13 @@
     if (h !== app.hwnd) return 0;
     if (msg === WM.SIZE) { layout(p, lp & 0xffff, lp >>> 16); return done(); }
     // (the timer: what the reply and the app's tools have written since, shown)
+    if (msg === WM.TIMER && app.notify) {   // a turn ended: beep and flash the taskbar button when the window is behind, as the settings say
+      const kind = app.notify, st = record('settings', {}); app.notify = null;
+      if (st[`${kind}_notifications`] !== 'none' && fn(p, 'USER32', 'FlashWindow') && U(p, 'GetForegroundWindow', []) !== h) {
+        if (st.notification_sound !== false) U(p, 'MessageBeep', [kind === 'question' ? 0x20 : 0]);   // MB_ICONQUESTION, the default sound
+        if (st.draw_attention_on_notifications !== false) U(p, 'FlashWindow', [h, 1]);
+      }
+    }
     if (msg === WM.TIMER) {
       if (app.dirty || regGet(KEY, 'sessions') !== app.raw || regGet(KEY, 'view') !== app.rawView || regGet(KEY, 'cards') !== app.rawCards) { app.dirty = false; showAll(p); }
       if (!asking && asks.length) { asking = asks.shift(); U(p, 'PostMessageA', [h, 0x8001, sz(p, 'ask-text', asking.text), sz(p, 'ask-title', asking.title || 'Claude')]); }
@@ -366,10 +402,20 @@
     // Edit: a message's actions (copy, fork, rewind, a chapter) and finding in the conversation
     const promptText = () => { const b = sz(p, 'prompt-in', ' '.repeat(4096)); U(p, 'GetWindowTextA', [app.kid[ID.PROMPT], b, 4096]); return p.readA(b).trim(); };
     const select = (a, b_) => { const e = app.kid[ID.CONVO]; U(p, 'SendMessageA', [e, 0xB1, a, b_]); U(p, 'SendMessageA', [e, 0xB7, 0, 0]); return e; };   // EM_SETSEL, EM_SCROLLCARET
+    // the message the caret is in (clicked into in the conversation), as the app's actions on a message; the last one
+    // when the caret is at the end, where the conversation leaves it
+    const msgAt = () => {
+      convo(s); const sp = convo.spans.spans, pos = U(p, 'SendMessageA', [app.kid[ID.CONVO], 0xB0, 0, 0]) & 0xffff;   // EM_GETSEL: its start
+      let r = null; for (const x of sp) if (x.from <= pos) r = x; return r || sp[sp.length - 1] || null;
+    };
     if (c === CMD.COPY_REPLY && s) {
-      const m = [...s.transcript].reverse().find(x => x.role === 'assistant' && x.text), t = ansi(convo(s)), at = m ? t.lastIndexOf(ansi(m.text)) : -1;
-      if (at >= 0) { U(p, 'SendMessageA', [select(at, at + ansi(m.text).length), 0x301, 0, 0]); app.note = 'Copied the last reply.'; }   // WM_COPY: the edit control's own clipboard copy
+      const at = msgAt(); if (!at) return done();
+      U(p, 'SendMessageA', [select(at.from + at.head, at.to), 0x301, 0, 0]); app.note = `Copied the message (${s.transcript[at.k].role === 'user' ? 'yours' : 'Claude\'s'}).`;   // WM_COPY: the edit control's own clipboard copy
       return redraw();
+    }
+    if (c === CMD.RENAME && s) {
+      const name = promptText(); if (!name) { app.note = 'Type the new name in the prompt, then Edit > Rename Session.'; return redraw(); }
+      update(sid, x => { x.title = name.slice(0, 80); }); text(p, app.kid[ID.PROMPT], 'prompt-clear', ''); return redraw();
     }
     if (c === CMD.FIND && s) {
       const q = promptText(), t = ansi(convo(s)), e = app.kid[ID.CONVO];
@@ -378,22 +424,28 @@
       if (at < 0) { app.note = `Cannot find "${q}".`; text(p, app.kid[ID.STATUS], 'status', app.note); app.note = null; return done(); }
       select(at, at + q.length); U(p, 'SetFocus', [e]); return done();
     }
-    if (c === CMD.FORK && s) {
-      const l = load(), f = { ...fresh(), title: `${s.title} (fork)`, startedBy: s.id, cwd: s.cwd, model: s.model, effort: s.effort, transcript: s.transcript.map(m => ({ ...m })), plan: s.plan.map(x => ({ ...x })) };
+    if (c === CMD.FORK && s) {   // Fork from here: the conversation through the message, in a new session
+      const at = msgAt(), upto = at ? at.k + 1 : s.transcript.length;
+      const l = load(), f = { ...fresh(), title: `${s.title} (fork)`, startedBy: s.id, cwd: s.cwd, model: s.model, effort: s.effort, transcript: s.transcript.slice(0, upto).map(m => ({ ...m })), plan: s.plan.map(x => ({ ...x })) };
       l.push(f); save(l); go(f.id); return redraw();
     }
-    if (c === CMD.REWIND && s && s.state !== 'working') {
-      const k = s.transcript.map(m => m.role).lastIndexOf('user'); if (k < 0) return done();
+    if (c === CMD.REWIND && s && s.state !== 'working') {   // Rewind to here: back to before the prompt (the message's, or the one Claude's answers)
+      const at = msgAt(), k = at ? s.transcript.slice(0, at.k + 1).map(m => m.role).lastIndexOf('user') : -1; if (k < 0) return done();
       const was = s.transcript[k].text; update(sid, x => { x.transcript = x.transcript.slice(0, k); x.next = null; });
       const e = app.kid[ID.PROMPT], n = ansi(was).length; text(p, e, 'prompt-rewind', was); U(p, 'SendMessageA', [e, 0xB1, n, n]); U(p, 'SetFocus', [e]); return redraw();
     }
-    if (c === CMD.CHAPTER && s) {
-      const name = promptText() || `Chapter ${(s.chapters || []).length + 1}`;
-      update(sid, x => { x.transcript.push({ uuid: id('msg'), t: Date.now(), role: 'chapter', text: name }); (x.chapters = x.chapters || []).push({ title: name, t: Date.now() }); });
+    if (c === CMD.CHAPTER && s) {   // Pin as chapter: a chapter starting at the message, named by the prompt or the message
+      const at = msgAt(), k = at ? at.k : s.transcript.length, first = at ? s.transcript[k].text.split('\n')[0].slice(0, 40) : '';
+      const name = promptText() || first || `Chapter ${(s.chapters || []).length + 1}`;
+      update(sid, x => { x.transcript.splice(k, 0, { uuid: id('msg'), t: Date.now(), role: 'chapter', text: name }); (x.chapters = x.chapters || []).push({ title: name, t: Date.now() }); });
       text(p, app.kid[ID.PROMPT], 'prompt-clear', ''); return redraw();
     }
     // View: the sidebar, the transcript view, the panes
     if (c === CMD.SIDEBAR) { setUi(u => { u.sidebarCollapsed = !u.sidebarCollapsed; }); return redraw(); }
+    if (c >= 380 && c < 380 + GROUP_BY.length) { setView('group_by', GROUP_BY[c - 380][0]); return redraw(); }
+    if (c >= 385 && c < 385 + SORT_BY.length) { setView('sort_by', SORT_BY[c - 385][0]); return redraw(); }
+    if (c >= 388 && c < 388 + STATUS.length) { setView('status', STATUS[c - 388][0]); return redraw(); }
+    if (c === CMD.HIDE_NESTED) { setUi(u => { u.hideNested = !u.hideNested; }); return redraw(); }
     if (c >= 330 && c < 330 + VIEWS.length) { if (sid) update(sid, x => { x.view = VIEWS[c - 330]; }); return redraw(); }
     if (c >= 340 && c < 340 + PANES.length) { togglePane(PANES[c - 340]); return redraw(); }
     if (c === CMD.CLOSE_PANE) { setUi(u => { u.panes = u.panes.slice(0, -1); }); return redraw(); }
