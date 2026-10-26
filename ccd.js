@@ -186,7 +186,9 @@
     // the session the calls act on as "self": the one this page's agent works in, made the first time it is needed
     let self = st.sessions.find(s => s.self);
     if (!self) { self = fresh({ self: true }); st.sessions.unshift(self); save('sessions'); }
-    let shown = self.id, sidebarCollapsed = false, splits = [], keepAwake = null;
+    // (the sidebar's and the panes' state is the registry's too: the Claude program shows them as the page's window does)
+    let shown = self.id, sidebarCollapsed = !!(st.view.ui && st.view.ui.sidebarCollapsed), splits = [], keepAwake = null;
+    const saveUi = () => { st.view.ui = { sidebarCollapsed, panes: panesOpen.slice() }; save('view'); };
     const byId = id => (id === 'self' ? self : st.sessions.find(s => s.id === id || s.name === id || (id === 'parent' && s.id === self.startedBy)));
     const need = id => { const s = byId(id); if (!s) throw new CcdError(`No session ${JSON.stringify(id)}: list_sessions lists the session ids.`); return s; };
     const family = s => st.sessions.filter(x => x === s || x.startedBy === s.id || s.startedBy === x.id || (x.startedBy && x.startedBy === s.startedBy));
@@ -223,7 +225,7 @@
     let win = null, body = null;
     const CR = () => (body && body.r ? body.r : { x: 0, y: 0, w: 640, h: 420 });
     const SBW = 172, HEAD = 30, PROMPT = 28, FOOT = 24;
-    let panesOpen = [], tscroll = 0, navBack = [], navFwd = [], railOpen = false;
+    let panesOpen = (st.view.ui && st.view.ui.panes) || [], tscroll = 0, navBack = [], navFwd = [], railOpen = false;
     const sideW = () => (sidebarCollapsed ? 0 : SBW);
     // (the chat column takes a third of what the sidebar leaves, as the app's, but never under 300 pixels)
     const paneX = () => (panesOpen.length ? Math.min(CR().w - 160, sideW() + Math.max(300, Math.round((CR().w - sideW()) * 0.34))) : CR().w);
@@ -438,7 +440,7 @@
           const y0 = a.y + k * ph, h = k === panesOpen.length - 1 ? a.h - k * ph : ph - 2;
           g.btnUp(a.x, y0, a.w, 24); g.text(PANE_TITLE[p], a.x + 8, y0 + 5, g.K.dk, true);
           let bx = a.x + a.w - 4;   // (right to left: Close, Expand, Copy)
-          for (const [l, fn] of [['x', () => closePane(p)], ['^', () => { panesOpen = [p]; }], ['Copy', () => copy(paneText(p).join('\n'))]]) {
+          for (const [l, fn] of [['x', () => closePane(p)], ['^', () => { panesOpen = [p]; saveUi(); }], ['Copy', () => copy(paneText(p).join('\n'))]]) {
             const bw = g.textW(l) + 10; bx -= bw + 2; g.btnUp(bx, y0 + 3, bw, 18); g.text(l, bx + 5, y0 + 5); hit(bx, y0 + 3, bw, 18, fn);
           }
           g.field(a.x, y0 + 25, a.w, h - 25);
@@ -465,9 +467,9 @@
       terminal: i => { if (i === 1) ui.runCommand('COMMAND.COM'); },
       preview: i => { const w = ui.windows().filter(x => !x.min && x !== win)[i - 1]; if (w) ui.activate(w); },
     };
-    function togglePane(p) { if (panesOpen.includes(p)) closePane(p); else { panesOpen = [...panesOpen.filter(x => x !== p), p].slice(-2); if (p === 'terminal') ui.runCommand('COMMAND.COM'); } ui.dirty(); }
-    function closePane(p) { panesOpen = p ? panesOpen.filter(x => x !== p) : panesOpen.slice(0, -1); ui.dirty(); }
-    function setSidebar(collapsed) { sidebarCollapsed = collapsed; ui.dirty(); }
+    function togglePane(p) { if (panesOpen.includes(p)) closePane(p); else { panesOpen = [...panesOpen.filter(x => x !== p), p].slice(-2); if (p === 'terminal') ui.runCommand('COMMAND.COM'); saveUi(); } ui.dirty(); }
+    function closePane(p) { panesOpen = p ? panesOpen.filter(x => x !== p) : panesOpen.slice(0, -1); saveUi(); ui.dirty(); }
+    function setSidebar(collapsed) { sidebarCollapsed = collapsed; saveUi(); ui.dirty(); }
     function setMode(m) { const s = cur(); s.permissionMode = m; save('sessions'); ui.dirty(); }
     const usage = s => { const tokens = s.transcript.reduce((n, m) => n + Math.ceil(m.text.length / 4), 0); return { tokens, percent: +(tokens / 2e3).toFixed(1) }; };
     const copy = t => { try { navigator.clipboard.writeText(t); } catch (_) { /* no clipboard here */ } ui.emit('ccd.copy', { text: t }); };
@@ -889,7 +891,7 @@
       },
       set_sidebar_collapsed(a) {
         if (sidebarCollapsed === !!a.collapsed) return `The sidebar is already ${a.collapsed ? 'collapsed' : 'expanded'}.`;
-        sidebarCollapsed = !!a.collapsed; ui.dirty(); return `Sidebar ${a.collapsed ? 'collapsed' : 'expanded'}.`;
+        setSidebar(!!a.collapsed); return `Sidebar ${a.collapsed ? 'collapsed' : 'expanded'}.`;
       },
     };
     const setting = k => (st.settings[k] !== undefined ? st.settings[k] : SETTINGS[k].v);

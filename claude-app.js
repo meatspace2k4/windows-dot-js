@@ -10,10 +10,12 @@
   const { def, regGet, regSet } = self.W95Win32, FS = self.W95FS;
   const KEY = 'hkcu\\software\\claude\\code';
   const WM = { DESTROY: 2, SIZE: 5, SETFONT: 0x30, COMMAND: 0x111, TIMER: 0x113, CLOSE: 0x10 };
-  const ID = { SESSIONS: 101, CONVO: 102, PROMPT: 103, SEND: 104, STATUS: 105, NEW: 201, EXIT: 202, ABOUT: 401 };
+  const ID = { SESSIONS: 101, CONVO: 102, PROMPT: 103, SEND: 104, STATUS: 105, NEXT: 106, ANSWER0: 107, ANSWER1: 108, TASKS: 109,
+    PANE0: 110, PANE0_TEXT: 111, PANE1: 112, PANE1_TEXT: 113, NEW: 201, EXIT: 202, ABOUT: 401 };
   const MODELS = [['claude-opus-5-5', 'Opus 5.5'], ['claude-sonnet-5-5', 'Sonnet 5.5'], ['claude-haiku-5-5', 'Haiku 5.5'], ['claude-fable-5-1', 'Fable 5.1']];
   const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
-  const app = { hwnd: 0, kid: {}, menu: 0, shown: null, dirty: false, bufs: new Map() };
+  const PANE_TITLE = { terminal: 'Terminal', diff: 'Changes', preview: 'Preview', files: 'Files', side_chat: 'Side Chat', plan: 'Plan', tasks: 'Tasks' };
+  const app = { hwnd: 0, kid: {}, menu: 0, shown: null, dirty: false, bufs: new Map(), rows: [], raw: null, rawView: null, size: [560, 400] };
 
   // ---------------------------------------------------------------- the sessions (the scripting API's records)
   const load = () => { const v = regGet(KEY, 'sessions'); if (!v) return []; try { return JSON.parse(typeof v === 'string' ? v : FS.decode(v.data).replace(/\0.*$/, '')); } catch (_) { return []; } };
@@ -25,6 +27,9 @@
     remoteControlState: 'off', cwd: 'C:\\', transcript: [], plan: [], chapters: [], next: null, view: 'normal', connectorsOff: [] });
   const update = (sid, f) => { const list = load(), s = list.find(x => x.id === sid); if (s) { f(s); s.active = Date.now(); save(list); } return s; };
   const current = () => { const l = sessions(); return l.find(s => s.id === app.shown) || l[0] || null; };
+  // the sidebar's groups and the Claude window's view (its panes, its sidebar), as the app's tools leave them (ccd.js)
+  const record = (name, dflt) => { const v = regGet(KEY, name); if (!v) return dflt; try { return JSON.parse(typeof v === 'string' ? v : FS.decode(v.data).replace(/\0.*$/, '')); } catch (_) { return dflt; } };
+  const ui = () => (record('view', {}).ui || {});
 
   // ---------------------------------------------------------------- the system's functions, called as the program calls them
   const fn = (p, dll, nm) => { const m = p.byName.get(dll); return m && m.exports.get(nm); };
@@ -40,40 +45,99 @@
 
   // ---------------------------------------------------------------- what the window shows
   const modelName = m => (MODELS.find(x => x[0] === m) || [m, m])[1];
+  // the conversation, as the session's transcript view shows it: normal (messages, tool calls, chapters), thinking (its
+  // summaries too), verbose (each tool call's input and answer too)
   const convo = s => {
     if (!s) return 'Choose File > New Session to start.';
-    const lines = [];
+    const lines = [], view = s.view || 'normal';
     for (const m of s.transcript) {
       if (m.role === 'user') lines.push(`You:\n${m.text}`);
       else if (m.role === 'assistant' && m.text) lines.push(`Claude:\n${m.text}`);
-      else if (m.role === 'tool') lines.push(`  > ${m.text}`);
-      else if (m.role === 'chapter') lines.push(`--- ${m.text} ---`);
+      else if (m.role === 'tool') lines.push(`  > ${m.text}${view === 'verbose' && m.detail ? `\n    ${m.detail.replace(/\n/g, '\n    ')}` : ''}`);
+      else if (m.role === 'thinking' && view !== 'normal' && m.text) lines.push(`  (thinking) ${m.text}`);
+      else if (m.role === 'chapter') lines.push(`---------- ${m.text} ----------`);
       else if (m.role === 'system') lines.push(`[${m.text}]`);
     }
     if (s.state === 'working') lines.push('Claude is thinking...');
     return lines.join('\n\n') || 'Type a message below and press Send.';
   };
-  const status = s => (s ? `${modelName(s.model)}  \u00b7  ${s.effort[0].toUpperCase()}${s.effort.slice(1)} effort  \u00b7  ${s.state === 'working' ? 'Working' : s.state === 'failed' ? 'Not connected' : 'Ready'}` : '');
-  function showSessions(p) {
-    const lb = app.kid[ID.SESSIONS], l = sessions(); U(p, 'SendMessageA', [lb, 0x184, 0, 0]);   // LB_RESETCONTENT
-    l.forEach(s => U(p, 'SendMessageA', [lb, 0x180, 0, sz(p, 'item', s.title)]));                 // LB_ADDSTRING
-    const k = l.findIndex(s => s.id === (current() || {}).id); if (k >= 0) U(p, 'SendMessageA', [lb, 0x186, k, 0]);   // LB_SETCURSEL
+  const status = s => (s ? `${modelName(s.model)}  \u00b7  ${s.effort[0].toUpperCase()}${s.effort.slice(1)} effort  \u00b7  ${s.state === 'working' ? 'Working' : s.state === 'waiting' ? 'Waiting for you' : s.state === 'failed' ? 'Not connected' : 'Ready'}  \u00b7  ${s.cwd}` : '');
+  // the sessions list as the sidebar lists them: pinned first, each group under its heading, then the rest; a dot for one
+  // that is working or unread
+  function rows() {
+    const l = sessions(), groups = record('groups', []), out = [], add = (s, d = '   ') => out.push({ label: `${d}${s.state === 'working' ? '* ' : s.unread ? 'o ' : ''}${s.title}`, sid: s.id });
+    const pinned = l.filter(s => s.pinned), rest = l.filter(s => !s.pinned);
+    if (pinned.length) { out.push({ label: 'Pinned' }); pinned.forEach(s => add(s)); }
+    for (const g of groups) { const in_ = rest.filter(s => s.group === g.id); if (in_.length) { out.push({ label: g.name }); in_.forEach(s => add(s)); } }
+    const loose = rest.filter(s => !s.group || !groups.some(g => g.id === s.group));
+    if (loose.length) { out.push({ label: 'Recents' }); loose.forEach(s => add(s)); }
+    return out;
   }
-  function showConvo(p) {
-    const s = current(), e = app.kid[ID.CONVO], t = ansi(convo(s));
+  function showSessions(p) {
+    const lb = app.kid[ID.SESSIONS]; app.rows = rows(); U(p, 'SendMessageA', [lb, 0x184, 0, 0]);   // LB_RESETCONTENT
+    app.rows.forEach((r, i) => U(p, 'SendMessageA', [lb, 0x180, 0, sz(p, `item${i % 8}`, r.label)]));   // LB_ADDSTRING
+    const k = app.rows.findIndex(r => r.sid === (current() || {}).id); U(p, 'SendMessageA', [lb, 0x186, k, 0]);   // LB_SETCURSEL
+  }
+  // a pane's text, as the Claude window's panes show them
+  function paneText(p, s) {
+    if (!s) return '';
+    if (p === 'plan') return s.plan.length ? s.plan.map(t => `${t.status === 'completed' ? '[x]' : t.status === 'in_progress' ? '[>]' : '[ ]'} ${t.content}`).join('\n') : 'No plan for this session.';
+    if (p === 'diff') return (s.changes || []).length ? s.changes.map(c => `${c.op}  ${c.path}`).join('\n') : 'No changes.';
+    if (p === 'tasks') { const kids = sessions().filter(x => x.startedBy === s.id); return kids.length ? kids.map(x => `${x.title}  (${x.state})`).join('\n') : 'No sessions started from this one.'; }
+    if (p === 'files') return `${s.cwd}`;
+    if (p === 'terminal') return 'MS-DOS Prompt runs in its own window.';
+    if (p === 'side_chat') return s.transcript.filter(m => m.side).map(m => `${m.role}: ${m.text}`).join('\n') || 'No side chat.';
+    return '';
+  }
+  const shown = (p, k, on) => U(p, 'ShowWindow', [app.kid[k], on ? 5 : 0]);   // SW_SHOW, SW_HIDE
+  function showAll(p) {
+    const s = current(), v = ui(), e = app.kid[ID.CONVO], t = ansi(convo(s));
+    app.raw = regGet(KEY, 'sessions'); app.rawView = regGet(KEY, 'view');
+    showSessions(p);
     text(p, e, 'convo', t); U(p, 'SendMessageA', [e, 0xB1, t.length, t.length]); U(p, 'SendMessageA', [e, 0xB7, 0, 0]);   // EM_SETSEL, EM_SCROLLCARET: the end in view
     text(p, app.kid[ID.STATUS], 'status', status(s));
-    const title = s ? `${s.title} - Claude` : 'Claude'; text(p, app.hwnd, 'title', title);
+    text(p, app.hwnd, 'title', s ? `${s.title} - Claude` : 'Claude');
+    // the task list, under the conversation
+    const tl = app.kid[ID.TASKS]; U(p, 'SendMessageA', [tl, 0x184, 0, 0]);
+    ((s && s.plan) || []).forEach((t, i) => U(p, 'SendMessageA', [tl, 0x180, 0, sz(p, `task${i % 8}`, `${t.status === 'completed' ? '[x]' : t.status === 'in_progress' ? '[>]' : '[ ]'} ${t.content}`)]));
+    // the next-step box: its recap and question, its buttons
+    const n = s && s.next;
+    text(p, app.kid[ID.NEXT], 'next', n ? `${n.ask ? `${n.ask}\n` : ''}${n.recap}` : '');   // (the question first: the recap may run past the box)
+    [ID.ANSWER0, ID.ANSWER1].forEach((k, i) => { const a = n && n.actions && n.actions[i]; if (a) text(p, app.kid[k], `answer${i}`, String(a.label || a.action || 'OK').replace(/&/g, '&&')); });
+    // the panes, at the right
+    const panes = (v.panes || []).filter(x => PANE_TITLE[x]).slice(0, 2);
+    panes.forEach((x, i) => { text(p, app.kid[i ? ID.PANE1 : ID.PANE0], `pane${i}`, PANE_TITLE[x]); text(p, app.kid[i ? ID.PANE1_TEXT : ID.PANE0_TEXT], `pane${i}t`, paneText(x, s)); });
     for (const [m] of MODELS) U(p, 'CheckMenuItem', [app.menu, 300 + MODELS.findIndex(x => x[0] === m), s && s.model === m ? 8 : 0]);
     EFFORTS.forEach((ef, i) => U(p, 'CheckMenuItem', [app.menu, 310 + i, s && s.effort === ef ? 8 : 0]));
+    layout(p, ...app.size);
   }
+  // the layout: the sessions (unless the sidebar is collapsed), the conversation, under it the task list and the next-step
+  // box when the session has them, the prompt and Send, the status line; the panes at the right
   function layout(p, w, h) {
+    app.size = [w, h];
     if (!app.kid[ID.SEND]) return;
-    const L = 160, pad = 6, foot = 20, row = 24, mv = (k, x, y, cw, ch) => U(p, 'MoveWindow', [app.kid[k], x, y, Math.max(0, cw), Math.max(0, ch), 1]);
-    mv(ID.SESSIONS, pad, pad, L - pad, h - 2 * pad - foot);
-    mv(ID.CONVO, L + pad, pad, w - L - 2 * pad, h - 3 * pad - row - foot);
-    mv(ID.PROMPT, L + pad, h - pad - row - foot, w - L - 3 * pad - 75, row);
-    mv(ID.SEND, w - pad - 75, h - pad - row - foot, 75, row);
+    const s = current(), v = ui(), n = s && s.next, plan = (s && s.plan) || [], panes = (v.panes || []).filter(x => PANE_TITLE[x]).slice(0, 2);
+    const pad = 6, foot = 20, row = 24, L = v.sidebarCollapsed ? 0 : 160, P = panes.length ? Math.min(220, Math.floor(w / 3)) : 0;
+    const x0 = L + pad, cw = w - x0 - pad - (P ? P + pad : 0);
+    const mv = (k, x, y, ww, hh) => U(p, 'MoveWindow', [app.kid[k], x, y, Math.max(0, ww), Math.max(0, hh), 1]);
+    shown(p, ID.SESSIONS, !v.sidebarCollapsed); if (!v.sidebarCollapsed) mv(ID.SESSIONS, pad, pad, L - pad, h - 2 * pad - foot);
+    let y = h - foot - pad - row;
+    mv(ID.PROMPT, x0, y, cw - 75 - pad, row); mv(ID.SEND, x0 + cw - 75, y, 75, row);
+    const bh = n ? 56 : 0, nh = n ? bh + (n.actions ? 27 : 0) : 0;   // (the box: four lines of recap and question; its buttons under it)
+    shown(p, ID.NEXT, !!n); [ID.ANSWER0, ID.ANSWER1].forEach((k, i) => shown(p, k, !!(n && n.actions && n.actions[i])));
+    if (n) {
+      y -= nh + pad; mv(ID.NEXT, x0, y, cw, bh);
+      const k = (n.actions || []).length, bw = Math.min(106, Math.floor((cw - 6 * (k - 1)) / Math.max(1, k)));   // (narrower in a narrow column)
+      (n.actions || []).forEach((a, i) => mv(i ? ID.ANSWER1 : ID.ANSWER0, x0 + cw - (k - i) * (bw + 6) + 6, y + bh + 4, bw, 23));
+    }
+    const th = plan.length ? Math.min(98, plan.length * 13 + 6) : 0;
+    shown(p, ID.TASKS, !!plan.length); if (plan.length) { y -= th + pad; mv(ID.TASKS, x0, y, cw, th); }
+    mv(ID.CONVO, x0, pad, cw, y - 2 * pad);
+    [[ID.PANE0, ID.PANE0_TEXT], [ID.PANE1, ID.PANE1_TEXT]].forEach(([tk, ek], i) => {
+      const on = i < panes.length; shown(p, tk, on); shown(p, ek, on); if (!on) return;
+      const ph = Math.floor((h - foot - pad) / panes.length), py = pad + i * ph, px = w - P - pad;
+      mv(tk, px, py, P, 16); mv(ek, px, py + 18, P, ph - 18 - pad);
+    });
     mv(ID.STATUS, pad, h - foot + 2, w - 2 * pad, foot - 4);
   }
 
@@ -115,7 +179,13 @@
           const ev = JSON.parse(buf.slice(0, i));
           if (ev.t === 'text') { got += ev.d; put(); app.dirty = true; }
           else if (ev.t === 'error') return { error: ev.e };
-          else if (ev.t === 'done') { put(ev.content); result = { stop: ev.stop, content: ev.content || [] }; }
+          else if (ev.t === 'done') {
+            // (a message whose content came back empty while text streamed, or one stopped short: kept as text, and said)
+            const content = ev.content && ev.content.length ? ev.content : null;
+            put(content); update(sid, x => { const m = x.transcript.find(y => y.uuid === msgId); if (m) { m.stop = ev.stop; m.model = ev.model; } });
+            if (!content || !['end_turn', 'tool_use', 'pause_turn'].includes(ev.stop)) update(sid, x => x.transcript.push({ uuid: id('msg'), t: Date.now(), role: 'system', text: `The reply stopped short (${ev.stop || 'no content'}${ev.model ? `, ${ev.model}` : ''}).` }));
+            result = { stop: ev.stop, content: content || [] };
+          }
         }
       }
     } catch (e) { return { error: `Not connected: ${e.message}` }; }
@@ -141,15 +211,24 @@
     update(sid, x => { if (failed) x.transcript.push({ uuid: id('msg'), t: Date.now(), role: 'system', text: failed }); x.state = failed ? 'failed' : x.next && x.next.blocked ? 'waiting' : 'idle'; });
     app.dirty = true;
   }
+  // a message of the user's into the session, and the turn that answers it
+  function say(p, t) {
+    let s = current(); if (!s) { const l = load(); s = fresh(); l.push(s); save(l); app.shown = s.id; }
+    if (s.state === 'working') return;
+    update(s.id, x => { x.transcript.push({ uuid: id('msg'), t: Date.now(), role: 'user', text: t }); x.state = 'working'; x.next = null; if (x.title === 'New session') x.title = t.slice(0, 48); });
+    showAll(p); reply(s.id);
+  }
   function send(p) {
     const e = app.kid[ID.PROMPT], b = sz(p, 'prompt-in', ' '.repeat(4096));
     U(p, 'GetWindowTextA', [e, b, 4096]); const t = p.readA(b).trim(); if (!t) return;
-    text(p, e, 'prompt-clear', '');
-    let s = current(); if (!s) { const l = load(); s = fresh(); l.push(s); save(l); app.shown = s.id; }
-    update(s.id, x => { x.transcript.push({ uuid: id('msg'), t: Date.now(), role: 'user', text: t }); x.state = 'working'; if (x.title === 'New session') x.title = t.slice(0, 48); });
-    showSessions(p); showConvo(p); reply(s.id);
+    text(p, e, 'prompt-clear', ''); say(p, t);
   }
-  function newSession(p) { const l = load(), s = fresh(); l.push(s); save(l); app.shown = s.id; showSessions(p); showConvo(p); }
+  // a next-step button: its message is the user's answer (the app's: ccd.js answer)
+  function answer(p, i) {
+    const s = current(), a = s && s.next && s.next.actions && s.next.actions[i]; if (!a) return;
+    say(p, a.message || a.label || a.action);
+  }
+  function newSession(p) { const l = load(), s = fresh(); l.push(s); save(l); app.shown = s.id; showAll(p); }
 
   // ---------------------------------------------------------------- the program's entry and its window procedure
   // Start(wndproc): the window, of a class whose procedure is the program's own (CLAUDE.EXE's WndProc, which asks Handle)
@@ -179,8 +258,13 @@
     kid(ID.PROMPT, 'EDIT', 0x200, 0x80 | 0x10000);                                   // ES_AUTOHSCROLL, WS_TABSTOP
     kid(ID.SEND, 'BUTTON', 0, 1 | 0x10000, '&Send');                                 // BS_DEFPUSHBUTTON, WS_TABSTOP
     kid(ID.STATUS, 'STATIC', 0, 0);
-    const rc = p.alloc(16); U(p, 'GetClientRect', [h, rc]); layout(p, p.r32(rc + 8), p.r32(rc + 12)); p.free(rc);
-    app.shown = (current() || {}).id || null; showSessions(p); showConvo(p);
+    kid(ID.TASKS, 'LISTBOX', 0x200, 0x00200000 | 0x100 | 0x4000);                  // WS_VSCROLL, LBS_NOINTEGRALHEIGHT, LBS_NOSEL
+    kid(ID.NEXT, 'STATIC', 0x200, 0);                                                 // (sunken: the next-step box)
+    kid(ID.ANSWER0, 'BUTTON', 0, 0x10000); kid(ID.ANSWER1, 'BUTTON', 0, 0x10000);
+    kid(ID.PANE0, 'STATIC', 0, 0); kid(ID.PANE0_TEXT, 'EDIT', 0x200, 0x00200000 | 4 | 0x800);
+    kid(ID.PANE1, 'STATIC', 0, 0); kid(ID.PANE1_TEXT, 'EDIT', 0x200, 0x00200000 | 4 | 0x800);
+    const rc = p.alloc(16); U(p, 'GetClientRect', [h, rc]); app.size = [p.r32(rc + 8), p.r32(rc + 12)]; p.free(rc);
+    app.shown = (current() || {}).id || null; showAll(p);
     U(p, 'SetTimer', [h, 1, 150, 0]);   // (the reply arrives between the program's messages: shown on the timer)
     U(p, 'SetFocus', [app.kid[ID.PROMPT]]);
     return h;
@@ -192,7 +276,8 @@
     const p = this, done = (v = 0) => { p.w32(res, v); return 1; };
     if (h !== app.hwnd) return 0;
     if (msg === WM.SIZE) { layout(p, lp & 0xffff, lp >>> 16); return done(); }
-    if (msg === WM.TIMER) { if (app.dirty) { app.dirty = false; showConvo(p); showSessions(p); } return done(); }
+    // (the timer: what the reply and the app's tools have written since, shown)
+    if (msg === WM.TIMER) { if (app.dirty || regGet(KEY, 'sessions') !== app.raw || regGet(KEY, 'view') !== app.rawView) { app.dirty = false; showAll(p); } return done(); }
     if (msg === WM.DESTROY) { U(p, 'KillTimer', [h, 1]); app.hwnd = 0; app.kid = {}; U(p, 'PostQuitMessage', [0]); return done(); }
     if (msg !== WM.COMMAND) return 0;
     const c = wp & 0xffff, note = wp >>> 16;
@@ -200,10 +285,13 @@
     if (c === ID.NEW) { newSession(p); return done(); }
     if (c === ID.EXIT) { U(p, 'PostMessageA', [h, WM.CLOSE, 0, 0]); return done(); }
     if (c === ID.ABOUT) { text(p, app.kid[ID.STATUS], 'status', 'Claude for Windows 95: the Claude desktop app, as a program of the system.'); return done(); }
-    if (c >= 300 && c < 300 + MODELS.length) { const s = current(); if (s) update(s.id, x => { x.model = MODELS[c - 300][0]; }); showConvo(p); return done(); }
-    if (c >= 310 && c < 310 + EFFORTS.length) { const s = current(); if (s) update(s.id, x => { x.effort = EFFORTS[c - 310]; }); showConvo(p); return done(); }
-    if (c === ID.SESSIONS && note === 1) {                                           // LBN_SELCHANGE
-      const k = U(p, 'SendMessageA', [app.kid[ID.SESSIONS], 0x188, 0, 0]), s = sessions()[k]; if (s) { app.shown = s.id; showConvo(p); } return done();
+    if (c === ID.ANSWER0 || c === ID.ANSWER1) { answer(p, c - ID.ANSWER0); return done(); }
+    if (c >= 300 && c < 300 + MODELS.length) { const s = current(); if (s) update(s.id, x => { x.model = MODELS[c - 300][0]; }); showAll(p); return done(); }
+    if (c >= 310 && c < 310 + EFFORTS.length) { const s = current(); if (s) update(s.id, x => { x.effort = EFFORTS[c - 310]; }); showAll(p); return done(); }
+    if (c === ID.SESSIONS && note === 1) {                                           // LBN_SELCHANGE (a heading: back to the session)
+      const k = U(p, 'SendMessageA', [app.kid[ID.SESSIONS], 0x188, 0, 0]), r = app.rows[k];
+      if (r && r.sid) { app.shown = r.sid; update(r.sid, x => { x.unread = false; }); }
+      showAll(p); return done();
     }
     return 0;
   });
