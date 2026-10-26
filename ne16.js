@@ -938,15 +938,24 @@ P.menuItems = function (h) {
     const l = this.r32(rc) | 0, t = this.r32(rc + 4) | 0, r = { x: l, y: t, w: (this.r32(rc + 8) | 0) - l, h: (this.r32(rc + 12) | 0) - t };
     return r.w > 0 && r.h > 0 && l >= wx && t >= wy && l < wx + ww && t < wy + wh ? r : null;
   };
-  // the menu: what the window answers (MN_GETHMENU), else, as this USER does not answer it, the menu handle whose
-  // items USER32 places in this window, with the most items (the handles are few: a scan of the range is quick)
+  // the menu: what the window answers (MN_GETHMENU), else, as this USER does not answer it, the popup menu whose items
+  // USER32 places in this window, all of them, the last ending at the window's foot (the handles are few: a scan of the
+  // range is quick). A window's menu bar is never asked: GetMenuItemRect with a popup's window lays the bar out at that
+  // window's width, and USER keeps that layout and draws the bar wrapped (its items in rows over the window). A popup
+  // window shows one menu after another, so the one found before is asked again as any other
   let hm = this.user16(111, [['w', h], ['w', 0x1e1], ['w', 0], ['l', 0]]).ax;
-  const known = this.menuOf && this.menuOf.get(h);
-  if (!hm && known && u(358, [['w', known]]) && rect(known, 0)) hm = known;   // (IsMenu: the one found before, still shown here)
   if (!hm && rectFn) {
-    let best = 0, bestN = 0;
-    for (let m = 4; m < 0x8000; m += 4) { if (!u(358, [['w', m]])) continue; const n = u(263, [['w', m]]); if (n > bestN && rect(m, 0)) { best = m; bestN = n; } }
-    hm = best; if (hm) (this.menuOf || (this.menuOf = new Map())).set(h, hm);
+    const bars = new Set();
+    for (let w = u(262, [['w', u(286, [])], ['w', 5]]), k = 0; w && k < 512; w = u(262, [['w', w], ['w', 2]]), k++) { const m = u(157, [['w', w]]); if (m) bars.add(m); }   // GetDesktopWindow, GW_CHILD, GW_HWNDNEXT; GetMenu
+    // (how far the menu is from filling the window: its last item at the window's foot, inside the border, else not
+    // shown here; then how much narrower than the window its items are, as Explorer's Start menu's banner takes some)
+    const fit = (m, n) => { const f = rect(m, 0), l = n > 1 ? rect(m, n - 1) : f; return f && l && Math.abs(wy + wh - (l.y + l.h)) <= 4 ? Math.abs(ww - f.w) : -1; };
+    let best = -1;
+    for (let m = 4; m < 0x8000; m += 4) {
+      if (bars.has(m) || !u(358, [['w', m]])) continue;   // (IsMenu)
+      const n = u(263, [['w', m]]), d = n ? fit(m, n) : -1;
+      if (d >= 0 && (best < 0 || d < best)) { hm = m; best = d; }
+    }
   }
   if (!hm) return [];
   const n = Math.min(u(263, [['w', hm]]), 64), out = [];   // GetMenuItemCount
