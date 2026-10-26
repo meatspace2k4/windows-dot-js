@@ -606,14 +606,19 @@
     }
 
     // ---------------------------------------------------------------- cards (start_session proposals and offers)
-    const cardWins = new Map();
+    // (a card a session of the Claude program's proposes is shown in the program, under its conversation, and answered
+    // there: api.cardAnswer; any other in a message box of the page's)
+    const cardWins = new Map(), cardWaits = new Map();
     function cardBox(card, buttons) {
+      card.session = self.id; card.buttons = buttons; save('cards'); ui.dirty();
       return new Promise(ok => {
-        const w = ui.msgBox(card.kind === 'offer' ? 'New task' : 'Suggested task', `${card.title}${card.prompt ? `\n\n${card.prompt.slice(0, 400)}` : ''}`, 'info', buttons, b => { cardWins.delete(card.task_id); ok(b); }, { modal: false });
+        cardWaits.set(card.task_id, b => { cardWaits.delete(card.task_id); cardWins.delete(card.task_id); ok(b); });
+        if (quiet && api.asker) return;
+        const w = ui.msgBox(card.kind === 'offer' ? 'New task' : 'Suggested task', `${card.title}${card.prompt ? `\n\n${card.prompt.slice(0, 400)}` : ''}`, 'info', buttons, b => { const f = cardWaits.get(card.task_id); if (f) f(b); }, { modal: false });
         cardWins.set(card.task_id, w);
       });
     }
-    const dropCard = id => { st.cards = st.cards.filter(c => c.task_id !== id); save('cards'); const w = cardWins.get(id); if (w) { ui.closeWin(w, true); cardWins.delete(id); } };
+    const dropCard = id => { st.cards = st.cards.filter(c => c.task_id !== id); save('cards'); cardWaits.delete(id); const w = cardWins.get(id); if (w) { ui.closeWin(w, true); cardWins.delete(id); } };
     function startFrom(card, o = {}) {
       const s = fresh({ title: card.title, name: card.name || slug(card.title), startedBy: self.id, state: 'working', cwd: card.cwd || self.cwd, ...o });
       if (card.prompt) said(s, 'user', card.prompt);
@@ -1019,6 +1024,14 @@
     api.open = () => openWindow();
     api.send = text => send(text);
     api.answer = (i = 0) => answer(byId(shown) || self, i);
+    // a card's button pressed in the Claude program (a card no call waits for any more, kept from before: Start starts it)
+    api.cardAnswer = (taskId, label) => {
+      sync(); const f = cardWaits.get(taskId), card = st.cards.find(c => c.task_id === taskId);
+      if (f) { f(label); return; }
+      if (!card) return;
+      dropCard(taskId); ui.emit('ccd.answer', { card: taskId, label, message: label });
+      if (label === 'Start' || label === 'New session') { const was = self; self = byId(card.session) || self; try { startFrom(card); } finally { self = was; } }
+    };
     api.Error = CcdError;
     api.state = () => JSON.parse(JSON.stringify(st));
     api.tools = () => Object.fromEntries(Object.entries(SCHEMA).map(([s, t]) => [s, Object.keys(t)]));

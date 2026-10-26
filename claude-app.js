@@ -11,7 +11,7 @@
   const KEY = 'hkcu\\software\\claude\\code';
   const WM = { DESTROY: 2, SIZE: 5, SETFONT: 0x30, COMMAND: 0x111, TIMER: 0x113, CLOSE: 0x10 };
   const ID = { SESSIONS: 101, CONVO: 102, PROMPT: 103, SEND: 104, STATUS: 105, NEXT: 106, ANSWER0: 107, ANSWER1: 108, TASKS: 109,
-    PANE0: 110, PANE0_TEXT: 111, PANE1: 112, PANE1_TEXT: 113, NEW: 201, EXIT: 202, ABOUT: 401 };
+    PANE0: 110, PANE0_TEXT: 111, PANE1: 112, PANE1_TEXT: 113, CARD: 114, CARD0: 115, CARD1: 116, NEW: 201, EXIT: 202, ABOUT: 401 };
   const MODELS = [['claude-opus-5-5', 'Opus 5.5'], ['claude-sonnet-5-5', 'Sonnet 5.5'], ['claude-haiku-5-5', 'Haiku 5.5'], ['claude-fable-5-1', 'Fable 5.1']];
   const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
   const PANE_TITLE = { terminal: 'Terminal', diff: 'Changes', preview: 'Preview', files: 'Files', side_chat: 'Side Chat', plan: 'Plan', tasks: 'Tasks' };
@@ -35,6 +35,7 @@
   // the sidebar's groups and the Claude window's view (its panes, its sidebar), as the app's tools leave them (ccd.js)
   const record = (name, dflt) => { const v = regGet(KEY, name); if (!v) return dflt; try { return JSON.parse(typeof v === 'string' ? v : FS.decode(v.data).replace(/\0.*$/, '')); } catch (_) { return dflt; } };
   const ui = () => (record('view', {}).ui || {});
+  const card = s => (s ? record('cards', []).find(c => c.session === s.id && c.buttons && c.buttons.length === 2) : null);   // (its oldest card)
   const setUi = f => { const v = record('view', {}); v.ui = { sidebarCollapsed: false, panes: [], ...(v.ui || {}) }; f(v.ui); regSet(KEY, 'view', { type: 1, data: FS.encode(JSON.stringify(v) + '\0') }); };
   const togglePane = x => setUi(u => { u.panes = u.panes.includes(x) ? u.panes.filter(y => y !== x) : [...u.panes.filter(y => y !== x), x].slice(-2); });
   // the sessions shown, in order, for Back and Forward (as the app's Go menu)
@@ -104,7 +105,7 @@
   const shown = (p, k, on) => U(p, 'ShowWindow', [app.kid[k], on ? 5 : 0]);   // SW_SHOW, SW_HIDE
   function showAll(p) {
     const s = current(), v = ui(), e = app.kid[ID.CONVO], t = ansi(convo(s));
-    app.raw = regGet(KEY, 'sessions'); app.rawView = regGet(KEY, 'view');
+    app.raw = regGet(KEY, 'sessions'); app.rawView = regGet(KEY, 'view'); app.rawCards = regGet(KEY, 'cards');
     showSessions(p);
     text(p, e, 'convo', t); U(p, 'SendMessageA', [e, 0xB1, t.length, t.length]); U(p, 'SendMessageA', [e, 0xB7, 0, 0]);   // EM_SETSEL, EM_SCROLLCARET: the end in view
     text(p, app.kid[ID.STATUS], 'status', app.note || status(s)); app.note = null;   // (a note of the program's: once, then the status again)
@@ -116,6 +117,9 @@
     const n = s && s.next;
     text(p, app.kid[ID.NEXT], 'next', n ? `${n.ask ? `${n.ask}\n` : ''}${n.recap}` : '');   // (the question first: the recap may run past the box)
     [ID.ANSWER0, ID.ANSWER1].forEach((k, i) => { const a = n && n.actions && n.actions[i]; if (a) text(p, app.kid[k], `answer${i}`, String(a.label || a.action || 'OK').replace(/&/g, '&&')); });
+    // the session's card (a start_session proposal or offer): its title and its two buttons
+    const cd = card(s);
+    if (cd) { text(p, app.kid[ID.CARD], 'card', `${cd.kind === 'offer' ? 'New task' : 'Suggested task'}: ${cd.title}`); cd.buttons.forEach((b, i) => text(p, app.kid[i ? ID.CARD1 : ID.CARD0], `card${i}`, b)); }
     // the panes, at the right
     const panes = (v.panes || []).filter(x => PANE_TITLE[x]).slice(0, 2);
     panes.forEach((x, i) => { text(p, app.kid[i ? ID.PANE1 : ID.PANE0], `pane${i}`, PANE_TITLE[x]); text(p, app.kid[i ? ID.PANE1_TEXT : ID.PANE0_TEXT], `pane${i}t`, paneText(x, s)); });
@@ -149,6 +153,11 @@
       y -= nh + pad; mv(ID.NEXT, x0, y, cw, bh);
       const k = (n.actions || []).length, bw = Math.min(106, Math.floor((cw - 6 * (k - 1)) / Math.max(1, k)));   // (narrower in a narrow column)
       (n.actions || []).forEach((a, i) => mv(i ? ID.ANSWER1 : ID.ANSWER0, x0 + cw - (k - i) * (bw + 6) + 6, y + bh + 4, bw, 23));
+    }
+    const cd = card(s); [ID.CARD, ID.CARD0, ID.CARD1].forEach(k => shown(p, k, !!cd));
+    if (cd) {   // (the card's title across the column, its buttons under it at the right)
+      y -= 18 + 4 + 23 + pad; const bw = Math.min(90, Math.floor((cw - 6) / 2));
+      mv(ID.CARD, x0, y, cw, 18); mv(ID.CARD0, x0 + cw - 2 * bw - 6, y + 22, bw, 23); mv(ID.CARD1, x0 + cw - bw, y + 22, bw, 23);
     }
     const th = plan.length ? Math.min(98, plan.length * 13 + 6) : 0;
     shown(p, ID.TASKS, !!plan.length); if (plan.length) { y -= th + pad; mv(ID.TASKS, x0, y, cw, th); }
@@ -301,6 +310,7 @@
     kid(ID.TASKS, 'LISTBOX', 0x200, 0x00200000 | 0x100 | 0x4000);                  // WS_VSCROLL, LBS_NOINTEGRALHEIGHT, LBS_NOSEL
     kid(ID.NEXT, 'STATIC', 0x200, 0);                                                 // (sunken: the next-step box)
     kid(ID.ANSWER0, 'BUTTON', 0, 0x10000); kid(ID.ANSWER1, 'BUTTON', 0, 0x10000);
+    kid(ID.CARD, 'STATIC', 0, 0x200 | 0x80 | 0x4000); kid(ID.CARD0, 'BUTTON', 0, 0x10000); kid(ID.CARD1, 'BUTTON', 0, 0x10000);   // (the card: SS_CENTERIMAGE, SS_NOPREFIX)
     kid(ID.PANE0, 'STATIC', 0, 0); kid(ID.PANE0_TEXT, 'EDIT', 0x200, 0x00200000 | 4 | 0x800);
     kid(ID.PANE1, 'STATIC', 0, 0); kid(ID.PANE1_TEXT, 'EDIT', 0x200, 0x00200000 | 4 | 0x800);
     const rc = p.alloc(16); U(p, 'GetClientRect', [h, rc]); app.size = [p.r32(rc + 8), p.r32(rc + 12)]; p.free(rc);
@@ -318,7 +328,7 @@
     if (msg === WM.SIZE) { layout(p, lp & 0xffff, lp >>> 16); return done(); }
     // (the timer: what the reply and the app's tools have written since, shown)
     if (msg === WM.TIMER) {
-      if (app.dirty || regGet(KEY, 'sessions') !== app.raw || regGet(KEY, 'view') !== app.rawView) { app.dirty = false; showAll(p); }
+      if (app.dirty || regGet(KEY, 'sessions') !== app.raw || regGet(KEY, 'view') !== app.rawView || regGet(KEY, 'cards') !== app.rawCards) { app.dirty = false; showAll(p); }
       if (!asking && asks.length) { asking = asks.shift(); U(p, 'PostMessageA', [h, 0x8001, sz(p, 'ask-text', asking.text), sz(p, 'ask-title', asking.title || 'Claude')]); }
       return done();
     }
@@ -351,6 +361,7 @@
     if (c === ID.EXIT) { U(p, 'PostMessageA', [h, WM.CLOSE, 0, 0]); return done(); }
     if (c === ID.ABOUT) { text(p, app.kid[ID.STATUS], 'status', 'Claude for Windows 95: the Claude desktop app, as a program of the system.'); return done(); }
     if (c === ID.ANSWER0 || c === ID.ANSWER1) { answer(p, c - ID.ANSWER0); return done(); }
+    if (c === ID.CARD0 || c === ID.CARD1) { const cd = card(current()); if (cd) post({ t: 'ccdCard', task: cd.task_id, label: cd.buttons[c - ID.CARD0] }); return done(); }
     const s = current(), sid = s && s.id, redraw = () => { showAll(p); return done(); };
     // Edit: a message's actions (copy, fork, rewind, a chapter) and finding in the conversation
     const promptText = () => { const b = sz(p, 'prompt-in', ' '.repeat(4096)); U(p, 'GetWindowTextA', [app.kid[ID.PROMPT], b, 4096]); return p.readA(b).trim(); };
