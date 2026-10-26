@@ -23,7 +23,7 @@ function machine(o = {}) {
   Object.defineProperty(p, 'dv', { value: new DataView(p.mem.buffer) });
   p.cpu = {}; for (const n of CPU) p.cpu[n] = new WebAssembly.Global({ value: 'i32', mutable: true }, n === 'if' ? 1 : 0);
   p.v86 = V86_BASE; p.disk = o.disk; p.geom = { heads: 16, spt: 63 }; p.o = o;
-  p.keys = []; p.port60 = 0; p.irq = 0; p.ticksAt = Date.now(); p.halted = false; p.polls = 0; p.v86Hooks = new Set([0x21]);
+  p.keys = []; p.port60 = 0; p.irq = 0; p.ticksAt = Date.now(); p.halted = false; p.polls = 0; p.v86Hooks = new Set([0x21, 0x2f]);
   p.trap = function (next, code) { this.v86Trap(next, code); };
   p.portIO = function (port, size, isIn) { this.v86Port(port, size, isIn); };
   p.v86Reset();
@@ -71,6 +71,8 @@ P.v86Reset = function () {
   this.s8(0x475, 1);                                                      // one hard disk
   this.s8(0x465, 0x29); this.s16(0x460, 0x0607);                          // the cursor's shape
   this.s8(ROM + 0xfffe, 0xfc);                                            // the model: an AT
+  [0x0f, 0xff, 0xf8, 0xcb].forEach((b, i) => this.s8(ROM + XMS.entry + i, b));   // the XMS driver's entry: the host, then RETF
+  this.xms = null;
   for (let i = 0; i < 4000; i += 2) { this.s8(0xb8000 + i, 0x20); this.s8(0xb8001 + i, 0x07); }
   this.cpu.if.value = 1;
 };
@@ -259,6 +261,8 @@ const fcbName = n => { const [b, e = ''] = n.toUpperCase().split('.'); return (b
 const match11 = (pat, name) => { const n = fcbName(name); for (let i = 0; i < 11; i++) if (pat[i] !== '?' && pat[i] !== n[i]) return false; return true; };
 const toPat = s => { const [b, e = ''] = s.toUpperCase().split('.'), f = (x, w) => { let o = ''; for (const c of x) { if (c === '*') { o = o.padEnd(w, '?'); break; } o += c; } return o.padEnd(w).slice(0, w); }; return f(b, 8) + f(e, 3); };
 HOOK[0x2f] = function () {
+  if (this.r('ax') === 0x4300) { this.setAL(0x80); return true; }                                       // XMS: installed
+  if (this.r('ax') === 0x4310) { this.sreg('es', ROM >> 4); this.w('bx', XMS.entry); return true; }       // its entry
   if (this.ah() !== 0x11 || !this.redir) return false;
   const fs = this.o.fs, al = this.al(), sda = this.sda, fn1 = () => ascii(this, sda + SDA.FN1), fn2 = () => ascii(this, sda + SDA.FN2);
   // (taken before the INT: its answer in the flags and registers as they are, its caller's word argument at SS:SP)
@@ -372,8 +376,13 @@ HOOK[0x2f] = function () {
 // ---------------------------------------------------------------- the ports
 P.v86Port = function (port, size, isIn, val) {
   const c = this.cpu;
-  if (!isIn) return;   // (the interrupt controller's EOI, the timer's programming, the CRTC's cursor: the host keeps its own)
+  if (!isIn) { if (port === 0x70) this.cmosAt = c.eax.value & 0x7f; return; }   // (the CMOS's index kept; the interrupt controller's EOI, the timer's programming, the CRTC's cursor: the host keeps its own)
   let v = 0xff;
+  // the CMOS's extended memory (17h/18h and 30h/31h: the KB above 1 MB), what XMS gives out and the HMA
+  const ext = XMS.kb + (XMS.base - 0x100000) / 1024;
+  if (port === 0x71 && [0x17, 0x30].includes(this.cmosAt)) v = ext & 0xff;
+  else if (port === 0x71 && [0x18, 0x31].includes(this.cmosAt)) v = ext >> 8;
+  else
   if (port === 0x60) { v = this.port60; this.kbdBusy = false; }
   else if (port === 0x64) v = this.kbdBusy ? 0x1d : 0x1c;
   else if (port === 0x3da) v = (this.retrace = (this.retrace || 0) ^ 9);
@@ -400,7 +409,7 @@ BIOS[0x13] = function () { disk.call(this); };
 BIOS[0x14] = function () { this.w('ax', 0); };
 BIOS[0x15] = function () {
   const ah = this.ah();
-  if (ah === 0x88) { this.w('ax', 0); this.retCF(false); return; }            // no extended memory
+  if (ah === 0x88) { this.w('ax', XMS.kb + (XMS.base - 0x100000) / 1024); this.retCF(false); return; }   // the extended memory, in KB (XMS gives it out)
   if (ah === 0x4f) { this.retCF(true); return; }                              // the keyboard intercept: the key kept
   if (ah === 0xc0) { this.sreg('es', ROM >> 4); this.w('bx', 0xe6f5); this.setAH(0); this.retCF(false); return; }
   this.setAH(0x86); this.retCF(true);
@@ -427,6 +436,75 @@ BIOS[0x1a] = function () {
   if (ah === 0x02) { this.w('cx', (bcd(d.getHours()) << 8) | bcd(d.getMinutes())); this.w('dx', bcd(d.getSeconds()) << 8); this.retCF(false); return; }
   if (ah === 0x04) { const y = d.getFullYear(); this.w('cx', (bcd((y / 100) | 0) << 8) | bcd(y % 100)); this.w('dx', (bcd(d.getMonth() + 1) << 8) | bcd(d.getDate())); this.retCF(false); return; }
   this.retCF(true);
+};
+// ---- XMS, as V86MMGR gives a VM extended memory: INT 2Fh 4300h says a driver is there, 4310h its entry (F000:3200h,
+// the host's service F8h, then RETF), whose functions (AH) manage blocks of the machine's extended memory (from
+// 120000h, past the HMA and the translator's flags at 110000h) and move memory between them and the first megabyte.
+// The HMA is DOS's (not given out), A20 always on, no upper memory blocks
+const XMS = { entry: 0x3200, base: 0x120000, kb: 15 * 1024, handles: 64 };
+const xmsOf = p => p.xms || (p.xms = { blocks: new Map(), next: 1 });
+const xmsFree = p => {   // the free runs between the blocks, in KB: [largest, total]
+  const used = [...xmsOf(p).blocks.values()].sort((a, b) => a.at - b.at); let at = 0, big = 0, all = 0;
+  for (const b of used) { big = Math.max(big, b.at - at); all += b.at - at; at = b.at + b.kb; }
+  big = Math.max(big, XMS.kb - at); all += XMS.kb - at; return [big, all];
+};
+const xmsPlace = (p, kb, skip) => {   // the first run of `kb` free KB (the block `skip` not counted), or -1
+  const used = [...xmsOf(p).blocks.values()].filter(b => b !== skip).sort((a, b) => a.at - b.at); let at = 0;
+  for (const b of used) { if (b.at - at >= kb) return at; at = b.at + b.kb; }
+  return XMS.kb - at >= kb ? at : -1;
+};
+BIOS[0xf8] = function (next) {
+  if (next !== this.v86 + ROM + XMS.entry + 3) return;   // (INT F8h's own stub: nothing)
+  const x = xmsOf(this), ah = this.ah(), c = this.cpu;
+  const done = (ax, bl) => { this.w('ax', ax); if (bl !== undefined) this.cpu.ebx.value = (this.cpu.ebx.value & ~0xff) | bl; };
+  const fail = bl => done(0, bl), blk = h => x.blocks.get(h & 0xffff);
+  const big = ah >= 0x80, size = v => big ? v >>> 0 : v & 0xffff;
+  switch (ah) {
+    case 0x00: this.w('ax', 0x0300); this.w('bx', 0x0395); this.w('dx', 1); return;   // version 3.0; an HMA (DOS's)
+    case 0x01: return fail(0x91); case 0x02: return fail(0x91);                        // the HMA: DOS's
+    case 0x03: case 0x04: case 0x05: case 0x06: return done(1, 0);                     // A20: on
+    case 0x07: return done(1, 0);
+    case 0x08: case 0x88: {
+      const [l, t] = xmsFree(this);
+      if (big) { c.eax.value = l; c.edx.value = t; c.ecx.value = XMS.base + XMS.kb * 1024 - 1; this.cpu.ebx.value &= ~0xff; return; }
+      this.w('ax', Math.min(l, 0xffff)); this.w('dx', Math.min(t, 0xffff)); this.cpu.ebx.value &= ~0xff; return;
+    }
+    case 0x09: case 0x89: {
+      if (x.blocks.size >= XMS.handles) return fail(0xa1);
+      const kb = size(c.edx.value), at = xmsPlace(this, kb); if (at < 0) return fail(0xa0);
+      const h = x.next++; x.blocks.set(h, { at, kb, lock: 0 }); this.w('dx', h); return done(1);
+    }
+    case 0x0a: { const b = blk(c.edx.value); if (!b) return fail(0xa2); if (b.lock) return fail(0xab); x.blocks.delete(c.edx.value & 0xffff); return done(1); }
+    case 0x0b: {   // move: DS:SI the length, the source handle and offset, the destination's (handle 0: a real-mode segment:offset)
+      const s = this.lin(c.ds.value, this.r('si')) - this.v86, n = this.m32(s);
+      const where = (h, off, bad) => {
+        if (!h) return { a: this.lin(off >>> 16, off & 0xffff) };
+        const b = blk(h); if (!b) return { e: bad }; if (off + n > b.kb * 1024) return { e: bad + 1 };
+        return { a: this.v86 + XMS.base + b.at * 1024 + off };
+      };
+      if (n & 1) return fail(0xa7);
+      const from = where(this.m16(s + 4), this.m32(s + 6), 0xa3), to = where(this.m16(s + 10), this.m32(s + 12), 0xa5);
+      if (from.e) return fail(from.e); if (to.e) return fail(to.e);
+      this.u8.copyWithin(to.a, from.a, from.a + n); return done(1, 0);
+    }
+    case 0x0c: { const b = blk(c.edx.value); if (!b) return fail(0xa2); b.lock++; const a = XMS.base + b.at * 1024; this.w('dx', a >>> 16); this.w('bx', a); this.w('ax', 1); return; }
+    case 0x0d: { const b = blk(c.edx.value); if (!b) return fail(0xa2); if (!b.lock) return fail(0xaa); b.lock--; return done(1); }
+    case 0x0e: case 0x8e: {
+      const b = blk(c.edx.value); if (!b) return fail(0xa2);
+      const free = XMS.handles - x.blocks.size;
+      if (big) { this.cpu.ebx.value = (this.cpu.ebx.value & ~0xff00) | (Math.min(b.lock, 255) << 8); this.w('cx', free); c.edx.value = b.kb; this.w('ax', 1); return; }
+      this.w('bx', Math.min(b.lock, 255) << 8 | Math.min(free, 255)); this.w('dx', b.kb); this.w('ax', 1); return;
+    }
+    case 0x0f: case 0x8f: {
+      const b = blk(c.edx.value); if (!b) return fail(0xa2); if (b.lock) return fail(0xab);
+      const kb = size(c.ebx.value), at = xmsPlace(this, kb, b); if (at < 0) return fail(0xa0);
+      if (at !== b.at) { const src = this.v86 + XMS.base + b.at * 1024; this.u8.copyWithin(this.v86 + XMS.base + at * 1024, src, src + Math.min(b.kb, kb) * 1024); }
+      b.at = at; b.kb = kb; return done(1);
+    }
+    case 0x10: this.w('dx', 0); return fail(0xb1);   // no upper memory blocks
+    case 0x11: case 0x12: return fail(0xb2);
+    default: return fail(0x80);
+  }
 };
 // the clock's ticks since midnight, as the BIOS counts them, set at power-on
 P.v86Clock = function () { const d = new Date(), s = d.getHours() * 3600 + d.getMinutes() * 60 + d.getSeconds(); this.s32(0x46c, Math.floor(s * 18.2065)); };
