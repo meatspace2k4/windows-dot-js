@@ -338,7 +338,7 @@
     sub(pop([[CMD.BACK, '&Back'], [CMD.FORWARD, '&Forward'], [0, null], [CMD.PREV, '&Previous Session'], [CMD.NEXT_SESSION, '&Next Session']]), '&Go');
     sub(pop([[MODES.map(([, n], i) => [320 + i, n]), 'Permission &Mode'], [0, null], [CMD.PIN, '&Pinned'], [CMD.ARCHIVE, '&Archive']]), '&Session');
     sub(pop(MODELS.map(([, n], i) => [300 + i, n])), 'M&odel');
-    sub(pop(EFFORTS.map((e, i) => [310 + i, `${e[0].toUpperCase()}${e.slice(1)}`])), 'E&ffort');
+    sub(pop(EFFORTS.map((e, i) => [310 + i, `${e[0].toUpperCase()}${e.slice(1)}`])), 'Effor&t');
     sub(pop([[CMD.USAGE, '&Usage'], [0, null], [ID.ABOUT, '&About Claude']]), '&Help');
     app.menu = bar;
     const h = U(p, 'CreateWindowExA', [0, cls, sz(p, 'title', 'Claude'), 0x10CF0000, 0x80000000, 0x80000000, 560, 400, 0, bar, inst, 0]);

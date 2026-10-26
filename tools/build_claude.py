@@ -51,9 +51,14 @@ def text(iat):
     label['loop'] = len(code)
     emit(0x6A, 0, 0x6A, 0, 0x6A, 0, 0x8D, 0x45, MSG, 0x50); call('GetMessageA')   # GetMessageA(&msg, 0, 0, 0)
     emit(0x85, 0xC0); jcc(0x84, 'done')                  # WM_QUIT
-    emit(0x83, 0xF8, 0xFF); jcc(0x84, 'done')            # -1: an error
+    emit(0x83, 0xF8, 0xFF); jcc(0x84, 'done')            # -1: an error    # (the system keys, Alt and Alt+letter, are the menu bar's: past IsDialogMessage, to DefWindowProc's menu loop, as in a
+    # program with no dialog keys; IsDialogMessage would take Alt+letter as a control's mnemonic)
+    emit(0x8B, 0x45, MSG + 4)                            # mov eax, [msg.message]
+    emit(0x2D); code.extend(struct.pack('<I', 0x104))    # sub eax, WM_SYSKEYDOWN
+    emit(0x83, 0xF8, 0x03); jcc(0x86, 'translate')       # cmp eax, 3; jbe translate (WM_SYSKEYDOWN, WM_SYSKEYUP, WM_SYSCHAR, WM_SYSDEADCHAR)
     emit(0x8D, 0x45, MSG, 0x50, 0xFF, 0x75, HWND); call('IsDialogMessageA')   # Tab between the controls, Enter as Send
     emit(0x85, 0xC0); jcc(0x85, 'loop')
+    label['translate'] = len(code)
     emit(0x8D, 0x45, MSG, 0x50); call('TranslateMessage')
     emit(0x8D, 0x45, MSG, 0x50); call('DispatchMessageA')
     jmp('loop')
