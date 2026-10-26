@@ -61,8 +61,64 @@ def share_op(sh, op, *a):
     raise FileNotFoundError(2, op)
 ERRNO = {2: 'ENOENT', 20: 'ENOTDIR', 13: 'EACCES', 1: 'EACCES', 17: 'EEXIST', 66: 'ENOTEMPTY', 39: 'ENOTEMPTY', 21: 'EISDIR'}
 
+# /__claude: the Win95 Claude window's prompts to the Claude API (ccd.js), streamed back as one JSON object per line. The
+# API key stays here: ANTHROPIC_API_KEY, or the first line of ~/.config/win95/anthropic-api-key, read at each request; a
+# key not scoped to a workspace names one in ANTHROPIC_WORKSPACE_ID or ~/.config/win95/anthropic-workspace-id.
+# Answered only for a page of this machine (a loopback client, a localhost Host, an Origin of that host when one is sent)
+# asking with JSON, which a page of any other site can't send here without a CORS preflight this server never answers
+KEY_FILE = os.path.expanduser('~/.config/win95/anthropic-api-key')
+WORKSPACE_FILE = os.path.expanduser('~/.config/win95/anthropic-workspace-id')
+MODELS = {'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5-1'}
+EFFORTS = {'low', 'medium', 'high', 'xhigh', 'max'}
+SYSTEM = ('You are Claude, talking with the user through the Claude desktop app recreated inside Windows 95. '
+          'Answer in plain text: the window shows no Markdown.')
+def setting(env, path):
+    if os.environ.get(env): return os.environ[env]
+    try:
+        with open(path) as f: return f.readline().strip() or None
+    except OSError: return None
+api_key = lambda: setting('ANTHROPIC_API_KEY', KEY_FILE)
+workspace_id = lambda: setting('ANTHROPIC_WORKSPACE_ID', WORKSPACE_FILE)
+def local_request(h):
+    host = (h.headers.get('Host') or '').rsplit(':', 1)[0].strip('[]').lower()
+    origin = h.headers.get('Origin')
+    return (h.client_address[0] in ('127.0.0.1', '::1') and (host in ('localhost', '127.0.0.1', '::1') or host.endswith('.localhost'))
+            and (origin is None or re.sub(r'^https?://', '', origin).rsplit(':', 1)[0].strip('[]').lower() == host)
+            and (h.headers.get('Content-Type') or '').startswith('application/json'))
+def claude(h, q):
+    import anthropic   # (only this endpoint needs it)
+    line = lambda o: (h.wfile.write((json.dumps(o) + '\n').encode()), h.wfile.flush())
+    msgs = [{'role': m['role'], 'content': str(m['content'])} for m in q.get('messages', []) if m.get('role') in ('user', 'assistant') and m.get('content')]
+    model = q.get('model') if q.get('model') in MODELS else 'claude-opus-5-5'
+    effort = q.get('effort') if q.get('effort') in EFFORTS else 'medium'
+    h.send_response(200); h.send_header('Content-Type', 'application/x-ndjson'); h.send_header('Cache-Control', 'no-store'); h.end_headers()
+    key = api_key()
+    if not key: line({'t': 'error', 'e': f'No API key: set ANTHROPIC_API_KEY or put the key in {KEY_FILE}'}); return
+    try:
+        ws = workspace_id()
+        client = anthropic.Anthropic(api_key=key, default_headers={'anthropic-workspace-id': ws} if ws else None)
+        # a refusal is answered by another model the server picks (server-side fallback), not ended
+        with client.beta.messages.stream(model=model, max_tokens=64000, system=SYSTEM, messages=msgs,
+                                         thinking={'type': 'adaptive', 'display': 'summarized'}, output_config={'effort': effort},
+                                         betas=['server-side-fallback-2026-07-01'], extra_body={'fallbacks': 'default'}) as stream:
+            for ev in stream:
+                if ev.type == 'content_block_delta' and ev.delta.type == 'text_delta': line({'t': 'text', 'd': ev.delta.text})
+                elif ev.type == 'content_block_delta' and ev.delta.type == 'thinking_delta': line({'t': 'thinking', 'd': ev.delta.thinking})
+            m = stream.get_final_message()
+        line({'t': 'done', 'stop': m.stop_reason, 'model': m.model, 'in': m.usage.input_tokens, 'out': m.usage.output_tokens})
+    except anthropic.AuthenticationError: line({'t': 'error', 'e': 'The API key was refused (401)'})
+    except anthropic.RateLimitError: line({'t': 'error', 'e': 'Rate limited (429): try again shortly'})
+    except anthropic.APIStatusError as e: line({'t': 'error', 'e': f'API error {e.status_code}: {e.message}'})
+    except anthropic.APIConnectionError: line({'t': 'error', 'e': 'Could not reach the Claude API'})
+    except (BrokenPipeError, ConnectionResetError): pass   # (the page went away)
+
 class H(http.server.SimpleHTTPRequestHandler):
     def do_POST(self):   # /__share: the shares' list, an operation on one ({ ok } or { err }), and the host's name
+        if self.path.split('?')[0] == '/__claude':
+            if not local_request(self): self.send_error(403); return
+            try: q = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')
+            except ValueError: self.send_error(400); return
+            claude(self, q); return
         if self.path.split('?')[0] != '/__share': self.send_error(404); return
         q = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')
         if q.get('op') == '$list': r = [{'name': x['name'], 'remark': ''} for x in SHARES if os.path.isdir(x['path'])]

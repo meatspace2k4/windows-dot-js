@@ -408,6 +408,42 @@
       said(s, 'user', t); s.state = 'working'; s.next = null; if (s.title === 'New session') s.title = t.slice(0, 48);
       save('sessions'); refreshLabels(); ui.dirty();
       ui.emit('ccd.prompt', { session: s.id, text: t });
+      reply(s);
+    }
+    // the reply: the conversation's messages to the Claude API through the dev server (tools/serve.py /__claude, which
+    // holds the key), streamed back a line at a time; Claude's text (and its thinking's summary) appended as it comes
+    async function reply(s) {
+      const messages = [];
+      for (const m of s.transcript) {
+        if (m.role !== 'user' && m.role !== 'assistant') continue;
+        const last = messages[messages.length - 1];
+        if (last && last.role === m.role) last.content += `\n\n${m.text}`; else messages.push({ role: m.role, content: m.text });
+      }
+      while (messages.length && messages[0].role !== 'user') messages.shift();
+      let msg = null, think = null, failed = null;
+      const on = ev => {
+        if (ev.t === 'text') { if (!msg) { msg = { uuid: uid('msg'), t: now(), role: 'assistant', text: '' }; s.transcript.push(msg); } msg.text += ev.d; }
+        else if (ev.t === 'thinking') { if (!think) { think = { uuid: uid('msg'), t: now(), role: 'thinking', text: '' }; s.transcript.push(think); } think.text += ev.d; }
+        else if (ev.t === 'done') s.usage = { in: ev.in, out: ev.out, model: ev.model, stop: ev.stop };
+        else if (ev.t === 'error') failed = ev.e;
+        s.active = now(); ui.dirty();
+      };
+      try {
+        const r = await fetch('__claude', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: s.model, effort: s.effort, messages }) });
+        if (!r.ok) failed = r.status === 404 || r.status === 501 ? 'Not connected: this page\'s server has no Claude API.' : `Not connected (HTTP ${r.status}).`;
+        else {
+          const rd = r.body.getReader(), dec = new TextDecoder(); let buf = '';
+          for (;;) {
+            const { value, done } = await rd.read(); if (done) break;
+            buf += dec.decode(value, { stream: true });
+            for (let i; (i = buf.indexOf('\n')) >= 0; buf = buf.slice(i + 1)) on(JSON.parse(buf.slice(0, i)));
+          }
+        }
+      } catch (e) { failed = `Not connected: ${e.message}`; }
+      if (failed) said(s, 'system', failed);
+      s.state = failed ? 'failed' : 'idle'; if (s.id !== shown) s.unread = true;
+      save('sessions'); ui.dirty(); notify('task_complete');
+      ui.emit('ccd.reply', { session: s.id, text: msg ? msg.text : '', error: failed });
     }
     function goBack() { if (!navBack.length) return; navFwd.push(shown); shown = navBack.pop(); refreshLabels(); ui.dirty(); }
     function goFwd() { if (!navFwd.length) return; navBack.push(shown); shown = navFwd.pop(); refreshLabels(); ui.dirty(); }
