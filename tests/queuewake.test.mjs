@@ -29,6 +29,13 @@ p.w16(QBASE + 0x4c, 0); p.w16(QBASE + 0x48, 0x40); e.set = true;
 reset.call(p, ev); assert.equal(e.set, true, 'a woken queue keeps its wake');
 // an event that is no queue's: reset as ever
 const other = create.call(p, 0, 1); reset.call(p, other); assert.equal(p.obj(other).set, false);
+// the wait: a woken queue's event that was taken anyway (Explorer's desktop thread after a mode change: its mask clear,
+// a SendMessage's reply and a timer waiting, the event unset) is ready, and the wait returns at once; an armed queue waits
+const wait = K16['KERNEL.#460'][2];
+p.depth = 0; p.w16(QBASE + 0x4c, 0); p.w16(QBASE + 0x48, 0xe010); e.set = false;
+assert.equal(wait.call(p, ev, 0xffffffff), 0, 'a woken queue does not sleep');
+p.w16(QBASE + 0x4c, 0x287f); p.w16(QBASE + 0x48, 0); e.set = false;
+assert.notEqual(wait.call(p, ev, 0xffffffff), 0, 'an armed queue sleeps');
 
 // a thread of a process that goes on: USER told on that thread, once
 {

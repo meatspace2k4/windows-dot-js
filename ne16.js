@@ -3095,7 +3095,7 @@ def16('KERNEL', 458, 'l', 'l', function (h) { const e = ev16(this, h); if (!e) r
 // it; a thread that sends or posts to the queue in between clears the mask and sets the event, and the reset then took
 // that wake away: the queue slept for good with the mask clear and the message waiting (Explorer's thread with a
 // SendMessage pending, the busy pointer for good). A queue USER has woken keeps its event set
-def16('KERNEL', 459, 'l', 'l', function (h) { const e = ev16(this, h); if (!e) return 0; if (!this.queueWoken(h)) e.set = false; return 1; });
+def16('KERNEL', 459, 'l', 'l', function (h) { const e = ev16(this, h); if (!e) return 0; if (!P.queueWoken.call(this, h)) e.set = false; return 1; });
 /** whether `h` is the event of a thread's queue that USER has woken since it was armed: its wake mask (4Ch) cleared by
  *  the waker, its wake bits (48h) set */
 P.queueWoken = function (h) {
@@ -3120,6 +3120,7 @@ const waitTop = (p, ms) => {
 const waitDone = p => { const t = p.thread16 || p.mainWait; if (t) { t.wake = 0; t.waitOn = null; } };
 def16('KERNEL', 460, 'll', 'l', function (h, ms) {
   const e = ev16(this, h); if (!e) return 0xffffffff;
+  if (!e.set && P.queueWoken.call(this, h)) e.set = true;   // (a queue USER has woken: its event as the waker set it, however it was taken since)
   if (this.thread16) this.thread16.waitOn = { hs: [h], all: 0, ms };   // (for a probe)
   if (!e.set && ms && this.atThreadTop()) return waitTop(this, ms);
   if (!e.set && ms) this.waitNested(() => e.set);
@@ -3155,6 +3156,7 @@ P.systemPump = function () {
 };
 def16('KERNEL', 461, 'llll', 'l', function (n, ph, all, ms) {                                        // WaitForMultipleObjects
   const hs = [...Array(n)].map((_, i) => ev16(this, this.r32(this.lin(ph) + 4 * i)));
+  hs.forEach((e, i) => { if (e && !e.set && P.queueWoken.call(this, this.r32(this.lin(ph) + 4 * i))) e.set = true; });   // (as #460)
   const ready = all ? hs.every(e => e && e.set) : hs.some(e => e && e.set);
   if (this.thread16) this.thread16.waitOn = { hs: [...Array(n)].map((_, i) => this.r32(this.lin(ph) + 4 * i)), all, ms, msg: true };   // (what the thread waits on: USER's MsgWaitForMultipleObjects, a wait that pumps)
   if (!ready && ms && this.atThreadTop()) return waitTop(this, ms);   // as #460: a thread at its top level gives up its slice
