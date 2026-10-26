@@ -265,7 +265,8 @@
     ['permission_request_notifications', 'Notify me when a session asks for &permission'], ['notification_sound', '&Beep with a notification'],
     ['draw_attention_on_notifications', 'F&lash the taskbar button with a notification'], ['keep_awake_while_working', 'Hold off the screen &saver while a session works'],
     ['prompt_suggestions', 'Suggest a &next prompt when a turn ends']];
-  const on = v => v === true || v === 'all';
+  const on = (k, v) => (v === null || v === undefined ? /notifications$/.test(k) : v === true || ['all', 'banner', 'badge', 'system'].includes(v));   // (a notification never set is on: banners)
+  const offOn = (k, now) => (/notifications$/.test(k) ? (now ? 'banner' : 'off') : k === 'notification_sound' ? (now ? 'system' : 'none') : now);
   function settingsTemplate(p) {
     const items = SETTING_BOXES.map(([, l], i) => [0x50010003, 0x0080, 10, 8 + 12 * i, 210, 10, 200 + i, l]);   // BS_AUTOCHECKBOX, WS_TABSTOP
     const y = 8 + 12 * SETTING_BOXES.length + 6;
@@ -276,7 +277,7 @@
   def('CLAUDE', 'SettingsProc', 4, function (h, msg, wp) {
     const p = this, cur = app.settingsNow || {};
     if (msg === 0x110) {
-      SETTING_BOXES.forEach(([k], i) => U(p, 'CheckDlgButton', [h, 200 + i, on((cur[k] || {}).value) ? 1 : 0]));
+      SETTING_BOXES.forEach(([k], i) => U(p, 'CheckDlgButton', [h, 200 + i, on(k, (cur[k] || {}).value) ? 1 : 0]));
       U(p, 'SetDlgItemInt', [h, 300, (cur.auto_archive_inactive_days || {}).value || 0, 0]);
       return 1;
     }
@@ -286,7 +287,7 @@
       const changes = [];
       SETTING_BOXES.forEach(([k], i) => {
         const was = (cur[k] || {}).value, now = U(p, 'IsDlgButtonChecked', [h, 200 + i]) === 1;
-        if (on(was) !== now) changes.push([k, typeof was === 'string' ? (now ? 'all' : 'none') : now]);
+        if (on(k, was) !== now) changes.push([k, offOn(k, now)]);
       });
       const days = U(p, 'GetDlgItemInt', [h, 300, 0, 0]); if (days !== ((cur.auto_archive_inactive_days || {}).value || 0)) changes.push(['auto_archive_inactive_days', days]);
       (async () => { for (const [key, value] of changes) { const r = await page('ccd_settings__set_setting', { key, value }, (current() || {}).id); if (r.error) app.note = `Not changed: ${r.error}`; } app.dirty = true; })();
@@ -533,8 +534,9 @@
     // (the timer: what the reply and the app's tools have written since, shown)
     if (msg === WM.TIMER && app.notify) {   // a turn ended: beep and flash the taskbar button when the window is behind, as the settings say
       const kind = app.notify, st = record('settings', {}); app.notify = null;
-      if (st[`${kind}_notifications`] !== 'none' && fn(p, 'USER32', 'FlashWindow') && U(p, 'GetForegroundWindow', []) !== h) {
-        if (st.notification_sound !== false) U(p, 'MessageBeep', [kind === 'question' ? 0x20 : 0]);   // MB_ICONQUESTION, the default sound
+      const how = { all: 'banner', none: 'off' }[st[`${kind}_notifications`]] || st[`${kind}_notifications`] || 'banner';   // (banner: beep and flash; badge: flash; off)
+      if (how !== 'off' && fn(p, 'USER32', 'FlashWindow') && U(p, 'GetForegroundWindow', []) !== h) {
+        if (how === 'banner' && st.notification_sound !== 'none' && st.notification_sound !== false) U(p, 'MessageBeep', [kind === 'question' ? 0x20 : 0]);   // MB_ICONQUESTION, the default sound
         if (st.draw_attention_on_notifications !== false) U(p, 'FlashWindow', [h, 1]);
       }
     }
@@ -617,7 +619,7 @@
     if (c === CMD.SETTINGS && !app.settingsOpen) {   // the settings as get_settings has them, then the dialog (WM_APP+4)
       app.settingsOpen = true; app.tplSettings = app.tplSettings || settingsTemplate(p);
       page('ccd_settings__get_settings', {}, (current() || {}).id).then(r => {
-        try { app.settingsNow = JSON.parse(r.result).settings; } catch (_) { app.settingsNow = {}; }
+        try { app.settingsNow = Object.fromEntries(JSON.parse(r.result).settings.map(x => [x.key, x])); } catch (_) { app.settingsNow = {}; }   // (get_settings lists them, as the app does)
         app.wantDialog = [app.tplSettings, 'SettingsProc'];
       });
       return done();

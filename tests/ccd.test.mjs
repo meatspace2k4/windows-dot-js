@@ -94,7 +94,7 @@ assert.ok(events.some(e => e.type === 'ccd.turn.wrap_up' && e.args.recap === 'No
 // sessions: started, proposed (a card), offered (waits for the user)
 let r = await ccd.session.start_session({ initiation: 'user_asked', title: 'Fix the printer', prompt: 'Fix SPOOL32.', background: 'x'.repeat(80) });
 const kid = /session_id: (local_\w+)/.exec(r)[1];
-assert.equal(JSON.parse(await ccd.session_mgmt.get_session({ session_id: kid })).state, 'working');
+assert.equal(JSON.parse(await ccd.session_mgmt.get_session({ session_id: kid })).isRunning, true);
 await rejects(ccd.session.start_session({ initiation: 'user_asked', title: 'x', prompt: 'y' }), /background: at least 80/);
 r = await ccd.session.start_session({ initiation: 'own_initiative', title: 'Tidy fonts', prompt: 'Tidy.', background: 'y'.repeat(80) });
 const task = /task_id: (task_\w+)/.exec(r)[1];
@@ -113,7 +113,7 @@ await rejects(ccd.session.move_to_cloud({ summary: 's' }), /no cloud/);
 // messages, transcripts, search, export
 assert.match(await ccd.session_mgmt.send_message({ session_id: kid, message: 'Use TTY.DRV' }), /delivery: queued/);
 assert.match(await ccd.session_mgmt.list_events({ session_id: kid }), /From Windows 95: Use TTY.DRV/);
-assert.equal(JSON.parse(await ccd.session_mgmt.search_session_transcripts({ query: 'tty.drv' }))[0].sessionId, kid);
+assert.equal(JSON.parse((await ccd.session_mgmt.search_session_transcripts({ query: 'tty.drv' })).split('\n\n').slice(1).join('\n\n'))[0].sessionId, kid);
 const ex = JSON.parse(await ccd.session_mgmt.export_transcript({ session_id: kid }));
 assert.equal(ex.path, 'C:\\My Documents\\Fix the printer.TXT'); assert.match(files.get(ex.path), /Fix SPOOL32/);
 
@@ -121,13 +121,18 @@ assert.equal(ex.path, 'C:\\My Documents\\Fix the printer.TXT'); assert.match(fil
 await ccd.session_mgmt.stop_session({ session_id: kid });
 let p = ccd.session_mgmt.archive_session({ session_id: kid }); await tick();
 boxes.at(-1).press('No'); await rejects(p, /declined/);
-assert.equal(JSON.parse(await ccd.session_mgmt.get_session({ session_id: kid })).archived, false);
+assert.equal(JSON.parse(await ccd.session_mgmt.get_session({ session_id: kid })).isArchived, false);
 p = ccd.session_mgmt.archive_session({ session_id: kid }); await tick(); boxes.at(-1).press('Yes');
 assert.match(await p, /Archived "Fix the printer"/);
-p = ccd.settings.set_setting({ key: 'notification_sound', value: false }); await tick(); boxes.at(-1).press('Yes');
-assert.match(await p, /notification_sound is false/);
-await rejects(ccd.settings.set_setting({ key: 'notification_sound', value: false }), /already false/);
+p = ccd.settings.set_setting({ key: 'notification_sound', value: 'none' }); await tick(); boxes.at(-1).press('Yes');
+assert.match(await p, /notification_sound is "none"/);
+await rejects(ccd.settings.set_setting({ key: 'notification_sound', value: 'none' }), /already "none"/);
 await rejects(ccd.settings.set_setting({ key: 'branch', value: 'x' }), /not a setting/);
+await rejects(ccd.settings.set_setting({ key: 'question_notifications', value: 'all' }), /"off" \| "badge" \| "banner"/);
+await rejects(ccd.settings.set_setting({ key: 'branch_prefix', value: 'main' }), /protected/);
+{ const g = JSON.parse(await ccd.settings.get_settings()), q = g.settings.find(x => x.key === 'question_notifications');   // (the app's shape: a list, each with its label and what it allows)
+  assert.deepEqual(plain(Object.keys(q)), ['key', 'label', 'value', 'current', 'allowed', 'meaning', 'settable']); assert.equal(q.value, null); assert.equal(q.current, 'Banners (default)');
+  assert.ok(Array.isArray(g.output_styles) && Array.isArray(g.read_only) && typeof g.how_to_change === 'string'); }
 
 // the sidebar
 const g = JSON.parse(await ccd.sidebar.create_group({ name: 'Printing' })).id;
@@ -147,13 +152,13 @@ assert.match(await ccd.view.show_pane({ pane: 'pr' }), /no pr pane/);
 assert.match(await ccd.window.set_sidebar_collapsed({ collapsed: true }), /collapsed/);
 assert.equal(dialogs[0].ctrls[0].hidden, true, 'the sidebar hides');
 assert.match(await ccd.host.request_keep_awake({ until: 'turn_end', reason: 'build' }), /screen saver/); assert.equal(ui.held, true);
-assert.equal(JSON.parse(await ccd.host.get_storage_usage()).drives[0].free, 60);
+assert.equal(JSON.parse(await ccd.host.get_storage_usage()).free_bytes, 60);
 await rejects(ccd.host.sync_with_base_branch({}), /no worktree/);
 await rejects(ccd.pr.bind_pr({ url: 'https://github.com/a/b/pull/1' }), /No pull request/);
-assert.equal(JSON.parse(await ccd.pr.get_status()).pr, null);
+assert.equal(JSON.parse(await ccd.pr.get_status()).bound, false);
 p = ccd.directory.change_directory({ path: 'C:\\WINDOWS' }); await tick(); boxes.at(-1).press('Yes');
 assert.match(await p, /works in C:\\WINDOWS/);
-assert.deepEqual(plain(JSON.parse(await ccd.connectors.session_connectors_status()).map(c => c.name)),['shares', 'cd', 'network', 'sound']);
+assert.deepEqual(plain(JSON.parse(await ccd.connectors.session_connectors_status()).servers.map(c => c.name)),['shares', 'cd', 'network', 'sound']);
 
 // the files tools (the Claude program's): C: only, writes asked in Ask permissions
 assert.ok(ccd.toolDefs().some(d => d.name === 'files__edit_file'));
@@ -169,7 +174,7 @@ files.delete('C:\\NOTE.TXT');
 // the records last: a new page reads them back from the registry
 ({ ccd } = load());
 const back = ccd.state();
-assert.equal(back.sessions.length, 3); assert.equal(back.groups[0].name, 'Printing'); assert.equal(back.settings.notification_sound, false);
+assert.equal(back.sessions.length, 3); assert.equal(back.groups[0].name, 'Printing'); assert.equal(back.settings.notification_sound, 'none');
 assert.equal(back.sessions.find(s => s.self).cwd, 'C:\\WINDOWS');
 assert.ok(back.sessions.find(s => s.id === kid).archived);
 void wins;
