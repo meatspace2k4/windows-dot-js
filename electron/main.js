@@ -49,6 +49,8 @@ async function exportSession() {
     dialog.showMessageBox({ type: 'info', message: 'Session exported', detail: `${r.filePath}\n\nOpen it on the other computer with File > Import Session.` })
   } catch (err) { dialog.showErrorBox('Export Session', `The session was not exported: ${err.message}`) }
 }
+ipcMain.on('session-export', () => exportSession())   // (Start > Programs > Accessories > System Tools, inside Windows 95)
+ipcMain.on('session-import', () => importSession())
 async function importSession() {
   const r = await dialog.showOpenDialog({ title: 'Import Session', buttonLabel: 'Import', properties: ['openFile'], filters: [{ name: 'Windows 95 sessions', extensions: ['w95session', 'db'] }] })
   if (r.canceled || !r.filePaths[0]) return

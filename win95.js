@@ -2034,6 +2034,37 @@ function dialog(title, cw, ch, ctrls, o = {}) {
   if (o.modal !== false) modals.push(win);
   return openWin(win);
 }
+// Export Session and Import Session (Start > Programs > Accessories > System Tools): the machine's C: and registry as a
+// .w95session file, to continue on another computer, the page or the Electron app (session-file.js). The app chooses
+// the file itself; here the browser's download and file picker do (the picker opens from the dialog's button, a click)
+function sessionCommand(op) {
+  const s = window.W95HOST && window.W95HOST.session, kb = n => (n < 1 << 20 ? `${Math.max(1, Math.round(n / 1024))} KB` : `${(n / (1 << 20)).toFixed(1)} MB`);
+  if (!s) return msgBox(op === 'export' ? 'Export Session' : 'Import Session', 'This page keeps nothing between visits (the browser gives it no storage), so there is no session to export or replace.', 'info');
+  if (s.host) return op === 'export' ? s.export() : s.import();
+  if (op === 'export') {
+    return s.export().then(r => msgBox('Export Session', `The session was saved as ${r.file} (${kb(r.size)}) in your downloads.\n\nOpen it on the other computer with Start > Programs > Accessories > System Tools > Import Session, or in the Windows 95 app with File > Import Session.`, 'info'),
+      e => msgBox('Export Session', `The session was not exported: ${e.message}`, 'error'));
+  }
+  let w;
+  const pick = () => {
+    const input = document.createElement('input'); input.type = 'file'; input.accept = '.w95session,.db';
+    input.onchange = async () => {
+      const f = input.files && input.files[0]; if (!f) return;
+      closeWin(w);
+      const bytes = new Uint8Array(await f.arrayBuffer()), why = await s.check(bytes).catch(e => e.message);
+      if (why) return msgBox('Import Session', `${f.name} cannot be imported: ${why}.`, 'error');
+      msgBox('Import Session', `Replace this computer's Windows 95 with ${f.name}?\n\nC:, the registry and the Claude program's sessions are replaced by those in it, and Windows 95 starts again from them. What is here now is downloaded first, as a session file.`, 'warning', ['Yes', 'No'],
+        b => { if (b === 'Yes') s.import(bytes).catch(e => msgBox('Import Session', `The session was not imported: ${e.message}`, 'error')); });
+    };
+    input.click();
+  };
+  w = dialog('Import Session', 300, 96, [
+    { type: 'label', text: 'Choose a .w95session file exported from this page or from the Windows 95 app.', x: 12, y: 12, w: 276 },
+    { type: 'button', label: '&Choose File...', x: 104, y: 62, w: 98, h: 23, def: true, fn: pick },
+    { type: 'button', label: 'Cancel', x: 208, y: 62, w: 80, h: 23, cancel: true, fn: () => closeWin(w) },
+  ], { modal: true });
+  return w;
+}
 function msgBox(title, msg, type, buttons = ['OK'], cb, o = {}) {
   const lines = wrap(esc(msg), Math.min(420, Math.floor(W * 0.6))), tw = Math.max(...lines.map(l => textW(l))), th = lines.length * 13;
   const tx = type ? 12 + 32 + 16 : 12, bw = buttons.length * 75 + (buttons.length - 1) * 6;
@@ -2686,7 +2717,10 @@ function setupStartMenu() {
   }
   let cur = null; try { cur = fs.readFile(PROGRAMS + '\\Windows Explorer.lnk'); } catch (_) { /* none yet */ }
   const claude = !!(S.programs || {})['CLAUDE.EXE'];   // (the Claude program: a folder of its own under Programs, claude-exe.js)
-  const missing = accessories.some(a => a.links.some(k => !fs.exists(join(PROGRAMS, 'Accessories', k[0] + '.lnk')))) || (claude && !fs.exists(join(PROGRAMS, 'Claude', 'Claude.lnk')));
+  // (Export and Import Session: RUNDLL32 running SESSION.DLL's entries, session-dll.js, in System Tools)
+  const session = !!(S.programs || {})['RUNDLL32.EXE'], tools = join(PROGRAMS, 'Accessories', 'System Tools');
+  const missing = accessories.some(a => a.links.some(k => !fs.exists(join(PROGRAMS, 'Accessories', k[0] + '.lnk')))) || (claude && !fs.exists(join(PROGRAMS, 'Claude', 'Claude.lnk')))
+    || (session && !fs.exists(join(tools, 'Export Session.lnk')));
   if (cur && cur[0] === 0x4c && cur[1] === 0 && !missing) return;   // ('L': a shell link's header)
   const out = new Map();
   const add = ({ sec, fields, subst }, names) => {
@@ -2703,6 +2737,12 @@ function setupStartMenu() {
   add(infParse(inf), ['winbase.inis', 'winother.links']);
   if (applets) add(applets, accessories.map(a => a.name));
   if (claude) { out.set('progman.groups', out.get('progman.groups') || { name: 'progman.groups', lines: [] }); out.get('progman.groups').lines.push('group90=Claude'); out.set('group90', { name: 'group90', lines: ['"Claude", CLAUDE.EXE'] }); }
+  if (session) {
+    const groups = out.get('progman.groups') || out.set('progman.groups', { name: 'progman.groups', lines: [] }).get('progman.groups');
+    if (!groups.lines.some(l => /^group11=/i.test(l))) groups.lines.push(`group11=${tools.slice(PROGRAMS.length + 1)}`);
+    const g = out.get('group11') || out.set('group11', { name: 'group11', lines: [] }).get('group11');
+    g.lines.push('"Export Session", "RUNDLL32.EXE SESSION.DLL,Export"', '"Import Session", "RUNDLL32.EXE SESSION.DLL,Import"');
+  }
   fs.writeFile(join(WINDIR, 'SETUP.INI'), W95FS.encode([...out.values()].map(v => `[${v.name}]\r\n${v.lines.join('\r\n')}\r\n`).join('\r\n')));
   // SETUPC.INF's RunOnce\Setup item: run under RUNONCE's "Windows 95 Setup" screen before the system's message server
   // starts (worker.js startSystemTask), before SystemStart and the shell. (GRPCONV makes the Start menu through the
@@ -3260,6 +3300,7 @@ class RemoteApp extends NativeApp {
         if (this.started) this.started(true); return;
       // MPR loaded in the system's machine (or no network client): the shell's network calls go ahead (netBoot)
       case 'mpr': this.mprUp = m.up; if (this.mprReady) { this.mprReady(m.up); this.mprReady = null; } return;
+      case 'session': sessionCommand(m.op); return;   // (Export or Import Session, from the Start menu: SESSION.DLL)
       case 'ccdCard': { const ccd = window.win95 && window.win95.ccd; if (ccd) ccd.cardAnswer(m.task, m.label); return; }   // (a card's button, pressed in the Claude program)
       case 'ccdAnswer': { const f = this.ccdAsks && this.ccdAsks.get(m.id); if (f) { this.ccdAsks.delete(m.id); f(!!m.yes); } return; }
       // a tool the Claude program's Claude used (claude-app.js): run here, where the app's tools are (ccd.js), its answer sent back

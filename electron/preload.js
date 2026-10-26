@@ -26,6 +26,8 @@ contextBridge.exposeInMainWorld('W95HOST', {
   cd: { read: (sector, length) => ipcRenderer.sendSync('cd-read', sector, length) },
   // the window is the monitor: its content takes the size of the display mode the system's machine is in
   screen: { fit: (width, height) => ipcRenderer.send('fit-window', width, height) },
+  // a session file to continue on another computer: the app's own Export and Import Session (main.js), which choose the file
+  session: { host: true, export: () => ipcRenderer.send('session-export'), import: () => ipcRenderer.send('session-import') },
   computerName: ipcRenderer.sendSync('host-name'),
   userName: ipcRenderer.sendSync('user-name'),   // the Mac's account: the name Setup gives the network logon
 })

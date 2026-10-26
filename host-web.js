@@ -31,15 +31,67 @@
   const shares = { list: () => share('$list') || [], op: (name, op, ...args) => share(op, name, args) || { err: 'EIO' } };
   const computerName = share('$host') || undefined;
 
+  // sql.js for a session file (session-file.js), fetched when one is exported or imported: its script pinned by its
+  // integrity, its WebAssembly by its SHA-256 before it runs
+  const SQLJS = { js: 'https://cdn.jsdelivr.net/npm/sql.js@1.14.1/dist/sql-wasm.js', sri: 'sha384-4BFYB3flXPr2Z7nY58MEovqPlVDyWWBDlHTclbOjtPii317X+bu9vsbPUCkb//6+',
+    wasm: 'https://cdn.jsdelivr.net/npm/sql.js@1.14.1/dist/sql-wasm.wasm', sha256: '438c88f666dc054ce4e9395f80fe9db4218b1a3c379960454880f048a7898aed' };
+  let sqljs = null;
+  const loadSql = () => sqljs || (sqljs = (async () => {
+    if (!window.initSqlJs) await new Promise((ok, no) => {
+      const s = document.createElement('script'); s.src = SQLJS.js; s.integrity = SQLJS.sri; s.crossOrigin = 'anonymous';
+      s.onload = ok; s.onerror = () => no(new Error('sql.js could not be loaded')); document.head.appendChild(s);
+    });
+    const wasm = new Uint8Array(await (await fetch(SQLJS.wasm)).arrayBuffer());
+    const hex = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', wasm)), c => c.toString(16).padStart(2, '0')).join('');
+    if (hex !== SQLJS.sha256) throw new Error('sql.js\'s WebAssembly is not the one expected');
+    return window.initSqlJs({ wasmBinary: wasm });
+  })().catch(e => { sqljs = null; throw e; }));
+  // a sql.js database as session-file.js reaches one
+  const adapt = d => ({ exec: s => d.exec(s), run: (s, p) => d.run(s, p),
+    all: s => { const st = d.prepare(s), out = []; while (st.step()) out.push(st.getAsObject()); st.free(); return out; } });
+  const stamp = () => new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
+  const download = (bytes, name) => {
+    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' })); a.download = name;
+    document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+  };
+  let frozen = false;   // (an imported session is replacing this one: the page going away writes nothing more)
+
   function host(db, disk, registry) {
+    // ---- a session file: the stores as they stand now, as the Electron app's database; an imported one in their place
+    const rows = async () => {
+      const tx = db.transaction(W95Session.TABLES), all = n => req(tx.objectStore(n).getAll());
+      const [node, chunk, volume, regkey, regval] = await Promise.all(W95Session.TABLES.map(all));
+      return { node, chunk, volume, regkey, regval };
+    };
+    const fileOf = async () => { const SQL = await loadSql(), d = new SQL.Database(); try { W95Session.write(adapt(d), await rows()); return d.export(); } finally { d.close(); } };
+    const session = {
+      export: async name => { const bytes = await fileOf(), file = name || `Windows 95 ${stamp()}.w95session`; download(bytes, file); return { file, size: bytes.length }; },
+      // why the bytes are not a session (null when they are one)
+      check: async bytes => { const SQL = await loadSql(); let d; try { d = new SQL.Database(bytes); return W95Session.check(adapt(d)); } catch (e) { return `it is not a Windows 95 session (${e.message})`; } finally { if (d) d.close(); } },
+      // the session in the bytes in place of this one (what is here now downloaded first, as the app keeps it), then
+      // the page starts again from it
+      import: async (bytes, backupName) => {
+        const SQL = await loadSql(), d = new SQL.Database(bytes); let next;
+        try { const why = W95Session.check(adapt(d)); if (why) throw new Error(why); next = W95Session.read(adapt(d)); } finally { d.close(); }
+        await session.export(backupName || `Windows 95 ${stamp()} before import.w95session`);
+        frozen = true;
+        await new Promise((ok, no) => {
+          const tx = db.transaction(W95Session.TABLES, 'readwrite', { durability: 'strict' });
+          for (const n of W95Session.TABLES) { const st = tx.objectStore(n); st.clear(); for (const r of next[n]) st.put(r); }
+          tx.oncomplete = ok; tx.onerror = () => no(tx.error); tx.onabort = () => no(tx.error);
+        });
+        location.reload();
+      },
+    };
     const run = (stores, fn) => {
+      if (frozen) return;
       const tx = db.transaction(stores, 'readwrite', { durability: 'strict' });
       fn(...stores.map(s => tx.objectStore(s)));
       tx.onerror = () => console.error('store write failed:', tx.error);
     };
     const chunks = (sid, from = 0) => IDBKeyRange.bound([sid, from], [sid, Infinity]);
     return {
-      shares, computerName,
+      shares, computerName, session,
       disk: {
         load: () => disk,
         node: r => run(['node'], async node => {
