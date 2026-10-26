@@ -1122,9 +1122,17 @@ P.r0Wait = function (done, what) {
   const t0 = performance.now(), site = this.svcSite, frames = [];
   // the callers, through the frame pointers, for a deadlock's report
   for (let bp = u32(this.cpu.ebp.value), k = 0; k < 8 && bp && bp + 8 < this.u8.length; k++, bp = this.r32(bp)) frames.push(this.r0Where(this.r32(bp + 4)));
+  // the interrupts held at the controller meanwhile are taken: a thread blocked at ring 0 waits with interrupts
+  // enabled, and r0Pump polls the hardware as an interrupt (interrupts off), so the network card's interrupt for the
+  // reply the redirector waits on was held there for good
+  const held = () => {
+    if (!this.irqPending) return false;
+    const f = this.cpu.if, was = f ? f.value : 1; if (f) f.value = 1;
+    try { return this.irqPending(); } finally { if (f) f.value = was; }
+  };
   while (!done()) {
     if (this.trapped) throw new W.GuestError(this.trapped);
-    if (this.r0Pump()) continue;
+    if (this.r0Pump() || held()) continue;
     if (this.r0Idle && performance.now() - t0 <= 10000 && this.r0Idle()) continue;   // (in a worker: real time, the page's frames)
     if (!this.r0Skip() || performance.now() - t0 > 10000) {
       const next = this.vxdTimeOuts && this.vxdTimeOuts.size ? Math.min(...[...this.vxdTimeOuts.values()].map(t => t.due)) - this.sysTime() : null;
@@ -1320,12 +1328,9 @@ svc(VMM, 0x159, function () {
 // ---- VMM: the VM's interrupts. Protected-mode and V86 vectors VxDs set or hook are kept; the VM's own code reaches
 // its interrupts through the personality (ne16 INTS), so a hook here sees only what a VxD reflects to it
 const vec = p => p.vxdVecs || (p.vxdVecs = { pm: new Map(), v86: new Map(), hooks: new Map() });
-// a vector no VxD has set leads to the personality's own handler for it (its DOS for 21h), as the VM's previous handler;
-// one the personality has none for (NetBIOS's 5Ch: no real-mode NetBIOS under the redirector) returns as it came, an
-// IRET, not a jump to 0:0 for the VxD that chains to it (VNETBIOS's, for the calls it passes on)
-const PMINTS = [0x21, 0x2f, 0x25, 0x26, 0x2a, 0x5c];
-svc(VMM, 0x44, function () { const n = this.cpu.eax.value & 0xff, v = vec(this).pm.get(n) || (N.INTS[n] || PMINTS.includes(n) ? this.thunk16For(`PMINT.#${n}`) : 0); this.cpu.ecx.value = lo16(this.cpu.ecx.value, v >>> 16); this.cpu.edx.value = v & 0xffff; });   // Get_PM_Int_Vector: CX:EDX
-for (const n of PMINTS) def16('PMINT', n, '', 'jmp', function () {   // an interrupt frame: IP, CS, flags
+// a vector no VxD has set leads to the personality's own handler for it (its DOS for 21h), as the VM's previous handler
+svc(VMM, 0x44, function () { const n = this.cpu.eax.value & 0xff, v = vec(this).pm.get(n) || (N.INTS[n] ? this.thunk16For(`PMINT.#${n}`) : 0); this.cpu.ecx.value = lo16(this.cpu.ecx.value, v >>> 16); this.cpu.edx.value = v & 0xffff; });   // Get_PM_Int_Vector: CX:EDX
+for (const n of [0x21, 0x2f, 0x25, 0x26, 0x2a, 0x5c]) def16('PMINT', n, '', 'jmp', function () {   // an interrupt frame: IP, CS, flags
   const r = N.INTS[n] ? N.INTS[n].call(this, W.LAYOUT.SENTINEL - 16) : undefined;
   if (r === W.LAYOUT.SENTINEL) return r;
   const ssb = u32(this.cpu.ssb.value), sp = this.cpu.esp.value & 0xffff, ip = this.r16(ssb + sp), cs = this.r16(ssb + ((sp + 2) & 0xffff));
@@ -1333,15 +1338,17 @@ for (const n of PMINTS) def16('PMINT', n, '', 'jmp', function () {   // an inter
 });
 /** INT 21h as VM code issues it in protected mode, through the handler the file system manager installed (its PM
  *  vector): `regs` the registers, DS and ES a 64K transfer area (`vmXfer()`) whose offsets the pointers are; the
- *  registers it returns (with CF) */
+ *  registers it returns (with CF). It runs on a stack of its own: on the VM's locked stack, where nested execution
+ *  starts at the top, an event while the redirector waited (VTDAPI's timer, SYSTEM.DRV's callback at SS:3FECh) wrote
+ *  over the call's return frame, and the call came back at 0:28h */
 P.vmXfer = function () { if (!this.xfer) { const a = this.alloc(0x10000); this.xfer = { lin: a, sel: this.allocSels(a, 0x10000) }; } return this.xfer; };
 P.vmInt21 = function (regs) {
   const v = vec(this).pm.get(0x21); if (!v) throw new W.GuestError('no protected-mode INT 21h handler');
   const x = this.vmXfer(), c = this.vmInt21Crs || (this.vmInt21Crs = this.alloc(0x60));
-  if (!this.vmStackSel) { const a = this.alloc(0x4000); this.vmStackSel = this.allocSels(a, 0x4000); }
+  if (!this.vmInt21Sel) { const a = this.alloc(0x4000); this.vmInt21Sel = this.allocSels(a, 0x4000); }
   this.u8.fill(0, c, c + 0x60);
   for (const [r, o] of CRS_REGS) this.w32(c + o, u32(regs[r] || 0));
-  this.w32(c + 0x30, 0x3ff0); this.w32(c + 0x34, this.vmStackSel); this.w32(c + 0x38, x.sel); this.w32(c + 0x3c, x.sel);
+  this.w32(c + 0x30, 0x3ff0); this.w32(c + 0x34, this.vmInt21Sel); this.w32(c + 0x38, x.sel); this.w32(c + 0x3c, x.sel);
   this.tick16();
   this.r0Out(() => this.vmFarCall(c, v >>> 16, v & 0xffff, [['w', 0x202]]));
   const out = {}; for (const [r, o] of CRS_REGS) out[r] = this.r32(c + o);
