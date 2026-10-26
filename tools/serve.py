@@ -207,6 +207,7 @@ class H(http.server.SimpleHTTPRequestHandler):
         if a.iso and p.split('?')[0] == '/cdrom.iso': return a.iso
         return super().translate_path(p)
     def send_head(self):
+        for k in ('If-Modified-Since', 'If-None-Match'): del self.headers[k]   # (never a 304: a copy the browser kept from before is not reused)
         m = re.match(r'bytes=(\d+)-(\d*)$', self.headers.get('Range', ''))
         path = self.translate_path(self.path)
         if not m or not os.path.isfile(path): return super().send_head()
@@ -216,8 +217,8 @@ class H(http.server.SimpleHTTPRequestHandler):
         self.send_response(206); self.send_header('Content-Type', self.guess_type(path))
         self.send_header('Content-Range', f'bytes {lo}-{hi}/{size}'); self.send_header('Content-Length', str(hi - lo + 1))
         self.send_header('Accept-Ranges', 'bytes'); self.end_headers(); return f
-    def end_headers(self):   # (scripts revalidate on every load: an edited one is never run stale)
-        self.send_header('Cache-Control', 'no-cache')
+    def end_headers(self):   # (nothing kept: every load fetches every file whole, so an edited one is never run stale; no-cache let a 304 by a modification time in seconds answer with the old copy)
+        self.send_header('Cache-Control', 'no-store')
         # cross-origin isolated, for the shared memory the machines' workers run on (SharedArrayBuffer)
         self.send_header('Cross-Origin-Opener-Policy', 'same-origin'); self.send_header('Cross-Origin-Embedder-Policy', 'require-corp')
         super().end_headers()
