@@ -975,9 +975,17 @@ P.listItems = function (h, x, y) {
     this.u8.fill(0, it, it + 36); this.w32(it, 1); this.w32(it + 4, i); this.w32(it + 20, txt); this.w32(it + 24, 64); this.u8[txt] = 0;   // LVIF_TEXT, pszText, cchTextMax
     const len = send(0x102d, i, it);   // LVM_GETITEMTEXTA
     const text = len > 0 ? this.readA(txt, Math.min(len, 63)) : '';
-    out.push({ x: x + l, y: y + t, w: s32(8) - l, h: s32(12) - t, text, selected: !!(send(0x102c, i, 2) & 2) });   // LVM_GETITEMSTATE, LVIS_SELECTED
+    out.push({ x: x + l, y: y + t, w: s32(8) - l, h: s32(12) - t, text, index: i, selected: !!(send(0x102c, i, 2) & 2) });   // LVM_GETITEMSTATE, LVIS_SELECTED
   }
   return out;
+};
+/** item `i` of list view `h` selected and focused alone (LVM_SETITEMSTATE), and opened as Enter opens it (the list's
+ *  owner opens the selection: a folder window opens the folder, the file) */
+P.listItem = function (h, i, open) {
+  const it = this.wbufLin + 0x110, set = (n, state) => { this.u8.fill(0, it, it + 36); this.w32(it + 12, state); this.w32(it + 16, 3); this.user16(111, [['w', h], ['w', 0x102b], ['w', n & 0xffff], ['l', it]]); };
+  set(-1, 0); set(i, 3);   // (every item's selection and focus off, then this one's on: LVIS_FOCUSED | LVIS_SELECTED)
+  if (open) { this.user16(110, [['w', h], ['w', 0x100], ['w', 0x0d], ['l', 0x001c0001]]); this.user16(110, [['w', h], ['w', 0x101], ['w', 0x0d], ['l', 0xc01c0001]]); }   // PostMessage WM_KEYDOWN, WM_KEYUP VK_RETURN
+  return true;
 };
 /** a tab control's tabs (COMCTL32's, in a 32-bit program: Explorer's task switcher), each its rectangle on screen (the
  *  control at x, y), its text and whether it is the selected one, from the control's own messages with flat buffers

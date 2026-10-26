@@ -52,7 +52,10 @@ if (!window.__xp) {
   const at = t => { const e = win95.elements({ window: t.window, role: t.role, name: t.name })[t.nth || 0]; return e && !e.covered ? e : null; };
   const act = async a => {
     if (a.do === 'key') win95.key(...a.keys);
-    else { const e = at(a.t); if (!e) return { missing: true }; win95.click(e, { button: a.button, double: !!a.double }); }
+    else {
+      const e = at(a.t); if (!e) return { missing: true };
+      try { await win95.click(e, { button: a.button, double: !!a.double }); } catch (err) { return { missing: true, why: err.message }; }
+    }
     await settle();
     return {};
   };

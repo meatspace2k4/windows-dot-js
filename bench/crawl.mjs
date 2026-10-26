@@ -54,15 +54,15 @@ const CRAWL = async SKIP => {
       await reset(); await open(); await frame();
       const e = win95.find({ window: 'Menu', depth, name: it.name }); if (!e) continue;
       where = `${path} > ${it.name}`;
-      if (it.submenu) { await crawlMenu(where, async () => { await open(); await frame(); win95.click(win95.find({ window: 'Menu', depth, name: it.name })); await sleep(450); }, depth + 1); continue; }
+      if (it.submenu) { await crawlMenu(where, async () => { await open(); await frame(); await win95.click(win95.find({ window: 'Menu', depth, name: it.name })); await sleep(450); }, depth + 1); continue; }
       const before = new Set(win95.windows().map(w => w.title));
-      win95.click(e); await sleep(250); await frame();
+      await win95.click(e); await sleep(250); await frame();
       for (const w of win95.windows()) if (!before.has(w.title)) opened.push({ from: where, title: w.title });
       if (win95.saverStats()) win95.stopSaver();
     }
   };
   const s = win95.screen();
-  await crawlMenu('Start', async () => win95.click({ role: 'pushbutton', name: 'Start' }));
+  await crawlMenu('Start', async () => { await win95.click({ role: 'pushbutton', name: 'Start' }); });
   await crawlMenu('Desktop menu', async () => win95.click(s.width - 30, s.taskbar - 30, { button: 'right' }));
   await crawlMenu('Taskbar menu', async () => win95.click(s.width >> 1, s.taskbar + 15, { button: 'right' }));
   // each desktop icon: open it, then every menu bar menu of its window, then its item menus
@@ -70,14 +70,14 @@ const CRAWL = async SKIP => {
   // (the desktop's icons: the page's own under 'Desktop'; Explorer's, the items of its desktop window's list view)
   const DESK = /^(Desktop|Program Manager)$/;
   for (const icon of win95.elements({ role: 'listitem', window: DESK })) {
-    await crawlMenu(`Desktop icon ${icon.name} (right-click)`, async () => win95.click(win95.find({ role: 'listitem', window: DESK, name: icon.name }), { button: 'right' }));
+    await crawlMenu(`Desktop icon ${icon.name} (right-click)`, async () => { await win95.click(win95.find({ role: 'listitem', window: DESK, name: icon.name }), { button: 'right' }); });
     await reset();
-    where = `open ${icon.name}`; win95.dblclick(win95.find({ role: 'listitem', window: DESK, name: icon.name })); await sleep(200);
+    where = `open ${icon.name}`; await win95.dblclick(win95.find({ role: 'listitem', window: DESK, name: icon.name })); await sleep(200);
     const w = win95.windows().filter(x => x.title && x.title !== 'Program Manager').at(-1); if (!w) continue;
     for (const bar of win95.elements({ window: w.title, menubar: true })) {
       await crawlMenu(`${w.title} > ${bar.name}`, async () => {
-        if (!win95.window(w.title)) { win95.dblclick(win95.find({ role: 'listitem', window: DESK, name: icon.name })); await sleep(200); }
-        win95.click(win95.find({ window: w.title, menubar: true, name: bar.name }));
+        if (!win95.window(w.title)) { await win95.dblclick(win95.find({ role: 'listitem', window: DESK, name: icon.name })); await sleep(200); }
+        await win95.click(win95.find({ window: w.title, menubar: true, name: bar.name }));
       });
     }
   }
@@ -88,11 +88,11 @@ const CRAWL = async SKIP => {
     await reset();
     const reopen = async () => {
       const [first, ...rest] = o.from.split(' > ');
-      if (first === 'Start') win95.click({ role: 'pushbutton', name: 'Start' });
+      if (first === 'Start') await win95.click({ role: 'pushbutton', name: 'Start' });
       else if (first === 'Desktop menu') win95.click(s.width - 30, s.taskbar - 30, { button: 'right' });
       else if (first === 'Taskbar menu') win95.click(s.width >> 1, s.taskbar + 15, { button: 'right' });
       else return false;
-      for (const [d, name] of rest.entries()) { await frame(); const e = win95.find({ window: 'Menu', depth: d, name }); if (!e) return false; win95.click(e); await sleep(e.submenu ? 450 : 250); }
+      for (const [d, name] of rest.entries()) { await frame(); const e = win95.find({ window: 'Menu', depth: d, name }); if (!e) return false; await win95.click(e); await sleep(e.submenu ? 450 : 250); }
       return !!win95.window(o.title);
     };
     if (!await reopen()) continue;
@@ -102,11 +102,11 @@ const CRAWL = async SKIP => {
       if (e.role === 'text-edit' && e.readonly) disabled.set(`${o.title} > read-only field showing "${e.value}"`, e.role);
     }
     for (const bar of win95.elements({ window: o.title, menubar: true })) {
-      await crawlMenu(`${o.title} > ${bar.name}`, async () => { if (!win95.window(o.title)) await reopen(); win95.click(win95.find({ window: o.title, menubar: true, name: bar.name })); });
+      await crawlMenu(`${o.title} > ${bar.name}`, async () => { if (!win95.window(o.title)) await reopen(); await win95.click(win95.find({ window: o.title, menubar: true, name: bar.name })); });
     }
     await reset(); if (!await reopen()) continue;
     for (const tab of win95.elements({ window: o.title, role: 'pagetab' })) {
-      win95.click(win95.find({ window: o.title, role: 'pagetab', name: tab.name })); await frame();
+      await win95.click(win95.find({ window: o.title, role: 'pagetab', name: tab.name })); await frame();
       for (const e of win95.elements({ window: o.title })) {
         if (e.disabled && e.role !== 'menuitem') disabled.set(`${o.title} > ${tab.name} > ${e.role} ${e.name || '(unnamed)'}`, e.role);
         if (e.role === 'text-edit' && e.readonly) disabled.set(`${o.title} > ${tab.name} > read-only field showing "${e.value}"`, e.role);
@@ -116,7 +116,7 @@ const CRAWL = async SKIP => {
       await reset(); if (!await reopen()) break;
       where = `${o.title} > button ${b.name}`;
       const e = win95.find({ role: 'pushbutton', window: o.title, name: b.name }); if (!e) continue;
-      win95.click(e); await sleep(250);
+      await win95.click(e); await sleep(250);
       if (win95.saverStats()) win95.stopSaver();
     }
   }

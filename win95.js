@@ -3220,6 +3220,13 @@ class RemoteApp extends NativeApp {
     }
     return this.kids.get(hwnd) || [];
   }
+  /** a window's controls as the machine answers now (children gives the last answer, and asks again) */
+  async childrenNow(hwnd) {
+    if (!this.kids) { this.kids = new Map(); this.kidsAsked = new Set(); }
+    const r = await this.cmd('children', [hwnd]);
+    if (r) this.kids.set(hwnd, r); else this.kids.delete(hwnd);
+    return this.kids.get(hwnd) || [];
+  }
   /** whether the system's machine has MPR loaded, once it has come to that (worker.js loadMpr) */
   mprLoaded() { return this.mprUp !== undefined ? Promise.resolve(this.mprUp) : new Promise(ok => { this.mprReady = ok; }); }
   /** a request to the machine; resolves to its answer */
@@ -4685,7 +4692,7 @@ function nativeEls(kids, win) {
     const name = win.window === 'Taskbar' && role === 'pushbutton' && !c.text && (c.style & 0x80) ? 'Start' : label(c.text);
     add(role, name, c, { ...win, cls: c.cls, id: c.id, hwnd: c.hwnd, disabled: !c.enabled, focused: c.focused,
       ...(c.checked !== undefined ? { checked: !!c.checked } : {}), ...(role === 'text-edit' || role === 'combobox' ? { value: c.text } : {}) });
-    if (role === 'list' && c.items) for (const it of c.items) add('listitem', it.text, it, { ...win, selected: !!it.selected });   // (a list view's items: the desktop's icons, a folder's files)
+    if (role === 'list' && c.items) for (const it of c.items) add('listitem', it.text, it, { ...win, selected: !!it.selected, list: c.hwnd, index: it.index });   // (a list view's items: the desktop's icons, a folder's files)
   }
   return out;
 }
@@ -4773,11 +4780,44 @@ function elements() {
   return out;
 }
 // the front-most element matching every given field: strings match exactly, RegExps test
-function findEl(q) {
+function findEl(q, all = elements()) {
   if (typeof q === 'string' || q instanceof RegExp) q = { name: q };
   const ok = e => Object.entries(q).every(([k, v]) => v instanceof RegExp ? v.test(String(e[k] ?? '')) : e[k] === v);
-  const all = elements(); for (let i = all.length - 1; i >= 0; i--) if (ok(all[i])) return all[i];
+  for (let i = all.length - 1; i >= 0; i--) if (ok(all[i])) return all[i];
   return null;
+}
+const qText = q => JSON.stringify(q, (k, v) => v instanceof RegExp ? String(v) : v);
+// an element object from an earlier listing names the element it was (its geometry may have moved since)
+const asQuery = q => (q && typeof q === 'object' && !(q instanceof RegExp) && 'x' in q && 'w' in q ? { name: q.name, role: q.role, ...(q.window ? { window: q.window } : {}) } : q);
+/** the elements with every native window's controls as its machine answers now (elements gives the last answer) */
+async function elementsNow() {
+  await Promise.all(windows.filter(w => w.native && !w.min && w.app && w.app.alive && w.app.childrenNow).map(w => w.app.childrenNow(w.hwnd).catch(() => null)));
+  return elements();
+}
+/** the element a query names, current and uncovered: waited for up to `ms`, else an error saying what is there */
+async function resolveEl(q, ms = 5000) {
+  q = asQuery(q);
+  const t0 = performance.now();
+  let e = null, all = [];
+  for (;;) {
+    all = await elementsNow(); e = findEl(q, all);
+    if (e && !e.covered) return e;
+    if (performance.now() - t0 >= ms) break;
+    await new Promise(r => setTimeout(r, 50));
+  }
+  if (e) { const cx = e.x + (e.w >> 1), cy = e.y + (e.h >> 1), over = winAt(cx, cy); throw new Error(`${qText(q)} is covered by ${over ? `'${over.title}'` : 'the taskbar'}`); }
+  const win = q && typeof q === 'object' && q.window, there = win ? all.filter(x => x.window === win && x.name).map(x => x.name) : [];
+  throw new Error(`no element matches ${qText(q)} within ${ms} ms${win ? `; '${win}' has ${there.length ? there.map(n => `'${n}'`).join(', ') : 'none named'}` : ''}`);
+}
+/** the pointer input `send` makes at the centre of the element `q` names, once it is there and uncovered. A native
+ *  list view's item (a desktop icon, a folder window's file) is selected, or opened (`item.open`), by its list view
+ *  itself (listItem): its rectangle runs the column's width, and a click at its middle fell beside its label.
+ *  Resolves with the element */
+async function actOn(q, send, item) {
+  const e = await resolveEl(q), w = item && e.list && windows.find(x => x.native && x.title === e.window && x.app);
+  if (w) { await w.app.cmd('listItem', [e.list, e.index, !!item.open]); return e; }
+  send(e.x + (e.w >> 1), e.y + (e.h >> 1));
+  return e;
 }
 // an element, a query for one, or plain coordinates, as the point a click lands on
 function target(a, b) {
@@ -4789,16 +4829,30 @@ function target(a, b) {
 
 const script = {
   move(x, y) { [x, y] = target(x, y); pointer('pointermove', x, y); },
-  down(x, y, o = {}) { if (typeof x !== 'number') { o = y || {}; [x, y] = target(x); } pointer('pointerdown', x, y, o.button === 'right' ? 2 : 0); },
-  up(x, y, o = {}) { if (typeof x !== 'number') { o = y || {}; [x, y] = target(x); } pointer('pointerup', x, y, o.button === 'right' ? 2 : 0); },
+  // (given coordinates, at once; given an element or a query for one, a promise: see actOn)
+  down(x, y, o = {}) {
+    if (typeof x !== 'number') return actOn(x, (px, py) => script.down(px, py, y || {}));
+    pointer('pointerdown', x, y, o.button === 'right' ? 2 : 0);
+  },
+  up(x, y, o = {}) {
+    if (typeof x !== 'number') return actOn(x, (px, py) => script.up(px, py, y || {}));
+    pointer('pointerup', x, y, o.button === 'right' ? 2 : 0);
+  },
   click(x, y, o = {}) {
-    if (typeof x !== 'number') { o = y || {}; [x, y] = target(x); }
+    if (typeof x !== 'number') return actOn(x, (px, py) => script.click(px, py, y || {}), y && y.button === 'right' ? null : { open: !!(y && y.double) });
     const b = o.button === 'right' ? 2 : 0;
     for (let i = 0; i < (o.double ? 2 : 1); i++) { pointer('pointermove', x, y); pointer('pointerdown', x, y, b); pointer('pointerup', x, y, b); }
   },
-  dblclick(x, y) { if (typeof x !== 'number') [x, y] = target(x); script.click(x, y, { double: true }); },
+  dblclick(x, y) {
+    if (typeof x !== 'number') return actOn(x, (px, py) => script.click(px, py, { double: true }), { open: true });
+    script.click(x, y, { double: true });
+  },
+  waitFor: (q, ms) => resolveEl(q, ms),
   drag(x1, y1, x2, y2, steps = 8) {
-    if (typeof x1 !== 'number') { steps = x2 ?? 8; [x2, y2] = target(y1); [x1, y1] = target(x1); }
+    if (typeof x1 !== 'number') {
+      const n = x2 ?? 8;
+      return resolveEl(y1).then(to => actOn(x1, (px, py) => script.drag(px, py, to.x + (to.w >> 1), to.y + (to.h >> 1), n)));
+    }
     pointer('pointermove', x1, y1); pointer('pointerdown', x1, y1);
     for (let i = 1; i <= steps; i++) pointer('pointermove', Math.round(x1 + (x2 - x1) * i / steps), Math.round(y1 + (y2 - y1) * i / steps));
     pointer('pointerup', x2, y2);
