@@ -1708,7 +1708,7 @@ P.globalAlloc16 = function (flags, size, owner = 0) {
   size = u32(size); if (!size) size = 1;
   const lin = this.alloc(size + 16, !!(flags & GMEM_ZEROINIT) || true);
   const sel = this.allocSels(lin, size);
-  this.ghandles.set(sel, { lin, size, n: Math.ceil(size / 0x10000), flags, lock: 0, owner });
+  this.ghandles.set(sel, { lin, size, n: Math.ceil(size / 0x10000), flags, lock: 0, owner, heap: true });   // (heap: its memory is the heap's, given back by GlobalFree)
   return flags & GMEM_MOVEABLE ? sel - 1 : sel;
 };
 P.globalHandleOf = function (h) { const b = this.gblock(h); if (!b) return 0; const sel = this.gsel(h); return b.flags & GMEM_MOVEABLE ? sel - 1 : sel; };
@@ -1999,7 +1999,7 @@ def16('KERNEL', 16, 'wlw', 'w', function (h, n, fl) {   // GlobalReAlloc
   const sel = this.gsel(h);
   if (n > b.size) {
     const cap = (this.allocs.get(b.lin) || 0) - 16;
-    if (n > cap) { const nl = this.alloc(n + 16, true); this.u8.copyWithin(nl, b.lin, b.lin + b.size); b.lin = nl; }
+    if (n > cap) { const nl = this.alloc(n + 16, true); this.u8.copyWithin(nl, b.lin, b.lin + b.size); if (b.heap) this.free(b.lin); b.lin = nl; b.heap = true; }
     else this.u8.fill(0, b.lin + b.size, b.lin + n);
   }
   b.size = n;
@@ -2009,7 +2009,7 @@ def16('KERNEL', 16, 'wlw', 'w', function (h, n, fl) {   // GlobalReAlloc
   this.refreshSegs();
   return h;
 });
-def16('KERNEL', 17, 'w', 'w', function (h) { const b = this.gblock(h); if (!b) return h; const sel = this.gsel(h); this.ghandles.delete(sel); this.freeSels(sel, b.n); return 0; });
+def16('KERNEL', 17, 'w', 'w', function (h) { const b = this.gblock(h); if (!b) return h; const sel = this.gsel(h); this.ghandles.delete(sel); this.freeSels(sel, b.n); if (b.heap) this.free(b.lin); return 0; });
 def16('KERNEL', 18, 'w', 'l', function (h) {    // GlobalLock: the selector is returned in CX as well
   const b = this.gblock(h), sel = b ? this.gsel(h) : 0; if (b) b.lock++;
   this.cpu.ecx.value = lo16(this.cpu.ecx.value, sel); return u32(sel << 16);
