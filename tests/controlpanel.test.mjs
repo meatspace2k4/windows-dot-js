@@ -24,7 +24,7 @@ const cut = (a, b) => { const i = w.indexOf(a); assert.ok(i >= 0, a); return w.s
   const files = new Set(['C:\\WINDOWS\\RUNDLL32.EXE']);
   const fs = { exists: f => files.has(f.toUpperCase()), cwd: 'C:\\WINDOWS\\DESKTOP' };
   const join = (...a) => a.filter(Boolean).join('\\'), basename = f => f.slice(f.lastIndexOf('\\') + 1), extname = f => (/\.[^.\\]*$/.exec(f) || [''])[0];
-  const A = new Function('fs', 'join', 'basename', 'extname', 'self', 'rpc', `return class {\n${src}\n spawnProgram(f, a) { return { f, a }; } }`)(fs, join, basename, extname, { W95SYSTEM: {} }, () => null);
+  const A = new Function('fs', 'join', 'basename', 'extname', 'self', 'rpc', `return class {\n${src}\n spawnProgram(f, a) { return { f, a }; }\n isNE() { return false; } }`)(fs, join, basename, extname, { W95SYSTEM: {} }, () => null);
   const a = new A();
   assert.deepEqual(a.exec('C:\\WINDOWS\\rundll32.exe shell32.dll,Control_RunDLL main.cpl,Mouse', 1), { f: 'C:\\WINDOWS\\rundll32.exe', a: 'shell32.dll,Control_RunDLL main.cpl,Mouse' });
   assert.deepEqual(a.exec('"C:\\WINDOWS\\rundll32.exe" shell32.dll,Control_RunDLL x', 1), { f: 'C:\\WINDOWS\\rundll32.exe', a: 'shell32.dll,Control_RunDLL x' });

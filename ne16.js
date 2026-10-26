@@ -213,6 +213,7 @@ P.neExport = function (m, key) {
 // session that runs native USER; otherwise those imports stay with the JS implementations
 P.loadLibrary16 = function (name, native = false, defer = false) {
   this.init16();
+  name = name.replace(/\.?\s*$/, '');   // ("MMSYSTEM.", VB3's Declare ... Lib "MMSYSTEM": a name with no extension)
   const base = name.toUpperCase().replace(/^.*\\/, '').replace(/\.(DLL|EXE|DRV)$/, '');
   if (base === 'KERNEL' || base === 'KRNL386') return this.kernelModule();   // KRNL386.EXE is the module KERNEL's file
   const all = (window.W95SYSTEM && window.W95SYSTEM.ne) || {};
@@ -346,12 +347,20 @@ P.loadNEDynamic = function (key, file) {
   }
   // the entry table: ordinal -> segment:offset (fixed bundles name their segment, movable ones each entry's)
   const exports = new Map();
+  // (a library's export that uses its data segment (flag 2) and starts mov ax,ds or push ds/pop ax, then nop, gets
+  // mov ax,DGROUP there, as KRNL386 patches the prolog: MCI.VBX's VBINITCC then runs on its own DS)
+  const dgSel = (h(0x0c) & 0x8000) && autodata && segs[autodata - 1] ? segs[autodata - 1].sel : 0;
+  const prolog = (sg, off, flag) => {
+    const s = segs[sg - 1]; if (!dgSel || !(flag & 2) || !s || (s.flags & 1) || off + 3 > s.alloc) return;
+    const a = s.base + off, w = this.r16(a);
+    if ((w === 0xd88c || w === 0x581e) && this.u8[a + 2] === 0x90) { this.u8[a] = 0xb8; this.w16(a + 1, dgSel); }
+  };
   for (let p = n + h(0x04), ord = 1, end = p + h(0x06); p < end && file[p];) {
     const cnt = file[p], ind = file[p + 1]; p += 2;
     if (ind === 0) { ord += cnt; continue; }
     for (let k = 0; k < cnt; k++, ord++) {
-      if (ind === 0xff) { const sg = file[p + 3], off = rd.u16(file, p + 4); if (segs[sg - 1]) exports.set(ord, u32((segs[sg - 1].sel << 16) | off)); p += 6; }
-      else { const off = rd.u16(file, p + 1); if (segs[ind - 1]) exports.set(ord, u32((segs[ind - 1].sel << 16) | off)); p += 3; }
+      if (ind === 0xff) { const sg = file[p + 3], off = rd.u16(file, p + 4); if (segs[sg - 1]) { exports.set(ord, u32((segs[sg - 1].sel << 16) | off)); prolog(sg, off, file[p]); } p += 6; }
+      else { const off = rd.u16(file, p + 1); if (segs[ind - 1]) { exports.set(ord, u32((segs[ind - 1].sel << 16) | off)); prolog(ind, off, file[p]); } p += 3; }
     }
   }
   const meta = { name, base: segs.length ? segs[0].base : 0, segs, autodata, entry: [h(0x16), h(0x14)], exports: {}, names, imports: [], textLo: 0, textHi: 0, blocks: [], fixups: [], dynamic: true };
@@ -549,6 +558,7 @@ P.interrupt = function (vec, next) {
 };
 const CF = (p, on) => { p.cpu.cf.value = on ? 1 : 0; };
 const INTS = {
+  0x3d() {},        // the x87 emulator's FWAIT (VBRUN300 has one with no OS fixup): with a coprocessor, nothing to wait for
   0x31(next) {      // DPMI
     const ax = this.ax(), bx = this.cpu.ebx.value & 0xffff, cx = this.cpu.ecx.value & 0xffff, dx = this.cpu.edx.value & 0xffff;
     CF(this, 0);
@@ -724,6 +734,7 @@ const INTS = {
               const hh = 0x7f00; this.dosFiles.set(hh, { dev: 'IFS$HLP$' }); return this.ax(hh);
             }
             const name = this.readA(dsdx()) || '', full = ah === 0x3c ? (/^[a-z]:\\/i.test(name) ? name : window.W95FS.join(this.fs.cwd, name)) : this.findFile16(name);
+            if (self.W95TRACE16) self.W95TRACE16({ key: `INT21.${ah.toString(16)} ${name}${full ? '' : ' (not found)'}` });   // (a diagnostic: cmd 'trace')
             if (!full) return fail(2);
             const h = this.dosOpen(full, ah === 0x3c ? 'w+' : (al & 3) === 0 ? 'r' : 'r+'); return h === 0xffff ? fail(this.lastError || 2) : this.ax(h);
           }
@@ -1821,8 +1832,11 @@ def16('DPMI', 1, '', 'jmp', function () { this.trapped = 'unhandled processor ex
 const GMEM_MOVEABLE = 2, GMEM_ZEROINIT = 0x40;
 P.gsel = function (h) { h &= 0xffff; return h ? h | 1 : 0; };
 P.gblock = function (h) { return this.ghandles.get(this.gsel(h)); };
+// a global block's size as KRNL386 gives it: rounded up to 32 bytes, so GlobalSize answers that (VB3's sub-heaps
+// walk a block to the end GlobalSize gives, in even steps)
+const gsize = n => u32((Math.max(u32(n), 1) + 31) & ~31);
 P.globalAlloc16 = function (flags, size, owner = 0) {
-  size = u32(size); if (!size) size = 1;
+  size = gsize(size);
   const lin = this.alloc(size + 16, !!(flags & GMEM_ZEROINIT) || true);
   const sel = this.allocSels(lin, size);
   this.ghandles.set(sel, { lin, size, n: Math.ceil(size / 0x10000), flags, lock: 0, owner, heap: true });   // (heap: its memory is the heap's, given back by GlobalFree)
@@ -2111,7 +2125,7 @@ def16('KERNEL', 161, '', 'w', function () { const lh = this.lheap(); return Math
 
 def16('KERNEL', 15, 'wl', 'w', function (fl, n) { return this.globalAlloc16(fl, n); });
 def16('KERNEL', 16, 'wlw', 'w', function (h, n, fl) {   // GlobalReAlloc
-  const b = this.gblock(h); if (!b) return 0; n = u32(n) || 1;
+  const b = this.gblock(h); if (!b) return 0; n = gsize(n);
   if (fl & LMEM_MODIFY) return h;
   const sel = this.gsel(h);
   if (n > b.size) {
@@ -3670,6 +3684,11 @@ def16('KERNEL', 28, '', 'l', function () {
 def16('KERNEL', 202, 'l', 'l', () => 0);                                                               // RegisterPtrace: no debugger
 def16('KERNEL', 29, '', 'v', function () {                                                             // Yield: as OldYield (#447)
   const t = thr(this, 0), top = this.thread16 ? this.depth === this.thread16.depth : this.depth === 0;
+  // a message another task sent waiting in the task's queue (its wake bits' QS_SENDMESSAGE): received through USER's
+  // UserYield, as KRNL386's Yield does for a task with a queue (MCIAVI's worker creates its window, sending to the
+  // playing task, which yields in a loop until the worker is up)
+  const user = t.task && t.queue && this.selValid(t.queue) && !t.userYield && (this.r16(this.selBase(t.queue) + 0x4a) & 0x40) && this.ne && this.ne.get('USER');
+  if (user && user.meta && this.neExport(user, 332)) { t.userYield = true; try { this.user16(332, []); } finally { t.userYield = false; } return; }
   if (top && !t.yielded) { t.yielded = true; return YIELD; }
   if (!top) this.threads16(true);   // inside a call: the other tasks and threads run now, as Yield switches to them
   t.yielded = false;

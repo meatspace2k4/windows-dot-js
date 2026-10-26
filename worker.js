@@ -321,7 +321,7 @@ class Machine {
     const p = this.proc, want = new RegExp(re, 'i'), only = names ? new RegExp(names, 'i') : null, log = this.traceLog = [], t0 = performance.now();
     const name = () => { const t = p.thread16; if (!t) return 'host'; const m = t.task && t.task.hInst && p.neByHandle(t.task.hInst); return (m && m.name) || (t.pc && t.pc.path) || String(t.id); };
     // (the command line of WinExec and LoadModule; the key of RegOpenKey, RegCreateKey, RegQueryValue, RegQueryValueEx)
-    const STR = { 166: 6, 45: 8, 217: 8, 218: 8, 219: 12, 220: 20, 95: 4, 97: 14, 127: 10, 128: 14, 70: 4, 69: 4 };   // (AddAtom, FindAtom: the name)   // (and the key of GetProfileInt/String, GetPrivateProfileInt/String)
+    const STR = { 74: 10, 166: 6, 45: 8, 217: 8, 218: 8, 219: 12, 220: 20, 95: 4, 97: 14, 127: 10, 128: 14, 70: 4, 69: 4 };   // (AddAtom, FindAtom: the name)   // (and the key of GetProfileInt/String, GetPrivateProfileInt/String)
     const arg = key => {
       const m = /KERNEL\.#(\d+)$/.exec(key), o = m && STR[m[1]];
       try {
@@ -474,6 +474,8 @@ class Machine {
     // a Windows (16-bit) program of the system's: a task of this machine's, as KERNEL's WinExec starts one
     const ne = Object.values((self.W95SYSTEM || {}).ne || {}).find(d => d.fileName === basename(file).toUpperCase() && /\.EXE$/.test(d.fileName));
     if (ne) return this.proc.winExec16(ne.fileName, arg || '', show === undefined ? 1 : show);
+    // (one from disk the bundle does not carry: the same, its module mapped by KERNEL's loader; its instance, else the error)
+    if (!((self.W95SYSTEM || {}).programs || {})[basename(file).toUpperCase()] && this.isNE(file)) return this.proc.winExec16(fs.realpath(file), arg || '', show === undefined ? 1 : show);
     const r = this.spawnProgram(file, arg);
     // WinExec's NE scheduler expects a process record with a 16-bit main thread. SCRs
     // are advanced independently as Win32 processes, so report successful launch
