@@ -839,6 +839,7 @@ class Machine {
         return true;
       }
       case 'trace': { if (args[0]) this.traceOn(args[0], args[1]); const l = this.traceLog || []; return l.splice(0); }   // (the calls traced so far; a thread regexp, and one for the import names, starts a trace)
+      case 'faults': return (p.faultLog || []).splice(0);   // (a diagnostic: the code the machine found none at, and why)
       case 'kick': return;
       case 'exit': this.exited(args[0] || 0); return;
     }

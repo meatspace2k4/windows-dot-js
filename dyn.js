@@ -31,15 +31,22 @@ const OP = { eqz: 0x45, eq: 0x46, ne: 0x47, lt_s: 0x48, lt_u: 0x49, gt_s: 0x4a, 
 const OP64 = { eqz: 0x50, ne: 0x52, lt_s: 0x53, add: 0x7c, sub: 0x7d, mul: 0x7e, div_s: 0x7f, div_u: 0x80, rem_s: 0x81, rem_u: 0x82, and: 0x83, or: 0x84, xor: 0x85, shl: 0x86, shr_s: 0x87, shr_u: 0x88 };
 const WRAP = 0xa7, EXT_S = 0xac, EXT_U = 0xad;
 
+// (the f64 operations the x87's translation uses)
+const F64 = { load: 0x2b, store: 0x39, add: 0xa0, sub: 0xa1, mul: 0xa2, div: 0xa3, abs: 0x99, neg: 0x9a, ceil: 0x9b, floor: 0x9c, trunc: 0x9d, nearest: 0x9e, sqrt: 0x9f,
+  eq: 0x61, ne: 0x62, lt: 0x63, gt: 0x64, fromI32: 0xb7, fromI64: 0xb9, fromF32: 0xbb, toF32: 0xb6 };
+const F64T = 0x7c, NF = 4;   // (four f64 locals, the first ones: the x87's operands and result)
+
 class Fn {
   constructor() { this.b = []; this.nloc = 0; this.n64 = 0; this.l64 = []; }
   e(...x) { for (const v of x) Array.isArray(v) ? this.b.push(...v) : this.b.push(v); return this; }
   c(v) { return this.e(0x41, sleb(v)); }
   c64(v) { return this.e(0x42, sleb64(v)); }
+  cf(v) { const b = new Uint8Array(new Float64Array([v]).buffer); return this.e(0x44, ...b); }
   op(n) { return this.e(OP[n]); }
   op64(n) { return this.e(OP64[n]); }
-  loc() { if (this.n64) throw new Error('i32 locals come first'); return this.nloc++; }
-  loc64() { this.l64.push(this.nloc + this.n64); return this.nloc + this.n64++; }
+  fop(n) { return this.e(F64[n]); }
+  loc() { if (this.n64) throw new Error('i32 locals come first'); return NF + this.nloc++; }
+  loc64() { this.l64.push(NF + this.nloc + this.n64); return NF + this.nloc + this.n64++; }
   lg(i) { return this.e(0x20, uleb(i)); }
   ls(i) { return this.e(0x21, uleb(i)); }
   lt(i) { return this.e(0x22, uleb(i)); }
@@ -51,7 +58,7 @@ class Fn {
   else_() { return this.e(0x05); }
   end() { return this.e(0x0b); }
   body() {
-    const groups = []; if (this.nloc) groups.push([...uleb(this.nloc), I32]); if (this.n64) groups.push([...uleb(this.n64), I64]);
+    const groups = [[...uleb(NF), F64T]]; if (this.nloc) groups.push([...uleb(this.nloc), I32]); if (this.n64) groups.push([...uleb(this.n64), I64]);
     const b = [...uleb(groups.length), ...groups.flat(), ...this.b, 0x0b]; return [...uleb(b.length), ...b];
   }
 }
@@ -319,6 +326,8 @@ function translate(p, lin, csb, d32, v86) {
       else f.gg('eax').c(8).op('shr_u').c(0xff).op('and').c(n).op('mul').gg('eax').c(0xff).op('and').op('add').c(0xff).op('and').ls(T);
       wrReg(0, 2, T); f.lg(T).c(0xff).op('and').ls(R); szp(1); continue;
     }
+    if (b === 0x9b) continue;   // fwait: the x87's exceptions are masked, nothing to wait for
+    if (b >= 0xd8 && b <= 0xdf) { x87(f, b, modrm(), A); continue; }
     if (b === 0xcd) {   // int n, which the host services (the continuation in the eip global); INT 20h's service dword follows it
       const v = fetch(); if (v === 0x20) pc += 4;
       f.c(pc | 0).c(0x100 + v).e(0x10, 1); f.gg('eip').e(0x0f); return done(pc);
@@ -481,6 +490,151 @@ function translate(p, lin, csb, d32, v86) {
   }
 }
 
+// ---------------------------------------------------------------- the x87, as the static recompiler translates it
+// (tools/recomp.py fpu): its eight registers f64s in memory at FPU (ST(i) at FPU + 8 * ((ftop + i) & 7)), the
+// status, control and top in the fsw, fcw and ftop globals; its loads, stores, arithmetic, compares (C0 C2 C3 in
+// fsw), rounding by the control word, and the transcendental ones through the host's math imports
+const FPU = 0x10000;
+const IMP = { fsin: 2, fcos: 3, ftan: 4, fatan2: 5, fexp2: 6, flog2: 7, fmod: 8, frem: 9, f80load: 10, f80store: 11 };
+const [FA, FB, FR, FT] = [0, 1, 2, 3];   // (the f64 locals)
+function x87(f, b, o, A) {
+  const g = i => f.e(0x20, FA + i), s = i => f.e(0x21, FA + i);   // (get / set an f64 local by its number 0..3)
+  const stAddr = i => { f.gg('ftop'); if (i) f.c(i).op('add'); f.c(7).op('and').c(3).op('shl').c(FPU).op('add'); };
+  const stGet = i => { stAddr(i); f.e(0x2b, 3, 0); };
+  const stSet = (i, val) => { stAddr(i); val(); f.e(0x39, 3, 0); };
+  const fpush = val => { val(); s(FT); f.gg('ftop').c(1).op('sub').c(7).op('and').gs('ftop'); stSet(0, () => g(FT)); };
+  const fpop = () => { f.gg('ftop').c(1).op('add').c(7).op('and').gs('ftop'); };
+  const load = kind => {   // a memory operand at local A, as an f64
+    f.lg(A);
+    if (kind === 'f32') f.e(0x2a, 2, 0).fop('fromF32'); else if (kind === 'f64') f.e(0x2b, 3, 0); else if (kind === 'f80') f.e(0x10, IMP.f80load);
+    else if (kind === 'i16') f.e(0x2e, 1, 0).fop('fromI32'); else if (kind === 'i32') f.e(0x28, 2, 0).fop('fromI32'); else f.e(0x29, 3, 0).fop('fromI64');
+  };
+  const round = () => {   // the f64 on the stack rounded as FCW's rounding control says: nearest, down, up, toward zero
+    s(FT); g(FT).fop('nearest'); s(FR);
+    for (const [op, code] of [['floor', 1], ['ceil', 2], ['trunc', 3]]) { g(FT).fop(op); g(FR); f.gg('fcw').c(10).op('shr_u').c(3).op('and').c(code).op('eq').e(0x1b); s(FR); }
+    g(FR);
+  };
+  const istore = (sz, trunc) => {   // ST(0) to an integer at A
+    f.lg(A); stGet(0); if (trunc) f.fop('trunc'); else round();
+    if (sz === 8) f.e(0xfc, 6).e(0x37, 3, 0); else f.e(0xfc, 2).e(sz === 2 ? 0x3b : 0x36, sz === 2 ? 1 : 2, 0);
+  };
+  const cmp = (src, pops) => {   // C3 C2 C0 from ST(0) against the source: less, equal, unordered
+    stGet(0); s(FA); src(); s(FB);
+    const v = () => { g(FA); g(FB); f.fop('lt').c(8).op('shl'); g(FA); g(FB); f.fop('eq').c(14).op('shl').op('or'); };
+    // (unordered, a NaN either side: C3 C2 C0 all set)
+    v(); f.c(0x4500); g(FA); g(FA); f.fop('eq'); g(FB); g(FB); f.fop('eq').op('and').e(0x1b);
+    f.gg('fsw').c(~0x4500).op('and').op('or').gs('fsw');
+    for (let i = 0; i < pops; i++) fpop();
+  };
+  const cmpi = (i, pop) => {   // fcomi / fucomi: ZF PF CF from ST(0) against ST(i)
+    stGet(0); s(FA); stGet(i); s(FB);
+    g(FA); g(FB); f.fop('lt'); g(FA); g(FA); f.fop('ne'); g(FB); g(FB); f.fop('ne').op('or').op('or').gs('cf');
+    g(FA); g(FB); f.fop('eq'); g(FA); g(FA); f.fop('ne'); g(FB); g(FB); f.fop('ne').op('or').op('or').gs('zf');
+    g(FA); g(FA); f.fop('ne'); g(FB); g(FB); f.fop('ne').op('or').gs('pf'); f.c(0).gs('of'); f.c(0).gs('sf');
+    if (pop) fpop();
+  };
+  const arith = (kind, dst, src, pop) => {   // ST(dst) = ST(dst) op source
+    stGet(dst); s(FA); src(); s(FB);
+    stSet(dst, () => { if (kind === 'subr') { g(FB); g(FA); f.fop('sub'); } else if (kind === 'divr') { g(FB); g(FA); f.fop('div'); } else { g(FA); g(FB); f.fop(kind); } });
+    if (pop) fpop();
+  };
+  const OPS8 = ['add', 'mul', 'com', 'comp', 'sub', 'subr', 'div', 'divr'];
+  const r = o.reg, i = o.rm;
+  if (!o.isReg) {   // memory forms
+    if (b === 0xd8 || b === 0xdc || b === 0xda || b === 0xde) {
+      const kind = { 0xd8: 'f32', 0xdc: 'f64', 0xda: 'i32', 0xde: 'i16' }[b], op = OPS8[r];
+      if (op === 'com' || op === 'comp') { cmp(() => load(kind), op === 'comp' ? 1 : 0); return; }
+      arith(op, 0, () => load(kind), false); return;
+    }
+    if (b === 0xd9) {
+      if (r === 0) { fpush(() => load('f32')); return; }
+      if (r === 2 || r === 3) { f.lg(A); stGet(0); f.fop('toF32').e(0x38, 2, 0); if (r === 3) fpop(); return; }
+      if (r === 5) { f.lg(A).ld(2).gs('fcw'); return; }                      // fldcw
+      if (r === 7) { f.lg(A).gg('fcw').st(2); return; }                      // fnstcw
+      if (r === 4 || r === 6) {   // fldenv / fnstenv: the control, status and tag words (the 28-byte form's first three)
+        if (r === 6) { f.lg(A).gg('fcw').st(4); f.lg(A).c(4).op('add').gg('fsw').c(~0x3800).op('and').gg('ftop').c(11).op('shl').op('or').st(4); f.lg(A).c(8).op('add').c(0xffff).st(4); }
+        else { f.lg(A).ld(2).gs('fcw'); f.lg(A).c(4).op('add').ld(2).c(11).op('shr_u').c(7).op('and').gs('ftop'); f.lg(A).c(4).op('add').ld(2).c(~0x3800).op('and').gs('fsw'); }
+        return;
+      }
+    }
+    if (b === 0xdb) {
+      if (r === 0) { fpush(() => load('i32')); return; }
+      if (r === 1 || r === 2 || r === 3) { istore(4, r === 1); if (r !== 2) fpop(); return; }
+      if (r === 5) { fpush(() => load('f80')); return; }
+      if (r === 7) { f.lg(A); stGet(0); f.e(0x10, IMP.f80store); fpop(); return; }
+    }
+    if (b === 0xdd) {
+      if (r === 0) { fpush(() => load('f64')); return; }
+      if (r === 1) { istore(8, true); fpop(); return; }
+      if (r === 2 || r === 3) { f.lg(A); stGet(0); f.e(0x39, 3, 0); if (r === 3) fpop(); return; }
+      if (r === 7) { f.lg(A).gg('fsw').c(~0x3800).op('and').gg('ftop').c(11).op('shl').op('or').st(2); return; }   // fnstsw m16
+    }
+    if (b === 0xdf) {
+      if (r === 0) { fpush(() => load('i16')); return; }
+      if (r === 1 || r === 2 || r === 3) { istore(2, r === 1); if (r !== 2) fpop(); return; }
+      if (r === 5) { fpush(() => load('i64')); return; }
+      if (r === 7) { istore(8, false); fpop(); return; }
+    }
+    throw new Unsupported(`x87 ${b.toString(16)} /${r} (memory)`);
+  }
+  // register forms
+  const st = k => () => stGet(k);
+  if (b === 0xd8) { const op = OPS8[r]; if (op === 'com' || op === 'comp') { cmp(st(i), op === 'comp' ? 1 : 0); return; } arith(op, 0, st(i), false); return; }
+  if (b === 0xdc || b === 0xde) {
+    const pop = b === 0xde;
+    if (b === 0xde && r === 3 && i === 1) { cmp(st(1), 2); return; }   // fcompp
+    if (r === 2 || r === 3) { cmp(st(i), (r === 3 ? 1 : 0) + (pop ? 1 : 0)); return; }
+    arith(['add', 'mul', null, null, 'subr', 'sub', 'divr', 'div'][r], i, st(0), pop); return;
+  }
+  if (b === 0xd9) {
+    if (r === 0) { stGet(i); s(FT); fpush(() => g(FT)); return; }                                 // fld st(i)
+    if (r === 1) { stGet(0); s(FA); stGet(i); s(FB); stSet(0, () => g(FB)); stSet(i, () => g(FA)); return; }   // fxch
+    const m = 0xc0 | (r << 3) | i;
+    const K = { 0xe8: 1, 0xe9: Math.log2(10), 0xea: Math.LOG2E, 0xeb: Math.PI, 0xec: Math.log10(2), 0xed: Math.LN2, 0xee: 0 };
+    if (m in K) { fpush(() => f.cf(K[m])); return; }
+    if (m === 0xd0) return;                                                                          // fnop
+    const un = { 0xe0: () => f.fop('neg'), 0xe1: () => f.fop('abs'), 0xfa: () => f.fop('sqrt'), 0xfe: () => f.e(0x10, IMP.fsin), 0xff: () => f.e(0x10, IMP.fcos), 0xfc: () => round(), 0xf0: () => { f.e(0x10, IMP.fexp2).cf(1).fop('sub'); } };
+    if (un[m]) { stGet(0); un[m](); s(FR); stSet(0, () => g(FR)); if (m === 0xfe || m === 0xff) f.gg('fsw').c(~0x400).op('and').gs('fsw'); return; }
+    if (m === 0xe4) { cmp(() => f.cf(0), 0); return; }                                                 // ftst
+    if (m === 0xe5) {   // fxam: zero C3, normal C2, negative C1
+      stGet(0); s(FA);
+      f.gg('fsw').c(~0x4700).op('and');
+      g(FA); f.cf(0).fop('eq').c(0x4000).op('mul'); g(FA); f.cf(0).fop('ne').c(0x400).op('mul').op('or'); g(FA); f.cf(0).fop('lt').c(0x200).op('mul').op('or');
+      f.op('or').gs('fsw'); return;
+    }
+    if (m === 0xf2) { stGet(0); f.e(0x10, IMP.ftan); s(FR); stSet(0, () => g(FR)); fpush(() => f.cf(1)); return; }     // fptan
+    if (m === 0xfb) { stGet(0); s(FT); stSet(0, () => { g(FT); f.e(0x10, IMP.fsin); }); fpush(() => { g(FT); f.e(0x10, IMP.fcos); }); return; }   // fsincos
+    if (m === 0xf3 || m === 0xf1 || m === 0xf9) {   // fpatan, fyl2x, fyl2xp1: ST(1) = f(ST(1), ST(0)), popped
+      stGet(0); s(FA); stGet(1); s(FB);
+      if (m === 0xf3) { g(FB); g(FA); f.e(0x10, IMP.fatan2); } else { g(FB); g(FA); if (m === 0xf9) f.cf(1).fop('add'); f.e(0x10, IMP.flog2).fop('mul'); }
+      s(FR); stSet(1, () => g(FR)); fpop(); return;
+    }
+    if (m === 0xf8 || m === 0xf5 || m === 0xfd) {   // fprem, fprem1, fscale
+      stGet(0); s(FA); stGet(1); s(FB);
+      if (m === 0xfd) { g(FA); g(FB); f.fop('trunc').e(0x10, IMP.fexp2).fop('mul'); } else { g(FA); g(FB); f.e(0x10, m === 0xf8 ? IMP.fmod : IMP.frem); }
+      s(FR); stSet(0, () => g(FR)); if (m !== 0xfd) f.gg('fsw').c(~0x400).op('and').gs('fsw'); return;
+    }
+    if (m === 0xf6) { f.gg('ftop').c(1).op('sub').c(7).op('and').gs('ftop'); return; }              // fdecstp
+    if (m === 0xf7) { fpop(); return; }                                                                // fincstp
+  }
+  if (b === 0xda && r === 5 && i === 1) { cmp(st(1), 2); return; }                                    // fucompp
+  if (b === 0xdb) {
+    if (r === 4 && i === 2) { f.gg('fsw').c(0x7f00).op('and').gs('fsw'); return; }                   // fnclex
+    if (r === 4 && i === 3) { f.c(0).gs('ftop').c(0x37f).gs('fcw').c(0).gs('fsw'); return; }          // fninit
+    if (r === 5 || r === 6) { cmpi(i, false); return; }                                                // fucomi / fcomi
+  }
+  if (b === 0xdd) {
+    if (r === 0) return;                                                                               // ffree
+    if (r === 2 || r === 3) { stGet(0); s(FT); stSet(i, () => g(FT)); if (r === 3) fpop(); return; }   // fst / fstp st(i)
+    if (r === 4 || r === 5) { cmp(st(i), r === 5 ? 1 : 0); return; }                                   // fucom / fucomp
+  }
+  if (b === 0xdf) {
+    if (r === 4 && i === 0) { f.gg('eax').c(~0xffff).op('and').gg('fsw').c(~0x3800).op('and').gg('ftop').c(11).op('shl').op('or').c(0xffff).op('and').op('or').gs('eax'); return; }   // fnstsw ax
+    if (r === 5 || r === 6) { cmpi(i, true); return; }                                                 // fucomip / fcomip
+  }
+  throw new Unsupported(`x87 ${b.toString(16)} ${(0xc0 | (r << 3) | i).toString(16)}`);
+}
+
 // shifts and rotates: group 2, sub-op `op`, count in local C (already masked)
 function shift(f, op, sz, o, rd, wr, L, szp) {
   const { B, C, R } = L, w = sz * 8, m = MASK[sz];
@@ -594,12 +748,16 @@ function strop(f, b, osz, asz, seg, rep, L, alu2, szp, dev) {
 // ---------------------------------------------------------------- module assembly and the cache
 function assemble(fn, shared) {
   const sec = (n, b) => [n, ...uleb(b.length), ...b];
-  const types = vec([[0x60, 0, 1, I32], [0x60, 2, I32, I32, 0]]);
+  // types: 0 run () -> i32; 1 (i32, i32); 2 (f64) -> f64; 3 (f64, f64) -> f64; 4 (i32) -> f64; 5 (i32, f64)
+  const types = vec([[0x60, 0, 1, I32], [0x60, 2, I32, I32, 0], [0x60, 1, F64T, 1, F64T], [0x60, 2, F64T, F64T, 1, F64T], [0x60, 1, I32, 1, F64T], [0x60, 2, I32, F64T, 0]]);
+  const imp = (n, t) => [...str('env'), ...str(n), 0x00, t];
   const imps = vec([[...str('env'), ...str('mem'), 0x02, ...(shared ? [0x03, ...uleb(MEM_PAGES), ...uleb(65536)] : [0x00, ...uleb(MEM_PAGES)])], ...G.map(n => [...str('cpu'), ...str(n), 0x03, I32, 1]),
-    [...str('env'), ...str('io'), 0x00, 1],     // function 0: port I/O (port, size | 8 for IN)
-    [...str('env'), ...str('trap'), 0x00, 1]]);   // function 1: an interrupt (continuation, 100h + n)
+    imp('io', 1),     // function 0: port I/O (port, size | 8 for IN)
+    imp('trap', 1),   // function 1: an interrupt (continuation, 100h + n)
+    // functions 2-11: the x87's (IMP), as the static modules import them
+    imp('fsin', 2), imp('fcos', 2), imp('ftan', 2), imp('fatan2', 3), imp('fexp2', 2), imp('flog2', 2), imp('fmod', 3), imp('frem', 3), imp('f80load', 4), imp('f80store', 5)]);
   const funcs = vec([[0]]);
-  const exps = vec([[...str('run'), 0x00, 2]]);
+  const exps = vec([[...str('run'), 0x00, 12]]);
   const code = vec([fn.body()]);
   return new Uint8Array([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0, ...sec(1, types), ...sec(2, imps), ...sec(3, funcs), ...sec(7, exps), ...sec(10, code)]);
 }
@@ -624,7 +782,12 @@ P.dynBlock = function (eip) {
   try { t = translate(this, eip, csb, d32, vm ? this.v86 : null); }
   catch (e) { if (e instanceof Unsupported) { this.trapped = `run-time code at ${eip.toString(16)}: ${e.message}`; return null; } throw e; }
   t.fn.e(0x0f);
-  const run = new WebAssembly.Instance(new WebAssembly.Module(assemble(t.fn, Object.prototype.toString.call(this.mem.buffer) === '[object SharedArrayBuffer]')), { env: { mem: this.mem, io: (port, k) => this.portIO(port & 0xffff, k & 7, !!(k & 8)), trap: (e, c) => this.trap(e, c) }, cpu: this.cpu }).exports.run;
+  // (the imports: the memory, port I/O, interrupts, and the x87's math, the process's own as its static modules get it)
+  const e = this.imports && this.imports.env, f80 = { f80load: a => this.f80load(a), f80store: (a, v) => this.f80store(a, v) };
+  const env = this.dynEnv || (this.dynEnv = { mem: this.mem, io: (port, k) => this.portIO(port & 0xffff, k & 7, !!(k & 8)), trap: (x, c) => this.trap(x, c),
+    fsin: Math.sin, fcos: Math.cos, ftan: Math.tan, fatan2: Math.atan2, fexp2: x => Math.pow(2, x), flog2: Math.log2, fmod: (a, b) => a % b, frem: (a, b) => a - b * Math.round(a / b),
+    ...f80, ...(e ? { f80load: e.f80load, f80store: e.f80store } : {}) });
+  const run = new WebAssembly.Instance(new WebAssembly.Module(assemble(t.fn, Object.prototype.toString.call(this.mem.buffer) === '[object SharedArrayBuffer]')), { env, cpu: this.cpu }).exports.run;
   c = { run, bytes: Array.from(u8.subarray(eip, eip + t.len)) };
   this.dynCache.set(key, c);
   return c;

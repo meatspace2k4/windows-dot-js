@@ -260,6 +260,7 @@ class Process {
    *  take: #UD): the exception's continuation, or null for a stop of the emulator's own (trapped) */
   noCode(at) {
     const t = this.trapped || '';
+    (this.faultLog || (this.faultLog = [])).push({ at: u32(at).toString(16), why: t, esp: u32(this.cpu.esp.value).toString(16) }); if (this.faultLog.length > 50) this.faultLog.shift();   // (a diagnostic: cmd 'faults')
     if (/^run-time code/.test(t)) { console.warn(`[win32] ${t}`); this.trapped = null; return this.raise(6, at); }   // (an emulator gap: named)
     if (t && !/^jump to unmapped address/.test(t)) return null;
     this.trapped = null; return this.raise(14, at, at);
@@ -906,6 +907,9 @@ function sehContext(p, at, eip, esp) {
 function sehDispatch(p, code, eip, params, fault, flags = 0) {
   p.sehFault = fault;
   const sp = u32(p.reg('esp')), rec = (sp - 0x400) & ~15, ctx = rec + 0x60, n = Math.min(params.length, 15);
+  // (a stack pointer that is no address the machine has: nothing can be pushed for a handler, the fault is not
+  // handled, the program's fault dialog takes it rather than the machine ending)
+  if (sp < 0x10000 || sp > p.u8.length) return null;
   p.u8.fill(0, rec, rec + 0x50);
   p.w32(rec, code); p.w32(rec + 4, flags & 1); p.w32(rec + 12, eip); p.w32(rec + 16, n);
   for (let i = 0; i < n; i++) p.w32(rec + 20 + 4 * i, params[i]);
