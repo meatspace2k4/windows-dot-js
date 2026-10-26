@@ -133,21 +133,39 @@ transcript and next-step box. What the app asks the user about is asked in a mes
 | `ccd.answer(i = 0)` | presses the next-step box's button `i` |
 | `ccd.tools()` | the servers and their tools |
 | `ccd.state()` | the records: sessions, groups, cards, settings, view |
-| `ccd.toolDefs()` | the tools as the Claude API takes them: every `ccd_<server>__<tool>`, and `files__read_file`, `files__list_directory`, `files__write_file`, `files__edit_file` |
+| `ccd.toolDefs()` | the tools as the Claude API takes them: every `ccd_<server>__<tool>`, and Claude Code's `Read`, `Write`, `Edit`, `Glob`, `Grep` |
+| `ccd.context(session)` | what goes ahead of each of the session's requests: the CLAUDE.MD files, the memory's index, the skills |
 | `ccd.callAs(session, name, args)` | runs a tool by that name for the session, as CLAUDE.EXE's Claude does |
 | `ccd.cardAnswer(task_id, label)` | answers a card with its button's label, as CLAUDE.EXE's card buttons do |
 
-The `files__*` tools work on C: only, the system's own disk: a path on another drive, a network drive or a share (a
-remote volume, whatever its letter) is refused. Writing and editing follow the session's permission mode: Plan mode
-refuses, Ask permissions asks in a message box, the others write.
+CLAUDE.EXE's Claude has Claude Code's own tools besides the app's, with Claude Code's names, parameters and answers:
+- `Read`, `Write`, `Edit`, `Glob`, `Grep` work on C: only, the system's own disk: a path on another drive, a network
+  drive or a share (a remote volume, whatever its letter) is refused. A path that is not absolute is in the session's
+  folder. A file is Read before Write or Edit changes it. Writing and editing follow the session's permission mode:
+  Plan mode refuses, Ask permissions asks in a message box, the others write.
+- `WebFetch` fetches a page through the server's `/__fetch` and has Haiku answer the prompt about it.
+- `Agent` starts a subagent in the background, as the app's do: the call answers at once ("Async agent launched"); the
+  agent, a conversation of its own with the same tools (but `Agent`), is one block in the session's conversation (its
+  description; running with its latest step, or done, with its tool uses, tokens and time; the Verbose view adds its
+  prompt, steps and result) and is listed in the Tasks pane; its own tool calls stay in it, not in the conversation
+  (`ccd.code.<Tool>` gives them with `agent`). When it ends, a `<task-notification>` with its result and usage is the
+  session's next message, shown as one line.
+- `Skill` loads `C:\WINDOWS\CLAUDE\SKILLS\<name>\SKILL.MD`.
+
+Each request starts with a system reminder, as Claude Code's do: `C:\WINDOWS\CLAUDE\CLAUDE.MD` (the user's own
+instructions), each `CLAUDE.MD` from the root down to the session's folder (the project's), the memory Claude keeps in
+`C:\WINDOWS\CLAUDE\MEMORY` (its index, `MEMORY.MD`), and the skills. Claude writes these with its own tools, so what it
+writes there shapes its next request. There is no `Bash`: Windows 95 here has no MS-DOS to run a command in.
 
 | Event | Fields | When |
 | --- | --- | --- |
 | `ccd.<server>.<tool>` | `args`, `result`, `error` | a tool is called |
+| `ccd.code.<Tool>` | `session`, `agent`, `args`, `result`, `error` | CLAUDE.EXE's Claude uses one of Claude Code's tools that runs on the page (`Read`, `Write`, `Edit`, `Glob`, `Grep`) |
+| `ccd.reply` | `session`, `text`, `error`, `stopped` | a turn ends, in the Claude window or CLAUDE.EXE (`text` its last reply) |
 | `ccd.answer` | `label`, `message`, `session` or `card`, `action` | the user answers a next-step box or a card |
 | `ccd.message` | `to`, `from`, `message`, `message_id` | `send_message` reaches a session |
 | `ccd.session.start`, `ccd.session.stop` | `session`, `title`, `prompt` | a session starts or is stopped |
-| `ccd.notify` | `kind` | a notification (a question, a finished task) |
+| `ccd.notify` | `kind`, `session` | a notification (a question, a finished task) |
 
 ## Exploring
 

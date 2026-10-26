@@ -3301,6 +3301,7 @@ class RemoteApp extends NativeApp {
       // MPR loaded in the system's machine (or no network client): the shell's network calls go ahead (netBoot)
       case 'mpr': this.mprUp = m.up; if (this.mprReady) { this.mprReady(m.up); this.mprReady = null; } return;
       case 'session': sessionCommand(m.op); return;   // (Export or Import Session, from the Start menu: SESSION.DLL)
+      case 'ccdTurn': emit('ccd.reply', { session: m.session, text: m.text, error: m.error, stopped: !!m.stopped }); if (m.kind) emit('ccd.notify', { kind: m.kind, session: m.session }); return;   // (a turn of the Claude program's ended)
       case 'ccdCard': { const ccd = window.win95 && window.win95.ccd; if (ccd) ccd.cardAnswer(m.task, m.label); return; }   // (a card's button, pressed in the Claude program)
       case 'ccdAnswer': { const f = this.ccdAsks && this.ccdAsks.get(m.id); if (f) { this.ccdAsks.delete(m.id); f(!!m.yes); } return; }
       // a tool the Claude program's Claude used (claude-app.js): run here, where the app's tools are (ccd.js), its answer sent back
@@ -3309,12 +3310,13 @@ class RemoteApp extends NativeApp {
         const ccd = window.win95 && window.win95.ccd;
         if (!ccd) { back({ error: 'The Claude app\'s tools are not loaded.' }); return; }
         if (m.name === '@defs') { back({ result: ccd.toolDefs() }); return; }   // (the tools themselves, as the API takes them)
+        if (m.name === '@context') { back({ result: ccd.context(m.session) }); return; }   // (CLAUDE.MD and the memory, for each request)
         if (m.name === '@appendC') { try { back({ result: ccd.appendC(m.args.path, m.args.text) }); } catch (e) { back({ error: e.message }); } return; }   // (feedback written)
         if (m.name === '@readC') { try { back({ result: ccd.readC(m.args.path) }); } catch (e) { back({ error: e.message }); } return; }   // (a file attached to a prompt)
         // what the tools ask the user, asked in the program's own message box (its answer: 'ccdAnswer')
         const asks = this.ccdAsks || (this.ccdAsks = new Map());
         ccd.asker = (title, text) => new Promise(ok => { const k = (this.ccdAskN = (this.ccdAskN || 0) + 1); asks.set(k, ok); this.worker.postMessage({ t: 'ccdAsk', id: k, title, text }); });
-        ccd.callAs(m.session, m.name, m.args).then(result => back({ result }), e => back({ error: String(e && e.message || e) }));
+        ccd.callAs(m.session, m.name, m.args, m.via).then(result => back({ result }), e => back({ error: String(e && e.message || e) }));
         return;
       }
       case 'lan': if (window.W95LAN && this.lanStation) W95LAN.send(this.lanStation, m.frame); return;
@@ -4945,7 +4947,8 @@ const script = {
   saverStats() { const a = fullSaver && fullSaver.pid && fullSaver.app; return a && a.alive && a.stats ? { ...a.stats } : null; },
   on(type, fn) { if (!listeners.has(type)) listeners.set(type, new Set()); listeners.get(type).add(fn); return () => listeners.get(type).delete(fn); },
   // resolves with the next event of this type that passes the test, or rejects after the timeout
-  next(type, test = () => true, ms = 10000) {
+  next(type, test, ms = 10000) {
+    test = test || (() => true);   // (no test, or null: any event of the type)
     return new Promise((ok, no) => {
       const off = script.on(type, e => { if (test(e)) { off(); clearTimeout(t); ok(e); } });
       const t = setTimeout(() => { off(); no(new Error(`no ${type} within ${ms} ms`)); }, ms);

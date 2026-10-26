@@ -11,8 +11,8 @@ import base64, json, os, struct, subprocess, sys, tempfile
 here = os.path.dirname(os.path.abspath(__file__)); root = os.path.dirname(here)
 BASE = 0x00570000      # its load base: a program base of its own (build_system.py PROGRAMS), the image's preferred base too
 LOOKUP = 0x07FF0000    # its block table, past the other programs'
-IMPORTS = [('CLAUDE.DLL', ['Start', 'Handle', 'Answer', 'Opened']), ('USER32.dll', ['GetMessageA', 'IsDialogMessageA', 'TranslateMessage', 'DispatchMessageA', 'DefWindowProcA', 'MessageBoxA',
-                                                                           'TrackPopupMenu', 'DestroyMenu', 'DialogBoxIndirectParamA']),
+IMPORTS = [('CLAUDE.DLL', ['Start', 'Handle', 'Answer', 'Opened', 'Prompt']), ('USER32.dll', ['GetMessageA', 'IsDialogMessageA', 'TranslateMessage', 'DispatchMessageA', 'DefWindowProcA', 'MessageBoxA',
+                                                                           'TrackPopupMenu', 'DestroyMenu', 'DialogBoxIndirectParamA', 'CallWindowProcA']),
            ('COMDLG32.dll', ['GetOpenFileNameA']), ('KERNEL32.dll', ['ExitProcess'])]
 TEXT_RVA, IDATA_RVA, ALIGN, FALIGN = 0x1000, 0x2000, 0x1000, 0x200
 
@@ -44,8 +44,9 @@ def text(iat):
     def jmp(to): emit(0xE9); fix.append((len(code), to)); code.extend(b'\0\0\0\0')
     MSG, HWND = 0xE4, 0xE0   # [ebp-28]: the MSG; [ebp-32]: the window
     emit(0x55, 0x89, 0xE5, 0x83, 0xEC, 0x24)            # push ebp; mov ebp, esp; sub esp, 36
+    emit(0x68); absfix.append((len(code), 'promptproc')); code.extend(b'\0\0\0\0')   # push PromptProc
     emit(0x68); absfix.append((len(code), 'wndproc')); code.extend(b'\0\0\0\0')   # push WndProc
-    call('Start')                                        # Start(WndProc): the window, or 0
+    call('Start')                                        # Start(WndProc, PromptProc): the window, or 0
     emit(0x85, 0xC0); jcc(0x84, 'done')                  # test eax, eax; jz done
     emit(0x89, 0x45, HWND)                               # mov [ebp-32], eax
     label['loop'] = len(code)
@@ -108,6 +109,23 @@ def text(iat):
     label['default'] = len(code)
     for off in (0x14, 0x10, 0x0C, 0x08): emit(0xFF, 0x75, off)
     call('DefWindowProcA')
+    emit(0xC9, 0xC2, 0x10, 0x00)                         # leave; ret 16
+    # PromptProc(hwnd, msg, wp, lp): the prompt edit control's window procedure, subclassed (SetWindowLongA in Start).
+    # CLAUDE.DLL's Prompt answers 1 for a message it took (the result written), else 0 with the edit control's own
+    # procedure written, which gets the message from here with CallWindowProcA, guest code calling guest code as in any
+    # subclass; 2 is the same, the answer or'd with DLGC_WANTTAB (a Tab the prompt takes, not IsDialogMessage)
+    label['promptproc'] = len(code)
+    emit(0x55, 0x89, 0xE5, 0x83, 0xEC, 0x04)            # push ebp; mov ebp, esp; sub esp, 4
+    emit(0x8D, 0x45, 0xFC, 0x50)                         # lea eax, [ebp-4]; push eax (&result)
+    for off in (0x14, 0x10, 0x0C, 0x08): emit(0xFF, 0x75, off)   # push lp, wp, msg, hwnd
+    call('Prompt')
+    emit(0x83, 0xF8, 0x01); jcc(0x85, 'pass')           # cmp eax, 1; jne pass
+    emit(0x8B, 0x45, 0xFC, 0xC9, 0xC2, 0x10, 0x00)      # mov eax, [ebp-4]; leave; ret 16
+    label['pass'] = len(code)
+    emit(0x50)                                           # push eax (0, or 2: or'd after)
+    for off in (0x14, 0x10, 0x0C, 0x08): emit(0xFF, 0x75, off)   # push lp, wp, msg, hwnd
+    emit(0xFF, 0x75, 0xFC); call('CallWindowProcA')      # push [ebp-4] (the edit's procedure); CallWindowProcA(...)
+    emit(0x59, 0x09, 0xC8)                               # pop ecx; or eax, ecx
     emit(0xC9, 0xC2, 0x10, 0x00)                         # leave; ret 16
     for at, to in fix: struct.pack_into('<i', code, at, label[to] - (at + 4))
     for at, to in absfix: struct.pack_into('<I', code, at, BASE + TEXT_RVA + label[to])

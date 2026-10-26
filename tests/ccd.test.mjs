@@ -166,15 +166,14 @@ p = ccd.directory.change_directory({ path: 'C:\\WINDOWS' }); await tick(); boxes
 assert.match(await p, /works in C:\\WINDOWS/);
 assert.deepEqual(plain(JSON.parse(await ccd.connectors.session_connectors_status()).servers.map(c => c.name)),['shares', 'cd', 'network', 'sound']);
 
-// the files tools (the Claude program's): C: only, writes asked in Ask permissions
-assert.ok(ccd.toolDefs().some(d => d.name === 'files__edit_file'));
-assert.match(await ccd.callAs(null, 'files__list_directory', { path: 'C:\\' }), /\[dir\] WINDOWS/);
-for (const path of ['D:\\SETUP.EXE', 'E:\\X.TXT', '\\\\HOST\\PUBLIC\\X.TXT', 'X.TXT']) await rejects(ccd.callAs(null, 'files__read_file', { path }), /not on C:/);
-p = ccd.callAs(null, 'files__write_file', { path: 'C:\\NOTE.TXT', content: 'a\nb' }); await tick(); assert.match(boxes.at(-1).msg, /create C:\\NOTE\.TXT/); boxes.at(-1).press('Yes');
-assert.match(await p, /Wrote/); assert.equal(files.get('C:\\NOTE.TXT'), 'a\r\nb');
-p = ccd.callAs(null, 'files__edit_file', { path: 'C:\\NOTE.TXT', old_string: 'b', new_string: 'c' }); await tick(); boxes.at(-1).press('No');
+// the files tools (Claude Code's, in the Claude program: tests/cctools.test.mjs): C: only, writes asked in Ask permissions
+assert.ok(ccd.toolDefs().some(d => d.name === 'Edit'));
+for (const file_path of ['D:\\SETUP.EXE', 'E:\\X.TXT', '\\\\HOST\\PUBLIC\\X.TXT']) await rejects(ccd.callAs(null, 'Read', { file_path }), /not on C:/);
+p = ccd.callAs(null, 'Write', { file_path: 'C:\\NOTE.TXT', content: 'a\nb' }); await tick(); assert.match(boxes.at(-1).msg, /create C:\\NOTE\.TXT/); boxes.at(-1).press('Yes');
+assert.match(await p, /File created successfully/); assert.equal(files.get('C:\\NOTE.TXT'), 'a\r\nb');
+p = ccd.callAs(null, 'Edit', { file_path: 'C:\\NOTE.TXT', old_string: 'b', new_string: 'c' }); await tick(); boxes.at(-1).press('No');
 await rejects(p, /Not allowed/); assert.equal(files.get('C:\\NOTE.TXT'), 'a\r\nb');
-assert.match(await ccd.callAs(null, 'files__read_file', { path: 'C:\\NOTE.TXT' }), /^1\ta\n2\tb$/);
+assert.match(await ccd.callAs(null, 'Read', { file_path: 'C:\\NOTE.TXT' }), /^ {5}1\ta\n {5}2\tb$/);
 files.delete('C:\\NOTE.TXT');
 
 // the records last: a new page reads them back from the registry

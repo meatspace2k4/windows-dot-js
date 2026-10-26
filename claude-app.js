@@ -60,6 +60,18 @@
 
   // ---------------------------------------------------------------- what the window shows
   const modelName = m => (MODELS.find(x => x[0] === m) || [m, m])[1];
+  // an agent's block: its description and how it stands (running with its latest step, or done, with its tool uses,
+  // tokens and time); the Verbose view adds its prompt, every step and its result
+  const agentLine = g => {
+    const secs = Math.round(((g.ended || Date.now()) - g.started) / 1000), k = g.tokens >= 1000 ? `${(g.tokens / 1000).toFixed(1)}k` : `${g.tokens}`;
+    return `${g.state === 'running' ? 'Running' : g.state === 'failed' ? 'Failed' : 'Done'} · ${g.tools} tool use${g.tools === 1 ? '' : 's'} · ${k} tokens · ${secs}s`;
+  };
+  const agentBlock = (g, view) => {
+    if (!g) return '  [Agent]';
+    const head = `  [Agent] ${g.description}\n    ${agentLine(g)}`;
+    if (view === 'verbose') return `${head}\n    Prompt: ${g.prompt.replace(/\n/g, '\n      ')}${g.steps.map(t => `\n    > ${t}`).join('')}${g.result ? `\n    Result: ${g.result.replace(/\n/g, '\n      ')}` : ''}`;
+    return g.state === 'running' && g.steps.length ? `${head}\n    > ${g.steps[g.steps.length - 1]}` : head;
+  };
   // the conversation, as the session's transcript view shows it: normal (messages, tool calls, chapters), thinking (its
   // summaries too), verbose (each tool call's input and answer too)
   const convo = s => {
@@ -68,9 +80,12 @@
     let at = 0;   // (where each message is in the text the conversation shows: msgAt)
     const put = (t, k) => { if (lines.length) at += 4; const n = ansi(t).length; if (k !== undefined) spans.push({ k, from: at, to: at + n, head: k === undefined ? 0 : t.indexOf('\n') + 2 }); at += n; lines.push(t); };
     s.transcript.forEach((m, k) => {
-      if (m.role === 'user') put(`You:\n${m.text}`, k);
+      // (an agent's task notification is the session's next message, not the user's: one line, its summary)
+      if (m.role === 'user' && /^<task-notification>/.test(m.text)) put(`  ${((/<summary>([^<]*)<\/summary>/.exec(m.text) || [])[1] || 'An agent finished')}.`);
+      else if (m.role === 'user') put(`You:\n${m.text}`, k);
       else if (m.role === 'assistant' && m.text) put(`Claude:\n${m.text}`, k);
       else if (m.role === 'tool') put(`  > ${m.text}${view === 'verbose' && m.detail ? `\n    ${m.detail.replace(/\n/g, '\n    ')}` : ''}`);
+      else if (m.role === 'agent') put(agentBlock((s.agents || []).find(g => g.id === m.agent), view));
       else if (m.role === 'thinking' && view !== 'normal' && m.text) put(`  (thinking) ${m.text}`);
       else if (m.role === 'chapter') put(`---------- ${m.text} ----------`);
       else if (m.role === 'system') put(`[${m.text}]`);
@@ -120,7 +135,11 @@
     if (!s) return '';
     if (p === 'plan') return s.plan.length ? s.plan.map(t => `${t.status === 'completed' ? '[x]' : t.status === 'in_progress' ? '[>]' : '[ ]'} ${t.content}`).join('\n') : 'No plan for this session.';
     if (p === 'diff') return (s.changes || []).length ? s.changes.map(c => `${c.op}  ${c.path}`).join('\n') : 'No changes.';
-    if (p === 'tasks') { const kids = sessions().filter(x => x.startedBy === s.id); return kids.length ? kids.map(x => `${x.title}  (${x.state})`).join('\n') : 'No sessions started from this one.'; }
+    if (p === 'tasks') {   // (the session's agents, then the sessions started from it)
+      const ags = (s.agents || []).slice().reverse(), kids = sessions().filter(x => x.startedBy === s.id);
+      const out = [...ags.map(g => `Agent: ${g.description}\n  ${agentLine(g)}${g.state === 'running' && g.steps.length ? `\n  > ${g.steps[g.steps.length - 1]}` : ''}`), ...kids.map(x => `Session: ${x.title}  (${x.state})`)];
+      return out.length ? out.join('\n\n') : 'No agents or sessions started from this one.';
+    }
     if (p === 'files') return `${s.cwd}`;
     if (p === 'terminal') return 'MS-DOS Prompt runs in its own window.';
     if (p === 'preview') {   // the page as text, its links numbered (type a link's number in the address to follow it)
@@ -139,7 +158,7 @@
     showSessions(p);
     text(p, e, 'convo', t); U(p, 'SendMessageA', [e, 0xB1, t.length, t.length]); U(p, 'SendMessageA', [e, 0xB7, 0, 0]);   // EM_SETSEL, EM_SCROLLCARET: the end in view
     const sg = s && app.suggestion && app.suggestion.sid === s.id && s.state !== 'working' ? app.suggestion.text : null;
-    text(p, app.kid[ID.STATUS], 'status', app.note || (sg ? `Suggested: "${sg}"  (Edit > Use Suggestion)` : status(s))); app.note = null;   // (a note of the program's: once, then the status again)
+    text(p, app.kid[ID.STATUS], 'status', app.note || (sg ? `Suggested: "${sg}"` : status(s))); app.note = null;   // (a note of the program's: once, then the status again)
     text(p, app.hwnd, 'title', s ? `${s.title} - Claude` : 'Claude');
     // the task list, under the conversation
     const tl = app.kid[ID.TASKS]; U(p, 'SendMessageA', [tl, 0x184, 0, 0]);
@@ -217,7 +236,7 @@
   // ---------------------------------------------------------------- the app's tools, which run on the page (ccd.js)
   const pending = new Map(); let nextCall = 1, toolDefs = null;
   self.W95ClaudeReply = m => { const f = pending.get(m.id); if (f) { pending.delete(m.id); f(m); } };
-  const page = (name, args, session) => new Promise(ok => { const k = nextCall++; pending.set(k, ok); post({ t: 'ccd', id: k, name, args, session }); });
+  const page = (name, args, session, via) => new Promise(ok => { const k = nextCall++; pending.set(k, ok); post({ t: 'ccd', id: k, name, args, session, via }); });   // (via: the agent making the call)
   // a tool's question (an approval): asked one at a time in the program's message box (CLAUDE.EXE's WndProc on WM_APP+1),
   // posted from the window's timer; with no window to ask in, the answer is No
   const asks = []; let asking = null;
@@ -309,6 +328,23 @@
     if (id_ === 1 || id_ === 2) { app.feedbackOpen = false; U(p, 'EndDialog', [h, id_ === 1 ? 1 : 0]); return 1; }
     return 0;
   });
+  // Prompt(hwnd, msg, wp, lp, &result): for the prompt's window procedure (CLAUDE.EXE's PromptProc, subclassing the edit
+  // control in Start). Tab in the empty prompt while a suggestion shows takes the suggestion into it: WM_GETDLGCODE says
+  // the prompt wants that Tab (2: PromptProc or's DLGC_WANTTAB into the edit control's answer), so IsDialogMessage gives
+  // it the key instead of moving the focus. 1: taken here, the result written; 0: the edit control's own (written)
+  def('CLAUDE', 'Prompt', 5, function (h, msg, wp, lp, res) {
+    const p = this, own = v => { p.w32(res, app.promptProc); return v; };
+    const s = current(), sg = s && app.suggestion && app.suggestion.sid === s.id && s.state !== 'working' ? app.suggestion : null;
+    const tabNow = () => sg && U(p, 'GetWindowTextLengthA', [h]) === 0;
+    if (msg === 0x87 && lp && p.r32(lp + 4) === 0x100 && p.r32(lp + 8) === 9 && tabNow()) return own(2);   // WM_GETDLGCODE for a WM_KEYDOWN of VK_TAB
+    if (msg === 0x100 && wp === 9 && tabNow()) {   // WM_KEYDOWN VK_TAB: the suggestion into the prompt, its caret at the end
+      const n = ansi(sg.text).length; app.taken = sg; app.suggestion = null; app.eatTab = true;
+      text(p, h, 'prompt-suggest', sg.text); U(p, 'SendMessageA', [h, 0xB1, n, n]); app.dirty = true;   // EM_SETSEL
+      p.w32(res, 0); return 1;
+    }
+    if (msg === 0x102 && wp === 9 && app.eatTab) { app.eatTab = false; p.w32(res, 0); return 1; }   // (its WM_CHAR, from TranslateMessage: not typed)
+    return own(0);
+  });
   def('CLAUDE', 'Answer', 1, function (r) { if (asking) post({ t: 'ccdAnswer', id: asking.id, yes: r === 6 }); asking = null; return 0; });   // (IDYES)
 
   // ---------------------------------------------------------------- the reply: the Claude API through the page's server
@@ -339,7 +375,10 @@
       const m = x.transcript.find(y => y.uuid === msgId); if (m) { m.text = got; if (blocks) m.blocks = blocks; }
     });
     try {
-      const r = await fetch('__claude', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: s.model, effort: s.effort, messages: history(s), tools: toolDefs || [] }), signal: (app.aborts[sid] = new AbortController()).signal });
+      // (CLAUDE.MD and the memory, read again for each request, in a system reminder ahead of the first prompt, where
+      // Claude Code puts them)
+      const cx = await page('@context', null, sid), msgs = reminder(cx.result, history(s));
+      const r = await fetch('__claude', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: s.model, effort: s.effort, messages: msgs, tools: toolDefs || [] }), signal: (app.aborts[sid] = new AbortController()).signal });
       if (!r.ok) return { error: `Not connected: this page's server has no Claude API (HTTP ${r.status}).` };
       const rd = r.body.getReader(), dec = new TextDecoder(); let buf = '';
       for (;;) {
@@ -365,6 +404,96 @@
     } catch (e) { return e.name === 'AbortError' ? { stopped: true } : { error: `Not connected: ${e.message}` }; }
     return result || { error: 'The reply ended early.' };
   }
+  // Claude Code's tools that run here, where the requests are made: WebFetch (a page fetched by the page's server and read
+  // by a small model with the prompt), Agent (a subagent: a conversation of its own with the same tools, its last reply
+  // the result) and Skill (a skill's SKILL.MD from C:\WINDOWS\CLAUDE\SKILLS, which the context lists)
+  const S_ = (props, req) => ({ type: 'object', properties: props, required: req });
+  const HERE_DEFS = [
+    { name: 'WebFetch', description: 'Fetches a URL (http or https) through this machine\'s server, as text, and answers the prompt about it with a small, fast model. The page\'s links are numbered in the text.', input_schema: S_({ url: { type: 'string', description: 'The URL to fetch content from' }, prompt: { type: 'string', description: 'The prompt to run on the fetched content' } }, ['url', 'prompt']) },
+    { name: 'Agent', description: 'Launches a subagent in the background for a multi-step task: a fresh conversation with the same tools (but Agent), given only the prompt. The call returns at once; when the agent finishes, its report arrives as a <task-notification> message. Brief it fully: it knows nothing of this conversation.', input_schema: S_({ description: { type: 'string', description: 'A short (3-5 word) description of the task' }, prompt: { type: 'string', description: 'The task for the agent to perform' }, model: { type: 'string', enum: ['opus', 'sonnet', 'haiku'], description: 'Optional model override (default: this session\'s)' } }, ['description', 'prompt']) },
+    { name: 'Skill', description: 'Invokes a skill: its instructions (C:\\WINDOWS\\CLAUDE\\SKILLS\\<name>\\SKILL.MD) load for you to follow. The skills there are listed in the context.', input_schema: S_({ skill: { type: 'string', description: 'The name of a listed skill' }, args: { type: 'string', description: 'Optional arguments for the skill' } }, ['skill']) },
+  ];
+  // one request, its stream read whole: the message's content and why it stopped, or an error
+  async function request(body, sid) {
+    try {
+      const r = await fetch('__claude', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: sid && app.aborts[sid] ? app.aborts[sid].signal : undefined });
+      if (!r.ok) return { error: `Not connected: this page's server has no Claude API (HTTP ${r.status}).` };
+      let text = '', done = null;
+      for (const l of (await r.text()).split('\n')) { if (!l) continue; const ev = JSON.parse(l); if (ev.t === 'text') text += ev.d; else if (ev.t === 'error') return { error: ev.e }; else if (ev.t === 'done') done = ev; }
+      return done ? { text, stop: done.stop, tokens: (done.in || 0) + (done.out || 0), content: done.content && done.content.length ? done.content : [{ type: 'text', text }] } : { error: 'The reply ended early.' };
+    } catch (e) { return { error: e.name === 'AbortError' ? 'Stopped.' : `Not connected: ${e.message}` }; }
+  }
+  const reminder = (cx, msgs) => cx && msgs.length ? [{ role: 'user', content: [{ type: 'text', text: `<system-reminder>\n${cx}\n</system-reminder>` }, ...msgs[0].content] }, ...msgs.slice(1)] : msgs;
+  const resultOf = (b, out) => ({ type: 'tool_result', tool_use_id: b.id, content: out.error ? `Error: ${out.error}` : typeof out.result === 'string' ? out.result : JSON.stringify(out.result === undefined ? null : out.result), ...(out.error ? { is_error: true } : {}) });
+  const MODEL = { opus: 'claude-opus-5-5', sonnet: 'claude-sonnet-5-5', haiku: 'claude-haiku-5-5' };
+  const HERE = {
+    async WebFetch(a) {
+      let r; try { r = await (await fetch('__fetch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: a.url }) })).json(); } catch (e) { return { error: e.message }; }
+      if (r.error) return { error: r.error };
+      const page_ = `${r.title ? `# ${r.title}\n\n` : ''}${r.text}${r.links && r.links.length ? `\n\nLinks:\n${r.links.slice(0, 100).map((l, i) => `[${i + 1}] ${l}`).join('\n')}` : ''}`.slice(0, 100000);
+      const q = await request({ model: 'claude-haiku-5-5', effort: 'low', messages: [{ role: 'user', content: `Web page content (${r.url}):\n---\n${page_}\n---\n\n${a.prompt}\n\nProvide a concise response based only on the content above.` }] });
+      if (q.error) return { error: q.error };
+      return { result: `${r.url !== a.url && new URL(r.url).host !== new URL(/^https?:/i.test(a.url) ? a.url : `https://${a.url}`).host ? `(Redirected to ${r.url})\n\n` : ''}${q.text}` };
+    },
+    // an agent runs in the background, as the app's do: the call answers at once; the agent is the session's (its
+    // description, state, tool uses, tokens, its steps and result), shown as one block in the conversation; when it ends
+    // a task notification comes to the session as the next message
+    async Agent(a, sid) {
+      const s = load().find(x => x.id === sid); if (!s) return { error: 'No session.' };
+      if (!a.prompt) return { error: 'prompt: the task for the agent.' };
+      const ag = { id: id('agent').replace(/^agent_?/, 'a'), description: String(a.description || 'Agent').slice(0, 60), prompt: a.prompt, model: MODEL[a.model] || s.model, state: 'running', tools: 0, tokens: 0, started: Date.now(), steps: [] };
+      update(sid, x => { (x.agents = x.agents || []).push(ag); x.transcript.push({ uuid: id('msg'), t: Date.now(), role: 'agent', agent: ag.id, text: ag.description }); });
+      runAgent(sid, ag, s.effort);
+      return { result: `Async agent launched successfully.\nagentId: ${ag.id}\nThe agent is working in the background. You will be notified automatically when it completes. You know nothing about its results until that notification arrives: do not report, assume, or predict them; continue other work or answer the user in the meantime.` };
+    },
+    async Skill(a) {
+      const name = String(a.skill || '').replace(/^\//, ''), dir = `C:\\WINDOWS\\CLAUDE\\SKILLS\\${name}`;
+      if (!/^[\w.-]{1,64}$/.test(name)) return { error: `Unknown skill: ${a.skill}` };
+      const r = await page('@readC', { path: `${dir}\\SKILL.MD` });
+      if (r.error) return { error: `Unknown skill: ${name}` };
+      return { result: `Base directory for this skill: ${dir}\n\n${r.result}${a.args ? `\n\nARGUMENTS: ${a.args}` : ''}` };
+    },
+  };
+  // an agent's record changed (its block in the conversation and the Tasks pane show it on the window's timer)
+  const agentDo = (sid, agId, f) => update(sid, x => { const g = (x.agents || []).find(y => y.id === agId); if (g) f(g); });
+  async function runAgent(sid, ag, effort) {
+    const defs = (toolDefs || []).filter(d => d.name !== 'Agent'), msgs = [{ role: 'user', content: [{ type: 'text', text: ag.prompt }] }];
+    let result = null, failed = null;
+    for (let k = 0; k < 40 && !result && !failed; k++) {
+      const cx = await page('@context', null, sid);
+      const r = await request({ model: ag.model, effort, messages: reminder(cx.result, msgs), tools: defs });
+      if (r.error) { failed = r.error; break; }
+      agentDo(sid, ag.id, g => { g.tokens += r.tokens || 0; });
+      msgs.push({ role: 'assistant', content: r.content });
+      if (r.stop !== 'tool_use') { result = r.text || '(The agent gave no reply.)'; break; }
+      const results = [];
+      for (const b of r.content.filter(x => x.type === 'tool_use')) {
+        const label = `${b.name}${b.input && (b.input.file_path || b.input.pattern || b.input.url || b.input.skill) ? ` ${b.input.file_path || b.input.pattern || b.input.url || b.input.skill}` : ''}`;
+        agentDo(sid, ag.id, g => { g.tools++; g.steps.push(label.slice(0, 120)); }); app.dirty = true;
+        results.push(resultOf(b, await tool(b, sid, ag.id)));
+      }
+      msgs.push({ role: 'user', content: results });
+    }
+    if (!result && !failed) failed = 'it stopped after 40 requests without finishing';
+    const ms = Date.now() - ag.started;
+    const fin = update(sid, x => { const g = (x.agents || []).find(y => y.id === ag.id); if (g) { g.state = failed ? 'failed' : 'completed'; g.result = result || failed; g.ended = Date.now(); } });
+    const g = fin && (fin.agents || []).find(y => y.id === ag.id) || ag;
+    const note = `<task-notification>\n<task-id>${ag.id}</task-id>\n<status>${failed ? 'failed' : 'completed'}</status>\n<summary>Agent "${ag.description}" ${failed ? `failed: ${failed}` : 'finished'}</summary>\n${result ? `<result>\n${result}\n</result>\n` : ''}<usage><subagent_tokens>${g.tokens}</subagent_tokens><tool_uses>${g.tools}</tool_uses><duration_ms>${ms}</duration_ms></usage>\n</task-notification>`;
+    // (to the session as its next message: queued while it works, else its turn now, from the window's timer)
+    if (fin && (fin.state === 'working' || app.running.has(sid))) (app.queue[sid] = app.queue[sid] || []).push(note);
+    else app.nextSay = app.nextSay || { sid, text: note };
+    app.dirty = true;
+  }
+  // a tool run here goes into the conversation as the page's tools do (its name, and in the Verbose view its input and
+  // answer); an agent's tools go into its own steps instead (via: its id), not the conversation
+  const toolRow = (sid, text, input, out) => update(sid, x => x.transcript.push({ uuid: id('msg'), t: Date.now(), role: 'tool', text: `${text}${out.error ? ' (refused)' : ''}`, detail: `${JSON.stringify(input)}\n${out.error || String(out.result).slice(0, 300)}`.slice(0, 600) }));
+  const tool = async (b, sid, via) => {
+    if (!HERE[b.name]) return page(b.name, b.input, sid, via);
+    const out = await HERE[b.name](b.input || {}, sid);
+    if (!via && b.name !== 'Agent') toolRow(sid, b.name, b.input, out);
+    app.dirty = true;
+    return out;
+  };
   // the turn: requests until Claude stops asking for tools; each tool it asks for run on the page as this session's call
   async function reply(sid) {
     if (app.running.has(sid)) return; app.running.add(sid);
@@ -372,7 +501,7 @@
   }
   async function turn(sid) {
     let failed = null;
-    if (!toolDefs) { const r = await page('@defs'); toolDefs = r.result || []; }
+    if (!toolDefs) { const r = await page('@defs'); toolDefs = [...(r.result || []), ...HERE_DEFS]; }
     for (let k = 0; k < 24; k++) {
       const s = load().find(x => x.id === sid); if (!s) return;
       const r = await ask(sid, s);
@@ -382,8 +511,8 @@
       const results = [];
       for (const b of r.content.filter(x => x.type === 'tool_use')) {
         // (stopped between tools: the rest are answered as not run, so the conversation stays one the API takes)
-        const out = app.stopping[sid] ? { error: 'Not run: the user stopped the turn.' } : await page(b.name, b.input, sid);
-        results.push({ type: 'tool_result', tool_use_id: b.id, content: out.error ? `Error: ${out.error}` : typeof out.result === 'string' ? out.result : JSON.stringify(out.result === undefined ? null : out.result), ...(out.error ? { is_error: true } : {}) });
+        const out = app.stopping[sid] ? { error: 'Not run: the user stopped the turn.' } : await tool(b, sid);
+        results.push(resultOf(b, out));
         app.dirty = true;
       }
       update(sid, x => x.transcript.push({ uuid: id('msg'), t: Date.now(), role: 'results', text: '', blocks: results }));
@@ -396,6 +525,9 @@
       x.state = failed ? 'failed' : x.next && x.next.blocked ? 'waiting' : 'idle';
     });
     if (!stopped) app.notify = fin && fin.next && fin.next.ask ? 'question' : 'task_complete';   // (told on the window's timer)
+    // (the page's scripts told: ccd.reply, as the page's own Claude window tells them)
+    const said_ = fin && [...fin.transcript].reverse().find(m => m.role === 'assistant' && m.text);
+    post({ t: 'ccdTurn', session: sid, text: said_ ? said_.text : '', error: failed, stopped, kind: stopped ? null : app.notify });
     if (!stopped && !failed && fin && !(app.queue[sid] || []).length && record('settings', {}).prompt_suggestions !== false) suggest(fin);
     // (a message sent while Claude worked: its turn now, from the window's timer)
     if ((app.queue[sid] || []).length) app.nextSay = { sid, text: app.queue[sid].shift() };
@@ -440,6 +572,7 @@
     const e = app.kid[ID.PROMPT], b = sz(p, 'prompt-in', ' '.repeat(4096));
     U(p, 'GetWindowTextA', [e, b, 4096]); const t = p.readA(b).trim();
     if (!t) { const s = current(); if (s && s.state === 'working') stop(p, s.id); return; }   // (Send, with nothing typed while Claude works: Stop)
+    app.taken = null;   // (a suggestion sent is used: the prompt cleared after it brings it back no more)
     text(p, e, 'prompt-clear', ''); say(p, t);
   }
   // the Browser pane: the address typed (or a link's number on the page shown) fetched by the page's server as text
@@ -474,7 +607,7 @@
 
   // ---------------------------------------------------------------- the program's entry and its window procedure
   // Start(wndproc): the window, of a class whose procedure is the program's own (CLAUDE.EXE's WndProc, which asks Handle)
-  def('CLAUDE', 'Start', 1, function (wndproc) {
+  def('CLAUDE', 'Start', 2, function (wndproc, promptproc) {
     const p = this, inst = p.call(p.thunkFor('KERNEL32', 'GetModuleHandleA'), [0]);   // (the program's instance, as it asks for it)
     const cls = sz(p, 'class', 'ClaudeWindow'), wc = p.alloc(40);
     for (const [o, v] of [[0, 3], [4, wndproc], [8, 0], [12, 0], [16, inst], [20, U(p, 'LoadIconA', [0, 32512])], [24, U(p, 'LoadCursorA', [0, 32512])], [28, 16], [32, 0], [36, cls]]) p.w32(wc + o, v);
@@ -528,6 +661,7 @@
     const rc = p.alloc(16); U(p, 'GetClientRect', [h, rc]); app.size = [p.r32(rc + 8), p.r32(rc + 12)]; p.free(rc);
     app.shown = (current() || {}).id || null; showAll(p);
     U(p, 'SetTimer', [h, 1, 150, 0]);   // (the reply arrives between the program's messages: shown on the timer)
+    if (promptproc) app.promptProc = U(p, 'SetWindowLongA', [app.kid[ID.PROMPT], -4, promptproc]);   // GWL_WNDPROC: CLAUDE.EXE's PromptProc (Tab takes the suggestion)
     U(p, 'SetFocus', [app.kid[ID.PROMPT]]);
     return h;
   });
@@ -629,6 +763,11 @@
     }
     if (msg !== WM.COMMAND) return 0;
     const c = wp & 0xffff, note = wp >>> 16;
+    // (the prompt emptied after Tab took the suggestion into it: the suggestion back where it was)
+    if (c === ID.PROMPT && note === 0x300 && app.taken && U(p, 'GetWindowTextLengthA', [app.kid[ID.PROMPT]]) === 0) {   // EN_CHANGE
+      if ((current() || {}).id === app.taken.sid) { app.suggestion = app.taken; app.dirty = true; }
+      app.taken = null; return done();
+    }
     if (c === ID.BGO || (c === 1 && U(p, 'GetFocus', []) === app.kid[ID.BURL])) { browse(p); return done(); }   // (Go, or Enter in the address)
     if (c === ID.SEND || c === 1) { send(p); return done(); }                         // (IDOK: Enter in the prompt)
     if (c === ID.NEW) { newSession(p); return done(); }

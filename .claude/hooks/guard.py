@@ -46,6 +46,38 @@ def touched(sid):
     return set(load(sid)['files'])
 
 
+TRANSCRIPTS = os.path.expanduser('~/.claude/projects/' + re.sub(r'[^\w-]', '-', REPO))
+
+
+def live(n, s, within):
+    """a session still at work: its transcript written within the last minutes (a session whose transcript is gone is gone)"""
+    try:
+        return time.time() - os.path.getmtime(os.path.join(TRANSCRIPTS, n[:-5] + '.jsonl')) < within
+    except OSError:
+        return False
+
+
+def other_writer(sid, path, within=10 * 60):
+    """another session at work that edited path (its state names the file, and it is live): a file's uncommitted edits
+    from a writer that is gone, or from the person, are not another writer's"""
+    try:
+        names = os.listdir(STATE)
+    except OSError:
+        return False
+    mine = os.path.basename(state_file(sid))
+    for n in names:
+        if n == mine or not n.endswith('.json'):
+            continue
+        try:
+            with open(os.path.join(STATE, n)) as f:
+                s = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if isinstance(s, dict) and path in s.get('files', []) and live(n, s, within):
+            return True
+    return False
+
+
 def untested(sid):
     s = load(sid)
     return s['edit'] > s['test'] and any(git_dirty(os.path.relpath(p, REPO)) for p in s['files'])
@@ -114,7 +146,7 @@ def check_file(ti, sid):
     if not in_repo(path) or path.startswith(os.path.join(REPO, '.claude') + os.sep) or path.startswith(os.path.join(REPO, '.git') + os.sep):
         return
     rel = os.path.relpath(path, REPO)
-    if git_dirty(rel) and path not in touched(sid):
+    if git_dirty(rel) and path not in touched(sid) and other_writer(sid, path):
         out('deny', f'{rel} holds uncommitted edits from another writer. Do not stack on them.')
 
 

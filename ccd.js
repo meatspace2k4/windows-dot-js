@@ -602,6 +602,7 @@
     const refreshLabels = () => { const n = cur().next; btns.forEach((b, i) => { b.label = n && n.actions && n.actions[i] ? (n.actions[i].label || n.actions[i].action || 'OK').replace(/&/g, '&&') : ''; }); };
     function show(id) { if (id !== shown) { navBack.push(shown); navFwd = []; } shown = id; tscroll = 0; refreshLabels(); if (win) ui.dirty(); }
     let quiet = false;   // (a call from the Claude program: the page's window is not opened for it)
+    let agentCall = null;   // (a call an agent of the session's made: in the agent's steps, not the session's conversation)
     function openWindow(focus = true) {
       if (quiet && !(win && ui.windows().includes(win))) return null;
       refreshLabels();
@@ -662,38 +663,96 @@
       if (m === 'default' && !(await approve(`Claude wants to ${what} ${p}. Allow it?`))) not(`Not allowed: ${what} ${p}.`);
     };
     const changed = (op, p) => { const c = self.changes = self.changes || []; if (!c.some(x => x.path === p && x.op === op)) c.push({ op, path: p }); save('sessions'); ui.dirty(); };
+    // Claude Code's own file tools, under its names and with its answers: a file is Read before Write or Edit changes it
+    // (the session keeps what it has read); a path that is not absolute is in the session's folder
+    const abs = p => { p = String(p || '').replace(/\//g, '\\'); return /^[a-z]:\\/i.test(p) || /^\\\\/.test(p) ? p : `${(self.cwd || 'C:\\').replace(/\\$/, '')}\\${p.replace(/^\.\\/, '')}`; };
+    const hasRead = p => (self.read = self.read || []).includes(p.toUpperCase());
+    const markRead = p => { if (!hasRead(p)) self.read.push(p.toUpperCase()); };
+    const mustHaveRead = p => { if (ui.fs.exists(p) && !hasRead(p)) not('File has not been read yet. Read it first before writing to it.'); };
+    // a glob (**, *, ?, {a,b}) as a regex for the paths under base, ignoring case as Windows does
+    const wild = (g, base) => {
+      g = String(g).replace(/\//g, '\\'); let r = '', brace = 0;
+      for (let i = 0; i < g.length; i++) {
+        const c = g[i];
+        if (c === '*' && g[i + 1] === '*') { if (g[i + 2] === '\\') { r += '(?:.*\\\\)?'; i += 2; } else { r += '.*'; i++; } }
+        else if (c === '*') r += '[^\\\\]*';
+        else if (c === '?') r += '[^\\\\]';
+        else if (c === '{') { r += '(?:'; brace++; }
+        else if (c === '}' && brace) { r += ')'; brace--; }
+        else if (c === ',' && brace) r += '|';
+        else r += c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      }
+      return new RegExp(`^${base.replace(/\\$/, '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\\\${r}$`, 'i');
+    };
+    const walk = (dir, out = []) => { for (const e of ui.fs.readdir(dir)) { if (out.length >= 20000) break; if (e.isDir) walk(e.path, out); else out.push(e); } return out; };
+    const textOf = e => { if (e.size > 4 << 20) return null; const t = ui.fs.readText(e.path); return t.includes('\0') ? null : t; };
+    const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
     const FILES = {
-      files__read_file(a) {
-        const p = onC(a.path), st_ = ui.fs.stat(p); if (st_.isDir) not(`${p} is a folder: list_directory lists it.`);
+      Read(a) {
+        const p = onC(abs(a.file_path));
+        if (!ui.fs.exists(p)) not('File does not exist.');
+        if (ui.fs.stat(p).isDir) not(`EISDIR: illegal operation on a directory, read '${p}'`);
         const lines = ui.fs.readText(p).split(/\r?\n/), from = Math.max(1, a.offset || 1), n = Math.min(a.limit || 2000, 2000);
-        return lines.slice(from - 1, from - 1 + n).map((l, i) => `${from + i}\t${l}`).join('\n') || '(empty file)';
+        markRead(p);
+        if (lines.length === 1 && !lines[0]) return '<system-reminder>Warning: the file exists but the contents are empty.</system-reminder>';
+        return lines.slice(from - 1, from - 1 + n).map((l, i) => `${String(from + i).padStart(6)}\t${l.slice(0, 2000)}`).join('\n');
       },
-      files__list_directory(a) {
-        const p = onC(a.path || 'C:\\');
-        return ui.fs.readdir(p, a.pattern).map(e => `${e.isDir ? '[dir] ' : ''}${e.name}${e.isDir ? '' : `  ${e.size}`}`).join('\n') || '(empty folder)';
+      async Write(a) {
+        const p = onC(abs(a.file_path)); if (typeof a.content !== 'string') not('content: the file\'s text.');
+        const had = ui.fs.exists(p); mustHaveRead(p);
+        await mayWrite(had ? 'overwrite' : 'create', p);
+        p.split('\\').slice(1, -1).reduce((d, x) => { d = `${d}\\${x}`; if (!ui.fs.exists(d)) ui.fs.mkdir(d); return d; }, p.slice(0, 2));   // (its folders made, as Claude Code's Write makes them)
+        ui.fs.writeFile(p, a.content.replace(/\r?\n/g, '\r\n')); changed('write', p); markRead(p);
+        return had ? `The file ${p} has been updated successfully.` : `File created successfully at: ${p}`;
       },
-      async files__write_file(a) {
-        const p = onC(a.path); if (typeof a.content !== 'string') not('content: the file\'s text.');
-        await mayWrite(ui.fs.exists(p) ? 'overwrite' : 'create', p);
-        ui.fs.writeFile(p, a.content.replace(/\r?\n/g, '\r\n')); changed('write', p);
-        return `Wrote ${p}.`;
-      },
-      async files__edit_file(a) {
-        const p = onC(a.path), t = ui.fs.readText(p), k = t.split(a.old_string).length - 1;
-        if (!a.old_string || !k) not(`old_string is not in ${p}.`);
-        if (k > 1 && !a.replace_all) not(`old_string is in ${p} ${k} times: give more of it, or replace_all.`);
+      async Edit(a) {
+        const p = onC(abs(a.file_path));
+        if (!ui.fs.exists(p)) not('File does not exist.');
+        mustHaveRead(p);
+        if (a.old_string === a.new_string) not('No changes to make: old_string and new_string are exactly the same.');
+        const t = ui.fs.readText(p), k = a.old_string ? t.split(a.old_string).length - 1 : 0;
+        if (!k) not(`String to replace not found in file.\nString: ${a.old_string}`);
+        if (k > 1 && !a.replace_all) not(`Found ${k} matches of the string to replace, but replace_all is false. To replace all occurrences, set replace_all to true. To replace only one occurrence, please provide more context to uniquely identify the instance.\nString: ${a.old_string}`);
         await mayWrite('edit', p);
-        const out = a.replace_all ? t.split(a.old_string).join(a.new_string) : t.replace(a.old_string, () => a.new_string);
-        ui.fs.writeFile(p, out); changed('write', p);
-        return `Edited ${p}.`;
+        ui.fs.writeFile(p, a.replace_all ? t.split(a.old_string).join(a.new_string) : t.replace(a.old_string, () => a.new_string)); changed('write', p);
+        return `The file ${p} has been updated successfully.`;
+      },
+      Glob(a) {
+        const base = onC(abs(a.path || self.cwd || 'C:\\'));
+        if (!ui.fs.exists(base) || !ui.fs.stat(base).isDir) not(`Directory does not exist: ${base}`);
+        const re = wild(a.pattern || '', base), hits = walk(base).filter(e => re.test(e.path)).sort((x, y) => y.mtime - x.mtime);
+        if (!hits.length) return 'No files found';
+        return hits.slice(0, 100).map(e => e.path).join('\n') + (hits.length > 100 ? '\n(Results are truncated. Consider using a more specific path or pattern.)' : '');
+      },
+      Grep(a) {
+        const base = onC(abs(a.path || self.cwd || 'C:\\')), mode = a.output_mode || 'files_with_matches';
+        if (!ui.fs.exists(base)) not(`Path does not exist: ${base}`);
+        let re; try { re = new RegExp(String(a.pattern), (a['-i'] ? 'i' : '') + (a.multiline ? 's' : '')); } catch (e) { not(`Invalid regex: ${e.message}`); }
+        const only = a.glob ? wild(/[\\/]/.test(a.glob) ? a.glob : `**\\${a.glob}`, base) : null;
+        const files = (ui.fs.stat(base).isDir ? walk(base) : [ui.fs.stat(base)]).filter(e => !only || only.test(e.path));
+        const out = []; let total = 0;
+        for (const e of files) {
+          const t = textOf(e); if (t == null) continue;
+          const lines = t.split(/\r?\n/), hit = lines.flatMap((l, i) => re.test(l) ? [i] : []);
+          if (!hit.length) continue;
+          total += hit.length;
+          if (mode === 'files_with_matches') out.push(e);
+          else if (mode === 'count') out.push(`${e.path}:${hit.length}`);
+          else for (const i of hit) out.push(`${e.path}:${a['-n'] === false ? '' : `${i + 1}:`}${lines[i]}`);
+        }
+        const skip = a.offset || 0, cut = x => a.head_limit ? x.slice(skip, skip + a.head_limit) : x.slice(skip);
+        if (mode === 'files_with_matches') return out.length ? `Found ${plural(out.length, 'file')}\n${cut(out.sort((x, y) => y.mtime - x.mtime).map(e => e.path)).join('\n')}` : 'No files found';
+        if (!out.length) return 'No matches found';
+        return cut(out).join('\n') + (mode === 'count' ? `\n\nFound ${plural(total, 'total occurrence')} across ${plural(out.length, 'file')}.` : '');
       },
     };
     const S_ = (props, req) => ({ type: 'object', properties: props, required: req });
     const FILE_DEFS = [
-      { name: 'files__read_file', description: 'Read a text file on the C: drive (the system\'s own disk), its lines numbered. Other drives, network drives and shares are refused.', input_schema: S_({ path: { type: 'string', description: 'C:\\...' }, offset: { type: 'integer' }, limit: { type: 'integer' } }, ['path']) },
-      { name: 'files__list_directory', description: 'List a folder on the C: drive (folders marked [dir], files with their sizes).', input_schema: S_({ path: { type: 'string' }, pattern: { type: 'string', description: 'a wildcard, such as *.TXT' } }, ['path']) },
-      { name: 'files__write_file', description: 'Write a text file on the C: drive, replacing it if it is there. The session\'s permission mode decides whether the user is asked.', input_schema: S_({ path: { type: 'string' }, content: { type: 'string' } }, ['path', 'content']) },
-      { name: 'files__edit_file', description: 'Replace old_string with new_string in a text file on the C: drive (old_string must be in it once, unless replace_all).', input_schema: S_({ path: { type: 'string' }, old_string: { type: 'string' }, new_string: { type: 'string' }, replace_all: { type: 'boolean' } }, ['path', 'old_string', 'new_string']) },
+      { name: 'Read', description: 'Reads a file from the C: drive (the system\'s own disk). file_path is absolute (C:\\...) or relative to the session\'s folder. Reads up to 2000 lines from offset, in cat -n format with line numbers starting at 1. Other drives, network drives and shares are refused.', input_schema: S_({ file_path: { type: 'string', description: 'The path of the file to read' }, offset: { type: 'integer', description: 'The line number to start reading from' }, limit: { type: 'integer', description: 'The number of lines to read' } }, ['file_path']) },
+      { name: 'Write', description: 'Writes a file on the C: drive, overwriting it if it is there. An existing file must be Read first in this session. The session\'s permission mode decides whether the user is asked.', input_schema: S_({ file_path: { type: 'string', description: 'The path of the file to write' }, content: { type: 'string', description: 'The content to write to the file' } }, ['file_path', 'content']) },
+      { name: 'Edit', description: 'Performs exact string replacement in a file on the C: drive. The file must be Read first in this session. old_string must be unique in the file unless replace_all is true.', input_schema: S_({ file_path: { type: 'string', description: 'The path of the file to modify' }, old_string: { type: 'string', description: 'The text to replace' }, new_string: { type: 'string', description: 'The text to replace it with (must be different from old_string)' }, replace_all: { type: 'boolean', description: 'Replace all occurrences of old_string (default false)' } }, ['file_path', 'old_string', 'new_string']) },
+      { name: 'Glob', description: 'Finds files on the C: drive by glob pattern (such as **\\*.TXT or WINDOWS\\*.INI; case is ignored), newest first, at most 100.', input_schema: S_({ pattern: { type: 'string', description: 'The glob pattern to match files against' }, path: { type: 'string', description: 'The folder to search in (default: the session\'s folder)' } }, ['pattern']) },
+      { name: 'Grep', description: 'Searches the text files of a folder (or one file) on the C: drive for a JavaScript regular expression. output_mode: files_with_matches (the default), content (path:line:text) or count.', input_schema: S_({ pattern: { type: 'string', description: 'The regular expression to search for' }, path: { type: 'string', description: 'The file or folder to search in (default: the session\'s folder)' }, glob: { type: 'string', description: 'Only files matching this glob (such as *.INI)' }, output_mode: { type: 'string', enum: ['content', 'files_with_matches', 'count'] }, '-i': { type: 'boolean', description: 'Case insensitive search' }, '-n': { type: 'boolean', description: 'Line numbers in content mode (default true)' }, multiline: { type: 'boolean' }, head_limit: { type: 'integer', description: 'Only the first N results' }, offset: { type: 'integer', description: 'Skip the first N results' } }, ['pattern']) },
     ];
 
     // ---------------------------------------------------------------- the tools
@@ -1183,7 +1242,7 @@
             result = await T[server][tool](args);
           } catch (e) { if (!(e instanceof CcdError)) throw e; error = e.message; }
           ui.emit(`ccd.${server}.${tool}`, { args, result: error ? null : result, error });
-          if (server !== 'turn') { said(self, 'tool', `${server}.${tool}${error ? ' (refused)' : ''}`, { detail: `${JSON.stringify(args)}\n${error || (typeof result === 'string' ? result : '')}`.slice(0, 600) }); save('sessions'); ui.dirty(); }
+          if (server !== 'turn' && !agentCall) { said(self, 'tool', `${server}.${tool}${error ? ' (refused)' : ''}`, { detail: `${JSON.stringify(args)}\n${error || (typeof result === 'string' ? result : '')}`.slice(0, 600) }); save('sessions'); ui.dirty(); }
           if (error) throw new CcdError(error);
           return result;
         };
@@ -1200,18 +1259,37 @@
     api.toolDefs = () => [...Object.entries(SCHEMA).flatMap(([server, tools]) => Object.entries(tools).map(([tool, sc]) => ({
       name: `ccd_${server}__${tool}`, description: DESC[server][tool], input_schema: inputSchema(server, tool, sc),
     }))), ...FILE_DEFS];
-    api.callAs = async (sid, name, args) => {
+    api.callAs = async (sid, name, args, via) => {   // (via: the agent of the session's making the call, whose own steps show it)
       if (FILES[name]) {
         sync(); const was = self; self = byId(sid) || self; quiet = true; let result, error;
         try { return (result = await FILES[name](args || {})); } catch (e) { error = e.message; throw e; }
         finally {
-          said(self, 'tool', `files.${name.slice(7)}${error ? ' (refused)' : ''}`, { detail: `${JSON.stringify(args)}\n${error || String(result).slice(0, 300)}`.slice(0, 600) }); save('sessions'); ui.dirty();
+          if (!via) { said(self, 'tool', `${name}${error ? ' (refused)' : ''}`, { detail: `${JSON.stringify(args)}\n${error || String(result).slice(0, 300)}`.slice(0, 600) }); save('sessions'); ui.dirty(); }
+          ui.emit(`ccd.code.${name}`, { session: self.id, agent: via || null, args, result: error ? null : result, error: error || null });
           self = st.sessions.find(s => s.id === was.id) || was; quiet = false;
         }
       }
       const m = /^ccd_(\w+?)__(\w+)$/.exec(name); if (!m || !api[m[1]] || !api[m[1]][m[2]]) throw new CcdError(`No tool ${name}.`);
-      sync(); const was = self; self = byId(sid) || self; quiet = true;
-      try { return await api[m[1]][m[2]](args || {}); } finally { self = st.sessions.find(s => s.id === was.id) || was; quiet = false; }
+      sync(); const was = self; self = byId(sid) || self; quiet = true; agentCall = via || null;
+      try { return await api[m[1]][m[2]](args || {}); } finally { self = st.sessions.find(s => s.id === was.id) || was; quiet = false; agentCall = null; }
+    };
+    // what Claude Code puts in front of each request, from C:: the user's instructions (C:\WINDOWS\CLAUDE\CLAUDE.MD, as
+    // ~/.claude/CLAUDE.md), the project's (CLAUDE.MD in the session's folder and each folder above it), and the memory
+    // Claude keeps for itself (C:\WINDOWS\CLAUDE\MEMORY: its index MEMORY.MD), which it writes with Write and Edit, so
+    // what it learns changes its next request
+    api.HOME = 'C:\\WINDOWS\\CLAUDE';
+    api.context = sid => {
+      const s = byId(sid) || self, text = p => { try { return ui.fs.exists(p) && !ui.fs.stat(p).isDir ? ui.fs.readText(p).slice(0, 40000) : null; } catch (_) { return null; } };
+      const out = [], mem = `${api.HOME}\\MEMORY`;
+      const user = text(`${api.HOME}\\CLAUDE.MD`); if (user) out.push(`Contents of ${api.HOME}\\CLAUDE.MD (the user's own instructions for all projects):\n\n${user}`);
+      const dirs = []; for (let d = (s.cwd || 'C:\\').replace(/\\$/, ''); ; d = d.replace(/\\[^\\]*$/, '')) { dirs.unshift(d); if (!d.includes('\\')) break; }
+      for (const d of dirs) { const p = `${d}\\CLAUDE.MD`, t = text(p); if (t && p.toUpperCase() !== `${api.HOME}\\CLAUDE.MD`.toUpperCase()) out.push(`Contents of ${p} (project instructions):\n\n${t}`); }
+      const index = text(`${mem}\\MEMORY.MD`);
+      out.push(`# Memory\n\nYou have a persistent memory in ${mem} on C:. Each memory is one file holding one fact, with a first line naming it and a one-line description, then the fact; feedback and project memories add why and how to apply them. After writing one, add a one-line pointer to ${mem}\\MEMORY.MD (- [Title](FILE.MD) - hook), which is loaded into every request. Check for an existing memory before adding one, update rather than duplicate, delete one that turns out wrong. Save who the user is, guidance they give on how you should work, ongoing work, and pointers to resources; not what the files already record. Write makes the folder when it is not there.\n\n${index ? `Contents of ${mem}\\MEMORY.MD:\n\n${index}` : `${mem}\\MEMORY.MD is empty or not there yet.`}`);
+      // (the skills: each folder of SKILLS with a SKILL.MD, its description from its front matter, for the Skill tool)
+      const skills = []; try { for (const e of ui.fs.readdir(`${api.HOME}\\SKILLS`)) { const t = e.isDir && text(`${e.path}\\SKILL.MD`); if (t) skills.push(`- ${e.name.toLowerCase()}: ${((/^description:\s*(.+)$/m.exec(t) || [])[1] || t.split(/\r?\n/).find(l => l.trim() && l.trim() !== '---') || '').trim().slice(0, 300)}`); } } catch (_) { /* no skills */ }
+      if (skills.length) out.push(`The following skills are available for use with the Skill tool:\n\n${skills.join('\n')}`);
+      return out.join('\n\n');
     };
     api.open = () => openWindow();
     api.send = text => send(text);
