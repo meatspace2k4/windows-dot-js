@@ -260,7 +260,7 @@ class Process {
    *  take: #UD): the exception's continuation, or null for a stop of the emulator's own (trapped) */
   noCode(at) {
     const t = this.trapped || '';
-    (this.faultLog || (this.faultLog = [])).push({ at: u32(at).toString(16), why: t, esp: u32(this.cpu.esp.value).toString(16) }); if (this.faultLog.length > 50) this.faultLog.shift();   // (a diagnostic: cmd 'faults')
+    (this.faultLog || (this.faultLog = [])).push({ at: u32(at).toString(16), why: t, esp: u32(this.cpu.esp.value).toString(16), from: u32(this.lastBlock || 0).toString(16), cs: (this.cpu.cs.value & 0xffff).toString(16), ss: (this.cpu.ss.value & 0xffff).toString(16) }); if (this.faultLog.length > 50) this.faultLog.shift();   // (a diagnostic: cmd 'faults')
     if (/^run-time code/.test(t)) { console.warn(`[win32] ${t}`); this.trapped = null; return this.raise(6, at); }   // (an emulator gap: named)
     if (t && !/^jump to unmapped address/.test(t)) return null;
     this.trapped = null; return this.raise(14, at, at);

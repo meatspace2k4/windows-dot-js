@@ -2916,6 +2916,7 @@ function setupPrinting() {
   const cv = 'hklm\\software\\microsoft\\windows\\currentversion', str = v => ({ type: 1, data: W95FS.encode(v + '\0') });
   if (R.regGet(cv + '\\setup', 'SourcePath') === undefined) R.regSet(cv + '\\setup', 'SourcePath', str('D:\\WIN95\\'));   // LDID_SRCPATH
   if (R.regGet(cv, 'DevicePath') === undefined) R.regSet(cv, 'DevicePath', str(dir));
+  if (R.regGet(cv, 'MediaPath') === undefined) R.regSet(cv, 'MediaPath', str(join(WINDIR, 'MEDIA')));   // (the Sounds page lists the .WAV files there)
   if (R.regGet(cv, 'SetupFlags') === undefined) R.regSet(cv, 'SetupFlags', { type: 3, data: new Uint8Array([0, 1, 0, 0]) });
   const cls = 'hklm\\system\\currentcontrolset\\services\\class\\printer';
   if (R.regGet(cls, 'Installer') === undefined) infAddReg(infs['MSPRINT.INF'], 'ClassAddReg', cls);

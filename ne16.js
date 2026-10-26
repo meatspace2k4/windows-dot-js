@@ -3227,6 +3227,11 @@ const pdw = (p, pid, off) => {
 };
 def16('KERNEL', 485, 'li', 'l', function (pid, off) { return pdw(this, pid, off)[off] >>> 0; });
 def16('KERNEL', 484, 'lil', 'v', function (pid, off, v) { pdw(this, pid, off)[off] = v; });
+// GetModuleFileName32 (KERNEL.487: a 32-bit module's file, into a 16-bit buffer, its length), as USER asks for a
+// 32-bit module's file (a combo box's drop-down list in a 32-bit program's dialog: MMSYS.CPL's Sounds); KERNEL32's
+// GetModuleFileNameA answers it
+def16('KERNEL', 486, 'l', 'w', function () { return 1; });   // FreeLibrary32: the module stays, as KERNEL32's FreeLibrary keeps them here
+def16('KERNEL', 487, 'lpw', 'w', function (h, buf, n) { return window.W95Win32.API.KERNEL32.GetModuleFileNameA[1].call(this, h, buf, n) & 0xffff; });
 // MapProcessHandle: the id of the process a handle names (GetCurrentProcess's the caller's); an id is taken as it is
 def16('KERNEL', 483, 'l', 'l', function (h) {
   if (h === 0xffffffff) return this.thread16 && this.thread16.pc ? this.thread16.pc.pid : this.inSystem() ? SYS_PID : MAIN_PID;
