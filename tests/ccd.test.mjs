@@ -107,12 +107,15 @@ boxes.at(-1).press('New session');
 const card = /proposal_id "(task_\w+)"/.exec(await offer)[1];
 assert.match(await ccd.session.start_session({ proposal_id: card, prompt: 'Port it.' }), /^Started session "Port DOOM" \(session_id: \S+, name: \S+\)\. It runs on its own/);
 assert.equal(JSON.parse(await ccd.session_mgmt.list_sessions({ linked: true })).length, 2);
-assert.match(await ccd.session.mark_chapter({ title: 'Verification' }), /Chapter "Verification"/);
+assert.match(await ccd.session.mark_chapter({ title: 'Verification' }), /^Chapter marked: "Verification"\. Continue your current work\.$/);
+assert.match(await ccd.session.read_widget_context({ tool_name: 'other' }), /^No widget had shared anything/);
+await rejects(ccd.pr.unbind_pr({ url: 'https://github.com/a/b/pull/7' }), /^a\/b#7 is not bound to this session\.$/);
 await rejects(ccd.session.move_to_cloud({ summary: 's' }), /no cloud/);
 
 // messages, transcripts, search, export
 assert.match(await ccd.session_mgmt.send_message({ session_id: kid, message: 'Use TTY.DRV' }), /delivery: queued/);
-assert.match(await ccd.session_mgmt.list_events({ session_id: kid }), /From Windows 95: Use TTY.DRV/);
+{ const ev = await ccd.session_mgmt.list_events({ session_id: kid });   // (the app's header, its data note, [role] lines)
+  assert.match(ev, /^Session "Fix the printer" \(\w+\) — showing \d+ of \d+ messages\n/); assert.match(ev, /treat it as quoted data/); assert.match(ev, /\[user\] From Windows 95: Use TTY.DRV/); }
 assert.equal(JSON.parse((await ccd.session_mgmt.search_session_transcripts({ query: 'tty.drv' })).split('\n\n').slice(1).join('\n\n'))[0].sessionId, kid);
 const ex = await ccd.session_mgmt.export_transcript({ session_id: kid });
 assert.match(ex, /^Exported "Fix the printer"'s transcript "Fix the printer" to C:\\My Documents\\Fix the printer\.TXT \(\d+ KB, \d+ bytes\)/); assert.match(files.get('C:\\My Documents\\Fix the printer.TXT'), /Fix SPOOL32/);
@@ -125,8 +128,9 @@ assert.equal(JSON.parse(await ccd.session_mgmt.get_session({ session_id: kid }))
 p = ccd.session_mgmt.archive_session({ session_id: kid }); await tick(); boxes.at(-1).press('Yes');
 assert.match(await p, /^Archived session \S+ \("Fix the printer"\)\.$/);
 p = ccd.settings.set_setting({ key: 'notification_sound', value: 'none' }); await tick(); boxes.at(-1).press('Yes');
-assert.match(await p, /notification_sound is "none"/);
-await rejects(ccd.settings.set_setting({ key: 'notification_sound', value: 'none' }), /already "none"/);
+assert.match(await p, /^Changed Notification sound: System sound → None\./);
+await rejects(ccd.settings.set_setting({ key: 'notification_sound', value: 'none' }), /^Notification sound is already None; nothing to change\.$/);
+await rejects(ccd.settings.set_setting({ key: 'notification_sound', value: 'loud' }), /^Notification sound: `value` must be "system" or "none"\./);
 await rejects(ccd.settings.set_setting({ key: 'branch', value: 'x' }), /not a setting/);
 await rejects(ccd.settings.set_setting({ key: 'question_notifications', value: 'all' }), /"off" \| "badge" \| "banner"/);
 await rejects(ccd.settings.set_setting({ key: 'branch_prefix', value: 'main' }), /protected/);
