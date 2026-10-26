@@ -18,7 +18,7 @@
   const MODES = [['default', 'Ask permissions'], ['acceptEdits', 'Edit automatically'], ['plan', 'Plan mode'], ['auto', 'Auto'], ['bypassPermissions', 'Bypass permissions']];
   const VIEWS = ['normal', 'thinking', 'verbose'], PANES = ['plan', 'diff', 'tasks', 'files'];
   // menu commands past the bar's first ones: models 300+, efforts 310+, modes 320+, views 330+, panes 340+, the rest below
-  const CMD = { EXPORT: 203, ATTACH: 204, COPY_REPLY: 210, FORK: 211, REWIND: 212, CHAPTER: 213, FIND: 214, RENAME: 215, USAGE: 402, TERMINAL: 352, STOP: 372, SETTINGS: 205, SIDEBAR: 350, HIDE_NESTED: 391, CLOSE_PANE: 351, BACK: 360, FORWARD: 361, PREV: 362, NEXT_SESSION: 363, PIN: 370, ARCHIVE: 371,
+  const CMD = { EXPORT: 203, ATTACH: 204, COPY_REPLY: 210, FORK: 211, REWIND: 212, CHAPTER: 213, FIND: 214, RENAME: 215, USAGE: 402, TERMINAL: 352, STOP: 372, SETTINGS: 205, SUGGEST: 216, SIDEBAR: 350, HIDE_NESTED: 391, CLOSE_PANE: 351, BACK: 360, FORWARD: 361, PREV: 362, NEXT_SESSION: 363, PIN: 370, ARCHIVE: 371,
     CTX_PIN: 501, CTX_UNREAD: 502, CTX_ARCHIVE: 503, CTX_DELETE: 504, CTX_EXPORT: 505, CTX_UNGROUP: 599, CTX_GROUP: 600 };
   const app = { hwnd: 0, kid: {}, menu: 0, shown: null, dirty: false, bufs: new Map(), rows: [], raw: null, rawView: null, size: [560, 400], attach: [], ofn: null, aborts: {}, stopping: {}, queue: {}, nextSay: null };
 
@@ -132,7 +132,8 @@
     app.raw = regGet(KEY, 'sessions'); app.rawView = regGet(KEY, 'view'); app.rawCards = regGet(KEY, 'cards');
     showSessions(p);
     text(p, e, 'convo', t); U(p, 'SendMessageA', [e, 0xB1, t.length, t.length]); U(p, 'SendMessageA', [e, 0xB7, 0, 0]);   // EM_SETSEL, EM_SCROLLCARET: the end in view
-    text(p, app.kid[ID.STATUS], 'status', app.note || status(s)); app.note = null;   // (a note of the program's: once, then the status again)
+    const sg = s && app.suggestion && app.suggestion.sid === s.id && s.state !== 'working' ? app.suggestion.text : null;
+    text(p, app.kid[ID.STATUS], 'status', app.note || (sg ? `Suggested: "${sg}"  (Edit > Use Suggestion)` : status(s))); app.note = null;   // (a note of the program's: once, then the status again)
     text(p, app.hwnd, 'title', s ? `${s.title} - Claude` : 'Claude');
     // the task list, under the conversation
     const tl = app.kid[ID.TASKS]; U(p, 'SendMessageA', [tl, 0x184, 0, 0]);
@@ -157,7 +158,7 @@
     check(CMD.SIDEBAR, !v.sidebarCollapsed); check(CMD.PIN, s && s.pinned); check(CMD.HIDE_NESTED, v.hideNested);
     const sv = sideView(); GROUP_BY.forEach(([k], i) => check(380 + i, (sv.group_by === 'custom' ? 'none' : sv.group_by) === k));
     SORT_BY.forEach(([k], i) => check(385 + i, sv.sort_by === k)); STATUS.forEach(([k], i) => check(388 + i, sv.status === k));
-    enable(CMD.STOP, s && s.state === 'working'); text(p, app.kid[ID.SEND], 'send', s && s.state === 'working' ? 'S&top' : '&Send');   // (Send is Stop while Claude works; typing queues a message instead)
+    enable(CMD.SUGGEST, !!sg); enable(CMD.STOP, s && s.state === 'working'); text(p, app.kid[ID.SEND], 'send', s && s.state === 'working' ? 'S&top' : '&Send');   // (Send is Stop while Claude works; typing queues a message instead)
     enable(CMD.BACK, nav.back.length); enable(CMD.FORWARD, nav.fwd.length); enable(CMD.CLOSE_PANE, (v.panes || []).length);
     U(p, 'DrawMenuBar', [app.hwnd]);
     layout(p, ...app.size);
@@ -360,15 +361,31 @@
       x.state = failed ? 'failed' : x.next && x.next.blocked ? 'waiting' : 'idle';
     });
     if (!stopped) app.notify = fin && fin.next && fin.next.ask ? 'question' : 'task_complete';   // (told on the window's timer)
+    if (!stopped && !failed && fin && !(app.queue[sid] || []).length && record('settings', {}).prompt_suggestions !== false) suggest(fin);
     // (a message sent while Claude worked: its turn now, from the window's timer)
     if ((app.queue[sid] || []).length) app.nextSay = { sid, text: app.queue[sid].shift() };
     app.dirty = true;
+  }
+  // the prompt suggestion the app offers when a turn ends: the next thing the user is likely to send, asked of a small
+  // model with the end of the conversation; shown in the status line, and Edit > Use Suggestion puts it in the prompt
+  async function suggest(s) {
+    const tail = s.transcript.filter(m => (m.role === 'user' || m.role === 'assistant') && m.text).slice(-4).map(m => `${m.role === 'user' ? 'User' : 'Claude'}: ${m.text.slice(0, 1500)}`).join('\n\n');
+    if (!tail) return;
+    const ask_ = `Here is the end of a conversation between a user and Claude:\n\n${tail}\n\nWrite the message the user is most likely to send next, in their voice, under 12 words. Reply with only that message.`;
+    try {
+      const r = await fetch('__claude', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'claude-haiku-5-5', effort: 'low', messages: [{ role: 'user', content: ask_ }] }) });
+      if (!r.ok) return;
+      let out = ''; for (const l of (await r.text()).split('\n')) { if (!l) continue; const ev = JSON.parse(l); if (ev.t === 'text') out += ev.d; }
+      out = out.trim().replace(/^["']|["']$/g, '').split('\n')[0].slice(0, 120);
+      if (out && (current() || {}).id === s.id) { app.suggestion = { sid: s.id, text: out }; app.dirty = true; }
+    } catch (_) {}
   }
   // a message of the user's into the session, and the turn that answers it
   function say(p, t, sid) {
     let s = sid ? load().find(x => x.id === sid) : current(); if (!s) { const l = load(); s = fresh(); l.push(s); save(l); app.shown = s.id; }
     // (sent while Claude works: queued, as the app queues it, and sent when the turn ends)
     if (s.state === 'working') { (app.queue[s.id] = app.queue[s.id] || []).push(t); app.note = `Queued: sent when Claude finishes (${app.queue[s.id].length} waiting).`; showAll(p); return; }
+    if (app.suggestion && app.suggestion.sid === s.id) app.suggestion = null;
     // (the files attached go with it: named in the conversation, their text in the message Claude gets)
     const att = app.attach.splice(0), shown_ = att.length ? `${t}\n${att.map(a => `[Attached: ${a.path}]`).join('\n')}` : t;
     const blocks = att.length ? [{ type: 'text', text: t }, ...att.map(a => ({ type: 'text', text: `<attachment path="${a.path}">\n${a.text}\n</attachment>` }))] : undefined;
@@ -415,7 +432,7 @@
     const sub = (m, l) => U(p, 'AppendMenuA', [bar, 0x10, m, sz(p, `bar-${l}`, l)]);
     sub(pop([[ID.NEW, '&New Session'], [CMD.ATTACH, '&Attach File...'], [0, null], [CMD.SETTINGS, 'Se&ttings...'], [0, null], [CMD.EXPORT, '&Export Transcript'], [0, null], [ID.EXIT, 'E&xit']]), '&File');
     sub(pop([[CMD.COPY_REPLY, '&Copy Message'], [CMD.FIND, '&Find Next (the prompt\'s text)'], [0, null],
-      [CMD.FORK, 'F&ork from Here'], [CMD.REWIND, '&Rewind to Here'], [CMD.CHAPTER, '&Pin as Chapter'], [0, null], [CMD.RENAME, 'Re&name Session...']]), '&Edit');
+      [CMD.FORK, 'F&ork from Here'], [CMD.REWIND, '&Rewind to Here'], [CMD.CHAPTER, '&Pin as Chapter'], [0, null], [CMD.SUGGEST, 'Use &Suggestion'], [CMD.RENAME, 'Re&name Session...']]), '&Edit');
     sub(pop([[CMD.SIDEBAR, 'Side&bar'], [GROUP_BY.map(([, l], i) => [380 + i, l]), '&Group Sessions By'], [SORT_BY.map(([, l], i) => [385 + i, l]), '&Sort Sessions By'],
       [STATUS.map(([, l], i) => [388 + i, l]), 'Sho&w Sessions'], [CMD.HIDE_NESTED, '&Hide Nested Sessions'], [0, null],
       [VIEWS.map((x, i) => [330 + i, `${x[0].toUpperCase()}${x.slice(1)}`]), '&Transcript View'], [0, null],
@@ -543,6 +560,10 @@
       const at = msgAt(); if (!at) return done();
       U(p, 'SendMessageA', [select(at.from + at.head, at.to), 0x301, 0, 0]); app.note = `Copied the message (${s.transcript[at.k].role === 'user' ? 'yours' : 'Claude\'s'}).`;   // WM_COPY: the edit control's own clipboard copy
       return redraw();
+    }
+    if (c === CMD.SUGGEST && app.suggestion && app.suggestion.sid === sid) {   // the suggestion into the prompt, to send or change
+      const e = app.kid[ID.PROMPT], t = app.suggestion.text, n = ansi(t).length; app.suggestion = null;
+      text(p, e, 'prompt-suggest', t); U(p, 'SendMessageA', [e, 0xB1, n, n]); U(p, 'SetFocus', [e]); return redraw();
     }
     if (c === CMD.RENAME && s && !app.renaming) {   // Rename Session: a dialog of the program's (WM_APP+4: DialogBoxIndirectParamA), answered in RenameProc
       app.renaming = s.id; app.tpl = app.tpl || dialogTemplate(p, 'Rename Session', 212, 62, [
