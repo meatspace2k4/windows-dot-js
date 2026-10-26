@@ -621,6 +621,7 @@ function x87(f, b, o, A) {
   if (b === 0xdb) {
     if (r === 4 && i === 2) { f.gg('fsw').c(0x7f00).op('and').gs('fsw'); return; }                   // fnclex
     if (r === 4 && i === 3) { f.c(0).gs('ftop').c(0x37f).gs('fcw').c(0).gs('fsw'); return; }          // fninit
+    if (r === 4 && (i === 0 || i === 1 || i === 4)) return;                                               // feni, fdisi, fsetpm: the 8087's and 287's, nothing on a 387
     if (r === 5 || r === 6) { cmpi(i, false); return; }                                                // fucomi / fcomi
   }
   if (b === 0xdd) {

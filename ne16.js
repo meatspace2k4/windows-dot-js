@@ -157,6 +157,7 @@ P.refreshSegs = function () {
 
 // ---------------------------------------------------------------- NE modules
 const rd = { u16: (d, o) => d[o] | (d[o + 1] << 8), u32: (d, o) => (d[o] | (d[o + 1] << 8) | (d[o + 2] << 16) | (d[o + 3] << 24)) >>> 0 };
+const taskStack = n => n && Math.max(n, 0x1000);   // a task's stack in its DGROUP (at least 4K, as the loader gives one); a library has none
 P.loadNE = function (name, file, module, meta) {
   this.init16();
   const u8 = this.u8;
@@ -180,7 +181,7 @@ P.loadNE = function (name, file, module, meta) {
   rec.dgroup = meta.autodata ? meta.segs[meta.autodata - 1].sel : 0;
   rec.hInstance = rec.dgroup || rec.hModule;
   if (rec.dgroup) {   // DGROUP starts at its minimum allocation plus local heap and stack; the module grows it itself
-    const dg = meta.segs[meta.autodata - 1], init = Math.min(0x10000, ((dg.minalloc || 0x10000) + rd.u16(file, n + 0x10) + rd.u16(file, n + 0x12) + 15) & ~15);
+    const dg = meta.segs[meta.autodata - 1], init = Math.min(0x10000, ((dg.minalloc || 0x10000) + rd.u16(file, n + 0x10) + taskStack(rd.u16(file, n + 0x12)) + 15) & ~15);
     this.ghandles.set(rec.dgroup | 1, { lin: dg.base, size: init, n: 1, flags: 2, lock: 0, owner: rec.hModule });
     this.w32(L.LDT + (rec.dgroup & 0xfff8) + 4, init - 1);
   }
@@ -398,7 +399,7 @@ P.loadNEDynamic = function (key, file) {
   rec.dgroup = autodata ? segs[autodata - 1].sel : 0;
   rec.hInstance = rec.dgroup || rec.hModule;
   if (rec.dgroup) {
-    const dg = segs[autodata - 1], init = Math.min(0x10000, ((dg.minalloc || 0x10000) + h(0x10) + h(0x12) + 15) & ~15);
+    const dg = segs[autodata - 1], init = Math.min(0x10000, ((dg.minalloc || 0x10000) + h(0x10) + taskStack(h(0x12)) + 15) & ~15);
     this.ghandles.set(rec.dgroup | 1, { lin: dg.base, size: init, n: 1, flags: 2, lock: 0, owner: rec.hModule });
   }
   for (const sg of segs) if (sg.num !== autodata) this.ghandles.set(sg.sel | 1, { lin: sg.base, size: sg.alloc, n: 1, flags: 0, lock: 0, owner: rec.hModule, code: !(sg.flags & 1) });
@@ -659,7 +660,11 @@ const INTS = {
       case 0x2a: { const d = new Date(); this.cpu.ecx.value = lo16(this.cpu.ecx.value, d.getFullYear()); this.cpu.edx.value = lo16(this.cpu.edx.value, ((d.getMonth() + 1) << 8) | d.getDate()); this.ax((this.ax() & 0xff00) | d.getDay()); return; }
       case 0x2c: { const d = new Date(); this.cpu.ecx.value = lo16(this.cpu.ecx.value, (d.getHours() << 8) | d.getMinutes()); this.cpu.edx.value = lo16(this.cpu.edx.value, (d.getSeconds() << 8) | Math.floor(d.getMilliseconds() / 10)); return; }
       case 0x33: if (al === 6) { this.cpu.ebx.value = lo16(this.cpu.ebx.value, 0x0007); this.cpu.edx.value = lo16(this.cpu.edx.value, 0x1000); } else if (al === 0) this.cpu.edx.value &= ~0xff; return;   // true version 7.0, in HMA; Ctrl+Break checking off
-      case 0x44: if (al === 0) { this.cpu.edx.value = lo16(this.cpu.edx.value, 0x80); return; } if (al === 0x0d) return this.blockIoctl(); break;
+      case 0x44: if (al === 0) {   // a handle's information: a file's drive (bit 7 clear; VB3 refuses a name that opens a device), else a character device
+        const fh = this.dosFiles.get(this.cpu.ebx.value & 0xffff);
+        if (fh && !fh.dev && fh.path) { this.cpu.edx.value = lo16(this.cpu.edx.value, (fh.path.toUpperCase().charCodeAt(0) - 65) & 0x3f); return; }
+        if (!fh || !fh.dev) { this.cpu.edx.value = lo16(this.cpu.edx.value, 0x80); return; }
+      } if (al === 0x0d) return this.blockIoctl(); break;
       case 0x50: case 0x51: case 0x62: return;
       // the redirector's list of redirected devices (5F02h, BX the index): the drives MPR connects are the network
       // process's; none is redirected through DOS here, so the list is empty (18, no more entries)
@@ -2210,7 +2215,12 @@ P.loadError16 = function (name) {
   const n = f.length > 0x40 ? rd.u32(f, 0x3c) : 0;
   return f[0] === 0x4d && f[1] === 0x5a && n + 2 < f.length && f[n] === 0x50 && f[n + 1] === 0x45 ? 21 : 11;
 };
-def16('KERNEL', 95, 's', 'w', function (name) { const m = this.loadLibrary16(name); return m ? m.hInstance || m.hModule : this.loadError16(name); });    // LoadLibrary (KERNEL's: its module handle)
+def16('KERNEL', 95, 's', 'w', function (name) {    // LoadLibrary (KERNEL's: its module handle), a module from disk's LibEntry run as it loads
+  const m = this.loadLibrary16(name);
+  if (!m) { if (this.missing16) { console.warn(`[ne16] LoadLibrary ${name}: ${this.missing16} is not found`); this.missing16 = null; return 2; } return this.loadError16(name); }
+  if (m.meta && m.meta.dynamic && !m.inited) { m.inited = true; if (!this.initNE(m)) { console.warn(`[ne16] LoadLibrary ${name}: LibEntry failed`); return 20; } }
+  return m.hInstance || m.hModule;
+});
 def16('KERNEL', 96, 'w', 'v', function () {});                                                                     // FreeLibrary
 def16('KERNEL', 46, 'w', 'v', function () {});                                                                     // FreeModule
 def16('KERNEL', 93, 'x', 'l', function (fp) { const s = fp >>> 16; const b = this.gblock(s); return b ? u32((s << 16) | (s - 1)) : 0; });   // GetCodeHandle
@@ -3691,9 +3701,9 @@ def16('KERNEL', 45, 'sp', 'l', function (name, pb) {
   if (self.W95_TASK_OWN_PC !== false) t.pc = null;   // a Win16 task is the Win16 process's (the system's), whoever starts it (GRPCONV's PROGMAN), not a thread of its starter
   t.task = { psp: pspSel, hInst: rec.hInstance, show, stack: rd.u16(rec.file, hdr + 0x12), heap: rd.u16(rec.file, hdr + 0x10), dgroup: rec.dgroup, mod: rec };
   rec.taskModule = true;
-  // its DGROUP: the data, then the local heap, then the stack (SP its top)
+  // its DGROUP: the data, then the stack (SP its top), then the local heap InitTask makes at the segment's end
   const dg = m.segs[m.autodata - 1], data = dg ? (Math.max(dg.minalloc || 0, dg.len || 0) + 15) & ~15 : 0;
-  Object.assign(t.task, { heapLo: data, heapHi: data + t.task.heap, sp: Math.min(0xfff0, (data + t.task.heap + Math.max(t.task.stack, 0x1000) + 15) & ~15) });
+  Object.assign(t.task, { sp: Math.min(0xfff0, (data + taskStack(t.task.stack || 1) + 15) & ~15) });
   // the module's one DGROUP holds the stack of its first live task only: a second instance (MMSYSTEM starts MMTASK
   // more than once) keeps a stack of its own, as this loader gives each module one DGROUP, not one per instance
   t.task.dgStack = ![...this.threadsById.values()].some(x => x !== t && x.task && x.task.dgStack && x.task.dgroup === rec.dgroup && x.state !== 'done');
@@ -3734,11 +3744,13 @@ P.startTask16 = function (name) {
 def16('KERNEL', 91, '', 'jmp', function () {
   const k = this.thread16 && this.thread16.task;
   if (!k) { this.ax(0); return this.retf16(0); }
-  // the task's local heap and its stack's bounds in its DGROUP's header (pStackTop, pStackMin, pStackBottom)
+  // the task's local heap, LocalInit(DS, 0, heap size) as KRNL386's InitTask makes it: at the end of the DGROUP as it
+  // is now (VB3's startup has grown it and copied its runtime's data to its bottom), and its stack's bounds in the
+  // DGROUP's header from the caller's SP (pStackTop, pStackMin, pStackBottom)
   if (!k.inited && k.dgStack) {
-    k.inited = true; const ds = this.selBase(k.dgroup);
-    if (k.heap && !this.lheaps.has(k.dgroup | 1)) this.localInit(k.dgroup, k.heapLo, k.heapHi);
-    this.w16(ds + 0x0a, k.heapHi); this.w16(ds + 0x0c, k.sp); this.w16(ds + 0x0e, k.sp);
+    k.inited = true; const ds = this.selBase(k.dgroup), sp = ((this.cpu.esp.value & 0xffff) + 4) & 0xffff;
+    if (k.heap && !this.lheaps.has(k.dgroup | 1)) this.localInit(k.dgroup, 0, k.heap);
+    this.w16(ds + 0x0a, Math.max(0x10, sp - taskStack(k.stack || 1))); this.w16(ds + 0x0c, sp); this.w16(ds + 0x0e, sp);
   }
   this.ax(1); this.seg('es', k.psp); this.cpu.ebx.value = lo16(this.cpu.ebx.value, 0x81); this.cpu.ecx.value = lo16(this.cpu.ecx.value, k.stack);
   this.cpu.edx.value = lo16(this.cpu.edx.value, k.show); this.cpu.esi.value = lo16(this.cpu.esi.value, 0); this.cpu.edi.value = lo16(this.cpu.edi.value, k.hInst);
