@@ -871,8 +871,9 @@
         return JSON.stringify({ path: `${dir}\\${name}`, size: body.length });
       },
       get_usage(a) {
-        const s = a.session_id ? need(a.session_id) : self, used = s.transcript.reduce((n, m) => n + Math.ceil(m.text.length / 4), 0);
-        return JSON.stringify({ plan: { status: 'not_applicable', note: 'Windows 95 has no plan limits.' }, context: { session_id: s.id, tokens: used, percent: +(used / 2e4).toFixed(2) } });
+        // (the context the session's last request used, as the API counted it when the Claude program sent it; else estimated)
+        const s = a.session_id ? need(a.session_id) : self, u = s.usage, used = u && u.context ? u.context : s.transcript.reduce((n, m) => n + Math.ceil(m.text.length / 4), 0);
+        return JSON.stringify({ plan: { status: 'not_applicable', note: 'Windows 95 has no plan limits.' }, context: { session_id: s.id, tokens: used, percent: +(used / 2e4).toFixed(2), ...(u ? { measured: true, session_input_tokens: u.in, session_output_tokens: u.out, requests: u.requests } : {}) } });
       },
     };
     const builtins = [{ id: 'pinned', kind: 'pinned', name: '' }, { id: 'routines', kind: 'routines', name: '' }, { id: 'sessions', kind: 'sessions', name: '' }];
@@ -1083,6 +1084,8 @@
     api.open = () => openWindow();
     api.send = text => send(text);
     api.answer = (i = 0) => answer(byId(shown) || self, i);
+    // a file's text for the Claude program to attach to a prompt (File > Attach File): C: only, as the files tools read
+    api.readC = path => ui.fs.readText(onC(path));
     // a card's button pressed in the Claude program (a card no call waits for any more, kept from before: Start starts it)
     api.cardAnswer = (taskId, label) => {
       sync(); const f = cardWaits.get(taskId), card = st.cards.find(c => c.task_id === taskId);

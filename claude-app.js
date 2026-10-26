@@ -18,9 +18,9 @@
   const MODES = [['default', 'Ask permissions'], ['acceptEdits', 'Edit automatically'], ['plan', 'Plan mode'], ['auto', 'Auto'], ['bypassPermissions', 'Bypass permissions']];
   const VIEWS = ['normal', 'thinking', 'verbose'], PANES = ['plan', 'diff', 'tasks', 'files'];
   // menu commands past the bar's first ones: models 300+, efforts 310+, modes 320+, views 330+, panes 340+, the rest below
-  const CMD = { EXPORT: 203, COPY_REPLY: 210, FORK: 211, REWIND: 212, CHAPTER: 213, FIND: 214, RENAME: 215, SIDEBAR: 350, HIDE_NESTED: 391, CLOSE_PANE: 351, BACK: 360, FORWARD: 361, PREV: 362, NEXT_SESSION: 363, PIN: 370, ARCHIVE: 371,
+  const CMD = { EXPORT: 203, ATTACH: 204, COPY_REPLY: 210, FORK: 211, REWIND: 212, CHAPTER: 213, FIND: 214, RENAME: 215, USAGE: 402, SIDEBAR: 350, HIDE_NESTED: 391, CLOSE_PANE: 351, BACK: 360, FORWARD: 361, PREV: 362, NEXT_SESSION: 363, PIN: 370, ARCHIVE: 371,
     CTX_PIN: 501, CTX_UNREAD: 502, CTX_ARCHIVE: 503, CTX_DELETE: 504, CTX_EXPORT: 505, CTX_UNGROUP: 599, CTX_GROUP: 600 };
-  const app = { hwnd: 0, kid: {}, menu: 0, shown: null, dirty: false, bufs: new Map(), rows: [], raw: null, rawView: null, size: [560, 400] };
+  const app = { hwnd: 0, kid: {}, menu: 0, shown: null, dirty: false, bufs: new Map(), rows: [], raw: null, rawView: null, size: [560, 400], attach: [], ofn: null };
 
   // ---------------------------------------------------------------- the sessions (the scripting API's records)
   const load = () => { const v = regGet(KEY, 'sessions'); if (!v) return []; try { return JSON.parse(typeof v === 'string' ? v : FS.decode(v.data).replace(/\0.*$/, '')); } catch (_) { return []; } };
@@ -204,6 +204,18 @@
   // posted from the window's timer; with no window to ask in, the answer is No
   const asks = []; let asking = null;
   self.W95ClaudeAsk = m => { if (!app.hwnd) post({ t: 'ccdAnswer', id: m.id, yes: false }); else asks.push(m); };
+  // Opened(chosen): the Open dialog's answer (CLAUDE.EXE's WndProc on WM_APP+3): the file chosen is read (C: only, as the
+  // files tools read) and attached to the next prompt
+  def('CLAUDE', 'Opened', 1, function (r) {
+    const o = app.ofn; app.ofn = null; if (!o) return 0;
+    const path = this.readA(o.file); this.free(o.at); this.free(o.file); if (!r || !path) return 0;
+    page('@readC', { path }).then(out => {
+      if (out.error) app.note = `Not attached: ${out.error}`;
+      else { app.attach.push({ path, text: String(out.result) }); app.note = `Attached ${path} to the next message (${app.attach.length} file${app.attach.length === 1 ? '' : 's'}).`; }
+      app.dirty = true;
+    });
+    return 0;
+  });
   def('CLAUDE', 'Answer', 1, function (r) { if (asking) post({ t: 'ccdAnswer', id: asking.id, yes: r === 6 }); asking = null; return 0; });   // (IDYES)
 
   // ---------------------------------------------------------------- the reply: the Claude API through the page's server
@@ -242,7 +254,10 @@
           else if (ev.t === 'done') {
             // (a message whose content came back empty while text streamed, or one stopped short: kept as text, and said)
             const content = ev.content && ev.content.length ? ev.content : null;
-            put(content); update(sid, x => { const m = x.transcript.find(y => y.uuid === msgId); if (m) { m.stop = ev.stop; m.model = ev.model; } });
+            put(content); update(sid, x => {
+              const m = x.transcript.find(y => y.uuid === msgId); if (m) { m.stop = ev.stop; m.model = ev.model; }
+              const u = x.usage = x.usage || {}; u.in = (u.in || 0) + (ev.in || 0); u.out = (u.out || 0) + (ev.out || 0); u.context = (ev.in || 0) + (ev.out || 0); u.requests = (u.requests || 0) + 1;   // (Help > Usage, get_usage)
+            });
             if (!content || !['end_turn', 'tool_use', 'pause_turn'].includes(ev.stop)) update(sid, x => x.transcript.push({ uuid: id('msg'), t: Date.now(), role: 'system', text: `The reply stopped short (${ev.stop || 'no content'}${ev.model ? `, ${ev.model}` : ''}).` }));
             result = { stop: ev.stop, content: content || [] };
           }
@@ -276,7 +291,10 @@
   function say(p, t) {
     let s = current(); if (!s) { const l = load(); s = fresh(); l.push(s); save(l); app.shown = s.id; }
     if (s.state === 'working') return;
-    update(s.id, x => { x.transcript.push({ uuid: id('msg'), t: Date.now(), role: 'user', text: t }); x.state = 'working'; x.next = null; if (x.title === 'New session') x.title = t.slice(0, 48); });
+    // (the files attached go with it: named in the conversation, their text in the message Claude gets)
+    const att = app.attach.splice(0), shown_ = att.length ? `${t}\n${att.map(a => `[Attached: ${a.path}]`).join('\n')}` : t;
+    const blocks = att.length ? [{ type: 'text', text: t }, ...att.map(a => ({ type: 'text', text: `<attachment path="${a.path}">\n${a.text}\n</attachment>` }))] : undefined;
+    update(s.id, x => { x.transcript.push({ uuid: id('msg'), t: Date.now(), role: 'user', text: shown_, ...(blocks ? { blocks } : {}) }); x.state = 'working'; x.next = null; if (x.title === 'New session') x.title = t.slice(0, 48); });
     showAll(p); reply(s.id);
   }
   function send(p) {
@@ -310,7 +328,7 @@
       return m;
     };
     const sub = (m, l) => U(p, 'AppendMenuA', [bar, 0x10, m, sz(p, `bar-${l}`, l)]);
-    sub(pop([[ID.NEW, '&New Session'], [0, null], [CMD.EXPORT, '&Export Transcript'], [0, null], [ID.EXIT, 'E&xit']]), '&File');
+    sub(pop([[ID.NEW, '&New Session'], [CMD.ATTACH, '&Attach File...'], [0, null], [CMD.EXPORT, '&Export Transcript'], [0, null], [ID.EXIT, 'E&xit']]), '&File');
     sub(pop([[CMD.COPY_REPLY, '&Copy Message'], [CMD.FIND, '&Find Next (the prompt\'s text)'], [0, null],
       [CMD.FORK, 'F&ork from Here'], [CMD.REWIND, '&Rewind to Here'], [CMD.CHAPTER, '&Pin as Chapter'], [0, null], [CMD.RENAME, 'Re&name Session (to the prompt\'s text)']]), '&Edit');
     sub(pop([[CMD.SIDEBAR, 'Side&bar'], [GROUP_BY.map(([, l], i) => [380 + i, l]), '&Group Sessions By'], [SORT_BY.map(([, l], i) => [385 + i, l]), '&Sort Sessions By'],
@@ -321,7 +339,7 @@
     sub(pop([[MODES.map(([, n], i) => [320 + i, n]), 'Permission &Mode'], [0, null], [CMD.PIN, '&Pinned'], [CMD.ARCHIVE, '&Archive']]), '&Session');
     sub(pop(MODELS.map(([, n], i) => [300 + i, n])), 'M&odel');
     sub(pop(EFFORTS.map((e, i) => [310 + i, `${e[0].toUpperCase()}${e.slice(1)}`])), 'E&ffort');
-    sub(pop([[ID.ABOUT, '&About Claude']]), '&Help');
+    sub(pop([[CMD.USAGE, '&Usage'], [0, null], [ID.ABOUT, '&About Claude']]), '&Help');
     app.menu = bar;
     const h = U(p, 'CreateWindowExA', [0, cls, sz(p, 'title', 'Claude'), 0x10CF0000, 0x80000000, 0x80000000, 560, 400, 0, bar, inst, 0]);
     if (!h) return 0;
@@ -395,6 +413,18 @@
     if (c === ID.SEND || c === 1) { send(p); return done(); }                         // (IDOK: Enter in the prompt)
     if (c === ID.NEW) { newSession(p); return done(); }
     if (c === ID.EXIT) { U(p, 'PostMessageA', [h, WM.CLOSE, 0, 0]); return done(); }
+    if (c === CMD.ATTACH && !app.ofn) {   // the Open dialog, run by the program's WndProc (WM_APP+3): its answer comes to Opened
+      const o = app.ofn = { at: p.alloc(76), file: p.alloc(260) };
+      const filter = sz(p, 'ofn-filter', 'Text Files (*.txt)\0*.TXT\0All Files (*.*)\0*.*\0\0');
+      p.writeA(o.file, '');
+      for (const [k, v] of [[0, 76], [4, h], [12, filter], [24, 1], [28, o.file], [32, 260], [44, sz(p, 'ofn-dir', (current() || {}).cwd || 'C:\\')], [48, sz(p, 'ofn-title', 'Attach File')], [52, 0x1000 | 0x800 | 0x4]]) p.w32(o.at + k, v);   // OFN_FILEMUSTEXIST, OFN_PATHMUSTEXIST, OFN_HIDEREADONLY
+      U(p, 'PostMessageA', [h, 0x8003, 0, o.at]); return done();
+    }
+    if (c === CMD.USAGE) {   // the app's usage meter: what this session's requests used, as the API counted it
+      const u = (current() || {}).usage, n = x => x.toLocaleString('en-US');
+      text(p, app.kid[ID.STATUS], 'status', u ? `Usage: context ${n(u.context)} tokens  ·  this session ${n(u.in)} in, ${n(u.out)} out over ${u.requests} request${u.requests === 1 ? '' : 's'}  ·  no plan limits` : 'Usage: no requests in this session yet.');
+      return done();
+    }
     if (c === ID.ABOUT) { text(p, app.kid[ID.STATUS], 'status', 'Claude for Windows 95: the Claude desktop app, as a program of the system.'); return done(); }
     if (c === ID.ANSWER0 || c === ID.ANSWER1) { answer(p, c - ID.ANSWER0); return done(); }
     if (c === ID.CARD0 || c === ID.CARD1) { const cd = card(current()); if (cd) post({ t: 'ccdCard', task: cd.task_id, label: cd.buttons[c - ID.CARD0] }); return done(); }

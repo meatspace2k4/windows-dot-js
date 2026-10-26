@@ -11,9 +11,9 @@ import base64, json, os, struct, subprocess, sys, tempfile
 here = os.path.dirname(os.path.abspath(__file__)); root = os.path.dirname(here)
 BASE = 0x00570000      # its load base: a program base of its own (build_system.py PROGRAMS), the image's preferred base too
 LOOKUP = 0x07FF0000    # its block table, past the other programs'
-IMPORTS = [('CLAUDE.DLL', ['Start', 'Handle', 'Answer']), ('USER32.dll', ['GetMessageA', 'IsDialogMessageA', 'TranslateMessage', 'DispatchMessageA', 'DefWindowProcA', 'MessageBoxA',
+IMPORTS = [('CLAUDE.DLL', ['Start', 'Handle', 'Answer', 'Opened']), ('USER32.dll', ['GetMessageA', 'IsDialogMessageA', 'TranslateMessage', 'DispatchMessageA', 'DefWindowProcA', 'MessageBoxA',
                                                                            'TrackPopupMenu', 'DestroyMenu']),
-           ('KERNEL32.dll', ['ExitProcess'])]
+           ('COMDLG32.dll', ['GetOpenFileNameA']), ('KERNEL32.dll', ['ExitProcess'])]
 TEXT_RVA, IDATA_RVA, ALIGN, FALIGN = 0x1000, 0x2000, 0x1000, 0x200
 
 # ---------------------------------------------------------------- the import section, laid out first (the code calls through its IAT)
@@ -74,11 +74,18 @@ def text(iat):
     # WM_APP+2 (the menu in wp, the screen point at [lp], [lp+4]): a shortcut menu of the app's (a session's), tracked as
     # a program tracks one; its choice arrives as WM_COMMAND, and the menu is destroyed after
     label['popup'] = len(code)
-    emit(0x81, 0x7D, 0x0C); code.extend(struct.pack('<I', 0x8002)); jcc(0x85, 'handle')
+    emit(0x81, 0x7D, 0x0C); code.extend(struct.pack('<I', 0x8002)); jcc(0x85, 'open')
     emit(0x8B, 0x45, 0x14)                               # mov eax, [ebp+20]
     emit(0x6A, 0x00, 0xFF, 0x75, 0x08, 0x6A, 0x00, 0xFF, 0x70, 0x04, 0xFF, 0x30, 0x6A, 0x02, 0xFF, 0x75, 0x10)   # push 0; push hwnd; push 0; push y; push x; push TPM_RIGHTBUTTON; push menu
     call('TrackPopupMenu')
     emit(0xFF, 0x75, 0x10); call('DestroyMenu')
+    emit(0x31, 0xC0, 0xC9, 0xC2, 0x10, 0x00)
+    # WM_APP+3 (an OPENFILENAME at lp): a file to attach to the prompt, chosen in the system's Open dialog (COMDLG32's
+    # GetOpenFileNameA, a modal loop of its own); whether one was chosen goes to CLAUDE.DLL's Opened
+    label['open'] = len(code)
+    emit(0x81, 0x7D, 0x0C); code.extend(struct.pack('<I', 0x8003)); jcc(0x85, 'handle')
+    emit(0xFF, 0x75, 0x14); call('GetOpenFileNameA')     # push lp; GetOpenFileNameA(lp)
+    emit(0x50); call('Opened')                           # Opened(chosen)
     emit(0x31, 0xC0, 0xC9, 0xC2, 0x10, 0x00)
     label['handle'] = len(code)
     emit(0x8D, 0x45, 0xFC, 0x50)                         # lea eax, [ebp-4]; push eax (&result)
