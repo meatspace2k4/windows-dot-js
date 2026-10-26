@@ -11,12 +11,12 @@
   const KEY = 'hkcu\\software\\claude\\code';
   const WM = { DESTROY: 2, SIZE: 5, SETFONT: 0x30, COMMAND: 0x111, TIMER: 0x113, CLOSE: 0x10 };
   const ID = { SESSIONS: 101, CONVO: 102, PROMPT: 103, SEND: 104, STATUS: 105, NEXT: 106, ANSWER0: 107, ANSWER1: 108, TASKS: 109,
-    PANE0: 110, PANE0_TEXT: 111, PANE1: 112, PANE1_TEXT: 113, CARD: 114, CARD0: 115, CARD1: 116, NEW: 201, EXIT: 202, ABOUT: 401 };
+    PANE0: 110, PANE0_TEXT: 111, PANE1: 112, PANE1_TEXT: 113, CARD: 114, CARD0: 115, CARD1: 116, BURL: 117, BGO: 118, NEW: 201, EXIT: 202, ABOUT: 401 };
   const MODELS = [['claude-opus-5-5', 'Opus 5.5'], ['claude-sonnet-5-5', 'Sonnet 5.5'], ['claude-haiku-5-5', 'Haiku 5.5'], ['claude-fable-5-1', 'Fable 5.1']];
   const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
-  const PANE_TITLE = { terminal: 'Terminal', diff: 'Changes', preview: 'Preview', files: 'Files', side_chat: 'Side Chat', plan: 'Plan', tasks: 'Tasks' };
+  const PANE_TITLE = { terminal: 'Terminal', diff: 'Changes', preview: 'Browser', files: 'Files', side_chat: 'Side Chat', plan: 'Plan', tasks: 'Tasks' };
   const MODES = [['default', 'Ask permissions'], ['acceptEdits', 'Edit automatically'], ['plan', 'Plan mode'], ['auto', 'Auto'], ['bypassPermissions', 'Bypass permissions']];
-  const VIEWS = ['normal', 'thinking', 'verbose'], PANES = ['plan', 'diff', 'tasks', 'files'];
+  const VIEWS = ['normal', 'thinking', 'verbose'], PANES = ['plan', 'diff', 'tasks', 'files', 'preview'];
   // menu commands past the bar's first ones: models 300+, efforts 310+, modes 320+, views 330+, panes 340+, the rest below
   const CMD = { EXPORT: 203, ATTACH: 204, COPY_REPLY: 210, FORK: 211, REWIND: 212, CHAPTER: 213, FIND: 214, RENAME: 215, USAGE: 402, TERMINAL: 352, STOP: 372, SETTINGS: 205, SUGGEST: 216, SIDEBAR: 350, HIDE_NESTED: 391, CLOSE_PANE: 351, BACK: 360, FORWARD: 361, PREV: 362, NEXT_SESSION: 363, PIN: 370, ARCHIVE: 371,
     CTX_PIN: 501, CTX_UNREAD: 502, CTX_ARCHIVE: 503, CTX_DELETE: 504, CTX_EXPORT: 505, CTX_UNGROUP: 599, CTX_GROUP: 600 };
@@ -123,6 +123,12 @@
     if (p === 'tasks') { const kids = sessions().filter(x => x.startedBy === s.id); return kids.length ? kids.map(x => `${x.title}  (${x.state})`).join('\n') : 'No sessions started from this one.'; }
     if (p === 'files') return `${s.cwd}`;
     if (p === 'terminal') return 'MS-DOS Prompt runs in its own window.';
+    if (p === 'preview') {   // the page as text, its links numbered (type a link's number in the address to follow it)
+      const b = app.browser; if (!b) return 'Type an address above and press Go.';
+      if (b.loading) return `Loading ${b.loading}...`;
+      if (b.error) return `Cannot open ${b.want}: ${b.error}`;
+      return `${b.title || b.url}\n${b.url}\n\n${b.text}${b.links.length ? `\n\nLinks:\n${b.links.map((l, i) => `[${i + 1}] ${l}`).join('\n')}` : ''}`.slice(0, 30000);
+    }
     if (p === 'side_chat') return s.transcript.filter(m => m.side).map(m => `${m.role}: ${m.text}`).join('\n') || 'No side chat.';
     return '';
   }
@@ -148,6 +154,7 @@
     // the panes, at the right
     const panes = (v.panes || []).filter(x => PANE_TITLE[x]).slice(0, 2);
     panes.forEach((x, i) => { text(p, app.kid[i ? ID.PANE1 : ID.PANE0], `pane${i}`, PANE_TITLE[x]); text(p, app.kid[i ? ID.PANE1_TEXT : ID.PANE0_TEXT], `pane${i}t`, paneText(x, s)); });
+    if (app.browserUrl) { text(p, app.kid[ID.BURL], 'burl', app.browserUrl); app.browserUrl = null; }   // (where the page came from, after its redirects)
     // the menus' checks: the model, the effort, the mode, the view, the sidebar, the panes, the pin; Back and Forward
     const check = (k, on) => U(p, 'CheckMenuItem', [app.menu, k, on ? 8 : 0]), enable = (k, on) => U(p, 'EnableMenuItem', [app.menu, k, on ? 0 : 1]);
     MODELS.forEach(([m], i) => check(300 + i, s && s.model === m));
@@ -199,9 +206,11 @@
     [[ID.PANE0, ID.PANE0_TEXT], [ID.PANE1, ID.PANE1_TEXT]].forEach(([tk, ek], i) => {
       const on = i < panes.length; shown(p, tk, on); shown(p, ek, on); if (!on) return;
       const all = h - foot - pad, cut = panes.length > 1 ? Math.round(all * app.geo.split) : all;
-      const py = pad + (i ? cut : 0), ph = i ? all - cut : cut, px = w - P - pad;
-      mv(tk, px, py, P, 16); mv(ek, px, py + 18, P, ph - 18 - pad);
+      const py = pad + (i ? cut : 0), ph = i ? all - cut : cut, px = w - P - pad, bar = panes[i] === 'preview' ? 24 : 0;   // (the Browser's address bar under its title)
+      mv(tk, px, py, P, 16); mv(ek, px, py + 18 + bar, P, ph - 18 - bar - pad);
+      if (bar) { mv(ID.BURL, px, py + 18, P - 34, 21); mv(ID.BGO, px + P - 30, py + 18, 30, 21); }
     });
+    const br = panes.includes('preview'); shown(p, ID.BURL, br); shown(p, ID.BGO, br);
     mv(ID.STATUS, pad, h - foot + 2, w - 2 * pad, foot - 4);
   }
 
@@ -405,6 +414,23 @@
     if (!t) { const s = current(); if (s && s.state === 'working') stop(p, s.id); return; }   // (Send, with nothing typed while Claude works: Stop)
     text(p, e, 'prompt-clear', ''); say(p, t);
   }
+  // the Browser pane: the address typed (or a link's number on the page shown) fetched by the page's server as text
+  // (tools/serve.py /__fetch: this machine's own pages only)
+  function browse(p) {
+    const b = sz(p, 'burl-in', ' '.repeat(1024)); U(p, 'GetWindowTextA', [app.kid[ID.BURL], b, 1024]);
+    let want = p.readA(b).trim(); const cur = app.browser;
+    if (/^\d+$/.test(want)) {   // (a link's number on the page shown)
+      const l = cur && cur.links && cur.links[+want - 1];
+      if (!l) { app.note = `No link [${want}] on this page.`; text(p, app.kid[ID.BURL], 'burl', (cur && cur.url) || ''); showAll(p); return; }
+      want = l;
+    }
+    if (!want) return;
+    text(p, app.kid[ID.BURL], 'burl', want); app.browser = { loading: want }; showAll(p);
+    fetch('__fetch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: want }) })
+      .then(r => (r.ok ? r.json() : { error: r.status === 404 ? 'this page\'s server has no browser' : `HTTP ${r.status}` }))
+      .catch(e => ({ error: e.message }))
+      .then(r => { app.browser = r.error ? { error: r.error, want } : r; app.browserUrl = r.url || want; app.dirty = true; });
+  }
   // Stop: the request in progress ended, the tools not yet run answered as not run; the queue dropped
   function stop(p, sid) {
     app.stopping[sid] = true; app.queue[sid] = [];
@@ -469,6 +495,7 @@
     kid(ID.CARD, 'STATIC', 0, 0x200 | 0x80 | 0x4000); kid(ID.CARD0, 'BUTTON', 0, 0x10000); kid(ID.CARD1, 'BUTTON', 0, 0x10000);   // (the card: SS_CENTERIMAGE, SS_NOPREFIX)
     kid(ID.PANE0, 'STATIC', 0, 0); kid(ID.PANE0_TEXT, 'EDIT', 0x200, 0x00200000 | 4 | 0x800);
     kid(ID.PANE1, 'STATIC', 0, 0); kid(ID.PANE1_TEXT, 'EDIT', 0x200, 0x00200000 | 4 | 0x800);
+    kid(ID.BURL, 'EDIT', 0x200, 0x80 | 0x10000); kid(ID.BGO, 'BUTTON', 0, 0x10000, '&Go');   // (the Browser pane's address and Go)
     const rc = p.alloc(16); U(p, 'GetClientRect', [h, rc]); app.size = [p.r32(rc + 8), p.r32(rc + 12)]; p.free(rc);
     app.shown = (current() || {}).id || null; showAll(p);
     U(p, 'SetTimer', [h, 1, 150, 0]);   // (the reply arrives between the program's messages: shown on the timer)
@@ -568,6 +595,7 @@
     }
     if (msg !== WM.COMMAND) return 0;
     const c = wp & 0xffff, note = wp >>> 16;
+    if (c === ID.BGO || (c === 1 && U(p, 'GetFocus', []) === app.kid[ID.BURL])) { browse(p); return done(); }   // (Go, or Enter in the address)
     if (c === ID.SEND || c === 1) { send(p); return done(); }                         // (IDOK: Enter in the prompt)
     if (c === ID.NEW) { newSession(p); return done(); }
     if (c === ID.EXIT) { U(p, 'PostMessageA', [h, WM.CLOSE, 0, 0]); return done(); }

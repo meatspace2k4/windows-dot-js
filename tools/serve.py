@@ -131,8 +131,56 @@ def claude(h, q):
     except anthropic.APIConnectionError: line({'t': 'error', 'e': 'Could not reach the Claude API'})
     except (BrokenPipeError, ConnectionResetError): pass   # (the page went away)
 
+def page_text(html_s, base):
+    """a web page as the Claude program's Browser pane shows it: its title, its text in lines, its links numbered"""
+    import html.parser, urllib.parse
+    class P(html.parser.HTMLParser):
+        def __init__(s): super().__init__(convert_charrefs=True); s.out, s.title, s.links, s.skip, s.intitle, s.href = [], '', [], 0, False, None
+        def handle_starttag(s, t, a):
+            if t in ('script', 'style', 'noscript', 'svg', 'template'): s.skip += 1
+            elif t == 'title': s.intitle = True
+            elif t == 'a': s.href = dict(a).get('href')
+            if t in ('p', 'div', 'br', 'li', 'tr', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'section', 'article', 'header', 'footer', 'pre', 'blockquote'): s.out.append('\n')
+            if t == 'li': s.out.append('* ')
+        def handle_endtag(s, t):
+            if t in ('script', 'style', 'noscript', 'svg', 'template') and s.skip: s.skip -= 1
+            elif t == 'title': s.intitle = False
+            elif t == 'a' and s.href:
+                if len(s.links) < 300: s.links.append(urllib.parse.urljoin(base, s.href)); s.out.append(f' [{len(s.links)}]')
+                s.href = None
+            if t in ('p', 'div', 'li', 'tr', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'pre', 'blockquote'): s.out.append('\n')
+        def handle_data(s, d):
+            if s.skip: return
+            if s.intitle: s.title += d; return
+            s.out.append(d)
+    p = P(); p.feed(html_s)
+    text = re.sub(r'[ \t\r\f\v]+', ' ', ''.join(p.out)); text = re.sub(r' *\n[ \n]*', '\n\n', text).strip()
+    return {'title': p.title.strip(), 'text': text[:200000], 'links': p.links}
+def fetch_page(h, q):
+    import urllib.request, urllib.error
+    url = str(q.get('url', '')).strip()
+    if not re.match(r'^https?://', url, re.I): url = 'https://' + url if url and '://' not in url else url
+    if not re.match(r'^https?://[^/\s]+', url, re.I): r = {'error': 'Only http and https addresses.'}
+    else:
+        try:
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/4.0 (compatible; Windows 95; Claude)'})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                body = resp.read(2 << 20); ctype = resp.headers.get('Content-Type', ''); final = resp.geturl()
+            cs = (re.search(r'charset=([\w-]+)', ctype) or [None, 'utf-8'])[1]
+            s = body.decode(cs, 'replace')
+            r = {'url': final, **(page_text(s, final) if 'html' in ctype or s.lstrip()[:1] == '<' else {'title': final, 'text': s[:200000], 'links': []})}
+        except urllib.error.HTTPError as e: r = {'error': f'HTTP {e.code} {e.reason}'}
+        except Exception as e: r = {'error': str(e)[:200]}
+    b = json.dumps(r).encode()
+    h.send_response(200); h.send_header('Content-Type', 'application/json'); h.send_header('Cache-Control', 'no-store'); h.send_header('Content-Length', str(len(b))); h.end_headers(); h.wfile.write(b)
+
 class H(http.server.SimpleHTTPRequestHandler):
     def do_POST(self):   # /__share: the shares' list, an operation on one ({ ok } or { err }), and the host's name
+        if self.path.split('?')[0] == '/__fetch':   # (the Claude program's Browser pane: a web page as text, for this machine's own pages only)
+            if not local_request(self): self.send_error(403); return
+            try: q = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')
+            except ValueError: self.send_error(400); return
+            fetch_page(self, q); return
         if self.path.split('?')[0] == '/__claude':
             if not local_request(self): self.send_error(403); return
             try: q = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')
