@@ -102,6 +102,45 @@ await call('Runtime.addBinding', { name: '__w95event' })
 
 The binding stays registered across page reloads.
 
+## Claude Code tools
+
+`ccd` (ccd.js) has the Claude desktop app's own tools, the `mcp__ccd_*` servers: `ccd.<server>.<tool>(args)`, with the
+app tool's name and parameters, returning a promise of its answer (the app's text, or its JSON as a string). A call
+the app would refuse rejects with `ccd.Error` and its reason; a missing required field or a value outside an enum is
+refused the same way. Each acts on Windows 95's own equivalent of what it acts on in the app. Sessions, groups, cards
+and settings are kept in the registry (`HKCU\Software\Claude\Code`) and last as the registry does. The Claude window
+(the desktop's Claude icon, or `ccd.open()`) shows them: the sessions in its sidebar, and the shown session's tasks,
+transcript and next-step box. What the app asks the user about is asked in a message box, and the call waits for it.
+
+| Server | Tools | In Windows 95 |
+| --- | --- | --- |
+| `turn` | `update_plan`, `wrap_up` | the Claude window's task list and next-step box; its buttons are real buttons, so `click({ name })` presses one |
+| `session` | `start_session`, `dismiss_task`, `hand_off_to_session`, `mark_chapter`, `read_widget_context`, `list_start_targets`, `move_to_cloud` | sessions are records; a proposal or offer is a message box (Start / Dismiss, New session / Do it here); places are the drives; no cloud |
+| `session_mgmt` | `list_sessions`, `get_session`, `list_events`, `search_session_transcripts`, `archive_session`, `unarchive_session`, `delete_session`, `clear_session`, `stop_session`, `detach_session`, `set_session_title`, `set_session_model`, `set_session_effort`, `set_session_fast_mode`, `set_session_permission_mode`, `set_session_output_style`, `set_remote_control`, `send_message`, `export_transcript`, `get_usage` | the records and their transcripts; an export is `C:\My Documents\<title>.TXT` |
+| `sidebar` | `list_groups`, `create_group`, `rename_group`, `delete_group`, `list_sections`, `create_section`, `rename_section`, `delete_section`, `move_sessions`, `set_pinned`, `set_unread`, `mark_completed`, `set_view` | the Claude window's sidebar |
+| `view` | `show_pane`, `close_pane`, `get_layout`, `set_transcript_view` | `file` is Notepad, `terminal` an MS-DOS Prompt, `plan` the Claude window, `tasks` Close Program; `diff`, `pr`, `artifact` have none |
+| `window` | `get_window_layout`, `open_session_in`, `close_split`, `set_sidebar_collapsed` | the shell's windows; a split puts a session's window beside the Claude window |
+| `settings` | `get_settings`, `set_setting` | the app's keys; keep-awake holds off the screen saver |
+| `pr` | `get_status`, `bind_pr`, `unbind_pr`, `set_auto_merge`, `set_monitor` | no GitHub: no pull request |
+| `host` | `open_in_editor`, `reveal_path`, `request_keep_awake`, `get_storage_usage`, `sync_with_base_branch`, `clean_up_worktrees`, `discard_kept_worktree` | Notepad, the folder, the screen saver, the drives; no worktrees |
+| `directory` | `change_directory`, `request_directory` | the session's folder; without a path, Browse for Folder |
+| `connectors` | `session_connectors_status`, `set_session_connector_enabled`, `reconnect_session_connector` | the page's hosts: `shares`, `cd`, `network`, `sound` |
+
+| Call | Does |
+| --- | --- |
+| `ccd.open()` | opens the Claude window |
+| `ccd.answer(i = 0)` | presses the next-step box's button `i` |
+| `ccd.tools()` | the servers and their tools |
+| `ccd.state()` | the records: sessions, groups, cards, settings, view |
+
+| Event | Fields | When |
+| --- | --- | --- |
+| `ccd.<server>.<tool>` | `args`, `result`, `error` | a tool is called |
+| `ccd.answer` | `label`, `message`, `session` or `card`, `action` | the user answers a next-step box or a card |
+| `ccd.message` | `to`, `from`, `message`, `message_id` | `send_message` reaches a session |
+| `ccd.session.start`, `ccd.session.stop` | `session`, `title`, `prompt` | a session starts or is stopped |
+| `ccd.notify` | `kind` | a notification (a question, a finished task) |
+
 ## Exploring
 
 `node bench/explore.mjs [endpoint] [--minutes 10] [--depth 12]` drives the system with these calls only, clicking

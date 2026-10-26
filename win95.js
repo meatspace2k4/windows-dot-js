@@ -2388,6 +2388,7 @@ const SYS_ITEMS = () => [
   { key: 'sys:mc', label: 'My Computer', icon: 'mycomputer', virt: true, open: () => openFolder(MyComputer) },
   { key: 'sys:net', label: 'Network Neighborhood', icon: 'network', virt: true, open: () => { Network.refresh(); openFolder(Network); } },
   { key: 'sys:bin', label: 'Recycle Bin', icon: binItems().length ? 'recyclefull' : 'recycle', virt: true, open: () => openFolder(RecycleBin) },
+  { key: 'sys:claude', label: 'Claude', icon: 'app', virt: true, open: () => window.win95.ccd && window.win95.ccd.open() },
 ];
 const desk = {
   selKey: null, pos: new Map(), posVer: 0, cells: [], cache: null, lay: null, pending: null, src: null,
@@ -2582,8 +2583,9 @@ function saverIni() {
   return { path: g('SYSTEM.INI', 'boot', 'SCRNSAVE.EXE') || '', active: g('WIN.INI', 'windows', 'ScreenSaveActive') === '1',
     timeout: parseInt(g('WIN.INI', 'windows', 'ScreenSaveTimeOut') || '900', 10) || 900 };
 }
+let saverHeld = false;   // (a Claude session keeping the machine awake: win95.ccd's request_keep_awake)
 setInterval(() => {
-  if (fullSaver || screen !== 'desktop') return;
+  if (fullSaver || screen !== 'desktop' || saverHeld) return;
   const c = saverIni();
   if (c.active && c.path && performance.now() - lastInput >= c.timeout * 1000) startFullSaver(c.path);
 }, 1000);
@@ -4888,5 +4890,13 @@ const script = {
   },
 };
 
-window.win95 = { ...script, get nativeApps() { return [...nativeApps]; }, startSystem, get sysApp() { return sysApp; }, netBoot, netCall, syncNetDrives, mapNetDrive, disconnectNetDrive, fs, render, displayProperties, startFullSaver, get fullSaver() { return fullSaver; }, properties, driveProps, openFolder, openPath, shellOpen, notepad, msgBox, runDialog, findComputer, findFiles, winHelp, shutDownDialog, MyComputer, get state() { return { menus: menus.length, menuSrc, modals: modals.length, cap: !!cap, drag: !!drag, screen, active: active && active.title }; } };
+// the Claude desktop app's tools (ccd.js), made on first use: the registry they keep their records in is loaded by then
+let ccdApi = null;
+const ccdUi = () => ({
+  W95Win32, fs, emit, dirty, dialog, msgBox, openWin, closeWin, activate, notepad, runCommand, openPath, netBoot,
+  windows: () => windows, screen: script.screen, key: script.key, netUp: () => !!(netUp && netUp.alive), icon: 'app',
+  holdSaver: on => { saverHeld = !!on; if (on) lastInput = performance.now(); },
+  gfx: { K, fill, field, text, esc, wrap, textW, ellipsis, btnUp, btnDown, focusRect },
+});
+window.win95 = { ...script, get ccd() { return ccdApi || (ccdApi = window.W95Ccd ? window.W95Ccd(ccdUi()) : null); }, get nativeApps() { return [...nativeApps]; }, startSystem, get sysApp() { return sysApp; }, netBoot, netCall, syncNetDrives, mapNetDrive, disconnectNetDrive, fs, render, displayProperties, startFullSaver, get fullSaver() { return fullSaver; }, properties, driveProps, openFolder, openPath, shellOpen, notepad, msgBox, runDialog, findComputer, findFiles, winHelp, shutDownDialog, MyComputer, get state() { return { menus: menus.length, menuSrc, modals: modals.length, cap: !!cap, drag: !!drag, screen, active: active && active.title }; } };
 })();
