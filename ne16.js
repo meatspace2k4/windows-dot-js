@@ -297,12 +297,107 @@ P.loadNEFile = function (name) {
   for (const m of this.ne.values()) if (m.path === key) return m;
   const file = this.fs.readFile(full);
   if (file[0] !== 0x4d || file[1] !== 0x5a) return null;
-  const n = rd.u32(file, 0x3c); if (file[n] !== 0x4e || file[n + 1] !== 0x45 || rd.u16(file, n + 0x1c)) return null;
+  const n = rd.u32(file, 0x3c); if (file[n] !== 0x4e || file[n + 1] !== 0x45) return null;
+  if (rd.u16(file, n + 0x1c)) return this.loadNEDynamic(key, file);   // (a module with code: mapped as the loader maps one)
   const hdrLen = Math.min(file.length - n, 0x4000), mdb = this.alloc(hdrLen + 16);
   this.u8.set(file.subarray(n, n + hdrLen), mdb);
   const rec = { name: key, path: key, kind: 'ne', file, segs: [], exports: new Map(), names: {}, meta: null, dgroup: 0 };
   rec.hModule = rec.hInstance = this.allocSels(mdb, hdrLen);
   this.ne.set(key, rec);
+  return rec;
+};
+/** a 16-bit module nothing was recompiled for (a program or DLL the system bundle does not carry), mapped as
+ *  KRNL386's loader maps one: each segment in memory of its own with a selector (code execute/read, data read/write;
+ *  DGROUP 64K, its heap and stack to grow into), its relocations applied (references to its own segments and entries,
+ *  imports by ordinal or by name, chains and additive ones; an import reaches a native or JS module through the 16-bit
+ *  import thunks, another such module at its export), its entry table its exports; its code translated as it runs
+ *  (dyn.js: no module's text is there, the dispatcher sends it there) */
+P.loadNEDynamic = function (key, file) {
+  const n = rd.u32(file, 0x3c), h = o => rd.u16(file, n + o), shift = h(0x32) || 9;
+  const nseg = h(0x1c), segt = n + h(0x22), autodata = h(0x0e);
+  const pstr = at => String.fromCharCode(...file.subarray(at + 1, at + 1 + file[at]));
+  // names: the resident table (its first entry the module's name) and the non-resident one, each name -> ordinal
+  const names = {}; let modName = key.replace(/^.*\\/, '').replace(/\.[^.]*$/, '');
+  for (const [at, end] of [[n + h(0x26), n + h(0x28)], [rd.u32(file, n + 0x2c), rd.u32(file, n + 0x2c) + h(0x20)]]) {
+    for (let p = at, first = true; p < end && file[p]; p += 3 + file[p], first = false) { const s = pstr(p).toUpperCase(); if (first && at === n + h(0x26)) modName = s; else names[s] = rd.u16(file, p + 1 + file[p]); }
+  }
+  const name = modName.toUpperCase();
+  if (this.ne.has(name)) return this.ne.get(name);
+  // the modules it imports, by the module-reference table: each one there (loaded, the bundle's, a JS one, or a file
+  // in the program's folder or Windows'), or the module is not loaded, as KRNL386 refuses one whose DLL is missing
+  const mods = []; for (let i = 0; i < h(0x1e); i++) mods.push(pstr(n + h(0x2a) + rd.u16(file, n + h(0x28) + 2 * i)).toUpperCase());
+  const all = (window.W95SYSTEM && window.W95SYSTEM.ne) || {}, dir = key.slice(0, key.lastIndexOf('\\'));
+  const there = m => m === 'KERNEL' || JS16.includes(m) || this.ne.has(m) || all[m] || Object.values(all).some(s => s.meta && s.meta.name.toUpperCase() === m) ||
+    ['.DLL', '.EXE', '.DRV'].some(x => this.findFile16(m + x) || this.fs.exists(`${dir}\\${m}${x}`));
+  const missing = mods.find(m => !there(m));
+  if (missing) { this.missing16 = `${missing}.DLL`; console.warn(`[ne16] ${key}: ${missing}.DLL is not found`); return null; }
+  this.dirs16 = [...new Set([dir, ...(this.dirs16 || [])])].slice(0, 8);   // (its folder searched for its DLLs, as the program's own is)
+  const segs = [];
+  for (let i = 0; i < nseg; i++) {
+    const e = segt + 8 * i, off = rd.u16(file, e) << shift, len = rd.u16(file, e + 2) || (off ? 0x10000 : 0), flags = rd.u16(file, e + 4), minalloc = rd.u16(file, e + 6) || 0x10000;
+    const size = i + 1 === autodata ? 0x10000 : Math.max(len, minalloc, 1), base = this.alloc(size + 16);
+    const sel = this.allocSels(base, size, flags & 1 ? 0xf300 : 0xfb00);
+    if (len && off) this.u8.set(file.subarray(off, off + len), base);
+    segs.push({ num: i + 1, sel, base, len, alloc: size, minalloc: rd.u16(file, e + 6), flags, fileoff: off, rel: flags & 0x100 ? off + len : 0 });
+  }
+  // the entry table: ordinal -> segment:offset (fixed bundles name their segment, movable ones each entry's)
+  const exports = new Map();
+  for (let p = n + h(0x04), ord = 1, end = p + h(0x06); p < end && file[p];) {
+    const cnt = file[p], ind = file[p + 1]; p += 2;
+    if (ind === 0) { ord += cnt; continue; }
+    for (let k = 0; k < cnt; k++, ord++) {
+      if (ind === 0xff) { const sg = file[p + 3], off = rd.u16(file, p + 4); if (segs[sg - 1]) exports.set(ord, u32((segs[sg - 1].sel << 16) | off)); p += 6; }
+      else { const off = rd.u16(file, p + 1); if (segs[ind - 1]) exports.set(ord, u32((segs[ind - 1].sel << 16) | off)); p += 3; }
+    }
+  }
+  const meta = { name, base: segs.length ? segs[0].base : 0, segs, autodata, entry: [h(0x16), h(0x14)], exports: {}, names, imports: [], textLo: 0, textHi: 0, blocks: [], fixups: [], dynamic: true };
+  const rec = { name, path: key, kind: 'ne', base: meta.base, meta, file, segs, exports, names, run: null };
+  this.ne.set(name, rec); this.modules.push(rec); this.byName.set(name, rec);   // (before its imports: a module that imports this one back finds it)
+  meta.imports = mods;
+  const target = (mi, ordOrName) => {   // an import's far address: a module loaded here at its export, else its thunk
+    const mod = mods[mi - 1] || '?'; let ord = ordOrName;
+    const m = mod === 'KERNEL' ? null : this.loadLibrary16(mod, true);
+    if (!m && mod !== 'KERNEL' && !JS16.includes(mod)) throw Object.assign(new Error(`${mod}.DLL could not be loaded`), { missing16: this.missing16 || `${mod}.DLL` });   // (a DLL of its own that did not load: neither does it)
+    if (typeof ord === 'string') ord = (m && m.names && m.names[ord.toUpperCase()]) || (names16(mod) || {})[ord.toUpperCase()] || 0;
+    if (m && m.meta && m.meta.dynamic) { if (!m.inited && m !== rec) { m.inited = true; this.initNE(m); } return m.exports.get(ord) || 0; }   // (its LibEntry run as it is loaded)
+    return this.thunk16For(`${m && m.kind !== 'js' ? m.name : mod}.#${ord}`);
+  };
+  try { for (const sg of segs) {
+    if (!sg.rel) continue;
+    const cnt = rd.u16(file, sg.rel);
+    for (let k = 0; k < cnt; k++) {
+      const r = sg.rel + 2 + 8 * k, at = file[r], typ = file[r + 1], off = rd.u16(file, r + 2), a = rd.u16(file, r + 4), b = rd.u16(file, r + 6);
+      let v;
+      if ((typ & 3) === 0) { v = a & 0xff ? (a & 0xff) === 0xff ? exports.get(b) || 0 : u32((segs[(a & 0xff) - 1] ? segs[(a & 0xff) - 1].sel : 0) << 16 | b) : 0; }   // internal: segment and offset, or a movable entry's ordinal
+      else if ((typ & 3) === 1) v = target(a, b);
+      else if ((typ & 3) === 2) v = target(a, pstr(n + h(0x2a) + b));
+      else continue;   // OS fixups (the x87's emulation): the instructions as they are
+      const put = loc => {
+        const lin = sg.base + loc;
+        if (at === 0) this.u8[lin] = (typ & 4 ? this.u8[lin] : 0) + (v & 0xff);
+        else if (at === 2) this.w16(lin, v >>> 16);
+        else if (at === 3) this.w32(lin, typ & 4 ? u32(((v >>> 16) << 16) | ((this.r16(lin) + (v & 0xffff)) & 0xffff)) : v);
+        else if (at === 5) this.w16(lin, (typ & 4 ? this.r16(lin) : 0) + (v & 0xffff));
+      };
+      if (typ & 4) { put(off); continue; }
+      for (let loc = off, guard = 0; loc !== 0xffff && loc < sg.alloc && guard < 0x10000; guard++) { const next = this.r16(sg.base + loc); put(loc); loc = next; }   // (a chain: each place holds the next's offset)
+    }
+  } } catch (e) {
+    if (!e.missing16) throw e;
+    this.ne.delete(name); this.byName.delete(name); this.modules = this.modules.filter(x => x !== rec);   // (not loaded after all)
+    this.missing16 = e.missing16; console.warn(`[ne16] ${key}: ${e.missing16} is not found`); return null;
+  }
+  // its module database (a copy of its NE header) and handles, as loadNE makes them
+  const hdrLen = Math.min(file.length - n, 0x4000), mdb = this.alloc(hdrLen + 16);
+  this.u8.set(file.subarray(n, n + hdrLen), mdb);
+  rec.hModule = this.allocSels(mdb, hdrLen);
+  rec.dgroup = autodata ? segs[autodata - 1].sel : 0;
+  rec.hInstance = rec.dgroup || rec.hModule;
+  if (rec.dgroup) {
+    const dg = segs[autodata - 1], init = Math.min(0x10000, ((dg.minalloc || 0x10000) + h(0x10) + h(0x12) + 15) & ~15);
+    this.ghandles.set(rec.dgroup | 1, { lin: dg.base, size: init, n: 1, flags: 2, lock: 0, owner: rec.hModule });
+  }
+  for (const sg of segs) if (sg.num !== autodata) this.ghandles.set(sg.sel | 1, { lin: sg.base, size: sg.alloc, n: 1, flags: 0, lock: 0, owner: rec.hModule, code: !(sg.flags & 1) });
   return rec;
 };
 P.jsModule = function (name) {
@@ -2390,7 +2485,7 @@ P.dosNames = function (fn, lfn) {
 };
 P.findFile16 = function (name) {
   if (/^[a-z]:\\/i.test(name) || name.startsWith('\\')) return this.fs.exists(name) ? this.fs.realpath(name) : null;
-  for (const d of [this.fs.cwd, 'C:\\WINDOWS', 'C:\\WINDOWS\\SYSTEM']) { const f = window.W95FS.join(d, name); if (this.fs.exists(f)) return this.fs.realpath(f); }
+  for (const d of [this.fs.cwd, 'C:\\WINDOWS', 'C:\\WINDOWS\\SYSTEM', ...(this.dirs16 || [])]) { const f = window.W95FS.join(d, name); if (this.fs.exists(f)) return this.fs.realpath(f); }
   return null;
 };
 P.dosOpen = function (path, mode) {
@@ -3562,7 +3657,9 @@ def16('KERNEL', 150, 'w', 'v', function () { if (!this.atThreadTop()) this.threa
 // DI its instance, BX its stack size, CX its heap size). Errors as LoadLibrary's
 // AX the instance and, for a task, DX its task handle (as KRNL386 returns them; MMSYSTEM's mmTaskCreate takes DX)
 def16('KERNEL', 45, 'sp', 'l', function (name, pb) {
-  const rec = this.loadLibrary16(name, true, true); if (!rec || !rec.meta) return this.loadError16(name);
+  const rec = this.loadLibrary16(name, true, true);
+  if (!rec && this.missing16) { this.missing16 = null; return 2; }   // (a DLL it needs is missing: file not found, as KRNL386 answers)
+  if (!rec || !rec.meta) return this.loadError16(name);
   const hdr = rd.u32(rec.file, 0x3c), flags = rd.u16(rec.file, hdr + 0x0c);
   if (flags & 0x8000) { if (!rec.inited) { rec.inited = true; this.initNE(rec); } return rec.hInstance; }
   const psp = this.alloc(0x100), pspSel = this.allocSels(psp, 0x100);

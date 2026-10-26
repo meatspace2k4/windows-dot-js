@@ -483,7 +483,11 @@ class Machine {
   spawnProgram(file, arg) {
     const S = self.W95SYSTEM || {}, p = this.proc;
     if (/\.SCR$/i.test(file)) return this.spawnSaver(file, arg || '');
-    const name = basename(file).toUpperCase(), d = (S.programs || {})[name] || this.dynProgram(file); if (!d) return 11;
+    const name = basename(file).toUpperCase(), d = (S.programs || {})[name] || this.dynProgram(file);
+    // (a Windows 3.x program the bundle does not carry: started as WinExec starts one, its module mapped by KERNEL's
+    // loader and its code translated as it runs, ne16.js loadNEDynamic)
+    if (!d && this.isNE(file)) { const r = p.winExec16(fs.realpath(file), arg || '', 1); this.kick(); return r > 32 ? { ok: true } : r; }
+    if (!d) return 11;
     if (p.pc0 && p.pc0.exe && p.pc0.exe.base === d.meta.base) return 8;   // (the machine's own program: one instance)
     const live = [...(p.procs || new Map()).values()].some(x => x.exe.base === d.meta.base);   // (then the instances share its image: P.spawn)
     if (!live) p.modules = p.modules.filter(x => x.base !== d.meta.base);
@@ -499,6 +503,11 @@ class Machine {
   // a Win32 program the bundle does not carry: its image as the loader maps one (the base its header prefers when
   // nothing is there, else, when it can be relocated, in the arena the bundle's images leave free), its code translated
   // as it runs (dyn.js); null when it is no Win32 program or has no room
+  isNE(file) {
+    let f; try { f = fs.readFile(file); } catch (_) { return false; }
+    if (f.length < 0x40 || f[0] !== 0x4d || f[1] !== 0x5a || (f[0x18] | f[0x19] << 8) < 0x40) return false;
+    const at = (f[0x3c] | f[0x3d] << 8 | f[0x3e] << 16 | f[0x3f] << 24) >>> 0; return at + 2 <= f.length && f[at] === 0x4e && f[at + 1] === 0x45;
+  }
   dynProgram(file) {
     let f; try { f = fs.readFile(file); } catch (_) { return null; }
     const dv = new DataView(f.buffer, f.byteOffset, f.byteLength);

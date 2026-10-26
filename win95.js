@@ -3210,6 +3210,8 @@ function installPrograms() {
   if (DOS && DOS.files['WINDOWS\\WIN.COM']) put(join(WINDIR, 'WIN.COM'), DOS.files['WINDOWS\\WIN.COM']);
   // the MS-DOS programs, in C:\WINDOWS\COMMAND (LDID_COMMAND)
   if (DOS && DOS.command) { fs.mkdir(join(WINDIR, 'COMMAND'), { recursive: true }); for (const [n, d] of Object.entries(DOS.command)) put(join(WINDIR, 'COMMAND', n), d); }
+  // the Windows 3.x runtime libraries, in SYSTEM (WIN87EM, NDDEAPI, OLE, WINSOCK: tools/build_dos.py)
+  if (DOS && DOS.system) for (const [n, d] of Object.entries(DOS.system)) put(join(WINDIR, 'SYSTEM', n), d);
 }
 class NativeWin extends Win {
   constructor(app, n) {
@@ -3596,7 +3598,7 @@ async function runNative(path, arg, o = {}) {
   let bytes; try { bytes = fs.readFile(path); } catch (e) { return false; }
   // (a Win32 program the bundle does not carry runs too: the system's machine maps it and translates its code as it
   // runs; worker.js dynProgram)
-  const prog = await nativeProgram(bytes); if (!prog && exeKind(bytes) !== 'pe') return false;
+  const prog = await nativeProgram(bytes); if (!prog && exeKind(bytes) !== 'pe' && exeKind(bytes) !== 'ne') return false;
   // in the system's machine, as Windows 95 runs every program on its one USER and its one set of drivers; a second
   // instance of a program (whose image's place there is taken) gets a machine of its own
   if (!o.apart) {
@@ -3604,7 +3606,10 @@ async function runNative(path, arg, o = {}) {
     if (sys) {
       let r = sys.spawnProgram(path, arg); if (r && r.then) r = await r;
       if (r && (r.ok || (typeof r === 'object' && !('err' in r)))) return true;
-      const err = r && typeof r === 'object' ? r.err : r; if (err !== 8) return false;
+      const err = r && typeof r === 'object' ? r.err : r;
+      // (a program whose DLL is missing: ShellExecute's own words for LoadModule's error 2)
+      if (err === 2) { msgBox(basename(path), `Cannot find the file '${path}' (or one of its components). Make sure the path and filename are correct and that all required libraries are available.`, 'error'); return true; }
+      if (err !== 8) return false;
     }
   }
   if (!prog) return false;
