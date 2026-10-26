@@ -3059,10 +3059,12 @@ async function nativeProgram(bytes) {
 // the files the bundle carries for programs replace the placeholders an older disk has for them
 function installPrograms() {
   const stub = exeStub(), S = window.W95SYSTEM || {};
+  const OURS = new Set(['CLAUDE.EXE']);   // (a program of this project's: its file is the one its translation is of, kept current)
   const put = (path, b64) => {
     let cur = null; try { cur = fs.readFile(path); } catch (_) { /* not there */ }
-    if (cur && !(cur.length === stub.length && cur.every((b, i) => b === stub[i]))) return;
-    fs.writeFile(path, b64bytes(b64));
+    const want = OURS.has(basename(path).toUpperCase()) ? b64bytes(b64) : null;
+    if (cur && !(cur.length === stub.length && cur.every((b, i) => b === stub[i])) && !(want && !(cur.length === want.length && cur.every((b, i) => b === want[i])))) return;
+    fs.writeFile(path, want || b64bytes(b64));
   };
   const IN_SYSTEM = new Set(['SPOOL32.EXE', 'SYSTRAY.EXE', 'MPREXE.EXE']);   // the programs Setup puts in SYSTEM rather than the Windows folder (COPY.INF: LDID 11; MPR starts MPREXE from there)
   for (const [name, d] of Object.entries(S.programs || {})) if (!d.onCD) put(join(WINDIR, IN_SYSTEM.has(name) ? 'SYSTEM' : '', name), d.file);   // (one the CD runs from the disc: Hover!)

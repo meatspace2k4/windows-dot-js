@@ -120,10 +120,11 @@
   function newSession(p) { const l = load(), s = fresh(); l.push(s); save(l); app.shown = s.id; showSessions(p); showConvo(p); }
 
   // ---------------------------------------------------------------- the program's entry and its window procedure
-  def('CLAUDE', 'Start', 0, function () {
+  // Start(wndproc): the window, of a class whose procedure is the program's own (CLAUDE.EXE's WndProc, which asks Handle)
+  def('CLAUDE', 'Start', 1, function (wndproc) {
     const p = this, inst = p.call(p.thunkFor('KERNEL32', 'GetModuleHandleA'), [0]);   // (the program's instance, as it asks for it)
     const cls = sz(p, 'class', 'ClaudeWindow'), wc = p.alloc(40);
-    for (const [o, v] of [[0, 3], [4, p.thunkFor('CLAUDE', 'WndProc')], [8, 0], [12, 0], [16, inst], [20, U(p, 'LoadIconA', [0, 32512])], [24, U(p, 'LoadCursorA', [0, 32512])], [28, 16], [32, 0], [36, cls]]) p.w32(wc + o, v);
+    for (const [o, v] of [[0, 3], [4, wndproc], [8, 0], [12, 0], [16, inst], [20, U(p, 'LoadIconA', [0, 32512])], [24, U(p, 'LoadCursorA', [0, 32512])], [28, 16], [32, 0], [36, cls]]) p.w32(wc + o, v);
     U(p, 'RegisterClassA', [wc]);
     // the menu bar
     const bar = U(p, 'CreateMenu', []), pop = items => { const m = U(p, 'CreatePopupMenu', []); for (const [i, l] of items) U(p, 'AppendMenuA', [m, l ? 0 : 0x800, i, l ? sz(p, `menu${i}`, l) : 0]); return m; };
@@ -152,25 +153,26 @@
     U(p, 'SetFocus', [app.kid[ID.PROMPT]]);
     return h;
   });
-  def('CLAUDE', 'WndProc', 4, function (h, msg, wp, lp) {
-    const p = this;
-    if (h === app.hwnd) {
-      if (msg === WM.SIZE) { layout(p, lp & 0xffff, lp >>> 16); return 0; }
-      if (msg === WM.TIMER) { if (app.dirty) { app.dirty = false; showConvo(p); showSessions(p); } return 0; }
-      if (msg === WM.DESTROY) { U(p, 'KillTimer', [h, 1]); app.hwnd = 0; app.kid = {}; U(p, 'PostQuitMessage', [0]); return 0; }
-      if (msg === WM.COMMAND) {
-        const c = wp & 0xffff, note = wp >>> 16;
-        if (c === ID.SEND || c === 1) { send(p); return 0; }                         // (IDOK: Enter in the prompt)
-        if (c === ID.NEW) { newSession(p); return 0; }
-        if (c === ID.EXIT) { U(p, 'DestroyWindow', [h]); return 0; }
-        if (c === ID.ABOUT) { U(p, 'MessageBoxA', [h, sz(p, 'about', 'Claude for Windows 95\n\nThe Claude desktop app, as a program of the system.'), sz(p, 'about-t', 'About Claude'), 0x40]); return 0; }
-        if (c >= 300 && c < 300 + MODELS.length) { const s = current(); if (s) update(s.id, x => { x.model = MODELS[c - 300][0]; }); showConvo(p); return 0; }
-        if (c >= 310 && c < 310 + EFFORTS.length) { const s = current(); if (s) update(s.id, x => { x.effort = EFFORTS[c - 310]; }); showConvo(p); return 0; }
-        if (c === ID.SESSIONS && note === 1) {                                           // LBN_SELCHANGE
-          const k = U(p, 'SendMessageA', [app.kid[ID.SESSIONS], 0x188, 0, 0]), s = sessions()[k]; if (s) { app.shown = s.id; showConvo(p); } return 0;
-        }
-      }
+  // Handle(hwnd, msg, wp, lp, &result): 1 with the result written for a message that is Claude's, else 0 (the program's
+  // WndProc passes those to DefWindowProcA itself). Nothing here waits on messages of its own (no DefWindowProcA, no
+  // MessageBoxA: a call from here runs to its end without giving the processor back)
+  def('CLAUDE', 'Handle', 5, function (h, msg, wp, lp, res) {
+    const p = this, done = (v = 0) => { p.w32(res, v); return 1; };
+    if (h !== app.hwnd) return 0;
+    if (msg === WM.SIZE) { layout(p, lp & 0xffff, lp >>> 16); return done(); }
+    if (msg === WM.TIMER) { if (app.dirty) { app.dirty = false; showConvo(p); showSessions(p); } return done(); }
+    if (msg === WM.DESTROY) { U(p, 'KillTimer', [h, 1]); app.hwnd = 0; app.kid = {}; U(p, 'PostQuitMessage', [0]); return done(); }
+    if (msg !== WM.COMMAND) return 0;
+    const c = wp & 0xffff, note = wp >>> 16;
+    if (c === ID.SEND || c === 1) { send(p); return done(); }                         // (IDOK: Enter in the prompt)
+    if (c === ID.NEW) { newSession(p); return done(); }
+    if (c === ID.EXIT) { U(p, 'PostMessageA', [h, WM.CLOSE, 0, 0]); return done(); }
+    if (c === ID.ABOUT) { text(p, app.kid[ID.STATUS], 'status', 'Claude for Windows 95: the Claude desktop app, as a program of the system.'); return done(); }
+    if (c >= 300 && c < 300 + MODELS.length) { const s = current(); if (s) update(s.id, x => { x.model = MODELS[c - 300][0]; }); showConvo(p); return done(); }
+    if (c >= 310 && c < 310 + EFFORTS.length) { const s = current(); if (s) update(s.id, x => { x.effort = EFFORTS[c - 310]; }); showConvo(p); return done(); }
+    if (c === ID.SESSIONS && note === 1) {                                           // LBN_SELCHANGE
+      const k = U(p, 'SendMessageA', [app.kid[ID.SESSIONS], 0x188, 0, 0]), s = sessions()[k]; if (s) { app.shown = s.id; showConvo(p); } return done();
     }
-    return U(p, 'DefWindowProcA', [h, msg, wp, lp]);
+    return 0;
   });
 })();
