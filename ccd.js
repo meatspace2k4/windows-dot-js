@@ -931,8 +931,11 @@
         closePane(p); return `Closed the ${PANE_TITLE[p]} pane.`;
       },
       get_layout() {
-        const open = win && ui.windows().includes(win);
-        return JSON.stringify({ views: open ? [{ where: splits.length ? 'split' : 'main', window: 'Claude' }] : [], open_panes: open ? panesOpen.slice() : [], popped_out_panes: [], transcript_view: self.view });
+        sync();
+        const open = win && ui.windows().includes(win), prog = ui.windows().some(w => w.native && / - Claude$|^Claude$/.test(w.title || ''));   // (the page's window, or CLAUDE.EXE's)
+        const progPanes = ((st.view.ui || {}).panes || []).slice(0, 2);
+        return JSON.stringify({ views: open || prog ? [{ where: open && splits.length ? 'split' : 'main', window: open ? 'Claude' : 'CLAUDE.EXE' }] : [],
+          open_panes: open ? panesOpen.slice() : prog ? progPanes : [], popped_out_panes: [], transcript_view: self.view });
       },
       set_transcript_view(a) {
         const s = a.session_id ? need(a.session_id) : self; if (s !== self && s.startedBy !== self.id) not('Only this session or a side session it started.');

@@ -169,7 +169,13 @@
     app.size = [w, h];
     if (!app.kid[ID.SEND]) return;
     const s = current(), v = ui(), n = s && s.next, plan = (s && s.plan) || [], panes = (v.panes || []).filter(x => PANE_TITLE[x]).slice(0, 2);
-    const pad = 6, foot = 20, row = 24, L = v.sidebarCollapsed ? 0 : 160, P = panes.length ? Math.min(220, Math.floor(w / 3)) : 0;
+    // (the sidebar's and the panes' widths and the panes' split: as dragged (app.drag, while the button is down), else as
+    // kept in the view; the chat column keeps 160 at least)
+    const g = Object.assign({}, v, app.drag ? app.drag.v : {});
+    const pad = 6, foot = 20, row = 24, room = Math.max(0, w - 160 - 4 * pad);
+    const L = v.sidebarCollapsed ? 0 : Math.max(80, Math.min(g.sidebarW || 160, room - (panes.length ? 120 : 0)));
+    const P = panes.length ? Math.max(120, Math.min(g.paneW || Math.min(220, Math.floor(w / 3)), room - L)) : 0;
+    app.geo = { L, P, pad, foot, w, h, n: panes.length, split: Math.max(0.2, Math.min(0.8, g.paneSplit || 0.5)) };
     const x0 = L + pad, cw = w - x0 - pad - (P ? P + pad : 0);
     const mv = (k, x, y, ww, hh) => U(p, 'MoveWindow', [app.kid[k], x, y, Math.max(0, ww), Math.max(0, hh), 1]);
     shown(p, ID.SESSIONS, !v.sidebarCollapsed); if (!v.sidebarCollapsed) mv(ID.SESSIONS, pad, pad, L - pad, h - 2 * pad - foot);
@@ -192,7 +198,8 @@
     mv(ID.CONVO, x0, pad, cw, y - 2 * pad);
     [[ID.PANE0, ID.PANE0_TEXT], [ID.PANE1, ID.PANE1_TEXT]].forEach(([tk, ek], i) => {
       const on = i < panes.length; shown(p, tk, on); shown(p, ek, on); if (!on) return;
-      const ph = Math.floor((h - foot - pad) / panes.length), py = pad + i * ph, px = w - P - pad;
+      const all = h - foot - pad, cut = panes.length > 1 ? Math.round(all * app.geo.split) : all;
+      const py = pad + (i ? cut : 0), ph = i ? all - cut : cut, px = w - P - pad;
       mv(tk, px, py, P, 16); mv(ek, px, py + 18, P, ph - 18 - pad);
     });
     mv(ID.STATUS, pad, h - foot + 2, w - 2 * pad, foot - 4);
@@ -517,6 +524,47 @@
       add(0, null, 0x800); add(CMD.CTX_EXPORT, 'Export Transcript'); add(CMD.CTX_ARCHIVE, 'Archive'); add(CMD.CTX_DELETE, 'Delete');
       p.w32(pt, x); p.w32(pt + 4, y); U(p, 'PostMessageA', [h, 0x8002, m, pt]);
       return done();
+    }
+    // the panels: the gaps between them are dividers to drag (the sidebar's width, the panes', the two panes' split), and
+    // a pane's title is dragged onto the other pane to swap them, as the app's panels are moved and resized
+    const zone = (x, y) => {
+      const G = app.geo; if (!G) return null;
+      const { L, P, pad, foot, w, h: H, n } = G, all = H - foot - pad, cut = Math.round(all * G.split);
+      if (y >= H - foot) return null;
+      if (L && x >= L && x < L + pad) return 'sidebar';
+      if (n && x >= w - P - 2 * pad && x < w - P - pad) return 'panes';
+      if (n && x >= w - P - pad && x < w - pad) {
+        if (n > 1 && y >= cut && y < cut + pad) return 'split';
+        if (y >= pad && y < pad + 16) return 'title0';
+        if (n > 1 && y >= pad + cut && y < pad + cut + 16) return 'title1';
+      }
+      return null;
+    };
+    const xy = l => [(l << 16) >> 16, l >> 16];
+    if (msg === 0x20 && wp === h && (lp & 0xffff) === 1) {   // WM_SETCURSOR, HTCLIENT: a sizing cursor over a divider
+      const pt = app.pt || (app.pt = p.alloc(8)); U(p, 'GetCursorPos', [pt]); U(p, 'ScreenToClient', [h, pt]);
+      const z = zone(p.r32(pt) | 0, p.r32(pt + 4) | 0); if (!z) return 0;
+      U(p, 'SetCursor', [U(p, 'LoadCursorA', [0, z === 'split' ? 32645 : /title/.test(z) ? 32646 : 32644])]); return done(1);   // IDC_SIZENS, IDC_SIZEALL, IDC_SIZEWE
+    }
+    if (msg === 0x201) {   // WM_LBUTTONDOWN
+      const [x, y] = xy(lp), z = zone(x, y); if (!z) return 0;
+      app.drag = { kind: z, v: {}, x, y }; U(p, 'SetCapture', [h]); return done();
+    }
+    if (msg === 0x200 && app.drag) {   // WM_MOUSEMOVE while dragging: the layout follows the pointer
+      const [x, y] = xy(lp), G = app.geo, d = app.drag;
+      if (d.kind === 'sidebar') d.v.sidebarW = x;
+      else if (d.kind === 'panes') d.v.paneW = G.w - G.pad - x;
+      else if (d.kind === 'split') d.v.paneSplit = (y - G.pad) / (G.h - G.foot - G.pad);
+      d.at = [x, y]; if (!/title/.test(d.kind)) layout(p, ...app.size);
+      return done();
+    }
+    if ((msg === 0x202 || msg === 0x215) && app.drag) {   // WM_LBUTTONUP (the place kept), WM_CAPTURECHANGED (dropped)
+      const d = app.drag; app.drag = null; if (msg === 0x202) U(p, 'ReleaseCapture', []);
+      if (msg === 0x202 && /title/.test(d.kind) && d.at && app.geo.n > 1) {   // a pane dropped on the other one's half: the two swap
+        const G = app.geo, cut = G.pad + Math.round((G.h - G.foot - G.pad) * G.split), from = d.kind === 'title0' ? 0 : 1, to = d.at[1] >= cut ? 1 : 0;
+        if (to !== from) setUi(u => { const ps = u.panes.filter(x => PANE_TITLE[x]).slice(0, 2); u.panes = [ps[1], ps[0], ...u.panes.filter(x => !ps.includes(x))]; });
+      } else if (msg === 0x202 && Object.keys(d.v).length) setUi(u => Object.assign(u, d.v));
+      showAll(p); return done();
     }
     if (msg !== WM.COMMAND) return 0;
     const c = wp & 0xffff, note = wp >>> 16;
