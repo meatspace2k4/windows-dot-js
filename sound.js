@@ -390,6 +390,7 @@ const WORKLET = `registerProcessor('w95-stream', class extends AudioWorkletProce
   }
 });`;
 let sys = null;
+const muted = () => { if (window.W95MUTE === undefined) { try { window.W95MUTE = /^(1|true)$/i.test(new URLSearchParams(location.search).get('mute') || ''); } catch (_) { window.W95MUTE = false; } } return window.W95MUTE; };
 /** the machine's output: the context and its worklet module, made as the system starts */
 const system = () => {
   if (sys) return sys;
@@ -401,8 +402,9 @@ const system = () => {
   // (a page that is not a secure context, plain http from another machine, has no audioWorklet: no sound)
   if (!ctx.audioWorklet) { try { ctx.close(); } catch (_) {} return (sys = { ctx: null }); }
   const url = URL.createObjectURL(new Blob([WORKLET], { type: 'text/javascript' }));
-  // (the streams meet in one gain before the device: none on a page asked to be silent, ?mute=1)
-  const dest = ctx.createGain(); dest.gain.value = window.W95MUTE ? 0 : 1; dest.connect(ctx.destination);
+  // (the streams meet in one gain before the device: none on a page asked to be silent, ?mute=1; the output is made as
+  // this file loads, so the page's flag is read from its URL here)
+  const dest = ctx.createGain(); dest.gain.value = muted() ? 0 : 1; dest.connect(ctx.destination);
   sys = { ctx, dest, ok: false };
   sys.ready = ctx.audioWorklet.addModule(url).then(() => { sys.ok = true; }).catch(() => {}).finally(() => URL.revokeObjectURL(url));
   // a page may open its output only after a click or key: the context goes on with the first of them

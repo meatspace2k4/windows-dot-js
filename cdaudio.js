@@ -33,7 +33,8 @@
     merge.connect(ctx.destination); out = { in: split, g };
     return split;
   };
-  const level = i => (window.W95MUTE ? 0 : levels[i]);   // (none on a page asked to be silent, ?mute=1)
+  const muted = () => { try { return /^(1|true)$/i.test(new URLSearchParams(location.search).get('mute') || ''); } catch (_) { return !!window.W95MUTE; } };
+  const level = i => (muted() ? 0 : levels[i]);   // (none on a page asked to be silent, ?mute=1)
   const gain = (l, r) => { levels = [l, r]; if (out) out.g.forEach((x, i) => { x.gain.setValueAtTime(level(i), ctx.currentTime); }); };
   // play sectors [from, to): fetched CHUNK at a time, each scheduled after the last, the next fetched while one plays
   const play = async (from, to) => {

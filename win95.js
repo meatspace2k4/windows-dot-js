@@ -3778,7 +3778,7 @@ const SHUTDOWN = 'w95.shutdown';
 const DEBUG = /^(1|true)$/i.test((() => { try { return new URLSearchParams(location.search).get('debug') || ''; } catch (_) { return ''; } })());
 // ?mute=1: a page that makes no sound: its start quiet, as ?debug=1's, and its outputs (the sound card's streams,
 // sound.js; the CD drive's, cdaudio.js) silent
-window.W95MUTE = /^(1|true)$/i.test((() => { try { return new URLSearchParams(location.search).get('mute') || ''; } catch (_) { return ''; } })());
+window.W95MUTE = window.W95MUTE || /^(1|true)$/i.test((() => { try { return new URLSearchParams(location.search).get('mute') || ''; } catch (_) { return ''; } })());
 const cleanStart = (() => { let v = null; try { v = localStorage.getItem(SHUTDOWN); localStorage.setItem(SHUTDOWN, 'running'); } catch (_) { /* no storage: every start plays */ } return v !== 'running'; })();
 function shutDownCleanly() { try { localStorage.setItem(SHUTDOWN, 'clean'); } catch (_) { /* no storage */ } }
 function startSystem() {
