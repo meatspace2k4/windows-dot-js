@@ -45,4 +45,10 @@ for (const [op, want] of [[0xe9, 7], [0xe1, -7]]) {
     v => { v.setFloat64(0x300100, 2.5, true); v.setFloat64(0x300108, 2.7, true); v.setUint16(0x300110, 0xf7f, true); });
   assert.equal(dv.getInt32(0x300000, true), 2); assert.equal(dv.getInt32(0x300004, true), 2);
 }
+// feni, fdisi, fsetpm (the 8087's and 287's, WIN87EM's start-up): nothing on a 387, the stack untouched
+// fld1; feni; fdisi; fsetpm; fstp dword [300000h]
+{
+  const { dv } = run([0xd9, 0xe8, 0xdb, 0xe0, 0xdb, 0xe1, 0xdb, 0xe4, 0xd9, 0x1d, ...d32(0x300000)]);
+  assert.equal(dv.getFloat32(0x300000, true), 1);
+}
 console.log('dynx87: ok');

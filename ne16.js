@@ -3017,7 +3017,15 @@ def16('KERNEL', 602, '', 'jmp', function () {
   return this.retf16(0);
 });
 // ---- what SHELL.DLL and COMMCTRL.DLL ask of KERNEL
-def16('KERNEL', 48, 'w', 'w', () => 1);                                                // GetModuleUsage
+// GetModuleUsage: a program's count is its live instances (0 once its last task or process has ended: a VB3 program
+// that Shells another polls it for 0 to know the other is done, MSBDEMOS's chooser after a video); a library loaded, 1
+def16('KERNEL', 48, 'w', 'w', function (h) {
+  const h32 = this.hinst32(h);
+  if (h32) return [...(this.procs || new Map()).values(), this.pc0].filter(pc => pc && pc.exe && pc.exe.base === h32 && (pc === this.pc0 ? this.exitCode : pc.exitCode) === null).length;   // (the machine's own program: its exit code is the machine's)
+  const m = this.neByHandle(h); if (!m) return 0;
+  if (!m.taskModule) return 1;
+  return [...(this.threadsById || new Map()).values()].filter(t => t.task && t.task.mod === m && t.state !== 'done').length;
+});
 def16('KERNEL', 51, 'xw', 'x', fp => fp);                                              // MakeProcInstance: protected mode needs no thunk
 def16('KERNEL', 52, 'x', 'v', () => {});                                               // FreeProcInstance
 def16('KERNEL', 65, 'ww', 'l', function (h, hr) {                                      // SizeofResource

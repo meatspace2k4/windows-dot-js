@@ -30,5 +30,11 @@ const cut = (a, b) => { const i = w.indexOf(a); assert.ok(i >= 0, a); return w.s
   assert.deepEqual(a.exec('"C:\\WINDOWS\\rundll32.exe" shell32.dll,Control_RunDLL x', 1), { f: 'C:\\WINDOWS\\rundll32.exe', a: 'shell32.dll,Control_RunDLL x' });
   assert.deepEqual(a.exec('rundll32.exe x', 1), { f: 'C:\\WINDOWS\\rundll32.exe', a: 'x' });
   assert.equal(a.exec('C:\\NOWHERE\\rundll32.exe x', 1), 2);
+  // a Windows 3.x program from disk the bundle does not carry (MSBDEMOS's chooser starting SOLARDEM): a task, as
+  // KERNEL's WinExec starts one, its instance the answer, not a Win32 process record
+  files.add('D:\\DEMOS\\SOLARDEM.EXE');
+  const B = new Function('fs', 'join', 'basename', 'extname', 'self', 'rpc', `return class {\n${src}\n spawnProgram() { throw new Error('spawned as Win32'); }\n isNE() { return true; } }`)({ ...fs, realpath: f => f }, join, basename, extname, { W95SYSTEM: {} }, () => null);
+  const b = new B(), started = []; b.proc = { winExec16: (f, arg, show) => { started.push([f, arg, show]); return 0x1a27; } };
+  assert.equal(b.exec('D:\\DEMOS\\SOLARDEM.EXE /x', 5), 0x1a27); assert.deepEqual(started, [['D:\\DEMOS\\SOLARDEM.EXE', '/x', 5]]);
 }
 console.log('controlpanel: ok');
