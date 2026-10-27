@@ -1225,7 +1225,8 @@ P.inputPending = function () {
  *  which paces the moves of a drag going in (worker.js feedMouse: USER keeps only the latest of those waiting) */
 P.hookTaken = function (user) {
   // (#114 for a Windows program; #822, DispatchMessage32, for a Win32 one, whose USER32 hands USER a 32-bit MSG:
-  // hwnd a dword, then the message)
+  // hwnd a dword, then the message; and USER32's own entry, loaded already or later, hookTaken32)
+  const u32m = this.byName && this.byName.get('USER32'); if (u32m) this.hookTaken32(u32m);
   for (const [ord, msgAt] of [[114, 2], [822, 4]]) {
     const at = this.neExport(user, ord); if (!at || !this.selValid(at >>> 16)) continue;
     (this.entryHooks || (this.entryHooks = new Map())).set(u32(this.selBase(at >>> 16) + (at & 0xffff)), function () {
