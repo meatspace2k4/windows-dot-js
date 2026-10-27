@@ -878,11 +878,14 @@ class Machine {
         if (show) await this.onWindow('ShowWindow', [hwnd, show]);
         if (show !== 3 && show !== 7) await this.onWindow('MoveWindow', [hwnd, x, y, w, h, 1]);
       })();
-      case 'close': u(110, [['w', args[0]], ['w', 0x10], ['w', 0], ['l', 0]]); return;
+      // (a window closed here because another machine's person closed it there: under a remote cause, ne16.js
+      // remoteClose, so the page sends no close of its own for it, oslogic.js read)
+      case 'close': p.remoteClose(args[0]); u(110, [['w', args[0]], ['w', 0x10], ['w', 0], ['l', 0]]); return;
       // a program another machine's person closed (its window gone there, after anything it asked there: "Save
       // changes?"): ended here as Windows ends a program, without its asking again, its contents being the session's
       // already. A Windows 3.x program's task is asked to close (WM_CLOSE)
       case 'end': {
+        p.remoteClose(args[0]);
         const task = u(224, [['w', args[0]]]), pc = task && [...(p.procs || new Map()).values()].find(c => c.tdb === task);
         if (pc && pc.exitCode === null) { p.endProcess(pc, 0); return true; }
         u(110, [['w', args[0]], ['w', 0x10], ['w', 0], ['l', 0]]); return false;

@@ -1331,7 +1331,19 @@ P.osWorld = function () {
     out.push({ hwnd: w.hwnd, pid: pc.pid, path: pc.path, cmd: pc.cmdLine !== undefined ? pc.cmdLine : pc.cmdPtr ? this.readA(pc.cmdPtr) : '', t0: pc.t0 || null, cls: w.cls, title: w.title, folder,
       x: w.x, y: w.y, w: w.w, h: w.h, min: w.iconic, max: !!u(272, [['w', w.hwnd]]), ask });   // IsZoomed
   }
-  return { list: out, area: this.workArea() };   // (and the work area they are placed in, which each machine's own screen sets)
+  // (and the windows closed here under a remote cause, another machine's person having closed them there, worker.js
+  // 'end' and 'close': the page sends no close of its own for one of these, oslogic.js read. Each is kept until it has
+  // been gone for two reads: the page reads a window's going after it went)
+  const rc = this.remoteClosed || (this.remoteClosed = new Map()), closed = [];
+  for (const [h, rec] of rc) { closed.push(h); if (!shown.has(h) && ++rec.gone > 2) rc.delete(h); }
+  return { list: out, area: this.workArea(), closed };   // (and the work area they are placed in, which each machine's own screen sets)
+};
+/** a window this machine closes because another machine's person closed it there (cause 'remote'): remembered for
+ *  osWorld, and the effects log */
+P.remoteClose = function (hwnd) {
+  (this.remoteClosed || (this.remoteClosed = new Map())).set(hwnd, { gone: 0 });
+  const by = this.thread16; this.thread16 = { id: 0, remote: true };
+  try { this.effect('close', `hwnd ${hwnd}`); } finally { this.thread16 = by; }
 };
 // ---- a shared session's intents: a setting this machine's person makes, as the call that makes it, which every other
 // machine makes too (worker.js 'intent'), each its own Windows then writing its own registry and INI files and telling

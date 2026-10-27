@@ -5175,7 +5175,8 @@ fs.on(e => emit('fs.' + e.op, { path: e.path, ...(e.path2 ? { path2: e.path2 } :
 // - a machine joining a running session holds the programs it would start of itself as Windows starts (worker.js
 //   holdStartup) until its person first does something on it: the session's are started for it instead
 let osWanted = false, osBusy = false, osAgain = false, osHeld = true;
-const osSeen = new Map(), osStarting = new Set(), osOpened = new Set(), OS_CLOSING = Symbol('closing');
+const osSeen = new Map(), osStarting = new Set(), osOpened = new Set();
+const osHwnd = new Map(), osRemoteClosed = new Set();   // (each id's window at the last read; the ids closed here under a remote cause, by the machine's own tag)
 let osArea = null;   // (this machine's work area at its last read: its screen changing is its own)
 const osTries = new Map();   // (the session's programs started here and not up yet: how many times)
 function shareInput(ev) {
@@ -5192,7 +5193,7 @@ function osFrame() { if (osWanted) { osWanted = false; osRead(); } }
 async function osLocal() {
   const a = sysApp; if (!a || !a.alive) return null;
   const got = await a.cmd('world'); if (!got) return null;
-  const { list, area } = got;
+  const { list, area, closed } = got;
   // (a program's instances counted by its command line: RUNDLL32 with DESK.CPL is another object than RUNDLL32 with
   // SYSDM.CPL, whichever a machine started first)
   const prog = w => `${w.path}\n${w.cmd}`;
@@ -5214,6 +5215,10 @@ async function osLocal() {
     out.set(`${kind}#${k}`, { hwnd: w.hwnd, v: { path: w.path, cmd: w.cmd, t0: w.t0 || null, cls: w.cls, title: w.title, ...place, ctrls } });
   }
   out.area = area;
+  // (the windows the machine closed under a remote cause, as ids: by the window each id had at the last read, or has now)
+  for (const [id, o] of out) osHwnd.set(id, o.hwnd);
+  for (const h of closed || []) for (const [id, hw] of osHwnd) if (hw === h) osRemoteClosed.add(id);
+  for (const id of [...osHwnd.keys()]) if (!out.has(id) && !osRemoteClosed.has(id)) osHwnd.delete(id);
   return out;
 }
 const osSame = (p, q) => JSON.stringify(p) === JSON.stringify(q);
@@ -5245,7 +5250,7 @@ async function osRead() {
     // (what to send and what to set here: oslogic.js read. A change of this machine's screen is its own: the session's
     // places set again, fitted to it, nothing sent)
     const r = W95OSLogic.read({ world: S.world(), local: new Map([...local].map(([id, o]) => [id, o.v])), seen: osSeen, starting: osStarting,
-      closing: OS_CLOSING, area: local.area, lastArea: osArea, caught: osCaught });
+      remoteClosed: osRemoteClosed, area: local.area, lastArea: osArea, caught: osCaught });
     osArea = r.area; for (const id of local.keys()) osTries.delete(id);
     for (const [id, v, patch] of r.sends) { S.obj(id, v, patch); emit(v ? 'sync.send' : 'sync.closed', v ? { id, x: v.x, y: v.y } : { id }); }
     for (const [id, v] of r.applies) osApply(id, v, local);
@@ -5259,7 +5264,7 @@ async function osApply(id, v, local, by) {
   const mine = local.get(id), a = sysApp;
   if (v == null) {   // (gone there: closed here)
     if (mine) {
-      emit('sync.close', { id }); osSeen.set(id, OS_CLOSING);
+      emit('sync.close', { id });   // (the machine marks the window closed under a remote cause itself: cmd 'end', 'close')
       // (its program's only object: the program ended here, as the person there ended it, without asking again; one
       // of several windows of a program, or a folder: closed as its own close box closes it)
       const prog = id.slice(0, id.lastIndexOf('/'));

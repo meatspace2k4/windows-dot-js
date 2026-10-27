@@ -9,7 +9,6 @@ import { readFileSync } from 'node:fs';
 globalThis.window = globalThis;
 if (!globalThis.W95OSLogic) new Function(readFileSync(new URL('../../oslogic.js', import.meta.url), 'utf8'))();
 const { read, merge, fields, without, same } = globalThis.W95OSLogic;
-const CLOSING = 'closing';
 
 /** a model of `machines` (names; those in `late` join later) sharing `ids`, under `rules` (ownWins, gens: a rule off
  *  is to show it is needed) */
@@ -26,7 +25,7 @@ export function model({ machines = ['A', 'B'], late = [], ids = ['W'], rules: gi
   // ---- a machine, started from the server's state (a late one: as it is when it joins)
   const mk = S => {
     const live = Object.entries(S.world).filter(([, v]) => v !== null && v !== undefined);
-    return { local: new Map(), seen: new Map(), starting: new Set(), world: new Map(Object.entries(S.world)), gens: new Map(Object.entries(S.gens)), own: new Map(), outbox: [], at: S.log.length, catch: live.map(([id]) => id) };
+    return { local: new Map(), seen: new Map(), starting: new Set(), remoteClosed: new Set(), world: new Map(Object.entries(S.world)), gens: new Map(Object.entries(S.gens)), own: new Map(), outbox: [], at: S.log.length, catch: live.map(([id]) => id) };
   };
   // (shared.js obj: the whole state in this machine's copy at once; what changed, waiting to be posted, a newer change
   // of the same object merged into it, a close replacing it, a reopening after a close waiting the whole state)
@@ -46,12 +45,13 @@ export function model({ machines = ['A', 'B'], late = [], ids = ['W'], rules: gi
   }
   function apply(m, id, v) {   // (win95.js osApply, its windows changed at once)
     const mine = m.local.get(id);
-    if (v === null || v === undefined) { if (mine !== undefined) { m.seen.set(id, CLOSING); m.local.delete(id); } return; }
+    // (closed here under a remote cause: the machine's own tag on the window, ne16.js remoteClose; no close of this machine's own)
+    if (v === null || v === undefined) { if (mine !== undefined) { m.remoteClosed.add(id); m.local.delete(id); } return; }
     if (mine === undefined) { if (m.starting.has(id)) return; m.starting.add(id); m.local.set(id, { p: -1, c: 0 }); osRead(m); return; }   // (started: at the program's own place first)
     m.seen.set(id, v); m.local.set(id, v);
   }
   function osRead(m) {
-    const r = read({ world: m.world, local: m.local, seen: m.seen, starting: m.starting, closing: CLOSING, area: null, lastArea: null, caught: true });
+    const r = read({ world: m.world, local: m.local, seen: m.seen, starting: m.starting, remoteClosed: m.remoteClosed, area: null, lastArea: null, caught: true });
     for (const [id, v, patch] of r.sends) send(m, id, v, patch);
     for (const [id, v] of r.applies) apply(m, id, v);
     for (const id of r.retries) apply(m, id, m.world.get(id));
@@ -82,9 +82,9 @@ export function model({ machines = ['A', 'B'], late = [], ids = ['W'], rules: gi
     return { S, budget, n: 0, life: {}, m };
   }
   const clone = s => ({ S: { world: { ...s.S.world }, gens: { ...s.S.gens }, log: [...s.S.log] }, budget: s.budget, n: s.n, life: { ...s.life },
-    m: Object.fromEntries(Object.entries(s.m).map(([k, m]) => [k, { local: new Map(m.local), seen: new Map(m.seen), starting: new Set(m.starting), world: new Map(m.world), gens: new Map(m.gens),
+    m: Object.fromEntries(Object.entries(s.m).map(([k, m]) => [k, { local: new Map(m.local), seen: new Map(m.seen), starting: new Set(m.starting), remoteClosed: new Set(m.remoteClosed), world: new Map(m.world), gens: new Map(m.gens),
       own: new Map([...m.own].map(([i, a]) => [i, [...a]])), outbox: m.outbox.map(o => ({ ...o })), at: m.at, catch: [...m.catch] }])) });
-  const key = s => JSON.stringify([s.S, s.budget, s.life, Object.entries(s.m).map(([k, m]) => [k, [...m.local], [...m.seen], [...m.starting], [...m.world], [...m.gens], [...m.own], m.outbox, m.at, m.catch])]);
+  const key = s => JSON.stringify([s.S, s.budget, s.life, Object.entries(s.m).map(([k, m]) => [k, [...m.local], [...m.seen], [...m.starting], [...m.remoteClosed], [...m.world], [...m.gens], [...m.own], m.outbox, m.at, m.catch])]);
   function moves(s) {
     const out = [], here = Object.keys(s.m);
     const informed = (t, k) => t.m[k].at === t.S.log.length && Object.values(t.m).every(j => !j.outbox.length);

@@ -18,26 +18,28 @@
    * this machine's windows read (o.local: id -> state) against what it last saw of each (o.seen, kept here) and the
    * session's (o.world): which to send (sends: [id, state or null for one closed here]), which of the session's to set
    * here (applies: [id, state]), and which of the session's to start again (retries). o.starting: the ones being
-   * started for the session (one up is taken off); o.closing: the mark of one this machine is closing; o.area and
-   * o.lastArea: the work area now and at the last read (a change: the session's places set again, nothing sent)
+   * started for the session (one up is taken off); o.remoteClosed: the ids of the windows this machine closed under a
+   * remote cause (another machine's person closed them there: the machine's cause tag, ne16.js remoteClose), whose
+   * going is not a close of this machine's own; o.area and o.lastArea: the work area now and at the last read (a
+   * change: the session's places set again, nothing sent)
    */
   function read(o) {
-    const { world, local, seen, starting, closing } = o, sends = [], applies = [], retries = [];
+    const { world, local, seen, starting } = o, remoteClosed = o.remoteClosed || new Set(), sends = [], applies = [], retries = [];
     const area = JSON.stringify(o.area || null), resized = o.lastArea !== null && o.lastArea !== undefined && area !== o.lastArea;
     const reset = new Set();
-    if (resized) for (const [id] of local) if (world.get(id) && seen.has(id) && seen.get(id) !== closing) { reset.add(id); applies.push([id, world.get(id)]); }
+    if (resized) for (const [id] of local) if (world.get(id) && seen.has(id) && !remoteClosed.has(id)) { reset.add(id); applies.push([id, world.get(id)]); }
     for (const [id, v] of local) {
       if (reset.has(id)) continue;
       starting.delete(id);   // (one started for the session: up)
-      if (seen.get(id) === closing || same(seen.get(id), v)) continue;   // (one this machine is closing: not reported)
+      if (remoteClosed.has(id) || same(seen.get(id), v)) continue;   // (one closing under a remote cause: not reported)
       // (one the session has that came up here, started for it: the session's, set here; one of this machine's: sent)
       if (!seen.has(id) && world.get(id)) { seen.set(id, v); applies.push([id, world.get(id)]); continue; }
       const prev = seen.get(id); seen.set(id, v); sends.push([id, v, diff(prev, v)]);
     }
     for (const id of [...seen.keys()]) if (!local.has(id)) {
-      const was = seen.get(id); seen.delete(id);
-      if (was !== closing && world.get(id)) sends.push([id, null]);   // (closed by this machine's person: closed everywhere)
-      else if (was === closing) for (const [w, v] of world) if (v && !local.has(w)) applies.push([w, v]);   // (one waiting for it to go)
+      seen.delete(id);
+      if (!remoteClosed.has(id) && world.get(id)) sends.push([id, null]);   // (closed by this machine's person: closed everywhere)
+      else if (remoteClosed.has(id)) { remoteClosed.delete(id); for (const [w, v] of world) if (v && !local.has(w)) applies.push([w, v]); }   // (one waiting for it to go)
     }
     // (one the session has that this machine has not, and is not starting: its start failed, or came too early)
     if (o.caught) for (const [id, wv] of world) if (wv && !local.has(id) && !starting.has(id) && !seen.has(id) && !sends.some(s => s[0] === id)) retries.push(id);
