@@ -90,6 +90,8 @@ waits for an element the same way and resolves with it. With coordinates the cal
 | `screen` | `screen` | boot screens, desktop, shutdown |
 | `devtools` | `open` | the browser's DevTools open or close (the Windows 95 app says; a browser tab cannot) |
 | `tray.follow`, `tray.window` | `client`; `id`, `client` | Follow chosen from a person's notification-area icon (`client` null when ended); one of their windows chosen there |
+| `sync.input` | `id`, `n`, `events`, `done` | this person's mouse stroke into a session object's window, or part of one, sent to the session |
+| `sync.stroke` | `id`, `by`, `events`, `done` | another person's stroke, or part of one, fed into this machine's copy of the window |
 | `fs.create`, `fs.write`, `fs.unlink`, `fs.mkdir`, `fs.rmdir`, `fs.rename`, `fs.attrib`, `fs.label`, `fs.mount` | `path`, `path2` for a rename | the file system changes |
 
 Window, menu, saver and screen events are found by comparing the shell's state after each change, so the changes
@@ -205,7 +207,9 @@ export at or before it), `OLE32+1a2c0 (CoInitialize+40)` (a 32-bit module's), or
 | `cmd('call16', [module, name or ordinal, [args as above, a buf with initial bytes as ['buf', n, bytes]]])` | any 16-bit module's export called the same way, the module loaded from disk if it is not yet (`['TOOLHELP', 'TASKFIRST', [['buf', 40, [40, 0]]]]`) |
 | `cmd('effects')` | what the machine did and under which cause (ne16.js `effect`: input, remote, boot, host) |
 | `win95.log(since = 0)` | the machines' log: `{ n, t, level, tag, text, machine }` per line, since line `n`. Everything the emulator says of itself (`win32`, `ne16`, `vxd`, `spawn` tags), what programs write with `OutputDebugString` (tagged with the program), KERNEL's `LogError`, and DevTools opening and closing. Each line is also written to the console with its level's method (`debug`, `info`, `warn`, `error`), so DevTools' level filter sorts them: Verbose shows the debug lines, Warnings the emulator's gaps, Errors the faults |
-| `cmd('lag', [true])`, `cmd('lag')` | records each mouse and key event's time as it is taken from the ring and as it is fed into USER's drivers; `win95.lag(moves, keys)` sends moves and key presses and answers each one's times from the page's send: `ring`, `fed`, and for a move `seen` (the sprite showing it), with their medians |
+| `cmd('lag', [true])`, `cmd('lag')` | records each mouse and key event's time as it is taken from the ring and as it is fed into USER's drivers; `win95.lag(moves, keys)` sends moves and key presses and answers each one's times from the page's send: `ring`, `fed`, and for a move `seen` (the sprite showing it), with their medians. With the log on, a shared session's strokes are in it too: `stroke-rec` (this person's, as recorded), `stroke-fed` (another's, as posted), `stroke-miss` (a press no window took) |
+| `cmd('strokes', [hwnd?, x, y])` | a shared session's strokes here: the others' waiting and being fed (by key, events left, lost), this person's going, the buttons held, the moves fed and taken (`movesFed`, `taken`: the program's DispatchMessage counted, which paces a drag), the mouse queue; with a window, its queue's state and the child under the point |
+| `cmd('pace', [n])` | how many of a drag's moves may go in ahead of the program taking them (4) |
 | `win95.devtools` | whether DevTools are open (the Windows 95 app says; a browser tab cannot, so `false` there). The machine has it as the registry value `HKLM\Software\Microsoft\Windows\CurrentVersion\Debug\DevTools` (1 or 0), and a `devtools` event (`{ open }`) says when it changes |
 
 The same log is in Windows itself: **Debug Monitor** (Programs > Accessories > System Tools, DBWIN.EXE, dbwin.js), a
@@ -215,6 +219,38 @@ the key reaches Windows; in the Windows 95 app the same key toggles them.
 
 Before any reload, read `read_console_messages` and `cmd('faults')`: a reload wipes both. `console.log('=== MARK ...')`
 before each step keeps the console in order.
+
+### A shared session's input
+
+A person's mouse strokes into a session object's window (a button pressed, the moves while it is held, its release)
+are the session's, as the windows are: several people draw in one Paint at once, deal in one Solitaire, press one
+Calculator's keys. The machine records this person's strokes as offsets from the top-level window they went to
+(worker.js `recordStroke`, ne16.js `strokeTarget`: not a press on a caption, border or button, whose outcome the
+object sync carries; a stroke into a popup of the object's, a menu or a dialog, names it by class and title), posts
+them to the page in parts as they go, and the page sends them by the object's id (`input` ops, shared.js; the server
+keeps each object's for a machine joining, which feeds them into its copy once the object is up). Another machine's
+stroke is fed into this machine's copy of the window as the mouse messages it would be, posted to the window under
+its first point (ne16.js `childAt`, `postMouse`), one stroke at a time and only while this person holds no button
+(worker.js `feedStroke`), so the program sees each stroke whole and this person's pointer stays where it is; the
+other person's pointer is drawn where their stroke has got to here (`strokeAt`). A drag's own moves go in up to
+four ahead of the program taking them (USER32's `DispatchMessageA` and USER's `DispatchMessage` watched at their
+entry, ne16.js `hookTaken`) and are never coalesced while a button is held, so every point of a curve reaches the
+program. Each person's pointer shows to the others as their Windows shows it to them: the cursor image goes with the
+pointer once per image, with its hot spot (win95.js `peerCursorOf`, sessions.py `cursors`). The windows must be the
+same size on every machine for the offsets to land alike, which the object sync keeps (a maximized window is each
+screen's own: the same screen size on each machine, then).
+
+### Sketching from vectors
+
+```js
+await import('/tools/sketch.mjs'); await W95Sketch.draw(svgText, { box: { x: 100, y: 80, w: 840, h: 520 }, ms: 5 })
+```
+
+draws an SVG with the pointer (`win95.down/move/up`): its `path`, `line`, `polyline`, `polygon`, `rect`, `circle` and
+`ellipse` elements, the path commands M, L, H, V, C, S, Q, T, A and Z, absolute or relative, each subpath one stroke,
+curves flattened by flatness and resampled `step` (3) pixels apart with corners kept, the viewBox fitted into `box`,
+`ms` the pace per point. `paths(svg, o)` gives the strokes as screen points without drawing; `flatten(d, tol)` a
+path's polylines; `resample(poly, step)`. tests/sketch.test.mjs checks the flattening.
 
 ### A shared session fuzzed over real machines
 

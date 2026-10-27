@@ -503,7 +503,10 @@ class Machine {
     if (!p.win16Held && p.k32CloseRequest && p.k32CloseRequest()) post({ t: 'closeProgram' });   // REBOOT's APC: Close Program
     this.feedMouse(); this.feedKeys();
     try {
-      for (let n = 0; this.alive && n < 4; n++) {
+      // (four slices a step; up to ten, within 12 ms of the step, while input waits to go in: a person drawing, or
+      // another machine's stroke being fed, gets the program its moves at the pace they come)
+      const busy = () => this.mouseq.length || this.rs || (this.strokes && this.strokes.length);
+      for (let n = 0; this.alive && (n < 4 || (n < 10 && busy() && performance.now() - t0 < 12)); n++) {
         if (n) { this.poll(); this.feedMouse(); this.postScan(); }
         p.stats.slices++; const live = p.slice();
         if (!p.win16Held) { p.timers16(); p.systemPump(); p.appy16(); p.threads16(); }

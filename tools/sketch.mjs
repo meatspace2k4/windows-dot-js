@@ -114,7 +114,7 @@
       while (d <= len) { out.push([x0 + (x1 - x0) * d / len, y0 + (y1 - y0) * d / len]); d += step; }
       acc = len - (d - step);
       // (a corner: the next segment turns sharply; the point itself is kept)
-      if (i + 1 < poly.length) { const [x2, y2] = poly[i + 1], a = Math.atan2(y1 - y0, x1 - x0), b = Math.atan2(y2 - y1, x2 - x1); let t = Math.abs(a - b); if (t > Math.PI) t = 2 * Math.PI - t; if (t > 25 * Math.PI / 180) { out.push([x1, y1]); acc = 0; } }
+      if (i + 1 < poly.length) { const [x2, y2] = poly[i + 1], a = Math.atan2(y1 - y0, x1 - x0), b = Math.atan2(y2 - y1, x2 - x1); let t = Math.abs(a - b); if (t > Math.PI) t = 2 * Math.PI - t; if (t > 25 * Math.PI / 180) { const e = out[out.length - 1]; if (e[0] !== x1 || e[1] !== y1) out.push([x1, y1]); acc = 0; } }
     }
     const last = poly[poly.length - 1], end = out[out.length - 1]; if (end[0] !== last[0] || end[1] !== last[1]) out.push(last);
     return out;
