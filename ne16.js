@@ -1433,9 +1433,38 @@ P.hookTapi = function (m) {
   hook('lineNegotiateAPIVersion', 6, () => 0x80000002);
   hook('lineGetDevCaps', 4, () => 0x80000002);
 };
+// an exclusive device (osclass.js exclusive-device: the wave and MIDI devices, MCI) is one machine's: a program
+// started here because another machine's person started it there (origin remote, causeOf) cannot open one, and is
+// answered MMSYSERR_ALLOCATED (4) at the export's entry, as it is answered when another program holds the device.
+// WINMM's 32-bit exports (stdcall: the arguments popped) and MMSYSTEM's 16-bit ones (Pascal: their bytes popped)
+P.hookExclusive = function (m) {
+  const hooks = this.entryHooks || (this.entryHooks = new Map());
+  const remote = () => P.intentQuiet.call(this) && this.causeOf() === 'remote';
+  if (m.name === 'WINMM' && m.exports) {
+    for (const [nm, nargs] of [['waveOutOpen', 6], ['waveInOpen', 6], ['midiOutOpen', 5], ['midiInOpen', 5], ['mciSendCommandA', 4], ['mciSendStringA', 4]]) {
+      const at = m.exports.get(nm); if (!at) continue;
+      hooks.set(u32(at), function () {
+        if (!remote()) return undefined;
+        this.effect('exclusive-device', `WINMM!${nm} refused`);
+        const sp = u32(this.cpu.esp.value), ret = this.r32(sp); this.cpu.eax.value = 4; this.cpu.esp.value = sp + 4 + 4 * nargs; return u32(ret);
+      });
+    }
+  }
+  if (m.name === 'MMSYSTEM' && m.meta) {
+    for (const [nm, bytes] of [['WAVEOUTOPEN', 22], ['WAVEINOPEN', 22], ['MIDIOUTOPEN', 18], ['MIDIINOPEN', 18], ['MCISENDCOMMAND', 12], ['MCISENDSTRING', 12]]) {
+      const a = this.neExport(m, nm); if (!a || !this.selValid(a >>> 16)) continue;
+      hooks.set(u32(this.selBase(a >>> 16) + (a & 0xffff)), function () {
+        if (!remote()) return undefined;
+        this.effect('exclusive-device', `MMSYSTEM!${nm} refused`);
+        this.ax(4); this.cpu.edx.value = lo16(this.cpu.edx.value, 0); return this.retf16(bytes);
+      });
+    }
+  }
+};
 P.hookIntents = function (user) {
   const hooks = this.entryHooks || (this.entryHooks = new Map());
-  const wasLoad = this.onModuleLoad; this.onModuleLoad = (name, m) => { if (wasLoad) wasLoad.call(this, name, m); if (name === 'TAPI32') this.hookTapi(m); };
+  const wasLoad = this.onModuleLoad; this.onModuleLoad = (name, m) => { if (wasLoad) wasLoad.call(this, name, m); if (name === 'TAPI32') this.hookTapi(m); if (name === 'WINMM' || name === 'MMSYSTEM') this.hookExclusive(m); };
+  for (const n of ['WINMM', 'MMSYSTEM']) { const m = this.byName && this.byName.get(n); if (m) this.hookExclusive(m); }   // (one loaded already)
   for (const [ord, fn] of [[483, P.spiIntent], [181, P.colorsIntent]]) {   // SystemParametersInfo, SetSysColors
     const at = this.neExport(user, ord); if (at) hooks.set(u32(this.selBase(at >>> 16) + (at & 0xffff)), fn);
   }

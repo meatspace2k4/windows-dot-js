@@ -17,10 +17,13 @@
     singleton: ['EXPLORER.EXE', 'MSGSRV32.EXE', 'MPREXE.EXE', 'SYSTRAY.EXE', 'SESSTRAY.EXE', 'MMTASK.TSK', 'SPOOL32.EXE'],
     derived: ['RUNONCE.EXE', 'GRPCONV.EXE', 'SETUP.EXE', 'SUWIN.EXE'],
   };
-  /** a program's class by its file: shared unless the table says otherwise */
-  const program = file => {
+  /** a program's class by its file (and command line): shared unless the table says otherwise. RUNDLL32 running a
+   *  Control Panel applet (Display Properties) is derived: its command line is what the session replicates, each
+   *  machine's shell placing the sheet itself; its controls still sync one by one */
+  const program = (file, cmd) => {
     const f = String(file || '').split('\\').pop().toUpperCase();
     for (const [cls, list] of Object.entries(PROGRAMS)) if (list.includes(f)) return cls;
+    if (f === 'RUNDLL32.EXE' && /\.CPL\b/i.test(String(cmd || ''))) return 'derived';
     return 'shared';
   };
   // SystemParametersInfo's settings a person makes for the session (an intent): by action, how its parameters are

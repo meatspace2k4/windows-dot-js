@@ -5224,7 +5224,10 @@ async function osLocal() {
     // (a control the machine could not ask now, null: as it was last read here, else left out)
     const was = osSeen.get(`${kind}#${k}`), ctrls = {};
     for (const [c, val] of Object.entries(w.ctrls)) if (val !== null) ctrls[c] = val; else if (was && was.ctrls && c in was.ctrls) ctrls[c] = was.ctrls[c];
-    out.set(`${kind}#${k}`, { hwnd: w.hwnd, v: { path: w.path, cmd: w.cmd, t0: w.t0 || null, cls: w.cls, title: w.title, ...place, ctrls } });
+    // (a derived object, RUNDLL32 running a Control Panel applet: its command line and controls are the session's, its
+    // window's place each machine's own; osclass.js program)
+    const derived = W95OSClass.program(w.path, w.cmd) === 'derived';
+    out.set(`${kind}#${k}`, { hwnd: w.hwnd, v: { path: w.path, cmd: w.cmd, t0: w.t0 || null, cls: w.cls, title: w.title, ...(derived ? { derived: true } : place), ctrls } });
   }
   out.area = area;
   // (the windows the machine closed under a remote cause, as ids: by the window each id had at the last read, or has now)
@@ -5312,7 +5315,7 @@ async function osApply(id, v, local, by) {
   // (its place fitted to this machine's screen, its title bar on it: this machine's own adjustment, which it does not
   // send back; seen as it will be here)
   const m = mine.v, f = W95OSLogic.fit(v, local.area); osSeen.set(id, f);
-  if (m.x !== f.x || m.y !== f.y || m.w !== f.w || m.h !== f.h || m.min !== f.min || m.max !== f.max) {
+  if (f.x !== undefined && (m.x !== f.x || m.y !== f.y || m.w !== f.w || m.h !== f.h || m.min !== f.min || m.max !== f.max)) {   // (a derived object carries no place)
     emit('sync.place', { id, x: f.x, y: f.y });
     a.cmd('place', [mine.hwnd, f.x, f.y, f.w, f.h, f.min ? 7 : f.max ? 3 : m.min || m.max ? 9 : 0]);
     if (by) peerActing(id, by, f);
