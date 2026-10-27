@@ -9,7 +9,7 @@ import { readFileSync } from 'node:fs';
 const src = readFileSync(new URL('../shared.js', import.meta.url), 'utf8');
 const b64 = s => Buffer.from(s).toString('base64');
 
-function page(search = '', stored = {}) {
+function page(search = '', stored = {}, registry = [['hku\\ann\\x', [['v', { type: 1, data: b64('1\0') }]], null]]) {
   const posts = [], sources = [], applied = [], regs = [], timers = [];
   const store = m => ({ getItem: k => (k in m ? m[k] : null), setItem: (k, v) => { m[k] = v; } });
   const local = store({ ...stored }), session = store({});
@@ -18,7 +18,7 @@ function page(search = '', stored = {}) {
     open(m, u) { this.u = u; } send() {
       this.status = 200;
       this.responseText = JSON.stringify({ seq: 7, sidBase: 3 << 20, disk: { nodes: [{ sid: 0, parent: -1, name: '', dir: true }, { sid: 5, parent: 0, name: 'a.txt', dir: false, data: b64('hi') }], label: 'W95', serial: 1 },
-        registry: [['hkcu\\x', [['v', { type: 1, data: b64('1\0') }]], null]], url: this.u });
+        registry, url: this.u });
     }
   }
   class EventSource { constructor(u) { this.u = u; this.on = {}; sources.push(this); } addEventListener(t, f) { this.on[t] = f; } emit(t, d) { this.on[t]({ data: JSON.stringify(d) }); } }
@@ -52,6 +52,7 @@ assert.equal(P.posts.length, 1); assert.deepEqual(P.posts[0].body.ops, [{ kind: 
 await P.settle();
 assert.equal(P.posts.length, 2); assert.deepEqual(P.posts[1].body.ops.map(o => o.op.op), ['size', 'set']);
 assert.equal(P.posts[1].body.ops[1].op.value.data, b64('2\0'), 'a value\'s bytes as base64');
+assert.equal(P.posts[1].body.ops[1].op.path, 'hku\\ann\\x', 'HKCU as this person\'s key under HKEY_USERS');
 await P.settle();
 
 // another machine's changes: waiting until Windows has started, then applied; this one's own echo passed over
@@ -61,9 +62,18 @@ es.emit('op', { seq: 9, client: S.client, kind: 'disk', op: { op: 'size', sid: 5
 assert.equal(P.applied.length, 0, 'before Windows starts: waiting');
 S.ready(P.fs);
 assert.equal(P.applied.length, 1); assert.equal(P.applied[0][0], 'C'); assert.equal(new TextDecoder().decode(P.applied[0][1].bytes), 'ok');
-es.emit('op', { seq: 10, client: 'other', kind: 'reg', op: { op: 'set', path: 'hkcu\\y', name: 'n', value: { type: 4, data: b64('\x01\0\0\0') } } });
+es.emit('op', { seq: 10, client: 'other', kind: 'reg', op: { op: 'set', path: 'hku\\ann\\y', name: 'n', value: { type: 4, data: b64('\x01\0\0\0') } } });
 assert.equal(P.regs[0][1], 'remote', 'to this page\'s machines, not back to the server'); assert.deepEqual([...P.regs[0][0].value.data], [1, 0, 0, 0]);
-assert.equal(S.seq(), 10);
+assert.equal(P.regs[0][0].path, 'hkcu\\y', 'this person\'s own key as HKCU');
+es.emit('op', { seq: 11, client: 'other', kind: 'reg', op: { op: 'set', path: 'hkcu\\z', name: 'n', value: { type: 4, data: b64('\0\0\0\0') } } });
+es.emit('op', { seq: 12, client: 'other', kind: 'reg', op: { op: 'del', path: 'hku\\bob\\z', name: 'n' } });
+assert.deepEqual(P.regs.slice(1).map(r => r[0].path), ['hkcu\\z', 'hku\\bob\\z'], 'another person\'s key as it is');
+assert.equal(S.seq(), 12);
+
+// who is logged on: each machine's own, neither taken from another nor sent
+es.emit('op', { seq: 13, client: 'other', kind: 'reg', op: { op: 'set', path: 'hklm\\network\\logon', name: 'username', value: { type: 1, data: b64('Bob\0') } } });
+assert.equal(P.regs.length, 3);
+{ const n = P.posts.length; H.registry.op({ op: 'set', path: 'hklm\\network\\logon', name: 'UserName', value: { type: 1, data: new Uint8Array([65, 0]) } }); assert.equal(P.posts.length, n); }
 
 // who else is here: not this person; their pointers
 const seen = []; S.watch(list => seen.push(list.map(p => p.user)));
@@ -87,5 +97,28 @@ es.on.reload({ data: '{}' }); assert.ok(P.location.reloaded);
   const R = page(); R.S.logOff('Guest'); assert.deepEqual(JSON.parse(R.local.getItem('w95.logon')), { user: 'Guest', session: 'guest' });
   const own = page('', { 'w95.logon': JSON.stringify({ user: 'Guest', session: 'guest', own: 'u-dan-abc123' }) }); own.S.logOff('Dan');
   assert.equal(JSON.parse(own.local.getItem('w95.logon')).session, 'u-dan-abc123', 'the same own session again');
+}
+// HKCU is this person's key under HKEY_USERS: sent as hku\<user>, theirs from the server as HKCU, another's left as it is;
+// a person with no profile yet gets the default user's, written back as theirs
+{
+  const sz = (t, s) => ({ type: t, data: b64(s) });
+  const rows = [['hklm\\x', [], null], ['hku\\.default\\control panel', [['a', sz(1, 'd\0')]], null], ['hku\\eve\\control panel', [['a', sz(1, 'e\0')]], null]];
+  const text = v => new TextDecoder().decode(v.data);
+  const Q = page('?user=Dee&session=s', {}, rows), H2 = Q.S.start({});
+  const got = H2.registry.load(), find = p => got.find(r => r[0] === p);
+  assert.equal(text(find('hkcu\\control panel')[1][0][1]), 'd\0', 'a new person: the default user\'s profile');
+  assert.ok(find('hku\\eve\\control panel'), 'another person\'s profile kept'); assert.ok(find('hku\\.default\\control panel'));
+  assert.deepEqual(Q.posts[0].body.ops.map(o => [o.op.op, o.op.path]), [['key', 'hku\\dee\\control panel']], 'the copy written as theirs');
+  await Q.settle();
+  assert.deepEqual(Q.posts[1].body.ops.map(o => [o.op.op, o.op.path, o.op.name, o.op.value.data]), [['set', 'hku\\dee\\control panel', 'a', b64('d\0')]]);
+
+  // their own profile, once they have one: theirs, not the default's, and nothing written
+  const R = page('?user=Eve&session=s', {}, rows), got2 = R.S.start({}).registry.load();
+  assert.equal(text(got2.find(r => r[0] === 'hkcu\\control panel')[1][0][1]), 'e\0'); assert.equal(got2.some(r => r[0].startsWith('hku\\eve')), false);
+  assert.equal(R.posts.length, 0);
+
+  // no default user: someone else's profile, copied
+  const T = page('?user=Fay&session=s', {}, [rows[2]]), got3 = T.S.start({}).registry.load();
+  assert.equal(text(got3.find(r => r[0] === 'hkcu\\control panel')[1][0][1]), 'e\0'); assert.ok(got3.find(r => r[0] === 'hku\\eve\\control panel'));
 }
 console.log('shared: ok');

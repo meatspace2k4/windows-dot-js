@@ -496,8 +496,9 @@ function drawMenu(m) {
 // ---------------------------------------------------------------- disk
 const { FileSystem, FSError, ATTR, join, basename, dirname, extname, is83 } = window.W95FS;
 const fs = new FileSystem();
-const WINDIR = 'C:\\WINDOWS', DESKTOP_DIR = 'C:\\WINDOWS\\Desktop', RECENT = 'C:\\WINDOWS\\Recent';
-const PROGRAMS = 'C:\\WINDOWS\\Start Menu\\Programs', BIN = 'C:\\RECYCLED', BIN_INFO = 'C:\\RECYCLED\\INFO';
+const WINDIR = 'C:\\WINDOWS', BIN = 'C:\\RECYCLED', BIN_INFO = 'C:\\RECYCLED\\INFO';
+// (the person's own, under Profiles, once they have logged on in a shared session: setupProfile)
+let DESKTOP_DIR = 'C:\\WINDOWS\\Desktop', RECENT = 'C:\\WINDOWS\\Recent', PROGRAMS = 'C:\\WINDOWS\\Start Menu\\Programs', START_MENU = 'C:\\WINDOWS\\Start Menu';
 
 // Executables on C: are placeholders: an MZ header plus the DOS stub message.
 function exeStub() {
@@ -684,7 +685,6 @@ function browseFolder(o) {
 }
 
 // ---------------------------------------------------------------- Taskbar Properties
-const START_MENU = 'C:\\WINDOWS\\Start Menu';
 function taskbarProperties(page = 0) {
   const open = windows.find(w => w.title === 'Taskbar Properties'); if (open) return activate(open);
   let win;
@@ -828,9 +828,30 @@ function bootDisk() {
   W95Win32.regAttach(host.registry);
   if (!fs.attach('C', host.disk)) makeDisk(true);
   installPrograms(); setupFonts(); setupRegistry(); setupDisplay(); setupSavers(); setupSound(); setupHelp(); setupNetwork(); setupPorts(); setupPrinting(); setupStartMenu();
+  if (host.shared) setupProfile(host.userName);
   fs.chdir('C:\\');
   // a shared session's (shared.js): the changes other people's machines made while this one started apply from here
   if (host.shared && window.W95Shared) { window.W95Shared.ready(fs); window.W95Shared.watch(() => dirty()); }
+}
+
+// a person's own folders in a session shared with others, as Windows 95 keeps them with user profiles on:
+// C:\WINDOWS\Profiles\<user>, made from the machine's Desktop and Start Menu the first time they log on
+// (Recent empty), listed under ProfileList, and theirs in HKCU's Shell Folders, which the shell finds its folders by
+// (HKCU being theirs: shared.js). A profile HKCU was copied from names its owner's folders, so the names are set again
+function setupProfile(user) {
+  const R = W95Win32, str = v => ({ type: 1, data: W95FS.encode(v + '\0') });
+  const name = String(user || '').replace(/[^\w.\-$!#%&'(){}^~@ ]/g, '').trim().slice(0, 20); if (!name) return;
+  const home = join(WINDIR, 'Profiles', name);
+  fs.mkdir(home, { recursive: true });
+  for (const [d, from] of [['Desktop', join(WINDIR, 'Desktop')], ['Start Menu', join(WINDIR, 'Start Menu')], ['Recent', null], ['NetHood', null]])
+    if (!fs.exists(join(home, d))) { if (from && fs.exists(from)) fs.copy(from, join(home, d)); else fs.mkdir(join(home, d)); }
+  DESKTOP_DIR = join(home, 'Desktop'); RECENT = join(home, 'Recent'); START_MENU = join(home, 'Start Menu'); PROGRAMS = join(START_MENU, 'Programs');
+  if (!fs.exists(join(PROGRAMS, 'StartUp'))) fs.mkdir(join(PROGRAMS, 'StartUp'), { recursive: true });
+  const folders = { Desktop: DESKTOP_DIR, Recent: RECENT, NetHood: join(home, 'NetHood'), 'Start Menu': START_MENU, Programs: PROGRAMS, Startup: join(PROGRAMS, 'StartUp') };
+  const ex = 'hkcu\\software\\microsoft\\windows\\currentversion\\explorer\\';
+  const put = (k, n, v) => { const was = R.regGet(k, n); if (!was || W95FS.decode(was.data).replace(/\0.*$/, '') !== v) R.regSet(k, n, str(v)); };
+  for (const [n, p] of Object.entries(folders)) { put(ex + 'shell folders', n, p); put(ex + 'user shell folders', n, p); }
+  put('hklm\\software\\microsoft\\windows\\currentversion\\profilelist\\' + name.toLowerCase(), 'ProfileImagePath', home);
 }
 
 // ---------------------------------------------------------------- shell namespace

@@ -36,8 +36,30 @@
   // ---- the wire: bytes as base64 in JSON
   const b64 = u8 => { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(s); };
   const unb64 = s => Uint8Array.from(atob(s || ''), c => c.charCodeAt(0));
-  const regOut = o => (o.value ? { ...o, value: { type: o.value.type, data: b64(o.value.data) } } : o);
-  const regIn = o => (o.value ? { ...o, value: { type: o.value.type, data: unb64(o.value.data) } } : o);
+  // (HKEY_CURRENT_USER is this person's own key under HKEY_USERS, as with Windows 95's user profiles: kept on the server
+  // as hku\<user>, the page's HKCU; another person's is theirs, under their name)
+  const me = () => 'hku\\' + logon.user.toLowerCase();
+  const toServer = p => (p === 'hkcu' || p.startsWith('hkcu\\') ? me() + p.slice(4) : p);
+  const fromServer = p => (p === me() || p.startsWith(me() + '\\') ? 'hkcu' + p.slice(me().length) : p);
+  const regOut = o => { const r = { ...o, path: toServer(o.path) }; return o.value ? { ...r, value: { type: o.value.type, data: b64(o.value.data) } } : r; };
+  const regIn = o => { const r = { ...o, path: fromServer(o.path) }; return o.value ? { ...r, value: { type: o.value.type, data: unb64(o.value.data) } } : r; };
+  /** the session's registry as this person's page has it: their profile as HKCU; a person new here starts from the
+   *  default user's (hku\.default), or else from a profile someone made before them, as Windows copies the default */
+  const regLoad = rows => {
+    const prefix = me(), mine = rows.some(([p]) => p === prefix || p.startsWith(prefix + '\\'));
+    let from = mine ? prefix : rows.some(([p]) => p === 'hku\\.default' || p.startsWith('hku\\.default\\')) ? 'hku\\.default' : null;
+    if (!from) { const any = rows.find(([p]) => /^hku\\[^\\]+/.test(p)); from = any ? any[0].match(/^hku\\[^\\]+/)[0] : null; }
+    const out = rows.filter(([p]) => p !== prefix && !p.startsWith(prefix + '\\'));
+    if (from) for (const [p, v, n] of rows) {
+      if (p !== from && !p.startsWith(from + '\\')) continue;
+      const local = 'hkcu' + p.slice(from.length); out.push([local, v, n]);
+      // (a profile copied for this person: theirs on the server too, whole, before anything they change goes there)
+      if (!mine) { send('reg', regOut(n ? { op: 'key', path: local, name: n } : { op: 'key', path: local })); for (const [k, val] of v) send('reg', regOut({ op: 'set', path: local, name: k, value: val })); }
+    }
+    return out;
+  };
+  // (who is logged on is each machine's own: Network\Logon's username stays on it, neither sent nor taken from others)
+  const ownValue = o => o.path === 'hklm\\network\\logon' && String(o.name || '').toLowerCase() === 'username';
   const url = s => `__session/${encodeURIComponent(logon.session)}/${s}`;
 
   // ---- what this machine changes, to the server in order (one post at a time, the ones made meanwhile together)
@@ -66,8 +88,8 @@
       label: (label, serial) => send('disk', { op: 'label', label, serial }),
     },
     registry: {
-      load: () => (state.registry ? state.registry.map(([p, vals, n]) => [p, vals.map(([k, v]) => [k, { type: v.type, data: unb64(v.data) }]), n]) : null),
-      op: o => send('reg', regOut(o)),
+      load: () => (state.registry ? regLoad(state.registry.map(([p, vals, n]) => [p, vals.map(([k, v]) => [k, { type: v.type, data: unb64(v.data) }]), n])) : null),
+      op: o => { if (!ownValue(o)) send('reg', regOut(o)); },
     },
   });
 
@@ -81,7 +103,7 @@
     if (m.client === client) return;
     if (!fs) { pending.push(m); return; }
     if (m.kind === 'disk') fs.applyStore('C', m.op.op === 'data' ? { ...m.op, bytes: unb64(m.op.bytes) } : m.op);
-    else if (m.kind === 'reg' && window.W95Win32) window.W95Win32.regApply(regIn(m.op), 'remote');
+    else if (m.kind === 'reg' && window.W95Win32 && !ownValue(m.op)) window.W95Win32.regApply(regIn(m.op), 'remote');
   };
   const roster = list => {
     people.clear();
