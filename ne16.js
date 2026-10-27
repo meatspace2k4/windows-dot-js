@@ -1237,8 +1237,48 @@ P.clockCall = function () {
   return this.retf16(0);
 };
 P.hookIntents = function (user) {
-  const at = this.neExport(user, 483); if (!at) return;
-  (this.entryHooks || (this.entryHooks = new Map())).set(u32(this.selBase(at >>> 16) + (at & 0xffff)), P.spiIntent);
+  const hooks = this.entryHooks || (this.entryHooks = new Map());
+  for (const [ord, fn] of [[483, P.spiIntent], [181, P.colorsIntent]]) {   // SystemParametersInfo, SetSysColors
+    const at = this.neExport(user, ord); if (at) hooks.set(u32(this.selBase(at >>> 16) + (at & 0xffff)), fn);
+  }
+  // (USER32's SystemParametersInfoA, for the settings a structure carries: where it is entered, once it is loaded)
+  const hook32 = m => { const at = m && m.exports && m.exports.get('SystemParametersInfoA'); if (at) hooks.set(u32(at), P.spiStructIntent); };
+  hook32(this.byName && this.byName.get('USER32'));
+  const was = this.onDllLoad; this.onDllLoad = (name, m) => { if (was) was.call(this, name, m); if (name === 'USER32') hook32(m); };
+};
+/** USER32's SystemParametersInfoA(uiAction, uiParam, pvParam, fWinIni) as it is entered (stdcall: its arguments after
+ *  the return address), for a setting a structure carries (osclass.js spiStruct): the structure's bytes with it */
+P.spiStructIntent = function () {
+  if (!this.onIntent) return;
+  const sp = u32(this.cpu.esp.value), action = this.r32(sp + 4), ui = this.r32(sp + 8), pv = this.r32(sp + 12), flags = this.r32(sp + 16);
+  if (!self.W95OSClass.spiStruct(action) || !(flags & 1) || !pv) return;
+  const key = `spi:${action}`;
+  if (P.intentQuiet.call(this)) { if (this.causeOf() === 'remote') this.effect('echo', key); return; }
+  const n = Math.min(action === 34 ? ui : this.r32(pv), 1024); if (!n) return;
+  this.effect('intent', key);
+  this.onIntent({ key, kind: 'spi', action, ui, flags, bytes: Array.from(this.u8.subarray(pv, pv + n)) });
+};
+/** USER's SetSysColors(nChanges, lpSysColor, lpColorValues) as it is entered (Pascal: the last argument nearest): each
+ *  colour an intent of its own (the last for each element wins) */
+P.colorsIntent = function () {
+  if (!this.onIntent) return;
+  const s = this.selBase(this.cpu.ss.value & 0xffff) + (this.cpu.esp.value & 0xffff);
+  const rgb = this.r32(s + 4), idx = this.r32(s + 8), n = this.r16(s + 12);
+  if (!n || n > 64 || !this.selValid(rgb >>> 16) || !this.selValid(idx >>> 16)) return;
+  const quiet = P.intentQuiet.call(this), remote = quiet && this.causeOf() === 'remote';
+  for (let k = 0; k < n; k++) {
+    const index = this.r16(this.lin(idx) + 2 * k), color = this.r32(this.lin(rgb) + 4 * k) >>> 0, key = `color:${index}`;
+    if (quiet) { if (remote) this.effect('echo', key); continue; }
+    this.effect('intent', key); this.onIntent({ key, kind: 'color', index, rgb: color });
+  }
+};
+/** a registry value written by a program, as an intent if it is one osclass.js REG names (none other is shared) */
+P.regIntent = function (path, name, value) {
+  if (!this.onIntent || self.W95OSClass.reg(path, name) !== 'shared') return;
+  const key = `reg:${path}:${String(name).toLowerCase()}`;
+  if (P.intentQuiet.call(this)) { if (this.causeOf() === 'remote') this.effect('echo', key); return; }
+  this.effect('intent', key);
+  this.onIntent({ key, kind: 'reg', path, name, type: value.type, data: Array.from(value.data || []) });
 };
 /** SystemParametersInfo(uiAction, uiParam, pvParam, fWinIni) as it is entered: its words on the stack after the far
  *  return address (Pascal order: fWinIni first) */

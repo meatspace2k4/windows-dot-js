@@ -163,7 +163,9 @@ class Process {
   loadDll(name) {
     if (this.byName.has(name)) return this.byName.get(name);
     const d = this.dlls.get(name); if (!d) return null;
-    return this.loadImage(d.file, d.module, d.meta, name);
+    const m = this.loadImage(d.file, d.module, d.meta, name);
+    if (m && this.onDllLoad) this.onDllLoad(name, m);   // (a module watched as it comes: a shared session's intents, ne16.js)
+    return m;
   }
   /** a module handle as the running process sees it: its program at the base the program's header prefers (where
    *  every Windows 95 process has its own, in its private arena), which here may be elsewhere in the shared space */
@@ -1851,7 +1853,9 @@ def('ADVAPI32', 'RegSetValueExA', 6, function (hk, name, res, type, data, n) {
   // (SPOOLSS gives a printer's "EMF" datatype a count of 2)
   const bytes = type === 1 && data ? window.W95FS.encode((this.readA(data) || '') + '\0') : this.u8.slice(data, data + n);
   const value = { type, data: bytes, name: this.readA(name) || '' };
-  m.set(key, value); regChanged({ op: 'set', path, name: key, value }); return 0;
+  m.set(key, value); regChanged({ op: 'set', path, name: key, value });
+  if (this.regIntent) this.regIntent(path, key, value);   // (a value a shared session's people set for each other: ne16.js)
+  return 0;
 });
 def('ADVAPI32', 'RegSetValueA', 5, function (hk, sub, type, data, n) { const path = regPath(this, hk, sub); if (!path) return 6; const m = regKey(path, true, regPath(this, hk, sub, true)), value = { type: 1, data: window.W95FS.encode((this.readA(data) || '') + '\0') }; m.set('', value); regChanged({ op: 'set', path, name: '', value }); return 0; });
 def('ADVAPI32', 'RegEnumKeyA', 4, function (hk, i, buf, n) {

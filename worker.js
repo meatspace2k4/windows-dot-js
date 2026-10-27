@@ -890,8 +890,15 @@ class Machine {
           let pv = 0, own = 0;
           if (i.str != null) pv = i.str;
           else if (i.ints) { pv = own = p.alloc(12); i.ints.forEach((v, k) => p.w32(own + 4 * k, v)); }
+          else if (i.bytes) { pv = own = p.alloc(i.bytes.length); p.u8.set(i.bytes, own); }   // (a structure: the Appearance tab's metrics and fonts)
           try { return await this.netBatch([{ dll: 'USER32', name: 'SystemParametersInfoA', args: [i.action, i.ui, pv, i.flags] }], true); } finally { if (own) p.free(own); }
         }
+        if (i.kind === 'color') {   // (a system colour: SetSysColors with the one element)
+          const b = p.alloc(8); p.w32(b, i.index); p.w32(b + 4, i.rgb);
+          try { return await this.netBatch([{ dll: 'USER32', name: 'SetSysColors', args: [1, b, b + 4] }], true); } finally { p.free(b); }
+        }
+        // (a registry value no other call carries: set as the program set it, by ADVAPI32's stand-in's registry)
+        if (i.kind === 'reg') { W.regSet(i.path, i.name, { type: i.type, data: Uint8Array.from(i.data || []), name: i.name }); return true; }
         if (i.kind === 'ini') return this.netBatch([{ dll: 'KERNEL32', name: 'WritePrivateProfileStringA', args: [i.app, i.name == null ? 0 : i.name, i.value == null ? 0 : i.value, i.file] }], true);
         return null;
       })();

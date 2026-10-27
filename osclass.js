@@ -29,6 +29,15 @@
   const SPI = { 4: 'mouse', 11: 'ui', 13: 'ui', 15: 'ui', 17: 'ui', 19: 'ui', 20: 'str', 21: 'str', 23: 'ui', 24: 'ui', 26: 'ui', 29: 'ui', 30: 'ui',
     32: 'ui', 33: 'ui', 37: 'ui', 75: 'ui', 81: 'ui', 82: 'ui', 85: 'ui', 86: 'ui' };
   const spi = action => SPI[action] || null;
+  // the settings a structure carries, made through USER32's SystemParametersInfoA (the Appearance tab's): the icon
+  // titles' font (34, LOGFONTA, uiParam its size), the window metrics and fonts (42, NONCLIENTMETRICSA), the minimized
+  // windows' (44, MINIMIZEDMETRICS), the icons' spacing and font (46, ICONMETRICSA); the others by their cbSize
+  const SPI_STRUCT = new Set([34, 42, 44, 46]);
+  const spiStruct = action => SPI_STRUCT.has(action);
+  // the registry's values a person sets for the session that no other call carries (an intent of their own): the
+  // screen saver's password being asked for (Display Properties' check box)
+  const REG = { 'hkcu\\control panel\\desktop': ['screensaveusepassword'] };
+  const reg = (path, name) => ((REG[String(path || '').toLowerCase()] || []).includes(String(name || '').toLowerCase()) ? 'shared' : 'local');
   /** a settings file's class: the system's (WIN.INI, SYSTEM.INI) shared, as intents; any other program's file local */
   const ini = file => (/^(WIN|SYSTEM)\.INI$/.test(String(file || '').split('\\').pop().toUpperCase()) ? 'shared' : 'local');
   // the registry's and the disk's areas: each machine's own, but who is logged on
@@ -45,5 +54,5 @@
   };
   const byName = new Map(Object.entries(API).flatMap(([cls, names]) => names.map(n => [n, cls])));
   const api = name => byName.get(name) || null;
-  g.W95OSClass = { STATE, PROGRAMS, program, SPI, spi, ini, area, API, api };
+  g.W95OSClass = { STATE, PROGRAMS, program, SPI, spi, spiStruct, REG, reg, ini, area, API, api };
 })();

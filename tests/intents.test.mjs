@@ -40,4 +40,23 @@ const m = got.length;
 P.iniIntent.call(p, 'WIN.INI', 'Desktop', 'Wallpaper', 'x', { name: 'USER' });   // USER's own, for a setting it keeps
 P.iniIntent.call(p, 'C:\\WINDOWS\\NOTEPAD.INI', 'x', 'y', 'z', null);            // a program's own file
 assert.equal(got.length, m);
+// the Appearance tab's: USER32's SystemParametersInfoA with a structure (stdcall, flat), its bytes by its cbSize, or
+// uiParam for the icon titles' font; SetSysColors, each colour its own; the saver's password value from the registry
+{
+  const sp = 0x2000; p.cpu.esp.value = sp;
+  const s32 = (action, ui, pv, flags) => { dv.setUint32(sp + 4, action, true); dv.setUint32(sp + 8, ui, true); dv.setUint32(sp + 12, pv, true); dv.setUint32(sp + 16, flags, true); P.spiStructIntent.call(p); };
+  dv.setUint32(0x3000, 20, true); u8[0x3004] = 7;   // MINIMIZEDMETRICS: cbSize 20
+  s32(44, 20, 0x3000, 3);
+  assert.equal(got.at(-1).key, 'spi:44'); assert.equal(got.at(-1).bytes.length, 20); assert.equal(got.at(-1).bytes[4], 7);
+  s32(34, 60, 0x3100, 1); assert.equal(got.at(-1).bytes.length, 60, 'the icon titles\' LOGFONTA, by uiParam');
+  const k = got.length; s32(17, 1, 0, 3); s32(44, 20, 0x3000, 0); assert.equal(got.length, k, 'not a structure\'s, or not kept: none');
+  // SetSysColors(2, {COLOR_WINDOW, COLOR_HIGHLIGHT}, {..}): far pointers on the 16-bit stack, the last nearest
+  p.cpu.esp.value = 0x100; const s = 0x1100; dv.setUint16(s + 12, 2, true); dv.setUint32(s + 8, 0x180020, true); dv.setUint32(s + 4, 0x180030, true);
+  dv.setUint16(0x4020, 5, true); dv.setUint16(0x4022, 13, true); dv.setUint32(0x4030, 0xffffff, true); dv.setUint32(0x4034, 0x800000, true);
+  P.colorsIntent.call(p);
+  assert.deepEqual(got.slice(-2), [{ key: 'color:5', kind: 'color', index: 5, rgb: 0xffffff }, { key: 'color:13', kind: 'color', index: 13, rgb: 0x800000 }]);
+  P.regIntent.call(p, 'hkcu\\control panel\\desktop', 'screensaveusepassword', { type: 1, data: Uint8Array.of(0x31, 0) });
+  assert.deepEqual(got.at(-1), { key: 'reg:hkcu\\control panel\\desktop:screensaveusepassword', kind: 'reg', path: 'hkcu\\control panel\\desktop', name: 'screensaveusepassword', type: 1, data: [0x31, 0] });
+  const j = got.length; P.regIntent.call(p, 'hkcu\\software\\x', 'y', { type: 1, data: [] }); assert.equal(got.length, j, 'another value: each machine\'s own');
+}
 console.log('intents: ok');
