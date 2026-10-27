@@ -329,6 +329,7 @@ class Machine {
         if (m && /^(533|534|537)$/.test(m[1])) return [4, 6, 8, 10].map(k => p.r16(f + k).toString(16)).join(' ');   // (the DDE conversions: their stack words)
         if (m && /^(484|485)$/.test(m[1])) { const o = m[1] === '484' ? 8 : 4; return `pid ${p.r32(f + o + 2).toString(16)} off ${(p.r16(f + o) << 16) >> 16}`; }   // (Get/SetProcessDword: the process and the field)
         if (m && /^(458|459|460)$/.test(m[1])) return 'h ' + p.r32(f + (m[1] === '460' ? 8 : 4)).toString(16);   // (Set/ResetW32Event, WaitForSingleObject: the handle)
+        if (m && m[1] === '128') { const s = k => { const v = p.r32(f + k); return v >>> 16 ? p.readA(p.lin(v)) || '' : '#' + v; }; return `[${s(22)}] ${s(18)} (${s(4)})`; }   // (GetPrivateProfileString: the section, the key, the file)
         if (m && /^(49|60|61|64|65|81|82|84|85)$/.test(m[1])) return [4, 6, 8, 10, 12].map(k => p.r16(f + k).toString(16)).join(' ') + (m[1] === '85' ? ' ' + p.readA(p.lin(p.r32(f + 6))) : '');   // (the file and resource calls: their stack words; _lopen's name)
         if (m && /^(334|335|336|337|346|347)$/.test(m[1])) { const w = m[1] === '336' ? 0 : /^34/.test(m[1]) ? 4 : 2, sp = p.r32(f + 4 + w); return `${sp.toString(16)} n ${w ? (w === 4 ? p.r32(f + 4) : p.r16(f + 4)) : 1}`; }   // (IsBadReadPtr, IsBadWritePtr, IsBadCodePtr, IsBadStringPtr, the huge ones: the pointer and size)
         if (m && m[1] === '457') return 'manual ' + p.r32(f + 8) + ' set ' + p.r32(f + 4) + ' -> h ' + ((p.nextHandle || 0) >>> 0).toString(16);   // (CreateW32Event)

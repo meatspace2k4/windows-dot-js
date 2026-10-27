@@ -3103,9 +3103,12 @@ def16('KERNEL', 651, 'sswlxsw', 'w', function (dll16, dll32, hinst, reason, td, 
 def16('KERNEL', 631, '', 'jmp', function () {
   const td = this.lin(u32(this.cpu.edx.value)), cx = this.cpu.ecx.value & 0xffff, rec = this.sl01 && this.sl01.get(td);
   if (rec && !rec.mod && rec.dll32) {
+    // (the 32-bit half loaded here, as LoadLibrary loads it: its DllMain runs, whose ThunkConnect32 gives the record
+    // its module and target table; MSVIDEO's first call to MSVFW32 found neither and every ICOpen failed)
     const m = this.loadDll(String(rec.dll32 || '').toUpperCase().replace(/^.*\\/, '').replace(/\.DLL$/, ''));
+    if (m) { this.runPendingInits(); for (const d of this.importClosure(m)) this.attach(d); }
     const td32 = m && m.exports.get(rec.name32);
-    if (td32) Object.assign(rec, { mod: m, table: u32(td32 + (this.r32(td32 + 0x20) | 0)) });
+    if (td32 && !rec.mod) Object.assign(rec, { mod: m, table: u32(td32 + (this.r32(td32 + 0x20) | 0)) });
   }
   const tgt = rec && rec.table ? this.r32(rec.table + cx) : 0;
   if (rec && rec.mod && tgt >= rec.mod.meta.textLo && tgt < rec.mod.meta.textHi) return this.enter32from16(tgt);
