@@ -3475,6 +3475,7 @@ class RemoteApp extends NativeApp {
       case 'session': sessionCommand(m.op); return;   // (Export or Import Session, from the Start menu: SESSION.DLL)
       // a console program's output, and its end, to the MS-DOS machine that is its console
       case 'conOut': { const c = consoles.get(m.id); if (c) { c.conWrite(m.text); dirty(); } return; }
+      case 'mic': { if (window.W95Mic) window.W95Mic.set(!!m.on, (samples, rate) => this.worker.postMessage({ t: 'micIn', samples, rate }, [samples.buffer])); return; }   // (the sound card capturing: the microphone opened, or let go)
       case 'cdaudio': { const A = window.W95CDAudio; if (A) { if (m.op === 'play') A.play(m.from, m.to); else if (m.op === 'gain') A.gain(m.l, m.r); else A.stop(); } return; }   // (the audio CD drive told to play sectors, or stop; the sound card's gain for it)
       case 'conMode': { const c = consoles.get(m.id); if (c && c.conWait) c.conWait.mode = m.mode; return; }
       case 'conExit': { const c = consoles.get(m.id); if (c) { consoles.delete(m.id); c.conDone(); } return; }

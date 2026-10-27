@@ -84,6 +84,17 @@ P.dmaRead = function (chn, n) {
   }
   return k === n ? out : out.subarray(0, k);
 };
+/** bytes to a DMA channel (device to memory, as a recording transfers); how many went before it was masked or ended */
+P.dmaWrite = function (chn, bytes) {
+  const d = dmac(this).ch[chn]; let k = 0;
+  while (k < bytes.length && !d.masked) {
+    this.u8[(d.page << 16) | d.cur] = bytes[k++];
+    d.cur = (d.cur + 1) & 0xffff;
+    if (d.count === 0) { d.tc = true; if (d.mode & 0x10) { d.cur = d.base; d.count = d.bcount; } else { d.masked = true; d.count = 0xffff; } }
+    else d.count--;
+  }
+  return k;
+};
 
 // ---------------------------------------------------------------- AD1848 codec
 // indirect registers 0-15: 6/7 DAC attenuation (bits 0-5 in 1.5 dB steps, bit 7 mute), 8 clock and data format,
@@ -270,6 +281,10 @@ P.soundIO = function (port, size, isIn) {
       const was = c.regs[c.idx]; c.regs[c.idx] = v;
       if (c.idx === 9 && !(v & 1) && (was & 1)) this.soundQuiet = false;   // the sound played unheard is over
       if (c.idx === 9 && (v & 1) && !(was & 1)) { c.count = (c.regs[14] << 8) | c.regs[15]; c.frac = 0; c.last = c.t; }
+      // capture enable (bit 1): the count starts as for playback; the page's microphone is opened for it, and closed
+      // when capture stops
+      if (c.idx === 9 && (v & 2) && !(was & 2)) { c.count = (c.regs[14] << 8) | c.regs[15]; c.frac = 0; c.last = c.t; this.mic = { q: [], pos: 0, rate: 0 }; if (self.W95MIC) self.W95MIC(true); }
+      if (c.idx === 9 && !(v & 2) && (was & 2) && self.W95MIC) self.W95MIC(false);
       if (c.idx === 15 || c.idx === 14) c.count = (c.regs[14] << 8) | c.regs[15];
       // AUX1, where the audio CD drive's output comes in (with the FM synthesizer's, on a Sound System card with a CD
       // connector): its gain and mute follow the mixer's MIDI line (and its master Volume, which MSSNDSYS applies there)
@@ -440,9 +455,44 @@ P.sound16 = function (bus = false) {
   this.irqPending();   // an interrupt held while the code had interrupts disabled, now that it enabled them
   const c = this.ad1848; if (!c) return;
   c.t = bus ? c.t + BUS_MS : Math.max(c.t, this.now());
-  if (!(c.regs[9] & 1) || this.inIRQ || this.inSound) return;
+  if (!(c.regs[9] & 3) || this.inIRQ || this.inSound) return;
   this.inSound = true;
-  try { this.soundRun(c); } finally { this.inSound = false; }
+  try { if (c.regs[9] & 1) this.soundRun(c); else this.captureRun(c); } finally { this.inSound = false; }
+};
+/** the microphone's samples from the page (mono, at its rate), queued for the codec's capture */
+P.micIn = function (samples, rate) {
+  const m = this.mic; if (!m) return;
+  m.rate = rate; m.q.push(samples);
+  let n = m.q.reduce((s, b) => s + b.length, 0) - m.pos;   // (at most 2 seconds queued: a capture that stalled starts fresh)
+  while (n > rate * 2 && m.q.length > 1) { const b = m.q.shift(); n -= b.length; m.pos = Math.max(0, m.pos - b.length); }
+};
+// a sample from the microphone's queue at the codec's rate (the queue's own rate stepped through), or silence when the
+// page has none (no microphone, or not allowed)
+const micSample = (m, rate) => {
+  if (!m || !m.rate || !m.q.length) return 0;
+  while (m.q.length && m.pos >= m.q[0].length) { m.pos -= m.q[0].length; m.q.shift(); }
+  if (!m.q.length) return 0;
+  const s = m.q[0][Math.floor(m.pos)]; m.pos += m.rate / rate; return s;
+};
+// The codec's capture (register 9 bit 1, on the card's one DMA channel): its input as register 0 (left) and 1 (right)
+// select it, bits 6-7 the source (line, AUX1, microphone, the output mix) and bits 0-3 the gain (1.5 dB steps, bit 5
+// the microphone's +20 dB). Only the microphone is connected: the page's. Frames are taken as playback takes them
+// (the count, the interrupt between blocks) in register 8's format and written to memory
+const ENC = { 0: s => [Math.max(0, Math.min(255, Math.round(s * 128 + 128)))], 2: s => { const v = Math.max(-32768, Math.min(32767, Math.round(s * 32768))); return [v & 0xff, (v >> 8) & 0xff]; } };
+const encLaw = (table, s) => { let best = 0, d = Infinity; for (let i = 0; i < 256; i++) { const e = Math.abs(table[i] - s); if (e < d) { d = e; best = i; } } return [best]; };
+P.captureRun = function (c) {
+  const now = c.t, rate = rateOf(c.regs[8]), dt = Math.min(now - c.last, 250); c.last = now;
+  c.frac += rate * dt / 1000; const frames = Math.floor(c.frac); c.frac -= frames;
+  if (frames <= 0) return;
+  const stereo = !!(c.regs[8] & 0x10), fmt = (c.regs[8] >> 5) & 3, enc = ENC[fmt] || (s => encLaw(fmt === 1 ? ULAW : ALAW, s));
+  const level = r => (((r >> 6) & 3) !== 2 ? 0 : Math.pow(10, (1.5 * (r & 0x0f) + (r & 0x20 ? 20 : 0)) / 20));
+  const gl = level(c.regs[0]), gr = level(c.regs[1]), v = this.vpicd && this.vpicd.byIrq.get(WSS.irq), p = pic(this);
+  for (let k = 0; k < frames && (c.regs[9] & 2); k++) {
+    if ((c.int || (v && v.request) || (p.irr & (1 << WSS.irq))) && (c.regs[10] & 2)) { c.frac += frames - k; break; }
+    const s = micSample(this.mic, rate), out = stereo ? [...enc(s * gl), ...enc(s * gr)] : enc(s * gl);
+    if (this.dmaWrite(WSS.dma, out) < out.length) break;
+    if (c.count === 0) { c.count = (c.regs[14] << 8) | c.regs[15]; c.int = true; if (c.regs[10] & 2) this.raiseIRQ(WSS.irq); } else c.count--;
+  }
 };
 P.soundRun = function (c) {
   const now = c.t, rate = rateOf(c.regs[8]), dt = Math.min(now - c.last, 250); c.last = now;

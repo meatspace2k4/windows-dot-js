@@ -13,6 +13,7 @@ const B = self.W95Bridge, W = self.W95Win32, { FSError, join, basename, extname 
 const b64bytes = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
 const post = (m, tr) => self.postMessage(m, tr || []);
 self.W95CDAUDIO = (op, from, to) => post({ t: 'cdaudio', op, from, to });   // (the audio CD drive's play and stop, for the page's cdaudio.js: ne16.js cdRequest)
+self.W95MIC = on => post({ t: 'mic', on });                                 // (the sound card's capture started or stopped: the page's microphone: sound.js)
 self.W95CDGAIN = (l, r) => post({ t: 'cdaudio', op: 'gain', l, r });       // (the sound card's AUX1 gain the drive's output goes through: sound.js)
 
 // ---------------------------------------------------------------- the page, called synchronously
@@ -893,6 +894,7 @@ self.onmessage = e => {
     for (const v of [...rfs.vols.values()]) if (!m.list.some(x => x.letter === v.letter && x.unc.toUpperCase() === v.unc.toUpperCase())) rfs.unmount(v.letter);
     for (const x of m.list) if (!rfs.vols.has(x.letter)) rfs.mount(x.letter, { remote: netOf(x.letter), unc: x.unc, label: x.unc.split('\\').pop() || '' });
   } else if (m.t === 'regop') W.regApply(m.o, true);
+  else if (m.t === 'micIn' && machine && machine.proc) machine.proc.micIn(m.samples, m.rate);   // (the microphone's samples, for the codec's capture)
   else if (m.t === 'conIn' && machine && machine.proc) { const p = machine.proc, c = p.conIn || (p.conIn = new Map()); c.set(m.id, (c.get(m.id) || '') + m.text); machine.kick && machine.kick(); }   // (a line typed in a console program's window)
   else if (m.t === 'ccdReply' && self.W95ClaudeReply) self.W95ClaudeReply(m);   // (a tool's answer for the Claude program: claude-app.js)
   else if (m.t === 'ccdAsk') { if (self.W95ClaudeAsk) self.W95ClaudeAsk(m); else post({ t: 'ccdAnswer', id: m.id, yes: false }); }   // (and a tool's question for it)
