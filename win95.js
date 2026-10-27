@@ -5284,7 +5284,7 @@ async function osApply(id, v, local, by) {
       // of several windows of a program, or a folder: closed as its own close box closes it)
       const prog = id.slice(0, id.lastIndexOf('/'));
       if (!mine.v.folder && ![...local.keys()].some(k => k !== id && k.startsWith(prog + '/'))) { a.cmd('end', [mine.hwnd]); return; }
-      const w = windows.find(x => x.native && x.guestHwnd === mine.hwnd); if (w) a.close(w);
+      a.cmd('closeRemote', [mine.hwnd]);
     }
     return;
   }

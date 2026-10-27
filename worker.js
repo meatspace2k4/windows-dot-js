@@ -879,15 +879,17 @@ class Machine {
         if (show) await this.onWindow('ShowWindow', [hwnd, show]);
         if (show !== 3 && show !== 7) await this.onWindow('MoveWindow', [hwnd, x, y, w, h, 1]);
       })();
-      // (a window closed here because another machine's person closed it there: under a remote cause, ne16.js
+      // a window closed as its close box closes it (this machine's person: the page's close box, win95.close)
+      case 'close': u(110, [['w', args[0]], ['w', 0x10], ['w', 0], ['l', 0]]); return;
+      // (one closed here because another machine's person closed it there: under a remote cause, ne16.js
       // remoteClose, so the page sends no close of its own for it, oslogic.js read)
-      case 'close': p.remoteClose(args[0]); u(110, [['w', args[0]], ['w', 0x10], ['w', 0], ['l', 0]]); return;
+      case 'closeRemote': p.remoteClose(args[0]); u(110, [['w', args[0]], ['w', 0x10], ['w', 0], ['l', 0]]); return;
       // a program another machine's person closed (its window gone there, after anything it asked there: "Save
       // changes?"): ended here as Windows ends a program, without its asking again, its contents being the session's
       // already. A Windows 3.x program's task is asked to close (WM_CLOSE)
       case 'end': {
         p.remoteClose(args[0]);
-        const task = u(224, [['w', args[0]]]), pc = task && [...(p.procs || new Map()).values()].find(c => c.tdb === task);
+        const task = u(224, [['w', args[0]]]).ax, pc = task && [...(p.procs || new Map()).values()].find(c => c.tdb === task);   // (GetWindowTask: AX)
         if (pc && pc.exitCode === null) { p.endProcess(pc, 0); return true; }
         u(110, [['w', args[0]], ['w', 0x10], ['w', 0], ['l', 0]]); return false;
       }
@@ -968,6 +970,14 @@ class Machine {
       // ('mouse-in', 'key-in'), and fed into USER's drivers ('mouse-fed', 'key-fed'); [true] starts recording, [] reads
       // and clears, [false] ends it. The sprite's move the page sees itself: win95.lag())
       case 'lag': { if (args.length && args[0] === true) { this.lagLog = []; return true; } if (args.length && args[0] === false) { this.lagLog = null; return true; } const l = this.lagLog || []; this.lagLog = this.lagLog ? [] : null; return l; }
+      // (a diagnostic: selectors allocated and not freed since [true], each with where it was allocated; [] gives them
+      // by site, [false] ends it)
+      case 'seltrace': {
+        if (args[0] === true) { const live = p.selTrace = new Map(), od = p.setDesc, of = p.freeSels; p.setDesc = function (s, ...a) { if (!this.selUsed[(s & 0xfff8) >> 3]) live.set(s & 0xfff8, new Error().stack.split('\n').slice(2, 8).map(x => x.trim().replace(/^at /, '').replace(/\(.*\//, '(')).join(' < ')); return od.call(this, s, ...a); }; p.freeSels = function (s, ...a) { live.delete(s & 0xfff8); return of.call(this, s, ...a); }; return true; }
+        if (args[0] === false) { delete p.setDesc; delete p.freeSels; p.selTrace = null; return true; }
+        const by = new Map(); for (const st of (p.selTrace || new Map()).values()) by.set(st, (by.get(st) || 0) + 1);
+        return [...by].sort((x, y) => y[1] - x[1]).slice(0, 10);
+      }
       case 'log': return W.log.lines(args[0] || 0);   // (the machine's log since line n: win32.js log; the page keeps its own copy as the lines come)
       // (a line said by the page, into this machine's log: the Debug Monitor shows the page's too)
       case 'logPut': W.log.put(args[0]); return;
