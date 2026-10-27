@@ -400,6 +400,10 @@ build_staging() {
     cp "$REPO_ROOT/index.html" "$REPO_ROOT/manifest.webmanifest" "$STAGING_DIR/site/"
     cp "$REPO_ROOT/icons/"*.png "$STAGING_DIR/site/icons/"
     stage_file "$REPO_ROOT/$CD_IMAGE" "$STAGING_DIR/site/$CD_IMAGE"
+    # The audio CD in the second CD drive (tools/build_audiocd.py), when there is one: without it the drive is empty
+    for f in audiocd.bin audiocd.json; do
+        [[ -e "$REPO_ROOT/$f" ]] && stage_file "$REPO_ROOT/$f" "$STAGING_DIR/site/$f"
+    done
 
     # The scripts the stamps rewrite are copies, never links into the working tree.
     for f in index.html host-web.js win95.js worker.js sw.js; do

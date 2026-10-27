@@ -12,6 +12,7 @@ importScripts('bridge.js', 'fs.js', 'win32.js', 'gl.js', 'shell32.js', 'system.j
 const B = self.W95Bridge, W = self.W95Win32, { FSError, join, basename, extname } = self.W95FS;
 const b64bytes = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
 const post = (m, tr) => self.postMessage(m, tr || []);
+self.W95CDAUDIO = (op, from, to) => post({ t: 'cdaudio', op, from, to });   // (the audio CD drive's play and stop, for the page's cdaudio.js: ne16.js cdRequest)
 
 // ---------------------------------------------------------------- the page, called synchronously
 let rpcSab = null;

@@ -26,6 +26,27 @@ assert.equal(req(3, 3, [10]), 0x0100); assert.deepEqual([p.u8[0x1101], p.u8[0x11
 const lead = 300000 + 150; assert.deepEqual([...p.u8.subarray(0x1103, 0x1106)], [lead % 75, Math.floor(lead / 75) % 60, Math.floor(lead / 4500)], 'the lead-out in Red Book (frame, second, minute)');
 assert.equal(req(3, 3, [11, 1]), 0x0100); assert.equal(p.u8[0x1106], 0x41, 'track 1 is data'); assert.deepEqual([...p.u8.subarray(0x1102, 0x1105)], [0, 2, 0], 'at 00:02:00');
 assert.equal(req(3, 3, [11, 2]), 0x8003, 'no track 2');
-assert.equal(req(3, 0x84), 0x0100); assert.equal(req(3, 0x85), 0x0100);
+assert.equal(req(3, 0x84), 0x800c, 'nothing to play on a data disc'); assert.equal(req(3, 0x85), 0x0100);
 assert.equal(req(3, 0x99), 0x8003); assert.equal(req(2, 3, [6]), 0x8001, 'C: is no CD drive');
+// the audio disc in E: (cdaudio.js's table of contents): its tracks audio (control 01h), the lead-out; play from a track
+// tells the page to play those sectors, the drive busy while it plays, the Q channel following the clock; stop pauses
+// (the page told to stop), resume plays on from there, a second stop stops for good
+{
+  let now = 1000; const sent = []; p.cdClock = () => now; self.W95CDAUDIO = (op, from, to) => sent.push([op, from, to]);
+  p.fs.vols.set('E', { kind: 'cdrom', letter: 'E', audio: { tracks: [{ number: 1, lba: 0, sectors: 13275 }, { number: 2, lba: 13275, sectors: 13155 }], leadout: 26430 } });
+  assert.equal(req(4, 3, [10]), 0x0100); assert.deepEqual([p.u8[0x1101], p.u8[0x1102]], [1, 2]);
+  assert.equal(req(4, 3, [11, 2]), 0x0100); assert.equal(p.u8[0x1106], 0x01, 'audio');
+  const rb = 13275 + 150; assert.deepEqual([p.u8[0x1102], p.u8[0x1103], p.u8[0x1104]], [rb % 75, Math.floor(rb / 75) % 60, Math.floor(rb / 4500)]);
+  // play track 2 to the end, by Red Book address
+  p.u8.fill(0, 0x1000, 0x1100); p.u8[0x1002] = 0x84; p.u8[0x100d] = 1; p.w32(0x100e, (Math.floor(rb / 4500) << 16) | ((Math.floor(rb / 75) % 60) << 8) | (rb % 75)); p.w32(0x1012, 13155);
+  p.cpu.eax.value = 0x1510; p.cpu.ecx.value = 4; p.cpu.es.value = 0x100; p.cpu.ebx.value = 0; p.interrupt(0x2f, 0);
+  assert.equal(p.r16(0x1003), 0x0300, 'done, busy'); assert.deepEqual(sent, [['play', 13275, 26430]]);
+  now += 2000; assert.equal(req(4, 3, [12]), 0x0300);
+  assert.deepEqual([p.u8[0x1102], p.u8[0x1104], p.u8[0x1105], p.u8[0x1106]], [0x02, 0, 2, 0], 'track 02, 0:02.00 into it');
+  assert.equal(req(4, 0x85), 0x0100); assert.deepEqual(sent[1], ['stop', undefined, undefined]);
+  assert.equal(req(4, 3, [15]), 0x0100); assert.equal(p.r16(0x1101), 1, 'paused');
+  now += 5000; assert.equal(req(4, 0x88), 0x0300); assert.deepEqual(sent[2], ['play', 13275 + 150, 26430], 'on from where it paused');
+  assert.equal(req(4, 0x85), 0x0100); assert.equal(req(4, 0x85), 0x0100); assert.equal(req(4, 0x88), 0x800c, 'stopped: nothing to resume');
+  assert.equal(req(3, 0x84), 0x800c, 'a data disc has no audio');
+}
 console.log('mscdex: ok');

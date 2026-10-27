@@ -541,6 +541,14 @@ function mountDrives() {
   const conv = e => (e[2] ? [e[0], e[1], e[2].map(conv)] : e[4] ? [e[0], e[1], null, e[3], b64(e[4])] : e);
   fs.load('A', window.W95FLOPPY.tree.map(conv));
   fs.load('D', window.W95CD.tree.map(conv));
+  // the second CD drive, E:, with the audio disc in it (cdaudio.js): its tracks the files CDFS shows (Track01.cda ...),
+  // its table of contents the drive's (MSCDEX, ne16.js cdRequest)
+  const A = window.W95CDAudio, toc = A && A.toc;
+  if (toc) {
+    const t0 = Date.UTC(1996, 0, 1), v = fs.mount('E', { kind: 'cdrom', label: 'Audio CD', readonly: true, cluster: 2048, fsname: 'CDFS' });
+    v.audio = { tracks: toc.tracks.map(t => ({ number: t.number, lba: t.lba, sectors: t.sectors })), leadout: toc.leadout, serial: A.serial() };
+    fs.load('E', toc.tracks.map(t => [`Track${String(t.number).padStart(2, '0')}.cda`, t0, null, 44, A.cda(t)]));
+  }
 }
 // Setup's first boot: C: as a fresh install leaves it
 function makeDisk(mounted) {
@@ -3458,6 +3466,7 @@ class RemoteApp extends NativeApp {
       case 'session': sessionCommand(m.op); return;   // (Export or Import Session, from the Start menu: SESSION.DLL)
       // a console program's output, and its end, to the MS-DOS machine that is its console
       case 'conOut': { const c = consoles.get(m.id); if (c) { c.conWrite(m.text); dirty(); } return; }
+      case 'cdaudio': { const A = window.W95CDAudio; if (A) { if (m.op === 'play') A.play(m.from, m.to); else A.stop(); } return; }   // (the audio CD drive told to play sectors, or stop)
       case 'conMode': { const c = consoles.get(m.id); if (c && c.conWait) c.conWait.mode = m.mode; return; }
       case 'conExit': { const c = consoles.get(m.id); if (c) { consoles.delete(m.id); c.conDone(); } return; }
       case 'ccdTurn': emit('ccd.reply', { session: m.session, text: m.text, error: m.error, stopped: !!m.stopped }); if (m.kind) emit('ccd.notify', { kind: m.kind, session: m.session }); return;   // (a turn of the Claude program's ended)
@@ -3512,7 +3521,7 @@ class RemoteApp extends NativeApp {
       if (m.target === 'fs') {
         if (m.method === 'getCwd') v = fs.cwd;
         else if (m.method === 'setCwd') { fs.cwd = m.args[0]; v = null; }
-        else if (m.method === 'vols') v = [...fs.vols.values()].map(x => ({ letter: x.letter, kind: x.kind, label: x.label, remote: !!x.remote, unc: x.unc || '' }));
+        else if (m.method === 'vols') v = [...fs.vols.values()].map(x => ({ letter: x.letter, kind: x.kind, label: x.label, remote: !!x.remote, unc: x.unc || '', ...(x.audio ? { audio: x.audio } : {}) }));
         else if (typeof fs[m.method] !== 'function') throw new Error(`the file system has no ${m.method}`);
         else v = fs[m.method](...m.args);
       } else if (m.target === 'host') {

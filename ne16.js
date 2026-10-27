@@ -570,30 +570,64 @@ const cdRequest = p => {
   const cd = [...p.fs.vols.values()].find(v => v.kind === 'cdrom' && v.letter.charCodeAt(0) - 65 === drive);
   const status = v => p.w16(hdr + 3, v);
   if (!cd) return status(0x8001);
-  // the disc's sectors: the primary volume descriptor's volume space size (sector 16, +80), else 74 minutes
-  let sectors = cd.sectors;
-  if (!sectors) { try { const d = cd.disc && cd.disc.read(16, 1); sectors = d && d.length >= 84 ? new DataView(d.buffer, d.byteOffset).getUint32(80, true) : 0; } catch (_) { sectors = 0; } sectors = cd.sectors = sectors || 333000; }
+  // the disc: an audio disc's tracks (cdaudio.js, the volume's table of contents), or a data disc as one data track
+  // whose sectors are the primary volume descriptor's volume space size (sector 16, +80), else 74 minutes
+  let disc = cd.toc16;
+  if (!disc) {
+    if (cd.audio) disc = { tracks: cd.audio.tracks.map(t => ({ ...t, ctl: 0x01 })), leadout: cd.audio.leadout };
+    else {
+      let n = 0; try { const d = cd.disc && cd.disc.read(16, 1); n = d && d.length >= 84 ? new DataView(d.buffer, d.byteOffset).getUint32(80, true) : 0; } catch (_) { n = 0; }
+      disc = { tracks: [{ number: 1, lba: 0, sectors: n || 333000, ctl: 0x41 }], leadout: n || 333000 };
+    }
+    cd.toc16 = disc;
+  }
   const msf = lba => { const f = lba + 150; return u32((Math.floor(f / 4500) << 16) | ((Math.floor(f / 75) % 60) << 8) | (f % 75)); };
+  const bytesMsf = (b, lba) => { const f = lba + 150; p.u8[b] = Math.floor(f / 4500); p.u8[b + 1] = Math.floor(f / 75) % 60; p.u8[b + 2] = f % 75; };   // (minute, second, frame)
+  // the drive's audio: playing [from, to) since t0 (its position by the clock, 75 sectors a second), or paused at pos
+  const now = p.cdClock ? p.cdClock() : performance.now(), a = cd.play16 || (cd.play16 = { state: 'idle', from: 0, to: 0, pos: 0, t0: 0 });
+  if (a.state === 'playing') { a.pos = Math.min(a.to, a.from + Math.floor((now - a.t0) * 75 / 1000)); if (a.pos >= a.to) a.state = 'idle'; }
+  const busy = a.state === 'playing' ? 0x0200 : 0, send = (op, from, to) => { if (self.W95CDAUDIO) self.W95CDAUDIO(op, from, to); };
+  const trackAt = lba => disc.tracks.find(t => lba >= t.lba && lba < t.lba + t.sectors) || disc.tracks[0];
   const cmd = p.u8[hdr + 2];
   if (cmd === 3) {
     const t = p.r32(hdr + 0x0e), b = at(t >>> 16, t), code = p.u8[b];
     switch (code) {
       case 0: p.w32(b + 1, 0); break;
-      case 1: p.u8[b + 1] = 0; p.w32(b + 2, 0); break;
+      case 1: p.u8[b + 1] = 0; p.w32(b + 2, a.pos); break;
       case 4: for (let i = 0; i < 4; i++) { p.u8[b + 1 + 2 * i] = i; p.u8[b + 2 + 2 * i] = 0xff; } break;
       case 6: p.w32(b + 1, 0x0214); break;
       case 7: p.u8[b + 1] = 0; p.w16(b + 2, 2048); break;
-      case 8: p.w32(b + 1, sectors); break;
+      case 8: p.w32(b + 1, disc.leadout); break;
       case 9: p.u8[b + 1] = 1; break;
-      case 10: p.u8[b + 1] = 1; p.u8[b + 2] = 1; p.w32(b + 3, msf(sectors)); break;
-      case 11: { const n = p.u8[b + 1]; if (n !== 1) return status(0x8003); p.w32(b + 2, msf(0)); p.u8[b + 6] = 0x41; break; }
-      case 12: p.u8.fill(0, b + 1, b + 11); p.u8[b + 1] = 0x41; p.u8[b + 2] = 1; p.u8[b + 3] = 1; break;
-      case 15: p.u8.fill(0, b + 1, b + 11); break;
-      default: return status(0x8003);
+      case 10: p.u8[b + 1] = disc.tracks[0].number; p.u8[b + 2] = disc.tracks[disc.tracks.length - 1].number; p.w32(b + 3, msf(disc.leadout)); break;
+      case 11: { const tr = disc.tracks.find(x => x.number === p.u8[b + 1]); if (!tr) return status(0x8003); p.w32(b + 2, msf(tr.lba)); p.u8[b + 6] = tr.ctl; break; }
+      case 12: {   // the Q channel: the track (BCD) and index, the time in the track, then on the disc
+        const tr = trackAt(a.pos), bcd = n => ((n / 10) << 4) | (n % 10), rel = a.pos - tr.lba;
+        p.u8.fill(0, b + 1, b + 11); p.u8[b + 1] = tr.ctl; p.u8[b + 2] = bcd(tr.number); p.u8[b + 3] = 1;
+        p.u8[b + 4] = Math.floor(rel / 4500); p.u8[b + 5] = Math.floor(rel / 75) % 60; p.u8[b + 6] = rel % 75; bytesMsf(b + 8, a.pos);
+        break;
+      }
+      case 15: p.u8.fill(0, b + 1, b + 11); p.w16(b + 1, a.state === 'paused' ? 1 : 0); p.w32(b + 3, msf(a.from)); p.w32(b + 7, msf(a.to)); break;
+      default: return status(0x8003 | busy);
     }
+    return status(0x0100 | busy);
+  }
+  if (cmd === 0x84) {   // play audio: from the start (+0Eh; HSG, or Red Book by the addressing mode at +0Dh) for n sectors (+12h)
+    const s = p.r32(hdr + 0x0e), start = p.u8[hdr + 0x0d] ? ((s >>> 16) & 0xff) * 4500 + ((s >>> 8) & 0xff) * 75 + (s & 0xff) - 150 : s;
+    const to = Math.min(disc.leadout, start + p.r32(hdr + 0x12));
+    if (!cd.audio || start < 0 || start >= to) return status(0x800c);   // (a data disc has nothing to play: general failure)
+    Object.assign(a, { state: 'playing', from: start, to, pos: start, t0: now }); send('play', start, to);
+    return status(0x0300);
+  }
+  if (cmd === 0x85) {   // stop audio: pauses a playing disc; a paused one is stopped for good
+    if (a.state === 'playing') { a.state = 'paused'; send('stop'); } else if (a.state === 'paused') a.state = 'idle';
     return status(0x0100);
   }
-  if ([12, 13, 14, 0x84, 0x85, 0x88].includes(cmd)) return status(0x0100);
+  if (cmd === 0x88) {   // resume audio: a paused disc plays on from where it stopped
+    if (a.state === 'paused' && a.pos < a.to) { Object.assign(a, { state: 'playing', from: a.pos, t0: now }); send('play', a.pos, a.to); return status(0x0300); }
+    return status(0x800c);
+  }
+  if ([12, 13, 14].includes(cmd)) return status(0x0100 | busy);
   return status(0x8003);
 };
 const INTS = {
