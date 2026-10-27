@@ -1122,6 +1122,42 @@ P.nativeChildren = function (parent) {
   walk(parent, 0);
   return out;
 };
+/** the OS's objects a shared session keeps the same on every machine (win95.js): each program's top-level windows
+ *  (not the shell's, not owned popups) with their program and command line, place, size and shown state, and the
+ *  contents of their edits, combo boxes and check boxes and radio buttons */
+// (the shell's and the system's own, and Setup's first-run programs, which each machine runs, or has run, itself)
+// (Explorer's folder windows are the session's too: `folder`, opened elsewhere as the shell opens one)
+const WORLD_SKIP = new Set(['EXPLORER.EXE', 'MSGSRV32.EXE', 'MPREXE.EXE', 'SYSTRAY.EXE', 'MMTASK.TSK', 'RUNONCE.EXE', 'GRPCONV.EXE', 'SETUP.EXE', 'SUWIN.EXE']);
+const FOLDER_CLS = /^(CabinetWClass|ExploreWClass)$/;
+P.osWorld = function () {
+  const u = (o, args) => this.user16(o, args).ax, procs = [...(this.procs || new Map()).values()];
+  const out = [];
+  for (const w of this.nativeWindows().list) {
+    if (w.owner || !w.title) continue;
+    const pc = w.task && procs.find(c => c.tdb === w.task); if (!pc) continue;
+    const base = String(pc.path || '').split('\\').pop().toUpperCase(), folder = FOLDER_CLS.test(w.cls);
+    if (WORLD_SKIP.has(base) && !folder) continue;
+    const ctrls = {};
+    for (const c of this.nativeChildren(w.hwnd)) {
+      if (c.depth || !c.id) continue;
+      if (/^(edit|combobox)$/i.test(c.cls)) ctrls[`${c.id}:${c.cls.toLowerCase()}`] = c.text;
+      else if (c.checked !== undefined) ctrls[`${c.id}:button`] = c.checked;
+    }
+    out.push({ hwnd: w.hwnd, pid: pc.pid, path: pc.path, cmd: pc.cmdPtr ? this.readA(pc.cmdPtr) : '', cls: w.cls, title: w.title, folder,
+      x: w.x, y: w.y, w: w.w, h: w.h, min: w.iconic, max: !!u(272, [['w', w.hwnd]]), ctrls });   // IsZoomed
+  }
+  return out;
+};
+/** a control of a top-level window set as another machine has it: an edit's or combo box's text (WM_SETTEXT), a
+ *  button's check (BM_SETCHECK) */
+P.osSetCtrl = function (hwnd, id, kind, value) {
+  const u = (o, args) => this.user16(o, args).ax, c = u(91, [['w', hwnd], ['w', id]]);   // GetDlgItem
+  if (!c) return false;
+  if (kind === 'button') { u(111, [['w', c], ['w', 0x401], ['w', value | 0], ['l', 0]]); return true; }   // SendMessage BM_SETCHECK
+  const s = String(value), n = s.length + 1, lin = this.alloc(n), sel = this.allocSels(lin, n);
+  try { this.writeA(lin, s, n); u(111, [['w', c], ['w', 0x0c], ['w', 0], ['l', u32(sel << 16)]]); } finally { this.freeSels(sel); this.free(lin); }   // SendMessage WM_SETTEXT
+  return true;
+};
 /** a popup menu's items (the Start menu, a context menu, a menu bar's dropped menu: USER's #32768 window), each its
  *  text, its state and its rectangle on screen: the menu handle from the window (MN_GETHMENU), the items by position
  *  (GetMenuItemCount, GetMenuString, GetMenuState), the rectangles from USER32's GetMenuItemRect, or laid out at the

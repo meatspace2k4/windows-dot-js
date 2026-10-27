@@ -34,9 +34,9 @@ for bad in [('disk', {'op': 'nope'}), ('nope', {})]:
 
 # ---- presence: join hears the roster, a pointer moves it, leave drops the person once their last stream ends
 s = S.Session('p')
-q1 = s.join('c1', 'Guest'); assert q1.get_nowait() == ('people', {'people': [{'client': 'c1', 'user': 'Guest', 'x': None, 'y': None, 'host': True}], 'seq': 0})
+q1 = s.join('c1', 'Guest'); assert q1.get_nowait() == ('people', {'people': [{'client': 'c1', 'user': 'Guest', 'x': None, 'y': None}], 'seq': 0})
 q2 = s.join('c2', 'Ann'); q1.get_nowait(); q2.get_nowait()
-assert s.pointer('c2', 10, 20) and q1.get_nowait()[1]['people'][1] == {'client': 'c2', 'user': 'Ann', 'x': 10, 'y': 20, 'host': False}
+assert s.pointer('c2', 10, 20) and q1.get_nowait()[1]['people'][1] == {'client': 'c2', 'user': 'Ann', 'x': 10, 'y': 20}
 assert not s.pointer('nobody', 1, 1)
 s.op('c1', 'disk', {'op': 'label', 'label': 'W95', 'serial': 7})
 ev = q2.get_nowait()
@@ -53,37 +53,20 @@ q4 = s.join('c4', 'Di', since=1); q4.get_nowait(); assert q4.get_nowait() == ('r
 S.LOG_KEEP = keep_log
 q5 = s.join('c5', 'Ed', since=4); q5.get_nowait(); assert q5.empty(), 'up to date: nothing more'
 
-# ---- the machines kept aligned: input numbered and logged with the changes but no state; the host the first one here,
-# then the next; its view (and only its) sent on, and given to a joiner; the session's screen the first one asked for
-s = S.Session('m')
-qa = s.join('a', 'Ann'); qb = s.join('b', 'Bob')
+# ---- the OS's objects: in the state by id, sent to everyone in order; one closed kept as closed (None); all gone when
+# no machine runs the session; the owner the first person to start it
+s = S.Session('w')
+a = s.start('a', 'Bob'); assert a['owner'] == 'Bob' and a['world'] == {}
+qa = s.join('a', 'Bob'); qb = s.join('b', 'Ann')
 for q in (qa, qb):
     while not q.empty(): q.get_nowait()
-assert s.host() == 'a'
-assert s.op('b', 'input', {'t': 'down', 'x': 1, 'y': 2}) == 1 and s.state()['disk'] is None and not s.dirty
-assert qa.get_nowait() == ('op', {'seq': 1, 'client': 'b', 'kind': 'input', 'op': {'t': 'down', 'x': 1, 'y': 2}})
-assert qb.get_nowait()[0] == 'op', 'its own input too, in order'
-assert not s.set_view('b', [{'title': 'X'}], 1), 'not the host'
-assert s.set_view('a', [{'title': 'A'}], 1) and qb.get_nowait() == ('view', {'client': 'a', 'seq': 1, 'view': [{'title': 'A'}]})
-qc = s.join('c', 'Cy', since=1); assert [qc.get_nowait()[0] for _ in range(2)] == ['people', 'view']
-s.leave('a', qa); assert s.host() == 'b' and s.roster()[0] == {'client': 'b', 'user': 'Bob', 'x': None, 'y': None, 'host': True}
-assert s.set_screen(800, 600) == {'w': 800, 'h': 600} and s.set_screen(1024, 768) == {'w': 800, 'h': 600}
-assert s.state()['screen'] == {'w': 800, 'h': 600} and s.state()['host'] == 'b'
-assert S.Session('z').set_screen(100, 5000) == {'w': 640, 'h': 960}
-
-# ---- where a machine starts: the first one from the state as it is, its owner the first one's user; one joining
-# while it runs from that same start (its seq, and `now`, the latest), however the state has changed since; with no
-# one running, the state as it is again
-s = S.Session('st')
-s.op('x', 'reg', {'op': 'key', 'path': 'hklm\\a'})
-a = s.start('a', 'Bob'); assert a['owner'] == 'Bob' and a['seq'] == 1 and a['now'] == 1
-qa = s.join('a', 'Bob')
-s.op('a', 'reg', {'op': 'key', 'path': 'hklm\\b'}); s.op('a', 'input', {'t': 'down'})
-b = s.start('b', 'Ann')
-assert b['owner'] == 'Bob' and b['seq'] == 1 and b['now'] == 3 and [r[0] for r in b['registry']] == ['hklm\\a'], b
-assert b['sidBase'] != a['sidBase'], 'its own block of ids'
-s.leave('a', qa)
-c = s.start('c', 'Cy'); assert c['owner'] == 'Cy' and c['seq'] == 3 and sorted(r[0] for r in c['registry']) == ['hklm\\a', 'hklm\\b']
+s.op('a', 'obj', {'id': 'NOTEPAD.EXE#0/Notepad#0', 'v': {'x': 1}})
+assert qb.get_nowait() == ('op', {'seq': 1, 'client': 'a', 'kind': 'obj', 'op': {'id': 'NOTEPAD.EXE#0/Notepad#0', 'v': {'x': 1}}})
+b = s.start('b', 'Ann'); assert b['owner'] == 'Bob' and b['world'] == {'NOTEPAD.EXE#0/Notepad#0': {'x': 1}}
+s.op('b', 'obj', {'id': 'NOTEPAD.EXE#0/Notepad#0', 'v': None}); assert s.state()['world'] == {'NOTEPAD.EXE#0/Notepad#0': None}
+try: s.op('a', 'obj', {'v': {}}); raise AssertionError('an object with no id')
+except ValueError: pass
+s.leave('a', qa); s.leave('b', qb); assert s.state()['world'] == {}
 
 # ---- kept in its folder: a new server has it
 root = tempfile.mkdtemp()

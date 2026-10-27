@@ -46,14 +46,7 @@ const disk = H.disk.load(); assert.equal(new TextDecoder().decode(disk.nodes[1].
 const reg = H.registry.load(); assert.deepEqual([reg[0][0], new TextDecoder().decode(reg[0][1][0][1].data)], ['hkcu\\x', '1\0']);
 assert.match(P.sources[0].u, /^__session\/room1\/events\?client=\w+&user=Ann&since=7$/);
 
-// this machine's changes: held until the server says who the host is; this one's, as the host's, in order, one post
-// at a time, the ones made meanwhile in the next
-H.disk.size(5, 1);
-assert.equal(P.posts.length, 0, 'no host known yet: held');
-P.sources[0].emit('people', { people: [{ client: S.client, user: 'Ann', host: true }] });
-assert.equal(S.isHost(), true);
-assert.deepEqual(P.posts[0].body.ops, [{ kind: 'disk', op: { op: 'size', sid: 5, size: 1 } }], 'the held one, once this is the host');
-await P.settle(); P.posts.length = 0;
+// this machine's changes: in order, one post at a time, the ones made meanwhile in the next
 H.disk.data(5, 0, new TextEncoder().encode('yo')); H.disk.size(5, 2); H.registry.op({ op: 'set', path: 'hkcu\\x', name: 'v', value: { type: 1, data: new Uint8Array([50, 0]) } });
 assert.equal(P.posts.length, 1); assert.deepEqual(P.posts[0].body.ops, [{ kind: 'disk', op: { op: 'data', sid: 5, offset: 0, bytes: b64('yo') } }]);
 await P.settle();
@@ -62,10 +55,8 @@ assert.equal(P.posts[1].body.ops[1].op.value.data, b64('2\0'), 'a value\'s bytes
 assert.equal(P.posts[1].body.ops[1].op.path, 'hku\\ann\\x', 'HKCU as this person\'s key under HKEY_USERS');
 await P.settle();
 
-// the host's changes (another machine's, here): waiting until Windows has started, then applied; this one's own echo
-// passed over
+// another machine's changes: waiting until Windows has started, then applied; this one's own echo passed over
 const es = P.sources[0];
-es.emit('people', { people: [{ client: 'other', user: 'Bob', host: true }, { client: S.client, user: 'Ann' }] });
 es.emit('op', { seq: 8, client: 'other', kind: 'disk', op: { op: 'data', sid: 5, offset: 0, bytes: b64('ok') } });
 es.emit('op', { seq: 9, client: S.client, kind: 'disk', op: { op: 'size', sid: 5, size: 0 } });
 assert.equal(P.applied.length, 0, 'before Windows starts: waiting');
@@ -83,61 +74,48 @@ assert.equal(S.seq(), 12);
 es.emit('op', { seq: 13, client: 'other', kind: 'reg', op: { op: 'set', path: 'hklm\\network\\logon', name: 'username', value: { type: 1, data: b64('Bob\0') } } });
 assert.equal(P.regs.length, 3);
 { const n = P.posts.length; H.registry.op({ op: 'set', path: 'hklm\\network\\logon', name: 'UserName', value: { type: 1, data: new Uint8Array([65, 0]) } }); assert.equal(P.posts.length, n); }
+// the display's mode: each machine's own (its page's size)
+es.emit('op', { seq: 13.5, client: 'other', kind: 'reg', op: { op: 'set', path: 'hklm\\config\\0001\\display\\settings', name: 'Resolution', value: { type: 1, data: b64('800,600\0') } } });
+assert.equal(P.regs.length, 3);
+{ const n = P.posts.length; H.registry.op({ op: 'set', path: 'hkcc\\display\\settings', name: 'Resolution', value: { type: 1, data: new Uint8Array([49, 0]) } }); assert.equal(P.posts.length, n); }
 
 // who else is here: not this person; their pointers
 const seen = []; S.watch(list => seen.push(list.map(p => p.user)));
-es.emit('people', { people: [{ client: S.client, user: 'Ann', host: true }, { client: 'other', user: 'Guest', x: 10, y: 20 }] });
+es.emit('people', { people: [{ client: S.client, user: 'Ann' }, { client: 'other', user: 'Guest', x: 10, y: 20 }] });
 assert.deepEqual(seen, [['Guest']]); assert.deepEqual(S.people().map(p => [p.x, p.y]), [[10, 20]]);
 
-// this person's pointer: one post for many moves, the last position
-S.pointer(1, 2); S.pointer(3, 4); S.pointer(5.4, 6.6);
-assert.equal(P.timers.length, 1); P.timers[0]();
-const last = P.posts.at(-1); assert.match(last.u, /pointer$/); assert.deepEqual([last.body.x, last.body.y], [5, 7]);
-
-// input: this person's sent at once, whoever the host is; another's applied, in order, the same one twice once
-const got = []; S.onInput((ev, who) => got.push([ev.t, who]));
-S.input({ t: 'down', x: 1, y: 2, b: 0 });
-await P.settle(); assert.deepEqual(P.posts.at(-1).body.ops.at(-1), { kind: 'input', op: { t: 'down', x: 1, y: 2, b: 0 } });
-es.emit('op', { seq: 14, client: 'other', kind: 'input', op: { t: 'down', x: 5, y: 5 } });
-es.emit('op', { seq: 14, client: 'other', kind: 'input', op: { t: 'down', x: 5, y: 5 } });
-es.emit('op', { seq: 15, client: S.client, kind: 'input', op: { t: 'up' } });
-assert.deepEqual(got, [['down', 'other']], 'its own passed over, one sent again applied once');
-// moves with no button held made while a post is on its way: only the last goes; ones with a button held all go
+// this person's pointer: each move sent as it happens; while one is on its way, the latest goes next
 {
-  S.input({ t: 'down', x: 0, y: 0 }); const n = P.posts.length;
-  S.input({ t: 'move', x: 1, y: 1 }); S.input({ t: 'move', x: 2, y: 2 }); S.input({ t: 'move', x: 3, y: 3, h: true }); S.input({ t: 'move', x: 4, y: 4, h: true });
-  S.input({ t: 'move', x: 5, y: 5 }); S.input({ t: 'move', x: 6, y: 6 });
+  const n = P.posts.length;
+  S.pointer(1, 2); S.pointer(3, 4); S.pointer(5.4, 6.6);
+  assert.equal(P.posts.length, n + 1); assert.match(P.posts.at(-1).u, /pointer$/); assert.deepEqual([P.posts.at(-1).body.x, P.posts.at(-1).body.y], [1, 2]);
   await P.settle();
-  assert.deepEqual(P.posts.slice(n).flatMap(p => p.body.ops.map(o => o.op.x)), [2, 3, 4, 6]);
+  assert.equal(P.posts.length, n + 2); assert.deepEqual([P.posts.at(-1).body.x, P.posts.at(-1).body.y], [5, 7]);
   await P.settle();
 }
-// one missed (the connection dropped): the events opened again from the last applied, which the server replays from
-es.emit('op', { seq: 18, client: 'other', kind: 'input', op: { t: 'up' } });
-assert.equal(got.length, 1, 'not applied out of order');
-assert.match(P.sources.at(-1).u, /since=15$/); assert.notEqual(P.sources.at(-1), es);
-P.sources.at(-1).emit('op', { seq: 16, client: 'other', kind: 'input', op: { t: 'move' } });
-assert.deepEqual(got.map(g => g[0]), ['down', 'move']);
+
+// the OS's objects: this machine's sent (a newer state of one still waiting replaces it); another's kept in the
+// session's world and given to win95.js; a closed one kept as closed; one sent again, or this machine's own, passed over
+const objs = []; S.onObj((id, v) => objs.push([id, v]));
+{
+  const n = P.posts.length;
+  S.obj('A', { x: 1 }); S.obj('B', { x: 1 }); S.obj('B', { x: 2 });
+  await P.settle();
+  assert.deepEqual(P.posts.slice(n).flatMap(p => p.body.ops.map(o => [o.kind, o.op.id, o.op.v && o.op.v.x])), [['obj', 'A', 1], ['obj', 'B', 2]]);
+  await P.settle();
+}
+es.emit('op', { seq: 14, client: 'other', kind: 'obj', op: { id: 'N', v: { x: 5 } } });
+es.emit('op', { seq: 14, client: 'other', kind: 'obj', op: { id: 'N', v: { x: 5 } } });
+es.emit('op', { seq: 15, client: S.client, kind: 'obj', op: { id: 'A', v: { x: 1 } } });
+assert.deepEqual(objs, [['N', { x: 5 }]]); assert.deepEqual(S.world().get('N'), { x: 5 });
+es.emit('op', { seq: 16, client: 'other', kind: 'obj', op: { id: 'N', v: null } });
+assert.deepEqual(objs.at(-1), ['N', null]); assert.equal(S.world().get('N'), null); assert.ok(S.world().has('N'));
+
+// one missed (the connection dropped): the events opened again from the last applied, which the server sends from
+es.emit('op', { seq: 19, client: 'other', kind: 'obj', op: { id: 'M', v: {} } });
+assert.equal(objs.length, 2, 'not applied out of order');
+assert.match(P.sources.at(-1).u, /since=16$/); assert.notEqual(P.sources.at(-1), es);
 const es2 = P.sources.at(-1);
-
-// the host's view: sent by the host, given to the others
-const views = []; S.onView((v, n) => views.push([v, n]));
-S.view([{ title: 'A' }]); P.timers.at(-1)(); assert.match(P.posts.at(-1).u, /view$/); assert.equal(P.posts.at(-1).body.seq, 16);
-es2.emit('view', { client: 'other', seq: 16, view: [{ title: 'B' }] }); assert.deepEqual(views, [[[{ title: 'B' }], 16]]);
-
-// not the host: none of its changes sent (the host's machine makes the same ones, from the same input); the host's
-// changes applied, another's not
-es2.emit('people', { people: [{ client: 'other', user: 'Bob', host: true }, { client: S.client, user: 'Ann' }] });
-assert.equal(S.isHost(), false);
-{
-  await P.settle(); const n = P.posts.length;
-  H.disk.size(5, 3); H.registry.op({ op: 'set', path: 'hklm\\y', name: 'n', value: { type: 4, data: new Uint8Array(4) } });
-  H.registry.op({ op: 'set', path: 'hkcu\\y', name: 'n', value: { type: 4, data: new Uint8Array(4) } });
-  assert.equal(P.posts.length, n);
-  const a0 = P.applied.length;
-  es2.emit('op', { seq: 17, client: 'other', kind: 'disk', op: { op: 'size', sid: 5, size: 0 } });
-  es2.emit('op', { seq: 18, client: 'third', kind: 'disk', op: { op: 'size', sid: 5, size: 9 } });
-  assert.deepEqual(P.applied.slice(a0).map(a => a[1].size), [0], 'the host\'s only');
-}
 
 // a reload the server asks for (it no longer has the changes since this page's last)
 es2.on.reload({ data: '{}' }); assert.ok(P.location.reloaded);
@@ -162,7 +140,6 @@ es2.on.reload({ data: '{}' }); assert.ok(P.location.reloaded);
   const got = H2.registry.load(), find = p => got.find(r => r[0] === p);
   assert.equal(text(find('hkcu\\control panel')[1][0][1]), 'd\0', 'a new person: the default user\'s profile');
   assert.ok(find('hku\\eve\\control panel'), 'another person\'s profile kept'); assert.ok(find('hku\\.default\\control panel'));
-  assert.equal(Q.posts.length, 0); Q.sources[0].emit('people', { people: [{ client: Q.S.client, user: 'Dee', host: true }] });
   assert.deepEqual(Q.posts[0].body.ops.map(o => [o.op.op, o.op.path]), [['key', 'hku\\dee\\control panel']], 'the copy written as theirs');
   await Q.settle();
   assert.deepEqual(Q.posts[1].body.ops.map(o => [o.op.op, o.op.path, o.op.name, o.op.value.data]), [['set', 'hku\\dee\\control panel', 'a', b64('d\0')]]);
@@ -176,23 +153,13 @@ es2.on.reload({ data: '{}' }); assert.ok(P.location.reloaded);
   const T = page('?user=Fay&session=s', {}, [rows[2]]), got3 = T.S.start({}).registry.load();
   assert.equal(text(got3.find(r => r[0] === 'hkcu\\control panel')[1][0][1]), 'e\0'); assert.ok(got3.find(r => r[0] === 'hku\\eve\\control panel'));
 }
-// joining a running session: this machine starts where the session's first machine did (seq 7) and runs as its owner
-// (Bob's HKCU); everything since comes again in order: the input applied once Windows runs here, the host's changes
-// up to the join (seq 9) passed over, as this machine makes them itself from the same input; later ones applied
+// joining a running session: this machine runs as the session's owner (Bob's HKCU), and is given its objects as they are
 {
-  const J = page('?user=Ann&session=s', {}, [['hku\\bob\\x', [['v', { type: 1, data: b64('b\0') }]], null], ['hku\\ann\\x', [['v', { type: 1, data: b64('a\0') }]], null]], { owner: 'Bob', now: 9 });
+  const J = page('?user=Ann&session=s', {}, [['hku\\bob\\x', [['v', { type: 1, data: b64('b\0') }]], null], ['hku\\ann\\x', [['v', { type: 1, data: b64('a\0') }]], null]],
+    { owner: 'Bob', world: { 'NOTEPAD.EXE#0/Notepad#0': { x: 3 }, 'WELCOME.EXE#0/W#0': null } });
   const HJ = J.S.start({});
   assert.equal(HJ.userName, 'Bob', 'the owner\'s name on this machine'); assert.equal(HJ.shared.user, 'Ann', 'the person here, on the pointer');
   const reg = HJ.registry.load(); assert.equal(new TextDecoder().decode(reg.find(r => r[0] === 'hkcu\\x')[1][0][1].data), 'b\0');
-  assert.match(J.sources[0].u, /since=7$/);
-  const ins = []; J.S.onInput(ev => ins.push(ev.t));
-  const es = J.sources[0]; es.emit('people', { people: [{ client: 'h', user: 'Bob', host: true }, { client: J.S.client, user: 'Ann' }] });
-  es.emit('op', { seq: 8, client: 'h', kind: 'input', op: { t: 'down' } });
-  es.emit('op', { seq: 9, client: 'h', kind: 'disk', op: { op: 'size', sid: 5, size: 1 } });
-  assert.deepEqual(ins, [], 'before Windows runs here: waiting');
-  J.S.ready(J.fs);
-  assert.deepEqual(ins, ['down']); assert.equal(J.applied.length, 0, 'the host\'s change before the join: this machine makes it');
-  es.emit('op', { seq: 10, client: 'h', kind: 'disk', op: { op: 'size', sid: 5, size: 2 } });
-  assert.deepEqual(J.applied.map(a => a[1].size), [2]);
+  assert.deepEqual([...J.S.world()], [['NOTEPAD.EXE#0/Notepad#0', { x: 3 }], ['WELCOME.EXE#0/W#0', null]]);
 }
 console.log('shared: ok');

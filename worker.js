@@ -475,6 +475,9 @@ class Machine {
     if (!extname(path)) path += '.exe';
     const file = (/^[a-z]:|^\\/i.test(path) ? [path] : [join('C:\\WINDOWS', path), join('C:\\WINDOWS\\SYSTEM', path), join(fs.cwd, path)]).find(f => fs.exists(f));
     if (!file) return 2;
+    // (a machine joining a shared session: a program the shell starts as Windows starts is the session's to start, if
+    // the session runs it; the system's own still start)
+    if (this.holdStartup && !/^(SYSTRAY|MPREXE|MMTASK|RUNDLL32|EXPLORER|MSGSRV32)\.(EXE|TSK)$/i.test(basename(file))) return { elsewhere: true };
     // a Windows (16-bit) program of the system's: a task of this machine's, as KERNEL's WinExec starts one
     const ne = Object.values((self.W95SYSTEM || {}).ne || {}).find(d => d.fileName === basename(file).toUpperCase() && /\.EXE$/.test(d.fileName));
     if (ne) return this.proc.winExec16(ne.fileName, arg || '', show === undefined ? 1 : show);
@@ -650,8 +653,8 @@ class Machine {
       this.kick();
     });
   }
-  netCall(name, args = []) {
-    const p = this.proc, mpr = p.byName.get('MPR'), fn = mpr && mpr.exports.get(name); if (!fn) return Promise.resolve(null);
+  netCall(name, args = [], dll = 'MPR') {
+    const p = this.proc, mpr = p.byName.get(dll), fn = mpr && mpr.exports.get(name); if (!fn) return Promise.resolve(null);
     const le32 = v => [v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, (v >>> 24) & 0xff];
     const a = p.alloc(96), res = a + 88, ptr = a + 92, code = [];
     const vals = args.map(v => (typeof v === 'string' ? (() => { const s = p.alloc(v.length + 1); p.writeA(s, v); return s; })() : v));
@@ -814,6 +817,29 @@ class Machine {
       case 'endProcess': { const p = this.proc, pc = p.procs && p.procs.get(args[0]); if (pc) p.endProcess(pc, args[1] || 0); return pc ? true : this.endSaver(args[0], args[1] || 0); }
       case 'closeWin32': return this.proc.sendMsg(args[0], W.WM.CLOSE);
       case 'children': return p.depth ? null : p.nativeChildren(args[0]);
+      // a shared session's OS objects (ne16.js osWorld), and a control set as another machine has it
+      case 'world': return p.depth ? null : p.osWorld();
+      // a folder opened as the shell opens one (SHELL32's ShellExecute, in Explorer's process): another machine's
+      // folder window, here too
+      case 'shellOpen': return this.netCall('ShellExecuteA', [0, 'open', args[0], 0, 0, 1], 'SHELL32');
+      // a folder of the shell's own (Control Panel, Printers, My Computer: a CSIDL), opened as the Start menu opens one:
+      // its ID list (SHGetSpecialFolderLocation), then ShellExecuteEx with it (SEE_MASK_IDLIST)
+      case 'shellOpenSpecial': return (async () => {
+        const pp = p.alloc(4); p.w32(pp, 0);
+        try {
+          if (await this.netCall('SHGetSpecialFolderLocation', [0, args[0], pp], 'SHELL32') !== 0 || !p.r32(pp)) return false;
+          const sei = p.alloc(60), verb = p.alloc(8); p.u8.fill(0, sei, sei + 60); p.writeA(verb, 'open');
+          p.w32(sei, 60); p.w32(sei + 4, 4); p.w32(sei + 12, verb); p.w32(sei + 28, 1); p.w32(sei + 36, p.r32(pp));
+          try { return !!(await this.netCall('ShellExecuteExA', [sei], 'SHELL32')); } finally { p.free(sei); p.free(verb); }
+        } finally { p.free(pp); }
+      })();
+      // the programs the shell starts as Windows starts, held while a machine joining a shared session catches up
+      // with it (the session's are started for it instead), and let go
+      case 'holdStartup': this.holdStartup = !!args[0]; return;
+      // a command line run as Windows runs one (WinExec, CreateProcess: a 16-bit program or a 32-bit one): a shared
+      // session's program, started here as another machine runs it
+      case 'run': { const held = this.holdStartup; this.holdStartup = false; try { const r = this.exec(args[0], 1); return typeof r === 'number' ? (r > 32 ? { ok: true } : { err: r }) : r && r.err ? r : { ok: true }; } finally { this.holdStartup = held; } }
+      case 'setCtrl': { const [hwnd, id, kind, value] = args; return p.depth ? null : p.asWindowTask(hwnd, () => p.osSetCtrl(hwnd, id, kind, value)); }
       case 'listItem': return p.depth ? null : p.listItem(args[0], args[1], !!args[2]);   // a list view's item selected, or opened (the scripting API's click, dblclick)
       case 'peek': return Array.from(p.u8.subarray(args[0], args[0] + Math.min(args[1], 4096)));   // a diagnostic: memory bytes
       case 'menuscan': {   // a diagnostic: every menu handle USER has (IsMenu over the handle range), its item count and first item, and whether USER32's GetMenuItemRect places its first item in the window given
