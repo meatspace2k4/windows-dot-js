@@ -32,7 +32,7 @@ b.clock.wall -= 3 * 3600000;   // (as if Ann's wall clock were three hours behin
 API.KERNEL32.GetSystemTime[1].call(bob, st);
 assert.equal(dv.getUint16(st + 8, true), new Date(Date.now() - 3 * 3600000).getUTCHours());
 // a Win16 task (Solitaire): its task carries the clock
-bob.thread16 = { pc: null, task: { clock: b.clock } };
+bob.thread16 = { pc: null, task: { clock: b.clock, t0: b.t0 } };
 assert.equal(bob.clockOf(), b.clock);
 
 // USER's GetTickCount and GetCurrentTime for such a program: answered, DX:AX, and returned from
@@ -44,5 +44,26 @@ assert.equal(bob.clockOf(), b.clock);
   assert.equal(((edx & 0xffff) << 16 | (eax & 0xffff)) >>> 0, (tickA + 250) >>> 0);
   bob.thread16 = { pc: { clock: null } };
   assert.equal(P.clockCall.call(bob), undefined, 'this machine\'s own clock: USER answers');
+}
+// in a shared session: until a program first waits with nothing to do, its clock is its start's time and one ms more
+// for each read, however long the machine takes (Solitaire's srand(GetCurrentTime()) as it starts, and again as it
+// deals); once it has waited, it runs on from there
+{
+  const now = { v: 70000 }, m = machine(now, 1000); m.sessionClock = true;
+  const pc = m.startClock(); m.thread16 = { pc };
+  now.v += 37;   // (its start-up, here slower or faster than elsewhere)
+  assert.equal(API.KERNEL32.GetTickCount[1].call(m), pc.t0.tick, 'the first read: the start');
+  now.v += 500;
+  assert.equal(API.KERNEL32.GetTickCount[1].call(m), (pc.t0.tick + 1) >>> 0, 'the next: one more, whatever the time here');
+  P.idle.call(m); now.v += 20;
+  assert.equal(API.KERNEL32.GetTickCount[1].call(m), (pc.t0.tick + 2) >>> 0, 'once it has waited: on from there');
+  now.v += 250; assert.equal(API.KERNEL32.GetTickCount[1].call(m), (pc.t0.tick + 252) >>> 0);
+  // USER's GetCurrentTime for a Win16 task: answered by the same clock
+  let eax = 0, edx = 0;
+  const task = { t0: { tick: 0x00123456, wall: Date.now() }, clock: null };
+  Object.assign(m, { thread16: { pc: null, task }, cpu: { eax: { get value() { return eax; }, set value(v) { eax = v >>> 0; } }, edx: { get value() { return edx; }, set value(v) { edx = v >>> 0; } } }, retf16: () => 0x99 });
+  assert.equal(P.clockCall.call(m), 0x99); assert.equal(((edx & 0xffff) << 16 | (eax & 0xffff)) >>> 0, 0x00123456);
+  assert.equal(P.clockCall.call(m), 0x99); assert.equal(((edx & 0xffff) << 16 | (eax & 0xffff)) >>> 0, 0x00123457);
+  m.sessionClock = false; assert.equal(P.clockCall.call(m), undefined, 'outside a session, on this machine\'s clock: USER answers');
 }
 console.log('clock: ok');

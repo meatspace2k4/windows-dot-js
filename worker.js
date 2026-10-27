@@ -155,6 +155,7 @@ class Machine {
       this.proc = new W.Process(this.bytes, prog.module, { ...prog.meta, name: prog.name.replace(/\.EXE$/, '') }, host, this.arg ? `${exe} ${this.arg}` : exe, dlls);
       this.proc.soundQuiet = !!this.quiet;   // (sound.js: the card's output off for the one sound)
       if (this.system && this.session) this.proc.onIntent = i => post({ t: 'intent', i });   // (a shared session's: ne16.js hookIntents)
+      if (this.system && this.session) this.proc.sessionClock = true;   // (its programs' first clock reads their start's: win32.js progTime)
       if (this.trace) this.traceOn(this.trace, this.traceNames || undefined);
       if (this.system && !this.proc.trapped && !this.startSystemTask()) throw new Error('MSGSRV32.EXE did not start');
     } catch (e) { console.error(e && e.stack ? e.stack : e); this.exited(-1, e.message); return; }

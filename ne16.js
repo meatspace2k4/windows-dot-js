@@ -754,8 +754,8 @@ const INTS = {
     switch (ah) {
       case 0x30: this.ax(0x0007); this.cpu.ebx.value = lo16(this.cpu.ebx.value, 0xff00); this.cpu.ecx.value = lo16(this.cpu.ecx.value, 0); return;   // DOS 7.0
       case 0x19: this.ax((this.ax() & 0xff00) | (this.fs.cwd.toUpperCase().charCodeAt(0) - 65)); return;        // the current drive
-      case 0x2a: { const d = new Date(Date.now() + this.clockOf().wall); this.cpu.ecx.value = lo16(this.cpu.ecx.value, d.getFullYear()); this.cpu.edx.value = lo16(this.cpu.edx.value, ((d.getMonth() + 1) << 8) | d.getDate()); this.ax((this.ax() & 0xff00) | d.getDay()); return; }
-      case 0x2c: { const d = new Date(Date.now() + this.clockOf().wall); this.cpu.ecx.value = lo16(this.cpu.ecx.value, (d.getHours() << 8) | d.getMinutes()); this.cpu.edx.value = lo16(this.cpu.edx.value, (d.getSeconds() << 8) | Math.floor(d.getMilliseconds() / 10)); return; }
+      case 0x2a: { const d = new Date(this.progTime('wall', true)); this.cpu.ecx.value = lo16(this.cpu.ecx.value, d.getFullYear()); this.cpu.edx.value = lo16(this.cpu.edx.value, ((d.getMonth() + 1) << 8) | d.getDate()); this.ax((this.ax() & 0xff00) | d.getDay()); return; }
+      case 0x2c: { const d = new Date(this.progTime('wall')); this.cpu.ecx.value = lo16(this.cpu.ecx.value, (d.getHours() << 8) | d.getMinutes()); this.cpu.edx.value = lo16(this.cpu.edx.value, (d.getSeconds() << 8) | Math.floor(d.getMilliseconds() / 10)); return; }
       case 0x33: if (al === 6) { this.cpu.ebx.value = lo16(this.cpu.ebx.value, 0x0007); this.cpu.edx.value = lo16(this.cpu.edx.value, 0x1000); } else if (al === 0) this.cpu.edx.value &= ~0xff; return;   // true version 7.0, in HMA; Ctrl+Break checking off
       case 0x44: if (al === 0) {   // a handle's information: a file's drive (bit 7 clear; VB3 refuses a name that opens a device), else a character device
         const fh = this.dosFiles.get(this.cpu.ebx.value & 0xffff);
@@ -1235,8 +1235,10 @@ P.hookClock = function (user) {
   }
 };
 P.clockCall = function () {
-  const c = this.clockOf(); if (!c.tick) return undefined;   // (this machine's own: USER answers)
-  const v = u32(this.now() - this.t0 + 3600000 + c.tick);
+  // (a program on this machine's own clock, outside a shared session: USER answers)
+  const t = this.thread16, rec = t && (t.pc || t.task);
+  if (!rec || !rec.t0 || (!this.sessionClock && !this.clockOf().tick)) return undefined;
+  const v = u32(this.progTime('tick'));
   this.ax(v & 0xffff); this.cpu.edx.value = lo16(this.cpu.edx.value, v >>> 16);
   return this.retf16(0);
 };
@@ -3609,11 +3611,14 @@ def16('KERNEL', 460, 'll', 'l', function (h, ms) {
   P.sendToGone.call(this);
   if (!e.set && P.queueWoken.call(this, h)) e.set = true;   // (a queue USER has woken: its event as the waker set it, however it was taken since)
   if (this.thread16) this.thread16.waitOn = { hs: [h], all: 0, ms };   // (for a probe)
-  if (!e.set && ms && this.atThreadTop()) return waitTop(this, ms);
+  if (!e.set && ms && this.atThreadTop()) { P.idle.call(this); return waitTop(this, ms); }
   if (!e.set && ms) this.waitNested(() => e.set);
   waitDone(this);
   if (!e.set) return 0x102; if (!e.manual) e.set = false; return 0;
 });
+/** the running program's thread waits with nothing to do (its message loop's wait): its start is over, and its clock
+ *  runs on from where its start left it (win32.js progTime) */
+P.idle = function () { const t = this.thread16, rec = t && (t.pc || t.task); if (rec && !rec.idle) rec.idle = true; };
 /** a wait inside a call (the waiting code cannot give up its slice): each other thread and task gets one turn, up to
  *  its next wait, as the processor would pass to them; the caller then finds the object set or not */
 P.waitNested = function (done) {
@@ -4126,7 +4131,7 @@ def16('KERNEL', 91, '', 'jmp', function () {
 def16('KERNEL', 30, 'w', 'w', function () {
   const t = thr(this, 0), top = !this.asTask && (this.thread16 ? this.depth === this.thread16.depth : this.depth === 0);
   if (t.events > 0) { t.events--; t.slept = false; return 0; }   // an event posted to the task (PostEvent, its start): no wait
-  if (top && !t.slept) { t.slept = true; return YIELD; }
+  if (top && !t.slept) { t.slept = true; P.idle.call(this); return YIELD; }
   if (!top) this.threads16(true);   // inside a call: the other tasks run, as the wait would let them
   t.slept = false; return 0;
 });
