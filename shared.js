@@ -62,9 +62,22 @@
   const ownValue = o => o.path === 'hklm\\network\\logon' && String(o.name || '').toLowerCase() === 'username';
   const url = s => `__session/${encodeURIComponent(logon.session)}/${s}`;
 
-  // ---- what this machine changes, to the server in order (one post at a time, the ones made meanwhile together)
-  let outbox = [], posting = false, quiet = false;
-  const send = (kind, op) => { if (!quiet) { outbox.push({ kind, op }); flush(); } };
+  // ---- what this machine changes, to the server in order (one post at a time, the ones made meanwhile together).
+  // Only the host's changes to C: and the registry are the session's state: every machine applies everyone's input, so
+  // each makes the same changes itself (another's HKCU being its own person's, those it sends too). Until the server
+  // has said who the host is, they wait (`held`)
+  let outbox = [], posting = false, quiet = false, hostId = null, held = [];
+  const mineToSend = (kind, op) => kind === 'input' || hostId === client || (kind === 'reg' && op.path && (op.path === me() || op.path.startsWith(me() + '\\')));
+  const send = (kind, op) => {
+    if (quiet) return;
+    if (kind !== 'input' && hostId === null) { held.push({ kind, op }); return; }
+    if (!mineToSend(kind, op)) return;
+    outbox.push({ kind, op }); flush();
+  };
+  const hostIs = id => {
+    const was = hostId; hostId = id || null;
+    if (was === null && hostId !== null) for (const h of held.splice(0)) send(h.kind, h.op);
+  };
   const flush = () => {
     if (posting || !outbox.length) return;
     const ops = outbox; outbox = []; posting = true;
@@ -94,20 +107,31 @@
   });
 
   // ---- what others change, applied here; who is here
-  let seq = 0, es = null, fs = null;
+  let seq = 0, es = null, fs = null, onInput = null, onView = null, lastView = null;
   const people = new Map(), watchers = new Set(), pending = [];
-  // another machine's change, to this page's C: or registry (its own come back too, and are passed over); before
-  // Windows has started here they wait (`pending`) until `ready` gives the file system
+  // another machine's change or input, in the server's order (its own come back too, and are passed over). A change
+  // goes to this page's C: or registry: the host's, while this machine is not the host (the host's own machine made the
+  // same ones as it applied the input), and another person's HKCU. Input goes to this machine as its own person's
+  // would. Before Windows has started here changes wait (`pending`) until `ready` gives the file system; input before
+  // then is none of this machine's. One numbered past the next expected means some were missed (the connection
+  // dropped): the events are opened again from the last one applied, and the server sends the rest in order
   const apply = m => {
+    if (m.seq && seq && m.seq > seq + 1) { catchUp(); return; }
+    if (m.seq && m.seq <= seq) return;   // (one already applied, sent again)
     seq = Math.max(seq, m.seq || 0);
-    if (m.client === client) return;
-    if (!fs) { pending.push(m); return; }
-    if (m.kind === 'disk') fs.applyStore('C', m.op.op === 'data' ? { ...m.op, bytes: unb64(m.op.bytes) } : m.op);
-    else if (m.kind === 'reg' && window.W95Win32 && !ownValue(m.op)) window.W95Win32.regApply(regIn(m.op), 'remote');
+    if (m.client !== client) deliver(m);
   };
-  const roster = list => {
+  const deliver = m => {
+    if (m.kind === 'input') { if (fs && onInput) { try { onInput(m.op, m.client); } catch (e) { console.warn('[shared] an input could not be applied:', e && e.message); } } return; }
+    if (!fs) { pending.push(m); return; }
+    if (m.kind === 'disk') { if (hostId !== client && m.client === hostId) fs.applyStore('C', m.op.op === 'data' ? { ...m.op, bytes: unb64(m.op.bytes) } : m.op); }
+    else if (m.kind === 'reg' && window.W95Win32 && !ownValue(m.op) && (m.client === hostId || !m.op.path.startsWith(me()))) window.W95Win32.regApply(regIn(m.op), 'remote');
+  };
+  const catchUp = () => { if (es) { try { es.close(); } catch (_) { /* gone */ } es = null; } listen(); };
+  const roster = (list, host) => {
     people.clear();
-    for (const p of list || []) if (p.client !== client) people.set(p.client, p);
+    for (const p of list || []) { if (p.host) host = p.client; if (p.client !== client) people.set(p.client, p); }
+    hostIs(host);
     for (const f of watchers) f([...people.values()]);
   };
   // the session's events: who is here (and where their pointers are), each change in order; a reconnect asks for the
@@ -117,6 +141,7 @@
     es = new window.EventSource(url(`events?client=${encodeURIComponent(client)}&user=${encodeURIComponent(logon.user)}&since=${seq}`));
     es.addEventListener('people', e => { try { roster(JSON.parse(e.data).people); } catch (_) { /* a bad message */ } });
     es.addEventListener('op', e => { try { apply(JSON.parse(e.data)); } catch (err) { console.warn('[shared] a change could not be applied:', err && err.message); } });
+    es.addEventListener('view', e => { try { const v = JSON.parse(e.data); if (v.client !== client) { lastView = v; if (onView) onView(v.view, v.seq); } } catch (_) { /* a bad message */ } });
     es.addEventListener('reload', () => { quiet = true; location.reload(); });
     es.onerror = () => { if (es.readyState === 2) { es = null; setTimeout(listen, 2000); } };   // (closed for good: open again)
   };
@@ -142,12 +167,34 @@
   };
   const start = base => {
     const state = fetchState(); if (!state) return null;
-    seq = state.seq || 0;
+    seq = state.seq || 0; screen = state.screen || null;
     listen();
-    return host(state, base);
+    return { ...host(state, base), screen };
+  };
+  // ---- the session's screen: the one every machine in it has, so a point on one is the same point on every other's.
+  // The first machine's (its page's size) when the session has none yet
+  let screen = null;
+  const screenFor = (w, h) => {
+    if (screen) return screen;
+    screen = { w, h };
+    fetch(url('screen'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ w, h }) })
+      .then(r => r.json()).then(s => { if (s && s.w) screen = s; }).catch(() => {});
+    return screen;
+  };
+  // ---- this person's input, applied here at once and sent for every other machine to apply as its own (nothing waits
+  // for the server); the host's windows after the inputs it has applied, for the others to align with
+  const input = ev => send('input', ev);
+  let viewTimer = 0, viewWanted = null;
+  const view = v => {
+    if (hostId !== client) return;
+    viewWanted = v; if (viewTimer) return;
+    viewTimer = setTimeout(() => {
+      viewTimer = 0; const body = JSON.stringify({ client, seq, view: viewWanted });
+      fetch(url('view'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body }).catch(() => {});
+    }, 150);
   };
   /** Windows has started here: the changes that came meanwhile are applied now */
-  const ready = files => { fs = files; for (const m of pending.splice(0)) apply(m); };
+  const ready = files => { fs = files; for (const m of pending.splice(0)) deliver(m); };
 
   // ---- logging off (Shut Down's "Close all programs and log on as a different user"): a name goes to that person's own
   // session (others join it by its id), Guest (or none) to the shared one; the page starts again there
@@ -160,8 +207,9 @@
   };
 
   window.W95Shared = {
-    wanted, start, ready, logon, client, ownSession, remember, logOff, pointer,
+    wanted, start, ready, logon, client, ownSession, remember, logOff, pointer, input, view, screenFor,
     people: () => [...people.values()], watch: f => { watchers.add(f); return () => watchers.delete(f); },
-    seq: () => seq,
+    seq: () => seq, isHost: () => hostId === client, host: () => hostId,
+    onInput: f => { onInput = f; }, onView: f => { onView = f; if (f && lastView) f(lastView.view, lastView.seq); },
   };
 })();

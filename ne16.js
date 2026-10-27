@@ -3188,6 +3188,9 @@ def16('KERNEL', 651, 'sswlxsw', 'w', function (dll16, dll32, hinst, reason, td, 
   if (reason === 1 && td >>> 16 && this.readA(this.lin(td), 4) === 'SL01') { const sl = this.sl01 || (this.sl01 = new Map()); sl.set(this.lin(td), Object.assign(sl.get(this.lin(td)) || {}, { dll32, name32 })); }
   return 1;
 });
+// OkWithKernelToChangeUsers (#653): USER's ExitWindows asks before a log off (EWX_LOGOFF) ends the user's programs;
+// nothing of KERNEL's stands in the way
+def16('KERNEL', 653, '', 'w', function () { return 1; });
 // C16ThkSL01 (#631): a thunk-compiler stub's 16 -> 32 call. EDX = 16:16 of its ThunkDataSL16, CX = target number * 4,
 // the caller's return address on top of the stack. The target is entry CX/4 of the 32-bit half's table (at its
 // ThunkDataSL32 + the offset at +20h); a table entry that is no code of that module means the target is not there, and

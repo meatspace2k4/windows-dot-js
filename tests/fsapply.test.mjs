@@ -37,4 +37,12 @@ A.fs.unlink('C:\\b.txt');
 sync(A, B); assert.deepEqual(tree(B.fs), ['C:\\Docs\\', 'C:\\Docs\\renamed.txt=hello']);
 // an op whose folder this side never saw is skipped, not thrown
 assert.equal(B.fs.applyStore('C', { op: 'node', sid: 99, parent: 12345, name: 'x', dir: false }), false);
+// both machines made the same file, applying the same input (a shared session): the other's is this one's, under the
+// other's id, its bytes following; no second file of the name
+B.sent.length = 0;
+B.fs.writeFile('C:\\Docs\\both.txt', new TextEncoder().encode('mine')); A.fs.writeFile('C:\\Docs\\both.txt', new TextEncoder().encode('theirs!'));
+sync(A, B);
+assert.deepEqual(tree(B.fs), ['C:\\Docs\\', 'C:\\Docs\\both.txt=theirs!', 'C:\\Docs\\renamed.txt=hello']);
+A.fs.writeFile('C:\\Docs\\both.txt', new TextEncoder().encode('again')); sync(A, B);
+assert.deepEqual(tree(B.fs)[1], 'C:\\Docs\\both.txt=again', 'the other\'s later changes reach it by the id');
 console.log('fsapply: ok');

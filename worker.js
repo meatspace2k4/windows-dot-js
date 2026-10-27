@@ -800,6 +800,9 @@ class Machine {
     switch (name) {
       case 'focus': { const [hwnd, min] = args; p.asWindowTask(hwnd, () => { if (min) u(42, [['w', hwnd], ['w', 9]]); else { u(59, [['w', hwnd]]); u(45, [['w', hwnd]]); } }); return; }
       case 'minimize': u(42, [['w', args[0]], ['w', 6]]); return;
+      // a window put where another machine in a shared session has it (shared.js): ShowWindow to its state (3
+      // maximized, 7 minimized, 9 restored), then MoveWindow to its place, on the window's own task
+      case 'place': { const [hwnd, x, y, w, h, show] = args; p.asWindowTask(hwnd, () => { if (show) u(42, [['w', hwnd], ['w', show]]); if (show !== 3 && show !== 7) u(56, [['w', hwnd], ['w', x & 0xffff], ['w', y & 0xffff], ['w', w], ['w', h], ['w', 1]]); }); return; }
       case 'close': u(110, [['w', args[0]], ['w', 0x10], ['w', 0], ['l', 0]]); return;
       case 'clipOut': return this.clipOut();
       case 'clipIn': this.clipIn(args[0]); return;

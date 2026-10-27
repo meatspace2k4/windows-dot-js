@@ -283,6 +283,15 @@ class FileSystem {
         case 'node': {
           if (op.sid === 0) { if (n) { n.attrs = op.attrs; n.mtime = op.mtime; } return true; }
           const p = sids.get(op.parent); if (!p || !p.dir) return false;   // (its folder not here: an order this side never saw)
+          // (one this machine made itself under that name, as it applied the same input the other did: the other's,
+          // under its id from now on, the other's bytes following)
+          const same = !n && p.kids.get(op.name.toUpperCase());
+          if (same && !!same.dir === !!op.dir) {
+            if (same.sid !== undefined) sids.delete(same.sid);
+            same.sid = op.sid; sids.set(op.sid, same);
+            same.attrs = (op.attrs & ~ATTR.DIRECTORY) | (same.dir ? ATTR.DIRECTORY : 0); same.mtime = op.mtime; same.atime = op.atime;
+            return true;
+          }
           if (!n) {
             const m = new Node(op.name, !!op.dir, op.attrs, op.ctime); m.sid = op.sid; sids.set(op.sid, m);
             this.link(p, m, op.name); if (op.short) { p.byShort.delete(m.short); m.short = op.short; p.byShort.set(m.short, m); }

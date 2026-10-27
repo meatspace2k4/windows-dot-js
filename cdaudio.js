@@ -29,11 +29,12 @@
   const output = () => {
     if (out) return out.in;
     const split = ctx.createChannelSplitter(2), merge = ctx.createChannelMerger(2), g = [ctx.createGain(), ctx.createGain()];
-    g.forEach((x, i) => { x.gain.value = levels[i]; split.connect(x, i); x.connect(merge, 0, i); });
+    g.forEach((x, i) => { x.gain.value = level(i); split.connect(x, i); x.connect(merge, 0, i); });
     merge.connect(ctx.destination); out = { in: split, g };
     return split;
   };
-  const gain = (l, r) => { levels = [l, r]; if (out) out.g.forEach((x, i) => { x.gain.setValueAtTime(levels[i], ctx.currentTime); }); };
+  const level = i => (window.W95MUTE ? 0 : levels[i]);   // (none on a page asked to be silent, ?mute=1)
+  const gain = (l, r) => { levels = [l, r]; if (out) out.g.forEach((x, i) => { x.gain.setValueAtTime(level(i), ctx.currentTime); }); };
   // play sectors [from, to): fetched CHUNK at a time, each scheduled after the last, the next fetched while one plays
   const play = async (from, to) => {
     const my = ++gen; stopSources();

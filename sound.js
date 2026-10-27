@@ -279,7 +279,9 @@ P.soundIO = function (port, size, isIn) {
       if (c.idx === 11) return true;
       this.sound16(true);   // the samples due up to this write play with the registers as they were
       const was = c.regs[c.idx]; c.regs[c.idx] = v;
-      if (c.idx === 9 && !(v & 1) && (was & 1)) this.soundQuiet = false;   // the sound played unheard is over
+      // the sound played unheard is over: one of some length (MSSNDSYS enables playback and turns it down again within
+      // microseconds as it starts, which is no sound: the quiet goes on to SystemStart)
+      if (c.idx === 9 && !(v & 1) && (was & 1) && this.soundQuiet && (this.quietMs || 0) >= 200) this.soundQuiet = false;
       if (c.idx === 9 && (v & 1) && !(was & 1)) { c.count = (c.regs[14] << 8) | c.regs[15]; c.frac = 0; c.last = c.t; }
       // capture enable (bit 1): the count starts as for playback; the page's microphone is opened for it, and closed
       // when capture stops
@@ -399,7 +401,9 @@ const system = () => {
   // (a page that is not a secure context, plain http from another machine, has no audioWorklet: no sound)
   if (!ctx.audioWorklet) { try { ctx.close(); } catch (_) {} return (sys = { ctx: null }); }
   const url = URL.createObjectURL(new Blob([WORKLET], { type: 'text/javascript' }));
-  sys = { ctx, ok: false };
+  // (the streams meet in one gain before the device: none on a page asked to be silent, ?mute=1)
+  const dest = ctx.createGain(); dest.gain.value = window.W95MUTE ? 0 : 1; dest.connect(ctx.destination);
+  sys = { ctx, dest, ok: false };
   sys.ready = ctx.audioWorklet.addModule(url).then(() => { sys.ok = true; }).catch(() => {}).finally(() => URL.revokeObjectURL(url));
   // a page may open its output only after a click or key: the context goes on with the first of them
   const resume = () => { if (ctx.state === 'suspended') ctx.resume(); else for (const t of ['pointerdown', 'keydown']) window.removeEventListener(t, resume, true); };
@@ -420,7 +424,7 @@ const out = (proc, rate) => {
       a.node = new AudioWorkletNode(s.ctx, 'w95-stream', { numberOfInputs: 0, outputChannelCount: [2],
         processorOptions: { lead: Math.round(LEAD * rate), step: rate / s.ctx.sampleRate } });
       a.node.port.onmessage = () => { a.dry++; };
-      a.node.connect(s.ctx.destination);
+      a.node.connect(s.dest);
       for (const m of a.pending) a.node.port.postMessage(m, [m[0].buffer, m[1].buffer]);
       a.pending = [];
     });
@@ -525,6 +529,7 @@ P.soundRun = function (c) {
   }
   this.soundStats.frames += k;
   // (soundQuiet: the card's output off for one sound, which still plays to the guest: the DMA, the interrupts)
+  if (k && this.soundQuiet) this.quietMs = (this.quietMs || 0) + k * 1000 / rate;
   if (k && !this.soundQuiet && play(this, rate, L, R, k)) this.soundStats.underruns = (this.soundStats.underruns || 0) + 1;
 };
 })();

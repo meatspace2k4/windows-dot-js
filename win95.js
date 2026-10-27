@@ -831,7 +831,10 @@ function bootDisk() {
   if (host.shared) setupProfile(host.userName);
   fs.chdir('C:\\');
   // a shared session's (shared.js): the changes other people's machines made while this one started apply from here
-  if (host.shared && window.W95Shared) { window.W95Shared.ready(fs); window.W95Shared.watch(() => dirty()); }
+  if (host.shared && window.W95Shared) {
+    const S = window.W95Shared; S.ready(fs);
+    S.watch(list => { if (S.isHost()) for (const p of list) profileHome(p.user); dirty(); });   // (everyone's profile on the session's C:)
+  }
 }
 
 // a person's own folders in a session shared with others, as Windows 95 keeps them with user profiles on:
@@ -840,18 +843,25 @@ function bootDisk() {
 // (HKCU being theirs: shared.js). A profile HKCU was copied from names its owner's folders, so the names are set again
 function setupProfile(user) {
   const R = W95Win32, str = v => ({ type: 1, data: W95FS.encode(v + '\0') });
-  const name = String(user || '').replace(/[^\w.\-$!#%&'(){}^~@ ]/g, '').trim().slice(0, 20); if (!name) return;
-  const home = join(WINDIR, 'Profiles', name);
-  fs.mkdir(home, { recursive: true });
-  for (const [d, from] of [['Desktop', join(WINDIR, 'Desktop')], ['Start Menu', join(WINDIR, 'Start Menu')], ['Recent', null], ['NetHood', null]])
-    if (!fs.exists(join(home, d))) { if (from && fs.exists(from)) fs.copy(from, join(home, d)); else fs.mkdir(join(home, d)); }
+  const home = profileHome(user); if (!home) return;
+  const name = basename(home);
   DESKTOP_DIR = join(home, 'Desktop'); RECENT = join(home, 'Recent'); START_MENU = join(home, 'Start Menu'); PROGRAMS = join(START_MENU, 'Programs');
-  if (!fs.exists(join(PROGRAMS, 'StartUp'))) fs.mkdir(join(PROGRAMS, 'StartUp'), { recursive: true });
   const folders = { Desktop: DESKTOP_DIR, Recent: RECENT, NetHood: join(home, 'NetHood'), 'Start Menu': START_MENU, Programs: PROGRAMS, Startup: join(PROGRAMS, 'StartUp') };
   const ex = 'hkcu\\software\\microsoft\\windows\\currentversion\\explorer\\';
   const put = (k, n, v) => { const was = R.regGet(k, n); if (!was || W95FS.decode(was.data).replace(/\0.*$/, '') !== v) R.regSet(k, n, str(v)); };
   for (const [n, p] of Object.entries(folders)) { put(ex + 'shell folders', n, p); put(ex + 'user shell folders', n, p); }
   put('hklm\\software\\microsoft\\windows\\currentversion\\profilelist\\' + name.toLowerCase(), 'ProfileImagePath', home);
+}
+/** a person's profile folder, made the first time (the host's machine makes everyone's in the session, its C: being
+ *  the session's); its path, or null for no name */
+function profileHome(user) {
+  const name = String(user || '').replace(/[^\w.\-$!#%&'(){}^~@ ]/g, '').trim().slice(0, 20); if (!name) return null;
+  const home = join(WINDIR, 'Profiles', name);
+  fs.mkdir(home, { recursive: true });
+  for (const [d, from] of [['Desktop', join(WINDIR, 'Desktop')], ['Start Menu', join(WINDIR, 'Start Menu')], ['Recent', null], ['NetHood', null]])
+    if (!fs.exists(join(home, d))) { if (from && fs.exists(from)) fs.copy(from, join(home, d)); else fs.mkdir(join(home, d)); }
+  if (!fs.exists(join(home, 'Start Menu', 'Programs', 'StartUp'))) fs.mkdir(join(home, 'Start Menu', 'Programs', 'StartUp'), { recursive: true });
+  return home;
 }
 
 // ---------------------------------------------------------------- shell namespace
@@ -3214,7 +3224,14 @@ const nativeApps = new Set();
 // line and its memory count: ne16.js displaySlot). A viewport larger than that gets a 1024-wide or 1024-tall screen, centered
 // (the custom mode has the driver's 1024-byte scan lines in the 1 MB its memory count finds, so 960 lines at most: a
 // mode of a full megabyte, 1024 by 1024, the driver refuses and falls back from)
-const nativeMode = () => [Math.max(640, Math.min(1024, Math.floor(innerWidth / ZOOM))), Math.max(480, Math.min(960, Math.floor(innerHeight / ZOOM)))];
+// (in a session shared with others, the session's screen, whatever the page's size: a point on one machine's screen is
+// the same point on every other's; the page shows it scaled to fit: resize)
+const nativeMode = () => {
+  const own = [Math.max(640, Math.min(1024, Math.floor(innerWidth / ZOOM))), Math.max(480, Math.min(960, Math.floor(innerHeight / ZOOM)))];
+  const S = sharedNow(); if (!S) return own;
+  const s = S.screenFor(own[0], own[1]); return [s.w, s.h];
+};
+const sharedNow = () => (window.W95HOST && window.W95HOST.shared && window.W95Shared) || null;
 // the mode the system's machine boots in, as Display Properties leaves it for the display driver: Display\Settings
 // under the current configuration (Resolution "w,h", BitsPerPixel), read by the display driver as it is enabled; the one
 // the page's viewport holds, so no change is needed once the shell is up
@@ -3759,6 +3776,9 @@ let sysApp = null, sysStarting = null, firstRun = false, rebooted = false;   // 
 const SHUTDOWN = 'w95.shutdown';
 // ?debug=1 (or true): a page started for testing, its start-up sound silent
 const DEBUG = /^(1|true)$/i.test((() => { try { return new URLSearchParams(location.search).get('debug') || ''; } catch (_) { return ''; } })());
+// ?mute=1: a page that makes no sound: its start quiet, as ?debug=1's, and its outputs (the sound card's streams,
+// sound.js; the CD drive's, cdaudio.js) silent
+window.W95MUTE = /^(1|true)$/i.test((() => { try { return new URLSearchParams(location.search).get('mute') || ''; } catch (_) { return ''; } })());
 const cleanStart = (() => { let v = null; try { v = localStorage.getItem(SHUTDOWN); localStorage.setItem(SHUTDOWN, 'running'); } catch (_) { /* no storage: every start plays */ } return v !== 'running'; })();
 function shutDownCleanly() { try { localStorage.setItem(SHUTDOWN, 'clean'); } catch (_) { /* no storage */ } }
 function startSystem() {
@@ -3769,7 +3789,7 @@ function startSystem() {
     // MSGSRV32's start-up plays SystemStart and starts the shell SYSTEM.INI names; after a start that was no shutdown
     // its SystemStart is not heard (quiet)
     // (?debug=1: the start-up sound never heard, for the restarts of testing)
-    const quiet = DEBUG || (!cleanStart && !firstRun && !rebooted);
+    const quiet = DEBUG || window.W95MUTE || (!cleanStart && !firstRun && !rebooted);
     const a = new RemoteApp(join(WINDIR, 'SYSTEM', 'MSGSRV32.EXE'), '', { system: true, quiet });
     if (!(await a.start(null, null))) { bootLogoEnd(); return null; }
     sysApp = a;
@@ -4759,8 +4779,10 @@ cv.addEventListener('pointerdown', e => {
   const [x, y] = pos(e); mouse = { x, y };
   try { cv.setPointerCapture(e.pointerId); } catch (_) { /* synthetic events */ }
   const btn = e.button === 2 ? 2 : 0, now = performance.now();
-  const dbl = btn === 0 && now - lastDown.t < 500 && Math.abs(x - lastDown.x) <= 4 && Math.abs(y - lastDown.y) <= 4;
+  // (another machine's click: a double click if it was one there, however the network spaced the two)
+  const dbl = replaying ? !!replaying.dbl : btn === 0 && now - lastDown.t < 500 && Math.abs(x - lastDown.x) <= 4 && Math.abs(y - lastDown.y) <= 4;
   lastDown = dbl ? { t: 0, x, y } : { t: btn === 0 ? now : 0, x, y };
+  shareInput({ t: 'down', x, y, b: btn, dbl });
   hideTip();
   if (screen === 'logos') { screen = 'black'; dirty(); setTimeout(boot, 1200); return; }
   if (screen !== 'desktop') return;
@@ -4783,7 +4805,10 @@ cv.addEventListener('pointerdown', e => {
 });
 cv.addEventListener('pointermove', e => {
   const [x, y] = pos(e); if (x !== mouse.x || y !== mouse.y) lastInput = performance.now(); mouse = { x, y };
-  if (window.W95HOST && window.W95HOST.shared && window.W95Shared) window.W95Shared.pointer(x, y);   // (to the others in the session)
+  if (!replaying && sharedNow()) {   // (to the others in the session: where it is, and, held down or now and then, the move)
+    sharedNow().pointer(x, y);
+    const t = performance.now(); if (cap || t - lastMoveSent >= 50) { lastMoveSent = t; shareInput({ t: 'move', x, y }); }
+  }
   if (tbar.autohide && !cap) { if (y >= H - 2 || (tbar.shown > 0 && y >= barTop())) slideTaskbar(true); else if (!(menuSrc && menuSrc.kind === 'start')) slideTaskbar(false); }
   const na = !cap && !menus.length && !modal() ? nativeAt(x, y) : null;
   if (cap && cap.move) cap.move(x, y);
@@ -4815,6 +4840,7 @@ cv.addEventListener('pointermove', e => {
 function hideTip() { clearTimeout(tipTimer); tipTimer = 0; if (tip) { tip = null; dirty(); } }
 cv.addEventListener('pointerup', e => {
   const [x, y] = pos(e);
+  shareInput({ t: 'up', x, y, b: e.button === 2 ? 2 : 0 });
   if (cap) { const c = cap; cap = null; if (c.up) c.up(x, y); dirty(); return; }
   if (screen === 'desktop' && !menus.length && onTaskbar(x, y)) {
     const ti = taskLayout().icons.find(v => inR(v, x, y)); if (ti) trayMouse(ti.t, e.button === 2 ? 0x205 : 0x202);
@@ -4830,19 +4856,21 @@ cv.addEventListener('contextmenu', e => e.preventDefault());
 
 // Printable characters arrive through the textarea's input event (covers paste and IME);
 // keydown handles everything else.
-kbd.addEventListener('input', () => {
-  const s = kbd.value; kbd.value = '';
+kbd.addEventListener('input', () => { const s = kbd.value; kbd.value = ''; shareInput({ t: 'text', s }); typed(s); });
+function typed(s) {
   { const a = nativeFocus(); if (a) { lastInput = performance.now(); a.typeText(s.replace(/\r/g, '')); return; } }
   for (const ch of s.replace(/\r/g, '')) handleKey({ key: ch === '\n' ? 'Enter' : ch, shiftKey: false, ctrlKey: false, metaKey: false, altKey: false, preventDefault() {} });
-});
+}
 // the keys go to USER while one of a native program's windows is active and the shell has nothing open over it
 // (or, the system's machine being the screen, while no window of the page's own is active)
 const nativeFocus = () => (!menus.length && !ren && !modal() && screen === 'desktop' ? (fullSaver && fullSaver.app && fullSaver.app.alive ? fullSaver.app : active && active.native && active.app.alive ? active.app : !(active && windows.includes(active)) ? monApp() : null) : null);
 // the keyboard reaches VKD before anything: the system in message mode (a blue screen) takes every key, and a hot key
 // goes to the native system with the focus, else to one that is frozen, else to any
 const vkdApp = () => msgApp || nativeFocus() || [...nativeApps].find(a => a.alive && a.proc && a.proc.win16Held) || [...nativeApps].find(a => a.alive);
-window.addEventListener('keyup', e => { const v = vkdApp(); if (v && v.vkd(e, true)) { e.preventDefault(); return; } const a = nativeFocus(); if (a) { e.preventDefault(); if (e.keyCode) a.key(e, true); } });
-window.addEventListener('keydown', e => {
+window.addEventListener('keyup', e => { shareKey('ku', e); keyUp(e); });
+window.addEventListener('keydown', e => { shareKey('kd', e); keyDown(e); });
+function keyUp(e) { const v = vkdApp(); if (v && v.vkd(e, true)) { e.preventDefault(); return; } const a = nativeFocus(); if (a) { e.preventDefault(); if (e.keyCode) a.key(e, true); } }
+function keyDown(e) {
   { const v = vkdApp(); if (v && v.vkd(e, false)) { e.preventDefault(); return; } }
   { const a = nativeFocus(); if (a) { lastInput = performance.now(); e.preventDefault(); if (!e.keyCode && e.key.length === 1 && (e.ctrlKey || e.altKey) && /^[a-z0-9]$/i.test(e.key)) a.chord(e); else if (!e.keyCode && e.key.length === 1) a.typeText(e.key); else a.key(e, false); return; } }
   // Option changes the character a Mac key types; Alt+letter means the letter on the key
@@ -4853,7 +4881,7 @@ window.addEventListener('keydown', e => {
   if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) return;
   if (e.isComposing) return;
   handleKey(e);
-});
+}
 function handleKey(e) {
   lastInput = performance.now();
   if (screen !== 'desktop') return;
@@ -4911,7 +4939,7 @@ function resize() {
   const mon = monitor = !!monApp();
   if (mon) {
     W = sysApp.sw; H = sysApp.sh;
-    const cw = W * ZOOM, ch = H * ZOOM;
+    const z = sharedNow() ? Math.min(ZOOM, innerWidth / W, innerHeight / H) : ZOOM, cw = Math.floor(W * z), ch = Math.floor(H * z);
     cv.width = W; cv.height = H; cv.style.width = cw + 'px'; cv.style.height = ch + 'px';
     cv.style.marginLeft = Math.max(0, (innerWidth - cw) >> 1) + 'px'; cv.style.marginTop = Math.max(0, (innerHeight - ch) >> 1) + 'px';
   } else {
@@ -4970,6 +4998,102 @@ function observe() {
   if (now.screen !== was.screen) emit('screen', { screen: now.screen });
 }
 fs.on(e => emit('fs.' + e.op, { path: e.path, ...(e.path2 ? { path2: e.path2 } : {}) }));
+
+// ---------------------------------------------------------------- a session shared with others (shared.js)
+// Every machine in the session runs the same Windows on the same C: and registry, and is kept aligned with the others:
+// - input: what this person does goes to this machine at once, as it always does, and to the server, which numbers it
+//   with everyone's; every other machine applies it, in that order, through the same handlers as its own person's
+//   (`replaying` while it does: what it does is not sent again). A machine that missed some gets them again in order
+//   (shared.js catchUp). Pointer moves go while a button is held, else at most every 50 ms
+// - alignment: the host (the first machine in the session, then the next) says what its windows are, with the number
+//   of the last input it applied; a machine that has applied the same inputs and whose person is not in the middle of
+//   something puts its windows where the host's are (moved, sized, minimized or maximized, the same one active) and
+//   closes the ones the host does not have
+// - each input carries the state its machine was in when it was made (its windows, a menu up or not, the one active:
+//   `gate`); a machine not yet there (still opening the menu the last input opened, say) holds that input until it
+//   is, 2 seconds at most, and applies it then whatever its state: the input reaches the same Windows it did on the
+//   machine it came from. Only the machine that is behind waits; its own person's input never does
+let replaying = null, lastMoveSent = 0, lastOwnInput = 0;
+function shareInput(ev) {
+  const S = sharedNow(); if (!S || replaying) return;
+  lastOwnInput = performance.now(); S.input(ev.t === 'move' ? ev : { ...ev, g: gate() });
+}
+const popupOpen = () => menus.length > 0 || windows.some(w => w.native && w.cls === '#32768');
+const gate = () => [windows.filter(w => w.title && w.title !== 'Program Manager').map(w => w.title).sort().join('|'), popupOpen() ? 1 : 0, active && active.title || ''].join('#');
+const inbox = []; let inboxSince = 0, inboxTimer = 0;
+function remoteArrived(ev) { inbox.push(ev); drainInbox(); }
+function drainInbox() {
+  clearTimeout(inboxTimer); inboxTimer = 0;
+  while (inbox.length) {
+    const ev = inbox[0];
+    if (ev.g && ev.g !== gate()) {
+      const now = performance.now(); if (!inboxSince) inboxSince = now;
+      if (now - inboxSince < 2000) { inboxTimer = setTimeout(drainInbox, 30); return; }
+      emit('sync.late', { input: ev.t, want: ev.g, have: gate() });
+    }
+    inboxSince = 0; inbox.shift(); remoteInput(ev);
+  }
+}
+function shareKey(t, e) { shareInput({ t, key: e.key, code: e.code, keyCode: e.keyCode, s: !!e.shiftKey, c: !!e.ctrlKey, a: !!e.altKey, m: !!e.metaKey }); }
+/** another machine's input, applied here as this machine's own person's would be */
+function remoteInput(ev) {
+  replaying = ev;
+  try {
+    switch (ev.t) {
+      case 'down': pointer('pointerdown', ev.x, ev.y, ev.b); break;
+      case 'move': pointer('pointermove', ev.x, ev.y); break;
+      case 'up': pointer('pointerup', ev.x, ev.y, ev.b); break;
+      case 'kd': case 'ku': {
+        const e = { key: ev.key, code: ev.code, keyCode: ev.keyCode, shiftKey: ev.s, ctrlKey: ev.c, altKey: ev.a, metaKey: ev.m, isComposing: false, preventDefault() {} };
+        if (ev.t === 'kd') keyDown(e); else keyUp(e); break;
+      }
+      case 'text': typed(String(ev.s || '')); break;
+      case 'press': pressKey(String(ev.spec || '')); break;
+    }
+  } finally { replaying = null; }
+  dirty();
+}
+// the windows as the host shows them: each titled top-level window, bottom to top
+const viewOf = () => windows.filter(w => w.title).map(w => ({ title: w.title, x: w.x, y: w.y, w: w.w, h: w.h, min: !!w.min, max: !!w.max, act: w === active }));
+let viewSent = '', viewSentAt = 0, viewWanted = null, aligned = 0;
+function shareTick() {
+  const S = sharedNow(); if (!S || screen !== 'desktop') return;
+  const now = performance.now();
+  if (S.isHost()) {   // (what changed, at once; the same again each second, with the inputs applied since)
+    const v = viewOf(), j = JSON.stringify(v);
+    if (j !== viewSent || now - viewSentAt > 1000) { viewSent = j; viewSentAt = now; S.view(v); }
+    return;
+  }
+  const want = viewWanted;
+  if (!want || want.seq !== S.seq() || inbox.length || cap || drag || popupOpen() || now - lastOwnInput < 400 || now - aligned < 1000) return;
+  viewWanted = null;
+  if (alignTo(want.view)) aligned = now;
+}
+/** this machine's windows put as the host's are; whether anything had to be */
+function alignTo(view) {
+  const left = windows.filter(w => w.title), used = new Set(); let changed = false, act = null;
+  for (const hv of view) {
+    const lw = left.find(w => w.title === hv.title && !used.has(w));
+    if (!lw) { emit('sync.missing', { title: hv.title }); continue; }
+    used.add(lw); if (hv.act) act = lw;
+    if (lw.x === hv.x && lw.y === hv.y && lw.w === hv.w && lw.h === hv.h && !!lw.min === hv.min && !!lw.max === hv.max) continue;
+    changed = true; emit('sync.place', { title: hv.title, x: hv.x, y: hv.y, w: hv.w, h: hv.h, min: hv.min, max: hv.max });
+    if (lw.native) lw.app.cmd('place', [lw.guestHwnd, hv.x, hv.y, hv.w, hv.h, hv.min ? 7 : hv.max ? 3 : lw.min || lw.max ? 9 : 0]);
+    else Object.assign(lw, { x: hv.x, y: hv.y, w: hv.w, h: hv.h, min: hv.min, max: hv.max });
+  }
+  for (const lw of left) if (!used.has(lw)) {
+    changed = true; emit('sync.close', { title: lw.title });
+    if (lw.native) lw.app.close(lw); else closeWin(lw, true);
+  }
+  if (act && act !== active && !act.min) { changed = true; emit('sync.activate', { title: act.title }); activate(act); }
+  if (changed) dirty();
+  return changed;
+}
+setInterval(shareTick, 250);
+if (sharedNow()) {
+  sharedNow().onInput(ev => remoteArrived(ev));
+  sharedNow().onView((view, seq) => { viewWanted = { view, seq }; });
+}
 
 // ---------------------------------------------------------------- scripting
 // Drives the shell through the same input paths a person uses: pointer events on the screen canvas in screen
@@ -5193,8 +5317,9 @@ const script = {
     for (let i = 1; i <= steps; i++) pointer('pointermove', Math.round(x1 + (x2 - x1) * i / steps), Math.round(y1 + (y2 - y1) * i / steps));
     pointer('pointerup', x2, y2);
   },
-  type(text) { const na = nativeFocus(); if (na) { na.typeText(String(text).replace(/\r/g, '')); return; } for (const ch of String(text).replace(/\r/g, '')) handleKey({ key: ch === '\n' ? 'Enter' : ch, shiftKey: false, ctrlKey: false, metaKey: false, altKey: false, preventDefault() {} }); },
-  key(...specs) { for (const k of specs) pressKey(k); },
+  type(text) { shareInput({ t: 'text', s: String(text) }); script.typeOwn(text); },
+  typeOwn(text) { const na = nativeFocus(); if (na) { na.typeText(String(text).replace(/\r/g, '')); return; } for (const ch of String(text).replace(/\r/g, '')) handleKey({ key: ch === '\n' ? 'Enter' : ch, shiftKey: false, ctrlKey: false, metaKey: false, altKey: false, preventDefault() {} }); },
+  key(...specs) { for (const k of specs) { shareInput({ t: 'press', spec: k }); pressKey(k); } },
   elements(q) { const all = elements(); if (!q) return all; if (typeof q === 'string' || q instanceof RegExp) q = { name: q };
     return all.filter(e => Object.entries(q).every(([k, v]) => v instanceof RegExp ? v.test(String(e[k] ?? '')) : e[k] === v)); },
   find: q => findEl(q),

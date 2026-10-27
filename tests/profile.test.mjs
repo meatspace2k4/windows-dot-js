@@ -8,13 +8,14 @@ globalThis.window = globalThis;
 new Function(readFileSync(new URL('../fs.js', import.meta.url), 'utf8'))();
 const { FileSystem, join } = window.W95FS;
 const w = readFileSync(new URL('../win95.js', import.meta.url), 'utf8');
-const i = w.indexOf('function setupProfile(user) {'), src = w.slice(i, w.indexOf('\n}\n', i) + 3);
+const fn = name => { const i = w.indexOf(`function ${name}(`); return w.slice(i, w.indexOf('\n}\n', i) + 3); };
+const src = fn('setupProfile') + fn('profileHome');
 
 const run = (fs, reg, user) => {
   const R = { regGet: (k, n) => (reg.get(k) || new Map()).get(n.toLowerCase()), regSet: (k, n, v) => { if (!reg.has(k)) reg.set(k, new Map()); reg.get(k).set(n.toLowerCase(), v); reg.sets = (reg.sets || 0) + 1; } };
   const vars = { DESKTOP_DIR: 'C:\\WINDOWS\\Desktop', RECENT: 'C:\\WINDOWS\\Recent', PROGRAMS: 'C:\\WINDOWS\\Start Menu\\Programs', START_MENU: 'C:\\WINDOWS\\Start Menu' };
-  new Function('fs', 'join', 'W95Win32', 'W95FS', 'WINDIR', 'V', `let { DESKTOP_DIR, RECENT, PROGRAMS, START_MENU } = V;\n${src}\nsetupProfile(${JSON.stringify(user)}); Object.assign(V, { DESKTOP_DIR, RECENT, PROGRAMS, START_MENU });`)(
-    fs, join, R, window.W95FS, 'C:\\WINDOWS', vars);
+  new Function('fs', 'join', 'basename', 'W95Win32', 'W95FS', 'WINDIR', 'V', `let { DESKTOP_DIR, RECENT, PROGRAMS, START_MENU } = V;\n${src}\nsetupProfile(${JSON.stringify(user)}); Object.assign(V, { DESKTOP_DIR, RECENT, PROGRAMS, START_MENU });`)(
+    fs, join, window.W95FS.basename, R, window.W95FS, 'C:\\WINDOWS', vars);
   return vars;
 };
 const text = v => new TextDecoder().decode(v.data).replace(/\0.*$/, '');
