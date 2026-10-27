@@ -12,6 +12,8 @@ s.op('b', 'intent', {'key': 'spi:17', 'kind': 'spi', 'action': 17, 'ui': 1, 'fla
 s.op('a', 'intent', {'key': 'ini:SYSTEM.INI:boot:scrnsave.exe', 'kind': 'ini', 'file': 'SYSTEM.INI', 'app': 'boot', 'name': 'SCRNSAVE.EXE', 'value': 'C:\\WINDOWS\\SYSTEM\\3DTEXT~1.SCR'})
 st = s.state()
 assert st['seq'] == 3 and st['intents']['spi:17']['ui'] == 1 and len(st['intents']) == 2, st
+# (the session's wall clock: its start and the server's time now, ms, for every machine's clock to agree on)
+assert isinstance(st['epoch'], int) and isinstance(st['now'], int) and st['epoch'] <= st['now'] <= st['epoch'] + 60000, st
 assert 'disk' not in st and 'registry' not in st, 'no disk or registry kept'
 for bad in [('intent', {'kind': 'spi'}), ('obj', {'v': {}}), ('disk', {'op': 'node'}), ('reg', {'op': 'set'}), ('nope', {})]:
     try: s.op('a', *bad); raise AssertionError('accepted ' + repr(bad))
@@ -110,7 +112,8 @@ def stream(client, user):
             elif line.startswith('data: '): data = json.loads(line[6:])
             elif line == '' and ev: return ev, data
     return next_event
-assert req('GET', '/__session/room/state')[1] == {'seq': 0, 'world': {}, 'gens': {}, 'intents': {}}
+st0 = req('GET', '/__session/room/state')[1]
+assert {k: v for k, v in st0.items() if k not in ('epoch', 'now')} == {'seq': 0, 'world': {}, 'gens': {}, 'intents': {}} and st0['epoch'] <= st0['now'], st0
 ann, bob = stream('c1', 'Ann'), stream('c2', 'Bob')
 assert ann()[0] == 'people'
 while True:

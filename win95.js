@@ -1074,6 +1074,7 @@ function dosMachine(program, args, o = {}) {
     ...Object.keys(D.files).filter(p => p !== 'IO.SYS').map(p => ({ path: p, data: bytes(D.files[p]) }))];
   const m = V.machine({ disk: V.fat16(bytes(D.boot), files, 16), program, args, fs, conIn: dosConIn, ...o });
   m.o.winExec = dosWinExec(m);
+  if (sharedNow()) m.wallSkew = sharedNow().clockSkew();   // (the session's wall clock for its real-time clock: v86Port)
   m.v86Clock(); m.v86Boot();
   return m;
 }
@@ -3562,7 +3563,7 @@ class RemoteApp extends NativeApp {
     this.worker.onmessage = e => this.message(e.data);
     this.worker.onerror = e => { console.error('[worker]', e.message); this.exited(-1, e.message); };
     this.worker.postMessage({ t: 'start', rpc: this.rpcSab, registry: W95Win32.regDump(), o: {
-      path: this.path, arg: this.arg, system: this.system, quiet: this.quiet, holdStartup: this.system && !!(sharedNow() && window.W95HOST.shared.joining), session: this.system && !!sharedNow(), sw: this.sw, sh: this.sh, shellW: W, workH: workH(), ring: this.ring, lan: this.lanRing || null,
+      path: this.path, arg: this.arg, system: this.system, quiet: this.quiet, holdStartup: this.system && !!(sharedNow() && window.W95HOST.shared.joining), session: this.system && !!sharedNow(), wallSkew: sharedNow() ? sharedNow().clockSkew() : 0, sw: this.sw, sh: this.sh, shellW: W, workH: workH(), ring: this.ring, lan: this.lanRing || null,
       bytes: bytes || null, prog: prog ? { name: prog.name, meta: prog.d.meta } : null,
       trace: new URLSearchParams(location.search).get('trace'),   // (?trace=MSGSRV32: the imports that thread calls, read back with cmd 'trace')
       traceNames: new URLSearchParams(location.search).get('traceNames'),   // (&traceNames=Profile|DeleteFile: only the imports whose names match)

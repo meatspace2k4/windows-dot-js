@@ -159,9 +159,13 @@
       return x.status === 200 ? JSON.parse(x.responseText) : null;
     } catch (_) { return null; }
   };
+  // (the session's wall clock: the server's. Every machine in the session reads its own clock plus this skew, so all
+  // show the same time, and a program's clock (win32.js progTime) starts from it: tools/sessions.py state's `now`)
+  let clockSkew = 0;
   const start = base => {
     const state = fetchState(); if (!state) return null;
     seq = state.seq || 0;
+    if (typeof state.now === 'number') clockSkew = state.now - Date.now();
     for (const [id, v] of Object.entries(state.world || {})) world.set(id, v);
     for (const [k, i] of Object.entries(state.intents || {})) intents.set(k, i);
     for (const [id, g] of Object.entries(state.gens || {})) gens.set(id, g);
@@ -189,7 +193,7 @@
   window.W95Shared = {
     wanted, start, ready, logon, client, ownSession, remember, logOff, goLocal, pointer, obj, intent,
     people: () => [...people.values()], watch: f => { watchers.add(f); return () => watchers.delete(f); },
-    seq: () => seq, world: () => new Map(world), onObj: f => { onObj = f; },
+    seq: () => seq, world: () => new Map(world), onObj: f => { onObj = f; }, clockSkew: () => clockSkew,
     intents: () => new Map(intents), onIntent: f => { onIntent = f; },
   };
 })();

@@ -752,7 +752,8 @@ class Process {
    *  srand(GetCurrentTime()), twice) is the same wherever it runs, and a wait timed by the clock still ends. From
    *  then on it runs on from there. `peek` reads without counting (MS-DOS's date, read with its time) */
   progTime(kind, peek) {
-    const t = this.thread16, rec = t && (t.pc || t.task), local = kind === 'tick' ? this.now() - this.t0 + 3600000 : Date.now();
+    // (the wall clock in a shared session: the server's, this machine's plus its skew to it, so every machine shows one time)
+    const t = this.thread16, rec = t && (t.pc || t.task), local = kind === 'tick' ? this.now() - this.t0 + 3600000 : Date.now() + (this.wallSkew || 0);
     if (!rec) return local;
     if (!this.sessionClock || !rec.t0) return local + (rec.clock ? rec.clock[kind] : 0);
     const v = (rec.vt || (rec.vt = {}))[kind] || (rec.vt[kind] = { n: 0, from: null });

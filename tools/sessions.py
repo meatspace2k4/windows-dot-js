@@ -20,7 +20,7 @@ Used by tools/serve.py and deploy/win95/win95_server.py:
     POST /__session/<id>/op                { client, kind: 'obj' | 'intent', op }, or { client, ops: [...] }  ->  { seq }
     POST /__session/<id>/pointer           { client, x, y }
 """
-import json, os, queue, re, threading
+import json, os, queue, re, threading, time
 
 MAX_SESSIONS = 64            # (sessions kept in memory at once; more are refused)
 LOG_KEEP = 20000             # (the changes kept to replay to someone who reconnects; one further behind loads the state again)
@@ -41,6 +41,7 @@ class Session:
         self.id, self.folder, self.lock = sid, folder, threading.RLock()
         self.seq, self.people, self.subs, self.log = 0, {}, set(), []
         self.dirty, self.saver = False, None
+        self.epoch = int(time.time() * 1000)   # (the session's wall clock: its start, ms; every machine's clock in the session reads it, shared.js, win32.js progTime)
         self.world = {}                        # (the OS's objects: id -> their state)
         self.gens = {}                         # (each object's generation: one more each time it is closed)
         self.intents = {}                      # (the settings made: key -> the intent that made it last)
@@ -66,11 +67,11 @@ class Session:
         client, and its old stream may not have ended yet) ran them, and its restart ended them"""
         with self.lock:
             others = any(c != client for c in self.people)
-            if not others: self.world, self.gens = {}, {}
+            if not others: self.world, self.gens = {}, {}; self.epoch = int(time.time() * 1000)   # (a session nobody runs starts afresh: its clock too)
             return dict(self.state(), running=others)
 
     def state(self):
-        with self.lock: return {'seq': self.seq, 'world': dict(self.world), 'gens': dict(self.gens), 'intents': dict(self.intents)}
+        with self.lock: return {'seq': self.seq, 'world': dict(self.world), 'gens': dict(self.gens), 'intents': dict(self.intents), 'epoch': self.epoch, 'now': int(time.time() * 1000)}
 
     # ---- changes, and who hears of them
     def op(self, client, kind, op):

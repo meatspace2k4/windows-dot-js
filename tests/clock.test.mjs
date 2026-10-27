@@ -66,4 +66,16 @@ assert.equal(bob.clockOf(), b.clock);
   assert.equal(P.clockCall.call(m), 0x99); assert.equal(((edx & 0xffff) << 16 | (eax & 0xffff)) >>> 0, 0x00123457);
   m.sessionClock = false; assert.equal(P.clockCall.call(m), undefined, 'outside a session, on this machine\'s clock: USER answers');
 }
+// the wall clock in a shared session: the server's, this machine's plus its skew to it (shared.js clockSkew, the
+// worker's wallSkew): every clock a program reads of the wall (KERNEL32's GetSystemTime, MS-DOS's date and time, a
+// program's start, startClock) is three hours on when the server's is
+{
+  const now = { v: 70000 }, m = machine(now, 1000); m.wallSkew = 3 * 3600000;
+  assert.ok(Math.abs(m.progTime('wall') - (Date.now() + 3 * 3600000)) < 1000, 'the wall clock skewed to the server\'s');
+  const pc = m.startClock(); assert.ok(Math.abs(pc.t0.wall - (Date.now() + 3 * 3600000)) < 1000, 'a program\'s start on that clock');
+  const st = 0x100, mem = new Uint8Array(0x200), dv = new DataView(mem.buffer);
+  Object.defineProperty(m, 'u8', { value: mem }); m.w16 = (p, v) => dv.setUint16(p, v, true); m.thread16 = null;
+  API.KERNEL32.GetSystemTime[1].call(m, st);
+  assert.equal(dv.getUint16(st + 8, true), new Date(Date.now() + 3 * 3600000).getUTCHours());
+}
 console.log('clock: ok');

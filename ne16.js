@@ -1399,7 +1399,7 @@ P.intentQuiet = function () { return !this.onIntent || this.causeOf() !== 'input
  *  (this.nextClock, worker.js 'run'), else this machine's own (no offsets) */
 P.startClock = function () {
   const c = this.nextClock; this.nextClock = null;
-  const tick = u32(this.now() - this.t0 + 3600000), wall = Date.now();
+  const tick = u32(this.now() - this.t0 + 3600000), wall = Date.now() + (this.wallSkew || 0);   // (the session's wall clock, win32.js progTime)
   return c ? { t0: c, clock: { tick: (c.tick - tick) | 0, wall: c.wall - wall } } : { t0: { tick, wall }, clock: null };
 };
 P.hookClock = function (user) {

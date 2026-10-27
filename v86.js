@@ -382,6 +382,13 @@ P.v86Port = function (port, size, isIn, val) {
   const ext = XMS.kb + (XMS.base - 0x100000) / 1024;
   if (port === 0x71 && [0x17, 0x30].includes(this.cmosAt)) v = ext & 0xff;
   else if (port === 0x71 && [0x18, 0x31].includes(this.cmosAt)) v = ext >> 8;
+  // the real-time clock's registers (0 seconds, 2 minutes, 4 hours, 6 the day of the week, 7 the day, 8 the month, 9
+  // the year, 32h the century, in BCD; 0Ah to 0Dh its status: not updating, 24-hour binary-coded, power good), from this
+  // machine's wall clock in the session's time (wallSkew: the server's clock, shared.js)
+  else if (port === 0x71 && this.cmosAt <= 9 || (port === 0x71 && (this.cmosAt === 0x32 || (this.cmosAt >= 0x0a && this.cmosAt <= 0x0d)))) {
+    const d = new Date(Date.now() + (this.wallSkew || 0)), bcd = n => ((n / 10) | 0) << 4 | (n % 10);
+    v = [bcd(d.getSeconds()), 0, bcd(d.getMinutes()), 0, bcd(d.getHours()), 0, d.getDay() + 1, bcd(d.getDate()), bcd(d.getMonth() + 1), bcd(d.getFullYear() % 100), 0x26, 0x02, 0x00, 0x80][this.cmosAt] ?? bcd((d.getFullYear() / 100) | 0);
+  }
   else
   if (port === 0x60) { v = this.port60; this.kbdBusy = false; }
   else if (port === 0x64) v = this.kbdBusy ? 0x1d : 0x1c;
