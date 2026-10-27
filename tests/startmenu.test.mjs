@@ -75,7 +75,9 @@ function run(lnkBytes, withGrpconv = true, o = {}) {
     window: { W95SYSTEM: { infs: { 'SETUPC.INF': INF, ...(o.applets ? { 'APPLETS.INF': APPLETS } : {}), ...(o.motown ? { 'MOTOWN.INF': MOTOWN } : {}) },
       programs: { ...(withGrpconv ? { 'GRPCONV.EXE': {} } : {}), ...(o.calc ? { 'CALC.EXE': {} } : {}), ...Object.fromEntries((o.programs || []).map(p => [p, {}])) } } },
     fs: { readFile: p => { if (!files.has(p)) throw new Error('ENOENT'); return files.get(p); }, writeFile: (p, d) => files.set(p, d), exists: p => files.has(p) },
-    W95FS: { encode: s => new TextEncoder().encode(s) }, W95Win32: { regSet: (k, n, v) => reg.push([k, n, new TextDecoder().decode(v.data)]) },
+    W95FS: { encode: s => new TextEncoder().encode(s), decode: b => new TextDecoder().decode(b) },
+    W95Win32: { regSet: (k, n, v) => reg.push([k, n, new TextDecoder().decode(v.data)]),
+      regGet: (k, n) => (o.programsFolder && /shell folders$/.test(k) && n === 'Programs' ? { data: new TextEncoder().encode(o.programsFolder + '\0') } : undefined) },
   };
   new Function('window', 'fs', 'W95FS', 'W95Win32', `
     const WINDIR = 'C:\\\\WINDOWS', PROGRAMS = 'C:\\\\WINDOWS\\\\Start Menu\\\\Programs', join = (...a) => a.filter(Boolean).join('\\\\');
@@ -119,5 +121,12 @@ assert.equal(run(LNK, true, { applets: true, calc: true, files: [[CALC, LNK]] })
   assert.ok(!/Volume|powerpnt|AVIFile/.test(r.ini));
   const MM = 'C:\\WINDOWS\\Start Menu\\Programs\\Accessories\\Multimedia\\';
   assert.equal(run(LNK, true, { motown: true, programs: ['MPLAYER.EXE', 'SNDREC32.EXE'], files: [[MM + 'Media Player.lnk', LNK], [MM + 'Sound Recorder.lnk', LNK]] }).ini, null);
+}
+// the user's Programs folder a profile's (Shell Folders): the links GRPCONV made there count, so Setup's item is not
+// armed again at every start; that profile's Start menu without them: made
+{
+  const P = 'C:\\WINDOWS\\Profiles\\Ann\\Start Menu\\Programs';
+  assert.equal(run(null, true, { programsFolder: P, files: [[P + '\\Windows Explorer.lnk', LNK]] }).ini, null);
+  assert.ok(run(null, true, { programsFolder: P }).ini);
 }
 console.log('startmenu: ok');

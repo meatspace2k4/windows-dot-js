@@ -44,9 +44,10 @@ for (const [record, opts, heard] of [
 // to the shell's own RunOnce: the machine runs Setup's items under RUNONCE before its message server starts, so the
 // shell, and SystemStart with it, come after Setup's screen
 {
-  const boots = w.split('\n').filter(l => /installPrograms\(\); setupFonts\(\);/.test(l));
+  // (each boot's passes, the user's profile among them on a shared session's, then the Start menu's)
+  const lines = w.split('\n'), boots = lines.map((l, i) => [l, i]).filter(([l]) => /installPrograms\(\); setupFonts\(\);/.test(l));
   assert.equal(boots.length, 2);
-  for (const l of boots) assert.ok(/\bsetupStartMenu\(\);/.test(l), l);
+  for (const [l, i] of boots) assert.ok(/\bsetupStartMenu\(\);/.test(lines.slice(i, i + 3).join('\n')), l);
   const body = cut('function setupStartMenu() {', "grpconv.exe') + ' -s'));\n}");
   assert.ok(/regSet\(ro \+ '\\\\setup', 'Programs on the Start menu'/.test(body));
   assert.ok(!/regSet\(ro, 'GrpConv'/.test(body) && !/'Wrapper'/.test(body));

@@ -827,8 +827,9 @@ function bootDisk() {
   mountDrives();
   W95Win32.regAttach(host.registry);
   if (!fs.attach('C', host.disk)) makeDisk(true);
-  installPrograms(); setupFonts(); setupRegistry(); setupDisplay(); setupSavers(); setupSound(); setupHelp(); setupNetwork(); setupPorts(); setupPrinting(); setupStartMenu();
+  installPrograms(); setupFonts(); setupRegistry(); setupDisplay(); setupSavers(); setupSound(); setupHelp(); setupNetwork(); setupPorts(); setupPrinting();
   if (host.shared) setupProfile(host.userName);
+  setupStartMenu();   // (after the profile: its links go in the Programs folder the user's Shell Folders name)
   fs.chdir('C:\\');
   // a shared session's (shared.js): the changes other people's machines made while this one started apply from here
   if (host.shared && window.W95Shared) {
@@ -2937,19 +2938,23 @@ function setupStartMenu() {
       .map(f => applets.fields(applets.subst(f[3])));
     if (links.length && links.every(k => (S.programs || {})[(k[1] || '').toUpperCase()])) accessories.push({ name, links });
   }
-  let cur = null; try { cur = fs.readFile(PROGRAMS + '\\Windows Explorer.lnk'); } catch (_) { /* none yet */ }
+  // (the Programs folder GRPCONV writes its links in: the one the user's Shell Folders name, a profile's where the user
+  // has one; Setup's item was armed at every start while the links were in a profile's and this looked in the default)
+  const sf = W95Win32.regGet('hkcu\\software\\microsoft\\windows\\currentversion\\explorer\\shell folders', 'Programs');
+  const progs = (sf && W95FS.decode(sf.data).replace(/\0.*$/, '')) || PROGRAMS;
+  let cur = null; try { cur = fs.readFile(progs + '\\Windows Explorer.lnk'); } catch (_) { /* none yet */ }
   const claude = !!(S.programs || {})['CLAUDE.EXE'];   // (the Claude program: a folder of its own under Programs, claude-exe.js)
   // (Export and Import Session: RUNDLL32 running SESSION.DLL's entries, session-dll.js, in System Tools)
-  const session = !!(S.programs || {})['RUNDLL32.EXE'], tools = join(PROGRAMS, 'Accessories', 'System Tools');
+  const session = !!(S.programs || {})['RUNDLL32.EXE'], tools = join(progs, 'Accessories', 'System Tools');
   // (an optional component Setup installs: its INF's links, Clipboard Viewer's in Accessories)
   const DOS = window.W95DOS, clip = DOS && DOS.infs && DOS.infs['CLIP.INF'] && fs.exists(join(WINDIR, 'CLIPBRD.EXE')) ? infParse(DOS.infs['CLIP.INF']) : null;
   // (the Multimedia accessories, in Accessories\Multimedia (group12): MOTOWN.INF's Media Player, Sound Recorder and
   // Volume Control and MMOPT.INF's CD Player, each whose program the system has)
   const media = [['MOTOWN.INF', 'MPlay.links', 'MPLAYER.EXE', 'Media Player'], ['MOTOWN.INF', 'Rec.links', 'SNDREC32.EXE', 'Sound Recorder'],
     ['MOTOWN.INF', 'Vol.links', 'SNDVOL32.EXE', 'Volume Control'], ['MMOPT.INF', 'CDPlayer.inis', 'CDPLAYER.EXE', 'CD Player']].filter(([inf, , file]) => infs[inf] && (S.programs || {})[file]);
-  const missing = accessories.some(a => a.links.some(k => !fs.exists(join(PROGRAMS, 'Accessories', k[0] + '.lnk')))) || (claude && !fs.exists(join(PROGRAMS, 'Claude', 'Claude.lnk')))
-    || media.some(m => !fs.exists(join(PROGRAMS, 'Accessories', 'Multimedia', m[3] + '.lnk')))
-    || (session && !fs.exists(join(tools, 'Join Session.lnk'))) || (clip && !fs.exists(join(PROGRAMS, 'Accessories', 'Clipboard Viewer.lnk')));
+  const missing = accessories.some(a => a.links.some(k => !fs.exists(join(progs, 'Accessories', k[0] + '.lnk')))) || (claude && !fs.exists(join(progs, 'Claude', 'Claude.lnk')))
+    || media.some(m => !fs.exists(join(progs, 'Accessories', 'Multimedia', m[3] + '.lnk')))
+    || (session && !fs.exists(join(tools, 'Join Session.lnk'))) || (clip && !fs.exists(join(progs, 'Accessories', 'Clipboard Viewer.lnk')));
   if (cur && cur[0] === 0x4c && cur[1] === 0 && !missing) return;   // ('L': a shell link's header)
   const out = new Map();
   const add = ({ sec, fields, subst }, names) => {
@@ -2970,7 +2975,7 @@ function setupStartMenu() {
   if (claude) { out.set('progman.groups', out.get('progman.groups') || { name: 'progman.groups', lines: [] }); out.get('progman.groups').lines.push('group90=Claude'); out.set('group90', { name: 'group90', lines: ['"Claude", CLAUDE.EXE'] }); }
   if (session) {
     const groups = out.get('progman.groups') || out.set('progman.groups', { name: 'progman.groups', lines: [] }).get('progman.groups');
-    if (!groups.lines.some(l => /^group11=/i.test(l))) groups.lines.push(`group11=${tools.slice(PROGRAMS.length + 1)}`);
+    if (!groups.lines.some(l => /^group11=/i.test(l))) groups.lines.push(`group11=${tools.slice(progs.length + 1)}`);
     const g = out.get('group11') || out.set('group11', { name: 'group11', lines: [] }).get('group11');
     g.lines.push('"Export Session", "RUNDLL32.EXE SESSION.DLL,Export"', '"Import Session", "RUNDLL32.EXE SESSION.DLL,Import"',
       '"Save Session", "RUNDLL32.EXE SESSION.DLL,Save"', '"Open Session", "RUNDLL32.EXE SESSION.DLL,Open"', '"Join Session", "RUNDLL32.EXE SESSION.DLL,Join"');
