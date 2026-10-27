@@ -21,7 +21,7 @@ assert.equal(fit(v, null), v);
   let r = read({ world, local: new Map([['A', moved]]), seen, starting: new Set(), closing: CL, area, lastArea: JSON.stringify({ ...area, w: 793 }) });
   assert.deepEqual(r.sends, []); assert.deepEqual(r.applies, [['A', v]]);
   r = read({ world, local: new Map([['A', moved]]), seen, starting: new Set(), closing: CL, area, lastArea: r.area });
-  assert.deepEqual(r.sends, [['A', moved]]);
+  assert.deepEqual(r.sends, [['A', moved, { x: 59, y: 49 }]], '(with what changed)');
 }
 // (win95.js osApply: a program another machine's person closed, its only object, ended here without asking again
 // (worker.js 'end'); a program started three times without coming is not started again)

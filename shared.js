@@ -49,21 +49,27 @@
   // an intent changes there, each machine's Windows writes itself. While one is waiting to go, a newer state of the same
   // object, or a newer intent for the same setting, replaces it
   let outbox = [], posting = false, quiet = false;
-  const send = (kind, op) => {
+  // (an object's change is what changed, oslogic.js diff, merged into one of its waiting; a close replaces one waiting,
+  // and a reopening after a close waiting goes as the whole state, `full`)
+  const send = (kind, op, full) => {
     if (quiet) return;
     const same = (kind === 'obj' && outbox.find(o => o.kind === 'obj' && o.op.id === op.id)) || (kind === 'intent' && outbox.find(o => o.kind === 'intent' && o.op.key === op.key));
-    if (same) same.op = op; else outbox.push({ kind, op });
+    if (!same) outbox.push({ kind, op });
+    else if (kind === 'obj') same.op = { id: op.id, v: op.v === null ? null : same.op.v === null ? full : L().merge(same.op.v, op.v) };
+    else same.op = op;
     flush();
   };
+  const L = () => window.W95OSLogic;
   // (an object's change goes with the generation it was made in: the server's, and one more for each close of this
-  // machine's on its way; `flying` keeps, for each object, this machine's changes posted and not yet back, a close as
-  // true: while one is, another machine's change to it is not set here, this machine's own coming after it)
+  // machine's on its way; `flying` keeps, for each object, this machine's changes posted and not yet back (a close, or
+  // the fields changed): while one is, another machine's change to the same fields is not set here, this machine's own
+  // coming after it, nor any while a close is)
   const flush = () => {
     if (posting || !outbox.length) return;
     const ops = outbox; outbox = []; posting = true;
     for (const o of ops) if (o.kind === 'obj') {
       const f = flying.get(o.op.id) || [];
-      o.op = { ...o.op, gen: (gens.get(o.op.id) || 0) + f.filter(Boolean).length }; flying.set(o.op.id, [...f, o.op.v == null]);
+      o.op = { ...o.op, gen: (gens.get(o.op.id) || 0) + f.filter(x => x.close).length }; flying.set(o.op.id, [...f, { close: o.op.v == null, fields: L().fields(o.op.v) }]);
     }
     const lost = () => { for (const o of ops) if (o.kind === 'obj') flying.set(o.op.id, (flying.get(o.op.id) || []).slice(0, -1)); };   // (not sent: none on its way)
     fetch(url('op'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client, ops }) })
@@ -96,14 +102,20 @@
     seq = Math.max(seq, m.seq || 0);
     if (m.kind === 'intent') { intents.set(m.op.key, m.op); if (m.client !== client) deliver(m); return; }
     if (m.kind !== 'obj') return;
-    // (an object: this machine's own back, or one of its own the server passed over (`to` it, the object as the server
-    // has it in its place), taken off those on their way; while any of its own is on its way or waiting, its own wins:
-    // nothing of the server's is set here, in the world's copy or the OS (tests/sessionmodel.test.mjs))
-    const id = m.op.id;
+    // (an object, its change a patch: this machine's own back, or one of its own the server passed over (`to` it, the
+    // object as the server has it in its place), taken off those on their way. While any of its own is on its way or
+    // waiting, its own wins for the fields it changes: another's change to other fields is set here, in the world's
+    // copy and the OS; a close either way waits for the server's (tests/sessionmodel.test.mjs))
+    const id = m.op.id, v = m.op.v == null ? null : m.op.v;
     if (m.client === client || m.to === client) flying.set(id, (flying.get(id) || []).slice(1));
-    if ((flying.get(id) || []).length || outbox.some(o => o.kind === 'obj' && o.op.id === id)) return;
-    world.set(id, m.op.v == null ? null : m.op.v); if (m.op.gen !== undefined) gens.set(id, m.op.gen);
-    if (m.client !== client) deliver(m);
+    const pend = [...(flying.get(id) || []), ...outbox.filter(o => o.kind === 'obj' && o.op.id === id).map(o => ({ close: o.op.v == null, fields: L().fields(o.op.v) }))];
+    if (pend.length) {
+      if (m.client === client || v === null || pend.some(p => p.close)) return;
+      const rest = L().without(v, new Set(pend.flatMap(p => p.fields))); if (!rest) return;
+      world.set(id, L().merge(world.get(id), rest)); deliver({ ...m, op: { ...m.op, v: world.get(id) } }); return;
+    }
+    world.set(id, m.to === client ? v : L().merge(world.get(id), v)); if (m.op.gen !== undefined) gens.set(id, m.op.gen);
+    if (m.client !== client) deliver({ ...m, op: { ...m.op, v: world.get(id) } });   // (the object as it is now, whole)
   };
   const deliver = m => {
     if (!ready16) { pending.push(m); return; }
@@ -157,7 +169,8 @@
     return host(state, base);
   };
   /** an OS object's new state on this machine (null: it is gone), for every other machine */
-  const obj = (id, v) => { world.set(id, v == null ? null : v); send('obj', { id, v: v == null ? null : v }); };
+  /** this machine's object's state now, and what changed (its patch; the whole state if not given) */
+  const obj = (id, v, patch) => { world.set(id, v == null ? null : v); send('obj', { id, v: v == null ? null : patch || v }, v == null ? null : v); };
   /** a setting this machine's person made, as the call that made it (ne16.js hookIntents), for every other machine */
   const intent = i => { intents.set(i.key, i); send('intent', i); };
   /** Windows has started here: what came meanwhile is made now */

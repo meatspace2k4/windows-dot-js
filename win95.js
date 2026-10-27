@@ -5193,7 +5193,7 @@ async function osRead() {
     const r = W95OSLogic.read({ world: S.world(), local: new Map([...local].map(([id, o]) => [id, o.v])), seen: osSeen, starting: osStarting,
       closing: OS_CLOSING, area: local.area, lastArea: osArea, caught: osCaught });
     osArea = r.area; for (const id of local.keys()) osTries.delete(id);
-    for (const [id, v] of r.sends) { S.obj(id, v); emit(v ? 'sync.send' : 'sync.closed', v ? { id, x: v.x, y: v.y } : { id }); }
+    for (const [id, v, patch] of r.sends) { S.obj(id, v, patch); emit(v ? 'sync.send' : 'sync.closed', v ? { id, x: v.x, y: v.y } : { id }); }
     for (const [id, v] of r.applies) osApply(id, v, local);
     for (const id of r.retries) { emit('sync.retry', { id }); osApply(id, S.world().get(id), local); }
     for (const id of osOpened) { osOpened.delete(id); if (!local.has(id)) osStarting.delete(id); }   // (a folder opened, not up by now: the next change tries again)

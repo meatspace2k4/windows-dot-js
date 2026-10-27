@@ -24,6 +24,15 @@ import json, os, queue, re, threading
 
 MAX_SESSIONS = 64            # (sessions kept in memory at once; more are refused)
 LOG_KEEP = 20000             # (the changes kept to replay to someone who reconnects; one further behind loads the state again)
+
+
+def merge(base, patch):
+    """an object's state with a patch made to it, as oslogic.js merge: None closes it; a patch to nothing is the patch"""
+    if patch is None: return None
+    if not isinstance(base, dict) or not isinstance(patch, dict): return patch
+    out = dict(base, **patch)
+    if 'ctrls' in base or 'ctrls' in patch: out['ctrls'] = dict(base.get('ctrls') or {}, **(patch.get('ctrls') or {}))
+    return out
 ID = re.compile(r'^[A-Za-z0-9_.-]{1,64}$')
 
 
@@ -42,7 +51,9 @@ class Session:
         if kind == 'obj':
             oid = op.get('id')
             if not isinstance(oid, str) or not oid: raise ValueError('an object needs an id')
-            self.world[oid] = op.get('v')   # (None: closed, kept so a machine starting it at its own start closes it too)
+            # (a patch of what changed, made to the object as it is: its fields, and each control in ctrls; None: closed,
+            # kept so a machine starting it at its own start closes it too)
+            self.world[oid] = merge(self.world.get(oid), op.get('v'))
         elif kind == 'intent':
             key = op.get('key')
             if not isinstance(key, str) or not key: raise ValueError('an intent needs a key')

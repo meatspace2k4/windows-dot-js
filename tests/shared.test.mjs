@@ -7,6 +7,8 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 const src = readFileSync(new URL('../shared.js', import.meta.url), 'utf8');
+globalThis.window = globalThis; new Function(readFileSync(new URL('../oslogic.js', import.meta.url), 'utf8'))();   // (oslogic.js: an object's changes by field)
+const W95OSLogic = globalThis.W95OSLogic;
 
 function page(search = '', stored = {}, extra = {}) {
   const posts = [], sources = [], timers = [];
@@ -18,7 +20,7 @@ function page(search = '', stored = {}, extra = {}) {
   }
   class EventSource { constructor(u) { this.u = u; this.on = {}; sources.push(this); } addEventListener(t, f) { this.on[t] = f; } emit(t, d) { this.on[t]({ data: JSON.stringify(d) }); } }
   let resolve = []; const fetch = (u, o) => { posts.push({ u, body: JSON.parse(o.body) }); return new Promise(ok => resolve.push(() => ok({ ok: true }))); };
-  const window = { EventSource };
+  const window = { EventSource, W95OSLogic };
   const setTimeout = f => { timers.push(f); return timers.length; };
   class URL0 { constructor(h) { this.h = h; this.searchParams = new URLSearchParams(h.split('?')[1] || ''); } toString() { const s = this.searchParams.toString(); return 'http://h/' + (s ? '?' + s : ''); } }
   new Function('window', 'location', 'localStorage', 'sessionStorage', 'XMLHttpRequest', 'fetch', 'setTimeout', 'URL', 'URLSearchParams', 'console', src)(
@@ -115,6 +117,20 @@ assert.deepEqual(objs.at(-1), ['N', null]); assert.equal(S.world().get('N'), nul
   assert.equal(S.world().get('G').x, 1, 'its own close back: its reopening still on its way');
   es1.emit('op', { seq: 16, client: 'server', to: S.client, kind: 'obj', op: { id: 'G', v: null, gen: 1 } });
   assert.deepEqual(objs, [['G', null]], 'its reopening passed over: closed here'); assert.equal(S.world().get('G'), null);
+  await P.settle();
+}
+// changes by field: what changed goes (a patch); while this machine's move is on its way, another's typing in the same
+// window is set here, the whole state given to the page, and another's move is not
+{
+  const n = P.posts.length; objs.length = 0;
+  S.obj('H', { x: 1, ctrls: { '1:edit': '' } }); await P.settle(); P.posts.length = n + 1;
+  es1.emit('op', { seq: 17, client: S.client, kind: 'obj', op: { id: 'H', v: { x: 1, ctrls: { '1:edit': '' } }, gen: 0 } });
+  S.obj('H', { x: 2, ctrls: { '1:edit': '' } }, { x: 2 });
+  assert.deepEqual(P.posts.at(-1).body.ops[0].op, { id: 'H', v: { x: 2 }, gen: 0 }, 'only the place');
+  es1.emit('op', { seq: 18, client: 'other', kind: 'obj', op: { id: 'H', v: { ctrls: { '1:edit': 'hi' } }, gen: 0 } });
+  assert.deepEqual(objs.at(-1), ['H', { x: 2, ctrls: { '1:edit': 'hi' } }]);
+  es1.emit('op', { seq: 19, client: 'other', kind: 'obj', op: { id: 'H', v: { x: 9 }, gen: 0 } });
+  assert.equal(objs.length, 1, 'another\'s move: its own on its way wins'); assert.equal(S.world().get('H').x, 2);
   await P.settle();
 }
 // a reload the server asks for (it no longer has the changes since this page's last)

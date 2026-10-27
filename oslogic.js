@@ -32,7 +32,7 @@
       if (seen.get(id) === closing || same(seen.get(id), v)) continue;   // (one this machine is closing: not reported)
       // (one the session has that came up here, started for it: the session's, set here; one of this machine's: sent)
       if (!seen.has(id) && world.get(id)) { seen.set(id, v); applies.push([id, world.get(id)]); continue; }
-      seen.set(id, v); sends.push([id, v]);
+      const prev = seen.get(id); seen.set(id, v); sends.push([id, v, diff(prev, v)]);
     }
     for (const id of [...seen.keys()]) if (!local.has(id)) {
       const was = seen.get(id); seen.delete(id);
@@ -43,5 +43,37 @@
     if (o.caught) for (const [id, wv] of world) if (wv && !local.has(id) && !starting.has(id) && !seen.has(id) && !sends.some(s => s[0] === id)) retries.push(id);
     return { sends, applies, retries, area };
   }
-  g.W95OSLogic = { fit, read, same, GRIP, CAPTION };
+  // ---- an object's changes by field: its place's and other top-level fields, and each control. Two people changing
+  // different fields of one window at once (one moving it, one typing in it) both keep their change; for one field, the
+  // last the server has wins
+  /** what changed from one state to the next, as a patch; the whole state for one not seen before */
+  function diff(prev, v) {
+    if (!prev || typeof prev !== 'object' || !v || typeof v !== 'object') return v;
+    const p = {};
+    for (const k of Object.keys(v)) if (k !== 'ctrls' && !same(prev[k], v[k])) p[k] = v[k];
+    const pc = prev.ctrls || {}, vc = v.ctrls || {}, c = {};
+    for (const k of Object.keys(vc)) if (!same(pc[k], vc[k])) c[k] = vc[k];
+    if (Object.keys(c).length) p.ctrls = c;
+    return p;
+  }
+  /** a state with a patch made to it (null: closed; a patch to nothing: the patch) */
+  function merge(base, patch) {
+    if (patch === null || patch === undefined) return null;
+    if (!base || typeof base !== 'object') return patch;
+    const out = { ...base, ...patch };
+    if (base.ctrls || patch.ctrls) out.ctrls = { ...(base.ctrls || {}), ...(patch.ctrls || {}) };
+    return out;
+  }
+  /** a patch's fields, by name ('ctrls.<control>' for a control) */
+  const fields = patch => (patch ? Object.keys(patch).flatMap(k => (k === 'ctrls' ? Object.keys(patch.ctrls).map(c => `ctrls.${c}`) : [k])) : []);
+  /** a patch without the given fields; null if none is left */
+  function without(patch, drop) {
+    const out = {};
+    for (const k of Object.keys(patch)) {
+      if (k === 'ctrls') { const c = Object.fromEntries(Object.entries(patch.ctrls).filter(([n]) => !drop.has(`ctrls.${n}`))); if (Object.keys(c).length) out.ctrls = c; }
+      else if (!drop.has(k)) out[k] = patch[k];
+    }
+    return Object.keys(out).length ? out : null;
+  }
+  g.W95OSLogic = { fit, read, same, diff, merge, fields, without, GRIP, CAPTION };
 })();

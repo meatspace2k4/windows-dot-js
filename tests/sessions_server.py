@@ -56,6 +56,10 @@ for q in (qa, qb):
 s.op('a', 'obj', {'id': 'NOTEPAD.EXE#0/Notepad#0', 'v': {'x': 9}, 'gen': 0})
 assert s.state()['world'] == {'NOTEPAD.EXE#0/Notepad#0': None}
 assert qa.get_nowait()[1] == {'seq': 3, 'client': 'server', 'to': 'a', 'kind': 'obj', 'op': {'id': 'NOTEPAD.EXE#0/Notepad#0', 'v': None, 'gen': 1}}
+# a change is a patch, made to the object as it is: a field, a control
+s2 = S.Session('p')
+s2.op('a', 'obj', {'id': 'N', 'v': {'x': 1, 'ctrls': {'1:edit': ''}}}); s2.op('b', 'obj', {'id': 'N', 'v': {'ctrls': {'1:edit': 'hi'}}}); s2.op('a', 'obj', {'id': 'N', 'v': {'x': 2}})
+assert s2.state()['world']['N'] == {'x': 2, 'ctrls': {'1:edit': 'hi'}}
 # opened again after it (generation 1): a new one
 s.op('a', 'obj', {'id': 'NOTEPAD.EXE#0/Notepad#0', 'v': {'x': 2}, 'gen': 1}); assert s.state()['world'] == {'NOTEPAD.EXE#0/Notepad#0': {'x': 2}}
 s.op('b', 'intent', {'key': 'spi:17', 'kind': 'spi', 'action': 17, 'ui': 1, 'flags': 3})

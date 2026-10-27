@@ -11,8 +11,10 @@ const n = model().explore(4);
 // the rules the session keeps: a machine's own change on its way wins over another's the server put before it
 // (shared.js); a change made before its object was closed is passed over (sessions.py: close wins, and an object
 // opened again after its close is a new one). Without either, the machines are found to disagree
-for (const off of ['ownWins', 'gens'])
-  assert.throws(() => model({ rules: { ownWins: true, gens: true, [off]: false } }).explore(3), /server W=/, `without ${off}: a disagreement found`);
+// (and changes go by field: another's change to a field this machine is not changing is set here while its own is on
+// its way; one moving a window and another typing in it both keep their change)
+for (const off of ['ownWins', 'gens', 'byField'])
+  assert.throws(() => model({ rules: { [off]: false } }).explore(3), /server W=/, `without ${off}: a disagreement found`);
 const late = model({ machines: ['A', 'B', 'C'], late: ['C'] }).explore(3);
 const two = model({ ids: ['W', 'X'] }).explore(3);
 console.log(`sessionmodel: ok (${n} states; with a late join ${late}, two objects ${two})`);
