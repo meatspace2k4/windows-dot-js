@@ -344,16 +344,114 @@ class Process {
    *  take: #UD): the exception's continuation, or null for a stop of the emulator's own (trapped) */
   noCode(at) {
     const t = this.trapped || '';
-    (this.faultLog || (this.faultLog = [])).push({ at: u32(at).toString(16), why: t, esp: u32(this.cpu.esp.value).toString(16), from: u32(this.lastBlock || 0).toString(16), cs: (this.cpu.cs.value & 0xffff).toString(16), ss: (this.cpu.ss.value & 0xffff).toString(16) }); if (this.faultLog.length > 50) this.faultLog.shift();   // (a diagnostic: cmd 'faults')
+    (this.faultLog || (this.faultLog = [])).push({ at: u32(at).toString(16), atIn: this.whereOf(at), why: t, esp: u32(this.cpu.esp.value).toString(16), from: u32(this.lastBlock || 0).toString(16), fromIn: this.whereOf(this.lastBlock || 0), cs: (this.cpu.cs.value & 0xffff).toString(16), ss: (this.cpu.ss.value & 0xffff).toString(16), thread: this.thread16 ? this.thread16.id : 'main' }); if (this.faultLog.length > 50) this.faultLog.shift();   // (a diagnostic: cmd 'faults')
     if (/^run-time code/.test(t)) { console.warn(`[win32] ${t}`); this.trapped = null; return this.raise(6, at); }   // (an emulator gap: named)
     if (t && !/^jump to unmapped address/.test(t)) return null;
     this.trapped = null; return this.raise(14, at, at);
+  }
+  // ---- diagnostics (worker.js cmd 'watch', 'memwatch', 'probe', 'faults'; SCRIPTING.md, Diagnostics)
+  /** a linear address as a symbol: a thunk's import, a 16-bit module's segment:offset, or a 32-bit module's offset,
+   *  with the nearest export at or before it (its name and the offset past it) when the module has one */
+  whereOf(lin) {
+    lin = u32(lin);
+    const N = window.W95NE16, T16 = N && N.L.T16;
+    if (T16 && lin >= T16 && lin < T16 + 0x10000 && this.th16) { const th = this.th16[(lin - T16) >> 2]; if (th) return `thunk ${th.key}`; }
+    if (lin >= LAYOUT.THUNK && this.thunks) { const t = this.thunks[(lin - LAYOUT.THUNK) >> 2]; if (t) return `${t.dll}!${t.nm}`; }
+    for (const m of this.ne ? this.ne.values() : []) {
+      for (const g of m.segs || []) {
+        const live = g.sel && this.selValid && this.selValid(g.sel), b = live ? u32(this.selBase(g.sel)) : g.base, len = g.len || (live ? this.selLimit(g.sel) + 1 : 0);
+        if (!b || lin < b || lin >= b + len) continue;
+        const off = lin - b, s = this.neSym(m, g, off);
+        return `${m.name} ${g.num}:${off.toString(16)}${s ? ` (${s})` : ''}`;
+      }
+    }
+    for (const m of this.modules || []) {
+      if (!m.base || !m.size || lin < m.base || lin >= m.base + m.size) continue;
+      const s = this.peSym(m, lin);
+      return `${m.name || '?'}+${(lin - m.base).toString(16)}${s ? ` (${s})` : ''}`;
+    }
+    return lin.toString(16);
+  }
+  /** the export of 32-bit module `m` at or before `lin`, as name+offset; '' with none */
+  peSym(m, lin) {
+    if (!m.exports || !m.exports.size) return '';
+    if (!m.symList) m.symList = [...m.exports].filter(([, a]) => typeof a === 'number' && a >= m.base && a < m.base + m.size).sort((x, y) => x[1] - y[1]);
+    const l = m.symList; let lo = 0, hi = l.length - 1, at = -1;
+    while (lo <= hi) { const mid = (lo + hi) >> 1; if (l[mid][1] <= lin) { at = mid; lo = mid + 1; } else hi = mid - 1; }
+    if (at < 0) return '';
+    const [nm, a] = l[at]; return lin === a ? nm : `${nm}+${(lin - a).toString(16)}`;
+  }
+  /** the export of 16-bit module `m` in segment `g` at or before offset `off`, as name (or #ordinal)+offset */
+  neSym(m, g, off) {
+    if (!m.exports || !m.exports.size || !g.sel) return '';
+    if (!m.symList) {
+      const byOrd = new Map(); for (const [k, v] of Object.entries(m.names || {})) { if (typeof v === 'number') byOrd.set(v, k); else if (/^\d+$/.test(k)) byOrd.set(+k, v); }
+      m.symList = [...m.exports].map(([ord, a]) => [byOrd.get(ord) || `#${ord}`, a >>> 16, a & 0xffff]).sort((x, y) => x[1] - y[1] || x[2] - y[2]);
+    }
+    let best = null;
+    for (const e of m.symList) { if ((e[1] | 1) !== (g.sel | 1)) continue; if (e[2] <= off) best = e; else break; }
+    if (!best) return '';
+    return off === best[2] ? best[0] : `${best[0]}+${(off - best[2]).toString(16)}`;
+  }
+  /** `fn` run as execution reaches linear `at` through the dispatcher (an export another module enters, a return
+   *  address another module returns to), beside any hook there already; the function that removes it. A hook that
+   *  answers where to go on (ne16.js clockCall) ends the chain */
+  addEntryHook(at, fn) {
+    at = u32(at);
+    const hooks = this.entryHooks || (this.entryHooks = new Map()), lists = this.entryLists || (this.entryLists = new Map());
+    let l = lists.get(at);
+    if (!l) {
+      l = { fns: [], was: hooks.get(at) || null }; lists.set(at, l);
+      hooks.set(at, function () { for (const f of l.fns.slice()) { const to = f.call(this); if (to !== undefined) return to; } return l.was ? l.was.call(this) : undefined; });
+    }
+    l.fns.push(fn);
+    return () => { const i = l.fns.indexOf(fn); if (i >= 0) l.fns.splice(i, 1); if (!l.fns.length) { lists.delete(at); if (l.was) hooks.set(at, l.was); else hooks.delete(at); } };
+  }
+  /** at an export's entry: `fn(eax, edx)` once the call returns to its caller (the return address on the stack now:
+   *  a 32-bit near return, or a 16-bit far one), matched by thread and stack depth so nested and concurrent calls
+   *  each find their own. Only a return that comes back through the dispatcher is seen (one from another module) */
+  onReturn(fn) {
+    const seg = !!(this.cpu.ss.value & 0xffff), sp = seg ? u32(this.cpu.ssb.value) + (this.cpu.esp.value & 0xffff) : u32(this.cpu.esp.value);
+    const ret = seg ? u32(this.selBase(this.r16(sp + 2)) + this.r16(sp)) : u32(this.r32(sp)), th = this.thread16 ? this.thread16.id : 'main', self_ = this;
+    const pend = this.retPend || (this.retPend = new Map()), key = ret, list = pend.get(key) || [];
+    if (!list.length) pend.set(key, list);
+    const rec = { th, sp, fn };
+    list.push(rec);
+    if (list.length === 1) {
+      list.off = this.addEntryHook(ret, function () {
+        const now = (this.cpu.ss.value & 0xffff) ? u32(this.cpu.ssb.value) + (this.cpu.esp.value & 0xffff) : u32(this.cpu.esp.value), me = this.thread16 ? this.thread16.id : 'main';
+        let k = -1; for (let i = list.length - 1; i >= 0; i--) if (list[i].th === me && now > list[i].sp) { k = i; break; }
+        if (k < 0) return undefined;
+        const [r] = list.splice(k, 1);
+        if (!list.length) { pend.delete(key); list.off(); }
+        try { r.fn.call(self_, u32(this.cpu.eax.value), u32(this.cpu.edx.value)); } catch (e) { console.error(e); }
+        return undefined;
+      });
+    }
+  }
+  /** a write watch on linear [lo, lo+len): the range is compared with its last contents at each dispatch (a block of a
+   *  recompiled module, a stand-in's call) and each run-time block, and the first change since, with what ran last,
+   *  goes in `hits` (cmd 'memwatch'); null ends it */
+  memWatch(lo, len) {
+    this.memW = lo == null ? null : { lo: u32(lo), len: len | 0, snap: this.u8.slice(u32(lo), u32(lo) + (len | 0)), hits: [], n: 0 };
+    return this.memW;
+  }
+  memCheck(by) {
+    const w = this.memW, u8 = this.u8, s = w.snap, lo = w.lo, n = w.len; let i = 0;
+    for (; i < n; i++) if (u8[lo + i] !== s[i]) break;
+    if (i === n) return;
+    let j = n - 1; while (j > i && u8[lo + j] === s[j]) j--;
+    w.n++;
+    if (w.hits.length < 50) w.hits.push({ at: (lo + i).toString(16), n: j - i + 1, was: Array.from(s.subarray(i, Math.min(j + 1, i + 16))), now: Array.from(u8.subarray(lo + i, Math.min(lo + j + 1, lo + i + 16))),
+      by: by || this.whereOf(this.lastBlock || 0), thread: this.thread16 ? this.thread16.id : 'main', t: Math.round(this.now()) });
+    s.set(u8.subarray(lo, lo + n));
   }
   dispatch(eip) {
     for (;;) {
       eip >>>= 0;
       if (eip === LAYOUT.SENTINEL) return 0;
       if (this.runHook) this.runHook(eip);   // debugging: set from the page to watch every dispatch
+      if (this.memW) this.memCheck();
       // (an export another module enters, watched: a shared session's intents, ne16.js hookIntents; a hook that answers
       // the call itself gives where it returns to: a program's clock, ne16.js hookClock)
       if (this.entryHooks) { const h = this.entryHooks.get(eip); if (h) { const to = h.call(this); if (to !== undefined) { eip = to; continue; } } }

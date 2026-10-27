@@ -365,7 +365,7 @@ class Machine {
       } catch (_) { return ''; }
     };
     // (and where the call came from: the module and offset of its return address)
-    const caller = () => { try { const a = p.r32(p.reg('esp')) >>> 0, m = (p.modules || []).find(x => x.base && a >= x.base && a < x.base + (x.size || 0)); return m ? `${m.name}+${(a - m.base).toString(16)}` : a.toString(16); } catch (_) { return ''; } };
+    const caller = () => { try { return p.whereOf(p.r32(p.reg('esp'))); } catch (_) { return ''; } };
     self.W95TRACE = t => { const th = name(); if (log.length < 20000 && want.test(th) && (!only || only.test(t.dll + '!' + t.nm))) log.push([Math.round(performance.now() - t0), th, t.dll + '!' + t.nm, arg32(t), caller()]); };
     self.W95APPYTRACE = e => { if (log.length < 20000) log.push([Math.round(performance.now() - t0), name(), 'appy', (e.fn >>> 0).toString(16)]); };
   }
@@ -702,7 +702,8 @@ class Machine {
     // result 0; a window gone since the call was asked for (a dialog closed while its controls are read) is no
     // parameter error of USER's)
     const p = this.proc, le32 = v => [v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, (v >>> 24) & 0xff];
-    const fns = calls.map(c => { if (c.dll === 'KERNEL32') return p.thunkFor('KERNEL32', c.name); const m = p.byName.get(c.dll); return m && m.exports.get(c.name); });
+    // (a DLL of the personality's (KERNEL32, and any other with no image here): its stand-in, through its thunk)
+    const fns = calls.map(c => { const m = p.byName.get(c.dll); if (m && m.exports.get(c.name)) return m.exports.get(c.name); return W.API[c.dll] && W.API[c.dll][c.name] ? p.thunkFor(c.dll, c.name) : 0; });
     const u32m = p.byName.get('USER32'), isWin = u32m && u32m.exports.get('IsWindow');
     if (!calls.length || fns.some(f => !f) || (calls.some(c => c.ifWindow) && !isWin)) return Promise.resolve(null);
     const strs = [], code = [], n = calls.length, size = (n + 1) * 8 + calls.reduce((s, c) => s + 5 * c.args.length + 11 + (c.ifWindow ? 19 : 0), 0) + 3;
@@ -759,16 +760,8 @@ class Machine {
     const p = this.proc, S = self.W95SYSTEM || {};
     this.probe.whereOf = lin => where(lin);
     const segs = []; for (const d of Object.values(S.ne || {})) for (const g of (d.meta && d.meta.segs) || []) segs.push([d.meta.name, g.num, g.base, g.len]);
-    const where = lin => {
-      lin = lin >>> 0;
-      const T16 = self.W95NE16.L.T16, th = lin >= T16 && lin < T16 + 0x10000 && p.th16 && p.th16[(lin - T16) >> 2];
-      if (th) return `thunk ${th.key}`;
-      const L32 = self.W95Win32.LAYOUT, t32 = L32 && lin >= L32.THUNK && p.thunks && p.thunks[(lin - L32.THUNK) >> 2];
-      if (t32) return `${t32.dll}!${t32.nm}`;
-      for (const [n, num, b, l] of segs) if (lin >= b && lin < b + l) return `${n} ${num}:${(lin - b).toString(16)}`;
-      for (const m of p.modules || []) if (m.base && lin >= m.base && lin < m.base + (m.size || 0)) return `${m.name || '?'}+${(lin - m.base).toString(16)}`;
-      return lin.toString(16);
-    };
+    // (an address as module, export and offset, win32.js whereOf; a system module's segment not loaded here by its build's place)
+    const where = lin => { const w = p.whereOf(lin); if (!/^[0-9a-f]+$/.test(w)) return w; lin = lin >>> 0; for (const [n, num, b, l] of segs) if (lin >= b && lin < b + l) return `${n} ${num}:${(lin - b).toString(16)}`; return w; };
     const stack = (ctx) => {   // far return addresses on a 16-bit stack, innermost first
       if (!ctx || !ctx.ss) return [];
       const out = [], base = p.selBase(ctx.ss), sp = ctx.esp & 0xffff;
@@ -1016,14 +1009,47 @@ class Machine {
         if (!this.probe.whereOf) this.probe();
         return { r, path: path.slice(-n).map(e => this.probe.whereOf(e)) };
       })();
-      // (a diagnostic: each entry to a module's export recorded with its first n stack arguments and its caller, until
-      // read: [dll, name, n]; [] reads and clears)
+      // (a diagnostic: each entry to a module's export recorded with its first n stack arguments (dwords of a 32-bit
+      // module's, words of a 16-bit one's), its caller and thread, and once the call returns to its caller, its result
+      // (eax, or AX and DX:AX): [dll, name, n], name an export's name, #ordinal, or /regexp/ over the module's names;
+      // the exports hooked. [] reads and clears the log; [dll] ends that module's watches)
       case 'watch': {
         if (!args.length) { const l = p.watchLog || []; p.watchLog = []; return l; }
-        const [dll, name, n = 4] = args, m = p.byName.get(dll), at = m && m.exports.get(name); if (!at) return false;
-        const hooks = p.entryHooks || (p.entryHooks = new Map());
-        hooks.set(at >>> 0, function () { const sp = this.reg('esp'), a = []; for (let i = 1; i <= n; i++) a.push((this.r32(sp + 4 * i) >>> 0).toString(16)); (this.watchLog || (this.watchLog = [])).push({ name, args: a, ret: (this.r32(sp) >>> 0).toString(16), thread: this.thread16 ? this.thread16.id : 0 }); });
-        return true;
+        const [dll, name, n = 4] = args, m = p.byName.get(String(dll).toUpperCase()) || p.byName.get(dll); if (!m) return false;
+        const offs = p.watchOff || (p.watchOff = new Map());
+        if (name === undefined) { for (const f of offs.get(m) || []) f(); offs.delete(m); return true; }
+        const ne = m.kind === 'ne', re = /^\/(.*)\/$/.exec(String(name)), want = re && new RegExp(re[1], 'i');
+        const names = [];   // [name, linear]
+        if (ne) {
+          const byOrd = new Map(); for (const [k, v] of Object.entries(m.names || {})) { if (typeof v === 'number') byOrd.set(v, k); else if (/^\d+$/.test(k)) byOrd.set(+k, v); }
+          const lin = a => a && p.selValid(a >>> 16) ? (p.selBase(a >>> 16) + (a & 0xffff)) >>> 0 : 0;
+          if (want) { for (const [ord, a] of m.exports) { const nm = byOrd.get(ord) || `#${ord}`; if (want.test(nm) && lin(a)) names.push([nm, lin(a)]); } }
+          else { const key = /^#?\d+$/.test(String(name)) ? +String(name).replace('#', '') : String(name), a = lin(p.neExport(m, key)); if (a) names.push([typeof key === 'number' ? byOrd.get(key) || `#${key}` : key, a]); }
+        } else {
+          if (want) { for (const [nm, a] of m.exports) if (want.test(nm) && typeof a === 'number' && a) names.push([nm, a >>> 0]); }
+          else { const a = m.exports.get(name); if (a) names.push([name, a >>> 0]); }
+        }
+        if (!names.length) return false;
+        const log = () => p.watchLog || (p.watchLog = []), t0 = performance.now();
+        for (const [nm, at] of names) {
+          const off = p.addEntryHook(at, function () {
+            const seg = !!(this.cpu.ss.value & 0xffff), sp = seg ? (this.cpu.ssb.value >>> 0) + (this.cpu.esp.value & 0xffff) : this.reg('esp') >>> 0, a = [];
+            if (seg) for (let i = 0; i < n; i++) a.push(this.r16(sp + 4 + 2 * i).toString(16)); else for (let i = 1; i <= n; i++) a.push((this.r32(sp + 4 * i) >>> 0).toString(16));
+            const ret = seg ? (this.selBase(this.r16(sp + 2)) + this.r16(sp)) >>> 0 : this.r32(sp) >>> 0;
+            const rec = { t: Math.round(performance.now() - t0), name: `${m.name}!${nm}`, args: a, from: this.whereOf(ret), thread: this.thread16 ? this.thread16.id : 'main' };
+            if (log().length < 20000) log().push(rec);
+            this.onReturn((eax, edx) => { rec.eax = eax.toString(16); if (seg) { rec.ax = (eax & 0xffff).toString(16); rec.dxax = (((edx & 0xffff) << 16 | (eax & 0xffff)) >>> 0).toString(16); } });
+          });
+          if (!offs.has(m)) offs.set(m, []); offs.get(m).push(off);
+        }
+        return names.map(x => x[0]);
+      }
+      // (a diagnostic: a write watch on linear [lo, lo+len): [lo, len] starts one, [] gives its hits so far (each the
+      // first changed byte, how many, the bytes before and after, and what ran last) and the count, [null] ends it)
+      case 'memwatch': {
+        if (!args.length) return p.memW ? { hits: p.memW.hits.splice(0), n: p.memW.n } : null;
+        if (args[0] == null) { p.memWatch(null); return true; }
+        p.memWatch(args[0], args[1] || 4); return true;
       }
       case 'netEnum': return this.netEnum(args[0], args[1]);
       case 'netConnections': return this.netConnections();
@@ -1032,7 +1058,7 @@ class Machine {
       case 'probe': return this.probe();
       // (offsets in a module, by name: EAX each time execution comes to one from another module, as a call into
       // another DLL returns there; into the trace's log; no offsets ends it)
-      case 'watch': {
+      case 'watchAt': {
         const [name, offs] = args, want = new Set(offs || []), log = this.traceLog || (this.traceLog = []);
         if (!want.size) { p.runHook = null; return true; }
         p.runHook = eip => {

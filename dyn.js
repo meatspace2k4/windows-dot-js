@@ -802,8 +802,10 @@ P.dynRun = function (eip) {
   for (let n = 0; ; n++) {
     if ((n & 0xfff) === 0xfff) { this.cpu.eip.value = eip; if (this.tick(eip)) return -1; }   // the processor's time, as the dispatcher asks
     const blk = this.dynBlock(eip); if (!blk) return null;
+    const from = eip;
     try { eip = u32(blk.run()); }
     catch (e) { if (!(e instanceof WebAssembly.RuntimeError)) throw e; this.trapped = `run-time code at ${eip.toString(16)} (instruction at ${u32(this.cpu.eip.value).toString(16)}): ${e.message}`; return null; }
+    if (this.memW) this.memCheck(`run-time code at ${from.toString(16)}`);   // (a write watch: each block of run-time code, win32.js memCheck)
     if (eip === LAYOUT.SENTINEL || eip >= LAYOUT.THUNK16) return eip;
     if (this.modules.some(m => eip >= m.meta.textLo && eip < m.meta.textHi && this.hasBlock(m, eip))) return eip;
   }

@@ -180,6 +180,31 @@ each has `keys` (scan code << 8 | character, typed into its keyboard), `out` and
 | `ccd.session.start`, `ccd.session.stop` | `session`, `title`, `prompt` | a session starts or is stopped |
 | `ccd.notify` | `kind`, `session` | a notification (a question, a finished task) |
 
+## Diagnostics
+
+With `?debug=1`, `win95.sysApp.cmd(name, args)` asks the system's machine (worker.js `cmd`). Each answers a promise.
+Addresses in the answers are symbols where the machine knows one: `thunk USER.#47` (a 16-bit import's stand-in),
+`KERNEL32!GetTickCount` (a 32-bit one's), `USER 3:bef (ISWINDOW+12)` (a 16-bit module's segment and offset, with the
+export at or before it), `OLE32+1a2c0 (CoInitialize+40)` (a 32-bit module's), or hex when it is in no module.
+
+| Call | Does |
+| --- | --- |
+| `cmd('probe')` | every thread (its state, program, what it waits on, where it stopped, its stack's return addresses and BP chain as symbols), the windows with their tasks, the processes, the loaded modules, and who holds the Win16 lock |
+| `cmd('faults')` | the fault log, and clears it: code the machine found none at (`at`, `atIn`, `from`, `fromIn`, `thread`), USER's and KERNEL's parameter errors with the parameter, the function and its caller, and `LogError` calls |
+| `cmd('trace', [threadRe, nameRe?])` | starts a trace of the stand-in and thunk calls the matching threads make (the JS-implemented imports only), with their arguments where known; `cmd('trace')` reads and clears what was traced |
+| `cmd('watch', [dll, name, n = 4])` | hooks the export's entry: each call is logged with its first `n` stack arguments (dwords for a 32-bit module, words for a 16-bit one), its caller (`from`, a symbol), its thread, and once it returns to its caller its result (`eax`; for a 16-bit export `ax` and `dxax` too). `name` is an export's name, `#ordinal`, or `/regexp/` over the module's export names, so `cmd('watch', ['USER32', '/^(Create|Destroy)Window/'])` traces the calls other recompiled modules make into those. The names hooked are answered. Works for native 16-bit modules (`['USER', 'ISWINDOW']`, `['GDI', '#42']`) and 32-bit ones alike; a return is seen when it comes back through the dispatcher, that is from another module |
+| `cmd('watch')` | reads and clears the watch log; `cmd('watch', [dll])` ends that module's watches |
+| `cmd('watchAt', [dll, [offsets]])` | EAX each time execution comes to one of the offsets in that module from another module (a call into another DLL returning there), into the trace log; `cmd('watchAt', [dll, []])` ends it |
+| `cmd('memwatch', [lin, len])` | a write watch on linear `[lin, lin+len)`: the range is compared with its last contents at each dispatch (a recompiled block's end, a stand-in's call) and each block of run-time code; `cmd('memwatch')` gives the hits so far (`at`, `n` bytes changed, `was`, `now`, `by`: what ran last, `thread`) and the count; `cmd('memwatch', [null])` ends it. Code of a recompiled module is sampled per block, so `by` names the block that ran, not the instruction |
+| `cmd('call', [dll, name, args])` | calls the export on a thread of its own with dword or string arguments and answers its result; a DLL of the personality's (KERNEL32's stand-ins) is called through its thunk. `null` when there is no such export |
+| `cmd('callPath', [dll, name, args, n = 400])` | the same, with the last `n` blocks it ran as symbols |
+| `cmd('peek', [lin, n])` | `n` bytes of memory |
+| `cmd('user16', [ordinal, [['w', v], ['l', v], ['buf', n]]])` | USER's ordinal called with those arguments; a `buf` is filled by the call and returned as bytes |
+| `cmd('effects')` | what the machine did and under which cause (ne16.js `effect`: input, remote, boot, host) |
+
+Before any reload, read `read_console_messages` and `cmd('faults')`: a reload wipes both. `console.log('=== MARK ...')`
+before each step keeps the console in order.
+
 ## Exploring
 
 `node bench/explore.mjs [endpoint] [--minutes 10] [--depth 12]` drives the system with these calls only, clicking
