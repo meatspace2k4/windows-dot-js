@@ -240,6 +240,10 @@ P.bootUser16 = function () {
   if (this.user16Ready === undefined) this.user16Ready = false;
   if (this.vxdBoot) this.vxdBoot();   // the static VxDs, initialized before Windows starts (vmm.js)
   for (const m of ['SYSTEM', 'KEYBOARD', 'MOUSE', this.displayDriverFile(), 'COMM', 'GDI']) this.loadLibrary16(m, true);
+  // the sound driver SYSTEM.INI's [boot] names (sound.drv=mmsound.drv: the module SOUND, Windows 3.x's sound functions,
+  // which Minesweeper imports), from its file, as KRNL386 loads it
+  const snd = this.fs && winIni(this, 'SYSTEM.INI', 'boot', 'sound.drv');
+  if (snd) { const f = this.findFile16(snd); if (f) try { this.loadLibrary16(f); } catch (e) { console.warn('[ne16] sound.drv', snd, e && e.message); } }
   // USER.EXE calls into USER32.DLL through flat thunks from its LibEntry on, and USER32 connects them when it loads,
   // naming USER.EXE: so USER's image first, then USER32, then USER's LibEntry
   const user = this.ne.get('USER') || this.loadLibrary16('USER', true, true);

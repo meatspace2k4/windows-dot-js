@@ -39,7 +39,18 @@ setup.ini, group4,, """%Calc_Desc%"""
 [MSPaint.links]
 setup.ini, group4,, """%MSPaint_Desc%"", MSPAINT.EXE"
 
+[wingames.links]
+setup.ini, progman.groups, , "group6=%GAMES_DESC%"         ;creates folder
+setup.ini, group6,, """%Sol_Desc%"", SOL.EXE,,,,,%Sol_ShortDesc%"            ;creates link
+setup.ini, progman.groups,, "OldGames=%Games_WIN31%" ; from Win31
+setup.ini, OldGames,, "%Sol_WIN31%"             ; from Win31
+
 [Strings]
+GAMES_DESC = "Accessories\\Games"
+Sol_Desc = "Solitaire"
+Sol_ShortDesc = "Sol"
+Games_WIN31 = "Games"
+Sol_WIN31 = "Solitaire"
 APPS_DESC = "Accessories"
 Calc_Desc = "Calculator"
 Calc_ShortDesc = "Calc"
@@ -72,7 +83,7 @@ function run(lnkBytes, withGrpconv = true, o = {}) {
   const files = new Map(o.files || []), reg = [];
   if (lnkBytes) files.set('C:\\WINDOWS\\Start Menu\\Programs\\Windows Explorer.lnk', lnkBytes);
   const env = {
-    window: { W95SYSTEM: { infs: { 'SETUPC.INF': INF, ...(o.applets ? { 'APPLETS.INF': APPLETS } : {}), ...(o.motown ? { 'MOTOWN.INF': MOTOWN } : {}) },
+    window: { ...(o.games ? { W95DOS: { windows: { 'SOL.EXE': 'x' } } } : {}), W95SYSTEM: { infs: { 'SETUPC.INF': INF, ...(o.applets ? { 'APPLETS.INF': APPLETS } : {}), ...(o.motown ? { 'MOTOWN.INF': MOTOWN } : {}) },
       programs: { ...(withGrpconv ? { 'GRPCONV.EXE': {} } : {}), ...(o.calc ? { 'CALC.EXE': {} } : {}), ...Object.fromEntries((o.programs || []).map(p => [p, {}])) } } },
     fs: { readFile: p => { if (!files.has(p)) throw new Error('ENOENT'); return files.get(p); }, writeFile: (p, d) => files.set(p, d), exists: p => files.has(p) },
     W95FS: { encode: s => new TextEncoder().encode(s), decode: b => new TextDecoder().decode(b) },
@@ -128,5 +139,13 @@ assert.equal(run(LNK, true, { applets: true, calc: true, files: [[CALC, LNK]] })
   const P = 'C:\\WINDOWS\\Profiles\\Ann\\Start Menu\\Programs';
   assert.equal(run(null, true, { programsFolder: P, files: [[P + '\\Windows Explorer.lnk', LNK]] }).ini, null);
   assert.ok(run(null, true, { programsFolder: P }).ini);
+}
+// the Games (an optional component Setup installed, msdos.js): their links in Accessories\Games, the old Win 3.1 group's
+// removed; made again while Solitaire's link is not there, left alone once it is
+{
+  const r = run(LNK, true, { applets: true, games: true });
+  assert.ok(/\r\ngroup6=Accessories\\Games\r\n/.test(r.ini) && /\[group6\]\r\n"Solitaire", SOL\.EXE,,,,,Sol\r\n/.test(r.ini), r.ini);
+  assert.equal(run(LNK, true, { applets: true, games: true, files: [['C:\\WINDOWS\\Start Menu\\Programs\\Accessories\\Games\\Solitaire.lnk', LNK]] }).ini, null);
+  assert.ok(!/Solitaire/.test(run(LNK, true, { applets: true }).ini || ''), 'not installed: no link');
 }
 console.log('startmenu: ok');

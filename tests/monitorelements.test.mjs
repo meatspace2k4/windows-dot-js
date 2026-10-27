@@ -57,4 +57,12 @@ assert.match(cut('function elements()', '\n}\n'), /w\.cls === '#32768'\) win\.me
 // the page's own taskbar is listed only while it is the one drawn
 const el = cut('function elements()', '\n}\n');
 assert.match(el, /if \(!monApp\(\)\) \{[^}]*const L = taskLayout\(\);/);
+// a dialog's icon (SS_ICON, its window text "\xff" and the resource's id) and bitmap (SS_BITMAP): graphics, unnamed;
+// its text, text
+{
+  const d = nativeEls([{ cls: 'Static', text: '\xff\x01', style: 0x50000003, ...r(10, 10, 32, 32), id: -1, hwnd: 5, enabled: true },
+    { cls: 'Static', text: '\xffx', style: 0x5000000e, ...r(50, 10, 32, 32), id: -1, hwnd: 6, enabled: true },
+    { cls: 'Static', text: 'The Windows password you typed is incorrect.', style: 0x50000000, ...r(60, 10, 200, 13), id: -1, hwnd: 7, enabled: true }], { window: 'Windows Networking' });
+  assert.deepEqual(d.map(e => [e.role, e.name]), [['graphic', ''], ['graphic', ''], ['text', 'The Windows password you typed is incorrect.']]);
+}
 console.log('monitorelements: ok');

@@ -2930,13 +2930,17 @@ function infUpdateInis(text, section, only) {
 function setupStartMenu() {
   const S = window.W95SYSTEM || {}, infs = S.infs || {}, inf = infs['SETUPC.INF']; if (!inf || !(S.programs || {})['GRPCONV.EXE']) return;
   const applets = infs['APPLETS.INF'] ? infParse(infs['APPLETS.INF']) : null;
-  // the accessories' sections: each <name>.links whose links are all to programs the system has, with the link's name
-  const accessories = [];
+  // the accessories' sections: each <name>.links whose links are all to programs the system has (its own, or an optional
+  // component's Setup installed: the Games, msdos.js), with each link's name and its folder (its group's, from the
+  // section's progman.groups lines: Accessories, Accessories\Games). A line naming no program removes an old link
+  const accessories = [], DOS0 = window.W95DOS, has = f => !!((S.programs || {})[f] || (DOS0 && DOS0.windows && DOS0.windows[f]));
   if (applets) for (const [name, lines] of Object.entries(applets.sec)) {
     if (!/\.links$/.test(name) || /remove/.test(name)) continue;
-    const links = lines.map(l => applets.fields(l)).filter(f => /^setup\.ini$/i.test(f[0]) && f[1] && !/^progman\.groups$/i.test(f[1]) && f[3])
-      .map(f => applets.fields(applets.subst(f[3])));
-    if (links.length && links.every(k => (S.programs || {})[(k[1] || '').toUpperCase()])) accessories.push({ name, links });
+    const fields = lines.map(l => applets.fields(l)).filter(f => /^setup\.ini$/i.test(f[0]) && f[1]), groups = {};
+    for (const f of fields) if (/^progman\.groups$/i.test(f[1]) && f[3]) { const [g, d] = applets.subst(f[3]).split('='); if (d) groups[g.toLowerCase()] = d; }
+    const links = fields.filter(f => !/^progman\.groups$/i.test(f[1]) && f[3]).map(f => ({ k: applets.fields(applets.subst(f[3])), group: f[1].toLowerCase() }))
+      .filter(l => l.k[1]).map(l => Object.assign(l.k, { folder: groups[l.group] || 'Accessories' }));
+    if (links.length && links.every(k => has((k[1] || '').toUpperCase()))) accessories.push({ name, links });
   }
   // (the Programs folder GRPCONV writes its links in: the one the user's Shell Folders name, a profile's where the user
   // has one; Setup's item was armed at every start while the links were in a profile's and this looked in the default)
@@ -2952,7 +2956,7 @@ function setupStartMenu() {
   // Volume Control and MMOPT.INF's CD Player, each whose program the system has)
   const media = [['MOTOWN.INF', 'MPlay.links', 'MPLAYER.EXE', 'Media Player'], ['MOTOWN.INF', 'Rec.links', 'SNDREC32.EXE', 'Sound Recorder'],
     ['MOTOWN.INF', 'Vol.links', 'SNDVOL32.EXE', 'Volume Control'], ['MMOPT.INF', 'CDPlayer.inis', 'CDPLAYER.EXE', 'CD Player']].filter(([inf, , file]) => infs[inf] && (S.programs || {})[file]);
-  const missing = accessories.some(a => a.links.some(k => !fs.exists(join(progs, 'Accessories', k[0] + '.lnk')))) || (claude && !fs.exists(join(progs, 'Claude', 'Claude.lnk')))
+  const missing = accessories.some(a => a.links.some(k => !fs.exists(join(progs, k.folder, k[0] + '.lnk')))) || (claude && !fs.exists(join(progs, 'Claude', 'Claude.lnk')))
     || media.some(m => !fs.exists(join(progs, 'Accessories', 'Multimedia', m[3] + '.lnk')))
     || (session && !fs.exists(join(tools, 'Join Session.lnk'))) || (clip && !fs.exists(join(progs, 'Accessories', 'Clipboard Viewer.lnk')));
   if (cur && cur[0] === 0x4c && cur[1] === 0 && !missing) return;   // ('L': a shell link's header)
@@ -3147,6 +3151,9 @@ function setupFontSize() {
 }
 function setupSound() {
   const S = window.W95SYSTEM || {}, infs = S.infs || {};
+  // Windows 3.x's sound functions (the module SOUND: Minesweeper's beeps), the driver SETUPC.INF names in SYSTEM.INI's
+  // [boot], which KERNEL loads as it loads the others there
+  if (fs.exists(join(WINDIR, 'SYSTEM', 'MMSOUND.DRV')) && W95Win32.iniGet(fs, 'SYSTEM.INI', 'boot', 'sound.drv') === null) W95Win32.iniSet(fs, 'SYSTEM.INI', 'boot', 'sound.drv', 'mmsound.drv');
   if (!infs['MOTOWN.INF']) return;
   // the media files, each one the disk lacks (a disk set up before the bundle carried it gets it too)
   const media = join(WINDIR, 'MEDIA'); fs.mkdir(media, { recursive: true });
@@ -3394,6 +3401,7 @@ function installPrograms() {
   if (DOS && DOS.windows) for (const [n, d] of Object.entries(DOS.windows)) put(join(WINDIR, n), d);
   if (DOS && DOS.help) { fs.mkdir(join(WINDIR, 'HELP'), { recursive: true }); for (const [n, d] of Object.entries(DOS.help)) put(join(WINDIR, 'HELP', n), d); }
   if (DOS && DOS.infs && DOS.infs['CLIP.INF']) W95Win32.regSet('hklm\\software\\microsoft\\windows\\currentversion\\setup\\optionalcomponents\\clipbrd', 'Installed', { type: 1, data: W95FS.encode('1\0') });
+  if (DOS && DOS.windows && DOS.windows['SOL.EXE']) W95Win32.regSet('hklm\\software\\microsoft\\windows\\currentversion\\setup\\optionalcomponents\\games', 'Installed', { type: 1, data: W95FS.encode('1\0') });   // (APPLETS.INF wingames.install.reg)
 }
 class NativeWin extends Win {
   constructor(app, n) {
@@ -5328,6 +5336,10 @@ function nativeEls(kids, win) {
     if (k === 'traynotifywnd' || k === 'mstaskswwclass') continue;   // (holders of the clock and the tabs, listed for themselves)
     if (k === 'trayclockwclass') { add('clock', c.text, c, win); continue; }
     if (k === 'systabcontrol32' && c.items) { for (const t of c.items) add('pushbutton', label(t.text), t, { ...win, pressed: !!t.selected }); continue; }
+    // (a static of an icon or a bitmap, SS_ICON or SS_BITMAP: a graphic, its window text the resource's id, "\xff" and
+    // a word, not its name)
+    const pic = k === 'static' && [3, 0x0e].includes(c.style & 0x1f);
+    if (pic) { add('graphic', '', c, { ...win, cls: c.cls, id: c.id, hwnd: c.hwnd }); continue; }
     const role = k === 'button' ? (bs === 7 ? 'grouping' : [2, 3, 5, 6].includes(bs) ? 'checkbutton' : [4, 9].includes(bs) ? 'radiobutton' : 'pushbutton')
       : k === 'edit' ? 'text-edit' : k === 'static' ? 'text' : k === 'combobox' ? 'combobox' : k === 'listbox' ? 'list'
       : k === 'scrollbar' ? 'scrollbar' : /listview/i.test(k) ? 'list' : /toolbar/i.test(k) ? 'toolbar' : 'client';

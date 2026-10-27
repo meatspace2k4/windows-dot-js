@@ -17,10 +17,16 @@ COMMAND = ['attrib.exe', 'chkdsk.exe', 'choice.com', 'debug.exe', 'deltree.exe',
 # from (programs load them as they are, ne16.js loadNEDynamic): the x87 emulator Visual Basic and C programs import,
 # Network DDE, OLE 1 and the 16-bit OLE 2, Windows Sockets
 SYSTEM = ['win87em.dll', 'nddeapi.dll', 'nddenb.dll', 'olecli.dll', 'olesvr.dll', 'compobj.dll', 'storage.dll', 'ole2.dll', 'ole2disp.dll',
-          'ole2nls.dll', 'ole2conv.dll', 'typelib.dll', 'stdole.tlb', 'winsock.dll']
+          'ole2nls.dll', 'ole2conv.dll', 'typelib.dll', 'stdole.tlb', 'winsock.dll',
+          'cards.dll',   # (the Games' card library, APPLETS.INF wingames.sys)
+          'mmsound.drv']   # (Windows 3.x's sound functions, module SOUND: COPY.INF, SYSTEM.INI [boot] sound.drv; Minesweeper imports them)
 # Setup's optional components, installed as Setup installs one that is chosen (its INF: CopyFiles to the Windows folder,
-# LDID 25, and the help folder, LDID 18; its links and registry): Clipboard Viewer (CLIP.INF)
-WINDOWS, HELP, INFS = ['clipbrd.exe'], ['clipbrd.hlp', 'clipbrd.cnt'], ['clip.inf']
+# LDID 25, and the help folder, LDID 18; its links and registry): Clipboard Viewer (CLIP.INF), and the Games
+# (APPLETS.INF [games]: wingames.files, wingames.help; their links, wingames.links)
+GAMES = ['freecell', 'mshearts', 'sol', 'winmine']
+WINDOWS = ['clipbrd.exe'] + [g + '.exe' for g in GAMES]
+HELP = ['clipbrd.hlp', 'clipbrd.cnt'] + [g + x for g in GAMES for x in ('.hlp', '.cnt')]
+INFS = ['clip.inf']
 found = {}
 for d in dirs:
     for root, _, files in os.walk(d):
