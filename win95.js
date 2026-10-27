@@ -2856,7 +2856,7 @@ function setupStartMenu() {
   add(infParse(inf), ['winbase.inis', 'winother.links']);
   if (applets) add(applets, accessories.map(a => a.name));
   if (clip) add(clip, ['clipbrd.links']);
-  for (const [inf, sec] of media) add(infParse(infs[inf]), [sec]);
+  for (const [inf, sec] of media) add(infParse(infs[inf]), [sec.toLowerCase()]);   // (infParse keys its sections in lower case)
   if (claude) { out.set('progman.groups', out.get('progman.groups') || { name: 'progman.groups', lines: [] }); out.get('progman.groups').lines.push('group90=Claude'); out.set('group90', { name: 'group90', lines: ['"Claude", CLAUDE.EXE'] }); }
   if (session) {
     const groups = out.get('progman.groups') || out.set('progman.groups', { name: 'progman.groups', lines: [] }).get('progman.groups');

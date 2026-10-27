@@ -45,11 +45,35 @@ Calc_Desc = "Calculator"
 Calc_ShortDesc = "Calc"
 MSPaint_Desc = "Paint"
 `;
+// MOTOWN.INF's Multimedia accessories (Accessories\Multimedia, group12), with its section names in mixed case
+const MOTOWN = `[MPlay.links]
+setup.ini, progman.groups,, "group12=%MMEDIA_DESC%"                ;create Accessories/MultiMedia if necessary
+setup.ini, group12,, """%MPlayerLinkDesc%"", MPLAYER.EXE,,,,,%MPlayerLinkShortDesc%"    ;creates link
+powerpnt.ini,"OLE Play Options",,"AVIFile=Movie,1,1"
+
+[Rec.links]
+setup.ini, progman.groups,, "group12=%MMEDIA_DESC%"
+setup.ini, group12,, """%SoundRec_Desc%"", SNDREC32.EXE,,,,,%SoundRec_ShortDesc%"
+
+[Vol.links]
+setup.ini, progman.groups,, "group12=%MMEDIA_DESC%"
+setup.ini, group12,, """%SndVolLinkDesc%"", SNDVOL32.EXE,,,,,%SndVolLinkShortDesc%"
+
+[Strings]
+MMEDIA_DESC = "Accessories\\Multimedia"
+MPlayerLinkDesc = "Media Player"
+MPlayerLinkShortDesc = "MPlayer"
+SoundRec_Desc = "Sound Recorder"
+SoundRec_ShortDesc = "Recorder"
+SndVolLinkDesc = "Volume Control"
+SndVolLinkShortDesc = "Volume"
+`;
 function run(lnkBytes, withGrpconv = true, o = {}) {
   const files = new Map(o.files || []), reg = [];
   if (lnkBytes) files.set('C:\\WINDOWS\\Start Menu\\Programs\\Windows Explorer.lnk', lnkBytes);
   const env = {
-    window: { W95SYSTEM: { infs: { 'SETUPC.INF': INF, ...(o.applets ? { 'APPLETS.INF': APPLETS } : {}) }, programs: { ...(withGrpconv ? { 'GRPCONV.EXE': {} } : {}), ...(o.calc ? { 'CALC.EXE': {} } : {}) } } },
+    window: { W95SYSTEM: { infs: { 'SETUPC.INF': INF, ...(o.applets ? { 'APPLETS.INF': APPLETS } : {}), ...(o.motown ? { 'MOTOWN.INF': MOTOWN } : {}) },
+      programs: { ...(withGrpconv ? { 'GRPCONV.EXE': {} } : {}), ...(o.calc ? { 'CALC.EXE': {} } : {}), ...Object.fromEntries((o.programs || []).map(p => [p, {}])) } } },
     fs: { readFile: p => { if (!files.has(p)) throw new Error('ENOENT'); return files.get(p); }, writeFile: (p, d) => files.set(p, d), exists: p => files.has(p) },
     W95FS: { encode: s => new TextEncoder().encode(s) }, W95Win32: { regSet: (k, n, v) => reg.push([k, n, new TextDecoder().decode(v.data)]) },
   };
@@ -86,4 +110,14 @@ const LNK = Uint8Array.of(0x4c, 0, 0, 0, 1, 0x14, 2, 0), CALC = 'C:\\WINDOWS\\St
 // a made Start menu without the accessory's link: made again, with it; with it: left alone
 assert.ok(/Calculator/.test(run(LNK, true, { applets: true, calc: true }).ini));
 assert.equal(run(LNK, true, { applets: true, calc: true, files: [[CALC, LNK]] }).ini, null);
+// the Multimedia accessories the system has, from MOTOWN.INF's sections (named in mixed case): Accessories\Multimedia
+// with Media Player and Sound Recorder; Volume Control's program not here, no link; all made: left alone
+{
+  const r = run(LNK, true, { motown: true, programs: ['MPLAYER.EXE', 'SNDREC32.EXE'] });
+  assert.ok(/\r\ngroup12=Accessories\\Multimedia\r\n/.test(r.ini));
+  assert.ok(r.ini.endsWith('[group12]\r\n"Media Player", MPLAYER.EXE,,,,,MPlayer\r\n"Sound Recorder", SNDREC32.EXE,,,,,Recorder\r\n'));
+  assert.ok(!/Volume|powerpnt|AVIFile/.test(r.ini));
+  const MM = 'C:\\WINDOWS\\Start Menu\\Programs\\Accessories\\Multimedia\\';
+  assert.equal(run(LNK, true, { motown: true, programs: ['MPLAYER.EXE', 'SNDREC32.EXE'], files: [[MM + 'Media Player.lnk', LNK], [MM + 'Sound Recorder.lnk', LNK]] }).ini, null);
+}
 console.log('startmenu: ok');
