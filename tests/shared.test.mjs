@@ -56,8 +56,8 @@ assert.match(P.sources[0].u, /^__session\/room1\/events\?client=\w+&user=Ann&sin
 }
 
 // another machine's: waiting until Windows has started, then given to win95.js; this one's own echo passed over
-const es = P.sources[0], got = [], objs = [];
-S.onIntent(i => got.push(i.key)); S.onObj((id, v) => objs.push([id, v]));
+const es = P.sources[0], got = [], objs = [], by = [];
+S.onIntent(i => got.push(i.key)); S.onObj((id, v, client) => { objs.push([id, v]); by.push(client); });   // (with the machine that made it)
 es.emit('op', { seq: 8, client: 'other', kind: 'intent', op: { key: 'spi:20', kind: 'spi', action: 20, ui: 0, str: 'C:\\WINDOWS\\CLOUDS.BMP', flags: 3 } });
 es.emit('op', { seq: 9, client: S.client, kind: 'intent', op: { key: 'spi:17', kind: 'spi', action: 17, ui: 0, flags: 3 } });
 assert.deepEqual(got, [], 'before Windows starts: waiting');
@@ -96,7 +96,7 @@ const es1 = P.sources.at(-1); assert.match(es1.u, /since=10$/);
 es1.emit('op', { seq: 11, client: 'other', kind: 'obj', op: { id: 'N', v: { x: 5 } } });
 es1.emit('op', { seq: 11, client: 'other', kind: 'obj', op: { id: 'N', v: { x: 5 } } });
 es1.emit('op', { seq: 12, client: S.client, kind: 'obj', op: { id: 'A', v: { x: 1 } } });
-assert.deepEqual(objs, [['N', { x: 5 }]]); assert.deepEqual(S.world().get('N'), { x: 5 });
+assert.deepEqual(objs, [['N', { x: 5 }]]); assert.deepEqual(S.world().get('N'), { x: 5 }); assert.deepEqual(by, ['other']);
 es1.emit('op', { seq: 13, client: 'other', kind: 'obj', op: { id: 'N', v: null } });
 assert.deepEqual(objs.at(-1), ['N', null]); assert.equal(S.world().get('N'), null); assert.ok(S.world().has('N'));
 

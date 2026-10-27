@@ -92,7 +92,8 @@
   };
   const deliver = m => {
     if (!ready16) { pending.push(m); return; }
-    const to = m.kind === 'obj' ? onObj && (() => onObj(m.op.id, m.op.v)) : m.kind === 'intent' ? onIntent && (() => onIntent(m.op)) : null;
+    // (with the machine that made it: who did it, for its window's outline in their colour)
+    const to = m.kind === 'obj' ? onObj && (() => onObj(m.op.id, m.op.v, m.client)) : m.kind === 'intent' ? onIntent && (() => onIntent(m.op, m.client)) : null;
     if (to) { try { to(); } catch (e) { console.warn('[shared] another machine\'s change could not be made here:', e && e.message); } }
   };
   const catchUp = () => { if (es) { try { es.close(); } catch (_) { /* gone */ } es = null; } listen(); };

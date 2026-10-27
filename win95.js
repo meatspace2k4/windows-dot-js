@@ -4586,6 +4586,15 @@ function drawPeers() {
     const label = p.user || 'Guest', tw = textW(label) + 10, tx = clamp(p.x + 12, 0, W - tw), ty = clamp(p.y + 18, 0, H - 17);
     fill(tx, ty, tw, 17, K.tip); fill(tx, ty, 4, 17, rgb); edge(tx, ty, tw, 17, K.dk, K.dk); text(label, tx + 7, ty + 2);
   }
+  // (a window another person is changing: its outline and their name on its title bar, in their colour)
+  for (const [id, a] of peerActs) {
+    if (a.until <= now) { peerActs.delete(id); continue; }
+    const who = S.people().find(p => p.client === a.client); if (!who) continue;
+    const rgb = `rgb(${peerColor(a.client).join(',')})`, label = who.user || 'Guest', tw = textW(label) + 6;
+    ctx.save(); ctx.strokeStyle = rgb; ctx.lineWidth = 3; ctx.strokeRect(a.x - 1.5, a.y - 1.5, a.w + 3, a.h + 3); ctx.restore();
+    const tx = clamp(a.x + a.w - tw - 60, a.x, W - tw), ty = clamp(a.y + 3, 0, H - 17);
+    fill(tx, ty, tw, 17, rgb); text(label, tx + 3, ty + 2, '#fff');
+  }
   // (the notices: by the notification area, above the taskbar, newest lowest)
   for (let i = peerNotes.length; i--;) if (peerNotes[i].until <= now) peerNotes.splice(i, 1);
   peerNotes.slice(-3).reverse().forEach((n, i) => {
@@ -5214,7 +5223,7 @@ function osFit(v, area) {
 }
 const OS_GRIP = 40, OS_CAPTION = 22;   // (of a title bar: the width left on the screen to drag it by; its height)
 /** another machine's state of an object, set on this one */
-async function osApply(id, v, local) {
+async function osApply(id, v, local, by) {
   local = local || await osLocal(); if (!local) return;
   const mine = local.get(id), a = sysApp;
   if (v == null) {   // (gone there: closed here)
@@ -5248,12 +5257,21 @@ async function osApply(id, v, local) {
   if (m.x !== f.x || m.y !== f.y || m.w !== f.w || m.h !== f.h || m.min !== f.min || m.max !== f.max) {
     emit('sync.place', { id, x: f.x, y: f.y });
     a.cmd('place', [mine.hwnd, f.x, f.y, f.w, f.h, f.min ? 7 : f.max ? 3 : m.min || m.max ? 9 : 0]);
+    if (by) peerActing(id, by, f);
   }
   for (const [k, val] of Object.entries(v.ctrls || {})) {
     if (osSame(m.ctrls && m.ctrls[k], val)) continue;
     const [cid, kind] = k.split(':'); emit('sync.control', { id, control: k });
     a.cmd('setCtrl', [mine.hwnd, +cid, kind, val]);
+    if (by) peerActing(id, by, f);
   }
+}
+/** another person changed a window here (moved, sized, typed in, checked): its outline in their colour, their name on
+ *  its title bar, for a moment after each change */
+const peerActs = new Map();
+function peerActing(id, client, r) {
+  if (r.min || r.x === undefined) return;
+  peerActs.set(id, { client, x: r.x, y: r.y, w: r.w, h: r.h, until: Date.now() + 1500 }); dirty(); setTimeout(dirty, 1600);
 }
 /** every object of the session set on this machine, and its settings made here, as a machine joining (or come back)
  *  does */
@@ -5265,7 +5283,7 @@ async function osCatchUp() {
 /** another machine's intent made here: the same call, on a thread of its own (worker.js 'intent'), as it is made there */
 function osIntent(i) { emit('sync.intent', { key: i.key }); return sysApp && sysApp.alive ? sysApp.cmd('intent', [i]) : null; }
 if (sharedNow()) {
-  sharedNow().onObj((id, v) => { if (osCaught) osApply(id, v); });
+  sharedNow().onObj((id, v, by) => { if (osCaught) osApply(id, v, null, by); });   // (by: the machine whose person did it)
   sharedNow().onIntent(i => { if (osCaught) osIntent(i); });
 }
 // (once this machine's shell is up, its first window list with the desktop's: the session's objects as they are)
