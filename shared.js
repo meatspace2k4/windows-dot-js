@@ -21,7 +21,8 @@
     user: name(q.get('user') || stored.user, 20) || 'Guest',
     session: sessionId(q.get('session') || stored.session) || 'guest',
   };
-  const client = get(sessionStorage, CLIENT) || (() => { const c = Math.random().toString(36).slice(2, 8) + Math.random().toString(36).slice(2, 8); put(sessionStorage, CLIENT, c); return c; })();
+  // (?client= names the machine without touching this tab's own: a frame in the tab is a machine of its own)
+  const client = sessionId(q.get('client')) || get(sessionStorage, CLIENT) || (() => { const c = Math.random().toString(36).slice(2, 8) + Math.random().toString(36).slice(2, 8); put(sessionStorage, CLIENT, c); return c; })();
   // (a page on a session this computer keeps, chosen by Open Session: its own store, until a session is joined)
   const wanted = () => q.get('shared') !== '0' && !window.W95HOST && !(stored.local && !q.get('session'));
   /** the logon this browser keeps for its next visit (joining a session leaves this computer's own) */

@@ -3,7 +3,9 @@
 //
 //   await import('/tools/convolution/fuzz-tabs.mjs'); await W95FuzzTabs.run({ seed: 1, actions: 10 })
 //
-// This tab opens two more on the same origin (B and C) in a session of its own. Machine A (this tab) gets random
+// This tab opens two more on the same origin (B and C) in a session of its own; where the browser gives no tabs (the
+// desktop app's browser pane opens a URL in the tab itself), { frames: true } makes them frames in this tab, each a
+// machine with a client id of its own. Machine A (this tab) gets random
 // win95.* actions: programs run, text typed, windows moved and closed. B gets random delays and a reload in the
 // middle; C joins late. Once things are quiet, every machine's digest is compared: the session's windows, the
 // shared registry values (osclass.js REG), and the effects logs (an action doubled, an echo, a diverging value); MRU
@@ -15,6 +17,20 @@
   const rng = seed => () => ((seed = (seed * 1103515245 + 12345) >>> 0) / 4294967296);
   const sha = async s => { const h = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s)); return [...new Uint8Array(h)].slice(0, 8).map(x => x.toString(16).padStart(2, '0')).join(''); };
   const url = (session, user) => `${location.origin}/?debug=1&mute=1&session=${encodeURIComponent(session)}&user=${encodeURIComponent(user)}`;
+  /** another machine of the page: a tab (window.open), or, where the browser gives no tabs (a pane that opens a URL
+   * in the tab itself), a frame in this tab with a client id of its own (?client=, shared.js); closed the same way */
+  function openMachine(session, user, frames) {
+    if (!frames) return g.open(url(session, user));
+    const f = document.createElement('iframe');
+    f.src = `${url(session, user)}&client=${Math.random().toString(36).slice(2, 14)}`;
+    Object.assign(f.style, { position: 'fixed', left: '0', top: '0', width: '1024px', height: '768px', opacity: '0.02', pointerEvents: 'none', zIndex: '-1' });
+    document.body.appendChild(f);
+    const w = f.contentWindow;
+    FRAMES.set(w, f);   // (the window's own properties go with each reload; its proxy stays)
+    return w;
+  }
+  const FRAMES = new Map();
+  const closeMachine = w => { try { const f = FRAMES.get(w); if (f) { f.remove(); FRAMES.delete(w); } else w.close(); } catch (_) { /* gone */ } };
   /** a tab's page once Windows is up in it (its shell's desktop, the system's machine alive) */
   async function up(w, ms = 180000) {
     const t0 = Date.now();
@@ -65,10 +81,10 @@
     return { wins, reg: await sha(JSON.stringify(shared)), regShared: shared.length, mru: await sha(JSON.stringify(mru)), mruN: mru.length, echoes, doubled, effects: effects.length };
   }
   /** one run: the tabs opened, the actions taken, the digests compared; { ok, why, trace, digests } */
-  async function once({ seed = 1, actions = 10, session = `fuzz-${seed}-${Date.now().toString(36)}`, keep = false } = {}) {
+  async function once({ seed = 1, actions = 10, session = `fuzz-${seed}-${Date.now().toString(36)}`, keep = false, frames = false } = {}) {
     const r = rng(seed), trace = [];
     const me = g.win95; if (!me) throw new Error('run this in a page of the shell');
-    const bw = g.open(url(session, 'Bob')); if (!bw) throw new Error('the browser blocked a tab: allow pop-ups for this page');
+    const bw = openMachine(session, 'Bob', frames); if (!bw) throw new Error('the browser blocked a tab: allow pop-ups for this page, or run with { frames: true }');
     let cw = null, cPage = null;
     // A joins its own session too: this page is reloaded into it only if it is not there already
     if (!(g.W95HOST && g.W95HOST.shared && g.W95HOST.shared.session === session)) throw new Error(`open this tab in the session first: ${url(session, 'Ann')}`);
@@ -80,7 +96,7 @@
       try { await f(me); } catch (e) { trace[trace.length - 1] += ` (${e.message})`; }
       await sleep(300 + Math.floor(r() * 1200));
       if (i === half) { trace.push('B reloads'); bw.location.reload(); await up(bw); }
-      if (i === half) { trace.push('C joins'); cw = g.open(url(session, 'Cal')); cPage = await up(cw); }
+      if (i === half) { trace.push('C joins'); cw = openMachine(session, 'Cal', frames); cPage = await up(cw); }
       if (r() < 0.3) await sleep(Math.floor(r() * 2000));   // (B's and C's delays: the others run on while A waits)
     }
     const tabs = [g, bw, cw].filter(Boolean);
@@ -99,7 +115,7 @@
     if (!why && doubled.length) why = `a remote start made twice: ${doubled.join('; ')}`;
     const mruDiff = digests.some(d => d.mru !== digests[0].mru);
     if (mruDiff) console.log('[fuzz-tabs] MRU values differ between machines (logged, no rule yet):', digests.map(d => d.mru));
-    if (!keep) for (const t of [bw, cw]) if (t) try { t.close(); } catch (_) { /* gone */ }
+    if (!keep) for (const t of [bw, cw]) if (t) closeMachine(t);
     return { ok: !why, why, trace, digests, session, mruDiff };
   }
   /** the trace shrunk: each action left out in turn, kept out while the failure stays; the shortest failing trace */

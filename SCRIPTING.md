@@ -224,7 +224,9 @@ In a tab of the shell opened in a session of its own (`?debug=1&mute=1&session=<
 await import('/tools/convolution/fuzz-tabs.mjs'); await W95FuzzTabs.run({ seed: 1, actions: 10 })
 ```
 
-opens two more tabs in that session (the browser must allow pop-ups for the page), gives this machine random
+opens two more tabs in that session (the browser must allow pop-ups for the page; where it gives no tabs, as the
+desktop app's browser pane, `{ frames: true }` makes them frames in this tab, each a machine with a client id of its
+own: `?client=` names a page's machine), gives this machine random
 actions (programs run, text typed, windows moved and closed) while the second reloads in the middle and the third
 joins late, waits until nothing is in flight, and compares the machines' digests (the session's windows, the shared
 registry values, the effects logs: a remote start made twice, echoes; MRU values that differ are logged). A failing
