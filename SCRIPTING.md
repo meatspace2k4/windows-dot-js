@@ -201,6 +201,13 @@ export at or before it), `OLE32+1a2c0 (CoInitialize+40)` (a 32-bit module's), or
 | `cmd('peek', [lin, n])` | `n` bytes of memory |
 | `cmd('user16', [ordinal, [['w', v], ['l', v], ['buf', n]]])` | USER's ordinal called with those arguments; a `buf` is filled by the call and returned as bytes |
 | `cmd('effects')` | what the machine did and under which cause (ne16.js `effect`: input, remote, boot, host) |
+| `win95.log(since = 0)` | the machines' log: `{ n, t, level, tag, text, machine }` per line, since line `n`. Everything the emulator says of itself (`win32`, `ne16`, `vxd`, `spawn` tags), what programs write with `OutputDebugString` (tagged with the program), KERNEL's `LogError`, and DevTools opening and closing. Each line is also written to the console with its level's method (`debug`, `info`, `warn`, `error`), so DevTools' level filter sorts them: Verbose shows the debug lines, Warnings the emulator's gaps, Errors the faults |
+| `win95.devtools` | whether DevTools are open (the Windows 95 app says; a browser tab cannot, so `false` there). The machine has it as the registry value `HKLM\Software\Microsoft\Windows\CurrentVersion\Debug\DevTools` (1 or 0), and a `devtools` event (`{ open }`) says when it changes |
+
+The same log is in Windows itself: **Debug Monitor** (Programs > Accessories > System Tools, DBWIN.EXE, dbwin.js), a
+window the lines are appended to as they come, as the SDK's DBWIN showed `OutputDebugString` output; Options >
+Verbose shows the debug lines too. Option+Cmd+I (Ctrl+Alt+I, Ctrl+Shift+I, F12) opens the browser's DevTools before
+the key reaches Windows; in the Windows 95 app the same key toggles them.
 
 Before any reload, read `read_console_messages` and `cmd('faults')`: a reload wipes both. `console.log('=== MARK ...')`
 before each step keeps the console in order.

@@ -8,7 +8,7 @@ self.window = self;
 // the Ethernet segment as this worker has it: its own stations (the card, in the system's machine), and the rest of the
 // segment on the page (the other computer, lanhost.js; other machines' cards), frames passing both ways
 self.W95LAN = { stations: new Set(), frames: 0 };
-importScripts('bridge.js', 'fs.js', 'win32.js', 'gl.js', 'shell32.js', 'system.js', 'claude-exe.js', 'claude-app.js', 'session-dll.js', 'sesstray-exe.js', 'session-tray.js', 'osclass.js', 'ne16.js', 'vmm.js', 'sound.js', 'lan.js', 'parallel.js', 'netfs.js', 'dyn.js', 'savers.js', 'saver-runtime.js');
+importScripts('bridge.js', 'fs.js', 'win32.js', 'gl.js', 'shell32.js', 'system.js', 'claude-exe.js', 'claude-app.js', 'session-dll.js', 'sesstray-exe.js', 'session-tray.js', 'dbwin-exe.js', 'dbwin.js','osclass.js', 'ne16.js', 'vmm.js', 'sound.js', 'lan.js', 'parallel.js', 'netfs.js', 'dyn.js', 'savers.js', 'saver-runtime.js');
 const B = self.W95Bridge, W = self.W95Win32, { FSError, join, basename, extname } = self.W95FS;
 const b64bytes = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
 const post = (m, tr) => self.postMessage(m, tr || []);
@@ -517,7 +517,7 @@ class Machine {
       // "C:\Program Files\Accessories\MSPAINT.EXE" there, and MFC opened "Files\...\MSPAINT.EXE" as a document)
       const prog = /\s/.test(real) ? `"${real}"` : real;
       pc = p.spawn(fs.readFile(file), mod, { ...d.meta, name: name.replace(/\.EXE$/, '') }, real, arg ? `${prog} ${arg}` : prog);
-    } catch (e) { if (e && e.missingDll) { console.warn(`[spawn] ${e.message}`); return 2; } console.error(e); return 8; }   // (2: a DLL it needs is missing, as WinExec answers)
+    } catch (e) { if (e && e.missingDll) { W.log('warn', 'spawn', e.message); return 2; } console.error(e); return 8; }   // (2: a DLL it needs is missing, as WinExec answers)
     // (its console: the MS-DOS machine's window it was started from, o.console, told when the program ends)
     if (o.console !== undefined) pc.console = o.console;
     pc.onExit = code => { if (!pc.fault) post({ t: 'emit', ev: 'program.exit', data: { path: pc.path, code } }); if (pc.console !== undefined) post({ t: 'conExit', id: pc.console, code: code >>> 0 }); };
@@ -540,7 +540,7 @@ class Machine {
     const opt = pe + 24, pref = dv.getUint32(opt + 28, true), size = dv.getUint32(opt + 56, true), ep = dv.getUint32(opt + 16, true);
     const relocs = !(dv.getUint16(pe + 22, true) & 1) && dv.getUint32(opt + 96 + 5 * 8 + 4, true) > 0;
     const p = this.proc, base = p.imageRoom(pref, size, relocs);   // (win32.js: 16-bit modules' segments counted too)
-    if (!base) { console.warn(`[spawn] ${file}: no room for its image at ${pref.toString(16)} (${relocs ? 'relocatable' : 'no relocations'})`); return null; }
+    if (!base) { W.log('warn', 'spawn', `${file}: no room for its image at ${pref.toString(16)} (${relocs ? 'relocatable' : 'no relocations'})`); return null; }
     return { dynamic: true, meta: { base, entry: base + ep, textLo: 0, textHi: 0, blocks: [], size } };
   }
   async spawnSaverAsync(file, arg) {
@@ -957,6 +957,9 @@ class Machine {
       // (and where it comes from, args[2]: 'remote', another machine's person's, for its cause, ne16.js causeOf)
       case 'run': return this.shellUp().then(() => { const held = this.holdStartup; this.holdStartup = false; p.nextClock = args[1] || null; p.nextOrigin = args[2] || null; try { const r = this.exec(args[0], 1); return typeof r === 'number' ? (r > 32 ? { ok: true } : { err: r }) : r && r.err ? r : { ok: true }; } finally { this.holdStartup = held; p.nextClock = null; p.nextOrigin = null; } });
       case 'effects': return (p.effects || []).slice();   // (what the machine did, with its causes: ne16.js effect)
+      case 'log': return W.log.lines(args[0] || 0);   // (the machine's log since line n: win32.js log; the page keeps its own copy as the lines come)
+      // (a line said by the page, into this machine's log: the Debug Monitor shows the page's too)
+      case 'logPut': W.log.put(args[0]); return;
       // a control set as another machine has it: an edit's or combo box's text (WM_SETTEXT), a button's check
       // (BM_SETCHECK), sent from a thread of its own as 'place' is
       case 'setCtrl': return (async () => {
@@ -1081,6 +1084,7 @@ self.onmessage = e => {
   const m = e.data;
   if (m.t === 'start') {
     rpcSab = m.rpc; lanRing = m.o.lan || null; regStore.held = m.registry; W.regAttach(regStore); if (m.o.exp) Object.assign(self, m.o.exp);
+    W.log.watch(line => { if (!line.posted) post({ t: 'log', line }); });   // (this machine's log lines, to the page's ring)
     machine = new Machine(m.o); machine.start().catch(err => { console.error(err); post({ t: 'exited', code: -1, why: String(err && err.message || err) }); });
   } else if (m.t === 'cmd') {
     const reply = (value, error) => { if (m.id) post({ t: 'reply', id: m.id, value: value === undefined ? null : value, error }); };

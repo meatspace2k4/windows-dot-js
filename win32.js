@@ -186,6 +186,7 @@ class Process {
     const d = this.dlls.get(name) || this.diskDll(name); if (!d) return null;
     const m = this.loadImage(d.file, d.module, d.meta, name);
     if (m && this.onDllLoad) this.onDllLoad(name, m);   // (a module watched as it comes: a shared session's intents, ne16.js)
+    if (m && this.onModuleLoad) this.onModuleLoad(name, m);   // (a watch asked for before the module came: worker.js cmd 'watch')
     return m;
   }
   /** where each module is in memory: a PE image from its base for its size; a 16-bit module, each of its segments (its
@@ -224,7 +225,7 @@ class Process {
     const opt = pe + 24, pref = dv.getUint32(opt + 28, true), size = dv.getUint32(opt + 56, true), ep = dv.getUint32(opt + 16, true);
     const relocatable = !(dv.getUint16(pe + 22, true) & 1) && dv.getUint32(opt + 96 + 5 * 8 + 4, true) > 0;
     const base = this.imageRoom(pref, size, relocatable);
-    if (!base) { console.warn(`[win32] ${file}: no room for its image at ${pref.toString(16)}`); return null; }
+    if (!base) { log('warn', 'win32', `${file}: no room for its image at ${pref.toString(16)}`); return null; }
     const d = { file: f, module: null, meta: { base, entry: ep ? base + ep : 0, textLo: 0, textHi: 0, blocks: [], size, dynamic: true } };
     this.dlls.set(name, d);
     return d;
@@ -345,7 +346,7 @@ class Process {
   noCode(at) {
     const t = this.trapped || '';
     (this.faultLog || (this.faultLog = [])).push({ at: u32(at).toString(16), atIn: this.whereOf(at), why: t, esp: u32(this.cpu.esp.value).toString(16), from: u32(this.lastBlock || 0).toString(16), fromIn: this.whereOf(this.lastBlock || 0), cs: (this.cpu.cs.value & 0xffff).toString(16), ss: (this.cpu.ss.value & 0xffff).toString(16), thread: this.thread16 ? this.thread16.id : 'main' }); if (this.faultLog.length > 50) this.faultLog.shift();   // (a diagnostic: cmd 'faults')
-    if (/^run-time code/.test(t)) { console.warn(`[win32] ${t}`); this.trapped = null; return this.raise(6, at); }   // (an emulator gap: named)
+    if (/^run-time code/.test(t)) { log('warn', 'win32', t); this.trapped = null; return this.raise(6, at); }   // (an emulator gap: named)
     if (t && !/^jump to unmapped address/.test(t)) return null;
     this.trapped = null; return this.raise(14, at, at);
   }
@@ -475,7 +476,7 @@ class Process {
         // made it, for its own handlers or its fault dialog, as the processor raises one; not the machine's end
         if (!(e instanceof WebAssembly.RuntimeError) || !/out of bounds/.test(e.message)) throw e;
         const at = u32(this.cpu.eip.value);
-        console.warn(`[win32] ${m.name || '?'}: memory access out of bounds in the block at ${at.toString(16)} (thread ${this.thread16 ? this.thread16.id : 'main'})`);
+        log('warn', 'win32', `${m.name || '?'}: memory access out of bounds in the block at ${at.toString(16)} (thread ${this.thread16 ? this.thread16.id : 'main'})`);
         eip = this.raise(14, at, 0xffffffff); continue;
       }
       if (r === 2 && this.dynWant !== undefined) {   // no translated block there: code written at run time
@@ -550,19 +551,19 @@ class Process {
   }
   /** a thread hung (HangError): it stays as it is, holding the Win16Lock, and the system is frozen behind it */
   hung(who, e) {
-    console.warn(`[win32] ${typeof who === 'string' ? who : 'thread ' + who.id} ${e.message}`);
+    log('warn', 'win32', `${typeof who === 'string' ? who : 'thread ' + who.id} ${e.message}`);
     this.holdWin16(who, true);
   }
   /** a processor exception that ends the program (or, at ring 0, the system's answer first): the host reads `fault` */
   faulted(f) {
     if (this.fault) return;
     this.fault = f;
-    console.error(`[win32] ${this.meta.name || ''} ${f.ring === 0 ? 'fatal exception' : 'fault'}: ${f.why} in ${f.module}`);
+    log('error', 'win32', `${this.meta.name || ''} ${f.ring === 0 ? 'fatal exception' : 'fault'}: ${f.why} in ${f.module}`);
   }
   fail(why) {
     if (this.failed) return;
     this.failed = true; this.trapped = why;
-    console.error(`[win32] ${this.meta.name || ''} stopped: ${why}`);
+    log('error', 'win32', `${this.meta.name || ''} stopped: ${why}`);
     this.host.exited(-1, why);
   }
   /** processor exception `n` at `eip` (cr2: the address a page fault was at), as Windows 95 takes one: at ring 0 it is
@@ -602,7 +603,7 @@ class Process {
   }
   trap(eip, code) {
     if (code === 2 && this.dynRun) { this.dynWant = u32(eip); return; }
-    if (code === 1) console.warn(`[win32] unsupported instruction at ${u32(eip).toString(16)} (cs ${(this.cpu.cs.value & 0xffff).toString(16)})`);   // (an emulator gap: named)
+    if (code === 1) log('warn', 'win32', `unsupported instruction at ${u32(eip).toString(16)} (cs ${(this.cpu.cs.value & 0xffff).toString(16)})`);   // (an emulator gap: named)
     if (code <= 4) { this.cpu.eip.value = this.raise(TRAP_VEC[code], u32(eip), code === 2 ? u32(eip) : 0) | 0; return; }
     if (this.trapHook && this.trapHook(eip, code)) return;
     this.trapped = `${['divide error', 'unsupported instruction', 'jump to unmapped address', 'breakpoint'][code] || 'trap'} at ${u32(eip).toString(16)}`;
@@ -618,7 +619,7 @@ class Process {
     if (u32(eip) < LAYOUT.THUNK) return this.api16(u32(eip));
     const t = this.thunks[(u32(eip) - LAYOUT.THUNK) >> 2];
     if (!t || !t.def) {   // a call into an import with nothing behind it: a page fault at its address, from where it was called
-      console.warn(`[win32] unimplemented import ${t ? t.dll + '!' + t.nm : u32(eip).toString(16)}`);
+      log('warn', 'win32', `unimplemented import ${t ? t.dll + '!' + t.nm : u32(eip).toString(16)}`);
       try { return this.raise(14, u32(eip), u32(eip)); } catch (e) { if (e instanceof FaultError) e.fault.import = t ? t.dll + '!' + t.nm : ''; throw e; }
     }
     const [nargs, fn] = t.def, sp = this.reg('esp');
@@ -990,6 +991,26 @@ const regSet = (path, name, value) => {
 const HKEY = { 0x80000000: 'hkcr', 0x80000001: 'hkcu', 0x80000002: 'hklm', 0x80000003: 'hku', 0x80000005: 'hkcc', 0x80000006: 'hkdd', 1: 'hkcr', 2: 'hkcu', 3: 'hklm' };
 
 // ---------------------------------------------------------------- API table: [argc, impl]; argc < 0 = cdecl varargs
+// ---------------------------------------------------------------- the machine's log
+// One log for everything the machine and its programs say: the emulator's own messages ([win32], [ne16], [vxd]), what
+// programs write with OutputDebugString, KERNEL's LogError. Each line has a level, and goes three ways: to the
+// console with that level's method (debug, info, warn, error: DevTools' level filter sorts them), to the ring the page
+// reads (win95.log(), cmd 'log'), and to anything listening (the Debug Monitor, dbwin.js). A worker's lines are
+// posted to the page by the worker (worker.js, 'log'), which keeps the page's ring; the console gets them from the
+// worker's own console, as DevTools shows a worker's console with the page's
+const LOG_RING = 2000, logRing = [], logWatchers = new Set();
+let logSeq = 0;
+function log(level, tag, text) {
+  const line = { n: ++logSeq, t: Date.now(), level, tag, text: String(text) };
+  logRing.push(line); if (logRing.length > LOG_RING) logRing.shift();
+  const f = console[level === 'debug' ? 'debug' : level === 'info' ? 'info' : level === 'error' ? 'error' : 'warn'];
+  if (f) f.call(console, `[${tag}] ${line.text}`);
+  for (const w of logWatchers) { try { w(line); } catch (_) { /* a watcher's own trouble */ } }
+  return line;
+}
+log.lines = (since = 0) => logRing.filter(l => l.n > since);
+log.watch = f => { logWatchers.add(f); return () => logWatchers.delete(f); };
+log.put = line => { logRing.push(line); if (logRing.length > LOG_RING) logRing.shift(); for (const w of logWatchers) { try { w(line); } catch (_) {} } };   // (a line made elsewhere: a worker's, kept in the page's ring)
 const API = {};
 // the DLLs implemented here in place of a DLL file a program can find by name (gl.js: OPENGL32, the installable client
 // driver GDI32's pixel-format calls look up with GetModuleHandle); the personality's own (KERNEL32, ADVAPI32, ...) are
@@ -2140,7 +2161,8 @@ def('KERNEL32', '#100', 3, () => 1);
 def('KERNEL32', 'ReadConsoleInputA', 4, () => 0);
 def('KERNEL32', 'PeekConsoleInputA', 4, () => 0);
 def('KERNEL32', 'GetNumberOfConsoleInputEvents', 2, () => 0);
-def('KERNEL32', 'OutputDebugStringA', 1, () => 0);
+// a program's debug output: the machine's log (the Debug Monitor, DevTools), tagged with the program
+def('KERNEL32', 'OutputDebugStringA', 1, function (s) { log('info', this.pc && this.pc.path ? this.pc.path.replace(/^.*\\/, '') : 'EXE', (this.readA(s) || '').replace(/\r?\n$/, '')); return 0; });
 
 // ADVAPI32: registry. Keys are lower-case paths under the root names; values keep their type and bytes.
 const regKey = (path, create, orig) => { if (!REGISTRY.has(path)) { if (!create) return null; regMake(path, orig); } return REGISTRY.get(path); };
@@ -2417,7 +2439,7 @@ def('USER32', 'CharNextA', 1, function (p) { return this.u8[p] ? p + 1 : p; });
 def('USER32', 'CharUpperA', 1, function (p) { if (p >>> 16) { this.writeA(p, this.readA(p).toUpperCase()); return p; } return String.fromCharCode(p).toUpperCase().charCodeAt(0); });
 def('USER32', 'wsprintfA', -1, function (buf, fmt) { return this.writeA(buf, wsprintf(this, this.readA(fmt), this.reg('esp') + 12)); });
 def('USER32', 'MessageBeep', 1, () => 1);
-def('USER32', 'MessageBoxA', 4, function (h, text, cap) { console.warn('[win32] MessageBox:', this.readA(cap), this.readA(text)); return 1; });
+def('USER32', 'MessageBoxA', 4, function (h, text, cap) { log('warn', 'win32', `MessageBox: ${this.readA(cap)}: ${this.readA(text)}`); return 1; });
 def('USER32', 'InflateRect', 3, function (p, dx, dy) { const r = readRect(this, p); writeRect(this, p, r.l - dx, r.t - dy, r.r + (dx | 0), r.b + (dy | 0)); return 1; });
 def('USER32', 'GetSysColor', 1, i => SYS_COLORS[i] ?? 0);
 def('USER32', 'SetSysColors', 3, () => 1);
@@ -3002,5 +3024,5 @@ function peString(bytes, id) {
   } catch (_) { return null; }
 }
 
-window.W95Win32 = { regAttach, regGet, regKids, regVals, regDel, regSet, regDump, regApply, regWatch: f => regWatchers.add(f), Process, API, STAND_IN, LAYOUT, WM, YIELD, iniGet, iniSet, iniRead, peString, peResource, faultText, fmtMsg, def, dcOf, GuestError, HangError, FaultError, mkCanvas, dibOut };
+window.W95Win32 = { log, regAttach, regGet, regKids, regVals, regDel, regSet, regDump, regApply, regWatch: f => regWatchers.add(f), Process, API, STAND_IN, LAYOUT, WM, YIELD, iniGet, iniSet, iniRead, peString, peResource, faultText, fmtMsg, def, dcOf, GuestError, HangError, FaultError, mkCanvas, dibOut };
 })();

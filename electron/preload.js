@@ -28,6 +28,8 @@ contextBridge.exposeInMainWorld('W95HOST', {
   screen: { fit: (width, height) => ipcRenderer.send('fit-window', width, height) },
   // a session file to continue on another computer: the app's own Export and Import Session (main.js), which choose the file
   session: { host: true, export: () => ipcRenderer.send('session-export'), import: () => ipcRenderer.send('session-import') },
+  // DevTools (Option+Cmd+I, View > Toggle Developer Tools): whether they are open now, and each change
+  devtools: { get open() { return ipcRenderer.sendSync('devtools-open') }, on: f => ipcRenderer.on('devtools', (_, open) => f(open)) },
   computerName: ipcRenderer.sendSync('host-name'),
   userName: ipcRenderer.sendSync('user-name'),   // the Mac's account: the name Setup gives the network logon
 })

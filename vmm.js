@@ -580,7 +580,7 @@ svc(VMM, 0x174, function (arg) {
 // ---- SHELL_Message(EBX VM, EAX flags, ECX message, EDI caption, ESI callback, EDX ref): shown, answered OK (1)
 svc(SHELL, 0x04, function () {
   const t = this.readA(u32(this.cpu.ecx.value)) || '', cap = this.readA(u32(this.cpu.edi.value)) || '';
-  console.warn(`[vxd] SHELL_Message: ${cap}: ${t}`); this.cpu.eax.value = 1; CF(this, false);
+  W.log('warn', 'vxd', `SHELL_Message: ${cap}: ${t}`); this.cpu.eax.value = 1; CF(this, false);
 });
 
 // ---- VXDLDR: LoadDevice (EDX file name, EAX flags: 1 send it SYS_DYNAMIC_DEVICE_INIT): EAX the DDB, EDX the device
@@ -1414,7 +1414,7 @@ svc(VWIN32, 0x0d, function () { return 0xc6000000 | 1; });                      
 svc(VWIN32, 0x10, function (arg) { const e = this.r0Event(arg(0)); if (e) e.set = false; return e ? 1 : 0; });   // _VWIN32_ResetWin32Event
 // _VWIN32_QueueKernelAPC(pfn, thread, data, flags): the ring-0 procedure called with the data when the thread next runs
 svc(VWIN32, 0x19, function (arg) { (this.kernelApcs = this.kernelApcs || []).push({ fn: arg(0), data: arg(2) }); return 1; });
-svc(VWIN32, 0x1a, function () { console.warn('[vxd] VWIN32_SysErrorBox'); this.cpu.eax.value = 0; });
+svc(VWIN32, 0x1a, function () { W.log('warn', 'vxd', 'VWIN32_SysErrorBox'); this.cpu.eax.value = 0; });
 // ---- SHELL: SHELL_SYSMODAL_Message is the recompiled SHELL.VXD's (its blue screen when Windows cannot show the
 // message); _SHELL_BroadcastSystemMessage: no window gets it here
 svc(SHELL, 0x10, function () { return 0; });
@@ -1476,8 +1476,8 @@ P.vxdBoot = function () {
     this.vxdInitState = [0, 0x10000000, 0x20000000][msg];
     if (failed.has(v)) continue;
     const r = this.vxdControl(v, msg);
-    if (this.trapped) { console.warn(`[vxd] ${v.file} system control ${msg}: ${this.trapped}`); return; }
-    if (r.cf) { console.warn(`[vxd] ${v.file} failed system control ${msg}`); failed.add(v); v.inited = false; }
+    if (this.trapped) { W.log('warn', 'vxd', `${v.file} system control ${msg}: ${this.trapped}`); return; }
+    if (r.cf) { W.log('warn', 'vxd', `${v.file} failed system control ${msg}`); failed.add(v); v.inited = false; }
   }
   this.vxdInitState = 0x40000000;
   this.k32RebootInit();
@@ -1561,9 +1561,9 @@ P.cmProcess = function (dn) {
   const sw = this.devSoftKey(dn), dl = sw && regStr(W.regGet(sw, 'DevLoader'));
   if (dl) {
     const v = dl.startsWith('*') ? [...(this.vxds || new Map()).values()].find(x => x.inited && x.name.toUpperCase() === dl.slice(1).toUpperCase()) : this.vxdLoad(dl);
-    if (!v) { console.warn(`[vxd] ${dn.id}: no device loader ${dl}`); return; }
+    if (!v) { W.log('warn', 'vxd', `${dn.id}: no device loader ${dl}`); return; }
     const r = this.vxdControl(v, PNP_NEW_DEVNODE, { ebx: dn.handle, edx: DLVXD_LOAD_DEVLOADER });
-    if (r.eax && !dn.handler) { console.warn(`[vxd] ${dl} PNP_NEW_DEVNODE ${dn.id}: ${r.eax.toString(16)}`); return; }   // a CONFIGRET in EAX
+    if (r.eax && !dn.handler) { W.log('warn', 'vxd', `${dl} PNP_NEW_DEVNODE ${dn.id}: ${r.eax.toString(16)}`); return; }   // a CONFIGRET in EAX
   }
   this.cmStart(dn);
   if (dn.started && dn.enumerator) this.vxdCdecl(dn.enumerator, [CONFIG_ENUMERATE, 0, dn.handle, dn.handle, 0]);

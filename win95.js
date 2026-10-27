@@ -2971,6 +2971,7 @@ function setupStartMenu() {
   const claude = !!(S.programs || {})['CLAUDE.EXE'];   // (the Claude program: a folder of its own under Programs, claude-exe.js)
   // (Export and Import Session: RUNDLL32 running SESSION.DLL's entries, session-dll.js, in System Tools)
   const session = !!(S.programs || {})['RUNDLL32.EXE'], tools = join(progs, 'Accessories', 'System Tools');
+  const dbwin = !!(S.programs || {})['DBWIN.EXE'];   // (the Debug Monitor, dbwin.js, in System Tools)
   // (an optional component Setup installs: its INF's links, Clipboard Viewer's in Accessories)
   const DOS = window.W95DOS, clip = DOS && DOS.infs && DOS.infs['CLIP.INF'] && fs.exists(join(WINDIR, 'CLIPBRD.EXE')) ? infParse(DOS.infs['CLIP.INF']) : null;
   // (the Multimedia accessories, in Accessories\Multimedia (group12): MOTOWN.INF's Media Player, Sound Recorder and
@@ -2979,7 +2980,7 @@ function setupStartMenu() {
     ['MOTOWN.INF', 'Vol.links', 'SNDVOL32.EXE', 'Volume Control'], ['MMOPT.INF', 'CDPlayer.inis', 'CDPLAYER.EXE', 'CD Player']].filter(([inf, , file]) => infs[inf] && (S.programs || {})[file]);
   const missing = accessories.some(a => a.links.some(k => !fs.exists(join(progs, k.folder, k[0] + '.lnk'))) || a.gone.some(k => fs.exists(join(progs, k.folder, k[0] + '.lnk')))) || (claude && !fs.exists(join(progs, 'Claude', 'Claude.lnk')))
     || media.some(m => !fs.exists(join(progs, 'Accessories', 'Multimedia', m[3] + '.lnk')))
-    || (session && !fs.exists(join(tools, 'Join Session.lnk'))) || (clip && !fs.exists(join(progs, 'Accessories', 'Clipboard Viewer.lnk')));
+    || (session && !fs.exists(join(tools, 'Join Session.lnk'))) || (dbwin && !fs.exists(join(tools, 'Debug Monitor.lnk'))) || (clip &&!fs.exists(join(progs, 'Accessories', 'Clipboard Viewer.lnk')));
   if (cur && cur[0] === 0x4c && cur[1] === 0 && !missing) return;   // ('L': a shell link's header)
   const out = new Map();
   const add = ({ sec, fields, subst }, names) => {
@@ -3004,6 +3005,12 @@ function setupStartMenu() {
     const g = out.get('group11') || out.set('group11', { name: 'group11', lines: [] }).get('group11');
     g.lines.push('"Export Session", "RUNDLL32.EXE SESSION.DLL,Export"', '"Import Session", "RUNDLL32.EXE SESSION.DLL,Import"',
       '"Save Session", "RUNDLL32.EXE SESSION.DLL,Save"', '"Open Session", "RUNDLL32.EXE SESSION.DLL,Open"', '"Join Session", "RUNDLL32.EXE SESSION.DLL,Join"');
+  }
+  if (dbwin) {
+    const groups = out.get('progman.groups') || out.set('progman.groups', { name: 'progman.groups', lines: [] }).get('progman.groups');
+    if (!groups.lines.some(l => /^group11=/i.test(l))) groups.lines.push(`group11=${tools.slice(progs.length + 1)}`);
+    const g = out.get('group11') || out.set('group11', { name: 'group11', lines: [] }).get('group11');
+    g.lines.push('"Debug Monitor", DBWIN.EXE');
   }
   fs.writeFile(join(WINDIR, 'SETUP.INI'), W95FS.encode([...out.values()].map(v => `[${v.name}]\r\n${v.lines.join('\r\n')}\r\n`).join('\r\n')));
   // SETUPC.INF's RunOnce\Setup item: run under RUNONCE's "Windows 95 Setup" screen before the system's message server
@@ -3398,7 +3405,7 @@ async function nativeProgram(bytes) {
 // the files the bundle carries for programs replace the placeholders an older disk has for them
 function installPrograms() {
   const stub = exeStub(), S = window.W95SYSTEM || {};
-  const OURS = new Set(['CLAUDE.EXE', 'SESSTRAY.EXE']);   // (a program of this project's: its file is the one its translation is of, kept current)
+  const OURS = new Set(['CLAUDE.EXE', 'SESSTRAY.EXE', 'DBWIN.EXE']);   // (a program of this project's: its file is the one its translation is of, kept current)
   const put = (path, b64) => {
     let cur = null; try { cur = fs.readFile(path); } catch (_) { /* not there */ }
     const want = OURS.has(basename(path).toUpperCase()) ? b64bytes(b64) : null;
@@ -3681,6 +3688,9 @@ class RemoteApp extends NativeApp {
         if (m.f) faultDialog(basename(m.path).replace(/\.[^.]*$/, '').toUpperCase(), m.f);
         else msgBox(basename(m.path), `This program has performed an illegal operation and will be shut down.\n\n${m.why}`, 'error', ['OK'], null, { noTask: false, modal: false });
         return;
+      // a line of the machine's log (win32.js log): into the page's ring, and to the Debug Monitor through the system's
+      // machine when another machine said it
+      case 'log': { m.line.posted = true; m.line.machine = this.system ? 'system' : basename(this.path || ''); W95Win32.log.put(m.line); if (!this.system && sysApp && sysApp.alive) sysApp.cmd('logPut', [m.line]); return; }
       case 'emit':
         if (m.ev === 'program.exit' && fullSaver && String(fullSaver.path).toUpperCase() === String(m.data.path).toUpperCase()) { fullSaver = null; lastInput = performance.now(); }
         emit(m.ev, m.data); return;
@@ -4996,8 +5006,28 @@ const nativeFocus = () => (!menus.length && !ren && !modal() && screen === 'desk
 const vkdApp = () => msgApp || nativeFocus() || [...nativeApps].find(a => a.alive && a.proc && a.proc.win16Held) || [...nativeApps].find(a => a.alive);
 window.addEventListener('keyup', e => { shareKey(); keyUp(e); });
 window.addEventListener('keydown', e => { shareKey(); keyDown(e); });
-function keyUp(e) { const v = vkdApp(); if (v && v.vkd(e, true)) { e.preventDefault(); return; } const a = nativeFocus(); if (a) { e.preventDefault(); if (e.keyCode) a.key(e, true); } }
+function keyUp(e) { if (devtoolsKey(e)) return; const v = vkdApp(); if (v && v.vkd(e, true)) { e.preventDefault(); return; } const a = nativeFocus(); if (a) { e.preventDefault(); if (e.keyCode) a.key(e, true); } }
+// the browser's own DevTools key (Cmd/Ctrl+Alt+I, Ctrl+Shift+I, F12) is not the machine's: it goes to the browser
+// untouched, before anything here sees it (the Windows 95 app opens its DevTools on it itself, electron/main.js)
+const devtoolsKey = e => (e.code === 'KeyI' && e.altKey && (e.metaKey || e.ctrlKey)) || (e.code === 'KeyI' && e.ctrlKey && e.shiftKey) || e.code === 'F12';
+// whether DevTools are open: told by the app (W95HOST.devtools), else guessed from the window's chrome. The machine is
+// told as a registry value (HKLM\...\CurrentVersion\Debug, DevTools), which the Debug Monitor and scripts can read
+let devtoolsOpen = false;
+function devtoolsState(open) {
+  if (open === devtoolsOpen) return;
+  devtoolsOpen = open;
+  try { W95Win32.regSet('hklm\\software\\microsoft\\windows\\currentversion\\debug', 'DevTools', { type: 4, data: Uint8Array.of(open ? 1 : 0, 0, 0, 0), name: 'DevTools' }); } catch (_) {}
+  W95Win32.log('info', 'page', open ? 'DevTools opened' : 'DevTools closed');
+  emit('devtools', { open });
+}
+{
+  const H = window.W95HOST && window.W95HOST.devtools;
+  if (H) { H.on(open => devtoolsState(!!open)); if (H.open !== undefined) devtoolsState(!!H.open); }   // (a browser tab tells nothing: false there)
+  // (the value as of this load: a disk kept from a load where they were open says nothing about now)
+  try { W95Win32.regSet('hklm\\software\\microsoft\\windows\\currentversion\\debug', 'DevTools', { type: 4, data: Uint8Array.of(devtoolsOpen ? 1 : 0, 0, 0, 0), name: 'DevTools' }); } catch (_) {}
+}
 function keyDown(e) {
+  if (devtoolsKey(e)) return;
   { const v = vkdApp(); if (v && v.vkd(e, false)) { e.preventDefault(); return; } }
   { const a = nativeFocus(); if (a) { lastInput = performance.now(); e.preventDefault(); if (!e.keyCode && e.key.length === 1 && (e.ctrlKey || e.altKey) && /^[a-z0-9]$/i.test(e.key)) a.chord(e); else if (!e.keyCode && e.key.length === 1) a.typeText(e.key); else a.key(e, false); return; } }
   // Option changes the character a Mac key types; Alt+letter means the letter on the key
@@ -5547,6 +5577,11 @@ const script = {
   async elementsNow(q) { return filterEls(await elementsNow(), q); },
   find: q => findEl(q),
   windows() { return windows.map(winInfo); },
+  // the machines' log (win32.js log): the emulator's messages, programs' OutputDebugString, KERNEL's LogError, each
+  // { n, t, level, tag, text, machine }, since line n; the same lines are in DevTools' console at their level and in
+  // the Debug Monitor (Programs > Accessories > System Tools)
+  log(since = 0) { return W95Win32.log.lines(since); },
+  get devtools() { return devtoolsOpen; },
   window(title) { const w = findWin(title); return w ? winInfo(w) : null; },
   activate(title) { const w = findWin(title); if (!w) return false; if (w.min) w.min = false; activate(w); dirty(); return true; },
   close(title) { const w = findWin(title); if (!w) return false; closeWin(w); dirty(); return true; },

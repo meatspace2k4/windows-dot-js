@@ -5,7 +5,7 @@
 // everything else is the original 16-bit code. Also provides the KERNEL32 flat-thunk entry points that
 // GDI32.DLL uses to reach GDI.EXE and back.
 (() => {
-const { Process, API, LAYOUT, GuestError, YIELD } = window.W95Win32;
+const { Process, API, LAYOUT, GuestError, YIELD, log } = window.W95Win32;
 const P = Process.prototype;
 
 const L = {
@@ -187,6 +187,7 @@ P.loadNE = function (name, file, module, meta) {
   }
   for (const sg of meta.segs) if (sg.num !== meta.autodata) this.ghandles.set(sg.sel | 1, { lin: sg.base, size: Math.max(sg.alloc, 1), n: 1, flags: 0, lock: 0, owner: rec.hModule, code: !(sg.flags & 1) });
   this.modules.push(rec); this.byName.set(name, rec); this.ne.set(name, rec);
+  if (this.onModuleLoad) this.onModuleLoad(name, rec);   // (a watch asked for before the module came: worker.js cmd 'watch')
   return rec;
 };
 /** a module's data segments as its file has them again (its relocations in them made again), its DGROUP at its first
@@ -249,7 +250,7 @@ P.loadLibrary16 = function (name, native = false, defer = false) {
   rec.fileName = sys.fileName;
   for (const imp of sys.meta.imports || []) if (imp !== 'KERNEL' && (native || !JS16.includes(imp))) this.loadLibrary16(imp, native);
   if (defer) return rec;   // the caller runs LibEntry (initNE) once what it needs is in place
-  if (!this.initNE(rec)) { console.warn('[ne16]', base, 'LibEntry failed'); }
+  if (!this.initNE(rec)) { log('warn', 'ne16', `${base} LibEntry failed`); }
   return rec;
 };
 /** start the native window system the way KRNL386 does: the drivers SYSTEM.INI's [boot] section names, in its
@@ -261,7 +262,7 @@ P.bootUser16 = function () {
   // the sound driver SYSTEM.INI's [boot] names (sound.drv=mmsound.drv: the module SOUND, Windows 3.x's sound functions,
   // which Minesweeper imports), from its file, as KRNL386 loads it
   const snd = this.fs && winIni(this, 'SYSTEM.INI', 'boot', 'sound.drv');
-  if (snd) { const f = this.findFile16(snd); if (f) try { this.loadLibrary16(f); } catch (e) { console.warn('[ne16] sound.drv', snd, e && e.message); } }
+  if (snd) { const f = this.findFile16(snd); if (f) try { this.loadLibrary16(f); } catch (e) { log('warn', 'ne16', `sound.drv ${snd} ${e && e.message}`); } }
   // USER.EXE calls into USER32.DLL through flat thunks from its LibEntry on, and USER32 connects them when it loads,
   // naming USER.EXE: so USER's image first, then USER32, then USER's LibEntry
   const user = this.ne.get('USER') || this.loadLibrary16('USER', true, true);
@@ -276,7 +277,7 @@ P.bootUser16 = function () {
     this.runPendingInits();
   }
   if (!user.inited) {
-    user.inited = true; if (!this.initNE(user)) console.warn('[ne16] USER LibEntry failed');
+    user.inited = true; if (!this.initNE(user)) log('warn', 'ne16', 'USER LibEntry failed');
     // FinalUserInit (#400), as KRNL386 calls it once USER is up: GDI's FinalGdiInit takes the USER entry points GDI
     // calls through (LoadString, GetActiveWindow and the rest, which its print-to-file prompt uses)
     if (this.neExport(user, 400)) this.user16(400);
@@ -358,7 +359,7 @@ P.loadNEDynamic = function (key, file) {
   const there = m => m === 'KERNEL' || JS16.includes(m) || this.ne.has(m) || all[m] || Object.values(all).some(s => s.meta && s.meta.name.toUpperCase() === m) ||
     ['.DLL', '.EXE', '.DRV'].some(x => this.findFile16(m + x) || this.fs.exists(`${dir}\\${m}${x}`));
   const missing = mods.find(m => !there(m));
-  if (missing) { this.missing16 = `${missing}.DLL`; console.warn(`[ne16] ${key}: ${missing}.DLL is not found`); return null; }
+  if (missing) { this.missing16 = `${missing}.DLL`; log('warn', 'ne16', `${key}: ${missing}.DLL is not found`); return null; }
   this.dirs16 = [...new Set([dir, ...(this.dirs16 || [])])].slice(0, 8);   // (its folder searched for its DLLs, as the program's own is)
   const segs = [];
   for (let i = 0; i < nseg; i++) {
@@ -426,7 +427,7 @@ P.loadNEDynamic = function (key, file) {
   try { for (const sg of segs) relocSeg(sg); } catch (e) {
     if (!e.missing16) throw e;
     this.ne.delete(name); this.byName.delete(name); this.modules = this.modules.filter(x => x !== rec);   // (not loaded after all)
-    this.missing16 = e.missing16; console.warn(`[ne16] ${key}: ${e.missing16} is not found`); return null;
+    this.missing16 = e.missing16; log('warn', 'ne16', `${key}: ${e.missing16} is not found`); return null;
   }
   // its module database (a copy of its NE header) and handles, as loadNE makes them
   const hdrLen = Math.min(file.length - n, 0x4000), mdb = this.alloc(hdrLen + 16);
@@ -439,6 +440,7 @@ P.loadNEDynamic = function (key, file) {
     this.ghandles.set(rec.dgroup | 1, { lin: dg.base, size: init, n: 1, flags: 2, lock: 0, owner: rec.hModule });
   }
   for (const sg of segs) if (sg.num !== autodata) this.ghandles.set(sg.sel | 1, { lin: sg.base, size: sg.alloc, n: 1, flags: 0, lock: 0, owner: rec.hModule, code: !(sg.flags & 1) });
+  if (this.onModuleLoad) this.onModuleLoad(name, rec);   // (a watch asked for before the module came: worker.js cmd 'watch')
   return rec;
 };
 P.jsModule = function (name) {
@@ -1356,8 +1358,26 @@ P.clockCall = function () {
   this.ax(v & 0xffff); this.cpu.edx.value = lo16(this.cpu.edx.value, v >>> 16);
   return this.retf16(0);
 };
+// TAPI32's lineInitialize, answered here as it is entered: no line devices (this machine has no modem; the no-modem
+// path is each program's own, HyperTerminal's "You need to install a modem"). Its own code thunks to the 16-bit
+// TAPI.DLL, which starts TAPIEXE.EXE and waits for it to initialize: the first call of a session came back
+// LINEERR_OPERATIONFAILED ("general TAPI error"), later ones with no devices. The app handle is a handle of this
+// process's; lineShutdown takes it back; lineNegotiateAPIVersion and lineGetDevCaps answer LINEERR_BADDEVICEID
+P.hookTapi = function (m) {
+  const x = m && m.exports; if (!x || !x.get('lineInitialize')) return;
+  const ans = (nargs, fn) => function () {
+    const sp = u32(this.cpu.esp.value), ret = this.r32(sp), args = []; for (let i = 1; i <= nargs; i++) args.push(this.r32(sp + 4 * i));
+    this.cpu.eax.value = u32(fn.call(this, ...args)); this.cpu.esp.value = sp + 4 + 4 * nargs; return u32(ret);
+  };
+  const hook = (name, nargs, fn) => { const at = x.get(name); if (at) (this.entryHooks || (this.entryHooks = new Map())).set(u32(at), ans(nargs, fn)); };
+  hook('lineInitialize', 5, function (ph, hInst, cb, name, pn) { if (ph) this.w32(ph, this.newHandle({ kind: 'lineapp', hInst, cb })); if (pn) this.w32(pn, 0); return 0; });
+  hook('lineShutdown', 1, function (h) { const o = this.obj(h); if (!o || o.kind !== 'lineapp') return 0x80000015; this.handles.delete(h); return 0; });   // (LINEERR_INVALAPPHANDLE)
+  hook('lineNegotiateAPIVersion', 6, () => 0x80000002);
+  hook('lineGetDevCaps', 4, () => 0x80000002);
+};
 P.hookIntents = function (user) {
   const hooks = this.entryHooks || (this.entryHooks = new Map());
+  const wasLoad = this.onModuleLoad; this.onModuleLoad = (name, m) => { if (wasLoad) wasLoad.call(this, name, m); if (name === 'TAPI32') this.hookTapi(m); };
   for (const [ord, fn] of [[483, P.spiIntent], [181, P.colorsIntent]]) {   // SystemParametersInfo, SetSysColors
     const at = this.neExport(user, ord); if (at) hooks.set(u32(this.selBase(at >>> 16) + (at & 0xffff)), fn);
   }
@@ -2092,7 +2112,7 @@ const aclOperand = (addr, yoff, wrap) => {
  *  the background one (7F9Eh) */
 P.aclStart = function (vram, dst) {
   const R = MMU + 0x7f00, u8 = this.u8, M = VRAM_SIZE - 1, routing = u8[R + 0x9c];
-  if (routing & 0x0f & ~2) console.warn(`[w32] ACL routing ${routing.toString(16)}h: CPU data other than the mix`);
+  if (routing & 0x0f & ~2) log('warn', 'w32', `ACL routing ${routing.toString(16)}h: CPU data other than the mix`);
   const dir = u8[R + 0x8f];
   return { vram, dst, cpuMix: (routing & 7) === 2, x: 0, y: 0,
     pat: aclOperand(this.r32(R + 0x80) & M, this.r16(R + 0x88), u8[R + 0x90]),
@@ -2652,7 +2672,7 @@ def16('KERNEL', 50, 'wx', 'l', function (h, name) {   // GetProcAddress
   const js = [...(this.jsMods || new Map()).values()].find(m => m.hModule === (h & 0xffff));
   if (js) {
     const ord = typeof key === 'number' ? key : names16(js.name)[key.toUpperCase()];
-    if (!ord || !K16[`${js.name}.#${ord}`]) { console.warn('[ne16] GetProcAddress', js.name, key); return 0; }
+    if (!ord || !K16[`${js.name}.#${ord}`]) { log('warn', 'ne16', `GetProcAddress ${js.name} ${key}`); return 0; }
     return this.thunk16For(`${js.name}.#${ord}`);
   }
   const m = this.neByHandle(h); return m ? this.neExport(m, key) : 0;
@@ -2667,8 +2687,8 @@ P.loadError16 = function (name) {
 };
 def16('KERNEL', 95, 's', 'w', function (name) {    // LoadLibrary (KERNEL's: its module handle), a module from disk's LibEntry run as it loads
   const m = this.loadLibrary16(name);
-  if (!m) { if (this.missing16) { console.warn(`[ne16] LoadLibrary ${name}: ${this.missing16} is not found`); this.missing16 = null; return 2; } return this.loadError16(name); }
-  if (m.meta && m.meta.dynamic && !m.inited) { m.inited = true; if (!this.initNE(m)) { console.warn(`[ne16] LoadLibrary ${name}: LibEntry failed`); return 20; } }
+  if (!m) { if (this.missing16) { log('warn', 'ne16', `LoadLibrary ${name}: ${this.missing16} is not found`); this.missing16 = null; return 2; } return this.loadError16(name); }
+  if (m.meta && m.meta.dynamic && !m.inited) { m.inited = true; if (!this.initNE(m)) { log('warn', 'ne16', `LoadLibrary ${name}: LibEntry failed`); return 20; } }
   return m.hInstance || m.hModule;
 });
 def16('KERNEL', 96, 'w', 'v', function () {});                                                                     // FreeLibrary
@@ -2712,7 +2732,7 @@ def16('KERNEL', 324, 'wx', 'v', function (code) {
   const sp = this.cpu.ssb.value + (this.cpu.esp.value & 0xffff), ip = this.r16(sp), cs = this.r16(sp + 2), m = this.neByHandle(cs), sg = m && m.segs.find(s => (s.sel | 1) === (cs | 1));
   const from = m ? `${m.name} ${sg ? sg.num : '?'}:${ip.toString(16)}` : `${cs.toString(16)}:${ip.toString(16)}`, t = this.thread16;
   const who = t ? (t.pc ? t.pc.path : t.task && t.task.path) || `thread ${t.id}` : 'main';
-  console.warn('[KERNEL] LogError', code.toString(16), 'from', from, 'in', who);
+  log('warn', 'KERNEL', `LogError ${code.toString(16)} from ${from} in ${who}`);
   (this.faultLog || (this.faultLog = [])).push({ why: `LogError ${code.toString(16)}`, at: from, thread: who });
 });
 def16('KERNEL', 327, '', 'jmp', function () {    // HandleParamError: BX = error, CX:AX = parameter; errors unwind to the handler at [BP-2]
@@ -3522,7 +3542,11 @@ def16('KERNEL', 65, 'ww', 'l', function (h, hr) {                               
   const e = this.resHandles && this.resHandles[hr / 4 - 1]; if (!e) return 0;
   return e.data ? e.data.length : e.r ? e.r.size || e.r.len || 0 : 0;
 });
-def16('KERNEL', 115, 'x', 'v', () => {});                                              // OutputDebugString
+// OutputDebugString: the machine's log (the Debug Monitor, DevTools), tagged with the task's module or the program
+def16('KERNEL', 115, 'x', 'v', function (sp) {
+  const t = this.thread16, m = t && t.task && t.task.hInst && this.neByHandle(t.task.hInst);
+  log('info', (m && m.name) || (t && t.pc && t.pc.path ? t.pc.path.replace(/^.*\\/, '') : 'KERNEL'), (sp >>> 16 ? this.readA(this.lin(sp)) || '' : '').replace(/\r?\n$/, ''));
+});
 def16('KERNEL', 131, '', 'l', function () {                                            // GetDOSEnvironment
   if (!this.dosEnv) { const s = 'COMSPEC=C:\\COMMAND.COM\0PATH=C:\\WINDOWS;C:\\WINDOWS\\COMMAND\0TEMP=C:\\WINDOWS\\TEMP\0windir=C:\\WINDOWS\0\0';
     const g = this.globalAlloc16(0, s.length + 16), a = this.gblock(g).lin; for (let i = 0; i < s.length; i++) this.u8[a + i] = s.charCodeAt(i); this.dosEnv = this.gsel(g); }
@@ -4182,7 +4206,7 @@ P.threads16 = function (nested = false, only = null) {
         // (a stop the emulator made, trapped, ends the run as the sentinel does, r 0: a VxD service it lacks)
         if (this.trapped && t.pc && this.noMain) { t.pc.trapped = this.trapped; (this.pcFaults || (this.pcFaults = [])).push({ pc: t.pc, why: this.trapped }); this.trapped = null; this.endProcess(t.pc, 0xffffffff); }
         else if (this.trapped && this.taskFault(t, this.trapped)) this.trapped = null;
-        if (t.pc) this.pcThreadEnded(t); else { this.threadExitUser(t); this.taskModuleEnded(t); } if (r !== 0 && this.trapped) console.warn('[ne16] thread', t.id, this.trapped); if (t.onDone) t.onDone(t);
+        if (t.pc) this.pcThreadEnded(t); else { this.threadExitUser(t); this.taskModuleEnded(t); } if (r !== 0 && this.trapped) log('warn', 'ne16', `thread ${t.id} ${this.trapped}`); if (t.onDone) t.onDone(t);
         if (t.flat && t.stackBase) { this.free(t.stackBase); this.free(t.tib); t.stackBase = t.tib = 0; }   // (its stack and thread information block go with it)
       }   // onDone: the host's, for a thread it started
     } catch (e) {
@@ -4201,7 +4225,7 @@ P.threads16 = function (nested = false, only = null) {
       if (e instanceof window.W95Win32.GuestError && !(e instanceof window.W95Win32.HangError) && this.noMain && (t.pc || t.task)) {
         t.state = 'done'; this.wakeWaiters(t);
         if (this.win16Held && this.win16Held.who === t) this.win16Held = null;
-        console.warn('[ne16] thread', t.id, 'ended:', e.message);
+        log('warn', 'ne16', `thread ${t.id} ended: ${e.message}`);
         if (t.pc) { t.pc.trapped = e.message; (this.pcFaults || (this.pcFaults = [])).push({ pc: t.pc, why: e.message }); this.endProcess(t.pc, 0xffffffff); }
         else this.taskFault(t, e.message);
         return;
@@ -4544,8 +4568,8 @@ K('ThunkConnect32', 6, function (td, f16, m16, m32, hmod, reason) {
   const who = () => (this.thread16 && this.thread16.pc && this.thread16.pc.path) || (this.thread16 ? 'thread ' + this.thread16.id : 'main');
   // (a connect that fails is kept for the probe too: the worker's console does not reach the page)
   const failed = why => { (this.thunkFails || (this.thunkFails = [])).push({ dll: this.readA(m32), to: name, f16: f16name, why, who: who() }); return 0; };
-  const t16 = find(); if (!t16) { console.warn('[ne16] ThunkConnect32', this.readA(m32), magic, 'no', name, f16name, 'in', who()); return failed('no 16-bit half'); }
-  if (this.r32(t16) !== this.r32(td) || this.r32(t16 + 4) !== this.r32(td + 4)) { console.warn('[ne16] ThunkConnect32', this.readA(m32), magic, name, f16name, 'checksum', this.r32(td + 4).toString(16), this.r32(t16 + 4).toString(16), 'td', td.toString(16), 'in', who()); return failed(`checksum ${this.r32(td + 4).toString(16)} ${this.r32(t16 + 4).toString(16)}`); }   // magic and checksum
+  const t16 = find(); if (!t16) { log('warn', 'ne16', `ThunkConnect32 ${this.readA(m32)} ${magic} no ${name} ${f16name} in ${who()}`); return failed('no 16-bit half'); }
+  if (this.r32(t16) !== this.r32(td) || this.r32(t16 + 4) !== this.r32(td + 4)) { log('warn', 'ne16', `ThunkConnect32 ${this.readA(m32)} ${magic} ${name} ${f16name} checksum ${this.r32(td + 4).toString(16)} ${this.r32(t16 + 4).toString(16)} td ${td.toString(16)} in ${who()}`); return failed(`checksum ${this.r32(td + 4).toString(16)} ${this.r32(t16 + 4).toString(16)}`); }   // magic and checksum
   if (magic === 'LS01') {
     const table = this.lin(this.r32(t16 + 8)); this.w32(td + 8, table);
     (this.thunkConns || (this.thunkConns = [])).push({ dll: this.readA(m32), to: name, td, far: this.r32(t16 + 8), table, who: who() });   // (for the probe)

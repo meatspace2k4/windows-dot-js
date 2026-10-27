@@ -14,8 +14,16 @@ function open() {
     webPreferences: { backgroundThrottling: false, contextIsolation: true, sandbox: true, preload: path.join(__dirname, 'preload.js') },
   })
   win.once('ready-to-show', () => { win.show(); win.focus() })
+  // DevTools: Option+Cmd+I (Ctrl+Alt+I elsewhere) toggles them before the page sees the key, and the page is told
+  // (W95HOST.devtools) so the machine knows (its registry's DevTools value, the Debug Monitor)
+  win.webContents.on('before-input-event', (e, input) => {
+    if (input.type === 'keyDown' && input.key.toLowerCase() === 'i' && input.alt && (input.meta || input.control)) { e.preventDefault(); win.webContents.toggleDevTools() }
+  })
+  win.webContents.on('devtools-opened', () => win.webContents.send('devtools', true))
+  win.webContents.on('devtools-closed', () => win.webContents.send('devtools', false))
   win.loadFile(page)
 }
+ipcMain.on('devtools-open', e => { e.returnValue = e.sender.isDevToolsOpened() })
 
 // DevTools protocol on 127.0.0.1:9334 so Claude Code can drive the running shell
 // the machines run in workers on shared memory (SharedArrayBuffer), which a file: page gets with this feature

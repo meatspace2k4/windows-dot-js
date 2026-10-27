@@ -801,6 +801,9 @@ P.dynBlock = function (eip) {
 P.dynRun = function (eip) {
   for (let n = 0; ; n++) {
     if ((n & 0xfff) === 0xfff) { this.cpu.eip.value = eip; if (this.tick(eip)) return -1; }   // the processor's time, as the dispatcher asks
+    // (an export another module enters, hooked, win32.js dispatch: a module run from its file reaches it here, never
+    // through the dispatcher; a hook that answers where to go on takes the call)
+    if (this.entryHooks) { const h = this.entryHooks.get(eip); if (h) { const to = h.call(this); if (to !== undefined) { eip = u32(to); if (eip === LAYOUT.SENTINEL || eip >= LAYOUT.THUNK16 || this.modules.some(m => eip >= m.meta.textLo && eip < m.meta.textHi && this.hasBlock(m, eip))) return eip; continue; } } }
     const blk = this.dynBlock(eip); if (!blk) return null;
     const from = eip;
     try { eip = u32(blk.run()); }
