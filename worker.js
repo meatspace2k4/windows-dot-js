@@ -250,14 +250,14 @@ class Machine {
     // (a drag's moves go in one to a slice of the machine's run, with the window's program given its slice between
     // them to take each: USER keeps only the latest of the moves waiting in its queue, and the path is what a
     // program drawing with them makes)
-    for (let moved = false; this.mouseq.length;) {
+    while (this.mouseq.length) {
       if (this.btn && this.stroke && this.mouseq[0][0] === 0x8001) {
-        if (moved) break; moved = true;
-        // (and not before the program has taken the last one: USER's DispatchMessage counts the moves taken,
-        // ne16.js hookTaken; past 100 ms without one taken, the next goes in anyway)
-        const taken = p.movesTaken || 0, lag = (this.movesFed || 0) - taken;
-        if (lag >= (this.lagMax || 1) && performance.now() - (this.lastFed || 0) < 100) break;
-        if (lag >= (this.lagMax || 1)) this.movesFed = taken;
+        // (a drag's moves run at most lagMax ahead of the program taking them: USER's DispatchMessage counts the
+        // moves taken, ne16.js hookTaken; past 100 ms without one taken, the next goes in anyway. Four ahead
+        // keep every point at a pace well past a mouse's; one a pass fed too slowly for a hand)
+        const taken = p.movesTaken || 0, lag = (this.movesFed || 0) - taken, max = this.lagMax || 4;
+        if (lag >= max && performance.now() - (this.lastFed || 0) < 100) break;
+        if (lag >= max) this.movesFed = taken;
         this.movesFed = (this.movesFed || 0) + 1;
       }
       const m = this.mouseq.shift(); this.lastFed = performance.now();
