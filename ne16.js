@@ -1235,6 +1235,16 @@ P.hookTaken = function (user) {
     });
   }
 };
+/** USER32's DispatchMessageA watched at its entry, for a Win32 program's moves taken: its USER32 reaches USER by
+ *  thunks of its own, not USER's exports (the MSG a flat pointer on the stack: hwnd, then the message) */
+P.hookTaken32 = function (m) {
+  const at = m.exports && m.exports.get('DispatchMessageA'); if (!at) return;
+  (this.entryHooks || (this.entryHooks = new Map())).set(u32(at), function () {
+    const msg = this.r32(this.r32(u32(this.cpu.esp.value) + 4) + 4);
+    if (msg === 0x200) this.movesTaken = (this.movesTaken || 0) + 1;   // WM_MOUSEMOVE
+    return undefined;
+  });
+};
 /** where USER's cursor is (GetCursorPos), for the pointer's hot spot in its image (null inside a call) */
 P.cursorPos = function () {
   if (this.depth) return null;
@@ -1564,7 +1574,7 @@ P.hookExclusive = function (m) {
 };
 P.hookIntents = function (user) {
   const hooks = this.entryHooks || (this.entryHooks = new Map());
-  const wasLoad = this.onModuleLoad; this.onModuleLoad = (name, m) => { if (wasLoad) wasLoad.call(this, name, m); if (name === 'TAPI32') this.hookTapi(m); if (name === 'WINMM' || name === 'MMSYSTEM') this.hookExclusive(m); };
+  const wasLoad = this.onModuleLoad; this.onModuleLoad = (name, m) => { if (wasLoad) wasLoad.call(this, name, m); if (name === 'TAPI32') this.hookTapi(m); if (name === 'WINMM' || name === 'MMSYSTEM') this.hookExclusive(m); if (name === 'USER32') this.hookTaken32(m); };
   for (const n of ['WINMM', 'MMSYSTEM']) { const m = this.byName && this.byName.get(n); if (m) this.hookExclusive(m); }   // (one loaded already)
   for (const [ord, fn] of [[483, P.spiIntent], [181, P.colorsIntent]]) {   // SystemParametersInfo, SetSysColors
     const at = this.neExport(user, ord); if (at) hooks.set(u32(this.selBase(at >>> 16) + (at & 0xffff)), fn);
