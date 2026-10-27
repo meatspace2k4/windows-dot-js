@@ -3047,6 +3047,12 @@ function setupSound() {
   if ((S.ne || {}).MCIAVI && W95Win32.regGet('hklm\\system\\currentcontrolset\\control\\mediaresources\\mci\\avivideo', 'Driver') === undefined)
     for (const sec of ['avivideo.Reg', 'cvid.Reg']) infAddReg(infs['MOTOWN.INF'], sec);
   if ((S.ne || {}).MCIAVI && !W95Win32.iniGet(fs, 'SYSTEM.INI', 'mci', 'avivideo')) for (const sec of ['avivideo.inis', 'cvid.inis']) infUpdateInis(infs['MOTOWN.INF'], sec);
+  // and the other codecs Setup installs with it (VIDC.MSVC, VIDC.MSRLE, VIDC.IV32: Video 1, RLE, Indeo 3.2), each on a
+  // disk whose [drivers32] lacks it
+  for (const [key, file, sec] of [['vidc.MSVC', 'MSVIDC32.DLL', 'msvc'], ['VIDC.MRLE', 'MSRLE32.DLL', 'msrle'], ['VIDC.IV32', 'IR32_32.DLL', 'iv32']]) {
+    if (!(S.dlls || {})[file] || W95Win32.iniGet(fs, 'SYSTEM.INI', 'drivers32', key)) continue;
+    infAddReg(infs['MOTOWN.INF'], `${sec}.Reg`); infUpdateInis(infs['MOTOWN.INF'], `${sec}.inis`);
+  }
   mediaResources();
   if (W95Win32.regGet('hkcu\\appevents\\eventlabels\\systemstart', '') !== undefined) return;
   infAddReg(infs['MOTOWN.INF'], 'mmsys.add.reg');

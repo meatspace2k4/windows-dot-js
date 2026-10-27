@@ -142,7 +142,10 @@ PE = [('gdi32.dll', 0x01D00000, 0x06C00000), ('user32.dll', 0x01D40000, 0x073400
       ('dashres.dll', 0x00700000, 0x064B0000), ('hoverhlp.dll', 0x00800000, 0x064B4000),
       # Video for Windows' 32-bit half, which MSVIDEO.DLL thunks to, the Cinepak codec ([drivers32] vidc.CVID) and the
       # display control interface (WIN95_02.CAB)
-      ('dciman32.dll', 0x01DB0000, 0x073B8000), ('msvfw32.dll', 0x01DC0000, 0x065A8000), ('iccvid.dll', 0x01D90000, 0x066B4000)]
+      ('dciman32.dll', 0x01DB0000, 0x073B8000), ('msvfw32.dll', 0x01DC0000, 0x065A8000), ('iccvid.dll', 0x01D90000, 0x066B4000),
+      # the other codecs Setup installs with Video for Windows (MOTOWN.INF VIDC.MSVC, VIDC.MSRLE, VIDC.IV32): Microsoft
+      # Video 1 ([drivers32] vidc.MSVC), RLE (VIDC.MRLE) and Indeo 3.2 (VIDC.IV32) (WIN95_06.CAB)
+      ('msvidc32.dll', 0x01D30000, 0x05780000), ('msrle32.dll', 0x01D50000, 0x057A0000), ('ir32_32.dll', 0x01AE0000, 0x05F90000)]
 # VxDs (ring-0 drivers), recompiled to run under the VMM in vmm.js: (file, load base, block-table base). MMDEVLDR is the
 # device loader of MEDIA devnodes; MSSNDSYS the Windows Sound System card's driver (WIN95_02.CAB)
 VXDS = [('mmdevldr.vxd', 0x01800000, 0x07C00000), ('mssndsys.vxd', 0x01810000, 0x07C40000),
