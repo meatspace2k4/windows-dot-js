@@ -256,8 +256,8 @@ class Machine {
         // (and not before the program has taken the last one: USER's DispatchMessage counts the moves taken,
         // ne16.js hookTaken; past 100 ms without one taken, the next goes in anyway)
         const taken = p.movesTaken || 0, lag = (this.movesFed || 0) - taken;
-        if (lag > 0 && performance.now() - (this.lastFed || 0) < 100) break;
-        if (lag > 0) this.movesFed = taken;
+        if (lag >= (this.lagMax || 1) && performance.now() - (this.lastFed || 0) < 100) break;
+        if (lag >= (this.lagMax || 1)) this.movesFed = taken;
         this.movesFed = (this.movesFed || 0) + 1;
       }
       const m = this.mouseq.shift(); this.lastFed = performance.now();
@@ -1068,6 +1068,7 @@ class Machine {
       case 'effects': return (p.effects || []).slice();   // (what the machine did, with its causes: ne16.js effect)
       // another machine's person's stroke (or part of one) into the session's object whose window here is root: fed
       // between this person's own (feedStroke)
+      case 'pace': this.lagMax = Math.max(1, args[0] | 0); return this.lagMax;   // (a diagnostic: how many of a drag's moves may be fed ahead of the program taking them)
       case 'strokes': {   // (a diagnostic: the strokes of others waiting and being fed, this person's going; with a window, its queue's state)
         let pending = null; try { pending = p.inputPending(); } catch (e) { pending = String(e); }
         const h = args[0], q = h ? { posted: p.postedPending(h), input: p.inputPendingFor(h), status: (p.asWindowTask(h, () => p.user16(334, [['w', 0xff]]).dxax) >>> 0).toString(16), child: p.childAt(h, args[1] || 0, args[2] || 0) } : null;
