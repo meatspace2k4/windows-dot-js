@@ -292,7 +292,7 @@ P.bootUser16 = function () {
     }
   }
   this.user16Ready = true;
-  this.hookIntents(user); this.hookClock(user);
+  this.hookIntents(user); this.hookClock(user); this.hookTaken(user);
   this.userStack();
   return user;
 };
@@ -1220,6 +1220,23 @@ P.user16 = function (ord, args = []) {
 P.inputPending = function () {
   const fg = this.user16(608).ax;                                                                     // GetForegroundWindow
   return !!this.asWindowTask(fg, () => this.user16(335).ax);                                          // GetInputState
+};
+/** USER's DispatchMessage (#114) watched at its entry: the mouse moves the programs take, counted (movesTaken),
+ *  which paces the moves of a drag going in (worker.js feedMouse: USER keeps only the latest of those waiting) */
+P.hookTaken = function (user) {
+  const at = this.neExport(user, 114); if (!at || !this.selValid(at >>> 16)) return;
+  (this.entryHooks || (this.entryHooks = new Map())).set(u32(this.selBase(at >>> 16) + (at & 0xffff)), function () {
+    const sp = this.selBase(this.cpu.ss.value) + (this.cpu.esp.value & 0xffff), off = this.r16(sp + 4), seg = this.r16(sp + 6);   // (the far return, then lpMsg)
+    if (this.selValid(seg) && this.r16(this.selBase(seg) + off + 2) === 0x200) this.movesTaken = (this.movesTaken || 0) + 1;   // WM_MOUSEMOVE
+    return undefined;   // (USER's own code goes on)
+  });
+};
+/** where USER's cursor is (GetCursorPos), for the pointer's hot spot in its image (null inside a call) */
+P.cursorPos = function () {
+  if (this.depth) return null;
+  if (!this.wbufLin) this.nativeWindows();
+  const a = this.wbufLin + 0x104; this.user16(17, [['l', u32((this.wbufSel << 16) + 0x104)]]);                     // GetCursorPos
+  return { x: (this.r16(a) << 16) >> 16, y: (this.r16(a + 2) << 16) >> 16 };
 };
 /** the window under a screen point among a window's descendants (the deepest, whatever other window covers it on
  *  this screen): the window itself if none */

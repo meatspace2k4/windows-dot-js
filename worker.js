@@ -251,7 +251,15 @@ class Machine {
     // them to take each: USER keeps only the latest of the moves waiting in its queue, and the path is what a
     // program drawing with them makes)
     for (let moved = false; this.mouseq.length;) {
-      if (this.btn && this.stroke && this.mouseq[0][0] === 0x8001) { if (moved) break; moved = true; }
+      if (this.btn && this.stroke && this.mouseq[0][0] === 0x8001) {
+        if (moved) break; moved = true;
+        // (and not before the program has taken the last one: USER's DispatchMessage counts the moves taken,
+        // ne16.js hookTaken; past 100 ms without one taken, the next goes in anyway)
+        const taken = p.movesTaken || 0, lag = (this.movesFed || 0) - taken;
+        if (lag > 0 && performance.now() - (this.lastFed || 0) < 100) break;
+        if (lag > 0) this.movesFed = taken;
+        this.movesFed = (this.movesFed || 0) + 1;
+      }
       const m = this.mouseq.shift(); this.lastFed = performance.now();
       try { if (this.lagLog) this.lagLog.push({ k: 'mouse-fed', f: m[0] & 0xff, x: m[1], y: m[2], t: Date.now() }); if (m[0] & 0x2a) { p.personActed = true; if (p.personInput) try { p.personInput(...m); } catch (e) { console.error(e); } } p.mouseEvent16(...m); this.recordStroke(m); } catch (e) { console.error(e); }   // (a button pressed: this machine's person has done something, ne16.js intentQuiet)
     }
@@ -269,7 +277,8 @@ class Machine {
     const sx = Math.round(m[1] * (sw - 1) / 65535), sy = Math.round(m[2] * (sh - 1) / 65535);
     const was = this.btn || 0;
     let btn = was; if (f & 2) btn |= 1; if (f & 4) btn &= ~1; if (f & 8) btn |= 2; if (f & 16) btn &= ~2; this.btn = btn;
-    if (!was && (f & 0x0a) && !this.stroke) {   // (a press with no button held: a stroke begins, at the window under it)
+    if (!was && (f & 0x0a)) {   // (a press with no button held: a stroke begins, at the window under it; one still to post goes first)
+      if (this.stroke) { this.stroke.done = true; this.postStroke(true); }
       let t = null, why = null; try { t = p.strokeTarget(sx, sy); } catch (e) { why = String(e); console.error(e); }
       if (!t) { if (this.lagLog) this.lagLog.push({ k: 'stroke-miss', x: sx, y: sy, why, t: Date.now() }); return; }
       this.stroke = { n: (this.strokeN = (this.strokeN || 0) + 1), root: t.root, pop: t.pop, ox: t.x, oy: t.y, ev: [], done: false };
@@ -326,8 +335,9 @@ class Machine {
   /** the screen's mode, DAC and cursor sprite for the page, which shows the screen from the shared memory */
   postScan() {
     const p = this.proc, a = p.scanout(), sp = p.sprite ? p.sprite() : null;
+    let cur = null; if (sp && p.cursorPos && this.system && !p.depth && !this.ring0()) try { cur = p.cursorPos(); } catch (_) { cur = null; }   // (USER's cursor, beside the sprite: the pointer's hot spot in its image)
     post({ t: 'scan', scan: { w: a.w, h: a.h, pitch: a.pitch || a.w, bpp: a.bpp, dacMode: a.hicolor, attr: Array.from(a.attr.subarray(0, 0x15)), vram: a.vram.byteOffset }, dac: Uint8Array.from(a.dac),
-      sprite: sp ? { x: sp.x, y: sp.y, px: sp.px, py: sp.py, cpp: sp.cpp, row: sp.row, at: sp.bits.byteOffset } : null });
+      sprite: sp ? { x: sp.x, y: sp.y, px: sp.px, py: sp.py, cpp: sp.cpp, row: sp.row, at: sp.bits.byteOffset } : null, cur });
   }
   /** the system's first task, MSGSRV32 (its message server: the drivers, SystemStart, then the shell). On the start
    *  after Setup, the items Setup left to it (RunOnce\Setup: GRPCONV's Start menu) run first, under RUNONCE's

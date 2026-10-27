@@ -5216,11 +5216,16 @@ function peerCursorOf(x, y) {
   const n = Math.min(sp.bits.length, 64 * sp.row); let h = 2166136261;
   for (let i = 0; i < n; i++) { h ^= sp.bits[i]; h = Math.imul(h, 16777619); }
   h ^= sp.px | sp.py << 6 | sp.cpp << 12 | sp.row << 16; h = Math.imul(h, 16777619) >>> 0;
-  const k = h.toString(16), hx = x - sp.x, hy = y - sp.y;   // (where the pointer is in the image, now: the sprite sits at the pointer less its hot spot)
+  const k = h.toString(16);
+  // (where the pointer is in the image: USER's cursor less the sprite's place, as the machine reported both together;
+  // kept per image, since the page's pointer runs ahead of the sprite)
+  const cur = a.scr && a.scr.cur; if (cur) curHot.set(k, [cur.x - sp.x, cur.y - sp.y]);
+  const [hx, hy] = curHot.get(k) || [0, 0];
   if (k === curKeyLast && curSprite) return { k, hx, hy };
   curKeyLast = k; curSprite = { px: sp.px, py: sp.py, cpp: sp.cpp, row: sp.row, b64: btoa(String.fromCharCode(...sp.bits.subarray(0, n))) };
   return { k, hx, hy, img: curSprite };
 }
+const curHot = new Map();
 function shareInput(ev) {
   const S = sharedNow(); if (!S) return;
   if (ev.t === 'move') { S.pointer(ev.x, ev.y, peerCursorOf(ev.x, ev.y)); return; }
