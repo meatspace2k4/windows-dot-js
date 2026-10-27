@@ -41,7 +41,10 @@
   const unb64 = s => Uint8Array.from(atob(s || ''), c => c.charCodeAt(0));
   // (HKEY_CURRENT_USER is this person's own key under HKEY_USERS, as with Windows 95's user profiles: kept on the server
   // as hku\<user>, the page's HKCU; another person's is theirs, under their name)
-  const me = () => 'hku\\' + logon.user.toLowerCase();
+  // (every machine in a session runs as its owner, the person whose machine started it: the same HKCU and folders on
+  // each, so each starts and runs the same; the person at each is their logon, on their pointer)
+  let owner = null;
+  const me = () => 'hku\\' + (owner || logon.user).toLowerCase();
   const toServer = p => (p === 'hkcu' || p.startsWith('hkcu\\') ? me() + p.slice(4) : p);
   const fromServer = p => (p === me() || p.startsWith(me() + '\\') ? 'hkcu' + p.slice(me().length) : p);
   const regOut = o => { const r = { ...o, path: toServer(o.path) }; return o.value ? { ...r, value: { type: o.value.type, data: b64(o.value.data) } } : r; };
@@ -70,7 +73,7 @@
   // each makes the same changes itself (another's HKCU being its own person's, those it sends too). Until the server
   // has said who the host is, they wait (`held`)
   let outbox = [], posting = false, quiet = false, hostId = null, held = [];
-  const mineToSend = (kind, op) => kind === 'input' || hostId === client || (kind === 'reg' && op.path && (op.path === me() || op.path.startsWith(me() + '\\')));
+  const mineToSend = kind => kind === 'input' || hostId === client;
   const send = (kind, op) => {
     if (quiet) return;
     if (kind !== 'input' && hostId === null) { held.push({ kind, op }); return; }
@@ -92,7 +95,7 @@
   // ---- the store W95HOST has in a shared session (host-web.js's shape)
   const host = (state, base) => ({
     ...base,
-    userName: logon.user,
+    userName: owner || logon.user,
     shared: { client, session: logon.session, user: logon.user },
     disk: {
       sidBase: state.sidBase,
@@ -110,7 +113,7 @@
   });
 
   // ---- what others change, applied here; who is here
-  let seq = 0, es = null, fs = null, onInput = null, onView = null, lastView = null;
+  let seq = 0, joinedAt = 0, es = null, fs = null, onInput = null, onView = null, lastView = null;
   const people = new Map(), watchers = new Set(), pending = [];
   // another machine's change or input, in the server's order (its own come back too, and are passed over). A change
   // goes to this page's C: or registry: the host's, while this machine is not the host (the host's own machine made the
@@ -125,10 +128,17 @@
     if (m.client !== client) deliver(m);
   };
   const deliver = m => {
-    if (m.kind === 'input') { if (fs && onInput) { try { onInput(m.op, m.client); } catch (e) { console.warn('[shared] an input could not be applied:', e && e.message); } } return; }
+    if (m.kind === 'input') {
+      if (!fs) { pending.push(m); return; }   // (applied once Windows runs here, in order: this machine catching up)
+      if (onInput) { try { onInput(m.op, m.client); } catch (e) { console.warn('[shared] an input could not be applied:', e && e.message); } }
+      return;
+    }
+    // (the host's changes up to when this machine joined are ones it makes itself, applying the same input from the
+    // same start)
+    if (m.seq && m.seq <= joinedAt) return;
     if (!fs) { pending.push(m); return; }
     if (m.kind === 'disk') { if (hostId !== client && m.client === hostId) fs.applyStore('C', m.op.op === 'data' ? { ...m.op, bytes: unb64(m.op.bytes) } : m.op); }
-    else if (m.kind === 'reg' && window.W95Win32 && !ownValue(m.op) && (m.client === hostId || !m.op.path.startsWith(me()))) window.W95Win32.regApply(regIn(m.op), 'remote');
+    else if (m.kind === 'reg' && window.W95Win32 && !ownValue(m.op) && hostId !== client && m.client === hostId) window.W95Win32.regApply(regIn(m.op), 'remote');
   };
   const catchUp = () => { if (es) { try { es.close(); } catch (_) { /* gone */ } es = null; } listen(); };
   const roster = (list, host) => {
@@ -164,13 +174,13 @@
   // answered, and the page runs on its own store)
   const fetchState = () => {
     try {
-      const x = new XMLHttpRequest(); x.open('GET', url('state'), false); x.send();
+      const x = new XMLHttpRequest(); x.open('GET', url(`state?client=${encodeURIComponent(client)}&user=${encodeURIComponent(logon.user)}`), false); x.send();
       return x.status === 200 ? JSON.parse(x.responseText) : null;
     } catch (_) { return null; }
   };
   const start = base => {
     const state = fetchState(); if (!state) return null;
-    seq = state.seq || 0; screen = state.screen || null;
+    seq = state.seq || 0; screen = state.screen || null; owner = state.owner || null; joinedAt = state.now || seq;
     listen();
     return { ...host(state, base), screen };
   };

@@ -43,6 +43,7 @@ class Session:
         self.seq, self.next_block, self.people, self.subs, self.log = 0, 1, {}, set(), []
         self.dirty, self.saver = False, None
         self.screen, self.view = None, None   # (the screen every machine in it has; the host's last view of its windows)
+        self.boot = None                      # (the state as the first machine started from it: { seq, owner, state })
         if folder: self.load()
 
     # ---- the state, as the page's store keeps it
@@ -84,6 +85,21 @@ class Session:
         else: raise ValueError(f'no kind {kind}')
 
     def bytes(self): return sum(len(b) for b in self.data.values())
+
+    def start(self, client, user):
+        """the state a machine starts from. The first machine in the session starts from the state as it is, and that
+        start is kept (`boot`) with its owner, the first machine's user; every machine that joins while one is running
+        starts from the same start and applies everything since (`seq` is the start's, `now` the latest), so it
+        reaches the same state the others did, the same way. A start the log no longer reaches back to is not used"""
+        with self.lock:
+            running = bool(self.people)
+            reach = self.boot and (not self.log or self.log[0]['seq'] <= self.boot['seq'] + 1 or self.boot['seq'] == self.seq)
+            if running and reach:
+                st = dict(self.boot['state']); st['sidBase'] = self.next_block * SID_BLOCK; self.next_block += 1; self.changed()
+                return dict(st, owner=self.boot['owner'], now=self.seq, host=self.host(), screen=self.screen)
+            st = self.state()
+            self.boot = {'seq': st['seq'], 'owner': user, 'state': {k: v for k, v in st.items() if k != 'sidBase'}}
+            return dict(st, owner=user, now=st['seq'])
 
     def state(self):
         with self.lock:
@@ -234,7 +250,9 @@ class Sessions:
         try: s = self.get(unq(m[1]))
         except (ValueError, OverflowError) as e: return send(h, 400 if isinstance(e, ValueError) else 503, {'err': str(e)})
         what = m[2]
-        if method == 'GET' and what == 'state': return send(h, 200, s.state())
+        if method == 'GET' and what == 'state':
+            if qs.get('client'): return send(h, 200, s.start(unq(qs.get('client')), unq(qs.get('user')) or 'Guest'))
+            return send(h, 200, s.state())
         if method == 'GET' and what == 'events':
             since = qs.get('since'); since = int(since) if since and since.isdigit() else None
             return events(h, s, unq(qs.get('client')) or 'anon', unq(qs.get('user')) or 'Guest', since)

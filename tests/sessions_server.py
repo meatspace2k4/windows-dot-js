@@ -71,6 +71,20 @@ assert s.set_screen(800, 600) == {'w': 800, 'h': 600} and s.set_screen(1024, 768
 assert s.state()['screen'] == {'w': 800, 'h': 600} and s.state()['host'] == 'b'
 assert S.Session('z').set_screen(100, 5000) == {'w': 640, 'h': 960}
 
+# ---- where a machine starts: the first one from the state as it is, its owner the first one's user; one joining
+# while it runs from that same start (its seq, and `now`, the latest), however the state has changed since; with no
+# one running, the state as it is again
+s = S.Session('st')
+s.op('x', 'reg', {'op': 'key', 'path': 'hklm\\a'})
+a = s.start('a', 'Bob'); assert a['owner'] == 'Bob' and a['seq'] == 1 and a['now'] == 1
+qa = s.join('a', 'Bob')
+s.op('a', 'reg', {'op': 'key', 'path': 'hklm\\b'}); s.op('a', 'input', {'t': 'down'})
+b = s.start('b', 'Ann')
+assert b['owner'] == 'Bob' and b['seq'] == 1 and b['now'] == 3 and [r[0] for r in b['registry']] == ['hklm\\a'], b
+assert b['sidBase'] != a['sidBase'], 'its own block of ids'
+s.leave('a', qa)
+c = s.start('c', 'Cy'); assert c['owner'] == 'Cy' and c['seq'] == 3 and sorted(r[0] for r in c['registry']) == ['hklm\\a', 'hklm\\b']
+
 # ---- kept in its folder: a new server has it
 root = tempfile.mkdtemp()
 try:

@@ -5079,6 +5079,8 @@ const inbox = []; let inboxSince = 0, inboxTimer = 0;
 function remoteArrived(ev) { inbox.push(ev); drainInbox(); }
 function drainInbox() {
   clearTimeout(inboxTimer); inboxTimer = 0;
+  // (a machine still starting, catching up with the others: nothing until its shell is up)
+  if (inbox.length && !(screen === 'desktop' && windows.some(w => w.native && w.title === 'Program Manager'))) { inboxTimer = setTimeout(drainInbox, 100); return; }
   while (inbox.length) {
     const ev = inbox[0];
     if (ev.g && ev.g !== gate()) {

@@ -9,7 +9,7 @@ import { readFileSync } from 'node:fs';
 const src = readFileSync(new URL('../shared.js', import.meta.url), 'utf8');
 const b64 = s => Buffer.from(s).toString('base64');
 
-function page(search = '', stored = {}, registry = [['hku\\ann\\x', [['v', { type: 1, data: b64('1\0') }]], null]]) {
+function page(search = '', stored = {}, registry = [['hku\\ann\\x', [['v', { type: 1, data: b64('1\0') }]], null]], extra = {}) {
   const posts = [], sources = [], applied = [], regs = [], timers = [];
   const store = m => ({ getItem: k => (k in m ? m[k] : null), setItem: (k, v) => { m[k] = v; } });
   const local = store({ ...stored }), session = store({});
@@ -18,7 +18,7 @@ function page(search = '', stored = {}, registry = [['hku\\ann\\x', [['v', { typ
     open(m, u) { this.u = u; } send() {
       this.status = 200;
       this.responseText = JSON.stringify({ seq: 7, sidBase: 3 << 20, disk: { nodes: [{ sid: 0, parent: -1, name: '', dir: true }, { sid: 5, parent: 0, name: 'a.txt', dir: false, data: b64('hi') }], label: 'W95', serial: 1 },
-        registry, url: this.u });
+        registry, url: this.u, ...extra });
     }
   }
   class EventSource { constructor(u) { this.u = u; this.on = {}; sources.push(this); } addEventListener(t, f) { this.on[t] = f; } emit(t, d) { this.on[t]({ data: JSON.stringify(d) }); } }
@@ -115,16 +115,15 @@ const views = []; S.onView((v, n) => views.push([v, n]));
 S.view([{ title: 'A' }]); P.timers.at(-1)(); assert.match(P.posts.at(-1).u, /view$/); assert.equal(P.posts.at(-1).body.seq, 16);
 es2.emit('view', { client: 'other', seq: 16, view: [{ title: 'B' }] }); assert.deepEqual(views, [[[{ title: 'B' }], 16]]);
 
-// not the host: its own changes to C: and the session's keys stay its own (the host's machine makes the same), its
-// own person's HKCU still sent; the host's changes applied, another's not
+// not the host: none of its changes sent (the host's machine makes the same ones, from the same input); the host's
+// changes applied, another's not
 es2.emit('people', { people: [{ client: 'other', user: 'Bob', host: true }, { client: S.client, user: 'Ann' }] });
 assert.equal(S.isHost(), false);
 {
   await P.settle(); const n = P.posts.length;
   H.disk.size(5, 3); H.registry.op({ op: 'set', path: 'hklm\\y', name: 'n', value: { type: 4, data: new Uint8Array(4) } });
-  assert.equal(P.posts.length, n);
   H.registry.op({ op: 'set', path: 'hkcu\\y', name: 'n', value: { type: 4, data: new Uint8Array(4) } });
-  assert.equal(P.posts.length, n + 1); assert.equal(P.posts.at(-1).body.ops[0].op.path, 'hku\\ann\\y');
+  assert.equal(P.posts.length, n);
   const a0 = P.applied.length;
   es2.emit('op', { seq: 17, client: 'other', kind: 'disk', op: { op: 'size', sid: 5, size: 0 } });
   es2.emit('op', { seq: 18, client: 'third', kind: 'disk', op: { op: 'size', sid: 5, size: 9 } });
@@ -154,7 +153,7 @@ es2.on.reload({ data: '{}' }); assert.ok(P.location.reloaded);
   const got = H2.registry.load(), find = p => got.find(r => r[0] === p);
   assert.equal(text(find('hkcu\\control panel')[1][0][1]), 'd\0', 'a new person: the default user\'s profile');
   assert.ok(find('hku\\eve\\control panel'), 'another person\'s profile kept'); assert.ok(find('hku\\.default\\control panel'));
-  assert.equal(Q.posts.length, 0); Q.sources[0].emit('people', { people: [{ client: 'h', user: 'Eve', host: true }, { client: Q.S.client, user: 'Dee' }] });
+  assert.equal(Q.posts.length, 0); Q.sources[0].emit('people', { people: [{ client: Q.S.client, user: 'Dee', host: true }] });
   assert.deepEqual(Q.posts[0].body.ops.map(o => [o.op.op, o.op.path]), [['key', 'hku\\dee\\control panel']], 'the copy written as theirs');
   await Q.settle();
   assert.deepEqual(Q.posts[1].body.ops.map(o => [o.op.op, o.op.path, o.op.name, o.op.value.data]), [['set', 'hku\\dee\\control panel', 'a', b64('d\0')]]);
@@ -167,5 +166,24 @@ es2.on.reload({ data: '{}' }); assert.ok(P.location.reloaded);
   // no default user: someone else's profile, copied
   const T = page('?user=Fay&session=s', {}, [rows[2]]), got3 = T.S.start({}).registry.load();
   assert.equal(text(got3.find(r => r[0] === 'hkcu\\control panel')[1][0][1]), 'e\0'); assert.ok(got3.find(r => r[0] === 'hku\\eve\\control panel'));
+}
+// joining a running session: this machine starts where the session's first machine did (seq 7) and runs as its owner
+// (Bob's HKCU); everything since comes again in order: the input applied once Windows runs here, the host's changes
+// up to the join (seq 9) passed over, as this machine makes them itself from the same input; later ones applied
+{
+  const J = page('?user=Ann&session=s', {}, [['hku\\bob\\x', [['v', { type: 1, data: b64('b\0') }]], null], ['hku\\ann\\x', [['v', { type: 1, data: b64('a\0') }]], null]], { owner: 'Bob', now: 9 });
+  const HJ = J.S.start({});
+  assert.equal(HJ.userName, 'Bob', 'the owner\'s name on this machine'); assert.equal(HJ.shared.user, 'Ann', 'the person here, on the pointer');
+  const reg = HJ.registry.load(); assert.equal(new TextDecoder().decode(reg.find(r => r[0] === 'hkcu\\x')[1][0][1].data), 'b\0');
+  assert.match(J.sources[0].u, /since=7$/);
+  const ins = []; J.S.onInput(ev => ins.push(ev.t));
+  const es = J.sources[0]; es.emit('people', { people: [{ client: 'h', user: 'Bob', host: true }, { client: J.S.client, user: 'Ann' }] });
+  es.emit('op', { seq: 8, client: 'h', kind: 'input', op: { t: 'down' } });
+  es.emit('op', { seq: 9, client: 'h', kind: 'disk', op: { op: 'size', sid: 5, size: 1 } });
+  assert.deepEqual(ins, [], 'before Windows runs here: waiting');
+  J.S.ready(J.fs);
+  assert.deepEqual(ins, ['down']); assert.equal(J.applied.length, 0, 'the host\'s change before the join: this machine makes it');
+  es.emit('op', { seq: 10, client: 'h', kind: 'disk', op: { op: 'size', sid: 5, size: 2 } });
+  assert.deepEqual(J.applied.map(a => a[1].size), [2]);
 }
 console.log('shared: ok');
