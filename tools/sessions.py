@@ -115,7 +115,7 @@ class Session:
     def publish(self, event, data):
         for q in list(self.subs): q.put((event, data))
 
-    def roster(self): return [{'client': c, 'user': p['user'], 'x': p.get('x'), 'y': p.get('y'), 'cur': p.get('cur')} for c, p in self.people.items()]
+    def roster(self): return [{'client': c, 'user': p['user'], 'x': p.get('x'), 'y': p.get('y'), 'cur': p.get('cur'), 'hot': p.get('hot')} for c, p in self.people.items()]
 
     def join(self, client, user, since=None):
         """a person's queue of events: the roster first; with `since` (the last change they have), the changes after it,
@@ -157,6 +157,7 @@ class Session:
             p['x'], p['y'] = int(x), int(y)
             if isinstance(cur, dict) and isinstance(cur.get('k'), str):
                 p['cur'] = cur['k'][:32]
+                if isinstance(cur.get('hx'), (int, float)) and isinstance(cur.get('hy'), (int, float)): p['hot'] = [int(cur['hx']), int(cur['hy'])]   # (where the pointer is in its image)
                 if isinstance(cur.get('img'), dict) and p['cur'] not in self.cursors:
                     if len(self.cursors) >= 64: self.cursors.pop(next(iter(self.cursors)))
                     self.cursors[p['cur']] = cur['img']; self.publish('cursor', {'k': p['cur'], 'img': cur['img']})

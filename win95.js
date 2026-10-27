@@ -4645,8 +4645,8 @@ function drawPeers() {
       ctx.save(); ctx.strokeStyle = rgb; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(p.x, p.y, 16, 0, 2 * Math.PI); ctx.stroke(); ctx.restore();
     }
     // (their pointer as their Windows shows it to them: the image they sent with it, else the arrow)
-    const img = p.cur && S.cursor(p.cur), bits = img && peerBits(p.cur, img);
-    if (bits) drawSpriteBits(bits, p.x - img.hx, p.y - img.hy);
+    const img = p.cur && S.cursor(p.cur), bits = img && peerBits(p.cur, img), hot = p.hot || [0, 0];
+    if (bits) drawSpriteBits(bits, p.x - hot[0], p.y - hot[1]);
     else if (c) ctx.drawImage(c.i, p.x - c.hx, p.y - c.hy);
     const label = p.user || 'Guest', tw = textW(label) + 10, tx = clamp(p.x + 12, 0, W - tw), ty = clamp(p.y + 18, 0, H - 17);
     fill(tx, ty, tw, 17, K.tip); fill(tx, ty, 4, 17, rgb); edge(tx, ty, tw, 17, K.dk, K.dk); text(label, tx + 7, ty + 2);
@@ -5216,10 +5216,10 @@ function peerCursorOf(x, y) {
   const n = Math.min(sp.bits.length, 64 * sp.row); let h = 2166136261;
   for (let i = 0; i < n; i++) { h ^= sp.bits[i]; h = Math.imul(h, 16777619); }
   h ^= sp.px | sp.py << 6 | sp.cpp << 12 | sp.row << 16; h = Math.imul(h, 16777619) >>> 0;
-  const k = h.toString(16);
-  if (k === curKeyLast && curSprite) return { k };
-  curKeyLast = k; curSprite = { px: sp.px, py: sp.py, cpp: sp.cpp, row: sp.row, hx: x - sp.x, hy: y - sp.y, b64: btoa(String.fromCharCode(...sp.bits.subarray(0, n))) };
-  return { k, img: curSprite };
+  const k = h.toString(16), hx = x - sp.x, hy = y - sp.y;   // (where the pointer is in the image, now: the sprite sits at the pointer less its hot spot)
+  if (k === curKeyLast && curSprite) return { k, hx, hy };
+  curKeyLast = k; curSprite = { px: sp.px, py: sp.py, cpp: sp.cpp, row: sp.row, b64: btoa(String.fromCharCode(...sp.bits.subarray(0, n))) };
+  return { k, hx, hy, img: curSprite };
 }
 function shareInput(ev) {
   const S = sharedNow(); if (!S) return;

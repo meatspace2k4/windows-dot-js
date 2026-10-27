@@ -231,7 +231,9 @@ class Machine {
     const f = kind;
     const q = this.mouseq, last = q[q.length - 1];
     if (f !== 1 && (ax !== this.ax || ay !== this.ay)) q.push([0x8001, ax, ay]);
-    if (f === 1 && last && last[0] === 0x8001 && !this.btn) q[q.length - 1] = [0x8001, ax, ay];   // (moves the machine has not had yet: the latest; every one while a button is held, a drag's path being what the program draws)
+    // (the buttons held as of what is queued, not only what the machine has had: a drag's moves waiting behind its press)
+    let qb = this.qbtn || 0; if (f & 2) qb |= 1; if (f & 4) qb &= ~1; if (f & 8) qb |= 2; if (f & 16) qb &= ~2; this.qbtn = qb;
+    if (f === 1 && last && last[0] === 0x8001 && !qb) q[q.length - 1] = [0x8001, ax, ay];   // (moves the machine has not had yet: the latest; every one while a button is held, a drag's path being what the program draws)
     else q.push([0x8001 | f, ax, ay]);
     this.ax = ax; this.ay = ay;
   }
@@ -248,7 +250,6 @@ class Machine {
     // (a drag's moves go in one to a slice of the machine's run, with the window's program given its slice between
     // them to take each: USER keeps only the latest of the moves waiting in its queue, and the path is what a
     // program drawing with them makes)
-    if (this.lagLog && this.btn) { let pend = null; try { pend = this.stroke ? p.inputPendingFor(this.stroke.root) : null; } catch (e) { pend = String(e); } this.lagLog.push({ k: 'pace', pend, q: this.mouseq.length, t: Date.now() }); }
     for (let moved = false; this.mouseq.length;) {
       if (this.btn && this.stroke && this.mouseq[0][0] === 0x8001) { if (moved) break; moved = true; }
       const m = this.mouseq.shift(); this.lastFed = performance.now();
@@ -269,8 +270,8 @@ class Machine {
     const was = this.btn || 0;
     let btn = was; if (f & 2) btn |= 1; if (f & 4) btn &= ~1; if (f & 8) btn |= 2; if (f & 16) btn &= ~2; this.btn = btn;
     if (!was && (f & 0x0a) && !this.stroke) {   // (a press with no button held: a stroke begins, at the window under it)
-      let t = null; try { t = p.strokeTarget(sx, sy); } catch (e) { console.error(e); }
-      if (!t) return;
+      let t = null, why = null; try { t = p.strokeTarget(sx, sy); } catch (e) { why = String(e); console.error(e); }
+      if (!t) { if (this.lagLog) this.lagLog.push({ k: 'stroke-miss', x: sx, y: sy, why, t: Date.now() }); return; }
       this.stroke = { n: (this.strokeN = (this.strokeN || 0) + 1), root: t.root, pop: t.pop, ox: t.x, oy: t.y, ev: [], done: false };
     }
     const s = this.stroke; if (!s) return;

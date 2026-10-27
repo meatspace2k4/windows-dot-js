@@ -154,7 +154,7 @@
   // kept by the server for everyone: the others draw this pointer as this person sees it)
   let ptr = null, ptrPosting = false; const curSent = new Set(), cursors = new Map();
   const pointer = (x, y, cur) => {
-    ptr = { x: Math.round(x), y: Math.round(y), cur: cur ? (curSent.has(cur.k) ? { k: cur.k } : cur) : undefined };
+    ptr = { x: Math.round(x), y: Math.round(y), cur: cur ? (curSent.has(cur.k) ? { k: cur.k, hx: cur.hx, hy: cur.hy } : cur) : undefined };
     if (ptrPosting) return;
     const p = ptr; ptr = null; ptrPosting = true;
     if (p.cur && p.cur.img) curSent.add(p.cur.k);

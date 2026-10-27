@@ -21,15 +21,15 @@ for bad in [('intent', {'kind': 'spi'}), ('obj', {'v': {}}), ('disk', {'op': 'no
 
 # ---- presence: join hears the roster, a pointer moves it, leave drops the person once their last stream ends
 s = S.Session('p')
-q1 = s.join('c1', 'Guest'); assert q1.get_nowait() == ('people', {'people': [{'client': 'c1', 'user': 'Guest', 'x': None, 'y': None, 'cur': None}], 'seq': 0})
+q1 = s.join('c1', 'Guest'); assert q1.get_nowait() == ('people', {'people': [{'client': 'c1', 'user': 'Guest', 'x': None, 'y': None, 'cur': None, 'hot': None}], 'seq': 0})
 q2 = s.join('c2', 'Ann'); q1.get_nowait(); q2.get_nowait()
-assert s.pointer('c2', 10, 20) and q1.get_nowait()[1]['people'][1] == {'client': 'c2', 'user': 'Ann', 'x': 10, 'y': 20, 'cur': None}
+assert s.pointer('c2', 10, 20) and q1.get_nowait()[1]['people'][1] == {'client': 'c2', 'user': 'Ann', 'x': 10, 'y': 20, 'cur': None, 'hot': None}
 assert not s.pointer('nobody', 1, 1)
 # (the image a pointer shows, by key, sent once with its image: kept, told to everyone, and to a joiner with the roster)
 img = {'px': 0, 'py': 0, 'cpp': 1, 'row': 16, 'hx': 1, 'hy': 1, 'b64': 'AAAA'}
-assert s.pointer('c2', 11, 21, {'k': 'abc', 'img': img})
+assert s.pointer('c2', 11, 21, {'k': 'abc', 'hx': 3, 'hy': 4, 'img': img})
 ev = q1.get_nowait(); assert ev[0] == 'cursor' and ev[1] == {'k': 'abc', 'img': img}, ev
-assert q1.get_nowait()[1]['people'][1]['cur'] == 'abc'
+who = q1.get_nowait()[1]['people'][1]; assert who['cur'] == 'abc' and who['hot'] == [3, 4], who
 assert s.pointer('c2', 12, 22, {'k': 'abc'}) and q1.get_nowait()[0] == 'people', 'a key already kept: no image event'
 q6 = s.join('c6', 'Fay'); q6.get_nowait(); assert q6.get_nowait() == ('cursor', {'k': 'abc', 'img': img})
 s.leave('c6', q6); q1.get_nowait(); q1.get_nowait()   # (c6 came and went: the roster twice)
