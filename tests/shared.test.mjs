@@ -102,6 +102,15 @@ es.emit('op', { seq: 14, client: 'other', kind: 'input', op: { t: 'down', x: 5, 
 es.emit('op', { seq: 14, client: 'other', kind: 'input', op: { t: 'down', x: 5, y: 5 } });
 es.emit('op', { seq: 15, client: S.client, kind: 'input', op: { t: 'up' } });
 assert.deepEqual(got, [['down', 'other']], 'its own passed over, one sent again applied once');
+// moves with no button held made while a post is on its way: only the last goes; ones with a button held all go
+{
+  S.input({ t: 'down', x: 0, y: 0 }); const n = P.posts.length;
+  S.input({ t: 'move', x: 1, y: 1 }); S.input({ t: 'move', x: 2, y: 2 }); S.input({ t: 'move', x: 3, y: 3, h: true }); S.input({ t: 'move', x: 4, y: 4, h: true });
+  S.input({ t: 'move', x: 5, y: 5 }); S.input({ t: 'move', x: 6, y: 6 });
+  await P.settle();
+  assert.deepEqual(P.posts.slice(n).flatMap(p => p.body.ops.map(o => o.op.x)), [2, 3, 4, 6]);
+  await P.settle();
+}
 // one missed (the connection dropped): the events opened again from the last applied, which the server replays from
 es.emit('op', { seq: 18, client: 'other', kind: 'input', op: { t: 'up' } });
 assert.equal(got.length, 1, 'not applied out of order');

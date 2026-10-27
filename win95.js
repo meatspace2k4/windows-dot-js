@@ -4543,7 +4543,8 @@ function logonChanged(o) {
 function drawPeers() {
   const S = window.W95Shared; if (!S || !window.W95HOST || !window.W95HOST.shared) return;
   const c = CUR.arrow;
-  for (const p of S.people()) {
+  for (const o of S.people()) {
+    const mine = peers.get(o.client), p = mine && mine.x != null ? { ...o, x: mine.x, y: mine.y } : o;   // (their input's position, as applied here, else the roster's)
     if (p.x == null || p.y == null) continue;
     if (c) ctx.drawImage(c.i, p.x - c.hx, p.y - c.hy);
     const label = p.user || 'Guest', tw = textW(label) + 6, tx = clamp(p.x + 12, 0, W - tw), ty = clamp(p.y + 18, 0, H - 17);
@@ -4860,10 +4861,7 @@ cv.addEventListener('pointerdown', e => {
 });
 cv.addEventListener('pointermove', e => {
   const [x, y] = pos(e); if (x !== mouse.x || y !== mouse.y) lastInput = performance.now(); mouse = { x, y };
-  if (!replaying && sharedNow()) {   // (to the others in the session: where it is, and, held down or now and then, the move)
-    sharedNow().pointer(x, y);
-    const t = performance.now(); if (cap || t - lastMoveSent >= 50) { lastMoveSent = t; shareInput({ t: 'move', x, y }); }
-  }
+  shareInput({ t: 'move', x, y, h: !!cap });   // (to the others in the session, each move as it happens)
   if (tbar.autohide && !cap) { if (y >= H - 2 || (tbar.shown > 0 && y >= barTop())) slideTaskbar(true); else if (!(menuSrc && menuSrc.kind === 'start')) slideTaskbar(false); }
   const na = !cap && !menus.length && !modal() ? nativeAt(x, y) : null;
   if (cap && cap.move) cap.move(x, y);
@@ -5059,7 +5057,7 @@ fs.on(e => emit('fs.' + e.op, { path: e.path, ...(e.path2 ? { path2: e.path2 } :
 // - input: what this person does goes to this machine at once, as it always does, and to the server, which numbers it
 //   with everyone's; every other machine applies it, in that order, through the same handlers as its own person's
 //   (`replaying` while it does: what it does is not sent again). A machine that missed some gets them again in order
-//   (shared.js catchUp). Pointer moves go while a button is held, else at most every 50 ms
+//   (shared.js catchUp). Every pointer move goes, as it happens
 // - alignment: the host (the first machine in the session, then the next) says what its windows are, with the number
 //   of the last input it applied; a machine that has applied the same inputs and whose person is not in the middle of
 //   something puts its windows where the host's are (moved, sized, minimized or maximized, the same one active) and
@@ -5068,7 +5066,7 @@ fs.on(e => emit('fs.' + e.op, { path: e.path, ...(e.path2 ? { path2: e.path2 } :
 //   `gate`); a machine not yet there (still opening the menu the last input opened, say) holds that input until it
 //   is, 2 seconds at most, and applies it then whatever its state: the input reaches the same Windows it did on the
 //   machine it came from. Only the machine that is behind waits; its own person's input never does
-let replaying = null, lastMoveSent = 0, lastOwnInput = 0, lastInputOther = false;
+let replaying = null, lastOwnInput = 0, lastInputOther = false;
 function shareInput(ev) {
   const S = sharedNow(); if (!S || replaying) return;
   lastOwnInput = performance.now(); lastInputOther = false; S.input(ev.t === 'move' ? ev : { ...ev, g: gate() });
@@ -5076,7 +5074,9 @@ function shareInput(ev) {
 const popupOpen = () => menus.length > 0 || windows.some(w => w.native && w.cls === '#32768');
 const gate = () => [windows.filter(w => w.title && w.title !== 'Program Manager').map(w => w.title).sort().join('|'), popupOpen() ? 1 : 0, active && active.title || ''].join('#');
 const inbox = []; let inboxSince = 0, inboxTimer = 0;
-function remoteArrived(ev) { inbox.push(ev); drainInbox(); }
+function remoteArrived(ev, who) { inbox.push({ ...ev, who }); drainInbox(); }
+// where each other person's pointer is, from their input as this machine applies it, and whether they hold a button
+const peers = new Map();
 function drainInbox() {
   clearTimeout(inboxTimer); inboxTimer = 0;
   // (a machine still starting, catching up with the others: nothing until its shell is up)
@@ -5093,13 +5093,24 @@ function drainInbox() {
 }
 function shareKey(t, e) { shareInput({ t, key: e.key, code: e.code, keyCode: e.keyCode, s: !!e.shiftKey, c: !!e.ctrlKey, a: !!e.altKey, m: !!e.metaKey }); }
 /** another machine's input, applied here as this machine's own person's would be */
+function peerAt(ev, held) {
+  const p = peers.get(ev.who) || { held: false }; p.x = ev.x; p.y = ev.y; if (held !== undefined) p.held = held; p.t = performance.now();
+  peers.set(ev.who, p); dirty(); return p;
+}
 function remoteInput(ev) {
   replaying = ev; lastInputOther = true;
   try {
     switch (ev.t) {
-      case 'down': pointer('pointerdown', ev.x, ev.y, ev.b); break;
-      case 'move': pointer('pointermove', ev.x, ev.y); break;
-      case 'up': pointer('pointerup', ev.x, ev.y, ev.b); break;
+      // (the machine has one mouse: another person's pointer moves it only to press, drag and let go; moving over
+      // the screen it is their pointer that moves, drawn over this one's (drawPeers), and this machine's stays with
+      // its own person's mouse, back there once they let go)
+      case 'down': peerAt(ev, true); pointer('pointerdown', ev.x, ev.y, ev.b); break;
+      case 'move': { const p = peerAt(ev); if (p.held) pointer('pointermove', ev.x, ev.y); break; }
+      case 'up': {
+        peerAt(ev, false); pointer('pointerup', ev.x, ev.y, ev.b);
+        if (mouse.x >= 0 && ![...peers.values()].some(p => p.held)) pointer('pointermove', mouse.x, mouse.y);
+        break;
+      }
       case 'kd': case 'ku': {
         const e = { key: ev.key, code: ev.code, keyCode: ev.keyCode, shiftKey: ev.s, ctrlKey: ev.c, altKey: ev.a, metaKey: ev.m, isComposing: false, preventDefault() {} };
         if (ev.t === 'kd') keyDown(e); else keyUp(e); break;
@@ -5151,7 +5162,7 @@ function alignTo(view) {
 }
 setInterval(shareTick, 250);
 if (sharedNow()) {
-  sharedNow().onInput(ev => remoteArrived(ev));
+  sharedNow().onInput((ev, who) => remoteArrived(ev, who));
   sharedNow().onView((view, seq) => { viewWanted = { view, seq }; });
 }
 

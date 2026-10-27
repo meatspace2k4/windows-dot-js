@@ -78,7 +78,11 @@
     if (quiet) return;
     if (kind !== 'input' && hostId === null) { held.push({ kind, op }); return; }
     if (!mineToSend(kind, op)) return;
-    outbox.push({ kind, op }); flush();
+    // (a pointer moving with no button held, while the last post is still on its way: only where it is now goes next)
+    const last = outbox[outbox.length - 1];
+    if (kind === 'input' && op.t === 'move' && !op.h && last && last.kind === 'input' && last.op.t === 'move' && !last.op.h) last.op = op;
+    else outbox.push({ kind, op });
+    flush();
   };
   const hostIs = id => {
     const was = hostId; hostId = id || null;
@@ -182,7 +186,7 @@
     const state = fetchState(); if (!state) return null;
     seq = state.seq || 0; screen = state.screen || null; owner = state.owner || null; joinedAt = state.now || seq;
     listen();
-    return { ...host(state, base), screen };
+    return host(state, base);
   };
   // ---- the session's screen: the one every machine in it has, so a point on one is the same point on every other's.
   // The first machine's (its page's size) when the session has none yet
