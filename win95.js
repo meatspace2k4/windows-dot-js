@@ -2890,7 +2890,8 @@ function infParse(text) {
   const strings = {};
   for (const l of sec.strings || []) { const m = l.match(/^\s*([^=;\s][^=]*?)\s*=\s*(.*)$/); if (m) strings[m[1].toLowerCase()] = fields(m[2])[0]; }
   const dirs = { 10: WINDIR, 11: WINDIR + '\\SYSTEM', 17: WINDIR + '\\INF', 18: WINDIR + '\\HELP', 20: WINDIR + '\\FONTS', 24: 'C:\\', 25: WINDIR, 30: 'C:\\' };
-  const subst = s => s.replace(/%([^%]*)%/g, (m, k) => (k === '' ? '%' : dirs[k] ?? strings[k.toLowerCase()] ?? m));
+  // (the root, 24 and 30, followed by the INF's own \: one, as Setup joins them)
+  const subst = s => s.replace(/%([^%]*)%(\\?)/g, (m, k, bs) => (k === '' ? '%' + bs : k === '24' || k === '30' ? 'C:\\' : (dirs[k] ?? strings[k.toLowerCase()] ?? `%${k}%`) + bs));
   return { sec, fields, subst };
 }
 function infAddReg(text, section, hkr) {
@@ -2930,14 +2931,37 @@ function setupStartMenu() {
   // the accessories' sections: each <name>.links whose links are all to programs the system has (its own, or an optional
   // component's Setup installed: the Games, msdos.js), with each link's name and its folder (its group's, from the
   // section's progman.groups lines: Accessories, Accessories\Games). A line naming no program removes an old link
-  const accessories = [], DOS0 = window.W95DOS, has = f => !!((S.programs || {})[f] || (DOS0 && DOS0.windows && DOS0.windows[f]));
-  if (applets) for (const [name, lines] of Object.entries(applets.sec)) {
-    if (!/\.links$/.test(name) || /remove/.test(name)) continue;
-    const fields = lines.map(l => applets.fields(l)).filter(f => /^setup\.ini$/i.test(f[0]) && f[1]), groups = {};
-    for (const f of fields) if (/^progman\.groups$/i.test(f[1]) && f[3]) { const [g, d] = applets.subst(f[3]).split('='); if (d) groups[g.toLowerCase()] = d; }
-    const links = fields.filter(f => !/^progman\.groups$/i.test(f[1]) && f[3]).map(f => ({ k: applets.fields(applets.subst(f[3])), group: f[1].toLowerCase() }))
-      .filter(l => l.k[1]).map(l => Object.assign(l.k, { folder: groups[l.group] || 'Accessories' }));
-    if (links.length && links.every(k => has((k[1] || '').toUpperCase()))) accessories.push({ name, links });
+  // (and the links of each Typical component installed from its own INF, its UpdateInis sections: WordPad's in
+  // WORDPAD.INF, Phone Dialer's Dialer.Inis. A link's program is the system's, or a file on the disk: by its path, or
+  // in the Windows folder)
+  const accessories = [], DOS0 = window.W95DOS;
+  const has = f => !!((S.programs || {})[f] || (DOS0 && DOS0.windows && DOS0.windows[f])) || (/\\/.test(f) ? fs.exists(f) : !!f && fs.exists(join(WINDIR, f)));
+  // (a section another component of APPLETS.INF makes its links with only when that component is set up: one a Typical
+  // install chooses, InstallType bit 2, or one installed, the Games; not the Windows 3.1 user interface's, Program
+  // Manager in StartUp)
+  const owner = {};
+  if (applets) for (const [comp, lines] of Object.entries(applets.sec)) {
+    const kv = Object.fromEntries(lines.map(l => l.split(';')[0]).filter(l => l.includes('=')).map(l => [l.slice(0, l.indexOf('=')).trim().toLowerCase(), l.slice(l.indexOf('=') + 1).trim()]));
+    for (const s of (kv.updateinis || '').split(',').map(x => x.trim().toLowerCase()).filter(Boolean)) owner[s] = { comp, type: parseInt(kv.installtype, 10) };
+  }
+  // (and Win95UI: the Windows 95 user interface, Setup's own choice)
+  const chosen = o => !o || o.type & 2 || o.comp === 'win95ui' || (v => v && W95FS.decode(v.data).startsWith('1'))(W95Win32.regGet(`hklm\\software\\microsoft\\windows\\currentversion\\setup\\optionalcomponents\\${o.comp}`, 'Installed'));
+  const sources = applets ? Object.keys(applets.sec).filter(n => /\.links$/.test(n) && !/remove/.test(n) && chosen(owner[n])).map(name => ({ inf: applets, name })) : [];
+  for (const c of (DOS0 && DOS0.components) || []) {
+    const text = DOS0.infs[c.inf]; if (!text) continue;
+    const p = infParse(text), body = (p.sec[c.name.toLowerCase()] || []).map(l => l.split(';')[0]).find(l => /^\s*updateinis\s*=/i.test(l));
+    for (const name of body ? body.slice(body.indexOf('=') + 1).split(',').map(x => x.trim().toLowerCase()).filter(Boolean) : []) if (!sources.some(s => s.name === name)) sources.push({ inf: p, name });
+  }
+  for (const { inf: src, name } of sources) {
+    const fields = (src.sec[name] || []).map(l => src.fields(l)).filter(f => /^setup\.ini$/i.test(f[0]) && f[1]), groups = {};
+    for (const f of fields) if (/^progman\.groups$/i.test(f[1]) && f[3]) { const [g, d] = src.subst(f[3]).split('='); if (d) groups[g.toLowerCase()] = d; }
+    const all = fields.filter(f => !/^progman\.groups$/i.test(f[1]) && f[3]).map(f => ({ k: src.fields(src.subst(f[3])), group: f[1].toLowerCase() }))
+      .map(l => Object.assign(l.k, { folder: groups[l.group] || 'Accessories' }));
+    // (a line naming no program deletes that link: Win95UI's, Program Manager's in StartUp; one there yet is work to do)
+    const links = all.filter(k => k[1]), gone = all.filter(k => !k[1] && k[0]);
+    // (a link's command: its program's path, which may have spaces in it, else its first word)
+    const prog = c => (has(c.toUpperCase()) ? c : c.split(/\s/)[0]).toUpperCase();
+    if (links.every(k => has(prog(k[1] || '')))) accessories.push({ inf: src, name, links, gone });
   }
   // (the Programs folder GRPCONV writes its links in: the one the user's Shell Folders name, a profile's where the user
   // has one; Setup's item was armed at every start while the links were in a profile's and this looked in the default)
@@ -2953,7 +2977,7 @@ function setupStartMenu() {
   // Volume Control and MMOPT.INF's CD Player, each whose program the system has)
   const media = [['MOTOWN.INF', 'MPlay.links', 'MPLAYER.EXE', 'Media Player'], ['MOTOWN.INF', 'Rec.links', 'SNDREC32.EXE', 'Sound Recorder'],
     ['MOTOWN.INF', 'Vol.links', 'SNDVOL32.EXE', 'Volume Control'], ['MMOPT.INF', 'CDPlayer.inis', 'CDPLAYER.EXE', 'CD Player']].filter(([inf, , file]) => infs[inf] && (S.programs || {})[file]);
-  const missing = accessories.some(a => a.links.some(k => !fs.exists(join(progs, k.folder, k[0] + '.lnk')))) || (claude && !fs.exists(join(progs, 'Claude', 'Claude.lnk')))
+  const missing = accessories.some(a => a.links.some(k => !fs.exists(join(progs, k.folder, k[0] + '.lnk'))) || a.gone.some(k => fs.exists(join(progs, k.folder, k[0] + '.lnk')))) || (claude && !fs.exists(join(progs, 'Claude', 'Claude.lnk')))
     || media.some(m => !fs.exists(join(progs, 'Accessories', 'Multimedia', m[3] + '.lnk')))
     || (session && !fs.exists(join(tools, 'Join Session.lnk'))) || (clip && !fs.exists(join(progs, 'Accessories', 'Clipboard Viewer.lnk')));
   if (cur && cur[0] === 0x4c && cur[1] === 0 && !missing) return;   // ('L': a shell link's header)
@@ -2970,7 +2994,7 @@ function setupStartMenu() {
     }
   };
   add(infParse(inf), ['winbase.inis', 'winother.links']);
-  if (applets) add(applets, accessories.map(a => a.name));
+  for (const a of accessories) add(a.inf, [a.name]);
   if (clip) add(clip, ['clipbrd.links']);
   for (const [inf, sec] of media) add(infParse(infs[inf]), [sec.toLowerCase()]);   // (infParse keys its sections in lower case)
   if (claude) { out.set('progman.groups', out.get('progman.groups') || { name: 'progman.groups', lines: [] }); out.get('progman.groups').lines.push('group90=Claude'); out.set('group90', { name: 'group90', lines: ['"Claude", CLAUDE.EXE'] }); }
@@ -3400,6 +3424,21 @@ function installPrograms() {
   if (DOS && DOS.help) { fs.mkdir(join(WINDIR, 'HELP'), { recursive: true }); for (const [n, d] of Object.entries(DOS.help)) put(join(WINDIR, 'HELP', n), d); }
   if (DOS && DOS.infs && DOS.infs['CLIP.INF']) W95Win32.regSet('hklm\\software\\microsoft\\windows\\currentversion\\setup\\optionalcomponents\\clipbrd', 'Installed', { type: 1, data: W95FS.encode('1\0') });
   if (DOS && DOS.windows && DOS.windows['SOL.EXE']) W95Win32.regSet('hklm\\software\\microsoft\\windows\\currentversion\\setup\\optionalcomponents\\games', 'Installed', { type: 1, data: W95FS.encode('1\0') });   // (APPLETS.INF wingames.install.reg)
+  // the components a Typical install sets up (Paint, WordPad, HyperTerminal, Phone Dialer, Disk Defragmenter, the
+  // document templates, Accessibility): their files where their INF's CopyFiles put them (tools/build_dos.py), then,
+  // once, as Setup installs one, its INF's AddReg and its UpdateInis lines for WIN.INI (its links: setupStartMenu)
+  // the DLLs those programs need that the system bundle does not carry (their imports' closure: MFC, TAPI), where Setup
+  // puts each (tools/build_dos.py); a file the bundle wrote is kept
+  for (const [path, d] of (DOS && DOS.deps) || []) { fs.mkdir(dirname(path), { recursive: true }); put(path, d); }
+  for (const c of (DOS && DOS.components) || []) {
+    const inf = DOS.infs[c.inf]; if (!inf) continue;
+    let fresh = false;
+    for (const [path, d] of c.files) { if (!fs.exists(path)) fresh = true; fs.mkdir(dirname(path), { recursive: true }); put(path, d); }
+    if (!fresh) continue;
+    const body = Object.fromEntries((infParse(inf).sec[c.name.toLowerCase()] || []).map(l => l.split(';')[0]).filter(l => l.includes('=')).map(l => [l.slice(0, l.indexOf('=')).trim().toLowerCase(), l.slice(l.indexOf('=') + 1).trim()]));
+    for (const s of (body.addreg || '').split(',').map(x => x.trim()).filter(Boolean)) infAddReg(inf, s);
+    for (const s of (body.updateinis || '').split(',').map(x => x.trim()).filter(Boolean)) infUpdateInis(inf, s, /^win\.ini$/i);
+  }
 }
 class NativeWin extends Win {
   constructor(app, n) {
@@ -3634,7 +3673,7 @@ class RemoteApp extends NativeApp {
       case 'audio': if (window.W95Sound) W95Sound.play(this, m.rate, m.l, m.r); return;
       case 'regop': W95Win32.regApply(m.o); logonChanged(m.o); return;
       case 'closeProgram': closeProgram(this); return;
-      case 'fault': faultDialog(this.progName(), m.f, () => this.exited(-1)); return;
+      case 'fault': this.stopped = true; faultDialog(this.progName(), m.f, () => this.exited(-1)); dirty(); return;   // (stopped: the mouse is the page's, pointerApp)
       case 'faultDialog': faultDialog(this.progName(), m.f); return;
       case 'pcFault':
         emit('program.exit', { path: m.path, code: -1, why: m.why });
@@ -4786,7 +4825,9 @@ function drawCursor(name) {
 const SIZE_CUR = { n: 'sizens', s: 'sizens', e: 'sizewe', w: 'sizewe', nw: 'sizenwse', se: 'sizenwse', ne: 'sizenesw', sw: 'sizenesw' };
 /** the machine the mouse goes to at a point: the one dragging (the shell's capture for it), else the one whose window is
  *  there when no shell menu or dialog has the mouse (as pointermove routes it) */
-const pointerApp = (x, y) => (cap ? cap.native || null : !menus.length && !modal() ? nativeAt(x, y) : null);
+// (a machine stopped by a fault, its fault dialog up, moves no pointer: the page's own is drawn over it, not the
+// machine's frozen one where the mouse last left it)
+const pointerApp = (x, y) => { const a = cap ? cap.native || null : !menus.length && !modal() ? nativeAt(x, y) : null; return a && !a.stopped ? a : null; };
 function cursorAt(x, y) {
   if (drag) return drag.cursor;
   if (pointerApp(x, y)) return 'none';   // one pointer: where a machine has the mouse, the cursor is its USER's, as its display adapter has it
@@ -4913,6 +4954,10 @@ cv.addEventListener('pointermove', e => {
   shareInput({ t: 'move', x, y });   // (where it is, to the others in the session, each move as it happens)
   if (tbar.autohide && !cap) { if (y >= H - 2 || (tbar.shown > 0 && y >= barTop())) slideTaskbar(true); else if (!(menuSrc && menuSrc.kind === 'start')) slideTaskbar(false); }
   const na = !cap && !menus.length && !modal() ? nativeAt(x, y) : null;
+  // (over one of the page's own windows, a fault dialog: the system's machine is told where the pointer is all the
+  // same, a move only, so its pointer is there as the mouse leaves the dialog; untold, it showed at the last place the
+  // mouse had been on its screen and jumped from there)
+  if (!na && !cap) { const m = monApp(); if (m && !m.stopped) m.pointer('move', x, y); }
   if (cap && cap.move) cap.move(x, y);
   else if (na) na.pointer('move', x, y);
   else if (menus.length) {

@@ -131,6 +131,19 @@ class Process {
       }
     }
     const rec = { name, base, pref, size: dv.getUint32(opt + 56, true), meta, rsrc: dir(2), exports: new Map(), run: null, deps: [] };
+    // a DLL Windows 95 loads below 2 GB, in a process's private arena (OLE32, SHELL32, MFC: not the shared arena's,
+    // KERNEL32, USER32, GDI32, COMCTL32, based at 80000000h and up): its writable sections are each process's own,
+    // but a section marked shared (IMAGE_SCN_MEM_SHARED). One copy for every process, OLE32's "registered" state from
+    // Explorer's OleInitialize was Paint's too, while USER keeps the class it registered as Explorer's: Paint's
+    // OleInitialize made no class, its window could not be made, and Paint said OLE 2.0 was unable to start
+    if (name !== 'EXE' && pref < 0x80000000) {
+      const ranges = [];
+      for (let i = 0; i < nsec; i++) {
+        const o = shdr + 40 * i, ch = dv.getUint32(o + 36, true), vs = dv.getUint32(o + 8, true) || dv.getUint32(o + 16, true), va = dv.getUint32(o + 12, true);
+        if (ch & 0x80000000 && !(ch & 0x10000000) && vs) ranges.push([base + va, base + va + vs]);   // (MEM_WRITE, not MEM_SHARED)
+      }
+      if (ranges.length) rec.priv = { ranges, init: null, cur: null, bufs: new Map() };
+    }
     this.modules.push(rec); this.byName.set(name, rec);
     const ex = dir(0);
     if (ex) {
@@ -142,6 +155,13 @@ class Process {
       const dll = this.readA(base + this.r32(d + 12)).toUpperCase().replace(/\.DLL$/, '');
       const iat = base + this.r32(d + 16); let lut = base + (this.r32(d) || this.r32(d + 16));
       const native = this.loadDll(dll); if (native && !rec.deps.includes(native)) rec.deps.push(native);
+      // (a DLL that is neither a module here, one implemented here, nor a file: the image is not loaded, as Windows'
+      // loader refuses it, "Cannot find ... (or one of its components)"; bound to dead thunks, the program ran into
+      // them and its fault's handling stopped the machine)
+      if (!native && !API[dll] && !this.peResolve) {   // (a ring-0 image's imports: vmm.js PELDR's own)
+        this.modules = this.modules.filter(m => m !== rec); if (this.byName.get(name) === rec) this.byName.delete(name);
+        throw Object.assign(new Error(`${name}: ${dll}.DLL is not found`), { missingDll: dll + '.DLL' });
+      }
       if (!native && STAND_IN.has(dll)) (this.jsImported || (this.jsImported = new Set())).add(dll);   // (a stand-in for a DLL file that an image imports is loaded: GetModuleHandle finds it)
       for (let k = 0; ; k++, lut += 4) {
         const v = this.r32(lut); if (!v) break;
@@ -150,6 +170,7 @@ class Process {
         this.w32(iat + 4 * k, addr || this.thunkFor(dll, nm));
       }
     }
+    if (rec.priv) rec.priv.init = rec.priv.ranges.map(([lo, hi]) => this.u8.slice(lo, hi));   // (as a process that attaches first finds it)
     // (an image nothing was recompiled for, a program the system bundle does not carry: no module, its code translated
     // as it runs, dyn.js, as the dispatcher sends any address outside a translated module's text there)
     if (module) {
@@ -162,10 +183,51 @@ class Process {
   }
   loadDll(name) {
     if (this.byName.has(name)) return this.byName.get(name);
-    const d = this.dlls.get(name); if (!d) return null;
+    const d = this.dlls.get(name) || this.diskDll(name); if (!d) return null;
     const m = this.loadImage(d.file, d.module, d.meta, name);
     if (m && this.onDllLoad) this.onDllLoad(name, m);   // (a module watched as it comes: a shared session's intents, ne16.js)
     return m;
+  }
+  /** where each module is in memory: a PE image from its base for its size; a 16-bit module, each of its segments (its
+   *  record has no size: an image's room was looked for as if USER's code at 1A00000h were free, and a program mapped
+   *  there wrote over it) */
+  moduleSpans() {
+    const out = [];
+    for (const m of this.modules) {
+      if (m.segs) { for (const s of m.segs) out.push([s.base, s.base + Math.max(s.alloc || 0, s.len || 0, 1)]); }
+      else if (m.size) out.push([m.base, m.base + m.size]);
+    }
+    return out;
+  }
+  /** room for an image of `size` bytes in the arena below the heap (400000h-2000000h): at `pref` when nothing is there,
+   *  else, for one that can be relocated, the first 64 KiB boundary with room; 0 when there is none */
+  imageRoom(pref, size, relocatable) {
+    const spans = this.moduleSpans(), free = a => a >= 0x400000 && a + size <= 0x02000000 && !spans.some(([lo, hi]) => a < hi && lo < a + size);
+    if (free(pref)) return pref;
+    if (relocatable) for (let a = 0x00620000; a + size <= 0x02000000; a += 0x10000) if (free(a)) return a;
+    return 0;
+  }
+  /** a DLL an image imports or LoadLibrary names that the system bundle does not carry, from its file, as Windows'
+   *  loader finds it: the program's folder, SYSTEM, the Windows folder. Mapped where there is room, its code translated
+   *  as it runs (dyn.js); null when there is no such file or it is no Win32 DLL. (Bound to no DLL, Paint's imports of
+   *  MFC30.DLL were dead thunks: the first call faulted, and its handling ran garbage until the machine stopped) */
+  diskDll(name) {
+    // (one this system implements, the personality's KERNEL32, ADVAPI32, ...: that one, never its file)
+    if (!this.fs || API[name] || STAND_IN.has(name) || !/^[A-Z0-9_$~!#%&'()@^`{}-]+(\.[A-Z0-9]+)?$/i.test(name)) return null;
+    const file = /\./.test(name) ? name : name + '.DLL';
+    const dirs = [...(this.loadDirs || []), 'C:\\WINDOWS\\SYSTEM', 'C:\\WINDOWS'];
+    let f = null;
+    for (const d of dirs) { try { f = this.fs.readFile(d + '\\' + file); break; } catch (_) { /* not there */ } }
+    if (!f || f.length < 0x40 || f[0] !== 0x4d || f[1] !== 0x5a) return null;
+    const dv = new DataView(f.buffer, f.byteOffset, f.byteLength), pe = dv.getUint32(0x3c, true);
+    if (pe + 0xf8 > f.length || dv.getUint32(pe, true) !== 0x4550 || !(dv.getUint16(pe + 22, true) & 0x2000)) return null;   // (IMAGE_FILE_DLL)
+    const opt = pe + 24, pref = dv.getUint32(opt + 28, true), size = dv.getUint32(opt + 56, true), ep = dv.getUint32(opt + 16, true);
+    const relocatable = !(dv.getUint16(pe + 22, true) & 1) && dv.getUint32(opt + 96 + 5 * 8 + 4, true) > 0;
+    const base = this.imageRoom(pref, size, relocatable);
+    if (!base) { console.warn(`[win32] ${file}: no room for its image at ${pref.toString(16)}`); return null; }
+    const d = { file: f, module: null, meta: { base, entry: ep ? base + ep : 0, textLo: 0, textHi: 0, blocks: [], size, dynamic: true } };
+    this.dlls.set(name, d);
+    return d;
   }
   /** a module handle as the running process sees it: its program at the base the program's header prefers (where
    *  every Windows 95 process has its own, in its private arena), which here may be elsewhere in the shared space */
@@ -213,12 +275,31 @@ class Process {
   }
   attach(m) {
     const pc = this.pc, done = pc.attached || (pc.attached = new Set());
-    if (done.has(m) || !m.meta || !m.meta.entry || m.clock) return;
+    if (done.has(m) || !m.meta || m.clock) return;
     done.add(m);
+    // (its data as a new process gets it, a DLL of the private arena's: as loaded, the attached ones' put by)
+    const v = m.priv;
+    if (v && v.init) {
+      if (v.cur === null) v.cur = pc;
+      else if (v.cur !== pc) { if (v.cur !== GONE) v.bufs.set(v.cur, v.ranges.map(([lo, hi]) => this.u8.slice(lo, hi))); v.ranges.forEach(([lo], i) => this.u8.set(v.init[i], lo)); v.cur = pc; }
+    }
+    if (!m.meta.entry) return;
     this.call(m.meta.entry, [m.base, 1, 0]);
     const ole = m.name === 'SHELL32' && m.exports.get('#151');
     if (ole) { this.shellNotifyList(m); this.call(ole, [2]); }
   }
+  /** the private-arena DLLs' data of process `pc` (the system's when null) in place, as the thread that runs is that
+   *  process's (ne16.js imgUse) */
+  dllUse(pc) {
+    const key = pc || this.pc0 || (this.pc0 = { pid: 0x50 });
+    for (const m of this.modules || []) {
+      const v = m.priv; if (!v || !v.init || v.cur === key || !v.bufs.has(key)) continue;
+      if (v.cur !== GONE && v.cur !== null) v.bufs.set(v.cur, v.ranges.map(([lo, hi]) => this.u8.slice(lo, hi)));
+      const mine = v.bufs.get(key); v.bufs.delete(key); v.ranges.forEach(([lo], i) => this.u8.set(mine[i], lo)); v.cur = key;
+    }
+  }
+  /** a process's end: its copies of the DLLs' data go */
+  dllForget(pc) { for (const m of this.modules || []) { const v = m.priv; if (!v) continue; v.bufs.delete(pc); if (v.cur === pc) v.cur = GONE; } }
   /** SHELL32's change notification clients (a DSA of 0x18-byte entries in its shared data), which SHLoadOLE walks to
    *  tell each that OLE is loaded. On Windows 95 Explorer's registration made it before any process loads OLE; here
    *  each process has its own copy of SHELL32's data, so a process gets the empty list Explorer's own would hold */
@@ -816,6 +897,7 @@ const API = {};
 // driver GDI32's pixel-format calls look up with GetModuleHandle); the personality's own (KERNEL32, ADVAPI32, ...) are
 // not found that way, as before
 const STAND_IN = new Set();
+const GONE = { gone: true };   // (a private-arena DLL's data in place belonged to a process that has ended: Process.dllForget)
 const def = (dll, name, n, fn) => { (API[dll] = API[dll] || {})[name] = [n, fn]; };
 const TRUE = 1, FALSE = 0;
 
@@ -956,8 +1038,14 @@ function sehDispatch(p, code, eip, params, fault, flags = 0) {
   // takes it: what the frames before it did not handle is not handled
   const tib = p.cpu.fs.value, end = p.mem.buffer.byteLength, top = p.r32(tib + 4), limit = p.r32(tib + 8);
   const onStack = f => f + 8 <= end && !(top > limit && (f < limit || f + 8 > top));
-  for (let f = p.r32(tib); f !== SEH_END && f && onStack(f); f = p.r32(f)) {
-    const r = sehCall(p, p.r32(f + 4), [rec, f, ctx, 0], sp);
+  // (an exception raised inside a handler, nested: its search starts above the frame whose handler is running, as
+  // KERNEL32's dispatcher skips the frames it is already in, EXCEPTION_NESTED_CALL. Searched from the chain's head, a
+  // handler that faulted was asked about its own fault, and again, until the page's stack ran out)
+  const active = p.sehActive || (p.sehActive = []), nested = active.length ? active[active.length - 1] : 0;
+  if (nested) p.w32(rec + 4, (flags & 1) | 0x10);
+  for (let f = nested ? p.r32(nested) : p.r32(tib); f !== SEH_END && f && onStack(f); f = p.r32(f)) {
+    active.push(f);
+    let r; try { r = sehCall(p, p.r32(f + 4), [rec, f, ctx, 0], sp); } finally { active.pop(); }
     if (r === 'escaped') return LAYOUT.SENTINEL;
     if (r === 0) {   // continue execution where the context says
       for (const [rg, o] of Object.entries(CTX)) p.reg(rg, p.r32(ctx + o));
@@ -1178,6 +1266,20 @@ def('KERNEL32', 'GetStringTypeA', 5, function (lc, type, src, n, out) {
   return 1;
 });
 def('KERNEL32', 'GetStringTypeW', 4, () => 0);
+// (with the locale first, as GetStringTypeA takes it: the same; the wide one's text in UTF-16)
+def('KERNEL32', 'GetStringTypeExA', 5, function (lc, type, src, n, out) { return API.KERNEL32.GetStringTypeA[1].call(this, lc, type, src, n, out); });
+def('KERNEL32', 'GetStringTypeExW', 5, function (lc, type, src, n, out) {
+  if (type !== 1) { this.lastError = 120; return 0; }   // (CT_CTYPE1 only)
+  const len = n === 0xffffffff || n === -1 ? (this.readW(src) || '').length + 1 : n;
+  for (let i = 0; i < len; i++) {
+    const c = String.fromCharCode(this.r16(src + 2 * i)), code = c.charCodeAt(0); let v = 0;
+    if (c !== c.toLowerCase()) v |= 0x101; if (c !== c.toUpperCase()) v |= 0x102; if (/[0-9]/.test(c)) v |= 0x84; if (/[a-f]/i.test(c)) v |= 0x80;
+    if (/\s/.test(c)) v |= 8; if (c === ' ' || c === '\t') v |= 0x40; if (code < 32) v |= 0x20;
+    if (!v && code > 32 && code !== 127) v |= 0x10;
+    this.w16(out + 2 * i, v);
+  }
+  return 1;
+});
 // case mapping (LCMAP_LOWERCASE 100h, LCMAP_UPPERCASE 200h); a sort key (400h) is the upper-cased text; a zero
 // output size asks for the size needed
 def('KERNEL32', 'LCMapStringA', 6, function (lc, fl, src, n, dst, max) {
@@ -1291,6 +1393,19 @@ def('KERNEL32', 'GlobalReAlloc', 3, function (p, n) { return this.realloc(p, n);
 def('KERNEL32', 'lstrlenW', 1, function (p) { return p ? this.readW(p).length : 0; });
 def('KERNEL32', 'lstrcpyW', 2, function (d, s) { const t = this.readW(s) || ''; for (let i = 0; i <= t.length; i++) this.w16(d + 2 * i, i < t.length ? t.charCodeAt(i) : 0); return d; });
 def('KERNEL32', 'GetUserDefaultLCID', 0, () => 0x409);
+def('KERNEL32', 'GetUserDefaultLangID', 0, () => 0x409);
+// the date and time formats of English (United States), each given to the callback until it answers FALSE, as
+// KERNEL32's EnumDateFormatsA (DATE_SHORTDATE 1, DATE_LONGDATE 2) and EnumTimeFormatsA list them
+const DATE_FORMATS = { 1: ['M/d/yy', 'M/d/yyyy', 'MM/dd/yy', 'MM/dd/yyyy', 'yy/MM/dd', 'dd-MMM-yy'], 2: ['dddd, MMMM dd, yyyy', 'MMMM dd, yyyy', 'dddd, dd MMMM, yyyy', 'dd MMMM, yyyy'] };
+const TIME_FORMATS = ['h:mm:ss tt', 'hh:mm:ss tt', 'H:mm:ss', 'HH:mm:ss'];
+function enumFormats(p, proc, list) {
+  if (!proc || !list) { p.lastError = 87; return 0; }
+  const buf = p.alloc(64);
+  try { for (const f of list) { p.writeA(buf, f); if (!p.call(proc, [buf])) break; } } finally { p.free(buf); }
+  return 1;
+}
+def('KERNEL32', 'EnumDateFormatsA', 3, function (proc, lc, flags) { return enumFormats(this, proc, DATE_FORMATS[flags & 3]); });
+def('KERNEL32', 'EnumTimeFormatsA', 3, function (proc) { return enumFormats(this, proc, TIME_FORMATS); });
 def('KERNEL32', 'GetSystemDefaultLCID', 0, () => 0x409);
 def('KERNEL32', 'IsValidCodePage', 1, cp => (cp === 1252 || cp === 437 ? 1 : 0));
 def('KERNEL32', 'GetLocaleInfoW', 4, () => 0);
@@ -1392,6 +1507,38 @@ def('KERNEL32', 'SetCommTimeouts', 2, commCall(11, 1));
 def('KERNEL32', 'TransmitCommChar', 2, commCall(12, 1));
 def('KERNEL32', 'GetCommModemStatus', 2, commCall(14, 1));
 def('KERNEL32', 'ClearCommError', 3, commCall(17, 2));
+def('KERNEL32', 'WaitCommEvent', 3, commCall(13, 2));   // (VCOMM's service 13: the mask and the OVERLAPPED)
+// (a break: EscapeCommFunction's SETBREAK 8 and CLRBREAK 9, as KERNEL32's SetCommBreak and ClearCommBreak make it)
+def('KERNEL32', 'SetCommBreak', 1, function (h) { return API.KERNEL32.EscapeCommFunction[1].call(this, h, 8); });
+def('KERNEL32', 'ClearCommBreak', 1, function (h) { return API.KERNEL32.EscapeCommFunction[1].call(this, h, 9); });
+// a port's COMMCONFIG (dwSize, wVersion 1, its DCB at 8, dwProviderSubType PST_RS232 1, no provider data: 52 bytes) from
+// its state, and its state from one
+const CC_SIZE = 52;
+def('KERNEL32', 'GetCommConfig', 3, function (h, cc, pn) {
+  if (!commOf(this, h)) { this.lastError = 6; return 0; }
+  const have = pn ? this.r32(pn) : 0; if (pn) this.w32(pn, CC_SIZE);
+  if (!cc || have < CC_SIZE) { this.lastError = 122; return 0; }   // ERROR_INSUFFICIENT_BUFFER: the size it needs
+  this.u8.fill(0, cc, cc + CC_SIZE); this.w32(cc, CC_SIZE); this.w16(cc + 4, 1); this.w32(cc + 8, 28);
+  if (!API.KERNEL32.GetCommState[1].call(this, h, cc + 8)) return 0;
+  this.w32(cc + 36, 1); return 1;
+});
+def('KERNEL32', 'SetCommConfig', 3, function (h, cc) { return cc ? API.KERNEL32.SetCommState[1].call(this, h, cc + 8) : 0; });
+// the port's settings dialog: its provider's, the serial port's SERIALUI.DLL (drvCommConfigDialog), as KERNEL32 finds
+// it for a port of class Ports
+def('KERNEL32', 'CommConfigDialogA', 3, function (name, hwnd, cc) {
+  const ui = this.loadDll('SERIALUI'), fn = ui && ui.exports.get('drvCommConfigDialog');
+  if (!fn) { this.lastError = 2; return 0; }
+  this.runPendingInits(); for (const m of this.importClosure(ui)) this.attach(m);
+  const r = this.call(fn, [name, hwnd, cc]); this.lastError = r; return r ? 0 : 1;   // (it answers an error code)
+});
+// an overlapped operation's result: the port's and the files' operations here finish before their call returns, so
+// it is the OVERLAPPED's (Internal, its status; InternalHigh, the bytes)
+def('KERNEL32', 'GetOverlappedResult', 4, function (h, ov, pn) {
+  if (!ov) { this.lastError = 87; return 0; }
+  if (pn) this.w32(pn, this.r32(ov + 4));
+  const st = this.r32(ov) >>> 0; if (st && st !== 0x103) { this.lastError = st; return 0; }
+  return 1;
+});
 def('KERNEL32', 'CreateFileA', 7, function (name, access, share, sa, disp, flags) {
   const path = this.readA(name); const write = !!(access & 0x40000000), read = !!(access & 0x80000000) || !write;
   const cm = COMM_NAME.exec(path || '');
@@ -1578,7 +1725,16 @@ def('KERNEL32', 'SetConsoleMode', 2, function (h, mode) { const o = conOf(this, 
 def('KERNEL32', 'WriteConsoleA', 5, function (h, buf, n, put) { const o = conOf(this, h); if (!o) return 0; conWrite(this, o, buf, n); if (put) this.w32(put, n); return 1; });
 def('KERNEL32', 'DuplicateHandle', 7, function (a, h, b, out) { if (out) this.w32(out, h); return 1; });
 def('KERNEL32', 'WaitForSingleObject', 2, () => 0);
-def('KERNEL32', 'GetExitCodeProcess', 2, () => 0);
+// a process's exit code: STILL_ACTIVE (103h) while it runs, else its code (a Win16 task's too); the process's own
+// pseudo-handle asks about itself. (It answered FALSE, and a caller polling for a child's end never saw it)
+def('KERNEL32', 'GetExitCodeProcess', 2, function (h, out) {
+  const o = (h >>> 0) === 0xffffffff ? { kind: 'process', pid: this.pc && this.pc.pid } : this.obj(h);
+  if (!o || o.kind !== 'process') { this.lastError = 6; return 0; }
+  let code;
+  if (o.task) code = o.task.state === 'done' ? (o.task.exitCode >>> 0) || 0 : 0x103;
+  else { const pc = this.procs && this.procs.get(o.pid); code = pc ? (pc.exitCode === null ? 0x103 : pc.exitCode >>> 0) : (this.exitCodes && this.exitCodes.get(o.pid)) || 0; }
+  if (out) this.w32(out, code); return 1;
+});
 // threads run where the scheduler for them is (a session on the native USER, ne16.js threads16); elsewhere there is
 // no second thread
 def('KERNEL32', 'CreateThread', 6, function (attr, stack, start, param, flags, ptid) {
@@ -1617,7 +1773,18 @@ def('KERNEL32', 'LoadModule', 2, function (name, parms) {
 def('KERNEL32', 'CreateProcessA', 10, function (app, cmd, pa, ta, inherit, flags, env, dir, si, pi) {
   const line = this.readA(cmd) || this.readA(app) || '', r = this.host.exec ? this.host.exec(app && cmd ? `"${this.readA(app)}" ${line.replace(/^\s*("[^"]*"|\S+)\s*/, '')}` : line, 1) : 2;
   if (typeof r !== 'object' && r <= 32) { this.lastError = r === 11 ? 193 : r; return 0; }
-  if (typeof r === 'number' || r.elsewhere) { if (pi) this.u8.fill(0, pi, pi + 16); return 1; }   // (a 16-bit program's task, or a second instance in a machine of its own: no handles here)
+  // a Windows 3.x program's task: a process of its own, as each Win16 task has its own process database on Windows 95,
+  // its handle signalled when the task ends (Explorer waits on it for each RunOnce program before its desktop: with
+  // no handle, TAPIINI's, it waited for good)
+  if (typeof r === 'number') {
+    const t = this.threadsById && [...this.threadsById.values()].reverse().find(x => x.task && x.task.hInst === r);
+    if (pi) {
+      this.u8.fill(0, pi, pi + 16);
+      if (t) { this.w32(pi, this.newHandle({ kind: 'process', task: t, pid: t.tdb })); this.w32(pi + 4, this.newHandle({ kind: 'thread', id: t.id })); this.w32(pi + 8, t.tdb); this.w32(pi + 12, t.id); }
+    }
+    return 1;
+  }
+  if (r.elsewhere) { if (pi) this.u8.fill(0, pi, pi + 16); return 1; }   // (a second instance in a machine of its own: no handles here)
   if (pi) { this.w32(pi, this.newHandle({ kind: 'process', pid: r.pid })); this.w32(pi + 4, this.newHandle({ kind: 'thread', id: r.main.id })); this.w32(pi + 8, r.pid); this.w32(pi + 12, r.main.id); }
   // it returns once the new process is loaded, as Windows 95's waits for its load-done event: its main thread has
   // attached its DLLs and USER has its per-process data (WaitForInputIdle, which callers ask next, reads it)
@@ -1794,6 +1961,45 @@ def('KERNEL32', 'GlobalAddAtomA', 1, function (s) {
 def('KERNEL32', 'GlobalDeleteAtom', 1, function (id) { { const r = userAtom(this, 269, [['w', id]]); if (r !== null) return r; } const t = atomsOf(this), a = t.byId.get(id); if (a && --a.refs <= 0) { t.byId.delete(id); t.byName.delete(a.name.toUpperCase()); } return 0; });
 def('KERNEL32', 'GlobalFindAtomA', 1, function (s) { { const r = userAtom(this, 270, [['l', segStr(this, s)]]); if (r !== null) return r; } const a = atomsOf(this).byName.get((this.readA(s) || '').toUpperCase()); return a ? a.id : 0; });
 def('KERNEL32', 'GlobalGetAtomNameA', 3, function (id, buf, n) { { const r = userAtom(this, 271, [['w', id], ['l', this.mapLS(buf)], ['w', Math.min(n, 0xffff)]]); if (r !== null) return r; } const a = atomsOf(this).byId.get(id); return a ? this.writeA(buf, a.name, n) : 0; });
+// WSOCK32's socket handles: a KERNEL32 handle it makes for each socket (CreateSocketHandle) and keeps its own data in
+// (SetHandleContext, GetHandleContext), as Windows 95's KERNEL32 serves them
+def('KERNEL32', 'CreateSocketHandle', 0, function () { return this.newHandle({ kind: 'socket', ctx: 0 }); });
+def('KERNEL32', 'SetHandleContext', 2, function (h, ctx) { const o = this.obj(h); if (!o) { this.lastError = 6; return 0; } o.ctx = ctx >>> 0; return 1; });
+def('KERNEL32', 'GetHandleContext', 1, function (h) { const o = this.obj(h); if (!o) { this.lastError = 6; return 0; } return o.ctx >>> 0 || 0; });
+// code written at run time is translated from its bytes as they are when it runs (dyn.js checks a block's bytes
+// before each run): nothing is cached that this would have to drop
+def('KERNEL32', 'FlushInstructionCache', 3, () => 1);
+// a 16-bit callback to 32-bit code, as a thunk DLL makes one (TAPI32's, for TAPI.DLL): a code segment of its own that
+// pops the far return address, pushes the 32-bit callback, pushes the return address back and jumps far to the 16-bit
+// finalizer, which calls the callback with it (as KERNEL32's AllocSLCallback builds it); its 16:16 address
+def('KERNEL32', 'AllocSLCallback', 2, function (finalizer, callback) {
+  const at = this.alloc(32), x = [0x66, 0x5a, 0x66, 0x68, callback & 0xff, callback >>> 8 & 0xff, callback >>> 16 & 0xff, callback >>> 24 & 0xff, 0x66, 0x52,
+    0xea, finalizer & 0xff, finalizer >>> 8 & 0xff, finalizer >>> 16 & 0xff, finalizer >>> 24 & 0xff];
+  this.u8.fill(0, at, at + 32); this.u8.set(x, at);
+  const sel = this.allocSels(at, 32, 0xfb00); (this.slCallbacks || (this.slCallbacks = new Map())).set(sel, at);
+  return (sel << 16) >>> 0;
+});
+def('KERNEL32', 'FreeSLCallback', 1, function (sp) {
+  const sel = sp >>> 16, m = this.slCallbacks, at = m && m.get(sel); if (!at) return 0;
+  m.delete(sel); this.freeSels(sel); this.free(at); return 1;
+});
+// local atoms: the process's own table (InitAtomTable sizes it; AddAtom makes it), as KERNEL32's are: an integer atom
+// (#n, or a value under C000h) is itself. HyperTerminal's AddAtomA was a dead import, its fault the system's end
+const localAtoms = p => { const pc = p.pc; return pc.atoms || (pc.atoms = { byName: new Map(), byId: new Map(), next: 0xc000 }); };
+const intAtom32 = (p, s) => (!(s >>> 16) ? s & 0xffff : /^#\d+$/.test(p.readA(s) || '') ? parseInt(p.readA(s).slice(1), 10) & 0xffff : null);
+def('KERNEL32', 'InitAtomTable', 1, function () { localAtoms(this); return 1; });
+def('KERNEL32', 'AddAtomA', 1, function (s) {
+  const i = intAtom32(this, s); if (i !== null) return i;
+  const t = localAtoms(this), name = (this.readA(s) || '').slice(0, 255), k = name.toUpperCase();
+  let a = t.byName.get(k); if (!a) { if (t.next > 0xffff) return 0; a = { id: t.next++, name, refs: 0 }; t.byName.set(k, a); t.byId.set(a.id, a); }
+  a.refs++; return a.id;
+});
+def('KERNEL32', 'FindAtomA', 1, function (s) { const i = intAtom32(this, s); if (i !== null) return i; const a = localAtoms(this).byName.get((this.readA(s) || '').toUpperCase()); return a ? a.id : 0; });
+def('KERNEL32', 'DeleteAtom', 1, function (id) { const t = localAtoms(this), a = t.byId.get(id); if (a && --a.refs <= 0) { t.byId.delete(id); t.byName.delete(a.name.toUpperCase()); } return 0; });
+def('KERNEL32', 'GetAtomNameA', 3, function (id, buf, n) {
+  if (id < 0xc000) return this.writeA(buf, '#' + id, n);
+  const a = localAtoms(this).byId.get(id); return a ? this.writeA(buf, a.name, n) : 0;
+});
 // KERNEL32's unnamed exports (by ordinal) that the shell uses
 def('KERNEL32', '#10', 2, function (s, d) { this.writeA(d, this.readA(s) || ''); return 1; });                                  // CharToOemA
 def('KERNEL32', '#11', 3, function (s, d, n) { this.u8.copyWithin(d, s, s + n); return 1; });                                   // CharToOemBuffA
@@ -1830,6 +2036,9 @@ def('ADVAPI32', 'GetUserNameA', 2, function (buf, pn) {
   this.writeA(buf, name); this.w32(pn, name.length + 1); return 1;
 });
 def('ADVAPI32', 'RegOpenKeyA', 3, function (hk, sub, out) { return regOpen.call(this, hk, sub, out, false); });
+// the Unicode registry calls Windows 95's ADVAPI32 does not implement: ERROR_CALL_NOT_IMPLEMENTED (120), on which a
+// program (OLEAUT32, WSOCK32) uses the ANSI ones
+for (const [n, k] of [['RegOpenKeyW', 3], ['RegCreateKeyW', 3], ['RegEnumKeyW', 4], ['RegQueryValueW', 4], ['RegQueryValueExW', 6], ['RegSetValueExW', 6]]) def('ADVAPI32', n, k, () => 120);
 def('ADVAPI32', 'RegOpenKeyExA', 5, function (hk, sub, opt, sam, out) { return regOpen.call(this, hk, sub, out, false); });
 def('ADVAPI32', 'RegCreateKeyA', 3, function (hk, sub, out) { return regOpen.call(this, hk, sub, out, true); });
 def('ADVAPI32', 'RegCreateKeyExA', 9, function (hk, sub, res, cls, opt, sam, sa, out, disp) {

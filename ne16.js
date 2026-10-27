@@ -189,6 +189,24 @@ P.loadNE = function (name, file, module, meta) {
   this.modules.push(rec); this.byName.set(name, rec); this.ne.set(name, rec);
   return rec;
 };
+/** a module's data segments as its file has them again (its relocations in them made again), its DGROUP at its first
+ *  size with no local heap yet: as a module freed and loaded again has them */
+P.reloadData16 = function (rec) {
+  const meta = rec.meta, u8 = this.u8, data = meta.segs.filter(sg => sg.flags & 1), n = rd.u32(rec.file, 0x3c);
+  for (const sg of data) { u8.fill(0, sg.base, sg.base + Math.max(sg.alloc, 1)); if (sg.len) u8.set(rec.file.subarray(sg.fileoff, sg.fileoff + sg.len), sg.base); }
+  const inData = lin => data.some(sg => lin >= sg.base && lin < sg.base + Math.max(sg.alloc, 1));
+  for (const [lin, size, val] of meta.fixups) if (inData(lin)) { if (size === 1) u8[lin] = val; else if (size === 2) this.w16(lin, val); else this.w32(lin, val); }
+  if (rec.relocSeg) for (const sg of data) rec.relocSeg(sg);   // (a module loaded from its file: its relocation records, made again)
+  if (rec.dgroup) {
+    const dg = meta.segs[meta.autodata - 1], init = Math.min(0x10000, ((dg.minalloc || 0x10000) + rd.u16(rec.file, n + 0x10) + taskStack(rd.u16(rec.file, n + 0x12)) + 15) & ~15);
+    const g = this.ghandles.get(rec.dgroup | 1); if (g) g.size = init;
+    this.w32(L.LDT + (rec.dgroup & 0xfff8) + 4, init - 1);
+    if (this.lheaps) this.lheaps.delete(rec.dgroup | 1);
+    // (and its atoms, kept for a segment with no local heap: Minesweeper's "Minesweeper" outlived its task, and its
+    // next start found it, took itself for a second instance and quit)
+    if (this.atoms) this.atoms.delete(rec.dgroup | 1);
+  }
+};
 /** run a DLL's LibEntry the way the Win16 loader does: DS = DGROUP, DI = hInstance, CX = heap size, ES:SI = command line */
 P.initNE = function (rec) {
   const m = rec.meta; if (!m.entry[0]) return 1;
@@ -381,8 +399,10 @@ P.loadNEDynamic = function (key, file) {
     if (m && m.meta && m.meta.dynamic) { if (!m.inited && m !== rec) { m.inited = true; this.initNE(m); } return m.exports.get(ord) || 0; }   // (its LibEntry run as it is loaded)
     return this.thunk16For(`${m && m.kind !== 'js' ? m.name : mod}.#${ord}`);
   };
-  try { for (const sg of segs) {
-    if (!sg.rel) continue;
+  // (a segment's relocations made in it: as it loads, and again for a data segment read again from the file, as the
+  // module is loaded again after its last task, reloadData16)
+  const relocSeg = sg => {
+    if (!sg.rel) return;
     const cnt = rd.u16(file, sg.rel);
     for (let k = 0; k < cnt; k++) {
       const r = sg.rel + 2 + 8 * k, at = file[r], typ = file[r + 1], off = rd.u16(file, r + 2), a = rd.u16(file, r + 4), b = rd.u16(file, r + 6);
@@ -401,7 +421,9 @@ P.loadNEDynamic = function (key, file) {
       if (typ & 4) { put(off); continue; }
       for (let loc = off, guard = 0; loc !== 0xffff && loc < sg.alloc && guard < 0x10000; guard++) { const next = this.r16(sg.base + loc); put(loc); loc = next; }   // (a chain: each place holds the next's offset)
     }
-  } } catch (e) {
+  };
+  rec.relocSeg = relocSeg;
+  try { for (const sg of segs) relocSeg(sg); } catch (e) {
     if (!e.missing16) throw e;
     this.ne.delete(name); this.byName.delete(name); this.modules = this.modules.filter(x => x !== rec);   // (not loaded after all)
     this.missing16 = e.missing16; console.warn(`[ne16] ${key}: ${e.missing16} is not found`); return null;
@@ -562,6 +584,36 @@ P.interrupt = function (vec, next) {
   return r === undefined ? next : r;
 };
 const CF = (p, on) => { p.cpu.cf.value = on ? 1 : 0; };
+/** a FAT boot sector for a volume: its BPB from its size and cluster, its serial and label (INT 25h's sector 0) */
+function bootSector(v) {
+  const b = new Uint8Array(512), dv = new DataView(b.buffer), total = Math.max(1, Math.floor((v.total || 0) / 512)), spc = Math.max(1, Math.min(128, Math.round((v.cluster || 4096) / 512)));
+  const clusters = Math.ceil(total / spc), fat32 = clusters >= 65525, spf = Math.ceil(clusters * (fat32 ? 4 : 2) / 512);
+  b.set([0xeb, 0x3c, 0x90]); b.set([...'MSWIN4.1'].map(c => c.charCodeAt(0)), 3);
+  dv.setUint16(11, 512, true); b[13] = spc; dv.setUint16(14, fat32 ? 32 : 1, true); b[16] = 2; dv.setUint16(17, fat32 ? 0 : 512, true);
+  if (total < 0x10000 && !fat32) dv.setUint16(19, total, true); else dv.setUint32(32, total, true);
+  b[21] = 0xf8; dv.setUint16(22, fat32 ? 0 : Math.min(0xffff, spf), true); dv.setUint16(24, 63, true); dv.setUint16(26, 255, true); dv.setUint32(28, 63, true);
+  const ext = fat32 ? 64 : 36; if (fat32) { dv.setUint32(36, spf, true); dv.setUint32(44, 2, true); dv.setUint16(48, 1, true); }
+  b[ext] = 0x80; b[ext + 2] = 0x29; dv.setUint32(ext + 3, (v.serial || 0) >>> 0, true);
+  const label = String(v.label || 'NO NAME').toUpperCase().padEnd(11).slice(0, 11); for (let i = 0; i < 11; i++) b[ext + 7 + i] = label.charCodeAt(i);
+  [...(fat32 ? 'FAT32   ' : 'FAT16   ')].forEach((c, i) => { b[ext + 18 + i] = c.charCodeAt(0); });
+  b[510] = 0x55; b[511] = 0xaa; return b;
+}
+function absDisk(p, write) {
+  const rm = p.rmode, at = (s, o) => (rm ? ((s & 0xffff) << 4) + (o & 0xffff) : p.lin(u32(((s & 0xffff) << 16) | (o & 0xffff))));
+  const drive = String.fromCharCode(65 + (p.cpu.eax.value & 0xff)), cx = p.cpu.ecx.value & 0xffff;
+  let first, n, buf;
+  if (cx === 0xffff) { const pk = at(p.cpu.ds.value, p.cpu.ebx.value); first = p.r32(pk) >>> 0; n = p.r16(pk + 4); buf = at(p.r16(pk + 8), p.r16(pk + 6)); }
+  else { first = p.cpu.edx.value & 0xffff; n = cx; buf = at(p.cpu.ds.value, p.cpu.ebx.value); }
+  const done = (ok, err) => {
+    CF(p, !ok); if (!ok) p.ax(err);
+    // (the flags left pushed for the caller to pop)
+    const sp = (p.cpu.esp.value - 2) & 0xffff; p.cpu.esp.value = (p.cpu.esp.value & ~0xffff) | sp; p.w16((p.cpu.ssb.value >>> 0) + sp, 0x0202 | (ok ? 0 : 1));
+  };
+  let v; try { v = p.fs.statvfs(drive + ':\\'); } catch (_) { return done(false, 0x8002); }   // (not ready: no such drive)
+  if (write) return done(true);   // (nothing written)
+  for (let i = 0; i < n; i++) { const s = first + i; if (s === 0) p.u8.set(bootSector(v), buf + 512 * i); else p.u8.fill(0, buf + 512 * i, buf + 512 * (i + 1)); }
+  done(true);
+}
 // MSCDEX's device request (INT 2Fh AX=1510h) for the CD drive: the request header's status (+3) is set done (100h), or
 // error (8000h | code: 1 unknown unit, 3 unknown command). IOCTL input (3) fills the control block at the transfer
 // address (+0Eh) by its code (its first byte): 0 the device header's address, 1 the head's location, 4 the audio
@@ -761,7 +813,30 @@ const INTS = {
         const fh = this.dosFiles.get(this.cpu.ebx.value & 0xffff);
         if (fh && !fh.dev && fh.path) { this.cpu.edx.value = lo16(this.cpu.edx.value, (fh.path.toUpperCase().charCodeAt(0) - 65) & 0x3f); return; }
         if (!fh || !fh.dev) { this.cpu.edx.value = lo16(this.cpu.edx.value, 0x80); return; }
-      } if (al === 0x0d) return this.blockIoctl(); break;
+      } if (al === 0x0d) return this.blockIoctl();
+      if (al === 0x0e || al === 0x0f) { this.ax(this.ax() & 0xff00); return; }   // the logical drive map (get, set): one letter to each drive here, AL 0
+      // a block device driver's control data (4404h read, 4405h write; DriveSpace's way to its compressed volumes): the
+      // drives here have no driver taking it, invalid function (1), as a plain disk's driver answers
+      if (al === 0x04 || al === 0x05) { CF(this, 1); this.ax(1); this.dosError = 1; return; }
+      // whether drive BL is remote (4409h: DX bit 12 for a network drive; a local one's attributes, 0802h, as DOS 7's
+      // for a fixed disk with generic IOCTL), a handle's file (440Ah: DX bit 15, never); 4410h/4411h whether a generic
+      // IOCTL is supported (AX 0 for those blockIoctl answers, else 1 invalid function)
+      if (al === 0x09) {
+        const bl = this.cpu.ebx.value & 0xff, v = this.fs.vols.get(bl ? String.fromCharCode(64 + bl) : this.fs.cwd[0].toUpperCase());
+        if (!v) { CF(this, 1); this.ax(15); this.dosError = 15; return; }
+        this.cpu.edx.value = lo16(this.cpu.edx.value, v.kind === 'remote' ? 0x1000 : 0x0802); this.ax(0); return;
+      }
+      if (al === 0x0a) { this.cpu.edx.value = lo16(this.cpu.edx.value, 0); this.ax(0); return; }
+      if (al === 0x10 || al === 0x11) {
+        const cx = this.cpu.ecx.value & 0xffff, ok = al === 0x11 && [0x084a, 0x086a, 0x084b, 0x086b, 0x086c, 0x0870, 0x0860, 0x0866, 0x086f].includes(cx);
+        if (ok) { this.ax(0); return; } CF(this, 1); this.ax(1); this.dosError = 1; return;
+      }
+      if (al === 0x08) {   // whether drive BL (0 the current) is removable: AX 0 removable, 1 fixed; 15 no such drive
+        const bl = this.cpu.ebx.value & 0xff, v = this.fs.vols.get(bl ? String.fromCharCode(64 + bl) : this.fs.cwd[0].toUpperCase());
+        if (!v || v.kind === 'remote') { CF(this, 1); this.ax(15); this.dosError = 15; return; }
+        this.ax(v.kind === 'removable' ? 0 : 1); return;
+      }
+      break;
       case 0x50: case 0x51: case 0x62: return;
       // the redirector's list of redirected devices (5F02h, BX the index): the drives MPR connects are the network
       // process's; none is redirected through DOS here, so the list is empty (18, no more entries)
@@ -800,7 +875,7 @@ const INTS = {
     }
     // names and directories, as DOS 7 answers them, with its long-name functions (AH=71h, the same calls with long
     // names): CF and AX = error code on failure
-    if (ah === 0x71 || [0x0e, 0x1a, 0x2f, 0x36, 0x39, 0x3a, 0x3b, 0x41, 0x43, 0x47, 0x4e, 0x4f, 0x56].includes(ah)) {
+    if (ah === 0x71 || [0x0e, 0x11, 0x12, 0x1a, 0x2f, 0x36, 0x39, 0x3a, 0x3b, 0x41, 0x43, 0x47, 0x4e, 0x4f, 0x56].includes(ah)) {
       const lfn = ah === 0x71, fn = lfn ? al : ah, r = this.dosNames(fn, lfn);
       if (r !== false) return r;
     }
@@ -864,6 +939,13 @@ const INTS = {
     this.trapped = `unhandled int 21h ax=${this.ax().toString(16)} bx=${(this.cpu.ebx.value & 0xffff).toString(16)} cx=${(this.cpu.ecx.value & 0xffff).toString(16)}`; return LAYOUT.SENTINEL;
   },
   0x11() { this.ax(0x0023); },
+  // DOS's absolute disk read (25h) and write (26h): AL the drive (0 A:), CX sectors from DX at DS:BX, or CX FFFFh and
+  // DS:BX a packet (the first sector, a dword; the count; the buffer, far). The drives here are files, not sectors: a
+  // read of the boot sector (sector 0) gives the BPB DOS would have for the volume (File Manager reads it for a drive's
+  // details), any other sector zeros; a write is taken and goes nowhere (Disk Defragmenter's moves: no sector of a
+  // drive here is ever written). CF and AX say how it went, and the flags stay pushed, as DOS leaves them for POPF
+  0x25() { absDisk(this, false); },
+  0x26() { absDisk(this, true); },
   0x41() {},   // the kernel debugger's interface: no debugger is present, so every notification goes unheard
   0x16() { biosKbd(this); },
   0x33() {   // the DOS mouse driver interface, as far as MOUSE.DRV asks it: 24h version, type (PS/2) and IRQ
@@ -905,6 +987,14 @@ const INTS = {
     if ([0x11, 0xb8, 0xb7, 0x58].includes(ax >> 8)) return;   // real-mode network redirector, network, APPEND and real-mode network extension checks: none is loaded (AL comes back as it went)
     if ((ax >> 8) === 0x40) return;    // VDD save/restore and critical-section notifications
     if (ax === 0x4a32) return;         // boot progress to IO.SYS (USER reports start-up done; its answer is not read)
+    // SMARTDrive's (4A10h) and DriveSpace's (4A11h) API: neither is loaded (the drives are files here), so AX comes
+    // back as it went, as DOS answers a call no one claims (Disk Defragmenter asks DriveSpace about each drive)
+    if (ax === 0x4a10 || ax === 0x4a11) return;
+    // a multiplex number nothing in this system owns (a TSR's: INTERLNK's 56h, which Disk Defragmenter asks about):
+    // none is loaded, the call comes back as it went, as DOS's chain ends. One that DOS, Windows or their drivers own
+    // and is not answered above stops here, named (a gap)
+    const OWNED = [0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x19, 0x1a, 0x40, 0x43, 0x46, 0x48, 0x4a, 0x4b, 0x55, 0x58, 0xae, 0xb7, 0xb8];
+    if (!OWNED.includes(ax >> 8)) return;
     this.trapped = `unhandled int 2Fh ax=${ax.toString(16)}`; return LAYOUT.SENTINEL;
   },
 };
@@ -917,8 +1007,30 @@ P.blockIoctl = function () {
   const bl = this.cpu.ebx.value & 0xff, cx = this.cpu.ecx.value & 0xffff;
   const L = bl ? String.fromCharCode(64 + bl) : this.fs.cwd[0].toUpperCase(), v = this.fs.vols.get(L);
   if (!v || v.kind === 'remote') return fail(15);
+  // (the volume locks a disk utility takes before it writes sectors, logical 084Ah/086Ah, physical 084Bh/086Bh, and
+  // their state, 086Ch/0870h: granted, its writes go nowhere, INT 26h; Disk Defragmenter locks C: so)
+  // (each drive's lock level, kept as DOS 7 keeps it: 084Ah takes BH's level, 086Ah lets the volume go; 0870h answers
+  // the level held, FFFFh none, as Disk Defragmenter asks before its own lock: answered 0, it said a disk utility had
+  // C: locked)
+  const locks = this.volLocks || (this.volLocks = new Map());
+  if (cx === 0x084a || cx === 0x084b) { locks.set(L, (this.cpu.ebx.value >> 8) & 0xff); this.ax(0); return; }
+  if (cx === 0x086a || cx === 0x086b) { const lv = locks.get(L); if (lv) locks.set(L, lv - 1); else locks.delete(L); this.ax(0); return; }
+  if (cx === 0x0870) { const lv = locks.get(L); this.ax(lv === undefined ? 0xffff : lv); this.cpu.ecx.value = lo16(this.cpu.ecx.value, 0); return; }
+  if (cx === 0x086c) { this.ax(0); return; }   // (the lock's access flag: nothing has written or mapped the volume since)
+  const a = this.lin(((this.cpu.ds.value & 0xffff) << 16) | (this.cpu.edx.value & 0xffff));
+  const vi = (() => { try { return this.fs.statvfs(L + ':\\'); } catch (_) { return null; } })();
+  // 0860h the device's parameters (DS:DX: special functions, device type, attributes, cylinders, media type, then the
+  // BPB, as the boot sector's, INT 25h's); 0866h its media id (info level, serial, label, file system type)
+  if (cx === 0x0860 && vi) {
+    const bs = bootSector(vi); this.u8[a + 1] = v.kind === 'removable' ? 7 : 5; this.w16(a + 2, v.kind === 'removable' ? 0 : 1);
+    this.w16(a + 4, 1024); this.u8[a + 6] = 0; this.u8.set(bs.subarray(11, 36), a + 7); this.ax(0); return;
+  }
+  if (cx === 0x0866 && vi) {
+    const bs = bootSector(vi), e = bs[0x52] === 0x46 ? 64 : 36;   // (the extended BPB: FAT32's further on)
+    this.w16(a, 0); this.u8.set(bs.subarray(e + 3, e + 26), a + 2); this.ax(0); return;
+  }
   if (cx !== 0x086f) return fail(1);
-  const a = this.lin(((this.cpu.ds.value & 0xffff) << 16) | (this.cpu.edx.value & 0xffff)), n = this.u8[a];
+  const n = this.u8[a];
   const fixed = v.kind === 'fixed', unit = fixed ? 0x80 : v.kind === 'removable' ? 0 : 0xff;
   const info = new Uint8Array(16), dv = new DataView(info.buffer);
   info[0] = n; info[1] = 16; info[2] = 1 | 2 | (v.kind === 'cdrom' ? 8 : 0); info[3] = unit;
@@ -1074,8 +1186,8 @@ P.asThread = function (t, fn) {
   if (!t || this.thread16 || t.state === 'done') return fn();
   // (as the thread's task, on a stack of the call's own: a Win16 task's stack in its DGROUP holds its own frames,
   // where it stopped)
-  this.thread16 = t; this.asTask = true; if (t.pc) this.imgUse(t.pc);
-  try { return fn(); } finally { this.thread16 = null; this.asTask = false; }
+  this.thread16 = t; this.asTask = true; this.imgUse(t.pc);
+  try { return fn(); } finally { this.thread16 = null; this.asTask = false; this.imgUse(null); }
 };
 /** the native USER's visible top-level windows, topmost first, with their screen rectangles, owners, classes and
  *  titles; and the active window and the window holding the mouse capture */
@@ -1120,7 +1232,7 @@ P.nativeChildren = function (parent, send = true) {
       const cl = u(58, [['w', h], ['l', buf + 0x180], ['w', 64]]), cls = cl ? this.readA(a + 0x180, cl) : '';
       const style = this.user16(135, [['w', h], ['w', 0xfff0]]).dxax;                                            // GetWindowLong(GWL_STYLE)
       let text = '';
-      if (/^(edit|combobox)$/i.test(cls) && ask) {   // SendMessage WM_GETTEXT, into a buffer the size of an edit's limit
+      if (/^(edit|combobox|richedit)$/i.test(cls) && ask) {   // SendMessage WM_GETTEXT, into a buffer the size of an edit's limit (WordPad's RICHEDIT too)
         if (!this.tbufLin) { this.tbufLin = this.alloc(0x10000); this.tbufSel = this.allocSels(this.tbufLin, 0x10000); }
         const tl = u(111, [['w', h], ['w', 0x0d], ['w', 0xffff], ['l', u32(this.tbufSel << 16)]]); text = tl ? this.readA(this.tbufLin, tl) : '';
       } else { const tl = u(107, [['w', h], ['w', 0x0d], ['w', 160], ['l', buf + 16]]); text = tl ? this.readA(a + 16, tl) : ''; }
@@ -1329,7 +1441,7 @@ P.workArea = function () {
  *  menu's item height when that is not there */
 P.menuItems = function (h) {
   const a = this.wbufLin, buf = u32(this.wbufSel << 16), u = (o, args) => this.user16(o, args).ax, s16 = o => (this.r16(a + o) << 16) >> 16;
-  const x32 = this.byName && this.byName.get('USER32'), rectFn = x32 && x32.exports && x32.exports.get('GetMenuItemRect');
+  const x32 = this.byName && this.byName.get('USER32'), rectFn = x32 && x32.exports && x32.exports.get('GetMenuItemRect'), infoFn = x32 && x32.exports && x32.exports.get('GetMenuItemInfoA');
   u(32, [['w', h], ['l', buf]]); const wx = s16(0), wy = s16(2), ww = s16(4) - wx, wh = s16(6) - wy;   // GetWindowRect
   const rc = a + 0x100;
   // an item's rectangle on screen, as USER32 places it for the menu shown in this window; null for a menu it does not show there
@@ -1363,13 +1475,32 @@ P.menuItems = function (h) {
   let y = wy + 3;
   for (let i = 0; i < n; i++) {
     const fl = u(250, [['w', hm], ['w', i], ['w', 0x400]]);   // GetMenuState, MF_BYPOSITION
-    const tl = u(161, [['w', hm], ['w', i], ['l', buf + 16], ['w', 128], ['w', 0x400]]), text = tl ? this.readA(a + 16, tl) : '';   // GetMenuString (none for an owner-drawn item: Explorer's Start menu draws its own)
+    const tl = u(161, [['w', hm], ['w', i], ['l', buf + 16], ['w', 128], ['w', 0x400]]); let text = tl ? this.readA(a + 16, tl) : '';   // GetMenuString (none for an owner-drawn item: Explorer's Start menu draws its own)
     const separator = !!(fl & 0x800);
+    // an owner-drawn item (its type, MIIM_TYPE: GetMenuState gives a submenu's item count in its high byte, over the
+    // flag) has no string; Explorer's Start menu items keep theirs in their data (MIIM_DATA), a pointer 16 bytes in
+    let data = 0, owner = false;
+    if (infoFn) {
+      const mi = a + 0x180; this.u8.fill(0, mi, mi + 44); this.w32(mi, 44); this.w32(mi + 4, 0x30);
+      if (this.call(infoFn, [hm, i, 1, mi])) { owner = !!(this.r32(mi + 8) & 0x100); data = owner ? this.r32(mi + 32) >>> 0 : 0; }
+    }
+    if (owner && !text && data) text = this.menuDataText(data);
     const r = rect(hm, i) || { x: wx + 3, y, w: ww - 6, h: separator ? 9 : 19 };
     y = r.y + r.h;
-    out.push({ hwnd: h, parent: h, cls: 'menuitem', text, ...r, id: i, style: fl, enabled: !(fl & 3), checked: !!(fl & 8), submenu: !!(fl & 0x10), separator, ownerdraw: !!(fl & 0x100), focused: false, depth: 0 });
+    out.push({ hwnd: h, parent: h, cls: 'menuitem', text, ...r, id: i, style: fl, enabled: !(fl & 3), checked: !!(fl & 8), submenu: !!(fl & 0x10), separator, ownerdraw: owner || !!(fl & 0x100), data, focused: false, depth: 0 });
   }
   return out;
+};
+/** an owner-drawn Start menu item's text, from its data (SHELL32's file menu item): the string it points to 16 bytes
+ *  in (Programs, Run...), else the name in the ID list it points to 12 bytes in (a folder or a shortcut of the Programs
+ *  folder: its file system item, type 30h-3Fh, the long name at 14), shown as the shell shows it, a shortcut's
+ *  extension hidden; '' when there is none */
+P.menuDataText = function (data) {
+  const ok = p => p > 0x10000 && p < this.u8.length - 256;
+  if (!ok(data)) return '';
+  const p = this.r32(data + 16) >>> 0; if (ok(p)) { const s = this.readA(p, 128); if (s) return s; }
+  const id = this.r32(data + 12) >>> 0; if (!ok(id) || this.r16(id) < 16 || (this.u8[id + 2] & 0xf0) !== 0x30) return '';
+  return this.readA(id + 14, 128).replace(/\.(lnk|pif|url)$/i, '');
 };
 /** a list view's items (COMCTL32's, in a 32-bit program: the desktop's icons, a folder window's files), each its
  *  bounds on screen (the control at x, y), its label and whether it is selected, from the control's own messages
@@ -2407,6 +2538,25 @@ def16('KERNEL', 162, '', 'w', function () {
   this.lheap(); const base = this.selBase(this.cpu.ds.value & 0xffff), info = this.r16(base + 6);
   return (this.r16(base + info + 0xa) + 4 - this.r16(base + info + 6)) & 0xffff;
 });
+// GlobalLRUOldest: the block made the first to discard; nothing here is discarded for memory, so its order is nothing to
+// keep: the handle back, as it does
+def16('KERNEL', 163, 'w', 'w', h => h);
+// FarSetOwner (KRNL386's 403, unnamed): the global block's owner is the given module or task (COMPOBJ hands its blocks to
+// the task they are for), so the block goes when that one does
+def16('KERNEL', 403, 'ww', 'v', function (h, owner) { const g = this.ghandles && (this.ghandles.get(h | 1) || this.ghandles.get(h)); if (g) g.owner = owner; });
+// KRNL386's 700 (unnamed): whether the stack is a 32-bit thread's big stack (a thunk's), as COMPOBJ asks before it
+// switches stacks; a Windows 3.x task's stack never is
+def16('KERNEL', 700, '', 'w', () => 0);
+// FileCDR: File Manager's callback for files deleted or renamed by others, kept for the task; TRUE, installed (the
+// callback is the task's to have; the shell's own change notices tell the folders here)
+def16('KERNEL', 130, 'x', 'w', function (fp) { const t = this.thread16 && this.thread16.task; if (t) t.fileCDR = fp >>> 0 === 0xffffffff ? null : fp; return 1; });
+// NetBIOSCall: INT 5Ch with the NCB at ES:BX; no NetBIOS is loaded here (the network is the redirector's), so the
+// NCB's return code, and AL, are NRC_OPENERR's "NetBIOS not loaded", FBh
+def16('KERNEL', 103, '', 'jmp', function () {
+  const ncb = this.selValid(this.cpu.es.value & 0xffff) ? this.selBase(this.cpu.es.value & 0xffff) + (this.cpu.ebx.value & 0xffff) : 0;
+  if (ncb) { this.u8[ncb + 1] = 0xfb; this.u8[ncb + 49] = 0xfb; }   // (ncb_retcode, ncb_cmd_cplt)
+  this.cpu.eax.value = (this.cpu.eax.value & ~0xff) | 0xfb; return this.retf16(0);
+});
 def16('KERNEL', 161, '', 'w', function () { const lh = this.lheap(); return Math.min(0xffff, lh.free.reduce((s, f) => s + f[1], 0)); });   // LocalCountFree: the free bytes in DS's local heap
 
 def16('KERNEL', 15, 'wl', 'w', function (fl, n) { return this.globalAlloc16(fl, n); });
@@ -2556,7 +2706,15 @@ def16('KERNEL', 466, '', 'jmp', function () {
 // machine. UNCONFIRMED: what VWIN32's function 0Dh does is not read from its code
 def16('KERNEL', 351, '', 'v', function () {});
 def16('KERNEL', 323, 'w', 'w', function () { return 0; });                                    // IsRomModule: no module runs from ROM
-def16('KERNEL', 324, 'wx', 'v', function (code) { console.warn('[KERNEL] LogError', code.toString(16)); });
+// LogError: logged with who called it (the module and offset its far return goes to) and on which thread, in the fault
+// log too: "LogError 44" alone named no window and no program
+def16('KERNEL', 324, 'wx', 'v', function (code) {
+  const sp = this.cpu.ssb.value + (this.cpu.esp.value & 0xffff), ip = this.r16(sp), cs = this.r16(sp + 2), m = this.neByHandle(cs), sg = m && m.segs.find(s => (s.sel | 1) === (cs | 1));
+  const from = m ? `${m.name} ${sg ? sg.num : '?'}:${ip.toString(16)}` : `${cs.toString(16)}:${ip.toString(16)}`, t = this.thread16;
+  const who = t ? (t.pc ? t.pc.path : t.task && t.task.path) || `thread ${t.id}` : 'main';
+  console.warn('[KERNEL] LogError', code.toString(16), 'from', from, 'in', who);
+  (this.faultLog || (this.faultLog = [])).push({ why: `LogError ${code.toString(16)}`, at: from, thread: who });
+});
 def16('KERNEL', 327, '', 'jmp', function () {    // HandleParamError: BX = error, CX:AX = parameter; errors unwind to the handler at [BP-2]
   const err = this.cpu.ebx.value & 0xffff, ssb = this.cpu.ssb.value >>> 0, sp = this.cpu.esp.value & 0xffff;
   const ip = this.r16(ssb + sp), cs = this.r16(ssb + sp + 2);
@@ -2747,8 +2905,44 @@ P.dosNames = function (fn, lfn) {
   };
   try {
     switch (fn) {
+      // reset drive DX (710Dh, CX: flush, invalidate, remount), the long-name form of disk reset (0Dh, above): no buffers
+      // are held for a drive here, each write is in place as it is made
+      case 0x0d: if (cx <= 2) return; return fail(1);
       case 0x0e: { const d = String.fromCharCode(65 + (this.cpu.edx.value & 0xff)); if (this.fs.vols.has(d)) { try { this.fs.chdir(d + ':\\'); } catch (_) { } } this.ax((this.ax() & 0xff00) | 26); return; }
       case 0x1a: this.dta = at('ds', off16('edx')); this.dtaFar = [this.cpu.ds.value & 0xffff, off16('edx')]; return;
+      // FCB find first (11h) and next (12h): DS:DX an unopened FCB (an extended one, FFh first, with the attributes to
+      // allow at 6); the entry found to the DTA as its FCB (the extended header again, then the drive and the 32-byte
+      // directory entry); AL 0, else FFh. A volume label (attribute 8) is the drive's label (File Manager reads it so)
+      case 0x11: case 0x12: {
+        const fcb = dsdx(), ext = this.u8[fcb] === 0xff, f = ext ? fcb + 7 : fcb, allow = ext ? this.u8[fcb + 6] : 0, dta = this.dta;
+        const notFound = () => { this.ax((this.ax() & 0xff00) | 0xff); };
+        if (!dta) return notFound();
+        const drv = this.u8[f], d = drv ? String.fromCharCode(64 + drv) : this.fs.cwd[0].toUpperCase();
+        let s;
+        if (fn === 0x11) {
+          const nm = String.fromCharCode(...this.u8.subarray(f + 1, f + 9)).trimEnd(), ex = String.fromCharCode(...this.u8.subarray(f + 9, f + 12)).trimEnd();
+          let list;
+          if (allow & 8) { let label = ''; try { label = (this.fs.statvfs(d + ':\\').label || ''); } catch (_) { } list = label ? [{ shortName: label.slice(0, 11).toUpperCase(), name: label, attrs: 8, isDir: false, mtime: Date.now(), size: 0, label: true }] : []; }
+          else {   // (the 11 characters of the name, blank-padded, each '?' any character, the padding too, as DOS matches them)
+            const want = String.fromCharCode(...this.u8.subarray(f + 1, f + 12)).toUpperCase();
+            const pad = n => { const s = n.toUpperCase(), i = s.lastIndexOf('.'), b = i < 0 ? s : s.slice(0, i), x = i < 0 ? '' : s.slice(i + 1); return b.padEnd(8).slice(0, 8) + x.padEnd(3).slice(0, 3); };
+            const ok = e => { const a = e.attrs | (e.isDir ? 0x10 : 0), n = pad(e.shortName || e.name); return !(a & 0x16 & ~allow) && [...want].every((c, i) => c === '?' || c === n[i]); };
+            const cur = this.fs.cwd[0].toUpperCase() === d ? this.fs.cwd : d + ':\\';   // (the drive's current folder)
+            try { list = this.fs.readdir(cur).filter(ok); } catch (e) { if (e instanceof W.FSError) list = []; else throw e; }   // (FCB calls answer AL FFh, not an error code)
+          }
+          s = { list, i: 0 }; (this.dosFinds = this.dosFinds || []).push(s);
+          this.w16(f + 12, this.dosFinds.length - 1); this.w16(f + 14, 0x4346);   // (the search, in the FCB's block and record-size words)
+        } else { s = this.r16(f + 14) === 0x4346 && (this.dosFinds || [])[this.r16(f + 12)]; if (!s) return notFound(); }
+        const e = s.list[s.i++]; if (!e) return notFound();
+        let o = dta; if (ext) { this.u8.set(this.u8.subarray(fcb, fcb + 7), dta); o += 7; }
+        this.u8.fill(0x20, o + 1, o + 12); this.u8.fill(0, o + 12, o + 33); this.u8[o] = drv || (d.charCodeAt(0) - 64);
+        const sn = (e.shortName || e.name).toUpperCase(), dot = e.label ? -1 : sn.lastIndexOf('.'), base = dot < 0 ? sn : sn.slice(0, dot), x = dot < 0 ? '' : sn.slice(dot + 1);
+        if (e.label) for (let i = 0; i < Math.min(11, sn.length); i++) this.u8[o + 1 + i] = sn.charCodeAt(i);
+        else { for (let i = 0; i < Math.min(8, base.length); i++) this.u8[o + 1 + i] = base.charCodeAt(i); for (let i = 0; i < Math.min(3, x.length); i++) this.u8[o + 9 + i] = x.charCodeAt(i); }
+        const [t, dt] = dosTime(e.mtime);
+        this.u8[o + 12] = e.attrs | (e.isDir ? 0x10 : 0); this.w16(o + 23, t); this.w16(o + 25, dt); this.w32(o + 29, e.size >>> 0);
+        this.ax(this.ax() & 0xff00); return;
+      }
       case 0x2f: { const [sg, o] = this.dtaFar || [0, 0]; if (this.rmode) this.cpu.es.value = sg; else this.seg('es', sg); reg('ebx', o); return; }
       case 0x36: {   // free space: AX sectors a cluster, BX free clusters, CX bytes a sector, DX clusters
         const dl = this.cpu.edx.value & 0xff, d = dl ? String.fromCharCode(64 + dl) : this.fs.cwd[0];
@@ -3538,6 +3732,7 @@ const ev16 = (p, h) => {
   const o = p.obj(h); if (!o) return null;
   if (o.kind === 'event') return o;
   if (o.kind === 'thread') { const t = p.threadsById && p.threadsById.get(o.id); return { manual: true, get set() { return !t || t.state === 'done'; }, set set(_) {} }; }
+  if (o.kind === 'process' && o.task) return { manual: true, get set() { return o.task.state === 'done'; }, set set(_) {} };   // (a Win16 task's: once it has ended)
   if (o.kind === 'process') return { manual: true, get set() { return !(p.procs && p.procs.has(o.pid)); }, set set(_) {} };   // (signalled once the process has ended)
   // a semaphore: signalled while its count is above zero; a wait it satisfies takes one (MPR's request queue, which
   // MPREXE's server threads wait on through USER's MsgWaitForMultipleObjects)
@@ -3771,7 +3966,11 @@ P.spawn = function (file, module, meta, path, cmdline) {
     // the thread that started it goes on with its own process's data in place (the shell starting Explorer from the
     // Start menu), the new instance's put by until its own thread runs
     const by = this.thread16 && this.thread16.pc; if (by && by !== pc && by.exe === rec) this.imgUse(by);
-  } else pc.exe = this.loadImage(file, module, meta, 'EXE');
+  } else {
+    // (its DLLs the bundle does not carry looked for in its own folder first, win32.js diskDll)
+    this.loadDirs = [String(path || '').replace(/\\[^\\]*$/, '')];
+    try { pc.exe = this.loadImage(file, module, meta, 'EXE'); } finally { this.loadDirs = null; }
+  }
   pc.cmdPtr = this.alloc(cmdline.length + 1); this.writeA(pc.cmdPtr, cmdline);
   pc.cmdLine = cmdline;   // (as it was started: the program can change its copy, RUNDLL32 cuts its at the comma)
   Object.assign(pc, this.startClock(), { origin: this.nextOrigin || 'here' }); this.effect('exec', cmdline);
@@ -3782,6 +3981,7 @@ P.spawn = function (file, module, meta, path, cmdline) {
 };
 /** the image data of process pc in place, when its image is shared with another instance (spawn) */
 P.imgUse = function (pc) {
+  this.dllUse(pc);   // (and its private-arena DLLs' data, win32.js; the system's for a thread of no started process)
   const rec = pc && pc.exe, g = rec && rec.inst; if (!g || g.cur === pc || !g.bufs.has(pc)) return;
   if (g.cur) g.bufs.set(g.cur, this.u8.slice(rec.base, rec.base + rec.size));
   this.u8.set(g.bufs.get(pc), rec.base); g.bufs.delete(pc); g.cur = pc;
@@ -3809,6 +4009,29 @@ P.threadExitUser = function (t) {
   t.userExited = true;
   const by = this.thread16; this.thread16 = t;
   try { this.user16(391, [['l', 0x20], ['l', t.id], ['l', 3], ['w', this.hinst16(exe.base)]]); } catch (e) { console.error(e); } finally { this.thread16 = by; }
+};
+/** a fault in a Windows 3.x program the system runs (a task of its own, not the system's first task): that program
+ *  ends and is named in the fault dialog, as Windows 95 closes the one program; the system goes on. Charged to the
+ *  machine, the fault named MSGSRV32 and its Close ended Windows. Whether it was one */
+P.taskFault = function (t, why, fault) {
+  if (!this.noMain || !t.task || t.pc || t === this.appyThread) return false;
+  t.state = 'done'; this.wakeWaiters(t);
+  if (this.win16Held && this.win16Held.who === t) this.win16Held = null;
+  (this.pcFaults || (this.pcFaults = [])).push({ pc: { path: t.task.path }, fault: fault || null, why });
+  this.threadExitUser(t); this.taskModuleEnded(t);
+  return true;
+};
+/** a Win16 task's end that leaves its program's module with no task: KERNEL frees the module and tells USER
+ *  (SignalProc32, USIG_DLL_UNLOAD_WIN16 1, the module's handle), which drops what the module registered, its window classes among it. Kept, the
+ *  next start's RegisterClass failed (Minesweeper's class there already) and the program quit at once */
+P.taskModuleEnded = function (t) {
+  if (t.modEnded) return; t.modEnded = true;
+  if (this.fgWanted) this.fgWanted.delete(t.tdb);   // (one that showed no window)
+  const m = t.task && t.task.mod, u = this.ne && this.ne.get('USER');
+  if (!m || !m.taskModule || !u || !u.meta || !this.neExport(u, 391)) return;
+  if ([...this.threadsById.values()].some(x => x !== t && x.task && x.task.mod === m && x.state !== 'done')) return;
+  const by = this.thread16; this.thread16 = t;
+  try { this.user16(391, [['l', 1], ['l', m.hModule], ['l', 0], ['w', m.hModule]]); } catch (e) { console.error(e); } finally { this.thread16 = by; }
 };
 /** a started process's end (ExitProcess, or its last thread): its threads stop */
 P.endProcess = function (pc, code) {
@@ -3843,8 +4066,10 @@ P.endProcess = function (pc, code) {
   if (this.w32DesktopSurface && this.w32DesktopSurface.pc === pc) this.w32DesktopSurface = null;
   if (sig) try { signal(0x300, pc.pid); signal(0x400, pc.pid); } catch (e) { console.error(e); }
   if (this.procs) this.procs.delete(pc.pid);
+  (this.exitCodes || (this.exitCodes = new Map())).set(pc.pid, pc.exitCode);   // (GetExitCodeProcess after it has gone)
   this.wakeWaiters(pc);   // (the threads waiting on its process handle)
   const g = pc.exe && pc.exe.inst; if (g) { g.bufs.delete(pc); if (g.cur === pc) g.cur = null; }   // (its copy of a shared image's data goes)
+  this.dllForget(pc);   // (and its copies of its DLLs' data)
   if (pc.onExit) pc.onExit(pc.exitCode);
 };
 // USER hears of a process as KERNEL32 tells it (SignalProc32: USIG_PROCESS_CREATE 100h, USIG_PROCESS_INIT 200h,
@@ -3902,7 +4127,7 @@ P.threads16 = function (nested = false, only = null) {
     if (t === caller || t.state === 'running' || t.blocked || (t.id === MAIN_TID && !caller) || (t.id === MAIN_TID && caller) || !t.state || t.state === 'done' || t.state === 'hung' || t.state === 'suspended' || (t.state === 'waiting' && t.wait && !t.wait.set)) continue;   // a thread that yielded with no event to wait for (in WaitEvent) runs again
     if (this.win16Held && this.win16Held.who !== t && !(caller && this.win16Held.who === caller)) continue;   // another thread holds the Win16Lock (a caller that yields hands its own over)
     const main = this.saveCtx16();
-    this.thread16 = t; t.sliceStart = this.now(); this.preempted = 0; if (t.pc) this.imgUse(t.pc);
+    this.thread16 = t; t.sliceStart = this.now(); this.preempted = 0; this.imgUse(t.pc);
     let r;
     try {
       if (t.state === 'new' && t.flat) {
@@ -3946,8 +4171,10 @@ P.threads16 = function (nested = false, only = null) {
         t.state = 'done'; this.wakeWaiters(t);
         // a fault in a program the system started ends that program, as Windows 95 closes the one program that
         // performed an illegal operation; the system and the other programs go on
-        if (r !== 0 && this.trapped && t.pc && this.noMain) { t.pc.trapped = this.trapped; (this.pcFaults || (this.pcFaults = [])).push({ pc: t.pc, why: this.trapped }); this.trapped = null; this.endProcess(t.pc, 0xffffffff); }
-        if (t.pc) this.pcThreadEnded(t); else this.threadExitUser(t); if (r !== 0 && this.trapped) console.warn('[ne16] thread', t.id, this.trapped); if (t.onDone) t.onDone(t);
+        // (a stop the emulator made, trapped, ends the run as the sentinel does, r 0: a VxD service it lacks)
+        if (this.trapped && t.pc && this.noMain) { t.pc.trapped = this.trapped; (this.pcFaults || (this.pcFaults = [])).push({ pc: t.pc, why: this.trapped }); this.trapped = null; this.endProcess(t.pc, 0xffffffff); }
+        else if (this.trapped && this.taskFault(t, this.trapped)) this.trapped = null;
+        if (t.pc) this.pcThreadEnded(t); else { this.threadExitUser(t); this.taskModuleEnded(t); } if (r !== 0 && this.trapped) console.warn('[ne16] thread', t.id, this.trapped); if (t.onDone) t.onDone(t);
         if (t.flat && t.stackBase) { this.free(t.stackBase); this.free(t.tib); t.stackBase = t.tib = 0; }   // (its stack and thread information block go with it)
       }   // onDone: the host's, for a thread it started
     } catch (e) {
@@ -3957,7 +4184,18 @@ P.threads16 = function (nested = false, only = null) {
         // a program the system started ends alone (KERNEL32's fault dialog for it); the program this machine runs, or
         // ring 0, takes the machine's answer
         if (t.pc && this.noMain && e.fault.ring !== 0) { t.pc.fault = e.fault; t.pc.main.fault = e.fault; (this.pcFaults || (this.pcFaults = [])).push({ pc: t.pc, fault: e.fault, why: e.fault.why }); this.endProcess(t.pc, 0xffffffff); }
-        else this.faulted(e.fault);
+        else if (e.fault.ring === 0 || !this.taskFault(t, e.fault.why, e.fault)) this.faulted(e.fault);
+        return;
+      }
+      // what the emulator cannot do for a program the system started (a VxD service it lacks, run-time code it cannot
+      // take) ends that program, as a fault of its own: thrown on, it stopped the system's machine, and Windows with it
+      // (HyperTerminal's thread ran into a missing import, its fault handling into garbage, "unimplemented VxD service")
+      if (e instanceof window.W95Win32.GuestError && !(e instanceof window.W95Win32.HangError) && this.noMain && (t.pc || t.task)) {
+        t.state = 'done'; this.wakeWaiters(t);
+        if (this.win16Held && this.win16Held.who === t) this.win16Held = null;
+        console.warn('[ne16] thread', t.id, 'ended:', e.message);
+        if (t.pc) { t.pc.trapped = e.message; (this.pcFaults || (this.pcFaults = [])).push({ pc: t.pc, why: e.message }); this.endProcess(t.pc, 0xffffffff); }
+        else this.taskFault(t, e.message);
         return;
       }
       if (!(e instanceof window.W95Win32.HangError)) throw e;
@@ -3970,7 +4208,7 @@ P.threads16 = function (nested = false, only = null) {
   // the lock the caller handed over comes back before it goes on: a thread whose time ran out in 16-bit code (inside
   // DIBENG's blit) holds it, and runs until it lets go, as the caller waits for the Win16Mutex
   for (let k = 0, h; caller && (h = this.win16Held && this.win16Held.who) && typeof h === 'object' && h !== caller && h.state === 'waiting' && k < 1000 && !this.trapped; k++) this.threads16(true, h);
-  } finally { this.inThreads = wasIn; this.threadsNest--; this.asTask = wasAs; if (caller) { this.preempted = wasPreempted; this.runT0 = t0; if (caller.pc) this.imgUse(caller.pc); } }
+  } finally { this.inThreads = wasIn; this.threadsNest--; this.asTask = wasAs; if (caller) { this.preempted = wasPreempted; this.runT0 = t0; this.imgUse(caller.pc); } else this.imgUse(null); }
 };
 /** a far call into 16-bit code that may yield: returns runAt's result (0 returned, 1 yielded) and leaves the
  *  CPU state as the code left it */
@@ -4058,6 +4296,9 @@ def16('KERNEL', 45, 'sp', 'l', function (name, pb) {
   if (!rec || !rec.meta) return this.loadError16(name);
   const hdr = rd.u32(rec.file, 0x3c), flags = rd.u16(rec.file, hdr + 0x0c);
   if (flags & 0x8000) { if (!rec.inited) { rec.inited = true; this.initNE(rec); } return rec.hInstance; }
+  // a program whose last task has ended: KERNEL freed its module then, and loads it again from its file, so its data
+  // starts as the file has it (kept, Minesweeper's ended game was its next start's, which quit at once)
+  if (rec.taskModule && !K16['KERNEL.#48'][2].call(this, rec.hModule)) this.reloadData16(rec);
   const psp = this.alloc(0x100), pspSel = this.allocSels(psp, 0x100);
   this.u8.fill(0, psp, psp + 0x100); this.w16(psp, 0x20cd);
   let show = 1;
@@ -4082,6 +4323,8 @@ def16('KERNEL', 45, 'sp', 'l', function (name, pb) {
   // more than once) keeps a stack of its own, as this loader gives each module one DGROUP, not one per instance
   t.task.dgStack = ![...this.threadsById.values()].some(x => x !== t && x.task && x.task.dgStack && x.task.dgroup === rec.dgroup && x.state !== 'done');
   t.tdb = newTdb(this);
+  // (its first window brought to the front, worker.js frame; not a program another machine started in a shared session)
+  if (t.task.origin !== 'remote') (this.fgWanted || (this.fgWanted = new Set())).add(t.tdb);
   // one event posted, as KERNEL starts a task: its first WaitEvent returns at once
   t.events = 1;
   // a task another task starts runs before LoadModule returns, until it first waits for a message or yields, as
@@ -4567,7 +4810,7 @@ function wait32(hs, all, ms, alertable) {
   // it waits for ends; the scheduler does not run it until then, and it checks its wait again when it runs
   if (ms === 0xffffffff && this.thread16) {
     t.blocked = true; t.alertWait = alertable;
-    for (const h of hs) { const o = this.obj(h); if (o) (o.waiters = o.waiters || new Set()).add(t); const w = o && (o.kind === 'thread' ? this.threadsById && this.threadsById.get(o.id) : o.kind === 'process' ? this.procs && this.procs.get(o.pid) : null); if (w) (w.waiters = w.waiters || new Set()).add(t); }
+    for (const h of hs) { const o = this.obj(h); if (o) (o.waiters = o.waiters || new Set()).add(t); const w = o && (o.kind === 'thread' ? this.threadsById && this.threadsById.get(o.id) : o.kind === 'process' ? o.task || (this.procs && this.procs.get(o.pid)) : null); if (w) (w.waiters = w.waiters || new Set()).add(t); }
     return YIELD;
   }
   if (!t.wake) t.wake = ms === 0xffffffff ? Infinity : this.now() + ms;
@@ -4778,5 +5021,5 @@ P.nativeFontDC = function (font) {
 const NAMES16 = { KERNEL: {}, ...NAMES16_INIT };
 /** a personality module's export names: the CD module's own (the system bundle's names16) and the ones listed here */
 const names16 = mod => ({ ...((window.W95SYSTEM && window.W95SYSTEM.names16) || {})[mod], ...NAMES16[mod] });
-window.W95NE16 = { K16, NAMES16, names16, L, def16, INTS, VXD_API, CR, regStr };
+window.W95NE16 = { K16, NAMES16, names16, L, def16, INTS, VXD_API, CR, regStr, KERNEL_EQUATES };
 })();

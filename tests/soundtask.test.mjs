@@ -26,7 +26,9 @@ function machine() {
   p.threads16(true, B);
   assert.equal(p.ran, 1); assert.equal(B.state, 'waiting'); assert.ok(B.ctx); assert.equal(B.preempted, true);
   assert.equal(p.thread16, A); assert.equal(p.depth, 2); assert.equal(p.stackLevel, 3); assert.equal(p.inThreads, true); assert.equal(p.preempted, 0); assert.equal(p.runT0, 500);
-  assert.deepEqual(used, [A.pc]);
+  // (the task's thread is the system process's, no started process: its turn puts the system's DLL data in place,
+  // imgUse(undefined); then the caller's process's again)
+  assert.deepEqual(used, [B.pc, A.pc]);
 }
 // a whole pass inside a thread's run (a Yield inside a call) runs the other threads, not the running ones; a thread
 // already running is never run again

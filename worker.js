@@ -237,7 +237,7 @@ class Machine {
    *  has the processor */
   feedMouse() {
     const p = this.proc;
-    if (!this.mouseq.length || p.depth || this.ring0()) return;
+    if (!this.mouseq.length || p.depth || this.ring0() || this.focusing) return;   // (a window being brought to the front first: 'focus')
     for (const m of this.mouseq.splice(0)) try { if (m[0] & 0x2a) { p.personActed = true; if (p.personInput) try { p.personInput(...m); } catch (e) { console.error(e); } } p.mouseEvent16(...m); } catch (e) { console.error(e); }   // (a button pressed: this machine's person has done something, ne16.js intentQuiet)
   }
   /** the screen's mode, DAC and cursor sprite for the page, which shows the screen from the shared memory */
@@ -372,7 +372,7 @@ class Machine {
   ring0() { return !!(this.proc && this.proc.r0Runs && this.proc.r0Runs.length); }
   feedKeys() {
     const p = this.proc;
-    if (!this.keyq.length || p.depth || this.ring0()) return;   // (the keyboard and mouse drivers report at interrupt time)
+    if (!this.keyq.length || p.depth || this.ring0() || this.focusing) return;   // (a window being brought to the front first: 'focus')   // (the keyboard and mouse drivers report at interrupt time)
     try { if (p.inputPending()) return; } catch (e) { console.error(e); }   // USER has input not yet taken
     for (let n = 0; this.keyq.length && n < 16; n++) {
       const k = this.keyq.shift(); if (!n && p.personInput) try { p.personInput(); } catch (e) { console.error(e); } p.personActed = true;
@@ -448,6 +448,10 @@ class Machine {
     const a = p.scanout(), sp = p.sprite ? p.sprite() : null;
     let bg = 0; try { const c = p.user16(180, [['w', 1]]); bg = (c.dx & 0xff) << 16 | (c.ax & 0xffff); } catch (e) { console.error(e); }
     for (const w of nw.list) { const pc = w.task && [...(p.procs || new Map()).values()].find(c => c.tdb === w.task); w.prog = pc ? basename(pc.path).toUpperCase() : null; }
+    // a Windows 3.x program started here: its first top-level window comes to the front, as USER brings forward the
+    // first window a starting program shows (a 32-bit one's is, USER told of its start: pcStart); without it a game
+    // opened behind the window that started it (ne16.js LoadModule: fgWanted)
+    if (p.fgWanted && p.fgWanted.size) for (const w of nw.list) if (p.fgWanted.has(w.task) && !w.owner && w.title) { p.fgWanted.delete(w.task); this.onWindow('SetForegroundWindow', [w.hwnd]); }
     const pixels = [], win32 = [];
     const addWin32Windows = (proc, preview = false) => { for (const w of proc.windows.values()) {
       if (w.kind !== 'window' || (w.child && !w.previewChild) || (!(w.style & 0x10000000) && !w.hostPreview) || !w.ctx) continue;
@@ -509,8 +513,11 @@ class Machine {
     let pc;
     try {
       const mod = d.dynamic ? null : d.modSync || (d.modSync = new WebAssembly.Module(b64bytes(d.wasm))), real = fs.realpath(file);
-      pc = p.spawn(fs.readFile(file), mod, { ...d.meta, name: name.replace(/\.EXE$/, '') }, real, arg ? `${real} ${arg}` : real);
-    } catch (e) { console.error(e); return 8; }
+      // (its command line names it in quotes when its path has a space in it: unquoted, the C run-time split
+      // "C:\Program Files\Accessories\MSPAINT.EXE" there, and MFC opened "Files\...\MSPAINT.EXE" as a document)
+      const prog = /\s/.test(real) ? `"${real}"` : real;
+      pc = p.spawn(fs.readFile(file), mod, { ...d.meta, name: name.replace(/\.EXE$/, '') }, real, arg ? `${prog} ${arg}` : prog);
+    } catch (e) { if (e && e.missingDll) { console.warn(`[spawn] ${e.message}`); return 2; } console.error(e); return 8; }   // (2: a DLL it needs is missing, as WinExec answers)
     // (its console: the MS-DOS machine's window it was started from, o.console, told when the program ends)
     if (o.console !== undefined) pc.console = o.console;
     pc.onExit = code => { if (!pc.fault) post({ t: 'emit', ev: 'program.exit', data: { path: pc.path, code } }); if (pc.console !== undefined) post({ t: 'conExit', id: pc.console, code: code >>> 0 }); };
@@ -532,9 +539,7 @@ class Machine {
     const pe = dv.getUint32(0x3c, true); if (pe + 0x78 > f.length || dv.getUint32(pe, true) !== 0x4550) return null;
     const opt = pe + 24, pref = dv.getUint32(opt + 28, true), size = dv.getUint32(opt + 56, true), ep = dv.getUint32(opt + 16, true);
     const relocs = !(dv.getUint16(pe + 22, true) & 1) && dv.getUint32(opt + 96 + 5 * 8 + 4, true) > 0;
-    const p = this.proc, free = (a, n) => a >= 0x400000 && a + n <= 0x02000000 && !p.modules.some(m => a < m.base + m.size && m.base < a + n);
-    let base = free(pref, size) ? pref : 0;
-    for (let a = 0x00620000; !base && relocs && a + size <= 0x00b00000; a += 0x10000) if (free(a, size)) base = a;
+    const p = this.proc, base = p.imageRoom(pref, size, relocs);   // (win32.js: 16-bit modules' segments counted too)
     if (!base) { console.warn(`[spawn] ${file}: no room for its image at ${pref.toString(16)} (${relocs ? 'relocatable' : 'no relocations'})`); return null; }
     return { dynamic: true, meta: { base, entry: base + ep, textLo: 0, textHi: 0, blocks: [], size } };
   }
@@ -837,10 +842,15 @@ class Machine {
     switch (name) {
       // a window brought to the front (a minimized one restored), from a thread of its own as 'place' is: a call made
       // as the window's thread while it waits on its own SendMessage takes its reply, and it waits for good
+      // (the keys and clicks that come after it wait for it, feedKeys: fed before it was made, a key went to the window
+      // that had been in front)
       case 'focus': return (async () => {
         const [hwnd, min] = args;
-        if (min) await this.onWindow('ShowWindow', [hwnd, 9]);
-        else await this.onWindow('SetForegroundWindow', [hwnd]);
+        this.focusing = (this.focusing || 0) + 1;
+        try {
+          if (min) await this.onWindow('ShowWindow', [hwnd, 9]);
+          else await this.onWindow('SetForegroundWindow', [hwnd]);
+        } finally { this.focusing--; }
       })();
       case 'minimize': u(42, [['w', args[0]], ['w', 6]]); return;
       // a window put where another machine in a shared session has it (shared.js): ShowWindow to its state (3
@@ -975,6 +985,26 @@ class Machine {
       // its enumerations, the drives it has connected, and a drive's or share's files (netfs.js) for the page
       case 'printerWindow': return this.printerWindow(args[0], args[1]);
       case 'netCall': return this.netCall(args[0], args[1]);
+      // (a diagnostic: any module's export called on a thread of its own, dword or string arguments: [dll, name, args])
+      case 'call': return this.netCall(args[1], args[2] || [], args[0]);
+      // (a diagnostic: the call above with the blocks it ran recorded, each as module segment:offset or linear, the last
+      // `n`: [dll, name, args, n])
+      case 'callPath': return (async () => {
+        const path = [], n = args[3] || 400, where = this.probe.whereOf || (lin => (lin >>> 0).toString(16));
+        p.runHook = e => { path.push(e >>> 0); if (path.length > 20000) path.splice(0, 10000); };
+        let r; try { r = await this.netCall(args[1], args[2] || [], args[0]); } finally { p.runHook = null; }
+        if (!this.probe.whereOf) this.probe();
+        return { r, path: path.slice(-n).map(e => this.probe.whereOf(e)) };
+      })();
+      // (a diagnostic: each entry to a module's export recorded with its first n stack arguments and its caller, until
+      // read: [dll, name, n]; [] reads and clears)
+      case 'watch': {
+        if (!args.length) { const l = p.watchLog || []; p.watchLog = []; return l; }
+        const [dll, name, n = 4] = args, m = p.byName.get(dll), at = m && m.exports.get(name); if (!at) return false;
+        const hooks = p.entryHooks || (p.entryHooks = new Map());
+        hooks.set(at >>> 0, function () { const sp = this.reg('esp'), a = []; for (let i = 1; i <= n; i++) a.push((this.r32(sp + 4 * i) >>> 0).toString(16)); (this.watchLog || (this.watchLog = [])).push({ name, args: a, ret: (this.r32(sp) >>> 0).toString(16), thread: this.thread16 ? this.thread16.id : 0 }); });
+        return true;
+      }
       case 'netEnum': return this.netEnum(args[0], args[1]);
       case 'netConnections': return this.netConnections();
       case 'netfs': return ownNet(args[0])[args[1]](...(args[2] || []));
