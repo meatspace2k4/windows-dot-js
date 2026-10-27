@@ -2555,7 +2555,10 @@ def16('KERNEL', 327, '', 'jmp', function () {    // HandleParamError: BX = error
   if (window.W95PARAMERR) window.W95PARAMERR(err, cs, ip, this);
   // (in the machine's fault log as the debug KERNEL reports one: the error, the parameter, the caller; cmd 'faults')
   const fm = this.neByHandle(cs), ps = this.cpu.ecx.value & 0xffff, pm = this.neByHandle(ps), pg = pm && pm.segs && pm.segs.find(s => (s.sel | 1) === (ps | 1)), gh = this.ghandles && this.ghandles.get(ps | 1);
-  (this.faultLog || (this.faultLog = [])).push({ why: `parameter error ${err.toString(16)}, parameter ${(ps << 16 | (this.cpu.eax.value & 0xffff)).toString(16)} (${pm ? `${pm.name} segment ${pg ? `${pg.num}, flags ${pg.flags.toString(16)}` : '?'}` : gh ? `a global block of ${gh.size} bytes${gh.code ? ', code' : ''}` : 'no module'})`, at: `${fm ? fm.name : cs.toString(16)} ${cs.toString(16)}:${ip.toString(16)}` });
+  // (and who called the function that checked it: the far return in its frame, [BP+2]; the thread, its program)
+  const fbp = this.cpu.ebp.value & 0xffff, rip = this.r16(ssb + ((fbp + 2) & 0xffff)), rcs = this.r16(ssb + ((fbp + 4) & 0xffff)), rm = this.neByHandle(rcs), t16 = this.thread16;
+  (this.faultLog || (this.faultLog = [])).push({ why: `parameter error ${err.toString(16)}, parameter ${(ps << 16 | (this.cpu.eax.value & 0xffff)).toString(16)} (${pm ? `${pm.name} segment ${pg ? `${pg.num}, flags ${pg.flags.toString(16)}` : '?'}` : gh ? `a global block of ${gh.size} bytes${gh.code ? ', code' : ''}` : 'no module'})`, at: `${fm ? fm.name : cs.toString(16)} ${cs.toString(16)}:${ip.toString(16)}`,
+    from: `${rm ? rm.name : rcs.toString(16)} ${rcs.toString(16)}:${rip.toString(16)}`, thread: t16 ? `${t16.id} ${t16.pc ? t16.pc.path : t16.task ? t16.task.cmdLine || 'task' : t16.remote !== undefined ? 'host call' : '?'}` : 'host' });
   if (this.faultLog.length > 50) this.faultLog.shift();
   if (err & 0x8000) return this.retf16(0);
   const bp = this.cpu.ebp.value & 0xffff, nbp = this.r16(ssb + bp) & 0xfffe, handler = this.r16(ssb + ((bp - 2) & 0xffff));

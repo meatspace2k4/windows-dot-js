@@ -654,6 +654,10 @@ class Machine {
       this.kick();
     });
   }
+  /** the taskbar's window (Explorer's Shell_TrayWnd), the owner of what the Start menu opens; 0 before the shell is up */
+  trayHwnd() { try { const w = this.proc.nativeWindows().list.find(x => x.cls === 'Shell_TrayWnd'); return w ? w.hwnd : 0; } catch (_) { return 0; } }
+  /** USER32's `name` on a window (args[0]), made only while it is one (netBatch ifWindow) */
+  onWindow(name, args) { return this.netBatch([{ dll: 'USER32', name, args, ifWindow: args[0] }]).then(r => r && r[0]); }
   netCall(name, args = [], dll = 'MPR') { return this.netBatch([{ dll, name, args }]).then(r => r && r[0]); }
   /** exports called one after another on one new thread of this process, each [dll, name, dword or string args]; their
    *  results, null when one is not there. The thread waits as a program's thread does (a SendMessage to another
@@ -661,13 +665,19 @@ class Machine {
   netBatch(calls, remote = false) {
     // (KERNEL32's are this personality's, through their thunks; remote: the thread applies another machine's intent,
     // and makes none of its own, ne16.js intentQuiet)
+    // (a call with `ifWindow`: made only while that window is one, as IsWindow says when its turn comes, else its
+    // result 0; a window gone since the call was asked for (a dialog closed while its controls are read) is no
+    // parameter error of USER's)
     const p = this.proc, le32 = v => [v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, (v >>> 24) & 0xff];
     const fns = calls.map(c => { if (c.dll === 'KERNEL32') return p.thunkFor('KERNEL32', c.name); const m = p.byName.get(c.dll); return m && m.exports.get(c.name); });
-    if (!calls.length || fns.some(f => !f)) return Promise.resolve(null);
-    const strs = [], code = [], n = calls.length, size = n * 8 + calls.reduce((s, c) => s + 5 * c.args.length + 11, 0) + 3;
-    const a = p.alloc(size), ptrs = a + size - n * 8, res = ptrs + n * 4;   // (the code, then the functions' addresses, then the results)
+    const u32m = p.byName.get('USER32'), isWin = u32m && u32m.exports.get('IsWindow');
+    if (!calls.length || fns.some(f => !f) || (calls.some(c => c.ifWindow) && !isWin)) return Promise.resolve(null);
+    const strs = [], code = [], n = calls.length, size = (n + 1) * 8 + calls.reduce((s, c) => s + 5 * c.args.length + 11 + (c.ifWindow ? 19 : 0), 0) + 3;
+    const a = p.alloc(size), ptrs = a + size - (n + 1) * 8, res = ptrs + (n + 1) * 4, isWinAt = ptrs + 4 * n;   // (the code, then the functions' addresses, then the results)
+    p.w32(isWinAt, isWin || 0);
     calls.forEach((c, k) => {
       const vals = c.args.map(v => (typeof v === 'string' ? (() => { const s = p.alloc(v.length + 1); p.writeA(s, v); strs.push(s); return s; })() : v));
+      if (c.ifWindow) code.push(0x68, ...le32(c.ifWindow), 0xff, 0x15, ...le32(isWinAt), 0x85, 0xc0, 0x0f, 0x84, ...le32(5 * vals.length + 6));   // push hwnd; call [IsWindow]; test eax, eax; jz (to the result: 0)
       for (let i = vals.length - 1; i >= 0; i--) code.push(0x68, ...le32(vals[i]));            // push imm32
       code.push(0xff, 0x15, ...le32(ptrs + 4 * k), 0xa3, ...le32(res + 4 * k));                // call [ptr]; mov [res], eax
       p.w32(ptrs + 4 * k, fns[k]);
@@ -821,8 +831,8 @@ class Machine {
       // as the window's thread while it waits on its own SendMessage takes its reply, and it waits for good
       case 'focus': return (async () => {
         const [hwnd, min] = args;
-        if (min) await this.netCall('ShowWindow', [hwnd, 9], 'USER32');
-        else await this.netCall('SetForegroundWindow', [hwnd], 'USER32');
+        if (min) await this.onWindow('ShowWindow', [hwnd, 9]);
+        else await this.onWindow('SetForegroundWindow', [hwnd]);
       })();
       case 'minimize': u(42, [['w', args[0]], ['w', 6]]); return;
       // a window put where another machine in a shared session has it (shared.js): ShowWindow to its state (3
@@ -831,8 +841,8 @@ class Machine {
       // made as that thread while it waits on its own SendMessage takes over its queue's one send, and it waits for good)
       case 'place': return (async () => {
         const [hwnd, x, y, w, h, show] = args;
-        if (show) await this.netCall('ShowWindow', [hwnd, show], 'USER32');
-        if (show !== 3 && show !== 7) await this.netCall('MoveWindow', [hwnd, x, y, w, h, 1], 'USER32');
+        if (show) await this.onWindow('ShowWindow', [hwnd, show]);
+        if (show !== 3 && show !== 7) await this.onWindow('MoveWindow', [hwnd, x, y, w, h, 1]);
       })();
       case 'close': u(110, [['w', args[0]], ['w', 0x10], ['w', 0], ['l', 0]]); return;
       // a program another machine's person closed (its window gone there, after anything it asked there: "Save
@@ -858,7 +868,7 @@ class Machine {
       case 'world': return p.depth ? null : (async () => {
         const got = p.osWorld(), asks = got.list.flatMap(w => w.ask.map(q => ({ w, q })));
         const bufs = asks.map(({ q }) => (q[2] === 'text' ? (b => (p.u8[b] = 0, b))(p.alloc(0x400)) : 0));
-        const r = asks.length ? await this.netBatch(asks.map(({ q }, i) => ({ dll: 'USER32', name: 'SendMessageA', args: q[2] === 'text' ? [q[1], 0x0d, 0x400, bufs[i]] : [q[1], 0xf0, 0, 0] }))) : [];
+        const r = asks.length ? await this.netBatch(asks.map(({ q }, i) => ({ dll: 'USER32', name: 'SendMessageA', args: q[2] === 'text' ? [q[1], 0x0d, 0x400, bufs[i]] : [q[1], 0xf0, 0, 0], ifWindow: q[1] }))) : [];
         for (const w of got.list) w.ctrls = {};
         asks.forEach(({ w, q }, i) => { w.ctrls[q[0]] = q[2] === 'text' ? (r ? p.readA(bufs[i], 0x400) : null) : r ? r[i] : null; });
         for (const b of bufs) if (b) p.free(b);
@@ -867,15 +877,17 @@ class Machine {
       })();
       // a folder opened as the shell opens one (SHELL32's ShellExecute, in Explorer's process): another machine's
       // folder window, here too
-      case 'shellOpen': return this.netCall('ShellExecuteA', [0, 'open', args[0], 0, 0, 1], 'SHELL32');
+      // (owned by the taskbar's window, as the Start menu's opens are: with none, the shell asked USER about window 0,
+      // GetWindow's parameter error 6040)
+      case 'shellOpen': return this.netCall('ShellExecuteA', [this.trayHwnd(), 'open', args[0], 0, 0, 1], 'SHELL32');
       // a folder of the shell's own (Control Panel, Printers, My Computer: a CSIDL), opened as the Start menu opens one:
       // its ID list (SHGetSpecialFolderLocation), then ShellExecuteEx with it (SEE_MASK_IDLIST)
       case 'shellOpenSpecial': return (async () => {
-        const pp = p.alloc(4); p.w32(pp, 0);
+        const pp = p.alloc(4), owner = this.trayHwnd(); p.w32(pp, 0);
         try {
-          if (await this.netCall('SHGetSpecialFolderLocation', [0, args[0], pp], 'SHELL32') !== 0 || !p.r32(pp)) return false;
+          if (await this.netCall('SHGetSpecialFolderLocation', [owner, args[0], pp], 'SHELL32') !== 0 || !p.r32(pp)) return false;
           const sei = p.alloc(60), verb = p.alloc(8); p.u8.fill(0, sei, sei + 60); p.writeA(verb, 'open');
-          p.w32(sei, 60); p.w32(sei + 4, 4); p.w32(sei + 12, verb); p.w32(sei + 28, 1); p.w32(sei + 36, p.r32(pp));
+          p.w32(sei, 60); p.w32(sei + 4, 4); p.w32(sei + 8, owner); p.w32(sei + 12, verb); p.w32(sei + 28, 1); p.w32(sei + 36, p.r32(pp));
           try { return !!(await this.netCall('ShellExecuteExA', [sei], 'SHELL32')); } finally { p.free(sei); p.free(verb); }
         } finally { p.free(pp); }
       })();
@@ -917,10 +929,10 @@ class Machine {
       // a control set as another machine has it: an edit's or combo box's text (WM_SETTEXT), a button's check
       // (BM_SETCHECK), sent from a thread of its own as 'place' is
       case 'setCtrl': return (async () => {
-        const [hwnd, id, kind, value] = args, c = await this.netCall('GetDlgItem', [hwnd, id], 'USER32');
+        const [hwnd, id, kind, value] = args, c = await this.onWindow('GetDlgItem', [hwnd, id]);
         if (!c) return false;
-        if (kind === 'button') await this.netCall('SendMessageA', [c, 0xf1, value | 0, 0], 'USER32');
-        else await this.netCall('SendMessageA', [c, 0x0c, 0, String(value)], 'USER32');
+        if (kind === 'button') await this.onWindow('SendMessageA', [c, 0xf1, value | 0, 0]);
+        else await this.onWindow('SendMessageA', [c, 0x0c, 0, String(value)]);
         return true;
       })();
       case 'listItem': return p.depth ? null : p.listItem(args[0], args[1], !!args[2]);   // a list view's item selected, or opened (the scripting API's click, dblclick)
