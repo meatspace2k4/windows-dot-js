@@ -362,6 +362,10 @@ class Machine {
   startSystemTask() {
     const p = this.proc, S = self.W95SYSTEM || {}, items = W.regVals('hklm\\software\\microsoft\\windows\\currentversion\\runonce\\setup');
     const exe = items.length && (S.programs || {})['RUNONCE.EXE'] ? ['C:\\WINDOWS\\RUNONCE.EXE', 'C:\\WINDOWS\\SYSTEM\\RUNONCE.EXE'].find(f => fs.exists(f)) : null;
+    // (a first start, Setup's items still to run: every program of it is this machine's own to run, whatever session it
+    // joins; a machine joining with them held never got its shell, which waits for them)
+    this.firstStart = !!items.length;
+    if (items.length && this.holdStartup) { this.holdStartup = false; post({ t: 'emit', ev: 'sync.firststart', data: {} }); }
     if (!exe) return this.startMsgsrv();
     p.init16();
     this.loadMpr();   // (before Setup's items: SHELL32 builds its desktop's items once in this address space, and RUNONCE is its first user)
@@ -798,7 +802,7 @@ class Machine {
    *  another Explorer, which made a second desktop and taskbar */
   async shellUp() {
     const up = () => { try { return this.proc.nativeWindows().list.some(x => x.cls === 'Progman'); } catch (_) { return false; } };
-    for (let i = 0; i < 400 && !up(); i++) await new Promise(r => setTimeout(r, 50));
+    for (let i = 0; i < (this.firstStart ? 1800 : 400) && !up(); i++) await new Promise(r => setTimeout(r, 50));   // (a first start takes its time under Setup's screen: the session's programs start after it)
   }
   /** USER32's `name` on a window (args[0]), made only while it is one (netBatch ifWindow) */
   onWindow(name, args) { return this.netBatch([{ dll: 'USER32', name, args, ifWindow: args[0] }]).then(r => r && r[0]); }
