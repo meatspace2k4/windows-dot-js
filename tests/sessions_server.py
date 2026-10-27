@@ -64,6 +64,14 @@ assert s2.state()['world']['N'] == {'x': 2, 'ctrls': {'1:edit': 'hi'}}
 s.op('a', 'obj', {'id': 'NOTEPAD.EXE#0/Notepad#0', 'v': {'x': 2}, 'gen': 1}); assert s.state()['world'] == {'NOTEPAD.EXE#0/Notepad#0': {'x': 2}}
 s.op('b', 'intent', {'key': 'spi:17', 'kind': 'spi', 'action': 17, 'ui': 1, 'flags': 3})
 s.leave('a', qa); s.leave('b', qb); assert s.state()['world'] == {} and 'spi:17' in s.state()['intents']
+# a reloaded page (the same client) starting while its old stream is still open, with no one else there: its windows
+# went with its restart (the Control Panel it had open was opened again at each reload)
+r = S.Session('r'); qr = r.join('a', 'Bob'); r.op('a', 'obj', {'id': 'FOLDER/Control Panel#0', 'v': {'folder': {'csidl': 3}}})
+st = r.start('a', 'Bob'); assert st['world'] == {} and st['running'] is False, st
+qr2 = r.join('a', 'Bob'); r.leave('a', qr); assert r.people and r.state()['world'] == {}
+# another machine running it: its windows stay
+r.op('a', 'obj', {'id': 'N', 'v': {'x': 1}}); qo = r.join('b', 'Ann')
+st = r.start('a', 'Bob'); assert st['running'] is True and st['world'] == {'N': {'x': 1}}, st
 
 # ---- kept in its folder: a new server has its intents, not its objects
 root = tempfile.mkdtemp()

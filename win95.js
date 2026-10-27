@@ -553,7 +553,6 @@ function mountDrives() {
 }
 // Setup's first boot: C: as a fresh install leaves it
 function makeDisk(mounted) {
-  firstRun = true;
   if (!mounted) mountDrives();
   const b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
   const sysFonts = (window.W95SYSTEM || {}).fonts || {};
@@ -570,7 +569,7 @@ function makeDisk(mounted) {
   txt('C:\\AUTOEXEC.BAT', '@ECHO OFF\nSET PATH=C:\\WINDOWS;C:\\WINDOWS\\COMMAND\nSET TEMP=C:\\WINDOWS\\TEMP\n');
   txt('C:\\CONFIG.SYS', 'DEVICE=C:\\WINDOWS\\HIMEM.SYS\nDOS=HIGH,UMB\nFILES=60\n');
   txt(WINDIR + '\\WIN.INI', '[windows]\nload=\nrun=\nNullPort=None\nScreenSaveActive=0\nScreenSaveTimeOut=900\n\n[Desktop]\nWallpaper=(None)\nTileWallpaper=0\nWallpaperStyle=0\n\n[intl]\nsCountry=United States\n\n[fonts]\n' + WIN_INI_FONTS.filter(([, f]) => sysFonts[f]).map(([n, f]) => `${n}=${f}\n`).join(''));
-  txt(WINDIR + '\\SYSTEM.INI', '[boot]\nshell=Explorer.exe\nSCRNSAVE.EXE=\nsystem.drv=system.drv\ndisplay.drv=pnpdrvr.drv\ndrivers=mmsystem.dll\n\n[386Enh]\nmouse=*vmouse, msmouse.vxd\n\n[boot.description]\ndisplay.drv=Standard Display Adapter (VGA)\n');
+  txt(WINDIR + '\\SYSTEM.INI', '[boot]\nshell=Explorer.exe\nSCRNSAVE.EXE=\nsystem.drv=system.drv\ndisplay.drv=pnpdrvr.drv\nsound.drv=mmsound.drv\ndrivers=mmsystem.dll\n\n[386Enh]\nmouse=*vmouse, msmouse.vxd\n\n[boot.description]\ndisplay.drv=Standard Display Adapter (VGA)\n');
   for (const e of ['NOTEPAD.EXE', 'EXPLORER.EXE', 'REGEDIT.EXE', 'CALC.EXE', 'WRITE.EXE', 'TASKMAN.EXE', 'PROGMAN.EXE', 'WINFILE.EXE', 'SOL.EXE'])
     fs.writeFile(join(WINDIR, e), exeStub());
   for (const e of ['USER.EXE', 'GDI.EXE', 'KRNL386.EXE', 'USER32.DLL', 'GDI32.DLL', 'KERNEL32.DLL', 'SHELL32.DLL', 'COMCTL32.DLL', 'VMM32.VXD'])
@@ -2622,10 +2621,8 @@ function logOnDialog() {
 }
 function shutdownSeq(restart) {
   [...windows].forEach(w => closeWin(w, true)); closeMenus();
-  shutDownCleanly();
   // the machines stop as Windows does (the system's, the programs'): a restart boots them afresh
   for (const a of new Set([...nativeApps, sysApp])) if (a && a.alive) a.exited(0);
-  if (restart) { rebooted = true; try { localStorage.setItem(SHUTDOWN, 'running'); } catch (_) { /* no storage */ } }   // (Windows runs again)
   screen = 'logow'; dirty();
   setTimeout(() => {
     if (restart) { screen = 'black'; dirty(); setTimeout(boot, 1200); } else { screen = 'logos'; dirty(); }
@@ -3152,8 +3149,9 @@ function setupFontSize() {
 function setupSound() {
   const S = window.W95SYSTEM || {}, infs = S.infs || {};
   // Windows 3.x's sound functions (the module SOUND: Minesweeper's beeps), the driver SETUPC.INF names in SYSTEM.INI's
-  // [boot], which KERNEL loads as it loads the others there
-  if (fs.exists(join(WINDIR, 'SYSTEM', 'MMSOUND.DRV')) && W95Win32.iniGet(fs, 'SYSTEM.INI', 'boot', 'sound.drv') === null) W95Win32.iniSet(fs, 'SYSTEM.INI', 'boot', 'sound.drv', 'mmsound.drv');
+  // [boot], which KERNEL loads as it loads the others there; on every disk, as Setup writes it whatever the system has
+  // (a disk made before the line was written gets it too)
+  if (!W95Win32.iniGet(fs, 'SYSTEM.INI', 'boot', 'sound.drv')) W95Win32.iniSet(fs, 'SYSTEM.INI', 'boot', 'sound.drv', 'mmsound.drv');
   if (!infs['MOTOWN.INF']) return;
   // the media files, each one the disk lacks (a disk set up before the bundle carried it gets it too)
   const media = join(WINDIR, 'MEDIA'); fs.mkdir(media, { recursive: true });
@@ -3412,7 +3410,7 @@ class NativeWin extends Win {
     this.set(n);
   }
   set(n) {
-    Object.assign(this, { x: n.x, y: n.y, w: n.w, h: n.h, title: n.title, min: n.iconic, cls: n.cls, transparent: !!(n.ex & 0x20), preview: !!n.preview, guestParent: n.parent || 0 });
+    Object.assign(this, { x: n.x, y: n.y, w: n.w, h: n.h, title: n.title, min: n.iconic, cls: n.cls, nativeModal: !!n.modal, transparent: !!(n.ex & 0x20), preview: !!n.preview, guestParent: n.parent || 0 });
     if (n.pixels) {
       if (!this.surface || this.surface.width !== n.w || this.surface.height !== n.h) { this.surface = mkc(n.w, n.h); this.surfaceCtx = this.surface.getContext('2d'); }
       const image = this.surfaceCtx.createImageData(n.w, n.h); image.data.set(n.pixels); this.surfaceCtx.putImageData(image, 0, 0);
@@ -3841,27 +3839,20 @@ function exeKind(b) {
 // Windows 95's system: one machine (one USER, one MMSYSTEM, one sound card) whose first task is MSGSRV32.EXE, started
 // as the desktop comes up. USER's first-task start-up loads the installable drivers for it (MMSYSTEM, the card's), so
 // sound starts once, with the system, and MSGSRV32 plays SystemStart. The programs the shell runs start in it
-let sysApp = null, sysStarting = null, firstRun = false, rebooted = false;   // firstRun: Setup built C: as this page started (makeDisk); rebooted: Restart in it
-// SystemStart is heard when Windows starts after it was shut down (Shut Down, Restart), and on its first run (Setup has
-// just built C:): a page reloaded or a window closed with Windows running is no shutdown, and the start after it is
-// quiet. The shutdown record is this browser's (a start with none plays)
-const SHUTDOWN = 'w95.shutdown';
-// ?debug=1 (or true): a page started for testing, its start-up sound silent
+let sysApp = null, sysStarting = null;
+// ?debug=1 (or true): a page started for testing
 const DEBUG = /^(1|true)$/i.test((() => { try { return new URLSearchParams(location.search).get('debug') || ''; } catch (_) { return ''; } })());
-// ?mute=1: a page that makes no sound: its start quiet, as ?debug=1's, and its outputs (the sound card's streams,
+// ?mute=1: a page that makes no sound: its start quiet, and its outputs (the sound card's streams,
 // sound.js; the CD drive's, cdaudio.js) silent
 window.W95MUTE = window.W95MUTE || /^(1|true)$/i.test((() => { try { return new URLSearchParams(location.search).get('mute') || ''; } catch (_) { return ''; } })());
-const cleanStart = (() => { let v = null; try { v = localStorage.getItem(SHUTDOWN); localStorage.setItem(SHUTDOWN, 'running'); } catch (_) { /* no storage: every start plays */ } return v !== 'running'; })();
-function shutDownCleanly() { try { localStorage.setItem(SHUTDOWN, 'clean'); } catch (_) { /* no storage */ } }
 function startSystem() {
   if (window.W95SYSTEMVM === false) return Promise.resolve(null);
   if (sysApp && sysApp.alive) return Promise.resolve(sysApp);
   return sysStarting || (sysStarting = (async () => {
     const S = window.W95SYSTEM || {}; if (!(S.ne || {}).MSGSRV32 || !Object.keys(S.programs || {}).length) return null;
-    // MSGSRV32's start-up plays SystemStart and starts the shell SYSTEM.INI names; after a start that was no shutdown
-    // its SystemStart is not heard (quiet)
-    // (?debug=1: the start-up sound never heard, for the restarts of testing)
-    const quiet = DEBUG || window.W95MUTE || (!cleanStart && !firstRun && !rebooted);
+    // MSGSRV32's start-up plays SystemStart at every start, as Windows 95's does (a reload, a Restart, after a crash),
+    // and starts the shell SYSTEM.INI names; a page asked to be silent (?mute=1) starts quiet
+    const quiet = window.W95MUTE;
     const a = new RemoteApp(join(WINDIR, 'SYSTEM', 'MSGSRV32.EXE'), '', { system: true, quiet });
     if (!(await a.start(null, null))) { bootLogoEnd(); return null; }
     sysApp = a;
@@ -5296,7 +5287,7 @@ function pointer(type, x, y, button = 0) {
   el.dispatchEvent(new PointerEvent(type, { clientX: r.left + (x + 0.5) * r.width / W, clientY: r.top + (y + 0.5) * r.height / H,
     button, buttons: type === 'pointerup' ? 0 : 1 << (button === 2 ? 1 : 0), pointerId: 1, pointerType: 'mouse', bubbles: true, cancelable: true }));
 }
-const winInfo = w => ({ title: w.title, x: w.x, y: w.y, w: w.w, h: w.h, active: w === active, minimized: !!w.min, maximized: !!w.max, modal: modals.includes(w), ...(w.message ? { message: w.message } : {}) });
+const winInfo = w => ({ title: w.title, x: w.x, y: w.y, w: w.w, h: w.h, active: w === active, minimized: !!w.min, maximized: !!w.max, modal: modals.includes(w) || !!w.nativeModal, ...(w.message ? { message: w.message } : {}) });
 const findWin = t => { const m = t instanceof RegExp ? w => t.test(w.title) : w => w.title === t; for (let i = windows.length - 1; i >= 0; i--) if (m(windows[i])) return windows[i]; return null; };
 const KEY_NAMES = { enter: 'Enter', esc: 'Escape', escape: 'Escape', tab: 'Tab', backspace: 'Backspace', delete: 'Delete', del: 'Delete',
   up: 'ArrowUp', down: 'ArrowDown', left: 'ArrowLeft', right: 'ArrowRight', home: 'Home', end: 'End', pageup: 'PageUp', pagedown: 'PageDown', space: ' ' };
@@ -5362,7 +5353,7 @@ function elements() {
     if (w.min) continue;
     const win = { window: w.title };
     if (w.native && w.cls === '#32768') win.menuDepth = menuDepth++;
-    add('window', w.title, w, { active: w.isActive, modal: modals.includes(w), maximized: !!w.max });
+    add('window', w.title, w, { active: w.isActive, modal: modals.includes(w) || !!w.nativeModal, maximized: !!w.max });
     add('titlebar', w.title, w.capR, win);
     for (const b of w.buttons()) add('pushbutton', { close: 'Close', max: 'Maximize', restore: 'Restore', min: 'Minimize' }[b.id], b, { ...win, disabled: !!b.disabled });
     if (w.native && w.app.alive && w.app.proc && !w.app.proc.depth) {   // the controls USER keeps for a native window

@@ -657,6 +657,13 @@ class Machine {
   }
   /** the taskbar's window (Explorer's Shell_TrayWnd), the owner of what the Start menu opens; 0 before the shell is up */
   trayHwnd() { try { const w = this.proc.nativeWindows().list.find(x => x.cls === 'Shell_TrayWnd'); return w ? w.hwnd : 0; } catch (_) { return 0; } }
+  /** until the shell's desktop (Progman, the window SetShellWindow names) is up, as Windows starts: a program started
+   *  before it that opens a folder (Control Panel: SHELL32's ShellExecuteEx with an ID list) finds no shell and starts
+   *  another Explorer, which made a second desktop and taskbar */
+  async shellUp() {
+    const up = () => { try { return this.proc.nativeWindows().list.some(x => x.cls === 'Progman'); } catch (_) { return false; } };
+    for (let i = 0; i < 400 && !up(); i++) await new Promise(r => setTimeout(r, 50));
+  }
   /** USER32's `name` on a window (args[0]), made only while it is one (netBatch ifWindow) */
   onWindow(name, args) { return this.netBatch([{ dll: 'USER32', name, args, ifWindow: args[0] }]).then(r => r && r[0]); }
   netCall(name, args = [], dll = 'MPR') { return this.netBatch([{ dll, name, args }]).then(r => r && r[0]); }
@@ -859,7 +866,7 @@ class Machine {
       case 'closeState': p.k32CloseState(args[0]); return;
       case 'spawn': {
         const result = r => typeof r === 'object' ? { ok: true, pid: r.pid, ...(r.previewKey ? { previewHwnd: r.previewHwnd, previewKey: r.previewKey } : {}) } : { err: r };
-        return /\.SCR$/i.test(args[0] || '') ? this.spawnSaverAsync(args[0], args[1] || '').then(result) : result(this.spawnProgram(args[0], args[1], args[2] || {}));
+        return /\.SCR$/i.test(args[0] || '') ? this.spawnSaverAsync(args[0], args[1] || '').then(result) : this.shellUp().then(() => result(this.spawnProgram(args[0], args[1], args[2] || {})));
       }
       case 'endProcess': { const p = this.proc, pc = p.procs && p.procs.get(args[0]); if (pc) p.endProcess(pc, args[1] || 0); return pc ? true : this.endSaver(args[0], args[1] || 0); }
       case 'closeWin32': return this.proc.sendMsg(args[0], W.WM.CLOSE);
@@ -925,7 +932,7 @@ class Machine {
       }
       // (a program another machine runs in a shared session: its clock as of its start there, args[1], ne16.js startClock)
       // (and where it comes from, args[2]: 'remote', another machine's person's, for its cause, ne16.js causeOf)
-      case 'run': { const held = this.holdStartup; this.holdStartup = false; p.nextClock = args[1] || null; p.nextOrigin = args[2] || null; try { const r = this.exec(args[0], 1); return typeof r === 'number' ? (r > 32 ? { ok: true } : { err: r }) : r && r.err ? r : { ok: true }; } finally { this.holdStartup = held; p.nextClock = null; p.nextOrigin = null; } }
+      case 'run': return this.shellUp().then(() => { const held = this.holdStartup; this.holdStartup = false; p.nextClock = args[1] || null; p.nextOrigin = args[2] || null; try { const r = this.exec(args[0], 1); return typeof r === 'number' ? (r > 32 ? { ok: true } : { err: r }) : r && r.err ? r : { ok: true }; } finally { this.holdStartup = held; p.nextClock = null; p.nextOrigin = null; } });
       case 'effects': return (p.effects || []).slice();   // (what the machine did, with its causes: ne16.js effect)
       // a control set as another machine has it: an edit's or combo box's text (WM_SETTEXT), a button's check
       // (BM_SETCHECK), sent from a thread of its own as 'place' is

@@ -61,8 +61,13 @@ class Session:
         else: raise ValueError(f'no kind {kind}')
 
     def start(self, client, user):
-        """the state a machine starts from, and whether others' machines run the session now"""
-        with self.lock: return dict(self.state(), running=bool(self.people))
+        """the state a machine starts from, and whether others' machines run the session now. With no other machine
+        running it, the session's programs and windows are gone: this one's own earlier start (a reloaded page keeps its
+        client, and its old stream may not have ended yet) ran them, and its restart ended them"""
+        with self.lock:
+            others = any(c != client for c in self.people)
+            if not others: self.world, self.gens = {}, {}
+            return dict(self.state(), running=others)
 
     def state(self):
         with self.lock: return {'seq': self.seq, 'world': dict(self.world), 'gens': dict(self.gens), 'intents': dict(self.intents)}

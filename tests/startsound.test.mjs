@@ -1,44 +1,31 @@
-// SystemStart at boot: the system's machine (MSGSRV32) starts with its sound heard after a shutdown or restart and on
-// the first run, quiet after a reload with Windows running; and its start owes nothing to Setup's Start menu pass
-// (GRPCONV's RunOnce), which the boot no longer runs
+// SystemStart at boot: the system's machine (MSGSRV32) starts with its sound heard at every start, as Windows 95's
+// (a reload, a Restart, ?debug=1's), quiet only on a page asked to be silent (?mute=1); and its start owes nothing to
+// Setup's Start menu pass (GRPCONV's RunOnce), which the boot no longer runs
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 const w = readFileSync(new URL('../win95.js', import.meta.url), 'utf8');
 const cut = (a, b) => { const i = w.indexOf(a); assert.ok(i >= 0, a); return w.slice(i, w.indexOf(b, i) + b.length); };
 
-// the page's start: heard (quiet false) with no record, after Shut Down ('clean') and after Restart; not after a
-// reload with Windows running ('running'), unless Setup built C: as the page started
-function page(record, { firstRun = false, rebooted = false, debug = '' } = {}) {
-  const store = new Map(); if (record !== null) store.set('w95.shutdown', record);
+function page(mute) {
   const started = [];
   class App { constructor(path, arg, o) { Object.assign(this, { path, arg, ...o }); } async start() { started.push(this); return true; } }
-  const S = new Function('localStorage', 'window', 'RemoteApp', 'NativeApp', 'join', 'WINDIR', 'firstRun', 'rebooted', 'location', `
+  const S = new Function('window', 'RemoteApp', 'NativeApp', 'join', 'WINDIR', `
     let sysApp = null, sysStarting = null; const bootLogoEnd = () => {};   // (the start-up screen: the page's drawing)
-    ${cut('const SHUTDOWN = ', '\n')}
-    ${cut('const DEBUG = ', '\n')}
-    ${cut('const cleanStart = ', '\n')}
-    ${cut('function shutDownCleanly() {', '\n')}
     ${cut('function startSystem() {', 'sysStarting = null; }));\n}')}
-    return { startSystem, shutDownCleanly, cleanStart, record: () => localStorage.getItem('w95.shutdown') };`);
-  const ls = { getItem: k => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, v) };
-  const win = { W95SYSTEM: { ne: { MSGSRV32: {} }, programs: { 'EXPLORER.EXE': {} } }, SharedArrayBuffer: function () {} };
-  return { ...S(ls, win, App, App, (...a) => a.join('\\'), 'C:\\WINDOWS', firstRun, rebooted, { search: debug ? `?debug=${debug}` : '' }), started };
+    return { startSystem };`);
+  const win = { W95SYSTEM: { ne: { MSGSRV32: {} }, programs: { 'EXPLORER.EXE': {} } }, W95MUTE: mute, SharedArrayBuffer: function () {} };
+  return { ...S(win, App, App, (...a) => a.join('\\'), 'C:\\WINDOWS'), started };
 }
-for (const [record, opts, heard] of [
-  [null, {}, true], ['clean', {}, true], ['running', {}, false], ['running', { rebooted: true }, true], ['running', { firstRun: true }, true],
-  // ?debug=1 (or true): silent whatever the record says
-  [null, { debug: '1' }, false], ['clean', { debug: 'true' }, false], ['running', { firstRun: true, debug: '1' }, false], [null, { debug: '0' }, true],
-]) {
-  const p = page(record, opts);
-  assert.equal(p.record(), 'running');   // (the page is running from here: a reload now is no shutdown)
+for (const mute of [false, true]) {
+  const p = page(mute);
   await p.startSystem();
-  assert.equal(p.started.length, 1, JSON.stringify([record, opts]));
+  assert.equal(p.started.length, 1);
   const a = p.started[0];
   assert.ok(/MSGSRV32\.EXE$/.test(a.path) && a.system, 'the system machine is MSGSRV32');
-  assert.equal(a.quiet, !heard, JSON.stringify([record, opts]));
+  assert.equal(a.quiet, mute);
 }
-// Shut Down leaves the record a clean one: the next start is heard
-{ const p = page('running'); p.shutDownCleanly(); assert.equal(p.record(), 'clean'); }
+// (no record of a shutdown decides it, and ?debug=1 does not silence it)
+assert.ok(!/w95\.shutdown|cleanStart/.test(w));
 
 // the boot's Setup passes include the Start menu one, and it leaves GRPCONV to Setup's RunOnce (RunOnce\Setup), not
 // to the shell's own RunOnce: the machine runs Setup's items under RUNONCE before its message server starts, so the

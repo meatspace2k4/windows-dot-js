@@ -1089,7 +1089,9 @@ P.nativeWindows = function () {
     const x = s16(0), y = s16(2), w = s16(4) - x, hh = s16(6) - y;
     const tl = this.user16(107, [['w', h], ['w', 0x0d], ['w', 160], ['l', buf + 16]]).ax, title = tl ? this.readA(a + 16, tl) : '';   // DefWindowProc WM_GETTEXT: USER's own copy, no message sent
     const cl = u(58, [['w', h], ['l', buf + 0x180], ['w', 64]]), cls = cl ? this.readA(a + 0x180, cl) : '';          // GetClassName
-    list.push({ hwnd: h, x, y, w, h: hh, title, cls, owner: u(262, [['w', h], ['w', 4]]), iconic: !!u(31, [['w', h]]), task: u(224, [['w', h]]), ex: this.user16(135, [['w', h], ['w', 0xffec]]).dxax });   // GW_OWNER, IsIconic, GetWindowTask, GWL_EXSTYLE
+    // (modal: owned, its owner disabled, as DialogBox and MessageBox leave it)
+    const owner = u(262, [['w', h], ['w', 4]]);
+    list.push({ hwnd: h, x, y, w, h: hh, title, cls, owner, modal: !!owner && !u(35, [['w', owner]]), iconic: !!u(31, [['w', h]]), task: u(224, [['w', h]]), ex: this.user16(135, [['w', h], ['w', 0xffec]]).dxax });   // GW_OWNER, IsIconic, GetWindowTask, GWL_EXSTYLE
   }
   // the active window: the foreground window when it is one of these (another started process's window is not the
   // active window of the task calling here), else the calling task's

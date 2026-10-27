@@ -24,7 +24,7 @@ SYSTEM = ['win87em.dll', 'nddeapi.dll', 'nddenb.dll', 'olecli.dll', 'olesvr.dll'
 # LDID 25, and the help folder, LDID 18; its links and registry): Clipboard Viewer (CLIP.INF), and the Games
 # (APPLETS.INF [games]: wingames.files, wingames.help; their links, wingames.links)
 GAMES = ['freecell', 'mshearts', 'sol', 'winmine']
-WINDOWS = ['clipbrd.exe'] + [g + '.exe' for g in GAMES]
+WINDOWS = ['clipbrd.exe'] + [g + '.exe' for g in GAMES] + ['control.exe']   # (and the base install's CONTROL.EXE: Run's 'control')
 HELP = ['clipbrd.hlp', 'clipbrd.cnt'] + [g + x for g in GAMES for x in ('.hlp', '.cnt')]
 INFS = ['clip.inf']
 found = {}
