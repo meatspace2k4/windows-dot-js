@@ -8,8 +8,8 @@
   if (typeof importScripts !== 'function' || !self.W95Win32) return;   // (the system's machine's worker only)
   const { def } = self.W95Win32;
   const WM = { DESTROY: 2, COMMAND: 0x111, LBUTTONUP: 0x202, RBUTTONUP: 0x205, POPUP: 0x8002, ICON: 0x8003, PEOPLE: 0x8005, NOTIFY: 0x8006, FREE: 0x8007 };
-  const NIM = { ADD: 0, MODIFY: 1, DELETE: 2 }, CMD = { WHERE: 1001 };
-  const st = self.W95TrayState = { hwnd: 0, people: new Map(), uid: 1, pt: 0, menuFor: null };
+  const NIM = { ADD: 0, MODIFY: 1, DELETE: 2 }, CMD = { WHERE: 1001, FOLLOW: 1002, WINDOW: 2000 };   // (WINDOW + n: the person's nth window)
+  const st = self.W95TrayState = { hwnd: 0, people: new Map(), uid: 1, pt: 0, menuFor: null, menuWins: [], following: null };
   const fn = (p, dll, nm) => { const m = p.byName.get(dll); return m && m.exports.get(nm); };
   const U = (p, nm, args) => p.call(fn(p, 'USER32', nm), args), G = (p, nm, args) => p.call(fn(p, 'GDI32', nm), args);
   // a string in the program's memory, one buffer per use, grown as the text grows
@@ -60,6 +60,7 @@
       const who = st.people.get(client);
       if (!who) { const w = { client, user: x.user, uid: st.uid++, icon: icon(p, x.color || [0, 0, 128]) }; st.people.set(client, w); U(p, 'PostMessageA', [st.hwnd, WM.NOTIFY, NIM.ADD, nid(p, w)]); }
       else if (who.user !== x.user) { who.user = x.user; U(p, 'PostMessageA', [st.hwnd, WM.NOTIFY, NIM.MODIFY, nid(p, who)]); }
+      st.people.get(client).wins = x.wins || [];   // (the windows they opened, for their menu)
     }
   }
 
@@ -86,12 +87,26 @@
       U(p, 'AppendMenuA', [m, 1, 0, str(p, 'name', who.user)]);                         // MF_GRAYED: their name
       U(p, 'AppendMenuA', [m, 0x800, 0, 0]);                                           // a separator
       U(p, 'AppendMenuA', [m, 0, CMD.WHERE, str(p, 'where', `&Where Is ${who.user}?`)]);
+      // Follow: their pointer marked on this screen until Follow is chosen again (checked while it is)
+      U(p, 'AppendMenuA', [m, st.following === who.client ? 8 : 0, CMD.FOLLOW, str(p, 'follow', `&Follow ${who.user}`)]);
+      // the windows they opened (the session's objects whose origin is their machine, from the page: W95TrayPeople),
+      // each brought to the front here when chosen
+      const wins = (who.wins || []).slice(0, 20); st.menuWins = wins;
+      if (wins.length) {
+        const sub = U(p, 'CreatePopupMenu', []);
+        wins.forEach((w, i) => U(p, 'AppendMenuA', [sub, 0, CMD.WINDOW + i, str(p, `win${i}`, String(w.title || w.id).replace(/&/g, '&&').slice(0, 60))]));
+        U(p, 'AppendMenuA', [m, 0x10, sub, str(p, 'wins', `${who.user}'s &Windows`)]);   // (MF_POPUP)
+      }
+      U(p, 'AppendMenuA', [m, 0x800, 0, 0]);
+      U(p, 'AppendMenuA', [m, 1, 0, str(p, 'owner', `Settings changes go to ${(self.W95TrayOwner || 'the session owner')}'s profile`)]);   // (grayed: the session's one HKCU)
       st.menuFor = who.client;
       U(p, 'SetForegroundWindow', [h]); U(p, 'GetCursorPos', [st.pt]);                  // (as a notification-area menu is tracked: its window in front, at the pointer)
       U(p, 'PostMessageA', [h, WM.POPUP, m, st.pt]);
       return done();
     }
     if (msg === WM.COMMAND && (wp & 0xffff) === CMD.WHERE) { self.postMessage({ t: 'trayWhere', client: st.menuFor }); return done(); }
+    if (msg === WM.COMMAND && (wp & 0xffff) === CMD.FOLLOW) { st.following = st.following === st.menuFor ? null : st.menuFor; self.postMessage({ t: 'trayFollow', client: st.following }); return done(); }
+    if (msg === WM.COMMAND && (wp & 0xffff) >= CMD.WINDOW && (wp & 0xffff) < CMD.WINDOW + 100) { const w = st.menuWins[(wp & 0xffff) - CMD.WINDOW]; if (w) self.postMessage({ t: 'trayWindow', id: w.id, client: st.menuFor }); return done(); }
     if (msg === WM.DESTROY) { st.hwnd = 0; U(p, 'PostQuitMessage', [0]); return done(); }
     return 0;
   });

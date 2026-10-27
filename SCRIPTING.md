@@ -88,6 +88,8 @@ waits for an element the same way and resolves with it. With coordinates the cal
 | `saver.start`, `saver.stop` | `path` | a full-screen screen saver starts or ends |
 | `program.exit` | `path`, `mode` (`s`, `p`, `c`), `code`, `why` if it failed | a guest program ends |
 | `screen` | `screen` | boot screens, desktop, shutdown |
+| `devtools` | `open` | the browser's DevTools open or close (the Windows 95 app says; a browser tab cannot) |
+| `tray.follow`, `tray.window` | `client`; `id`, `client` | Follow chosen from a person's notification-area icon (`client` null when ended); one of their windows chosen there |
 | `fs.create`, `fs.write`, `fs.unlink`, `fs.mkdir`, `fs.rmdir`, `fs.rename`, `fs.attrib`, `fs.label`, `fs.mount` | `path`, `path2` for a rename | the file system changes |
 
 Window, menu, saver and screen events are found by comparing the shell's state after each change, so the changes

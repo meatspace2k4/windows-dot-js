@@ -48,8 +48,8 @@ qa = s.join('a', 'Bob'); qb = s.join('b', 'Ann')
 for q in (qa, qb):
     while not q.empty(): q.get_nowait()
 s.op('a', 'obj', {'id': 'NOTEPAD.EXE#0/Notepad#0', 'v': {'x': 1}})
-assert qb.get_nowait() == ('op', {'seq': 1, 'client': 'a', 'kind': 'obj', 'op': {'id': 'NOTEPAD.EXE#0/Notepad#0', 'v': {'x': 1}, 'gen': 0}})
-b = s.start('b', 'Ann'); assert b['running'] is True and b['world'] == {'NOTEPAD.EXE#0/Notepad#0': {'x': 1}}
+assert qb.get_nowait() == ('op', {'seq': 1, 'client': 'a', 'kind': 'obj', 'op': {'id': 'NOTEPAD.EXE#0/Notepad#0', 'v': {'x': 1, 'origin': 'a'}, 'gen': 0}})   # (its first appearance carries whose machine opened it)
+b = s.start('b', 'Ann'); assert b['running'] is True and b['world'] == {'NOTEPAD.EXE#0/Notepad#0': {'x': 1, 'origin': 'a'}}   # (origin: whose machine opened it)
 s.op('b', 'obj', {'id': 'NOTEPAD.EXE#0/Notepad#0', 'v': None}); assert s.state()['world'] == {'NOTEPAD.EXE#0/Notepad#0': None}
 assert s.state()['gens'] == {'NOTEPAD.EXE#0/Notepad#0': 1}, 'a close: the next generation'
 # a change made before that close (generation 0): passed over; its machine is sent the object as it is, from 'server'
@@ -61,9 +61,9 @@ assert qa.get_nowait()[1] == {'seq': 3, 'client': 'server', 'to': 'a', 'kind': '
 # a change is a patch, made to the object as it is: a field, a control
 s2 = S.Session('p')
 s2.op('a', 'obj', {'id': 'N', 'v': {'x': 1, 'ctrls': {'1:edit': ''}}}); s2.op('b', 'obj', {'id': 'N', 'v': {'ctrls': {'1:edit': 'hi'}}}); s2.op('a', 'obj', {'id': 'N', 'v': {'x': 2}})
-assert s2.state()['world']['N'] == {'x': 2, 'ctrls': {'1:edit': 'hi'}}
+assert s2.state()['world']['N'] == {'x': 2, 'ctrls': {'1:edit': 'hi'}, 'origin': 'a'}   # (origin: the machine that first said it exists, kept through others' patches)
 # opened again after it (generation 1): a new one
-s.op('a', 'obj', {'id': 'NOTEPAD.EXE#0/Notepad#0', 'v': {'x': 2}, 'gen': 1}); assert s.state()['world'] == {'NOTEPAD.EXE#0/Notepad#0': {'x': 2}}
+s.op('a', 'obj', {'id': 'NOTEPAD.EXE#0/Notepad#0', 'v': {'x': 2}, 'gen': 1}); assert s.state()['world'] == {'NOTEPAD.EXE#0/Notepad#0': {'x': 2, 'origin': 'a'}}
 s.op('b', 'intent', {'key': 'spi:17', 'kind': 'spi', 'action': 17, 'ui': 1, 'flags': 3})
 s.leave('a', qa); s.leave('b', qb); assert s.state()['world'] == {} and 'spi:17' in s.state()['intents']
 # a reloaded page (the same client) starting while its old stream is still open, with no one else there: its windows
@@ -73,7 +73,7 @@ st = r.start('a', 'Bob'); assert st['world'] == {} and st['running'] is False, s
 qr2 = r.join('a', 'Bob'); r.leave('a', qr); assert r.people and r.state()['world'] == {}
 # another machine running it: its windows stay
 r.op('a', 'obj', {'id': 'N', 'v': {'x': 1}}); qo = r.join('b', 'Ann')
-st = r.start('a', 'Bob'); assert st['running'] is True and st['world'] == {'N': {'x': 1}}, st
+st = r.start('a', 'Bob'); assert st['running'] is True and st['world'] == {'N': {'x': 1, 'origin': 'a'}}, st
 
 # ---- kept in its folder: a new server has its intents, not its objects
 root = tempfile.mkdtemp()

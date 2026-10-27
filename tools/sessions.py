@@ -48,13 +48,15 @@ class Session:
         if folder: self.load()
 
     # ---- the state
-    def apply(self, kind, op):
+    def apply(self, kind, op, client=None):
         if kind == 'obj':
             oid = op.get('id')
             if not isinstance(oid, str) or not oid: raise ValueError('an object needs an id')
             # (a patch of what changed, made to the object as it is: its fields, and each control in ctrls; None: closed,
             # kept so a machine starting it at its own start closes it too)
             self.world[oid] = merge(self.world.get(oid), op.get('v'))
+            # (whose machine opened it: the first client to say it exists, kept with the object for the tray's menus)
+            if isinstance(self.world[oid], dict) and client and not self.world[oid].get('origin'): self.world[oid] = dict(self.world[oid], origin=client)
         elif kind == 'intent':
             key = op.get('key')
             if not isinstance(key, str) or not key: raise ValueError('an intent needs a key')
@@ -89,7 +91,9 @@ class Session:
                     return self.seq
                 self.gens[oid] = max(cur, g + 1) if op.get('v') is None else cur
                 op = dict(op, gen=self.gens[oid])
-            self.apply(kind, op); self.seq += 1
+                # (an object's first appearance: whose machine opened it goes out with it, for every machine's copy)
+                if isinstance(op.get('v'), dict) and self.world.get(oid) is None: op['v'] = dict(op['v'], origin=client)
+            self.apply(kind, op, client); self.seq += 1
             msg = {'seq': self.seq, 'client': client, 'kind': kind, 'op': op}
             self.log.append(msg)
             if len(self.log) > LOG_KEEP: del self.log[:len(self.log) - LOG_KEEP]

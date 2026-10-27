@@ -174,7 +174,8 @@
   };
   /** an OS object's new state on this machine (null: it is gone), for every other machine */
   /** this machine's object's state now, and what changed (its patch; the whole state if not given) */
-  const obj = (id, v, patch) => { world.set(id, v == null ? null : v); send('obj', { id, v: v == null ? null : patch || v }, v == null ? null : v); };
+  // (this machine's copy keeps what the session knows of the object beyond this machine's state: its origin)
+  const obj = (id, v, patch) => { world.set(id, v == null ? null : L().merge(world.get(id), v)); send('obj', { id, v: v == null ? null : patch || v }, v == null ? null : v); };
   /** a setting this machine's person made, as the call that made it (ne16.js hookIntents), for every other machine */
   const intent = i => { intents.set(i.key, i); send('intent', i); };
   /** Windows has started here: what came meanwhile is made now */

@@ -3644,6 +3644,10 @@ class RemoteApp extends NativeApp {
         else peerWhere = { client: m.client, until: Date.now() + 3000 };
         dirty(); return;
       }
+      // Follow (from a person's icon): their pointer kept marked on this screen until Follow is chosen again (null)
+      case 'trayFollow': { peerFollow = m.client || null; const who = peerFollow && window.W95Shared && window.W95Shared.people().find(p => p.client === peerFollow); peerNotes.push({ text: peerFollow ? `Following ${(who && who.user) || 'Guest'}` : 'No longer following', until: Date.now() + 3000 }); emit('tray.follow', { client: peerFollow }); setTimeout(dirty, 3100); dirty(); return; }
+      // one of a person's windows chosen from their icon's menu: brought to the front here (it is the session's, so it is here too)
+      case 'trayWindow': { emit('tray.window', { id: m.id, client: m.client }); osLocal().then(local => { const mine = local && local.get(m.id); const w = mine && windows.find(x => x.native && x.guestHwnd === mine.hwnd); if (w) activate(w); else if (mine) sysApp.cmd('focus', [mine.hwnd, 0]); }).catch(() => {}); return; }
       // a console program's output, and its end, to the MS-DOS machine that is its console
       case 'conOut': { const c = consoles.get(m.id); if (c) { c.conWrite(m.text); dirty(); } return; }
       case 'mic': { if (window.W95Mic) window.W95Mic.set(!!m.on, (samples, rate) => this.worker.postMessage({ t: 'micIn', samples, rate }, [samples.buffer])); return; }   // (the sound card capturing: the microphone opened, or let go)
@@ -4603,7 +4607,7 @@ function logonChanged(o) {
 const PEER_COLORS = [[0, 0, 128], [128, 0, 0], [0, 128, 0], [128, 0, 128], [0, 128, 128], [128, 128, 0], [0, 0, 255], [255, 0, 0]];
 /** a person's colour, by their machine: the same on every machine */
 function peerColor(client) { let h = 0; for (const ch of String(client)) h = (h * 31 + ch.charCodeAt(0)) >>> 0; return PEER_COLORS[h % PEER_COLORS.length]; }
-const peerNotes = []; let peerSeen = null, peerWhere = null, trayStarted = false;
+const peerNotes = []; let peerSeen = null, peerWhere = null, peerFollow = null, trayStarted = false;
 function peopleChanged(list) {
   const now = Date.now(), names = new Map(list.map(p => [p.client, p.user || 'Guest']));
   if (peerSeen) {
@@ -4616,7 +4620,11 @@ function peopleChanged(list) {
 /** who is here, for the notification area's icons; SESSTRAY.EXE started the first time, once the shell is up */
 function trayPeople() {
   const S = window.W95Shared, a = sysApp; if (!S || !a || !a.alive || !osCaught) return;
-  a.cmd('tray', [S.people().map(p => ({ client: p.client, user: p.user || 'Guest', color: peerColor(p.client) }))]).catch(() => {});
+  // (with each person's windows: the session's objects whose origin is their machine, by title; and the session's
+  // owner, whose profile every settings change goes to: a name's own session is theirs, Guest's the shared one)
+  const wins = client => [...S.world()].filter(([, v]) => v && v.origin === client && v.folder === undefined).map(([id, v]) => ({ id, title: v.title || id }));
+  const owner = /^guest$/i.test(S.logon.session) || S.logon.session === 'guest' ? 'Guest' : (S.logon.session === S.ownSession(S.logon.user) ? S.logon.user : S.logon.session);
+  a.cmd('tray', [S.people().map(p => ({ client: p.client, user: p.user || 'Guest', color: peerColor(p.client), wins: wins(p.client) })), owner]).catch(() => {});
   if (!trayStarted) { trayStarted = true; a.cmd('run', ['SESSTRAY.EXE']).catch(() => { trayStarted = false; }); }
 }
 // the pointers of the other people in a shared session (shared.js), each an arrow with their name beside it in their
@@ -4631,6 +4639,9 @@ function drawPeers() {
       const k = (peerWhere.until - now) % 750 / 750;
       ctx.save(); ctx.strokeStyle = rgb; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(p.x, p.y, 10 + 30 * k, 0, 2 * Math.PI); ctx.stroke(); ctx.restore();
       requestAnimationFrame(dirty);
+    }
+    if (peerFollow === p.client) {   // (Follow: a ring round it, kept, until Follow is chosen again)
+      ctx.save(); ctx.strokeStyle = rgb; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(p.x, p.y, 16, 0, 2 * Math.PI); ctx.stroke(); ctx.restore();
     }
     if (c) ctx.drawImage(c.i, p.x - c.hx, p.y - c.hy);
     const label = p.user || 'Guest', tw = textW(label) + 10, tx = clamp(p.x + 12, 0, W - tw), ty = clamp(p.y + 18, 0, H - 17);
