@@ -5023,6 +5023,7 @@ Promise.all(ready).then(() => { resize(); kbd.focus(); dirty(); });
 const listeners = new Map();
 function emit(type, data = {}) {
   const ev = { type, ...data, t: Date.now() };
+  if (DEBUG && /^sync\./.test(type)) { const l = window.W95SYNCLOG || (window.W95SYNCLOG = []); l.push(ev); if (l.length > 200) l.shift(); }   // (a shared session's sync, from the page's start: ?debug=1)
   for (const k of [type, type.split('.')[0], '*']) for (const fn of listeners.get(k) || []) { try { fn(ev); } catch (e) { console.error(e); } }
   if (typeof window.__w95event === 'function') { try { window.__w95event(JSON.stringify(ev)); } catch (_) { /* client gone */ } }
 }
@@ -5072,6 +5073,7 @@ fs.on(e => emit('fs.' + e.op, { path: e.path, ...(e.path2 ? { path2: e.path2 } :
 //   holdStartup) until its person first does something on it: the session's are started for it instead
 let osWanted = false, osBusy = false, osAgain = false, osHeld = true;
 const osSeen = new Map(), osStarting = new Set(), osOpened = new Set(), OS_CLOSING = Symbol('closing');
+let osArea = null;   // (this machine's work area at its last read: its screen changing is its own)
 function shareInput(ev) {
   const S = sharedNow(); if (!S) return;
   if (ev.t === 'move') { S.pointer(ev.x, ev.y); return; }
@@ -5137,12 +5139,18 @@ async function osRead() {
   try {
     const S = sharedNow(), local = await osLocal(); if (!S || !local) return;
     const world = S.world();
+    // (this machine's screen changed: where Windows moved the windows for it is this machine's own; the session's places
+    // set again, fitted to the new screen, and nothing sent)
+    const area = JSON.stringify(local.area || null), resized = osArea !== null && area !== osArea; osArea = area;
+    const reset = new Set();
+    if (resized) for (const [id] of local) if (world.get(id) && osSeen.has(id) && osSeen.get(id) !== OS_CLOSING) { reset.add(id); osApply(id, world.get(id), local); }
     for (const [id, { v }] of local) {
+      if (reset.has(id)) continue;
       osStarting.delete(id);   // (one started for the session: up)
       if (osSeen.get(id) === OS_CLOSING || osSame(osSeen.get(id), v)) continue;   // (one this machine is closing: not reported)
       // (one the session has that came up here, started for it: the session's, set here; one of this machine's: sent)
       if (!osSeen.has(id) && world.get(id)) { osSeen.set(id, v); osApply(id, world.get(id), local); continue; }
-      osSeen.set(id, v); S.obj(id, v);
+      osSeen.set(id, v); S.obj(id, v); emit('sync.send', { id, x: v.x, y: v.y });
     }
     for (const id of [...osSeen.keys()]) if (!local.has(id)) {
       const was = osSeen.get(id); osSeen.delete(id);
@@ -5156,6 +5164,15 @@ async function osRead() {
     for (const id of osOpened) { osOpened.delete(id); if (!local.has(id)) osStarting.delete(id); }   // (a folder opened, not up by now: the next change tries again)
   } finally { osBusy = false; if (osAgain) { osAgain = false; osRead(); } }
 }
+/** a window's place as this machine shows the session's: moved only as far as keeps its title bar on this machine's
+ *  work area (a screen smaller than the machine's that placed it); a minimized or maximized one as it is */
+function osFit(v, area) {
+  if (!area || !area.w || !area.h || v.min || v.max || v.x === undefined) return v;
+  const clamp = (n, lo, hi) => Math.max(lo, Math.min(hi, n));
+  const x = clamp(v.x, area.x - v.w + OS_GRIP, area.x + area.w - OS_GRIP), y = clamp(v.y, area.y, area.y + area.h - OS_CAPTION);
+  return x === v.x && y === v.y ? v : { ...v, x, y };
+}
+const OS_GRIP = 40, OS_CAPTION = 22;   // (of a title bar: the width left on the screen to drag it by; its height)
 /** another machine's state of an object, set on this one */
 async function osApply(id, v, local) {
   local = local || await osLocal(); if (!local) return;
@@ -5185,10 +5202,12 @@ async function osApply(id, v, local) {
     a.cmd('run', [v.cmd || v.path, v.t0 || null]).then(r => { if (!r || r.err) { osStarting.delete(id); emit('sync.failed', { id, cmd: v.cmd, r }); } }, e => { osStarting.delete(id); emit('sync.failed', { id, cmd: v.cmd, err: String(e) }); });
     return;
   }
-  const m = mine.v; osSeen.set(id, v);
-  if (m.x !== v.x || m.y !== v.y || m.w !== v.w || m.h !== v.h || m.min !== v.min || m.max !== v.max) {
-    emit('sync.place', { id, x: v.x, y: v.y });
-    a.cmd('place', [mine.hwnd, v.x, v.y, v.w, v.h, v.min ? 7 : v.max ? 3 : m.min || m.max ? 9 : 0]);
+  // (its place fitted to this machine's screen, its title bar on it: this machine's own adjustment, which it does not
+  // send back; seen as it will be here)
+  const m = mine.v, f = osFit(v, local.area); osSeen.set(id, f);
+  if (m.x !== f.x || m.y !== f.y || m.w !== f.w || m.h !== f.h || m.min !== f.min || m.max !== f.max) {
+    emit('sync.place', { id, x: f.x, y: f.y });
+    a.cmd('place', [mine.hwnd, f.x, f.y, f.w, f.h, f.min ? 7 : f.max ? 3 : m.min || m.max ? 9 : 0]);
   }
   for (const [k, val] of Object.entries(v.ctrls || {})) {
     if (osSame(m.ctrls && m.ctrls[k], val)) continue;
