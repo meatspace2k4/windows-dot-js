@@ -216,6 +216,22 @@ the key reaches Windows; in the Windows 95 app the same key toggles them.
 Before any reload, read `read_console_messages` and `cmd('faults')`: a reload wipes both. `console.log('=== MARK ...')`
 before each step keeps the console in order.
 
+### A shared session fuzzed over real machines
+
+In a tab of the shell opened in a session of its own (`?debug=1&mute=1&session=<name>&user=Ann`):
+
+```js
+await import('/tools/convolution/fuzz-tabs.mjs'); await W95FuzzTabs.run({ seed: 1, actions: 10 })
+```
+
+opens two more tabs in that session (the browser must allow pop-ups for the page), gives this machine random
+actions (programs run, text typed, windows moved and closed) while the second reloads in the middle and the third
+joins late, waits until nothing is in flight, and compares the machines' digests (the session's windows, the shared
+registry values, the effects logs: a remote start made twice, echoes; MRU values that differ are logged). A failing
+trace is shrunk to the fewest actions that still fail, each try in a fresh session, and offered as a replay test
+(`W95FuzzTabs.replay({ trace })`). `tools/convolution/fuzz.mjs` walks the protocol's model the same way, without
+machines.
+
 ## Exploring
 
 `node bench/explore.mjs [endpoint] [--minutes 10] [--depth 12]` drives the system with these calls only, clicking

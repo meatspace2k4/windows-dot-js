@@ -1000,12 +1000,16 @@ const HKEY = { 0x80000000: 'hkcr', 0x80000001: 'hkcu', 0x80000002: 'hklm', 0x800
 // posted to the page by the worker (worker.js, 'log'), which keeps the page's ring; the console gets them from the
 // worker's own console, as DevTools shows a worker's console with the page's
 const LOG_RING = 2000, logRing = [], logWatchers = new Set();
-let logSeq = 0;
+let logSeq = 0, logLast = null, logBurst = { t: 0, n: 0 };
+// (a line said again at once is counted, not repeated; past 50 lines in a second the rest go to the ring only, with
+// one line saying how many: a program writing debug output in a loop must not slow the machine or fill the console)
 function log(level, tag, text) {
-  const line = { n: ++logSeq, t: Date.now(), level, tag, text: String(text) };
+  text = String(text);
+  if (logLast && logLast.tag === tag && logLast.text === text && logLast.level === level) { logLast.repeat = (logLast.repeat || 1) + 1; return logLast; }
+  const line = logLast = { n: ++logSeq, t: Date.now(), level, tag, text };
   logRing.push(line); if (logRing.length > LOG_RING) logRing.shift();
-  const f = console[level === 'debug' ? 'debug' : level === 'info' ? 'info' : level === 'error' ? 'error' : 'warn'];
-  if (f) f.call(console, `[${tag}] ${line.text}`);
+  const sec = (line.t / 1000) | 0; if (sec !== logBurst.t) { if (logBurst.n > 50) console.info(`[log] ${logBurst.n - 50} more lines in that second, in the ring only`); logBurst = { t: sec, n: 0 }; }
+  if (++logBurst.n <= 50) { const f = console[level === 'debug' ? 'debug' : level === 'info' ? 'info' : level === 'error' ? 'error' : 'warn']; if (f) f.call(console, `[${tag}] ${text}`); }
   for (const w of logWatchers) { try { w(line); } catch (_) { /* a watcher's own trouble */ } }
   return line;
 }

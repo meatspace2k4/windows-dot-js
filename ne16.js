@@ -1335,7 +1335,7 @@ P.osWorld = function () {
   // 'end' and 'close': the page sends no close of its own for one of these, oslogic.js read. Each is kept until it has
   // been gone for two reads: the page reads a window's going after it went)
   const rc = this.remoteClosed || (this.remoteClosed = new Map()), closed = [];
-  for (const [h, rec] of rc) { closed.push(h); if (!shown.has(h) && ++rec.gone > 2) rc.delete(h); }
+  for (const [h, rec] of rc) { if (shown.has(h) && rec.gone) { rc.delete(h); continue; } closed.push(h); if (!shown.has(h) && ++rec.gone > 2) rc.delete(h); }   // (a handle shown again after it went is a new window's)
   return { list: out, area: this.workArea(), closed };   // (and the work area they are placed in, which each machine's own screen sets)
 };
 /** a window this machine closes because another machine's person closed it there (cause 'remote'): remembered for
