@@ -193,11 +193,13 @@ class Machine {
     while ((r = B.ringTake(this.ring))) {
       if (r[0] === B.KEY) {
         const scan = r[1] & 0xff, ext = !!(r[1] & 0x100), up = !!(r[1] & 0x200), toUser = !!(r[1] & 0x400), mods = { shift: !!(r[2] & 1), ctrl: !!(r[2] & 2), alt: !!(r[2] & 4) };
+        if (this.lagLog) this.lagLog.push({ k: 'key-in', vk: r[3], up, t: Date.now() });
         let taken = false; try { taken = scan && p.vkdKey ? p.vkdKey(scan, ext, up, mods) : false; } catch (e) { console.error(e); }
         if (!taken && toUser && r[3]) this.queueKey(r[3], scan | (ext ? 0x100 : 0), up, mods);
         if (!taken && toUser) p.dispatchInput(up ? W.WM.KEYUP : W.WM.KEYDOWN, r[3] || scan, 0);
         if (!up) this.stopFullSavers();
       } else if (r[0] === B.MOUSE) {
+        if (this.lagLog) this.lagLog.push({ k: 'mouse-in', f: r[1], x: r[2], y: r[3], t: Date.now() });   // (a diagnostic: cmd 'lag')
         this.queueMouse(r[1], r[2], r[3]);
         if (r[1] & 1) this.stopFullSavers();
         p.dispatchInput(W.WM.MOUSEMOVE, 0, (r[3] << 16) | r[2]);
@@ -238,7 +240,7 @@ class Machine {
   feedMouse() {
     const p = this.proc;
     if (!this.mouseq.length || p.depth || this.ring0() || this.focusing) return;   // (a window being brought to the front first: 'focus')
-    for (const m of this.mouseq.splice(0)) try { if (m[0] & 0x2a) { p.personActed = true; if (p.personInput) try { p.personInput(...m); } catch (e) { console.error(e); } } p.mouseEvent16(...m); } catch (e) { console.error(e); }   // (a button pressed: this machine's person has done something, ne16.js intentQuiet)
+    for (const m of this.mouseq.splice(0)) try { if (this.lagLog) this.lagLog.push({ k: 'mouse-fed', f: m[0] & 0xff, x: m[1], y: m[2], t: Date.now() }); if (m[0] & 0x2a) { p.personActed = true; if (p.personInput) try { p.personInput(...m); } catch (e) { console.error(e); } } p.mouseEvent16(...m); } catch (e) { console.error(e); }   // (a button pressed: this machine's person has done something, ne16.js intentQuiet)
   }
   /** the screen's mode, DAC and cursor sprite for the page, which shows the screen from the shared memory */
   postScan() {
@@ -376,6 +378,7 @@ class Machine {
     try { if (p.inputPending()) return; } catch (e) { console.error(e); }   // USER has input not yet taken
     for (let n = 0; this.keyq.length && n < 16; n++) {
       const k = this.keyq.shift(); if (!n && p.personInput) try { p.personInput(); } catch (e) { console.error(e); } p.personActed = true;
+      if (this.lagLog) this.lagLog.push({ k: 'key-fed', vk: k[0], up: k[2], t: Date.now() });
       try { p.keyEvent16(k[0], k[1] & 0xff, k[2], k[1] > 0xff); } catch (e) { console.error(e); }
     }
   }
@@ -815,7 +818,7 @@ class Machine {
     const dmod = p.ne && p.ne.get('DISPLAY'), dseg = dmod && dmod.segs && dmod.segs[dmod.segs.length - 1], dsb = dseg && p.selValid(dseg.sel) ? p.selBase(dseg.sel) : 0;
     const display = dsb ? { sel: dseg.sel, chip81e: p.r16(dsb + 0x81e), bpp2d: p.r16(dsb + 0x2d), mem7a: p.r32(dsb + 0x7a), w: [...p.u8.slice(dsb, dsb + 0x40)].map(b => b.toString(16).padStart(2, '0')).join('') } : null;
     const metrics = p.depth || p.thread16 ? null : (() => { try { return [0, 1, 4].map(i => p.user16(179, [['w', i]]).ax); } catch (e) { return e.message; } })();   // GetSystemMetrics: CXSCREEN, CYSCREEN, CYCAPTION
-    return { crits, metrics, display, nic, jsDlls: p.jsDlls ? Object.fromEntries(p.jsDlls) : null, nullJumps: (p.nullJumps || []).map(j => ({ ...j, fromIn: j.from !== undefined ? where(j.from) : undefined })),
+    return { crits, metrics, display, nic, tdbs: (p.tdbList || []).map(s => ({ sel: s, name: p.selValid(s) ? p.readA(p.selBase(s) + 0xf2, 8) : null })), thhook: p.thhookLin ? Array.from(p.u8.subarray(p.thhookLin, p.thhookLin + 0x20)) : null, jsDlls: p.jsDlls ? Object.fromEntries(p.jsDlls) : null, nullJumps: (p.nullJumps || []).map(j => ({ ...j, fromIn: j.from !== undefined ? where(j.from) : undefined })),
       mods32: (p.modules || []).filter(m => m.meta && m.meta.textHi).map(m => [m.name, m.base >>> 0, m.meta.textLo >>> 0, m.meta.textHi >>> 0]), thunkFails: p.thunkFails || [], thunkConns: p.thunkConns || [], gl: [...(p.glContexts || [])].map(c => ({ w: c.canvas && c.canvas.width, h: c.canvas && c.canvas.height, lost: !c.g || c.g.isContextLost(), err: c.g ? c.g.getError() : null, dc: c.dc ? { native: !!c.dc.native, bpp: c.dc.bpp, w: c.dc.w, h: c.dc.h, hwnd: c.dc.hwnd, hdc: c.dc.hdc, gdi: c.dc.native ? (() => {
       const g = p.byName.get('GDI32'), f = n => g.exports.get(n), r = p.alloc(32); try {
         const bm = p.call(f('GetCurrentObject'), [c.dc.hdc, 7]), got = bm ? p.call(f('GetObjectA'), [bm, 24, r]) : 0, type = p.call(f('GetObjectType'), [c.dc.hdc]);
@@ -957,6 +960,10 @@ class Machine {
       // (and where it comes from, args[2]: 'remote', another machine's person's, for its cause, ne16.js causeOf)
       case 'run': return this.shellUp().then(() => { const held = this.holdStartup; this.holdStartup = false; p.nextClock = args[1] || null; p.nextOrigin = args[2] || null; try { const r = this.exec(args[0], 1); return typeof r === 'number' ? (r > 32 ? { ok: true } : { err: r }) : r && r.err ? r : { ok: true }; } finally { this.holdStartup = held; p.nextClock = null; p.nextOrigin = null; } });
       case 'effects': return (p.effects || []).slice();   // (what the machine did, with its causes: ne16.js effect)
+      // (a diagnostic: the input's times in this machine, Date.now() each: a mouse or key event taken from the ring
+      // ('mouse-in', 'key-in'), and fed into USER's drivers ('mouse-fed', 'key-fed'); [true] starts recording, [] reads
+      // and clears, [false] ends it. The sprite's move the page sees itself: win95.lag())
+      case 'lag': { if (args.length && args[0] === true) { this.lagLog = []; return true; } if (args.length && args[0] === false) { this.lagLog = null; return true; } const l = this.lagLog || []; this.lagLog = this.lagLog ? [] : null; return l; }
       case 'log': return W.log.lines(args[0] || 0);   // (the machine's log since line n: win32.js log; the page keeps its own copy as the lines come)
       // (a line said by the page, into this machine's log: the Debug Monitor shows the page's too)
       case 'logPut': W.log.put(args[0]); return;
@@ -970,7 +977,7 @@ class Machine {
         return true;
       })();
       case 'listItem': return p.depth ? null : p.listItem(args[0], args[1], !!args[2]);   // a list view's item selected, or opened (the scripting API's click, dblclick)
-      case 'peek': return Array.from(p.u8.subarray(args[0], args[0] + Math.min(args[1], 4096)));   // a diagnostic: memory bytes
+      case 'peek': { const at = args[2] ? (p.selValid(args[2]) ? p.selBase(args[2]) + args[0] : -1) : args[0]; return at < 0 ? null : Array.from(p.u8.subarray(at, at + Math.min(args[1], 4096))); }   // a diagnostic: memory bytes, at a linear address or [offset, n, selector]
       case 'menuscan': {   // a diagnostic: every menu handle USER has (IsMenu over the handle range), its item count and first item, and whether USER32's GetMenuItemRect places its first item in the window given
         if (p.depth) return null;
         const u16 = (o, a) => p.user16(o, a).ax, x32 = p.byName && p.byName.get('USER32'), rectFn = x32 && x32.exports && x32.exports.get('GetMenuItemRect'), out = [], buf = p.alloc(256), sel = p.allocSels(buf, 256);
@@ -991,6 +998,16 @@ class Machine {
         const bufs = [], a = args[1].map(x => { if (x[0] !== 'buf') return x; const lin = p.alloc(x[1]), sel = p.allocSels(lin, x[1]); bufs.push({ lin, sel, n: x[1] }); return ['l', (sel << 16) >>> 0]; });
         try { const r = p.user16(args[0], a); return { ax: r.ax, dxax: r.dxax, bufs: bufs.map(b => Array.from(p.u8.subarray(b.lin, b.lin + b.n))) }; }
         finally { for (const b of bufs) { p.freeSels(b.sel); p.free(b.lin); } }
+      }
+      case 'call16': {   // a diagnostic: a 16-bit module's export (loaded from disk if need be) called with args as 'user16' takes them: [module, name or ordinal, args]
+        if (p.depth) return null;
+        const m = p.loadLibrary16(args[0], true); if (!m) return { err: 'no module' };
+        if (m.meta && m.meta.dynamic && !m.inited) { m.inited = true; if (!p.initNE(m)) return { err: 'LibEntry failed' }; }   // (as KERNEL's LoadLibrary runs a module's LibMain)
+        const key = /^#?\d+$/.test(String(args[1])) ? +String(args[1]).replace('#', '') : String(args[1]), at = p.neExport(m, key); if (!at) return { err: 'no export' };
+        const bufs = [], a = (args[2] || []).map(x => { if (x[0] !== 'buf') return x; const lin = p.alloc(x[1]), sel = p.allocSels(lin, x[1]); if (x[2]) p.u8.set(x[2], lin); else p.u8.fill(0, lin, lin + x[1]); bufs.push({ lin, sel, n: x[1] }); return ['l', (sel << 16) >>> 0]; });
+        const path = args[3] ? [] : null; if (path) p.runHook = e => { path.push(e >>> 0); if (path.length > 20000) path.splice(0, 10000); };   // (args[3]: the blocks it ran, as symbols)
+        try { const r = p.call16(at >>> 16, at & 0xffff, a); return { ax: r.ax, dxax: r.dxax, bufs: bufs.map(b => Array.from(p.u8.subarray(b.lin, b.lin + b.n))), path: path && path.slice(-(args[3] | 0 || 400)).map(e => p.whereOf(e)) }; }
+        finally { if (path) p.runHook = null; for (const b of bufs) { p.freeSels(b.sel); p.free(b.lin); } }
       }
       case 'hung': {   // USER32's IsHungThread for the thread that owns each window
         const x = p.byName && p.byName.get('USER32') && p.byName.get('USER32').exports, tid = x && x.get('GetWindowThreadProcessId'), hung = x && x.get('IsHungThread');

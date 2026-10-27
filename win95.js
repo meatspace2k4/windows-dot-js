@@ -5581,6 +5581,31 @@ const script = {
   // { n, t, level, tag, text, machine }, since line n; the same lines are in DevTools' console at their level and in
   // the Debug Monitor (Programs > Accessories > System Tools)
   log(since = 0) { return W95Win32.log.lines(since); },
+  // the input's latency, measured: `n` pointer moves (to a diagonal of points) and `keys` key presses sent to the
+  // system's machine as a person's are, each timed from the page's send to the machine taking it from its ring, to
+  // its feed into USER's drivers, and (a move) to the sprite showing it on the page; the samples and their medians, ms
+  async lag(n = 20, keys = 10) {
+    const a = sysApp; if (!a || !a.alive) throw new Error('no system machine');
+    await a.cmd('lag', [true]);
+    const moves = [], presses = [], med = v => { const s = v.filter(x => x != null).sort((x, y) => x - y); return s.length ? s[(s.length - 1) >> 1] : null; };
+    const wait = ms => new Promise(r => setTimeout(r, ms));
+    const sw = a.sw || 640, sh = a.sh || 480;
+    for (let i = 0; i < n; i++) {
+      const x = 40 + Math.round(i * (sw - 80) / Math.max(1, n - 1)), y = 40 + Math.round(i * (sh - 120) / Math.max(1, n - 1)), t0 = Date.now();
+      a.pointer('move', x, y);
+      let seen = null; for (let k = 0; k < 60 && seen == null; k++) { await wait(2); const s = a.sprite(); if (s && Math.abs(s.x - x) <= 1 && Math.abs(s.y - y) <= 1) seen = Date.now() - t0; }
+      moves.push({ x, y, t0, seen });
+      await wait(40);
+    }
+    for (let i = 0; i < keys; i++) { const t0 = Date.now(); a.key({ keyCode: 16, code: 'ShiftLeft', shiftKey: true, ctrlKey: false, altKey: false }, false); presses.push({ t0 }); await wait(20); a.key({ keyCode: 16, code: 'ShiftLeft', shiftKey: false, ctrlKey: false, altKey: false }, true); await wait(40); }
+    await wait(100);
+    const log = await a.cmd('lag'); await a.cmd('lag', [false]);
+    const ins = log.filter(e => e.k === 'mouse-in'), feds = log.filter(e => e.k === 'mouse-fed');
+    for (const m of moves) { const i = ins.find(e => e.x === m.x && e.y === m.y), f = feds.find(e => e.t >= (i ? i.t : m.t0) && Math.abs(Math.round(e.x * (sw - 1) / 65535) - m.x) <= 1); m.ring = i ? i.t - m.t0 : null; m.fed = f ? f.t - m.t0 : null; }
+    const kin = log.filter(e => e.k === 'key-in' && !e.up), kfed = log.filter(e => e.k === 'key-fed' && !e.up);
+    presses.forEach((p, i) => { p.ring = kin[i] ? kin[i].t - p.t0 : null; p.fed = kfed[i] ? kfed[i].t - p.t0 : null; });
+    return { moves, keys: presses, median: { moveRing: med(moves.map(m => m.ring)), moveFed: med(moves.map(m => m.fed)), moveSeen: med(moves.map(m => m.seen)), keyRing: med(presses.map(p => p.ring)), keyFed: med(presses.map(p => p.fed)) }, stats: a.stats || null };
+  },
   get devtools() { return devtoolsOpen; },
   window(title) { const w = findWin(title); return w ? winInfo(w) : null; },
   activate(title) { const w = findWin(title); if (!w) return false; if (w.min) w.min = false; activate(w); dirty(); return true; },

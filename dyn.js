@@ -466,6 +466,12 @@ function translate(p, lin, csb, d32, v86) {
         f.gg('zf').if_(); f.lg(T).c(b2 === 0x02 ? ACC : LDT + 4).op('add').ld(4).ls(R); wrReg(o.reg, osz, R); f.end();
         continue;
       }
+      if (b2 === 0x00 && (((u8[pc] >> 3) & 7) === 4 || ((u8[pc] >> 3) & 7) === 5)) {   // verr / verw: ZF when the selector's descriptor is present (and, for verw, not code)
+        const w = ((u8[pc] >> 3) & 7) === 5, o = modrm(); rd(o, 2); f.c(0xfff8).op('and').ls(T);
+        f.lg(T).c(LDT + 4).op('add').ld(4).lg(T).c(LDT).op('add').ld(4).op('or').c(0).op('ne');
+        if (w) f.lg(T).c(ACC).op('add').ld(4).c(0x0800).op('and').op('eqz').op('and');
+        f.gs('zf'); continue;
+      }
       throw new Unsupported(`0f ${b2.toString(16)}`);
     }
     if (b === 0xd7) { f.gg(sbase(seg === null ? 3 : seg)).gg('ebx'); if (asz === 2) f.c(0xffff).op('and'); f.gg('eax').c(0xff).op('and').op('add').op('add').ld(1).ls(T); wrReg(0, 1, T); continue; }

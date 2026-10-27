@@ -944,6 +944,16 @@ class Translator:
         f.lg(t).e(0x28, 0, uleb(off)).ls(v)
         d = Loc(f, ops[0]); f.gg('zf').e(0x04, 0x40); d.write(lambda: f.lg(v)); f.e(0x0b)
     def x_lsl(self, f, ins, ops, live): self.descr(f, ops, 4)
+    # verr / verw: ZF when the selector's descriptor is present (a segment of this machine's is readable, and
+    # writable unless it is code: TOOLHELP checks a task's SS before it reads the stack's bounds)
+    def verify(self, f, ops, write):
+        t = f.i()
+        Loc(f, ops[0]).read(); f.c(0xfff8).e(OPS['and_']).c(LDT_BASE).e(OPS['add']).ls(t)
+        f.lg(t).e(0x28, 0, uleb(4)).lg(t).mem(0x28).e(OPS['or_']).c(0).e(OPS['ne'])
+        if write: f.lg(t).e(0x28, 0, uleb(0x10000)).c(0x0800).e(OPS['and_']).c(0).e(OPS['eq']).e(OPS['and_'])   # (not a code segment: access byte bit 3)
+        f.gs('zf')
+    def x_verr(self, f, ins, ops, live): self.verify(f, ops, False)
+    def x_verw(self, f, ins, ops, live): self.verify(f, ops, True)
     def x_lar(self, f, ins, ops, live): self.descr(f, ops, 0x10000)   # access rights table at LDT_BASE + 0x10000
     def x_shld(self, f, ins, ops, live): self.dshift(f, ops, live, True)
     def x_shrd(self, f, ins, ops, live): self.dshift(f, ops, live, False)

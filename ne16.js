@@ -874,6 +874,52 @@ const INTS = {
       } break;
       case 0x25: (this.dosVec = this.dosVec || {})[al] = u32((this.cpu.ds.value << 16) | (this.cpu.edx.value & 0xffff)); return;
       case 0x4c: if (this.thread16 && this.thread16.task && this.atThreadTop()) { this.thread16.exitCode = al; return LAYOUT.SENTINEL; } break;   // a task's exit ends its thread
+      // MS-DOS 7's FAT32 functions (Disk Defragmenter, ScanDisk), answered from the volume's numbers: 7302h the
+      // extended DPB (DS:DX the drive's name, ES:DI the buffer, CX its size), 7303h the extended free space (DS:DX
+      // the name, ES:DI the buffer, CX its size), 7304h set DPB for formatting (done), 7305h extended absolute read and
+      // write (DS:BX the packet, SI bit 0 write; a read of sector 0 is the boot sector, the rest zeros; a write goes
+      // nowhere: nothing here ever writes a drive's sectors)
+      case 0x73: {
+        const rm = this.rmode, at = (s, o) => (rm ? ((s & 0xffff) << 4) + (o & 0xffff) : this.lin(u32(((s & 0xffff) << 16) | (o & 0xffff))));
+        const fail = code => { CF(this, 1); this.ax(code); };
+        if (al === 2 || al === 3) {
+          const name = this.readA(at(this.cpu.ds.value, this.cpu.edx.value)) || '', L = (name[0] || this.fs.cwd[0]).toUpperCase();
+          let v; try { v = this.fs.statvfs(L + ':\\'); } catch (_) { return fail(0x0f); }   // (invalid drive)
+          const buf = at(this.cpu.es.value, this.cpu.edx.value * 0 + (this.cpu.edi.value & 0xffff)), cx = this.cpu.ecx.value & 0xffff;
+          const bs = bootSector(v), spc = bs[13], bps = 512, total = bs.length && (new DataView(bs.buffer).getUint16(19, true) || new DataView(bs.buffer).getUint32(32, true));
+          const fat32 = bs[0x52] === 0x46, spf = fat32 ? new DataView(bs.buffer).getUint32(36, true) : new DataView(bs.buffer).getUint16(22, true), nfats = bs[16], res = new DataView(bs.buffer).getUint16(14, true);
+          const rootSecs = fat32 ? 0 : Math.ceil(512 * 32 / bps), data0 = res + nfats * spf + rootSecs, clusters = Math.max(1, Math.floor((total - data0) / spc));
+          const freeCl = Math.min(clusters, Math.floor((v.free || 0) / (spc * bps)));
+          if (al === 2) {
+            if (cx < 0x3f) return fail(0x18);   // (bad length: the buffer is smaller than the extended DPB)
+            this.w16(buf, 0x3d); const d = buf + 2;   // (the size written, then the DPB: 3Dh bytes with the FAT32 extension)
+            this.u8.fill(0, d, d + 0x3d);
+            this.u8[d] = L.charCodeAt(0) - 65; this.u8[d + 1] = this.u8[d]; this.w16(d + 2, bps); this.u8[d + 4] = spc - 1; this.u8[d + 5] = Math.log2(spc) | 0;
+            this.w16(d + 6, res); this.u8[d + 8] = nfats; this.w16(d + 9, fat32 ? 0 : 512); this.w16(d + 0xb, data0 & 0xffff); this.w16(d + 0xd, Math.min(0xffff, clusters + 1));
+            this.w16(d + 0xf, fat32 ? 0 : spf); this.w16(d + 0x11, fat32 ? 0 : res + nfats * spf);
+            this.u8[d + 0x17] = 0xf8; this.u8[d + 0x18] = 0; this.w32(d + 0x19, 0xffffffff); this.w16(d + 0x1d, 2); this.w16(d + 0x1f, Math.min(0xffff, freeCl));
+            // (the FAT32 extension: flags, FS information sector, backup boot sector, first data sector, the counts as dwords)
+            this.w16(d + 0x21, 0); this.w16(d + 0x23, fat32 ? 1 : 0xffff); this.w16(d + 0x25, fat32 ? 6 : 0xffff); this.w32(d + 0x27, data0); this.w32(d + 0x2b, clusters + 1);
+            this.w32(d + 0x2f, spf); this.w32(d + 0x33, fat32 ? 2 : 0); this.w32(d + 0x37, freeCl); this.w32(d + 0x3b, 2);
+            this.ax(0); CF(this, 0); return;
+          }
+          if (cx < 0x2c) return fail(0x18);
+          this.u8.fill(0, buf, buf + 0x2c); this.w16(buf, 0x2c); this.w16(buf + 2, 0);
+          this.w32(buf + 4, spc); this.w32(buf + 8, bps); this.w32(buf + 12, freeCl); this.w32(buf + 16, clusters);
+          this.w32(buf + 20, freeCl * spc); this.w32(buf + 24, clusters * spc); this.w32(buf + 28, freeCl * spc); this.w32(buf + 32, clusters * spc);
+          this.ax(0); CF(this, 0); return;
+        }
+        if (al === 4) { this.ax(0); CF(this, 0); return; }
+        if (al === 5) {
+          if ((this.cpu.ecx.value & 0xffff) !== 0xffff) return fail(1);
+          const L = String.fromCharCode(64 + (this.cpu.edx.value & 0xff)), pk = at(this.cpu.ds.value, this.cpu.ebx.value), write = this.cpu.esi.value & 1;
+          let v; try { v = this.fs.statvfs(L + ':\\'); } catch (_) { return fail(0x0f); }
+          const first = this.r32(pk) >>> 0, n = this.r16(pk + 4), buf = at(this.r16(pk + 8), this.r16(pk + 6));
+          if (!write) for (let i = 0; i < n; i++) { const s = first + i; if (s === 0) this.u8.set(bootSector(v), buf + 512 * i); else this.u8.fill(0, buf + 512 * i, buf + 512 * (i + 1)); }
+          this.ax(0); CF(this, 0); return;
+        }
+        break;
+      }
     }
     // names and directories, as DOS 7 answers them, with its long-name functions (AH=71h, the same calls with long
     // names): CF and AX = error code on failure
@@ -2642,17 +2688,69 @@ def16('KERNEL', 159, 'w', 'l', function (sel) { return K16['KERNEL.#21'][2].call
 def16('KERNEL', 122, '', 'w', () => 0);   // IsTaskLocked: no task has locked the system (LockCurrentTask)
 def16('KERNEL', 491, 'll', 'l', () => 1);   // RegisterServiceProcess: the task is left out of the task list; there is no task list to leave
 def16('KERNEL', 320, 'w', 'w', function (h) { return h && (h === this.currentTask() || [...(this.threadsById || new Map()).values()].some(t => t.tdb === h && t.state !== 'done')) ? 1 : 0; });   // IsTask (an ended task is none: MMSYSTEM waits for MMTASK's end so as Windows exits)
-/** a task database: the process's (its Win32 threads share it), or a Win16 task's own (MMTASK.TSK); the queue at 20h,
- *  'TD' at FAh */
-const newTdb = p => { const a = p.alloc(0x200); p.u8.fill(0, a, a + 0x200); p.w16(a + 0xfa, 0x4454); return p.allocSels(a, 0x200); };
+/** a task database: the process's (its Win32 threads share it), or a Win16 task's own (MMTASK.TSK), laid out as
+ *  Windows 3.1's TDB, which TOOLHELP reads (TaskFirst, TaskNext, TaskFindHandle): the next task at 0, the task's
+ *  SS:SP at 2 and 4, hInstance at 1Ch, hModule at 1Eh, hQueue at 20h, the module name (8 characters) at F2h, 'TD' at
+ *  FAh. Each is linked into KERNEL's task list (THHOOK's HeadTDB) as it is made and taken out as its task ends
+ *  (tdbPrune); CurTDB is the running task's (tdbCurrent) */
+const newTdb = (p, info) => {
+  // (TOOLHELP takes a task's selector for a TDB only with 204h bytes or more behind it: a TDB's size on Windows 3.1)
+  const a = p.alloc(0x220); p.u8.fill(0, a, a + 0x220); p.w16(a + 0xfa, 0x4454);
+  const sel = p.allocSels(a, 0x220);
+  if (info) { p.w16(a + 0x1c, info.hInst || 0); p.w16(a + 0x1e, info.hModule || 0); const nm = String(info.name || '').toUpperCase().slice(0, 8).padEnd(8, ' '); for (let i = 0; i < 8; i++) p.u8[a + 0xf2 + i] = nm.charCodeAt(i); }
+  p.tdbLink(sel);
+  return sel;
+};
+// KERNEL's THHOOK block (its export 332, a data pointer: TOOLHELP's way into the kernel's lists): hGlobalHeap 0,
+// pGlobalHeap 2, hExeHead 4, hExeSweep 6, TopPDB 8, HeadPDB 0Ah, TopSizePDB 0Ch, HeadTDB 0Eh, CurTDB 10h, LoadTDB 12h,
+// LockTDB 14h, SelTableLen 16h, SelTableStart 18h
+P.thhook = function () {
+  if (!this.thhookSel) {
+    const a = this.alloc(0x40); this.u8.fill(0, a, a + 0x40);
+    this.thhookSel = this.allocSels(a, 0x40); this.thhookLin = a;
+    const m = this.masterSel || (K16['KERNEL.#28'][2].call(this) & 0xffff);
+    this.w16(a, m); this.w16(a + 2, m); this.w16(a + 4, this.kernelModule().hModule || 0);
+    for (const sel of this.tdbList || []) if (!this.r16(a + 0xe)) { this.w16(a + 0xe, sel); }
+  }
+  return u32(this.thhookSel << 16);
+};
+P.tdbLink = function (sel) {
+  const l = this.tdbList || (this.tdbList = []);
+  this.w16(this.selBase(sel), l[0] || 0); l.unshift(sel);
+  if (this.thhookLin) this.w16(this.thhookLin + 0xe, sel);
+};
+P.tdbUnlink = function (sel) {
+  const l = this.tdbList; if (!l) return; const i = l.indexOf(sel); if (i < 0) return;
+  l.splice(i, 1);
+  if (i === 0) { if (this.thhookLin) this.w16(this.thhookLin + 0xe, l[0] || 0); } else this.w16(this.selBase(l[i - 1]), l[i] || 0);
+};
+/** the tasks that ended, out of the list (their threads done, their processes ended) */
+P.tdbPrune = function () {
+  const l = this.tdbList; if (!l || !l.length) return;
+  const live = new Set([this.tdb16]);
+  for (const t of (this.threadsById || new Map()).values()) if (t.state && t.state !== 'done') { if (t.tdb) live.add(t.tdb); if (t.pc && t.pc.exitCode === null) live.add(t.pc.tdb); }
+  for (const pc of (this.procs || new Map()).values()) if (pc.exitCode === null) live.add(pc.tdb);
+  for (const sel of l.slice()) if (!live.has(sel)) this.tdbUnlink(sel);
+};
+/** the running task's, as THHOOK's CurTDB and its TDB's SS:SP (a switch to it, ne16.js threads16) */
+P.tdbCurrent = function (t) {
+  const sel = t ? (t.tdb || (t.pc && t.pc.tdb)) : this.tdb16; if (!sel || !this.thhookLin) return;
+  this.w16(this.thhookLin + 0x10, sel);
+  if (t && t.ctx && t.ctx.ss) { const b = this.selBase(sel); this.w16(b + 2, t.ctx.esp & 0xffff); this.w16(b + 4, t.ctx.ss & 0xffff); }
+};
 P.currentTask = function () {
   const t = this.thread16;
   // a Win16 task (LoadModule: MMTASK) is a task of its own, whoever started it: MCISEQ's task tells the driver its
   // handle (mmGetCurrentTask) and the driver posts the sequencer's commands to it (PostAppMessage)
-  if (t && t.task) { if (!t.tdb) { t.tdb = newTdb(this); this.w16(this.selBase(t.tdb) + 0x20, t.queue || 0); } return t.tdb; }
+  if (t && t.task) { if (!t.tdb) { t.tdb = newTdb(this, { hInst: t.task.hInst, hModule: t.task.mod && t.task.mod.hModule, name: t.task.mod && t.task.mod.name }); this.w16(this.selBase(t.tdb) + 0x20, t.queue || 0); } return t.tdb; }
   if (t && t.pc) { t.tdb = t.pc.tdb; return t.pc.tdb; }
-  return this.tdb16 || (this.tdb16 = newTdb(this));
+  return this.tdb16 || (this.tdb16 = newTdb(this, { name: 'KERNEL' }));
 };
+// the ToolHelp hooks KERNEL keeps for TOOLHELP.DLL: each set answers the one before it; HasGPHandler: no task has a
+// fault handler of its own (TOOLHELP's InterruptRegister would)
+def16('KERNEL', 318, 'l', 'l', function (fn) { const o = this.fatalExitHook || 0; this.fatalExitHook = fn >>> 0; return o; });   // FatalExitHook
+def16('KERNEL', 341, 'l', 'l', function (fn) { const o = this.toolHelpHook || 0; this.toolHelpHook = fn >>> 0; return o; });      // ToolHelpHook
+def16('KERNEL', 338, 'w', 'w', () => 0);                                                                                           // HasGPHandler
 def16('KERNEL', 47, 's', 'w', function (name) {   // GetModuleHandle
   if (typeof name === 'number') { const m = this.neByHandle(name); return m ? m.hModule : 0; }
   const n = (name || '').toUpperCase().replace(/^.*\\/, '').replace(/\.(DLL|EXE|DRV)$/, '');
@@ -2672,6 +2770,7 @@ def16('KERNEL', 50, 'wx', 'l', function (h, name) {   // GetProcAddress
   const js = [...(this.jsMods || new Map()).values()].find(m => m.hModule === (h & 0xffff));
   if (js) {
     const ord = typeof key === 'number' ? key : names16(js.name)[key.toUpperCase()];
+    if (js.name === 'KERNEL' && ord === 332) return this.thhook();   // (THHOOK: a pointer to data, not code)
     if (!ord || !K16[`${js.name}.#${ord}`]) { log('warn', 'ne16', `GetProcAddress ${js.name} ${key}`); return 0; }
     return this.thunk16For(`${js.name}.#${ord}`);
   }
@@ -3975,7 +4074,7 @@ P.newThread = function (start, param, stack, flat, suspended) {
 // process has loaded (SignalProc32), then its entry point
 let nextPid = 0x60;
 P.spawn = function (file, module, meta, path, cmdline) {
-  const pc = { pid: nextPid, path, exitCode: null, tdb: newTdb(this), started: false, parent: (this.thread16 && this.thread16.pc) || null };   // (parent: the process whose thread starts it)
+  const pc = { pid: nextPid, path, exitCode: null, tdb: newTdb(this, { name: String(path || '').replace(/^.*\\/, '').replace(/\.[^.]*$/, '') }), started: false, parent: (this.thread16 && this.thread16.pc) || null };   // (parent: the process whose thread starts it)
   nextPid += 4;
   // a second instance of a program already running here: one image, as code, with each process's own copy of its
   // data (as each Win32 process has its own address space), the running one's put by as the new one's is laid out;
@@ -4155,11 +4254,12 @@ P.threads16 = function (nested = false, only = null) {
   // (the threads run here run as themselves: a call the host makes as the caller (asTask) is the caller's alone)
   const caller = this.thread16, wasIn = this.inThreads, wasPreempted = this.preempted, t0 = this.runT0, wasAs = this.asTask;
   this.inThreads = true; this.threadsNest = (this.threadsNest || 0) + 1; this.asTask = false; if (caller) this.runT0 = this.now();
+  if (this.tdbList && this.tdbList.length && !nested) this.tdbPrune();   // (the tasks that ended, out of KERNEL's task list)
   try { for (const t of only ? [only] : [...this.threadsById.values()]) {   // the threads there are as the pass starts: one created in it starts in the next
     if (t === caller || t.state === 'running' || t.blocked || (t.id === MAIN_TID && !caller) || (t.id === MAIN_TID && caller) || !t.state || t.state === 'done' || t.state === 'hung' || t.state === 'suspended' || (t.state === 'waiting' && t.wait && !t.wait.set)) continue;   // a thread that yielded with no event to wait for (in WaitEvent) runs again
     if (this.win16Held && this.win16Held.who !== t && !(caller && this.win16Held.who === caller)) continue;   // another thread holds the Win16Lock (a caller that yields hands its own over)
     const main = this.saveCtx16();
-    this.thread16 = t; t.sliceStart = this.now(); this.preempted = 0; this.imgUse(t.pc);
+    this.thread16 = t; t.sliceStart = this.now(); this.preempted = 0; this.imgUse(t.pc); if (this.thhookLin) this.tdbCurrent(t);
     let r;
     try {
       if (t.state === 'new' && t.flat) {
@@ -4354,7 +4454,7 @@ def16('KERNEL', 45, 'sp', 'l', function (name, pb) {
   // the module's one DGROUP holds the stack of its first live task only: a second instance (MMSYSTEM starts MMTASK
   // more than once) keeps a stack of its own, as this loader gives each module one DGROUP, not one per instance
   t.task.dgStack = ![...this.threadsById.values()].some(x => x !== t && x.task && x.task.dgStack && x.task.dgroup === rec.dgroup && x.state !== 'done');
-  t.tdb = newTdb(this);
+  t.tdb = newTdb(this, { hInst: rec.hInstance, hModule: rec.hModule, name: rec.name });
   // (its first window brought to the front, worker.js frame; not a program another machine started in a shared session)
   if (t.task.origin !== 'remote') (this.fgWanted || (this.fgWanted = new Set())).add(t.tdb);
   // one event posted, as KERNEL starts a task: its first WaitEvent returns at once

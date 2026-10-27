@@ -200,8 +200,10 @@ export at or before it), `OLE32+1a2c0 (CoInitialize+40)` (a 32-bit module's), or
 | `cmd('callPath', [dll, name, args, n = 400])` | the same, with the last `n` blocks it ran as symbols |
 | `cmd('peek', [lin, n])` | `n` bytes of memory |
 | `cmd('user16', [ordinal, [['w', v], ['l', v], ['buf', n]]])` | USER's ordinal called with those arguments; a `buf` is filled by the call and returned as bytes |
+| `cmd('call16', [module, name or ordinal, [args as above, a buf with initial bytes as ['buf', n, bytes]]])` | any 16-bit module's export called the same way, the module loaded from disk if it is not yet (`['TOOLHELP', 'TASKFIRST', [['buf', 40, [40, 0]]]]`) |
 | `cmd('effects')` | what the machine did and under which cause (ne16.js `effect`: input, remote, boot, host) |
 | `win95.log(since = 0)` | the machines' log: `{ n, t, level, tag, text, machine }` per line, since line `n`. Everything the emulator says of itself (`win32`, `ne16`, `vxd`, `spawn` tags), what programs write with `OutputDebugString` (tagged with the program), KERNEL's `LogError`, and DevTools opening and closing. Each line is also written to the console with its level's method (`debug`, `info`, `warn`, `error`), so DevTools' level filter sorts them: Verbose shows the debug lines, Warnings the emulator's gaps, Errors the faults |
+| `cmd('lag', [true])`, `cmd('lag')` | records each mouse and key event's time as it is taken from the ring and as it is fed into USER's drivers; `win95.lag(moves, keys)` sends moves and key presses and answers each one's times from the page's send: `ring`, `fed`, and for a move `seen` (the sprite showing it), with their medians |
 | `win95.devtools` | whether DevTools are open (the Windows 95 app says; a browser tab cannot, so `false` there). The machine has it as the registry value `HKLM\Software\Microsoft\Windows\CurrentVersion\Debug\DevTools` (1 or 0), and a `devtools` event (`{ open }`) says when it changes |
 
 The same log is in Windows itself: **Debug Monitor** (Programs > Accessories > System Tools, DBWIN.EXE, dbwin.js), a
