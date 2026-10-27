@@ -557,6 +557,45 @@ P.interrupt = function (vec, next) {
   return r === undefined ? next : r;
 };
 const CF = (p, on) => { p.cpu.cf.value = on ? 1 : 0; };
+// MSCDEX's device request (INT 2Fh AX=1510h) for the CD drive: the request header's status (+3) is set done (100h), or
+// error (8000h | code: 1 unknown unit, 3 unknown command). IOCTL input (3) fills the control block at the transfer
+// address (+0Eh) by its code (its first byte): 0 the device header's address, 1 the head's location, 4 the audio
+// channels, 6 the device's status (cooked and raw reads, data and audio, Red Book addresses), 7 the sector size, 8 the
+// volume's size, 9 media not changed, 10 the audio disc (tracks 1 to 1, the lead-out), 11 a track (a data track: its
+// control byte 41h), 12 the Q channel, 15 the audio status; IOCTL output (12), open (13), close (14), and play (84h),
+// stop (85h) and resume (88h), which have nothing to play on a data disc, are done
+const cdRequest = p => {
+  const rm = p.rmode, at = (s, o) => (rm ? ((s & 0xffff) << 4) + (o & 0xffff) : p.lin(u32(((s & 0xffff) << 16) | (o & 0xffff))));
+  const hdr = at(p.cpu.es.value, p.cpu.ebx.value), drive = p.cpu.ecx.value & 0xffff;
+  const cd = [...p.fs.vols.values()].find(v => v.kind === 'cdrom' && v.letter.charCodeAt(0) - 65 === drive);
+  const status = v => p.w16(hdr + 3, v);
+  if (!cd) return status(0x8001);
+  // the disc's sectors: the primary volume descriptor's volume space size (sector 16, +80), else 74 minutes
+  let sectors = cd.sectors;
+  if (!sectors) { try { const d = cd.disc && cd.disc.read(16, 1); sectors = d && d.length >= 84 ? new DataView(d.buffer, d.byteOffset).getUint32(80, true) : 0; } catch (_) { sectors = 0; } sectors = cd.sectors = sectors || 333000; }
+  const msf = lba => { const f = lba + 150; return u32((Math.floor(f / 4500) << 16) | ((Math.floor(f / 75) % 60) << 8) | (f % 75)); };
+  const cmd = p.u8[hdr + 2];
+  if (cmd === 3) {
+    const t = p.r32(hdr + 0x0e), b = at(t >>> 16, t), code = p.u8[b];
+    switch (code) {
+      case 0: p.w32(b + 1, 0); break;
+      case 1: p.u8[b + 1] = 0; p.w32(b + 2, 0); break;
+      case 4: for (let i = 0; i < 4; i++) { p.u8[b + 1 + 2 * i] = i; p.u8[b + 2 + 2 * i] = 0xff; } break;
+      case 6: p.w32(b + 1, 0x0214); break;
+      case 7: p.u8[b + 1] = 0; p.w16(b + 2, 2048); break;
+      case 8: p.w32(b + 1, sectors); break;
+      case 9: p.u8[b + 1] = 1; break;
+      case 10: p.u8[b + 1] = 1; p.u8[b + 2] = 1; p.w32(b + 3, msf(sectors)); break;
+      case 11: { const n = p.u8[b + 1]; if (n !== 1) return status(0x8003); p.w32(b + 2, msf(0)); p.u8[b + 6] = 0x41; break; }
+      case 12: p.u8.fill(0, b + 1, b + 11); p.u8[b + 1] = 0x41; p.u8[b + 2] = 1; p.u8[b + 3] = 1; break;
+      case 15: p.u8.fill(0, b + 1, b + 11); break;
+      default: return status(0x8003);
+    }
+    return status(0x0100);
+  }
+  if ([12, 13, 14, 0x84, 0x85, 0x88].includes(cmd)) return status(0x0100);
+  return status(0x8003);
+};
 const INTS = {
   0x3d() {},        // the x87 emulator's FWAIT (VBRUN300 has one with no OS fixup): with a coprocessor, nothing to wait for
   0x31(next) {      // DPMI
@@ -809,6 +848,9 @@ const INTS = {
         case 0x0d: { const at = this.rmode ? ((this.cpu.es.value & 0xffff) << 4) + (this.cpu.ebx.value & 0xffff) : this.lin(((this.cpu.es.value & 0xffff) << 16) | (this.cpu.ebx.value & 0xffff)); cds.forEach((c, i) => { this.u8[at + i] = c; }); return; }
       }
     }
+    // 1510h, a request to drive CX's device driver (ES:BX its request header), as MCICDA (CD Player's MCI device)
+    // sends them: the disc is the CD's data disc, one data track from 0 to its lead-out, so it has no audio to play
+    if (ax === 0x1510) return cdRequest(this);
     if (ax === 0x1689 || ax === 0x1680) return;
     if (ax === 0x160b) return;          // identify Windows-aware TSRs: none is loaded, so ES:DI comes back as it went in
     if (ax === 0x1607) return;          // device callout to real-mode software (a VxD asking for its TSR's API): none answers
