@@ -3060,6 +3060,15 @@ function setupSound() {
     if (W95Win32.regGet('hklm\\system\\currentcontrolset\\control\\mediaresources\\mci\\cdaudio', 'Driver') === undefined) infAddReg(infs['MOTOWN.INF'], 'cdaudio.Reg');
     if (!W95Win32.iniGet(fs, 'SYSTEM.INI', 'mci', 'cdaudio')) infUpdateInis(infs['MOTOWN.INF'], 'cdaudio.inis');
   }
+  // the audio disc in E: catalogued in CD Player's disc database (CDPLAYER.INI, the disc's ID its section), as its
+  // owner's Edit Play List leaves it: the artist, the title and each track's, the play list in disc order
+  const CDA = window.W95CDAudio, cdToc = CDA && CDA.toc, cdId = cdToc && CDA.discId();
+  if (cdId && !W95Win32.iniGet(fs, 'CDPLAYER.INI', cdId, 'title')) {
+    const set = (k, v) => W95Win32.iniSet(fs, 'CDPLAYER.INI', cdId, k, v), n = cdToc.tracks.length;
+    set('EntryType', '1'); set('artist', cdToc.performer || ''); set('title', cdToc.album || ''); set('numtracks', String(n));
+    cdToc.tracks.forEach((t, i) => set(String(i), t.title));
+    set('order', cdToc.tracks.map((t, i) => i).join(' ')); set('numplay', String(n));
+  }
   const oc = 'hklm\\software\\microsoft\\windows\\currentversion\\setup\\optionalcomponents';
   for (const [file, inf, sec, name] of [['SNDREC32.EXE', 'MOTOWN.INF', 'Rec.install.reg', 'Rec'], ['SNDVOL32.EXE', 'MOTOWN.INF', 'Vol.install.reg', 'Vol'], ['CDPLAYER.EXE', 'MMOPT.INF', 'CDPlayer.reg', 'CDPlayer']]) {
     if (!(S.programs || {})[file] || !infs[inf]) continue;

@@ -50,5 +50,8 @@
   };
   const stopSources = () => { for (const s of sources) { try { s.stop(); } catch (_) { /* not started */ } } sources = []; };
   const stop = () => { gen++; stopSources(); };
-  window.W95CDAudio = { toc, cda, serial: () => (toc ? serial() : 0), play, stop };
+  // the disc's ID as CD Player makes one, its section in CDPLAYER.INI: the sum of the tracks' starts, each as minute,
+  // second and frame packed in a word (MSF 00:02:00 on), in hex
+  const discId = () => toc.tracks.reduce((s, t) => { const f = t.lba + 150; return (s + ((Math.floor(f / 4500) << 16) | ((Math.floor(f / 75) % 60) << 8) | (f % 75))) >>> 0; }, 0).toString(16).toUpperCase();
+  window.W95CDAudio = { toc, cda, serial: () => (toc ? serial() : 0), discId: () => (toc ? discId() : null), play, stop };
 })();
