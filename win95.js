@@ -5417,7 +5417,10 @@ function elements() {
   for (let i = out.length - 1; i >= 0; i--) {
     const e = out[i], cx = e.x + (e.w >> 1), cy = e.y + (e.h >> 1);
     if (e.window === 'Menu') { above.push(e); continue; }
-    e.covered = above.some(a => inR(a, cx, cy)) || (!!bar && e.window !== 'Taskbar' && inR(bar, cx, cy));
+    // (and what covers it: the front-most window or menu over that point, else the taskbar)
+    const over = [...above].reverse().find(a => inR(a, cx, cy)) || (!!bar && e.window !== 'Taskbar' && inR(bar, cx, cy) ? 'taskbar' : null);
+    e.covered = !!over;
+    if (over) e.coveredBy = over === 'taskbar' ? 'the taskbar' : over.window === 'Menu' ? 'a menu' : `'${over.name}'`;
     if (e.role === 'window') above.push(e);
   }
   return out;
@@ -5460,7 +5463,7 @@ async function actOn(q, send, item) {
   const e = await resolveEl(q), w = item && e.list && windows.find(x => x.native && x.title === e.window && x.app);
   if (w) { await w.app.cmd('listItem', [e.list, e.index, !!item.open]); return e; }
   const cx = e.x + (e.w >> 1), cy = e.y + (e.h >> 1);
-  if (e.covered) { const over = winAt(cx, cy); throw new Error(`${qText(asQuery(q))} is covered by ${over ? `'${over.title}'` : 'the taskbar'}`); }
+  if (e.covered) throw new Error(`${qText(asQuery(q))} is covered by ${e.coveredBy || 'another window'}`);
   send(cx, cy);
   return e;
 }

@@ -29,8 +29,8 @@ const S = make(env);
 // covered: rejects naming what covers it
 {
   const keep = env.windows; env.windows = [];
-  env.list = [{ role: 'listitem', name: 'Network Neighborhood', window: 'Program Manager', x: 2, y: 75, w: 71, h: 66, covered: true }];
-  env.winAt = () => ({ title: 'Developer' });
+  // (what elements found over it: a window of the machine's (Welcome over the logon form) as much as the page's)
+  env.list = [{ role: 'listitem', name: 'Network Neighborhood', window: 'Program Manager', x: 2, y: 75, w: 71, h: 66, covered: true, coveredBy: "'Developer'" }];
   await assert.rejects(S.actOn({ name: 'Network Neighborhood' }, () => {}, null), /covered by 'Developer'/);
   env.list = [{ role: 'listitem', name: 'Entire Network', window: 'Network Neighborhood', x: 0, y: 0, w: 10, h: 10 }];
   await assert.rejects(S.resolveEl({ name: 'home', window: 'Network Neighborhood' }, 100), /no element matches .*'Entire Network'/);
