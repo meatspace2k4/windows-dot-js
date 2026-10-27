@@ -2833,7 +2833,12 @@ function setupStartMenu() {
   const session = !!(S.programs || {})['RUNDLL32.EXE'], tools = join(PROGRAMS, 'Accessories', 'System Tools');
   // (an optional component Setup installs: its INF's links, Clipboard Viewer's in Accessories)
   const DOS = window.W95DOS, clip = DOS && DOS.infs && DOS.infs['CLIP.INF'] && fs.exists(join(WINDIR, 'CLIPBRD.EXE')) ? infParse(DOS.infs['CLIP.INF']) : null;
+  // (the Multimedia accessories, in Accessories\Multimedia (group12): MOTOWN.INF's Media Player, Sound Recorder and
+  // Volume Control and MMOPT.INF's CD Player, each whose program the system has)
+  const media = [['MOTOWN.INF', 'MPlay.links', 'MPLAYER.EXE', 'Media Player'], ['MOTOWN.INF', 'Rec.links', 'SNDREC32.EXE', 'Sound Recorder'],
+    ['MOTOWN.INF', 'Vol.links', 'SNDVOL32.EXE', 'Volume Control'], ['MMOPT.INF', 'CDPlayer.inis', 'CDPLAYER.EXE', 'CD Player']].filter(([inf, , file]) => infs[inf] && (S.programs || {})[file]);
   const missing = accessories.some(a => a.links.some(k => !fs.exists(join(PROGRAMS, 'Accessories', k[0] + '.lnk')))) || (claude && !fs.exists(join(PROGRAMS, 'Claude', 'Claude.lnk')))
+    || media.some(m => !fs.exists(join(PROGRAMS, 'Accessories', 'Multimedia', m[3] + '.lnk')))
     || (session && !fs.exists(join(tools, 'Export Session.lnk'))) || (clip && !fs.exists(join(PROGRAMS, 'Accessories', 'Clipboard Viewer.lnk')));
   if (cur && cur[0] === 0x4c && cur[1] === 0 && !missing) return;   // ('L': a shell link's header)
   const out = new Map();
@@ -2851,6 +2856,7 @@ function setupStartMenu() {
   add(infParse(inf), ['winbase.inis', 'winother.links']);
   if (applets) add(applets, accessories.map(a => a.name));
   if (clip) add(clip, ['clipbrd.links']);
+  for (const [inf, sec] of media) add(infParse(infs[inf]), [sec]);
   if (claude) { out.set('progman.groups', out.get('progman.groups') || { name: 'progman.groups', lines: [] }); out.get('progman.groups').lines.push('group90=Claude'); out.set('group90', { name: 'group90', lines: ['"Claude", CLAUDE.EXE'] }); }
   if (session) {
     const groups = out.get('progman.groups') || out.set('progman.groups', { name: 'progman.groups', lines: [] }).get('progman.groups');
@@ -3039,6 +3045,19 @@ function setupSound() {
   // (the [mci] lines on a disk that lacks them, whatever the registry holds: the registry and the disk are kept apart,
   // and a disk made new under a registry that had the devices got none, so Media Player found no MCI devices)
   if (!W95Win32.iniGet(fs, 'SYSTEM.INI', 'mci', 'sequencer')) for (const sec of ['sequencer.inis', 'waveaudio.inis']) infUpdateInis(infs['MOTOWN.INF'], sec);
+  // the CD audio device (MOTOWN.INF's MCICDA: [mci] cdaudio=mcicda.drv), and the Multimedia accessories of a Typical
+  // install: Sound Recorder (Rec: .wav files are SoundRec's), Volume Control (Vol) and CD Player (MMOPT.INF's
+  // CDPlayer: .cda files), each the system has and the disk has not had set up
+  if ((S.ne || {}).MCICDA) {
+    if (W95Win32.regGet('hklm\\system\\currentcontrolset\\control\\mediaresources\\mci\\cdaudio', 'Driver') === undefined) infAddReg(infs['MOTOWN.INF'], 'cdaudio.Reg');
+    if (!W95Win32.iniGet(fs, 'SYSTEM.INI', 'mci', 'cdaudio')) infUpdateInis(infs['MOTOWN.INF'], 'cdaudio.inis');
+  }
+  const oc = 'hklm\\software\\microsoft\\windows\\currentversion\\setup\\optionalcomponents';
+  for (const [file, inf, sec, name] of [['SNDREC32.EXE', 'MOTOWN.INF', 'Rec.install.reg', 'Rec'], ['SNDVOL32.EXE', 'MOTOWN.INF', 'Vol.install.reg', 'Vol'], ['CDPLAYER.EXE', 'MMOPT.INF', 'CDPlayer.reg', 'CDPlayer']]) {
+    if (!(S.programs || {})[file] || !infs[inf]) continue;
+    const v = W95Win32.regGet(`${oc}\\${name.toLowerCase()}`, 'Installed');
+    if (!v || W95FS.decode(v.data).replace(/\0.*$/, '') !== '1') infAddReg(infs[inf], sec);
+  }
   // Media Player checks that .avi is still its avifile type (MOTOWN.INF's HKCR,.avi,,,avifile, which OSR2 leaves to
   // ActiveMovie) and otherwise asks on every start to repair its settings
   if (W95Win32.regGet('hkcr\\.avi', '') === undefined) W95Win32.regSet('hkcr\\.avi', '', { type: 1, data: W95FS.encode('avifile\0') });

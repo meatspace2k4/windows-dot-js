@@ -42,6 +42,8 @@ NE = [('gdi.exe', 0x01C00000, 0x1007, 0x06A00000), ('dibeng.dll', 0x01E00000, 0x
       # the MCI sequencer and waveaudio devices (MOTOWN.INF's MCISEQ and MCIWAVE, SYSTEM.INI [mci]) that play MIDI and
       # wave files for Media Player and mciSendString (WIN95_13.CAB)
       ('mciseq.drv', 0x018A0000, 0x1987, 0x07DC0000), ('mciwave.drv', 0x018C0000, 0x19C7, 0x07E00000),
+      # the MCI CD audio device CD Player and mciSendString play audio discs through (MOTOWN.INF's MCICDA) (WIN95_02.CAB)
+      ('mcicda.drv', 0x01EC0000, 0x1927, 0x05C78000),
       # the Setup engine (INF files, copying from the source disks, the registry), and the Add Printer wizard's 16-bit
       # half, which installs printer drivers through it (PRECOPY2.CAB)
       ('setupx.dll', 0x01130000, 0x1A17, 0x05CA0000), ('msprint.dll', 0x014E0000, 0x1B97, 0x06E20000),
@@ -105,6 +107,9 @@ PROGRAMS = [('notepad.exe', 0x00400000, 0x06000000), ('rundll32.exe', 0x00410000
             ('autorun.exe', 0x00540000, 0x07FE0000),
             # the Accessories: Calculator (WIN95_02.CAB)
             ('calc.exe', 0x005E0000, 0x06C90000),
+            # the Multimedia accessories of a Typical install: Sound Recorder and Volume Control (MOTOWN.INF Rec, Vol)
+            # and CD Player (MMOPT.INF CDPlayer) (WIN95_02.CAB)
+            ('sndrec32.exe', 0x00C00000, 0x05BE0000), ('sndvol32.exe', 0x00C20000, 0x05B70000), ('cdplayer.exe', 0x00C40000, 0x05E90000),
             # the CD's Hover! (FUNSTUFF\HOVER), run from the CD; its code's block table where the heap stops
             ('hover.exe', 0x00600000, 0x05600000)]
 # the programs and DLLs above that run from the CD: not installed on C:, their files read from the disc
