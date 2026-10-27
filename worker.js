@@ -835,6 +835,14 @@ class Machine {
         if (show !== 3 && show !== 7) await this.netCall('MoveWindow', [hwnd, x, y, w, h, 1], 'USER32');
       })();
       case 'close': u(110, [['w', args[0]], ['w', 0x10], ['w', 0], ['l', 0]]); return;
+      // a program another machine's person closed (its window gone there, after anything it asked there: "Save
+      // changes?"): ended here as Windows ends a program, without its asking again, its contents being the session's
+      // already. A Windows 3.x program's task is asked to close (WM_CLOSE)
+      case 'end': {
+        const task = u(224, [['w', args[0]]]), pc = task && [...(p.procs || new Map()).values()].find(c => c.tdb === task);
+        if (pc && pc.exitCode === null) { p.endProcess(pc, 0); return true; }
+        u(110, [['w', args[0]], ['w', 0x10], ['w', 0], ['l', 0]]); return false;
+      }
       case 'clipOut': return this.clipOut();
       case 'clipIn': this.clipIn(args[0]); return;
       case 'closeState': p.k32CloseState(args[0]); return;

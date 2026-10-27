@@ -23,4 +23,11 @@ assert.equal(fit(v, null), v);
   r = read({ world, local: new Map([['A', moved]]), seen, starting: new Set(), closing: CL, area, lastArea: r.area });
   assert.deepEqual(r.sends, [['A', moved]]);
 }
+// (win95.js osApply: a program another machine's person closed, its only object, ended here without asking again
+// (worker.js 'end'); a program started three times without coming is not started again)
+{
+  const w = readFileSync(new URL('../win95.js', import.meta.url), 'utf8'), a = w.slice(w.indexOf('async function osApply('), w.indexOf('/** another person changed a window here'));
+  assert.ok(/a\.cmd\('end', \[mine\.hwnd\]\)/.test(a)); assert.ok(/if \(n > 3\) return;/.test(a));
+  assert.ok(/case 'end': \{/.test(readFileSync(new URL('../worker.js', import.meta.url), 'utf8')));
+}
 console.log('osfit: ok');

@@ -5123,6 +5123,7 @@ fs.on(e => emit('fs.' + e.op, { path: e.path, ...(e.path2 ? { path2: e.path2 } :
 let osWanted = false, osBusy = false, osAgain = false, osHeld = true;
 const osSeen = new Map(), osStarting = new Set(), osOpened = new Set(), OS_CLOSING = Symbol('closing');
 let osArea = null;   // (this machine's work area at its last read: its screen changing is its own)
+const osTries = new Map();   // (the session's programs started here and not up yet: how many times)
 function shareInput(ev) {
   const S = sharedNow(); if (!S) return;
   if (ev.t === 'move') { S.pointer(ev.x, ev.y); return; }
@@ -5191,7 +5192,7 @@ async function osRead() {
     // places set again, fitted to it, nothing sent)
     const r = W95OSLogic.read({ world: S.world(), local: new Map([...local].map(([id, o]) => [id, o.v])), seen: osSeen, starting: osStarting,
       closing: OS_CLOSING, area: local.area, lastArea: osArea, caught: osCaught });
-    osArea = r.area;
+    osArea = r.area; for (const id of local.keys()) osTries.delete(id);
     for (const [id, v] of r.sends) { S.obj(id, v); emit(v ? 'sync.send' : 'sync.closed', v ? { id, x: v.x, y: v.y } : { id }); }
     for (const [id, v] of r.applies) osApply(id, v, local);
     for (const id of r.retries) { emit('sync.retry', { id }); osApply(id, S.world().get(id), local); }
@@ -5203,7 +5204,14 @@ async function osApply(id, v, local, by) {
   local = local || await osLocal(); if (!local) return;
   const mine = local.get(id), a = sysApp;
   if (v == null) {   // (gone there: closed here)
-    if (mine) { emit('sync.close', { id }); osSeen.set(id, OS_CLOSING); const w = windows.find(x => x.native && x.guestHwnd === mine.hwnd); if (w) a.close(w); }
+    if (mine) {
+      emit('sync.close', { id }); osSeen.set(id, OS_CLOSING);
+      // (its program's only object: the program ended here, as the person there ended it, without asking again; one
+      // of several windows of a program, or a folder: closed as its own close box closes it)
+      const prog = id.slice(0, id.lastIndexOf('/'));
+      if (!mine.v.folder && ![...local.keys()].some(k => k !== id && k.startsWith(prog + '/'))) { a.cmd('end', [mine.hwnd]); return; }
+      const w = windows.find(x => x.native && x.guestHwnd === mine.hwnd); if (w) a.close(w);
+    }
     return;
   }
   if (!mine) {   // (not here: started, with the same command line, or opened as the shell opens it; once, until it is up)
@@ -5222,6 +5230,9 @@ async function osApply(id, v, local, by) {
     // comes when that one has gone)
     const prog = id.slice(0, id.lastIndexOf('/'));   // (its command line can have a slash in it; its class has none)
     if ([...local.keys()].some(k => k.startsWith(prog + '/'))) return;
+    // (started three times and not come: a program that hands its start to one already running, as a single-instance
+    // program does, or one that cannot start here; not started again)
+    const n = (osTries.get(id) || 0) + 1; if (n > 3) return; osTries.set(id, n);
     osStarting.add(id); emit('sync.start', { id, cmd: v.cmd });
     // (with its clock, as of its start where it was started)
     a.cmd('run', [v.cmd || v.path, v.t0 || null, 'remote']).then(r => { if (!r || r.err) { osStarting.delete(id); emit('sync.failed', { id, cmd: v.cmd, r }); } }, e => { osStarting.delete(id); emit('sync.failed', { id, cmd: v.cmd, err: String(e) }); });
