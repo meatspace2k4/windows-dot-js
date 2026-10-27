@@ -570,21 +570,25 @@ const cdRequest = p => {
   const cd = [...p.fs.vols.values()].find(v => v.kind === 'cdrom' && v.letter.charCodeAt(0) - 65 === drive);
   const status = v => p.w16(hdr + 3, v);
   if (!cd) return status(0x8001);
+  // the drive's state, kept on the machine by drive (the system machine's volumes are the page's, made afresh each time
+  // it asks for them: kept on one, a playing disc was idle at the next request, so CD Player went on a track at once
+  // and Stop found nothing to stop)
+  const st = (p.cdDrives || (p.cdDrives = {}))[drive] || (p.cdDrives[drive] = {});
   // the disc: an audio disc's tracks (cdaudio.js, the volume's table of contents), or a data disc as one data track
   // whose sectors are the primary volume descriptor's volume space size (sector 16, +80), else 74 minutes
-  let disc = cd.toc16;
+  let disc = st.toc;
   if (!disc) {
     if (cd.audio) disc = { tracks: cd.audio.tracks.map(t => ({ ...t, ctl: 0x01 })), leadout: cd.audio.leadout };
     else {
       let n = 0; try { const d = cd.disc && cd.disc.read(16, 1); n = d && d.length >= 84 ? new DataView(d.buffer, d.byteOffset).getUint32(80, true) : 0; } catch (_) { n = 0; }
       disc = { tracks: [{ number: 1, lba: 0, sectors: n || 333000, ctl: 0x41 }], leadout: n || 333000 };
     }
-    cd.toc16 = disc;
+    st.toc = disc;
   }
   const msf = lba => { const f = lba + 150; return u32((Math.floor(f / 4500) << 16) | ((Math.floor(f / 75) % 60) << 8) | (f % 75)); };
   const bytesMsf = (b, lba) => { const f = lba + 150; p.u8[b] = Math.floor(f / 4500); p.u8[b + 1] = Math.floor(f / 75) % 60; p.u8[b + 2] = f % 75; };   // (minute, second, frame)
   // the drive's audio: playing [from, to) since t0 (its position by the clock, 75 sectors a second), or paused at pos
-  const now = p.cdClock ? p.cdClock() : performance.now(), a = cd.play16 || (cd.play16 = { state: 'idle', from: 0, to: 0, pos: 0, t0: 0 });
+  const now = p.cdClock ? p.cdClock() : performance.now(), a = st.play || (st.play = { state: 'idle', from: 0, to: 0, pos: 0, t0: 0 });
   if (a.state === 'playing') { a.pos = Math.min(a.to, a.from + Math.floor((now - a.t0) * 75 / 1000)); if (a.pos >= a.to) a.state = 'idle'; }
   const busy = a.state === 'playing' ? 0x0200 : 0, send = (op, from, to) => { if (self.W95CDAUDIO) self.W95CDAUDIO(op, from, to); };
   const trackAt = lba => disc.tracks.find(t => lba >= t.lba && lba < t.lba + t.sectors) || disc.tracks[0];
@@ -620,7 +624,8 @@ const cdRequest = p => {
     return status(0x0300);
   }
   if (cmd === 0x85) {   // stop audio: pauses a playing disc; a paused one is stopped for good
-    if (a.state === 'playing') { a.state = 'paused'; send('stop'); } else if (a.state === 'paused') a.state = 'idle';
+    if (a.state === 'playing') a.state = 'paused'; else if (a.state === 'paused') a.state = 'idle';
+    send('stop');   // (the page's drive stops whatever it still has to play, whatever the state says)
     return status(0x0100);
   }
   if (cmd === 0x88) {   // resume audio: a paused disc plays on from where it stopped

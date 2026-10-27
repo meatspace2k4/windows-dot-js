@@ -10,7 +10,9 @@ const p = Object.create(Process.prototype);
 p.mem = { buffer: new ArrayBuffer(1 << 20) };
 p.cpu = {}; for (const r of ['eax', 'ebx', 'ecx', 'edx', 'esi', 'edi', 'es', 'ds', 'cf']) p.cpu[r] = { value: 0 };
 const pvd = new Uint8Array(2048); new DataView(pvd.buffer).setUint32(80, 300000, true);
-p.fs = { vols: new Map([['D', { kind: 'cdrom', letter: 'D', disc: { read: s => (s === 16 ? pvd : null) } }]]) };
+// (the volumes as the system machine has them: the page's, made afresh each time they are asked for)
+const VOLS = new Map([['D', { kind: 'cdrom', letter: 'D', disc: { read: s => (s === 16 ? pvd : null) } }]]);
+p.fs = { get vols() { return new Map([...VOLS].map(([k, v]) => [k, { ...v }])); } };
 p.rmode = true;   // (as through DPMI's real-mode interrupt: ES:BX and the transfer address are segment:offset)
 const req = (drive, cmd, block) => {
   p.u8.fill(0, 0x1000, 0x1100); p.u8[0x1002] = cmd; p.w32(0x100e, (0x110 << 16) | 0);   // header at 100:0, block at 110:0
@@ -33,7 +35,7 @@ assert.equal(req(3, 0x99), 0x8003); assert.equal(req(2, 3, [6]), 0x8001, 'C: is 
 // (the page told to stop), resume plays on from there, a second stop stops for good
 {
   let now = 1000; const sent = []; p.cdClock = () => now; self.W95CDAUDIO = (op, from, to) => sent.push([op, from, to]);
-  p.fs.vols.set('E', { kind: 'cdrom', letter: 'E', audio: { tracks: [{ number: 1, lba: 0, sectors: 13275 }, { number: 2, lba: 13275, sectors: 13155 }], leadout: 26430 } });
+  VOLS.set('E', { kind: 'cdrom', letter: 'E', audio: { tracks: [{ number: 1, lba: 0, sectors: 13275 }, { number: 2, lba: 13275, sectors: 13155 }], leadout: 26430 } });
   assert.equal(req(4, 3, [10]), 0x0100); assert.deepEqual([p.u8[0x1101], p.u8[0x1102]], [1, 2]);
   assert.equal(req(4, 3, [11, 2]), 0x0100); assert.equal(p.u8[0x1106], 0x01, 'audio');
   const rb = 13275 + 150; assert.deepEqual([p.u8[0x1102], p.u8[0x1103], p.u8[0x1104]], [rb % 75, Math.floor(rb / 75) % 60, Math.floor(rb / 4500)]);
@@ -43,10 +45,20 @@ assert.equal(req(3, 0x99), 0x8003); assert.equal(req(2, 3, [6]), 0x8001, 'C: is 
   assert.equal(p.r16(0x1003), 0x0300, 'done, busy'); assert.deepEqual(sent, [['play', 13275, 26430]]);
   now += 2000; assert.equal(req(4, 3, [12]), 0x0300);
   assert.deepEqual([p.u8[0x1102], p.u8[0x1104], p.u8[0x1105], p.u8[0x1106]], [0x02, 0, 2, 0], 'track 02, 0:02.00 into it');
-  assert.equal(req(4, 0x85), 0x0100); assert.deepEqual(sent[1], ['stop', undefined, undefined]);
+  assert.equal(req(4, 0x85), 0x0100); assert.deepEqual(sent.at(-1), ['stop', undefined, undefined]);
   assert.equal(req(4, 3, [15]), 0x0100); assert.equal(p.r16(0x1101), 1, 'paused');
-  now += 5000; assert.equal(req(4, 0x88), 0x0300); assert.deepEqual(sent[2], ['play', 13275 + 150, 26430], 'on from where it paused');
+  now += 5000; assert.equal(req(4, 0x88), 0x0300); assert.deepEqual(sent.at(-1), ['play', 13275 + 150, 26430], 'on from where it paused');
   assert.equal(req(4, 0x85), 0x0100); assert.equal(req(4, 0x85), 0x0100); assert.equal(req(4, 0x88), 0x800c, 'stopped: nothing to resume');
   assert.equal(req(3, 0x84), 0x800c, 'a data disc has no audio');
+  // CD Player's way: play track 1 alone (its sectors); the drive is busy for the track's 177 seconds, every request
+  // until then saying so, and done after; Stop then stops the page's drive even with the disc done
+  const playTrack = (lba, n) => { p.u8.fill(0, 0x1000, 0x1100); p.u8[0x1002] = 0x84; p.w32(0x100e, lba); p.w32(0x1012, n); p.cpu.eax.value = 0x1510; p.cpu.ecx.value = 4; p.cpu.es.value = 0x100; p.cpu.ebx.value = 0; p.interrupt(0x2f, 0); return p.r16(0x1003); };
+  sent.length = 0;
+  assert.equal(playTrack(0, 13275), 0x0300); assert.deepEqual(sent, [['play', 0, 13275]]);
+  for (let s = 25; s <= 175; s += 25) { now += 25000; assert.equal(req(4, 3, [15]) & 0x0200, 0x0200, `still busy ${s} s in`); }
+  now += 2000; assert.equal(req(4, 3, [12]) & 0x0200, 0, 'done after the track');
+  assert.equal(req(4, 0x85), 0x0100); assert.deepEqual(sent.at(-1), ['stop', undefined, undefined]);
+  // stop in the middle of a play: the page told to stop
+  sent.length = 0; assert.equal(playTrack(13275, 13155), 0x0300); now += 3000; assert.equal(req(4, 0x85), 0x0100); assert.deepEqual(sent, [['play', 13275, 26430], ['stop', undefined, undefined]]);
 }
 console.log('mscdex: ok');
