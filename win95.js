@@ -3680,6 +3680,7 @@ class RemoteApp extends NativeApp {
       case 'mode': if (this.modeDone) this.modeDone(m.r); return;   // (a mode asked for while a thread held USER, made now)
       case 'intent': { const S = sharedNow(); if (S) S.intent(m.i); return; }   // (a setting this machine's person made: ne16.js hookIntents)
       case 'stroke': if (this.system) osStrokeOut(m); return;   // (this person's mouse stroke into a window, or part of one: worker.js recordStroke)
+      case 'strokeAt': { const client = String(m.key).split(':')[0]; if (m.done) peerAt.delete(client); else peerAt.set(client, { x: m.x, y: m.y, t: Date.now() }); dirty(); return; }   // (another person's stroke, as far as it is drawn here: their pointer drawn on it)
       case 'text': this.txt = m.txt; if (msgApp === this) dirty(); return;
       case 'msgMode': msgApp = m.on ? this : msgApp === this ? null : msgApp; this.r0 = m.on; dirty(); return;
       case 'reset': machineReset(); return;
@@ -4608,7 +4609,7 @@ function logonChanged(o) {
 const PEER_COLORS = [[0, 0, 128], [128, 0, 0], [0, 128, 0], [128, 0, 128], [0, 128, 128], [128, 128, 0], [0, 0, 255], [255, 0, 0]];
 /** a person's colour, by their machine: the same on every machine */
 function peerColor(client) { let h = 0; for (const ch of String(client)) h = (h * 31 + ch.charCodeAt(0)) >>> 0; return PEER_COLORS[h % PEER_COLORS.length]; }
-const peerNotes = []; let peerSeen = null, peerWhere = null, peerFollow = null, trayStarted = false;
+const peerNotes = [], peerAt = new Map(); let peerSeen = null, peerWhere = null, peerFollow = null, trayStarted = false;
 function peopleChanged(list) {
   const now = Date.now(), names = new Map(list.map(p => [p.client, p.user || 'Guest']));
   if (peerSeen) {
@@ -4633,7 +4634,9 @@ function trayPeople() {
 function drawPeers() {
   const S = window.W95Shared; if (!S || !window.W95HOST || !window.W95HOST.shared) return;
   const c = CUR.arrow, now = Date.now();
-  for (const p of S.people()) {
+  for (const q of S.people()) {
+    // (a person whose stroke is being drawn here: their pointer where the line has got to, so the two meet)
+    const at = peerAt.get(q.client), p = at && now - at.t < 1000 ? { ...q, x: at.x, y: at.y } : q;
     if (p.x == null || p.y == null) continue;
     const rgb = `rgb(${peerColor(p.client).join(',')})`;
     if (peerWhere && peerWhere.client === p.client && now < peerWhere.until) {   // (Where Is: rings round it, closing in)

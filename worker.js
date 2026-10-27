@@ -283,10 +283,10 @@ class Machine {
       if (!t) { if (this.lagLog) this.lagLog.push({ k: 'stroke-miss', x: sx, y: sy, why, t: Date.now() }); return; }
       this.stroke = { n: (this.strokeN = (this.strokeN || 0) + 1), root: t.root, pop: t.pop, ox: t.x, oy: t.y, ev: [], done: false };
     }
-    const s = this.stroke; if (!s) return;
+    const s = this.stroke; if (!s || s.done) return;   // (a move after the release is not the stroke's)
     s.ev.push([f & 0x3f, sx - s.ox, sy - s.oy]);
     if (this.lagLog) this.lagLog.push({ k: 'stroke-rec', f: f & 0x3f, x: sx, y: sy, ox: s.ox, oy: s.oy, t: Date.now() });
-    if (!btn) s.done = true;
+    if (!btn) { s.done = true; this.postStroke(true); }
   }
   /** the stroke's events not yet posted, to the page (all of it so far at its end) */
   postStroke(force) {
@@ -323,7 +323,7 @@ class Machine {
     // (as many as the window's queue takes, up to 16 a pass: a post refused by a full queue is kept for the next;
     // the stroke is over once its events are posted and the last has been taken)
     const s = this.rs, sw = this.sw, sh = this.sh;
-    let full = false;
+    let full = false, at = null;
     for (let n = 0; s.ev.length && n < 16 && !full; n++) {
       const [f, dx, dy] = s.ev[0], sx = Math.max(0, Math.min(sw - 1, s.ox + dx)), sy = Math.max(0, Math.min(sh - 1, s.oy + dy));
       let keys = s.keys; if (f & 2) keys |= 1; if (f & 4) keys &= ~1; if (f & 8) keys |= 2; if (f & 16) keys &= ~2;
@@ -331,10 +331,15 @@ class Machine {
       const oks = [];
       for (const m of msgs) { const ok = p.postMouse(s.child, m, m === 0x202 ? keys & ~1 : m === 0x205 ? keys & ~2 : keys, sx, sy); oks.push(ok); if (!ok) break; }
       if (oks.some(o => !o)) { full = true; if (oks.length > 1) s.lost = (s.lost || 0) + 1; break; }   // (the queue full: again next pass; a button's messages split by it are counted)
-      s.ev.shift(); s.keys = keys; s.fed++;
+      s.ev.shift(); s.keys = keys; s.fed++; at = [sx, sy];
       if (this.lagLog) this.lagLog.push({ k: 'stroke-fed', f, x: sx, y: sy, t: Date.now() });
     }
-    if (!s.ev.length && s.done) { let waiting = false; try { waiting = p.postedPending(s.child); } catch (e) { console.error(e); } if (!waiting) { this.rs = null; return this.feedStroke(); } }
+    // (where the stroke has got to here, for the page to draw its person's pointer there, on the line as it is drawn)
+    if (at) post({ t: 'strokeAt', key: s.key, x: at[0], y: at[1], done: !s.ev.length && s.done });
+    // (over once posted: the next stroke's messages follow in the same queue, and this person's own input, which
+    // waits meanwhile, comes after posted messages anyway. A program posting to itself, as MFC's idle does, never
+    // shows an empty queue, so none is waited for)
+    if (!s.ev.length && s.done) { this.rs = null; return this.feedStroke(); }
     return true;
   }
   /** the screen's mode, DAC and cursor sprite for the page, which shows the screen from the shared memory */
