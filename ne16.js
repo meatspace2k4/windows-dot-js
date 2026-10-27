@@ -2420,10 +2420,15 @@ def16('KERNEL', 147, 'l', 'v', function (e) { this.lastError = e; });
 def16('KERNEL', 148, '', 'l', function () { return this.lastError || 0; });
 def16('KERNEL', 361, '', 'v', function () {});                                                         // PIGLET_361: KRNL386's entry is a bare RETF
 // ThunkTerminateProcess (KRNL386's thunk 18h into KERNEL32), which USER's ExitWindows calls after a Win32 thread's
-// windows took WM_ENDSESSION(TRUE) (USER seg16 B64h): the process ends with the rest as the machine ends at ExitKernel,
-// which follows, so nothing is done here ahead of it. UNCONFIRMED: which process KERNEL32 ends here is not read from
-// its code (the call names none; it is not the caller's, whose thread goes on to ExitKernel)
-def16('KERNEL', 362, 'lw', 'v', function () {});
+// windows took WM_ENDSESSION(TRUE) (USER seg16 B64h), in that thread, as ExitProcess for a Win16 process's (B56h):
+// its process ends and the thread unwinds, as Windows ends a program at a log off (EWX_LOGOFF: the machine goes on,
+// and Welcome stayed over the logon form). The thread that runs ExitWindows never gets here (B15h) and goes on to the
+// logon or ExitKernel
+def16('KERNEL', 362, '', 'jmp', function () {
+  const t = this.thread16;
+  if (!t || !t.pc) return LAYOUT.SENTINEL;
+  this.endProcess(t.pc, 0); t.exitCode = 0; return LAYOUT.SENTINEL;
+});
 // ExitProcess(WORD code): USER's ExitWindows calls it in a thread whose own window took WM_ENDSESSION(TRUE) (USER
 // seg16 B56h): the thread's process ends, its other threads with it (endProcess), and the thread itself unwinds as
 // KERNEL32's ExitThread ends one, while the thread that runs ExitWindows goes on to ExitKernel. The system's own

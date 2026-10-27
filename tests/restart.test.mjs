@@ -87,6 +87,14 @@ function guest() {
 }
 // the thunks USER's ExitWindows reaches: ThunkTerminateProcess (#362) and BUNNY_351
 assert.ok(K16['KERNEL.#362'] && K16['KERNEL.#351']);
+// ThunkTerminateProcess, in a Win32 thread whose window took WM_ENDSESSION(TRUE) (a log off: Welcome, SYSTRAY): its
+// process ends and the thread unwinds; a thread of no process (the system's) only unwinds
+{
+  const term = K16['KERNEL.#362'][2], procs = [], pc = {}, t = { pc };
+  const g = Object.assign(guest(), { thread16: t, endProcess: (p, c) => procs.push([p, c]) });
+  assert.equal(term.call(g), W.LAYOUT.SENTINEL); assert.deepEqual([procs, t.exitCode], [[[pc, 0]], 0]);
+  g.thread16 = { id: 3 }; assert.equal(term.call(g), W.LAYOUT.SENTINEL); assert.equal(procs.length, 1);
+}
 // ExitProcess (#466), which USER calls where a thread's own window took WM_ENDSESSION(TRUE): MSGSRV32's, as Display
 // Properties restarts Windows, in a call from the restarting thread's SendMessage. That call ends and the machine
 // goes on to ExitKernel (EW_RESTARTWINDOWS); at the system task's own top level its exit is the machine's. A Win32

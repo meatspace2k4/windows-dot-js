@@ -25,13 +25,19 @@
   // (a page on a session this computer keeps, chosen by Open Session: its own store, until a session is joined)
   const wanted = () => q.get('shared') !== '0' && !window.W95HOST && !(stored.local && !q.get('session'));
   /** the logon this browser keeps for its next visit (joining a session leaves this computer's own) */
-  const remember = (user, session) => put(localStorage, LOGON, JSON.stringify({ ...(stored.own ? { own: stored.own } : {}), user: name(user, 20) || 'Guest', session: sessionId(session) || 'guest' }));
+  const remember = (user, session) => put(localStorage, LOGON, JSON.stringify({ ...(stored.own ? { own: stored.own } : {}), ...(stored.owns ? { owns: stored.owns } : {}), user: name(user, 20) || 'Guest', session: sessionId(session) || 'guest' }));
   /** the next start on a session this computer keeps (host-web.js's choice), not one on the server */
   const goLocal = () => { quiet = true; put(localStorage, LOGON, JSON.stringify({ ...stored, user: logon.user, local: true })); };
-  /** this person's own session, which others join by its id: a name from the user's, kept with the logon */
+  /** this person's own session, which others join by its id: a name from the user's, kept with the logon, one for each
+   *  name this browser has logged on as (another name logging on here gets its own, not the last one's) */
   const ownSession = user => {
-    const mine = stored.own || ('u-' + (name(user, 20) || 'user').toLowerCase().replace(/[^a-z0-9]/g, '') + '-' + client.slice(0, 6));
-    if (stored.own !== mine) { stored.own = mine; put(localStorage, LOGON, JSON.stringify({ ...stored, own: mine })); }
+    const k = (name(user, 20) || 'user').toLowerCase().replace(/[^a-z0-9]/g, ''), owns = { ...(stored.owns || {}) };
+    const was = /^u-([a-z0-9]+)-/.exec(stored.own || '');
+    if (was && !owns[was[1]]) owns[was[1]] = stored.own;
+    const mine = owns[k] || `u-${k}-${client.slice(0, 6)}`;
+    if (stored.own !== mine || (stored.owns || {})[k] !== mine) {
+      owns[k] = mine; stored.own = mine; stored.owns = owns; put(localStorage, LOGON, JSON.stringify({ ...stored }));
+    }
     return mine;
   };
 

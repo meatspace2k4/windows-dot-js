@@ -112,6 +112,12 @@ es1.on.reload({ data: '{}' }); assert.ok(P.location.reloaded);
   const R = page(); R.S.logOff('Guest'); assert.deepEqual(JSON.parse(R.local.getItem('w95.logon')), { user: 'Guest', session: 'guest' });
   const own = page('', { 'w95.logon': JSON.stringify({ user: 'Guest', session: 'guest', own: 'u-dan-abc123' }) }); own.S.logOff('Dan');
   assert.equal(JSON.parse(own.local.getItem('w95.logon')).session, 'u-dan-abc123', 'the same own session again');
+  // another name logging on in the same browser: its own session, not the last name's; the first name's kept for it
+  const other = page('', { 'w95.logon': JSON.stringify({ user: 'Carol', session: 'u-carol-abc123', own: 'u-carol-abc123' }) }); other.S.logOff('Mia');
+  const mia = JSON.parse(other.local.getItem('w95.logon'));
+  assert.match(mia.session, /^u-mia-\w{6}$/); assert.equal(mia.owns.carol, 'u-carol-abc123');
+  const back = page('', { 'w95.logon': JSON.stringify(mia) }); back.S.logOff('Carol');
+  assert.equal(JSON.parse(back.local.getItem('w95.logon')).session, 'u-carol-abc123', 'the first name\'s own session again');
 }
 // joining a running session: this machine as its own person, given the session's objects and intents as they are
 {
