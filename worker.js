@@ -320,17 +320,21 @@ class Machine {
     // (the stroke's events as the mouse messages they would be, posted to its window with its own coordinates, not
     // through the mouse driver: this person's pointer stays where it is, and the program sees the stroke as one of
     // its own. One at a time, the next once the program has taken it: a queue keeps only so many)
+    // (as many as the window's queue takes, up to 16 a pass: a post refused by a full queue is kept for the next;
+    // the stroke is over once its events are posted and the last has been taken)
     const s = this.rs, sw = this.sw, sh = this.sh;
-    let waiting = false; try { waiting = p.postedPending(s.child); } catch (e) { console.error(e); }
-    if (!waiting && s.ev.length) {
-      const [f, dx, dy] = s.ev.shift(), sx = Math.max(0, Math.min(sw - 1, s.ox + dx)), sy = Math.max(0, Math.min(sh - 1, s.oy + dy));
-      if (f & 2) s.keys |= 1; if (f & 4) s.keys &= ~1; if (f & 8) s.keys |= 2; if (f & 16) s.keys &= ~2;
+    let full = false;
+    for (let n = 0; s.ev.length && n < 16 && !full; n++) {
+      const [f, dx, dy] = s.ev[0], sx = Math.max(0, Math.min(sw - 1, s.ox + dx)), sy = Math.max(0, Math.min(sh - 1, s.oy + dy));
+      let keys = s.keys; if (f & 2) keys |= 1; if (f & 4) keys &= ~1; if (f & 8) keys |= 2; if (f & 16) keys &= ~2;
       const msgs = []; if (f & 2) msgs.push(0x201); if (f & 8) msgs.push(0x204); if ((f & 1) || !msgs.length) msgs.unshift(0x200); if (f & 4) msgs.push(0x202); if (f & 16) msgs.push(0x205);   // WM_MOUSEMOVE, WM_LBUTTONDOWN, WM_RBUTTONDOWN, WM_LBUTTONUP, WM_RBUTTONUP
-      const oks = msgs.map(m => p.postMouse(s.child, m, m === 0x202 ? s.keys & ~1 : m === 0x205 ? s.keys & ~2 : s.keys, sx, sy));
-      s.fed++; if (oks.some(o => !o)) s.lost = (s.lost || 0) + 1;
-      if (this.lagLog) this.lagLog.push({ k: 'stroke-fed', f, x: sx, y: sy, ok: oks, t: Date.now() });
+      const oks = [];
+      for (const m of msgs) { const ok = p.postMouse(s.child, m, m === 0x202 ? keys & ~1 : m === 0x205 ? keys & ~2 : keys, sx, sy); oks.push(ok); if (!ok) break; }
+      if (oks.some(o => !o)) { full = true; if (oks.length > 1) s.lost = (s.lost || 0) + 1; break; }   // (the queue full: again next pass; a button's messages split by it are counted)
+      s.ev.shift(); s.keys = keys; s.fed++;
+      if (this.lagLog) this.lagLog.push({ k: 'stroke-fed', f, x: sx, y: sy, t: Date.now() });
     }
-    if (!s.ev.length && s.done && !waiting) { this.rs = null; return this.feedStroke(); }
+    if (!s.ev.length && s.done) { let waiting = false; try { waiting = p.postedPending(s.child); } catch (e) { console.error(e); } if (!waiting) { this.rs = null; return this.feedStroke(); } }
     return true;
   }
   /** the screen's mode, DAC and cursor sprite for the page, which shows the screen from the shared memory */
