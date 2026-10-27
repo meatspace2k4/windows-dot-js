@@ -5187,41 +5187,17 @@ async function osRead() {
   osBusy = true;
   try {
     const S = sharedNow(), local = await osLocal(); if (!S || !local) return;
-    const world = S.world();
-    // (this machine's screen changed: where Windows moved the windows for it is this machine's own; the session's places
-    // set again, fitted to the new screen, and nothing sent)
-    const area = JSON.stringify(local.area || null), resized = osArea !== null && area !== osArea; osArea = area;
-    const reset = new Set();
-    if (resized) for (const [id] of local) if (world.get(id) && osSeen.has(id) && osSeen.get(id) !== OS_CLOSING) { reset.add(id); osApply(id, world.get(id), local); }
-    for (const [id, { v }] of local) {
-      if (reset.has(id)) continue;
-      osStarting.delete(id);   // (one started for the session: up)
-      if (osSeen.get(id) === OS_CLOSING || osSame(osSeen.get(id), v)) continue;   // (one this machine is closing: not reported)
-      // (one the session has that came up here, started for it: the session's, set here; one of this machine's: sent)
-      if (!osSeen.has(id) && world.get(id)) { osSeen.set(id, v); osApply(id, world.get(id), local); continue; }
-      osSeen.set(id, v); S.obj(id, v); emit('sync.send', { id, x: v.x, y: v.y });
-    }
-    for (const id of [...osSeen.keys()]) if (!local.has(id)) {
-      const was = osSeen.get(id); osSeen.delete(id);
-      if (was !== OS_CLOSING && world.get(id)) { emit('sync.closed', { id }); S.obj(id, null); }   // (closed by this machine's person: closed everywhere)
-      else if (was === OS_CLOSING) for (const [w, v] of world) if (v && !local.has(w)) osApply(w, v, local);   // (one waiting for it to go)
-    }
-    // (one the session has that this machine has not, and is not starting: its start failed, or came too early for
-    // the shell; started again now that this machine's windows have changed. The world as it is now: one closed here
-    // just now is closed in it)
-    if (osCaught) for (const [id, wv] of S.world()) if (wv && !local.has(id) && !osStarting.has(id) && !osSeen.has(id)) { emit('sync.retry', { id }); osApply(id, wv, local); }
+    // (what to send and what to set here: oslogic.js read. A change of this machine's screen is its own: the session's
+    // places set again, fitted to it, nothing sent)
+    const r = W95OSLogic.read({ world: S.world(), local: new Map([...local].map(([id, o]) => [id, o.v])), seen: osSeen, starting: osStarting,
+      closing: OS_CLOSING, area: local.area, lastArea: osArea, caught: osCaught });
+    osArea = r.area;
+    for (const [id, v] of r.sends) { S.obj(id, v); emit(v ? 'sync.send' : 'sync.closed', v ? { id, x: v.x, y: v.y } : { id }); }
+    for (const [id, v] of r.applies) osApply(id, v, local);
+    for (const id of r.retries) { emit('sync.retry', { id }); osApply(id, S.world().get(id), local); }
     for (const id of osOpened) { osOpened.delete(id); if (!local.has(id)) osStarting.delete(id); }   // (a folder opened, not up by now: the next change tries again)
   } finally { osBusy = false; if (osAgain) { osAgain = false; osRead(); } }
 }
-/** a window's place as this machine shows the session's: moved only as far as keeps its title bar on this machine's
- *  work area (a screen smaller than the machine's that placed it); a minimized or maximized one as it is */
-function osFit(v, area) {
-  if (!area || !area.w || !area.h || v.min || v.max || v.x === undefined) return v;
-  const clamp = (n, lo, hi) => Math.max(lo, Math.min(hi, n));
-  const x = clamp(v.x, area.x - v.w + OS_GRIP, area.x + area.w - OS_GRIP), y = clamp(v.y, area.y, area.y + area.h - OS_CAPTION);
-  return x === v.x && y === v.y ? v : { ...v, x, y };
-}
-const OS_GRIP = 40, OS_CAPTION = 22;   // (of a title bar: the width left on the screen to drag it by; its height)
 /** another machine's state of an object, set on this one */
 async function osApply(id, v, local, by) {
   local = local || await osLocal(); if (!local) return;
@@ -5253,7 +5229,7 @@ async function osApply(id, v, local, by) {
   }
   // (its place fitted to this machine's screen, its title bar on it: this machine's own adjustment, which it does not
   // send back; seen as it will be here)
-  const m = mine.v, f = osFit(v, local.area); osSeen.set(id, f);
+  const m = mine.v, f = W95OSLogic.fit(v, local.area); osSeen.set(id, f);
   if (m.x !== f.x || m.y !== f.y || m.w !== f.w || m.h !== f.h || m.min !== f.min || m.max !== f.max) {
     emit('sync.place', { id, x: f.x, y: f.y });
     a.cmd('place', [mine.hwnd, f.x, f.y, f.w, f.h, f.min ? 7 : f.max ? 3 : m.min || m.max ? 9 : 0]);

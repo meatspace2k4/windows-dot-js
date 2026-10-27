@@ -46,9 +46,18 @@ qa = s.join('a', 'Bob'); qb = s.join('b', 'Ann')
 for q in (qa, qb):
     while not q.empty(): q.get_nowait()
 s.op('a', 'obj', {'id': 'NOTEPAD.EXE#0/Notepad#0', 'v': {'x': 1}})
-assert qb.get_nowait() == ('op', {'seq': 1, 'client': 'a', 'kind': 'obj', 'op': {'id': 'NOTEPAD.EXE#0/Notepad#0', 'v': {'x': 1}}})
+assert qb.get_nowait() == ('op', {'seq': 1, 'client': 'a', 'kind': 'obj', 'op': {'id': 'NOTEPAD.EXE#0/Notepad#0', 'v': {'x': 1}, 'gen': 0}})
 b = s.start('b', 'Ann'); assert b['running'] is True and b['world'] == {'NOTEPAD.EXE#0/Notepad#0': {'x': 1}}
 s.op('b', 'obj', {'id': 'NOTEPAD.EXE#0/Notepad#0', 'v': None}); assert s.state()['world'] == {'NOTEPAD.EXE#0/Notepad#0': None}
+assert s.state()['gens'] == {'NOTEPAD.EXE#0/Notepad#0': 1}, 'a close: the next generation'
+# a change made before that close (generation 0): passed over; its machine is sent the object as it is, from 'server'
+for q in (qa, qb):
+    while not q.empty(): q.get_nowait()
+s.op('a', 'obj', {'id': 'NOTEPAD.EXE#0/Notepad#0', 'v': {'x': 9}, 'gen': 0})
+assert s.state()['world'] == {'NOTEPAD.EXE#0/Notepad#0': None}
+assert qa.get_nowait()[1] == {'seq': 3, 'client': 'server', 'to': 'a', 'kind': 'obj', 'op': {'id': 'NOTEPAD.EXE#0/Notepad#0', 'v': None, 'gen': 1}}
+# opened again after it (generation 1): a new one
+s.op('a', 'obj', {'id': 'NOTEPAD.EXE#0/Notepad#0', 'v': {'x': 2}, 'gen': 1}); assert s.state()['world'] == {'NOTEPAD.EXE#0/Notepad#0': {'x': 2}}
 s.op('b', 'intent', {'key': 'spi:17', 'kind': 'spi', 'action': 17, 'ui': 1, 'flags': 3})
 s.leave('a', qa); s.leave('b', qb); assert s.state()['world'] == {} and 'spi:17' in s.state()['intents']
 
@@ -89,7 +98,7 @@ def stream(client, user):
             elif line.startswith('data: '): data = json.loads(line[6:])
             elif line == '' and ev: return ev, data
     return next_event
-assert req('GET', '/__session/room/state')[1] == {'seq': 0, 'world': {}, 'intents': {}}
+assert req('GET', '/__session/room/state')[1] == {'seq': 0, 'world': {}, 'gens': {}, 'intents': {}}
 ann, bob = stream('c1', 'Ann'), stream('c2', 'Bob')
 assert ann()[0] == 'people'
 while True:

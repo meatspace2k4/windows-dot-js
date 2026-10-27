@@ -100,6 +100,23 @@ assert.deepEqual(objs, [['N', { x: 5 }]]); assert.deepEqual(S.world().get('N'), 
 es1.emit('op', { seq: 13, client: 'other', kind: 'obj', op: { id: 'N', v: null } });
 assert.deepEqual(objs.at(-1), ['N', null]); assert.equal(S.world().get('N'), null); assert.ok(S.world().has('N'));
 
+// this machine's own change on its way wins over another's the server put before it: that one is set neither in the
+// copy nor here; its generation goes with it (one more for a close of its own on its way); one passed over by the
+// server comes back 'to' it, and the object as the server has it is set here
+{
+  const n = P.posts.length; objs.length = 0;
+  S.obj('G', null);
+  assert.deepEqual(P.posts[n].body.ops.map(o => [o.op.id, o.op.gen]), [['G', 0]]);
+  es1.emit('op', { seq: 14, client: 'other', kind: 'obj', op: { id: 'G', v: { x: 7 }, gen: 0 } });
+  assert.deepEqual(objs, [], 'not set: its own close is on its way'); assert.equal(S.world().get('G'), null);
+  await P.settle();
+  S.obj('G', { x: 1 }); assert.equal(P.posts.at(-1).body.ops[0].op.gen, 1, 'opened again: the generation after its close');
+  es1.emit('op', { seq: 15, client: S.client, kind: 'obj', op: { id: 'G', v: null, gen: 1 } });
+  assert.equal(S.world().get('G').x, 1, 'its own close back: its reopening still on its way');
+  es1.emit('op', { seq: 16, client: 'server', to: S.client, kind: 'obj', op: { id: 'G', v: null, gen: 1 } });
+  assert.deepEqual(objs, [['G', null]], 'its reopening passed over: closed here'); assert.equal(S.world().get('G'), null);
+  await P.settle();
+}
 // a reload the server asks for (it no longer has the changes since this page's last)
 es1.on.reload({ data: '{}' }); assert.ok(P.location.reloaded);
 

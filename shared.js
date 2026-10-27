@@ -55,11 +55,19 @@
     if (same) same.op = op; else outbox.push({ kind, op });
     flush();
   };
+  // (an object's change goes with the generation it was made in: the server's, and one more for each close of this
+  // machine's on its way; `flying` keeps, for each object, this machine's changes posted and not yet back, a close as
+  // true: while one is, another machine's change to it is not set here, this machine's own coming after it)
   const flush = () => {
     if (posting || !outbox.length) return;
     const ops = outbox; outbox = []; posting = true;
+    for (const o of ops) if (o.kind === 'obj') {
+      const f = flying.get(o.op.id) || [];
+      o.op = { ...o.op, gen: (gens.get(o.op.id) || 0) + f.filter(Boolean).length }; flying.set(o.op.id, [...f, o.op.v == null]);
+    }
+    const lost = () => { for (const o of ops) if (o.kind === 'obj') flying.set(o.op.id, (flying.get(o.op.id) || []).slice(0, -1)); };   // (not sent: none on its way)
     fetch(url('op'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client, ops }) })
-      .then(r => { if (!r.ok) console.warn('[shared] the server refused a change:', r.status); }, e => console.warn('[shared] a change was not sent:', e && e.message))
+      .then(r => { if (!r.ok) { lost(); console.warn('[shared] the server refused a change:', r.status); } }, e => { lost(); console.warn('[shared] a change was not sent:', e && e.message); })
       .finally(() => { posting = false; flush(); });
   };
 
@@ -76,7 +84,7 @@
 
   // ---- what others do, applied here; who is here
   let seq = 0, es = null, ready16 = false, onObj = null, onIntent = null;
-  const people = new Map(), watchers = new Set(), pending = [], world = new Map(), intents = new Map();
+  const people = new Map(), watchers = new Set(), pending = [], world = new Map(), intents = new Map(), gens = new Map(), flying = new Map();
   // another machine's, in the server's order (its own come back too, and are passed over): an OS object, which win95.js
   // sets this machine's OS to (`onObj`), or an intent, which this machine's Windows makes too (`onIntent`). Before
   // Windows has started here they wait (`pending`) until `ready`. One numbered past the next expected means some were
@@ -86,8 +94,15 @@
     if (m.seq && seq && m.seq > seq + 1) { catchUp(); return; }
     if (m.seq && m.seq <= seq) return;   // (one already applied, sent again)
     seq = Math.max(seq, m.seq || 0);
-    if (m.kind === 'obj') world.set(m.op.id, m.op.v == null ? null : m.op.v);
-    if (m.kind === 'intent') intents.set(m.op.key, m.op);
+    if (m.kind === 'intent') { intents.set(m.op.key, m.op); if (m.client !== client) deliver(m); return; }
+    if (m.kind !== 'obj') return;
+    // (an object: this machine's own back, or one of its own the server passed over (`to` it, the object as the server
+    // has it in its place), taken off those on their way; while any of its own is on its way or waiting, its own wins:
+    // nothing of the server's is set here, in the world's copy or the OS (tests/sessionmodel.test.mjs))
+    const id = m.op.id;
+    if (m.client === client || m.to === client) flying.set(id, (flying.get(id) || []).slice(1));
+    if ((flying.get(id) || []).length || outbox.some(o => o.kind === 'obj' && o.op.id === id)) return;
+    world.set(id, m.op.v == null ? null : m.op.v); if (m.op.gen !== undefined) gens.set(id, m.op.gen);
     if (m.client !== client) deliver(m);
   };
   const deliver = m => {
@@ -137,6 +152,7 @@
     seq = state.seq || 0;
     for (const [id, v] of Object.entries(state.world || {})) world.set(id, v);
     for (const [k, i] of Object.entries(state.intents || {})) intents.set(k, i);
+    for (const [id, g] of Object.entries(state.gens || {})) gens.set(id, g);
     listen();
     return host(state, base);
   };

@@ -33,6 +33,7 @@ class Session:
         self.seq, self.people, self.subs, self.log = 0, {}, set(), []
         self.dirty, self.saver = False, None
         self.world = {}                        # (the OS's objects: id -> their state)
+        self.gens = {}                         # (each object's generation: one more each time it is closed)
         self.intents = {}                      # (the settings made: key -> the intent that made it last)
         if folder: self.load()
 
@@ -53,12 +54,24 @@ class Session:
         with self.lock: return dict(self.state(), running=bool(self.people))
 
     def state(self):
-        with self.lock: return {'seq': self.seq, 'world': dict(self.world), 'intents': dict(self.intents)}
+        with self.lock: return {'seq': self.seq, 'world': dict(self.world), 'gens': dict(self.gens), 'intents': dict(self.intents)}
 
     # ---- changes, and who hears of them
     def op(self, client, kind, op):
-        """a change, numbered and logged, so a machine that missed some gets them again in order"""
+        """a change, numbered and logged, so a machine that missed some gets them again in order. An object's change
+        made in a generation before its last close (a move, or a close, of a window another machine closed meanwhile)
+        is passed over: the close wins, and an object opened again after it is a new one. The machine that made it is
+        sent the object as it is ('to': it, from 'server') in its place (tests/sessionmodel.test.mjs)"""
         with self.lock:
+            if kind == 'obj' and isinstance(op.get('id'), str):
+                oid, cur, g = op['id'], self.gens.get(op['id'], 0), op.get('gen') or 0
+                if g < cur:
+                    self.seq += 1
+                    msg = {'seq': self.seq, 'client': 'server', 'to': client, 'kind': 'obj', 'op': {'id': oid, 'v': self.world.get(oid), 'gen': cur}}
+                    self.log.append(msg); self.publish('op', msg)
+                    return self.seq
+                self.gens[oid] = max(cur, g + 1) if op.get('v') is None else cur
+                op = dict(op, gen=self.gens[oid])
             self.apply(kind, op); self.seq += 1
             msg = {'seq': self.seq, 'client': client, 'kind': kind, 'op': op}
             self.log.append(msg)
@@ -99,7 +112,7 @@ class Session:
             if p:
                 p['n'] -= 1
                 if p['n'] <= 0: del self.people[client]
-            if not self.people: self.world = {}   # (no machine runs the session now: its programs and windows are gone)
+            if not self.people: self.world, self.gens = {}, {}   # (no machine runs the session now: its programs and windows are gone)
             self.publish('people', {'people': self.roster(), 'seq': self.seq})
 
     def pointer(self, client, x, y):
