@@ -8,23 +8,26 @@ const cut = (a, b) => { const i = w.indexOf(a); assert.ok(i >= 0, a); return w.s
 
 // the page's start: heard (quiet false) with no record, after Shut Down ('clean') and after Restart; not after a
 // reload with Windows running ('running'), unless Setup built C: as the page started
-function page(record, { firstRun = false, rebooted = false } = {}) {
+function page(record, { firstRun = false, rebooted = false, debug = '' } = {}) {
   const store = new Map(); if (record !== null) store.set('w95.shutdown', record);
   const started = [];
   class App { constructor(path, arg, o) { Object.assign(this, { path, arg, ...o }); } async start() { started.push(this); return true; } }
-  const S = new Function('localStorage', 'window', 'RemoteApp', 'NativeApp', 'join', 'WINDIR', 'firstRun', 'rebooted', `
+  const S = new Function('localStorage', 'window', 'RemoteApp', 'NativeApp', 'join', 'WINDIR', 'firstRun', 'rebooted', 'location', `
     let sysApp = null, sysStarting = null; const bootLogoEnd = () => {};   // (the start-up screen: the page's drawing)
     ${cut('const SHUTDOWN = ', '\n')}
+    ${cut('const DEBUG = ', '\n')}
     ${cut('const cleanStart = ', '\n')}
     ${cut('function shutDownCleanly() {', '\n')}
     ${cut('function startSystem() {', 'sysStarting = null; }));\n}')}
     return { startSystem, shutDownCleanly, cleanStart, record: () => localStorage.getItem('w95.shutdown') };`);
   const ls = { getItem: k => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, v) };
   const win = { W95SYSTEM: { ne: { MSGSRV32: {} }, programs: { 'EXPLORER.EXE': {} } }, SharedArrayBuffer: function () {} };
-  return { ...S(ls, win, App, App, (...a) => a.join('\\'), 'C:\\WINDOWS', firstRun, rebooted), started };
+  return { ...S(ls, win, App, App, (...a) => a.join('\\'), 'C:\\WINDOWS', firstRun, rebooted, { search: debug ? `?debug=${debug}` : '' }), started };
 }
 for (const [record, opts, heard] of [
   [null, {}, true], ['clean', {}, true], ['running', {}, false], ['running', { rebooted: true }, true], ['running', { firstRun: true }, true],
+  // ?debug=1 (or true): silent whatever the record says
+  [null, { debug: '1' }, false], ['clean', { debug: 'true' }, false], ['running', { firstRun: true, debug: '1' }, false], [null, { debug: '0' }, true],
 ]) {
   const p = page(record, opts);
   assert.equal(p.record(), 'running');   // (the page is running from here: a reload now is no shutdown)

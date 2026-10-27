@@ -181,8 +181,11 @@
 
   opening.onsuccess = async () => {
     try {
-      const db = opening.result, { disk, registry } = await load(db);
-      window.W95HOST = host(db, disk, registry);
+      const db = opening.result, { disk, registry } = await load(db), own = host(db, disk, registry);
+      // a session shared with others (shared.js): its C: and registry the server's, the rest this browser's (the
+      // shares, the computer's name); with no server answering, this browser's own store
+      const S = window.W95Shared;
+      window.W95HOST = (S && S.wanted() && S.start(own)) || own;
     } catch (e) { console.error('no persistent store, starting fresh:', e); }
     start();
   };

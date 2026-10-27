@@ -10,6 +10,10 @@ ap = argparse.ArgumentParser(); ap.add_argument('port', type=int); ap.add_argume
 # secure context has the shared memory the machines run on (SharedArrayBuffer) and the sound's AudioWorklet
 ap.add_argument('--cert'); ap.add_argument('--key'); a = ap.parse_args()
 root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# the sessions people share (tools/sessions.py: /__sessions, /__session/<id>/...), kept in .sessions beside the project,
+# one folder of them per port (each port a page origin of its own, as each has its own disk)
+import sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import sessions
+SESSIONS = sessions.Sessions(os.path.join(root, '.sessions', str(a.port)))
 
 # the Mac's folders the LAN's other computer serves (lanhost.js), as the app's shares.js serves them: the home folder as
 # HOME, without the folders macOS asks permission for; every path relative to its share's folder and refused outside it
@@ -178,7 +182,11 @@ def fetch_page(h, q):
     h.send_response(200); h.send_header('Content-Type', 'application/json'); h.send_header('Cache-Control', 'no-store'); h.send_header('Content-Length', str(len(b))); h.end_headers(); h.wfile.write(b)
 
 class H(http.server.SimpleHTTPRequestHandler):
+    def do_GET(self):
+        if self.path.startswith('/__session') and SESSIONS.handle(self, 'GET'): return
+        super().do_GET()
     def do_POST(self):   # /__share: the shares' list, an operation on one ({ ok } or { err }), and the host's name
+        if self.path.startswith('/__session') and SESSIONS.handle(self, 'POST'): return
         if self.path.split('?')[0] == '/__fetch':   # (the Claude program's Browser pane: a web page as text, for this machine's own pages only)
             if not local_request(self): self.send_error(403); return
             try: q = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')

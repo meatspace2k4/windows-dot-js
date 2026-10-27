@@ -7,6 +7,7 @@
 /cdrom.js
 /floppy.js
 /cdrom.iso
+/.sessions/
 /audiocd.bin
 /audiocd.cue
 /audiocd.json

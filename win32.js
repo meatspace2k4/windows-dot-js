@@ -726,7 +726,9 @@ const REGISTRY = new Map([
 // set or deleted, as it happens. Values are numbers, strings, or { type, name, data } with the raw bytes.
 let regStore = null, regQuiet = false;
 const regWatchers = new Set();   // the page's: each change, for the machines' copies in their workers
-const regChanged = op => { if (regQuiet) return; if (regStore) regStore.op(op); for (const f of regWatchers) f(op); };
+// (regQuiet true: nothing told; 'remote': a change another person's machine made, from the shared session's server
+// (shared.js): this page's machines told, the store not, the server having it already)
+const regChanged = op => { if (regQuiet === true) return; if (regStore && !regQuiet) regStore.op(op); for (const f of regWatchers) f(op); };
 // each key's name as it was created (RegEnumKey gives it back so: SPOOLSS finds its "Windows 4.0" environment by a
 // case-sensitive compare); the registry's paths themselves are lower case
 const KEYNAME = new Map();
@@ -753,9 +755,9 @@ const regAttach = store => {
 /** the registry as it is now, in the form a store's load gives it ([path, values, name]), for a machine in a worker */
 const regDump = () => [...REGISTRY].map(([path, m]) => [path, [...m], KEYNAME.get(path) || null]);
 /** a change another copy of the registry made (a machine's in its worker, or the page's): applied here, and passed on
- *  to this copy's store unless `quiet` */
+ *  to this copy's store unless `quiet` ('remote': another person's, to this page's machines but not its store) */
 const regApply = (o, quiet) => {
-  const was = regQuiet; if (quiet) regQuiet = true;
+  const was = regQuiet; if (quiet) regQuiet = quiet === 'remote' ? 'remote' : true;
   try {
     if (o.op === 'key') {   // (its name with it, to this copy's store too: the case a later load gives back)
       const had = REGISTRY.has(o.path);

@@ -49,6 +49,7 @@ const base = mkdtempSync(join(tmpdir(), 'w95deploy-'));
 const inst = join(base, 'win95'), dev = join(base, 'win95-dev');
 mkdirSync(join(inst, 'site'), { recursive: true }); mkdirSync(join(dev, 'site'), { recursive: true });
 writeFileSync(join(inst, 'win95_server.py'), readFileSync(join(root, 'deploy/win95/win95_server.py')));
+writeFileSync(join(inst, 'sessions.py'), readFileSync(join(root, 'tools/sessions.py')));   // (beside it, as deploy.sh puts it)
 writeFileSync(join(inst, 'site/index.html'), '<meta name="build-channel" content="prod" />');
 writeFileSync(join(inst, 'site/a.js'), '0123456789');
 mkdirSync(join(inst, 'share')); writeFileSync(join(inst, 'share/README.TXT'), 'hello world');
@@ -95,5 +96,13 @@ try {
     assert.deepEqual(await post('win95.funstuff.app', { op, name: 'PUBLIC', args }), { err: 'EACCES' }, op);
   assert.equal(readFileSync(join(inst, 'share/README.TXT'), 'utf8'), 'hello world');
   assert.deepEqual(await post('win95.funstuff.app', { op: 'read', name: 'PUBLIC', args: ['../win95_server.py', 0, 5] }), { err: 'EACCES' });
+  // shared sessions (sessions.py): a change on the dev site's session is not production's, each kept beside its site
+  const op = (host, o) => { const body = JSON.stringify(o); return get('/__session/guest/op', host, { method: 'POST', body, headers: { 'Content-Type': 'application/json', 'Content-Length': String(Buffer.byteLength(body)) } }).then(async y => JSON.parse(await y.text())); };
+  assert.deepEqual(await op('win95-dev.localhost:8770', { client: 'c', kind: 'reg', op: { op: 'key', path: 'hkcu\\dev' } }), { seq: 1 });
+  const state = async host => JSON.parse(await (await get('/__session/guest/state', host)).text());
+  assert.deepEqual((await state('win95-dev.localhost:8770')).registry, [['hkcu\\dev', [], null]]);
+  assert.equal((await state('win95.funstuff.app')).registry, null, 'production\'s guest session is its own');
+  for (let i = 0; i < 30 && !existsSync(join(dev, 'sessions/guest/state.json')); i++) await new Promise(res => setTimeout(res, 100));
+  assert.ok(existsSync(join(dev, 'sessions/guest/state.json')), 'kept beside the dev site');
 } finally { srv.kill(); }
 console.log('deploy: ok');

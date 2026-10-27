@@ -829,6 +829,8 @@ function bootDisk() {
   if (!fs.attach('C', host.disk)) makeDisk(true);
   installPrograms(); setupFonts(); setupRegistry(); setupDisplay(); setupSavers(); setupSound(); setupHelp(); setupNetwork(); setupPorts(); setupPrinting(); setupStartMenu();
   fs.chdir('C:\\');
+  // a shared session's (shared.js): the changes other people's machines made while this one started apply from here
+  if (host.shared && window.W95Shared) { window.W95Shared.ready(fs); window.W95Shared.watch(() => dirty()); }
 }
 
 // ---------------------------------------------------------------- shell namespace
@@ -2034,9 +2036,10 @@ class DialogBody {
         if (c.iconName) icon(c.iconName + '16', a.x + 3, a.y + ((a.h - 16) >> 1));
         ctx.save(); ctx.beginPath(); ctx.rect(a.x + 2, a.y + 2, a.w - 4 - (c.combo ? 16 : 0), a.h - 4); ctx.clip();
         // a field whose whole text is selected (as when the focus arrives by Tab or a dialog opens on it) shows it highlighted
-        if (c.all && foc && c.value) { fill(tx - 1, ty, textW(esc(c.value)) + 2, 13, K.sel); text(esc(c.value), tx, ty, K.hl); }
-        else text(esc(c.value), tx, ty);
-        if (foc && !c.readonly && blinkOn && !(c.all && c.value)) fill(tx + textW(esc(c.value.slice(0, c.caret))), ty, 1, 13, K.dk);
+        const shown = c.password ? '*'.repeat(c.value.length) : c.value;   // (a password field shows a star for each character)
+        if (c.all && foc && c.value) { fill(tx - 1, ty, textW(esc(shown)) + 2, 13, K.sel); text(esc(shown), tx, ty, K.hl); }
+        else text(esc(shown), tx, ty);
+        if (foc && !c.readonly && blinkOn && !(c.all && c.value)) fill(tx + textW(esc(shown.slice(0, c.caret))), ty, 1, 13, K.dk);
         ctx.restore();
         if (c.combo) { const bx = a.x + a.w - 2 - 16; btnUp(bx, a.y + 2, 16, a.h - 4); mglyph('down', bx + 4, a.y + 2 + ((a.h - 8) >> 1)); }
       } else if (c.type === 'custom') c.draw(a, foc, win);
@@ -2504,7 +2507,7 @@ function shutDownDialog() {
   const yes = () => {
     const pick = radios.findIndex(r => r.checked);
     closeWin(win);
-    if (pick === 3) { [...windows].forEach(w => closeWin(w, true)); return; }
+    if (pick === 3) { [...windows].forEach(w => closeWin(w, true)); if (window.W95HOST && window.W95HOST.shared) logOnDialog(); return; }
     shutdownSeq(pick !== 0);
   };
   const bx = (cw - (3 * 75 + 12)) >> 1;
@@ -2515,6 +2518,22 @@ function shutDownDialog() {
     { type: 'button', label: '&Yes', x: bx, y: 118, w: 75, h: 23, def: true, fn: yes },
     { type: 'button', label: '&No', x: bx + 81, y: 118, w: 75, h: 23, cancel: true, fn: () => closeWin(win) },
     { type: 'button', label: '&Help', x: bx + 162, y: 118, w: 75, h: 23, disabled: !hasHelp(), fn: () => winHelp() },
+  ], { dim: true });
+}
+/** Welcome to Windows, as Windows Logon asks after a log off (the page's own shell's Shut Down): the name typed goes
+ *  to that person's own session, Guest to the shared one (shared.js) */
+function logOnDialog() {
+  let win;
+  const user = { type: 'edit', x: 120, y: 52, w: 180, h: 21, value: '', caret: 0, focus: true };
+  const pass = { type: 'edit', x: 120, y: 80, w: 180, h: 21, value: '', caret: 0, password: true };
+  const ok = () => { closeWin(win); window.W95Shared.logOff(user.value.trim() || 'Guest'); };
+  win = dialog('Welcome to Windows', 400, 150, [
+    { type: 'icon', name: 'passwords', x: 14, y: 12 },
+    { type: 'label', text: 'Type a user name and password to log on to Windows.', x: 60, y: 14 },
+    { type: 'label', text: '&User name:', x: 60, y: 55 }, user,
+    { type: 'label', text: '&Password:', x: 60, y: 83 }, pass,
+    { type: 'button', label: 'OK', x: 312, y: 50, w: 75, h: 23, def: true, fn: ok },
+    { type: 'button', label: 'Cancel', x: 312, y: 78, w: 75, h: 23, cancel: true, fn: () => { closeWin(win); window.W95Shared.logOff('Guest'); } },
   ], { dim: true });
 }
 function shutdownSeq(restart) {
@@ -3119,7 +3138,10 @@ function setupNetwork() {
   // that has none (a browser's), a name of its own, as the copy's registered owner has one (setupRegistration): with
   // none, the logon offered an empty name, OK refused it, and Cancel left the network client logged off
   const user = ((window.W95HOST && window.W95HOST.userName) || 'User').replace(/[^\w.\-$!#%&'(){}^~@]/g, '').slice(0, 20) || 'User';
-  if (user && R.regGet('hklm\\network\\logon', 'username') === undefined) R.regSet('hklm\\network\\logon', 'username', str(user));
+  // (in a session shared with others, the person here logs on as themselves each time: their logon's name, which
+  // Windows Logon then logs on with, asking nothing; shared.js)
+  const was = R.regGet('hklm\\network\\logon', 'username');
+  if (user && (was === undefined || (window.W95HOST && window.W95HOST.shared && W95FS.decode(was.data).replace(/\0.*$/, '') !== user))) R.regSet('hklm\\network\\logon', 'username', str(user));
   // the providers MPR calls, in order (NetworkProvider\Order's ProviderOrder): the network device installer composes
   // it from the names the clients' INF sections leave under that key (MSNP32); with none, MPR has no network, and
   // neither do USER (SM_NETWORK) and the shell (Network Neighborhood)
@@ -3507,7 +3529,7 @@ class RemoteApp extends NativeApp {
       case 'msgMode': msgApp = m.on ? this : msgApp === this ? null : msgApp; this.r0 = m.on; dirty(); return;
       case 'reset': machineReset(); return;
       case 'audio': if (window.W95Sound) W95Sound.play(this, m.rate, m.l, m.r); return;
-      case 'regop': W95Win32.regApply(m.o); return;
+      case 'regop': W95Win32.regApply(m.o); logonChanged(m.o); return;
       case 'closeProgram': closeProgram(this); return;
       case 'fault': faultDialog(this.progName(), m.f, () => this.exited(-1)); return;
       case 'faultDialog': faultDialog(this.progName(), m.f); return;
@@ -3714,6 +3736,8 @@ let sysApp = null, sysStarting = null, firstRun = false, rebooted = false;   // 
 // just built C:): a page reloaded or a window closed with Windows running is no shutdown, and the start after it is
 // quiet. The shutdown record is this browser's (a start with none plays)
 const SHUTDOWN = 'w95.shutdown';
+// ?debug=1 (or true): a page started for testing, its start-up sound silent
+const DEBUG = /^(1|true)$/i.test((() => { try { return new URLSearchParams(location.search).get('debug') || ''; } catch (_) { return ''; } })());
 const cleanStart = (() => { let v = null; try { v = localStorage.getItem(SHUTDOWN); localStorage.setItem(SHUTDOWN, 'running'); } catch (_) { /* no storage: every start plays */ } return v !== 'running'; })();
 function shutDownCleanly() { try { localStorage.setItem(SHUTDOWN, 'clean'); } catch (_) { /* no storage */ } }
 function startSystem() {
@@ -3723,7 +3747,8 @@ function startSystem() {
     const S = window.W95SYSTEM || {}; if (!(S.ne || {}).MSGSRV32 || !Object.keys(S.programs || {}).length) return null;
     // MSGSRV32's start-up plays SystemStart and starts the shell SYSTEM.INI names; after a start that was no shutdown
     // its SystemStart is not heard (quiet)
-    const quiet = !cleanStart && !firstRun && !rebooted;
+    // (?debug=1: the start-up sound never heard, for the restarts of testing)
+    const quiet = DEBUG || (!cleanStart && !firstRun && !rebooted);
     const a = new RemoteApp(join(WINDIR, 'SYSTEM', 'MSGSRV32.EXE'), '', { system: true, quiet });
     if (!(await a.start(null, null))) { bootLogoEnd(); return null; }
     sysApp = a;
@@ -4405,6 +4430,29 @@ function render() {
   for (const a of nativeApps) if (a.ov && a.alive && a !== sa) ctx.drawImage(a.ov, 0, 0);
   if (cur === 'none') { const na = pointerApp(mouse.x, mouse.y); if (na) drawSprite(na); }
   else drawCursor(cur);
+  drawPeers();
+}
+/** this machine's own Windows Logon recorded another user (Network\Logon's user name: Shut Down's "Close all programs
+ *  and log on as a different user", then the logon form): in a shared session, the page goes to that person's
+ *  session (their own; Guest's the shared one), as Windows logs on there. Another person's change is no logon here */
+function logonChanged(o) {
+  const S = window.W95Shared, H = window.W95HOST;
+  if (!S || !H || !H.shared || !o || o.op !== 'set' || o.path !== 'hklm\\network\\logon' || String(o.name).toLowerCase() !== 'username') return false;
+  const v = o.value && o.value.data ? W95FS.decode(o.value.data).replace(/\0.*$/, '') : String(o.value || '');
+  if (!v || v.toLowerCase() === String(S.logon.user).toLowerCase()) return false;
+  S.logOff(v); return true;
+}
+// the pointers of the other people in a shared session (shared.js), each an arrow with their name beside it, over the
+// screen as this person's own is
+function drawPeers() {
+  const S = window.W95Shared; if (!S || !window.W95HOST || !window.W95HOST.shared) return;
+  const c = CUR.arrow;
+  for (const p of S.people()) {
+    if (p.x == null || p.y == null) continue;
+    if (c) ctx.drawImage(c.i, p.x - c.hx, p.y - c.hy);
+    const label = p.user || 'Guest', tw = textW(label) + 6, tx = clamp(p.x + 12, 0, W - tw), ty = clamp(p.y + 18, 0, H - 17);
+    fill(tx, ty, tw, 17, K.tip); edge(tx, ty, tw, 17, K.dk, K.dk); text(label, tx + 3, ty + 2);
+  }
 }
 // the display adapter's hardware cursor: the sprite the program's display driver loaded and placed, overlaid on the
 // whole screen as the CRTC overlays it on scanout (2 bits a pixel: bit 1 keeps the screen, bit 0 inverts it), a
@@ -4714,6 +4762,7 @@ cv.addEventListener('pointerdown', e => {
 });
 cv.addEventListener('pointermove', e => {
   const [x, y] = pos(e); if (x !== mouse.x || y !== mouse.y) lastInput = performance.now(); mouse = { x, y };
+  if (window.W95HOST && window.W95HOST.shared && window.W95Shared) window.W95Shared.pointer(x, y);   // (to the others in the session)
   if (tbar.autohide && !cap) { if (y >= H - 2 || (tbar.shown > 0 && y >= barTop())) slideTaskbar(true); else if (!(menuSrc && menuSrc.kind === 'start')) slideTaskbar(false); }
   const na = !cap && !menus.length && !modal() ? nativeAt(x, y) : null;
   if (cap && cap.move) cap.move(x, y);

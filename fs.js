@@ -261,14 +261,61 @@ class FileSystem {
     this.forgetTree(n);
   }
   forgetTree(n) {
-    this.inodes.delete(n.ino);
+    this.inodes.delete(n.ino); if (n.vol && n.vol.sids && n.sid !== undefined) n.vol.sids.delete(n.sid);
     if (n.dir) for (const k of n.kids.values()) this.forgetTree(k);
     else n.vol.used -= n.vol.alloc(n.size);
   }
   // ---- write-through: a volume with a store gets every change to its nodes and bytes as it happens.
   // A store keeps nodes by a stable id (sid, the root is 0) and file bytes by offset; see attach().
-  stored(n) { return n.vol && n.vol.store && (n.parent || n === n.vol.root) ? n.vol.store : null; }
-  sidOf(n) { if (n.sid === undefined) n.sid = n === n.vol.root ? 0 : n.vol.nextSid++; return n.sid; }
+  stored(n) { return !this.applying && n.vol && n.vol.store && (n.parent || n === n.vol.root) ? n.vol.store : null; }
+  // ---- a change another person's machine made to a shared volume (a session's: shared.js), as its store's operation:
+  // applied to this tree by node id, not written back to the store, with the change events a local one makes
+  bySid(v) {
+    if (!v.sids) { v.sids = new Map(); const walk = n => { if (n.sid !== undefined) v.sids.set(n.sid, n); if (n.dir) for (const k of n.kids.values()) walk(k); }; walk(v.root); }
+    return v.sids;
+  }
+  applyStore(letter, op) {
+    const v = this.vols.get(letter.toUpperCase()); if (!v) return false;
+    const sids = this.bySid(v), n = sids.get(op.sid);
+    this.applying = true;
+    try {
+      switch (op.op) {
+        case 'node': {
+          if (op.sid === 0) { if (n) { n.attrs = op.attrs; n.mtime = op.mtime; } return true; }
+          const p = sids.get(op.parent); if (!p || !p.dir) return false;   // (its folder not here: an order this side never saw)
+          if (!n) {
+            const m = new Node(op.name, !!op.dir, op.attrs, op.ctime); m.sid = op.sid; sids.set(op.sid, m);
+            this.link(p, m, op.name); if (op.short) { p.byShort.delete(m.short); m.short = op.short; p.byShort.set(m.short, m); }
+            m.ord = op.ord || m.ord; m.mtime = op.mtime; m.atime = op.atime;
+            this.emit(m.dir ? 'mkdir' : 'create', this.pathOf(m)); return true;
+          }
+          if (n.parent !== p || n.name !== op.name) {
+            const old = this.pathOf(n); this.detach(n); this.link(p, n, op.name);
+            if (op.short) { p.byShort.delete(n.short); n.short = op.short; p.byShort.set(n.short, n); }
+            this.emit('rename', old, this.pathOf(n));
+          }
+          n.attrs = (op.attrs & ~ATTR.DIRECTORY) | (n.dir ? ATTR.DIRECTORY : 0); n.ctime = op.ctime; n.mtime = op.mtime; n.atime = op.atime;
+          this.emit('attrib', this.pathOf(n)); return true;
+        }
+        case 'remove': {
+          if (!n || !n.parent) return false;
+          const path = this.pathOf(n), drop = x => { sids.delete(x.sid); if (x.dir) for (const k of x.kids.values()) drop(k); };
+          this.detach(n); this.forgetTree(n); drop(n);
+          this.emit(n.dir ? 'rmdir' : 'unlink', path); return true;
+        }
+        case 'data': {
+          if (!n || n.dir) return false;
+          const b = op.bytes, end = op.offset + b.length;
+          if (end > n.size) this.resize(n, end);
+          n.buf.set(b, op.offset); this.emit('write', this.pathOf(n)); return true;
+        }
+        case 'size': if (!n || n.dir) return false; this.resize(n, op.size); this.emit('write', this.pathOf(n)); return true;
+        case 'label': v.label = op.label; v.serial = op.serial; this.emit('label', v.letter + ':\\'); return true;
+      }
+      return false;
+    } finally { this.applying = false; }
+  }
+  sidOf(n) { if (n.sid === undefined) { n.sid = n === n.vol.root ? 0 : n.vol.nextSid++; if (n.vol.sids) n.vol.sids.set(n.sid, n); } return n.sid; }
   meta(n) {
     const s = this.stored(n); if (!s) return;
     s.node({ sid: this.sidOf(n), parent: n.parent ? this.sidOf(n.parent) : -1, name: n.name, short: n.short, dir: n.dir,
@@ -277,7 +324,7 @@ class FileSystem {
   // a volume's store and what it already holds: true when it held a tree, false when it is empty (and now takes this one)
   attach(letter, store) {
     const v = this.vols.get(letter.toUpperCase()), r = v.root, held = store.load();
-    if (!held) { v.store = store; v.nextSid = 1; this.meta(r); store.label(v.label, v.serial); return false; }
+    if (!held) { v.store = store; v.nextSid = Math.max(1, store.sidBase || 0); v.sids = null; this.meta(r); store.label(v.label, v.serial); return false; }
     for (const k of r.kids.values()) this.forgetTree(k);
     r.kids.clear(); r.byShort.clear(); v.used = 0; v.store = store; v.nextSid = 1;
     const bySid = new Map([[0, r]]);
@@ -293,6 +340,10 @@ class FileSystem {
       n.short = e.short; n.parent = p; p.kids.set(n.name.toUpperCase(), n); p.byShort.set(n.short, n);
     }
     if (held.label !== undefined) { v.label = held.label; v.serial = held.serial; }
+    // (a shared volume's store gives this person a block of node ids of their own: what they create never takes an id
+    // someone else's machine creates at the same time)
+    if (store.sidBase) v.nextSid = Math.max(v.nextSid, store.sidBase);
+    v.sids = null;
     this.setVol(r, v); this.emit('mount', v.letter + ':\\');
     return true;
   }

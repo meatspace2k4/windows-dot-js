@@ -1,0 +1,145 @@
+// A Windows 95 session shared with other people through the server (tools/sessions.py): the VM's state, C: and the
+// registry, which every person's page runs Windows on. Nothing is streamed. C: and the registry are loaded from the
+// server; each change this machine makes goes to it (the store's write-through operations, as host-web.js writes them
+// to IndexedDB); each change another person's machine makes arrives over the session's events and is applied here
+// (fs.js applyStore; the registry's regApply, which tells this page's machines too). Who else is here, and where
+// their pointers are, come with the events too (W95Shared.people).
+//
+// Which session, and as whom: ?session= and ?user= on the URL (for testing, and a link to join someone), else the
+// logon this browser keeps (localStorage w95.logon: { user, session }), else Guest in the shared session 'guest'.
+// Each tab is a person of its own (its client id in sessionStorage). ?shared=0 runs on this browser's own store.
+(() => {
+  const q = new URLSearchParams(location.search);
+  const LOGON = 'w95.logon', CLIENT = 'w95.client';
+  const get = (s, k) => { try { return s.getItem(k); } catch (_) { return null; } };
+  const put = (s, k, v) => { try { s.setItem(k, v); } catch (_) { /* no storage */ } };
+  const name = (v, max) => String(v || '').replace(/[^\w.\- ]/g, '').trim().slice(0, max);
+  const sessionId = v => String(v || '').replace(/[^A-Za-z0-9_.-]/g, '').slice(0, 64);
+
+  // ---- who and where
+  const stored = (() => { try { return JSON.parse(get(localStorage, LOGON) || 'null'); } catch (_) { return null; } })() || {};
+  const logon = {
+    user: name(q.get('user') || stored.user, 20) || 'Guest',
+    session: sessionId(q.get('session') || stored.session) || 'guest',
+  };
+  const client = get(sessionStorage, CLIENT) || (() => { const c = Math.random().toString(36).slice(2, 8) + Math.random().toString(36).slice(2, 8); put(sessionStorage, CLIENT, c); return c; })();
+  const wanted = () => q.get('shared') !== '0' && !window.W95HOST;
+  /** the logon this browser keeps for its next visit */
+  const remember = (user, session) => put(localStorage, LOGON, JSON.stringify({ ...(stored.own ? { own: stored.own } : {}), user: name(user, 20) || 'Guest', session: sessionId(session) || 'guest' }));
+  /** this person's own session, which others join by its id: a name from the user's, kept with the logon */
+  const ownSession = user => {
+    const mine = stored.own || ('u-' + (name(user, 20) || 'user').toLowerCase().replace(/[^a-z0-9]/g, '') + '-' + client.slice(0, 6));
+    if (stored.own !== mine) { stored.own = mine; put(localStorage, LOGON, JSON.stringify({ ...stored, own: mine })); }
+    return mine;
+  };
+
+  // ---- the wire: bytes as base64 in JSON
+  const b64 = u8 => { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(s); };
+  const unb64 = s => Uint8Array.from(atob(s || ''), c => c.charCodeAt(0));
+  const regOut = o => (o.value ? { ...o, value: { type: o.value.type, data: b64(o.value.data) } } : o);
+  const regIn = o => (o.value ? { ...o, value: { type: o.value.type, data: unb64(o.value.data) } } : o);
+  const url = s => `__session/${encodeURIComponent(logon.session)}/${s}`;
+
+  // ---- what this machine changes, to the server in order (one post at a time, the ones made meanwhile together)
+  let outbox = [], posting = false, quiet = false;
+  const send = (kind, op) => { if (!quiet) { outbox.push({ kind, op }); flush(); } };
+  const flush = () => {
+    if (posting || !outbox.length) return;
+    const ops = outbox; outbox = []; posting = true;
+    fetch(url('op'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client, ops }) })
+      .then(r => { if (!r.ok) console.warn('[shared] the server refused a change:', r.status); }, e => console.warn('[shared] a change was not sent:', e && e.message))
+      .finally(() => { posting = false; flush(); });
+  };
+
+  // ---- the store W95HOST has in a shared session (host-web.js's shape)
+  const host = (state, base) => ({
+    ...base,
+    userName: logon.user,
+    shared: { client, session: logon.session, user: logon.user },
+    disk: {
+      sidBase: state.sidBase,
+      load: () => (state.disk ? { ...state.disk, nodes: state.disk.nodes.map(n => (n.dir ? n : { ...n, data: unb64(n.data) })) } : null),
+      node: r => send('disk', { op: 'node', ...r }),
+      remove: sid => send('disk', { op: 'remove', sid }),
+      data: (sid, offset, bytes) => send('disk', { op: 'data', sid, offset, bytes: b64(bytes) }),
+      size: (sid, size) => send('disk', { op: 'size', sid, size }),
+      label: (label, serial) => send('disk', { op: 'label', label, serial }),
+    },
+    registry: {
+      load: () => (state.registry ? state.registry.map(([p, vals, n]) => [p, vals.map(([k, v]) => [k, { type: v.type, data: unb64(v.data) }]), n]) : null),
+      op: o => send('reg', regOut(o)),
+    },
+  });
+
+  // ---- what others change, applied here; who is here
+  let seq = 0, es = null, fs = null;
+  const people = new Map(), watchers = new Set(), pending = [];
+  // another machine's change, to this page's C: or registry (its own come back too, and are passed over); before
+  // Windows has started here they wait (`pending`) until `ready` gives the file system
+  const apply = m => {
+    seq = Math.max(seq, m.seq || 0);
+    if (m.client === client) return;
+    if (!fs) { pending.push(m); return; }
+    if (m.kind === 'disk') fs.applyStore('C', m.op.op === 'data' ? { ...m.op, bytes: unb64(m.op.bytes) } : m.op);
+    else if (m.kind === 'reg' && window.W95Win32) window.W95Win32.regApply(regIn(m.op), 'remote');
+  };
+  const roster = list => {
+    people.clear();
+    for (const p of list || []) if (p.client !== client) people.set(p.client, p);
+    for (const f of watchers) f([...people.values()]);
+  };
+  // the session's events: who is here (and where their pointers are), each change in order; a reconnect asks for the
+  // changes since the last one seen, or the server says to load the state again ('reload')
+  const listen = () => {
+    if (!window.EventSource) return;
+    es = new window.EventSource(url(`events?client=${encodeURIComponent(client)}&user=${encodeURIComponent(logon.user)}&since=${seq}`));
+    es.addEventListener('people', e => { try { roster(JSON.parse(e.data).people); } catch (_) { /* a bad message */ } });
+    es.addEventListener('op', e => { try { apply(JSON.parse(e.data)); } catch (err) { console.warn('[shared] a change could not be applied:', err && err.message); } });
+    es.addEventListener('reload', () => { quiet = true; location.reload(); });
+    es.onerror = () => { if (es.readyState === 2) { es = null; setTimeout(listen, 2000); } };   // (closed for good: open again)
+  };
+
+  // ---- this person's pointer, to the others (at most ten times a second, the last position sent)
+  let ptr = null, ptrTimer = 0;
+  const pointer = (x, y) => {
+    ptr = { x: Math.round(x), y: Math.round(y) };
+    if (ptrTimer) return;
+    ptrTimer = setTimeout(() => {
+      ptrTimer = 0; const p = ptr; if (!p) return;
+      fetch(url('pointer'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client, ...p }) }).catch(() => {});
+    }, 100);
+  };
+
+  // ---- the start: the session's state, synchronously as the page's store loads before Windows starts (null: no server
+  // answered, and the page runs on its own store)
+  const fetchState = () => {
+    try {
+      const x = new XMLHttpRequest(); x.open('GET', url('state'), false); x.send();
+      return x.status === 200 ? JSON.parse(x.responseText) : null;
+    } catch (_) { return null; }
+  };
+  const start = base => {
+    const state = fetchState(); if (!state) return null;
+    seq = state.seq || 0;
+    listen();
+    return host(state, base);
+  };
+  /** Windows has started here: the changes that came meanwhile are applied now */
+  const ready = files => { fs = files; for (const m of pending.splice(0)) apply(m); };
+
+  // ---- logging off (Shut Down's "Close all programs and log on as a different user"): a name goes to that person's own
+  // session (others join it by its id), Guest (or none) to the shared one; the page starts again there
+  const logOff = (user, session) => {
+    const u = name(user, 20) || 'Guest';
+    const s = sessionId(session) || (/^guest$/i.test(u) ? 'guest' : ownSession(u));
+    remember(u, s); quiet = true;
+    const next = new URL(location.href); next.searchParams.delete('user'); next.searchParams.delete('session');
+    location.href = next.toString();
+  };
+
+  window.W95Shared = {
+    wanted, start, ready, logon, client, ownSession, remember, logOff, pointer,
+    people: () => [...people.values()], watch: f => { watchers.add(f); return () => watchers.delete(f); },
+    seq: () => seq,
+  };
+})();

@@ -120,6 +120,19 @@ PROD_SITE = BASE / "site"
 DEV_SITE = BASE.parent / (BASE.name + "-dev") / "site"
 
 
+# The sessions people share (sessions.py, copied beside this by deploy.sh: /__sessions, /__session/<id>/...), the dev
+# site's apart from production's, each kept in a folder beside its site
+import sys
+sys.path.insert(0, str(BASE))
+import sessions
+SESSIONS = {"prod": sessions.Sessions(str(BASE / "sessions")), "dev": sessions.Sessions(str(BASE.parent / (BASE.name + "-dev") / "sessions"))}
+
+
+def sessions_for(host):
+    host = (host or "").split(":")[0].strip().lower()
+    return SESSIONS["dev" if host in DEV_HOSTS else "prod"]
+
+
 def site_for(host):
     """The site root for a request's Host. A missing or half-synced dev tree falls back to production, so a failed
     dev deploy degrades to the live site instead of a broken page."""
@@ -183,7 +196,14 @@ class H(http.server.SimpleHTTPRequestHandler):
             n -= len(b)
         self.range_left = None
 
+    def do_GET(self):
+        if self.path.startswith("/__session") and sessions_for(self.headers.get("Host")).handle(self, "GET"):
+            return
+        super().do_GET()
+
     def do_POST(self):
+        if self.path.startswith("/__session") and sessions_for(self.headers.get("Host")).handle(self, "POST"):
+            return
         # /__share as tools/serve.py answers it: the host's name, the shares' list, and an operation on one (the page
         # learns its computer's name here, as on the dev server and in the app)
         if self.path.split("?")[0] != "/__share":
