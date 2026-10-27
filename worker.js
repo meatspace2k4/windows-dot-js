@@ -345,7 +345,9 @@ class Machine {
   /** the screen's mode, DAC and cursor sprite for the page, which shows the screen from the shared memory */
   postScan() {
     const p = this.proc, a = p.scanout(), sp = p.sprite ? p.sprite() : null;
-    let cur = null; if (sp && p.cursorPos && this.system && !p.depth && !this.ring0()) try { cur = p.cursorPos(); } catch (_) { cur = null; }   // (USER's cursor, beside the sprite: the pointer's hot spot in its image)
+    // (USER's cursor, beside the sprite: the pointer's hot spot in its image; once the shell is up, USER taking the call)
+    if (sp && this.system && !this.shellSeen) try { this.shellSeen = p.nativeWindows().list.some(x => x.cls === 'Progman'); } catch (_) { /* not yet */ }
+    let cur = null; if (sp && this.shellSeen && p.cursorPos && !p.depth && !this.ring0()) try { cur = p.cursorPos(); } catch (_) { cur = null; }
     post({ t: 'scan', scan: { w: a.w, h: a.h, pitch: a.pitch || a.w, bpp: a.bpp, dacMode: a.hicolor, attr: Array.from(a.attr.subarray(0, 0x15)), vram: a.vram.byteOffset }, dac: Uint8Array.from(a.dac),
       sprite: sp ? { x: sp.x, y: sp.y, px: sp.px, py: sp.py, cpp: sp.cpp, row: sp.row, at: sp.bits.byteOffset } : null, cur });
   }
@@ -590,7 +592,9 @@ class Machine {
     if (!file) return 2;
     // (a machine joining a shared session: a program the shell starts as Windows starts is the session's to start, if
     // the session runs it; the system's own still start)
-    if (this.holdStartup && !/^(SYSTRAY|MPREXE|MMTASK|RUNDLL32|EXPLORER|MSGSRV32)\.(EXE|TSK)$/i.test(basename(file))) return { elsewhere: true };
+    // (and Setup's first-start programs, which each machine runs itself, osclass.js derived: RUNONCE's GRPCONV makes
+    // the Start menu over DDE with the shell, which waits for it)
+    if (this.holdStartup && !/^(SYSTRAY|MPREXE|MMTASK|RUNDLL32|EXPLORER|MSGSRV32|RUNONCE|GRPCONV|SETUP|SUWIN)\.(EXE|TSK)$/i.test(basename(file))) return { elsewhere: true };
     // a Windows (16-bit) program of the system's: a task of this machine's, as KERNEL's WinExec starts one
     const ne = Object.values((self.W95SYSTEM || {}).ne || {}).find(d => d.fileName === basename(file).toUpperCase() && /\.EXE$/.test(d.fileName));
     if (ne) return this.proc.winExec16(ne.fileName, arg || '', show === undefined ? 1 : show);
