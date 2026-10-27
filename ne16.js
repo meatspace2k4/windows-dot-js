@@ -590,7 +590,11 @@ const cdRequest = p => {
   // the drive's audio: playing [from, to) since t0 (its position by the clock, 75 sectors a second), or paused at pos
   const now = p.cdClock ? p.cdClock() : performance.now(), a = st.play || (st.play = { state: 'idle', from: 0, to: 0, pos: 0, t0: 0 });
   if (a.state === 'playing') { a.pos = Math.min(a.to, a.from + Math.floor((now - a.t0) * 75 / 1000)); if (a.pos >= a.to) a.state = 'idle'; }
-  const busy = a.state === 'playing' ? 0x0200 : 0, send = (op, from, to) => { if (self.W95CDAUDIO) self.W95CDAUDIO(op, from, to); };
+  // (a play goes with the gain AUX1 has, where the drive's output reaches the sound card: sound.js cdAuxGain)
+  const busy = a.state === 'playing' ? 0x0200 : 0, send = (op, from, to) => {
+    if (op === 'play' && self.W95CDGAIN && p.cdAuxGain) self.W95CDGAIN(...p.cdAuxGain());
+    if (self.W95CDAUDIO) self.W95CDAUDIO(op, from, to);
+  };
   const trackAt = lba => disc.tracks.find(t => lba >= t.lba && lba < t.lba + t.sectors) || disc.tracks[0];
   const cmd = p.u8[hdr + 2];
   if (cmd === 3) {

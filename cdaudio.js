@@ -24,7 +24,16 @@
   };
   // (the disc's serial number as CDFS makes one for an audio disc: from its tracks' places)
   const serial = () => toc.tracks.reduce((h, t) => (Math.imul(h, 31) + t.lba + t.sectors) >>> 0, toc.leadout >>> 0);
-  let ctx = null, gen = 0, sources = [];
+  let ctx = null, gen = 0, sources = [], out = null, levels = [1, 1];
+  // the drive's output as the sound card mixes it: each channel through its gain (the codec's AUX1, sound.js)
+  const output = () => {
+    if (out) return out.in;
+    const split = ctx.createChannelSplitter(2), merge = ctx.createChannelMerger(2), g = [ctx.createGain(), ctx.createGain()];
+    g.forEach((x, i) => { x.gain.value = levels[i]; split.connect(x, i); x.connect(merge, 0, i); });
+    merge.connect(ctx.destination); out = { in: split, g };
+    return split;
+  };
+  const gain = (l, r) => { levels = [l, r]; if (out) out.g.forEach((x, i) => { x.gain.setValueAtTime(levels[i], ctx.currentTime); }); };
   // play sectors [from, to): fetched CHUNK at a time, each scheduled after the last, the next fetched while one plays
   const play = async (from, to) => {
     const my = ++gen; stopSources();
@@ -41,7 +50,7 @@
       if (my !== gen) return;
       const frames = pcm.length >> 1, buf = ctx.createBuffer(2, frames, 44100), l = buf.getChannelData(0), rt = buf.getChannelData(1);
       for (let i = 0; i < frames; i++) { l[i] = pcm[2 * i] / 32768; rt[i] = pcm[2 * i + 1] / 32768; }
-      const src = ctx.createBufferSource(); src.buffer = buf; src.connect(ctx.destination);
+      const src = ctx.createBufferSource(); src.buffer = buf; src.connect(output());
       at = Math.max(at, ctx.currentTime + 0.05); src.start(at); at += buf.duration;
       sources.push(src); src.onended = () => { sources = sources.filter(x => x !== src); };
       // (wait to fetch the next until this one is under way: a few seconds ahead, not the whole disc)
@@ -53,5 +62,5 @@
   // the disc's ID as CD Player makes one, its section in CDPLAYER.INI: the sum of the tracks' starts, each as minute,
   // second and frame packed in a word (MSF 00:02:00 on), in hex
   const discId = () => toc.tracks.reduce((s, t) => { const f = t.lba + 150; return (s + ((Math.floor(f / 4500) << 16) | ((Math.floor(f / 75) % 60) << 8) | (f % 75))) >>> 0; }, 0).toString(16).toUpperCase();
-  window.W95CDAudio = { toc, cda, serial: () => (toc ? serial() : 0), discId: () => (toc ? discId() : null), play, stop };
+  window.W95CDAudio = { toc, cda, serial: () => (toc ? serial() : 0), discId: () => (toc ? discId() : null), play, stop, gain, levels: () => levels };
 })();

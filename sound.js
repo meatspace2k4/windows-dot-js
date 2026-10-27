@@ -92,6 +92,10 @@ P.dmaRead = function (chn, n) {
 const XTAL = [24576000, 16934400], DIV = [3072, 1536, 896, 768, 448, 384, 512, 2560];
 const codec = p => p.ad1848 || (p.ad1848 = { idx: 0, mce: false, trd: false, regs: Uint8Array.from([0, 0, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0, 0, 0, 0, 0x0a, 0, 0, 0]), int: false, count: 0, frac: 0, last: p.now(), t: p.now(), cfg: 0 });
 const rateOf = r8 => XTAL[r8 & 1] / DIV[(r8 >> 1) & 7];
+// AUX1's gain, left and right (indirect registers 2 and 3: bits 0-4 in 1.5 dB steps from +12 dB at 0, 0 dB at 8,
+// bit 7 mute), as linear factors; a codec the driver has not set up yet passes AUX1 at 0 dB
+const auxGain = r => (r & 0x80 ? 0 : Math.pow(10, (12 - 1.5 * (r & 0x1f)) / 20));
+P.cdAuxGain = function () { const c = this.ad1848; return c ? [auxGain(c.regs[2]), auxGain(c.regs[3])] : [1, 1]; };
 // ---------------------------------------------------------------- OPL3 (YMF262) at 388h-38Bh
 // The synthesizer's register file (two banks: 388h/389h and 38Ah/38Bh) and its two timers, as drivers detect the chip:
 // timer 1 counts in 80 us steps from register 2, timer 2 in 320 us steps from register 3; register 4 starts them
@@ -267,6 +271,9 @@ P.soundIO = function (port, size, isIn) {
       if (c.idx === 9 && !(v & 1) && (was & 1)) this.soundQuiet = false;   // the sound played unheard is over
       if (c.idx === 9 && (v & 1) && !(was & 1)) { c.count = (c.regs[14] << 8) | c.regs[15]; c.frac = 0; c.last = c.t; }
       if (c.idx === 15 || c.idx === 14) c.count = (c.regs[14] << 8) | c.regs[15];
+      // AUX1, where the audio CD drive's output comes in (with the FM synthesizer's, on a Sound System card with a CD
+      // connector): its gain and mute follow the mixer's MIDI line (and its master Volume, which MSSNDSYS applies there)
+      if ((c.idx === 2 || c.idx === 3) && v !== was && self.W95CDGAIN) self.W95CDGAIN(...this.cdAuxGain());
       return true;
     }
     if (off === 2) {   // status: INT, PRDY; a write clears INT. A driver polling it sees the codec move on

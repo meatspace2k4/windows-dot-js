@@ -5,10 +5,22 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 const src = readFileSync(new URL('../cdaudio.js', import.meta.url), 'utf8');
+// (Web Audio as the page has it, recorded: the nodes made, what each buffer source starts and stops)
+const audio = { sources: [], gains: [], fetched: [] };
+class Node0 { connect() {} }
+class AudioContext {
+  constructor() { this.currentTime = 0; this.state = 'running'; this.destination = new Node0(); }
+  resume() { return Promise.resolve(); }
+  createChannelSplitter() { return new Node0(); } createChannelMerger() { return new Node0(); }
+  createGain() { const g = new Node0(); g.gain = { value: 1, setValueAtTime(v) { this.value = v; } }; audio.gains.push(g); return g; }
+  createBuffer(ch, frames, rate) { const d = [new Float32Array(frames), new Float32Array(frames)]; return { duration: frames / rate, getChannelData: i => d[i] }; }
+  createBufferSource() { const s = new Node0(); s.start = at => { s.at = at; }; s.stop = () => { s.stopped = true; }; audio.sources.push(s); return s; }
+}
+const fetch = async (url, o) => { audio.fetched.push(o.headers.Range); const [, a, b] = /bytes=(\d+)-(\d+)/.exec(o.headers.Range); return { arrayBuffer: async () => new ArrayBuffer(+b - +a + 1) }; };
 const load = body => {
   const window = {};
   class XMLHttpRequest { open() {} send() { this.status = body ? 200 : 404; this.responseText = body || ''; } }
-  new Function('window', 'XMLHttpRequest', src)(window, XMLHttpRequest);
+  new Function('window', 'XMLHttpRequest', 'AudioContext', 'fetch', 'setTimeout', src)(window, XMLHttpRequest, AudioContext, fetch, (f, ms) => setTimeout(f, 0));
   return window.W95CDAudio;
 };
 let toc = null; try { toc = JSON.parse(readFileSync(new URL('../audiocd.json', import.meta.url), 'utf8')); } catch (_) { /* not built in this checkout */ }
@@ -24,4 +36,18 @@ const want = T.tracks.reduce((s, t) => { const x = t.lba + 150; return s + ((Mat
 assert.equal(A.discId(), want);
 if (toc && /Incredible Machine 3/.test(toc.album)) assert.equal(A.discId(), '20D49D5', 'the disc ID CD Player looks this disc up by');
 assert.equal(load(null).toc, null); assert.equal(load(null).discId(), null);
+// play: the sectors fetched by byte range, 4 seconds at a time, each through the left and right gains; the gain the
+// sound card sends set on them; stop: every source scheduled stopped, nothing more fetched
+{
+  A.gain(0.5, 0.25);
+  const done = A.play(0, 600);   // (8 seconds: two fetches)
+  await new Promise(ok => setTimeout(ok, 20));
+  assert.equal(audio.fetched[0], `bytes=0-${300 * 2352 - 1}`);
+  assert.deepEqual(audio.gains.map(g => g.gain.value), [0.5, 0.25], 'the gain AUX1 had');
+  A.gain(1, 0); assert.deepEqual(audio.gains.map(g => g.gain.value), [1, 0]);
+  assert.ok(audio.sources.length >= 1);
+  A.stop(); await done;
+  assert.ok(audio.sources.every(s => s.stopped), 'all stopped'); const n = audio.fetched.length;
+  await new Promise(ok => setTimeout(ok, 20)); assert.equal(audio.fetched.length, n, 'nothing fetched after stop');
+}
 console.log('cdaudio: ok');
