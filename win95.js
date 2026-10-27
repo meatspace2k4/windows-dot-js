@@ -2233,7 +2233,7 @@ function sessionKeep(op, s) {
     const ok = () => {
       const n = name.value.trim() || 'Session'; closeWin(w);
       s.save(n, fs.storeImage('C'), W95Win32.regDump()).then(() => {
-        if (joined) return msgBox('Save Session', `"${n}" has been saved on this computer.\n\nWindows will start from it next time. Your other saved sessions are still available in Open Session.`, 'info');
+        if (joined) return msgBox('Save Session', `"${n}" has been saved on this computer.\n\nWindows will start from it next time. To use a different saved session, click Start, point to Programs, Accessories, and System Tools, and then click Open Session.`, 'info');
         location.reload();   // (this page's machine writes on to the one it is kept as)
       }, e => msgBox('Save Session', `The session was not saved: ${e.message}`, 'error'));
     };
