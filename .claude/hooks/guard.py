@@ -50,14 +50,16 @@ TRANSCRIPTS = os.path.expanduser('~/.claude/projects/' + re.sub(r'[^\w-]', '-', 
 
 
 def live(n, s, within):
-    """a session still at work: its transcript written within the last minutes (a session whose transcript is gone is gone)"""
-    try:
-        return time.time() - os.path.getmtime(os.path.join(TRANSCRIPTS, n[:-5] + '.jsonl')) < within
-    except OSError:
+    """a session still at work: one this guard has seen call a tool within the last minutes ('seen', main). A
+    transcript's time is no sign of it: a rewound conversation, or the one a fork was taken from, has its file
+    written without doing anything, and its edits were taken for a live writer's (a session whose transcript is gone
+    is gone)"""
+    if not os.path.exists(os.path.join(TRANSCRIPTS, n[:-5] + '.jsonl')):
         return False
+    return time.time() - s.get('seen', s.get('edit', 0)) < within
 
 
-def other_writer(sid, path, within=10 * 60):
+def other_writer(sid, path, within=3 * 60):
     """another session at work that edited path (its state names the file, and it is live): a file's uncommitted edits
     from a writer that is gone, or from the person, are not another writer's"""
     try:
@@ -197,6 +199,10 @@ def main():
     tool, ti, sid = d.get('tool_name', ''), d.get('tool_input') or {}, d.get('session_id', '')
     SID = sid
     ev = d.get('hook_event_name')
+    if sid and ev == 'PreToolUse':   # (this session at work: other sessions' live(); at most every few seconds)
+        s = load(sid)
+        if time.time() - s.get('seen', 0) > 5:
+            s['seen'] = time.time(); save(sid, s)
     if ev == 'Stop':
         if untested(sid):
             print(json.dumps({'decision': 'block', 'reason': 'Files edited since the last passing node tests/ run. Run the tests on this change before ending the turn.'}))

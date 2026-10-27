@@ -660,7 +660,6 @@ class Machine {
       this.kick();
     });
   }
-  /** the taskbar's window (Explorer's Shell_TrayWnd), the owner of what the Start menu opens; 0 before the shell is up */
   /** a program's fault: KERNEL32's fault dialog (its dialog 1) in this machine, on a thread of the system's own, as
    *  Windows 95 shows it, with the system's screen and pointer (the page drew one of its own over the machine's
    *  screen, and two pointers fought over it); the page told it ended. Shown by the page only when this machine cannot
@@ -681,6 +680,7 @@ class Machine {
     // 0 was USER's parameter error 6022)
     this.netCall('DialogBoxIndirectParamA', [user.base, t, 0, p.thunkFor('KERNEL32', 'FaultDlgProc'), blk], 'USER32').then(free, free);
   }
+  /** the taskbar's window (Explorer's Shell_TrayWnd), the owner of what the Start menu opens; 0 before the shell is up */
   trayHwnd() { try { const w = this.proc.nativeWindows().list.find(x => x.cls === 'Shell_TrayWnd'); return w ? w.hwnd : 0; } catch (_) { return 0; } }
   /** until the shell's desktop (Progman, the window SetShellWindow names) is up, as Windows starts: a program started
    *  before it that opens a folder (Control Panel: SHELL32's ShellExecuteEx with an ID list) finds no shell and starts

@@ -5465,6 +5465,11 @@ const qText = q => JSON.stringify(q, (k, v) => v instanceof RegExp ? String(v) :
 // control is the same window whatever its text is now (an edit's name is its text, which typing changes)
 const asQuery = q => (q && typeof q === 'object' && !(q instanceof RegExp) && 'x' in q && 'w' in q
   ? q.hwnd && q.list === undefined ? { hwnd: q.hwnd, role: q.role, ...(q.window ? { window: q.window } : {}) } : { name: q.name, role: q.role, ...(q.window ? { window: q.window } : {}) } : q);
+/** the elements a query matches (a name, or { field: value or RegExp }) */
+function filterEls(all, q) {
+  if (!q) return all; if (typeof q === 'string' || q instanceof RegExp) q = { name: q };
+  return all.filter(e => Object.entries(q).every(([k, v]) => v instanceof RegExp ? v.test(String(e[k] ?? '')) : e[k] === v));
+}
 /** the elements with every native window's controls as its machine answers now (elements gives the last answer) */
 async function elementsNow() {
   await Promise.all(windows.filter(w => w.native && !w.min && w.app && w.app.alive && w.app.childrenNow).map(w => w.app.childrenNow(w.hwnd).catch(() => null)));
@@ -5536,8 +5541,10 @@ const script = {
   type(text) { shareInput({ t: 'text' }); script.typeOwn(text); },
   typeOwn(text) { const na = nativeFocus(); if (na) { na.typeText(String(text).replace(/\r/g, '')); return; } for (const ch of String(text).replace(/\r/g, '')) handleKey({ key: ch === '\n' ? 'Enter' : ch, shiftKey: false, ctrlKey: false, metaKey: false, altKey: false, preventDefault() {} }); },
   key(...specs) { for (const k of specs) { shareInput({ t: 'key' }); pressKey(k); } },
-  elements(q) { const all = elements(); if (!q) return all; if (typeof q === 'string' || q instanceof RegExp) q = { name: q };
-    return all.filter(e => Object.entries(q).every(([k, v]) => v instanceof RegExp ? v.test(String(e[k] ?? '')) : e[k] === v)); },
+  elements(q) { return filterEls(elements(), q); },
+  // (the same, each native window's controls asked of its machine now: elements() gives its last answer, none yet for
+  // a window that has just come)
+  async elementsNow(q) { return filterEls(await elementsNow(), q); },
   find: q => findEl(q),
   windows() { return windows.map(winInfo); },
   window(title) { const w = findWin(title); return w ? winInfo(w) : null; },

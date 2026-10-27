@@ -42,6 +42,8 @@ waits for an element the same way and resolves with it. With coordinates the cal
 | Call | Returns |
 | --- | --- |
 | `windows()` | `[{ title, x, y, w, h, active, minimized, maximized, modal }]`, bottom to top |
+| `elements(query?)` | what is on screen, `[{ role, name, window, x, y, w, h, ... }]`; a native window's controls as its machine last reported them (none yet for a window that has just come) |
+| `await elementsNow(query?)` | the same, each native window's controls asked of its machine now |
 | `window(title)` | the topmost window whose title equals the string or matches the RegExp, or `null` |
 | `activate(title)` | brings it to the front, restoring it if minimized |
 | `close(title)` | closes it as its close box would |
