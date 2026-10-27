@@ -269,7 +269,7 @@ P.bootUser16 = function () {
     }
   }
   this.user16Ready = true;
-  this.hookIntents(user);
+  this.hookIntents(user); this.hookClock(user);
   this.userStack();
   return user;
 };
@@ -750,8 +750,8 @@ const INTS = {
     switch (ah) {
       case 0x30: this.ax(0x0007); this.cpu.ebx.value = lo16(this.cpu.ebx.value, 0xff00); this.cpu.ecx.value = lo16(this.cpu.ecx.value, 0); return;   // DOS 7.0
       case 0x19: this.ax((this.ax() & 0xff00) | (this.fs.cwd.toUpperCase().charCodeAt(0) - 65)); return;        // the current drive
-      case 0x2a: { const d = new Date(); this.cpu.ecx.value = lo16(this.cpu.ecx.value, d.getFullYear()); this.cpu.edx.value = lo16(this.cpu.edx.value, ((d.getMonth() + 1) << 8) | d.getDate()); this.ax((this.ax() & 0xff00) | d.getDay()); return; }
-      case 0x2c: { const d = new Date(); this.cpu.ecx.value = lo16(this.cpu.ecx.value, (d.getHours() << 8) | d.getMinutes()); this.cpu.edx.value = lo16(this.cpu.edx.value, (d.getSeconds() << 8) | Math.floor(d.getMilliseconds() / 10)); return; }
+      case 0x2a: { const d = new Date(Date.now() + this.clockOf().wall); this.cpu.ecx.value = lo16(this.cpu.ecx.value, d.getFullYear()); this.cpu.edx.value = lo16(this.cpu.edx.value, ((d.getMonth() + 1) << 8) | d.getDate()); this.ax((this.ax() & 0xff00) | d.getDay()); return; }
+      case 0x2c: { const d = new Date(Date.now() + this.clockOf().wall); this.cpu.ecx.value = lo16(this.cpu.ecx.value, (d.getHours() << 8) | d.getMinutes()); this.cpu.edx.value = lo16(this.cpu.edx.value, (d.getSeconds() << 8) | Math.floor(d.getMilliseconds() / 10)); return; }
       case 0x33: if (al === 6) { this.cpu.ebx.value = lo16(this.cpu.ebx.value, 0x0007); this.cpu.edx.value = lo16(this.cpu.edx.value, 0x1000); } else if (al === 0) this.cpu.edx.value &= ~0xff; return;   // true version 7.0, in HMA; Ctrl+Break checking off
       case 0x44: if (al === 0) {   // a handle's information: a file's drive (bit 7 clear; VB3 refuses a name that opens a device), else a character device
         const fh = this.dosFiles.get(this.cpu.ebx.value & 0xffff);
@@ -1150,7 +1150,9 @@ P.osWorld = function () {
     // (an owned window is its owner's popup, unless the owner is not shown: RUNDLL32's property sheets, Display
     // Properties among them, are owned by its hidden window)
     if ((w.owner && shown.has(w.owner)) || !w.title) continue;
-    const pc = w.task && procs.find(c => c.tdb === w.task); if (!pc) continue;
+    // (a Win32 program's process; a Windows 3.x program's task: Solitaire)
+    const k = w.task && !procs.some(c => c.tdb === w.task) && [...(this.threadsById || new Map()).values()].find(t => t.tdb === w.task && t.task && t.task.cmdLine && t.state !== 'done');
+    const pc = w.task && (procs.find(c => c.tdb === w.task) || (k && { pid: 0x10000 + w.task, ...k.task })); if (!pc) continue;
     const base = String(pc.path || '').split('\\').pop().toUpperCase(), folder = FOLDER_CLS.test(w.cls);
     if (WORLD_SKIP.has(base) && !folder) continue;
     // (its controls whose contents only a message tells: listed here, asked by the caller from a thread of its own,
@@ -1161,7 +1163,7 @@ P.osWorld = function () {
       if (/^(edit|combobox)$/i.test(c.cls)) ask.push([`${c.id}:${c.cls.toLowerCase()}`, c.hwnd, 'text']);
       else if (/^button$/i.test(c.cls) && [2, 3, 4, 5, 6, 9].includes(c.style & 0x0f)) ask.push([`${c.id}:button`, c.hwnd, 'check']);
     }
-    out.push({ hwnd: w.hwnd, pid: pc.pid, path: pc.path, cmd: pc.cmdLine !== undefined ? pc.cmdLine : pc.cmdPtr ? this.readA(pc.cmdPtr) : '', cls: w.cls, title: w.title, folder,
+    out.push({ hwnd: w.hwnd, pid: pc.pid, path: pc.path, cmd: pc.cmdLine !== undefined ? pc.cmdLine : pc.cmdPtr ? this.readA(pc.cmdPtr) : '', t0: pc.t0 || null, cls: w.cls, title: w.title, folder,
       x: w.x, y: w.y, w: w.w, h: w.h, min: w.iconic, max: !!u(272, [['w', w.hwnd]]), ask });   // IsZoomed
   }
   return { list: out, area: this.workArea() };   // (and the work area they are placed in, which each machine's own screen sets)
@@ -1178,6 +1180,31 @@ const SPI_SET = { 4: 'mouse', 11: 'ui', 13: 'ui', 15: 'ui', 17: 'ui', 19: 'ui', 
  *  machine's person has pressed a key or a button (personActed, worker.js) writes settings of its own */
 P.intentQuiet = function () { return !this.onIntent || !this.personActed || !this.thread16 || !!this.thread16.remote; };   // (no thread: the host's own, the display's mode for its page)
 /** USER's SystemParametersInfo (#483) watched where another module enters it (win32.js dispatch), once USER is up */
+// ---- a program's clock: one started here for a shared session reads the clock of the machine that started it, as of
+// its start there (its t0: { tick, wall }), so what it makes of the time (a seed: Solitaire's deal, srand(time())) is
+// what it made there. The offsets go on the process (Win32) or the task (Win16) as it starts (startClock); the reads a
+// program makes take them (win32.js clockOf): KERNEL32's GetTickCount, QueryPerformanceCounter, GetLocalTime,
+// GetSystemTime(AsFileTime), MS-DOS's date and time (INT 21h 2Ah, 2Ch), and USER's GetTickCount and GetCurrentTime,
+// answered where another module enters them (hookClock). USER's own time (message times, timers) stays the machine's
+/** the start of a program: its t0 and its clock's offsets, from the machine that started it for the session
+ *  (this.nextClock, worker.js 'run'), else this machine's own (no offsets) */
+P.startClock = function () {
+  const c = this.nextClock; this.nextClock = null;
+  const tick = u32(this.now() - this.t0 + 3600000), wall = Date.now();
+  return c ? { t0: c, clock: { tick: (c.tick - tick) | 0, wall: c.wall - wall } } : { t0: { tick, wall }, clock: null };
+};
+P.hookClock = function (user) {
+  for (const ord of [13, 15]) {   // GetTickCount, GetCurrentTime
+    const at = this.neExport(user, ord); if (!at) continue;
+    (this.entryHooks || (this.entryHooks = new Map())).set(u32(this.selBase(at >>> 16) + (at & 0xffff)), P.clockCall);
+  }
+};
+P.clockCall = function () {
+  const c = this.clockOf(); if (!c.tick) return undefined;   // (this machine's own: USER answers)
+  const v = u32(this.now() - this.t0 + 3600000 + c.tick);
+  this.ax(v & 0xffff); this.cpu.edx.value = lo16(this.cpu.edx.value, v >>> 16);
+  return this.retf16(0);
+};
 P.hookIntents = function (user) {
   const at = this.neExport(user, 483); if (!at) return;
   (this.entryHooks || (this.entryHooks = new Map())).set(u32(this.selBase(at >>> 16) + (at & 0xffff)), P.spiIntent);
@@ -3655,6 +3682,7 @@ P.spawn = function (file, module, meta, path, cmdline) {
   } else pc.exe = this.loadImage(file, module, meta, 'EXE');
   pc.cmdPtr = this.alloc(cmdline.length + 1); this.writeA(pc.cmdPtr, cmdline);
   pc.cmdLine = cmdline;   // (as it was started: the program can change its copy, RUNDLL32 cuts its at the comma)
+  Object.assign(pc, this.startClock());
   this.inits = [];   // its DLLs attach to it as its main thread starts (pcStart)
   const t = this.newThread(meta.entry, 0, 0x100000, true, false); t.pc = pc; t.tdb = pc.tdb; pc.main = t;
   (this.procs || (this.procs = new Map())).set(pc.pid, pc);
@@ -3951,6 +3979,9 @@ def16('KERNEL', 45, 'sp', 'l', function (name, pb) {
   if (self.W95_TASK_OWN_PC !== false) t.pc = null;   // a Win16 task is the Win16 process's (the system's), whoever starts it (GRPCONV's PROGMAN), not a thread of its starter
   t.task = { psp: pspSel, hInst: rec.hInstance, show, stack: rd.u16(rec.file, hdr + 0x12), heap: rd.u16(rec.file, hdr + 0x10), dgroup: rec.dgroup, mod: rec };
   rec.taskModule = true;
+  // (the program as it was started, for a shared session's world: its file and command line, and its clock)
+  const file = String(rec.fileName || rec.path || name).replace(/^.*\\/, '').toUpperCase(), tail = this.readA(psp + 0x81, 127).trim();
+  Object.assign(t.task, { path: rec.path || `C:\\WINDOWS\\${file}`, cmdLine: tail ? `${file} ${tail}` : file }, this.startClock());
   // its DGROUP: the data, then the stack (SP its top), then the local heap InitTask makes at the segment's end
   const dg = m.segs[m.autodata - 1], data = dg ? (Math.max(dg.minalloc || 0, dg.len || 0) + 15) & ~15 : 0;
   Object.assign(t.task, { sp: Math.min(0xfff0, (data + taskStack(t.task.stack || 1) + 15) & ~15) });

@@ -889,7 +889,8 @@ class Machine {
       })();
       // a command line run as Windows runs one (WinExec, CreateProcess: a 16-bit program or a 32-bit one): a shared
       // session's program, started here as another machine runs it
-      case 'run': { const held = this.holdStartup; this.holdStartup = false; try { const r = this.exec(args[0], 1); return typeof r === 'number' ? (r > 32 ? { ok: true } : { err: r }) : r && r.err ? r : { ok: true }; } finally { this.holdStartup = held; } }
+      // (a program another machine runs in a shared session: its clock as of its start there, args[1], ne16.js startClock)
+      case 'run': { const held = this.holdStartup; this.holdStartup = false; p.nextClock = args[1] || null; try { const r = this.exec(args[0], 1); return typeof r === 'number' ? (r > 32 ? { ok: true } : { err: r }) : r && r.err ? r : { ok: true }; } finally { this.holdStartup = held; p.nextClock = null; } }
       // a control set as another machine has it: an edit's or combo box's text (WM_SETTEXT), a button's check
       // (BM_SETCHECK), sent from a thread of its own as 'place' is
       case 'setCtrl': return (async () => {

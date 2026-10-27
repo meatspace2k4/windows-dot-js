@@ -10,6 +10,7 @@
 const LAYOUT = { SENTINEL: 0xFFFFFFF0, THUNK: 0xFFFF0000, THUNK16: 0xFFFE0000, FPU: 0x10000, TIB: 0x11000, SCRATCH: 0x12000,
   STACK_LO: 0x100000, STACK_TOP: 0x3ffff0, HEAP: 0x02000000, HEAP_END: 0x05600000 };
 const YIELD = Symbol('yield');   // returned by an API implementation to suspend the guest at depth 0
+const NO_CLOCK = Object.freeze({ tick: 0, wall: 0 });   // (a program reading this machine's own clock: Process.clockOf)
 const TICK_MS = 65536 * 1000 / 1193182;   // PIT channel 0 period, 54.925 ms
 const CPU_REGS = ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi', 'cf', 'pf', 'zf', 'sf', 'of', 'df', 'fs', 'ftop', 'fsw', 'fcw', 'eip',
   'cs', 'ds', 'es', 'ss', 'fsel', 'gsel', 'csb', 'dsb', 'esb', 'ssb', 'gsb', 'budget',
@@ -270,8 +271,9 @@ class Process {
       eip >>>= 0;
       if (eip === LAYOUT.SENTINEL) return 0;
       if (this.runHook) this.runHook(eip);   // debugging: set from the page to watch every dispatch
-      // (an export another module enters, watched: a shared session's intents, ne16.js hookIntents)
-      if (this.entryHooks) { const h = this.entryHooks.get(eip); if (h) h.call(this); }
+      // (an export another module enters, watched: a shared session's intents, ne16.js hookIntents; a hook that answers
+      // the call itself gives where it returns to: a program's clock, ne16.js hookClock)
+      if (this.entryHooks) { const h = this.entryHooks.get(eip); if (h) { const to = h.call(this); if (to !== undefined) { eip = to; continue; } } }
       const m = eip >= LAYOUT.THUNK16 ? this.modules[0] : this.modules.find(x => eip >= x.meta.textLo && eip < x.meta.textHi);
       if (!m) {
         if (eip < 0x10000) (this.nullJumps || (this.nullJumps = [])).push({ at: eip, from: this.lastBlock >>> 0, cs: this.cpu.cs ? this.cpu.cs.value & 0xffff : null });
@@ -555,6 +557,9 @@ class Process {
   }
   /** Earliest time something becomes deliverable, for the host scheduler. */
   now() { return this.host.now(); }
+  /** the clock the running program reads, as an offset from this machine's ({ tick, wall } ms): a program started here
+   *  for a shared session reads the clock of the machine that started it, as of its start there (ne16.js startClock) */
+  clockOf() { const t = this.thread16, c = t && (t.pc ? t.pc.clock : t.task && t.task.clock); return c || NO_CLOCK; }
   /** Charge the guest instructions retired since the last call (counted by the translated code). */
   ready() {
     if (this.exitCode !== null || this.trapped) return false;
@@ -851,7 +856,7 @@ def('KERNEL32', 'GetTickCount', 0, function () {
   const t = this.thread16;
   if (t && t.flat && this.depth === 0 && this.now() - (t.sliceStart || 0) > 8) { if (!t.preempt) { t.preempt = true; return YIELD; } }
   if (t) t.preempt = false;
-  return (this.now() - this.t0 + 3600000) >>> 0;
+  return (this.now() - this.t0 + 3600000 + this.clockOf().tick) >>> 0;
 });
 // Sleep: a thread at its top level gives up the processor until the time is up (the call is made again when it
 // resumes, and returns once its wake-up time has passed); elsewhere it returns at once
@@ -972,7 +977,7 @@ def('KERNEL32', 'GlobalMemoryStatus', 1, function (p) {   // 16 MB of RAM, as Ge
   this.w32(p, 32); this.w32(p + 4, 50); this.w32(p + 8, 0x1000000); this.w32(p + 12, 0x800000); this.w32(p + 16, 0x2000000); this.w32(p + 20, 0x1800000);
   this.w32(p + 24, 0x7fc00000); this.w32(p + 28, 0x7f000000);
 });
-def('KERNEL32', 'QueryPerformanceCounter', 1, function (p) { const t = Math.floor((this.now() - this.t0) * 1193.182); this.w32(p, t % 4294967296); this.w32(p + 4, Math.floor(t / 4294967296)); return 1; });
+def('KERNEL32', 'QueryPerformanceCounter', 1, function (p) { const t = Math.floor((this.now() - this.t0 + this.clockOf().tick) * 1193.182); this.w32(p, t % 4294967296); this.w32(p + 4, Math.floor(t / 4294967296)); return 1; });
 def('KERNEL32', 'QueryPerformanceFrequency', 1, function (p) { this.w32(p, 1193182); this.w32(p + 4, 0); return 1; });
 def('KERNEL32', 'IsBadStringPtrW', 2, function (a) { return !a || a >= this.mem.buffer.byteLength ? 1 : 0; });
 def('KERNEL32', 'LocalHandle', 1, p => p);
@@ -1119,7 +1124,7 @@ def('KERNEL32', 'WritePrivateProfileStructA', 5, function (sec, key, buf, n, fil
 });
 def('KERNEL32', 'GetWindowsDirectoryA', 2, function (b, n) { return this.writeA(b, 'C:\\WINDOWS', n); });
 def('KERNEL32', 'GetLocalTime', 1, function (p) {
-  const d = new Date(); [d.getFullYear(), d.getMonth() + 1, d.getDay(), d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds(), d.getMilliseconds()].forEach((v, i) => this.w16(p + 2 * i, v));
+  const d = new Date(Date.now() + this.clockOf().wall); [d.getFullYear(), d.getMonth() + 1, d.getDay(), d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds(), d.getMilliseconds()].forEach((v, i) => this.w16(p + 2 * i, v));
 });
 def('KERNEL32', 'GetACP', 0, () => 1252);
 def('KERNEL32', 'GetOEMCP', 0, () => 437);
@@ -1307,11 +1312,11 @@ def('KERNEL32', 'GetEnvironmentVariableA', 3, function (name, buf, n) {
   if (!buf || n <= e.value.length) return e.value.length + 1;
   this.writeA(buf, e.value, n); return e.value.length;
 });
-const ftNow = () => BigInt(Date.now()) * 10000n + 116444736000000000n;
+const ftNow = p => BigInt(Date.now() + p.clockOf().wall) * 10000n + 116444736000000000n;
 def('KERNEL32', 'GetSystemTime', 1, function (p) {
-  const d = new Date(); [d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDay(), d.getUTCDate(), d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds(), d.getUTCMilliseconds()].forEach((v, i) => this.w16(p + 2 * i, v));
+  const d = new Date(Date.now() + this.clockOf().wall); [d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDay(), d.getUTCDate(), d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds(), d.getUTCMilliseconds()].forEach((v, i) => this.w16(p + 2 * i, v));
 });
-def('KERNEL32', 'GetSystemTimeAsFileTime', 1, function (p) { const t = ftNow(); this.w32(p, Number(t & 0xffffffffn)); this.w32(p + 4, Number(t >> 32n)); });
+def('KERNEL32', 'GetSystemTimeAsFileTime', 1, function (p) { const t = ftNow(this); this.w32(p, Number(t & 0xffffffffn)); this.w32(p + 4, Number(t >> 32n)); });
 def('KERNEL32', 'GetTimeZoneInformation', 1, function (p) { this.u8.fill(0, p, p + 172); this.w32(p, new Date().getTimezoneOffset()); return 0; });
 def('KERNEL32', 'FileTimeToSystemTime', 2, function (ft, st) {
   const t = (BigInt(this.r32(ft + 4)) << 32n) | BigInt(this.r32(ft)), d = new Date(Number((t - 116444736000000000n) / 10000n));

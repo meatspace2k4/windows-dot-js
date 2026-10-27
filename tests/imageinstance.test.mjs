@@ -16,7 +16,7 @@ const BASE = 0x40000, SIZE = 0x1000;
 const rec = { base: BASE, size: SIZE };
 Object.assign(p, {
   modules: [rec], byName: new Map([['EXE', rec]]), threadsById: new Map(), selUsed: new Uint8Array(8192),
-  alloc: () => 0x80000, writeA() {}, newThread: () => ({}),
+  alloc: () => 0x80000, writeA() {}, newThread: () => ({}), host: { now: () => 0 }, t0: 0,
   // (the image laid out afresh: the new instance's data)
   loadImage() { mem.fill(0x22, BASE, BASE + SIZE); const r = { base: BASE, size: SIZE }; this.modules.push(r); return r; },
 });

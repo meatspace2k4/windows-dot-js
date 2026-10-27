@@ -5100,7 +5100,7 @@ async function osLocal() {
     // (a control the machine could not ask now, null: as it was last read here, else left out)
     const was = osSeen.get(`${kind}#${k}`), ctrls = {};
     for (const [c, val] of Object.entries(w.ctrls)) if (val !== null) ctrls[c] = val; else if (was && was.ctrls && c in was.ctrls) ctrls[c] = was.ctrls[c];
-    out.set(`${kind}#${k}`, { hwnd: w.hwnd, v: { path: w.path, cmd: w.cmd, cls: w.cls, title: w.title, ...place, ctrls } });
+    out.set(`${kind}#${k}`, { hwnd: w.hwnd, v: { path: w.path, cmd: w.cmd, t0: w.t0 || null, cls: w.cls, title: w.title, ...place, ctrls } });
   }
   out.area = area;
   return out;
@@ -5176,7 +5176,8 @@ async function osApply(id, v, local) {
     const prog = id.slice(0, id.lastIndexOf('/'));   // (its command line can have a slash in it; its class has none)
     if ([...local.keys()].some(k => k.startsWith(prog + '/'))) return;
     osStarting.add(id); emit('sync.start', { id, cmd: v.cmd });
-    a.cmd('run', [v.cmd || v.path]).then(r => { if (!r || r.err) { osStarting.delete(id); emit('sync.failed', { id, cmd: v.cmd, r }); } }, e => { osStarting.delete(id); emit('sync.failed', { id, cmd: v.cmd, err: String(e) }); });
+    // (with its clock, as of its start where it was started)
+    a.cmd('run', [v.cmd || v.path, v.t0 || null]).then(r => { if (!r || r.err) { osStarting.delete(id); emit('sync.failed', { id, cmd: v.cmd, r }); } }, e => { osStarting.delete(id); emit('sync.failed', { id, cmd: v.cmd, err: String(e) }); });
     return;
   }
   const m = mine.v; osSeen.set(id, v);
