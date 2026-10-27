@@ -870,7 +870,8 @@ def('KERNEL32', 'GetVersionExA', 1, function (p) {
   return 1;
 });
 def('KERNEL32', 'LoadLibraryA', 1, function (n) {
-  const name = (this.readA(n) || '').toUpperCase().replace(/^.*\\/, '').replace(/\.DLL$/, '');
+  // (a name in quotes, as RUNDLL32 passes the one on its command line: "C:\WINDOWS\SYSTEM\DESK.CPL")
+  const name = (this.readA(n) || '').trim().replace(/^"(.*)"$/, '$1').toUpperCase().replace(/^.*\\/, '').replace(/\.DLL$/, '');
   const native = this.loadDll(name);
   // the process attaches to the library and to every DLL it uses, dependencies first, as Windows 95's LoadLibrary
   // does (a DLL another process loaded is attached to this one too: RUNDLL32 ran MMSYS.CPL on WINMM before the

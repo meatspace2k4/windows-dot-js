@@ -5065,7 +5065,7 @@ fs.on(e => emit('fs.' + e.op, { path: e.path, ...(e.path2 ? { path2: e.path2 } :
 // - a machine joining a running session holds the programs it would start of itself as Windows starts (worker.js
 //   holdStartup) until its person first does something on it: the session's are started for it instead
 let osWanted = false, osBusy = false, osAgain = false, osHeld = true;
-const osSeen = new Map(), osStarting = new Set(), OS_CLOSING = Symbol('closing');
+const osSeen = new Map(), osStarting = new Set(), osOpened = new Set(), OS_CLOSING = Symbol('closing');
 function shareInput(ev) {
   const S = sharedNow(); if (!S) return;
   if (ev.t === 'move') { S.pointer(ev.x, ev.y); return; }
@@ -5079,19 +5079,29 @@ function osFrame() { if (osWanted) { osWanted = false; osRead(); } }
 /** this machine's OS objects, by their session ids */
 async function osLocal() {
   const a = sysApp; if (!a || !a.alive) return null;
-  const list = await a.cmd('world'); if (!list) return null;
-  const byPath = new Map(); for (const w of list) (byPath.get(w.path) || byPath.set(w.path, new Set()).get(w.path)).add(w.pid);
+  const got = await a.cmd('world'); if (!got) return null;
+  const { list, area } = got;
+  // (a program's instances counted by its command line: RUNDLL32 with DESK.CPL is another object than RUNDLL32 with
+  // SYSDM.CPL, whichever a machine started first)
+  const prog = w => `${w.path}\n${w.cmd}`;
+  const byPath = new Map(); for (const w of list) (byPath.get(prog(w)) || byPath.set(prog(w), new Set()).get(prog(w))).add(w.pid);
   const out = new Map(), count = new Map();
   for (const w of [...list].sort((p, q) => p.pid - q.pid || p.hwnd - q.hwnd)) {
+    const place = { x: w.x, y: w.y, w: w.w, h: w.h, min: !!w.min, max: !!w.max };
     if (w.folder) {   // (one of Explorer's folders: known by its title, opened as the shell opens it)
       const kind = `FOLDER/${w.title}`, k = count.get(kind) || 0; count.set(kind, k + 1);
-      out.set(`${kind}#${k}`, { hwnd: w.hwnd, v: { folder: osFolder(w.title), cls: w.cls, title: w.title, x: w.x, y: w.y, w: w.w, h: w.h, min: !!w.min, max: !!w.max, ctrls: {} } });
+      out.set(`${kind}#${k}`, { hwnd: w.hwnd, v: { folder: osFolder(w.title), cls: w.cls, title: w.title, ...place, ctrls: {} } });
       continue;
     }
-    const n = [...byPath.get(w.path)].sort((p, q) => p - q).indexOf(w.pid), base = basename(w.path).toUpperCase();
-    const kind = `${base}#${n}/${w.cls}`, k = count.get(kind) || 0; count.set(kind, k + 1);
-    out.set(`${kind}#${k}`, { hwnd: w.hwnd, v: { path: w.path, cmd: w.cmd, cls: w.cls, title: w.title, x: w.x, y: w.y, w: w.w, h: w.h, min: !!w.min, max: !!w.max, ctrls: w.ctrls } });
+    const n = [...byPath.get(prog(w))].sort((p, q) => p - q).indexOf(w.pid), base = basename(w.path).toUpperCase();
+    const args = String(w.cmd || '').replace(/^\s*("[^"]*"|\S+)\s*/, '');
+    const kind = `${base}${args ? ' ' + args : ''}#${n}/${w.cls}`, k = count.get(kind) || 0; count.set(kind, k + 1);
+    // (a control the machine could not ask now, null: as it was last read here, else left out)
+    const was = osSeen.get(`${kind}#${k}`), ctrls = {};
+    for (const [c, val] of Object.entries(w.ctrls)) if (val !== null) ctrls[c] = val; else if (was && was.ctrls && c in was.ctrls) ctrls[c] = was.ctrls[c];
+    out.set(`${kind}#${k}`, { hwnd: w.hwnd, v: { path: w.path, cmd: w.cmd, cls: w.cls, title: w.title, ...place, ctrls } });
   }
+  out.area = area;
   return out;
 }
 const osSame = (p, q) => JSON.stringify(p) === JSON.stringify(q);
@@ -5130,9 +5140,14 @@ async function osRead() {
     }
     for (const id of [...osSeen.keys()]) if (!local.has(id)) {
       const was = osSeen.get(id); osSeen.delete(id);
-      if (was !== OS_CLOSING && world.get(id)) S.obj(id, null);   // (closed by this machine's person: closed everywhere)
+      if (was !== OS_CLOSING && world.get(id)) { emit('sync.closed', { id }); S.obj(id, null); }   // (closed by this machine's person: closed everywhere)
       else if (was === OS_CLOSING) for (const [w, v] of world) if (v && !local.has(w)) osApply(w, v, local);   // (one waiting for it to go)
     }
+    // (one the session has that this machine has not, and is not starting: its start failed, or came too early for
+    // the shell; started again now that this machine's windows have changed. The world as it is now: one closed here
+    // just now is closed in it)
+    if (osCaught) for (const [id, wv] of S.world()) if (wv && !local.has(id) && !osStarting.has(id) && !osSeen.has(id)) { emit('sync.retry', { id }); osApply(id, wv, local); }
+    for (const id of osOpened) { osOpened.delete(id); if (!local.has(id)) osStarting.delete(id); }   // (a folder opened, not up by now: the next change tries again)
   } finally { osBusy = false; if (osAgain) { osAgain = false; osRead(); } }
 }
 /** another machine's state of an object, set on this one */
@@ -5148,16 +5163,19 @@ async function osApply(id, v, local) {
     if (v.folder !== undefined) {
       if (!v.folder) return;
       osStarting.add(id); emit('sync.start', { id, folder: v.folder });
-      const done = r => { if (!r || r.err || r === false || (typeof r === 'number' && r <= 32)) osStarting.delete(id); };   // (it could not be: free to try again)
+      // (it could not be: free to try again; it was: tried again if its window has not come by this machine's next
+      // window change, as an open sent before the shell could open folders came to nothing. Opening a folder that is
+      // open brings its window up, so a second open makes no second window)
+      const done = r => { if (!r || r.err || r === false || (typeof r === 'number' && r <= 32)) osStarting.delete(id); else osOpened.add(id); };
       (v.folder.csidl !== undefined ? a.cmd('shellOpenSpecial', [v.folder.csidl]) : a.cmd('shellOpen', [v.folder.path])).then(done, () => osStarting.delete(id));
       return;
     }
     // (one of its program's windows here already, or one closing: its program is running, or the next window it has
     // comes when that one has gone)
-    const prog = id.slice(0, id.indexOf('/'));
+    const prog = id.slice(0, id.lastIndexOf('/'));   // (its command line can have a slash in it; its class has none)
     if ([...local.keys()].some(k => k.startsWith(prog + '/'))) return;
     osStarting.add(id); emit('sync.start', { id, cmd: v.cmd });
-    a.cmd('run', [v.cmd || v.path]).then(r => { if (!r || r.err) osStarting.delete(id); }, () => osStarting.delete(id));
+    a.cmd('run', [v.cmd || v.path]).then(r => { if (!r || r.err) { osStarting.delete(id); emit('sync.failed', { id, cmd: v.cmd, r }); } }, e => { osStarting.delete(id); emit('sync.failed', { id, cmd: v.cmd, err: String(e) }); });
     return;
   }
   const m = mine.v; osSeen.set(id, v);

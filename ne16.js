@@ -791,7 +791,7 @@ const INTS = {
         const m = this.dosMachine; this.writeA(at, m ? m.name : ''.padEnd(15), 16); this.cpu.ecx.value = lo16(this.cpu.ecx.value, m ? 0x100 | m.num : 0); return;
       } break;
       case 0x25: (this.dosVec = this.dosVec || {})[al] = u32((this.cpu.ds.value << 16) | (this.cpu.edx.value & 0xffff)); return;
-      case 0x4c: if (this.thread16 && this.thread16.task && this.depth === this.thread16.depth) { this.thread16.exitCode = al; return LAYOUT.SENTINEL; } break;   // a task's exit ends its thread
+      case 0x4c: if (this.thread16 && this.thread16.task && this.atThreadTop()) { this.thread16.exitCode = al; return LAYOUT.SENTINEL; } break;   // a task's exit ends its thread
     }
     // names and directories, as DOS 7 answers them, with its long-name functions (AH=71h, the same calls with long
     // names): CF and AX = error code on failure
@@ -1094,12 +1094,17 @@ P.nativeWindows = function () {
 /** the visible descendants of a native window, front to back as USER links them: rectangle, class, text, control id,
  *  style and enabled state. Edits and combo boxes are asked for their text (WM_GETTEXT); buttons for their check
  *  state (BM_GETCHECK) */
-P.nativeChildren = function (parent) {
+P.nativeChildren = function (parent, send = true) {
   if (!this.wbufLin) this.nativeWindows();
   const a = this.wbufLin, buf = u32(this.wbufSel << 16), u = (o, args) => this.user16(o, args).ax, s16 = o => (this.r16(a + o) << 16) >> 16;
   const pl = u(58, [['w', parent], ['l', buf + 0x180], ['w', 64]]);
   if (pl && this.readA(a + 0x180, pl) === '#32768') return this.menuItems(parent);   // a popup menu's window: its items, which are no windows
   const out = [], focus = u(23);   // GetFocus
+  // (what only a message tells, an edit's text, a button's check, a tab's or list's items, is asked only while no
+  // thread waits on a reply to a SendMessage of its own: one sent from here then went into that thread's chain of
+  // sends, and it waited for good. Then the control is `unknown`: its window text only, no check, no items)
+  // (send false: nothing asked, the caller asks from a thread of its own: worker.js 'world')
+  const ask = send && !this.replyAwaited();
   const walk = (p, depth) => {
     for (let h = u(262, [['w', p], ['w', 5]]), n = 0; h && n < 512; h = u(262, [['w', h], ['w', 2]]), n++) {
       if (!u(49, [['w', h]])) continue;
@@ -1108,19 +1113,27 @@ P.nativeChildren = function (parent) {
       const cl = u(58, [['w', h], ['l', buf + 0x180], ['w', 64]]), cls = cl ? this.readA(a + 0x180, cl) : '';
       const style = this.user16(135, [['w', h], ['w', 0xfff0]]).dxax;                                            // GetWindowLong(GWL_STYLE)
       let text = '';
-      if (/^(edit|combobox)$/i.test(cls)) {   // SendMessage WM_GETTEXT, into a buffer the size of an edit's limit
+      if (/^(edit|combobox)$/i.test(cls) && ask) {   // SendMessage WM_GETTEXT, into a buffer the size of an edit's limit
         if (!this.tbufLin) { this.tbufLin = this.alloc(0x10000); this.tbufSel = this.allocSels(this.tbufLin, 0x10000); }
         const tl = u(111, [['w', h], ['w', 0x0d], ['w', 0xffff], ['l', u32(this.tbufSel << 16)]]); text = tl ? this.readA(this.tbufLin, tl) : '';
       } else { const tl = u(107, [['w', h], ['w', 0x0d], ['w', 160], ['l', buf + 16]]); text = tl ? this.readA(a + 16, tl) : ''; }
-      const c = { hwnd: h, parent: p, x, y, w, h: hh, cls, text, id: u(277, [['w', h]]), style, enabled: !!u(35, [['w', h]]), focused: h === focus, depth };
-      if (/^button$/i.test(cls) && [2, 3, 4, 5, 6, 9].includes(style & 0x0f)) c.checked = u(111, [['w', h], ['w', 0x400], ['w', 0], ['l', 0]]);
-      if (/^SysTabControl32$/i.test(cls)) c.items = this.tabItems(h, x, y);
-      if (/^SysListView32$/i.test(cls)) c.items = this.listItems(h, x, y);
+      const c = { hwnd: h, parent: p, x, y, w, h: hh, cls, text, id: u(277, [['w', h]]), style, enabled: !!u(35, [['w', h]]), focused: h === focus, depth, ...(ask ? {} : { unknown: true }) };
+      if (/^button$/i.test(cls) && [2, 3, 4, 5, 6, 9].includes(style & 0x0f)) c.checked = ask ? u(111, [['w', h], ['w', 0x400], ['w', 0], ['l', 0]]) : undefined;
+      if (ask && /^SysTabControl32$/i.test(cls)) c.items = this.tabItems(h, x, y);
+      if (ask && /^SysListView32$/i.test(cls)) c.items = this.listItems(h, x, y);
       out.push(c); walk(h, depth + 1);
     }
   };
   walk(parent, 0);
   return out;
+};
+/** whether a thread waits on the reply to a SendMessage of its own: its queue's wake mask (4Ch) asks for QS_SMRESULT */
+P.replyAwaited = function () {
+  for (const t of (this.threadsById || new Map()).values()) {
+    if (!t.queue || !t.state || t.state === 'done' || !this.selValid(t.queue)) continue;
+    if (this.r16(this.selBase(t.queue) + 0x4c) & 0x8000) return true;
+  }
+  return false;
 };
 /** the OS's objects a shared session keeps the same on every machine (win95.js): each program's top-level windows
  *  (not the shell's, not owned popups) with their program and command line, place, size and shown state, and the
@@ -1131,32 +1144,33 @@ const WORLD_SKIP = new Set(['EXPLORER.EXE', 'MSGSRV32.EXE', 'MPREXE.EXE', 'SYSTR
 const FOLDER_CLS = /^(CabinetWClass|ExploreWClass)$/;
 P.osWorld = function () {
   const u = (o, args) => this.user16(o, args).ax, procs = [...(this.procs || new Map()).values()];
-  const out = [];
-  for (const w of this.nativeWindows().list) {
-    if (w.owner || !w.title) continue;
+  const out = [], list = this.nativeWindows().list, shown = new Set(list.map(w => w.hwnd));
+  for (const w of list) {
+    // (an owned window is its owner's popup, unless the owner is not shown: RUNDLL32's property sheets, Display
+    // Properties among them, are owned by its hidden window)
+    if ((w.owner && shown.has(w.owner)) || !w.title) continue;
     const pc = w.task && procs.find(c => c.tdb === w.task); if (!pc) continue;
     const base = String(pc.path || '').split('\\').pop().toUpperCase(), folder = FOLDER_CLS.test(w.cls);
     if (WORLD_SKIP.has(base) && !folder) continue;
-    const ctrls = {};
-    for (const c of this.nativeChildren(w.hwnd)) {
+    // (its controls whose contents only a message tells: listed here, asked by the caller from a thread of its own,
+    // each [key, control, 'text' or 'check'])
+    const ask = [];
+    for (const c of this.nativeChildren(w.hwnd, false)) {
       if (c.depth || !c.id) continue;
-      if (/^(edit|combobox)$/i.test(c.cls)) ctrls[`${c.id}:${c.cls.toLowerCase()}`] = c.text;
-      else if (c.checked !== undefined) ctrls[`${c.id}:button`] = c.checked;
+      if (/^(edit|combobox)$/i.test(c.cls)) ask.push([`${c.id}:${c.cls.toLowerCase()}`, c.hwnd, 'text']);
+      else if (/^button$/i.test(c.cls) && [2, 3, 4, 5, 6, 9].includes(c.style & 0x0f)) ask.push([`${c.id}:button`, c.hwnd, 'check']);
     }
-    out.push({ hwnd: w.hwnd, pid: pc.pid, path: pc.path, cmd: pc.cmdPtr ? this.readA(pc.cmdPtr) : '', cls: w.cls, title: w.title, folder,
-      x: w.x, y: w.y, w: w.w, h: w.h, min: w.iconic, max: !!u(272, [['w', w.hwnd]]), ctrls });   // IsZoomed
+    out.push({ hwnd: w.hwnd, pid: pc.pid, path: pc.path, cmd: pc.cmdLine !== undefined ? pc.cmdLine : pc.cmdPtr ? this.readA(pc.cmdPtr) : '', cls: w.cls, title: w.title, folder,
+      x: w.x, y: w.y, w: w.w, h: w.h, min: w.iconic, max: !!u(272, [['w', w.hwnd]]), ask });   // IsZoomed
   }
-  return out;
+  return { list: out, area: this.workArea() };   // (and the work area they are placed in, which each machine's own screen sets)
 };
-/** a control of a top-level window set as another machine has it: an edit's or combo box's text (WM_SETTEXT), a
- *  button's check (BM_SETCHECK) */
-P.osSetCtrl = function (hwnd, id, kind, value) {
-  const u = (o, args) => this.user16(o, args).ax, c = u(91, [['w', hwnd], ['w', id]]);   // GetDlgItem
-  if (!c) return false;
-  if (kind === 'button') { u(111, [['w', c], ['w', 0x401], ['w', value | 0], ['l', 0]]); return true; }   // SendMessage BM_SETCHECK
-  const s = String(value), n = s.length + 1, lin = this.alloc(n), sel = this.allocSels(lin, n);
-  try { this.writeA(lin, s, n); u(111, [['w', c], ['w', 0x0c], ['w', 0], ['l', u32(sel << 16)]]); } finally { this.freeSels(sel); this.free(lin); }   // SendMessage WM_SETTEXT
-  return true;
+/** the desktop's work area, the screen less the taskbar: USER's SystemParametersInfo(SPI_GETWORKAREA), as x, y, w, h */
+P.workArea = function () {
+  if (!this.wbufLin) this.nativeWindows();
+  const a = this.wbufLin + 0x1c0, s16 = o => (this.r16(a + o) << 16) >> 16;
+  this.user16(483, [['w', 0x30], ['w', 0], ['l', u32((this.wbufSel << 16) + 0x1c0)], ['w', 0]]);
+  return { x: s16(0), y: s16(2), w: s16(4) - s16(0), h: s16(6) - s16(2) };
 };
 /** a popup menu's items (the Start menu, a context menu, a menu bar's dropped menu: USER's #32768 window), each its
  *  text, its state and its rectangle on screen: the menu handle from the window (MN_GETHMENU), the items by position
@@ -2406,7 +2420,7 @@ def16('KERNEL', 237, '', 'v', function () {});                                 /
 // WIN32_OldYield: USER's PeekMessage calls it when the queue is empty. A thread not inside a call JS made gives up
 // its slice once, so a loop polling PeekMessage (SHELL32's drag loop, for one) lets input and the other threads run.
 function oldYield() {
-  const t = thr(this, 0), top = this.thread16 ? this.depth === this.thread16.depth : this.depth === 0;
+  const t = thr(this, 0), top = !this.asTask && (this.thread16 ? this.depth === this.thread16.depth : this.depth === 0);
   if (top && !t.yielded) { t.yielded = true; return YIELD; }
   t.yielded = false;
 }
@@ -3371,7 +3385,10 @@ const ev16 = (p, h) => {
 };
 /** set an event and make the threads blocked on it runnable (they check their wait again when they run) */
 P.signal = function (e) { if (!e) return; e.set = true; this.wakeWaiters(e); };
-P.wakeWaiters = function (o) { if (o.waiters) { for (const t of o.waiters) t.blocked = false; o.waiters.clear(); } };
+P.wakeWaiters = function (o) {
+  if (o.waiters) { for (const t of o.waiters) t.blocked = false; o.waiters.clear(); }
+  if (o.state === 'done' && o.queue) this.queueGone(o);   // (an ended thread: the sends waiting on its queue answered)
+};
 def16('KERNEL', 457, 'll', 'l', function (manual, initial) { return this.newHandle({ kind: 'event', manual: !!manual, set: !!initial }); });   // CreateW32Event
 def16('KERNEL', 458, 'l', 'l', function (h) { const e = ev16(this, h); if (!e) return 0; this.signal(e); return 1; });   // SetW32Event
 // ResetW32Event. USER sleeps a Win32 thread's queue by arming its wake mask, resetting the queue's event and waiting on
@@ -3379,6 +3396,35 @@ def16('KERNEL', 458, 'l', 'l', function (h) { const e = ev16(this, h); if (!e) r
 // that wake away: the queue slept for good with the mask clear and the message waiting (Explorer's thread with a
 // SendMessage pending, the busy pointer for good). A queue USER has woken keeps its event set
 def16('KERNEL', 459, 'l', 'l', function (h) { const e = ev16(this, h); if (!e) return 0; if (!P.queueWoken.call(this, h)) e.set = false; return 1; });
+/** a thread has ended: each SendMessage another thread waits on to its queue is answered (0), as USER answers them when
+ *  a queue goes. A sender's queue holds its send's record at 4Eh, in USER's data: the receiving queue at 12h, the result
+ *  at 20h, the flags at 24h (1: replied), which USER's send loop waits on (USER 4:1E70). The sender is woken as USER's
+ *  SetWakeBit2 wakes a queue: QS_SMRESULT in its wake bits (48h) and changed bits (4Ah), its mask (4Ch) cleared, its
+ *  event (0Ch) set. A thread that ended with a send to it waiting left the sender waiting for good (Display
+ *  Properties' hourglass after a screen saver's preview ended) */
+P.queueGone = function (t) {
+  if (!t || !t.queue) return;
+  for (const s of (this.threadsById || new Map()).values()) if (s !== t) this.answerSend(s, q => q === t.queue);
+};
+/** thread s's SendMessage answered (0) when the queue it went to is `gone(queue)`; true if it was */
+P.answerSend = function (s, gone) {
+  const u = this.ne && this.ne.get('USER'), ds = u && u.segs && u.segs.find(x => x.num === 32);
+  if (!ds || !this.selValid(ds.sel) || !s.queue || !s.state || s.state === 'done' || !this.selValid(s.queue)) return false;
+  const d = this.selBase(ds.sel), q = this.selBase(s.queue), rec = this.r16(q + 0x4e);
+  if (!rec || !(this.r16(q + 0x4c) & 0x8000) || (this.u8[d + rec + 0x24] & 1) || !gone(this.r16(d + rec + 0x12))) return false;
+  this.w32(d + rec + 0x20, 0); this.u8[d + rec + 0x24] |= 1;
+  this.w16(q + 0x48, this.r16(q + 0x48) | 0x8000); this.w16(q + 0x4a, this.r16(q + 0x4a) | 0x8000); this.w16(q + 0x4c, 0);
+  const e = ev16(this, this.r32(q + 0xc)); if (e) this.signal(e);
+  return true;
+};
+/** the current thread, about to wait on its SendMessage, to a queue no thread that goes on has (one that ended before
+ *  the send was made, its queue left behind): answered now */
+P.sendToGone = function () {
+  const s = this.thread16; if (!s || !s.queue || !this.threadsById) return;
+  // (the main and system threads, which have no state, go on)
+  const live = new Set(); for (const t of this.threadsById.values()) if (t.queue && t.state !== 'done') live.add(t.queue);
+  P.answerSend.call(this, s, q => q && !live.has(q));
+};
 /** whether `h` is the event of a thread's queue that USER has woken since it was armed: its wake mask (4Ch) cleared by
  *  the waker, its wake bits (48h) set */
 P.queueWoken = function (h) {
@@ -3403,6 +3449,7 @@ const waitTop = (p, ms) => {
 const waitDone = p => { const t = p.thread16 || p.mainWait; if (t) { t.wake = 0; t.waitOn = null; } };
 def16('KERNEL', 460, 'll', 'l', function (h, ms) {
   const e = ev16(this, h); if (!e) return 0xffffffff;
+  P.sendToGone.call(this);
   if (!e.set && P.queueWoken.call(this, h)) e.set = true;   // (a queue USER has woken: its event as the waker set it, however it was taken since)
   if (this.thread16) this.thread16.waitOn = { hs: [h], all: 0, ms };   // (for a probe)
   if (!e.set && ms && this.atThreadTop()) return waitTop(this, ms);
@@ -3415,7 +3462,8 @@ def16('KERNEL', 460, 'll', 'l', function (h, ms) {
 P.waitNested = function (done) {
   if (!done()) this.threads16(true);
 };
-P.atThreadTop = function () { return this.thread16 ? this.depth === this.thread16.depth : this.depth === 0 && !this.inSystem(); };
+// (a call the host makes as a thread (asThread) is never that thread's top level: the thread is stopped where it was)
+P.atThreadTop = function () { return this.asTask ? false : this.thread16 ? this.depth === this.thread16.depth : this.depth === 0 && !this.inSystem(); };
 /** whether USER is running as the system thread: its start-up, and its message loop between slices (systemPump) */
 P.inSystem = function () { return this.user16Ready === false || !!this.sysPumping; };
 /**
@@ -3515,7 +3563,7 @@ def16('KERNEL', 442, '', 'l', function () { return this.newHandle({ kind: 'event
 def16('KERNEL', 443, 'l', 'v', function (h) { this.handles.delete(h); });                                              // VWin32_EventDestroy
 def16('KERNEL', 450, 'l', 'v', function (h) {                                                                         // VWin32_EventWait
   const e = ev16(this, h); if (!e) return;
-  if (!e.set && this.thread16 && this.thread16.id !== MAIN_TID && this.depth === this.thread16.depth) { this.thread16.wait = e; return YIELD; }
+  if (!e.set && this.thread16 && this.thread16.id !== MAIN_TID && this.atThreadTop()) { this.thread16.wait = e; return YIELD; }
   e.set = false;
 });
 def16('KERNEL', 451, 'l', 'v', function (h) { this.signal(ev16(this, h)); });                      // VWin32_EventSet
@@ -3561,6 +3609,7 @@ P.spawn = function (file, module, meta, path, cmdline) {
     const by = this.thread16 && this.thread16.pc; if (by && by !== pc && by.exe === rec) this.imgUse(by);
   } else pc.exe = this.loadImage(file, module, meta, 'EXE');
   pc.cmdPtr = this.alloc(cmdline.length + 1); this.writeA(pc.cmdPtr, cmdline);
+  pc.cmdLine = cmdline;   // (as it was started: the program can change its copy, RUNDLL32 cuts its at the comma)
   this.inits = [];   // its DLLs attach to it as its main thread starts (pcStart)
   const t = this.newThread(meta.entry, 0, 0x100000, true, false); t.pc = pc; t.tdb = pc.tdb; pc.main = t;
   (this.procs || (this.procs = new Map())).set(pc.pid, pc);
@@ -3589,11 +3638,12 @@ P.pcThreadEnded = function (t) {
  *  as a whole process ended, an Explorer folder window's thread that ended left its queue behind, and the folder's
  *  window never filled (the busy pointer for good) */
 P.threadExitUser = function (t) {
-  const pc = t.pc, u = pc && pc.started && pc.exe && this.ne && this.ne.get('USER'), sig = u && u.meta && this.neExport(u, 391);
+  // (a thread of no started process, one the host made (worker.js netBatch), is the system process's)
+  const pc = t.pc, exe = pc ? pc.started && pc.exe : this.exe, u = exe && this.ne && this.ne.get('USER'), sig = u && u.meta && this.neExport(u, 391);
   if (!sig || !t.queue || t.userExited) return;
   t.userExited = true;
   const by = this.thread16; this.thread16 = t;
-  try { this.user16(391, [['l', 0x20], ['l', t.id], ['l', 3], ['w', this.hinst16(pc.exe.base)]]); } catch (e) { console.error(e); } finally { this.thread16 = by; }
+  try { this.user16(391, [['l', 0x20], ['l', t.id], ['l', 3], ['w', this.hinst16(exe.base)]]); } catch (e) { console.error(e); } finally { this.thread16 = by; }
 };
 /** a started process's end (ExitProcess, or its last thread): its threads stop */
 P.endProcess = function (pc, code) {
@@ -3680,8 +3730,9 @@ P.threads16 = function (nested = false, only = null) {
   // (between slices the host lets it run; a wait on a wave's end made inside a call would otherwise never see it)
   if (nested && this.sound16) this.sound16();
   if (!this.threadsById || (!nested && (this.thread16 || this.depth)) || (this.threadsNest || 0) >= 4) return;
-  const caller = this.thread16, wasIn = this.inThreads, wasPreempted = this.preempted, t0 = this.runT0;
-  this.inThreads = true; this.threadsNest = (this.threadsNest || 0) + 1; if (caller) this.runT0 = this.now();
+  // (the threads run here run as themselves: a call the host makes as the caller (asTask) is the caller's alone)
+  const caller = this.thread16, wasIn = this.inThreads, wasPreempted = this.preempted, t0 = this.runT0, wasAs = this.asTask;
+  this.inThreads = true; this.threadsNest = (this.threadsNest || 0) + 1; this.asTask = false; if (caller) this.runT0 = this.now();
   try { for (const t of only ? [only] : [...this.threadsById.values()]) {   // the threads there are as the pass starts: one created in it starts in the next
     if (t === caller || t.state === 'running' || t.blocked || (t.id === MAIN_TID && !caller) || (t.id === MAIN_TID && caller) || !t.state || t.state === 'done' || t.state === 'hung' || t.state === 'suspended' || (t.state === 'waiting' && t.wait && !t.wait.set)) continue;   // a thread that yielded with no event to wait for (in WaitEvent) runs again
     if (this.win16Held && this.win16Held.who !== t && !(caller && this.win16Held.who === caller)) continue;   // another thread holds the Win16Lock (a caller that yields hands its own over)
@@ -3731,7 +3782,7 @@ P.threads16 = function (nested = false, only = null) {
         // a fault in a program the system started ends that program, as Windows 95 closes the one program that
         // performed an illegal operation; the system and the other programs go on
         if (r !== 0 && this.trapped && t.pc && this.noMain) { t.pc.trapped = this.trapped; (this.pcFaults || (this.pcFaults = [])).push({ pc: t.pc, why: this.trapped }); this.trapped = null; this.endProcess(t.pc, 0xffffffff); }
-        if (t.pc) this.pcThreadEnded(t); if (r !== 0 && this.trapped) console.warn('[ne16] thread', t.id, this.trapped); if (t.onDone) t.onDone(t);
+        if (t.pc) this.pcThreadEnded(t); else this.threadExitUser(t); if (r !== 0 && this.trapped) console.warn('[ne16] thread', t.id, this.trapped); if (t.onDone) t.onDone(t);
         if (t.flat && t.stackBase) { this.free(t.stackBase); this.free(t.tib); t.stackBase = t.tib = 0; }   // (its stack and thread information block go with it)
       }   // onDone: the host's, for a thread it started
     } catch (e) {
@@ -3754,7 +3805,7 @@ P.threads16 = function (nested = false, only = null) {
   // the lock the caller handed over comes back before it goes on: a thread whose time ran out in 16-bit code (inside
   // DIBENG's blit) holds it, and runs until it lets go, as the caller waits for the Win16Mutex
   for (let k = 0, h; caller && (h = this.win16Held && this.win16Held.who) && typeof h === 'object' && h !== caller && h.state === 'waiting' && k < 1000 && !this.trapped; k++) this.threads16(true, h);
-  } finally { this.inThreads = wasIn; this.threadsNest--; if (caller) { this.preempted = wasPreempted; this.runT0 = t0; if (caller.pc) this.imgUse(caller.pc); } }
+  } finally { this.inThreads = wasIn; this.threadsNest--; this.asTask = wasAs; if (caller) { this.preempted = wasPreempted; this.runT0 = t0; if (caller.pc) this.imgUse(caller.pc); } }
 };
 /** a far call into 16-bit code that may yield: returns runAt's result (0 returned, 1 yielded) and leaves the
  *  CPU state as the code left it */
@@ -3773,7 +3824,7 @@ P.start16 = function (sel, off, args) {
   for (const [t, v] of args) { if (t === 'w') { sp -= 2; this.w16(base + sp, v); } else { sp -= 4; this.w32(base + sp, v); } }
   sp -= 2; this.w16(base + sp, L.SENT); sp -= 2; this.w16(base + sp, 0);
   this.cpu.esp.value = sp; this.seg('cs', sel);
-  this.depth++; if (this.thread16) this.thread16.depth = this.depth;
+  this.depth++; if (this.thread16 && !this.asTask) this.thread16.depth = this.depth;   // (a call made as a thread leaves the thread's own depth as it is)
   return this.runTop(u32(this.selBase(sel) + off));
 };
 // the 32-bit modules from 16-bit code: LoadLibrary32 and GetProcAddress32 (by name, or by ordinal as a low word)
@@ -3818,7 +3869,7 @@ def16('KERNEL', 28, '', 'l', function () {
 });
 def16('KERNEL', 202, 'l', 'l', () => 0);                                                               // RegisterPtrace: no debugger
 def16('KERNEL', 29, '', 'v', function () {                                                             // Yield: as OldYield (#447)
-  const t = thr(this, 0), top = this.thread16 ? this.depth === this.thread16.depth : this.depth === 0;
+  const t = thr(this, 0), top = !this.asTask && (this.thread16 ? this.depth === this.thread16.depth : this.depth === 0);
   // a message another task sent waiting in the task's queue (its wake bits' QS_SENDMESSAGE): received through USER's
   // UserYield, as KRNL386's Yield does for a task with a queue (MCIAVI's worker creates its window, sending to the
   // playing task, which yields in a loop until the worker is up)
@@ -3911,7 +3962,7 @@ def16('KERNEL', 91, '', 'jmp', function () {
   return this.retf16(0);
 });
 def16('KERNEL', 30, 'w', 'w', function () {
-  const t = thr(this, 0), top = this.thread16 ? this.depth === this.thread16.depth : this.depth === 0;
+  const t = thr(this, 0), top = !this.asTask && (this.thread16 ? this.depth === this.thread16.depth : this.depth === 0);
   if (t.events > 0) { t.events--; t.slept = false; return 0; }   // an event posted to the task (PostEvent, its start): no wait
   if (top && !t.slept) { t.slept = true; return YIELD; }
   if (!top) this.threads16(true);   // inside a call: the other tasks run, as the wait would let them
@@ -4386,10 +4437,14 @@ K('LeaveCriticalSection', 1, function (cs) {
   if (--c.count > 0) return;
   c.owner = 0; for (const t of c.waiters) t.blocked = false; c.waiters.clear();
 });
-const critInit = function (cs) { this.u8.fill(0, cs, cs + 24); if (this.critSecs) this.critSecs.delete(cs); };
+// (a section made new, or deleted, while threads wait on it: they are let go, and enter it as it is now. A DLL's start in
+// another process makes the sections in its shared data again, SHELL32's as RUNDLL32 loads it, while a thread of this
+// one waited on them: it waited for good)
+const critDrop = (p, cs) => { const c = p.critSecs && p.critSecs.get(cs); if (!c) return; for (const t of c.waiters) t.blocked = false; p.critSecs.delete(cs); };
+const critInit = function (cs) { this.u8.fill(0, cs, cs + 24); critDrop(this, cs); };
 K('InitializeCriticalSection', 1, critInit);
 K('ReinitializeCriticalSection', 1, critInit);
-K('DeleteCriticalSection', 1, function (cs) { if (this.critSecs) this.critSecs.delete(cs); });
+K('DeleteCriticalSection', 1, function (cs) { critDrop(this, cs); });
 K('SetEvent', 1, function (h) { this.signal(ev16(this, h)); return 1; });
 K('ResetEvent', 1, function (h) { const e = ev16(this, h); if (e) e.set = false; return 1; });
 K('PulseEvent', 1, function (h) { const e = ev16(this, h); if (e) { e.set = false; this.wakeWaiters(e); } return 1; });

@@ -653,15 +653,25 @@ class Machine {
       this.kick();
     });
   }
-  netCall(name, args = [], dll = 'MPR') {
-    const p = this.proc, mpr = p.byName.get(dll), fn = mpr && mpr.exports.get(name); if (!fn) return Promise.resolve(null);
-    const le32 = v => [v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, (v >>> 24) & 0xff];
-    const a = p.alloc(96), res = a + 88, ptr = a + 92, code = [];
-    const vals = args.map(v => (typeof v === 'string' ? (() => { const s = p.alloc(v.length + 1); p.writeA(s, v); return s; })() : v));
-    for (let i = vals.length - 1; i >= 0; i--) code.push(0x68, ...le32(vals[i]));   // push imm32
-    code.push(0xff, 0x15, ...le32(ptr), 0xa3, ...le32(res), 0xc2, 0x04, 0x00);       // call [ptr]; mov [res], eax; ret 4
-    p.w32(ptr, fn); p.u8.set(code, a);
-    return new Promise(ok => { const t = p.newThread(a, 0, 0x10000, true, false); t.onDone = () => { const r = p.r32(res); p.free(a); for (let i = 0; i < vals.length; i++) if (typeof args[i] === 'string') p.free(vals[i]); ok(r); }; this.kick(); });
+  netCall(name, args = [], dll = 'MPR') { return this.netBatch([{ dll, name, args }]).then(r => r && r[0]); }
+  /** exports called one after another on one new thread of this process, each [dll, name, dword or string args]; their
+   *  results, null when one is not there. The thread waits as a program's thread does (a SendMessage to another
+   *  thread's window waits at its own top level), where a call made from the host would wait inside the host's call */
+  netBatch(calls) {
+    const p = this.proc, le32 = v => [v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, (v >>> 24) & 0xff];
+    const fns = calls.map(c => { const m = p.byName.get(c.dll); return m && m.exports.get(c.name); });
+    if (!calls.length || fns.some(f => !f)) return Promise.resolve(null);
+    const strs = [], code = [], n = calls.length, size = n * 8 + calls.reduce((s, c) => s + 5 * c.args.length + 11, 0) + 3;
+    const a = p.alloc(size), ptrs = a + size - n * 8, res = ptrs + n * 4;   // (the code, then the functions' addresses, then the results)
+    calls.forEach((c, k) => {
+      const vals = c.args.map(v => (typeof v === 'string' ? (() => { const s = p.alloc(v.length + 1); p.writeA(s, v); strs.push(s); return s; })() : v));
+      for (let i = vals.length - 1; i >= 0; i--) code.push(0x68, ...le32(vals[i]));            // push imm32
+      code.push(0xff, 0x15, ...le32(ptrs + 4 * k), 0xa3, ...le32(res + 4 * k));                // call [ptr]; mov [res], eax
+      p.w32(ptrs + 4 * k, fns[k]);
+    });
+    code.push(0xc2, 0x04, 0x00);                                                               // ret 4
+    p.u8.set(code, a);
+    return new Promise(ok => { const t = p.newThread(a, 0, 0x10000, true, false); t.onDone = () => { const r = calls.map((_, k) => p.r32(res + 4 * k)); p.free(a); for (const s of strs) p.free(s); ok(r); }; this.kick(); });
   }
   /** WNetOpenEnum / WNetEnumResource: the resources at a scope (under one, `res`) */
   async netEnum(scope, res) {
@@ -736,10 +746,13 @@ class Machine {
       return out;
     };
     const name = t => (t.task && t.task.hInst && p.neByHandle(t.task.hInst) ? p.neByHandle(t.task.hInst).name : t.pc && t.pc.path) || '';
-    const threads = [...(p.threadsById || new Map()).values()].map(t => ({ id: t.id, tdb: t.tdb, state: t.state, name: name(t), wait: t.wait ? t.wait.kind || 'object' : null, waitOn: t.waitOn ? { ...t.waitOn, objs: t.waitOn.hs.map(h => { const o = p.obj(h); return o ? { kind: o.kind, set: o.set, count: o.count, id: o.id, pid: o.pid, name: o.name, site: o.site ? where(o.site) : undefined } : h; }) } : null,
+    const crits = p.critSecs ? [...p.critSecs].filter(([, c]) => c.owner || c.waiters.size).map(([cs, c]) => ({ cs: cs.toString(16), at: where(cs), owner: c.owner, count: c.count, waiters: [...c.waiters].map(t => t.id) })) : [];
+    const threads = [...(p.threadsById || new Map()).values()].map(t => ({ id: t.id, tdb: t.tdb, state: t.state, name: name(t), blocked: !!t.blocked, preempted: !!t.preempted, wake: t.wake || 0, execWait: !!t.execWait, flat: !!t.flat, wait: t.wait ? t.wait.kind || 'object' : null, waitOn: t.waitOn ? { ...t.waitOn, objs: t.waitOn.hs.map(h => { const o = p.obj(h); return o ? { kind: o.kind, set: o.set, count: o.count, id: o.id, pid: o.pid, name: o.name, site: o.site ? where(o.site) : undefined } : h; }) } : null,
       at: t.ctx ? where(t.ctx.eip) : null, stack: stack(t.ctx), frames: frames(t.ctx), regs: t.ctx ? { cs: t.ctx.cs, ss: t.ctx.ss, bp: t.ctx.ebp, sp: t.ctx.esp, all: Object.fromEntries(Object.entries(t.ctx).filter(([, v]) => typeof v === 'number').map(([k, v]) => [k, (v >>> 0).toString(16)])) } : null,
       raw: t.ctx && t.ctx.ss && p.selValid(t.ctx.ss) ? (() => { const b = p.selBase(t.ctx.ss), sp = t.ctx.esp & 0xffff, o = []; for (let i = sp; i < Math.min(0xfffe, sp + 0x400); i += 2) o.push(p.r16(b + i).toString(16)); return { sp: sp.toString(16), words: o.join(' ') }; })() : null,
-      queue: t.queue && p.selValid(t.queue) ? (q => ({ q: t.queue, task: p.r16(q + 2), flags: p.r16(q + 0x14), wake: p.r16(q + 0x48), changed: p.r16(q + 0x4a), mask: p.r16(q + 0x4c), ev: p.r32(q + 0xc) }))(p.selBase(t.queue)) : null }));
+      queue: t.queue && p.selValid(t.queue) ? (q => ({ q: t.queue, task: p.r16(q + 2), flags: p.r16(q + 0x14), wake: p.r16(q + 0x48), changed: p.r16(q + 0x4a), mask: p.r16(q + 0x4c), ev: p.r32(q + 0xc),
+        // (the SendMessage it waits on: USER's record of it, at 4Eh in USER's data, its words)
+        sent: (() => { const rec = p.r16(q + 0x4e), u = p.ne && p.ne.get('USER'), ds = u && u.segs && u.segs.find(s => s.num === 32); if (!rec || !ds || !p.selValid(ds.sel)) return null; const b = p.selBase(ds.sel) + rec, o = []; for (let i = 0; i < 0x30; i += 2) o.push(p.r16(b + i).toString(16)); return { rec: rec.toString(16), words: o.join(' ') }; })() }))(p.selBase(t.queue)) : null }));
     // every top-level window, hidden ones too, with its task (a window whose task has ended answers no message)
     const wins = [];
     if (!p.depth) {
@@ -763,7 +776,7 @@ class Machine {
     const dmod = p.ne && p.ne.get('DISPLAY'), dseg = dmod && dmod.segs && dmod.segs[dmod.segs.length - 1], dsb = dseg && p.selValid(dseg.sel) ? p.selBase(dseg.sel) : 0;
     const display = dsb ? { sel: dseg.sel, chip81e: p.r16(dsb + 0x81e), bpp2d: p.r16(dsb + 0x2d), mem7a: p.r32(dsb + 0x7a), w: [...p.u8.slice(dsb, dsb + 0x40)].map(b => b.toString(16).padStart(2, '0')).join('') } : null;
     const metrics = p.depth || p.thread16 ? null : (() => { try { return [0, 1, 4].map(i => p.user16(179, [['w', i]]).ax); } catch (e) { return e.message; } })();   // GetSystemMetrics: CXSCREEN, CYSCREEN, CYCAPTION
-    return { metrics, display, nic, jsDlls: p.jsDlls ? Object.fromEntries(p.jsDlls) : null, nullJumps: (p.nullJumps || []).map(j => ({ ...j, fromIn: j.from !== undefined ? where(j.from) : undefined })),
+    return { crits, metrics, display, nic, jsDlls: p.jsDlls ? Object.fromEntries(p.jsDlls) : null, nullJumps: (p.nullJumps || []).map(j => ({ ...j, fromIn: j.from !== undefined ? where(j.from) : undefined })),
       mods32: (p.modules || []).filter(m => m.meta && m.meta.textHi).map(m => [m.name, m.base >>> 0, m.meta.textLo >>> 0, m.meta.textHi >>> 0]), thunkFails: p.thunkFails || [], thunkConns: p.thunkConns || [], gl: [...(p.glContexts || [])].map(c => ({ w: c.canvas && c.canvas.width, h: c.canvas && c.canvas.height, lost: !c.g || c.g.isContextLost(), err: c.g ? c.g.getError() : null, dc: c.dc ? { native: !!c.dc.native, bpp: c.dc.bpp, w: c.dc.w, h: c.dc.h, hwnd: c.dc.hwnd, hdc: c.dc.hdc, gdi: c.dc.native ? (() => {
       const g = p.byName.get('GDI32'), f = n => g.exports.get(n), r = p.alloc(32); try {
         const bm = p.call(f('GetCurrentObject'), [c.dc.hdc, 7]), got = bm ? p.call(f('GetObjectA'), [bm, 24, r]) : 0, type = p.call(f('GetObjectType'), [c.dc.hdc]);
@@ -801,11 +814,23 @@ class Machine {
   cmd(name, args) {
     const p = this.proc, u = (o, a) => p.user16(o, a);
     switch (name) {
-      case 'focus': { const [hwnd, min] = args; p.asWindowTask(hwnd, () => { if (min) u(42, [['w', hwnd], ['w', 9]]); else { u(59, [['w', hwnd]]); u(45, [['w', hwnd]]); } }); return; }
+      // a window brought to the front (a minimized one restored), from a thread of its own as 'place' is: a call made
+      // as the window's thread while it waits on its own SendMessage takes its reply, and it waits for good
+      case 'focus': return (async () => {
+        const [hwnd, min] = args;
+        if (min) await this.netCall('ShowWindow', [hwnd, 9], 'USER32');
+        else await this.netCall('SetForegroundWindow', [hwnd], 'USER32');
+      })();
       case 'minimize': u(42, [['w', args[0]], ['w', 6]]); return;
       // a window put where another machine in a shared session has it (shared.js): ShowWindow to its state (3
-      // maximized, 7 minimized, 9 restored), then MoveWindow to its place, on the window's own task
-      case 'place': { const [hwnd, x, y, w, h, show] = args; p.asWindowTask(hwnd, () => { if (show) u(42, [['w', hwnd], ['w', show]]); if (show !== 3 && show !== 7) u(56, [['w', hwnd], ['w', x & 0xffff], ['w', y & 0xffff], ['w', w], ['w', h], ['w', 1]]); }); return; }
+      // maximized, 7 minimized, 9 restored), then MoveWindow to its place. On a thread of its own, as another
+      // program's thread asks it: the window's thread gets the messages as sent to it, whatever it is doing (a call
+      // made as that thread while it waits on its own SendMessage takes over its queue's one send, and it waits for good)
+      case 'place': return (async () => {
+        const [hwnd, x, y, w, h, show] = args;
+        if (show) await this.netCall('ShowWindow', [hwnd, show], 'USER32');
+        if (show !== 3 && show !== 7) await this.netCall('MoveWindow', [hwnd, x, y, w, h, 1], 'USER32');
+      })();
       case 'close': u(110, [['w', args[0]], ['w', 0x10], ['w', 0], ['l', 0]]); return;
       case 'clipOut': return this.clipOut();
       case 'clipIn': this.clipIn(args[0]); return;
@@ -818,7 +843,17 @@ class Machine {
       case 'closeWin32': return this.proc.sendMsg(args[0], W.WM.CLOSE);
       case 'children': return p.depth ? null : p.nativeChildren(args[0]);
       // a shared session's OS objects (ne16.js osWorld), and a control set as another machine has it
-      case 'world': return p.depth ? null : p.osWorld();
+      // (its controls' contents asked from a thread of its own, all in one: WM_GETTEXT, BM_GETCHECK)
+      case 'world': return p.depth ? null : (async () => {
+        const got = p.osWorld(), asks = got.list.flatMap(w => w.ask.map(q => ({ w, q })));
+        const bufs = asks.map(({ q }) => (q[2] === 'text' ? (b => (p.u8[b] = 0, b))(p.alloc(0x400)) : 0));
+        const r = asks.length ? await this.netBatch(asks.map(({ q }, i) => ({ dll: 'USER32', name: 'SendMessageA', args: q[2] === 'text' ? [q[1], 0x0d, 0x400, bufs[i]] : [q[1], 0xf0, 0, 0] }))) : [];
+        for (const w of got.list) w.ctrls = {};
+        asks.forEach(({ w, q }, i) => { w.ctrls[q[0]] = q[2] === 'text' ? (r ? p.readA(bufs[i], 0x400) : null) : r ? r[i] : null; });
+        for (const b of bufs) if (b) p.free(b);
+        for (const w of got.list) delete w.ask;
+        return got;
+      })();
       // a folder opened as the shell opens one (SHELL32's ShellExecute, in Explorer's process): another machine's
       // folder window, here too
       case 'shellOpen': return this.netCall('ShellExecuteA', [0, 'open', args[0], 0, 0, 1], 'SHELL32');
@@ -839,7 +874,15 @@ class Machine {
       // a command line run as Windows runs one (WinExec, CreateProcess: a 16-bit program or a 32-bit one): a shared
       // session's program, started here as another machine runs it
       case 'run': { const held = this.holdStartup; this.holdStartup = false; try { const r = this.exec(args[0], 1); return typeof r === 'number' ? (r > 32 ? { ok: true } : { err: r }) : r && r.err ? r : { ok: true }; } finally { this.holdStartup = held; } }
-      case 'setCtrl': { const [hwnd, id, kind, value] = args; return p.depth ? null : p.asWindowTask(hwnd, () => p.osSetCtrl(hwnd, id, kind, value)); }
+      // a control set as another machine has it: an edit's or combo box's text (WM_SETTEXT), a button's check
+      // (BM_SETCHECK), sent from a thread of its own as 'place' is
+      case 'setCtrl': return (async () => {
+        const [hwnd, id, kind, value] = args, c = await this.netCall('GetDlgItem', [hwnd, id], 'USER32');
+        if (!c) return false;
+        if (kind === 'button') await this.netCall('SendMessageA', [c, 0xf1, value | 0, 0], 'USER32');
+        else await this.netCall('SendMessageA', [c, 0x0c, 0, String(value)], 'USER32');
+        return true;
+      })();
       case 'listItem': return p.depth ? null : p.listItem(args[0], args[1], !!args[2]);   // a list view's item selected, or opened (the scripting API's click, dblclick)
       case 'peek': return Array.from(p.u8.subarray(args[0], args[0] + Math.min(args[1], 4096)));   // a diagnostic: memory bytes
       case 'menuscan': {   // a diagnostic: every menu handle USER has (IsMenu over the handle range), its item count and first item, and whether USER32's GetMenuItemRect places its first item in the window given
