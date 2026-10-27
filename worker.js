@@ -418,7 +418,7 @@ class Machine {
       if (p.fault.ring === 0) { this.fatal(p.fault); if (this.alive) this.timer = setTimeout(() => this.step(), 16); return; }
       this.stopped = true; post({ t: 'fault', f: p.fault }); return;
     }
-    for (const f of (p.pcFaults || []).splice(0)) { f.pc.fault = true; post({ t: 'pcFault', path: f.pc.path, why: f.why, f: f.fault || null }); }
+    for (const f of (p.pcFaults || []).splice(0)) { f.pc.fault = true; this.faultBox(f); }
     if (p.trapped && !p.failed) p.fail(p.trapped);
     if (p.exitCode !== null || p.trapped) { this.exited(p.exitCode, p.trapped); return; }
     if (!p.win16Held) this.frame();
@@ -661,6 +661,26 @@ class Machine {
     });
   }
   /** the taskbar's window (Explorer's Shell_TrayWnd), the owner of what the Start menu opens; 0 before the shell is up */
+  /** a program's fault: KERNEL32's fault dialog (its dialog 1) in this machine, on a thread of the system's own, as
+   *  Windows 95 shows it, with the system's screen and pointer (the page drew one of its own over the machine's
+   *  screen, and two pointers fought over it); the page told it ended. Shown by the page only when this machine cannot
+   *  show it (no KERNEL32 resources, no USER32 here) */
+  faultBox(f) {
+    const p = this.proc, S = self.W95SYSTEM || {}, W = self.W95Win32, path = f.pc.path || '';
+    const k32 = this.k32Res || (this.k32Res = S.res && S.res['KERNEL32.DLL'] ? b64bytes(S.res['KERNEL32.DLL']) : null);
+    const tmpl = k32 && W.peResource(k32, 5, 1), user = p.byName && p.byName.get('USER32');
+    const prog = basename(path).replace(/\.[^.]*$/, '').toUpperCase();
+    post({ t: 'pcFault', path, why: f.why, f: f.fault || null, shown: !!(tmpl && user) });
+    if (!tmpl || !user) return;
+    const text = W.peString(k32, 104) || 'This program has performed an illegal operation and will be shut down.';
+    const details = (f.fault ? W.faultText(k32, prog, f.fault) : String(f.why || '')).replace(/\r?\n/g, '\r\n');
+    const tb = p.alloc(tmpl.length + 4), t = (tb + 3) & ~3, strs = [prog, text, details].map(s => { const a = p.alloc(s.length + 1); p.writeA(a, s); return a; });
+    const blk = p.alloc(12); strs.forEach((a, i) => p.w32(blk + 4 * i, a)); p.u8.set(tmpl, t);   // (the template DWORD-aligned, as USER reads it)
+    const free = () => { for (const a of [tb, blk, ...strs]) p.free(a); };
+    // (an instance a module of this machine's has: USER32's, as KERNEL32's own is a module here only in its resources;
+    // 0 was USER's parameter error 6022)
+    this.netCall('DialogBoxIndirectParamA', [user.base, t, 0, p.thunkFor('KERNEL32', 'FaultDlgProc'), blk], 'USER32').then(free, free);
+  }
   trayHwnd() { try { const w = this.proc.nativeWindows().list.find(x => x.cls === 'Shell_TrayWnd'); return w ? w.hwnd : 0; } catch (_) { return 0; } }
   /** until the shell's desktop (Progman, the window SetShellWindow names) is up, as Windows starts: a program started
    *  before it that opens a folder (Control Panel: SHELL32's ShellExecuteEx with an ID list) finds no shell and starts

@@ -4015,6 +4015,14 @@ P.threadExitUser = function (t) {
  *  machine, the fault named MSGSRV32 and its Close ended Windows. Whether it was one */
 P.taskFault = function (t, why, fault) {
   if (!this.noMain || !t.task || t.pc || t === this.appyThread) return false;
+  // its windows go first, destroyed as its own thread (DestroyWindow, as USER takes down an ending task's windows),
+  // so what they covered is repainted: told only that the thread had ended, USER let them go and the screen kept
+  // their pixels (Disk Defragmenter's window, after its fault)
+  // (the stop is taken here: USER's calls do not run while it stands, and the windows stayed)
+  this.trapped = null;
+  const by = this.thread16; this.thread16 = t;
+  try { for (const h of this.taskWindows(t.tdb).reverse()) if (this.user16(47, [['w', h]]).ax) this.user16(53, [['w', h]]); }   // (IsWindow: one an owner's destruction took is gone)
+  catch (e) { console.error(e); this.trapped = null; } finally { this.thread16 = by; }
   t.state = 'done'; this.wakeWaiters(t);
   if (this.win16Held && this.win16Held.who === t) this.win16Held = null;
   (this.pcFaults || (this.pcFaults = [])).push({ pc: { path: t.task.path }, fault: fault || null, why });

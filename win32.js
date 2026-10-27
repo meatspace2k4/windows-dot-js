@@ -1983,6 +1983,36 @@ def('KERNEL32', 'FreeSLCallback', 1, function (sp) {
   const sel = sp >>> 16, m = this.slCallbacks, at = m && m.get(sel); if (!at) return 0;
   m.delete(sel); this.freeSels(sel); this.free(at); return 1;
 });
+// KERNEL32's fault dialog's procedure: its dialog 1 (the program's name as the title, "This program has performed an
+// illegal operation...", Close, Details>>, the details in an edit below), run in the system's machine by the worker
+// for a program that faulted (worker.js faultBox), as KERNEL32 shows it, on the system's own screen and pointer.
+// lParam: the title, the message and the details. Details>> grows the dialog to the marker control's 152 dialog units
+const faultBoxes = new Map();
+def('KERNEL32', 'FaultDlgProc', 4, function (h, msg, wp, lp) {
+  const user = this.byName.get('USER32'), U = n => (...a) => this.call(user.exports.get(n), a);
+  if (msg === 0x110) {   // WM_INITDIALOG
+    U('SetWindowTextA')(h, this.r32(lp)); U('SetDlgItemTextA')(h, 3, this.r32(lp + 4)); U('SetDlgItemTextA')(h, 8, this.r32(lp + 8));
+    U('SendDlgItemMessageA')(h, 9, 0x170, U('LoadIconA')(0, 32513), 0);   // (STM_SETICON, IDI_HAND)
+    faultBoxes.set(h, false); return 1;
+  }
+  if (msg === 0x111) {   // WM_COMMAND
+    const id = wp & 0xffff;
+    if (id === 1 || id === 2) { faultBoxes.delete(h); U('EndDialog')(h, 1); return 1; }
+    if (id === 4) {
+      const open = !faultBoxes.get(h); faultBoxes.set(h, open);
+      const rc = this.alloc(32), s = rc + 16;
+      try {
+        this.w32(rc, 0); this.w32(rc + 4, 61); this.w32(rc + 8, 0); this.w32(rc + 12, 152); U('MapDialogRect')(h, rc);
+        const d = this.i32(rc + 12) - this.i32(rc + 4);
+        U('GetWindowRect')(h, rc); const w = this.i32(rc + 8) - this.i32(rc), hh = this.i32(rc + 12) - this.i32(rc + 4);
+        U('SetWindowPos')(h, 0, 0, 0, w, hh + (open ? d : -d), 6);   // (SWP_NOMOVE, SWP_NOZORDER)
+        this.writeA(s, open ? '&Details<<' : '&Details>>'); U('SetDlgItemTextA')(h, 4, s);
+      } finally { this.free(rc); }
+      return 1;
+    }
+  }
+  return 0;
+});
 // local atoms: the process's own table (InitAtomTable sizes it; AddAtom makes it), as KERNEL32's are: an integer atom
 // (#n, or a value under C000h) is itself. HyperTerminal's AddAtomA was a dead import, its fault the system's end
 const localAtoms = p => { const pc = p.pc; return pc.atoms || (pc.atoms = { byName: new Map(), byId: new Map(), next: 0xc000 }); };
@@ -2834,6 +2864,26 @@ function peResource(bytes, type, id) {
     return bytes.subarray(a, a + dv.getUint32(de + 4, true));
   } catch (_) { return null; }
 }
+/** FormatMessage's inserts: %n, and %n!printf format! (d, x, with a width and a precision) */
+const fmtMsg = (fmt, args) => fmt.replace(/%(\d)(?:!([^!]*)!)?/g, (m, k, f) => {
+  const v = args[+k - 1]; if (v === undefined) return '';
+  if (!f || f === 's') return String(v);
+  const t = /x$/i.test(f) ? (v >>> 0).toString(16).toUpperCase() : String(v | 0), w = /\.?(\d+)/.exec(f);
+  return w ? t.padStart(+w[1], '0') : t;
+});
+// the message for each exception (KERNEL32's strings 106-113; 107 any other)
+const FAULT_MSG = { 0: 108, 6: 109, 0xb: 110, 0xc: 111, 0xd: 112, 0xe: 113 };
+/** the details KERNEL32 writes for a fault, from its own strings (k32: KERNEL32.DLL's bytes): what, where, the
+ *  registers, the bytes at CS:EIP and the stack */
+function faultText(k32, prog, f) {
+  const s = id => peString(k32, id) || '', r = f.regs, sg = f.segs;
+  let t = fmtMsg(s(FAULT_MSG[f.n] || 107), [prog, f.module, f.cs, f.offset, f.n]);
+  t += fmtMsg(s(114), [r.eax, f.cs, f.offset, f.flags]) + fmtMsg(s(115), [r.ebx, sg.ss, r.esp, r.ebp]);
+  t += fmtMsg(s(116), [r.ecx, sg.ds, r.esi, sg.fsel]) + fmtMsg(s(117), [r.edx, sg.es, r.edi, sg.gsel]);
+  t += s(118) + f.bytes.map(b => fmtMsg(s(120), [b])).join('');
+  t += s(119); f.stack.forEach((d, i) => { t += fmtMsg(s(122), [d]) + (i % 8 === 7 ? '\n' : ''); });
+  return t;
+}
 function peString(bytes, id) {
   try {
     const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), p = dv.getUint32(0x3c, true), opt = p + 24;
@@ -2854,5 +2904,5 @@ function peString(bytes, id) {
   } catch (_) { return null; }
 }
 
-window.W95Win32 = { regAttach, regGet, regKids, regVals, regDel, regSet, regDump, regApply, regWatch: f => regWatchers.add(f), Process, API, STAND_IN, LAYOUT, WM, YIELD, iniGet, iniSet, iniRead, peString, peResource, def, dcOf, GuestError, HangError, FaultError, mkCanvas, dibOut };
+window.W95Win32 = { regAttach, regGet, regKids, regVals, regDel, regSet, regDump, regApply, regWatch: f => regWatchers.add(f), Process, API, STAND_IN, LAYOUT, WM, YIELD, iniGet, iniSet, iniRead, peString, peResource, faultText, fmtMsg, def, dcOf, GuestError, HangError, FaultError, mkCanvas, dibOut };
 })();

@@ -3677,6 +3677,7 @@ class RemoteApp extends NativeApp {
       case 'faultDialog': faultDialog(this.progName(), m.f); return;
       case 'pcFault':
         emit('program.exit', { path: m.path, code: -1, why: m.why });
+        if (m.shown) return;   // (the machine's own fault dialog, worker.js faultBox)
         if (m.f) faultDialog(basename(m.path).replace(/\.[^.]*$/, '').toUpperCase(), m.f);
         else msgBox(basename(m.path), `This program has performed an illegal operation and will be shut down.\n\n${m.why}`, 'error', ['OK'], null, { noTask: false, modal: false });
         return;
@@ -4750,25 +4751,8 @@ function closeProgram(app) {
 let k32Bytes = null;
 const k32 = () => k32Bytes || (k32Bytes = window.W95SYSTEM && W95SYSTEM.res && W95SYSTEM.res['KERNEL32.DLL'] ? b64bytes(W95SYSTEM.res['KERNEL32.DLL']) : null);
 const k32Str = id => (k32() && W95Win32.peString(k32(), id)) || '';
-/** FormatMessage's inserts: %n, and %n!printf format! (d, x, with a width and a precision) */
-const fmtMsg = (fmt, args) => fmt.replace(/%(\d)(?:!([^!]*)!)?/g, (m, k, f) => {
-  const v = args[+k - 1]; if (v === undefined) return '';
-  if (!f || f === 's') return String(v);
-  const t = /x$/i.test(f) ? (v >>> 0).toString(16).toUpperCase() : String(v | 0), w = /\.?(\d+)/.exec(f);
-  return w ? t.padStart(+w[1], '0') : t;
-});
-// the message for each exception (KERNEL32's strings 106-113; 107 any other)
-const FAULT_MSG = { 0: 108, 6: 109, 0xb: 110, 0xc: 111, 0xd: 112, 0xe: 113 };
-/** the details KERNEL32 writes for a fault: what, where, the registers, the bytes at CS:EIP and the stack */
-function faultDetails(prog, f) {
-  const r = f.regs, sg = f.segs;
-  let t = fmtMsg(k32Str(FAULT_MSG[f.n] || 107), [prog, f.module, f.cs, f.offset, f.n]);
-  t += fmtMsg(k32Str(114), [r.eax, f.cs, f.offset, f.flags]) + fmtMsg(k32Str(115), [r.ebx, sg.ss, r.esp, r.ebp]);
-  t += fmtMsg(k32Str(116), [r.ecx, sg.ds, r.esi, sg.fsel]) + fmtMsg(k32Str(117), [r.edx, sg.es, r.edi, sg.gsel]);
-  t += k32Str(118) + f.bytes.map(b => fmtMsg(k32Str(120), [b])).join('');
-  t += k32Str(119); f.stack.forEach((d, i) => { t += fmtMsg(k32Str(122), [d]) + (i % 8 === 7 ? '\n' : ''); });
-  return t;
-}
+/** the details KERNEL32 writes for a fault (win32.js faultText, the system's machine's own fault dialog's too) */
+const faultDetails = (prog, f) => (k32() ? W95Win32.faultText(k32(), prog, f) : '');
 /** KERNEL32's fault dialog (its dialog 1, in dialog units): the program's name as the title, "This program has
  *  performed an illegal operation and will be shut down", Close, and Details>> opening the details below it */
 function faultDialog(prog, f, done) {
@@ -4954,10 +4938,6 @@ cv.addEventListener('pointermove', e => {
   shareInput({ t: 'move', x, y });   // (where it is, to the others in the session, each move as it happens)
   if (tbar.autohide && !cap) { if (y >= H - 2 || (tbar.shown > 0 && y >= barTop())) slideTaskbar(true); else if (!(menuSrc && menuSrc.kind === 'start')) slideTaskbar(false); }
   const na = !cap && !menus.length && !modal() ? nativeAt(x, y) : null;
-  // (over one of the page's own windows, a fault dialog: the system's machine is told where the pointer is all the
-  // same, a move only, so its pointer is there as the mouse leaves the dialog; untold, it showed at the last place the
-  // mouse had been on its screen and jumped from there)
-  if (!na && !cap) { const m = monApp(); if (m && !m.stopped) m.pointer('move', x, y); }
   if (cap && cap.move) cap.move(x, y);
   else if (na) na.pointer('move', x, y);
   else if (menus.length) {
