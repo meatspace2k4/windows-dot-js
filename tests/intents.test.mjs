@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 globalThis.window = globalThis; globalThis.self = globalThis;
-for (const f of ['fs.js', 'win32.js', 'ne16.js']) new Function(readFileSync(new URL('../' + f, import.meta.url), 'utf8'))();
+for (const f of ['fs.js', 'win32.js', 'osclass.js', 'ne16.js']) new Function(readFileSync(new URL('../' + f, import.meta.url), 'utf8'))();
 const P = window.W95Win32.Process.prototype;
 const buf = new ArrayBuffer(0x20000), dv = new DataView(buf), u8 = new Uint8Array(buf);
 const p = Object.create(P), got = [];

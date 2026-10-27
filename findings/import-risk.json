@@ -1,0 +1,1470 @@
+{
+ "categories": {
+  "broadcast": [
+   "SHELL32!SHChangeNotify",
+   "USER!BroadcastSystemMessage (#604)",
+   "USER32!BroadcastSystemMessage",
+   "USER32!BroadcastSystemMessageA",
+   "USER32!BroadcastSystemMessageW",
+   "USER32!SendMessageTimeoutA",
+   "USER32!SendMessageTimeoutW",
+   "USER32!SendNotifyMessageA",
+   "USER32!SendNotifyMessageW"
+  ],
+  "exclusive-device": [
+   "MMSYSTEM!PlaySound (#3)",
+   "MMSYSTEM!joyGetPos (#103)",
+   "MMSYSTEM!joyGetPosEx (#110)",
+   "MMSYSTEM!mciSendCommand (#701)",
+   "MMSYSTEM!mciSendString (#702)",
+   "MMSYSTEM!midiInOpen (#304)",
+   "MMSYSTEM!midiOutOpen (#204)",
+   "MMSYSTEM!sndPlaySound (#2)",
+   "MMSYSTEM!waveInOpen (#504)",
+   "MMSYSTEM!waveOutOpen (#404)",
+   "USER!OpenComm (#200)",
+   "WINMM!PlaySound",
+   "WINMM!PlaySoundA",
+   "WINMM!PlaySoundW",
+   "WINMM!joyGetPos",
+   "WINMM!joyGetPosEx",
+   "WINMM!mciSendCommandA",
+   "WINMM!mciSendCommandW",
+   "WINMM!mciSendStringA",
+   "WINMM!mciSendStringW",
+   "WINMM!midiInOpen",
+   "WINMM!midiOutOpen",
+   "WINMM!sndPlaySoundA",
+   "WINMM!sndPlaySoundW",
+   "WINMM!waveInOpen",
+   "WINMM!waveOutOpen"
+  ],
+  "hidden-input": [
+   "KERNEL!DOS3Call (#102)",
+   "KERNEL32!GetLocalTime",
+   "KERNEL32!GetSystemTime",
+   "KERNEL32!GetSystemTimeAsFileTime",
+   "KERNEL32!GetTickCount",
+   "KERNEL32!QueryPerformanceCounter",
+   "MMSYSTEM!timeGetSystemTime (#601)",
+   "MMSYSTEM!timeGetTime (#607)",
+   "OLE32!CoCreateGuid",
+   "RPCRT4!UuidCreate",
+   "RPCRT4!UuidCreateSequential",
+   "USER!GetAsyncKeyState (#249)",
+   "USER!GetCurrentTime (#15)",
+   "USER!GetCursorPos (#17)",
+   "USER!GetKeyState (#106)",
+   "USER!GetKeyboardState (#222)",
+   "USER!GetTickCount (#13)",
+   "USER32!GetAsyncKeyState",
+   "USER32!GetCursorPos",
+   "USER32!GetKeyState",
+   "USER32!GetKeyboardState",
+   "WINMM!timeGetSystemTime",
+   "WINMM!timeGetTime"
+  ],
+  "modal": [
+   "COMDLG32!ChooseColorA",
+   "COMDLG32!ChooseColorW",
+   "COMDLG32!ChooseFontA",
+   "COMDLG32!ChooseFontW",
+   "COMDLG32!GetOpenFileNameA",
+   "COMDLG32!GetOpenFileNameW",
+   "COMDLG32!GetSaveFileNameA",
+   "COMDLG32!GetSaveFileNameW",
+   "COMDLG32!PageSetupDlgA",
+   "COMDLG32!PageSetupDlgW",
+   "COMDLG32!PrintDlgA",
+   "COMDLG32!PrintDlgW",
+   "COMMDLG!ChooseColor (#5)",
+   "COMMDLG!ChooseFont (#15)",
+   "COMMDLG!GetOpenFileName (#1)",
+   "COMMDLG!GetSaveFileName (#2)",
+   "COMMDLG!PrintDlg (#20)",
+   "USER!DialogBox (#87)",
+   "USER!DialogBoxIndirect (#218)",
+   "USER!DialogBoxIndirectParam (#240)",
+   "USER!DialogBoxParam (#239)",
+   "USER!MessageBox (#1)",
+   "USER!MessageBoxIndirect (#827)",
+   "USER!TrackPopupMenu (#416)",
+   "USER!TrackPopupMenuEx (#667)",
+   "USER32!DialogBoxIndirectParamA",
+   "USER32!DialogBoxIndirectParamW",
+   "USER32!DialogBoxParamA",
+   "USER32!DialogBoxParamW",
+   "USER32!MessageBoxA",
+   "USER32!MessageBoxExA",
+   "USER32!MessageBoxExW",
+   "USER32!MessageBoxIndirectA",
+   "USER32!MessageBoxIndirectW",
+   "USER32!MessageBoxW",
+   "USER32!TrackPopupMenu",
+   "USER32!TrackPopupMenuEx"
+  ],
+  "shared-write": [
+   "ADVAPI32!RegCreateKeyA",
+   "ADVAPI32!RegCreateKeyExA",
+   "ADVAPI32!RegCreateKeyExW",
+   "ADVAPI32!RegCreateKeyW",
+   "ADVAPI32!RegDeleteKeyA",
+   "ADVAPI32!RegDeleteKeyW",
+   "ADVAPI32!RegDeleteValueA",
+   "ADVAPI32!RegDeleteValueW",
+   "ADVAPI32!RegSetValueA",
+   "ADVAPI32!RegSetValueExA",
+   "ADVAPI32!RegSetValueExW",
+   "ADVAPI32!RegSetValueW",
+   "KERNEL!DeleteFile (#146)",
+   "KERNEL!RegCreateKey (#218)",
+   "KERNEL!RegDeleteKey (#219)",
+   "KERNEL!RegDeleteValue (#222)",
+   "KERNEL!RegSetValue (#221)",
+   "KERNEL!RegSetValueEx (#226)",
+   "KERNEL!WritePrivateProfileSection (#416)",
+   "KERNEL!WritePrivateProfileString (#129)",
+   "KERNEL!WriteProfileSection (#417)",
+   "KERNEL!WriteProfileString (#59)",
+   "KERNEL!_lcreat (#83)",
+   "KERNEL32!CopyFileA",
+   "KERNEL32!CopyFileW",
+   "KERNEL32!CreateDirectoryA",
+   "KERNEL32!CreateDirectoryW",
+   "KERNEL32!CreateFileA",
+   "KERNEL32!CreateFileW",
+   "KERNEL32!DeleteFileA",
+   "KERNEL32!DeleteFileW",
+   "KERNEL32!MoveFileA",
+   "KERNEL32!MoveFileExA",
+   "KERNEL32!MoveFileExW",
+   "KERNEL32!MoveFileW",
+   "KERNEL32!RemoveDirectoryA",
+   "KERNEL32!RemoveDirectoryW",
+   "KERNEL32!SetFileAttributesA",
+   "KERNEL32!SetFileAttributesW",
+   "KERNEL32!WritePrivateProfileSectionA",
+   "KERNEL32!WritePrivateProfileSectionW",
+   "KERNEL32!WritePrivateProfileStringA",
+   "KERNEL32!WritePrivateProfileStringW",
+   "KERNEL32!WritePrivateProfileStructA",
+   "KERNEL32!WritePrivateProfileStructW",
+   "KERNEL32!WriteProfileSectionA",
+   "KERNEL32!WriteProfileSectionW",
+   "KERNEL32!WriteProfileStringA",
+   "KERNEL32!WriteProfileStringW",
+   "KERNEL32!_lcreat",
+   "SHELL!RegCreateKey (#2)",
+   "SHELL!RegDeleteKey (#4)",
+   "SHELL!RegSetValue (#5)",
+   "SHELL32!SHFileOperation",
+   "SHELL32!SHFileOperationA",
+   "SHELL32!SHFileOperationW",
+   "USER!SetSysColors (#181)",
+   "USER!SystemParametersInfo (#483)",
+   "USER32!SetSysColors",
+   "USER32!SystemParametersInfoA",
+   "USER32!SystemParametersInfoW"
+  ],
+  "singleton-probe": [
+   "KERNEL32!CreateEventA",
+   "KERNEL32!CreateEventW",
+   "KERNEL32!CreateFileMappingA",
+   "KERNEL32!CreateFileMappingW",
+   "KERNEL32!CreateMutexA",
+   "KERNEL32!CreateMutexW",
+   "KERNEL32!CreateSemaphoreA",
+   "KERNEL32!CreateSemaphoreW",
+   "KERNEL32!GlobalAddAtomA",
+   "KERNEL32!GlobalAddAtomW",
+   "KERNEL32!GlobalFindAtomA",
+   "KERNEL32!GlobalFindAtomW",
+   "KERNEL32!OpenEventA",
+   "KERNEL32!OpenEventW",
+   "KERNEL32!OpenFileMappingA",
+   "KERNEL32!OpenFileMappingW",
+   "KERNEL32!OpenMutexA",
+   "KERNEL32!OpenMutexW",
+   "KERNEL32!OpenSemaphoreA",
+   "KERNEL32!OpenSemaphoreW",
+   "USER!FindWindow (#50)",
+   "USER!FindWindowEx (#427)",
+   "USER!GlobalAddAtom (#268)",
+   "USER!GlobalFindAtom (#270)",
+   "USER!RegisterWindowMessage (#118)",
+   "USER32!FindWindowA",
+   "USER32!FindWindowExA",
+   "USER32!FindWindowExW",
+   "USER32!FindWindowW",
+   "USER32!RegisterWindowMessageA",
+   "USER32!RegisterWindowMessageW"
+  ]
+ },
+ "programs": {
+  "AUTORUN.EXE": {
+   "kind": "PE",
+   "risks": {
+    "hidden-input": [
+     "USER32!GetAsyncKeyState",
+     "USER32!GetCursorPos",
+     "USER32!GetKeyState"
+    ],
+    "singleton-probe": [
+     "USER32!FindWindowA"
+    ]
+   },
+   "single_instance": true
+  },
+  "CALC.EXE": {
+   "kind": "PE",
+   "risks": {
+    "hidden-input": [
+     "KERNEL32!GetTickCount"
+    ],
+    "modal": [
+     "USER32!MessageBoxA",
+     "USER32!TrackPopupMenuEx"
+    ],
+    "shared-write": [
+     "KERNEL32!WriteProfileStringA"
+    ]
+   }
+  },
+  "COMCTL32.DLL": {
+   "kind": "PE",
+   "risks": {
+    "broadcast": [
+     "USER32!SendNotifyMessageA"
+    ],
+    "hidden-input": [
+     "KERNEL32!GetLocalTime",
+     "KERNEL32!GetTickCount",
+     "USER32!GetAsyncKeyState",
+     "USER32!GetCursorPos",
+     "USER32!GetKeyState",
+     "USER32!GetKeyboardState"
+    ],
+    "modal": [
+     "USER32!DialogBoxParamA",
+     "USER32!TrackPopupMenu"
+    ],
+    "shared-write": [
+     "ADVAPI32!RegCreateKeyA",
+     "ADVAPI32!RegCreateKeyExA",
+     "ADVAPI32!RegSetValueExA",
+     "KERNEL32!CreateFileA",
+     "USER32!SystemParametersInfoA"
+    ],
+    "singleton-probe": [
+     "KERNEL32!CreateFileMappingA",
+     "KERNEL32!GlobalAddAtomA",
+     "USER32!FindWindowA",
+     "USER32!RegisterWindowMessageA"
+    ]
+   },
+   "single_instance": true
+  },
+  "COMDLG32.DLL": {
+   "kind": "PE",
+   "risks": {
+    "hidden-input": [
+     "USER32!GetKeyState"
+    ],
+    "modal": [
+     "USER32!DialogBoxIndirectParamA",
+     "USER32!DialogBoxParamA",
+     "USER32!MessageBoxA"
+    ],
+    "shared-write": [
+     "KERNEL32!CreateFileA",
+     "KERNEL32!DeleteFileA"
+    ],
+    "singleton-probe": [
+     "USER32!RegisterWindowMessageA"
+    ]
+   }
+  },
+  "COMMCTRL.DLL": {
+   "kind": "NE",
+   "risks": {
+    "hidden-input": [
+     "USER!GetAsyncKeyState",
+     "USER!GetCursorPos",
+     "USER!GetKeyState",
+     "USER!GetTickCount"
+    ],
+    "modal": [
+     "USER!DialogBoxParam"
+    ],
+    "shared-write": [
+     "KERNEL!RegCreateKey",
+     "KERNEL!RegSetValueEx",
+     "USER!SystemParametersInfo"
+    ],
+    "singleton-probe": [
+     "USER!RegisterWindowMessage"
+    ]
+   }
+  },
+  "COMMDLG.DLL": {
+   "kind": "NE",
+   "risks": {
+    "modal": [
+     "USER!DialogBoxIndirectParam",
+     "USER!MessageBox"
+    ],
+    "shared-write": [
+     "KERNEL!DeleteFile",
+     "KERNEL!_lcreat"
+    ],
+    "singleton-probe": [
+     "USER!RegisterWindowMessage"
+    ]
+   }
+  },
+  "CONTROL.EXE": {
+   "kind": "NE",
+   "risks": {
+    "hidden-input": [
+     "KERNEL!DOS3Call"
+    ]
+   }
+  },
+  "DDEML.DLL": {
+   "kind": "NE",
+   "risks": {
+    "hidden-input": [
+     "USER!GetCurrentTime"
+    ],
+    "modal": [
+     "USER!DialogBox"
+    ],
+    "singleton-probe": [
+     "USER!GlobalAddAtom",
+     "USER!GlobalFindAtom"
+    ]
+   }
+  },
+  "DESK.CPL": {
+   "kind": "PE",
+   "risks": {
+    "modal": [
+     "USER32!MessageBoxA"
+    ],
+    "shared-write": [
+     "KERNEL32!WritePrivateProfileStringA",
+     "USER32!SystemParametersInfoA"
+    ]
+   }
+  },
+  "DESKCP16.DLL": {
+   "kind": "NE",
+   "risks": {
+    "hidden-input": [
+     "USER!GetAsyncKeyState",
+     "USER!GetCursorPos"
+    ],
+    "modal": [
+     "COMMDLG!ChooseColor",
+     "COMMDLG!GetOpenFileName",
+     "USER!DialogBox",
+     "USER!DialogBoxParam",
+     "USER!MessageBox",
+     "USER!MessageBoxIndirect",
+     "USER!TrackPopupMenu"
+    ],
+    "shared-write": [
+     "KERNEL!RegCreateKey",
+     "KERNEL!RegDeleteKey",
+     "KERNEL!RegDeleteValue",
+     "KERNEL!RegSetValueEx",
+     "KERNEL!WritePrivateProfileString",
+     "KERNEL!WriteProfileString",
+     "USER!SetSysColors",
+     "USER!SystemParametersInfo"
+    ],
+    "singleton-probe": [
+     "USER!FindWindow"
+    ]
+   },
+   "single_instance": true
+  },
+  "EXPLORER.EXE": {
+   "kind": "PE",
+   "risks": {
+    "broadcast": [
+     "SHELL32!SHChangeNotify",
+     "USER32!BroadcastSystemMessage",
+     "USER32!SendMessageTimeoutA",
+     "USER32!SendNotifyMessageA"
+    ],
+    "hidden-input": [
+     "KERNEL32!GetLocalTime",
+     "KERNEL32!GetTickCount",
+     "USER32!GetAsyncKeyState",
+     "USER32!GetCursorPos",
+     "USER32!GetKeyState"
+    ],
+    "modal": [
+     "USER32!DialogBoxParamA",
+     "USER32!MessageBoxA",
+     "USER32!TrackPopupMenu",
+     "USER32!TrackPopupMenuEx"
+    ],
+    "shared-write": [
+     "ADVAPI32!RegCreateKeyA",
+     "ADVAPI32!RegDeleteKeyA",
+     "ADVAPI32!RegDeleteValueA",
+     "ADVAPI32!RegSetValueA",
+     "ADVAPI32!RegSetValueExA",
+     "KERNEL32!CreateFileA",
+     "KERNEL32!DeleteFileA",
+     "SHELL32!SHFileOperation",
+     "USER32!SystemParametersInfoA"
+    ],
+    "singleton-probe": [
+     "KERNEL32!CreateEventA",
+     "KERNEL32!GlobalAddAtomA",
+     "USER32!FindWindowA",
+     "USER32!RegisterWindowMessageA"
+    ]
+   },
+   "single_instance": true
+  },
+  "FRAMEBUF.DLL": {
+   "kind": "PE",
+   "risks": {
+    "hidden-input": [
+     "KERNEL32!QueryPerformanceCounter"
+    ]
+   }
+  },
+  "FTSRCH.DLL": {
+   "kind": "PE",
+   "risks": {
+    "hidden-input": [
+     "KERNEL32!GetTickCount",
+     "USER32!GetKeyState"
+    ],
+    "modal": [
+     "USER32!DialogBoxParamA",
+     "USER32!MessageBoxA"
+    ],
+    "shared-write": [
+     "ADVAPI32!RegCreateKeyExA",
+     "ADVAPI32!RegSetValueExA",
+     "KERNEL32!CopyFileA",
+     "KERNEL32!CreateFileA",
+     "KERNEL32!DeleteFileA",
+     "KERNEL32!MoveFileA",
+     "KERNEL32!MoveFileExA"
+    ],
+    "singleton-probe": [
+     "KERNEL32!CreateEventA",
+     "KERNEL32!CreateFileMappingA"
+    ]
+   }
+  },
+  "GDI.EXE": {
+   "kind": "NE",
+   "risks": {
+    "shared-write": [
+     "KERNEL!DeleteFile",
+     "KERNEL!RegCreateKey",
+     "KERNEL!RegDeleteValue",
+     "KERNEL!RegSetValue",
+     "KERNEL!RegSetValueEx",
+     "KERNEL!WriteProfileString",
+     "KERNEL!_lcreat"
+    ]
+   }
+  },
+  "GDI32.DLL": {
+   "kind": "PE",
+   "risks": {
+    "shared-write": [
+     "ADVAPI32!RegCreateKeyA",
+     "ADVAPI32!RegCreateKeyExA",
+     "ADVAPI32!RegDeleteKeyA",
+     "ADVAPI32!RegDeleteValueA",
+     "ADVAPI32!RegSetValueExA",
+     "KERNEL32!CreateFileA",
+     "KERNEL32!DeleteFileA"
+    ],
+    "singleton-probe": [
+     "KERNEL32!CreateFileMappingA",
+     "KERNEL32!OpenEventA",
+     "KERNEL32!OpenMutexA"
+    ]
+   },
+   "single_instance": true
+  },
+  "GRPCONV.EXE": {
+   "kind": "PE",
+   "risks": {
+    "modal": [
+     "USER32!MessageBoxA"
+    ],
+    "shared-write": [
+     "ADVAPI32!RegCreateKeyA",
+     "ADVAPI32!RegDeleteKeyA",
+     "ADVAPI32!RegSetValueA",
+     "ADVAPI32!RegSetValueExA",
+     "KERNEL32!CreateFileA",
+     "KERNEL32!DeleteFileA",
+     "KERNEL32!MoveFileA",
+     "KERNEL32!SetFileAttributesA",
+     "KERNEL32!WritePrivateProfileStringA",
+     "USER32!SystemParametersInfoA"
+    ],
+    "singleton-probe": [
+     "USER32!FindWindowA"
+    ]
+   },
+   "single_instance": true
+  },
+  "HOVER.EXE": {
+   "kind": "PE",
+   "risks": {
+    "exclusive-device": [
+     "WINMM!joyGetPos",
+     "WINMM!sndPlaySoundA",
+     "WINMM!waveOutOpen"
+    ],
+    "hidden-input": [
+     "KERNEL32!GetLocalTime",
+     "KERNEL32!GetTickCount",
+     "USER32!GetAsyncKeyState",
+     "USER32!GetCursorPos",
+     "USER32!GetKeyState",
+     "WINMM!timeGetTime"
+    ],
+    "modal": [
+     "COMDLG32!GetOpenFileNameA",
+     "COMDLG32!GetSaveFileNameA",
+     "USER32!DialogBoxIndirectParamA",
+     "USER32!DialogBoxParamA",
+     "USER32!MessageBoxA",
+     "USER32!TrackPopupMenu"
+    ],
+    "shared-write": [
+     "ADVAPI32!RegCreateKeyExA",
+     "ADVAPI32!RegDeleteKeyA",
+     "ADVAPI32!RegDeleteValueA",
+     "ADVAPI32!RegSetValueExA",
+     "KERNEL32!CreateFileA",
+     "KERNEL32!DeleteFileA",
+     "KERNEL32!WritePrivateProfileStringA",
+     "USER32!SystemParametersInfoA"
+    ],
+    "singleton-probe": [
+     "KERNEL32!CreateEventA",
+     "KERNEL32!GlobalAddAtomA",
+     "USER32!RegisterWindowMessageA"
+    ]
+   }
+  },
+  "HOVERHLP.DLL": {
+   "kind": "PE",
+   "risks": {
+    "exclusive-device": [
+     "WINMM!sndPlaySoundA"
+    ],
+    "modal": [
+     "USER32!MessageBoxA"
+    ]
+   }
+  },
+  "ICCVID.DLL": {
+   "kind": "PE",
+   "risks": {
+    "modal": [
+     "USER32!DialogBoxParamA"
+    ]
+   }
+  },
+  "ICONLIB.DLL": {
+   "kind": "NE",
+   "risks": {
+    "hidden-input": [
+     "KERNEL!DOS3Call"
+    ]
+   }
+  },
+  "LZEXPAND.DLL": {
+   "kind": "NE",
+   "risks": {
+    "hidden-input": [
+     "KERNEL!DOS3Call"
+    ],
+    "shared-write": [
+     "KERNEL!_lcreat"
+    ]
+   }
+  },
+  "MMCI.DLL": {
+   "kind": "NE",
+   "risks": {
+    "modal": [
+     "USER!MessageBox"
+    ],
+    "shared-write": [
+     "KERNEL!RegDeleteKey",
+     "KERNEL!RegSetValueEx",
+     "KERNEL!WritePrivateProfileString"
+    ],
+    "singleton-probe": [
+     "USER!FindWindow"
+    ]
+   },
+   "single_instance": true
+  },
+  "MMSYS.CPL": {
+   "kind": "PE",
+   "risks": {
+    "exclusive-device": [
+     "WINMM!mciSendCommandA",
+     "WINMM!midiOutOpen",
+     "WINMM!waveInOpen",
+     "WINMM!waveOutOpen"
+    ],
+    "hidden-input": [
+     "KERNEL32!GetSystemTime",
+     "KERNEL32!GetTickCount",
+     "USER32!GetAsyncKeyState",
+     "USER32!GetCursorPos"
+    ],
+    "modal": [
+     "COMDLG32!GetOpenFileNameA",
+     "USER32!DialogBoxParamA",
+     "USER32!MessageBoxA",
+     "USER32!TrackPopupMenuEx"
+    ],
+    "shared-write": [
+     "ADVAPI32!RegCreateKeyA",
+     "ADVAPI32!RegCreateKeyExA",
+     "ADVAPI32!RegDeleteKeyA",
+     "ADVAPI32!RegSetValueA",
+     "ADVAPI32!RegSetValueExA",
+     "KERNEL32!CopyFileA",
+     "KERNEL32!CreateFileA",
+     "KERNEL32!WritePrivateProfileStringA"
+    ],
+    "singleton-probe": [
+     "KERNEL32!CreateMutexA",
+     "USER32!FindWindowA",
+     "USER32!RegisterWindowMessageA"
+    ]
+   },
+   "single_instance": true
+  },
+  "MMSYSTEM.DLL": {
+   "kind": "NE",
+   "risks": {
+    "hidden-input": [
+     "USER!GetAsyncKeyState"
+    ],
+    "modal": [
+     "USER!MessageBox"
+    ],
+    "shared-write": [
+     "KERNEL!RegCreateKey",
+     "KERNEL!RegDeleteKey",
+     "KERNEL!RegDeleteValue",
+     "KERNEL!RegSetValue",
+     "KERNEL!RegSetValueEx",
+     "KERNEL!WritePrivateProfileString",
+     "KERNEL!_lcreat"
+    ]
+   }
+  },
+  "MPLAYER.EXE": {
+   "kind": "PE",
+   "risks": {
+    "exclusive-device": [
+     "WINMM!mciSendCommandA",
+     "WINMM!mciSendStringA",
+     "WINMM!sndPlaySoundA"
+    ],
+    "hidden-input": [
+     "KERNEL32!GetTickCount",
+     "USER32!GetAsyncKeyState",
+     "USER32!GetKeyState"
+    ],
+    "modal": [
+     "USER32!DialogBoxParamA",
+     "USER32!MessageBoxA"
+    ],
+    "shared-write": [
+     "ADVAPI32!RegCreateKeyA",
+     "ADVAPI32!RegCreateKeyExA",
+     "ADVAPI32!RegDeleteValueA",
+     "ADVAPI32!RegSetValueExA",
+     "USER32!SystemParametersInfoA"
+    ],
+    "singleton-probe": [
+     "KERNEL32!CreateEventA",
+     "KERNEL32!GlobalAddAtomA",
+     "USER32!FindWindowA"
+    ]
+   },
+   "single_instance": true
+  },
+  "MPR.DLL": {
+   "kind": "PE",
+   "risks": {
+    "hidden-input": [
+     "KERNEL32!GetTickCount"
+    ],
+    "shared-write": [
+     "ADVAPI32!RegCreateKeyA"
+    ],
+    "singleton-probe": [
+     "KERNEL32!CreateEventA",
+     "KERNEL32!CreateMutexA",
+     "KERNEL32!OpenEventA"
+    ]
+   },
+   "single_instance": true
+  },
+  "MPREXE.EXE": {
+   "kind": "PE",
+   "risks": {
+    "hidden-input": [
+     "KERNEL32!GetTickCount"
+    ],
+    "shared-write": [
+     "ADVAPI32!RegDeleteValueA"
+    ],
+    "singleton-probe": [
+     "KERNEL32!CreateEventA",
+     "KERNEL32!CreateSemaphoreA"
+    ]
+   }
+  },
+  "MPRSERV.DLL": {
+   "kind": "PE",
+   "risks": {
+    "broadcast": [
+     "USER32!BroadcastSystemMessage"
+    ],
+    "hidden-input": [
+     "KERNEL32!GetTickCount"
+    ],
+    "modal": [
+     "USER32!DialogBoxParamA",
+     "USER32!MessageBoxA"
+    ],
+    "shared-write": [
+     "ADVAPI32!RegCreateKeyA",
+     "ADVAPI32!RegCreateKeyExA",
+     "ADVAPI32!RegDeleteKeyA",
+     "ADVAPI32!RegDeleteValueA",
+     "ADVAPI32!RegSetValueExA",
+     "KERNEL32!CopyFileA",
+     "KERNEL32!CreateDirectoryA",
+     "KERNEL32!CreateFileA",
+     "KERNEL32!DeleteFileA",
+     "KERNEL32!MoveFileA",
+     "KERNEL32!RemoveDirectoryA",
+     "KERNEL32!SetFileAttributesA",
+     "KERNEL32!WriteProfileStringA"
+    ],
+    "singleton-probe": [
+     "KERNEL32!CreateMutexA",
+     "KERNEL32!CreateSemaphoreA"
+    ]
+   },
+   "single_instance": true
+  },
+  "MSACM.DLL": {
+   "kind": "NE",
+   "risks": {
+    "exclusive-device": [
+     "MMSYSTEM!waveInOpen",
+     "MMSYSTEM!waveOutOpen"
+    ],
+    "hidden-input": [
+     "KERNEL!DOS3Call"
+    ],
+    "modal": [
+     "USER!DialogBoxIndirectParam",
+     "USER!DialogBoxParam",
+     "USER!MessageBox"
+    ],
+    "shared-write": [
+     "KERNEL!RegCreateKey",
+     "KERNEL!RegDeleteKey",
+     "KERNEL!RegDeleteValue",
+     "KERNEL!RegSetValueEx",
+     "KERNEL!WritePrivateProfileString"
+    ],
+    "singleton-probe": [
+     "USER!RegisterWindowMessage"
+    ]
+   }
+  },
+  "MSACM32.DLL": {
+   "kind": "PE",
+   "risks": {
+    "exclusive-device": [
+     "WINMM!waveInOpen",
+     "WINMM!waveOutOpen"
+    ],
+    "modal": [
+     "USER32!DialogBoxIndirectParamA",
+     "USER32!DialogBoxParamA",
+     "USER32!MessageBoxA"
+    ],
+    "shared-write": [
+     "ADVAPI32!RegCreateKeyA",
+     "ADVAPI32!RegCreateKeyExA",
+     "ADVAPI32!RegDeleteKeyA",
+     "ADVAPI32!RegDeleteValueA",
+     "ADVAPI32!RegSetValueExA",
+     "KERNEL32!CreateFileA",
+     "KERNEL32!WritePrivateProfileStringA"
+    ],
+    "singleton-probe": [
+     "KERNEL32!CreateEventA",
+     "KERNEL32!CreateFileMappingA",
+     "USER32!RegisterWindowMessageA"
+    ]
+   }
+  },
+  "MSGSRV32.EXE": {
+   "kind": "NE",
+   "risks": {
+    "broadcast": [
+     "USER!BroadcastSystemMessage"
+    ],
+    "hidden-input": [
+     "KERNEL!DOS3Call"
+    ],
+    "modal": [
+     "USER!DialogBoxParam",
+     "USER!MessageBox"
+    ],
+    "shared-write": [
+     "KERNEL!RegDeleteValue",
+     "KERNEL!RegSetValue",
+     "KERNEL!RegSetValueEx",
+     "KERNEL!WritePrivateProfileString",
+     "KERNEL!WriteProfileString"
+    ],
+    "singleton-probe": [
+     "USER!FindWindow"
+    ]
+   },
+   "single_instance": true
+  },
+  "MSNET32.DLL": {
+   "kind": "PE",
+   "risks": {
+    "hidden-input": [
+     "KERNEL32!GetLocalTime"
+    ],
+    "modal": [
+     "USER32!DialogBoxParamA"
+    ],
+    "shared-write": [
+     "KERNEL32!CreateFileA",
+     "KERNEL32!DeleteFileA"
+    ]
+   }
+  },
+  "MSNP32.DLL": {
+   "kind": "PE",
+   "risks": {
+    "modal": [
+     "USER32!MessageBoxA"
+    ],
+    "shared-write": [
+     "ADVAPI32!RegCreateKeyA",
+     "ADVAPI32!RegDeleteValueA",
+     "ADVAPI32!RegSetValueExA",
+     "KERNEL32!CreateFileA"
+    ]
+   }
+  },
+  "MSPRINT.DLL": {
+   "kind": "NE",
+   "risks": {
+    "hidden-input": [
+     "KERNEL!DOS3Call",
+     "USER!GetTickCount"
+    ],
+    "modal": [
+     "USER!MessageBox"
+    ],
+    "shared-write": [
+     "KERNEL!WritePrivateProfileString"
+    ],
+    "singleton-probe": [
+     "USER!FindWindowEx"
+    ]
+   },
+   "single_instance": true
+  },
+  "MSPRINT2.DLL": {
+   "kind": "PE",
+   "risks": {
+    "modal": [
+     "USER32!DialogBoxParamA",
+     "USER32!MessageBoxA"
+    ]
+   }
+  },
+  "MSPWL32.DLL": {
+   "kind": "PE",
+   "risks": {
+    "hidden-input": [
+     "KERNEL32!GetSystemTime",
+     "KERNEL32!GetTickCount"
+    ],
+    "shared-write": [
+     "ADVAPI32!RegCreateKeyA",
+     "KERNEL32!CreateFileA",
+     "KERNEL32!DeleteFileA",
+     "KERNEL32!WritePrivateProfileStringA"
+    ]
+   }
+  },
+  "MSVCRT20.DLL": {
+   "kind": "PE",
+   "risks": {
+    "hidden-input": [
+     "KERNEL32!GetLocalTime"
+    ],
+    "modal": [
+     "USER32!MessageBoxA"
+    ],
+    "shared-write": [
+     "KERNEL32!CreateDirectoryA",
+     "KERNEL32!CreateDirectoryW",
+     "KERNEL32!CreateFileA",
+     "KERNEL32!CreateFileW",
+     "KERNEL32!DeleteFileA",
+     "KERNEL32!DeleteFileW",
+     "KERNEL32!MoveFileA",
+     "KERNEL32!MoveFileW",
+     "KERNEL32!RemoveDirectoryA",
+     "KERNEL32!RemoveDirectoryW",
+     "KERNEL32!SetFileAttributesA",
+     "KERNEL32!SetFileAttributesW"
+    ]
+   }
+  },
+  "MSVFW32.DLL": {
+   "kind": "PE",
+   "risks": {
+    "exclusive-device": [
+     "WINMM!mciSendCommandA",
+     "WINMM!mciSendStringA"
+    ],
+    "hidden-input": [
+     "USER32!GetCursorPos",
+     "USER32!GetKeyState",
+     "WINMM!timeGetTime"
+    ],
+    "modal": [
+     "USER32!DialogBoxParamA",
+     "USER32!MessageBoxA",
+     "USER32!TrackPopupMenu"
+    ],
+    "shared-write": [
+     "ADVAPI32!RegCreateKeyA",
+     "ADVAPI32!RegDeleteValueA",
+     "ADVAPI32!RegSetValueExA",
+     "KERNEL32!WritePrivateProfileStringA",
+     "USER32!SystemParametersInfoA"
+    ]
+   }
+  },
+  "MSVIDEO.DLL": {
+   "kind": "NE",
+   "risks": {
+    "exclusive-device": [
+     "MMSYSTEM!mciSendCommand",
+     "MMSYSTEM!mciSendString"
+    ],
+    "hidden-input": [
+     "MMSYSTEM!timeGetTime",
+     "USER!GetCursorPos",
+     "USER!GetKeyState"
+    ],
+    "modal": [
+     "USER!DialogBoxParam",
+     "USER!MessageBox",
+     "USER!TrackPopupMenu"
+    ],
+    "shared-write": [
+     "KERNEL!RegCreateKey",
+     "KERNEL!WritePrivateProfileString",
+     "KERNEL!WriteProfileString",
+     "USER!SystemParametersInfo"
+    ]
+   }
+  },
+  "NETDI.DLL": {
+   "kind": "NE",
+   "risks": {
+    "hidden-input": [
+     "KERNEL!DOS3Call"
+    ],
+    "modal": [
+     "USER!DialogBox",
+     "USER!DialogBoxParam",
+     "USER!MessageBox"
+    ],
+    "shared-write": [
+     "KERNEL!_lcreat"
+    ],
+    "singleton-probe": [
+     "USER!GlobalAddAtom"
+    ]
+   }
+  },
+  "NOTEPAD.EXE": {
+   "kind": "PE",
+   "risks": {
+    "hidden-input": [
+     "KERNEL32!GetLocalTime",
+     "USER32!GetCursorPos"
+    ],
+    "modal": [
+     "COMDLG32!GetOpenFileNameA",
+     "COMDLG32!GetSaveFileNameA",
+     "COMDLG32!PageSetupDlgA",
+     "USER32!MessageBoxA"
+    ],
+    "shared-write": [
+     "KERNEL32!CreateFileA",
+     "KERNEL32!DeleteFileA",
+     "KERNEL32!_lcreat"
+    ],
+    "singleton-probe": [
+     "USER32!RegisterWindowMessageA"
+    ]
+   }
+  },
+  "OLE32.DLL": {
+   "kind": "PE",
+   "risks": {
+    "hidden-input": [
+     "KERNEL32!GetSystemTime",
+     "KERNEL32!GetTickCount",
+     "RPCRT4!UuidCreate",
+     "USER32!GetCursorPos",
+     "USER32!GetKeyState"
+    ],
+    "shared-write": [
+     "ADVAPI32!RegDeleteKeyA",
+     "ADVAPI32!RegSetValueA",
+     "KERNEL32!CreateFileA",
+     "KERNEL32!DeleteFileA",
+     "KERNEL32!WriteProfileStringA"
+    ],
+    "singleton-probe": [
+     "KERNEL32!CreateEventA",
+     "KERNEL32!CreateFileMappingA",
+     "KERNEL32!CreateMutexA",
+     "KERNEL32!CreateSemaphoreA",
+     "KERNEL32!GlobalAddAtomA",
+     "KERNEL32!GlobalFindAtomA",
+     "KERNEL32!OpenEventA",
+     "KERNEL32!OpenFileMappingA",
+     "USER32!RegisterWindowMessageA"
+    ]
+   },
+   "single_instance": true
+  },
+  "PROGMAN.EXE": {
+   "kind": "NE",
+   "risks": {
+    "hidden-input": [
+     "KERNEL!DOS3Call",
+     "USER!GetKeyState"
+    ],
+    "modal": [
+     "USER!DialogBox",
+     "USER!MessageBox"
+    ],
+    "shared-write": [
+     "KERNEL!RegSetValueEx",
+     "KERNEL!WritePrivateProfileString",
+     "KERNEL!_lcreat",
+     "USER!SystemParametersInfo"
+    ],
+    "singleton-probe": [
+     "USER!GlobalAddAtom",
+     "USER!GlobalFindAtom",
+     "USER!RegisterWindowMessage"
+    ]
+   }
+  },
+  "RPCRT4.DLL": {
+   "kind": "PE",
+   "risks": {
+    "hidden-input": [
+     "KERNEL32!GetLocalTime",
+     "KERNEL32!GetTickCount",
+     "KERNEL32!QueryPerformanceCounter"
+    ],
+    "shared-write": [
+     "ADVAPI32!RegCreateKeyExA",
+     "ADVAPI32!RegDeleteKeyA",
+     "ADVAPI32!RegSetValueExA",
+     "KERNEL32!CreateFileA"
+    ],
+    "singleton-probe": [
+     "KERNEL32!CreateEventA",
+     "KERNEL32!CreateMutexA",
+     "KERNEL32!CreateSemaphoreA"
+    ]
+   },
+   "single_instance": true
+  },
+  "RUNDLL32.EXE": {
+   "kind": "PE",
+   "risks": {
+    "modal": [
+     "USER32!MessageBoxA"
+    ]
+   }
+  },
+  "RUNONCE.EXE": {
+   "kind": "PE",
+   "risks": {
+    "modal": [
+     "USER32!DialogBoxParamA",
+     "USER32!MessageBoxA"
+    ],
+    "shared-write": [
+     "ADVAPI32!RegDeleteKeyA",
+     "ADVAPI32!RegDeleteValueA",
+     "ADVAPI32!RegSetValueExA",
+     "USER32!SystemParametersInfoA"
+    ]
+   }
+  },
+  "SETUPX.DLL": {
+   "kind": "NE",
+   "risks": {
+    "hidden-input": [
+     "KERNEL!DOS3Call",
+     "USER!GetCurrentTime",
+     "USER!GetKeyState",
+     "USER!GetTickCount"
+    ],
+    "modal": [
+     "USER!DialogBox",
+     "USER!DialogBoxParam",
+     "USER!MessageBox"
+    ],
+    "shared-write": [
+     "KERNEL!RegCreateKey",
+     "KERNEL!RegDeleteKey",
+     "KERNEL!RegDeleteValue",
+     "KERNEL!RegSetValue",
+     "KERNEL!RegSetValueEx",
+     "KERNEL!WritePrivateProfileString",
+     "KERNEL!_lcreat"
+    ],
+    "singleton-probe": [
+     "USER!FindWindow",
+     "USER!GlobalAddAtom",
+     "USER!RegisterWindowMessage"
+    ]
+   },
+   "single_instance": true
+  },
+  "SHELL.DLL": {
+   "kind": "NE",
+   "risks": {
+    "modal": [
+     "USER!DialogBoxParam",
+     "USER!MessageBox"
+    ],
+    "shared-write": [
+     "KERNEL!RegCreateKey",
+     "KERNEL!RegDeleteKey",
+     "KERNEL!RegSetValue",
+     "KERNEL!RegSetValueEx"
+    ],
+    "singleton-probe": [
+     "USER!RegisterWindowMessage"
+    ]
+   }
+  },
+  "SHELL32.DLL": {
+   "kind": "PE",
+   "risks": {
+    "hidden-input": [
+     "KERNEL32!GetSystemTime",
+     "KERNEL32!GetTickCount",
+     "USER32!GetAsyncKeyState",
+     "USER32!GetCursorPos",
+     "USER32!GetKeyState"
+    ],
+    "modal": [
+     "USER32!DialogBoxParamA",
+     "USER32!MessageBoxA",
+     "USER32!MessageBoxIndirectA",
+     "USER32!TrackPopupMenu",
+     "USER32!TrackPopupMenuEx"
+    ],
+    "shared-write": [
+     "ADVAPI32!RegCreateKeyA",
+     "ADVAPI32!RegDeleteKeyA",
+     "ADVAPI32!RegDeleteValueA",
+     "ADVAPI32!RegSetValueA",
+     "ADVAPI32!RegSetValueExA",
+     "KERNEL32!CopyFileA",
+     "KERNEL32!CreateDirectoryA",
+     "KERNEL32!CreateFileA",
+     "KERNEL32!DeleteFileA",
+     "KERNEL32!MoveFileA",
+     "KERNEL32!RemoveDirectoryA",
+     "KERNEL32!SetFileAttributesA",
+     "KERNEL32!WritePrivateProfileStringA",
+     "KERNEL32!WriteProfileStringA",
+     "KERNEL32!_lcreat",
+     "USER32!SystemParametersInfoA"
+    ],
+    "singleton-probe": [
+     "KERNEL32!CreateEventA",
+     "KERNEL32!CreateFileMappingA",
+     "KERNEL32!CreateSemaphoreA",
+     "KERNEL32!GlobalAddAtomA",
+     "KERNEL32!OpenEventA",
+     "USER32!FindWindowA"
+    ]
+   },
+   "single_instance": true
+  },
+  "SPOOL32.EXE": {
+   "kind": "PE",
+   "risks": {
+    "modal": [
+     "USER32!MessageBoxA"
+    ],
+    "shared-write": [
+     "ADVAPI32!RegSetValueExA",
+     "KERNEL32!WriteProfileStringA"
+    ],
+    "singleton-probe": [
+     "KERNEL32!CreateEventA",
+     "KERNEL32!CreateMutexA",
+     "KERNEL32!OpenMutexA"
+    ]
+   },
+   "single_instance": true
+  },
+  "SPOOLSS.DLL": {
+   "kind": "PE",
+   "risks": {
+    "broadcast": [
+     "USER32!SendNotifyMessageA"
+    ],
+    "hidden-input": [
+     "KERNEL32!GetSystemTime",
+     "KERNEL32!GetTickCount"
+    ],
+    "modal": [
+     "USER32!DialogBoxParamA",
+     "USER32!MessageBoxA"
+    ],
+    "shared-write": [
+     "ADVAPI32!RegCreateKeyA",
+     "ADVAPI32!RegCreateKeyExA",
+     "ADVAPI32!RegDeleteKeyA",
+     "ADVAPI32!RegDeleteValueA",
+     "ADVAPI32!RegSetValueExA",
+     "KERNEL32!CreateDirectoryA",
+     "KERNEL32!CreateFileA",
+     "KERNEL32!DeleteFileA",
+     "KERNEL32!SetFileAttributesA",
+     "KERNEL32!WriteProfileStringA"
+    ],
+    "singleton-probe": [
+     "KERNEL32!CreateEventA",
+     "USER32!FindWindowA"
+    ]
+   },
+   "single_instance": true
+  },
+  "SVRAPI.DLL": {
+   "kind": "PE",
+   "risks": {
+    "shared-write": [
+     "KERNEL32!CreateFileA"
+    ],
+    "singleton-probe": [
+     "KERNEL32!CreateMutexA"
+    ]
+   },
+   "single_instance": true
+  },
+  "SYSDM.CPL": {
+   "kind": "NE",
+   "risks": {
+    "hidden-input": [
+     "USER!GetTickCount"
+    ],
+    "modal": [
+     "COMMDLG!PrintDlg",
+     "USER!DialogBox",
+     "USER!DialogBoxParam",
+     "USER!MessageBox"
+    ],
+    "shared-write": [
+     "KERNEL!RegCreateKey",
+     "KERNEL!RegDeleteKey",
+     "KERNEL!RegDeleteValue",
+     "KERNEL!RegSetValue",
+     "KERNEL!RegSetValueEx",
+     "KERNEL!WritePrivateProfileSection",
+     "KERNEL!WritePrivateProfileString",
+     "KERNEL!_lcreat"
+    ],
+    "singleton-probe": [
+     "USER!GlobalAddAtom"
+    ]
+   }
+  },
+  "SYSTRAY.EXE": {
+   "kind": "PE",
+   "risks": {
+    "hidden-input": [
+     "USER32!GetCursorPos"
+    ],
+    "modal": [
+     "USER32!MessageBoxA",
+     "USER32!TrackPopupMenu"
+    ],
+    "shared-write": [
+     "ADVAPI32!RegCreateKeyA",
+     "ADVAPI32!RegDeleteValueA",
+     "ADVAPI32!RegSetValueExA",
+     "KERNEL32!CreateFileA"
+    ],
+    "singleton-probe": [
+     "USER32!FindWindowA"
+    ]
+   },
+   "single_instance": true
+  },
+  "TOOLHELP.DLL": {
+   "kind": "NE",
+   "risks": {
+    "hidden-input": [
+     "USER!GetTickCount"
+    ]
+   }
+  },
+  "UNIDRV.DLL": {
+   "kind": "NE",
+   "risks": {
+    "modal": [
+     "USER!DialogBoxParam",
+     "USER!MessageBox"
+    ],
+    "shared-write": [
+     "KERNEL!WritePrivateProfileString",
+     "KERNEL!WriteProfileString",
+     "KERNEL!_lcreat"
+    ],
+    "singleton-probe": [
+     "USER!FindWindowEx",
+     "USER!GlobalAddAtom",
+     "USER!GlobalFindAtom"
+    ]
+   },
+   "single_instance": true
+  },
+  "USER.EXE": {
+   "kind": "NE",
+   "risks": {
+    "shared-write": [
+     "KERNEL!RegCreateKey",
+     "KERNEL!RegDeleteValue",
+     "KERNEL!RegSetValueEx",
+     "KERNEL!WritePrivateProfileString",
+     "KERNEL!WriteProfileString"
+    ]
+   }
+  },
+  "VER.DLL": {
+   "kind": "NE",
+   "risks": {
+    "hidden-input": [
+     "KERNEL!DOS3Call"
+    ]
+   }
+  },
+  "WELCOME.EXE": {
+   "kind": "PE",
+   "risks": {
+    "modal": [
+     "USER32!DialogBoxParamA"
+    ],
+    "shared-write": [
+     "ADVAPI32!RegCreateKeyA",
+     "ADVAPI32!RegSetValueExA",
+     "USER32!SystemParametersInfoA"
+    ]
+   }
+  },
+  "WINHLP32.EXE": {
+   "kind": "PE",
+   "risks": {
+    "hidden-input": [
+     "KERNEL32!GetSystemTime",
+     "KERNEL32!GetTickCount",
+     "USER32!GetAsyncKeyState",
+     "USER32!GetCursorPos",
+     "USER32!GetKeyState"
+    ],
+    "modal": [
+     "USER32!DialogBoxParamA",
+     "USER32!MessageBoxA",
+     "USER32!TrackPopupMenu"
+    ],
+    "shared-write": [
+     "ADVAPI32!RegCreateKeyExA",
+     "ADVAPI32!RegSetValueExA",
+     "KERNEL32!CopyFileA",
+     "KERNEL32!DeleteFileA",
+     "KERNEL32!MoveFileA",
+     "KERNEL32!SetFileAttributesA",
+     "KERNEL32!_lcreat",
+     "USER32!SystemParametersInfoA"
+    ],
+    "singleton-probe": [
+     "KERNEL32!CreateFileMappingA",
+     "USER32!FindWindowA",
+     "USER32!RegisterWindowMessageA"
+    ]
+   },
+   "single_instance": true
+  },
+  "WINMM.DLL": {
+   "kind": "PE",
+   "risks": {
+    "hidden-input": [
+     "KERNEL32!GetTickCount"
+    ],
+    "shared-write": [
+     "KERNEL32!CreateFileA",
+     "KERNEL32!DeleteFileA",
+     "KERNEL32!MoveFileA"
+    ],
+    "singleton-probe": [
+     "KERNEL32!CreateEventA",
+     "KERNEL32!CreateFileMappingA"
+    ]
+   }
+  }
+ }
+}

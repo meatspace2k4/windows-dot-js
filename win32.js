@@ -442,6 +442,9 @@ class Process {
     }
     const [nargs, fn] = t.def, sp = this.reg('esp');
     if (window.W95TRACE) window.W95TRACE(t, this);
+    // (a call osclass.js classes: in the effects log, with its cause, once a process; ne16.js effect)
+    if (t.cls === undefined) t.cls = (window.W95OSClass && window.W95OSClass.api(t.nm)) || null;
+    if (t.cls && this.effect) this.effect(t.cls, `${t.dll}!${t.nm}`);
     if (nargs === 'regs') {   // register-convention entry: the implementation moves ESP and picks the continuation
       try { return u32(fn.call(this)); }
       catch (e) { if (e instanceof GuestError) { this.trapped = e.message; return LAYOUT.SENTINEL; } throw e; }

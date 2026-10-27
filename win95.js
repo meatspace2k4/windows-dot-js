@@ -5248,7 +5248,7 @@ async function osApply(id, v, local, by) {
     if ([...local.keys()].some(k => k.startsWith(prog + '/'))) return;
     osStarting.add(id); emit('sync.start', { id, cmd: v.cmd });
     // (with its clock, as of its start where it was started)
-    a.cmd('run', [v.cmd || v.path, v.t0 || null]).then(r => { if (!r || r.err) { osStarting.delete(id); emit('sync.failed', { id, cmd: v.cmd, r }); } }, e => { osStarting.delete(id); emit('sync.failed', { id, cmd: v.cmd, err: String(e) }); });
+    a.cmd('run', [v.cmd || v.path, v.t0 || null, 'remote']).then(r => { if (!r || r.err) { osStarting.delete(id); emit('sync.failed', { id, cmd: v.cmd, r }); } }, e => { osStarting.delete(id); emit('sync.failed', { id, cmd: v.cmd, err: String(e) }); });
     return;
   }
   // (its place fitted to this machine's screen, its title bar on it: this machine's own adjustment, which it does not

@@ -8,7 +8,7 @@ self.window = self;
 // the Ethernet segment as this worker has it: its own stations (the card, in the system's machine), and the rest of the
 // segment on the page (the other computer, lanhost.js; other machines' cards), frames passing both ways
 self.W95LAN = { stations: new Set(), frames: 0 };
-importScripts('bridge.js', 'fs.js', 'win32.js', 'gl.js', 'shell32.js', 'system.js', 'claude-exe.js', 'claude-app.js', 'session-dll.js', 'sesstray-exe.js', 'session-tray.js', 'ne16.js', 'vmm.js', 'sound.js', 'lan.js', 'parallel.js', 'netfs.js', 'dyn.js', 'savers.js', 'saver-runtime.js');
+importScripts('bridge.js', 'fs.js', 'win32.js', 'gl.js', 'shell32.js', 'system.js', 'claude-exe.js', 'claude-app.js', 'session-dll.js', 'sesstray-exe.js', 'session-tray.js', 'osclass.js', 'ne16.js', 'vmm.js', 'sound.js', 'lan.js', 'parallel.js', 'netfs.js', 'dyn.js', 'savers.js', 'saver-runtime.js');
 const B = self.W95Bridge, W = self.W95Win32, { FSError, join, basename, extname } = self.W95FS;
 const b64bytes = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
 const post = (m, tr) => self.postMessage(m, tr || []);
@@ -237,7 +237,7 @@ class Machine {
   feedMouse() {
     const p = this.proc;
     if (!this.mouseq.length || p.depth || this.ring0()) return;
-    for (const m of this.mouseq.splice(0)) try { if (m[0] & 0x2a) p.personActed = true; p.mouseEvent16(...m); } catch (e) { console.error(e); }   // (a button pressed: this machine's person has done something, ne16.js intentQuiet)
+    for (const m of this.mouseq.splice(0)) try { if (m[0] & 0x2a) { p.personActed = true; if (p.personInput) try { p.personInput(...m); } catch (e) { console.error(e); } } p.mouseEvent16(...m); } catch (e) { console.error(e); }   // (a button pressed: this machine's person has done something, ne16.js intentQuiet)
   }
   /** the screen's mode, DAC and cursor sprite for the page, which shows the screen from the shared memory */
   postScan() {
@@ -374,7 +374,7 @@ class Machine {
     if (!this.keyq.length || p.depth || this.ring0()) return;   // (the keyboard and mouse drivers report at interrupt time)
     try { if (p.inputPending()) return; } catch (e) { console.error(e); }   // USER has input not yet taken
     for (let n = 0; this.keyq.length && n < 16; n++) {
-      const k = this.keyq.shift(); p.personActed = true;
+      const k = this.keyq.shift(); if (!n && p.personInput) try { p.personInput(); } catch (e) { console.error(e); } p.personActed = true;
       try { p.keyEvent16(k[0], k[1] & 0xff, k[2], k[1] > 0xff); } catch (e) { console.error(e); }
     }
   }
@@ -896,7 +896,9 @@ class Machine {
         return st && st.hwnd ? this.netCall('PostMessageA', [st.hwnd, 0x8005, 0, 0], 'USER32') : false;
       }
       // (a program another machine runs in a shared session: its clock as of its start there, args[1], ne16.js startClock)
-      case 'run': { const held = this.holdStartup; this.holdStartup = false; p.nextClock = args[1] || null; try { const r = this.exec(args[0], 1); return typeof r === 'number' ? (r > 32 ? { ok: true } : { err: r }) : r && r.err ? r : { ok: true }; } finally { this.holdStartup = held; p.nextClock = null; } }
+      // (and where it comes from, args[2]: 'remote', another machine's person's, for its cause, ne16.js causeOf)
+      case 'run': { const held = this.holdStartup; this.holdStartup = false; p.nextClock = args[1] || null; p.nextOrigin = args[2] || null; try { const r = this.exec(args[0], 1); return typeof r === 'number' ? (r > 32 ? { ok: true } : { err: r }) : r && r.err ? r : { ok: true }; } finally { this.holdStartup = held; p.nextClock = null; p.nextOrigin = null; } }
+      case 'effects': return (p.effects || []).slice();   // (what the machine did, with its causes: ne16.js effect)
       // a control set as another machine has it: an edit's or combo box's text (WM_SETTEXT), a button's check
       // (BM_SETCHECK), sent from a thread of its own as 'place' is
       case 'setCtrl': return (async () => {

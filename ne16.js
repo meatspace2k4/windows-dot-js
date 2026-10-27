@@ -1141,7 +1141,6 @@ P.replyAwaited = function () {
  *  contents of their edits, combo boxes and check boxes and radio buttons */
 // (the shell's and the system's own, and Setup's first-run programs, which each machine runs, or has run, itself)
 // (Explorer's folder windows are the session's too: `folder`, opened elsewhere as the shell opens one)
-const WORLD_SKIP = new Set(['EXPLORER.EXE', 'MSGSRV32.EXE', 'MPREXE.EXE', 'SYSTRAY.EXE', 'SESSTRAY.EXE', 'MMTASK.TSK','RUNONCE.EXE', 'GRPCONV.EXE', 'SETUP.EXE', 'SUWIN.EXE']);
 const FOLDER_CLS = /^(CabinetWClass|ExploreWClass)$/;
 P.osWorld = function () {
   const u = (o, args) => this.user16(o, args).ax, procs = [...(this.procs || new Map()).values()];
@@ -1154,7 +1153,7 @@ P.osWorld = function () {
     const k = w.task && !procs.some(c => c.tdb === w.task) && [...(this.threadsById || new Map()).values()].find(t => t.tdb === w.task && t.task && t.task.cmdLine && t.state !== 'done');
     const pc = w.task && (procs.find(c => c.tdb === w.task) || (k && { pid: 0x10000 + w.task, ...k.task })); if (!pc) continue;
     const base = String(pc.path || '').split('\\').pop().toUpperCase(), folder = FOLDER_CLS.test(w.cls);
-    if (WORLD_SKIP.has(base) && !folder) continue;
+    if (!folder && self.W95OSClass.program(base) !== 'shared') continue;   // (the machine's own programs, and Setup's: osclass.js)
     // (its controls whose contents only a message tells: listed here, asked by the caller from a thread of its own,
     // each [key, control, 'text' or 'check'])
     const ask = [];
@@ -1172,13 +1171,45 @@ P.osWorld = function () {
 // machine makes too (worker.js 'intent'), each its own Windows then writing its own registry and INI files and telling
 // its own programs. Only a setting kept (SPIF_UPDATEINIFILE) is one; a thread applying another machine's (remote) makes
 // none. this.onIntent: the machine's (worker.js), given { key, kind, ... }; the key is the setting, the last one wins
-// SystemParametersInfo's settings: by their action, how its parameters are kept (ui: uiParam; str: pvParam a string;
-// mouse: pvParam three ints)
-const SPI_SET = { 4: 'mouse', 11: 'ui', 13: 'ui', 15: 'ui', 17: 'ui', 19: 'ui', 20: 'str', 21: 'str', 23: 'ui', 24: 'ui', 26: 'ui', 29: 'ui', 30: 'ui',
-  32: 'ui', 33: 'ui', 37: 'ui', 75: 'ui', 81: 'ui', 82: 'ui', 85: 'ui', 86: 'ui' };
-/** whether a call now is another machine's intent applied here, or no person's: Windows' own start, before this
- *  machine's person has pressed a key or a button (personActed, worker.js) writes settings of its own */
-P.intentQuiet = function () { return !this.onIntent || !this.personActed || !this.thread16 || !!this.thread16.remote; };   // (no thread: the host's own, the display's mode for its page)
+// (SystemParametersInfo's settings, by action: osclass.js SPI)
+/** what a call now comes of (its cause): 'remote', another machine's person (a thread applying their change, or a
+ *  program started for them that this machine's person has not acted on since); 'input', this machine's person (once
+ *  they have pressed a key or a button: personActed, worker.js); 'boot', Windows' own start before that; 'host', no
+ *  thread (the host's own: the display's mode for its page) */
+P.causeOf = function () {
+  const t = this.thread16;
+  if (!t) return 'host';
+  if (t.remote) return 'remote';
+  const rec = t.pc || t.task, id = t.pc ? t.pc.pid : t.tdb;
+  if (rec && rec.origin === 'remote' && this.personOn !== id) return 'remote';
+  return this.personActed ? 'input' : 'boot';
+};
+/** this machine's person's input, as it goes in: the program it goes to (the window under a button pressed, the active
+ *  window's for a key), which is theirs to act on from then (causeOf) */
+P.personInput = function (flags, x, y) {
+  const u = (o, a) => this.user16(o, a).ax;
+  let h;
+  if (flags === undefined) h = u(60, []);                                                   // GetActiveWindow
+  else if (flags & 0x8000) {                                                                 // (a button, at an absolute place)
+    const sx = Math.floor(x * u(179, [['w', 0]]) / 65536), sy = Math.floor(y * u(179, [['w', 1]]) / 65536);
+    h = u(30, [['l', u32((sy << 16) | (sx & 0xffff))]]);                                     // WindowFromPoint
+  } else return;
+  const task = h && u(224, [['w', h]]), pc = task && [...(this.procs || new Map()).values()].find(c => c.tdb === task);
+  this.personOn = pc ? pc.pid : task || null;
+};
+/** what the machine did, with its cause, for a session's convolutions to be found by (cmd 'effects'): a program
+ *  started, an intent made or passed over, a call osclass.js classes (once a process) */
+P.effect = function (kind, what) {
+  const t = this.thread16, pid = t ? (t.pc ? t.pc.pid : t.tdb) : 0;
+  if (kind !== 'exec' && kind !== 'intent' && kind !== 'echo') {
+    const seen = this.effectSeen || (this.effectSeen = new Set()), k = `${pid}|${what}`;
+    if (seen.has(k)) return; seen.add(k);
+  }
+  const l = this.effects || (this.effects = []);
+  l.push({ t: Date.now(), kind, what, cause: this.causeOf(), pid }); if (l.length > 500) l.shift();
+};
+/** whether a call now makes no intent: one that is not this machine's person's (causeOf) */
+P.intentQuiet = function () { return !this.onIntent || this.causeOf() !== 'input'; };
 /** USER's SystemParametersInfo (#483) watched where another module enters it (win32.js dispatch), once USER is up */
 // ---- a program's clock: one started here for a shared session reads the clock of the machine that started it, as of
 // its start there (its t0: { tick, wall }), so what it makes of the time (a seed: Solitaire's deal, srand(time())) is
@@ -1212,10 +1243,12 @@ P.hookIntents = function (user) {
 /** SystemParametersInfo(uiAction, uiParam, pvParam, fWinIni) as it is entered: its words on the stack after the far
  *  return address (Pascal order: fWinIni first) */
 P.spiIntent = function () {
-  if (P.intentQuiet.call(this)) return;
+  if (!this.onIntent) return;
   const s = this.selBase(this.cpu.ss.value & 0xffff) + (this.cpu.esp.value & 0xffff);
-  const flags = this.r16(s + 4), pv = this.r32(s + 6), ui = this.r16(s + 10), action = this.r16(s + 12), kind = SPI_SET[action];
+  const flags = this.r16(s + 4), pv = this.r32(s + 6), ui = this.r16(s + 10), action = this.r16(s + 12), kind = self.W95OSClass.spi(action);
   if (!kind || !(flags & 1)) return;
+  if (P.intentQuiet.call(this)) { if (this.causeOf() === 'remote') this.effect('echo', `spi:${action}`); return; }   // (another machine's, made here: not sent back)
+  this.effect('intent', `spi:${action}`);
   const i = { key: `spi:${action}`, kind: 'spi', action, ui, flags };
   const lin = pv >>> 16 && this.selValid(pv >>> 16) ? this.lin(pv) : 0;
   if (kind === 'str') i.str = lin ? this.readA(lin) : null;
@@ -1227,9 +1260,12 @@ P.caller16 = function () { const s = this.selBase(this.cpu.ss.value & 0xffff) + 
 /** a write to WIN.INI or SYSTEM.INI, the system's settings files, as an intent; not USER's own, which a setting it
  *  keeps writes (that setting is the intent) */
 P.iniIntent = function (file, app, key, value, by) {
-  if (P.intentQuiet.call(this) || (by && /^(USER|GDI)$/.test(by.name))) return;
+  if (!this.onIntent || (by && /^(USER|GDI)$/.test(by.name))) return;
   const f = String(file || 'WIN.INI').split('\\').pop().toUpperCase();
-  if (!/^(WIN|SYSTEM)\.INI$/.test(f) || !app) return;
+  if (self.W95OSClass.ini(f) !== 'shared' || !app) return;
+  const k = `ini:${f}:${String(app).toLowerCase()}:${String(key || '').toLowerCase()}`;
+  if (P.intentQuiet.call(this)) { if (this.causeOf() === 'remote') this.effect('echo', k); return; }
+  this.effect('intent', k);
   this.onIntent({ key: `ini:${f}:${String(app).toLowerCase()}:${String(key || '').toLowerCase()}`, kind: 'ini', file: f, app, name: key, value });
 };
 /** the desktop's work area, the screen less the taskbar: USER's SystemParametersInfo(SPI_GETWORKAREA), as x, y, w, h */
@@ -3682,7 +3718,7 @@ P.spawn = function (file, module, meta, path, cmdline) {
   } else pc.exe = this.loadImage(file, module, meta, 'EXE');
   pc.cmdPtr = this.alloc(cmdline.length + 1); this.writeA(pc.cmdPtr, cmdline);
   pc.cmdLine = cmdline;   // (as it was started: the program can change its copy, RUNDLL32 cuts its at the comma)
-  Object.assign(pc, this.startClock());
+  Object.assign(pc, this.startClock(), { origin: this.nextOrigin || 'here' }); this.effect('exec', cmdline);
   this.inits = [];   // its DLLs attach to it as its main thread starts (pcStart)
   const t = this.newThread(meta.entry, 0, 0x100000, true, false); t.pc = pc; t.tdb = pc.tdb; pc.main = t;
   (this.procs || (this.procs = new Map())).set(pc.pid, pc);
@@ -3981,7 +4017,8 @@ def16('KERNEL', 45, 'sp', 'l', function (name, pb) {
   rec.taskModule = true;
   // (the program as it was started, for a shared session's world: its file and command line, and its clock)
   const file = String(rec.fileName || rec.path || name).replace(/^.*\\/, '').toUpperCase(), tail = this.readA(psp + 0x81, 127).trim();
-  Object.assign(t.task, { path: rec.path || `C:\\WINDOWS\\${file}`, cmdLine: tail ? `${file} ${tail}` : file }, this.startClock());
+  Object.assign(t.task, { path: rec.path || `C:\\WINDOWS\\${file}`, cmdLine: tail ? `${file} ${tail}` : file, origin: this.nextOrigin || 'here' }, this.startClock());
+  this.effect('exec', t.task.cmdLine);
   // its DGROUP: the data, then the stack (SP its top), then the local heap InitTask makes at the segment's end
   const dg = m.segs[m.autodata - 1], data = dg ? (Math.max(dg.minalloc || 0, dg.len || 0) + 15) & ~15 : 0;
   Object.assign(t.task, { sp: Math.min(0xfff0, (data + taskStack(t.task.stack || 1) + 15) & ~15) });
