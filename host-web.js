@@ -8,14 +8,52 @@
 
   const CHUNK = 65536;
   const req = r => new Promise((ok, no) => { r.onsuccess = () => ok(r.result); r.onerror = () => no(r.error); });
-  const opening = indexedDB.open('win95', 1);
-  opening.onupgradeneeded = () => {
-    const db = opening.result;
-    db.createObjectStore('node', { keyPath: 'sid' }).createIndex('parent', 'parent');
-    db.createObjectStore('chunk', { keyPath: ['sid', 'idx'] });
-    db.createObjectStore('volume', { keyPath: 'k' });
-    db.createObjectStore('regkey', { keyPath: 'path' });
-    db.createObjectStore('regval', { keyPath: ['path', 'name'] });
+  // The sessions this computer keeps, side by side, each a database of its own ('win95' the first); which one Windows
+  // starts from is the catalog's choice (localStorage w95.stores), so saving or importing one adds it and chooses it,
+  // and the one chosen before is still there to go back to. A session joined (shared.js) runs from memory and the
+  // server, and is kept here only when saved
+  const CATALOG = 'w95.stores';
+  const catalog = (() => { let c = null; try { c = JSON.parse(localStorage.getItem(CATALOG) || 'null'); } catch (_) { /* none */ }
+    return c && c.current && Array.isArray(c.list) ? c : { current: 'win95', list: [{ db: 'win95', name: 'This computer', at: 0 }] }; })();
+  const keepCatalog = () => { try { localStorage.setItem(CATALOG, JSON.stringify(catalog)); } catch (_) { /* no storage */ } };
+  const openDb = name => new Promise((ok, no) => {
+    const o = indexedDB.open(name, 1);
+    o.onupgradeneeded = () => {
+      const db = o.result;
+      db.createObjectStore('node', { keyPath: 'sid' }).createIndex('parent', 'parent');
+      db.createObjectStore('chunk', { keyPath: ['sid', 'idx'] });
+      db.createObjectStore('volume', { keyPath: 'k' });
+      db.createObjectStore('regkey', { keyPath: 'path' });
+      db.createObjectStore('regval', { keyPath: ['path', 'name'] });
+    };
+    o.onsuccess = () => ok(o.result); o.onerror = () => no(o.error);
+  });
+  // a session's tables (W95Session.TABLES' rows) as a database of its own, added to the catalog and chosen
+  const keepSession = async (rows, name) => {
+    const db = 'win95-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), d = await openDb(db);
+    try {
+      await new Promise((ok, no) => {
+        const tx = d.transaction(W95Session.TABLES, 'readwrite', { durability: 'strict' });
+        for (const n of W95Session.TABLES) { const st = tx.objectStore(n); for (const r of rows[n] || []) st.put(r); }
+        tx.oncomplete = ok; tx.onerror = () => no(tx.error); tx.onabort = () => no(tx.error);
+      });
+    } finally { d.close(); }
+    catalog.list.push({ db, name: String(name || 'Session').slice(0, 64), at: Date.now() }); catalog.current = db; keepCatalog();
+    return db;
+  };
+  // the tables of a session as the page's machine has it now (C: as its store loads, the registry as regDump gives it)
+  const rowsOf = (disk, registry) => {
+    const out = { node: [], chunk: [], volume: [], regkey: [], regval: [] };
+    for (const e of (disk && disk.nodes) || []) {
+      const { data, ...r } = e; out.node.push({ ...r, size: data ? data.length : 0 });
+      if (data) for (let i = 0; i * CHUNK < data.length; i++) out.chunk.push({ sid: e.sid, idx: i, bytes: data.slice(i * CHUNK, (i + 1) * CHUNK) });
+    }
+    if (disk) out.volume.push({ k: 'label', v: disk.label }, { k: 'serial', v: disk.serial });
+    for (const [path, vals, name] of registry || []) {
+      out.regkey.push(name ? { path, name } : { path });
+      for (const [n, v] of vals) out.regval.push({ path, name: n, value: { type: v.type, data: v.data } });
+    }
+    return out;
   };
 
   // the server's shares (/__share: tools/serve.py's, the deployed win95_server.py's), asked synchronously as the app's
@@ -68,20 +106,21 @@
       export: async name => { const bytes = await fileOf(), file = name || `Windows 95 ${stamp()}.w95session`; download(bytes, file); return { file, size: bytes.length }; },
       // why the bytes are not a session (null when they are one)
       check: async bytes => { const SQL = await loadSql(); let d; try { d = new SQL.Database(bytes); return W95Session.check(adapt(d)); } catch (e) { return `it is not a Windows 95 session (${e.message})`; } finally { if (d) d.close(); } },
-      // the session in the bytes in place of this one (what is here now downloaded first, as the app keeps it), then
-      // the page starts again from it
-      import: async (bytes, backupName) => {
+      // the session in the bytes kept beside this computer's others and chosen, then the page starts again from it (the
+      // one before still kept: Open Session goes back to it)
+      import: async (bytes, name) => {
         const SQL = await loadSql(), d = new SQL.Database(bytes); let next;
         try { const why = W95Session.check(adapt(d)); if (why) throw new Error(why); next = W95Session.read(adapt(d)); } finally { d.close(); }
-        await session.export(backupName || `Windows 95 ${stamp()} before import.w95session`);
-        frozen = true;
-        await new Promise((ok, no) => {
-          const tx = db.transaction(W95Session.TABLES, 'readwrite', { durability: 'strict' });
-          for (const n of W95Session.TABLES) { const st = tx.objectStore(n); st.clear(); for (const r of next[n]) st.put(r); }
-          tx.oncomplete = ok; tx.onerror = () => no(tx.error); tx.onabort = () => no(tx.error);
-        });
-        location.reload();
+        await keepSession(next, name || `Imported ${stamp()}`);
+        frozen = true; location.reload();
       },
+      // the session the page's machine runs now (a joined one too) kept on this computer as a session of its own, and
+      // the one it starts from from now on; nothing kept here before is replaced
+      save: async (name, disk, registry) => { const db = await keepSession(rowsOf(disk, registry), name); return { db, name }; },
+      // the sessions kept here, and the one Windows starts from
+      list: () => catalog.list.map(e => ({ ...e, current: e.db === catalog.current })),
+      // Windows to start from another kept session: chosen, and the page starts again (leaving a joined session)
+      open: db => { if (!catalog.list.some(e => e.db === db)) return false; catalog.current = db; keepCatalog(); frozen = true; return true; },
     };
     const run = (stores, fn) => {
       if (frozen) return;
@@ -179,15 +218,14 @@
     return { disk, registry };
   }
 
-  opening.onsuccess = async () => {
+  openDb(catalog.current).then(async db => {
     try {
-      const db = opening.result, { disk, registry } = await load(db), own = host(db, disk, registry);
+      const { disk, registry } = await load(db), own = host(db, disk, registry);
       // a session shared with others (shared.js): its C: and registry the server's, the rest this browser's (the
-      // shares, the computer's name); with no server answering, this browser's own store
+      // shares, the computer's name, its kept sessions); with no server answering, this browser's own store
       const S = window.W95Shared;
       window.W95HOST = (S && S.wanted() && S.start(own)) || own;
     } catch (e) { console.error('no persistent store, starting fresh:', e); }
     start();
-  };
-  opening.onerror = () => { console.error('no persistent store, starting fresh:', opening.error); start(); };
+  }, e => { console.error('no persistent store, starting fresh:', e); start(); });
 })();

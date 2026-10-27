@@ -23,9 +23,12 @@
     session: sessionId(q.get('session') || stored.session) || 'guest',
   };
   const client = get(sessionStorage, CLIENT) || (() => { const c = Math.random().toString(36).slice(2, 8) + Math.random().toString(36).slice(2, 8); put(sessionStorage, CLIENT, c); return c; })();
-  const wanted = () => q.get('shared') !== '0' && !window.W95HOST;
-  /** the logon this browser keeps for its next visit */
+  // (a page on a session this computer keeps, chosen by Open Session: its own store, until a session is joined)
+  const wanted = () => q.get('shared') !== '0' && !window.W95HOST && !(stored.local && !q.get('session'));
+  /** the logon this browser keeps for its next visit (joining a session leaves this computer's own) */
   const remember = (user, session) => put(localStorage, LOGON, JSON.stringify({ ...(stored.own ? { own: stored.own } : {}), user: name(user, 20) || 'Guest', session: sessionId(session) || 'guest' }));
+  /** the next start on a session this computer keeps (host-web.js's choice), not one on the server */
+  const goLocal = () => { quiet = true; put(localStorage, LOGON, JSON.stringify({ ...stored, user: logon.user, local: true })); };
   /** this person's own session, which others join by its id: a name from the user's, kept with the logon */
   const ownSession = user => {
     const mine = stored.own || ('u-' + (name(user, 20) || 'user').toLowerCase().replace(/[^a-z0-9]/g, '') + '-' + client.slice(0, 6));
@@ -207,7 +210,7 @@
   };
 
   window.W95Shared = {
-    wanted, start, ready, logon, client, ownSession, remember, logOff, pointer, input, view, screenFor,
+    wanted, start, ready, logon, client, ownSession, remember, logOff, goLocal, pointer, input, view, screenFor,
     people: () => [...people.values()], watch: f => { watchers.add(f); return () => watchers.delete(f); },
     seq: () => seq, isHost: () => hostId === client, host: () => hostId,
     onInput: f => { onInput = f; }, onView: f => { onView = f; if (f && lastView) f(lastView.view, lastView.seq); },

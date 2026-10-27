@@ -2190,9 +2190,12 @@ function dialog(title, cw, ch, ctrls, o = {}) {
 // .w95session file, to continue on another computer, the page or the Electron app (session-file.js). The app chooses
 // the file itself; here the browser's download and file picker do (the picker opens from the dialog's button, a click)
 function sessionCommand(op) {
+  // (in a shared session, a command another person's input started on this machine too is theirs, not this person's)
+  if (sharedNow() && lastInputOther) return;
   const s = window.W95HOST && window.W95HOST.session, kb = n => (n < 1 << 20 ? `${Math.max(1, Math.round(n / 1024))} KB` : `${(n / (1 << 20)).toFixed(1)} MB`);
   if (!s) return msgBox(op === 'export' ? 'Export Session' : 'Import Session', 'This page keeps nothing between visits (the browser gives it no storage), so there is no session to export or replace.', 'info');
   if (s.host) return op === 'export' ? s.export() : s.import();
+  if (op === 'save' || op === 'open' || op === 'join') return sessionKeep(op, s);
   if (op === 'export') {
     return s.export().then(r => msgBox('Export Session', `The session was saved as ${r.file} (${kb(r.size)}) in your downloads.\n\nOpen it on the other computer with Start > Programs > Accessories > System Tools > Import Session, or in the Windows 95 app with File > Import Session.`, 'info'),
       e => msgBox('Export Session', `The session was not exported: ${e.message}`, 'error'));
@@ -2214,6 +2217,57 @@ function sessionCommand(op) {
     { type: 'label', text: 'Choose a .w95session file exported from this page or from the Windows 95 app.', x: 12, y: 12, w: 276 },
     { type: 'button', label: '&Choose File...', x: 104, y: 62, w: 98, h: 23, def: true, fn: pick },
     { type: 'button', label: 'Cancel', x: 208, y: 62, w: 80, h: 23, cancel: true, fn: () => closeWin(w) },
+  ], { modal: true });
+  return w;
+}
+// Save, Open and Join Session. The sessions this computer keeps are side by side (host-web.js), one of them the one
+// Windows starts from: Save keeps the session running now (a joined one too, which otherwise runs from memory and the
+// server) as another, and starts from it from then on; Open starts Windows from one kept here; Join runs another
+// person's session, by its id, from memory, leaving what this computer keeps as it is
+function sessionKeep(op, s) {
+  const S = window.W95Shared, joined = !!(window.W95HOST && window.W95HOST.shared && S);
+  let w;
+  if (op === 'save') {
+    if (!s.save) return msgBox('Save Session', 'This page cannot keep sessions.', 'info');
+    const name = { type: 'edit', x: 70, y: 40, w: 220, h: 21, value: joined ? `${S.logon.session}` : `Saved ${new Date().toLocaleString()}`, caret: 0, focus: true };
+    const ok = () => {
+      const n = name.value.trim() || 'Session'; closeWin(w);
+      s.save(n, fs.storeImage('C'), W95Win32.regDump()).then(() => {
+        if (joined) return msgBox('Save Session', `"${n}" has been saved on this computer.\n\nWindows will start from it next time. Your other saved sessions are still available in Open Session.`, 'info');
+        location.reload();   // (this page's machine writes on to the one it is kept as)
+      }, e => msgBox('Save Session', `The session was not saved: ${e.message}`, 'error'));
+    };
+    w = dialog('Save Session', 300, 104, [
+      { type: 'label', text: 'Save this session on this computer as:', x: 12, y: 14 },
+      { type: 'label', text: '&Name:', x: 12, y: 44 }, name,
+      { type: 'button', label: 'OK', x: 128, y: 74, w: 75, h: 23, def: true, fn: ok },
+      { type: 'button', label: 'Cancel', x: 213, y: 74, w: 75, h: 23, cancel: true, fn: () => closeWin(w) },
+    ], { modal: true });
+    return w;
+  }
+  if (op === 'open') {
+    const kept = s.list ? s.list() : [];
+    if (!kept.length) return msgBox('Open Session', 'This computer keeps no sessions.', 'info');
+    const radios = kept.slice(-10).map((e, i) => ({ type: 'radio', group: 'k', label: `${e.name}${e.at ? '  (' + new Date(e.at).toLocaleString() + ')' : ''}${e.current ? '  - now' : ''}`, checked: e.current, x: 16, y: 34 + i * 19, db: e.db }));
+    if (!radios.some(r => r.checked)) radios[0].checked = true;
+    const h = 34 + radios.length * 19 + 40;
+    const ok = () => { const r = radios.find(x => x.checked); closeWin(w); if (S) S.goLocal(); if (s.open(r.db)) { const u = new URL(location.href); u.searchParams.delete('session'); u.searchParams.delete('user'); location.href = u.toString(); } };
+    w = dialog('Open Session', 360, h, [
+      { type: 'label', text: 'Choose a saved session to start Windows from:', x: 12, y: 12 }, ...radios,
+      { type: 'button', label: 'OK', x: 188, y: h - 34, w: 75, h: 23, def: true, fn: ok },
+      { type: 'button', label: 'Cancel', x: 273, y: h - 34, w: 75, h: 23, cancel: true, fn: () => closeWin(w) },
+    ], { modal: true });
+    return w;
+  }
+  // join: a session on the server, by its id (the one a person running it gives)
+  if (!S) return msgBox('Join Session', 'This page has no server to join sessions on.', 'info');
+  const id = { type: 'edit', x: 80, y: 40, w: 208, h: 21, value: '', caret: 0, focus: true };
+  const ok = () => { const v = id.value.trim(); if (!v) return; closeWin(w); S.logOff((S.logon && S.logon.user) || 'Guest', v); };
+  w = dialog('Join Session', 300, 104, [
+    { type: 'label', text: 'Type the name of the session you want to join:', x: 12, y: 14 },
+    { type: 'label', text: '&Session:', x: 12, y: 44 }, id,
+    { type: 'button', label: 'OK', x: 128, y: 74, w: 75, h: 23, def: true, fn: ok },
+    { type: 'button', label: 'Cancel', x: 213, y: 74, w: 75, h: 23, cancel: true, fn: () => closeWin(w) },
   ], { modal: true });
   return w;
 }
@@ -2897,7 +2951,7 @@ function setupStartMenu() {
     ['MOTOWN.INF', 'Vol.links', 'SNDVOL32.EXE', 'Volume Control'], ['MMOPT.INF', 'CDPlayer.inis', 'CDPLAYER.EXE', 'CD Player']].filter(([inf, , file]) => infs[inf] && (S.programs || {})[file]);
   const missing = accessories.some(a => a.links.some(k => !fs.exists(join(PROGRAMS, 'Accessories', k[0] + '.lnk')))) || (claude && !fs.exists(join(PROGRAMS, 'Claude', 'Claude.lnk')))
     || media.some(m => !fs.exists(join(PROGRAMS, 'Accessories', 'Multimedia', m[3] + '.lnk')))
-    || (session && !fs.exists(join(tools, 'Export Session.lnk'))) || (clip && !fs.exists(join(PROGRAMS, 'Accessories', 'Clipboard Viewer.lnk')));
+    || (session && !fs.exists(join(tools, 'Join Session.lnk'))) || (clip && !fs.exists(join(PROGRAMS, 'Accessories', 'Clipboard Viewer.lnk')));
   if (cur && cur[0] === 0x4c && cur[1] === 0 && !missing) return;   // ('L': a shell link's header)
   const out = new Map();
   const add = ({ sec, fields, subst }, names) => {
@@ -2920,7 +2974,8 @@ function setupStartMenu() {
     const groups = out.get('progman.groups') || out.set('progman.groups', { name: 'progman.groups', lines: [] }).get('progman.groups');
     if (!groups.lines.some(l => /^group11=/i.test(l))) groups.lines.push(`group11=${tools.slice(PROGRAMS.length + 1)}`);
     const g = out.get('group11') || out.set('group11', { name: 'group11', lines: [] }).get('group11');
-    g.lines.push('"Export Session", "RUNDLL32.EXE SESSION.DLL,Export"', '"Import Session", "RUNDLL32.EXE SESSION.DLL,Import"');
+    g.lines.push('"Export Session", "RUNDLL32.EXE SESSION.DLL,Export"', '"Import Session", "RUNDLL32.EXE SESSION.DLL,Import"',
+      '"Save Session", "RUNDLL32.EXE SESSION.DLL,Save"', '"Open Session", "RUNDLL32.EXE SESSION.DLL,Open"', '"Join Session", "RUNDLL32.EXE SESSION.DLL,Join"');
   }
   fs.writeFile(join(WINDIR, 'SETUP.INI'), W95FS.encode([...out.values()].map(v => `[${v.name}]\r\n${v.lines.join('\r\n')}\r\n`).join('\r\n')));
   // SETUPC.INF's RunOnce\Setup item: run under RUNONCE's "Windows 95 Setup" screen before the system's message server
@@ -5013,10 +5068,10 @@ fs.on(e => emit('fs.' + e.op, { path: e.path, ...(e.path2 ? { path2: e.path2 } :
 //   `gate`); a machine not yet there (still opening the menu the last input opened, say) holds that input until it
 //   is, 2 seconds at most, and applies it then whatever its state: the input reaches the same Windows it did on the
 //   machine it came from. Only the machine that is behind waits; its own person's input never does
-let replaying = null, lastMoveSent = 0, lastOwnInput = 0;
+let replaying = null, lastMoveSent = 0, lastOwnInput = 0, lastInputOther = false;
 function shareInput(ev) {
   const S = sharedNow(); if (!S || replaying) return;
-  lastOwnInput = performance.now(); S.input(ev.t === 'move' ? ev : { ...ev, g: gate() });
+  lastOwnInput = performance.now(); lastInputOther = false; S.input(ev.t === 'move' ? ev : { ...ev, g: gate() });
 }
 const popupOpen = () => menus.length > 0 || windows.some(w => w.native && w.cls === '#32768');
 const gate = () => [windows.filter(w => w.title && w.title !== 'Program Manager').map(w => w.title).sort().join('|'), popupOpen() ? 1 : 0, active && active.title || ''].join('#');
@@ -5037,7 +5092,7 @@ function drainInbox() {
 function shareKey(t, e) { shareInput({ t, key: e.key, code: e.code, keyCode: e.keyCode, s: !!e.shiftKey, c: !!e.ctrlKey, a: !!e.altKey, m: !!e.metaKey }); }
 /** another machine's input, applied here as this machine's own person's would be */
 function remoteInput(ev) {
-  replaying = ev;
+  replaying = ev; lastInputOther = true;
   try {
     switch (ev.t) {
       case 'down': pointer('pointerdown', ev.x, ev.y, ev.b); break;
@@ -5053,8 +5108,11 @@ function remoteInput(ev) {
   } finally { replaying = null; }
   dirty();
 }
+// (a person's own: the session commands' windows and the page's logon, which no other machine has or aligns)
+const PERSONAL = new Set(['Save Session', 'Open Session', 'Join Session', 'Import Session', 'Export Session', 'Welcome to Windows']);
+const shared_ = w => w.title && !PERSONAL.has(w.title);
 // the windows as the host shows them: each titled top-level window, bottom to top
-const viewOf = () => windows.filter(w => w.title).map(w => ({ title: w.title, x: w.x, y: w.y, w: w.w, h: w.h, min: !!w.min, max: !!w.max, act: w === active }));
+const viewOf = () => windows.filter(shared_).map(w => ({ title: w.title, x: w.x, y: w.y, w: w.w, h: w.h, min: !!w.min, max: !!w.max, act: w === active }));
 let viewSent = '', viewSentAt = 0, viewWanted = null, aligned = 0;
 function shareTick() {
   const S = sharedNow(); if (!S || screen !== 'desktop') return;
@@ -5071,7 +5129,7 @@ function shareTick() {
 }
 /** this machine's windows put as the host's are; whether anything had to be */
 function alignTo(view) {
-  const left = windows.filter(w => w.title), used = new Set(); let changed = false, act = null;
+  const left = windows.filter(shared_), used = new Set(); let changed = false, act = null;
   for (const hv of view) {
     const lw = left.find(w => w.title === hv.title && !used.has(w));
     if (!lw) { emit('sync.missing', { title: hv.title }); continue; }

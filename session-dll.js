@@ -7,4 +7,9 @@
   // (hwnd, hinst, lpszCmdLine, nCmdShow), as RUNDLL32 calls an entry
   def('SESSION', 'Export', 4, () => { self.postMessage({ t: 'session', op: 'export' }); return 0; });
   def('SESSION', 'Import', 4, () => { self.postMessage({ t: 'session', op: 'import' }); return 0; });
+  // Save Session (the one running kept on this computer and started from), Open Session (one kept here), Join Session
+  // (another's, run from memory)
+  def('SESSION', 'Save', 4, () => { self.postMessage({ t: 'session', op: 'save' }); return 0; });
+  def('SESSION', 'Open', 4, () => { self.postMessage({ t: 'session', op: 'open' }); return 0; });
+  def('SESSION', 'Join', 4, () => { self.postMessage({ t: 'session', op: 'join' }); return 0; });
 })();

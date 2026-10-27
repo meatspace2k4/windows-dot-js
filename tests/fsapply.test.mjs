@@ -45,4 +45,10 @@ sync(A, B);
 assert.deepEqual(tree(B.fs), ['C:\\Docs\\', 'C:\\Docs\\both.txt=theirs!', 'C:\\Docs\\renamed.txt=hello']);
 A.fs.writeFile('C:\\Docs\\both.txt', new TextEncoder().encode('again')); sync(A, B);
 assert.deepEqual(tree(B.fs)[1], 'C:\\Docs\\both.txt=again', 'the other\'s later changes reach it by the id');
+// a volume's image (Save Session's): the tree its store loads, the same tree again on another machine
+{
+  const img = B.fs.storeImage('C'), C = new FileSystem(); C.mount('C', { kind: 'fixed', total: 1 << 24 });
+  assert.equal(C.fs === undefined && C.attach('C', { load: () => img, node() {}, remove() {}, data() {}, size() {}, label() {} }), true);
+  assert.deepEqual(tree(C), tree(B.fs));
+}
 console.log('fsapply: ok');

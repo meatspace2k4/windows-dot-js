@@ -330,6 +330,19 @@ class FileSystem {
     s.node({ sid: this.sidOf(n), parent: n.parent ? this.sidOf(n.parent) : -1, name: n.name, short: n.short, dir: n.dir,
       ord: n.ord || 0, attrs: n.attrs, ctime: n.ctime, mtime: n.mtime, atime: n.atime });
   }
+  /** a volume as its store's load gives one back: { nodes (each file's bytes as data), label, serial } */
+  storeImage(letter) {
+    const v = this.vols.get(letter.toUpperCase()), nodes = [];
+    const walk = n => {
+      const e = { sid: this.sidOf(n), parent: n.parent ? this.sidOf(n.parent) : -1, name: n.name, short: n.short, dir: n.dir,
+        ord: n.ord || 0, attrs: n.attrs, ctime: n.ctime, mtime: n.mtime, atime: n.atime };
+      if (!n.dir) e.data = n.buf.slice(0, n.size);
+      nodes.push(e);
+      if (n.dir) for (const k of n.kids.values()) walk(k);
+    };
+    walk(v.root);
+    return { nodes, label: v.label, serial: v.serial };
+  }
   // a volume's store and what it already holds: true when it held a tree, false when it is empty (and now takes this one)
   attach(letter, store) {
     const v = this.vols.get(letter.toUpperCase()), r = v.root, held = store.load();
