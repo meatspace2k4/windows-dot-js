@@ -852,7 +852,7 @@ class Machine {
         if (!want.size) { p.runHook = null; return true; }
         p.runHook = eip => {
           const m = p.modules.find(x => x.name === name && eip >= x.base && eip < x.base + (x.size || 0));
-          if (m && want.has(eip - m.base)) log.push([Math.round(performance.now()), p.thread16 && p.thread16.pc ? p.thread16.pc.path : 'host', 'watch', `${name}+${(eip - m.base).toString(16)}`, `eax ${(p.reg('eax') >>> 0).toString(16)}`]);
+          if (m && want.has(eip - m.base)) { const sp = p.reg('esp') >>> 0; log.push([Math.round(performance.now()), p.thread16 && p.thread16.pc ? p.thread16.pc.path : 'host', 'watch', `${name}+${(eip - m.base).toString(16)}`, `eax ${(p.reg('eax') >>> 0).toString(16)}`, `args ${[4, 8, 12, 16, 20].map(k => (p.r32(sp + k) >>> 0).toString(16)).join(' ')}`]); }   // (the stack's first five arguments, as a stdcall function sees them on entry)
         };
         return true;
       }
