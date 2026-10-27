@@ -24,6 +24,7 @@ import json, os, queue, re, threading, time
 
 MAX_SESSIONS = 64            # (sessions kept in memory at once; more are refused)
 LOG_KEEP = 20000             # (the changes kept to replay to someone who reconnects; one further behind loads the state again)
+INPUT_KEEP = 50000           # (the events of an object's strokes kept for a machine joining; the oldest parts let go past it)
 
 
 def merge(base, patch):
@@ -45,6 +46,8 @@ class Session:
         self.world = {}                        # (the OS's objects: id -> their state)
         self.gens = {}                         # (each object's generation: one more each time it is closed)
         self.intents = {}                      # (the settings made: key -> the intent that made it last)
+        self.inputs = {}                       # (each object's strokes so far, in order, for a machine joining to feed its copy: id -> [part])
+        self.cursors = {}                      # (the pointer images the people's pointers show, by key: the cursor each person's Windows shows them)
         if folder: self.load()
 
     # ---- the state
@@ -57,6 +60,14 @@ class Session:
             self.world[oid] = merge(self.world.get(oid), op.get('v'))
             # (whose machine opened it: the first client to say it exists, kept with the object for the tray's menus)
             if isinstance(self.world[oid], dict) and client and not self.world[oid].get('origin'): self.world[oid] = dict(self.world[oid], origin=client)
+            if self.world[oid] is None: self.inputs.pop(oid, None)   # (closed: its strokes are over)
+        elif kind == 'input':
+            # (a person's stroke, or part of one, into an object's window: its events as offsets from the window, win95.js
+            # osStroke; kept with the object, the oldest let go past INPUT_KEEP events, for a machine joining later)
+            oid, ev = op.get('id'), op.get('ev')
+            if not isinstance(oid, str) or not oid or not isinstance(ev, list): raise ValueError('an input needs an id and events')
+            parts = self.inputs.setdefault(oid, []); parts.append(dict({k: op[k] for k in op if k != 'id'}, by=client))   # (by: whose, so a joiner tells one machine's strokes from another's)
+            while sum(len(p['ev']) for p in parts) > INPUT_KEEP and len(parts) > 1: parts.pop(0)
         elif kind == 'intent':
             key = op.get('key')
             if not isinstance(key, str) or not key: raise ValueError('an intent needs a key')
@@ -69,11 +80,11 @@ class Session:
         client, and its old stream may not have ended yet) ran them, and its restart ended them"""
         with self.lock:
             others = any(c != client for c in self.people)
-            if not others: self.world, self.gens = {}, {}; self.epoch = int(time.time() * 1000)   # (a session nobody runs starts afresh: its clock too)
+            if not others: self.world, self.gens, self.inputs = {}, {}, {}; self.epoch = int(time.time() * 1000)   # (a session nobody runs starts afresh: its clock too)
             return dict(self.state(), running=others)
 
     def state(self):
-        with self.lock: return {'seq': self.seq, 'world': dict(self.world), 'gens': dict(self.gens), 'intents': dict(self.intents), 'epoch': self.epoch, 'now': int(time.time() * 1000)}
+        with self.lock: return {'seq': self.seq, 'world': dict(self.world), 'gens': dict(self.gens), 'intents': dict(self.intents), 'inputs': {k: list(v) for k, v in self.inputs.items()}, 'epoch': self.epoch, 'now': int(time.time() * 1000)}
 
     # ---- changes, and who hears of them
     def op(self, client, kind, op):
@@ -104,7 +115,7 @@ class Session:
     def publish(self, event, data):
         for q in list(self.subs): q.put((event, data))
 
-    def roster(self): return [{'client': c, 'user': p['user'], 'x': p.get('x'), 'y': p.get('y')} for c, p in self.people.items()]
+    def roster(self): return [{'client': c, 'user': p['user'], 'x': p.get('x'), 'y': p.get('y'), 'cur': p.get('cur')} for c, p in self.people.items()]
 
     def join(self, client, user, since=None):
         """a person's queue of events: the roster first; with `since` (the last change they have), the changes after it,
@@ -119,6 +130,7 @@ class Session:
                     for m in self.log:
                         if m['seq'] > since: q.put(('op', m))
                 else: q.put(('reload', {'seq': self.seq}))
+            for k, img in self.cursors.items(): q.put(('cursor', {'k': k, 'img': img}))   # (the pointers' images in use, for the others' pointers drawn as they are)
         return q
 
     def ops(self, client, items):
@@ -133,14 +145,21 @@ class Session:
             if p:
                 p['n'] -= 1
                 if p['n'] <= 0: del self.people[client]
-            if not self.people: self.world, self.gens = {}, {}   # (no machine runs the session now: its programs and windows are gone)
+            if not self.people: self.world, self.gens, self.inputs = {}, {}, {}   # (no machine runs the session now: its programs and windows are gone)
             self.publish('people', {'people': self.roster(), 'seq': self.seq})
 
-    def pointer(self, client, x, y):
+    def pointer(self, client, x, y, cur=None):
+        """where a person's pointer is, and which image it shows (cur: {'k': its key, 'img': the image, the first
+        time this machine sends that key}): the image is kept for everyone's pointers drawn as they are"""
         with self.lock:
             p = self.people.get(client)
             if not p: return False
             p['x'], p['y'] = int(x), int(y)
+            if isinstance(cur, dict) and isinstance(cur.get('k'), str):
+                p['cur'] = cur['k'][:32]
+                if isinstance(cur.get('img'), dict) and p['cur'] not in self.cursors:
+                    if len(self.cursors) >= 64: self.cursors.pop(next(iter(self.cursors)))
+                    self.cursors[p['cur']] = cur['img']; self.publish('cursor', {'k': p['cur'], 'img': cur['img']})
             self.publish('people', {'people': self.roster(), 'seq': self.seq})
             return True
 
@@ -210,7 +229,7 @@ class Sessions:
             try:
                 if what == 'op' and isinstance(body.get('ops'), list): return send(h, 200, {'seq': s.ops(str(body.get('client')), body['ops'])})
                 if what == 'op': return send(h, 200, {'seq': s.op(str(body.get('client')), body.get('kind'), body.get('op') or {})})
-                return send(h, 200, {'ok': s.pointer(str(body.get('client')), body.get('x', 0), body.get('y', 0))})
+                return send(h, 200, {'ok': s.pointer(str(body.get('client')), body.get('x', 0), body.get('y', 0), body.get('cur'))})
             except (ValueError, KeyError, TypeError) as e: return send(h, 400, {'err': str(e)})
         h.send_error(405); return True
 

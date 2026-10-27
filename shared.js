@@ -54,9 +54,11 @@
   // and a reopening after a close waiting goes as the whole state, `full`)
   const send = (kind, op, full) => {
     if (quiet) return;
-    const same = (kind === 'obj' && outbox.find(o => o.kind === 'obj' && o.op.id === op.id)) || (kind === 'intent' && outbox.find(o => o.kind === 'intent' && o.op.key === op.key));
+    const same = (kind === 'obj' && outbox.find(o => o.kind === 'obj' && o.op.id === op.id)) || (kind === 'intent' && outbox.find(o => o.kind === 'intent' && o.op.key === op.key))
+      || (kind === 'input' && outbox.find(o => o.kind === 'input' && o.op.id === op.id && o.op.n === op.n));   // (a stroke's parts waiting: one part)
     if (!same) outbox.push({ kind, op });
     else if (kind === 'obj') same.op = { id: op.id, v: op.v === null ? null : same.op.v === null ? full : L().merge(same.op.v, op.v) };
+    else if (kind === 'input') same.op = { ...same.op, ev: [...same.op.ev, ...op.ev], done: same.op.done || op.done };
     else same.op = op;
     flush();
   };
@@ -90,8 +92,8 @@
   });
 
   // ---- what others do, applied here; who is here
-  let seq = 0, es = null, ready16 = false, onObj = null, onIntent = null;
-  const people = new Map(), watchers = new Set(), pending = [], world = new Map(), intents = new Map(), gens = new Map(), flying = new Map();
+  let seq = 0, es = null, ready16 = false, onObj = null, onIntent = null, onInput = null;
+  const people = new Map(), watchers = new Set(), pending = [], world = new Map(), intents = new Map(), gens = new Map(), flying = new Map(), inputs = new Map();
   // another machine's, in the server's order (its own come back too, and are passed over): an OS object, which win95.js
   // sets this machine's OS to (`onObj`), or an intent, which this machine's Windows makes too (`onIntent`). Before
   // Windows has started here they wait (`pending`) until `ready`. One numbered past the next expected means some were
@@ -102,6 +104,9 @@
     if (m.seq && m.seq <= seq) return;   // (one already applied, sent again)
     seq = Math.max(seq, m.seq || 0);
     if (m.kind === 'intent') { intents.set(m.op.key, m.op); if (m.client !== client) deliver(m); return; }
+    // (a person's stroke into an object's window, or part of one: another machine's fed here, win95.js osStroke; its
+    // own back is passed over. The history kept here is the session's for the objects started here for it)
+    if (m.kind === 'input') { if (m.client !== client) deliver(m); return; }
     if (m.kind !== 'obj') return;
     // (an object, its change a patch: this machine's own back, or one of its own the server passed over (`to` it, the
     // object as the server has it in its place), taken off those on their way. While any of its own is on its way or
@@ -121,7 +126,8 @@
   const deliver = m => {
     if (!ready16) { pending.push(m); return; }
     // (with the machine that made it: who did it, for its window's outline in their colour)
-    const to = m.kind === 'obj' ? onObj && (() => onObj(m.op.id, m.op.v, m.client)) : m.kind === 'intent' ? onIntent && (() => onIntent(m.op, m.client)) : null;
+    const to = m.kind === 'obj' ? onObj && (() => onObj(m.op.id, m.op.v, m.client)) : m.kind === 'intent' ? onIntent && (() => onIntent(m.op, m.client))
+      : m.kind === 'input' ? onInput && (() => onInput(m.op.id, m.op, m.client)) : null;
     if (to) { try { to(); } catch (e) { console.warn('[shared] another machine\'s change could not be made here:', e && e.message); } }
   };
   const catchUp = () => { if (es) { try { es.close(); } catch (_) { /* gone */ } es = null; } listen(); };
@@ -136,6 +142,7 @@
     if (!window.EventSource) return;
     es = new window.EventSource(url(`events?client=${encodeURIComponent(client)}&user=${encodeURIComponent(logon.user)}&since=${seq}`));
     es.addEventListener('people', e => { try { roster(JSON.parse(e.data).people); } catch (_) { /* a bad message */ } });
+    es.addEventListener('cursor', e => { try { const c = JSON.parse(e.data); cursors.set(c.k, c.img); } catch (_) { /* a bad message */ } });   // (a pointer's image, by key)
     es.addEventListener('op', e => { try { apply(JSON.parse(e.data)); } catch (err) { console.warn('[shared] a change could not be applied:', err && err.message); } });
     es.addEventListener('reload', () => { quiet = true; location.reload(); });
     es.onerror = () => { if (es.readyState === 2) { es = null; setTimeout(listen, 2000); } };   // (closed for good: open again)
@@ -143,13 +150,16 @@
 
   // ---- this person's pointer, to the others: each move as it happens; while one is on its way, where it is when that
   // one has gone is sent next
-  let ptr = null, ptrPosting = false;
-  const pointer = (x, y) => {
-    ptr = { x: Math.round(x), y: Math.round(y) };
+  // (with the image the pointer shows, cur: { k } its key, and its image the first time this machine sends that key,
+  // kept by the server for everyone: the others draw this pointer as this person sees it)
+  let ptr = null, ptrPosting = false; const curSent = new Set(), cursors = new Map();
+  const pointer = (x, y, cur) => {
+    ptr = { x: Math.round(x), y: Math.round(y), cur: cur ? (curSent.has(cur.k) ? { k: cur.k } : cur) : undefined };
     if (ptrPosting) return;
     const p = ptr; ptr = null; ptrPosting = true;
+    if (p.cur && p.cur.img) curSent.add(p.cur.k);
     fetch(url('pointer'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client, ...p }) })
-      .catch(() => {}).finally(() => { ptrPosting = false; if (ptr) pointer(ptr.x, ptr.y); });
+      .catch(() => { if (p.cur && p.cur.img) curSent.delete(p.cur.k); }).finally(() => { ptrPosting = false; if (ptr) pointer(ptr.x, ptr.y, ptr.cur); });
   };
 
   // ---- the start: the session's state, synchronously as the page's store loads before Windows starts (null: no server
@@ -170,6 +180,7 @@
     for (const [id, v] of Object.entries(state.world || {})) world.set(id, v);
     for (const [k, i] of Object.entries(state.intents || {})) intents.set(k, i);
     for (const [id, g] of Object.entries(state.gens || {})) gens.set(id, g);
+    for (const [id, parts] of Object.entries(state.inputs || {})) inputs.set(id, parts);
     listen();
     return host(state, base);
   };
@@ -179,6 +190,9 @@
   const obj = (id, v, patch) => { world.set(id, v == null ? null : L().merge(world.get(id), v)); send('obj', { id, v: v == null ? null : patch || v }, v == null ? null : v); };
   /** a setting this machine's person made, as the call that made it (ne16.js hookIntents), for every other machine */
   const intent = i => { intents.set(i.key, i); send('intent', i); };
+  /** this person's stroke into an object's window, or part of one (n: which stroke of this machine's; ev: its events
+   *  as offsets from the window; pop: the object's popup it went into, if one; done: its end), for every other machine */
+  const input = (id, part) => send('input', { id, ...part });
   /** Windows has started here: what came meanwhile is made now */
   const ready = () => { ready16 = true; for (const m of pending.splice(0)) deliver(m); };
 
@@ -197,5 +211,7 @@
     people: () => [...people.values()], watch: f => { watchers.add(f); return () => watchers.delete(f); },
     seq: () => seq, world: () => new Map(world), onObj: f => { onObj = f; }, clockSkew: () => clockSkew,
     intents: () => new Map(intents), onIntent: f => { onIntent = f; },
+    input, inputs: () => new Map(inputs), onInput: f => { onInput = f; },
+    cursor: k => cursors.get(k) || null,
   };
 })();

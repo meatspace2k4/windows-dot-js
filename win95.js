@@ -3679,6 +3679,7 @@ class RemoteApp extends NativeApp {
       case 'scan': this.scr = m; this.followMode(m); dirty(); return;
       case 'mode': if (this.modeDone) this.modeDone(m.r); return;   // (a mode asked for while a thread held USER, made now)
       case 'intent': { const S = sharedNow(); if (S) S.intent(m.i); return; }   // (a setting this machine's person made: ne16.js hookIntents)
+      case 'stroke': if (this.system) osStrokeOut(m); return;   // (this person's mouse stroke into a window, or part of one: worker.js recordStroke)
       case 'text': this.txt = m.txt; if (msgApp === this) dirty(); return;
       case 'msgMode': msgApp = m.on ? this : msgApp === this ? null : msgApp; this.r0 = m.on; dirty(); return;
       case 'reset': machineReset(); return;
@@ -4643,7 +4644,10 @@ function drawPeers() {
     if (peerFollow === p.client) {   // (Follow: a ring round it, kept, until Follow is chosen again)
       ctx.save(); ctx.strokeStyle = rgb; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(p.x, p.y, 16, 0, 2 * Math.PI); ctx.stroke(); ctx.restore();
     }
-    if (c) ctx.drawImage(c.i, p.x - c.hx, p.y - c.hy);
+    // (their pointer as their Windows shows it to them: the image they sent with it, else the arrow)
+    const img = p.cur && S.cursor(p.cur), bits = img && peerBits(p.cur, img);
+    if (bits) drawSpriteBits(bits, p.x - img.hx, p.y - img.hy);
+    else if (c) ctx.drawImage(c.i, p.x - c.hx, p.y - c.hy);
     const label = p.user || 'Guest', tw = textW(label) + 10, tx = clamp(p.x + 12, 0, W - tw), ty = clamp(p.y + 18, 0, H - 17);
     fill(tx, ty, tw, 17, K.tip); fill(tx, ty, 4, 17, rgb); edge(tx, ty, tw, 17, K.dk, K.dk); text(label, tx + 7, ty + 2);
   }
@@ -4672,9 +4676,20 @@ const spriteCv = mkc(64, 64), spriteCx = spriteCv.getContext('2d'), spriteImg = 
 function drawSprite(app) {
   let sp; try { sp = app.sprite(); } catch (e) { return; }
   if (!sp) return;
-  const cpp = sp.cpp || 1, x = sp.x, y = sp.y, w = Math.min(Math.floor((64 - sp.px) / cpp), W - x), h = Math.min(64 - sp.py, H - y);
+  drawSpriteBits(sp, sp.x, sp.y, app);
+}
+// (another person's pointer image, decoded once per key: the sprite's bits as sent)
+const peerBitsCache = new Map();
+function peerBits(k, img) {
+  let b = peerBitsCache.get(k);
+  if (!b) { try { const s = atob(img.b64), u = new Uint8Array(s.length); for (let i = 0; i < u.length; i++) u[i] = s.charCodeAt(i); b = { px: img.px, py: img.py, cpp: img.cpp, row: img.row, bits: u }; } catch (_) { b = false; } peerBitsCache.set(k, b); }
+  return b || null;
+}
+/** a sprite's bits (px, py, cpp, row, bits) drawn with its top-left at x, y; app: the machine whose screen is under it */
+function drawSpriteBits(sp, x, y, app = sysApp) {
+  const cpp = sp.cpp || 1, w = Math.min(Math.floor((64 - sp.px) / cpp), W - x), h = Math.min(64 - sp.py, H - y);
   if (w <= 0 || h <= 0 || x < 0 || y < 0) return;
-  const scr = app.d32, sw = app.sw || 0, sh = app.sh || 0;
+  const scr = app && app.d32, sw = (app && app.sw) || 0, sh = (app && app.sh) || 0;
   for (let j = 0; j < h; j++) {
     const row = (sp.py + j) * sp.row;
     for (let i = 0; i < w; i++) {
@@ -5191,9 +5206,24 @@ const osSeen = new Map(), osStarting = new Set(), osOpened = new Set();
 const osHwnd = new Map(), osRemoteClosed = new Set();   // (each id's window at the last read; the ids closed here under a remote cause, by the machine's own tag)
 let osArea = null;   // (this machine's work area at its last read: its screen changing is its own)
 const osTries = new Map();   // (the session's programs started here and not up yet: how many times)
+// the image this person's pointer shows (USER's cursor, the machine's sprite), keyed by its bits, with its hot spot
+// where the pointer is in it: sent with the pointer, once per image, for the others to draw this pointer as it is
+let curKeyLast = null, curSprite = null;
+function peerCursorOf(x, y) {
+  const a = sysApp; if (!a || !a.alive || !a.sprite) return null;
+  let sp; try { sp = a.sprite(); } catch (_) { return null; }
+  if (!sp || !sp.bits) return null;
+  const n = Math.min(sp.bits.length, 64 * sp.row); let h = 2166136261;
+  for (let i = 0; i < n; i++) { h ^= sp.bits[i]; h = Math.imul(h, 16777619); }
+  h ^= sp.px | sp.py << 6 | sp.cpp << 12 | sp.row << 16; h = Math.imul(h, 16777619) >>> 0;
+  const k = h.toString(16);
+  if (k === curKeyLast && curSprite) return { k };
+  curKeyLast = k; curSprite = { px: sp.px, py: sp.py, cpp: sp.cpp, row: sp.row, hx: x - sp.x, hy: y - sp.y, b64: btoa(String.fromCharCode(...sp.bits.subarray(0, n))) };
+  return { k, img: curSprite };
+}
 function shareInput(ev) {
   const S = sharedNow(); if (!S) return;
-  if (ev.t === 'move') { S.pointer(ev.x, ev.y); return; }
+  if (ev.t === 'move') { S.pointer(ev.x, ev.y, peerCursorOf(ev.x, ev.y)); return; }
   if (osHeld && sysApp && sysApp.alive) { osHeld = false; sysApp.cmd('holdStartup', [false]); }
   osSoon();
 }
@@ -5271,6 +5301,10 @@ async function osRead() {
     for (const [id, v] of r.applies) osApply(id, v, local);
     for (const id of r.retries) { emit('sync.retry', { id }); osApply(id, S.world().get(id), local); }
     for (const id of osOpened) { osOpened.delete(id); if (!local.has(id)) osStarting.delete(id); }   // (a folder opened, not up by now: the next change tries again)
+    // (an object up here that the session had: the strokes made into it so far, fed into this copy of it, once; and
+    // the strokes that came for any object before its window was here)
+    for (const [id] of r.applies) if (local.has(id) && !osFed.has(id)) { osFed.add(id); for (const part of S.inputs().get(id) || []) osStroke(id, part, part.by || 'session', local); }
+    for (const [id, list] of osInputWait) if (local.has(id)) { osInputWait.delete(id); for (const [part, by] of list) osStroke(id, part, by, local); }
   } finally { osBusy = false; if (osAgain) { osAgain = false; osRead(); } }
 }
 /** another machine's state of an object, set on this one */
@@ -5327,6 +5361,32 @@ async function osApply(id, v, local, by) {
     if (by) peerActing(id, by, f);
   }
 }
+// ---- the session's input: a person's mouse strokes into an object's window (a button pressed, the moves while it
+// is held, its release) go to every machine's copy of the window, as offsets from it, so what the program makes of
+// them (a line drawn in Paint, a card moved in Solitaire, a button pressed in Calculator) it makes everywhere. The
+// machine records this person's (worker.js recordStroke) and feeds the others' one stroke at a time between this
+// person's own (feedStroke); the server keeps each object's for a machine joining, which feeds them into its copy
+// once the object is up (osRead). A stroke into a popup of the object's (a menu, a dialog) names the popup by class
+// and title, by which each machine finds its own copy of it
+const osInputWait = new Map(), osFed = new Set();   // (strokes for an object whose window is not here yet; the objects whose history was fed)
+/** this person's stroke, or part of one (the machine's message): to the session, by the object its window is */
+function osStrokeOut(m, again) {
+  const S = sharedNow(); if (!S) return;
+  let id = null; for (const [k, h] of osHwnd) if (h === m.root) { id = k; break; }
+  if (!id) { if (!again) osLocal().then(() => osStrokeOut(m, true)).catch(() => {}); return; }   // (a window not read yet: read, then once more)
+  const part = { n: m.n, ev: m.ev, done: !!m.done, ...(m.pop ? { pop: m.pop } : {}) };
+  S.input(id, part); emit('sync.input', { id, n: m.n, events: m.ev.length, done: !!m.done });
+}
+/** another machine's stroke into an object, fed into this machine's copy of its window (kept until the window is here) */
+function osStroke(id, part, by, local) {
+  const a = sysApp; if (!a || !a.alive) return;
+  if (!local) { osLocal().then(l => osStroke(id, part, by, l || new Map())).catch(() => {}); return; }   // (the machine's windows now: the object's may be new)
+  const mine = local.get(id);
+  if (!mine) { (osInputWait.get(id) || osInputWait.set(id, []).get(id)).push([part, by]); osSoon(); return; }   // (not here yet: fed once it is, osRead)
+  a.cmd('stroke', [`${by}:${part.n}`, mine.hwnd, part.pop || null, part.ev || [], !!part.done]).catch(() => {});
+  emit('sync.stroke', { id, by, events: (part.ev || []).length, done: !!part.done });
+  const S = sharedNow(), v = S && S.world().get(id); if (v && by !== 'session') peerActing(id, by, v);
+}
 /** another person changed a window here (moved, sized, typed in, checked): its outline in their colour, their name on
  *  its title bar, for a moment after each change */
 const peerActs = new Map();
@@ -5346,6 +5406,7 @@ function osIntent(i) { emit('sync.intent', { key: i.key }); return sysApp && sys
 if (sharedNow()) {
   sharedNow().onObj((id, v, by) => { if (osCaught) osApply(id, v, null, by); });   // (by: the machine whose person did it)
   sharedNow().onIntent(i => { if (osCaught) osIntent(i); });
+  sharedNow().onInput((id, part, by) => { if (osCaught) osStroke(id, part, by); else (osInputWait.get(id) || osInputWait.set(id, []).get(id)).push([part, by]); });
 }
 // (once this machine's shell is up, its first window list with the desktop's: the session's objects as they are)
 let osCaught = false;

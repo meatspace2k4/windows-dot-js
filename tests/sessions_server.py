@@ -21,10 +21,18 @@ for bad in [('intent', {'kind': 'spi'}), ('obj', {'v': {}}), ('disk', {'op': 'no
 
 # ---- presence: join hears the roster, a pointer moves it, leave drops the person once their last stream ends
 s = S.Session('p')
-q1 = s.join('c1', 'Guest'); assert q1.get_nowait() == ('people', {'people': [{'client': 'c1', 'user': 'Guest', 'x': None, 'y': None}], 'seq': 0})
+q1 = s.join('c1', 'Guest'); assert q1.get_nowait() == ('people', {'people': [{'client': 'c1', 'user': 'Guest', 'x': None, 'y': None, 'cur': None}], 'seq': 0})
 q2 = s.join('c2', 'Ann'); q1.get_nowait(); q2.get_nowait()
-assert s.pointer('c2', 10, 20) and q1.get_nowait()[1]['people'][1] == {'client': 'c2', 'user': 'Ann', 'x': 10, 'y': 20}
+assert s.pointer('c2', 10, 20) and q1.get_nowait()[1]['people'][1] == {'client': 'c2', 'user': 'Ann', 'x': 10, 'y': 20, 'cur': None}
 assert not s.pointer('nobody', 1, 1)
+# (the image a pointer shows, by key, sent once with its image: kept, told to everyone, and to a joiner with the roster)
+img = {'px': 0, 'py': 0, 'cpp': 1, 'row': 16, 'hx': 1, 'hy': 1, 'b64': 'AAAA'}
+assert s.pointer('c2', 11, 21, {'k': 'abc', 'img': img})
+ev = q1.get_nowait(); assert ev[0] == 'cursor' and ev[1] == {'k': 'abc', 'img': img}, ev
+assert q1.get_nowait()[1]['people'][1]['cur'] == 'abc'
+assert s.pointer('c2', 12, 22, {'k': 'abc'}) and q1.get_nowait()[0] == 'people', 'a key already kept: no image event'
+q6 = s.join('c6', 'Fay'); q6.get_nowait(); assert q6.get_nowait() == ('cursor', {'k': 'abc', 'img': img})
+s.leave('c6', q6); q1.get_nowait(); q1.get_nowait()   # (c6 came and went: the roster twice)
 s.op('c1', 'intent', {'key': 'spi:15', 'kind': 'spi', 'action': 15, 'ui': 60, 'flags': 3})
 ev = q2.get_nowait()
 while ev[0] != 'op': ev = q2.get_nowait()
@@ -34,11 +42,12 @@ s.leave('c2', q2); assert [p['client'] for p in s.roster()] == ['c1']
 assert s.ops('c1', [{'kind': 'obj', 'op': {'id': 'A', 'v': {}}}, {'kind': 'obj', 'op': {'id': 'B', 'v': {}}}]) == 3
 q3 = s.join('c3', 'Cy', since=1); q3.get_nowait()
 assert [q3.get_nowait()[1]['seq'] for _ in range(2)] == [2, 3]
+assert q3.get_nowait()[0] == 'cursor', 'the pointer image in use, after the changes'
 keep_log = S.LOG_KEEP; S.LOG_KEEP = 1
 s.op('c1', 'obj', {'id': 'C', 'v': {}})
 q4 = s.join('c4', 'Di', since=1); q4.get_nowait(); assert q4.get_nowait() == ('reload', {'seq': 4})
 S.LOG_KEEP = keep_log
-q5 = s.join('c5', 'Ed', since=4); q5.get_nowait(); assert q5.empty(), 'up to date: nothing more'
+q5 = s.join('c5', 'Ed', since=4); q5.get_nowait(); assert q5.get_nowait()[0] == 'cursor' and q5.empty(), 'up to date: nothing more'
 
 # ---- the OS's objects: in the state by id, sent to everyone in order; one closed kept as closed (None); all gone when
 # no machine runs the session, the intents kept
@@ -62,6 +71,24 @@ assert qa.get_nowait()[1] == {'seq': 3, 'client': 'server', 'to': 'a', 'kind': '
 s2 = S.Session('p')
 s2.op('a', 'obj', {'id': 'N', 'v': {'x': 1, 'ctrls': {'1:edit': ''}}}); s2.op('b', 'obj', {'id': 'N', 'v': {'ctrls': {'1:edit': 'hi'}}}); s2.op('a', 'obj', {'id': 'N', 'v': {'x': 2}})
 assert s2.state()['world']['N'] == {'x': 2, 'ctrls': {'1:edit': 'hi'}, 'origin': 'a'}   # (origin: the machine that first said it exists, kept through others' patches)
+# ---- a person's strokes into an object's window ('input': its events as offsets from the window, in parts): sent on
+# in order, kept with the object for a machine joining (whose they were with them), the oldest let go past INPUT_KEEP
+# events, gone with the object's close; one without an id or events refused
+s3 = S.Session('i'); qi = s3.join('b', 'Ann')
+s3.op('a', 'obj', {'id': 'MSPAINT.EXE#0/MSPaintApp#0', 'v': {'x': 1}})
+s3.op('a', 'input', {'id': 'MSPAINT.EXE#0/MSPaintApp#0', 'n': 1, 'ev': [[2, 10, 10], [1, 12, 12]], 'done': False})
+s3.op('a', 'input', {'id': 'MSPAINT.EXE#0/MSPaintApp#0', 'n': 1, 'ev': [[4, 14, 14]], 'done': True})
+evs = [qi.get_nowait() for _ in range(4)]
+assert evs[2][1]['kind'] == 'input' and evs[2][1]['op'] == {'id': 'MSPAINT.EXE#0/MSPaintApp#0', 'n': 1, 'ev': [[2, 10, 10], [1, 12, 12]], 'done': False}, evs
+assert s3.state()['inputs'] == {'MSPAINT.EXE#0/MSPaintApp#0': [{'n': 1, 'ev': [[2, 10, 10], [1, 12, 12]], 'done': False, 'by': 'a'}, {'n': 1, 'ev': [[4, 14, 14]], 'done': True, 'by': 'a'}]}
+keep = S.INPUT_KEEP; S.INPUT_KEEP = 2
+s3.op('a', 'input', {'id': 'MSPAINT.EXE#0/MSPaintApp#0', 'n': 2, 'ev': [[2, 1, 1], [4, 1, 1]], 'done': True})
+assert [p['n'] for p in s3.state()['inputs']['MSPAINT.EXE#0/MSPaintApp#0']] == [2], 'the oldest parts let go'
+S.INPUT_KEEP = keep
+for bad in [{'id': 'X'}, {'ev': []}, {'id': 'X', 'ev': 'no'}]:
+    try: s3.op('a', 'input', bad); raise AssertionError('accepted ' + repr(bad))
+    except ValueError: pass
+s3.op('a', 'obj', {'id': 'MSPAINT.EXE#0/MSPaintApp#0', 'v': None}); assert s3.state()['inputs'] == {}, 'closed: its strokes are over'
 # opened again after it (generation 1): a new one
 s.op('a', 'obj', {'id': 'NOTEPAD.EXE#0/Notepad#0', 'v': {'x': 2}, 'gen': 1}); assert s.state()['world'] == {'NOTEPAD.EXE#0/Notepad#0': {'x': 2, 'origin': 'a'}}
 s.op('b', 'intent', {'key': 'spi:17', 'kind': 'spi', 'action': 17, 'ui': 1, 'flags': 3})
@@ -113,7 +140,7 @@ def stream(client, user):
             elif line == '' and ev: return ev, data
     return next_event
 st0 = req('GET', '/__session/room/state')[1]
-assert {k: v for k, v in st0.items() if k not in ('epoch', 'now')} == {'seq': 0, 'world': {}, 'gens': {}, 'intents': {}} and st0['epoch'] <= st0['now'], st0
+assert {k: v for k, v in st0.items() if k not in ('epoch', 'now')} == {'seq': 0, 'world': {}, 'gens': {}, 'intents': {}, 'inputs': {}} and st0['epoch'] <= st0['now'], st0
 ann, bob = stream('c1', 'Ann'), stream('c2', 'Bob')
 assert ann()[0] == 'people'
 while True:

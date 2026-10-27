@@ -231,7 +231,7 @@ class Machine {
     const f = kind;
     const q = this.mouseq, last = q[q.length - 1];
     if (f !== 1 && (ax !== this.ax || ay !== this.ay)) q.push([0x8001, ax, ay]);
-    if (f === 1 && last && last[0] === 0x8001) q[q.length - 1] = [0x8001, ax, ay];   // (moves the machine has not had yet: the latest)
+    if (f === 1 && last && last[0] === 0x8001 && !this.btn) q[q.length - 1] = [0x8001, ax, ay];   // (moves the machine has not had yet: the latest; every one while a button is held, a drag's path being what the program draws)
     else q.push([0x8001 | f, ax, ay]);
     this.ax = ax; this.ay = ay;
   }
@@ -240,8 +240,87 @@ class Machine {
    *  has the processor */
   feedMouse() {
     const p = this.proc;
-    if (!this.mouseq.length || p.depth || this.ring0() || this.focusing) return;   // (a window being brought to the front first: 'focus')
-    for (const m of this.mouseq.splice(0)) try { if (this.lagLog) this.lagLog.push({ k: 'mouse-fed', f: m[0] & 0xff, x: m[1], y: m[2], t: Date.now() }); if (m[0] & 0x2a) { p.personActed = true; if (p.personInput) try { p.personInput(...m); } catch (e) { console.error(e); } } p.mouseEvent16(...m); } catch (e) { console.error(e); }   // (a button pressed: this machine's person has done something, ne16.js intentQuiet)
+    if (p.depth || this.ring0() || this.focusing) return;   // (a window being brought to the front first: 'focus')
+    // (another machine's person's stroke into a window here, fed first, whole, while this person's input waits:
+    // USER has one mouse, and a program drawing takes one stroke at a time)
+    if (this.feedStroke()) return;
+    if (!this.mouseq.length) return;
+    // (a drag's moves go in one to a slice of the machine's run, with the window's program given its slice between
+    // them to take each: USER keeps only the latest of the moves waiting in its queue, and the path is what a
+    // program drawing with them makes)
+    if (this.lagLog && this.btn) { let pend = null; try { pend = this.stroke ? p.inputPendingFor(this.stroke.root) : null; } catch (e) { pend = String(e); } this.lagLog.push({ k: 'pace', pend, q: this.mouseq.length, t: Date.now() }); }
+    for (let moved = false; this.mouseq.length;) {
+      if (this.btn && this.stroke && this.mouseq[0][0] === 0x8001) { if (moved) break; moved = true; }
+      const m = this.mouseq.shift(); this.lastFed = performance.now();
+      try { if (this.lagLog) this.lagLog.push({ k: 'mouse-fed', f: m[0] & 0xff, x: m[1], y: m[2], t: Date.now() }); if (m[0] & 0x2a) { p.personActed = true; if (p.personInput) try { p.personInput(...m); } catch (e) { console.error(e); } } p.mouseEvent16(...m); this.recordStroke(m); } catch (e) { console.error(e); }   // (a button pressed: this machine's person has done something, ne16.js intentQuiet)
+    }
+    this.postStroke(false);
+  }
+  // ---- a shared session's input: this person's mouse strokes (a button pressed, the moves while it is held, its
+  // release) into a program's window are the session's, as its windows are: every machine feeds them into its own
+  // copy of the program (the page: win95.js osStroke; the server keeps each object's for a machine joining). A stroke
+  // is kept as offsets from the top-level window it went to (the same window on every machine), posted to the page
+  // as it goes, in parts, with the object's window and, for a popup of the object's (a menu, a dialog), how the
+  // others find theirs (ne16.js strokeTarget)
+  /** this person's mouse event, as fed: into the stroke it is part of */
+  recordStroke(m) {
+    const f = m[0], p = this.proc, sw = this.sw, sh = this.sh;
+    const sx = Math.round(m[1] * (sw - 1) / 65535), sy = Math.round(m[2] * (sh - 1) / 65535);
+    const was = this.btn || 0;
+    let btn = was; if (f & 2) btn |= 1; if (f & 4) btn &= ~1; if (f & 8) btn |= 2; if (f & 16) btn &= ~2; this.btn = btn;
+    if (!was && (f & 0x0a) && !this.stroke) {   // (a press with no button held: a stroke begins, at the window under it)
+      let t = null; try { t = p.strokeTarget(sx, sy); } catch (e) { console.error(e); }
+      if (!t) return;
+      this.stroke = { n: (this.strokeN = (this.strokeN || 0) + 1), root: t.root, pop: t.pop, ox: t.x, oy: t.y, ev: [], done: false };
+    }
+    const s = this.stroke; if (!s) return;
+    s.ev.push([f & 0x3f, sx - s.ox, sy - s.oy]);
+    if (this.lagLog) this.lagLog.push({ k: 'stroke-rec', f: f & 0x3f, x: sx, y: sy, ox: s.ox, oy: s.oy, t: Date.now() });
+    if (!btn) s.done = true;
+  }
+  /** the stroke's events not yet posted, to the page (all of it so far at its end) */
+  postStroke(force) {
+    const s = this.stroke; if (!s) return;
+    if (!s.ev.length && !s.done && !force) return;
+    post({ t: 'stroke', n: s.n, root: s.root, pop: s.pop, ev: s.ev.splice(0), done: s.done });
+    if (s.done) this.stroke = null;
+  }
+  /** another machine's stroke, from the page: appended to its entry by key (the machine and its number); fed when
+   *  no button of this person's is held, into this machine's copy of the window (the object's, or its popup of
+   *  that class and title, waited for a moment if it is not up yet) */
+  feedStroke() {
+    const p = this.proc, q = this.strokes || (this.strokes = []);
+    if (!this.rs) {
+      if (!q.length || this.btn) return false;
+      const s = q[0], now = performance.now();
+      // (this person's last events, fed, may not have been taken yet: posted messages are taken before them, so a
+      // stroke posted now would come before this person's release. A moment for them to be taken first)
+      if (now - (this.lastFed || 0) < 60 && now - (s.since || (s.since = now)) < 400) return false;
+      let h = s.root;
+      if (s.pop) { h = p.findPopup(s.root, s.pop); if (!h) { if ((s.waited = (s.waited || 0) + 1) < 120) return true; q.shift(); return false; } }   // (its popup not up here yet: this person's input waits a while for it)
+      const r = p.windowRect(h);
+      if (!r) { q.shift(); return false; }
+      if (!s.ev.length) return !s.done || (q.shift(), false);   // (nothing of it here yet)
+      // (the window the stroke goes to: the one under its first point in the object's window, as the first press
+      // found it there, whatever covers it on this screen; the stroke stays with it, as the capture would keep it)
+      const [, dx0, dy0] = s.ev[0], target = p.childAt(h, r.x + dx0, r.y + dy0);
+      this.rs = Object.assign(q.shift(), { hwnd: h, child: target, ox: r.x, oy: r.y, fed: 0, keys: 0 });
+    }
+    // (the stroke's events as the mouse messages they would be, posted to its window with its own coordinates, not
+    // through the mouse driver: this person's pointer stays where it is, and the program sees the stroke as one of
+    // its own. One at a time, the next once the program has taken it: a queue keeps only so many)
+    const s = this.rs, sw = this.sw, sh = this.sh;
+    let waiting = false; try { waiting = p.postedPending(s.child); } catch (e) { console.error(e); }
+    if (!waiting && s.ev.length) {
+      const [f, dx, dy] = s.ev.shift(), sx = Math.max(0, Math.min(sw - 1, s.ox + dx)), sy = Math.max(0, Math.min(sh - 1, s.oy + dy));
+      if (f & 2) s.keys |= 1; if (f & 4) s.keys &= ~1; if (f & 8) s.keys |= 2; if (f & 16) s.keys &= ~2;
+      const msgs = []; if (f & 2) msgs.push(0x201); if (f & 8) msgs.push(0x204); if ((f & 1) || !msgs.length) msgs.unshift(0x200); if (f & 4) msgs.push(0x202); if (f & 16) msgs.push(0x205);   // WM_MOUSEMOVE, WM_LBUTTONDOWN, WM_RBUTTONDOWN, WM_LBUTTONUP, WM_RBUTTONUP
+      const oks = msgs.map(m => p.postMouse(s.child, m, m === 0x202 ? s.keys & ~1 : m === 0x205 ? s.keys & ~2 : s.keys, sx, sy));
+      s.fed++; if (oks.some(o => !o)) s.lost = (s.lost || 0) + 1;
+      if (this.lagLog) this.lagLog.push({ k: 'stroke-fed', f, x: sx, y: sy, ok: oks, t: Date.now() });
+    }
+    if (!s.ev.length && s.done && !waiting) { this.rs = null; return this.feedStroke(); }
+    return true;
   }
   /** the screen's mode, DAC and cursor sprite for the page, which shows the screen from the shared memory */
   postScan() {
@@ -966,6 +1045,20 @@ class Machine {
       // (and where it comes from, args[2]: 'remote', another machine's person's, for its cause, ne16.js causeOf)
       case 'run': return this.shellUp().then(() => { const held = this.holdStartup; this.holdStartup = false; p.nextClock = args[1] || null; p.nextOrigin = args[2] || null; try { const r = this.exec(args[0], 1); return typeof r === 'number' ? (r > 32 ? { ok: true } : { err: r }) : r && r.err ? r : { ok: true }; } finally { this.holdStartup = held; p.nextClock = null; p.nextOrigin = null; } });
       case 'effects': return (p.effects || []).slice();   // (what the machine did, with its causes: ne16.js effect)
+      // another machine's person's stroke (or part of one) into the session's object whose window here is root: fed
+      // between this person's own (feedStroke)
+      case 'strokes': {   // (a diagnostic: the strokes of others waiting and being fed, this person's going; with a window, its queue's state)
+        let pending = null; try { pending = p.inputPending(); } catch (e) { pending = String(e); }
+        const h = args[0], q = h ? { posted: p.postedPending(h), input: p.inputPendingFor(h), status: (p.asWindowTask(h, () => p.user16(334, [['w', 0xff]]).dxax) >>> 0).toString(16), child: p.childAt(h, args[1] || 0, args[2] || 0) } : null;
+        return { waiting: (this.strokes || []).map(s => ({ key: s.key, root: s.root, pop: s.pop, ev: s.ev.length, done: s.done, waited: s.waited || 0 })), feeding: this.rs ? { key: this.rs.key, left: this.rs.ev.length, fed: this.rs.fed, lost: this.rs.lost || 0, done: this.rs.done } : null, btn: this.btn || 0, pending, own: this.stroke ? { n: this.stroke.n, ev: this.stroke.ev.length } : null, q };
+      }
+      case 'stroke': {
+        const [key, root, pop, ev, done] = args, q = this.strokes || (this.strokes = []);
+        let s = q.find(x => x.key === key) || (this.rs && this.rs.key === key ? this.rs : null);
+        if (!s) { s = { key, root, pop: pop || null, ev: [], done: false }; q.push(s); }
+        s.ev.push(...(ev || [])); if (done) s.done = true;
+        this.kick(); return true;
+      }
       // (a diagnostic: the input's times in this machine, Date.now() each: a mouse or key event taken from the ring
       // ('mouse-in', 'key-in'), and fed into USER's drivers ('mouse-fed', 'key-fed'); [true] starts recording, [] reads
       // and clears, [false] ends it. The sprite's move the page sees itself: win95.lag())

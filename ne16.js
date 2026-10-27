@@ -1221,6 +1221,38 @@ P.inputPending = function () {
   const fg = this.user16(608).ax;                                                                     // GetForegroundWindow
   return !!this.asWindowTask(fg, () => this.user16(335).ax);                                          // GetInputState
 };
+/** the window under a screen point among a window's descendants (the deepest, whatever other window covers it on
+ *  this screen): the window itself if none */
+P.childAt = function (h, sx, sy) {
+  const u = (o, args) => this.user16(o, args).ax;
+  for (let n = 0; n < 32; n++) {
+    const c = this.clientPoint(h, sx, sy), k = u(191, [['w', h], ['l', u32((c.y << 16) | (c.x & 0xffff))]]);   // ChildWindowFromPoint
+    if (!k || k === h) break;
+    h = k;
+  }
+  return h;
+};
+/** a screen point in a window's client coordinates (ScreenToClient) */
+P.clientPoint = function (h, sx, sy) {
+  if (!this.wbufLin) this.nativeWindows();
+  const a = this.wbufLin + 0x100; this.w16(a, sx & 0xffff); this.w16(a + 2, sy & 0xffff);
+  this.user16(29, [['w', h], ['l', u32((this.wbufSel << 16) + 0x100)]]);                                             // ScreenToClient
+  return { x: (this.r16(a) << 16) >> 16, y: (this.r16(a + 2) << 16) >> 16 };
+};
+/** a mouse message posted to a window as the mouse's own would come (wParam the buttons held, lParam the point in
+ *  its client coordinates), from a screen point */
+P.postMouse = function (h, msg, keys, sx, sy) {
+  const c = this.clientPoint(h, sx, sy);
+  return this.user16(110, [['w', h], ['w', msg], ['w', keys], ['l', u32((c.y << 16) | (c.x & 0xffff))]]).ax;      // PostMessage
+};
+/** whether a posted message waits in the queue of the task owning a window (GetQueueStatus(QS_POSTMESSAGE) asked as it) */
+P.postedPending = function (hwnd) {
+  return !!(this.asWindowTask(hwnd, () => this.user16(334, [['w', 8]]).dxax) & 0x00080000);                      // (the high word: the kinds of message in the queue now)
+};
+/** whether the task owning a window has input in its queue it has not taken yet (GetInputState asked as that task) */
+P.inputPendingFor = function (hwnd) {
+  return !!this.asWindowTask(hwnd, () => this.user16(335).ax);                                        // GetInputState
+};
 /** fn run as the task of the started process that owns a window (as its main thread), the way that process's own
  *  calls for the window run: USER's SetActiveWindow activates only a window of the calling task */
 P.asWindowTask = function (hwnd, fn) {
@@ -1257,6 +1289,54 @@ P.nativeWindows = function () {
   // active window of the task calling here), else the calling task's
   const fg = u(608);                                                                                                  // GetForegroundWindow
   return { list, active: list.some(w => w.hwnd === fg) ? fg : u(60), capture: u(236) };                              // GetActiveWindow, GetCapture
+};
+/** a native window's screen rectangle (null: no such window) */
+P.windowRect = function (h) {
+  if (!this.wbufLin) this.nativeWindows();
+  const u = (o, args) => this.user16(o, args).ax;
+  if (!h || !u(47, [['w', h]])) return null;                                                                       // IsWindow
+  const a = this.wbufLin; u(32, [['w', h], ['l', u32(this.wbufSel << 16)]]);                                       // GetWindowRect
+  const s16 = o => (this.r16(a + o) << 16) >> 16, x = s16(0), y = s16(2);
+  return { x, y, w: s16(4) - x, h: s16(6) - y };
+};
+/** where a person's button press at a screen point goes, for a shared session's input (worker.js strokes): the
+ *  top-level window there (a child's topmost non-child ancestor), the root of its owner chain (the session's object:
+ *  a program's main window), and, for a popup of the object's (a menu, a dialog), its class and title, by which the
+ *  other machines find their own copy of that popup; the press and the rest of the stroke are kept as offsets
+ *  from the top-level window's rectangle, which is the same on every machine */
+P.strokeTarget = function (sx, sy) {
+  const u = (o, args) => this.user16(o, args).ax;
+  let h = u(30, [['l', u32((sy << 16) | (sx & 0xffff))]]);                                                          // WindowFromPoint
+  if (!h) return null;
+  // (a press on a window's caption, its buttons, its borders or its system menu moves, sizes, shows or closes it:
+  // the window's place and state are the session's by the object sync, so the press itself is not)
+  const ht = this.user16(111, [['w', h], ['w', 0x84], ['w', 0], ['l', u32((sy << 16) | (sx & 0xffff))]]).ax;       // SendMessage WM_NCHITTEST
+  if (ht === 2 || ht === 3 || ht === 8 || ht === 9 || (ht >= 10 && ht <= 17) || ht === 20 || ht === 21 || ht === 0xffff) return null;   // HTCAPTION, HTSYSMENU, HTMINBUTTON, HTMAXBUTTON, HTLEFT..HTBOTTOMRIGHT, HTCLOSE, HTHELP, HTERROR
+  for (let n = 0; n < 32; n++) {
+    if (!(this.user16(135, [['w', h], ['w', 0xfff0]]).dxax & 0x40000000)) break;                                   // GWL_STYLE: WS_CHILD
+    const par = u(46, [['w', h]]); if (!par) break; h = par;                                                        // GetParent
+  }
+  let root = h;
+  for (let n = 0; n < 32; n++) { const o = u(262, [['w', root], ['w', 4]]); if (!o) break; root = o; }             // GW_OWNER
+  const r = this.windowRect(h); if (!r) return null;
+  let pop = null;
+  if (h !== root) {
+    const a = this.wbufLin, cl = u(58, [['w', h], ['l', u32(this.wbufSel << 16) + 0x180], ['w', 64]]);             // GetClassName
+    const tl = this.user16(107, [['w', h], ['w', 0x0d], ['w', 160], ['l', u32(this.wbufSel << 16) + 16]]).ax;        // DefWindowProc WM_GETTEXT
+    pop = { cls: cl ? this.readA(a + 0x180, cl) : '', title: tl ? this.readA(a + 16, tl) : '' };
+  }
+  return { hwnd: h, root, x: r.x, y: r.y, pop };
+};
+/** this machine's copy of another machine's popup of an object: the visible window whose owner chain ends at the
+ *  object's window, of that class and title (the topmost of several); null while there is none yet */
+P.findPopup = function (root, pop) {
+  const u = (o, args) => this.user16(o, args).ax;
+  for (const w of this.nativeWindows().list) {
+    if (w.hwnd === root || w.cls !== pop.cls || w.title !== pop.title) continue;
+    let o = w.hwnd; for (let n = 0; o && n < 32; n++) { const p = u(262, [['w', o], ['w', 4]]); if (!p) break; o = p; }
+    if (o === root) return w.hwnd;
+  }
+  return null;
 };
 /** the visible descendants of a native window, front to back as USER links them: rectangle, class, text, control id,
  *  style and enabled state. Edits and combo boxes are asked for their text (WM_GETTEXT); buttons for their check
