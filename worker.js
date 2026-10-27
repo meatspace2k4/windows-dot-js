@@ -8,7 +8,7 @@ self.window = self;
 // the Ethernet segment as this worker has it: its own stations (the card, in the system's machine), and the rest of the
 // segment on the page (the other computer, lanhost.js; other machines' cards), frames passing both ways
 self.W95LAN = { stations: new Set(), frames: 0 };
-importScripts('bridge.js', 'fs.js', 'win32.js', 'gl.js', 'shell32.js', 'system.js', 'claude-exe.js', 'claude-app.js', 'session-dll.js', 'ne16.js', 'vmm.js', 'sound.js', 'lan.js', 'parallel.js', 'netfs.js', 'dyn.js', 'savers.js', 'saver-runtime.js');
+importScripts('bridge.js', 'fs.js', 'win32.js', 'gl.js', 'shell32.js', 'system.js', 'claude-exe.js', 'claude-app.js', 'session-dll.js', 'sesstray-exe.js', 'session-tray.js', 'ne16.js', 'vmm.js', 'sound.js', 'lan.js', 'parallel.js', 'netfs.js', 'dyn.js', 'savers.js', 'saver-runtime.js');
 const B = self.W95Bridge, W = self.W95Win32, { FSError, join, basename, extname } = self.W95FS;
 const b64bytes = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
 const post = (m, tr) => self.postMessage(m, tr || []);
@@ -889,6 +889,12 @@ class Machine {
       })();
       // a command line run as Windows runs one (WinExec, CreateProcess: a 16-bit program or a 32-bit one): a shared
       // session's program, started here as another machine runs it
+      // the other people in a shared session ([{ client, user, color }]), for SESSTRAY.EXE's icons (session-tray.js),
+      // told to its window
+      case 'tray': {
+        self.W95TrayPeople = args[0] || []; const st = self.W95TrayState;
+        return st && st.hwnd ? this.netCall('PostMessageA', [st.hwnd, 0x8005, 0, 0], 'USER32') : false;
+      }
       // (a program another machine runs in a shared session: its clock as of its start there, args[1], ne16.js startClock)
       case 'run': { const held = this.holdStartup; this.holdStartup = false; p.nextClock = args[1] || null; try { const r = this.exec(args[0], 1); return typeof r === 'number' ? (r > 32 ? { ok: true } : { err: r }) : r && r.err ? r : { ok: true }; } finally { this.holdStartup = held; p.nextClock = null; } }
       // a control set as another machine has it: an edit's or combo box's text (WM_SETTEXT), a button's check

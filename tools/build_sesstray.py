@@ -1,0 +1,82 @@
+"""Build SESSTRAY.EXE, the shared session's notification-area program, and write sesstray-exe.js: its file, its code
+recompiled as every program's is (recomp.py) and its metadata, as a program of the system's (W95SYSTEM.programs). It
+is a Win32 GUI image as CLAUDE.EXE is (build_claude.py lays out its PE): its entry calls SESSTRAY.DLL's Start, which
+makes its hidden window through the system's USER32 (session-tray.js), then runs the message loop until WM_QUIT. Its
+window procedure puts each person's icon in the taskbar's notification area as a program does (Shell_NotifyIconA,
+from the program's own code, its message WM_APP+6), tracks a person's menu (TrackPopupMenu, WM_APP+2), and gives
+SESSTRAY.DLL's Handle every other message, DefWindowProcA what it does not answer.
+
+    python3 tools/build_sesstray.py
+"""
+import base64, json, os, struct, subprocess, sys, tempfile
+import build_claude as pe32   # (its PE layout: the import section, the relocations and the headers, for this image's code)
+
+here = os.path.dirname(os.path.abspath(__file__)); root = os.path.dirname(here)
+BASE = 0x00580000      # its load base: a program base of its own (build_system.py PROGRAMS, build_claude.py)
+LOOKUP = 0x07FF2000    # its block table, past CLAUDE.EXE's
+IMPORTS = [('SESSTRAY.DLL', ['Start', 'Handle']), ('USER32.dll', ['GetMessageA', 'TranslateMessage', 'DispatchMessageA', 'DefWindowProcA', 'TrackPopupMenu', 'DestroyMenu']),
+           ('SHELL32.dll', ['Shell_NotifyIconA']), ('KERNEL32.dll', ['ExitProcess'])]
+
+def text(iat):
+    code = bytearray(); fix = []; absfix = []; label = {}
+    def emit(*b): code.extend(b)
+    def call(n): emit(0xFF, 0x15); code.extend(struct.pack('<I', iat[n]))
+    def jcc(op, to): emit(0x0F, op); fix.append((len(code), to)); code.extend(b'\0\0\0\0')
+    def jmp(to): emit(0xE9); fix.append((len(code), to)); code.extend(b'\0\0\0\0')
+    MSG = 0xE4   # [ebp-28]: the MSG
+    emit(0x55, 0x89, 0xE5, 0x83, 0xEC, 0x24)            # push ebp; mov ebp, esp; sub esp, 36
+    emit(0x68); absfix.append((len(code), 'wndproc')); code.extend(b'\0\0\0\0')   # push WndProc
+    call('Start')                                        # Start(WndProc): the window, or 0
+    emit(0x85, 0xC0); jcc(0x84, 'done')
+    label['loop'] = len(code)
+    emit(0x6A, 0, 0x6A, 0, 0x6A, 0, 0x8D, 0x45, MSG, 0x50); call('GetMessageA')   # GetMessageA(&msg, 0, 0, 0)
+    emit(0x85, 0xC0); jcc(0x84, 'done')                  # WM_QUIT
+    emit(0x83, 0xF8, 0xFF); jcc(0x84, 'done')            # -1: an error
+    emit(0x8D, 0x45, MSG, 0x50); call('TranslateMessage')
+    emit(0x8D, 0x45, MSG, 0x50); call('DispatchMessageA')
+    jmp('loop')
+    label['done'] = len(code)
+    emit(0x6A, 0); call('ExitProcess'); emit(0xC3)
+    # WndProc(hwnd, msg, wp, lp)
+    label['wndproc'] = len(code)
+    emit(0x55, 0x89, 0xE5, 0x83, 0xEC, 0x04)            # push ebp; mov ebp, esp; sub esp, 4
+    # WM_APP+6 (NIM_ in wp, a NOTIFYICONDATA at lp): a person's icon added, changed or taken from the notification area
+    emit(0x81, 0x7D, 0x0C); code.extend(struct.pack('<I', 0x8006)); jcc(0x85, 'popup')
+    emit(0xFF, 0x75, 0x14, 0xFF, 0x75, 0x10); call('Shell_NotifyIconA')   # push lp; push wp
+    emit(0xC9, 0xC2, 0x10, 0x00)                         # leave; ret 16 (its answer)
+    # WM_APP+2 (the menu in wp, the screen point at [lp], [lp+4]): a person's menu, tracked as a program tracks one; its
+    # choice arrives as WM_COMMAND, and the menu is destroyed after
+    label['popup'] = len(code)
+    emit(0x81, 0x7D, 0x0C); code.extend(struct.pack('<I', 0x8002)); jcc(0x85, 'handle')
+    emit(0x8B, 0x45, 0x14)                               # mov eax, [ebp+20]
+    emit(0x6A, 0x00, 0xFF, 0x75, 0x08, 0x6A, 0x00, 0xFF, 0x70, 0x04, 0xFF, 0x30, 0x6A, 0x02, 0xFF, 0x75, 0x10)   # push 0; push hwnd; push 0; push y; push x; push TPM_RIGHTBUTTON; push menu
+    call('TrackPopupMenu')
+    emit(0xFF, 0x75, 0x10); call('DestroyMenu')
+    emit(0x31, 0xC0, 0xC9, 0xC2, 0x10, 0x00)            # xor eax, eax; leave; ret 16
+    label['handle'] = len(code)
+    emit(0x8D, 0x45, 0xFC, 0x50)                         # lea eax, [ebp-4]; push eax (&result)
+    for off in (0x14, 0x10, 0x0C, 0x08): emit(0xFF, 0x75, off)   # push lp, wp, msg, hwnd
+    call('Handle')
+    emit(0x85, 0xC0); jcc(0x84, 'default')
+    emit(0x8B, 0x45, 0xFC, 0xC9, 0xC2, 0x10, 0x00)      # mov eax, [ebp-4]; leave; ret 16
+    label['default'] = len(code)
+    for off in (0x14, 0x10, 0x0C, 0x08): emit(0xFF, 0x75, off)
+    call('DefWindowProcA')
+    emit(0xC9, 0xC2, 0x10, 0x00)                         # leave; ret 16
+    for at, to in fix: struct.pack_into('<i', code, at, label[to] - (at + 4))
+    for at, to in absfix: struct.pack_into('<I', code, at, BASE + pe32.TEXT_RVA + label[to])
+    return bytes(code), [at for at, _ in absfix]
+
+if __name__ == '__main__':
+    pe32.BASE, pe32.IMPORTS, pe32.text = BASE, IMPORTS, text   # (this image's base, imports and code in CLAUDE.EXE's layout)
+    os.environ['RECOMP_SHARED'] = '1'   # (the machines' memory is shared, as build_system.py builds every module)
+    with tempfile.TemporaryDirectory() as tmp:
+        exe = os.path.join(tmp, 'sesstray.exe'); open(exe, 'wb').write(pe32.pe())
+        out = os.path.join(tmp, 'sesstray')
+        subprocess.run([sys.executable, os.path.join(here, 'recomp.py'), exe, out, '--base', hex(BASE), '--lookup', hex(LOOKUP)], check=True)
+        b64 = lambda p: base64.b64encode(open(p, 'rb').read()).decode()
+        entry = {'file': b64(exe), 'wasm': b64(out + '.wasm'), 'meta': json.load(open(out + '.json'))}
+    with open(os.path.join(root, 'sesstray-exe.js'), 'w') as f:
+        f.write('// Generated by tools/build_sesstray.py: SESSTRAY.EXE, a program of the system\'s (system.js W95SYSTEM.programs)\n')
+        f.write(f"window.W95SYSTEM.programs['SESSTRAY.EXE'] = {json.dumps(entry)};\n")
+    print('sesstray-exe.js:', len(entry['file']), 'bytes of image (base64),', len(entry['meta']['blocks']), 'blocks')

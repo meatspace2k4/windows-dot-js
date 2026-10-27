@@ -834,7 +834,7 @@ function bootDisk() {
   // a shared session's (shared.js): the changes other people's machines made while this one started apply from here
   if (host.shared && window.W95Shared) {
     const S = window.W95Shared; S.ready(fs);
-    S.watch(list => { if (S.isHost()) for (const p of list) profileHome(p.user); dirty(); });   // (everyone's profile on the session's C:)
+    S.watch(peopleChanged);   // (who is here: their icons in the notification area, a notice as one comes or goes)
   }
 }
 
@@ -3369,7 +3369,7 @@ async function nativeProgram(bytes) {
 // the files the bundle carries for programs replace the placeholders an older disk has for them
 function installPrograms() {
   const stub = exeStub(), S = window.W95SYSTEM || {};
-  const OURS = new Set(['CLAUDE.EXE']);   // (a program of this project's: its file is the one its translation is of, kept current)
+  const OURS = new Set(['CLAUDE.EXE', 'SESSTRAY.EXE']);   // (a program of this project's: its file is the one its translation is of, kept current)
   const put = (path, b64) => {
     let cur = null; try { cur = fs.readFile(path); } catch (_) { /* not there */ }
     const want = OURS.has(basename(path).toUpperCase()) ? b64bytes(b64) : null;
@@ -3585,6 +3585,12 @@ class RemoteApp extends NativeApp {
       // MPR loaded in the system's machine (or no network client): the shell's network calls go ahead (netBoot)
       case 'mpr': this.mprUp = m.up; if (this.mprReady) { this.mprReady(m.up); this.mprReady = null; } return;
       case 'session': sessionCommand(m.op); return;   // (Export or Import Session, from the Start menu: SESSION.DLL)
+      case 'trayWhere': {   // (Where Is, from a person's icon: SESSTRAY.DLL)
+        const who = window.W95Shared && window.W95Shared.people().find(p => p.client === m.client);
+        if (who && who.x == null) { peerNotes.push({ text: `${who.user || 'Guest'} has not moved their pointer yet`, until: Date.now() + 4000 }); setTimeout(dirty, 4100); }
+        else peerWhere = { client: m.client, until: Date.now() + 3000 };
+        dirty(); return;
+      }
       // a console program's output, and its end, to the MS-DOS machine that is its console
       case 'conOut': { const c = consoles.get(m.id); if (c) { c.conWrite(m.text); dirty(); } return; }
       case 'mic': { if (window.W95Mic) window.W95Mic.set(!!m.on, (samples, rate) => this.worker.postMessage({ t: 'micIn', samples, rate }, [samples.buffer])); return; }   // (the sound card capturing: the microphone opened, or let go)
@@ -4541,17 +4547,51 @@ function logonChanged(o) {
   if (!v || v.toLowerCase() === String(S.logon.user).toLowerCase()) return false;
   S.logOff(v); return true;
 }
-// the pointers of the other people in a shared session (shared.js), each an arrow with their name beside it, over the
-// screen as this person's own is
+// ---- the other people in a shared session, in the OS's own GUI: each one's icon in the taskbar's notification area
+// (SESSTRAY.EXE, session-tray.js), their pointer with their name in their colour, a notice by the notification area
+// as one comes or goes, and their pointer marked when Where Is is chosen from their icon's menu
+const PEER_COLORS = [[0, 0, 128], [128, 0, 0], [0, 128, 0], [128, 0, 128], [0, 128, 128], [128, 128, 0], [0, 0, 255], [255, 0, 0]];
+/** a person's colour, by their machine: the same on every machine */
+function peerColor(client) { let h = 0; for (const ch of String(client)) h = (h * 31 + ch.charCodeAt(0)) >>> 0; return PEER_COLORS[h % PEER_COLORS.length]; }
+const peerNotes = []; let peerSeen = null, peerWhere = null, trayStarted = false;
+function peopleChanged(list) {
+  const now = Date.now(), names = new Map(list.map(p => [p.client, p.user || 'Guest']));
+  if (peerSeen) {
+    for (const [c, u] of names) if (!peerSeen.has(c)) peerNotes.push({ text: `${u} joined the session`, until: now + 5000 });
+    for (const [c, u] of peerSeen) if (!names.has(c)) peerNotes.push({ text: `${u} left the session`, until: now + 5000 });
+    if (peerNotes.length) setTimeout(dirty, 5100);
+  }
+  peerSeen = names; trayPeople(); dirty();
+}
+/** who is here, for the notification area's icons; SESSTRAY.EXE started the first time, once the shell is up */
+function trayPeople() {
+  const S = window.W95Shared, a = sysApp; if (!S || !a || !a.alive || !osCaught) return;
+  a.cmd('tray', [S.people().map(p => ({ client: p.client, user: p.user || 'Guest', color: peerColor(p.client) }))]).catch(() => {});
+  if (!trayStarted) { trayStarted = true; a.cmd('run', ['SESSTRAY.EXE']).catch(() => { trayStarted = false; }); }
+}
+// the pointers of the other people in a shared session (shared.js), each an arrow with their name beside it in their
+// colour, over the screen as this person's own is
 function drawPeers() {
   const S = window.W95Shared; if (!S || !window.W95HOST || !window.W95HOST.shared) return;
-  const c = CUR.arrow;
+  const c = CUR.arrow, now = Date.now();
   for (const p of S.people()) {
     if (p.x == null || p.y == null) continue;
+    const rgb = `rgb(${peerColor(p.client).join(',')})`;
+    if (peerWhere && peerWhere.client === p.client && now < peerWhere.until) {   // (Where Is: rings round it, closing in)
+      const k = (peerWhere.until - now) % 750 / 750;
+      ctx.save(); ctx.strokeStyle = rgb; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(p.x, p.y, 10 + 30 * k, 0, 2 * Math.PI); ctx.stroke(); ctx.restore();
+      requestAnimationFrame(dirty);
+    }
     if (c) ctx.drawImage(c.i, p.x - c.hx, p.y - c.hy);
-    const label = p.user || 'Guest', tw = textW(label) + 6, tx = clamp(p.x + 12, 0, W - tw), ty = clamp(p.y + 18, 0, H - 17);
-    fill(tx, ty, tw, 17, K.tip); edge(tx, ty, tw, 17, K.dk, K.dk); text(label, tx + 3, ty + 2);
+    const label = p.user || 'Guest', tw = textW(label) + 10, tx = clamp(p.x + 12, 0, W - tw), ty = clamp(p.y + 18, 0, H - 17);
+    fill(tx, ty, tw, 17, K.tip); fill(tx, ty, 4, 17, rgb); edge(tx, ty, tw, 17, K.dk, K.dk); text(label, tx + 7, ty + 2);
   }
+  // (the notices: by the notification area, above the taskbar, newest lowest)
+  for (let i = peerNotes.length; i--;) if (peerNotes[i].until <= now) peerNotes.splice(i, 1);
+  peerNotes.slice(-3).reverse().forEach((n, i) => {
+    const tw = textW(n.text) + 6, tx = W - tw - 4, ty = H - 32 - 19 * (i + 1);
+    fill(tx, ty, tw, 17, K.tip); edge(tx, ty, tw, 17, K.dk, K.dk); text(n.text, tx + 3, ty + 2);
+  });
 }
 // the display adapter's hardware cursor: the sprite the program's display driver loaded and placed, overlaid on the
 // whole screen as the CRTC overlays it on scanout (2 bits a pixel: bit 1 keeps the screen, bit 0 inverts it), a
@@ -5232,7 +5272,7 @@ if (sharedNow()) {
 let osCaught = false;
 function osShellUp(list) {
   if (osCaught || !list.some(n => n.cls === 'Progman')) return;
-  osCaught = true; osCatchUp().then(osSoon);
+  osCaught = true; osCatchUp().then(osSoon); trayPeople();
 }
 
 // ---------------------------------------------------------------- scripting

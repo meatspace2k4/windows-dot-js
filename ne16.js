@@ -1141,7 +1141,7 @@ P.replyAwaited = function () {
  *  contents of their edits, combo boxes and check boxes and radio buttons */
 // (the shell's and the system's own, and Setup's first-run programs, which each machine runs, or has run, itself)
 // (Explorer's folder windows are the session's too: `folder`, opened elsewhere as the shell opens one)
-const WORLD_SKIP = new Set(['EXPLORER.EXE', 'MSGSRV32.EXE', 'MPREXE.EXE', 'SYSTRAY.EXE', 'MMTASK.TSK', 'RUNONCE.EXE', 'GRPCONV.EXE', 'SETUP.EXE', 'SUWIN.EXE']);
+const WORLD_SKIP = new Set(['EXPLORER.EXE', 'MSGSRV32.EXE', 'MPREXE.EXE', 'SYSTRAY.EXE', 'SESSTRAY.EXE', 'MMTASK.TSK','RUNONCE.EXE', 'GRPCONV.EXE', 'SETUP.EXE', 'SUWIN.EXE']);
 const FOLDER_CLS = /^(CabinetWClass|ExploreWClass)$/;
 P.osWorld = function () {
   const u = (o, args) => this.user16(o, args).ax, procs = [...(this.procs || new Map()).values()];
