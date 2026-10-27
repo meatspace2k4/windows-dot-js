@@ -304,8 +304,9 @@ class Machine {
       if (!q.length || this.btn) return false;
       const s = q[0], now = performance.now();
       // (this person's last events, fed, may not have been taken yet: posted messages are taken before them, so a
-      // stroke posted now would come before this person's release. A moment for them to be taken first)
-      if (now - (this.lastFed || 0) < 60 && now - (s.since || (s.since = now)) < 400) return false;
+      // stroke posted now would come before this person's release. Until the moves fed have been taken, ne16.js
+      // hookTaken, or 400 ms)
+      if ((this.movesFed || 0) > (p.movesTaken || 0) && now - (this.lastFed || 0) < 100 && now - (s.since || (s.since = now)) < 400) return false;
       let h = s.root;
       if (s.pop) { h = p.findPopup(s.root, s.pop); if (!h) { if ((s.waited = (s.waited || 0) + 1) < 120) return true; q.shift(); return false; } }   // (its popup not up here yet: this person's input waits a while for it)
       const r = p.windowRect(h);
@@ -1061,7 +1062,7 @@ class Machine {
       case 'strokes': {   // (a diagnostic: the strokes of others waiting and being fed, this person's going; with a window, its queue's state)
         let pending = null; try { pending = p.inputPending(); } catch (e) { pending = String(e); }
         const h = args[0], q = h ? { posted: p.postedPending(h), input: p.inputPendingFor(h), status: (p.asWindowTask(h, () => p.user16(334, [['w', 0xff]]).dxax) >>> 0).toString(16), child: p.childAt(h, args[1] || 0, args[2] || 0) } : null;
-        return { waiting: (this.strokes || []).map(s => ({ key: s.key, root: s.root, pop: s.pop, ev: s.ev.length, done: s.done, waited: s.waited || 0 })), feeding: this.rs ? { key: this.rs.key, left: this.rs.ev.length, fed: this.rs.fed, lost: this.rs.lost || 0, done: this.rs.done } : null, btn: this.btn || 0, pending, own: this.stroke ? { n: this.stroke.n, ev: this.stroke.ev.length } : null, q };
+        return { waiting: (this.strokes || []).map(s => ({ key: s.key, root: s.root, pop: s.pop, ev: s.ev.length, done: s.done, waited: s.waited || 0 })), feeding: this.rs ? { key: this.rs.key, left: this.rs.ev.length, fed: this.rs.fed, lost: this.rs.lost || 0, done: this.rs.done } : null, btn: this.btn || 0, pending, own: this.stroke ? { n: this.stroke.n, ev: this.stroke.ev.length } : null, q, taken: p.movesTaken || 0, movesFed: this.movesFed || 0, mouseq: this.mouseq.length };
       }
       case 'stroke': {
         const [key, root, pop, ev, done] = args, q = this.strokes || (this.strokes = []);

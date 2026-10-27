@@ -1224,12 +1224,16 @@ P.inputPending = function () {
 /** USER's DispatchMessage (#114) watched at its entry: the mouse moves the programs take, counted (movesTaken),
  *  which paces the moves of a drag going in (worker.js feedMouse: USER keeps only the latest of those waiting) */
 P.hookTaken = function (user) {
-  const at = this.neExport(user, 114); if (!at || !this.selValid(at >>> 16)) return;
-  (this.entryHooks || (this.entryHooks = new Map())).set(u32(this.selBase(at >>> 16) + (at & 0xffff)), function () {
-    const sp = this.selBase(this.cpu.ss.value) + (this.cpu.esp.value & 0xffff), off = this.r16(sp + 4), seg = this.r16(sp + 6);   // (the far return, then lpMsg)
-    if (this.selValid(seg) && this.r16(this.selBase(seg) + off + 2) === 0x200) this.movesTaken = (this.movesTaken || 0) + 1;   // WM_MOUSEMOVE
-    return undefined;   // (USER's own code goes on)
-  });
+  // (#114 for a Windows program; #822, DispatchMessage32, for a Win32 one, whose USER32 hands USER a 32-bit MSG:
+  // hwnd a dword, then the message)
+  for (const [ord, msgAt] of [[114, 2], [822, 4]]) {
+    const at = this.neExport(user, ord); if (!at || !this.selValid(at >>> 16)) continue;
+    (this.entryHooks || (this.entryHooks = new Map())).set(u32(this.selBase(at >>> 16) + (at & 0xffff)), function () {
+      const sp = this.selBase(this.cpu.ss.value) + (this.cpu.esp.value & 0xffff), off = this.r16(sp + 4), seg = this.r16(sp + 6);   // (the far return, then lpMsg)
+      if (this.selValid(seg) && this.r16(this.selBase(seg) + off + msgAt) === 0x200) this.movesTaken = (this.movesTaken || 0) + 1;   // WM_MOUSEMOVE
+      return undefined;   // (USER's own code goes on)
+    });
+  }
 };
 /** where USER's cursor is (GetCursorPos), for the pointer's hot spot in its image (null inside a call) */
 P.cursorPos = function () {
