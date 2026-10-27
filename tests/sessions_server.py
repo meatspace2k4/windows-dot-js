@@ -1,34 +1,19 @@
-"""tools/sessions.py, run by tests/sessions.test.mjs: a session's state as ops build it, what a joiner gets, each joiner's
-own block of node ids, presence and pointers, the folder it is kept in, the size cap, and the HTTP side end to end
-(the state, two people's event streams, an op one posts reaching the other)."""
-import base64, http.client, http.server, json, os, shutil, sys, tempfile, threading, time
+"""tools/sessions.py, run by tests/sessions.test.mjs: a session's objects and intents as ops build it, what a joiner gets,
+presence and pointers, the folder its intents are kept in, and the HTTP side end to end (the state, two people's event
+streams, an op one posts reaching the other)."""
+import http.client, http.server, json, os, shutil, sys, tempfile, threading
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'tools'))
 import sessions as S
 
-b64 = lambda b: base64.b64encode(b).decode()
-
-# ---- state from ops: a folder, a file in it with bytes, resized; the registry; removal takes the subtree
+# ---- intents: by the setting they make, the last one the setting; ops without a key or of no kind refused
 s = S.Session('t')
-s.op('a', 'disk', {'op': 'node', 'sid': 0, 'parent': -1, 'name': '', 'dir': True})
-s.op('a', 'disk', {'op': 'node', 'sid': 5, 'parent': 0, 'name': 'DOCS', 'short': 'DOCS', 'dir': True, 'ord': 1})
-s.op('a', 'disk', {'op': 'node', 'sid': 6, 'parent': 5, 'name': 'a.txt', 'short': 'A.TXT', 'dir': False, 'ord': 2})
-s.op('a', 'disk', {'op': 'data', 'sid': 6, 'offset': 0, 'bytes': b64(b'hello world')})
-s.op('a', 'disk', {'op': 'data', 'sid': 6, 'offset': 6, 'bytes': b64(b'there')})
-s.op('a', 'disk', {'op': 'size', 'sid': 6, 'size': 11})
-s.op('b', 'reg', {'op': 'set', 'path': 'hkcu\\x', 'name': 'v', 'value': {'type': 1, 'data': b64(b'1\0')}})
-s.op('b', 'reg', {'op': 'key', 'path': 'hkcu\\x', 'name': 'X'})
+s.op('a', 'intent', {'key': 'spi:17', 'kind': 'spi', 'action': 17, 'ui': 0, 'flags': 3})
+s.op('b', 'intent', {'key': 'spi:17', 'kind': 'spi', 'action': 17, 'ui': 1, 'flags': 3})
+s.op('a', 'intent', {'key': 'ini:SYSTEM.INI:boot:scrnsave.exe', 'kind': 'ini', 'file': 'SYSTEM.INI', 'app': 'boot', 'name': 'SCRNSAVE.EXE', 'value': 'C:\\WINDOWS\\SYSTEM\\3DTEXT~1.SCR'})
 st = s.state()
-assert st['seq'] == 8
-f = next(n for n in st['disk']['nodes'] if n['sid'] == 6)
-assert base64.b64decode(f['data']) == b'hello there', f
-assert st['registry'] == [['hkcu\\x', [['v', {'type': 1, 'data': b64(b'1\0')}]], 'X']], st['registry']
-# each joiner its own block of node ids
-assert s.state()['sidBase'] == st['sidBase'] + S.SID_BLOCK
-s.op('a', 'disk', {'op': 'remove', 'sid': 5})
-assert [n['sid'] for n in s.state()['disk']['nodes']] == [0]
-s.op('b', 'reg', {'op': 'delkey', 'path': 'hkcu\\x'})
-assert s.state()['registry'] is None
-for bad in [('disk', {'op': 'nope'}), ('nope', {})]:
+assert st['seq'] == 3 and st['intents']['spi:17']['ui'] == 1 and len(st['intents']) == 2, st
+assert 'disk' not in st and 'registry' not in st, 'no disk or registry kept'
+for bad in [('intent', {'kind': 'spi'}), ('obj', {'v': {}}), ('disk', {'op': 'node'}), ('reg', {'op': 'set'}), ('nope', {})]:
     try: s.op('a', *bad); raise AssertionError('accepted ' + repr(bad))
     except ValueError: pass
 
@@ -38,58 +23,45 @@ q1 = s.join('c1', 'Guest'); assert q1.get_nowait() == ('people', {'people': [{'c
 q2 = s.join('c2', 'Ann'); q1.get_nowait(); q2.get_nowait()
 assert s.pointer('c2', 10, 20) and q1.get_nowait()[1]['people'][1] == {'client': 'c2', 'user': 'Ann', 'x': 10, 'y': 20}
 assert not s.pointer('nobody', 1, 1)
-s.op('c1', 'disk', {'op': 'label', 'label': 'W95', 'serial': 7})
+s.op('c1', 'intent', {'key': 'spi:15', 'kind': 'spi', 'action': 15, 'ui': 60, 'flags': 3})
 ev = q2.get_nowait()
 while ev[0] != 'op': ev = q2.get_nowait()
-assert ev == ('op', {'seq': 1, 'client': 'c1', 'kind': 'disk', 'op': {'op': 'label', 'label': 'W95', 'serial': 7}})
+assert ev == ('op', {'seq': 1, 'client': 'c1', 'kind': 'intent', 'op': {'key': 'spi:15', 'kind': 'spi', 'action': 15, 'ui': 60, 'flags': 3}})
 s.leave('c2', q2); assert [p['client'] for p in s.roster()] == ['c1']
 # a batch in order; someone rejoining after seq 1 is replayed what came after; one further back than the log reloads
-assert s.ops('c1', [{'kind': 'reg', 'op': {'op': 'key', 'path': 'hkcu\\a'}}, {'kind': 'reg', 'op': {'op': 'key', 'path': 'hkcu\\b'}}]) == 3
+assert s.ops('c1', [{'kind': 'obj', 'op': {'id': 'A', 'v': {}}}, {'kind': 'obj', 'op': {'id': 'B', 'v': {}}}]) == 3
 q3 = s.join('c3', 'Cy', since=1); q3.get_nowait()
 assert [q3.get_nowait()[1]['seq'] for _ in range(2)] == [2, 3]
 keep_log = S.LOG_KEEP; S.LOG_KEEP = 1
-s.op('c1', 'reg', {'op': 'key', 'path': 'hkcu\\c'})
+s.op('c1', 'obj', {'id': 'C', 'v': {}})
 q4 = s.join('c4', 'Di', since=1); q4.get_nowait(); assert q4.get_nowait() == ('reload', {'seq': 4})
 S.LOG_KEEP = keep_log
 q5 = s.join('c5', 'Ed', since=4); q5.get_nowait(); assert q5.empty(), 'up to date: nothing more'
 
 # ---- the OS's objects: in the state by id, sent to everyone in order; one closed kept as closed (None); all gone when
-# no machine runs the session; the owner the first person to start it
+# no machine runs the session, the intents kept
 s = S.Session('w')
-a = s.start('a', 'Bob'); assert a['owner'] == 'Bob' and a['world'] == {}
+a = s.start('a', 'Bob'); assert a['world'] == {} and a['running'] is False
 qa = s.join('a', 'Bob'); qb = s.join('b', 'Ann')
 for q in (qa, qb):
     while not q.empty(): q.get_nowait()
 s.op('a', 'obj', {'id': 'NOTEPAD.EXE#0/Notepad#0', 'v': {'x': 1}})
 assert qb.get_nowait() == ('op', {'seq': 1, 'client': 'a', 'kind': 'obj', 'op': {'id': 'NOTEPAD.EXE#0/Notepad#0', 'v': {'x': 1}}})
-b = s.start('b', 'Ann'); assert b['owner'] == 'Bob' and b['world'] == {'NOTEPAD.EXE#0/Notepad#0': {'x': 1}}
+b = s.start('b', 'Ann'); assert b['running'] is True and b['world'] == {'NOTEPAD.EXE#0/Notepad#0': {'x': 1}}
 s.op('b', 'obj', {'id': 'NOTEPAD.EXE#0/Notepad#0', 'v': None}); assert s.state()['world'] == {'NOTEPAD.EXE#0/Notepad#0': None}
-try: s.op('a', 'obj', {'v': {}}); raise AssertionError('an object with no id')
-except ValueError: pass
-s.leave('a', qa); s.leave('b', qb); assert s.state()['world'] == {}
+s.op('b', 'intent', {'key': 'spi:17', 'kind': 'spi', 'action': 17, 'ui': 1, 'flags': 3})
+s.leave('a', qa); s.leave('b', qb); assert s.state()['world'] == {} and 'spi:17' in s.state()['intents']
 
-# ---- kept in its folder: a new server has it
+# ---- kept in its folder: a new server has its intents, not its objects
 root = tempfile.mkdtemp()
 try:
     a = S.Sessions(root); t = a.get('keep')
-    t.op('a', 'disk', {'op': 'node', 'sid': 9, 'parent': 0, 'name': 'k', 'dir': False})
-    t.op('a', 'disk', {'op': 'data', 'sid': 9, 'offset': 0, 'bytes': b64(b'kept')})
-    t.op('a', 'reg', {'op': 'set', 'path': 'hklm\\y', 'name': 'n', 'value': {'type': 4, 'data': b64(b'\1\0\0\0')}})
-    assert t.state()['sidBase'] == S.SID_BLOCK
+    t.op('a', 'intent', {'key': 'spi:20', 'kind': 'spi', 'action': 20, 'ui': 0, 'str': 'C:\\WINDOWS\\CLOUDS.BMP', 'flags': 3})
+    t.op('a', 'obj', {'id': 'X', 'v': {}})
     t.save()
-    b = S.Sessions(root).get('keep'); st = b.state()
-    assert base64.b64decode(next(n for n in st['disk']['nodes'] if n['sid'] == 9)['data']) == b'kept'
-    assert st['seq'] == 3 and st['registry'][0][0] == 'hklm\\y'
-    assert st['sidBase'] > S.SID_BLOCK, 'blocks go on from where the last server left them'
+    st = S.Sessions(root).get('keep').state()
+    assert st['intents']['spi:20']['str'] == 'C:\\WINDOWS\\CLOUDS.BMP' and st['world'] == {} and st['seq'] == 2, st
 finally: shutil.rmtree(root)
-
-# ---- the cap: bytes past it refused; bad ids refused
-S.MAX_BYTES, keep = 16, S.MAX_BYTES
-try:
-    s = S.Session('cap'); s.op('a', 'disk', {'op': 'node', 'sid': 1, 'parent': 0, 'name': 'f', 'dir': False})
-    try: s.op('a', 'disk', {'op': 'data', 'sid': 1, 'offset': 0, 'bytes': b64(b'x' * 32)}); raise AssertionError('over the cap')
-    except ValueError: pass
-finally: S.MAX_BYTES = keep
 for bad in ['', '../x', 'a/b', 'x' * 65]:
     try: S.Sessions().get(bad); raise AssertionError('id ' + bad)
     except ValueError: pass
@@ -117,19 +89,20 @@ def stream(client, user):
             elif line.startswith('data: '): data = json.loads(line[6:])
             elif line == '' and ev: return ev, data
     return next_event
-assert req('GET', '/__session/room/state')[1]['disk'] is None
+assert req('GET', '/__session/room/state')[1] == {'seq': 0, 'world': {}, 'intents': {}}
 ann, bob = stream('c1', 'Ann'), stream('c2', 'Bob')
 assert ann()[0] == 'people'
 while True:
     ev, d = ann()
     if ev == 'people' and len(d['people']) == 2: break
-assert req('POST', '/__session/room/op', {'client': 'c2', 'kind': 'reg', 'op': {'op': 'key', 'path': 'hkcu\\z'}}) == (200, {'seq': 1})
+i = {'key': 'spi:17', 'kind': 'spi', 'action': 17, 'ui': 1, 'flags': 3}
+assert req('POST', '/__session/room/op', {'client': 'c2', 'kind': 'intent', 'op': i}) == (200, {'seq': 1})
 while True:
     ev, d = ann()
     if ev == 'op': break
-assert d == {'seq': 1, 'client': 'c2', 'kind': 'reg', 'op': {'op': 'key', 'path': 'hkcu\\z'}}
+assert d == {'seq': 1, 'client': 'c2', 'kind': 'intent', 'op': i}
 assert req('POST', '/__session/room/pointer', {'client': 'c1', 'x': 3, 'y': 4}) == (200, {'ok': True})
-assert req('POST', '/__session/room/op', {'client': 'c2', 'kind': 'disk', 'op': {'op': 'bad'}})[0] == 400
+assert req('POST', '/__session/room/op', {'client': 'c2', 'kind': 'disk', 'op': {'op': 'node'}})[0] == 400
 assert req('GET', '/__sessions')[1] == [{'id': 'room', 'people': 2, 'seq': 1}]
 assert req('GET', '/__session/..%2Fx/state')[0] == 400
 srv.shutdown()

@@ -1,9 +1,8 @@
-// A Windows 95 session shared with other people through the server (tools/sessions.py): the VM's state, C: and the
-// registry, which every person's page runs Windows on. Nothing is streamed. C: and the registry are loaded from the
-// server; each change this machine makes goes to it (the store's write-through operations, as host-web.js writes them
-// to IndexedDB); each change another person's machine makes arrives over the session's events and is applied here
-// (fs.js applyStore; the registry's regApply, which tells this page's machines too). Who else is here, and where
-// their pointers are, come with the events too (W95Shared.people).
+// A Windows 95 session shared with other people through the server (tools/sessions.py). Nothing is streamed and no
+// disk is copied: every person's page runs its own Windows on its own C: and registry (this browser's, in memory while
+// in the session), and what a person does goes to the others as what they did: the OS's objects (a program's window,
+// its place, its controls) and intents (a setting made, as the call that made it), which each machine's Windows makes
+// itself. Who else is here, and where their pointers are, come with the session's events too (W95Shared.people).
 //
 // Which session, and as whom: ?session= and ?user= on the URL (for testing, and a link to join someone), else the
 // logon this browser keeps (localStorage w95.logon: { user, session }), else Guest in the shared session 'guest'.
@@ -36,48 +35,17 @@
     return mine;
   };
 
-  // ---- the wire: bytes as base64 in JSON
-  const b64 = u8 => { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(s); };
-  const unb64 = s => Uint8Array.from(atob(s || ''), c => c.charCodeAt(0));
-  // (HKEY_CURRENT_USER is this person's own key under HKEY_USERS, as with Windows 95's user profiles: kept on the server
-  // as hku\<user>, the page's HKCU; another person's is theirs, under their name)
-  // (every machine in a session runs as its owner, the person whose machine started it: the same HKCU and folders on
-  // each, so each starts and runs the same; the person at each is their logon, on their pointer)
-  let owner = null;
-  const me = () => 'hku\\' + (owner || logon.user).toLowerCase();
-  const toServer = p => (p === 'hkcu' || p.startsWith('hkcu\\') ? me() + p.slice(4) : p);
-  const fromServer = p => (p === me() || p.startsWith(me() + '\\') ? 'hkcu' + p.slice(me().length) : p);
-  const regOut = o => { const r = { ...o, path: toServer(o.path) }; return o.value ? { ...r, value: { type: o.value.type, data: b64(o.value.data) } } : r; };
-  const regIn = o => { const r = { ...o, path: fromServer(o.path) }; return o.value ? { ...r, value: { type: o.value.type, data: unb64(o.value.data) } } : r; };
-  /** the session's registry as this person's page has it: their profile as HKCU; a person new here starts from the
-   *  default user's (hku\.default), or else from a profile someone made before them, as Windows copies the default */
-  const regLoad = rows => {
-    const prefix = me(), mine = rows.some(([p]) => p === prefix || p.startsWith(prefix + '\\'));
-    let from = mine ? prefix : rows.some(([p]) => p === 'hku\\.default' || p.startsWith('hku\\.default\\')) ? 'hku\\.default' : null;
-    if (!from) { const any = rows.find(([p]) => /^hku\\[^\\]+/.test(p)); from = any ? any[0].match(/^hku\\[^\\]+/)[0] : null; }
-    const out = rows.filter(([p]) => p !== prefix && !p.startsWith(prefix + '\\'));
-    if (from) for (const [p, v, n] of rows) {
-      if (p !== from && !p.startsWith(from + '\\')) continue;
-      const local = 'hkcu' + p.slice(from.length); out.push([local, v, n]);
-      // (a profile copied for this person: theirs on the server too, whole, before anything they change goes there)
-      if (!mine) { send('reg', regOut(n ? { op: 'key', path: local, name: n } : { op: 'key', path: local })); for (const [k, val] of v) send('reg', regOut({ op: 'set', path: local, name: k, value: val })); }
-    }
-    return out;
-  };
-  // (each machine's own, neither sent nor taken from others: who is logged on (Network\Logon's username), and the
-  // display's mode, which follows each page's own size (Display\Settings' Resolution, win95.js bootMode))
-  const ownValue = o => (o.path === 'hklm\\network\\logon' && String(o.name || '').toLowerCase() === 'username')
-    || (/\\display\\settings$/.test(o.path || '') && String(o.name || '').toLowerCase() === 'resolution');
   const url = s => `__session/${encodeURIComponent(logon.session)}/${s}`;
 
-  // ---- what this machine changes, to the server in order (one post at a time, the ones made meanwhile together): its
-  // C: and registry (the store's write-through) and its OS objects ('obj': a program's window, its place, its controls'
-  // contents, win95.js). A person's action runs on their machine only; what it changes goes to the others from here.
-  // While a change is waiting to go, a newer state of the same object replaces it
+  // ---- what this machine's person does, to the server in order (one post at a time, the ones made meanwhile together):
+  // its OS objects ('obj': a program's window, its place, its controls' contents, win95.js) and its intents ('intent':
+  // a setting made, as the call that made it, ne16.js hookIntents). Each machine's disk and registry are its own: what
+  // an intent changes there, each machine's Windows writes itself. While one is waiting to go, a newer state of the same
+  // object, or a newer intent for the same setting, replaces it
   let outbox = [], posting = false, quiet = false;
   const send = (kind, op) => {
     if (quiet) return;
-    const same = kind === 'obj' && outbox.find(o => o.kind === 'obj' && o.op.id === op.id);
+    const same = (kind === 'obj' && outbox.find(o => o.kind === 'obj' && o.op.id === op.id)) || (kind === 'intent' && outbox.find(o => o.kind === 'intent' && o.op.key === op.key));
     if (same) same.op = op; else outbox.push({ kind, op });
     flush();
   };
@@ -89,46 +57,37 @@
       .finally(() => { posting = false; flush(); });
   };
 
-  // ---- the store W95HOST has in a shared session (host-web.js's shape)
+  // ---- the store W95HOST has in a shared session (host-web.js's shape): this browser's own C: and registry, kept in
+  // memory while the machine is in the session (Save Session keeps them), the session's people and objects the server's
   const host = (state, base) => ({
     ...base,
-    userName: owner || logon.user,
+    userName: logon.user,
     // (joining: others' machines already run the session, so its programs are theirs to say, not this one's start's)
     shared: { client, session: logon.session, user: logon.user, joining: !!state.running },
-    disk: {
-      sidBase: state.sidBase,
-      load: () => (state.disk ? { ...state.disk, nodes: state.disk.nodes.map(n => (n.dir ? n : { ...n, data: unb64(n.data) })) } : null),
-      node: r => send('disk', { op: 'node', ...r }),
-      remove: sid => send('disk', { op: 'remove', sid }),
-      data: (sid, offset, bytes) => send('disk', { op: 'data', sid, offset, bytes: b64(bytes) }),
-      size: (sid, size) => send('disk', { op: 'size', sid, size }),
-      label: (label, serial) => send('disk', { op: 'label', label, serial }),
-    },
-    registry: {
-      load: () => (state.registry ? regLoad(state.registry.map(([p, vals, n]) => [p, vals.map(([k, v]) => [k, { type: v.type, data: unb64(v.data) }]), n])) : null),
-      op: o => { if (!ownValue(o)) send('reg', regOut(o)); },
-    },
+    disk: { ...base.disk, node() {}, remove() {}, data() {}, size() {}, label() {} },
+    registry: { load: base.registry.load, op() {} },
   });
 
-  // ---- what others change, applied here; who is here
-  let seq = 0, es = null, fs = null, onObj = null;
-  const people = new Map(), watchers = new Set(), pending = [], world = new Map();
-  // another machine's change, in the server's order (its own come back too, and are passed over): to this page's C:
-  // or registry, or an OS object, which win95.js sets this machine's OS to (`onObj`). Before Windows has started here
-  // they wait (`pending`) until `ready`. One numbered past the next expected means some were missed (the connection
-  // dropped): the events are opened again from the last one applied, and the server sends the rest in order
+  // ---- what others do, applied here; who is here
+  let seq = 0, es = null, ready16 = false, onObj = null, onIntent = null;
+  const people = new Map(), watchers = new Set(), pending = [], world = new Map(), intents = new Map();
+  // another machine's, in the server's order (its own come back too, and are passed over): an OS object, which win95.js
+  // sets this machine's OS to (`onObj`), or an intent, which this machine's Windows makes too (`onIntent`). Before
+  // Windows has started here they wait (`pending`) until `ready`. One numbered past the next expected means some were
+  // missed (the connection dropped): the events are opened again from the last one applied, and the server sends the
+  // rest in order
   const apply = m => {
     if (m.seq && seq && m.seq > seq + 1) { catchUp(); return; }
     if (m.seq && m.seq <= seq) return;   // (one already applied, sent again)
     seq = Math.max(seq, m.seq || 0);
     if (m.kind === 'obj') world.set(m.op.id, m.op.v == null ? null : m.op.v);
+    if (m.kind === 'intent') intents.set(m.op.key, m.op);
     if (m.client !== client) deliver(m);
   };
   const deliver = m => {
-    if (!fs) { pending.push(m); return; }
-    if (m.kind === 'disk') fs.applyStore('C', m.op.op === 'data' ? { ...m.op, bytes: unb64(m.op.bytes) } : m.op);
-    else if (m.kind === 'reg' && window.W95Win32 && !ownValue(m.op)) window.W95Win32.regApply(regIn(m.op), 'remote');
-    else if (m.kind === 'obj' && onObj) { try { onObj(m.op.id, m.op.v); } catch (e) { console.warn('[shared] an object could not be set:', e && e.message); } }
+    if (!ready16) { pending.push(m); return; }
+    const to = m.kind === 'obj' ? onObj && (() => onObj(m.op.id, m.op.v)) : m.kind === 'intent' ? onIntent && (() => onIntent(m.op)) : null;
+    if (to) { try { to(); } catch (e) { console.warn('[shared] another machine\'s change could not be made here:', e && e.message); } }
   };
   const catchUp = () => { if (es) { try { es.close(); } catch (_) { /* gone */ } es = null; } listen(); };
   const roster = list => {
@@ -168,15 +127,18 @@
   };
   const start = base => {
     const state = fetchState(); if (!state) return null;
-    seq = state.seq || 0; owner = state.owner || null;
+    seq = state.seq || 0;
     for (const [id, v] of Object.entries(state.world || {})) world.set(id, v);
+    for (const [k, i] of Object.entries(state.intents || {})) intents.set(k, i);
     listen();
     return host(state, base);
   };
   /** an OS object's new state on this machine (null: it is gone), for every other machine */
   const obj = (id, v) => { world.set(id, v == null ? null : v); send('obj', { id, v: v == null ? null : v }); };
-  /** Windows has started here: the changes that came meanwhile are applied now */
-  const ready = files => { fs = files; for (const m of pending.splice(0)) deliver(m); };
+  /** a setting this machine's person made, as the call that made it (ne16.js hookIntents), for every other machine */
+  const intent = i => { intents.set(i.key, i); send('intent', i); };
+  /** Windows has started here: what came meanwhile is made now */
+  const ready = () => { ready16 = true; for (const m of pending.splice(0)) deliver(m); };
 
   // ---- logging off (Shut Down's "Close all programs and log on as a different user"): a name goes to that person's own
   // session (others join it by its id), Guest (or none) to the shared one; the page starts again there
@@ -189,8 +151,9 @@
   };
 
   window.W95Shared = {
-    wanted, start, ready, logon, client, ownSession, remember, logOff, goLocal, pointer, obj,
+    wanted, start, ready, logon, client, ownSession, remember, logOff, goLocal, pointer, obj, intent,
     people: () => [...people.values()], watch: f => { watchers.add(f); return () => watchers.delete(f); },
     seq: () => seq, world: () => new Map(world), onObj: f => { onObj = f; },
+    intents: () => new Map(intents), onIntent: f => { onIntent = f; },
   };
 })();

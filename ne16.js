@@ -269,6 +269,7 @@ P.bootUser16 = function () {
     }
   }
   this.user16Ready = true;
+  this.hookIntents(user);
   this.userStack();
   return user;
 };
@@ -1164,6 +1165,45 @@ P.osWorld = function () {
       x: w.x, y: w.y, w: w.w, h: w.h, min: w.iconic, max: !!u(272, [['w', w.hwnd]]), ask });   // IsZoomed
   }
   return { list: out, area: this.workArea() };   // (and the work area they are placed in, which each machine's own screen sets)
+};
+// ---- a shared session's intents: a setting this machine's person makes, as the call that makes it, which every other
+// machine makes too (worker.js 'intent'), each its own Windows then writing its own registry and INI files and telling
+// its own programs. Only a setting kept (SPIF_UPDATEINIFILE) is one; a thread applying another machine's (remote) makes
+// none. this.onIntent: the machine's (worker.js), given { key, kind, ... }; the key is the setting, the last one wins
+// SystemParametersInfo's settings: by their action, how its parameters are kept (ui: uiParam; str: pvParam a string;
+// mouse: pvParam three ints)
+const SPI_SET = { 4: 'mouse', 11: 'ui', 13: 'ui', 15: 'ui', 17: 'ui', 19: 'ui', 20: 'str', 21: 'str', 23: 'ui', 24: 'ui', 26: 'ui', 29: 'ui', 30: 'ui',
+  32: 'ui', 33: 'ui', 37: 'ui', 75: 'ui', 81: 'ui', 82: 'ui', 85: 'ui', 86: 'ui' };
+/** whether a call now is another machine's intent applied here, or no person's: Windows' own start, before this
+ *  machine's person has pressed a key or a button (personActed, worker.js) writes settings of its own */
+P.intentQuiet = function () { return !this.onIntent || !this.personActed || !this.thread16 || !!this.thread16.remote; };   // (no thread: the host's own, the display's mode for its page)
+/** USER's SystemParametersInfo (#483) watched where another module enters it (win32.js dispatch), once USER is up */
+P.hookIntents = function (user) {
+  const at = this.neExport(user, 483); if (!at) return;
+  (this.entryHooks || (this.entryHooks = new Map())).set(u32(this.selBase(at >>> 16) + (at & 0xffff)), P.spiIntent);
+};
+/** SystemParametersInfo(uiAction, uiParam, pvParam, fWinIni) as it is entered: its words on the stack after the far
+ *  return address (Pascal order: fWinIni first) */
+P.spiIntent = function () {
+  if (P.intentQuiet.call(this)) return;
+  const s = this.selBase(this.cpu.ss.value & 0xffff) + (this.cpu.esp.value & 0xffff);
+  const flags = this.r16(s + 4), pv = this.r32(s + 6), ui = this.r16(s + 10), action = this.r16(s + 12), kind = SPI_SET[action];
+  if (!kind || !(flags & 1)) return;
+  const i = { key: `spi:${action}`, kind: 'spi', action, ui, flags };
+  const lin = pv >>> 16 && this.selValid(pv >>> 16) ? this.lin(pv) : 0;
+  if (kind === 'str') i.str = lin ? this.readA(lin) : null;
+  if (kind === 'mouse') i.ints = lin ? [0, 2, 4].map(o => (this.r16(lin + o) << 16) >> 16) : null;
+  this.onIntent(i);
+};
+/** a far call's caller, for a stand-in: the module its return address is in */
+P.caller16 = function () { const s = this.selBase(this.cpu.ss.value & 0xffff) + (this.cpu.esp.value & 0xffff); return this.neByHandle(this.r16(s + 2)); };
+/** a write to WIN.INI or SYSTEM.INI, the system's settings files, as an intent; not USER's own, which a setting it
+ *  keeps writes (that setting is the intent) */
+P.iniIntent = function (file, app, key, value, by) {
+  if (P.intentQuiet.call(this) || (by && /^(USER|GDI)$/.test(by.name))) return;
+  const f = String(file || 'WIN.INI').split('\\').pop().toUpperCase();
+  if (!/^(WIN|SYSTEM)\.INI$/.test(f) || !app) return;
+  this.onIntent({ key: `ini:${f}:${String(app).toLowerCase()}:${String(key || '').toLowerCase()}`, kind: 'ini', file: f, app, name: key, value });
 };
 /** the desktop's work area, the screen less the taskbar: USER's SystemParametersInfo(SPI_GETWORKAREA), as x, y, w, h */
 P.workArea = function () {
@@ -2543,7 +2583,7 @@ def16('KERNEL', 25, 'l', 'l', () => 0x00ff0000);
 def16('KERNEL', 207, 'w', 'w', () => 0);
 // FatalAppExit(action, message): the program ends with the message
 def16('KERNEL', 137, 'ws', 'v', function (a, msg) { throw new GuestError(`FatalAppExit: ${msg || ''}`); });
-def16('KERNEL', 59, 'sss', 'w', function (app, key, v) { try { window.W95Win32.iniSet(this.fs, 'WIN.INI', app, key, v); return 1; } catch (_) { return 0; } });
+def16('KERNEL', 59, 'sss', 'w', function (app, key, v) { P.iniIntent.call(this, 'WIN.INI', app, key, v, P.caller16.call(this)); try { window.W95Win32.iniSet(this.fs, 'WIN.INI', app, key, v); return 1; } catch (_) { return 0; } });
 def16('KERNEL', 217, 'lpp', 'l', function (hk, sub, out) { return API.ADVAPI32.RegOpenKeyA[1].call(this, hk, sub, out); });
 def16('KERNEL', 218, 'lpp', 'l', function (hk, sub, out) { return API.ADVAPI32.RegCreateKeyA ? API.ADVAPI32.RegCreateKeyA[1].call(this, hk, sub, out) : API.ADVAPI32.RegOpenKeyA[1].call(this, hk, sub, out); });
 def16('KERNEL', 219, 'lp', 'l', function (hk, sub) { return API.ADVAPI32.RegDeleteKeyA[1].call(this, hk, sub); });                // RegDeleteKey
@@ -3988,6 +4028,7 @@ def16('KERNEL', 49, 'wpi', 'w', function (h, buf, n) {                          
 });
 def16('KERNEL', 73, 'w', 'w', function (id) { if (id < 0xc000) return 0; if (this.latoms()) return (id & 0x3fff) << 2; return this.atomTable().byId.has(id) ? id : 0; });     // GetAtomHandle: the atom's entry
 def16('KERNEL', 129, 'ssss', 'w', function (app, key, v, f) {                                         // WritePrivateProfileString
+  P.iniIntent.call(this, f, app, key, v, P.caller16.call(this));
   try { window.W95Win32.iniSet(this.fs, f, app, key === null ? null : key, v); return 1; } catch (_) { return 0; }
 });
 def16('KERNEL', 235, '', 'v', function () {});                                                         // InvalidateNlsCache: nothing cached

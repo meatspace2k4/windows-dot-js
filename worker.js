@@ -154,6 +154,7 @@ class Machine {
       if (this.system) { host.vmTop = 0x0a000000; host.vmPages = 2048; }
       this.proc = new W.Process(this.bytes, prog.module, { ...prog.meta, name: prog.name.replace(/\.EXE$/, '') }, host, this.arg ? `${exe} ${this.arg}` : exe, dlls);
       this.proc.soundQuiet = !!this.quiet;   // (sound.js: the card's output off for the one sound)
+      if (this.system && this.session) this.proc.onIntent = i => post({ t: 'intent', i });   // (a shared session's: ne16.js hookIntents)
       if (this.trace) this.traceOn(this.trace, this.traceNames || undefined);
       if (this.system && !this.proc.trapped && !this.startSystemTask()) throw new Error('MSGSRV32.EXE did not start');
     } catch (e) { console.error(e && e.stack ? e.stack : e); this.exited(-1, e.message); return; }
@@ -236,7 +237,7 @@ class Machine {
   feedMouse() {
     const p = this.proc;
     if (!this.mouseq.length || p.depth || this.ring0()) return;
-    for (const m of this.mouseq.splice(0)) try { p.mouseEvent16(...m); } catch (e) { console.error(e); }
+    for (const m of this.mouseq.splice(0)) try { if (m[0] & 0x2a) p.personActed = true; p.mouseEvent16(...m); } catch (e) { console.error(e); }   // (a button pressed: this machine's person has done something, ne16.js intentQuiet)
   }
   /** the screen's mode, DAC and cursor sprite for the page, which shows the screen from the shared memory */
   postScan() {
@@ -373,7 +374,7 @@ class Machine {
     if (!this.keyq.length || p.depth || this.ring0()) return;   // (the keyboard and mouse drivers report at interrupt time)
     try { if (p.inputPending()) return; } catch (e) { console.error(e); }   // USER has input not yet taken
     for (let n = 0; this.keyq.length && n < 16; n++) {
-      const k = this.keyq.shift();
+      const k = this.keyq.shift(); p.personActed = true;
       try { p.keyEvent16(k[0], k[1] & 0xff, k[2], k[1] > 0xff); } catch (e) { console.error(e); }
     }
   }
@@ -657,9 +658,11 @@ class Machine {
   /** exports called one after another on one new thread of this process, each [dll, name, dword or string args]; their
    *  results, null when one is not there. The thread waits as a program's thread does (a SendMessage to another
    *  thread's window waits at its own top level), where a call made from the host would wait inside the host's call */
-  netBatch(calls) {
+  netBatch(calls, remote = false) {
+    // (KERNEL32's are this personality's, through their thunks; remote: the thread applies another machine's intent,
+    // and makes none of its own, ne16.js intentQuiet)
     const p = this.proc, le32 = v => [v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, (v >>> 24) & 0xff];
-    const fns = calls.map(c => { const m = p.byName.get(c.dll); return m && m.exports.get(c.name); });
+    const fns = calls.map(c => { if (c.dll === 'KERNEL32') return p.thunkFor('KERNEL32', c.name); const m = p.byName.get(c.dll); return m && m.exports.get(c.name); });
     if (!calls.length || fns.some(f => !f)) return Promise.resolve(null);
     const strs = [], code = [], n = calls.length, size = n * 8 + calls.reduce((s, c) => s + 5 * c.args.length + 11, 0) + 3;
     const a = p.alloc(size), ptrs = a + size - n * 8, res = ptrs + n * 4;   // (the code, then the functions' addresses, then the results)
@@ -671,7 +674,7 @@ class Machine {
     });
     code.push(0xc2, 0x04, 0x00);                                                               // ret 4
     p.u8.set(code, a);
-    return new Promise(ok => { const t = p.newThread(a, 0, 0x10000, true, false); t.onDone = () => { const r = calls.map((_, k) => p.r32(res + 4 * k)); p.free(a); for (const s of strs) p.free(s); ok(r); }; this.kick(); });
+    return new Promise(ok => { const t = p.newThread(a, 0, 0x10000, true, false); t.remote = remote; t.onDone = () => { const r = calls.map((_, k) => p.r32(res + 4 * k)); p.free(a); for (const s of strs) p.free(s); ok(r); }; this.kick(); });
   }
   /** WNetOpenEnum / WNetEnumResource: the resources at a scope (under one, `res`) */
   async netEnum(scope, res) {
@@ -871,6 +874,19 @@ class Machine {
       // the programs the shell starts as Windows starts, held while a machine joining a shared session catches up
       // with it (the session's are started for it instead), and let go
       case 'holdStartup': this.holdStartup = !!args[0]; return;
+      // another machine's intent made here as the call that made it there (ne16.js hookIntents): SystemParametersInfo
+      // with its flags (this Windows keeps the setting and tells its programs), a settings file's line written
+      case 'intent': return (async () => {
+        const i = args[0];
+        if (i.kind === 'spi') {
+          let pv = 0, own = 0;
+          if (i.str != null) pv = i.str;
+          else if (i.ints) { pv = own = p.alloc(12); i.ints.forEach((v, k) => p.w32(own + 4 * k, v)); }
+          try { return await this.netBatch([{ dll: 'USER32', name: 'SystemParametersInfoA', args: [i.action, i.ui, pv, i.flags] }], true); } finally { if (own) p.free(own); }
+        }
+        if (i.kind === 'ini') return this.netBatch([{ dll: 'KERNEL32', name: 'WritePrivateProfileStringA', args: [i.app, i.name == null ? 0 : i.name, i.value == null ? 0 : i.value, i.file] }], true);
+        return null;
+      })();
       // a command line run as Windows runs one (WinExec, CreateProcess: a 16-bit program or a 32-bit one): a shared
       // session's program, started here as another machine runs it
       case 'run': { const held = this.holdStartup; this.holdStartup = false; try { const r = this.exec(args[0], 1); return typeof r === 'number' ? (r > 32 ? { ok: true } : { err: r }) : r && r.err ? r : { ok: true }; } finally { this.holdStartup = held; } }

@@ -98,10 +98,11 @@ try {
   assert.deepEqual(await post('win95.funstuff.app', { op: 'read', name: 'PUBLIC', args: ['../win95_server.py', 0, 5] }), { err: 'EACCES' });
   // shared sessions (sessions.py): a change on the dev site's session is not production's, each kept beside its site
   const op = (host, o) => { const body = JSON.stringify(o); return get('/__session/guest/op', host, { method: 'POST', body, headers: { 'Content-Type': 'application/json', 'Content-Length': String(Buffer.byteLength(body)) } }).then(async y => JSON.parse(await y.text())); };
-  assert.deepEqual(await op('win95-dev.localhost:8770', { client: 'c', kind: 'reg', op: { op: 'key', path: 'hkcu\\dev' } }), { seq: 1 });
+  const i = { key: 'spi:17', kind: 'spi', action: 17, ui: 1, flags: 3 };
+  assert.deepEqual(await op('win95-dev.localhost:8770', { client: 'c', kind: 'intent', op: i }), { seq: 1 });
   const state = async host => JSON.parse(await (await get('/__session/guest/state', host)).text());
-  assert.deepEqual((await state('win95-dev.localhost:8770')).registry, [['hkcu\\dev', [], null]]);
-  assert.equal((await state('win95.funstuff.app')).registry, null, 'production\'s guest session is its own');
+  assert.deepEqual((await state('win95-dev.localhost:8770')).intents, { 'spi:17': i });
+  assert.deepEqual((await state('win95.funstuff.app')).intents, {}, 'production\'s guest session is its own');
   for (let i = 0; i < 30 && !existsSync(join(dev, 'sessions/guest/state.json')); i++) await new Promise(res => setTimeout(res, 100));
   assert.ok(existsSync(join(dev, 'sessions/guest/state.json')), 'kept beside the dev site');
 } finally { srv.kill(); }

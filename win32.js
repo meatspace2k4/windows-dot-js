@@ -270,6 +270,8 @@ class Process {
       eip >>>= 0;
       if (eip === LAYOUT.SENTINEL) return 0;
       if (this.runHook) this.runHook(eip);   // debugging: set from the page to watch every dispatch
+      // (an export another module enters, watched: a shared session's intents, ne16.js hookIntents)
+      if (this.entryHooks) { const h = this.entryHooks.get(eip); if (h) h.call(this); }
       const m = eip >= LAYOUT.THUNK16 ? this.modules[0] : this.modules.find(x => eip >= x.meta.textLo && eip < x.meta.textHi);
       if (!m) {
         if (eip < 0x10000) (this.nullJumps || (this.nullJumps = [])).push({ at: eip, from: this.lastBlock >>> 0, cs: this.cpu.cs ? this.cpu.cs.value & 0xffff : null });
@@ -1099,6 +1101,7 @@ def('KERNEL32', 'GetPrivateProfileStringA', 6, function (sec, key, dflt, buf, n,
   return this.writeA(buf, v === null ? (this.readA(dflt) || '') : v, n);
 });
 def('KERNEL32', 'WritePrivateProfileStringA', 4, function (sec, key, val, file) {
+  if (this.iniIntent) this.iniIntent(file ? this.readA(file) : 'WIN.INI', this.readA(sec), key ? this.readA(key) : null, val ? this.readA(val) : null, null);
   try { iniSet(this.fs, this.readA(file), this.readA(sec), key ? this.readA(key) : null, val ? this.readA(val) : null); return 1; } catch (_) { return 0; }
 });
 def('KERNEL32', 'GetPrivateProfileStructA', 5, function (sec, key, buf, n, file) {

@@ -3505,7 +3505,7 @@ class RemoteApp extends NativeApp {
     this.worker.onmessage = e => this.message(e.data);
     this.worker.onerror = e => { console.error('[worker]', e.message); this.exited(-1, e.message); };
     this.worker.postMessage({ t: 'start', rpc: this.rpcSab, registry: W95Win32.regDump(), o: {
-      path: this.path, arg: this.arg, system: this.system, quiet: this.quiet, holdStartup: this.system && !!(sharedNow() && window.W95HOST.shared.joining), sw: this.sw, sh: this.sh, shellW: W, workH: workH(), ring: this.ring, lan: this.lanRing || null,
+      path: this.path, arg: this.arg, system: this.system, quiet: this.quiet, holdStartup: this.system && !!(sharedNow() && window.W95HOST.shared.joining), session: this.system && !!sharedNow(), sw: this.sw, sh: this.sh, shellW: W, workH: workH(), ring: this.ring, lan: this.lanRing || null,
       bytes: bytes || null, prog: prog ? { name: prog.name, meta: prog.d.meta } : null,
       trace: new URLSearchParams(location.search).get('trace'),   // (?trace=MSGSRV32: the imports that thread calls, read back with cmd 'trace')
       traceNames: new URLSearchParams(location.search).get('traceNames'),   // (&traceNames=Profile|DeleteFile: only the imports whose names match)
@@ -3610,6 +3610,7 @@ class RemoteApp extends NativeApp {
       // the screen's mode, DAC and the cursor sprite, as often as the machine runs, its window list or not (USER held)
       case 'scan': this.scr = m; this.followMode(m); dirty(); return;
       case 'mode': if (this.modeDone) this.modeDone(m.r); return;   // (a mode asked for while a thread held USER, made now)
+      case 'intent': { const S = sharedNow(); if (S) S.intent(m.i); return; }   // (a setting this machine's person made: ne16.js hookIntents)
       case 'text': this.txt = m.txt; if (msgApp === this) dirty(); return;
       case 'msgMode': msgApp = m.on ? this : msgApp === this ? null : msgApp; this.r0 = m.on; dirty(); return;
       case 'reset': machineReset(); return;
@@ -5189,13 +5190,18 @@ async function osApply(id, v, local) {
     a.cmd('setCtrl', [mine.hwnd, +cid, kind, val]);
   }
 }
-/** every object of the session set on this machine, as a machine joining (or come back) does */
+/** every object of the session set on this machine, and its settings made here, as a machine joining (or come back)
+ *  does */
 async function osCatchUp() {
   const S = sharedNow(), local = await osLocal(); if (!S || !local) return;
+  for (const i of S.intents().values()) await osIntent(i);
   for (const [id, v] of S.world()) osApply(id, v, local);
 }
+/** another machine's intent made here: the same call, on a thread of its own (worker.js 'intent'), as it is made there */
+function osIntent(i) { emit('sync.intent', { key: i.key }); return sysApp && sysApp.alive ? sysApp.cmd('intent', [i]) : null; }
 if (sharedNow()) {
   sharedNow().onObj((id, v) => { if (osCaught) osApply(id, v); });
+  sharedNow().onIntent(i => { if (osCaught) osIntent(i); });
 }
 // (once this machine's shell is up, its first window list with the desktop's: the session's objects as they are)
 let osCaught = false;
