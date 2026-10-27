@@ -534,7 +534,7 @@ P.api16 = function (eip) {
   catch (e) { if (e instanceof GuestError) { this.trapped = e.message; return LAYOUT.SENTINEL; } throw e; }
   if (this.exitCode !== null) return LAYOUT.SENTINEL;
   if (r === YIELD) { this.preempted = 0; return -1; }   // a thread suspended in the call: it runs the call again when resumed (it stopped there, not where its time ran out)
-  if (ret === 'w') this.cpu.eax.value = lo16(this.cpu.eax.value, r | 0);
+  if (ret === 'w' || ret === 'i') this.cpu.eax.value = lo16(this.cpu.eax.value, r | 0);   // (a word, unsigned or signed: lstrcmp's -1)
   else if (ret === 'l') { this.cpu.eax.value = r | 0; this.cpu.edx.value = lo16(this.cpu.edx.value, u32(r) >>> 16); }
   this.cpu.esp.value = lo16(this.cpu.esp.value, sp + 4 + total);
   this.refreshSegs();
@@ -3309,7 +3309,9 @@ def16('KERNEL', 48, 'w', 'w', function (h) {
   if (!m.taskModule) return 1;
   return [...(this.threadsById || new Map()).values()].filter(t => t.task && t.task.mod === m && t.state !== 'done').length;
 });
-def16('KERNEL', 51, 'xw', 'x', fp => fp);                                              // MakeProcInstance: protected mode needs no thunk
+// MakeProcInstance: protected mode needs no thunk; the procedure's own address back in DX:AX (a far pointer, 'l': it
+// came back as no return at all, PROGMAN's message hook a stray DX:AX, SetWindowsHook's error 7008)
+def16('KERNEL', 51, 'xw', 'l', fp => fp);
 def16('KERNEL', 52, 'x', 'v', () => {});                                               // FreeProcInstance
 def16('KERNEL', 65, 'ww', 'l', function (h, hr) {                                      // SizeofResource
   const e = this.resHandles && this.resHandles[hr / 4 - 1]; if (!e) return 0;
