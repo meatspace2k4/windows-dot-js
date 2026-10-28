@@ -67,7 +67,12 @@
     return r && r.ok !== undefined ? { ok: dec(r.ok) } : r;
   };
   const shares = { list: () => share('$list') || [], op: (name, op, ...args) => share(op, name, args) || { err: 'EIO' } };
-  const computerName = share('$host') || undefined;
+  // the computer's name, asked in the background as the page loads (a blocking request here held every script after this one for
+  // a round trip); a reader before the answer asks synchronously
+  let hostName, hostNameKnown = false;
+  fetch('__share', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ op: '$host' }) })
+    .then(r => (r.ok ? r.json() : null)).then(r => { if (!hostNameKnown) { hostName = typeof r === 'string' ? r : undefined; hostNameKnown = true; } }).catch(() => {});
+  const computerName = () => { if (!hostNameKnown) { hostName = share('$host') || undefined; hostNameKnown = true; } return hostName; };
 
   // sql.js for a session file (session-file.js), fetched when one is exported or imported: its script pinned by its
   // integrity, its WebAssembly by its SHA-256 before it runs
@@ -130,7 +135,7 @@
     };
     const chunks = (sid, from = 0) => IDBKeyRange.bound([sid, from], [sid, Infinity]);
     return {
-      shares, computerName, session,
+      shares, get computerName() { return computerName(); }, session,
       disk: {
         load: () => disk,
         node: r => run(['node'], async node => {

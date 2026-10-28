@@ -24,8 +24,8 @@ if (existsSync(join(root, 'deploy/win95/deploy.config'))) {
   assert.notEqual(r.status, 0); assert.match(r.stdout + r.stderr, /W95_ALLOW_PROD is not 1/);
 }
 
-// a signed build
-r = run(['--build-only', '--commit', head, '--version', '0-01']);
+// a signed build (unminified, the stamps' text as the sources have it)
+r = run(['--build-only', '--commit', head, '--version', '0-01'], { W95_NO_MINIFY: '1' });
 assert.equal(r.status, 0, r.stdout + r.stderr);
 const sig = `0-01+${head}`, cb = `?v=${sig}`, site = join(root, 'deploy/win95/.staging/site');
 const page = readFileSync(join(site, 'index.html'), 'utf8');
@@ -43,6 +43,18 @@ for (const f of ['system.js', 'cdrom.iso', 'icons/icon192.png', 'manifest.webman
 // the working tree is untouched by the stamps
 assert.ok(readFileSync(join(root, 'index.html'), 'utf8').includes('<meta name="build-sig" content="local" />'));
 assert.ok(readFileSync(join(root, 'win95.js'), 'utf8').includes("new Worker('worker.js')"));
+
+// the minified build: every script still parses, and the stamped URLs are still in it
+if (spawnSync('terser', ['--version']).status === 0) {
+  r = run(['--build-only', '--commit', head, '--version', '0-01']);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  for (const f of execFileSync('git', ['-C', root, 'ls-files', '--', '*.js'], { encoding: 'utf8' }).split('\n').filter(f => f && !f.includes('/'))) {
+    const c = spawnSync('node', ['--check', join(site, f)], { encoding: 'utf8' });
+    assert.equal(c.status, 0, f + ': ' + c.stderr);
+  }
+  assert.ok(readFileSync(join(site, 'worker.js'), 'utf8').includes(cb));
+  assert.ok(readFileSync(join(site, 'win95.js'), 'utf8').includes(`worker.js${cb}`));
+}
 
 // the server: prod and dev trees beside each other, as on the Pi
 const base = mkdtempSync(join(tmpdir(), 'w95deploy-'));

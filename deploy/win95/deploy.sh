@@ -370,6 +370,26 @@ stage_file() {
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 1: Build/stage files locally
 # ─────────────────────────────────────────────────────────────────────────────
+# terser, as the dustytrails deploy runs it, over the staged hand-written scripts (the tracked top-level .js; the
+# generated bundles are untracked and left as they are). After the stamps, whose checks look for the sources' quoting.
+# A file terser fails on stays as it was.
+TERSER_FLAGS=(--compress --mangle)
+minify_site() {
+    [[ "${W95_NO_MINIFY:-}" == 1 ]] && return 0
+    if ! command -v terser >/dev/null 2>&1; then
+        log_warn "terser not found: scripts are served unminified (npm i -g terser)"
+        return 0
+    fi
+    log_info "Minifying scripts (terser ${TERSER_FLAGS[*]})..."
+    local before after
+    before="$(cat $(cd "$REPO_ROOT" && git ls-files -- '*.js' | grep -v / | sed "s|^|$STAGING_DIR/site/|") | wc -c)"
+    (cd "$REPO_ROOT" && git ls-files -- '*.js' | grep -v /) | xargs -P 8 -I{} sh -c '
+        f="$1/site/{}"; t="$f.min"
+        if terser "$f" '"${TERSER_FLAGS[*]}"' -o "$t" 2>/dev/null && [ -s "$t" ]; then mv "$t" "$f"; else rm -f "$t"; echo "  not minified: {}"; fi' _ "$STAGING_DIR"
+    after="$(cat $(cd "$REPO_ROOT" && git ls-files -- '*.js' | grep -v / | sed "s|^|$STAGING_DIR/site/|") | wc -c)"
+    log_info "Scripts: $before -> $after bytes"
+}
+
 build_staging() {
     if [[ -z "$DEPLOY_SIG" ]]; then
         DEPLOY_SIG="$(date +%s)"
@@ -415,6 +435,7 @@ build_staging() {
 
     cache_bust_site
     stamp_build_meta
+    minify_site
 
     # Server and unit, outside the served tree
     cp "$SCRIPT_DIR/win95_server.py" "$SCRIPT_DIR/win95.service" "$REPO_ROOT/tools/sessions.py" "$REPO_ROOT/tools/claude_api.py" "$STAGING_DIR/"

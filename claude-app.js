@@ -234,9 +234,9 @@
   }
 
   // ---------------------------------------------------------------- the app's tools, which run on the page (ccd.js)
-  const pending = new Map(); let nextCall = 1, toolDefs = null;
-  self.W95ClaudeReply = m => { const f = pending.get(m.id); if (f) { pending.delete(m.id); f(m); } };
-  const page = (name, args, session, via) => new Promise(ok => { const k = nextCall++; pending.set(k, ok); post({ t: 'ccd', id: k, name, args, session, via }); });   // (via: the agent making the call)
+  const pending = new Map(), pendingSid = new Map(); let nextCall = 1, toolDefs = null;
+  self.W95ClaudeReply = m => { const f = pending.get(m.id); pendingSid.delete(m.id); if (f) { pending.delete(m.id); f(m); } };
+  const page = (name, args, session, via) => new Promise(ok => { const k = nextCall++; pending.set(k, ok); if (session && !via) pendingSid.set(k, session); post({ t: 'ccd', id: k, name, args, session, via }); });   // (via: the agent making the call)
   // a tool's question (an approval): asked one at a time in the program's message box (CLAUDE.EXE's WndProc on WM_APP+1),
   // posted from the window's timer; with no window to ask in, the answer is No
   const asks = []; let asking = null;
@@ -360,6 +360,14 @@
       if (last && last.role === role) last.content.push(...b); else out.push({ role, content: b.slice() });
     }
     while (out.length && out[0].role !== 'user') out.shift();
+    // (a tool use whose result never came, its turn having ended first: answered as not run, which the API requires)
+    for (let i = 0; i < out.length; i++) {
+      const want = out[i].role === 'assistant' ? out[i].content.filter(b => b.type === 'tool_use').map(b => b.id) : [], n = out[i + 1];
+      const have = n && n.role === 'user' ? n.content.filter(b => b.type === 'tool_result').map(b => b.tool_use_id) : [];
+      const lost = want.filter(x => !have.includes(x)).map(x => ({ type: 'tool_result', tool_use_id: x, content: 'Error: Not run: the turn ended before this tool ran.', is_error: true }));
+      if (!lost.length) continue;
+      if (n && n.role === 'user') n.content.unshift(...lost); else out.splice(i + 1, 0, { role: 'user', content: lost });
+    }
     return out;
   }
   // one request: Claude's text into the conversation as it arrives; its whole message kept with it for the next request
@@ -401,7 +409,7 @@
           }
         }
       }
-    } catch (e) { return e.name === 'AbortError' ? { stopped: true } : { error: `Not connected: ${e.message}` }; }
+    } catch (e) { return e.name === 'AbortError' ? (result || { stopped: true }) : { error: `Not connected: ${e.message}` }; }   // (stopped after the message came whole: its tools are answered as not run)
     return result || { error: 'The reply ended early.' };
   }
   // Claude Code's tools that run here, where the requests are made: WebFetch (a page fetched by the page's server and read
@@ -502,7 +510,7 @@
   async function turn(sid) {
     let failed = null;
     if (!toolDefs) { const r = await page('@defs'); toolDefs = [...(r.result || []), ...HERE_DEFS]; }
-    for (let k = 0; k < 24; k++) {
+    try { for (let k = 0; k < 24; k++) {
       const s = load().find(x => x.id === sid); if (!s) return;
       const r = await ask(sid, s);
       if (r.stopped) break;
@@ -517,7 +525,7 @@
       }
       update(sid, x => x.transcript.push({ uuid: id('msg'), t: Date.now(), role: 'results', text: '', blocks: results }));
       if (app.stopping[sid]) break;
-    }
+    } } catch (e) { failed = `The turn stopped on an error: ${e.message}`; }   // (the session must not stay 'working')
     const stopped = !!app.stopping[sid]; delete app.stopping[sid]; delete app.aborts[sid];
     const fin = update(sid, x => {
       if (failed) x.transcript.push({ uuid: id('msg'), t: Date.now(), role: 'system', text: failed });
@@ -596,6 +604,8 @@
   function stop(p, sid) {
     app.stopping[sid] = true; app.queue[sid] = [];
     const a = app.aborts[sid]; if (a) a.abort();
+    // (a tool the page never answers must not hold the turn: answered as not run)
+    for (const [k, s] of [...pendingSid]) if (s === sid) { const f = pending.get(k); pending.delete(k); pendingSid.delete(k); if (f) f({ error: 'Not run: the user stopped the turn.' }); }
     app.note = 'Stopping...'; showAll(p);
   }
   // a next-step button: its message is the user's answer (the app's: ccd.js answer)
