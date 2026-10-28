@@ -22,6 +22,7 @@ const req = (drive, cmd, block) => {
   return p.r16(0x1003);
 };
 assert.equal(req(3, 3, [6]), 0x0100); assert.equal(p.r32(0x1101), 0x0a14, 'device status of a data disc: no audio disc in the drive');
+assert.equal(req(3, 3, [9]), 0x0100); assert.equal(p.u8[0x1101], 0xff, 'the first ask: media changed'); assert.equal(req(3, 3, [9]), 0x0100); assert.equal(p.u8[0x1101], 1, 'then not changed');
 assert.equal(req(3, 3, [7]), 0x0100); assert.equal(p.r16(0x1102), 2048);
 assert.equal(req(3, 3, [8]), 0x0100); assert.equal(p.r32(0x1101), 300000);
 assert.equal(req(3, 3, [10]), 0x0100); assert.deepEqual([p.u8[0x1101], p.u8[0x1102]], [1, 1]);

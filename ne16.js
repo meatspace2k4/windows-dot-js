@@ -666,7 +666,7 @@ const cdRequest = p => {
       case 6: p.w32(b + 1, cd.audio ? 0x0214 : 0x0a14); break;   // (a data disc is no audio disc to the drive's audio side: 0800h, no disc, with 0200h, Red Book addressing kept)
       case 7: p.u8[b + 1] = 0; p.w16(b + 2, 2048); break;
       case 8: p.w32(b + 1, disc.leadout); break;
-      case 9: p.u8[b + 1] = 1; break;
+      case 9: p.u8[b + 1] = st.seen ? 1 : 0xff; st.seen = true; break;   // (the first ask of a drive finds the disc just changed: MCICDA reads a disc's table only then, and starts with none)
       case 10: p.u8[b + 1] = disc.tracks[0].number; p.u8[b + 2] = disc.tracks[disc.tracks.length - 1].number; p.w32(b + 3, msf(disc.leadout)); break;
       case 11: { const tr = disc.tracks.find(x => x.number === p.u8[b + 1]); if (!tr) return status(0x8003); p.w32(b + 2, msf(tr.lba)); p.u8[b + 6] = tr.ctl; break; }
       case 12: {   // the Q channel: the track (BCD) and index, the time in the track, then on the disc
