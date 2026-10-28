@@ -50,6 +50,11 @@ assert.equal(req(3, 0x99), 0x8003); assert.equal(req(2, 3, [6]), 0x8001, 'C: is 
   now += 5000; assert.equal(req(4, 0x88), 0x0300); assert.deepEqual(sent.at(-1), ['play', 13275 + 150, 26430], 'on from where it paused');
   assert.equal(req(4, 0x85), 0x0100); assert.equal(req(4, 0x85), 0x0100); assert.equal(req(4, 0x88), 0x800c, 'stopped: nothing to resume');
   assert.equal(req(3, 0x84), 0x800c, 'a data disc has no audio');
+  // the drives MCICDA is told of, the audio disc's first (it opens the first, and the data CD in D: has no tracks to play)
+  const ask = ax => { p.cpu.eax.value = ax; p.cpu.ebx.value = 0; p.cpu.ecx.value = 0; p.cpu.es.value = 0x200; p.interrupt(0x2f, 0); };
+  ask(0x1500); assert.equal(p.cpu.ebx.value & 0xffff, 2); assert.equal(p.cpu.ecx.value & 0xffff, 4, 'E: first');
+  ask(0x150d); assert.deepEqual([...p.u8.subarray(0x2000, 0x2002)], [4, 3]);
+  p.cpu.ecx.value = 3; p.cpu.eax.value = 0x150b; p.interrupt(0x2f, 0); assert.equal(p.cpu.eax.value & 0xffff, 0x5ad8, 'D: is still a CD drive');
   // CD Player's way: play track 1 alone (its sectors); the drive is busy for the track's 177 seconds, every request
   // until then saying so, and done after; Stop then stops the page's drive even with the disc done
   const playTrack = (lba, n) => { p.u8.fill(0, 0x1000, 0x1100); p.u8[0x1002] = 0x84; p.w32(0x100e, lba); p.w32(0x1012, n); p.cpu.eax.value = 0x1510; p.cpu.ecx.value = 4; p.cpu.es.value = 0x100; p.cpu.ebx.value = 0; p.interrupt(0x2f, 0); return p.r16(0x1003); };
