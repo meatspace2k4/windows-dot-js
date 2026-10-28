@@ -329,9 +329,9 @@ class Machine {
       let keys = s.keys; if (f & 2) keys |= 1; if (f & 4) keys &= ~1; if (f & 8) keys |= 2; if (f & 16) keys &= ~2;
       const msgs = []; if (f & 2) msgs.push(0x201); if (f & 8) msgs.push(0x204); if ((f & 1) || !msgs.length) msgs.unshift(0x200); if (f & 4) msgs.push(0x202); if (f & 16) msgs.push(0x205);   // WM_MOUSEMOVE, WM_LBUTTONDOWN, WM_RBUTTONDOWN, WM_LBUTTONUP, WM_RBUTTONUP
       const oks = [];
-      for (const m of msgs) { const ok = p.postMouse(s.child, m, m === 0x202 ? keys & ~1 : m === 0x205 ? keys & ~2 : keys, sx, sy); oks.push(ok); if (!ok) break; }
+      for (const m of msgs) { const ok = p.postMouse(s.child, m, m === 0x202 ? keys & ~1 : m === 0x205 ? keys & ~2 : keys, sx, sy); oks.push(ok); if (!ok) break; const c = this.posted || (this.posted = {}); c[m] = (c[m] || 0) + 1; }
       if (oks.some(o => !o)) { full = true; if (oks.length > 1) s.lost = (s.lost || 0) + 1; break; }   // (the queue full: again next pass; a button's messages split by it are counted)
-      s.ev.shift(); s.keys = keys; s.fed++; at = [sx, sy];
+      s.ev.shift(); s.keys = keys; s.fed++; at = [sx, sy]; s.last = at;
       if (this.lagLog) this.lagLog.push({ k: 'stroke-fed', f, x: sx, y: sy, t: Date.now() });
     }
     // (where the stroke has got to here, for the page to draw its person's pointer there, on the line as it is drawn)
@@ -341,7 +341,7 @@ class Machine {
     // shows an empty queue, so none is waited for)
     // (a stroke whose end never comes, its sender gone or its parts lost, is let go after 3 s without a part: a
     // release is posted so the program's drag ends, and the next stroke goes in)
-    if (!s.ev.length && !s.done) { if (!s.idle) s.idle = performance.now(); else if (performance.now() - s.idle > 3000) { if (s.keys & 1) p.postMouse(s.child, 0x202, s.keys & ~1, s.ox, s.oy); if (s.keys & 2) p.postMouse(s.child, 0x205, s.keys & ~2, s.ox, s.oy); s.done = true; } }
+    if (!s.ev.length && !s.done) { if (!s.idle) s.idle = performance.now(); else if (performance.now() - s.idle > 3000) { const [lx, ly] = s.last || [s.ox, s.oy]; if (s.keys & 1) p.postMouse(s.child, 0x202, s.keys & ~1, lx, ly); if (s.keys & 2) p.postMouse(s.child, 0x205, s.keys & ~2, lx, ly); s.done = true; } }
     else s.idle = 0;
     if (!s.ev.length && s.done) { this.rs = null; return this.feedStroke(); }
     return true;
@@ -1093,7 +1093,7 @@ class Machine {
       case 'strokes': {   // (a diagnostic: the strokes of others waiting and being fed, this person's going; with a window, its queue's state)
         let pending = null; try { pending = p.inputPending(); } catch (e) { pending = String(e); }
         const h = args[0], q = h ? { posted: p.postedPending(h), input: p.inputPendingFor(h), status: (p.asWindowTask(h, () => p.user16(334, [['w', 0xff]]).dxax) >>> 0).toString(16), child: p.childAt(h, args[1] || 0, args[2] || 0) } : null;
-        return { waiting: (this.strokes || []).map(s => ({ key: s.key, root: s.root, pop: s.pop, ev: s.ev.length, done: s.done, waited: s.waited || 0 })), feeding: this.rs ? { key: this.rs.key, left: this.rs.ev.length, fed: this.rs.fed, lost: this.rs.lost || 0, done: this.rs.done } : null, btn: this.btn || 0, pending, own: this.stroke ? { n: this.stroke.n, ev: this.stroke.ev.length } : null, q, taken: p.movesTaken || 0, movesFed: this.movesFed || 0, mouseq: this.mouseq.length };
+        return { waiting: (this.strokes || []).map(s => ({ key: s.key, root: s.root, pop: s.pop, ev: s.ev.length, done: s.done, waited: s.waited || 0 })), feeding: this.rs ? { key: this.rs.key, left: this.rs.ev.length, fed: this.rs.fed, lost: this.rs.lost || 0, done: this.rs.done } : null, btn: this.btn || 0, pending, own: this.stroke ? { n: this.stroke.n, ev: this.stroke.ev.length } : null, q, taken: p.movesTaken || 0, movesFed: this.movesFed || 0, mouseq: this.mouseq.length, posted: this.posted || {}, msgTaken: p.msgTaken || {} };
       }
       case 'stroke': {
         const [key, root, pop, ev, done] = args, q = this.strokes || (this.strokes = []);
