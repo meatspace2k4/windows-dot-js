@@ -662,7 +662,7 @@ const cdRequest = p => {
       case 0: p.w32(b + 1, 0); break;
       case 1: p.u8[b + 1] = 0; p.w32(b + 2, a.pos); break;
       case 4: for (let i = 0; i < 4; i++) { p.u8[b + 1 + 2 * i] = i; p.u8[b + 2 + 2 * i] = 0xff; } break;
-      case 6: p.w32(b + 1, 0x0214); break;
+      case 6: p.w32(b + 1, cd.audio ? 0x0214 : 0x0a14); break;   // (a data disc is no audio disc to the drive's audio side: 0800h, no disc, with 0200h, Red Book addressing kept)
       case 7: p.u8[b + 1] = 0; p.w16(b + 2, 2048); break;
       case 8: p.w32(b + 1, disc.leadout); break;
       case 9: p.u8[b + 1] = 1; break;

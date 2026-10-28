@@ -21,7 +21,7 @@ const req = (drive, cmd, block) => {
   assert.equal(p.interrupt(0x2f, 0x5000), 0x5000);
   return p.r16(0x1003);
 };
-assert.equal(req(3, 3, [6]), 0x0100); assert.equal(p.r32(0x1101), 0x0214, 'device status: cooked/raw, data and audio, Red Book');
+assert.equal(req(3, 3, [6]), 0x0100); assert.equal(p.r32(0x1101), 0x0a14, 'device status of a data disc: no audio disc in the drive');
 assert.equal(req(3, 3, [7]), 0x0100); assert.equal(p.r16(0x1102), 2048);
 assert.equal(req(3, 3, [8]), 0x0100); assert.equal(p.r32(0x1101), 300000);
 assert.equal(req(3, 3, [10]), 0x0100); assert.deepEqual([p.u8[0x1101], p.u8[0x1102]], [1, 1]);
@@ -36,6 +36,7 @@ assert.equal(req(3, 0x99), 0x8003); assert.equal(req(2, 3, [6]), 0x8001, 'C: is 
 {
   let now = 1000; const sent = []; p.cdClock = () => now; self.W95CDAUDIO = (op, from, to) => sent.push([op, from, to]);
   VOLS.set('E', { kind: 'cdrom', letter: 'E', audio: { tracks: [{ number: 1, lba: 0, sectors: 13275 }, { number: 2, lba: 13275, sectors: 13155 }], leadout: 26430 } });
+  assert.equal(req(4, 3, [6]), 0x0100); assert.equal(p.r32(0x1101), 0x0214, 'device status of an audio disc: cooked/raw, audio, Red Book');
   assert.equal(req(4, 3, [10]), 0x0100); assert.deepEqual([p.u8[0x1101], p.u8[0x1102]], [1, 2]);
   assert.equal(req(4, 3, [11, 2]), 0x0100); assert.equal(p.u8[0x1106], 0x01, 'audio');
   const rb = 13275 + 150; assert.deepEqual([p.u8[0x1102], p.u8[0x1103], p.u8[0x1104]], [rb % 75, Math.floor(rb / 75) % 60, Math.floor(rb / 4500)]);
