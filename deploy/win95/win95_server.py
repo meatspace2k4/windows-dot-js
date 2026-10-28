@@ -125,6 +125,7 @@ DEV_SITE = BASE.parent / (BASE.name + "-dev") / "site"
 import sys
 sys.path.insert(0, str(BASE))
 import sessions
+from claude_api import local_request, claude, fetch_page   # (tools/claude_api.py, copied beside this by deploy.sh)
 SESSIONS = {"prod": sessions.Sessions(str(BASE / "sessions")), "dev": sessions.Sessions(str(BASE.parent / (BASE.name + "-dev") / "sessions"))}
 
 
@@ -203,6 +204,17 @@ class H(http.server.SimpleHTTPRequestHandler):
 
     def do_POST(self):
         if self.path.startswith("/__session") and sessions_for(self.headers.get("Host")).handle(self, "POST"):
+            return
+        if self.path.split("?")[0] in ("/__claude", "/__fetch"):   # (local_request: only this machine's own *.localhost pages)
+            if not local_request(self):
+                self.send_error(403)
+                return
+            try:
+                q = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+            except ValueError:
+                self.send_error(400)
+                return
+            (claude if self.path.startswith("/__claude") else fetch_page)(self, q)
             return
         # /__share as tools/serve.py answers it: the host's name, the shares' list, and an operation on one (the page
         # learns its computer's name here, as on the dev server and in the app)

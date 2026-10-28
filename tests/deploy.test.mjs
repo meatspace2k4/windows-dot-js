@@ -50,6 +50,7 @@ const inst = join(base, 'win95'), dev = join(base, 'win95-dev');
 mkdirSync(join(inst, 'site'), { recursive: true }); mkdirSync(join(dev, 'site'), { recursive: true });
 writeFileSync(join(inst, 'win95_server.py'), readFileSync(join(root, 'deploy/win95/win95_server.py')));
 writeFileSync(join(inst, 'sessions.py'), readFileSync(join(root, 'tools/sessions.py')));   // (beside it, as deploy.sh puts it)
+writeFileSync(join(inst, 'claude_api.py'), readFileSync(join(root, 'tools/claude_api.py')));
 writeFileSync(join(inst, 'site/index.html'), '<meta name="build-channel" content="prod" />');
 writeFileSync(join(inst, 'site/a.js'), '0123456789');
 mkdirSync(join(inst, 'share')); writeFileSync(join(inst, 'share/README.TXT'), 'hello world');
