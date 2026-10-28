@@ -1017,11 +1017,14 @@ const INTS = {
     // MSCDEX's interface, which the CD-ROM file system answers: 1500h the CD-ROM drives (BX how many, CX the first, 0
     // for A:), 150Bh whether drive CX is one (AX nonzero, BX ADADh), 150Ch the version (BX 2.21), 150Dh their letters
     if ((ax >> 8) === 0x15 && [0x00, 0x0b, 0x0c, 0x0d].includes(ax & 0xff)) {
-      const cds = [...this.fs.vols.values()].filter(v => v.kind === 'cdrom').map(v => v.letter.charCodeAt(0) - 65).sort((a, b) => a - b);
+      const all = [...this.fs.vols.values()].filter(v => v.kind === 'cdrom').sort((a, b) => a.letter.localeCompare(b.letter));
+      // (the drives are listed with the audio disc's first: MCICDA opens the first it is told of, so CD Audio plays the
+      // audio disc and not the data CD, which has no tracks)
+      const cds = [...all.filter(v => v.audio), ...all.filter(v => !v.audio)].map(v => v.letter.charCodeAt(0) - 65);
       const reg = (r, v) => { this.cpu[r].value = lo16(this.cpu[r].value, v); };
       switch (ax & 0xff) {
         case 0x00: reg('ebx', cds.length); if (cds.length) reg('ecx', cds[0]); return;
-        case 0x0b: reg('ebx', 0xadad); this.ax(cds.includes(this.cpu.ecx.value & 0xffff) ? 0x5ad8 : 0); return;
+        case 0x0b: reg('ebx', 0xadad); this.ax(all.some(v => v.letter.charCodeAt(0) - 65 === (this.cpu.ecx.value & 0xffff)) ? 0x5ad8 : 0); return;
         case 0x0c: reg('ebx', 0x0215); return;
         case 0x0d: { const at = this.rmode ? ((this.cpu.es.value & 0xffff) << 4) + (this.cpu.ebx.value & 0xffff) : this.lin(((this.cpu.es.value & 0xffff) << 16) | (this.cpu.ebx.value & 0xffff)); cds.forEach((c, i) => { this.u8[at + i] = c; }); return; }
       }
