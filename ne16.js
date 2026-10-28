@@ -626,13 +626,14 @@ function absDisk(p, write) {
 const cdRequest = p => {
   const rm = p.rmode, at = (s, o) => (rm ? ((s & 0xffff) << 4) + (o & 0xffff) : p.lin(u32(((s & 0xffff) << 16) | (o & 0xffff))));
   const hdr = at(p.cpu.es.value, p.cpu.ebx.value), drive = p.cpu.ecx.value & 0xffff;
-  const cd = [...p.fs.vols.values()].find(v => v.kind === 'cdrom' && v.letter.charCodeAt(0) - 65 === drive);
   const status = v => p.w16(hdr + 3, v);
-  if (!cd) return status(0x8001);
   // the drive's state, kept on the machine by drive (the system machine's volumes are the page's, made afresh each time
   // it asks for them: kept on one, a playing disc was idle at the next request, so CD Player went on a track at once
-  // and Stop found nothing to stop)
+  // and Stop found nothing to stop). The volume is kept too: each ask is a round trip to the page, and CD Player
+  // makes dozens of requests a drive at start, which the busy page answered in seconds
   const st = (p.cdDrives || (p.cdDrives = {}))[drive] || (p.cdDrives[drive] = {});
+  const cd = st.vol || (st.vol = [...p.fs.vols.values()].find(v => v.kind === 'cdrom' && v.letter.charCodeAt(0) - 65 === drive));
+  if (!cd) { st.vol = null; return status(0x8001); }
   // the disc: an audio disc's tracks (cdaudio.js, the volume's table of contents), or a data disc as one data track
   // whose sectors are the primary volume descriptor's volume space size (sector 16, +80), else 74 minutes
   let disc = st.toc;
