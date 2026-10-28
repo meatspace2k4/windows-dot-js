@@ -22,8 +22,8 @@
     d.setUint32(28, t.lba, true); d.setUint32(32, t.sectors, true); msf(36, t.lba + 150); msf(40, t.sectors);
     return b;
   };
-  // (the disc's serial number as CDFS makes one for an audio disc: from its tracks' places)
-  const serial = () => toc.tracks.reduce((h, t) => (Math.imul(h, 31) + t.lba + t.sectors) >>> 0, toc.leadout >>> 0);
+  // (the disc's serial number is its identity, the one MCICDA answers for it: the sum of the tracks' packed starts)
+  const serial = () => parseInt(discId(), 16) >>> 0;
   let ctx = null, gen = 0, sources = [], out = null, levels = [1, 1];
   // the drive's output as the sound card mixes it: each channel through its gain (the codec's AUX1, sound.js)
   const output = () => {
