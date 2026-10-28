@@ -689,6 +689,12 @@ const cdRequest0 = p => {
     }
     return status(0x0100 | busy);
   }
+  if (cmd === 0x83) {   // seek: the head to the address (as play's), the drive stopped there, nothing playing
+    const s = p.r32(hdr + 0x0e), start = p.u8[hdr + 0x0d] ? ((s >>> 16) & 0xff) * 4500 + ((s >>> 8) & 0xff) * 75 + (s & 0xff) - 150 : s;
+    if (!cd.audio || start < 0 || start >= disc.leadout) return status(0x800c);
+    Object.assign(a, { state: 'idle', from: start, to: start, pos: start }); send('stop');
+    return status(0x0100);
+  }
   if (cmd === 0x84) {   // play audio: from the start (+0Eh; HSG, or Red Book by the addressing mode at +0Dh) for n sectors (+12h)
     const s = p.r32(hdr + 0x0e), start = p.u8[hdr + 0x0d] ? ((s >>> 16) & 0xff) * 4500 + ((s >>> 8) & 0xff) * 75 + (s & 0xff) - 150 : s;
     const to = Math.min(disc.leadout, start + p.r32(hdr + 0x12));

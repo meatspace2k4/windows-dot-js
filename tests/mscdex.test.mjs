@@ -60,6 +60,11 @@ assert.equal(req(3, 0x99), 0x8003); assert.equal(req(2, 3, [6]), 0x8001, 'C: is 
   for (let s = 25; s <= 175; s += 25) { now += 25000; assert.equal(req(4, 3, [15]) & 0x0200, 0x0200, `still busy ${s} s in`); }
   now += 2000; assert.equal(req(4, 3, [12]) & 0x0200, 0, 'done after the track');
   assert.equal(req(4, 0x85), 0x0100); assert.deepEqual(sent.at(-1), ['stop', undefined, undefined]);
+  // seek (CD Player stops, seeks to the track, then plays): the head there, the drive idle, the Q channel at the track
+  { const seek = (lba, mode) => { p.u8.fill(0, 0x1000, 0x1100); p.u8[0x1002] = 0x83; p.u8[0x100d] = mode; p.w32(0x100e, lba); p.cpu.eax.value = 0x1510; p.cpu.ecx.value = 4; p.cpu.es.value = 0x100; p.cpu.ebx.value = 0; p.interrupt(0x2f, 0); return p.r16(0x1003); };
+    assert.equal(seek(13275, 0), 0x0100, 'seek to track 2'); assert.equal(req(4, 3, [12]) & 0x0200, 0, 'idle after a seek');
+    assert.deepEqual([p.u8[0x1102], p.u8[0x1104], p.u8[0x1105], p.u8[0x1106]], [0x02, 0, 0, 0], 'at the start of track 02');
+    assert.equal(seek(99999999, 0), 0x800c, 'past the lead-out'); }
   // stop in the middle of a play: the page told to stop
   sent.length = 0; assert.equal(playTrack(13275, 13155), 0x0300); now += 3000; assert.equal(req(4, 0x85), 0x0100); assert.deepEqual(sent, [['play', 13275, 26430], ['stop', undefined, undefined]]);
 }
