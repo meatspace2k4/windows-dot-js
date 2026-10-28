@@ -339,6 +339,10 @@ class Machine {
     // (over once posted: the next stroke's messages follow in the same queue, and this person's own input, which
     // waits meanwhile, comes after posted messages anyway. A program posting to itself, as MFC's idle does, never
     // shows an empty queue, so none is waited for)
+    // (a stroke whose end never comes, its sender gone or its parts lost, is let go after 3 s without a part: a
+    // release is posted so the program's drag ends, and the next stroke goes in)
+    if (!s.ev.length && !s.done) { if (!s.idle) s.idle = performance.now(); else if (performance.now() - s.idle > 3000) { if (s.keys & 1) p.postMouse(s.child, 0x202, s.keys & ~1, s.ox, s.oy); if (s.keys & 2) p.postMouse(s.child, 0x205, s.keys & ~2, s.ox, s.oy); s.done = true; } }
+    else s.idle = 0;
     if (!s.ev.length && s.done) { this.rs = null; return this.feedStroke(); }
     return true;
   }
@@ -1089,7 +1093,7 @@ class Machine {
         const [key, root, pop, ev, done] = args, q = this.strokes || (this.strokes = []);
         let s = q.find(x => x.key === key) || (this.rs && this.rs.key === key ? this.rs : null);
         if (!s) { s = { key, root, pop: pop || null, ev: [], done: false }; q.push(s); }
-        s.ev.push(...(ev || [])); if (done) s.done = true;
+        s.ev.push(...(ev || [])); if (done) s.done = true; s.idle = 0;
         this.kick(); return true;
       }
       // (a diagnostic: the input's times in this machine, Date.now() each: a mouse or key event taken from the ring
