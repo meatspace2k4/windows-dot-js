@@ -1005,7 +1005,13 @@ class Machine {
       case 'end': {
         p.remoteClose(args[0]);
         const task = u(224, [['w', args[0]]]).ax, pc = task && [...(p.procs || new Map()).values()].find(c => c.tdb === task);   // (GetWindowTask: AX)
-        if (pc && pc.exitCode === null) { p.endProcess(pc, 0); return true; }
+        if (pc && pc.exitCode === null) {
+          p.endProcess(pc, 0);
+          // (what its windows covered is painted again: a process ended this way leaves no WM_PAINT behind it)
+          const repaint = () => { try { if (!p.depth && !this.ring0()) u(125, [['w', 0], ['l', 0], ['w', 1]]); } catch (_) { /* USER busy */ } };   // InvalidateRect(all windows, erase)
+          repaint(); setTimeout(() => { repaint(); this.kick(); }, 400);
+          return true;
+        }
         u(110, [['w', args[0]], ['w', 0x10], ['w', 0], ['l', 0]]); return false;
       }
       case 'clipOut': return this.clipOut();

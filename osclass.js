@@ -14,7 +14,7 @@
   const STATE = ['shared', 'derived', 'local', 'singleton', 'identity'];
   // the programs, by file, that are not the session's objects
   const PROGRAMS = {
-    singleton: ['EXPLORER.EXE', 'MSGSRV32.EXE', 'MPREXE.EXE', 'SYSTRAY.EXE', 'SESSTRAY.EXE', 'MMTASK.TSK', 'SPOOL32.EXE'],
+    singleton: ['EXPLORER.EXE', 'MSGSRV32.EXE', 'MPREXE.EXE', 'SYSTRAY.EXE', 'SESSTRAY.EXE', 'MMTASK.TSK', 'SPOOL32.EXE', 'WELCOME.EXE'],   // (Welcome: each machine's own first-start greeting, over its own screen)
     derived: ['RUNONCE.EXE', 'GRPCONV.EXE', 'SETUP.EXE', 'SUWIN.EXE'],
   };
   /** a program's class by its file (and command line): shared unless the table says otherwise. RUNDLL32 running a
