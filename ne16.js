@@ -1342,7 +1342,9 @@ P.strokeTarget = function (sx, sy) {
   if (!h) return null;
   // (a press on a window's caption, its buttons, its borders or its system menu moves, sizes, shows or closes it:
   // the window's place and state are the session's by the object sync, so the press itself is not)
-  const ht = this.user16(111, [['w', h], ['w', 0x84], ['w', 0], ['l', u32((sy << 16) | (sx & 0xffff))]]).ax;       // SendMessage WM_NCHITTEST
+  // (asked as the window's own task, as its program's calls run: a message sent into a Win32 program's window from
+  // the system's context goes through its thunks on the wrong thread)
+  const ht = this.asWindowTask(h, () => this.user16(111, [['w', h], ['w', 0x84], ['w', 0], ['l', u32((sy << 16) | (sx & 0xffff))]]).ax);   // SendMessage WM_NCHITTEST
   if (ht === 2 || ht === 3 || ht === 8 || ht === 9 || (ht >= 10 && ht <= 17) || ht === 20 || ht === 21 || ht === 0xffff) return null;   // HTCAPTION, HTSYSMENU, HTMINBUTTON, HTMAXBUTTON, HTLEFT..HTBOTTOMRIGHT, HTCLOSE, HTHELP, HTERROR
   for (let n = 0; n < 32; n++) {
     if (!(this.user16(135, [['w', h], ['w', 0xfff0]]).dxax & 0x40000000)) break;                                   // GWL_STYLE: WS_CHILD
