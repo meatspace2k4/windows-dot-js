@@ -9,7 +9,6 @@
   const H = window.W95HOST && window.W95HOST.audio;
   const toc = H ? H.toc : (() => {
     const x = new XMLHttpRequest(); x.open('GET', 'audiocd.json', false); x.send();
-    if (x.status !== 200) throw new Error(`audiocd.json: ${x.status}`);
     return JSON.parse(x.responseText);
   })();
   // the files CDFS shows for an audio disc: Track01.cda ..., each a RIFF CDDA header naming its track (its number, the

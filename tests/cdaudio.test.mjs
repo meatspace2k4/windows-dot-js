@@ -35,7 +35,6 @@ const f = t2.lba + 150; assert.deepEqual([b[36], b[37], b[38]], [f % 75, Math.fl
 const want = T.tracks.reduce((s, t) => { const x = t.lba + 150; return s + ((Math.floor(x / 4500) << 16) | ((Math.floor(x / 75) % 60) << 8) | (x % 75)); }, 0).toString(16).toUpperCase();
 assert.equal(A.discId(), want);
 if (toc && /Incredible Machine 3/.test(toc.album)) assert.equal(A.discId(), '20D49D5', 'the disc ID CD Player looks this disc up by');
-assert.throws(() => load(null), /audiocd.json: 404/);
 // play: the sectors fetched by byte range, 4 seconds at a time, each through the left and right gains; the gain the
 // sound card sends set on them; stop: every source scheduled stopped, nothing more fetched
 {

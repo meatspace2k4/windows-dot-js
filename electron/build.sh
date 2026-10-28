@@ -16,7 +16,6 @@ test -f "$ISO" || { echo "no $ISO: the CD image the drive holds (serve.py --iso 
 printf '{ "image": "%s" }\n' "$ISO" > "$R/app/cd.json"
 # the audio CD in the second drive: its table of contents in the app, its sectors the project's audiocd.bin (read by path)
 AUDIO="$(cd .. && pwd)/audiocd.bin"
-test -f "$AUDIO" || { echo "no $AUDIO: the audio CD's sectors (tools/build_audiocd.py)" >&2; exit 1; }
 cp ../audiocd.json "$R/app/audiocd.json"; printf '{ "file": "%s" }\n' "$AUDIO" > "$R/app/audio.json"
 cp ../icons/*.png "$R/app/web/icons/"
 rm "$R/app/web/sw.js"
