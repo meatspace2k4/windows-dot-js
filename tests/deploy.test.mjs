@@ -1,6 +1,6 @@
 // deploy/win95/deploy.sh: a signed build stamps the page's build-* tags and every script URL with <ver>+<sha>, refuses
 // a wrong commit, a malformed version and an unaffirmed --prod; win95_server.py serves the dev tree to its DEV_HOST
-// only, answers byte ranges, keeps assets out of the browser's cache, and shares its own folder read-only to the public
+// only, answers byte ranges, leaves caching to Cloudflare (no Cache-Control), and shares its own folder read-only to the public
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
@@ -86,7 +86,7 @@ const get = async (path, host, init = {}) => {
 try {
   let x = await get('/', 'win95.funstuff.app');
   assert.match(await x.text(), /content="prod"/);
-  assert.equal(x.headers.get('cache-control'), 'public, no-cache, s-maxage=60');
+  assert.equal(x.headers.get('cache-control'), null);
   assert.equal(x.headers.get('cross-origin-embedder-policy'), 'require-corp');
   x = await get('/', 'win95-dev.funstuff.app');
   assert.match(await x.text(), /content="dev"/);
@@ -96,7 +96,7 @@ try {
   assert.match(await x.text(), /content="prod"/);
   x = await get('/a.js?v=1', 'win95.funstuff.app', { headers: { Range: 'bytes=2-4' } });
   assert.equal(x.status, 206); assert.equal(await x.text(), '234');
-  assert.equal(x.headers.get('cache-control'), 'public, max-age=31536000, immutable');
+  assert.equal(x.headers.get('cache-control'), null);
   x = await get('/../win95_server.py', 'win95.funstuff.app');
   assert.equal(x.status, 404); await x.text();
   const post = (host, o) => { const body = JSON.stringify(o); return get('/__share', host, { method: 'POST', body, headers: { 'Content-Length': String(Buffer.byteLength(body)) } }).then(async y => JSON.parse(await y.text())); };

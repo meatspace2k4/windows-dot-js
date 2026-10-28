@@ -177,11 +177,7 @@ class H(http.server.SimpleHTTPRequestHandler):
         return f
 
     def end_headers(self):
-        # The page revalidates (the edge may keep it for its s-maxage); every file is immutable, kept by the browser and the
-        # edge (a new deploy is a new ?v= URL). /__ endpoints set their own.
-        path = self.path.split("?", 1)[0]
-        if not path.startswith("/__"):
-            self.send_header("Cache-Control", "public, no-cache, s-maxage=60" if path in ("/", "/index.html") else "public, max-age=31536000, immutable")
+        # No Cache-Control here: Cloudflare manages the cache (the /__ endpoints set their own).
         self.send_header("Cross-Origin-Opener-Policy", "same-origin")
         self.send_header("Cross-Origin-Embedder-Policy", "require-corp")
         super().end_headers()
