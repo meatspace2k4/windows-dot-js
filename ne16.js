@@ -1243,7 +1243,7 @@ P.hookTaken32 = function (m) {
   (this.entryHooks || (this.entryHooks = new Map())).set(u32(at), function () {
     const lp = this.r32(u32(this.cpu.esp.value) + 4), msg = this.r32(lp + 4);
     if (msg === 0x200) this.movesTaken = (this.movesTaken || 0) + 1;   // WM_MOUSEMOVE
-    if (msg >= 0x200 && msg <= 0x209) { const c = this.msgTaken || (this.msgTaken = {}); c[msg] = (c[msg] || 0) + 1; }   // (the mouse messages taken, by message: the strokes diagnostic)
+    if (msg >= 0x200 && msg <= 0x209) { const c = this.msgTaken || (this.msgTaken = {}); c[msg] = (c[msg] || 0) + 1; if (msg === 0x200 && (this.r32(lp + 8) & 1)) c.movesHeld = (c.movesHeld || 0) + 1; }   // (the mouse messages taken, by message, and the moves with the left button held: the strokes diagnostic)
     return undefined;
   });
 };
