@@ -544,12 +544,10 @@ function mountDrives() {
   fs.load('D', window.W95CD.tree.map(conv));
   // the second CD drive, E:, with the audio disc in it (cdaudio.js): its tracks the files CDFS shows (Track01.cda ...),
   // its table of contents the drive's (MSCDEX, ne16.js cdRequest)
-  const A = window.W95CDAudio, toc = A && A.toc;
-  if (toc) {
-    const t0 = Date.UTC(1996, 0, 1), v = fs.mount('E', { kind: 'cdrom', label: 'Audio CD', readonly: true, cluster: 2048, fsname: 'CDFS' });
-    v.audio = { tracks: toc.tracks.map(t => ({ number: t.number, lba: t.lba, sectors: t.sectors })), leadout: toc.leadout, serial: A.serial() };
-    fs.load('E', toc.tracks.map(t => [`Track${String(t.number).padStart(2, '0')}.cda`, t0, null, 44, A.cda(t)]));
-  }
+  const A = window.W95CDAudio, toc = A.toc;
+  const t0 = Date.UTC(1996, 0, 1), v = fs.mount('E', { kind: 'cdrom', label: 'Audio CD', readonly: true, cluster: 2048, fsname: 'CDFS' });
+  v.audio = { tracks: toc.tracks.map(t => ({ number: t.number, lba: t.lba, sectors: t.sectors })), leadout: toc.leadout, serial: A.serial() };
+  fs.load('E', toc.tracks.map(t => [`Track${String(t.number).padStart(2, '0')}.cda`, t0, null, 44, A.cda(t)]));
 }
 // Setup's first boot: C: as a fresh install leaves it
 function makeDisk(mounted) {
@@ -3207,7 +3205,7 @@ function setupSound() {
   }
   // the audio disc in E: catalogued in CD Player's disc database (CDPLAYER.INI, the disc's ID its section), as its
   // owner's Edit Play List leaves it: the artist, the title and each track's, the play list in disc order
-  const CDA = window.W95CDAudio, cdToc = CDA && CDA.toc, cdId = cdToc && CDA.discId();
+  const CDA = window.W95CDAudio, cdToc = CDA.toc, cdId = CDA.discId();
   if (cdId && !W95Win32.iniGet(fs, 'CDPLAYER.INI', cdId, 'title')) {
     const set = (k, v) => W95Win32.iniSet(fs, 'CDPLAYER.INI', cdId, k, v), n = cdToc.tracks.length;
     set('EntryType', '1'); set('artist', cdToc.performer || ''); set('title', cdToc.album || ''); set('numtracks', String(n));
@@ -3651,7 +3649,7 @@ class RemoteApp extends NativeApp {
       // a console program's output, and its end, to the MS-DOS machine that is its console
       case 'conOut': { const c = consoles.get(m.id); if (c) { c.conWrite(m.text); dirty(); } return; }
       case 'mic': { if (window.W95Mic) window.W95Mic.set(!!m.on, (samples, rate) => this.worker.postMessage({ t: 'micIn', samples, rate }, [samples.buffer])); return; }   // (the sound card capturing: the microphone opened, or let go)
-      case 'cdaudio': { const A = window.W95CDAudio; if (A) { if (m.op === 'play') A.play(m.from, m.to); else if (m.op === 'gain') A.gain(m.l, m.r); else A.stop(); } return; }   // (the audio CD drive told to play sectors, or stop; the sound card's gain for it)
+      case 'cdaudio': { const A = window.W95CDAudio; if (m.op === 'play') A.play(m.from, m.to); else if (m.op === 'gain') A.gain(m.l, m.r); else A.stop(); return; }   // (the audio CD drive told to play sectors, or stop; the sound card's gain for it)
       case 'cdtrace': { if (!/\.localhost$/.test(location.hostname)) return; (window.cdLogBuf || (window.cdLogBuf = [])).push(m.s); if (!window.cdLogT) window.cdLogT = setTimeout(() => { window.cdLogT = 0; fetch('/__cdlog', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ lines: window.cdLogBuf.splice(0) }) }).catch(() => {}); }, 300); return; }
       case 'conMode': { const c = consoles.get(m.id); if (c && c.conWait) c.conWait.mode = m.mode; return; }
       case 'conExit': { const c = consoles.get(m.id); if (c) { consoles.delete(m.id); c.conDone(); } return; }

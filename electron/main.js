@@ -113,6 +113,17 @@ ipcMain.on('cd-read', (e, sector, length) => {
   const b = Buffer.alloc(length), n = fs.readSync(cdFd, b, 0, length, sector * 2048)
   e.returnValue = n === length ? b : null
 })
+// ---- the audio CD in the second drive: its table of contents and the file of its sectors, as the build placed them
+const audioToc = JSON.parse(fs.readFileSync(path.join(__dirname, 'audiocd.json'), 'utf8'))
+const audioFile = JSON.parse(fs.readFileSync(path.join(__dirname, 'audio.json'), 'utf8')).file
+let audioFd = null
+ipcMain.on('audio-toc', e => { e.returnValue = audioToc })
+ipcMain.handle('audio-read', (e, start, length) => {
+  if (!(start >= 0) || !(length > 0) || length > 16 << 20) throw new Error('audio-read: bad range')
+  if (audioFd === null) audioFd = fs.openSync(audioFile, 'r')
+  const b = Buffer.alloc(length), n = fs.readSync(audioFd, b, 0, length, start)
+  return b.subarray(0, n)
+})
 async function insertCD() {
   const r = await dialog.showOpenDialog({ title: 'Insert CD Image', buttonLabel: 'Insert', properties: ['openFile'], filters: [{ name: 'CD images', extensions: ['iso'] }] })
   if (r.canceled || !r.filePaths[0]) return

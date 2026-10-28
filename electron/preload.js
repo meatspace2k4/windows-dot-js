@@ -24,6 +24,8 @@ contextBridge.exposeInMainWorld('W95HOST', {
   },
   // the disc in the CD drive: the CD image chosen with File > Insert CD Image, a byte range at a time (null with none)
   cd: { read: (sector, length) => ipcRenderer.sendSync('cd-read', sector, length) },
+  // the audio CD in the second drive: its table of contents (null with none) and its sectors a byte range at a time
+  audio: { toc: ipcRenderer.sendSync('audio-toc'), read: (start, length) => ipcRenderer.invoke('audio-read', start, length) },
   // the window is the monitor: its content takes the size of the display mode the system's machine is in
   screen: { fit: (width, height) => ipcRenderer.send('fit-window', width, height) },
   // a session file to continue on another computer: the app's own Export and Import Session (main.js), which choose the file

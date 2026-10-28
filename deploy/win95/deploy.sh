@@ -423,9 +423,9 @@ build_staging() {
     cp "$REPO_ROOT/tools/sketch.mjs" "$STAGING_DIR/site/tools/" && cp "$REPO_ROOT/tools/convolution/fuzz-tabs.mjs" "$STAGING_DIR/site/tools/convolution/"
     cp "$REPO_ROOT/icons/"*.png "$STAGING_DIR/site/icons/"
     stage_file "$REPO_ROOT/$CD_IMAGE" "$STAGING_DIR/site/$CD_IMAGE"
-    # The audio CD in the second CD drive (tools/build_audiocd.py), when there is one: without it the drive is empty
+    # The audio CD in the second CD drive (tools/build_audiocd.py): the page needs it
     for f in audiocd.bin audiocd.json; do
-        [[ -e "$REPO_ROOT/$f" ]] && stage_file "$REPO_ROOT/$f" "$STAGING_DIR/site/$f"
+        stage_file "$REPO_ROOT/$f" "$STAGING_DIR/site/$f"
     done
 
     # The scripts the stamps rewrite are copies, never links into the working tree.

@@ -5,12 +5,12 @@
 // to another, or stop; it keeps the drive's position itself.
 (function () {
   const SECTOR = 2352, CHUNK = 75 * 4;   // (sectors fetched at once: 4 seconds)
-  // the disc: its table of contents, or null when the server has none (no disc in the drive)
-  const toc = (() => {
-    try {
-      const x = new XMLHttpRequest(); x.open('GET', 'audiocd.json', false); x.send();
-      return x.status === 200 ? JSON.parse(x.responseText) : null;
-    } catch (_) { return null; }
+  // the disc: its table of contents (the app's host has it, a page reads audiocd.json from the server)
+  const H = window.W95HOST && window.W95HOST.audio;
+  const toc = H ? H.toc : (() => {
+    const x = new XMLHttpRequest(); x.open('GET', 'audiocd.json', false); x.send();
+    if (x.status !== 200) throw new Error(`audiocd.json: ${x.status}`);
+    return JSON.parse(x.responseText);
   })();
   // the files CDFS shows for an audio disc: Track01.cda ..., each a RIFF CDDA header naming its track (its number, the
   // disc's serial number, its first sector and length, and those in minutes, seconds and frames, 2 seconds on)
@@ -46,8 +46,8 @@
       const n = Math.min(CHUNK, to - s);
       let pcm;
       try {
-        const r = await fetch(toc.file, { headers: { Range: `bytes=${s * SECTOR}-${(s + n) * SECTOR - 1}` } });
-        pcm = new Int16Array(await r.arrayBuffer());
+        const r = H ? await H.read(s * SECTOR, n * SECTOR) : new Uint8Array(await (await fetch(toc.file, { headers: { Range: `bytes=${s * SECTOR}-${(s + n) * SECTOR - 1}` } })).arrayBuffer());
+        pcm = new Int16Array(r.buffer.slice(r.byteOffset, r.byteOffset + r.byteLength));
       } catch (e) { console.warn('[cdaudio]', e); return; }
       if (my !== gen) return;
       const frames = pcm.length >> 1, buf = ctx.createBuffer(2, frames, 44100), l = buf.getChannelData(0), rt = buf.getChannelData(1);
@@ -64,5 +64,5 @@
   // the disc's ID as CD Player makes one, its section in CDPLAYER.INI: the sum of the tracks' starts, each as minute,
   // second and frame packed in a word (MSF 00:02:00 on), in hex
   const discId = () => toc.tracks.reduce((s, t) => { const f = t.lba + 150; return (s + ((Math.floor(f / 4500) << 16) | ((Math.floor(f / 75) % 60) << 8) | (f % 75))) >>> 0; }, 0).toString(16).toUpperCase();
-  window.W95CDAudio = { toc, cda, serial: () => (toc ? serial() : 0), discId: () => (toc ? discId() : null), play, stop, gain, levels: () => levels };
+  window.W95CDAudio = { toc, cda, serial, discId, play, stop, gain, levels: () => levels };
 })();

@@ -1,7 +1,7 @@
 // The audio disc's page side (cdaudio.js): its table of contents from audiocd.json, the Track##.cda files CDFS shows
 // (a RIFF CDDA header: the track, the disc's serial, its first sector and length, and those in minutes, seconds and
 // frames 2 seconds on), and CD Player's disc ID (the sum of the tracks' packed starts, in hex: The Incredible Machine 3's
-// disc is 20D49D5); no audiocd.json, no disc
+// disc is 20D49D5); no audiocd.json, no page
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 const src = readFileSync(new URL('../cdaudio.js', import.meta.url), 'utf8');
@@ -35,7 +35,7 @@ const f = t2.lba + 150; assert.deepEqual([b[36], b[37], b[38]], [f % 75, Math.fl
 const want = T.tracks.reduce((s, t) => { const x = t.lba + 150; return s + ((Math.floor(x / 4500) << 16) | ((Math.floor(x / 75) % 60) << 8) | (x % 75)); }, 0).toString(16).toUpperCase();
 assert.equal(A.discId(), want);
 if (toc && /Incredible Machine 3/.test(toc.album)) assert.equal(A.discId(), '20D49D5', 'the disc ID CD Player looks this disc up by');
-assert.equal(load(null).toc, null); assert.equal(load(null).discId(), null);
+assert.throws(() => load(null), /audiocd.json: 404/);
 // play: the sectors fetched by byte range, 4 seconds at a time, each through the left and right gains; the gain the
 // sound card sends set on them; stop: every source scheduled stopped, nothing more fetched
 {
