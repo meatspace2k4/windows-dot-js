@@ -5311,8 +5311,11 @@ async function osRead() {
     for (const id of osOpened) { osOpened.delete(id); if (!local.has(id)) osStarting.delete(id); }   // (a folder opened, not up by now: the next change tries again)
     // (an object up here that the session had: the strokes made into it so far, fed into this copy of it, once; and
     // the strokes that came for any object before its window was here)
-    for (const [id] of r.applies) if (local.has(id) && !osFed.has(id)) { osFed.add(id); for (const part of S.inputs().get(id) || []) osStroke(id, part, part.by || 'session', local); }
-    for (const [id, list] of osInputWait) if (local.has(id)) { osInputWait.delete(id); for (const [part, by] of list) osStroke(id, part, by, local); }
+    // (not before the window here has the session's size and state: the strokes are offsets from the window as it
+    // was there, and a window still to be placed takes them wrong)
+    for (const [id] of r.applies) if (!osFed.has(id)) osHistWait.add(id);
+    for (const id of osHistWait) if (osFitted(local, id)) { osHistWait.delete(id); osFed.add(id); for (const part of S.inputs().get(id) || []) osStroke(id, part, part.by || 'session', local); }
+    for (const [id, list] of osInputWait) if (osFitted(local, id)) { osInputWait.delete(id); for (const [part, by] of list) osStroke(id, part, by, local); }
   } finally { osBusy = false; if (osAgain) { osAgain = false; osRead(); } }
 }
 /** another machine's state of an object, set on this one */
@@ -5376,7 +5379,7 @@ async function osApply(id, v, local, by) {
 // person's own (feedStroke); the server keeps each object's for a machine joining, which feeds them into its copy
 // once the object is up (osRead). A stroke into a popup of the object's (a menu, a dialog) names the popup by class
 // and title, by which each machine finds its own copy of it
-const osInputWait = new Map(), osFed = new Set();   // (strokes for an object whose window is not here yet; the objects whose history was fed)
+const osInputWait = new Map(), osFed = new Set(), osHistWait = new Set();   // (strokes for an object whose window is not here yet; the objects whose history was fed, and those whose history waits for the window's place)
 /** this person's stroke, or part of one (the machine's message): to the session, by the object its window is */
 function osStrokeOut(m, again) {
   const S = sharedNow(); if (!S) return;
@@ -5386,11 +5389,17 @@ function osStrokeOut(m, again) {
   S.input(id, part); emit('sync.input', { id, n: m.n, events: m.ev.length, done: !!m.done });
 }
 /** another machine's stroke into an object, fed into this machine's copy of its window (kept until the window is here) */
+/** whether an object's window here has the session's size and state: the strokes are offsets from the window as it
+ *  was there, and a window still to be placed would take them wrong (a derived object carries no place: as it is) */
+function osFitted(local, id) {
+  const m = local.get(id), S = sharedNow(), v = S && S.world().get(id);
+  return !!m && (!v || v.x === undefined || (m.v.w === v.w && m.v.h === v.h && !!m.v.max === !!v.max));
+}
 function osStroke(id, part, by, local) {
   const a = sysApp; if (!a || !a.alive) return;
   if (!local) { osLocal().then(l => osStroke(id, part, by, l || new Map())).catch(() => {}); return; }   // (the machine's windows now: the object's may be new)
   const mine = local.get(id);
-  if (!mine) { (osInputWait.get(id) || osInputWait.set(id, []).get(id)).push([part, by]); osSoon(); return; }   // (not here yet: fed once it is, osRead)
+  if (!mine || !osFitted(local, id)) { (osInputWait.get(id) || osInputWait.set(id, []).get(id)).push([part, by]); osSoon(); return; }   // (not here, or not placed, yet: fed once it is, osRead)
   a.cmd('stroke', [`${by}:${part.n}`, mine.hwnd, part.pop || null, part.ev || [], !!part.done]).catch(() => {});
   emit('sync.stroke', { id, by, events: (part.ev || []).length, done: !!part.done });
   const S = sharedNow(), v = S && S.world().get(id); if (v && by !== 'session') peerActing(id, by, v);
