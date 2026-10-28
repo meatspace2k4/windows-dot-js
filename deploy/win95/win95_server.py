@@ -177,10 +177,11 @@ class H(http.server.SimpleHTTPRequestHandler):
         return f
 
     def end_headers(self):
-        # The page revalidates (the edge may keep it for its s-maxage); every other file carries the deploy's ?v=
-        # and is never kept by a browser: a new deploy is always a new URL, and an old one is never served stale.
-        page = self.path.split("?", 1)[0] in ("/", "/index.html")
-        self.send_header("Cache-Control", "public, no-cache, s-maxage=60" if page else "no-store, max-age=0")
+        # The page revalidates (the edge may keep it for its s-maxage); every file is immutable, kept by the browser and the
+        # edge (a new deploy is a new ?v= URL). /__ endpoints set their own.
+        path = self.path.split("?", 1)[0]
+        if not path.startswith("/__"):
+            self.send_header("Cache-Control", "public, no-cache, s-maxage=60" if path in ("/", "/index.html") else "public, max-age=31536000, immutable")
         self.send_header("Cross-Origin-Opener-Policy", "same-origin")
         self.send_header("Cross-Origin-Embedder-Policy", "require-corp")
         super().end_headers()

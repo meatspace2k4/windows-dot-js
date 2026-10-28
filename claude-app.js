@@ -169,7 +169,7 @@
     [ID.ANSWER0, ID.ANSWER1].forEach((k, i) => { const a = n && n.actions && n.actions[i]; if (a) text(p, app.kid[k], `answer${i}`, String(a.label || a.action || 'OK').replace(/&/g, '&&')); });
     // the session's card (a start_session proposal or offer): its title and its two buttons
     const cd = card(s);
-    if (cd) { text(p, app.kid[ID.CARD], 'card', `${cd.kind === 'offer' ? 'New task' : 'Suggested task'}: ${cd.title}`); cd.buttons.forEach((b, i) => text(p, app.kid[i ? ID.CARD1 : ID.CARD0], `card${i}`, b)); }
+    if (cd) { text(p, app.kid[ID.CARD], 'card', cd.kind === 'question' ? cd.title : `${cd.kind === 'offer' ? 'New task' : 'Suggested task'}: ${cd.title}`); cd.buttons.forEach((b, i) => text(p, app.kid[i ? ID.CARD1 : ID.CARD0], `card${i}`, b)); }
     // the panes, at the right
     const panes = (v.panes || []).filter(x => PANE_TITLE[x]).slice(0, 2);
     panes.forEach((x, i) => { text(p, app.kid[i ? ID.PANE1 : ID.PANE0], `pane${i}`, PANE_TITLE[x]); text(p, app.kid[i ? ID.PANE1_TEXT : ID.PANE0_TEXT], `pane${i}t`, paneText(x, s)); });

@@ -632,7 +632,7 @@
       return new Promise(ok => {
         cardWaits.set(card.task_id, b => { cardWaits.delete(card.task_id); cardWins.delete(card.task_id); ok(b); });
         if (quiet && api.asker) return;
-        const w = ui.msgBox(card.kind === 'offer' ? 'New task' : 'Suggested task', `${card.title}${card.prompt ? `\n\n${card.prompt.slice(0, 400)}` : ''}`, 'info', buttons, b => { const f = cardWaits.get(card.task_id); if (f) f(b); }, { modal: false });
+        const w = ui.msgBox(card.kind === 'offer' ? 'New task' : card.kind === 'question' ? 'Claude' : 'Suggested task', `${card.title}${card.prompt ? `\n\n${card.prompt.slice(0, 400)}` : ''}`, card.kind === 'question' ? 'question' : 'info', buttons, b => { const f = cardWaits.get(card.task_id); if (f) f(b); }, { modal: false });
         cardWins.set(card.task_id, w);
       });
     }
@@ -688,6 +688,31 @@
     const textOf = e => { if (e.size > 4 << 20) return null; const t = ui.fs.readText(e.path); return t.includes('\0') ? null : t; };
     const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
     const FILES = {
+      // AskUserQuestion: 1 to 4 questions of 2 to 4 options each, asked one after another as Claude Code asks them; two options
+      // are a card in the Claude program (cardBox), more a message box of the page's with a button each, and a multi-select
+      // asks each option as Yes or No. The answers go back as Claude Code words them
+      async AskUserQuestion(a) {
+        const qs = a.questions;
+        if (!Array.isArray(qs) || !qs.length || qs.length > 4) not('questions: 1 to 4 questions.');
+        for (const q of qs) if (!q || typeof q.question !== 'string' || !q.question.trim() || !Array.isArray(q.options) || q.options.length < 2 || q.options.length > 4 || q.options.some(o => !o || typeof o.label !== 'string' || !o.label.trim())) not('Each question needs its text and 2 to 4 options, each with a label.');
+        const said_ = [];
+        for (const q of qs) {
+          const title = String(q.header || 'Claude').slice(0, 40), labels = q.options.map(o => o.label.trim().slice(0, 40));
+          const text = `${q.question.trim()}\n\n${q.options.map(o => `${o.label.trim()}${o.description ? `: ${String(o.description).slice(0, 200)}` : ''}`).join('\n')}`;
+          let pick;
+          if (q.multiSelect) {
+            pick = [];
+            for (const o of q.options) if ((await ask(title, `${q.question.trim()}\n\nInclude "${o.label.trim()}"?${o.description ? `\n${String(o.description).slice(0, 200)}` : ''}`)) === 'Yes') pick.push(o.label.trim());
+            pick = pick.join(', ') || 'None';
+          } else if (labels.length === 2) {
+            const card = { task_id: uid('task'), kind: 'question', title: q.question.trim(), prompt: text.slice(q.question.trim().length + 2), created: now() };
+            st.cards.push(card); save('cards');
+            pick = await cardBox(card, labels); dropCard(card.task_id);
+          } else pick = await new Promise(ok => ui.msgBox(title, text, 'question', labels, b => ok(b), { modal: false }));
+          said_.push(`"${q.question.trim()}"="${pick}"`);
+        }
+        return `User has answered your questions: ${said_.join(', ')}. You can now continue with the user's answers in mind.`;
+      },
       // Bash: the command run as COMMAND.COM /C runs it, in an MS-DOS machine of Windows 95's (the session's folder
       // its current one), what it writes to the screen the answer; asked as Claude Code asks, by permission mode
       async Bash(a) {
@@ -762,6 +787,7 @@
     };
     const S_ = (props, req) => ({ type: 'object', properties: props, required: req });
     const FILE_DEFS = [
+      { name: 'AskUserQuestion', description: 'Asks the user 1 to 4 multiple-choice questions and waits for the answers: to gather preferences, clarify an ambiguous instruction, or let the user choose between approaches. Each question has 2 to 4 options (a label and what it means); the user may pick one, or several when multiSelect is true.', input_schema: S_({ questions: { type: 'array', minItems: 1, maxItems: 4, description: 'The questions to ask', items: S_({ question: { type: 'string', description: 'The complete question, ending with a question mark' }, header: { type: 'string', description: 'A very short label for the question (at most 12 characters)' }, multiSelect: { type: 'boolean', description: 'Allow more than one option to be chosen (default false)' }, options: { type: 'array', minItems: 2, maxItems: 4, description: 'The choices', items: S_({ label: { type: 'string', description: 'The choice, 1 to 5 words' }, description: { type: 'string', description: 'What choosing it means' } }, ['label', 'description']) } }, ['question', 'header', 'options']) } }, ['questions']) },
       { name: 'Bash', description: 'Runs a command in MS-DOS (COMMAND.COM /C) in a machine of this Windows 95, its drives C: and D: Windows\' own, starting in the session\'s folder, and returns what it writes to the screen. The command line is MS-DOS\'s: 127 characters at most, no && or pipes to Unix tools; DIR, TYPE, COPY, REN, DEL, MD, SET, the programs in C:\\WINDOWS\\COMMAND (MEM, FIND, SORT, MORE, XCOPY, ATTRIB, FC, DEBUG, ...) and any MS-DOS program, with | and > as DOS has them. The session\'s permission mode decides whether the user is asked.', input_schema: S_({ command: { type: 'string', description: 'The MS-DOS command to run' }, description: { type: 'string', description: 'What the command does, in 5-10 words' }, timeout: { type: 'integer', description: 'Milliseconds before it is stopped (default 120000, at most 600000)' } }, ['command']) },
       { name: 'Read', description: 'Reads a file from the C: drive (the system\'s own disk). file_path is absolute (C:\\...) or relative to the session\'s folder. Reads up to 2000 lines from offset, in cat -n format with line numbers starting at 1. Other drives, network drives and shares are refused.', input_schema: S_({ file_path: { type: 'string', description: 'The path of the file to read' }, offset: { type: 'integer', description: 'The line number to start reading from' }, limit: { type: 'integer', description: 'The number of lines to read' } }, ['file_path']) },
       { name: 'Write', description: 'Writes a file on the C: drive, overwriting it if it is there. An existing file must be Read first in this session. The session\'s permission mode decides whether the user is asked.', input_schema: S_({ file_path: { type: 'string', description: 'The path of the file to write' }, content: { type: 'string', description: 'The content to write to the file' } }, ['file_path', 'content']) },
@@ -1319,7 +1345,7 @@
       if (f) { f(label); return; }
       if (!card) return;
       dropCard(taskId); ui.emit('ccd.answer', { card: taskId, label, message: label });
-      if (label === 'Start' || label === 'New session') { const was = self; self = byId(card.session) || self; try { startFrom(card); } finally { self = was; } }
+      if (card.kind !== 'question' && (label === 'Start' || label === 'New session')) { const was = self; self = byId(card.session) || self; try { startFrom(card); } finally { self = was; } }
     };
     api.Error = CcdError;
     api.state = () => JSON.parse(JSON.stringify(st));

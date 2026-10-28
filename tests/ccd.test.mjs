@@ -176,6 +176,20 @@ await rejects(p, /Not allowed/); assert.equal(files.get('C:\\NOTE.TXT'), 'a\r\nb
 assert.match(await ccd.callAs(null, 'Read', { file_path: 'C:\\NOTE.TXT' }), /^ {5}1\ta\n {5}2\tb$/);
 files.delete('C:\\NOTE.TXT');
 
+// AskUserQuestion: two options a card, more a box with a button each, a multi-select asked per option; answered as Claude Code words it
+assert.ok(ccd.toolDefs().some(d => d.name === 'AskUserQuestion' && d.input_schema.required[0] === 'questions'));
+await rejects(ccd.callAs(null, 'AskUserQuestion', { questions: [] }), /1 to 4 questions/);
+await rejects(ccd.callAs(null, 'AskUserQuestion', { questions: [{ question: 'Which?', options: [{ label: 'A' }] }] }), /2 to 4 options/);
+p = ccd.callAs(null, 'AskUserQuestion', { questions: [
+  { question: 'Which port?', header: 'Port', options: [{ label: 'COM1', description: 'first' }, { label: 'COM2', description: 'second' }] },
+  { question: 'Which fonts?', header: 'Fonts', options: [{ label: 'Arial', description: '' }, { label: 'Times', description: '' }, { label: 'Courier', description: '' }] },
+  { question: 'Which extras?', header: 'Extras', multiSelect: true, options: [{ label: 'Sound', description: '' }, { label: 'Network', description: '' }] }] });
+await tick(); assert.deepEqual(plain(boxes.at(-1).buttons), ['COM1', 'COM2']); boxes.at(-1).press('COM2');
+await tick(); assert.deepEqual(plain(boxes.at(-1).buttons), ['Arial', 'Times', 'Courier']); boxes.at(-1).press('Times');
+await tick(); boxes.at(-1).press('Yes'); await tick(); boxes.at(-1).press('No');
+assert.equal(await p, 'User has answered your questions: "Which port?"="COM2", "Which fonts?"="Times", "Which extras?"="Sound". You can now continue with the user\'s answers in mind.');
+assert.equal(ccd.state().cards.some(c => c.kind === 'question'), false);
+
 // the records last: a new page reads them back from the registry
 ({ ccd } = load());
 const back = ccd.state();
