@@ -125,7 +125,7 @@ DEV_SITE = BASE.parent / (BASE.name + "-dev") / "site"
 import sys
 sys.path.insert(0, str(BASE))
 import sessions
-from claude_api import local_request, claude, fetch_page   # (tools/claude_api.py, copied beside this by deploy.sh)
+from claude_api import local_request, site_request, claude, fetch_page   # (tools/claude_api.py, copied beside this by deploy.sh)
 SESSIONS = {"prod": sessions.Sessions(str(BASE / "sessions")), "dev": sessions.Sessions(str(BASE.parent / (BASE.name + "-dev") / "sessions"))}
 
 
@@ -205,8 +205,8 @@ class H(http.server.SimpleHTTPRequestHandler):
     def do_POST(self):
         if self.path.startswith("/__session") and sessions_for(self.headers.get("Host")).handle(self, "POST"):
             return
-        if self.path.split("?")[0] in ("/__claude", "/__fetch"):   # (local_request: only this machine's own *.localhost pages)
-            if not local_request(self):
+        if self.path.split("?")[0] in ("/__claude", "/__fetch"):   # (/__fetch reads any address from this machine: its own *.localhost pages only)
+            if not (site_request if self.path.startswith("/__claude") else local_request)(self):
                 self.send_error(403)
                 return
             try:

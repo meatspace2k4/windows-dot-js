@@ -29,6 +29,12 @@ def local_request(h):
     return (h.client_address[0] in ('127.0.0.1', '::1') and (host in ('localhost', '127.0.0.1', '::1') or host.endswith('.localhost'))
             and (origin is None or re.sub(r'^https?://', '', origin).rsplit(':', 1)[0].strip('[]').lower() == host)
             and (h.headers.get('Content-Type') or '').startswith('application/json'))
+def site_request(h):
+    """the site's own page on any host (the public one too): JSON, from an Origin of the Host asked, as no other site's page can send"""
+    host = (h.headers.get('Host') or '').rsplit(':', 1)[0].strip('[]').lower()
+    origin = h.headers.get('Origin')
+    return ((origin is None or re.sub(r'^https?://', '', origin).rsplit(':', 1)[0].strip('[]').lower() == host)
+            and (h.headers.get('Content-Type') or '').startswith('application/json'))
 TOOL_NAME = re.compile(r'^[a-zA-Z0-9_-]{1,64}$')
 def tools_of(q):
     """the page's tools (the Claude app's own, ccd.js), checked: a name, a description and an object schema each"""
