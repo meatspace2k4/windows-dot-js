@@ -65,6 +65,7 @@ writeFileSync(join(inst, 'sessions.py'), readFileSync(join(root, 'tools/sessions
 writeFileSync(join(inst, 'claude_api.py'), readFileSync(join(root, 'tools/claude_api.py')));
 writeFileSync(join(inst, 'site/index.html'), '<meta name="build-channel" content="prod" />');
 writeFileSync(join(inst, 'site/a.js'), '0123456789');
+writeFileSync(join(inst, 'site/cdrom.iso'), '0123456789');
 mkdirSync(join(inst, 'share')); writeFileSync(join(inst, 'share/README.TXT'), 'hello world');
 writeFileSync(join(dev, 'site/index.html'), '<meta name="build-channel" content="dev" />');
 const port = 20000 + Math.floor(Math.random() * 20000);
@@ -97,6 +98,8 @@ try {
   x = await get('/a.js?v=1', 'win95.funstuff.app', { headers: { Range: 'bytes=2-4' } });
   assert.equal(x.status, 206); assert.equal(await x.text(), '234');
   assert.equal(x.headers.get('cache-control'), null);
+  x = await get('/cdrom.iso', 'win95.funstuff.app', { headers: { Range: 'bytes=2-4' } });   // (the CD is read by range: never the edge's to fetch whole)
+  assert.equal(x.status, 206); assert.equal(await x.text(), '234'); assert.equal(x.headers.get('cache-control'), 'private');
   x = await get('/../win95_server.py', 'win95.funstuff.app');
   assert.equal(x.status, 404); await x.text();
   const post = (host, o) => { const body = JSON.stringify(o); return get('/__share', host, { method: 'POST', body, headers: { 'Content-Length': String(Buffer.byteLength(body)) } }).then(async y => JSON.parse(await y.text())); };

@@ -177,7 +177,11 @@ class H(http.server.SimpleHTTPRequestHandler):
         return f
 
     def end_headers(self):
-        # No Cache-Control here: Cloudflare manages the cache (the /__ endpoints set their own).
+        # No Cache-Control here: Cloudflare manages the cache (the /__ endpoints set their own), except the CD images the
+        # page reads a sector range at a time: Cloudflare caches .iso and .bin, and for a range it first fetches the whole
+        # file (600 MB) from the origin, so the page's synchronous reads never come back
+        if self.path.split("?", 1)[0] in ("/cdrom.iso", "/audiocd.bin"):
+            self.send_header("Cache-Control", "private")
         self.send_header("Cross-Origin-Opener-Policy", "same-origin")
         self.send_header("Cross-Origin-Embedder-Policy", "require-corp")
         super().end_headers()
