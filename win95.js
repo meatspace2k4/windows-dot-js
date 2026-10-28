@@ -5043,6 +5043,7 @@ const devtoolsKey = e => (e.code === 'KeyI' && e.altKey && (e.metaKey || e.ctrlK
 // whether DevTools are open: told by the app (W95HOST.devtools), else guessed from the window's chrome. The machine is
 // told as a registry value (HKLM\...\CurrentVersion\Debug, DevTools), which the Debug Monitor and scripts can read
 let devtoolsOpen = false;
+const listeners = new Map();   // (win95.on's: before devtoolsState runs at load, which emits)
 function devtoolsState(open) {
   if (open === devtoolsOpen) return;
   devtoolsOpen = open;
@@ -5153,7 +5154,6 @@ Promise.all(ready).then(() => { resize(); kbd.focus(); dirty(); });
 // client that registered the binding __w95event (Runtime.addBinding), as JSON { type, ...data }.
 // Window, menu and screen saver events come from comparing the shell's state after each change; file system
 // events come straight from the file system.
-const listeners = new Map();
 function emit(type, data = {}) {
   const ev = { type, ...data, t: Date.now() };
   if (DEBUG && /^sync\./.test(type)) { const l = window.W95SYNCLOG || (window.W95SYNCLOG = []); l.push(ev); if (l.length > 200) l.shift(); }   // (a shared session's sync, from the page's start: ?debug=1)
