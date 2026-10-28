@@ -14,6 +14,7 @@ const b64bytes = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
 const post = (m, tr) => self.postMessage(m, tr || []);
 self.W95CDAUDIO = (op, from, to) => post({ t: 'cdaudio', op, from, to });   // (the audio CD drive's play and stop, for the page's cdaudio.js: ne16.js cdRequest)
 self.W95MIC = on => post({ t: 'mic', on });                                 // (the sound card's capture started or stopped: the page's microphone: sound.js)
+self.W95CDTRACE = s => post({ t: 'cdtrace', s: `${Date.now() % 1000000} ${s}` });   // (MSCDEX's requests, for the page to send to the dev server's cd log)
 self.W95CDGAIN = (l, r) => post({ t: 'cdaudio', op: 'gain', l, r });       // (the sound card's AUX1 gain the drive's output goes through: sound.js)
 
 // ---------------------------------------------------------------- the page, called synchronously

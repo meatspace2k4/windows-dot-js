@@ -623,7 +623,16 @@ function absDisk(p, write) {
 // volume's size, 9 media not changed, 10 the audio disc (tracks 1 to 1, the lead-out), 11 a track (a data track: its
 // control byte 41h), 12 the Q channel, 15 the audio status; IOCTL output (12), open (13), close (14), and play (84h),
 // stop (85h) and resume (88h), which have nothing to play on a data disc, are done
-const cdRequest = p => {
+const cdRequest = p => {   // (each request logged for the dev server's cd log: worker.js W95CDTRACE)
+  const T = self.W95CDTRACE; if (!T) return cdRequest0(p);
+  const at = (s, o) => (p.rmode ? ((s & 0xffff) << 4) + (o & 0xffff) : p.lin(u32(((s & 0xffff) << 16) | (o & 0xffff))));
+  const hdr = at(p.cpu.es.value, p.cpu.ebx.value), drive = p.cpu.ecx.value & 0xffff, cmd = p.u8[hdr + 2];
+  const t = cmd === 3 ? p.r32(hdr + 0x0e) : 0, b = t ? at(t >>> 16, t) : 0;
+  const r = cdRequest0(p);
+  T(`th${p.thread16 ? p.thread16.id : 0} d${drive} c${cmd.toString(16)}${b ? ' i' + p.u8[b] : ''} -> ${p.r16(hdr + 3).toString(16)}${b ? ' [' + [...p.u8.subarray(b, b + 8)].map(x => x.toString(16)).join(' ') + ']' : ''}`);
+  return r;
+};
+const cdRequest0 = p => {
   const rm = p.rmode, at = (s, o) => (rm ? ((s & 0xffff) << 4) + (o & 0xffff) : p.lin(u32(((s & 0xffff) << 16) | (o & 0xffff))));
   const hdr = at(p.cpu.es.value, p.cpu.ebx.value), drive = p.cpu.ecx.value & 0xffff;
   const status = v => p.w16(hdr + 3, v);
@@ -1020,6 +1029,7 @@ const INTS = {
     if ((ax >> 8) === 0x15 && [0x00, 0x0b, 0x0c, 0x0d].includes(ax & 0xff)) {
       const cds = [...this.fs.vols.values()].filter(v => v.kind === 'cdrom').map(v => v.letter.charCodeAt(0) - 65).sort((a, b) => a - b);
       const reg = (r, v) => { this.cpu[r].value = lo16(this.cpu[r].value, v); };
+      if (self.W95CDTRACE) self.W95CDTRACE(`th${this.thread16 ? this.thread16.id : 0} int2f ${ax.toString(16)} cx${(this.cpu.ecx.value & 0xffff).toString(16)} drives ${cds.join(',')}`);
       switch (ax & 0xff) {
         case 0x00: reg('ebx', cds.length); if (cds.length) reg('ecx', cds[0]); return;
         case 0x0b: reg('ebx', 0xadad); this.ax(cds.includes(this.cpu.ecx.value & 0xffff) ? 0x5ad8 : 0); return;

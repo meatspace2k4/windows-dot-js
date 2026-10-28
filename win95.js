@@ -3652,6 +3652,7 @@ class RemoteApp extends NativeApp {
       case 'conOut': { const c = consoles.get(m.id); if (c) { c.conWrite(m.text); dirty(); } return; }
       case 'mic': { if (window.W95Mic) window.W95Mic.set(!!m.on, (samples, rate) => this.worker.postMessage({ t: 'micIn', samples, rate }, [samples.buffer])); return; }   // (the sound card capturing: the microphone opened, or let go)
       case 'cdaudio': { const A = window.W95CDAudio; if (A) { if (m.op === 'play') A.play(m.from, m.to); else if (m.op === 'gain') A.gain(m.l, m.r); else A.stop(); } return; }   // (the audio CD drive told to play sectors, or stop; the sound card's gain for it)
+      case 'cdtrace': { (window.cdLogBuf || (window.cdLogBuf = [])).push(m.s); if (!window.cdLogT) window.cdLogT = setTimeout(() => { window.cdLogT = 0; fetch('/__cdlog', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ lines: window.cdLogBuf.splice(0) }) }).catch(() => {}); }, 300); return; }
       case 'conMode': { const c = consoles.get(m.id); if (c && c.conWait) c.conWait.mode = m.mode; return; }
       case 'conExit': { const c = consoles.get(m.id); if (c) { consoles.delete(m.id); c.conDone(); } return; }
       case 'ccdTurn': emit('ccd.reply', { session: m.session, text: m.text, error: m.error, stopped: !!m.stopped }); if (m.kind) emit('ccd.notify', { kind: m.kind, session: m.session }); return;   // (a turn of the Claude program's ended)

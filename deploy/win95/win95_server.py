@@ -217,6 +217,16 @@ class H(http.server.SimpleHTTPRequestHandler):
                 return
             (claude if self.path.startswith("/__claude") else fetch_page)(self, q)
             return
+        if self.path.split("?")[0] == "/__cdlog" and local_request(self):   # (the dev page's CD request trace, read back from the file)
+            try:
+                q = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+                with open("/tmp/w95/cdlog.txt", "a") as f:
+                    f.write("\n".join(str(x)[:300] for x in q.get("lines", [])[:500]) + "\n")
+            except (ValueError, OSError):
+                pass
+            self.send_response(204)
+            self.end_headers()
+            return
         # /__share as tools/serve.py answers it: the host's name, the shares' list, and an operation on one (the page
         # learns its computer's name here, as on the dev server and in the app)
         if self.path.split("?")[0] != "/__share":
