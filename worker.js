@@ -322,16 +322,25 @@ class Machine {
     // its own. One at a time, the next once the program has taken it: a queue keeps only so many)
     // (as many as the window's queue takes, up to 16 a pass: a post refused by a full queue is kept for the next;
     // the stroke is over once its events are posted and the last has been taken)
-    const s = this.rs, sw = this.sw, sh = this.sh;
-    let full = false, at = null;
-    for (let n = 0; s.ev.length && n < 16 && !full; n++) {
+    // (the stroke's events through the mouse driver, as this person's own go in, paced the same way, up to lagMax
+    // moves ahead of the program taking them (ne16.js hookTaken): posted messages were taken only in part by a
+    // program whose window was not the active one. This person's pointer goes with it and comes back at the end)
+    const s = this.rs, sw = this.sw, sh = this.sh, max = this.lagMax || 4;
+    let at = null;
+    while (s.ev.length) {
       const [f, dx, dy] = s.ev[0], sx = Math.max(0, Math.min(sw - 1, s.ox + dx)), sy = Math.max(0, Math.min(sh - 1, s.oy + dy));
+      if (f === 1) {
+        const taken = p.movesTaken || 0, lag = (this.movesFed || 0) - taken;
+        if (lag >= max && performance.now() - (this.lastFed || 0) < 100) break;
+        if (lag >= max) this.movesFed = taken;
+        this.movesFed = (this.movesFed || 0) + 1;
+      }
+      const ax = Math.round(sx * 65535 / (sw - 1)), ay = Math.round(sy * 65535 / (sh - 1));
+      if (f & ~1) p.mouseEvent16(0x8001, ax, ay);   // (a button at a place: the move there first, as queueMouse sends them: USER takes the button where the cursor is)
+      p.mouseEvent16(0x8000 | f, ax, ay); this.lastFed = performance.now();
       let keys = s.keys; if (f & 2) keys |= 1; if (f & 4) keys &= ~1; if (f & 8) keys |= 2; if (f & 16) keys &= ~2;
-      const msgs = []; if (f & 2) msgs.push(0x201); if (f & 8) msgs.push(0x204); if ((f & 1) || !msgs.length) msgs.unshift(0x200); if (f & 4) msgs.push(0x202); if (f & 16) msgs.push(0x205);   // WM_MOUSEMOVE, WM_LBUTTONDOWN, WM_RBUTTONDOWN, WM_LBUTTONUP, WM_RBUTTONUP
-      const oks = [];
-      for (const m of msgs) { const ok = p.postMouse(s.child, m, m === 0x202 ? keys & ~1 : m === 0x205 ? keys & ~2 : keys, sx, sy); oks.push(ok); if (!ok) break; const c = this.posted || (this.posted = {}); c[m] = (c[m] || 0) + 1; }
-      if (oks.some(o => !o)) { full = true; if (oks.length > 1) s.lost = (s.lost || 0) + 1; break; }   // (the queue full: again next pass; a button's messages split by it are counted)
       s.ev.shift(); s.keys = keys; s.fed++; at = [sx, sy]; s.last = at;
+      const c = this.posted || (this.posted = {}); c[f] = (c[f] || 0) + 1;
       if (this.lagLog) this.lagLog.push({ k: 'stroke-fed', f, x: sx, y: sy, t: Date.now() });
     }
     // (where the stroke has got to here, for the page to draw its person's pointer there, on the line as it is drawn)
@@ -341,9 +350,13 @@ class Machine {
     // shows an empty queue, so none is waited for)
     // (a stroke whose end never comes, its sender gone or its parts lost, is let go after 3 s without a part: a
     // release is posted so the program's drag ends, and the next stroke goes in)
-    if (!s.ev.length && !s.done) { if (!s.idle) s.idle = performance.now(); else if (performance.now() - s.idle > 3000) { const [lx, ly] = s.last || [s.ox, s.oy]; if (s.keys & 1) p.postMouse(s.child, 0x202, s.keys & ~1, lx, ly); if (s.keys & 2) p.postMouse(s.child, 0x205, s.keys & ~2, lx, ly); s.done = true; } }
+    if (!s.ev.length && !s.done) { if (!s.idle) s.idle = performance.now(); else if (performance.now() - s.idle > 3000) { const [lx, ly] = s.last || [s.ox, s.oy], ax = Math.round(lx * 65535 / (sw - 1)), ay = Math.round(ly * 65535 / (sh - 1)); if (s.keys & 1) p.mouseEvent16(0x8004, ax, ay); if (s.keys & 2) p.mouseEvent16(0x8010, ax, ay); s.done = true; } }
     else s.idle = 0;
-    if (!s.ev.length && s.done) { this.rs = null; return this.feedStroke(); }
+    if (!s.ev.length && s.done) {   // (its end: this person's pointer back where it is)
+      this.rs = null;
+      if (this.ax >= 0) p.mouseEvent16(0x8001, this.ax, this.ay);
+      return this.feedStroke();
+    }
     return true;
   }
   /** the screen's mode, DAC and cursor sprite for the page, which shows the screen from the shared memory */
