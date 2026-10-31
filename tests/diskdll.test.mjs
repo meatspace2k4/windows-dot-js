@@ -56,6 +56,7 @@ const user16 = { name: 'USER', base: 0x01a00000, segs: [{ base: 0x01a00000, allo
   assert.deepEqual(p.thunks, [], 'no dead thunk');
   assert.equal(p.r32(rec.base + 0x10a0) >>> 0, 0x00700000 + 0x1100, 'the IAT holds #287: the 20th export from base 268');
   assert.ok(rec.deps.includes(testlib), 'the program depends on it (its DllMain runs as the program starts)');
+  assert.deepEqual([...testlib.importers.get('#287')], ['EXE'], 'who imports the ordinal: cmd watch\'s name for an export without one');
 }
 { // a DLL on no disk and implemented nowhere: the image is not loaded, as Windows refuses it
   const p = machine({});

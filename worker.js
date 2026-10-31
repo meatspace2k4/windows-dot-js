@@ -669,6 +669,19 @@ class Machine {
   // a Win32 program the bundle does not carry: its image as the loader maps one (the base its header prefers, in its
   // process's own view where other programs are; else, when it can be relocated, in the arena the system's modules
   // leave free), its code translated as it runs (dyn.js); null when it is no Win32 program or has no room
+  /** a 32-bit DLL's export names by ordinal from its .def (EXPORTS name @n) or .map file (its exports' "ordinal name"
+   *  lines), looked for where its loader looks for the DLL; empty when there is neither (cmd 'watch') */
+  ordNames(m) {
+    if (m.ordNames) return m.ordNames;
+    const out = m.ordNames = new Map(), read = f => { try { return W95FS.decode(fs.readFile(f)); } catch (_) { return null; } };
+    for (const dir of ['C:\\WINDOWS\\SYSTEM', 'C:\\WINDOWS', ...[...(this.proc.procs || new Map()).values()].map(c => String(c.path || '').replace(/\\[^\\]*$/, ''))]) {
+      const def = read(`${dir}\\${m.name}.DEF`), map = !def && read(`${dir}\\${m.name}.MAP`);
+      if (def) { let on = false; for (const l of def.split(/\r?\n/)) { if (/^\s*EXPORTS\b/i.test(l)) { on = true; continue; } if (/^\s*[A-Z]+\s*$/.test(l)) on = false; const x = on && /^\s*([^\s=;][^\s=]*?)(?:\s*=\s*\S+)?\s+@\s*(\d+)/.exec(l); if (x) out.set(+x[2], x[1]); } }
+      if (map) { let on = false; for (const l of map.split(/\r?\n/)) { if (/ordinal\s+name/i.test(l)) { on = true; continue; } const x = on && /^\s*(\d+)\s+(\S+)/.exec(l); if (x) out.set(+x[1], x[2]); } }
+      if (def || map) break;
+    }
+    return out;
+  }
   isNE(file) {
     let f; try { f = fs.readFile(file); } catch (_) { return false; }
     if (f.length < 0x40 || f[0] !== 0x4d || f[1] !== 0x5a) return false;
@@ -1221,8 +1234,12 @@ class Machine {
           if (want) { for (const [ord, a] of m.exports) { const nm = byOrd.get(ord) || `#${ord}`; if (want.test(nm) && lin(a)) names.push([nm, lin(a)]); } }
           else { const key = /^#?\d+$/.test(String(name)) ? +String(name).replace('#', '') : String(name), a = lin(p.neExport(m, key)); if (a) names.push([typeof key === 'number' ? byOrd.get(key) || `#${key}` : key, a]); }
         } else {
-          if (want) { for (const [nm, a] of m.exports) if (want.test(nm) && typeof a === 'number' && a) names.push([nm, a >>> 0]); }
-          else { const a = m.exports.get(name); if (a) names.push([name, a >>> 0]); }
+          // (an export by ordinal only, as MFC30's all are: named from a .def or .map file beside the DLL when there is
+          // one, else by its ordinal with the modules that import it)
+          const named = this.ordNames(m), label = nm => !/^#\d+$/.test(nm) ? nm : named.get(+nm.slice(1)) || (m.importers && m.importers.has(nm) ? `${nm} (${[...m.importers.get(nm)].join(', ')})` : nm);
+          const hasName = new Set([...m.exports].filter(([nm]) => nm[0] !== '#').map(([, a]) => a));
+          if (want) { for (const [nm, a] of m.exports) if (typeof a === 'number' && a && !(nm[0] === '#' && hasName.has(a)) && want.test(label(nm))) names.push([label(nm), a >>> 0]); }
+          else { const k = [...named].find(([, v]) => v === name), a = m.exports.get(k ? `#${k[0]}` : name); if (a) names.push([label(k ? `#${k[0]}` : name), a >>> 0]); }
         }
         if (!names.length) return false;
         const log = () => p.watchLog || (p.watchLog = []), t0 = performance.now();

@@ -173,6 +173,8 @@ class Process {
         const v = this.r32(lut); if (!v) break;
         const nm = v & 0x80000000 ? '#' + (v & 0xffff) : this.readA(base + v + 2);
         const addr = (native && native.exports.get(nm)) || (this.peResolve && this.peResolve(dll, nm));   // a ring-0 image's (vmm.js PELDR)
+        // (who imports an export by ordinal: the name cmd 'watch' gives one that has none, MFC30's)
+        if (native && nm[0] === '#') { const by = native.importers || (native.importers = new Map()); if (!by.has(nm)) by.set(nm, new Set()); by.get(nm).add(name === 'EXE' ? (meta.name || name) : name); }
         this.w32(iat + 4 * k, addr || this.thunkFor(dll, nm));
       }
     }
@@ -676,6 +678,7 @@ class Process {
     // the access was to in CR2, a write's flagged in the exception's information)
     if ((code & ~0x10) === 0x4000000) {
       this.pfWrite = !!(code & 0x10);
+      (this.faultLog || (this.faultLog = [])).push({ why: `ring 3 ${this.pfWrite ? 'write' : 'read'} at ${u32(eip).toString(16)}, a protected page`, at: u32(this.cpu.eip.value).toString(16), atIn: this.whereOf(this.cpu.eip.value), thread: this.thread16 ? this.thread16.id : 'main' }); if (this.faultLog.length > 50) this.faultLog.shift();
       try { this.cpu.eip.value = this.raise(14, u32(this.cpu.eip.value), u32(eip)) | 0; } finally { this.pfWrite = false; }
       return;
     }
