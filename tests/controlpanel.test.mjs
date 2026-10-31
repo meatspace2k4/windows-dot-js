@@ -24,7 +24,7 @@ const cut = (a, b) => { const i = w.indexOf(a); assert.ok(i >= 0, a); return w.s
   const files = new Set(['C:\\WINDOWS\\RUNDLL32.EXE']);
   const fs = { exists: f => files.has(f.toUpperCase()), cwd: 'C:\\WINDOWS\\DESKTOP' };
   const join = (...a) => a.filter(Boolean).join('\\'), basename = f => f.slice(f.lastIndexOf('\\') + 1), extname = f => (/\.[^.\\]*$/.exec(f) || [''])[0];
-  const A = new Function('fs', 'join', 'basename', 'extname', 'self', 'rpc', `return class {\n${src}\n spawnProgram(f, a) { return { f, a }; }\n isNE() { return false; } }`)(fs, join, basename, extname, { W95SYSTEM: {} }, () => null);
+  const A = new Function('fs', 'join', 'basename', 'extname', 'self', 'rpc', `return class {\n${src}\n spawnProgram(f, a) { return { f, a }; }\n isNE() { return false; }\n bundled() { return null; } }`)(fs, join, basename, extname, { W95SYSTEM: {} }, () => null);
   const a = new A();
   assert.deepEqual(a.exec('C:\\WINDOWS\\rundll32.exe shell32.dll,Control_RunDLL main.cpl,Mouse', 1), { f: 'C:\\WINDOWS\\rundll32.exe', a: 'shell32.dll,Control_RunDLL main.cpl,Mouse' });
   assert.deepEqual(a.exec('"C:\\WINDOWS\\rundll32.exe" shell32.dll,Control_RunDLL x', 1), { f: 'C:\\WINDOWS\\rundll32.exe', a: 'shell32.dll,Control_RunDLL x' });
@@ -33,7 +33,7 @@ const cut = (a, b) => { const i = w.indexOf(a); assert.ok(i >= 0, a); return w.s
   // a Windows 3.x program from disk the bundle does not carry (MSBDEMOS's chooser starting SOLARDEM): a task, as
   // KERNEL's WinExec starts one, its instance the answer, not a Win32 process record
   files.add('D:\\DEMOS\\SOLARDEM.EXE');
-  const B = new Function('fs', 'join', 'basename', 'extname', 'self', 'rpc', `return class {\n${src}\n spawnProgram() { throw new Error('spawned as Win32'); }\n isNE() { return true; } }`)({ ...fs, realpath: f => f }, join, basename, extname, { W95SYSTEM: {} }, () => null);
+  const B = new Function('fs', 'join', 'basename', 'extname', 'self', 'rpc', `return class {\n${src}\n spawnProgram() { throw new Error('spawned as Win32'); }\n isNE() { return true; }\n bundled() { return null; } }`)({ ...fs, realpath: f => f }, join, basename, extname, { W95SYSTEM: {} }, () => null);
   const b = new B(), started = []; b.proc = { winExec16: (f, arg, show) => { started.push([f, arg, show]); return 0x1a27; } };
   assert.equal(b.exec('D:\\DEMOS\\SOLARDEM.EXE /x', 5), 0x1a27); assert.deepEqual(started, [['D:\\DEMOS\\SOLARDEM.EXE', '/x', 5]]);
 }

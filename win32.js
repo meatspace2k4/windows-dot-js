@@ -428,10 +428,13 @@ class Process {
         return `${m.name} ${g.num}:${off.toString(16)}${s ? ` (${s})` : ''}`;
       }
     }
-    for (const m of this.modules || []) {
+    // (a program's image: the running thread's own process's first, named by its file, as programs' images share their
+    // preferred base, each in its process's view: another's EXE there is not what this thread runs)
+    const pc = this.thread16 && this.thread16.pc, own = pc && pc.exe;
+    for (const m of own ? [own, ...(this.modules || []).filter(x => x !== own)] : this.modules || []) {
       if (!m.base || !m.size || lin < m.base || lin >= m.base + m.size) continue;
-      const s = this.peSym(m, lin);
-      return `${m.name || '?'}+${(lin - m.base).toString(16)}${s ? ` (${s})` : ''}`;
+      const s = this.peSym(m, lin), name = m === own && pc.path ? pc.path.replace(/^.*\\/, '').toUpperCase() : m.name || '?';
+      return `${name}+${(lin - m.base).toString(16)}${s ? ` (${s})` : ''}`;
     }
     return lin.toString(16);
   }
