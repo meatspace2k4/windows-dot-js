@@ -2414,6 +2414,12 @@ function runCommand(v) {
   const bases = /^[a-z]:|^\\/i.test(cmd) ? [cmd] : [join(fs.cwd, cmd), join(WINDIR, cmd), join(WINDIR, 'SYSTEM', cmd), join(WINDIR, 'COMMAND', cmd), join('C:\\', cmd)];
   const exts = extname(cmd) ? [''] : ['', '.exe', '.com', '.bat'];
   for (const b of bases) for (const e of exts) if (fs.exists(b + e)) return shellOpen(fs.realpath(b + e), arg);
+  // (then the program's own entry under App Paths, as ShellExecute looks a name up there last: MSPAINT, WORDPAD)
+  if (!/[\\/:]/.test(cmd)) {
+    const ap = W95Win32.regGet(`hklm\\software\\microsoft\\windows\\currentversion\\app paths\\${extname(cmd) ? cmd : cmd + '.exe'}`, '');
+    const at = ap && ap.data && W95FS.decode(ap.data).replace(/\0.*$/, '').replace(/^"(.*)"$/, '$1');
+    if (at && fs.exists(at)) return shellOpen(fs.realpath(at), arg);
+  }
   if (/^[a-z]:\\?$/i.test(cmd)) { try { fs.stat(cmd); } catch (e) { return msgBox(cmd.toUpperCase(), fsMsg(cmd.toUpperCase(), e), 'error'); } }
   msgBox(v, `Cannot find the file '${v}' (or one of its components). Make sure the path and filename are correct and that all required libraries are available.`, 'error');
 }
@@ -5734,9 +5740,12 @@ let ccdApi = null;
 // ccd.js's tools are made again on next use from their records in the registry); a script of the machines' goes to the
 // system's machine (worker.js cmd 'reload')
 const WORKER_SCRIPTS = new Set(['claude-app.js', 'session-dll.js', 'session-tray.js', 'dbwin.js', 'shell32.js', 'osclass.js', 'saver-runtime.js', 'gl.js', 'sound.js']);
+// the page's scripts that only define things, so can be loaded again (win95.js loaded twice ran two shells on one screen)
+const PAGE_SCRIPTS = new Set(['ccd.js']);
 async function reloadScript(f) {
   f = String(f || ''); if (!/^[\w.-]+\.js$/.test(f)) throw new Error(`reloadScript: a script of the site's, by name (${f})`);
   if (WORKER_SCRIPTS.has(f)) { if (!sysApp || !sysApp.alive) throw new Error('reloadScript: the system\'s machine is not running'); return { machine: await sysApp.cmd('reload', [f]) }; }
+  if (!PAGE_SCRIPTS.has(f)) throw new Error(`reloadScript: ${f} runs the page itself and cannot be loaded twice: reload the page`);
   await new Promise((ok, no) => { const s = document.createElement('script'); s.src = `${f}?reload=${Date.now()}`; s.onload = ok; s.onerror = () => no(new Error(`reloadScript: ${f} did not load`)); document.head.appendChild(s); });
   if (f === 'ccd.js') ccdApi = null;
   return { page: f };

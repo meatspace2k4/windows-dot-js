@@ -169,7 +169,8 @@ CLAUDE.EXE's Claude has Claude Code's own tools besides the app's, with Claude C
 `win95.reloadScript(file)` loads a script of the site again from its server into the running system, no restart. A
 script of the machines' (`claude-app.js`, `shell32.js`, `session-tray.js`, `dbwin.js`, ...) goes to the system's
 machine, `cmd('reload', [file])`: its `def()`s replace the exports' functions in place (win32.js `def`), so the
-thunks programs already hold call the new code. Any other (`ccd.js`, ...) is loaded into the page; `ccd.js`'s tools
+thunks programs already hold call the new code. Of the page's scripts only `ccd.js` is loaded again into the page; any other
+(`win95.js`, ...) runs the page itself and is refused: reload the page instead. `ccd.js`'s tools
 are made again on next use from their registry records. A script keeps across a reload only what it puts on the
 worker itself: `claude-app.js` keeps its window, its turns in progress and its tools' pending answers
 (`self.W95ClaudeKeep`), so CLAUDE.EXE's Claude can `Edit` its own code on `SRC:\` and reload it in the middle of a
