@@ -678,7 +678,8 @@ class Process {
     // the access was to in CR2, a write's flagged in the exception's information)
     if ((code & ~0x10) === 0x4000000) {
       this.pfWrite = !!(code & 0x10);
-      (this.faultLog || (this.faultLog = [])).push({ why: `ring 3 ${this.pfWrite ? 'write' : 'read'} at ${u32(eip).toString(16)}, a protected page`, at: u32(this.cpu.eip.value).toString(16), atIn: this.whereOf(this.cpu.eip.value), thread: this.thread16 ? this.thread16.id : 'main' }); if (this.faultLog.length > 50) this.faultLog.shift();
+      (this.faultLog || (this.faultLog = [])).push({ why: `ring 3 ${this.pfWrite ? 'write' : 'read'} at ${u32(eip).toString(16)}, a protected page`, at: u32(this.cpu.eip.value).toString(16), atIn: this.whereOf(this.cpu.eip.value), thread: this.thread16 ? this.thread16.id : 'main',
+        stack: Array.from({ length: 16 }, (_, k) => this.r32(u32(this.cpu.esp.value) + 4 * k)).map(v => this.whereOf(v)).filter(s => s && /[A-Z]/.test(s)) }); if (this.faultLog.length > 50) this.faultLog.shift();
       try { this.cpu.eip.value = this.raise(14, u32(this.cpu.eip.value), u32(eip)) | 0; } finally { this.pfWrite = false; }
       return;
     }
