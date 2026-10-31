@@ -57,6 +57,7 @@ waits for an element the same way and resolves with it. With coordinates the cal
 | `open(path)` | opens a folder window or the file's program |
 | `saver(path)`, `stopSaver()` | runs a screen saver full screen, ends it |
 | `fs` | the file system (`readText`, `writeFile`, `readdir`, `stat`, ...; see `fs.js`) |
+| `pc.text()`, `pc.type(keys)`, `pc.reset()`, `pc.inWindows`, `pc.machine`, `pc.failed` | the PC under Windows: its BIOS boots C:'s MS-DOS at each start (IO.SYS, CONFIG.SYS, AUTOEXEC.BAT, WIN.COM, VMM32.VXD's loader), and Windows has the screen from where the VMM's loader enters protected mode until Windows ends (Restart in MS-DOS mode: WIN.COM's DOSSTART.BAT and COMMAND.COM; EXIT starts Windows again). Its 80x25 text screen as lines; keys typed at its keyboard (`{Enter}`, `{F8}`, ... by name); a power cycle; whether Windows has it; its v86.js machine; why it stopped |
 | `cd.images()`, `cd.insert(name)`, `cd.eject()`, `cd.disc` | the CD images the drive can take (`tools/serve.py --iso` and each `--cd`, listed at `/__cd`; the app's File > Insert CD Image), putting one in D: (its tree read from the disc, the drive's media change counted for MSCDEX, AutoRun then as Explorer runs it), taking it out (D: not ready), the disc in it (`{ label, serial, sectors }` or `null`). The choice is kept for the next start; `?cd=<name>` picks one. The audio CD stays in E: |
 
 ## State

@@ -46,6 +46,13 @@
       "url": "http://127.0.0.1:8121"
     },
     {
+      "name": "win95 (dos boot 8131)",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["tools/serve.py", "8131", "--iso", "/Users/johusha/Downloads/Windows 95/Win95 OSR2.ISO"],
+      "port": 8131,
+      "url": "http://127.0.0.1:8131"
+    },
+    {
       "name": "win95 (fresh 8117)",
       "runtimeExecutable": "python3",
       "runtimeArgs": ["tools/serve.py", "8117", "--iso", "/Users/johusha/Downloads/Windows 95/Win95 OSR2.ISO"],

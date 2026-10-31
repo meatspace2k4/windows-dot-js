@@ -630,6 +630,10 @@ function mountDrives() {
   v.audio = { tracks: toc.tracks.map(t => ({ number: t.number, lba: t.lba, sectors: t.sectors })), leadout: toc.leadout, serial: A.serial() };
   fs.load('E', toc.tracks.map(t => [`Track${String(t.number).padStart(2, '0')}.cda`, t0, null, 44, A.cda(t)]));
 }
+// C:\CONFIG.SYS as Setup leaves it: DOS in the HMA and its file handles; the machine's extended memory is its own
+// (the XMS v86.js's BIOS gives, as V86MMGR gives a VM's), so it loads no HIMEM.SYS. A disk made with the line that
+// named one (never put on the disk: "missing or corrupted", line 1) has it as this
+const CONFIG_SYS = 'DOS=HIGH,UMB\nFILES=60\n', CONFIG_SYS_OLD = 'DEVICE=C:\\WINDOWS\\HIMEM.SYS\r\nDOS=HIGH,UMB\r\nFILES=60\r\n';
 // Setup's first boot: C: as a fresh install leaves it
 function makeDisk(mounted) {
   if (!mounted) mountDrives();
@@ -646,7 +650,7 @@ function makeDisk(mounted) {
   txt('C:\\MSDOS.SYS', '[Paths]\nWinDir=C:\\WINDOWS\nWinBootDir=C:\\WINDOWS\nHostWinBootDrv=C\n\n[Options]\nBootGUI=1\nLogo=1\n', HSR);
   fs.writeFile('C:\\COMMAND.COM', exeStub());
   txt('C:\\AUTOEXEC.BAT', '@ECHO OFF\nSET PATH=C:\\WINDOWS;C:\\WINDOWS\\COMMAND\nSET TEMP=C:\\WINDOWS\\TEMP\n');
-  txt('C:\\CONFIG.SYS', 'DEVICE=C:\\WINDOWS\\HIMEM.SYS\nDOS=HIGH,UMB\nFILES=60\n');
+  txt('C:\\CONFIG.SYS', CONFIG_SYS);
   txt(WINDIR + '\\WIN.INI', '[windows]\nload=\nrun=\nNullPort=None\nScreenSaveActive=0\nScreenSaveTimeOut=900\n\n[Desktop]\nWallpaper=(None)\nTileWallpaper=0\nWallpaperStyle=0\n\n[intl]\nsCountry=United States\n\n[fonts]\n' + WIN_INI_FONTS.filter(([, f]) => sysFonts[f]).map(([n, f]) => `${n}=${f}\n`).join(''));
   txt(WINDIR + '\\SYSTEM.INI', '[boot]\nshell=Explorer.exe\nSCRNSAVE.EXE=\nsystem.drv=system.drv\ndisplay.drv=pnpdrvr.drv\nsound.drv=mmsound.drv\ndrivers=mmsystem.dll\n\n[386Enh]\nmouse=*vmouse, msmouse.vxd\n\n[boot.description]\ndisplay.drv=Standard Display Adapter (VGA)\n');
   for (const e of ['NOTEPAD.EXE', 'EXPLORER.EXE', 'REGEDIT.EXE', 'CALC.EXE', 'WRITE.EXE', 'TASKMAN.EXE', 'PROGMAN.EXE', 'WINFILE.EXE', 'SOL.EXE'])
@@ -658,7 +662,7 @@ function makeDisk(mounted) {
   for (const e of ['SSERIFE.FON', 'VGAFIX.FON', 'VGASYS.FON', 'MARLETT.TTF', 'ARIAL.TTF', 'TIMES.TTF', 'COUR.TTF']) if (!sysFonts[e]) fs.writeFile(join(WINDIR, 'FONTS', e), exeStub());
   for (const [e, d] of Object.entries(sysFonts)) fs.writeFile(join(WINDIR, 'FONTS', e), b64(d));
   fs.writeFile('C:\\Program Files\\Accessories\\WORDPAD.EXE', exeStub());
-  installPrograms(); setupFonts(); setupRegistry(); setupDisplay(); setupSavers(); setupSound(); setupHelp(); setupNetwork(); setupPorts(); setupPrinting(); setupStartMenu();
+  installPrograms(); setupFonts(); setupRegistry(); setupDisplay(); setupSavers(); setupSound(); setupHelp(); setupNetwork(); setupPorts(); setupPrinting(); setupVxds(); setupStartMenu();
   fs.chdir('C:\\');
 }
 // the CD's screen savers, byte for byte, under the long names APPLETS.INF gives them in LDID_SYS, and the DLLs they
@@ -905,7 +909,7 @@ function bootDisk() {
   mountDrives();
   W95Win32.regAttach(host.registry);
   if (!fs.attach('C', host.disk)) makeDisk(true);
-  installPrograms(); setupFonts(); setupRegistry(); setupDisplay(); setupSavers(); setupSound(); setupHelp(); setupNetwork(); setupPorts(); setupPrinting();
+  installPrograms(); setupFonts(); setupRegistry(); setupDisplay(); setupSavers(); setupSound(); setupHelp(); setupNetwork(); setupPorts(); setupPrinting(); setupVxds();
   if (host.shared) setupProfile(host.userName);
   setupStartMenu();   // (after the profile: its links go in the Programs folder the user's Shell Folders name)
   fs.chdir('C:\\');
@@ -1145,13 +1149,31 @@ function dosWinExec(m) {
   };
 }
 const dosConIn = (id, text) => { if (sysApp && sysApp.worker) sysApp.worker.postMessage({ t: 'conIn', id, text }); };
-// a machine booted to run `program` with `args` (its drives Windows' own: v86.js takeDrives)
+// a machine booted to run `program` with `args` as Windows' VM (its drives Windows' own: v86.js takeDrives), or, with
+// o.pc, the PC itself. Its disk is the boot volume SYS.COM leaves (the CD's boot sector, IO.SYS and MSDOS.SYS first). A
+// VM's is made as Windows makes a VM from the MS-DOS it started from: the CD's MS-DOS, no CONFIG.SYS, and an MSDOS.SYS
+// that starts no Windows of its own (the box's program runs where WIN.COM would). The PC's holds what IO.SYS reads
+// before its shell runs, from C: as it is now: IO.SYS, MSDOS.SYS, CONFIG.SYS and each driver it names, AUTOEXEC.BAT
+// (whether there is one), IFSHLP.SYS, the registry's files, COMMAND.COM and WIN.COM; from the shell's start on, C: is
+// the disk's own (takeDrives)
 function dosMachine(program, args, o = {}) {
   const V = window.W95V86, D = window.W95DOS, bytes = s => b64bytes(s);
-  try { program = fs.stat(program).shortPath; } catch (_) { /* (DOS's own name for it: its 8.3 path) */ }
-  const msdos = '[Paths]\r\nWinDir=C:\\WINDOWS\r\nWinBootDir=C:\\WINDOWS\r\nHostWinBootDrv=C\r\n[Options]\r\nBootGUI=0\r\nLogo=0\r\n' + Array(20).fill(';' + 'x'.repeat(68)).join('\r\n') + '\r\n';
-  const files = [{ name: 'IO.SYS', data: bytes(D.files['IO.SYS']), attr: 7 }, { name: 'MSDOS.SYS', data: W95FS.encode(msdos), attr: 7 },
-    ...Object.keys(D.files).filter(p => p !== 'IO.SYS').map(p => ({ path: p, data: bytes(D.files[p]) }))];
+  if (program) try { program = fs.stat(program).shortPath; } catch (_) { /* (DOS's own name for it: its 8.3 path) */ }
+  let files;
+  if (o.pc) {
+    const fromC = p => { try { return fs.readFile('C:\\' + p); } catch (_) { return null; } };
+    files = [{ name: 'IO.SYS', data: fromC('IO.SYS') || new Uint8Array(0), attr: 7 }, { name: 'MSDOS.SYS', data: fromC('MSDOS.SYS') || new Uint8Array(0), attr: 7 }];
+    const add = p => { const d = fromC(p); if (d && !files.some(f => (f.path || f.name).toUpperCase() === p.toUpperCase())) files.push({ path: p, data: d }); };
+    add('COMMAND.COM'); add('CONFIG.SYS'); add('AUTOEXEC.BAT'); add('WINDOWS\\IFSHLP.SYS'); add('WINDOWS\\HIMEM.SYS'); add('WINDOWS\\SYSTEM.DAT'); add('WINDOWS\\USER.DAT'); add('WINDOWS\\WIN.COM');
+    // (the drivers CONFIG.SYS loads, by their paths on C:)
+    for (const l of W95FS.decode(fromC('CONFIG.SYS') || new Uint8Array(0)).split(/\r?\n/)) {
+      const r = /^\s*(?:DEVICE|DEVICEHIGH|INSTALL|INSTALLHIGH)\s*=\s*(?:\/\S+\s+)*C:\\(\S+)/i.exec(l); if (r) add(r[1]);
+    }
+  } else {
+    const msdos = '[Paths]\r\nWinDir=C:\\WINDOWS\r\nWinBootDir=C:\\WINDOWS\r\nHostWinBootDrv=C\r\n[Options]\r\nBootGUI=0\r\nLogo=0\r\n' + Array(20).fill(';' + 'x'.repeat(68)).join('\r\n') + '\r\n';
+    files = [{ name: 'IO.SYS', data: bytes(D.files['IO.SYS']), attr: 7 }, { name: 'MSDOS.SYS', data: W95FS.encode(msdos), attr: 7 },
+      ...Object.keys(D.files).filter(p => p !== 'IO.SYS').map(p => ({ path: p, data: bytes(D.files[p]) }))];
+  }
   const m = V.machine({ disk: V.fat16(bytes(D.boot), files, 16), program, args, fs, conIn: dosConIn, ...o });
   m.o.winExec = dosWinExec(m);
   if (sharedNow()) m.wallSkew = sharedNow().clockSkew();   // (the session's wall clock for its real-time clock: v86Port)
@@ -1225,6 +1247,73 @@ function dosBox(program, args) {
   }, 15);
   emit('dos.start', { program, args: args || '' });
   return win;
+}
+// ---------------------------------------------------------------- the PC
+// The machine the page is: at power-on (and each restart) its BIOS boots C:'s MS-DOS, which runs CONFIG.SYS and
+// AUTOEXEC.BAT and then, as MSDOS.SYS's BootGUI has it, WIN.COM, which loads VMM32.VXD; Windows starts where the VMM's
+// loader enters protected mode (pcWindows) and has the screen until it ends, when the loader returns to WIN.COM with
+// ExitWindows' code (pcEnd) and WIN.COM does what it asks: Restart in MS-DOS mode runs DOSSTART.BAT and COMMAND.COM
+// (EXIT starts Windows again), a restart resets the PC. Its text screen is the display, whole; the page's keys are its
+// keyboard; Ctrl+Alt+Del restarts it
+let pc = null;
+/** the registry's files in the Windows folder, SYSTEM.DAT and USER.DAT, as Windows writes them when it flushes the
+ *  registry (as it shuts down): what IO.SYS reads as the PC next starts */
+function flushRegistry() {
+  for (const [file, which] of [['SYSTEM.DAT', 'system'], ['USER.DAT', 'user']]) {
+    const p = join(WINDIR, file);
+    try { if (fs.exists(p)) fs.setAttrs(p, 0); fs.writeFile(p, W95Win32.regHive(which)); fs.setAttrs(p, ATTR.HIDDEN | ATTR.SYSTEM | ATTR.READONLY); } catch (e) { console.error('[registry]', file, e); }
+  }
+}
+function pcBoot() {
+  if (pc) clearInterval(pc.timer);
+  if (!window.W95V86 || !window.W95DOS) { pc = null; screen = 'black'; dirty(); return; }
+  if (!fs.exists(join(WINDIR, 'SYSTEM.DAT'))) flushRegistry();   // (a disk made before Windows wrote its registry's files)
+  const m = dosMachine(null, null, { pc: true, windows: path => pcWindows(path), reset: () => setTimeout(pcBoot, 0) });
+  pc = { m, timer: 0, failed: null };
+  if (!dosFont) { const d = window.W95SYSTEM && W95SYSTEM.dos && W95SYSTEM.dos['EGA.CPI']; if (d) dosFont = cpiFont(b64bytes(d), 437, 14); }
+  screen = 'dos'; dirty();
+  const me = pc;
+  me.timer = setInterval(() => {
+    if (me.failed || pc !== me) return;
+    const t0 = performance.now();
+    while (performance.now() - t0 < 10) {
+      const st = m.v86Run(4000);
+      if (st === 'idle') { if (!m.winWait) m.halted = false; break; }
+      if (st === 'trap') { me.failed = m.trapped || 'the machine stopped'; console.error('[pc]', me.failed); break; }
+    }
+    if (screen === 'dos' && m.dirty) { m.dirty = false; dirty(); }
+  }, 4);
+  emit('pc.boot', {});
+}
+/** the VMM WIN.COM loaded entering protected mode: the Windows it is starts, the screen its */
+function pcWindows(path) {
+  screen = 'desktop'; ren = null; desk.selKey = null; active = null; dirty();
+  emit('pc.windows', { path });
+  systemBootLater(); netBootLater();
+}
+/** Windows has ended with ExitWindows' `code`: the VMM's loader returns to WIN.COM with it, and the PC's screen is its
+ *  own again (a shutdown's: the page's It's now safe screen while WIN.COM waits) */
+function pcEnd(code) {
+  if (!pc || !pc.m.winWait) { pcBoot(); return; }
+  // (Restart in MS-DOS mode is Windows' Exit To Dos.pif: COMMAND.COM, which WIN.COM runs after DOSSTART.BAT)
+  pc.m.winDone(code, code === 0x44 ? { path: join(WINDIR, 'COMMAND.COM'), tail: '' } : null); screen = code === 0 ? 'logos' : 'dos'; dirty();
+}
+// the PC's text screen as the display shows it (80x25, from B800h; the cursor where the BIOS keeps it)
+function pcText() {
+  const m = pc.m, ch = new Uint8Array(2000), at = new Uint8Array(2000);
+  for (let i = 0; i < 2000; i++) { ch[i] = m.m8(0xb8000 + i * 2); at[i] = m.m8(0xb8001 + i * 2); }
+  return { rows: 25, cols: 80, ch, at, cur: [m.m8(0x451), m.m8(0x450)] };
+}
+// a key on the PC's keyboard: its scan code and character as the BIOS's keyboard interrupt gets them, the shift state
+// in the BIOS's data area (40:17h)
+function pcKey(e) {
+  const m = pc.m;
+  m.s8(0x417, (m.m8(0x417) & ~0x0f) | (e.shiftKey ? 2 : 0) | (e.ctrlKey ? 4 : 0) | (e.altKey ? 8 : 0));
+  let k = 0;
+  if (e.ctrlKey && e.key.length === 1 && /[a-z]/i.test(e.key)) k = ((DOS_SCAN.indexOf(e.key.toLowerCase()) + 2) << 8) | (e.key.toUpperCase().charCodeAt(0) - 64);
+  else k = DOS_KEYS[e.key] || (e.key.length === 1 ? ((Math.max(0, DOS_SCAN.indexOf(e.key.toLowerCase())) + 2) << 8) | (e.key.charCodeAt(0) & 0xff) : 0);
+  if (!k) return false;
+  m.keys.push(k); m.halted = false; return true;
 }
 // Notepad: the CD's NOTEPAD.EXE on the native USER when the system bundle has it, the shell's own otherwise
 function runNotepad(file, exe = join(WINDIR, 'NOTEPAD.EXE')) {
@@ -2683,7 +2772,7 @@ function shutDownDialog() {
     const pick = radios.findIndex(r => r.checked);
     closeWin(win);
     if (pick === 3) { [...windows].forEach(w => closeWin(w, true)); if (window.W95HOST && window.W95HOST.shared) logOnDialog(); return; }
-    shutdownSeq(pick !== 0);
+    shutdownSeq([0, 0x43, 0x44][pick]);   // (ExitWindows' codes: shut down, EW_REBOOTSYSTEM, EW_EXITANDEXECAPP)
   };
   const bx = (cw - (3 * 75 + 12)) >> 1;
   win = dialog('Shut Down Windows', cw, 150, [
@@ -2711,20 +2800,24 @@ function logOnDialog() {
     { type: 'button', label: 'Cancel', x: 312, y: 78, w: 75, h: 23, cancel: true, fn: () => { closeWin(win); window.W95Shared.logOff('Guest'); } },
   ], { dim: true });
 }
-function shutdownSeq(restart) {
+function shutdownSeq(code) {
   [...windows].forEach(w => closeWin(w, true)); closeMenus();
-  // the machines stop as Windows does (the system's, the programs'): a restart boots them afresh
+  // the machines stop as Windows does (the system's, the programs'), the registry written to its files; then the VMM
+  // returns to MS-DOS with the code, which WIN.COM acts on (pcEnd)
   for (const a of new Set([...nativeApps, sysApp])) if (a && a.alive) a.exited(0);
+  flushRegistry();
   screen = 'logow'; dirty();
-  setTimeout(() => {
-    if (restart) { screen = 'black'; dirty(); setTimeout(boot, 1200); } else { screen = 'logos'; dirty(); }
-  }, 2600);
+  setTimeout(() => pcEnd(code), 2600);
 }
 /** Windows itself shut down (Explorer's Shut Down: USER's ExitWindows ending in KERNEL's ExitKernel): a clean
- *  shutdown, the next start's SystemStart heard; a restart (EW_RESTARTWINDOWS, EW_REBOOTSYSTEM) starts it again */
-function systemEnded(code) { shutdownSeq(code === 0x42 || code === 0x43); }
+ *  shutdown, the next start's SystemStart heard; ExitWindows' code goes back to WIN.COM (EW_RESTARTWINDOWS 42h,
+ *  EW_REBOOTSYSTEM 43h, EW_EXITANDEXECAPP 44h, 0 a shutdown) */
+function systemEnded(code) {
+  emit('pc.windowsEnded', { code });
+  shutdownSeq([0x42, 0x43, 0x44].includes(code) ? code : 0);
+}
 // The disk lives in memory, so it survives a restart but not a page reload.
-function boot() { screen = 'desktop'; ren = null; desk.selKey = null; active = null; dirty(); systemBootLater(); netBootLater(); }
+function boot() { pcBoot(); }
 
 // ---------------------------------------------------------------- desktop
 const SYS_ITEMS = () => [
@@ -3177,6 +3270,25 @@ function setupHelp() {
 // folder as the source Setup's engine copies from, SetupFlags as a local install leaves them (SUF_SBSCOPYOK, files
 // may be copied into the Windows folders, which no server shares; the first boot done) and MSPRINT.INF's Printer
 // class, whose installer is MSPRINT.DLL
+// the VxDs the machine's devices name (SYSTEM.INI [386Enh], the registry's StaticVxD), where Setup copies them and
+// VMM32's loader reads them as WIN.COM starts Windows: one named *NAME (a VxD VMM32.VXD may hold) in SYSTEM\VMM32, the
+// others in SYSTEM (tools/build_dos.py VXDS); each the disk lacks
+function setupVxds() {
+  const DOS = window.W95DOS; if (!DOS || !DOS.vxds) return;
+  const named = new Set();
+  let ini = ''; try { ini = fs.readText(join(WINDIR, 'SYSTEM.INI')); } catch (_) { /* none */ }
+  const sec = (/\[386Enh\]([\s\S]*?)(?:\r?\n\[|$)/i.exec(ini) || [])[1] || '';
+  for (const l of sec.split(/\r?\n/)) { const r = /^\s*[^=;]+=\s*(.*)$/.exec(l); if (r) for (const v of r[1].split(',')) named.add(v.trim().toUpperCase()); }
+  for (const [, vals] of W95Win32.regDump()) for (const [n, v] of vals) {
+    if (n !== 'staticvxd') continue;
+    for (const x of (typeof v === 'string' ? v : W95FS.decode(v.data || new Uint8Array(0)).replace(/\0/g, '')).split(',')) named.add(x.trim().toUpperCase());
+  }
+  for (const [n, d] of Object.entries(DOS.vxds)) {
+    const dir = named.has('*' + n.replace(/\.VXD$/, '')) ? join(WINDIR, 'SYSTEM', 'VMM32') : named.has(n) ? join(WINDIR, 'SYSTEM') : null;
+    if (!dir || fs.exists(join(dir, n))) continue;
+    fs.mkdir(dir, { recursive: true }); fs.writeFile(join(dir, n), b64bytes(d));
+  }
+}
 function setupPrinting() {
   const R = W95Win32, infs = (window.W95SYSTEM || {}).infs || {}, dir = join(WINDIR, 'INF');
   if (!infs['MSPRINT.INF']) return;
@@ -3511,8 +3623,24 @@ function installPrograms() {
   for (const d of Object.values(S.ne || {})) if (d.fileName && !d.onDisk) put(join(WINDIR, d.fileName === 'PROGMAN.EXE' ? '' : 'SYSTEM', d.fileName), d.file);   // (a printer driver: as the Add Printer wizard copies it; Program Manager in the Windows folder, COPY.INF)
   // MS-DOS's command interpreter, where Setup puts it: the root's (IO.SYS starts it) and the Windows folder's
   const DOS = window.W95DOS; if (DOS) for (const p of ['C:\\COMMAND.COM', join(WINDIR, 'COMMAND.COM')]) put(p, DOS.files['COMMAND.COM']);
+  // MS-DOS itself, as Setup's SYS leaves C:: IO.SYS (the CD's WINBOOT.SYS, which the boot sector loads) and MSDOS.SYS,
+  // its settings, padded past 1024 bytes as IO.SYS requires (the lines Setup writes for programs that check its size)
+  if (DOS) {
+    const HSR = ATTR.HIDDEN | ATTR.SYSTEM | ATTR.READONLY, unlock = p => { try { fs.setAttrs(p, 0); } catch (_) { /* not there */ } };
+    unlock('C:\\IO.SYS'); put('C:\\IO.SYS', DOS.files['IO.SYS']); fs.setAttrs('C:\\IO.SYS', HSR);
+    try { if (fs.readText('C:\\CONFIG.SYS') === CONFIG_SYS_OLD && !fs.exists(join(WINDIR, 'HIMEM.SYS'))) fs.writeFile('C:\\CONFIG.SYS', CONFIG_SYS.replace(/\n/g, '\r\n')); } catch (_) { /* none */ }
+    let t = ''; try { t = fs.readText('C:\\MSDOS.SYS'); } catch (_) { /* written below */ }
+    if (t.length < 1024) {
+      const own = t.replace(/\r?\n/g, '\r\n').replace(/(\r\n)*$/, '') || '[Paths]\r\nWinDir=C:\\WINDOWS\r\nWinBootDir=C:\\WINDOWS\r\nHostWinBootDrv=C\r\n\r\n[Options]\r\nBootGUI=1\r\nLogo=1';
+      const pad = [';', ';The following lines are required for compatibility with other programs.', ';Do not remove them (MSDOS.SYS needs to be >1024 bytes).'];
+      for (let i = 0; i < 18; i++) pad.push(';' + 'x'.repeat(68) + String.fromCharCode(97 + i));
+      unlock('C:\\MSDOS.SYS'); fs.writeFile('C:\\MSDOS.SYS', W95FS.encode(`${own}\r\n${pad.join('\r\n')}\r\n`)); fs.setAttrs('C:\\MSDOS.SYS', HSR);
+    }
+  }
   // and WIN.COM, which IO.SYS's shell runs to start Windows (Setup builds it from WIN.CNF)
   if (DOS && DOS.files['WINDOWS\\WIN.COM']) put(join(WINDIR, 'WIN.COM'), DOS.files['WINDOWS\\WIN.COM']);
+  // and IFSHLP.SYS, the file system helper IO.SYS loads from the Windows folder as it starts
+  if (DOS && DOS.files['WINDOWS\\IFSHLP.SYS']) put(join(WINDIR, 'IFSHLP.SYS'), DOS.files['WINDOWS\\IFSHLP.SYS']);
   // the MS-DOS programs, in C:\WINDOWS\COMMAND (LDID_COMMAND)
   if (DOS && DOS.command) { fs.mkdir(join(WINDIR, 'COMMAND'), { recursive: true }); for (const [n, d] of Object.entries(DOS.command)) put(join(WINDIR, 'COMMAND', n), d); }
   // the Windows 3.x runtime libraries, in SYSTEM (WIN87EM, NDDEAPI, OLE, WINSOCK: tools/build_dos.py)
@@ -4657,6 +4785,7 @@ function render() {
   rafPending = false;
   const txt = msgApp && msgApp.txt;
   if (txt) { drawTextScreen(txt); return; }
+  if (screen === 'dos' && pc) { drawTextScreen(pcText()); setTimeout(dirty, 250); return; }
   if (bootLogo.on && screen === 'desktop') { drawBootLogo(); return; }
   if (screen !== 'desktop') {
     fill(0, 0, W, H, '#000');
@@ -5158,6 +5287,7 @@ function devtoolsState(open) {
 }
 function keyDown(e) {
   if (devtoolsKey(e)) return;
+  if (screen === 'dos' && pc) { lastInput = performance.now(); if (pcKey(e)) e.preventDefault(); return; }
   { const v = vkdApp(); if (v && v.vkd(e, false)) { e.preventDefault(); return; } }
   { const a = nativeFocus(); if (a) { lastInput = performance.now(); e.preventDefault(); if (!e.keyCode && e.key.length === 1 && (e.ctrlKey || e.altKey) && /^[a-z0-9]$/i.test(e.key)) a.chord(e); else if (!e.keyCode && e.key.length === 1) a.typeText(e.key); else a.key(e, false); return; } }
   // Option changes the character a Mac key types; Alt+letter means the letter on the key
@@ -5242,8 +5372,7 @@ setInterval(() => { blinkOn = !blinkOn; dirty(); }, 530);
 
 bootDisk();
 mountHostShares();
-systemBootLater();
-netBootLater();
+pcBoot();
 loadTaskbar();
 desk.src = new FsSource(DESKTOP_DIR);
 fs.on(() => dirty());
@@ -5861,7 +5990,16 @@ const ccdUi = () => ({
   gfx: { K, fill, field, text, esc, wrap, textW, ellipsis, btnUp, btnDown, focusRect, clip: (x, y, w, h, f) => { ctx.save(); ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip(); try { f(); } finally { ctx.restore(); } } },
   Win, DialogBody, popup: openPopup, on: script.on,
 });
-window.win95 = { ...script, cd: { images: () => cdImages().map(i => i.name), insert: name => cdInsert(name), eject: () => cdInsert(null), get disc() { const v = fs.vols.get('D'); return v.ready ? { label: v.label, serial: v.serial, sectors: v.sectors } : null; } }, get ccd() { return ccdApi || (ccdApi = window.W95Ccd ? window.W95Ccd(ccdUi()) : null); }, get nativeApps() { return [...nativeApps]; }, get dos() { return [...dosMachines]; }, startSystem, get sysApp() { return sysApp; }, reloadScript, netBoot, netCall, syncNetDrives, mapNetDrive, disconnectNetDrive, fs, render, displayProperties, startFullSaver, get fullSaver() { return fullSaver; }, properties, driveProps, openFolder, openPath, shellOpen, notepad, msgBox, runDialog, findComputer, findFiles, winHelp, shutDownDialog, MyComputer, get state() { return { menus: menus.length, menuSrc, modals: modals.length, cap: !!cap, drag: !!drag, screen, active: active && active.title }; } };
+window.win95 = { ...script,
+  // the PC: its text screen as lines, keys typed at its keyboard (each character; {Enter}, {F8}, ... by DOS_KEYS' names),
+  // a power cycle; its machine and whether Windows has the screen
+  pc: {
+    get machine() { return pc && pc.m; }, get failed() { return pc && pc.failed; }, get inWindows() { return !!(pc && pc.m.winWait); },
+    text() { if (!pc) return ''; const t = pcText(); let s = ''; for (let r = 0; r < 25; r++) s += String.fromCharCode(...t.ch.subarray(r * 80, r * 80 + 80)).replace(/\0/g, ' ').trimEnd() + '\n'; return s.replace(/\n+$/, '\n'); },
+    type(s) { if (!pc) return false; for (const m of String(s).matchAll(/\{(\w+)\}|([\s\S])/g)) pcKey({ key: m[1] || m[2], shiftKey: false, ctrlKey: false, altKey: false }); return true; },
+    reset: () => pcBoot(),
+  },
+  cd: { images: () => cdImages().map(i => i.name), insert: name => cdInsert(name), eject: () => cdInsert(null), get disc() { const v = fs.vols.get('D'); return v.ready ? { label: v.label, serial: v.serial, sectors: v.sectors } : null; } }, get ccd() { return ccdApi || (ccdApi = window.W95Ccd ? window.W95Ccd(ccdUi()) : null); }, get nativeApps() { return [...nativeApps]; }, get dos() { return [...dosMachines]; }, startSystem, get sysApp() { return sysApp; }, reloadScript, netBoot, netCall, syncNetDrives, mapNetDrive, disconnectNetDrive, fs, render, displayProperties, startFullSaver, get fullSaver() { return fullSaver; }, properties, driveProps, openFolder, openPath, shellOpen, notepad, msgBox, runDialog, findComputer, findFiles, winHelp, shutDownDialog, MyComputer, get state() { return { menus: menus.length, menuSrc, modals: modals.length, cap: !!cap, drag: !!drag, screen, active: active && active.title }; } };
 // the scripting API's calls shown as they are made (?scriptlog=1, or win95.scriptLog = true): each win95.* call and each
 // win95.sysApp.cmd, then what it answered, as 'script' lines at the debug level in DevTools' console and the machines'
 // log (Verbose in both: Debug Monitor's Options > Verbose),

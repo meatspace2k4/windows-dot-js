@@ -1109,6 +1109,82 @@ const regSet = (path, name, value) => {
   REGISTRY.get(path).set(name.toLowerCase(), value); regChanged({ op: 'set', path, name: name.toLowerCase(), value });
 };
 const HKEY = { 0x80000000: 'hkcr', 0x80000001: 'hkcu', 0x80000002: 'hklm', 0x80000003: 'hku', 0x80000005: 'hkcc', 0x80000006: 'hkdd', 1: 'hkcr', 2: 'hkcu', 3: 'hklm' };
+/** the registry's file, as Windows 95 writes it to the Windows folder (and IO.SYS's real-mode registry reads it):
+ *  'system' SYSTEM.DAT, HKEY_LOCAL_MACHINE (HKEY_CLASSES_ROOT its SOFTWARE\Classes, HKEY_CURRENT_CONFIG its
+ *  Config\0001); 'user' USER.DAT, HKEY_USERS (HKEY_CURRENT_USER its .Default). The CREG format: a 20h-byte header, the
+ *  RGKN block of key entries (1Ch bytes each: hash, parent, first child, next sibling, the key's id and RGDB block, the
+ *  offsets from RGKN's start), then RGDB blocks of 4 KB multiples holding each key's name and values, by id */
+const regHive = which => {
+  // the tree: [path in the hive, the registry path its values come from]
+  const map = which === 'user' ? [['', 'hku'], ['.default', 'hkcu']] : [['', 'hklm'], ['software\\classes', 'hkcr'], ['config\\0001', 'hkcc']];
+  const root = { name: '', kids: new Map(), vals: null };
+  const at = (hp, name) => { let n = root; if (hp) for (const seg of hp.split('\\')) { let k = n.kids.get(seg); if (!k) n.kids.set(seg, k = { name: seg, kids: new Map(), vals: null }); n = k; } if (name && !n.orig) n.orig = name; return n; };
+  for (const [path, vals] of REGISTRY) for (const [hp, rp] of map) {
+    if (path !== rp && !path.startsWith(rp + '\\')) continue;
+    if (map.some(([h2, r2]) => r2 !== rp && r2.startsWith(rp + '\\') && (path === r2 || path.startsWith(r2 + '\\')))) continue;
+    const rest = path.slice(rp.length + 1), n = at([hp, rest].filter(Boolean).join('\\'));
+    const nm = KEYNAME.get(path); if (nm) n.orig = nm;
+    n.vals = n.vals ? new Map([...n.vals, ...vals]) : new Map(vals);
+  }
+  if (which === 'user' && !root.kids.has('.default')) at('.default', '.Default'); else if (root.kids.has('.default')) root.kids.get('.default').orig = '.Default';
+  const enc = s => { const b = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) b[i] = s.charCodeAt(i) & 0xff; return b; };
+  const value = (k, v) => {   // [type, name bytes, data bytes]
+    const name = enc(v && typeof v === 'object' && v.name !== undefined ? String(v.name) : k);
+    if (typeof v === 'number') { const d = new Uint8Array(4); new DataView(d.buffer).setUint32(0, v >>> 0, true); return [4, name, d]; }
+    if (typeof v === 'string') return [1, name, enc(v)];
+    const d = v && v.data ? (v.data instanceof Uint8Array ? v.data : new Uint8Array(v.data)) : new Uint8Array(0);
+    return [v && v.type !== undefined ? v.type : 3, name, (v && (v.type === 1 || v.type === 2) && d.length && d[d.length - 1] === 0) ? d.subarray(0, d.length - 1) : d];
+  };
+  // the key entries in RGKN, depth first (the root first, with no RGDB record), and each key's record
+  const keys = []; const walk = (n, parent) => { n.i = keys.length; n.parent = parent; keys.push(n); for (const k of n.kids.values()) walk(k, n); };
+  walk(root, null);
+  const recs = keys.map((n, i) => {
+    if (!i) return null;
+    const name = enc(n.orig || n.name), vals = [...(n.vals || new Map())].map(([k, v]) => value(k, v));
+    const size = 0x14 + name.length + vals.reduce((s, [, nm, d]) => s + 0x0c + nm.length + d.length, 0);
+    return { name, vals, size };
+  });
+  // the records in blocks: each block 20h of header and its records, rounded up to 4 KB (the rest one free record)
+  const blocks = []; let cur = null;
+  for (let i = 1; i < keys.length; i++) {
+    const r = recs[i];
+    if (!cur || (cur.recs.length && cur.used + r.size > 0x1000 - 0x20 - 0x10)) { cur = { recs: [], used: 0, ids: 0 }; blocks.push(cur); }
+    r.block = blocks.length - 1; r.id = cur.ids++; cur.recs.push(r); cur.used += r.size;
+  }
+  const rgknSize = (0x20 + keys.length * 0x1c + 0xfff) & ~0xfff;
+  const blockSize = b => (b.used + 0x20 + 0x10 + 0xfff) & ~0xfff;
+  const total = 0x20 + rgknSize + blocks.reduce((s, b) => s + blockSize(b), 0);
+  const out = new Uint8Array(total), dv = new DataView(out.buffer), tag = (o, s) => out.set(enc(s), o);
+  tag(0, 'CREG'); dv.setUint32(4, 0x10000, true); dv.setUint32(8, 0x20 + rgknSize, true); dv.setUint16(0x10, blocks.length, true); dv.setUint16(0x16, 0x80, true);
+  const K = 0x20;
+  tag(K, 'RGKN'); dv.setUint32(K + 4, rgknSize, true); dv.setUint32(K + 8, 0x20, true); dv.setUint16(K + 0x0c, 0xffff, true); dv.setUint16(K + 0x0e, 0xffff, true); dv.setUint32(K + 0x10, 9, true);
+  const off = n => (n ? 0x20 + n.i * 0x1c : 0xffffffff);
+  for (const n of keys) {
+    const e = K + off(n), kids = [...n.kids.values()], sib = n.parent ? [...n.parent.kids.values()] : [], si = sib.indexOf(n);
+    let hash = 0; for (const c of (n.orig || n.name).toUpperCase()) hash += c.charCodeAt(0) & 0xff;
+    dv.setUint32(e, 0, true); dv.setUint32(e + 4, hash, true); dv.setUint32(e + 8, 0xffffffff, true);
+    dv.setUint32(e + 0x0c, off(n.parent), true); dv.setUint32(e + 0x10, off(kids[0]), true); dv.setUint32(e + 0x14, off(si >= 0 ? sib[si + 1] : null), true);
+    const r = recs[n.i]; dv.setUint16(e + 0x18, r ? r.id : 0xffff, true); dv.setUint16(e + 0x1a, r ? r.block : 0, true);
+  }
+  let o = 0x20 + rgknSize;
+  blocks.forEach((b, bn) => {
+    const size = blockSize(b), free = size - 0x20 - b.used;
+    tag(o, 'RGDB'); dv.setUint32(o + 4, size, true); dv.setUint32(o + 8, free, true); dv.setUint16(o + 0x0c, b.ids, true); dv.setUint16(o + 0x0e, bn, true);
+    dv.setUint32(o + 0x10, 0x20 + b.used, true); dv.setUint16(o + 0x14, b.ids, true);
+    let p = o + 0x20;
+    for (const r of b.recs) {
+      dv.setUint32(p, r.size, true); dv.setUint16(p + 4, r.id, true); dv.setUint16(p + 6, bn, true); dv.setUint32(p + 8, r.size, true);
+      dv.setUint16(p + 0x0c, r.name.length, true); dv.setUint16(p + 0x0e, r.vals.length, true); out.set(r.name, p + 0x14);
+      let q = p + 0x14 + r.name.length;
+      for (const [type, nm, d] of r.vals) { dv.setUint32(q, type, true); dv.setUint16(q + 8, nm.length, true); dv.setUint16(q + 0x0a, d.length, true); out.set(nm, q + 0x0c); out.set(d, q + 0x0c + nm.length); q += 0x0c + nm.length + d.length; }
+      p += r.size;
+    }
+    // (the rest of the block one free record: its ids FFFFh)
+    dv.setUint32(p, free, true); dv.setUint32(p + 4, 0xffffffff, true); dv.setUint32(p + 8, 0xffffffff, true);
+    o += size;
+  });
+  return out;
+};
 
 // ---------------------------------------------------------------- API table: [argc, impl]; argc < 0 = cdecl varargs
 // ---------------------------------------------------------------- the machine's log
@@ -3150,5 +3226,5 @@ function peString(bytes, id) {
   } catch (_) { return null; }
 }
 
-window.W95Win32 = { log, regAttach, regGet, regKids, regVals, regDel, regSet, regDump, regApply, regWatch: f => regWatchers.add(f), Process, API, STAND_IN, LAYOUT, WM, YIELD, iniGet, iniSet, iniRead, peString, peResource, faultText, fmtMsg, def, dcOf, GuestError, HangError, FaultError, mkCanvas, dibOut, sha256 };
+window.W95Win32 = { log, regAttach, regGet, regKids, regVals, regDel, regSet, regDump, regApply, regHive, regWatch: f => regWatchers.add(f), Process, API, STAND_IN, LAYOUT, WM, YIELD, iniGet, iniSet, iniRead, peString, peResource, faultText, fmtMsg, def, dcOf, GuestError, HangError, FaultError, mkCanvas, dibOut, sha256 };
 })();

@@ -65,7 +65,9 @@ class Fn {
 }
 
 // ---------------------------------------------------------------- decoding
-class Unsupported extends Error {}
+// (n: the instruction of the block being translated that it met, so the block can end before it: dynBlock)
+let insnAt = 0;
+class Unsupported extends Error { constructor(m) { super(m); this.n = insnAt; } }
 const MASK = { 1: 0xff, 2: 0xffff, 4: -1 };
 const COND = ['o', 'no', 'b', 'ae', 'e', 'ne', 'be', 'a', 's', 'ns', 'p', 'np', 'l', 'ge', 'le', 'g'];
 
@@ -84,7 +86,7 @@ function mmioRange(p, lin) {
 /** translate the block at linear `lin` (code segment base `csb`, 32-bit default when `d32`); `v86` is the linear
  *  base of a virtual-8086 machine's first megabyte when the code is that machine's: a segment register's base is then
  *  v86 + 16 * its value, INT goes through the machine's own interrupt vectors, and the BIOS's ROM calls the host */
-function translate(p, lin, csb, d32, v86) {
+function translate(p, lin, csb, d32, v86, limit) {
   const vm = v86 !== undefined && v86 !== null;
   // (a V86 machine's FLAGS bits 12-14, IOPL and NT, which a 386 keeps as written and the translated code keeps no
   // global for: a word of the machine's own, past its first megabyte and the 64K above it)
@@ -112,7 +114,8 @@ function translate(p, lin, csb, d32, v86) {
   const fetchS8 = () => (fetch() << 24) >> 24;
   const done = next => { f.c(next | 0); return { fn: f, len: pc - lin, n }; };
   for (;;) {
-    if (++n > 400) return done(pc);   // a long straight run: continue in another block
+    if (++n > (limit || 400)) return done(pc);   // a long straight run: continue in another block
+    insnAt = n;
     const start = pc;
     f.c(start | 0).gs('eip');
     let osz = d32 ? 4 : 2, asz = d32 ? 4 : 2, seg = null, rep = null;
@@ -849,8 +852,14 @@ P.dynBlock = function (eip) {
   let c = kept.find(k => k.bytes.every((v, i) => u8[eip + i] === v));
   if (c) return c;
   let t;
+  // (an instruction translation cannot take ends the block before it: what comes first runs, and the block after it
+  // starts at that instruction, where the failure is the instruction's own)
   try { t = translate(this, eip, csb, d32, vm ? this.v86 : null); }
-  catch (e) { if (e instanceof Unsupported) { this.trapped = `run-time code at ${eip.toString(16)}: ${e.message}`; return null; } throw e; }
+  catch (e) {
+    if (!(e instanceof Unsupported)) throw e;
+    if (e.n > 1) t = translate(this, eip, csb, d32, vm ? this.v86 : null, e.n - 1);
+    else { this.trapped = `run-time code at ${eip.toString(16)}: ${e.message}`; return null; }
+  }
   t.fn.e(0x0f);
   // (the imports: the memory, port I/O, interrupts, and the x87's math, the process's own as its static modules get it)
   const e = this.imports && this.imports.env, f80 = { f80load: a => this.f80load(a), f80store: (a, v) => this.f80store(a, v) };

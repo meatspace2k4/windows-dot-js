@@ -71,6 +71,7 @@ P.v86Reset = function () {
   this.s8(0x475, 1);                                                      // one hard disk
   this.s8(0x465, 0x29); this.s16(0x460, 0x0607);                          // the cursor's shape
   this.s8(ROM + 0xfffe, 0xfc);                                            // the model: an AT
+  [0x0f, 0xff, 0xfe].forEach((b, i) => this.s8(ROM + 0xfff0 + i, b));     // the reset vector, FFFF:0000 (the host's reset)
   [0x0f, 0xff, 0xf8, 0xcb].forEach((b, i) => this.s8(ROM + XMS.entry + i, b));   // the XMS driver's entry: the host, then RETF
   this.xms = null;
   for (let i = 0; i < 4000; i += 2) { this.s8(0xb8000 + i, 0x20); this.s8(0xb8001 + i, 0x07); }
@@ -90,7 +91,7 @@ P.v86Boot = function () {
 // ---------------------------------------------------------------- running
 /** run up to `n` blocks; 'idle' when the machine waits (HLT, a key), 'trap' with this.trapped set when it faulted */
 P.v86Run = function (n = 20000) {
-  if (this.conWait) return 'idle';   // (its EXEC waits for the Windows console program it started: conDone)
+  if (this.conWait || this.winWait) return 'idle';   // (its EXEC waits for the Windows console program it started, conDone, or for Windows, winDone)
   let eip = u32(this.cpu.eip.value);
   for (let k = 0; k < n; k++) {
     this.cpu.eip.value = eip; this.v86Interrupts();   // (an interrupt pushes where the code is now)
@@ -98,7 +99,7 @@ P.v86Run = function (n = 20000) {
     if (this.irqTaken) { this.irqTaken = false; eip = u32(this.cpu.eip.value); }
     if (this.conWait) { this.cpu.eip.value = eip; return 'idle'; }
     const blk = this.dynBlock(eip);
-    if (!blk) { this.cpu.eip.value = eip; return 'trap'; }
+    if (!blk) { if (this.o.pc && this.vmm && this.vmmEnter(eip)) { this.trapped = null; return 'idle'; } this.cpu.eip.value = eip; return 'trap'; }
     try { eip = u32(blk.run()); }
     catch (e) { if (!(e instanceof WebAssembly.RuntimeError)) throw e; this.trapped = `${e.message} at ${(eip - this.v86).toString(16)}`; return 'trap'; }
     if (this.halted) { this.cpu.eip.value = eip; return 'idle'; }
@@ -146,6 +147,13 @@ HOOK[0x21] = function (next) {
   if (this.ah() !== 0x4b || this.al() !== 0 || this.boxReturn) return false;
   const s = this.lin(this.cpu.ds.value, this.r('dx')) - this.v86; let name = '';
   for (let i = 0; i < 128 && this.m8(s + i); i++) name += String.fromCharCode(this.m8(s + i));
+  // the PC's own MS-DOS runs WIN.COM as it is; WIN.COM runs the VMM's file (Windows 95's VMM32.VXD, Windows 3.1's
+  // WIN386.EXE), whose real-mode loader the host takes over from where it enters protected mode (vmmEnter). What it
+  // will have changed by then is noted: the vectors as they were, the extended memory already given out
+  if (this.o.pc) {
+    if (/(^|\\)(VMM32\.VXD|WIN386\.EXE)$/i.test(name)) this.vmm = { path: name, ivt: this.u8.slice(this.v86, this.v86 + 1024), xms: new Set(this.xms ? this.xms.blocks.keys() : []) };
+    return false;
+  }
   if (!/(^|\\)WIN\.COM$/i.test(name)) return false;
   const prog = this.o.program || 'C:\\COMMAND.COM', tail = this.o.args ? ` ${this.o.args}` : '';
   [...prog].forEach((c, i) => this.s8(ROM + 0x3000 + i, c.charCodeAt(0))); this.s8(ROM + 0x3000 + prog.length, 0);
@@ -171,9 +179,10 @@ HOOK[0x21] = function (next) {
   if (this.ah() === 0x52 && !this.lol) this.want52 = next;   // (its answer, ES:BX, read as the call returns: v86Run)
   if (this.o.capture && this.boxReturn) this.captureOut();
   // (the drives taken as the shell is run, once DOS has its drive table from CONFIG.SYS: IO.SYS's own EXECs of
-  // WINBOOT.SYS and IO.SYS come before it; and again should DOS make the table anew)
+  // WINBOOT.SYS and IO.SYS come before it; the shell COMMAND.COM, or WIN.COM when there is no AUTOEXEC.BAT to run;
+  // and again should DOS make the table anew)
   if (this.lol && this.o.fs) {
-    if (!this.drivesTaken && this.ah() === 0x4b && this.al() === 0 && /COMMAND\.COM$/i.test(ascii(this, this.lin(this.cpu.ds.value, this.r('dx')) - this.v86))) this.takeDrives();
+    if (!this.drivesTaken && this.ah() === 0x4b && this.al() === 0 && /(COMMAND|WIN)\.COM$/i.test(ascii(this, this.lin(this.cpu.ds.value, this.r('dx')) - this.v86))) this.takeDrives();
     else if (this.drivesTaken && this.m32(this.lol + 0x16) !== this.cdsAt) this.takeDrives();
   }
   return HOOK21.call(this, next);
@@ -220,6 +229,49 @@ P.conKey = function (k) {
 };
 /** the console program has ended: the EXEC that waited for it returns */
 P.conDone = function () { this.conWait = null; this.halted = false; };
+/** the VMM's loader entering protected mode (MOV to or from CR0 or CR3, LGDT, LIDT, LMSW at `eip`): Windows starts on
+ *  the host (o.windows, the VMM's file), the machine waiting in the loader until Windows ends (winDone) */
+P.vmmEnter = function (eip) {
+  let a = eip; while ([0x66, 0x67, 0x2e, 0x26, 0x36, 0x3e, 0x64, 0x65].includes(this.u8[a])) a++;
+  const b1 = this.u8[a + 1], reg = (this.u8[a + 2] >> 3) & 7;
+  if (this.u8[a] !== 0x0f || !(b1 === 0x20 || b1 === 0x22 || (b1 === 0x01 && (reg === 2 || reg === 3 || reg === 6)))) return false;
+  const psp = this.m16(this.sda + 0x10);
+  this.winWait = { vmm: this.vmm, psp }; this.halted = true; this.cpu.eip.value = eip;
+  this.o.windows(this.o.fs ? this.o.fs.realpath(this.vmm.path) : this.vmm.path);
+  return true;
+};
+/** Windows has ended with `code` (ExitWindows': 0 shut down, 42h restart Windows, 43h restart the computer, 44h exit to
+ *  MS-DOS and run its program): the VMM back in real mode returns to its loader, which ends as the loader does (INT 2Fh
+ *  AX=1606h, Windows' end told to what is loaded, then INT 21h AH=4Ch with the code), and WIN.COM, which ran it, does
+ *  what the code asks. What the VMM puts back on its way out is put back: the vectors its loader took into its own
+ *  memory, the extended memory it was given; the screen in the text mode it leaves. For 44h, `exec` is the program
+ *  ({ path, tail }, an MS-DOS mode program's PIF's) the VMM gives WIN.COM to run: written to the buffer WIN.COM's
+ *  INT 2Fh AX=4B20h answers (DX:CX, its command tail 80h on) */
+P.winDone = function (code = 0, exec = null) {
+  const w = this.winWait; if (!w) return;
+  this.winWait = null; this.halted = false;
+  const lo = w.psp * 16, hi = lo + this.m16((w.psp - 1) * 16 + 3) * 16;
+  for (let n = 0; n < 256; n++) {
+    const at = (this.m16(n * 4 + 2) << 4) + this.m16(n * 4);
+    if (at >= lo && at < hi) this.u8.set(w.vmm.ivt.subarray(n * 4, n * 4 + 4), this.v86 + n * 4);
+  }
+  if (this.xms) for (const h of [...this.xms.blocks.keys()]) if (!w.vmm.xms.has(h)) this.xms.blocks.delete(h);
+  const ax = this.cpu.eax.value; this.cpu.eax.value = 0x0003; BIOS[0x10].call(this); this.cpu.eax.value = ax;
+  const S = ROM + 0x3300, code86 = [];
+  if (code === 0x44 && exec) {
+    const path = [...exec.path].map(c => c.charCodeAt(0)).concat(0), t = exec.tail ? ` ${exec.tail}` : '', tail = [t.length, ...[...t].map(c => c.charCodeAt(0)), 13];
+    const P0 = 0x200, T0 = P0 + path.length;   // (the strings after the code, in the stub's segment)
+    path.forEach((b, i) => this.s8(S + P0 + i, b)); tail.forEach((b, i) => this.s8(S + T0 + i, b));
+    const w16 = v => [v & 0xff, v >> 8], off = v => w16(0x3300 + v);
+    code86.push(0xb8, 0x20, 0x4b, 0xcd, 0x2f,                 // mov ax,4B20h; int 2Fh: WIN.COM's buffer in DX:CX
+      0x8e, 0xc2, 0x89, 0xcf, 0x89, 0xcb, 0x0e, 0x1f,           // mov es,dx; mov di,cx; mov bx,cx; push cs; pop ds
+      0xbe, ...off(P0), 0xb9, ...w16(path.length), 0xf3, 0xa4,  // the program's path
+      0x8d, 0xbf, 0x80, 0x00, 0xbe, ...off(T0), 0xb9, ...w16(tail.length), 0xf3, 0xa4);   // lea di,[bx+80h]: its command tail
+  }
+  code86.push(0xb8, 0x06, 0x16, 0x31, 0xd2, 0xcd, 0x2f, 0xb8, code & 0xff, 0x4c, 0xcd, 0x21);
+  code86.forEach((b, i) => this.s8(S + i, b));
+  this.sreg('cs', ROM >> 4); this.cpu.eip.value = this.v86 + ROM + 0x3300; this.vmm = null;
+};
 // what the box's program writes to the console, kept for a command run with no window (dosRun): INT 21h's character
 // and string output, and writes to a handle whose file is the console (a character device that is the standard
 // output, by the process's handle table and DOS's file table: not what a command redirects to a file)
@@ -376,7 +428,12 @@ HOOK[0x2f] = function () {
 // ---------------------------------------------------------------- the ports
 P.v86Port = function (port, size, isIn, val) {
   const c = this.cpu;
-  if (!isIn) { if (port === 0x70) this.cmosAt = c.eax.value & 0x7f; return; }   // (the CMOS's index kept; the interrupt controller's EOI, the timer's programming, the CRTC's cursor: the host keeps its own)
+  if (!isIn) {
+    if (port === 0x70) this.cmosAt = c.eax.value & 0x7f;
+    // the reset line: the keyboard controller's pulse (command FEh) or port 92h's bit 0, as the PC starts again
+    else if ((port === 0x64 && (c.eax.value & 0xff) === 0xfe) || (port === 0x92 && c.eax.value & 1)) BIOS[0xfe].call(this);
+    return;
+  }   // (the CMOS's index kept; the interrupt controller's EOI, the timer's programming, the CRTC's cursor: the host keeps its own)
   let v = 0xff;
   // the CMOS's extended memory (17h/18h and 30h/31h: the KB above 1 MB), what XMS gives out and the HMA
   const ext = XMS.kb + (XMS.base - 0x100000) / 1024;
@@ -407,6 +464,8 @@ const BIOS = {};
 BIOS[0x08] = function () { this.s32(0x46c, this.dv.getUint32(this.v86 + 0x46c, true) + 1); };   // the tick (INT 1Ch and the EOI follow in the ROM)
 BIOS[0x09] = function () {   // the keyboard: the key read from port 60h into the buffer (a scan code and its character)
   const k = this.port60Key; this.kbdBusy = false;
+  // Ctrl+Alt+Del: the warm boot (40:72h 1234h, the memory test skipped), the PC started again
+  if (k >> 8 === 0x53 && (this.m8(0x417) & 0x0c) === 0x0c) { this.s16(0x472, 0x1234); if (this.o.reset) this.o.reset(); else { this.v86Reset(); this.v86Boot(); } return; }
   if (k) { const t = this.m16(0x41c), nt = t + 2 >= this.m16(0x482) ? this.m16(0x480) : t + 2; if (nt !== this.m16(0x41a)) { this.s16(0x400 + t, k); this.s16(0x41c, nt); } }
 };
 BIOS[0x11] = function () { this.w('ax', this.m16(0x410)); };
@@ -437,6 +496,8 @@ BIOS[0x17] = function () { this.setAH(0x90); };
 BIOS[0x28] = function () { if (++this.polls >= 20) { this.polls = 0; this.halted = true; } };   // DOS idle (its default handler, kept as an IRET)
 BIOS[0x18] = function () { this.trapped = 'no system to boot (INT 18h)'; this.halted = true; };
 BIOS[0x19] = function () { this.v86Boot(); };
+// the processor's reset (the vector at FFFF:0000, the reset line): the PC from its power-on, or the machine anew
+BIOS[0xfe] = function () { this.halted = true; if (this.o.reset) this.o.reset(); else { this.v86Reset(); this.v86Boot(); this.halted = false; } };
 BIOS[0x1a] = function () {
   const ah = this.ah(), d = new Date();
   if (ah === 0x00) { const t = this.dv.getUint32(this.v86 + 0x46c, true); this.w('cx', t >>> 16); this.w('dx', t); this.setAL(0); return; }

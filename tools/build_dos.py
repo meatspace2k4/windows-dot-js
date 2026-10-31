@@ -20,7 +20,16 @@ SYSTEM = ['win87em.dll', 'nddeapi.dll', 'nddenb.dll', 'olecli.dll', 'olesvr.dll'
           'ole2nls.dll', 'ole2conv.dll', 'typelib.dll', 'stdole.tlb', 'winsock.dll',
           'cards.dll',   # (the Games' card library, APPLETS.INF wingames.sys)
           'mmsound.drv',   # (Windows 3.x's sound functions, module SOUND: COPY.INF, SYSTEM.INI [boot] sound.drv; Minesweeper imports them)
-          'riched32.dll']   # (the rich edit control, COPY.INF: WordPad loads it by name, LoadLibrary, not as an import)
+          'riched32.dll',   # (the rich edit control, COPY.INF: WordPad loads it by name, LoadLibrary, not as an import)
+          'vmm32.vxd']   # (the virtual machine manager and the static VxDs, which WIN.COM loads from SYSTEM to start Windows)
+# the VxDs the machine's devices name (SYSTEM.INI [386Enh], the registry's StaticVxD) that VMM32.VXD does not hold, which
+# VMM32's loader reads from the disk as WIN.COM starts Windows: one named *NAME from SYSTEM\VMM32 (LDID 22), the
+# others from SYSTEM, where Setup copies them (MSMOUSE.INF, NETTRANS.INF, NET.INF)
+VXDS = ['msmouse.vxd', 'ndis.vxd', 'ndis2sup.vxd', 'vnetbios.vxd', 'vnetsup.vxd', 'vredir.vxd']
+# the VxDs Setup packs into VMM32.VXD with VMM as it installs Windows (the CD's VMM32.VXD holds VMM alone): the base
+# set VMM's loader names, and the mouse's (VMOUSE, *vmouse in SYSTEM.INI)
+PACKED = ['biosxlat', 'configmg', 'dosmgr', 'dynapage', 'ebios', 'ifsmgr', 'int13', 'ios', 'pageswap', 'qemmfix', 'shell', 'v86mmgr',
+          'vcache', 'vcd', 'vcomm', 'vcond', 'vdd', 'vdmad', 'vfat', 'vkd', 'vmcpd', 'vpd', 'vpicd', 'vtd', 'vtdapi', 'vwin32', 'vxdldr', 'vmouse']
 # Setup's optional components, installed as Setup installs one that is chosen (its INF: CopyFiles to the Windows folder,
 # LDID 25, and the help folder, LDID 18; its links and registry): Clipboard Viewer (CLIP.INF), and the Games
 # (APPLETS.INF [games]: wingames.files, wingames.help; their links, wingames.links)
@@ -40,20 +49,54 @@ for d in dirs:
     for root, _, files in os.walk(d):
         for f in files:
             k = f.lower()
-            if (k in WANT or k in COMMAND or k in SYSTEM or k in WINDOWS or k in HELP or k in INFS) and k not in found: found[k] = os.path.join(root, f)
-missing = [k for k in [*WANT, *COMMAND, *SYSTEM, *WINDOWS, *HELP, *INFS] if k not in found]
+            if (k in WANT or k in COMMAND or k in SYSTEM or k in VXDS or k[:-4] in PACKED and k.endswith('.vxd') or k in WINDOWS or k in HELP or k in INFS) and k not in found: found[k] = os.path.join(root, f)
+missing = [k for k in [*WANT, *COMMAND, *SYSTEM, *VXDS, *[p + '.vxd' for p in PACKED], *WINDOWS, *HELP, *INFS] if k not in found]
 if missing: sys.exit(f'build_dos: not found under {dirs}: {missing}')
 sysc = open(found['sys.com'], 'rb').read()
 at = sysc.find(b'MSWIN4.1') - 3
 boot = sysc[at:at + 512]
 if at < 0 or boot[0x36:0x3e] != b'FAT12   ' or boot[510:512] != b'\x55\xaa': sys.exit('build_dos: no FAT12/16 boot sector in SYS.COM')
 b64 = lambda b: base64.b64encode(b).decode()
+
+
+def pack_vmm32(base, vxds):
+    """VMM32.VXD as Setup builds it: the CD's (its real-mode loader, the W3 directory and VMM) with each VxD's LE added, its
+    header and tables in one piece and an entry in the directory (its name, where it is, its size), its pages and
+    non-resident names after, the LE's two file offsets to them (80h, 88h) set to where they now are"""
+    out = bytearray(base)
+    u32 = lambda b, o: int.from_bytes(b[o:o + 4], 'little')
+    w3 = u32(base, 0x3c)
+    if base[w3:w3 + 2] != b'W3': sys.exit('build_dos: VMM32.VXD has no W3 directory')
+    n = int.from_bytes(base[w3 + 4:w3 + 6], 'little'); first = min(u32(base, w3 + 16 + 16 * i + 8) for i in range(n))
+    if w3 + 16 + 16 * (n + len(vxds)) > first: sys.exit('build_dos: no room in VMM32.VXD\'s W3 directory')
+    for name, f in vxds:
+        e = u32(f, 0x3c); le = f[e:]
+        if le[:2] != b'LE': sys.exit(f'build_dos: {name}: not an LE VxD')
+        pages_at, npages, psize, last = u32(le, 0x80), u32(le, 0x14), u32(le, 0x28), u32(le, 0x2c)
+        nonres, nonres_len = u32(le, 0x88), u32(le, 0x8c)
+        head = bytearray(f[e:pages_at])
+        pages = f[pages_at:pages_at + (npages - 1) * psize + last] if npages else b''
+        while len(out) % 16: out.append(0)
+        h = len(out); out += head
+        while len(out) % 512: out.append(0)
+        p = len(out); out += pages
+        q = len(out); out += f[nonres:nonres + nonres_len]
+        out[h + 0x80:h + 0x84] = p.to_bytes(4, 'little')
+        if nonres_len: out[h + 0x88:h + 0x8c] = q.to_bytes(4, 'little')
+        d = w3 + 16 + 16 * n
+        out[d:d + 8] = name.upper().ljust(8).encode()[:8]; out[d + 8:d + 12] = h.to_bytes(4, 'little'); out[d + 12:d + 16] = len(head).to_bytes(4, 'little')
+        n += 1
+    out[w3 + 4:w3 + 6] = n.to_bytes(2, 'little')
+    return bytes(out)
+
+
 bundle = {'boot': b64(boot), 'files': {path: b64(open(found[k], 'rb').read()) for k, path in WANT.items() if path},
           'command': {k.upper(): b64(open(found[k], 'rb').read()) for k in COMMAND},
-          'system': {k.upper(): b64(open(found[k], 'rb').read()) for k in SYSTEM},
+          'system': {k.upper(): b64(pack_vmm32(open(found[k], 'rb').read(), [(p, open(found[p + '.vxd'], 'rb').read()) for p in PACKED]) if k == 'vmm32.vxd' else open(found[k], 'rb').read()) for k in SYSTEM},
           'windows': {k.upper(): b64(open(found[k], 'rb').read()) for k in WINDOWS},
           'help': {k.upper(): b64(open(found[k], 'rb').read()) for k in HELP},
-          'infs': {k.upper(): open(found[k], 'rb').read().decode('latin-1') for k in INFS}}
+          'infs': {k.upper(): open(found[k], 'rb').read().decode('latin-1') for k in INFS},
+          'vxds': {k.upper(): b64(open(found[k], 'rb').read()) for k in VXDS}}
 
 
 def inf_parse(text):
