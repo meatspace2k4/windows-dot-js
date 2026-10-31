@@ -816,6 +816,17 @@ svc(VDMAD, 0x06, function () {
 svc(VDMAD, 0x07, function () { const d = dmaOf(this); d.masked = true; });                           // Mask_Channel (virtual)
 svc(VDMAD, 0x08, function () { const d = dmaOf(this); d.masked = false; this.dmaChannel(d.ch).masked = false; });   // UnMask_Channel
 svc(VDMAD, 0x12, function () { const d = dmaOf(this); if (d) { const c = this.dmaChannel(d.ch); d.virt = { addr: (c.page << 16) | c.base, count: c.bcount, mode: c.mode, ext: 0 }; } });   // Default_Handler
+// the region and buffer services NDIS and LPT call (tools/staticmap.py): one address space, a region's physical address
+// its linear one, contiguous, and the DMA buffer the region itself, so a copy to or from the buffer has nothing to do
+svc(VDMAD, 0x09, function () { this.cpu.edx.value = this.cpu.esi.value; CF(this, false); });           // Lock_DMA_Region: EDX physical
+svc(VDMAD, 0x0a, function () { CF(this, false); });                                                  // Unlock_DMA_Region
+svc(VDMAD, 0x0c, function () { CF(this, false); });                                                  // Scatter_Unlock
+svc(VDMAD, 0x0d, function () { });                                                                   // Reserve_Buffer_Space
+svc(VDMAD, 0x0e, function () { this.cpu.ebx.value = 1; this.cpu.edx.value = this.cpu.esi.value; CF(this, false); });   // Request_Buffer: EBX the id, EDX physical
+svc(VDMAD, 0x0f, function () { CF(this, false); });                                                  // Release_Buffer
+svc(VDMAD, 0x10, function () { CF(this, false); });                                                  // Copy_To_Buffer
+svc(VDMAD, 0x11, function () { CF(this, false); });                                                  // Copy_From_Buffer
+svc(VDMAD, 0x16, function () { });                                                                   // Set_EISA_Adr_Mode: an ISA machine
 svc(VDMAD, 0x13, function () { CF(this, false); });                                                  // Disable_Translation
 svc(VDMAD, 0x14, function () { CF(this, false); });                                                  // Enable_Translation
 svc(VDMAD, 0x18, function () { const d = dmaOf(this); this.dmaChannel(d.ch).masked = true; });        // Phys_Mask_Channel
