@@ -54,7 +54,7 @@
    "entries": 122,
    "reachable": 49047,
    "blockStarts": 10416,
-   "recompUnsupported": 99
+   "recompUnsupported": 98
   },
   "VCACHE.VXD": {
    "group": "vxds",
@@ -159,7 +159,7 @@
    "entries": 21,
    "reachable": 14893,
    "blockStarts": 4295,
-   "recompUnsupported": 15
+   "recompUnsupported": 13
   },
   "COMCTL32.DLL": {
    "group": "dlls",
@@ -173,7 +173,7 @@
    "entries": 253,
    "reachable": 105669,
    "blockStarts": 29314,
-   "recompUnsupported": 211
+   "recompUnsupported": 209
   },
   "VERSION.DLL": {
    "group": "dlls",
@@ -194,7 +194,7 @@
    "entries": 8,
    "reachable": 25662,
    "blockStarts": 6107,
-   "recompUnsupported": 2
+   "recompUnsupported": 1
   },
   "DESK.CPL": {
    "group": "dlls",
@@ -390,7 +390,7 @@
    "entries": 1,
    "reachable": 6473,
    "blockStarts": 1929,
-   "recompUnsupported": 27
+   "recompUnsupported": 26
   },
   "SYSTRAY.EXE": {
    "group": "programs",
@@ -887,16 +887,6 @@
     "VCOMM.VXD+29d"
    ]
   },
-  "salc": {
-   "count": 5,
-   "at": [
-    "IFSMGR.VXD+75c4",
-    "SHELL32.DLL+5ec28",
-    "SHELL32.DLL+5cf10",
-    "MMSYS.CPL+61f7",
-    "GRPCONV.EXE+315e"
-   ]
-  },
   "punpckldq": {
    "count": 1,
    "at": [
@@ -1004,13 +994,6 @@
    "at": [
     "COMDLG32.DLL+d995",
     "COMDLG32.DLL+d38e"
-   ]
-  },
-  "jmp": {
-   "count": 2,
-   "at": [
-    "COMDLG32.DLL+d942",
-    "COMDLG32.DLL+e38a"
    ]
   },
   "sgdt": {
@@ -1161,12 +1144,6 @@
    "000c:0002": [
     "ENABLE.VXD+360f"
    ],
-   "002a:000a": [
-    "SPOOLER.VXD+255e"
-   ],
-   "002a:0009": [
-    "SPOOLER.VXD+254f"
-   ],
    "0041:0001": [
     "IFSMGR.VXD+1d0d2"
    ],
@@ -1259,9 +1236,6 @@
    ],
    "0001:0153": [
     "SHELL.VXD+103f0"
-   ],
-   "0033:003f": [
-    "VCOMM.VXD+3f28"
    ],
    "0033:0064": [
     "VCOMM.VXD+749c",

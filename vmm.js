@@ -500,6 +500,10 @@ P.vxdCallAt = function (addr, sp, regs = {}) { return this.vxdCall(addr, regs, s
 svc(VWIN32, 0x02, function (arg) { this.queueApc(this.r0Tid(arg(2)), arg(0), arg(1)); return 1; });   // _VWIN32_QueueUserApc(proc, data, thread)
 svc(VWIN32, 0x0e, function (arg) { const e = this.r0Event(arg(0)); if (e) this.signal(e); return e ? 1 : 0; });   // _VWIN32_SetWin32Event
 svc(VWIN32, 0x14, function () { return 1; });                                                         // _VWIN32_CloseVxDHandle
+// VWIN32_EnterCrstR0 / VWIN32_LeaveCrstR0 (EDX the critical section): SPOOLER's, around its queue's work. One
+// processor, and ring 0 is not preempted here: nothing else can be in it meanwhile (tools/staticmap.py found them called)
+svc(VWIN32, 0x09, function () { CF(this, false); });
+svc(VWIN32, 0x0a, function () { CF(this, false); });
 
 // ---- CONFIGMG at ring 0 (flat pointers, cdecl, EAX the CONFIGRET)
 svc(CONFIGMG, 0x00, function () { return 0x400; });                                                   // Get_Version
@@ -930,6 +934,15 @@ svc(CONFIGMG, 0x3e, function (arg) {
   const v = valBytes(W.regGet('hklm\\' + k, (arg(2) && this.readA(arg(2))) || '')); if (!v) return CR.NO_SUCH_VALUE;
   const n = this.r32(arg(5)); this.w32(arg(5), v.data.length); if (n < v.data.length) return CR.BUFFER_SMALL;
   if (arg(4)) this.u8.set(v.data, arg(4)); return CR.SUCCESS;
+});
+// Write_Registry_Value(dn, subkey, name, type, buf, len, flags): VCOMM's, a port's settings under its devnode's key (a
+// string to its terminating null)
+svc(CONFIGMG, 0x3f, function (arg) {
+  const dn = this.cmNode(arg(0)); if (!dn) return CR.INVALID_DEVNODE;
+  const k = this.cmKey(dn, arg(1) && this.readA(arg(1)), arg(6)); if (!k) return CR.REGISTRY_ERROR;
+  let data = this.u8.slice(arg(4), arg(4) + arg(5));
+  if (arg(3) === 1) { const z = data.indexOf(0); if (z >= 0) data = data.slice(0, z + 1); }
+  W.regSet('hklm\\' + k, (arg(2) && this.readA(arg(2))) || '', { type: arg(3), data }); return CR.SUCCESS;
 });
 
 // ---- VMM: time. Get_System_Time: EAX the milliseconds since Windows started; Get_System_Time_Address: EAX the

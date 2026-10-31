@@ -34,6 +34,15 @@ p.cpu.ecx.value = 0x1f; p.cpu.edx.value = 0x100; call(1, 0x45); p.cpu.eax.value 
 p.cpu.zf.value = 1; call(0x2a, 0x19, 0x1000, 0, 0xffffffff, 4); assert.equal(p.cpu.zf.value, 0, 'VWIN32 19h: ZF from its result');
 p.loadLibrary16 = () => null; p.writeA(name, 'NONE.DLL'); call(0x17, 0x18, name, 1, 0, 0); assert.notEqual(p.cpu.ecx.value, 0, '_SHELL_CallDll: ECX nonzero, not called');
 
+// services the gap map found called that nothing provided: VWIN32's EnterCrstR0 / LeaveCrstR0 (SPOOLER's), CONFIGMG's
+// Write_Registry_Value (VCOMM's port settings), read back by Read_Registry_Value
+assert.ok(S[0x2a << 16 | 9] && S[0x2a << 16 | 0xa]);
+const dn = { id: 'ROOT\\*PNP0500\\0000' }; p.cmNode = () => dn; p.cmKey = () => 'enum\\root\\*pnp0500\\0000';
+p.writeA(0x700300, 'Settings'); p.writeA(0x700400, '9600,n,8,1'); dv.setUint32(0x700500, 0x100, true);
+call(0x33, 0x3f, 1, 0, 0x700300, 1, 0x700400, 0x100, 0); assert.equal(p.cpu.eax.value, 0);
+u8.fill(0, 0x700600, 0x700700); call(0x33, 0x3e, 1, 0, 0x700300, 1, 0x700600, 0x700500, 0);
+assert.equal(p.readA(0x700600), '9600,n,8,1', 'to its terminating null');
+
 // run-time translation: invalid opcodes, not the translator's own error
 p.selLimit = () => 0xffff; p.trap = () => {};
 for (const [bytes, what] of [[[0x8e, 0xf0], 'mov to segment register 6'], [[0x8c, 0xf8], 'mov from segment register 7'], [[0x8e, 0xc8], 'mov to segment register 1'], [[0x8d, 0xc0], 'lea with a register operand']]) {
