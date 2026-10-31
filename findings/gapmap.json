@@ -1198,7 +1198,7 @@
   },
   "contract": {},
   "names": {
-   "002a:0018": "VWIN32_TerminateApp (EDI the thread: its saved ring-3 context back and VWIN32's APC queued that ends it; IFSMGR's, as its INT 21h dispatch returns -41h)",
+   "002a:0018": "VWIN32_TerminateApp (EDI the thread: its saved ring-3 context back and VWIN32's APC queued that ends it; IFSMGR's, as its INT 21h dispatch returns -41h, which no VxD of the bundle and no stand-in returns)",
    "0041:0001": "VCDFSD",
    "0021:0007": "PAGEFILE (DYNAPAGE.VXD)",
    "0487:0001": "NWLINK (IPX/SPX), absent where the network is NetBEUI's as here",

@@ -325,7 +325,7 @@ result['services']['contract'] = {k: {'reads': dict(v['reads']), **{x: v[x] for 
 result['services']['missing'] = dict(result['services']['missing'])
 result['services']['absent'] = dict(result['services']['absent'])
 # what the services and devices left are, read from Windows 95's own components (WIN95_02.CAB and the other CABs)
-NAMES = {'002a:0018': "VWIN32_TerminateApp (EDI the thread: its saved ring-3 context back and VWIN32's APC queued that ends it; IFSMGR's, as its INT 21h dispatch returns -41h)",
+NAMES = {'002a:0018': "VWIN32_TerminateApp (EDI the thread: its saved ring-3 context back and VWIN32's APC queued that ends it; IFSMGR's, as its INT 21h dispatch returns -41h, which no VxD of the bundle and no stand-in returns)",
          0x21: 'PAGEFILE (DYNAPAGE.VXD)', 0x32: 'VSERVER', 0x41: 'VCDFSD', 0x482: 'SNAPVXD (SNAPSHOT.VXD)', 0x487: 'NWLINK (IPX/SPX), absent where the network is NetBEUI\'s as here',
          0x496: 'NDIS2SUP', 0x497: 'MSODISUP', 0x49b: 'VNBT (NetBIOS over TCP/IP)'}
 result['services']['names'] = {k: NAMES.get(k) or NAMES.get(int(k.split(':')[0], 16)) for k in list(result['services']['missing']) + list(result['services']['absent']) if NAMES.get(k) or NAMES.get(int(k.split(':')[0], 16))}
