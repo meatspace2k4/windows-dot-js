@@ -5775,7 +5775,8 @@ const ccdUi = () => ({
 });
 window.win95 = { ...script, get ccd() { return ccdApi || (ccdApi = window.W95Ccd ? window.W95Ccd(ccdUi()) : null); }, get nativeApps() { return [...nativeApps]; }, get dos() { return [...dosMachines]; }, startSystem, get sysApp() { return sysApp; }, reloadScript, netBoot, netCall, syncNetDrives, mapNetDrive, disconnectNetDrive, fs, render, displayProperties, startFullSaver, get fullSaver() { return fullSaver; }, properties, driveProps, openFolder, openPath, shellOpen, notepad, msgBox, runDialog, findComputer, findFiles, winHelp, shutDownDialog, MyComputer, get state() { return { menus: menus.length, menuSrc, modals: modals.length, cap: !!cap, drag: !!drag, screen, active: active && active.title }; } };
 // the scripting API's calls shown as they are made (?scriptlog=1, or win95.scriptLog = true): each win95.* call and each
-// win95.sysApp.cmd, then what it answered, as 'script' lines in DevTools' console and the machines' log (Debug Monitor),
+// win95.sysApp.cmd, then what it answered, as 'script' lines at the debug level in DevTools' console and the machines'
+// log (Verbose in both: Debug Monitor's Options > Verbose),
 // so the person at the screen sees what a script (an agent driving the system) does; win95.note(text) adds a line of its own
 {
   let on = new URLSearchParams(location.search).has('scriptlog'), seq = 0;
@@ -5785,7 +5786,7 @@ window.win95 = { ...script, get ccd() { return ccdApi || (ccdApi = window.W95Ccd
     return s.length > 300 ? `${s.slice(0, 300)}... (${s.length} characters)` : s;
   };
   const say = text => {
-    const line = W95Win32.log('info', 'script', text);
+    const line = W95Win32.log('debug', 'script', text);   // (Verbose: DevTools' level, Debug Monitor's Options > Verbose)
     if (line && sysApp && sysApp.alive) sysApp.cmd('logPut', [{ ...line, posted: true, machine: 'page' }]);   // (Debug Monitor is the system's machine's)
   };
   // (a call, and its answer once a promise's comes: numbered, so a slow answer is matched to its call)
