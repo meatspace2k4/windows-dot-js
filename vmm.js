@@ -1167,8 +1167,11 @@ svc(VMM, 0x12f, function (arg) { const m = mutexes(this).get(u32(arg(0))); if (m
 // the critical section: one holder, counted (Begin_Critical_Section ECX flags; End_Critical_Section)
 svc(VMM, 0x1f, function () { this.vxdCrit = (this.vxdCrit || 0) + 1; });
 svc(VMM, 0x20, function () { if (this.vxdCrit) this.vxdCrit--; });
-// Get_Crit_Status_No_Block / Get_Crit_Status_Thread: EBX the owner, ECX the claims, ZF set when unowned
-const critStatus = function () { const n = this.vxdCrit || 0; this.cpu.ecx.value = n; this.cpu.ebx.value = n ? this.sysVM() : 0; ZF(this, !n); };
+// Get_Crit_Status_No_Block / Get_Crit_Status_Thread: ECX the claims, CF set when owned (EBX the owner), ZF set when
+// unowned; unowned, EBX is the current VM, as its callers take it: IFSMGR compares it with its own when CF is set, and
+// NETBEUI's time-out reads the VM's client registers through it when CF is clear ([EBX+8], then the client's flags).
+// Given EBX 0, NETBEUI read a pointer from address 8, whatever a stray write had left there, and page-faulted
+const critStatus = function () { const n = this.vxdCrit || 0; this.cpu.ecx.value = n; this.cpu.ebx.value = this.sysVM(); CF(this, n); ZF(this, !n); };
 svc(VMM, 0xf1, critStatus); svc(VMM, 0x145, critStatus);
 svc(VMM, 0x1a, function () {}); svc(VMM, 0x1b, function () {});                                      // Enable_VM_Ints, Disable_VM_Ints
 svc(VMM, 0x1e, function () {});                                                                     // Adjust_Exec_Priority

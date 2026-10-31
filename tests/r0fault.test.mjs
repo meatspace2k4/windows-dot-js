@@ -34,4 +34,19 @@ try {
   { const { m, faults } = mk(() => { throw new Error('no such service'); }); ring = [];
     m.pollIn(); assert.deepEqual(faults, []); assert.deepEqual(printed, ['Error: no such service']); }
 } finally { console.error = err; }
+
+// the key feed: a fault in KEYBOARD's or USER's handling (keyEvent16) or the person's input hook is r0Fault's too,
+// not printed and passed over
+{
+  const k = w.indexOf('  feedKeys() {'), s = w.indexOf('  step() {');
+  assert.ok(k >= 0 && s > k, 'feedKeys');
+  const Feed = new Function('W', `return class { ${w.slice(i, i + w.slice(i).indexOf('  pollIn() {'))} ${w.slice(k, s)} }`)(W);
+  const m = new Feed(), faults = []; m.keyq = [[0x41, 0x1e, false]]; m.ring0 = () => false;
+  m.proc = { depth: 0, inputPending: () => false, faulted: f => faults.push(f), keyEvent16: () => { throw new FaultError(fault); } };
+  assert.throws(() => m.feedKeys(), FaultError); assert.deepEqual(faults, [fault]);
+  // and the step feeds input inside the run's try, where a fault is answered (VWIN32's blue screen)
+  const st = w.slice(s, s + 4000);
+  assert.ok(st.indexOf('try {\n      this.feedMouse(); this.feedKeys();') >= 0, 'input fed inside the step\'s try');
+  assert.ok(/try \{ this\.poll\(\); \} catch \(e\) \{ if \(!\(e instanceof W\.FaultError\)\) throw e; \}/.test(st), 'the first poll\'s fault kept for the answer');
+}
 console.log('r0fault: ok');

@@ -269,7 +269,9 @@ class Machine {
         this.movesFed = (this.movesFed || 0) + 1;
       }
       const m = this.mouseq.shift(); this.lastFed = performance.now();
-      try { if (this.lagLog) this.lagLog.push({ k: 'mouse-fed', f: m[0] & 0xff, x: m[1], y: m[2], t: Date.now() }); if (m[0] & 0x2a) { p.personActed = true; if (p.personInput) try { p.personInput(...m); } catch (e) { console.error(e); } } p.mouseEvent16(...m); this.recordStroke(m); } catch (e) { console.error(e); }   // (a button pressed: this machine's person has done something, ne16.js intentQuiet)
+      // (a button pressed: this machine's person has done something, ne16.js intentQuiet; a processor exception in the
+      // drivers' handling is the machine's to answer, r0Fault)
+      try { if (this.lagLog) this.lagLog.push({ k: 'mouse-fed', f: m[0] & 0xff, x: m[1], y: m[2], t: Date.now() }); if (m[0] & 0x2a) { p.personActed = true; if (p.personInput) try { p.personInput(...m); } catch (e) { this.r0Fault(e); } } p.mouseEvent16(...m); this.recordStroke(m); } catch (e) { this.r0Fault(e); }
     }
     this.postStroke(false);
   }
@@ -509,16 +511,16 @@ class Machine {
     if (!this.keyq.length || p.depth || this.ring0() || this.focusing) return;   // (a window being brought to the front first: 'focus')   // (the keyboard and mouse drivers report at interrupt time)
     try { if (p.inputPending()) return; } catch (e) { console.error(e); }   // USER has input not yet taken
     for (let n = 0; this.keyq.length && n < 16; n++) {
-      const k = this.keyq.shift(); if (!n && p.personInput) try { p.personInput(); } catch (e) { console.error(e); } p.personActed = true;
+      const k = this.keyq.shift(); if (!n && p.personInput) try { p.personInput(); } catch (e) { this.r0Fault(e); } p.personActed = true;
       if (this.lagLog) this.lagLog.push({ k: 'key-fed', vk: k[0], up: k[2], t: Date.now() });
-      try { p.keyEvent16(k[0], k[1] & 0xff, k[2], k[1] > 0xff); } catch (e) { console.error(e); }
+      try { p.keyEvent16(k[0], k[1] & 0xff, k[2], k[1] > 0xff); } catch (e) { this.r0Fault(e); }
     }
   }
   step() {
     clearTimeout(this.timer); this.timer = 0;
     if (!this.alive) return;
     const p = this.proc, t0 = performance.now();
-    this.poll();
+    try { this.poll(); } catch (e) { if (!(e instanceof W.FaultError)) throw e; }   // (recorded by r0Fault, answered below)
     if (p.r0Runs && p.r0Runs.length) {
       try { p.r0Step(); } catch (e) { console.error(e && e.stack ? e.stack : e); this.exited(-1, e.message); return; }
       this.sendText();
@@ -532,8 +534,8 @@ class Machine {
       const [w, h] = this.wantMode; this.wantMode = null; const r = this.setMode(w, h); if (r) post({ t: 'mode', r }); else this.wantMode = [w, h];
     }
     if (!p.win16Held && p.k32CloseRequest && p.k32CloseRequest()) post({ t: 'closeProgram' });   // REBOOT's APC: Close Program
-    this.feedMouse(); this.feedKeys();
     try {
+      this.feedMouse(); this.feedKeys();   // (a fault in the drivers' handling of it, r0Fault, answered below as any other)
       // (four slices a step; up to ten, within 12 ms of the step, while input waits to go in: a person drawing, or
       // another machine's stroke being fed, gets the program its moves at the pace they come)
       const busy = () => this.mouseq.length || this.rs || (this.strokes && this.strokes.length);
