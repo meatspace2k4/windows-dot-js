@@ -447,9 +447,13 @@ function translate(p, lin, csb, d32, v86) {
       if (b2 === 0xa1 || b2 === 0xa9) { pop(T, osz); loadSeg(b2 === 0xa1 ? 4 : 5, T); continue; }
       if (b2 === 0xb2 || b2 === 0xb4 || b2 === 0xb5) { const o = modrm(); f.lg(A).ld(osz).ls(T); f.lg(A).c(osz).op('add').ld(2).ls(B); wrReg(o.reg, osz, T); loadSeg(b2 === 0xb2 ? 2 : b2 === 0xb4 ? 4 : 5, B); continue; }
       if (b2 === 0xa3 || b2 === 0xab || b2 === 0xb3 || b2 === 0xbb || b2 === 0xba) {   // bt / bts / btr / btc
-        const o = modrm(); if (!o.isReg && b2 !== 0xba) throw new Unsupported('bt with a memory operand and a register index');
+        const o = modrm();
         const kind = b2 === 0xba ? o.reg - 4 : [0xa3, 0xab, 0xb3, 0xbb].indexOf(b2);   // 0 bt, 1 bts, 2 btr, 3 btc
-        if (b2 === 0xba) f.c(fetch()); else rdReg(o.reg, osz);
+        if (b2 === 0xba) f.c(fetch());
+        else if (!o.isReg) {   // (a memory operand with a register's bit index: the index, signed, picks the operand-sized word from the address on; IFSMGR's)
+          rdReg(o.reg, osz); if (osz === 2) f.c(16).op('shl').c(16).op('shr_s'); f.ls(X);
+          f.lg(A).lg(X).c(osz === 4 ? 5 : 4).op('shr_s').c(osz === 4 ? 2 : 1).op('shl').op('add').ls(A); f.lg(X);
+        } else rdReg(o.reg, osz);
         f.c(osz * 8 - 1).op('and').ls(C); rd(o, osz); f.ls(B);
         f.lg(B).lg(C).op('shr_u').c(1).op('and').gs('cf');
         if (kind) {

@@ -506,7 +506,9 @@ class Process {
     let j = n - 1; while (j > i && u8[lo + j] === s[j]) j--;
     w.n++;
     if (w.hits.length < 50) w.hits.push({ at: (lo + i).toString(16), n: j - i + 1, was: Array.from(s.subarray(i, Math.min(j + 1, i + 16))), now: Array.from(u8.subarray(lo + i, Math.min(lo + j + 1, lo + i + 16))),
-      by: by || this.whereOf(this.lastBlock || 0), thread: this.thread16 ? this.thread16.id : 'main', t: Math.round(this.now()) });
+      by: by || this.whereOf(this.lastBlock || 0), thread: this.thread16 ? this.thread16.id : 'main', t: Math.round(this.now()),
+      // (the return addresses on the stack then, as symbols: who the code that wrote was called by)
+      stack: Array.from({ length: 48 }, (_, k) => this.r32(u32(this.cpu.esp.value) + 4 * k)).filter(v => this.modules.some(m => m.meta && v >= m.meta.textLo && v < m.meta.textHi)).map(v => this.whereOf(v)) });
     s.set(u8.subarray(lo, lo + n));
   }
   dispatch(eip) {

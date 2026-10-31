@@ -30,6 +30,12 @@ P.vxd = function (file) {
   m.blocks.forEach((a, i) => { look[a - m.textLo] = i + 1; });
   const rec = { kind: 'vxd', name: m.name.trim(), file: key, id: m.id, meta: m, run, ddb: m.ddb, procs: m.procs, base: m.base, clock: true };
   this.modules.push(rec); this.vxds.set(key, rec);
+  // (debugging, ?dynat=addr,...: those blocks run as run-time code, block by block, so a write watch names the block
+  // that wrote and the stack it ran on; a VxD's name: all of its blocks)
+  for (const a of (this.host && this.host.dynAt) || []) {
+    if (typeof a === 'string') { if (a.toUpperCase() === rec.name.toUpperCase()) look.fill(0); }
+    else if (a >= m.textLo && a < m.textHi) this.smc(a);
+  }
   return rec;
 };
 /** the loaded VxD with device id `id` */
@@ -1445,11 +1451,13 @@ svc(CONFIGMG, 0x33, function (arg) {
 svc(CONFIGMG, 0x4e, function (arg) { this.appyCall(arg(0), arg(1)); return CR.SUCCESS; });
 svc(CONFIGMG, 0x54, function () { return CR.FAILURE; });                                              // Call_Enumerator_Function: none registered
 svc(CONFIGMG, 0x58, function () { return CR.SUCCESS; });                                            // Broadcast_Device_Change_Message
-// ---- IOS, the block-device subsystem: IOS_Requestor_Service (an ISP: ISP_func, ISP_result): no block devices are
-// IOS's here (the disks are the shell's), so every request finds none
+// ---- IOS, the block-device subsystem: IOS_Requestor_Service (an IRS: IRS_func, IRS_result, bytes, then the request's
+// fields, IRS_drv the drive at 2): no block devices are IOS's here (the disks are the shell's), so every request finds
+// none. (Answered as an ISP's word result at 2, it wrote over IFSMGR's drive letter: IFSMGR took drive 10h-41h for
+// one of IOS's and wrote its current-directory entry, "\x10:\", through the end of its CDS table, at address 0)
 const IOS = 0x10;
 svc(IOS, 0x00, function () { this.cpu.eax.value = 0x400; CF(this, false); });
-svc(IOS, 0x08, function (arg) { this.w16(arg(0) + 2, 0x10); });   // IORS_INVALID_COMMAND
+svc(IOS, 0x08, function (arg) { this.u8[u32(arg(0)) + 1] = 0x10; });   // IRS_result: IORS_INVALID_COMMAND
 // ---- a service of a device that is not loaded: its Get_Version (service 0) answers CF set, as the VMM's default
 // handler does, so a VxD can ask whether another one is there
 P.absentService = function (dev, n) {

@@ -68,7 +68,7 @@ const w = p.memWatch(0x14000, 16);
 p.memCheck(); assert.equal(w.hits.length, 0);
 mem[0x14004] = 0xaa; mem[0x14005] = 0xbb;
 p.memCheck();
-assert.equal(w.hits.length, 1); assert.deepEqual(w.hits[0], { at: '14004', n: 2, was: [0, 0], now: [0xaa, 0xbb], by: 'OLE32+234 (CoUninitialize+34)', thread: 'main', t: 0 });
+assert.equal(w.hits.length, 1); assert.deepEqual(w.hits[0], { at: '14004', n: 2, was: [0, 0], now: [0xaa, 0xbb], by: 'OLE32+234 (CoUninitialize+34)', thread: 'main', t: 0, stack: [] });
 p.memCheck(); assert.equal(w.hits.length, 1, 'no change since: nothing more');
 mem[0x1400f] = 1; p.memCheck('run-time code at 9000'); assert.equal(w.hits[1].by, 'run-time code at 9000'); assert.equal(w.n, 2);
 p.memWatch(null); assert.equal(p.memW, null);
