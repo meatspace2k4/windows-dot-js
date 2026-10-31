@@ -540,12 +540,13 @@
         const r = await fetch('__claude', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: s.model, effort: s.effort, messages }) });
         if (!r.ok) failed = r.status === 404 || r.status === 501 ? 'Not connected: this page\'s server has no Claude API.' : `Not connected (HTTP ${r.status}).`;
         else {
-          const rd = r.body.getReader(), dec = new TextDecoder(); let buf = '';
-          for (;;) {
+          // (read until the reply's last line, 'done' or 'error': the server may keep the connection open after it)
+          const rd = r.body.getReader(), dec = new TextDecoder(); let buf = '', last = false;
+          try { while (!last) {
             const { value, done } = await rd.read(); if (done) break;
             buf += dec.decode(value, { stream: true });
-            for (let i; (i = buf.indexOf('\n')) >= 0; buf = buf.slice(i + 1)) on(JSON.parse(buf.slice(0, i)));
-          }
+            for (let i; !last && (i = buf.indexOf('\n')) >= 0; buf = buf.slice(i + 1)) { if (!i) continue; const ev = JSON.parse(buf.slice(0, i)); on(ev); last = ev.t === 'done' || ev.t === 'error'; }
+          } } finally { rd.cancel().catch(() => {}); }
         }
       } catch (e) { failed = `Not connected: ${e.message}`; }
       if (failed) said(s, 'system', failed);
@@ -657,6 +658,17 @@
       if (fs.exists(p) && !/^c:\\/i.test(fs.realpath(p))) not(`${p} is not on C:.`);
       return p;
     };
+    // SRC:\ is the project's own code, the checkout the page's server serves (tools/serve.py /__src, tools/src_api.py), so
+    // the system is changed from inside it: read and written there as on C:, with the same permission mode; a page whose
+    // server has none (the deployed site) refuses it
+    const SRC = /^src:\\?/i, isSrc = p => SRC.test(String(p || ''));
+    const srcRel = p => String(p).replace(SRC, '').replace(/\\/g, '/');
+    const srcPath = rel => `SRC:\\${rel.replace(/\//g, '\\')}`;
+    const src = async (op, p, text) => {
+      let r; try { r = await fetch('__src', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ op, path: srcRel(p), text }) }); } catch (e) { not(`SRC: ${e.message}`); }
+      if (!r.ok) not(r.status === 404 || r.status === 501 ? 'This page\'s server has no SRC: (the project\'s code is served by tools/serve.py only).' : `SRC: HTTP ${r.status}`);
+      const j = await r.json(); if (j.error) not(j.error); return j;
+    };
     const mayWrite = async (what, p) => {
       const m = self.permissionMode;
       if (m === 'plan') not('Plan mode: no files are written. Present the plan first.');
@@ -665,7 +677,7 @@
     const changed = (op, p) => { const c = self.changes = self.changes || []; if (!c.some(x => x.path === p && x.op === op)) c.push({ op, path: p }); save('sessions'); ui.dirty(); };
     // Claude Code's own file tools, under its names and with its answers: a file is Read before Write or Edit changes it
     // (the session keeps what it has read); a path that is not absolute is in the session's folder
-    const abs = p => { p = String(p || '').replace(/\//g, '\\'); return /^[a-z]:\\/i.test(p) || /^\\\\/.test(p) ? p : `${(self.cwd || 'C:\\').replace(/\\$/, '')}\\${p.replace(/^\.\\/, '')}`; };
+    const abs = p => { p = String(p || '').replace(/\//g, '\\'); return /^[a-z]:\\/i.test(p) || /^\\\\/.test(p) || isSrc(p) ? p : `${(self.cwd || 'C:\\').replace(/\\$/, '')}\\${p.replace(/^\.\\/, '')}`; };
     const hasRead = p => (self.read = self.read || []).includes(p.toUpperCase());
     const markRead = p => { if (!hasRead(p)) self.read.push(p.toUpperCase()); };
     const mustHaveRead = p => { if (ui.fs.exists(p) && !hasRead(p)) not('File has not been read yet. Read it first before writing to it.'); };
@@ -687,6 +699,61 @@
     const walk = (dir, out = []) => { for (const e of ui.fs.readdir(dir)) { if (out.length >= 20000) break; if (e.isDir) walk(e.path, out); else out.push(e); } return out; };
     const textOf = e => { if (e.size > 4 << 20) return null; const t = ui.fs.readText(e.path); return t.includes('\0') ? null : t; };
     const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+    // the file tools on SRC:\ (the session they are for taken before the server is asked: another call may come between)
+    const numbered = (t, a) => {
+      const lines = t.split(/\r?\n/), from = Math.max(1, a.offset || 1), n = Math.min(a.limit || 2000, 2000);
+      if (lines.length === 1 && !lines[0]) return '<system-reminder>Warning: the file exists but the contents are empty.</system-reminder>';
+      return lines.slice(from - 1, from - 1 + n).map((l, i) => `${String(from + i).padStart(6)}\t${l.slice(0, 2000)}`).join('\n');
+    };
+    const readBy = (s, p) => { const r = s.read = s.read || []; if (!r.includes(p.toUpperCase())) r.push(p.toUpperCase()); };
+    const srcList = async base => { const st_ = await src('stat', base); if (!st_.exists) not(`Path does not exist: ${base}`); return st_.isDir ? (await src('list', base)).files.map(e => ({ ...e, path: srcPath(e.path) })) : [{ path: base, size: st_.size, mtime: st_.mtime }]; };
+    const SRC_FILES = {
+      async Read(a, p) { const s = self, j = await src('read', p); readBy(s, p); return numbered(j.text, a); },
+      async Write(a, p) {
+        const s = self; if (typeof a.content !== 'string') not('content: the file\'s text.');
+        const had = (await src('stat', p)).exists;
+        if (had && !(s.read || []).includes(p.toUpperCase())) not('File has not been read yet. Read it first before writing to it.');
+        await mayWrite(had ? 'overwrite' : 'create', p);
+        await src('write', p, a.content); readBy(s, p); changed('write', p);
+        return had ? `The file ${p} has been updated successfully.` : `File created successfully at: ${p}`;
+      },
+      async Edit(a, p) {
+        const s = self, t = (await src('read', p)).text;
+        if (!(s.read || []).includes(p.toUpperCase())) not('File has not been read yet. Read it first before writing to it.');
+        if (a.old_string === a.new_string) not('No changes to make: old_string and new_string are exactly the same.');
+        const k = a.old_string ? t.split(a.old_string).length - 1 : 0;
+        if (!k) not(`String to replace not found in file.\nString: ${a.old_string}`);
+        if (k > 1 && !a.replace_all) not(`Found ${k} matches of the string to replace, but replace_all is false. To replace all occurrences, set replace_all to true. To replace only one occurrence, please provide more context to uniquely identify the instance.\nString: ${a.old_string}`);
+        await mayWrite('edit', p);
+        await src('write', p, a.replace_all ? t.split(a.old_string).join(a.new_string) : t.replace(a.old_string, () => a.new_string)); changed('write', p);
+        return `The file ${p} has been updated successfully.`;
+      },
+      async Glob(a, base) {
+        const re = wild(a.pattern || '', base.replace(/\\$/, '') || 'SRC:'), hits = (await srcList(base)).filter(e => re.test(e.path));
+        if (!hits.length) return 'No files found';
+        return hits.slice(0, 100).map(e => e.path).join('\n') + (hits.length > 100 ? '\n(Results are truncated. Consider using a more specific path or pattern.)' : '');
+      },
+      async Grep(a, base) {
+        const mode = a.output_mode || 'files_with_matches';
+        let re; try { re = new RegExp(String(a.pattern), (a['-i'] ? 'i' : '') + (a.multiline ? 's' : '')); } catch (e) { not(`Invalid regex: ${e.message}`); }
+        const only = a.glob ? wild(/[\\/]/.test(a.glob) ? a.glob : `**\\${a.glob}`, base.replace(/\\$/, '')) : null;
+        const files = (await srcList(base)).filter(e => e.size <= 4 << 20 && (!only || only.test(e.path)));
+        const out = []; let total = 0;
+        for (const e of files) {
+          let t; try { t = (await src('read', e.path)).text; } catch (_) { continue; }   // (not text)
+          const lines = t.split(/\r?\n/), hit = lines.flatMap((l, i) => re.test(l) ? [i] : []);
+          if (!hit.length) continue;
+          total += hit.length;
+          if (mode === 'files_with_matches') out.push(e.path);
+          else if (mode === 'count') out.push(`${e.path}:${hit.length}`);
+          else for (const i of hit) out.push(`${e.path}:${a['-n'] === false ? '' : `${i + 1}:`}${lines[i]}`);
+        }
+        const skip = a.offset || 0, cut = x => a.head_limit ? x.slice(skip, skip + a.head_limit) : x.slice(skip);
+        if (mode === 'files_with_matches') return out.length ? `Found ${plural(out.length, 'file')}\n${cut(out).join('\n')}` : 'No files found';
+        if (!out.length) return 'No matches found';
+        return cut(out).join('\n') + (mode === 'count' ? `\n\nFound ${plural(total, 'total occurrence')} across ${plural(out.length, 'file')}.` : '');
+      },
+    };
     const FILES = {
       // AskUserQuestion: 1 to 4 questions of 2 to 4 options each, asked one after another as Claude Code asks them; two options
       // are a card in the Claude program (cardBox), more a message box of the page's with a button each, and a multi-select
@@ -727,7 +794,25 @@
         if (r.timedOut) return `${out ? `${out}\n` : ''}Command timed out after ${Math.round(ms / 1000)}s`;
         return out || '(no output)';
       },
+      // JavaScript: code run in the page, where the scripting API is (SCRIPTING.md): win95.* drives the shell and its
+      // programs, win95.sysApp.cmd(...) asks the system's machine (probe, faults, trace, watch, memwatch, reload, ...),
+      // win95.reloadScript(file) loads a changed script again without a restart. An expression's value is the answer
+      // (a promise awaited), or the body's return; JSON, at most 30000 characters. Asked as Bash is, by permission mode
+      async JavaScript(a) {
+        const code = String(a.code || ''); if (!code.trim()) not('code: the JavaScript to run.');
+        const m = self.permissionMode;
+        if ((m === 'default' || m === 'plan') && !(await approve(`Claude wants to run JavaScript in the page:\n\n${code.slice(0, 600)}${code.length > 600 ? '\n...' : ''}\n\nAllow it?`))) not('Permission to run the JavaScript was denied.');
+        const Async = Object.getPrototypeOf(async () => {}).constructor;
+        let f; try { f = new Async('win95', `return (${code}\n)`); } catch (_) { try { f = new Async('win95', code); } catch (e) { not(`SyntaxError: ${e.message}`); } }
+        let v; try { v = await f(window.win95); } catch (e) { not(`${e && e.name || 'Error'}: ${e && e.message || e}`); }
+        if (v === undefined) return 'undefined';
+        let out; if (typeof v === 'string') out = v;
+        else { const seen = new WeakSet(); try { out = JSON.stringify(v, (k, x) => (typeof x === 'object' && x !== null ? (seen.has(x) ? '[Circular]' : (seen.add(x), x)) : typeof x === 'bigint' ? String(x) : typeof x === 'function' ? `[function ${x.name || ''}]` : x), 2); } catch (e) { out = String(v); } }
+        if (out === undefined) out = String(v);
+        return out.length > 30000 ? `${out.slice(0, 30000)}\n... (truncated: ${out.length} characters)` : out;
+      },
       Read(a) {
+        if (isSrc(abs(a.file_path))) return SRC_FILES.Read(a, abs(a.file_path));
         const p = onC(abs(a.file_path));
         if (!ui.fs.exists(p)) not('File does not exist.');
         if (ui.fs.stat(p).isDir) not(`EISDIR: illegal operation on a directory, read '${p}'`);
@@ -737,6 +822,7 @@
         return lines.slice(from - 1, from - 1 + n).map((l, i) => `${String(from + i).padStart(6)}\t${l.slice(0, 2000)}`).join('\n');
       },
       async Write(a) {
+        if (isSrc(abs(a.file_path))) return SRC_FILES.Write(a, abs(a.file_path));
         const p = onC(abs(a.file_path)); if (typeof a.content !== 'string') not('content: the file\'s text.');
         const had = ui.fs.exists(p); mustHaveRead(p);
         await mayWrite(had ? 'overwrite' : 'create', p);
@@ -745,6 +831,7 @@
         return had ? `The file ${p} has been updated successfully.` : `File created successfully at: ${p}`;
       },
       async Edit(a) {
+        if (isSrc(abs(a.file_path))) return SRC_FILES.Edit(a, abs(a.file_path));
         const p = onC(abs(a.file_path));
         if (!ui.fs.exists(p)) not('File does not exist.');
         mustHaveRead(p);
@@ -757,6 +844,7 @@
         return `The file ${p} has been updated successfully.`;
       },
       Glob(a) {
+        if (isSrc(abs(a.path || self.cwd))) return SRC_FILES.Glob(a, abs(a.path || self.cwd));
         const base = onC(abs(a.path || self.cwd || 'C:\\'));
         if (!ui.fs.exists(base) || !ui.fs.stat(base).isDir) not(`Directory does not exist: ${base}`);
         const re = wild(a.pattern || '', base), hits = walk(base).filter(e => re.test(e.path)).sort((x, y) => y.mtime - x.mtime);
@@ -764,6 +852,7 @@
         return hits.slice(0, 100).map(e => e.path).join('\n') + (hits.length > 100 ? '\n(Results are truncated. Consider using a more specific path or pattern.)' : '');
       },
       Grep(a) {
+        if (isSrc(abs(a.path || self.cwd))) return SRC_FILES.Grep(a, abs(a.path || self.cwd));
         const base = onC(abs(a.path || self.cwd || 'C:\\')), mode = a.output_mode || 'files_with_matches';
         if (!ui.fs.exists(base)) not(`Path does not exist: ${base}`);
         let re; try { re = new RegExp(String(a.pattern), (a['-i'] ? 'i' : '') + (a.multiline ? 's' : '')); } catch (e) { not(`Invalid regex: ${e.message}`); }
@@ -789,11 +878,12 @@
     const FILE_DEFS = [
       { name: 'AskUserQuestion', description: 'Asks the user 1 to 4 multiple-choice questions and waits for the answers: to gather preferences, clarify an ambiguous instruction, or let the user choose between approaches. Each question has 2 to 4 options (a label and what it means); the user may pick one, or several when multiSelect is true.', input_schema: S_({ questions: { type: 'array', minItems: 1, maxItems: 4, description: 'The questions to ask', items: S_({ question: { type: 'string', description: 'The complete question, ending with a question mark' }, header: { type: 'string', description: 'A very short label for the question (at most 12 characters)' }, multiSelect: { type: 'boolean', description: 'Allow more than one option to be chosen (default false)' }, options: { type: 'array', minItems: 2, maxItems: 4, description: 'The choices', items: S_({ label: { type: 'string', description: 'The choice, 1 to 5 words' }, description: { type: 'string', description: 'What choosing it means' } }, ['label', 'description']) } }, ['question', 'header', 'options']) } }, ['questions']) },
       { name: 'Bash', description: 'Runs a command in MS-DOS (COMMAND.COM /C) in a machine of this Windows 95, its drives C: and D: Windows\' own, starting in the session\'s folder, and returns what it writes to the screen. The command line is MS-DOS\'s: 127 characters at most, no && or pipes to Unix tools; DIR, TYPE, COPY, REN, DEL, MD, SET, the programs in C:\\WINDOWS\\COMMAND (MEM, FIND, SORT, MORE, XCOPY, ATTRIB, FC, DEBUG, ...) and any MS-DOS program, with | and > as DOS has them. The session\'s permission mode decides whether the user is asked.', input_schema: S_({ command: { type: 'string', description: 'The MS-DOS command to run' }, description: { type: 'string', description: 'What the command does, in 5-10 words' }, timeout: { type: 'integer', description: 'Milliseconds before it is stopped (default 120000, at most 600000)' } }, ['command']) },
-      { name: 'Read', description: 'Reads a file from the C: drive (the system\'s own disk). file_path is absolute (C:\\...) or relative to the session\'s folder. Reads up to 2000 lines from offset, in cat -n format with line numbers starting at 1. Other drives, network drives and shares are refused.', input_schema: S_({ file_path: { type: 'string', description: 'The path of the file to read' }, offset: { type: 'integer', description: 'The line number to start reading from' }, limit: { type: 'integer', description: 'The number of lines to read' } }, ['file_path']) },
-      { name: 'Write', description: 'Writes a file on the C: drive, overwriting it if it is there. An existing file must be Read first in this session. The session\'s permission mode decides whether the user is asked.', input_schema: S_({ file_path: { type: 'string', description: 'The path of the file to write' }, content: { type: 'string', description: 'The content to write to the file' } }, ['file_path', 'content']) },
-      { name: 'Edit', description: 'Performs exact string replacement in a file on the C: drive. The file must be Read first in this session. old_string must be unique in the file unless replace_all is true.', input_schema: S_({ file_path: { type: 'string', description: 'The path of the file to modify' }, old_string: { type: 'string', description: 'The text to replace' }, new_string: { type: 'string', description: 'The text to replace it with (must be different from old_string)' }, replace_all: { type: 'boolean', description: 'Replace all occurrences of old_string (default false)' } }, ['file_path', 'old_string', 'new_string']) },
-      { name: 'Glob', description: 'Finds files on the C: drive by glob pattern (such as **\\*.TXT or WINDOWS\\*.INI; case is ignored), newest first, at most 100.', input_schema: S_({ pattern: { type: 'string', description: 'The glob pattern to match files against' }, path: { type: 'string', description: 'The folder to search in (default: the session\'s folder)' } }, ['pattern']) },
-      { name: 'Grep', description: 'Searches the text files of a folder (or one file) on the C: drive for a JavaScript regular expression. output_mode: files_with_matches (the default), content (path:line:text) or count.', input_schema: S_({ pattern: { type: 'string', description: 'The regular expression to search for' }, path: { type: 'string', description: 'The file or folder to search in (default: the session\'s folder)' }, glob: { type: 'string', description: 'Only files matching this glob (such as *.INI)' }, output_mode: { type: 'string', enum: ['content', 'files_with_matches', 'count'] }, '-i': { type: 'boolean', description: 'Case insensitive search' }, '-n': { type: 'boolean', description: 'Line numbers in content mode (default true)' }, multiline: { type: 'boolean' }, head_limit: { type: 'integer', description: 'Only the first N results' }, offset: { type: 'integer', description: 'Skip the first N results' } }, ['pattern']) },
+      { name: 'JavaScript', description: 'Runs JavaScript in the page this Windows 95 runs in, where its scripting API is (SRC:\\SCRIPTING.md): win95.* drives the shell and its programs as a person would (windows(), elementsNow(), click(query), run(cmd), next(event), ccd.<server>.<tool>(args), ...); win95.sysApp.cmd(name, args) asks the system\'s machine its diagnostics (probe, faults, trace, watch, memwatch, call, peek, effects); win95.reloadScript(\'file.js\') loads a script of the system changed on SRC:\\ again into the running page or machine, no restart (claude-app.js, this program\'s own code, keeps its window and turns). Wait for state with win95.next(event) or waitFor(query), not timers. The code is an expression (its value, a promise awaited) or a function body with return; the answer is the value as JSON, at most 30000 characters. The session\'s permission mode decides whether the user is asked.', input_schema: S_({ code: { type: 'string', description: 'The JavaScript to run' }, description: { type: 'string', description: 'What it does, in 5-10 words' } }, ['code']) },
+      { name: 'Read', description: 'Reads a file from the C: drive (the system\'s own disk), or from SRC:\\, the project\'s own code (the checkout the page\'s server serves: the system\'s scripts, tools and tests; SRC:\\SCRIPTING.md is the scripting API). file_path is absolute (C:\\... or SRC:\\...) or relative to the session\'s folder. Reads up to 2000 lines from offset, in cat -n format with line numbers starting at 1. Other drives, network drives and shares are refused.', input_schema: S_({ file_path: { type: 'string', description: 'The path of the file to read' }, offset: { type: 'integer', description: 'The line number to start reading from' }, limit: { type: 'integer', description: 'The number of lines to read' } }, ['file_path']) },
+      { name: 'Write', description: 'Writes a file on the C: drive or SRC:\\ (the project\'s code), overwriting it if it is there. An existing file must be Read first in this session. The session\'s permission mode decides whether the user is asked.', input_schema: S_({ file_path: { type: 'string', description: 'The path of the file to write' }, content: { type: 'string', description: 'The content to write to the file' } }, ['file_path', 'content']) },
+      { name: 'Edit', description: 'Performs exact string replacement in a file on the C: drive or SRC:\\ (the project\'s code). The file must be Read first in this session. old_string must be unique in the file unless replace_all is true.', input_schema: S_({ file_path: { type: 'string', description: 'The path of the file to modify' }, old_string: { type: 'string', description: 'The text to replace' }, new_string: { type: 'string', description: 'The text to replace it with (must be different from old_string)' }, replace_all: { type: 'boolean', description: 'Replace all occurrences of old_string (default false)' } }, ['file_path', 'old_string', 'new_string']) },
+      { name: 'Glob', description: 'Finds files on the C: drive or SRC:\\ (path SRC:\\ for the project\'s code) by glob pattern (such as **\\*.TXT or WINDOWS\\*.INI; case is ignored), newest first, at most 100.', input_schema: S_({ pattern: { type: 'string', description: 'The glob pattern to match files against' }, path: { type: 'string', description: 'The folder to search in (default: the session\'s folder)' } }, ['pattern']) },
+      { name: 'Grep', description: 'Searches the text files of a folder (or one file) on the C: drive or SRC:\\ (the project\'s code) for a JavaScript regular expression. output_mode: files_with_matches (the default), content (path:line:text) or count.', input_schema: S_({ pattern: { type: 'string', description: 'The regular expression to search for' }, path: { type: 'string', description: 'The file or folder to search in (default: the session\'s folder)' }, glob: { type: 'string', description: 'Only files matching this glob (such as *.INI)' }, output_mode: { type: 'string', enum: ['content', 'files_with_matches', 'count'] }, '-i': { type: 'boolean', description: 'Case insensitive search' }, '-n': { type: 'boolean', description: 'Line numbers in content mode (default true)' }, multiline: { type: 'boolean' }, head_limit: { type: 'integer', description: 'Only the first N results' }, offset: { type: 'integer', description: 'Skip the first N results' } }, ['pattern']) },
     ];
 
     // ---------------------------------------------------------------- the tools

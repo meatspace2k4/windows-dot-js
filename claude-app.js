@@ -20,7 +20,10 @@
   // menu commands past the bar's first ones: models 300+, efforts 310+, modes 320+, views 330+, panes 340+, the rest below
   const CMD = { EXPORT: 203, ATTACH: 204, COPY_REPLY: 210, FORK: 211, REWIND: 212, CHAPTER: 213, FIND: 214, RENAME: 215, USAGE: 402, TERMINAL: 352, STOP: 372, SETTINGS: 205, SUGGEST: 216, ACCOUNT: 403, FEEDBACK: 404, SIDEBAR: 350, HIDE_NESTED: 391, CLOSE_PANE: 351, BACK: 360, FORWARD: 361, PREV: 362, NEXT_SESSION: 363, PIN: 370, ARCHIVE: 371,
     CTX_PIN: 501, CTX_UNREAD: 502, CTX_ARCHIVE: 503, CTX_DELETE: 504, CTX_EXPORT: 505, CTX_UNGROUP: 599, CTX_GROUP: 600 };
-  const app = { hwnd: 0, kid: {}, menu: 0, shown: null, dirty: false, bufs: new Map(), rows: [], raw: null, rawView: null, size: [560, 400], attach: [], ofn: null, aborts: {}, stopping: {}, queue: {}, nextSay: null, running: new Set() };
+  // (what the program has going: kept on the worker, so this script loaded again into the running machine (worker.js
+  // cmd 'reload') takes over the window, the turns in progress and the tools' answers where the last one left them)
+  const keep = self.W95ClaudeKeep || (self.W95ClaudeKeep = { nextCall: 1, asking: null });
+  const app = keep.app || (keep.app = { hwnd: 0, kid: {}, menu: 0, shown: null, dirty: false, bufs: new Map(), rows: [], raw: null, rawView: null, size: [560, 400], attach: [], ofn: null, aborts: {}, stopping: {}, queue: {}, nextSay: null, running: new Set() });
 
   // ---------------------------------------------------------------- the sessions (the scripting API's records)
   const load = () => { const v = regGet(KEY, 'sessions'); if (!v) return []; try { return JSON.parse(typeof v === 'string' ? v : FS.decode(v.data).replace(/\0.*$/, '')); } catch (_) { return []; } };
@@ -42,7 +45,7 @@
     STATUS = [['active', '&Active'], ['archived', 'A&rchived'], ['all', 'A&ll']];
   const togglePane = x => setUi(u => { u.panes = u.panes.includes(x) ? u.panes.filter(y => y !== x) : [...u.panes.filter(y => y !== x), x].slice(-2); });
   // the sessions shown, in order, for Back and Forward (as the app's Go menu)
-  const nav = { back: [], fwd: [] };
+  const nav = keep.nav || (keep.nav = { back: [], fwd: [] });
   const go = (sid, how) => { const cur = (current() || {}).id; if (!sid || sid === cur) return; if (how !== 'nav') { nav.back.push(cur); nav.fwd = []; } app.shown = sid; };
   const exportOf = s => { const f = `C:\\My Documents\\${s.title.replace(/[\\/:*?"<>|]/g, '_').slice(0, 60) || 'Session'}.TXT`; return f; };
 
@@ -234,12 +237,12 @@
   }
 
   // ---------------------------------------------------------------- the app's tools, which run on the page (ccd.js)
-  const pending = new Map(), pendingSid = new Map(); let nextCall = 1, toolDefs = null;
+  const pending = keep.pending || (keep.pending = new Map()), pendingSid = keep.pendingSid || (keep.pendingSid = new Map()); let toolDefs = null;   // (the tools asked of the page again after a reload)
   self.W95ClaudeReply = m => { const f = pending.get(m.id); pendingSid.delete(m.id); if (f) { pending.delete(m.id); f(m); } };
-  const page = (name, args, session, via) => new Promise(ok => { const k = nextCall++; pending.set(k, ok); if (session && !via) pendingSid.set(k, session); post({ t: 'ccd', id: k, name, args, session, via }); });   // (via: the agent making the call)
+  const page = (name, args, session, via) => new Promise(ok => { const k = keep.nextCall++; pending.set(k, ok); if (session && !via) pendingSid.set(k, session); post({ t: 'ccd', id: k, name, args, session, via }); });   // (via: the agent making the call)
   // a tool's question (an approval): asked one at a time in the program's message box (CLAUDE.EXE's WndProc on WM_APP+1),
   // posted from the window's timer; with no window to ask in, the answer is No
-  const asks = []; let asking = null;
+  const asks = keep.asks || (keep.asks = []);   // (keep.asking: the one being asked)
   self.W95ClaudeAsk = m => { if (!app.hwnd) post({ t: 'ccdAnswer', id: m.id, yes: false }); else asks.push(m); };
   // Opened(chosen): the Open dialog's answer (CLAUDE.EXE's WndProc on WM_APP+3): the file chosen is read (C: only, as the
   // files tools read) and attached to the next prompt
@@ -345,7 +348,7 @@
     if (msg === 0x102 && wp === 9 && app.eatTab) { app.eatTab = false; p.w32(res, 0); return 1; }   // (its WM_CHAR, from TranslateMessage: not typed)
     return own(0);
   });
-  def('CLAUDE', 'Answer', 1, function (r) { if (asking) post({ t: 'ccdAnswer', id: asking.id, yes: r === 6 }); asking = null; return 0; });   // (IDYES)
+  def('CLAUDE', 'Answer', 1, function (r) { if (keep.asking) post({ t: 'ccdAnswer', id: keep.asking.id, yes: r === 6 }); keep.asking = null; return 0; });   // (IDYES)
 
   // ---------------------------------------------------------------- the reply: the Claude API through the page's server
   // The conversation as the API takes it: each turn's blocks as they came (thinking and tool use, unchanged), the user's
@@ -370,6 +373,20 @@
     }
     return out;
   }
+  // the reply's lines (/__claude: one JSON object each), read as they come until its last ('done', 'error' or 'info'):
+  // the server may keep the connection open after it (HTTP/1.1 with no length), so the stream's end is not waited for
+  async function lines(r, each) {
+    const rd = r.body.getReader(), dec = new TextDecoder(); let buf = '';
+    try { for (;;) {
+      const { value, done } = await rd.read(); if (done) return;
+      buf += dec.decode(value, { stream: true });
+      for (let i; (i = buf.indexOf('\n')) >= 0; buf = buf.slice(i + 1)) {
+        if (!i) continue;
+        const ev = JSON.parse(buf.slice(0, i)); each(ev);
+        if (ev.t === 'done' || ev.t === 'error' || ev.t === 'info') return;
+      }
+    } } finally { rd.cancel().catch(() => {}); }
+  }
   // one request: Claude's text into the conversation as it arrives; its whole message kept with it for the next request
   async function ask(sid, s) {
     let got = '', msgId = null, result = null, thought = '', thId = null;
@@ -388,15 +405,11 @@
       const cx = await page('@context', null, sid), msgs = reminder(cx.result, history(s));
       const r = await fetch('__claude', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: s.model, effort: s.effort, messages: msgs, tools: toolDefs || [] }), signal: (app.aborts[sid] = new AbortController()).signal });
       if (!r.ok) return { error: `Not connected: this page's server has no Claude API (HTTP ${r.status}).` };
-      const rd = r.body.getReader(), dec = new TextDecoder(); let buf = '';
-      for (;;) {
-        const { value, done } = await rd.read(); if (done) break;
-        buf += dec.decode(value, { stream: true });
-        for (let i; (i = buf.indexOf('\n')) >= 0; buf = buf.slice(i + 1)) {
-          const ev = JSON.parse(buf.slice(0, i));
+      let err = null;
+      await lines(r, ev => {
           if (ev.t === 'text') { got += ev.d; put(); app.dirty = true; }
           else if (ev.t === 'thinking') { thought += ev.d; think(); app.dirty = true; }
-          else if (ev.t === 'error') return { error: ev.e };
+          else if (ev.t === 'error') err = { error: ev.e };
           else if (ev.t === 'done') {
             // (a message whose content came back empty while text streamed, or one stopped short: kept as text, and said)
             const content = ev.content && ev.content.length ? ev.content : null;
@@ -407,8 +420,8 @@
             if (!content || !['end_turn', 'tool_use', 'pause_turn'].includes(ev.stop)) update(sid, x => x.transcript.push({ uuid: id('msg'), t: Date.now(), role: 'system', text: `The reply stopped short (${ev.stop || 'no content'}${ev.model ? `, ${ev.model}` : ''}).` }));
             result = { stop: ev.stop, content: content || [] };
           }
-        }
-      }
+      });
+      if (err) return err;
     } catch (e) { return e.name === 'AbortError' ? (result || { stopped: true }) : { error: `Not connected: ${e.message}` }; }   // (stopped after the message came whole: its tools are answered as not run)
     return result || { error: 'The reply ended early.' };
   }
@@ -427,7 +440,7 @@
       const r = await fetch('__claude', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: sid && app.aborts[sid] ? app.aborts[sid].signal : undefined });
       if (!r.ok) return { error: `Not connected: this page's server has no Claude API (HTTP ${r.status}).` };
       let text = '', done = null;
-      for (const l of (await r.text()).split('\n')) { if (!l) continue; const ev = JSON.parse(l); if (ev.t === 'text') text += ev.d; else if (ev.t === 'error') return { error: ev.e }; else if (ev.t === 'done') done = ev; }
+      let err = null; await lines(r, ev => { if (ev.t === 'text') text += ev.d; else if (ev.t === 'error') err = ev.e; else if (ev.t === 'done') done = ev; }); if (err) return { error: err };
       return done ? { text, stop: done.stop, tokens: (done.in || 0) + (done.out || 0), content: done.content && done.content.length ? done.content : [{ type: 'text', text }] } : { error: 'The reply ended early.' };
     } catch (e) { return { error: e.name === 'AbortError' ? 'Stopped.' : `Not connected: ${e.message}` }; }
   }
@@ -559,7 +572,7 @@
     try {
       const r = await fetch('__claude', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'claude-haiku-5-5', effort: 'low', messages: [{ role: 'user', content: ask_ }] }) });
       if (!r.ok) return;
-      let out = ''; for (const l of (await r.text()).split('\n')) { if (!l) continue; const ev = JSON.parse(l); if (ev.t === 'text') out += ev.d; }
+      let out = ''; await lines(r, ev => { if (ev.t === 'text') out += ev.d; });
       out = out.trim().replace(/^["']|["']$/g, '').split('\n')[0].slice(0, 120);
       if (out && (current() || {}).id === s.id) { app.suggestion = { sid: s.id, text: out }; app.dirty = true; }
     } catch (_) {}
@@ -705,7 +718,7 @@
     }
     if (msg === WM.TIMER) {
       if (app.dirty || regGet(KEY, 'sessions') !== app.raw || regGet(KEY, 'view') !== app.rawView || regGet(KEY, 'cards') !== app.rawCards) { app.dirty = false; showAll(p); }
-      if (!asking && asks.length) { asking = asks.shift(); U(p, 'PostMessageA', [h, 0x8001, sz(p, 'ask-text', asking.text), sz(p, 'ask-title', asking.title || 'Claude')]); }
+      if (!keep.asking && asks.length) { const a = keep.asking = asks.shift(); U(p, 'PostMessageA', [h, 0x8001, sz(p, 'ask-text', a.text), sz(p, 'ask-title', a.title || 'Claude')]); }
       return done();
     }
     if (msg === WM.DESTROY) { U(p, 'KillTimer', [h, 1]); app.hwnd = 0; app.kid = {}; U(p, 'PostQuitMessage', [0]); return done(); }
@@ -799,7 +812,7 @@
     }
     if (c === CMD.ACCOUNT) {   // who the program talks to Claude as: the API key and workspace of this machine's server (whether set, never what)
       fetch('__claude', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ info: true }) })
-        .then(r => (r.ok ? r.text() : Promise.reject(new Error(`HTTP ${r.status}`)))).then(t => JSON.parse(t.split('\n')[0]))
+        .then(async r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); let i = null; await lines(r, ev => { i = i || ev; }); return i; })
         .then(i => { app.note = `Account: the Claude API through this machine's server  ·  API key ${i.key ? 'set' : 'not set'}  ·  workspace ${i.workspace ? 'set' : 'not set'}  ·  no plan limits`; }, e => { app.note = `Account: this page's server has no Claude API (${e.message}).`; })
         .then(() => { app.dirty = true; });
       return done();

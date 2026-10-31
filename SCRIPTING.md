@@ -14,7 +14,7 @@ Coordinates are screen pixels of the emulated display, origin top left. `win95.s
 | `click(x, y, { button: 'right', double: true })` | press and release; both options optional |
 | `dblclick(x, y)` | two clicks inside the double-click time |
 | `down(x, y, o)`, `up(x, y, o)` | one half of a click, for custom gestures |
-| `drag(x1, y1, x2, y2, steps = 8)` | press, move in steps, release |
+| `drag(x1, y1, x2, y2, steps = 8)` | press, move in steps, release, each once the machine has fed the last to USER (its frames say so) and the page has drawn it, as a person's come in; a promise for the release |
 | `type(text)` | each character as a key; `\n` is Enter |
 | `key('alt+F4', 'tab', 'enter')` | named keys with `ctrl+`, `shift+`, `alt+`, `meta+`; names: `enter`, `esc`, `tab`, `backspace`, `delete`, `up`, `down`, `left`, `right`, `home`, `end`, `pageup`, `pagedown`, `space`, `F1`..`F12`, or a character |
 
@@ -139,14 +139,17 @@ transcript and next-step box. What the app asks the user about is asked in a mes
 | `ccd.answer(i = 0)` | presses the next-step box's button `i` |
 | `ccd.tools()` | the servers and their tools |
 | `ccd.state()` | the records: sessions, groups, cards, settings, view |
-| `ccd.toolDefs()` | the tools as the Claude API takes them: every `ccd_<server>__<tool>`, and Claude Code's `Read`, `Write`, `Edit`, `Glob`, `Grep` |
+| `ccd.toolDefs()` | the tools as the Claude API takes them: every `ccd_<server>__<tool>`, and Claude Code's `AskUserQuestion`, `Bash`, `JavaScript`, `Read`, `Write`, `Edit`, `Glob`, `Grep` |
 | `ccd.context(session)` | what goes ahead of each of the session's requests: the CLAUDE.MD files, the memory's index, the skills |
 | `ccd.callAs(session, name, args)` | runs a tool by that name for the session, as CLAUDE.EXE's Claude does |
 | `ccd.cardAnswer(task_id, label)` | answers a card with its button's label, as CLAUDE.EXE's card buttons do |
 
 CLAUDE.EXE's Claude has Claude Code's own tools besides the app's, with Claude Code's names, parameters and answers:
-- `Read`, `Write`, `Edit`, `Glob`, `Grep` work on C: only, the system's own disk: a path on another drive, a network
-  drive or a share (a remote volume, whatever its letter) is refused. A path that is not absolute is in the session's
+- `Read`, `Write`, `Edit`, `Glob`, `Grep` work on C:, the system's own disk, and on `SRC:\`, the project's own code:
+  the checkout `tools/serve.py` serves, through its `/__src` (tools/src_api.py; this machine's own pages only; `.git`,
+  and a path through a symbolic link, such as a worktree's link to a generated bundle, refused). A page whose server
+  has no `/__src` (the deployed site) refuses `SRC:\`. Any other drive, a network drive or a share (a remote volume,
+  whatever its letter) is refused. A path that is not absolute is in the session's
   folder. A file is Read before Write or Edit changes it. Writing and editing follow the session's permission mode:
   Plan mode refuses, Ask permissions asks in a message box, the others write.
 - `WebFetch` fetches a page through the server's `/__fetch` and has Haiku answer the prompt about it.
@@ -157,6 +160,21 @@ CLAUDE.EXE's Claude has Claude Code's own tools besides the app's, with Claude C
   (`ccd.code.<Tool>` gives them with `agent`). When it ends, a `<task-notification>` with its result and usage is the
   session's next message, shown as one line.
 - `Skill` loads `C:\WINDOWS\CLAUDE\SKILLS\<name>\SKILL.MD`.
+- `JavaScript` runs code in the page, with `win95` (this API, `sysApp.cmd` diagnostics included) in scope: an
+  expression's value (a promise awaited) or a function body's return, as JSON up to 30000 characters. Asked first in
+  Ask permissions and Plan mode.
+
+### Changing the system while it runs
+
+`win95.reloadScript(file)` loads a script of the site again from its server into the running system, no restart. A
+script of the machines' (`claude-app.js`, `shell32.js`, `session-tray.js`, `dbwin.js`, ...) goes to the system's
+machine, `cmd('reload', [file])`: its `def()`s replace the exports' functions in place (win32.js `def`), so the
+thunks programs already hold call the new code. Of the page's scripts only `ccd.js` is loaded again into the page; any other
+(`win95.js`, ...) runs the page itself and is refused: reload the page instead. `ccd.js`'s tools
+are made again on next use from their registry records. A script keeps across a reload only what it puts on the
+worker itself: `claude-app.js` keeps its window, its turns in progress and its tools' pending answers
+(`self.W95ClaudeKeep`), so CLAUDE.EXE's Claude can `Edit` its own code on `SRC:\` and reload it in the middle of a
+turn (tests/claudeturn.test.mjs). A script's other module state starts again.
 
 Each request starts with a system reminder, as Claude Code's do: `C:\WINDOWS\CLAUDE\CLAUDE.MD` (the user's own
 instructions), each `CLAUDE.MD` from the root down to the session's folder (the project's), the memory Claude keeps in
@@ -193,12 +211,18 @@ export at or before it), `OLE32+1a2c0 (CoInitialize+40)` (a 32-bit module's), or
 
 | Call | Does |
 | --- | --- |
-| `cmd('probe')` | every thread (its state, program, what it waits on, where it stopped, its stack's return addresses and BP chain as symbols), the windows with their tasks, the processes, the loaded modules, and who holds the Win16 lock |
-| `cmd('faults')` | the fault log, and clears it: code the machine found none at (`at`, `atIn`, `from`, `fromIn`, `thread`), USER's and KERNEL's parameter errors with the parameter, the function and its caller, and `LogError` calls |
+| `cmd('probe')` | every thread (its state, program, what it waits on, where it stopped, its stack's return addresses and BP chain as symbols), the windows with their tasks, the processes, the loaded modules, who holds the Win16 lock, and `stats` (timer messages, GL frames, slices, `guestMs`: the processor time guest code has had) |
+| `cmd('reload', [file])` | loads a script of the machine's again into it, no restart (see Changing the system while it runs) |
+| `cmd('faults')` | the fault log, and clears it: code the machine found none at (`at`, `atIn`, `from`, `fromIn`, `thread`), USER's and KERNEL's parameter errors with the parameter, the function and its caller, `LogError` calls, and the processor exception that ended a program or the system (`ring`, `module`, `cr2`, `regs`, `stack`) |
 | `cmd('trace', [threadRe, nameRe?])` | starts a trace of the stand-in and thunk calls the matching threads make (the JS-implemented imports only), with their arguments where known; `cmd('trace')` reads and clears what was traced |
 | `cmd('watch', [dll, name, n = 4])` | hooks the export's entry: each call is logged with its first `n` stack arguments (dwords for a 32-bit module, words for a 16-bit one), its caller (`from`, a symbol), its thread, and once it returns to its caller its result (`eax`; for a 16-bit export `ax` and `dxax` too). `name` is an export's name, `#ordinal`, or `/regexp/` over the module's export names, so `cmd('watch', ['USER32', '/^(Create|Destroy)Window/'])` traces the calls other recompiled modules make into those. The names hooked are answered. Works for native 16-bit modules (`['USER', 'ISWINDOW']`, `['GDI', '#42']`) and 32-bit ones alike; a return is seen when it comes back through the dispatcher, that is from another module |
 | `cmd('watch')` | reads and clears the watch log; `cmd('watch', [dll])` ends that module's watches |
 | `cmd('watchAt', [dll, [offsets]])` | EAX each time execution comes to one of the offsets in that module from another module (a call into another DLL returning there), into the trace log; `cmd('watchAt', [dll, []])` ends it |
+| `?scriptlog=1`, `win95.scriptLog = true` | each `win95.*` call and each `win95.sysApp.cmd`, numbered, then what it answered, as `script` lines at the debug level (Verbose in DevTools' console and in Debug Monitor's Options), so the person at the screen sees what a script does; `win95.note(text)` adds a line of the script's own |
+| `python3 tools/staticmap.py` | the gap map, by static analysis of the bundle's modules with nothing run (`findings/gapmap.json`): each module's code reachable from its entry points; the instructions there the recompiler made #UD and the blocks run-time translation cannot take, graded by how they are reached (control flow from an entry point, or only a data pointer); the VxD services called that nothing provides (a VxD's service an entry point only when reachable code calls it and no stand-in takes it), and those of devices the system does not have, guarded or not by a test of the device's Get_Version; and each stand-in whose callers read a result it does not set (a flag tested after the call, a register a C service's caller reads besides EAX). `W95_SCRIPTS=<folder>` runs it on other scripts (an older `vmm.js`) |
+| `python3 tools/realcheck.py` | each VxD service stand-in against Windows 95's own service (VMM32.VXD's VMM and the CD cabinets' VxDs, from `cdrom.iso` with 7z, or `--vxds <folder>`), by static analysis of the originals after `tools/staticmap.py`: a result the original returns that callers read and the stand-in does not set, or a register or flag the stand-in changes that the original keeps and callers read (`findings/realcheck.json`) |
+| `?memwatch=lo,len` | `cmd('memwatch')` from the machine's first instruction (hex), boot's writes too |
+| `?dynat=IFSMGR` or `?dynat=12219c9,...` | a VxD's blocks (all of a VxD's, by its name) run as run-time code, block by block: a write watch then names the block that wrote, and the return addresses on its stack (`stack`) |
 | `cmd('memwatch', [lin, len])` | a write watch on linear `[lin, lin+len)`: the range is compared with its last contents at each dispatch (a recompiled block's end, a stand-in's call) and each block of run-time code; `cmd('memwatch')` gives the hits so far (`at`, `n` bytes changed, `was`, `now`, `by`: what ran last, `thread`) and the count; `cmd('memwatch', [null])` ends it. Code of a recompiled module is sampled per block, so `by` names the block that ran, not the instruction |
 | `cmd('call', [dll, name, args])` | calls the export on a thread of its own with dword or string arguments and answers its result; a DLL of the personality's (KERNEL32's stand-ins) is called through its thunk. `null` when there is no such export |
 | `cmd('callPath', [dll, name, args, n = 400])` | the same, with the last `n` blocks it ran as symbols |

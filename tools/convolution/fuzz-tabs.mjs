@@ -86,20 +86,25 @@
     const me = g.win95; if (!me) throw new Error('run this in a page of the shell');
     const bw = openMachine(session, 'Bob', frames); if (!bw) throw new Error('the browser blocked a tab: allow pop-ups for this page, or run with { frames: true }');
     let cw = null, cPage = null;
-    // A joins its own session too: this page is reloaded into it only if it is not there already
-    if (!(g.W95HOST && g.W95HOST.shared && g.W95HOST.shared.session === session)) throw new Error(`open this tab in the session first: ${url(session, 'Ann')}`);
+    // A joins its own session too: this page if it is there already, else (with frames) a frame of its own
+    let aw = g, ap = me;
+    if (!(g.W95HOST && g.W95HOST.shared && g.W95HOST.shared.session === session)) {
+      if (!frames) throw new Error(`open this tab in the session first: ${url(session, 'Ann')}`);
+      aw = openMachine(session, 'Ann', frames);   // (a replay's fresh session: A a frame like B and C)
+    }
     const bPage = await up(bw);
+    if (aw !== g) ap = await up(aw);
     const half = Math.max(1, actions >> 1);
     for (let i = 0; i < actions; i++) {
       const [name, f] = g.__fuzzPick ? g.__fuzzPick() : ACTIONS[Math.floor(r() * ACTIONS.length)];   // (a replay: its trace's actions in order)
       trace.push(name);
-      try { await f(me); } catch (e) { trace[trace.length - 1] += ` (${e.message})`; }
+      try { await f(ap); } catch (e) { trace[trace.length - 1] += ` (${e.message})`; }
       await sleep(300 + Math.floor(r() * 1200));
       if (i === half) { trace.push('B reloads'); bw.location.reload(); await up(bw); }
       if (i === half) { trace.push('C joins'); cw = openMachine(session, 'Cal', frames); cPage = await up(cw); }
       if (r() < 0.3) await sleep(Math.floor(r() * 2000));   // (B's and C's delays: the others run on while A waits)
     }
-    const tabs = [g, bw, cw].filter(Boolean);
+    const tabs = [aw, bw, cw].filter(Boolean);
     await quiet(tabs);
     for (const t of tabs) await dismiss(t.win95);
     await quiet(tabs);
@@ -115,7 +120,7 @@
     if (!why && doubled.length) why = `a remote start made twice: ${doubled.join('; ')}`;
     const mruDiff = digests.some(d => d.mru !== digests[0].mru);
     if (mruDiff) console.log('[fuzz-tabs] MRU values differ between machines (logged, no rule yet):', digests.map(d => d.mru));
-    if (!keep) for (const t of [bw, cw]) if (t) closeMachine(t);
+    if (!keep) for (const t of [bw, cw, aw !== g && aw]) if (t) closeMachine(t);
     return { ok: !why, why, trace, digests, session, mruDiff };
   }
   /** the trace shrunk: each action left out in turn, kept out while the failure stays; the shortest failing trace */

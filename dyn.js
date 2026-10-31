@@ -97,6 +97,13 @@ function translate(p, lin, csb, d32, v86) {
   const mm = mmioRange(p, lin);
   const dev = (a, sz, code = 0x2000000) => { if (mm) f.lg(a).c(mm[0]).op('sub').c(mm[1]).op('lt_u').if_().lg(a).c(code | sz).e(0x10, 1).end(); };
   const devLoad = (a, sz) => dev(a, sz, 0x3000000);   // (and its loads from there ask the host first, as recomp.py's do)
+  // a ring-3 program's code (flat 32-bit, outside a VxD's run): an access to a page ring 3 has no access to (the null
+  // page, the VxDs', the frame buffer's: win32.js PROT, a byte a page) is a page fault at the address, before it is made
+  const r3 = !vm && !csb && d32 && !(p.r0Depth > 0) && !(p.cpu.cs.value & 0xffff);
+  // (a call's return address checked as the stack grows: a thread's stack has protected pages below it, and runaway
+  // recursion meets them as a stack fault, not running on down through the heap; ESP's own accesses are not checked)
+  const callGuard = () => { if (r3) { f.gg('esp').c(4).op('sub').ls(K); guard(K, true); } };
+  const guard = (a, wr) => { if (r3) f.lg(a).c(12).op('shr_u').e(0x2d, 0, uleb(LAYOUT.PROT)).if_().lg(a).c(wr ? 0x4000010 : 0x4000000).e(0x10, 1).gg('eip').e(0x0f).end(); };
   let pc = lin, n = 0;
   const fetch = () => u8[pc++];
   const fetch16 = () => { const v = u8[pc] | (u8[pc + 1] << 8); pc += 2; return v; };
@@ -125,11 +132,12 @@ function translate(p, lin, csb, d32, v86) {
       const m = fetch(), mod = m >> 6, reg = (m >> 3) & 7, rm = m & 7;
       if (mod === 3) return { reg, rm, isReg: true };
       // effective address into local A (then plus segment base)
-      let defSeg = 3;
+      let defSeg = 3, onStack = false;
       if (asz === 4) {
         let base = rm, idx = -1, scale = 0;
         if (rm === 4) { const sib = fetch(); scale = sib >> 6; idx = (sib >> 3) & 7; base = sib & 7; if (idx === 4) idx = -1; }
         let disp = 0, hasBase = true;
+        onStack = base === 4 && idx < 0;
         if (mod === 0 && base === 5) { hasBase = false; disp = fetch32(); }
         else if (mod === 1) disp = fetchS8(); else if (mod === 2) disp = fetch32();
         f.c(disp);
@@ -145,6 +153,7 @@ function translate(p, lin, csb, d32, v86) {
       }
       const sr = seg === null ? defSeg : seg;
       f.gg(sbase(sr)).op('add').ls(A);
+      if (b !== 0x8d && !onStack) guard(A, false);   // (lea's address is no access; ESP's frame is the stack's own pages)
       return { reg, mem: true, sr };
     };
     const rdReg = (r, sz) => {
@@ -266,9 +275,11 @@ function translate(p, lin, csb, d32, v86) {
       if (b & 2) { rd(o, sz); f.ls(T); wrReg(o.reg, sz, T); } else { rdReg(o.reg, sz); f.ls(T); wr(o, sz, T); }
       continue;
     }
-    if (b === 0x8c) { const o = modrm(); f.gg(SEG[o.reg][0]).ls(T); wr(o, o.isReg ? osz : 2, T); continue; }
-    if (b === 0x8e) { const o = modrm(); rd(o, 2); f.ls(T); loadSeg(o.reg, T); continue; }
-    if (b === 0x8d) { const o = modrm(); f.lg(A).gg(sbase(o.sr)).op('sub').ls(T); wrReg(o.reg, osz, T); continue; }   // lea: the offset (less the base its address added: SS's for BP and SP)
+    // (segment registers 6 and 7 are none, and CS is no mov's to load: an invalid opcode, as the processor takes them;
+    // indexed past the table, the translator itself threw: tools/staticmap.py)
+    if (b === 0x8c) { const o = modrm(); if (o.reg > 5) throw new Unsupported(`mov from segment register ${o.reg}`); f.gg(SEG[o.reg][0]).ls(T); wr(o, o.isReg ? osz : 2, T); continue; }
+    if (b === 0x8e) { const o = modrm(); if (o.reg > 5 || o.reg === 1) throw new Unsupported(`mov to segment register ${o.reg}`); rd(o, 2); f.ls(T); loadSeg(o.reg, T); continue; }
+    if (b === 0x8d) { const o = modrm(); if (o.isReg) throw new Unsupported('lea with a register operand'); f.lg(A).gg(sbase(o.sr)).op('sub').ls(T); wrReg(o.reg, osz, T); continue; }   // lea: the offset (less the base its address added: SS's for BP and SP)
     if (b === 0x8f) { const o = modrm(); pop(T, osz); wr(o, osz, T); continue; }
     if (b === 0x90) continue;
     if (b === 0x60) {   // pusha: AX CX DX BX, SP as it was, BP SI DI
@@ -332,6 +343,9 @@ function translate(p, lin, csb, d32, v86) {
       const v = fetch(); if (v === 0x20) pc += 4;
       f.c(pc | 0).c(0x100 + v).e(0x10, 1); f.gg('eip').e(0x0f); return done(pc);
     }
+    // int 3: the breakpoint exception after the instruction, as the recompiler raises it (trap 3); IFSMGR's
+    if (b === 0xcc) { f.c(pc | 0).c(3).e(0x10, 1); f.gg('eip').e(0x0f); return done(pc); }
+    if (b === 0xd6) { f.c(-1).c(0).gg('cf').e(0x1b).c(0xff).op('and').ls(T); wrReg(0, 1, T); continue; }   // salc: AL = CF ? FFh : 0
     if ((b >= 0xe4 && b <= 0xe7) || (b >= 0xec && b <= 0xef)) {   // in / out, through the host's port I/O
       const sz = b & 1 ? osz : 1, isIn = !(b & 2);
       if (b < 0xe8) f.c(fetch()); else f.gg('edx').c(0xffff).op('and');
@@ -345,12 +359,12 @@ function translate(p, lin, csb, d32, v86) {
     if (b === 0x9f) { f.gg('cf').gg('pf').c(2).op('shl').op('or').gg('zf').c(6).op('shl').op('or').gg('sf').c(7).op('shl').op('or').c(2).op('or').ls(T); f.gg('eax').c(0xffff00ff).op('and').lg(T).c(8).op('shl').op('or').gs('eax'); continue; }
     if (b >= 0xa0 && b <= 0xa3) {   // mov al/eax, moffs
       const sz = b & 1 ? osz : 1, off = asz === 4 ? fetch32() : fetch16();
-      f.c(off).gg(sbase(seg === null ? 3 : seg)).op('add').ls(A);
+      f.c(off).gg(sbase(seg === null ? 3 : seg)).op('add').ls(A); guard(A, !!(b & 2));
       if (b & 2) { rdReg(0, sz); f.ls(T); f.lg(A).lg(T).st(sz); dev(A, sz); } else { devLoad(A, sz); f.lg(A).ld(sz).ls(T); wrReg(0, sz, T); }
       continue;
     }
     if (b === 0xa8 || b === 0xa9) { const sz = b & 1 ? osz : 1; rdReg(0, sz); f.c(imm(sz)).op('and').ls(R); f.c(0).gs('cf'); f.c(0).gs('of'); szp(sz); continue; }
-    if ((b >= 0xa4 && b <= 0xa7) || (b >= 0xaa && b <= 0xaf) || (b >= 0x6c && b <= 0x6f)) { strop(f, b, osz, asz, seg, rep, { T, A, B, C, R, X, D }, alu2, szp, dev); continue; }
+    if ((b >= 0xa4 && b <= 0xa7) || (b >= 0xaa && b <= 0xaf) || (b >= 0x6c && b <= 0x6f)) { strop(f, b, osz, asz, seg, rep, { T, A, B, C, R, X, D }, alu2, szp, dev, guard); continue; }
     if (b >= 0xb0 && b < 0xb8) { f.c(fetch()).ls(T); wrReg(b & 7, 1, T); continue; }
     if (b >= 0xb8 && b < 0xc0) { f.c(osz === 4 ? fetch32() : fetch16()).ls(T); wrReg(b & 7, osz, T); continue; }
     if (b === 0xc0 || b === 0xc1 || (b >= 0xd0 && b <= 0xd3)) {
@@ -384,7 +398,7 @@ function translate(p, lin, csb, d32, v86) {
       }
       f.if_().c(t | 0).e(0x0f).end(); return done(pc);
     }
-    if (b === 0xe8) { const d = osz === 4 ? fetch32() : (fetch16() << 16) >> 16; f.c(offOf(pc)).ls(T); push(T, osz); return done(osz === 4 ? pc + d : csb + ((pc - csb + d) & 0xffff)); }
+    if (b === 0xe8) { const d = osz === 4 ? fetch32() : (fetch16() << 16) >> 16; callGuard(); f.c(offOf(pc)).ls(T); push(T, osz); return done(osz === 4 ? pc + d : csb + ((pc - csb + d) & 0xffff)); }
     if (b === 0xe9) { const d = osz === 4 ? fetch32() : (fetch16() << 16) >> 16; return done(osz === 4 ? pc + d : csb + ((pc - csb + d) & 0xffff)); }
     if (b === 0xeb) { const d = fetchS8(); return done(pc + d); }
     if (b === 0xea) {   // jmp far ptr16:16/32
@@ -408,7 +422,7 @@ function translate(p, lin, csb, d32, v86) {
       if (o.reg <= 1) { const cf = K; f.gg('cf').ls(cf); rd(o, sz); f.ls(B); f.c(1).ls(C); alu2(o.reg ? 5 : 0, sz); f.lg(cf).gs('cf'); wr(o, sz, R); continue; }
       if (b === 0xff && o.reg === 6) { rd(o, osz); f.ls(T); push(T, osz); continue; }
       if (b === 0xff && o.reg === 4) { rd(o, osz); f.gg('csb').op('add').e(0x0f); return done(pc); }
-      if (b === 0xff && o.reg === 2) { rd(o, osz); f.ls(B); f.c(offOf(pc)).ls(T); push(T, osz); f.lg(B).gg('csb').op('add').e(0x0f); return done(pc); }
+      if (b === 0xff && o.reg === 2) { rd(o, osz); f.ls(B); callGuard(); f.c(offOf(pc)).ls(T); push(T, osz); f.lg(B).gg('csb').op('add').e(0x0f); return done(pc); }
       if (b === 0xff && (o.reg === 3 || o.reg === 5)) {   // call/jmp far [mem]
         f.lg(A).ld(osz).ls(B); f.lg(A).c(osz).op('add').ld(2).ls(C);
         if (o.reg === 3) { f.gg('cs').ls(T); push(T, osz); f.c(offOf(pc)).ls(T); push(T, osz); }
@@ -440,10 +454,28 @@ function translate(p, lin, csb, d32, v86) {
       if (b2 === 0xa0 || b2 === 0xa8) { f.gg(b2 === 0xa0 ? 'fsel' : 'gsel').ls(T); push(T, osz); continue; }
       if (b2 === 0xa1 || b2 === 0xa9) { pop(T, osz); loadSeg(b2 === 0xa1 ? 4 : 5, T); continue; }
       if (b2 === 0xb2 || b2 === 0xb4 || b2 === 0xb5) { const o = modrm(); f.lg(A).ld(osz).ls(T); f.lg(A).c(osz).op('add').ld(2).ls(B); wrReg(o.reg, osz, T); loadSeg(b2 === 0xb2 ? 2 : b2 === 0xb4 ? 4 : 5, B); continue; }
+      // cpuid: the processor as the machine is one (an i486DX4: tools/recomp.py x_cpuid)
+      if (b2 === 0xa2) {
+        f.gg('eax').op('eqz').if_().c(1).gs('eax').c(0x756e6547).gs('ebx').c(0x49656e69).gs('edx').c(0x6c65746e).gs('ecx').else_();
+        f.gg('eax').c(1).op('eq').if_().c(0x480).gs('eax').c(0).gs('ebx').c(0).gs('ecx').c(1).gs('edx').else_().c(0).gs('eax').c(0).gs('ebx').c(0).gs('ecx').c(0).gs('edx').end().end();
+        continue;
+      }
+      // cmpxchg: the accumulator compared with the destination (flags as cmp); equal, the source goes there, else the
+      // destination into the accumulator
+      if (b2 === 0xb0 || b2 === 0xb1) {
+        const sz = b2 & 1 ? osz : 1, o = modrm();
+        rdReg(0, sz); f.ls(B); rd(o, sz); f.ls(C); alu2(7, sz);
+        f.lg(B).lg(C).op('eq').if_(); rdReg(o.reg, sz); f.ls(T); wr(o, sz, T); f.else_(); wrReg(0, sz, C); f.end();
+        continue;
+      }
       if (b2 === 0xa3 || b2 === 0xab || b2 === 0xb3 || b2 === 0xbb || b2 === 0xba) {   // bt / bts / btr / btc
-        const o = modrm(); if (!o.isReg && b2 !== 0xba) throw new Unsupported('bt with a memory operand and a register index');
+        const o = modrm();
         const kind = b2 === 0xba ? o.reg - 4 : [0xa3, 0xab, 0xb3, 0xbb].indexOf(b2);   // 0 bt, 1 bts, 2 btr, 3 btc
-        if (b2 === 0xba) f.c(fetch()); else rdReg(o.reg, osz);
+        if (b2 === 0xba) f.c(fetch());
+        else if (!o.isReg) {   // (a memory operand with a register's bit index: the index, signed, picks the operand-sized word from the address on; IFSMGR's)
+          rdReg(o.reg, osz); if (osz === 2) f.c(16).op('shl').c(16).op('shr_s'); f.ls(X);
+          f.lg(A).lg(X).c(osz === 4 ? 5 : 4).op('shr_s').c(osz === 4 ? 2 : 1).op('shl').op('add').ls(A); f.lg(X);
+        } else rdReg(o.reg, osz);
         f.c(osz * 8 - 1).op('and').ls(C); rd(o, osz); f.ls(B);
         f.lg(B).lg(C).op('shr_u').c(1).op('and').gs('cf');
         if (kind) {
@@ -574,6 +606,20 @@ function x87(f, b, o, A) {
       if (r === 1) { istore(8, true); fpop(); return; }
       if (r === 2 || r === 3) { f.lg(A); stGet(0); f.e(0x39, 3, 0); if (r === 3) fpop(); return; }
       if (r === 7) { f.lg(A).gg('fsw').c(~0x3800).op('and').gg('ftop').c(11).op('shl').op('or').st(2); return; }   // fnstsw m16
+      // fnsave / frstor: the 28-byte environment (control, status with TOP, tags, the pointers: none kept), then the
+      // eight registers, ST(0) first, 10 bytes each; fnsave then initializes the unit (MSVCRT20's and CALC's state saves,
+      // which tools/staticmap.py found reachable)
+      if (r === 6) {
+        for (let k = 0; k < 7; k++) f.lg(A).c(4 * k).op('add').c(0).st(4);
+        f.lg(A).gg('fcw').st(2); f.lg(A).c(4).op('add').gg('fsw').c(~0x3800).op('and').gg('ftop').c(11).op('shl').op('or').st(2); f.lg(A).c(8).op('add').c(0xffff).st(2);
+        for (let k = 0; k < 8; k++) { f.lg(A).c(28 + 10 * k).op('add'); stGet(k); f.e(0x10, IMP.f80store); }
+        f.c(0).gs('ftop'); f.c(0x37f).gs('fcw'); f.c(0).gs('fsw'); return;
+      }
+      if (r === 4) {
+        f.lg(A).ld(2).gs('fcw'); f.lg(A).c(4).op('add').ld(2).c(11).op('shr_u').c(7).op('and').gs('ftop'); f.lg(A).c(4).op('add').ld(2).c(~0x3800).op('and').gs('fsw');
+        for (let k = 0; k < 8; k++) stSet(k, () => { f.lg(A).c(28 + 10 * k).op('add').e(0x10, IMP.f80load); });
+        return;
+      }
     }
     if (b === 0xdf) {
       if (r === 0) { fpush(() => load('i16')); return; }
@@ -723,9 +769,9 @@ function muldiv(f, op, sz, o, rd, L, rdReg, wrReg) {
 }
 
 // string instructions, with rep / repe / repne
-function strop(f, b, osz, asz, seg, rep, L, alu2, szp, dev) {
+function strop(f, b, osz, asz, seg, rep, L, alu2, szp, dev, guard) {
   const { T, A, B, C, R, D, X } = L, sz = b & 1 ? osz : 1;
-  const ld = () => { f.ls(X); dev(X, sz, 0x3000000); f.lg(X).ld(sz); };   // (the address on the stack: the load, a device's asked first)
+  const ld = () => { f.ls(X); guard(X, false); dev(X, sz, 0x3000000); f.lg(X).ld(sz); };   // (the address on the stack: the load, a device's asked first)
   const idx = r => { f.gg(r); if (asz === 2) f.c(0xffff).op('and'); };
   const step = r => {   // r += df ? -sz : sz, within the address size
     f.gg(r).c(-sz).c(sz).gg('df').e(0x1b).op('add');
@@ -739,8 +785,8 @@ function strop(f, b, osz, asz, seg, rep, L, alu2, szp, dev) {
     // and writes EAX: EAX kept around it)
     if (kind === 'ins') { f.gg('eax').ls(X); f.gg('edx').c(0xffff).op('and').c(sz | 8).e(0x10, 0); f.gg('esb'); idx('edi'); f.op('add').gg('eax').st(sz); f.lg(X).gs('eax'); step('edi'); }
     else if (kind === 'outs') { f.gg('eax').ls(X); f.gg(srcBase); idx('esi'); f.op('add').ld(sz).gs('eax'); f.gg('edx').c(0xffff).op('and').c(sz).e(0x10, 0); f.lg(X).gs('eax'); step('esi'); }
-    else if (kind === 'movs') { f.gg('esb'); idx('edi'); f.op('add').lt(D); f.gg(srcBase); idx('esi'); f.op('add'); ld(); f.st(sz); dev(D, sz); step('esi'); step('edi'); }
-    else if (kind === 'stos') { f.gg('esb'); idx('edi'); f.op('add').lt(D).gg('eax').st(sz); dev(D, sz); step('edi'); }
+    else if (kind === 'movs') { f.gg('esb'); idx('edi'); f.op('add').lt(D); guard(D, true); f.gg(srcBase); idx('esi'); f.op('add'); ld(); f.st(sz); dev(D, sz); step('esi'); step('edi'); }
+    else if (kind === 'stos') { f.gg('esb'); idx('edi'); f.op('add').lt(D); guard(D, true); f.gg('eax').st(sz); dev(D, sz); step('edi'); }
     else if (kind === 'lods') { f.gg(srcBase); idx('esi'); f.op('add'); ld(); f.ls(T); if (sz === 4) f.lg(T).gs('eax'); else f.gg('eax').c(sz === 2 ? 0xffff0000 : 0xffffff00).op('and').lg(T).op('or').gs('eax'); step('esi'); }
     else if (kind === 'scas') { f.gg('eax').ls(B); f.gg('esb'); idx('edi'); f.op('add'); ld(); f.ls(C); alu2(7, sz); step('edi'); }
     else { f.gg(srcBase); idx('esi'); f.op('add'); ld(); f.ls(B); f.gg('esb'); idx('edi'); f.op('add'); ld(); f.ls(C); alu2(7, sz); step('esi'); step('edi'); }
@@ -774,6 +820,12 @@ function assemble(fn, shared) {
 }
 
 /** the run-time block at linear `eip`, translated now or from the cache; null when it cannot be translated */
+/** whether the block at linear `eip` can be translated, flat 32-bit code (16-bit with `d32` false): null, or what it
+ *  cannot take (tools/gapmap.mjs, translating every block of every module without running it) */
+P.dynCheck = function (eip, d32 = true) {
+  try { const t = translate(this, u32(eip), 0, d32, null); return { len: t.len }; }
+  catch (e) { if (e instanceof Unsupported) return { unsupported: e.message }; throw e; }
+};
 P.dynBlock = function (eip) {
   this.dynCache = this.dynCache || new Map();
   const u8 = this.u8;
@@ -786,9 +838,11 @@ P.dynBlock = function (eip) {
   const d32 = !vm && (flat || !!(this.r32(ACC + (cs & 0xfff8)) & 0x400000));
   // (a translation holds the code segment's base and its operand size: the same bytes run through another segment, or
   // as 16-bit code where they ran as 32-bit, are another block. DIBENG compiles 16- and 32-bit blits into one buffer)
-  const key = `${eip}:${csb}:${d32 ? 32 : 16}${vm ? 'v' : ''}`;
-  let c = this.dynCache.get(key);
-  if (c && c.bytes.every((v, i) => u8[eip + i] === v)) return c;
+  const key = `${eip}:${csb}:${d32 ? 32 : 16}${vm ? 'v' : ''}${this.r0Depth > 0 ? 'r0' : ''}`;   // (ring 0's translation has no ring-3 guard)
+  // (a few translations per address: two processes' programs at one base, each process's view in place in turn, arenaUse)
+  const kept = this.dynCache.get(key) || [];
+  let c = kept.find(k => k.bytes.every((v, i) => u8[eip + i] === v));
+  if (c) return c;
   let t;
   try { t = translate(this, eip, csb, d32, vm ? this.v86 : null); }
   catch (e) { if (e instanceof Unsupported) { this.trapped = `run-time code at ${eip.toString(16)}: ${e.message}`; return null; } throw e; }
@@ -800,7 +854,7 @@ P.dynBlock = function (eip) {
     ...f80, ...(e ? { f80load: e.f80load, f80store: e.f80store } : {}) });
   const run = new WebAssembly.Instance(new WebAssembly.Module(assemble(t.fn, Object.prototype.toString.call(this.mem.buffer) === '[object SharedArrayBuffer]')), { env, cpu: this.cpu }).exports.run;
   c = { run, bytes: Array.from(u8.subarray(eip, eip + t.len)) };
-  this.dynCache.set(key, c);
+  this.dynCache.set(key, [c, ...kept.slice(0, 3)]);
   return c;
 };
 /** run run-time code from `eip` until control reaches translated module code (or the sentinel); the next address */
@@ -809,14 +863,14 @@ P.dynRun = function (eip) {
     if ((n & 0xfff) === 0xfff) { this.cpu.eip.value = eip; if (this.tick(eip)) return -1; }   // the processor's time, as the dispatcher asks
     // (an export another module enters, hooked, win32.js dispatch: a module run from its file reaches it here, never
     // through the dispatcher; a hook that answers where to go on takes the call)
-    if (this.entryHooks) { const h = this.entryHooks.get(eip); if (h) { const to = h.call(this); if (to !== undefined) { eip = u32(to); if (eip === LAYOUT.SENTINEL || eip >= LAYOUT.THUNK16 || this.modules.some(m => eip >= m.meta.textLo && eip < m.meta.textHi && this.hasBlock(m, eip))) return eip; continue; } } }
+    if (this.entryHooks) { const h = this.entryHooks.get(eip); if (h) { const to = h.call(this); if (to !== undefined) { eip = u32(to); if (eip === LAYOUT.SENTINEL || eip >= LAYOUT.THUNK16 || this.modules.some(m => eip >= m.meta.textLo && eip < m.meta.textHi && !m.hidden && this.hasBlock(m, eip))) return eip; continue; } } }
     const blk = this.dynBlock(eip); if (!blk) return null;
     const from = eip;
     try { eip = u32(blk.run()); }
     catch (e) { if (!(e instanceof WebAssembly.RuntimeError)) throw e; this.trapped = `run-time code at ${eip.toString(16)} (instruction at ${u32(this.cpu.eip.value).toString(16)}): ${e.message}`; return null; }
     if (this.memW) this.memCheck(`run-time code at ${from.toString(16)}`);   // (a write watch: each block of run-time code, win32.js memCheck)
     if (eip === LAYOUT.SENTINEL || eip >= LAYOUT.THUNK16) return eip;
-    if (this.modules.some(m => eip >= m.meta.textLo && eip < m.meta.textHi && this.hasBlock(m, eip))) return eip;
+    if (this.modules.some(m => eip >= m.meta.textLo && eip < m.meta.textHi && !m.hidden && this.hasBlock(m, eip))) return eip;   // (another process's program at this address is not this one's code: arenaUse)
   }
 };
 /** whether module `m` has a translated block starting at `eip` */

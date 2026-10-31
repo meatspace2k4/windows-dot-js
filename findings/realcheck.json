@@ -1,0 +1,93 @@
+{
+ "mismatches": {
+  "0001:0053": {
+   "original": "vmm32.vxd+41788",
+   "returns": [
+    "eax",
+    "ecx",
+    "edx"
+   ],
+   "standin": [
+    "eax",
+    "edx"
+   ],
+   "missing": {
+    "ecx": [
+     "MMDEVLDR.VXD+22ff"
+    ]
+   },
+   "source": "function (arg) { const n = arg(0) * 4096; if (arg(7) & PAGEUSEALIGN || (arg(5) && arg(5) < 0x1000)) { const align = (arg(7) & PAGEUSEALIGN ? arg(3) + 1 : 1) * 4096, lo = Math.ceil(this.dosTop / align)"
+  },
+  "0001:00a2": {
+   "original": "vmm32.vxd+131c",
+   "returns": [
+    "cf",
+    "eax",
+    "of",
+    "sf",
+    "zf"
+   ],
+   "may": [
+    "ebp",
+    "ebx",
+    "edi"
+   ],
+   "standin": [],
+   "missing": {
+    "eax": [
+     "SHELL.VXD+c0bc",
+     "SHELL.VXD+c0f6"
+    ]
+   },
+   "source": "function () { this.free && this.free(u32(this.cpu.eax.value)); }"
+  },
+  "0004:000e": {
+   "original": "vdmad.vxd+aac",
+   "returns": [
+    "cf",
+    "eax",
+    "ebx",
+    "edx",
+    "of",
+    "sf",
+    "zf"
+   ],
+   "may": [
+    "ebp"
+   ],
+   "standin": [
+    "cf",
+    "ebx",
+    "edx"
+   ],
+   "missing": {
+    "eax": [
+     "LPT.VXD+3790"
+    ]
+   },
+   "source": "function () { this.cpu.ebx.value = 1; this.cpu.edx.value = this.cpu.esi.value; CF(this, false); }"
+  }
+ },
+ "unfollowed": [
+  "0001:000d",
+  "0001:002b",
+  "0001:002f",
+  "0001:004f",
+  "0001:0063",
+  "0001:006c",
+  "0001:0084",
+  "0001:0085",
+  "0001:008f",
+  "0001:0094",
+  "0001:009d",
+  "0001:00a7",
+  "0001:00b8",
+  "0001:00be",
+  "0001:00bf",
+  "0001:00ec",
+  "0001:011d",
+  "0001:0159",
+  "0004:000d",
+  "0027:0002"
+ ]
+}
