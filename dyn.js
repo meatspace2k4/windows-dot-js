@@ -343,6 +343,9 @@ function translate(p, lin, csb, d32, v86) {
       const v = fetch(); if (v === 0x20) pc += 4;
       f.c(pc | 0).c(0x100 + v).e(0x10, 1); f.gg('eip').e(0x0f); return done(pc);
     }
+    // int 3: the breakpoint exception after the instruction, as the recompiler raises it (trap 3); IFSMGR's
+    if (b === 0xcc) { f.c(pc | 0).c(3).e(0x10, 1); f.gg('eip').e(0x0f); return done(pc); }
+    if (b === 0xd6) { f.c(-1).c(0).gg('cf').e(0x1b).c(0xff).op('and').ls(T); wrReg(0, 1, T); continue; }   // salc: AL = CF ? FFh : 0
     if ((b >= 0xe4 && b <= 0xe7) || (b >= 0xec && b <= 0xef)) {   // in / out, through the host's port I/O
       const sz = b & 1 ? osz : 1, isIn = !(b & 2);
       if (b < 0xe8) f.c(fetch()); else f.gg('edx').c(0xffff).op('and');
@@ -451,6 +454,20 @@ function translate(p, lin, csb, d32, v86) {
       if (b2 === 0xa0 || b2 === 0xa8) { f.gg(b2 === 0xa0 ? 'fsel' : 'gsel').ls(T); push(T, osz); continue; }
       if (b2 === 0xa1 || b2 === 0xa9) { pop(T, osz); loadSeg(b2 === 0xa1 ? 4 : 5, T); continue; }
       if (b2 === 0xb2 || b2 === 0xb4 || b2 === 0xb5) { const o = modrm(); f.lg(A).ld(osz).ls(T); f.lg(A).c(osz).op('add').ld(2).ls(B); wrReg(o.reg, osz, T); loadSeg(b2 === 0xb2 ? 2 : b2 === 0xb4 ? 4 : 5, B); continue; }
+      // cpuid: the processor as the machine is one (an i486DX4: tools/recomp.py x_cpuid)
+      if (b2 === 0xa2) {
+        f.gg('eax').op('eqz').if_().c(1).gs('eax').c(0x756e6547).gs('ebx').c(0x49656e69).gs('edx').c(0x6c65746e).gs('ecx').else_();
+        f.gg('eax').c(1).op('eq').if_().c(0x480).gs('eax').c(0).gs('ebx').c(0).gs('ecx').c(1).gs('edx').else_().c(0).gs('eax').c(0).gs('ebx').c(0).gs('ecx').c(0).gs('edx').end().end();
+        continue;
+      }
+      // cmpxchg: the accumulator compared with the destination (flags as cmp); equal, the source goes there, else the
+      // destination into the accumulator
+      if (b2 === 0xb0 || b2 === 0xb1) {
+        const sz = b2 & 1 ? osz : 1, o = modrm();
+        rdReg(0, sz); f.ls(B); rd(o, sz); f.ls(C); alu2(7, sz);
+        f.lg(B).lg(C).op('eq').if_(); rdReg(o.reg, sz); f.ls(T); wr(o, sz, T); f.else_(); wrReg(0, sz, C); f.end();
+        continue;
+      }
       if (b2 === 0xa3 || b2 === 0xab || b2 === 0xb3 || b2 === 0xbb || b2 === 0xba) {   // bt / bts / btr / btc
         const o = modrm();
         const kind = b2 === 0xba ? o.reg - 4 : [0xa3, 0xab, 0xb3, 0xbb].indexOf(b2);   // 0 bt, 1 bts, 2 btr, 3 btc
@@ -589,6 +606,20 @@ function x87(f, b, o, A) {
       if (r === 1) { istore(8, true); fpop(); return; }
       if (r === 2 || r === 3) { f.lg(A); stGet(0); f.e(0x39, 3, 0); if (r === 3) fpop(); return; }
       if (r === 7) { f.lg(A).gg('fsw').c(~0x3800).op('and').gg('ftop').c(11).op('shl').op('or').st(2); return; }   // fnstsw m16
+      // fnsave / frstor: the 28-byte environment (control, status with TOP, tags, the pointers: none kept), then the
+      // eight registers, ST(0) first, 10 bytes each; fnsave then initializes the unit (MSVCRT20's and CALC's state saves,
+      // which tools/staticmap.py found reachable)
+      if (r === 6) {
+        for (let k = 0; k < 7; k++) f.lg(A).c(4 * k).op('add').c(0).st(4);
+        f.lg(A).gg('fcw').st(2); f.lg(A).c(4).op('add').gg('fsw').c(~0x3800).op('and').gg('ftop').c(11).op('shl').op('or').st(2); f.lg(A).c(8).op('add').c(0xffff).st(2);
+        for (let k = 0; k < 8; k++) { f.lg(A).c(28 + 10 * k).op('add'); stGet(k); f.e(0x10, IMP.f80store); }
+        f.c(0).gs('ftop'); f.c(0x37f).gs('fcw'); f.c(0).gs('fsw'); return;
+      }
+      if (r === 4) {
+        f.lg(A).ld(2).gs('fcw'); f.lg(A).c(4).op('add').ld(2).c(11).op('shr_u').c(7).op('and').gs('ftop'); f.lg(A).c(4).op('add').ld(2).c(~0x3800).op('and').gs('fsw');
+        for (let k = 0; k < 8; k++) stSet(k, () => { f.lg(A).c(28 + 10 * k).op('add').e(0x10, IMP.f80load); });
+        return;
+      }
     }
     if (b === 0xdf) {
       if (r === 0) { fpush(() => load('i16')); return; }

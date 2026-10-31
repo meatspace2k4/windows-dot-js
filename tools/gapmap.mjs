@@ -64,12 +64,14 @@ if (mode === '--standins') {
     else if (g === 'ne') { const f = b64(m.file); for (const s of m.meta.segs) if (s.fileoff && s.len) p.u8.set(f.subarray(s.fileoff, s.fileoff + s.len), s.base); }
     else mapPE(b64(m.file), m.meta.base);
     p.r0Depth = g === 'vxds' || g === 'drivers' ? 1 : 0;
+    const flow = new Set(r.flow || []);
     for (const [a, bits] of Object.entries(r.bits)) {
       const lin = parseInt(a, 16);
       let res; try { res = p.dynCheck(lin, bits === 32); } catch (e) { res = { unsupported: `translator error: ${e.message} (${(String(e.stack).split('\n')[1] || '').replace(/^.*<anonymous>:/, 'dyn.js line ').replace(/\)$/, '')})` }; }
       if (!res.unsupported) continue;
       const k = res.unsupported.replace(/ at [0-9a-f]+$/, ''), e = out[k] || (out[k] = { count: 0, modules: {}, first: [] });
       e.count++; e.modules[name] = (e.modules[name] || 0) + 1; if (e.first.length < 8) e.first.push(`${name}+${hex(lin - m.meta.base)}`);
+      if (flow.has(a)) { e.flow = (e.flow || 0) + 1; (e.flowAt || (e.flowAt = [])).push(`${name}+${hex(lin - m.meta.base)}`); }   // (by direct control flow from an entry point)
     }
   }
   log(JSON.stringify(out));

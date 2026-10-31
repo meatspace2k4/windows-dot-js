@@ -48,9 +48,11 @@ def map_pe(name, group, m):
     nsec = int.from_bytes(f[pe + 6:pe + 8], 'little'); shdr = opt + int.from_bytes(f[pe + 20:pe + 22], 'little')
     size = int.from_bytes(f[opt + 56:opt + 60], 'little'); img = bytearray(size); hdr = int.from_bytes(f[opt + 60:opt + 64], 'little')
     img[:hdr] = f[:hdr]
+    im.exec = []   # (the sections that hold code: an export or a pointer elsewhere is data, MSVCRT20's variables)
     for i in range(nsec):
         o = shdr + 40 * i; vs, va, rs, ro = (int.from_bytes(f[o + k:o + k + 4], 'little') for k in (8, 12, 16, 20))
         n = min(rs, vs or rs); img[va:va + n] = f[ro:ro + n]
+        if int.from_bytes(f[o + 36:o + 40], 'little') & 0x20000020: im.exec.append((meta['base'] + va, meta['base'] + va + max(vs, rs)))
     pref = int.from_bytes(f[opt + 28:opt + 32], 'little'); im.delta = meta['base'] - pref
     im.add(meta['base'], img, 32)
     entries = [meta['entry']] if meta.get('entry') else []
@@ -72,9 +74,10 @@ def map_vxd(name, m):
 
 def map_ne(name, m):
     f = b64(m['file']); meta = m['meta']; im = Image(name, 'ne', meta); im.delta = 0
-    base_of = {}
+    base_of = {}; im.exec = []   # (code segments only: flags bit 0 marks a data segment, whose exports are variables)
     for g in meta['segs']:
         if g.get('fileoff') and g.get('len'): im.add(g['base'], f[g['fileoff']:g['fileoff'] + g['len']], g.get('bits', 16)); base_of[g['sel']] = g['base']; base_of[g['num']] = g['base']
+        if not g.get('flags', 0) & 1: im.exec.append((g['base'], g['base'] + max(g.get('len', 0), g.get('alloc', 0))))
     entries = []
     es, eo = meta['entry'] if isinstance(meta.get('entry'), list) else (0, 0)
     if es in base_of: entries.append(base_of[es] + eo)
@@ -108,16 +111,18 @@ def target(im, a, i, bits):
 def is_vxdcall(i): return i.mnemonic == 'int' and i.op_str == '0x20'
 BRANCH_END = {'ret', 'retf', 'iret', 'iretd', 'jmp', 'ljmp', 'hlt', 'ud2', 'int3'}
 
-def reach(im, entries):
-    """recursive descent: every instruction reachable from the entries along direct transfers; the block starts"""
+def reach(im, entries, scan=True):
+    """recursive descent: every instruction reachable from the entries along direct transfers; the block starts. With
+    `scan`, from data pointers too: the image's aligned dwords that hold one of the recompiler's block addresses
+    (callbacks, window procedures, tables), which reach data the recompiler's sweep took for code as well"""
     blocks = set(im.meta.get('blocks') or []); text = (im.meta.get('textLo', 0), im.meta.get('textHi', 0))
-    # (aligned dwords of the image holding one of the recompiler's block addresses: callbacks, procedures, tables)
     for base, d, bits in im.regions:
-        if bits != 32: continue
+        if bits != 32 or not scan: continue
         for o in range(0, len(d) - 3, 4):
             v = (int.from_bytes(d[o:o + 4], 'little') + im.delta) & 0xffffffff
             if v in blocks: entries.append(v)
-    seen, starts, work, insns = set(), set(), [e for e in entries if text[0] <= e < text[1] or im.at(e)[0] is not None], {}
+    code = lambda e: not getattr(im, 'exec', None) or any(lo <= e < hi for lo, hi in im.exec)
+    seen, starts, work, insns = set(), set(), [e for e in entries if (text[0] <= e < text[1] or im.at(e)[0] is not None) and code(e)], {}
     starts.update(work); funcs = set(work)
     while work:
         a = work.pop()
@@ -208,6 +213,8 @@ provided = {m['meta']['id'] for m in S.get('vxds', {}).values()}
 result = {'modules': {}, 'recompUnsupported': defaultdict(lambda: {'count': 0, 'at': []}), 'services': {'missing': defaultdict(list), 'contract': defaultdict(lambda: {'reads': defaultdict(list)})}}
 dyn_starts = {}
 for im, entries in images:
+    # (flow: reached from the entry points by direct control flow; the rest only through a data pointer)
+    flow = set(reach(im, list(entries), scan=False)[0])
     insns, starts, funcs = reach(im, list(entries))
     unsup = set(im.meta.get('unsupportedAt') or [])
     n_unsup = 0
@@ -215,6 +222,7 @@ for im, entries in images:
         i = rec[0]; key = i.mnemonic if a in unsup else None
         if key:
             n_unsup += 1; e = result['recompUnsupported'][key]; e['count'] += 1
+            if a in flow: e['flow'] = e.get('flow', 0) + 1; e.setdefault('flowAt', []).append('%s+%x' % (im.name, a - im.meta['base']))
             if len(e['at']) < 10: e['at'].append('%s+%x' % (im.name, a - im.meta['base']))
         if len(rec) == 3 and im.group in ('vxds', 'drivers'):
             code = rec[2]; dev, svc = code >> 16, code & 0x7fff; key = '%04x:%04x' % (dev, svc)
@@ -235,7 +243,7 @@ for im, entries in images:
                 for r in sorted((regs & {'ecx', 'edx'}) - sets - wrote): result['services']['contract'][key]['reads'][r].append(site)
             if st.get('probe'): result['services']['contract'][key]['probe'] = st['probe']
             result['services']['contract'][key]['source'] = st['source']
-    dyn_starts[im.name] = {'bits': {('%x' % a): bits for a in sorted(starts) for _, _, bits in [im.at(a)]}, 'base': im.meta['base']}
+    dyn_starts[im.name] = {'bits': {('%x' % a): bits for a in sorted(starts) for _, _, bits in [im.at(a)]}, 'flow': ['%x' % a for a in sorted(starts) if a in flow], 'base': im.meta['base']}
     result['modules'][im.name] = {'group': im.group, 'entries': len(entries), 'reachable': len(insns), 'blockStarts': len(starts), 'recompUnsupported': n_unsup}
 
 # run-time translation over the reachable block starts
@@ -251,10 +259,12 @@ result['recompUnsupported'] = dict(result['recompUnsupported'])
 json.dump(result, open(os.environ.get('GAPMAP_OUT') or os.path.join(ROOT, 'findings', 'gapmap.json'), 'w'), indent=1)   # (W95_SCRIPTS, GAPMAP_OUT: the check run on other scripts, tools/gapmap.mjs)
 
 print('reachable instructions:', sum(m['reachable'] for m in result['modules'].values()), 'in', len(result['modules']), 'modules')
-print('recompiler #UD, reachable:')
-for k, e in sorted(result['recompUnsupported'].items(), key=lambda kv: -kv[1]['count']): print('  %5d  %-22s %s' % (e['count'], k, ' '.join(e['at'][:4])))
-print('run-time translation, reachable blocks it cannot take:')
-for k, e in sorted(dyn.items(), key=lambda kv: -kv[1]['count']): print('  %5d  %-45s %s' % (e['count'], k, ' '.join(e['first'][:4])))
+print('recompiler #UD reached by control flow from an entry point (and only through a data pointer):')
+for k, e in sorted(result['recompUnsupported'].items(), key=lambda kv: (-kv[1].get('flow', 0), -kv[1]['count'])):
+    print('  %5d (%5d)  %-22s %s' % (e.get('flow', 0), e['count'] - e.get('flow', 0), k, ' '.join((e.get('flowAt') or e['at'])[:4])))
+print('run-time translation, blocks it cannot take, by control flow (and only through a data pointer):')
+for k, e in sorted(dyn.items(), key=lambda kv: (-kv[1].get('flow', 0), -kv[1]['count'])):
+    print('  %5d (%5d)  %-45s %s' % (e.get('flow', 0), e['count'] - e.get('flow', 0), k, ' '.join((e.get('flowAt') or e['first'])[:4])))
 print('VxD services nothing provides:')
 for k, v in sorted(result['services']['missing'].items()): print('  %s  %d sites  %s' % (k, len(v), ' '.join(v[:3])))
 print('stand-ins whose callers read a result they do not set:')

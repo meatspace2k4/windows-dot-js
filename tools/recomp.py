@@ -272,6 +272,7 @@ def flag_use_def(ins):
         if cnt is not None and cnt.type == X.X86_OP_IMM and cnt.imm & 31: return 0, d
         return d, d
     if mn in ('rcl', 'rcr'): return CF, CF | OF
+    if mn == 'salc': return CF, 0
     if mn in ('bt', 'bts', 'btr', 'btc', 'clc', 'stc', 'cmc'): return (CF if mn == 'cmc' else 0), CF
     if mn in ('lahf', 'pushfd', 'pushf', 'adc', 'sbb'): return ALLF, 0
     if mn == 'popf': return 0, ALLF
@@ -1095,6 +1096,36 @@ class Translator:
         f.lg(s).e(OPS['eqz']).gs('zf')
         if k == 'ctz': d.write(lambda: (f.lg(s), f.e(OPS['ctz']), d.read(), f.lg(s), f.e(SELECT)))
         else: d.write(lambda: (f.c(31), f.lg(s), f.e(OPS['clz']), f.e(OPS['sub']), d.read(), f.lg(s), f.e(SELECT)))
+    def x_cmpxchg(self, f, ins, ops, live):
+        """compare the accumulator with the destination (flags as cmp): equal, the source into the destination; else
+        the destination into the accumulator (CRTDLL's, which tools/staticmap.py found reachable)"""
+        d, s = Loc(f, ops[0]), Loc(f, ops[1]); sz = ops[0].size; m = MASK[sz]
+        a, b, r = f.i(), f.i(), f.i()
+        f.gg('eax').c(m).e(OPS['and_']).ls(a); d.read(); f.c(m).e(OPS['and_']).ls(b)
+        f.lg(a).lg(b).e(OPS['sub']).c(m).e(OPS['and_']).ls(r)
+        set_szp(f, r, sz, live | ZF)
+        if live & CF: f.lg(a).lg(b).e(OPS['lt_u']).gs('cf')
+        if live & OF: f.lg(a).lg(b).e(OPS['xor']).lg(a).lg(r).e(OPS['xor']).e(OPS['and_']).c(8 * sz - 1).e(OPS['shr_u']).c(1).e(OPS['and_']).gs('of')
+        f.lg(a).lg(b).e(OPS['eq']).e(0x04, 0x40)
+        d.write(lambda: s.read())
+        f.e(0x05)
+        if sz == 4: f.lg(b).gs('eax')
+        else: f.gg('eax').c(~m).e(OPS['and_']).lg(b).e(OPS['or_']).gs('eax')
+        f.e(0x0b)
+    def x_salc(self, f, ins, ops, live):
+        """AL = CF ? FFh : 0, the undocumented one"""
+        f.gg('eax').c(~0xff).e(OPS['and_']).c(0xff).c(0).gg('cf').e(SELECT).e(OPS['or_']).gs('eax')
+    def x_cpuid(self, f, ins, ops, live):
+        """the processor as the machine is one (Get_Machine_Info: an ISA 486), an i486DX4 that has CPUID: leaf 0 the
+        highest leaf, 1, and "GenuineIntel"; leaf 1 family 4, model 8, and the FPU; any other leaf 0s (SYSDM's)"""
+        f.gg('eax').e(OPS['eqz']).e(0x04, 0x40)
+        f.c(1).gs('eax').c(0x756e6547).gs('ebx').c(0x49656e69).gs('edx').c(0x6c65746e).gs('ecx')
+        f.e(0x05)
+        f.gg('eax').c(1).e(OPS['eq']).e(0x04, 0x40)
+        f.c(0x480).gs('eax').c(0).gs('ebx').c(0).gs('ecx').c(1).gs('edx')
+        f.e(0x05)
+        f.c(0).gs('eax').c(0).gs('ebx').c(0).gs('ecx').c(0).gs('edx')
+        f.e(0x0b, 0x0b)
     def x_xadd(self, f, ins, ops, live):
         d, s = Loc(f, ops[0]), Loc(f, ops[1]); a, b = f.i(), f.i()
         d.read(); f.ls(a); s.read(); f.ls(b)
@@ -1294,6 +1325,28 @@ class Translator:
         if mn in ('fnstcw', 'fstcw'): loc = Loc(f, mems[0]); f.lg(loc.addr).gg('fcw').mem(0x3b); return
         if mn == 'fldcw': loc = Loc(f, mems[0]); f.lg(loc.addr).mem(0x2f).gs('fcw'); return
         if mn in ('fninit', 'finit'): f.c(0).gs('ftop').c(0x37f).gs('fcw').c(0).gs('fsw'); return
+        if mn in ('fnstenv', 'fstenv', 'fnsave', 'fsave', 'fldenv', 'frstor'):
+            # (the unit's environment, 14 bytes at a 16-bit operand size and 28 at 32: control word, status word with TOP,
+            # tags, then the last instruction's and operand's pointers, none kept (0); fnsave and frstor the eight
+            # registers after it, ST(0) first, 10 bytes each; fnsave then initializes the unit as fninit does. MSVCRT20's
+            # and CALC's floating-point state saves, which tools/staticmap.py found reachable)
+            loc = Loc(f, mems[0]); a = loc.addr; w = 2 if opsize(ins) == 2 else 4; env = 7 * w
+            at = lambda off: (f.lg(a), f.c(off), f.e(OPS['add']))
+            if mn in ('fnstenv', 'fstenv', 'fnsave', 'fsave'):
+                for k in range(7): at(k * w); f.c(0); f.mem(STORE[w])
+                at(0); f.gg('fcw'); f.mem(0x3b)
+                at(w); f.gg('fsw').c(~0x3800).e(OPS['and_']).gg('ftop').c(11).e(OPS['shl']).e(OPS['or_']); f.mem(0x3b)
+                at(2 * w); f.c(0xffff); f.mem(0x3b)
+                if mn in ('fnsave', 'fsave'):
+                    for k in range(8): at(env + 10 * k); st_get(f, k); f.e(0x10, uleb(IMP['f80store']))
+                    f.c(0).gs('ftop').c(0x37f).gs('fcw').c(0).gs('fsw')
+                return
+            t = f.i()
+            at(0); f.mem(0x2f).gs('fcw')
+            at(w); f.mem(0x2f).ls(t); f.lg(t).c(11).e(OPS['shr_u']).c(7).e(OPS['and_']).gs('ftop'); f.lg(t).c(~0x3800).e(OPS['and_']).gs('fsw')
+            if mn == 'frstor':
+                for k in range(8): st_set(f, k, lambda k=k: (at(env + 10 * k), f.e(0x10, uleb(IMP['f80load']))))
+            return
         if mn == 'fincstp': fpop(f); return
         if mn == 'fdecstp': f.gg('ftop').c(1).e(OPS['sub']).c(7).e(OPS['and_']).gs('ftop'); return
         unary = {'fchs': lambda: f.e(D['neg']), 'fabs': lambda: f.e(D['abs']), 'fsqrt': lambda: f.e(D['sqrt']),

@@ -143,8 +143,8 @@
   "GDI32.DLL": {
    "group": "dlls",
    "entries": 336,
-   "reachable": 31826,
-   "blockStarts": 7054,
+   "reachable": 30205,
+   "blockStarts": 6731,
    "recompUnsupported": 1
   },
   "USER32.DLL": {
@@ -164,29 +164,29 @@
   "COMCTL32.DLL": {
    "group": "dlls",
    "entries": 139,
-   "reachable": 40964,
-   "blockStarts": 10680,
+   "reachable": 40947,
+   "blockStarts": 10678,
    "recompUnsupported": 2
   },
   "SHELL32.DLL": {
    "group": "dlls",
    "entries": 253,
-   "reachable": 105706,
-   "blockStarts": 29316,
+   "reachable": 105669,
+   "blockStarts": 29314,
    "recompUnsupported": 211
   },
   "VERSION.DLL": {
    "group": "dlls",
    "entries": 15,
-   "reachable": 642,
-   "blockStarts": 197,
+   "reachable": 601,
+   "blockStarts": 195,
    "recompUnsupported": 0
   },
   "WINMM.DLL": {
    "group": "dlls",
    "entries": 186,
-   "reachable": 11606,
-   "blockStarts": 3639,
+   "reachable": 11568,
+   "blockStarts": 3637,
    "recompUnsupported": 2
   },
   "MMSYS.CPL": {
@@ -206,8 +206,8 @@
   "MSACM32.DLL": {
    "group": "dlls",
    "entries": 45,
-   "reachable": 22399,
-   "blockStarts": 5737,
+   "reachable": 22380,
+   "blockStarts": 5736,
    "recompUnsupported": 8
   },
   "OLE32.DLL": {
@@ -227,16 +227,16 @@
   "MSVCRT20.DLL": {
    "group": "dlls",
    "entries": 1127,
-   "reachable": 66485,
-   "blockStarts": 17404,
-   "recompUnsupported": 5
+   "reachable": 58872,
+   "blockStarts": 16901,
+   "recompUnsupported": 1
   },
   "FTSRCH.DLL": {
    "group": "dlls",
    "entries": 32,
    "reachable": 45495,
    "blockStarts": 10977,
-   "recompUnsupported": 3
+   "recompUnsupported": 1
   },
   "WINSPOOL.DRV": {
    "group": "dlls",
@@ -262,8 +262,8 @@
   "MSPRINT2.DLL": {
    "group": "dlls",
    "entries": 5,
-   "reachable": 4256,
-   "blockStarts": 1258,
+   "reachable": 4238,
+   "blockStarts": 1256,
    "recompUnsupported": 0
   },
   "LINKINFO.DLL": {
@@ -290,15 +290,15 @@
   "DCIMAN32.DLL": {
    "group": "dlls",
    "entries": 23,
-   "reachable": 509,
-   "blockStarts": 152,
+   "reachable": 486,
+   "blockStarts": 149,
    "recompUnsupported": 0
   },
   "MSVFW32.DLL": {
    "group": "dlls",
    "entries": 50,
-   "reachable": 13532,
-   "blockStarts": 3755,
+   "reachable": 13495,
+   "blockStarts": 3753,
    "recompUnsupported": 0
   },
   "ICCVID.DLL": {
@@ -418,7 +418,7 @@
    "entries": 1,
    "reachable": 10113,
    "blockStarts": 1878,
-   "recompUnsupported": 12
+   "recompUnsupported": 9
   },
   "SNDREC32.EXE": {
    "group": "programs",
@@ -445,7 +445,7 @@
    "group": "net",
    "entries": 104,
    "reachable": 15316,
-   "blockStarts": 2502,
+   "blockStarts": 2501,
    "recompUnsupported": 1
   },
   "MSNP32.DLL": {
@@ -493,8 +493,8 @@
   "GDI": {
    "group": "ne",
    "entries": 359,
-   "reachable": 55152,
-   "blockStarts": 13453,
+   "reachable": 55132,
+   "blockStarts": 13452,
    "recompUnsupported": 2
   },
   "DIBENG": {
@@ -515,8 +515,8 @@
    "group": "ne",
    "entries": 14,
    "reachable": 291,
-   "blockStarts": 85,
-   "recompUnsupported": 2
+   "blockStarts": 84,
+   "recompUnsupported": 0
   },
   "KEYBOARD": {
    "group": "ne",
@@ -549,8 +549,8 @@
   "USER": {
    "group": "ne",
    "entries": 502,
-   "reachable": 76196,
-   "blockStarts": 20458,
+   "reachable": 76175,
+   "blockStarts": 20457,
    "recompUnsupported": 1
   },
   "COMMDLG": {
@@ -563,15 +563,15 @@
   "SHELL": {
    "group": "ne",
    "entries": 35,
-   "reachable": 3734,
-   "blockStarts": 1152,
+   "reachable": 2668,
+   "blockStarts": 727,
    "recompUnsupported": 0
   },
   "COMMCTRL": {
    "group": "ne",
    "entries": 46,
-   "reachable": 25967,
-   "blockStarts": 6615,
+   "reachable": 25931,
+   "blockStarts": 6613,
    "recompUnsupported": 0
   },
   "LZEXPAND": {
@@ -584,15 +584,15 @@
   "VER": {
    "group": "ne",
    "entries": 13,
-   "reachable": 2604,
-   "blockStarts": 593,
+   "reachable": 2414,
+   "blockStarts": 590,
    "recompUnsupported": 0
   },
   "MMSYSTEM": {
    "group": "ne",
    "entries": 171,
-   "reachable": 17488,
-   "blockStarts": 4587,
+   "reachable": 17436,
+   "blockStarts": 4585,
    "recompUnsupported": 0
   },
   "MSSNDSYS": {
@@ -612,8 +612,8 @@
   "MSACM": {
    "group": "ne",
    "entries": 42,
-   "reachable": 7126,
-   "blockStarts": 1936,
+   "reachable": 7103,
+   "blockStarts": 1935,
    "recompUnsupported": 0
   },
   "MSACMMAP": {
@@ -668,8 +668,8 @@
   "MSPRINT": {
    "group": "ne",
    "entries": 7,
-   "reachable": 1770,
-   "blockStarts": 438,
+   "reachable": 1212,
+   "blockStarts": 283,
    "recompUnsupported": 0
   },
   "SETUP4": {
@@ -682,9 +682,9 @@
   "SYSDM": {
    "group": "ne",
    "entries": 26,
-   "reachable": 12746,
-   "blockStarts": 2862,
-   "recompUnsupported": 2
+   "reachable": 12740,
+   "blockStarts": 2861,
+   "recompUnsupported": 0
   },
   "UNIDRV": {
    "group": "ne",
@@ -710,15 +710,15 @@
   "DCIMAN": {
    "group": "ne",
    "entries": 26,
-   "reachable": 1250,
-   "blockStarts": 273,
+   "reachable": 1235,
+   "blockStarts": 270,
    "recompUnsupported": 0
   },
   "MSVIDEO": {
    "group": "ne",
    "entries": 71,
-   "reachable": 11263,
-   "blockStarts": 2882,
+   "reachable": 11230,
+   "blockStarts": 2880,
    "recompUnsupported": 0
   },
   "MCIAVI": {
@@ -746,7 +746,7 @@
    "group": "ne",
    "entries": 41,
    "reachable": 2879,
-   "blockStarts": 819,
+   "blockStarts": 818,
    "recompUnsupported": 0
   },
   "DESKCP16": {
@@ -806,6 +806,10 @@
     "VREDIR.VXD+fa3",
     "VREDIR.VXD+e62",
     "VNETBIOS.VXD+1b40"
+   ],
+   "flow": 1,
+   "flowAt": [
+    "USER+62ce2"
    ]
   },
   "bound": {
@@ -1049,18 +1053,18 @@
    ]
   },
   "fistp": {
-   "count": 21,
+   "count": 22,
    "at": [
     "SHELL32.DLL+5f29a",
     "SHELL32.DLL+5f2ba",
     "SHELL32.DLL+5edaa",
     "SHELL32.DLL+5de5a",
     "SHELL32.DLL+5de52",
+    "SHELL32.DLL+5de56",
     "SHELL32.DLL+604de",
     "SHELL32.DLL+604c6",
     "SHELL32.DLL+6023e",
-    "SHELL32.DLL+5e6be",
-    "SHELL32.DLL+5e729"
+    "SHELL32.DLL+5e6be"
    ]
   },
   "into": {
@@ -1072,12 +1076,6 @@
     "SHELL32.DLL+5ca31"
    ]
   },
-  "fstp": {
-   "count": 1,
-   "at": [
-    "SHELL32.DLL+606a9"
-   ]
-  },
   "aad": {
    "count": 6,
    "at": [
@@ -1087,31 +1085,6 @@
     "CALC.EXE+a58e",
     "CDPLAYER.EXE+109c",
     "CDPLAYER.EXE+10a4"
-   ]
-  },
-  "fnsave": {
-   "count": 4,
-   "at": [
-    "MSVCRT20.DLL+2c136",
-    "FTSRCH.DLL+2b8b1",
-    "CALC.EXE+7e81",
-    "SYSTEM+119"
-   ]
-  },
-  "frstor": {
-   "count": 4,
-   "at": [
-    "MSVCRT20.DLL+2c141",
-    "FTSRCH.DLL+2b8bc",
-    "CALC.EXE+7e8c",
-    "SYSTEM+125"
-   ]
-  },
-  "fnstenv": {
-   "count": 2,
-   "at": [
-    "MSVCRT20.DLL+2968b",
-    "MSVCRT20.DLL+29943"
    ]
   },
   "ud0": {
@@ -1138,15 +1111,13 @@
     "ICCVID.DLL+a242"
    ]
   },
-  "fldenv": {
-   "count": 1,
-   "at": [
-    "CALC.EXE+a50d"
-   ]
-  },
   "dec": {
    "count": 1,
    "at": [
+    "GDI+10"
+   ],
+   "flow": 1,
+   "flowAt": [
     "GDI+10"
    ]
   },
@@ -1154,13 +1125,10 @@
    "count": 1,
    "at": [
     "GDI+20"
-   ]
-  },
-  "cpuid": {
-   "count": 2,
-   "at": [
-    "SYSDM+1aa",
-    "SYSDM+1be"
+   ],
+   "flow": 1,
+   "flowAt": [
+    "GDI+20"
    ]
   }
  },
@@ -1326,51 +1294,8 @@
   "contract": {}
  },
  "dynUntranslatable": {
-  "opcode cc": {
-   "count": 320,
-   "modules": {
-    "MSSNDSYS.VXD": 1,
-    "IFSMGR.VXD": 24,
-    "VNETSUP.VXD": 1,
-    "VREDIR.VXD": 4,
-    "VNETBIOS.VXD": 5,
-    "NDIS.VXD": 5,
-    "VCOMM.VXD": 1,
-    "COMDLG32.DLL": 24,
-    "COMCTL32.DLL": 1,
-    "SHELL32.DLL": 165,
-    "VERSION.DLL": 1,
-    "WINMM.DLL": 1,
-    "MMSYS.CPL": 17,
-    "MSACM32.DLL": 7,
-    "RPCRT4.DLL": 1,
-    "MSPRINT2.DLL": 2,
-    "DCIMAN32.DLL": 2,
-    "MSVFW32.DLL": 1,
-    "ICCVID.DLL": 2,
-    "IR32_32.DLL": 8,
-    "MPLAYER.EXE": 3,
-    "WINHLP32.EXE": 7,
-    "EXPLORER.EXE": 25,
-    "CDPLAYER.EXE": 6,
-    "GDI": 1,
-    "COMM": 2,
-    "USER": 1,
-    "NETDI": 2
-   },
-   "first": [
-    "MSSNDSYS.VXD+39",
-    "IFSMGR.VXD+3725",
-    "IFSMGR.VXD+3889",
-    "IFSMGR.VXD+cf6",
-    "IFSMGR.VXD+383f",
-    "IFSMGR.VXD+386c",
-    "IFSMGR.VXD+38b1",
-    "IFSMGR.VXD+38e9"
-   ]
-  },
   "opcode ff": {
-   "count": 322,
+   "count": 276,
    "modules": {
     "MSSNDSYS.VXD": 12,
     "VTDAPI.VXD": 3,
@@ -1380,14 +1305,10 @@
     "VREDIR.VXD": 24,
     "NDIS.VXD": 8,
     "SHELL.VXD": 8,
-    "GDI32.DLL": 1,
     "USER32.DLL": 2,
     "COMDLG32.DLL": 1,
-    "SHELL32.DLL": 77,
-    "VERSION.DLL": 1,
-    "WINMM.DLL": 1,
-    "MSACM32.DLL": 7,
-    "MSVCRT20.DLL": 26,
+    "SHELL32.DLL": 76,
+    "MSACM32.DLL": 6,
     "ICCVID.DLL": 14,
     "MSVIDC32.DLL": 1,
     "IR32_32.DLL": 5,
@@ -1399,17 +1320,9 @@
     "CALC.EXE": 5,
     "SNDVOL32.EXE": 3,
     "MPR.DLL": 1,
-    "GDI": 2,
-    "SYSTEM": 1,
-    "USER": 3,
-    "VER": 1,
-    "MMSYSTEM": 2,
-    "MSACM": 1,
-    "MSPRINT": 5,
-    "SYSDM": 1,
-    "DCIMAN": 1,
-    "MSGSRV32": 1,
-    "TOOLHELP": 1
+    "GDI": 1,
+    "USER": 2,
+    "MSGSRV32": 1
    },
    "first": [
     "MSSNDSYS.VXD+110",
@@ -1420,10 +1333,14 @@
     "MSSNDSYS.VXD+d0",
     "MSSNDSYS.VXD+d4",
     "MSSNDSYS.VXD+d8"
+   ],
+   "flow": 1,
+   "flowAt": [
+    "USER+62cd6"
    ]
   },
   "opcode 62": {
-   "count": 234,
+   "count": 217,
    "modules": {
     "MSSNDSYS.VXD": 3,
     "VTDAPI.VXD": 8,
@@ -1435,10 +1352,8 @@
     "NDIS.VXD": 32,
     "PERF.VXD": 4,
     "REBOOT.VXD": 6,
-    "GDI32.DLL": 3,
     "COMDLG32.DLL": 1,
     "SHELL32.DLL": 28,
-    "MSVCRT20.DLL": 14,
     "ICCVID.DLL": 2,
     "WINHLP32.EXE": 14,
     "EXPLORER.EXE": 18,
@@ -1460,13 +1375,13 @@
    ]
   },
   "opcode 63": {
-   "count": 904,
+   "count": 843,
    "modules": {
     "MSSNDSYS.VXD": 3,
     "VTDAPI.VXD": 1,
     "MSOPL.VXD": 2,
     "ENABLE.VXD": 6,
-    "IFSMGR.VXD": 105,
+    "IFSMGR.VXD": 106,
     "VCACHE.VXD": 4,
     "VNETSUP.VXD": 4,
     "VREDIR.VXD": 27,
@@ -1477,7 +1392,6 @@
     "SHELL.VXD": 11,
     "REBOOT.VXD": 12,
     "VCOMM.VXD": 2,
-    "GDI32.DLL": 13,
     "USER32.DLL": 4,
     "COMDLG32.DLL": 9,
     "COMCTL32.DLL": 1,
@@ -1485,7 +1399,6 @@
     "WINMM.DLL": 2,
     "DESK.CPL": 1,
     "MSACM32.DLL": 22,
-    "MSVCRT20.DLL": 15,
     "MPREXE.EXE": 1,
     "WINHLP32.EXE": 16,
     "EXPLORER.EXE": 29,
@@ -1498,9 +1411,7 @@
     "MSNP32.DLL": 29,
     "MPRSERV.DLL": 40,
     "MSPWL32.DLL": 1,
-    "SVRAPI.DLL": 1,
-    "SHELL": 23,
-    "MSPRINT": 11
+    "SVRAPI.DLL": 1
    },
    "first": [
     "MSSNDSYS.VXD+20d7",
@@ -1523,13 +1434,12 @@
    ]
   },
   "opcode f4": {
-   "count": 41,
+   "count": 35,
    "modules": {
     "IFSMGR.VXD": 10,
     "VCACHE.VXD": 2,
     "VNETSUP.VXD": 1,
     "VREDIR.VXD": 5,
-    "GDI32.DLL": 6,
     "COMCTL32.DLL": 1,
     "SHELL32.DLL": 12,
     "ICCVID.DLL": 2,
@@ -1635,28 +1545,6 @@
     "ICCVID.DLL+d8cc"
    ]
   },
-  "opcode d6": {
-   "count": 41,
-   "modules": {
-    "IFSMGR.VXD": 1,
-    "SHELL32.DLL": 4,
-    "MMSYS.CPL": 1,
-    "MSVCRT20.DLL": 31,
-    "FTSRCH.DLL": 1,
-    "GRPCONV.EXE": 1,
-    "CDPLAYER.EXE": 2
-   },
-   "first": [
-    "IFSMGR.VXD+75bb",
-    "SHELL32.DLL+5cf10",
-    "SHELL32.DLL+5ec23",
-    "SHELL32.DLL+5ec24",
-    "SHELL32.DLL+5ec28",
-    "MMSYS.CPL+61f7",
-    "MSVCRT20.DLL+37718",
-    "MSVCRT20.DLL+37748"
-   ]
-  },
   "0f 10": {
    "count": 46,
    "modules": {
@@ -1726,17 +1614,15 @@
    ]
   },
   "0f 0": {
-   "count": 85,
+   "count": 83,
    "modules": {
     "VNETSUP.VXD": 51,
     "NDIS.VXD": 3,
     "COMDLG32.DLL": 20,
     "SHELL32.DLL": 3,
-    "MSVCRT20.DLL": 1,
     "ICCVID.DLL": 4,
     "WINHLP32.EXE": 1,
-    "EXPLORER.EXE": 1,
-    "COMMCTRL": 1
+    "EXPLORER.EXE": 1
    },
    "first": [
     "VNETSUP.VXD+3820",
@@ -1819,11 +1705,10 @@
    ]
   },
   "lea with a register operand": {
-   "count": 15,
+   "count": 12,
    "modules": {
     "COMCTL32.DLL": 1,
     "SHELL32.DLL": 7,
-    "MSVCRT20.DLL": 3,
     "IR32_32.DLL": 4
    },
    "first": [
@@ -1923,18 +1808,6 @@
     "SHELL32.DLL+5f91d"
    ]
   },
-  "0f e5": {
-   "count": 3,
-   "modules": {
-    "SHELL32.DLL": 1,
-    "SHELL": 2
-   },
-   "first": [
-    "SHELL32.DLL+6802c",
-    "SHELL+f140",
-    "SHELL+f1cc"
-   ]
-  },
   "0f ff": {
    "count": 5,
    "modules": {
@@ -1946,52 +1819,6 @@
     "MSVCRT20.DLL+11f32",
     "MSVCRT20.DLL+11f36",
     "MSVCRT20.DLL+11f58"
-   ]
-  },
-  "x87 dd /6 (memory)": {
-   "count": 4,
-   "modules": {
-    "MSVCRT20.DLL": 1,
-    "FTSRCH.DLL": 1,
-    "CALC.EXE": 1,
-    "SYSTEM": 1
-   },
-   "first": [
-    "MSVCRT20.DLL+2c122",
-    "FTSRCH.DLL+2b89d",
-    "CALC.EXE+7e6d",
-    "SYSTEM+113"
-   ]
-  },
-  "x87 dd /4 (memory)": {
-   "count": 4,
-   "modules": {
-    "MSVCRT20.DLL": 1,
-    "FTSRCH.DLL": 1,
-    "CALC.EXE": 1,
-    "SYSTEM": 1
-   },
-   "first": [
-    "MSVCRT20.DLL+2c13e",
-    "FTSRCH.DLL+2b8b9",
-    "CALC.EXE+7e89",
-    "SYSTEM+11f"
-   ]
-  },
-  "mov to segment register 1": {
-   "count": 5,
-   "modules": {
-    "MSVFW32.DLL": 1,
-    "ICCVID.DLL": 1,
-    "GDI": 1,
-    "MSVIDEO": 2
-   },
-   "first": [
-    "MSVFW32.DLL+150d4",
-    "ICCVID.DLL+a491",
-    "GDI+44dba",
-    "MSVIDEO+14f68",
-    "MSVIDEO+14f78"
    ]
   },
   "0f 11": {
@@ -2011,6 +1838,21 @@
    },
    "first": [
     "ICCVID.DLL+a242"
+   ]
+  },
+  "mov to segment register 1": {
+   "count": 2,
+   "modules": {
+    "ICCVID.DLL": 1,
+    "GDI": 1
+   },
+   "first": [
+    "ICCVID.DLL+a491",
+    "GDI+44dba"
+   ],
+   "flow": 1,
+   "flowAt": [
+    "GDI+44dba"
    ]
   },
   "enter with nesting level 6": {
@@ -2058,15 +1900,6 @@
     "EXPLORER.EXE+212d2"
    ]
   },
-  "enter with nesting level 31": {
-   "count": 1,
-   "modules": {
-    "MPR.DLL": 1
-   },
-   "first": [
-    "MPR.DLL+8000"
-   ]
-  },
   "x87 d9 /1 (memory)": {
    "count": 1,
    "modules": {
@@ -2074,16 +1907,10 @@
    },
    "first": [
     "GDI+466f0"
-   ]
-  },
-  "0f a2": {
-   "count": 2,
-   "modules": {
-    "SYSDM": 2
-   },
-   "first": [
-    "SYSDM+19e",
-    "SYSDM+1b9"
+   ],
+   "flow": 1,
+   "flowAt": [
+    "GDI+466f0"
    ]
   }
  }
