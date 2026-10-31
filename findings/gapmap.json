@@ -1142,54 +1142,34 @@
    },
    "0487:0001": {
     "guarded": [
+     "VREDIR.VXD+6037",
+     "VREDIR.VXD+601c",
+     "VREDIR.VXD+5f8d",
      "VREDIR.VXD+5f3a"
     ],
     "unguarded": [
      "VREDIR.VXD+6057",
      "VREDIR.VXD+5f53",
-     "VREDIR.VXD+6037",
-     "VREDIR.VXD+601c",
-     "VREDIR.VXD+5fd5",
-     "VREDIR.VXD+5f8d"
-    ]
-   },
-   "0006:000e": {
-    "guarded": [],
-    "unguarded": [
-     "VREDIR.VXD+5baf",
-     "VNETBIOS.VXD+ec"
+     "VREDIR.VXD+5fd5"
     ]
    },
    "049b:0001": {
-    "guarded": [],
-    "unguarded": [
+    "guarded": [
      "VREDIR.VXD+5b74"
-    ]
+    ],
+    "unguarded": []
    },
    "049b:0002": {
-    "guarded": [],
-    "unguarded": [
+    "guarded": [
      "VREDIR.VXD+5b7c"
-    ]
-   },
-   "0006:000d": {
-    "guarded": [],
-    "unguarded": [
-     "VREDIR.VXD+5b8f",
-     "VNETBIOS.VXD+c2"
-    ]
-   },
-   "0006:0005": {
-    "guarded": [],
-    "unguarded": [
-     "VREDIR.VXD+5b68"
-    ]
+    ],
+    "unguarded": []
    },
    "0487:0004": {
-    "guarded": [],
-    "unguarded": [
+    "guarded": [
      "VREDIR.VXD+5b10"
-    ]
+    ],
+    "unguarded": []
    },
    "0032:0001": {
     "guarded": [
@@ -1203,26 +1183,33 @@
      "VREDIR.VXD+222e0"
     ]
    },
-   "0006:0004": {
-    "guarded": [],
-    "unguarded": [
-     "VNETBIOS.VXD+4321"
-    ]
-   },
    "0497:0001": {
-    "guarded": [],
-    "unguarded": [
+    "guarded": [
      "NDIS.VXD+10038"
-    ]
+    ],
+    "unguarded": []
    },
    "0496:0001": {
-    "guarded": [],
-    "unguarded": [
+    "guarded": [
      "NDIS.VXD+10032"
-    ]
+    ],
+    "unguarded": []
    }
   },
-  "contract": {}
+  "contract": {},
+  "names": {
+   "002a:0018": "VWIN32_TerminateApp (EDI the thread: its saved ring-3 context back and VWIN32's APC queued that ends it; IFSMGR's, as its INT 21h dispatch returns -41h)",
+   "0041:0001": "VCDFSD",
+   "0021:0007": "PAGEFILE (DYNAPAGE.VXD)",
+   "0487:0001": "NWLINK (IPX/SPX), absent where the network is NetBEUI's as here",
+   "049b:0001": "VNBT (NetBIOS over TCP/IP)",
+   "049b:0002": "VNBT (NetBIOS over TCP/IP)",
+   "0487:0004": "NWLINK (IPX/SPX), absent where the network is NetBEUI's as here",
+   "0032:0001": "VSERVER",
+   "0482:0001": "SNAPVXD (SNAPSHOT.VXD)",
+   "0497:0001": "MSODISUP",
+   "0496:0001": "NDIS2SUP"
+  }
  },
  "dynUntranslatable": {
   "opcode ff": {

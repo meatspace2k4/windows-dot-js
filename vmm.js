@@ -801,6 +801,23 @@ svc(VSD, 0x03, function () { this.speakerTaken = this.cpu.eax.value & 0xff; CF(t
 svc(VMD, 0x00, function () { this.cpu.eax.value = 0x300; CF(this, false); });
 svc(VMD, 0x02, function () { this.cpu.ebx.value = this.sysVM(); });
 
+// ---- V86MMGR (version 3.0Ah). Map_Pages (ESI linear, ECX size) puts a 32-bit buffer where V86 code can address it
+// (EDI that address, ESI a handle for Free_Page_Map_Region), from a region of the first megabyte it maps pages into:
+// one linear memory has no second mapping of a page, so a buffer already there is its own address and any other is
+// what V86MMGR answers when the region is full (CF), and Get_Mapping_Info has that region empty (CH
+// its pages, CL those free). Set_Mapping_Info sizes the region for VMs other than the system's
+const V86MMGR = 6;
+svc(V86MMGR, 0x00, function () { this.cpu.eax.value = 0x30a; CF(this, false); });
+svc(V86MMGR, 0x04, function () {});
+svc(V86MMGR, 0x05, function () { this.cpu.ecx.value = this.cpu.ecx.value & ~0xffff; });
+svc(V86MMGR, 0x0d, function () {
+  const lin = u32(this.cpu.esi.value), n = u32(this.cpu.ecx.value);
+  if (!n) { this.cpu.edi.value = 0xffffffff; this.cpu.esi.value = 0xffff; CF(this, false); return; }
+  if (lin + n <= 0x110000) { this.cpu.edi.value = lin; this.cpu.esi.value = 0; CF(this, false); return; }
+  CF(this, true);
+});
+svc(V86MMGR, 0x0e, function () {});
+
 // ---- VDMAD: the DMA controller. Virtualize_Channel (EAX channel, ESI callback): EAX the DMA handle
 const VDMAD = 4, vdmad = p => p.vdmad || (p.vdmad = new Map());
 const dmaOf = p => vdmad(p).get(u32(p.cpu.eax.value));

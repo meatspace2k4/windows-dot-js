@@ -60,6 +60,10 @@ call(0x33, 0x64, 9, 1, 0); assert.equal(p.cpu.eax.value, 5); assert.equal(dn.pow
 p.sysVM = () => 0xc0001000;
 for (const d of [0xb, 0xc]) { p.cpu.cf.value = 1; S[d << 16].call(p); assert.deepEqual([p.cpu.eax.value, p.cpu.cf.value], [0x300, 0]); }
 S[0xc << 16 | 2].call(p); assert.equal(p.cpu.ebx.value >>> 0, 0xc0001000, 'VMD: the system VM owns the mouse');
+// V86MMGR's Map_Pages: a buffer in the first megabyte is its own V86 address; another finds the mapping region full
+p.cpu.esi.value = 0x9a000; p.cpu.ecx.value = 0x800; S[6 << 16 | 0xd].call(p); assert.deepEqual([p.cpu.cf.value, p.cpu.edi.value], [0, 0x9a000]);
+p.cpu.esi.value = 0x700000; p.cpu.edi.value = 5; S[6 << 16 | 0xd].call(p); assert.deepEqual([p.cpu.cf.value, p.cpu.edi.value, p.cpu.esi.value], [1, 5, 0x700000]);
+p.cpu.ecx.value = 0x1234ffff; S[6 << 16 | 5].call(p); assert.equal(p.cpu.ecx.value, 0x12340000, 'Get_Mapping_Info: no mapping pages');
 
 // run-time translation: invalid opcodes, not the translator's own error
 p.selLimit = () => 0xffff; p.trap = () => {};

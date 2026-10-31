@@ -191,8 +191,8 @@ def reads_after(im, a, limit=24):
     return regs, flags
 
 def version_vars(im, insns, dev):
-    """where the module keeps device `dev`'s Get_Version result: the memory a register is stored to after the call's
-    CF test (an absent device's Get_Version sets CF)"""
+    """where the module keeps device `dev`'s Get_Version result: the memory written after the call's CF test, the
+    version or a count of it (an absent device's Get_Version sets CF)"""
     """, and the instructions straight on from that test with CF clear (the device's other services called there)"""
     out, past = set(), set()
     for a, rec in insns.items():
@@ -206,7 +206,7 @@ def version_vars(im, insns, dev):
             if i.mnemonic in ('jb', 'jc', 'jae', 'jnc') and not tested:
                 tested = True
                 if i.mnemonic in ('jae', 'jnc'): t = target(im, p, i, bits); p = t if t is not None else p + i.size; continue
-            elif tested and i.mnemonic == 'mov' and i.operands[0].type == X.X86_OP_MEM and i.operands[0].mem.base == 0 and i.operands[0].mem.index == 0:
+            elif tested and i.operands and i.operands[0].type == X.X86_OP_MEM and i.operands[0].access & capstone.CS_AC_WRITE and i.operands[0].mem.base == 0 and i.operands[0].mem.index == 0:
                 out.add(i.operands[0].mem.disp & 0xffffffff)
             if i.mnemonic in BRANCH_END or capstone.CS_GRP_RET in i.groups: break
             p += i.size
@@ -267,7 +267,7 @@ for im, entries in images:
     flow = set(reach(im, list(entries), scan=False)[0])
     insns, starts, funcs = reach(im, list(entries))
     unsup = set(im.meta.get('unsupportedAt') or [])
-    n_unsup = 0
+    n_unsup = 0; callers = None
     for a, rec in insns.items():
         i = rec[0]; key = i.mnemonic if a in unsup else None
         if key:
@@ -281,9 +281,22 @@ for im, entries in images:
                 if svc == 0 or dev in provided: continue
                 if dev in present: result['services']['missing'][key].append(site); continue
                 # (an absent device's service: called only if the caller goes on past its Get_Version's CF, as when the
-                # function tests the variable the module keeps that result in first)
+                # function tests the variable the module keeps that result in first, or when every direct call of the
+                # function is so guarded)
                 vv, past = version_vars(im, insns, dev)
-                result['services']['absent'][key]['guarded' if a in past or vv and reads_var(im, funcs, a, vv) else 'unguarded'].append(site)
+                if callers is None:
+                    callers = defaultdict(set)
+                    for c, r in insns.items():
+                        if capstone.CS_GRP_CALL in r[0].groups and len(r) == 2:
+                            t = target(im, c, r[0], r[1])
+                            if t is not None: callers[t].add(c)
+                    taken = {(int.from_bytes(d[o:o + 4], 'little') + im.delta) & 0xffffffff for base, d, bits in im.regions if bits == 32 for o in range(0, len(d) - 3)} | set(entries)
+                def guarded(x, depth=0, seen=()):
+                    if x in past or vv and reads_var(im, funcs, x, vv): return True
+                    s = max((f for f in funcs if f <= x and x - f < 0x2000), default=None)
+                    if s is None or s in taken or not callers.get(s) or depth > 6 or s in seen: return False
+                    return all(guarded(c, depth + 1, seen + (s,)) for c in callers[s])
+                result['services']['absent'][key]['guarded' if guarded(a) else 'unguarded'].append(site)
                 continue
             if code & 0x8000: continue
             regs, flags = reads_after(im, a + 6)
@@ -311,6 +324,11 @@ result['dynUntranslatable'] = dyn
 result['services']['contract'] = {k: {'reads': dict(v['reads']), **{x: v[x] for x in ('probe', 'source') if x in v}} for k, v in result['services']['contract'].items() if v['reads']}
 result['services']['missing'] = dict(result['services']['missing'])
 result['services']['absent'] = dict(result['services']['absent'])
+# what the services and devices left are, read from Windows 95's own components (WIN95_02.CAB and the other CABs)
+NAMES = {'002a:0018': "VWIN32_TerminateApp (EDI the thread: its saved ring-3 context back and VWIN32's APC queued that ends it; IFSMGR's, as its INT 21h dispatch returns -41h)",
+         0x21: 'PAGEFILE (DYNAPAGE.VXD)', 0x32: 'VSERVER', 0x41: 'VCDFSD', 0x482: 'SNAPVXD (SNAPSHOT.VXD)', 0x487: 'NWLINK (IPX/SPX), absent where the network is NetBEUI\'s as here',
+         0x496: 'NDIS2SUP', 0x497: 'MSODISUP', 0x49b: 'VNBT (NetBIOS over TCP/IP)'}
+result['services']['names'] = {k: NAMES.get(k) or NAMES.get(int(k.split(':')[0], 16)) for k in list(result['services']['missing']) + list(result['services']['absent']) if NAMES.get(k) or NAMES.get(int(k.split(':')[0], 16))}
 result['recompUnsupported'] = dict(result['recompUnsupported'])
 json.dump(result, open(os.environ.get('GAPMAP_OUT') or os.path.join(ROOT, 'findings', 'gapmap.json'), 'w'), indent=1)   # (W95_SCRIPTS, GAPMAP_OUT: the check run on other scripts, tools/gapmap.mjs)
 
