@@ -128,7 +128,9 @@ async function insertCD() {
   const r = await dialog.showOpenDialog({ title: 'Insert CD Image', buttonLabel: 'Insert', properties: ['openFile'], filters: [{ name: 'CD images', extensions: ['iso'] }] })
   if (r.canceled || !r.filePaths[0]) return
   cdOpen(r.filePaths[0]); fs.writeFileSync(cdFile(), JSON.stringify({ image: cdImage }, null, 2))
+  for (const w of BrowserWindow.getAllWindows()) w.webContents.send('cd-changed', cdImage && path.basename(cdImage))
 }
+ipcMain.on('cd-image', e => { e.returnValue = cdImage && path.basename(cdImage) })
 async function shareFolder() {
   const r = await dialog.showOpenDialog({ title: 'Share a Folder', buttonLabel: 'Share', properties: ['openDirectory', 'createDirectory'] })
   if (!r.canceled && r.filePaths[0]) shares.add(r.filePaths[0])

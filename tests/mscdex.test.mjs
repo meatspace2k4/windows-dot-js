@@ -9,9 +9,9 @@ const { Process } = window.W95Win32;
 const p = Object.create(Process.prototype);
 p.mem = { buffer: new ArrayBuffer(1 << 20) };
 p.cpu = {}; for (const r of ['eax', 'ebx', 'ecx', 'edx', 'esi', 'edi', 'es', 'ds', 'cf']) p.cpu[r] = { value: 0 };
-const pvd = new Uint8Array(2048); new DataView(pvd.buffer).setUint32(80, 300000, true);
-// (the volumes as the system machine has them: the page's, made afresh each time they are asked for)
-const VOLS = new Map([['D', { kind: 'cdrom', letter: 'D', disc: { read: s => (s === 16 ? pvd : null) } }]]);
+// (the volumes as the system machine has them: the page's, made afresh each time they are asked for; a data disc's
+// size in sectors, from its volume descriptor, and the count of its drive's disc changes)
+const VOLS = new Map([['D', { kind: 'cdrom', letter: 'D', ready: true, media: 1, sectors: 300000 }]]);
 p.fs = { get vols() { return new Map([...VOLS].map(([k, v]) => [k, { ...v }])); } };
 p.rmode = true;   // (as through DPMI's real-mode interrupt: ES:BX and the transfer address are segment:offset)
 const req = (drive, cmd, block) => {
@@ -31,6 +31,13 @@ assert.equal(req(3, 3, [11, 1]), 0x0100); assert.equal(p.u8[0x1106], 0x41, 'trac
 assert.equal(req(3, 3, [11, 2]), 0x8003, 'no track 2');
 assert.equal(req(3, 0x84), 0x800c, 'nothing to play on a data disc'); assert.equal(req(3, 0x85), 0x0100);
 assert.equal(req(3, 0x99), 0x8003); assert.equal(req(2, 3, [6]), 0x8001, 'C: is no CD drive');
+// another disc put in D: (win95.cd.insert): media changed once, then the new disc's size; taken out, the door open
+VOLS.set('D', { ...VOLS.get('D'), media: 2, sectors: 318654 });
+assert.equal(req(3, 3, [9]), 0x0100); assert.equal(p.u8[0x1101], 0xff, 'swapped: media changed'); assert.equal(req(3, 3, [9]), 0x0100); assert.equal(p.u8[0x1101], 1);
+assert.equal(req(3, 3, [8]), 0x0100); assert.equal(p.r32(0x1101), 318654, 'the new disc\'s size');
+VOLS.set('D', { ...VOLS.get('D'), media: 3, ready: false, sectors: 0 });
+assert.equal(req(3, 3, [9]), 0x0100); assert.equal(p.u8[0x1101], 0xff); assert.equal(req(3, 3, [6]), 0x0100); assert.equal(p.r32(0x1101) & 1, 1, 'an empty drive: door open');
+VOLS.set('D', { kind: 'cdrom', letter: 'D', ready: true, media: 4, sectors: 300000 }); req(3, 3, [9]);
 // the audio disc in E: (cdaudio.js's table of contents): its tracks audio (control 01h), the lead-out; play from a track
 // tells the page to play those sectors, the drive busy while it plays, the Q channel following the clock; stop pauses
 // (the page told to stop), resume plays on from there, a second stop stops for good

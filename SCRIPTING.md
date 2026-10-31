@@ -57,6 +57,7 @@ waits for an element the same way and resolves with it. With coordinates the cal
 | `open(path)` | opens a folder window or the file's program |
 | `saver(path)`, `stopSaver()` | runs a screen saver full screen, ends it |
 | `fs` | the file system (`readText`, `writeFile`, `readdir`, `stat`, ...; see `fs.js`) |
+| `cd.images()`, `cd.insert(name)`, `cd.eject()`, `cd.disc` | the CD images the drive can take (`tools/serve.py --iso` and each `--cd`, listed at `/__cd`; the app's File > Insert CD Image), putting one in D: (its tree read from the disc, the drive's media change counted for MSCDEX, AutoRun then as Explorer runs it), taking it out (D: not ready), the disc in it (`{ label, serial, sectors }` or `null`). The choice is kept for the next start; `?cd=<name>` picks one. The audio CD stays in E: |
 
 ## State
 

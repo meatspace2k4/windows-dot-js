@@ -140,6 +140,18 @@ class FileSystem {
     for (const [fd, h] of this.fds) if (h.v === v) this.fds.delete(fd);
     this.vols.delete(v.letter); this.emit('unmount', v.letter + ':\\');
   }
+  /** the disc in a drive changed: what it had is gone (handles open on it with it), and the new disc's tree is in
+   *  ({ label, serial, total, sectors, disc, tree } as load takes a tree), or the drive is empty, not ready. v.media counts the
+   *  changes, which the drive answers as "media changed" (MSCDEX) */
+  change(letter, o) {
+    const v = this.vols.get(letter.toUpperCase()), r = v.root;
+    for (const [fd, h] of this.fds) if (h.v === v || (h.n && h.n.vol === v)) this.fds.delete(fd);
+    for (const k of r.kids.values()) this.forgetTree(k);
+    r.kids.clear(); r.byShort.clear(); v.used = 0; v.media = (v.media || 0) + 1;
+    Object.assign(v, o ? { ready: true, label: (o.label || '').toUpperCase().slice(0, 11), serial: o.serial >>> 0, total: o.total || 0, sectors: o.sectors || 0, disc: o.disc || null }
+      : { ready: false, label: '', total: 0, sectors: 0, disc: null });
+    if (o && o.tree) this.load(v.letter, o.tree); else this.emit('mount', v.letter + ':\\');
+  }
   // ---- remote volumes: a drive whose files are another computer's. Its operations go to the volume's backend
   // (remote: { stat, list, open, read, write, truncate, size, close, mkdir, rmdir, unlink, rename, setAttrs, setTime,
   // space }, on paths relative to the drive's root), which throws FSErrors; nothing of it is kept here

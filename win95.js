@@ -513,35 +513,116 @@ const WIN_INI_FONTS = [['MS Sans Serif 8,10,12,14,18,24', 'SSERIFE.FON'], ['MS S
   ['Courier New (TrueType)', 'COUR.TTF'], ['Courier New Bold (TrueType)', 'COURBD.TTF'], ['Courier New Bold Italic (TrueType)', 'COURBI.TTF'], ['Courier New Italic (TrueType)', 'COURI.TTF'],
   ['Times New Roman (TrueType)', 'TIMES.TTF'], ['Times New Roman Bold (TrueType)', 'TIMESBD.TTF'], ['Times New Roman Bold Italic (TrueType)', 'TIMESBI.TTF'], ['Times New Roman Italic (TrueType)', 'TIMESI.TTF'],
   ['Symbol (TrueType)', 'SYMBOL.TTF'], ['Wingdings (TrueType)', 'WINGDING.TTF']];
-// the disc in the CD drive: the image of the CD whose tree cdrom.js has, read a sector range at a time. The app's host
-// reads the image the person chose (File > Insert CD Image); a plain browser reads cdrom.iso from the server, which
-// must answer byte ranges. An image whose label and size are not the tree's is no disc
-function cdDisc() {
-  const want = window.W95CD || {}, host = window.W95HOST && window.W95HOST.cd;
-  const label = b => String.fromCharCode(...b.subarray(40, 72)).trim();
-  const ok = b => !!b && b.length === 2048 && String.fromCharCode(...b.subarray(1, 6)) === 'CD001' && label(b) === want.label;
+// the disc in the CD drive (D:): an ISO 9660 image, read a sector range at a time. The app's host reads the image the
+// person chose (File > Insert CD Image); a plain browser reads one of the server's images (/__cd lists them, each
+// answering byte ranges; cdrom.iso alone where the server has no list). A disc's tree is read from the disc as it is
+// put in, except the Windows 95 CD's, which cdrom.js has
+const CD_KEY = 'w95.cd';
+function cdImages() {
+  const host = window.W95HOST && window.W95HOST.cd;
+  if (host) return [{ name: (host.image && host.image()) || 'CD', url: null }];
+  try {
+    const x = new XMLHttpRequest(); x.open('GET', '__cd', false); x.send();
+    if (x.status === 200) { const l = JSON.parse(x.responseText); if (Array.isArray(l) && l.length) return l; }
+  } catch (_) { /* no list */ }
+  return [{ name: 'cdrom.iso', url: 'cdrom.iso' }];
+}
+// an image as a disc: { read(sector, bytes) }, null where it does not answer
+function cdDisc(img) {
+  const host = window.W95HOST && window.W95HOST.cd;
   if (host) return { read: (sector, len) => { if (!len) return new Uint8Array(0); const b = host.read(sector, len); return b ? new Uint8Array(b) : null; } };
-  const get = (at, len) => {
-    const x = new XMLHttpRequest(); x.open('GET', 'cdrom.iso', false);
-    x.setRequestHeader('Range', `bytes=${at}-${at + len - 1}`); x.overrideMimeType('text/plain; charset=x-user-defined');
-    x.send(); if (x.status !== 206 || x.responseText.length !== len) return null;
-    const t = x.responseText, b = new Uint8Array(len); for (let i = 0; i < len; i++) b[i] = t.charCodeAt(i) & 0xff; return b;
-  };
-  let present;
   return { read(sector, len) {
     if (!len) return new Uint8Array(0);
-    if (present === undefined) { try { present = ok(get(16 * 2048, 2048)); } catch (_) { present = false; } }
-    return present ? get(sector * 2048, len) : null;
+    const x = new XMLHttpRequest(); x.open('GET', img.url, false);
+    x.setRequestHeader('Range', `bytes=${sector * 2048}-${sector * 2048 + len - 1}`); x.overrideMimeType('text/plain; charset=x-user-defined');
+    x.send(); if (x.status !== 206 || x.responseText.length !== len) return null;
+    const t = x.responseText, b = new Uint8Array(len); for (let i = 0; i < len; i++) b[i] = t.charCodeAt(i) & 0xff; return b;
   } };
+}
+// what is on a disc, as CDFS reads it: the label, the serial (the volume descriptor's bytes summed in four lanes, as
+// Windows makes a CD's), the size in sectors, and the tree as fs.load takes it, from the Joliet descriptor (UCS-2
+// names) when the disc has one, else the primary's; each file by the first sector of its extent. `known` is a tree
+// read before (cdrom.js's), taken when its label and size are the disc's. null for no ISO 9660 disc
+function cdRead(disc, known) {
+  const pvd = disc.read(16, 2048), str = (b, o, n) => String.fromCharCode(...b.subarray(o, o + n));
+  if (!pvd || pvd.length !== 2048 || str(pvd, 1, 5) !== 'CD001') return null;
+  let desc = pvd, joliet = false;
+  for (let n = 17; n < 32; n++) {
+    const d = disc.read(n, 2048); if (!d || d[0] === 255) break;
+    if (d[0] === 2 && ['%/@', '%/C', '%/E'].includes(str(d, 88, 3))) { desc = d; joliet = true; break; }
+  }
+  const dv = b => new DataView(b.buffer, b.byteOffset, b.byteLength);
+  const lane = [0, 0, 0, 0]; for (let i = 0; i < 2048; i++) lane[i & 3] = (lane[i & 3] + desc[i]) & 0xff;
+  const out = { label: str(pvd, 40, 32).trim(), serial: (lane[0] | lane[1] << 8 | lane[2] << 16 | lane[3] << 24) >>> 0, sectors: dv(pvd).getUint32(80, true) };
+  if (known && known.label === out.label && known.sectors === out.sectors) return { ...out, tree: known.tree };
+  const when = (r, o) => Date.UTC(1900 + r[o], r[o + 1] - 1, r[o + 2], r[o + 3], r[o + 4], r[o + 5]) - dv(r).getInt8(o + 6) * 15 * 60000;
+  const name = raw => {
+    let s = ''; if (joliet) for (let i = 0; i + 1 < raw.length; i += 2) s += String.fromCharCode(raw[i] << 8 | raw[i + 1]); else s = str(raw, 0, raw.length);
+    return s.split(';')[0].replace(/\.$/, '');
+  };
+  const seen = new Set();
+  const walk = (lba, size) => {
+    const kids = []; if (seen.has(lba)) return kids; seen.add(lba);
+    const data = disc.read(lba, Math.ceil(size / 2048) * 2048); if (!data) return kids;
+    for (let o = 0; o < size;) {
+      const n = data[o]; if (!n) { o = (Math.floor(o / 2048) + 1) * 2048; continue; }
+      const r = data.subarray(o, o + n); o += n;
+      const ext = dv(r).getUint32(2, true), ln = dv(r).getUint32(10, true), raw = r.subarray(33, 33 + r[32]);
+      if (raw.length === 1 && raw[0] < 2) continue;
+      kids.push(r[25] & 2 ? [name(raw), when(r, 18), walk(ext, ln)] : [name(raw), when(r, 18), null, ln, null, ext]);
+    }
+    return kids.sort((a, b) => (a[0].toUpperCase() < b[0].toUpperCase() ? -1 : 1));
+  };
+  const root = desc.subarray(156, 190);
+  return { ...out, tree: walk(dv(root).getUint32(2, true), dv(root).getUint32(10, true)) };
+}
+// puts the image named in the drive, the disc there taken out first, or takes the disc out (null); the drive's disc
+// is kept for the next start (localStorage, or ?cd= names it), as a disc stays in its drive. AutoRun follows a disc
+// put in, as Explorer runs it
+const cdChoice = () => { try { return new URLSearchParams(location.search).get('cd') || localStorage.getItem(CD_KEY); } catch (_) { return null; } };
+function cdInsert(name, o = {}) {
+  const imgs = cdImages(), img = name == null ? null : imgs.find(i => i.name === name);
+  if (img === undefined) throw new Error(`no CD image ${name}: ${imgs.map(i => i.name).join(', ')}`);
+  if (!o.boot) try { if (img) localStorage.setItem(CD_KEY, img.name); else localStorage.removeItem(CD_KEY); } catch (_) { /* no storage */ }
+  if (!img) { fs.change('D', null); return null; }
+  const disc = cdDisc(img), b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+  const conv = e => (e[2] ? [e[0], e[1], e[2].map(conv)] : e[4] ? [e[0], e[1], null, e[3], b64(e[4])] : e);
+  const W = window.W95CD, d = cdRead(disc, W && { label: W.label, sectors: W.sectors, get tree() { return W.tree.map(conv); } });
+  if (!d) { fs.change('D', null); return null; }
+  fs.change('D', { label: d.label, serial: d.serial, total: d.sectors * 2048, sectors: d.sectors, disc, tree: d.tree });
+  if (!o.boot) setTimeout(() => autoRun('D'), 0);
+  return { name: img.name, label: d.label, sectors: d.sectors };
+}
+// AutoRun, as Explorer does it when a disc comes: the root's AUTORUN.INF, its [autorun] open= command run with the
+// disc's root the current folder, unless NoDriveTypeAutoRun (HKCU ...\Policies\Explorer: a bit per drive type, 95h
+// when unset, which leaves a CD's on) turns it off for the drive's type
+function autoRunCmd(letter) {
+  let t; try { t = fs.readText(letter + ':\\AUTORUN.INF'); } catch (_) { return null; }
+  let sec = '', open = null;
+  for (const l of t.split(/\r?\n/)) {
+    const m = /^\s*\[(.*)\]/.exec(l); if (m) { sec = m[1].trim().toLowerCase(); continue; }
+    const k = /^\s*open\s*=\s*(.*?)\s*$/i.exec(l); if (sec === 'autorun' && k) open = k[1];
+  }
+  return open;
+}
+function autoRun(letter) {
+  const v = fs.vols.get(letter); if (!v || !v.ready) return;
+  const nd = W95Win32.regGet('hkcu\\software\\microsoft\\windows\\currentversion\\policies\\explorer', 'NoDriveTypeAutoRun');
+  const mask = nd && nd.data && nd.data.length ? nd.data[0] : 0x95, type = { removable: 2, fixed: 3, remote: 4, cdrom: 5 }[v.kind] || 1;
+  if (mask & (1 << type)) return;
+  const open = autoRunCmd(letter); if (!open) return;
+  const was = fs.cwd; fs.chdir(letter + ':\\');
+  try { runCommand(/^[a-z]:|^\\/i.test(open) ? open : letter + ':\\' + open); } finally { try { fs.chdir(was); } catch (_) { /* gone */ } }
 }
 function mountDrives() {
   fs.mount('A', { kind: 'removable', ready: true, total: 1457664, cluster: 512 });
   fs.mount('C', { kind: 'fixed', total: 536870912, cluster: 8192 });
-  fs.mount('D', { kind: 'cdrom', label: window.W95CD.label, readonly: true, cluster: 2048, fsname: 'CDFS', disc: cdDisc() });
+  fs.mount('D', { kind: 'cdrom', readonly: true, cluster: 2048, fsname: 'CDFS' });
   const b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
   const conv = e => (e[2] ? [e[0], e[1], e[2].map(conv)] : e[4] ? [e[0], e[1], null, e[3], b64(e[4])] : e);
   fs.load('A', window.W95FLOPPY.tree.map(conv));
-  fs.load('D', window.W95CD.tree.map(conv));
+  { const c = cdChoice(), first = cdImages()[0].name; let r = null; try { r = cdInsert(c || first, { boot: true }); } catch (_) { /* gone from the server */ } if (!r && c && c !== first) cdInsert(first, { boot: true }); }
+  const host = window.W95HOST && window.W95HOST.cd; if (host && host.on) host.on(name => cdInsert(name || null));   // (the app's File > Insert CD Image)
   // the second CD drive, E:, with the audio disc in it (cdaudio.js): its tracks the files CDFS shows (Track01.cda ...),
   // its table of contents the drive's (MSCDEX, ne16.js cdRequest)
   const A = window.W95CDAudio, toc = A.toc;
@@ -971,7 +1052,8 @@ async function printerWindow(name) {
 }
 function addPrinter() { closeMenus(); runNative(join(WINDIR, 'RUNDLL32.EXE'), 'shell32.dll,SHHelpShortcuts_RunDLL AddPrinter'); }
 const MyComputer = virt('mycomputer', 'My Computer', 'mycomputer', () => [
-  ...fs.volumes().map(v => ({ key: 'drv:' + v.letter, label: driveLabel(v.letter), icon: driveIcon(v.letter), drive: v.letter, path: v.root, open: () => openPath(v.root) })),
+  ...fs.volumes().map(v => ({ key: 'drv:' + v.letter, label: driveLabel(v.letter), icon: driveIcon(v.letter), drive: v.letter, path: v.root,
+    open: () => (v.letter === 'D' && v.ready && autoRunCmd('D') ? autoRun('D') : openPath(v.root)) })),   // (AutoPlay, the default verb of a disc with AutoRun)
   { key: 'v:cp', label: 'Control Panel', icon: 'controlpanel', virt: true, open: () => openFolder(ControlPanel) },
   { key: 'v:pr', label: 'Printers', icon: 'printers', virt: true, open: () => openFolder(Printers) },
 ]);
@@ -1374,8 +1456,13 @@ function viewSelItem(v) { return v.cells.find(c => c.it.key === v.selKey)?.it ||
 function itemMenu(view, it) {
   if (it.bin) return [{ label: '&Restore', bold: true, fn: () => restoreBin(it.bin) }, { sep: true }, { label: '&Delete', fn: () => confirmDelete(it) }, { sep: true }, { label: 'P&roperties', fn: () => binProps(it.bin) }];
   const real = !!it.info && !isRoot(it.path), ro = real && fs.vols.get(it.path[0]).readonly;
-  const out = [{ label: '&Open', bold: true, fn: () => it.open() }];
+  // (a CD drive with an AutoRun disc: AutoPlay first, as Explorer's default; Eject takes its disc out. A drive with no
+  // disc offers the images the host has, the host's own act of putting one in)
+  const cd = it.drive === 'D' ? fs.vols.get('D') : null, play = cd && cd.ready && autoRunCmd('D');
+  const out = play ? [{ label: 'Auto&Play', bold: true, fn: () => autoRun('D') }, { label: '&Open', fn: () => it.open() }] : [{ label: '&Open', bold: true, fn: () => it.open() }];
   if ((it.info && it.info.isDir) || it.drive || it.key === 'sys:mc') out.push({ label: '&Explore', fn: () => it.open() });
+  if (cd && cd.ready) out.push({ label: 'E&ject', fn: () => cdInsert(null) });
+  if (cd && !cd.ready) out.push({ label: '&Insert Disc', sub: cdImages().map(i => ({ label: i.name, fn: () => cdInsert(i.name) })) });
   out.push({ sep: true });
   if (real) out.push({ label: 'Cu&t', disabled: ro, fn: () => cutCopy(it, 'cut') }, { label: '&Copy', fn: () => cutCopy(it, 'copy') }, { sep: true });
   if (it.key === 'sys:bin') out.push({ label: 'Empty Recycle &Bin', disabled: !binItems().length, fn: emptyBin }, { sep: true });
@@ -3720,7 +3807,7 @@ class RemoteApp extends NativeApp {
       if (m.target === 'fs') {
         if (m.method === 'getCwd') v = fs.cwd;
         else if (m.method === 'setCwd') { fs.cwd = m.args[0]; v = null; }
-        else if (m.method === 'vols') v = [...fs.vols.values()].map(x => ({ letter: x.letter, kind: x.kind, label: x.label, remote: !!x.remote, unc: x.unc || '', ...(x.audio ? { audio: x.audio } : {}) }));
+        else if (m.method === 'vols') v = [...fs.vols.values()].map(x => ({ letter: x.letter, kind: x.kind, label: x.label, remote: !!x.remote, unc: x.unc || '', ready: x.ready, media: x.media || 0, sectors: x.sectors || 0, ...(x.audio ? { audio: x.audio } : {}) }));
         else if (typeof fs[m.method] !== 'function') throw new Error(`the file system has no ${m.method}`);
         else v = fs[m.method](...m.args);
       } else if (m.target === 'host') {
@@ -5774,7 +5861,7 @@ const ccdUi = () => ({
   gfx: { K, fill, field, text, esc, wrap, textW, ellipsis, btnUp, btnDown, focusRect, clip: (x, y, w, h, f) => { ctx.save(); ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip(); try { f(); } finally { ctx.restore(); } } },
   Win, DialogBody, popup: openPopup, on: script.on,
 });
-window.win95 = { ...script, get ccd() { return ccdApi || (ccdApi = window.W95Ccd ? window.W95Ccd(ccdUi()) : null); }, get nativeApps() { return [...nativeApps]; }, get dos() { return [...dosMachines]; }, startSystem, get sysApp() { return sysApp; }, reloadScript, netBoot, netCall, syncNetDrives, mapNetDrive, disconnectNetDrive, fs, render, displayProperties, startFullSaver, get fullSaver() { return fullSaver; }, properties, driveProps, openFolder, openPath, shellOpen, notepad, msgBox, runDialog, findComputer, findFiles, winHelp, shutDownDialog, MyComputer, get state() { return { menus: menus.length, menuSrc, modals: modals.length, cap: !!cap, drag: !!drag, screen, active: active && active.title }; } };
+window.win95 = { ...script, cd: { images: () => cdImages().map(i => i.name), insert: name => cdInsert(name), eject: () => cdInsert(null), get disc() { const v = fs.vols.get('D'); return v.ready ? { label: v.label, serial: v.serial, sectors: v.sectors } : null; } }, get ccd() { return ccdApi || (ccdApi = window.W95Ccd ? window.W95Ccd(ccdUi()) : null); }, get nativeApps() { return [...nativeApps]; }, get dos() { return [...dosMachines]; }, startSystem, get sysApp() { return sysApp; }, reloadScript, netBoot, netCall, syncNetDrives, mapNetDrive, disconnectNetDrive, fs, render, displayProperties, startFullSaver, get fullSaver() { return fullSaver; }, properties, driveProps, openFolder, openPath, shellOpen, notepad, msgBox, runDialog, findComputer, findFiles, winHelp, shutDownDialog, MyComputer, get state() { return { menus: menus.length, menuSrc, modals: modals.length, cap: !!cap, drag: !!drag, screen, active: active && active.title }; } };
 // the scripting API's calls shown as they are made (?scriptlog=1, or win95.scriptLog = true): each win95.* call and each
 // win95.sysApp.cmd, then what it answered, as 'script' lines at the debug level in DevTools' console and the machines'
 // log (Verbose in both: Debug Monitor's Options > Verbose),
