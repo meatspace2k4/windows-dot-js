@@ -1327,7 +1327,9 @@ class Machine {
         if (args[0]) {
           const want = new RegExp(args[0], 'i'), n = args[1] || 4000, log = [];
           // (named as each runs: a program's image is its own process's, which is in place only while its thread runs)
-          p.dynHook = eip => { const t = p.thread16; if (t && t.pc && want.test(t.pc.path || '')) { log.push(`${t.id} ${p.whereOf(eip)}`); if (log.length > n) log.splice(0, log.length - n); } };
+          // (a Windows 3.x task by its module's name, as trace names it; a Win32 process by its program's path)
+          const named = t => { const m = t.task && t.task.hInst && p.neByHandle(t.task.hInst); return (t.pc && t.pc.path) || (m && m.name) || ''; };
+          p.dynHook = eip => { const t = p.thread16; if (t && want.test(named(t))) { log.push(`${t.id} ${p.whereOf(eip)}`); if (log.length > n) log.splice(0, log.length - n); } };
           p.dynHook.log = log; return true;
         }
         const l = (p.dynHook && p.dynHook.log) || []; p.dynHook = null; return l;

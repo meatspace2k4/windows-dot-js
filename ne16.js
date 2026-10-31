@@ -88,6 +88,10 @@ P.dosData = function () {
   this.w32(d.lol + 0x12, 0xffffffff); far(d.lol + 0x16, d.cds); far(d.lol + 0x1a, d.fcb);
   this.u8[d.lol + 0x20] = 0; this.u8[d.lol + 0x21] = 26;        // block devices, LASTDRIVE
   this.w32(d.lol + 0x22, 0xffffffff); this.w16(d.lol + 0x26, 0x8004); this.writeA(d.lol + 0x2c, 'NUL     ');
+  // what IO.SYS records at boot: the boot drive (C:, 3), a 386 or later (dword moves), and the extended memory in KB
+  // as INT 15h AH=88h gave it, the machine's 16 MB less the first (GlobalMemoryStatus' total). Windows 98 Setup takes
+  // its memory from this word, and found none
+  this.u8[d.lol + 0x43] = 3; this.u8[d.lol + 0x44] = 1; this.w16(d.lol + 0x45, 15 * 1024);
   // CDS entries (58h bytes each): the path "X:\", flags (4000h physical for the drives the shell has), the root's length
   for (let i = 0; i < 26; i++) {
     const e = d.cds + 0x58 * i, l = String.fromCharCode(65 + i), has = this.fs && this.fs.vols && this.fs.vols.has(l);
@@ -2762,7 +2766,10 @@ const iniApi = () => window.W95Win32;
 const winIni = (p, file, sec, key) => { const { iniGet } = iniApi(); return iniGet(p.fs, file, sec, key); };
 
 def16('KERNEL', 2, 'w', 'v', function (code) { this.exitCode = code; this.host.exited(code); });                        // ExitKernel
-def16('KERNEL', 3, '', 'w', () => 0x4f4);                                                                              // GetVersion (3.95)
+// GetVersion: Windows 3.95 in AX (5F03h, the minor version in the high byte), the MS-DOS version in DX (7.00, DH the
+// major: INT 21h AH=30h's), as Windows 95's own answers. AX alone, 4F4h, Windows 98 Setup read DX for MS-DOS 0 and
+// said it needs MS-DOS 5.00 or later
+def16('KERNEL', 3, '', 'l', () => 0x07005f03);
 // GetVersionEx(far OSVERSIONINFO): 4.0 build 950, Windows (KERNEL32's GetVersionExA answers the same); SETUPX takes the
 // export's presence for an installed system rather than Setup's
 def16('KERNEL', 149, 'l', 'w', function (fp) { const p = this.lin(fp); if (!p || this.r32(p) < 148) return 0; this.w32(p + 4, 4); this.w32(p + 8, 0); this.w32(p + 12, 950); this.w32(p + 16, 1); this.writeA(p + 20, ' B'); return 1; });

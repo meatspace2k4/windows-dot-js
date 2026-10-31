@@ -19,7 +19,9 @@ const CPU_REGS = ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi', 'cf', 
   'cs', 'ds', 'es', 'ss', 'fsel', 'gsel', 'csb', 'dsb', 'esb', 'ssb', 'gsb', 'budget',
   // the interrupt flag (IF): cleared by CLI, set by STI, popped by POPF and IRET (dyn.js); the hardware's interrupts
   // wait while it is clear, as the processor holds them (sound.js raiseIRQ, vmm.js vmIrqDeliver)
-  'if'];
+  'if',
+  // EFLAGS' AF, NT, AC and ID as POPF left them, for PUSHF (dyn.js flagsWord): a thread's own, with its context
+  'xf'];
 // the processor is the host's: every BUDGET blocks the dispatcher asks it (tick) whether the guest goes on. A run that
 // can give up the processor (a thread at its top level) does after SLICE_MS; one inside a call the host made cannot,
 // and runs on, as a processor would: its machine is a worker's (worker.js), so it holds nothing but that machine, whose
