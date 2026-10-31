@@ -200,6 +200,7 @@ class Machine {
       try { p.vxdRunTimeOuts(); } catch (e) { this.r0Fault(e); } finally { p.depth = d; this.inTimer = false; }
     }
     while ((r = B.ringTake(this.ring))) {
+      this.ringTaken = (this.ringTaken || 0) + 1;   // (each frame says how many: the page paces a script's drag on it)
       if (r[0] === B.KEY) {
         const scan = r[1] & 0xff, ext = !!(r[1] & 0x100), up = !!(r[1] & 0x200), toUser = !!(r[1] & 0x400), mods = { shift: !!(r[2] & 1), ctrl: !!(r[2] & 2), alt: !!(r[2] & 4) };
         if (this.lagLog) this.lagLog.push({ k: 'key-in', vk: r[3], up, t: Date.now() });
@@ -606,7 +607,8 @@ class Machine {
     post({ t: 'frame', list: [...nw.list, ...win32], active: nw.active, capture: nw.capture, cursorOn: this.cursorOn,
       scan: { w: a.w, h: a.h, pitch: a.pitch || a.w, bpp: a.bpp, dacMode: a.hicolor, attr: Array.from(a.attr.subarray(0, 0x15)), vram: a.vram.byteOffset }, dac: Uint8Array.from(a.dac), bg,
       sprite: sp ? { x: sp.x, y: sp.y, px: sp.px, py: sp.py, cpp: sp.cpp, row: sp.row, at: sp.bits.byteOffset } : null,
-      stats: { ...p.stats }, held: p.win16Held ? { hung: p.win16Held.hung } : null }, pixels);
+      stats: { ...p.stats }, held: p.win16Held ? { hung: p.win16Held.hung } : null,
+      input: { taken: this.ringTaken || 0, mouse: this.mouseq.length } }, pixels);   // (the input it has taken from the ring, and the mouse events not yet fed)
     this.clip();
   }
   sendText(force) {

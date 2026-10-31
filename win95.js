@@ -3678,8 +3678,8 @@ class RemoteApp extends NativeApp {
         return;
       }
       case 'lan': if (window.W95LAN && this.lanStation) W95LAN.send(this.lanStation, m.frame); return;
-      case 'frame': this.frame(m); return;
-      case 'held': this.held = m.held; this.stats = m.stats; return;
+      case 'frame': this.frame(m); this.framed(); return;
+      case 'held': this.held = m.held; this.stats = m.stats; this.framed(); return;
       // the screen's mode, DAC and the cursor sprite, as often as the machine runs, its window list or not (USER held)
       case 'scan': this.scr = m; this.followMode(m); dirty(); return;
       case 'mode': if (this.modeDone) this.modeDone(m.r); return;   // (a mode asked for while a thread held USER, made now)
@@ -3801,9 +3801,14 @@ class RemoteApp extends NativeApp {
   pointer(kind, x, y, btn = 0) {
     if (!this.alive || !this.ring) return;
     const f = kind === 'down' ? (btn === 2 ? 8 : 2) : kind === 'up' ? (btn === 2 ? 16 : 4) : 1;
-    W95Bridge.ringPut(this.ring, W95Bridge.MOUSE, f, Math.round(x), Math.round(y));
+    if (W95Bridge.ringPut(this.ring, W95Bridge.MOUSE, f, Math.round(x), Math.round(y))) this.ringPut = (this.ringPut || 0) + 1;
     this.kick();
   }
+  /** the next message the machine sends of its screen (a frame, or its state while a thread holds USER) */
+  nextFrame() { return new Promise(ok => (this.frameWaiters || (this.frameWaiters = [])).push(ok)); }
+  framed() { const w = this.frameWaiters; if (w && w.length) { this.frameWaiters = []; for (const ok of w) ok(); } }
+  /** the machine has fed USER every pointer event put in its ring so far: a frame says so (worker.js input) */
+  inputFed() { const i = this.snap && this.snap.input; return !this.ring || !!i && i.taken >= (this.ringPut || 0) && !i.mouse; }
   key(e, up) { this.ringKey(e, up, true); }
   ringKey(e, up, toUser) {
     if (!this.alive || !this.ring) return;
@@ -3811,7 +3816,7 @@ class RemoteApp extends NativeApp {
     let sc = SCAN[e.code] || 0;
     if (e.code === 'Backspace' && e.ctrlKey && e.altKey) sc = 0x153;   // a Mac's Delete key: Ctrl+Alt+Del
     const a = (sc & 0x1ff) | (up ? 0x200 : 0) | (toUser ? 0x400 : 0), b = (e.shiftKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.altKey ? 4 : 0);
-    W95Bridge.ringPut(this.ring, W95Bridge.KEY, a, b, vk);
+    if (W95Bridge.ringPut(this.ring, W95Bridge.KEY, a, b, vk)) this.ringPut = (this.ringPut || 0) + 1;
     this.kick();
   }
   // VKD's first look at a key the program does not have the focus for: Ctrl+Alt+Del, and every key in message mode
@@ -5440,6 +5445,11 @@ function osShellUp(list) {
 // ---------------------------------------------------------------- scripting
 // Drives the shell through the same input paths a person uses: pointer events on the screen canvas in screen
 // pixels, keys through the shell's key handler. Documented in SCRIPTING.md.
+/** the pointer input sent so far fed to USER by each machine it went to (its frames say so), then drawn by the page */
+async function inputDrawn() {
+  for (const a of [sysApp, ...nativeApps]) for (let n = 0; a && a.alive && !a.inputFed() && n < 600; n++) await a.nextFrame();
+  await new Promise(ok => requestAnimationFrame(() => ok()));
+}
 function pointer(type, x, y, button = 0) {
   const el = cv, r = el.getBoundingClientRect();
   el.dispatchEvent(new PointerEvent(type, { clientX: r.left + (x + 0.5) * r.width / W, clientY: r.top + (y + 0.5) * r.height / H,
@@ -5667,9 +5677,14 @@ const script = {
       const n = x2 ?? 8;
       return resolveEl(y1).then(to => actOn(x1, (px, py) => script.drag(px, py, to.x + (to.w >> 1), to.y + (to.h >> 1), n)));
     }
-    pointer('pointermove', x1, y1); pointer('pointerdown', x1, y1);
-    for (let i = 1; i <= steps; i++) pointer('pointermove', Math.round(x1 + (x2 - x1) * i / steps), Math.round(y1 + (y2 - y1) * i / steps));
-    pointer('pointerup', x2, y2);
+    // (paced as a person's come in: each part once the machine has fed USER the last and the page has drawn it, so a
+    // window dragged by its title moves: sent at once, the button was up before USER's move loop began)
+    return (async () => {
+      const part = async (type, x, y) => { pointer(type, x, y); await inputDrawn(); };
+      await part('pointermove', x1, y1); await part('pointerdown', x1, y1);
+      for (let i = 1; i <= steps; i++) await part('pointermove', Math.round(x1 + (x2 - x1) * i / steps), Math.round(y1 + (y2 - y1) * i / steps));
+      await part('pointerup', x2, y2);
+    })();
   },
   type(text) { shareInput({ t: 'text' }); script.typeOwn(text); },
   typeOwn(text) { const na = nativeFocus(); if (na) { na.typeText(String(text).replace(/\r/g, '')); return; } for (const ch of String(text).replace(/\r/g, '')) handleKey({ key: ch === '\n' ? 'Enter' : ch, shiftKey: false, ctrlKey: false, metaKey: false, altKey: false, preventDefault() {} }); },

@@ -14,7 +14,7 @@ Coordinates are screen pixels of the emulated display, origin top left. `win95.s
 | `click(x, y, { button: 'right', double: true })` | press and release; both options optional |
 | `dblclick(x, y)` | two clicks inside the double-click time |
 | `down(x, y, o)`, `up(x, y, o)` | one half of a click, for custom gestures |
-| `drag(x1, y1, x2, y2, steps = 8)` | press, move in steps, release |
+| `drag(x1, y1, x2, y2, steps = 8)` | press, move in steps, release, each once the machine has fed the last to USER (its frames say so) and the page has drawn it, as a person's come in; a promise for the release |
 | `type(text)` | each character as a key; `\n` is Enter |
 | `key('alt+F4', 'tab', 'enter')` | named keys with `ctrl+`, `shift+`, `alt+`, `meta+`; names: `enter`, `esc`, `tab`, `backspace`, `delete`, `up`, `down`, `left`, `right`, `home`, `end`, `pageup`, `pagedown`, `space`, `F1`..`F12`, or a character |
 
