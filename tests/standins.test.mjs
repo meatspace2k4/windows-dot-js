@@ -43,6 +43,24 @@ call(0x33, 0x3f, 1, 0, 0x700300, 1, 0x700400, 0x100, 0); assert.equal(p.cpu.eax.
 u8.fill(0, 0x700600, 0x700700); call(0x33, 0x3e, 1, 0, 0x700300, 1, 0x700600, 0x700500, 0);
 assert.equal(p.readA(0x700600), '9600,n,8,1', 'to its terminating null');
 
+// and the ones read from Windows 95's own VMM32 components (WIN95_02.CAB): VMM's _GetCurrentContext (one context,
+// _PageAttach's), VDMAD's Scatter_Lock, CONFIGMG's Set_DevNode_PowerState, VSD's and VMD's
+call(1, 0x157); const ctx = p.cpu.eax.value; assert.ok(ctx); call(1, 0x157); assert.equal(p.cpu.eax.value, ctx);
+call(1, 0x125, 0x100, ctx, 0x200, 1); assert.equal(p.cpu.eax.value, 0, '_PageAttach: no second mapping of a page');
+const dds = 0x700800; u8.fill(0, dds, dds + 0x40); dv.setUint32(dds, 0x2345, true); dv.setUint32(dds + 4, 0x123456, true); dv.setUint16(dds + 0xc, 4, true);
+p.cpu.eax.value = 0; p.cpu.edi.value = dds; S[4 << 16 | 0xb].call(p);
+assert.deepEqual([p.cpu.cf.value, p.cpu.zf.value, p.cpu.edx.value, dv.getUint16(dds + 0xe, true), dv.getUint32(dds + 0x10, true), dv.getUint32(dds + 0x14, true)], [0, 1, 1, 1, 0x123456, 0x2345], 'Scatter_Lock: one piece');
+p.cpu.eax.value = 1; S[4 << 16 | 0xb].call(p);
+assert.deepEqual([p.cpu.zf.value, p.cpu.esi.value, dv.getUint16(dds + 0xe, true), dv.getUint32(dds + 0x10, true), dv.getUint32(dds + 0x18, true), dv.getUint32(dds, true)], [1, 0x456, 3, 0x123007, 0x125007, 0x2345], 'page table entries');
+dv.setUint16(dds + 0xc, 2, true); S[4 << 16 | 0xb].call(p);
+assert.deepEqual([p.cpu.zf.value, p.cpu.edx.value, dv.getUint32(dds, true)], [0, 2, 0x2000 - 0x456], 'more pages than entries: the size the table holds');
+p.cmNode = h => (h === 7 ? dn : null);
+for (const [st, fl, cr] of [[1, 0, 0], [3, 0, 0x1f], [0x10, 0, 4], [8, 2, 4], [8, 0, 0]]) { call(0x33, 0x64, 7, st, fl); assert.equal(p.cpu.eax.value, cr, `power state ${st} ${fl}`); }
+call(0x33, 0x64, 9, 1, 0); assert.equal(p.cpu.eax.value, 5); assert.equal(dn.power, 8);
+p.sysVM = () => 0xc0001000;
+for (const d of [0xb, 0xc]) { p.cpu.cf.value = 1; S[d << 16].call(p); assert.deepEqual([p.cpu.eax.value, p.cpu.cf.value], [0x300, 0]); }
+S[0xc << 16 | 2].call(p); assert.equal(p.cpu.ebx.value >>> 0, 0xc0001000, 'VMD: the system VM owns the mouse');
+
 // run-time translation: invalid opcodes, not the translator's own error
 p.selLimit = () => 0xffff; p.trap = () => {};
 for (const [bytes, what] of [[[0x8e, 0xf0], 'mov to segment register 6'], [[0x8c, 0xf8], 'mov from segment register 7'], [[0x8e, 0xc8], 'mov to segment register 1'], [[0x8d, 0xc0], 'lea with a register operand']]) {

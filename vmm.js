@@ -790,6 +790,17 @@ svc(VPICD, 0x06, function () { this.cpu.ecx.value = irqStatus(this); });
 svc(VPICD, 0x08, function () { const e = irqOf(this); if (e) this.picState().imr[e.irq >> 3] |= 1 << (e.irq & 7); });     // Physically_Mask
 svc(VPICD, 0x09, function () { const e = irqOf(this); if (e) this.picState().imr[e.irq >> 3] &= ~(1 << (e.irq & 7)); });  // Physically_Unmask
 
+// ---- VSD, the speaker, and VMD, the mouse, as VMM32 has them (version 3.0). VSD's bell sounds the PC speaker, which
+// this machine has none of; its 3 takes the speaker's port (AL 1) and gives it back (AL 0), ENABLE's around its
+// ToggleKeys clicks, and 2 does nothing. VMD's 2: EBX the VM that owns the mouse, the system's (ENABLE's MouseKeys)
+const VSD = 0x0b, VMD = 0x0c;
+svc(VSD, 0x00, function () { this.cpu.eax.value = 0x300; CF(this, false); });
+svc(VSD, 0x01, function () {});
+svc(VSD, 0x02, function () {});
+svc(VSD, 0x03, function () { this.speakerTaken = this.cpu.eax.value & 0xff; CF(this, false); });
+svc(VMD, 0x00, function () { this.cpu.eax.value = 0x300; CF(this, false); });
+svc(VMD, 0x02, function () { this.cpu.ebx.value = this.sysVM(); });
+
 // ---- VDMAD: the DMA controller. Virtualize_Channel (EAX channel, ESI callback): EAX the DMA handle
 const VDMAD = 4, vdmad = p => p.vdmad || (p.vdmad = new Map());
 const dmaOf = p => vdmad(p).get(u32(p.cpu.eax.value));
@@ -821,6 +832,24 @@ svc(VDMAD, 0x12, function () { const d = dmaOf(this); if (d) { const c = this.dm
 svc(VDMAD, 0x09, function () { this.cpu.edx.value = this.cpu.esi.value; CF(this, false); });           // Lock_DMA_Region: EDX physical
 svc(VDMAD, 0x0a, function () { CF(this, false); });                                                  // Unlock_DMA_Region
 svc(VDMAD, 0x0c, function () { CF(this, false); });                                                  // Scatter_Unlock
+// Scatter_Lock (EBX VM, EAX flags, EDI an extended DDS: +0 size, +4 linear, +8 selector, +0Ch entries available, +0Eh
+// used, +10h the table): the region's physical pieces, (address, size) pairs, or with flag 1 a page table entry each
+// page and ESI the offset in the first. Linear is physical here, so the region is one piece. EDX the entries used, ZF
+// the whole region described (else its size is what the table holds), CF none
+svc(VDMAD, 0x0b, function () {
+  const d = u32(this.cpu.edi.value), sel = this.r16(d + 8), avail = this.r16(d + 0xc), size = this.r32(d);
+  const lin = u32((sel ? SVC[VMM << 16 | 0x6e].call(this, i => [0, sel, 0][i]) : 0) + this.r32(d + 4));
+  this.w16(d + 0xe, 0);
+  if (!size || !avail || lin + size - 1 > 0xffffffff || (sel && lin === 0xffffffff)) { this.w32(d, 0); CF(this, true); return; }
+  let used = 1;
+  if (this.cpu.eax.value & 1) {
+    const off = lin & 0xfff, pages = ((lin + size - 1) >>> 12) - (lin >>> 12) + 1; used = Math.min(pages, avail);
+    for (let i = 0; i < used; i++) this.w32(d + 0x10 + 4 * i, u32(((lin >>> 12) + i) * 0x1000 | 7));
+    if (used < pages) this.w32(d, used * 0x1000 - off);
+    this.cpu.esi.value = off; ZF(this, used === pages);
+  } else { this.w32(d + 0x10, lin); this.w32(d + 0x14, size); ZF(this, true); }
+  this.w16(d + 0xe, used); this.cpu.edx.value = used; CF(this, false);
+});
 svc(VDMAD, 0x0d, function () { });                                                                   // Reserve_Buffer_Space
 svc(VDMAD, 0x0e, function () { this.cpu.ebx.value = 1; this.cpu.edx.value = this.cpu.esi.value; CF(this, false); });   // Request_Buffer: EBX the id, EDX physical
 svc(VDMAD, 0x0f, function () { CF(this, false); });                                                  // Release_Buffer
@@ -954,6 +983,20 @@ svc(CONFIGMG, 0x3f, function (arg) {
   let data = this.u8.slice(arg(4), arg(4) + arg(5));
   if (arg(3) === 1) { const z = data.indexOf(0); if (z >= 0) data = data.slice(0, z + 1); }
   W.regSet('hklm\\' + k, (arg(2) && this.readA(arg(2))) || '', { type: arg(3), data }); return CR.SUCCESS;
+});
+// Set_DevNode_PowerState(dn, state, flags): a device state D0-D3 (1, 2, 4, 8); one it is in already answers at once,
+// another goes to its driver as CONFIG_APM (8) with that state's subfunction (9 + 2 per state, + 1 with flag 1), and
+// one it refuses is CR_FAILURE. VCOMM's, D0 as a port opens and D3 as it closes
+svc(CONFIGMG, 0x64, function (arg) {
+  const dn = this.cmNode(arg(0)), st = arg(1), fl = arg(2); if (!dn) return CR.INVALID_DEVNODE;
+  if (st & ~0xf || fl & ~1) return 4;   // CR_INVALID_FLAG
+  if (st & (st - 1)) return 0x1f;       // not one state
+  if ((dn.power || 1) === st) return CR.SUCCESS;
+  if (dn.handler && st) {
+    const r = this.vxdCdecl(dn.handler, [8, 9 + 2 * Math.log2(st) + (fl & 1), dn.handle, dn.ref || 0, 0]);
+    if ((r.eax & 0xffff) > 1) return CR.FAILURE;
+  }
+  dn.power = st; return CR.SUCCESS;
 });
 
 // ---- VMM: time. Get_System_Time: EAX the milliseconds since Windows started; Get_System_Time_Address: EAX the
@@ -1323,6 +1366,17 @@ svc(VMM, 0x11d, function (arg) {
   const a = this.alloc(n + 4096); return (a + 4095) & ~4095;
 });
 svc(VMM, 0x11e, function (arg) { const a = arg(0) * 4096; this.u8.fill(0, a, a + arg(1) * 4096); return 1; });   // _PageCommit(page, n, ...)
+svc(VMM, 0x11f, function () { return 1; });                                                            // _PageDecommit(page, n, flags): committed again zeroed (_PageCommit)
+// _GetCurrentContext: the memory context in place, one address space here (a process's own image range is its view of
+// the arena, win32.js arenaClaim, not a context of its own). _PageAttach(pagesrc, hcontext, pagedst, n) maps the
+// source's pages at the destination too: one linear memory has no second mapping of a page, so 0, as the VMM answers
+// a range it cannot attach (DSOUND's aliases of a hardware buffer)
+svc(VMM, 0x157, function () { return this.r0Context || (this.r0Context = this.alloc(16)); });
+svc(VMM, 0x125, function () { return 0; });
+// _EnterMustComplete / _LeaveMustComplete: the current thread's count of must-complete sections, which hold off its
+// termination; a thread here is not ended inside a VxD's call
+svc(VMM, 0x135, function () {});
+svc(VMM, 0x136, function () {});
 svc(VMM, 0x17d, function (arg) { this.u8.copyWithin(arg(0), arg(1), arg(1) + arg(2)); return arg(0); });   // _lmemcpy
 // Map_Lin_To_VM_Addr (EAX linear, ECX limit): CX:EDX a selector to it and offset 0
 svc(VMM, 0x1d, function () { const s = this.allocSels(u32(this.cpu.eax.value), 1); this.setDesc(s, u32(this.cpu.eax.value), u32(this.cpu.ecx.value), 0xf300); this.cpu.ecx.value = lo16(this.cpu.ecx.value, s); this.cpu.edx.value = 0; CF(this, false); });

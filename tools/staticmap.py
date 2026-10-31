@@ -68,8 +68,8 @@ def map_vxd(name, m):
     meta = m['meta']; im = Image(name, 'vxds', meta); img = b64(m['image']); im.delta = 0; im.add(meta['base'], img, 32)
     d = meta['ddb'] - meta['base']; dw = lambda o: int.from_bytes(img[o:o + 4], 'little')
     entries = [dw(d + 0x18), dw(d + 0x1c), dw(d + 0x20)]
-    tab, n = dw(d + 0x30), dw(d + 0x34)
-    if tab and meta['base'] <= tab < meta['base'] + len(img): entries += [dw(tab - meta['base'] + 4 * k) for k in range(min(n, 512))]
+    tab, n = dw(d + 0x30), dw(d + 0x34); im.svcs = []
+    if tab and meta['base'] <= tab < meta['base'] + len(img): im.svcs = [(k, dw(tab - meta['base'] + 4 * k)) for k in range(min(n, 512))]; entries += [a for k, a in im.svcs]
     return im, [e for e in entries if e]
 
 def map_ne(name, m):
@@ -109,6 +109,10 @@ def target(im, a, i, bits):
     d, o, _ = im.at(a); return a - o + (op.imm & 0xffff)
 
 def is_vxdcall(i): return i.mnemonic == 'int' and i.op_str == '0x20'
+# (the arithmetic and logic instructions write every status flag; capstone gives some forms no flag information, test
+# of memory with a register)
+ALU = {'add', 'adc', 'sub', 'sbb', 'cmp', 'test', 'and', 'or', 'xor', 'neg', 'shl', 'shr', 'sar', 'sal'}
+def writes_flag(i, mod): return bool(i.eflags & mod) or i.mnemonic in ALU
 BRANCH_END = {'ret', 'retf', 'iret', 'iretd', 'jmp', 'ljmp', 'hlt', 'ud2', 'int3'}
 
 def reach(im, entries, scan=True):
@@ -121,6 +125,7 @@ def reach(im, entries, scan=True):
         for o in range(0, len(d) - 3, 4):
             v = (int.from_bytes(d[o:o + 4], 'little') + im.delta) & 0xffffffff
             if v in blocks: entries.append(v)
+    entries = [e for e in entries if e not in getattr(im, 'dead', ())]
     code = lambda e: not getattr(im, 'exec', None) or any(lo <= e < hi for lo, hi in im.exec)
     seen, starts, work, insns = set(), set(), [e for e in entries if (text[0] <= e < text[1] or im.at(e)[0] is not None) and code(e)], {}
     starts.update(work); funcs = set(work)
@@ -174,7 +179,7 @@ def reads_after(im, a, limit=24):
                 if i.eflags & test and k not in wflags: flags.add(k)
             for r in ww: written = written | {full(r, i)}
             for k, (test, mod) in FLAGS.items():
-                if i.eflags & mod: wflags = wflags | {k}
+                if writes_flag(i, mod): wflags = wflags | {k}
             if capstone.CS_GRP_CALL in i.groups or capstone.CS_GRP_RET in i.groups or i.mnemonic in ('iret', 'iretd', 'hlt'): return
             if capstone.CS_GRP_JUMP in i.groups:
                 t = target(im, a, i, bits)
@@ -184,6 +189,38 @@ def reads_after(im, a, limit=24):
             a += i.size
     walk(a, frozenset(), frozenset(), 0)
     return regs, flags
+
+def version_vars(im, insns, dev):
+    """where the module keeps device `dev`'s Get_Version result: the memory a register is stored to after the call's
+    CF test (an absent device's Get_Version sets CF)"""
+    """, and the instructions straight on from that test with CF clear (the device's other services called there)"""
+    out, past = set(), set()
+    for a, rec in insns.items():
+        if len(rec) != 3 or rec[2] != dev << 16: continue
+        p, tested = a + 6, False
+        for _ in range(12):
+            i, bits = insn_at(im, p)
+            if i is None: break
+            if tested: past.add(p)
+            if is_vxdcall(i): p += 6; continue
+            if i.mnemonic in ('jb', 'jc', 'jae', 'jnc') and not tested:
+                tested = True
+                if i.mnemonic in ('jae', 'jnc'): t = target(im, p, i, bits); p = t if t is not None else p + i.size; continue
+            elif tested and i.mnemonic == 'mov' and i.operands[0].type == X.X86_OP_MEM and i.operands[0].mem.base == 0 and i.operands[0].mem.index == 0:
+                out.add(i.operands[0].mem.disp & 0xffffffff)
+            if i.mnemonic in BRANCH_END or capstone.CS_GRP_RET in i.groups: break
+            p += i.size
+    return out, past
+
+def reads_var(im, funcs, a, var):
+    """whether the function `a` is in reads one of `var` before `a`, straight through from its start"""
+    s = max((x for x in funcs if x <= a and a - x < 0x2000), default=a); p = s
+    while p < a:
+        i, bits = insn_at(im, p)
+        if i is None: return False
+        if any(o.type == X.X86_OP_MEM and o.mem.base == 0 and o.mem.index == 0 and (o.mem.disp & 0xffffffff) in var for o in i.operands): return True
+        p += 6 if is_vxdcall(i) else i.size
+    return False
 
 def before(im, funcs, a):
     """what the caller does from the start of its function to the call, straight through: the registers it writes, and
@@ -202,7 +239,7 @@ def before(im, funcs, a):
         for r in i.regs_access()[1]: regs.add(full(r, i))
         for k, (test, mod) in FLAGS.items():
             if i.eflags & test and capstone.CS_GRP_JUMP in i.groups and fl.get(k) == 'data': fl[k] = 'known'
-            if i.eflags & mod: fl[k] = 'data'
+            if writes_flag(i, mod): fl[k] = 'data'
         p += i.size
     return regs, fl
 
@@ -210,8 +247,21 @@ def before(im, funcs, a):
 standins = json.loads(subprocess.run(['node', os.path.join(ROOT, 'tools', 'gapmap.mjs'), '--standins', BUNDLE], capture_output=True, text=True, check=True).stdout)
 provided = {m['meta']['id'] for m in S.get('vxds', {}).values()}
 
-result = {'modules': {}, 'recompUnsupported': defaultdict(lambda: {'count': 0, 'at': []}), 'services': {'missing': defaultdict(list), 'contract': defaultdict(lambda: {'reads': defaultdict(list)})}}
+# (a device with neither: its Get_Version sets CF, P.absentService)
+present = provided | {int(k.split(':')[0], 16) for k in standins}
+
+result = {'modules': {}, 'recompUnsupported': defaultdict(lambda: {'count': 0, 'at': []}), 'services': {'missing': defaultdict(list), 'absent': defaultdict(lambda: {'guarded': [], 'unguarded': []}), 'contract': defaultdict(lambda: {'reads': defaultdict(list)})}}
 dyn_starts = {}
+# A VxD's service is entered only through a VxDCall (ring 0's code is all in the bundle and the stand-ins), and not
+# when a stand-in provides it: the dispatcher never enters the VxD's own code then. So its service table's entries are
+# the ones some reachable code calls, to a fixed point; the JavaScript calls SHELL's 3 and 6 itself (worker.js, vmm.js)
+called = {(0x17, 3), (0x17, 6)}
+while True:
+    for im, entries in images:
+        if im.group == 'vxds': im.dead = {a for k, a in im.svcs if '%04x:%04x' % (im.meta['id'], k) in standins or (im.meta['id'], k) not in called} - set(entries[:3])
+    more = {(rec[2] >> 16, rec[2] & 0x7fff) for im, entries in images for rec in reach(im, list(entries))[0].values() if len(rec) == 3} - called
+    if not more: break
+    called |= more
 for im, entries in images:
     # (flow: reached from the entry points by direct control flow; the rest only through a data pointer)
     flow = set(reach(im, list(entries), scan=False)[0])
@@ -228,7 +278,12 @@ for im, entries in images:
             code = rec[2]; dev, svc = code >> 16, code & 0x7fff; key = '%04x:%04x' % (dev, svc)
             site = '%s+%x' % (im.name, a - im.meta['base'])
             if key not in standins:
-                if dev not in provided and not (svc == 0): result['services']['missing'][key].append(site)
+                if svc == 0 or dev in provided: continue
+                if dev in present: result['services']['missing'][key].append(site); continue
+                # (an absent device's service: called only if the caller goes on past its Get_Version's CF, as when the
+                # function tests the variable the module keeps that result in first)
+                vv, past = version_vars(im, insns, dev)
+                result['services']['absent'][key]['guarded' if a in past or vv and reads_var(im, funcs, a, vv) else 'unguarded'].append(site)
                 continue
             if code & 0x8000: continue
             regs, flags = reads_after(im, a + 6)
@@ -255,6 +310,7 @@ result['dynUntranslatable'] = dyn
 # (a contract finding needs a read the stand-in leaves unset; keep the services that have one)
 result['services']['contract'] = {k: {'reads': dict(v['reads']), **{x: v[x] for x in ('probe', 'source') if x in v}} for k, v in result['services']['contract'].items() if v['reads']}
 result['services']['missing'] = dict(result['services']['missing'])
+result['services']['absent'] = dict(result['services']['absent'])
 result['recompUnsupported'] = dict(result['recompUnsupported'])
 json.dump(result, open(os.environ.get('GAPMAP_OUT') or os.path.join(ROOT, 'findings', 'gapmap.json'), 'w'), indent=1)   # (W95_SCRIPTS, GAPMAP_OUT: the check run on other scripts, tools/gapmap.mjs)
 
@@ -267,6 +323,8 @@ for k, e in sorted(dyn.items(), key=lambda kv: (-kv[1].get('flow', 0), -kv[1]['c
     print('  %5d (%5d)  %-45s %s' % (e.get('flow', 0), e['count'] - e.get('flow', 0), k, ' '.join((e.get('flowAt') or e['first'])[:4])))
 print('VxD services nothing provides:')
 for k, v in sorted(result['services']['missing'].items()): print('  %s  %d sites  %s' % (k, len(v), ' '.join(v[:3])))
+print("services of devices the system does not have, unguarded (guarded: reached past a test of the device's version):")
+for k, v in sorted(result['services']['absent'].items()): print('  %s  %d unguarded  %s  (%d guarded)' % (k, len(v['unguarded']), ' '.join(v['unguarded'][:3]), len(v['guarded'])))
 print('stand-ins whose callers read a result they do not set:')
 for k, v in sorted(result['services']['contract'].items()):
     print('  %s%s' % (k, '  (probe: %s)' % v['probe'] if 'probe' in v else ''))

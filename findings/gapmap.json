@@ -3,8 +3,8 @@
   "MMDEVLDR.VXD": {
    "group": "vxds",
    "entries": 9,
-   "reachable": 3980,
-   "blockStarts": 506,
+   "reachable": 3823,
+   "blockStarts": 472,
    "recompUnsupported": 0
   },
   "MSSNDSYS.VXD": {
@@ -24,8 +24,8 @@
   "DSOUND.VXD": {
    "group": "vxds",
    "entries": 6,
-   "reachable": 1387,
-   "blockStarts": 240,
+   "reachable": 1273,
+   "blockStarts": 202,
    "recompUnsupported": 1
   },
   "MSOPL.VXD": {
@@ -38,50 +38,50 @@
   "ENABLE.VXD": {
    "group": "vxds",
    "entries": 13,
-   "reachable": 8532,
-   "blockStarts": 589,
+   "reachable": 8341,
+   "blockStarts": 530,
    "recompUnsupported": 10
   },
   "SPOOLER.VXD": {
    "group": "vxds",
    "entries": 18,
-   "reachable": 4752,
-   "blockStarts": 699,
+   "reachable": 2901,
+   "blockStarts": 282,
    "recompUnsupported": 0
   },
   "IFSMGR.VXD": {
    "group": "vxds",
    "entries": 122,
-   "reachable": 49047,
-   "blockStarts": 10416,
+   "reachable": 45950,
+   "blockStarts": 9569,
    "recompUnsupported": 98
   },
   "VCACHE.VXD": {
    "group": "vxds",
    "entries": 28,
-   "reachable": 8128,
-   "blockStarts": 547,
+   "reachable": 7804,
+   "blockStarts": 451,
    "recompUnsupported": 4
   },
   "VNETSUP.VXD": {
    "group": "vxds",
    "entries": 10,
-   "reachable": 6213,
-   "blockStarts": 364,
+   "reachable": 6207,
+   "blockStarts": 362,
    "recompUnsupported": 6
   },
   "VREDIR.VXD": {
    "group": "vxds",
    "entries": 18,
-   "reachable": 38430,
-   "blockStarts": 7452,
+   "reachable": 36911,
+   "blockStarts": 7209,
    "recompUnsupported": 42
   },
   "VNETBIOS.VXD": {
    "group": "vxds",
    "entries": 9,
-   "reachable": 14273,
-   "blockStarts": 1115,
+   "reachable": 14259,
+   "blockStarts": 1111,
    "recompUnsupported": 25
   },
   "NETBEUI.VXD": {
@@ -94,36 +94,36 @@
   "NDIS.VXD": {
    "group": "vxds",
    "entries": 105,
-   "reachable": 33935,
-   "blockStarts": 8262,
+   "reachable": 33217,
+   "blockStarts": 8019,
    "recompUnsupported": 233
   },
   "PERF.VXD": {
    "group": "vxds",
    "entries": 6,
-   "reachable": 5158,
-   "blockStarts": 382,
+   "reachable": 5050,
+   "blockStarts": 350,
    "recompUnsupported": 6
   },
   "SHELL.VXD": {
    "group": "vxds",
    "entries": 31,
-   "reachable": 25594,
-   "blockStarts": 1789,
+   "reachable": 25035,
+   "blockStarts": 1588,
    "recompUnsupported": 12
   },
   "REBOOT.VXD": {
    "group": "vxds",
    "entries": 6,
-   "reachable": 7415,
-   "blockStarts": 320,
+   "reachable": 7411,
+   "blockStarts": 318,
    "recompUnsupported": 15
   },
   "VCOMM.VXD": {
    "group": "vxds",
    "entries": 38,
-   "reachable": 8265,
-   "blockStarts": 871,
+   "reachable": 8163,
+   "blockStarts": 835,
    "recompUnsupported": 6
   },
   "LPT.VXD": {
@@ -1117,121 +1117,110 @@
  },
  "services": {
   "missing": {
-   "0001:011f": [
-    "DSOUND.VXD+1024"
-   ],
-   "0001:0135": [
-    "DSOUND.VXD+2634"
-   ],
-   "0001:0157": [
-    "DSOUND.VXD+2664",
-    "DSOUND.VXD+253e"
-   ],
-   "0001:0125": [
-    "DSOUND.VXD+2695",
-    "DSOUND.VXD+2568"
-   ],
-   "0001:0136": [
-    "DSOUND.VXD+26b0"
-   ],
-   "000b:0002": [
-    "ENABLE.VXD+3ee4"
-   ],
-   "000b:0003": [
-    "ENABLE.VXD+401e",
-    "ENABLE.VXD+3f05"
-   ],
-   "000c:0002": [
-    "ENABLE.VXD+360f"
-   ],
-   "0041:0001": [
-    "IFSMGR.VXD+1d0d2"
-   ],
-   "0021:0007": [
-    "IFSMGR.VXD+dcfe"
-   ],
-   "20cd:4c01": [
-    "IFSMGR.VXD+cd5d"
-   ],
    "002a:0018": [
     "IFSMGR.VXD+c38"
-   ],
-   "0015:0011": [
-    "IFSMGR.VXD+ee05"
-   ],
-   "0487:0001": [
-    "VREDIR.VXD+6057",
-    "VREDIR.VXD+5f53",
-    "VREDIR.VXD+6037",
-    "VREDIR.VXD+601c",
-    "VREDIR.VXD+5fd5",
-    "VREDIR.VXD+5f8d",
-    "VREDIR.VXD+5f3a"
-   ],
-   "0006:000e": [
-    "VREDIR.VXD+5baf",
-    "VNETBIOS.VXD+ec"
-   ],
-   "049b:0001": [
-    "VREDIR.VXD+5b74"
-   ],
-   "049b:0002": [
-    "VREDIR.VXD+5b7c"
-   ],
-   "0006:000d": [
-    "VREDIR.VXD+5b8f",
-    "VNETBIOS.VXD+c2"
-   ],
-   "0006:0005": [
-    "VREDIR.VXD+5b68"
-   ],
-   "0487:0004": [
-    "VREDIR.VXD+5b10"
-   ],
-   "0032:0001": [
-    "VREDIR.VXD+22195"
-   ],
-   "0482:0001": [
-    "VREDIR.VXD+222e0"
-   ],
-   "0006:0004": [
-    "VNETBIOS.VXD+4321"
-   ],
-   "0497:0001": [
-    "NDIS.VXD+10038"
-   ],
-   "0496:0001": [
-    "NDIS.VXD+10032"
-   ],
-   "000b:0001": [
-    "SHELL.VXD+8"
-   ],
-   "0001:0153": [
-    "SHELL.VXD+103f0"
-   ],
-   "0033:0064": [
-    "VCOMM.VXD+749c",
-    "VCOMM.VXD+35fb"
-   ],
-   "000e:0008": [
-    "VCOMM.VXD+31a1"
-   ],
-   "000e:0007": [
-    "VCOMM.VXD+3185"
-   ],
-   "000e:0005": [
-    "VCOMM.VXD+318e"
-   ],
-   "000e:0006": [
-    "VCOMM.VXD+30ce",
-    "VCOMM.VXD+311e"
-   ],
-   "000e:0004": [
-    "VCOMM.VXD+3136"
-   ],
-   "0004:000b": [
-    "LPT.VXD+38d0"
    ]
+  },
+  "absent": {
+   "0041:0001": {
+    "guarded": [
+     "IFSMGR.VXD+1d0d2"
+    ],
+    "unguarded": []
+   },
+   "0021:0007": {
+    "guarded": [
+     "IFSMGR.VXD+dcfe"
+    ],
+    "unguarded": []
+   },
+   "20cd:4c01": {
+    "guarded": [],
+    "unguarded": [
+     "IFSMGR.VXD+cd5d"
+    ]
+   },
+   "0487:0001": {
+    "guarded": [
+     "VREDIR.VXD+5f3a"
+    ],
+    "unguarded": [
+     "VREDIR.VXD+6057",
+     "VREDIR.VXD+5f53",
+     "VREDIR.VXD+6037",
+     "VREDIR.VXD+601c",
+     "VREDIR.VXD+5fd5",
+     "VREDIR.VXD+5f8d"
+    ]
+   },
+   "0006:000e": {
+    "guarded": [],
+    "unguarded": [
+     "VREDIR.VXD+5baf",
+     "VNETBIOS.VXD+ec"
+    ]
+   },
+   "049b:0001": {
+    "guarded": [],
+    "unguarded": [
+     "VREDIR.VXD+5b74"
+    ]
+   },
+   "049b:0002": {
+    "guarded": [],
+    "unguarded": [
+     "VREDIR.VXD+5b7c"
+    ]
+   },
+   "0006:000d": {
+    "guarded": [],
+    "unguarded": [
+     "VREDIR.VXD+5b8f",
+     "VNETBIOS.VXD+c2"
+    ]
+   },
+   "0006:0005": {
+    "guarded": [],
+    "unguarded": [
+     "VREDIR.VXD+5b68"
+    ]
+   },
+   "0487:0004": {
+    "guarded": [],
+    "unguarded": [
+     "VREDIR.VXD+5b10"
+    ]
+   },
+   "0032:0001": {
+    "guarded": [
+     "VREDIR.VXD+22195"
+    ],
+    "unguarded": []
+   },
+   "0482:0001": {
+    "guarded": [],
+    "unguarded": [
+     "VREDIR.VXD+222e0"
+    ]
+   },
+   "0006:0004": {
+    "guarded": [],
+    "unguarded": [
+     "VNETBIOS.VXD+4321"
+    ]
+   },
+   "0497:0001": {
+    "guarded": [],
+    "unguarded": [
+     "NDIS.VXD+10038"
+    ]
+   },
+   "0496:0001": {
+    "guarded": [],
+    "unguarded": [
+     "NDIS.VXD+10032"
+    ]
+   }
   },
   "contract": {}
  },
