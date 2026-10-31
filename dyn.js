@@ -97,6 +97,10 @@ function translate(p, lin, csb, d32, v86) {
   const mm = mmioRange(p, lin);
   const dev = (a, sz, code = 0x2000000) => { if (mm) f.lg(a).c(mm[0]).op('sub').c(mm[1]).op('lt_u').if_().lg(a).c(code | sz).e(0x10, 1).end(); };
   const devLoad = (a, sz) => dev(a, sz, 0x3000000);   // (and its loads from there ask the host first, as recomp.py's do)
+  // a ring-3 program's code (flat 32-bit, outside a VxD's run): an access to a page ring 3 has no access to (the null
+  // page, the VxDs', the frame buffer's: win32.js PROT, a byte a page) is a page fault at the address, before it is made
+  const r3 = !vm && !csb && d32 && !(p.r0Depth > 0) && !(p.cpu.cs.value & 0xffff);
+  const guard = (a, wr) => { if (r3) f.lg(a).c(12).op('shr_u').e(0x2d, 0, uleb(LAYOUT.PROT)).if_().lg(a).c(wr ? 0x4000010 : 0x4000000).e(0x10, 1).gg('eip').e(0x0f).end(); };
   let pc = lin, n = 0;
   const fetch = () => u8[pc++];
   const fetch16 = () => { const v = u8[pc] | (u8[pc + 1] << 8); pc += 2; return v; };
@@ -125,11 +129,12 @@ function translate(p, lin, csb, d32, v86) {
       const m = fetch(), mod = m >> 6, reg = (m >> 3) & 7, rm = m & 7;
       if (mod === 3) return { reg, rm, isReg: true };
       // effective address into local A (then plus segment base)
-      let defSeg = 3;
+      let defSeg = 3, onStack = false;
       if (asz === 4) {
         let base = rm, idx = -1, scale = 0;
         if (rm === 4) { const sib = fetch(); scale = sib >> 6; idx = (sib >> 3) & 7; base = sib & 7; if (idx === 4) idx = -1; }
         let disp = 0, hasBase = true;
+        onStack = base === 4 && idx < 0;
         if (mod === 0 && base === 5) { hasBase = false; disp = fetch32(); }
         else if (mod === 1) disp = fetchS8(); else if (mod === 2) disp = fetch32();
         f.c(disp);
@@ -145,6 +150,7 @@ function translate(p, lin, csb, d32, v86) {
       }
       const sr = seg === null ? defSeg : seg;
       f.gg(sbase(sr)).op('add').ls(A);
+      if (b !== 0x8d && !onStack) guard(A, false);   // (lea's address is no access; ESP's frame is the stack's own pages)
       return { reg, mem: true, sr };
     };
     const rdReg = (r, sz) => {
@@ -345,12 +351,12 @@ function translate(p, lin, csb, d32, v86) {
     if (b === 0x9f) { f.gg('cf').gg('pf').c(2).op('shl').op('or').gg('zf').c(6).op('shl').op('or').gg('sf').c(7).op('shl').op('or').c(2).op('or').ls(T); f.gg('eax').c(0xffff00ff).op('and').lg(T).c(8).op('shl').op('or').gs('eax'); continue; }
     if (b >= 0xa0 && b <= 0xa3) {   // mov al/eax, moffs
       const sz = b & 1 ? osz : 1, off = asz === 4 ? fetch32() : fetch16();
-      f.c(off).gg(sbase(seg === null ? 3 : seg)).op('add').ls(A);
+      f.c(off).gg(sbase(seg === null ? 3 : seg)).op('add').ls(A); guard(A, !!(b & 2));
       if (b & 2) { rdReg(0, sz); f.ls(T); f.lg(A).lg(T).st(sz); dev(A, sz); } else { devLoad(A, sz); f.lg(A).ld(sz).ls(T); wrReg(0, sz, T); }
       continue;
     }
     if (b === 0xa8 || b === 0xa9) { const sz = b & 1 ? osz : 1; rdReg(0, sz); f.c(imm(sz)).op('and').ls(R); f.c(0).gs('cf'); f.c(0).gs('of'); szp(sz); continue; }
-    if ((b >= 0xa4 && b <= 0xa7) || (b >= 0xaa && b <= 0xaf) || (b >= 0x6c && b <= 0x6f)) { strop(f, b, osz, asz, seg, rep, { T, A, B, C, R, X, D }, alu2, szp, dev); continue; }
+    if ((b >= 0xa4 && b <= 0xa7) || (b >= 0xaa && b <= 0xaf) || (b >= 0x6c && b <= 0x6f)) { strop(f, b, osz, asz, seg, rep, { T, A, B, C, R, X, D }, alu2, szp, dev, guard); continue; }
     if (b >= 0xb0 && b < 0xb8) { f.c(fetch()).ls(T); wrReg(b & 7, 1, T); continue; }
     if (b >= 0xb8 && b < 0xc0) { f.c(osz === 4 ? fetch32() : fetch16()).ls(T); wrReg(b & 7, osz, T); continue; }
     if (b === 0xc0 || b === 0xc1 || (b >= 0xd0 && b <= 0xd3)) {
@@ -723,9 +729,9 @@ function muldiv(f, op, sz, o, rd, L, rdReg, wrReg) {
 }
 
 // string instructions, with rep / repe / repne
-function strop(f, b, osz, asz, seg, rep, L, alu2, szp, dev) {
+function strop(f, b, osz, asz, seg, rep, L, alu2, szp, dev, guard) {
   const { T, A, B, C, R, D, X } = L, sz = b & 1 ? osz : 1;
-  const ld = () => { f.ls(X); dev(X, sz, 0x3000000); f.lg(X).ld(sz); };   // (the address on the stack: the load, a device's asked first)
+  const ld = () => { f.ls(X); guard(X, false); dev(X, sz, 0x3000000); f.lg(X).ld(sz); };   // (the address on the stack: the load, a device's asked first)
   const idx = r => { f.gg(r); if (asz === 2) f.c(0xffff).op('and'); };
   const step = r => {   // r += df ? -sz : sz, within the address size
     f.gg(r).c(-sz).c(sz).gg('df').e(0x1b).op('add');
@@ -739,8 +745,8 @@ function strop(f, b, osz, asz, seg, rep, L, alu2, szp, dev) {
     // and writes EAX: EAX kept around it)
     if (kind === 'ins') { f.gg('eax').ls(X); f.gg('edx').c(0xffff).op('and').c(sz | 8).e(0x10, 0); f.gg('esb'); idx('edi'); f.op('add').gg('eax').st(sz); f.lg(X).gs('eax'); step('edi'); }
     else if (kind === 'outs') { f.gg('eax').ls(X); f.gg(srcBase); idx('esi'); f.op('add').ld(sz).gs('eax'); f.gg('edx').c(0xffff).op('and').c(sz).e(0x10, 0); f.lg(X).gs('eax'); step('esi'); }
-    else if (kind === 'movs') { f.gg('esb'); idx('edi'); f.op('add').lt(D); f.gg(srcBase); idx('esi'); f.op('add'); ld(); f.st(sz); dev(D, sz); step('esi'); step('edi'); }
-    else if (kind === 'stos') { f.gg('esb'); idx('edi'); f.op('add').lt(D).gg('eax').st(sz); dev(D, sz); step('edi'); }
+    else if (kind === 'movs') { f.gg('esb'); idx('edi'); f.op('add').lt(D); guard(D, true); f.gg(srcBase); idx('esi'); f.op('add'); ld(); f.st(sz); dev(D, sz); step('esi'); step('edi'); }
+    else if (kind === 'stos') { f.gg('esb'); idx('edi'); f.op('add').lt(D); guard(D, true); f.gg('eax').st(sz); dev(D, sz); step('edi'); }
     else if (kind === 'lods') { f.gg(srcBase); idx('esi'); f.op('add'); ld(); f.ls(T); if (sz === 4) f.lg(T).gs('eax'); else f.gg('eax').c(sz === 2 ? 0xffff0000 : 0xffffff00).op('and').lg(T).op('or').gs('eax'); step('esi'); }
     else if (kind === 'scas') { f.gg('eax').ls(B); f.gg('esb'); idx('edi'); f.op('add'); ld(); f.ls(C); alu2(7, sz); step('edi'); }
     else { f.gg(srcBase); idx('esi'); f.op('add'); ld(); f.ls(B); f.gg('esb'); idx('edi'); f.op('add'); ld(); f.ls(C); alu2(7, sz); step('esi'); step('edi'); }
@@ -786,7 +792,7 @@ P.dynBlock = function (eip) {
   const d32 = !vm && (flat || !!(this.r32(ACC + (cs & 0xfff8)) & 0x400000));
   // (a translation holds the code segment's base and its operand size: the same bytes run through another segment, or
   // as 16-bit code where they ran as 32-bit, are another block. DIBENG compiles 16- and 32-bit blits into one buffer)
-  const key = `${eip}:${csb}:${d32 ? 32 : 16}${vm ? 'v' : ''}`;
+  const key = `${eip}:${csb}:${d32 ? 32 : 16}${vm ? 'v' : ''}${this.r0Depth > 0 ? 'r0' : ''}`;   // (ring 0's translation has no ring-3 guard)
   // (a few translations per address: two processes' programs at one base, each process's view in place in turn, arenaUse)
   const kept = this.dynCache.get(key) || [];
   let c = kept.find(k => k.bytes.every((v, i) => u8[eip + i] === v));

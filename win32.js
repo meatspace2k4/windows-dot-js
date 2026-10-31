@@ -8,7 +8,10 @@
 // guest address space: low runtime area, stack, images at 0x400000/0x1000000, native DLLs from 0x1800000,
 // heap, then per-module block lookup tables from 0x5600000
 const LAYOUT = { SENTINEL: 0xFFFFFFF0, THUNK: 0xFFFF0000, THUNK16: 0xFFFE0000, FPU: 0x10000, TIB: 0x11000, SCRATCH: 0x12000,
-  STACK_LO: 0x100000, STACK_TOP: 0x3ffff0, HEAP: 0x02000000, HEAP_END: 0x05600000 };
+  STACK_LO: 0x100000, STACK_TOP: 0x3ffff0, HEAP: 0x02000000, HEAP_END: 0x05500000,
+  // a byte a 4 KB page of the address space, nonzero where ring 3 has no access (the null page, the VxDs' images, the
+  // frame buffer's ring-0 mapping): ring-3 code's accesses are checked against it (dyn.js guard), protect() sets it
+  PROT: 0x05500000 };
 const YIELD = Symbol('yield');   // returned by an API implementation to suspend the guest at depth 0
 const NO_CLOCK = Object.freeze({ tick: 0, wall: 0 });   // (a program reading this machine's own clock: Process.clockOf)
 const TICK_MS = 65536 * 1000 / 1193182;   // PIT channel 0 period, 54.925 ms
@@ -69,6 +72,7 @@ class Process {
     this.handles = new Map(); this.nextHandle = 0x100;
     this.windows = new Map(); this.classes = new Map(); this.queue = []; this.timers = []; this.quit = null;
     this.heapTop = LAYOUT.HEAP; this.freeList = new Map(); this.allocs = new Map();
+    this.protect(0, 0x1000);   // (the null page: no program's)
     const math = { fsin: Math.sin, fcos: Math.cos, ftan: Math.tan, fatan2: Math.atan2, fexp2: x => Math.pow(2, x), flog2: Math.log2,
       fmod: (a, b) => a % b, frem: (a, b) => a - b * Math.round(a / b), f80load: a => this.f80load(a), f80store: (a, v) => this.f80store(a, v), btrace: e => { if (window.W95BTRACE) window.W95BTRACE(e >>> 0); } };
     this.imports = { env: { mem: this.mem, api: e => this.api(e), trap: (e, c) => this.trap(e, c), tick: e => this.tick(e), smc: a => this.smc(a), ...math }, cpu: this.cpu };
@@ -94,6 +98,8 @@ class Process {
   set exe(v) { (this.pc0 || (this.pc0 = { pid: 0x50 })).exe = v; }
   get cmdPtr() { return this.pc.cmdPtr; }
   set cmdPtr(v) { (this.pc0 || (this.pc0 = { pid: 0x50 })).cmdPtr = v; }
+  /** the whole pages in [lo, hi) as ring 0's only (`on`), or given back to ring 3: LAYOUT.PROT */
+  protect(lo, hi, on = true) { const a = (lo + 0xfff) >>> 12, b = hi >>> 12; if (b > a) this.u8.fill(on ? 1 : 0, LAYOUT.PROT + a, LAYOUT.PROT + b); }
   get u8() { return new Uint8Array(this.mem.buffer); }
   get dv() { return new DataView(this.mem.buffer); }
   r32(a) { return this.dv.getUint32(a, true); }
@@ -634,7 +640,7 @@ class Process {
       throw new FaultError(f);
     }
     if (!this.r32(this.cpu.fs.value) || this.r32(this.cpu.fs.value) === 0xffffffff) throw new FaultError(f);
-    const r = sehDispatch(this, EXC_CODE[n] || 0xc0000005, eip, n === 14 || n === 13 ? [0, cr2] : [], f);
+    const r = sehDispatch(this, EXC_CODE[n] || 0xc0000005, eip, n === 14 || n === 13 ? [this.pfWrite ? 1 : 0, cr2] : [], f);
     if (r === null) throw new FaultError(f);
     return r;
   }
@@ -666,6 +672,13 @@ class Process {
     if (code === 2 && this.dynRun) { this.dynWant = u32(eip); return; }
     if (code === 1) log('warn', 'win32', `unsupported instruction at ${u32(eip).toString(16)} (cs ${(this.cpu.cs.value & 0xffff).toString(16)})`);   // (an emulator gap: named)
     if (code <= 4) { this.cpu.eip.value = this.raise(TRAP_VEC[code], u32(eip), code === 2 ? u32(eip) : 0) | 0; return; }
+    // (ring-3 code's access to a page it has no access to, dyn.js guard: a page fault at the instruction, the address
+    // the access was to in CR2, a write's flagged in the exception's information)
+    if ((code & ~0x10) === 0x4000000) {
+      this.pfWrite = !!(code & 0x10);
+      try { this.cpu.eip.value = this.raise(14, u32(this.cpu.eip.value), u32(eip)) | 0; } finally { this.pfWrite = false; }
+      return;
+    }
     if (this.trapHook && this.trapHook(eip, code)) return;
     this.trapped = `${['divide error', 'unsupported instruction', 'jump to unmapped address', 'breakpoint'][code] || 'trap'} at ${u32(eip).toString(16)}`;
     if (code === 0) this.cpu.eip.value = LAYOUT.SENTINEL | 0;

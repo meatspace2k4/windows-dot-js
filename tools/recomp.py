@@ -366,6 +366,7 @@ class Loc:
         self.f, self.op = f, op; self.size = size or op.size; self.addr = None
         if op.type == X.X86_OP_MEM:
             self.addr = f.i(); emit_addr(f, op.mem); f.ls(self.addr)
+            if not (op.mem.base == X.X86_REG_ESP and not op.mem.index): guard(f, self.addr)   # (ESP's frame: the stack's own pages)
     def read(self, signed=False):
         f, op, sz = self.f, self.op, self.size
         if op.type == X.X86_OP_IMM:
@@ -415,6 +416,20 @@ def mmio_store(f, addr, sz, code=0x2000000):
 # ... and each load from there asks the host first, trap(address, 0x3000000 | size): the device puts what the read
 # returns there (a VGA's read mode, loading its latches) before the load takes it
 def mmio_load(f, addr, sz): mmio_store(f, addr, sz, 0x3000000)
+# ring-3 code (a Win32 program's or DLL's, build: not a driver's or a VxD's): each access's page is looked up in the host's
+# protection map (win32.js LAYOUT.PROT, a byte a 4 KB page, nonzero where ring 3 has no access: the null page, the
+# VxDs', the frame buffer's) before it is made; a protected one is a page fault at the instruction, trap(address,
+# 4000000h, 4000010h for a write) with the instruction in the eip global, and the block goes on where the host says
+RING3 = False
+PROT = 0x05500000
+def pe_off(data): return int.from_bytes(data[0x3c:0x40], 'little')
+def guard(f, addr, write=False):
+    if not RING3 or segmode(): return
+    f.lg(addr).c(12).e(OPS['shr_u']).e(0x2d, 0, uleb(PROT)).e(0x04, 0x40)
+    f.c(CUR.addr).gs('eip').lg(addr).c(0x4000010 if write else 0x4000000).e(0x10, uleb(IMP['trap'])).gg('eip').e(RETURN).e(0x0b)
+def guard_reg(f, reg, write=False):
+    if not RING3 or segmode(): return
+    t = f.i(); f.gg(reg).ls(t); guard(f, t, write)
 # ---- segmented (NE) mode. CUR is the instruction being translated.
 CUR = None
 def segmode(): return CUR is not None and CUR.segbase is not None
@@ -1096,6 +1111,8 @@ class Translator:
         step = f.i()
         f.c(-sz).c(sz).gg('df').e(SELECT).ls(step)      # DF=1 decrements
         def one():
+            if kind in ('movs', 'lods', 'cmps', 'outs'): guard_reg(f, 'esi')
+            if kind in ('movs', 'stos', 'ins', 'scas', 'cmps'): guard_reg(f, 'edi', kind in ('movs', 'stos', 'ins'))
             if kind == 'movs':
                 f.gg('edi').gg('esi').mem(LOAD[sz]).mem(STORE[sz])
                 f.gg('esi').lg(step).e(OPS['add']).gs('esi'); f.gg('edi').lg(step).e(OPS['add']).gs('edi')
@@ -1678,6 +1695,8 @@ def assemble(bodies, text_lo, text_hi, lookup):
 def build(path, out, base=None, lookup=0x06000000):
     data = open(path, 'rb').read()
     pe = PE(data)
+    # (a Win32 program or DLL runs at ring 3; a native image, a network card's NDIS driver, at ring 0)
+    global RING3; RING3 = int.from_bytes(data[pe_off(data) + 24 + 68:pe_off(data) + 24 + 70], 'little') != 1
     if base is not None and base != pe.base: pe.rebase(base)
     insns, entries = decode_all(pe)
     global CODE_BYTES; CODE_BYTES = frozenset(a for i in insns.values() for a in range(i.addr, i.next))

@@ -23,6 +23,7 @@ P.vxd = function (file) {
   const b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
   const m = d.meta, img = d.imgBytes || (d.imgBytes = b64(d.image));
   this.u8.set(img, m.base);
+  this.protect(m.base, m.base + (m.size || img.length));   // (ring 0's pages: a program's stray pointer into them faults, win32.js PROT)
   const mod = d.mod || (d.mod = new WebAssembly.Module(b64(d.wasm)));
   const run = new WebAssembly.Instance(mod, this.imports).exports.run;
   const look = new Uint32Array(this.mem.buffer, m.lookup, m.textHi - m.textLo);

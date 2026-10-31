@@ -2206,6 +2206,7 @@ P.adapter = function () {
   if (this.et) return this.et;
   this.init16();
   const vramLin = this.alloc(VRAM_SIZE + 0x1000, true);
+  this.protect(vramLin, vramLin + VRAM_SIZE);   // (the frame buffer's ring-0 mapping: a program's stray write faults, it does not draw; win32.js PROT)
   return (this.et = { vramLin, vram: this.u8.subarray(vramLin, vramLin + VRAM_SIZE), flat: false, bank: 0, misc: 0x67, seq: new Uint8Array(256), gc: new Uint8Array(256), crtc: new Uint8Array(256),
     attr: new Uint8Array(256), idx: { seq: 0, gc: 0, crtc: 0, attr: 0 }, flip: 0, dacW: 0, dacR: 0, dac: new Uint8Array(768), pelMask: 0xff,
     hicolor: 0, hidden: 0, status: 0, mode: 3, w: 720, h: 400, bpp: 0, pitch: 0, dirty: true, ima: new Uint8Array(256), imaIdx: 0 });
