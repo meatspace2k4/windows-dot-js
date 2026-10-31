@@ -750,7 +750,11 @@ class Translator:
     def x_call(self, f, ins, ops, live):
         t = f.i(); self.target(f, ins, ops[0]); f.ls(t)
         if segmode(): push_val(f, lambda: f.c(ins.next - ins.segbase), opsize(ins))
-        else: push_val(f, lambda: f.c(ins.next))
+        else:
+            # (the return address's slot checked as the stack grows: a thread's stack has protected pages below it, and
+            # runaway recursion meets them as a stack fault rather than running on down through the heap)
+            if RING3: s = f.i(); f.gg('esp').c(4).e(OPS['sub']).ls(s); guard(f, s, True)
+            push_val(f, lambda: f.c(ins.next))
         f.lg(t).e(RETURN); return True
     def x_ret(self, f, ins, ops, live):
         t = f.i()

@@ -40,4 +40,21 @@ assert.equal(p.cpu.eax.value, 0);
 run([0x89, 0x07], { edi: 0x300000 }); assert.deepEqual(traps, []); assert.equal(p.r32(0x300000), 0x11223344);
 // a page given back
 p.protect(FB, FB + 0x10000, false); run([0x89, 0x07], { edi: FB + 4 }); assert.deepEqual(traps, []);
+// runaway recursion: each call's return slot is checked, and the pages below the thread's stack (TIB's StackLimit)
+// stop it as a stack fault, before it runs on down over the heap
+{
+  const TIB = 0x11000, LIMIT = 0x900000, SELF = 0x280000;
+  p.u8.fill(0, TIB, TIB + 0x20); p.w32(TIB + 8, LIMIT); p.protect(LIMIT - 0x10000, LIMIT);
+  p.cpu.fs.value = TIB; p.cpu.cs.value = 0; p.cpu.csb.value = 0; p.r0Depth = 0; p.modules = []; p.meta = {};
+  p.trap = window.W95Win32.Process.prototype.trap;
+  p.u8.set([0xe8, 0xfb, 0xff, 0xff, 0xff], SELF);   // L: call L
+  p.cpu.esp.value = LIMIT + 0x100; p.dynCache = new Map();
+  const blk = p.dynBlock(SELF);
+  let fault = null, n = 0;
+  try { for (; n < 1000; n++) blk.run(); } catch (e) { fault = e; }
+  assert.ok(fault && fault.fault, 'a fault, the program\'s to answer');
+  assert.equal(fault.fault.n, 12); assert.match(fault.fault.why, /stack fault/);
+  assert.equal(n, 0x100 / 4, 'stopped at the stack\'s end'); assert.equal(p.cpu.esp.value >>> 0, LIMIT, 'nothing pushed below it');
+  p.protect(LIMIT - 0x10000, LIMIT, false);
+}
 console.log('ring3guard: ok');

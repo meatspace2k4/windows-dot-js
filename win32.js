@@ -680,6 +680,13 @@ class Process {
     // (ring-3 code's access to a page it has no access to, dyn.js guard: a page fault at the instruction, the address
     // the access was to in CR2, a write's flagged in the exception's information)
     if ((code & ~0x10) === 0x4000000) {
+      // (the pages below the thread's stack, ne16.js stackAlloc: the stack has run out, a stack fault the program does
+      // not get to handle, as nothing can be pushed for a handler)
+      const limit = this.r32(this.cpu.fs.value + 8) >>> 0;
+      if (u32(eip) < limit && u32(eip) >= limit - 0x10000) {
+        log('warn', 'win32', `stack fault: thread ${this.thread16 ? this.thread16.id : 'main'}'s stack ran out at ${u32(eip).toString(16)}`);
+        throw new FaultError(Object.assign(this.faultInfo(12, u32(this.cpu.eip.value), u32(eip)), { why: `stack fault at ${u32(this.cpu.eip.value).toString(16)}` }));
+      }
       this.pfWrite = !!(code & 0x10);
       (this.faultLog || (this.faultLog = [])).push({ why: `ring 3 ${this.pfWrite ? 'write' : 'read'} at ${u32(eip).toString(16)}, a protected page`, at: u32(this.cpu.eip.value).toString(16), atIn: this.whereOf(this.cpu.eip.value), thread: this.thread16 ? this.thread16.id : 'main',
         stack: Array.from({ length: 16 }, (_, k) => this.r32(u32(this.cpu.esp.value) + 4 * k)).map(v => this.whereOf(v)).filter(s => s && /[A-Z]/.test(s)) }); if (this.faultLog.length > 50) this.faultLog.shift();

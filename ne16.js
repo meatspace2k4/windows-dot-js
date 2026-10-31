@@ -4282,6 +4282,20 @@ P.spawn = function (file, module, meta, path, cmdline) {
   (this.procs || (this.procs = new Map())).set(pc.pid, pc);
   return pc;
 };
+/** a Win32 thread's stack, with STACK_GUARD bytes of pages below it that ring 3 has no access to (win32.js PROT), as
+ *  Windows reserves a guard below each thread's stack: runaway recursion meets them as a stack fault (win32.js trap)
+ *  instead of running on down through the heap, as Paint's C++ unwind ran down over NETBEUI's data and the frame buffer */
+const STACK_GUARD = 0x10000;
+P.stackAlloc = function (t) {
+  const raw = this.alloc(t.stack + STACK_GUARD + 0x1000, false), lo = (raw + 0xfff) & ~0xfff;
+  this.protect(lo, lo + STACK_GUARD);
+  t.stackRaw = raw; t.stackBase = lo + STACK_GUARD; this.u8.fill(0, t.stackBase, t.stackBase + t.stack);
+};
+P.stackFree = function (t) {
+  if (t.stackRaw) { const lo = t.stackBase - STACK_GUARD; this.protect(lo, lo + STACK_GUARD, false); this.free(t.stackRaw); }
+  else this.free(t.stackBase);
+  t.stackBase = t.stackRaw = 0;
+};
 /** process pc's view of the arena in place, where its image overlaps another process's (spawn, win32.js arenaUse) */
 P.imgUse = function (pc) {
   this.dllUse(pc);   // (and its private-arena DLLs' data, win32.js; the system's for a thread of no started process)
@@ -4367,7 +4381,7 @@ P.endProcess = function (pc, code) {
   } catch (e) { console.error(e); }
   for (const t of (this.threadsById || new Map()).values()) if (t.pc === pc && t !== this.thread16 && t.state !== 'done') {
     t.state = 'done'; this.wakeWaiters(t); if (this.win16Held && this.win16Held.who === t) this.win16Held = null;
-    if (t.flat && t.stackBase) { this.free(t.stackBase); this.free(t.tib); t.stackBase = t.tib = 0; }   // (its stack and thread information block go with it)
+    if (t.flat && t.stackBase) { this.stackFree(t); this.free(t.tib); t.tib = 0; }   // (its stack and thread information block go with it)
   }
   // the address space it reserved (VirtualAlloc) goes with it, as its private arena does on Windows 95
   for (const [b, r] of this.vregions || new Map()) if (r.pc === pc) { this.vregions.delete(b); if (r.heap) this.free(r.heap); else (this.vspare || (this.vspare = [])).push({ base: b, size: r.size }); }
@@ -4449,7 +4463,7 @@ P.threads16 = function (nested = false, only = null) {
       if (t.state === 'new' && t.flat) {
         // a Win32 thread (CreateThread): its own stack and thread information block, then its procedure called
         // with its parameter in flat mode; returning to the sentinel ends it
-        t.stackBase = this.alloc(t.stack); t.tib = this.alloc(0x100);
+        this.stackAlloc(t); t.tib = this.alloc(0x100);
         this.u8.copyWithin(t.tib, LAYOUT.TIB, LAYOUT.TIB + 0x100);
         this.w32(t.tib, 0xffffffff); this.w32(t.tib + 4, t.stackBase + t.stack); this.w32(t.tib + 8, t.stackBase); this.w32(t.tib + 0x18, t.tib);
         this.w16(t.tib + 0x28, 0);
@@ -4491,7 +4505,7 @@ P.threads16 = function (nested = false, only = null) {
         if (this.trapped && t.pc && this.noMain) { t.pc.trapped = this.trapped; (this.pcFaults || (this.pcFaults = [])).push({ pc: t.pc, why: this.trapped }); this.trapped = null; this.endProcess(t.pc, 0xffffffff); }
         else if (this.trapped && this.taskFault(t, this.trapped)) this.trapped = null;
         if (t.pc) this.pcThreadEnded(t); else { this.threadExitUser(t); this.taskModuleEnded(t); } if (r !== 0 && this.trapped) log('warn', 'ne16', `thread ${t.id} ${this.trapped}`); if (t.onDone) t.onDone(t);
-        if (t.flat && t.stackBase) { this.free(t.stackBase); this.free(t.tib); t.stackBase = t.tib = 0; }   // (its stack and thread information block go with it)
+        if (t.flat && t.stackBase) { this.stackFree(t); this.free(t.tib); t.tib = 0; }   // (its stack and thread information block go with it)
       }   // onDone: the host's, for a thread it started
     } catch (e) {
       if (e instanceof window.W95Win32.FaultError) {   // a processor exception nothing in it handled

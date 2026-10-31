@@ -100,6 +100,9 @@ function translate(p, lin, csb, d32, v86) {
   // a ring-3 program's code (flat 32-bit, outside a VxD's run): an access to a page ring 3 has no access to (the null
   // page, the VxDs', the frame buffer's: win32.js PROT, a byte a page) is a page fault at the address, before it is made
   const r3 = !vm && !csb && d32 && !(p.r0Depth > 0) && !(p.cpu.cs.value & 0xffff);
+  // (a call's return address checked as the stack grows: a thread's stack has protected pages below it, and runaway
+  // recursion meets them as a stack fault, not running on down through the heap; ESP's own accesses are not checked)
+  const callGuard = () => { if (r3) { f.gg('esp').c(4).op('sub').ls(K); guard(K, true); } };
   const guard = (a, wr) => { if (r3) f.lg(a).c(12).op('shr_u').e(0x2d, 0, uleb(LAYOUT.PROT)).if_().lg(a).c(wr ? 0x4000010 : 0x4000000).e(0x10, 1).gg('eip').e(0x0f).end(); };
   let pc = lin, n = 0;
   const fetch = () => u8[pc++];
@@ -390,7 +393,7 @@ function translate(p, lin, csb, d32, v86) {
       }
       f.if_().c(t | 0).e(0x0f).end(); return done(pc);
     }
-    if (b === 0xe8) { const d = osz === 4 ? fetch32() : (fetch16() << 16) >> 16; f.c(offOf(pc)).ls(T); push(T, osz); return done(osz === 4 ? pc + d : csb + ((pc - csb + d) & 0xffff)); }
+    if (b === 0xe8) { const d = osz === 4 ? fetch32() : (fetch16() << 16) >> 16; callGuard(); f.c(offOf(pc)).ls(T); push(T, osz); return done(osz === 4 ? pc + d : csb + ((pc - csb + d) & 0xffff)); }
     if (b === 0xe9) { const d = osz === 4 ? fetch32() : (fetch16() << 16) >> 16; return done(osz === 4 ? pc + d : csb + ((pc - csb + d) & 0xffff)); }
     if (b === 0xeb) { const d = fetchS8(); return done(pc + d); }
     if (b === 0xea) {   // jmp far ptr16:16/32
@@ -414,7 +417,7 @@ function translate(p, lin, csb, d32, v86) {
       if (o.reg <= 1) { const cf = K; f.gg('cf').ls(cf); rd(o, sz); f.ls(B); f.c(1).ls(C); alu2(o.reg ? 5 : 0, sz); f.lg(cf).gs('cf'); wr(o, sz, R); continue; }
       if (b === 0xff && o.reg === 6) { rd(o, osz); f.ls(T); push(T, osz); continue; }
       if (b === 0xff && o.reg === 4) { rd(o, osz); f.gg('csb').op('add').e(0x0f); return done(pc); }
-      if (b === 0xff && o.reg === 2) { rd(o, osz); f.ls(B); f.c(offOf(pc)).ls(T); push(T, osz); f.lg(B).gg('csb').op('add').e(0x0f); return done(pc); }
+      if (b === 0xff && o.reg === 2) { rd(o, osz); f.ls(B); callGuard(); f.c(offOf(pc)).ls(T); push(T, osz); f.lg(B).gg('csb').op('add').e(0x0f); return done(pc); }
       if (b === 0xff && (o.reg === 3 || o.reg === 5)) {   // call/jmp far [mem]
         f.lg(A).ld(osz).ls(B); f.lg(A).c(osz).op('add').ld(2).ls(C);
         if (o.reg === 3) { f.gg('cs').ls(T); push(T, osz); f.c(offOf(pc)).ls(T); push(T, osz); }

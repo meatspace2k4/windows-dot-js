@@ -314,8 +314,29 @@ svc(VMM, 0x53, function (arg) {
 svc(VMM, 0x55, function (arg) { const a = this.pageAllocs && this.pageAllocs.get(u32(arg(0))); if (a) { this.pageAllocs.delete(u32(arg(0))); this.free(a); } return 1; });   // _PageFree(hMem, flags)
 svc(VMM, 0x63, function (arg) { return u32(arg(0) << 12); });                                         // _LinPageLock: the region's linear address
 svc(VMM, 0x64, function () { return 1; });                                                            // _LinPageUnLock
-svc(VMM, 0x4f, function (arg) { const a = this.alloc(Math.max(arg(0), 1)); this.u8.fill(0, a, a + Math.max(arg(0), 1)); return a; });   // _HeapAllocate
-svc(VMM, 0x51, function (arg) { this.free(u32(arg(0))); return 1; });                                  // _HeapFree(hAddress, flags)
+// _HeapAllocate, _HeapFree: the VxDs' heap on ring 0's pages (win32.js PROT), as the VMM's heap is in the system arena,
+// which ring 3 cannot reach: a program's stray pointer into a VxD's data faults rather than writing over it (Paint's
+// C++ unwind, on a pointer it read from address 0, wrote a stack address into NETBEUI's list, and NETBEUI's next
+// time-out followed it). Pools of 256 KB, page-aligned and protected whole, blocks of 16 bytes and up from them
+P.r0Alloc = function (n) {
+  n = (Math.max(n, 1) + 15) & ~15;
+  const h = this.r0Heap || (this.r0Heap = { pool: 0, top: 0, end: 0, sizes: new Map(), free: new Map() });
+  const l = h.free.get(n); let a = l && l.length ? l.pop() : 0;
+  if (!a) {
+    if (h.top + n > h.end) {
+      const size = Math.max(0x40000, (n + 0xfff) & ~0xfff), raw = this.alloc(size + 0x1000, false), p = (raw + 0xfff) & ~0xfff;
+      this.protect(p, p + size); h.top = p; h.end = p + size;
+    }
+    a = h.top; h.top += n;
+  }
+  h.sizes.set(a, n); this.u8.fill(0, a, a + n); return a;
+};
+P.r0HeapFree = function (a) {
+  const h = this.r0Heap, n = h && h.sizes.get(a); if (!n) return false;
+  h.sizes.delete(a); if (!h.free.has(n)) h.free.set(n, []); h.free.get(n).push(a); return true;
+};
+svc(VMM, 0x4f, function (arg) { return this.r0Alloc(arg(0)); });                                      // _HeapAllocate
+svc(VMM, 0x51, function (arg) { if (!this.r0HeapFree(u32(arg(0)))) this.free(u32(arg(0))); return 1; });   // _HeapFree(hAddress, flags)
 
 // ---- VMM: selectors. _BuildDescriptorDWORDs(base, limit, type, size, flags) -> EAX low, EDX high dword
 svc(VMM, 0x7a, function (arg) {
