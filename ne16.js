@@ -865,6 +865,16 @@ const INTS = {
       }
       break;
       case 0x50: case 0x51: case 0x62: return;
+      // the memory allocation strategy (AL 0 get into AX, 1 set from BX: first fit, 0, at start) and the upper memory
+      // blocks' link (2 get into AL, 3 set from BX: not linked, 0, at start), as MS-DOS 7 keeps them
+      case 0x58: {
+        const m = this.dosMem || (this.dosMem = { strategy: 0, link: 0 }), bx = this.cpu.ebx.value & 0xffff;
+        if (al === 0) { this.ax(m.strategy); return; }
+        if (al === 1) { m.strategy = bx & 0xc3; return; }
+        if (al === 2) { this.ax((this.ax() & 0xff00) | m.link); return; }
+        if (al === 3 && bx <= 1) { m.link = bx; return; }
+        CF(this, 1); this.ax(1); this.dosError = 1; return;
+      }
       // the redirector's list of redirected devices (5F02h, BX the index): the drives MPR connects are the network
       // process's; none is redirected through DOS here, so the list is empty (18, no more entries)
       case 0x5f: if (al === 2) { CF(this, 1); this.ax(18); this.dosError = 18; return; } break;
@@ -1056,6 +1066,11 @@ const INTS = {
     // sends them: the disc is the CD's data disc, one data track from 0 to its lead-out, so it has no audio to play
     if (ax === 0x1510) return cdRequest(this);
     if (ax === 0x1689 || ax === 0x1680) return;
+    // the DPMI host's vendor API (168Ah, DS:SI its name: "MS-DOS"'s function 100h a selector of the LDT) and 1688h
+    // BX=0BADh (the same, Windows 3.1's): none, AL and AX come back as they went. This machine's LDT is not in the
+    // processor's form (bases and limits at LDT, the access bytes a table of their own), so a selector of it would be
+    // read wrong; a caller goes on without one (Windows 98 Setup's W98SETUP)
+    if (ax === 0x168a || ax === 0x1688) return;
     if (ax === 0x160b) return;          // identify Windows-aware TSRs: none is loaded, so ES:DI comes back as it went in
     if (ax === 0x1607) return;          // device callout to real-mode software (a VxD asking for its TSR's API): none answers
     if ([0x11, 0xb8, 0xb7, 0x58].includes(ax >> 8)) return;   // real-mode network redirector, network, APPEND and real-mode network extension checks: none is loaded (AL comes back as it went)
@@ -2409,9 +2424,67 @@ P.setVideoMode = function (mode, clear, hicolor) {
   if (a.bpp === 8 && clear) for (let i = 0; i < 256; i++) { a.dac[3 * i] = a.dac[3 * i + 1] = a.dac[3 * i + 2] = 0; }
   return true;
 };
+// The 8254 timer (ports 40h-43h) and port 61h's side of it: each channel counts down at 1.193182 MHz from its load, by
+// the clock, in its mode (0: once to zero, OUT high there; 2 and 3: periodic, 3 a square wave counting by two), with
+// latch and read-back commands, a count read low byte then high where its access says so. Channel 2 counts while
+// port 61h's bit 0 (its gate) is set, and holds while it is clear; 61h answers its gate, the speaker bit, the refresh
+// toggle (bit 4) and channel 2's OUT (bit 5). With nothing here every read was FFh: Windows 98 Setup times its CPU by
+// channel 2, read back as no time at all, and divided by it
+const PIT_HZ = 1193.182;   // (counts a millisecond)
+P.pitIO = function (port, size, isIn) {
+  if (!(port >= 0x40 && port <= 0x43) && port !== 0x61) return false;
+  const eax = this.cpu.eax.value, v = eax & 0xff, now = this.now();
+  const pit = this.pit || (this.pit = { p61: 0, ch: [0, 1, 2].map(() => ({ rw: 3, mode: 3, init: 0x10000, t0: now, held: null, lo: true, wlo: true, latch: [], gate: true })) });
+  pit.ch[2].gate = !!(pit.p61 & 1);
+  // a channel's count and OUT now: the counts gone since its load (or its gate's rise), up to where its gate fell
+  const state = c => {
+    const n = Math.floor(((c.held === null ? now : c.held) - c.t0) * PIT_HZ), N = c.init || 0x10000;
+    if (c.mode === 0 || c.mode === 4 || c.mode === 1 || c.mode === 5) { const left = N - n; return { count: ((left % 0x10000) + 0x10000) % 0x10000, out: left <= 0 }; }
+    if (c.mode === 3 || c.mode === 7) { const k = n % N; return { count: (N - 2 * (k % (N >> 1 || 1))) & 0xfffe, out: k < N / 2 }; }
+    const k = n % N; return { count: (N - k) & 0xffff, out: k !== N - 1 };
+  };
+  const ret = r => { this.cpu.eax.value = (eax & ~0xff) | (r & 0xff); return true; };
+  if (port === 0x61) {
+    if (isIn) return ret((pit.p61 & 0x0f) | ((Math.floor(now * 66) & 1) << 4) | (state(pit.ch[2]).out ? 0x20 : 0));
+    const c = pit.ch[2], was = pit.p61 & 1; pit.p61 = v & 0x0f;
+    if ((v & 1) && !was) { c.t0 = c.held === null || c.mode !== 0 ? now : now - (c.held - c.t0); c.held = null; }   // (mode 0 goes on from where it held; the others start again)
+    else if (!(v & 1) && was && c.held === null) c.held = now;
+    return true;
+  }
+  if (port === 0x43) {
+    if (isIn) return ret(0xff);
+    const sc = v >> 6;
+    if (sc === 3) {   // read-back: bit 5 clear latches the counts, bit 4 clear the status, of the channels in bits 1-3
+      for (let i = 0; i < 3; i++) if (v & (2 << i)) {
+        const c = pit.ch[i], s = state(c); c.latch = [];
+        if (!(v & 0x10)) c.latch.push((s.out ? 0x80 : 0) | (c.rw << 4) | (c.mode << 1));
+        if (!(v & 0x20)) { if (c.rw !== 2) c.latch.push(s.count & 0xff); if (c.rw !== 1) c.latch.push(s.count >> 8); }
+      }
+      return true;
+    }
+    const c = pit.ch[sc], rw = (v >> 4) & 3;
+    if (!rw) { const s = state(c); c.latch = c.rw === 1 ? [s.count & 0xff] : c.rw === 2 ? [s.count >> 8] : [s.count & 0xff, s.count >> 8]; return true; }   // (counter latch)
+    Object.assign(c, { rw, mode: (v >> 1) & 7, lo: true, wlo: true, latch: [] });
+    return true;
+  }
+  const c = pit.ch[port - 0x40];
+  if (isIn) {
+    if (c.latch.length) return ret(c.latch.shift());
+    const s = state(c).count;
+    if (c.rw === 1) return ret(s & 0xff);
+    if (c.rw === 2) return ret(s >> 8);
+    const r = c.lo ? s & 0xff : s >> 8; c.lo = !c.lo; return ret(r);
+  }
+  // a load: the count (0 is 10000h) once whole, counting from now if the gate lets it
+  if (c.rw === 1) c.init = v; else if (c.rw === 2) c.init = v << 8;
+  else if (c.wlo) { c.pend = v; c.wlo = false; return true; } else { c.init = c.pend | (v << 8); c.wlo = true; }
+  c.t0 = now; c.held = c.gate ? null : now;
+  return true;
+};
 P.portIO = function (port, size, isIn) {
   if (window.W95PORTTRACE) window.W95PORTTRACE(port, size, isIn, this);
   if (this.vxdTrapIO && this.vxdTrapIO(port, size, isIn)) return;   // a port a VxD traps (vmm.js)
+  if (size === 1 && this.pitIO(port, size, isIn)) return;   // the timer and port 61h
   if (this.soundIO && this.soundIO(port, size, isIn)) return;   // the sound card, DMA and interrupt controllers (sound.js)
   if (this.nicIO && this.nicIO(port, size, isIn)) return;   // the network card (lan.js)
   if (this.lptIO && this.lptIO(port, size, isIn)) return;   // the printer port (parallel.js)
