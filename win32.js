@@ -192,18 +192,20 @@ class Process {
   /** where each module is in memory: a PE image from its base for its size; a 16-bit module, each of its segments (its
    *  record has no size: an image's room was looked for as if USER's code at 1A00000h were free, and a program mapped
    *  there wrote over it) */
-  moduleSpans() {
+  moduleSpans(which = () => true) {
     const out = [];
     for (const m of this.modules) {
+      if (!which(m)) continue;
       if (m.segs) { for (const s of m.segs) out.push([s.base, s.base + Math.max(s.alloc || 0, s.len || 0, 1)]); }
       else if (m.size) out.push([m.base, m.base + m.size]);
     }
     return out;
   }
   /** room for an image of `size` bytes in the arena below the heap (400000h-2000000h): at `pref` when nothing is there,
-   *  else, for one that can be relocated, the first 64 KiB boundary with room; 0 when there is none */
-  imageRoom(pref, size, relocatable) {
-    const spans = this.moduleSpans(), free = a => a >= 0x400000 && a + size <= 0x02000000 && !spans.some(([lo, hi]) => a < hi && lo < a + size);
+   *  else, for one that can be relocated, the first 64 KiB boundary with room; 0 when there is none. A program's own
+   *  image (`own`) goes over other programs' images: each process has its own view of that range (arenaClaim) */
+  imageRoom(pref, size, relocatable, own = false) {
+    const spans = own ? this.moduleSpans(m => m.name !== 'EXE') : this.moduleSpans(), free = a => a >= 0x400000 && a + size <= 0x02000000 && !spans.some(([lo, hi]) => a < hi && lo < a + size);
     if (free(pref)) return pref;
     if (relocatable) for (let a = 0x00620000; a + size <= 0x02000000; a += 0x10000) if (free(a)) return a;
     return 0;
@@ -239,7 +241,7 @@ class Process {
     if (!m.has(name)) m.set(name, 0x10000000 | (this.newHandle({ kind: 'module', name }) & 0xffff));
     return m.get(name);
   }
-  moduleFor(h) { h = this.hmod(h); return this.modules.find(m => m.base === h) || this.exe; }
+  moduleFor(h) { h = this.hmod(h); const e = this.exe; return e && e.base === h ? e : this.modules.find(m => m.base === h && !m.hidden) || e; }   // (the running process's own program first: another's may be at its base, arenaClaim)
   thunkFor(dll, nm) {
     const key = dll + '!' + nm;
     if (this.thunkByName.has(key)) return this.thunkByName.get(key);
@@ -301,6 +303,57 @@ class Process {
   }
   /** a process's end: its copies of the DLLs' data go */
   dllForget(pc) { for (const m of this.modules || []) { const v = m.priv; if (!v) continue; v.bufs.delete(pc); if (v.cur === pc) v.cur = GONE; } }
+  /** a range of the arena where programs' images overlap, Windows 95 mapping each process's at the base its header
+   *  names in an address space of its own (400000h-7FFFFFFFh): two programs linked at 400000h without relocations run
+   *  at once, and two instances of one program each have their own data. A slot keeps one copy of [lo, hi) per view:
+   *  the process's own (`own`) for those whose image was mapped over it, view 0 for every other process's; the copy in
+   *  place is the view of the process whose thread runs (arenaUse), and the image of a process whose view is put by is
+   *  `hidden` from the dispatcher. The new process `pc`'s view, as its image is about to be mapped at [lo, hi) */
+  arenaClaim(pc, lo, hi) {
+    const arena = this.arena || (this.arena = []);
+    let s = arena.find(v => v.lo < hi && lo < v.hi);
+    if (!s) {
+      if (![...(this.procs || new Map()).values()].some(x => x !== pc && x.exitCode === null && x.exe && x.exe.base < hi && lo < x.exe.base + x.exe.size)) return;
+      s = { lo, hi, cur: 0, own: new Set(), bufs: new Map(), spare: null }; arena.push(s);
+    }
+    if (lo < s.lo || hi > s.hi) {   // (grown over the new image: each copy put by takes what is in place there now)
+      const nlo = Math.min(lo, s.lo), nhi = Math.max(hi, s.hi);
+      for (const [k, b] of s.bufs) { const g = this.u8.slice(nlo, nhi); g.set(b, s.lo - nlo); s.bufs.set(k, g); }
+      s.lo = nlo; s.hi = nhi; s.spare = null;
+    }
+    if (s.cur !== null) s.bufs.set(s.cur, this.u8.slice(s.lo, s.hi));
+    s.own.add(pc); s.cur = pc;
+    this.arenaHide(s);
+  }
+  /** the views of process `pc` (view 0 for the system's context, null) in place */
+  arenaUse(pc) {
+    for (const s of this.arena || []) {
+      const key = pc && s.own.has(pc) ? pc : 0, mine = s.bufs.get(key);
+      if (s.cur === key || !mine) continue;
+      if (s.cur !== null) { const put = s.spare && s.spare.length === mine.length ? s.spare : new Uint8Array(mine.length); put.set(this.u8.subarray(s.lo, s.hi)); s.bufs.set(s.cur, put); }
+      this.u8.set(mine, s.lo); s.bufs.delete(key); s.spare = mine; s.cur = key;
+      this.arenaHide(s);
+    }
+  }
+  /** which programs' images in slot s are in place: those of the processes whose view is */
+  arenaHide(s) {
+    const live = [...(this.procs || new Map()).values()].filter(x => x.exitCode === null && x.exe && x.exe.base < s.hi && s.lo < x.exe.base + x.exe.size);
+    for (const x of live) x.exe.hidden = true;
+    for (const x of live) if (s.own.has(x) ? s.cur === x : s.cur === 0) x.exe.hidden = false;
+  }
+  /** a process's end: its view goes, and its image's record with it when no process goes on with that image; a slot
+   *  no process has a view of its own in any more is view 0's again */
+  arenaForget(pc) {
+    for (const s of [...(this.arena || [])]) {
+      if (!s.own.has(pc)) continue;
+      s.own.delete(pc); s.bufs.delete(pc); if (s.cur === pc) s.cur = null;
+      if (pc.exe && ![...(this.procs || new Map()).values()].some(x => x.exe === pc.exe && x.exitCode === null)) this.modules = this.modules.filter(m => m !== pc.exe);
+      if (s.own.size) { this.arenaHide(s); continue; }
+      if (s.cur === null && s.bufs.has(0)) { this.u8.set(s.bufs.get(0), s.lo); s.cur = 0; }
+      this.arenaHide(s);
+      this.arena = this.arena.filter(v => v !== s);
+    }
+  }
   /** SHELL32's change notification clients (a DSA of 0x18-byte entries in its shared data), which SHLoadOLE walks to
    *  tell each that OLE is loaded. On Windows 95 Explorer's registration made it before any process loads OLE; here
    *  each process has its own copy of SHELL32's data, so a process gets the empty list Explorer's own would hold */
@@ -456,7 +509,7 @@ class Process {
       // (an export another module enters, watched: a shared session's intents, ne16.js hookIntents; a hook that answers
       // the call itself gives where it returns to: a program's clock, ne16.js hookClock)
       if (this.entryHooks) { const h = this.entryHooks.get(eip); if (h) { const to = h.call(this); if (to !== undefined) { eip = to; continue; } } }
-      const m = eip >= LAYOUT.THUNK16 ? this.modules[0] : this.modules.find(x => eip >= x.meta.textLo && eip < x.meta.textHi);
+      const m = eip >= LAYOUT.THUNK16 ? this.modules[0] : this.modules.find(x => eip >= x.meta.textLo && eip < x.meta.textHi && !x.hidden);   // (not a program whose process's view is put by: arenaUse)
       if (!m) {
         if (eip < 0x10000) (this.nullJumps || (this.nullJumps = [])).push({ at: eip, from: this.lastBlock >>> 0, cs: this.cpu.cs ? this.cpu.cs.value & 0xffff : null });
         const next = this.dataCode && this.dataCode(eip);
@@ -559,6 +612,9 @@ class Process {
     if (this.fault) return;
     this.fault = f;
     log('error', 'win32', `${this.meta.name || ''} ${f.ring === 0 ? 'fatal exception' : 'fault'}: ${f.why} in ${f.module}`);
+    // (in the fault log too, with the processor's state and the address a page fault was at: cmd 'faults')
+    (this.faultLog || (this.faultLog = [])).push({ why: f.why, at: f.eip.toString(16), atIn: this.whereOf(f.eip), cr2: f.cr2.toString(16), ring: f.ring, module: f.module,
+      regs: Object.fromEntries(Object.entries(f.regs).map(([k, v]) => [k, v.toString(16)])), stack: f.stack.slice(0, 12).map(v => `${v.toString(16)} ${this.whereOf(v) || ''}`.trim()), thread: this.thread16 ? this.thread16.id : 'main' });
   }
   fail(why) {
     if (this.failed) return;
@@ -592,7 +648,12 @@ class Process {
     if (cs && this.neByHandle) {   // 16-bit: the module's file and the segment's number, the offset in it
       const ne = this.neByHandle(cs); const sg = ne && ne.meta && ne.meta.segs && ne.meta.segs.findIndex(x => x.sel === (cs & ~7) || x.sel === cs);
       if (ne) { module = (ne.fileName || ne.name + '.EXE').toUpperCase(); if (sg >= 0) sel = sg + 1; at = (eip - u32(this.selBase(cs))) >>> 0; }
-    } else if (m) module = m.kind === 'vxd' ? m.name : m === this.exe ? (this.pc && this.pc.path ? this.pc.path.replace(/^.*\\/, '') : (this.meta.name || 'EXE') + '.EXE').toUpperCase() : (typeof m.file === 'string' ? m.file : m.name + '.DLL').toUpperCase();   // (a DLL's file is its image's bytes)
+    } else {
+      // (the image the address is in, its code translated as it runs too (dyn.js): a program the bundle does not carry)
+      const im = m || this.modules.find(x => !x.hidden && !x.segs && x.size && eip >= x.base && eip < x.base + x.size);
+      const of = im && im.name === 'EXE' && (im === this.exe ? this.pc : [...(this.procs || new Map()).values()].find(x => x.exe === im));
+      if (im) module = im.kind === 'vxd' ? im.name : im.name === 'EXE' ? (of && of.path ? of.path.replace(/^.*\\/, '') : (this.meta.name || 'EXE') + '.EXE').toUpperCase() : (typeof im.file === 'string' ? im.file : im.name + '.DLL').toUpperCase();   // (a DLL's file is its image's bytes)
+    }
     const bytes = [], stack = [];
     for (let i = 0; i < 16; i++) bytes.push(eip + i < this.u8.length ? this.u8[eip + i] : 0);
     const sp = this.stackLin ? this.stackLin() : regs.esp;

@@ -787,8 +787,10 @@ P.dynBlock = function (eip) {
   // (a translation holds the code segment's base and its operand size: the same bytes run through another segment, or
   // as 16-bit code where they ran as 32-bit, are another block. DIBENG compiles 16- and 32-bit blits into one buffer)
   const key = `${eip}:${csb}:${d32 ? 32 : 16}${vm ? 'v' : ''}`;
-  let c = this.dynCache.get(key);
-  if (c && c.bytes.every((v, i) => u8[eip + i] === v)) return c;
+  // (a few translations per address: two processes' programs at one base, each process's view in place in turn, arenaUse)
+  const kept = this.dynCache.get(key) || [];
+  let c = kept.find(k => k.bytes.every((v, i) => u8[eip + i] === v));
+  if (c) return c;
   let t;
   try { t = translate(this, eip, csb, d32, vm ? this.v86 : null); }
   catch (e) { if (e instanceof Unsupported) { this.trapped = `run-time code at ${eip.toString(16)}: ${e.message}`; return null; } throw e; }
@@ -800,7 +802,7 @@ P.dynBlock = function (eip) {
     ...f80, ...(e ? { f80load: e.f80load, f80store: e.f80store } : {}) });
   const run = new WebAssembly.Instance(new WebAssembly.Module(assemble(t.fn, Object.prototype.toString.call(this.mem.buffer) === '[object SharedArrayBuffer]')), { env, cpu: this.cpu }).exports.run;
   c = { run, bytes: Array.from(u8.subarray(eip, eip + t.len)) };
-  this.dynCache.set(key, c);
+  this.dynCache.set(key, [c, ...kept.slice(0, 3)]);
   return c;
 };
 /** run run-time code from `eip` until control reaches translated module code (or the sentinel); the next address */
@@ -809,14 +811,14 @@ P.dynRun = function (eip) {
     if ((n & 0xfff) === 0xfff) { this.cpu.eip.value = eip; if (this.tick(eip)) return -1; }   // the processor's time, as the dispatcher asks
     // (an export another module enters, hooked, win32.js dispatch: a module run from its file reaches it here, never
     // through the dispatcher; a hook that answers where to go on takes the call)
-    if (this.entryHooks) { const h = this.entryHooks.get(eip); if (h) { const to = h.call(this); if (to !== undefined) { eip = u32(to); if (eip === LAYOUT.SENTINEL || eip >= LAYOUT.THUNK16 || this.modules.some(m => eip >= m.meta.textLo && eip < m.meta.textHi && this.hasBlock(m, eip))) return eip; continue; } } }
+    if (this.entryHooks) { const h = this.entryHooks.get(eip); if (h) { const to = h.call(this); if (to !== undefined) { eip = u32(to); if (eip === LAYOUT.SENTINEL || eip >= LAYOUT.THUNK16 || this.modules.some(m => eip >= m.meta.textLo && eip < m.meta.textHi && !m.hidden && this.hasBlock(m, eip))) return eip; continue; } } }
     const blk = this.dynBlock(eip); if (!blk) return null;
     const from = eip;
     try { eip = u32(blk.run()); }
     catch (e) { if (!(e instanceof WebAssembly.RuntimeError)) throw e; this.trapped = `run-time code at ${eip.toString(16)} (instruction at ${u32(this.cpu.eip.value).toString(16)}): ${e.message}`; return null; }
     if (this.memW) this.memCheck(`run-time code at ${from.toString(16)}`);   // (a write watch: each block of run-time code, win32.js memCheck)
     if (eip === LAYOUT.SENTINEL || eip >= LAYOUT.THUNK16) return eip;
-    if (this.modules.some(m => eip >= m.meta.textLo && eip < m.meta.textHi && this.hasBlock(m, eip))) return eip;
+    if (this.modules.some(m => eip >= m.meta.textLo && eip < m.meta.textHi && !m.hidden && this.hasBlock(m, eip))) return eip;   // (another process's program at this address is not this one's code: arenaUse)
   }
 };
 /** whether module `m` has a translated block starting at `eip` */

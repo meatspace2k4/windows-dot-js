@@ -648,8 +648,6 @@ class Machine {
     if (!d && this.isNE(file)) { const r = p.winExec16(fs.realpath(file), arg || '', 1); this.kick(); return r > 32 ? { ok: true } : r; }
     if (!d) return 11;
     if (p.pc0 && p.pc0.exe && p.pc0.exe.base === d.meta.base) return 8;   // (the machine's own program: one instance)
-    const live = [...(p.procs || new Map()).values()].some(x => x.exe.base === d.meta.base);   // (then the instances share its image: P.spawn)
-    if (!live) p.modules = p.modules.filter(x => x.base !== d.meta.base);
     let pc;
     try {
       const mod = d.dynamic ? null : d.modSync || (d.modSync = new WebAssembly.Module(b64bytes(d.wasm))), real = fs.realpath(file);
@@ -664,9 +662,9 @@ class Machine {
     this.kick();
     return pc;
   }
-  // a Win32 program the bundle does not carry: its image as the loader maps one (the base its header prefers when
-  // nothing is there, else, when it can be relocated, in the arena the bundle's images leave free), its code translated
-  // as it runs (dyn.js); null when it is no Win32 program or has no room
+  // a Win32 program the bundle does not carry: its image as the loader maps one (the base its header prefers, in its
+  // process's own view where other programs are; else, when it can be relocated, in the arena the system's modules
+  // leave free), its code translated as it runs (dyn.js); null when it is no Win32 program or has no room
   isNE(file) {
     let f; try { f = fs.readFile(file); } catch (_) { return false; }
     if (f.length < 0x40 || f[0] !== 0x4d || f[1] !== 0x5a) return false;
@@ -679,7 +677,9 @@ class Machine {
     const pe = dv.getUint32(0x3c, true); if (pe + 0x78 > f.length || dv.getUint32(pe, true) !== 0x4550) return null;
     const opt = pe + 24, pref = dv.getUint32(opt + 28, true), size = dv.getUint32(opt + 56, true), ep = dv.getUint32(opt + 16, true);
     const relocs = !(dv.getUint16(pe + 22, true) & 1) && dv.getUint32(opt + 96 + 5 * 8 + 4, true) > 0;
-    const p = this.proc, base = p.imageRoom(pref, size, relocs);   // (win32.js: 16-bit modules' segments counted too)
+    // (its preferred base over other programs' images, in a view of its own, as each Windows 95 process has its own
+    // arena: win32.js arenaClaim. Refused only where the system's modules are, 16-bit modules' segments counted too)
+    const p = this.proc, base = p.imageRoom(pref, size, relocs, true);
     if (!base) { W.log('warn', 'spawn', `${file}: no room for its image at ${pref.toString(16)} (${relocs ? 'relocatable' : 'no relocations'})`); return null; }
     return { dynamic: true, meta: { base, entry: base + ep, textLo: 0, textHi: 0, blocks: [], size } };
   }

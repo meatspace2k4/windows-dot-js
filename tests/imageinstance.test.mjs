@@ -20,7 +20,7 @@ Object.assign(p, {
   // (the image laid out afresh: the new instance's data)
   loadImage() { mem.fill(0x22, BASE, BASE + SIZE); const r = { base: BASE, size: SIZE }; this.modules.push(r); return r; },
 });
-const shell = { pid: 0x68, exe: rec, exitCode: null };
+const shell = { pid: 0x68, exe: rec, exitCode: null, path: 'C:\\WINDOWS\\EXPLORER.EXE' };   // (an instance of the same file)
 p.procs = new Map([[shell.pid, shell]]);
 mem.fill(0x11, BASE, BASE + SIZE);   // (the running shell's data)
 
