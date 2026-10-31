@@ -1,0 +1,263 @@
+"""The emulator's map of its own gaps, by static analysis of the system bundle's modules, nothing run. Writes
+findings/gapmap.json and prints what it found:
+
+- reach: each module's code reachable from its entry points (a PE's entry and exports, a VxD's control, API and service
+  procedures, an NE module's entry and exports, and any aligned dword of the image that holds the address of one of the
+  recompiler's blocks: callbacks, window procedures, vtables), by recursive descent over direct jumps and calls;
+- recompiler: the reachable instructions tools/recomp.py translated as an invalid opcode (its meta.unsupported kinds);
+- run-time translation: the reachable block starts dyn.js cannot translate (tools/gapmap.mjs --dyn);
+- services: every reachable VxDCall: a service nothing provides (no stand-in in vmm.js, no VxD of the bundle's), and
+  a stand-in whose results the caller reads but the stand-in does not set: a flag the caller tests after the call, or
+  a register it reads that it did not set before the call (NETBEUI's CF and EBX after Get_Crit_Status_No_Block,
+  MMDEVLDR's EDX after _lstrlen).
+
+python3 tools/staticmap.py [system.js]
+"""
+import base64, json, os, subprocess, sys
+from collections import defaultdict
+import capstone
+from capstone import x86_const as X
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BUNDLE = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, 'system.js')
+src = open(BUNDLE).read(); at = src.index('window.W95SYSTEM = ') + len('window.W95SYSTEM = ')
+S = json.loads(src[at:src.rindex(';')])
+b64 = base64.b64decode
+
+FULL = {}
+for r32, parts in {'eax': ('eax', 'ax', 'al', 'ah'), 'ebx': ('ebx', 'bx', 'bl', 'bh'), 'ecx': ('ecx', 'cx', 'cl', 'ch'), 'edx': ('edx', 'dx', 'dl', 'dh'),
+                   'esi': ('esi', 'si'), 'edi': ('edi', 'di'), 'ebp': ('ebp', 'bp'), 'esp': ('esp', 'sp')}.items():
+    for p in parts: FULL[p] = r32
+FLAGS = {'cf': (X.X86_EFLAGS_TEST_CF, X.X86_EFLAGS_MODIFY_CF | X.X86_EFLAGS_SET_CF | X.X86_EFLAGS_RESET_CF | X.X86_EFLAGS_UNDEFINED_CF),
+         'zf': (X.X86_EFLAGS_TEST_ZF, X.X86_EFLAGS_MODIFY_ZF | X.X86_EFLAGS_SET_ZF | X.X86_EFLAGS_RESET_ZF | X.X86_EFLAGS_UNDEFINED_ZF),
+         'sf': (X.X86_EFLAGS_TEST_SF, X.X86_EFLAGS_MODIFY_SF | X.X86_EFLAGS_SET_SF | X.X86_EFLAGS_RESET_SF | X.X86_EFLAGS_UNDEFINED_SF),
+         'of': (X.X86_EFLAGS_TEST_OF, X.X86_EFLAGS_MODIFY_OF | X.X86_EFLAGS_SET_OF | X.X86_EFLAGS_RESET_OF | X.X86_EFLAGS_UNDEFINED_OF)}
+
+class Image:
+    """a module's bytes where it loads: regions (base, bytes, bits)"""
+    def __init__(self, name, group, meta): self.name, self.group, self.meta, self.regions = name, group, meta, []
+    def add(self, base, data, bits): self.regions.append((base, bytes(data), bits))
+    def at(self, a):
+        for base, d, bits in self.regions:
+            if base <= a < base + len(d): return d, a - base, bits
+        return None, 0, 32
+
+def map_pe(name, group, m):
+    f = b64(m['file']); meta = m['meta']; im = Image(name, group, meta)
+    pe = int.from_bytes(f[0x3c:0x40], 'little'); opt = pe + 24
+    nsec = int.from_bytes(f[pe + 6:pe + 8], 'little'); shdr = opt + int.from_bytes(f[pe + 20:pe + 22], 'little')
+    size = int.from_bytes(f[opt + 56:opt + 60], 'little'); img = bytearray(size); hdr = int.from_bytes(f[opt + 60:opt + 64], 'little')
+    img[:hdr] = f[:hdr]
+    for i in range(nsec):
+        o = shdr + 40 * i; vs, va, rs, ro = (int.from_bytes(f[o + k:o + k + 4], 'little') for k in (8, 12, 16, 20))
+        n = min(rs, vs or rs); img[va:va + n] = f[ro:ro + n]
+    pref = int.from_bytes(f[opt + 28:opt + 32], 'little'); im.delta = meta['base'] - pref
+    im.add(meta['base'], img, 32)
+    entries = [meta['entry']] if meta.get('entry') else []
+    exp = int.from_bytes(f[opt + 96:opt + 100], 'little')
+    if exp:
+        nf = int.from_bytes(img[exp + 20:exp + 24], 'little'); fa = int.from_bytes(img[exp + 28:exp + 32], 'little')
+        for k in range(nf):
+            r = int.from_bytes(img[fa + 4 * k:fa + 4 * k + 4], 'little')
+            if r: entries.append(meta['base'] + r)
+    return im, entries
+
+def map_vxd(name, m):
+    meta = m['meta']; im = Image(name, 'vxds', meta); img = b64(m['image']); im.delta = 0; im.add(meta['base'], img, 32)
+    d = meta['ddb'] - meta['base']; dw = lambda o: int.from_bytes(img[o:o + 4], 'little')
+    entries = [dw(d + 0x18), dw(d + 0x1c), dw(d + 0x20)]
+    tab, n = dw(d + 0x30), dw(d + 0x34)
+    if tab and meta['base'] <= tab < meta['base'] + len(img): entries += [dw(tab - meta['base'] + 4 * k) for k in range(min(n, 512))]
+    return im, [e for e in entries if e]
+
+def map_ne(name, m):
+    f = b64(m['file']); meta = m['meta']; im = Image(name, 'ne', meta); im.delta = 0
+    base_of = {}
+    for g in meta['segs']:
+        if g.get('fileoff') and g.get('len'): im.add(g['base'], f[g['fileoff']:g['fileoff'] + g['len']], g.get('bits', 16)); base_of[g['sel']] = g['base']; base_of[g['num']] = g['base']
+    entries = []
+    es, eo = meta['entry'] if isinstance(meta.get('entry'), list) else (0, 0)
+    if es in base_of: entries.append(base_of[es] + eo)
+    for v in (meta.get('exports') or {}).values():
+        if isinstance(v, list) and v[0] in base_of: entries.append(base_of[v[0]] + v[1])
+    return im, entries
+
+images = []
+for n, m in S.get('vxds', {}).items(): images.append(map_vxd(n, m))
+for g in ('dlls', 'programs', 'net', 'drivers'):
+    for n, m in S.get(g, {}).items():
+        if 'file' in m: images.append(map_pe(n, g, m))
+for n, m in S.get('ne', {}).items(): images.append(map_ne(n, m))
+
+md = {32: capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32), 16: capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_16)}
+for c in md.values(): c.detail = True
+
+def insn_at(im, a):
+    """the instruction at linear `a`; 16-bit code decoded at its offset in the segment, so its targets are offsets"""
+    d, o, bits = im.at(a)
+    if d is None: return None, bits
+    for i in md[bits].disasm(d[o:o + 16], a if bits == 32 else o, 1): return i, bits
+    return None, bits
+
+def target(im, a, i, bits):
+    op = i.operands[0] if i.operands else None
+    if op is None or op.type != X.X86_OP_IMM: return None
+    if bits == 32: return op.imm & 0xffffffff
+    d, o, _ = im.at(a); return a - o + (op.imm & 0xffff)
+
+def is_vxdcall(i): return i.mnemonic == 'int' and i.op_str == '0x20'
+BRANCH_END = {'ret', 'retf', 'iret', 'iretd', 'jmp', 'ljmp', 'hlt', 'ud2', 'int3'}
+
+def reach(im, entries):
+    """recursive descent: every instruction reachable from the entries along direct transfers; the block starts"""
+    blocks = set(im.meta.get('blocks') or []); text = (im.meta.get('textLo', 0), im.meta.get('textHi', 0))
+    # (aligned dwords of the image holding one of the recompiler's block addresses: callbacks, procedures, tables)
+    for base, d, bits in im.regions:
+        if bits != 32: continue
+        for o in range(0, len(d) - 3, 4):
+            v = (int.from_bytes(d[o:o + 4], 'little') + im.delta) & 0xffffffff
+            if v in blocks: entries.append(v)
+    seen, starts, work, insns = set(), set(), [e for e in entries if text[0] <= e < text[1] or im.at(e)[0] is not None], {}
+    starts.update(work); funcs = set(work)
+    while work:
+        a = work.pop()
+        while a not in seen:
+            i, bits = insn_at(im, a)
+            if i is None: break
+            seen.add(a); insns[a] = (i, bits)
+            nxt = a + i.size
+            if is_vxdcall(i):
+                d, o, _ = im.at(a)
+                code = int.from_bytes(d[o + 2:o + 6], 'little') if d else 0
+                insns[a] = (i, bits, code); nxt = a + 6
+                if code & 0x8000: break   # (VxDJmp: back to the caller's caller)
+                starts.add(nxt); a = nxt; continue
+            grp = i.groups
+            if capstone.CS_GRP_JUMP in grp or capstone.CS_GRP_CALL in grp:
+                t = target(im, a, i, bits) if i.mnemonic not in ('ljmp', 'lcall') else None
+                if t is not None and im.at(t)[0] is not None:
+                    work.append(t); starts.add(t)
+                    if capstone.CS_GRP_CALL in grp: funcs.add(t)
+                if i.mnemonic in ('jmp', 'ljmp'): break
+                starts.add(nxt)
+            if i.mnemonic in BRANCH_END or capstone.CS_GRP_RET in grp or capstone.CS_GRP_IRET in grp: break
+            a = nxt
+    return insns, starts, funcs
+
+def full(reg_id, i):
+    n = i.reg_name(reg_id); return FULL.get(n, n)
+
+def reads_after(im, a, limit=24):
+    """registers and flags read before being written along the paths from `a` (both ways at a branch, up to `limit`
+    instructions a path, ending at a return, a call, an indirect jump or another VxDCall)"""
+    regs, flags, seen = set(), set(), set()
+    def walk(a, written, wflags, n):
+        while n < limit and a not in seen:
+            i, bits = insn_at(im, a)
+            if i is None or is_vxdcall(i): return
+            seen.add(a); n += 1
+            rr, ww = i.regs_access()
+            # (xor r, r and sub r, r read nothing; push r then a write of r saves it: neither reads a result)
+            if i.mnemonic in ('xor', 'sub') and len(i.operands) == 2 and all(o.type == X.X86_OP_REG for o in i.operands) and i.operands[0].reg == i.operands[1].reg: rr = []
+            if i.mnemonic == 'push' and i.operands and i.operands[0].type == X.X86_OP_REG:
+                j, _ = insn_at(im, a + i.size)
+                if j is not None and full(i.operands[0].reg, i) in {full(r, j) for r in j.regs_access()[1]} - {full(r, j) for r in j.regs_access()[0]}: rr = []
+            for r in rr:
+                f = full(r, i)
+                if f in ('eax', 'ebx', 'ecx', 'edx', 'esi', 'edi', 'ebp') and f not in written: regs.add(f)
+            for k, (test, mod) in FLAGS.items():
+                if i.eflags & test and k not in wflags: flags.add(k)
+            for r in ww: written = written | {full(r, i)}
+            for k, (test, mod) in FLAGS.items():
+                if i.eflags & mod: wflags = wflags | {k}
+            if capstone.CS_GRP_CALL in i.groups or capstone.CS_GRP_RET in i.groups or i.mnemonic in ('iret', 'iretd', 'hlt'): return
+            if capstone.CS_GRP_JUMP in i.groups:
+                t = target(im, a, i, bits)
+                if t is None: return
+                if i.mnemonic == 'jmp': a = t; continue
+                walk(t, written, wflags, n)
+            a += i.size
+    walk(a, frozenset(), frozenset(), 0)
+    return regs, flags
+
+def before(im, funcs, a):
+    """what the caller does from the start of its function to the call, straight through: the registers it writes, and
+    each flag's state there: 'data' when an instruction last set it from data, 'known' when a conditional jump on it
+    came after (on the way to the call it then has one value, so a test after the call asks the service), absent when
+    nothing set it"""
+    s = max((x for x in funcs if x <= a and a - x < 0x2000), default=a)
+    regs, fl = set(), {}; p = s
+    while p < a:
+        i, bits = insn_at(im, p)
+        if i is None: break
+        if is_vxdcall(i):   # (an earlier service's results count as set: its stand-in's registers and flags)
+            d, o, _ = im.at(p); code = int.from_bytes(d[o + 2:o + 6], 'little') if d else 0
+            sets = set(standins.get('%04x:%04x' % (code >> 16, code & 0x7fff), {}).get('sets', []))
+            regs |= sets; fl.update({k: 'data' for k in sets if k in FLAGS}); p += 6; continue
+        for r in i.regs_access()[1]: regs.add(full(r, i))
+        for k, (test, mod) in FLAGS.items():
+            if i.eflags & test and capstone.CS_GRP_JUMP in i.groups and fl.get(k) == 'data': fl[k] = 'known'
+            if i.eflags & mod: fl[k] = 'data'
+        p += i.size
+    return regs, fl
+
+# the stand-ins' results (tools/gapmap.mjs --standins), and the devices the bundle's VxDs provide
+standins = json.loads(subprocess.run(['node', os.path.join(ROOT, 'tools', 'gapmap.mjs'), '--standins', BUNDLE], capture_output=True, text=True, check=True).stdout)
+provided = {m['meta']['id'] for m in S.get('vxds', {}).values()}
+
+result = {'modules': {}, 'recompUnsupported': defaultdict(lambda: {'count': 0, 'at': []}), 'services': {'missing': defaultdict(list), 'contract': defaultdict(lambda: {'reads': defaultdict(list)})}}
+dyn_starts = {}
+for im, entries in images:
+    insns, starts, funcs = reach(im, list(entries))
+    unsup = set(im.meta.get('unsupportedAt') or [])
+    n_unsup = 0
+    for a, rec in insns.items():
+        i = rec[0]; key = i.mnemonic if a in unsup else None
+        if key:
+            n_unsup += 1; e = result['recompUnsupported'][key]; e['count'] += 1
+            if len(e['at']) < 10: e['at'].append('%s+%x' % (im.name, a - im.meta['base']))
+        if len(rec) == 3 and im.group in ('vxds', 'drivers'):
+            code = rec[2]; dev, svc = code >> 16, code & 0x7fff; key = '%04x:%04x' % (dev, svc)
+            site = '%s+%x' % (im.name, a - im.meta['base'])
+            if key not in standins:
+                if dev not in provided and not (svc == 0): result['services']['missing'][key].append(site)
+                continue
+            if code & 0x8000: continue
+            regs, flags = reads_after(im, a + 6)
+            st = standins[key]; sets = set(st['sets'])
+            wrote, fl = before(im, funcs, a)
+            # (a flag tested after the call that the caller left unset, or had one value for on its way to the call: the
+            # service's to set. A C service's ECX or EDX read after it, not set before: a result the service returns
+            # beside EAX)
+            for f in sorted(flags - sets):
+                if fl.get(f) != 'data': result['services']['contract'][key]['reads'][f].append(site)
+            if st.get('cdecl', '(arg)' in st['source'] or 'arg(' in st['source']):
+                for r in sorted((regs & {'ecx', 'edx'}) - sets - wrote): result['services']['contract'][key]['reads'][r].append(site)
+            if st.get('probe'): result['services']['contract'][key]['probe'] = st['probe']
+            result['services']['contract'][key]['source'] = st['source']
+    dyn_starts[im.name] = {'bits': {('%x' % a): bits for a in sorted(starts) for _, _, bits in [im.at(a)]}, 'base': im.meta['base']}
+    result['modules'][im.name] = {'group': im.group, 'entries': len(entries), 'reachable': len(insns), 'blockStarts': len(starts), 'recompUnsupported': n_unsup}
+
+# run-time translation over the reachable block starts
+tmp = os.path.join(ROOT, 'findings', '.reach.json'); os.makedirs(os.path.dirname(tmp), exist_ok=True)
+json.dump(dyn_starts, open(tmp, 'w'))
+dyn = json.loads(subprocess.run(['node', os.path.join(ROOT, 'tools', 'gapmap.mjs'), '--dyn', tmp, BUNDLE], capture_output=True, text=True, check=True).stdout)
+os.remove(tmp)
+result['dynUntranslatable'] = dyn
+# (a contract finding needs a read the stand-in leaves unset; keep the services that have one)
+result['services']['contract'] = {k: {'reads': dict(v['reads']), **{x: v[x] for x in ('probe', 'source') if x in v}} for k, v in result['services']['contract'].items() if v['reads']}
+result['services']['missing'] = dict(result['services']['missing'])
+result['recompUnsupported'] = dict(result['recompUnsupported'])
+json.dump(result, open(os.environ.get('GAPMAP_OUT') or os.path.join(ROOT, 'findings', 'gapmap.json'), 'w'), indent=1)   # (W95_SCRIPTS, GAPMAP_OUT: the check run on other scripts, tools/gapmap.mjs)
+
+print('reachable instructions:', sum(m['reachable'] for m in result['modules'].values()), 'in', len(result['modules']), 'modules')
+print('recompiler #UD, reachable:')
+for k, e in sorted(result['recompUnsupported'].items(), key=lambda kv: -kv[1]['count']): print('  %5d  %-22s %s' % (e['count'], k, ' '.join(e['at'][:4])))
+print('run-time translation, reachable blocks it cannot take:')
+for k, e in sorted(dyn.items(), key=lambda kv: -kv[1]['count']): print('  %5d  %-45s %s' % (e['count'], k, ' '.join(e['first'][:4])))
+print('VxD services nothing provides:')
+for k, v in sorted(result['services']['missing'].items()): print('  %s  %d sites  %s' % (k, len(v), ' '.join(v[:3])))
+print('stand-ins whose callers read a result they do not set:')
+for k, v in sorted(result['services']['contract'].items()):
+    print('  %s%s' % (k, '  (probe: %s)' % v['probe'] if 'probe' in v else ''))
+    for r, sites in v['reads'].items(): print('      %-4s %d sites  %s' % (r, len(sites), ' '.join(sites[:3])))

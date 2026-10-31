@@ -187,6 +187,7 @@ P.sysVM = function () {
 // ---------------------------------------------------------------- INT 20h: VxDCall / VxDJmp
 const SVC = {};   // (device << 16 | service) -> fn(p): register services read and write p.cpu; C services use arg(i)
 const svc = (dev, n, fn) => { SVC[dev << 16 | n] = fn; };
+N.VXD_SVC = SVC;   // (the stand-ins by device << 16 | service, for the static checks: tools/gapmap.mjs)
 INTS[0x20] = function (next) {
   const d = this.r32(u32(next) - 4), dev = d >>> 16, n = d & 0x7fff, jmp = d & 0x8000, fn = SVC[dev << 16 | n];
   if (window.W95VXDTRACE) window.W95VXDTRACE(dev, n, this, u32(next) - 6);   // debugging: every VxDCall
@@ -253,7 +254,8 @@ svc(VMM, 0xd0, function () { this.cpu.eax.value = this.sysTime(); });           
 svc(VMM, 0x114, function () {});                                                                      // Adjust_Thread_Exec_Priority
 svc(VMM, 0x163, function () {});                                                                      // Set_Inversion_Pri
 svc(VMM, 0x166, function () { return 8; });                                                           // Get_Thread_Win32_Pri: normal
-svc(VMM, 0x21, function () { if (this.vxdCrit) this.vxdCrit--; });                                   // End_Crit_And_Suspend
+// End_Crit_And_Suspend: CF set, the system VM not suspended (as Suspend_VM answers), which SHELL tests for
+svc(VMM, 0x21, function () { if (this.vxdCrit) this.vxdCrit--; CF(this, true); });
 // Get_Crit_Section_Status: EBX the owner, ECX its claims (none but the VxDs' own here)
 svc(VMM, 0x29, function () { const n = this.vxdCrit || 0; this.cpu.ecx.value = n; this.cpu.ebx.value = n ? this.sysVM() : 0; CF(this, false); });
 svc(VMM, 0x09, function () { CF(this, false); });                                                     // Install_V86_Break_Point: no V86 code reaches it
@@ -382,7 +384,12 @@ svc(VMM, 0xa4, function () {                                                    
 svc(VMM, 0xa5, function () { const l = lists(this).get(u32(this.cpu.esi.value)); const a = l && l.nodes.length ? l.nodes.shift() : 0; this.cpu.eax.value = a; ZF(this, !a); });   // List_Remove_First
 
 // ---- VMM: strings
-svc(VMM, 0x17b, function (arg) { const s = this.readA(arg(1)) || '', n = arg(2); this.writeA(arg(0), s.slice(0, Math.max(n - 1, 0)), n); return arg(0); });   // _lstrcpyn
+// _lstrcpyn(dest, src, n): EAX dest, EDX its terminating null, ECX the room left there, as its callers append: SHELL
+// copies the Windows folder, then a file name at EDX in ECX characters (tools/staticmap.py found the reads)
+svc(VMM, 0x17b, function (arg) {
+  const s = this.readA(arg(1)) || '', n = u32(arg(2)), k = this.writeA(arg(0), s.slice(0, Math.max(Math.min(n, 0x7fffffff) - 1, 0)), n > 0x7fffffff ? undefined : n);
+  this.cpu.edx.value = u32(arg(0) + k) | 0; this.cpu.ecx.value = u32(n - k) | 0; return arg(0);
+});
 // _lstrlen: EAX the length, EDX the terminating null, as callers take it: MMDEVLDR appends "\Drivers" at EDX after it
 // (left as it was, EDX 0, the strings went to address 0, the null page)
 svc(VMM, 0x17c, function (arg) { const n = (this.readA(arg(0)) || '').length; this.cpu.edx.value = u32(arg(0) + n) | 0; return n; });
@@ -452,9 +459,11 @@ P.appyCall = function (fn, ref) {
   (this.appyQueue = this.appyQueue || []).push({ fn, ref }); return false;
 };
 // _SHELL_CallDll(dll, proc, cbArgs, args): the 16-bit DLL's export called with the argument block as its PASCAL
-// frame (the block is the stack image, last argument first); EAX its DX:AX
+// frame (the block is the stack image, last argument first); EAX its DX:AX, ECX 0 once it was called (SHELL's callers
+// take ECX nonzero, jecxz, as the call not made: tools/staticmap.py)
 svc(SHELL, 0x18, function (arg) {
   const dll = this.readA(arg(0)) || '', proc = arg(1) >>> 16 ? this.readA(arg(1)) || '' : arg(1) & 0xffff, n = arg(2), blk = arg(3);
+  this.cpu.ecx.value = 1;
   const m = this.loadLibrary16(dll); if (!m) return 0;
   let ep;
   if (m.meta) ep = this.neExport(m, typeof proc === 'string' ? proc.toUpperCase() : proc);
@@ -464,7 +473,7 @@ svc(SHELL, 0x18, function (arg) {
   }
   if (!ep) return 0;
   const words = []; for (let o = n - 2; o >= 0; o -= 2) words.push(['w', this.r16(blk + o)]);
-  this.tick16(); return this.call16(ep >>> 16, ep & 0xffff, words).dxax;
+  this.tick16(); const r = this.call16(ep >>> 16, ep & 0xffff, words).dxax; this.cpu.ecx.value = 0; return r;
 });
 /** run the appy-time callbacks VxDs scheduled: the host calls this between slices */
 P.vxdAppy = function () {
@@ -1249,7 +1258,7 @@ svc(VMM, 0xb1, profNum(v => (/^(1|on|yes|true)$/i.test(v) ? 0xffffffff : /^(0|of
 // Get_Config_Directory: EDX the Windows directory (with its backslash); Get_Exec_Path: EDX VMM32's path, ECX the
 // length of its directory part
 const lin = (p, k, s) => p[k] || (p[k] = (() => { const a = p.alloc(s.length + 1); p.writeA(a, s); return a; })());
-svc(VMM, 0xb7, function () { this.cpu.edx.value = lin(this, 'cfgDirLin', 'C:\\WINDOWS\\'); });
+svc(VMM, 0xb7, function () { this.cpu.edx.value = lin(this, 'cfgDirLin', 'C:\\WINDOWS\\'); this.cpu.ecx.value = 11; });   // (ECX: the characters up to the last backslash)
 svc(VMM, 0xb6, function () { this.cpu.edx.value = lin(this, 'execPathLin', 'C:\\WINDOWS\\SYSTEM\\VMM32.VXD'); this.cpu.ecx.value = 'C:\\WINDOWS\\SYSTEM\\'.length; });
 // OpenFile (EDX the name, EDI a buffer for the path found): the file found as DOS searches for it (the current
 // directory, the Windows and system directories, the path), opened for reading: EAX its DOS handle
@@ -1362,7 +1371,8 @@ svc(VMM, 0x159, function () {
 // its interrupts through the personality (ne16 INTS), so a hook here sees only what a VxD reflects to it
 const vec = p => p.vxdVecs || (p.vxdVecs = { pm: new Map(), v86: new Map(), hooks: new Map() });
 // a vector no VxD has set leads to the personality's own handler for it (its DOS for 21h), as the VM's previous handler
-svc(VMM, 0x44, function () { const n = this.cpu.eax.value & 0xff, v = vec(this).pm.get(n) || (N.INTS[n] ? this.thunk16For(`PMINT.#${n}`) : 0); this.cpu.ecx.value = lo16(this.cpu.ecx.value, v >>> 16); this.cpu.edx.value = v & 0xffff; });   // Get_PM_Int_Vector: CX:EDX
+// (ZF set when the vector is the default one, nothing having hooked it: IFSMGR asks of INT 24h's)
+svc(VMM, 0x44, function () { const n = this.cpu.eax.value & 0xff, own = vec(this).pm.get(n), v = own || (N.INTS[n] ? this.thunk16For(`PMINT.#${n}`) : 0); this.cpu.ecx.value = lo16(this.cpu.ecx.value, v >>> 16); this.cpu.edx.value = v & 0xffff; ZF(this, !own); });   // Get_PM_Int_Vector: CX:EDX
 for (const n of [0x21, 0x2f, 0x25, 0x26, 0x2a, 0x5c]) def16('PMINT', n, '', 'jmp', function () {   // an interrupt frame: IP, CS, flags
   const r = N.INTS[n] ? N.INTS[n].call(this, W.LAYOUT.SENTINEL - 16) : undefined;
   if (r === W.LAYOUT.SENTINEL) return r;
@@ -1446,7 +1456,7 @@ svc(VWIN32, 0x00, function () { this.cpu.eax.value = 0x400; CF(this, false); });
 svc(VWIN32, 0x0d, function () { return 0xc6000000 | 1; });                                          // VWIN32_GetCurrentProcessHandle
 svc(VWIN32, 0x10, function (arg) { const e = this.r0Event(arg(0)); if (e) e.set = false; return e ? 1 : 0; });   // _VWIN32_ResetWin32Event
 // _VWIN32_QueueKernelAPC(pfn, thread, data, flags): the ring-0 procedure called with the data when the thread next runs
-svc(VWIN32, 0x19, function (arg) { (this.kernelApcs = this.kernelApcs || []).push({ fn: arg(0), data: arg(2) }); return 1; });
+svc(VWIN32, 0x19, function (arg) { (this.kernelApcs = this.kernelApcs || []).push({ fn: arg(0), data: arg(2) }); ZF(this, false); return 1; });   // (ZF from the result, which IFSMGR tests)
 svc(VWIN32, 0x1a, function () { W.log('warn', 'vxd', 'VWIN32_SysErrorBox'); this.cpu.eax.value = 0; });
 // ---- SHELL: SHELL_SYSMODAL_Message is the recompiled SHELL.VXD's (its blue screen when Windows cannot show the
 // message); _SHELL_BroadcastSystemMessage: no window gets it here

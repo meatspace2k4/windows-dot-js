@@ -550,7 +550,7 @@ class Translator:
     TRACE = False
     def __init__(self, pe, blocks):
         self.pe, self.blocks = pe, blocks
-        self.unsupported = {}
+        self.unsupported = {}; self.unsupported_at = []
     def block(self, start, lst):
         f = Fn()
         if self.TRACE: f.c(start).e(0x10, uleb(IMP['btrace']))
@@ -565,6 +565,7 @@ class Translator:
         except Unsupported as e:
             key = '%s %s' % (ins.mn, ins.i.op_str) if 'reg' in str(e) or 'segment' in str(e) else ins.mn
             self.unsupported[key] = self.unsupported.get(key, 0) + 1
+            self.unsupported_at.append(ins.addr)   # (where: tools/staticmap.py keeps the ones its code reaches)
             # #UD at the instruction: the host dispatches the exception and leaves the continuation in the eip global
             f = Fn(); f.c(ins.addr).c(1).e(0x10, uleb(IMP['trap'])); f.gg('eip').e(RETURN)
         return f
@@ -1647,6 +1648,7 @@ def build_ne(path, out, base, selbase, lookup, registry):
                 autodata=ne.autodata, entry=[ne.entry_seg, ne.entry_off], imports=ne.mods, exports=exports, names=ne.names, fixups=fixups,
                 textLo=text_lo, textHi=text_hi, lookup=lookup, blocks=order, thunks=reg['thunks'], **({'mmio': list(MMIO)} if MMIO else {}),
                 layout=dict(sentinel=SENTINEL, thunkBase=THUNK_BASE, thunk16Base=THUNK16_BASE, thunk16Sel=THUNK16_SEL, ldt=LDT_BASE, fpuBase=FPU_BASE, pages=MEM_PAGES))
+    meta['unsupported'] = tr.unsupported; meta['unsupportedAt'] = sorted(tr.unsupported_at)   # (the instructions translated as #UD, by kind and where: tools/staticmap.py)
     json.dump(meta, open(out + '.json', 'w'))
     print('%s: %d insns, %d blocks, wasm %d bytes, %d fixups, %d thunks' % (ne.name, len(insns), len(blocks), len(mod), len(fixups), len(reg['thunks'])))
     if tr.unsupported: print('  unsupported:', dict(sorted(tr.unsupported.items(), key=lambda kv: -kv[1])[:25]))
@@ -1715,6 +1717,7 @@ def build(path, out, base=None, lookup=0x06000000):
     open(out + '.wasm', 'wb').write(mod)
     meta = dict(sha256=hashlib.sha256(data).hexdigest(), base=pe.base, prefBase=pe.pref, entry=pe.entry, textLo=text_lo, textHi=text_hi,
                 lookup=lookup, blocks=order, layout=dict(sentinel=SENTINEL, thunkBase=THUNK_BASE, fpuBase=FPU_BASE, pages=MEM_PAGES))
+    meta['unsupported'] = tr.unsupported; meta['unsupportedAt'] = sorted(tr.unsupported_at)   # (the instructions translated as #UD, by kind and where: tools/staticmap.py)
     json.dump(meta, open(out + '.json', 'w'))
     print('%s: %d insns, %d blocks, wasm %d bytes' % (path.split('/')[-1], len(insns), len(blocks), len(mod)))
     if tr.unsupported: print('  unsupported:', tr.unsupported)
@@ -1736,6 +1739,7 @@ def build_vxd(path, out, base, lookup):
     meta = dict(sha256=hashlib.sha256(data).hexdigest(), base=pe.base, size=pe.size, vxd=True, id=pe.vxd_id, name=pe.vxd_name,
                 ddb=pe.ddb, procs=pe.procs, services=pe.services, textLo=text_lo, textHi=text_hi, lookup=lookup, blocks=order,
                 layout=dict(sentinel=SENTINEL, thunkBase=THUNK_BASE, fpuBase=FPU_BASE, pages=MEM_PAGES))
+    meta['unsupported'] = tr.unsupported; meta['unsupportedAt'] = sorted(tr.unsupported_at)   # (the instructions translated as #UD, by kind and where: tools/staticmap.py)
     json.dump(meta, open(out + '.json', 'w'))
     open(out + '.img', 'wb').write(bytes(pe.image))
     print('%s (%s, VxD %xh): %d insns, %d blocks, wasm %d bytes' % (path.split('/')[-1], pe.vxd_name, pe.vxd_id, len(insns), len(blocks), len(mod)))

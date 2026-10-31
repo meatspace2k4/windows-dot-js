@@ -275,9 +275,11 @@ function translate(p, lin, csb, d32, v86) {
       if (b & 2) { rd(o, sz); f.ls(T); wrReg(o.reg, sz, T); } else { rdReg(o.reg, sz); f.ls(T); wr(o, sz, T); }
       continue;
     }
-    if (b === 0x8c) { const o = modrm(); f.gg(SEG[o.reg][0]).ls(T); wr(o, o.isReg ? osz : 2, T); continue; }
-    if (b === 0x8e) { const o = modrm(); rd(o, 2); f.ls(T); loadSeg(o.reg, T); continue; }
-    if (b === 0x8d) { const o = modrm(); f.lg(A).gg(sbase(o.sr)).op('sub').ls(T); wrReg(o.reg, osz, T); continue; }   // lea: the offset (less the base its address added: SS's for BP and SP)
+    // (segment registers 6 and 7 are none, and CS is no mov's to load: an invalid opcode, as the processor takes them;
+    // indexed past the table, the translator itself threw: tools/staticmap.py)
+    if (b === 0x8c) { const o = modrm(); if (o.reg > 5) throw new Unsupported(`mov from segment register ${o.reg}`); f.gg(SEG[o.reg][0]).ls(T); wr(o, o.isReg ? osz : 2, T); continue; }
+    if (b === 0x8e) { const o = modrm(); if (o.reg > 5 || o.reg === 1) throw new Unsupported(`mov to segment register ${o.reg}`); rd(o, 2); f.ls(T); loadSeg(o.reg, T); continue; }
+    if (b === 0x8d) { const o = modrm(); if (o.isReg) throw new Unsupported('lea with a register operand'); f.lg(A).gg(sbase(o.sr)).op('sub').ls(T); wrReg(o.reg, osz, T); continue; }   // lea: the offset (less the base its address added: SS's for BP and SP)
     if (b === 0x8f) { const o = modrm(); pop(T, osz); wr(o, osz, T); continue; }
     if (b === 0x90) continue;
     if (b === 0x60) {   // pusha: AX CX DX BX, SP as it was, BP SI DI
@@ -787,6 +789,12 @@ function assemble(fn, shared) {
 }
 
 /** the run-time block at linear `eip`, translated now or from the cache; null when it cannot be translated */
+/** whether the block at linear `eip` can be translated, flat 32-bit code (16-bit with `d32` false): null, or what it
+ *  cannot take (tools/gapmap.mjs, translating every block of every module without running it) */
+P.dynCheck = function (eip, d32 = true) {
+  try { const t = translate(this, u32(eip), 0, d32, null); return { len: t.len }; }
+  catch (e) { if (e instanceof Unsupported) return { unsupported: e.message }; throw e; }
+};
 P.dynBlock = function (eip) {
   this.dynCache = this.dynCache || new Map();
   const u8 = this.u8;
