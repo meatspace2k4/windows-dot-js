@@ -184,19 +184,26 @@ class Machine {
     if (!p.runLevel || !cpu.ss) return this.pollIn();
     return p.asInterrupt(() => this.pollIn());
   }
+  /** an error from ring 0 the poll ran (a VxD's time-out, VKD's key): a processor exception there is the machine's to
+   *  answer (VWIN32's blue screen, step), and the run it interrupted goes no further; printed and passed over, the
+   *  system ran on with the VxD's state broken (NETBEUI's time-out faulted, ran again from 0, and wrote over the screen) */
+  r0Fault(e) {
+    if (!(e instanceof W.FaultError)) { console.error(e); return; }
+    this.proc.faulted(e.fault); throw e;
+  }
   pollIn() {
     const p = this.proc; let r;
     // the timer's interrupt: the VMM's global time-outs that are due run now, unless ring 0 or its critical section has
     // the processor (a guest running on inside a call still gets them, as a hung Windows still runs REBOOT's)
     if (p.depth && !p.r0Depth && !p.vxdCrit && p.vxdTimeOuts && p.vxdTimeOuts.size && !this.inTimer) {
       this.inTimer = true; const d = p.depth; p.depth = 0;
-      try { p.vxdRunTimeOuts(); } catch (e) { console.error(e); } finally { p.depth = d; this.inTimer = false; }
+      try { p.vxdRunTimeOuts(); } catch (e) { this.r0Fault(e); } finally { p.depth = d; this.inTimer = false; }
     }
     while ((r = B.ringTake(this.ring))) {
       if (r[0] === B.KEY) {
         const scan = r[1] & 0xff, ext = !!(r[1] & 0x100), up = !!(r[1] & 0x200), toUser = !!(r[1] & 0x400), mods = { shift: !!(r[2] & 1), ctrl: !!(r[2] & 2), alt: !!(r[2] & 4) };
         if (this.lagLog) this.lagLog.push({ k: 'key-in', vk: r[3], up, t: Date.now() });
-        let taken = false; try { taken = scan && p.vkdKey ? p.vkdKey(scan, ext, up, mods) : false; } catch (e) { console.error(e); }
+        let taken = false; try { taken = scan && p.vkdKey ? p.vkdKey(scan, ext, up, mods) : false; } catch (e) { this.r0Fault(e); }
         if (!taken && toUser && r[3]) this.queueKey(r[3], scan | (ext ? 0x100 : 0), up, mods);
         if (!taken && toUser) p.dispatchInput(up ? W.WM.KEYUP : W.WM.KEYDOWN, r[3] || scan, 0);
         if (!up) this.stopFullSavers();
