@@ -511,7 +511,7 @@
    "count": 1
   },
   "int 21h ax=6000": {
-   "answer": "unhandled int 21h ax=6000 bx=0 cx=0",
+   "answer": "answered",
    "sites": [
     "DSKMAINT.DLL 1:1ac"
    ],
@@ -672,7 +672,7 @@
    "count": 1
   },
   "int 21h ax=5a00": {
-   "answer": "unhandled int 21h ax=5a00 bx=0 cx=0",
+   "answer": "answered (threw on an empty machine: Cannot read properties of undefined (reading 'get'))",
    "sites": [
     "DSKMAINT.DLL 3:4f46"
    ],
@@ -712,7 +712,7 @@
    "count": 1
   },
   "int 21h ax=71a8": {
-   "answer": "unhandled int 21h ax=71a8 bx=0 cx=0",
+   "answer": "answered",
    "sites": [
     "DSKMAINT.DLL 4:a402"
    ],
@@ -849,14 +849,14 @@
    "count": 3
   },
   "int 21h ax=6800": {
-   "answer": "unhandled int 21h ax=6800 bx=0 cx=0",
+   "answer": "answered (threw on an empty machine: Cannot read properties of undefined (reading 'get'))",
    "sites": [
     "DSKMAINT.DLL 6:752f"
    ],
    "count": 1
   },
   "int 21h ax=716c": {
-   "answer": "unhandled int 21h ax=716c bx=0 cx=0",
+   "answer": "answered (threw on an empty machine: Cannot read properties of undefined (reading 'get'))",
    "sites": [
     "DSKMAINT.DLL 6:7563"
    ],
@@ -899,21 +899,21 @@
    "count": 1
   },
   "int 21h ax=5400": {
-   "answer": "unhandled int 21h ax=5400 bx=0 cx=0",
+   "answer": "answered",
    "sites": [
     "DSKMAINT.DLL 8:aa"
    ],
    "count": 1
   },
   "int 21h ax=2e00": {
-   "answer": "unhandled int 21h ax=2e00 bx=0 cx=0",
+   "answer": "answered",
    "sites": [
     "DSKMAINT.DLL 8:b6"
    ],
    "count": 1
   },
   "int 21h ax=2e01": {
-   "answer": "unhandled int 21h ax=2e01 bx=0 cx=0",
+   "answer": "answered",
    "sites": [
     "DSKMAINT.DLL 8:c2"
    ],
@@ -990,7 +990,7 @@
    "count": 2
   },
   "int 21h ax=6506": {
-   "answer": "unhandled int 21h ax=6506 bx=0 cx=0",
+   "answer": "answered",
    "sites": [
     "NETAPI.DLL 2:1dba"
    ],
@@ -1020,7 +1020,7 @@
    "count": 1
   },
   "int 21h ax=6501": {
-   "answer": "unhandled int 21h ax=6501 bx=0 cx=0",
+   "answer": "answered",
    "sites": [
     "NETAPI.DLL 2:1f6a"
    ],
@@ -1034,21 +1034,21 @@
    "count": 1
   },
   "int 2ah ax=0100 bx=0a44": {
-   "answer": "unhandled interrupt 2ah (ax=100) at 5000",
+   "answer": "answered",
    "sites": [
     "NETAPI.DLL 2:204d"
    ],
    "count": 1
   },
   "int 21h ax=5f3d": {
-   "answer": "unhandled int 21h ax=5f3d bx=0 cx=0",
+   "answer": "answered",
    "sites": [
     "NETAPI.DLL 2:211d"
    ],
    "count": 1
   },
   "int 2ah ax=0100 bx=0a04": {
-   "answer": "unhandled interrupt 2ah (ax=100) at 5000",
+   "answer": "answered",
    "sites": [
     "NETAPI.DLL 2:21aa"
    ],
@@ -1093,7 +1093,7 @@
    "count": 1
   },
   "int 2ah ax=0000": {
-   "answer": "unhandled interrupt 2ah (ax=0) at 5000",
+   "answer": "answered",
    "sites": [
     "NETAPI.DLL 9:16"
    ],
@@ -1174,7 +1174,7 @@
    "count": 1
   },
   "int 21h ax=6601": {
-   "answer": "unhandled int 21h ax=6601 bx=0 cx=0",
+   "answer": "answered",
    "sites": [
     "SETUPX.DLL 3:4a96"
    ],
@@ -1189,7 +1189,7 @@
    "count": 2
   },
   "int 21h ax=716c bx=0002": {
-   "answer": "unhandled int 21h ax=716c bx=2 cx=0",
+   "answer": "answered (threw on an empty machine: Cannot read properties of undefined (reading 'get'))",
    "sites": [
     "SETUPX.DLL 5:d46"
    ],
@@ -1312,21 +1312,21 @@
    "count": 5
   },
   "int 21h ax=68??": {
-   "answer": "unhandled int 21h ax=6800 bx=0 cx=0",
+   "answer": "answered (threw on an empty machine: Cannot read properties of undefined (reading 'get'))",
    "sites": [
     "SETUPX.DLL 25:78"
    ],
    "count": 1
   },
   "int 21h ax=5a??": {
-   "answer": "unhandled int 21h ax=5a00 bx=0 cx=0",
+   "answer": "answered (threw on an empty machine: Cannot read properties of undefined (reading 'get'))",
    "sites": [
     "SETUPX.DLL 25:91"
    ],
    "count": 1
   },
   "int 13h ax=0d??": {
-   "answer": "unhandled interrupt 13h (ax=d00) at 5000",
+   "answer": "answered",
    "sites": [
     "SUWIN.EXE 3:2aca",
     "SUWIN.EXE 3:2b65"
@@ -2702,12 +2702,8 @@
    "count": 7
   },
   "KERNEL.#196": {
-   "have": null,
-   "count": 2,
-   "sites": [
-    "DSKMAINT.DLL 4:1509",
-    "DSKMAINT.DLL 4:151f"
-   ]
+   "have": "stand-in",
+   "count": 2
   },
   "KERNEL.#176": {
    "have": "stand-in",
@@ -3410,25 +3406,16 @@
    "count": 17
   },
   "KERNEL.#234": {
-   "have": null,
-   "count": 1,
-   "sites": [
-    "SETUPX.DLL 2:59a9"
-   ]
+   "have": "stand-in",
+   "count": 1
   },
   "KERNEL.#232": {
-   "have": null,
-   "count": 1,
-   "sites": [
-    "SETUPX.DLL 2:59ed"
-   ]
+   "have": "stand-in",
+   "count": 1
   },
   "KERNEL.#233": {
-   "have": null,
-   "count": 1,
-   "sites": [
-    "SETUPX.DLL 2:5a25"
-   ]
+   "have": "stand-in",
+   "count": 1
   },
   "KERNEL.#224": {
    "have": "stand-in",
