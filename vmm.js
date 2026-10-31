@@ -249,18 +249,18 @@ svc(VMM, 0x31, function () { CF(this, false); });                               
 svc(VMM, 0x32, function () { this.cpu.eax.value = 0; this.cpu.ecx.value = 100; this.cpu.edx.value = 50; this.cpu.esi.value = 100; });   // Get_Time_Slice_Priority
 svc(VMM, 0x33, function () { CF(this, false); });                                                     // Set_Time_Slice_Priority
 svc(VMM, 0x37, function () {});                                                                       // Adjust_Execution_Time
-svc(VMM, 0x40, function () { this.cpu.eax.value = this.sysTime(); this.cpu.edx.value = 0; });          // Get_VM_Exec_Time
+svc(VMM, 0x40, function () { this.cpu.eax.value = this.sysTime(); });                                   // Get_VM_Exec_Time: EAX, the rest kept (SHELL's EDX, a time it subtracts)
 svc(VMM, 0xd0, function () { this.cpu.eax.value = this.sysTime(); });                                  // Get_Last_Updated_VM_Exec_Time
 svc(VMM, 0x114, function () {});                                                                      // Adjust_Thread_Exec_Priority
 svc(VMM, 0x163, function () {});                                                                      // Set_Inversion_Pri
-svc(VMM, 0x166, function () { return 8; });                                                           // Get_Thread_Win32_Pri: normal
+svc(VMM, 0x166, function () { this.cpu.ecx.value = 8; return 8; });                                     // Get_Thread_Win32_Pri: normal, EAX and ECX
 // End_Crit_And_Suspend: CF set, the system VM not suspended (as Suspend_VM answers), which SHELL tests for
 svc(VMM, 0x21, function () { if (this.vxdCrit) this.vxdCrit--; CF(this, true); });
 // Get_Crit_Section_Status: EBX the owner, ECX its claims (none but the VxDs' own here)
 svc(VMM, 0x29, function () { const n = this.vxdCrit || 0; this.cpu.ecx.value = n; this.cpu.ebx.value = n ? this.sysVM() : 0; CF(this, false); });
 svc(VMM, 0x09, function () { CF(this, false); });                                                     // Install_V86_Break_Point: no V86 code reaches it
 svc(VMM, 0xbd, function () {});                                                                       // Set_System_Exit_Code
-svc(VMM, 0xdb, function () { CF(this, true); });                                                      // Get_Name_Of_Ugly_TSR: none loaded
+svc(VMM, 0xdb, function () { this.cpu.eax.value = 0; this.cpu.ebx.value = 0; ZF(this, true); CF(this, false); });   // Get_Name_Of_Ugly_TSR: EAX:EBX the name, none loaded (ZF)
 svc(VMM, 0xe0, function () { this.cpu.eax.value = 0; this.cpu.edx.value = 0; CF(this, false); });     // GetSetDetailedVMError: none
 svc(VMM, 0x142, function () { this.cpu.eax.value = 0; });                                              // Get_Set_Real_DOS_PSP
 svc(VMM, 0x18, function () { CF(this, false); });                                                     // Hook_NMI_Event: no NMI comes
@@ -291,7 +291,20 @@ svc(VMM, 0x7b, function (arg) {
   this.cpu.edx.value = u32((base & 0xff000000) | ((base >>> 16) & 0xff) | (this.r32(N.L.ACC + sel) & 0x40ff00) | g | (lim & 0xf0000));
   return u32((base & 0xffff) << 16 | (lim & 0xffff));
 });
-svc(VMM, 0xb5, function () { CF(this, true); });                                                      // Get_Environment_String: none set
+// Get_Environment_String (ESI a name, or 0): EDX its value in the environment Windows started with, or with ESI 0 the
+// environment itself (in DOS's memory after its arena header, whose size MMDEVLDR reads); CF none of that name
+svc(VMM, 0xb5, function () {
+  if (!this.vmmEnv) {
+    const s = N.DOS_ENV, paras = (s.length + 15) >> 4, a = (this.dosTop + 15) & ~15; this.dosTop = a + 16 + paras * 16;
+    this.u8.fill(0, a, a + 16 + paras * 16); this.u8[a] = 0x4d; this.w16(a + 1, 8); this.w16(a + 3, paras);
+    for (let i = 0; i < s.length; i++) this.u8[a + 16 + i] = s.charCodeAt(i);
+    this.vmmEnv = a + 16;
+  }
+  this.cpu.edx.value = this.vmmEnv;
+  const name = u32(this.cpu.esi.value) && (this.readA(u32(this.cpu.esi.value)) || '').toUpperCase(); if (!name) { CF(this, false); return; }
+  for (let p = this.vmmEnv, e; (e = this.readA(p)); p += e.length + 1) if (e.slice(0, e.indexOf('=')).toUpperCase() === name) { this.cpu.edx.value = p + e.indexOf('=') + 1; CF(this, false); return; }
+  CF(this, true);
+});
 
 // ---- VMM: memory
 // _PageAllocate(nPages, pType, VM, AlignMask, minPhys, maxPhys, PhysAddrPtr, flags): EAX handle, EDX linear address.
@@ -753,7 +766,13 @@ const VDD = 0x0a;
 P.textScreen = function () { return this.txt || (this.txt = { cols: 80, rows: 25, ch: new Uint8Array(2000), at: new Uint8Array(2000), fg: 7, bg: 0, cur: [0, 0], gen: 0 }); };
 svc(VDD, 0x00, function () { this.cpu.eax.value = 0x400; CF(this, false); });   // VDD_Get_Version
 svc(VDD, 0x01, function () {});                                                  // VDD_PIF_State
-svc(VDD, 0x02, function () { CF(this, true); });                                 // VDD_Get_GrabRtn: no screen grabs
+// VDD_Get_GrabRtn: ESI the routine that copies a VM's screen to the clipboard, which SHELL calls for Print Screen in
+// a VM other than the system's: this machine has no other, so nothing to grab
+svc(VDD, 0x02, function () {
+  if (!W.API.VMMSVC) W.API.VMMSVC = {};
+  if (!W.API.VMMSVC.VDDGRAB) W.API.VMMSVC.VDDGRAB = ['regs', function () { const sp = u32(this.cpu.esp.value), ret = this.r32(sp); this.cpu.esp.value = sp + 4; return ret; }];
+  this.cpu.esi.value = this.thunkFor('VMMSVC', 'VDDGRAB');
+});
 svc(VDD, 0x04, function () {});                                                  // VDD_Set_VMType
 svc(VDD, 0x07, function () { const t = this.textScreen(); t.bg = this.cpu.eax.value & 0xf; t.ch.fill(0x20); t.at.fill(t.bg << 4 | t.fg); t.gen++; this.cpu.eax.value = t.cols; this.cpu.edx.value = t.rows; });
 svc(VDD, 0x08, function () { this.textScreen().fg = this.cpu.eax.value & 0xf; });
@@ -1204,7 +1223,7 @@ svc(VWIN32, 0x0f, function (arg) { const e = this.r0Event(arg(0)); if (e) { this
 // ---- VTD: the timer. Get_Version: EAX; Get_Interrupt_Period: EAX the ms between ticks (1: the host's clock);
 // Begin/End_Min_Int_Period (EAX ms)
 const VTD = 5;
-svc(VTD, 0x00, function () { this.cpu.eax.value = 0x400; CF(this, false); });
+svc(VTD, 0x00, function () { this.cpu.eax.value = 0x400; this.cpu.ebx.value = 1; this.cpu.ecx.value = 0x36; CF(this, false); });   // VTD_Get_Version: EBX and ECX the periods it can keep, 1 to 54 ms (VTDAPI's timeGetDevCaps)
 svc(VTD, 0x02, function () { this.cpu.eax.value = 1; });
 svc(VTD, 0x03, function () { CF(this, false); });
 svc(VTD, 0x04, function () { CF(this, false); });
@@ -1278,9 +1297,9 @@ svc(VMM, 0x28, function () { const s = sems(this).get(u32(this.cpu.eax.value)); 
 svc(VMM, 0xfa, function (arg) {
   const ids = this.r0Ids || (this.r0Ids = new Map()), id = u32(arg(0)), w = { woke: false };
   (ids.get(id) || ids.set(id, []).get(id)).push(w);
-  if (this.r0Stop(() => w.woke)) return 0;   // a ring-0 run the host started: it waits off the host's stack
-  this.r0Wait(() => w.woke, `_SignalID ${id.toString(16)}`); return 0;
-});
+  if (this.r0Stop(() => w.woke)) return;   // a ring-0 run the host started: it waits off the host's stack
+  this.r0Wait(() => w.woke, `_SignalID ${id.toString(16)}`);
+});   // (the registers as they were: NDIS's EAX, the block it then tests)
 svc(VMM, 0x127, function (arg) { const ids = this.r0Ids, l = ids && ids.get(u32(arg(0))); if (l) { for (const w of l) w.woke = true; ids.delete(u32(arg(0))); } });
 // mutexes: _CreateMutex(boost, flags): EAX; _EnterMutex(h, flags), _LeaveMutex(h); one thread holds one, recursively
 const mutexes = p => p.vxdMutexes || (p.vxdMutexes = new Map());
@@ -1295,7 +1314,13 @@ svc(VMM, 0x20, function () { if (this.vxdCrit) this.vxdCrit--; });
 // NETBEUI's time-out reads the VM's client registers through it when CF is clear ([EBX+8], then the client's flags).
 // Given EBX 0, NETBEUI read a pointer from address 8, whatever a stray write had left there, and page-faulted
 const critStatus = function () { const n = this.vxdCrit || 0; this.cpu.ecx.value = n; this.cpu.ebx.value = this.sysVM(); CF(this, n); ZF(this, !n); };
-svc(VMM, 0xf1, critStatus); svc(VMM, 0x145, critStatus);
+svc(VMM, 0xf1, critStatus);
+// Get_Crit_Status_Thread: ECX the claims, and when there are any CF and EDI the thread that holds it (ring 0's work
+// here is the current thread's); none, EDI the critical section itself, CF clear
+svc(VMM, 0x145, function () {
+  const n = this.vxdCrit || 0; this.cpu.ecx.value = n; CF(this, n); ZF(this, !n);
+  this.cpu.edi.value = n ? this.r0Thread(this.currentThreadId()) : (this.r0CritLin || (this.r0CritLin = this.alloc(0x20)));
+});
 svc(VMM, 0x1a, function () {}); svc(VMM, 0x1b, function () {});                                      // Enable_VM_Ints, Disable_VM_Ints
 svc(VMM, 0x1e, function () {});                                                                     // Adjust_Exec_Priority
 svc(VMM, 0x38, function () { this.r0Pump(); });                                                      // Release_Time_Slice
@@ -1362,7 +1387,7 @@ svc(VMM, 0xb9, function () { this.cpu.eax.value = this.dosData ? this.dosData().
 // ---- VMM: memory the VMM accounts for (page counts) and V86 memory (conventional memory below 1 MB)
 svc(VMM, 0x59, function () { this.cpu.edx.value = 0x2000; return 0x2000; });                         // _PageGetAllocInfo: 32 MB free
 svc(VMM, 0x5a, function () { this.cpu.edx.value = 0x2000; return 0x2000; });                         // _GetFreePageCount
-svc(VMM, 0x5b, function () { return 0x4000; });                                                       // _GetSysPageCount: 64 MB
+svc(VMM, 0x5b, function () { this.cpu.edx.value = 0x2000; return 0x100; });                             // _GetSysPageCount: EDX the system pages left (IFSMGR's), EAX 100h as the VMM's
 svc(VMM, 0x5f, function () { return 0; });                                                            // _TestGlobalV86Mem: not global V86 memory
 svc(VMM, 0x6b, function () { return 0x10; });                                                         // _GetFirstV86Page
 svc(VMM, 0xd5, function () { return 0x9f; });                                                         // _GetLastV86Page
@@ -1496,7 +1521,8 @@ P.vmInt21 = function (regs) {
 svc(VMM, 0x45, function () { vec(this).pm.set(this.cpu.eax.value & 0xff, u32(((this.cpu.ecx.value & 0xffff) << 16) | (this.cpu.edx.value & 0xffff))); });
 svc(VMM, 0x42, function () { const v = vec(this).v86.get(this.cpu.eax.value & 0xff) || 0; this.cpu.ecx.value = lo16(this.cpu.ecx.value, v >>> 16); this.cpu.edx.value = v & 0xffff; });
 svc(VMM, 0x43, function () { vec(this).v86.set(this.cpu.eax.value & 0xff, u32(((this.cpu.ecx.value & 0xffff) << 16) | (this.cpu.edx.value & 0xffff))); });
-svc(VMM, 0x141, function () { const v = vec(this).v86.get(this.cpu.eax.value & 0xff) || 0; this.cpu.ecx.value = lo16(this.cpu.ecx.value, v >>> 16); this.cpu.edx.value = v & 0xffff; CF(this, false); });
+// (141h, EAX the interrupt, EBX the VM: EAX that VM's vector as a far pointer, the rest as they were: IFSMGR's of 13h)
+svc(VMM, 0x141, function () { this.cpu.eax.value = vec(this).v86.get(this.cpu.eax.value & 0xff) || 0; });
 svc(VMM, 0x41, function () { const h = vec(this).hooks, n = this.cpu.eax.value & 0xff; (h.get(n) || h.set(n, []).get(n)).unshift(u32(this.cpu.esi.value)); CF(this, false); });   // Hook_V86_Int_Chain
 // callbacks: Allocate_PM_Call_Back / Allocate_V86_Call_Back (EDX ref, ESI proc): EAX a segment:offset that, called or
 // jumped to, enters the procedure with EBX the VM, EDX the ref, EBP the client registers (CS:IP the callback itself)

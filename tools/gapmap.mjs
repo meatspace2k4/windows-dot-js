@@ -41,7 +41,9 @@ if (mode === '--standins') {
     // CF(this, ...), ZF(this, ...), a value returned)
     const s = String(fn);
     if (threw) { for (const m of s.matchAll(/cpu\.(\w+)\.value\s*=[^=]/g)) writes.add(m[1]); for (const m of s.matchAll(/\b(CF|ZF)\(this/g)) writes.add(m[1].toLowerCase()); if (/return [^;]/.test(s)) writes.add('eax'); }
-    out[`${hex(id >>> 16).padStart(4, '0')}:${hex(id & 0xffff).padStart(4, '0')}`] = { sets: [...writes].sort(), ...(threw ? { probe: `threw: ${threw}` } : {}), source: s.replace(/\s+/g, ' ').slice(0, 200) };
+    // (and what the source can set on any of its ways, which the empty machine's one way may not take: tools/realcheck.py)
+    const src = new Set(); for (const m of s.matchAll(/cpu\.(\w+)\.value\s*=[^=]/g)) src.add(m[1]); for (const m of s.matchAll(/\b(CF|ZF)\(this/g)) src.add(m[1].toLowerCase()); if (/return [^;]/.test(s)) src.add('eax');
+    out[`${hex(id >>> 16).padStart(4, '0')}:${hex(id & 0xffff).padStart(4, '0')}`] = { sets: [...writes].sort(), srcSets: [...src].sort(), ...(threw ? { probe: `threw: ${threw}` } : {}), source: s.replace(/\s+/g, ' ').slice(0, 200) };
   }
   log(JSON.stringify(out));
 } else if (mode === '--dyn') {

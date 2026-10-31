@@ -169,6 +169,7 @@ def reads_after(im, a, limit=24):
             rr, ww = i.regs_access()
             # (xor r, r and sub r, r read nothing; push r then a write of r saves it: neither reads a result)
             if i.mnemonic in ('xor', 'sub') and len(i.operands) == 2 and all(o.type == X.X86_OP_REG for o in i.operands) and i.operands[0].reg == i.operands[1].reg: rr = []
+            if i.mnemonic in ('or', 'and') and len(i.operands) == 2 and i.operands[0].type == X.X86_OP_REG and i.operands[1].type == X.X86_OP_IMM and (i.operands[1].imm & 0xffffffff) == (0xffffffff if i.mnemonic == 'or' else 0): rr = []   # (or r, -1 and and r, 0: a constant)
             if i.mnemonic == 'push' and i.operands and i.operands[0].type == X.X86_OP_REG:
                 j, _ = insn_at(im, a + i.size)
                 if j is not None and full(i.operands[0].reg, i) in {full(r, j) for r in j.regs_access()[1]} - {full(r, j) for r in j.regs_access()[0]}: rr = []
@@ -250,7 +251,7 @@ provided = {m['meta']['id'] for m in S.get('vxds', {}).values()}
 # (a device with neither: its Get_Version sets CF, P.absentService)
 present = provided | {int(k.split(':')[0], 16) for k in standins}
 
-result = {'modules': {}, 'recompUnsupported': defaultdict(lambda: {'count': 0, 'at': []}), 'services': {'missing': defaultdict(list), 'absent': defaultdict(lambda: {'guarded': [], 'unguarded': []}), 'contract': defaultdict(lambda: {'reads': defaultdict(list)})}}
+result = {'modules': {}, 'recompUnsupported': defaultdict(lambda: {'count': 0, 'at': []}), 'services': {'missing': defaultdict(list), 'absent': defaultdict(lambda: {'guarded': [], 'unguarded': []}), 'contract': defaultdict(lambda: {'reads': defaultdict(list)}), 'reads': defaultdict(lambda: defaultdict(list))}}
 dyn_starts = {}
 # A VxD's service is entered only through a VxDCall (ring 0's code is all in the bundle and the stand-ins), and not
 # when a stand-in provides it: the dispatcher never enters the VxD's own code then. So its service table's entries are
@@ -300,6 +301,7 @@ for im, entries in images:
                 continue
             if code & 0x8000: continue
             regs, flags = reads_after(im, a + 6)
+            for r in regs | flags: result['services']['reads'][key][r].append(site)   # (all a caller reads after it: tools/realcheck.py)
             st = standins[key]; sets = set(st['sets'])
             wrote, fl = before(im, funcs, a)
             # (a flag tested after the call that the caller left unset, or had one value for on its way to the call: the
@@ -324,6 +326,7 @@ result['dynUntranslatable'] = dyn
 result['services']['contract'] = {k: {'reads': dict(v['reads']), **{x: v[x] for x in ('probe', 'source') if x in v}} for k, v in result['services']['contract'].items() if v['reads']}
 result['services']['missing'] = dict(result['services']['missing'])
 result['services']['absent'] = dict(result['services']['absent'])
+result['services']['reads'] = {k: dict(v) for k, v in result['services']['reads'].items()}
 # what the services and devices left are, read from Windows 95's own components (WIN95_02.CAB and the other CABs)
 NAMES = {'002a:0018': "VWIN32_TerminateApp (EDI the thread: its saved ring-3 context back and VWIN32's APC queued that ends it; IFSMGR's, as its INT 21h dispatch returns -41h, which no VxD of the bundle and no stand-in returns)",
          0x21: 'PAGEFILE (DYNAPAGE.VXD)', 0x32: 'VSERVER', 0x41: 'VCDFSD', 0x482: 'SNAPVXD (SNAPSHOT.VXD)', 0x487: 'NWLINK (IPX/SPX), absent where the network is NetBEUI\'s as here',

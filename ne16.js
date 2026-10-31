@@ -3820,8 +3820,10 @@ def16('KERNEL', 115, 'x', 'v', function (sp) {
   const t = this.thread16, m = t && t.task && t.task.hInst && this.neByHandle(t.task.hInst);
   log('info', (m && m.name) || (t && t.pc && t.pc.path ? t.pc.path.replace(/^.*\\/, '') : 'KERNEL'), (sp >>> 16 ? this.readA(this.lin(sp)) || '' : '').replace(/\r?\n$/, ''));
 });
+// the environment Windows started with (WIN.COM's, AUTOEXEC.BAT's sets), as KERNEL and the VMM give it
+const DOS_ENV = 'COMSPEC=C:\\COMMAND.COM\0PATH=C:\\WINDOWS;C:\\WINDOWS\\COMMAND\0TEMP=C:\\WINDOWS\\TEMP\0windir=C:\\WINDOWS\0\0';
 def16('KERNEL', 131, '', 'l', function () {                                            // GetDOSEnvironment
-  if (!this.dosEnv) { const s = 'COMSPEC=C:\\COMMAND.COM\0PATH=C:\\WINDOWS;C:\\WINDOWS\\COMMAND\0TEMP=C:\\WINDOWS\\TEMP\0windir=C:\\WINDOWS\0\0';
+  if (!this.dosEnv) { const s = DOS_ENV;
     const g = this.globalAlloc16(0, s.length + 16), a = this.gblock(g).lin; for (let i = 0; i < s.length; i++) this.u8[a + i] = s.charCodeAt(i); this.dosEnv = this.gsel(g); }
   return u32(this.dosEnv << 16);
 });
@@ -5359,5 +5361,5 @@ P.nativeFontDC = function (font) {
 const NAMES16 = { KERNEL: {}, ...NAMES16_INIT };
 /** a personality module's export names: the CD module's own (the system bundle's names16) and the ones listed here */
 const names16 = mod => ({ ...((window.W95SYSTEM && window.W95SYSTEM.names16) || {})[mod], ...NAMES16[mod] });
-window.W95NE16 = { K16, NAMES16, names16, L, def16, INTS, VXD_API, CR, regStr, KERNEL_EQUATES };
+window.W95NE16 = { K16, NAMES16, names16, L, def16, INTS, VXD_API, CR, regStr, KERNEL_EQUATES, DOS_ENV };
 })();

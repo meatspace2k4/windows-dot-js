@@ -65,6 +65,19 @@ p.cpu.esi.value = 0x9a000; p.cpu.ecx.value = 0x800; S[6 << 16 | 0xd].call(p); as
 p.cpu.esi.value = 0x700000; p.cpu.edi.value = 5; S[6 << 16 | 0xd].call(p); assert.deepEqual([p.cpu.cf.value, p.cpu.edi.value, p.cpu.esi.value], [1, 5, 0x700000]);
 p.cpu.ecx.value = 0x1234ffff; S[6 << 16 | 5].call(p); assert.equal(p.cpu.ecx.value, 0x12340000, 'Get_Mapping_Info: no mapping pages');
 
+// what tools/realcheck.py found the originals return that the stand-ins did not: VTD_Get_Version's range (1 to 54 ms),
+// Get_VM_Exec_Time leaving EDX (SHELL's time), Get_Environment_String, Get_Name_Of_Ugly_TSR, _GetSysPageCount's EDX
+const reg = (dev, n, set) => { for (const [r, x] of Object.entries(set)) p.cpu[r].value = x; const r = S[dev << 16 | n].call(p); if (r !== undefined) p.cpu.eax.value = r; };
+reg(5, 0, {}); assert.deepEqual([p.cpu.eax.value, p.cpu.ebx.value, p.cpu.ecx.value], [0x400, 1, 0x36]);
+p.sysTime = () => 1234; reg(1, 0x40, { edx: 77 }); assert.deepEqual([p.cpu.eax.value, p.cpu.edx.value], [1234, 77]);
+p.dosTop = 0x90000; p.writeA(0x700700, 'temp'); reg(1, 0xb5, { esi: 0x700700 });
+assert.deepEqual([p.cpu.cf.value, p.readA(p.cpu.edx.value >>> 0)], [0, 'C:\\WINDOWS\\TEMP']);
+reg(1, 0xb5, { esi: 0 }); assert.equal(p.readA(p.cpu.edx.value >>> 0), 'COMSPEC=C:\\COMMAND.COM', 'ESI 0: the environment');
+assert.equal(dv.getUint16((p.cpu.edx.value >>> 0) - 0xd, true), (N.DOS_ENV.length + 15) >> 4, 'its arena header: its size');
+p.writeA(0x700700, 'NONE'); reg(1, 0xb5, { esi: 0x700700 }); assert.equal(p.cpu.cf.value, 1);
+reg(1, 0xdb, { eax: 5, ebx: 5, cf: 1 }); assert.deepEqual([p.cpu.eax.value, p.cpu.ebx.value, p.cpu.zf.value, p.cpu.cf.value], [0, 0, 1, 0]);
+reg(1, 0x5b, {}); assert.deepEqual([p.cpu.eax.value, p.cpu.edx.value], [0x100, 0x2000]);
+
 // run-time translation: invalid opcodes, not the translator's own error
 p.selLimit = () => 0xffff; p.trap = () => {};
 for (const [bytes, what] of [[[0x8e, 0xf0], 'mov to segment register 6'], [[0x8c, 0xf8], 'mov from segment register 7'], [[0x8e, 0xc8], 'mov to segment register 1'], [[0x8d, 0xc0], 'lea with a register operand']]) {
