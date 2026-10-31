@@ -195,7 +195,9 @@ cache_bust_site() {
 
     patch_file "$site/index.html" \
         's|(<script src="[A-Za-z0-9_./-]+\.js)(?:\?v=[A-Za-z0-9_.+-]*)?"|$1?$ENV{CB}"|g; s|register\(\x27sw\.js(?:\?v=[A-Za-z0-9_.+-]*)?\x27\)|register(\x27sw.js?$ENV{CB}\x27)|g'
-    patch_file "$site/host-web.js" \
+    # (host-web.js is its own file, or packed into app.js: bundle_site)
+    local hw="$site/host-web.js"; [[ -f "$hw" ]] || hw="$site/app.js"
+    patch_file "$hw" \
         's|\.src = \x27win95\.js(?:\?v=[A-Za-z0-9_.+-]*)?\x27|.src = \x27win95.js?$ENV{CB}\x27|g'
     patch_file "$site/win95.js" \
         's|new Worker\(\x27worker\.js(?:\?v=[A-Za-z0-9_.+-]*)?\x27\)|new Worker(\x27worker.js?$ENV{CB}\x27)|g'
@@ -210,7 +212,7 @@ cache_bust_site() {
     [[ "$n" == "0" ]] || { log_error "index.html: $n <script src> without ?${cb}"; bad=1; }
     grep -qF "register('sw.js?${cb}')" "$site/index.html" || { log_error "index.html: sw.js registration not stamped"; bad=1; }
     grep -qF "new Worker('worker.js?${cb}')" "$site/win95.js" || { log_error "win95.js: new Worker('worker.js') not stamped"; bad=1; }
-    grep -qF ".src = 'win95.js?${cb}'" "$site/host-web.js" || { log_error "host-web.js: win95.js load not stamped"; bad=1; }
+    grep -qF ".src = 'win95.js?${cb}'" "$hw" || { log_error "$(basename "$hw"): win95.js load not stamped"; bad=1; }
     n="$(grep -E '^importScripts\(' "$site/worker.js" | grep -oE "'[^']+\.js[^']*'" | grep -vcF "?${cb}'" || true)"
     [[ "$n" == "0" ]] || { log_error "worker.js: $n importScripts entries without ?${cb}"; bad=1; }
     grep -qF "const CACHE = 'win95-${DEPLOY_SIG}';" "$site/sw.js" || { log_error "sw.js: cache name not stamped"; bad=1; }
@@ -370,6 +372,61 @@ stage_file() {
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 1: Build/stage files locally
 # ─────────────────────────────────────────────────────────────────────────────
+# The page's hand-written scripts packed into one file each for the page (app.js) and the worker (worker-libs.js),
+# in the order they were loaded, so the browser fetches two scripts in place of forty: the generated bundles (data,
+# window.W95SYSTEM and the like, hundreds of megabytes together) stay their own files, loaded first, so each is cached
+# on its own. The single files are read by every tag or importScripts entry the stamps then sign. A hand-written
+# script that was loaded after a generated one reads the generated one's globals only at run time (makeDisk,
+# W95SAV in the saver runtime), never as it loads, so the order of the two kinds does not matter; among the
+# hand-written ones it is kept. win95.js stays its own file (host-web.js loads it once the store is open), sw.js too.
+bundle_site() {
+    [[ "${W95_NO_BUNDLE:-}" == 1 ]] && return 0
+    local site="$STAGING_DIR/site" idx="$STAGING_DIR/site/index.html"
+    local gen=" ${GENERATED[*]} msdos.js "
+    # the page: its <script src> tags in order, split into the generated ones (kept) and the hand-written ones (packed)
+    local tags hand=() keep=() f
+    tags="$(grep -oE '<script src="[A-Za-z0-9_./-]+\.js"' "$idx" | sed -E 's/<script src="(.*)"/\1/')"
+    for f in $tags; do
+        if [[ "$gen" == *" $f "* ]]; then keep+=("$f"); else hand+=("$f"); fi
+    done
+    : > "$site/app.js"
+    for f in "${hand[@]}"; do { cat "$site/$f"; printf '\n;\n'; } >> "$site/app.js"; done
+    # the tags: the generated ones as they were, then one for app.js; the hand-written ones' tags removed
+    local tmp="$idx.tmp"
+    HAND="${hand[*]}" perl -pe '
+        BEGIN { %h = map { $_ => 1 } split / /, $ENV{HAND}; $done = 0 }
+        if (/^<script src="([A-Za-z0-9_.\/-]+\.js)"/ && $h{$1}) { $_ = $done++ ? "" : "<script src=\"app.js\"></script>\n"; }
+    ' "$idx" > "$tmp" && mv "$tmp" "$idx"
+    # (app.js goes after the last generated tag: the line it took is the first hand-written one's, moved past them)
+    python3 - "$idx" "${keep[@]}" <<'PY'
+import re, sys
+p, keep = sys.argv[1], sys.argv[2:]
+s = open(p).read()
+app = '<script src="app.js"></script>\n'
+s = s.replace(app, '', 1)
+last = None
+for k in keep:
+    m = re.search(r'<script src="%s"[^>]*></script>\n' % re.escape(k), s)
+    if m and (last is None or m.end() > last): last = m.end()
+s = s[:last] + app + s[last:] if last is not None else s.replace('<body>\n', '<body>\n' + app, 1)
+open(p, 'w').write(s)
+PY
+    # the worker: its importScripts entries the same way, into worker-libs.js (the files both read go once both have)
+    local wk="$site/worker.js" imports whand=() wkeep=()
+    imports="$(grep -E '^importScripts\(' "$wk" | grep -oE "'[A-Za-z0-9_.-]+\.js'" | tr -d "'")"
+    for f in $imports; do
+        if [[ "$gen" == *" $f "* ]]; then wkeep+=("$f"); else whand+=("$f"); fi
+    done
+    : > "$site/worker-libs.js"
+    for f in "${whand[@]}"; do { cat "$site/$f"; printf '\n;\n'; } >> "$site/worker-libs.js"; done
+    local line="importScripts(" sep=""
+    for f in "${wkeep[@]}" worker-libs.js; do line+="${sep}'$f'"; sep=", "; done
+    line+=");"
+    LINE="$line" perl -pe 'if (/^importScripts\(/) { $_ = "$ENV{LINE}\n" }' "$wk" > "$wk.tmp" && mv "$wk.tmp" "$wk"
+    for f in "${hand[@]}" "${whand[@]}"; do rm -f "$site/$f"; done
+    log_info "Packed ${#hand[@]} page scripts into app.js and ${#whand[@]} worker scripts into worker-libs.js"
+}
+
 # terser, as the dustytrails deploy runs it, over the staged hand-written scripts (the tracked top-level .js; the
 # generated bundles are untracked and left as they are). After the stamps, whose checks look for the sources' quoting.
 # A file terser fails on stays as it was.
@@ -381,12 +438,14 @@ minify_site() {
         return 0
     fi
     log_info "Minifying scripts (terser ${TERSER_FLAGS[*]})..."
-    local before after
-    before="$(cat $(cd "$REPO_ROOT" && git ls-files -- '*.js' | grep -v / | sed "s|^|$STAGING_DIR/site/|") | wc -c)"
-    (cd "$REPO_ROOT" && git ls-files -- '*.js' | grep -v /) | xargs -P 8 -I{} sh -c '
+    # (the tracked top-level scripts still in the site, and the packed ones)
+    local list before after
+    list="$( { cd "$REPO_ROOT" && git ls-files -- '*.js' | grep -v /; echo app.js; echo worker-libs.js; } | while read -r f; do [[ -f "$STAGING_DIR/site/$f" ]] && echo "$f"; done)"
+    before="$(cat $(echo "$list" | sed "s|^|$STAGING_DIR/site/|") | wc -c)"
+    echo "$list" | xargs -P 8 -I{} sh -c '
         f="$1/site/{}"; t="$f.min"
         if terser "$f" '"${TERSER_FLAGS[*]}"' -o "$t" 2>/dev/null && [ -s "$t" ]; then mv "$t" "$f"; else rm -f "$t"; echo "  not minified: {}"; fi' _ "$STAGING_DIR"
-    after="$(cat $(cd "$REPO_ROOT" && git ls-files -- '*.js' | grep -v / | sed "s|^|$STAGING_DIR/site/|") | wc -c)"
+    after="$(cat $(echo "$list" | sed "s|^|$STAGING_DIR/site/|") | wc -c)"
     log_info "Scripts: $before -> $after bytes"
 }
 
@@ -433,6 +492,7 @@ build_staging() {
         cp "$REPO_ROOT/$f" "$STAGING_DIR/site/$f.fresh" && mv "$STAGING_DIR/site/$f.fresh" "$STAGING_DIR/site/$f"
     done
 
+    bundle_site
     cache_bust_site
     stamp_build_meta
     minify_site
@@ -465,6 +525,23 @@ deploy_files() {
     rsync -av --delete "$STAGING_DIR/share/" "$(pi_dest "$INSTALL_DIR/share/")"
     rsync -av "$STAGING_DIR/win95_server.py" "$STAGING_DIR/sessions.py" "$STAGING_DIR/claude_api.py" "$(pi_dest "$INSTALL_DIR/")"
     log_info "Files deployed to $(pi_dest "$INSTALL_DIR")"
+    install_claude_key
+}
+
+# The Claude API key the service reads (tools/claude_api.py: ~/.config/win95/anthropic-api-key and -workspace-id of
+# the user it runs as): this machine's copy goes to the Pi user's home, owner-readable only, when the Pi is a real
+# one. Under PI_ROOT the service runs as this user and reads this machine's own files, so nothing is copied. The
+# key never goes into the site or the server's files.
+install_claude_key() {
+    local src="$HOME/.config/win95" f
+    [[ -n "$PI_ROOT" ]] && { log_info "Claude API key: the service reads $src itself (PI_ROOT)"; return 0; }
+    [[ -f "$src/anthropic-api-key" ]] || { log_warn "No $src/anthropic-api-key here: the Pi's service has no Claude API key unless one is there already"; return 0; }
+    on_pi "mkdir -p ~/.config/win95 && chmod 700 ~/.config/win95"
+    for f in anthropic-api-key anthropic-workspace-id; do
+        [[ -f "$src/$f" ]] || continue
+        rsync -a --chmod=F600 "$src/$f" "$PI_TARGET:.config/win95/$f"
+    done
+    log_info "Claude API key installed in ~/.config/win95 on the Pi"
 }
 
 # The Pi answers (ssh), or PI_ROOT is a folder laid out as the Pi's home.
