@@ -8,9 +8,19 @@ import vm from 'node:vm';
 const src = readFileSync(new URL('../ccd.js', import.meta.url), 'utf8');
 const enc = new TextEncoder(), dec = new TextDecoder();
 const reg = new Map();
+// the page's server's /__src (tools/src_api.py): the project's files
+const srcFiles = new Map([['SCRIPTING.md', '# Scripting\nwin95.reloadScript\n'], ['tools/a.py', 'x = 1\n']]);
+const srcServer = async (u, o) => {
+  const q = JSON.parse(o.body); let r;
+  if (q.op === 'stat') r = srcFiles.has(q.path) ? { exists: true, isDir: false, size: srcFiles.get(q.path).length, mtime: 1 } : q.path === '' || q.path === 'tools' ? { exists: true, isDir: true } : { exists: false };
+  else if (q.op === 'read') r = srcFiles.has(q.path) ? { text: srcFiles.get(q.path) } : { error: 'File does not exist.' };
+  else if (q.op === 'write') { srcFiles.set(q.path, q.text); r = { ok: true }; }
+  else if (q.op === 'list') r = { files: [...srcFiles.keys()].filter(k => !q.path || k.startsWith(`${q.path}/`)).map(path => ({ path, size: srcFiles.get(path).length, mtime: 1 })) };
+  return { ok: u === '__src', status: u === '__src' ? 200 : 404, json: async () => r };
+};
 function load() {
   const window = { W95FS: { encode: s => enc.encode(s), decode: b => dec.decode(b) } };
-  vm.runInNewContext(src, { window });
+  vm.runInNewContext(src, { window, fetch: (u, o) => srcServer(u, o) });
   const events = [], boxes = [], dialogs = [], files = new Map();
   let wins = [];
   const ui = {
@@ -175,6 +185,26 @@ p = ccd.callAs(null, 'Edit', { file_path: 'C:\\NOTE.TXT', old_string: 'b', new_s
 await rejects(p, /Not allowed/); assert.equal(files.get('C:\\NOTE.TXT'), 'a\r\nb');
 assert.match(await ccd.callAs(null, 'Read', { file_path: 'C:\\NOTE.TXT' }), /^ {5}1\ta\n {5}2\tb$/);
 files.delete('C:\\NOTE.TXT');
+
+// SRC:\ (the project's code, through the page's server): read, found, searched, edited as on C:, writes asked the same way
+assert.match(await ccd.callAs(null, 'Read', { file_path: 'SRC:\\SCRIPTING.md' }), /^ {5}1\t# Scripting\n {5}2\twin95\.reloadScript\n/);
+assert.equal(await ccd.callAs(null, 'Glob', { pattern: '**\\*.py', path: 'SRC:\\' }), 'SRC:\\tools\\a.py');
+assert.equal(await ccd.callAs(null, 'Grep', { pattern: 'reloadScript', path: 'SRC:\\', output_mode: 'content' }), 'SRC:\\SCRIPTING.md:2:win95.reloadScript');
+await rejects(ccd.callAs(null, 'Edit', { file_path: 'SRC:\\tools\\a.py', old_string: '1', new_string: '2' }), /has not been read/);
+await ccd.callAs(null, 'Read', { file_path: 'src:/tools/a.py' });
+p = ccd.callAs(null, 'Edit', { file_path: 'SRC:\\tools\\a.py', old_string: '1', new_string: '2' }); await tick(); await tick(); assert.match(boxes.at(-1).msg, /edit SRC:\\tools\\a\.py/); boxes.at(-1).press('Yes');
+assert.match(await p, /updated successfully/); assert.equal(srcFiles.get('tools/a.py'), 'x = 2\n');
+await rejects(ccd.callAs(null, 'Read', { file_path: 'SRC:\\nope.js' }), /does not exist/);
+
+// JavaScript: run in the page with win95 in scope, asked first in Ask permissions; an expression's value is the answer
+p = ccd.callAs(null, 'JavaScript', { code: '[1, 2].map(x => x * 2)' }); await tick(); assert.match(boxes.at(-1).msg, /run JavaScript/); boxes.at(-1).press('Yes');
+assert.equal(JSON.parse(await p).join(), '2,4');
+p = ccd.callAs(null, 'JavaScript', { code: 'const a = 5;\nreturn { a }' }); await tick(); boxes.at(-1).press('Yes');
+assert.equal(JSON.parse(await p).a, 5);
+p = ccd.callAs(null, 'JavaScript', { code: 'throw new TypeError("bad")' }); await tick(); boxes.at(-1).press('Yes');
+await rejects(p, /TypeError: bad/);
+p = ccd.callAs(null, 'JavaScript', { code: '1' }); await tick(); boxes.at(-1).press('No');
+await rejects(p, /denied/);
 
 // AskUserQuestion: two options a card, more a box with a button each, a multi-select asked per option; answered as Claude Code words it
 assert.ok(ccd.toolDefs().some(d => d.name === 'AskUserQuestion' && d.input_schema.required[0] === 'questions'));

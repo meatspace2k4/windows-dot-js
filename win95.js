@@ -5730,6 +5730,17 @@ const script = {
 
 // the Claude desktop app's tools (ccd.js), made on first use: the registry they keep their records in is loaded by then
 let ccdApi = null;
+// a script of the site's loaded again from its server into the running page, no restart (the page's half of a change:
+// ccd.js's tools are made again on next use from their records in the registry); a script of the machines' goes to the
+// system's machine (worker.js cmd 'reload')
+const WORKER_SCRIPTS = new Set(['claude-app.js', 'session-dll.js', 'session-tray.js', 'dbwin.js', 'shell32.js', 'osclass.js', 'saver-runtime.js', 'gl.js', 'sound.js']);
+async function reloadScript(f) {
+  f = String(f || ''); if (!/^[\w.-]+\.js$/.test(f)) throw new Error(`reloadScript: a script of the site's, by name (${f})`);
+  if (WORKER_SCRIPTS.has(f)) { if (!sysApp || !sysApp.alive) throw new Error('reloadScript: the system\'s machine is not running'); return { machine: await sysApp.cmd('reload', [f]) }; }
+  await new Promise((ok, no) => { const s = document.createElement('script'); s.src = `${f}?reload=${Date.now()}`; s.onload = ok; s.onerror = () => no(new Error(`reloadScript: ${f} did not load`)); document.head.appendChild(s); });
+  if (f === 'ccd.js') ccdApi = null;
+  return { page: f };
+}
 const ccdUi = () => ({
   W95Win32, fs, emit, dirty, dialog, msgBox, openWin, closeWin, activate, notepad, runCommand, openPath, netBoot, dosRun: window.W95V86 && window.W95DOS ? dosRun : null,
   windows: () => windows, screen: script.screen, key: script.key, netUp: () => !!(netUp && netUp.alive), icon: 'app',
@@ -5737,5 +5748,5 @@ const ccdUi = () => ({
   gfx: { K, fill, field, text, esc, wrap, textW, ellipsis, btnUp, btnDown, focusRect, clip: (x, y, w, h, f) => { ctx.save(); ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip(); try { f(); } finally { ctx.restore(); } } },
   Win, DialogBody, popup: openPopup, on: script.on,
 });
-window.win95 = { ...script, get ccd() { return ccdApi || (ccdApi = window.W95Ccd ? window.W95Ccd(ccdUi()) : null); }, get nativeApps() { return [...nativeApps]; }, get dos() { return [...dosMachines]; }, startSystem, get sysApp() { return sysApp; }, netBoot, netCall, syncNetDrives, mapNetDrive, disconnectNetDrive, fs, render, displayProperties, startFullSaver, get fullSaver() { return fullSaver; }, properties, driveProps, openFolder, openPath, shellOpen, notepad, msgBox, runDialog, findComputer, findFiles, winHelp, shutDownDialog, MyComputer, get state() { return { menus: menus.length, menuSrc, modals: modals.length, cap: !!cap, drag: !!drag, screen, active: active && active.title }; } };
+window.win95 = { ...script, get ccd() { return ccdApi || (ccdApi = window.W95Ccd ? window.W95Ccd(ccdUi()) : null); }, get nativeApps() { return [...nativeApps]; }, get dos() { return [...dosMachines]; }, startSystem, get sysApp() { return sysApp; }, reloadScript, netBoot, netCall, syncNetDrives, mapNetDrive, disconnectNetDrive, fs, render, displayProperties, startFullSaver, get fullSaver() { return fullSaver; }, properties, driveProps, openFolder, openPath, shellOpen, notepad, msgBox, runDialog, findComputer, findFiles, winHelp, shutDownDialog, MyComputer, get state() { return { menus: menus.length, menuSrc, modals: modals.length, cap: !!cap, drag: !!drag, screen, active: active && active.title }; } };
 })();

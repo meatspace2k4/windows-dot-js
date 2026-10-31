@@ -1022,7 +1022,9 @@ const API = {};
 // not found that way, as before
 const STAND_IN = new Set();
 const GONE = { gone: true };   // (a private-arena DLL's data in place belonged to a process that has ended: Process.dllForget)
-const def = (dll, name, n, fn) => { (API[dll] = API[dll] || {})[name] = [n, fn]; };
+// (defined again, as a script reloaded into the running machine defines it: changed in place, so the thunks already
+// made for it, which hold its entry, call the new function)
+const def = (dll, name, n, fn) => { const m = API[dll] = API[dll] || {}, e = m[name]; if (e) { e[0] = n; e[1] = fn; } else m[name] = [n, fn]; };
 const TRUE = 1, FALSE = 0;
 
 // KERNEL32
