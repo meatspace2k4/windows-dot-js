@@ -3569,6 +3569,7 @@ class RemoteApp extends NativeApp {
     this.worker.postMessage({ t: 'start', rpc: this.rpcSab, registry: W95Win32.regDump(), o: {
       path: this.path, arg: this.arg, system: this.system, quiet: this.quiet, holdStartup: this.system && !!(sharedNow() && window.W95HOST.shared.joining), session: this.system && !!sharedNow(), wallSkew: sharedNow() ? sharedNow().clockSkew() : 0, sw: this.sw, sh: this.sh, shellW: W, workH: workH(), ring: this.ring, lan: this.lanRing || null,
       bytes: bytes || null, prog: prog ? { name: prog.name, meta: prog.d.meta } : null,
+      memwatch: new URLSearchParams(location.search).get('memwatch'),   // (?memwatch=0,16: cmd 'memwatch' from the machine's first instruction, boot's writes too)
       trace: new URLSearchParams(location.search).get('trace'),   // (?trace=MSGSRV32: the imports that thread calls, read back with cmd 'trace')
       traceNames: new URLSearchParams(location.search).get('traceNames'),   // (&traceNames=Profile|DeleteFile: only the imports whose names match)
       exp: Object.fromEntries(new URLSearchParams(location.search).getAll('exp').map(x => x.split('=')).map(([k, v]) => [k, v === 'false' ? false : v === 'true' ? true : v])) } });   // (?exp=NAME=false: a switch in the machine, for an experiment)
@@ -5773,4 +5774,42 @@ const ccdUi = () => ({
   Win, DialogBody, popup: openPopup, on: script.on,
 });
 window.win95 = { ...script, get ccd() { return ccdApi || (ccdApi = window.W95Ccd ? window.W95Ccd(ccdUi()) : null); }, get nativeApps() { return [...nativeApps]; }, get dos() { return [...dosMachines]; }, startSystem, get sysApp() { return sysApp; }, reloadScript, netBoot, netCall, syncNetDrives, mapNetDrive, disconnectNetDrive, fs, render, displayProperties, startFullSaver, get fullSaver() { return fullSaver; }, properties, driveProps, openFolder, openPath, shellOpen, notepad, msgBox, runDialog, findComputer, findFiles, winHelp, shutDownDialog, MyComputer, get state() { return { menus: menus.length, menuSrc, modals: modals.length, cap: !!cap, drag: !!drag, screen, active: active && active.title }; } };
+// the scripting API's calls shown as they are made (?scriptlog=1, or win95.scriptLog = true): each win95.* call and each
+// win95.sysApp.cmd, then what it answered, as 'script' lines in DevTools' console and the machines' log (Debug Monitor),
+// so the person at the screen sees what a script (an agent driving the system) does; win95.note(text) adds a line of its own
+{
+  let on = new URLSearchParams(location.search).has('scriptlog'), seq = 0;
+  const show = v => {
+    let s; try { s = typeof v === 'function' ? 'function' : JSON.stringify(v, (k, x) => (x instanceof Uint8Array ? `<${x.length} bytes>` : x)); } catch (_) { s = String(v); }
+    if (s === undefined) s = 'undefined';
+    return s.length > 300 ? `${s.slice(0, 300)}... (${s.length} characters)` : s;
+  };
+  const say = text => {
+    const line = W95Win32.log('info', 'script', text);
+    if (line && sysApp && sysApp.alive) sysApp.cmd('logPut', [{ ...line, posted: true, machine: 'page' }]);   // (Debug Monitor is the system's machine's)
+  };
+  // (a call, and its answer once a promise's comes: numbered, so a slow answer is matched to its call)
+  const traced = (name, f) => function (...args) {
+    if (!on) return f.apply(this, args);
+    const n = ++seq; say(`#${n} ${name}(${args.map(show).join(', ')})`);
+    let r; try { r = f.apply(this, args); } catch (e) { say(`#${n} threw ${e && e.message}`); throw e; }
+    if (r && typeof r.then === 'function') r.then(v => say(`#${n} -> ${show(v)}`), e => say(`#${n} rejected: ${e && e.message}`));
+    else say(`#${n} -> ${show(r)}`);
+    return r;
+  };
+  const api = window.win95;
+  for (const k of Object.keys(api)) {
+    const d = Object.getOwnPropertyDescriptor(api, k);
+    if (typeof d.value === 'function' && k !== 'log') api[k] = traced(k, d.value);
+  }
+  // (the system's machine as the script sees it: its cmd traced, everything else its own)
+  const cmdOf = new WeakMap();
+  Object.defineProperty(api, 'sysApp', { enumerable: true, get() {
+    if (!sysApp) return sysApp;
+    if (!cmdOf.has(sysApp)) { const a = sysApp, c = traced('sysApp.cmd', (name, args) => a.cmd(name, args)); cmdOf.set(a, new Proxy(a, { get: (t, p) => (p === 'cmd' ? c : typeof t[p] === 'function' ? t[p].bind(t) : t[p]) })); }
+    return cmdOf.get(sysApp);
+  } });
+  Object.defineProperty(api, 'scriptLog', { get: () => on, set: v => { on = !!v; say(`script log ${on ? 'on' : 'off'}`); } });
+  api.note = text => say(String(text));
+}
 })();

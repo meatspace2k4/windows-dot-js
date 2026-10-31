@@ -356,7 +356,9 @@ svc(VMM, 0xa5, function () { const l = lists(this).get(u32(this.cpu.esi.value));
 
 // ---- VMM: strings
 svc(VMM, 0x17b, function (arg) { const s = this.readA(arg(1)) || '', n = arg(2); this.writeA(arg(0), s.slice(0, Math.max(n - 1, 0)), n); return arg(0); });   // _lstrcpyn
-svc(VMM, 0x17c, function (arg) { return (this.readA(arg(0)) || '').length; });                        // _lstrlen
+// _lstrlen: EAX the length, EDX the terminating null, as callers take it: MMDEVLDR appends "\Drivers" at EDX after it
+// (left as it was, EDX 0, the strings went to address 0, the null page)
+svc(VMM, 0x17c, function (arg) { const n = (this.readA(arg(0)) || '').length; this.cpu.edx.value = u32(arg(0) + n) | 0; return n; });
 
 // ---- VMM: the registry. Keys are handles to paths under the predefined roots; values are the registry's own
 const ROOTS = { 0x80000000: 'hkcr', 0x80000001: 'hkcu', 0x80000002: 'hklm', 0x80000003: 'hku', 0x80000005: 'hkcc', 0x80000006: 'hkdd' };

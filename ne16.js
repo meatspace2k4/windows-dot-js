@@ -5222,7 +5222,10 @@ K('CreateFileA', 7, function (name, ...rest) {
   const id = VXD_FILES[m[1].toUpperCase()] || (loaded && loaded.id);
   if (!id) { this.lastError = 2; return 0xffffffff; }
   const vx = this.vxdById && this.vxdById(id);   // a recompiled VxD (vmm.js) is asked first (DIOC_OPEN)
-  if (vx) { const e = this.vxdIoctl(vx, 0, 0, 0, 0, 0, 0, 0); if (e) { this.lastError = e; return 0xffffffff; } }
+  // (DIOC_OPEN, which is DIOC_GETVERSION's code: with an output buffer, as VTDAPI writes its version there unasked; with
+  // none it wrote 400h at address 0)
+  const out = this.diocOpenOut || (this.diocOpenOut = this.alloc(16));
+  if (vx) { const e = this.vxdIoctl(vx, 0, 0, 0, out, 16, 0, 0); if (e) { this.lastError = e; return 0xffffffff; } }
   return this.newHandle({ kind: 'vxd', name: m[1].toUpperCase(), id });
 });
 const devIoctl = API.KERNEL32.DeviceIoControl[1];

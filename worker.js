@@ -138,6 +138,7 @@ class Machine {
     this.saverDlls = new Map([...dlls].filter(([n]) => ['CRTDLL', 'GLU32'].includes(n)));
     const m = this;
     const host = {
+      memWatch: this.memwatch ? this.memwatch.split(',').map(v => parseInt(v, 16)) : null,
       fs, width: this.sw, height: this.sh, path: this.path, now: () => performance.now(), lan: !!(this.system && lanRing), system: !!this.system, vmPages: 2048, shared: true,   // (lan: the network stack and its card, as the system's machine has them; system: the Win16 tasks' process is its own)
       cursor: () => ({ x: m.mouse.x, y: m.mouse.y }), surface: (h, w, hh, win, pc) => {
         const canvas = new OffscreenCanvas(Math.max(1, w), Math.max(1, hh));
