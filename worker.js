@@ -583,7 +583,7 @@ class Machine {
         p.stats.slices++; const live = p.slice();
         st.slice += performance.now() - ts; ts = performance.now();
         if (!p.win16Held) { p.timers16(); p.systemPump(); p.appy16(); p.threads16(); }
-        else { p.threads16(); if (p.vxdRunTimeOuts) p.vxdRunTimeOuts(); }
+        else { p.threads16(); st.t16 = (st.t16 || 0) + performance.now() - ts; if (p.vxdRunTimeOuts) p.vxdRunTimeOuts(); }
         st.threads += performance.now() - ts; st.n++;
         if (p.sound16) p.sound16(); if (p.lanPoll) p.lanPoll();
         if (!live || p.preempted || p.win16Held) break;
@@ -591,7 +591,7 @@ class Machine {
       const tv = performance.now();
       if (p.vmsRun) p.vmsRun(6);   // (the MS-DOS VMs' time, as the VMM schedules them beside the system VM: vmm.js)
       st.vms = performance.now() - tv; st.total = performance.now() - t0; st.heldAfter = !!p.win16Held;
-      for (const k of ['slice', 'threads', 'vms', 'total']) st[k] = Math.round(st[k]);
+      for (const k of ['slice', 'threads', 't16', 'vms', 'total']) if (st[k] !== undefined) st[k] = Math.round(st[k] * 10) / 10;
       const sl = this.stepLog || (this.stepLog = []); sl.push(st); if (sl.length > 120) sl.shift();
     } catch (e) {
       if (e instanceof W.FaultError) { p.depth = 0; p.faulted(e.fault); }
