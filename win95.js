@@ -3662,10 +3662,15 @@ function installPrograms() {
   if (DOS && DOS.command) { fs.mkdir(join(WINDIR, 'COMMAND'), { recursive: true }); for (const [n, d] of Object.entries(DOS.command)) put(join(WINDIR, 'COMMAND', n), d); }
   // the Windows 3.x runtime libraries, in SYSTEM (WIN87EM, NDDEAPI, OLE, WINSOCK: tools/build_dos.py)
   if (DOS && DOS.system) for (const [n, d] of Object.entries(DOS.system)) put(join(WINDIR, 'SYSTEM', n), d);
+  // the display's grabber, which WinOldAp imports as GRABBER and KERNEL finds by SYSTEM.INI's [boot] 386grabber, as the
+  // display's INF (MSDISP.INF) leaves it; a disk set up before it was written gets it too
+  if (DOS && DOS.system && DOS.system['VGAFULL.3GR'] && !W95Win32.iniGet(fs, 'SYSTEM.INI', 'boot', '386grabber')) W95Win32.iniSet(fs, 'SYSTEM.INI', 'boot', '386grabber', 'vgafull.3gr');
   // Setup's optional components (Clipboard Viewer, CLIP.INF): their programs in the Windows folder, their help in HELP,
   // and the OptionalComponents value Add/Remove Programs reads to show one installed
   if (DOS && DOS.windows) for (const [n, d] of Object.entries(DOS.windows)) put(join(WINDIR, n), d);
   if (DOS && DOS.help) { fs.mkdir(join(WINDIR, 'HELP'), { recursive: true }); for (const [n, d] of Object.entries(DOS.help)) put(join(WINDIR, 'HELP', n), d); }
+  // the INFs Setup leaves in the INF folder that the system bundle does not carry (APPS.INF, which PIFMGR reads)
+  if (DOS && DOS.infs) { fs.mkdir(join(WINDIR, 'INF'), { recursive: true }); for (const [n, t] of Object.entries(DOS.infs)) { const f = join(WINDIR, 'INF', n); if (!fs.exists(f)) fs.writeFile(f, Uint8Array.from(t, c => c.charCodeAt(0))); } }
   if (DOS && DOS.infs && DOS.infs['CLIP.INF']) W95Win32.regSet('hklm\\software\\microsoft\\windows\\currentversion\\setup\\optionalcomponents\\clipbrd', 'Installed', { type: 1, data: W95FS.encode('1\0') });
   if (DOS && DOS.windows && DOS.windows['SOL.EXE']) W95Win32.regSet('hklm\\software\\microsoft\\windows\\currentversion\\setup\\optionalcomponents\\games', 'Installed', { type: 1, data: W95FS.encode('1\0') });   // (APPLETS.INF wingames.install.reg)
   // the components a Typical install sets up (Paint, WordPad, HyperTerminal, Phone Dialer, Disk Defragmenter, the

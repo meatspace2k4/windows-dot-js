@@ -469,6 +469,7 @@ class Machine {
     const STR = { 74: 10, 166: 6, 45: 8, 217: 8, 218: 8, 219: 12, 220: 20, 95: 4, 97: 14, 127: 10, 128: 14, 70: 4, 69: 4 };   // (AddAtom, FindAtom: the name)   // (and the key of GetProfileInt/String, GetPrivateProfileInt/String)
     const arg = key => {
       const m = /KERNEL\.#(\d+)$/.exec(key), o = m && STR[m[1]];
+      if (/^VXD\.#/.test(key)) return ['eax', 'ebx', 'ecx', 'edx'].map(r => `${r} ${(p.cpu[r].value >>> 0).toString(16)}`).join(' ');   // (a VxD's API: its function and arguments in the registers)
       try {
         const f = p.cpu.ssb.value + (p.cpu.esp.value & 0xffff);
         if (m && /^(533|534|537)$/.test(m[1])) return [4, 6, 8, 10].map(k => p.r16(f + k).toString(16)).join(' ');   // (the DDE conversions: their stack words)
@@ -638,6 +639,14 @@ class Machine {
     if (ne) return this.proc.winExec16(ne.fileName, arg || '', show === undefined ? 1 : show);
     // (one from disk the bundle does not carry: the same, its module mapped by KERNEL's loader; its instance, else the error)
     if (!this.bundled(file) && this.isNE(file)) return this.proc.winExec16(fs.realpath(file), arg || '', show === undefined ? 1 : show);
+    // an MS-DOS program (or a .PIF or .BAT): KERNEL starts WinOldAp for it, as KRNL386's LoadModule does for a file
+    // that is no Windows module, its command line the program's arguments, a NUL, then the program and a line feed
+    // (WINOA386.MOD 2:1C1E)
+    const woa = 'C:\\WINDOWS\\SYSTEM\\WINOA386.MOD';
+    if (this.isDosProgram(file) && fs.exists(woa)) {
+      let sp = file; try { sp = fs.stat(file).shortPath; } catch (_) { /* as given */ }
+      return this.proc.winExec16(woa, `${arg || ''}\0${sp}\n`, show === undefined ? 1 : show);
+    }
     const r = this.spawnProgram(file, arg);
     // WinExec's NE scheduler expects a process record with a 16-bit main thread. SCRs
     // are advanced independently as Win32 processes, so report successful launch
@@ -696,6 +705,16 @@ class Machine {
       if (def || map) break;
     }
     return out;
+  }
+  /** an MS-DOS program as KRNL386's loader tells one: a .COM, .BAT or .PIF, or an MZ file whose new header (at 3Ch, when
+   *  its relocation table starts at 40h or later) is no Windows module's (NE, PE, LE, LX) */
+  isDosProgram(file) {
+    if (/\.(COM|BAT|PIF)$/i.test(file)) return true;
+    let f; try { f = fs.readFile(file); } catch (_) { return false; }
+    if (f.length < 0x1c || f[0] !== 0x4d || f[1] !== 0x5a) return false;
+    if ((f[0x18] | f[0x19] << 8) < 0x40 || f.length < 0x40) return true;
+    const at = (f[0x3c] | f[0x3d] << 8 | f[0x3e] << 16 | f[0x3f] << 24) >>> 0;
+    return !(at + 2 <= f.length && /^(NE|PE|LE|LX)$/.test(String.fromCharCode(f[at], f[at + 1])));
   }
   isNE(file) {
     let f; try { f = fs.readFile(file); } catch (_) { return false; }

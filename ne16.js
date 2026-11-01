@@ -49,6 +49,14 @@ P.setDesc = function (sel, base, limit, acc = 0xf300) {
 P.selBase = function (sel) { return this.r32(L.LDT + (sel & 0xfff8)); };
 P.selLimit = function (sel) { return this.r32(L.LDT + (sel & 0xfff8) + 4); };
 P.selValid = function (sel) { return (sel & 0xfff8) && this.selUsed[(sel & 0xfff8) >> 3]; };
+/** a new selector with selector s's base, limit and access (AllocSelector, the alias calls, DPMI 000Ah): one
+ *  descriptor, as the source is one (a 32-bit segment with a 4 GB limit among them), or the tiles of a huge global
+ *  block when s is the first of its block's selectors */
+P.copySel = function (s, acc = this.r32(L.ACC + (s & 0xfff8))) {
+  const g = this.ghandles && this.ghandles.get(s);
+  if (g && g.n > 1) return this.allocSels(this.selBase(s), this.selLimit(s) + 1, acc);
+  const n = this.allocSels(0, 1); this.setDesc(n, this.selBase(s), this.selLimit(s), acc); return n;
+};
 /** n consecutive selectors (stepping by __AHINCR) covering [base, base+size) */
 P.allocSels = function (base, size, acc = 0xf300) {
   const n = Math.max(1, Math.ceil(size / 0x10000));
@@ -58,7 +66,7 @@ P.allocSels = function (base, size, acc = 0xf300) {
     for (let k = 0; k < n; k++) this.setDesc(((i + k) << 3) | 7, base + 0x10000 * k, Math.min(size - 0x10000 * k, 0x10000) - 1 + (k ? 0 : Math.max(0, size - 0x10000)) , acc);
     return (i << 3) | 7;
   }
-  throw new GuestError('out of selectors');
+  throw new GuestError(`out of selectors (${n} for ${u32(size).toString(16)}h bytes)`);
 };
 P.freeSels = function (sel, n = 1) {
   for (let k = 0; k < n; k++) { const i = ((sel & 0xfff8) >> 3) + k; this.selUsed[i] = 0; this.w32(L.LDT + 8 * i, 0); this.w32(L.LDT + 8 * i + 4, 0); this.w32(L.ACC + 8 * i, 0); }
@@ -234,11 +242,15 @@ P.neExport = function (m, key) {
 };
 // `native`: also bring up the modules the JS personality stands in for (JS16) from their recompiled code, for a
 // session that runs native USER; otherwise those imports stay with the JS implementations
+/** the display's grabber, the module GRABBER: the file SYSTEM.INI's [boot] 386grabber names, where KERNEL finds it */
+P.grabberFile = function () { const g = this.fs && winIni(this, 'SYSTEM.INI', 'boot', '386grabber'); return g ? this.findFile16(g) : null; };
 P.loadLibrary16 = function (name, native = false, defer = false) {
   this.init16();
   name = name.replace(/\.?\s*$/, '');   // ("MMSYSTEM.", VB3's Declare ... Lib "MMSYSTEM": a name with no extension)
   const base = name.toUpperCase().replace(/^.*\\/, '').replace(/\.(DLL|EXE|DRV)$/, '');
   if (base === 'KERNEL' || base === 'KRNL386') return this.kernelModule();   // KRNL386.EXE is the module KERNEL's file
+  // the module GRABBER (WinOldAp's import) is the display's grabber, the file SYSTEM.INI's [boot] 386grabber names
+  if (base === 'GRABBER' && !this.ne.has('GRABBER')) { const g = this.grabberFile(); if (g) name = g; }
   const all = (window.W95SYSTEM && window.W95SYSTEM.ne) || {};
   const file = name.toUpperCase().replace(/^.*\\/, '');
   // a file name finds that file's module first (MSACM.DRV is the module MSACMMAP, not MSACM.DLL's MSACM)
@@ -370,7 +382,7 @@ P.loadNEDynamic = function (key, file) {
   const mods = []; for (let i = 0; i < h(0x1e); i++) mods.push(pstr(n + h(0x2a) + rd.u16(file, n + h(0x28) + 2 * i)).toUpperCase());
   const all = (window.W95SYSTEM && window.W95SYSTEM.ne) || {}, dir = key.slice(0, key.lastIndexOf('\\'));
   const there = m => m === 'KERNEL' || JS16.includes(m) || this.ne.has(m) || all[m] || Object.values(all).some(s => s.meta && s.meta.name.toUpperCase() === m) ||
-    ['.DLL', '.EXE', '.DRV'].some(x => this.findFile16(m + x) || this.fs.exists(`${dir}\\${m}${x}`));
+    ['.DLL', '.EXE', '.DRV'].some(x => this.findFile16(m + x) || this.fs.exists(`${dir}\\${m}${x}`)) || (m === 'GRABBER' && !!this.grabberFile());
   const missing = mods.find(m => !there(m));
   if (missing) { this.missing16 = `${missing}.DLL`; log('warn', 'ne16', `${key}: ${missing}.DLL is not found`); return null; }
   this.dirs16 = [...new Set([dir, ...(this.dirs16 || [])])].slice(0, 8);   // (its folder searched for its DLLs, as the program's own is)
@@ -572,7 +584,7 @@ P.api16 = function (eip) {
   this.retCS = cs;
   let r;
   try { r = fn.apply(this, vals); }
-  catch (e) { if (e instanceof GuestError) { this.trapped = e.message; return LAYOUT.SENTINEL; } throw e; }
+  catch (e) { if (e instanceof GuestError) { const m = this.neByHandle(cs); this.trapped = `${e.message} in ${t.key}, called from ${m ? m.name : '?'} ${cs.toString(16)}:${ip.toString(16)}`; return LAYOUT.SENTINEL; } throw e; }
   if (this.exitCode !== null) return LAYOUT.SENTINEL;
   if (r === YIELD) { this.preempted = 0; return -1; }   // a thread suspended in the call: it runs the call again when resumed (it stopped there, not where its time ran out)
   if (ret === 'w' || ret === 'i') this.cpu.eax.value = lo16(this.cpu.eax.value, r | 0);   // (a word, unsigned or signed: lstrcmp's -1)
@@ -745,7 +757,7 @@ const INTS = {
       case 0x0007: this.w32(L.LDT + (bx & 0xfff8), u32((cx << 16) | dx)); this.refreshSegs(); return;
       case 0x0008: this.w32(L.LDT + (bx & 0xfff8) + 4, u32((cx << 16) | dx)); return;
       case 0x0009: this.w32(L.ACC + (bx & 0xfff8), (cx & 0xff) << 8 | ((cx & 0xc000) << 8)); return;
-      case 0x000a: { const s = this.allocSels(this.selBase(bx), this.selLimit(bx) + 1, 0xf300); this.ax(s); return; }
+      case 0x000a: { const s = this.copySel(bx, (this.r32(L.ACC + (bx & 0xfff8)) & ~0xff00) | 0xf300); this.ax(s); return; }   // (a data alias: the source's size and granularity kept)
       case 0x000b: { const a = this.lin((this.cpu.es.value << 16) | (this.cpu.edi.value & 0xffff)), b = this.selBase(bx), l = this.selLimit(bx);
         this.w16(a, l); this.w16(a + 2, b); this.u8[a + 4] = b >>> 16; this.w16(a + 5, this.r32(L.ACC + (bx & 0xfff8)) >>> 8); this.u8[a + 7] = b >>> 24; return; }
       case 0x000c: { const a = this.lin((this.cpu.es.value << 16) | (this.cpu.edi.value & 0xffff));
@@ -1282,6 +1294,9 @@ vxdApi(0x0001, 'VMM', {
   0x26d() { return 0; },
 });
 vxdApi(0x0009, 'REBOOT', {});
+vxdApi(0x000d, 'VKD', {
+  0() { return 0x200; },   // version 2.00: WinOldAp takes a VKD of version 2 only (WINOA386.MOD 2:C18)
+});
 vxdApi(0x000c, 'VMD', {
   0() { return 0x400; },                                       // version 4.00
   5() { this.cpu.edx.value = lo16(this.cpu.edx.value, 0); return 4; },   // mouse type: PS/2 (no serial port IRQ to claim)
@@ -2240,6 +2255,13 @@ P.customEntry = function (w, h, slot = CUSTOM_SLOTS[0]) {
 def16('VDD', 0, '', 'jmp', function () {
   const fn = u32(this.cpu.eax.value);
   switch (fn) {
+    // the grabber's functions (below 80h, VDD.VXD 1:2413F): 0 VDD's version, 4.00, its 8-byte ID ("VIDEOVGA", as
+    // VDD_Get_Version gives it) copied to ES:EDI (VDD 1:B20F); the grabber takes a VDD of 3.0Ah to 4.00
+    case 0: {
+      const es = this.cpu.es.value & 0xffff;
+      if (es) { const a = this.lin((es << 16) | (this.cpu.edi.value & 0xffff)); [...'VIDEOVGA'].forEach((c, i) => { this.u8[a + i] = c.charCodeAt(0); }); }
+      this.cpu.eax.value = 0x400; break;
+    }
     case 0x80: this.cpu.eax.value = this.cpu.ecx.value; break;          // VDD_DRIVER_REGISTER: VRAM the visible screen uses
     case 0x83: {                                                         // the W32's MMU and accelerator at EDX (B8000h): a selector for them in EDX
       const a = this.adapter();
@@ -2984,8 +3006,8 @@ def16('KERNEL', 112, 'w', 'w', function (h) { const b = this.gblock(h); if (b &&
 def16('KERNEL', 177, 'ww', 'w', function (src, dst) {    // PrestoChangoSelector: dst = src with code/data swapped
   const acc = this.r32(L.ACC + (src & 0xfff8)); this.setDesc(dst, this.selBase(src), this.selLimit(src), acc ^ 0x0800); this.refreshSegs(); return dst;
 });
-def16('KERNEL', 170, 'w', 'w', function (s) { return this.allocSels(this.selBase(s), this.selLimit(s) + 1, 0xf300); });   // AllocCStoDSAlias
-def16('KERNEL', 171, 'w', 'w', function (s) { return this.allocSels(this.selBase(s), this.selLimit(s) + 1, 0xfb00); });   // AllocDStoCSAlias
+def16('KERNEL', 170, 'w', 'w', function (s) { return this.copySel(s, 0xf300); });   // AllocCStoDSAlias
+def16('KERNEL', 171, 'w', 'w', function (s) { return this.copySel(s, 0xfb00); });   // AllocDStoCSAlias
 def16('KERNEL', 184, 'l', 'l', function (n) {           // GlobalDOSAlloc: conventional memory, DX = paragraph, AX = selector
   n = (u32(n) + 15) & ~15; if (this.dosTop + n > 0xa0000) return 0;
   const lin = this.dosTop; this.dosTop += n; this.u8.fill(0, lin, lin + n);
@@ -3181,7 +3203,7 @@ def16('KERNEL', 471, '', 'l', function () { return this.thread16 && this.thread1
 def16('KEYBOARD', 100, 'w', 'v', function () {});                              // ScreenSwitchEnable
 
 // selectors
-def16('KERNEL', 175, 'w', 'w', function (s) { if (!s) return this.allocSels(0, 1); return this.allocSels(this.selBase(s), this.selLimit(s) + 1, this.r32(L.ACC + (s & 0xfff8))); });
+def16('KERNEL', 175, 'w', 'w', function (s) { if (!s) return this.allocSels(0, 1); return this.copySel(s); });
 def16('KERNEL', 176, 'w', 'w', function (s) { this.freeSels(s); return 0; });
 def16('KERNEL', 186, 'w', 'l', function (s) { return this.selBase(s); });
 def16('KERNEL', 187, 'wl', 'w', function (s, b) { this.w32(L.LDT + (s & 0xfff8), b); this.refreshSegs(); return s; });
@@ -3273,15 +3295,24 @@ P.findData16 = function (a, e) {
   ft(4, e.ctime); ft(12, e.atime); ft(20, e.mtime); this.w32(a + 32, e.size);
   this.writeA(a + 44, e.name, 260); if (e.shortName && e.shortName !== e.name) this.writeA(a + 304, e.shortName, 14);
 };
-def16('KERNEL', 413, 'sp', 'w', function (pat, data) {
+// FindFirstFile / FindNextFile / FindClose: the search's handle a DWORD, in DX:AX and on the stack (PIFMGR.DLL 2:7CF
+// keeps DX and passes DX:AX to FindClose); INVALID_HANDLE_VALUE when nothing matches
+def16('KERNEL', 413, 'sp', 'l', function (pat, data) {
   const full = this.dosFull(pat), i = full.lastIndexOf('\\'), dir = i <= 2 ? full.slice(0, 3) : full.slice(0, i), mask = full.slice(i + 1) || '*';
   let list; try { list = this.fs.readdir(dir, mask === '*.*' ? '*' : mask); } catch (_) { list = []; }
-  if (!list.length) { this.lastError = 2; return 0xffff; }
+  if (!list.length) { this.lastError = 2; return 0xffffffff; }
   this.findData16(data, list[0]);
   this.finds16 = this.finds16 || new Map(); const h = 0x4800 + (this.findNext16 = ((this.findNext16 || 0) + 1) & 0x3ff); this.finds16.set(h, { list, i: 1 }); return h;
 });
-def16('KERNEL', 414, 'wp', 'w', function (h, data) { const f = this.finds16 && this.finds16.get(h); if (!f || f.i >= f.list.length) { this.lastError = 18; return 0; } this.findData16(data, f.list[f.i++]); return 1; });
-def16('KERNEL', 415, 'w', 'w', function (h) { return this.finds16 && this.finds16.delete(h) ? 1 : 0; });
+def16('KERNEL', 414, 'lp', 'w', function (h, data) { const f = this.finds16 && this.finds16.get(h); if (!f || f.i >= f.list.length) { this.lastError = 18; return 0; } this.findData16(data, f.list[f.i++]); return 1; });
+def16('KERNEL', 415, 'l', 'w', function (h) { return this.finds16 && this.finds16.delete(h) ? 1 : 0; });
+// CreateDirectory(path, security attributes) and SetFileAttributes(path, attributes): TRUE, or FALSE with the error
+def16('KERNEL', 144, 'sl', 'w', function (name) {
+  try { this.fs.mkdir(this.dosFull(name)); return 1; } catch (e) { if (!(e instanceof window.W95FS.FSError)) throw e; this.lastError = e.code || 5; return 0; }
+});
+def16('KERNEL', 421, 'sl', 'w', function (name, attrs) {
+  try { this.fs.setAttrs(this.dosFull(name), attrs & 0x27); return 1; } catch (e) { if (!(e instanceof window.W95FS.FSError)) throw e; this.lastError = e.code || 2; return 0; }
+});
 // GetFileAttributes: the attributes, -1 for a name that is not there
 def16('KERNEL', 420, 's', 'l', function (name) { const f = this.findFile16(name) || (name && this.fs.exists(this.dosFull(name)) ? this.dosFull(name) : null); if (!f) { this.lastError = this.dosError = 2; return 0xffffffff; } const i = this.fs.stat(f); return i.attrs | (i.isDir ? 0x10 : 0); });
 // GetDriveType(0 for A:): 2 removable, 3 fixed, 4 remote (Win16 reports CD-ROM drives as remote), 0 no such drive
@@ -4715,7 +4746,7 @@ P.threads16 = function (nested = false, only = null) {
       if (e instanceof window.W95Win32.GuestError && !(e instanceof window.W95Win32.HangError) && this.noMain && (t.pc || t.task)) {
         t.state = 'done'; this.wakeWaiters(t);
         if (this.win16Held && this.win16Held.who === t) this.win16Held = null;
-        log('warn', 'ne16', `thread ${t.id} ended: ${e.message}`);
+        log('warn', 'ne16', `thread ${t.id} ended: ${e.message} (${String(e.stack || '').split('\n').slice(1, 5).map(s => s.trim()).join(' | ')})`);
         if (t.pc) { t.pc.trapped = e.message; (this.pcFaults || (this.pcFaults = [])).push({ pc: t.pc, why: e.message }); this.endProcess(t.pc, 0xffffffff); }
         else this.taskFault(t, e.message);
         return;
@@ -4774,6 +4805,15 @@ def16('KERNEL', 473, '', 'jmp', function () {
   this.cpu.eax.value = (this.hinst32(h16) || h) | 0; return this.retf16(0);
 });
 def16('KERNEL', 476, 'l', 'l', function (h) { return h; });                                            // ConvertToGlobalHandle: one process, so already global
+// WinOldAp's console, KERNEL32's side (KRNL386's thunks into it): the console object of an MS-DOS program's window,
+// which the Win32 console processes that window hosts attach to. WOACreateConsole(VM, hwnd) makes one for the window;
+// WOADestroyConsole frees it; WOAFullScreen(console, on) records the window's state; WOATerminateProcess ends the
+// Win32 processes on the console (a plain MS-DOS program's has none); WOAAbort(console) ends a pending console read
+def16('KERNEL', 467, 'lw', 'l', function (vm, hwnd) { return this.newHandle({ kind: 'woaConsole', vm, hwnd, full: false }); });
+def16('KERNEL', 470, 'l', 'v', function (h) { const c = this.handles.get(h); if (c && c.kind === 'woaConsole') this.handles.delete(h); });
+def16('KERNEL', 477, 'lw', 'v', function (h, on) { const c = this.handles.get(h); if (c && c.kind === 'woaConsole') c.full = !!on; });
+def16('KERNEL', 478, 'l', 'v', function (h) { const c = this.handles.get(h); if (c && c.kind === 'woaConsole' && c.pcs) for (const pc of c.pcs) if (pc.exitCode === null) this.endProcess(pc, 0xffffffff); });
+def16('KERNEL', 492, 'w', 'v', function () {});
 def16('KERNEL', 474, 'l', 'w', function (h) { return this.handles.delete(h) ? 1 : 0; });               // CloseW32Handle
 def16('KERNEL', 105, '', 'w', function () { return 0x0400; });                                         // GetExeVersion: system code expects Windows 4.0
 def16('KERNEL', 132, '', 'l', function () { return 0x0c29; });                                         // GetWinFlags: protected mode, 486, enhanced, 80x87, paging

@@ -363,9 +363,16 @@ const descBase = (lo, hi) => u32((lo >>> 16) | ((hi & 0xff) << 16) | (hi & 0xff0
 const descLimit = (lo, hi) => { const l = (lo & 0xffff) | (hi & 0xf0000); return hi & 0x800000 ? u32(l * 4096 + 4095) : l; };
 // _Allocate_LDT_Selector(VM, DescDWORD1 (high), DescDWORD2 (low), Count, flags) / _Allocate_GDT_Selector(DescDWORD1,
 // DescDWORD2, flags): EAX the selector, EDX the descriptor table's selector and size
-svc(VMM, 0x78, function (arg) { const s = this.allocSels(descBase(arg(2), arg(1)), descLimit(arg(2), arg(1)) + 1); this.cpu.edx.value = 0; return s; });
+// (each selector the descriptor given, its access byte and size bits: one descriptor, a 4 GB flat one among them,
+// not 64K tiles over its limit)
+const descSels = (p, lo, hi, count = 1) => {
+  const n = Math.max(1, count), s = p.allocSels(0, n * 0x10000);
+  for (let k = 0; k < n; k++) p.setDesc(s + 8 * k, descBase(lo, hi), descLimit(lo, hi), u32(hi & 0x00c0ff00));
+  return s;
+};
+svc(VMM, 0x78, function (arg) { const s = descSels(this, arg(2), arg(1), arg(3)); this.cpu.edx.value = 0; return s; });
 svc(VMM, 0x79, function (arg) { this.freeSels(arg(1) & 0xffff); return 1; });
-svc(VMM, 0x76, function (arg) { const s = this.allocSels(descBase(arg(1), arg(0)), descLimit(arg(1), arg(0)) + 1); this.cpu.edx.value = 0; return s; });
+svc(VMM, 0x76, function (arg) { const s = descSels(this, arg(1), arg(0)); this.cpu.edx.value = 0; return s; });
 svc(VMM, 0x77, function (arg) { this.freeSels(arg(0) & 0xffff); return 1; });
 // Map_Flat: AH the offset of a segment register, AL of an offset register, in the client registers (EBP): EAX linear
 // Map_Flat (AH, AL: the offsets of a segment and an offset register in the client registers): the current VM's client

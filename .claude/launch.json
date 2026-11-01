@@ -46,6 +46,13 @@
       "url": "http://127.0.0.1:8121"
     },
     {
+      "name": "win95 (win98 cd, dos 8141)",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["tools/serve.py", "8141", "--iso", "/Users/johusha/Downloads/Windows 95/Win95 OSR2.ISO", "--cd", "/Users/johusha/Downloads/Windows 98 se Upgrade.iso"],
+      "port": 8141,
+      "url": "http://w98e.localhost:8141"
+    },
+    {
       "name": "win95 (dos boot 8131)",
       "runtimeExecutable": "python3",
       "runtimeArgs": ["tools/serve.py", "8131", "--iso", "/Users/johusha/Downloads/Windows 95/Win95 OSR2.ISO"],
