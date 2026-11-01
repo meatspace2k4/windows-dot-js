@@ -26,7 +26,9 @@ const CPU_REGS = ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi', 'cf', 
 // can give up the processor (a thread at its top level) does after SLICE_MS; one inside a call the host made cannot,
 // and runs on, as a processor would: its machine is a worker's (worker.js), so it holds nothing but that machine, whose
 // interrupts (the keys, the mouse, the timer) still come at each check
-const BUDGET = 0x4000, SLICE_MS = 40;
+// (10 ms: the machine's step comes round, with the input, the timers and a frame, every ~10 ms while a thread computes;
+// at 40 a busy 16-bit program left the page 16 frames a second)
+const BUDGET = 0x4000, SLICE_MS = 10;
 const WM = { NULL: 0, CREATE: 1, DESTROY: 2, MOVE: 3, SIZE: 5, ACTIVATE: 6, SETFOCUS: 7, KILLFOCUS: 8, PAINT: 0xf, CLOSE: 0x10,
   QUIT: 0x12, ERASEBKGND: 0x14, SHOWWINDOW: 0x18, ACTIVATEAPP: 0x1c, SETCURSOR: 0x20, NCCREATE: 0x81, NCDESTROY: 0x82,
   NCACTIVATE: 0x86, KEYDOWN: 0x100, KEYUP: 0x101, CHAR: 0x102, SYSKEYDOWN: 0x104, SYSCOMMAND: 0x112, TIMER: 0x113,

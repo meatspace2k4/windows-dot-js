@@ -575,15 +575,24 @@ class Machine {
       // (four slices a step; up to ten, within 12 ms of the step, while input waits to go in: a person drawing, or
       // another machine's stroke being fed, gets the program its moves at the pace they come)
       const busy = () => this.mouseq.length || this.rs || (this.strokes && this.strokes.length);
+      // (where a step's time goes, the last 120: worker.js probe 'steps')
+      const st = { at: Math.round(t0), gap: Math.round(t0 - (this.lastStepEnd || t0)), slice: 0, threads: 0, vms: 0, n: 0, held: !!p.win16Held };
       for (let n = 0; this.alive && (n < 4 || (n < 10 && busy() && performance.now() - t0 < 12)); n++) {
         if (n) { this.poll(); this.feedMouse(); this.postScan(); }
+        let ts = performance.now();
         p.stats.slices++; const live = p.slice();
+        st.slice += performance.now() - ts; ts = performance.now();
         if (!p.win16Held) { p.timers16(); p.systemPump(); p.appy16(); p.threads16(); }
         else { p.threads16(); if (p.vxdRunTimeOuts) p.vxdRunTimeOuts(); }
+        st.threads += performance.now() - ts; st.n++;
         if (p.sound16) p.sound16(); if (p.lanPoll) p.lanPoll();
         if (!live || p.preempted || p.win16Held) break;
       }
+      const tv = performance.now();
       if (p.vmsRun) p.vmsRun(6);   // (the MS-DOS VMs' time, as the VMM schedules them beside the system VM: vmm.js)
+      st.vms = performance.now() - tv; st.total = performance.now() - t0; st.heldAfter = !!p.win16Held;
+      for (const k of ['slice', 'threads', 'vms', 'total']) st[k] = Math.round(st[k]);
+      const sl = this.stepLog || (this.stepLog = []); sl.push(st); if (sl.length > 120) sl.shift();
     } catch (e) {
       if (e instanceof W.FaultError) { p.depth = 0; p.faulted(e.fault); }
       else if (!(e instanceof W.HangError)) { console.error(e && e.stack ? e.stack : e); this.exited(-1, e.message); return; }
@@ -605,7 +614,16 @@ class Machine {
         preempted: !!t.preempted, cs, ip: t.ctx ? (t.ctx.eip >>> 0) : null } : w;
       post({ t: 'held', held: { hung: p.win16Held.hung, who, since: p.win16Held.since }, stats: { ...p.stats } }); this.postScan();
     }   // (no USER while a thread holds the lock: the page learns it is held, and has the screen)
-    this.timer = setTimeout(() => this.step(), this.keyq.length ? 0 : 16);
+    this.lastStepEnd = performance.now();
+    // (a machine with work left (a thread's time ran out, or one holds the Win16Lock) steps again at once, through a
+    // message rather than a timer, whose 16 ms left a third of a busy machine's time unused; an idle one waits 16 ms)
+    const busy = p.preempted || p.win16Held || performance.now() - t0 > 6;
+    if (busy || this.keyq.length) this.stepSoon(); else this.timer = setTimeout(() => this.step(), 16);
+  }
+  /** the next step as soon as the worker's other messages (the page's input, commands) have had their turn */
+  stepSoon() {
+    if (!this.soonCh) { this.soonCh = new MessageChannel(); this.soonCh.port1.onmessage = () => { if (this.soonPending) { this.soonPending = false; if (!this.timer || this.timer === -1) { this.timer = 0; this.step(); } } }; }
+    this.timer = -1; this.soonPending = true; this.soonCh.port2.postMessage(0);
   }
   kick() { if (this.alive && this.timer) { clearTimeout(this.timer); this.timer = setTimeout(() => this.step(), 0); } }
   /** VWIN32's blue screen for a fault at ring 0 (its text from the page), then the current application ends */
@@ -1045,7 +1063,7 @@ class Machine {
     // (the VMs' view of C: as a disk: its geometry, and a folder's chain and first entries, by args 'disk' on the probe)
     const fv = p.vmDisks && p.vmDisks.C, FL = fv && fv.L, dsk = FL ? { spc: FL.spc, dataStart: FL.dataStart, clusters: FL.clusters, used: FL.used, dirs: [...FL.dirs.entries()].slice(0, 12).map(([k, d]) => [k, d.chain, d.entries]),
       sys: (() => { const d = FL.dirs.get('C:\\WINDOWS\\SYSTEM'); if (!d) return null; const s = fv.sector(FL.hidden + FL.dataStart + (d.start - 2) * FL.spc); return [...s.subarray(0, 64)].map(x => x.toString(16).padStart(2, '0')).join(' '); })() } : null;
-    return { vms, dsk, crits, metrics, display, nic, stats: { ...p.stats, upMs: Math.round(performance.now()) }, sizes: { threads: p.threadsById ? p.threadsById.size : 0, entryHooks: p.entryHooks ? p.entryHooks.size : 0, retPend: p.retPend ? [...p.retPend.values()].reduce((n, l) => n + l.length, 0) : 0, tdbs: (p.tdbList || []).length, remoteClosed: p.remoteClosed ? p.remoteClosed.size : 0, lagLog: this.lagLog ? this.lagLog.length : 0, watchLog: (p.watchLog || []).length, effects: (p.effects || []).length, effectSeen: p.effectSeen ? p.effectSeen.size : 0, handles: p.handles ? p.handles.size : 0, dynCache: p.dynCache ? p.dynCache.size : 0, traceLog: (this.traceLog || []).length, keyq: this.keyq.length, mouseq: this.mouseq.length, procs: p.procs ? p.procs.size : 0, selUsed: p.selUsed ? p.selUsed.reduce((n, v) => n + v, 0) : 0 }, tdbs: (p.tdbList || []).map(s => ({ sel: s, name: p.selValid(s) ? p.readA(p.selBase(s) + 0xf2, 8) : null })), thhook: p.thhookLin ? Array.from(p.u8.subarray(p.thhookLin, p.thhookLin + 0x20)) : null, jsDlls: p.jsDlls ? Object.fromEntries(p.jsDlls) : null, nullJumps: (p.nullJumps || []).map(j => ({ ...j, fromIn: j.from !== undefined ? where(j.from) : undefined })),
+    return { vms, dsk, steps: this.stepLog || [], crits, metrics, display, nic, stats: { ...p.stats, upMs: Math.round(performance.now()) }, sizes: { threads: p.threadsById ? p.threadsById.size : 0, entryHooks: p.entryHooks ? p.entryHooks.size : 0, retPend: p.retPend ? [...p.retPend.values()].reduce((n, l) => n + l.length, 0) : 0, tdbs: (p.tdbList || []).length, remoteClosed: p.remoteClosed ? p.remoteClosed.size : 0, lagLog: this.lagLog ? this.lagLog.length : 0, watchLog: (p.watchLog || []).length, effects: (p.effects || []).length, effectSeen: p.effectSeen ? p.effectSeen.size : 0, handles: p.handles ? p.handles.size : 0, dynCache: p.dynCache ? p.dynCache.size : 0, traceLog: (this.traceLog || []).length, keyq: this.keyq.length, mouseq: this.mouseq.length, procs: p.procs ? p.procs.size : 0, selUsed: p.selUsed ? p.selUsed.reduce((n, v) => n + v, 0) : 0 }, tdbs: (p.tdbList || []).map(s => ({ sel: s, name: p.selValid(s) ? p.readA(p.selBase(s) + 0xf2, 8) : null })), thhook: p.thhookLin ? Array.from(p.u8.subarray(p.thhookLin, p.thhookLin + 0x20)) : null, jsDlls: p.jsDlls ? Object.fromEntries(p.jsDlls) : null, nullJumps: (p.nullJumps || []).map(j => ({ ...j, fromIn: j.from !== undefined ? where(j.from) : undefined })),
       mods32: (p.modules || []).filter(m => m.meta && m.meta.textHi).map(m => [m.name, m.base >>> 0, m.meta.textLo >>> 0, m.meta.textHi >>> 0]), thunkFails: p.thunkFails || [], thunkConns: p.thunkConns || [], gl: [...(p.glContexts || [])].map(c => ({ w: c.canvas && c.canvas.width, h: c.canvas && c.canvas.height, lost: !c.g || c.g.isContextLost(), err: c.g ? c.g.getError() : null, dc: c.dc ? { native: !!c.dc.native, bpp: c.dc.bpp, w: c.dc.w, h: c.dc.h, hwnd: c.dc.hwnd, hdc: c.dc.hdc, gdi: c.dc.native ? (() => {
       const g = p.byName.get('GDI32'), f = n => g.exports.get(n), r = p.alloc(32); try {
         const bm = p.call(f('GetCurrentObject'), [c.dc.hdc, 7]), got = bm ? p.call(f('GetObjectA'), [bm, 24, r]) : 0, type = p.call(f('GetObjectType'), [c.dc.hdc]);
