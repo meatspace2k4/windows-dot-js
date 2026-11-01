@@ -962,7 +962,7 @@ const INTS = {
         if (!v || v.kind === 'remote') { CF(this, 1); this.ax(15); this.dosError = 15; return; }
         this.ax(v.kind === 'removable' ? 0 : 1); return;
       }
-      break;
+      break;   // (the device IOCTLs below: IFSHLP's control data, the console's)
       case 0x50: case 0x51: case 0x62: return;
       // the memory allocation strategy (AL 0 get into AX, 1 set from BX: first fit, 0, at start) and the upper memory
       // blocks' link (2 get into AL, 3 set from BX: not linked, 0, at start), as MS-DOS 7 keeps them
@@ -1147,6 +1147,11 @@ const INTS = {
     // Windows 98 Setup probes for after the Save System Files page (DCh, its connection number): DOS's dispatcher answers
     // AL 0, which a NetWare probe reads as no shell, no connection)
     if (ah > 0x73) { this.ax(this.ax() & 0xff00); return; }
+    // (an IOCTL subfunction nothing above claims: past MS-DOS 7's table (11h), or for a handle no device here takes:
+    // invalid function (1) with carry, as the CD's IO.SYS answers it (its dispatcher at 154D9h: cmp al,11h / ja
+    // 156A3h, which is mov al,1 and the error exit). Windows 98 Setup's SUWIN issues 44E0h as it saves the system
+    // files, and stopped here)
+    if (ah === 0x44) { CF(this, 1); this.ax(1); this.dosError = 1; return; }
     this.trapped = `unhandled int 21h ax=${this.ax().toString(16)} bx=${(this.cpu.ebx.value & 0xffff).toString(16)} cx=${(this.cpu.ecx.value & 0xffff).toString(16)}`; return LAYOUT.SENTINEL;
   },
   0x11() { this.ax(0x0023); },
