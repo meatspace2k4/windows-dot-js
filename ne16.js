@@ -1134,7 +1134,9 @@ const INTS = {
           }
           case 0x3e: if (!f) return fail(6); if (!f.dev) this.fs.close(f.fd); this.dosFiles.delete(bx); return;
           case 0x3f: { if (!f) return fail(6); const b = this.fs.read(f.fd, cx); this.u8.set(b, dsdx()); return this.ax(b.length); }
-          case 0x40: if (!f) return fail(6); return this.ax(this.fs.write(f.fd, this.u8.slice(dsdx(), dsdx() + cx)));
+          // (a write of 0 bytes sets the file's length to where it is, as MS-DOS's does: a program that rewrites a file in
+          // place ends it there. Windows 98 Setup rewrote AUTOEXEC.BAT shorter and the old file's end stayed after it)
+          case 0x40: if (!f) return fail(6); if (!cx && !f.dev) { this.fs.truncate(f.fd); return this.ax(0); } return this.ax(this.fs.write(f.fd, this.u8.slice(dsdx(), dsdx() + cx)));
           case 0x41: this.fs.unlink(this.readA(dsdx()) || ''); return;
           case 0x57: {   // file dates: AL 0 written, 4 accessed, 6 created (CX time, DX date); the setters change nothing
             if (!f) return fail(6); if (al & 1) return;
@@ -3719,7 +3721,8 @@ def16('KERNEL', 85, 'sw', 'w', function (name, mode) { const f = this.findFile16
 def16('KERNEL', 83, 'sw', 'w', function (name) { return this.dosOpen(/^[a-z]:\\/i.test(name) ? name : window.W95FS.join(this.fs.cwd, name), 'w+'); });   // _lcreat
 def16('KERNEL', 81, 'w', 'w', function (h) { const f = this.dosFiles.get(h); if (!f) return 0xffff; this.fs.close(f.fd); this.dosFiles.delete(h); return 0; });
 const lread = function (h, buf, n) { const f = this.dosFiles.get(h); if (!f) return 0xffffffff; const b = this.fs.read(f.fd, n); this.u8.set(b, buf); return b.length; };
-const lwrite = function (h, buf, n) { const f = this.dosFiles.get(h); if (!f) return 0xffffffff; return this.fs.write(f.fd, this.u8.slice(buf, buf + n)); };
+// (_lwrite and _hwrite of 0 bytes set the file's length to where it is, as INT 21h AH=40h does)
+const lwrite = function (h, buf, n) { const f = this.dosFiles.get(h); if (!f) return 0xffffffff; if (!n && !f.dev) { this.fs.truncate(f.fd); return 0; } return this.fs.write(f.fd, this.u8.slice(buf, buf + n)); };
 def16('KERNEL', 82, 'wpw', 'w', function (h, b, n) { return lread.call(this, h, b, n); });
 def16('KERNEL', 349, 'wpl', 'l', function (h, b, n) { return lread.call(this, h, b, n); });
 def16('KERNEL', 86, 'wpw', 'w', function (h, b, n) { return lwrite.call(this, h, b, n); });

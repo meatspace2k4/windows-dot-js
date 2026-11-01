@@ -24,4 +24,20 @@ assert.ok(p.fs.stat('C:\\NEW').isDir);
   p.cpu.eax.value = 0xdc55; const r = INTS[0x21].call(p);
   assert.notEqual(r, window.W95Win32.LAYOUT.SENTINEL, 'not a stop'); assert.equal(p.cpu.eax.value & 0xffff, 0xdc00, 'AL 0: no NetWare connection');
 }
+// a write of 0 bytes (INT 21h AH=40h, CX 0) ends the file where it is: a file rewritten shorter in place keeps none
+// of its old end (Windows 98 Setup's AUTOEXEC.BAT)
+{
+  const { INTS } = window.W95NE16;
+  p.dosFiles = p.dosFiles || new Map(); p.nextDosFile = 5;
+  p.fs.writeFile('C:\\AUTOEXEC.BAT', new TextEncoder().encode('0123456789'));
+  p.writeA(0x1000, 'C:\\AUTOEXEC.BAT'); p.cpu.edx.value = 0x1000; p.cpu.eax.value = 0x3d02; INTS[0x21].call(p);
+  assert.equal(p.cpu.cf.value, 0, `opened (${(p.cpu.eax.value & 0xffff).toString(16)})`);
+  const h = p.cpu.eax.value & 0xffff;
+  p.writeA(0x1100, 'abc'); p.cpu.ebx.value = h; p.cpu.ecx.value = 3; p.cpu.edx.value = 0x1100; p.cpu.eax.value = 0x4000; INTS[0x21].call(p);
+  assert.deepEqual([p.cpu.cf.value, p.cpu.eax.value & 0xffff], [0, 3], 'the 3-byte write');
+  p.cpu.ebx.value = h; p.cpu.ecx.value = 0; p.cpu.eax.value = 0x4000; INTS[0x21].call(p);
+  assert.equal(p.cpu.cf.value, 0, `the 0-byte write (${(p.cpu.eax.value & 0xffff).toString(16)})`);
+  p.cpu.ebx.value = h; p.cpu.eax.value = 0x3e00; INTS[0x21].call(p);
+  assert.equal(new TextDecoder().decode(p.fs.readFile('C:\\AUTOEXEC.BAT')), 'abc', 'the file ends after what was written');
+}
 console.log('doserrors: ok');
