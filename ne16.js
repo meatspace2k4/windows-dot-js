@@ -1299,6 +1299,10 @@ vxdApi(0x000d, 'VKD', {
 });
 vxdApi(0x000c, 'VMD', {
   0() { return 0x400; },                                       // version 4.00
+  // WinOldAp's: the pointer over an MS-DOS VM's window, for that VM's mouse (EBX the VM, CX the buttons, the high word
+  // of ECX the buttons that changed, EDI the position: Y in the high word, X in the low, in the VM's pixels); kept on
+  // the VM for its INT 33h. ECX goes back as it came: the changes WinOldAp captures the pointer for
+  1() { const v = this.vmOf && this.vmOf(this.cpu.ebx.value); if (v && !v.sys) v.mouse = { buttons: this.cpu.ecx.value & 0xffff, x: this.cpu.edi.value & 0xffff, y: this.cpu.edi.value >>> 16 }; },
   5() { this.cpu.edx.value = lo16(this.cpu.edx.value, 0); return 4; },   // mouse type: PS/2 (no serial port IRQ to claim)
   // asked after the type; a zero answer sends MOUSE.DRV through a set-up of its own that this mouse does not need
   // (an unconfirmed reading of the driver)
@@ -2252,6 +2256,44 @@ P.customEntry = function (w, h, slot = CUSTOM_SLOTS[0]) {
   for (const [o, v] of [[8, w], [0xa, h], [0x34, w], [0x36, -h], [0x3c, w], [0x3e, -h], [0x44, X], [0x46, -X], [0x4c, Y], [0x4e, -Y], [0x54, Y], [0x56, -Y]]) this.w16(gdi + o, v & 0xffff);
   return true;
 };
+// The grabber's functions of VDD (EBX the VM, ES:EDI the caller's buffer), answered from the VM's machine (vmm.js): its
+// video state as the BIOS keeps it, its screen memory where it is in Windows' memory, and what changed on it.
+//   1, 6  the VM's video memory (28h bytes): +0..+0Ch each plane's linear address, +10h the displayed page's offset,
+//         +14h..+20h each plane's size (the text screen at its B8000h, 32K); DL flags, none
+//   2, 8  its video state (20h bytes, VDD 2:2D86): +0 the mode (the BIOS's number), +2 flags (8: text), +3 the rows,
+//         +4/+6 the cursor's column and row, +8/+0Ah its first and last scan line, +0Ch the 16 palette registers,
+//         +1Ch the columns
+//   3     what changed since it was last cleared: CX nonzero and flags 8 (the whole screen: the grabber repaints it all,
+//         VGAFULL 1:85F), CX 0 when nothing did
+//   4     the changes cleared; 5 the memory let go; 7 and 9 nothing kept here
+P.vddGrab = function (fn) {
+  const v = this.vmOf && this.vmOf(this.cpu.ebx.value), m = v && !v.sys ? v.m : null;
+  const buf = () => this.lin(((this.cpu.es.value & 0xffff) << 16) | (this.cpu.edi.value & 0xffff));
+  const text = () => (m ? m.u8.slice(m.v86 + 0xb8000 + m.m16(0x44e), m.v86 + 0xb8000 + m.m16(0x44e) + 4000) : null);
+  this.cpu.cf.value = 0;
+  if (!m) { if (fn === 3) this.cpu.ecx.value &= ~0xffff; this.cpu.eax.value = 0; return; }
+  if (fn === 1 || fn === 6) {
+    const a = buf(); this.u8.fill(0, a, a + 0x28);
+    for (let i = 0; i < 4; i++) { this.w32(a + 4 * i, m.v86 + 0xb8000); this.w32(a + 0x14 + 4 * i, 0x8000); }
+    this.w32(a + 0x10, m.m16(0x44e)); this.cpu.edx.value &= ~0xff; return;
+  }
+  if (fn === 2 || fn === 8) {
+    const a = buf(), page = m.m8(0x462), cur = m.m16(0x450 + 2 * page), cols = m.m16(0x44a) || 80, rows = (m.m8(0x484) || 24) + 1;
+    let s = m.m8(0x461) & 0x1f, e = m.m8(0x460) & 0x1f; const max = 15;
+    if (s > max) { s = 0; e = 0; } else { if (s === e) e++; if (!e) e = max + 1; if (s >= e) [s, e] = [e, s]; if (s > max) { e = max + 1; s = 0; } }
+    this.u8.fill(0, a, a + 0x20);
+    this.u8[a] = m.m8(0x449); this.u8[a + 2] = 8 | 1; this.u8[a + 3] = rows;
+    this.w16(a + 4, cur & 0xff); this.w16(a + 6, cur >> 8); this.w16(a + 8, s); this.w16(a + 0xa, e);
+    [0, 1, 2, 3, 4, 5, 0x14, 7, 0x38, 0x39, 0x3a, 0x3b, 0x3c, 0x3d, 0x3e, 0x3f].forEach((p, i) => { this.u8[a + 0xc + i] = p; });
+    this.w16(a + 0x1c, cols); return;
+  }
+  if (fn === 3) {
+    const now = text(), was = v.grabShot, cur = m.m16(0x450 + 2 * m.m8(0x462)), changed = !was || cur !== v.grabCur || now.some((b, i) => b !== was[i]);
+    const a = buf(); this.w16(a, changed ? 8 : 0); this.w16(a + 2, 0);
+    this.cpu.ecx.value = (this.cpu.ecx.value & ~0xffff) | (changed ? 1 : 0); return;
+  }
+  if (fn === 4) { v.grabShot = text(); v.grabCur = m.m16(0x450 + 2 * m.m8(0x462)); v.dispPosted = 0; }
+};
 def16('VDD', 0, '', 'jmp', function () {
   const fn = u32(this.cpu.eax.value);
   switch (fn) {
@@ -2262,6 +2304,7 @@ def16('VDD', 0, '', 'jmp', function () {
       if (es) { const a = this.lin((es << 16) | (this.cpu.edi.value & 0xffff)); [...'VIDEOVGA'].forEach((c, i) => { this.u8[a + i] = c.charCodeAt(0); }); }
       this.cpu.eax.value = 0x400; break;
     }
+    case 1: case 2: case 3: case 4: case 5: case 6: case 7: case 8: case 9: this.vddGrab(fn); break;
     case 0x80: this.cpu.eax.value = this.cpu.ecx.value; break;          // VDD_DRIVER_REGISTER: VRAM the visible screen uses
     case 0x83: {                                                         // the W32's MMU and accelerator at EDX (B8000h): a selector for them in EDX
       const a = this.adapter();

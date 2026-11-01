@@ -22,7 +22,9 @@ function machine(o = {}) {
   Object.defineProperty(p, 'u8', { value: new Uint8Array(p.mem.buffer) });
   Object.defineProperty(p, 'dv', { value: new DataView(p.mem.buffer) });
   p.cpu = {}; for (const n of CPU) p.cpu[n] = new WebAssembly.Global({ value: 'i32', mutable: true }, n === 'if' ? 1 : 0);
-  p.v86 = V86_BASE; p.disk = o.disk; p.geom = { heads: 16, spt: 63 }; p.o = o;
+  // (o.base: where its first megabyte is, in a memory shared with Windows' VMM: a VM's at its CB_High_Linear; o.xmsKB
+  // the extended memory it has past 120000h)
+  p.v86 = o.base || V86_BASE; p.xmsKB = o.xmsKB || XMS.kb; p.disk = o.disk; p.geom = { heads: 16, spt: 63 }; p.o = o;
   p.keys = []; p.port60 = 0; p.irq = 0; p.ticksAt = Date.now(); p.halted = false; p.polls = 0; p.v86Hooks = new Set([0x21, 0x2f]);
   p.trap = function (next, code) { this.v86Trap(next, code); };
   p.portIO = function (port, size, isIn) { this.v86Port(port, size, isIn); };
@@ -114,6 +116,7 @@ P.v86Run = function (n = 20000) {
     try { eip = u32(blk.run()); }
     catch (e) { if (!(e instanceof WebAssembly.RuntimeError)) throw e; this.trapped = `${e.message} at ${(eip - this.v86).toString(16)}`; return 'trap'; }
     if (this.halted) { this.cpu.eip.value = eip; return 'idle'; }
+    if (eip === this.nestReturn) { this.cpu.eip.value = eip; return 'nest'; }   // (an interrupt the VMM ran in it has returned: vmm.js vmIntV86)
     if (eip === this.boxReturn) { this.cpu.eip.value = eip; this.exited = true; return 'exit'; }   // (the box's program has ended)
     if (eip === this.want52) { this.want52 = 0; this.lol = this.lin(this.cpu.es.value, this.r('bx')) - this.v86; }   // (DOS's List of Lists, as INT 21h AH=52h answers)
   }
@@ -295,6 +298,59 @@ P.winDone = function (code = 0, exec = null) {
   code86.forEach((b, i) => this.s8(S + i, b));
   this.sreg('cs', ROM >> 4); this.cpu.eip.value = this.v86 + ROM + 0x3300; this.vmm = null;
 };
+/** the DOS that booted, as the VMM's loader left it entering protected mode (the PC waiting for Windows): what Windows
+ *  makes each MS-DOS VM from. Its first megabyte and HMA, the loader's PSP, the vectors as they were before the loader
+ *  took any, DOS's tables, and the drives the redirector has */
+P.dosState = function () {
+  const w = this.winWait; if (!w) return null;
+  return { mem: this.u8.slice(this.v86, this.v86 + 0x110000), psp: w.psp, ivt: w.vmm.ivt.slice(), lol: this.lol, sda: this.sda, cdsAt: this.cdsAt, drivesTaken: !!this.drivesTaken };
+};
+/** a VM Windows makes for an MS-DOS program (vmm.js), in memory of Windows' at o.base: the DOS that booted (`dos`,
+ *  dosState) copied in, as V86MMGR makes a VM's memory from the system VM's, and the vectors the loader took put back
+ *  (as winDone puts them back) */
+M.vmMachine = function (o, dos) {
+  const m = machine(o);
+  m.u8.set(dos.mem, m.v86);
+  m.lol = dos.lol; m.sda = dos.sda; m.cdsAt = dos.cdsAt; m.drivesTaken = dos.drivesTaken; m.dos = dos;
+  m.redir = new Map(); m.nextRedir = 1; m.searches = new Map();
+  const lo = dos.psp * 16, hi = lo + m.m16((dos.psp - 1) * 16 + 3) * 16;
+  for (let n = 0; n < 256; n++) {
+    const at = (m.m16(n * 4 + 2) << 4) + m.m16(n * 4);
+    if (at >= lo && at < hi) m.u8.set(dos.ivt.subarray(n * 4, n * 4 + 4), m.v86 + n * 4);
+  }
+  if (m.drivesTaken) m.v86Hooks.add(0x2f);
+  m.halted = true;   // (it runs once DOSMGR starts its program: vmExec)
+  return m;
+};
+/** a VM's current folder (DOSMGR's, from the program's properties): its drive's entry in DOS's current-directory
+ *  structures, in DOS's 8.3 form, and DOS's current drive (the swappable data area's 16h) */
+P.vmCwd = function (dir) {
+  let p = dir.toUpperCase().replace(/\\+$/, ''); try { p = this.o.fs.stat(dir).shortPath.toUpperCase().replace(/\\+$/, ''); } catch (_) { return; }
+  if (p.length === 2) p += '\\';
+  const d = p.charCodeAt(0) - 65, cds = this.lin(this.m16(this.lol + 0x18), this.m16(this.lol + 0x16)) - this.v86, e = cds + d * 0x58;
+  if (d < 0 || d >= this.m8(this.lol + 0x21)) return;
+  for (let i = 0; i < 67; i++) this.s8(e + i, i < p.length ? p.charCodeAt(i) : 0);
+  this.s8(this.sda + 0x16, d);
+};
+/** DOSMGR's start of a VM's program: the loader's memory given back to DOS but for its PSP, and `program` EXECed from
+ *  there with `tail` (DOS's form: a length, the text, CR); the EXEC's return ends the VM (v86Run 'exit') */
+P.vmExec = function (program, tail) {
+  const m = this, dos = this.dos;
+  try { program = this.o.fs.stat(program).shortPath; } catch (_) { /* (DOS's own name for it, as given) */ }
+  // (the stub, its strings and its stack in the ROM's segment, after winDone's: AH=4Ah the loader's block down to its
+  // PSP, then AX=4B00h the program with a parameter block naming the tail and two empty FCBs)
+  const S = 0x3600, PATH = 0x3700, TAIL = 0x3800, PB = 0x3900, FCB = 0x3920;
+  [...program].forEach((c, i) => m.s8(ROM + PATH + i, c.charCodeAt(0))); m.s8(ROM + PATH + program.length, 0);
+  tail.forEach((b, i) => m.s8(ROM + TAIL + i, b));
+  for (let i = 0; i < 0x20; i++) m.s8(ROM + FCB + i, i >= 1 && i < 12 ? 0x20 : 0);
+  m.s16(ROM + PB, 0); m.s16(ROM + PB + 2, TAIL); m.s16(ROM + PB + 4, ROM >> 4); m.s16(ROM + PB + 6, FCB); m.s16(ROM + PB + 8, ROM >> 4); m.s16(ROM + PB + 10, FCB); m.s16(ROM + PB + 12, ROM >> 4);
+  const w16 = v => [v & 0xff, v >> 8];
+  const code = [0xb8, ...w16(dos.psp), 0x8e, 0xc0, 0xbb, 0x10, 0x00, 0xb4, 0x4a, 0xcd, 0x21,   // mov ax,psp; mov es,ax; mov bx,10h; mov ah,4Ah; int 21h
+    0x0e, 0x1f, 0xba, ...w16(PATH), 0x0e, 0x07, 0xbb, ...w16(PB), 0xb8, 0x00, 0x4b, 0xcd, 0x21];   // push cs; pop ds; mov dx,PATH; push cs; pop es; mov bx,PB; mov ax,4B00h; int 21h
+  code.forEach((b, i) => m.s8(ROM + S + i, b));
+  m.sreg('cs', ROM >> 4); m.cpu.eip.value = m.v86 + ROM + S; m.sreg('ss', ROM >> 4); m.cpu.esp.value = 0x5ffe; m.sreg('ds', ROM >> 4); m.sreg('es', ROM >> 4);
+  m.boxReturn = m.v86 + ROM + S + code.length; m.halted = false;
+};
 // what the box's program writes to the console, kept for a command run with no window (dosRun): INT 21h's character
 // and string output, and writes to a handle whose file is the console (a character device that is the standard
 // output, by the process's handle table and DOS's file table: not what a command redirects to a file)
@@ -459,7 +515,7 @@ P.v86Port = function (port, size, isIn, val) {
   }   // (the CMOS's index kept; the interrupt controller's EOI, the timer's programming, the CRTC's cursor: the host keeps its own)
   let v = 0xff;
   // the CMOS's extended memory (17h/18h and 30h/31h: the KB above 1 MB), what XMS gives out and the HMA
-  const ext = XMS.kb + (XMS.base - 0x100000) / 1024;
+  const ext = this.xmsKB + (XMS.base - 0x100000) / 1024;
   if (port === 0x71 && [0x17, 0x30].includes(this.cmosAt)) v = ext & 0xff;
   else if (port === 0x71 && [0x18, 0x31].includes(this.cmosAt)) v = ext >> 8;
   // the real-time clock's registers (0 seconds, 2 minutes, 4 hours, 6 the day of the week, 7 the day, 8 the month, 9
@@ -498,7 +554,7 @@ BIOS[0x13] = function () { disk.call(this); };
 BIOS[0x14] = function () { this.w('ax', 0); };
 BIOS[0x15] = function () {
   const ah = this.ah();
-  if (ah === 0x88) { this.w('ax', XMS.kb + (XMS.base - 0x100000) / 1024); this.retCF(false); return; }   // the extended memory, in KB (XMS gives it out)
+  if (ah === 0x88) { this.w('ax', this.xmsKB + (XMS.base - 0x100000) / 1024); this.retCF(false); return; }   // the extended memory, in KB (XMS gives it out)
   if (ah === 0x4f) { this.retCF(true); return; }                              // the keyboard intercept: the key kept
   if (ah === 0xc0) { this.sreg('es', ROM >> 4); this.w('bx', 0xe6f5); this.setAH(0); this.retCF(false); return; }
   this.setAH(0x86); this.retCF(true);
@@ -537,12 +593,12 @@ const xmsOf = p => p.xms || (p.xms = { blocks: new Map(), next: 1 });
 const xmsFree = p => {   // the free runs between the blocks, in KB: [largest, total]
   const used = [...xmsOf(p).blocks.values()].sort((a, b) => a.at - b.at); let at = 0, big = 0, all = 0;
   for (const b of used) { big = Math.max(big, b.at - at); all += b.at - at; at = b.at + b.kb; }
-  big = Math.max(big, XMS.kb - at); all += XMS.kb - at; return [big, all];
+  big = Math.max(big, p.xmsKB - at); all += p.xmsKB - at; return [big, all];
 };
 const xmsPlace = (p, kb, skip) => {   // the first run of `kb` free KB (the block `skip` not counted), or -1
   const used = [...xmsOf(p).blocks.values()].filter(b => b !== skip).sort((a, b) => a.at - b.at); let at = 0;
   for (const b of used) { if (b.at - at >= kb) return at; at = b.at + b.kb; }
-  return XMS.kb - at >= kb ? at : -1;
+  return p.xmsKB - at >= kb ? at : -1;
 };
 BIOS[0xf8] = function (next) {
   if (next !== this.v86 + ROM + XMS.entry + 3) return;   // (INT F8h's own stub: nothing)
@@ -557,7 +613,7 @@ BIOS[0xf8] = function (next) {
     case 0x07: return done(1, 0);
     case 0x08: case 0x88: {
       const [l, t] = xmsFree(this);
-      if (big) { c.eax.value = l; c.edx.value = t; c.ecx.value = XMS.base + XMS.kb * 1024 - 1; this.cpu.ebx.value &= ~0xff; return; }
+      if (big) { c.eax.value = l; c.edx.value = t; c.ecx.value = XMS.base + this.xmsKB * 1024 - 1; this.cpu.ebx.value &= ~0xff; return; }
       this.w('ax', Math.min(l, 0xffff)); this.w('dx', Math.min(t, 0xffff)); this.cpu.ebx.value &= ~0xff; return;
     }
     case 0x09: case 0x89: {

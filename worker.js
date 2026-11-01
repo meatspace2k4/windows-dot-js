@@ -8,7 +8,7 @@ self.window = self;
 // the Ethernet segment as this worker has it: its own stations (the card, in the system's machine), and the rest of the
 // segment on the page (the other computer, lanhost.js; other machines' cards), frames passing both ways
 self.W95LAN = { stations: new Set(), frames: 0 };
-importScripts('bridge.js', 'fs.js', 'win32.js', 'gl.js', 'shell32.js', 'system.js', 'claude-exe.js', 'claude-app.js', 'session-dll.js', 'sesstray-exe.js', 'session-tray.js', 'dbwin-exe.js', 'dbwin.js','osclass.js', 'ne16.js', 'vmm.js', 'sound.js', 'lan.js', 'parallel.js', 'netfs.js', 'dyn.js', 'savers.js', 'saver-runtime.js');
+importScripts('bridge.js', 'fs.js', 'win32.js', 'gl.js', 'shell32.js', 'system.js', 'claude-exe.js', 'claude-app.js', 'session-dll.js', 'sesstray-exe.js', 'session-tray.js', 'dbwin-exe.js', 'dbwin.js','osclass.js', 'ne16.js', 'vmm.js', 'sound.js', 'lan.js', 'parallel.js', 'netfs.js', 'dyn.js', 'v86.js', 'savers.js', 'saver-runtime.js');
 const B = self.W95Bridge, W = self.W95Win32, { FSError, join, basename, extname } = self.W95FS;
 const b64bytes = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
 const sha256 = W.sha256;   // (a program's identity as the bundle records it: spawnProgram)
@@ -161,6 +161,7 @@ class Machine {
       if (this.system && this.session) this.proc.onIntent = i => post({ t: 'intent', i });   // (a shared session's: ne16.js hookIntents)
       if (this.system && this.session) this.proc.sessionClock = true;   // (its programs' first clock reads their start's: win32.js progTime)
       if (this.wallSkew) this.proc.wallSkew = this.wallSkew;   // (a shared session's wall clock: the server's, win32.js progTime)
+      if (this.pcDos) this.proc.pcDos = this.pcDos;   // (the DOS that booted, which each MS-DOS VM is made from: vmm.js vmRun)
       if (this.trace) this.traceOn(this.trace, this.traceNames || undefined);
       if (this.system && !this.proc.trapped && !this.startSystemTask()) throw new Error('MSGSRV32.EXE did not start');
     } catch (e) { console.error(e && e.stack ? e.stack : e); this.exited(-1, e.message); return; }
@@ -469,7 +470,7 @@ class Machine {
     const STR = { 74: 10, 166: 6, 45: 8, 217: 8, 218: 8, 219: 12, 220: 20, 95: 4, 97: 14, 127: 10, 128: 14, 70: 4, 69: 4 };   // (AddAtom, FindAtom: the name)   // (and the key of GetProfileInt/String, GetPrivateProfileInt/String)
     const arg = key => {
       const m = /KERNEL\.#(\d+)$/.exec(key), o = m && STR[m[1]];
-      if (/^VXD\.#/.test(key)) return ['eax', 'ebx', 'ecx', 'edx'].map(r => `${r} ${(p.cpu[r].value >>> 0).toString(16)}`).join(' ');   // (a VxD's API: its function and arguments in the registers)
+      if (/^(VXD|VDD|VFLATD)\.#/.test(key)) return ['eax', 'ebx', 'ecx', 'edx'].map(r => `${r} ${(p.cpu[r].value >>> 0).toString(16)}`).join(' ');   // (a VxD's API: its function and arguments in the registers)
       try {
         const f = p.cpu.ssb.value + (p.cpu.esp.value & 0xffff);
         if (m && /^(533|534|537)$/.test(m[1])) return [4, 6, 8, 10].map(k => p.r16(f + k).toString(16)).join(' ');   // (the DDE conversions: their stack words)
@@ -552,6 +553,7 @@ class Machine {
         if (p.sound16) p.sound16(); if (p.lanPoll) p.lanPoll();
         if (!live || p.preempted || p.win16Held) break;
       }
+      if (p.vmsRun) p.vmsRun(6);   // (the MS-DOS VMs' time, as the VMM schedules them beside the system VM: vmm.js)
     } catch (e) {
       if (e instanceof W.FaultError) { p.depth = 0; p.faulted(e.fault); }
       else if (!(e instanceof W.HangError)) { console.error(e && e.stack ? e.stack : e); this.exited(-1, e.message); return; }
@@ -1006,7 +1008,11 @@ class Machine {
     const dmod = p.ne && p.ne.get('DISPLAY'), dseg = dmod && dmod.segs && dmod.segs[dmod.segs.length - 1], dsb = dseg && p.selValid(dseg.sel) ? p.selBase(dseg.sel) : 0;
     const display = dsb ? { sel: dseg.sel, chip81e: p.r16(dsb + 0x81e), bpp2d: p.r16(dsb + 0x2d), mem7a: p.r32(dsb + 0x7a), w: [...p.u8.slice(dsb, dsb + 0x40)].map(b => b.toString(16).padStart(2, '0')).join('') } : null;
     const metrics = p.depth || p.thread16 ? null : (() => { try { return [0, 1, 4].map(i => p.user16(179, [['w', i]]).ax); } catch (e) { return e.message; } })();   // GetSystemMetrics: CXSCREEN, CYSCREEN, CYCAPTION
-    return { crits, metrics, display, nic, stats: { ...p.stats, upMs: Math.round(performance.now()) }, sizes: { threads: p.threadsById ? p.threadsById.size : 0, entryHooks: p.entryHooks ? p.entryHooks.size : 0, retPend: p.retPend ? [...p.retPend.values()].reduce((n, l) => n + l.length, 0) : 0, tdbs: (p.tdbList || []).length, remoteClosed: p.remoteClosed ? p.remoteClosed.size : 0, lagLog: this.lagLog ? this.lagLog.length : 0, watchLog: (p.watchLog || []).length, effects: (p.effects || []).length, effectSeen: p.effectSeen ? p.effectSeen.size : 0, handles: p.handles ? p.handles.size : 0, dynCache: p.dynCache ? p.dynCache.size : 0, traceLog: (this.traceLog || []).length, keyq: this.keyq.length, mouseq: this.mouseq.length, procs: p.procs ? p.procs.size : 0, selUsed: p.selUsed ? p.selUsed.reduce((n, v) => n + v, 0) : 0 }, tdbs: (p.tdbList || []).map(s => ({ sel: s, name: p.selValid(s) ? p.readA(p.selBase(s) + 0xf2, 8) : null })), thhook: p.thhookLin ? Array.from(p.u8.subarray(p.thhookLin, p.thhookLin + 0x20)) : null, jsDlls: p.jsDlls ? Object.fromEntries(p.jsDlls) : null, nullJumps: (p.nullJumps || []).map(j => ({ ...j, fromIn: j.from !== undefined ? where(j.from) : undefined })),
+    // (the MS-DOS VMs: each one's id, handle, what it runs and where its processor is, its screen's first line)
+    const vms = (p.vms || []).map(v => ({ id: v.id, cb: v.cb.toString(16), started: !!v.started, gone: !!v.gone, exec: v.exec ? v.exec.program : null,
+      at: v.m ? `${(v.m.cpu.cs.value & 0xffff).toString(16)}:${((v.m.cpu.eip.value >>> 0) - (v.m.cpu.csb.value >>> 0)).toString(16)}` : null, halted: v.m ? !!v.m.halted : null, dispEvents: v.dispEvents || 0, dispLast: v.dispLast, dispPosted: !!v.dispPosted,
+      screen: v.m ? [...Array(25)].map((_, r) => [...Array(80)].map((_, c) => String.fromCharCode(v.m.m8(0xb8000 + (r * 80 + c) * 2) || 32)).join('').trimEnd()).filter(Boolean).slice(0, 25) : null }));
+    return { vms, crits, metrics, display, nic, stats: { ...p.stats, upMs: Math.round(performance.now()) }, sizes: { threads: p.threadsById ? p.threadsById.size : 0, entryHooks: p.entryHooks ? p.entryHooks.size : 0, retPend: p.retPend ? [...p.retPend.values()].reduce((n, l) => n + l.length, 0) : 0, tdbs: (p.tdbList || []).length, remoteClosed: p.remoteClosed ? p.remoteClosed.size : 0, lagLog: this.lagLog ? this.lagLog.length : 0, watchLog: (p.watchLog || []).length, effects: (p.effects || []).length, effectSeen: p.effectSeen ? p.effectSeen.size : 0, handles: p.handles ? p.handles.size : 0, dynCache: p.dynCache ? p.dynCache.size : 0, traceLog: (this.traceLog || []).length, keyq: this.keyq.length, mouseq: this.mouseq.length, procs: p.procs ? p.procs.size : 0, selUsed: p.selUsed ? p.selUsed.reduce((n, v) => n + v, 0) : 0 }, tdbs: (p.tdbList || []).map(s => ({ sel: s, name: p.selValid(s) ? p.readA(p.selBase(s) + 0xf2, 8) : null })), thhook: p.thhookLin ? Array.from(p.u8.subarray(p.thhookLin, p.thhookLin + 0x20)) : null, jsDlls: p.jsDlls ? Object.fromEntries(p.jsDlls) : null, nullJumps: (p.nullJumps || []).map(j => ({ ...j, fromIn: j.from !== undefined ? where(j.from) : undefined })),
       mods32: (p.modules || []).filter(m => m.meta && m.meta.textHi).map(m => [m.name, m.base >>> 0, m.meta.textLo >>> 0, m.meta.textHi >>> 0]), thunkFails: p.thunkFails || [], thunkConns: p.thunkConns || [], gl: [...(p.glContexts || [])].map(c => ({ w: c.canvas && c.canvas.width, h: c.canvas && c.canvas.height, lost: !c.g || c.g.isContextLost(), err: c.g ? c.g.getError() : null, dc: c.dc ? { native: !!c.dc.native, bpp: c.dc.bpp, w: c.dc.w, h: c.dc.h, hwnd: c.dc.hwnd, hdc: c.dc.hdc, gdi: c.dc.native ? (() => {
       const g = p.byName.get('GDI32'), f = n => g.exports.get(n), r = p.alloc(32); try {
         const bm = p.call(f('GetCurrentObject'), [c.dc.hdc, 7]), got = bm ? p.call(f('GetObjectA'), [bm, 24, r]) : 0, type = p.call(f('GetObjectType'), [c.dc.hdc]);

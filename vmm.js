@@ -111,7 +111,8 @@ P.r0StepIn = function () {
   // (a run whose time ran out is ring-0 code in progress: it goes on first, as nothing interrupts ring 0 with more of
   // it; events start once every stopped run is one that waits)
   if (this.vxdEvents && this.vxdEvents.length && runs.every(s => s.wait)) {
-    const e = this.vxdEvents.shift();
+    const e = this.vxdEvents.shift(), v = this.vmEventVM(e);
+    if (v) { this.vmEventRun(v, e); return true; }
     this.r0Start(e.fn, { ebx: this.sysVM(), edx: e.ref, ebp: this.vmClientIdle(), esi: e.handle || 0 });
     return !!(this.r0Runs && this.r0Runs.length);
   }
@@ -233,17 +234,142 @@ P.svcThunk = function (id) {
 const ZF = (p, on) => { p.cpu.zf.value = on ? 1 : 0; };
 const VMM = 1, SHELL = 0x17, VWIN32 = 0x2a, CONFIGMG = 0x33;
 
+// ---- VMM: the VMs. The system VM, and one more for each MS-DOS program SHELL starts (System_Control Create_VM, as
+// WinOldAp asks SHELL's API function 3): its control block as the system VM's (CB_VM_Status, CB_High_Linear the
+// linear address of its first megabyte, CB_Client_Pointer, CB_VMID, CB_Signature; the devices' areas at the offsets
+// _Allocate_Device_CB_Area gave), its client registers, its V86 memory
+const CB = { STATUS: 0, HIGH: 4, CLIENT: 8, ID: 0xc, SIG: 0x10 };
+/** the VM whose handle (control block) is h, the system VM's record for it, or null */
+P.vmOf = function (h) { h = u32(h); return h === this.sysVM() ? { cb: h, sys: true } : (this.vms || []).find(v => v.cb === h) || null; };
+P.vmHandles = function () { return [this.sysVM(), ...(this.vms || []).filter(v => !v.gone).map(v => v.cb)]; };
+const VM_XMS_KB = 1024;   // (a VM's extended memory, XMS's, past 120000h of its memory)
+P.createVM = function () {
+  const size = 0x120000 + VM_XMS_KB * 1024, cb = this.alloc(0x4000), client = this.alloc(0x60), mem = this.alloc(size + 0x1000);
+  this.u8.fill(0, cb, cb + 0x4000); this.u8.fill(0, client, client + 0x60);
+  const high = (mem + 0xfff) & ~0xfff; this.u8.fill(0, high, high + size);
+  const vm = { cb, client, high, id: (this.vmNextId = (this.vmNextId || 1) + 1), status: 0 };
+  // its memory: the DOS that booted (the page's PC, as the VMM's loader left it), as V86MMGR makes a VM's from the system
+  // VM's; a machine of v86.js's runs it there, in Windows' memory
+  if (this.pcDos && window.W95V86) vm.m = window.W95V86.vmMachine({ mem: this.mem, base: high, xmsKB: VM_XMS_KB, fs: this.fs }, this.pcDos);
+  // a V86 VM being made: CB_VM_Status VMStat_Creating until VM_Init has been sent
+  this.w32(cb + CB.STATUS, 4); this.w32(cb + CB.HIGH, high); this.w32(cb + CB.CLIENT, client); this.w32(cb + CB.ID, vm.id); this.w32(cb + CB.SIG, 0x62634d56);
+  this.w32(client + 0x2c, 0x20202);   // (the client's flags: V86, IF)
+  (this.vms || (this.vms = [])).push(vm);
+  return vm;
+};
+/** a control message sent to the devices for VM `vm` (EBX its handle, EBP its client registers): false when one
+ *  fails it (CF). The file system's devices are left out: a VM's files are its own MS-DOS's, whose drives are Windows'
+ *  through the redirector (v86.js), where IFSMgr would take that DOS's file tables over (it walks the VM's system
+ *  file tables from the List of Lists it found in the system VM's DOS, which is not the one the VM booted) */
+const VM_FS_DEVICES = new Set(['IFSMGR', 'VREDIR']);
+P.vmBroadcast = function (vm, msg, regs = {}) {
+  for (const v of [...(this.vxds || new Map()).values()].filter(x => x.inited && !VM_FS_DEVICES.has(String(x.name).trim().toUpperCase()))) {
+    const r = this.vxdCall(v.procs.control, { ...regs, eax: msg, ebx: vm.cb, ebp: vm.client });
+    if (r.cf) { W.log('warn', 'vxd', `${v.file} failed system control ${msg} for VM ${vm.id}`); return false; }
+  }
+  return true;
+};
+const CREATE_VM = 7, VM_CRITICAL_INIT = 8, VM_INIT = 9, VM_TERMINATE = 0xa, VM_NOT_EXECUTEABLE = 0xb, DESTROY_VM = 0xc;
+/** System_Control Create_VM, which the VMM carries out: a VM made, Create_VM and VM_Critical_Init sent for it, then
+ *  VM_Init in its own context (the current VM while the devices take it); EBX the new VM, or CF when a device refused
+ *  it (VM_Not_Executeable and Destroy_VM sent then, the VM gone) */
+P.vmCreate = function (regs) {
+  const vm = this.createVM();
+  const ok = this.vmBroadcast(vm, CREATE_VM, regs) && this.vmBroadcast(vm, VM_CRITICAL_INIT, regs) && (() => {
+    const cur = this.curVM; this.curVM = vm;
+    try { return this.vmBroadcast(vm, VM_INIT, regs); } finally { this.curVM = cur; }
+  })();
+  if (!ok) { this.vmBroadcast(vm, VM_NOT_EXECUTEABLE, { edx: 0 }); this.vmBroadcast(vm, DESTROY_VM); vm.gone = true; return 0; }
+  this.w32(vm.cb + CB.STATUS, this.r32(vm.cb + CB.STATUS) & ~4);
+  return vm.cb;
+};
+// the client registers (Client_Reg_Struc) of a VM whose machine is stopped, from its processor and back
+const CRS_V86 = [['edi', 0], ['esi', 4], ['ebp', 8], ['ebx', 0x10], ['edx', 0x14], ['ecx', 0x18], ['eax', 0x1c]];
+const FLAG_BITS = [['cf', 0], ['pf', 2], ['zf', 6], ['sf', 7], ['if', 9], ['df', 10], ['of', 11]];
+P.vmToClient = function (vm) {
+  const m = vm.m, c = vm.client; if (!m) return;
+  for (const [r, o] of CRS_V86) this.w32(c + o, u32(m.cpu[r].value));
+  let fl = 0x20002; for (const [f, b] of FLAG_BITS) fl |= (m.cpu[f].value & 1) << b;
+  this.w32(c + 0x24, u32(m.cpu.eip.value) - u32(m.cpu.csb.value)); this.w32(c + 0x28, m.cpu.cs.value & 0xffff); this.w32(c + 0x2c, fl);
+  this.w32(c + 0x30, m.cpu.esp.value & 0xffff); this.w32(c + 0x34, m.cpu.ss.value & 0xffff);
+  this.w32(c + 0x38, m.cpu.es.value & 0xffff); this.w32(c + 0x3c, m.cpu.ds.value & 0xffff); this.w32(c + 0x40, m.cpu.fsel.value & 0xffff); this.w32(c + 0x44, m.cpu.gsel.value & 0xffff);
+};
+P.vmFromClient = function (vm) {
+  const m = vm.m, c = vm.client; if (!m) return;
+  for (const [r, o] of CRS_V86) m.cpu[r].value = this.r32(c + o);
+  const fl = this.r32(c + 0x2c); for (const [f, b] of FLAG_BITS) m.cpu[f].value = (fl >> b) & 1;
+  m.sreg('ss', this.r16(c + 0x34)); m.cpu.esp.value = this.r32(c + 0x30) & 0xffff;
+  m.sreg('es', this.r16(c + 0x38)); m.sreg('ds', this.r16(c + 0x3c)); m.sreg('fsel', this.r16(c + 0x40)); m.sreg('gsel', this.r16(c + 0x44));
+  m.sreg('cs', this.r16(c + 0x28)); m.cpu.eip.value = u32(m.cpu.csb.value) + (this.r32(c + 0x24) & 0xffff);
+};
+/** an interrupt run in a VM's own machine on its client registers (Exec_Int in its context): its DOS's or BIOS's
+ *  handler, through its vectors, to the IRET back to a stub in its ROM's segment; its machine as it was afterwards */
+P.vmIntV86 = function (vm, n) {
+  const m = vm.m, keep = {}; for (const r of m.CPU_NAMES || Object.keys(m.cpu)) keep[r] = m.cpu[r].value;
+  const halted = m.halted, ret = m.boxReturn, STUB = 0xf3a00;
+  m.s8(STUB, 0xcd); m.s8(STUB + 1, n);
+  this.vmFromClient(vm); m.sreg('cs', 0xf000); m.cpu.eip.value = m.v86 + STUB; m.halted = false; m.nestReturn = m.v86 + STUB + 2;
+  try {
+    for (let k = 0; k < 2000; k++) { const st = m.v86Run(4000); if (st === 'nest') break; if (st === 'trap') throw new W.GuestError(`VM ${vm.id}: ${m.trapped}`); if (st === 'idle') m.halted = false; }
+    const c = vm.client, cs = this.r32(c + 0x28), ip = this.r32(c + 0x24);
+    this.vmToClient(vm); this.w32(c + 0x28, cs); this.w32(c + 0x24, ip);
+  } finally {
+    m.nestReturn = 0; for (const r of Object.keys(keep)) m.cpu[r].value = keep[r]; m.halted = halted; m.boxReturn = ret;
+  }
+};
+/** the MS-DOS VMs' time: each started one runs for its share of `ms`; its program's end ends it */
+P.vmsRun = function (ms) {
+  const live = (this.vms || []).filter(v => v.m && v.started && !v.gone && !v.suspended); if (!live.length) return;
+  for (const v of live) {
+    const t0 = performance.now();
+    while (performance.now() - t0 < ms / live.length) {
+      const st = v.m.v86Run(4000);
+      if (st === 'idle') { v.m.halted = false; break; }
+      if (st === 'exit') { this.vmEnd(v); break; }
+      if (st === 'trap') { W.log('warn', 'vmm', `VM ${v.id} stopped: ${v.m.trapped}`); this.vmEnd(v, true); break; }
+    }
+    if (!v.gone) this.vmDisplayEvent(v);
+  }
+};
+/** VDD's part when a windowed VM's screen has changed since the grabber last cleared its changes (vddGrab 4): message
+ *  41Ah to its WinOldAp window through SHELL_Event (EBX the VM, ECX the message, EAX 0), as VDD posts it (VDD 2:57A4);
+ *  again each quarter second while the grabber has not taken them (WinOldAp drops it until its window is up: 2:1D1) */
+P.vmDisplayEvent = function (vm) {
+  const m = vm.m; if (!m || (vm.dispPosted && performance.now() - vm.dispPosted < 250)) return;
+  const at = m.v86 + 0xb8000 + m.m16(0x44e), cur = m.m16(0x450 + 2 * m.m8(0x462)), was = vm.grabShot;
+  let changed = !was || cur !== vm.grabCur; for (let i = 0; !changed && i < 4000; i++) if (m.u8[at + i] !== was[i]) changed = true;
+  if (!changed) return;
+  const fn = this.vxdService(SHELL, 2); if (!fn) return;
+  vm.dispPosted = performance.now();
+  const r = this.vxdCall(fn, { ebx: vm.cb, ecx: 0x41a, eax: 0, esi: 0, edx: 0, ebp: this.vmClientIdle() });
+  vm.dispEvents = (vm.dispEvents || 0) + 1; vm.dispLast = r && r.eax;
+};
+/** a VM's program has ended (its EXEC returned, CF its failure): DOSMGR's callback told in the VM's context (SHELL takes
+ *  the exit code from the VM's DOS), then the VM closed, as Windows closes one: VM_Terminate in its context,
+ *  VM_Not_Executeable (EDX VNE_Crashed when it stopped), Destroy_VM */
+P.vmEnd = function (vm, crashed = false) {
+  vm.started = false;
+  const cur = this.curVM; this.curVM = vm;
+  try {
+    this.vmToClient(vm);
+    if (vm.execEnd && !crashed) this.vxdCall(vm.execEnd.fn, { ebx: vm.cb, ebp: vm.client, edx: vm.execEnd.ref });
+    this.vmBroadcast(vm, VM_TERMINATE);
+  } finally { this.curVM = cur; }
+  this.vmBroadcast(vm, VM_NOT_EXECUTEABLE, { edx: crashed ? 1 : 0 });
+  this.vmBroadcast(vm, DESTROY_VM);
+  vm.gone = true; vm.m = null;
+};
 // ---- VMM: VM and thread handles
-svc(VMM, 0x01, function () { this.cpu.ebx.value = this.sysVM(); });                                   // Get_Cur_VM_Handle
+svc(VMM, 0x01, function () { this.cpu.ebx.value = this.curVM ? this.curVM.cb : this.sysVM(); });   // Get_Cur_VM_Handle
 svc(VMM, 0x03, function () { this.cpu.ebx.value = this.sysVM(); });                                   // Get_Sys_VM_Handle
 svc(VMM, 0x04, function () { ZF(this, u32(this.cpu.ebx.value) === this.sysVM()); });                  // Test_Sys_VM_Handle
-svc(VMM, 0x05, function () { CF(this, u32(this.cpu.ebx.value) !== this.sysVM()); });                  // Validate_VM_Handle
+svc(VMM, 0x05, function () { const v = this.vmOf(this.cpu.ebx.value); CF(this, !v || !!v.gone); });  // Validate_VM_Handle
 svc(VMM, 0x108, function () { this.cpu.edi.value = this.r0Thread(this.currentThreadId()); });          // Get_Cur_Thread_Handle
-svc(VMM, 0x02, function () { ZF(this, u32(this.cpu.ebx.value) === this.sysVM()); });                  // Test_Cur_VM_Handle: the system VM runs
+svc(VMM, 0x02, function () { ZF(this, u32(this.cpu.ebx.value) === (this.curVM ? this.curVM.cb : this.sysVM())); });   // Test_Cur_VM_Handle
 svc(VMM, 0x109, function () { ZF(this, u32(this.cpu.edi.value) === this.r0Thread(this.currentThreadId())); });   // Test_Cur_Thread_Handle
-// the system VM is the only one, always running, always the one with the focus, at its usual priorities
-svc(VMM, 0x2b, function () { CF(this, true); });                                                      // Suspend_VM: the system VM cannot be
-svc(VMM, 0x2c, function () { CF(this, false); });                                                     // Resume_VM
+// the system VM always runs, has the focus and its usual priorities; another VM is suspended and resumed as asked
+svc(VMM, 0x2b, function () { const v = this.vmOf(this.cpu.ebx.value); if (!v || v.sys) { CF(this, true); return; } v.suspended = (v.suspended || 0) + 1; CF(this, false); });   // Suspend_VM
+svc(VMM, 0x2c, function () { const v = this.vmOf(this.cpu.ebx.value); if (v && !v.sys && v.suspended) v.suspended--; CF(this, false); });                                // Resume_VM
 svc(VMM, 0x30, function () { this.cpu.ebx.value = this.sysVM(); });                                   // Get_Execution_Focus
 svc(VMM, 0x31, function () { CF(this, false); });                                                     // Set_Execution_Focus
 svc(VMM, 0x32, function () { this.cpu.eax.value = 0; this.cpu.ecx.value = 100; this.cpu.edx.value = 50; this.cpu.esi.value = 100; });   // Get_Time_Slice_Priority
@@ -587,11 +713,11 @@ svc(VMM, 0xa7, function (arg) {
   const at = this.vmcbNext || 0x100; if (at + n > 0x4000) return 0;
   this.vmcbNext = at + n; this.u8.fill(0, this.vmcb + at, this.vmcb + at + n); return at;
 });
-svc(VMM, 0x3b, function () { this.cpu.ebx.value = this.sysVM(); });                                  // Get_Next_VM_Handle: the one VM
+svc(VMM, 0x3b, function () { const l = this.vmHandles(), i = l.indexOf(u32(this.cpu.ebx.value)); this.cpu.ebx.value = l[(i + 1) % l.length]; });   // Get_Next_VM_Handle: round the list, the system VM first
 
 // ---- VMM: events. Schedule_Global_Event(ESI proc, EDX ref): EAX handle; the procedure runs between slices
 svc(VMM, 0x0e, function () { const q = this.vxdEvents || (this.vxdEvents = []); q.push({ fn: u32(this.cpu.esi.value), ref: u32(this.cpu.edx.value) }); this.cpu.esi.value = q.length; });
-svc(VMM, 0x0f, function () { const q = this.vxdEvents || (this.vxdEvents = []); q.push({ fn: u32(this.cpu.esi.value), ref: u32(this.cpu.edx.value) }); this.cpu.esi.value = q.length; });   // Schedule_VM_Event
+svc(VMM, 0x0f, function () { const q = this.vxdEvents || (this.vxdEvents = []); q.push({ fn: u32(this.cpu.esi.value), ref: u32(this.cpu.edx.value), vm: u32(this.cpu.ebx.value) }); this.cpu.esi.value = q.length; });   // Schedule_VM_Event (EBX the VM)
 /** run the events VxDs scheduled (EBX the VM, EDX the reference data, EBP the client registers) */
 P.vxdRunEvents = function () { return this.asInterrupt(() => this.vxdRunEventsIn()); };
 P.vxdRunEventsIn = function () {
@@ -601,7 +727,15 @@ P.vxdRunEventsIn = function () {
   if (!this.vxdEvents || !this.vxdEvents.length) return;
   if ((this.r0Runs || []).some(s => !s.wait)) return;   // (ring-0 code in progress, its time out: it goes on first, r0Step)
   const q = this.vxdEvents; this.vxdEvents = [];
-  for (const e of q) this.vxdCall(e.fn, { ebx: this.sysVM(), edx: e.ref, ebp: this.vmClientIdle() });
+  for (const e of q) { const v = this.vmEventVM(e); if (v) this.vmEventRun(v, e); else this.vxdCall(e.fn, { ebx: this.sysVM(), edx: e.ref, ebp: this.vmClientIdle() }); }
+};
+/** the MS-DOS VM a VM event was scheduled for (Schedule_VM_Event, Call_Priority_VM_Event: EBX), when it is not the
+ *  system VM and still there; such an event runs in that VM's context, on its client registers */
+P.vmEventVM = function (e) { const v = e.vm && this.vmOf(e.vm); return v && !v.sys && !v.gone ? v : null; };
+P.vmEventRun = function (v, e) {
+  const cur = this.curVM; this.curVM = v;
+  try { this.vmToClient(v); this.vxdCall(e.fn, { ebx: v.cb, edx: e.ref, ebp: v.client, esi: e.handle || 0 }); if (v.m && v.started) this.vmFromClient(v); }
+  finally { this.curVM = cur; }
 };
 
 // ---- VMM: I/O trapping. A VxD's handler for a port (Install_IO_Handler: ESI proc, EDX port) sees the VM's IN and OUT
@@ -843,6 +977,44 @@ svc(V86MMGR, 0x0d, function () {
   CF(this, true);
 });
 svc(V86MMGR, 0x0e, function () {});
+// Allocate_V86_Pages (EBX the VM, ESI the pages wanted, EDI the fewest it takes, ECX flags): EAX the pages its
+// conventional memory has, the 640K below the video memory (a VM's DOS is the booted one's, its size fixed)
+svc(V86MMGR, 0x01, function () {
+  const v = this.vmOf(this.cpu.ebx.value); if (!v) { CF(this, true); return; }
+  const want = u32(this.cpu.esi.value), least = u32(this.cpu.edi.value), have = 0xa0;
+  if (least !== 0xffffffff && least > have) { CF(this, true); return; }
+  v.v86Pages = want === 0xffffffff ? have : Math.min(want, have); this.cpu.eax.value = v.v86Pages; CF(this, false);
+});
+// Set_EMS_XMS_Limits (EBX the VM, EAX/EDX EMS most and least KB, ESI/EDI XMS most and least KB, ECX flags): kept on the
+// VM, whose XMS is its DOS's (the BIOS's)
+svc(V86MMGR, 0x02, function () {
+  const v = this.vmOf(this.cpu.ebx.value); if (!v) { CF(this, true); return; }
+  v.limits = { ems: [u32(this.cpu.edx.value), u32(this.cpu.eax.value)], xms: [u32(this.cpu.edi.value), u32(this.cpu.esi.value)], flags: u32(this.cpu.ecx.value) };
+  CF(this, false);
+});
+
+// ---- DOSMGR: what an MS-DOS VM runs. _DOSMGR_Set_Exec_VM_Data(VM, the program, its command tail, its folder), as
+// SHELL gives them from the program's properties; DOSMGR_Copy_VM_Drive_State (EBX from, ESI to): the drives' current
+// folders are Windows' own here (fs.js), shared by every VM; _DOSMGR_Exec_VM starts it. (DOSMGR_Get_Version answers
+// as an absent device's does: IFSMgr takes the system VM's DOS through DOSMGR's other services when there is one)
+const DOSMGR = 0x15;
+svc(DOSMGR, 0x01, function (arg) {
+  const v = this.vmOf(arg(0)), a = i => u32(arg(i)), s = i => (a(i) ? this.readA(a(i), 260) || '' : '');
+  if (!v) return 0;
+  const tail = a(1) ? [...this.u8.subarray(a(1), a(1) + Math.min(this.u8[a(1)], 126) + 2)] : [0, 13];   // (DOS's form: its length, the text, CR)
+  v.exec = { tail, program: s(2), dir: s(3) };
+  return 1;
+});
+svc(DOSMGR, 0x02, function () { CF(this, false); });
+// _DOSMGR_Exec_VM(VM, its V86 pages, callback, reference): the program started in the VM, from its folder; the callback
+// runs in the VM's context when the program has ended (vmEnd)
+svc(DOSMGR, 0x03, function (arg) {
+  const v = this.vmOf(arg(0)); if (!v || !v.m || !v.exec) return 0;
+  v.execEnd = { fn: u32(arg(2)), ref: u32(arg(3)) };
+  if (v.exec.dir) v.m.vmCwd(v.exec.dir);
+  v.m.vmExec(v.exec.program, v.exec.tail); v.started = true;
+  return 1;
+});
 
 // ---- VDMAD: the DMA controller. Virtualize_Channel (EAX channel, ESI callback): EAX the DMA handle
 const VDMAD = 4, vdmad = p => p.vdmad || (p.vdmad = new Map());
@@ -1072,7 +1244,7 @@ svc(VMM, 0x3e, function () { if (this.vxdTimeOuts) this.vxdTimeOuts.delete(u32(t
 // handle; the procedure runs with the VM (EBX, EDX the ref, EBP the client registers). Cancel_Priority_VM_Event (ESI)
 svc(VMM, 0x14, function () {
   const q = this.vxdEvents || (this.vxdEvents = []), h = r0Handle(this);
-  q.push({ fn: u32(this.cpu.esi.value), ref: u32(this.cpu.edx.value), handle: h }); this.cpu.esi.value = h;
+  q.push({ fn: u32(this.cpu.esi.value), ref: u32(this.cpu.edx.value), handle: h, vm: u32(this.cpu.ebx.value) }); this.cpu.esi.value = h;
 });
 svc(VMM, 0x15, function () { if (this.vxdEvents) this.vxdEvents = this.vxdEvents.filter(e => e.handle !== u32(this.cpu.esi.value)); });
 /** the time-outs that are due, run as the timer interrupt runs them */
@@ -1091,7 +1263,7 @@ P.vxdRunTimeOutsIn = function () {
   }
 };
 /** the system VM's client registers as a VxD sees them between its slices: a Client_Reg_Struc */
-P.vmClient = function () { return this.crs || (this.crs = this.alloc(0x60)); };
+P.vmClient = function () { if (this.curVM && this.curVM.client) return this.curVM.client; return this.crs || (this.crs = this.alloc(0x60)); };   // (a VM's own while it is the current one)
 /** the client registers for an event or time-out run between slices: the VM stopped with its own 16-bit stack (SS:SP)
  *  for VxDs to call into it on */
 P.vmClientIdle = function () {
@@ -1114,6 +1286,7 @@ svc(VMM, 0x8e, function () { this.u8.copyWithin(this.vmClient(), u32(this.cpu.es
 // DIBENG's 4Ah-byte blit stack: the line count at SS:0 written over, the blit's `dec dword ss:[0]` loop from 0, the
 // first start's freeze
 svc(VMM, 0x83, function () {
+  if (this.curVM && this.curVM.m) { (this.nest = this.nest || []).push({ pushes: [], target: null, vm: this.curVM }); return; }   // (an MS-DOS VM's: in V86 mode on its own stack)
   const c = this.vmClient(), n = { pushes: [], target: null }, st = this.vmLockedStack();
   if ((this.r16(c + 0x34) & 0xffff) !== st.sel) { n.client = [this.r32(c + 0x30), this.r32(c + 0x34)]; this.w32(c + 0x30, st.sp); this.w32(c + 0x34, st.sel); }
   (this.nest = this.nest || []).push(n);
@@ -1203,7 +1376,7 @@ P.vmInt = function (c, n, v86) {
   }
 };
 // (the system VM is in V86 mode until the VxDs have initialized, as Windows' KERNEL has not yet switched it)
-svc(VMM, 0x84, function () { const n = this.nest && this.nest[this.nest.length - 1]; this.vmInt(this.r32(this.sysVM() + 8), this.cpu.eax.value & 0xff, !!(n && n.v86) || (this.vxdInitState !== undefined && this.vxdInitState < 0x40000000)); });
+svc(VMM, 0x84, function () { if (this.curVM && this.curVM.m) { this.vmIntV86(this.curVM, this.cpu.eax.value & 0xff); return; } const n = this.nest && this.nest[this.nest.length - 1]; this.vmInt(this.r32(this.sysVM() + 8), this.cpu.eax.value & 0xff, !!(n && n.v86) || (this.vxdInitState !== undefined && this.vxdInitState < 0x40000000)); });
 // Exec_VxD_Int (the interrupt pushed, the registers as the interrupt takes them, pointers flat): the VM's handler run on
 // the VxD's registers, as a VxD calls DOS
 svc(VMM, 0x8f, function () {
@@ -1255,7 +1428,7 @@ P.r0PumpIn = function () {
   }
   if (this.vxdEvents && this.vxdEvents.length) {
     const q = this.vxdEvents; this.vxdEvents = []; ran = true;
-    for (const e of q) this.vxdCall(e.fn, { ebx: this.sysVM(), edx: e.ref, ebp: this.vmClientIdle(), esi: e.handle || 0 });
+    for (const e of q) { const v = this.vmEventVM(e); if (v) this.vmEventRun(v, e); else this.vxdCall(e.fn, { ebx: this.sysVM(), edx: e.ref, ebp: this.vmClientIdle(), esi: e.handle || 0 }); }
   }
   return ran;
 };
@@ -1444,6 +1617,8 @@ svc(VMM, 0x93, function () {
   if (regs.eax === 0x10) { this.msgMode = true; this.msgKeys = []; if (this.host && this.host.msgMode) this.host.msgMode(true); }
   if (regs.eax === 0x11 || regs.eax === 0x2b) { this.msgMode = false; if (this.host && this.host.msgMode) this.host.msgMode(false); }
   if (regs.eax === 0x12) { if (this.host && this.host.reset) this.host.reset(); throw new W.GuestError('the processor was reset'); }
+  // Create_VM is the VMM's to carry out (SHELL's VM for an MS-DOS program): EBX the new VM
+  if (regs.eax === CREATE_VM) { const h = this.vmCreate(regs); if (!h) { CF(this, true); return; } this.cpu.ebx.value = h; CF(this, false); return; }
   for (const v of [...(this.vxds || new Map()).values()].filter(x => x.inited)) { const r = this.vxdCall(v.procs.control, regs); if (r.cf) { CF(this, true); return; } }
   CF(this, false);
 });
