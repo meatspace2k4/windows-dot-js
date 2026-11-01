@@ -909,9 +909,9 @@ function bootDisk() {
   mountDrives();
   W95Win32.regAttach(host.registry);
   if (!fs.attach('C', host.disk)) makeDisk(true);
-  // (a disk of Windows 3.1 is its own: nothing of Windows 95's Setup, and the MS-DOS it has, if any: one is installed
-  // on it as on any PC, by booting its Setup disk in A:)
-  if (diskSystem() === 'win31') { fs.chdir('C:\\'); return; }
+  // (a disk of Windows 3.1 is its own: nothing of Windows 95's Setup; MS-DOS 7 on it as SYS leaves it, booting to the
+  // prompt, and an AUTOEXEC.BAT that runs the disk's own WIN.BAT, which starts Windows)
+  if (diskSystem() === 'win31') { sysDisk(false); win31Autoexec(); fs.chdir('C:\\'); return; }
   installPrograms(); setupFonts(); setupRegistry(); setupDisplay(); setupSavers(); setupSound(); setupHelp(); setupNetwork(); setupPorts(); setupPrinting(); setupVxds();
   if (host.shared) setupProfile(host.userName);
   setupStartMenu();   // (after the profile: its links go in the Programs folder the user's Shell Folders name)
@@ -1296,6 +1296,8 @@ function pcBoot() {
 }
 /** the VMM WIN.COM loaded entering protected mode: the Windows it is starts, the screen its */
 function pcWindows(path) {
+  // (Windows 3.1's WIN386.EXE: its personality is not in the bundle yet, so nothing starts; the PC waits at its entry)
+  if (/WIN386\.EXE$/i.test(path)) { pc.failed = `${path}: no Windows 3.1 system in this build`; emit('pc.windows', { path, failed: pc.failed }); return; }
   screen = 'desktop'; ren = null; desk.selKey = null; active = null; dirty();
   emit('pc.windows', { path });
   systemBootLater(); netBootLater();
@@ -3635,6 +3637,14 @@ function sysDisk(gui) {
     for (let i = 0; i < 18; i++) pad.push(';' + 'x'.repeat(68) + String.fromCharCode(97 + i));
     unlock('C:\\MSDOS.SYS'); fs.writeFile('C:\\MSDOS.SYS', W95FS.encode(`${own}\r\n${pad.join('\r\n')}\r\n`)); fs.setAttrs('C:\\MSDOS.SYS', HSR);
   }
+}
+/** a Windows 3.1 disk's AUTOEXEC.BAT, when it has none: the commands of its WIN.BAT (its PATH and settings, then
+ *  WIN.COM) if it keeps one in the root, its lines ended CR LF as COMMAND.COM reads them (one kept by DOSBox ends them
+ *  with LF alone, one line to MS-DOS), else WIN.COM from its Windows folder */
+function win31Autoexec() {
+  if (fs.exists('C:\\AUTOEXEC.BAT')) return;
+  let cmds = null; try { cmds = fs.readText('C:\\WIN.BAT').split(/\r?\n/).filter(l => l.trim()).join('\r\n'); } catch (_) { /* none */ }
+  fs.writeFile('C:\\AUTOEXEC.BAT', W95FS.encode(`@ECHO OFF\r\n${cmds || join(WINDIR, 'WIN.COM')}\r\n`));
 }
 function installPrograms() {
   const stub = exeStub(), S = window.W95SYSTEM || {};
