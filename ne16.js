@@ -644,7 +644,7 @@ P.rmReflect = function (vec) {
   const v = this.r32(vec * 4), at = ((v >>> 16) << 4) + (v & 0xffff);
   if (!v || ![...this.ghandles.values()].some(b => b.dos && at >= b.lin && at < b.lin + b.size)) return false;
   const c = this.cpu, keep = {}; for (const k of Object.keys(c)) keep[k] = c[k].value;
-  if (!this.rmStack) { const a = (this.dosTop + 15) & ~15; this.dosTop = a + 0x1000; this.rmStack = a; this.v86FlagsAt = this.alloc(16); }
+  this.rmStackGet();
   const ss = this.rmStack >>> 4, ret = this.rmStack + 0x10;   // (the return: an address no code is at, the stack's own first paragraph)
   const sreg = (s, b, sel) => { c[s].value = sel & 0xffff; c[b].value = (sel & 0xffff) << 4; };
   let sp = 0xffe; const push = w => { sp -= 2; this.w16(this.rmStack + sp, w); };
@@ -653,15 +653,8 @@ P.rmReflect = function (vec) {
   sreg('ss', 'ssb', ss); c.esp.value = sp; sreg('ds', 'dsb', 0); sreg('es', 'esb', 0); sreg('fsel', 'fs', 0); sreg('gsel', 'gsb', 0); sreg('cs', 'csb', v >>> 16);
   const was = { v86: this.v86, hooks: this.v86Hooks, flags: this.v86Flags, rm: this.rmode };
   this.v86 = 0; this.v86Hooks = RM_INTS; this.v86Flags = this.v86FlagsAt; this.rmode = true;
-  let eip = u32(c.csb.value + (v & 0xffff));
-  try {
-    for (let k = 0; eip !== ret; k++) {
-      if (k > 200000) throw new GuestError(`real-mode INT ${vec.toString(16)}h handler at ${(v >>> 16).toString(16)}:${(v & 0xffff).toString(16)} did not return`);
-      c.eip.value = eip; const blk = this.dynBlock(eip);
-      if (!blk || this.trapped) throw new GuestError(this.trapped || `real-mode INT ${vec.toString(16)}h: no code at ${eip.toString(16)}`);
-      eip = u32(blk.run());
-    }
-  } finally {
+  try { this.rmRun(u32(c.csb.value + (v & 0xffff)), ret, `real-mode INT ${vec.toString(16)}h handler at ${(v >>> 16).toString(16)}:${(v & 0xffff).toString(16)}`); }
+  finally {
     Object.assign(this, { v86: was.v86, v86Hooks: was.hooks, v86Flags: was.flags, rmode: was.rm });
     const res = {}; for (const r of ['eax', 'ebx', 'ecx', 'edx', 'esi', 'edi', 'ebp', 'cf', 'pf', 'zf', 'sf', 'of', 'df']) res[r] = c[r].value;
     for (const k of Object.keys(c)) c[k].value = keep[k];
@@ -669,12 +662,34 @@ P.rmReflect = function (vec) {
   }
   return true;
 };
+/** real-mode code run on the system VM's first megabyte from linear `eip` until it comes to `ret` (an address no code
+ *  is at, a return pushed for it): the registers as the code leaves them. The caller has set the segments and the
+ *  stack and switched the translator to V86 mode (as rmReflect does) */
+P.rmRun = function (eip, ret, what) {
+  const c = this.cpu;
+  for (let k = 0; eip !== ret; k++) {
+    if (k > 200000) throw new GuestError(`${what} did not return`);
+    c.eip.value = eip; const blk = this.dynBlock(eip);
+    if (!blk || this.trapped) throw new GuestError(this.trapped || `${what}: no code at ${eip.toString(16)}`);
+    eip = u32(blk.run());
+  }
+};
+/** the real-mode stack the system VM's reflected real-mode code runs on (a 4 KB paragraph block in DOS memory), and
+ *  where its translator keeps the flags it needs (dyn.js v86Flags) */
+P.rmStackGet = function () {
+  if (!this.rmStack) { const a = (this.dosTop + 15) & ~15; this.dosTop = a + 0x1000; this.rmStack = a; this.v86FlagsAt = this.alloc(16); }
+  return this.rmStack;
+};
 /** an interrupt the real-mode code reflected above issues (dyn.js: a hooked vector traps 400h + n): the system VM's own
  *  answer for it, in real mode, the code going on after the INT */
 P.rmInt = function (n, next) {
   const done = () => { this.cpu.eip.value = next; this.w16(this.v86Flags + 2, 1); };   // (taken: the code goes on at EIP)
   if (this.v86IntChain && this.v86IntChain(n)) return done();   // (the VxDs that hooked it first, as the VMM offers it)
-  const h = INTS[n]; if (!h) { this.trapped = `unhandled real-mode interrupt ${n.toString(16)}h (ax=${this.ax().toString(16)})`; return; }
+  // (a vector nothing here answers: the BIOS's dummy handler, an IRET, as a PC's unused vectors point to one; the code
+  // goes on with its registers as they were. Named once, as a gap: VNETBIOS's post routine comes through the
+  // real-mode INT 5Ch vector, which no NetBIOS of the V86 side has)
+  const h = INTS[n];
+  if (!h) { (this.rmIntsSeen || (this.rmIntsSeen = new Set())); if (!this.rmIntsSeen.has(n)) { this.rmIntsSeen.add(n); log('warn', 'ne16', `real-mode INT ${n.toString(16)}h (ax=${this.ax().toString(16)}): no handler, returned as the BIOS's dummy vector does`); } return done(); }
   h.call(this, next);
   // (DOS's own INT 2Fh returns a function nothing in the chain claims with the registers as they were, as IO.SYS's
   // does: the multiplex interrupt's answer for "no one here")
@@ -1323,6 +1338,9 @@ P.trapHook = function (e, code) {
   if (code >= 0x2000000) { this.mmioWrite(u32(e), code & 0xff); return true; }
   if (code >= 0x1000000) { this.portIO(code & 0xffff, (code >> 16) & 7, !!(code & 0x800000)); return true; }
   if (code >= 0x400 && code < 0x500 && this.v86 === 0) { this.rmInt(code - 0x400, u32(e)); return true; }   // (real-mode code's INT: rmReflect)
+  // (real-mode code that came to a vector's ROM stub itself, 0F FF n then IRET, a far return to the vector: the BIOS's
+  // service n, then on at the IRET; VNETBIOS's post stub returns through the INT 5Ch vector so)
+  if (code >= 0x200 && code < 0x300 && this.v86 === 0) { this.rmInt(code - 0x200, u32(e)); return true; }
   this.cpu.eip.value = this.interrupt(code - 0x100, u32(e)) | 0;
   return true;
 };
@@ -5879,5 +5897,5 @@ P.nativeFontDC = function (font) {
 const NAMES16 = { KERNEL: {}, ...NAMES16_INIT };
 /** a personality module's export names: the CD module's own (the system bundle's names16) and the ones listed here */
 const names16 = mod => ({ ...((window.W95SYSTEM && window.W95SYSTEM.names16) || {})[mod], ...NAMES16[mod] });
-window.W95NE16 = { K16, NAMES16, names16, L, def16, INTS, VXD_API, CR, regStr, KERNEL_EQUATES, DOS_ENV };
+window.W95NE16 = { K16, NAMES16, names16, L, def16, INTS, VXD_API, CR, regStr, KERNEL_EQUATES, DOS_ENV, RM_INTS };
 })();

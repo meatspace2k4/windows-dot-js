@@ -1495,8 +1495,11 @@ P.vmLockedStack = function () {
   return { sel: this.vmStackSel, sp: 0x3ff0 };
 };
 svc(VMM, 0x82, function () { (this.nest = this.nest || []).push({ pushes: [], target: null, v86: true }); });   // Begin_Nest_V86_Exec
-svc(VMM, 0x4d, function () { const n = this.nest && this.nest[this.nest.length - 1]; if (n) n.pushes.push(['w', this.cpu.eax.value & 0xffff]); });
-svc(VMM, 0x48, function () { const n = this.nest && this.nest[this.nest.length - 1]; if (n) n.target = [this.cpu.ecx.value & 0xffff, this.cpu.edx.value & 0xffff]; });
+// (a push made after Simulate_Far_Call goes above the call's return frame, where the callee pops it first: VNETBIOS
+// far-calls a `cli; retf` stub in V86 memory with the real-mode INT 5Ch vector pushed after the call, so the retf
+// goes to the vector with the flags and the return pushed before it making its IRET frame)
+svc(VMM, 0x4d, function () { const n = this.nest && this.nest[this.nest.length - 1]; if (n) (n.target ? n.after : n.pushes).push(['w', this.cpu.eax.value & 0xffff]); });
+svc(VMM, 0x48, function () { const n = this.nest && this.nest[this.nest.length - 1]; if (n) { n.target = [this.cpu.ecx.value & 0xffff, this.cpu.edx.value & 0xffff]; n.after = []; } });
 svc(VMM, 0x85, function () {
   const n = this.nest && this.nest[this.nest.length - 1];
   // the VM runs for a moment with nothing called (IFSMgr_Yield): what the processor would take meanwhile runs, the
@@ -1519,9 +1522,38 @@ svc(VMM, 0x85, function () {
     this.w32(c + 0x1c, (this.r32(c + 0x1c) & 0xffff0000 | (r & 0xffff)) >>> 0); this.w32(c + 0x14, (this.r32(c + 0x14) & 0xffff0000 | (r >>> 16)) >>> 0);
     n.target = null; n.pushes = []; return;
   }
-  this.r0Out(() => this.vmFarCall(this.vmClient(), n.target[0], n.target[1], n.pushes));
-  n.target = null; n.pushes = [];
+  // (a V86 block's call, Begin_Nest_V86_Exec: real-mode code on the system VM's first megabyte, its segment a
+  // paragraph. Run as protected-mode code, VNETBIOS's post stub's paragraph was taken for a selector of base 0, and
+  // the call went to address 0 (SUWIN's fault as Windows 98 Setup saved its system files, NETBEUI's timer on its thread))
+  if (n.v86 && !(this.curVM && this.curVM.m)) this.r0Out(() => this.rmFarCall(this.vmClient(), n.target[0], n.target[1], n.pushes, n.after || []));
+  else this.r0Out(() => this.vmFarCall(this.vmClient(), n.target[0], n.target[1], [...n.pushes, ...(n.after || [])]));
+  n.target = null; n.pushes = []; n.after = [];
 });
+/** a far call in real mode on the system VM's first megabyte, for a V86 nested execution block: the words pushed
+ *  before the call, the return frame, then the words pushed after it, on the real-mode stack reflected real-mode code
+ *  runs on (ne16.js rmReflect); the general registers from the client, and back into it as the code leaves them */
+P.rmFarCall = function (c, seg, off, before = [], after = []) {
+  const cpu = this.cpu, keep = {}; for (const k of Object.keys(cpu)) keep[k] = cpu[k].value;
+  const stack = this.rmStackGet(), ss = stack >>> 4, ret = stack + 0x10;   // (the return: an address no code is at, the stack's own first paragraph)
+  const sreg = (s, b, v) => { cpu[s].value = v & 0xffff; cpu[b].value = (v & 0xffff) << 4; };
+  let sp = 0xffe; const push = w => { sp -= 2; this.w16(stack + sp, w & 0xffff); };
+  for (const [, v] of before) push(v);
+  push(ss); push(0x10);
+  for (const [, v] of after) push(v);
+  const was = { v86: this.v86, hooks: this.v86Hooks, flags: this.v86Flags, rm: this.rmode };
+  try {
+    for (const [r, o] of CRS_REGS) cpu[r].value = this.r32(c + o);
+    const fl = this.r32(c + 0x2c); for (const [f, b] of [['cf', 0], ['pf', 2], ['zf', 6], ['sf', 7], ['df', 10], ['of', 11]]) cpu[f].value = (fl >> b) & 1;
+    sreg('ss', 'ssb', ss); cpu.esp.value = sp; sreg('ds', 'dsb', 0); sreg('es', 'esb', 0); sreg('fsel', 'fs', 0); sreg('gsel', 'gsb', 0); sreg('cs', 'csb', seg);
+    this.v86 = 0; this.v86Hooks = N.RM_INTS; this.v86Flags = this.v86FlagsAt; this.rmode = true;
+    this.rmRun(u32(cpu.csb.value + (off & 0xffff)), ret, `real-mode call ${seg.toString(16)}:${off.toString(16)}`);
+    for (const [r, o] of CRS_REGS) this.w32(c + o, u32(cpu[r].value));
+    let nf = fl & ~0x8d5; for (const [f, b] of [['cf', 0], ['pf', 2], ['zf', 6], ['sf', 7], ['df', 10], ['of', 11]]) nf |= (cpu[f].value & 1) << b; this.w32(c + 0x2c, u32(nf));
+  } finally {
+    Object.assign(this, { v86: was.v86, v86Hooks: was.hooks, v86Flags: was.flags, rmode: was.rm });
+    for (const k of Object.keys(cpu)) cpu[k].value = keep[k];
+  }
+};
 /** run a far call in the VM on its client registers (a Client_Reg_Struc): the words pushed and the return on the
  *  client's own stack (SS:SP), the general and data segment registers from it; afterwards its registers hold what the
  *  callee left, SP where its return left it */
