@@ -58,4 +58,16 @@ const run = (code, setup) => {
   let s = ''; for (let i = 0; m.m8(0x30500 + i); i++) s += String.fromCharCode(m.m8(0x30500 + i));
   assert.equal(s, 'C:\\WINDOWS\\COMMAND.COM'); assert.deepEqual([m.m8(0x30580), m.m8(0x30581)], [0, 13], 'an empty command tail');
 }
+// drive A:: a 1.44 MB image in it, read by CHS (cylinder 1, head 1, sector 3: LBA 56), its change line told once; the
+// BIOS boots it before the hard disk
+{
+  const img = new Uint8Array(1474560); img[56 * 512] = 0xab; img[510] = 0x55; img[511] = 0xaa; img[0] = 0xf4;
+  const fl = { image: img, changed: true };
+  const m = V.machine({ floppy: fl }); m.ticksAt = Date.now() + 1e9;
+  m.v86Boot(); assert.equal((m.cpu.eip.value >>> 0) - m.v86, 0x7c00); assert.equal(m.r('dx') & 0xff, 0); assert.equal(m.m8(0x7c00), 0xf4);
+  fl.changed = true;
+  const rd = () => { m.u8.set([0xb8, 0x01, 0x02, 0xb9, 0x03, 0x01, 0xba, 0x00, 0x01, 0xbb, 0x00, 0x80, 0xcd, 0x13, 0xf4], m.v86 + 0x7c00);
+    m.sreg('cs', 0); m.sreg('es', 0); m.sreg('ss', 0); m.cpu.esp.value = 0x7c00; m.cpu.eip.value = m.v86 + 0x7c00; m.halted = false; m.v86Run(50); return m.ah(); };
+  assert.equal(rd(), 0x06, 'the first read after a change: changed'); assert.equal(rd(), 0); assert.equal(m.m8(0x8000), 0xab);
+}
 console.log('v86: ok');

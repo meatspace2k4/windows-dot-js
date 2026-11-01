@@ -909,8 +909,9 @@ function bootDisk() {
   mountDrives();
   W95Win32.regAttach(host.registry);
   if (!fs.attach('C', host.disk)) makeDisk(true);
-  // (a disk of Windows 3.1 is its own: MS-DOS on it as SYS puts it, and nothing of Windows 95's Setup)
-  if (diskSystem() === 'win31') { sysDisk(false); fs.chdir('C:\\'); return; }
+  // (a disk of Windows 3.1 is its own: nothing of Windows 95's Setup, and the MS-DOS it has, if any: one is installed
+  // on it as on any PC, by booting its Setup disk in A:)
+  if (diskSystem() === 'win31') { fs.chdir('C:\\'); return; }
   installPrograms(); setupFonts(); setupRegistry(); setupDisplay(); setupSavers(); setupSound(); setupHelp(); setupNetwork(); setupPorts(); setupPrinting(); setupVxds();
   if (host.shared) setupProfile(host.userName);
   setupStartMenu();   // (after the profile: its links go in the Programs folder the user's Shell Folders name)
@@ -1165,7 +1166,8 @@ function dosMachine(program, args, o = {}) {
   let files;
   if (o.pc) {
     const fromC = p => { try { return fs.readFile('C:\\' + p); } catch (_) { return null; } };
-    files = [{ name: 'IO.SYS', data: fromC('IO.SYS') || new Uint8Array(0), attr: 7 }, { name: 'MSDOS.SYS', data: fromC('MSDOS.SYS') || new Uint8Array(0), attr: 7 }];
+    // (a C: with no MS-DOS on it has none on its boot volume: its boot sector finds no IO.SYS, "Non-system disk")
+    files = ['IO.SYS', 'MSDOS.SYS'].filter(n => fromC(n)).map(n => ({ name: n, data: fromC(n), attr: 7 }));
     const add = p => { const d = fromC(p); if (d && !files.some(f => (f.path || f.name).toUpperCase() === p.toUpperCase())) files.push({ path: p, data: d }); };
     add('COMMAND.COM'); add('CONFIG.SYS'); add('AUTOEXEC.BAT'); add('WINDOWS\\IFSHLP.SYS'); add('WINDOWS\\SYSTEM.DAT'); add('WINDOWS\\USER.DAT'); add('WINDOWS\\WIN.COM');
     // (the drivers CONFIG.SYS loads, by their paths on C:)
@@ -1259,6 +1261,9 @@ function dosBox(program, args) {
 // (EXIT starts Windows again), a restart resets the PC. Its text screen is the display, whole; the page's keys are its
 // keyboard; Ctrl+Alt+Del restarts it
 let pc = null;
+// the PC's diskette drive A: as its BIOS reads it by sector: a 1.44 MB disk image put in (pc.floppy), the change line
+// set as one goes in, what is written to it kept in the image; the BIOS boots it when it is in at a start
+const pcFloppy = { image: null, name: null, changed: false };
 /** the registry's files in the Windows folder, SYSTEM.DAT and USER.DAT, as Windows writes them when it flushes the
  *  registry (as it shuts down): what IO.SYS reads as the PC next starts */
 function flushRegistry() {
@@ -1272,7 +1277,7 @@ function pcBoot() {
   if (pc) clearInterval(pc.timer);
   if (!window.W95V86 || !window.W95DOS) { pc = null; screen = 'black'; dirty(); return; }
   if (!fs.exists(join(WINDIR, 'SYSTEM.DAT'))) flushRegistry();   // (a disk made before Windows wrote its registry's files)
-  const m = dosMachine(null, null, { pc: true, windows: path => pcWindows(path), reset: () => setTimeout(pcBoot, 0) });
+  const m = dosMachine(null, null, { pc: true, floppy: pcFloppy, windows: path => pcWindows(path), reset: () => setTimeout(pcBoot, 0) });
   pc = { m, timer: 0, failed: null };
   if (!dosFont) { const d = window.W95SYSTEM && W95SYSTEM.dos && W95SYSTEM.dos['EGA.CPI']; if (d) dosFont = cpiFont(b64bytes(d), 437, 14); }
   screen = 'dos'; dirty();
@@ -6011,6 +6016,9 @@ window.win95 = { ...script,
     text() { if (!pc) return ''; const t = pcText(); let s = ''; for (let r = 0; r < 25; r++) s += String.fromCharCode(...t.ch.subarray(r * 80, r * 80 + 80)).replace(/\0/g, ' ').trimEnd() + '\n'; return s.replace(/\n+$/, '\n'); },
     type(s) { if (!pc) return false; for (const m of String(s).matchAll(/\{(\w+)\}|([\s\S])/g)) pcKey({ key: m[1] || m[2], shiftKey: false, ctrlKey: false, altKey: false }); return true; },
     reset: () => pcBoot(),
+    // a 1.44 MB disk image in drive A: (its bytes; the written sectors stay in them), or taken out (null); what is in it
+    floppy(image, name = '') { pcFloppy.image = image ? new Uint8Array(image) : null; pcFloppy.name = image ? name : null; pcFloppy.changed = true; return true; },
+    get disk() { return pcFloppy.image ? { name: pcFloppy.name, image: pcFloppy.image } : null; },
   },
   cd: { images: () => cdImages().map(i => i.name), insert: name => cdInsert(name), eject: () => cdInsert(null), get disc() { const v = fs.vols.get('D'); return v.ready ? { label: v.label, serial: v.serial, sectors: v.sectors } : null; } }, get ccd() { return ccdApi || (ccdApi = window.W95Ccd ? window.W95Ccd(ccdUi()) : null); }, get nativeApps() { return [...nativeApps]; }, get dos() { return [...dosMachines]; }, startSystem, get sysApp() { return sysApp; }, reloadScript, netBoot, netCall, syncNetDrives, mapNetDrive, disconnectNetDrive, fs, render, displayProperties, startFullSaver, get fullSaver() { return fullSaver; }, properties, driveProps, openFolder, openPath, shellOpen, notepad, msgBox, runDialog, findComputer, findFiles, winHelp, shutDownDialog, MyComputer, get state() { return { menus: menus.length, menuSrc, modals: modals.length, cap: !!cap, drag: !!drag, screen, active: active && active.title }; } };
 // the scripting API's calls shown as they are made (?scriptlog=1, or win95.scriptLog = true): each win95.* call and each

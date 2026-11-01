@@ -72,6 +72,10 @@ P.v86Reset = function () {
   this.s8(0x465, 0x29); this.s16(0x460, 0x0607);                          // the cursor's shape
   this.s8(ROM + 0xfffe, 0xfc);                                            // the model: an AT
   [0x0f, 0xff, 0xfe].forEach((b, i) => this.s8(ROM + 0xfff0 + i, b));     // the reset vector, FFFF:0000 (the host's reset)
+  // the diskette parameter table (a 1.44 MB drive's: step rate, head times, 512-byte sectors, 18 a track, gaps, fill,
+  // settle and motor times), INT 1Eh's vector its address
+  [0xaf, 0x02, 0x25, 0x02, 0x12, 0x1b, 0xff, 0x6c, 0xf6, 0x0f, 0x08].forEach((b, i) => this.s8(ROM + DPT + i, b));
+  this.s16(0x1e * 4, DPT); this.s16(0x1e * 4 + 2, ROM >> 4);
   [0x0f, 0xff, 0xf8, 0xcb].forEach((b, i) => this.s8(ROM + XMS.entry + i, b));   // the XMS driver's entry: the host, then RETF
   this.xms = null;
   for (let i = 0; i < 4000; i += 2) { this.s8(0xb8000 + i, 0x20); this.s8(0xb8001 + i, 0x07); }
@@ -80,6 +84,13 @@ P.v86Reset = function () {
 /** INT 19h and the master boot record's work, as the BIOS's last step: the active partition's first sector at 0:7C00h,
  *  and on there with DL the drive and DS:SI its entry in the partition table (kept at 0:0600h, where the MBR moves itself) */
 P.v86Boot = function () {
+  // (a disk in drive A: first, as the BIOS's boot order has it: its boot sector at 0:7C00h, DL 00h)
+  const fl = this.o.floppy && this.o.floppy.image;
+  if (fl && fl[510] === 0x55 && fl[511] === 0xaa) {
+    this.u8.set(fl.subarray(0, 512), this.v86 + 0x7c00); this.o.floppy.changed = false;
+    this.sreg('cs', 0); this.sreg('ds', 0); this.sreg('es', 0); this.sreg('ss', 0); this.cpu.esp.value = 0x7c00;
+    this.cpu.edx.value = 0x00; this.cpu.eip.value = this.v86 + 0x7c00; return;
+  }
   this.u8.set(this.disk.subarray(0, 512), this.v86 + 0x600);
   let e = 0x7be; for (let i = 0; i < 4; i++) if (this.m8(0x7be + i * 16) === 0x80) { e = 0x7be + i * 16; break; }
   const lba = this.dv.getUint32(this.v86 + e + 8, true);
@@ -173,6 +184,16 @@ HOOK[0x21] = function (next) {
 // (o.fs, fs.js): DOS routes every file call on them there, its own EXEC's reads among them. DOS's tables are found as
 // DOS gives them: the List of Lists from INT 21h AH=52h (IO.SYS asks for it as it starts), its Swappable Data Area at
 // 320h in the same segment (MS-DOS 5 and later); the drives are taken at the first EXEC, the shell's
+/** DOS's List of Lists, by its NUL device (the header at 22h: the next driver's far pointer, attribute 8004h, the
+ *  strategy and interrupt offsets, the name NUL padded to 8) in the first 64 KB of memory, as DOS 2 and later keep it */
+const findLol = p => {
+  const name = [0x4e, 0x55, 0x4c, 0x20, 0x20, 0x20, 0x20, 0x20];
+  for (let a = 0x600; a < 0x10000; a++) {
+    if (p.m8(a) !== 0x4e || name.some((c, i) => p.m8(a + i) !== c) || p.m16(a - 6) !== 0x8004) continue;
+    const lol = a - 0x0a - 0x22; if (lol > 0x400 && (lol & 0xf) === 0x6) return lol;   // (DOS's data segment:0026h)
+  }
+  return 0;
+};
 const SDA = { DTA: 0x0c, FN1: 0x9e, FN2: 0x11e, SDB: 0x19e, DIRENT: 0x1b3, SATTR: 0x24d, XACTION: 0x2dd, XATTR: 0x2df, XMODE: 0x2e1 };
 const HOOK21 = HOOK[0x21];
 HOOK[0x21] = function (next) {
@@ -180,7 +201,9 @@ HOOK[0x21] = function (next) {
   if (this.o.capture && this.boxReturn) this.captureOut();
   // (the drives taken as the shell is run, once DOS has its drive table from CONFIG.SYS: IO.SYS's own EXECs of
   // WINBOOT.SYS and IO.SYS come before it; the shell COMMAND.COM, or WIN.COM when there is no AUTOEXEC.BAT to run;
-  // and again should DOS make the table anew)
+  // and again should DOS make the table anew). A DOS whose IO.SYS has not asked for the List of Lists by then (MS-DOS
+  // 6's does not) has it found where DOS keeps it: its NUL device's header is part of it, at 22h
+  if (!this.lol && this.o.fs && this.ah() === 0x4b && this.al() === 0) this.lol = findLol(this);
   if (this.lol && this.o.fs) {
     if (!this.drivesTaken && this.ah() === 0x4b && this.al() === 0 && /(COMMAND|WIN)\.COM$/i.test(ascii(this, this.lin(this.cpu.ds.value, this.r('dx')) - this.v86))) this.takeDrives();
     else if (this.drivesTaken && this.m32(this.lol + 0x16) !== this.cdsAt) this.takeDrives();
@@ -615,11 +638,41 @@ function video() {
   }
 }
 
+// ---- INT 13h's diskette drive A: (00h): a 1.44 MB disk, 80 cylinders of 2 heads of 18 sectors, its sectors the image in
+// the drive (o.floppy: { image, changed }, a Uint8Array the disk's written sectors go back to); none in it, not ready.
+// Its change line: set as a disk is put in, read and cleared by AH=16h, as DOS asks before trusting what it has read
+function floppy(ah, dl, ok, bad) {
+  const f = this.o.floppy, img = f && f.image, SPT = 18, HEADS = 2, CYLS = 80;
+  if (dl !== 0) { bad(0x01); return; }
+  switch (ah) {
+    case 0x00: ok(); return;
+    case 0x01: this.setAH(this.m8(0x441)); this.retCF(false); return;
+    case 0x02: case 0x03: case 0x04: {
+      if (!img) { this.s8(0x441, 0x80); bad(0x80); return; }   // (no disk: the drive times out)
+      if (f.changed) { f.changed = false; this.s8(0x441, 0x06); bad(0x06); return; }   // (the disk was changed: told once)
+      const cx = this.r('cx'), cyl = cx >> 8 | ((cx & 0xc0) << 2), sec = cx & 0x3f, head = (this.cpu.edx.value >> 8) & 0xff, n = this.al();
+      const lba = (cyl * HEADS + head) * SPT + sec - 1, mem = this.lin(this.cpu.es.value, this.r('bx'));
+      if (sec < 1 || sec > SPT || head >= HEADS || cyl >= CYLS || lba + n > img.length / 512) { this.s8(0x441, 0x04); bad(0x04); return; }
+      if (ah === 0x02) this.u8.set(img.subarray(lba * 512, (lba + n) * 512), mem);
+      else if (ah === 0x03) { if (f.readonly) { bad(0x03); return; } img.set(this.u8.subarray(mem, mem + n * 512), lba * 512); if (f.wrote) f.wrote(); }
+      this.s8(0x441, 0); this.setAL(n); ok(); return;
+    }
+    case 0x05: if (!img) { bad(0x80); return; } ok(); return;   // (formatting a track: the image's track is the format)
+    case 0x08: this.w('bx', 0x0004); this.w('cx', ((CYLS - 1) << 8) | SPT); this.w('dx', ((HEADS - 1) << 8) | 1); this.sreg('es', ROM >> 4); this.w('di', DPT); ok(); return;
+    case 0x15: this.setAH(0x02); this.retCF(false); return;   // (a diskette drive with a change line)
+    case 0x16: if (f && f.changed) { this.setAH(0x06); this.retCF(true); return; } this.setAH(0); this.retCF(false); return;
+    case 0x17: case 0x18: ok(); return;   // (the media type to format: the drive's own)
+    default: bad(0x01);
+  }
+}
+const DPT = 0xefc7;   // the diskette parameter table, where the AT BIOS keeps it (INT 1Eh's vector points there)
+
 // ---- INT 13h: the hard disk (80h; the boot partition from its first sector), in 16 heads of 63 sectors
 function disk() {
   const ah = this.ah(), dl = this.cpu.edx.value & 0xff, d = this.disk, nsec = d ? d.length >> 9 : 0, { heads, spt } = this.geom;
   const ok = () => { this.setAH(0); this.retCF(false); }, bad = (e = 1) => { this.setAH(e); this.retCF(true); };
-  if (dl !== 0x80 || !d) { bad(dl < 0x80 ? 0x80 : 1); return; }
+  if (dl < 0x80) { floppy.call(this, ah, dl, ok, bad); return; }
+  if (dl !== 0x80 || !d) { bad(1); return; }
   const xfer = (lba, n, buf, write) => {
     if (lba + n > nsec) return false;
     const mem = this.v86 + buf;
