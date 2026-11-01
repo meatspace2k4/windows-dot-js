@@ -250,7 +250,10 @@ P.createVM = function () {
   const vm = { cb, client, high, id: (this.vmNextId = (this.vmNextId || 1) + 1), status: 0 };
   // its memory: the DOS that booted (the page's PC, as the VMM's loader left it), as V86MMGR makes a VM's from the system
   // VM's; a machine of v86.js's runs it there, in Windows' memory
-  if (this.pcDos && window.W95V86) vm.m = window.W95V86.vmMachine({ mem: this.mem, base: high, xmsKB: VM_XMS_KB, fs: this.fs, clip: m => this.vmClipboard(m) }, this.pcDos);
+  // (Windows' fixed drives its local disks, as IFSMgr gives them to a VM: each a FAT view of fs.js's drive, one per
+  // drive for every VM)
+  if (!this.vmDisks && window.W95V86) { this.vmDisks = {}; for (const [l, v] of this.fs.vols) if (v.kind === 'fixed') this.vmDisks[l] = new window.W95V86.FatView(this.fs, l); }
+  if (this.pcDos && window.W95V86) vm.m = window.W95V86.vmMachine({ mem: this.mem, base: high, xmsKB: VM_XMS_KB, fs: this.fs, disks: this.vmDisks, clip: m => this.vmClipboard(m), vmId: vm.id }, this.pcDos);
   // a V86 VM being made: CB_VM_Status VMStat_Creating until VM_Init has been sent
   this.w32(cb + CB.STATUS, 4); this.w32(cb + CB.HIGH, high); this.w32(cb + CB.CLIENT, client); this.w32(cb + CB.ID, vm.id); this.w32(cb + CB.SIG, 0x62634d56);
   this.w32(client + 0x2c, 0x20202);   // (the client's flags: V86, IF)

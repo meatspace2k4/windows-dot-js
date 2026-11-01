@@ -319,6 +319,7 @@ M.vmMachine = function (o, dos) {
     if (at >= lo && at < hi) m.u8.set(dos.ivt.subarray(n * 4, n * 4 + 4), m.v86 + n * 4);
   }
   if (m.drivesTaken) m.v86Hooks.add(0x2f);
+  if (o.disks) m.v86Hooks.add(0x25);   // (its local disks' absolute reads)
   m.halted = true;   // (it runs once DOSMGR starts its program: vmExec)
   return m;
 };
@@ -395,6 +396,15 @@ HOOK[0x2f] = function () {
   if (this.r('ax') === 0x4300) { this.setAL(0x80); return true; }                                       // XMS: installed
   if (this.r('ax') === 0x4310) { this.sreg('es', ROM >> 4); this.w('bx', XMS.entry); return true; }       // its entry
   if (this.ah() === 0x17 && this.o.clip) return this.o.clip(this);                                         // Windows' clipboard, in a VM of Windows' (vmm.js)
+  // in a VM of Windows' (o.vmId), what the VMM answers there: 1600h enhanced-mode Windows 4.00, 160Ah its version (BX
+  // 0400h) and mode (CX 3, enhanced), 1680h the time slice given up (AL 0), 1683h the VM's id
+  if (this.o.vmId) {
+    const ax = this.r('ax');
+    if (ax === 0x1600) { this.w('ax', 0x0004); return true; }
+    if (ax === 0x160a) { this.w('ax', 0); this.w('bx', 0x0400); this.w('cx', 3); return true; }
+    if (ax === 0x1680) { this.w('ax', 0); this.halted = true; return true; }
+    if (ax === 0x1683) { this.w('bx', this.o.vmId); return true; }
+  }
   if (this.ah() !== 0x11 || !this.redir) return false;
   const fs = this.o.fs, al = this.al(), sda = this.sda, fn1 = () => ascii(this, sda + SDA.FN1), fn2 = () => ascii(this, sda + SDA.FN2);
   // (taken before the INT: its answer in the flags and registers as they are, its caller's word argument at SS:SP)
@@ -807,12 +817,217 @@ M.fat16 = function (boot, files, mb = 16) {
   return disk;
 };
 
+// ---------------------------------------------------------------- a drive of Windows' as a hard disk
+// A hard disk whose sectors are made from one of fs.js's drives (fs.js keeps files, not sectors): an MBR with one
+// active FAT16 partition at sector 63, its boot sector and BPB, two FATs, a root directory of 512 entries and the
+// clusters, each folder's entries as VFAT writes them (a long name's entries before its 8.3 one, the checksum of the
+// short name, the times and attributes fs.js keeps) and each file's data read from fs.js as asked. The layout follows
+// fs.js (its version), as a disk does: a folder or file keeps the clusters it had, one that grew takes free ones onto
+// its chain, one that shrank or went gives its back, a new one takes the lowest free. Writes are not taken: what reads
+// it (ScanDisk's check, DOS's absolute reads) only reads
+const dosTime = t => { const d = new Date(t || 0); return { time: (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1), date: Math.max(0, d.getFullYear() - 1980) << 9 | ((d.getMonth() + 1) << 5) | d.getDate() }; };
+class FatView {
+  constructor(fs, letter) { this.fs = fs; this.letter = letter; this.built = -1; this.chains = new Map(); }
+  /** the layout, for fs.js as it is now */
+  layout() {
+    if (this.built === this.fs.version && this.L) return this.L;
+    const fs = this.fs, v = fs.vols.get(this.letter), hidden = 63, sectors = Math.floor((v.total || 0x20000000) / 512);
+    let spc = 4; while (spc < 64 && sectors / spc > 65500) spc *= 2;
+    const rootEntries = 512, rootSecs = rootEntries * 32 / 512, reserved = 1;
+    const clusters0 = Math.floor((sectors - reserved - rootSecs) / spc), fatSecs = Math.ceil((clusters0 + 2) * 2 / 512);
+    const dataStart = reserved + 2 * fatSecs + rootSecs, clusters = Math.min(Math.floor((sectors - dataStart) / spc), 65524), cb = spc * 512;
+    const L = { hidden, sectors, spc, cb, reserved, fatSecs, rootSecs, rootEntries, dataStart, clusters, fat: new Uint16Array(clusters + 2), owner: new Array(clusters + 2), dirs: new Map(), serial: v.serial >>> 0 };
+    // (what each folder and file needs, in the tree's order: a folder's entries counted with its long names)
+    const items = [];
+    const walk = (path, isRoot) => {
+      let kids = []; try { kids = fs.readdir(path).filter(k => !k.absent); } catch (_) { /* none */ }
+      const n = kids.reduce((s, k) => s + 1 + (k.name !== k.shortName ? Math.ceil(k.name.length / 13) : 0), isRoot ? 0 : 2);
+      const d = { path, kids, entries: n, isRoot, chain: [] };
+      if (!isRoot) items.push({ key: path.toUpperCase() + '\\', n: Math.max(1, Math.ceil(n * 32 / cb)), obj: d, dir: true });
+      L.dirs.set(path.toUpperCase(), d);
+      for (const k of kids) if (k.isDir) k.dir = walk(k.path, false); else if (k.size > 0) items.push({ key: k.path.toUpperCase(), n: Math.ceil(k.size / cb), obj: k });
+      return d;
+    };
+    L.root = walk(`${this.letter}:\\`, true);
+    // (the clusters kept: each item's old chain, cut to what it needs; the rest free)
+    const used = new Uint8Array(clusters + 2); used[0] = used[1] = 1;
+    const chains = new Map();
+    for (const it of items) { const old = (this.chains.get(it.key) || []).filter(c => c < clusters + 2 && !used[c]).slice(0, it.n); for (const c of old) used[c] = 1; chains.set(it.key, old); }
+    let free = 2;
+    for (const it of items) {
+      const ch = chains.get(it.key);
+      while (ch.length < it.n) { while (free < clusters + 2 && used[free]) free++; if (free >= clusters + 2) break; used[free] = 1; ch.push(free); }
+      it.obj.chain = ch; it.obj.start = ch[0] || 0;
+      ch.forEach((c, i) => { L.fat[c] = i === ch.length - 1 ? 0xffff : ch[i + 1]; L.owner[c] = { obj: it.obj, i, dir: !!it.dir }; });
+    }
+    L.fat[0] = 0xfff8; L.fat[1] = 0xffff;
+    L.used = used.reduce((s, x) => s + x, 0) - 2;
+    this.chains = chains; this.L = L; this.built = fs.version; this.dirBytes = new Map(); this.fileCache = null;
+    return L;
+  }
+  /** a folder's entries, as bytes */
+  dirData(d, parent) {
+    const L = this.L, out = new Uint8Array(Math.max(d.isRoot ? L.rootEntries : d.chain.length * L.cb / 32, 1) * 32); let o = 0;
+    const ent = (name11, attr, start, size, t) => {
+      for (let i = 0; i < 11; i++) out[o + i] = name11.charCodeAt(i) & 0xff;
+      out[o + 11] = attr; const w = (at, x) => { out[o + at] = x & 0xff; out[o + at + 1] = (x >> 8) & 0xff; };
+      const c = dosTime(t.c), m = dosTime(t.m), a = dosTime(t.a);
+      w(14, c.time); w(16, c.date); w(18, a.date); w(22, m.time); w(24, m.date); w(26, start); w(28, size & 0xffff); w(30, size >>> 16); o += 32;
+    };
+    const short11 = s => { const [b, e = ''] = s.toUpperCase().split('.'); return b.padEnd(8).slice(0, 8) + e.padEnd(3).slice(0, 3); };
+    if (!d.isRoot) { const t = { c: 0, m: 0, a: 0 }; ent('.          ', 0x10, d.start, 0, t); ent('..         ', 0x10, parent && !parent.isRoot ? parent.start : 0, 0, t); }
+    for (const k of d.kids) {
+      const s11 = short11(k.shortName);
+      if (k.name !== k.shortName) {
+        let sum = 0; for (let i = 0; i < 11; i++) sum = (((sum & 1) << 7) | (sum >> 1)) + s11.charCodeAt(i) & 0xff;
+        const parts = Math.ceil(k.name.length / 13);
+        for (let p = parts; p >= 1; p--) {
+          const chunk = []; for (let i = 0; i < 13; i++) { const j = (p - 1) * 13 + i; chunk.push(j < k.name.length ? k.name.charCodeAt(j) : j === k.name.length ? 0 : 0xffff); }
+          out.fill(0, o, o + 32); out[o] = p | (p === parts ? 0x40 : 0); out[o + 11] = 0x0f; out[o + 13] = sum;
+          [1, 3, 5, 7, 9, 14, 16, 18, 20, 22, 24, 28, 30].forEach((at, i) => { out[o + at] = chunk[i] & 0xff; out[o + at + 1] = chunk[i] >> 8; });
+          o += 32;
+        }
+      }
+      ent(s11, (k.attrs & 0x27) | (k.isDir ? 0x10 : 0), k.isDir ? k.dir.start : k.start || 0, k.isDir ? 0 : k.size, { c: k.ctime, m: k.mtime, a: k.atime });
+    }
+    return out;
+  }
+  /** `n` sectors from `lba` of the disk */
+  read(lba, n = 1) {
+    const L = this.layout(), out = new Uint8Array(n * 512);
+    for (let i = 0; i < n; i++) out.set(this.sector(lba + i), i * 512);
+    return out;
+  }
+  sector(lba) {
+    const L = this.L, s = new Uint8Array(512), dv = new DataView(s.buffer);
+    if (lba === 0) {   // the MBR: one active FAT16 (over 32 MB) partition
+      const e = 0x1be; s[e] = 0x80; s[e + 1] = 1; s[e + 2] = 1; s[e + 4] = 0x06; s[e + 5] = 0xfe; s[e + 6] = 0xff; s[e + 7] = 0xff;
+      dv.setUint32(e + 8, L.hidden, true); dv.setUint32(e + 12, L.sectors, true); s[510] = 0x55; s[511] = 0xaa; return s;
+    }
+    if (lba < L.hidden) return s;
+    const p = lba - L.hidden;
+    if (p === 0) {   // the boot sector: its BPB and extended BPB, as SYS writes one (MSWIN4.1)
+      s.set([0xeb, 0x3c, 0x90]); [...'MSWIN4.1'].forEach((c, i) => { s[3 + i] = c.charCodeAt(0); });
+      dv.setUint16(11, 512, true); s[13] = L.spc; dv.setUint16(14, L.reserved, true); s[16] = 2; dv.setUint16(17, L.rootEntries, true);
+      dv.setUint16(19, 0, true); s[21] = 0xf8; dv.setUint16(22, L.fatSecs, true); dv.setUint16(24, 63, true); dv.setUint16(26, 255, true);
+      dv.setUint32(28, L.hidden, true); dv.setUint32(32, L.sectors, true); s[36] = 0x80; s[38] = 0x29; dv.setUint32(39, L.serial, true);
+      [...'NO NAME    FAT16   '].forEach((c, i) => { s[43 + i] = c.charCodeAt(0); }); s[510] = 0x55; s[511] = 0xaa; return s;
+    }
+    if (p >= L.sectors) return s;
+    const fat0 = L.reserved, root0 = fat0 + 2 * L.fatSecs;
+    if (p >= fat0 && p < root0) { const f = (p - fat0) % L.fatSecs; for (let i = 0; i < 256; i++) { const c = f * 256 + i; if (c < L.fat.length) dv.setUint16(i * 2, L.fat[c], true); } return s; }
+    if (p >= root0 && p < L.dataStart) { const b = this.dirOf(L.root, null); s.set(b.subarray((p - root0) * 512, (p - root0) * 512 + 512)); return s; }
+    const rel = p - L.dataStart, c = 2 + Math.floor(rel / L.spc), own = c < L.owner.length ? L.owner[c] : null;
+    if (!own) return s;
+    const off = own.i * L.cb + (rel % L.spc) * 512;
+    if (own.dir) { const parent = this.parentOf(own.obj); const b = this.dirOf(own.obj, parent); s.set(b.subarray(off, off + 512)); return s; }
+    const f = own.obj; if (!this.fileCache || this.fileCache.path !== f.path) { let data = new Uint8Array(0); try { data = this.fs.readFile(f.path); } catch (_) { /* gone meanwhile */ } this.fileCache = { path: f.path, data }; }
+    s.set(this.fileCache.data.subarray(off, Math.min(off + 512, this.fileCache.data.length)));
+    return s;
+  }
+  dirOf(d, parent) { let b = this.dirBytes.get(d); if (!b) { b = this.dirData(d, parent); this.dirBytes.set(d, b); } return b; }
+  parentOf(d) { const i = d.path.lastIndexOf('\\'), up = d.path.slice(0, i); return this.L.dirs.get((up.length === 2 ? up + '\\' : up).toUpperCase()) || this.L.root; }
+  /** the BPB's numbers, for DOS's device parameters and drive parameter block */
+  bpb() { const L = this.layout(); return L; }
+}
+M.FatView = FatView;
+// A VM's local disks (o.disks: a letter's FatView), as IFSMgr answers for Windows' own drives in a VM: the drive is
+// local and fixed to the IOCTLs that ask (4408h, 4409h), its device parameters, locks and media ID are the generic
+// IOCTL's (440Dh), its drive parameter block is 7302h's, and its sectors are read by INT 25h and 7305h, from the view;
+// its files go on through the redirector as before
+const diskOf = (p, bl) => {
+  const d = (bl & 0xff) || (p.m8(p.sda + 0x16) + 1), l = String.fromCharCode(64 + d);
+  return p.o.disks && p.o.disks[l] ? { l, view: p.o.disks[l] } : null;
+};
+const segLin = (p, seg, off) => p.lin(seg, off) - p.v86;
+/** DOS's extended DPB of a view (3Dh bytes, MS-DOS 7.1's, as INT 21h AX=7302h gives it) at `a`: the DPB's fields, then
+ *  the free count's high word, the FAT mirroring, no FSINFO or backup boot sector, and the dword copies of the first
+ *  data sector, the highest cluster, the FAT's size, the root's cluster (0: FAT16's fixed root) and where a search for
+ *  a free cluster starts */
+const dpbOf = (p, a, l, view) => {
+  const L = view.layout(), d = l.charCodeAt(0) - 65, free = L.clusters - L.used;
+  for (let i = 0; i < 0x3d; i++) p.s8(a + i, 0);
+  p.s8(a, d); p.s8(a + 1, d); p.s16(a + 2, 512); p.s8(a + 4, L.spc - 1); p.s8(a + 5, Math.log2(L.spc)); p.s16(a + 6, L.reserved); p.s8(a + 8, 2);
+  p.s16(a + 9, L.rootEntries); p.s16(a + 0x0b, L.dataStart); p.s16(a + 0x0d, L.clusters + 1); p.s16(a + 0x0f, L.fatSecs); p.s16(a + 0x11, L.reserved + 2 * L.fatSecs);
+  p.s8(a + 0x17, 0xf8); p.s8(a + 0x18, 0); p.s32(a + 0x19, 0xffffffff); p.s16(a + 0x1d, 2); p.s16(a + 0x1f, free & 0xffff);
+  p.s16(a + 0x21, free >>> 16); p.s16(a + 0x23, 0); p.s16(a + 0x25, 0xffff); p.s16(a + 0x27, 0xffff);
+  p.s32(a + 0x29, L.dataStart); p.s32(a + 0x2d, L.clusters + 1); p.s32(a + 0x31, L.fatSecs); p.s32(a + 0x35, 0); p.s32(a + 0x39, 2);
+};
+/** the BPB as the generic IOCTL's device parameters give it, at `a` (31 bytes: FAT16's, the large sector count) */
+const bpbOf = (p, a, view) => {
+  const L = view.layout();
+  p.s16(a, 512); p.s8(a + 2, L.spc); p.s16(a + 3, L.reserved); p.s8(a + 5, 2); p.s16(a + 6, L.rootEntries); p.s16(a + 8, 0); p.s8(a + 10, 0xf8);
+  p.s16(a + 11, L.fatSecs); p.s16(a + 13, 63); p.s16(a + 15, 255); p.s32(a + 17, L.hidden); p.s32(a + 21, L.sectors);
+};
+const HOOK21D = HOOK[0x21];
+HOOK[0x21] = function (next) {
+  if (!this.o.disks) return HOOK21D.call(this, next);
+  const ax = this.r('ax'), ah = ax >> 8, al = ax & 0xff, ok = () => { this.cpu.cf.value = 0; return true; }, fail = e => { this.w('ax', e); this.cpu.cf.value = 1; return true; };
+  if (ah === 0x44 && (al === 0x08 || al === 0x09 || al === 0x0d || al === 0x11)) {
+    const k = diskOf(this, this.r('bx')); if (!k) return HOOK21D.call(this, next);
+    if (al === 0x08) { this.w('ax', 1); return ok(); }                                  // fixed
+    if (al === 0x09) { this.w('dx', 0x0840); return ok(); }                             // local, not substituted (a block device's attributes)
+    if (al === 0x11) { this.w('ax', 0); return ok(); }                                  // the generic IOCTL's functions: all of them
+    const ch = this.r('cx') >> 8, cl = this.r('cx') & 0xff, a = segLin(this, this.cpu.ds.value, this.r('dx'));
+    if (cl === 0x60 || cl === 0x40) {                                                   // device parameters (get, or set: kept as they are)
+      if (cl === 0x60) { this.s8(a + 1, 5); this.s16(a + 2, 1); this.s16(a + 4, Math.ceil(k.view.layout().sectors / (255 * 63))); this.s8(a + 6, 0); bpbOf(this, a + 7, k.view); }
+      return ok();
+    }
+    if (cl === 0x4a || cl === 0x4b || cl === 0x6a || cl === 0x6b || cl === 0x6c || cl === 0x6d) { if (cl === 0x6c) this.w('ax', 0); if (cl === 0x6d) this.w('cx', 0); return ok(); }   // locks: granted
+    if (cl === 0x66) {                                                                  // media ID: the serial, no label, FAT16
+      const L = k.view.layout(); this.s16(a, 0); this.s32(a + 2, L.serial); [...'NO NAME    FAT16   '].forEach((c, i) => this.s8(a + 6 + i, c.charCodeAt(0))); return ok();
+    }
+    if (cl === 0x61 || cl === 0x41) {                                                   // read (or write) track: head, cylinder, first sector, count, buffer
+      const L = k.view.layout(), head = this.m16(a + 1), cyl = this.m16(a + 3), first = this.m16(a + 5), n = this.m16(a + 7);
+      if (cl === 0x41) return fail(0x13);                                               // (write protected: the view is read)
+      const lba = (cyl * 255 + head) * 63 + first, buf = segLin(this, this.m16(a + 11), this.m16(a + 9));
+      this.u8.set(k.view.read(L.hidden + lba, n), this.v86 + buf); return ok();
+    }
+    return fail(1);                                                                     // (any other: invalid function)
+  }
+  if (ax === 0x7302) {                                                                  // the extended DPB: its size, then the DPB
+    const k = diskOf(this, this.r('dx')); if (!k) return HOOK21D.call(this, next);
+    const a = segLin(this, this.cpu.es.value, this.r('di')); this.s16(a, 0x3d); dpbOf(this, a + 2, k.l, k.view); return ok();
+  }
+  if (ah === 0x36) {                                                                    // free space: sectors a cluster, free clusters, bytes a sector, clusters
+    const k = diskOf(this, this.r('dx')); if (!k) return HOOK21D.call(this, next);
+    const L = k.view.layout(); this.w('ax', L.spc); this.w('bx', L.clusters - L.used); this.w('cx', 512); this.w('dx', L.clusters); return true;
+  }
+  if (ax === 0x7303) {                                                                  // the extended free space: its structure at ES:DI (DS:DX the drive's root)
+    const name = ascii(this, segLin(this, this.cpu.ds.value, this.r('dx'))), k = /^[a-z]:/i.test(name) ? diskOf(this, name.toUpperCase().charCodeAt(0) - 64) : null;
+    if (!k) return HOOK21D.call(this, next);
+    const L = k.view.layout(), a = segLin(this, this.cpu.es.value, this.r('di')), free = L.clusters - L.used;
+    for (let i = 0; i < 0x2c; i++) this.s8(a + i, 0);
+    this.s16(a, 0x2c); this.s32(a + 4, L.spc); this.s32(a + 8, 512); this.s32(a + 0x0c, free); this.s32(a + 0x10, L.clusters);
+    this.s32(a + 0x14, free * L.spc); this.s32(a + 0x18, L.clusters * L.spc); this.s32(a + 0x1c, free); this.s32(a + 0x20, L.clusters);
+    return ok();
+  }
+  if (ax === 0x7305) {                                                                  // extended absolute read (SI bit 0 clear) or write
+    const k = diskOf(this, this.r('dx')); if (!k) return HOOK21D.call(this, next);
+    const pk = segLin(this, this.cpu.ds.value, this.r('bx')), lba = this.m32(pk), n = this.m16(pk + 4), buf = segLin(this, this.m16(pk + 8), this.m16(pk + 6));
+    if (this.r('si') & 1) return fail(0x0300);
+    if (this.ilog) this.ilog.push(`read ${lba} ${n}`);
+    this.u8.set(k.view.read(k.view.layout().hidden + lba, n), this.v86 + buf); this.w('ax', 0); return ok();
+  }
+  return HOOK21D.call(this, next);
+};
+// INT 25h: absolute read (AL the drive, 0 for A:; CX the count and DX the sector, or CX FFFFh and DS:BX a packet of the
+// sector, the count and the buffer). It returns with the flags it was entered with left on the stack, as DOS's does
+HOOK[0x25] = function () {
+  const view = this.o.disks && this.o.disks[String.fromCharCode(65 + this.al())]; if (!view) return false;
+  const L = view.layout(); let lba = this.r('dx'), n = this.r('cx'), buf = segLin(this, this.cpu.ds.value, this.r('bx'));
+  if (n === 0xffff) { const pk = buf; lba = this.m32(pk); n = this.m16(pk + 4); buf = segLin(this, this.m16(pk + 8), this.m16(pk + 6)); }
+  this.u8.set(view.read(L.hidden + lba, n), this.v86 + buf); this.w('ax', 0); this.cpu.cf.value = 0;
+  const c = this.cpu, fl = 0x0202 | (c.zf.value & 1) << 6 | (c.sf.value & 1) << 7 | (c.df.value & 1) << 10 | (c.of.value & 1) << 11;
+  c.esp.value = (c.esp.value & 0xffff0000) | ((c.esp.value - 2) & 0xffff); this.dv.setUint16(this.lin(c.ss.value, c.esp.value), fl, true);
+  return true;
+};
 // (a diagnostic: each INT 21h and 2Fh a machine with an `ilog` takes, its AX, BX, CX and DX, the last 3000; vmm.js
 // gives a VM's one)
 for (const n of [0x21, 0x2f]) {
   const h = HOOK[n];
   HOOK[n] = function (next) {
-    if (this.ilog) { this.ilog.push(`${n.toString(16)}:${['ax', 'bx', 'cx', 'dx'].map(r => this.r(r).toString(16)).join(' ')}`); if (this.ilog.length > 3000) this.ilog.shift(); }
+    if (this.ilog && !(n === 0x21 && this.ah() === 0x0b)) { this.ilog.push(`${n.toString(16)}:${['ax', 'bx', 'cx', 'dx'].map(r => this.r(r).toString(16)).join(' ')}`); if (this.ilog.length > 3000) this.ilog.shift(); }
     return h.call(this, next);
   };
 }
