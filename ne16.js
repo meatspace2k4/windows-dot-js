@@ -492,13 +492,15 @@ const JS16 = ['KERNEL', 'USER', 'KEYBOARD', 'SYSTEM', 'VDD', 'VFLATD', 'DPMI'];
 // after. Run on the interrupted code's stack or client, their frames went below its SS:SP over what it keeps there:
 // DIBENG's compiled blit keeps its line count at SS:0 of a 4Ah-byte stack, and WELCOME's blit ran from 0 at the first
 // start (the sound card's interrupt, a56b40c; VTDAPI's timer event nesting MMSYSTEM's callback, e00457a)
+const INT_FLAGS = ['cf', 'pf', 'zf', 'sf', 'of', 'df'];
 P.asInterrupt = function (fn) {
   if (this.inInterrupt) return fn();
-  // (the code interrupted goes on with every register and flag as it left them, as the processor's FLAGS on the stack
-  // and the handler's own saves give it back at IRET: what the interrupt runs, a VxD's time-out or the mouse's and
-  // keyboard's handling, changes them. Kept from a point between a CMP and its jump in another block, the flags were the
-  // handler's, and PIDGEN's binary GCD on Windows 98 Setup's product key ran past x = y into x = 0 and never ended)
-  const full = {}; for (const k of Object.keys(this.cpu)) full[k] = this.cpu[k].value;
+  // (the code interrupted goes on with its flags as it left them, as the processor's FLAGS on the stack give them back
+  // at IRET: what the interrupt runs, a VxD's time-out or the mouse's and keyboard's handling, changes them, and the
+  // calls it makes (vxdCall, call16) put back the registers but not the flags. Interrupted between a CMP and its jump in
+  // another block, PIDGEN's binary GCD on Windows 98 Setup's product key took the handler's flags, ran past x = y into
+  // x = 0 and never ended)
+  const flags = INT_FLAGS.filter(f => this.cpu[f]).map(f => [f, this.cpu[f].value]);
   const c = this.cpu, st = c.ss && { ss: c.ss.value, ssb: c.ssb.value, esp: c.esp.value }, ie = c.if ? c.if.value : 1;
   const vm = { crs: this.crs, level: this.crsLevel, pool: this.crsPool, cb: this.vmcb ? this.r32(this.vmcb + 8) : 0 };
   if (!this.intStack && st) { this.intStack = this.alloc(0x10000); this.intCrs = this.alloc(0x60); this.intCrsPool = []; }
@@ -511,7 +513,7 @@ P.asInterrupt = function (fn) {
   this.inInterrupt = true;
   try { return fn(); } finally {
     this.inInterrupt = false;
-    for (const k of Object.keys(full)) c[k].value = full[k];
+    for (const [f, v] of flags) c[f].value = v;
     if (st) { c.ss.value = st.ss; c.ssb.value = st.ssb; c.esp.value = st.esp; }
     if (c.if) c.if.value = ie;
     this.crs = vm.crs; this.crsLevel = vm.level; this.crsPool = vm.pool; if (this.vmcb) this.w32(this.vmcb + 8, vm.cb);
