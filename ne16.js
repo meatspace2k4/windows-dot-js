@@ -682,6 +682,12 @@ P.rmInt = function (n, next) {
   done();
 };
 const CF = (p, on) => { p.cpu.cf.value = on ? 1 : 0; };
+/** a file system error (fs.js: Win32's codes) as MS-DOS's INT 21h gives it: the codes MS-DOS has none of are its
+ *  access denied (MKDIR of a folder that is there, RMDIR of one that is not empty, a folder where a file was named) and
+ *  path not found (an invalid name). Given 183 for MKDIR of C:\WINDOWS, Windows 98 Setup stopped with "Setup cannot
+ *  create C:\WINDOWS" (SU0343): it takes access denied from an existing folder as the folder being there */
+const DOS_ERRORS = { 183: 5, 145: 5, 267: 5, 123: 3 };
+const dosError = code => DOS_ERRORS[code] || code || 5;
 /** a drive's boot sector and its sectors from `first`: a fixed drive's from its disk (P.fixedDisk, the view the BIOS
  *  and the VMs read), another's its boot sector and zeros */
 const volBoot = (p, l, v) => { const d = p.fixedDisk && p.fixedDisk(l); return d ? d.read(d.layout().hidden, 1) : bootSector(v); };
@@ -1139,7 +1145,7 @@ const INTS = {
           }
           case 0x42: { if (!f) return fail(6); const pos = this.fs.seek(f.fd, (((this.cpu.ecx.value & 0xffff) << 16) | (this.cpu.edx.value & 0xffff)) | 0, al); this.ax(pos & 0xffff); this.cpu.edx.value = lo16(this.cpu.edx.value, pos >>> 16); return; }
         }
-      } catch (e) { if (e instanceof window.W95FS.FSError) return fail(e.code || 5); throw e; }
+      } catch (e) { if (e instanceof window.W95FS.FSError) return fail(dosError(e.code)); throw e; }
     }
     this.trapped = `unhandled int 21h ax=${this.ax().toString(16)} bx=${(this.cpu.ebx.value & 0xffff).toString(16)} cx=${(this.cpu.ecx.value & 0xffff).toString(16)}`; return LAYOUT.SENTINEL;
   },
@@ -3673,7 +3679,7 @@ P.dosNames = function (fn, lfn) {
         reg('ebx', 0x4006); reg('ecx', 255); reg('edx', 260); return;
       }
     }
-  } catch (e) { if (e instanceof W.FSError) return fail(e.code || 5); throw e; }
+  } catch (e) { if (e instanceof W.FSError) return fail(dosError(e.code)); throw e; }
   return false;
 };
 P.findFile16 = function (name) {
