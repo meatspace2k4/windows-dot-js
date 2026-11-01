@@ -1628,7 +1628,9 @@ P.nativeChildren = function (parent, send = true) {
   // thread waits on a reply to a SendMessage of its own: one sent from here then went into that thread's chain of
   // sends, and it waited for good. Then the control is `unknown`: its window text only, no check, no items)
   // (send false: nothing asked, the caller asks from a thread of its own: worker.js 'world')
-  const ask = send && !this.replyAwaited();
+  // (nor while a thread holds the Win16Lock: it is in the middle of a run of its own (SUWIN's key check) and takes no
+  // message until it is done; a send then waited on it, and the page lost its frames meanwhile)
+  const ask = send && !this.replyAwaited() && !this.win16Held;
   const walk = (p, depth) => {
     for (let h = u(262, [['w', p], ['w', 5]]), n = 0; h && n < 512; h = u(262, [['w', h], ['w', 2]]), n++) {
       if (!u(49, [['w', h]])) continue;
@@ -4578,6 +4580,14 @@ def16('KERNEL', 460, 'll', 'l', function (h, ms) {
   if (this.thread16) this.thread16.waitOn = { hs: [h], all: 0, ms };   // (for a probe)
   if (!e.set && ms && this.atThreadTop()) { P.idle.call(this); return waitTop(this, ms); }
   if (!e.set && ms) this.waitNested(() => e.set);
+  // a call the host made (no thread: the page's reading of a window's controls, worker.js nativeChildren) waits on
+  // for the reply to its SendMessage, as the sender blocks on Windows: the receiving thread needs several turns to
+  // wake, take the message and reply. Given one turn, the call came back unanswered, USER freed the message's record,
+  // and the receiver's queue still held it; what took the memory next was called as a procedure (Explorer, after
+  // Windows 98 Setup's ScanDisk: "invalid page fault at 0002:3B08", the record's bytes a posted message's time)
+  // (up to 64 turns or 200 ms of the machine's time: a receiver busy in a long run of its own (SUWIN's key check) is
+  // not waited for; the page keeps its frames, and the caller sees the time-out as before)
+  if (!e.set && ms && !this.thread16) for (let k = 0, t0 = performance.now(); k < 64 && !e.set && performance.now() - t0 < 200; k++) { this.waitNested(() => e.set); if (!e.set && P.queueWoken.call(this, h)) e.set = true; }
   waitDone(this);
   if (!e.set) return 0x102; if (!e.manual) e.set = false; return 0;
 });
