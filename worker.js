@@ -541,7 +541,7 @@ class Machine {
     self.W95TRACE = t => { const th = name(); if (log.length < 20000 && want.test(th) && (!only || only.test(t.dll + '!' + t.nm))) log.push([Math.round(performance.now() - t0), th, t.dll + '!' + t.nm, arg32(t), caller()]); };
     self.W95APPYTRACE = e => { if (log.length < 20000) log.push([Math.round(performance.now() - t0), name(), 'appy', (e.fn >>> 0).toString(16)]); };
   }
-  ring0() { return !!(this.proc && this.proc.r0Runs && this.proc.r0Runs.length); }
+  ring0() { return !!(this.proc && this.proc.r0Runs && this.proc.r0Runs.some(s => !(s.vm && s.wait))); }   // (an MS-DOS VM's waiting event holds that VM only)
   feedKeys() {
     const p = this.proc;
     if (!this.keyq.length || p.depth || this.ring0() || this.focusing) return;   // (a window being brought to the front first: 'focus')   // (the keyboard and mouse drivers report at interrupt time)
@@ -557,7 +557,12 @@ class Machine {
     if (!this.alive) return;
     const p = this.proc, t0 = performance.now();
     try { this.poll(); } catch (e) { if (!(e instanceof W.FaultError)) throw e; }   // (recorded by r0Fault, answered below)
-    if (p.r0Runs && p.r0Runs.length) {
+    // (an MS-DOS VM's event that waits holds that VM only (vmm.js vmEventRun): the system goes on, and the thread whose
+    // call signals it runs. Held as ring 0 is, nothing ran but the wait, and WinOldAp's next SHELL call never came)
+    if (p.r0Runs && p.r0Runs.length && p.r0Runs.every(s => s.vm && s.wait)) {
+      try { p.r0Step(); } catch (e) { console.error(e && e.stack ? e.stack : e); this.exited(-1, e.message); return; }
+    }
+    if (p.r0Runs && p.r0Runs.length && !p.r0Runs.every(s => s.vm && s.wait)) {
       try { p.r0Step(); } catch (e) { console.error(e && e.stack ? e.stack : e); this.exited(-1, e.message); return; }
       this.sendText();
       if (!(p.r0Runs && p.r0Runs.length) && this.afterR0) { const go = this.afterR0; this.afterR0 = null; go(); }
@@ -762,9 +767,12 @@ class Machine {
     if (/\.(COM|BAT|PIF)$/i.test(file)) return true;
     let f; try { f = fs.readFile(file); } catch (_) { return false; }
     if (f.length < 0x1c || f[0] !== 0x4d || f[1] !== 0x5a) return false;
-    if ((f[0x18] | f[0x19] << 8) < 0x40 || f.length < 0x40) return true;
+    // (a new header at 3Ch, NE, PE, LE or LX, makes it a Windows program, whatever its MZ header's relocation offset
+    // at 18h says: SESSTRAY.EXE, CLAUDE.EXE and DBWIN.EXE have 0 there, and were started as MS-DOS programs under
+    // WinOldAp, whose VM stopped at their Windows code)
+    if (f.length < 0x40) return true;
     const at = (f[0x3c] | f[0x3d] << 8 | f[0x3e] << 16 | f[0x3f] << 24) >>> 0;
-    return !(at + 2 <= f.length && /^(NE|PE|LE|LX)$/.test(String.fromCharCode(f[at], f[at + 1])));
+    return !(at >= 0x40 && at + 2 <= f.length && /^(NE|PE|LE|LX)$/.test(String.fromCharCode(f[at], f[at + 1])));
   }
   isNE(file) {
     let f; try { f = fs.readFile(file); } catch (_) { return false; }
@@ -1058,6 +1066,7 @@ class Machine {
     const metrics = p.depth || p.thread16 ? null : (() => { try { return [0, 1, 4].map(i => p.user16(179, [['w', i]]).ax); } catch (e) { return e.message; } })();   // GetSystemMetrics: CXSCREEN, CYSCREEN, CYCAPTION
     // (the MS-DOS VMs: each one's id, handle, what it runs and where its processor is, its screen's first line)
     const vms = (p.vms || []).map(v => ({ id: v.id, cb: v.cb.toString(16), started: !!v.started, gone: !!v.gone, exec: v.exec ? v.exec.program : null,
+      maps: v.vmaps ? [...v.vmaps].map(([pg, lin]) => `${pg.toString(16)}>${(lin >>> 0).toString(16)}`) : [],   // (the pages VxDs mapped into it: VDD's video memory)
       at: v.m ? `${(v.m.cpu.cs.value & 0xffff).toString(16)}:${((v.m.cpu.eip.value >>> 0) - (v.m.cpu.csb.value >>> 0)).toString(16)}` : null, halted: v.m ? !!v.m.halted : null, dispEvents: v.dispEvents || 0, dispLast: v.dispLast, dispPosted: !!v.dispPosted,
       screen: v.m ? [...Array(25)].map((_, r) => [...Array(80)].map((_, c) => String.fromCharCode(v.m.m8(0xb8000 + (r * 80 + c) * 2) || 32)).join('').trimEnd()).filter(Boolean).slice(0, 25) : v.lastScreen || null, ints: (v.m ? v.m.ilog : v.lastInts) || null }));
     // (the VMs' view of C: as a disk: its geometry, and a folder's chain and first entries, by args 'disk' on the probe)

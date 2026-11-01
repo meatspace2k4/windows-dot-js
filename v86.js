@@ -518,6 +518,12 @@ HOOK[0x2f] = function () {
 // ---------------------------------------------------------------- the ports
 P.v86Port = function (port, size, isIn, val) {
   const c = this.cpu;
+  // the VGA's ports in a VM of Windows': the display's VxD (VDD) traps them and keeps the VM's video state, as it
+  // does for every VM (o.vgaPort, vmm.js vmVgaIO); a port it does not trap is the machine's own
+  if (port >= 0x3b0 && port <= 0x3df && this.o.vgaPort) {
+    const r = this.o.vgaPort(port, size, isIn, c.eax.value >>> 0);
+    if (r !== undefined) { if (isIn) { const m = size === 1 ? 0xff : size === 2 ? 0xffff : -1; c.eax.value = (c.eax.value & ~m) | (r & m); } return; }
+  }
   if (!isIn) {
     if (port === 0x70) this.cmosAt = c.eax.value & 0x7f;
     // the reset line: the keyboard controller's pulse (command FEh) or port 92h's bit 0, as the PC starts again
@@ -668,10 +674,43 @@ BIOS[0xf8] = function (next) {
 P.v86Clock = function () { const d = new Date(), s = d.getHours() * 3600 + d.getMinutes() * 60 + d.getSeconds(); this.s32(0x46c, Math.floor(s * 18.2065)); };
 
 // ---- INT 10h: the text screen (mode 3, 80 x 25 at B800h; one page)
+// the VGA's registers for mode 3 (80x25 text, 16 colours), as the VGA BIOS programs them: the miscellaneous output
+// register, the sequencer's, the CRT controller's, the attribute controller's (palette, mode control) and the
+// graphics controller's. Programmed through the ports, so the display's VxD sees the mode a VM is in (it keeps each
+// VM's registers from its traps): set in memory alone, VDD took the VM for one it could not show in a window
+const VGA_MODE3 = {
+  misc: 0x67, seq: [0x03, 0x00, 0x03, 0x00, 0x02],
+  crtc: [0x5f, 0x4f, 0x50, 0x82, 0x55, 0x81, 0xbf, 0x1f, 0x00, 0x4f, 0x0d, 0x0e, 0x00, 0x00, 0x00, 0x00, 0x9c, 0x8e, 0x8f, 0x28, 0x1f, 0x96, 0xb9, 0xa3, 0xff],
+  attr: [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x14, 0x07, 0x38, 0x39, 0x3a, 0x3b, 0x3c, 0x3d, 0x3e, 0x3f, 0x0c, 0x00, 0x0f, 0x08, 0x00],
+  gc: [0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x0e, 0x00, 0xff],
+};
+P.vgaOut = function (port, v) { const c = this.cpu, ax = c.eax.value; c.eax.value = (ax & ~0xff) | (v & 0xff); this.v86Port(port, 1, false); c.eax.value = ax; };
+P.vgaIn = function (port) { const c = this.cpu, ax = c.eax.value; this.v86Port(port, 1, true); const v = c.eax.value & 0xff; c.eax.value = ax; return v; };
+P.vgaMode3 = function () {
+  const t = VGA_MODE3;
+  this.vgaOut(0x3c2, t.misc);
+  t.seq.forEach((v, i) => { this.vgaOut(0x3c4, i); this.vgaOut(0x3c5, v); });
+  this.vgaOut(0x3d4, 0x11); this.vgaOut(0x3d5, t.crtc[0x11] & 0x7f);   // (the CRTC's registers 0-7 unprotected first)
+  t.crtc.forEach((v, i) => { this.vgaOut(0x3d4, i); this.vgaOut(0x3d5, v); });
+  t.gc.forEach((v, i) => { this.vgaOut(0x3ce, i); this.vgaOut(0x3cf, v); });
+  this.vgaIn(0x3da); t.attr.forEach((v, i) => { this.vgaOut(0x3c0, i); this.vgaOut(0x3c0, v); }); this.vgaOut(0x3c0, 0x20);   // (the flip-flop reset; the screen on)
+  // the DAC, as the VGA BIOS loads it at a mode set: its first 64 entries the EGA's colours (each 6-bit component
+  // 2Ah for a primary bit and 15h for a secondary), the rest black; the mask all on. Left alone, VDD kept the VM's DAC
+  // as all black, the grabber took every colour from it (VDD hands it the VM's register state), and MEM's text was
+  // drawn black on black
+  this.vgaOut(0x3c6, 0xff); this.vgaOut(0x3c8, 0);
+  for (let i = 0; i < 256; i++) {
+    const k = i & 63, c = (p, s) => (k >> p & 1) * 0x2a + (k >> s & 1) * 0x15;
+    const [r, g, b] = i < 64 ? [c(2, 5), c(1, 4), c(0, 3)] : [0, 0, 0];
+    this.vgaOut(0x3c9, r); this.vgaOut(0x3c9, g); this.vgaOut(0x3c9, b);
+  }
+};
+/** the cursor's place (CRTC 0Eh, 0Fh: its offset in the screen's cells) and shape (0Ah, 0Bh), as the BIOS sets them */
+P.vgaCursor = function (r, c) { const o = r * 80 + c; this.vgaOut(0x3d4, 0x0e); this.vgaOut(0x3d5, o >> 8); this.vgaOut(0x3d4, 0x0f); this.vgaOut(0x3d5, o & 0xff); };
 function video() {
   const ah = this.ah(), cols = 80, rows = 25;
   const cur = () => [this.m8(0x451), this.m8(0x450)];   // row, column
-  const setCur = (r, c) => { this.s8(0x450, c); this.s8(0x451, r); };
+  const setCur = (r, c) => { this.s8(0x450, c); this.s8(0x451, r); this.vgaCursor(r, c); };
   const cell = (r, c) => 0xb8000 + (r * cols + c) * 2;
   const scroll = (n, top, left, bot, right, attr, up) => {
     const h = bot - top + 1;
@@ -688,8 +727,8 @@ function video() {
   };
   this.dirty = true;
   switch (ah) {
-    case 0x00: scroll(0, 0, 0, rows - 1, cols - 1, 7, true); setCur(0, 0); this.s8(0x449, 3); return;
-    case 0x01: this.s16(0x460, this.r('cx')); return;
+    case 0x00: this.vgaMode3(); scroll(0, 0, 0, rows - 1, cols - 1, 7, true); setCur(0, 0); this.s8(0x449, 3); return;
+    case 0x01: { const cx = this.r('cx'); this.s16(0x460, cx); this.vgaOut(0x3d4, 0x0a); this.vgaOut(0x3d5, cx >> 8); this.vgaOut(0x3d4, 0x0b); this.vgaOut(0x3d5, cx & 0xff); return; }
     case 0x02: setCur((this.cpu.edx.value >> 8) & 0xff, this.cpu.edx.value & 0xff); return;
     case 0x03: { const [r, c] = cur(); this.w('dx', (r << 8) | c); this.w('cx', this.m16(0x460)); return; }
     case 0x05: return;

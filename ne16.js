@@ -233,7 +233,7 @@ P.initNE = function (rec) {
 };
 P.neByHandle = function (h) {
   h &= 0xffff; if (!h) return null;
-  for (const m of this.ne.values()) if (m.hModule === h || m.hInstance === h || (m.dgroup | 1) === (h | 1) || m.segs.some(s => (s.sel | 1) === (h | 1))) return m;
+  for (const m of this.ne.values()) if (m.hModule === h || m.hInstance === h || (m.dgroup | 1) === (h | 1) || m.segs.some(s => (s.sel | 1) === (h | 1)) || (m.instances && [...m.instances].some(g => (g | 1) === (h | 1)))) return m;
   return null;
 };
 P.neExport = function (m, key) {
@@ -1128,7 +1128,9 @@ const INTS = {
           }
           case 0x3e: if (!f) return fail(6); if (!f.dev) this.fs.close(f.fd); this.dosFiles.delete(bx); return;
           case 0x3f: { if (!f) return fail(6); const b = this.fs.read(f.fd, cx); this.u8.set(b, dsdx()); return this.ax(b.length); }
-          case 0x40: if (!f) return fail(6); return this.ax(this.fs.write(f.fd, this.u8.slice(dsdx(), dsdx() + cx)));
+          // (a write of 0 bytes sets the file's length to where it is, as MS-DOS's does: a program that rewrites a file in
+          // place ends it there. Windows 98 Setup rewrote AUTOEXEC.BAT shorter and the old file's end stayed after it)
+          case 0x40: if (!f) return fail(6); if (!cx && !f.dev) { this.fs.truncate(f.fd); return this.ax(0); } return this.ax(this.fs.write(f.fd, this.u8.slice(dsdx(), dsdx() + cx)));
           case 0x41: this.fs.unlink(this.readA(dsdx()) || ''); return;
           case 0x57: {   // file dates: AL 0 written, 4 accessed, 6 created (CX time, DX date); the setters change nothing
             if (!f) return fail(6); if (al & 1) return;
@@ -1243,6 +1245,9 @@ const INTS = {
     if (ax === 0x168a || ax === 0x1688) return;
     if (ax === 0x160b) return;          // identify Windows-aware TSRs: none is loaded, so ES:DI comes back as it went in
     if (ax === 0x1607) return;          // device callout to real-mode software (a VxD asking for its TSR's API): none answers
+    // VDD's notice to real-mode display software around a mode set it makes in a VM (BL 2 before its INT 10h calls,
+    // 1 after: VDD.VXD 1:49EC, 1:4A23): no such software is loaded, so it comes back as it went
+    if (ax === 0x160e) return;
     if ([0x11, 0xb8, 0xb7, 0x58].includes(ax >> 8)) return;   // real-mode network redirector, network, APPEND and real-mode network extension checks: none is loaded (AL comes back as it went)
     if ((ax >> 8) === 0x40) return;    // VDD save/restore and critical-section notifications
     if (ax === 0x4a32) return;         // boot progress to IO.SYS (USER reports start-up done; its answer is not read)
@@ -1411,6 +1416,14 @@ vxdApi(0x0001, 'VMM', {
 vxdApi(0x0009, 'REBOOT', {});
 vxdApi(0x000d, 'VKD', {
   0() { return 0x200; },   // version 2.00: WinOldAp takes a VKD of version 2 only (WINOA386.MOD 2:C18)
+  // a key typed into an MS-DOS VM's window, which WinOldAp hands on (WINOA386.MOD 2:FFB): EBX the VM, CH the scan
+  // code, CL the character; into that VM's keyboard as its BIOS takes keys, carry clear. Missing, the first key typed
+  // stopped WinOldAp ("unimplemented VKD API function 1h")
+  1() {
+    const v = this.vmOf && this.vmOf(this.cpu.ebx.value), m = v && !v.sys && !v.gone ? v.m : null;
+    if (m) m.keys.push(this.cpu.ecx.value & 0x7fff);
+    this.cpu.cf.value = m ? 0 : 1;
+  },
 });
 vxdApi(0x000c, 'VMD', {
   0() { return 0x400; },                                       // version 4.00
@@ -2381,16 +2394,57 @@ P.customEntry = function (w, h, slot = CUSTOM_SLOTS[0]) {
 //   3     what changed since it was last cleared: CX nonzero and flags 8 (the whole screen: the grabber repaints it all,
 //         VGAFULL 1:85F), CX 0 when nothing did
 //   4     the changes cleared; 5 the memory let go; 7 and 9 nothing kept here
+// +24h of the memory record: the colors, 256 dwords, as VDD's register state has them (VDD 1:2436E): an attribute's
+// palette register value indexes it for the DAC entry in its low byte, and that entry's top three bytes are the DAC's
+// 6-bit blue, green and red, which the grabber shifts into a COLORREF (VGAFULL 1:1913). The VGA's default DAC: its
+// first 64 the EGA's colors. Left 0, every color the grabber looked up was black, and MEM's text was drawn black on black
+P.grabPalette = function (v) {
+  if (!v.grabPal) {
+    v.grabPal = this.alloc(0x400);
+    for (let i = 0; i < 256; i++) {
+      const k = i & 63, c = (p, s) => (k >> p & 1) * 0x2a + (k >> s & 1) * 0x15;
+      const [r, g, b] = i < 64 ? [c(2, 5), c(1, 4), c(0, 3)] : [0, 0, 0];
+      this.w32(v.grabPal + 4 * i, u32((b << 24) | (g << 16) | (r << 8) | i));
+    }
+  }
+  return v.grabPal;
+};
 P.vddGrab = function (fn) {
   const v = this.vmOf && this.vmOf(this.cpu.ebx.value), m = v && !v.sys ? v.m : null;
   const buf = () => this.lin(((this.cpu.es.value & 0xffff) << 16) | (this.cpu.edi.value & 0xffff));
   const text = () => (m ? m.u8.slice(m.v86 + 0xb8000 + m.m16(0x44e), m.v86 + 0xb8000 + m.m16(0x44e) + 4000) : null);
   this.cpu.cf.value = 0;
-  if (!m) { if (fn === 3) this.cpu.ecx.value &= ~0xffff; this.cpu.eax.value = 0; return; }
+  if (!v || v.sys) { if (fn === 3) this.cpu.ecx.value &= ~0xffff; this.cpu.eax.value = 0; return; }
+  // (a VM whose program has ended, its machine gone: its screen as last seen, its state as last given, for the
+  // grabber's last repaints of the window. Its record left as it was, the grabber took the stack's garbage for the
+  // memory's address and wrote out of bounds (VGAFULL 1:1333) when the key that ended MEM was pressed)
+  if (!m) {
+    const a = buf();
+    if (fn === 1 || fn === 6) {
+      this.u8.fill(0, a, a + 0x28);
+      if (!v.grabMem) { v.grabMem = this.alloc(0x8000); for (let i = 0; i < 0x4000; i++) this.w16(v.grabMem + 2 * i, 0x0720); }
+      this.w32(a, v.grabMem); this.w32(a + 0x14, 0x8000); this.w32(a + 0x24, this.grabPalette(v)); this.w32(a + 0x10, v.grabPage || 0);
+      this.cpu.edx.value &= ~0xff;
+    } else if (fn === 2 || fn === 8) {
+      if (v.grabState) this.u8.set(v.grabState, a);
+      else { this.u8.fill(0, a, a + 0x20); this.u8[a] = 3; this.u8[a + 2] = 9; this.u8[a + 3] = 25; this.w16(a + 0x1c, 80); [0, 1, 2, 3, 4, 5, 0x14, 7, 0x38, 0x39, 0x3a, 0x3b, 0x3c, 0x3d, 0x3e, 0x3f].forEach((p, i) => { this.u8[a + 0xc + i] = p; }); }
+    } else if (fn === 3) { this.w16(a, 8); this.w16(a + 2, 0); this.cpu.ecx.value = (this.cpu.ecx.value & ~0xffff) | 1; }
+    return;
+  }
   if (fn === 1 || fn === 6) {
+    // (VDD's own memory for the grab, the screen as it is now copied there (VDD 1:2432B), not the VM's: the grabber
+    // works in what it is given (VGAFULL 1:1333 clears rows with REP STOSW), and given the VM's screen it wiped MEM's
+    // output; the window stayed black with the VM's own text gone)
+    // In text mode +4 (plane 1) is the grabber's shadow, the screen as it last drew it: given one, it draws only the
+    // cells that differ from it (VGAFULL 1:BAD), and a repaint after the window was erased drew nothing (the text
+    // showed, then went); given the screen itself, nothing ever differed and the window stayed black. 0: no shadow,
+    // every cell drawn each time (1:D0F, 1:BAB)
     const a = buf(); this.u8.fill(0, a, a + 0x28);
-    for (let i = 0; i < 4; i++) { this.w32(a + 4 * i, m.v86 + 0xb8000); this.w32(a + 0x14 + 4 * i, 0x8000); }
-    this.w32(a + 0x10, m.m16(0x44e)); this.cpu.edx.value &= ~0xff; return;
+    if (!v.grabMem) v.grabMem = this.alloc(0x8000);
+    this.u8.copyWithin(v.grabMem, m.v86 + 0xb8000, m.v86 + 0xb8000 + 0x8000);
+    this.w32(a, v.grabMem); this.w32(a + 0x14, 0x8000);
+    this.w32(a + 0x24, this.grabPalette(v));
+    v.grabPage = m.m16(0x44e); this.w32(a + 0x10, v.grabPage); this.cpu.edx.value &= ~0xff; return;
   }
   if (fn === 2 || fn === 8) {
     const a = buf(), page = m.m8(0x462), cur = m.m16(0x450 + 2 * page), cols = m.m16(0x44a) || 80, rows = (m.m8(0x484) || 24) + 1;
@@ -2400,17 +2454,27 @@ P.vddGrab = function (fn) {
     this.u8[a] = m.m8(0x449); this.u8[a + 2] = 8 | 1; this.u8[a + 3] = rows;
     this.w16(a + 4, cur & 0xff); this.w16(a + 6, cur >> 8); this.w16(a + 8, s); this.w16(a + 0xa, e);
     [0, 1, 2, 3, 4, 5, 0x14, 7, 0x38, 0x39, 0x3a, 0x3b, 0x3c, 0x3d, 0x3e, 0x3f].forEach((p, i) => { this.u8[a + 0xc + i] = p; });
-    this.w16(a + 0x1c, cols); return;
+    this.w16(a + 0x1c, cols); v.grabState = this.u8.slice(a, a + 0x20); return;
   }
+  // (3 answers the whole screen each time: WinOldAp repaints its window through it (3, then the grabber's update),
+  // and an answer of no change after the window was erased drew nothing back: the text printed, then cleared. Its
+  // wake for a change (41Ah, vmDisplayEvent) still comes only when the screen changed since 4)
   if (fn === 3) {
-    const now = text(), was = v.grabShot, cur = m.m16(0x450 + 2 * m.m8(0x462)), changed = !was || cur !== v.grabCur || now.some((b, i) => b !== was[i]);
-    const a = buf(); this.w16(a, changed ? 8 : 0); this.w16(a + 2, 0);
-    this.cpu.ecx.value = (this.cpu.ecx.value & ~0xffff) | (changed ? 1 : 0); return;
+    const a = buf(); this.w16(a, 8); this.w16(a + 2, 0);
+    this.cpu.ecx.value = (this.cpu.ecx.value & ~0xffff) | 1; return;
   }
   if (fn === 4) { v.grabShot = text(); v.grabCur = m.m16(0x450 + 2 * m.m8(0x462)); v.dispPosted = 0; }
+  // 7: the whole screen changed for the next 3 (VDD 1:24419 > 1:2116E), as the grabber asks when its window was
+  // erased; doing nothing, the next 3 found no change, nothing was drawn back, and the window's text cleared
+  if (fn === 7) v.grabShot = null;
 };
 def16('VDD', 0, '', 'jmp', function () {
-  const fn = u32(this.cpu.eax.value);
+  // Windows 95's own VDD.VXD when it is loaded (vmm.js, STATIC_VXDS): its protected-mode API answers the grabber and
+  // the display driver; what follows answers in its absence (a machine without the bundle's VDD)
+  const rv = (this.cpu.eax.value & 0xff) < 0x80 && this.vxdApiRoute && this.vxdApiRoute(0x000a); if (rv) return this.vxdPmApi(rv);
+  // (the function in AX: a 16-bit caller sets no more, and EAX's high word is whatever it held (3DF7h, 141Fh from the
+  // grabber, whose calls then went unanswered: WinOldAp's window had no rows, a title and a toolbar)
+  const fn = this.cpu.eax.value & 0xffff;
   switch (fn) {
     // the grabber's functions (below 80h, VDD.VXD 1:2413F): 0 VDD's version, 4.00, its 8-byte ID ("VIDEOVGA", as
     // VDD_Get_Version gives it) copied to ES:EDI (VDD 1:B20F); the grabber takes a VDD of 3.0Ah to 4.00
@@ -3715,7 +3779,8 @@ def16('KERNEL', 85, 'sw', 'w', function (name, mode) { const f = this.findFile16
 def16('KERNEL', 83, 'sw', 'w', function (name) { return this.dosOpen(/^[a-z]:\\/i.test(name) ? name : window.W95FS.join(this.fs.cwd, name), 'w+'); });   // _lcreat
 def16('KERNEL', 81, 'w', 'w', function (h) { const f = this.dosFiles.get(h); if (!f) return 0xffff; this.fs.close(f.fd); this.dosFiles.delete(h); return 0; });
 const lread = function (h, buf, n) { const f = this.dosFiles.get(h); if (!f) return 0xffffffff; const b = this.fs.read(f.fd, n); this.u8.set(b, buf); return b.length; };
-const lwrite = function (h, buf, n) { const f = this.dosFiles.get(h); if (!f) return 0xffffffff; return this.fs.write(f.fd, this.u8.slice(buf, buf + n)); };
+// (_lwrite and _hwrite of 0 bytes set the file's length to where it is, as INT 21h AH=40h does)
+const lwrite = function (h, buf, n) { const f = this.dosFiles.get(h); if (!f) return 0xffffffff; if (!n && !f.dev) { this.fs.truncate(f.fd); return 0; } return this.fs.write(f.fd, this.u8.slice(buf, buf + n)); };
 def16('KERNEL', 82, 'wpw', 'w', function (h, b, n) { return lread.call(this, h, b, n); });
 def16('KERNEL', 349, 'wpl', 'l', function (h, b, n) { return lread.call(this, h, b, n); });
 def16('KERNEL', 86, 'wpw', 'w', function (h, b, n) { return lwrite.call(this, h, b, n); });
@@ -3877,27 +3942,45 @@ const res32 = (p, h32, id, type) => {
   if (type === 5) data = dialog16(data); // RT_DIALOG
   return data;
 };
+// (one resource handle for each resource of a module, as KERNEL's is its entry in the module's resource table: found
+// again, the same handle, and its loaded block shared with a count that FreeResource takes back. A new handle and block
+// at each find, never freed, held a copy of USER's 65488-byte resource for each load, 104 of them, until MSGSRV32 ran
+// out of memory)
+const resHandle = function (key, rec) {
+  const ix = this.resIx || (this.resIx = new Map());
+  let k = ix.get(key); if (k) return k;
+  (this.resHandles = this.resHandles || []).push(rec); k = this.resHandles.length * 4; ix.set(key, k); return k;
+};
 def16('KERNEL', 60, 'wxx', 'w', function (h, name, type) {     // FindResource
   const h32 = this.hinst32 && this.hinst32(h);
   if (h32) {
-    const data = res32(this, h32, resKey.call(this, name), resKey.call(this, type)); if (!data) return 0;
-    (this.resHandles = this.resHandles || []).push({ data }); return this.resHandles.length * 4;
+    const kn = resKey.call(this, name), kt = resKey.call(this, type), data = res32(this, h32, kn, kt); if (!data) return 0;
+    return resHandle.call(this, `${h32}:${kt}:${kn}`, { data });
   }
   const m = this.neByHandle(h); if (!m) return 0;
   const k = resKey.call(this, name), t = resKey.call(this, type);
   const i = this.neResources(m).findIndex(r => r.id === k && r.type === t);
   if (i < 0) return 0;
-  (this.resHandles = this.resHandles || []).push({ m, r: m.res[i] }); return this.resHandles.length * 4;
+  return resHandle.call(this, m.res[i], { m, r: m.res[i] });
 });
 def16('KERNEL', 168, 'www', 'w', function (h, type, size) { return this.globalAlloc16(GMEM_MOVEABLE, size); });   // DirectResAlloc
 def16('KERNEL', 61, 'ww', 'w', function (h, hr) {               // LoadResource
   const e = this.resHandles && this.resHandles[hr / 4 - 1]; if (!e) return 0;
-  if (!e.g && e.data) { e.g = this.globalAlloc16(0, e.data.length || 1); this.u8.set(e.data, this.gblock(e.g).lin); }
-  if (!e.g) { e.g = this.globalAlloc16(0, e.r.len); this.u8.set(e.m.file.subarray(e.r.off, e.r.off + e.r.len), this.gblock(e.g).lin); }
+  if (e.g && e.b && this.gblock(e.g) === e.b) { e.n++; return e.g; }   // (loaded and not freed since: shared)
+  const bytes = e.data || e.m.file.subarray(e.r.off, e.r.off + e.r.len);
+  e.g = this.globalAlloc16(0, bytes.length || 1); if (!e.g) return 0;
+  e.b = this.gblock(e.g); this.u8.set(bytes, e.b.lin); e.n = 1;
+  (this.resByG || (this.resByG = new Map())).set(e.g, e);
   return e.g;
 });
 def16('KERNEL', 62, 'w', 'l', function (h) { const b = this.gblock(h); return b ? u32(this.gsel(h) << 16) : 0; });   // LockResource
-def16('KERNEL', 63, 'w', 'w', () => 0);
+def16('KERNEL', 63, 'w', 'w', function (h) {                    // FreeResource: the last of its loads frees the block
+  const e = this.resByG && this.resByG.get(h);
+  if (!e || e.g !== h || this.gblock(h) !== e.b) return 0;
+  if (--e.n > 0) return 0;
+  this.resByG.delete(h); e.g = 0; e.b = null;
+  return K16['KERNEL.#17'][2].call(this, h);
+});
 def16('KERNEL', 64, 'ww', 'w', function (h, hr) {               // AccessResource: the module's file opened for reading at the resource
   const e = this.resHandles && this.resHandles[hr / 4 - 1]; if (!e || !e.m || !e.m.path) return 0xffff;
   const fh = this.dosOpen(e.m.path, 'r'), f = this.dosFiles.get(fh); if (f) this.fs.seek(f.fd, e.r.off, 0);
@@ -4741,6 +4824,13 @@ P.taskFault = function (t, why, fault) {
 P.taskModuleEnded = function (t) {
   if (t.modEnded) return; t.modEnded = true;
   if (this.fgWanted) this.fgWanted.delete(t.tdb);   // (one that showed no window)
+  // (an instance's own DGROUP goes with it: its heap, atoms and memory)
+  if (t.task && t.task.ownDg) {
+    const g = t.task.ownDg; t.task.ownDg = 0;
+    if (t.task.mod && t.task.mod.instances) t.task.mod.instances.delete(g);
+    if (this.lheaps) this.lheaps.delete(g | 1); if (this.atoms) this.atoms.delete(g | 1);
+    K16['KERNEL.#17'][2].call(this, g);
+  }
   const m = t.task && t.task.mod, u = this.ne && this.ne.get('USER');
   if (!m || !m.taskModule || !u || !u.meta || !this.neExport(u, 391)) return;
   if ([...this.threadsById.values()].some(x => x !== t && x.task && x.task.mod === m && x.state !== 'done')) return;
@@ -5046,6 +5136,24 @@ def16('KERNEL', 45, 'sp', 'l', function (name, pb) {
   // the module's one DGROUP holds the stack of its first live task only: a second instance (MMSYSTEM starts MMTASK
   // more than once) keeps a stack of its own, as this loader gives each module one DGROUP, not one per instance
   t.task.dgStack = ![...this.threadsById.values()].some(x => x !== t && x.task && x.task.dgStack && x.task.dgroup === rec.dgroup && x.state !== 'done');
+  // a second instance of a MULTIPLEDATA program (WinOldAp, one per MS-DOS program) gets a DGROUP of its own, as KERNEL
+  // gives each instance one: the data as the file has it, then its stack and the local heap InitTask makes (on the
+  // module's, with no heap of its own, its LocalAlloc failed: "no local heap in ... called from WINOLDAP")
+  // (and InitTask hands it the instance already running as its previous one, SI: WinMain's hPrevInstance, with which
+  // a program skips registering its window classes again; given 0, WinOldAp's second registered them again, USER
+  // refused (LogError 42) and it stopped with "There are not enough system resources to run this program")
+  const prev = [...this.threadsById.values()].find(x => x !== t && x.task && x.task.mod === rec && x.state !== 'done');
+  if (prev) t.task.prev = prev.task.hInst;
+  if (!t.task.dgStack && (flags & 0x0002) && dg) {
+    const size = Math.min(0x10000, (data + taskStack(t.task.stack || 1) + (t.task.heap || 0x1000) + 15) & ~15);
+    const g = this.globalAlloc16(0, size), b = this.gblock(g); if (!g || !b) return 8;
+    this.u8.fill(0, b.lin, b.lin + size);
+    if (dg.len) this.u8.set(rec.file.subarray(dg.fileoff, dg.fileoff + dg.len), b.lin);
+    for (const [lin, n, v] of m.fixups || []) if (lin >= dg.base && lin < dg.base + Math.max(dg.alloc, 1)) { const a = b.lin + lin - dg.base; if (n === 1) this.u8[a] = v; else if (n === 2) this.w16(a, v); else this.w32(a, v); }
+    if (rec.relocSeg) rec.relocSeg({ ...dg, base: b.lin });
+    Object.assign(t.task, { dgroup: g, hInst: g, ownDg: g, dgStack: true });
+    (rec.instances || (rec.instances = new Set())).add(g);
+  }
   t.tdb = newTdb(this, { hInst: rec.hInstance, hModule: rec.hModule, name: rec.name });
   // (its first window brought to the front, worker.js frame; not a program another machine started in a shared session)
   if (t.task.origin !== 'remote') (this.fgWanted || (this.fgWanted = new Set())).add(t.tdb);
@@ -5094,7 +5202,7 @@ def16('KERNEL', 91, '', 'jmp', function () {
     this.w16(ds + 0x0a, Math.max(0x10, sp - taskStack(k.stack || 1))); this.w16(ds + 0x0c, sp); this.w16(ds + 0x0e, sp);
   }
   this.ax(1); this.seg('es', k.psp); this.cpu.ebx.value = lo16(this.cpu.ebx.value, 0x81); this.cpu.ecx.value = lo16(this.cpu.ecx.value, k.stack);
-  this.cpu.edx.value = lo16(this.cpu.edx.value, k.show); this.cpu.esi.value = lo16(this.cpu.esi.value, 0); this.cpu.edi.value = lo16(this.cpu.edi.value, k.hInst);
+  this.cpu.edx.value = lo16(this.cpu.edx.value, k.show); this.cpu.esi.value = lo16(this.cpu.esi.value, k.prev || 0); this.cpu.edi.value = lo16(this.cpu.edi.value, k.hInst);
   return this.retf16(0);
 });
 def16('KERNEL', 30, 'w', 'w', function () {

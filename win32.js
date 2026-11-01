@@ -789,6 +789,18 @@ class Process {
     let p = list && list.length ? list.pop() : 0;
     if (!p) {
       p = this.heapTop; this.heapTop += n;
+      // (the heap's end reached: the free blocks merged where they touch, the end given back where the last of them
+      // reaches it, then the smallest free block that holds it, the rest of that block free again at its size)
+      if (this.heapTop > LAYOUT.HEAP_END) {
+        this.heapTop -= n; this.coalesce(); p = this.heapTop; this.heapTop += n;
+        if (this.heapTop > LAYOUT.HEAP_END) {
+          let best = 0; for (const [s, l] of this.freeList) if (s >= n && l.length && (!best || s < best)) best = s;
+          if (best) {
+            this.heapTop -= n; p = this.freeList.get(best).pop();
+            if (best > n) { const r = best - n; if (!this.freeList.has(r)) this.freeList.set(r, []); this.freeList.get(r).push(p + n); }
+          }
+        }
+      }
       if (this.heapTop > LAYOUT.HEAP_END) {   // (the report says what holds the heap: live blocks by size, and what idles on the free lists)
         const by = new Map(); let live = 0; for (const [, s] of this.allocs) { by.set(s, (by.get(s) || 0) + s); live += s; }
         let idle = 0; for (const [s, l] of this.freeList) idle += s * l.length;
@@ -799,6 +811,15 @@ class Process {
     this.allocs.set(p, n); if (zero) this.u8.fill(0, p, p + n);
     if (n >= 8 << 20) (this.bigAllocs || (this.bigAllocs = [])).push(`${n} bytes at ${p.toString(16)}: ${(new Error().stack || '').split('\n').slice(2, 7).map(s => s.trim()).join(' < ')}`);   // (who takes a block of 8 MB or more: the out-of-memory report)
     return p;
+  }
+  /** the free lists with adjacent free blocks merged into one, and the heap's top lowered past free blocks at its end */
+  coalesce() {
+    const blocks = []; for (const [s, l] of this.freeList) for (const a of l) blocks.push([a, s]);
+    blocks.sort((x, y) => x[0] - y[0]);
+    const merged = [];
+    for (const [a, s] of blocks) { const last = merged[merged.length - 1]; if (last && last[0] + last[1] === a) last[1] += s; else merged.push([a, s]); }
+    while (merged.length && merged[merged.length - 1][0] + merged[merged.length - 1][1] === this.heapTop) this.heapTop = merged.pop()[0];
+    this.freeList = new Map(); for (const [a, s] of merged) { if (!this.freeList.has(s)) this.freeList.set(s, []); this.freeList.get(s).push(a); }
   }
   free(p) { const n = this.allocs.get(p); if (!n) return false; this.allocs.delete(p); if (!this.freeList.has(n)) this.freeList.set(n, []); this.freeList.get(n).push(p); return true; }
   realloc(p, n) { if (!p) return this.alloc(n); const old = this.allocs.get(p) || 0; if (n <= old) return p; const q = this.alloc(n, true); this.u8.copyWithin(q, p, p + old); this.free(p); return q; }

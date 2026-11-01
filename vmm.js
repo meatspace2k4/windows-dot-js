@@ -74,21 +74,23 @@ P.vxdCall = function (addr, regs = {}, at) {
 // SS:ESP (stackLinOf of its saved registers, which for a run stopped in VM code it called is the VM's segment and
 // SP), a time-out's frames landed in VxD images: VTDAPI's event saved the client registers over its own
 // VxDCall Begin_Nest_Exec (f0f1h:f8h at VTDAPI+186h), NDIS's Get_System_Time read device FFh
-P.r0Start = function (addr, regs = {}) {
+P.r0Start = function (addr, regs = {}, vm = null) {
   const outer = this.saveFull(), stack = (this.r0Stacks || (this.r0Stacks = [])).pop() || this.alloc(0x10000);
   for (const [s, b] of SEGS) { this.cpu[s].value = 0; if (s !== 'fsel') this.cpu[b].value = 0; }
   this.cpu.fs.value = this.tibFor ? this.tibFor() : this.cpu.fs.value;
   for (const r of GPR) if (r !== 'esp') this.cpu[r].value = u32(regs[r] || 0);
   this.cpu.esp.value = stack + 0x10000 - 16; this.push(W.LAYOUT.SENTINEL);
   this.depth++;
-  return this.r0Run({ outer, eip: addr, stack });
+  return this.r0Run({ outer, eip: addr, stack, vm });
 };
 P.r0Run = function (s) {
   this.r0Depth = (this.r0Depth || 0) + 1; this.preempted = 0; this.r0StopReady = null;
+  const curVM = this.curVM; if (s.vm) this.curVM = s.vm;   // (an MS-DOS VM's event runs as that VM, each time it goes on)
   let r;
   try { r = this.runTop(s.eip); }
-  catch (e) { this.r0Depth--; this.loadFull(s.outer); this.r0Stacks.push(s.stack); throw e; }
-  this.r0Depth--;
+  catch (e) { this.r0Depth--; this.curVM = curVM; this.loadFull(s.outer); this.r0Stacks.push(s.stack); throw e; }
+  this.r0Depth--; this.curVM = curVM;
+  if (s.vm && r !== 1 && s.vm.m && s.vm.started && !s.vm.gone) this.vmFromClient(s.vm);   // (its client registers back to its machine, done)
   if (r === 1 && !this.trapped) {   // it waits (R0WAIT, until `ready`), or its time ran out: kept as it is, the host's state put back
     s.ctx = this.saveFull(); s.eip = u32(this.cpu.eip.value);
     s.wait = !this.preempted; s.cont = this.r0Cont; s.ready = s.wait ? this.r0StopReady || (() => true) : () => true;
@@ -113,6 +115,7 @@ P.r0StepIn = function () {
   if (this.vxdEvents && this.vxdEvents.length && runs.every(s => s.wait)) {
     const e = this.vxdEvents.shift(), v = this.vmEventVM(e);
     if (v) { this.vmEventRun(v, e); return true; }
+    if (this.vmEventGone(e)) return true;
     this.r0Start(e.fn, { ebx: this.sysVM(), edx: e.ref, ebp: this.vmClientIdle(), esi: e.handle || 0 });
     return !!(this.r0Runs && this.r0Runs.length);
   }
@@ -247,13 +250,13 @@ P.createVM = function () {
   const size = 0x120000 + VM_XMS_KB * 1024, cb = this.alloc(0x4000), client = this.alloc(0x60), mem = this.alloc(size + 0x1000);
   this.u8.fill(0, cb, cb + 0x4000); this.u8.fill(0, client, client + 0x60);
   const high = (mem + 0xfff) & ~0xfff; this.u8.fill(0, high, high + size);
-  const vm = { cb, client, high, id: (this.vmNextId = (this.vmNextId || 1) + 1), status: 0 };
+  const vm = { cb, client, high, mem, id: (this.vmNextId = (this.vmNextId || 1) + 1), status: 0 };
   // its memory: the DOS that booted (the page's PC, as the VMM's loader left it), as V86MMGR makes a VM's from the system
   // VM's; a machine of v86.js's runs it there, in Windows' memory
   // (Windows' fixed drives its local disks, as IFSMgr gives them to a VM: each a FAT view of fs.js's drive, one per
   // drive for every VM)
   this.fixedDisk('C');
-  if (this.pcDos && window.W95V86) vm.m = window.W95V86.vmMachine({ mem: this.mem, base: high, xmsKB: VM_XMS_KB, fs: this.fs, disks: this.vmDisks, clip: m => this.vmClipboard(m), vmId: vm.id }, this.pcDos);
+  if (this.pcDos && window.W95V86) vm.m = window.W95V86.vmMachine({ mem: this.mem, base: high, xmsKB: VM_XMS_KB, fs: this.fs, disks: this.vmDisks, clip: m => this.vmClipboard(m), vmId: vm.id, vgaPort: (port, size, isIn, eax) => this.vmVgaIO(vm, port, size, isIn, eax) }, this.pcDos);
   // a V86 VM being made: CB_VM_Status VMStat_Creating until VM_Init has been sent
   this.w32(cb + CB.STATUS, 4); this.w32(cb + CB.HIGH, high); this.w32(cb + CB.CLIENT, client); this.w32(cb + CB.ID, vm.id); this.w32(cb + CB.SIG, 0x62634d56);
   this.w32(client + 0x2c, 0x20202);   // (the client's flags: V86, IF)
@@ -282,7 +285,7 @@ P.vmCreate = function (regs) {
     const cur = this.curVM; this.curVM = vm;
     try { return this.vmBroadcast(vm, VM_INIT, regs); } finally { this.curVM = cur; }
   })();
-  if (!ok) { this.vmBroadcast(vm, VM_NOT_EXECUTEABLE, { edx: 0 }); this.vmBroadcast(vm, DESTROY_VM); vm.gone = true; return 0; }
+  if (!ok) { this.vmBroadcast(vm, VM_NOT_EXECUTEABLE, { edx: 0 }); this.vmBroadcast(vm, DESTROY_VM); vm.gone = true; vm.m = null; if (vm.mem) { this.free(vm.mem); vm.mem = 0; } return 0; }
   this.w32(vm.cb + CB.STATUS, this.r32(vm.cb + CB.STATUS) & ~4);
   return vm.cb;
 };
@@ -353,16 +356,18 @@ P.vmClipboard = function (m) {
 };
 /** the MS-DOS VMs' time: each started one runs for its share of `ms`; its program's end ends it */
 P.vmsRun = function (ms) {
-  const live = (this.vms || []).filter(v => v.m && v.started && !v.gone && !v.suspended); if (!live.length) return;
+  const held = new Set((this.r0Runs || []).map(s => s.vm).filter(Boolean));   // (a VM in an event that is stopped: held there)
+  const live = (this.vms || []).filter(v => v.m && v.started && !v.gone && !v.suspended && !held.has(v)); if (!live.length) return;
   for (const v of live) {
     const t0 = performance.now();
+    this.vmPageFaults(v); this.vmMapSync(v, true);
     while (performance.now() - t0 < ms / live.length) {
       const st = v.m.v86Run(4000);
       if (st === 'idle') { v.m.halted = false; break; }
       if (st === 'exit') { this.vmEnd(v); break; }
       if (st === 'trap') { W.log('warn', 'vmm', `VM ${v.id} stopped: ${v.m.trapped}`); this.vmEnd(v, true); break; }
     }
-    if (!v.gone) this.vmDisplayEvent(v);
+    if (!v.gone) { this.vmMapSync(v, false); this.vmDisplayEvent(v); }
   }
 };
 /** VDD's part when a windowed VM's screen has changed since the grabber last cleared its changes (vddGrab 4): message
@@ -393,7 +398,17 @@ P.vmEnd = function (vm, crashed = false) {
   } finally { this.curVM = cur; }
   this.vmBroadcast(vm, VM_NOT_EXECUTEABLE, { edx: crashed ? 1 : 0 });
   this.vmBroadcast(vm, DESTROY_VM);
+  this.vmMapSync(vm, false);   // (its last screen to the VxD's pages)
   vm.gone = true; vm.m = null;
+  // (its events go with it, queued or stopped in a wait, as the VMM cancels a destroyed VM's events)
+  if (this.vxdEvents) this.vxdEvents = this.vxdEvents.filter(e => e.vm !== vm.cb);
+  if (this.r0Runs) this.r0Runs = this.r0Runs.filter(s => { if (s.vm !== vm) return true; if (s.stack) (this.r0Stacks || (this.r0Stacks = [])).push(s.stack); return false; });
+  // (its 2 MB of memory back to the heap once the devices have let it go: kept, each MS-DOS program Windows 98 Setup
+  // ran held one for good, and MSGSRV32 ran out of memory after Setup. Its control block stays: the handle is not
+  // given to another VM)
+  if (vm.mem) { this.free(vm.mem); vm.mem = 0; }
+  // (the grabber's copy of its screen and its colors stay: WinOldAp's window shows the last screen once the program
+  // has ended, and repaints from them, ne16.js vddGrab)   // (the grabber's copy of its screen and its shadow, ne16.js vddGrab)
 };
 // ---- VMM: VM and thread handles
 svc(VMM, 0x01, function () { this.cpu.ebx.value = this.curVM ? this.curVM.cb : this.sysVM(); });   // Get_Cur_VM_Handle
@@ -427,13 +442,81 @@ svc(VMM, 0xe0, function () { this.cpu.eax.value = 0; this.cpu.edx.value = 0; CF(
 svc(VMM, 0x142, function () { this.cpu.eax.value = 0; });                                              // Get_Set_Real_DOS_PSP
 svc(VMM, 0x18, function () { CF(this, false); });                                                     // Hook_NMI_Event: no NMI comes
 svc(VMM, 0xe9, function () { CF(this, false); });                                                     // Hook_Invalid_Page_Fault: every page is present
-// Close_VM (EBX VM, EAX flags): the system VM's is the machine's end
-svc(VMM, 0xec, function () { if (this.host && this.host.reset) this.host.reset(); throw new W.GuestError('the system VM was closed'); });
+// Close_VM (EBX VM, EAX flags): the system VM's is the machine's end; an MS-DOS VM's ends that VM, as its program's
+// end does (vmsRun), its memory given back (it reset the machine whatever VM it was asked for)
+svc(VMM, 0xec, function () {
+  const v = this.vmOf(this.cpu.ebx.value);
+  if (v && !v.sys) { if (!v.gone) this.vmEnd(v); CF(this, false); return; }
+  if (this.host && this.host.reset) this.host.reset(); throw new W.GuestError('the system VM was closed');
+});
 svc(VMM, 0x2f, function () { throw new W.GuestError('Crash_Cur_VM'); });
 // the page tables: one address space, every page mapped to itself. _CopyPageTable(page, n, buf, flags): the entries
 // (present, writable, user); _ModifyPageBits, _MapIntoV86, _PhysIntoV86: the mapping stays as it is
-svc(VMM, 0x61, function (arg) { for (let i = 0; i < arg(1); i++) this.w32(arg(2) + 4 * i, u32((arg(0) + i) * 0x1000 | 7)); return 1; });
-svc(VMM, 0x60, function () { return 1; }); svc(VMM, 0x5d, function () { return 1; }); svc(VMM, 0x5e, function () { return 1; });
+// A page an MS-DOS VM has written since its dirty bit was last cleared: dirty (P_DIRTY 40h), as the processor sets it,
+// which VDD reads to find what changed on a VM's screen (VDD 1:24F63). Never dirty, VDD saw no change and the grabber
+// drew nothing. Kept by linear page (dirtyLin): the VM's own (CB_High_Linear on) and the VxD's page mapped there, both
+// one physical page on Windows 95, which VDD reads it through (its video memory's own linear pages)
+svc(VMM, 0x61, function (arg) {
+  for (let i = 0; i < arg(1); i++) {
+    const pg = arg(0) + i, dirty = this.dirtyLin && this.dirtyLin.has(pg);
+    this.w32(arg(2) + 4 * i, u32(pg * 0x1000 | 7 | 0x20 | (dirty ? 0x40 : 0)));
+  }
+  return 1;
+});
+// _ModifyPageBits(VM, VMLinPgNum, nPages, bitAND, bitOR, pType, flags): of the bits kept here, the dirty bit, cleared
+// where bitAND clears it (VDD, once it has taken a page's changes): the VM's page and the page mapped there
+svc(VMM, 0x60, function (arg) {
+  const v = this.vmOf(arg(0));
+  if (v && !v.sys && this.dirtyLin && !(arg(3) & 0x40)) for (let i = 0; i < arg(2); i++) {
+    const pg = arg(1) + i, to = v.vmaps && v.vmaps.get(pg);
+    this.dirtyLin.delete((v.high >>> 12) + pg); if (to) this.dirtyLin.delete(to >>> 12);
+  }
+  return 1;
+});
+// a VxD's memory mapped into an MS-DOS VM's first megabyte (VDD's video memory for the VM at A0000h-BFFFFh): a VM's
+// memory is a block of its own here, not page tables, so a mapped page is kept as its own copy in the VM's memory, the
+// VxD's page and the VM's in step at each turn of the VM's (vmMapSync) and as the mapping changes. The system VM's
+// pages stay as they are (one address space). _MapIntoV86(hMem, VM, VMLinPgNum, nPages, PageOff, flags): the pages
+// of a block; the null page's handle unmaps them. _PhysIntoV86(PhysPage, VM, VMLinPgNum, nPages, flags): the
+// hardware's (a VM in a window does not have them): unmapped. _LinMapIntoV86(HLinPgNum, VM, VMLinPgNum, nPages, flags)
+P.vmMapPages = function (vmh, page, n, lin) {
+  const v = this.vmOf(vmh); if (!v || v.sys || !v.m) return 1;
+  const maps = v.vmaps || (v.vmaps = new Map()), vmLin = pg => v.m.v86 + pg * 0x1000;
+  for (let i = 0; i < n; i++) {
+    const pg = page + i, old = maps.get(pg);
+    if (old) this.u8.copyWithin(old, vmLin(pg), vmLin(pg) + 0x1000);   // (what the VM wrote, to the page it had)
+    const to = lin ? lin(i) : 0;
+    if (to) { maps.set(pg, to); this.u8.copyWithin(vmLin(pg), to, to + 0x1000); } else maps.delete(pg);
+  }
+  return 1;
+};
+/** a VM's first touch of a page a VxD hooked (Hook_V86_Page: VDD's video memory, A0h-BFh) and has not mapped: the
+ *  hook called as the page fault calls it (EAX the page, EBX the VM), once a page for each VM (a page the hook leaves
+ *  unmapped, the VGA's graphics pages in text mode, is not asked again each turn). Its pages always present, the VM
+ *  never faulted, VDD never mapped its screen, and the window was blank */
+P.vmPageFaults = function (v) {
+  if (!this.v86PageHooks || !this.v86PageHooks.size) return;
+  const tried = v.pageTried || (v.pageTried = new Set());
+  for (const [pg, fn] of this.v86PageHooks) {
+    if ((v.vmaps && v.vmaps.has(pg)) || tried.has(pg)) continue;
+    tried.add(pg);
+    const cur = this.curVM; this.curVM = v;
+    try { this.vxdCall(fn, { eax: pg, ebx: v.cb, ebp: v.client }); } finally { this.curVM = cur; }
+  }
+};
+/** the pages VxDs mapped into a VM, in step: `toVM` before the VM runs (what the VxD wrote), else after (what the VM wrote) */
+P.vmMapSync = function (v, toVM) {
+  if (!v.vmaps || !v.m) return;
+  for (const [pg, lin] of v.vmaps) {
+    const a = v.m.v86 + pg * 0x1000;
+    if (toVM) { this.u8.copyWithin(a, lin, lin + 0x1000); continue; }
+    // (what the VM wrote: the page dirty, as the processor marks it, then the VxD's copy brought up to date)
+    let i = 0; const u = this.u8; while (i < 0x1000 && u[a + i] === u[lin + i]) i++;
+    if (i < 0x1000) { const d = this.dirtyLin || (this.dirtyLin = new Set()); d.add(a >>> 12); d.add(lin >>> 12); u.copyWithin(lin, a, a + 0x1000); }
+  }
+};
+svc(VMM, 0x5d, function (arg) { const h = u32(arg(0)), off = arg(4); return this.vmMapPages(arg(1), arg(2), arg(3), h && h !== this.nulPage ? i => h + (off + i) * 0x1000 : null); });
+svc(VMM, 0x5e, function (arg) { return this.vmMapPages(arg(1), arg(2), arg(3), null); });
 // VMM_GetDDBList: the first DDB, each one's DDB_Next the one loaded after it
 svc(VMM, 0x13f, function () {
   const vs = [...(this.vxds || new Map()).values()].filter(v => v.inited);
@@ -536,6 +619,42 @@ svc(VMM, 0x78, function (arg) { const s = descSels(this, arg(2), arg(1), arg(3))
 svc(VMM, 0x79, function (arg) { this.freeSels(arg(1) & 0xffff); return 1; });
 svc(VMM, 0x76, function (arg) { const s = descSels(this, arg(1), arg(0)); this.cpu.edx.value = 0; return s; });
 svc(VMM, 0x77, function (arg) { this.freeSels(arg(0) & 0xffff); return 1; });
+// _SetDescriptor(selector, VM, DescDWORD1 (high), DescDWORD2 (low), flags): the descriptor given; nonzero
+svc(VMM, 0x7c, function (arg) { this.setDesc(arg(0) & 0xffff, descBase(arg(3), arg(2)), descLimit(arg(3), arg(2)), u32(arg(2) & 0x00c0ff00)); if (this.refreshSegs) this.refreshSegs(); return 1; });
+
+// ---- VMM: the V86 address space's device pages and hooks, as VDD claims the video memory's (VDD.VXD's Sys_Critical_Init).
+// _Assign_Device_V86_Pages(VMLinrPage, nPages, VM (0: every VM), flags): the pages a device's own in the VMs, nonzero
+// unless one is a device's already; _DeAssign_Device_V86_Pages gives them back; _Get_Device_V86_Pages_Array(VM,
+// ArrayBuf, flags) the bitmap of the first 110h pages assigned (global and the VM's), nonzero. One address space here:
+// the claim is a record, the pages stay where they are
+const devPages = (p, vm) => { const m = p.devV86 || (p.devV86 = new Map()); if (!m.has(vm)) m.set(vm, new Set()); return m.get(vm); };
+svc(VMM, 0x72, function (arg) {
+  const lo = arg(0), n = arg(1), mine = devPages(this, u32(arg(2))), all = devPages(this, 0);
+  for (let i = lo; i < lo + n; i++) if (mine.has(i) || all.has(i)) return 0;
+  for (let i = lo; i < lo + n; i++) mine.add(i);
+  return 1;
+});
+svc(VMM, 0x73, function (arg) { const s = devPages(this, u32(arg(2))); for (let i = arg(0); i < arg(0) + arg(1); i++) s.delete(i); return 1; });
+svc(VMM, 0x74, function (arg) {
+  const buf = u32(arg(1)), on = new Set([...devPages(this, 0), ...(arg(0) ? devPages(this, u32(arg(0))) : [])]);
+  for (let w = 0; w < 0x110 / 32; w++) { let d = 0; for (let b = 0; b < 32; b++) if (on.has(w * 32 + b)) d |= 1 << b; this.w32(buf + 4 * w, u32(d)); }
+  return 1;
+});
+// Hook_V86_Page(EAX page, ESI callback): the page's faults the callback's; every page is present here, so none comes. CF clear
+svc(VMM, 0x71, function () { (this.v86PageHooks || (this.v86PageHooks = new Map())).set(this.cpu.eax.value >>> 0, u32(this.cpu.esi.value)); CF(this, false); });
+// Hook_PM_Fault(EAX the fault, ESI the handler): ESI the one before (none), CF clear
+svc(VMM, 0x80, function () { (this.pmFaultHooks || (this.pmFaultHooks = new Map())).set(this.cpu.eax.value & 0xff, u32(this.cpu.esi.value)); this.cpu.esi.value = 0; CF(this, false); });
+// _LinMapIntoV86(HLinPgNum, VM, VMLinPgNum, nPages, flags) and _PageLock/_PageUnLock(hMem, nPages, PageOff, flags):
+// one address space, every page present and locked: nonzero (the mapping as it is, as _MapIntoV86 answers)
+svc(VMM, 0x62, function (arg) { const pg = arg(0); return this.vmMapPages(arg(1), arg(2), arg(3), i => (pg + i) * 0x1000); });
+svc(VMM, 0x56, function () { return 1; }); svc(VMM, 0x57, function () { return 1; });
+// _GetNulPageHandle: the handle of the page the VMM maps where nothing is (a page of zeros)
+svc(VMM, 0x6a, function () {
+  if (!this.nulPage) { const a = this.alloc(0x2000), pg = (a + 0xfff) & ~0xfff; this.u8.fill(0, pg, pg + 0x1000); (this.pageAllocs || (this.pageAllocs = new Map())).set(pg, a); this.nulPage = pg; }
+  return this.nulPage;
+});
+// No_Fail_Resume_VM (EBX): as Resume_VM, never failing
+svc(VMM, 0x2d, function () { const v = this.vmOf(this.cpu.ebx.value); if (v && !v.sys && v.suspended) v.suspended--; });
 // Map_Flat: AH the offset of a segment register, AL of an offset register, in the client registers (EBP): EAX linear
 // Map_Flat (AH, AL: the offsets of a segment and an offset register in the client registers): the current VM's client
 // registers, through its control block (CB_Client_Pointer), whatever EBP holds
@@ -763,14 +882,22 @@ P.vxdRunEventsIn = function () {
   if (!this.vxdEvents || !this.vxdEvents.length) return;
   if ((this.r0Runs || []).some(s => !s.wait)) return;   // (ring-0 code in progress, its time out: it goes on first, r0Step)
   const q = this.vxdEvents; this.vxdEvents = [];
-  for (const e of q) { const v = this.vmEventVM(e); if (v) this.vmEventRun(v, e); else this.vxdCall(e.fn, { ebx: this.sysVM(), edx: e.ref, ebp: this.vmClientIdle() }); }
+  for (const e of q) { const v = this.vmEventVM(e); if (v) this.vmEventRun(v, e); else if (!this.vmEventGone(e)) this.vxdCall(e.fn, { ebx: this.sysVM(), edx: e.ref, ebp: this.vmClientIdle() }); }
 };
+/** an event for an MS-DOS VM that has ended: the VMM drops a VM's events when it destroys it. Run as the system VM's,
+ *  SHELL's hold of a VM whose program had ended waited for a release that never came (SHELL 1:1158C), a deadlock */
+P.vmEventGone = function (e) { if (!e.vm || e.vm === this.sysVM()) return false; const v = this.vmOf(e.vm); return !v || !!v.gone; };
 /** the MS-DOS VM a VM event was scheduled for (Schedule_VM_Event, Call_Priority_VM_Event: EBX), when it is not the
  *  system VM and still there; such an event runs in that VM's context, on its client registers */
 P.vmEventVM = function (e) { const v = e.vm && this.vmOf(e.vm); return v && !v.sys && !v.gone ? v : null; };
+// (started by the host, it is a ring-0 run that can stop, as a time-out is: an event that blocks (SHELL's, which holds
+// the VM until WinOldAp's next call signals it, SHELL 1:1158C) stops there and the system goes on; run inside a call it
+// could not, and the wait was a ring-0 deadlock that froze the system. The VM does not run while its event is stopped)
 P.vmEventRun = function (v, e) {
+  // (inside a call it cannot stop: it waits in the queue for the host's next turn, as the VM's own time comes later)
+  if (this.depth || this.runLevel) { (this.vxdEvents || (this.vxdEvents = [])).push(e); return; }
   const cur = this.curVM; this.curVM = v;
-  try { this.vmToClient(v); this.vxdCall(e.fn, { ebx: v.cb, edx: e.ref, ebp: v.client, esi: e.handle || 0 }); if (v.m && v.started) this.vmFromClient(v); }
+  try { this.vmToClient(v); this.r0Start(e.fn, { ebx: v.cb, edx: e.ref, ebp: v.client, esi: e.handle || 0 }, v); }
   finally { this.curVM = cur; }
 };
 
@@ -779,16 +906,43 @@ P.vmEventRun = function (v, e) {
 const ioh = p => p.ioHandlers || (p.ioHandlers = new Map());
 svc(VMM, 0x96, function () { ioh(this).set(this.cpu.edx.value & 0xffff, { fn: u32(this.cpu.esi.value), on: true }); CF(this, false); });
 svc(VMM, 0x116, function () { ioh(this).delete(this.cpu.edx.value & 0xffff); CF(this, false); });     // Remove_IO_Handler
-svc(VMM, 0x98, function () { const h = ioh(this).get(this.cpu.edx.value & 0xffff); if (h) h.on = true; });    // Enable_Local_Trapping
-svc(VMM, 0x9a, function () { const h = ioh(this).get(this.cpu.edx.value & 0xffff); if (h) h.on = false; });   // Disable_Local_Trapping
+// Enable_Local_Trapping / Disable_Local_Trapping (EBX the VM, EDX the port): that VM's alone. (Taken for every VM, VDD's
+// untrapping of the system VM's display ports untrapped them for the MS-DOS VMs too: their mode sets never reached
+// VDD, which then mapped them no screen, and their windows were blank)
+svc(VMM, 0x98, function () { const h = ioh(this).get(this.cpu.edx.value & 0xffff); if (h) { if (u32(this.cpu.ebx.value) === this.sysVM()) h.on = true; else if (h.off) h.off.delete(u32(this.cpu.ebx.value)); } });
+svc(VMM, 0x9a, function () { const h = ioh(this).get(this.cpu.edx.value & 0xffff); if (h) { if (u32(this.cpu.ebx.value) === this.sysVM()) h.on = false; else (h.off || (h.off = new Set())).add(u32(this.cpu.ebx.value)); } });
+// Enable_Global_Trapping / Disable_Global_Trapping (EDX port): as the local ones, the one VM this machine traps for
+svc(VMM, 0x97, function () { const h = ioh(this).get(this.cpu.edx.value & 0xffff); if (h) h.on = true; });
+svc(VMM, 0x99, function () { const h = ioh(this).get(this.cpu.edx.value & 0xffff); if (h) h.on = false; });
+// Install_Mult_IO_Handlers (EDI an I/O table: a word count, then each port's word and handler's dword): each port's
+// handler installed as Install_IO_Handler installs one (VDD's VGA ports, 3B4h-3DFh); CF clear
+svc(VMM, 0x95, function () {
+  const t = u32(this.cpu.edi.value), n = this.r16(t);
+  for (let i = 0; i < n; i++) ioh(this).set(this.r16(t + 2 + 6 * i), { fn: this.r32(t + 4 + 6 * i), on: true });
+  CF(this, false);
+});
 /** a port access by VM code (ne16 portIO): the VxD's handler takes it when trapping is on. ECX the type (0 byte in,
  *  4 byte out, 8/0Ch word, 10h/14h dword), EAX the data; true if handled */
 P.vxdTrapIO = function (port, size, isIn) {
+  // (the VGA's ports, 3B0h-3DFh, are the display adapter's in the system VM: its display driver programs them, as
+  // VDD lets it once the driver has registered (VDD_DRIVER_REGISTER), and VDD's traps are for the MS-DOS VMs, whose
+  // machines take their own ports (v86.js). Trapped here, TSENG.DRV's and DIBENG's register writes went to VDD's
+  // handlers, GDI's display failed to start (LogError 80), and USER and MSGSRV32 fell over after it)
+  if (port >= 0x3b0 && port <= 0x3df) return false;
   const h = this.ioHandlers && this.ioHandlers.get(port); if (!h || !h.on || this.r0Depth) return false;
   const type = (isIn ? 0 : 4) | (size === 2 ? 8 : size === 4 ? 0x10 : 0), m = size === 1 ? 0xff : size === 2 ? 0xffff : 0xffffffff;
   const r = this.vxdCall(h.fn, { eax: u32(this.cpu.eax.value) & m, ebx: this.sysVM(), ecx: type, edx: port, ebp: this.crs || (this.crs = this.alloc(0x60)) });
   if (isIn) this.cpu.eax.value = u32((this.cpu.eax.value & ~m) | (r.eax & m));
   return true;
+};
+/** an MS-DOS VM's access to a VGA port (v86.js o.vgaPort): the handler a VxD installed for it (VDD's), run as that
+ *  VM (EBX its handle, EBP its client registers); the value read, or undefined when no VxD traps the port */
+P.vmVgaIO = function (vm, port, size, isIn, eax) {
+  const h = this.ioHandlers && this.ioHandlers.get(port); if (!h || (h.off && h.off.has(vm.cb))) return undefined;   // (h.on: the system VM's)
+  const type = (isIn ? 0 : 4) | (size === 2 ? 8 : size === 4 ? 0x10 : 0), m = size === 1 ? 0xff : size === 2 ? 0xffff : 0xffffffff;
+  const cur = this.curVM; this.curVM = vm;
+  try { return this.vxdCall(h.fn, { eax: u32(eax) & m, ebx: vm.cb, ecx: type, edx: port, ebp: vm.client }).eax & m; }
+  finally { this.curVM = cur; }
 };
 // Simulate_IO (EAX data, EBX VM, ECX type, EDX port): the access as the hardware would take it
 svc(VMM, 0x94, function () {
@@ -1286,7 +1440,7 @@ svc(VMM, 0x14, function () {
 svc(VMM, 0x15, function () { if (this.vxdEvents) this.vxdEvents = this.vxdEvents.filter(e => e.handle !== u32(this.cpu.esi.value)); });
 /** the time-outs that are due, run as the timer interrupt runs them */
 P.vxdRunTimeOuts = function () {
-  if (this.depth || (this.r0Runs && this.r0Runs.length) || !this.vxdTimeOuts || !this.vxdTimeOuts.size) return;
+  if (this.depth || (this.r0Runs && this.r0Runs.some(s => !(s.vm && s.wait))) || !this.vxdTimeOuts || !this.vxdTimeOuts.size) return;
   return this.asInterrupt(() => this.vxdRunTimeOutsIn());
 };
 P.vxdRunTimeOutsIn = function () {
@@ -1463,9 +1617,10 @@ P.r0PumpIn = function () {
       this.vxdCall(t.fn, { ebx: this.sysVM(), ecx: u32(now - t.due), edx: t.ref, esi: h, ebp: this.vmClientIdle() });
     }
   }
-  if (this.vxdEvents && this.vxdEvents.length) {
-    const q = this.vxdEvents; this.vxdEvents = []; ran = true;
-    for (const e of q) { const v = this.vmEventVM(e); if (v) this.vmEventRun(v, e); else this.vxdCall(e.fn, { ebx: this.sysVM(), edx: e.ref, ebp: this.vmClientIdle(), esi: e.handle || 0 }); }
+  // (the system VM's events; an MS-DOS VM's stays queued for the host's turn, vmEventRun, where it can stop)
+  if (this.vxdEvents && this.vxdEvents.some(e => !this.vmEventVM(e))) {
+    const q = this.vxdEvents; this.vxdEvents = q.filter(e => this.vmEventVM(e)); ran = true;
+    for (const e of q) if (!this.vmEventVM(e) && !this.vmEventGone(e)) this.vxdCall(e.fn, { ebx: this.sysVM(), edx: e.ref, ebp: this.vmClientIdle(), esi: e.handle || 0 });
   }
   return ran;
 };
@@ -1861,7 +2016,7 @@ P.absentService = function (dev, n) {
 // and Init_Complete before Windows starts. The system's machine (host.lan) has the network's too: the file system
 // manager and its cache and PERF, which VMM32 carries, and each one a Services\VxD key names (StaticVxD), every VxD
 // given each message in turn in the order of their DDBs' Init_Order
-const STATIC_VXDS = ['VTDAPI.VXD', 'ENABLE.VXD', 'SHELL.VXD', 'REBOOT.VXD', 'VCOMM.VXD'], VMM32_NET = ['IFSMGR.VXD', 'VCACHE.VXD', 'PERF.VXD'];
+const STATIC_VXDS = ['VDD.VXD', 'VTDAPI.VXD', 'ENABLE.VXD', 'SHELL.VXD', 'REBOOT.VXD', 'VCOMM.VXD'], VMM32_NET = ['IFSMGR.VXD', 'VCACHE.VXD', 'PERF.VXD'];
 P.vxdStatics = function () {
   const files = [...STATIC_VXDS];
   if (this.host && this.host.lan) {   // (the system's machine, which has the network stack as Windows does)
