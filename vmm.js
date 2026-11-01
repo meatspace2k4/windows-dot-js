@@ -250,7 +250,7 @@ P.createVM = function () {
   const vm = { cb, client, high, id: (this.vmNextId = (this.vmNextId || 1) + 1), status: 0 };
   // its memory: the DOS that booted (the page's PC, as the VMM's loader left it), as V86MMGR makes a VM's from the system
   // VM's; a machine of v86.js's runs it there, in Windows' memory
-  if (this.pcDos && window.W95V86) vm.m = window.W95V86.vmMachine({ mem: this.mem, base: high, xmsKB: VM_XMS_KB, fs: this.fs }, this.pcDos);
+  if (this.pcDos && window.W95V86) vm.m = window.W95V86.vmMachine({ mem: this.mem, base: high, xmsKB: VM_XMS_KB, fs: this.fs, clip: m => this.vmClipboard(m) }, this.pcDos);
   // a V86 VM being made: CB_VM_Status VMStat_Creating until VM_Init has been sent
   this.w32(cb + CB.STATUS, 4); this.w32(cb + CB.HIGH, high); this.w32(cb + CB.CLIENT, client); this.w32(cb + CB.ID, vm.id); this.w32(cb + CB.SIG, 0x62634d56);
   this.w32(client + 0x2c, 0x20202);   // (the client's flags: V86, IF)
@@ -317,6 +317,37 @@ P.vmIntV86 = function (vm, n) {
     m.nestReturn = 0; for (const r of Object.keys(keep)) m.cpu[r].value = keep[r]; m.halted = halted; m.boxReturn = ret;
   }
 };
+/** an MS-DOS program's clipboard calls (INT 2Fh AH=17h, the interface WinOldAp's SHELL gives a VM), done on the system
+ *  VM's clipboard with USER's own functions: 1700h the version (not 1700h: there is one), 1701h OpenClipboard,
+ *  1702h EmptyClipboard, 1703h SetClipboardData (DX the format, ES:BX the data, SI:CX its size), 1704h the size of
+ *  the format DX's data (DX:AX), 1705h that data to ES:BX, 1708h CloseClipboard, 1709h the room for SI:CX bytes;
+ *  AX 0 when USER is busy in a thread's call or a call fails */
+P.vmClipboard = function (m) {
+  const ax = m.r('ax'), dx = m.r('dx'), es = m.cpu.es.value & 0xffff, bx = m.r('bx'), big = ((m.r('si') << 16) | m.r('cx')) >>> 0;
+  const ret = v => { m.w('ax', v); return true; };
+  if (ax === 0x1700) return ret(0x0a01);
+  if (this.depth || this.thread16 || this.win16Held) return ret(0);
+  const u = (ord, a = []) => this.user16(ord, a).ax;
+  try {
+    switch (ax) {
+      case 0x1701: return ret(u(137, [['w', 0]]) ? 1 : 0);
+      case 0x1702: return ret(u(139) ? 1 : 0);
+      case 0x1703: {
+        const n = Math.min(big, 0x100000), h = this.globalAlloc16(0x2002, n); if (!h) return ret(0);
+        const b = this.gblock(h); this.u8.set(m.u8.subarray(m.v86 + es * 16 + bx, m.v86 + es * 16 + bx + n), b.lin);
+        return ret(u(141, [['w', dx], ['w', h]]) ? 1 : 0);
+      }
+      case 0x1704: case 0x1705: {
+        const h = u(142, [['w', dx]]), b = h && this.gblock(h); if (!b) { m.w('dx', 0); return ret(0); }
+        if (ax === 0x1704) { m.w('dx', b.size >>> 16); return ret(b.size & 0xffff); }
+        m.u8.set(this.u8.subarray(b.lin, b.lin + b.size), m.v86 + es * 16 + bx); return ret(1);
+      }
+      case 0x1708: return ret(u(138) ? 1 : 0);
+      case 0x1709: m.w('dx', big >>> 16); return ret(big & 0xffff);
+    }
+  } catch (e) { if (!(e instanceof W.GuestError)) throw e; W.log('warn', 'vmm', `VM clipboard ${ax.toString(16)}h: ${e.message}`); }
+  return ret(0);
+};
 /** the MS-DOS VMs' time: each started one runs for its share of `ms`; its program's end ends it */
 P.vmsRun = function (ms) {
   const live = (this.vms || []).filter(v => v.m && v.started && !v.gone && !v.suspended); if (!live.length) return;
@@ -349,6 +380,8 @@ P.vmDisplayEvent = function (vm) {
  *  VM_Not_Executeable (EDX VNE_Crashed when it stopped), Destroy_VM */
 P.vmEnd = function (vm, crashed = false) {
   vm.started = false;
+  // (what its screen last showed, kept for the diagnostics: worker.js probe)
+  if (vm.m) { const m = vm.m; vm.lastInts = m.ilog; vm.lastScreen = [...Array(25)].map((_, r) => [...Array(80)].map((_, c) => String.fromCharCode(m.m8(0xb8000 + (r * 80 + c) * 2) || 32)).join('').trimEnd()).filter(Boolean); }
   const cur = this.curVM; this.curVM = vm;
   try {
     this.vmToClient(vm);
@@ -977,11 +1010,12 @@ svc(V86MMGR, 0x0d, function () {
   CF(this, true);
 });
 svc(V86MMGR, 0x0e, function () {});
-// Allocate_V86_Pages (EBX the VM, ESI the pages wanted, EDI the fewest it takes, ECX flags): EAX the pages its
-// conventional memory has, the 640K below the video memory (a VM's DOS is the booted one's, its size fixed)
+// Allocate_V86_Pages (EBX the VM, ESI the memory wanted, EDI the least it takes, in KB as SHELL gives them from the
+// program's properties: its last V86 page's end, 640, for all of it; ECX flags): EAX what its conventional memory has,
+// the 640K below the video memory (a VM's DOS is the booted one's, its size fixed)
 svc(V86MMGR, 0x01, function () {
   const v = this.vmOf(this.cpu.ebx.value); if (!v) { CF(this, true); return; }
-  const want = u32(this.cpu.esi.value), least = u32(this.cpu.edi.value), have = 0xa0;
+  const want = u32(this.cpu.esi.value), least = u32(this.cpu.edi.value), have = 640;
   if (least !== 0xffffffff && least > have) { CF(this, true); return; }
   v.v86Pages = want === 0xffffffff ? have : Math.min(want, have); this.cpu.eax.value = v.v86Pages; CF(this, false);
 });
@@ -1010,7 +1044,7 @@ svc(DOSMGR, 0x02, function () { CF(this, false); });
 // runs in the VM's context when the program has ended (vmEnd)
 svc(DOSMGR, 0x03, function (arg) {
   const v = this.vmOf(arg(0)); if (!v || !v.m || !v.exec) return 0;
-  v.execEnd = { fn: u32(arg(2)), ref: u32(arg(3)) };
+  v.execEnd = { fn: u32(arg(2)), ref: u32(arg(3)) }; v.m.ilog = [];
   if (v.exec.dir) v.m.vmCwd(v.exec.dir);
   v.m.vmExec(v.exec.program, v.exec.tail); v.started = true;
   return 1;

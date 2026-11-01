@@ -394,6 +394,7 @@ const toPat = s => { const [b, e = ''] = s.toUpperCase().split('.'), f = (x, w) 
 HOOK[0x2f] = function () {
   if (this.r('ax') === 0x4300) { this.setAL(0x80); return true; }                                       // XMS: installed
   if (this.r('ax') === 0x4310) { this.sreg('es', ROM >> 4); this.w('bx', XMS.entry); return true; }       // its entry
+  if (this.ah() === 0x17 && this.o.clip) return this.o.clip(this);                                         // Windows' clipboard, in a VM of Windows' (vmm.js)
   if (this.ah() !== 0x11 || !this.redir) return false;
   const fs = this.o.fs, al = this.al(), sda = this.sda, fn1 = () => ascii(this, sda + SDA.FN1), fn2 = () => ascii(this, sda + SDA.FN2);
   // (taken before the INT: its answer in the flags and registers as they are, its caller's word argument at SS:SP)
@@ -806,5 +807,14 @@ M.fat16 = function (boot, files, mb = 16) {
   return disk;
 };
 
+// (a diagnostic: each INT 21h and 2Fh a machine with an `ilog` takes, its AX, BX, CX and DX, the last 3000; vmm.js
+// gives a VM's one)
+for (const n of [0x21, 0x2f]) {
+  const h = HOOK[n];
+  HOOK[n] = function (next) {
+    if (this.ilog) { this.ilog.push(`${n.toString(16)}:${['ax', 'bx', 'cx', 'dx'].map(r => this.r(r).toString(16)).join(' ')}`); if (this.ilog.length > 3000) this.ilog.shift(); }
+    return h.call(this, next);
+  };
+}
 window.W95V86 = M;
 })();

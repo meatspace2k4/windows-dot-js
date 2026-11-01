@@ -29,4 +29,8 @@ the upgrade question (or `win95.run('D:\\setup.exe')`).
 | 2026-10-31 | 2823081 (wip) | 1 | "requires a computer with an 80486 processor or higher" (POPFD dropped AC) | 2823081: run-time code keeps AF, NT, AC, ID |
 | 2026-10-31 | 2823081 (wip) | 1 | "requires at least 16MB of memory" (List of Lists +45h, extended memory, was 0) | 2823081: boot drive, 386 flag, 15360 KB |
 | 2026-10-31 | 2823081 | 1 | W98SETUP divide by zero (1:790): its CPU-speed loop times itself on 8254 channel 2, every port read FFh | the 8254 and port 61h by the clock (ne16.js pitIO) |
+| 2026-10-31 | 421b712 | 2 | "Setup could not check the hard drives": SCANDISK.EXE started by WinExec answered 11 (not a Windows program) | 92c226c: WinExec of an MS-DOS program runs WINOA386.MOD (with VGAFULL.3GR, PIFMGR.DLL, APPS.INF) |
+| 2026-10-31 | 92c226c | 2 | WinOldAp: SHELL's Create_VM had no VMM to make the VM | 71285d9: VMs made from the booted DOS (vmm.js Create_VM, DOSMGR's exec, v86.js machines in Windows' memory) |
+| 2026-10-31 | 71285d9 | 2 | ScanDisk's VM refused, "not enough memory": Allocate_V86_Pages read SHELL's KB as pages | KB; the WinOldAp clipboard (INT 2Fh AH=17h) in VMs |
+| 2026-10-31 | (wip) | 2 | ScanDisk runs in its VM and tests nothing (C: remote through the redirector, D: and E: CDs): SCANDISK.LOG "did not perform any tests"; Setup: "not enough conventional memory to check your computer's hard disks" | open: C: is fs.js, with no sectors for ScanDisk |
 | 2026-10-31 | pitIO (wip) | 1 | W98SETUP: unhandled INT 21h AX=5802h (UMB link state) | AH=58h: allocation strategy and UMB link |
