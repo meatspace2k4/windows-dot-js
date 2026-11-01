@@ -470,6 +470,7 @@ class Machine {
     const STR = { 74: 10, 166: 6, 45: 8, 217: 8, 218: 8, 219: 12, 220: 20, 95: 4, 97: 14, 127: 10, 128: 14, 70: 4, 69: 4 };   // (AddAtom, FindAtom: the name)   // (and the key of GetProfileInt/String, GetPrivateProfileInt/String)
     const arg = key => {
       const m = /KERNEL\.#(\d+)$/.exec(key), o = m && STR[m[1]];
+      if (key === 'KERNEL.#102') { let s = ''; try { s = p.readA(p.lin(((p.cpu.ds.value & 0xffff) << 16) | (p.cpu.edx.value & 0xffff)), 64) || ''; } catch (_) { /* none */ } return ['eax', 'ebx', 'ecx', 'edx'].map(r => `${r} ${(p.cpu[r].value >>> 0).toString(16)}`).join(' ') + (/^[\x20-\x7e]{2,}/.test(s) ? ` "${s}"` : ''); }   // (DOS3Call: its registers, and DS:DX's text)
       if (/^(VXD|VDD|VFLATD)\.#/.test(key)) return ['eax', 'ebx', 'ecx', 'edx'].map(r => `${r} ${(p.cpu[r].value >>> 0).toString(16)}`).join(' ');   // (a VxD's API: its function and arguments in the registers)
       try {
         const f = p.cpu.ssb.value + (p.cpu.esp.value & 0xffff);
@@ -489,6 +490,35 @@ class Machine {
       } catch (_) { return ''; }
     };
     const svm = p.setVideoMode; p.setVideoMode = function (mode, clear, hi) { log.push([Math.round(performance.now() - t0), name(), 'int10 mode', (mode & 0xff).toString(16) + (hi ? ' hicolor ' + hi : '')]); return svm.call(this, mode, clear, hi); };
+    // (and the 16-bit code's own INT 31h calls, 'int31', with their registers and, for 0300h, the real-mode call's AX)
+    const INTS0 = self.W95NE16 && self.W95NE16.INTS, i31 = INTS0 && (INTS0.__orig31 || INTS0[0x31]);
+    if (i31 && (!only || only.test('int31'))) {
+      INTS0.__orig31 = i31;
+      INTS0[0x31] = function (...a) {
+        const th = name();
+        if (log.length < 20000 && want.test(th)) {
+          const ax = this.cpu.eax.value & 0xffff; let rm = '';
+          if (ax === 0x300 || ax === 0x302) { try { const s = this.lin(((this.cpu.es.value & 0xffff) << 16) | (this.cpu.edi.value & 0xffff)); rm = ` int ${(this.cpu.ebx.value & 0xff).toString(16)} rm ax ${this.r16(s + 0x1c).toString(16)} dx ${this.r16(s + 0x14).toString(16)} ds ${this.r16(s + 0x24).toString(16)}`; } catch (_) { /* none */ } }
+          log.push([Math.round(performance.now() - t0), th, 'int31', ['eax', 'ebx', 'ecx', 'edx'].map(r => `${r} ${(this.cpu[r].value >>> 0).toString(16)}`).join(' ') + rm]);
+        }
+        const r = i31.apply(this, a);
+        if (log.length < 20000 && want.test(th)) log.push([Math.round(performance.now() - t0), th, 'int31 ->', `ax ${(this.cpu.eax.value & 0xffff).toString(16)} cf ${this.cpu.cf.value & 1}`]);
+        return r;
+      };
+    }
+    // (and the 16-bit code's own INT 21h calls, by the name 'int21', with their registers and DS:DX's text)
+    const INTS = self.W95NE16 && self.W95NE16.INTS, i21 = INTS && (INTS.__orig21 || INTS[0x21]);
+    if (i21 && (!only || only.test('int21'))) {
+      INTS.__orig21 = i21;
+      INTS[0x21] = function (...a) {
+        const th = name();
+        if (log.length < 20000 && want.test(th)) { let s = ''; try { s = this.rmode ? '' : this.readA(this.lin(((this.cpu.ds.value & 0xffff) << 16) | (this.cpu.edx.value & 0xffff)), 64) || ''; } catch (_) { /* none */ }
+          log.push([Math.round(performance.now() - t0), th, 'int21', ['eax', 'ebx', 'ecx', 'edx'].map(r => `${r} ${(this.cpu[r].value >>> 0).toString(16)}`).join(' ') + (/^[\x20-\x7e]{2,}/.test(s) ? ` "${s}"` : '')]); }
+        const r = i21.apply(this, a);
+        if (log.length < 20000 && want.test(th)) log.push([Math.round(performance.now() - t0), th, 'int21 ->', `ax ${(this.cpu.eax.value & 0xffff).toString(16)} cf ${this.cpu.cf.value & 1}`]);
+        return r;
+      };
+    }
     self.W95TRACE16 = t => { const th = name(); if (log.length < 20000 && want.test(th) && (!only || only.test(t.key))) log.push([Math.round(performance.now() - t0), th, t.key, arg(t.key)]); };
     // (the key or value name of the registry calls: the second argument on a stdcall frame at entry)
     const arg32 = t => {

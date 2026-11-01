@@ -1742,6 +1742,26 @@ svc(VMM, 0x42, function () { const v = vec(this).v86.get(this.cpu.eax.value & 0x
 svc(VMM, 0x43, function () { vec(this).v86.set(this.cpu.eax.value & 0xff, u32(((this.cpu.ecx.value & 0xffff) << 16) | (this.cpu.edx.value & 0xffff))); });
 // (141h, EAX the interrupt, EBX the VM: EAX that VM's vector as a far pointer, the rest as they were: IFSMGR's of 13h)
 svc(VMM, 0x141, function () { this.cpu.eax.value = vec(this).v86.get(this.cpu.eax.value & 0xff) || 0; });
+/** a real-mode interrupt in the system VM's V86 code (ne16.js rmInt) offered to the VxDs that hooked it
+ *  (Hook_V86_Int_Chain), the last hook first, as the VMM offers it: EAX the interrupt, EBX the VM, EBP its client
+ *  registers, which hold the processor's; a hook that clears CF has taken it, its client registers the result */
+P.v86IntChain = function (n) {
+  const list = vec(this).hooks.get(n); if (!list || !list.length) return false;
+  const cpu = this.cpu, c = this.vmClient();
+  for (const [r, o] of CRS_REGS) this.w32(c + o, u32(cpu[r].value));
+  let fl = 0x20202; for (const [f, b] of FLAG_BITS) if (f !== 'if') fl |= (cpu[f].value & 1) << b;
+  this.w32(c + 0x2c, fl); this.w32(c + 0x30, cpu.esp.value & 0xffff); this.w32(c + 0x34, cpu.ss.value & 0xffff);
+  this.w32(c + 0x38, cpu.es.value & 0xffff); this.w32(c + 0x3c, cpu.ds.value & 0xffff); this.w32(c + 0x40, cpu.fsel.value & 0xffff); this.w32(c + 0x44, cpu.gsel.value & 0xffff);
+  for (const h of list) {
+    const r = this.vxdCall(h, { eax: n, ebx: this.sysVM(), ebp: c });
+    if (r && r.cf) continue;
+    for (const [rg, o] of CRS_REGS) cpu[rg].value = this.r32(c + o);
+    const nf = this.r32(c + 0x2c); for (const [f, b] of FLAG_BITS) if (f !== 'if') cpu[f].value = (nf >> b) & 1;
+    for (const [s, b, o] of [['es', 'esb', 0x38], ['ds', 'dsb', 0x3c]]) { const v = this.r16(c + o); cpu[s].value = v; cpu[b].value = v << 4; }
+    return true;
+  }
+  return false;
+};
 svc(VMM, 0x41, function () { const h = vec(this).hooks, n = this.cpu.eax.value & 0xff; (h.get(n) || h.set(n, []).get(n)).unshift(u32(this.cpu.esi.value)); CF(this, false); });   // Hook_V86_Int_Chain
 // callbacks: Allocate_PM_Call_Back / Allocate_V86_Call_Back (EDX ref, ESI proc): EAX a segment:offset that, called or
 // jumped to, enters the procedure with EBX the VM, EDX the ref, EBP the client registers (CS:IP the callback itself)

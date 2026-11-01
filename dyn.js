@@ -90,7 +90,7 @@ function translate(p, lin, csb, d32, v86, limit) {
   const vm = v86 !== undefined && v86 !== null;
   // (a V86 machine's FLAGS bits 12-14, IOPL and NT, which a 386 keeps as written and the translated code keeps no
   // global for: a word of the machine's own, past its first megabyte and the 64K above it)
-  const XFLAGS = vm ? (v86 + 0x110000) | 0 : 0;
+  const XFLAGS = vm ? (p.v86Flags || (v86 + 0x110000)) | 0 : 0;   // (a machine's own word for them, p.v86Flags: the system VM's, whose 110000h is its threads' stacks)
   const u8 = p.u8;
   const f = new Fn();
   const T = f.loc(), A = f.loc(), B = f.loc(), R = f.loc(), C = f.loc(), X = f.loc(), K = f.loc(), D = f.loc();   // scratch locals

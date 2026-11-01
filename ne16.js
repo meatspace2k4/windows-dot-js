@@ -606,9 +606,66 @@ P.ax = function (v) { if (v === undefined) return this.cpu.eax.value & 0xffff; t
 P.interrupt = function (vec, next) {
   const h = INTS[vec];
   if (window.W95INTTRACE) window.W95INTTRACE(vec, this);
+  if (!this.rmode && this.v86 === undefined && this.rmReflect(vec)) return next;
   if (!h) { this.trapped = `unhandled interrupt ${vec.toString(16)}h (ax=${this.ax().toString(16)}) at ${u32(next).toString(16)}`; return LAYOUT.SENTINEL; }
   const r = h.call(this, next);
   return r === undefined ? next : r;
+};
+// A protected-mode software interrupt whose real-mode vector a program has installed (the system VM's vectors at 0:4n,
+// which the emulator itself never sets: a nonzero one is a program's), reflected to V86 mode as Windows' DPMI host
+// reflects one it has no protected-mode handler for: the general registers as they are, CS:IP from the vector,
+// FLAGS and a return pushed on a real-mode stack in DOS memory, run in V86 mode on the system VM's first megabyte until
+// the handler's IRET comes back; the interrupts it issues are answered by the system VM's DOS and BIOS (INTS, in real
+// mode), and the general registers and flags it leaves are the interrupt's results. Windows 98 Setup runs its
+// real-mode probes so (W98SETUP 5:246: a routine copied to DOS memory, INT 12h pointed at it, INT 12h issued): with
+// INT 12h answered here instead (640), its NetWare probe called every drive a network drive and Setup found no drive
+// for its temporary folder. The vectors Windows answers in protected mode itself (KERNEL's 21h and 2Fh, the DPMI
+// host's 31h, 20h's VxD calls) stay the system's
+const RM_KEEP = new Set([0x20, 0x21, 0x2f, 0x31]);
+const RM_INTS = new Set([...Array(256).keys()]);
+P.rmReflect = function (vec) {
+  if (RM_KEEP.has(vec)) return false;
+  // (a program's handler is in conventional memory a program was given, a GlobalDOSAlloc block: the low memory's other
+  // contents are the emulator's own, IFSHLP's image and the tables, whose vectors the system answers itself)
+  const v = this.r32(vec * 4), at = ((v >>> 16) << 4) + (v & 0xffff);
+  if (!v || ![...this.ghandles.values()].some(b => b.dos && at >= b.lin && at < b.lin + b.size)) return false;
+  const c = this.cpu, keep = {}; for (const k of Object.keys(c)) keep[k] = c[k].value;
+  if (!this.rmStack) { const a = (this.dosTop + 15) & ~15; this.dosTop = a + 0x1000; this.rmStack = a; this.v86FlagsAt = this.alloc(16); }
+  const ss = this.rmStack >>> 4, ret = this.rmStack + 0x10;   // (the return: an address no code is at, the stack's own first paragraph)
+  const sreg = (s, b, sel) => { c[s].value = sel & 0xffff; c[b].value = (sel & 0xffff) << 4; };
+  let sp = 0xffe; const push = w => { sp -= 2; this.w16(this.rmStack + sp, w); };
+  let fl = 0x0202; for (const [f, b] of [['cf', 0], ['pf', 2], ['zf', 6], ['sf', 7], ['df', 10], ['of', 11]]) fl |= (c[f].value & 1) << b;
+  push(fl); push(ss); push(0x10);
+  sreg('ss', 'ssb', ss); c.esp.value = sp; sreg('ds', 'dsb', 0); sreg('es', 'esb', 0); sreg('fsel', 'fs', 0); sreg('gsel', 'gsb', 0); sreg('cs', 'csb', v >>> 16);
+  const was = { v86: this.v86, hooks: this.v86Hooks, flags: this.v86Flags, rm: this.rmode };
+  this.v86 = 0; this.v86Hooks = RM_INTS; this.v86Flags = this.v86FlagsAt; this.rmode = true;
+  let eip = u32(c.csb.value + (v & 0xffff));
+  try {
+    for (let k = 0; eip !== ret; k++) {
+      if (k > 200000) throw new GuestError(`real-mode INT ${vec.toString(16)}h handler at ${(v >>> 16).toString(16)}:${(v & 0xffff).toString(16)} did not return`);
+      c.eip.value = eip; const blk = this.dynBlock(eip);
+      if (!blk || this.trapped) throw new GuestError(this.trapped || `real-mode INT ${vec.toString(16)}h: no code at ${eip.toString(16)}`);
+      eip = u32(blk.run());
+    }
+  } finally {
+    Object.assign(this, { v86: was.v86, v86Hooks: was.hooks, v86Flags: was.flags, rmode: was.rm });
+    const res = {}; for (const r of ['eax', 'ebx', 'ecx', 'edx', 'esi', 'edi', 'ebp', 'cf', 'pf', 'zf', 'sf', 'of', 'df']) res[r] = c[r].value;
+    for (const k of Object.keys(c)) c[k].value = keep[k];
+    for (const r of Object.keys(res)) c[r].value = res[r];
+  }
+  return true;
+};
+/** an interrupt the real-mode code reflected above issues (dyn.js: a hooked vector traps 400h + n): the system VM's own
+ *  answer for it, in real mode, the code going on after the INT */
+P.rmInt = function (n, next) {
+  const done = () => { this.cpu.eip.value = next; this.w16(this.v86Flags + 2, 1); };   // (taken: the code goes on at EIP)
+  if (this.v86IntChain && this.v86IntChain(n)) return done();   // (the VxDs that hooked it first, as the VMM offers it)
+  const h = INTS[n]; if (!h) { this.trapped = `unhandled real-mode interrupt ${n.toString(16)}h (ax=${this.ax().toString(16)})`; return; }
+  h.call(this, next);
+  // (DOS's own INT 2Fh returns a function nothing in the chain claims with the registers as they were, as IO.SYS's
+  // does: the multiplex interrupt's answer for "no one here")
+  if (n === 0x2f && /^unhandled int 2Fh/.test(this.trapped || '')) this.trapped = null;
+  done();
 };
 const CF = (p, on) => { p.cpu.cf.value = on ? 1 : 0; };
 /** a FAT boot sector for a volume: its BPB from its size and cluster, its serial and label (INT 25h's sector 0) */
@@ -1198,6 +1255,7 @@ P.trapHook = function (e, code) {
   if (code >= 0x3000000) { this.mmioRead(u32(e), code & 0xff); return true; }
   if (code >= 0x2000000) { this.mmioWrite(u32(e), code & 0xff); return true; }
   if (code >= 0x1000000) { this.portIO(code & 0xffff, (code >> 16) & 7, !!(code & 0x800000)); return true; }
+  if (code >= 0x400 && code < 0x500 && this.v86 === 0) { this.rmInt(code - 0x400, u32(e)); return true; }   // (real-mode code's INT: rmReflect)
   this.cpu.eip.value = this.interrupt(code - 0x100, u32(e)) | 0;
   return true;
 };
@@ -3054,7 +3112,7 @@ def16('KERNEL', 171, 'w', 'w', function (s) { return this.copySel(s, 0xfb00); })
 def16('KERNEL', 184, 'l', 'l', function (n) {           // GlobalDOSAlloc: conventional memory, DX = paragraph, AX = selector
   n = (u32(n) + 15) & ~15; if (this.dosTop + n > 0xa0000) return 0;
   const lin = this.dosTop; this.dosTop += n; this.u8.fill(0, lin, lin + n);
-  const sel = this.allocSels(lin, n); this.ghandles.set(sel, { lin, size: n, n: 1, flags: 0, lock: 0, owner: 0 });
+  const sel = this.allocSels(lin, n); this.ghandles.set(sel, { lin, size: n, n: 1, flags: 0, lock: 0, owner: 0, dos: true });
   return u32(((lin >> 4) << 16) | sel);
 });
 def16('KERNEL', 185, 'w', 'w', function (s) { const b = this.gblock(s); if (b) { this.ghandles.delete(this.gsel(s)); this.freeSels(this.gsel(s), b.n); } return 0; });
