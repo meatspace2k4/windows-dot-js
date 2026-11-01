@@ -3620,7 +3620,7 @@ P.dosNames = function (fn, lfn) {
       }
       // (MKDIR of a folder that is there: access denied (5), as MS-DOS answers it, not the file system's 183; Windows 98
       // Setup takes 5 from C:\WINDOWS as the folder being there, and with 183 stopped: "Setup cannot create" (SU0343))
-      case 0x39: { const full = this.dosFull(this.readA(dsdx())); if (this.fs.exists(full)) return fail(5); this.fs.mkdir(full); return; }
+      case 0x39: { const full = this.dosFull(this.readA(dsdx())); if (!lfn && !this.vxdFlat && this.thread16 && this.thread16.task && this.fs.exists(full)) return fail(5); this.fs.mkdir(full); return; }
       case 0x3a: this.fs.rmdir(this.dosFull(this.readA(dsdx()))); return;
       case 0x3b: this.fs.chdir(this.dosFull(this.readA(dsdx()))); return;
       case 0x41: this.fs.unlink(this.dosFull(this.readA(dsdx()))); return;
