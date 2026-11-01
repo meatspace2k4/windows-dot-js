@@ -823,11 +823,13 @@ M.fat16 = function (boot, files, mb = 16) {
 // clusters, each folder's entries as VFAT writes them (a long name's entries before its 8.3 one, the checksum of the
 // short name, the times and attributes fs.js keeps) and each file's data read from fs.js as asked. The layout follows
 // fs.js (its version), as a disk does: a folder or file keeps the clusters it had, one that grew takes free ones onto
-// its chain, one that shrank or went gives its back, a new one takes the lowest free. Writes are not taken: what reads
-// it (ScanDisk's check, DOS's absolute reads) only reads
+// its chain, one that shrank or went gives its back, a new one takes the lowest free. A write is taken by the sectors
+// ahead of the FATs (the MBR, the hidden track, the boot sector), which read back as written from then on, as Windows 98
+// Setup's check for a BIOS's boot-sector protection writes the MBR and boot sector back and reads them again; the FATs,
+// folders and files are fs.js's, and a write to them is not taken
 const dosTime = t => { const d = new Date(t || 0); return { time: (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1), date: Math.max(0, d.getFullYear() - 1980) << 9 | ((d.getMonth() + 1) << 5) | d.getDate() }; };
 class FatView {
-  constructor(fs, letter) { this.fs = fs; this.letter = letter; this.built = -1; this.chains = new Map(); }
+  constructor(fs, letter) { this.fs = fs; this.letter = letter; this.built = -1; this.chains = new Map(); this.written = new Map(); }
   /** the layout, for fs.js as it is now */
   layout() {
     if (this.built === this.fs.version && this.L) return this.L;
@@ -898,8 +900,16 @@ class FatView {
     for (let i = 0; i < n; i++) out.set(this.sector(lba + i), i * 512);
     return out;
   }
+  /** `data`'s sectors written from `lba`: false (none taken) if one is past the boot sector's area */
+  write(lba, data) {
+    const L = this.layout(), n = data.length >> 9;
+    if (lba + n > L.hidden + L.reserved) return false;
+    for (let i = 0; i < n; i++) this.written.set(lba + i, data.slice(i * 512, i * 512 + 512));
+    return true;
+  }
   sector(lba) {
     const L = this.L, s = new Uint8Array(512), dv = new DataView(s.buffer);
+    if (this.written.has(lba)) return this.written.get(lba).slice();
     if (lba === 0) {   // the MBR: one active FAT16 (over 32 MB) partition
       const e = 0x1be; s[e] = 0x80; s[e + 1] = 1; s[e + 2] = 1; s[e + 4] = 0x06; s[e + 5] = 0xfe; s[e + 6] = 0xff; s[e + 7] = 0xff;
       dv.setUint32(e + 8, L.hidden, true); dv.setUint32(e + 12, L.sectors, true); s[510] = 0x55; s[511] = 0xaa; return s;

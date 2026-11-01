@@ -1150,9 +1150,9 @@ const INTS = {
   // the fixed disk BIOS (INT 13h) as a program under Windows reaches it: the first hard disk (DL 80h) is C:, the FAT
   // view of fs.js's drive the MS-DOS VMs have too (v86.js FatView), at 255 heads and 63 sectors a track. AH=00h and 0Dh
   // reset (SUWIN resets each drive before it reads its boot record); 08h its geometry (and the diskette drive's, a
-  // 1.44 MB one with no disk the system reads); 02h reads by cylinder, head and sector into ES:BX; 15h the type and
-  // size; 41h no extensions. A write is refused (03h: write protected), as the view takes none; any other function
-  // stops here, named (a gap)
+  // 1.44 MB one with no disk the system reads); 02h reads by cylinder, head and sector into ES:BX, 03h writes from it
+  // (the view takes the sectors ahead of its FATs, the MBR and boot sector; another is refused, 03h write protected);
+  // 15h the type and size; 41h no extensions. Any other function stops here, named (a gap)
   0x13(next) {
     const ah = this.ax() >> 8, dl = this.cpu.edx.value & 0xff, view = dl === 0x80 && this.fixedDisk && this.fixedDisk('C');
     const ok = () => { CF(this, 0); this.ax(this.ax() & 0xff); }, bad = e => { CF(this, 1); this.ax((e << 8) | (this.ax() & 0xff)); };
@@ -1166,12 +1166,13 @@ const INTS = {
     if (ah === 0x15) { if (dl === 0x80 && L) { this.cpu.ecx.value = lo16(this.cpu.ecx.value, all >>> 16); this.cpu.edx.value = lo16(this.cpu.edx.value, all); CF(this, 0); this.ax((3 << 8) | (this.ax() & 0xff)); return; } if (dl === 0) { CF(this, 0); this.ax((2 << 8) | (this.ax() & 0xff)); return; } return bad(0); }
     if (ah === 0x41) return bad(0x01);
     if ((ah === 0x02 || ah === 0x03) && !L) return bad(dl < 0x80 ? 0x80 : 0x01);
-    if (ah === 0x03) return bad(0x03);
-    if (ah === 0x02) {
+    if (ah === 0x02 || ah === 0x03) {
       const cx = this.cpu.ecx.value & 0xffff, cyl = (cx >> 8) | ((cx & 0xc0) << 2), sec = cx & 0x3f, head = (this.cpu.edx.value >> 8) & 0xff, n = this.ax() & 0xff;
       const lba = (cyl * 255 + head) * 63 + sec - 1, bx = this.cpu.ebx.value & 0xffff, es = this.cpu.es.value & 0xffff;
       const at = this.rmode ? (es << 4) + bx : this.lin(u32((es << 16) | bx));
-      this.u8.set(view.read(lba, n), at); CF(this, 0); this.ax(n); return;
+      if (ah === 0x03) { if (!view.write(lba, this.u8.slice(at, at + n * 512))) return bad(0x03); }
+      else this.u8.set(view.read(lba, n), at);
+      CF(this, 0); this.ax(n); return;
     }
     this.trapped = `unhandled int 13h ax=${this.ax().toString(16)}`; return LAYOUT.SENTINEL;
   },
@@ -1251,6 +1252,16 @@ const INTS = {
 P.blockIoctl = function () {
   const fail = e => { CF(this, 1); this.ax(e); this.dosError = e; };
   const bl = this.cpu.ebx.value & 0xff, cx = this.cpu.ecx.value & 0xffff;
+  // (the physical volume locks, 084Bh and 086Bh, name the disk by its INT 13h unit in BL: 80h the first hard disk, C:'s
+  // FAT view, 0 and 1 the diskette drives; Windows 98 Setup locks unit 80h before it reads the master boot record, and
+  // with BL taken for a drive letter it was refused, "Message SU991010")
+  if (cx === 0x084b || cx === 0x086b) {
+    const unit = bl, there = unit === 0x80 ? !!(this.fixedDisk && this.fixedDisk('C')) : unit < 2 && this.fs.vols.has(String.fromCharCode(65 + unit));
+    if (!there) return fail(15);
+    const locks = this.physLocks || (this.physLocks = new Map());
+    if (cx === 0x084b) locks.set(unit, (this.cpu.ebx.value >> 8) & 0xff); else { const lv = locks.get(unit); if (lv) locks.set(unit, lv - 1); else locks.delete(unit); }
+    CF(this, 0); this.ax(0); return;
+  }
   const L = bl ? String.fromCharCode(64 + bl) : this.fs.cwd[0].toUpperCase(), v = this.fs.vols.get(L);
   if (!v || v.kind === 'remote') return fail(15);
   // (the volume locks a disk utility takes before it writes sectors, logical 084Ah/086Ah, physical 084Bh/086Bh, and
@@ -1259,8 +1270,8 @@ P.blockIoctl = function () {
   // the level held, FFFFh none, as Disk Defragmenter asks before its own lock: answered 0, it said a disk utility had
   // C: locked)
   const locks = this.volLocks || (this.volLocks = new Map());
-  if (cx === 0x084a || cx === 0x084b) { locks.set(L, (this.cpu.ebx.value >> 8) & 0xff); this.ax(0); return; }
-  if (cx === 0x086a || cx === 0x086b) { const lv = locks.get(L); if (lv) locks.set(L, lv - 1); else locks.delete(L); this.ax(0); return; }
+  if (cx === 0x084a) { locks.set(L, (this.cpu.ebx.value >> 8) & 0xff); this.ax(0); return; }
+  if (cx === 0x086a) { const lv = locks.get(L); if (lv) locks.set(L, lv - 1); else locks.delete(L); this.ax(0); return; }
   if (cx === 0x0870) { const lv = locks.get(L); this.ax(lv === undefined ? 0xffff : lv); this.cpu.ecx.value = lo16(this.cpu.ecx.value, 0); return; }
   if (cx === 0x086c) { this.ax(0); return; }   // (the lock's access flag: nothing has written or mapped the volume since)
   const a = this.lin(((this.cpu.ds.value & 0xffff) << 16) | (this.cpu.edx.value & 0xffff));
