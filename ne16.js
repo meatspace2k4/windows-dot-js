@@ -494,6 +494,11 @@ const JS16 = ['KERNEL', 'USER', 'KEYBOARD', 'SYSTEM', 'VDD', 'VFLATD', 'DPMI'];
 // start (the sound card's interrupt, a56b40c; VTDAPI's timer event nesting MMSYSTEM's callback, e00457a)
 P.asInterrupt = function (fn) {
   if (this.inInterrupt) return fn();
+  // (the code interrupted goes on with every register and flag as it left them, as the processor's FLAGS on the stack
+  // and the handler's own saves give it back at IRET: what the interrupt runs, a VxD's time-out or the mouse's and
+  // keyboard's handling, changes them. Kept from a point between a CMP and its jump in another block, the flags were the
+  // handler's, and PIDGEN's binary GCD on Windows 98 Setup's product key ran past x = y into x = 0 and never ended)
+  const full = {}; for (const k of Object.keys(this.cpu)) full[k] = this.cpu[k].value;
   const c = this.cpu, st = c.ss && { ss: c.ss.value, ssb: c.ssb.value, esp: c.esp.value }, ie = c.if ? c.if.value : 1;
   const vm = { crs: this.crs, level: this.crsLevel, pool: this.crsPool, cb: this.vmcb ? this.r32(this.vmcb + 8) : 0 };
   if (!this.intStack && st) { this.intStack = this.alloc(0x10000); this.intCrs = this.alloc(0x60); this.intCrsPool = []; }
@@ -506,6 +511,7 @@ P.asInterrupt = function (fn) {
   this.inInterrupt = true;
   try { return fn(); } finally {
     this.inInterrupt = false;
+    for (const k of Object.keys(full)) c[k].value = full[k];
     if (st) { c.ss.value = st.ss; c.ssb.value = st.ssb; c.esp.value = st.esp; }
     if (c.if) c.if.value = ie;
     this.crs = vm.crs; this.crsLevel = vm.level; this.crsPool = vm.pool; if (this.vmcb) this.w32(this.vmcb + 8, vm.cb);
