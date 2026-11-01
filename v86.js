@@ -392,10 +392,14 @@ const fcbName = n => { const [b, e = ''] = n.toUpperCase().split('.'); return (b
 // a pattern in the 8.3 form DOS keeps (? for each position), matched against a short name
 const match11 = (pat, name) => { const n = fcbName(name); for (let i = 0; i < 11; i++) if (pat[i] !== '?' && pat[i] !== n[i]) return false; return true; };
 const toPat = s => { const [b, e = ''] = s.toUpperCase().split('.'), f = (x, w) => { let o = ''; for (const c of x) { if (c === '*') { o = o.padEnd(w, '?'); break; } o += c; } return o.padEnd(w).slice(0, w); }; return f(b, 8) + f(e, 3); };
-HOOK[0x2f] = function () {
+HOOK[0x2f] = function (next) {
   if (this.r('ax') === 0x4300) { this.setAL(0x80); return true; }                                       // XMS: installed
   if (this.r('ax') === 0x4310) { this.sreg('es', ROM >> 4); this.w('bx', XMS.entry); return true; }       // its entry
-  if (this.ah() === 0x17 && this.o.clip) return this.o.clip(this);                                         // Windows' clipboard, in a VM of Windows' (vmm.js)
+  if (this.ah() === 0x17 && this.o.clip) {   // Windows' clipboard, in a VM of Windows' (vmm.js)
+    const r = this.o.clip(this);
+    if (r === 'wait') { this.cpu.eip.value = next - 2; this.halted = true; return true; }   // (the INT 2Fh again at the next tick: USER is busy)
+    return r;
+  }
   // in a VM of Windows' (o.vmId), what the VMM answers there: 1600h enhanced-mode Windows 4.00, 160Ah its version (BX
   // 0400h) and mode (CX 3, enhanced), 1680h the time slice given up (AL 0), 1683h the VM's id
   if (this.o.vmId) {

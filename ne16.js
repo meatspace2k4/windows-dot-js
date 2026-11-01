@@ -4525,14 +4525,17 @@ def16('KERNEL', 459, 'l', 'l', function (h) { const e = ev16(this, h); if (!e) r
  *  Properties' hourglass after a screen saver's preview ended) */
 P.queueGone = function (t) {
   if (!t || !t.queue) return;
-  for (const s of (this.threadsById || new Map()).values()) if (s !== t) this.answerSend(s, q => q === t.queue);
+  for (const s of (this.threadsById || new Map()).values()) if (s !== t) this.answerSend(s, q => q === t.queue, `thread ${t.id} ended`);
 };
 /** thread s's SendMessage answered (0) when the queue it went to is `gone(queue)`; true if it was */
-P.answerSend = function (s, gone) {
+P.answerSend = function (s, gone, why) {
   const u = this.ne && this.ne.get('USER'), ds = u && u.segs && u.segs.find(x => x.num === 32);
   if (!ds || !this.selValid(ds.sel) || !s.queue || !s.state || s.state === 'done' || !this.selValid(s.queue)) return false;
   const d = this.selBase(ds.sel), q = this.selBase(s.queue), rec = this.r16(q + 0x4e);
   if (!rec || !(this.r16(q + 0x4c) & 0x8000) || (this.u8[d + rec + 0x24] & 1) || !gone(this.r16(d + rec + 0x12))) return false;
+  // (answered for a queue no thread of the host's has: the thread that owns it, if one does, as a record of what was cut short)
+  const to = this.r16(d + rec + 0x12), owner = [...this.threadsById.values()].find(t => t.queue === to);
+  log('warn', 'ne16', `thread ${s.id}'s SendMessage (record ${rec.toString(16)}, message ${this.r16(d + rec + 0x26).toString(16)}h to window ${this.r16(d + rec + 0x34).toString(16)}h) to queue ${to.toString(16)} answered 0: ${why || 'the queue is gone'}${owner ? ` (thread ${owner.id} has it, ${owner.state})` : ''}`);
   this.w32(d + rec + 0x20, 0); this.u8[d + rec + 0x24] |= 1;
   this.w16(q + 0x48, this.r16(q + 0x48) | 0x8000); this.w16(q + 0x4a, this.r16(q + 0x4a) | 0x8000); this.w16(q + 0x4c, 0);
   const e = ev16(this, this.r32(q + 0xc)); if (e) this.signal(e);
@@ -4544,7 +4547,7 @@ P.sendToGone = function () {
   const s = this.thread16; if (!s || !s.queue || !this.threadsById) return;
   // (the main and system threads, which have no state, go on)
   const live = new Set(); for (const t of this.threadsById.values()) if (t.queue && t.state !== 'done') live.add(t.queue);
-  P.answerSend.call(this, s, q => q && !live.has(q));
+  P.answerSend.call(this, s, q => q && !live.has(q), 'no thread that goes on has the queue');
 };
 /** whether `h` is the event of a thread's queue that USER has woken since it was armed: its wake mask (4Ch) cleared by
  *  the waker, its wake bits (48h) set */

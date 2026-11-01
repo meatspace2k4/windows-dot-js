@@ -247,7 +247,8 @@ P.vmOf = function (h) { h = u32(h); return h === this.sysVM() ? { cb: h, sys: tr
 P.vmHandles = function () { return [this.sysVM(), ...(this.vms || []).filter(v => !v.gone).map(v => v.cb)]; };
 const VM_XMS_KB = 1024;   // (a VM's extended memory, XMS's, past 120000h of its memory)
 P.createVM = function () {
-  const size = 0x120000 + VM_XMS_KB * 1024, cb = this.alloc(0x4000), client = this.alloc(0x60), mem = this.alloc(size + 0x1000);
+  // (its memory: an ended VM's block when one is parked (vmEnd), else new from the heap)
+  const size = 0x120000 + VM_XMS_KB * 1024, cb = this.alloc(0x4000), client = this.alloc(0x60), mem = (this.vmMemSpare && this.vmMemSpare.pop()) || this.alloc(size + 0x1000);
   this.u8.fill(0, cb, cb + 0x4000); this.u8.fill(0, client, client + 0x60);
   const high = (mem + 0xfff) & ~0xfff; this.u8.fill(0, high, high + size);
   const vm = { cb, client, high, mem, id: (this.vmNextId = (this.vmNextId || 1) + 1), status: 0 };
@@ -285,7 +286,7 @@ P.vmCreate = function (regs) {
     const cur = this.curVM; this.curVM = vm;
     try { return this.vmBroadcast(vm, VM_INIT, regs); } finally { this.curVM = cur; }
   })();
-  if (!ok) { this.vmBroadcast(vm, VM_NOT_EXECUTEABLE, { edx: 0 }); this.vmBroadcast(vm, DESTROY_VM); vm.gone = true; vm.m = null; if (vm.mem) { this.free(vm.mem); vm.mem = 0; } return 0; }
+  if (!ok) { this.vmBroadcast(vm, VM_NOT_EXECUTEABLE, { edx: 0 }); this.vmBroadcast(vm, DESTROY_VM); vm.gone = true; vm.m = null; if (vm.mem) { (this.vmMemSpare || (this.vmMemSpare = [])).push(vm.mem); vm.mem = 0; } return 0; }   // (parked, as vmEnd parks it)
   this.w32(vm.cb + CB.STATUS, this.r32(vm.cb + CB.STATUS) & ~4);
   return vm.cb;
 };
@@ -327,12 +328,15 @@ P.vmIntV86 = function (vm, n) {
  *  VM's clipboard with USER's own functions: 1700h the version (not 1700h: there is one), 1701h OpenClipboard,
  *  1702h EmptyClipboard, 1703h SetClipboardData (DX the format, ES:BX the data, SI:CX its size), 1704h the size of
  *  the format DX's data (DX:AX), 1705h that data to ES:BX, 1708h CloseClipboard, 1709h the room for SI:CX bytes;
- *  AX 0 when USER is busy in a thread's call or a call fails */
+ *  AX 0 when a call fails. While USER is busy in a thread's call (or a thread holds the Win16Lock) the VM waits for it,
+ *  as SHELL has the call made in the system VM when it can: answered 0 then, ScanDisk run by Windows 98 Setup quit
+ *  without its report (Setup's thread holds the lock as it waits for it), and Setup said there was not enough
+ *  conventional memory to check the disks */
 P.vmClipboard = function (m) {
   const ax = m.r('ax'), dx = m.r('dx'), es = m.cpu.es.value & 0xffff, bx = m.r('bx'), big = ((m.r('si') << 16) | m.r('cx')) >>> 0;
   const ret = v => { m.w('ax', v); return true; };
   if (ax === 0x1700) return ret(0x0a01);
-  if (this.depth || this.thread16 || this.win16Held) return ret(0);
+  if (this.depth || this.thread16 || this.win16Held) return 'wait';
   const u = (ord, a = []) => this.user16(ord, a).ax;
   try {
     switch (ax) {
@@ -403,10 +407,13 @@ P.vmEnd = function (vm, crashed = false) {
   // (its events go with it, queued or stopped in a wait, as the VMM cancels a destroyed VM's events)
   if (this.vxdEvents) this.vxdEvents = this.vxdEvents.filter(e => e.vm !== vm.cb);
   if (this.r0Runs) this.r0Runs = this.r0Runs.filter(s => { if (s.vm !== vm) return true; if (s.stack) (this.r0Stacks || (this.r0Stacks = [])).push(s.stack); return false; });
-  // (its 2 MB of memory back to the heap once the devices have let it go: kept, each MS-DOS program Windows 98 Setup
-  // ran held one for good, and MSGSRV32 ran out of memory after Setup. Its control block stays: the handle is not
-  // given to another VM)
-  if (vm.mem) { this.free(vm.mem); vm.mem = 0; }
+  // (its 2 MB of memory parked for the next VM made (createVM), not given back to the heap: the devices keep the
+  // VM's handle after Destroy_VM (WinOldAp's window repaints its last screen through VDD, which reads and writes
+  // the VM's video pages at CB_High_Linear; SHELL's release comes after), and freed, the block was USER's and
+  // Explorer's next memory, written over under them (Explorer's jump to 0:0 as Windows 98 Setup's ScanDisk ended).
+  // Kept for good, each MS-DOS program Windows 98 Setup ran held one, and MSGSRV32 ran out of memory after Setup;
+  // parked, as many blocks as VMs ran at once. Its control block stays: the handle is not given to another VM)
+  if (vm.mem) { (this.vmMemSpare || (this.vmMemSpare = [])).push(vm.mem); vm.mem = 0; }
   // (the grabber's copy of its screen and its colors stay: WinOldAp's window shows the last screen once the program
   // has ended, and repaints from them, ne16.js vddGrab)   // (the grabber's copy of its screen and its shadow, ne16.js vddGrab)
 };

@@ -409,7 +409,7 @@ class Process {
   /** Dispatch across modules until the sentinel (0), a yield (1) or a fault (2). */
   runAt(eip) {
     if (this.runLevel++ === 0) this.runT0 = this.now();   // the host's processor is the guest's from here
-    try { return this.dispatch(eip); } finally { this.runLevel--; }
+    try { return this.dispatch(eip); } finally { if (this.callRun && this.callRun.level === this.runLevel) this.callRun = null; this.runLevel--; }
   }
   /** run at `eip` as a thread's top level: a run that can give up the processor when its time is up (1) */
   runTop(eip) {
@@ -434,13 +434,21 @@ class Process {
       if (this.now() - this.runT0 < SLICE_MS) return 0;
       this.preempted = u32(eip); return 1;
     }
-    return 0;   // (inside a call the host made it cannot stop: it runs on)
+    // (inside a call the host made it cannot stop: it runs on. One that runs on 10 s is named once in the log, where it
+    // is: nothing else runs meanwhile, and the machine answers nothing)
+    const s = this.callRun;
+    if (!s || s.level !== this.runLevel) this.callRun = { level: this.runLevel, t0: performance.now(), told: false };
+    else if (!s.told && performance.now() - s.t0 > 10000) {
+      s.told = true;
+      log('warn', 'win32', `a call the host made runs on at ${this.whereOf(eip)} (${u32(eip).toString(16)}), thread ${this.thread16 ? this.thread16.id : 'main'}, level ${this.runLevel}/${this.yieldLevel}, depth ${this.depth}, ring 0 ${this.r0Depth || 0}`);
+    }
+    return 0;
   }
   /** no code at `at` the processor can run (nothing mapped there: #PF; an instruction run-time translation cannot
    *  take: #UD): the exception's continuation, or null for a stop of the emulator's own (trapped) */
   noCode(at) {
     const t = this.trapped || '';
-    (this.faultLog || (this.faultLog = [])).push({ at: u32(at).toString(16), atIn: this.whereOf(at), why: t, esp: u32(this.cpu.esp.value).toString(16), from: u32(this.lastBlock || 0).toString(16), fromIn: this.whereOf(this.lastBlock || 0), cs: (this.cpu.cs.value & 0xffff).toString(16), ss: (this.cpu.ss.value & 0xffff).toString(16), thread: this.thread16 ? this.thread16.id : 'main' }); if (this.faultLog.length > 50) this.faultLog.shift();   // (a diagnostic: cmd 'faults')
+    (this.faultLog || (this.faultLog = [])).push({ at: u32(at).toString(16), atIn: this.whereOf(at), why: t, esp: u32(this.cpu.esp.value).toString(16), from: u32(this.lastBlock || 0).toString(16), fromIn: this.whereOf(this.lastBlock || 0), path: this.entryRing ? [...Array(32).keys()].map(k => this.entryRing[(this.entryAt + k) & 31]).filter(Boolean).map(v => this.whereOf(v)) : [], cs: (this.cpu.cs.value & 0xffff).toString(16), ss: (this.cpu.ss.value & 0xffff).toString(16), thread: this.thread16 ? this.thread16.id : 'main' }); if (this.faultLog.length > 50) this.faultLog.shift();   // (a diagnostic: cmd 'faults')
     if (/^run-time code/.test(t)) { log('warn', 'win32', t); this.trapped = null; return this.raise(6, at); }   // (an emulator gap: named)
     if (t && !/^jump to unmapped address/.test(t)) return null;
     this.trapped = null; return this.raise(14, at, at);
@@ -531,8 +539,8 @@ class Process {
   /** a write watch on linear [lo, lo+len): the range is compared with its last contents at each dispatch (a block of a
    *  recompiled module, a stand-in's call) and each run-time block, and the first change since, with what ran last,
    *  goes in `hits` (cmd 'memwatch'); null ends it */
-  memWatch(lo, len) {
-    this.memW = lo == null ? null : { lo: u32(lo), len: len | 0, snap: this.u8.slice(u32(lo), u32(lo) + (len | 0)), hits: [], n: 0 };
+  memWatch(lo, len, own, max) {   // (own: a thread's id whose own writes are not recorded, for a watch on that thread's stack; max: the hits kept, 50)
+    this.memW = lo == null ? null : { lo: u32(lo), len: len | 0, snap: this.u8.slice(u32(lo), u32(lo) + (len | 0)), hits: [], n: 0, own: own || null, max: max || 50 };
     return this.memW;
   }
   memCheck(by) {
@@ -540,8 +548,9 @@ class Process {
     for (; i < n; i++) if (u8[lo + i] !== s[i]) break;
     if (i === n) return;
     let j = n - 1; while (j > i && u8[lo + j] === s[j]) j--;
+    if (w.own && this.thread16 && this.thread16.id === w.own) { s.set(u8.subarray(lo, lo + n)); return; }
     w.n++;
-    if (w.hits.length < 50) w.hits.push({ at: (lo + i).toString(16), n: j - i + 1, was: Array.from(s.subarray(i, Math.min(j + 1, i + 16))), now: Array.from(u8.subarray(lo + i, Math.min(lo + j + 1, lo + i + 16))),
+    if (w.hits.length < w.max) w.hits.push({ at: (lo + i).toString(16), n: j - i + 1, was: Array.from(s.subarray(i, Math.min(j + 1, i + 16))), now: Array.from(u8.subarray(lo + i, Math.min(lo + j + 1, lo + i + 16))),
       by: by || this.whereOf(this.lastBlock || 0), thread: this.thread16 ? this.thread16.id : 'main', t: Math.round(this.now()),
       // (the return addresses on the stack then, as symbols: who the code that wrote was called by)
       stack: Array.from({ length: 48 }, (_, k) => this.r32(u32(this.cpu.esp.value) + 4 * k)).filter(v => this.modules.some(m => m.meta && v >= m.meta.textLo && v < m.meta.textHi)).map(v => this.whereOf(v)) });
@@ -570,7 +579,7 @@ class Process {
       if (this.modeSwitch && eip < LAYOUT.THUNK16) this.modeSwitch(m);
       if (m.clock) this.tick16();   // SYSTEM.DRV reads the time the timer VxD keeps current
       let r;
-      this.lastBlock = eip;
+      this.lastBlock = eip; (this.entryRing || (this.entryAt = 0, this.entryRing = new Uint32Array(32)))[this.entryAt++ & 31] = eip;   // (the last 32 entries into modules: a fault's way there, noCode)
       try { r = m.run(eip); } catch (e) {
         // an access past the end of memory (a pointer that is no address the machine has): a page fault where the guest
         // made it, for its own handlers or its fault dialog, as the processor raises one; not the machine's end

@@ -1035,7 +1035,7 @@ class Machine {
     };
     const name = t => (t.task && t.task.hInst && p.neByHandle(t.task.hInst) ? p.neByHandle(t.task.hInst).name : t.pc && t.pc.path) || '';
     const crits = p.critSecs ? [...p.critSecs].filter(([, c]) => c.owner || c.waiters.size).map(([cs, c]) => ({ cs: cs.toString(16), at: where(cs), owner: c.owner, count: c.count, waiters: [...c.waiters].map(t => t.id) })) : [];
-    const threads = [...(p.threadsById || new Map()).values()].map(t => ({ id: t.id, tdb: t.tdb, state: t.state, name: name(t), blocked: !!t.blocked, preempted: !!t.preempted, wake: t.wake || 0, execWait: !!t.execWait, flat: !!t.flat, wait: t.wait ? t.wait.kind || 'object' : null, waitOn: t.waitOn ? { ...t.waitOn, objs: t.waitOn.hs.map(h => { const o = p.obj(h); return o ? { kind: o.kind, set: o.set, count: o.count, id: o.id, pid: o.pid, name: o.name, site: o.site ? where(o.site) : undefined } : h; }) } : null,
+    const threads = [...(p.threadsById || new Map()).values()].map(t => ({ id: t.id, tdb: t.tdb, state: t.state, name: name(t), blocked: !!t.blocked, preempted: !!t.preempted, wake: t.wake || 0, execWait: !!t.execWait, flat: !!t.flat, stackBase: t.stackBase || 0, stackSize: t.stack || 0, ssel: t.ssel || 0, queue: t.queue || 0, wait: t.wait ? t.wait.kind || 'object' : null, waitOn: t.waitOn ? { ...t.waitOn, objs: t.waitOn.hs.map(h => { const o = p.obj(h); return o ? { kind: o.kind, set: o.set, count: o.count, id: o.id, pid: o.pid, name: o.name, site: o.site ? where(o.site) : undefined } : h; }) } : null,
       at: t.ctx ? where(t.ctx.eip) : null, stack: stack(t.ctx), frames: frames(t.ctx), regs: t.ctx ? { cs: t.ctx.cs, ss: t.ctx.ss, bp: t.ctx.ebp, sp: t.ctx.esp, all: Object.fromEntries(Object.entries(t.ctx).filter(([, v]) => typeof v === 'number').map(([k, v]) => [k, (v >>> 0).toString(16)])) } : null,
       raw: t.ctx && t.ctx.ss && p.selValid(t.ctx.ss) ? (() => { const b = p.selBase(t.ctx.ss), sp = t.ctx.esp & 0xffff, o = []; for (let i = sp; i < Math.min(0xfffe, sp + 0x400); i += 2) o.push(p.r16(b + i).toString(16)); return { sp: sp.toString(16), words: o.join(' ') }; })() : null,
       queue: t.queue && p.selValid(t.queue) ? (q => ({ q: t.queue, task: p.r16(q + 2), flags: p.r16(q + 0x14), wake: p.r16(q + 0x48), changed: p.r16(q + 0x4a), mask: p.r16(q + 0x4c), ev: p.r32(q + 0xc),
@@ -1361,7 +1361,7 @@ class Machine {
       case 'memwatch': {
         if (!args.length) return p.memW ? { hits: p.memW.hits.splice(0), n: p.memW.n } : null;
         if (args[0] == null) { p.memWatch(null); return true; }
-        p.memWatch(args[0], args[1] || 4); return true;
+        p.memWatch(args[0], args[1] || 4, args[2], args[3]); return true;
       }
       case 'netEnum': return this.netEnum(args[0], args[1]);
       case 'netConnections': return this.netConnections();
