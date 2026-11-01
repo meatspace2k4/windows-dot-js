@@ -477,6 +477,13 @@ function translate(p, lin, csb, d32, v86, limit) {
         f.lg(B).lg(C).op('eq').if_(); rdReg(o.reg, sz); f.ls(T); wr(o, sz, T); f.else_(); wrReg(0, sz, C); f.end();
         continue;
       }
+      // xadd: the sum (flags as add) to the destination, the destination's old value to the source register
+      if (b2 === 0xc0 || b2 === 0xc1) {
+        const sz = b2 & 1 ? osz : 1, o = modrm();
+        rd(o, sz); f.ls(B); rdReg(o.reg, sz); f.ls(C); alu2(0, sz);
+        wrReg(o.reg, sz, B); wr(o, sz, R);
+        continue;
+      }
       if (b2 === 0xa3 || b2 === 0xab || b2 === 0xb3 || b2 === 0xbb || b2 === 0xba) {   // bt / bts / btr / btc
         const o = modrm();
         const kind = b2 === 0xba ? o.reg - 4 : [0xa3, 0xab, 0xb3, 0xbb].indexOf(b2);   // 0 bt, 1 bts, 2 btr, 3 btc

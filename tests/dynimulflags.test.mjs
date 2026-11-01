@@ -30,4 +30,7 @@ assert.deepEqual(run([0x69, 0xc0, 0x00, 0x00, 0x01, 0x00], 0x8000, 0), [0x800000
 assert.deepEqual(run([0xd1, 0xc0], 0x40000000, 0, 0), [0x80000000, 0, 1], 'rol eax, 1: the top bit changed');
 assert.deepEqual(run([0xd1, 0xc8], 0x00000001, 0, 0), [0x80000000, 1, 1], 'ror eax, 1: the top two bits differ');
 assert.deepEqual(run([0x0f, 0xa4, 0xc8, 0x01], 0x40000000, 0, 0), [0x80000000, 0, 1], 'shld eax, ecx, 1: the sign changed');
+// XADD (0Fh C1h): the sum to the destination, its old value to the source, flags as ADD
+assert.deepEqual(run([0x0f, 0xc1, 0xc8], 0xffffffff, 2, 0), [1, 1, 0], 'xadd eax, ecx: EAX the sum, carried out');
+assert.equal(p.cpu.ecx.value >>> 0, 0xffffffff, 'xadd eax, ecx: ECX the old EAX');
 console.log('dynimulflags: ok');
