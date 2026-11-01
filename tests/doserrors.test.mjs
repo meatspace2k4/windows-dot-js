@@ -17,4 +17,11 @@ assert.deepEqual(call(0x39, 'C:\\WINDOWS'), [1, 5], 'MKDIR of a folder that is t
 assert.deepEqual(call(0x3a, 'C:\\WINDOWS'), [1, 5], 'RMDIR of a folder that is not empty: access denied');
 assert.deepEqual(call(0x39, 'C:\\NEW'), [0, 0x3900], 'MKDIR of a new folder');
 assert.ok(p.fs.stat('C:\\NEW').isDir);
+// a function past MS-DOS 7's last (NetWare's DCh, its connection number, which Windows 98 Setup asks for): AL 0, the
+// program going on, as DOS's dispatcher answers one it lacks
+{
+  const { INTS } = window.W95NE16;
+  p.cpu.eax.value = 0xdc55; const r = INTS[0x21].call(p);
+  assert.notEqual(r, window.W95Win32.LAYOUT.SENTINEL, 'not a stop'); assert.equal(p.cpu.eax.value & 0xffff, 0xdc00, 'AL 0: no NetWare connection');
+}
 console.log('doserrors: ok');

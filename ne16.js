@@ -1147,6 +1147,10 @@ const INTS = {
         }
       } catch (e) { if (e instanceof window.W95FS.FSError) return fail(dosError(e.code)); throw e; }
     }
+    // (a function past MS-DOS 7's last, 73h, that nothing here claims: a network shell's, NetWare's from B4h on, which
+    // Windows 98 Setup probes for after the Save System Files page (DCh, its connection number): DOS's dispatcher answers
+    // AL 0, which a NetWare probe reads as no shell, no connection)
+    if (ah > 0x73) { this.ax(this.ax() & 0xff00); return; }
     this.trapped = `unhandled int 21h ax=${this.ax().toString(16)} bx=${(this.cpu.ebx.value & 0xffff).toString(16)} cx=${(this.cpu.ecx.value & 0xffff).toString(16)}`; return LAYOUT.SENTINEL;
   },
   0x11() { this.ax(0x0023); },
