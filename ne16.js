@@ -682,12 +682,6 @@ P.rmInt = function (n, next) {
   done();
 };
 const CF = (p, on) => { p.cpu.cf.value = on ? 1 : 0; };
-/** a file system error (fs.js: Win32's codes) as MS-DOS's INT 21h gives it: the codes MS-DOS has none of are its
- *  access denied (MKDIR of a folder that is there, RMDIR of one that is not empty, a folder where a file was named) and
- *  path not found (an invalid name). Given 183 for MKDIR of C:\WINDOWS, Windows 98 Setup stopped with "Setup cannot
- *  create C:\WINDOWS" (SU0343): it takes access denied from an existing folder as the folder being there */
-const DOS_ERRORS = { 183: 5, 145: 5, 267: 5, 123: 3 };
-const dosError = code => DOS_ERRORS[code] || code || 5;
 /** a drive's boot sector and its sectors from `first`: a fixed drive's from its disk (P.fixedDisk, the view the BIOS
  *  and the VMs read), another's its boot sector and zeros */
 const volBoot = (p, l, v) => { const d = p.fixedDisk && p.fixedDisk(l); return d ? d.read(d.layout().hidden, 1) : bootSector(v); };
@@ -1147,7 +1141,7 @@ const INTS = {
           }
           case 0x42: { if (!f) return fail(6); const pos = this.fs.seek(f.fd, (((this.cpu.ecx.value & 0xffff) << 16) | (this.cpu.edx.value & 0xffff)) | 0, al); this.ax(pos & 0xffff); this.cpu.edx.value = lo16(this.cpu.edx.value, pos >>> 16); return; }
         }
-      } catch (e) { if (e instanceof window.W95FS.FSError) return fail(dosError(e.code)); throw e; }
+      } catch (e) { if (e instanceof window.W95FS.FSError) return fail(e.code || 5); throw e; }
     }
     // (a function past MS-DOS 7's last, 73h, that nothing here claims: a network shell's, NetWare's from B4h on, which
     // Windows 98 Setup probes for after the Save System Files page (DCh, its connection number): DOS's dispatcher answers
@@ -3624,7 +3618,9 @@ P.dosNames = function (fn, lfn) {
         const spc = Math.max(1, Math.round((v.cluster || 4096) / 512)), cl = spc * 512;
         this.ax(spc); reg('ebx', Math.min(0xffff, Math.floor(v.free / cl))); reg('ecx', 512); reg('edx', Math.min(0xffff, Math.floor(v.total / cl))); return;
       }
-      case 0x39: this.fs.mkdir(this.dosFull(this.readA(dsdx()))); return;
+      // (MKDIR of a folder that is there: access denied (5), as MS-DOS answers it, not the file system's 183; Windows 98
+      // Setup takes 5 from C:\WINDOWS as the folder being there, and with 183 stopped: "Setup cannot create" (SU0343))
+      case 0x39: { const full = this.dosFull(this.readA(dsdx())); if (this.fs.exists(full)) return fail(5); this.fs.mkdir(full); return; }
       case 0x3a: this.fs.rmdir(this.dosFull(this.readA(dsdx()))); return;
       case 0x3b: this.fs.chdir(this.dosFull(this.readA(dsdx()))); return;
       case 0x41: this.fs.unlink(this.dosFull(this.readA(dsdx()))); return;
@@ -3685,7 +3681,7 @@ P.dosNames = function (fn, lfn) {
         reg('ebx', 0x4006); reg('ecx', 255); reg('edx', 260); return;
       }
     }
-  } catch (e) { if (e instanceof W.FSError) return fail(dosError(e.code)); throw e; }
+  } catch (e) { if (e instanceof W.FSError) return fail(e.code || 5); throw e; }
   return false;
 };
 P.findFile16 = function (name) {

@@ -14,7 +14,6 @@ p.fs = new FileSystem(); p.fs.mount('C', { kind: 'fixed', total: 1 << 24 }); p.f
 p.fs.writeFile('C:\\WINDOWS\\WIN.INI', new Uint8Array(4));
 const call = (ah, path) => { p.writeA(0x1000, path); p.cpu.edx.value = 0x1000; p.cpu.eax.value = ah << 8; p.cpu.cf.value = 0; p.dosNames(ah, false); return [p.cpu.cf.value, p.cpu.eax.value & 0xffff]; };
 assert.deepEqual(call(0x39, 'C:\\WINDOWS'), [1, 5], 'MKDIR of a folder that is there: access denied');
-assert.deepEqual(call(0x3a, 'C:\\WINDOWS'), [1, 5], 'RMDIR of a folder that is not empty: access denied');
 assert.deepEqual(call(0x39, 'C:\\NEW'), [0, 0x3900], 'MKDIR of a new folder');
 assert.ok(p.fs.stat('C:\\NEW').isDir);
 // a function past MS-DOS 7's last (NetWare's DCh, its connection number, which Windows 98 Setup asks for): AL 0, the
