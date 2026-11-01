@@ -242,6 +242,12 @@ P.neExport = function (m, key) {
 };
 // `native`: also bring up the modules the JS personality stands in for (JS16) from their recompiled code, for a
 // session that runs native USER; otherwise those imports stay with the JS implementations
+/** Windows' fixed drive `l` as a hard disk: a FAT view of fs.js's drive (v86.js FatView), one for the system's BIOS
+ *  and every MS-DOS VM */
+P.fixedDisk = function (l) {
+  if (!this.vmDisks && window.W95V86 && this.fs) { this.vmDisks = {}; for (const [k, v] of this.fs.vols) if (v.kind === 'fixed') this.vmDisks[k] = new window.W95V86.FatView(this.fs, k); }
+  return (this.vmDisks && this.vmDisks[l]) || null;
+};
 /** the display's grabber, the module GRABBER: the file SYSTEM.INI's [boot] 386grabber names, where KERNEL finds it */
 P.grabberFile = function () { const g = this.fs && winIni(this, 'SYSTEM.INI', 'boot', '386grabber'); return g ? this.findFile16(g) : null; };
 P.loadLibrary16 = function (name, native = false, defer = false) {
@@ -668,6 +674,13 @@ P.rmInt = function (n, next) {
   done();
 };
 const CF = (p, on) => { p.cpu.cf.value = on ? 1 : 0; };
+/** a drive's boot sector and its sectors from `first`: a fixed drive's from its disk (P.fixedDisk, the view the BIOS
+ *  and the VMs read), another's its boot sector and zeros */
+const volBoot = (p, l, v) => { const d = p.fixedDisk && p.fixedDisk(l); return d ? d.read(d.layout().hidden, 1) : bootSector(v); };
+const volSectors = (p, l, v, first, n) => {
+  const d = p.fixedDisk && p.fixedDisk(l); if (d) return d.read(d.layout().hidden + first, n);
+  const out = new Uint8Array(512 * n); if (first === 0 && n) out.set(bootSector(v)); return out;
+};
 /** a FAT boot sector for a volume: its BPB from its size and cluster, its serial and label (INT 25h's sector 0) */
 function bootSector(v) {
   const b = new Uint8Array(512), dv = new DataView(b.buffer), total = Math.max(1, Math.floor((v.total || 0) / 512)), spc = Math.max(1, Math.min(128, Math.round((v.cluster || 4096) / 512)));
@@ -695,7 +708,7 @@ function absDisk(p, write) {
   };
   let v; try { v = p.fs.statvfs(drive + ':\\'); } catch (_) { return done(false, 0x8002); }   // (not ready: no such drive)
   if (write) return done(true);   // (nothing written)
-  for (let i = 0; i < n; i++) { const s = first + i; if (s === 0) p.u8.set(bootSector(v), buf + 512 * i); else p.u8.fill(0, buf + 512 * i, buf + 512 * (i + 1)); }
+  p.u8.set(volSectors(p, drive, v, first, n), buf);
   done(true);
 }
 // MSCDEX's device request (INT 2Fh AX=1510h) for the CD drive: the request header's status (+3) is set done (100h), or
@@ -1009,7 +1022,7 @@ const INTS = {
           const name = this.readA(at(this.cpu.ds.value, this.cpu.edx.value)) || '', L = (name[0] || this.fs.cwd[0]).toUpperCase();
           let v; try { v = this.fs.statvfs(L + ':\\'); } catch (_) { return fail(0x0f); }   // (invalid drive)
           const buf = at(this.cpu.es.value, this.cpu.edx.value * 0 + (this.cpu.edi.value & 0xffff)), cx = this.cpu.ecx.value & 0xffff;
-          const bs = bootSector(v), spc = bs[13], bps = 512, total = bs.length && (new DataView(bs.buffer).getUint16(19, true) || new DataView(bs.buffer).getUint32(32, true));
+          const bs = volBoot(this, L, v), spc = bs[13], bps = 512, total = bs.length && (new DataView(bs.buffer).getUint16(19, true) || new DataView(bs.buffer).getUint32(32, true));
           const fat32 = bs[0x52] === 0x46, spf = fat32 ? new DataView(bs.buffer).getUint32(36, true) : new DataView(bs.buffer).getUint16(22, true), nfats = bs[16], res = new DataView(bs.buffer).getUint16(14, true);
           const rootSecs = fat32 ? 0 : Math.ceil(512 * 32 / bps), data0 = res + nfats * spf + rootSecs, clusters = Math.max(1, Math.floor((total - data0) / spc));
           const freeCl = Math.min(clusters, Math.floor((v.free || 0) / (spc * bps)));
@@ -1038,7 +1051,7 @@ const INTS = {
           const L = String.fromCharCode(64 + (this.cpu.edx.value & 0xff)), pk = at(this.cpu.ds.value, this.cpu.ebx.value), write = this.cpu.esi.value & 1;
           let v; try { v = this.fs.statvfs(L + ':\\'); } catch (_) { return fail(0x0f); }
           const first = this.r32(pk) >>> 0, n = this.r16(pk + 4), buf = at(this.r16(pk + 8), this.r16(pk + 6));
-          if (!write) for (let i = 0; i < n; i++) { const s = first + i; if (s === 0) this.u8.set(bootSector(v), buf + 512 * i); else this.u8.fill(0, buf + 512 * i, buf + 512 * (i + 1)); }
+          if (!write) this.u8.set(volSectors(this, L, v, first, n), buf);
           this.ax(0); CF(this, 0); return;
         }
         break;
@@ -1134,11 +1147,32 @@ const INTS = {
   // MS-DOS's network and critical-section hooks (INT 2Ah): no network software in real mode takes them, so DOS's own
   // IRET answers each: 00h's AH comes back 0, no network installed (NETAPI asks), and 80h-82h's critical sections pass
   0x2a() {},
-  // the fixed disk BIOS (INT 13h) as a program under Windows reaches it: AH=00h and 0Dh reset the drive (SUWIN resets
-  // each before it reads its boot record); any other function stops here, named (a gap)
+  // the fixed disk BIOS (INT 13h) as a program under Windows reaches it: the first hard disk (DL 80h) is C:, the FAT
+  // view of fs.js's drive the MS-DOS VMs have too (v86.js FatView), at 255 heads and 63 sectors a track. AH=00h and 0Dh
+  // reset (SUWIN resets each drive before it reads its boot record); 08h its geometry (and the diskette drive's, a
+  // 1.44 MB one with no disk the system reads); 02h reads by cylinder, head and sector into ES:BX; 15h the type and
+  // size; 41h no extensions. A write is refused (03h: write protected), as the view takes none; any other function
+  // stops here, named (a gap)
   0x13(next) {
-    const ah = this.ax() >> 8;
-    if (ah === 0x00 || ah === 0x0d) { CF(this, 0); this.ax(this.ax() & 0xff); return; }
+    const ah = this.ax() >> 8, dl = this.cpu.edx.value & 0xff, view = dl === 0x80 && this.fixedDisk && this.fixedDisk('C');
+    const ok = () => { CF(this, 0); this.ax(this.ax() & 0xff); }, bad = e => { CF(this, 1); this.ax((e << 8) | (this.ax() & 0xff)); };
+    if (ah === 0x00 || ah === 0x0d) return ok();
+    const L = view ? view.layout() : null, all = L ? L.hidden + L.sectors : 0, cyls = Math.ceil(all / (255 * 63));
+    if (ah === 0x08) {
+      if (dl === 0x80 && L) { const c = cyls - 1; this.cpu.ecx.value = lo16(this.cpu.ecx.value, ((c & 0xff) << 8) | ((c >> 2) & 0xc0) | 63); this.cpu.edx.value = lo16(this.cpu.edx.value, (254 << 8) | 1); return ok(); }
+      if (dl === 0x00) { this.cpu.ebx.value = (this.cpu.ebx.value & ~0xff) | 4; this.cpu.ecx.value = lo16(this.cpu.ecx.value, (79 << 8) | 18); this.cpu.edx.value = lo16(this.cpu.edx.value, (1 << 8) | 1); return ok(); }
+      return bad(0x01);
+    }
+    if (ah === 0x15) { if (dl === 0x80 && L) { this.cpu.ecx.value = lo16(this.cpu.ecx.value, all >>> 16); this.cpu.edx.value = lo16(this.cpu.edx.value, all); CF(this, 0); this.ax((3 << 8) | (this.ax() & 0xff)); return; } if (dl === 0) { CF(this, 0); this.ax((2 << 8) | (this.ax() & 0xff)); return; } return bad(0); }
+    if (ah === 0x41) return bad(0x01);
+    if ((ah === 0x02 || ah === 0x03) && !L) return bad(dl < 0x80 ? 0x80 : 0x01);
+    if (ah === 0x03) return bad(0x03);
+    if (ah === 0x02) {
+      const cx = this.cpu.ecx.value & 0xffff, cyl = (cx >> 8) | ((cx & 0xc0) << 2), sec = cx & 0x3f, head = (this.cpu.edx.value >> 8) & 0xff, n = this.ax() & 0xff;
+      const lba = (cyl * 255 + head) * 63 + sec - 1, bx = this.cpu.ebx.value & 0xffff, es = this.cpu.es.value & 0xffff;
+      const at = this.rmode ? (es << 4) + bx : this.lin(u32((es << 16) | bx));
+      this.u8.set(view.read(lba, n), at); CF(this, 0); this.ax(n); return;
+    }
     this.trapped = `unhandled int 13h ax=${this.ax().toString(16)}`; return LAYOUT.SENTINEL;
   },
   // the system BIOS (INT 15h): C0h its configuration table at ES:BX (F000:E6F5, by __F000H's selector in protected
@@ -1234,11 +1268,11 @@ P.blockIoctl = function () {
   // 0860h the device's parameters (DS:DX: special functions, device type, attributes, cylinders, media type, then the
   // BPB, as the boot sector's, INT 25h's); 0866h its media id (info level, serial, label, file system type)
   if (cx === 0x0860 && vi) {
-    const bs = bootSector(vi); this.u8[a + 1] = v.kind === 'removable' ? 7 : 5; this.w16(a + 2, v.kind === 'removable' ? 0 : 1);
+    const bs = volBoot(this, L, vi); this.u8[a + 1] = v.kind === 'removable' ? 7 : 5; this.w16(a + 2, v.kind === 'removable' ? 0 : 1);
     this.w16(a + 4, 1024); this.u8[a + 6] = 0; this.u8.set(bs.subarray(11, 36), a + 7); this.ax(0); return;
   }
   if (cx === 0x0866 && vi) {
-    const bs = bootSector(vi), e = bs[0x52] === 0x46 ? 64 : 36;   // (the extended BPB: FAT32's further on)
+    const bs = volBoot(this, L, vi), e = bs[0x52] === 0x46 ? 64 : 36;   // (the extended BPB: FAT32's further on)
     this.w16(a, 0); this.u8.set(bs.subarray(e + 3, e + 26), a + 2); this.ax(0); return;
   }
   if (cx !== 0x086f) return fail(1);
@@ -3554,6 +3588,8 @@ P.dosNames = function (fn, lfn) {
       case 0x36: {   // free space: AX sectors a cluster, BX free clusters, CX bytes a sector, DX clusters
         const dl = this.cpu.edx.value & 0xff, d = dl ? String.fromCharCode(64 + dl) : this.fs.cwd[0];
         let v; try { v = this.fs.statvfs(d + ':\\'); } catch (_) { this.ax(0xffff); return; }
+        const disk = this.fixedDisk && this.fixedDisk(d.toUpperCase());   // (a fixed drive's disk, as its BIOS and DPB give it)
+        if (disk) { const L = disk.layout(); this.ax(L.spc); reg('ebx', L.clusters - L.used); reg('ecx', 512); reg('edx', L.clusters); return; }
         const spc = Math.max(1, Math.round((v.cluster || 4096) / 512)), cl = spc * 512;
         this.ax(spc); reg('ebx', Math.min(0xffff, Math.floor(v.free / cl))); reg('ecx', 512); reg('edx', Math.min(0xffff, Math.floor(v.total / cl))); return;
       }

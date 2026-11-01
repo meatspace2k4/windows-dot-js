@@ -4043,7 +4043,25 @@ class RemoteApp extends NativeApp {
     if (!this.alive || !this.ring) return;
     const f = kind === 'down' ? (btn === 2 ? 8 : 2) : kind === 'up' ? (btn === 2 ? 16 : 4) : 1;
     if (W95Bridge.ringPut(this.ring, W95Bridge.MOUSE, f, Math.round(x), Math.round(y))) this.ringPut = (this.ringPut || 0) + 1;
+    const k = `${Math.round(x)},${Math.round(y)}`, s = this.sentPts || (this.sentPts = []); s.push(k); if (s.length > 64) s.shift(); this.lastPtr = [Math.round(x), Math.round(y)];
     this.kick();
+  }
+  /** where the hardware cursor is, as the mouse's interrupt moves it on a real machine ahead of whatever runs: at the
+   *  page's newest pointer, less the image's hot spot, while the machine's cursor (USER's, reported with the sprite) is
+   *  at a place this page sent, that is, while it follows the mouse; the sprite's own place when the machine put its
+   *  cursor elsewhere (ClipCursor's edge, SetCursorPos), or before the hot spot is known. The hot spot is kept for each
+   *  image (USER's cursor less the sprite's place, reported together) */
+  pointerAt(sp) {
+    if (!sp || !sp.bits || !this.lastPtr) return null;
+    let h = 2166136261; const n = Math.min(sp.bits.length, 64 * sp.row);
+    for (let i = 0; i < n; i++) { h ^= sp.bits[i]; h = Math.imul(h, 16777619); }
+    const key = `${h >>> 0}:${sp.px}:${sp.py}:${sp.cpp}`, hot = this.hots || (this.hots = new Map()), cur = this.scr && this.scr.cur;
+    if (cur) {
+      this.follows = (this.sentPts || []).includes(`${cur.x},${cur.y}`);
+      if (sp.x === this.scr.sprite.x && sp.y === this.scr.sprite.y) hot.set(key, [cur.x - sp.x, cur.y - sp.y]);
+    }
+    const hs = hot.get(key); if (!this.follows || !hs) return null;
+    return [this.lastPtr[0] - hs[0], this.lastPtr[1] - hs[1]];
   }
   /** the next message the machine sends of its screen (a frame, or its state while a thread holds USER) */
   nextFrame() { return new Promise(ok => (this.frameWaiters || (this.frameWaiters = [])).push(ok)); }
@@ -4931,7 +4949,8 @@ const spriteCv = mkc(64, 64), spriteCx = spriteCv.getContext('2d'), spriteImg = 
 function drawSprite(app) {
   let sp; try { sp = app.sprite(); } catch (e) { return; }
   if (!sp) return;
-  drawSpriteBits(sp, sp.x, sp.y, app);
+  const at = app.pointerAt ? app.pointerAt(sp) : null;
+  drawSpriteBits(sp, at ? at[0] : sp.x, at ? at[1] : sp.y, app);
 }
 // (another person's pointer image, decoded once per key: the sprite's bits as sent)
 const peerBitsCache = new Map();
