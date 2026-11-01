@@ -5,7 +5,9 @@ furthest step reached, the first gap that stopped it, its fix. Not a goal to pas
 
 Run: `tools/serve.py <port> --iso "Win95 OSR2.ISO" --cd "Windows 98 se Upgrade.iso"`, a fresh origin
 (`http://<name>.localhost:<port>/?debug=1&mute=1&shared=0`), `win95.cd.insert('Windows 98 se Upgrade.iso')`, Yes to
-the upgrade question (or `win95.run('D:\\setup.exe')`).
+the upgrade question (or `win95.run('D:\\setup.exe')`). `W98KEY=... node bench/setup98.mjs [endpoint]` drives the
+ladder through the shell's API (each page's control waited for, then pressed; the key from the environment, written
+nowhere) and reports what stopped it; in a page with no DevTools endpoint, its `pageDrive` is evaluated there.
 
 ## The ladder
 
