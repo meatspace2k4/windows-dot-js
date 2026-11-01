@@ -909,6 +909,8 @@ function bootDisk() {
   mountDrives();
   W95Win32.regAttach(host.registry);
   if (!fs.attach('C', host.disk)) makeDisk(true);
+  // (a disk of Windows 3.1 is its own: MS-DOS on it as SYS puts it, and nothing of Windows 95's Setup)
+  if (diskSystem() === 'win31') { sysDisk(false); fs.chdir('C:\\'); return; }
   installPrograms(); setupFonts(); setupRegistry(); setupDisplay(); setupSavers(); setupSound(); setupHelp(); setupNetwork(); setupPorts(); setupPrinting(); setupVxds();
   if (host.shared) setupProfile(host.userName);
   setupStartMenu();   // (after the profile: its links go in the Programs folder the user's Shell Folders name)
@@ -1155,7 +1157,8 @@ const dosConIn = (id, text) => { if (sysApp && sysApp.worker) sysApp.worker.post
 // that starts no Windows of its own (the box's program runs where WIN.COM would). The PC's holds what IO.SYS reads
 // before its shell runs, from C: as it is now: IO.SYS, MSDOS.SYS, CONFIG.SYS and each driver it names, AUTOEXEC.BAT
 // (whether there is one), IFSHLP.SYS, the registry's files, COMMAND.COM and WIN.COM; from the shell's start on, C: is
-// the disk's own (takeDrives)
+// the disk's own (takeDrives). Not HIMEM.SYS, which IO.SYS loads when it finds one: the machine's extended memory is
+// its BIOS's XMS (v86.js), which HIMEM.SYS would find already there
 function dosMachine(program, args, o = {}) {
   const V = window.W95V86, D = window.W95DOS, bytes = s => b64bytes(s);
   if (program) try { program = fs.stat(program).shortPath; } catch (_) { /* (DOS's own name for it: its 8.3 path) */ }
@@ -1164,7 +1167,7 @@ function dosMachine(program, args, o = {}) {
     const fromC = p => { try { return fs.readFile('C:\\' + p); } catch (_) { return null; } };
     files = [{ name: 'IO.SYS', data: fromC('IO.SYS') || new Uint8Array(0), attr: 7 }, { name: 'MSDOS.SYS', data: fromC('MSDOS.SYS') || new Uint8Array(0), attr: 7 }];
     const add = p => { const d = fromC(p); if (d && !files.some(f => (f.path || f.name).toUpperCase() === p.toUpperCase())) files.push({ path: p, data: d }); };
-    add('COMMAND.COM'); add('CONFIG.SYS'); add('AUTOEXEC.BAT'); add('WINDOWS\\IFSHLP.SYS'); add('WINDOWS\\HIMEM.SYS'); add('WINDOWS\\SYSTEM.DAT'); add('WINDOWS\\USER.DAT'); add('WINDOWS\\WIN.COM');
+    add('COMMAND.COM'); add('CONFIG.SYS'); add('AUTOEXEC.BAT'); add('WINDOWS\\IFSHLP.SYS'); add('WINDOWS\\SYSTEM.DAT'); add('WINDOWS\\USER.DAT'); add('WINDOWS\\WIN.COM');
     // (the drivers CONFIG.SYS loads, by their paths on C:)
     for (const l of W95FS.decode(fromC('CONFIG.SYS') || new Uint8Array(0)).split(/\r?\n/)) {
       const r = /^\s*(?:DEVICE|DEVICEHIGH|INSTALL|INSTALLHIGH)\s*=\s*(?:\/\S+\s+)*C:\\(\S+)/i.exec(l); if (r) add(r[1]);
@@ -1259,6 +1262,7 @@ let pc = null;
 /** the registry's files in the Windows folder, SYSTEM.DAT and USER.DAT, as Windows writes them when it flushes the
  *  registry (as it shuts down): what IO.SYS reads as the PC next starts */
 function flushRegistry() {
+  if (diskSystem() !== 'win95') return;   // (Windows 3.1's registry is its REG.DAT, which its SHELL writes)
   for (const [file, which] of [['SYSTEM.DAT', 'system'], ['USER.DAT', 'user']]) {
     const p = join(WINDIR, file);
     try { if (fs.exists(p)) fs.setAttrs(p, 0); fs.writeFile(p, W95Win32.regHive(which)); fs.setAttrs(p, ATTR.HIDDEN | ATTR.SYSTEM | ATTR.READONLY); } catch (e) { console.error('[registry]', file, e); }
@@ -3607,6 +3611,26 @@ async function nativeProgram(bytes) {
   return null;
 }
 // the files the bundle carries for programs replace the placeholders an older disk has for them
+/** the Windows C: has: 'win31' for a Windows 3.1 installation (WIN386.EXE, no VMM32.VXD), else Windows 95 */
+const diskSystem = () => (fs.exists(join(WINDIR, 'SYSTEM', 'WIN386.EXE')) && !fs.exists(join(WINDIR, 'SYSTEM', 'VMM32.VXD')) ? 'win31' : 'win95');
+/** MS-DOS on C:, as SYS leaves it (and Windows 95's Setup, which runs it): IO.SYS (the CD's WINBOOT.SYS, which the boot
+ *  sector loads), COMMAND.COM in the root, and MSDOS.SYS, its settings, padded past 1024 bytes as IO.SYS requires (the
+ *  lines Setup writes for programs that check its size): Windows 95's starting it (BootGUI=1), a disk of an older
+ *  Windows booting to the prompt, its own WIN starting that */
+function sysDisk(gui) {
+  const DOS = window.W95DOS; if (!DOS) return;
+  const stub = exeStub(), HSR = ATTR.HIDDEN | ATTR.SYSTEM | ATTR.READONLY, unlock = p => { try { fs.setAttrs(p, 0); } catch (_) { /* not there */ } };
+  const put = (path, b64) => { let cur = null; try { cur = fs.readFile(path); } catch (_) { /* not there */ } if (!cur || (cur.length === stub.length && cur.every((b, i) => b === stub[i]))) fs.writeFile(path, b64bytes(b64)); };
+  unlock('C:\\IO.SYS'); put('C:\\IO.SYS', DOS.files['IO.SYS']); fs.setAttrs('C:\\IO.SYS', HSR);
+  put('C:\\COMMAND.COM', DOS.files['COMMAND.COM']);
+  let t = ''; try { t = fs.readText('C:\\MSDOS.SYS'); } catch (_) { /* written below */ }
+  if (t.length < 1024) {
+    const own = t.replace(/\r?\n/g, '\r\n').replace(/(\r\n)*$/, '') || `[Paths]\r\nWinDir=C:\\WINDOWS\r\nWinBootDir=C:\\WINDOWS\r\nHostWinBootDrv=C\r\n\r\n[Options]\r\nBootGUI=${gui ? 1 : 0}\r\nLogo=${gui ? 1 : 0}`;
+    const pad = [';', ';The following lines are required for compatibility with other programs.', ';Do not remove them (MSDOS.SYS needs to be >1024 bytes).'];
+    for (let i = 0; i < 18; i++) pad.push(';' + 'x'.repeat(68) + String.fromCharCode(97 + i));
+    unlock('C:\\MSDOS.SYS'); fs.writeFile('C:\\MSDOS.SYS', W95FS.encode(`${own}\r\n${pad.join('\r\n')}\r\n`)); fs.setAttrs('C:\\MSDOS.SYS', HSR);
+  }
+}
 function installPrograms() {
   const stub = exeStub(), S = window.W95SYSTEM || {};
   const OURS = new Set(['CLAUDE.EXE', 'SESSTRAY.EXE', 'DBWIN.EXE']);   // (a program of this project's: its file is the one its translation is of, kept current)
@@ -3623,20 +3647,8 @@ function installPrograms() {
   for (const d of Object.values(S.ne || {})) if (d.fileName && !d.onDisk) put(join(WINDIR, d.fileName === 'PROGMAN.EXE' ? '' : 'SYSTEM', d.fileName), d.file);   // (a printer driver: as the Add Printer wizard copies it; Program Manager in the Windows folder, COPY.INF)
   // MS-DOS's command interpreter, where Setup puts it: the root's (IO.SYS starts it) and the Windows folder's
   const DOS = window.W95DOS; if (DOS) for (const p of ['C:\\COMMAND.COM', join(WINDIR, 'COMMAND.COM')]) put(p, DOS.files['COMMAND.COM']);
-  // MS-DOS itself, as Setup's SYS leaves C:: IO.SYS (the CD's WINBOOT.SYS, which the boot sector loads) and MSDOS.SYS,
-  // its settings, padded past 1024 bytes as IO.SYS requires (the lines Setup writes for programs that check its size)
-  if (DOS) {
-    const HSR = ATTR.HIDDEN | ATTR.SYSTEM | ATTR.READONLY, unlock = p => { try { fs.setAttrs(p, 0); } catch (_) { /* not there */ } };
-    unlock('C:\\IO.SYS'); put('C:\\IO.SYS', DOS.files['IO.SYS']); fs.setAttrs('C:\\IO.SYS', HSR);
-    try { if (fs.readText('C:\\CONFIG.SYS') === CONFIG_SYS_OLD && !fs.exists(join(WINDIR, 'HIMEM.SYS'))) fs.writeFile('C:\\CONFIG.SYS', CONFIG_SYS.replace(/\n/g, '\r\n')); } catch (_) { /* none */ }
-    let t = ''; try { t = fs.readText('C:\\MSDOS.SYS'); } catch (_) { /* written below */ }
-    if (t.length < 1024) {
-      const own = t.replace(/\r?\n/g, '\r\n').replace(/(\r\n)*$/, '') || '[Paths]\r\nWinDir=C:\\WINDOWS\r\nWinBootDir=C:\\WINDOWS\r\nHostWinBootDrv=C\r\n\r\n[Options]\r\nBootGUI=1\r\nLogo=1';
-      const pad = [';', ';The following lines are required for compatibility with other programs.', ';Do not remove them (MSDOS.SYS needs to be >1024 bytes).'];
-      for (let i = 0; i < 18; i++) pad.push(';' + 'x'.repeat(68) + String.fromCharCode(97 + i));
-      unlock('C:\\MSDOS.SYS'); fs.writeFile('C:\\MSDOS.SYS', W95FS.encode(`${own}\r\n${pad.join('\r\n')}\r\n`)); fs.setAttrs('C:\\MSDOS.SYS', HSR);
-    }
-  }
+  sysDisk(true);
+  try { if (fs.readText('C:\\CONFIG.SYS') === CONFIG_SYS_OLD && !fs.exists(join(WINDIR, 'HIMEM.SYS'))) fs.writeFile('C:\\CONFIG.SYS', CONFIG_SYS.replace(/\n/g, '\r\n')); } catch (_) { /* none */ }
   // and WIN.COM, which IO.SYS's shell runs to start Windows (Setup builds it from WIN.CNF)
   if (DOS && DOS.files['WINDOWS\\WIN.COM']) put(join(WINDIR, 'WIN.COM'), DOS.files['WINDOWS\\WIN.COM']);
   // and IFSHLP.SYS, the file system helper IO.SYS loads from the Windows folder as it starts
@@ -5374,7 +5386,8 @@ bootDisk();
 mountHostShares();
 pcBoot();
 loadTaskbar();
-desk.src = new FsSource(DESKTOP_DIR);
+// (the shell's desktop folder: Windows 95's; a disk of Windows 3.1 has none, its Program Manager is its shell)
+desk.src = fs.exists(DESKTOP_DIR) ? new FsSource(DESKTOP_DIR) : null;
 fs.on(() => dirty());
 Promise.all(ready).then(() => { resize(); kbd.focus(); dirty(); });
 // ---------------------------------------------------------------- events
