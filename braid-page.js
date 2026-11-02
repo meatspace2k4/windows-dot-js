@@ -304,7 +304,12 @@ window.W95BraidPage = function (ui) {
     const out = {};
     for (const [k, ex] of Object.entries(rec.machines)) { const a = k === 'system' ? sys() : live().find(x => x.path === k); if (!a) { out[k] = 'no such machine running'; continue; } out[k] = await a.cmd('import', [ex]); forgetKids(a); }
     watchStores(); ui.closeMenus();
-    const sh = ui.shell(), r = B.rebind([fs, sh], rec.page, { opaque: opaque(), skip: shellSkip }); shellBack(sh);
+    // (the shell's windows are not rebound: a machine's windows come from its next frame, as they are its own, and a
+    // window of the page's is code the record cannot carry. Matched by position to the booted shell's windows, the
+    // record's windows took over those objects (the Welcome window drew the CD's folder) and the rest were made with
+    // no procedure to draw them)
+    const sh = ui.shell(), skipArrive = (o, k) => shellSkip(o, k) || (o === sh && /^(windows|tasks|modals|active|menus|menuSrc|cap|drag|ghost|msgApp)$/.test(k));
+    const r = B.rebind([fs, sh], rec.page, { opaque: opaque(), skip: skipArrive }); shellBack(sh);
     W.regLoad(rec.registry, true);
     const disk = writeDisk(true);
     if (rec.line) Object.assign(line, B.Line.from(rec.line));
