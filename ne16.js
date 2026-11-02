@@ -1577,13 +1577,19 @@ P.postedPending = function (hwnd) {
 P.inputPendingFor = function (hwnd) {
   return !!this.asWindowTask(hwnd, () => this.user16(335).ax);                                        // GetInputState
 };
-/** fn run as the task of the started process that owns a window (as its main thread), the way that process's own
- *  calls for the window run: USER's SetActiveWindow activates only a window of the calling task */
+/** fn run as the task that owns a window (a started process's main thread, or a Windows 3.x task's own thread), the
+ *  way that task's own calls for the window run: USER's SetActiveWindow activates only a window of the calling task,
+ *  and a message sent into the window from the system's context goes to another queue than the window's, so USER
+ *  makes a send record for it on the task's queue, which the task answers only when it runs. The host's call ran on,
+ *  the record stayed on the queue, and the next such send linked it again (SUWIN, Windows 98 Setup's saving of the
+ *  system files: the hit test the host made for a press on its wizard, answered on the record a later GetMessage
+ *  took as a message to window 0, whose window procedure read as 0:FFFE) */
 P.asWindowTask = function (hwnd, fn) {
   const task = this.thread16 ? 0 : this.user16(224, [['w', hwnd]]).ax;                                 // GetWindowTask
   const pc = task && this.procs && [...this.procs.values()].find(c => c.tdb === task && c.main && c.main.state !== 'done');
-  if (!pc) return fn();
-  return this.asThread(pc.main, fn);   // (on a stack of the call's own: the task's holds its frames where it stopped)
+  if (pc) return this.asThread(pc.main, fn);   // (on a stack of the call's own: the task's holds its frames where it stopped)
+  const t = task && this.threadsById && [...this.threadsById.values()].find(x => x.task && x.tdb === task && x.state && x.state !== 'done');
+  return t ? this.asThread(t, fn) : fn();
 };
 /** fn run as thread t (null: as the main thread) */
 P.asThread = function (t, fn) {
