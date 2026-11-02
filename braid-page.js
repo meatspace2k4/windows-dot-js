@@ -308,8 +308,23 @@ window.W95BraidPage = function (ui) {
     // window of the page's is code the record cannot carry. Matched by position to the booted shell's windows, the
     // record's windows took over those objects (the Welcome window drew the CD's folder) and the rest were made with
     // no procedure to draw them)
-    const sh = ui.shell(), skipArrive = (o, k) => shellSkip(o, k) || (o === sh && /^(windows|tasks|modals|active|menus|menuSrc|cap|drag|ghost|msgApp)$/.test(k));
-    const r = B.rebind([fs, sh], rec.page, { opaque: opaque(), skip: skipArrive }); shellBack(sh);
+    const sh = ui.shell(), own = ['windows', 'tasks', 'modals', 'active', 'menus', 'menuSrc', 'cap', 'drag', 'ghost', 'msgApp'], kept = Object.fromEntries(own.map(k => [k, sh[k]]));
+    const r = B.rebind([fs, sh], rec.page, { opaque: opaque(), skip: (o, k) => shellSkip(o, k) || (o === sh && own.includes(k)) });
+    const recWins = Array.isArray(sh.windows) ? sh.windows : [], recActive = sh.active;   // (the record's windows, made anew: their fields, not their code)
+    Object.assign(sh, kept); shellBack(sh);   // (rebind gives the record's own of what it did not find live: the shell's are put back)
+    // the machines' windows as the record has them, placed as a frame's list would place them (a machine that holds
+    // its Win16Lock, as a task mid-way does, sends no list until the lock is let go: the page would show none of its
+    // windows meanwhile); the booted machines' windows the record has not are closed on the page
+    const appOf = a => a && (a.system ? sys() : live().find(x => x.path === a.path));
+    const placed = new Set(); let act = null;
+    for (const w of recWins) {
+      const a = w && w.native && appOf(w.app); if (!a) continue;
+      const n = { key: w.hwnd, hwnd: w.guestHwnd, x: w.x, y: w.y, w: w.w, h: w.h, title: w.title, cls: w.cls, iconic: !!w.min, modal: !!w.nativeModal, ex: w.transparent ? 0x20 : 0, ownerPid: w.ownerPid, win32: w.win32, parent: w.guestParent, preview: w.preview };
+      const nw = ui.adoptNative(a, n, { noTask: !!w.noTask, minimizable: !w.noTask }); placed.add(nw); if (w === recActive) act = nw;
+    }
+    for (const w of [...ui.windows()]) if (w.native && [sys(), ...live()].includes(w.app) && !placed.has(w)) ui.closeWin(w, true);
+    if (act) ui.setActive(act);
+    r.placed = placed.size;
     W.regLoad(rec.registry, true);
     const disk = writeDisk(true);
     if (rec.line) Object.assign(line, B.Line.from(rec.line));

@@ -1125,8 +1125,11 @@ class Machine {
       const u = (o, args) => p.user16(o, args).ax, buf = (p.wbufSel << 16) >>> 0;
       for (let h = u(262, [['w', u(286)], ['w', 5]]), n = 0; h && n < 256; h = u(262, [['w', h], ['w', 2]]), n++) {
         const cl = u(58, [['w', h], ['l', buf + 0x180], ['w', 64]]);
-        const x = p.byName && p.byName.get('USER32') && p.byName.get('USER32').exports, gt = x && x.get('GetWindowThreadProcessId');
-        wins.push({ h, cls: cl ? p.readA(p.wbufLin + 0x180, cl) : '', task: u(224, [['w', h]]), vis: !!u(49, [['w', h]]), tid: gt ? p.call(gt, [h, 0]) : null });
+        // (the thread by its task, from the machine's own records: a call into USER32 from the host runs its code
+        // in no process's view, and after an arrival that code was at another address, a page fault the machine took
+        // as its own)
+        const task = u(224, [['w', h]]), th = task && [...(p.threadsById || new Map()).values()].find(t => t.tdb === task && t.state !== 'done');
+        wins.push({ h, cls: cl ? p.readA(p.wbufLin + 0x180, cl) : '', task, vis: !!u(49, [['w', h]]), tid: th ? th.id : null });
       }
     }
     // MMSYSTEM's installed drivers (its list at DGROUP 30Ah: next at +0Ch, type at +0Ah, flags at +0Bh, devices at +6)
@@ -1538,6 +1541,12 @@ class Machine {
         const p = this.proc, S = self.W95SYSTEM || {}; p.dynCache = new Map();
         // (the 16/32-bit transitions in flight: each record's continuation found again by its kind's name, ne16.js retDone)
         for (const r of p.retRecs || []) if (r && !r.done) { if (!r.kind || !p.retDone[r.kind]) throw new Error(`a transition in flight without a continuation's name (${r.kind})`); r.done = p.retDone[r.kind]; }
+        // (the import thunks, by their names: the 16-bit ones' definitions (ne16.js K16) and the 32-bit ones' (win32.js
+        // API) are code the export cannot carry; one the moment has and this machine had not made came without them,
+        // and the first call through it died in api16. One of no definition is as thunk16For makes it: the native
+        // module's export answers it, found again as it is called (api16, t.native))
+        { const K16 = (self.W95NE16 || {}).K16 || {}; for (const t of p.th16 || []) if (t && t.key) { t.def = K16[t.key]; if (!t.def) delete t.native; } }
+        for (const t of p.thunks || []) if (t && t.dll) t.def = ((W.API || {})[t.dll] || {})[t.nm];
         for (const rec of p.modules || []) if (!rec.run) {
           const mod = rec.module instanceof WebAssembly.Module ? rec.module : rec.kind === 'vxd' ? (S.vxds[rec.file] || {}).mod : (Object.values(S.ne || {}).find(d => d.meta === rec.meta) || {}).mod;
           if (mod) rec.run = new WebAssembly.Instance(mod, p.imports).exports.run;
@@ -1552,6 +1561,13 @@ class Machine {
         if (this.alive) this.timer = setTimeout(() => this.step(), 0);
         return r;
       }
+      case 'views': {   // (a diagnostic: the modules' private data views and the arena, whose copies a thread switch swaps, and where the switches' time goes)
+        const pidOf = k => (k === null ? null : k === 0 ? 0 : k === undefined ? 'undef' : typeof k === 'object' ? (k.pid !== undefined ? k.pid : 'obj') : k);
+        return { pc0: p.pc0 ? p.pc0.pid : null, switchMs: p.switchMs || null,
+          priv: (p.modules || []).filter(m => m.priv && m.priv.init).map(m => ({ name: m.name, cur: pidOf(m.priv.cur), curIsPc0: m.priv.cur === p.pc0, keys: [...m.priv.bufs.keys()].map(pidOf), keyPc0: m.priv.bufs.has(p.pc0), bytes: m.priv.ranges.reduce((n, [lo, hi]) => n + hi - lo, 0) })),
+          arena: (p.arena || []).map(s => ({ lo: s.lo.toString(16), hi: s.hi.toString(16), cur: pidOf(s.cur), own: [...s.own].map(pidOf), bufs: [...s.bufs.keys()].map(pidOf) })) };
+      }
+      case 'steps': return (this.stepLog || []).slice(-(args[0] || 20));   // (a diagnostic: the last steps' timings, as the probe carries them, without the probe's calls into the machine)
       case 'kick': return;
       case 'exit': this.exited(args[0] || 0); return;
     }

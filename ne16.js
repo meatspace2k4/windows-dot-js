@@ -5012,7 +5012,8 @@ P.threads16 = function (nested = false, only = null) {
     if (t === caller || t.state === 'running' || t.blocked || (t.id === MAIN_TID && !caller) || (t.id === MAIN_TID && caller) || !t.state || t.state === 'done' || t.state === 'hung' || t.state === 'suspended' || (t.state === 'waiting' && t.wait && !t.wait.set)) continue;   // a thread that yielded with no event to wait for (in WaitEvent) runs again
     if (this.win16Held && this.win16Held.who !== t && !(caller && this.win16Held.who === caller)) continue;   // another thread holds the Win16Lock (a caller that yields hands its own over)
     const main = this.saveCtx16();
-    this.thread16 = t; t.sliceStart = this.now(); this.preempted = 0; this.imgUse(t.pc); if (this.thhookLin) this.tdbCurrent(t);
+    const sw = this.switchMs || (this.switchMs = { img: 0, load: 0, run: 0, save: 0, n: 0 }); let tm = performance.now();   // (a diagnostic: where a thread switch's time goes, cmd 'views')
+    this.thread16 = t; t.sliceStart = this.now(); this.preempted = 0; this.imgUse(t.pc); if (this.thhookLin) this.tdbCurrent(t); sw.img += performance.now() - tm; sw.n++;
     let r;
     try {
       if (t.state === 'new' && t.flat) {
@@ -5042,8 +5043,8 @@ P.threads16 = function (nested = false, only = null) {
         r = this.start16(t.start >>> 16, t.start & 0xffff, t.task ? [] : [['l', t.param]]);
       } else {
         // it yielded at its top level, so it holds no 16-bit stack aliases: it takes them from the level in use now
-        this.loadCtx16(t.ctx); this.stackLevel = main.stackLevel; t.state = 'running'; t.wait = null;
-        r = this.runTop(u32(this.cpu.eip.value));
+        tm = performance.now(); this.loadCtx16(t.ctx); this.stackLevel = main.stackLevel; t.state = 'running'; t.wait = null; sw.load += performance.now() - tm;
+        tm = performance.now(); r = this.runTop(u32(this.cpu.eip.value)); sw.run += performance.now() - tm;
       }
       // a thread that stopped in a wait gave up the processor there (the call's YIELD clears what its time running out
       // earlier in the run left) and lets the Win16Lock go; one whose time ran out in code keeps it. Its wait flags do
@@ -5051,7 +5052,7 @@ P.threads16 = function (nested = false, only = null) {
       // the lock go, another thread blitted on DIBENG's one blit stack (its line count at SS:0 run down to 0), and
       // WELCOME's blit went on from 0: `dec dword ss:[0]` 4 billion times, the hourglass at the first start
       t.preempted = r === 1 && !!this.preempted; this.holdWin16(t);
-      if (r === 1) { t.ctx = this.saveCtx16(); t.state = 'waiting'; }
+      if (r === 1) { tm = performance.now(); t.ctx = this.saveCtx16(); t.state = 'waiting'; sw.save += performance.now() - tm; }
       else {
         t.state = 'done'; this.wakeWaiters(t);
         // a fault in a program the system started ends that program, as Windows 95 closes the one program that
@@ -5093,7 +5094,7 @@ P.threads16 = function (nested = false, only = null) {
   // the lock the caller handed over comes back before it goes on: a thread whose time ran out in 16-bit code (inside
   // DIBENG's blit) holds it, and runs until it lets go, as the caller waits for the Win16Mutex
   for (let k = 0, h; caller && (h = this.win16Held && this.win16Held.who) && typeof h === 'object' && h !== caller && h.state === 'waiting' && k < 1000 && !this.trapped; k++) this.threads16(true, h);
-  } finally { this.inThreads = wasIn; this.threadsNest--; this.asTask = wasAs; if (caller) { this.preempted = wasPreempted; this.runT0 = t0; this.imgUse(caller.pc); } else this.imgUse(null); }
+  } finally { this.inThreads = wasIn; this.threadsNest--; this.asTask = wasAs; const tm2 = performance.now(); if (caller) { this.preempted = wasPreempted; this.runT0 = t0; this.imgUse(caller.pc); } else this.imgUse(null); if (this.switchMs) this.switchMs.img += performance.now() - tm2; }
 };
 /** a far call into 16-bit code that may yield: returns runAt's result (0 returned, 1 yielded) and leaves the
  *  CPU state as the code left it */

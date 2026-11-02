@@ -6036,6 +6036,16 @@ const braidUi = () => ({
   machines: () => [...machineWorkers], sysApp: () => sysApp, windows: () => windows, shared: () => sharedNow(),
   shell: () => ({ windows, tasks, modals, active, menus, menuSrc, cap, drag, ghost, screen, textClip, clipOwner, msgApp, cascadeN }),
   setShell: sh => { ({ windows, tasks, modals, active, menus, menuSrc, cap, drag, ghost, screen, textClip, clipOwner, msgApp, cascadeN } = sh); },
+  // a machine's window the page is told of (a moment arrived at: its windows as the record has them, braid-page.js
+  // arrive), placed as a frame's list places one, with no focus given to the machine; one the page has by that key
+  // takes the new place instead
+  adoptNative: (app, n, o = {}) => {
+    const key = n.key || n.hwnd; let w = app.wins.get(key);
+    if (w) w.set(n); else { w = new NativeWin(app, n); app.wins.set(key, w); windows.push(w); if (!w.noTask) tasks.push(w); }
+    Object.assign(w, o); if (o.noTask !== undefined && !o.noTask && !tasks.includes(w)) tasks.push(w);
+    windows = windows.filter(v => v !== w); windows.push(w); dirty(); return w;
+  },
+  setActive: w => { active = w; blinkOn = true; dirty(); },
   gfx: { K, fill, text, textW, btnUp, focusRect },
 });
 const braid = window.W95BraidPage ? window.W95BraidPage(braidUi()) : null;
