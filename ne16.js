@@ -683,18 +683,20 @@ P.rmStackGet = function () {
 };
 /** the system VM's interrupt vector table, in its memory at linear 0 as a PC's is: the vectors the personality answers
  *  (its BIOS and DOS, INTS) each to a stub in DOS memory that enters the host (0F FF n, then IRET: a far call through
- *  the vector reaches the handler as an INT does), the rest 0000:0000, as DOS leaves what nothing installed. A VxD
- *  that sets a vector (Set_V86_Int_Vector) writes it here, where code that reads the table itself finds it:
- *  VNETBIOS posts an NCB by a far call through the INT 5Ch vector read from 170h, having set that vector to an IRET
- *  of its own at its init if it was 0; read from the map alone it was 0 in memory, and the retf ran the null page's
- *  zeros up to FFFFh (SUWIN's "invalid instruction at 0137:0000FFFF" as Windows 98 Setup saved its system files) */
+ *  the vector reaches the handler as an INT does); every other vector to the stub's IRET alone, the dummy handler a
+ *  PC's BIOS points its unused vectors at. A VxD that sets a vector (Set_V86_Int_Vector) writes it here, where code
+ *  that reads the table itself finds it: VNETBIOS posts an NCB by Simulate_Far_Call of its `cli; retf` stub with the
+ *  INT 5Ch vector, read from 170h itself, pushed after; at its init it chains the vector it found behind a far jump
+ *  (the BIOS's IRET on a PC), or, finding 0000:0000, makes the stub `cli; iret` and the vector that IRET, which pops
+ *  the post's frame wrong. Read from the map alone the vector was 0 in memory (SUWIN's "invalid instruction at
+ *  0137:0000FFFF" as Windows 98 Setup saved its system files), and a table with 0 for it ended at 0137:0000FFF1 */
 P.rmIvtInit = function () {
   if (this.rmIvt) return this.rmIvt;
   const a = (this.dosTop + 15) & ~15; this.dosTop = a + 0x400; this.rmIvt = a;
   for (let n = 0; n < 256; n++) {
     this.u8.set([0x0f, 0xff, n, 0xcf], a + n * 4);
     const set = this.vxdVecs && this.vxdVecs.v86.get(n);
-    if (set) this.w32(n * 4, set); else if (INTS[n] && !this.r32(n * 4)) this.w32(n * 4, ((a >>> 4) << 16 | n * 4) >>> 0);
+    if (set) this.w32(n * 4, set); else if (!this.r32(n * 4)) this.w32(n * 4, ((a >>> 4) << 16 | (n * 4 + (INTS[n] ? 0 : 3))) >>> 0);
   }
   return a;
 };
