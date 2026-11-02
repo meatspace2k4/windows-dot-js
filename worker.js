@@ -117,13 +117,14 @@ class Machine {
     this.ring = o.ring; this.pending = new Map(); this.alive = true; this.savers = new Map();
     // the machine's own clock (host.now, Process.now: the VxDs' time-outs, USER's timers, the ticks programs read):
     // not the wall's. It moves by a quantum per BUDGET blocks the processor runs (win32.js tick) and by a step's
-    // period per step, so the same run of blocks reads the same times whatever the host's speed, a moment rewound
+    // period per step, so the same run of blocks reads the same times whatever the host's speed, a moment travelled
     // to runs on from its own time, and a step run ahead of the wall (fast: steps back to back, the period scaled)
     // runs the machine's time ahead with it: the progress bars that wait on time go faster than real time
     this.vclock = { now: 0, perTick: 0.25, period: 16, scale: 1 };
-    this.mods = [];     // (the scripts loaded over the machine as it ran, cmd 'reload': named in each moment)
+    this.mods = [];     // (the scripts loaded over the machine as it ran, cmd 'reload': { name, sum }, named beside each moment, braid.js mod)
+    this.until = null;  // (a machine time the machine runs to, fast, then answers: cmd 'until', the page's scrub)
   }
-  // ---------------------------------------------------------------- ring α: moments of the machine, taken and rewound to (braid.js)
+  // ---------------------------------------------------------------- ring α: moments of the machine, marked and travelled to (braid.js)
   /** the objects a moment keeps by reference, not by contents: the bundle's images and metadata, the page's file
    *  system (a proxy: never walked), the shell's proxy, the diagnostics' logs the page reads back */
   braidOpaque() {
@@ -144,13 +145,16 @@ class Machine {
   braidNamed() { const by = new Map(); for (const [v, k] of this.braidNames()) by.set(k, v); return name => by.get(name); }
   /** the properties of the machine's own object that are the host's live things, not the moment's: the step timer,
    *  the message channel, the input ring, the moments themselves, the clock's skew */
-  braidSkip(obj, k) { return (obj === this && (k === 'timer' || k === 'soonCh' || k === 'soonPending' || k === 'ring' || k === 'alive' || k === 'mods' || k === 'stepLog' || k === 'started' || k === 'fast')) || (obj === this.proc && (k === 'dynCache' || k === 'dynEnv')); }   // (the run-time translations: a cache of code, made again as the code runs; its wasm instances cannot be exported)
+  braidSkip(obj, k) { return (obj === this && (k === 'timer' || k === 'soonCh' || k === 'soonPending' || k === 'ring' || k === 'alive' || k === 'mods' || k === 'stepLog' || k === 'started' || k === 'fast' || k === 'until' || k === 'untilWait' || k === 'markWait')) || (obj === this.proc && (k === 'dynCache' || k === 'dynEnv')); }   // (the run-time translations: a cache of code, made again as the code runs; its wasm instances cannot be exported)
   /** the lint's record of the machine now (braid.js lint) */
   braidProbe() {
     const p = this.proc, held = p.win16Held ? { who: typeof p.win16Held.who === 'object' ? 'thread ' + p.win16Held.who.id : String(p.win16Held.who), since: p.win16Held.since, cpu: p.win16Held.cpu, hung: !!p.win16Held.hung } : null;
     const threads = [...(p.threadsById || new Map()).values()].map(t => ({ id: t.id, state: t.state, path: t.pc ? t.pc.path : null, blocked: !!t.blocked, preempted: !!t.preempted,
       cs: t.ctx ? t.ctx.cs & 0xffff : 0, ip: t.ctx ? t.ctx.eip >>> 0 : 0, wait: t.waitOn ? { on: (t.waitOn.hs || []).join(',') } : t.wait ? { on: t.wait.kind || 'object' } : null }));
-    return { now: p.now(), threads, held, faults: (p.faultLog || []).length + (p.fault ? 1 : 0), heapTop: p.heapTop, allocs: p.allocs ? p.allocs.size : 0, r0: p.r0Runs ? p.r0Runs.length : 0, queue: p.queue ? p.queue.length : 0, depth: p.depth, exited: p.exitCode };
+    const r0 = (p.r0Runs || []).find(s => !(s.vm && s.wait));   // (a ring-0 run in flight, where it is: the same place in two moments is a VxD that does not come back)
+    // (faults: the diagnostic log's count since the start (USER's parameter errors, LogError, code the machine found
+    // none at), a sign; fatal: the exceptions the system answered with a fault dialog or a blue screen, a broken state)
+    return { now: p.now(), threads, held, faults: (this.faultsTaken || 0) + (p.faultLog || []).length, fatal: (this.fatalN || 0) + (p.fault ? 1 : 0), heapTop: p.heapTop, allocs: p.allocs ? p.allocs.size : 0, r0: p.r0Runs ? p.r0Runs.length : 0, r0At: r0 ? (r0.eip >>> 0) : undefined, queue: p.queue ? p.queue.length : 0, depth: p.depth, exited: p.exitCode };
   }
   /** a moment of this machine, now (between two steps: no call of the host's in progress, every thread's state in its
    *  record): memory, registers and the host's objects as one graph from the machine's own object, the registry, the
@@ -164,17 +168,19 @@ class Machine {
     s.took = Math.round(performance.now() - t0);
     return s;
   }
-  /** the machine put back at a moment: its graph into the same objects, the registry's copy here, the input waiting in
-   *  the ring dropped, the clock set back to the moment's, the step timer started afresh. The page restores its own
-   *  parts (the disk, its registry) beside this */
-  braidRewind(s) {
+  /** the machine at a moment again: its graph into the same objects, the registry's copy here, the input waiting in
+   *  the ring dropped, the clock reading the moment's time, the step timer started afresh. The mods stay as they are
+   *  now (they are beside the moment, not in it: a fix is loaded, then the moment before the fault is travelled to).
+   *  The page puts its own parts (the disk, its registry) back beside this */
+  braidTravel(s) {
     const why = self.W95Braid.refuse(s, this.build || ''); if (why) throw new Error(why);
     const t0 = performance.now(); clearTimeout(this.timer);
     self.W95Braid.restoreGraph(s.sections.host.graph);
     W.regLoad(s.sections.registry.value);
     while (B.ringTake(this.ring));
-    this.keyq = []; this.mouseq = []; this.mods = s.mods.slice();
+    this.keyq = []; this.mouseq = [];
     this.vclock.now = s.now;   // (the machine's clock reads the moment's time again; the graph put it back as well)
+    this.until = null; if (this.untilWait) { const w = this.untilWait; this.untilWait = null; w({ at: s.now, left: true }); }
     this.faultTaken = false; this.stopped = false; this.txtGen = -1;
     if (this.proc.fault) this.proc.fault = null;
     this.timer = 0; this.soonPending = false;
@@ -670,11 +676,11 @@ class Machine {
     }
     p.stats.guestMs += performance.now() - t0;
     if (p.fault && !this.faultTaken) {
-      this.faultTaken = true;
+      this.faultTaken = true; this.fatalN = (this.fatalN || 0) + 1;   // (fatalN: the processor exceptions the system answered, a blue screen or a fault dialog: the lint's broken state, braidProbe)
       if (p.fault.ring === 0) { this.fatal(p.fault); if (this.alive) this.timer = setTimeout(() => this.step(), 16); return; }
       this.stopped = true; post({ t: 'fault', f: p.fault }); return;
     }
-    for (const f of (p.pcFaults || []).splice(0)) { f.pc.fault = true; this.faultBox(f); }
+    for (const f of (p.pcFaults || []).splice(0)) { f.pc.fault = true; this.fatalN = (this.fatalN || 0) + 1; this.faultBox(f); }
     if (p.trapped && !p.failed) p.fail(p.trapped);
     if (p.exitCode !== null || p.trapped) { this.exited(p.exitCode, p.trapped); return; }
     if (!p.win16Held) this.frame();
@@ -689,6 +695,10 @@ class Machine {
     // message rather than a timer, whose 16 ms left a third of a busy machine's time unused; an idle one waits 16 ms;
     // one run fast (cmd 'speed') steps again at once whatever it has to do)
     { const vc = this.vclock, ran = vc.now - (this.stepClock0 || 0), period = vc.period * vc.scale; if (ran < period) vc.now += period - ran; }   // (a step is a period of the machine's time at least: the blocks' quanta, or the idle period)
+    // (the time the machine was asked to run to, reached: a person's pace again, and the page told: cmd 'until')
+    if (this.until !== null && this.vclock.now >= this.until) { this.until = null; this.fast = false; this.vclock.scale = 1; const w = this.untilWait; this.untilWait = null; if (w) w({ at: this.vclock.now }); }
+    // (a moment asked for at a time of the clock, reached: taken now, between steps: cmd 'markAt')
+    if (this.markWait && this.vclock.now >= this.markWait.at) { const w = this.markWait; this.markWait = null; try { const s = this.braidMark(w.name); moments.set(s.name, s); w.ok({ ...self.W95Braid.describe(s), took: s.took }); } catch (e) { w.no(e); } }
     const busy = p.preempted || p.win16Held || performance.now() - t0 > 6;
     if (busy || this.keyq.length || this.fast) this.stepSoon(); else this.timer = setTimeout(() => this.step(), 16);
   }
@@ -1463,30 +1473,55 @@ class Machine {
         const l = (p.dynHook && p.dynHook.log) || []; p.dynHook = null; return l;
       }
       case 'trace': { if (args[0]) this.traceOn(args[0], args[1]); const l = this.traceLog || []; return l.splice(0); }   // (the calls traced so far; a thread regexp, and one for the import names, starts a trace)
-      case 'faults': return (p.faultLog || []).splice(0);   // (a diagnostic: the code the machine found none at, and why)
+      case 'faults': { const l = (p.faultLog || []).splice(0); this.faultsTaken = (this.faultsTaken || 0) + l.length; return l; }   // (a diagnostic: the code the machine found none at, and why; the count read stays counted for the lint's probe)
       // a script of the machine's (a stand-in: claude-app.js, shell32.js, ...) loaded again from the page's server into
       // the running machine, no restart: its def()s replace the functions in place (win32.js def), so the thunks made
       // already call the new ones; what the script keeps across a reload is its own affair (claude-app.js keeps its state)
+      // (the mod: the script's name and the sum of its text, braid.js mod, named beside each moment from here on)
       case 'reload': {
         const f = String(args[0] || '');
         if (!/^[\w.-]+\.js$/.test(f)) throw new Error(`reload: a script of the site's, by name (${f})`);
-        importScripts(`${f}?reload=${Date.now()}`);
-        this.mods.push(f);
-        return { reloaded: f };
+        const url = `${f}?reload=${Date.now()}`, x = new XMLHttpRequest(); x.open('GET', url, false); x.send();
+        if (x.status !== 200) throw new Error(`reload: ${f} did not load (${x.status})`);
+        importScripts(url);
+        const rec = self.W95Braid.mod(f, x.responseText); this.mods.push(rec);
+        return { reloaded: f, sum: rec.sum };
       }
-      // ring α (braid.js): a moment of the machine taken now, by name; the machine put back at one; the moments held
+      case 'mods': return this.mods.slice();
+      // ring α (braid.js): a moment of the machine marked now, by name; the machine at one again; the moments on its line
       case 'mark': { const s = this.braidMark(String(args[0] || 'moment')); moments.set(s.name, s); return { ...self.W95Braid.describe(s), took: s.took }; }
-      case 'rewind': { const s = moments.get(String(args[0])); if (!s) throw new Error(`no moment ${args[0]}`); return this.braidRewind(s); }
+      // (a moment at a time of the machine's own clock, taken at the end of the first step that reaches it: every
+      // machine of a shared session marks at the same time of the same run, so all hold the same state)
+      case 'markAt': {
+        const name = String(args[0] || 'moment'), at = Number(args[1]);
+        if (!(at > this.vclock.now)) { const s = this.braidMark(name); moments.set(s.name, s); return { ...self.W95Braid.describe(s), took: s.took, late: true }; }
+        if (this.markWait) { const w = this.markWait; this.markWait = null; w.no(new Error('another moment was asked for meanwhile')); }
+        return new Promise((ok, no) => { this.markWait = { name, at, ok, no }; });
+      }
+      case 'travel': { const s = moments.get(String(args[0])); if (!s) throw new Error(`no moment ${args[0]}`); return this.braidTravel(s); }
       case 'moments': return [...moments.values()].map(s => self.W95Braid.describe(s));
       case 'forget': return moments.delete(String(args[0]));
       case 'lint': { const a = moments.get(String(args[0])), b = args.length > 1 ? moments.get(String(args[1])) : null; if (!a) throw new Error(`no moment ${args[0]}`); return self.W95Braid.lint(a, b || { sections: { probe: { kind: 'json', value: this.braidProbe() } } }); }
+      case 'lintProbe': return this.braidProbe();   // (what the lint reads of the machine now)
+      // (a diagnostic: the DOS name calls whose name matches a regexp, with the function and the block they came from,
+      // ne16.js dosFull: [re] starts it, [] reads and clears the log, [null] ends it)
+      case 'doswatch': { if (!args.length) return (p.dosWatchLog || []).splice(0); if (args[0] == null) { p.dosWatch = null; return true; } p.dosWatch = new RegExp(String(args[0]), 'i'); p.dosWatchLog = []; return true; }
       case 'build': { this.build = String(args[0] || ''); return this.build; }
       // the machine run ahead of the wall: steps back to back, each a scaled period of the machine's time (x times the
       // 16 ms); 1 is the pace of a person's machine again. The clock as it reads now
       case 'speed': { const x = Math.max(1, Number(args[0]) || 1); this.fast = x > 1; this.vclock.scale = x; if (this.fast) this.kick(); return { scale: x, now: this.vclock.now }; }
       case 'now': return this.vclock.now;
-      // a moment of this machine as bytes and meta (braid.js serialize), for the page to keep on this computer; one
-      // brought back into this machine, booted afresh, by the paths of its objects (braid.js rebind)
+      // the machine run to a time of its own clock, fast (x the pace, 8), then at a person's pace again: answers when
+      // it is there ({ at }), or when travel left the run ({ at, left }); a time already past answers at once
+      case 'until': {
+        const t = Number(args[0]), x = Math.max(1, Number(args[1]) || 8);
+        if (!(t > this.vclock.now)) return { at: this.vclock.now };
+        if (this.untilWait) { const w = this.untilWait; this.untilWait = null; w({ at: this.vclock.now, left: true }); }
+        this.until = t; this.fast = true; this.vclock.scale = x; this.kick();
+        return new Promise(ok => { this.untilWait = ok; });
+      }
+      // a moment of this machine as bytes and meta (braid.js serialize), for the page to anchor on this computer; one
+      // arrived at in this machine, booted afresh, by the paths of its objects (braid.js rebind)
       case 'export': {
         // (a ring-0 run in flight across steps, a host call waiting on a return: continuations an export cannot carry;
         // the page asks again at a later step)
@@ -1501,6 +1536,8 @@ class Machine {
         // (a module's instance is this machine's own: one the export brought that this machine had not loaded gets
         // its instance from its module, as loading it made one; the run-time translations are made again as code runs)
         const p = this.proc, S = self.W95SYSTEM || {}; p.dynCache = new Map();
+        // (the 16/32-bit transitions in flight: each record's continuation found again by its kind's name, ne16.js retDone)
+        for (const r of p.retRecs || []) if (r && !r.done) { if (!r.kind || !p.retDone[r.kind]) throw new Error(`a transition in flight without a continuation's name (${r.kind})`); r.done = p.retDone[r.kind]; }
         for (const rec of p.modules || []) if (!rec.run) {
           const mod = rec.module instanceof WebAssembly.Module ? rec.module : rec.kind === 'vxd' ? (S.vxds[rec.file] || {}).mod : (Object.values(S.ne || {}).find(d => d.meta === rec.meta) || {}).mod;
           if (mod) rec.run = new WebAssembly.Instance(mod, p.imports).exports.run;

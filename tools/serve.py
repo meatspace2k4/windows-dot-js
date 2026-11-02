@@ -119,6 +119,11 @@ class H(http.server.SimpleHTTPRequestHandler):
         if m and int(m[1]) < len(CDS): return CDS[int(m[1])]['path']
         return super().translate_path(p)
     def send_head(self):
+        if self.path.split('?')[0] == '/__w98key':   # (the Windows 98 product key, from this server's environment (W98KEY) to the page, never to a file: bench/setup98.mjs; a page of this computer's only)
+            if self.client_address[0] not in ('127.0.0.1', '::1'): self.send_response(403); self.end_headers(); import io; return io.BytesIO(b'')
+            b = os.environ.get('W98KEY', '').encode()
+            self.send_response(200); self.send_header('Content-Type', 'text/plain'); self.send_header('Cache-Control', 'no-store'); self.send_header('Content-Length', str(len(b))); self.end_headers()
+            import io; return io.BytesIO(b)
         if self.path.split('?')[0] == '/__cd':   # (the CD images the drive can take: --iso's first, as cdrom.iso, then each --cd)
             b = json.dumps([{'name': c['name'], 'url': c['url']} for c in CDS if os.path.isfile(c['path'])]).encode()
             self.send_response(200); self.send_header('Content-Type', 'application/json'); self.send_header('Content-Length', str(len(b))); self.end_headers()

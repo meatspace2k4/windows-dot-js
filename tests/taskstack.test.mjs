@@ -21,7 +21,7 @@ const DG = 0x1cf7, DGB = 0x200000;
   const p = machine(); p.setDesc(DG, DGB, 0xffff);
   p.thread16 = { id: 86, task: { dgroup: DG, dgStack: true } };
   const src = DGB + 0xe000;
-  p.enter16from32(0x11a305b2, src, 8, 0, false, () => 0);
+  p.enter16from32(0x11a305b2, src, 8, 0, false, { kind: 'ret', ret: 0 });
   assert.equal(p.cpu.ss.value & 0xffff, DG);
   assert.equal(p.cpu.esp.value & 0xffff, 0xe000 - 4);   // (the far return to the way back)
   const k = p.retRecs.findIndex(r => r); assert.equal(p.retRecs[k].ssel, 0);   // (no alias to give back)
@@ -29,10 +29,10 @@ const DG = 0x1cf7, DGB = 0x200000;
 { // a Win32 thread (no task), or a flat stack outside the DGROUP: a stack alias as before
   const p = machine(); p.setDesc(DG, DGB, 0xffff);
   p.thread16 = { id: 90, task: { dgroup: DG, dgStack: true } };
-  p.enter16from32(0x11a305b2, 0x300000, 8, 0, false, () => 0);
+  p.enter16from32(0x11a305b2, 0x300000, 8, 0, false, { kind: 'ret', ret: 0 });
   assert.notEqual(p.cpu.ss.value & 0xffff, DG);
   const q = machine(); q.thread16 = null;
-  q.enter16from32(0x11a305b2, 0x300000, 8, 0, false, () => 0);
+  q.enter16from32(0x11a305b2, 0x300000, 8, 0, false, { kind: 'ret', ret: 0 });
   assert.ok((q.cpu.ss.value & 0xffff) >= L.DYN * 8);
 }
 console.log('taskstack: ok');

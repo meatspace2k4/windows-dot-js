@@ -1,9 +1,9 @@
 'use strict';
-// Ring α: the ground the processor's rings stand on, from which the machine's time is braided. A moment is the whole
-// machine at an instant, kept in memory and put back later (rewound), so the system's run is a line to move along,
-// not a sequence to repeat: a lock-up or a crash is left by going back to a moment before it and running on, with
-// the code changed meanwhile if need be (the scripts loaded over the machine as it runs, cmd 'reload', are not part
-// of a moment: it is named in it and runs under whatever is loaded when it is rewound to).
+// Ring α ("Braid"): the ground the processor's rings stand on, from which the machine's time is braided. A moment is
+// the whole machine at an instant, held in memory and travelled to, so the system's run is a line to move along, not
+// a sequence to repeat: a lock-up or a crash is left by travelling to a moment before it and going on, with the code
+// changed meanwhile if need be (the scripts loaded over the machine as it runs, cmd 'reload', are not part of a
+// moment: it names them, a sidecar, and runs under whatever is loaded when it is travelled to).
 //
 // A moment is a record of named sections, each a part of the machine's state, with a checksum over all of them and
 // the signature of the build that made it (braid.js, win32.js, ne16.js, vmm.js, v86.js, dyn.js, fs.js: the code that
@@ -17,11 +17,11 @@
 //   probe      what the lint reads: the threads, who holds the Win16Lock, the faults, the heap (a small record)
 //   registry   the registry, as its store loads it
 //   disk       (the page's) the file system's volumes, by the same graph
-//   mods       the scripts loaded over the machine while it ran: named, not kept
+//   mods       the scripts loaded over the machine while it ran: named (with the sum of their text), never carried
 //
 // The graph: an object is walked through its own data properties (never its getters, never its prototype); a Map, a
 // Set and an Array through their contents; a typed array and an ArrayBuffer are copied; a canvas by its pixels; a
-// function, a promise, a module, an instance and any platform object are kept by reference, not walked. Rewinding
+// function, a promise, a module, an instance and any platform object are held by reference, not walked. Travel
 // writes each object's properties back into the same object, so nothing made since the moment is reached from it
 // any more, and nothing that held an object before the moment loses it.
 (function () {
@@ -250,9 +250,12 @@ async function buildSignature(fetchText) {
 
 // ---------------------------------------------------------------- the lint: two moments of the same machine compared, for what looks like a machine that will not come back
 /** the probe of a machine's state the lint reads: { threads: [{ id, state, cs, ip, blocked, wait, preempted, path }], held: { who, since, cpu, hung },
- *  faults: n, heapTop, allocs, r0: n, queue: n, now }: taken by the worker (worker.js braidProbe) into the moment's `probe` section.
- *  The halting problem allows no proof; these are the signs: the lock held by one thread across both moments, a thread
- *  at the same place in both with its time running out each slice, faults since, a heap or a queue that only grows */
+ *  faults: n, fatal: n, heapTop, allocs, r0: n, r0At, queue: n, now, exited }: taken by the worker (worker.js braidProbe) into the
+ *  moment's `probe` section. The halting problem allows no proof; these are the signs: the lock held by one thread
+ *  across both moments, a thread at the same place in both with its time running out each slice, a ring-0 run at the
+ *  same place across both, lines in the fault log since, the machine's process ended, a heap or a queue that only grows.
+ *  Each finding has a level: `error` is a state the system does not come back from (a processor exception it answered
+ *  with a fault dialog or a blue screen, a hang the machine itself has called, its process ended), `warn` the look of one */
 function lint(a, b) {
   const out = [], A = a.sections.probe && a.sections.probe.value, B = b.sections.probe && b.sections.probe.value;
   if (!A || !B) return [{ level: 'info', what: 'no probe in one of the moments' }];
@@ -264,14 +267,141 @@ function lint(a, b) {
     if (t.state === 'running' && was.state === 'running' && t.cs === was.cs && t.ip === was.ip && t.preempted && was.preempted && dt > 1000) out.push({ level: 'warn', what: `thread ${t.id} (${t.path || '?'}) at ${(t.cs >>> 0).toString(16)}:${(t.ip >>> 0).toString(16)} in both moments, its time running out each slice: a spin`, thread: t.id });
     if (t.blocked && was.blocked && t.wait && was.wait && t.wait.on === was.wait.on && dt > 30000) out.push({ level: 'info', what: `thread ${t.id} blocked on ${t.wait.on} for ${Math.round(dt)} ms`, thread: t.id });
   }
-  if (B.faults > A.faults) out.push({ level: 'error', what: `${B.faults - A.faults} fault(s) since: code the machine found none at, or a processor exception` });
+  if (A.r0 && B.r0 && A.r0At !== undefined && A.r0At === B.r0At && dt > 2000) out.push({ level: 'warn', what: `a ring-0 run at ${(B.r0At >>> 0).toString(16)} in both moments, ${Math.round(dt)} ms apart: a VxD that does not come back` });
+  if ((B.fatal || 0) > (A.fatal || 0)) out.push({ level: 'error', what: `${B.fatal - (A.fatal || 0)} processor exception(s) the system answered since: a fault dialog, or a blue screen` });
+  if (B.faults > A.faults) out.push({ level: 'warn', what: `${B.faults - A.faults} line(s) in the fault log since: a parameter error, a LogError, or code the machine found none at` });
+  if (B.exited != null && A.exited == null) out.push({ level: 'error', what: `the machine's process ended (${B.exited})` });
   if (B.heapTop - A.heapTop > 8 << 20) out.push({ level: 'warn', what: `the heap grew ${((B.heapTop - A.heapTop) >> 20)} MB` });
   if (B.allocs - A.allocs > 5000) out.push({ level: 'warn', what: `${B.allocs - A.allocs} more live heap blocks: a leak` });
   if (B.queue > 200 && B.queue > A.queue) out.push({ level: 'warn', what: `${B.queue} messages waiting in USER's queues and growing` });
   return out;
 }
+/** what the findings add up to: `broken` (an error: the system does not come back), `suspect` (a warning), `ok` */
+function verdict(findings) { return findings.some(f => f.level === 'error') ? 'broken' : findings.some(f => f.level === 'warn') ? 'suspect' : 'ok'; }
 
-const api = { Ref, takeGraph, restoreGraph, serialize, rebind, make, checksum, refuse, describe, buildSignature, lint, BUILD_FILES, MAGIC, VERSION, fnv, fnvStr, FNV0 };
+// ---------------------------------------------------------------- mods: scripts loaded over the running machine, named beside a moment, never in it
+/** a mod's record: the script's name and the sum of its text, as the moments it ran under name it (a sidecar: the
+ *  moment holds the state, the record says what code was over it; the same script changed is another mod) */
+function mod(name, text) { return { name: String(name), sum: (fnvStr(FNV0, String(text || '')) >>> 0).toString(16).padStart(8, '0') }; }
+
+// ---------------------------------------------------------------- an anchored moment: everything as bytes and meta, on this computer
+// A moment held in the page's memory puts its objects back by identity; one anchored on this computer (IndexedDB) has
+// no identities and is arrived at by path (rebind). Its record: the magic, the version, the build, every machine's
+// export, the page's, the registry, the line and the mods, and a checksum over all of it, so a damaged copy or
+// another build's is refused the same way a moment in memory is
+const ANCHOR = 'W95ANCHOR';
+function anchor(o) {
+  const rec = { magic: ANCHOR, version: VERSION, name: String(o.name), at: o.at || Date.now(), now: o.now || 0, gen: o.gen || 0, build: o.build || '', mods: [...(o.mods || [])], machines: o.machines, page: o.page, registry: o.registry, line: o.line || null };
+  rec.sum = anchorSum(rec); return rec;
+}
+function anchorSum(rec) {
+  let h = fnvStr(FNV0, `${rec.magic}/${rec.version}/${rec.build}/${rec.name}/${rec.now}`);
+  const blob = b => (b instanceof Uint8Array ? b : new Uint8Array(b.buffer || b));
+  for (const k of Object.keys(rec.machines || {}).sort()) { const m = rec.machines[k]; h = fnvStr(h, k + JSON.stringify(m.meta) + JSON.stringify(m.roots) + JSON.stringify(m.registry || null) + m.now); h = fnv(h, blob(m.blob)); }
+  if (rec.page) { h = fnvStr(h, JSON.stringify(rec.page.meta) + JSON.stringify(rec.page.roots)); h = fnv(h, blob(rec.page.blob)); }
+  h = fnvStr(h, JSON.stringify(rec.registry || null) + JSON.stringify(rec.mods || []));
+  return h >>> 0;
+}
+function refuseAnchor(rec, build) {
+  if (!rec || rec.magic !== ANCHOR) return 'not an anchored moment';
+  if (rec.version !== VERSION) return `anchored moment version ${rec.version}, this code reads ${VERSION}`;
+  if (anchorSum(rec) !== rec.sum) return 'the anchored moment is damaged (checksum)';
+  if (build && rec.build && rec.build !== build) return `the moment is build ${rec.build}'s, this is ${build}: the state's meaning may differ`;
+  return null;
+}
+
+// ---------------------------------------------------------------- the line: the machine's time as a whole, in generations
+// Generation 0 is the run from the page's start. Travel to a moment begins the next generation, which grows from that
+// moment (in the generation it was taken in); the one left runs no further, but its moments stay on the line and are
+// travelled to again. Every moment is at a machine time (`at`: the system's machine's own clock, worker.js vclock), so
+// a time on the line names a place on it: the moment at or before it on the generation's lineage, and the run from
+// there to it. The journal keeps the API's actions by machine time, closed into segments between moments: a segment
+// from a moment with the same actions as one lived before is a span already computed, and its end is where it leads
+// (memo). Every fault a machine reports is an event on the line, under its generation
+class Line {
+  constructor() { this.gen = 0; this.forks = [{ gen: 0, from: null, fromGen: null, at: 0 }]; this.moments = new Map(); this.events = []; this.segments = []; this.j = { from: null, fromSum: null, at0: 0, actions: [] }; this.broken = new Map(); }
+  /** a moment taken: on the generation now, at machine time `at` */
+  took(m) {
+    const d = { name: String(m.name), gen: this.gen, at: m.at, wall: m.wall || Date.now(), sum: m.sum, build: m.build || '', mods: [...(m.mods || [])], bytes: m.bytes || 0 };
+    this.moments.set(d.name, d);
+    if (this.j.from !== null) this.segments.push({ from: this.j.from, fromSum: this.j.fromSum, to: d.name, toSum: d.sum, actions: this.j.actions.slice(), at0: this.j.at0, at1: d.at, gen: this.gen });
+    this.j = { from: d.name, fromSum: d.sum, at0: d.at, actions: [] };
+    return d;
+  }
+  forget(name) { this.broken.delete(String(name)); return this.moments.delete(String(name)); }
+  /** travel to a moment: the next generation grows from it (`how`: 'travel', 'anchor', 'memo', 'scrub') */
+  fork(name, how = 'travel', extra = {}) {
+    const m = this.moments.get(String(name));
+    // (the journal since the last moment, closed into an open segment (no end): the actions of the generation left, by time)
+    if (this.j.actions.length) this.segments.push({ from: this.j.from, fromSum: this.j.fromSum, to: null, toSum: null, actions: this.j.actions.slice(), at0: this.j.at0, at1: extra.now != null ? extra.now : null, gen: this.gen });
+    this.gen++; this.forks.push({ gen: this.gen, from: String(name), fromGen: m ? m.gen : null, at: m ? m.at : (extra.at || 0), how, left: this.gen - 1, ...extra });
+    this.j = { from: String(name), fromSum: m ? m.sum : null, at0: m ? m.at : (extra.at || 0), actions: [] };
+    return this.gen;
+  }
+  /** the generations a generation grew from, nearest first, each with the machine time its successor left it at */
+  lineage(gen = this.gen) {
+    const out = []; let g = gen, until = Infinity;
+    for (let n = 0; n < 10000 && g !== null && g !== undefined; n++) {
+      const f = this.forks.find(x => x.gen === g); if (!f) break;
+      out.push({ gen: g, until }); until = f.at; g = f.fromGen;
+    }
+    return out;
+  }
+  /** the moments of a generation's lineage in machine order: each generation's up to where the next left it */
+  along(gen = this.gen) {
+    const L = this.lineage(gen), out = [];
+    for (const m of this.moments.values()) { const l = L.find(x => x.gen === m.gen); if (l && m.at <= l.until) out.push(m); }
+    return out.sort((a, b) => a.at - b.at || a.wall - b.wall);
+  }
+  /** the latest moment at or before machine time t on the lineage, or null; `after`: the earliest past t */
+  before(t, gen = this.gen) { const a = this.along(gen).filter(m => m.at <= t); return a.length ? a[a.length - 1] : null; }
+  after(t, gen = this.gen) { return this.along(gen).find(m => m.at > t) || null; }
+  /** whether a generation's record runs past machine time t: a moment of its past t, or left (travelled away from) past t */
+  ranPast(gen, t) { for (const m of this.moments.values()) if (m.gen === gen && m.at > t) return true; return this.forks.some(f => f.fromGen === gen && f.at > t); }
+  /** the place on the line machine time t names: the moment at or before it on this lineage when the lineage has a
+   *  moment past t; else the newest generation left behind whose record runs past t, at its lineage's moment at or
+   *  before t (a scrub into a run left behind brings that run back, its actions with it); else this lineage's, the
+   *  run from there on being new. { moment, gen }, or null */
+  at(t) {
+    const cur = this.before(t);
+    if (cur && this.after(t)) return { moment: cur, gen: this.gen };
+    for (let g = this.gen - 1; g >= 0; g--) { if (!this.ranPast(g, t)) continue; const m = this.before(t, g); if (m) return { moment: m, gen: g }; }
+    return cur ? { moment: cur, gen: this.gen } : null;
+  }
+  /** the journal's actions of one generation between two machine times (the open journal's too when it is this one) */
+  actionsIn(gen, t0, t1) {
+    const out = [];
+    for (const s of this.segments) if (s.gen === gen) for (const a of s.actions) if (a.at > t0 && a.at <= t1) out.push(a);
+    if (gen === this.gen) for (const a of this.j.actions) if (a.at > t0 && a.at <= t1) out.push(a);
+    return out.sort((a, b) => a.at - b.at);
+  }
+  /** the line's extent in machine time, for a slider: the first moment's time and the last's (or `now`) */
+  extent(now) { let lo = Infinity, hi = -Infinity; for (const m of this.moments.values()) { lo = Math.min(lo, m.at); hi = Math.max(hi, m.at); } if (now !== undefined) { lo = Math.min(lo, now); hi = Math.max(hi, now); } return lo === Infinity ? null : { lo, hi }; }
+  /** an action of the API's, into the journal, at machine time `at` (filled in when the machine answers) */
+  note(a) { this.j.actions.push(a); return a; }
+  /** the journal's actions on this lineage between two machine times */
+  actionsBetween(t0, t1, gen = this.gen) {
+    const L = this.lineage(gen), out = [];
+    for (const s of this.segments) { const l = L.find(x => x.gen === s.gen); if (l) for (const a of s.actions) if (a.at > t0 && a.at <= t1 && a.at <= l.until) out.push(a); }
+    for (const a of this.j.actions) if (a.at > t0 && a.at <= t1) out.push(a);
+    return out.sort((a, b) => a.at - b.at);
+  }
+  /** the segment from the moment the line is at now whose actions are these ([[op, args], ...]) and whose end is a
+   *  moment on the line: a span already computed, its end where it leads. null when there is none */
+  memo(actions) {
+    const key = JSON.stringify(actions);
+    return this.segments.find(s => s.from === this.j.from && s.fromSum === this.j.fromSum && JSON.stringify(s.actions.map(a => [a.op, a.args])) === key && this.moments.has(s.to)) || null;
+  }
+  /** a fault a machine reported, on the line under its generation */
+  event(e) { this.events.push({ gen: this.gen, ...e }); return this.events[this.events.length - 1]; }
+  /** the line as data: the generation now, every fork, every moment (with the lint's verdict where it has one), the segments, the events */
+  describe() { return { gen: this.gen, forks: this.forks.map(f => ({ ...f })), moments: [...this.moments.values()].map(m => ({ ...m, verdict: this.broken.get(m.name) || m.verdict || null })), segments: this.segments.map(s => ({ from: s.from, to: s.to, gen: s.gen, at0: s.at0, at1: s.at1, actions: s.actions.length })), events: this.events.map(e => ({ gen: e.gen, t: e.t, machine: e.machine, fatal: e.fatal, why: e.fault && e.fault.why, fault: e.fault, faults: e.faults })), journal: { from: this.j.from, actions: this.j.actions.slice() } }; }
+  /** the line as a record (anchored beside a moment), and one made from a record */
+  toJSON() { return { gen: this.gen, forks: this.forks, moments: [...this.moments.values()], events: this.events.map(e => ({ gen: e.gen, t: e.t, machine: e.machine, fatal: e.fatal, fault: e.fault })), segments: this.segments, j: this.j, broken: [...this.broken] }; }
+  static from(o) { const l = new Line(); if (!o) return l; l.gen = o.gen || 0; l.forks = o.forks || l.forks; for (const m of o.moments || []) l.moments.set(m.name, m); l.events = o.events || []; l.segments = o.segments || []; l.j = o.j || l.j; l.broken = new Map(o.broken || []); return l; }
+}
+
+const api = { Ref, takeGraph, restoreGraph, serialize, rebind, make, checksum, refuse, describe, buildSignature, lint, verdict, mod, anchor, anchorSum, refuseAnchor, Line, BUILD_FILES, MAGIC, ANCHOR, VERSION, fnv, fnvStr, FNV0 };
 if (typeof self !== 'undefined') self.W95Braid = api;
 if (typeof window !== 'undefined') window.W95Braid = api;
 })();

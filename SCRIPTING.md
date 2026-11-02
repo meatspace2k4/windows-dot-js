@@ -68,33 +68,55 @@ waits for an element the same way and resolves with it. With coordinates the cal
 | `screenshot()` | the screen as a PNG data URL |
 | `state` | menus, modals, pointer capture, active window title |
 
-## Ring α: moments, rewinding (braid.js)
+## Ring α, "Braid": time travel through the running OS (braid.js, braid-page.js)
 
 The machine's run is a line to move along, not a sequence to repeat. A moment is everything at an instant: each
 machine's memory, registers and host-side objects (threads, tasks, VxD time-outs, VMs, heaps, faults: one graph,
-kept by identity and written back into the same objects), the registry, and the page's disk (the volumes' trees; a
-rewind writes the disk's store what the tree has again for every node written since). Moments live in memory and
-end with the page. A lock-up, a blue screen, a fault dialog: rewind to the moment before it and run on, with the
-machine's scripts changed meanwhile if need be (`reloadScript`; the mods loaded are named in the moment, not kept).
+held by identity and written back into the same objects), the registry, the page's disk (the volumes' trees; travel
+writes the disk's store what the tree has then for every node written since) and the shell. Every moment is at a
+time of the machine's own clock (`braid.now()`: a quantum per BUDGET blocks run and a period per step, so the same
+run reads the same times on every host, and a CPU-bound check ends at the same time everywhere), and the line is the
+whole of that time, in generations: travel to a moment forks it, the new generation grows from the moment, and the
+one left runs no further but its moments stay, to travel to again. A lock-up, a blue screen, a fault dialog: travel
+to the moment before it and go on, with the machine's scripts changed meanwhile if need be (`reloadScript`: a mod).
+
+Moments live in this page's memory and end with it, unless anchored on this computer (IndexedDB), where a page that
+starts later travels to them; neither needs a server. A moment is a record of named sections under a checksum and the
+signature of the build that made it (braid.js, win32.js, ne16.js, vmm.js, v86.js, dyn.js, fs.js): a damaged copy or
+another build's is refused. The lint compares moments and disallows system-breaking states (its verdict on each:
+`broken`, `suspect`, `ok`); the mods are named beside a moment, as a sidecar, never carried in it. In a shared
+session every person's marks and travels are the session's: each machine marks at the same machine time and travels
+to the same moment, so everyone is at the same place on one line.
 
 | Call | Does |
 | --- | --- |
-| `braid.mark(name)` | a moment of everything, now (between two steps; about half a second and the memory's size); resolves with what was taken (`bytes`, `objects`, `took`, the `build` signature, `sum`) |
-| `braid.rewind(name)` | everything put back at that moment: the machines first, then the file system and registry, then the disk's store (`disk.wrote`, `disk.removed`). The input waiting is dropped; the machine's clock goes back with it. Refused for a damaged moment (checksum) or one of another build (the signature of braid.js, win32.js, ne16.js, vmm.js, v86.js, dyn.js, fs.js) |
-| `braid.moments()`, `braid.forget(name)` | the moments held; one let go |
-| `braid.record({ every: 30000, keep: 3 })`, `braid.stop()`, `braid.recorded` | the line kept as the machine runs: a moment every `every` ms, the last `keep` held (`rec1`, `rec2`, ...), to rewind from when no one marked one |
-| `braid.lint(a, b?)` | the system's machine between two moments (or a moment and now): the signs of a machine that will not come back (the Win16Lock held by one thread across both, a thread at the same place with its time running out each slice, faults since, a heap or queue only growing). Heuristics: the halting problem allows no proof |
-| `braid.line` | the line in generations: `gen` now, `forks` (each generation after the first: the moment and generation it grew from, or a kept moment loaded), `moments` by the generation they were taken in, `events`: every fault a machine reported, with its record (the exception, registers, stack words, code path) and the machine's fault log then, under its generation |
+| `braid.mark(name?)` | a moment of everything, now (between two steps; about half a second and the memory's size), `m<n>` when unnamed; linted against the moment before it on the line. Resolves with what was taken (`bytes`, the `build` signature, `sum`, `verdict`, `findings`, `gen`). In a shared session, at a machine time 200 ms ahead, which every machine marks at |
+| `braid.travel(name, { force })` | to that moment, back or ahead, in any generation: the machines first, then the disk, registry and shell, then the disk's store (`disk.wrote`, `disk.removed`). The input waiting is dropped; the clock reads the moment's time; the mods loaded now stay. A moment anchored on this computer and not in this page's memory is arrived at in the page's machines, booted as they are, by the paths of their objects. Refused for a damaged moment, another build's, or one the lint found broken, unless `force` |
+| `braid.travel({ t })` | to machine time `t` on the line (a scrub, back or ahead): the moment at or before it on the lineage, then the run from there to `t`, fast (`speed`), with the journal's actions made again as the clock reaches each one's time; from where the line is when that is between the moment and `t` |
+| `braid.anchor(name?)` | the moment of now anchored on this computer (every machine's bytes and objects by name and path, the disk, the shell, the registry, the mods, the line), under a checksum and the build signature; marked on the line here as well. The memo's ground: a page that has it starts there, nothing run again |
+| `braid.moments()`, `braid.forget(name)` | every moment on the line (`here`: this page's memory; `anchored`: this computer; `gen`, `at`, `verdict`); one let go from both |
+| `braid.every(ms = 30000, keep = 3)`, `braid.auto` | the line marking itself as the machine runs, `t1`, `t2`, ..., the last `keep` held (one found broken is held beyond them): what a lock-up or a crash is travelled back from when no one marked a moment. `every(0)` ends it |
+| `braid.lint(a, b?)` | the system's machine between two moments (or a moment and now): `verdict` and `findings`. The signs of a machine that will not come back: the Win16Lock held by one thread across both, a thread at the same place with its time running out each slice, a ring-0 run at the same place, faults since, the process ended, a heap or queue only growing. Heuristics: the halting problem allows no proof |
+| `braid.memo(actions)` | a span already computed: the segment from the moment the line is at whose actions are these (`[[op, args], ...]`, as the journal has them) and whose end is on the line. The line travels to its end, the work between not done again (PIDGEN's key check, a copy): `{ from, to, ms, gen }`, or null |
+| `braid.line` | the line: `gen` now, `forks` (each generation: the moment and generation it grew from, `how`: travel, scrub, memo, anchor), `moments` with their verdicts, `segments` (each pair of moments, with how many actions between), `events` (every fault a machine reported, under its generation), `journal` |
+| `braid.journal` | the actions made through the API since the last moment (`click`, `dblclick`, `type`, `key`, `run`, `drag`, `open`), each stamped with the machine's clock; `segments`: each pair of moments with the actions between them |
 | `braid.same(a, b)` | two faults of the line compared record for record (by index into `line.events`, or `{ gen }` for a generation's last): `same`, and `diff` where they part |
-| `braid.now()`, `braid.speed(x)` | the machine's own clock (ms since its start: a quantum per BUDGET blocks run and a period per step, the same for the same run whatever the host; worker.js vclock), and the machine run ahead of the wall by `x`: steps back to back, each `x` periods, so what waits on time passes `x` times faster than real time (`speed(1)` is a person's pace again) |
-| `braid.journal` | the actions made through the API since the last moment, each stamped with the machine's clock; `segments`: each pair of moments with the actions between them |
-| `braid.skip(actions)` | the segment from the moment the line is at whose actions are these (`[[op, args], ...]`, as the journal has them) and whose end is held: the line jumps to its end, the work between not run again (`{ skipped, from, to, ms }`), or null |
-| `braid.replay(i)` | segment `i` run again from its moment: the same actions when the machine's clock reaches the time each was made at |
-| `braid.save(name)`, `braid.kept()`, `braid.load(name)`, `braid.drop(name)` | a moment kept on this computer (IndexedDB, this origin's: every machine's bytes and objects by name and path, the file system, the registry, the journal and the line) and brought back into the page's machines, booted as they are, by the paths of their objects (braid.js rebind); refused for another build's. The memo's ground: a page that has the moment starts there |
-| `sysApp.cmd('mark' \| 'rewind' \| 'moments' \| 'forget' \| 'lint' \| 'speed' \| 'now' \| 'export' \| 'import', [...])` | the same for one machine alone |
+| `braid.now()`, `braid.speed(x)` | the machine's own clock (ms since its start), and the machine run ahead of the wall by `x`: steps back to back, each `x` periods, so what waits on time passes `x` times faster than real time (progress bars included; `speed(1)` is a person's pace again) |
+| `braid.mods` | the scripts loaded over the running machine or page (`reloadScript`), `{ name, sum }` each: named beside every moment marked from then on |
+| `braid.window()`, Run > `braid` | the Braid window: the line as a slider (moments as ticks coloured by the lint, forks as wedges, the thumb at now); drag the thumb to a time or click a moment to travel; Mark, Anchor, Lint; the line marking itself |
+| `sysApp.cmd('mark' \| 'markAt' \| 'travel' \| 'moments' \| 'forget' \| 'lint' \| 'probe' \| 'speed' \| 'now' \| 'until' \| 'mods' \| 'export' \| 'import', [...])` | the same for one machine alone (`markAt`: at a time of its clock; `until`: run fast to a time and answer; `export`, `import`: its moment as bytes, and arrived at from them) |
 
-`bench/setup98.mjs`'s `pageDrive(key, { mark: true })` takes a moment before each of Setup's steps, keeping the last
-three: a step that faults is rewound from and run again.
+Events: `braid.mark`, `braid.travel`, `braid.scrub`, `braid.anchor`, `braid.lint` (`moment`, `from`, `verdict`,
+`findings`), `braid.broken` (the line marked itself and found the state broken), `braid.fault` (`gen`, `machine`,
+`fault`, `faults`, `index`), `braid.mod`.
+
+CLAUDE.EXE's Claude has it as its `Braid` tool (`action`: mark, travel, moments, lint, line, memo, anchor, every, mods,
+speed, now, forget, window), so a lock-up met while it works is left by travelling, and a fix loaded with
+`reloadScript` is tried from the moment before the fault. The page API is the test entry point.
+
+`bench/setup98.mjs`'s `pageDrive(key, { every: 30000 })` runs Windows 98 Setup with the line marking itself: a fault
+dialog or a broken verdict is travelled back from (the moment before it) and the step lived again, the fork recorded;
+the key check and each page already lived from the same moment are memo'd past.
 
 ## Events
 

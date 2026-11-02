@@ -3661,6 +3661,9 @@ P.dosCountry = function (ah, al) {
 };
 P.dosFull = function (name) {
   const W = window.W95FS; let p = String(name || '').replace(/\//g, '\\');
+  // (a diagnostic, cmd 'doswatch': each DOS name call whose name matches, with the function (AX), the thread, and the
+  // block the call came from, as a symbol)
+  if (this.dosWatch && this.dosWatch.test(p)) { const l = this.dosWatchLog || (this.dosWatchLog = []); if (l.length < 2000) l.push({ name: p, ax: (this.cpu.eax.value & 0xffff).toString(16), bx: (this.cpu.ebx.value & 0xffff).toString(16), thread: this.thread16 ? this.thread16.id : 'main', from: this.whereOf(this.lastBlock || 0) }); }
   if (/^[a-z]:\\/i.test(p) || p.startsWith('\\\\')) { /* full */ } else if (/^[a-z]:/i.test(p)) p = W.join(p.slice(0, 2) + '\\', p.slice(2));
   else if (p.startsWith('\\')) p = this.fs.cwd.slice(0, 2) + p; else p = W.join(this.fs.cwd, p);
   const unc = p.startsWith('\\\\'), parts = p.split('\\').filter((x, i) => x !== '' || i === 0), out = [];
@@ -4147,13 +4150,7 @@ def16('KERNEL', 517, '', 'jmp', function () {
   const n = this.r32(f + 4) & 0x7fffffff, mask = this.r32(f + 8), proc = this.r32(f + 12);
   const args = new Array(n);
   for (let i = 0; i < n; i++) { const v = this.r32(f + 16 + 4 * i); args[n - 1 - i] = mask & (1 << i) ? this.lin(v) : v; }
-  const save = {}; for (const r of GPR) save[r] = this.cpu[r].value; for (const [s, b] of SEGS) { save[s] = this.cpu[s].value; save[b] = this.cpu[b].value; }
-  save.done = function (c) {
-    const r = u32(this.cpu.eax.value); if (window.W95CP32) window.W95CP32(proc, args, r);
-    for (const g of GPR) this.cpu[g].value = c[g]; for (const [s, b] of SEGS) { this.cpu[s].value = c[s]; this.cpu[b].value = c[b]; }
-    this.cpu.eax.value = r | 0; this.cpu.edx.value = lo16(this.cpu.edx.value, r >>> 16);
-    return this.retf16(12 + 4 * n);
-  };
+  const save = { kind: 'cp32', proc, args, pop: 12 + 4 * n }; for (const r of GPR) save[r] = this.cpu[r].value; for (const [s, b] of SEGS) { save[s] = this.cpu[s].value; save[b] = this.cpu[b].value; }
   // on the flat alias of the 16-bit stack, as KRNL386's 16 -> 32 callbacks run
   for (const [s, b] of SEGS) { this.cpu[s].value = 0; if (s !== 'fsel') this.cpu[b].value = 0; }
   this.cpu.fs.value = this.tibFor();
@@ -4178,13 +4175,7 @@ def16('KERNEL', 518, '', 'jmp', function () {
   const ssb = u32(this.cpu.ssb.value), f = ssb + (this.cpu.esp.value & 0xffff);
   const n = this.r32(f + 4) & 0x7fffffff, mask = this.r32(f + 8), proc = this.r32(f + 12);
   const args = []; for (let i = 0; i < n; i++) { const v = this.r32(f + 16 + 4 * i); args.push(mask & (1 << i) ? this.lin(v) : v); }
-  const save = {}; for (const r of GPR) save[r] = this.cpu[r].value; for (const [s, b] of SEGS) { save[s] = this.cpu[s].value; save[b] = this.cpu[b].value; }
-  save.done = function (c) {
-    const r = u32(this.cpu.eax.value); if (window.W95CP32) window.W95CP32(proc, args, r);
-    for (const g of GPR) this.cpu[g].value = c[g]; for (const [s, b] of SEGS) { this.cpu[s].value = c[s]; this.cpu[b].value = c[b]; }
-    this.cpu.eax.value = r | 0; this.cpu.edx.value = lo16(this.cpu.edx.value, r >>> 16);
-    return this.retf16(0);
-  };
+  const save = { kind: 'cp32', proc, args, pop: 0 }; for (const r of GPR) save[r] = this.cpu[r].value; for (const [s, b] of SEGS) { save[s] = this.cpu[s].value; save[b] = this.cpu[b].value; }
   for (const [s, b] of SEGS) { this.cpu[s].value = 0; if (s !== 'fsel') this.cpu[b].value = 0; }
   this.cpu.fs.value = this.tibFor();
   let esp = f & ~3;
@@ -5314,7 +5305,32 @@ def16('KERNEL', 352, 'xpi', 'l', function (dsp, s, n) {                         
 // blocks below it (USER's WaitEvent in GetMessage) suspends the whole guest until a later slice, and threads that
 // interleave their transitions each come back to their own.
 const NRET = 256;
+// the continuations of the 16/32-bit transitions in flight, by kind: a record carries its data and the kind's name,
+// never a closure, so a moment anchored on this computer (braid.js) brings the record back and the continuation is
+// found again by its name (worker.js 'import')
+P.retDone = {
+  ret(c) { return c.ret; },                                                          // (FT_Thunk, QT_Thunk: on at the 32-bit return address)
+  common(c) { this.reg('esp', c.sp + (this.last16.ebx & 0xff)); this.reg('edi', c.edi0); return c.ret; },   // (Common32ThkLS: edi0 the caller's EDI, the record's own edi being the one the 16-bit side was given)
+  back32(c) { this.reg('esp', c.esp + 8); return c.ret; },                           // (W32S_BackTo32)
+  cp32(c) {                                                                          // (CallProc32W, _CallProcEx32W: the 16-bit caller's registers back, DX:AX the result)
+    const r = u32(this.cpu.eax.value); if (window.W95CP32) window.W95CP32(c.proc, c.args, r);
+    for (const g of GPR) this.cpu[g].value = c[g]; for (const [s, b] of SEGS) { this.cpu[s].value = c[s]; this.cpu[b].value = c[b]; }
+    this.cpu.eax.value = r | 0; this.cpu.edx.value = lo16(this.cpu.edx.value, r >>> 16);
+    return this.retf16(c.pop);
+  },
+  sl(c) {                                                                            // (an SL thunk: back to the 16-bit caller, dropping CL bytes of its arguments)
+    const n = this.cpu.ecx.value & 0xff;
+    for (const r of ['ebp', 'esi', 'edi', 'ebx']) this.cpu[r].value = c[r];
+    for (const [s, b] of SEGS) { this.cpu[s].value = c[s]; this.cpu[b].value = c[b]; }
+    const ip = this.r16(c.frame), cs = this.r16(c.frame + 2);
+    this.cpu.esp.value = lo16(c.esp, (c.esp & 0xffff) + 4 + n);
+    this.seg('cs', cs);
+    return u32(this.selBase(cs) + ip);
+  },
+};
 P.retToken = function (rec) {
+  if (!rec.kind || !this.retDone[rec.kind]) throw new Error(`a transition record without a continuation's name (${rec.kind})`);
+  rec.done = this.retDone[rec.kind];
   if (!this.retFree) { this.retFree = []; for (let k = NRET - 1; k >= 0; k--) this.retFree.push(k); this.retRecs = []; }
   const k = this.retFree.pop(); if (k === undefined) throw new GuestError('too many 16/32-bit transitions in flight');
   this.retRecs[k] = rec; return k;
@@ -5337,19 +5353,10 @@ for (let k = 0; k < NRET; k++) {
 }
 /** 16 -> 32 transition for SL thunks: EBX + 0x16 addresses the 16-bit arguments; the target returns with CL = argument bytes */
 P.enter32from16 = function (target) {
-  const ctx = { esp: this.cpu.esp.value, ebp: this.cpu.ebp.value, esi: this.cpu.esi.value, edi: this.cpu.edi.value, ebx: this.cpu.ebx.value };
+  const ctx = { kind: 'sl', esp: this.cpu.esp.value, ebp: this.cpu.ebp.value, esi: this.cpu.esi.value, edi: this.cpu.edi.value, ebx: this.cpu.ebx.value };
   for (const [s, b] of SEGS) { ctx[s] = this.cpu[s].value; ctx[b] = this.cpu[b].value; }
   const frame = u32((this.cpu.ssb.value >>> 0) + (this.cpu.esp.value & 0xffff));
-  ctx.frame = frame;
-  ctx.done = function (c) {   // back to the 16-bit caller, dropping CL bytes of its arguments
-    const n = this.cpu.ecx.value & 0xff;
-    for (const r of ['ebp', 'esi', 'edi', 'ebx']) this.cpu[r].value = c[r];
-    for (const [s, b] of SEGS) { this.cpu[s].value = c[s]; this.cpu[b].value = c[b]; }
-    const ip = this.r16(c.frame), cs = this.r16(c.frame + 2);
-    this.cpu.esp.value = lo16(c.esp, (c.esp & 0xffff) + 4 + n);
-    this.seg('cs', cs);
-    return u32(this.selBase(cs) + ip);
-  };
+  ctx.frame = frame;   // (the continuation: retDone.sl, back to the 16-bit caller, dropping CL bytes of its arguments)
   const back = this.thunkFor('KERNEL32', '__Ret32.' + this.retToken(ctx));
   for (const [s, b] of SEGS) { this.cpu[s].value = 0; if (s !== 'fsel') this.cpu[b].value = 0; }
   this.cpu.fs.value = this.tibFor();
@@ -5460,7 +5467,7 @@ KR('FT_Prolog', function () { return this.ftProlog(); });
 KR('FT_Thunk', function () {
   const ret = pop32(this);
   const ebp = this.reg('ebp'), map = this.r32(ebp - 20), target = this.r32(ebp - 52);
-  return this.enter16from32(target, this.reg('esp'), Math.min(ebp - this.reg('esp') - 0x40, 0x80), map, false, () => ret);
+  return this.enter16from32(target, this.reg('esp'), Math.min(ebp - this.reg('esp') - 0x40, 0x80), map, false, { kind: 'ret', ret });
 });
 for (let n = 0; n <= 56; n += 4) KR('FT_Exit' + n, function () {
   const ebp = this.reg('ebp');
@@ -5480,24 +5487,24 @@ P.ftProlog = function () {
 P.qtThunk = function () {
   const ret = pop32(this);
   const sp = this.reg('esp'), n = Math.min(this.reg('ebp') - sp, 64);
-  return this.enter16from32(this.reg('edx'), sp, n, 0, false, () => ret);
+  return this.enter16from32(this.reg('edx'), sp, n, 0, false, { kind: 'ret', ret });
 };
 /**
  * Enter a 16:16 target whose `n` argument bytes sit on the flat stack at `src`. As on Windows 95 the 16-bit stack
  * aliases the 32-bit one: SS:SP addresses the argument block in place, so anything the callee writes there is seen
  * by the 32-bit side. `map` marks argument dwords holding flat pointers into the block (converted to SS:offset).
  * The callee's far return comes back through a return thunk (return16to32), which puts the 32-bit registers back,
- * moves ESP past the bytes the callee popped and continues where `done` says. `ret32`: the callee returns with a
- * 32-bit far return (66h lret).
+ * moves ESP past the bytes the callee popped and continues where `cont` says (a record with its continuation's kind,
+ * retDone, and that kind's data). `ret32`: the callee returns with a 32-bit far return (66h lret).
  */
-P.enter16from32 = function (target, src, n, map, ret32, done) {
+P.enter16from32 = function (target, src, n, map, ret32, cont) {
   const sel = target >>> 16, off = target & 0xffff;
   // a Win16 task's flat stack is in its DGROUP (CallProc32W runs the 32-bit side there): the callback's SS is the
   // DGROUP itself, as Windows keeps a task's stack (its code takes DS from SS), not another selector for that memory
   const k = this.thread16 && this.thread16.task && this.thread16.task.dgStack ? this.thread16.task : null, dgb = k ? this.selBase(k.dgroup) : 0;
   const inDg = !!k && src >= dgb + 0x100 && src < dgb + this.selLimit(k.dgroup);
   const base = inDg ? dgb : (src - 0xf000) & ~0xf, ssel = inDg ? k.dgroup : this.stackSel(base);
-  const rec = { ebx: this.reg('ebx'), esi: this.reg('esi'), edi: this.reg('edi'), ebp: this.reg('ebp'), esp: this.reg('esp'), ret32, done, ssel: inDg ? 0 : ssel };
+  const rec = { ...cont, ebx: this.reg('ebx'), esi: this.reg('esi'), edi: this.reg('edi'), ebp: this.reg('ebp'), esp: this.reg('esp'), ret32, ssel: inDg ? 0 : ssel };
   this.seg('ss', ssel);
   let sp = src - base;
   if (map) for (let i = 0; i < 32; i++) if (map & (1 << i)) {
@@ -5530,10 +5537,7 @@ KR('#45', function () {          // Common32ThkLS: EAX = 16-bit common entry, CX
   this.reg('edi', lo16(edi, this.reg('ecx')));      // the target index goes to the 16-bit side only
   const sp = this.reg('esp');
   this.reg('esp', sp - 32);
-  return this.enter16from32(this.reg('eax'), sp - 32, n + 32, 0, true, function () {
-    this.reg('esp', sp + (this.last16.ebx & 0xff)); this.reg('edi', edi);
-    return ret;
-  });
+  return this.enter16from32(this.reg('eax'), sp - 32, n + 32, 0, true, { kind: 'common', sp, edi0: edi, ret });
 });
 // pointer mapping
 KR('SMapLS', function () { const a = this.reg('eax'); this.reg('edx', a >>> 16 ? this.mapLS(a) : 0); if (a >>> 16) this.reg('eax', this.reg('edx')); return ret32(this); });
@@ -5662,7 +5666,7 @@ API.KERNEL32['#51'] = ['regs', function () {
   // copied below, the target returns through a return thunk, which moves ESP back and goes on at `ret`
   const esp = this.reg('esp'), target = this.r32(esp), ret = this.r32(esp + 4);
   let sp = esp - 40; this.u8.copyWithin(sp, esp + 8, esp + 48);
-  sp -= 4; this.w32(sp, this.thunkFor('KERNEL32', '__Ret32.' + this.retToken({ done() { this.reg('esp', esp + 8); return ret; } })));
+  sp -= 4; this.w32(sp, this.thunkFor('KERNEL32', '__Ret32.' + this.retToken({ kind: 'back32', esp, ret })));
   this.reg('esp', sp);
   return target;
 }];

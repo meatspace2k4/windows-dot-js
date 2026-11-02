@@ -1,11 +1,11 @@
-// Ring α (braid.js): a moment of a machine taken and rewound to. (1) The graph: objects of every kind the machine's
+// Ring α (braid.js): a moment of a machine marked and travelled to. (1) The graph: objects of every kind the machine's
 // state is made of, changed in every way after the moment (properties set, added and deleted, Maps and Sets and
 // arrays refilled, typed arrays and memories written, one typed array replaced by a longer one), put back as they
 // were, in the same objects, so a closure that held one sees the moment's values. (2) A V86 machine running real-mode
-// code: a moment in the middle of its run, the run continued, the moment rewound, the same steps run again to the
-// same state: time travel within the recompilation. (3) The record: its checksum tells a damaged copy, its build
+// code: a moment in the middle of its run, the run continued, the moment travelled to, the same steps run again to
+// the same state: time travel within the recompilation. (3) The record: its checksum tells a damaged copy, its build
 // signature another build's; a moment's lint reads the probe. (4) The registry's copy put back, quietly and as
-// operations.
+// operations. The line, the anchored record and the verdicts: tests/braid-line.test.mjs.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 globalThis.window = globalThis; globalThis.self = globalThis;
@@ -37,14 +37,14 @@ const B = window.W95Braid, W = window.W95Win32, V = window.W95V86;
   assert.equal(root.nested.more, undefined); assert.equal(typeof root.fn, 'function'); assert.equal(root.gone, undefined);
   assert.equal(new Uint8Array(mem.buffer)[0x500], 0xaa); assert.equal(new Uint8Array(mem.buffer)[0x600], 0); assert.equal(g.value, 7);
   assert.equal(root.when.getTime(), 5, 'a date, by reference');
-  assert.equal(root.live, 'changed', 'a property left out of the moment is left alone by the rewind too');
+  assert.equal(root.live, 'changed', 'a property left out of the moment is left alone by travel too');
   // the record: a copy damaged after its checksum is refused; another build's too
   assert.equal(B.refuse(snap, 'b1'), null); snap.sections.host.graph.entries[0].props.push(['x', 1]); assert.match(B.refuse(snap, 'b1'), /damaged/);
   snap.sections.host.graph.entries[0].props.pop(); assert.equal(B.refuse(snap, 'b1'), null); assert.match(B.refuse(snap, 'b2'), /build b1/);
   assert.match(B.refuse({ magic: 'x' }, ''), /not a moment/);
 }
 
-// (2) a machine's run, braided: real-mode code counting at 0600h, a moment mid-run, rewound, the same run again
+// (2) a machine's run, braided: real-mode code counting at 0600h, a moment mid-run, travelled to, the same run again
 {
   const m = V.machine({}); m.v86 = 0;
   let top = 0x30000; Object.assign(m, { dosTop: 0x20000, alloc: n => { const a = top; top += (n + 15) & ~15; return a; } });
@@ -57,7 +57,7 @@ const B = window.W95Braid, W = window.W95Win32, V = window.W95V86;
   const snap = B.make({ host: { kind: 'graph', graph: B.takeGraph([m], { skip: (o, k) => k === 'dynEnv' }) } }, { name: 'mid', build: '' });
   run(5); const n1 = count(); assert.ok(n1 > n0, 'it ran on');
   B.restoreGraph(snap.sections.host.graph);
-  assert.equal(count(), n0, 'rewound: the counter as it was at the moment');
+  assert.equal(count(), n0, 'travelled to: the counter as it was at the moment');
   run(5); assert.equal(count(), n1, 'the same steps again, the same state: the run is a line to move along');
 }
 
@@ -83,7 +83,7 @@ const B = window.W95Braid, W = window.W95Win32, V = window.W95V86;
 // (3) the lint: the Win16Lock held by the same thread across two moments, a thread at the same place with its time running out, faults since
 {
   const probe = (now, o = {}) => ({ kind: 'json', value: { now, threads: [{ id: 5, state: 'running', cs: 0x1f, ip: 0x200, preempted: true, path: 'C:\\SUWIN.EXE' }], held: { who: 'thread 5', since: 100, hung: false }, faults: 0, heapTop: 0x400000, allocs: 10, r0: 0, queue: 0, ...o } });
-  const a = { sections: { probe: probe(1000) } }, b = { sections: { probe: probe(6000, { faults: 1 }) } };
+  const a = { sections: { probe: probe(1000) } }, b = { sections: { probe: probe(6000, { fatal: 1 }) } };
   const out = B.lint(a, b);
   assert.ok(out.some(x => /Win16Lock held by thread 5/.test(x.what)), 'the lock');
   assert.ok(out.some(x => /spin/.test(x.what) && x.thread === 5), 'the spin');
