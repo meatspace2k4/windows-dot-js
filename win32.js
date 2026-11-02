@@ -429,6 +429,7 @@ class Process {
   /** the dispatcher's question when the block budget runs out: 1 to give the processor back to the host here */
   tick(eip) {
     this.cpu.budget.value = BUDGET;
+    const vc = this.host.vclock; if (vc) vc.now += vc.perTick;   // (the machine's own clock: a quantum per BUDGET blocks, whatever the host's speed; worker.js vclock)
     if (this.inputPoll && !this.inPoll) { this.inPoll = true; try { this.inputPoll(); } finally { this.inPoll = false; } }   // interrupts: the keyboard's and the mouse's
     if (this.runLevel === this.yieldLevel && !this.noPreempt) {
       if (this.now() - this.runT0 < SLICE_MS) return 0;

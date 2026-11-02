@@ -96,7 +96,7 @@ W.Process.prototype.r0Idle = function () {
   if (due !== null && due <= 0) return true;
   const ms = due === null ? 200 : Math.min(due, 50);
   const got = lanRing ? B.frameWait(lanRing, ms) : (Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms), false);
-  if (machine) machine.poll();
+  if (machine) { machine.vclock.now += ms * machine.vclock.scale; machine.poll(); }   // (the wait is the machine's time too)
   return got || due !== null;
 };
 
@@ -115,7 +115,12 @@ class Machine {
   constructor(o) {
     Object.assign(this, o); this.keyq = []; this.mouseq = []; this.mods = {}; this.ax = -1; this.ay = -1; this.cursorOn = false; this.mouse = { x: -100, y: -100 };
     this.ring = o.ring; this.pending = new Map(); this.alive = true; this.savers = new Map();
-    this.nowSkew = 0;   // (the machine's clock behind real time, by what a rewind took back: host.now)
+    // the machine's own clock (host.now, Process.now: the VxDs' time-outs, USER's timers, the ticks programs read):
+    // not the wall's. It moves by a quantum per BUDGET blocks the processor runs (win32.js tick) and by a step's
+    // period per step, so the same run of blocks reads the same times whatever the host's speed, a moment rewound
+    // to runs on from its own time, and a step run ahead of the wall (fast: steps back to back, the period scaled)
+    // runs the machine's time ahead with it: the progress bars that wait on time go faster than real time
+    this.vclock = { now: 0, perTick: 0.25, period: 16, scale: 1 };
     this.mods = [];     // (the scripts loaded over the machine as it ran, cmd 'reload': named in each moment)
   }
   // ---------------------------------------------------------------- ring α: moments of the machine, taken and rewound to (braid.js)
@@ -129,7 +134,7 @@ class Machine {
   }
   /** the properties of the machine's own object that are the host's live things, not the moment's: the step timer,
    *  the message channel, the input ring, the moments themselves, the clock's skew */
-  braidSkip(obj, k) { return obj === this && (k === 'timer' || k === 'soonCh' || k === 'soonPending' || k === 'ring' || k === 'alive' || k === 'nowSkew' || k === 'mods' || k === 'stepLog' || k === 'started'); }
+  braidSkip(obj, k) { return obj === this && (k === 'timer' || k === 'soonCh' || k === 'soonPending' || k === 'ring' || k === 'alive' || k === 'mods' || k === 'stepLog' || k === 'started' || k === 'fast'); }
   /** the lint's record of the machine now (braid.js lint) */
   braidProbe() {
     const p = this.proc, held = p.win16Held ? { who: typeof p.win16Held.who === 'object' ? 'thread ' + p.win16Held.who.id : String(p.win16Held.who), since: p.win16Held.since, cpu: p.win16Held.cpu, hung: !!p.win16Held.hung } : null;
@@ -159,7 +164,7 @@ class Machine {
     W.regLoad(s.sections.registry.value);
     while (B.ringTake(this.ring));
     this.keyq = []; this.mouseq = []; this.mods = s.mods.slice();
-    this.nowSkew = performance.now() - s.now;   // (host.now reads the moment's time again)
+    this.vclock.now = s.now;   // (the machine's clock reads the moment's time again; the graph put it back as well)
     this.faultTaken = false; this.stopped = false; this.txtGen = -1;
     if (this.proc.fault) this.proc.fault = null;
     this.timer = 0; this.soonPending = false;
@@ -191,7 +196,7 @@ class Machine {
     const host = {
       memWatch: this.memwatch ? this.memwatch.split(',').map(v => parseInt(v, 16)) : null,
       dynAt: this.dynat ? this.dynat.split(',').map(v => (/^[0-9a-f]+$/i.test(v) ? parseInt(v, 16) : v)) : null,
-      fs, width: this.sw, height: this.sh, path: this.path, now: () => performance.now() - m.nowSkew, lan: !!(this.system && lanRing), system: !!this.system, vmPages: 2048, shared: true,   // (lan: the network stack and its card, as the system's machine has them; system: the Win16 tasks' process is its own)
+      fs, width: this.sw, height: this.sh, path: this.path, now: () => m.vclock.now, vclock: this.vclock, lan: !!(this.system && lanRing), system: !!this.system, vmPages: 2048, shared: true,   // (lan: the network stack and its card, as the system's machine has them; system: the Win16 tasks' process is its own)
       cursor: () => ({ x: m.mouse.x, y: m.mouse.y }), surface: (h, w, hh, win, pc) => {
         const canvas = new OffscreenCanvas(Math.max(1, w), Math.max(1, hh));
         if (!h) m.w32DesktopSurface = { canvas, w: canvas.width, h: canvas.height, pc, version: 1 };
@@ -605,7 +610,7 @@ class Machine {
   step() {
     clearTimeout(this.timer); this.timer = 0;
     if (!this.alive) return;
-    const p = this.proc, t0 = performance.now();
+    const p = this.proc, t0 = performance.now(); this.stepClock0 = this.vclock.now;
     try { this.poll(); } catch (e) { if (!(e instanceof W.FaultError)) throw e; }   // (recorded by r0Fault, answered below)
     // (an MS-DOS VM's event that waits holds that VM only (vmm.js vmEventRun): the system goes on, and the thread whose
     // call signals it runs. Held as ring 0 is, nothing ran but the wait, and WinOldAp's next SHELL call never came)
@@ -671,9 +676,11 @@ class Machine {
     }   // (no USER while a thread holds the lock: the page learns it is held, and has the screen)
     this.lastStepEnd = performance.now();
     // (a machine with work left (a thread's time ran out, or one holds the Win16Lock) steps again at once, through a
-    // message rather than a timer, whose 16 ms left a third of a busy machine's time unused; an idle one waits 16 ms)
+    // message rather than a timer, whose 16 ms left a third of a busy machine's time unused; an idle one waits 16 ms;
+    // one run fast (cmd 'speed') steps again at once whatever it has to do)
+    { const vc = this.vclock, ran = vc.now - (this.stepClock0 || 0), period = vc.period * vc.scale; if (ran < period) vc.now += period - ran; }   // (a step is a period of the machine's time at least: the blocks' quanta, or the idle period)
     const busy = p.preempted || p.win16Held || performance.now() - t0 > 6;
-    if (busy || this.keyq.length) this.stepSoon(); else this.timer = setTimeout(() => this.step(), 16);
+    if (busy || this.keyq.length || this.fast) this.stepSoon(); else this.timer = setTimeout(() => this.step(), 16);
   }
   /** the next step as soon as the worker's other messages (the page's input, commands) have had their turn */
   stepSoon() {
@@ -1464,6 +1471,28 @@ class Machine {
       case 'forget': return moments.delete(String(args[0]));
       case 'lint': { const a = moments.get(String(args[0])), b = args.length > 1 ? moments.get(String(args[1])) : null; if (!a) throw new Error(`no moment ${args[0]}`); return self.W95Braid.lint(a, b || { sections: { probe: { kind: 'json', value: this.braidProbe() } } }); }
       case 'build': { this.build = String(args[0] || ''); return this.build; }
+      // the machine run ahead of the wall: steps back to back, each a scaled period of the machine's time (x times the
+      // 16 ms); 1 is the pace of a person's machine again. The clock as it reads now
+      case 'speed': { const x = Math.max(1, Number(args[0]) || 1); this.fast = x > 1; this.vclock.scale = x; if (this.fast) this.kick(); return { scale: x, now: this.vclock.now }; }
+      case 'now': return this.vclock.now;
+      // a moment of this machine as bytes and meta (braid.js serialize), for the page to keep on this computer; one
+      // brought back into this machine, booted afresh, by the paths of its objects (braid.js rebind)
+      case 'export': {
+        if (this.proc.depth) throw new Error('a moment is taken between steps, not inside a call');
+        const B = self.W95Braid, graph = B.takeGraph([this], { opaque: this.braidOpaque(), skip: (o, k) => this.braidSkip(o, k) });
+        const ex = B.serialize(graph);
+        return { meta: ex.meta, roots: ex.roots, blob: ex.blob, registry: W.regDump(), probe: this.braidProbe(), now: this.vclock.now, build: this.build || '', mods: this.mods.slice() };
+      }
+      case 'import': {
+        const ex = args[0], B = self.W95Braid; clearTimeout(this.timer);
+        const r = B.rebind([this], { meta: ex.meta, roots: ex.roots, blob: ex.blob instanceof Uint8Array ? ex.blob : new Uint8Array(ex.blob) }, { opaque: this.braidOpaque(), skip: (o, k) => this.braidSkip(o, k), protos: { Machine, Process: W.Process } });
+        W.regLoad(ex.registry);
+        while (B.ringTake(this.ring));
+        this.keyq = []; this.mouseq = []; this.vclock.now = ex.now;
+        this.faultTaken = false; this.stopped = false; this.txtGen = -1; this.timer = 0; this.soonPending = false;
+        if (this.alive) this.timer = setTimeout(() => this.step(), 0);
+        return r;
+      }
       case 'kick': return;
       case 'exit': this.exited(args[0] || 0); return;
     }
@@ -1480,7 +1509,7 @@ self.onmessage = e => {
     W.log.watch(line => { if (!line.posted) post({ t: 'log', line }); });   // (this machine's log lines, to the page's ring)
     machine = new Machine(m.o); machine.start().catch(err => { console.error(err); post({ t: 'exited', code: -1, why: String(err && err.message || err) }); });
   } else if (m.t === 'cmd') {
-    const reply = (value, error) => { if (m.id) post({ t: 'reply', id: m.id, value: value === undefined ? null : value, error }); };
+    const reply = (value, error) => { if (m.id) post({ t: 'reply', id: m.id, value: value === undefined ? null : value, error }, value && value.blob instanceof Uint8Array ? [value.blob.buffer] : []); };   // (an export's bytes handed over, not copied)
     let value, error = null;
     try { value = machine && machine.alive ? machine.cmd(m.name, m.args || []) : undefined; } catch (err) { console.error(err); error = String(err.message || err); }
     if (value && typeof value.then === 'function') value.then(v => reply(v, null), err => reply(null, String(err && err.message || err)));

@@ -61,6 +61,25 @@ const B = window.W95Braid, W = window.W95Win32, V = window.W95V86;
   run(5); assert.equal(count(), n1, 'the same steps again, the same state: the run is a line to move along');
 }
 
+// (5) a moment exported (bytes and meta, no identities) and brought into another machine of the same shape, by the
+// paths of its objects: the memory and registers as exported, a thread the fresh machine lacks made anew with its
+// class, a closure the export could not carry kept as the fresh machine has it
+{
+  class Thread { constructor(id) { this.id = id; this.state = 'ready'; } get label() { return 't' + this.id; } }
+  const build = () => { const mem = new WebAssembly.Memory({ initial: 1, maximum: 1 }), g = new WebAssembly.Global({ value: 'i32', mutable: true }, 1); const t = new Thread(1); return { mem, cpu: { eip: g }, threads: new Map([[1, t]]), list: [t], fpu: new Uint8Array(4), host: { now: () => 'live' }, deep: { n: 1 } }; };
+  const a = build(); new Uint8Array(a.mem.buffer)[0x500] = 0x77; a.cpu.eip.value = 0x1234; a.threads.set(2, new Thread(2)); a.threads.get(2).state = 'running'; a.list.push(a.threads.get(2)); a.fpu[1] = 9; a.deep.n = 5; a.deep.more = { x: 1 };
+  const ex = B.serialize(B.takeGraph([a]));
+  const copy = JSON.parse(JSON.stringify({ meta: ex.meta, roots: ex.roots })); copy.blob = ex.blob.slice();   // (as it comes back from a store: plain data)
+  const b = build(); const hostFn = b.host.now;
+  const r = B.rebind([b], copy, { protos: { Thread } });
+  assert.equal(new Uint8Array(b.mem.buffer)[0x500], 0x77, 'the memory'); assert.equal(b.cpu.eip.value, 0x1234, 'a register');
+  assert.equal(b.threads.size, 2); assert.equal(b.threads.get(2).state, 'running'); assert.equal(b.threads.get(2).label, 't2', 'a thread made anew has its class');
+  assert.equal(b.threads.get(1), b.list[0], 'one object, by both paths'); assert.equal(b.list[1], b.threads.get(2));
+  assert.deepEqual([...b.fpu], [0, 9, 0, 0]); assert.equal(b.deep.n, 5); assert.deepEqual(b.deep.more, { x: 1 });
+  assert.equal(b.host.now, hostFn, 'a closure the export could not carry is the fresh machine\'s');
+  assert.ok(r.made.length >= 1 && r.matched > 5, JSON.stringify(r));
+}
+
 // (3) the lint: the Win16Lock held by the same thread across two moments, a thread at the same place with its time running out, faults since
 {
   const probe = (now, o = {}) => ({ kind: 'json', value: { now, threads: [{ id: 5, state: 'running', cs: 0x1f, ip: 0x200, preempted: true, path: 'C:\\SUWIN.EXE' }], held: { who: 'thread 5', since: 100, hung: false }, faults: 0, heapTop: 0x400000, allocs: 10, r0: 0, queue: 0, ...o } });
