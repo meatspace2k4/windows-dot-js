@@ -64,7 +64,7 @@ waits for an element the same way and resolves with it. With coordinates the cal
 
 | Call | Returns |
 | --- | --- |
-| `screen()` | `{ width, height, taskbar }`, `taskbar` the top row of the taskbar |
+| `screen()` | `{ width, height, taskbar, screen }`, `taskbar` the top row of the taskbar, `screen` what the `screen` event carries (`desktop`, `dos`, `black`, `logow`, `logos`): read it before waiting on the event, which comes only on a change |
 | `screenshot()` | the screen as a PNG data URL |
 | `state` | menus, modals, pointer capture, active window title |
 

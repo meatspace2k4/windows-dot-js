@@ -6001,7 +6001,7 @@ const script = {
   open(path) { openPath(path); dirty(); },
   saver(path) { startFullSaver(path); },
   stopSaver() { if (!fullSaver || !fullSaver.pid) return false; stopSaverProcess(fullSaver); fullSaver = null; return true; },
-  screen() { return { width: W, height: H, taskbar: barTop() }; },
+  screen() { return { width: W, height: H, taskbar: barTop(), screen }; },   // (screen: what the 'screen' event carries, readable before waiting on it)
   screenshot() { render(); return cv.toDataURL('image/png'); },
   // the machine the saver runs on, as its last frame reported it (the saver is a process of the system's machine, so
   // the counts are the machine's: its timers, its GL frames, its guest time; the bench takes differences while it runs)
