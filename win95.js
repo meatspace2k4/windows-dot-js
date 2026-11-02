@@ -3933,8 +3933,8 @@ class RemoteApp extends NativeApp {
       case 'audio': if (window.W95Sound) W95Sound.play(this, m.rate, m.l, m.r); return;
       case 'regop': W95Win32.regApply(m.o); logonChanged(m.o); return;
       case 'closeProgram': closeProgram(this); return;
-      case 'fault': this.stopped = true; faultDialog(this.progName(), m.f, () => this.exited(-1)); dirty(); return;   // (stopped: the mouse is the page's, pointerApp)
-      case 'faultDialog': faultDialog(this.progName(), m.f); return;
+      case 'fault': braidFault(this, m.f, true); this.stopped = true; faultDialog(this.progName(), m.f, () => this.exited(-1)); dirty(); return;   // (stopped: the mouse is the page's, pointerApp)
+      case 'faultDialog': braidFault(this, m.f, false); faultDialog(this.progName(), m.f); return;
       case 'pcFault':
         emit('program.exit', { path: m.path, code: -1, why: m.why });
         if (m.shown) return;   // (the machine's own fault dialog, worker.js faultBox)
@@ -6036,13 +6036,20 @@ function braidWatchStores() {
   }
 }
 const braidOpaque = () => { const o = new Set([fs.uncBackend]); for (const v of [...fs.vols.values(), ...fs.uncs.values()]) { if (v.disc) o.add(v.disc); if (v.remote) o.add(v.remote); if (v.store) o.add(v.store); } o.delete(null); o.delete(undefined); return o; };
+// the shell's own state: its windows (the ones it draws itself: a fault's box, a message box, a folder, and the
+// mirrors of the machines'), the active one, the modals, the menus, a capture or drag in progress, the clipboard: a
+// graph of its own in the moment, put back by assignment, so the screen after a rewind is the moment's screen. A
+// machine's page-side object (its worker, the calls in flight, its rings) is the host's live thing, left alone
+const braidShell = () => ({ windows, tasks, modals, active, menus, menuSrc, cap, drag, ghost, screen, textClip, clipOwner, msgApp, cascadeN });
+const braidShellSkip = (o, k) => (o && o.worker instanceof Worker && /^(worker|calls|nextCall|started|ring|rpcSab|lanRing|mem|modeBusy|modeDone|alive|lanStation|lanDetach|kids|kidsAsked)$/.test(k)) || (o === fs && k === 'subs');
 const braid = {
   /** a moment of everything, by name: resolves with what was taken */
   async mark(name = 'moment') {
     name = String(name); const build = await braidBuildSig(); braidWatchStores();
     const machines = {};
     for (const a of [...machineWorkers]) if (a.alive) { const r = await a.cmd('mark', [name]); if (!r) throw new Error(`the machine ${a.system ? 'system' : a.path} took no moment (inside a call: try again)`); machines[a.system ? 'system' : a.path] = { app: a, info: r }; }
-    const graph = W95Braid.takeGraph([fs], { opaque: braidOpaque() });
+    closeMenus();
+    const graph = W95Braid.takeGraph([fs, braidShell()], { opaque: braidOpaque(), skip: braidShellSkip });
     const s = W95Braid.make({ disk: { kind: 'graph', graph }, registry: { kind: 'json', value: W95Win32.regDump() } }, { name, build, now: Date.now() });
     s.machines = machines; braidMoments.set(name, s);
     return { ...W95Braid.describe(s), machines: Object.fromEntries(Object.entries(machines).map(([k, m]) => [k, m.info])) };
@@ -6054,7 +6061,9 @@ const braid = {
     const why = W95Braid.refuse(s, await braidBuildSig()); if (why) throw new Error(why);
     const out = {};
     for (const [k, m] of Object.entries(s.machines)) { if (!m.app.alive) { out[k] = 'gone'; continue; } out[k] = await m.app.cmd('rewind', [s.name]); if (!out[k]) throw new Error(`the machine ${k} refused the moment (see the console)`); m.app.kids = null; }
-    W95Braid.restoreGraph(s.sections.disk.graph);
+    closeMenus();
+    const [, sh] = W95Braid.restoreGraph(s.sections.disk.graph);
+    ({ windows, tasks, modals, active, menus, menuSrc, cap, drag, ghost, screen, textClip, clipOwner, msgApp, cascadeN } = sh);
     W95Win32.regLoad(s.sections.registry.value, true);
     const nodes = new Map(), stores = [];
     for (const v of fs.vols.values()) if (v.store && v.store.under) { stores.push(v.store.under); (function walk(n) { if (n.sid !== undefined) nodes.set(n.sid, n); if (n.dir) for (const k of n.kids.values()) walk(k); })(v.root); }
@@ -6068,7 +6077,8 @@ const braid = {
       wrote++;
     }
     diskTouched.clear(); fs.version++; dirty();
-    return { ...out, disk: { wrote, removed } };
+    braidLine.gen++; emit('braid.rewound', { gen: braidLine.gen, moment: s.name });
+    return { ...out, gen: braidLine.gen, disk: { wrote, removed } };
   },
   moments: () => [...braidMoments.values()].map(s => ({ ...W95Braid.describe(s), machines: Object.fromEntries(Object.entries(s.machines).map(([k, m]) => [k, m.info])) })),
   forget(name) { const s = braidMoments.get(String(name)); if (!s) return false; for (const m of Object.values(s.machines)) if (m.app.alive) m.app.cmd('forget', [s.name]); return braidMoments.delete(String(name)); },
@@ -6086,6 +6096,37 @@ const braid = {
   get recorded() { return braidRec.ring.slice(); },
 };
 const braidRec = { timer: null, n: 0, ring: [] };
+// the line itself, in generations: generation 0 is the run from the page's start; each rewind begins the next, from
+// the moment it went back to. Every fault a machine reports is written to the line as it comes, with the machine's
+// own record of it (win32.js faultInfo: the exception, its registers, the stack's words and the code path to it) and
+// the machine's fault log at that instant, under its generation: a fault of generation n and the same fault of
+// generation n+1 are compared record for record (braid.same), never from memory of what a dialog said
+const braidLine = { gen: 0, events: [] };
+function braidFault(app, f, fatal) {
+  const ev = { gen: braidLine.gen, t: Date.now(), machine: app.system ? 'system' : app.path, fatal, fault: f, faults: null };
+  braidLine.events.push(ev);
+  if (app.alive) app.cmd('faults').then(l => { ev.faults = l; emit('braid.fault', { gen: ev.gen, machine: ev.machine, fault: f, faults: l }); });
+  else emit('braid.fault', { gen: ev.gen, machine: ev.machine, fault: f, faults: null });
+}
+Object.assign(braid, {
+  /** the line: its generation now, and every fault written to it, by generation */
+  get line() { return { gen: braidLine.gen, events: braidLine.events.map(e => ({ ...e })) }; },
+  /** two faults of the line compared (by index into `line.events`, or the last of two generations): the same
+   *  exception at the same place on the same thread with the same stack words and the same path, or where they part */
+  same(a, b) {
+    const ev = x => (typeof x === 'number' ? braidLine.events[x] : braidLine.events.filter(e => e.gen === x.gen).slice(-1)[0]);
+    const A = ev(a), B = ev(b); if (!A || !B) return { same: false, why: 'no such fault on the line' };
+    const diff = [], fa = A.fault || {}, fb = B.fault || {};
+    for (const k of ['why', 'at', 'module', 'ring', 'thread', 'cr2', 'from', 'esp', 'ss']) if (JSON.stringify(fa[k]) !== JSON.stringify(fb[k])) diff.push({ what: k, a: fa[k], b: fb[k] });
+    for (const k of Object.keys({ ...(fa.regs || {}), ...(fb.regs || {}) })) if ((fa.regs || {})[k] !== (fb.regs || {})[k]) diff.push({ what: 'reg ' + k, a: (fa.regs || {})[k], b: (fb.regs || {})[k] });
+    const sa = fa.stack || [], sb = fb.stack || []; for (let i = 0; i < Math.max(sa.length, sb.length); i++) if (sa[i] !== sb[i]) diff.push({ what: 'stack ' + i, a: sa[i], b: sb[i] });
+    // (the machine's log of it: the thread, the block it came from, the code path, the stack as symbols)
+    const la = (A.faults || []).filter(x => x.thread !== 'host').slice(-1)[0] || {}, lb = (B.faults || []).filter(x => x.thread !== 'host').slice(-1)[0] || {};
+    for (const k of ['why', 'thread', 'from', 'fromIn', 'at', 'esp', 'ss']) if (JSON.stringify(la[k]) !== JSON.stringify(lb[k])) diff.push({ what: 'log ' + k, a: la[k], b: lb[k] });
+    for (const k of ['path', 'stack']) { const pa = la[k] || [], pb = lb[k] || []; for (let i = 0; i < Math.max(pa.length, pb.length); i++) if (pa[i] !== pb[i]) diff.push({ what: `log ${k} ${i}`, a: pa[i], b: pb[i] }); }
+    return { same: !diff.length, gens: [A.gen, B.gen], diff };
+  },
+});
 async function reloadScript(f) {
   f = String(f || ''); if (!/^[\w.-]+\.js$/.test(f)) throw new Error(`reloadScript: a script of the site's, by name (${f})`);
   if (WORKER_SCRIPTS.has(f)) { if (!sysApp || !sysApp.alive) throw new Error('reloadScript: the system\'s machine is not running'); return { machine: await sysApp.cmd('reload', [f]) }; }
