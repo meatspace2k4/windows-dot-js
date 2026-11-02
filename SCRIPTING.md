@@ -97,6 +97,22 @@ waits for an element the same way and resolves with it. With coordinates the cal
 Window, menu, saver and screen events are found by comparing the shell's state after each change, so the changes
 made by one call arrive together, windows before menus. File system events arrive as each change happens.
 
+### From outside the browser
+
+A page opened with `?debug=1` posts every event to the dev server (`tools/serve.py`), batched every 100 ms or 50
+events (`win95.events.flush()` posts what is waiting); the server keeps the last 2000 of each origin in memory, each
+numbered `n` in the order they arrived. A process outside the browser blocks on the next one instead of polling the page.
+The endpoints answer local requests sent as JSON only (`Content-Type: application/json`, from the page's own origin).
+
+| Endpoint or command | Does |
+| --- | --- |
+| `POST /__events` `{ origin, events: [...] }` | appends the events to `origin`'s ring (the page sends `location.host`); 204 |
+| `GET /__events?since=n&wait=ms&match=re&origin=host` | `{ next, events }`: the events after `n` whose `type` matches `re`, each with `n` and `origin`, at once, or waiting up to `wait` ms (60 s at most) for one; no `since` is after the newest; `origin` with or without its port, all origins without it; ask again with `since=next` |
+| `node tools/events.mjs wait <endpoint> <type-regexp> [timeout-ms]` | prints the first matching event after it starts as JSON and exits 0, or exits 1 at the timeout (60 s) |
+| `node tools/events.mjs tail <endpoint>` | prints every event from now on, a line of JSON each |
+
+`endpoint` is the dev server's base URL, `http://127.0.0.1:8141`.
+
 ### Over the control port
 
 A DevTools client receives every event as JSON by registering the binding `__w95event`:

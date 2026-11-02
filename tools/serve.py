@@ -67,9 +67,44 @@ ERRNO = {2: 'ENOENT', 20: 'ENOTDIR', 13: 'EACCES', 1: 'EACCES', 17: 'EEXIST', 66
 
 from claude_api import local_request, claude, fetch_page
 
+# the pages' win95 events (?debug=1 pages post them), for a process outside the browser to wait on: kept in memory,
+# the last 2000 of each origin, each with a sequence number n counted across all origins
+import threading, urllib.parse
+EVENTS = {}; EVENTS_N = 0; EVENTS_CV = threading.Condition()
+def events_post(origin, evs):
+    global EVENTS_N
+    with EVENTS_CV:
+        ring = EVENTS.setdefault(origin, [])
+        for e in evs:
+            if not isinstance(e, dict): continue
+            EVENTS_N += 1; ring.append({**e, 'n': EVENTS_N, 'origin': origin})
+        del ring[:-2000]
+        EVENTS_CV.notify_all()
+def events_get(q):
+    """{ next, events }: the events after since (the newest's n when not given) whose type matches, waiting up to wait ms
+    for one; next is the since that asks for the ones after these"""
+    try: since = int(q['since'][0]) if 'since' in q else None; wait = min(max(int(q.get('wait', ['0'])[0]), 0), 60000) / 1000
+    except ValueError: return None
+    try: match = re.compile(q.get('match', [''])[0])
+    except re.error: return None
+    origin = q.get('origin', [None])[0]
+    def mine(o): return origin is None or o == origin or o.rsplit(':', 1)[0] == origin
+    with EVENTS_CV:
+        if since is None: since = EVENTS_N
+        def found(): return [e for o, ring in EVENTS.items() if mine(o) for e in ring if e['n'] > since and match.search(str(e.get('type', '')))]
+        r = EVENTS_CV.wait_for(found, wait) or []
+        r.sort(key=lambda e: e['n'])
+        return {'next': EVENTS_N, 'events': r}
+
 class H(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith('/__session') and SESSIONS.handle(self, 'GET'): return
+        if self.path.split('?')[0] == '/__events':
+            if not local_request(self): self.send_error(403); return
+            r = events_get(urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query))
+            if r is None: self.send_error(400); return
+            b = json.dumps(r).encode(); self.send_response(200); self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(b))); self.end_headers(); self.wfile.write(b); return
         super().do_GET()
     def do_POST(self):   # /__share: the shares' list, an operation on one ({ ok } or { err }), and the host's name
         if self.path.startswith('/__session') and SESSIONS.handle(self, 'POST'): return
@@ -83,6 +118,14 @@ class H(http.server.SimpleHTTPRequestHandler):
             try: q = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')
             except ValueError: self.send_error(400); return
             claude(self, q); return
+        if self.path.split('?')[0] == '/__events':   # { origin, events }: a page's events (the ring above)
+            if not local_request(self): self.send_error(403); return
+            try: q = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')
+            except ValueError: self.send_error(400); return
+            evs = q.get('events') if isinstance(q, dict) else None
+            if not isinstance(evs, list): self.send_error(400); return
+            events_post(str(q.get('origin') or self.headers.get('Host') or ''), evs)
+            self.send_response(204); self.end_headers(); return
         if self.path.split('?')[0] != '/__share': self.send_error(404); return
         q = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')
         if q.get('op') == '$list': r = [{'name': x['name'], 'remark': ''} for x in SHARES if os.path.isdir(x['path'])]

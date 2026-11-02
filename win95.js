@@ -5738,4 +5738,17 @@ const ccdUi = () => ({
   Win, DialogBody, popup: openPopup, on: script.on,
 });
 window.win95 = { ...script, get ccd() { return ccdApi || (ccdApi = window.W95Ccd ? window.W95Ccd(ccdUi()) : null); }, get nativeApps() { return [...nativeApps]; }, get dos() { return [...dosMachines]; }, startSystem, get sysApp() { return sysApp; }, netBoot, netCall, syncNetDrives, mapNetDrive, disconnectNetDrive, fs, render, displayProperties, startFullSaver, get fullSaver() { return fullSaver; }, properties, driveProps, openFolder, openPath, shellOpen, notepad, msgBox, runDialog, findComputer, findFiles, winHelp, shutDownDialog, MyComputer, get state() { return { menus: menus.length, menuSrc, modals: modals.length, cap: !!cap, drag: !!drag, screen, active: active && active.title }; } };
+// ?debug=1: every event posted to the dev server's /__events (tools/serve.py), for a process outside the browser to
+// wait on (tools/events.mjs); batched every 100 ms or 50 events, and a post that fails is dropped
+if (DEBUG) {
+  const buf = []; let timer = 0;
+  const flush = () => {
+    clearTimeout(timer); timer = 0;
+    if (!buf.length) return Promise.resolve();
+    let body; try { body = JSON.stringify({ origin: location.host, events: buf.splice(0) }); } catch (_) { return Promise.resolve(); }
+    return fetch('/__events', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body }).then(() => {}, () => {});
+  };
+  script.on('*', ev => { buf.push(ev); if (buf.length >= 50) flush(); else if (!timer) timer = setTimeout(flush, 100); });
+  window.win95.events = { flush };
+}
 })();
