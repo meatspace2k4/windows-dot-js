@@ -3936,6 +3936,7 @@ class RemoteApp extends NativeApp {
       case 'fault': braidFault(this, m.f, true); this.stopped = true; faultDialog(this.progName(), m.f, () => this.exited(-1)); dirty(); return;   // (stopped: the mouse is the page's, pointerApp)
       case 'faultDialog': braidFault(this, m.f, false); faultDialog(this.progName(), m.f); return;
       case 'pcFault':
+        braidFault(this, m.f || { why: m.why, program: m.path }, false);
         emit('program.exit', { path: m.path, code: -1, why: m.why });
         if (m.shown) return;   // (the machine's own fault dialog, worker.js faultBox)
         if (m.f) faultDialog(basename(m.path).replace(/\.[^.]*$/, '').toUpperCase(), m.f);

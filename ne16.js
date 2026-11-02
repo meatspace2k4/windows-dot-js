@@ -2271,6 +2271,9 @@ vxdApi(0x0033, 'CONFIGMG', {
     const arg = cmArgs(this), dn = this.cmNode(arg(1)); if (!dn || !dn.parent) return CR.INVALID_DEVNODE;
     const sib = dn.parent.children, n = sib[sib.indexOf(dn) + 1]; if (!n) return CR.NO_SUCH_DEVNODE; this.w32(this.lin(arg(0)), n.handle); return CR.SUCCESS;
   },
+  // Get_Depth(far *depth, dn, flags): how many parents above it, the root's 0 (NETDI, walking up from a network
+  // device's devnode as Windows 98 Setup identifies the computer)
+  8() { const arg = cmArgs(this), dn = this.cmNode(arg(1)); if (!dn) return CR.INVALID_DEVNODE; let d = 0; for (let x = dn; x.parent; x = x.parent) d++; this.w32(this.lin(arg(0)), d); return CR.SUCCESS; },
   // the logical configurations and their resource descriptors, as CONFIGMG gives them to ring-0 callers (vmm.js), the
   // pointers here 16:16: Add_Empty_Log_Conf(far *lc, dn, priority, flags), Get_First_Log_Conf(far *lc, dn, flags),
   // Get_Next_Log_Conf(far *lc, lc, flags), Add_Res_Des(far *rd, lc, resource, far data, len, flags),
