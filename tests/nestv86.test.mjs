@@ -76,9 +76,21 @@ const P = window.W95Win32.Process.prototype, { INTS } = window.W95NE16, V = wind
   svc(0x85);
   assert.ok(!m.trapped && !m.rmode, 'the post came back: ' + m.trapped);
   svc(0x86);
+  // a post made while one runs (NETBEUI's timer from the host's poll between the blocks of the first): its frame
+  // below the running one's stack pointer, its own return; the first's frame untouched, its IRET to its own return.
+  // (On the same frame the second's IRET went to 0000:FFF8: SUWIN's invalid instruction at 0137:0000FFF8)
+  let inner = null; const run0 = m.rmRun;
+  m.rmRun = function (eip, ret, what) { const self = this; if (!inner) { inner = 'running'; const c = self.cpu, keep = {}; for (const k of Object.keys(c)) keep[k] = c[k].value; m.rmRun = run0; P.rmFarCall.call(self, C, 0x700, 0, [['w', 0x0202]], [['w', vec >>> 16], ['w', vec & 0xffff]]); inner = 'done'; for (const k of Object.keys(c)) c[k].value = keep[k]; } return run0.call(this, eip, ret, what); };
+  const frame = m.rmStack + 0xff8 - 2 * 3; dv.setUint16(frame, 0x1234, true);   // (just below where the first frame goes: untouched by a nested call framed below the first's stack pointer)
+  svc(0x82); m.cpu.eax.value = 0x0202; svc(0x4d); m.cpu.ecx.value = 0x0700; m.cpu.edx.value = 0; svc(0x48); m.cpu.eax.value = vec >>> 16; svc(0x4d); m.cpu.eax.value = vec & 0xffff; svc(0x4d);
+  svc(0x85);
+  assert.equal(inner, 'done', 'the nested post ran'); assert.ok(!m.trapped && !m.rmode, 'and the first came back: ' + m.trapped);
+  assert.equal(dv.getUint16(frame, true), 0x1234, 'the word below the first frame untouched: the nested post framed below the stack pointer, not at the top');
+  svc(0x86);
   // (what the init does when it finds 0000:0000, as the table gave it before: the retf made an IRET, the vector that
   // IRET; the post's first IRET pops the vector and the return's IP as flags, the second runs on garbage)
   dv.setUint32(0x170, 0, true); m.u8.set([0xfa, 0xcf, 0xea, 0, 0, 0, 0], 0x7100); dv.setUint32(0x170, 0x07100001, true);
+  for (let a = 0x2000; a < 0x7000; a += 2) { m.u8[a] = 0x0f; m.u8[a + 1] = 0x0b; }   // (UD2 everywhere the garbage frame can lead: a wrong return is seen, not run through)
   svc(0x82); m.cpu.eax.value = 0x0202; svc(0x4d); m.cpu.ecx.value = 0x0710; m.cpu.edx.value = 0; svc(0x48);
   m.cpu.eax.value = 0x0710; svc(0x4d); m.cpu.eax.value = 1; svc(0x4d);
   let bad = null; try { svc(0x85); } catch (e) { bad = e.message; }

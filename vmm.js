@@ -1536,11 +1536,14 @@ svc(VMM, 0x85, function () {
 P.rmFarCall = function (c, seg, off, before = [], after = []) {
   const cpu = this.cpu, keep = {}; for (const k of Object.keys(cpu)) keep[k] = cpu[k].value;
   if (this.rmIvtInit) this.rmIvtInit();   // (the vector table in memory, for a call through a vector)
-  const stack = this.rmStackGet(), ss = stack >>> 4, ret = stack + 0x10;   // (the return: an address no code is at, the stack's own first paragraph)
+  const stack = this.rmStackGet(), ss = stack >>> 4;
+  // (a call made while one runs (a VxD's event from the poll between blocks) frames itself below the running one's
+  // stack pointer, as an interrupt would, not over its frame; its return address is its own)
+  const nested = this.rmRunning && (cpu.ss.value & 0xffff) === ss, top = nested ? ((cpu.esp.value & 0xffff) - 0x40) & ~1 : 0xffe, retIp = top - 0x3e, ret = stack + retIp;   // (the return: an address no code is at, in the stack below the frame; a nested call's its own)
   const sreg = (s, b, v) => { cpu[s].value = v & 0xffff; cpu[b].value = (v & 0xffff) << 4; };
-  let sp = 0xffe; const push = w => { sp -= 2; this.w16(stack + sp, w & 0xffff); };
+  let sp = top; const push = w => { sp -= 2; this.w16(stack + sp, w & 0xffff); };
   for (const [, v] of before) push(v);
-  push(ss); push(0x10);
+  push(ss); push(retIp);
   for (const [, v] of after) push(v);
   const was = { v86: this.v86, hooks: this.v86Hooks, flags: this.v86Flags, rm: this.rmode };
   try {

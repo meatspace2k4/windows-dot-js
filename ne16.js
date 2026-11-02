@@ -668,12 +668,18 @@ P.rmReflect = function (vec) {
  *  stack and switched the translator to V86 mode (as rmReflect does) */
 P.rmRun = function (eip, ret, what) {
   const c = this.cpu;
-  for (let k = 0; eip !== ret; k++) {
-    if (k > 200000) throw new GuestError(`${what} did not return`);
-    c.eip.value = eip; const blk = this.dynBlock(eip);
-    if (!blk || this.trapped) throw new GuestError(this.trapped || `${what}: no code at ${eip.toString(16)}`);
-    eip = u32(blk.run());
-  }
+  // (rmRunning: real-mode code on the system VM's stack is running; the host's poll between blocks runs no time-outs
+  // meanwhile (worker.js pollIn), as NETBEUI's timer, run from the poll inside VNETBIOS's post, posted again on the
+  // same stack over the first post's frame, whose IRET then went to 0000:FFF8)
+  this.rmRunning = (this.rmRunning || 0) + 1;
+  try {
+    for (let k = 0; eip !== ret; k++) {
+      if (k > 200000) throw new GuestError(`${what} did not return`);
+      c.eip.value = eip; const blk = this.dynBlock(eip);
+      if (!blk || this.trapped) throw new GuestError(this.trapped || `${what}: no code at ${eip.toString(16)}`);
+      eip = u32(blk.run());
+    }
+  } finally { this.rmRunning--; }
 };
 /** the real-mode stack the system VM's reflected real-mode code runs on (a 4 KB paragraph block in DOS memory), and
  *  where its translator keeps the flags it needs (dyn.js v86Flags) */

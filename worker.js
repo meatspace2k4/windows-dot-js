@@ -264,7 +264,7 @@ class Machine {
     const p = this.proc; let r;
     // the timer's interrupt: the VMM's global time-outs that are due run now, unless ring 0 or its critical section has
     // the processor (a guest running on inside a call still gets them, as a hung Windows still runs REBOOT's)
-    if (p.depth && !p.r0Depth && !p.vxdCrit && p.vxdTimeOuts && p.vxdTimeOuts.size && !this.inTimer) {
+    if (p.depth && !p.r0Depth && !p.vxdCrit && !p.rmRunning && p.vxdTimeOuts && p.vxdTimeOuts.size && !this.inTimer) {   // (rmRunning: real-mode code of a VxD's nested execution, interrupts off: ne16.js rmRun)
       this.inTimer = true; const d = p.depth; p.depth = 0;
       try { p.vxdRunTimeOuts(); } catch (e) { this.r0Fault(e); } finally { p.depth = d; this.inTimer = false; }
     }
