@@ -1511,7 +1511,7 @@ class Machine {
         this.faultTaken = false; this.stopped = false; this.txtGen = -1; this.timer = 0; this.soonPending = false;
         // (the page's screen follows the moment's mode at once: its canvases were the boot's; the windows come with the
         // next step's frame, no call into USER from here)
-        { const a = p.scanout(); if (a.bpp) [this.sw, this.sh] = [a.w, a.h]; } this.shellSeen = false; this.postScan();
+        { const a = p.scanout(); if (a.bpp) [this.sw, this.sh] = [a.w, a.h]; } this.shellSeen = true; this.postScan();   // (shellSeen: postScan asks USER for the windows otherwise, a call into the machine from here)
         if (this.alive) this.timer = setTimeout(() => this.step(), 0);
         return r;
       }
