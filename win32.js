@@ -1116,6 +1116,20 @@ const regAttach = store => {
 };
 /** the registry as it is now, in the form a store's load gives it ([path, values, name]), for a machine in a worker */
 const regDump = () => [...REGISTRY].map(([path, m]) => [path, [...m], KEYNAME.get(path) || null]);
+/** this copy of the registry put back as a dump had it (a moment rewound: braid.js). Quiet, the copy alone changes;
+ *  `tell`, each difference goes as the operation that makes it, so the store and the other copies follow */
+const regLoad = (held, tell) => {
+  if (!tell) { REGISTRY.clear(); KEYNAME.clear(); for (const [path, vals, name] of held) { REGISTRY.set(path, new Map(vals)); if (name) KEYNAME.set(path, name); } return; }
+  const want = new Map(held.map(([path, vals, name]) => [path, { vals: new Map(vals), name }]));
+  for (const path of [...REGISTRY.keys()].sort().reverse()) if (!want.has(path) && REGISTRY.has(path)) regDel(path);
+  for (const [path, { vals, name }] of want) {
+    if (!REGISTRY.has(path)) regMake(path, name ? path.slice(0, path.length - name.length) + name : null);
+    if (name && KEYNAME.get(path) !== name) { KEYNAME.set(path, name); regChanged({ op: 'key', path, name }); }
+    const m = REGISTRY.get(path);
+    for (const n of [...m.keys()]) if (!vals.has(n)) { m.delete(n); regChanged({ op: 'del', path, name: n }); }
+    for (const [n, v] of vals) if (JSON.stringify(m.get(n)) !== JSON.stringify(v)) { m.set(n, v); regChanged({ op: 'set', path, name: n, value: v }); }
+  }
+};
 /** a change another copy of the registry made (a machine's in its worker, or the page's): applied here, and passed on
  *  to this copy's store unless `quiet` ('remote': another person's, to this page's machines but not its store) */
 const regApply = (o, quiet) => {
@@ -3261,5 +3275,5 @@ function peString(bytes, id) {
   } catch (_) { return null; }
 }
 
-window.W95Win32 = { log, regAttach, regGet, regKids, regVals, regDel, regSet, regDump, regApply, regHive, regWatch: f => regWatchers.add(f), Process, API, STAND_IN, LAYOUT, WM, YIELD, iniGet, iniSet, iniRead, peString, peResource, faultText, fmtMsg, def, dcOf, GuestError, HangError, FaultError, mkCanvas, dibOut, sha256 };
+window.W95Win32 = { log, regAttach, regGet, regKids, regVals, regDel, regSet, regDump, regApply, regLoad, regHive, regWatch: f => regWatchers.add(f), Process, API, STAND_IN, LAYOUT, WM, YIELD, iniGet, iniSet, iniRead, peString, peResource, faultText, fmtMsg, def, dcOf, GuestError, HangError, FaultError, mkCanvas, dibOut, sha256 };
 })();

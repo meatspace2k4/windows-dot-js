@@ -6019,6 +6019,63 @@ let ccdApi = null;
 const WORKER_SCRIPTS = new Set(['claude-app.js', 'session-dll.js', 'session-tray.js', 'dbwin.js', 'shell32.js', 'osclass.js', 'saver-runtime.js', 'gl.js', 'sound.js']);
 // the page's scripts that only define things, so can be loaded again (win95.js loaded twice ran two shells on one screen)
 const PAGE_SCRIPTS = new Set(['ccd.js']);
+// ---------------------------------------------------------------- ring α on the page (braid.js): the machines' moments, with the disk and the registry beside them
+// A moment is taken of every machine running (each worker's cmd 'mark': its memory, registers and objects), then of
+// the page's file system (the volumes' trees, as a graph of its own) and the page's registry; rewinding puts each
+// back, and writes the disk's store what the tree has again for every node written since, so the disk on this
+// computer is the moment's too. The moments live in memory: a reload of the page is the end of them.
+const braidMoments = new Map(), diskTouched = new Set(); let braidBuild = null;
+const braidBuildSig = () => braidBuild || (braidBuild = W95Braid.buildSignature(f => fetch(f, { cache: 'no-store' }).then(r => r.text())).then(sig => { for (const a of machineWorkers) a.cmd('build', [sig]); return sig; }));
+/** the volumes' stores, each wrapped once to note the node ids written (what a rewind writes back); the wrap is the
+ *  volume's `store` from then on, so a moment's graph keeps it too */
+function braidWatchStores() {
+  for (const v of fs.vols.values()) {
+    const st = v.store; if (!st || st.under) continue;
+    const rec = sid => diskTouched.add(sid);
+    v.store = { ...st, under: st, node: r => { rec(r.sid); return st.node(r); }, remove: sid => { rec(sid); return st.remove(sid); }, data: (sid, off, b) => { rec(sid); return st.data(sid, off, b); }, size: (sid, n) => { rec(sid); return st.size(sid, n); } };
+  }
+}
+const braidOpaque = () => { const o = new Set([fs.uncBackend]); for (const v of [...fs.vols.values(), ...fs.uncs.values()]) { if (v.disc) o.add(v.disc); if (v.remote) o.add(v.remote); if (v.store) o.add(v.store); } o.delete(null); o.delete(undefined); return o; };
+const braid = {
+  /** a moment of everything, by name: resolves with what was taken */
+  async mark(name = 'moment') {
+    name = String(name); const build = await braidBuildSig(); braidWatchStores();
+    const machines = {};
+    for (const a of [...machineWorkers]) if (a.alive) { const r = await a.cmd('mark', [name]); if (!r) throw new Error(`the machine ${a.system ? 'system' : a.path} took no moment (inside a call: try again)`); machines[a.system ? 'system' : a.path] = { app: a, info: r }; }
+    const graph = W95Braid.takeGraph([fs], { opaque: braidOpaque() });
+    const s = W95Braid.make({ disk: { kind: 'graph', graph }, registry: { kind: 'json', value: W95Win32.regDump() } }, { name, build, now: Date.now() });
+    s.machines = machines; braidMoments.set(name, s);
+    return { ...W95Braid.describe(s), machines: Object.fromEntries(Object.entries(machines).map(([k, m]) => [k, m.info])) };
+  },
+  /** everything put back at the moment: the machines first (each stops touching the disk's later state), then the
+   *  page's file system and registry, then the disk's store */
+  async rewind(name) {
+    const s = braidMoments.get(String(name)); if (!s) throw new Error(`no moment ${name}`);
+    const why = W95Braid.refuse(s, await braidBuildSig()); if (why) throw new Error(why);
+    const out = {};
+    for (const [k, m] of Object.entries(s.machines)) { if (!m.app.alive) { out[k] = 'gone'; continue; } out[k] = await m.app.cmd('rewind', [s.name]); if (!out[k]) throw new Error(`the machine ${k} refused the moment (see the console)`); m.app.kids = null; }
+    W95Braid.restoreGraph(s.sections.disk.graph);
+    W95Win32.regLoad(s.sections.registry.value, true);
+    const nodes = new Map(), stores = [];
+    for (const v of fs.vols.values()) if (v.store && v.store.under) { stores.push(v.store.under); (function walk(n) { if (n.sid !== undefined) nodes.set(n.sid, n); if (n.dir) for (const k of n.kids.values()) walk(k); })(v.root); }
+    let wrote = 0, removed = 0;
+    for (const sid of [...diskTouched].sort((a, b) => a - b)) {
+      const n = nodes.get(sid);
+      if (!n) { for (const st of stores) st.remove(sid); removed++; continue; }
+      const st = n.vol.store.under;
+      st.node({ sid, parent: n.parent ? fs.sidOf(n.parent) : -1, name: n.name, short: n.short, dir: n.dir, ord: n.ord || 0, attrs: n.attrs, ctime: n.ctime, mtime: n.mtime, atime: n.atime });
+      if (!n.dir) { st.size(sid, n.size); if (n.size) st.data(sid, 0, n.buf.slice(0, n.size)); }
+      wrote++;
+    }
+    diskTouched.clear(); fs.version++; dirty();
+    return { ...out, disk: { wrote, removed } };
+  },
+  moments: () => [...braidMoments.values()].map(s => ({ ...W95Braid.describe(s), machines: Object.fromEntries(Object.entries(s.machines).map(([k, m]) => [k, m.info])) })),
+  forget(name) { const s = braidMoments.get(String(name)); if (!s) return false; for (const m of Object.values(s.machines)) if (m.app.alive) m.app.cmd('forget', [s.name]); return braidMoments.delete(String(name)); },
+  /** the system's machine between two moments (or a moment and now): what looks like a machine that will not come back */
+  lint: (a, b) => sysApp && sysApp.alive ? sysApp.cmd('lint', b === undefined ? [String(a)] : [String(a), String(b)]) : Promise.resolve(null),
+  get build() { return braidBuildSig(); },
+};
 async function reloadScript(f) {
   f = String(f || ''); if (!/^[\w.-]+\.js$/.test(f)) throw new Error(`reloadScript: a script of the site's, by name (${f})`);
   if (WORKER_SCRIPTS.has(f)) { if (!sysApp || !sysApp.alive) throw new Error('reloadScript: the system\'s machine is not running'); return { machine: await sysApp.cmd('reload', [f]) }; }
@@ -6046,6 +6103,7 @@ window.win95 = { ...script,
     floppy(image, name = '') { pcFloppy.image = image ? new Uint8Array(image) : null; pcFloppy.name = image ? name : null; pcFloppy.changed = true; return true; },
     get disk() { return pcFloppy.image ? { name: pcFloppy.name, image: pcFloppy.image } : null; },
   },
+  braid,
   cd: { images: () => cdImages().map(i => i.name), insert: name => cdInsert(name), eject: () => cdInsert(null), get disc() { const v = fs.vols.get('D'); return v.ready ? { label: v.label, serial: v.serial, sectors: v.sectors } : null; } }, get ccd() { return ccdApi || (ccdApi = window.W95Ccd ? window.W95Ccd(ccdUi()) : null); }, get nativeApps() { return [...nativeApps]; }, get dos() { return [...dosMachines]; }, startSystem, get sysApp() { return sysApp; }, reloadScript, netBoot, netCall, syncNetDrives, mapNetDrive, disconnectNetDrive, fs, render, displayProperties, startFullSaver, get fullSaver() { return fullSaver; }, properties, driveProps, openFolder, openPath, shellOpen, notepad, msgBox, runDialog, findComputer, findFiles, winHelp, shutDownDialog, MyComputer, get state() { return { menus: menus.length, menuSrc, modals: modals.length, cap: !!cap, drag: !!drag, screen, active: active && active.title }; } };
 // the scripting API's calls shown as they are made (?scriptlog=1, or win95.scriptLog = true): each win95.* call and each
 // win95.sysApp.cmd, then what it answered, as 'script' lines at the debug level in DevTools' console and the machines'

@@ -8,7 +8,7 @@ self.window = self;
 // the Ethernet segment as this worker has it: its own stations (the card, in the system's machine), and the rest of the
 // segment on the page (the other computer, lanhost.js; other machines' cards), frames passing both ways
 self.W95LAN = { stations: new Set(), frames: 0 };
-importScripts('bridge.js', 'fs.js', 'win32.js', 'gl.js', 'shell32.js', 'system.js', 'claude-exe.js', 'claude-app.js', 'session-dll.js', 'sesstray-exe.js', 'session-tray.js', 'dbwin-exe.js', 'dbwin.js','osclass.js', 'ne16.js', 'vmm.js', 'sound.js', 'lan.js', 'parallel.js', 'netfs.js', 'dyn.js', 'v86.js', 'savers.js', 'saver-runtime.js');
+importScripts('bridge.js', 'braid.js', 'fs.js', 'win32.js', 'gl.js', 'shell32.js', 'system.js', 'claude-exe.js', 'claude-app.js', 'session-dll.js', 'sesstray-exe.js', 'session-tray.js', 'dbwin-exe.js', 'dbwin.js','osclass.js', 'ne16.js', 'vmm.js', 'sound.js', 'lan.js', 'parallel.js', 'netfs.js', 'dyn.js', 'v86.js', 'savers.js', 'saver-runtime.js');
 const B = self.W95Bridge, W = self.W95Win32, { FSError, join, basename, extname } = self.W95FS;
 const b64bytes = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
 const sha256 = W.sha256;   // (a program's identity as the bundle records it: spawnProgram)
@@ -115,6 +115,56 @@ class Machine {
   constructor(o) {
     Object.assign(this, o); this.keyq = []; this.mouseq = []; this.mods = {}; this.ax = -1; this.ay = -1; this.cursorOn = false; this.mouse = { x: -100, y: -100 };
     this.ring = o.ring; this.pending = new Map(); this.alive = true; this.savers = new Map();
+    this.nowSkew = 0;   // (the machine's clock behind real time, by what a rewind took back: host.now)
+    this.mods = [];     // (the scripts loaded over the machine as it ran, cmd 'reload': named in each moment)
+  }
+  // ---------------------------------------------------------------- ring α: moments of the machine, taken and rewound to (braid.js)
+  /** the objects a moment keeps by reference, not by contents: the bundle's images and metadata, the page's file
+   *  system (a proxy: never walked), the shell's proxy, the diagnostics' logs the page reads back */
+  braidOpaque() {
+    const S = self.W95SYSTEM || {}, o = new Set([fs, self.W95SHELL, rfs, NATIVE, this.ring, this.stepLog || null]);
+    for (const grp of [S.ne, S.dlls, S.programs, S.net, (self.W95SAVERS || {}).dlls]) for (const d of Object.values(grp || {})) { o.add(d); if (d.meta) o.add(d.meta); if (d.bytes) o.add(d.bytes); if (d.mod) o.add(d.mod); }
+    if (this.proc) for (const d of this.proc.dlls.values()) { o.add(d); if (d.meta) o.add(d.meta); if (d.file) o.add(d.file); }
+    o.delete(null); return o;
+  }
+  /** the properties of the machine's own object that are the host's live things, not the moment's: the step timer,
+   *  the message channel, the input ring, the moments themselves, the clock's skew */
+  braidSkip(obj, k) { return obj === this && (k === 'timer' || k === 'soonCh' || k === 'soonPending' || k === 'ring' || k === 'alive' || k === 'nowSkew' || k === 'mods' || k === 'stepLog' || k === 'started'); }
+  /** the lint's record of the machine now (braid.js lint) */
+  braidProbe() {
+    const p = this.proc, held = p.win16Held ? { who: typeof p.win16Held.who === 'object' ? 'thread ' + p.win16Held.who.id : String(p.win16Held.who), since: p.win16Held.since, cpu: p.win16Held.cpu, hung: !!p.win16Held.hung } : null;
+    const threads = [...(p.threadsById || new Map()).values()].map(t => ({ id: t.id, state: t.state, path: t.pc ? t.pc.path : null, blocked: !!t.blocked, preempted: !!t.preempted,
+      cs: t.ctx ? t.ctx.cs & 0xffff : 0, ip: t.ctx ? t.ctx.eip >>> 0 : 0, wait: t.waitOn ? { on: (t.waitOn.hs || []).join(',') } : t.wait ? { on: t.wait.kind || 'object' } : null }));
+    return { now: p.now(), threads, held, faults: (p.faultLog || []).length + (p.fault ? 1 : 0), heapTop: p.heapTop, allocs: p.allocs ? p.allocs.size : 0, r0: p.r0Runs ? p.r0Runs.length : 0, queue: p.queue ? p.queue.length : 0, depth: p.depth, exited: p.exitCode };
+  }
+  /** a moment of this machine, now (between two steps: no call of the host's in progress, every thread's state in its
+   *  record): memory, registers and the host's objects as one graph from the machine's own object, the registry, the
+   *  lint's probe, the mods named */
+  braidMark(name) {
+    if (this.proc.depth) throw new Error('a moment is taken between steps, not inside a call');
+    const t0 = performance.now(), B = self.W95Braid;
+    const graph = B.takeGraph([this], { opaque: this.braidOpaque(), skip: (o, k) => this.braidSkip(o, k) });
+    const s = B.make({ host: { kind: 'graph', graph }, registry: { kind: 'json', value: W.regDump() }, probe: { kind: 'json', value: this.braidProbe() } },
+      { name, now: this.proc.now(), build: this.build || '', mods: this.mods });
+    s.took = Math.round(performance.now() - t0);
+    return s;
+  }
+  /** the machine put back at a moment: its graph into the same objects, the registry's copy here, the input waiting in
+   *  the ring dropped, the clock set back to the moment's, the step timer started afresh. The page restores its own
+   *  parts (the disk, its registry) beside this */
+  braidRewind(s) {
+    const why = self.W95Braid.refuse(s, this.build || ''); if (why) throw new Error(why);
+    const t0 = performance.now(); clearTimeout(this.timer);
+    self.W95Braid.restoreGraph(s.sections.host.graph);
+    W.regLoad(s.sections.registry.value);
+    while (B.ringTake(this.ring));
+    this.keyq = []; this.mouseq = []; this.mods = s.mods.slice();
+    this.nowSkew = performance.now() - s.now;   // (host.now reads the moment's time again)
+    this.faultTaken = false; this.stopped = false; this.txtGen = -1;
+    if (this.proc.fault) this.proc.fault = null;
+    this.timer = 0; this.soonPending = false;
+    if (this.alive) this.timer = setTimeout(() => this.step(), 0);
+    return { ms: Math.round(performance.now() - t0), now: s.now };
   }
   async start() {
     const S = self.W95SYSTEM;
@@ -141,7 +191,7 @@ class Machine {
     const host = {
       memWatch: this.memwatch ? this.memwatch.split(',').map(v => parseInt(v, 16)) : null,
       dynAt: this.dynat ? this.dynat.split(',').map(v => (/^[0-9a-f]+$/i.test(v) ? parseInt(v, 16) : v)) : null,
-      fs, width: this.sw, height: this.sh, path: this.path, now: () => performance.now(), lan: !!(this.system && lanRing), system: !!this.system, vmPages: 2048, shared: true,   // (lan: the network stack and its card, as the system's machine has them; system: the Win16 tasks' process is its own)
+      fs, width: this.sw, height: this.sh, path: this.path, now: () => performance.now() - m.nowSkew, lan: !!(this.system && lanRing), system: !!this.system, vmPages: 2048, shared: true,   // (lan: the network stack and its card, as the system's machine has them; system: the Win16 tasks' process is its own)
       cursor: () => ({ x: m.mouse.x, y: m.mouse.y }), surface: (h, w, hh, win, pc) => {
         const canvas = new OffscreenCanvas(Math.max(1, w), Math.max(1, hh));
         if (!h) m.w32DesktopSurface = { canvas, w: canvas.width, h: canvas.height, pc, version: 1 };
@@ -1404,8 +1454,16 @@ class Machine {
         const f = String(args[0] || '');
         if (!/^[\w.-]+\.js$/.test(f)) throw new Error(`reload: a script of the site's, by name (${f})`);
         importScripts(`${f}?reload=${Date.now()}`);
+        this.mods.push(f);
         return { reloaded: f };
       }
+      // ring α (braid.js): a moment of the machine taken now, by name; the machine put back at one; the moments held
+      case 'mark': { const s = this.braidMark(String(args[0] || 'moment')); moments.set(s.name, s); return { ...self.W95Braid.describe(s), took: s.took }; }
+      case 'rewind': { const s = moments.get(String(args[0])); if (!s) throw new Error(`no moment ${args[0]}`); return this.braidRewind(s); }
+      case 'moments': return [...moments.values()].map(s => self.W95Braid.describe(s));
+      case 'forget': return moments.delete(String(args[0]));
+      case 'lint': { const a = moments.get(String(args[0])), b = args.length > 1 ? moments.get(String(args[1])) : null; if (!a) throw new Error(`no moment ${args[0]}`); return self.W95Braid.lint(a, b || { sections: { probe: { kind: 'json', value: this.braidProbe() } } }); }
+      case 'build': { this.build = String(args[0] || ''); return this.build; }
       case 'kick': return;
       case 'exit': this.exited(args[0] || 0); return;
     }
@@ -1414,6 +1472,7 @@ class Machine {
 }
 
 let machine = null;
+const moments = new Map();   // (ring α: the moments of this machine, by name, held here outside the machine's graph)
 self.onmessage = e => {
   const m = e.data;
   if (m.t === 'start') {
