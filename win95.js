@@ -6052,7 +6052,7 @@ const braid = {
     closeMenus();
     const graph = W95Braid.takeGraph([fs, braidShell()], { opaque: braidOpaque(), skip: braidShellSkip });
     const s = W95Braid.make({ disk: { kind: 'graph', graph }, registry: { kind: 'json', value: W95Win32.regDump() } }, { name, build, now: Date.now() });
-    s.machines = machines; braidMoments.set(name, s);
+    s.machines = machines; s.gen = braidLine.gen; braidMoments.set(name, s);
     return { ...W95Braid.describe(s), machines: Object.fromEntries(Object.entries(machines).map(([k, m]) => [k, m.info])) };
   },
   /** everything put back at the moment: the machines first (each stops touching the disk's later state), then the
@@ -6078,7 +6078,10 @@ const braid = {
       wrote++;
     }
     diskTouched.clear(); fs.version++; dirty();
-    braidLine.gen++; emit('braid.rewound', { gen: braidLine.gen, moment: s.name });
+    // (a rewind forks the line: the new generation grows from the moment, in the generation the moment was taken in;
+    // the one left runs no further, its faults and moments stay on the line)
+    braidLine.gen++; braidLine.forks.push({ gen: braidLine.gen, from: s.name, fromGen: s.gen, at: Date.now(), now: s.now, left: braidLine.gen - 1 });
+    emit('braid.rewound', { gen: braidLine.gen, moment: s.name, fromGen: s.gen });
     return { ...out, gen: braidLine.gen, disk: { wrote, removed } };
   },
   moments: () => [...braidMoments.values()].map(s => ({ ...W95Braid.describe(s), machines: Object.fromEntries(Object.entries(s.machines).map(([k, m]) => [k, m.info])) })),
@@ -6102,7 +6105,7 @@ const braidRec = { timer: null, n: 0, ring: [] };
 // own record of it (win32.js faultInfo: the exception, its registers, the stack's words and the code path to it) and
 // the machine's fault log at that instant, under its generation: a fault of generation n and the same fault of
 // generation n+1 are compared record for record (braid.same), never from memory of what a dialog said
-const braidLine = { gen: 0, events: [] };
+const braidLine = { gen: 0, events: [], forks: [] };   // (forks: each generation after the first, the moment and generation it grew from)
 function braidFault(app, f, fatal) {
   const ev = { gen: braidLine.gen, t: Date.now(), machine: app.system ? 'system' : app.path, fatal, fault: f, faults: null };
   braidLine.events.push(ev);
@@ -6110,8 +6113,9 @@ function braidFault(app, f, fatal) {
   else emit('braid.fault', { gen: ev.gen, machine: ev.machine, fault: f, faults: null });
 }
 Object.assign(braid, {
-  /** the line: its generation now, and every fault written to it, by generation */
-  get line() { return { gen: braidLine.gen, events: braidLine.events.map(e => ({ ...e })) }; },
+  /** the line: its generation now, the forks (each generation, the moment and generation it grew from), the moments
+   *  by the generation they were taken in, and every fault written to it, by generation */
+  get line() { return { gen: braidLine.gen, forks: braidLine.forks.map(f => ({ ...f })), moments: [...braidMoments.values()].map(s => ({ name: s.name, gen: s.gen, at: s.at })), events: braidLine.events.map(e => ({ ...e })) }; },
   /** two faults of the line compared (by index into `line.events`, or the last of two generations): the same
    *  exception at the same place on the same thread with the same stack words and the same path, or where they part */
   same(a, b) {
