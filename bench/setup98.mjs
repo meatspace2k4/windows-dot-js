@@ -36,7 +36,8 @@ export const pageDrive = async (key, o = {}) => {
     if (await win95.waitFor({ name: 'Yes', window: /Windows 98 CD-ROM/ }, 30000).then(() => true, () => false)) { await win95.click({ name: 'Yes', window: /Windows 98 CD-ROM/ }); lg('AutoRun: Yes'); }
     else { win95.run('D:\\SETUP.EXE'); lg('D:\\SETUP.EXE run'); }
     await win95.waitFor({ role: 'pushbutton', name: 'Continue', window: 'Windows 98 Setup' }, 5 * MIN);
-    await win95.click({ name: 'Continue', window: 'Windows 98 Setup' }); lg('Continue');
+    // (the element itself: three windows carry Setup's title, and the full-screen one is taken for covering the dialog's button)
+    await win95.click((await win95.elementsNow()).find(e => e.role === 'pushbutton' && e.name === 'Continue' && e.window === 'Windows 98 Setup')); lg('Continue');
     }
     // (ScanDisk's VM, then the Wizard's preparation: minutes)
     const WIZ = /^Windows 98 Setup( Wizard)?$/;   // (the license and the key are the Wizard's pages, under either title)
