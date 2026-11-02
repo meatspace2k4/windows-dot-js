@@ -1591,9 +1591,10 @@ P.asWindowTask = function (hwnd, fn) {
  *  only when its own message loop runs: the host's call ran on, the record stayed on the queue, and the next such
  *  send linked it again (SUWIN, Windows 98 Setup's saving of the system files: the hit test the host made for a press
  *  on its wizard, taken by a later GetMessage as a message to window 0, whose window procedure read as 0:FFFE). Run
- *  as the task's thread while the task was stopped away from its loop, the window procedure ran on top of the
- *  task's own frames and waited for that loop for good (COMMCTRL's): the host runs its message as the task only
- *  while the task waits at its loop (threadAtLoop), and asks USER's default procedure otherwise (strokeTarget) */
+ *  as the task's thread (asThread), the message ran on a stack of the call's own, not the task's DGROUP, and a
+ *  Windows 3.x window procedure takes its DS from SS: COMMCTRL's read its globals from the wrong segment and ran for
+ *  good, with the task at its loop or stopped elsewhere. So the host asks USER's default procedure of such a window
+ *  (strokeTarget), never its own procedure */
 P.windowTask16 = function (hwnd) {
   const task = this.thread16 ? 0 : this.user16(224, [['w', hwnd]]).ax;                                 // GetWindowTask
   if (!task || (this.procs && [...this.procs.values()].some(c => c.tdb === task && c.main && c.main.state !== 'done'))) return null;
@@ -1649,12 +1650,10 @@ P.strokeTarget = function (sx, sy) {
   // (a press on a window's caption, its buttons, its borders or its system menu moves, sizes, shows or closes it:
   // the window's place and state are the session's by the object sync, so the press itself is not)
   // (asked as the window's own task, as its program's calls run: a message sent into a Win32 program's window from
-  // the system's context goes through its thunks on the wrong thread, and one sent into a Windows 3.x task's window
-  // from there goes to the task's queue as a record its own loop answers, windowTask16. A task stopped away from its
-  // loop is asked nothing: USER's default procedure answers for its window, threadAtLoop)
-  const args = [['w', h], ['w', 0x84], ['w', 0], ['l', u32((sy << 16) | (sx & 0xffff))]], t16 = this.windowTask16(h);   // WM_NCHITTEST
-  const ht = t16 ? (this.threadAtLoop(t16) ? this.asThread(t16, () => this.user16(111, args).ax) : this.user16(107, args).ax)   // SendMessage; DefWindowProc
-    : this.asWindowTask(h, () => this.user16(111, args).ax);
+  // the system's context goes through its thunks on the wrong thread. A Windows 3.x task's window procedure is not
+  // asked: USER's default procedure answers for its window, windowTask16)
+  const args = [['w', h], ['w', 0x84], ['w', 0], ['l', u32((sy << 16) | (sx & 0xffff))]];   // WM_NCHITTEST
+  const ht = this.windowTask16(h) ? this.user16(107, args).ax : this.asWindowTask(h, () => this.user16(111, args).ax);   // DefWindowProc; SendMessage
   if (ht === 2 || ht === 3 || ht === 8 || ht === 9 || (ht >= 10 && ht <= 17) || ht === 20 || ht === 21 || ht === 0xffff) return null;   // HTCAPTION, HTSYSMENU, HTMINBUTTON, HTMAXBUTTON, HTLEFT..HTBOTTOMRIGHT, HTCLOSE, HTHELP, HTERROR
   for (let n = 0; n < 32; n++) {
     if (!(this.user16(135, [['w', h], ['w', 0xfff0]]).dxax & 0x40000000)) break;                                   // GWL_STYLE: WS_CHILD

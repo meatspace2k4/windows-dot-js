@@ -2,11 +2,12 @@
 // from the system's context, USER sends it to the task's queue as a record the task's own loop answers, and the
 // host's call ran on past it. The record stayed on SUWIN's queue through Windows 98 Setup's saving of the system
 // files, the next press linked it again, and the GetMessage that took it read a message to window 0 (whose procedure
-// is 0:FFFE). Run as the task's thread while the task was stopped away from its loop, the window procedure waited
-// for that loop for good. So: (1) windowTask16 names the task's thread for a window of no started process, and none
-// for a process's window or an ended task's. (2) threadAtLoop: a thread waiting for input at its loop. (3) The hit
-// test runs as the task only while it waits at its loop; otherwise USER's default procedure answers, from the
-// host's own context; a process's window goes as before, as its main thread.
+// is 0:FFFE). Run as the task's thread, the message ran on a stack of the call's own, and a Windows 3.x window
+// procedure takes DS from SS: COMMCTRL's ran for good. So: (1) windowTask16 names the task's thread for a window of
+// no started process, and none for a process's window or an ended task's. (2) threadAtLoop: a thread waiting for
+// input at its loop (processIdle's test). (3) The hit test into a Windows 3.x task's window is USER's default
+// procedure's answer, from the host's own context, whatever the task is doing; a process's window goes as before,
+// as its main thread.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 globalThis.window = globalThis; globalThis.self = globalThis;
@@ -48,10 +49,10 @@ const machine = (task, threads, procs) => {
   };
   const suwin = { id: 119, state: 'waiting', slept: true, task: { dgStack: true }, tdb: 0x46f7 };
   let { r, hit } = run(0x46f7, [suwin], []);
-  assert.equal(r.hwnd, 0x210); assert.deepEqual(hit, [111, suwin, true], 'at its loop: the message, as the task');
+  assert.equal(r.hwnd, 0x210); assert.deepEqual(hit, [107, null, undefined], 'at its loop: the default procedure, from the host');
   const busy = { id: 119, state: 'waiting', preempted: true, task: { dgStack: true }, tdb: 0x46f7 };
   ({ hit } = run(0x46f7, [busy], []));
-  assert.deepEqual(hit, [107, null, undefined], 'stopped elsewhere: the default procedure, from the host');
+  assert.deepEqual(hit, [107, null, undefined], 'stopped elsewhere: the same');
   const main = { id: 85, state: 'waiting', slept: true }, pc = { pid: 0x60, tdb: 0x3907, main }; main.pc = pc;
   ({ hit } = run(0x3907, [main], [pc]));
   assert.deepEqual(hit, [111, main, true], 'a process\'s window: as its main thread');

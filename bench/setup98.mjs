@@ -45,6 +45,7 @@ export const pageDrive = async (key, o = {}) => {
     const broken = await mark(`fault${++nf}`);
     const line = B.line, ev = line.events.length - 1, rec = { ...f, moment: broken && broken.name, gen: line.gen, event: ev >= 0 ? ev : null };
     faults.push(rec);
+    if (o.stop) { lg(`stopped at the fault (${f.title}), on the line as ${rec.moment}`); return false; }   // (o.stop: the fault marked, the machine left as it is, for a person to look at)
     if (lastFault !== null && ev >= 0 && B.same(lastFault, ev).same) { lg(`the same fault again (${f.title}) on generation ${line.gen}: reproduced from ${forks[forks.length - 1].from}`); rec.reproduced = true; return false; }
     if (ev >= 0) lastFault = ev;
     const good = B.along().filter(m => m.verdict !== 'broken' && m.name !== rec.moment && !/^fault/.test(m.name)).pop();
