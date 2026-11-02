@@ -28,7 +28,7 @@ export const pageDrive = async (key, o = {}) => {
   });
   const texts = win => win95.elements().filter(e => e.role === 'statictext' && e.window === win).map(e => String(e.name)).join(' | ');
   try {
-    if (o.from === 'license') lg('from the license page on');   // (Setup already past its first dialog: the ladder from the Wizard on)
+    if (o.from) lg(`from the ${o.from} on`);   // (Setup already past its first dialog ('license'), or past the key ('wizard'): the ladder from there)
     else {
     win95.cd.insert('Windows 98 se Upgrade.iso'); lg('CD inserted');
     // (the question may be up before a listener is: waited for as a control; a CD already in, which asks nothing, has
@@ -40,6 +40,7 @@ export const pageDrive = async (key, o = {}) => {
     }
     // (ScanDisk's VM, then the Wizard's preparation: minutes)
     const WIZ = /^Windows 98 Setup( Wizard)?$/;   // (the license and the key are the Wizard's pages, under either title)
+    if (o.from !== 'wizard') {
     await win95.waitFor({ name: 'I accept the Agreement', window: WIZ }, 15 * MIN);
     await mark('license');
     await win95.click({ name: 'I accept the Agreement', window: WIZ }); lg('License: accepted');
@@ -49,17 +50,27 @@ export const pageDrive = async (key, o = {}) => {
     for (const g of String(key).split('-')) { await win95.type(g); await sleep(300); }
     lg('Product Key typed');
     await win95.click({ name: 'Next >', window: WIZ }); lg('Next (the key\'s check)');
+    }
     // the Wizard's pages, each with a Next of its own: the directory, Save System Files, Setup Options, the user's
     // name, components, identification, settings, the startup disk (declined), then the copy
-    for (let i = 0; i < 12 && !fault; i++) {
-      const b = await win95.waitFor({ role: 'pushbutton', name: /^(Next >|Finish)$/, window: 'Windows 98 Setup Wizard' }, 30 * MIN);
-      if (fault) break;
-      const t = texts('Windows 98 Setup Wizard');
-      await mark('page' + i + ':' + t.slice(0, 24).replace(/\W+/g, '-'));
-      if (/startup disk/i.test(t)) { await win95.click({ name: 'Cancel', window: 'Windows 98 Setup Wizard' }); lg('Startup Disk: Cancel'); }
-      else if (b.name === 'Finish') { await win95.click({ name: 'Finish', window: 'Windows 98 Setup Wizard' }); lg('Finish'); break; }
-      else { await win95.click({ name: 'Next >', window: 'Windows 98 Setup Wizard' }); lg('Next :: ' + t.slice(0, 100)); }
-      await sleep(4000);   // (the page turns before its Next is looked for again)
+    // (a page is pressed once, when its Next (or Finish, or OK) is enabled and the page is not the one pressed last:
+    // Setup's checks run with Next greyed for minutes, and some pages are dialogs of their own (Identification))
+    const PAGES = /Setup Wizard|Identification|Setup Options|User Information|Components|Location|Startup Disk|Start Copying|Computer Settings|Network/;
+    const page = () => {
+      const w = win95.windows().find(x => PAGES.test(x.title) && x.title !== 'Windows 98 Setup'); if (!w) return null;
+      const els = win95.elements().filter(e => e.window === w.title), btn = els.find(e => e.role === 'pushbutton' && /^(Next >|Finish|OK)$/.test(e.name) && !e.disabled);
+      return { title: w.title, text: els.filter(e => e.role === 'text').map(e => String(e.name)).join(' '), btn, cancel: els.find(e => e.role === 'pushbutton' && e.name === 'Cancel') };
+    };
+    let last = '';
+    for (let i = 0; i < 40 && !fault; i++) {
+      let pg = null; const t0 = Date.now();
+      while (!fault && Date.now() - t0 < 30 * MIN) { await sleep(1500); pg = page(); if (pg && pg.btn && pg.title + '|' + pg.text.slice(0, 40) !== last) break; pg = null; }
+      if (fault || !pg) break;
+      last = pg.title + '|' + pg.text.slice(0, 40);
+      await mark('page' + i + ':' + (pg.title + ' ' + pg.text).slice(0, 28).replace(/\W+/g, '-'));
+      const startup = /startup disk/i.test(pg.text) && pg.cancel, btn = startup ? pg.cancel : pg.btn;
+      await win95.click(btn); lg(`${btn.name} on ${pg.title} :: ${pg.text.slice(0, 60)}`);
+      if (btn.name === 'Finish') break;
     }
     if (!fault) lg('ladder done: the copy and the restart are the machine\'s now');
   } catch (e) { lg('stopped: ' + e.message); }
