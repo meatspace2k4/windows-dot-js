@@ -358,14 +358,17 @@ P.vmClipboard = function (m) {
   } catch (e) { if (!(e instanceof W.GuestError)) throw e; W.log('warn', 'vmm', `VM clipboard ${ax.toString(16)}h: ${e.message}`); }
   return ret(0);
 };
-/** the MS-DOS VMs' time: each started one runs for its share of `ms`; its program's end ends it */
+/** the MS-DOS VMs' time: each started one runs for its share of a step, `ms` of the system's clock as blocks (a
+ *  VM's blocks count as the system's do, so a step gives the same VM work on every host); its program's end ends it */
 P.vmsRun = function (ms) {
   const held = new Set((this.r0Runs || []).map(s => s.vm).filter(Boolean));   // (a VM in an event that is stopped: held there)
   const live = (this.vms || []).filter(v => v.m && v.started && !v.gone && !v.suspended && !held.has(v)); if (!live.length) return;
+  const vc = this.host && this.host.vclock, share = vc ? Math.max(1, Math.round(ms / live.length / vc.perTick)) : 0;   // (runs of 4000 blocks, each a tick's quantum of the clock)
   for (const v of live) {
-    const t0 = performance.now();
+    const t0 = performance.now(); let runs = 0;
     this.vmPageFaults(v); this.vmMapSync(v, true);
-    while (performance.now() - t0 < ms / live.length) {
+    while (vc ? runs++ < share : performance.now() - t0 < ms / live.length) {
+      if (vc) vc.now += vc.perTick;
       const st = v.m.v86Run(4000);
       if (st === 'idle') { v.m.halted = false; break; }
       if (st === 'exit') { this.vmEnd(v); break; }

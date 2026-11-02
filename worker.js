@@ -647,7 +647,7 @@ class Machine {
       const busy = () => this.mouseq.length || this.rs || (this.strokes && this.strokes.length);
       // (where a step's time goes, the last 120: worker.js probe 'steps')
       const st = { at: Math.round(t0), gap: Math.round(t0 - (this.lastStepEnd || t0)), slice: 0, threads: 0, vms: 0, n: 0, held: !!p.win16Held };
-      for (let n = 0; this.alive && (n < 4 || (n < 10 && busy() && performance.now() - t0 < 12)); n++) {
+      for (let n = 0; this.alive && (n < 4 || (n < 10 && busy())); n++) {   // (how many slices a step has depends on the machine, never on the wall: the same step on every host)
         if (n) { this.poll(); this.feedMouse(); this.postScan(); }
         let ts = performance.now();
         p.stats.slices++; const live = p.slice();
