@@ -47,7 +47,18 @@ export const pageDrive = async (key, o = {}) => {
     await win95.click({ name: 'Next >', window: WIZ }); lg('Next');
     const edit = await win95.waitFor({ role: 'text-edit', window: WIZ }, 2 * MIN);
     await win95.click(edit); await sleep(300);
-    for (const g of String(key).split('-')) { await win95.type(g); await sleep(300); }
+    // (a character at a time, with time for USER to take each: typed as a string, one came twice and the key's boxes
+    // ended shifted; each box read back and typed again where it differs; the key stays in the page's memory)
+    const groups = String(key).split('-'), boxesNow = async () => (await win95.elementsNow()).filter(e => e.role === 'text-edit' && WIZ.test(e.window));
+    for (const g of groups) for (const ch of g) { win95.type(ch); await sleep(150); }
+    for (let pass = 0; pass < 3; pass++) {
+      const boxes = await boxesNow(); if (boxes.length === groups.length && boxes.every((b, i) => String(b.name) === groups[i])) break;
+      for (let i = 0; i < groups.length && i < boxes.length; i++) {
+        if (String(boxes[i].name) === groups[i]) continue;
+        await win95.click(boxes[i]); await sleep(400); win95.key('End'); await sleep(150); for (let k = 0; k < 6; k++) { win95.key('Backspace'); await sleep(120); }
+        for (const ch of groups[i]) { win95.type(ch); await sleep(250); } await sleep(500);
+      }
+    }
     lg('Product Key typed');
     await win95.click({ name: 'Next >', window: WIZ }); lg('Next (the key\'s check)');
     }
