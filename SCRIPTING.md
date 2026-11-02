@@ -84,10 +84,17 @@ machine's scripts changed meanwhile if need be (`reloadScript`; the mods loaded 
 | `braid.moments()`, `braid.forget(name)` | the moments held; one let go |
 | `braid.record({ every: 30000, keep: 3 })`, `braid.stop()`, `braid.recorded` | the line kept as the machine runs: a moment every `every` ms, the last `keep` held (`rec1`, `rec2`, ...), to rewind from when no one marked one |
 | `braid.lint(a, b?)` | the system's machine between two moments (or a moment and now): the signs of a machine that will not come back (the Win16Lock held by one thread across both, a thread at the same place with its time running out each slice, faults since, a heap or queue only growing). Heuristics: the halting problem allows no proof |
-| `sysApp.cmd('mark' \| 'rewind' \| 'moments' \| 'forget' \| 'lint', [...])` | the same for one machine alone |
+| `braid.line` | the line in generations: `gen` now, `forks` (each generation after the first: the moment and generation it grew from, or a kept moment loaded), `moments` by the generation they were taken in, `events`: every fault a machine reported, with its record (the exception, registers, stack words, code path) and the machine's fault log then, under its generation |
+| `braid.same(a, b)` | two faults of the line compared record for record (by index into `line.events`, or `{ gen }` for a generation's last): `same`, and `diff` where they part |
+| `braid.now()`, `braid.speed(x)` | the machine's own clock (ms since its start: a quantum per BUDGET blocks run and a period per step, the same for the same run whatever the host; worker.js vclock), and the machine run ahead of the wall by `x`: steps back to back, each `x` periods, so what waits on time passes `x` times faster than real time (`speed(1)` is a person's pace again) |
+| `braid.journal` | the actions made through the API since the last moment, each stamped with the machine's clock; `segments`: each pair of moments with the actions between them |
+| `braid.skip(actions)` | the segment from the moment the line is at whose actions are these (`[[op, args], ...]`, as the journal has them) and whose end is held: the line jumps to its end, the work between not run again (`{ skipped, from, to, ms }`), or null |
+| `braid.replay(i)` | segment `i` run again from its moment: the same actions when the machine's clock reaches the time each was made at |
+| `braid.save(name)`, `braid.kept()`, `braid.load(name)`, `braid.drop(name)` | a moment kept on this computer (IndexedDB, this origin's: every machine's bytes and objects by name and path, the file system, the registry, the journal and the line) and brought back into the page's machines, booted as they are, by the paths of their objects (braid.js rebind); refused for another build's. The memo's ground: a page that has the moment starts there |
+| `sysApp.cmd('mark' \| 'rewind' \| 'moments' \| 'forget' \| 'lint' \| 'speed' \| 'now' \| 'export' \| 'import', [...])` | the same for one machine alone |
 
 `bench/setup98.mjs`'s `pageDrive(key, { mark: true })` takes a moment before each of Setup's steps, keeping the last
-two: a step that faults is rewound from and run again.
+three: a step that faults is rewound from and run again.
 
 ## Events
 
