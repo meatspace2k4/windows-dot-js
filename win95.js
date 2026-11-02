@@ -6129,7 +6129,8 @@ function braidFault(app, f, fatal) {
   if (app.alive) app.cmd('faults').then(l => { ev.faults = l; emit('braid.fault', { gen: ev.gen, machine: ev.machine, fault: f, faults: l }); });
   else emit('braid.fault', { gen: ev.gen, machine: ev.machine, fault: f, faults: null });
 }
-Object.assign(braid, {
+// (defined by descriptor: `line` and `journal` are getters, which Object.assign would read once and copy as values)
+Object.defineProperties(braid, Object.getOwnPropertyDescriptors({
   /** the line: its generation now, the forks (each generation, the moment and generation it grew from), the moments
    *  by the generation they were taken in, and every fault written to it, by generation */
   get line() { return { gen: braidLine.gen, forks: braidLine.forks.map(f => ({ ...f })), moments: [...braidMoments.values()].map(s => ({ name: s.name, gen: s.gen, at: s.at })), events: braidLine.events.map(e => ({ ...e })) }; },
@@ -6204,7 +6205,7 @@ Object.assign(braid, {
     for (const k of ['path', 'stack']) { const pa = la[k] || [], pb = lb[k] || []; for (let i = 0; i < Math.max(pa.length, pb.length); i++) if (pa[i] !== pb[i]) diff.push({ what: `log ${k} ${i}`, a: pa[i], b: pb[i] }); }
     return { same: !diff.length, gens: [A.gen, B.gen], diff };
   },
-});
+}));
 async function reloadScript(f) {
   f = String(f || ''); if (!/^[\w.-]+\.js$/.test(f)) throw new Error(`reloadScript: a script of the site's, by name (${f})`);
   if (WORKER_SCRIPTS.has(f)) { if (!sysApp || !sysApp.alive) throw new Error('reloadScript: the system\'s machine is not running'); return { machine: await sysApp.cmd('reload', [f]) }; }
