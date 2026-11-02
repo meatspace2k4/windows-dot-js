@@ -6060,9 +6060,11 @@ const braid = {
   },
   /** everything put back at the moment: the machines first (each stops touching the disk's later state), then the
    *  page's file system and registry, then the disk's store */
-  async rewind(name) {
+  async rewind(name, o = {}) {
     const s = braidMoments.get(String(name)); if (!s) throw new Error(`no moment ${name}`);
-    const why = W95Braid.refuse(s, await braidBuildSig()); if (why) throw new Error(why);
+    // (another build's moment: refused, unless forced: the code changed under the machine is what a rewind is for,
+    // and the state's shape is the same until braid.js's VERSION says otherwise; the fork records the build it came from)
+    const why = W95Braid.refuse(s, await braidBuildSig()); if (why && !(o.force && /build/.test(why))) throw new Error(why);
     const out = {};
     for (const [k, m] of Object.entries(s.machines)) { if (!m.app.alive) { out[k] = 'gone'; continue; } out[k] = await m.app.cmd('rewind', [s.name]); if (!out[k]) throw new Error(`the machine ${k} refused the moment (see the console)`); m.app.kids = null; }
     closeMenus();
@@ -6173,10 +6175,10 @@ Object.defineProperties(braid, Object.getOwnPropertyDescriptors({
   async kept() { return braidDb(db => new Promise((ok, no) => { const r = db.transaction('moments').objectStore('moments').getAll(); r.onsuccess = () => ok(r.result.map(x => ({ name: x.name, at: x.at, build: x.build, machines: Object.keys(x.machines), bytes: Object.values(x.machines).reduce((n, m) => n + m.blob.length, x.page.blob.length) }))); r.onerror = () => no(r.error); })); },
   /** a kept moment brought into this page's machines (booted: their objects matched by path) and its file system and
    *  registry; refused for another build's */
-  async load(name) {
+  async load(name, o = {}) {
     const rec = await braidDb(db => new Promise((ok, no) => { const r = db.transaction('moments').objectStore('moments').get(String(name)); r.onsuccess = () => ok(r.result); r.onerror = () => no(r.error); }));
     if (!rec) throw new Error(`no kept moment ${name}`);
-    const build = await braidBuildSig(); if (rec.build !== build) throw new Error(`the moment is build ${rec.build}'s, this is ${build}`);
+    const build = await braidBuildSig(); if (rec.build !== build && !o.force) throw new Error(`the moment is build ${rec.build}'s, this is ${build} (load(name, { force: true }) brings it in anyway)`);
     const out = {};
     for (const [k, ex] of Object.entries(rec.machines)) { const a = k === 'system' ? sysApp : [...machineWorkers].find(x => x.path === k); if (!a || !a.alive) { out[k] = 'no such machine running'; continue; } out[k] = await a.cmd('import', [ex]); a.kids = null; }
     braidWatchStores(); closeMenus();
@@ -6185,7 +6187,7 @@ Object.defineProperties(braid, Object.getOwnPropertyDescriptors({
     // (the disk's store: every node, as the tree has it now)
     const stores = []; for (const v of fs.vols.values()) if (v.store && v.store.under) { stores.push(v.store.under); (function walk(n) { const sid = fs.sidOf(n); v.store.under.node({ sid, parent: n.parent ? fs.sidOf(n.parent) : -1, name: n.name, short: n.short, dir: n.dir, ord: n.ord || 0, attrs: n.attrs, ctime: n.ctime, mtime: n.mtime, atime: n.atime }); if (!n.dir) { v.store.under.size(sid, n.size); if (n.size) v.store.under.data(sid, 0, n.buf.slice(0, n.size)); } else for (const k of n.kids.values()) walk(k); })(v.root); }
     diskTouched.clear(); fs.version++; dirty();
-    braidLine.gen++; braidLine.forks.push({ gen: braidLine.gen, from: rec.name, fromGen: null, at: Date.now(), kept: true });
+    braidLine.gen++; braidLine.forks.push({ gen: braidLine.gen, from: rec.name, fromGen: null, at: Date.now(), kept: true, build: rec.build, forced: rec.build !== build });
     braidJ.from = rec.name; braidJ.fromSum = null; braidJ.actions = []; braidJ.at0 = await sysApp.cmd('now');
     return { ...out, page: r, gen: braidLine.gen };
   },
