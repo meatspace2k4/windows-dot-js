@@ -39,15 +39,16 @@ export const pageDrive = async (key, o = {}) => {
     await win95.click({ name: 'Continue', window: 'Windows 98 Setup' }); lg('Continue');
     }
     // (ScanDisk's VM, then the Wizard's preparation: minutes)
-    await win95.waitFor({ name: 'I accept the Agreement', window: 'Windows 98 Setup' }, 15 * MIN);
+    const WIZ = /^Windows 98 Setup( Wizard)?$/;   // (the license and the key are the Wizard's pages, under either title)
+    await win95.waitFor({ name: 'I accept the Agreement', window: WIZ }, 15 * MIN);
     await mark('license');
-    await win95.click({ name: 'I accept the Agreement', window: 'Windows 98 Setup' }); lg('License: accepted');
-    await win95.click({ name: 'Next >', window: 'Windows 98 Setup' }); lg('Next');
-    const edit = await win95.waitFor({ role: 'text-edit', window: 'Windows 98 Setup' }, 2 * MIN);
+    await win95.click({ name: 'I accept the Agreement', window: WIZ }); lg('License: accepted');
+    await win95.click({ name: 'Next >', window: WIZ }); lg('Next');
+    const edit = await win95.waitFor({ role: 'text-edit', window: WIZ }, 2 * MIN);
     await win95.click(edit); await sleep(300);
     for (const g of String(key).split('-')) { await win95.type(g); await sleep(300); }
     lg('Product Key typed');
-    await win95.click({ name: 'Next >', window: 'Windows 98 Setup' }); lg('Next (the key\'s check)');
+    await win95.click({ name: 'Next >', window: WIZ }); lg('Next (the key\'s check)');
     // the Wizard's pages, each with a Next of its own: the directory, Save System Files, Setup Options, the user's
     // name, components, identification, settings, the startup disk (declined), then the copy
     for (let i = 0; i < 12 && !fault; i++) {
