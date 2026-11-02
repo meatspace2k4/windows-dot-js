@@ -1534,6 +1534,7 @@ svc(VMM, 0x85, function () {
  *  runs on (ne16.js rmReflect); the general registers from the client, and back into it as the code leaves them */
 P.rmFarCall = function (c, seg, off, before = [], after = []) {
   const cpu = this.cpu, keep = {}; for (const k of Object.keys(cpu)) keep[k] = cpu[k].value;
+  if (this.rmIvtInit) this.rmIvtInit();   // (the vector table in memory, for a call through a vector)
   const stack = this.rmStackGet(), ss = stack >>> 4, ret = stack + 0x10;   // (the return: an address no code is at, the stack's own first paragraph)
   const sreg = (s, b, v) => { cpu[s].value = v & 0xffff; cpu[b].value = (v & 0xffff) << 4; };
   let sp = 0xffe; const push = w => { sp -= 2; this.w16(stack + sp, w & 0xffff); };
@@ -1932,10 +1933,13 @@ P.vmInt21 = function (regs) {
   return out;
 };
 svc(VMM, 0x45, function () { vec(this).pm.set(this.cpu.eax.value & 0xff, u32(((this.cpu.ecx.value & 0xffff) << 16) | (this.cpu.edx.value & 0xffff))); });
-svc(VMM, 0x42, function () { const v = vec(this).v86.get(this.cpu.eax.value & 0xff) || 0; this.cpu.ecx.value = lo16(this.cpu.ecx.value, v >>> 16); this.cpu.edx.value = v & 0xffff; });
-svc(VMM, 0x43, function () { vec(this).v86.set(this.cpu.eax.value & 0xff, u32(((this.cpu.ecx.value & 0xffff) << 16) | (this.cpu.edx.value & 0xffff))); });
+// (the V86 vectors are the system VM's table in its memory at linear 0 (ne16.js rmIvtInit), which VxDs read directly
+// too; the map keeps what VxDs set, for the table's making when it comes later)
+const v86Vec = (p, n) => (p.rmIvt ? p.r32(n * 4) : vec(p).v86.get(n) || 0);
+svc(VMM, 0x42, function () { const v = v86Vec(this, this.cpu.eax.value & 0xff); this.cpu.ecx.value = lo16(this.cpu.ecx.value, v >>> 16); this.cpu.edx.value = v & 0xffff; });
+svc(VMM, 0x43, function () { const n = this.cpu.eax.value & 0xff, v = u32(((this.cpu.ecx.value & 0xffff) << 16) | (this.cpu.edx.value & 0xffff)); vec(this).v86.set(n, v); if (this.rmIvt) this.w32(n * 4, v); });
 // (141h, EAX the interrupt, EBX the VM: EAX that VM's vector as a far pointer, the rest as they were: IFSMGR's of 13h)
-svc(VMM, 0x141, function () { this.cpu.eax.value = vec(this).v86.get(this.cpu.eax.value & 0xff) || 0; });
+svc(VMM, 0x141, function () { this.cpu.eax.value = v86Vec(this, this.cpu.eax.value & 0xff); });
 /** a real-mode interrupt in the system VM's V86 code (ne16.js rmInt) offered to the VxDs that hooked it
  *  (Hook_V86_Int_Chain), the last hook first, as the VMM offers it: EAX the interrupt, EBX the VM, EBP its client
  *  registers, which hold the processor's; a hook that clears CF has taken it, its client registers the result */

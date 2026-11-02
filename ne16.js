@@ -32,6 +32,7 @@ P.init16 = function () {
   for (const [sel, base] of [[0x107, 0], [0x10f, 0x400], [0x117, 0xa0000], [0x11f, 0xb0000], [0x127, 0xb8000], [0x12f, 0xc0000], [0x137, 0xd0000], [0x13f, 0xe0000], [0x147, 0xf0000]])
     this.setDesc(sel, base, 0xffff, 0xf300);   // __0000H, __0040H, __A000H ... __F000H
   this.dosTop = 0x50000;                       // conventional memory handed out by GlobalDOSAlloc
+  this.rmIvtInit();                            // the interrupt vectors at linear 0, as a PC has them
   this.stackLevel = 0;
   this.ne = new Map();                // upper-case module name -> NE module record
   this.ghandles = new Map();          // selector -> global block {lin, size, sels, flags, lock, owner}
@@ -679,6 +680,23 @@ P.rmRun = function (eip, ret, what) {
 P.rmStackGet = function () {
   if (!this.rmStack) { const a = (this.dosTop + 15) & ~15; this.dosTop = a + 0x1000; this.rmStack = a; this.v86FlagsAt = this.alloc(16); }
   return this.rmStack;
+};
+/** the system VM's interrupt vector table, in its memory at linear 0 as a PC's is: the vectors the personality answers
+ *  (its BIOS and DOS, INTS) each to a stub in DOS memory that enters the host (0F FF n, then IRET: a far call through
+ *  the vector reaches the handler as an INT does), the rest 0000:0000, as DOS leaves what nothing installed. A VxD
+ *  that sets a vector (Set_V86_Int_Vector) writes it here, where code that reads the table itself finds it:
+ *  VNETBIOS posts an NCB by a far call through the INT 5Ch vector read from 170h, having set that vector to an IRET
+ *  of its own at its init if it was 0; read from the map alone it was 0 in memory, and the retf ran the null page's
+ *  zeros up to FFFFh (SUWIN's "invalid instruction at 0137:0000FFFF" as Windows 98 Setup saved its system files) */
+P.rmIvtInit = function () {
+  if (this.rmIvt) return this.rmIvt;
+  const a = (this.dosTop + 15) & ~15; this.dosTop = a + 0x400; this.rmIvt = a;
+  for (let n = 0; n < 256; n++) {
+    this.u8.set([0x0f, 0xff, n, 0xcf], a + n * 4);
+    const set = this.vxdVecs && this.vxdVecs.v86.get(n);
+    if (set) this.w32(n * 4, set); else if (INTS[n] && !this.r32(n * 4)) this.w32(n * 4, ((a >>> 4) << 16 | n * 4) >>> 0);
+  }
+  return a;
 };
 /** an interrupt the real-mode code reflected above issues (dyn.js: a hooked vector traps 400h + n): the system VM's own
  *  answer for it, in real mode, the code going on after the INT */

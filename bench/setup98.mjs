@@ -12,10 +12,13 @@
 import { connect, SHELL_READY } from './runner.mjs';
 
 /** runs in the page: the ladder, as far as it goes; resolves with the log of what was pressed and what stopped it */
-export const pageDrive = async key => {
+export const pageDrive = async (key, o = {}) => {
   const log = [], lg = s => { log.push(`${new Date().toLocaleTimeString()} ${s}`); win95.note(s); };
   const MIN = 60000, sleep = ms => new Promise(r => setTimeout(r, ms));
   let fault = null;
+  // (o.mark: a moment of everything before each step, ring α (braid.js), the last `o.keep` (2) kept: a fault is
+  // rewound from, the step run again under code changed meanwhile)
+  const marks = [], mark = async name => { if (!o.mark) return; try { await win95.braid.mark(name); marks.push(name); lg('moment ' + name); while (marks.length > (o.keep || 2)) win95.braid.forget(marks.shift()); } catch (e) { lg('moment ' + name + ' failed: ' + e.message); } };
   const stopOnFault = win95.on('window.open', e => { if (/^(EXPLORER|SUWIN|W98SETUP|MSGSRV32)/.test(e.title) && e.modal) { fault = e.title; lg('FAULT dialog ' + e.title); } });
   // (the uninstall-drive and startup-disk dialogs come as the pages run: pressed as they open)
   const dialogs = win95.on('window.open', async e => {
@@ -26,12 +29,13 @@ export const pageDrive = async key => {
   const texts = win => win95.elements().filter(e => e.role === 'statictext' && e.window === win).map(e => String(e.name)).join(' | ');
   try {
     win95.cd.insert('Windows 98 se Upgrade.iso'); lg('CD inserted');
-    await win95.next('window.open', e => /Windows 98 CD-ROM/.test(e.title) && e.modal, 2 * MIN);
+    await win95.waitFor({ name: 'Yes', window: /Windows 98 CD-ROM/ }, 2 * MIN);   // (the question may be up before a listener is: waited for as a control)
     await win95.click({ name: 'Yes', window: /Windows 98 CD-ROM/ }); lg('AutoRun: Yes');
     await win95.waitFor({ role: 'pushbutton', name: 'Continue', window: 'Windows 98 Setup' }, 5 * MIN);
     await win95.click({ name: 'Continue', window: 'Windows 98 Setup' }); lg('Continue');
     // (ScanDisk's VM, then the Wizard's preparation: minutes)
     await win95.waitFor({ name: 'I accept the Agreement', window: 'Windows 98 Setup' }, 15 * MIN);
+    await mark('license');
     await win95.click({ name: 'I accept the Agreement', window: 'Windows 98 Setup' }); lg('License: accepted');
     await win95.click({ name: 'Next >', window: 'Windows 98 Setup' }); lg('Next');
     const edit = await win95.waitFor({ role: 'text-edit', window: 'Windows 98 Setup' }, 2 * MIN);
@@ -45,6 +49,7 @@ export const pageDrive = async key => {
       const b = await win95.waitFor({ role: 'pushbutton', name: /^(Next >|Finish)$/, window: 'Windows 98 Setup Wizard' }, 30 * MIN);
       if (fault) break;
       const t = texts('Windows 98 Setup Wizard');
+      await mark('page' + i + ':' + t.slice(0, 24).replace(/\W+/g, '-'));
       if (/startup disk/i.test(t)) { await win95.click({ name: 'Cancel', window: 'Windows 98 Setup Wizard' }); lg('Startup Disk: Cancel'); }
       else if (b.name === 'Finish') { await win95.click({ name: 'Finish', window: 'Windows 98 Setup Wizard' }); lg('Finish'); break; }
       else { await win95.click({ name: 'Next >', window: 'Windows 98 Setup Wizard' }); lg('Next :: ' + t.slice(0, 100)); }
@@ -54,7 +59,7 @@ export const pageDrive = async key => {
   } catch (e) { lg('stopped: ' + e.message); }
   finally { stopOnFault(); dialogs(); }
   const faults = win95.sysApp ? await Promise.race([win95.sysApp.cmd('faults'), sleep(8000).then(() => null)]) : null;
-  return { log, fault, faults: (faults || []).filter(f => f.thread !== 'host') };
+  return { log, fault, faults: (faults || []).filter(f => f.thread !== 'host'), moments: marks.slice() };
 };
 
 if (import.meta.url === `file://${process.argv[1]}`) {
