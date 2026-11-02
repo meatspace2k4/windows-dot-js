@@ -6075,7 +6075,17 @@ const braid = {
   /** the system's machine between two moments (or a moment and now): what looks like a machine that will not come back */
   lint: (a, b) => sysApp && sysApp.alive ? sysApp.cmd('lint', b === undefined ? [String(a)] : [String(a), String(b)]) : Promise.resolve(null),
   get build() { return braidBuildSig(); },
+  // the line kept as the machine runs: a moment every `every` ms (30 s), the last `keep` (3) held, named rec1, rec2,
+  // ...: what a lock-up or a crash is rewound from when no one marked a moment before it
+  record(o = {}) {
+    braid.stop(); const every = o.every || 30000, keep = o.keep || 3;
+    const tick = async () => { if (!braidRec.timer) return; try { const name = 'rec' + (++braidRec.n); await braid.mark(name); braidRec.ring.push(name); while (braidRec.ring.length > keep) braid.forget(braidRec.ring.shift()); } catch (_) { /* inside a call: the next tick */ } if (braidRec.timer) braidRec.timer = setTimeout(tick, every); };
+    braidRec.timer = setTimeout(tick, every); return { every, keep };
+  },
+  stop() { clearTimeout(braidRec.timer); braidRec.timer = null; },
+  get recorded() { return braidRec.ring.slice(); },
 };
+const braidRec = { timer: null, n: 0, ring: [] };
 async function reloadScript(f) {
   f = String(f || ''); if (!/^[\w.-]+\.js$/.test(f)) throw new Error(`reloadScript: a script of the site's, by name (${f})`);
   if (WORKER_SCRIPTS.has(f)) { if (!sysApp || !sysApp.alive) throw new Error('reloadScript: the system\'s machine is not running'); return { machine: await sysApp.cmd('reload', [f]) }; }

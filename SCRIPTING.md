@@ -68,6 +68,27 @@ waits for an element the same way and resolves with it. With coordinates the cal
 | `screenshot()` | the screen as a PNG data URL |
 | `state` | menus, modals, pointer capture, active window title |
 
+## Ring α: moments, rewinding (braid.js)
+
+The machine's run is a line to move along, not a sequence to repeat. A moment is everything at an instant: each
+machine's memory, registers and host-side objects (threads, tasks, VxD time-outs, VMs, heaps, faults: one graph,
+kept by identity and written back into the same objects), the registry, and the page's disk (the volumes' trees; a
+rewind writes the disk's store what the tree has again for every node written since). Moments live in memory and
+end with the page. A lock-up, a blue screen, a fault dialog: rewind to the moment before it and run on, with the
+machine's scripts changed meanwhile if need be (`reloadScript`; the mods loaded are named in the moment, not kept).
+
+| Call | Does |
+| --- | --- |
+| `braid.mark(name)` | a moment of everything, now (between two steps; about half a second and the memory's size); resolves with what was taken (`bytes`, `objects`, `took`, the `build` signature, `sum`) |
+| `braid.rewind(name)` | everything put back at that moment: the machines first, then the file system and registry, then the disk's store (`disk.wrote`, `disk.removed`). The input waiting is dropped; the machine's clock goes back with it. Refused for a damaged moment (checksum) or one of another build (the signature of braid.js, win32.js, ne16.js, vmm.js, v86.js, dyn.js, fs.js) |
+| `braid.moments()`, `braid.forget(name)` | the moments held; one let go |
+| `braid.record({ every: 30000, keep: 3 })`, `braid.stop()`, `braid.recorded` | the line kept as the machine runs: a moment every `every` ms, the last `keep` held (`rec1`, `rec2`, ...), to rewind from when no one marked one |
+| `braid.lint(a, b?)` | the system's machine between two moments (or a moment and now): the signs of a machine that will not come back (the Win16Lock held by one thread across both, a thread at the same place with its time running out each slice, faults since, a heap or queue only growing). Heuristics: the halting problem allows no proof |
+| `sysApp.cmd('mark' \| 'rewind' \| 'moments' \| 'forget' \| 'lint', [...])` | the same for one machine alone |
+
+`bench/setup98.mjs`'s `pageDrive(key, { mark: true })` takes a moment before each of Setup's steps, keeping the last
+two: a step that faults is rewound from and run again.
+
 ## Events
 
 | Call | Does |

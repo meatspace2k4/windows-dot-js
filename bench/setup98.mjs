@@ -28,11 +28,16 @@ export const pageDrive = async (key, o = {}) => {
   });
   const texts = win => win95.elements().filter(e => e.role === 'statictext' && e.window === win).map(e => String(e.name)).join(' | ');
   try {
+    if (o.from === 'license') lg('from the license page on');   // (Setup already past its first dialog: the ladder from the Wizard on)
+    else {
     win95.cd.insert('Windows 98 se Upgrade.iso'); lg('CD inserted');
-    await win95.waitFor({ name: 'Yes', window: /Windows 98 CD-ROM/ }, 2 * MIN);   // (the question may be up before a listener is: waited for as a control)
-    await win95.click({ name: 'Yes', window: /Windows 98 CD-ROM/ }); lg('AutoRun: Yes');
+    // (the question may be up before a listener is: waited for as a control; a CD already in, which asks nothing, has
+    // its Setup run by name)
+    if (await win95.waitFor({ name: 'Yes', window: /Windows 98 CD-ROM/ }, 30000).then(() => true, () => false)) { await win95.click({ name: 'Yes', window: /Windows 98 CD-ROM/ }); lg('AutoRun: Yes'); }
+    else { win95.run('D:\\SETUP.EXE'); lg('D:\\SETUP.EXE run'); }
     await win95.waitFor({ role: 'pushbutton', name: 'Continue', window: 'Windows 98 Setup' }, 5 * MIN);
     await win95.click({ name: 'Continue', window: 'Windows 98 Setup' }); lg('Continue');
+    }
     // (ScanDisk's VM, then the Wizard's preparation: minutes)
     await win95.waitFor({ name: 'I accept the Agreement', window: 'Windows 98 Setup' }, 15 * MIN);
     await mark('license');
