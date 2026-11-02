@@ -1488,7 +1488,9 @@ class Machine {
       // a moment of this machine as bytes and meta (braid.js serialize), for the page to keep on this computer; one
       // brought back into this machine, booted afresh, by the paths of its objects (braid.js rebind)
       case 'export': {
-        if (this.proc.depth) throw new Error('a moment is taken between steps, not inside a call');
+        // (a ring-0 run in flight across steps, a host call waiting on a return: continuations an export cannot carry;
+        // the page asks again at a later step)
+        if (this.proc.depth || (this.proc.r0Runs && this.proc.r0Runs.length) || (this.proc.retPend && [...this.proc.retPend.values()].some(l => l.length))) return { busy: true };
         const B = self.W95Braid, graph = B.takeGraph([this], { opaque: this.braidOpaque(), skip: (o, k) => this.braidSkip(o, k) });
         const names = this.braidNames(), ex = B.serialize(graph, v => names.get(v) || null);
         return { meta: ex.meta, roots: ex.roots, blob: ex.blob, registry: W.regDump(), probe: this.braidProbe(), now: this.vclock.now, build: this.build || '', mods: this.mods.slice() };
@@ -1507,6 +1509,9 @@ class Machine {
         while (B.ringTake(this.ring));
         this.keyq = []; this.mouseq = []; this.vclock.now = ex.now;
         this.faultTaken = false; this.stopped = false; this.txtGen = -1; this.timer = 0; this.soonPending = false;
+        // (the page's screen follows the moment's mode at once: its canvases were the boot's; the windows come with the
+        // next step's frame, no call into USER from here)
+        { const a = p.scanout(); if (a.bpp) [this.sw, this.sh] = [a.w, a.h]; } this.shellSeen = false; this.postScan();
         if (this.alive) this.timer = setTimeout(() => this.step(), 0);
         return r;
       }

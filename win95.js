@@ -6165,7 +6165,12 @@ Object.defineProperties(braid, Object.getOwnPropertyDescriptors({
   // rebind). A kept moment is the memo's ground: a page that has it starts there, nothing run again
   async save(name) {
     name = String(name); const build = await braidBuildSig(); const machines = {};
-    for (const a of [...machineWorkers]) if (a.alive) { const ex = await a.cmd('export'); if (!ex) throw new Error('export refused (inside a call: try again)'); machines[a.system ? 'system' : a.path] = ex; }
+    for (const a of [...machineWorkers]) if (a.alive) {
+      // (asked at a step with no ring-0 run in flight: up to 20 s of steps)
+      let ex = null; for (let i = 0; i < 400 && !(ex && ex.meta); i++) { ex = await a.cmd('export'); if (ex && ex.busy) await new Promise(r => setTimeout(r, 50)); }
+      if (!ex || !ex.meta) throw new Error('export refused: ' + (ex && ex.busy ? 'a ring-0 run in flight on every step' : 'inside a call: try again'));
+      machines[a.system ? 'system' : a.path] = ex;
+    }
     closeMenus();
     const page = W95Braid.serialize(W95Braid.takeGraph([fs, braidShell()], { opaque: braidOpaque(), skip: braidShellSkip }));
     const rec = { name, at: Date.now(), build, machines, page: { meta: page.meta, roots: page.roots, blob: page.blob }, registry: W95Win32.regDump(), journal: braid.journal, line: braid.line };
