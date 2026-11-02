@@ -178,7 +178,8 @@ function rebind(roots, ex, opts = {}) {
   const bytesOf = m => ex.blob.subarray(m.bytes[0], m.bytes[0] + m.bytes[1]);
   for (const i of order) {
     const m = ex.meta[i], p = path[i], l = live.get(p);
-    if (m.kind === 'mem' || m.kind === 'global' || m.kind === 'canvas' || m.kind === 'ref') { obj[i] = l || null; continue; }   // (what cannot be made anew: the fresh machine's own, or nothing)
+    if (m.kind === 'mem' || m.kind === 'canvas' || m.kind === 'ref') { obj[i] = l || null; continue; }   // (what cannot be made anew: the fresh machine's own, or nothing)
+    if (m.kind === 'global') { obj[i] = hasWasm && l instanceof WebAssembly.Global ? l : hasWasm ? new WebAssembly.Global({ value: 'i32', mutable: true }, m.value | 0) : null; continue; }   // (a register of a machine this page had not: made anew with its value, as a VM's are)
     if (m.kind === 'ab') { obj[i] = l instanceof ArrayBuffer && l.byteLength === m.bytes[1] ? l : bytesOf(m).slice().buffer; continue; }
     if (m.kind === 'ta') { const C = TA[m.ta] || Uint8Array, b = bytesOf(m); const want = b.length / C.BYTES_PER_ELEMENT; obj[i] = l && l.constructor === C && l.length === want ? l : isImageData(l) && l.data.length === want ? l.data : new C(b.slice().buffer, 0, want); continue; }
     if (m.kind === 'map') { obj[i] = l instanceof Map ? l : new Map(); continue; }

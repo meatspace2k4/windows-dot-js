@@ -8,6 +8,11 @@
 (() => {
 const { Process } = window.W95Win32;
 const P = Object.create(Process.prototype);   // (a V86 machine's own methods, over the processor's: Process itself unchanged)
+// (the prototype under a name of its own: a moment arrived at in another page makes its VMs' machines anew by the
+// name their prototype's constructor has (braid.js rebind, worker.js 'import' protos); as Process's they got Process's
+// methods and none of these, and the VM ran nothing)
+function V86Machine() {}
+V86Machine.prototype = P; P.constructor = V86Machine;
 const u32 = v => v >>> 0;
 const V86_BASE = 0x00400000, ROM = 0xf0000, STUB = 0x1000;   // the vectors' stubs at F000:1000 + 4n
 const CPU = ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi', 'cf', 'pf', 'zf', 'sf', 'of', 'df', 'fs', 'ftop', 'fsw', 'fcw', 'eip',
@@ -983,7 +988,7 @@ class FatView {
   /** the BPB's numbers, for DOS's device parameters and drive parameter block */
   bpb() { const L = this.layout(); return L; }
 }
-M.FatView = FatView;
+M.FatView = FatView; M.V86Machine = V86Machine;
 // A VM's local disks (o.disks: a letter's FatView), as IFSMgr answers for Windows' own drives in a VM: the drive is
 // local and fixed to the IOCTLs that ask (4408h, 4409h), its device parameters, locks and media ID are the generic
 // IOCTL's (440Dh), its drive parameter block is 7302h's, and its sectors are read by INT 25h and 7305h, from the view;

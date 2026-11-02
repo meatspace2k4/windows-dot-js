@@ -1535,10 +1535,16 @@ class Machine {
       }
       case 'import': {
         const ex = args[0], BR = self.W95Braid; clearTimeout(this.timer);
-        const r = BR.rebind([this], { meta: ex.meta, roots: ex.roots, blob: ex.blob instanceof Uint8Array ? ex.blob : new Uint8Array(ex.blob) }, { opaque: this.braidOpaque(), skip: (o, k) => this.braidSkip(o, k), protos: { Machine, Process: W.Process }, named: this.braidNamed() });
+        // (the classes the machine's objects have, by name: one the moment has and this machine had not is made anew
+        // with its prototype (braid.js rebind protoAt): a VM's machine (v86.js V86Machine), a VM's view of a disk (FatView))
+        const V86 = self.W95V86 || {}, protos = { Machine, Process: W.Process, ...(V86.V86Machine ? { V86Machine: V86.V86Machine } : {}), ...(V86.FatView ? { FatView: V86.FatView } : {}) };
+        const r = BR.rebind([this], { meta: ex.meta, roots: ex.roots, blob: ex.blob instanceof Uint8Array ? ex.blob : new Uint8Array(ex.blob) }, { opaque: this.braidOpaque(), skip: (o, k) => this.braidSkip(o, k), protos, named: this.braidNamed() });
         // (a module's instance is this machine's own: one the export brought that this machine had not loaded gets
         // its instance from its module, as loading it made one; the run-time translations are made again as code runs)
         const p = this.proc, S = self.W95SYSTEM || {}; p.dynCache = new Map();
+        // (a VM's machine made anew: its views of the memory it shares with this machine (v86.js machine: u8, dv, not
+        // writable, so not in the export), and its own translations)
+        for (const v of p.vms || []) { const m = v.m; if (!m || !m.mem) continue; if (!Object.getOwnPropertyDescriptor(m, 'u8')) Object.defineProperty(m, 'u8', { value: new Uint8Array(m.mem.buffer) }); if (!Object.getOwnPropertyDescriptor(m, 'dv')) Object.defineProperty(m, 'dv', { value: new DataView(m.mem.buffer) }); if (m.dynCache && !(m.dynCache instanceof Map)) m.dynCache = new Map(); }
         // (the 16/32-bit transitions in flight: each record's continuation found again by its kind's name, ne16.js retDone)
         for (const r of p.retRecs || []) if (r && !r.done) { if (!r.kind || !p.retDone[r.kind]) throw new Error(`a transition in flight without a continuation's name (${r.kind})`); r.done = p.retDone[r.kind]; }
         // (the import thunks, by their names: the 16-bit ones' definitions (ne16.js K16) and the 32-bit ones' (win32.js
@@ -1566,6 +1572,14 @@ class Machine {
         return { pc0: p.pc0 ? p.pc0.pid : null, switchMs: p.switchMs || null,
           priv: (p.modules || []).filter(m => m.priv && m.priv.init).map(m => ({ name: m.name, cur: pidOf(m.priv.cur), curIsPc0: m.priv.cur === p.pc0, keys: [...m.priv.bufs.keys()].map(pidOf), keyPc0: m.priv.bufs.has(p.pc0), bytes: m.priv.ranges.reduce((n, [lo, hi]) => n + hi - lo, 0) })),
           arena: (p.arena || []).map(s => ({ lo: s.lo.toString(16), hi: s.hi.toString(16), cur: pidOf(s.cur), own: [...s.own].map(pidOf), bufs: [...s.bufs.keys()].map(pidOf) })) };
+      }
+      case 'trail': {   // (a diagnostic: the next n dispatches, each its address as a symbol, then the hook ends; [] reads what came; with the holder's clock: runT0, the budget, the clock)
+        if (args[0]) { const n = args[0], log = []; p.runHook = eip => { log.push(`${(eip >>> 0).toString(16)} ${p.whereOf(eip)} t ${p.now().toFixed(1)} b ${p.cpu.budget.value}`); if (log.length >= n) p.runHook = null; }; p.runHook.log = log; return true; }
+        const l = (p.runHook && p.runHook.log) || this.trailLast || []; if (p.runHook && p.runHook.log) this.trailLast = p.runHook.log;
+        const h = p.win16Held && typeof p.win16Held.who === 'object' ? p.win16Held.who : null;
+        return { trail: l, runT0: p.runT0, now: p.now(), budget: p.cpu.budget.value, holder: h && { id: h.id, sliceStart: h.sliceStart, ctxEip: h.ctx && (h.ctx.eip >>> 0).toString(16), ctxIn: h.ctx && p.whereOf(h.ctx.eip >>> 0), state: h.state, preempted: h.preempted }, preempted: p.preempted,
+          vms: (p.vms || []).map(v => ({ id: v.id, started: !!v.started, gone: !!v.gone, suspended: !!v.suspended, hasM: !!v.m, run: !!(v.m && typeof v.m.v86Run === 'function'), proto: v.m && Object.getPrototypeOf(v.m) && Object.getPrototypeOf(v.m).constructor.name, halted: v.m ? !!v.m.halted : null, exec: v.exec ? v.exec.program : null })),
+          r0: (p.r0Runs || []).map(s => ({ vm: s.vm ? s.vm.id : null, wait: !!s.wait, at: s.eip !== undefined ? p.whereOf(s.eip >>> 0) : null, kind: s.kind || null })) };
       }
       case 'steps': return (this.stepLog || []).slice(-(args[0] || 20));   // (a diagnostic: the last steps' timings, as the probe carries them, without the probe's calls into the machine)
       case 'kick': return;
