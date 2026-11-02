@@ -123,10 +123,12 @@ function hashGraph(h, g) {
 // the constructor of that name from `protos`, or Object's); a function the export could not carry (a closure) is left
 // as the fresh machine has it at that key. Memories, globals, typed arrays and canvases carry their bytes
 /** the graph as JSON-able meta and one byte blob: entries by index, refs as { r: i }, prototypes by constructor name */
-function serialize(g) {
+function serialize(g, nameOf = () => null) {
   const chunks = [], meta = []; let total = 0;
   const put = bytes => { const u = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes.buffer || bytes, bytes.byteOffset || 0, bytes.byteLength); chunks.push(u); const at = total; total += u.length; return [at, u.length]; };
-  const val = v => (v instanceof Ref ? { r: v.i } : typeof v === 'function' ? { fn: true } : (v !== null && typeof v === 'object') ? { opaque: true } : (typeof v === 'bigint' ? { big: v.toString() } : v === undefined ? { u: true } : Number.isNaN(v) ? { nan: true } : v));
+  // (an opaque object or a function the export cannot carry goes by the name the host gives it, when it has one:
+  // the bundle's images and metadata, found again by name where the export is brought in)
+  const val = v => (v instanceof Ref ? { r: v.i } : typeof v === 'function' ? { fn: nameOf(v) || true } : (v !== null && typeof v === 'object') ? { opaque: nameOf(v) || true } : (typeof v === 'bigint' ? { big: v.toString() } : v === undefined ? { u: true } : Number.isNaN(v) ? { nan: true } : v));
   for (const e of g.entries) {
     const m = { kind: e.kind }; const p = Object.getPrototypeOf(e.o); m.proto = p && p.constructor && p.constructor.name !== 'Object' ? p.constructor.name : null;
     if (e.kind === 'mem' || e.kind === 'ab') m.bytes = put(e.bytes);
@@ -144,7 +146,7 @@ function serialize(g) {
 const TA = { Uint8Array, Int8Array, Uint16Array, Int16Array, Uint32Array, Int32Array, Float32Array, Float64Array, Uint8ClampedArray, ...(typeof BigInt64Array === 'function' ? { BigInt64Array, BigUint64Array } : {}) };
 /** the export put into the live graph from `roots`: each exported entry matched to a live object by path */
 function rebind(roots, ex, opts = {}) {
-  const protos = opts.protos || {}, opaque = opts.opaque || new Set(), skip = opts.skip || (() => false);
+  const protos = opts.protos || {}, opaque = opts.opaque || new Set(), skip = opts.skip || (() => false), named = opts.named || (() => undefined);
   // the live objects by path, as the export's walk numbered its entries: both walks are depth-first from the roots in
   // property order, so the n-th entry of each is the same path when the shapes agree; where they part, by path name
   const live = new Map(), lvisit = new Set();
@@ -178,7 +180,7 @@ function rebind(roots, ex, opts = {}) {
     const m = ex.meta[i], p = path[i], l = live.get(p);
     if (m.kind === 'mem' || m.kind === 'global' || m.kind === 'canvas' || m.kind === 'ref') { obj[i] = l || null; continue; }   // (what cannot be made anew: the fresh machine's own, or nothing)
     if (m.kind === 'ab') { obj[i] = l instanceof ArrayBuffer && l.byteLength === m.bytes[1] ? l : bytesOf(m).slice().buffer; continue; }
-    if (m.kind === 'ta') { const C = TA[m.ta] || Uint8Array, b = bytesOf(m); const want = b.length / C.BYTES_PER_ELEMENT; obj[i] = l && l.constructor === C && l.length === want ? l : new C(b.slice().buffer, 0, want); continue; }
+    if (m.kind === 'ta') { const C = TA[m.ta] || Uint8Array, b = bytesOf(m); const want = b.length / C.BYTES_PER_ELEMENT; obj[i] = l && l.constructor === C && l.length === want ? l : isImageData(l) && l.data.length === want ? l.data : new C(b.slice().buffer, 0, want); continue; }
     if (m.kind === 'map') { obj[i] = l instanceof Map ? l : new Map(); continue; }
     if (m.kind === 'set') { obj[i] = l instanceof Set ? l : new Set(); continue; }
     if (m.kind === 'arr') { obj[i] = Array.isArray(l) ? l : []; continue; }
@@ -186,7 +188,7 @@ function rebind(roots, ex, opts = {}) {
     else { obj[i] = Object.create(m.proto ? protoAt(m, p) : Object.prototype); made.push(p); }
   }
   // the contents: bytes first, then every object's properties, a function the export could not carry kept as it is
-  const resolve = (v, l, k) => { if (v && typeof v === 'object') { if ('r' in v) return obj[v.r]; if (v.fn || v.opaque) return l && k !== undefined ? l[k] : undefined; if (v.u) return undefined; if (v.nan) return NaN; if ('big' in v) return BigInt(v.big); } return v; };
+  const resolve = (v, l, k) => { if (v && typeof v === 'object') { if ('r' in v) return obj[v.r]; if (v.fn || v.opaque) { const n = v.fn || v.opaque; if (typeof n === 'string') { const got = named(n); if (got !== undefined) return got; } return l && k !== undefined ? l[k] : undefined; } if (v.u) return undefined; if (v.nan) return NaN; if ('big' in v) return BigInt(v.big); } return v; };
   for (const i of order) {
     const m = ex.meta[i], o = obj[i]; if (!o) continue;
     if (m.kind === 'mem') new Uint8Array(o.buffer).set(bytesOf(m));

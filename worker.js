@@ -127,14 +127,24 @@ class Machine {
   /** the objects a moment keeps by reference, not by contents: the bundle's images and metadata, the page's file
    *  system (a proxy: never walked), the shell's proxy, the diagnostics' logs the page reads back */
   braidOpaque() {
-    const S = self.W95SYSTEM || {}, o = new Set([fs, self.W95SHELL, rfs, NATIVE, this.ring, this.stepLog || null]);
-    for (const grp of [S.ne, S.dlls, S.programs, S.net, (self.W95SAVERS || {}).dlls]) for (const d of Object.values(grp || {})) { o.add(d); if (d.meta) o.add(d.meta); if (d.bytes) o.add(d.bytes); if (d.mod) o.add(d.mod); }
-    if (this.proc) for (const d of this.proc.dlls.values()) { o.add(d); if (d.meta) o.add(d.meta); if (d.file) o.add(d.file); }
+    const o = new Set([fs, self.W95SHELL, rfs, NATIVE, this.ring, this.stepLog || null]);
+    for (const v of this.braidNames().keys()) o.add(v);
     o.delete(null); return o;
   }
+  /** the bundle's objects by name (its images, their metadata and modules, the DLL records made from them at the
+   *  start): kept by reference in a moment, and by name in an export, found again here by the name */
+  braidNames() {
+    if (this.names) return this.names;
+    const S = self.W95SYSTEM || {}, n = new Map();
+    const add = (v, name) => { if (v && (typeof v === 'object' || typeof v === 'function') && !n.has(v)) n.set(v, name); };
+    for (const [g, grp] of [['ne', S.ne], ['dlls', S.dlls], ['programs', S.programs], ['net', S.net], ['vxds', S.vxds], ['savers', (self.W95SAVERS || {}).dlls]]) for (const [k, d] of Object.entries(grp || {})) { add(d, `${g}:${k}`); add(d.meta, `${g}:${k}.meta`); add(d.bytes, `${g}:${k}.bytes`); add(d.imgBytes, `${g}:${k}.imgBytes`); add(d.mod, `${g}:${k}.mod`); if (typeof d.modSync === 'object') add(d.modSync, `${g}:${k}.modSync`); }
+    if (this.proc) for (const [k, d] of this.proc.dlls) if (d.module || d.meta && !d.meta.dynamic) { add(d, `dll:${k}`); add(d.meta, `dll:${k}.meta`); add(d.file, `dll:${k}.file`); add(d.module, `dll:${k}.module`); }
+    return (this.names = n);
+  }
+  braidNamed() { const by = new Map(); for (const [v, k] of this.braidNames()) by.set(k, v); return name => by.get(name); }
   /** the properties of the machine's own object that are the host's live things, not the moment's: the step timer,
    *  the message channel, the input ring, the moments themselves, the clock's skew */
-  braidSkip(obj, k) { return obj === this && (k === 'timer' || k === 'soonCh' || k === 'soonPending' || k === 'ring' || k === 'alive' || k === 'mods' || k === 'stepLog' || k === 'started' || k === 'fast'); }
+  braidSkip(obj, k) { return (obj === this && (k === 'timer' || k === 'soonCh' || k === 'soonPending' || k === 'ring' || k === 'alive' || k === 'mods' || k === 'stepLog' || k === 'started' || k === 'fast')) || (obj === this.proc && (k === 'dynCache' || k === 'dynEnv')); }   // (the run-time translations: a cache of code, made again as the code runs; its wasm instances cannot be exported)
   /** the lint's record of the machine now (braid.js lint) */
   braidProbe() {
     const p = this.proc, held = p.win16Held ? { who: typeof p.win16Held.who === 'object' ? 'thread ' + p.win16Held.who.id : String(p.win16Held.who), since: p.win16Held.since, cpu: p.win16Held.cpu, hung: !!p.win16Held.hung } : null;
@@ -1480,12 +1490,19 @@ class Machine {
       case 'export': {
         if (this.proc.depth) throw new Error('a moment is taken between steps, not inside a call');
         const B = self.W95Braid, graph = B.takeGraph([this], { opaque: this.braidOpaque(), skip: (o, k) => this.braidSkip(o, k) });
-        const ex = B.serialize(graph);
+        const names = this.braidNames(), ex = B.serialize(graph, v => names.get(v) || null);
         return { meta: ex.meta, roots: ex.roots, blob: ex.blob, registry: W.regDump(), probe: this.braidProbe(), now: this.vclock.now, build: this.build || '', mods: this.mods.slice() };
       }
       case 'import': {
-        const ex = args[0], B = self.W95Braid; clearTimeout(this.timer);
-        const r = B.rebind([this], { meta: ex.meta, roots: ex.roots, blob: ex.blob instanceof Uint8Array ? ex.blob : new Uint8Array(ex.blob) }, { opaque: this.braidOpaque(), skip: (o, k) => this.braidSkip(o, k), protos: { Machine, Process: W.Process } });
+        const ex = args[0], BR = self.W95Braid; clearTimeout(this.timer);
+        const r = BR.rebind([this], { meta: ex.meta, roots: ex.roots, blob: ex.blob instanceof Uint8Array ? ex.blob : new Uint8Array(ex.blob) }, { opaque: this.braidOpaque(), skip: (o, k) => this.braidSkip(o, k), protos: { Machine, Process: W.Process }, named: this.braidNamed() });
+        // (a module's instance is this machine's own: one the export brought that this machine had not loaded gets
+        // its instance from its module, as loading it made one; the run-time translations are made again as code runs)
+        const p = this.proc, S = self.W95SYSTEM || {}; p.dynCache = new Map();
+        for (const rec of p.modules || []) if (!rec.run) {
+          const mod = rec.module instanceof WebAssembly.Module ? rec.module : rec.kind === 'vxd' ? (S.vxds[rec.file] || {}).mod : (Object.values(S.ne || {}).find(d => d.meta === rec.meta) || {}).mod;
+          if (mod) rec.run = new WebAssembly.Instance(mod, p.imports).exports.run;
+        }
         W.regLoad(ex.registry);
         while (B.ringTake(this.ring));
         this.keyq = []; this.mouseq = []; this.vclock.now = ex.now;

@@ -6042,7 +6042,7 @@ const braidOpaque = () => { const o = new Set([fs.uncBackend]); for (const v of 
 // graph of its own in the moment, put back by assignment, so the screen after a rewind is the moment's screen. A
 // machine's page-side object (its worker, the calls in flight, its rings) is the host's live thing, left alone
 const braidShell = () => ({ windows, tasks, modals, active, menus, menuSrc, cap, drag, ghost, screen, textClip, clipOwner, msgApp, cascadeN });
-const braidShellSkip = (o, k) => (o && o.worker instanceof Worker && /^(worker|calls|nextCall|started|ring|rpcSab|lanRing|mem|modeBusy|modeDone|alive|lanStation|lanDetach|kids|kidsAsked)$/.test(k)) || (o === fs && k === 'subs');
+const braidShellSkip = (o, k) => (o && o.worker instanceof Worker && /^(worker|calls|nextCall|started|ring|rpcSab|lanRing|mem|modeBusy|modeDone|alive|lanStation|lanDetach|kids|kidsAsked|cv|cx|img|d32|ov|ox|oimg|o32|pal|scr|snap)$/.test(k)) || (o === fs && k === 'subs');   // (a machine's page-side canvases and image data are drawing surfaces, drawn again from its memory and frames)
 const braid = {
   /** a moment of everything, by name: resolves with what was taken */
   async mark(name = 'moment') {
