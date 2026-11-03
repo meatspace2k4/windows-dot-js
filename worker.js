@@ -677,10 +677,18 @@ class Machine {
     p.stats.guestMs += performance.now() - t0;
     if (p.fault && !this.faultTaken) {
       this.faultTaken = true; this.fatalN = (this.fatalN || 0) + 1;   // (fatalN: the processor exceptions the system answered, a blue screen or a fault dialog: the lint's broken state, braidProbe)
-      if (p.fault.ring === 0) { this.fatal(p.fault); if (this.alive) this.timer = setTimeout(() => this.step(), 16); return; }
+      // (and one in the system's own first task, MSGSRV32, the process Windows itself runs in: Windows cannot go on
+      // without it, and VWIN32 says so on the blue screen; a fault dialog over the page's own desktop looked like a
+      // system still running)
+      if (p.fault.ring === 0 || (this.system && (!p.fault.program || /MSGSRV32/i.test(p.fault.program)))) { this.fatal(p.fault); if (this.alive) this.timer = setTimeout(() => this.step(), 16); return; }
       this.stopped = true; post({ t: 'fault', f: p.fault }); return;
     }
-    for (const f of (p.pcFaults || []).splice(0)) { f.pc.fault = true; this.fatalN = (this.fatalN || 0) + 1; this.faultBox(f); }
+    for (const f of (p.pcFaults || []).splice(0)) {
+      f.pc.fault = true; this.fatalN = (this.fatalN || 0) + 1;
+      // (MSGSRV32's own fault: the blue screen, Windows ended (fatal), not a program's dialog)
+      if (this.system && /MSGSRV32/i.test((f.pc && f.pc.path) || '')) { this.fatal(f.fault || { n: 0x0e, cs: 0x28, eip: 0, vxd: null, offset: 0 }); return; }
+      this.faultBox(f);
+    }
     if (p.trapped && !p.failed) p.fail(p.trapped);
     if (p.exitCode !== null || p.trapped) { this.exited(p.exitCode, p.trapped); return; }
     if (!p.win16Held) this.frame();
@@ -708,10 +716,23 @@ class Machine {
     this.timer = -1; this.soonPending = true; this.soonCh.port2.postMessage(0);
   }
   kick() { if (this.alive && this.timer) { clearTimeout(this.timer); this.timer = setTimeout(() => this.step(), 0); } }
+  /** the blue screen as VWIN32 draws it through the display's message mode (blue, the " Windows " title reversed, the
+   *  message, "Press any key to continue"), for a fault before SHELL's message service is up (MSGSRV32's start-up):
+   *  the system stays stopped there, as Windows does; it was ended, and the page's own desktop came back as if it ran */
+  blueText(msg) {
+    const cols = 80, rows = 25, ch = new Array(cols * rows).fill(32), at = new Array(cols * rows).fill(0x17);
+    const put = (r, c, s, a) => { for (let i = 0; i < s.length && c + i < cols; i++) { ch[r * cols + c + i] = s.charCodeAt(i); if (a !== undefined) at[r * cols + c + i] = a; } };
+    const title = ' Windows '; put(8, (cols - title.length) >> 1, title, 0x71);
+    const lines = []; for (const para of String(msg).replace(/\r/g, '').split('\n')) { let l = ''; for (const w of para.split(' ')) { if ((l + ' ' + w).trim().length > 66) { lines.push(l); l = w; } else l = (l ? l + ' ' : '') + w; } lines.push(l); }
+    lines.forEach((l, i) => put(10 + i, 7, l));
+    put(Math.min(rows - 2, 11 + lines.length + 1), 7, '*  Press any key to continue');
+    this.stopped = true; this.proc.txt = { cols, rows, ch, at, cur: -1, gen: (this.proc.txt ? this.proc.txt.gen : 0) + 1 };
+    post({ t: 'msgMode', on: true }); this.sendText(true);
+  }
   /** VWIN32's blue screen for a fault at ring 0 (its text from the page), then the current application ends */
   fatal(f) {
     const p = this.proc, msg = rpc('host', 'fatalText', [f]), at = p.vxdService && p.vxdService(0x17, 3);
-    if (!msg || !at) { this.exited(-1); return; }
+    if (!msg || !at) { if (msg && this.system) this.blueText(msg); else this.exited(-1); return; }
     const a = p.alloc(msg.length + 1); p.writeA(a, msg);
     this.afterR0 = () => this.exited(-1);
     try { if (p.r0Start(at, { ebx: p.sysVM(), eax: 0x40001000, ecx: a, edi: 0, esi: 0, edx: 0 }) !== null) this.exited(-1); }
@@ -1542,6 +1563,10 @@ class Machine {
         // (a module's instance is this machine's own: one the export brought that this machine had not loaded gets
         // its instance from its module, as loading it made one; the run-time translations are made again as code runs)
         const p = this.proc, S = self.W95SYSTEM || {}; p.dynCache = new Map();
+        // (a disk's FAT view is of this machine's file system, which the moment does not carry: one made anew from the
+        // moment had none, and the first read of C:'s sectors after the arrival (MSGSRV32's, as Windows 98 Setup ran on)
+        // ended in "reading 'version'" of nothing)
+        for (const d of [...Object.values(p.vmDisks || {}), ...(p.vms || []).flatMap(v => Object.values((v.m && v.m.o && v.m.o.disks) || {}))]) if (d && !d.fs) d.fs = p.fs;
         // (a VM's machine made anew: its views of the memory it shares with this machine (v86.js machine: u8, dv, not
         // writable, so not in the export), and its own translations)
         for (const v of p.vms || []) { const m = v.m; if (!m || !m.mem) continue; if (!Object.getOwnPropertyDescriptor(m, 'u8')) Object.defineProperty(m, 'u8', { value: new Uint8Array(m.mem.buffer) }); if (!Object.getOwnPropertyDescriptor(m, 'dv')) Object.defineProperty(m, 'dv', { value: new DataView(m.mem.buffer) }); if (m.dynCache && !(m.dynCache instanceof Map)) m.dynCache = new Map(); }

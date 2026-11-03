@@ -450,6 +450,9 @@ class Process {
   noCode(at) {
     const t = this.trapped || '';
     (this.faultLog || (this.faultLog = [])).push({ at: u32(at).toString(16), atIn: this.whereOf(at), why: t, esp: u32(this.cpu.esp.value).toString(16), from: u32(this.lastBlock || 0).toString(16), fromIn: this.whereOf(this.lastBlock || 0), path: this.entryRing ? [...Array(32).keys()].map(k => this.entryRing[(this.entryAt + k) & 31]).filter(Boolean).map(v => this.whereOf(v)) : [], stack: (() => { try { const ss = this.cpu.ss.value & 0xffff, sp = ss && ss !== LAYOUT.FLATDS ? (this.cpu.ssb.value >>> 0) + (this.cpu.esp.value & 0xffff) : u32(this.cpu.esp.value); return Array.from({ length: 8 }, (_, k) => this.r32(sp + 4 * k) >>> 0).map(v => `${v.toString(16)} ${this.whereOf(v)}`); } catch (_) { return []; } })(), cs: (this.cpu.cs.value & 0xffff).toString(16), ss: (this.cpu.ss.value & 0xffff).toString(16), thread: this.thread16 ? this.thread16.id : 'main' }); if (this.faultLog.length > 50) this.faultLog.shift();   // (a diagnostic: cmd 'faults')
+    // (the way there in the log too, as it happens: a machine that ends of it, the system's machine at its start, leaves
+    // no fault log to ask for)
+    { const f = this.faultLog[this.faultLog.length - 1]; log('warn', 'win32', `no code at ${f.at} (${f.why || 'unmapped'}) from ${f.fromIn || f.from}, esp ${f.esp}; the way there: ${f.path.slice(-16).join(' < ')}; stack ${(f.stack || []).slice(0, 8).join(' ')}`); }
     if (/^run-time code/.test(t)) { log('warn', 'win32', t); this.trapped = null; return this.raise(6, at); }   // (an emulator gap: named)
     if (t && !/^jump to unmapped address/.test(t)) return null;
     this.trapped = null; return this.raise(14, at, at);
@@ -1927,7 +1930,13 @@ def('KERNEL32', 'CreateFileA', 7, function (name, access, share, sa, disp, flags
     return this.newHandle({ kind: 'file', fd: this.fs.open(path, mode), path });
   }, 0xffffffff);
 });
-def('KERNEL32', 'CloseHandle', 1, function (h) { const f = fileOf(this, h); if (f) fsCall(this, () => this.fs.close(f.fd)); const c = commOf(this, h); if (c) vcomm(this, 18, [c.vh]); this.handles.delete(h); return 1; });
+def('KERNEL32', 'CloseHandle', 1, function (h) {
+  const f = fileOf(this, h); if (f) fsCall(this, () => this.fs.close(f.fd)); const c = commOf(this, h); if (c) vcomm(this, 18, [c.vh]);
+  const m = this.obj(h); this.handles.delete(h);
+  // (a file's mapping goes with its last handle, and its data with it)
+  if (m && m.kind === 'mapping' && m.file && ![...this.handles.values()].includes(m)) { this.free(m.base); m.base = 0; if (this.mappings) this.mappings.delete(m); }
+  return 1;
+});
 // ---- consoles: a Win32 console program's, which an MS-DOS machine's window is (a DOS box is a console, as CONAGENT makes
 // one in Windows 95); the process's console is the one it was started with (pc.console, worker.js spawnProgram), its
 // standard handles console handles. What it writes goes to the page (host.console), what is typed comes back in lines
@@ -2071,6 +2080,7 @@ def('KERNEL32', 'CreateFileMappingA', 6, function (h, sa, prot, hi, lo, name) {
   if (u32(h) === 0xffffffff) { if (!lo) { this.lastError = 87; return 0; } const base = this.alloc(lo); this.u8.fill(0, base, base + lo); m = { kind: 'mapping', base, size: lo }; }
   else { const f = fileOf(this, h); if (!f) { this.lastError = 6; return 0; } m = { kind: 'mapping', path: f.path }; }
   if (key) sections(this).set(key, m);
+  (this.mappings || (this.mappings = new Set())).add(m);
   this.lastError = 0; return this.newHandle(m);
 });
 def('KERNEL32', 'OpenFileMappingA', 3, function (access, inherit, name) {
@@ -2079,10 +2089,14 @@ def('KERNEL32', 'OpenFileMappingA', 3, function (access, inherit, name) {
 });
 def('KERNEL32', 'MapViewOfFile', 5, function (h, access, hi, lo) {
   const m = this.obj(h); if (!m || m.kind !== 'mapping') { this.lastError = 6; return 0; }
-  if (m.base) return m.base + lo;
-  return fsCall(this, () => { const b = this.fs.readFile(m.path); const p = this.alloc(b.length + 1); this.u8.set(b, p); return p + lo; });
+  // (a file's mapping has its data at one address for as long as the mapping object lives, as Windows 95 keeps a
+  // mapping in the shared arena: every view is that address, and unmapping a view leaves it. GDI32 maps a font file,
+  // unmaps the view at once and reads the font through its address while it holds the mapping's handle; a copy per
+  // view, freed at the unmap, was SUWIN's next GlobalAlloc, zeroed, and the TrueType loader found no table directory)
+  if (!m.base) { const r = fsCall(this, () => { const b = this.fs.readFile(m.path); m.base = this.alloc(b.length + 1); m.size = b.length; m.file = true; this.u8.set(b, m.base); return 0; }); if (!m.base) return r || 0; }
+  return m.base + lo;
 });
-def('KERNEL32', 'UnmapViewOfFile', 1, function (p) { for (const m of sections(this).values()) if (p >= m.base && p < m.base + m.size) return 1; this.free(p); return 1; });
+def('KERNEL32', 'UnmapViewOfFile', 1, function (p) { for (const m of this.mappings || sections(this).values()) if (p >= m.base && p < m.base + Math.max(m.size, 1)) return 1; this.free(p); return 1; });
 def('KERNEL32', 'CreateFileW', 7, () => 0xffffffff);
 def('KERNEL32', 'GetFullPathNameA', 4, function (n, len, buf, part) {
   const s = this.readA(n); const full = /^[a-z]:/i.test(s) ? s : window.W95FS.join(this.fs.cwd, s); this.writeA(buf, full, len);

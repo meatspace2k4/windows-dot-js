@@ -4120,7 +4120,9 @@ class RemoteApp extends NativeApp {
     if (this.mprReady) { this.mprReady(false); this.mprReady = null; }
     setTimeout(() => this.worker.terminate(), 0);
     emit('program.exit', { path: this.path, code, ...(why ? { why } : {}) });
-    if (why) msgBox(basename(this.path), `This program has performed an illegal operation and will be shut down.\n\n${why}`, 'error', ['OK'], null, { noTask: false, modal: false });
+    // (the system's machine itself: Windows is gone, its stop is the screen; a program's fault is its dialog)
+    if (why && this.system) sysDied = stopScreen(why);
+    else if (why) msgBox(basename(this.path), `This program has performed an illegal operation and will be shut down.\n\n${why}`, 'error', ['OK'], null, { noTask: false, modal: false });
     dirty();
     if (own && this.system && !why) systemEnded(code);
   }
@@ -4185,7 +4187,7 @@ function startSystem() {
     const quiet = window.W95MUTE;
     const a = new RemoteApp(join(WINDIR, 'SYSTEM', 'MSGSRV32.EXE'), '', { system: true, quiet });
     if (!(await a.start(null, null))) { bootLogoEnd(); return null; }
-    sysApp = a;
+    sysApp = a; sysDied = null;
     return a;
   })().finally(() => { sysStarting = null; }));
 }
@@ -4847,7 +4849,9 @@ function render() {
   // page's own desktop and taskbar
   const sa = monApp();
   if (!!sa !== monitor) resize();
-  if (sa) sa.scanToCanvas(); else drawDesktop();
+  // (no page desktop in its place: a system's machine that died leaves its stop on the screen, as Windows' own does,
+  // and one not up yet leaves the screen black; the page's desktop is only a page run without the system's machine)
+  if (sa) sa.scanToCanvas(); else if (sysDied) drawTextScreen(sysDied); else if (window.W95SYSTEMVM === false) drawDesktop(); else fill(0, 0, W, H, '#000');
   // a screen saver running full screen on the machine is topmost: the shell's own windows, menus and tips stay under it
   if (sa && sa.snap && sa.snap.list.some(n => /^WindowsScreenSaverClass$/i.test(n.cls || '') && !n.preview)) { const na = pointerApp(mouse.x, mouse.y); if (na) drawSprite(na); return; }
   const m = modal();
@@ -4993,6 +4997,21 @@ function cpiFont(b, cp = 437, h = 16) {
     for (let k = v.getUint16(info + 2, true); k-- > 0; f += 6 + v.getUint16(f + 4, true) * b[f]) if (b[f] === h && b[f + 1] === 8) return b.subarray(f + 6, f + 6 + 256 * h);
   }
   return null;
+}
+/** the system's machine's stop as a text screen, white on blue as Windows' fatal exception screens are: what ended
+ *  it, word-wrapped at 76 columns */
+let sysDied = null;
+function stopScreen(why) {
+  const ch = new Uint8Array(2000).fill(0x20), at = new Uint8Array(2000).fill(0x1f);
+  const lines = [], words = ` Windows `.split(''), text = String(why);
+  for (const para of ['Windows has stopped: the system could not go on.', '', ...text.split('\n')]) {
+    let l = ''; for (const w of para.split(' ')) { if ((l + ' ' + w).trim().length > 76) { lines.push(l); l = w; } else l = (l ? l + ' ' : '') + w; } lines.push(l);
+  }
+  const put = (r, s, a) => { for (let i = 0; i < s.length && i < 80; i++) { ch[r * 80 + i] = s.charCodeAt(i) & 0xff; if (a !== undefined) at[r * 80 + i] = a; } };
+  put(6, ' '.repeat(Math.max(0, (80 - words.length) >> 1)) + words.join(''), 0x1f);
+  for (let i = 0; i < 9; i++) at[6 * 80 + ((80 - words.length) >> 1) + i] = 0x71;
+  lines.slice(0, 14).forEach((l, i) => put(9 + i, '  ' + l));
+  return { rows: 25, cols: 80, ch, at, cur: [-1, -1] };
 }
 function drawTextScreen(t) {
   if (!textFont) { const d = window.W95SYSTEM && W95SYSTEM.dos && W95SYSTEM.dos['EGA.CPI']; if (d) textFont = cpiFont(b64bytes(d)); }

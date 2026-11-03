@@ -17,6 +17,7 @@ window.W95BraidPage = function (ui) {
   const here = new Map();                 // the moments in this page's memory, by name: { s: the page's record, machines: { key: { app, info } } }
   const diskTouched = new Set(), mods = [], line = new B.Line();
   const auto = { timer: null, n: 0, ring: [], every: 0, keep: 3 };
+  let anchorBusy = null;   // (the name of the anchor being written, anchor)
   let sig = null, quiet = false, markN = 0;
   const key = a => (a.system ? 'system' : a.path);
   const live = () => ui.machines().filter(a => a.alive);
@@ -137,8 +138,17 @@ window.W95BraidPage = function (ui) {
      *  signature; marked on the line here as well. Taken at a step with no ring-0 run in flight. The memo's ground: a
      *  page that has it starts there, nothing run again */
     async anchor(name) {
+      // (one anchor at a time: the moment it marks is a braid.mark like any, and a listener that anchors on marks
+      // anchored again from inside this one, each a moment of 300 MB under a name grown by its prefix, until this
+      // computer's store held gigabytes)
+      if (anchorBusy) throw new Error(`an anchor (${anchorBusy}) is being written: one at a time`);
+      anchorBusy = name == null ? 'unnamed' : String(name);
+      try {
       name = name == null ? autoName() : String(name);
-      if (here.has(name) || line.moments.has(name)) throw new Error(`a moment named ${name} is on the line already: an anchor is a moment of now, under a new name`);
+      // (a name already on the line or on this computer: the moment of now takes the next free one, name-2, name-3, ...;
+      // the earlier moment keeps its own)
+      const taken = new Set([...here.keys(), ...line.moments.keys(), ...(await dbAll().catch(() => [])).filter(Boolean).map(x => x.name)]);
+      if (taken.has(name)) { let i = 2; while (taken.has(`${name}-${i}`)) i++; name = `${name}-${i}`; }
       await braid.mark(name);
       const b = await build(), machines = {};
       for (const a of live()) {
@@ -155,13 +165,14 @@ window.W95BraidPage = function (ui) {
       const bytes = Object.values(machines).reduce((n, x) => n + x.blob.length, page.blob.length);
       ui.emit('braid.anchor', { name, bytes, sum: rec.sum });
       return { name, bytes, build: b, sum: rec.sum, at: now };
+      } finally { anchorBusy = null; }
     },
     /** every moment on the line, in machine order: `here` (this page's memory), `anchored` (this computer), the
      *  generation it was taken in, its machine time, the lint's verdict */
     async moments() {
       const by = new Map();
       for (const m of line.moments.values()) by.set(m.name, { ...m, verdict: line.broken.get(m.name) || (m.verdict || 'ok'), here: here.has(m.name), anchored: !!m.anchored });
-      for (const x of await dbAll().catch(() => [])) { const w = by.get(x.name); if (w) { w.anchored = true; w.anchorBytes = Object.values(x.machines).reduce((n, m) => n + m.blob.length, x.page.blob.length); } else by.set(x.name, { name: x.name, gen: x.gen, at: x.now, wall: x.at, build: x.build, mods: x.mods, here: false, anchored: true, verdict: 'ok', anchorBytes: Object.values(x.machines).reduce((n, m) => n + m.blob.length, x.page.blob.length) }); }
+      for (const x of (await dbAll().catch(() => [])).filter(Boolean)) { const w = by.get(x.name); if (w) { w.anchored = true; w.anchorBytes = Object.values(x.machines).reduce((n, m) => n + m.blob.length, x.page.blob.length); } else by.set(x.name, { name: x.name, gen: x.gen, at: x.now, wall: x.at, build: x.build, mods: x.mods, here: false, anchored: true, verdict: 'ok', anchorBytes: Object.values(x.machines).reduce((n, m) => n + m.blob.length, x.page.blob.length) }); }
       return [...by.values()].sort((a, b) => a.at - b.at || a.wall - b.wall);
     },
     /** a moment let go: from this page's memory, from every machine, and from this computer */

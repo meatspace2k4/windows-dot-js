@@ -127,8 +127,13 @@ export const pageDrive = async (key, o = {}) => {
       if (o.until && o.until.test(pg.title + ' ' + pg.text)) { lg(`at ${pg.title} :: ${pg.text.slice(0, 60)} (until)`); break; }   // (o.until: the ladder stops at the page, unpressed)
       const name = 'page' + i + ':' + (pg.title + ' ' + pg.text).slice(0, 28).replace(/\W+/g, '-');
       if (!B.along().some(m => m.name === name)) await mark(name);
-      const startup = /startup disk/i.test(pg.text) && pg.cancel, btn = startup ? pg.cancel : pg.btn;
-      await step([['click', { name: btn.name, role: btn.role, window: btn.window }]], async () => { await win95.click(btn); lg(`${btn.name} on ${pg.title} :: ${pg.text.slice(0, 60)}`); });
+      // (the Startup Disk page takes Next: its Cancel asks whether to quit Setup; the disk itself is declined at its
+      // Insert Disk dialog, Cancel, above)
+      const btn = pg.btn;
+      // (a page that went before its button was pressed (the Identification dialog Setup shows and takes down itself):
+      // the ladder looks for the next page, the press not made)
+      try { await step([['click', { name: btn.name, role: btn.role, window: btn.window }]], async () => { await win95.click(btn); lg(`${btn.name} on ${pg.title} :: ${pg.text.slice(0, 60)}`); }); }
+      catch (e) { if (!/no element matches/.test(e.message)) throw e; lg(`${pg.title} went before its ${btn.name} was pressed`); last = ''; continue; }
       if (btn.name === 'Finish') done = true;
     }
     if (fault) await recover();

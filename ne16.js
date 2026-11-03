@@ -225,7 +225,10 @@ P.reloadData16 = function (rec) {
 P.initNE = function (rec) {
   const m = rec.meta; if (!m.entry[0]) return 1;
   const heap = rd.u16(rec.file, rd.u32(rec.file, 0x3c) + 0x10);
-  const r = this.call16(m.segs[m.entry[0] - 1].sel, m.entry[1], [], { ds: rec.dgroup, di: rec.hInstance, cx: heap, es: 0, si: 0 });
+  // (a fault in it named with the module, as the loader's error is: the stack alone said only that a library loaded
+  // from its file had faulted)
+  let r; try { r = this.call16(m.segs[m.entry[0] - 1].sel, m.entry[1], [], { ds: rec.dgroup, di: rec.hInstance, cx: heap, es: 0, si: 0 }); }
+  catch (e) { if (e && typeof e.message === 'string' && !e.message.includes(rec.name)) e.message += ` (in ${rec.name}'s LibEntry)`; throw e; }
   // then, as KRNL386 does for a library that exports one, its DllEntryPoint(DLL_PROCESS_ATTACH, hInstance, DS, heap
   // size, 0, 0) for the process that loaded it (MSACM.DLL makes its per-process instance there)
   const dep = r.ax && this.neExport(rec, 'DLLENTRYPOINT');
@@ -537,9 +540,18 @@ P.call16 = function (sel, off, args = [], regs = {}) {
   // (the stack in use: a 16-bit one by SS:SP; the flat one by ESP, with SS null or the flat selector, as a Win32
   // thread's LoadLibrary16 has it: DCIMAN32 loading DCIMAN, whose start-up runs here)
   const ss = this.cpu.ss.value & 0xffff, flat = ss && ss !== L.FLATDS ? u32(this.cpu.ssb.value + (this.cpu.esp.value & 0xffff)) : u32(this.cpu.esp.value);
-  const base = Math.max(0, flat - 0xfff0) & ~0xf;   // (64 KB below the stack top, and not below 0 for a stack low in memory)
-  this.setDesc(ssel, base, 0xffff, 0xf300); this.seg('ss', ssel);
-  let sp = flat - 16 - base;
+  // (a call made while a Win16 task runs on its own stack goes on there, SS its DGROUP: a window procedure the call
+  // reaches takes its DS from SS (`mov ax,ss` ... `mov ds,ax`), and on an alias of the same memory it read another
+  // segment's data: Windows 98 Setup's billboard procedure, sent a message from inside the USER call a stand-in made
+  // as W98SETUP ended, jumped to nothing)
+  // (and a call the host makes as an ending task (USER told of its end, its windows destroyed: atExit) runs on that
+  // task's stack from its top, its own frames done: the WM_DESTROY W98SETUP's main window took there, on an alias,
+  // read the handles it deletes from another segment, deleted garbage, and its next procedure jumped to nothing)
+  const t16 = !this.asTask && this.thread16, kt = t16 && t16.task && t16.task.dgStack ? t16.task : null;
+  const k = kt && (kt.dgroup === ss || t16.atExit) ? kt : null, top = k && kt.dgroup !== ss;
+  const base = k ? this.selBase(k.dgroup) : Math.max(0, flat - 0xfff0) & ~0xf;   // (64 KB below the stack top, and not below 0 for a stack low in memory)
+  if (k) this.seg('ss', k.dgroup); else { this.setDesc(ssel, base, 0xffff, 0xf300); this.seg('ss', ssel); }
+  let sp = top ? k.sp - 16 : flat - 16 - base;
   for (const [t, v] of args) { if (t === 'w') { sp -= 2; this.w16(base + sp, v); } else { sp -= 4; this.w32(base + sp, v); } }
   sp -= 2; this.w16(base + sp, L.SENT); sp -= 2; this.w16(base + sp, 0);
   this.cpu.esp.value = sp;
@@ -932,7 +944,9 @@ const INTS = {
     const v = this.video();
     const setBX = x => { this.cpu.ebx.value = lo16(this.cpu.ebx.value, x); }, setCX = x => { this.cpu.ecx.value = lo16(this.cpu.ecx.value, x); };
     const esdi = () => this.rmode ? ((this.cpu.es.value & 0xffff) << 4) + (this.cpu.edi.value & 0xffff) : this.lin((this.cpu.es.value << 16) | (this.cpu.edi.value & 0xffff));
-    const farp = a => this.rmode ? u32(((a >> 4) << 16) | (a & 0xf)) : this.mapLS(a);
+    // (the adapter's strings' far pointers in protected mode: a selector each, made once with the adapter and kept on
+    // it, never a new one per call)
+    const farp = a => this.rmode ? u32(((a >> 4) << 16) | (a & 0xf)) : ((v.far || (v.far = new Map())).get(a) || (v.far.set(a, u32((this.allocSels(a & ~0xf, 0x10000 - (a & 0xf)) << 16) | (a & 0xf))), v.far.get(a)));
     if (ah === 0x12 && bl === 0x10) { setBX(0x0003); setCX(0x0009); return; }        // EGA/VGA info: color, 256K
     if (ah === 0x1a && (ax & 0xff) === 0) { this.ax(0x001a); setBX(0x0008); return; } // display combination: VGA color
     if (ah === 0x0f) { const a = this.adapter(); this.ax(((a.w / 8) << 8) | a.mode); setBX(0); return; }
@@ -1220,7 +1234,9 @@ const INTS = {
   // reset (SUWIN resets each drive before it reads its boot record); 08h its geometry (and the diskette drive's, a
   // 1.44 MB one with no disk the system reads); 02h reads by cylinder, head and sector into ES:BX, 03h writes from it
   // (the view takes the sectors ahead of its FATs, the MBR and boot sector; another is refused, 03h write protected);
-  // 15h the type and size; 41h no extensions. Any other function stops here, named (a gap)
+  // 04h verifies AL sectors where 02h would read them, and moves nothing (SUWIN verifies after the Startup Disk page:
+  // C:'s view has every sector, AL of them verified; no diskette, 80h, timed out); 15h the type and size; 41h no
+  // extensions. Any other function stops here, named (a gap)
   0x13(next) {
     const ah = this.ax() >> 8, dl = this.cpu.edx.value & 0xff, view = dl === 0x80 && this.fixedDisk && this.fixedDisk('C');
     const ok = () => { CF(this, 0); this.ax(this.ax() & 0xff); }, bad = e => { CF(this, 1); this.ax((e << 8) | (this.ax() & 0xff)); };
@@ -1233,7 +1249,8 @@ const INTS = {
     }
     if (ah === 0x15) { if (dl === 0x80 && L) { this.cpu.ecx.value = lo16(this.cpu.ecx.value, all >>> 16); this.cpu.edx.value = lo16(this.cpu.edx.value, all); CF(this, 0); this.ax((3 << 8) | (this.ax() & 0xff)); return; } if (dl === 0) { CF(this, 0); this.ax((2 << 8) | (this.ax() & 0xff)); return; } return bad(0); }
     if (ah === 0x41) return bad(0x01);
-    if ((ah === 0x02 || ah === 0x03) && !L) return bad(dl < 0x80 ? 0x80 : 0x01);
+    if ((ah === 0x02 || ah === 0x03 || ah === 0x04) && !L) return bad(dl < 0x80 ? 0x80 : 0x01);
+    if (ah === 0x04) { CF(this, 0); this.ax(this.ax() & 0xff); return; }
     if (ah === 0x02 || ah === 0x03) {
       const cx = this.cpu.ecx.value & 0xffff, cyl = (cx >> 8) | ((cx & 0xc0) << 2), sec = cx & 0x3f, head = (this.cpu.edx.value >> 8) & 0xff, n = this.ax() & 0xff;
       const lba = (cyl * 255 + head) * 63 + sec - 1, bx = this.cpu.ebx.value & 0xffff, es = this.cpu.es.value & 0xffff;
@@ -3584,8 +3601,11 @@ def16('KERNEL', 347, 'xl', 'w', function (sp, n) { return okPtr.call(this, sp, n
 def16('KERNEL', 627, 'xlw', 'w', function (sp, n) { return okPtr.call(this, sp, n); });   // IsBadFlatReadWritePtr(16:16 from HugeMapLS, size, write)
 
 // strings
-def16('KERNEL', 88, 'px', 'l', function (d, s) { const t = this.readA(this.lin(s)) || ''; W(this, d, t); return this.mapLS(d); });
-def16('KERNEL', 89, 'px', 'l', function (d, s) { const a = this.readA(d) || '', t = this.readA(this.lin(s)) || ''; W(this, d, a + t); return this.mapLS(d); });
+// (lstrcpy and lstrcat answer the destination as the caller passed it: a selector made for it (mapLS) is never let go,
+// and SUWIN's thousands of copies a second as it reads its INFs filled the LDT, each new one found by a scan of the
+// whole table, until Setup ran no further)
+def16('KERNEL', 88, 'xx', 'l', function (dp, s) { const t = this.readA(this.lin(s)) || ''; W(this, this.lin(dp), t); return dp; });
+def16('KERNEL', 89, 'xx', 'l', function (dp, s) { const d = this.lin(dp), a = this.readA(d) || '', t = this.readA(this.lin(s)) || ''; W(this, d, a + t); return dp; });
 def16('KERNEL', 90, 'p', 'w', function (s) { return s ? (this.readA(s) || '').length : 0; });
 def16('KERNEL', 353, 'xpw', 'l', function (dsp, s, n) { const d = this.lin(dsp); W(this, d, this.readA(s) || '', n); return dsp; });
 def16('KERNEL', 87, 'pp', 'i', function (a, b) { const x = this.readA(a) || '', y = this.readA(b) || ''; return x < y ? -1 : x > y ? 1 : 0; });   // lstrcmp
@@ -4928,7 +4948,7 @@ P.threadExitUser = function (t) {
   const pc = t.pc, exe = pc ? pc.started && pc.exe : this.exe, u = exe && this.ne && this.ne.get('USER'), sig = u && u.meta && this.neExport(u, 391);
   if (!sig || !t.queue || t.userExited) return;
   t.userExited = true;
-  const by = this.thread16; this.thread16 = t;
+  const by = this.thread16; this.thread16 = t; t.atExit = true;
   try { this.user16(391, [['l', 0x20], ['l', t.id], ['l', 3], ['w', this.hinst16(exe.base, exe)]]); } catch (e) { console.error(e); } finally { this.thread16 = by; }
 };
 /** a fault in a Windows 3.x program the system runs (a task of its own, not the system's first task): that program
@@ -4941,7 +4961,7 @@ P.taskFault = function (t, why, fault) {
   // their pixels (Disk Defragmenter's window, after its fault)
   // (the stop is taken here: USER's calls do not run while it stands, and the windows stayed)
   this.trapped = null;
-  const by = this.thread16; this.thread16 = t;
+  const by = this.thread16; this.thread16 = t; t.atExit = true;
   try { for (const h of this.taskWindows(t.tdb).reverse()) if (this.user16(47, [['w', h]]).ax) this.user16(53, [['w', h]]); }   // (IsWindow: one an owner's destruction took is gone)
   catch (e) { console.error(e); this.trapped = null; } finally { this.thread16 = by; }
   t.state = 'done'; this.wakeWaiters(t);
@@ -5112,7 +5132,7 @@ P.threads16 = function (nested = false, only = null) {
         // (a stop the emulator made, trapped, ends the run as the sentinel does, r 0: a VxD service it lacks)
         if (this.trapped && t.pc && this.noMain) { t.pc.trapped = this.trapped; (this.pcFaults || (this.pcFaults = [])).push({ pc: t.pc, why: this.trapped }); this.trapped = null; this.endProcess(t.pc, 0xffffffff); }
         else if (this.trapped && this.taskFault(t, this.trapped)) this.trapped = null;
-        if (t.pc) this.pcThreadEnded(t); else { this.threadExitUser(t); this.taskModuleEnded(t); } if (r !== 0 && this.trapped) log('warn', 'ne16', `thread ${t.id} ${this.trapped}`); if (t.onDone) t.onDone(t);
+        if (t.pc) this.pcThreadEnded(t); else { this.threadExitUser(t); this.taskWindowsEnd(t); this.taskModuleEnded(t); } if (r !== 0 && this.trapped) log('warn', 'ne16', `thread ${t.id} ${this.trapped}`); if (t.onDone) t.onDone(t);
         if (t.flat && t.stackBase) { this.stackFree(t); this.free(t.tib); t.tib = 0; }   // (its stack and thread information block go with it)
       }   // onDone: the host's, for a thread it started
     } catch (e) {
@@ -5287,6 +5307,16 @@ def16('KERNEL', 45, 'sp', 'l', function (name, pb) {
     Object.assign(t.task, { dgroup: g, hInst: g, ownDg: g, dgStack: true });
     (rec.instances || (rec.instances = new Set())).add(g);
   }
+  // its own thread information block, as every thread has one, its stack's top and limit the DGROUP's stack: the
+  // 32-bit code it calls through a thunk runs on that stack, and with the main thread's block (another stack's
+  // bounds) the exception frames it pushed there were no frames to KERNEL32's dispatcher. GDI32's TrueType
+  // interpreter divides by zero on a glyph and catches it; uncaught, W98SETUP ended as it drew its billboard
+  if (!t.tib) {
+    t.tib = this.alloc(0x100); this.u8.copyWithin(t.tib, LAYOUT.TIB, LAYOUT.TIB + 0x100);
+    const sb = t.task.dgStack ? this.selBase(t.task.dgroup) : 0;
+    this.w32(t.tib, 0xffffffff); this.w32(t.tib + 4, sb ? sb + t.task.sp : 0); this.w32(t.tib + 8, sb); this.w32(t.tib + 0x18, t.tib);
+    this.w16(t.tib + 0x28, t.queue || 0);
+  }
   t.tdb = newTdb(this, { hInst: rec.hInstance, hModule: rec.hModule, name: rec.name });
   // (its first window brought to the front, worker.js frame; not a program another machine started in a shared session)
   if (t.task.origin !== 'remote') (this.fgWanted || (this.fgWanted = new Set())).add(t.tdb);
@@ -5298,6 +5328,16 @@ def16('KERNEL', 45, 'sp', 'l', function (name, pb) {
   return u32((t.tdb << 16) | rec.hInstance);
 });
 /** a task's top-level windows, hidden ones too, front to back */
+/** an ended Win16 task's windows that outlived USER's word of its end, destroyed as the task, as USER's AppExit takes
+ *  down every window of a task that goes: SUWIN's end destroyed its windows from inside a host call, where the reply
+ *  one of them waited on could not come, and its dialog stayed with a queue no thread would read. Windows 98 Setup's
+ *  ExitWindows then sent it WM_QUERYENDSESSION and waited for good, the restart never made */
+P.taskWindowsEnd = function (t) {
+  if (!t.task || !t.tdb || !this.user16Ready) return;
+  const by = this.thread16; this.thread16 = t; t.atExit = true;
+  try { for (const h of this.taskWindows(t.tdb).reverse()) if (this.user16(47, [['w', h]]).ax) this.user16(53, [['w', h]]); }
+  catch (e) { console.error(e); this.trapped = null; } finally { this.thread16 = by; }
+};
 P.taskWindows = function (task) {
   const u = (o, args) => this.user16(o, args).ax, out = [];
   for (let h = u(262, [['w', u(286)], ['w', 5]]), n = 0; h && n < 512; h = u(262, [['w', h], ['w', 2]]), n++) if (u(224, [['w', h]]) === task) out.push(h);   // GW_CHILD, GW_HWNDNEXT, GetWindowTask
