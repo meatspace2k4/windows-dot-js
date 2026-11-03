@@ -1553,6 +1553,12 @@ class Machine {
         // module's export answers it, found again as it is called (api16, t.native))
         { const K16 = (self.W95NE16 || {}).K16 || {}; for (const t of p.th16 || []) if (t && t.key) { t.def = K16[t.key]; if (!t.def) delete t.native; } }
         for (const t of p.thunks || []) if (t && t.dll) t.def = ((W.API || {})[t.dll] || {})[t.nm];
+        // (the hooks at the exports other modules enter (win32.js entryHooks) are code: made again for the USER loaded,
+        // as its load made them (ne16.js hookIntents, hookClock, hookTaken); a return watched by a diagnostic is not)
+        { p.entryHooks = new Map(); p.entryLists = new Map(); p.retPend = new Map(); const user = p.ne && p.ne.get('USER'); if (user && user.meta) { p.hookIntents(user); p.hookClock(user); p.hookTaken(user); } }
+        // (a started program's end told to the page (program.exit), as 'run' tells it; its console's or a saver's own
+        // telling is not carried)
+        for (const pc of (p.procs || new Map()).values()) if (pc && typeof pc.onExit !== 'function') pc.onExit = code => { if (!pc.fault) post({ t: 'emit', ev: 'program.exit', data: { path: pc.path, code } }); };
         for (const rec of p.modules || []) if (!rec.run) {
           const mod = rec.module instanceof WebAssembly.Module ? rec.module : rec.kind === 'vxd' ? (S.vxds[rec.file] || {}).mod : (Object.values(S.ne || {}).find(d => d.meta === rec.meta) || {}).mod;
           if (mod) rec.run = new WebAssembly.Instance(mod, p.imports).exports.run;
@@ -1574,10 +1580,10 @@ class Machine {
           arena: (p.arena || []).map(s => ({ lo: s.lo.toString(16), hi: s.hi.toString(16), cur: pidOf(s.cur), own: [...s.own].map(pidOf), bufs: [...s.bufs.keys()].map(pidOf) })) };
       }
       case 'trail': {   // (a diagnostic: the next n dispatches, each its address as a symbol, then the hook ends; [] reads what came; with the holder's clock: runT0, the budget, the clock)
-        if (args[0]) { const n = args[0], log = []; p.runHook = eip => { log.push(`${(eip >>> 0).toString(16)} ${p.whereOf(eip)} t ${p.now().toFixed(1)} b ${p.cpu.budget.value}`); if (log.length >= n) p.runHook = null; }; p.runHook.log = log; return true; }
-        const l = (p.runHook && p.runHook.log) || this.trailLast || []; if (p.runHook && p.runHook.log) this.trailLast = p.runHook.log;
+        if (args[0]) { const n = args[0], log = this.trailLog = []; p.runHook = eip => { log.push(`${(eip >>> 0).toString(16)} ${p.whereOf(eip)} t ${p.now().toFixed(1)} b ${p.cpu.budget.value} th ${p.thread16 ? p.thread16.id : 'main'}`); if (log.length >= n) p.runHook = null; }; return true; }
+        const l = this.trailLog || [];
         const h = p.win16Held && typeof p.win16Held.who === 'object' ? p.win16Held.who : null;
-        return { trail: l, runT0: p.runT0, now: p.now(), budget: p.cpu.budget.value, holder: h && { id: h.id, sliceStart: h.sliceStart, ctxEip: h.ctx && (h.ctx.eip >>> 0).toString(16), ctxIn: h.ctx && p.whereOf(h.ctx.eip >>> 0), state: h.state, preempted: h.preempted }, preempted: p.preempted,
+        return { trail: l, runT0: p.runT0, now: p.now(), budget: p.cpu.budget.value, depth: p.depth, asTask: !!p.asTask, inThreads: !!p.inThreads, threadsNest: p.threadsNest || 0, holder: h && { id: h.id, depth: h.depth, slept: !!h.slept, events: h.events || 0, sliceStart: h.sliceStart, ctxEip: h.ctx && (h.ctx.eip >>> 0).toString(16), ctxIn: h.ctx && p.whereOf(h.ctx.eip >>> 0), ctxDepth: h.ctx && h.ctx.depth, state: h.state, preempted: h.preempted }, preempted: p.preempted,
           vms: (p.vms || []).map(v => ({ id: v.id, started: !!v.started, gone: !!v.gone, suspended: !!v.suspended, hasM: !!v.m, run: !!(v.m && typeof v.m.v86Run === 'function'), proto: v.m && Object.getPrototypeOf(v.m) && Object.getPrototypeOf(v.m).constructor.name, halted: v.m ? !!v.m.halted : null, exec: v.exec ? v.exec.program : null })),
           r0: (p.r0Runs || []).map(s => ({ vm: s.vm ? s.vm.id : null, wait: !!s.wait, at: s.eip !== undefined ? p.whereOf(s.eip >>> 0) : null, kind: s.kind || null })) };
       }

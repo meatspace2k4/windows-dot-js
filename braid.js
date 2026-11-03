@@ -173,7 +173,7 @@ function rebind(roots, ex, opts = {}) {
   };
   ex.roots.forEach((r, i) => walkEx(r, '#' + i));
   // each exported entry's live object: the one at its path, or one made anew
-  const obj = new Array(ex.meta.length).fill(null), made = [];
+  const obj = new Array(ex.meta.length).fill(null), made = [], unmade = [], lost = []; let curPath = '';   // (unmade: an object made without its class, [path, class wanted, class got]; lost: a function or opaque thing the record names that nothing here answers to, [name, key])
   const protoAt = (m, p) => { const sib = live.get(p); if (sib && Object.getPrototypeOf(sib) && Object.getPrototypeOf(sib).constructor.name === m.proto) return Object.getPrototypeOf(sib); const parent = live.get(p.replace(/\/[^/]*$/, '')); for (const c of parent instanceof Map ? parent.values() : parent instanceof Set ? parent : Array.isArray(parent) ? parent : []) if (c && typeof c === 'object' && Object.getPrototypeOf(c).constructor.name === m.proto) return Object.getPrototypeOf(c); return protos[m.proto] ? protos[m.proto].prototype : Object.prototype; };
   const bytesOf = m => ex.blob.subarray(m.bytes[0], m.bytes[0] + m.bytes[1]);
   for (const i of order) {
@@ -186,10 +186,10 @@ function rebind(roots, ex, opts = {}) {
     if (m.kind === 'set') { obj[i] = l instanceof Set ? l : new Set(); continue; }
     if (m.kind === 'arr') { obj[i] = Array.isArray(l) ? l : []; continue; }
     if (l && typeof l === 'object' && !(l instanceof Map) && !(l instanceof Set) && !Array.isArray(l) && TAG(l) === '[object Object]') obj[i] = l;
-    else { obj[i] = Object.create(m.proto ? protoAt(m, p) : Object.prototype); made.push(p); }
+    else { const pr = m.proto ? protoAt(m, p) : Object.prototype; obj[i] = Object.create(pr); made.push(p); if (m.proto && m.proto !== 'Object' && (pr === Object.prototype || pr.constructor.name !== m.proto)) unmade.push([p, m.proto, pr.constructor ? pr.constructor.name : '?']); }
   }
   // the contents: bytes first, then every object's properties, a function the export could not carry kept as it is
-  const resolve = (v, l, k) => { if (v && typeof v === 'object') { if ('r' in v) return obj[v.r]; if (v.fn || v.opaque) { const n = v.fn || v.opaque; if (typeof n === 'string') { const got = named(n); if (got !== undefined) return got; } return l && k !== undefined ? l[k] : undefined; } if (v.u) return undefined; if (v.nan) return NaN; if ('big' in v) return BigInt(v.big); } return v; };
+  const resolve = (v, l, k) => { if (v && typeof v === 'object') { if ('r' in v) return obj[v.r]; if (v.fn || v.opaque) { const n = v.fn || v.opaque; if (typeof n === 'string') { const got = named(n); if (got !== undefined) return got; } if (!(l && k !== undefined && l[k] !== undefined)) lost.push([typeof n === 'string' ? n : v.fn ? 'fn' : 'opaque', k, curPath]); return l && k !== undefined ? l[k] : undefined; } if (v.u) return undefined; if (v.nan) return NaN; if ('big' in v) return BigInt(v.big); } return v; };
   for (const i of order) {
     const m = ex.meta[i], o = obj[i]; if (!o) continue;
     if (m.kind === 'mem') new Uint8Array(o.buffer).set(bytesOf(m));
@@ -200,6 +200,7 @@ function rebind(roots, ex, opts = {}) {
   }
   for (const i of order) {
     const m = ex.meta[i], o = obj[i]; if (!o) continue;
+    curPath = path[i];
     if (m.kind === 'map') { o.clear(); for (const [k, v] of m.items) o.set(resolve(k), resolve(v)); }
     else if (m.kind === 'set') { o.clear(); for (const v of m.items) o.add(resolve(v)); }
     else if (m.kind === 'arr') { const was = o.slice(); o.length = 0; m.items.forEach((v, n) => { o[n] = resolve(v, was, n); }); }
@@ -209,7 +210,7 @@ function rebind(roots, ex, opts = {}) {
       for (const [k, v] of m.props) { const r = resolve(v, o, k); if (v && typeof v === 'object' && (v.fn || v.opaque) && r === undefined) continue; o[k] = r; }
     }
   }
-  return { made, matched: order.length - made.length };
+  return { made, matched: order.length - made.length, unmade, lost };
 }
 
 // ---------------------------------------------------------------- the record

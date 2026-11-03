@@ -10,6 +10,10 @@ const w = readFileSync(new URL('../worker.js', import.meta.url), 'utf8');
 const i = w.indexOf("case 'import': {"), body = w.slice(i, w.indexOf("case 'kick':", i));
 assert.match(body, /for \(const t of p\.th16 \|\| \[\]\) if \(t && t\.key\) \{ t\.def = K16\[t\.key\]; if \(!t\.def\) delete t\.native; \}/, 'the 16-bit thunks by key, one of no definition left to the native export');
 assert.ok(!/16-bit thunk without a definition/.test(body), 'not refused');
+// (the hooks at the exports other modules enter are code too: made again for the USER loaded, as its load made them;
+// a started program's end told to the page again)
+assert.match(body, /p\.entryHooks = new Map\(\); p\.entryLists = new Map\(\); p\.retPend = new Map\(\); const user = p\.ne && p\.ne\.get\('USER'\); if \(user && user\.meta\) \{ p\.hookIntents\(user\); p\.hookClock\(user\); p\.hookTaken\(user\); \}/, 'the entry hooks made again');
+assert.match(body, /for \(const pc of \(p\.procs \|\| new Map\(\)\)\.values\(\)\) if \(pc && typeof pc\.onExit !== 'function'\) pc\.onExit = /, 'program.exit told again');
 assert.match(body, /for \(const t of p\.thunks \|\| \[\]\) if \(t && t\.dll\) t\.def = \(\(W\.API \|\| \{\}\)\[t\.dll\] \|\| \{\}\)\[t\.nm\];/, 'the 32-bit thunks by DLL and name');
 assert.ok(body.indexOf('p.retDone[r.kind]') < body.indexOf('p.th16'), 'after the transitions in flight, before the modules\' instances');
 // (the thunk records name what they need: ne16.js thunk16Def keeps the key, win32.js thunkFor the DLL and the name)
