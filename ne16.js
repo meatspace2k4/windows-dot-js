@@ -4614,8 +4614,12 @@ def16('KERNEL', 605, 'll', 'l', function (target, rel) { return this.slThunklet(
 // then allocates); thunklets here are the target itself, so both are the same
 def16('KERNEL', 610, 'll', 'l', function (target, rel) { return this.slThunklet(target, rel); });
 def16('KERNEL', 630, '', 'jmp', function () {                                 // C16ThkSL
-  // the stub would load EDX from the 32-bit target table at [EDX + CX] and far-jump to the 16 -> 32 transition
-  const target = this.r32(u32(this.cpu.edx.value + (this.cpu.ecx.value & 0xffff)));
+  // the stub would load EDX from the 32-bit target table at [EDX + CX] and far-jump to the 16 -> 32 transition. The
+  // read is the stub's own through the flat selector: a table pointer of 0 (a 32-bit half not connected) faults on
+  // the null page there, as in Windows, not a read of what low memory holds and a jump to it
+  const at = u32(this.cpu.edx.value + (this.cpu.ecx.value & 0xffff));
+  if (at < 0x1000) return this.raise(14, u32(this.cpu.eip.value), at);
+  const target = this.r32(at);
   return this.enter32from16(target);
 });
 
