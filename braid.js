@@ -145,6 +145,15 @@ function serialize(g, nameOf = () => null) {
 }
 const TA = { Uint8Array, Int8Array, Uint16Array, Int16Array, Uint32Array, Int32Array, Float32Array, Float64Array, Uint8ClampedArray, ...(typeof BigInt64Array === 'function' ? { BigInt64Array, BigUint64Array } : {}) };
 /** the export put into the live graph from `roots`: each exported entry matched to a live object by path */
+// an array's element named by what it is, where it says so: a record's name, key, id, pid or path (a module, a thunk,
+// a thread, a process), so the records of two machines pair by identity, not by position (a module record paired by
+// position with another module's record took that module's code, its wasm run, and ran nothing at its own addresses);
+// its index otherwise, or where the name repeats
+const IDK = ['name', 'key', 'id', 'pid', 'path'];
+const elKey = (get, i, used) => {
+  if (get) for (const k of IDK) { const v = get(k); if (typeof v === 'string' || typeof v === 'number') { const s = k + '=' + String(v).replace(/\//g, '%2F'); if (!used.has(s)) { used.add(s); return s; } break; } }
+  return String(i);
+};
 function rebind(roots, ex, opts = {}) {
   const protos = opts.protos || {}, opaque = opts.opaque || new Set(), skip = opts.skip || (() => false), named = opts.named || (() => undefined);
   // the live objects by path, as the export's walk numbered its entries: both walks are depth-first from the roots in
@@ -156,7 +165,7 @@ function rebind(roots, ex, opts = {}) {
     if (v instanceof ArrayBuffer || (hasShared && v instanceof SharedArrayBuffer) || ArrayBuffer.isView(v) || isCanvas(v) || isCtx(v) || isImageData(v)) return;
     if (v instanceof Map) { let i = 0; for (const [k, x] of v) { walkLive(k, path + '/k' + i); walkLive(x, path + '/' + (typeof k === 'string' || typeof k === 'number' ? k : 'v' + i)); i++; } return; }
     if (v instanceof Set) { let i = 0; for (const x of v) walkLive(x, path + '/' + i++); return; }
-    if (Array.isArray(v)) { v.forEach((x, i) => walkLive(x, path + '/' + i)); return; }
+    if (Array.isArray(v)) { const used = new Set(); v.forEach((x, i) => walkLive(x, path + '/' + elKey(x && typeof x === 'object' && !Array.isArray(x) ? k => x[k] : null, i, used))); return; }
     if (TAG(v) !== '[object Object]') return;
     const d = Object.getOwnPropertyDescriptors(v);
     for (const k of Object.keys(d)) { const p = d[k]; if (!('value' in p) || !p.writable || skip(v, k)) continue; walkLive(p.value, path + '/' + k); }
@@ -168,7 +177,8 @@ function rebind(roots, ex, opts = {}) {
     if (!v || typeof v !== 'object' || !('r' in v)) return; const i = v.r; if (path[i] !== null) return; path[i] = p; order.push(i);
     const m = ex.meta[i];
     if (m.kind === 'map') m.items.forEach(([k, x], n) => { walkEx(k, p + '/k' + n); walkEx(x, p + '/' + (typeof k === 'string' || typeof k === 'number' ? k : 'v' + n)); });
-    else if (m.kind === 'set' || m.kind === 'arr') m.items.forEach((x, n) => walkEx(x, p + '/' + n));
+    else if (m.kind === 'set') m.items.forEach((x, n) => walkEx(x, p + '/' + n));
+    else if (m.kind === 'arr') { const used = new Set(); m.items.forEach((x, n) => { const e = x && typeof x === 'object' && 'r' in x ? ex.meta[x.r] : null; walkEx(x, p + '/' + elKey(e && e.kind === 'obj' ? k => { const pr = e.props.find(q => q[0] === k); return pr ? pr[1] : undefined; } : null, n, used)); }); }
     else if (m.kind === 'obj') m.props.forEach(([k, x]) => walkEx(x, p + '/' + k));
   };
   ex.roots.forEach((r, i) => walkEx(r, '#' + i));

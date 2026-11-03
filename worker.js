@@ -1560,7 +1560,9 @@ class Machine {
         // telling is not carried)
         for (const pc of (p.procs || new Map()).values()) if (pc && typeof pc.onExit !== 'function') pc.onExit = code => { if (!pc.fault) post({ t: 'emit', ev: 'program.exit', data: { path: pc.path, code } }); };
         for (const rec of p.modules || []) if (!rec.run) {
-          const mod = rec.module instanceof WebAssembly.Module ? rec.module : rec.kind === 'vxd' ? (S.vxds[rec.file] || {}).mod : (Object.values(S.ne || {}).find(d => d.meta === rec.meta) || {}).mod;
+          // (a 16-bit module of the bundle's by its name: a record this machine had not has a metadata object of its own,
+          // not the bundle's)
+          const mod = rec.module instanceof WebAssembly.Module ? rec.module : rec.kind === 'vxd' ? (S.vxds[rec.file] || {}).mod : ((S.ne || {})[rec.name] && !(rec.meta && rec.meta.dynamic) ? S.ne[rec.name] : Object.values(S.ne || {}).find(d => d.meta === rec.meta) || {}).mod;
           if (mod) rec.run = new WebAssembly.Instance(mod, p.imports).exports.run;
         }
         W.regLoad(ex.registry);
