@@ -210,7 +210,7 @@ P.reloadData16 = function (rec) {
   for (const sg of data) { u8.fill(0, sg.base, sg.base + Math.max(sg.alloc, 1)); if (sg.len) u8.set(rec.file.subarray(sg.fileoff, sg.fileoff + sg.len), sg.base); }
   const inData = lin => data.some(sg => lin >= sg.base && lin < sg.base + Math.max(sg.alloc, 1));
   for (const [lin, size, val] of meta.fixups) if (inData(lin)) { if (size === 1) u8[lin] = val; else if (size === 2) this.w16(lin, val); else this.w32(lin, val); }
-  if (rec.relocSeg) for (const sg of data) rec.relocSeg(sg);   // (a module loaded from its file: its relocation records, made again)
+  if (meta.dynamic && rec.file) for (const sg of data) this.relocSeg16(rec, sg);   // (a module loaded from its file: its relocation records, made again)
   if (rec.dgroup) {
     const dg = meta.segs[meta.autodata - 1], init = Math.min(0x10000, ((dg.minalloc || 0x10000) + rd.u16(rec.file, n + 0x10) + taskStack(rd.u16(rec.file, n + 0x12)) + 15) & ~15);
     const g = this.ghandles.get(rec.dgroup | 1); if (g) g.size = init;
@@ -373,6 +373,43 @@ P.loadNEFile = function (name) {
 // KERNEL's exports that are constants, as tools/recomp.py resolves them: __AHSHIFT, __AHINCR, __WINFLAGS, __FLATCS,
 // __FLATDS, and the selectors of fixed real-mode memory (__0000H, __0040H, __A000H ... __F000H, __ROMBIOS)
 const KERNEL_EQUATES = { 113: 3, 114: 8, 178: 0x0c29, 454: L.FLATCS, 455: L.FLATDS, 183: 0x107, 193: 0x10f, 174: 0x117, 181: 0x11f, 182: 0x127, 195: 0x12f, 179: 0x137, 190: 0x13f, 194: 0x147, 173: 0x147 };
+/** an import's far address, for a module loaded from its file (its module-reference table in meta.imports): a module
+ *  loaded here at its export, else its thunk; KERNEL's constants as values */
+P.importTarget16 = function (rec, mi, ordOrName) {
+  const mods = rec.meta.imports, mod = mods[mi - 1] || '?'; let ord = ordOrName;
+  const m = mod === 'KERNEL' ? null : this.loadLibrary16(mod, true);
+  if (!m && mod !== 'KERNEL' && !JS16.includes(mod)) throw Object.assign(new Error(`${mod}.DLL could not be loaded`), { missing16: this.missing16 || `${mod}.DLL` });   // (a DLL of its own that did not load: neither does it)
+  if (typeof ord === 'string') ord = (m && m.names && m.names[ord.toUpperCase()]) || (names16(mod) || {})[ord.toUpperCase()] || 0;
+  if (mod === 'KERNEL' && KERNEL_EQUATES[ord] !== undefined) { const c = KERNEL_EQUATES[ord]; return u32(c << 16 | c); }   // (its constants: the value at a segment or an offset fixup)
+  if (m && m.meta && m.meta.dynamic) { if (!m.inited && m !== rec) { m.inited = true; this.initNE(m); } return m.exports.get(ord) || 0; }   // (its LibEntry run as it is loaded)
+  return this.thunk16For(`${m && m.kind !== 'js' ? m.name : mod}.#${ord}`);
+};
+/** a segment's relocations made in it, from the module's record alone (its file, segments and exports): as it
+ *  loads, and again for a data segment read again from the file (reloadData16). Nothing of the loader's is kept on
+ *  the record as code: a moment arrived at in another page has the record and not the loader's closures */
+P.relocSeg16 = function (rec, sg) {
+  if (!sg.rel) return;
+  const file = rec.file, segs = rec.segs, exports = rec.exports, n = rd.u32(file, 0x3c), h = o => rd.u16(file, n + o);
+  const pstr = at => String.fromCharCode(...file.subarray(at + 1, at + 1 + file[at]));
+  const cnt = rd.u16(file, sg.rel);
+  for (let k = 0; k < cnt; k++) {
+    const r = sg.rel + 2 + 8 * k, at = file[r], typ = file[r + 1], off = rd.u16(file, r + 2), a = rd.u16(file, r + 4), b = rd.u16(file, r + 6);
+    let v;
+    if ((typ & 3) === 0) { v = a & 0xff ? (a & 0xff) === 0xff ? exports.get(b) || 0 : u32((segs[(a & 0xff) - 1] ? segs[(a & 0xff) - 1].sel : 0) << 16 | b) : 0; }   // internal: segment and offset, or a movable entry's ordinal
+    else if ((typ & 3) === 1) v = this.importTarget16(rec, a, b);
+    else if ((typ & 3) === 2) v = this.importTarget16(rec, a, pstr(n + h(0x2a) + b));
+    else continue;   // OS fixups (the x87's emulation): the instructions as they are
+    const put = loc => {
+      const lin = sg.base + loc;
+      if (at === 0) this.u8[lin] = (typ & 4 ? this.u8[lin] : 0) + (v & 0xff);
+      else if (at === 2) this.w16(lin, v >>> 16);
+      else if (at === 3) this.w32(lin, typ & 4 ? u32(((v >>> 16) << 16) | ((this.r16(lin) + (v & 0xffff)) & 0xffff)) : v);
+      else if (at === 5) this.w16(lin, (typ & 4 ? this.r16(lin) : 0) + (v & 0xffff));
+    };
+    if (typ & 4) { put(off); continue; }
+    for (let loc = off, guard = 0; loc !== 0xffff && loc < sg.alloc && guard < 0x10000; guard++) { const next = this.r16(sg.base + loc); put(loc); loc = next; }   // (a chain: each place holds the next's offset)
+  }
+};
 P.loadNEDynamic = function (key, file) {
   const n = rd.u32(file, 0x3c), h = o => rd.u16(file, n + o), shift = h(0x32) || 9;
   const nseg = h(0x1c), segt = n + h(0x22), autodata = h(0x0e);
@@ -423,40 +460,9 @@ P.loadNEDynamic = function (key, file) {
   const rec = { name, path: key, kind: 'ne', base: meta.base, meta, file, segs, exports, names, run: null };
   this.ne.set(name, rec); this.modules.push(rec); this.byName.set(name, rec);   // (before its imports: a module that imports this one back finds it)
   meta.imports = mods;
-  const target = (mi, ordOrName) => {   // an import's far address: a module loaded here at its export, else its thunk
-    const mod = mods[mi - 1] || '?'; let ord = ordOrName;
-    const m = mod === 'KERNEL' ? null : this.loadLibrary16(mod, true);
-    if (!m && mod !== 'KERNEL' && !JS16.includes(mod)) throw Object.assign(new Error(`${mod}.DLL could not be loaded`), { missing16: this.missing16 || `${mod}.DLL` });   // (a DLL of its own that did not load: neither does it)
-    if (typeof ord === 'string') ord = (m && m.names && m.names[ord.toUpperCase()]) || (names16(mod) || {})[ord.toUpperCase()] || 0;
-    if (mod === 'KERNEL' && KERNEL_EQUATES[ord] !== undefined) { const c = KERNEL_EQUATES[ord]; return u32(c << 16 | c); }   // (its constants: the value at a segment or an offset fixup)
-    if (m && m.meta && m.meta.dynamic) { if (!m.inited && m !== rec) { m.inited = true; this.initNE(m); } return m.exports.get(ord) || 0; }   // (its LibEntry run as it is loaded)
-    return this.thunk16For(`${m && m.kind !== 'js' ? m.name : mod}.#${ord}`);
-  };
   // (a segment's relocations made in it: as it loads, and again for a data segment read again from the file, as the
-  // module is loaded again after its last task, reloadData16)
-  const relocSeg = sg => {
-    if (!sg.rel) return;
-    const cnt = rd.u16(file, sg.rel);
-    for (let k = 0; k < cnt; k++) {
-      const r = sg.rel + 2 + 8 * k, at = file[r], typ = file[r + 1], off = rd.u16(file, r + 2), a = rd.u16(file, r + 4), b = rd.u16(file, r + 6);
-      let v;
-      if ((typ & 3) === 0) { v = a & 0xff ? (a & 0xff) === 0xff ? exports.get(b) || 0 : u32((segs[(a & 0xff) - 1] ? segs[(a & 0xff) - 1].sel : 0) << 16 | b) : 0; }   // internal: segment and offset, or a movable entry's ordinal
-      else if ((typ & 3) === 1) v = target(a, b);
-      else if ((typ & 3) === 2) v = target(a, pstr(n + h(0x2a) + b));
-      else continue;   // OS fixups (the x87's emulation): the instructions as they are
-      const put = loc => {
-        const lin = sg.base + loc;
-        if (at === 0) this.u8[lin] = (typ & 4 ? this.u8[lin] : 0) + (v & 0xff);
-        else if (at === 2) this.w16(lin, v >>> 16);
-        else if (at === 3) this.w32(lin, typ & 4 ? u32(((v >>> 16) << 16) | ((this.r16(lin) + (v & 0xffff)) & 0xffff)) : v);
-        else if (at === 5) this.w16(lin, (typ & 4 ? this.r16(lin) : 0) + (v & 0xffff));
-      };
-      if (typ & 4) { put(off); continue; }
-      for (let loc = off, guard = 0; loc !== 0xffff && loc < sg.alloc && guard < 0x10000; guard++) { const next = this.r16(sg.base + loc); put(loc); loc = next; }   // (a chain: each place holds the next's offset)
-    }
-  };
-  rec.relocSeg = relocSeg;
-  try { for (const sg of segs) relocSeg(sg); } catch (e) {
+  // module is loaded again after its last task, reloadData16: relocSeg16, from the record alone)
+  try { for (const sg of segs) this.relocSeg16(rec, sg); } catch (e) {
     if (!e.missing16) throw e;
     this.ne.delete(name); this.byName.delete(name); this.modules = this.modules.filter(x => x !== rec);   // (not loaded after all)
     this.missing16 = e.missing16; log('warn', 'ne16', `${key}: ${e.missing16} is not found`); return null;
@@ -5231,7 +5237,7 @@ def16('KERNEL', 45, 'sp', 'l', function (name, pb) {
     this.u8.fill(0, b.lin, b.lin + size);
     if (dg.len) this.u8.set(rec.file.subarray(dg.fileoff, dg.fileoff + dg.len), b.lin);
     for (const [lin, n, v] of m.fixups || []) if (lin >= dg.base && lin < dg.base + Math.max(dg.alloc, 1)) { const a = b.lin + lin - dg.base; if (n === 1) this.u8[a] = v; else if (n === 2) this.w16(a, v); else this.w32(a, v); }
-    if (rec.relocSeg) rec.relocSeg({ ...dg, base: b.lin });
+    if (m.dynamic && rec.file) this.relocSeg16(rec, { ...dg, base: b.lin });   // (a second instance's data segment: its relocations made in it, from the record)
     Object.assign(t.task, { dgroup: g, hInst: g, ownDg: g, dgStack: true });
     (rec.instances || (rec.instances = new Set())).add(g);
   }
