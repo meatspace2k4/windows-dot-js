@@ -35,7 +35,12 @@ export const pageDrive = async (key, o = {}) => {
   const onBroken = win95.on('braid.broken', e => { if (!fault) { fault = { title: 'lint: ' + e.moment, findings: e.findings, t: Date.now() }; lg(`BROKEN ${e.moment}: ${(e.findings || []).map(f => f.what).join('; ')}`); } });
   // (the uninstall-drive dialog comes as the pages run: pressed as it opens)
   const dialogs = win95.on('window.open', async e => {
-    try { if (/Uninstall Drive/.test(e.title)) { await win95.click({ name: 'OK', window: /Uninstall Drive/ }); lg('Select Uninstall Drive: OK'); } }
+    try {
+      if (/Uninstall Drive/.test(e.title)) { await win95.click({ name: 'OK', window: /Uninstall Drive/ }); lg('Select Uninstall Drive: OK'); }
+      // (the startup disk's own dialog, after its page: Setup asks for a disk in A: once its files are gathered; Cancel
+      // skips the disk, as the page's Cancel did)
+      if (/^Insert Disk$/.test(e.title)) { await win95.click({ name: 'Cancel', window: 'Insert Disk' }); lg('Insert Disk: Cancel (no startup disk)'); }
+    }
     catch (err) { lg('dialog ' + e.title + ': ' + err.message); }
   });
   /** a fault met: the broken state marked on the line, then travel back to the last moment the lint passed, the fork
