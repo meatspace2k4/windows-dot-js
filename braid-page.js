@@ -302,7 +302,10 @@ window.W95BraidPage = function (ui) {
     const rec = await dbGet(name); if (!rec) throw new Error(`no moment ${name}: not on the line here, not anchored on this computer`);
     const b = await build(), why = B.refuseAnchor(rec, b); if (why && !(o.force && /build/.test(why))) throw new Error(why);
     const out = {};
-    for (const [k, ex] of Object.entries(rec.machines)) { const a = k === 'system' ? sys() : live().find(x => x.path === k); if (!a) { out[k] = 'no such machine running'; continue; } out[k] = await a.cmd('import', [ex]); forgetKids(a); }
+    // (the system's machine the page starts as something needs it: a moment with one, arrived at in a page that has
+    // none yet, starts it first, booted, then brings the moment into it; the moment's page is not arrived at into a
+    // page with no machine for it, which left the line at the moment and the machines where they were)
+    for (const [k, ex] of Object.entries(rec.machines)) { const a = k === 'system' ? (sys() || await ui.startSystem()) : live().find(x => x.path === k); if (!a) throw new Error(`no machine running for the moment's ${k}`); out[k] = await a.cmd('import', [ex]); forgetKids(a); }
     watchStores(); ui.closeMenus();
     // (the shell's windows are not rebound: a machine's windows come from its next frame, as they are its own, and a
     // window of the page's is code the record cannot carry. Matched by position to the booted shell's windows, the

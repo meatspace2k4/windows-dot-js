@@ -6033,7 +6033,7 @@ const PAGE_SCRIPTS = new Set(['ccd.js']);
 // the other people in it
 const braidUi = () => ({
   W95Win32, fs, emit, dirty, closeMenus, dialog, closeWin, msgBox, activate, script,
-  machines: () => [...machineWorkers], sysApp: () => sysApp, windows: () => windows, shared: () => sharedNow(),
+  machines: () => [...machineWorkers], sysApp: () => sysApp, startSystem, windows: () => windows, shared: () => sharedNow(),
   shell: () => ({ windows, tasks, modals, active, menus, menuSrc, cap, drag, ghost, screen, textClip, clipOwner, msgApp, cascadeN }),
   setShell: sh => { ({ windows, tasks, modals, active, menus, menuSrc, cap, drag, ghost, screen, textClip, clipOwner, msgApp, cascadeN } = sh); },
   // a machine's window the page is told of (a moment arrived at: its windows as the record has them, braid-page.js

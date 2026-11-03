@@ -1316,6 +1316,24 @@ const INTS = {
     this.trapped = `unhandled int 2Fh ax=${ax.toString(16)}`; return LAYOUT.SENTINEL;
   },
 };
+// (the watch, cmd 'doswatch': each name call it logged (dosFull) gets how the call came out, the carry and AX after it,
+// whichever way the call came: a program's INT 21h, DOS3Call, a VxD's)
+// With the watch's second argument (cmd 'doswatch' [pattern, true]), every call (AX, BX, CX, DX in, the carry and AX out)
+{ const dos = INTS[0x21]; INTS[0x21] = function (next) {
+  if (!this.dosWatch) return dos.call(this, next);
+  const l = this.dosWatchLog || (this.dosWatchLog = []), n0 = l.length;
+  if (this.dosWatchAll && l.length < 2000) {
+    // (where the call came from: the code after the INT (next), or for DOS3Call's far call the return address on the
+    // caller's stack)
+    const sp = this.cpu.ssb.value + (this.cpu.esp.value & 0xffff), rip = this.r16(sp), rcs = this.r16(sp + 2);
+    let at = null; try { at = next !== undefined ? this.whereOf(u32(next)) : this.whereOf(this.lin((rcs << 16) | rip)); } catch (_) { at = null; }
+    const stk = Array.from({ length: 16 }, (_, k) => this.r16(sp + 2 * k).toString(16));   // (the caller's stack: its frames, for who called the wrapper that made the call)
+    l.push({ call: (this.cpu.eax.value & 0xffff).toString(16), bx: (this.cpu.ebx.value & 0xffff).toString(16), cx: (this.cpu.ecx.value & 0xffff).toString(16), dx: (this.cpu.edx.value & 0xffff).toString(16), thread: this.thread16 ? this.thread16.id : 'main', at, next: next === undefined ? null : (u32(next) >>> 0).toString(16), ret: `${rcs.toString(16)}:${rip.toString(16)}`, stk, from: this.whereOf(this.lastBlock || 0) });
+  }
+  const r = dos.call(this, next);
+  for (let i = n0; i < l.length; i++) { l[i].cf = this.cpu.cf.value; l[i].out = (this.cpu.eax.value & 0xffff).toString(16); }
+  return r;
+}; }
 /** INT 21h 440Dh, a block device's generic IOCTL (BL the drive, 0 the current one; CH 08h, CL the request): Get Drive
  *  Map Info (6Fh), the DRIVE_MAP_INFO at DS:DX, which says a drive runs under a protected-mode driver (1), on a physical
  *  drive (2), ejectable by software (8), its INT 13h unit and the logical drives sharing it; a drive with no block
@@ -1613,8 +1631,23 @@ P.asThread = function (t, fn) {
   if (!t || this.thread16 || t.state === 'done') return fn();
   // (as the thread's task, on a stack of the call's own: a Win16 task's stack in its DGROUP holds its own frames,
   // where it stopped)
-  this.thread16 = t; this.asTask = true; this.imgUse(t.pc);
-  try { return fn(); } finally { this.thread16 = null; this.asTask = false; this.imgUse(null); }
+  this.thread16 = t; this.asTask = true; this.imgUse(t.pc); this.cwdSwitch(t);
+  try { return fn(); } finally { this.thread16 = null; this.asTask = false; this.imgUse(null); this.cwdSwitch((this.threadsById && this.threadsById.get(MAIN_TID)) || null); }
+};
+/** the current directory is each process's own, as Windows 95 keeps it: a Win32 process's in its PDB, a Win16 task's
+ *  in its TDB (TDB_Directory), DOS's made the running one's at each switch. One for the whole machine, SUWIN's was
+ *  the Explorer's (the CD's folder, D:\) as its EBD copy named command.com by its bare name against the current
+ *  directory, its own as it was started in C:\WININST0.400, and the copy found no file. A thread's holder: its task
+ *  (a Win16 task is a process of its own to KERNEL), else its process */
+P.cwdSwitch = function (t) {
+  const to = t ? (t.task ? t : t.pc || null) : null, from = this.cwdHolder || null;
+  if (to === from || !this.fs) return;
+  if (from) from.cwd = this.fs.cwd;
+  // (a task's directory starts as its program's, as LoadModule sets it (a program loaded from its file: its path);
+  // a process's as its starter's, inherited as it first runs)
+  if (to && to.cwd === undefined && to.task && to.task.mod && to.task.mod.path) { const full = String(to.task.mod.path), i = full.lastIndexOf('\\'); to.cwd = i <= 2 ? full.slice(0, 3) : full.slice(0, i); }
+  if (to && to.cwd && to.cwd !== this.fs.cwd) this.fs.chdir(to.cwd);
+  this.cwdHolder = to;
 };
 /** the native USER's visible top-level windows, topmost first, with their screen rectangles, owners, classes and
  *  titles; and the active window and the window holding the mouse capture */
@@ -3688,7 +3721,7 @@ P.dosFull = function (name) {
   const W = window.W95FS; let p = String(name || '').replace(/\//g, '\\');
   // (a diagnostic, cmd 'doswatch': each DOS name call whose name matches, with the function (AX), the thread, and the
   // block the call came from, as a symbol)
-  if (this.dosWatch && this.dosWatch.test(p)) { const l = this.dosWatchLog || (this.dosWatchLog = []); if (l.length < 2000) l.push({ name: p, ax: (this.cpu.eax.value & 0xffff).toString(16), bx: (this.cpu.ebx.value & 0xffff).toString(16), thread: this.thread16 ? this.thread16.id : 'main', from: this.whereOf(this.lastBlock || 0) }); }
+  if (this.dosWatch && this.dosWatch.test(p)) { const l = this.dosWatchLog || (this.dosWatchLog = []); if (l.length < 2000) l.push({ name: p, ax: (this.cpu.eax.value & 0xffff).toString(16), bx: (this.cpu.ebx.value & 0xffff).toString(16), cx: (this.cpu.ecx.value & 0xffff).toString(16), thread: this.thread16 ? this.thread16.id : 'main', from: this.whereOf(this.lastBlock || 0) }); }
   if (/^[a-z]:\\/i.test(p) || p.startsWith('\\\\')) { /* full */ } else if (/^[a-z]:/i.test(p)) p = W.join(p.slice(0, 2) + '\\', p.slice(2));
   else if (p.startsWith('\\')) p = this.fs.cwd.slice(0, 2) + p; else p = W.join(this.fs.cwd, p);
   const unc = p.startsWith('\\\\'), parts = p.split('\\').filter((x, i) => x !== '' || i === 0), out = [];
@@ -3829,12 +3862,23 @@ P.dosNames = function (fn, lfn) {
   return false;
 };
 P.findFile16 = function (name) {
+  const found = this.findFile16Body(name);
+  // (the watch, cmd 'doswatch': a name looked for by the file calls, with where it was found, or not)
+  if (this.dosWatch && this.dosWatch.test(name)) { const l = this.dosWatchLog || (this.dosWatchLog = []); if (l.length < 2000) l.push({ name, find: found, cwd: this.fs.cwd, thread: this.thread16 ? this.thread16.id : 'main', from: this.whereOf(this.lastBlock || 0) }); }
+  return found;
+};
+P.findFile16Body = function (name) {
   if (/^[a-z]:\\/i.test(name) || name.startsWith('\\')) return this.fs.exists(name) ? this.fs.realpath(name) : null;
   for (const d of [this.fs.cwd, 'C:\\WINDOWS', 'C:\\WINDOWS\\SYSTEM', ...(this.dirs16 || [])]) { const f = window.W95FS.join(d, name); if (this.fs.exists(f)) return this.fs.realpath(f); }
   return null;
 };
 P.dosOpen = function (path, mode) {
-  try { const fd = this.fs.open(path, mode); const h = this.nextDosFile++; this.dosFiles.set(h, { fd, path }); return h; }
+  if (this.dosWatch && this.dosWatch.test(path)) { const l = this.dosWatchLog || (this.dosWatchLog = []); if (l.length < 2000) l.push({ name: path, open: mode, thread: this.thread16 ? this.thread16.id : 'main', from: this.whereOf(this.lastBlock || 0) }); }
+  // (the handle: the lowest free one from 5, as DOS fills the job file table, a closed one's number given out again.
+  // Counted up and never given again, the numbers passed 400h; SUEXPAND's CopyLZFile takes a handle from 400h for
+  // one of its own LZ handles, found no file under it (LZERROR_BADINHANDLE), and Setup said it could not find the
+  // file for its startup disk's command.com)
+  try { const fd = this.fs.open(path, mode); let h = 5; while (this.dosFiles.has(h)) h++; this.dosFiles.set(h, { fd, path }); return h; }
   catch (e) { if (e instanceof window.W95FS.FSError) { this.lastError = this.dosError = e.code || 2; return 0xffff; } throw e; }
 };
 def16('KERNEL', 74, 'spw', 'w', function (name, of, style) {   // OpenFile
@@ -5021,7 +5065,7 @@ P.threads16 = function (nested = false, only = null) {
     if (this.win16Held && this.win16Held.who !== t && !(caller && this.win16Held.who === caller)) continue;   // another thread holds the Win16Lock (a caller that yields hands its own over)
     const main = this.saveCtx16();
     const sw = this.switchMs || (this.switchMs = { img: 0, load: 0, run: 0, save: 0, n: 0 }); let tm = performance.now();   // (a diagnostic: where a thread switch's time goes, cmd 'views')
-    this.thread16 = t; t.sliceStart = this.now(); this.preempted = 0; this.imgUse(t.pc); if (this.thhookLin) this.tdbCurrent(t); sw.img += performance.now() - tm; sw.n++;
+    this.thread16 = t; t.sliceStart = this.now(); this.preempted = 0; this.imgUse(t.pc); this.cwdSwitch(t); if (this.thhookLin) this.tdbCurrent(t); sw.img += performance.now() - tm; sw.n++;
     let r;
     try {
       if (t.state === 'new' && t.flat) {
@@ -5097,7 +5141,7 @@ P.threads16 = function (nested = false, only = null) {
         t.state = 'done'; t.pc.trapped = e.message;
         this.endProcess(t.pc, 0xffffffff);   // a saver must not hold the system's process-wide Win16 lock
       } else { t.state = 'hung'; this.hung(t, e); }   // it stays where it hung, holding what it held
-    } finally { this.thread16 = caller; this.loadCtx16(main); }
+    } finally { this.thread16 = caller; this.loadCtx16(main); this.cwdSwitch(caller || this.threadsById.get(MAIN_TID) || null); }
   }
   // the lock the caller handed over comes back before it goes on: a thread whose time ran out in 16-bit code (inside
   // DIBENG's blit) holds it, and runs until it lets go, as the caller waits for the Win16Mutex

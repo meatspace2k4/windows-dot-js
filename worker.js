@@ -1508,7 +1508,7 @@ class Machine {
       case 'lintProbe': return this.braidProbe();   // (what the lint reads of the machine now)
       // (a diagnostic: the DOS name calls whose name matches a regexp, with the function and the block they came from,
       // ne16.js dosFull: [re] starts it, [] reads and clears the log, [null] ends it)
-      case 'doswatch': { if (!args.length) return (p.dosWatchLog || []).splice(0); if (args[0] == null) { p.dosWatch = null; return true; } p.dosWatch = new RegExp(String(args[0]), 'i'); p.dosWatchLog = []; return true; }
+      case 'doswatch': { if (!args.length) return (p.dosWatchLog || []).splice(0); if (args[0] == null) { p.dosWatch = null; p.dosWatchAll = false; return true; } p.dosWatch = new RegExp(String(args[0]), 'i'); p.dosWatchAll = !!args[1]; p.dosWatchLog = []; return true; }
       case 'build': { this.build = String(args[0] || ''); return this.build; }
       // the machine run ahead of the wall: steps back to back, each a scaled period of the machine's time (x times the
       // 16 ms); 1 is the pace of a person's machine again. The clock as it reads now
@@ -1559,11 +1559,23 @@ class Machine {
         // (a started program's end told to the page (program.exit), as 'run' tells it; its console's or a saver's own
         // telling is not carried)
         for (const pc of (p.procs || new Map()).values()) if (pc && typeof pc.onExit !== 'function') pc.onExit = code => { if (!pc.fault) post({ t: 'emit', ev: 'program.exit', data: { path: pc.path, code } }); };
-        for (const rec of p.modules || []) if (!rec.run) {
-          // (a 16-bit module of the bundle's by its name: a record this machine had not has a metadata object of its own,
-          // not the bundle's)
-          const mod = rec.module instanceof WebAssembly.Module ? rec.module : rec.kind === 'vxd' ? (S.vxds[rec.file] || {}).mod : ((S.ne || {})[rec.name] && !(rec.meta && rec.meta.dynamic) ? S.ne[rec.name] : Object.values(S.ne || {}).find(d => d.meta === rec.meta) || {}).mod;
-          if (mod) rec.run = new WebAssembly.Instance(mod, p.imports).exports.run;
+        // (a module's wasm run is code the record cannot carry: made again from the bundle's module of its name. A 16-bit
+        // module's by its name in the bundle (a record this machine had not has a metadata object of its own, not the
+        // bundle's); a 32-bit DLL's from the machine's DLL table (the bundle's, the net's, a saver's: a DLL read from the
+        // disk has none, its code translated as it runs); a program's from the bundle's programs by the name its metadata
+        // carries, and always, as every program's record is named EXE and the rebind pairs those by position: the run
+        // kept from the live record at its position was another program's)
+        for (const rec of p.modules || []) {
+          const isExe = rec.name === 'EXE' && rec.meta && rec.meta.name;
+          if (rec.run && !isExe) continue;
+          if (rec.meta && rec.meta.dynamic) continue;
+          let mod = rec.module instanceof WebAssembly.Module ? rec.module : null;
+          if (!mod && rec.kind === 'vxd') mod = (S.vxds[rec.file] || {}).mod;
+          else if (!mod && rec.kind === 'ne') mod = ((S.ne || {})[rec.name] || Object.values(S.ne || {}).find(d => d.meta === rec.meta) || {}).mod;
+          else if (!mod && isExe) { const progs = S.programs || {}, d = (rec.meta.sha256 && Object.values(progs).find(x => x.meta && x.meta.sha256 === rec.meta.sha256)) || progs[rec.meta.name + '.EXE']; if (d) mod = d.mod || d.modSync || (d.modSync = new WebAssembly.Module(b64bytes(d.wasm))); }
+          else if (!mod) { const d = p.dlls && p.dlls.get(rec.name); if (d && d.module instanceof WebAssembly.Module) mod = d.module; }
+          if (mod) { rec.run = new WebAssembly.Instance(mod, p.imports).exports.run; if (rec.meta && rec.meta.lookup) { const look = new Uint32Array(p.mem.buffer, rec.meta.lookup, rec.meta.textHi - rec.meta.textLo); rec.meta.blocks.forEach((a, i) => { look[a - rec.meta.textLo] = i + 1; }); } }
+          else if (!rec.run) console.warn(`[import] ${rec.name}${isExe ? ' (' + rec.meta.name + ')' : ''}: no module to make its run from`);
         }
         W.regLoad(ex.registry);
         while (B.ringTake(this.ring));
