@@ -3531,8 +3531,10 @@ const nativeApps = new Set();
 // EXPLORER.EXE's screen is shown on); 640x480 at the least, 1024 on a side at most (the display driver's longest scan
 // line and its memory count: ne16.js displaySlot). A viewport larger than that gets a 1024-wide or 1024-tall screen, centered
 // (the custom mode has the driver's 1024-byte scan lines in the 1 MB its memory count finds, so 960 lines at most: a
-// mode of a full megabyte, 1024 by 1024, the driver refuses and falls back from)
-const nativeMode = () => [Math.max(640, Math.min(1024, Math.floor(innerWidth / ZOOM))), Math.max(480, Math.min(960, Math.floor(innerHeight / ZOOM)))];
+// mode of a full megabyte, 1024 by 1024, the driver refuses and falls back from). The width stops at 1016: Windows 98
+// Setup sizes its billboard's text by the screen's width (W98SETUP 3:2b91, 14 pt at 1024 and wider, 8 pt below), and
+// its 14 pt Arial drew every step heavy; an odd width (1023) drew the screen skewed
+const nativeMode = () => [Math.max(640, Math.min(1016, Math.floor(innerWidth / ZOOM))), Math.max(480, Math.min(960, Math.floor(innerHeight / ZOOM)))];
 const sharedNow = () => (window.W95HOST && window.W95HOST.shared && window.W95Shared) || null;
 // the mode the system's machine boots in, as Display Properties leaves it for the display driver: Display\Settings
 // under the current configuration (Resolution "w,h", BitsPerPixel), read by the display driver as it is enabled; the one
