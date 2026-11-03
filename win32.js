@@ -630,8 +630,7 @@ class Process {
     for (let i = args.length - 1; i >= 0; i--) this.push(args[i]);
     this.push(LAYOUT.SENTINEL);
     this.depth++;
-    const r = this.runAt(addr);
-    this.depth--;
+    let r; try { r = this.runAt(addr); } finally { this.depth--; }   // (the depth comes back whatever the run does: ne16.js call16)
     if (r !== 0 || this.trapped) throw new GuestError(this.trapped || `guest callback did not return (${r} at ${this.reg('eip').toString(16)})`);
     const ret = this.reg('eax');
     this.reg('esp', save.esp); this.cpu.eip.value = save.eip;

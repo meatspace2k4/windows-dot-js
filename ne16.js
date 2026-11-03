@@ -546,9 +546,11 @@ P.call16 = function (sel, off, args = [], regs = {}) {
   this.seg('ds', regs.ds || 0); this.seg('es', regs.es || 0);
   for (const r of ['ax', 'bx', 'cx', 'dx', 'si', 'di', 'bp']) if (regs[r] !== undefined) { const R = 'e' + r; this.cpu[R].value = lo16(this.cpu[R].value, regs[r]); }
   this.seg('cs', sel);
+  // (the depth and the stack level come back whatever the run does: a call that threw out of the run (a page's command
+  // into the machine, a GuestError) left the machine at depth 1 with nothing in flight, where its threads run no
+  // more and it takes no moment, for good)
   this.depth++;
-  const r = this.runAt(u32(this.selBase(sel) + off));
-  this.depth--; this.stackLevel--;
+  let r; try { r = this.runAt(u32(this.selBase(sel) + off)); } finally { this.depth--; this.stackLevel--; }
   if (r !== 0 || this.trapped) throw new GuestError(this.trapped || `16-bit call ${sel.toString(16)}:${off.toString(16)} did not return (${r} at ${this.reg('eip').toString(16)})`);
   const out = { ax: this.cpu.eax.value & 0xffff, dx: this.cpu.edx.value & 0xffff, eax: u32(this.cpu.eax.value), cx: this.cpu.ecx.value & 0xffff };
   out.dxax = u32((out.dx << 16) | out.ax);
