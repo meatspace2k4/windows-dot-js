@@ -1250,6 +1250,60 @@ const regHive = which => {
   });
   return out;
 };
+/** a registry's file read back (regHive's format, and Windows 9x's own, as its Setup writes one): the keys it holds as
+ *  a dump's entries ([path, values, name], regLoad's), the hive's paths put where regHive takes them from ('system':
+ *  hklm, its software\classes hkcr, its config\0001 hkcc; 'user': hku, its .default hkcu). Null when it is not one */
+const regReadHive = (b, which) => {
+  if (!b || b.length < 0x40) return null;
+  const dv = new DataView(b.buffer, b.byteOffset, b.byteLength), tag = o => String.fromCharCode(b[o], b[o + 1], b[o + 2], b[o + 3]);
+  if (tag(0) !== 'CREG' || tag(0x20) !== 'RGKN') return null;
+  const K = 0x20, rgdb0 = dv.getUint32(8, true), nblocks = dv.getUint16(0x10, true);
+  const str = (o, n) => { let s = ''; for (let i = 0; i < n; i++) s += String.fromCharCode(b[o + i]); return s; };
+  // each key's record, by its block and id
+  const recs = new Map();
+  for (let o = rgdb0, bn = 0; bn < nblocks && o + 0x20 <= b.length && tag(o) === 'RGDB'; bn++) {
+    const size = dv.getUint32(o + 4, true), end = o + size;
+    for (let p = o + 0x20; p + 0x14 <= end;) {
+      const rs = dv.getUint32(p, true); if (rs < 0x14 || p + rs > end) break;
+      const id = dv.getUint16(p + 4, true), blk = dv.getUint16(p + 6, true);
+      if (id !== 0xffff) {
+        const nl = dv.getUint16(p + 0x0c, true), nv = dv.getUint16(p + 0x0e, true), vals = [];
+        let q = p + 0x14 + nl;
+        for (let i = 0; i < nv && q + 0x0c <= p + rs; i++) {
+          const type = dv.getUint32(q, true), vnl = dv.getUint16(q + 8, true), dl = dv.getUint16(q + 0x0a, true);
+          const name = str(q + 0x0c, vnl), d = b.slice(q + 0x0c + vnl, q + 0x0c + vnl + dl);
+          // (as the registry keeps a value RegSetValueEx gave: a DWORD a number, a string with its NUL, the rest bytes)
+          const v = type === 4 && dl === 4 ? new DataView(d.buffer).getUint32(0, true)
+            : { type, data: (type === 1 || type === 2) ? Uint8Array.from([...d, 0]) : d, ...(name !== name.toLowerCase() ? { name } : {}) };
+          vals.push([name.toLowerCase(), v]); q += 0x0c + vnl + dl;
+        }
+        recs.set(`${blk}:${id}`, { name: str(p + 0x14, nl), vals });
+      }
+      p += rs;
+    }
+    o = end;
+  }
+  // the tree from RGKN's root, each key's path in the hive
+  const out = [], map = which === 'user' ? [['.default', 'hkcu'], ['', 'hku']] : [['software\\classes', 'hkcr'], ['config\\0001', 'hkcc'], ['', 'hklm']];
+  const seen = new Set();
+  const visit = (off, hp, depth) => {
+    for (let guard = 0; off !== 0xffffffff && off + K + 0x1c <= b.length && guard < 1e6 && depth < 64; guard++) {
+      if (seen.has(off)) return; seen.add(off);
+      const e = K + off, r = recs.get(`${dv.getUint16(e + 0x1a, true)}:${dv.getUint16(e + 0x18, true)}`);
+      const isRoot = !hp && dv.getUint32(e + 0x0c, true) === 0xffffffff;
+      const name = isRoot ? '' : (r ? r.name : ''), path = isRoot ? '' : (hp === null ? name : `${hp}\\${name}`).replace(/^\\/, '');
+      if (!isRoot || (r && r.vals.length)) {
+        const low = path.toLowerCase(), [h, root] = map.find(([h]) => !h || low === h || low.startsWith(h + '\\'));
+        const rest = h ? low.slice(h.length + 1) : low, rp = [root, rest].filter(Boolean).join('\\');
+        out.push([rp, r ? r.vals : [], rest ? path.slice(path.lastIndexOf('\\') + 1) : null]);
+      }
+      visit(dv.getUint32(e + 0x10, true), isRoot ? '' : path, depth + 1);
+      off = dv.getUint32(e + 0x14, true);
+    }
+  };
+  visit(dv.getUint32(K + 8, true), null, 0);
+  return out;
+};
 
 // ---------------------------------------------------------------- API table: [argc, impl]; argc < 0 = cdecl varargs
 // ---------------------------------------------------------------- the machine's log
@@ -3390,5 +3444,5 @@ function peString(bytes, id) {
   } catch (_) { return null; }
 }
 
-window.W95Win32 = { log, regAttach, regGet, regKids, regVals, regDel, regSet, regDump, regApply, regLoad, regHive, regWatch: f => regWatchers.add(f), Process, API, STAND_IN, LAYOUT, WM, YIELD, iniGet, iniSet, iniRead, peString, peResource, faultText, fmtMsg, def, dcOf, GuestError, HangError, FaultError, mkCanvas, dibOut, sha256 };
+window.W95Win32 = { log, regAttach, regGet, regKids, regVals, regDel, regSet, regDump, regApply, regLoad, regHive, regReadHive, regWatch: f => regWatchers.add(f), Process, API, STAND_IN, LAYOUT, WM, YIELD, iniGet, iniSet, iniRead, peString, peResource, faultText, fmtMsg, def, dcOf, GuestError, HangError, FaultError, mkCanvas, dibOut, sha256 };
 })();

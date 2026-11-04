@@ -1271,12 +1271,39 @@ let pc = null;
 const pcFloppy = { image: null, name: null, changed: false };
 /** the registry's files in the Windows folder, SYSTEM.DAT and USER.DAT, as Windows writes them when it flushes the
  *  registry (as it shuts down): what IO.SYS reads as the PC next starts */
+// (Windows writes its registry back into the files it loaded it from; a file put in their place since, as Windows 98
+// Setup puts its new SYSTEM.DAT and USER.DAT there before its restart, is not those files: the flush leaves it, and
+// the next start loads the registry from it (loadHives), as the VMM does. Each file as Windows last had it: its stamp,
+// kept in the registry under a root of the host's own no file holds (hkhost), so it goes with the registry's store, a
+// reload of the page and a moment travelled to)
+const HIVES = [['SYSTEM.DAT', 'system'], ['USER.DAT', 'user']];
+const hiveStamps = { get: f => { const v = W95Win32.regGet('hkhost\\hives', f.toLowerCase()); return typeof v === 'string' ? v : undefined; }, set: (f, v) => W95Win32.regSet('hkhost\\hives', f.toLowerCase(), v) };
+const hiveStamp = p => { try { const s = fs.stat(p), b = fs.readFile(p); let h = 0x811c9dc5; for (let i = 0; i < b.length; i++) h = Math.imul(h ^ b[i], 0x01000193); return `${s.size}:${h >>> 0}`; } catch (_) { return null; } };
 function flushRegistry() {
   if (diskSystem() !== 'win95') return;   // (Windows 3.1's registry is its REG.DAT, which its SHELL writes)
-  for (const [file, which] of [['SYSTEM.DAT', 'system'], ['USER.DAT', 'user']]) {
-    const p = join(WINDIR, file);
-    try { if (fs.exists(p)) fs.setAttrs(p, 0); fs.writeFile(p, W95Win32.regHive(which)); fs.setAttrs(p, ATTR.HIDDEN | ATTR.SYSTEM | ATTR.READONLY); } catch (e) { console.error('[registry]', file, e); }
+  for (const [file, which] of HIVES) {
+    const p = join(WINDIR, file), was = hiveStamps.get(file);
+    if (was && hiveStamp(p) !== was) { console.info(`[registry] ${file} was put there after Windows loaded its registry: left as it is`); continue; }
+    try { if (fs.exists(p)) fs.setAttrs(p, 0); fs.writeFile(p, W95Win32.regHive(which)); fs.setAttrs(p, ATTR.HIDDEN | ATTR.SYSTEM | ATTR.READONLY); hiveStamps.set(file, hiveStamp(p)); } catch (e) { console.error('[registry]', file, e); }
   }
+}
+/** Windows starting from the PC's boot loads its registry from SYSTEM.DAT and USER.DAT, as the VMM does: those the
+ *  host wrote itself (their stamps the same) are the registry as it is already; one another wrote (Setup's) is read
+ *  (win32.js regReadHive) and the registry made what it holds, the roots no file keeps (HKEY_DYN_DATA) kept */
+function loadHives() {
+  if (diskSystem() !== 'win95') return;
+  const W = W95Win32, read = new Map();
+  for (const [file, which] of HIVES) {
+    const p = join(WINDIR, file), st = hiveStamp(p); if (!st || st === hiveStamps.get(file)) continue;
+    let held = null; try { held = W.regReadHive(fs.readFile(p), which); } catch (e) { console.error('[registry]', file, e); }
+    if (held && held.length) read.set(which, held);
+    hiveStamps.set(file, st);
+  }
+  if (!read.size) return;
+  const roots = { system: ['hklm', 'hkcr', 'hkcc'], user: ['hku', 'hkcu'] }, from = [...read.keys()].flatMap(w => roots[w]);
+  const keep = W.regDump().filter(([path]) => !from.includes(path.split('\\')[0]));
+  W.regLoad([...keep, ...[...read.values()].flat()], true);
+  console.info(`[registry] loaded from ${[...read.keys()].map(w => w === 'system' ? 'SYSTEM.DAT' : 'USER.DAT').join(' and ')}`);
 }
 function pcBoot() {
   if (pc) clearInterval(pc.timer);
@@ -1304,6 +1331,7 @@ function pcBoot() {
 function pcWindows(path) {
   screen = 'desktop'; ren = null; desk.selKey = null; active = null; dirty();
   emit('pc.windows', { path });
+  loadHives();   // (the registry the VMM reads: Setup's new one after its restart)
   systemBootLater(); netBootLater();
 }
 /** Windows has ended with ExitWindows' `code`: the VMM's loader returns to WIN.COM with it, and the PC's screen is its
