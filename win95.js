@@ -1170,6 +1170,11 @@ function dosMachine(program, args, o = {}) {
     files = ['IO.SYS', 'MSDOS.SYS'].filter(n => fromC(n)).map(n => ({ name: n, data: fromC(n), attr: 7 }));
     const add = p => { const d = fromC(p); if (d && !files.some(f => (f.path || f.name).toUpperCase() === p.toUpperCase())) files.push({ path: p, data: d }); };
     add('COMMAND.COM'); add('CONFIG.SYS'); add('AUTOEXEC.BAT'); add('WINDOWS\\IFSHLP.SYS'); add('WINDOWS\\SYSTEM.DAT'); add('WINDOWS\\USER.DAT'); add('WINDOWS\\WIN.COM');
+    // (the drivers IO.SYS loads by itself, as MSDOS.SYS's [Options] and its own list have them: DBLBUFF.SYS for
+    // DoubleBuffer, which Windows 98 Setup sets, and SETVER.EXE; left off, Windows 98's IO.SYS said DBLBUFF.SYS was missing)
+    const opts = W95FS.decode(fromC('MSDOS.SYS') || new Uint8Array(0));
+    if (/^\s*DoubleBuffer\s*=\s*[12]/im.test(opts)) add('WINDOWS\\DBLBUFF.SYS');
+    add('WINDOWS\\SETVER.EXE');
     // (the drivers CONFIG.SYS loads, by their paths on C:)
     for (const l of W95FS.decode(fromC('CONFIG.SYS') || new Uint8Array(0)).split(/\r?\n/)) {
       const r = /^\s*(?:DEVICE|DEVICEHIGH|INSTALL|INSTALLHIGH)\s*=\s*(?:\/\S+\s+)*C:\\(\S+)/i.exec(l); if (r) add(r[1]);
@@ -1277,6 +1282,7 @@ function pcBoot() {
   if (pc) clearInterval(pc.timer);
   if (!window.W95V86 || !window.W95DOS) { pc = null; screen = 'black'; dirty(); return; }
   if (!fs.exists(join(WINDIR, 'SYSTEM.DAT'))) flushRegistry();   // (a disk made before Windows wrote its registry's files)
+  if (diskSystem() === 'win95') strayCopies();
   const m = dosMachine(null, null, { pc: true, floppy: pcFloppy, windows: path => pcWindows(path), reset: () => setTimeout(pcBoot, 0) });
   pc = { m, timer: 0, failed: null };
   if (!dosFont) { const d = window.W95SYSTEM && W95SYSTEM.dos && W95SYSTEM.dos['EGA.CPI']; if (d) dosFont = cpiFont(b64bytes(d), 437, 14); }
@@ -3639,6 +3645,19 @@ function sysDisk(gui) {
     unlock('C:\\MSDOS.SYS'); fs.writeFile('C:\\MSDOS.SYS', W95FS.encode(`${own}\r\n${pad.join('\r\n')}\r\n`)); fs.setAttrs('C:\\MSDOS.SYS', HSR);
   }
 }
+/** a copy this page put in the Windows folder before of a program Setup puts in SYSTEM (`names`), the bundle's own bytes:
+ *  removed. Windows 98's MSGSRV32 runs "runonce.exe -m", found in the Windows folder before SYSTEM, and Windows 95's
+ *  RUNONCE ran on Windows 98 (its "Windows 95 Setup" over Setup's first-start items). At the page's start and at each
+ *  boot of the PC (Setup's restart, a moment's disk travelled to) */
+function strayCopies(names = ['SPOOL32.EXE', 'SYSTRAY.EXE', 'MPREXE.EXE', 'RUNONCE.EXE']) {
+  const S = window.W95SYSTEM || {};
+  for (const name of names) {
+    const d = (S.programs || {})[name], stray = join(WINDIR, name); if (!d) continue;
+    let cur = null; try { cur = fs.readFile(stray); } catch (_) { /* none */ }
+    const want = cur && b64bytes(d.file);
+    if (cur && cur.length === want.length && cur.every((b, i) => b === want[i])) { fs.setAttrs(stray, 0); fs.unlink(stray); }
+  }
+}
 function installPrograms() {
   const stub = exeStub(), S = window.W95SYSTEM || {};
   const OURS = new Set(['CLAUDE.EXE', 'SESSTRAY.EXE', 'DBWIN.EXE']);   // (a program of this project's: its file is the one its translation is of, kept current)
@@ -3648,8 +3667,11 @@ function installPrograms() {
     if (cur && !(cur.length === stub.length && cur.every((b, i) => b === stub[i])) && !(want && !(cur.length === want.length && cur.every((b, i) => b === want[i])))) return;
     fs.writeFile(path, want || b64bytes(b64));
   };
-  const IN_SYSTEM = new Set(['SPOOL32.EXE', 'SYSTRAY.EXE', 'MPREXE.EXE']);   // the programs Setup puts in SYSTEM rather than the Windows folder (COPY.INF: LDID 11; MPR starts MPREXE from there)
+  // the programs Setup puts in SYSTEM rather than the Windows folder (COPY.INF: LDID 11; MPR starts MPREXE from there;
+  // SETUPC.INF's [winother.files], RUNONCE.EXE)
+  const IN_SYSTEM = new Set(['SPOOL32.EXE', 'SYSTRAY.EXE', 'MPREXE.EXE', 'RUNONCE.EXE']);
   for (const [name, d] of Object.entries(S.programs || {})) if (!d.onCD) put(join(WINDIR, IN_SYSTEM.has(name) ? 'SYSTEM' : '', name), d.file);   // (one the CD runs from the disc: Hover!)
+  strayCopies(IN_SYSTEM);
   // the system modules the programs run on, in SYSTEM as Setup puts them (SHELL32 reads its icons from its file)
   for (const [name, d] of Object.entries({ ...S.dlls, ...S.net, ...S.drivers })) if (!d.onCD) put(join(WINDIR, 'SYSTEM', name), d.file);
   for (const d of Object.values(S.ne || {})) if (d.fileName && !d.onDisk) put(join(WINDIR, d.fileName === 'PROGMAN.EXE' ? '' : 'SYSTEM', d.fileName), d.file);   // (a printer driver: as the Add Printer wizard copies it; Program Manager in the Windows folder, COPY.INF)
@@ -4120,9 +4142,8 @@ class RemoteApp extends NativeApp {
     if (this.mprReady) { this.mprReady(false); this.mprReady = null; }
     setTimeout(() => this.worker.terminate(), 0);
     emit('program.exit', { path: this.path, code, ...(why ? { why } : {}) });
-    // (the system's machine itself: Windows is gone, its stop is the screen; a program's fault is its dialog)
-    if (why && this.system) sysDied = stopScreen(why);
-    else if (why) msgBox(basename(this.path), `This program has performed an illegal operation and will be shut down.\n\n${why}`, 'error', ['OK'], null, { noTask: false, modal: false });
+    if (why && this.system) console.error(`[system] ${why}`);
+    if (why) msgBox(basename(this.path), `This program has performed an illegal operation and will be shut down.\n\n${why}`, 'error', ['OK'], null, { noTask: false, modal: false });
     dirty();
     if (own && this.system && !why) systemEnded(code);
   }
@@ -4187,16 +4208,26 @@ function startSystem() {
     const quiet = window.W95MUTE;
     const a = new RemoteApp(join(WINDIR, 'SYSTEM', 'MSGSRV32.EXE'), '', { system: true, quiet });
     if (!(await a.start(null, null))) { bootLogoEnd(); return null; }
-    sysApp = a; sysDied = null;
+    sysApp = a;
     return a;
   })().finally(() => { sysStarting = null; }));
 }
 // The start-up screen while the system's machine boots, as IO.SYS shows it until Windows' display driver takes the
-// screen: the CD's LOGO.SYS (320x400, 8 bits, shown at 4:3), its bottom band (palette entries 236-255) rotating. It
-// stays until the machine has a window on screen (Setup's, the logon's, the shell's)
+// screen, its bottom band (palette entries 236-255) rotating. After the PC's own boot it is what IO.SYS drew on the
+// VGA as Windows took over (v86.js vgaFrame): the logo of the IO.SYS on the disk, Windows 98's once Setup has put its
+// own there, or C:\LOGO.SYS; none when IO.SYS showed none (MSDOS.SYS Logo=0). A machine started with no PC boot
+// before it shows the CD's LOGO.SYS (320x400, 8 bits, shown at 4:3). It stays until the machine has a window on
+// screen (Setup's, the logon's, the shell's)
 const bootLogo = { on: false, img: null, pal: null, px: null, timer: 0 };
 function bootLogoStart() {
-  const s = (window.W95SYSTEM || {}).logo; if (!s || window.W95SYSTEMVM === false) return;
+  if (window.W95SYSTEMVM === false) return;
+  if (pc && pc.m && pc.m.vga) {
+    const fr = pc.m.vgaFrame(); if (!fr) return;
+    Object.assign(bootLogo, { px: fr.px, pal: fr.pal, w: fr.w, h: fr.h, cv: mkc(fr.w, fr.h) }); bootLogo.img = bootLogo.cv.getContext('2d').createImageData(fr.w, fr.h);
+    bootLogo.fromPc = true;
+  } else if (bootLogo.fromPc) bootLogo.px = null;
+  const s = (window.W95SYSTEM || {}).logo;
+  if (!bootLogo.px && !s) return;
   if (!bootLogo.px) {
     const b = b64bytes(s), dv = new DataView(b.buffer), off = dv.getUint32(10, true), w = dv.getInt32(18, true), h = dv.getInt32(22, true);
     bootLogo.pal = Array.from({ length: 256 }, (_, i) => [b[54 + 4 * i + 2], b[54 + 4 * i + 1], b[54 + 4 * i]]);
@@ -4209,13 +4240,20 @@ function bootLogoStart() {
 }
 function bootLogoEnd() { if (!bootLogo.on) return; bootLogo.on = false; clearInterval(bootLogo.timer); dirty(); }
 function drawBootLogo() {
-  const L = bootLogo, d = L.img.data, step = Math.floor((performance.now() - L.t0) / 60) % 20;
-  const pal = L.pal.map((c, i) => (i >= 236 ? L.pal[236 + (i - 236 + step) % 20] : c));
-  for (let i = 0; i < L.px.length; i++) { const c = pal[L.px[i]]; d[4 * i] = c[0]; d[4 * i + 1] = c[1]; d[4 * i + 2] = c[2]; d[4 * i + 3] = 255; }
-  L.cv.getContext('2d').putImageData(L.img, 0, 0);
+  const L = bootLogo, step = Math.floor((performance.now() - L.t0) / 60) % 20;
+  drawIndexed(L.px, L.w, L.h, L.pal.map((c, i) => (i >= 236 ? L.pal[236 + (i - 236 + step) % 20] : c)), L);
+}
+/** an indexed picture (`px` a palette index a pixel, `pal` [r, g, b] each) on the whole screen at 4:3, black around it,
+ *  as a monitor shows the VGA's 320-wide modes; `into` keeps its canvas and image between frames */
+const idxCanvas = {};
+function drawIndexed(px, w, h, pal, into = idxCanvas) {
+  if (!into.cv || into.cv.width !== w || into.cv.height !== h) { into.cv = mkc(w, h); into.img = into.cv.getContext('2d').createImageData(w, h); }
+  const d = into.img.data;
+  for (let i = 0; i < w * h; i++) { const c = pal[px[i]]; d[4 * i] = c[0]; d[4 * i + 1] = c[1]; d[4 * i + 2] = c[2]; d[4 * i + 3] = 255; }
+  into.cv.getContext('2d').putImageData(into.img, 0, 0);
   fill(0, 0, W, H, '#000');
   const s = Math.min(W / 4, H / 3), dw = Math.round(s * 4), dh = Math.round(s * 3);
-  ctx.imageSmoothingEnabled = false; ctx.drawImage(L.cv, (W - dw) >> 1, (H - dh) >> 1, dw, dh);
+  ctx.imageSmoothingEnabled = false; ctx.drawImage(into.cv, (W - dw) >> 1, (H - dh) >> 1, dw, dh);
 }
 /** at boot: once the desktop is drawn and the page has loaded */
 function systemBootLater() {
@@ -4833,7 +4871,7 @@ function render() {
   rafPending = false;
   const txt = msgApp && msgApp.txt;
   if (txt) { drawTextScreen(txt); return; }
-  if (screen === 'dos' && pc) { drawTextScreen(pcText()); setTimeout(dirty, 250); return; }
+  if (screen === 'dos' && pc) { const fr = pc.m.vgaFrame && pc.m.vgaFrame(); if (fr) drawIndexed(fr.px, fr.w, fr.h, fr.pal); else drawTextScreen(pcText()); setTimeout(dirty, fr ? 60 : 250); return; }
   if (bootLogo.on && screen === 'desktop') { drawBootLogo(); return; }
   if (screen !== 'desktop') {
     fill(0, 0, W, H, '#000');
@@ -4849,15 +4887,13 @@ function render() {
   // page's own desktop and taskbar
   const sa = monApp();
   if (!!sa !== monitor) resize();
-  // (no page desktop in its place: a system's machine that died leaves its stop on the screen, as Windows' own does,
-  // and one not up yet leaves the screen black; the page's desktop is only a page run without the system's machine)
-  if (sa) sa.scanToCanvas(); else if (sysDied) drawTextScreen(sysDied); else if (window.W95SYSTEMVM === false) drawDesktop(); else fill(0, 0, W, H, '#000');
+  // (the monitor shows the system's machine; without it there is no picture, only the fault that ended it: the page
+  // draws no desktop or taskbar of its own)
+  if (sa) sa.scanToCanvas(); else fill(0, 0, W, H, '#000');
   // a screen saver running full screen on the machine is topmost: the shell's own windows, menus and tips stay under it
   if (sa && sa.snap && sa.snap.list.some(n => /^WindowsScreenSaverClass$/i.test(n.cls || '') && !n.preview)) { const na = pointerApp(mouse.x, mouse.y); if (na) drawSprite(na); return; }
   const m = modal();
-  if (!sa && !tbar.ontop) drawTaskbar();
   for (const w of windows) if (!(sa && w.app === sa && !w.win32) && !w.min && !(m && m.dim && w === m)) w.draw();
-  if (!sa && tbar.ontop) drawTaskbar();
   if (m && m.dim) { ctx.fillStyle = PAT.dim; ctx.fillRect(0, 0, W, H); m.draw(); }
   for (const mm of menus) drawMenu(mm);
   if (drag) xorFrame(drag.r, drag.t);
@@ -4997,21 +5033,6 @@ function cpiFont(b, cp = 437, h = 16) {
     for (let k = v.getUint16(info + 2, true); k-- > 0; f += 6 + v.getUint16(f + 4, true) * b[f]) if (b[f] === h && b[f + 1] === 8) return b.subarray(f + 6, f + 6 + 256 * h);
   }
   return null;
-}
-/** the system's machine's stop as a text screen, white on blue as Windows' fatal exception screens are: what ended
- *  it, word-wrapped at 76 columns */
-let sysDied = null;
-function stopScreen(why) {
-  const ch = new Uint8Array(2000).fill(0x20), at = new Uint8Array(2000).fill(0x1f);
-  const lines = [], words = ` Windows `.split(''), text = String(why);
-  for (const para of ['Windows has stopped: the system could not go on.', '', ...text.split('\n')]) {
-    let l = ''; for (const w of para.split(' ')) { if ((l + ' ' + w).trim().length > 76) { lines.push(l); l = w; } else l = (l ? l + ' ' : '') + w; } lines.push(l);
-  }
-  const put = (r, s, a) => { for (let i = 0; i < s.length && i < 80; i++) { ch[r * 80 + i] = s.charCodeAt(i) & 0xff; if (a !== undefined) at[r * 80 + i] = a; } };
-  put(6, ' '.repeat(Math.max(0, (80 - words.length) >> 1)) + words.join(''), 0x1f);
-  for (let i = 0; i < 9; i++) at[6 * 80 + ((80 - words.length) >> 1) + i] = 0x71;
-  lines.slice(0, 14).forEach((l, i) => put(9 + i, '  ' + l));
-  return { rows: 25, cols: 80, ch, at, cur: [-1, -1] };
 }
 function drawTextScreen(t) {
   if (!textFont) { const d = window.W95SYSTEM && W95SYSTEM.dos && W95SYSTEM.dos['EGA.CPI']; if (d) textFont = cpiFont(b64bytes(d)); }

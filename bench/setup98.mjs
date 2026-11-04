@@ -150,6 +150,11 @@ if (typeof process === 'object' && import.meta.url === `file://${process.argv[1]
   for (let i = 0; i < 300 && !(await c.evaluate(SHELL_READY).catch(() => false)); i++) await new Promise(r => setTimeout(r, 1000));
   const r = await c.evaluate(`(${pageDrive})(${JSON.stringify(key)})`, 90 * 60000);
   for (const l of r.log) console.log(l);
-  if (r.faults.length) { console.log('faults:', JSON.stringify(r.faults, null, 1)); console.log('forks:', JSON.stringify(r.forks, null, 1)); process.exitCode = 1; }
+  if (r.faults.length) { console.log('faults:', JSON.stringify(r.faults, null, 1)); console.log('forks:', JSON.stringify(r.forks, null, 1)); }
+  // (one line a check runner keeps as the run's record: the ladder finished or not, the last thing it logged, the faults)
+  const done = r.log.some(l => /ladder done/.test(l));
+  console.log('SETUP98 ' + JSON.stringify({ done, atKey: r.atKey, last: r.log[r.log.length - 1] || null, fault: r.fault, faults: r.faults.length, forks: r.forks.length,
+    machineFaults: r.machineFaults.length }));
+  process.exitCode = done && !r.faults.length && !r.machineFaults.length ? 0 : 1;
   c.close();
 }

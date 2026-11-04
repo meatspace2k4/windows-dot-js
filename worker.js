@@ -172,10 +172,43 @@ class Machine {
    *  the ring dropped, the clock reading the moment's time, the step timer started afresh. The mods stay as they are
    *  now (they are beside the moment, not in it: a fix is loaded, then the moment before the fault is travelled to).
    *  The page puts its own parts (the disk, its registry) back beside this */
+  /** each module record's wasm run, which a record cannot carry, made again from the bundle's module of its name after
+   *  a moment's records came in: a 16-bit module's by its name in the bundle (a record this machine had not has a
+   *  metadata object of its own, not the bundle's); a 32-bit DLL's from the machine's DLL table (the bundle's, the net's,
+   *  a saver's: a DLL read from the disk has none, its code translated as it runs); a program's from the bundle's
+   *  programs by the name its metadata carries, and always, as every program's record is named EXE and the rebind pairs
+   *  those by position: the run kept from the live record at its position was another program's. Both an arrival from
+   *  another page and a travel here: a module the moment had and this machine did not (RICHED32, travelled to during
+   *  Windows 98 Setup) came with none, and the dispatcher called it */
+  remakeRuns() {
+    const p = this.proc, S = self.W95SYSTEM || {};
+    for (const rec of p.modules || []) {
+      const isExe = rec.name === 'EXE' && rec.meta && rec.meta.name;
+      if (typeof rec.run === 'function' && !isExe) continue;
+      if (rec.meta && rec.meta.dynamic) continue;
+      let mod = rec.module instanceof WebAssembly.Module ? rec.module : null;
+      if (!mod && rec.kind === 'vxd') mod = ((S.vxds || {})[rec.file] || {}).mod;
+      else if (!mod && rec.kind === 'ne') mod = ((S.ne || {})[rec.name] || Object.values(S.ne || {}).find(d => d.meta === rec.meta) || {}).mod;
+      else if (!mod && isExe) { const progs = S.programs || {}, d = (rec.meta.sha256 && Object.values(progs).find(x => x.meta && x.meta.sha256 === rec.meta.sha256)) || progs[rec.meta.name + '.EXE']; if (d) mod = d.mod || d.modSync || (d.modSync = new WebAssembly.Module(b64bytes(d.wasm))); }
+      else if (!mod) {
+        const d = p.dlls && p.dlls.get(rec.name); if (d && d.module instanceof WebAssembly.Module) mod = d.module;
+        // (or the bundle's own, by its metadata: the moment ran the bundle's WINMM, and this machine maps Windows 98's
+        // from the disk, so its table has none of that name)
+        if (!mod && rec.meta && !rec.meta.dynamic) {
+          const b = [...Object.values(S.dlls || {}), ...Object.values(S.net || {})].find(x => x.meta === rec.meta || (x.meta && rec.meta.sha256 && x.meta.sha256 === rec.meta.sha256) || (x.meta && x.meta.name && rec.meta.name && x.meta.name.toUpperCase() === rec.meta.name.toUpperCase() && x.meta.base === rec.meta.base));
+          if (b) mod = b.mod instanceof WebAssembly.Module ? b.mod : (b.modSync || (b.modSync = new WebAssembly.Module(b64bytes(b.wasm))));
+        }
+      }
+      if (rec.meta && !rec.meta.textHi && !(rec.meta.blocks || []).length && !mod) continue;   // (a program mapped from its file: its code translated as it runs, no run to make)
+      if (mod) { rec.run = new WebAssembly.Instance(mod, p.imports).exports.run; if (rec.meta && rec.meta.lookup) { const look = new Uint32Array(p.mem.buffer, rec.meta.lookup, rec.meta.textHi - rec.meta.textLo); rec.meta.blocks.forEach((a, i) => { look[a - rec.meta.textLo] = i + 1; }); } }
+      else if (typeof rec.run !== 'function') console.warn(`[arrival] ${rec.name}${isExe ? ' (' + rec.meta.name + ')' : ''}: no module to make its run from`);
+    }
+  }
   braidTravel(s) {
     const why = self.W95Braid.refuse(s, this.build || ''); if (why) throw new Error(why);
     const t0 = performance.now(); clearTimeout(this.timer);
     self.W95Braid.restoreGraph(s.sections.host.graph);
+    this.remakeRuns();
     W.regLoad(s.sections.registry.value);
     while (B.ringTake(this.ring));
     this.keyq = []; this.mouseq = [];
@@ -218,12 +251,14 @@ class Machine {
         if (!h) m.w32DesktopSurface = { canvas, w: canvas.width, h: canvas.height, pc, version: 1 };
         return canvas.getContext('2d');
       }, surfaceChanged: (h, pc) => { if (!h && m.w32DesktopSurface && m.w32DesktopSurface.pc === pc) m.w32DesktopSurface.version++; }, setCursor: () => {},
-      exited: (code, why) => m.exited(code, why), boot: p => p.bootUser16(), exec: (cmd, show) => m.exec(cmd, show),
+      exited: (code, why) => m.exited(code, why), boot: p => { m.proc = p; return p.bootUser16(); }, exec: (cmd, show) => m.exec(cmd, show),
       msgMode: on => { m.msg = on; post({ t: 'msgMode', on }); m.sendText(true); }, reset: () => post({ t: 'reset' }),
       faultDialog: f => post({ t: 'faultDialog', f }),
       console: (id, text) => post({ t: 'conOut', id, text }),   // (a console program's output, to its MS-DOS window: KERNEL32 WriteFile)
       consoleMode: (id, mode) => post({ t: 'conMode', id, mode }),   // (and its input's mode: line input, echo)
     };
+    // (boot: the process is the machine's from its boot on, inside its constructor: Windows 98's system starts a
+    // program as it boots, and exec found no process to give its image room in)
     const exe = /\s/.test(this.path) ? `"${this.path}"` : this.path;
     try {
       if (this.system) { host.vmTop = 0x0a000000; host.vmPages = 2048; }
@@ -464,7 +499,8 @@ class Machine {
    *  MSGSRV32 plays before it starts the shell) and the shell come after the screen. False if it cannot start */
   startSystemTask() {
     const p = this.proc, S = self.W95SYSTEM || {}, items = W.regVals('hklm\\software\\microsoft\\windows\\currentversion\\runonce\\setup');
-    const exe = items.length && (S.programs || {})['RUNONCE.EXE'] ? ['C:\\WINDOWS\\RUNONCE.EXE', 'C:\\WINDOWS\\SYSTEM\\RUNONCE.EXE'].find(f => fs.exists(f)) : null;
+    // (RUNONCE.EXE where Setup puts it, SYSTEM, LDID 11: SETUPC.INF; whichever Windows installed it, 95's or 98's)
+    const exe = items.length && (S.programs || {})['RUNONCE.EXE'] ? ['C:\\WINDOWS\\SYSTEM\\RUNONCE.EXE'].find(f => fs.exists(f)) : null;
     // (a first start, Setup's items still to run: every program of it is this machine's own to run, whatever session it
     // joins; a machine joining with them held never got its shell, which waits for them)
     this.firstStart = !!items.length;
@@ -1164,6 +1200,11 @@ class Machine {
       ring: lanRing ? (() => { const c = new Int32Array(lanRing, 0, 2); return (Atomics.load(c, 0) - Atomics.load(c, 1) + (1 << 20)) % (1 << 20); })() : null, irqs: p.lanIrqs || 0 } : null;
     const dmod = p.ne && p.ne.get('DISPLAY'), dseg = dmod && dmod.segs && dmod.segs[dmod.segs.length - 1], dsb = dseg && p.selValid(dseg.sel) ? p.selBase(dseg.sel) : 0;
     const display = dsb ? { sel: dseg.sel, chip81e: p.r16(dsb + 0x81e), bpp2d: p.r16(dsb + 0x2d), mem7a: p.r32(dsb + 0x7a), w: [...p.u8.slice(dsb, dsb + 0x40)].map(b => b.toString(16).padStart(2, '0')).join('') } : null;
+    // (the screen as the adapter scans it and as the driver's records describe it: a line length that differs between
+    // the two is a sheared screen)
+    if (display && p.adapter) { const a = p.scanout(), r = p.customRecs; display.scan = { pitch: a.pitch, crtc13: a.crtc[0x13], bpp: a.bpp, w: a.width, h: a.height, custom: p.customMode };
+      display.recs = r ? { tables: r.tables.length, pitch: r.pitch, gdi: [...r.gdi].map(([k, v]) => [k, v]), desc: [...r.desc].map(([k, v]) => [k, v.map(x => ({ px: x.px, w: p.r32(x.at), h: p.r32(x.at + 4), line: p.r32(x.at + 8) }))]),
+        pitches: r.pitch !== undefined ? [1, 2, 3, 4].map(px => p.r16(r.pitch + 32 * (px - 1) + 4 * 6 + 2)) : null } : null; }
     const metrics = p.depth || p.thread16 ? null : (() => { try { return [0, 1, 4].map(i => p.user16(179, [['w', i]]).ax); } catch (e) { return e.message; } })();   // GetSystemMetrics: CXSCREEN, CYSCREEN, CYCAPTION
     // (the MS-DOS VMs: each one's id, handle, what it runs and where its processor is, its screen's first line)
     const vms = (p.vms || []).map(v => ({ id: v.id, cb: v.cb.toString(16), started: !!v.started, gone: !!v.gone, exec: v.exec ? v.exec.program : null,
@@ -1590,18 +1631,7 @@ class Machine {
         // disk has none, its code translated as it runs); a program's from the bundle's programs by the name its metadata
         // carries, and always, as every program's record is named EXE and the rebind pairs those by position: the run
         // kept from the live record at its position was another program's)
-        for (const rec of p.modules || []) {
-          const isExe = rec.name === 'EXE' && rec.meta && rec.meta.name;
-          if (rec.run && !isExe) continue;
-          if (rec.meta && rec.meta.dynamic) continue;
-          let mod = rec.module instanceof WebAssembly.Module ? rec.module : null;
-          if (!mod && rec.kind === 'vxd') mod = (S.vxds[rec.file] || {}).mod;
-          else if (!mod && rec.kind === 'ne') mod = ((S.ne || {})[rec.name] || Object.values(S.ne || {}).find(d => d.meta === rec.meta) || {}).mod;
-          else if (!mod && isExe) { const progs = S.programs || {}, d = (rec.meta.sha256 && Object.values(progs).find(x => x.meta && x.meta.sha256 === rec.meta.sha256)) || progs[rec.meta.name + '.EXE']; if (d) mod = d.mod || d.modSync || (d.modSync = new WebAssembly.Module(b64bytes(d.wasm))); }
-          else if (!mod) { const d = p.dlls && p.dlls.get(rec.name); if (d && d.module instanceof WebAssembly.Module) mod = d.module; }
-          if (mod) { rec.run = new WebAssembly.Instance(mod, p.imports).exports.run; if (rec.meta && rec.meta.lookup) { const look = new Uint32Array(p.mem.buffer, rec.meta.lookup, rec.meta.textHi - rec.meta.textLo); rec.meta.blocks.forEach((a, i) => { look[a - rec.meta.textLo] = i + 1; }); } }
-          else if (!rec.run) console.warn(`[import] ${rec.name}${isExe ? ' (' + rec.meta.name + ')' : ''}: no module to make its run from`);
-        }
+        this.remakeRuns();
         W.regLoad(ex.registry);
         while (B.ringTake(this.ring));
         this.keyq = []; this.mouseq = []; this.vclock.now = ex.now;

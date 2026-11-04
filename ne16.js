@@ -229,6 +229,7 @@ P.initNE = function (rec) {
   // from its file had faulted)
   let r; try { r = this.call16(m.segs[m.entry[0] - 1].sel, m.entry[1], [], { ds: rec.dgroup, di: rec.hInstance, cx: heap, es: 0, si: 0 }); }
   catch (e) { if (e && typeof e.message === 'string' && !e.message.includes(rec.name)) e.message += ` (in ${rec.name}'s LibEntry)`; throw e; }
+  if (!r.ax) log('warn', 'ne16', `${rec.name}'s LibEntry answered 0 (failed)`);
   // then, as KRNL386 does for a library that exports one, its DllEntryPoint(DLL_PROCESS_ATTACH, hInstance, DS, heap
   // size, 0, 0) for the process that loaded it (MSACM.DLL makes its per-process instance there)
   const dep = r.ax && this.neExport(rec, 'DLLENTRYPOINT');
@@ -254,6 +255,42 @@ P.fixedDisk = function (l) {
 };
 /** the display's grabber, the module GRABBER: the file SYSTEM.INI's [boot] 386grabber names, where KERNEL finds it */
 P.grabberFile = function () { const g = this.fs && winIni(this, 'SYSTEM.INI', 'boot', '386grabber'); return g ? this.findFile16(g) : null; };
+/** the file a bundled module is mapped from in place of its translation (null: the translation runs), as the loader
+ *  finds it: another file of that module's name where Windows has it (Windows 98's GDI.EXE, Setup's own SETUPX.DLL);
+ *  or its own file when a module it imports is mapped from its file. The bundle links its modules' far calls to each
+ *  other's segments and offsets as it builds them (tools/recomp.py, the registry), so a translation is good only with
+ *  the bundle's own modules under it: the bundle's display driver called Windows 98's DIBENG.DLL, mapped from its file,
+ *  at the bundle DIBENG's selector, which nothing had made, and jumped to linear 182. `memo`: one load's answers, the
+ *  files being what they are for that load (Setup copies new ones in between) */
+P.bundleDisk16 = function (sys, fname, native, memo = new Map()) {
+  const key = sys.meta.name.toUpperCase();
+  if (memo.has(key)) return memo.get(key);
+  memo.set(key, null);   // (a module importing it back, as GDI and USER each import the other, finds nothing stale through it)
+  if (!sys.meta.sha256) return null;
+  const full = this.findFile16(fname);
+  let f = null; try { f = full && this.fs.readFile(full); } catch (_) { /* as the bundle has it */ }
+  const ne = f && f[0] === 0x4d && f[1] === 0x5a && f.length > 0x40 ? rd.u32(f, 0x3c) : 0;
+  const isNE = !!(ne && ne + 0x40 < f.length && f[ne] === 0x4e && f[ne + 1] === 0x45 && rd.u16(f, ne + 0x1c));
+  let r = null;
+  if (isNE && window.W95Win32.sha256(f) !== sys.meta.sha256) r = full;
+  else {
+    const all = (window.W95SYSTEM && window.W95SYSTEM.ne) || {};
+    for (const imp of sys.meta.imports || []) {
+      // (KERNEL's and the JS stand-ins' are thunks, answered whatever runs; a JS16 name loaded as a module (native USER,
+      // Windows 98's from its file) is decided by what is loaded, whatever this caller's flag: a bundled COMMDLG loaded
+      // through LoadLibrary would call the bundle USER's selectors)
+      const m = this.ne.get(imp);
+      if (imp === 'KERNEL' || (JS16.includes(imp) && !(m && m.meta) && !native)) continue;
+      const s = !m && (all[imp] || Object.values(all).find(x => x.meta && x.meta.name.toUpperCase() === imp));
+      const stale = m ? !!(m.meta && m.meta.dynamic) : !!(s && this.bundleDisk16(s, s.fileName, native, memo));
+      if (!stale) continue;
+      // (with no file of its own to map, it is not found, as the loader finds no file: the bundle's copy would call the
+      // bundle's imp at selectors nothing made)
+      r = isNE ? full : { missing: fname }; break;
+    }
+  }
+  memo.set(key, r); return r;
+};
 P.loadLibrary16 = function (name, native = false, defer = false) {
   this.init16();
   name = name.replace(/\.?\s*$/, '');   // ("MMSYSTEM.", VB3's Declare ... Lib "MMSYSTEM": a name with no extension)
@@ -272,12 +309,10 @@ P.loadLibrary16 = function (name, native = false, defer = false) {
   // (the bundle's translation is for the file it was made from: another file of that module's name where the loader
   // finds it, Windows 98 Setup's own SETUPX.DLL, VER.DLL, NETDI.DLL, is mapped from disk and runs its own code. A
   // placeholder, no module with code, is the bundle's)
-  if (sys.meta.sha256) {
-    const full = this.findFile16(/\\/.test(name) ? name : sys.fileName);
-    let f = null; try { f = full && this.fs.readFile(full); } catch (_) { /* as the bundle has it */ }
-    const ne = f && f[0] === 0x4d && f[1] === 0x5a && f.length > 0x40 ? rd.u32(f, 0x3c) : 0;
-    if (ne && ne + 0x40 < f.length && f[ne] === 0x4e && f[ne + 1] === 0x45 && rd.u16(f, ne + 0x1c) && window.W95Win32.sha256(f) !== sys.meta.sha256) return this.loadNEFile(full);
-  }
+  // (a path that is not there is not found, as KRNL386's LoadModule opens the file first: MSGSRV32 asks for
+  // SYSBCKUP\LZEXPAND.DLL, Setup's backup, and takes 2 for none; it was given the bundle's LZEXPAND instead)
+  if (/\\/.test(name) && !this.findFile16(name)) { this.missing16 = name.replace(/^.*\\/, ''); return null; }
+  { const own = this.bundleDisk16(sys, /\\/.test(name) ? name : sys.fileName, native); if (own && own.missing) { this.missing16 = own.missing.replace(/^.*\\/, ''); return null; } if (own) return this.loadNEFile(own); }
   if (sys.onDisk && !this.findFile16(/\\/.test(name) ? name : sys.fileName)) return null;   // a module Setup leaves on the CD: once installed
   const b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
   if (this.ne.has(sys.meta.name.toUpperCase())) return this.ne.get(sys.meta.name.toUpperCase());
@@ -293,7 +328,28 @@ P.loadLibrary16 = function (name, native = false, defer = false) {
 P.bootUser16 = function () {
   if (this.user16Ready === undefined) this.user16Ready = false;
   if (this.vxdBoot) this.vxdBoot();   // the static VxDs, initialized before Windows starts (vmm.js)
+  // (USER.EXE from disk is loaded as the import of a driver or of GDI's own imports before the USER step below: its
+  // LibEntry waits there for USER32 all the same)
+  // a GDI.EXE from disk (Windows 98's) calls into GDI32 through flat thunks from its LibEntry on, and GDI32 connects
+  // them when it loads, naming GDI.EXE: so GDI's image first, then GDI32, then GDI's LibEntry, as USER's below. Run as
+  // the display driver's import, its LibEntry read the unset target table and jumped to what was at 0. The bundle's
+  // GDI loads in the drivers' order below, as it always has
+  const gsys = window.W95SYSTEM && window.W95SYSTEM.ne && window.W95SYSTEM.ne.GDI;
+  const gdiDisk = !this.ne.has('GDI') && !!(gsys && this.bundleDisk16(gsys, gsys.fileName, true));
+  this.initAfter32 = new Set(gdiDisk ? ['GDI', 'USER'] : ['USER']);
+  const gdi = gdiDisk ? this.loadLibrary16('GDI', true, true) : null;
+  if (gdi && gdi.meta && gdi.meta.dynamic && !gdi.inited) {
+    const sys = window.W95SYSTEM, b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+    if (sys && sys.dlls) for (const [n, x] of Object.entries(sys.dlls)) { const k = n.replace(/\.DLL$/, ''); if (!this.dlls.has(k)) this.dlls.set(k, { file: x.fileBytes || (x.fileBytes = b64(x.file)), module: x.mod || (x.mod = new WebAssembly.Module(b64(x.wasm))), meta: x.meta }); }
+    this.loadDll('GDI32'); this.runPendingInits();
+    gdi.initLater = false; gdi.inited = true; if (!this.initNE(gdi)) log('warn', 'ne16', 'GDI LibEntry failed');
+  }
   for (const m of ['SYSTEM', 'KEYBOARD', 'MOUSE', this.displayDriverFile(), 'COMM', 'GDI']) this.loadLibrary16(m, true);
+  // the configured size into the display driver's records now that it is loaded, before USER's LibEntry enables it:
+  // asked for above to name the driver, before the driver was there, customEntry found no DISPLAY and changed nothing,
+  // and Windows 98's TSENG.DRV, mapped from its file, enabled 1024 bytes a line on a screen read at 1016 (each line
+  // drawn 8 pixels on from the last: the screen sheared)
+  this.displayConfig();
   // the sound driver SYSTEM.INI's [boot] names (sound.drv=mmsound.drv: the module SOUND, Windows 3.x's sound functions,
   // which Minesweeper imports), from its file, as KRNL386 loads it
   const snd = this.fs && winIni(this, 'SYSTEM.INI', 'boot', 'sound.drv');
@@ -311,8 +367,9 @@ P.bootUser16 = function () {
     this.loadDll('USER32');
     this.runPendingInits();
   }
+  this.initAfter32 = null;
   if (!user.inited) {
-    user.inited = true; if (!this.initNE(user)) log('warn', 'ne16', 'USER LibEntry failed');
+    user.initLater = false; user.inited = true; if (!this.initNE(user)) log('warn', 'ne16', 'USER LibEntry failed');
     // FinalUserInit (#400), as KRNL386 calls it once USER is up: GDI's FinalGdiInit takes the USER entry points GDI
     // calls through (LoadString, GetActiveWindow and the rest, which its print-to-file prompt uses)
     if (this.neExport(user, 400)) this.user16(400);
@@ -384,7 +441,14 @@ P.importTarget16 = function (rec, mi, ordOrName) {
   if (!m && mod !== 'KERNEL' && !JS16.includes(mod)) throw Object.assign(new Error(`${mod}.DLL could not be loaded`), { missing16: this.missing16 || `${mod}.DLL` });   // (a DLL of its own that did not load: neither does it)
   if (typeof ord === 'string') ord = (m && m.names && m.names[ord.toUpperCase()]) || (names16(mod) || {})[ord.toUpperCase()] || 0;
   if (mod === 'KERNEL' && KERNEL_EQUATES[ord] !== undefined) { const c = KERNEL_EQUATES[ord]; return u32(c << 16 | c); }   // (its constants: the value at a segment or an offset fixup)
-  if (m && m.meta && m.meta.dynamic) { if (!m.inited && m !== rec) { m.inited = true; this.initNE(m); } return m.exports.get(ord) || 0; }   // (its LibEntry run as it is loaded)
+  // (a module from its file runs its LibEntry at the end of its own load, loadNEDynamic: one that imports it back, as
+  // DDEML imports USER, gets its exports, set before its relocations, and runs nothing of it. An export the file does
+  // not have is named: a 0 far pointer there is a jump to 0 later)
+  if (m && m.meta && m.meta.dynamic) {
+    const v = m.exports.get(ord);
+    if (!v) log('warn', 'ne16', `${rec.name} imports ${mod}.${typeof ordOrName === 'string' ? ordOrName : '#' + ord}, which ${m.path || mod} does not export`);
+    return v || 0;
+  }
   return this.thunk16For(`${m && m.kind !== 'js' ? m.name : mod}.#${ord}`);
 };
 /** a segment's relocations made in it, from the module's record alone (its file, segments and exports): as it
@@ -437,9 +501,11 @@ P.loadNEDynamic = function (key, file) {
   for (let i = 0; i < nseg; i++) {
     const e = segt + 8 * i, off = rd.u16(file, e) << shift, len = rd.u16(file, e + 2) || (off ? 0x10000 : 0), flags = rd.u16(file, e + 4), minalloc = rd.u16(file, e + 6) || 0x10000;
     const size = i + 1 === autodata ? 0x10000 : Math.max(len, minalloc, 1), base = this.alloc(size + 16);
-    const sel = this.allocSels(base, size, flags & 1 ? 0xf300 : 0xfb00);
+    // (a 32-bit code segment, flag 2000h, a 32-bit descriptor, as loadNE makes the bundle's: Windows 98's DIBENG.DLL's
+    // blits, run as 16-bit code, read their first instruction as FF /7)
+    const sel = this.allocSels(base, size, flags & 1 ? 0xf300 : flags & 0x2000 ? 0x40fb00 : 0xfb00);
     if (len && off) this.u8.set(file.subarray(off, off + len), base);
-    segs.push({ num: i + 1, sel, base, len, alloc: size, minalloc: rd.u16(file, e + 6), flags, fileoff: off, rel: flags & 0x100 ? off + len : 0 });
+    segs.push({ num: i + 1, sel, base, len, alloc: size, minalloc: rd.u16(file, e + 6), flags, bits: flags & 0x2000 ? 32 : 16, fileoff: off, rel: flags & 0x100 ? off + len : 0 });
   }
   // the entry table: ordinal -> segment:offset (fixed bundles name their segment, movable ones each entry's)
   const exports = new Map();
@@ -460,7 +526,12 @@ P.loadNEDynamic = function (key, file) {
     }
   }
   const meta = { name, base: segs.length ? segs[0].base : 0, segs, autodata, entry: [h(0x16), h(0x14)], exports: {}, names, imports: [], textLo: 0, textHi: 0, blocks: [], fixups: [], dynamic: true };
-  const rec = { name, path: key, kind: 'ne', base: meta.base, meta, file, segs, exports, names, run: null };
+  // (the device memory the bundle's build of this file writes as registers, recomp.py --mmio: a device's, whichever
+  // file of the driver's runs. Windows 98's TSENG.DRV, mapped from its file, waited on the W32's accelerator status
+  // at B8000h+7F36h, plain memory to it, for good)
+  { const fn = key.replace(/^.*\\/, '').toUpperCase(), b = Object.values(all).find(s => s.fileName === fn && s.meta && s.meta.mmio); if (b) meta.mmio = b.meta.mmio; }
+  const rec = { name, path: key, kind: 'ne', base: meta.base, meta, file, segs, exports, names, run: null, loading: true };
+  if (this.initAfter32 && this.initAfter32.has(name)) rec.initLater = true;   // (its LibEntry run by bootUser16 once its 32-bit half is loaded, whoever imports it first)
   this.ne.set(name, rec); this.modules.push(rec); this.byName.set(name, rec);   // (before its imports: a module that imports this one back finds it)
   meta.imports = mods;
   // (a segment's relocations made in it: as it loads, and again for a data segment read again from the file, as the
@@ -481,7 +552,12 @@ P.loadNEDynamic = function (key, file) {
     this.ghandles.set(rec.dgroup | 1, { lin: dg.base, size: init, n: 1, flags: 2, lock: 0, owner: rec.hModule });
   }
   for (const sg of segs) if (sg.num !== autodata) this.ghandles.set(sg.sel | 1, { lin: sg.base, size: sg.alloc, n: 1, flags: 0, lock: 0, owner: rec.hModule, code: !(sg.flags & 1) });
+  delete rec.loading;
   if (this.onModuleLoad) this.onModuleLoad(name, rec);   // (a watch asked for before the module came: worker.js cmd 'watch')
+  // a library's LibEntry, here and only here, as KRNL386 runs it once the module and its imports are loaded (its
+  // imports' own having run at the end of theirs); a library whose 32-bit half must connect its thunks first waits for
+  // bootUser16 (initLater). Run by each caller before, a DLL a 32-bit half's ThunkConnect32 loaded never had its run
+  if ((h(0x0c) & 0x8000) && !rec.initLater && !rec.inited) { rec.inited = true; if (!this.initNE(rec)) log('warn', 'ne16', `${name}'s LibEntry failed`); }
   return rec;
 };
 P.jsModule = function (name) {
@@ -2482,6 +2558,9 @@ const findWords = (u8, b, n, words) => {
  *  sets the mode from (320x200 first), its GDIINFO for each entry (GDI 4.0, 208 by 156 mm, the entry's size), and the
  *  scan line lengths of each depth where the driver keeps them (TSENG.DRV: a flags and length pair for each entry, 8
  *  entries to a depth: 8 bits 320, 320, 512 ... 1280, then 16 bits twice those) */
+// the custom size's scan line: its pixels in 8-byte units, longer until the driver's 1K cursor image past the screen
+// ends in the 64K bank it starts in (customEntry); the BIOS's mode set programs the CRTC offset with the same length
+const customLine = (w, h, px) => { let l = (w * px + 7) & ~7; while (((h * l) & 0xffff) > 0xfc00) l += 8; return l; };
 P.customEntry = function (w, h, slot = CUSTOM_SLOTS[0]) {
   const m = this.ne && this.ne.get('DISPLAY'), sg = m && m.segs && m.segs.find(g => g.num === 2); if (!sg) return false;
   if (!this.customRecs) {
@@ -2506,7 +2585,7 @@ P.customEntry = function (w, h, slot = CUSTOM_SLOTS[0]) {
   // (a scan line the CRTC's offset register holds: 8-byte units. The driver keeps the cursor's 1K image just past the
   // screen, at h scan lines, and writes it through the 64K window without changing bank part way: a line long enough
   // that the image ends in the bank it starts in)
-  const line = px => { let l = (w * px + 7) & ~7; while (((h * l) & 0xffff) > 0xfc00) l += 8; return l; };
+  const line = px => customLine(w, h, px);
   if (pitch !== undefined) for (let px = 1; px <= 4; px++) this.w16(pitch + 32 * (px - 1) + 4 * slot.i + 2, line(px));
   for (const { at, px } of this.customRecs.desc.get(slot.i) || []) { this.w32(at, w); this.w32(at + 4, h); this.w32(at + 8, line(px)); }
   const X = Math.round(w * 254 / 640), Y = Math.round(h * 127 / 480);
@@ -2831,7 +2910,10 @@ P.setVideoMode = function (mode, clear, hicolor) {
   if (this.customMode && a.mode === this.customMode.mode) [a.w, a.h] = [this.customMode.w, this.customMode.h];   // the adapter's custom mode: the configured size (displaySlot), in the entry that stands for it at the depth
   if (hicolor) a.bpp = hicolor;
   a.planar = a.bpp === 4;
-  a.pitch = a.planar ? a.w >> 3 : a.w * (a.bpp >> 3);
+  // (the custom size's line as the driver's records have it, customLine: programmed as the pixels alone, 1640 bytes at
+  // 818x559x16 where the driver and the DIB engine drew 1648, the screen sheared 4 pixels a line)
+  const cm = this.customMode, custom = cm && !a.planar && a.bpp && cm.w === a.w && cm.h === a.h;
+  a.pitch = a.planar ? a.w >> 3 : custom ? customLine(a.w, a.h, a.bpp >> 3) : a.w * (a.bpp >> 3);
   // the register values the BIOS loads for the mode: sequencer memory mode (chain-4 for the packed-pixel modes; the
   // 16-color modes' four planes each at the same address, odd/even off), the CRTC's horizontal and vertical display
   // end (with their overflow bits in 07h and Tseng's 35h) and its offset
@@ -3313,8 +3395,13 @@ def16('KERNEL', 161, '', 'w', function () { const lh = this.lheap(); return Math
 
 def16('KERNEL', 15, 'wl', 'w', function (fl, n) { return this.globalAlloc16(fl, n); });
 def16('KERNEL', 16, 'wlw', 'w', function (h, n, fl) {   // GlobalReAlloc
-  const b = this.gblock(h); if (!b) return 0; n = gsize(n);
+  const b = this.gblock(h); if (!b) return 0;
   if (fl & LMEM_MODIFY) return h;
+  // size 0, moveable: discard it (GlobalDiscard). A module's code segment discarded is not present until called, when
+  // KRNL386 loads it again from the file, the same bytes and relocations: here it stays as it is. Resized to 32 bytes
+  // instead, Windows 98's GDI, discarding its own segment 11 at start, then called AddFontResource there past the limit
+  if (!u32(n) && (fl & GMEM_MOVEABLE) && b.code) return h;
+  n = gsize(n);
   const sel = this.gsel(h);
   if (n > b.size) {
     const cap = (this.allocs.get(b.lin) || 0) - 16;
@@ -3520,6 +3607,12 @@ def16('KERNEL', 324, 'wx', 'v', function (code) {
   log('warn', 'KERNEL', `LogError ${code.toString(16)} from ${from} in ${who}`);
   (this.faultLog || (this.faultLog = [])).push({ why: `LogError ${code.toString(16)}`, at: from, thread: who });
 });
+// LogParamError(error, function, parameter) (Windows 98's MSACM.DLL): logged as LogError is, with the function and value
+def16('KERNEL', 325, 'wxx', 'v', function (code, fn, param) {
+  const t = this.thread16, who = t ? (t.pc ? t.pc.path : t.task && t.task.path) || `thread ${t.id}` : 'main', at = this.whereOf(this.lin(fn));
+  log('warn', 'KERNEL', `LogParamError ${code.toString(16)} in ${at}, parameter ${u32(param).toString(16)}, in ${who}`);
+  (this.faultLog || (this.faultLog = [])).push({ why: `LogParamError ${code.toString(16)} (${u32(param).toString(16)})`, at, thread: who });
+});
 def16('KERNEL', 327, '', 'jmp', function () {    // HandleParamError: BX = error, CX:AX = parameter; errors unwind to the handler at [BP-2]
   const err = this.cpu.ebx.value & 0xffff, ssb = this.cpu.ssb.value >>> 0, sp = this.cpu.esp.value & 0xffff;
   const ip = this.r16(ssb + sp), cs = this.r16(ssb + sp + 2);
@@ -3550,7 +3643,7 @@ def16('KERNEL', 447, '', 'v', oldYield);
 // OldYield: the same for a Win16 task (USER's PeekMessage calls it when the queue is empty, as for MSGSRV32 polling
 // while MMTASK plays its sound)
 def16('KERNEL', 117, '', 'v', oldYield);
-def16('KERNEL', 471, '', 'l', function () { return this.thread16 && this.thread16.pc ? this.thread16.pc.pid : this.inSystem && this.inSystem() ? SYS_PID : MAIN_PID; });   // GetCurrentProcessId: KERNEL32's ids
+def16('KERNEL', 471, '', 'l', function () { return this.thread16 && this.thread16.pc ? this.thread16.pc.pid : this.inSystem && this.inSystem() ? sysPid(this) : MAIN_PID; });   // GetCurrentProcessId: KERNEL32's ids
 def16('KEYBOARD', 100, 'w', 'v', function () {});                              // ScreenSwitchEnable
 
 // selectors
@@ -3612,6 +3705,25 @@ def16('KERNEL', 87, 'pp', 'i', function (a, b) { const x = this.readA(a) || '', 
 def16('KERNEL', 78, 'xx', 'l', function (start, cur) { return cur > start ? cur - 1 : start; });    // AnsiPrev
 def16('KERNEL', 348, 'ppl', 'v', function (d, s, n) { this.u8.copyWithin(d, s, s + n); });     // hmemcpy
 def16('KERNEL', 102, '', 'jmp', function () { const r = INTS[0x21].call(this); return r === LAYOUT.SENTINEL ? r : this.retf16(0); });   // DOS3Call
+// NoHookDosCall (Windows 98's SYSTEM.DRV): KERNEL's own INT 21h handling, past the hooks programs put on the vector
+// (KRNL386 seg1:891Dh calls it, seg1:8836h); none are put here, so it is DOS3Call's
+def16('KERNEL', 101, '', 'jmp', function () { const r = INTS[0x21].call(this); return r === LAYOUT.SENTINEL ? r : this.retf16(0); });
+// CVWBreak (Windows 98's KEYBOARD.DRV, Ctrl+Alt+SysRq): a break into CodeView for Windows when the kernel's debugger
+// flag is set (KRNL386 seg2:4B88h tests [1443h] bit 4); no debugger here
+def16('KERNEL', 205, '', 'v', function () {});
+// GetProductName(buf, cb) (Windows 98's USER): KRNL386's string 2Ch ("Windows 98 ", seg3:0593h), from the KRNL386.EXE
+// Windows runs: copied (lstrcpyn) into buf with the buffer back in DX:AX, or with cb 0 its length
+def16('KERNEL', 236, 'xw', 'l', function (buf, cb) {
+  if (this.productName === undefined) {
+    const f = this.findFile16('KRNL386.EXE'); let s = '';
+    try { const m = { file: this.fs.readFile(f) }, r = this.neResources(m).find(x => x.type === 6 && x.id === (0x2c >> 4) + 1); if (r) { let o = r.off; for (let k = 0; k < (0x2c & 15); k++) o += 1 + m.file[o]; s = String.fromCharCode(...m.file.subarray(o + 1, o + 1 + m.file[o])); } } catch (_) { s = ''; }
+    this.productName = s;
+  }
+  if (!cb) return this.productName.length;
+  const p = this.lin(buf), n = Math.min(this.productName.length, cb - 1);
+  for (let i = 0; i < n; i++) this.u8[p + i] = this.productName.charCodeAt(i); this.u8[p + n] = 0;
+  return u32(buf);
+});
 
 // directories, profile, registry
 def16('KERNEL', 134, 'pw', 'w', function (b, n) { return W(this, b, 'C:\\WINDOWS', n); });
@@ -3659,6 +3771,9 @@ def16('KERNEL', 413, 'sp', 'l', function (pat, data) {
   this.finds16 = this.finds16 || new Map(); const h = 0x4800 + (this.findNext16 = ((this.findNext16 || 0) + 1) & 0x3ff); this.finds16.set(h, { list, i: 1 }); return h;
 });
 def16('KERNEL', 414, 'lp', 'w', function (h, data) { const f = this.finds16 && this.finds16.get(h); if (!f || f.i >= f.list.length) { this.lastError = 18; return 0; } this.findData16(data, f.list[f.i++]); return 1; });
+// FileTimeToLocalFileTime (KRNL386's thunk to KERNEL32's, entry 0Ah of its table): Windows 98's MSGSRV32 converts a
+// file's time with it at start, in place (both pointers the same 16:16 buffer)
+def16('KERNEL', 432, 'pp', 'w', function (a, b) { return API.KERNEL32.FileTimeToLocalFileTime[1].call(this, a, b); });
 def16('KERNEL', 415, 'l', 'w', function (h) { return this.finds16 && this.finds16.delete(h) ? 1 : 0; });
 // CreateDirectory(path, security attributes) and SetFileAttributes(path, attributes): TRUE, or FALSE with the error
 def16('KERNEL', 144, 'sl', 'w', function (name) {
@@ -4712,6 +4827,23 @@ const waitTop = (p, ms) => {
   return YIELD;
 };
 const waitDone = p => { const t = p.thread16 || p.mainWait; if (t) { t.wake = 0; t.waitOn = null; } };
+// KERNEL.495: KRNL386's thunk to KERNEL32's WaitForMultipleObjectsEx (KRNL386 seg3:40CCh, entry 15h of KERNEL32's
+// table, as #460 is WaitForSingleObject's): Windows 98's USER waits there in MsgWaitForMultipleObjects (seg16:3B68h),
+// the handles in a 16:16 array it Local32Allocs, the answer checked for WAIT_TIMEOUT. The 16-bit thread's wait, as #460's
+def16('KERNEL', 495, 'lplll', 'l', function (n, ph, all, ms) {
+  const hs = [...Array(n)].map((_, i) => this.r32(ph + 4 * i)), objs = hs.map(h => ev16(this, h));
+  if (objs.some(e => !e)) return 0xffffffff;   // WAIT_FAILED, as #460 for a handle that is no object
+  P.sendToGone.call(this);
+  objs.forEach((e, i) => { if (!e.set && P.queueWoken.call(this, hs[i])) e.set = true; });
+  const ready = () => (all ? objs.every(e => e.set) : objs.some(e => e.set));
+  if (this.thread16) this.thread16.waitOn = { hs, all, ms };   // (for a probe)
+  if (!ready() && ms && this.atThreadTop()) { P.idle.call(this); return waitTop(this, ms); }
+  if (!ready() && ms) this.waitNested(ready);
+  waitDone(this);
+  if (!ready()) return 0x102;
+  if (all) { for (const e of objs) if (!e.manual) e.set = false; return 0; }
+  const i = objs.findIndex(e => e.set); if (!objs[i].manual) objs[i].set = false; return i;
+});
 def16('KERNEL', 460, 'll', 'l', function (h, ms) {
   const e = ev16(this, h); if (!e) return 0xffffffff;
   P.sendToGone.call(this);
@@ -4805,7 +4937,7 @@ def16('KERNEL', 625, '', 'w', function () {
 const GPD = { 0: 0, '-4': 0, '-8': 0, '-12': 0, '-16': 0, '-20': 0, '-24': 0, '-28': 0, '-32': 0, '-36': 0, '-40': 0, '-44': 0x400, '-48': 0, '-52': 0, '-56': 0 };
 const pdw = (p, pid, off) => {
   if (!(off in GPD)) throw new GuestError(`GetProcessDword offset ${off}`);
-  pid = pid || (p.thread16 && p.thread16.pc ? p.thread16.pc.pid : p.inSystem() ? SYS_PID : MAIN_PID);   // USER's start-up runs as the system process, not the program's
+  pid = pid || (p.thread16 && p.thread16.pc ? p.thread16.pc.pid : p.inSystem() ? sysPid(p) : MAIN_PID);   // USER's start-up runs as the system process, not the program's
   p.procDword = p.procDword || new Map();
   if (!p.procDword.has(pid)) {
     // the process's instance (-48), as KERNEL32 keeps it: its program's 16-bit alias (ShellExecute answers with it for a
@@ -4828,7 +4960,7 @@ def16('KERNEL', 486, 'l', 'w', function () { return 1; });   // FreeLibrary32: t
 def16('KERNEL', 487, 'lpw', 'w', function (h, buf, n) { return window.W95Win32.API.KERNEL32.GetModuleFileNameA[1].call(this, h, buf, n) & 0xffff; });
 // MapProcessHandle: the id of the process a handle names (GetCurrentProcess's the caller's); an id is taken as it is
 def16('KERNEL', 483, 'l', 'l', function (h) {
-  if (h === 0xffffffff) return this.thread16 && this.thread16.pc ? this.thread16.pc.pid : this.inSystem() ? SYS_PID : MAIN_PID;
+  if (h === 0xffffffff) return this.thread16 && this.thread16.pc ? this.thread16.pc.pid : this.inSystem() ? sysPid(this) : MAIN_PID;
   if (h === SYS_PID || h === MAIN_PID || (this.procs && this.procs.has(h))) return h;
   const o = this.obj(h); if (o && o.kind === 'process') return o.pid;
   this.lastError = 6; return 0;   // ERROR_INVALID_HANDLE
@@ -4848,6 +4980,12 @@ def16('KERNEL', 479, 'l', 'v', function (h) { this.signal(ev16(this, h)); });
 // (threads16, between slices of the main thread), runs until it waits on an event that is not set (then yields
 // in the wait, resuming there once the event is set), and ends when its procedure returns.
 const MAIN_TID = 0x51, SYS_TID = 0x41, MAIN_PID = 0x50, SYS_PID = 0x40;   // the program's thread, and the system thread USER starts up on
+// the process the system thread runs in: on Windows' own machine (no program of its own), the Win16 process every 16-bit
+// task runs in, as USER starts up in KRNL386's own; a process of its own beside a machine's program. Two processes
+// there, USER's queue for the system thread had another process than the tasks' (its +16h), so ExitWindows took the
+// windows that thread holds (the task-switch window, the menu window) for another program's and ended that task inside
+// the host's pump: Windows 98 Setup waited on its WM_ENDSESSION for good, and the PC never restarted
+const sysPid = p => (p.host && p.host.system ? MAIN_PID : SYS_PID);
 const thr = (p, tid) => {   // a thread's record by id (0 or the main thread's id: the current/main thread)
   p.threadsById = p.threadsById || new Map([[MAIN_TID, { id: MAIN_TID }]]);
   const id = tid || (p.thread16 ? p.thread16.id : p.inSystem() ? SYS_TID : MAIN_TID);
@@ -5132,6 +5270,8 @@ P.threads16 = function (nested = false, only = null) {
         // (a stop the emulator made, trapped, ends the run as the sentinel does, r 0: a VxD service it lacks)
         if (this.trapped && t.pc && this.noMain) { t.pc.trapped = this.trapped; (this.pcFaults || (this.pcFaults = [])).push({ pc: t.pc, why: this.trapped }); this.trapped = null; this.endProcess(t.pc, 0xffffffff); }
         else if (this.trapped && this.taskFault(t, this.trapped)) this.trapped = null;
+        // (a Win16 task's end named in the log: Windows 98's MSGSRV32 ended before it started the shell, and nothing said so)
+        if (!t.pc && t.task) log('info', 'ne16', `task ${t.task.mod ? t.task.mod.name : '?'} (thread ${t.id}) ended${this.trapped ? ': ' + this.trapped : ''}, AX ${(this.cpu.eax.value & 0xffff).toString(16)}`);
         if (t.pc) this.pcThreadEnded(t); else { this.threadExitUser(t); this.taskWindowsEnd(t); this.taskModuleEnded(t); } if (r !== 0 && this.trapped) log('warn', 'ne16', `thread ${t.id} ${this.trapped}`); if (t.onDone) t.onDone(t);
         if (t.flat && t.stackBase) { this.stackFree(t); this.free(t.tib); t.tib = 0; }   // (its stack and thread information block go with it)
       }   // onDone: the host's, for a thread it started
@@ -5548,10 +5688,16 @@ K('ThunkConnect32', 6, function (td, f16, m16, m32, hmod, reason) {
   // 16 -> 32: the 32-bit half's target table, for the 16-bit half (ThunkConnect16's record, made now if its half has
   // not announced itself yet) to call through
   if (magic === 'SL01') {
-    const t16 = find(); if (!t16) return 1;
+    const t16 = find(); if (!t16) { log('warn', 'ne16', `ThunkConnect32 ${this.readA(m32)} SL01: no ${f16name} in ${name}`); return 1; }
     const sl = this.sl01 || (this.sl01 = new Map()), rec = sl.get(t16) || {}; sl.set(t16, rec);
     rec.mod = this.modules.find(x => x.base === hmod) || this.modules.find(x => td >= x.base && td < x.base + (x.size || 0x100000));
     rec.table = u32(f16 + (this.r32(td + 0x20) | 0));   // the thunk compiler's table lies before the 16-bit half's name
+    // (the 16-bit half's data of the older form, no SL01 of its own: a checksum, then a far pointer to the variable its
+    // stubs load EDX from for C16ThkSL (#630), which takes the table's flat address here, as KERNEL32 writes it.
+    // Windows 98's GDI.EXE has its ICM and font driver thunks so (IcmThkConnectionDataSL: 47:0500), and its LibEntry's
+    // first call through one jumped to what the unset variable held)
+    if (this.readA(t16, 4) !== 'SL01') { const v = this.lin(this.r32(t16 + 4)); if (v) this.w32(v, rec.table); }
+    log('warn', 'ne16', `ThunkConnect32 ${this.readA(m32)} SL01 ${name} ${f16name}: table ${rec.table.toString(16)}`);
     return 1;
   }
   const who = () => (this.thread16 && this.thread16.pc && this.thread16.pc.path) || (this.thread16 ? 'thread ' + this.thread16.id : 'main');
@@ -5764,7 +5910,10 @@ KR('#33', function () { return ret32(this); });    // frees 16-bit blocks a thre
 K('#48', 1, function (p) { if (p) this.w32(p, 0); return 0; });   // ReleaseThunkLock
 // USER32.DLL's start-up: the Win16Lock it takes around every call into USER.EXE, and KERNEL's 16-bit system variables
 // (a block USER32 writes into). One thread runs here, so the lock has nothing to exclude.
-K('#93', 1, function (pp) { if (!this.win16Lock) this.win16Lock = this.alloc(0x40); this.w32(pp, this.win16Lock); return 0; });   // GetpWin16Lock
+// GetpWin16Lock: no lock structure here (#86/#97/#98 keep only a level count), so USER32 is given none, and pushes 0 to
+// _EnterSysLevel/_LeaveSysLevel around its calls into USER. Given a block of zeros as the lock, Windows 95's USER32 took
+// its lock-owner paths, and a window procedure CallProc32W called returned to USER's 16:16 return address as a linear one
+K('#93', 1, function (pp) { if (pp) this.w32(pp, 0); return 0; });
 K('#92', 0, function () { if (!this.pk16SysVar) this.pk16SysVar = this.alloc(0x40); return this.pk16SysVar; });            // GetPK16SysVar
 // _EnterSysLevel / _LeaveSysLevel: the levels a thread holds (the Win16Lock among them), which it keeps when its time
 // runs out there (holdWin16)
@@ -5773,7 +5922,6 @@ K('#86', 1, function () { this.sysLevel = (this.sysLevel || 0) + 1; return 0; })
 // returns the result it has in EAX straight after leaving: GetObjectType)
 K('#97', 1, function () { this.sysLevel = Math.max(0, (this.sysLevel || 0) - 1); return this.reg('eax'); });
 K('#49', 1, () => 0);                                      // RestoreThunkLock
-K('#51', 0, () => 0);
 // W32S_BackTo32 (KERNEL32 #51), as USER32's thunklet relays use it under native USER: entered by a jump with [ESP] the
 // 32-bit target and [ESP+4] where to return; calls the target with the ten DWORDs above those as its arguments and
 // returns there with the target's EAX, the target's own argument pops undone (KERNEL32 restores ESP with LEAVE)
@@ -5787,9 +5935,6 @@ API.KERNEL32['#51'] = ['regs', function () {
   this.reg('esp', sp);
   return target;
 }];
-K('#68', 3, function (sp) { return this.lin(sp); });      // K32WOWGetVDMPointerFix
-K('#69', 1, () => 0);
-K('#93', 1, function (p) { if (p) this.w32(p, 0); return 0; });   // GetpWin16Lock
 K('#96', 0, () => 1);
 K('#98', 1, function () { return this.reg('eax'); });
 K('GetProcessFlags', 1, () => 0);
