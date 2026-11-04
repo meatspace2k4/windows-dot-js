@@ -30,8 +30,8 @@ nowhere) and reports what stopped it; in a page with no DevTools endpoint, its `
   (`0BAh`), `DIRNUL=` removes a folder (`0F2h`), and either one counts a file or folder that is not there as done; any
   other key is a rename, skipped when its source is not there. Failures go to the reporter at `5C4h`, whose `%1`/`%2`
   are SysDispMsg sublists at DS:0716h and DS:0721h.
-- A DOS program run offline, on the emulator with an in-memory C:: `COMMAND.COM /C <program>` in `V.machine` with the
-  bundle's MS-DOS 7.10, as win95.js `dosRun` makes one (Windows 98's tools need 7.00 or later, INT 21h AX=3306h).
+- WININIT run offline with a WININIT.INI of your own: `tools/wininit-run.mjs` (the bundle's MS-DOS 7.10 and an
+  in-memory C:, as win95.js `dosRun` runs a program; Windows 98's tools need 7.00 or later, INT 21h AX=3306h).
 - The PC's screen and the IO.SYS logo: v86.js `vgaFrame`, drawn by win95.js `drawIndexed`.
 
 ## Runs
