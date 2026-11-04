@@ -26,7 +26,12 @@ const CPU_REGS = ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi', 'cf', 
 // can give up the processor (a thread at its top level) does after SLICE_MS; one inside a call the host made cannot,
 // and runs on, as a processor would: its machine is a worker's (worker.js), so it holds nothing but that machine, whose
 // interrupts (the keys, the mouse, the timer) still come at each check
-const BUDGET = 0x4000, SLICE_MS = 40;
+// (4 ms: the machine's step, with the input, the timers and a frame, comes round faster than the display's 120 a second
+// while a thread computes. A thread stops only where it is at its own top level, not in a call the host made for it,
+// and Windows 98 Setup's preparation comes there about every 5 ms: a 7 ms slice ran to its second such point, 10 ms,
+// 95 steps a second; 4 ms stops at the first. The step's own work is ~0.1 ms. At 40 a busy 16-bit program left the
+// page 16 frames a second)
+const BUDGET = 0x1000, SLICE_MS = 4;   // (BUDGET: blocks between the checks, so a slice ends close to its time)
 const WM = { NULL: 0, CREATE: 1, DESTROY: 2, MOVE: 3, SIZE: 5, ACTIVATE: 6, SETFOCUS: 7, KILLFOCUS: 8, PAINT: 0xf, CLOSE: 0x10,
   QUIT: 0x12, ERASEBKGND: 0x14, SHOWWINDOW: 0x18, ACTIVATEAPP: 0x1c, SETCURSOR: 0x20, NCCREATE: 0x81, NCDESTROY: 0x82,
   NCACTIVATE: 0x86, KEYDOWN: 0x100, KEYUP: 0x101, CHAR: 0x102, SYSKEYDOWN: 0x104, SYSCOMMAND: 0x112, TIMER: 0x113,
@@ -220,7 +225,17 @@ class Process {
   }
   loadDll(name) {
     if (this.byName.has(name)) return this.byName.get(name);
-    const d = this.dlls.get(name) || this.diskDll(name); if (!d) return null;
+    // (the bundle's translation is of the file it was made from: another file of that name where the loader finds it,
+    // Windows 98's GDI32.DLL over Windows 95's, is mapped from disk and runs its own code, as ne16.js loadLibrary16
+    // takes a 16-bit module; the bundle's GDI32 connected nothing of Windows 98's GDI.EXE)
+    let d = this.dlls.get(name);
+    // (its stand-ins, API[name], answer as they do for the bundle's: by name, over the module's own exports)
+    if (d && d.file && this.fs && !STAND_IN.has(name)) {
+      const file = /\./.test(name) ? name : name + '.DLL'; let f = null;
+      for (const dir of [...(this.loadDirs || []), 'C:\\WINDOWS\\SYSTEM', 'C:\\WINDOWS']) { try { f = this.fs.readFile(dir + '\\' + file); break; } catch (_) { /* not there */ } }
+      if (f && !sameBytes(f, d.file)) { this.dlls.delete(name); d = this.diskDll(name, true); }
+    }
+    d = d || this.diskDll(name); if (!d) return null;
     const m = this.loadImage(d.file, d.module, d.meta, name);
     if (m && this.onDllLoad) this.onDllLoad(name, m);   // (a module watched as it comes: a shared session's intents, ne16.js)
     if (m && this.onModuleLoad) this.onModuleLoad(name, m);   // (a watch asked for before the module came: worker.js cmd 'watch')
@@ -251,9 +266,10 @@ class Process {
    *  loader finds it: the program's folder, SYSTEM, the Windows folder. Mapped where there is room, its code translated
    *  as it runs (dyn.js); null when there is no such file or it is no Win32 DLL. (Bound to no DLL, Paint's imports of
    *  MFC30.DLL were dead thunks: the first call faulted, and its handling ran garbage until the machine stopped) */
-  diskDll(name) {
-    // (one this system implements, the personality's KERNEL32, ADVAPI32, ...: that one, never its file)
-    if (!this.fs || API[name] || STAND_IN.has(name) || !/^[A-Z0-9_$~!#%&'()@^`{}-]+(\.[A-Z0-9]+)?$/i.test(name)) return null;
+  diskDll(name, replacing = false) {
+    // (one this system implements, the personality's KERNEL32, ADVAPI32, ...: that one, never its file; unless the file
+    // replaces the bundle's own translation of it, replacing)
+    if (!this.fs || (API[name] && !replacing) || STAND_IN.has(name) || !/^[A-Z0-9_$~!#%&'()@^`{}-]+(\.[A-Z0-9]+)?$/i.test(name)) return null;
     const file = /\./.test(name) ? name : name + '.DLL';
     const dirs = [...(this.loadDirs || []), 'C:\\WINDOWS\\SYSTEM', 'C:\\WINDOWS'];
     let f = null;
@@ -404,7 +420,7 @@ class Process {
   /** Dispatch across modules until the sentinel (0), a yield (1) or a fault (2). */
   runAt(eip) {
     if (this.runLevel++ === 0) this.runT0 = this.now();   // the host's processor is the guest's from here
-    try { return this.dispatch(eip); } finally { this.runLevel--; }
+    try { return this.dispatch(eip); } finally { if (this.callRun && this.callRun.level === this.runLevel) this.callRun = null; this.runLevel--; }
   }
   /** run at `eip` as a thread's top level: a run that can give up the processor when its time is up (1) */
   runTop(eip) {
@@ -424,18 +440,30 @@ class Process {
   /** the dispatcher's question when the block budget runs out: 1 to give the processor back to the host here */
   tick(eip) {
     this.cpu.budget.value = BUDGET;
+    const vc = this.host.vclock; if (vc) vc.now += vc.perTick;   // (the machine's own clock: a quantum per BUDGET blocks, whatever the host's speed; worker.js vclock)
     if (this.inputPoll && !this.inPoll) { this.inPoll = true; try { this.inputPoll(); } finally { this.inPoll = false; } }   // interrupts: the keyboard's and the mouse's
     if (this.runLevel === this.yieldLevel && !this.noPreempt) {
       if (this.now() - this.runT0 < SLICE_MS) return 0;
       this.preempted = u32(eip); return 1;
     }
-    return 0;   // (inside a call the host made it cannot stop: it runs on)
+    // (inside a call the host made it cannot stop: it runs on. One that runs on 10 s is named once in the log, where it
+    // is: nothing else runs meanwhile, and the machine answers nothing)
+    const s = this.callRun;
+    if (!s || s.level !== this.runLevel) this.callRun = { level: this.runLevel, t0: performance.now(), told: false };
+    else if (!s.told && performance.now() - s.t0 > 10000) {
+      s.told = true;
+      log('warn', 'win32', `a call the host made runs on at ${this.whereOf(eip)} (${u32(eip).toString(16)}), thread ${this.thread16 ? this.thread16.id : 'main'}, level ${this.runLevel}/${this.yieldLevel}, depth ${this.depth}, ring 0 ${this.r0Depth || 0}`);
+    }
+    return 0;
   }
   /** no code at `at` the processor can run (nothing mapped there: #PF; an instruction run-time translation cannot
    *  take: #UD): the exception's continuation, or null for a stop of the emulator's own (trapped) */
   noCode(at) {
     const t = this.trapped || '';
-    (this.faultLog || (this.faultLog = [])).push({ at: u32(at).toString(16), atIn: this.whereOf(at), why: t, esp: u32(this.cpu.esp.value).toString(16), from: u32(this.lastBlock || 0).toString(16), fromIn: this.whereOf(this.lastBlock || 0), cs: (this.cpu.cs.value & 0xffff).toString(16), ss: (this.cpu.ss.value & 0xffff).toString(16), thread: this.thread16 ? this.thread16.id : 'main' }); if (this.faultLog.length > 50) this.faultLog.shift();   // (a diagnostic: cmd 'faults')
+    (this.faultLog || (this.faultLog = [])).push({ at: u32(at).toString(16), atIn: this.whereOf(at), why: t, esp: u32(this.cpu.esp.value).toString(16), from: u32(this.lastBlock || 0).toString(16), fromIn: this.whereOf(this.lastBlock || 0), path: this.entryRing ? [...Array(32).keys()].map(k => this.entryRing[(this.entryAt + k) & 31]).filter(Boolean).map(v => this.whereOf(v)) : [], stack: (() => { try { const ss = this.cpu.ss.value & 0xffff, sp = ss && ss !== LAYOUT.FLATDS ? (this.cpu.ssb.value >>> 0) + (this.cpu.esp.value & 0xffff) : u32(this.cpu.esp.value); return Array.from({ length: 8 }, (_, k) => this.r32(sp + 4 * k) >>> 0).map(v => { const w = this.whereOf(v), far = this.selValid && this.selValid(v >>> 16) ? this.whereOf(u32(this.selBase(v >>> 16) + (v & 0xffff))) : null; return `${v.toString(16)} ${far && !/^[0-9a-f]+$/.test(far) ? `(${far})` : w}`; }); } catch (_) { return []; } })(), cs: (this.cpu.cs.value & 0xffff).toString(16), ss: (this.cpu.ss.value & 0xffff).toString(16), thread: this.thread16 ? this.thread16.id : 'main' }); if (this.faultLog.length > 50) this.faultLog.shift();   // (a diagnostic: cmd 'faults')
+    // (the way there in the log too, as it happens: a machine that ends of it, the system's machine at its start, leaves
+    // no fault log to ask for)
+    { const f = this.faultLog[this.faultLog.length - 1]; log('warn', 'win32', `no code at ${f.at} (${f.atIn}) (${f.why || 'unmapped'}) cs ${f.cs} ss ${f.ss} ${['eax', 'ebx', 'ecx', 'edx', 'esi', 'edi', 'ebp'].map(r => `${r} ${u32(this.cpu[r].value).toString(16)}`).join(' ')} from ${f.fromIn || f.from}, esp ${f.esp}; the way there: ${f.path.slice(-16).join(' < ')}; stack ${(f.stack || []).slice(0, 8).join(' ')}`); }
     if (/^run-time code/.test(t)) { log('warn', 'win32', t); this.trapped = null; return this.raise(6, at); }   // (an emulator gap: named)
     if (t && !/^jump to unmapped address/.test(t)) return null;
     this.trapped = null; return this.raise(14, at, at);
@@ -526,8 +554,8 @@ class Process {
   /** a write watch on linear [lo, lo+len): the range is compared with its last contents at each dispatch (a block of a
    *  recompiled module, a stand-in's call) and each run-time block, and the first change since, with what ran last,
    *  goes in `hits` (cmd 'memwatch'); null ends it */
-  memWatch(lo, len) {
-    this.memW = lo == null ? null : { lo: u32(lo), len: len | 0, snap: this.u8.slice(u32(lo), u32(lo) + (len | 0)), hits: [], n: 0 };
+  memWatch(lo, len, own, max) {   // (own: a thread's id whose own writes are not recorded, for a watch on that thread's stack; max: the hits kept, 50)
+    this.memW = lo == null ? null : { lo: u32(lo), len: len | 0, snap: this.u8.slice(u32(lo), u32(lo) + (len | 0)), hits: [], n: 0, own: own || null, max: max || 50 };
     return this.memW;
   }
   memCheck(by) {
@@ -535,8 +563,9 @@ class Process {
     for (; i < n; i++) if (u8[lo + i] !== s[i]) break;
     if (i === n) return;
     let j = n - 1; while (j > i && u8[lo + j] === s[j]) j--;
+    if (w.own && this.thread16 && this.thread16.id === w.own) { s.set(u8.subarray(lo, lo + n)); return; }
     w.n++;
-    if (w.hits.length < 50) w.hits.push({ at: (lo + i).toString(16), n: j - i + 1, was: Array.from(s.subarray(i, Math.min(j + 1, i + 16))), now: Array.from(u8.subarray(lo + i, Math.min(lo + j + 1, lo + i + 16))),
+    if (w.hits.length < w.max) w.hits.push({ at: (lo + i).toString(16), n: j - i + 1, was: Array.from(s.subarray(i, Math.min(j + 1, i + 16))), now: Array.from(u8.subarray(lo + i, Math.min(lo + j + 1, lo + i + 16))),
       by: by || this.whereOf(this.lastBlock || 0), thread: this.thread16 ? this.thread16.id : 'main', t: Math.round(this.now()),
       // (the return addresses on the stack then, as symbols: who the code that wrote was called by)
       stack: Array.from({ length: 48 }, (_, k) => this.r32(u32(this.cpu.esp.value) + 4 * k)).filter(v => this.modules.some(m => m.meta && v >= m.meta.textLo && v < m.meta.textHi)).map(v => this.whereOf(v)) });
@@ -565,7 +594,7 @@ class Process {
       if (this.modeSwitch && eip < LAYOUT.THUNK16) this.modeSwitch(m);
       if (m.clock) this.tick16();   // SYSTEM.DRV reads the time the timer VxD keeps current
       let r;
-      this.lastBlock = eip;
+      this.lastBlock = eip; (this.entryRing || (this.entryAt = 0, this.entryRing = new Uint32Array(32)))[this.entryAt++ & 31] = eip;   // (the last 32 entries into modules: a fault's way there, noCode)
       try { r = m.run(eip); } catch (e) {
         // an access past the end of memory (a pointer that is no address the machine has): a page fault where the guest
         // made it, for its own handlers or its fault dialog, as the processor raises one; not the machine's end
@@ -615,8 +644,7 @@ class Process {
     for (let i = args.length - 1; i >= 0; i--) this.push(args[i]);
     this.push(LAYOUT.SENTINEL);
     this.depth++;
-    const r = this.runAt(addr);
-    this.depth--;
+    let r; try { r = this.runAt(addr); } finally { this.depth--; }   // (the depth comes back whatever the run does: ne16.js call16)
     if (r !== 0 || this.trapped) throw new GuestError(this.trapped || `guest callback did not return (${r} at ${this.reg('eip').toString(16)})`);
     const ret = this.reg('eax');
     this.reg('esp', save.esp); this.cpu.eip.value = save.eip;
@@ -721,6 +749,8 @@ class Process {
       this.pfWrite = !!(code & 0x10);
       (this.faultLog || (this.faultLog = [])).push({ why: `ring 3 ${this.pfWrite ? 'write' : 'read'} at ${u32(eip).toString(16)}, a protected page`, at: u32(this.cpu.eip.value).toString(16), atIn: this.whereOf(this.cpu.eip.value), thread: this.thread16 ? this.thread16.id : 'main',
         stack: Array.from({ length: 16 }, (_, k) => this.r32(u32(this.cpu.esp.value) + 4 * k)).map(v => this.whereOf(v)).filter(s => s && /[A-Z]/.test(s)) }); if (this.faultLog.length > 50) this.faultLog.shift();
+      // (in the log as it happens too, as noCode's: a machine that ends of it, at its boot, leaves no fault log to ask for)
+      { const f = this.faultLog[this.faultLog.length - 1]; log('warn', 'win32', `${f.why}, by ${f.atIn} (${f.at}), ${['eax', 'ebx', 'ecx', 'edx', 'esi', 'edi', 'ebp', 'esp'].map(r => `${r} ${u32(this.cpu[r].value).toString(16)}`).join(' ')}; called from ${f.stack.slice(0, 6).join(' < ')}`); }
       try { this.cpu.eip.value = this.raise(14, u32(this.cpu.eip.value), u32(eip)) | 0; } finally { this.pfWrite = false; }
       return;
     }
@@ -784,6 +814,18 @@ class Process {
     let p = list && list.length ? list.pop() : 0;
     if (!p) {
       p = this.heapTop; this.heapTop += n;
+      // (the heap's end reached: the free blocks merged where they touch, the end given back where the last of them
+      // reaches it, then the smallest free block that holds it, the rest of that block free again at its size)
+      if (this.heapTop > LAYOUT.HEAP_END) {
+        this.heapTop -= n; this.coalesce(); p = this.heapTop; this.heapTop += n;
+        if (this.heapTop > LAYOUT.HEAP_END) {
+          let best = 0; for (const [s, l] of this.freeList) if (s >= n && l.length && (!best || s < best)) best = s;
+          if (best) {
+            this.heapTop -= n; p = this.freeList.get(best).pop();
+            if (best > n) { const r = best - n; if (!this.freeList.has(r)) this.freeList.set(r, []); this.freeList.get(r).push(p + n); }
+          }
+        }
+      }
       if (this.heapTop > LAYOUT.HEAP_END) {   // (the report says what holds the heap: live blocks by size, and what idles on the free lists)
         const by = new Map(); let live = 0; for (const [, s] of this.allocs) { by.set(s, (by.get(s) || 0) + s); live += s; }
         let idle = 0; for (const [s, l] of this.freeList) idle += s * l.length;
@@ -794,6 +836,15 @@ class Process {
     this.allocs.set(p, n); if (zero) this.u8.fill(0, p, p + n);
     if (n >= 8 << 20) (this.bigAllocs || (this.bigAllocs = [])).push(`${n} bytes at ${p.toString(16)}: ${(new Error().stack || '').split('\n').slice(2, 7).map(s => s.trim()).join(' < ')}`);   // (who takes a block of 8 MB or more: the out-of-memory report)
     return p;
+  }
+  /** the free lists with adjacent free blocks merged into one, and the heap's top lowered past free blocks at its end */
+  coalesce() {
+    const blocks = []; for (const [s, l] of this.freeList) for (const a of l) blocks.push([a, s]);
+    blocks.sort((x, y) => x[0] - y[0]);
+    const merged = [];
+    for (const [a, s] of blocks) { const last = merged[merged.length - 1]; if (last && last[0] + last[1] === a) last[1] += s; else merged.push([a, s]); }
+    while (merged.length && merged[merged.length - 1][0] + merged[merged.length - 1][1] === this.heapTop) this.heapTop = merged.pop()[0];
+    this.freeList = new Map(); for (const [a, s] of merged) { if (!this.freeList.has(s)) this.freeList.set(s, []); this.freeList.get(s).push(a); }
   }
   free(p) { const n = this.allocs.get(p); if (!n) return false; this.allocs.delete(p); if (!this.freeList.has(n)) this.freeList.set(n, []); this.freeList.get(n).push(p); return true; }
   realloc(p, n) { if (!p) return this.alloc(n); const old = this.allocs.get(p) || 0; if (n <= old) return p; const q = this.alloc(n, true); this.u8.copyWithin(q, p, p + old); this.free(p); return q; }
@@ -1081,6 +1132,20 @@ const regAttach = store => {
 };
 /** the registry as it is now, in the form a store's load gives it ([path, values, name]), for a machine in a worker */
 const regDump = () => [...REGISTRY].map(([path, m]) => [path, [...m], KEYNAME.get(path) || null]);
+/** this copy of the registry put back as a dump had it (a moment rewound: braid.js). Quiet, the copy alone changes;
+ *  `tell`, each difference goes as the operation that makes it, so the store and the other copies follow */
+const regLoad = (held, tell) => {
+  if (!tell) { REGISTRY.clear(); KEYNAME.clear(); for (const [path, vals, name] of held) { REGISTRY.set(path, new Map(vals)); if (name) KEYNAME.set(path, name); } return; }
+  const want = new Map(held.map(([path, vals, name]) => [path, { vals: new Map(vals), name }]));
+  for (const path of [...REGISTRY.keys()].sort().reverse()) if (!want.has(path) && REGISTRY.has(path)) regDel(path);
+  for (const [path, { vals, name }] of want) {
+    if (!REGISTRY.has(path)) regMake(path, name ? path.slice(0, path.length - name.length) + name : null);
+    if (name && KEYNAME.get(path) !== name) { KEYNAME.set(path, name); regChanged({ op: 'key', path, name }); }
+    const m = REGISTRY.get(path);
+    for (const n of [...m.keys()]) if (!vals.has(n)) { m.delete(n); regChanged({ op: 'del', path, name: n }); }
+    for (const [n, v] of vals) if (JSON.stringify(m.get(n)) !== JSON.stringify(v)) { m.set(n, v); regChanged({ op: 'set', path, name: n, value: v }); }
+  }
+};
 /** a change another copy of the registry made (a machine's in its worker, or the page's): applied here, and passed on
  *  to this copy's store unless `quiet` ('remote': another person's, to this page's machines but not its store) */
 const regApply = (o, quiet) => {
@@ -1237,7 +1302,10 @@ def('KERNEL32', 'GetCommandLineA', 0, function () {
 });
 def('KERNEL32', 'GetStartupInfoA', 1, function (p) { this.u8.fill(0, p, p + 68); this.w32(p, 68); });
 def('KERNEL32', 'GetModuleHandleA', 1, function (name) {
-  if (!name) return this.exe.base;
+  // (NULL: the calling process's own image, as Windows 98's KERNEL32 takes it from the process database's EXE module,
+  // [ppdbCur]+98h; a process with none, the system's whose first task is MSGSRV32, 16-bit, answers 0. Read from the
+  // system's process's image, there is none: a DLL calling it from GDI's LibEntry at boot stopped the machine)
+  if (!name) { const pc = this.thread16 && this.thread16.pc, exe = (pc && pc.exe) || this.exe; return exe ? exe.base : 0; }
   const n = (this.readA(name) || '').toUpperCase().replace(/^.*\\/, '').replace(/\.DLL$/, ''), m = this.byName.get(n);
   // (a DLL implemented here is loaded once an image imported it or LoadLibrary loaded it: GDI32's ChoosePixelFormat
   // and SwapBuffers find OPENGL32 by GetModuleHandle, and give up without it)
@@ -1395,7 +1463,6 @@ for (const [nm, n, ret] of [['CreateDirectoryW', 2, 0], ['CreateProcessW', 10, 0
   ['GetFullPathNameW', 4, 0], ['GetModuleFileNameW', 3, 0], ['MoveFileW', 2, 0], ['RemoveDirectoryW', 1, 0], ['SetCurrentDirectoryW', 1, 0],
   ['SetEnvironmentVariableW', 2, 0], ['SetFileAttributesW', 2, 0]])
   def('KERNEL32', nm, n, function () { this.lastError = 120; return ret; });
-def('KERNEL32', 'AreFileApisANSI', 0, () => 1);
 def('KERNEL32', 'GetComputerNameA', 2, function (buf, pn) { const s = 'WIN95'; if (this.r32(pn) <= s.length) { this.w32(pn, s.length + 1); this.lastError = 111; return 0; } this.writeA(buf, s); this.w32(pn, s.length); return 1; });
 def('KERNEL32', 'GetTempPathA', 2, function (n, buf) { const s = 'C:\\WINDOWS\\TEMP\\'; if (n > s.length) this.writeA(buf, s); return s.length; });
 def('KERNEL32', 'GetSystemInfo', 1, function (p) {   // one 486, 4K pages, applications from 4 MB to 2 GB
@@ -1629,6 +1696,10 @@ def('KERNEL32', 'WideCharToMultiByte', 8, function (cp, fl, src, n, dst, max, df
 });
 def('KERNEL32', 'GetPriorityClass', 1, () => 0x20);
 def('KERNEL32', 'SetPriorityClass', 2, () => 1);
+// a process's place in the shutdown order (level, flags), as Windows 98's Explorer sets its own at start; kept for the
+// process and read back (default level 280h, no flags)
+def('KERNEL32', 'SetProcessShutdownParameters', 2, function (level, flags) { const pc = this.pc || this; pc.shutdownParams = [level, flags]; return 1; });
+def('KERNEL32', 'GetProcessShutdownParameters', 2, function (pl, pf) { const pc = this.pc || this, [l, f] = pc.shutdownParams || [0x280, 0]; if (pl) this.w32(pl, l); if (pf) this.w32(pf, f); return 1; });
 def('KERNEL32', 'FindResourceA', 3, function (m, name, type) {
   const r = this.findResource(this.resName(type), this.resName(name), this.moduleFor(m)); if (!r) return 0;
   return this.newHandle({ kind: 'res', ...r });
@@ -1792,6 +1863,8 @@ def('KERNEL32', 'LocalFileTimeToFileTime', 2, function (a, b) { return ftShift(t
 
 // file I/O on the in-memory disk. Win32 handles wrap W95FS file descriptors.
 const FERR = e => (e && e.code) || 5;
+/** whether two files are the same bytes */
+function sameBytes(a, b) { if (!a || !b || a.length !== b.length) return false; for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false; return true; }
 function fsCall(p, fn, fail = 0) {
   try { const r = fn(); p.lastError = 0; return r; } catch (e) { if (!(e instanceof window.W95FS.FSError)) throw e; p.lastError = FERR(e); return fail; }
 }
@@ -1878,7 +1951,13 @@ def('KERNEL32', 'CreateFileA', 7, function (name, access, share, sa, disp, flags
     return this.newHandle({ kind: 'file', fd: this.fs.open(path, mode), path });
   }, 0xffffffff);
 });
-def('KERNEL32', 'CloseHandle', 1, function (h) { const f = fileOf(this, h); if (f) fsCall(this, () => this.fs.close(f.fd)); const c = commOf(this, h); if (c) vcomm(this, 18, [c.vh]); this.handles.delete(h); return 1; });
+def('KERNEL32', 'CloseHandle', 1, function (h) {
+  const f = fileOf(this, h); if (f) fsCall(this, () => this.fs.close(f.fd)); const c = commOf(this, h); if (c) vcomm(this, 18, [c.vh]);
+  const m = this.obj(h); this.handles.delete(h);
+  // (a file's mapping goes with its last handle, and its data with it)
+  if (m && m.kind === 'mapping' && m.file && ![...this.handles.values()].includes(m)) { this.free(m.base); m.base = 0; if (this.mappings) this.mappings.delete(m); }
+  return 1;
+});
 // ---- consoles: a Win32 console program's, which an MS-DOS machine's window is (a DOS box is a console, as CONAGENT makes
 // one in Windows 95); the process's console is the one it was started with (pc.console, worker.js spawnProgram), its
 // standard handles console handles. What it writes goes to the page (host.console), what is typed comes back in lines
@@ -2022,6 +2101,7 @@ def('KERNEL32', 'CreateFileMappingA', 6, function (h, sa, prot, hi, lo, name) {
   if (u32(h) === 0xffffffff) { if (!lo) { this.lastError = 87; return 0; } const base = this.alloc(lo); this.u8.fill(0, base, base + lo); m = { kind: 'mapping', base, size: lo }; }
   else { const f = fileOf(this, h); if (!f) { this.lastError = 6; return 0; } m = { kind: 'mapping', path: f.path }; }
   if (key) sections(this).set(key, m);
+  (this.mappings || (this.mappings = new Set())).add(m);
   this.lastError = 0; return this.newHandle(m);
 });
 def('KERNEL32', 'OpenFileMappingA', 3, function (access, inherit, name) {
@@ -2030,10 +2110,14 @@ def('KERNEL32', 'OpenFileMappingA', 3, function (access, inherit, name) {
 });
 def('KERNEL32', 'MapViewOfFile', 5, function (h, access, hi, lo) {
   const m = this.obj(h); if (!m || m.kind !== 'mapping') { this.lastError = 6; return 0; }
-  if (m.base) return m.base + lo;
-  return fsCall(this, () => { const b = this.fs.readFile(m.path); const p = this.alloc(b.length + 1); this.u8.set(b, p); return p + lo; });
+  // (a file's mapping has its data at one address for as long as the mapping object lives, as Windows 95 keeps a
+  // mapping in the shared arena: every view is that address, and unmapping a view leaves it. GDI32 maps a font file,
+  // unmaps the view at once and reads the font through its address while it holds the mapping's handle; a copy per
+  // view, freed at the unmap, was SUWIN's next GlobalAlloc, zeroed, and the TrueType loader found no table directory)
+  if (!m.base) { const r = fsCall(this, () => { const b = this.fs.readFile(m.path); m.base = this.alloc(b.length + 1); m.size = b.length; m.file = true; this.u8.set(b, m.base); return 0; }); if (!m.base) return r || 0; }
+  return m.base + lo;
 });
-def('KERNEL32', 'UnmapViewOfFile', 1, function (p) { for (const m of sections(this).values()) if (p >= m.base && p < m.base + m.size) return 1; this.free(p); return 1; });
+def('KERNEL32', 'UnmapViewOfFile', 1, function (p) { for (const m of this.mappings || sections(this).values()) if (p >= m.base && p < m.base + Math.max(m.size, 1)) return 1; this.free(p); return 1; });
 def('KERNEL32', 'CreateFileW', 7, () => 0xffffffff);
 def('KERNEL32', 'GetFullPathNameA', 4, function (n, len, buf, part) {
   const s = this.readA(n); const full = /^[a-z]:/i.test(s) ? s : window.W95FS.join(this.fs.cwd, s); this.writeA(buf, full, len);
@@ -2351,6 +2435,86 @@ def('KERNEL32', 'GetAtomNameA', 3, function (id, buf, n) {
   if (id < 0xc000) return this.writeA(buf, '#' + id, n);
   const a = localAtoms(this).byId.get(id); return a ? this.writeA(buf, a.name, n) : 0;
 });
+// VxDCall0 ... VxDCall8 (ordinals 1-9, one entry): a VxD's Win32 service, the service dword above the return address.
+// KERNEL32 drops the dword (mov eax,[esp+4] / pop [esp]) and enters the VMM's Win32 service dispatcher by its call
+// gate, which (Windows 95's VMM at 4C27Ch) finds the device's table, [1C600h + 4 * id] for an id below 40h, else
+// DDB_Win32_Service_Table (DDB+38h) of the DDB with that id flagged 4000h, each entry a handler and its argument
+// count. With no table, or a service past its end, the client's EAX is 1 and it returns to the caller with the
+// arguments still on its stack: Windows 98's WINMM asks VTDAPI (442h, no Win32 services) for the time that way at its
+// start, and takes 10 or less for no answer and asks by DeviceIoControl
+for (let k = 1; k <= 9; k++) def('KERNEL32', `#${k}`, 'regs', function () {
+  const sp = u32(this.reg('esp')), ret = this.r32(sp), id = this.r32(sp + 4), dev = id >>> 16, n = id & 0xffff;
+  const v = this.vxdById && this.vxdById(dev), ddb = v && v.ddb, t = ddb && (this.r16(ddb + 0x0a) & 0x4000) ? this.r32(ddb + 0x38) : 0;
+  if (t && n < this.r32(t)) throw new GuestError(`VxDCall ${id.toString(16)}: ${v.name || dev.toString(16)}'s Win32 service ${n} (handler ${this.r32(t + 8 + 8 * n).toString(16)}, ${this.r32(t + 12 + 8 * n)} arguments) is not dispatched here`);
+  this.reg('esp', sp + 8); this.reg('eax', 1);
+  return ret;
+});
+// Windows 98's KERNEL32 functions its own programs import (Explorer, OLE32, COMCTL32, the shell), each as that
+// KERNEL32 has it (read from its code)
+// the Unicode functions Windows 9x does not implement: one stub (KERNEL32 BFF71319h) sets error 120,
+// ERROR_CALL_NOT_IMPLEMENTED, and returns 0, its arguments popped
+for (const [nm, n] of [['CreateEventW', 4], ['GlobalGetAtomNameW', 3], ['SearchPathW', 6], ['lstrcmpW', 2], ['lstrcmpiW', 2]])
+  def('KERNEL32', nm, n, function () { this.lastError = 120; return 0; });
+// MoveFileExA: the paths checked, then MoveFileA's move (BFF9C478h); MOVEFILE_REPLACE_EXISTING (1) deletes the target
+// first, MOVEFILE_COPY_ALLOWED (2) copies across drives, MOVEFILE_DELAY_UNTIL_REBOOT (4) is a line in WININIT.INI's
+// [rename] section ("new=old", NUL for a delete), which WININIT carries out at the next start
+def('KERNEL32', 'MoveFileExA', 3, function (a, b, fl) {
+  const from = this.readA(a), to = b ? this.readA(b) : null;
+  return fsCall(this, () => {
+    if (fl & 4) {
+      const ini = 'C:\\WINDOWS\\WININIT.INI', old = this.fs.exists(ini) ? window.W95FS.decode(this.fs.readFile(ini)) : '';
+      const line = `${to || 'NUL'}=${from}\r\n`, txt = /^\[rename\]/im.test(old) ? old.replace(/^\[rename\]\r?\n/im, m => m + line) : `${old}${old && !old.endsWith('\n') ? '\r\n' : ''}[rename]\r\n${line}`;
+      this.fs.writeFile(ini, window.W95FS.encode(txt)); return 1;
+    }
+    if (!to) { this.fs.unlink(from); return 1; }
+    if ((fl & 1) && this.fs.exists(to)) this.fs.unlink(to);
+    if ((fl & 2) && from[0].toUpperCase() !== to[0].toUpperCase()) { this.fs.copy(from, to, { overwrite: !!(fl & 1) }); this.fs.unlink(from); return 1; }
+    this.fs.rename(from, to); return 1;
+  });
+});
+// FindResourceExA(module, type, name, language): FindResourceA's lookup (BFF80A40h), one language to a resource here
+def('KERNEL32', 'FindResourceExA', 4, function (m, type, name) { return API.KERNEL32.FindResourceA[1].call(this, m, name, type); });
+// GetFileAttributesExA(name, GetFileExInfoStandard, WIN32_FILE_ATTRIBUTE_DATA): attributes, creation, access and write
+// times, size high and low; the find data's first 36 bytes
+def('KERNEL32', 'GetFileAttributesExA', 3, function (n, level, p) {
+  if (level !== 0) { this.lastError = 87; return 0; }
+  return fsCall(this, () => { const s = this.fs.stat(this.readA(n)), tmp = this.alloc(320); try { writeFindData(this, tmp, s); this.u8.copyWithin(p, tmp, tmp + 36); } finally { this.free(tmp); } return 1; });
+});
+// GlobalFlags (BFF748CDh) and LocalShrink (BFF9A0EAh), after the handle's check: a fixed block's flags (no lock count,
+// not discardable) are 0; the heap's size is what LocalShrink answers
+def('KERNEL32', 'GlobalFlags', 1, () => 0);
+def('KERNEL32', 'LocalShrink', 2, function () { return 0x10000; });
+// GlobalCompact: the largest free block, from GlobalMemoryStatus's free memory
+def('KERNEL32', 'GlobalCompact', 1, function () { const p = this.alloc(32); try { API.KERNEL32.GlobalMemoryStatus[1].call(this, p); return this.r32(p + 12); } finally { this.free(p); } });
+def('KERNEL32', 'IsBadHugeWritePtr', 2, function (a, n) { return API.KERNEL32.IsBadWritePtr[1].call(this, a, n); });
+// FreeLibraryAndExitThread (BFF95B34h): FreeLibrary, then ExitThread with the code, never returning
+def('KERNEL32', 'FreeLibraryAndExitThread', 'regs', function () {
+  const sp = u32(this.reg('esp')); API.KERNEL32.FreeLibrary[1].call(this, this.r32(sp + 4));
+  this.w32(sp + 4, this.r32(sp + 8)); return API.KERNEL32.ExitThread[1].call(this);
+});
+// MapViewOfFileEx: MapViewOfFile's view; one asked for at an address it cannot have fails (ERROR_INVALID_ADDRESS)
+def('KERNEL32', 'MapViewOfFileEx', 6, function (h, acc, hi, lo, n, base) {
+  const v = API.KERNEL32.MapViewOfFile[1].call(this, h, acc, hi, lo, n);
+  if (!base || !v || v === base) return v;
+  API.KERNEL32.UnmapViewOfFile[1].call(this, v); this.lastError = 487; return 0;
+});
+def('KERNEL32', 'ResetNLSUserInfoCache', 0, () => 0);
+// the Toolhelp process list (TH32CS_SNAPPROCESS): this machine's processes as a snapshot, each a PROCESSENTRY32 (296
+// bytes: size, usage, process id, heap, module, threads, parent, priority, flags, exe path)
+def('KERNEL32', 'CreateToolhelp32Snapshot', 2, function (flags) {
+  const procs = [...(this.procs || new Map()).values()].filter(pc => pc.exitCode === null || pc.exitCode === undefined);
+  const list = (flags & 2) ? procs.map(pc => ({ pid: pc.pid || 0, path: pc.path || '', threads: [...(this.threadsById || new Map()).values()].filter(t => t.pc === pc && t.state !== 'done').length || 1 })) : [];
+  return this.newHandle({ kind: 'th32', list, i: 0 });
+});
+const th32Proc = (p, h, e, first) => {
+  const s = p.handles && p.handles.get(h); if (!s || s.kind !== 'th32') { p.lastError = 6; return 0; }
+  if (first) s.i = 0;
+  const x = s.list[s.i++]; if (!x) { p.lastError = 18; return 0; }   // ERROR_NO_MORE_FILES
+  p.u8.fill(0, e + 4, e + 296); p.w32(e + 4, 1); p.w32(e + 8, x.pid); p.w32(e + 20, x.threads); p.w32(e + 28, 8); p.writeA(e + 36, x.path, 260);
+  return 1;
+};
+def('KERNEL32', 'Process32First', 2, function (h, e) { return th32Proc(this, h, e, true); });
+def('KERNEL32', 'Process32Next', 2, function (h, e) { return th32Proc(this, h, e, false); });
 // KERNEL32's unnamed exports (by ordinal) that the shell uses
 def('KERNEL32', '#10', 2, function (s, d) { this.writeA(d, this.readA(s) || ''); return 1; });                                  // CharToOemA
 def('KERNEL32', '#11', 3, function (s, d, n) { this.u8.copyWithin(d, s, s + n); return 1; });                                   // CharToOemBuffA
@@ -3226,5 +3390,5 @@ function peString(bytes, id) {
   } catch (_) { return null; }
 }
 
-window.W95Win32 = { log, regAttach, regGet, regKids, regVals, regDel, regSet, regDump, regApply, regHive, regWatch: f => regWatchers.add(f), Process, API, STAND_IN, LAYOUT, WM, YIELD, iniGet, iniSet, iniRead, peString, peResource, faultText, fmtMsg, def, dcOf, GuestError, HangError, FaultError, mkCanvas, dibOut, sha256 };
+window.W95Win32 = { log, regAttach, regGet, regKids, regVals, regDel, regSet, regDump, regApply, regLoad, regHive, regWatch: f => regWatchers.add(f), Process, API, STAND_IN, LAYOUT, WM, YIELD, iniGet, iniSet, iniRead, peString, peResource, faultText, fmtMsg, def, dcOf, GuestError, HangError, FaultError, mkCanvas, dibOut, sha256 };
 })();

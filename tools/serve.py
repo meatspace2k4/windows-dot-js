@@ -69,13 +69,29 @@ def share_op(sh, op, *a):
 ERRNO = {2: 'ENOENT', 20: 'ENOTDIR', 13: 'EACCES', 1: 'EACCES', 17: 'EEXIST', 66: 'ENOTEMPTY', 39: 'ENOTEMPTY', 21: 'EISDIR'}
 
 from claude_api import local_request, claude, fetch_page
-import src_api
+import src_api, gitref
 
 class H(http.server.SimpleHTTPRequestHandler):
+    def ref(self):
+        """a commit's build (gitref.py, /__ref/<rev>/...): its file answered (True), or the path made the server's own"""
+        r = gitref.split(self.path)
+        if not r: return False
+        if self.client_address[0] not in ('127.0.0.1', '::1'): self.send_error(403); return True   # (this computer's pages only)
+        b = gitref.blob(root, *r) if self.command in ('GET', 'HEAD') else None
+        if b is None:
+            q = self.path.find('?'); self.path = '/' + r[1] + (self.path[q:] if q >= 0 else ''); return False
+        self.send_response(200); self.send_header('Content-Type', self.guess_type(r[1])); self.send_header('Content-Length', str(len(b))); self.end_headers()
+        if self.command == 'GET': self.wfile.write(b)
+        return True
+    def do_HEAD(self):
+        if self.ref(): return
+        super().do_HEAD()
     def do_GET(self):
+        if self.ref(): return
         if self.path.startswith('/__session') and SESSIONS.handle(self, 'GET'): return
         super().do_GET()
     def do_POST(self):   # /__share: the shares' list, an operation on one ({ ok } or { err }), and the host's name
+        if self.ref(): return
         if self.path.startswith('/__session') and SESSIONS.handle(self, 'POST'): return
         if self.path.split('?')[0] == '/__fetch':   # (the Claude program's Browser pane: a web page as text, for this machine's own pages only)
             if not local_request(self): self.send_error(403); return
@@ -90,6 +106,14 @@ class H(http.server.SimpleHTTPRequestHandler):
             try: q = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')
             except ValueError: self.send_error(400); return
             claude(self, q); return
+        if self.path.split('?')[0] == '/__cdlog':   # (the dev page's CD request trace, as deploy/win95/win95_server.py keeps it)
+            if not local_request(self): self.send_error(403); return
+            try:
+                q = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')
+                os.makedirs('/tmp/w95', exist_ok=True)
+                with open('/tmp/w95/cdlog.txt', 'a') as f: f.write('\n'.join(str(x)[:300] for x in q.get('lines', [])[:500]) + '\n')
+            except (ValueError, OSError): pass
+            self.send_response(204); self.end_headers(); return
         if self.path.split('?')[0] != '/__share': self.send_error(404); return
         q = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')
         if q.get('op') == '$list': r = [{'name': x['name'], 'remark': ''} for x in SHARES if os.path.isdir(x['path'])]
@@ -111,6 +135,11 @@ class H(http.server.SimpleHTTPRequestHandler):
         if m and int(m[1]) < len(CDS): return CDS[int(m[1])]['path']
         return super().translate_path(p)
     def send_head(self):
+        if self.path.split('?')[0] == '/__w98key':   # (the Windows 98 product key, from this server's environment (W98KEY) to the page, never to a file: bench/setup98.mjs; a page of this computer's only)
+            if self.client_address[0] not in ('127.0.0.1', '::1'): self.send_response(403); self.end_headers(); import io; return io.BytesIO(b'')
+            b = os.environ.get('W98KEY', '').encode()
+            self.send_response(200); self.send_header('Content-Type', 'text/plain'); self.send_header('Cache-Control', 'no-store'); self.send_header('Content-Length', str(len(b))); self.end_headers()
+            import io; return io.BytesIO(b)
         if self.path.split('?')[0] == '/__cd':   # (the CD images the drive can take: --iso's first, as cdrom.iso, then each --cd)
             b = json.dumps([{'name': c['name'], 'url': c['url']} for c in CDS if os.path.isfile(c['path'])]).encode()
             self.send_response(200); self.send_header('Content-Type', 'application/json'); self.send_header('Content-Length', str(len(b))); self.end_headers()

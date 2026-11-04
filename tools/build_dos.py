@@ -21,7 +21,12 @@ SYSTEM = ['win87em.dll', 'nddeapi.dll', 'nddenb.dll', 'olecli.dll', 'olesvr.dll'
           'cards.dll',   # (the Games' card library, APPLETS.INF wingames.sys)
           'mmsound.drv',   # (Windows 3.x's sound functions, module SOUND: COPY.INF, SYSTEM.INI [boot] sound.drv; Minesweeper imports them)
           'riched32.dll',   # (the rich edit control, COPY.INF: WordPad loads it by name, LoadLibrary, not as an import)
+          'winoa386.new',   # (WinOldAp, the task KERNEL starts for an MS-DOS program; installed as WINOA386.MOD, SETUPC.INF)
+          'vgafull.3gr',    # (the VGA grabber, module GRABBER, which WinOldAp imports: SYSTEM.INI [boot] 386grabber, MSDISP.INF)
+          'pifmgr.dll',     # (the program-information-file manager WinOldAp loads for an MS-DOS program's properties, COPY.INF)
           'vmm32.vxd']   # (the virtual machine manager and the static VxDs, which WIN.COM loads from SYSTEM to start Windows)
+# a file Setup copies under another name (SETUPC.INF's rename section)
+RENAME = {'winoa386.new': 'winoa386.mod'}
 # the VxDs the machine's devices name (SYSTEM.INI [386Enh], the registry's StaticVxD) that VMM32.VXD does not hold, which
 # VMM32's loader reads from the disk as WIN.COM starts Windows: one named *NAME from SYSTEM\VMM32 (LDID 22), the
 # others from SYSTEM, where Setup copies them (MSMOUSE.INF, NETTRANS.INF, NET.INF)
@@ -43,7 +48,8 @@ TYPICAL = [('applets.inf', 'mspaint'), ('applets.inf', 'msonline'), ('applets.in
            ('wordpad.inf', 'MSWordPad'), ('shell.inf', 'templates'), ('enable.inf', 'Install_Enable'),
            ('tapi.inf', 'tapi')]   # (and the base install's, its [BaseWinOptions]: Telephony, which HyperTerminal and Phone Dialer start)
 HELP = ['clipbrd.hlp', 'clipbrd.cnt'] + [g + x for g in GAMES for x in ('.hlp', '.cnt')]
-INFS = ['clip.inf']
+INFS = ['clip.inf',
+        'apps.inf']   # (the MS-DOS programs' settings PIFMGR.DLL looks a program up in, in the INF folder: COPY.INF, LDID 17)
 found = {}
 for d in dirs:
     for root, _, files in os.walk(d):
@@ -92,7 +98,7 @@ def pack_vmm32(base, vxds):
 
 bundle = {'boot': b64(boot), 'files': {path: b64(open(found[k], 'rb').read()) for k, path in WANT.items() if path},
           'command': {k.upper(): b64(open(found[k], 'rb').read()) for k in COMMAND},
-          'system': {k.upper(): b64(pack_vmm32(open(found[k], 'rb').read(), [(p, open(found[p + '.vxd'], 'rb').read()) for p in PACKED]) if k == 'vmm32.vxd' else open(found[k], 'rb').read()) for k in SYSTEM},
+          'system': {RENAME.get(k, k).upper(): b64(pack_vmm32(open(found[k], 'rb').read(), [(p, open(found[p + '.vxd'], 'rb').read()) for p in PACKED]) if k == 'vmm32.vxd' else open(found[k], 'rb').read()) for k in SYSTEM},
           'windows': {k.upper(): b64(open(found[k], 'rb').read()) for k in WINDOWS},
           'help': {k.upper(): b64(open(found[k], 'rb').read()) for k in HELP},
           'infs': {k.upper(): open(found[k], 'rb').read().decode('latin-1') for k in INFS},

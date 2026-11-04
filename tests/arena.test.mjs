@@ -67,7 +67,7 @@ const code = (pc, v) => { p.imgUse(pc); p.u8.set([0xb8, v, 0, 0, 0, 0xc3], 0x401
 code(a, 1); code(b, 2);
 const run = pc => { p.imgUse(pc); p.cpu.esp.value = 0x8000; p.cpu.eax.value = 0; p.dynBlock(0x401100).run(); return p.cpu.eax.value; };
 assert.equal(run(a), 1); assert.equal(run(b), 2); assert.equal(run(a), 1);
-assert.equal(p.dynCache.get(`${0x401100}:0:32`).length, 2, 'both translations kept');
+assert.equal(p.dynCache.get(`${0x401100}:0:32:s32:c0`).length, 2, 'both translations kept');
 
 // a second instance of the first program: one image record, its own data
 const a2 = p.spawn(exe(0xaa), null, { ...meta }, 'C:\\APPS\\ONE.EXE', 'ONE.EXE');

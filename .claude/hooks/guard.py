@@ -3,7 +3,7 @@
 import json, os, re, subprocess, sys, time
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-STATE = os.path.join(REPO, '.git', 'claude-guard')
+STATE = os.path.join(subprocess.run(['git', '-C', REPO, 'rev-parse', '--absolute-git-dir'], capture_output=True, text=True).stdout.strip() or os.path.join(REPO, '.git'), 'claude-guard')
 TMP = ('/tmp/', '/private/tmp/', '/dev/', '/var/folders/')
 
 

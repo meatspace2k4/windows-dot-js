@@ -64,9 +64,59 @@ waits for an element the same way and resolves with it. With coordinates the cal
 
 | Call | Returns |
 | --- | --- |
-| `screen()` | `{ width, height, taskbar }`, `taskbar` the top row of the taskbar |
+| `screen()` | `{ width, height, taskbar, screen }`, `taskbar` the top row of the taskbar, `screen` what the `screen` event carries (`desktop`, `dos`, `black`, `logow`, `logos`): read it before waiting on the event, which comes only on a change |
 | `screenshot()` | the screen as a PNG data URL |
 | `state` | menus, modals, pointer capture, active window title |
+
+## Ring α, "Braid": time travel through the running OS (braid.js, braid-page.js)
+
+The machine's run is a line to move along, not a sequence to repeat. A moment is everything at an instant: each
+machine's memory, registers and host-side objects (threads, tasks, VxD time-outs, VMs, heaps, faults: one graph,
+held by identity and written back into the same objects), the registry, the page's disk (the volumes' trees; travel
+writes the disk's store what the tree has then for every node written since) and the shell. Every moment is at a
+time of the machine's own clock (`braid.now()`: a quantum per BUDGET blocks run and a period per step, so the same
+run reads the same times on every host, and a CPU-bound check ends at the same time everywhere), and the line is the
+whole of that time, in generations: travel to a moment forks it, the new generation grows from the moment, and the
+one left runs no further but its moments stay, to travel to again. A lock-up, a blue screen, a fault dialog: travel
+to the moment before it and go on, with the machine's scripts changed meanwhile if need be (`reloadScript`: a mod).
+
+Moments live in this page's memory and end with it, unless anchored on this computer (IndexedDB), where a page that
+starts later travels to them; neither needs a server. A moment is a record of named sections under a checksum and the
+signature of the build that made it (braid.js, win32.js, ne16.js, vmm.js, v86.js, dyn.js, fs.js): a damaged copy or
+another build's is refused. The lint compares moments and disallows system-breaking states (its verdict on each:
+`broken`, `suspect`, `ok`); the mods are named beside a moment, as a sidecar, never carried in it. In a shared
+session every person's marks and travels are the session's: each machine marks at the same machine time and travels
+to the same moment, so everyone is at the same place on one line.
+
+| Call | Does |
+| --- | --- |
+| `braid.mark(name?)` | a moment of everything, now (between two steps; about half a second and the memory's size), `m<n>` when unnamed; linted against the moment before it on the line. Resolves with what was taken (`bytes`, the `build` signature, `sum`, `verdict`, `findings`, `gen`). In a shared session, at a machine time 200 ms ahead, which every machine marks at |
+| `braid.travel(name, { force })` | to that moment, back or ahead, in any generation: the machines first, then the disk, registry and shell, then the disk's store (`disk.wrote`, `disk.removed`). The input waiting is dropped; the clock reads the moment's time; the mods loaded now stay. A moment anchored on this computer and not in this page's memory is arrived at in the page's machines, booted as they are, by the paths of their objects. Refused for a damaged moment, another build's, or one the lint found broken, unless `force` |
+| `braid.travel({ t })` | to machine time `t` on the line (a scrub, back or ahead): the moment at or before it on the lineage, then the run from there to `t`, fast (`speed`), with the journal's actions made again as the clock reaches each one's time; from where the line is when that is between the moment and `t` |
+| `braid.anchor(name?)` | the moment of now anchored on this computer (every machine's bytes and objects by name and path, the disk, the shell, the registry, the mods, the line), under a checksum and the build signature; marked on the line here as well. The memo's ground: a page that has it starts there, nothing run again |
+| `braid.moments()`, `braid.forget(name)` | every moment on the line (`here`: this page's memory; `anchored`: this computer; `gen`, `at`, `verdict`); one let go from both |
+| `braid.every(ms = 30000, keep = 3)`, `braid.auto` | the line marking itself as the machine runs, `t1`, `t2`, ..., the last `keep` held (one found broken is held beyond them): what a lock-up or a crash is travelled back from when no one marked a moment. `every(0)` ends it |
+| `braid.lint(a, b?)` | the system's machine between two moments (or a moment and now): `verdict` and `findings`. The signs of a machine that will not come back: the Win16Lock held by one thread across both, a thread at the same place with its time running out each slice, a ring-0 run at the same place, faults since, the process ended, a heap or queue only growing. Heuristics: the halting problem allows no proof |
+| `braid.memo(actions)` | a span already computed: the segment from the moment the line is at whose actions are these (`[[op, args], ...]`, as the journal has them) and whose end is on the line. The line travels to its end, the work between not done again (PIDGEN's key check, a copy): `{ from, to, ms, gen }`, or null |
+| `braid.line` | the line: `gen` now, `forks` (each generation: the moment and generation it grew from, `how`: travel, scrub, memo, anchor), `moments` with their verdicts, `segments` (each pair of moments, with how many actions between), `events` (every fault a machine reported, under its generation), `journal` |
+| `braid.journal` | the actions made through the API since the last moment (`click`, `dblclick`, `type`, `key`, `run`, `drag`, `open`), each stamped with the machine's clock; `segments`: each pair of moments with the actions between them |
+| `braid.same(a, b)` | two faults of the line compared record for record (by index into `line.events`, or `{ gen }` for a generation's last): `same`, and `diff` where they part |
+| `braid.now()`, `braid.speed(x)` | the machine's own clock (ms since its start), and the machine run ahead of the wall by `x`: steps back to back, each `x` periods, so what waits on time passes `x` times faster than real time (progress bars included; `speed(1)` is a person's pace again) |
+| `braid.mods` | the scripts loaded over the running machine or page (`reloadScript`), `{ name, sum }` each: named beside every moment marked from then on |
+| `braid.window()`, Run > `braid` | the Braid window: the line as a slider (moments as ticks coloured by the lint, forks as wedges, the thumb at now); drag the thumb to a time or click a moment to travel; Mark, Anchor, Lint; the line marking itself |
+| `sysApp.cmd('mark' \| 'markAt' \| 'travel' \| 'moments' \| 'forget' \| 'lint' \| 'probe' \| 'speed' \| 'now' \| 'until' \| 'mods' \| 'export' \| 'import', [...])` | the same for one machine alone (`markAt`: at a time of its clock; `until`: run fast to a time and answer; `export`, `import`: its moment as bytes, and arrived at from them) |
+
+Events: `braid.mark`, `braid.travel`, `braid.scrub`, `braid.anchor`, `braid.lint` (`moment`, `from`, `verdict`,
+`findings`), `braid.broken` (the line marked itself and found the state broken), `braid.fault` (`gen`, `machine`,
+`fault`, `faults`, `index`), `braid.mod`.
+
+CLAUDE.EXE's Claude has it as its `Braid` tool (`action`: mark, travel, moments, lint, line, memo, anchor, every, mods,
+speed, now, forget, window), so a lock-up met while it works is left by travelling, and a fix loaded with
+`reloadScript` is tried from the moment before the fault. The page API is the test entry point.
+
+`bench/setup98.mjs`'s `pageDrive(key, { every: 30000 })` runs Windows 98 Setup with the line marking itself: a fault
+dialog or a broken verdict is travelled back from (the moment before it) and the step lived again, the fork recorded;
+the key check and each page already lived from the same moment are memo'd past.
 
 ## Events
 
@@ -223,6 +273,7 @@ export at or before it), `OLE32+1a2c0 (CoInitialize+40)` (a 32-bit module's), or
 | `cmd('blocks', [pathRe, n = 4000])` | records each block of run-time code (dyn.js) the threads of programs whose path (a Windows 3.x task's module name) matches run, as `thread symbol`, the last `n`; `cmd('blocks')` answers them and ends it. A program the bundle does not carry runs this way, its imports' code too where it is a module run from its file |
 | `?scriptlog=1`, `win95.scriptLog = true` | each `win95.*` call and each `win95.sysApp.cmd`, numbered, then what it answered, as `script` lines at the debug level (Verbose in DevTools' console and in Debug Monitor's Options), so the person at the screen sees what a script does; `win95.note(text)` adds a line of the script's own |
 | `python3 tools/staticmap.py` | the gap map, by static analysis of the bundle's modules with nothing run (`findings/gapmap.json`): each module's code reachable from its entry points; the instructions there the recompiler made #UD and the blocks run-time translation cannot take, graded by how they are reached (control flow from an entry point, or only a data pointer); the VxD services called that nothing provides (a VxD's service an entry point only when reachable code calls it and no stand-in takes it), and those of devices the system does not have, guarded or not by a test of the device's Get_Version; and each stand-in whose callers read a result it does not set (a flag tested after the call, a register a C service's caller reads besides EAX). `W95_SCRIPTS=<folder>` runs it on other scripts (an older `vmm.js`) |
+| `python3 tools/v86mem.py <folder of .vxd>` | where a VxD reads or writes the system VM's first megabyte itself, not through a VMM service (an interrupt vector by its number, `[reg*4]`; an absolute address in the IVT, the BIOS data area or the adapter area; a linear address made segment:offset for real-mode code), by static scan with the LE fixups excluded (`findings/v86mem.json`). Every such place is state that must be in guest memory, not in a stand-in's own table: VNETBIOS read the INT 5Ch vector at 170h and the vectors lived in a map |
 | `python3 tools/realcheck.py` | each VxD service stand-in against Windows 95's own service (VMM32.VXD's VMM and the CD cabinets' VxDs, from `cdrom.iso` with 7z, or `--vxds <folder>`), by static analysis of the originals after `tools/staticmap.py`: a result the original returns that callers read and the stand-in does not set, or a register or flag the stand-in changes that the original keeps and callers read (`findings/realcheck.json`) |
 | `?memwatch=lo,len` | `cmd('memwatch')` from the machine's first instruction (hex), boot's writes too |
 | `?dynat=IFSMGR` or `?dynat=12219c9,...` | a VxD's blocks (all of a VxD's, by its name) run as run-time code, block by block: a write watch then names the block that wrote, and the return addresses on its stack (`stack`) |

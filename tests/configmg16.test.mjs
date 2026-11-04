@@ -42,6 +42,9 @@ assert.equal(cm(4, far(OUT), root, 0), 0, 'Get_Child of the root'); const first 
 assert.equal(cm(5, far(OUT), first, 0), 0, 'Get_Sibling'); const second = p.r32(BASE + OUT);
 assert.equal(cm(5, far(OUT), second, 0), 0x0d, 'the last child has no sibling (CR_NO_SUCH_DEVNODE)');
 assert.equal(cm(3, far(OUT), second, 0), 0); assert.equal(p.r32(BASE + OUT), root, 'Get_Parent: the root');
+assert.equal(cm(8, far(OUT), root, 0), 0); assert.equal(p.r32(BASE + OUT), 0, 'Get_Depth: the root at 0');
+assert.equal(cm(8, far(OUT), second, 0), 0); assert.equal(p.r32(BASE + OUT), 1, 'a child of the root at 1 (NETDI, Windows 98 Setup\'s Identification)');
+assert.equal(cm(8, far(OUT), 0x12345678, 0), 5, 'no such devnode');
 assert.equal(cm(7, first, far(0x40), 64, 0), 0); assert.equal(p.readA(BASE + 0x40), 'ROOT\\*PNP0400\\0000');
 
 // Get_HW_Prof_Flags(far ID, config, far *flags): the profile's CSConfigFlags, 0 when it has none

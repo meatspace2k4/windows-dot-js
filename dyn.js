@@ -75,10 +75,12 @@ const COND = ['o', 'no', 'b', 'ae', 'e', 'ne', 'be', 'a', 's', 'ns', 'p', 'np', 
  *  code in no module's image (a display driver's blits compiled onto the stack: VGA.DRV's), the range of the loaded
  *  module that has one, the display driver that compiled it */
 function mmioRange(p, lin) {
+  if (p.vgaRange) return p.vgaRange;   // (the PC's own VGA window, before Windows: v86.js vgaInit)
   let other = null;
   for (const m of p.ne ? p.ne.values() : []) {
     const meta = m && m.meta; if (!meta) continue;
-    if (lin >= meta.base && lin < meta.base + meta.size) return meta.mmio || null;
+    // (a module mapped from its file has its segments each where it was allocated: its code is in one of them)
+    if (meta.dynamic ? (m.segs || []).some(g => lin >= g.base && lin < g.base + g.alloc) : lin >= meta.base && lin < meta.base + meta.size) return meta.mmio || null;
     if (meta.mmio && !other) other = meta.mmio;
   }
   return p.modules && p.modules.some(m => m.base && lin >= m.base && lin < m.base + (m.size || 0)) ? null : other;
@@ -86,11 +88,11 @@ function mmioRange(p, lin) {
 /** translate the block at linear `lin` (code segment base `csb`, 32-bit default when `d32`); `v86` is the linear
  *  base of a virtual-8086 machine's first megabyte when the code is that machine's: a segment register's base is then
  *  v86 + 16 * its value, INT goes through the machine's own interrupt vectors, and the BIOS's ROM calls the host */
-function translate(p, lin, csb, d32, v86, limit) {
+function translate(p, lin, csb, d32, v86, limit, ss32In) {
   const vm = v86 !== undefined && v86 !== null;
   // (a V86 machine's FLAGS bits 12-14, IOPL and NT, which a 386 keeps as written and the translated code keeps no
   // global for: a word of the machine's own, past its first megabyte and the 64K above it)
-  const XFLAGS = vm ? (v86 + 0x110000) | 0 : 0;
+  const XFLAGS = vm ? (p.v86Flags || (v86 + 0x110000)) | 0 : 0;   // (a machine's own word for them, p.v86Flags: the system VM's, whose 110000h is its threads' stacks)
   const u8 = p.u8;
   const f = new Fn();
   const T = f.loc(), A = f.loc(), B = f.loc(), R = f.loc(), C = f.loc(), X = f.loc(), K = f.loc(), D = f.loc();   // scratch locals
@@ -105,7 +107,8 @@ function translate(p, lin, csb, d32, v86, limit) {
   const r3 = !vm && !csb && d32 && !(p.r0Depth > 0) && !(p.cpu.cs.value & 0xffff);
   // (a call's return address checked as the stack grows: a thread's stack has protected pages below it, and runaway
   // recursion meets them as a stack fault, not running on down through the heap; ESP's own accesses are not checked)
-  const callGuard = () => { if (r3) { f.gg('esp').c(4).op('sub').ls(K); guard(K, true); } };
+  const ssWide = ss32In !== undefined ? ss32In : !vm && (!!(p.r32(ACC + (p.cpu.ss.value & 0xfff8)) & 0x400000) || !(p.cpu.ss.value & 0xffff));
+  const callGuard = () => { if (r3 && ssWide) { f.gg('esp').c(4).op('sub').ls(K); guard(K, true); } };
   const guard = (a, wr) => { if (r3) f.lg(a).c(12).op('shr_u').e(0x2d, 0, uleb(LAYOUT.PROT)).if_().lg(a).c(wr ? 0x4000010 : 0x4000000).e(0x10, 1).gg('eip').e(0x0f).end(); };
   let pc = lin, n = 0;
   const fetch = () => u8[pc++];
@@ -206,7 +209,10 @@ function translate(p, lin, csb, d32, v86, limit) {
       if (c & 1) f.op('eqz');
     };
     // ---- stack (SS's B bit picks ESP or SP)
-    const ss32 = !vm && (!!(p.r32(ACC + (p.cpu.ss.value & 0xfff8)) & 0x400000) || !(p.cpu.ss.value & 0xffff));
+    // (the stack's width as the block is entered, which its cache key carries; a load of SS ends the block, so the
+    // next block is translated for the new stack: USER32's 16 -> 32 callback did lss sp then retf in one block, and the
+    // retf popped through the 32-bit ESP it had before, to 0:0)
+    const ss32 = ssWide;
     const push = (loc, sz) => {
       if (ss32) { f.gg('esp').c(sz).op('sub').gs('esp'); f.gg('ssb').gg('esp').op('add').lg(loc).st(sz); }
       else { f.gg('esp').c(0xffff0000).op('and').gg('esp').c(sz).op('sub').c(0xffff).op('and').op('or').gs('esp'); f.gg('ssb').gg('esp').c(0xffff).op('and').op('add').lg(loc).st(sz); }
@@ -263,10 +269,10 @@ function translate(p, lin, csb, d32, v86, limit) {
     if (b >= 0x58 && b < 0x60) { pop(T, osz); wrReg(b & 7, osz, T); continue; }
     if (b === 0x68 || b === 0x6a) { f.c(b === 0x68 ? (osz === 4 ? fetch32() : fetch16()) : fetchS8()).ls(T); push(T, osz); continue; }
     if (b === 0x06 || b === 0x0e || b === 0x16 || b === 0x1e) { f.gg(SEG[b >> 3][0]).ls(T); push(T, osz); continue; }
-    if (b === 0x07 || b === 0x17 || b === 0x1f) { pop(T, osz); loadSeg(b >> 3, T); continue; }
+    if (b === 0x07 || b === 0x17 || b === 0x1f) { pop(T, osz); loadSeg(b >> 3, T); if (b === 0x17) return done(pc); continue; }
     if (b === 0x69 || b === 0x6b) {   // imul r, rm, imm
       const o = modrm(); rd(o, osz); f.ls(B); f.c(b === 0x69 ? (osz === 4 ? fetch32() : (fetch16() << 16) >> 16) : fetchS8()).ls(C);
-      f.lg(B).lg(C).op('mul').ls(R); f.c(0).gs('cf'); f.c(0).gs('of'); wrReg(o.reg, osz, R); continue;
+      imul2(f, osz, B, C, R, W); wrReg(o.reg, osz, R); continue;
     }
     if (b >= 0x70 && b < 0x80) {   // jcc short
       const d = fetchS8(), t = pc + d; cond(b & 15); f.ls(T); f.lg(T).if_().c(t | 0).e(0x0f).end(); return done(pc);
@@ -286,7 +292,7 @@ function translate(p, lin, csb, d32, v86, limit) {
     // (segment registers 6 and 7 are none, and CS is no mov's to load: an invalid opcode, as the processor takes them;
     // indexed past the table, the translator itself threw: tools/staticmap.py)
     if (b === 0x8c) { const o = modrm(); if (o.reg > 5) throw new Unsupported(`mov from segment register ${o.reg}`); f.gg(SEG[o.reg][0]).ls(T); wr(o, o.isReg ? osz : 2, T); continue; }
-    if (b === 0x8e) { const o = modrm(); if (o.reg > 5 || o.reg === 1) throw new Unsupported(`mov to segment register ${o.reg}`); rd(o, 2); f.ls(T); loadSeg(o.reg, T); continue; }
+    if (b === 0x8e) { const o = modrm(); if (o.reg > 5 || o.reg === 1) throw new Unsupported(`mov to segment register ${o.reg}`); rd(o, 2); f.ls(T); loadSeg(o.reg, T); if (o.reg === 2) return done(pc); continue; }
     if (b === 0x8d) { const o = modrm(); if (o.isReg) throw new Unsupported('lea with a register operand'); f.lg(A).gg(sbase(o.sr)).op('sub').ls(T); wrReg(o.reg, osz, T); continue; }   // lea: the offset (less the base its address added: SS's for BP and SP)
     if (b === 0x8f) { const o = modrm(); pop(T, osz); wr(o, osz, T); continue; }
     if (b === 0x90) continue;
@@ -446,7 +452,7 @@ function translate(p, lin, csb, d32, v86, limit) {
         if (b2 >= 0xbe) { const sh = 32 - ssz * 8; f.c(sh).op('shl').c(sh).op('shr_s'); }
         f.ls(T); wrReg(o.reg, osz, T); continue;
       }
-      if (b2 === 0xaf) { const o = modrm(); rdReg(o.reg, osz); rd(o, osz); f.op('mul').ls(R); f.c(0).gs('cf'); f.c(0).gs('of'); wrReg(o.reg, osz, R); continue; }
+      if (b2 === 0xaf) { const o = modrm(); rdReg(o.reg, osz); f.ls(B); rd(o, osz); f.ls(C); imul2(f, osz, B, C, R, W); wrReg(o.reg, osz, R); continue; }
       if (b2 >= 0xc8 && b2 < 0xd0) { const r = b2 & 7; f.gg(G[r]).ls(T); f.lg(T).c(24).op('shl').lg(T).c(8).op('shl').c(0xff0000).op('and').op('or').lg(T).c(8).op('shr_u').c(0xff00).op('and').op('or').lg(T).c(24).op('shr_u').op('or').gs(G[r]); continue; }
       if (b2 === 0xa4 || b2 === 0xa5 || b2 === 0xac || b2 === 0xad) {   // shld / shrd
         const o = modrm(), left = b2 < 0xa8; f.c(b2 & 1 ? 0 : fetch()); if (b2 & 1) f.gg('ecx'); else f.c(0).op('or'); f.c(31).op('and').ls(C);
@@ -457,11 +463,12 @@ function translate(p, lin, csb, d32, v86, limit) {
           else f.lg(B).lg(C).op('shr_u').lg(T).c(32).lg(C).op('sub').op('shl').op('or').ls(R).lg(B).lg(C).c(1).op('sub').op('shr_u').c(1).op('and').gs('cf');
         } else if (left) f.lg(B).c(16).op('shl').lg(T).c(0xffff).op('and').op('or').lg(C).op('shl').c(16).op('shr_u').ls(R).lg(B).c(16).lg(C).op('sub').op('shr_u').c(1).op('and').gs('cf');
         else f.lg(T).c(16).op('shl').lg(B).c(0xffff).op('and').op('or').lg(C).op('shr_u').c(0xffff).op('and').ls(R).lg(B).lg(C).c(1).op('sub').op('shr_u').c(1).op('and').gs('cf');   // counts past 16 are undefined on x86
+        f.lg(R).lg(B).op('xor').c(osz * 8 - 1).op('shr_u').c(1).op('and').gs('of');   // (OF: the sign changed, as a 1-bit shift sets it)
         szp(osz); wr(o, osz, R); f.end(); continue;
       }
       if (b2 === 0xa0 || b2 === 0xa8) { f.gg(b2 === 0xa0 ? 'fsel' : 'gsel').ls(T); push(T, osz); continue; }
       if (b2 === 0xa1 || b2 === 0xa9) { pop(T, osz); loadSeg(b2 === 0xa1 ? 4 : 5, T); continue; }
-      if (b2 === 0xb2 || b2 === 0xb4 || b2 === 0xb5) { const o = modrm(); f.lg(A).ld(osz).ls(T); f.lg(A).c(osz).op('add').ld(2).ls(B); wrReg(o.reg, osz, T); loadSeg(b2 === 0xb2 ? 2 : b2 === 0xb4 ? 4 : 5, B); continue; }
+      if (b2 === 0xb2 || b2 === 0xb4 || b2 === 0xb5) { const o = modrm(); f.lg(A).ld(osz).ls(T); f.lg(A).c(osz).op('add').ld(2).ls(B); wrReg(o.reg, osz, T); loadSeg(b2 === 0xb2 ? 2 : b2 === 0xb4 ? 4 : 5, B); if (b2 === 0xb2) return done(pc); continue; }
       // cpuid: the processor as the machine is one (an i486DX4: tools/recomp.py x_cpuid)
       if (b2 === 0xa2) {
         f.gg('eax').op('eqz').if_().c(1).gs('eax').c(0x756e6547).gs('ebx').c(0x49656e69).gs('edx').c(0x6c65746e).gs('ecx').else_();
@@ -474,6 +481,13 @@ function translate(p, lin, csb, d32, v86, limit) {
         const sz = b2 & 1 ? osz : 1, o = modrm();
         rdReg(0, sz); f.ls(B); rd(o, sz); f.ls(C); alu2(7, sz);
         f.lg(B).lg(C).op('eq').if_(); rdReg(o.reg, sz); f.ls(T); wr(o, sz, T); f.else_(); wrReg(0, sz, C); f.end();
+        continue;
+      }
+      // xadd: the sum (flags as add) to the destination, the destination's old value to the source register
+      if (b2 === 0xc0 || b2 === 0xc1) {
+        const sz = b2 & 1 ? osz : 1, o = modrm();
+        rd(o, sz); f.ls(B); rdReg(o.reg, sz); f.ls(C); alu2(0, sz);
+        wrReg(o.reg, sz, B); wr(o, sz, R);
         continue;
       }
       if (b2 === 0xa3 || b2 === 0xab || b2 === 0xb3 || b2 === 0xbb || b2 === 0xba) {   // bt / bts / btr / btc
@@ -722,6 +736,9 @@ function shift(f, op, sz, o, rd, wr, L, szp) {
       f.lg(B).lg(R).op(op === 0 ? 'shl' : 'shr_u').lg(B).c(w).lg(R).op('sub').op(op === 0 ? 'shr_u' : 'shl').op('or').c(m).op('and').ls(R);
     }
     if (op === 0) f.lg(R).c(1).op('and').gs('cf'); else f.lg(R).c(w - 1).op('shr_u').c(1).op('and').gs('cf');
+    // (OF, as a 1-bit rotate sets it: ROL the top bit XOR CF, ROR the top two bits XORed)
+    if (op === 0) f.lg(R).c(w - 1).op('shr_u').gg('cf').op('xor').c(1).op('and').gs('of');
+    else f.lg(R).c(w - 1).op('shr_u').lg(R).c(w - 2).op('shr_u').op('xor').c(1).op('and').gs('of');
   } else {                      // rcl / rcr: a rotate of w + 1 bits, CF above the operand
     const X = f.loc64(), K = f.loc64(), mask = (1n << BigInt(w + 1)) - 1n;
     f.gg('cf').e(EXT_U).c64(w).op64('shl').lg(B).c(m).op('and').e(EXT_U).op64('or').ls(X);
@@ -736,6 +753,19 @@ function shift(f, op, sz, o, rd, wr, L, szp) {
   }
   wr(o, sz, R);
   f.end();
+}
+
+// imul r, r/m and imul r, r/m, imm (0Fh AFh, 69h, 6Bh): R the low half of B * C, signed; CF and OF set when the product
+// does not fit the operand (a 16-bit product checked on sign-extended operands)
+function imul2(f, osz, B, C, R, W) {
+  if (osz === 4) {
+    f.lg(B).e(EXT_S).lg(C).e(EXT_S).op64('mul').e(0x21, uleb(W));
+    f.e(0x20, uleb(W)).e(WRAP).ls(R); f.e(0x20, uleb(W)).lg(R).e(EXT_S).op64('ne').gs('cf');
+  } else {
+    f.lg(B).c(16).op('shl').c(16).op('shr_s').lg(C).c(16).op('shl').c(16).op('shr_s').op('mul').ls(R);
+    f.lg(R).c(16).op('shl').c(16).op('shr_s').lg(R).op('ne').gs('cf');
+  }
+  f.gg('cf').gs('of');
 }
 
 // mul / imul / div / idiv (group 3, sub-ops 4..7)
@@ -842,23 +872,39 @@ P.dynBlock = function (eip) {
   // a stray jump (to 0, or past the segment) is the guest's fault, not code
   const vm = this.v86 !== undefined && this.v86 !== null;   // (a virtual-8086 machine's code: any segment value is one)
   const flat = !vm && !cs && !csb;
-  if (vm ? eip >= u8.length : !eip || (flat ? eip >= u8.length : !cs || eip < csb || eip - csb > this.selLimit(cs))) { this.trapped = `jump to unmapped address ${eip.toString(16)}`; return null; }
+  if (vm ? eip >= u8.length : !eip || (flat ? eip >= u8.length : !cs || eip < csb || eip - csb > this.selLimit(cs))) { this.trapped = `jump to unmapped address ${eip.toString(16)}${vm || flat ? '' : ` (CS ${cs.toString(16)}: base ${csb.toString(16)}, limit ${cs ? u32(this.selLimit(cs)).toString(16) : '-'})`}`; return null; }
   const d32 = !vm && (flat || !!(this.r32(ACC + (cs & 0xfff8)) & 0x400000));
   // (a translation holds the code segment's base and its operand size: the same bytes run through another segment, or
   // as 16-bit code where they ran as 32-bit, are another block. DIBENG compiles 16- and 32-bit blits into one buffer)
-  const key = `${eip}:${csb}:${d32 ? 32 : 16}${vm ? 'v' : ''}${this.r0Depth > 0 ? 'r0' : ''}`;   // (ring 0's translation has no ring-3 guard)
+  // (and the stack's width, and CS itself: CS 0 and the flat selector share a base, and only CS 0's code has the ring-3
+  // guard)
+  const ss = this.cpu.ss.value & 0xffff, ss32 = !vm && (!ss || !!(this.r32(ACC + (ss & 0xfff8)) & 0x400000));
+  // (the block this address ran last, when it is run the same way and its bytes are as they were: the common case, a
+  // loop's blocks, found by number, not by the string key below. Windows 98 Setup's CAB inflating in SETUPX ran 400
+  // blocks a millisecond, a quarter of the time in this lookup)
+  const r0 = this.r0Depth > 0, fast = this.dynFast || (this.dynFast = new Map()), fe = fast.get(eip);
+  if (fe && fe.csb === csb && fe.cs === cs && fe.d32 === d32 && fe.ss32 === ss32 && fe.vm === vm && fe.r0 === r0) {
+    const b = fe.c.bytes; let i = 0; for (; i < b.length; i++) if (u8[eip + i] !== b[i]) break;
+    if (i === b.length) return fe.c;
+  }
+  const remember = c => { fast.set(eip, { c, csb, cs, d32, ss32, vm, r0 }); return c; };
+  const key =`${eip}:${csb}:${d32 ? 32 : 16}:s${ss32 ? 32 : 16}:c${cs}${vm ? 'v' : ''}${this.r0Depth > 0 ? 'r0' : ''}`;   // (ring 0's translation has no ring-3 guard)
   // (a few translations per address: two processes' programs at one base, each process's view in place in turn, arenaUse)
   const kept = this.dynCache.get(key) || [];
   let c = kept.find(k => k.bytes.every((v, i) => u8[eip + i] === v));
-  if (c) return c;
+  if (c) return remember(c);
   let t;
   // (an instruction translation cannot take ends the block before it: what comes first runs, and the block after it
-  // starts at that instruction, where the failure is the instruction's own)
-  try { t = translate(this, eip, csb, d32, vm ? this.v86 : null); }
+  // starts at that instruction, where the failure is the instruction's own. The end found is kept by the block's key,
+  // so translating the block again (its bytes rewritten, or its translation dropped from the four kept) goes straight
+  // to it, not through the failing translation first; changed bytes that fail sooner fail again and are found again,
+  // and bytes that would now go further end at the kept end, a shorter block that is still right)
+  const ends = this.dynEnds || (this.dynEnds = new Map());
+  try { t = translate(this, eip, csb, d32, vm ? this.v86 : null, ends.get(key), ss32); }
   catch (e) {
     if (!(e instanceof Unsupported)) throw e;
-    if (e.n > 1) t = translate(this, eip, csb, d32, vm ? this.v86 : null, e.n - 1);
-    else { this.trapped = `run-time code at ${eip.toString(16)}: ${e.message}`; return null; }
+    if (e.n > 1) { ends.set(key, e.n - 1); t = translate(this, eip, csb, d32, vm ? this.v86 : null, e.n - 1, ss32); }
+    else { this.trapped = `run-time code at ${eip.toString(16)} (${this.whereOf(eip)}, bytes ${Array.from(u8.subarray(eip, eip + 12), v => v.toString(16).padStart(2, '0')).join(' ')}): ${e.message}`; return null; }
   }
   t.fn.e(0x0f);
   // (the imports: the memory, port I/O, interrupts, and the x87's math, the process's own as its static modules get it)
@@ -870,7 +916,25 @@ P.dynBlock = function (eip) {
   const run = new WebAssembly.Instance(new WebAssembly.Module(assemble(t.fn, Object.prototype.toString.call(this.mem.buffer) === '[object SharedArrayBuffer]')), { env, cpu: this.cpu }).exports.run;
   c = { run, bytes: Array.from(u8.subarray(eip, eip + t.len)) };
   this.dynCache.set(key, [c, ...kept.slice(0, 3)]);
-  return c;
+  return remember(c);
+};
+/** whether `eip` starts a block of a translated module the dispatcher runs (not hidden: another process's program at
+ *  this address is not this one's code, arenaUse). The modules' code ranges by 64K page, made again when the module
+ *  list changes: run-time code asked after every block, and went through every module each time */
+P.staticCodeAt = function (eip) {
+  const ms = this.modules || [];
+  let s = this.staticPages;
+  if (!s || s.arr !== ms || s.len !== ms.length) {
+    const pages = new Map();
+    for (const m of ms) {
+      const t = m.meta; if (!t || !(t.textHi > t.textLo)) continue;
+      for (let pg = t.textLo >>> 16; pg <= (t.textHi - 1) >>> 16; pg++) { let l = pages.get(pg); if (!l) pages.set(pg, l = []); l.push(m); }
+    }
+    s = this.staticPages = { arr: ms, len: ms.length, pages };
+  }
+  const l = s.pages.get(eip >>> 16); if (!l) return false;
+  for (const m of l) if (eip >= m.meta.textLo && eip < m.meta.textHi && !m.hidden && this.hasBlock(m, eip)) return true;
+  return false;
 };
 /** run run-time code from `eip` until control reaches translated module code (or the sentinel); the next address */
 P.dynRun = function (eip) {
@@ -878,7 +942,11 @@ P.dynRun = function (eip) {
     if ((n & 0xfff) === 0xfff) { this.cpu.eip.value = eip; if (this.tick(eip)) return -1; }   // the processor's time, as the dispatcher asks
     // (an export another module enters, hooked, win32.js dispatch: a module run from its file reaches it here, never
     // through the dispatcher; a hook that answers where to go on takes the call)
-    if (this.entryHooks) { const h = this.entryHooks.get(eip); if (h) { const to = h.call(this); if (to !== undefined) { eip = u32(to); if (eip === LAYOUT.SENTINEL || eip >= LAYOUT.THUNK16 || this.modules.some(m => eip >= m.meta.textLo && eip < m.meta.textHi && !m.hidden && this.hasBlock(m, eip))) return eip; continue; } } }
+    if (this.entryHooks) { const h = this.entryHooks.get(eip); if (h) { const to = h.call(this); if (to !== undefined) { eip = u32(to); if (eip === LAYOUT.SENTINEL || eip >= LAYOUT.THUNK16 || this.staticCodeAt(eip)) return eip; continue; } } }
+    // (code the host runs in a module's data, ne16.js dataCode: ThunkConnect32's relays, LS thunklets. The dispatcher
+    // asks for it, and so must a run of run-time code going on to its next block: Windows 98's SHELL32, mapped from
+    // its file, called its LS01 relay, and the relay's padding (INT 3) ran instead)
+    if (this.dataCode) { const to = this.dataCode(eip); if (to !== undefined && to !== null) { eip = u32(to); if (eip === LAYOUT.SENTINEL || eip >= LAYOUT.THUNK16 || this.staticCodeAt(eip)) return eip; continue; } }
     const blk = this.dynBlock(eip); if (!blk) return null;
     const from = eip;
     if (this.dynHook) this.dynHook(eip);   // (a diagnostic: the blocks a program runs, worker.js cmd 'blocks')
@@ -886,7 +954,7 @@ P.dynRun = function (eip) {
     catch (e) { if (!(e instanceof WebAssembly.RuntimeError)) throw e; this.trapped = `run-time code at ${eip.toString(16)} (instruction at ${u32(this.cpu.eip.value).toString(16)}): ${e.message}`; return null; }
     if (this.memW) this.memCheck(`run-time code at ${from.toString(16)}`);   // (a write watch: each block of run-time code, win32.js memCheck)
     if (eip === LAYOUT.SENTINEL || eip >= LAYOUT.THUNK16) return eip;
-    if (this.modules.some(m => eip >= m.meta.textLo && eip < m.meta.textHi && !m.hidden && this.hasBlock(m, eip))) return eip;   // (another process's program at this address is not this one's code: arenaUse)
+    if (this.staticCodeAt(eip)) return eip;   // (another process's program at this address is not this one's code: arenaUse)
   }
 };
 /** whether module `m` has a translated block starting at `eip` */
