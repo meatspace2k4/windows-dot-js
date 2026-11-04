@@ -160,6 +160,7 @@ class Machine {
    *  record): memory, registers and the host's objects as one graph from the machine's own object, the registry, the
    *  lint's probe, the mods named */
   braidMark(name) {
+    if (!this.proc) throw new Error('the machine is starting: no moment yet');   // (the line marking itself while the PC boots)
     if (this.proc.depth) throw new Error('a moment is taken between steps, not inside a call');
     const t0 = performance.now(), B = self.W95Braid;
     const graph = B.takeGraph([this], { opaque: this.braidOpaque(), skip: (o, k) => this.braidSkip(o, k) });
@@ -297,6 +298,24 @@ class Machine {
   /** an error from ring 0 the poll ran (a VxD's time-out, VKD's key): a processor exception there is the machine's to
    *  answer (VWIN32's blue screen, step), and the run it interrupted goes no further; printed and passed over, the
    *  system ran on with the VxD's state broken (NETBEUI's time-out faulted, ran again from 0, and wrote over the screen) */
+  /** the processor exception the machine took (p.fault), answered as Windows does: at ring 0, or in the system's own
+   *  first task, MSGSRV32, the process Windows itself runs in, the blue screen (Windows cannot go on without it, and
+   *  VWIN32 says so; a fault dialog over the page's own desktop looked like a system still running); else the
+   *  program's fault dialog */
+  answerFault() {
+    const p = this.proc;
+    this.faultTaken = true; this.fatalN = (this.fatalN || 0) + 1;   // (fatalN: the processor exceptions the system answered, a blue screen or a fault dialog: the lint's broken state, braidProbe)
+    if (p.fault.ring === 0 || (this.system && (!p.fault.program || /MSGSRV32/i.test(p.fault.program)))) { this.fatal(p.fault); if (this.alive) this.timer = setTimeout(() => this.step(), 16); return; }
+    this.stopped = true; post({ t: 'fault', f: p.fault });
+  }
+  /** a run at ring 0 in flight (r0Step) that ended in an error: a processor exception is answered as any other
+   *  (answerFault: MSGSRV32's at 9A11E919, in a VxD call's nested run, ended the machine with the page's own fault
+   *  box, not Windows' blue screen); anything else ends the machine */
+  r0StepFailed(e) {
+    const p = this.proc;
+    if (e instanceof W.FaultError) { p.depth = 0; p.faulted(e.fault); if (!this.faultTaken) this.answerFault(); return; }
+    console.error(e && e.stack ? e.stack : e); this.exited(-1, e.message);
+  }
   r0Fault(e) {
     if (!(e instanceof W.FaultError)) { console.error(e); return; }
     this.proc.faulted(e.fault); throw e;
@@ -498,6 +517,11 @@ class Machine {
    *  "Windows 95 Setup" screen on USER's bare desktop; MSGSRV32 starts when RUNONCE has ended, so SystemStart (which
    *  MSGSRV32 plays before it starts the shell) and the shell come after the screen. False if it cannot start */
   startSystemTask() {
+    // (Windows 98's RUNONCE runs only as MSGSRV32 starts it, "runonce.exe -m": started by any other process during a
+    // first start it says "InSetup, but called by someone other than msgsvr32" and ends, and its items fell to
+    // Explorer, which ran its own commands, FlushRegistry, as files. Its message is its own: the RUNONCE that has it is
+    // left to MSGSRV32)
+    const ownedByMsgsrv = f => { try { return new TextDecoder('latin1').decode(fs.readFile(f)).includes('called by someone other than msgsvr32'); } catch (_) { return false; } };
     const p = this.proc, S = self.W95SYSTEM || {}, items = W.regVals('hklm\\software\\microsoft\\windows\\currentversion\\runonce\\setup');
     // (RUNONCE.EXE where Setup puts it, SYSTEM, LDID 11: SETUPC.INF; whichever Windows installed it, 95's or 98's)
     const exe = items.length && (S.programs || {})['RUNONCE.EXE'] ? ['C:\\WINDOWS\\SYSTEM\\RUNONCE.EXE'].find(f => fs.exists(f)) : null;
@@ -505,7 +529,7 @@ class Machine {
     // joins; a machine joining with them held never got its shell, which waits for them)
     this.firstStart = !!items.length;
     if (items.length && this.holdStartup) { this.holdStartup = false; post({ t: 'emit', ev: 'sync.firststart', data: {} }); }
-    if (!exe) return this.startMsgsrv();
+    if (!exe || ownedByMsgsrv(exe)) return this.startMsgsrv();
     p.init16();
     this.loadMpr();   // (before Setup's items: SHELL32 builds its desktop's items once in this address space, and RUNONCE is its first user)
     const pc = this.spawnProgram(exe, '');
@@ -637,7 +661,10 @@ class Machine {
           return t.nm === 'GlobalAlloc' ? `flags ${a(1).toString(16)} n ${a(2)}` : t.nm === 'GlobalReAlloc' ? `h ${h.toString(16)} n ${a(2)} flags ${a(3).toString(16)}${txt}` : `h ${h.toString(16)}${txt}`;
         }
         if (/^Global(Add|Find)AtomA$/.test(t.nm)) { const sp = p.r32(p.reg('esp') + 4); return sp >>> 16 ? p.readA(sp) || '' : '#' + sp; }
-        if (/^(LoadLibraryA|GetPrivateProfileSectionA|GetPrivateProfileStringA|FindFirstFileA|CreateFileA|GetFileAttributesA|DeleteFileA|MoveFileA|GetModuleHandleA|WritePrivateProfileStringA|CreateDirectoryA)$/.test(t.nm)) { const sp = p.r32(p.reg('esp') + 4); return sp > 0x10000 && sp < p.u8.length ? p.readA(sp) || '' : String(sp); }
+        if (/^(LoadLibraryA|LoadLibraryExA|SearchPathA|GetFullPathNameA|OpenFile|_lopen|GetPrivateProfileSectionA|GetPrivateProfileStringA|FindFirstFileA|CreateFileA|GetFileAttributesA|DeleteFileA|MoveFileA|GetModuleHandleA|WritePrivateProfileStringA|CreateDirectoryA)$/.test(t.nm)) { const sp = p.r32(p.reg('esp') + 4); return sp > 0x10000 && sp < p.u8.length ? p.readA(sp) || '' : String(sp); }
+        // (the address space asked for: VirtualAlloc's address, size and allocation type; HeapCreate's sizes)
+        if (t.nm === 'VirtualAlloc') { const q = k => p.r32(p.reg('esp') + 4 * k) >>> 0; return `at ${q(1).toString(16)} n ${q(2).toString(16)} type ${q(3).toString(16)}`; }
+        if (t.nm === 'HeapCreate') { const q = k => p.r32(p.reg('esp') + 4 * k) >>> 0; return `initial ${q(2).toString(16)} max ${q(3).toString(16)}`; }
         if (t.nm === 'GetProcAddress') { const sp = p.r32(p.reg('esp') + 8); return sp > 0x10000 && sp < p.u8.length ? p.readA(sp) || '' : '#' + sp; }
         if (!/^Reg(Open|Create|Query|Enum)/.test(t.nm)) return '';
         const s = p.r32(p.reg('esp') + 8); return s > 0x10000 && s < p.u8.length ? p.readA(s) || '' : String(s);
@@ -667,10 +694,10 @@ class Machine {
     // (an MS-DOS VM's event that waits holds that VM only (vmm.js vmEventRun): the system goes on, and the thread whose
     // call signals it runs. Held as ring 0 is, nothing ran but the wait, and WinOldAp's next SHELL call never came)
     if (p.r0Runs && p.r0Runs.length && p.r0Runs.every(s => s.vm && s.wait)) {
-      try { p.r0Step(); } catch (e) { console.error(e && e.stack ? e.stack : e); this.exited(-1, e.message); return; }
+      try { p.r0Step(); } catch (e) { this.r0StepFailed(e); return; }
     }
     if (p.r0Runs && p.r0Runs.length && !p.r0Runs.every(s => s.vm && s.wait)) {
-      try { p.r0Step(); } catch (e) { console.error(e && e.stack ? e.stack : e); this.exited(-1, e.message); return; }
+      try { p.r0Step(); } catch (e) { this.r0StepFailed(e); return; }
       this.sendText();
       if (!(p.r0Runs && p.r0Runs.length) && this.afterR0) { const go = this.afterR0; this.afterR0 = null; go(); }
       if (this.alive) this.timer = setTimeout(() => this.step(), 16);
@@ -711,14 +738,7 @@ class Machine {
       else { p.hung('host', e); p.depth = 0; }
     }
     p.stats.guestMs += performance.now() - t0;
-    if (p.fault && !this.faultTaken) {
-      this.faultTaken = true; this.fatalN = (this.fatalN || 0) + 1;   // (fatalN: the processor exceptions the system answered, a blue screen or a fault dialog: the lint's broken state, braidProbe)
-      // (and one in the system's own first task, MSGSRV32, the process Windows itself runs in: Windows cannot go on
-      // without it, and VWIN32 says so on the blue screen; a fault dialog over the page's own desktop looked like a
-      // system still running)
-      if (p.fault.ring === 0 || (this.system && (!p.fault.program || /MSGSRV32/i.test(p.fault.program)))) { this.fatal(p.fault); if (this.alive) this.timer = setTimeout(() => this.step(), 16); return; }
-      this.stopped = true; post({ t: 'fault', f: p.fault }); return;
-    }
+    if (p.fault && !this.faultTaken) { this.answerFault(); return; }
     for (const f of (p.pcFaults || []).splice(0)) {
       f.pc.fault = true; this.fatalN = (this.fatalN || 0) + 1;
       // (MSGSRV32's own fault: the blue screen, Windows ended (fatal), not a program's dialog)
@@ -1618,7 +1638,7 @@ class Machine {
         // and the first call through it died in api16. One of no definition is as thunk16For makes it: the native
         // module's export answers it, found again as it is called (api16, t.native))
         { const K16 = (self.W95NE16 || {}).K16 || {}; for (const t of p.th16 || []) if (t && t.key) { t.def = K16[t.key]; if (!t.def) delete t.native; } }
-        for (const t of p.thunks || []) if (t && t.dll) t.def = ((W.API || {})[t.dll] || {})[t.nm];
+        for (const t of p.thunks || []) if (t && t.dll) t.def = p.importDef(t.dll, t.nm);
         // (the hooks at the exports other modules enter (win32.js entryHooks) are code: made again for the USER loaded,
         // as its load made them (ne16.js hookIntents, hookClock, hookTaken); a return watched by a diagnostic is not)
         { p.entryHooks = new Map(); p.entryLists = new Map(); p.retPend = new Map(); const user = p.ne && p.ne.get('USER'); if (user && user.meta) { p.hookIntents(user); p.hookClock(user); p.hookTaken(user); } }

@@ -16,7 +16,7 @@ window.W95BraidPage = function (ui) {
   const B = window.W95Braid, W = ui.W95Win32, fs = ui.fs;
   const here = new Map();                 // the moments in this page's memory, by name: { s: the page's record, machines: { key: { app, info } } }
   const diskTouched = new Set(), mods = [], line = new B.Line();
-  const auto = { timer: null, n: 0, ring: [], every: 0, keep: 3, atimer: null, an: 0, anchors: [], anchorEvery: 0, anchorKeep: 3 };
+  const auto = { timer: null, n: 0, ring: [], v: new Map(), hold: null, every: 0, keep: 3, atimer: null, an: 0, anchors: [], anchorEvery: 0, anchorKeep: 3 };
   let anchorBusy = null;   // (the name of the anchor being written, anchor)
   let sig = null, quiet = false, markN = 0;
   const key = a => (a.system ? 'system' : a.path);
@@ -160,6 +160,12 @@ window.W95BraidPage = function (ui) {
       const name = String(to), h = here.get(name);
       const asked = viaLine({ op: 'travel', name, force: !!o.force }, o); if (asked) return asked;
       if (!h) return arrive(name, o);
+      // (the system's machine the moment is in has ended, its worker with it: the moment is gone from here. Its anchor
+      // comes back; without one, refused: a travel that skipped it as 'gone' ran nothing and said it had arrived)
+      if (h.machines.system && !h.machines.system.app.alive) {
+        if ((await dbNames().catch(() => [])).includes(name)) return arrive(name, o);
+        throw new Error(`the moment ${name} was in the system's machine, which ended: it went with it (an anchored moment comes back)`);
+      }
       const v = line.broken.get(name); if (v === 'broken' && !o.force) throw new Error(`the moment ${name} is a broken state (the lint): travel(name, { force: true }) goes anyway`);
       const why = B.refuse(h.s, await build()); if (why && !(o.force && /build/.test(why))) throw new Error(why);
       const out = {}, now = await clock();
@@ -239,9 +245,10 @@ window.W95BraidPage = function (ui) {
       clearTimeout(auto.atimer); auto.atimer = null; auto.anchorEvery = ms ? (o.anchorEvery === undefined ? 300000 : o.anchorEvery) : 0; auto.anchorKeep = o.anchorKeep || 3;
       if (!ms) return null;
       const anchorTick = async () => {
-        if (!auto.atimer) return;
+        if (!auto.atimer) return; const run = auto.atimer;
         try {
           const r = await braid.anchor('live' + (++auto.an), { local: true }); auto.anchors.push(r.name);
+          if (auto.atimer !== run) return;   // (stopped meanwhile: no anchor let go)
           const fine = auto.anchors.filter(n => (line.broken.get(n) || 'ok') !== 'broken');
           while (fine.length > auto.anchorKeep) { const n = fine.shift(); auto.anchors.splice(auto.anchors.indexOf(n), 1); await braid.forget(n, { local: true }); }
         } catch (e) { console.warn('[braid] the line could not anchor itself:', e.message); }   // (another anchor being written, a ring-0 run on every step: the next tick)
@@ -249,8 +256,11 @@ window.W95BraidPage = function (ui) {
       };
       if (auto.anchorEvery) auto.atimer = setTimeout(anchorTick, auto.anchorEvery);
       const tick = async () => {
-        if (!auto.timer) return;
-        try { const name = 't' + (++auto.n); const r = await braid.mark(name, { local: true }); auto.ring.push(name); const fine = auto.ring.filter(n => (line.broken.get(n) || 'ok') !== 'broken' && !(line.moments.get(n) || {}).anchored); while (fine.length > keep) { const n = fine.shift(); auto.ring.splice(auto.ring.indexOf(n), 1); await braid.forget(n, { local: true }); } if (r.verdict === 'broken') ui.emit('braid.broken', { moment: name, findings: r.findings }); }
+        if (!auto.timer) return; const run = auto.timer;
+        // (a line stopped or started again while this mark was taken lets nothing go: the stop is to keep what it has;
+        // and the last clean moment before the latest suspect or broken one stays: the one before a fault to travel to,
+        // as moments after the fault lint clean again against each other)
+        try { const name = 't' + (++auto.n); const r = await braid.mark(name, { local: true }); auto.ring.push(name); auto.v.set(name, r.verdict || 'ok'); if (auto.timer !== run) return; const v = n => line.broken.get(n) || auto.v.get(n) || 'ok'; if (v(name) !== 'ok') auto.hold = auto.ring.slice(0, -1).filter(n => v(n) === 'ok').pop() || auto.hold; const hold = auto.hold; const fine = auto.ring.filter(n => n !== hold && v(n) !== 'broken' && !(line.moments.get(n) || {}).anchored); while (fine.length > keep) { const n = fine.shift(); auto.ring.splice(auto.ring.indexOf(n), 1); auto.v.delete(n); await braid.forget(n, { local: true }); } if (r.verdict === 'broken') ui.emit('braid.broken', { moment: name, findings: r.findings }); }
         catch (e) { console.warn('[braid] the line could not mark itself:', e.message); }
         if (auto.timer) auto.timer = setTimeout(tick, ms);
       };

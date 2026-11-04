@@ -28,7 +28,9 @@ P.vxd = function (file) {
   const run = new WebAssembly.Instance(mod, this.imports).exports.run;
   const look = new Uint32Array(this.mem.buffer, m.lookup, m.textHi - m.textLo);
   m.blocks.forEach((a, i) => { look[a - m.textLo] = i + 1; });
-  const rec = { kind: 'vxd', name: m.name.trim(), file: key, id: m.id, meta: m, run, ddb: m.ddb, procs: m.procs, base: m.base, clock: true };
+  // (its size: where it is, so an image looked for room is not mapped over it, win32.js imageRoom. Without one,
+  // Windows 98's MSHTML.DLL went over a VxD in the arena, and MSGSRV32's next call into the VxD ran MSHTML's bytes)
+  const rec = { kind: 'vxd', name: m.name.trim(), file: key, id: m.id, meta: m, run, ddb: m.ddb, procs: m.procs, base: m.base, size: m.size || img.length, clock: true };
   this.modules.push(rec); this.vxds.set(key, rec);
   // (debugging, ?dynat=addr,...: those blocks run as run-time code, block by block, so a write watch names the block
   // that wrote and the stack it ran on; a VxD's name: all of its blocks)

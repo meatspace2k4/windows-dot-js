@@ -110,5 +110,24 @@ assert.ok(T, 'braid-page.js gives its store to tests (__test)');
   assert.equal(page.every(1000).anchorEvery, 300000, 'anchoring on by default (5 min)'); page.every(0);
   assert.equal(page.every(1000, 3, { anchorEvery: 0 }).anchorEvery, 0); page.every(0);
 }
+{ // every()'s marks: the last clean moment kept while later ones are suspect (the one before a fault, to travel to);
+  // and a mark in flight when the line stops lets nothing go (MSGSRV32's fault: t3, the moment before it, was let go
+  // by the tick that was marking t6 as the line was stopped to keep it)
+  const forgot = [], names = []; let gate = null;
+  // (two clean, the fault's (suspect), then clean again: the moments after a fault lint clean against each other)
+  page.mark = async name => { if (gate) await gate; names.push(name); return { verdict: names.length === 3 ? 'suspect' : 'ok' }; };
+  page.forget = async name => { forgot.push(name); return true; };
+  page.every(5, 3, { anchorEvery: 0 });
+  await new Promise(r => setTimeout(r, 200));
+  let release; gate = new Promise(r => { release = r; });
+  await new Promise(r => setTimeout(r, 30));   // (a mark waiting at the gate)
+  page.every(0); const before = forgot.length; release(); await new Promise(r => setTimeout(r, 30));
+  assert.equal(forgot.length, before, 'stopped: the mark in flight let nothing go');
+  const ring = page.auto.moments, clean = names[1];
+  assert.ok(names.length > 6, `marked ${names.length} times`);
+  assert.ok(!forgot.includes(clean) && ring.includes(clean), `the last clean moment ${clean} kept (${ring.join(' ')})`);
+  assert.ok(forgot.includes(names[0]), 'an older clean one let go');
+  assert.deepEqual(ring.filter(x => x !== clean), names.slice(-4), 'the rest a ring of three, and the stopped mark\'s own with nothing let go for it');
+}
 console.log('braidchunks: ok');
 process.exit(0);

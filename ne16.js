@@ -3773,6 +3773,16 @@ def16('KERNEL', 413, 'sp', 'l', function (pat, data) {
 def16('KERNEL', 414, 'lp', 'w', function (h, data) { const f = this.finds16 && this.finds16.get(h); if (!f || f.i >= f.list.length) { this.lastError = 18; return 0; } this.findData16(data, f.list[f.i++]); return 1; });
 // FileTimeToLocalFileTime (KRNL386's thunk to KERNEL32's, entry 0Ah of its table): Windows 98's MSGSRV32 converts a
 // file's time with it at start, in place (both pointers the same 16:16 buffer)
+// IsPeFormat(lpszFile, hFile) (#431): whether the file is a Win32 image, its MZ header's new header a PE one. RUNDLL
+// asks it of the DLL its command line names, to hand a Win32 one to RUNDLL32; missing, RUNDLL ended on Windows 98's
+// first start. (by its name; a file only open, no name, is answered no)
+def16('KERNEL', 431, 'sw', 'w', function (name) {
+  const full = name ? this.findFile16(name) : null; if (!full) return 0;
+  let b; try { b = this.fs.readFile(full); } catch (_) { return 0; }
+  if (b.length < 0x40 || b[0] !== 0x4d || b[1] !== 0x5a) return 0;
+  const o = (b[0x3c] | b[0x3d] << 8 | b[0x3e] << 16 | b[0x3f] << 24) >>> 0;
+  return o + 4 <= b.length && b[o] === 0x50 && b[o + 1] === 0x45 && !b[o + 2] && !b[o + 3] ? 1 : 0;
+});
 def16('KERNEL', 432, 'pp', 'w', function (a, b) { return API.KERNEL32.FileTimeToLocalFileTime[1].call(this, a, b); });
 def16('KERNEL', 415, 'l', 'w', function (h) { return this.finds16 && this.finds16.delete(h) ? 1 : 0; });
 // CreateDirectory(path, security attributes) and SetFileAttributes(path, attributes): TRUE, or FALSE with the error

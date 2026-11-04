@@ -255,11 +255,15 @@ class Process {
   }
   /** room for an image of `size` bytes in the arena below the heap (400000h-2000000h): at `pref` when nothing is there,
    *  else, for one that can be relocated, the first 64 KiB boundary with room; 0 when there is none. A program's own
-   *  image (`own`) goes over other programs' images: each process has its own view of that range (arenaClaim) */
+   *  image (`own`) goes over other programs' images: each process has its own view of that range (arenaClaim).
+   *  A relocated DLL is placed clear of the programs' two bases: 400000h (the scan starts above it) and 1000000h, where
+   *  35 of Windows 98's programs are linked with no relocations, the largest 5F000h (DXDIAG). Relocated next to
+   *  MSHTA's image there, MSVCRT left PSTORES no room, and its start failed (ERROR_BAD_EXE_FORMAT) */
   imageRoom(pref, size, relocatable, own = false) {
     const spans = own ? this.moduleSpans(m => m.name !== 'EXE') : this.moduleSpans(), free = a => a >= 0x400000 && a + size <= 0x02000000 && !spans.some(([lo, hi]) => a < hi && lo < a + size);
     if (free(pref)) return pref;
-    if (relocatable) for (let a = 0x00620000; a + size <= 0x02000000; a += 0x10000) if (free(a)) return a;
+    const PROGRAMS = [0x01000000, 0x01100000], programs = a => !own && a < PROGRAMS[1] && PROGRAMS[0] < a + size;
+    if (relocatable) for (let a = 0x00620000; a + size <= 0x02000000; a += 0x10000) if (free(a) && !programs(a)) return a;
     return 0;
   }
   /** a DLL an image imports or LoadLibrary names that the system bundle does not carry, from its file, as Windows'
@@ -272,8 +276,8 @@ class Process {
     if (!this.fs || (API[name] && !replacing) || STAND_IN.has(name) || !/^[A-Z0-9_$~!#%&'()@^`{}-]+(\.[A-Z0-9]+)?$/i.test(name)) return null;
     const file = /\./.test(name) ? name : name + '.DLL';
     const dirs = [...(this.loadDirs || []), 'C:\\WINDOWS\\SYSTEM', 'C:\\WINDOWS'];
-    let f = null;
-    for (const d of dirs) { try { f = this.fs.readFile(d + '\\' + file); break; } catch (_) { /* not there */ } }
+    let f = null, path = null;
+    for (const d of dirs) { try { f = this.fs.readFile(d + '\\' + file); path = d + '\\' + file; break; } catch (_) { /* not there */ } }
     if (!f || f.length < 0x40 || f[0] !== 0x4d || f[1] !== 0x5a) return null;
     const dv = new DataView(f.buffer, f.byteOffset, f.byteLength), pe = dv.getUint32(0x3c, true);
     if (pe + 0xf8 > f.length || dv.getUint32(pe, true) !== 0x4550 || !(dv.getUint16(pe + 22, true) & 0x2000)) return null;   // (IMAGE_FILE_DLL)
@@ -281,7 +285,8 @@ class Process {
     const relocatable = !(dv.getUint16(pe + 22, true) & 1) && dv.getUint32(opt + 96 + 5 * 8 + 4, true) > 0;
     const base = this.imageRoom(pref, size, relocatable);
     if (!base) { log('warn', 'win32', `${file}: no room for its image at ${pref.toString(16)}`); return null; }
-    const d = { file: f, module: null, meta: { base, entry: ep ? base + ep : 0, textLo: 0, textHi: 0, blocks: [], size, dynamic: true } };
+    // (the file it was mapped from: GetModuleFileName's answer, TRIEDIT's own type library found beside it)
+    const d = { file: f, module: null, meta: { base, entry: ep ? base + ep : 0, textLo: 0, textHi: 0, blocks: [], size, dynamic: true, path } };
     this.dlls.set(name, d);
     return d;
   }
@@ -298,10 +303,53 @@ class Process {
   thunkFor(dll, nm) {
     const key = dll + '!' + nm;
     if (this.thunkByName.has(key)) return this.thunkByName.get(key);
-    const def = (API[dll] || {})[nm];
+    const def = this.importDef(dll, nm);
     const t = LAYOUT.THUNK + this.thunks.length * 4;
     this.thunks.push({ dll, nm, def }); this.thunkByName.set(key, t);
     return t;
+  }
+  /** what a call to `dll`!`nm` does: its definition here, else what the DLL's own file does when that is the system's
+   *  common stub for a call it leaves unimplemented. (Windows 98's SETUPAPI imports ADVAPI32's IsTextUnicode, which
+   *  Windows 98's ADVAPI32 exports as that stub and this ADVAPI32 lacked: a dead thunk, and Explorer's first start
+   *  faulted in it) */
+  importDef(dll, nm) { return (API[dll] || {})[nm] || this.unimpStub(dll, nm) || undefined; }
+  /** an export of `dll`'s file that is `xor eax,eax; mov cl,N; jmp KERNEL32!#17` (directly or through a jump):
+   *  KERNEL32's CommonUnimpStub, which sets ERROR_CALL_NOT_IMPLEMENTED, returns by N's high nibble (1: 1, 13: 50,
+   *  14: 120, 15: -1, else 0) and pops N's low nibble of arguments. Its definition, or null */
+  unimpStub(dll, nm) {
+    if (!this.fs || !API[dll]) return null;
+    const file = /\./.test(dll) ? dll : dll + '.DLL'; let f = null;
+    for (const d of [...(this.loadDirs || []), 'C:\\WINDOWS\\SYSTEM', 'C:\\WINDOWS']) { try { f = this.fs.readFile(d + '\\' + file); break; } catch (_) { /* not there */ } }
+    if (!f || f.length < 0x40 || f[0] !== 0x4d || f[1] !== 0x5a) return null;
+    const dv = new DataView(f.buffer, f.byteOffset, f.byteLength), pe = dv.getUint32(0x3c, true);
+    if (pe + 0xf8 > f.length || dv.getUint32(pe, true) !== 0x4550) return null;
+    const opt = pe + 24, nsec = dv.getUint16(pe + 6, true), sh = opt + dv.getUint16(pe + 20, true), base = dv.getUint32(opt + 28, true);
+    const off = r => { for (let i = 0; i < nsec; i++) { const s = sh + 40 * i, va = dv.getUint32(s + 12, true), n = Math.max(dv.getUint32(s + 8, true), dv.getUint32(s + 16, true)); if (r >= va && r < va + n) { const o = dv.getUint32(s + 20, true) + r - va; return o < f.length ? o : -1; } } return -1; };
+    const str = o => { let s = ''; while (o >= 0 && o < f.length && f[o]) s += String.fromCharCode(f[o++]); return s; };
+    const ex = off(dv.getUint32(opt + 96, true)); if (ex < 0) return null;
+    const obase = dv.getUint32(ex + 16, true), nf = dv.getUint32(ex + 20, true), nn = dv.getUint32(ex + 24, true), fa = off(dv.getUint32(ex + 28, true)), na = off(dv.getUint32(ex + 32, true)), oa = off(dv.getUint32(ex + 36, true));
+    let k = -1;
+    if (nm[0] === '#') k = +nm.slice(1) - obase;
+    else for (let i = 0; i < nn; i++) if (str(off(dv.getUint32(na + 4 * i, true))) === nm) { k = dv.getUint16(oa + 2 * i, true); break; }
+    if (k < 0 || k >= nf) return null;
+    let rva = dv.getUint32(fa + 4 * k, true), c = off(rva);
+    if (c < 0 || c + 9 > f.length || f[c] !== 0x33 || f[c + 1] !== 0xc0 || f[c + 2] !== 0xb1) return null;
+    const cl = f[c + 3]; rva += 4; c += 4;
+    if (f[c] === 0xe9) { rva = (rva + 5 + dv.getInt32(c + 1, true)) >>> 0; c = off(rva); }
+    else if (f[c] === 0xeb) { rva = (rva + 2 + dv.getInt8(c + 1)) >>> 0; c = off(rva); }
+    // (KERNEL32's own: straight to its #17, no import between: Windows 98's GetVersionExW, LoadLibraryW, ...)
+    const def = () => { const ret = { 1: 1, 13: 50, 14: 120, 15: 0xffffffff }[cl >> 4] || 0; return [cl & 15, function () { this.lastError = 120; return ret; }]; };
+    if (/^KERNEL32(\.DLL)?$/i.test(dll) && 17 - obase >= 0 && 17 - obase < nf && rva === dv.getUint32(fa + 4 * (17 - obase), true)) return def();
+    if (c < 0 || c + 6 > f.length || f[c] !== 0xff || f[c + 1] !== 0x25) return null;
+    const slot = (dv.getUint32(c + 2, true) - base) >>> 0;   // (the IAT entry it jumps through: KERNEL32's #17)
+    for (let d = off(dv.getUint32(opt + 104, true)); d >= 0 && d + 20 <= f.length && dv.getUint32(d + 12, true); d += 20) {
+      const iat = dv.getUint32(d + 16, true), lut = off(dv.getUint32(d, true) || iat);
+      if (slot < iat || (slot - iat) & 3 || !/^KERNEL32(\.DLL)?$/i.test(str(off(dv.getUint32(d + 12, true))))) continue;
+      const v = lut < 0 ? 0 : dv.getUint32(lut + slot - iat, true);
+      if (v !== (0x80000000 | 17) >>> 0) return null;
+      return def();
+    }
+    return null;
   }
   setupStack(cmdline) {
     const t = LAYOUT.TIB;
@@ -1106,7 +1154,22 @@ let regStore = null, regQuiet = false;
 const regWatchers = new Set();   // the page's: each change, for the machines' copies in their workers
 // (regQuiet true: nothing told; 'remote': a change another person's machine made, from the shared session's server
 // (shared.js): this page's machines told, the store not, the server having it already)
-const regChanged = op => { if (regQuiet === true) return; if (regStore && !regQuiet) regStore.op(op); for (const f of regWatchers) f(op); };
+// RegNotifyChangeKeyValue's asks: each one's event set once, at the first change to its key (or under it, when it
+// watches the subtree) of the kinds it asked for (REG_NOTIFY_CHANGE_NAME 1: keys made or deleted; LAST_SET 4: values),
+// whoever's change it was, this machine's or one told it quietly (another machine's, the page's)
+const regNotifies = new Set();
+const regNotify = op => {
+  if (!regNotifies.size || !op || !op.path) return;
+  const kind = op.op === 'set' || op.op === 'del' ? 4 : 1, parent = op.path.slice(0, op.path.lastIndexOf('\\'));
+  for (const n of [...regNotifies]) {
+    // (a key made or deleted is a change to its parent's names)
+    const hit = op.path === n.path || (n.sub && op.path.startsWith(n.path + '\\')) || (kind === 1 && parent === n.path);
+    if (!(n.filter & kind) || !hit) continue;
+    regNotifies.delete(n);
+    if (n.proc.signal) n.proc.signal(n.ev); else n.ev.set = true;
+  }
+};
+const regChanged = op => { regNotify(op); if (regQuiet === true) return; if (regStore && !regQuiet) regStore.op(op); for (const f of regWatchers) f(op); };
 // each key's name as it was created (RegEnumKey gives it back so: SPOOLSS finds its "Windows 4.0" environment by a
 // case-sensitive compare); the registry's paths themselves are lower case
 const KEYNAME = new Map();
@@ -1370,8 +1433,10 @@ def('KERNEL32', 'GetModuleFileNameA', 3, function (h, buf, n) {
   h = this.hmod(h);
   const m = h && this.modules.find(x => x.base === h && x !== this.exe && x.kind !== 'ne');   // a DLL: its file in SYSTEM; another program: its file
   const other = m && m.name === 'EXE' && [this.pc0, ...(this.procs || new Map()).values()].find(x => x && x.exe === m);
-  // (a module named with its own extension, DESK.CPL or WINSPOOL.DRV, is that file; the others are .DLL)
-  return this.writeA(buf, other ? other.path || this.host.path : m ? `C:\\WINDOWS\\SYSTEM\\${/\.[A-Z0-9]{1,3}$/i.test(m.name) ? m.name : m.name + '.DLL'}` : this.pc.path || this.host.path || 'C:\\WINDOWS\\SCRNSAVE.SCR', n);
+  // (a module named with its own extension, DESK.CPL or WINSPOOL.DRV, is that file; the others are .DLL. A DLL mapped
+  // from its file is that file, wherever it was: TRIEDIT's registration looked for its type library in SYSTEM, where
+  // it is not, and failed ERROR_FILE_NOT_FOUND on Windows 98's first start)
+  return this.writeA(buf, other ? other.path || this.host.path : m && m.meta && m.meta.path ? m.meta.path : m ? `C:\\WINDOWS\\SYSTEM\\${/\.[A-Z0-9]{1,3}$/i.test(m.name) ? m.name : m.name + '.DLL'}` : this.pc.path || this.host.path || 'C:\\WINDOWS\\SCRNSAVE.SCR', n);
 });
 def('KERNEL32', 'ExitProcess', 'regs', function () {
   const code = this.r32(this.reg('esp') + 4), pc = this.pc;
@@ -1423,8 +1488,13 @@ def('KERNEL32', 'GetVersionExA', 1, function (p) {
 });
 def('KERNEL32', 'LoadLibraryA', 1, function (n) {
   // (a name in quotes, as RUNDLL32 passes the one on its command line: "C:\WINDOWS\SYSTEM\DESK.CPL")
-  const name = (this.readA(n) || '').trim().replace(/^"(.*)"$/, '$1').toUpperCase().replace(/^.*\\/, '').replace(/\.DLL$/, '');
-  const native = this.loadDll(name);
+  const given = (this.readA(n) || '').trim().replace(/^"(.*)"$/, '$1'), name = given.toUpperCase().replace(/^.*\\/, '').replace(/\.DLL$/, '');
+  // (a path: the file there, and the DLLs it imports looked for in its folder first, as LOAD_WITH_ALTERED_SEARCH_PATH
+  // has it. Its folder was dropped: IERNONCE's C:\PROGRA~1\INTERN~1\HMMAPI.DLL was looked for in SYSTEM and the
+  // Windows folder only, not found, and Windows 98's first start said it was not installed)
+  const dir = /\\/.test(given) ? given.replace(/\\[^\\]*$/, '') : null, was = this.loadDirs;
+  if (dir) this.loadDirs = [dir, ...(was || []).filter(d => d.toUpperCase() !== dir.toUpperCase())];
+  let native; try { native = this.loadDll(name); } finally { this.loadDirs = was; }
   // the process attaches to the library and to every DLL it uses, dependencies first, as Windows 95's LoadLibrary
   // does (a DLL another process loaded is attached to this one too: RUNDLL32 ran MMSYS.CPL on WINMM before the
   // shell's thread had attached WINMM, so WINMM's thunks to MMSYSTEM were not connected and it crashed in them)
@@ -1438,7 +1508,7 @@ def('KERNEL32', 'GetProcAddress', 2, function (h, name) {
   const native = this.modules.find(x => x.base === this.hmod(h));
   if (native) return native.exports.get(nm) || 0;
   const m = this.obj(0x0000ffff & h) || { name: 'KERNEL32' };
-  return API[m.name] && API[m.name][nm] ? this.thunkFor(m.name, nm) : 0;
+  return API[m.name] && this.importDef(m.name, nm) ? this.thunkFor(m.name, nm) : 0;
 });
 // ---- structured exceptions. RaiseException hands the exception to the handlers on the thread's chain (FS:[0]) as
 // the system's dispatcher does: each gets (record, its frame, context, dispatcher context) and answers continue
@@ -1593,10 +1663,13 @@ def('KERNEL32', 'VirtualAlloc', 4, function (a, n, type) {
   if (spare >= 0) { b = this.vspare.splice(spare, 1)[0].base; this.u8.fill(0, b, b + size); }
   else if (this.vmTop + size <= end) { b = this.vmTop; this.vmTop += size; }
   else { heap = this.alloc(size + 0xffff, true); b = (heap + 0xffff) & ~0xffff; }
-  // (pc: the process whose own program reserved it, the caller's return address in its image: it goes when that
-  // process ends. What a DLL reserves (SHELL32's, DESK.CPL's) is the DLL's, kept: the DLLs are one copy here, shared)
+  // (pc: the process whose own program reserved it, the caller's return address in its image, or a DLL whose
+  // writable data is each process's own (priv: MSVCRT's, OLEAUT32's from their files, whose heaps' 4 MB reservations
+  // their data holds): it goes when that process ends. What a DLL of one copy reserves (SHELL32's, DESK.CPL's) is the
+  // DLL's, kept. MSVCRT's heap in every RUNDLL32 and REGSVR32 was kept: Windows 98's first start ran out of memory)
   const pc = this.pc, e = pc && pc.exe, ret = this.r32(this.reg('esp'));
-  regions.set(b, { size, heap, pc: e && ret >= e.base && ret < e.base + (e.size || 0) ? pc : null });
+  const by = !(e && ret >= e.base && ret < e.base + (e.size || 0)) && (this.modules || []).find(x => !x.hidden && !x.segs && x.size && ret >= x.base && ret < x.base + x.size);
+  regions.set(b, { size, heap, pc: e && ret >= e.base && ret < e.base + (e.size || 0) ? pc : by && by.priv && pc ? pc : null });
   return b;
 });
 def('KERNEL32', 'VirtualFree', 3, function (p, n, type) {
@@ -1758,6 +1831,13 @@ def('KERNEL32', 'FindResourceA', 3, function (m, name, type) {
   const r = this.findResource(this.resName(type), this.resName(name), this.moduleFor(m)); if (!r) return 0;
   return this.newHandle({ kind: 'res', ...r });
 });
+// FindResourceW: Windows 98's KERNEL32 has it (its own code, not the common stub), names in UTF-16 or by number (RUNONCE's
+// call was a dead thunk, and RUNONCE ended on Windows 98's first start)
+def('KERNEL32', 'FindResourceW', 3, function (m, name, type) {
+  const n = p => (p >>> 16 ? this.readW(p) : p);
+  const r = this.findResource(n(type), n(name), this.moduleFor(m)); if (!r) return 0;
+  return this.newHandle({ kind: 'res', ...r });
+});
 // a loaded resource is its data's address, as on Win32 (code hands LoadResource's result on without LockResource)
 def('KERNEL32', 'LoadResource', 2, function (m, h) { const r = this.obj(h); return r && r.kind === 'res' ? r.addr : 0; });
 def('KERNEL32', 'LockResource', 1, function (h) { const r = this.obj(h); return r && r.kind === 'res' ? r.addr : h; });
@@ -1853,6 +1933,11 @@ function enumFormats(p, proc, list) {
 def('KERNEL32', 'EnumDateFormatsA', 3, function (proc, lc, flags) { return enumFormats(this, proc, DATE_FORMATS[flags & 3]); });
 def('KERNEL32', 'EnumTimeFormatsA', 3, function (proc) { return enumFormats(this, proc, TIME_FORMATS); });
 def('KERNEL32', 'GetSystemDefaultLCID', 0, () => 0x409);
+// the system's language, as its locale's (Windows 98's KERNEL32 reads it from a word of its data, the system locale's
+// LANGID: mov ax,[...]; ret); 27 of Windows 98's files import it, and none could start past it
+def('KERNEL32', 'GetSystemDefaultLangID', 0, () => 0x409);
+// lstrcatW: Windows 98's KERNEL32 has it (its own code, not the common stub): the source after the destination's text
+def('KERNEL32', 'lstrcatW', 2, function (d, s) { const t = (this.readW(d) || '') + (this.readW(s) || ''); for (let i = 0; i <= t.length; i++) this.w16(d + 2 * i, i < t.length ? t.charCodeAt(i) : 0); return d; });
 def('KERNEL32', 'IsValidCodePage', 1, cp => (cp === 1252 || cp === 437 ? 1 : 0));
 def('KERNEL32', 'GetLocaleInfoW', 4, () => 0);
 // the locale's settings, as Windows 95 has them for English (United States) (1033); LOCALE_NOUSEROVERRIDE (80000000h)
@@ -2323,8 +2408,14 @@ def('KERNEL32', 'DeviceIoControl', 8, function () { this.lastError = 50; return 
 def('KERNEL32', 'LoadLibraryExA', 3, function (name, f, fl) {
   if (fl & 2) {
     const path = this.readA(name) || '';
+    // (a bare name looked for as LoadLibrary looks: the search folders, SYSTEM, the Windows folder; a file not there is
+    // ERROR_FILE_NOT_FOUND, not a bad image)
+    const at = /\\|:/.test(path) ? [path] : [...(this.loadDirs || []), 'C:\\WINDOWS\\SYSTEM', 'C:\\WINDOWS'].map(d => d + '\\' + path);
+    let file = null;
+    for (const q of at) { try { file = this.fs.readFile(this.fs.resolve ? this.fs.resolve(q) : q); break; } catch (_) { /* not there */ } }
+    if (!file) { this.lastError = 2; return 0; }
     let pe = false;
-    try { const b = this.fs.readFile(this.fs.resolve ? this.fs.resolve(path) : path); const o = b.length > 0x40 ? b[0x3c] | b[0x3d] << 8 | b[0x3e] << 16 | b[0x3f] << 24 : 0; pe = b[0] === 0x4d && b[1] === 0x5a && o + 4 <= b.length && b[o] === 0x50 && b[o + 1] === 0x45 && !b[o + 2] && !b[o + 3]; } catch (_) { pe = false; }
+    try { const b = file; const o = b.length > 0x40 ? b[0x3c] | b[0x3d] << 8 | b[0x3e] << 16 | b[0x3f] << 24 : 0; pe = b[0] === 0x4d && b[1] === 0x5a && o + 4 <= b.length && b[o] === 0x50 && b[o + 1] === 0x45 && !b[o + 2] && !b[o + 3]; } catch (_) { pe = false; }
     if (!pe) { this.lastError = 193; return 0; }
   }
   return API.KERNEL32.LoadLibraryA[1].call(this, name);
@@ -2657,6 +2748,17 @@ def('ADVAPI32', 'RegEnumKeyA', 4, function (hk, i, buf, n) {
   if (i >= kids.length) return 259; this.writeA(buf, keyName(path, kids[i]), n); return 0;
 });
 def('ADVAPI32', 'RegFlushKey', 1, () => 0);                       // the registry store writes through
+// RegNotifyChangeKeyValue(hKey, bWatchSubtree, dwNotifyFilter, hEvent, fAsynchronous): the event set at the key's next
+// change (regNotify). Windows 98's ADVAPI32 has it (its own code, not KERNEL32's common stub); missing here, the call
+// (CRYPT32 imports it) was a dead thunk on Windows 98's first start. A synchronous ask (no event) is answered at once: the change it
+// would wait for is not waited on, as no thread here can be held in the call
+def('ADVAPI32', 'RegNotifyChangeKeyValue', 5, function (hk, sub, filter, ev, async) {
+  const path = regPath(this, hk, 0); if (!path || !REGISTRY.has(path)) return 6;   // ERROR_INVALID_HANDLE
+  if (!async) return 0;
+  const o = this.obj(ev); if (!o || o.kind !== 'event') return 6;
+  regNotifies.add({ proc: this, path, sub: !!sub, filter: filter & 5 || 5, ev: o });
+  return 0;
+});
 def('ADVAPI32', 'RegConnectRegistryA', 3, () => 53);              // another computer's registry: ERROR_BAD_NETPATH
 // user profiles' hives (MPRSERV, when profiles are enabled): this machine keeps one user's settings
 def('ADVAPI32', 'RegLoadKeyA', 3, () => 1); def('ADVAPI32', 'RegUnLoadKeyA', 2, () => 1); def('ADVAPI32', 'RegSaveKeyA', 3, () => 1);
