@@ -85,6 +85,9 @@
     { "id": "machine-fds-left-open", "file": "win95.js", "fix": "a machine's files on the page are closed when it ends (WININIT could replace SHELL.DLL and DDEML.DLL)",
       "from": "if (this.fds) { for (const fd of this.fds) { try { fs.close(fd); } catch (_) { /* closed already */ } } this.fds.clear(); }", "to": "",
       "killedBy": ["node tests/machinefds.test.mjs"], "case": null },
+    { "id": "followmode-by-sw", "file": "win95.js", "fix": "the page's screen buffers follow the machine's scan-out by their own size, so a travel to a moment of another size draws unsheared",
+      "from": " || !this.img || this.img.width !== s.w || this.img.height !== s.h)) this.screenSized", "to": ")) this.screenSized",
+      "killedBy": ["node tests/followmode.test.mjs"], "case": null },
     { "id": "gitref-climb", "file": "tools/gitref.py", "fix": "no /__ref/ path climbs out of the commit",
       "from": "if not m or '..' in m[1].split('/') or '..' in m[2].split('/'): return None", "to": "if not m: return None",
       "killedBy": ["python3 tests/gitref_test.py"], "case": null }

@@ -54,7 +54,9 @@ export const pageCheck = async (o = {}) => {
     step('digests equal, as at m1, the server too');
     const fc = frame('Cal'); frames.push(fc); const C = await upIn(fc.contentWindow);
     await until(() => C.windows().some(x => /Notepad/.test(x.title)), 30000, 'Notepad on Cal'); await sleep(4000);
-    if ((await C.braid.moments()).length || C.braid.line.gen !== 0) throw new Error('the joiner made a Braid intent again');
+    // (its own line: moments in its memory, and m1 anywhere; the origin's anchors from other runs are on every page's list)
+    const cm = (await C.braid.moments()).filter(m => m.here || m.name === 'm1');
+    if (cm.length || C.braid.line.gen !== 0) throw new Error(`the joiner made a Braid intent again: ${JSON.stringify(cm.map(m => m.name))}, generation ${C.braid.line.gen}`);
     const dc = await D(fc.contentWindow);
     if (JSON.stringify(dc.wins.filter(t => t !== 'Welcome')) !== JSON.stringify(want) || dc.reg !== da.reg) throw new Error(`the joiner's state: ${JSON.stringify(dc.wins)}`);
     step('Cal joined: the same state, no Braid intents made again');

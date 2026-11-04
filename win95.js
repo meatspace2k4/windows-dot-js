@@ -4013,7 +4013,10 @@ class RemoteApp extends NativeApp {
   // USER's windows as the machine reported them: the shell's windows for them, its screen, its cursor
   /** the page's canvases are the size of the mode the machine is in (a mode changed from inside it too: Display
    *  Properties) */
-  followMode(m) { const s = m && m.scan; if (s && s.bpp && (s.w !== this.sw || s.h !== this.sh)) this.screenSized(s.w, s.h); }
+  // (the page's buffers follow the screen the machine scans out, by their own size: a travel puts sw and sh back from
+  // the moment and leaves the canvases, the page's live things, as they were, so a moment taken at 706x859 arrived at
+  // from 640x480 had sw at 706 and a 640-wide image, and the 1416-byte lines were drawn 640 to a row, sheared)
+  followMode(m) { const s = m && m.scan; if (s && s.bpp && (s.w !== this.sw || s.h !== this.sh || !this.img || this.img.width !== s.w || this.img.height !== s.h)) this.screenSized(s.w, s.h); }
   frame(m) {
     if (this.system && bootLogo.on && m.list.length) bootLogoEnd();   // (Windows has a window up: the start-up screen goes)
     if (this.system && sharedNow()) {   // (its windows changed: the session's objects may have; win95.js osSoon)
