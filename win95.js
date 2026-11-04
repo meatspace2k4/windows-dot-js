@@ -3994,7 +3994,15 @@ class RemoteApp extends NativeApp {
         else if (m.method === 'setCwd') { fs.cwd = m.args[0]; v = null; }
         else if (m.method === 'vols') v = [...fs.vols.values()].map(x => ({ letter: x.letter, kind: x.kind, label: x.label, remote: !!x.remote, unc: x.unc || '', ready: x.ready, media: x.media || 0, sectors: x.sectors || 0, ...(x.audio ? { audio: x.audio } : {}) }));
         else if (typeof fs[m.method] !== 'function') throw new Error(`the file system has no ${m.method}`);
-        else v = fs[m.method](...m.args);
+        else {
+          v = fs[m.method](...m.args);
+          // (the descriptors the machine opens are its own, closed when it ends, as a process's handles are: Windows
+          // keeps a 16-bit module's file open for its discardable segments, and SHELL.DLL's and DDEML.DLL's stayed open
+          // on the page after Windows 95 shut down for Setup's restart, so WININIT could not replace them, a sharing
+          // violation each: "Windows could not upgrade the file")
+          if (m.method === 'open' && typeof v === 'number') (this.fds || (this.fds = new Set())).add(v);
+          else if (m.method === 'close' && this.fds) this.fds.delete(m.args[0]);
+        }
       } else if (m.target === 'host') {
         if (m.method === 'fatalText') v = fatalText(m.args[0]);
         else if (m.method === 'runApart') { runNative(m.args[0], m.args[1] || '', { apart: true }); v = true; }   // (it starts as the page goes on)
@@ -4138,6 +4146,7 @@ class RemoteApp extends NativeApp {
   exited(code, why, own) {
     if (!this.alive) return;
     this.alive = false; nativeApps.delete(this); machineWorkers.delete(this);
+    if (this.fds) { for (const fd of this.fds) { try { fs.close(fd); } catch (_) { /* closed already */ } } this.fds.clear(); }   // (its files, closed: serve)
     if (this.lanDetach) this.lanDetach();
     if (this.system) for (const a of machineWorkers) a.worker.postMessage({ t: 'netlink', port: null });
     if (clipOwner === this) clipOwner = null;

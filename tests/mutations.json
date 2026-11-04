@@ -82,6 +82,9 @@
     { "id": "tray-braid-wrong-op", "file": "session-tray.js", "fix": "the Braid icon's Mark Now marks",
       "from": "self.postMessage({ t: 'trayBraid', op: 'mark' })", "to": "self.postMessage({ t: 'trayBraid', op: 'anchor' })",
       "killedBy": ["node tests/sesstray.test.mjs"], "case": null },
+    { "id": "machine-fds-left-open", "file": "win95.js", "fix": "a machine's files on the page are closed when it ends (WININIT could replace SHELL.DLL and DDEML.DLL)",
+      "from": "if (this.fds) { for (const fd of this.fds) { try { fs.close(fd); } catch (_) { /* closed already */ } } this.fds.clear(); }", "to": "",
+      "killedBy": ["node tests/machinefds.test.mjs"], "case": null },
     { "id": "gitref-climb", "file": "tools/gitref.py", "fix": "no /__ref/ path climbs out of the commit",
       "from": "if not m or '..' in m[1].split('/') or '..' in m[2].split('/'): return None", "to": "if not m: return None",
       "killedBy": ["python3 tests/gitref_test.py"], "case": null }
