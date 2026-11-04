@@ -69,13 +69,29 @@ def share_op(sh, op, *a):
 ERRNO = {2: 'ENOENT', 20: 'ENOTDIR', 13: 'EACCES', 1: 'EACCES', 17: 'EEXIST', 66: 'ENOTEMPTY', 39: 'ENOTEMPTY', 21: 'EISDIR'}
 
 from claude_api import local_request, claude, fetch_page
-import src_api
+import src_api, gitref
 
 class H(http.server.SimpleHTTPRequestHandler):
+    def ref(self):
+        """a commit's build (gitref.py, /__ref/<rev>/...): its file answered (True), or the path made the server's own"""
+        r = gitref.split(self.path)
+        if not r: return False
+        if self.client_address[0] not in ('127.0.0.1', '::1'): self.send_error(403); return True   # (this computer's pages only)
+        b = gitref.blob(root, *r) if self.command in ('GET', 'HEAD') else None
+        if b is None:
+            q = self.path.find('?'); self.path = '/' + r[1] + (self.path[q:] if q >= 0 else ''); return False
+        self.send_response(200); self.send_header('Content-Type', self.guess_type(r[1])); self.send_header('Content-Length', str(len(b))); self.end_headers()
+        if self.command == 'GET': self.wfile.write(b)
+        return True
+    def do_HEAD(self):
+        if self.ref(): return
+        super().do_HEAD()
     def do_GET(self):
+        if self.ref(): return
         if self.path.startswith('/__session') and SESSIONS.handle(self, 'GET'): return
         super().do_GET()
     def do_POST(self):   # /__share: the shares' list, an operation on one ({ ok } or { err }), and the host's name
+        if self.ref(): return
         if self.path.startswith('/__session') and SESSIONS.handle(self, 'POST'): return
         if self.path.split('?')[0] == '/__fetch':   # (the Claude program's Browser pane: a web page as text, for this machine's own pages only)
             if not local_request(self): self.send_error(403); return
