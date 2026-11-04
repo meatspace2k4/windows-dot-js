@@ -2196,6 +2196,21 @@ def('KERNEL32', 'RemoveDirectoryA', 1, function (n) { return fsCall(this, () => 
 def('KERNEL32', 'GetCurrentDirectoryA', 2, function (n, b) { return this.writeA(b, this.fs.cwd.replace(/\\$/, (m, o) => (o > 2 ? '' : m)), n); });
 def('KERNEL32', 'SetCurrentDirectoryA', 1, function (n) { return fsCall(this, () => (this.fs.chdir(this.readA(n)), 1)); });
 def('KERNEL32', 'GetDriveTypeA', 1, function (n) { const l = ((this.readA(n) || this.fs.cwd)[0] || 'C').toUpperCase(); const v = this.fs.vols.get(l); return !v ? 1 : { removable: 2, fixed: 3, remote: 4, cdrom: 5 }[v.kind] || 3; });   // (a network drive's DRIVE_REMOTE)
+// QueryDosDeviceA(name, target, max), as Windows 98's KERNEL32 has it (BFF70000h+388A0h, behind its argument check):
+// no name, no buffer or a size over 104h is ERROR_INVALID_PARAMETER; COMn and LPTn are their own targets; "X:", a drive
+// there, is its SUBST path (INT 21h 71AAh, BH 2), and a drive not substituted (every drive here: none is) is
+// ERROR_FILE_NOT_FOUND, as anything else is; a target longer than the buffer ERROR_INSUFFICIENT_BUFFER. The count of
+// the characters written, the NUL not counted. Missing, PIDSET's call was a dead thunk and its C runtime's exception
+// handling ran it out of stack on Windows 98's first start
+def('KERNEL32', 'QueryDosDeviceA', 3, function (name, target, max) {
+  if (!name || !target || u32(max) > 0x104) { this.lastError = 87; return 0; }
+  const n = (this.readA(name) || '').toUpperCase();
+  // (a drive, there or not, is no SUBST drive here: not found, as a name that is no device)
+  const to = /^(COM[1-9]|LPT[1-9])$/.test(n) ? n : null;
+  if (to === null) { this.lastError = 2; return 0; }
+  if (to.length + 1 > u32(max)) { this.lastError = 0x7a; return 0; }
+  this.writeA(target, to, to.length + 1); return to.length;
+});
 def('KERNEL32', 'GetLogicalDrives', 0, function () { let m = 0; for (const v of this.fs.vols.values()) m |= 1 << (v.letter.charCodeAt(0) - 65); return m; });
 // GetLogicalDriveStringsA: the drives' root paths, each null-terminated, then a null ("A:\0C:\0D:\0" with backslashes);
 // the length needed when the buffer is too small (LINKINFO asks with none first)

@@ -97,6 +97,7 @@ W.Process.prototype.r0Idle = function () {
   const ms = due === null ? 200 : Math.min(due, 50);
   const got = lanRing ? B.frameWait(lanRing, ms) : (Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms), false);
   if (machine) { machine.vclock.now += ms * machine.vclock.scale; machine.poll(); }   // (the wait is the machine's time too)
+  if (machine && machine.detLog) machine.detLog.push(`r0idle ${ms} frame ${!!got} @${machine.vclock.now}`);
   return got || due !== null;
 };
 
@@ -145,7 +146,7 @@ class Machine {
   braidNamed() { const by = new Map(); for (const [v, k] of this.braidNames()) by.set(k, v); return name => by.get(name); }
   /** the properties of the machine's own object that are the host's live things, not the moment's: the step timer,
    *  the message channel, the input ring, the moments themselves, the clock's skew */
-  braidSkip(obj, k) { return (obj === this && (k === 'timer' || k === 'soonCh' || k === 'soonPending' || k === 'ring' || k === 'alive' || k === 'mods' || k === 'stepLog' || k === 'started' || k === 'fast' || k === 'until' || k === 'untilWait' || k === 'markWait')) || (obj === this.proc && (k === 'dynCache' || k === 'dynEnv')); }   // (the run-time translations: a cache of code, made again as the code runs; its wasm instances cannot be exported)
+  braidSkip(obj, k) { return (obj === this && (k === 'timer' || k === 'soonCh' || k === 'soonPending' || k === 'ring' || k === 'alive' || k === 'mods' || k === 'stepLog' || k === 'started' || k === 'fast' || k === 'until' || k === 'untilWait' || k === 'markWait' || k === 'detLog' || k === 'trailLog')) || (obj === this.proc && (k === 'dynCache' || k === 'dynFast' || k === 'dynEnv' || k === 'runHook')); }   // (the run-time translations: a cache of code, made again as the code runs; its wasm instances cannot be exported. dynFast, the block each address ran last, too: carried in a moment without its code, an arrival from an anchor called a block with no run)
   /** the lint's record of the machine now (braid.js lint) */
   braidProbe() {
     const p = this.proc, held = p.win16Held ? { who: typeof p.win16Held.who === 'object' ? 'thread ' + p.win16Held.who.id : String(p.win16Held.who), since: p.win16Held.since, cpu: p.win16Held.cpu, hung: !!p.win16Held.hung } : null;
@@ -755,6 +756,7 @@ class Machine {
       post({ t: 'held', held: { hung: p.win16Held.hung, who, since: p.win16Held.since }, stats: { ...p.stats } }); this.postScan();
     }   // (no USER while a thread holds the lock: the page learns it is held, and has the screen)
     this.lastStepEnd = performance.now();
+    if (this.detLog) { const th = p.thread16; this.detLog.push(`step @${this.vclock.now} slices ${p.stats.slices} th ${th ? th.id : 'main'} eip ${(p.cpu.eip.value >>> 0).toString(16)} esp ${(p.cpu.esp.value >>> 0).toString(16)} eax ${(p.cpu.eax.value >>> 0).toString(16)}`); if (this.detLog.length > 200000) this.detLog.splice(0, 100000); }
     // (a machine with work left (a thread's time ran out, or one holds the Win16Lock) steps again at once, through a
     // message rather than a timer, whose 16 ms left a third of a busy machine's time unused; an idle one waits 16 ms;
     // one run fast (cmd 'speed') steps again at once whatever it has to do)
@@ -1623,7 +1625,7 @@ class Machine {
         const r = BR.rebind([this], { meta: ex.meta, roots: ex.roots, blob: ex.blob instanceof Uint8Array ? ex.blob : new Uint8Array(ex.blob) }, { opaque: this.braidOpaque(), skip: (o, k) => this.braidSkip(o, k), protos, named: this.braidNamed() });
         // (a module's instance is this machine's own: one the export brought that this machine had not loaded gets
         // its instance from its module, as loading it made one; the run-time translations are made again as code runs)
-        const p = this.proc, S = self.W95SYSTEM || {}; p.dynCache = new Map();
+        const p = this.proc, S = self.W95SYSTEM || {}; p.dynCache = new Map(); p.dynFast = new Map();
         // (a disk's FAT view is of this machine's file system, which the moment does not carry: one made anew from the
         // moment had none, and the first read of C:'s sectors after the arrival (MSGSRV32's, as Windows 98 Setup ran on)
         // ended in "reading 'version'" of nothing)
@@ -1668,7 +1670,28 @@ class Machine {
           priv: (p.modules || []).filter(m => m.priv && m.priv.init).map(m => ({ name: m.name, cur: pidOf(m.priv.cur), curIsPc0: m.priv.cur === p.pc0, keys: [...m.priv.bufs.keys()].map(pidOf), keyPc0: m.priv.bufs.has(p.pc0), bytes: m.priv.ranges.reduce((n, [lo, hi]) => n + hi - lo, 0) })),
           arena: (p.arena || []).map(s => ({ lo: s.lo.toString(16), hi: s.hi.toString(16), cur: pidOf(s.cur), own: [...s.own].map(pidOf), bufs: [...s.bufs.keys()].map(pidOf) })) };
       }
+      // (a diagnostic: 'det' [true] starts the determinism log afresh, [false] ends it, [] reads it: each step's end with
+      // the machine's clock and where the processor was, and what came in from outside meanwhile)
+      case 'det': { if (args[0] === true) { this.detLog = []; return true; } if (args[0] === false) { const l = this.detLog || []; this.detLog = null; return l; } return (this.detLog || []).slice(args[1] || 0); }
       case 'trail': {   // (a diagnostic: the next n dispatches, each its address as a symbol, then the hook ends; [] reads what came; with the holder's clock: runT0, the budget, the clock)
+        // (args[1] 'ring': the last n kept, the hook left on, each with CS (its width, 32 or 16, from its access rights),
+        // SS:SP: what ran just before a fault)
+        if (args[0] && args[1] === 'ring') {
+          const n = args[0], log = this.trailLog = [];
+          // (raw, named as they are read: a symbol a dispatch is too slow to keep up)
+          // (it stops at the first fault after it starts whose reason matches args[2] (a pattern; any fault without one):
+          // the dispatches that led to it kept. 'all' runs on. The fault log is read by its last entry, as the page's
+          // probe empties it as it reads)
+          const why = args[2] && args[2] !== 'all' ? new RegExp(args[2], 'i') : null, stop = args[2] !== 'all', last = () => { const l = p.faultLog || []; return l[l.length - 1] || null; }, l0 = last();
+          // (args[3]: only the threads of the program whose path matches it)
+          const prog = args[3] ? new RegExp(args[3], 'i') : null;
+          p.runHook = eip => { const f = stop && last(); if (f && f !== l0 && (!why || why.test(f.why || ''))) { p.runHook = null; return; } if (prog && !(p.thread16 && p.thread16.pc && prog.test(p.thread16.pc.path || ''))) return; if (args[4] === 'first' && log.length >= n) { p.runHook = null; return; } log.push([eip >>> 0, p.cpu.cs.value & 0xffff, p.cpu.ss.value & 0xffff, p.cpu.esp.value >>> 0, p.thread16 ? p.thread16.id : 'main']); if (log.length > 2 * n) log.splice(0, n); };
+          this.trailN = n; return true;
+        }
+        if (args[0] === 0 && args[1] === 'ring') {   // (the ring read: its last n, each named)
+          const w = s => (s && p.r32(0x40000 + (s & 0xfff8)) & 0x400000 ? 32 : 16), l = (this.trailLog || []).slice(-(this.trailN || 200));
+          return l.map(([eip, cs, ss, esp, th]) => `${eip.toString(16)} ${p.whereOf(eip)} cs ${cs.toString(16)}/${w(cs)} ss:sp ${ss.toString(16)}/${w(ss)}:${esp.toString(16)} th ${th}`);
+        }
         if (args[0]) { const n = args[0], log = this.trailLog = []; p.runHook = eip => { log.push(`${(eip >>> 0).toString(16)} ${p.whereOf(eip)} t ${p.now().toFixed(1)} b ${p.cpu.budget.value} th ${p.thread16 ? p.thread16.id : 'main'}`); if (log.length >= n) p.runHook = null; }; return true; }
         const l = this.trailLog || [];
         const h = p.win16Held && typeof p.win16Held.who === 'object' ? p.win16Held.who : null;
@@ -1688,6 +1711,9 @@ let machine = null;
 const moments = new Map();   // (ring α: the moments of this machine, by name, held here outside the machine's graph)
 self.onmessage = e => {
   const m = e.data;
+  // (cmd 'det': what came in from outside, stamped with the machine's clock, beside each step's end: two runs from one
+  // moment compared find where the outside made them differ)
+  if (machine && machine.detLog && m.t !== 'cmd') machine.detLog.push(`in ${m.t}${m.name ? ' ' + m.name : ''} @${machine.vclock.now}`);
   if (m.t === 'start') {
     rpcSab = m.rpc; lanRing = m.o.lan || null; regStore.held = m.registry; W.regAttach(regStore); if (m.o.exp) Object.assign(self, m.o.exp);
     W.log.watch(line => { if (!line.posted) post({ t: 'log', line }); });   // (this machine's log lines, to the page's ring)

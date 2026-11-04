@@ -29,4 +29,14 @@ const { API } = window.W95Win32, { K16 } = window.W95NE16;
   assert.equal(fn.call(p, null, 5), 0, 'no name');
 }
 assert.equal(API.KERNEL32.GetSystemDefaultLangID[1](), 0x409);
+// QueryDosDeviceA, as Windows 98's: a port its own target, a drive (none substituted) not found, bad arguments refused
+{
+  const q = API.KERNEL32.QueryDosDeviceA[1]; let name = '', out = null;
+  const p = { lastError: 0, readA: () => name, writeA: (a, s) => { out = s; return s.length; } };
+  name = 'com1'; assert.equal(q.call(p, 1, 2, 260), 4); assert.equal(out, 'COM1', 'a port: its own name');
+  name = 'C:'; out = null; assert.equal(q.call(p, 1, 2, 260), 0); assert.equal(p.lastError, 2, 'a drive not substituted: not found'); assert.equal(out, null);
+  name = 'LPT1'; assert.equal(q.call(p, 1, 2, 4), 0); assert.equal(p.lastError, 0x7a, 'no room for it and its NUL');
+  assert.equal(q.call(p, 0, 2, 260), 0); assert.equal(p.lastError, 87);
+  assert.equal(q.call(p, 1, 2, 0x105), 0); assert.equal(p.lastError, 87, 'a size over 104h');
+}
 console.log('w98calls: ok');

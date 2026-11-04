@@ -148,6 +148,12 @@
     { "id": "ispeformat-any-mz", "file": "ne16.js", "fix": "IsPeFormat is yes only for a PE image, not any MZ file (RUNDLL hands a Win32 DLL to RUNDLL32)",
       "from": "return o + 4 <= b.length && b[o] === 0x50 && b[o + 1] === 0x45 && !b[o + 2] && !b[o + 3] ? 1 : 0;", "to": "return 1;",
       "killedBy": ["node tests/w98calls.test.mjs"], "case": null },
+    { "id": "dynfast-in-moment", "file": "worker.js", "fix": "the translator's fast-path cache is not taken into a moment (an arrival from an anchor ran a block with no run)",
+      "from": "k === 'dynCache' || k === 'dynFast' || k === 'dynEnv'", "to": "k === 'dynCache' || k === 'dynEnv'",
+      "killedBy": ["node tests/importthunks.test.mjs"], "case": null },
+    { "id": "querydosdevice-room", "file": "win32.js", "fix": "QueryDosDeviceA refuses a target that does not fit with its NUL (ERROR_INSUFFICIENT_BUFFER)",
+      "from": "if (to.length + 1 > u32(max)) { this.lastError = 0x7a; return 0; }", "to": "",
+      "killedBy": ["node tests/w98calls.test.mjs"], "case": null },
     { "id": "gitref-climb", "file": "tools/gitref.py", "fix": "no /__ref/ path climbs out of the commit",
       "from": "if not m or '..' in m[1].split('/') or '..' in m[2].split('/'): return None", "to": "if not m: return None",
       "killedBy": ["python3 tests/gitref_test.py"], "case": null }
