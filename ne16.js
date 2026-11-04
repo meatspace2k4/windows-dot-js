@@ -2206,6 +2206,7 @@ P.adapter = function () {
   if (this.et) return this.et;
   this.init16();
   const vramLin = this.alloc(VRAM_SIZE + 0x1000, true);
+  this.protect(vramLin, vramLin + VRAM_SIZE);   // (the frame buffer's ring-0 mapping: a program's stray write faults, it does not draw; win32.js PROT)
   return (this.et = { vramLin, vram: this.u8.subarray(vramLin, vramLin + VRAM_SIZE), flat: false, bank: 0, misc: 0x67, seq: new Uint8Array(256), gc: new Uint8Array(256), crtc: new Uint8Array(256),
     attr: new Uint8Array(256), idx: { seq: 0, gc: 0, crtc: 0, attr: 0 }, flip: 0, dacW: 0, dacR: 0, dac: new Uint8Array(768), pelMask: 0xff,
     hicolor: 0, hidden: 0, status: 0, mode: 3, w: 720, h: 400, bpp: 0, pitch: 0, dirty: true, ima: new Uint8Array(256), imaIdx: 0 });
@@ -3819,8 +3820,10 @@ def16('KERNEL', 115, 'x', 'v', function (sp) {
   const t = this.thread16, m = t && t.task && t.task.hInst && this.neByHandle(t.task.hInst);
   log('info', (m && m.name) || (t && t.pc && t.pc.path ? t.pc.path.replace(/^.*\\/, '') : 'KERNEL'), (sp >>> 16 ? this.readA(this.lin(sp)) || '' : '').replace(/\r?\n$/, ''));
 });
+// the environment Windows started with (WIN.COM's, AUTOEXEC.BAT's sets), as KERNEL and the VMM give it
+const DOS_ENV = 'COMSPEC=C:\\COMMAND.COM\0PATH=C:\\WINDOWS;C:\\WINDOWS\\COMMAND\0TEMP=C:\\WINDOWS\\TEMP\0windir=C:\\WINDOWS\0\0';
 def16('KERNEL', 131, '', 'l', function () {                                            // GetDOSEnvironment
-  if (!this.dosEnv) { const s = 'COMSPEC=C:\\COMMAND.COM\0PATH=C:\\WINDOWS;C:\\WINDOWS\\COMMAND\0TEMP=C:\\WINDOWS\\TEMP\0windir=C:\\WINDOWS\0\0';
+  if (!this.dosEnv) { const s = DOS_ENV;
     const g = this.globalAlloc16(0, s.length + 16), a = this.gblock(g).lin; for (let i = 0; i < s.length; i++) this.u8[a + i] = s.charCodeAt(i); this.dosEnv = this.gsel(g); }
   return u32(this.dosEnv << 16);
 });
@@ -3851,7 +3854,7 @@ def16('KERNEL', 166, 'sw', 'w', function (cmd, show) {   // WinExec: the started
   if (t && t.execWait) {   // the call resumed: the program it started earlier, waited for at the thread's top
     const pc = t.execWait;
     if (!this.processIdle(pc) && this.now() < t.execUntil) return YIELD;
-    t.execWait = null; return this.hinst16(pc.exe.base);
+    t.execWait = null; return this.hinst16(pc.exe.base, pc.exe);
   }
   const r = this.host && this.host.exec ? this.host.exec(cmd, show) : 2;
   if (typeof r !== 'object') return r;
@@ -3859,7 +3862,7 @@ def16('KERNEL', 166, 'sw', 'w', function (cmd, show) {   // WinExec: the started
   // the new process runs as the caller gives up its slices (the machine goes on: its screen, its other threads),
   // until it is idle or 60 s have passed; inside a call, where the caller cannot give up its slice, it runs here
   if (t && this.atThreadTop()) { t.execWait = r; t.execUntil = this.now() + 60000; return YIELD; }
-  this.runUntilIdle(r); return this.hinst16(r.exe.base);
+  this.runUntilIdle(r); return this.hinst16(r.exe.base, r.exe);
 });
 def16('KERNEL', 169, 'w', 'l', () => 0x01000000);                                     // GetFreeSpace: 16 MB
 def16('KERNEL', 328, '', 'jmp', function () { return this.retf16(0); });              // _DebugOutput (cdecl): kept only under a debugger
@@ -4194,7 +4197,7 @@ const pdw = (p, pid, off) => {
     // machine's own where the machine is the system's and has no program) has fWin16Process (8) in its flags, as
     // KERNEL32 marks the process Win16 programs run in (GRPCONV asks it of the process behind a Progman window)
     const win16 = pid === SYS_PID || (pid === MAIN_PID && !!(p.host && p.host.system));
-    p.procDword.set(pid, { ...GPD, '-4': win16 ? 8 : 0, '-48': exe ? p.hinst16(exe.base) : 0 });
+    p.procDword.set(pid, { ...GPD, '-4': win16 ? 8 : 0, '-48': exe ? p.hinst16(exe.base, exe) : 0 });
   }
   return p.procDword.get(pid);
 };
@@ -4249,24 +4252,30 @@ let nextPid = 0x60;
 P.spawn = function (file, module, meta, path, cmdline) {
   const pc = { pid: nextPid, path, exitCode: null, tdb: newTdb(this, { name: String(path || '').replace(/^.*\\/, '').replace(/\.[^.]*$/, '') }), started: false, parent: (this.thread16 && this.thread16.pc) || null };   // (parent: the process whose thread starts it)
   nextPid += 4;
-  // a second instance of a program already running here: one image, as code, with each process's own copy of its
-  // data (as each Win32 process has its own address space), the running one's put by as the new one's is laid out;
-  // the copy in place is the one of the process whose thread runs (imgUse)
-  const live = [...(this.procs || new Map()).values()].find(x => x.exe.base === meta.base && x.exitCode === null);
+  // its image where its header says, in a view of its own wherever another process's program is there (win32.js
+  // arenaClaim): a second instance of a program already running, or another program linked at the same base. A second
+  // instance keeps one image record, as code, with each process's own copy of its data
+  const procs = [...(this.procs || new Map()).values()], same = x => x.exitCode === null && x.exe && x.exe.base === meta.base && String(x.path || '').toUpperCase() === String(path || '').toUpperCase();
+  const live = procs.find(same);
+  const lo = meta.base, hi = lo + ((live && live.exe.size) || peImageSize(file) || meta.size || 0);
+  // (the records of programs that have ended, where this one goes: the dispatcher would take their code for its own)
+  this.modules = this.modules.filter(m => m.name !== 'EXE' || !(m.base < hi && lo < m.base + (m.size || 1)) || procs.some(x => x.exe === m && x.exitCode === null));
+  this.arenaClaim(pc, lo, hi);
+  const exe0 = this.byName.get('EXE');
   if (live) {
-    const rec = live.exe, g = rec.inst || (rec.inst = { cur: live, bufs: new Map() }), exe0 = this.byName.get('EXE');
-    if (g.cur) g.bufs.set(g.cur, this.u8.slice(rec.base, rec.base + rec.size));
     const fresh = this.loadImage(file, module, meta, 'EXE');
     this.modules = this.modules.filter(m => m !== fresh); if (exe0) this.byName.set('EXE', exe0);
-    pc.exe = rec; g.cur = pc;
-    // the thread that started it goes on with its own process's data in place (the shell starting Explorer from the
-    // Start menu), the new instance's put by until its own thread runs
-    const by = this.thread16 && this.thread16.pc; if (by && by !== pc && by.exe === rec) this.imgUse(by);
+    pc.exe = live.exe;
   } else {
     // (its DLLs the bundle does not carry looked for in its own folder first, win32.js diskDll)
     this.loadDirs = [String(path || '').replace(/\\[^\\]*$/, '')];
     try { pc.exe = this.loadImage(file, module, meta, 'EXE'); } finally { this.loadDirs = null; }
   }
+  (this.procs || (this.procs = new Map())).set(pc.pid, pc);
+  for (const s of this.arena || []) if (s.own.has(pc)) this.arenaHide(s);   // (its image the one in place, the others' put by)
+  // the thread that started it goes on with its own process's view in place (the shell starting Explorer from the
+  // Start menu), the new process's put by until its own thread runs
+  const by = this.thread16 && this.thread16.pc; if (by && by !== pc) this.imgUse(by);
   pc.cmdPtr = this.alloc(cmdline.length + 1); this.writeA(pc.cmdPtr, cmdline);
   pc.cmdLine = cmdline;   // (as it was started: the program can change its copy, RUNDLL32 cuts its at the comma)
   Object.assign(pc, this.startClock(), { origin: this.nextOrigin || 'here' }); this.effect('exec', cmdline);
@@ -4275,12 +4284,30 @@ P.spawn = function (file, module, meta, path, cmdline) {
   (this.procs || (this.procs = new Map())).set(pc.pid, pc);
   return pc;
 };
-/** the image data of process pc in place, when its image is shared with another instance (spawn) */
+/** a Win32 thread's stack, with STACK_GUARD bytes of pages below it that ring 3 has no access to (win32.js PROT), as
+ *  Windows reserves a guard below each thread's stack: runaway recursion meets them as a stack fault (win32.js trap)
+ *  instead of running on down through the heap, as Paint's C++ unwind ran down over NETBEUI's data and the frame buffer */
+const STACK_GUARD = 0x10000;
+P.stackAlloc = function (t) {
+  const raw = this.alloc(t.stack + STACK_GUARD + 0x1000, false), lo = (raw + 0xfff) & ~0xfff;
+  this.protect(lo, lo + STACK_GUARD);
+  t.stackRaw = raw; t.stackBase = lo + STACK_GUARD; this.u8.fill(0, t.stackBase, t.stackBase + t.stack);
+};
+P.stackFree = function (t) {
+  if (t.stackRaw) { const lo = t.stackBase - STACK_GUARD; this.protect(lo, lo + STACK_GUARD, false); this.free(t.stackRaw); }
+  else this.free(t.stackBase);
+  t.stackBase = t.stackRaw = 0;
+};
+/** process pc's view of the arena in place, where its image overlaps another process's (spawn, win32.js arenaUse) */
 P.imgUse = function (pc) {
   this.dllUse(pc);   // (and its private-arena DLLs' data, win32.js; the system's for a thread of no started process)
-  const rec = pc && pc.exe, g = rec && rec.inst; if (!g || g.cur === pc || !g.bufs.has(pc)) return;
-  if (g.cur) g.bufs.set(g.cur, this.u8.slice(rec.base, rec.base + rec.size));
-  this.u8.set(g.bufs.get(pc), rec.base); g.bufs.delete(pc); g.cur = pc;
+  this.arenaUse(pc);
+};
+/** the size of a PE file's image (SizeOfImage), 0 for no PE file */
+const peImageSize = f => {
+  if (!f || f.length < 0x40) return 0;
+  const at = (f[0x3c] | f[0x3d] << 8 | f[0x3e] << 16 | f[0x3f] << 24) >>> 0;
+  return at + 0x54 <= f.length ? (f[at + 0x50] | f[at + 0x51] << 8 | f[at + 0x52] << 16 | f[at + 0x53] << 24) >>> 0 : 0;
 };
 /** WinExec's start, as Win16's loader gives it: the new process runs until its main thread first waits for input
  *  (or ends), so it has made its windows by the time WinExec returns */
@@ -4304,7 +4331,7 @@ P.threadExitUser = function (t) {
   if (!sig || !t.queue || t.userExited) return;
   t.userExited = true;
   const by = this.thread16; this.thread16 = t;
-  try { this.user16(391, [['l', 0x20], ['l', t.id], ['l', 3], ['w', this.hinst16(exe.base)]]); } catch (e) { console.error(e); } finally { this.thread16 = by; }
+  try { this.user16(391, [['l', 0x20], ['l', t.id], ['l', 3], ['w', this.hinst16(exe.base, exe)]]); } catch (e) { console.error(e); } finally { this.thread16 = by; }
 };
 /** a fault in a Windows 3.x program the system runs (a task of its own, not the system's first task): that program
  *  ends and is named in the fault dialog, as Windows 95 closes the one program; the system goes on. Charged to the
@@ -4345,7 +4372,7 @@ P.endProcess = function (pc, code) {
   // 300h, USIG_PROCESS_DESTROY 400h): the windows and queues of its threads go there. A thread's end is signalled on
   // that thread while it still is one (its stack and information block not yet freed), as KERNEL32 signals it from
   // the exiting thread: USER's DestroyWindow goes on only for a window of the current thread's queue
-  const u = pc.started && pc.exe && this.ne && this.ne.get('USER'), sig = u && u.meta && this.neExport(u, 391), h = sig && this.hinst16(pc.exe.base);
+  const u = pc.started && pc.exe && this.ne && this.ne.get('USER'), sig = u && u.meta && this.neExport(u, 391), h = sig && this.hinst16(pc.exe.base, pc.exe);
   const signal = (s, id) => this.user16(391, [['l', s], ['l', id], ['l', 3], ['w', h]]);
   if (sig) try {
     const by = this.thread16;
@@ -4356,7 +4383,7 @@ P.endProcess = function (pc, code) {
   } catch (e) { console.error(e); }
   for (const t of (this.threadsById || new Map()).values()) if (t.pc === pc && t !== this.thread16 && t.state !== 'done') {
     t.state = 'done'; this.wakeWaiters(t); if (this.win16Held && this.win16Held.who === t) this.win16Held = null;
-    if (t.flat && t.stackBase) { this.free(t.stackBase); this.free(t.tib); t.stackBase = t.tib = 0; }   // (its stack and thread information block go with it)
+    if (t.flat && t.stackBase) { this.stackFree(t); this.free(t.tib); t.tib = 0; }   // (its stack and thread information block go with it)
   }
   // the address space it reserved (VirtualAlloc) goes with it, as its private arena does on Windows 95
   for (const [b, r] of this.vregions || new Map()) if (r.pc === pc) { this.vregions.delete(b); if (r.heap) this.free(r.heap); else (this.vspare || (this.vspare = [])).push({ base: b, size: r.size }); }
@@ -4372,7 +4399,7 @@ P.endProcess = function (pc, code) {
   if (this.procs) this.procs.delete(pc.pid);
   (this.exitCodes || (this.exitCodes = new Map())).set(pc.pid, pc.exitCode);   // (GetExitCodeProcess after it has gone)
   this.wakeWaiters(pc);   // (the threads waiting on its process handle)
-  const g = pc.exe && pc.exe.inst; if (g) { g.bufs.delete(pc); if (g.cur === pc) g.cur = null; }   // (its copy of a shared image's data goes)
+  this.arenaForget(pc);   // (its view of the arena goes)
   this.dllForget(pc);   // (and its copies of its DLLs' data)
   if (pc.onExit) pc.onExit(pc.exitCode);
 };
@@ -4381,7 +4408,7 @@ P.endProcess = function (pc, code) {
 // attached; flags Win32 and GUI): its per-process state, its global classes among it, is made there
 P.pcStart = function (pc) {
   pc.started = true;
-  const u = this.ne.get('USER'), sig = u && u.meta && this.neExport(u, 391), h = this.hinst16(pc.exe.base);
+  const u = this.ne.get('USER'), sig = u && u.meta && this.neExport(u, 391), h = this.hinst16(pc.exe.base, pc.exe);
   const signal = (s, id) => { if (sig) this.user16(391, [['l', s], ['l', id], ['l', 3], ['w', h]]); };
   signal(0x100, pc.pid); signal(0x200, pc.pid); signal(0x10, pc.main.id);
   for (const m of this.importClosure(pc.exe)) if (m !== pc.exe) this.attach(m);   // DllMain(DLL_PROCESS_ATTACH) of each DLL its image uses, dependencies first
@@ -4438,7 +4465,7 @@ P.threads16 = function (nested = false, only = null) {
       if (t.state === 'new' && t.flat) {
         // a Win32 thread (CreateThread): its own stack and thread information block, then its procedure called
         // with its parameter in flat mode; returning to the sentinel ends it
-        t.stackBase = this.alloc(t.stack); t.tib = this.alloc(0x100);
+        this.stackAlloc(t); t.tib = this.alloc(0x100);
         this.u8.copyWithin(t.tib, LAYOUT.TIB, LAYOUT.TIB + 0x100);
         this.w32(t.tib, 0xffffffff); this.w32(t.tib + 4, t.stackBase + t.stack); this.w32(t.tib + 8, t.stackBase); this.w32(t.tib + 0x18, t.tib);
         this.w16(t.tib + 0x28, 0);
@@ -4480,7 +4507,7 @@ P.threads16 = function (nested = false, only = null) {
         if (this.trapped && t.pc && this.noMain) { t.pc.trapped = this.trapped; (this.pcFaults || (this.pcFaults = [])).push({ pc: t.pc, why: this.trapped }); this.trapped = null; this.endProcess(t.pc, 0xffffffff); }
         else if (this.trapped && this.taskFault(t, this.trapped)) this.trapped = null;
         if (t.pc) this.pcThreadEnded(t); else { this.threadExitUser(t); this.taskModuleEnded(t); } if (r !== 0 && this.trapped) log('warn', 'ne16', `thread ${t.id} ${this.trapped}`); if (t.onDone) t.onDone(t);
-        if (t.flat && t.stackBase) { this.free(t.stackBase); this.free(t.tib); t.stackBase = t.tib = 0; }   // (its stack and thread information block go with it)
+        if (t.flat && t.stackBase) { this.stackFree(t); this.free(t.tib); t.tib = 0; }   // (its stack and thread information block go with it)
       }   // onDone: the host's, for a thread it started
     } catch (e) {
       if (e instanceof window.W95Win32.FaultError) {   // a processor exception nothing in it handled
@@ -4960,16 +4987,21 @@ K('MapHInstLS_PN', 0, function () { const h = this.reg('eax'); return h ? (this.
 /** whether this process runs the native USER.EXE (then Win32 module handles need 16-bit counterparts) */
 P.nativeUser16 = function () { const u = this.ne && this.ne.get('USER'); return !!(u && u.meta); };
 /** the 16-bit handle USER uses for a Win32 module (as Windows 95 gives each one), made on first use */
-P.hinst16 = function (h32) {
+P.hinst16 = function (h32, mod = this.moduleFor(h32)) {
   this.h16of = this.h16of || new Map(); this.h32of = this.h32of || new Map();
-  if (this.h16of.has(h32)) return this.h16of.get(h32);
+  // (a program's by its image: two programs at one base, each in its process's view, are two modules to USER, their
+  // classes each their own)
+  const owners = this.h16owner || (this.h16owner = new Map()), was = owners.get(h32), exe = mod && mod.name === 'EXE' && mod.base === h32;
+  const key = exe && was && was !== mod && [...(this.procs || new Map()).values()].some(x => x.exitCode === null && x.exe === was) ? mod : h32;
+  if (exe && key === h32) owners.set(h32, mod);
+  if (this.h16of.has(key)) return this.h16of.get(key);
   // a module database as KERNEL makes one for a Win32 module: 'NE', and flags with NE_FFLAGS_WIN32 (10h) and single
   // data, plus the library bit for a DLL
-  const mod = this.moduleFor(h32), pe = mod && mod.base === h32 ? this.r32(h32 + 0x3c) : 0;
+  const pe = mod && mod.base === h32 ? this.r32(h32 + 0x3c) : 0;
   const dll = pe && (this.r16(h32 + pe + 0x16) & 0x2000);
   const mdb = this.alloc(0x40); this.u8.set([0x4e, 0x45], mdb); this.w16(mdb + 0x0c, 0x0011 | (dll ? 0x8000 : 0));
   const sel = this.allocSels(mdb, 0x40);
-  this.h16of.set(h32, sel); this.h32of.set(sel & 0xfffe, h32);
+  this.h16of.set(key, sel); this.h32of.set(sel & 0xfffe, h32);
   return sel;
 };
 /** KERNEL32 starting a Win32 program under the native USER: USER's InitApp (USER.5) for its task, as a 16-bit program
@@ -5206,7 +5238,10 @@ K('CreateFileA', 7, function (name, ...rest) {
   const id = VXD_FILES[m[1].toUpperCase()] || (loaded && loaded.id);
   if (!id) { this.lastError = 2; return 0xffffffff; }
   const vx = this.vxdById && this.vxdById(id);   // a recompiled VxD (vmm.js) is asked first (DIOC_OPEN)
-  if (vx) { const e = this.vxdIoctl(vx, 0, 0, 0, 0, 0, 0, 0); if (e) { this.lastError = e; return 0xffffffff; } }
+  // (DIOC_OPEN, which is DIOC_GETVERSION's code: with an output buffer, as VTDAPI writes its version there unasked; with
+  // none it wrote 400h at address 0)
+  const out = this.diocOpenOut || (this.diocOpenOut = this.alloc(16));
+  if (vx) { const e = this.vxdIoctl(vx, 0, 0, 0, out, 16, 0, 0); if (e) { this.lastError = e; return 0xffffffff; } }
   return this.newHandle({ kind: 'vxd', name: m[1].toUpperCase(), id });
 });
 const devIoctl = API.KERNEL32.DeviceIoControl[1];
@@ -5326,5 +5361,5 @@ P.nativeFontDC = function (font) {
 const NAMES16 = { KERNEL: {}, ...NAMES16_INIT };
 /** a personality module's export names: the CD module's own (the system bundle's names16) and the ones listed here */
 const names16 = mod => ({ ...((window.W95SYSTEM && window.W95SYSTEM.names16) || {})[mod], ...NAMES16[mod] });
-window.W95NE16 = { K16, NAMES16, names16, L, def16, INTS, VXD_API, CR, regStr, KERNEL_EQUATES };
+window.W95NE16 = { K16, NAMES16, names16, L, def16, INTS, VXD_API, CR, regStr, KERNEL_EQUATES, DOS_ENV };
 })();

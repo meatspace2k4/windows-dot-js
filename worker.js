@@ -138,6 +138,8 @@ class Machine {
     this.saverDlls = new Map([...dlls].filter(([n]) => ['CRTDLL', 'GLU32'].includes(n)));
     const m = this;
     const host = {
+      memWatch: this.memwatch ? this.memwatch.split(',').map(v => parseInt(v, 16)) : null,
+      dynAt: this.dynat ? this.dynat.split(',').map(v => (/^[0-9a-f]+$/i.test(v) ? parseInt(v, 16) : v)) : null,
       fs, width: this.sw, height: this.sh, path: this.path, now: () => performance.now(), lan: !!(this.system && lanRing), system: !!this.system, vmPages: 2048, shared: true,   // (lan: the network stack and its card, as the system's machine has them; system: the Win16 tasks' process is its own)
       cursor: () => ({ x: m.mouse.x, y: m.mouse.y }), surface: (h, w, hh, win, pc) => {
         const canvas = new OffscreenCanvas(Math.max(1, w), Math.max(1, hh));
@@ -184,19 +186,27 @@ class Machine {
     if (!p.runLevel || !cpu.ss) return this.pollIn();
     return p.asInterrupt(() => this.pollIn());
   }
+  /** an error from ring 0 the poll ran (a VxD's time-out, VKD's key): a processor exception there is the machine's to
+   *  answer (VWIN32's blue screen, step), and the run it interrupted goes no further; printed and passed over, the
+   *  system ran on with the VxD's state broken (NETBEUI's time-out faulted, ran again from 0, and wrote over the screen) */
+  r0Fault(e) {
+    if (!(e instanceof W.FaultError)) { console.error(e); return; }
+    this.proc.faulted(e.fault); throw e;
+  }
   pollIn() {
     const p = this.proc; let r;
     // the timer's interrupt: the VMM's global time-outs that are due run now, unless ring 0 or its critical section has
     // the processor (a guest running on inside a call still gets them, as a hung Windows still runs REBOOT's)
     if (p.depth && !p.r0Depth && !p.vxdCrit && p.vxdTimeOuts && p.vxdTimeOuts.size && !this.inTimer) {
       this.inTimer = true; const d = p.depth; p.depth = 0;
-      try { p.vxdRunTimeOuts(); } catch (e) { console.error(e); } finally { p.depth = d; this.inTimer = false; }
+      try { p.vxdRunTimeOuts(); } catch (e) { this.r0Fault(e); } finally { p.depth = d; this.inTimer = false; }
     }
     while ((r = B.ringTake(this.ring))) {
+      this.ringTaken = (this.ringTaken || 0) + 1;   // (each frame says how many: the page paces a script's drag on it)
       if (r[0] === B.KEY) {
         const scan = r[1] & 0xff, ext = !!(r[1] & 0x100), up = !!(r[1] & 0x200), toUser = !!(r[1] & 0x400), mods = { shift: !!(r[2] & 1), ctrl: !!(r[2] & 2), alt: !!(r[2] & 4) };
         if (this.lagLog) this.lagLog.push({ k: 'key-in', vk: r[3], up, t: Date.now() });
-        let taken = false; try { taken = scan && p.vkdKey ? p.vkdKey(scan, ext, up, mods) : false; } catch (e) { console.error(e); }
+        let taken = false; try { taken = scan && p.vkdKey ? p.vkdKey(scan, ext, up, mods) : false; } catch (e) { this.r0Fault(e); }
         if (!taken && toUser && r[3]) this.queueKey(r[3], scan | (ext ? 0x100 : 0), up, mods);
         if (!taken && toUser) p.dispatchInput(up ? W.WM.KEYUP : W.WM.KEYDOWN, r[3] || scan, 0);
         if (!up) this.stopFullSavers();
@@ -262,7 +272,9 @@ class Machine {
         this.movesFed = (this.movesFed || 0) + 1;
       }
       const m = this.mouseq.shift(); this.lastFed = performance.now();
-      try { if (this.lagLog) this.lagLog.push({ k: 'mouse-fed', f: m[0] & 0xff, x: m[1], y: m[2], t: Date.now() }); if (m[0] & 0x2a) { p.personActed = true; if (p.personInput) try { p.personInput(...m); } catch (e) { console.error(e); } } p.mouseEvent16(...m); this.recordStroke(m); } catch (e) { console.error(e); }   // (a button pressed: this machine's person has done something, ne16.js intentQuiet)
+      // (a button pressed: this machine's person has done something, ne16.js intentQuiet; a processor exception in the
+      // drivers' handling is the machine's to answer, r0Fault)
+      try { if (this.lagLog) this.lagLog.push({ k: 'mouse-fed', f: m[0] & 0xff, x: m[1], y: m[2], t: Date.now() }); if (m[0] & 0x2a) { p.personActed = true; if (p.personInput) try { p.personInput(...m); } catch (e) { this.r0Fault(e); } } p.mouseEvent16(...m); this.recordStroke(m); } catch (e) { this.r0Fault(e); }
     }
     this.postStroke(false);
   }
@@ -502,16 +514,16 @@ class Machine {
     if (!this.keyq.length || p.depth || this.ring0() || this.focusing) return;   // (a window being brought to the front first: 'focus')   // (the keyboard and mouse drivers report at interrupt time)
     try { if (p.inputPending()) return; } catch (e) { console.error(e); }   // USER has input not yet taken
     for (let n = 0; this.keyq.length && n < 16; n++) {
-      const k = this.keyq.shift(); if (!n && p.personInput) try { p.personInput(); } catch (e) { console.error(e); } p.personActed = true;
+      const k = this.keyq.shift(); if (!n && p.personInput) try { p.personInput(); } catch (e) { this.r0Fault(e); } p.personActed = true;
       if (this.lagLog) this.lagLog.push({ k: 'key-fed', vk: k[0], up: k[2], t: Date.now() });
-      try { p.keyEvent16(k[0], k[1] & 0xff, k[2], k[1] > 0xff); } catch (e) { console.error(e); }
+      try { p.keyEvent16(k[0], k[1] & 0xff, k[2], k[1] > 0xff); } catch (e) { this.r0Fault(e); }
     }
   }
   step() {
     clearTimeout(this.timer); this.timer = 0;
     if (!this.alive) return;
     const p = this.proc, t0 = performance.now();
-    this.poll();
+    try { this.poll(); } catch (e) { if (!(e instanceof W.FaultError)) throw e; }   // (recorded by r0Fault, answered below)
     if (p.r0Runs && p.r0Runs.length) {
       try { p.r0Step(); } catch (e) { console.error(e && e.stack ? e.stack : e); this.exited(-1, e.message); return; }
       this.sendText();
@@ -525,8 +537,8 @@ class Machine {
       const [w, h] = this.wantMode; this.wantMode = null; const r = this.setMode(w, h); if (r) post({ t: 'mode', r }); else this.wantMode = [w, h];
     }
     if (!p.win16Held && p.k32CloseRequest && p.k32CloseRequest()) post({ t: 'closeProgram' });   // REBOOT's APC: Close Program
-    this.feedMouse(); this.feedKeys();
     try {
+      this.feedMouse(); this.feedKeys();   // (a fault in the drivers' handling of it, r0Fault, answered below as any other)
       // (four slices a step; up to ten, within 12 ms of the step, while input waits to go in: a person drawing, or
       // another machine's stroke being fed, gets the program its moves at the pace they come)
       const busy = () => this.mouseq.length || this.rs || (this.strokes && this.strokes.length);
@@ -597,7 +609,8 @@ class Machine {
     post({ t: 'frame', list: [...nw.list, ...win32], active: nw.active, capture: nw.capture, cursorOn: this.cursorOn,
       scan: { w: a.w, h: a.h, pitch: a.pitch || a.w, bpp: a.bpp, dacMode: a.hicolor, attr: Array.from(a.attr.subarray(0, 0x15)), vram: a.vram.byteOffset }, dac: Uint8Array.from(a.dac), bg,
       sprite: sp ? { x: sp.x, y: sp.y, px: sp.px, py: sp.py, cpp: sp.cpp, row: sp.row, at: sp.bits.byteOffset } : null,
-      stats: { ...p.stats }, held: p.win16Held ? { hung: p.win16Held.hung } : null }, pixels);
+      stats: { ...p.stats }, held: p.win16Held ? { hung: p.win16Held.hung } : null,
+      input: { taken: this.ringTaken || 0, mouse: this.mouseq.length } }, pixels);   // (the input it has taken from the ring, and the mouse events not yet fed)
     this.clip();
   }
   sendText(force) {
@@ -641,8 +654,6 @@ class Machine {
     if (!d && this.isNE(file)) { const r = p.winExec16(fs.realpath(file), arg || '', 1); this.kick(); return r > 32 ? { ok: true } : r; }
     if (!d) return 11;
     if (p.pc0 && p.pc0.exe && p.pc0.exe.base === d.meta.base) return 8;   // (the machine's own program: one instance)
-    const live = [...(p.procs || new Map()).values()].some(x => x.exe.base === d.meta.base);   // (then the instances share its image: P.spawn)
-    if (!live) p.modules = p.modules.filter(x => x.base !== d.meta.base);
     let pc;
     try {
       const mod = d.dynamic ? null : d.modSync || (d.modSync = new WebAssembly.Module(b64bytes(d.wasm))), real = fs.realpath(file);
@@ -657,9 +668,22 @@ class Machine {
     this.kick();
     return pc;
   }
-  // a Win32 program the bundle does not carry: its image as the loader maps one (the base its header prefers when
-  // nothing is there, else, when it can be relocated, in the arena the bundle's images leave free), its code translated
-  // as it runs (dyn.js); null when it is no Win32 program or has no room
+  // a Win32 program the bundle does not carry: its image as the loader maps one (the base its header prefers, in its
+  // process's own view where other programs are; else, when it can be relocated, in the arena the system's modules
+  // leave free), its code translated as it runs (dyn.js); null when it is no Win32 program or has no room
+  /** a 32-bit DLL's export names by ordinal from its .def (EXPORTS name @n) or .map file (its exports' "ordinal name"
+   *  lines), looked for where its loader looks for the DLL; empty when there is neither (cmd 'watch') */
+  ordNames(m) {
+    if (m.ordNames) return m.ordNames;
+    const out = m.ordNames = new Map(), read = f => { try { return W95FS.decode(fs.readFile(f)); } catch (_) { return null; } };
+    for (const dir of ['C:\\WINDOWS\\SYSTEM', 'C:\\WINDOWS', ...[...(this.proc.procs || new Map()).values()].map(c => String(c.path || '').replace(/\\[^\\]*$/, ''))]) {
+      const def = read(`${dir}\\${m.name}.DEF`), map = !def && read(`${dir}\\${m.name}.MAP`);
+      if (def) { let on = false; for (const l of def.split(/\r?\n/)) { if (/^\s*EXPORTS\b/i.test(l)) { on = true; continue; } if (/^\s*[A-Z]+\s*$/.test(l)) on = false; const x = on && /^\s*([^\s=;][^\s=]*?)(?:\s*=\s*\S+)?\s+@\s*(\d+)/.exec(l); if (x) out.set(+x[2], x[1]); } }
+      if (map) { let on = false; for (const l of map.split(/\r?\n/)) { if (/ordinal\s+name/i.test(l)) { on = true; continue; } const x = on && /^\s*(\d+)\s+(\S+)/.exec(l); if (x) out.set(+x[1], x[2]); } }
+      if (def || map) break;
+    }
+    return out;
+  }
   isNE(file) {
     let f; try { f = fs.readFile(file); } catch (_) { return false; }
     if (f.length < 0x40 || f[0] !== 0x4d || f[1] !== 0x5a) return false;
@@ -672,7 +696,9 @@ class Machine {
     const pe = dv.getUint32(0x3c, true); if (pe + 0x78 > f.length || dv.getUint32(pe, true) !== 0x4550) return null;
     const opt = pe + 24, pref = dv.getUint32(opt + 28, true), size = dv.getUint32(opt + 56, true), ep = dv.getUint32(opt + 16, true);
     const relocs = !(dv.getUint16(pe + 22, true) & 1) && dv.getUint32(opt + 96 + 5 * 8 + 4, true) > 0;
-    const p = this.proc, base = p.imageRoom(pref, size, relocs);   // (win32.js: 16-bit modules' segments counted too)
+    // (its preferred base over other programs' images, in a view of its own, as each Windows 95 process has its own
+    // arena: win32.js arenaClaim. Refused only where the system's modules are, 16-bit modules' segments counted too)
+    const p = this.proc, base = p.imageRoom(pref, size, relocs, true);
     if (!base) { W.log('warn', 'spawn', `${file}: no room for its image at ${pref.toString(16)} (${relocs ? 'relocatable' : 'no relocations'})`); return null; }
     return { dynamic: true, meta: { base, entry: base + ep, textLo: 0, textHi: 0, blocks: [], size } };
   }
@@ -948,7 +974,7 @@ class Machine {
     const dmod = p.ne && p.ne.get('DISPLAY'), dseg = dmod && dmod.segs && dmod.segs[dmod.segs.length - 1], dsb = dseg && p.selValid(dseg.sel) ? p.selBase(dseg.sel) : 0;
     const display = dsb ? { sel: dseg.sel, chip81e: p.r16(dsb + 0x81e), bpp2d: p.r16(dsb + 0x2d), mem7a: p.r32(dsb + 0x7a), w: [...p.u8.slice(dsb, dsb + 0x40)].map(b => b.toString(16).padStart(2, '0')).join('') } : null;
     const metrics = p.depth || p.thread16 ? null : (() => { try { return [0, 1, 4].map(i => p.user16(179, [['w', i]]).ax); } catch (e) { return e.message; } })();   // GetSystemMetrics: CXSCREEN, CYSCREEN, CYCAPTION
-    return { crits, metrics, display, nic, sizes: { threads: p.threadsById ? p.threadsById.size : 0, entryHooks: p.entryHooks ? p.entryHooks.size : 0, retPend: p.retPend ? [...p.retPend.values()].reduce((n, l) => n + l.length, 0) : 0, tdbs: (p.tdbList || []).length, remoteClosed: p.remoteClosed ? p.remoteClosed.size : 0, lagLog: this.lagLog ? this.lagLog.length : 0, watchLog: (p.watchLog || []).length, effects: (p.effects || []).length, effectSeen: p.effectSeen ? p.effectSeen.size : 0, handles: p.handles ? p.handles.size : 0, dynCache: p.dynCache ? p.dynCache.size : 0, traceLog: (this.traceLog || []).length, keyq: this.keyq.length, mouseq: this.mouseq.length, procs: p.procs ? p.procs.size : 0, selUsed: p.selUsed ? p.selUsed.reduce((n, v) => n + v, 0) : 0 }, tdbs: (p.tdbList || []).map(s => ({ sel: s, name: p.selValid(s) ? p.readA(p.selBase(s) + 0xf2, 8) : null })), thhook: p.thhookLin ? Array.from(p.u8.subarray(p.thhookLin, p.thhookLin + 0x20)) : null, jsDlls: p.jsDlls ? Object.fromEntries(p.jsDlls) : null, nullJumps: (p.nullJumps || []).map(j => ({ ...j, fromIn: j.from !== undefined ? where(j.from) : undefined })),
+    return { crits, metrics, display, nic, stats: { ...p.stats, upMs: Math.round(performance.now()) }, sizes: { threads: p.threadsById ? p.threadsById.size : 0, entryHooks: p.entryHooks ? p.entryHooks.size : 0, retPend: p.retPend ? [...p.retPend.values()].reduce((n, l) => n + l.length, 0) : 0, tdbs: (p.tdbList || []).length, remoteClosed: p.remoteClosed ? p.remoteClosed.size : 0, lagLog: this.lagLog ? this.lagLog.length : 0, watchLog: (p.watchLog || []).length, effects: (p.effects || []).length, effectSeen: p.effectSeen ? p.effectSeen.size : 0, handles: p.handles ? p.handles.size : 0, dynCache: p.dynCache ? p.dynCache.size : 0, traceLog: (this.traceLog || []).length, keyq: this.keyq.length, mouseq: this.mouseq.length, procs: p.procs ? p.procs.size : 0, selUsed: p.selUsed ? p.selUsed.reduce((n, v) => n + v, 0) : 0 }, tdbs: (p.tdbList || []).map(s => ({ sel: s, name: p.selValid(s) ? p.readA(p.selBase(s) + 0xf2, 8) : null })), thhook: p.thhookLin ? Array.from(p.u8.subarray(p.thhookLin, p.thhookLin + 0x20)) : null, jsDlls: p.jsDlls ? Object.fromEntries(p.jsDlls) : null, nullJumps: (p.nullJumps || []).map(j => ({ ...j, fromIn: j.from !== undefined ? where(j.from) : undefined })),
       mods32: (p.modules || []).filter(m => m.meta && m.meta.textHi).map(m => [m.name, m.base >>> 0, m.meta.textLo >>> 0, m.meta.textHi >>> 0]), thunkFails: p.thunkFails || [], thunkConns: p.thunkConns || [], gl: [...(p.glContexts || [])].map(c => ({ w: c.canvas && c.canvas.width, h: c.canvas && c.canvas.height, lost: !c.g || c.g.isContextLost(), err: c.g ? c.g.getError() : null, dc: c.dc ? { native: !!c.dc.native, bpp: c.dc.bpp, w: c.dc.w, h: c.dc.h, hwnd: c.dc.hwnd, hdc: c.dc.hdc, gdi: c.dc.native ? (() => {
       const g = p.byName.get('GDI32'), f = n => g.exports.get(n), r = p.alloc(32); try {
         const bm = p.call(f('GetCurrentObject'), [c.dc.hdc, 7]), got = bm ? p.call(f('GetObjectA'), [bm, 24, r]) : 0, type = p.call(f('GetObjectType'), [c.dc.hdc]);
@@ -1210,8 +1236,12 @@ class Machine {
           if (want) { for (const [ord, a] of m.exports) { const nm = byOrd.get(ord) || `#${ord}`; if (want.test(nm) && lin(a)) names.push([nm, lin(a)]); } }
           else { const key = /^#?\d+$/.test(String(name)) ? +String(name).replace('#', '') : String(name), a = lin(p.neExport(m, key)); if (a) names.push([typeof key === 'number' ? byOrd.get(key) || `#${key}` : key, a]); }
         } else {
-          if (want) { for (const [nm, a] of m.exports) if (want.test(nm) && typeof a === 'number' && a) names.push([nm, a >>> 0]); }
-          else { const a = m.exports.get(name); if (a) names.push([name, a >>> 0]); }
+          // (an export by ordinal only, as MFC30's all are: named from a .def or .map file beside the DLL when there is
+          // one, else by its ordinal with the modules that import it)
+          const named = this.ordNames(m), label = nm => !/^#\d+$/.test(nm) ? nm : named.get(+nm.slice(1)) || (m.importers && m.importers.has(nm) ? `${nm} (${[...m.importers.get(nm)].join(', ')})` : nm);
+          const hasName = new Set([...m.exports].filter(([nm]) => nm[0] !== '#').map(([, a]) => a));
+          if (want) { for (const [nm, a] of m.exports) if (typeof a === 'number' && a && !(nm[0] === '#' && hasName.has(a)) && want.test(label(nm))) names.push([label(nm), a >>> 0]); }
+          else { const k = [...named].find(([, v]) => v === name), a = m.exports.get(k ? `#${k[0]}` : name); if (a) names.push([label(k ? `#${k[0]}` : name), a >>> 0]); }
         }
         if (!names.length) return false;
         const log = () => p.watchLog || (p.watchLog = []), t0 = performance.now();
@@ -1253,6 +1283,15 @@ class Machine {
       }
       case 'trace': { if (args[0]) this.traceOn(args[0], args[1]); const l = this.traceLog || []; return l.splice(0); }   // (the calls traced so far; a thread regexp, and one for the import names, starts a trace)
       case 'faults': return (p.faultLog || []).splice(0);   // (a diagnostic: the code the machine found none at, and why)
+      // a script of the machine's (a stand-in: claude-app.js, shell32.js, ...) loaded again from the page's server into
+      // the running machine, no restart: its def()s replace the functions in place (win32.js def), so the thunks made
+      // already call the new ones; what the script keeps across a reload is its own affair (claude-app.js keeps its state)
+      case 'reload': {
+        const f = String(args[0] || '');
+        if (!/^[\w.-]+\.js$/.test(f)) throw new Error(`reload: a script of the site's, by name (${f})`);
+        importScripts(`${f}?reload=${Date.now()}`);
+        return { reloaded: f };
+      }
       case 'kick': return;
       case 'exit': this.exited(args[0] || 0); return;
     }

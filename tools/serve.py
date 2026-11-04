@@ -66,6 +66,7 @@ def share_op(sh, op, *a):
 ERRNO = {2: 'ENOENT', 20: 'ENOTDIR', 13: 'EACCES', 1: 'EACCES', 17: 'EEXIST', 66: 'ENOTEMPTY', 39: 'ENOTEMPTY', 21: 'EISDIR'}
 
 from claude_api import local_request, claude, fetch_page
+import src_api
 
 class H(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
@@ -78,6 +79,9 @@ class H(http.server.SimpleHTTPRequestHandler):
             try: q = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')
             except ValueError: self.send_error(400); return
             fetch_page(self, q); return
+        if self.path.split('?')[0] == '/__src':   # (the project's own files, CLAUDE.EXE's SRC:\: this machine's own pages only)
+            if not local_request(self): self.send_error(403); return
+            src_api.handle(self, root); return
         if self.path.split('?')[0] == '/__claude':
             if not local_request(self): self.send_error(403); return
             try: q = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')

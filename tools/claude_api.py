@@ -15,7 +15,9 @@ SYSTEM = ('You are Claude, talking with the user through the Claude desktop app 
 TOOLS_NOTE = (' You have the Claude desktop app\'s own tools (the ccd_* tools), acting on this Windows 95 system: its sessions, '
               'their task lists and next-step box, the sidebar, panes, windows, settings and folders. Use them when the user asks '
               'for something they do; a tool the app would ask the user about shows a message box, and its result says what they chose. '
-              'Read, Write, Edit, Glob and Grep are Claude Code\'s file tools, on the C: drive only; Bash runs MS-DOS commands.')
+              'Read, Write, Edit, Glob and Grep are Claude Code\'s file tools, on the C: drive and on SRC:\\, the project\'s own code '
+              '(this Windows 95\'s scripts, where the page\'s server serves the checkout); Bash runs MS-DOS commands; JavaScript runs '
+              'in the page, with the scripting API (win95.*) and win95.reloadScript to load changed code without a restart.')
 def setting(env, path):
     if os.environ.get(env): return os.environ[env]
     try:
@@ -53,7 +55,9 @@ def claude(h, q):
     tools = tools_of(q)
     model = q.get('model') if q.get('model') in MODELS else 'claude-opus-5-5'
     effort = q.get('effort') if q.get('effort') in EFFORTS else 'medium'
-    h.send_response(200); h.send_header('Content-Type', 'application/x-ndjson'); h.send_header('Cache-Control', 'no-store'); h.end_headers()
+    # (no length and no chunking: the stream ends with the connection, which an HTTP/1.1 server would otherwise keep open)
+    h.send_response(200); h.send_header('Content-Type', 'application/x-ndjson'); h.send_header('Cache-Control', 'no-store'); h.send_header('Connection', 'close'); h.end_headers()
+    h.close_connection = True
     key = api_key()
     if q.get('info'): line({'t': 'info', 'key': bool(key), 'workspace': bool(workspace_id())}); return   # (the account menu: whether there is a key and a workspace, never either)
     if not key: line({'t': 'error', 'e': f'No API key: set ANTHROPIC_API_KEY or put the key in {KEY_FILE}'}); return

@@ -272,6 +272,7 @@ def flag_use_def(ins):
         if cnt is not None and cnt.type == X.X86_OP_IMM and cnt.imm & 31: return 0, d
         return d, d
     if mn in ('rcl', 'rcr'): return CF, CF | OF
+    if mn == 'salc': return CF, 0
     if mn in ('bt', 'bts', 'btr', 'btc', 'clc', 'stc', 'cmc'): return (CF if mn == 'cmc' else 0), CF
     if mn in ('lahf', 'pushfd', 'pushf', 'adc', 'sbb'): return ALLF, 0
     if mn == 'popf': return 0, ALLF
@@ -366,6 +367,7 @@ class Loc:
         self.f, self.op = f, op; self.size = size or op.size; self.addr = None
         if op.type == X.X86_OP_MEM:
             self.addr = f.i(); emit_addr(f, op.mem); f.ls(self.addr)
+            if not (op.mem.base == X.X86_REG_ESP and not op.mem.index): guard(f, self.addr)   # (ESP's frame: the stack's own pages)
     def read(self, signed=False):
         f, op, sz = self.f, self.op, self.size
         if op.type == X.X86_OP_IMM:
@@ -415,6 +417,20 @@ def mmio_store(f, addr, sz, code=0x2000000):
 # ... and each load from there asks the host first, trap(address, 0x3000000 | size): the device puts what the read
 # returns there (a VGA's read mode, loading its latches) before the load takes it
 def mmio_load(f, addr, sz): mmio_store(f, addr, sz, 0x3000000)
+# ring-3 code (a Win32 program's or DLL's, build: not a driver's or a VxD's): each access's page is looked up in the host's
+# protection map (win32.js LAYOUT.PROT, a byte a 4 KB page, nonzero where ring 3 has no access: the null page, the
+# VxDs', the frame buffer's) before it is made; a protected one is a page fault at the instruction, trap(address,
+# 4000000h, 4000010h for a write) with the instruction in the eip global, and the block goes on where the host says
+RING3 = False
+PROT = 0x05500000
+def pe_off(data): return int.from_bytes(data[0x3c:0x40], 'little')
+def guard(f, addr, write=False):
+    if not RING3 or segmode(): return
+    f.lg(addr).c(12).e(OPS['shr_u']).e(0x2d, 0, uleb(PROT)).e(0x04, 0x40)
+    f.c(CUR.addr).gs('eip').lg(addr).c(0x4000010 if write else 0x4000000).e(0x10, uleb(IMP['trap'])).gg('eip').e(RETURN).e(0x0b)
+def guard_reg(f, reg, write=False):
+    if not RING3 or segmode(): return
+    t = f.i(); f.gg(reg).ls(t); guard(f, t, write)
 # ---- segmented (NE) mode. CUR is the instruction being translated.
 CUR = None
 def segmode(): return CUR is not None and CUR.segbase is not None
@@ -535,7 +551,7 @@ class Translator:
     TRACE = False
     def __init__(self, pe, blocks):
         self.pe, self.blocks = pe, blocks
-        self.unsupported = {}
+        self.unsupported = {}; self.unsupported_at = []
     def block(self, start, lst):
         f = Fn()
         if self.TRACE: f.c(start).e(0x10, uleb(IMP['btrace']))
@@ -550,6 +566,7 @@ class Translator:
         except Unsupported as e:
             key = '%s %s' % (ins.mn, ins.i.op_str) if 'reg' in str(e) or 'segment' in str(e) else ins.mn
             self.unsupported[key] = self.unsupported.get(key, 0) + 1
+            self.unsupported_at.append(ins.addr)   # (where: tools/staticmap.py keeps the ones its code reaches)
             # #UD at the instruction: the host dispatches the exception and leaves the continuation in the eip global
             f = Fn(); f.c(ins.addr).c(1).e(0x10, uleb(IMP['trap'])); f.gg('eip').e(RETURN)
         return f
@@ -735,7 +752,11 @@ class Translator:
     def x_call(self, f, ins, ops, live):
         t = f.i(); self.target(f, ins, ops[0]); f.ls(t)
         if segmode(): push_val(f, lambda: f.c(ins.next - ins.segbase), opsize(ins))
-        else: push_val(f, lambda: f.c(ins.next))
+        else:
+            # (the return address's slot checked as the stack grows: a thread's stack has protected pages below it, and
+            # runaway recursion meets them as a stack fault rather than running on down through the heap)
+            if RING3: s = f.i(); f.gg('esp').c(4).e(OPS['sub']).ls(s); guard(f, s, True)
+            push_val(f, lambda: f.c(ins.next))
         f.lg(t).e(RETURN); return True
     def x_ret(self, f, ins, ops, live):
         t = f.i()
@@ -1075,6 +1096,36 @@ class Translator:
         f.lg(s).e(OPS['eqz']).gs('zf')
         if k == 'ctz': d.write(lambda: (f.lg(s), f.e(OPS['ctz']), d.read(), f.lg(s), f.e(SELECT)))
         else: d.write(lambda: (f.c(31), f.lg(s), f.e(OPS['clz']), f.e(OPS['sub']), d.read(), f.lg(s), f.e(SELECT)))
+    def x_cmpxchg(self, f, ins, ops, live):
+        """compare the accumulator with the destination (flags as cmp): equal, the source into the destination; else
+        the destination into the accumulator (CRTDLL's, which tools/staticmap.py found reachable)"""
+        d, s = Loc(f, ops[0]), Loc(f, ops[1]); sz = ops[0].size; m = MASK[sz]
+        a, b, r = f.i(), f.i(), f.i()
+        f.gg('eax').c(m).e(OPS['and_']).ls(a); d.read(); f.c(m).e(OPS['and_']).ls(b)
+        f.lg(a).lg(b).e(OPS['sub']).c(m).e(OPS['and_']).ls(r)
+        set_szp(f, r, sz, live | ZF)
+        if live & CF: f.lg(a).lg(b).e(OPS['lt_u']).gs('cf')
+        if live & OF: f.lg(a).lg(b).e(OPS['xor']).lg(a).lg(r).e(OPS['xor']).e(OPS['and_']).c(8 * sz - 1).e(OPS['shr_u']).c(1).e(OPS['and_']).gs('of')
+        f.lg(a).lg(b).e(OPS['eq']).e(0x04, 0x40)
+        d.write(lambda: s.read())
+        f.e(0x05)
+        if sz == 4: f.lg(b).gs('eax')
+        else: f.gg('eax').c(~m).e(OPS['and_']).lg(b).e(OPS['or_']).gs('eax')
+        f.e(0x0b)
+    def x_salc(self, f, ins, ops, live):
+        """AL = CF ? FFh : 0, the undocumented one"""
+        f.gg('eax').c(~0xff).e(OPS['and_']).c(0xff).c(0).gg('cf').e(SELECT).e(OPS['or_']).gs('eax')
+    def x_cpuid(self, f, ins, ops, live):
+        """the processor as the machine is one (Get_Machine_Info: an ISA 486), an i486DX4 that has CPUID: leaf 0 the
+        highest leaf, 1, and "GenuineIntel"; leaf 1 family 4, model 8, and the FPU; any other leaf 0s (SYSDM's)"""
+        f.gg('eax').e(OPS['eqz']).e(0x04, 0x40)
+        f.c(1).gs('eax').c(0x756e6547).gs('ebx').c(0x49656e69).gs('edx').c(0x6c65746e).gs('ecx')
+        f.e(0x05)
+        f.gg('eax').c(1).e(OPS['eq']).e(0x04, 0x40)
+        f.c(0x480).gs('eax').c(0).gs('ebx').c(0).gs('ecx').c(1).gs('edx')
+        f.e(0x05)
+        f.c(0).gs('eax').c(0).gs('ebx').c(0).gs('ecx').c(0).gs('edx')
+        f.e(0x0b, 0x0b)
     def x_xadd(self, f, ins, ops, live):
         d, s = Loc(f, ops[0]), Loc(f, ops[1]); a, b = f.i(), f.i()
         d.read(); f.ls(a); s.read(); f.ls(b)
@@ -1096,6 +1147,8 @@ class Translator:
         step = f.i()
         f.c(-sz).c(sz).gg('df').e(SELECT).ls(step)      # DF=1 decrements
         def one():
+            if kind in ('movs', 'lods', 'cmps', 'outs'): guard_reg(f, 'esi')
+            if kind in ('movs', 'stos', 'ins', 'scas', 'cmps'): guard_reg(f, 'edi', kind in ('movs', 'stos', 'ins'))
             if kind == 'movs':
                 f.gg('edi').gg('esi').mem(LOAD[sz]).mem(STORE[sz])
                 f.gg('esi').lg(step).e(OPS['add']).gs('esi'); f.gg('edi').lg(step).e(OPS['add']).gs('edi')
@@ -1272,6 +1325,28 @@ class Translator:
         if mn in ('fnstcw', 'fstcw'): loc = Loc(f, mems[0]); f.lg(loc.addr).gg('fcw').mem(0x3b); return
         if mn == 'fldcw': loc = Loc(f, mems[0]); f.lg(loc.addr).mem(0x2f).gs('fcw'); return
         if mn in ('fninit', 'finit'): f.c(0).gs('ftop').c(0x37f).gs('fcw').c(0).gs('fsw'); return
+        if mn in ('fnstenv', 'fstenv', 'fnsave', 'fsave', 'fldenv', 'frstor'):
+            # (the unit's environment, 14 bytes at a 16-bit operand size and 28 at 32: control word, status word with TOP,
+            # tags, then the last instruction's and operand's pointers, none kept (0); fnsave and frstor the eight
+            # registers after it, ST(0) first, 10 bytes each; fnsave then initializes the unit as fninit does. MSVCRT20's
+            # and CALC's floating-point state saves, which tools/staticmap.py found reachable)
+            loc = Loc(f, mems[0]); a = loc.addr; w = 2 if opsize(ins) == 2 else 4; env = 7 * w
+            at = lambda off: (f.lg(a), f.c(off), f.e(OPS['add']))
+            if mn in ('fnstenv', 'fstenv', 'fnsave', 'fsave'):
+                for k in range(7): at(k * w); f.c(0); f.mem(STORE[w])
+                at(0); f.gg('fcw'); f.mem(0x3b)
+                at(w); f.gg('fsw').c(~0x3800).e(OPS['and_']).gg('ftop').c(11).e(OPS['shl']).e(OPS['or_']); f.mem(0x3b)
+                at(2 * w); f.c(0xffff); f.mem(0x3b)
+                if mn in ('fnsave', 'fsave'):
+                    for k in range(8): at(env + 10 * k); st_get(f, k); f.e(0x10, uleb(IMP['f80store']))
+                    f.c(0).gs('ftop').c(0x37f).gs('fcw').c(0).gs('fsw')
+                return
+            t = f.i()
+            at(0); f.mem(0x2f).gs('fcw')
+            at(w); f.mem(0x2f).ls(t); f.lg(t).c(11).e(OPS['shr_u']).c(7).e(OPS['and_']).gs('ftop'); f.lg(t).c(~0x3800).e(OPS['and_']).gs('fsw')
+            if mn == 'frstor':
+                for k in range(8): st_set(f, k, lambda k=k: (at(env + 10 * k), f.e(0x10, uleb(IMP['f80load']))))
+            return
         if mn == 'fincstp': fpop(f); return
         if mn == 'fdecstp': f.gg('ftop').c(1).e(OPS['sub']).c(7).e(OPS['and_']).gs('ftop'); return
         unary = {'fchs': lambda: f.e(D['neg']), 'fabs': lambda: f.e(D['abs']), 'fsqrt': lambda: f.e(D['sqrt']),
@@ -1626,6 +1701,7 @@ def build_ne(path, out, base, selbase, lookup, registry):
                 autodata=ne.autodata, entry=[ne.entry_seg, ne.entry_off], imports=ne.mods, exports=exports, names=ne.names, fixups=fixups,
                 textLo=text_lo, textHi=text_hi, lookup=lookup, blocks=order, thunks=reg['thunks'], **({'mmio': list(MMIO)} if MMIO else {}),
                 layout=dict(sentinel=SENTINEL, thunkBase=THUNK_BASE, thunk16Base=THUNK16_BASE, thunk16Sel=THUNK16_SEL, ldt=LDT_BASE, fpuBase=FPU_BASE, pages=MEM_PAGES))
+    meta['unsupported'] = tr.unsupported; meta['unsupportedAt'] = sorted(tr.unsupported_at)   # (the instructions translated as #UD, by kind and where: tools/staticmap.py)
     json.dump(meta, open(out + '.json', 'w'))
     print('%s: %d insns, %d blocks, wasm %d bytes, %d fixups, %d thunks' % (ne.name, len(insns), len(blocks), len(mod), len(fixups), len(reg['thunks'])))
     if tr.unsupported: print('  unsupported:', dict(sorted(tr.unsupported.items(), key=lambda kv: -kv[1])[:25]))
@@ -1678,6 +1754,8 @@ def assemble(bodies, text_lo, text_hi, lookup):
 def build(path, out, base=None, lookup=0x06000000):
     data = open(path, 'rb').read()
     pe = PE(data)
+    # (a Win32 program or DLL runs at ring 3; a native image, a network card's NDIS driver, at ring 0)
+    global RING3; RING3 = int.from_bytes(data[pe_off(data) + 24 + 68:pe_off(data) + 24 + 70], 'little') != 1
     if base is not None and base != pe.base: pe.rebase(base)
     insns, entries = decode_all(pe)
     global CODE_BYTES; CODE_BYTES = frozenset(a for i in insns.values() for a in range(i.addr, i.next))
@@ -1692,6 +1770,7 @@ def build(path, out, base=None, lookup=0x06000000):
     open(out + '.wasm', 'wb').write(mod)
     meta = dict(sha256=hashlib.sha256(data).hexdigest(), base=pe.base, prefBase=pe.pref, entry=pe.entry, textLo=text_lo, textHi=text_hi,
                 lookup=lookup, blocks=order, layout=dict(sentinel=SENTINEL, thunkBase=THUNK_BASE, fpuBase=FPU_BASE, pages=MEM_PAGES))
+    meta['unsupported'] = tr.unsupported; meta['unsupportedAt'] = sorted(tr.unsupported_at)   # (the instructions translated as #UD, by kind and where: tools/staticmap.py)
     json.dump(meta, open(out + '.json', 'w'))
     print('%s: %d insns, %d blocks, wasm %d bytes' % (path.split('/')[-1], len(insns), len(blocks), len(mod)))
     if tr.unsupported: print('  unsupported:', tr.unsupported)
@@ -1713,6 +1792,7 @@ def build_vxd(path, out, base, lookup):
     meta = dict(sha256=hashlib.sha256(data).hexdigest(), base=pe.base, size=pe.size, vxd=True, id=pe.vxd_id, name=pe.vxd_name,
                 ddb=pe.ddb, procs=pe.procs, services=pe.services, textLo=text_lo, textHi=text_hi, lookup=lookup, blocks=order,
                 layout=dict(sentinel=SENTINEL, thunkBase=THUNK_BASE, fpuBase=FPU_BASE, pages=MEM_PAGES))
+    meta['unsupported'] = tr.unsupported; meta['unsupportedAt'] = sorted(tr.unsupported_at)   # (the instructions translated as #UD, by kind and where: tools/staticmap.py)
     json.dump(meta, open(out + '.json', 'w'))
     open(out + '.img', 'wb').write(bytes(pe.image))
     print('%s (%s, VxD %xh): %d insns, %d blocks, wasm %d bytes' % (path.split('/')[-1], pe.vxd_name, pe.vxd_id, len(insns), len(blocks), len(mod)))

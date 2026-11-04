@@ -1,0 +1,5979 @@
+{
+ "modules": {
+  "MMDEVLDR.VXD": {
+   "group": "vxds",
+   "entries": 9,
+   "reachable": 3823,
+   "blockStarts": 472,
+   "recompUnsupported": 0
+  },
+  "MSSNDSYS.VXD": {
+   "group": "vxds",
+   "entries": 3,
+   "reachable": 7703,
+   "blockStarts": 1175,
+   "recompUnsupported": 7
+  },
+  "VTDAPI.VXD": {
+   "group": "vxds",
+   "entries": 2,
+   "reachable": 5869,
+   "blockStarts": 269,
+   "recompUnsupported": 3
+  },
+  "DSOUND.VXD": {
+   "group": "vxds",
+   "entries": 6,
+   "reachable": 1273,
+   "blockStarts": 202,
+   "recompUnsupported": 1
+  },
+  "MSOPL.VXD": {
+   "group": "vxds",
+   "entries": 3,
+   "reachable": 4597,
+   "blockStarts": 235,
+   "recompUnsupported": 4
+  },
+  "ENABLE.VXD": {
+   "group": "vxds",
+   "entries": 13,
+   "reachable": 8341,
+   "blockStarts": 530,
+   "recompUnsupported": 10
+  },
+  "SPOOLER.VXD": {
+   "group": "vxds",
+   "entries": 18,
+   "reachable": 2901,
+   "blockStarts": 282,
+   "recompUnsupported": 0
+  },
+  "IFSMGR.VXD": {
+   "group": "vxds",
+   "entries": 122,
+   "reachable": 45950,
+   "blockStarts": 9569,
+   "recompUnsupported": 98
+  },
+  "VCACHE.VXD": {
+   "group": "vxds",
+   "entries": 28,
+   "reachable": 7804,
+   "blockStarts": 451,
+   "recompUnsupported": 4
+  },
+  "VNETSUP.VXD": {
+   "group": "vxds",
+   "entries": 10,
+   "reachable": 6207,
+   "blockStarts": 362,
+   "recompUnsupported": 6
+  },
+  "VREDIR.VXD": {
+   "group": "vxds",
+   "entries": 18,
+   "reachable": 36911,
+   "blockStarts": 7209,
+   "recompUnsupported": 42
+  },
+  "VNETBIOS.VXD": {
+   "group": "vxds",
+   "entries": 9,
+   "reachable": 14259,
+   "blockStarts": 1111,
+   "recompUnsupported": 25
+  },
+  "NETBEUI.VXD": {
+   "group": "vxds",
+   "entries": 1,
+   "reachable": 14703,
+   "blockStarts": 2779,
+   "recompUnsupported": 2
+  },
+  "NDIS.VXD": {
+   "group": "vxds",
+   "entries": 105,
+   "reachable": 33217,
+   "blockStarts": 8019,
+   "recompUnsupported": 233
+  },
+  "PERF.VXD": {
+   "group": "vxds",
+   "entries": 6,
+   "reachable": 5050,
+   "blockStarts": 350,
+   "recompUnsupported": 6
+  },
+  "SHELL.VXD": {
+   "group": "vxds",
+   "entries": 31,
+   "reachable": 25035,
+   "blockStarts": 1588,
+   "recompUnsupported": 12
+  },
+  "REBOOT.VXD": {
+   "group": "vxds",
+   "entries": 6,
+   "reachable": 7411,
+   "blockStarts": 318,
+   "recompUnsupported": 15
+  },
+  "VCOMM.VXD": {
+   "group": "vxds",
+   "entries": 38,
+   "reachable": 8163,
+   "blockStarts": 835,
+   "recompUnsupported": 6
+  },
+  "LPT.VXD": {
+   "group": "vxds",
+   "entries": 1,
+   "reachable": 5835,
+   "blockStarts": 1374,
+   "recompUnsupported": 0
+  },
+  "LPTENUM.VXD": {
+   "group": "vxds",
+   "entries": 1,
+   "reachable": 1339,
+   "blockStarts": 20,
+   "recompUnsupported": 0
+  },
+  "GDI32.DLL": {
+   "group": "dlls",
+   "entries": 336,
+   "reachable": 30205,
+   "blockStarts": 6731,
+   "recompUnsupported": 1
+  },
+  "USER32.DLL": {
+   "group": "dlls",
+   "entries": 581,
+   "reachable": 7158,
+   "blockStarts": 1903,
+   "recompUnsupported": 7
+  },
+  "COMDLG32.DLL": {
+   "group": "dlls",
+   "entries": 21,
+   "reachable": 14893,
+   "blockStarts": 4295,
+   "recompUnsupported": 13
+  },
+  "COMCTL32.DLL": {
+   "group": "dlls",
+   "entries": 139,
+   "reachable": 40947,
+   "blockStarts": 10678,
+   "recompUnsupported": 2
+  },
+  "SHELL32.DLL": {
+   "group": "dlls",
+   "entries": 253,
+   "reachable": 105669,
+   "blockStarts": 29314,
+   "recompUnsupported": 209
+  },
+  "VERSION.DLL": {
+   "group": "dlls",
+   "entries": 15,
+   "reachable": 601,
+   "blockStarts": 195,
+   "recompUnsupported": 0
+  },
+  "WINMM.DLL": {
+   "group": "dlls",
+   "entries": 186,
+   "reachable": 11568,
+   "blockStarts": 3637,
+   "recompUnsupported": 2
+  },
+  "MMSYS.CPL": {
+   "group": "dlls",
+   "entries": 8,
+   "reachable": 25662,
+   "blockStarts": 6107,
+   "recompUnsupported": 1
+  },
+  "DESK.CPL": {
+   "group": "dlls",
+   "entries": 3,
+   "reachable": 521,
+   "blockStarts": 152,
+   "recompUnsupported": 1
+  },
+  "MSACM32.DLL": {
+   "group": "dlls",
+   "entries": 45,
+   "reachable": 22380,
+   "blockStarts": 5736,
+   "recompUnsupported": 8
+  },
+  "OLE32.DLL": {
+   "group": "dlls",
+   "entries": 163,
+   "reachable": 142789,
+   "blockStarts": 39604,
+   "recompUnsupported": 0
+  },
+  "RPCRT4.DLL": {
+   "group": "dlls",
+   "entries": 357,
+   "reachable": 50802,
+   "blockStarts": 13919,
+   "recompUnsupported": 0
+  },
+  "MSVCRT20.DLL": {
+   "group": "dlls",
+   "entries": 1127,
+   "reachable": 58872,
+   "blockStarts": 16901,
+   "recompUnsupported": 1
+  },
+  "FTSRCH.DLL": {
+   "group": "dlls",
+   "entries": 32,
+   "reachable": 45495,
+   "blockStarts": 10977,
+   "recompUnsupported": 1
+  },
+  "WINSPOOL.DRV": {
+   "group": "dlls",
+   "entries": 108,
+   "reachable": 3487,
+   "blockStarts": 1041,
+   "recompUnsupported": 0
+  },
+  "SPOOLSS.DLL": {
+   "group": "dlls",
+   "entries": 55,
+   "reachable": 17322,
+   "blockStarts": 5265,
+   "recompUnsupported": 0
+  },
+  "WOW32.DLL": {
+   "group": "dlls",
+   "entries": 18,
+   "reachable": 23,
+   "blockStarts": 18,
+   "recompUnsupported": 0
+  },
+  "MSPRINT2.DLL": {
+   "group": "dlls",
+   "entries": 5,
+   "reachable": 4238,
+   "blockStarts": 1256,
+   "recompUnsupported": 0
+  },
+  "LINKINFO.DLL": {
+   "group": "dlls",
+   "entries": 10,
+   "reachable": 2715,
+   "blockStarts": 813,
+   "recompUnsupported": 0
+  },
+  "DASHRES.DLL": {
+   "group": "dlls",
+   "entries": 1,
+   "reachable": 173,
+   "blockStarts": 70,
+   "recompUnsupported": 0
+  },
+  "HOVERHLP.DLL": {
+   "group": "dlls",
+   "entries": 5,
+   "reachable": 1978,
+   "blockStarts": 604,
+   "recompUnsupported": 0
+  },
+  "DCIMAN32.DLL": {
+   "group": "dlls",
+   "entries": 23,
+   "reachable": 486,
+   "blockStarts": 149,
+   "recompUnsupported": 0
+  },
+  "MSVFW32.DLL": {
+   "group": "dlls",
+   "entries": 50,
+   "reachable": 13495,
+   "blockStarts": 3753,
+   "recompUnsupported": 0
+  },
+  "ICCVID.DLL": {
+   "group": "dlls",
+   "entries": 2,
+   "reachable": 21108,
+   "blockStarts": 2673,
+   "recompUnsupported": 18
+  },
+  "MSVIDC32.DLL": {
+   "group": "dlls",
+   "entries": 1,
+   "reachable": 3124,
+   "blockStarts": 541,
+   "recompUnsupported": 0
+  },
+  "MSRLE32.DLL": {
+   "group": "dlls",
+   "entries": 2,
+   "reachable": 1654,
+   "blockStarts": 470,
+   "recompUnsupported": 0
+  },
+  "IR32_32.DLL": {
+   "group": "dlls",
+   "entries": 5,
+   "reachable": 98894,
+   "blockStarts": 4135,
+   "recompUnsupported": 6
+  },
+  "NOTEPAD.EXE": {
+   "group": "programs",
+   "entries": 1,
+   "reachable": 3480,
+   "blockStarts": 919,
+   "recompUnsupported": 0
+  },
+  "RUNDLL32.EXE": {
+   "group": "programs",
+   "entries": 1,
+   "reachable": 3927,
+   "blockStarts": 107,
+   "recompUnsupported": 0
+  },
+  "MPLAYER.EXE": {
+   "group": "programs",
+   "entries": 1,
+   "reachable": 24203,
+   "blockStarts": 6097,
+   "recompUnsupported": 1
+  },
+  "MPREXE.EXE": {
+   "group": "programs",
+   "entries": 2,
+   "reachable": 6685,
+   "blockStarts": 628,
+   "recompUnsupported": 0
+  },
+  "WINHLP32.EXE": {
+   "group": "programs",
+   "entries": 1,
+   "reachable": 63379,
+   "blockStarts": 18459,
+   "recompUnsupported": 36
+  },
+  "SPOOL32.EXE": {
+   "group": "programs",
+   "entries": 1,
+   "reachable": 2472,
+   "blockStarts": 739,
+   "recompUnsupported": 0
+  },
+  "EXPLORER.EXE": {
+   "group": "programs",
+   "entries": 1,
+   "reachable": 26209,
+   "blockStarts": 6875,
+   "recompUnsupported": 48
+  },
+  "RUNONCE.EXE": {
+   "group": "programs",
+   "entries": 1,
+   "reachable": 1139,
+   "blockStarts": 290,
+   "recompUnsupported": 0
+  },
+  "GRPCONV.EXE": {
+   "group": "programs",
+   "entries": 1,
+   "reachable": 6473,
+   "blockStarts": 1929,
+   "recompUnsupported": 26
+  },
+  "SYSTRAY.EXE": {
+   "group": "programs",
+   "entries": 1,
+   "reachable": 613,
+   "blockStarts": 210,
+   "recompUnsupported": 4
+  },
+  "WELCOME.EXE": {
+   "group": "programs",
+   "entries": 1,
+   "reachable": 602,
+   "blockStarts": 212,
+   "recompUnsupported": 3
+  },
+  "AUTORUN.EXE": {
+   "group": "programs",
+   "entries": 1,
+   "reachable": 642,
+   "blockStarts": 164,
+   "recompUnsupported": 0
+  },
+  "CALC.EXE": {
+   "group": "programs",
+   "entries": 1,
+   "reachable": 10113,
+   "blockStarts": 1878,
+   "recompUnsupported": 9
+  },
+  "SNDREC32.EXE": {
+   "group": "programs",
+   "entries": 1,
+   "reachable": 17421,
+   "blockStarts": 4832,
+   "recompUnsupported": 0
+  },
+  "SNDVOL32.EXE": {
+   "group": "programs",
+   "entries": 1,
+   "reachable": 3543,
+   "blockStarts": 967,
+   "recompUnsupported": 2
+  },
+  "CDPLAYER.EXE": {
+   "group": "programs",
+   "entries": 1,
+   "reachable": 8767,
+   "blockStarts": 1860,
+   "recompUnsupported": 6
+  },
+  "MPR.DLL": {
+   "group": "net",
+   "entries": 104,
+   "reachable": 15316,
+   "blockStarts": 2501,
+   "recompUnsupported": 1
+  },
+  "MSNP32.DLL": {
+   "group": "net",
+   "entries": 21,
+   "reachable": 14396,
+   "blockStarts": 2806,
+   "recompUnsupported": 11
+  },
+  "MSNET32.DLL": {
+   "group": "net",
+   "entries": 87,
+   "reachable": 16677,
+   "blockStarts": 4311,
+   "recompUnsupported": 12
+  },
+  "MPRSERV.DLL": {
+   "group": "net",
+   "entries": 98,
+   "reachable": 26114,
+   "blockStarts": 6908,
+   "recompUnsupported": 37
+  },
+  "MSPWL32.DLL": {
+   "group": "net",
+   "entries": 15,
+   "reachable": 11521,
+   "blockStarts": 1090,
+   "recompUnsupported": 1
+  },
+  "SVRAPI.DLL": {
+   "group": "net",
+   "entries": 21,
+   "reachable": 2462,
+   "blockStarts": 687,
+   "recompUnsupported": 1
+  },
+  "NE2000.SYS": {
+   "group": "drivers",
+   "entries": 1,
+   "reachable": 2031,
+   "blockStarts": 504,
+   "recompUnsupported": 0
+  },
+  "GDI": {
+   "group": "ne",
+   "entries": 359,
+   "reachable": 55132,
+   "blockStarts": 13452,
+   "recompUnsupported": 2
+  },
+  "DIBENG": {
+   "group": "ne",
+   "entries": 47,
+   "reachable": 5523,
+   "blockStarts": 1503,
+   "recompUnsupported": 0
+  },
+  "DISPLAY": {
+   "group": "ne",
+   "entries": 42,
+   "reachable": 2812,
+   "blockStarts": 687,
+   "recompUnsupported": 0
+  },
+  "SYSTEM": {
+   "group": "ne",
+   "entries": 14,
+   "reachable": 291,
+   "blockStarts": 84,
+   "recompUnsupported": 0
+  },
+  "KEYBOARD": {
+   "group": "ne",
+   "entries": 28,
+   "reachable": 1543,
+   "blockStarts": 376,
+   "recompUnsupported": 0
+  },
+  "MOUSE": {
+   "group": "ne",
+   "entries": 11,
+   "reachable": 957,
+   "blockStarts": 252,
+   "recompUnsupported": 0
+  },
+  "COMM": {
+   "group": "ne",
+   "entries": 20,
+   "reachable": 1162,
+   "blockStarts": 258,
+   "recompUnsupported": 0
+  },
+  "DDEML": {
+   "group": "ne",
+   "entries": 40,
+   "reachable": 5040,
+   "blockStarts": 1360,
+   "recompUnsupported": 0
+  },
+  "USER": {
+   "group": "ne",
+   "entries": 502,
+   "reachable": 76175,
+   "blockStarts": 20457,
+   "recompUnsupported": 1
+  },
+  "COMMDLG": {
+   "group": "ne",
+   "entries": 14,
+   "reachable": 5690,
+   "blockStarts": 1508,
+   "recompUnsupported": 0
+  },
+  "SHELL": {
+   "group": "ne",
+   "entries": 35,
+   "reachable": 2668,
+   "blockStarts": 727,
+   "recompUnsupported": 0
+  },
+  "COMMCTRL": {
+   "group": "ne",
+   "entries": 46,
+   "reachable": 25931,
+   "blockStarts": 6613,
+   "recompUnsupported": 0
+  },
+  "LZEXPAND": {
+   "group": "ne",
+   "entries": 67,
+   "reachable": 6943,
+   "blockStarts": 1680,
+   "recompUnsupported": 0
+  },
+  "VER": {
+   "group": "ne",
+   "entries": 13,
+   "reachable": 2414,
+   "blockStarts": 590,
+   "recompUnsupported": 0
+  },
+  "MMSYSTEM": {
+   "group": "ne",
+   "entries": 171,
+   "reachable": 17436,
+   "blockStarts": 4585,
+   "recompUnsupported": 0
+  },
+  "MSSNDSYS": {
+   "group": "ne",
+   "entries": 9,
+   "reachable": 3469,
+   "blockStarts": 889,
+   "recompUnsupported": 0
+  },
+  "MMTASK": {
+   "group": "ne",
+   "entries": 1,
+   "reachable": 51,
+   "blockStarts": 15,
+   "recompUnsupported": 0
+  },
+  "MSACM": {
+   "group": "ne",
+   "entries": 42,
+   "reachable": 7103,
+   "blockStarts": 1935,
+   "recompUnsupported": 0
+  },
+  "MSACMMAP": {
+   "group": "ne",
+   "entries": 6,
+   "reachable": 429,
+   "blockStarts": 118,
+   "recompUnsupported": 0
+  },
+  "MSOPL": {
+   "group": "ne",
+   "entries": 5,
+   "reachable": 243,
+   "blockStarts": 76,
+   "recompUnsupported": 0
+  },
+  "MIDIMAP": {
+   "group": "ne",
+   "entries": 4,
+   "reachable": 198,
+   "blockStarts": 43,
+   "recompUnsupported": 0
+  },
+  "MCIMIDI": {
+   "group": "ne",
+   "entries": 2,
+   "reachable": 263,
+   "blockStarts": 78,
+   "recompUnsupported": 0
+  },
+  "MCIWAVE": {
+   "group": "ne",
+   "entries": 3,
+   "reachable": 48,
+   "blockStarts": 13,
+   "recompUnsupported": 0
+  },
+  "MCICDA": {
+   "group": "ne",
+   "entries": 3,
+   "reachable": 68,
+   "blockStarts": 15,
+   "recompUnsupported": 0
+  },
+  "SETUPX": {
+   "group": "ne",
+   "entries": 224,
+   "reachable": 40223,
+   "blockStarts": 9093,
+   "recompUnsupported": 0
+  },
+  "MSPRINT": {
+   "group": "ne",
+   "entries": 7,
+   "reachable": 1212,
+   "blockStarts": 283,
+   "recompUnsupported": 0
+  },
+  "SETUP4": {
+   "group": "ne",
+   "entries": 5,
+   "reachable": 491,
+   "blockStarts": 124,
+   "recompUnsupported": 0
+  },
+  "SYSDM": {
+   "group": "ne",
+   "entries": 26,
+   "reachable": 12740,
+   "blockStarts": 2861,
+   "recompUnsupported": 0
+  },
+  "UNIDRV": {
+   "group": "ne",
+   "entries": 30,
+   "reachable": 20538,
+   "blockStarts": 4511,
+   "recompUnsupported": 0
+  },
+  "TTY": {
+   "group": "ne",
+   "entries": 37,
+   "reachable": 3478,
+   "blockStarts": 882,
+   "recompUnsupported": 0
+  },
+  "ICONS": {
+   "group": "ne",
+   "entries": 4,
+   "reachable": 87,
+   "blockStarts": 19,
+   "recompUnsupported": 0
+  },
+  "DCIMAN": {
+   "group": "ne",
+   "entries": 26,
+   "reachable": 1235,
+   "blockStarts": 270,
+   "recompUnsupported": 0
+  },
+  "MSVIDEO": {
+   "group": "ne",
+   "entries": 71,
+   "reachable": 11230,
+   "blockStarts": 2880,
+   "recompUnsupported": 0
+  },
+  "MCIAVI": {
+   "group": "ne",
+   "entries": 3,
+   "reachable": 69,
+   "blockStarts": 15,
+   "recompUnsupported": 0
+  },
+  "MSGSRV32": {
+   "group": "ne",
+   "entries": 1,
+   "reachable": 1467,
+   "blockStarts": 325,
+   "recompUnsupported": 0
+  },
+  "PROGMAN": {
+   "group": "ne",
+   "entries": 15,
+   "reachable": 8298,
+   "blockStarts": 2359,
+   "recompUnsupported": 0
+  },
+  "TOOLHELP": {
+   "group": "ne",
+   "entries": 41,
+   "reachable": 2879,
+   "blockStarts": 818,
+   "recompUnsupported": 0
+  },
+  "DESKCP16": {
+   "group": "ne",
+   "entries": 23,
+   "reachable": 17347,
+   "blockStarts": 4207,
+   "recompUnsupported": 0
+  },
+  "MMCI": {
+   "group": "ne",
+   "entries": 3,
+   "reachable": 1640,
+   "blockStarts": 351,
+   "recompUnsupported": 0
+  },
+  "NETDI": {
+   "group": "ne",
+   "entries": 60,
+   "reachable": 13708,
+   "blockStarts": 3178,
+   "recompUnsupported": 0
+  },
+  "ENUMFILE": {
+   "group": "ne",
+   "entries": 5,
+   "reachable": 517,
+   "blockStarts": 84,
+   "recompUnsupported": 0
+  },
+  "VGA": {
+   "group": "ne",
+   "entries": 32,
+   "reachable": 8188,
+   "blockStarts": 1847,
+   "recompUnsupported": 0
+  },
+  "SUPERVGA": {
+   "group": "ne",
+   "entries": 32,
+   "reachable": 8296,
+   "blockStarts": 1866,
+   "recompUnsupported": 0
+  }
+ },
+ "recompUnsupported": {
+  "aas": {
+   "count": 31,
+   "at": [
+    "MSSNDSYS.VXD+11d",
+    "MSSNDSYS.VXD+11c",
+    "VREDIR.VXD+d4f",
+    "VREDIR.VXD+d88",
+    "VREDIR.VXD+115c",
+    "VREDIR.VXD+1100",
+    "VREDIR.VXD+fa0",
+    "VREDIR.VXD+fa3",
+    "VREDIR.VXD+e62",
+    "VNETBIOS.VXD+1b40"
+   ],
+   "flow": 1,
+   "flowAt": [
+    "USER+62ce2"
+   ]
+  },
+  "bound": {
+   "count": 133,
+   "at": [
+    "MSSNDSYS.VXD+2017",
+    "MSSNDSYS.VXD+2069",
+    "MSSNDSYS.VXD+20ad",
+    "VTDAPI.VXD+4218",
+    "VTDAPI.VXD+41ed",
+    "MSOPL.VXD+1013",
+    "MSOPL.VXD+1041",
+    "ENABLE.VXD+104e",
+    "ENABLE.VXD+10cd",
+    "ENABLE.VXD+10f9"
+   ]
+  },
+  "arpl": {
+   "count": 568,
+   "at": [
+    "MSSNDSYS.VXD+20dd",
+    "MSSNDSYS.VXD+20de",
+    "VTDAPI.VXD+41bf",
+    "MSOPL.VXD+101c",
+    "MSOPL.VXD+1032",
+    "ENABLE.VXD+1025",
+    "ENABLE.VXD+1073",
+    "ENABLE.VXD+107e",
+    "IFSMGR.VXD+8319",
+    "IFSMGR.VXD+8327"
+   ]
+  },
+  "daa": {
+   "count": 18,
+   "at": [
+    "DSOUND.VXD+129",
+    "IFSMGR.VXD+7cc6",
+    "IFSMGR.VXD+7089",
+    "VCACHE.VXD+87c",
+    "SHELL.VXD+70c3",
+    "SHELL32.DLL+5e0ac",
+    "SHELL32.DLL+5de44",
+    "SHELL32.DLL+614c0",
+    "SHELL32.DLL+60ecd",
+    "SHELL32.DLL+5e3c3"
+   ]
+  },
+  "das": {
+   "count": 28,
+   "at": [
+    "IFSMGR.VXD+a36c",
+    "IFSMGR.VXD+13265",
+    "VREDIR.VXD+70a9",
+    "VREDIR.VXD+70f3",
+    "SHELL.VXD+2026",
+    "SHELL.VXD+1046c",
+    "COMDLG32.DLL+d474",
+    "MMSYS.CPL+121e0",
+    "MPLAYER.EXE+1354d",
+    "EXPLORER.EXE+20e34"
+   ]
+  },
+  "aaa": {
+   "count": 24,
+   "at": [
+    "IFSMGR.VXD+759c",
+    "IFSMGR.VXD+53b1",
+    "IFSMGR.VXD+4c86",
+    "VNETSUP.VXD+3999",
+    "VREDIR.VXD+e25",
+    "VREDIR.VXD+e55",
+    "VREDIR.VXD+1622",
+    "VREDIR.VXD+182dc",
+    "VREDIR.VXD+9d3a",
+    "VCOMM.VXD+29d"
+   ]
+  },
+  "punpckldq": {
+   "count": 1,
+   "at": [
+    "IFSMGR.VXD+7213"
+   ]
+  },
+  "movups": {
+   "count": 12,
+   "at": [
+    "IFSMGR.VXD+bc83",
+    "IFSMGR.VXD+c10b",
+    "VNETSUP.VXD+d1e",
+    "VREDIR.VXD+1003",
+    "ICCVID.DLL+b65f",
+    "ICCVID.DLL+e043",
+    "ICCVID.DLL+a274",
+    "ICCVID.DLL+a165",
+    "ICCVID.DLL+3409",
+    "WINHLP32.EXE+29dff"
+   ]
+  },
+  "int1": {
+   "count": 11,
+   "at": [
+    "IFSMGR.VXD+bd25",
+    "IFSMGR.VXD+756c",
+    "SHELL32.DLL+5f1e9",
+    "SHELL32.DLL+5f110",
+    "SHELL32.DLL+5fff1",
+    "SHELL32.DLL+5ffed",
+    "SHELL32.DLL+5e6fd",
+    "ICCVID.DLL+b2ec",
+    "ICCVID.DLL+3463",
+    "ICCVID.DLL+32c3"
+   ]
+  },
+  "fstpnce": {
+   "count": 2,
+   "at": [
+    "IFSMGR.VXD+c1d5",
+    "ICCVID.DLL+e10d"
+   ]
+  },
+  "aam": {
+   "count": 12,
+   "at": [
+    "IFSMGR.VXD+741c",
+    "VNETBIOS.VXD+1303",
+    "NETBEUI.VXD+6e0e",
+    "SHELL32.DLL+5dc4d",
+    "SHELL32.DLL+5dc65",
+    "SHELL32.DLL+5dc71",
+    "SHELL32.DLL+5dc7d",
+    "SHELL32.DLL+5dc89",
+    "SHELL32.DLL+5dca1",
+    "SHELL32.DLL+5e501"
+   ]
+  },
+  "clts": {
+   "count": 1,
+   "at": [
+    "VNETSUP.VXD+cea"
+   ]
+  },
+  "wbinvd": {
+   "count": 1,
+   "at": [
+    "VNETBIOS.VXD+1994"
+   ]
+  },
+  "enter": {
+   "count": 4,
+   "at": [
+    "NDIS.VXD+d70",
+    "VCOMM.VXD+364",
+    "WINHLP32.EXE+31c10",
+    "WINHLP32.EXE+2cd7a"
+   ]
+  },
+  "sldt": {
+   "count": 9,
+   "at": [
+    "NDIS.VXD+460",
+    "NDIS.VXD+468",
+    "COMDLG32.DLL+dcc0",
+    "SHELL32.DLL+61150",
+    "ICCVID.DLL+337c",
+    "ICCVID.DLL+339e",
+    "ICCVID.DLL+33ce",
+    "WINHLP32.EXE+36e30",
+    "EXPLORER.EXE+22460"
+   ]
+  },
+  "idiv": {
+   "count": 4,
+   "at": [
+    "USER32.DLL+52de",
+    "USER32.DLL+52c2",
+    "USER32.DLL+533a",
+    "USER32.DLL+5316"
+   ]
+  },
+  "fucompp": {
+   "count": 2,
+   "at": [
+    "COMDLG32.DLL+d995",
+    "COMDLG32.DLL+d38e"
+   ]
+  },
+  "sgdt": {
+   "count": 5,
+   "at": [
+    "COMDLG32.DLL+e100",
+    "SHELL32.DLL+61210",
+    "WINHLP32.EXE+36fd0",
+    "EXPLORER.EXE+22520",
+    "CDPLAYER.EXE+15a0"
+   ]
+  },
+  "out": {
+   "count": 1,
+   "at": [
+    "COMCTL32.DLL+19016"
+   ]
+  },
+  "psrad": {
+   "count": 3,
+   "at": [
+    "SHELL32.DLL+5f0b5",
+    "SHELL32.DLL+604e1",
+    "SHELL32.DLL+604f9"
+   ]
+  },
+  "fidivr": {
+   "count": 37,
+   "at": [
+    "SHELL32.DLL+5f22e",
+    "SHELL32.DLL+5f692",
+    "SHELL32.DLL+5f6a2",
+    "SHELL32.DLL+5f6d2",
+    "SHELL32.DLL+5f6e6",
+    "SHELL32.DLL+5f20a",
+    "SHELL32.DLL+604fe",
+    "SHELL32.DLL+60366",
+    "SHELL32.DLL+60246",
+    "SHELL32.DLL+5f8ea"
+   ]
+  },
+  "fistp": {
+   "count": 22,
+   "at": [
+    "SHELL32.DLL+5f29a",
+    "SHELL32.DLL+5f2ba",
+    "SHELL32.DLL+5edaa",
+    "SHELL32.DLL+5de5a",
+    "SHELL32.DLL+5de52",
+    "SHELL32.DLL+5de56",
+    "SHELL32.DLL+604de",
+    "SHELL32.DLL+604c6",
+    "SHELL32.DLL+6023e",
+    "SHELL32.DLL+5e6be"
+   ]
+  },
+  "into": {
+   "count": 4,
+   "at": [
+    "SHELL32.DLL+606b1",
+    "SHELL32.DLL+60ff1",
+    "SHELL32.DLL+5e6fc",
+    "SHELL32.DLL+5ca31"
+   ]
+  },
+  "aad": {
+   "count": 6,
+   "at": [
+    "SHELL32.DLL+61273",
+    "FTSRCH.DLL+2d9d4",
+    "EXPLORER.EXE+22583",
+    "CALC.EXE+a58e",
+    "CDPLAYER.EXE+109c",
+    "CDPLAYER.EXE+10a4"
+   ]
+  },
+  "ud0": {
+   "count": 1,
+   "at": [
+    "MSVCRT20.DLL+11f5d"
+   ]
+  },
+  "femms": {
+   "count": 1,
+   "at": [
+    "ICCVID.DLL+aa1e"
+   ]
+  },
+  "mov": {
+   "count": 1,
+   "at": [
+    "ICCVID.DLL+a491"
+   ]
+  },
+  "fcmovu": {
+   "count": 1,
+   "at": [
+    "ICCVID.DLL+a242"
+   ]
+  },
+  "dec": {
+   "count": 1,
+   "at": [
+    "GDI+10"
+   ],
+   "flow": 1,
+   "flowAt": [
+    "GDI+10"
+   ]
+  },
+  "adc": {
+   "count": 1,
+   "at": [
+    "GDI+20"
+   ],
+   "flow": 1,
+   "flowAt": [
+    "GDI+20"
+   ]
+  }
+ },
+ "services": {
+  "missing": {
+   "002a:0018": [
+    "IFSMGR.VXD+c38"
+   ]
+  },
+  "absent": {
+   "0041:0001": {
+    "guarded": [
+     "IFSMGR.VXD+1d0d2"
+    ],
+    "unguarded": []
+   },
+   "0021:0007": {
+    "guarded": [
+     "IFSMGR.VXD+dcfe"
+    ],
+    "unguarded": []
+   },
+   "20cd:4c01": {
+    "guarded": [],
+    "unguarded": [
+     "IFSMGR.VXD+cd5d"
+    ]
+   },
+   "0487:0001": {
+    "guarded": [
+     "VREDIR.VXD+6037",
+     "VREDIR.VXD+601c",
+     "VREDIR.VXD+5f8d",
+     "VREDIR.VXD+5f3a"
+    ],
+    "unguarded": [
+     "VREDIR.VXD+6057",
+     "VREDIR.VXD+5f53",
+     "VREDIR.VXD+5fd5"
+    ]
+   },
+   "049b:0001": {
+    "guarded": [
+     "VREDIR.VXD+5b74"
+    ],
+    "unguarded": []
+   },
+   "049b:0002": {
+    "guarded": [
+     "VREDIR.VXD+5b7c"
+    ],
+    "unguarded": []
+   },
+   "0487:0004": {
+    "guarded": [
+     "VREDIR.VXD+5b10"
+    ],
+    "unguarded": []
+   },
+   "0032:0001": {
+    "guarded": [
+     "VREDIR.VXD+22195"
+    ],
+    "unguarded": []
+   },
+   "0482:0001": {
+    "guarded": [],
+    "unguarded": [
+     "VREDIR.VXD+222e0"
+    ]
+   },
+   "0497:0001": {
+    "guarded": [
+     "NDIS.VXD+10038"
+    ],
+    "unguarded": []
+   },
+   "0496:0001": {
+    "guarded": [
+     "NDIS.VXD+10032"
+    ],
+    "unguarded": []
+   }
+  },
+  "contract": {},
+  "reads": {
+   "0001:00a2": {
+    "edx": [
+     "MMDEVLDR.VXD+10cd",
+     "MSSNDSYS.VXD+8379",
+     "DSOUND.VXD+1061",
+     "SHELL.VXD+e53c",
+     "SHELL.VXD+10062",
+     "SHELL.VXD+c0f6",
+     "SHELL.VXD+e688"
+    ],
+    "ecx": [
+     "MMDEVLDR.VXD+10cd",
+     "MSSNDSYS.VXD+8379",
+     "VTDAPI.VXD+21c2",
+     "DSOUND.VXD+1061",
+     "SHELL.VXD+11531",
+     "SHELL.VXD+473e"
+    ],
+    "eax": [
+     "SHELL.VXD+c0bc",
+     "SHELL.VXD+c0f6"
+    ],
+    "edi": [
+     "SHELL.VXD+11531"
+    ],
+    "ebp": [
+     "SHELL.VXD+11ad7"
+    ]
+   },
+   "0001:00a1": {
+    "edx": [
+     "MMDEVLDR.VXD+10dd",
+     "MSSNDSYS.VXD+8389",
+     "DSOUND.VXD+1071"
+    ],
+    "ecx": [
+     "MMDEVLDR.VXD+10dd",
+     "MSSNDSYS.VXD+8389",
+     "DSOUND.VXD+1071"
+    ],
+    "eax": [
+     "MMDEVLDR.VXD+10dd",
+     "MSSNDSYS.VXD+8389",
+     "DSOUND.VXD+1071",
+     "SHELL.VXD+11521",
+     "SHELL.VXD+e67c"
+    ],
+    "cf": [
+     "MMDEVLDR.VXD+10dd",
+     "MSSNDSYS.VXD+8389",
+     "DSOUND.VXD+1071",
+     "SHELL.VXD+11521",
+     "SHELL.VXD+e67c"
+    ]
+   },
+   "0001:009c": {
+    "edx": [
+     "MMDEVLDR.VXD+1018",
+     "MSSNDSYS.VXD+8368",
+     "DSOUND.VXD+10a8"
+    ],
+    "ecx": [
+     "MMDEVLDR.VXD+1018",
+     "MSSNDSYS.VXD+8368",
+     "DSOUND.VXD+10a8"
+    ],
+    "edi": [
+     "SHELL.VXD+e303",
+     "VCOMM.VXD+39c0",
+     "VCOMM.VXD+386b",
+     "VCOMM.VXD+36bc",
+     "VCOMM.VXD+36ce"
+    ],
+    "ebx": [
+     "SHELL.VXD+e303"
+    ],
+    "ebp": [
+     "VCOMM.VXD+39c0",
+     "VCOMM.VXD+386b"
+    ]
+   },
+   "0017:0018": {
+    "ebp": [
+     "MMDEVLDR.VXD+207f"
+    ],
+    "eax": [
+     "MMDEVLDR.VXD+207f",
+     "MMDEVLDR.VXD+2109",
+     "ENABLE.VXD+36fc",
+     "SHELL.VXD+10207",
+     "SHELL.VXD+af9c"
+    ],
+    "ecx": [
+     "SHELL.VXD+10207"
+    ]
+   },
+   "0017:000d": {
+    "eax": [
+     "MMDEVLDR.VXD+20a2",
+     "SHELL.VXD+101b0"
+    ]
+   },
+   "0001:0003": {
+    "edx": [
+     "MMDEVLDR.VXD+20ce",
+     "ENABLE.VXD+366f",
+     "SHELL.VXD+11256"
+    ],
+    "ebx": [
+     "MMDEVLDR.VXD+20ce",
+     "MSSNDSYS.VXD+7bf4",
+     "MSSNDSYS.VXD+3038",
+     "MSSNDSYS.VXD+a030",
+     "DSOUND.VXD+1009",
+     "MSOPL.VXD+2022",
+     "MSOPL.VXD+6030",
+     "ENABLE.VXD+3782",
+     "VNETBIOS.VXD+943",
+     "VNETBIOS.VXD+9a3",
+     "NDIS.VXD+6376",
+     "SHELL.VXD+1121a",
+     "SHELL.VXD+d494",
+     "SHELL.VXD+2c"
+    ],
+    "eax": [
+     "MMDEVLDR.VXD+20ce",
+     "MSSNDSYS.VXD+7bf4",
+     "VNETBIOS.VXD+943",
+     "VNETBIOS.VXD+9a3",
+     "PERF.VXD+3ef4",
+     "SHELL.VXD+1121a",
+     "REBOOT.VXD+1df"
+    ],
+    "edi": [
+     "MSSNDSYS.VXD+7bf4",
+     "VNETBIOS.VXD+943",
+     "VNETBIOS.VXD+9a3"
+    ],
+    "esi": [
+     "VNETBIOS.VXD+1b1",
+     "VNETBIOS.VXD+9a3"
+    ],
+    "ebp": [
+     "VNETBIOS.VXD+943",
+     "VNETBIOS.VXD+9a3",
+     "SHELL.VXD+1121a",
+     "SHELL.VXD+d494",
+     "SHELL.VXD+2c",
+     "SHELL.VXD+ad4a"
+    ],
+    "ecx": [
+     "REBOOT.VXD+1df"
+    ]
+   },
+   "0001:0078": {
+    "edx": [
+     "MMDEVLDR.VXD+20e1"
+    ],
+    "eax": [
+     "MMDEVLDR.VXD+20e1"
+    ],
+    "ebp": [
+     "IFSMGR.VXD+ddd0"
+    ]
+   },
+   "0001:00a4": {
+    "edx": [
+     "MMDEVLDR.VXD+1029",
+     "MSSNDSYS.VXD+2b9",
+     "MSSNDSYS.VXD+8335",
+     "VTDAPI.VXD+12",
+     "VTDAPI.VXD+23d1",
+     "DSOUND.VXD+1041",
+     "MSOPL.VXD+f1",
+     "SHELL.VXD+11882",
+     "SHELL.VXD+c082",
+     "SHELL.VXD+e4a8",
+     "SHELL.VXD+90d4",
+     "VCOMM.VXD+39f0"
+    ],
+    "ecx": [
+     "MMDEVLDR.VXD+1029",
+     "MSSNDSYS.VXD+8335",
+     "MSSNDSYS.VXD+7674",
+     "MSSNDSYS.VXD+758b",
+     "VTDAPI.VXD+229b",
+     "VTDAPI.VXD+21ed",
+     "DSOUND.VXD+1041",
+     "MSOPL.VXD+443e",
+     "SHELL.VXD+e4a8",
+     "SHELL.VXD+1175a",
+     "VCOMM.VXD+39f0"
+    ],
+    "ebx": [
+     "MSSNDSYS.VXD+391",
+     "MSSNDSYS.VXD+2b9",
+     "MSSNDSYS.VXD+7103",
+     "VTDAPI.VXD+23d1",
+     "MSOPL.VXD+172",
+     "MSOPL.VXD+f1",
+     "MSOPL.VXD+428b",
+     "SHELL.VXD+e568",
+     "SHELL.VXD+e4a8",
+     "SHELL.VXD+1175a"
+    ],
+    "eax": [
+     "MSSNDSYS.VXD+391",
+     "MSSNDSYS.VXD+337",
+     "MSSNDSYS.VXD+2b9",
+     "MSSNDSYS.VXD+7674",
+     "MSSNDSYS.VXD+758b",
+     "MSSNDSYS.VXD+7160",
+     "MSSNDSYS.VXD+7103",
+     "VTDAPI.VXD+229b",
+     "VTDAPI.VXD+21ed",
+     "VTDAPI.VXD+23d1",
+     "MSOPL.VXD+172",
+     "MSOPL.VXD+128",
+     "MSOPL.VXD+f1",
+     "MSOPL.VXD+443e",
+     "MSOPL.VXD+42e6",
+     "MSOPL.VXD+428b",
+     "SHELL.VXD+11882",
+     "SHELL.VXD+e568",
+     "SHELL.VXD+10140",
+     "SHELL.VXD+c082",
+     "SHELL.VXD+e4a8",
+     "SHELL.VXD+90d4",
+     "SHELL.VXD+1175a",
+     "SHELL.VXD+4716",
+     "VCOMM.VXD+4312",
+     "VCOMM.VXD+39f0",
+     "VCOMM.VXD+20ee",
+     "VCOMM.VXD+35d6",
+     "VCOMM.VXD+41b0"
+    ],
+    "zf": [
+     "MSSNDSYS.VXD+337",
+     "MSSNDSYS.VXD+2b9",
+     "MSSNDSYS.VXD+7674",
+     "MSSNDSYS.VXD+758b",
+     "MSSNDSYS.VXD+7160",
+     "MSSNDSYS.VXD+7103",
+     "VTDAPI.VXD+229b",
+     "VTDAPI.VXD+21ed",
+     "VTDAPI.VXD+410f",
+     "MSOPL.VXD+128",
+     "MSOPL.VXD+f1",
+     "MSOPL.VXD+443e",
+     "MSOPL.VXD+42e6",
+     "MSOPL.VXD+428b",
+     "SHELL.VXD+11882",
+     "SHELL.VXD+e568",
+     "SHELL.VXD+c082",
+     "SHELL.VXD+e4a8",
+     "SHELL.VXD+d0cb",
+     "SHELL.VXD+d04b",
+     "SHELL.VXD+90d4",
+     "SHELL.VXD+1175a",
+     "SHELL.VXD+4716",
+     "SHELL.VXD+a063",
+     "VCOMM.VXD+4312",
+     "VCOMM.VXD+20ee",
+     "VCOMM.VXD+35d6",
+     "VCOMM.VXD+4428",
+     "VCOMM.VXD+41b0"
+    ],
+    "edi": [
+     "MSSNDSYS.VXD+337",
+     "MSOPL.VXD+128",
+     "SHELL.VXD+10140",
+     "SHELL.VXD+e4a8",
+     "SHELL.VXD+d0cb",
+     "SHELL.VXD+1175a",
+     "VCOMM.VXD+39f0"
+    ],
+    "ebp": [
+     "MSSNDSYS.VXD+2b9",
+     "MSSNDSYS.VXD+7674",
+     "MSSNDSYS.VXD+758b",
+     "MSOPL.VXD+f1",
+     "MSOPL.VXD+443e",
+     "SHELL.VXD+e4a8",
+     "SHELL.VXD+d0cb",
+     "VCOMM.VXD+4312",
+     "VCOMM.VXD+35d6"
+    ],
+    "esi": [
+     "VTDAPI.VXD+23d1",
+     "SHELL.VXD+e4a8",
+     "SHELL.VXD+4716"
+    ]
+   },
+   "0001:00a3": {
+    "edx": [
+     "MMDEVLDR.VXD+1038",
+     "MSSNDSYS.VXD+297",
+     "MSSNDSYS.VXD+8344",
+     "DSOUND.VXD+1050",
+     "MSOPL.VXD+cf",
+     "SHELL.VXD+1187a",
+     "SHELL.VXD+c075",
+     "SHELL.VXD+e48b",
+     "SHELL.VXD+910e"
+    ],
+    "ecx": [
+     "MMDEVLDR.VXD+1038",
+     "MSSNDSYS.VXD+8344",
+     "MSSNDSYS.VXD+7665",
+     "MSSNDSYS.VXD+757a",
+     "VTDAPI.VXD+2281",
+     "VTDAPI.VXD+21e0",
+     "DSOUND.VXD+1050",
+     "MSOPL.VXD+442f",
+     "SHELL.VXD+ae7d",
+     "SHELL.VXD+e48b",
+     "SHELL.VXD+910e"
+    ],
+    "ebx": [
+     "MSSNDSYS.VXD+365",
+     "MSSNDSYS.VXD+297",
+     "MSSNDSYS.VXD+73b5",
+     "MSSNDSYS.VXD+734c",
+     "MSSNDSYS.VXD+70cb",
+     "MSOPL.VXD+159",
+     "MSOPL.VXD+cf",
+     "MSOPL.VXD+4269",
+     "SHELL.VXD+e555",
+     "SHELL.VXD+e48b",
+     "SHELL.VXD+d03f",
+     "SHELL.VXD+910e"
+    ],
+    "eax": [
+     "MSSNDSYS.VXD+365",
+     "MSSNDSYS.VXD+324",
+     "MSSNDSYS.VXD+297",
+     "MSSNDSYS.VXD+7665",
+     "MSSNDSYS.VXD+73b5",
+     "MSSNDSYS.VXD+734c",
+     "MSSNDSYS.VXD+757a",
+     "MSSNDSYS.VXD+714d",
+     "MSSNDSYS.VXD+70cb",
+     "VTDAPI.VXD+2281",
+     "VTDAPI.VXD+21e0",
+     "VTDAPI.VXD+8",
+     "VTDAPI.VXD+23c7",
+     "MSOPL.VXD+159",
+     "MSOPL.VXD+115",
+     "MSOPL.VXD+cf",
+     "MSOPL.VXD+442f",
+     "MSOPL.VXD+42d5",
+     "MSOPL.VXD+4269",
+     "SHELL.VXD+1187a",
+     "SHELL.VXD+e555",
+     "SHELL.VXD+10118",
+     "SHELL.VXD+c075",
+     "SHELL.VXD+e48b",
+     "SHELL.VXD+d03f",
+     "SHELL.VXD+910e",
+     "SHELL.VXD+470e",
+     "VCOMM.VXD+42cd",
+     "VCOMM.VXD+39d9",
+     "VCOMM.VXD+20d5",
+     "VCOMM.VXD+3b10",
+     "VCOMM.VXD+35b2",
+     "VCOMM.VXD+419b"
+    ],
+    "zf": [
+     "MSSNDSYS.VXD+324",
+     "MSSNDSYS.VXD+297",
+     "MSSNDSYS.VXD+7665",
+     "MSSNDSYS.VXD+757a",
+     "MSSNDSYS.VXD+714d",
+     "MSSNDSYS.VXD+70cb",
+     "VTDAPI.VXD+2281",
+     "VTDAPI.VXD+21e0",
+     "VTDAPI.VXD+8",
+     "VTDAPI.VXD+4038",
+     "VTDAPI.VXD+23c7",
+     "MSOPL.VXD+115",
+     "MSOPL.VXD+cf",
+     "MSOPL.VXD+442f",
+     "MSOPL.VXD+42d5",
+     "MSOPL.VXD+4269",
+     "SHELL.VXD+1187a",
+     "SHELL.VXD+e555",
+     "SHELL.VXD+ae7d",
+     "SHELL.VXD+c075",
+     "SHELL.VXD+e48b",
+     "SHELL.VXD+d09b",
+     "SHELL.VXD+d03f",
+     "SHELL.VXD+470e",
+     "SHELL.VXD+a054",
+     "VCOMM.VXD+6512",
+     "VCOMM.VXD+42cd",
+     "VCOMM.VXD+39d9",
+     "VCOMM.VXD+20d5",
+     "VCOMM.VXD+35b2",
+     "VCOMM.VXD+4419",
+     "VCOMM.VXD+419b"
+    ],
+    "edi": [
+     "MSSNDSYS.VXD+324",
+     "MSSNDSYS.VXD+73b5",
+     "MSOPL.VXD+115",
+     "SHELL.VXD+e48b",
+     "SHELL.VXD+d09b",
+     "SHELL.VXD+d03f",
+     "SHELL.VXD+910e",
+     "VCOMM.VXD+39d9"
+    ],
+    "ebp": [
+     "MSSNDSYS.VXD+297",
+     "MSSNDSYS.VXD+7665",
+     "MSSNDSYS.VXD+73b5",
+     "MSSNDSYS.VXD+734c",
+     "MSSNDSYS.VXD+757a",
+     "MSOPL.VXD+cf",
+     "MSOPL.VXD+442f",
+     "SHELL.VXD+e48b",
+     "SHELL.VXD+d09b",
+     "SHELL.VXD+d03f",
+     "SHELL.VXD+910e",
+     "VCOMM.VXD+42cd",
+     "VCOMM.VXD+35b2"
+    ],
+    "esi": [
+     "MSSNDSYS.VXD+734c",
+     "SHELL.VXD+10118",
+     "SHELL.VXD+e48b",
+     "SHELL.VXD+910e",
+     "SHELL.VXD+470e",
+     "VCOMM.VXD+39d9"
+    ]
+   },
+   "0001:009f": {
+    "edx": [
+     "MMDEVLDR.VXD+1071",
+     "MSSNDSYS.VXD+8311"
+    ],
+    "ecx": [
+     "MMDEVLDR.VXD+1071",
+     "MSSNDSYS.VXD+8311"
+    ],
+    "edi": [
+     "VTDAPI.VXD+212a",
+     "VCOMM.VXD+3887"
+    ],
+    "eax": [
+     "VTDAPI.VXD+212a",
+     "VCOMM.VXD+3887",
+     "VCOMM.VXD+3076",
+     "VCOMM.VXD+41be"
+    ],
+    "ebx": [
+     "VTDAPI.VXD+212a",
+     "VCOMM.VXD+3887"
+    ],
+    "ebp": [
+     "SHELL.VXD+11bba"
+    ],
+    "esi": [
+     "VCOMM.VXD+3887"
+    ]
+   },
+   "0001:017c": {
+    "ebp": [
+     "MMDEVLDR.VXD+23f2",
+     "MMDEVLDR.VXD+2403",
+     "PERF.VXD+3219"
+    ],
+    "edx": [
+     "MMDEVLDR.VXD+2403",
+     "SHELL.VXD+1061f",
+     "VCOMM.VXD+4046"
+    ],
+    "esi": [
+     "PERF.VXD+3219",
+     "PERF.VXD+32c5",
+     "PERF.VXD+32f4",
+     "PERF.VXD+3112",
+     "VCOMM.VXD+40d7"
+    ],
+    "eax": [
+     "PERF.VXD+3219",
+     "PERF.VXD+32c5",
+     "PERF.VXD+32f4",
+     "PERF.VXD+333a",
+     "PERF.VXD+30b1",
+     "PERF.VXD+3112",
+     "VCOMM.VXD+4046",
+     "VCOMM.VXD+4052",
+     "VCOMM.VXD+40d7"
+    ],
+    "edi": [
+     "PERF.VXD+32c5",
+     "PERF.VXD+3112",
+     "VCOMM.VXD+4046",
+     "VCOMM.VXD+4052",
+     "VCOMM.VXD+40d7"
+    ],
+    "ebx": [
+     "VCOMM.VXD+4052"
+    ]
+   },
+   "0001:017b": {
+    "ebp": [
+     "MMDEVLDR.VXD+2412",
+     "MMDEVLDR.VXD+23e1",
+     "PERF.VXD+3272"
+    ],
+    "esi": [
+     "PERF.VXD+3272",
+     "PERF.VXD+30ec",
+     "SHELL.VXD+aa68",
+     "SHELL.VXD+aa7d",
+     "SHELL.VXD+aa96",
+     "SHELL.VXD+aaaf"
+    ],
+    "edi": [
+     "PERF.VXD+3272",
+     "PERF.VXD+30ec",
+     "SHELL.VXD+105b1",
+     "SHELL.VXD+10630",
+     "SHELL.VXD+aa68",
+     "SHELL.VXD+aa7d",
+     "SHELL.VXD+aa96",
+     "SHELL.VXD+aaaf",
+     "VCOMM.VXD+40e9"
+    ],
+    "edx": [
+     "SHELL.VXD+105a1",
+     "VCOMM.VXD+4078"
+    ],
+    "ecx": [
+     "SHELL.VXD+105a1"
+    ]
+   },
+   "0001:009d": {
+    "edx": [
+     "MMDEVLDR.VXD+1080",
+     "MSSNDSYS.VXD+8320",
+     "SHELL.VXD+aa32",
+     "SHELL.VXD+a043"
+    ],
+    "ecx": [
+     "MMDEVLDR.VXD+1080",
+     "MSSNDSYS.VXD+8320",
+     "VTDAPI.VXD+211e",
+     "SHELL.VXD+11614",
+     "SHELL.VXD+aa32",
+     "SHELL.VXD+11ba2"
+    ],
+    "eax": [
+     "MMDEVLDR.VXD+1080",
+     "MSSNDSYS.VXD+8320",
+     "MSSNDSYS.VXD+4122",
+     "MSOPL.VXD+303b",
+     "SHELL.VXD+c08a",
+     "SHELL.VXD+11614",
+     "SHELL.VXD+aa32",
+     "SHELL.VXD+a043",
+     "SHELL.VXD+11ba2"
+    ],
+    "esi": [
+     "MSSNDSYS.VXD+4122",
+     "SHELL.VXD+aa32"
+    ],
+    "cf": [
+     "MSSNDSYS.VXD+4122",
+     "VTDAPI.VXD+211e",
+     "MSOPL.VXD+303b",
+     "SHELL.VXD+c08a",
+     "SHELL.VXD+11614",
+     "SHELL.VXD+aa32",
+     "SHELL.VXD+a043",
+     "SHELL.VXD+11ba2",
+     "SHELL.VXD+11a46",
+     "VCOMM.VXD+387f",
+     "VCOMM.VXD+306e"
+    ],
+    "edi": [
+     "SHELL.VXD+c08a",
+     "SHELL.VXD+11614",
+     "SHELL.VXD+aa32",
+     "SHELL.VXD+a043"
+    ],
+    "ebx": [
+     "SHELL.VXD+11614",
+     "SHELL.VXD+aa32",
+     "SHELL.VXD+a043"
+    ],
+    "ebp": [
+     "SHELL.VXD+aa32",
+     "SHELL.VXD+11ba2",
+     "SHELL.VXD+11a46"
+    ]
+   },
+   "0001:009b": {
+    "esi": [
+     "MMDEVLDR.VXD+1004",
+     "MSSNDSYS.VXD+8354",
+     "MSSNDSYS.VXD+a022",
+     "MSSNDSYS.VXD+a047",
+     "MSSNDSYS.VXD+7137",
+     "VTDAPI.VXD+1020",
+     "DSOUND.VXD+10c0",
+     "MSOPL.VXD+6022",
+     "MSOPL.VXD+6047",
+     "MSOPL.VXD+42c0",
+     "SHELL.VXD+d3d1",
+     "SHELL.VXD+4476",
+     "SHELL.VXD+4492",
+     "SHELL.VXD+44ae",
+     "SHELL.VXD+44ca",
+     "SHELL.VXD+44e6",
+     "SHELL.VXD+4673",
+     "SHELL.VXD+46d4",
+     "SHELL.VXD+46ec",
+     "SHELL.VXD+a035",
+     "VCOMM.VXD+202a",
+     "VCOMM.VXD+207a",
+     "VCOMM.VXD+3907",
+     "VCOMM.VXD+37ef",
+     "VCOMM.VXD+305e",
+     "VCOMM.VXD+418d"
+    ],
+    "edx": [
+     "MMDEVLDR.VXD+1004",
+     "MSSNDSYS.VXD+8354",
+     "DSOUND.VXD+10c0"
+    ],
+    "ecx": [
+     "MMDEVLDR.VXD+1004",
+     "MSSNDSYS.VXD+8354",
+     "DSOUND.VXD+10c0"
+    ],
+    "cf": [
+     "MSSNDSYS.VXD+a022",
+     "MSSNDSYS.VXD+a047",
+     "MSSNDSYS.VXD+7137",
+     "VTDAPI.VXD+1020",
+     "MSOPL.VXD+6022",
+     "MSOPL.VXD+6047",
+     "MSOPL.VXD+42c0",
+     "SHELL.VXD+d3d1",
+     "SHELL.VXD+4476",
+     "SHELL.VXD+4492",
+     "SHELL.VXD+44ae",
+     "SHELL.VXD+44ca",
+     "SHELL.VXD+44e6",
+     "SHELL.VXD+46d4",
+     "SHELL.VXD+46ec",
+     "SHELL.VXD+a035",
+     "VCOMM.VXD+202a",
+     "VCOMM.VXD+207a",
+     "VCOMM.VXD+3907",
+     "VCOMM.VXD+37ef",
+     "VCOMM.VXD+305e",
+     "VCOMM.VXD+418d"
+    ],
+    "edi": [
+     "MSSNDSYS.VXD+a047",
+     "MSSNDSYS.VXD+7137",
+     "MSOPL.VXD+6047",
+     "MSOPL.VXD+42c0",
+     "SHELL.VXD+d3d1",
+     "VCOMM.VXD+3907",
+     "VCOMM.VXD+37ef"
+    ],
+    "ebx": [
+     "MSSNDSYS.VXD+a047",
+     "MSSNDSYS.VXD+7137",
+     "MSOPL.VXD+6047",
+     "MSOPL.VXD+42c0",
+     "SHELL.VXD+d3d1"
+    ],
+    "ebp": [
+     "VCOMM.VXD+3907",
+     "VCOMM.VXD+37ef"
+    ],
+    "eax": [
+     "VCOMM.VXD+418d"
+    ]
+   },
+   "0033:0002": {
+    "esi": [
+     "MMDEVLDR.VXD+2376"
+    ],
+    "ebp": [
+     "MMDEVLDR.VXD+2376"
+    ],
+    "eax": [
+     "MMDEVLDR.VXD+2376"
+    ]
+   },
+   "0033:0036": {
+    "esi": [
+     "MMDEVLDR.VXD+2392"
+    ],
+    "ebp": [
+     "MMDEVLDR.VXD+2392"
+    ],
+    "eax": [
+     "MMDEVLDR.VXD+2392"
+    ]
+   },
+   "0001:0055": {
+    "esi": [
+     "MMDEVLDR.VXD+233e"
+    ],
+    "edi": [
+     "MMDEVLDR.VXD+233e"
+    ],
+    "eax": [
+     "MMDEVLDR.VXD+233e",
+     "MMDEVLDR.VXD+255b"
+    ],
+    "ebp": [
+     "MMDEVLDR.VXD+255b",
+     "IFSMGR.VXD+dcc3"
+    ]
+   },
+   "0001:0053": {
+    "edi": [
+     "MMDEVLDR.VXD+22ff"
+    ],
+    "ecx": [
+     "MMDEVLDR.VXD+22ff"
+    ],
+    "eax": [
+     "MMDEVLDR.VXD+22ff",
+     "MMDEVLDR.VXD+252b",
+     "IFSMGR.VXD+3464",
+     "IFSMGR.VXD+dcb1",
+     "VNETBIOS.VXD+4013",
+     "NDIS.VXD+654c",
+     "LPT.VXD+3805"
+    ],
+    "esi": [
+     "MMDEVLDR.VXD+22ff",
+     "LPT.VXD+3805"
+    ],
+    "edx": [
+     "MMDEVLDR.VXD+22ff",
+     "IFSMGR.VXD+3464",
+     "IFSMGR.VXD+dcb1",
+     "VNETBIOS.VXD+4013",
+     "NDIS.VXD+654c",
+     "LPT.VXD+3805"
+    ],
+    "ebp": [
+     "IFSMGR.VXD+dcb1"
+    ]
+   },
+   "002a:0014": {
+    "esi": [
+     "MMDEVLDR.VXD+2254",
+     "DSOUND.VXD+2471"
+    ],
+    "eax": [
+     "MMDEVLDR.VXD+2254",
+     "DSOUND.VXD+2471"
+    ],
+    "edi": [
+     "DSOUND.VXD+2471"
+    ],
+    "ebp": [
+     "DSOUND.VXD+2471"
+    ]
+   },
+   "002a:0002": {
+    "esi": [
+     "MMDEVLDR.VXD+228c"
+    ],
+    "edi": [
+     "MMDEVLDR.VXD+228c",
+     "REBOOT.VXD+f0"
+    ],
+    "eax": [
+     "MMDEVLDR.VXD+228c",
+     "MMDEVLDR.VXD+2500"
+    ],
+    "ebp": [
+     "MMDEVLDR.VXD+2500"
+    ]
+   },
+   "0001:0108": {
+    "esi": [
+     "MMDEVLDR.VXD+2228",
+     "IFSMGR.VXD+9b4",
+     "VCOMM.VXD+6561"
+    ],
+    "edi": [
+     "MMDEVLDR.VXD+2228",
+     "IFSMGR.VXD+23641",
+     "IFSMGR.VXD+5371",
+     "IFSMGR.VXD+367c",
+     "IFSMGR.VXD+3641",
+     "IFSMGR.VXD+34f4",
+     "IFSMGR.VXD+354d",
+     "IFSMGR.VXD+1d010",
+     "IFSMGR.VXD+ecf1",
+     "IFSMGR.VXD+9b4",
+     "IFSMGR.VXD+c9a",
+     "IFSMGR.VXD+c0e",
+     "VNETBIOS.VXD+109",
+     "VCOMM.VXD+6561",
+     "VCOMM.VXD+651a",
+     "VCOMM.VXD+6457",
+     "VCOMM.VXD+63c8",
+     "VCOMM.VXD+6378"
+    ],
+    "ecx": [
+     "IFSMGR.VXD+3641",
+     "IFSMGR.VXD+354d",
+     "IFSMGR.VXD+1d010",
+     "IFSMGR.VXD+ecf1",
+     "IFSMGR.VXD+9b4",
+     "VCOMM.VXD+651a",
+     "VCOMM.VXD+6378"
+    ],
+    "edx": [
+     "IFSMGR.VXD+34f4",
+     "IFSMGR.VXD+1d010",
+     "IFSMGR.VXD+9b4",
+     "IFSMGR.VXD+c0e",
+     "VCOMM.VXD+6457",
+     "VCOMM.VXD+63c8"
+    ],
+    "eax": [
+     "IFSMGR.VXD+354d"
+    ],
+    "ebp": [
+     "IFSMGR.VXD+9b4",
+     "VCOMM.VXD+6457",
+     "VCOMM.VXD+63c8"
+    ]
+   },
+   "0001:0064": {
+    "edi": [
+     "MMDEVLDR.VXD+220f"
+    ],
+    "esi": [
+     "IFSMGR.VXD+dd52"
+    ],
+    "ebx": [
+     "IFSMGR.VXD+dd52"
+    ],
+    "ebp": [
+     "IFSMGR.VXD+dd52",
+     "IFSMGR.VXD+dd97"
+    ],
+    "eax": [
+     "IFSMGR.VXD+dd52",
+     "VNETBIOS.VXD+184"
+    ]
+   },
+   "0001:0063": {
+    "esi": [
+     "MMDEVLDR.VXD+21dc",
+     "IFSMGR.VXD+dd5a"
+    ],
+    "edi": [
+     "MMDEVLDR.VXD+21dc"
+    ],
+    "eax": [
+     "MMDEVLDR.VXD+21dc",
+     "IFSMGR.VXD+dd5a",
+     "VNETBIOS.VXD+b3",
+     "VNETBIOS.VXD+136",
+     "VCOMM.VXD+6419"
+    ],
+    "ebx": [
+     "IFSMGR.VXD+dd5a"
+    ],
+    "ebp": [
+     "IFSMGR.VXD+dd5a"
+    ]
+   },
+   "0001:001c": {
+    "ebp": [
+     "MMDEVLDR.VXD+2469",
+     "MMDEVLDR.VXD+2489",
+     "MMDEVLDR.VXD+253b",
+     "MSSNDSYS.VXD+76d3",
+     "MSSNDSYS.VXD+76f2",
+     "MSSNDSYS.VXD+770d",
+     "MSSNDSYS.VXD+7689",
+     "MSSNDSYS.VXD+73cc",
+     "MSSNDSYS.VXD+7363",
+     "MSSNDSYS.VXD+75a0",
+     "VTDAPI.VXD+201e",
+     "MSOPL.VXD+4451",
+     "IFSMGR.VXD+e4ad",
+     "IFSMGR.VXD+e2f9",
+     "IFSMGR.VXD+a7d",
+     "IFSMGR.VXD+d15a",
+     "IFSMGR.VXD+d1cb",
+     "IFSMGR.VXD+d235",
+     "IFSMGR.VXD+ee2a",
+     "VREDIR.VXD+5de1",
+     "VREDIR.VXD+5b26",
+     "SHELL.VXD+11683",
+     "SHELL.VXD+10165",
+     "SHELL.VXD+ae4f",
+     "SHELL.VXD+e5b8",
+     "SHELL.VXD+c113",
+     "SHELL.VXD+a76f",
+     "SHELL.VXD+11425",
+     "SHELL.VXD+114ba",
+     "SHELL.VXD+d4ad",
+     "SHELL.VXD+10222",
+     "VCOMM.VXD+34a2",
+     "VCOMM.VXD+3468",
+     "VCOMM.VXD+33f1",
+     "VCOMM.VXD+32bd",
+     "VCOMM.VXD+32d7",
+     "VCOMM.VXD+32f6"
+    ],
+    "eax": [
+     "MMDEVLDR.VXD+2469",
+     "MMDEVLDR.VXD+2489",
+     "MMDEVLDR.VXD+24a3",
+     "MMDEVLDR.VXD+2551",
+     "MMDEVLDR.VXD+250f",
+     "MMDEVLDR.VXD+253b",
+     "MMDEVLDR.VXD+256d",
+     "MMDEVLDR.VXD+24f2",
+     "MSSNDSYS.VXD+7765",
+     "MSSNDSYS.VXD+76d3",
+     "MSSNDSYS.VXD+76f2",
+     "MSSNDSYS.VXD+770d",
+     "MSSNDSYS.VXD+7689",
+     "MSSNDSYS.VXD+73cc",
+     "MSSNDSYS.VXD+7363",
+     "MSSNDSYS.VXD+75a0",
+     "VTDAPI.VXD+22c0",
+     "VTDAPI.VXD+20d4",
+     "VTDAPI.VXD+20ba",
+     "VTDAPI.VXD+201e",
+     "MSOPL.VXD+4451",
+     "IFSMGR.VXD+ecd4",
+     "IFSMGR.VXD+e51c",
+     "IFSMGR.VXD+e4ad",
+     "IFSMGR.VXD+e19c",
+     "IFSMGR.VXD+e2f9",
+     "IFSMGR.VXD+a7d",
+     "IFSMGR.VXD+d235",
+     "IFSMGR.VXD+e8e8",
+     "IFSMGR.VXD+e8d5",
+     "IFSMGR.VXD+ee2a",
+     "VNETSUP.VXD+8c",
+     "VNETBIOS.VXD+4295",
+     "SHELL.VXD+a6f8",
+     "SHELL.VXD+11683",
+     "SHELL.VXD+10165",
+     "SHELL.VXD+ae4f",
+     "SHELL.VXD+e5b8",
+     "SHELL.VXD+c113",
+     "SHELL.VXD+c140",
+     "SHELL.VXD+a76f",
+     "SHELL.VXD+11425",
+     "SHELL.VXD+114ba",
+     "SHELL.VXD+d4ad",
+     "SHELL.VXD+d4fb",
+     "SHELL.VXD+d578",
+     "SHELL.VXD+d094",
+     "SHELL.VXD+d0bf",
+     "SHELL.VXD+d034",
+     "SHELL.VXD+10222",
+     "VCOMM.VXD+3497",
+     "VCOMM.VXD+34a2",
+     "VCOMM.VXD+3468",
+     "VCOMM.VXD+343b",
+     "VCOMM.VXD+341a",
+     "VCOMM.VXD+33f1",
+     "VCOMM.VXD+3380",
+     "VCOMM.VXD+32bd",
+     "VCOMM.VXD+32d7",
+     "VCOMM.VXD+32f6",
+     "VCOMM.VXD+322b"
+    ],
+    "esi": [
+     "MMDEVLDR.VXD+2489",
+     "MMDEVLDR.VXD+24a3",
+     "MSSNDSYS.VXD+7765",
+     "MSSNDSYS.VXD+76d3",
+     "MSSNDSYS.VXD+76f2",
+     "MSSNDSYS.VXD+770d",
+     "MSSNDSYS.VXD+7689",
+     "MSSNDSYS.VXD+73cc",
+     "MSSNDSYS.VXD+7363",
+     "MSSNDSYS.VXD+75a0",
+     "MSOPL.VXD+4451",
+     "VNETBIOS.VXD+4295",
+     "SHELL.VXD+a6f8",
+     "SHELL.VXD+10165",
+     "SHELL.VXD+ae4f",
+     "SHELL.VXD+c113",
+     "SHELL.VXD+c140",
+     "SHELL.VXD+d4ad",
+     "SHELL.VXD+d4fb",
+     "SHELL.VXD+d578",
+     "VCOMM.VXD+34a2",
+     "VCOMM.VXD+3468",
+     "VCOMM.VXD+343b",
+     "VCOMM.VXD+341a",
+     "VCOMM.VXD+33f1",
+     "VCOMM.VXD+32bd",
+     "VCOMM.VXD+32d7",
+     "VCOMM.VXD+32f6",
+     "VCOMM.VXD+322b"
+    ],
+    "ecx": [
+     "MMDEVLDR.VXD+24a3",
+     "MMDEVLDR.VXD+253b",
+     "IFSMGR.VXD+ecd4",
+     "IFSMGR.VXD+e4ad",
+     "IFSMGR.VXD+a7d",
+     "VNETSUP.VXD+8c",
+     "SHELL.VXD+c113",
+     "SHELL.VXD+c140",
+     "SHELL.VXD+10222",
+     "VCOMM.VXD+3468",
+     "VCOMM.VXD+341a"
+    ],
+    "edx": [
+     "MMDEVLDR.VXD+253b",
+     "IFSMGR.VXD+a7d",
+     "IFSMGR.VXD+ee2a",
+     "SHELL.VXD+d0bf",
+     "SHELL.VXD+10222",
+     "VCOMM.VXD+32d7",
+     "VCOMM.VXD+32f6"
+    ],
+    "ebx": [
+     "MMDEVLDR.VXD+253b",
+     "IFSMGR.VXD+e51c",
+     "IFSMGR.VXD+e4ad",
+     "IFSMGR.VXD+e19c",
+     "IFSMGR.VXD+a7d",
+     "IFSMGR.VXD+d1cb",
+     "VREDIR.VXD+5de1",
+     "SHELL.VXD+10165",
+     "SHELL.VXD+e5b8",
+     "SHELL.VXD+d4ad",
+     "SHELL.VXD+d578",
+     "SHELL.VXD+10222"
+    ],
+    "edi": [
+     "MSSNDSYS.VXD+7689",
+     "MSSNDSYS.VXD+73cc",
+     "MSSNDSYS.VXD+7363",
+     "MSSNDSYS.VXD+75a0",
+     "VTDAPI.VXD+20d4",
+     "VTDAPI.VXD+20ba",
+     "VTDAPI.VXD+201e",
+     "MSOPL.VXD+4451",
+     "IFSMGR.VXD+a7d",
+     "SHELL.VXD+a6f8",
+     "SHELL.VXD+11425",
+     "SHELL.VXD+114ba",
+     "SHELL.VXD+d094",
+     "SHELL.VXD+d034",
+     "SHELL.VXD+10222",
+     "VCOMM.VXD+3497",
+     "VCOMM.VXD+34a2",
+     "VCOMM.VXD+3380",
+     "VCOMM.VXD+32bd",
+     "VCOMM.VXD+32d7",
+     "VCOMM.VXD+32f6",
+     "VCOMM.VXD+322b"
+    ]
+   },
+   "0017:000e": {
+    "ebp": [
+     "MMDEVLDR.VXD+24c6"
+    ],
+    "eax": [
+     "MMDEVLDR.VXD+24c6"
+    ],
+    "edi": [
+     "SHELL.VXD+aae0"
+    ]
+   },
+   "002a:000e": {
+    "ebp": [
+     "MMDEVLDR.VXD+2575",
+     "DSOUND.VXD+1c5",
+     "VCOMM.VXD+217"
+    ],
+    "eax": [
+     "MMDEVLDR.VXD+2575"
+    ]
+   },
+   "0001:00b5": {
+    "edx": [
+     "MMDEVLDR.VXD+322d",
+     "SHELL.VXD+10427"
+    ],
+    "ebp": [
+     "MMDEVLDR.VXD+322d"
+    ]
+   },
+   "0001:0004": {
+    "zf": [
+     "MSSNDSYS.VXD+352",
+     "MSSNDSYS.VXD+71d8",
+     "MSSNDSYS.VXD+ab5",
+     "MSSNDSYS.VXD+72b6",
+     "MSSNDSYS.VXD+6f98",
+     "MSSNDSYS.VXD+6d4c",
+     "MSSNDSYS.VXD+74eb",
+     "MSSNDSYS.VXD+44f",
+     "VTDAPI.VXD+1b",
+     "MSOPL.VXD+146",
+     "ENABLE.VXD+33b2",
+     "SPOOLER.VXD+25b0",
+     "SPOOLER.VXD+216e",
+     "SPOOLER.VXD+2097",
+     "IFSMGR.VXD+1d06d",
+     "IFSMGR.VXD+ec2c",
+     "IFSMGR.VXD+e961",
+     "VNETSUP.VXD+1c5",
+     "VREDIR.VXD+59e8",
+     "PERF.VXD+3f01",
+     "SHELL.VXD+c00e",
+     "SHELL.VXD+a87a",
+     "SHELL.VXD+1169d",
+     "SHELL.VXD+e59a",
+     "SHELL.VXD+1143b",
+     "SHELL.VXD+114d0",
+     "SHELL.VXD+1123d",
+     "SHELL.VXD+11282",
+     "SHELL.VXD+113b5",
+     "SHELL.VXD+112fb",
+     "SHELL.VXD+e4b8",
+     "SHELL.VXD+908a",
+     "SHELL.VXD+a8a6",
+     "SHELL.VXD+a945",
+     "SHELL.VXD+118ef",
+     "SHELL.VXD+119bb",
+     "SHELL.VXD+e338",
+     "SHELL.VXD+11124",
+     "SHELL.VXD+11197",
+     "SHELL.VXD+d409",
+     "SHELL.VXD+d44d",
+     "SHELL.VXD+111e5",
+     "SHELL.VXD+a982",
+     "SHELL.VXD+ad2a"
+    ],
+    "edi": [
+     "MSSNDSYS.VXD+71d8",
+     "MSSNDSYS.VXD+72b6",
+     "MSSNDSYS.VXD+6f98",
+     "SHELL.VXD+a87a",
+     "SHELL.VXD+113b5",
+     "SHELL.VXD+112fb",
+     "SHELL.VXD+908a",
+     "SHELL.VXD+11124"
+    ],
+    "esi": [
+     "MSSNDSYS.VXD+ab5",
+     "MSSNDSYS.VXD+6d4c",
+     "VTDAPI.VXD+1b",
+     "SHELL.VXD+1123d",
+     "SHELL.VXD+113b5",
+     "SHELL.VXD+112fb",
+     "SHELL.VXD+908a",
+     "SHELL.VXD+11124"
+    ],
+    "ecx": [
+     "MSSNDSYS.VXD+6d4c",
+     "SHELL.VXD+908a",
+     "SHELL.VXD+11124"
+    ],
+    "ebx": [
+     "MSSNDSYS.VXD+6d4c",
+     "SPOOLER.VXD+216e",
+     "SPOOLER.VXD+2097",
+     "IFSMGR.VXD+e961",
+     "VREDIR.VXD+59e8",
+     "SHELL.VXD+a87a",
+     "SHELL.VXD+1169d",
+     "SHELL.VXD+113b5",
+     "SHELL.VXD+112fb",
+     "SHELL.VXD+e4b8",
+     "SHELL.VXD+908a",
+     "SHELL.VXD+11124",
+     "SHELL.VXD+111e5",
+     "SHELL.VXD+a982"
+    ],
+    "edx": [
+     "MSSNDSYS.VXD+6d4c",
+     "MSSNDSYS.VXD+74eb",
+     "VTDAPI.VXD+1b",
+     "SHELL.VXD+1169d",
+     "SHELL.VXD+1123d",
+     "SHELL.VXD+908a",
+     "SHELL.VXD+a982"
+    ],
+    "eax": [
+     "VTDAPI.VXD+1b",
+     "ENABLE.VXD+33b2",
+     "IFSMGR.VXD+e961",
+     "PERF.VXD+3f01",
+     "SHELL.VXD+c00e",
+     "SHELL.VXD+1169d",
+     "SHELL.VXD+908a",
+     "SHELL.VXD+11124"
+    ],
+    "ebp": [
+     "VTDAPI.VXD+1b",
+     "SPOOLER.VXD+216e",
+     "SPOOLER.VXD+2097",
+     "IFSMGR.VXD+e961",
+     "SHELL.VXD+c00e",
+     "SHELL.VXD+1169d",
+     "SHELL.VXD+908a",
+     "SHELL.VXD+111e5",
+     "SHELL.VXD+ad2a"
+    ]
+   },
+   "0004:0014": {
+    "edi": [
+     "MSSNDSYS.VXD+71eb",
+     "MSSNDSYS.VXD+71f8"
+    ]
+   },
+   "0003:0003": {
+    "esi": [
+     "MSSNDSYS.VXD+722e",
+     "NDIS.VXD+1981c"
+    ]
+   },
+   "0001:0098": {
+    "edi": [
+     "MSSNDSYS.VXD+6f37",
+     "MSSNDSYS.VXD+6f52"
+    ],
+    "esi": [
+     "MSSNDSYS.VXD+6f37",
+     "MSSNDSYS.VXD+6f52",
+     "MSSNDSYS.VXD+6f75",
+     "MSSNDSYS.VXD+702e",
+     "MSOPL.VXD+41df"
+    ],
+    "edx": [
+     "MSSNDSYS.VXD+6f37",
+     "MSSNDSYS.VXD+6f52",
+     "MSSNDSYS.VXD+6f75",
+     "MSSNDSYS.VXD+702e",
+     "MSOPL.VXD+41df"
+    ],
+    "ecx": [
+     "MSSNDSYS.VXD+6f37",
+     "MSSNDSYS.VXD+6f52",
+     "MSSNDSYS.VXD+6f75",
+     "MSSNDSYS.VXD+702e",
+     "MSOPL.VXD+41df"
+    ]
+   },
+   "000d:0004": {
+    "edi": [
+     "MSSNDSYS.VXD+135e"
+    ],
+    "edx": [
+     "SHELL.VXD+c0ce"
+    ],
+    "esi": [
+     "SHELL.VXD+a8e8",
+     "SHELL.VXD+d47f",
+     "SHELL.VXD+462e"
+    ],
+    "ecx": [
+     "SHELL.VXD+a8e8",
+     "SHELL.VXD+d47f"
+    ]
+   },
+   "0003:0006": {
+    "esi": [
+     "MSSNDSYS.VXD+12e2",
+     "MSSNDSYS.VXD+da1"
+    ],
+    "ecx": [
+     "MSSNDSYS.VXD+12e2",
+     "MSSNDSYS.VXD+da1"
+    ]
+   },
+   "000d:0003": {
+    "esi": [
+     "MSSNDSYS.VXD+b0d",
+     "SHELL.VXD+a7b0",
+     "SHELL.VXD+d487"
+    ],
+    "edi": [
+     "MSSNDSYS.VXD+b0d"
+    ],
+    "ecx": [
+     "SHELL.VXD+a7b0",
+     "SHELL.VXD+d487"
+    ]
+   },
+   "0001:0005": {
+    "edi": [
+     "MSSNDSYS.VXD+728b",
+     "SHELL.VXD+1114a"
+    ],
+    "cf": [
+     "MSSNDSYS.VXD+728b",
+     "ENABLE.VXD+379e",
+     "IFSMGR.VXD+d4c3",
+     "SHELL.VXD+a2a2",
+     "SHELL.VXD+115a2",
+     "SHELL.VXD+1154e",
+     "SHELL.VXD+a86c",
+     "SHELL.VXD+a81f",
+     "SHELL.VXD+a83d",
+     "SHELL.VXD+11858",
+     "SHELL.VXD+1172c",
+     "SHELL.VXD+a70d",
+     "SHELL.VXD+115d8",
+     "SHELL.VXD+e61e",
+     "SHELL.VXD+e592",
+     "SHELL.VXD+a756",
+     "SHELL.VXD+11433",
+     "SHELL.VXD+114c8",
+     "SHELL.VXD+11212",
+     "SHELL.VXD+e46f",
+     "SHELL.VXD+e4b0",
+     "SHELL.VXD+e4db",
+     "SHELL.VXD+1114a",
+     "SHELL.VXD+558",
+     "SHELL.VXD+11a66"
+    ],
+    "ebx": [
+     "SHELL.VXD+115a2",
+     "SHELL.VXD+1154e",
+     "SHELL.VXD+a81f",
+     "SHELL.VXD+a83d",
+     "SHELL.VXD+11858",
+     "SHELL.VXD+11212",
+     "SHELL.VXD+e4db",
+     "SHELL.VXD+1114a",
+     "SHELL.VXD+558"
+    ],
+    "ebp": [
+     "SHELL.VXD+11858",
+     "SHELL.VXD+1172c",
+     "SHELL.VXD+e592",
+     "SHELL.VXD+a756",
+     "SHELL.VXD+558"
+    ],
+    "eax": [
+     "SHELL.VXD+11858",
+     "SHELL.VXD+11212",
+     "SHELL.VXD+1114a"
+    ],
+    "ecx": [
+     "SHELL.VXD+1114a"
+    ],
+    "esi": [
+     "SHELL.VXD+558",
+     "SHELL.VXD+11a66"
+    ]
+   },
+   "0004:0013": {
+    "edi": [
+     "MSSNDSYS.VXD+72c9",
+     "MSSNDSYS.VXD+72d6"
+    ]
+   },
+   "0003:0005": {
+    "ecx": [
+     "MSSNDSYS.VXD+72e7",
+     "MSSNDSYS.VXD+540"
+    ],
+    "edi": [
+     "MSSNDSYS.VXD+540"
+    ]
+   },
+   "0001:009a": {
+    "edi": [
+     "MSSNDSYS.VXD+6faa",
+     "MSSNDSYS.VXD+6fc8"
+    ],
+    "esi": [
+     "MSSNDSYS.VXD+6faa",
+     "MSSNDSYS.VXD+6fc8",
+     "MSSNDSYS.VXD+6feb",
+     "MSSNDSYS.VXD+7052",
+     "MSSNDSYS.VXD+6ecb",
+     "MSOPL.VXD+420f"
+    ],
+    "edx": [
+     "MSSNDSYS.VXD+6faa",
+     "MSSNDSYS.VXD+6fc8",
+     "MSSNDSYS.VXD+6feb",
+     "MSSNDSYS.VXD+7052",
+     "MSOPL.VXD+420f"
+    ],
+    "ecx": [
+     "MSSNDSYS.VXD+6faa",
+     "MSSNDSYS.VXD+6fc8",
+     "MSSNDSYS.VXD+6feb",
+     "MSSNDSYS.VXD+7052",
+     "MSOPL.VXD+420f"
+    ]
+   },
+   "0004:001c": {
+    "ecx": [
+     "MSSNDSYS.VXD+7b10",
+     "MSSNDSYS.VXD+7444"
+    ],
+    "ebp": [
+     "MSSNDSYS.VXD+7444"
+    ]
+   },
+   "0001:0001": {
+    "ebx": [
+     "MSSNDSYS.VXD+7ae8",
+     "SPOOLER.VXD+2412",
+     "SPOOLER.VXD+4218",
+     "IFSMGR.VXD+d55c",
+     "IFSMGR.VXD+d764",
+     "IFSMGR.VXD+d5cd",
+     "IFSMGR.VXD+d67a",
+     "IFSMGR.VXD+dc67",
+     "IFSMGR.VXD+d34a",
+     "IFSMGR.VXD+d1de",
+     "IFSMGR.VXD+253",
+     "IFSMGR.VXD+f15",
+     "IFSMGR.VXD+d1ad",
+     "IFSMGR.VXD+d0db",
+     "IFSMGR.VXD+5365",
+     "IFSMGR.VXD+d217",
+     "IFSMGR.VXD+1d121",
+     "IFSMGR.VXD+dff3",
+     "VREDIR.VXD+5dc1",
+     "VNETBIOS.VXD+16ff",
+     "VNETBIOS.VXD+1a8",
+     "VNETBIOS.VXD+816",
+     "NETBEUI.VXD+3f3",
+     "NETBEUI.VXD+4dd9",
+     "NDIS.VXD+fc5a",
+     "NDIS.VXD+c135",
+     "VCOMM.VXD+34d1",
+     "VCOMM.VXD+3204"
+    ],
+    "edi": [
+     "IFSMGR.VXD+d764",
+     "IFSMGR.VXD+1d121"
+    ],
+    "ebp": [
+     "IFSMGR.VXD+d5cd",
+     "IFSMGR.VXD+d67a",
+     "IFSMGR.VXD+dc67",
+     "IFSMGR.VXD+d34a",
+     "IFSMGR.VXD+d1de",
+     "IFSMGR.VXD+d0db",
+     "VREDIR.VXD+5d06",
+     "VCOMM.VXD+34d1"
+    ],
+    "eax": [
+     "IFSMGR.VXD+d1ad",
+     "VREDIR.VXD+5dc1",
+     "VNETBIOS.VXD+16ff"
+    ],
+    "edx": [
+     "VNETBIOS.VXD+16ff"
+    ],
+    "esi": [
+     "VNETBIOS.VXD+816",
+     "VCOMM.VXD+34d1",
+     "VCOMM.VXD+3204"
+    ]
+   },
+   "0001:0116": {
+    "edi": [
+     "MSSNDSYS.VXD+4290",
+     "MSSNDSYS.VXD+425e"
+    ],
+    "ecx": [
+     "MSSNDSYS.VXD+4290",
+     "MSSNDSYS.VXD+425e"
+    ],
+    "ebp": [
+     "MSSNDSYS.VXD+425e"
+    ]
+   },
+   "0033:0003": {
+    "edi": [
+     "MSSNDSYS.VXD+520f",
+     "MSSNDSYS.VXD+4b26"
+    ],
+    "ebp": [
+     "MSSNDSYS.VXD+520f"
+    ],
+    "eax": [
+     "MSSNDSYS.VXD+520f",
+     "MSSNDSYS.VXD+4b26"
+    ],
+    "ebx": [
+     "MSSNDSYS.VXD+4b26"
+    ]
+   },
+   "0004:0001": {
+    "edi": [
+     "MSSNDSYS.VXD+525e"
+    ],
+    "ecx": [
+     "MSSNDSYS.VXD+525e"
+    ],
+    "cf": [
+     "MSSNDSYS.VXD+525e",
+     "NDIS.VXD+fe98",
+     "NDIS.VXD+ff15",
+     "LPT.VXD+3749"
+    ],
+    "eax": [
+     "MSSNDSYS.VXD+525e",
+     "NDIS.VXD+fe98",
+     "NDIS.VXD+ff15"
+    ],
+    "ebx": [
+     "MSSNDSYS.VXD+525e"
+    ],
+    "edx": [
+     "NDIS.VXD+fe98",
+     "NDIS.VXD+ff15"
+    ],
+    "ebp": [
+     "NDIS.VXD+fe98",
+     "NDIS.VXD+ff15"
+    ]
+   },
+   "0004:001f": {
+    "edi": [
+     "MSSNDSYS.VXD+5275"
+    ],
+    "ebp": [
+     "MSSNDSYS.VXD+5275"
+    ]
+   },
+   "0001:004f": {
+    "edi": [
+     "MSSNDSYS.VXD+41e3",
+     "IFSMGR.VXD+dfaa",
+     "IFSMGR.VXD+1ccf1",
+     "IFSMGR.VXD+b0e0",
+     "IFSMGR.VXD+b141",
+     "VCACHE.VXD+2111",
+     "SHELL.VXD+d3b9",
+     "VCOMM.VXD+4210",
+     "VCOMM.VXD+41ca"
+    ],
+    "ebp": [
+     "MSSNDSYS.VXD+41e3",
+     "SPOOLER.VXD+3229",
+     "SPOOLER.VXD+2204",
+     "SPOOLER.VXD+3562",
+     "IFSMGR.VXD+1f86",
+     "IFSMGR.VXD+22509",
+     "IFSMGR.VXD+14275",
+     "IFSMGR.VXD+dfaa",
+     "IFSMGR.VXD+1bef0",
+     "IFSMGR.VXD+1cbde",
+     "IFSMGR.VXD+1ccf1",
+     "IFSMGR.VXD+1b2a9",
+     "IFSMGR.VXD+b34a",
+     "VREDIR.VXD+60b2",
+     "PERF.VXD+3254",
+     "PERF.VXD+30be",
+     "VCOMM.VXD+4210"
+    ],
+    "eax": [
+     "MSSNDSYS.VXD+41e3",
+     "SPOOLER.VXD+3229",
+     "SPOOLER.VXD+2204",
+     "SPOOLER.VXD+3562",
+     "IFSMGR.VXD+1f86",
+     "IFSMGR.VXD+1099",
+     "IFSMGR.VXD+f121",
+     "IFSMGR.VXD+21729",
+     "IFSMGR.VXD+22509",
+     "IFSMGR.VXD+14275",
+     "IFSMGR.VXD+dfaa",
+     "IFSMGR.VXD+1bef0",
+     "IFSMGR.VXD+1cbde",
+     "IFSMGR.VXD+e5af",
+     "IFSMGR.VXD+1ccf1",
+     "IFSMGR.VXD+1b2a9",
+     "IFSMGR.VXD+ac22",
+     "IFSMGR.VXD+acbc",
+     "IFSMGR.VXD+ad53",
+     "IFSMGR.VXD+b34a",
+     "IFSMGR.VXD+b0e0",
+     "IFSMGR.VXD+b141",
+     "VCACHE.VXD+2111",
+     "VNETBIOS.VXD+a65",
+     "VNETBIOS.VXD+a9c",
+     "VNETBIOS.VXD+ad3",
+     "NETBEUI.VXD+808a",
+     "NDIS.VXD+6576",
+     "PERF.VXD+3254",
+     "PERF.VXD+30be",
+     "SHELL.VXD+d3b9",
+     "VCOMM.VXD+6539",
+     "VCOMM.VXD+4210",
+     "VCOMM.VXD+41ca"
+    ],
+    "esi": [
+     "IFSMGR.VXD+1f86",
+     "IFSMGR.VXD+22509",
+     "IFSMGR.VXD+1cbde",
+     "IFSMGR.VXD+1ccf1",
+     "IFSMGR.VXD+acbc",
+     "IFSMGR.VXD+b34a",
+     "PERF.VXD+3254",
+     "PERF.VXD+30be",
+     "VCOMM.VXD+41ca"
+    ],
+    "ebx": [
+     "IFSMGR.VXD+1099",
+     "IFSMGR.VXD+14275",
+     "IFSMGR.VXD+dfaa",
+     "IFSMGR.VXD+1cbde",
+     "IFSMGR.VXD+ac22",
+     "IFSMGR.VXD+acbc",
+     "IFSMGR.VXD+ad53",
+     "IFSMGR.VXD+b34a",
+     "VNETBIOS.VXD+a65",
+     "SHELL.VXD+d3b9"
+    ]
+   },
+   "0001:0096": {
+    "edi": [
+     "MSSNDSYS.VXD+4231"
+    ],
+    "ecx": [
+     "MSSNDSYS.VXD+4231"
+    ],
+    "cf": [
+     "MSSNDSYS.VXD+4231"
+    ],
+    "esi": [
+     "MSSNDSYS.VXD+4231"
+    ],
+    "ebp": [
+     "MSSNDSYS.VXD+4231"
+    ]
+   },
+   "0001:003b": {
+    "edi": [
+     "MSSNDSYS.VXD+3054",
+     "MSOPL.VXD+203e",
+     "IFSMGR.VXD+d564"
+    ],
+    "ebx": [
+     "MSSNDSYS.VXD+3054",
+     "MSSNDSYS.VXD+a052",
+     "MSOPL.VXD+203e",
+     "MSOPL.VXD+6052",
+     "IFSMGR.VXD+d564",
+     "IFSMGR.VXD+dc77",
+     "SHELL.VXD+11154"
+    ],
+    "esi": [
+     "IFSMGR.VXD+d564"
+    ],
+    "ebp": [
+     "IFSMGR.VXD+d564",
+     "IFSMGR.VXD+dc77"
+    ],
+    "edx": [
+     "IFSMGR.VXD+dc77"
+    ],
+    "ecx": [
+     "IFSMGR.VXD+dc77",
+     "SHELL.VXD+11154"
+    ],
+    "eax": [
+     "SHELL.VXD+11154"
+    ]
+   },
+   "0001:00a7": {
+    "eax": [
+     "MSSNDSYS.VXD+a004",
+     "MSOPL.VXD+6004",
+     "IFSMGR.VXD+a710",
+     "VNETBIOS.VXD+4235",
+     "SHELL.VXD+4456"
+    ],
+    "ebx": [
+     "IFSMGR.VXD+a710"
+    ]
+   },
+   "000d:0001": {
+    "cf": [
+     "MSSNDSYS.VXD+a082",
+     "MSSNDSYS.VXD+a0a3",
+     "IFSMGR.VXD+b8c4",
+     "SHELL.VXD+c0ad",
+     "SHELL.VXD+461c"
+    ],
+    "eax": [
+     "MSSNDSYS.VXD+a082",
+     "MSSNDSYS.VXD+a0a3",
+     "SHELL.VXD+c0ad",
+     "SHELL.VXD+461c"
+    ],
+    "ecx": [
+     "IFSMGR.VXD+b8c4"
+    ],
+    "edx": [
+     "SHELL.VXD+c0ad"
+    ]
+   },
+   "0001:003e": {
+    "eax": [
+     "VTDAPI.VXD+2225",
+     "SPOOLER.VXD+2401",
+     "SHELL.VXD+472a",
+     "REBOOT.VXD+3062"
+    ],
+    "ebp": [
+     "IFSMGR.VXD+1089",
+     "IFSMGR.VXD+d4aa",
+     "SHELL.VXD+a0db"
+    ],
+    "ecx": [
+     "SHELL.VXD+1006a"
+    ],
+    "edi": [
+     "VCOMM.VXD+13d",
+     "VCOMM.VXD+14f"
+    ]
+   },
+   "0001:0015": {
+    "eax": [
+     "VTDAPI.VXD+2231"
+    ],
+    "ebp": [
+     "IFSMGR.VXD+1077",
+     "IFSMGR.VXD+d4a2",
+     "SHELL.VXD+ad83"
+    ],
+    "edx": [
+     "SHELL.VXD+115b6"
+    ]
+   },
+   "0001:003f": {
+    "edx": [
+     "VTDAPI.VXD+217a",
+     "VTDAPI.VXD+62",
+     "NDIS.VXD+1b011",
+     "NDIS.VXD+1b032",
+     "NDIS.VXD+1b046"
+    ],
+    "eax": [
+     "VTDAPI.VXD+217a",
+     "VTDAPI.VXD+238b",
+     "VTDAPI.VXD+20a4",
+     "VTDAPI.VXD+62",
+     "NDIS.VXD+1b002",
+     "NDIS.VXD+1b011",
+     "NDIS.VXD+1b02a",
+     "NDIS.VXD+1b032",
+     "NDIS.VXD+1b046",
+     "PERF.VXD+3f0f",
+     "SHELL.VXD+adc7",
+     "SHELL.VXD+ad41",
+     "LPT.VXD+6e03",
+     "LPTENUM.VXD+1003"
+    ],
+    "ebp": [
+     "VTDAPI.VXD+20a4",
+     "SHELL.VXD+adc7",
+     "SHELL.VXD+ad41",
+     "LPT.VXD+6e03",
+     "LPTENUM.VXD+1003"
+    ],
+    "ecx": [
+     "NDIS.VXD+1b002",
+     "NDIS.VXD+1b011"
+    ]
+   },
+   "0001:00fe": {
+    "edi": [
+     "VTDAPI.VXD+218c"
+    ],
+    "esi": [
+     "VTDAPI.VXD+218c",
+     "VTDAPI.VXD+80",
+     "DSOUND.VXD+1d5"
+    ],
+    "edx": [
+     "VTDAPI.VXD+218c",
+     "VTDAPI.VXD+80"
+    ],
+    "ecx": [
+     "VTDAPI.VXD+218c",
+     "VTDAPI.VXD+80"
+    ],
+    "ebp": [
+     "DSOUND.VXD+1d5"
+    ]
+   },
+   "0005:0002": {
+    "eax": [
+     "VTDAPI.VXD+2383",
+     "VTDAPI.VXD+2092",
+     "NETBEUI.VXD+81df"
+    ],
+    "ebp": [
+     "VTDAPI.VXD+2092"
+    ]
+   },
+   "0005:0004": {
+    "cf": [
+     "VTDAPI.VXD+237b",
+     "VTDAPI.VXD+207d"
+    ],
+    "ebp": [
+     "VTDAPI.VXD+207d"
+    ]
+   },
+   "0005:0003": {
+    "cf": [
+     "VTDAPI.VXD+234a",
+     "VTDAPI.VXD+2054"
+    ],
+    "ebp": [
+     "VTDAPI.VXD+2054"
+    ]
+   },
+   "0005:0000": {
+    "ebx": [
+     "VTDAPI.VXD+1000"
+    ],
+    "ecx": [
+     "VTDAPI.VXD+1000"
+    ],
+    "eax": [
+     "VTDAPI.VXD+1000"
+    ]
+   },
+   "0001:0144": {
+    "eax": [
+     "VTDAPI.VXD+102e"
+    ]
+   },
+   "0001:007a": {
+    "edx": [
+     "VTDAPI.VXD+1040",
+     "IFSMGR.VXD+ddbe",
+     "IFSMGR.VXD+a7a9"
+    ],
+    "eax": [
+     "VTDAPI.VXD+1040",
+     "IFSMGR.VXD+ddbe",
+     "IFSMGR.VXD+a7a9"
+    ],
+    "ebp": [
+     "IFSMGR.VXD+ddbe"
+    ]
+   },
+   "0001:0076": {
+    "eax": [
+     "VTDAPI.VXD+104d",
+     "IFSMGR.VXD+a7b6",
+     "SHELL.VXD+d61a"
+    ],
+    "edx": [
+     "IFSMGR.VXD+a7b6"
+    ],
+    "esi": [
+     "SHELL.VXD+d61a"
+    ],
+    "ebp": [
+     "SHELL.VXD+d61a"
+    ]
+   },
+   "0001:00f3": {
+    "edx": [
+     "VTDAPI.VXD+401d",
+     "VTDAPI.VXD+4030"
+    ],
+    "eax": [
+     "VTDAPI.VXD+4049",
+     "VTDAPI.VXD+4056",
+     "VTDAPI.VXD+4064",
+     "VTDAPI.VXD+4072",
+     "VTDAPI.VXD+4080",
+     "VTDAPI.VXD+408e",
+     "VTDAPI.VXD+409c",
+     "VTDAPI.VXD+40aa",
+     "VTDAPI.VXD+40b8",
+     "VTDAPI.VXD+40c6",
+     "VTDAPI.VXD+40d4",
+     "VTDAPI.VXD+40e2",
+     "VTDAPI.VXD+40f0"
+    ]
+   },
+   "0001:010c": {
+    "edx": [
+     "VTDAPI.VXD+11c"
+    ],
+    "cf": [
+     "VTDAPI.VXD+11c"
+    ]
+   },
+   "0001:0083": {
+    "edx": [
+     "VTDAPI.VXD+186",
+     "NDIS.VXD+fc72"
+    ],
+    "ebp": [
+     "VTDAPI.VXD+186",
+     "VNETBIOS.VXD+1536",
+     "NDIS.VXD+fc72"
+    ],
+    "ebx": [
+     "VTDAPI.VXD+186",
+     "NDIS.VXD+fc72",
+     "SHELL.VXD+40aa"
+    ],
+    "esi": [
+     "IFSMGR.VXD+e17"
+    ],
+    "eax": [
+     "VNETBIOS.VXD+1536"
+    ],
+    "edi": [
+     "SHELL.VXD+40aa"
+    ]
+   },
+   "0001:006e": {
+    "ebp": [
+     "VTDAPI.VXD+1ad",
+     "IFSMGR.VXD+d1ea",
+     "SHELL.VXD+10183"
+    ],
+    "eax": [
+     "VTDAPI.VXD+1ad",
+     "IFSMGR.VXD+d1ea",
+     "VNETBIOS.VXD+170a",
+     "VNETBIOS.VXD+7f",
+     "SHELL.VXD+10183",
+     "SHELL.VXD+d4c5",
+     "SHELL.VXD+d4d8",
+     "SHELL.VXD+d4eb"
+    ],
+    "ebx": [
+     "VNETBIOS.VXD+170a",
+     "SHELL.VXD+d4c5",
+     "SHELL.VXD+d4d8"
+    ],
+    "edi": [
+     "VNETBIOS.VXD+7f",
+     "SHELL.VXD+d4c5",
+     "SHELL.VXD+d4d8"
+    ],
+    "esi": [
+     "SHELL.VXD+10183",
+     "SHELL.VXD+d4c5",
+     "SHELL.VXD+d4d8",
+     "SHELL.VXD+d4eb"
+    ]
+   },
+   "0001:0048": {
+    "eax": [
+     "VTDAPI.VXD+1e5",
+     "VNETBIOS.VXD+1101"
+    ]
+   },
+   "0001:0085": {
+    "edx": [
+     "VTDAPI.VXD+1fd"
+    ],
+    "ebp": [
+     "VTDAPI.VXD+1fd"
+    ],
+    "ebx": [
+     "VTDAPI.VXD+1fd",
+     "IFSMGR.VXD+d38c"
+    ],
+    "ecx": [
+     "VNETBIOS.VXD+10a6"
+    ]
+   },
+   "0001:008e": {
+    "edx": [
+     "VTDAPI.VXD+21c",
+     "IFSMGR.VXD+d6f6",
+     "IFSMGR.VXD+d37",
+     "VREDIR.VXD+222f1"
+    ],
+    "eax": [
+     "IFSMGR.VXD+d6f6",
+     "IFSMGR.VXD+eb1"
+    ],
+    "ebp": [
+     "IFSMGR.VXD+d3a0",
+     "IFSMGR.VXD+eb1",
+     "IFSMGR.VXD+d145",
+     "IFSMGR.VXD+d24d",
+     "IFSMGR.VXD+de58",
+     "VNETBIOS.VXD+10c5",
+     "NETBEUI.VXD+433",
+     "SHELL.VXD+11c"
+    ],
+    "esi": [
+     "IFSMGR.VXD+db56",
+     "IFSMGR.VXD+d37",
+     "IFSMGR.VXD+de58"
+    ],
+    "ebx": [
+     "IFSMGR.VXD+bd4",
+     "IFSMGR.VXD+eb1",
+     "IFSMGR.VXD+a64b",
+     "VREDIR.VXD+22179",
+     "VREDIR.VXD+222f1"
+    ],
+    "edi": [
+     "IFSMGR.VXD+eb1",
+     "IFSMGR.VXD+d37"
+    ],
+    "ecx": [
+     "IFSMGR.VXD+aeb4",
+     "VNETBIOS.VXD+10c5"
+    ]
+   },
+   "0001:0014": {
+    "esi": [
+     "VTDAPI.VXD+ae",
+     "IFSMGR.VXD+fa1",
+     "IFSMGR.VXD+d4df",
+     "SHELL.VXD+11575",
+     "SHELL.VXD+ad61"
+    ],
+    "edx": [
+     "VTDAPI.VXD+ae",
+     "IFSMGR.VXD+fa1",
+     "SHELL.VXD+11575"
+    ],
+    "edi": [
+     "IFSMGR.VXD+d4df"
+    ],
+    "ebx": [
+     "IFSMGR.VXD+d4df"
+    ],
+    "ebp": [
+     "VREDIR.VXD+5cfe",
+     "VREDIR.VXD+5d1b",
+     "SHELL.VXD+11bdf",
+     "SHELL.VXD+ad61"
+    ]
+   },
+   "0001:0135": {
+    "ebp": [
+     "DSOUND.VXD+2634"
+    ]
+   },
+   "0001:0157": {
+    "ecx": [
+     "DSOUND.VXD+2664",
+     "DSOUND.VXD+253e"
+    ],
+    "ebp": [
+     "DSOUND.VXD+2664",
+     "DSOUND.VXD+253e"
+    ],
+    "eax": [
+     "DSOUND.VXD+2664",
+     "DSOUND.VXD+253e"
+    ],
+    "edx": [
+     "DSOUND.VXD+253e"
+    ],
+    "ebx": [
+     "DSOUND.VXD+253e"
+    ]
+   },
+   "0001:0125": {
+    "ebx": [
+     "DSOUND.VXD+2695"
+    ],
+    "ebp": [
+     "DSOUND.VXD+2695",
+     "DSOUND.VXD+2568"
+    ],
+    "eax": [
+     "DSOUND.VXD+2695",
+     "DSOUND.VXD+2568"
+    ],
+    "esi": [
+     "DSOUND.VXD+2568"
+    ],
+    "edi": [
+     "DSOUND.VXD+2568"
+    ]
+   },
+   "0001:0136": {
+    "edi": [
+     "DSOUND.VXD+26b0"
+    ],
+    "esi": [
+     "DSOUND.VXD+26b0"
+    ],
+    "ebx": [
+     "DSOUND.VXD+26b0"
+    ],
+    "ebp": [
+     "DSOUND.VXD+26b0"
+    ]
+   },
+   "0001:003c": {
+    "esi": [
+     "ENABLE.VXD+83f4",
+     "ENABLE.VXD+807c",
+     "IFSMGR.VXD+f5f",
+     "IFSMGR.VXD+d470",
+     "VCACHE.VXD+825",
+     "VNETBIOS.VXD+123b",
+     "NETBEUI.VXD+82fc",
+     "NETBEUI.VXD+36a2",
+     "NDIS.VXD+6686",
+     "NDIS.VXD+c115",
+     "SHELL.VXD+b05e",
+     "SHELL.VXD+a0f7",
+     "SHELL.VXD+5058",
+     "REBOOT.VXD+c3",
+     "VCOMM.VXD+3bab",
+     "VCOMM.VXD+3bc9",
+     "VCOMM.VXD+3bf3",
+     "LPT.VXD+904d"
+    ],
+    "edx": [
+     "IFSMGR.VXD+f5f",
+     "IFSMGR.VXD+d470",
+     "VNETBIOS.VXD+123b"
+    ],
+    "ebp": [
+     "IFSMGR.VXD+f5f",
+     "IFSMGR.VXD+d470",
+     "VNETBIOS.VXD+123b",
+     "NDIS.VXD+6686",
+     "SHELL.VXD+a0f7"
+    ],
+    "ecx": [
+     "VNETBIOS.VXD+123b"
+    ],
+    "ebx": [
+     "VNETBIOS.VXD+123b",
+     "VCOMM.VXD+3bab",
+     "VCOMM.VXD+3bc9",
+     "VCOMM.VXD+3bf3"
+    ],
+    "edi": [
+     "VCOMM.VXD+3bab"
+    ]
+   },
+   "000b:0002": {
+    "ecx": [
+     "ENABLE.VXD+3ee4"
+    ]
+   },
+   "000b:0003": {
+    "ebx": [
+     "ENABLE.VXD+3f05"
+    ],
+    "ecx": [
+     "ENABLE.VXD+3f05"
+    ]
+   },
+   "0001:00b6": {
+    "edx": [
+     "ENABLE.VXD+2028",
+     "ENABLE.VXD+2044",
+     "IFSMGR.VXD+af08",
+     "VCOMM.VXD+2088"
+    ],
+    "ecx": [
+     "ENABLE.VXD+2028",
+     "ENABLE.VXD+2044",
+     "IFSMGR.VXD+af08",
+     "VCOMM.VXD+2088"
+    ]
+   },
+   "000c:0000": {
+    "eax": [
+     "ENABLE.VXD+20e3"
+    ]
+   },
+   "0001:0090": {
+    "esi": [
+     "ENABLE.VXD+2104",
+     "ENABLE.VXD+20d3",
+     "IFSMGR.VXD+a92b",
+     "IFSMGR.VXD+a943",
+     "IFSMGR.VXD+a95a",
+     "IFSMGR.VXD+a987",
+     "IFSMGR.VXD+a99d",
+     "IFSMGR.VXD+a9b3",
+     "IFSMGR.VXD+a9c9",
+     "IFSMGR.VXD+a9df",
+     "IFSMGR.VXD+a9f5",
+     "VNETSUP.VXD+3050",
+     "VREDIR.VXD+22360"
+    ],
+    "cf": [
+     "ENABLE.VXD+2104",
+     "ENABLE.VXD+20d3",
+     "SHELL.VXD+464e",
+     "SHELL.VXD+4660"
+    ],
+    "ebx": [
+     "VREDIR.VXD+22360"
+    ],
+    "ecx": [
+     "VREDIR.VXD+22360"
+    ],
+    "edx": [
+     "VREDIR.VXD+22360"
+    ]
+   },
+   "000d:0000": {
+    "eax": [
+     "ENABLE.VXD+209e",
+     "IFSMGR.VXD+b8a2",
+     "SHELL.VXD+4680"
+    ]
+   },
+   "0001:00af": {
+    "eax": [
+     "ENABLE.VXD+2127",
+     "ENABLE.VXD+2318",
+     "ENABLE.VXD+2333",
+     "ENABLE.VXD+234e",
+     "ENABLE.VXD+2369",
+     "ENABLE.VXD+2384",
+     "ENABLE.VXD+239f",
+     "ENABLE.VXD+23ba",
+     "ENABLE.VXD+23d5",
+     "ENABLE.VXD+23f0",
+     "ENABLE.VXD+240b",
+     "ENABLE.VXD+2426",
+     "ENABLE.VXD+2441",
+     "SHELL.VXD+4041",
+     "SHELL.VXD+4058"
+    ],
+    "edx": [
+     "IFSMGR.VXD+b86a"
+    ],
+    "cf": [
+     "IFSMGR.VXD+b86a"
+    ]
+   },
+   "0001:00cf": {
+    "eax": [
+     "ENABLE.VXD+8026",
+     "ENABLE.VXD+5d",
+     "VREDIR.VXD+5e02",
+     "VCOMM.VXD+3bd2",
+     "VCOMM.VXD+3bfc"
+    ],
+    "edx": [
+     "VREDIR.VXD+5e02"
+    ],
+    "ecx": [
+     "VREDIR.VXD+5e02"
+    ],
+    "ebx": [
+     "VCOMM.VXD+3bd2",
+     "VCOMM.VXD+3bfc"
+    ]
+   },
+   "0001:014a": {
+    "eax": [
+     "ENABLE.VXD+46f6",
+     "PERF.VXD+202b",
+     "PERF.VXD+32b1",
+     "PERF.VXD+3102"
+    ],
+    "esi": [
+     "PERF.VXD+32b1",
+     "PERF.VXD+3102"
+    ],
+    "ebp": [
+     "PERF.VXD+32b1",
+     "PERF.VXD+3102"
+    ]
+   },
+   "0027:0002": {
+    "cf": [
+     "ENABLE.VXD+30ab",
+     "ENABLE.VXD+3059",
+     "NDIS.VXD+c0d2",
+     "VCOMM.VXD+44f8"
+    ],
+    "edx": [
+     "NDIS.VXD+c0d2"
+    ],
+    "ecx": [
+     "NDIS.VXD+c0d2",
+     "VCOMM.VXD+44f8"
+    ],
+    "eax": [
+     "NDIS.VXD+c0d2"
+    ]
+   },
+   "0027:0001": {
+    "cf": [
+     "ENABLE.VXD+310c",
+     "NDIS.VXD+c0a8",
+     "PERF.VXD+38"
+    ],
+    "edx": [
+     "NDIS.VXD+c0a8",
+     "PERF.VXD+38"
+    ],
+    "eax": [
+     "NDIS.VXD+c0a8",
+     "PERF.VXD+38"
+    ]
+   },
+   "000c:0002": {
+    "edx": [
+     "ENABLE.VXD+360f"
+    ],
+    "ebx": [
+     "ENABLE.VXD+360f"
+    ],
+    "eax": [
+     "ENABLE.VXD+360f"
+    ]
+   },
+   "0001:0148": {
+    "eax": [
+     "SPOOLER.VXD+4184",
+     "IFSMGR.VXD+b3ec",
+     "IFSMGR.VXD+af50",
+     "VNETSUP.VXD+329c",
+     "VNETSUP.VXD+31fc",
+     "SHELL.VXD+105dd",
+     "SHELL.VXD+ac8e",
+     "VCOMM.VXD+41fc",
+     "VCOMM.VXD+4705"
+    ],
+    "ebx": [
+     "VNETSUP.VXD+329c",
+     "VCOMM.VXD+4705"
+    ],
+    "ebp": [
+     "VNETSUP.VXD+329c",
+     "VNETSUP.VXD+31fc",
+     "VCOMM.VXD+41fc",
+     "VCOMM.VXD+4705"
+    ],
+    "edi": [
+     "SHELL.VXD+105dd"
+    ]
+   },
+   "0001:0051": {
+    "ebp": [
+     "SPOOLER.VXD+2c3b",
+     "SPOOLER.VXD+2c06",
+     "SPOOLER.VXD+3507",
+     "SPOOLER.VXD+245e",
+     "SPOOLER.VXD+32d6",
+     "IFSMGR.VXD+225ba",
+     "IFSMGR.VXD+22439",
+     "IFSMGR.VXD+22eaf",
+     "IFSMGR.VXD+2375",
+     "IFSMGR.VXD+2006",
+     "IFSMGR.VXD+2052",
+     "IFSMGR.VXD+20e5",
+     "IFSMGR.VXD+22567",
+     "IFSMGR.VXD+1c188",
+     "IFSMGR.VXD+142b1",
+     "IFSMGR.VXD+14352",
+     "IFSMGR.VXD+1b484",
+     "IFSMGR.VXD+1b4a6",
+     "IFSMGR.VXD+1c06b",
+     "IFSMGR.VXD+1cbb3",
+     "VREDIR.VXD+60c5",
+     "VCOMM.VXD+425f"
+    ],
+    "eax": [
+     "SPOOLER.VXD+2c3b",
+     "SPOOLER.VXD+2c06",
+     "SPOOLER.VXD+3507",
+     "SPOOLER.VXD+245e",
+     "SPOOLER.VXD+32d6",
+     "IFSMGR.VXD+225ba",
+     "IFSMGR.VXD+22439",
+     "IFSMGR.VXD+22eaf",
+     "IFSMGR.VXD+2375",
+     "IFSMGR.VXD+2006",
+     "IFSMGR.VXD+2052",
+     "IFSMGR.VXD+20e5",
+     "IFSMGR.VXD+22567",
+     "IFSMGR.VXD+1c188",
+     "IFSMGR.VXD+142b1",
+     "IFSMGR.VXD+14352",
+     "IFSMGR.VXD+1b484",
+     "IFSMGR.VXD+1b4a6",
+     "IFSMGR.VXD+1c06b",
+     "IFSMGR.VXD+1cbb3"
+    ],
+    "edi": [
+     "SPOOLER.VXD+245e",
+     "IFSMGR.VXD+22439",
+     "IFSMGR.VXD+22eaf",
+     "IFSMGR.VXD+1c188",
+     "IFSMGR.VXD+14352",
+     "SHELL.VXD+e2f0"
+    ],
+    "esi": [
+     "SPOOLER.VXD+32d6",
+     "IFSMGR.VXD+22439",
+     "IFSMGR.VXD+22eaf",
+     "IFSMGR.VXD+2006",
+     "IFSMGR.VXD+2052",
+     "IFSMGR.VXD+20e5",
+     "IFSMGR.VXD+22567",
+     "IFSMGR.VXD+1c188",
+     "IFSMGR.VXD+14352",
+     "IFSMGR.VXD+1b484"
+    ],
+    "ebx": [
+     "IFSMGR.VXD+21806",
+     "IFSMGR.VXD+218db",
+     "IFSMGR.VXD+1c188",
+     "IFSMGR.VXD+142b1",
+     "IFSMGR.VXD+14352",
+     "IFSMGR.VXD+1cbb3",
+     "SHELL.VXD+e2f0"
+    ]
+   },
+   "0001:0029": {
+    "edi": [
+     "SPOOLER.VXD+241a"
+    ],
+    "ecx": [
+     "SPOOLER.VXD+241a",
+     "SPOOLER.VXD+4220",
+     "SPOOLER.VXD+217c",
+     "SPOOLER.VXD+20a1"
+    ],
+    "eax": [
+     "SPOOLER.VXD+241a"
+    ],
+    "esi": [
+     "SPOOLER.VXD+241a",
+     "SPOOLER.VXD+4220",
+     "SPOOLER.VXD+217c",
+     "SPOOLER.VXD+20a1"
+    ],
+    "ebx": [
+     "SPOOLER.VXD+241a",
+     "SPOOLER.VXD+4220",
+     "SPOOLER.VXD+217c",
+     "SPOOLER.VXD+20a1"
+    ],
+    "ebp": [
+     "SPOOLER.VXD+241a",
+     "SPOOLER.VXD+217c",
+     "SPOOLER.VXD+20a1"
+    ],
+    "cf": [
+     "SHELL.VXD+72e"
+    ]
+   },
+   "0001:00b9": {
+    "eax": [
+     "IFSMGR.VXD+a3ae"
+    ]
+   },
+   "0001:00bb": {
+    "eax": [
+     "IFSMGR.VXD+a3bc",
+     "IFSMGR.VXD+a656",
+     "IFSMGR.VXD+a5ae",
+     "NDIS.VXD+131ff",
+     "NDIS.VXD+13223"
+    ],
+    "ebp": [
+     "IFSMGR.VXD+a5ae",
+     "NDIS.VXD+131ff",
+     "NDIS.VXD+13223"
+    ],
+    "ebx": [
+     "VNETBIOS.VXD+414d",
+     "NDIS.VXD+6641"
+    ],
+    "esi": [
+     "NDIS.VXD+131ff"
+    ],
+    "edi": [
+     "NDIS.VXD+13223"
+    ]
+   },
+   "0001:0101": {
+    "eax": [
+     "IFSMGR.VXD+a413",
+     "IFSMGR.VXD+a442",
+     "VCOMM.VXD+204c"
+    ]
+   },
+   "0001:00ab": {
+    "edx": [
+     "IFSMGR.VXD+b84b"
+    ],
+    "cf": [
+     "IFSMGR.VXD+b84b"
+    ],
+    "edi": [
+     "VCACHE.VXD+2019"
+    ],
+    "ebx": [
+     "VCACHE.VXD+2019"
+    ],
+    "eax": [
+     "VCACHE.VXD+2019",
+     "VNETBIOS.VXD+41ec",
+     "VNETBIOS.VXD+4226",
+     "VNETBIOS.VXD+42d7",
+     "VNETBIOS.VXD+4169"
+    ]
+   },
+   "0001:015a": {
+    "esi": [
+     "IFSMGR.VXD+fe3",
+     "NETBEUI.VXD+368c"
+    ],
+    "edx": [
+     "IFSMGR.VXD+fe3"
+    ],
+    "ebp": [
+     "SHELL.VXD+52c",
+     "VCOMM.VXD+231"
+    ]
+   },
+   "0001:0111": {
+    "esi": [
+     "IFSMGR.VXD+21857"
+    ],
+    "eax": [
+     "IFSMGR.VXD+21857"
+    ]
+   },
+   "0001:0127": {
+    "ebp": [
+     "IFSMGR.VXD+ef7"
+    ]
+   },
+   "0010:0008": {
+    "ebp": [
+     "IFSMGR.VXD+f102",
+     "IFSMGR.VXD+f0b2"
+    ],
+    "edi": [
+     "IFSMGR.VXD+f0b2",
+     "IFSMGR.VXD+21b4c",
+     "IFSMGR.VXD+e61f"
+    ],
+    "ebx": [
+     "IFSMGR.VXD+f0b2",
+     "IFSMGR.VXD+abb2"
+    ],
+    "esi": [
+     "IFSMGR.VXD+21b4c"
+    ],
+    "edx": [
+     "IFSMGR.VXD+2175c",
+     "IFSMGR.VXD+abb2"
+    ],
+    "ecx": [
+     "IFSMGR.VXD+2175c",
+     "IFSMGR.VXD+f324"
+    ]
+   },
+   "0001:00fa": {
+    "ebp": [
+     "IFSMGR.VXD+ee8",
+     "SHELL.VXD+537"
+    ],
+    "eax": [
+     "NDIS.VXD+687d"
+    ]
+   },
+   "0001:0020": {
+    "esi": [
+     "IFSMGR.VXD+1e57b",
+     "IFSMGR.VXD+1eab2",
+     "IFSMGR.VXD+1e912",
+     "IFSMGR.VXD+bb6",
+     "IFSMGR.VXD+2cab"
+    ],
+    "ebp": [
+     "IFSMGR.VXD+1eab2",
+     "IFSMGR.VXD+1e912",
+     "IFSMGR.VXD+bb6",
+     "IFSMGR.VXD+2ff3",
+     "SHELL.VXD+a7c2",
+     "SHELL.VXD+ad9c"
+    ],
+    "edi": [
+     "IFSMGR.VXD+bb6"
+    ],
+    "ebx": [
+     "IFSMGR.VXD+bb6"
+    ]
+   },
+   "0001:0113": {
+    "edx": [
+     "IFSMGR.VXD+366f",
+     "IFSMGR.VXD+a7f2"
+    ],
+    "edi": [
+     "IFSMGR.VXD+366f",
+     "IFSMGR.VXD+261c8",
+     "IFSMGR.VXD+a7f2"
+    ],
+    "ecx": [
+     "IFSMGR.VXD+366f"
+    ],
+    "esi": [
+     "IFSMGR.VXD+a7f2"
+    ],
+    "ebx": [
+     "IFSMGR.VXD+a7f2"
+    ]
+   },
+   "0001:005b": {
+    "edx": [
+     "IFSMGR.VXD+dc94"
+    ],
+    "ebp": [
+     "IFSMGR.VXD+dc94"
+    ]
+   },
+   "0001:001f": {
+    "edx": [
+     "IFSMGR.VXD+2360a",
+     "IFSMGR.VXD+535a",
+     "VNETBIOS.VXD+113d",
+     "VNETBIOS.VXD+11fc",
+     "SHELL.VXD+54b"
+    ],
+    "edi": [
+     "IFSMGR.VXD+97e",
+     "IFSMGR.VXD+e95"
+    ],
+    "ebx": [
+     "IFSMGR.VXD+97e",
+     "VNETBIOS.VXD+11fc"
+    ],
+    "esi": [
+     "IFSMGR.VXD+e95",
+     "VNETBIOS.VXD+11fc"
+    ],
+    "ebp": [
+     "VNETBIOS.VXD+113d",
+     "VNETBIOS.VXD+11fc",
+     "SHELL.VXD+a77c"
+    ],
+    "eax": [
+     "VNETBIOS.VXD+113d",
+     "VNETBIOS.VXD+11fc"
+    ],
+    "ecx": [
+     "VNETBIOS.VXD+11fc"
+    ]
+   },
+   "0001:0082": {
+    "ecx": [
+     "IFSMGR.VXD+d69c"
+    ],
+    "ebp": [
+     "IFSMGR.VXD+d69c",
+     "IFSMGR.VXD+e9bb",
+     "IFSMGR.VXD+d9a2",
+     "IFSMGR.VXD+a497",
+     "IFSMGR.VXD+b583",
+     "IFSMGR.VXD+adee",
+     "VREDIR.VXD+22264",
+     "VNETBIOS.VXD+c60",
+     "VNETBIOS.VXD+425b",
+     "VNETBIOS.VXD+152e"
+    ],
+    "eax": [
+     "IFSMGR.VXD+d69c",
+     "IFSMGR.VXD+adee",
+     "VNETBIOS.VXD+c60",
+     "VNETBIOS.VXD+152e"
+    ],
+    "ebx": [
+     "IFSMGR.VXD+e00b",
+     "VNETBIOS.VXD+c60"
+    ],
+    "edi": [
+     "VNETBIOS.VXD+c60"
+    ],
+    "esi": [
+     "VNETBIOS.VXD+c60"
+    ],
+    "edx": [
+     "VNETBIOS.VXD+c60"
+    ]
+   },
+   "0001:004e": {
+    "edx": [
+     "IFSMGR.VXD+d6c4"
+    ],
+    "ebp": [
+     "IFSMGR.VXD+d6c4"
+    ],
+    "ebx": [
+     "IFSMGR.VXD+d128"
+    ]
+   },
+   "002a:0000": {
+    "cf": [
+     "IFSMGR.VXD+1d085",
+     "IFSMGR.VXD+1d036",
+     "IFSMGR.VXD+1d04e"
+    ]
+   },
+   "002a:0019": {
+    "zf": [
+     "IFSMGR.VXD+1d098"
+    ],
+    "eax": [
+     "IFSMGR.VXD+1d098"
+    ]
+   },
+   "0001:0145": {
+    "edi": [
+     "IFSMGR.VXD+1d004"
+    ],
+    "ecx": [
+     "IFSMGR.VXD+1d004"
+    ]
+   },
+   "0001:008d": {
+    "ebp": [
+     "IFSMGR.VXD+d32c",
+     "IFSMGR.VXD+db6d",
+     "IFSMGR.VXD+958",
+     "IFSMGR.VXD+de70"
+    ],
+    "ebx": [
+     "IFSMGR.VXD+958"
+    ],
+    "eax": [
+     "IFSMGR.VXD+958",
+     "IFSMGR.VXD+ee1f",
+     "VNETBIOS.VXD+1521"
+    ],
+    "edx": [
+     "IFSMGR.VXD+ee1f"
+    ]
+   },
+   "0001:004d": {
+    "ebp": [
+     "IFSMGR.VXD+d35a",
+     "IFSMGR.VXD+d364",
+     "IFSMGR.VXD+d36e",
+     "IFSMGR.VXD+d378",
+     "IFSMGR.VXD+d0ea",
+     "IFSMGR.VXD+d0f3"
+    ],
+    "esi": [
+     "IFSMGR.VXD+d9a",
+     "IFSMGR.VXD+da4",
+     "IFSMGR.VXD+dae",
+     "IFSMGR.VXD+db7",
+     "IFSMGR.VXD+dc1",
+     "IFSMGR.VXD+dcb",
+     "IFSMGR.VXD+dd5",
+     "IFSMGR.VXD+ddf"
+    ],
+    "eax": [
+     "VNETBIOS.VXD+1111"
+    ]
+   },
+   "0001:0084": {
+    "ebx": [
+     "IFSMGR.VXD+e9ca",
+     "IFSMGR.VXD+da0b",
+     "IFSMGR.VXD+a591",
+     "NDIS.VXD+fcb4"
+    ],
+    "ebp": [
+     "IFSMGR.VXD+e9ca",
+     "IFSMGR.VXD+d9cb",
+     "IFSMGR.VXD+d9df",
+     "IFSMGR.VXD+a4a8",
+     "IFSMGR.VXD+a4cc",
+     "IFSMGR.VXD+a50c",
+     "IFSMGR.VXD+a540",
+     "IFSMGR.VXD+a591",
+     "IFSMGR.VXD+a5d1",
+     "IFSMGR.VXD+a5f0",
+     "IFSMGR.VXD+a60f",
+     "IFSMGR.VXD+a631",
+     "IFSMGR.VXD+b594",
+     "IFSMGR.VXD+ae1f",
+     "IFSMGR.VXD+ae59",
+     "VREDIR.VXD+2227d",
+     "VREDIR.VXD+222c2",
+     "VNETBIOS.VXD+4280",
+     "SHELL.VXD+4124",
+     "SHELL.VXD+4225",
+     "SHELL.VXD+423c"
+    ],
+    "esi": [
+     "IFSMGR.VXD+e81",
+     "IFSMGR.VXD+d9df",
+     "VNETBIOS.VXD+4280",
+     "SHELL.VXD+4124"
+    ],
+    "edi": [
+     "IFSMGR.VXD+e81",
+     "IFSMGR.VXD+ae1f",
+     "IFSMGR.VXD+ae59"
+    ],
+    "ecx": [
+     "IFSMGR.VXD+d9cb",
+     "SHELL.VXD+4124"
+    ],
+    "edx": [
+     "IFSMGR.VXD+d9df"
+    ]
+   },
+   "0001:0047": {
+    "ebx": [
+     "IFSMGR.VXD+e690"
+    ],
+    "ebp": [
+     "VNETBIOS.VXD+1412"
+    ],
+    "eax": [
+     "VNETBIOS.VXD+1412"
+    ]
+   },
+   "0001:0141": {
+    "edx": [
+     "IFSMGR.VXD+e644"
+    ],
+    "eax": [
+     "IFSMGR.VXD+e644",
+     "IFSMGR.VXD+e596",
+     "IFSMGR.VXD+a972"
+    ]
+   },
+   "0001:002b": {
+    "edx": [
+     "IFSMGR.VXD+b43"
+    ],
+    "edi": [
+     "IFSMGR.VXD+b43"
+    ],
+    "ecx": [
+     "IFSMGR.VXD+b43",
+     "SHELL.VXD+1148c"
+    ],
+    "ebp": [
+     "IFSMGR.VXD+b43"
+    ],
+    "esi": [
+     "SHELL.VXD+1148c"
+    ],
+    "cf": [
+     "SHELL.VXD+1148c"
+    ]
+   },
+   "0001:001e": {
+    "edi": [
+     "IFSMGR.VXD+b69",
+     "NETBEUI.VXD+2f37",
+     "NETBEUI.VXD+2f6a",
+     "NETBEUI.VXD+2fa2"
+    ],
+    "ebp": [
+     "IFSMGR.VXD+b69"
+    ],
+    "edx": [
+     "NETBEUI.VXD+2f37"
+    ],
+    "esi": [
+     "NETBEUI.VXD+2f37"
+    ],
+    "eax": [
+     "NETBEUI.VXD+2f37"
+    ]
+   },
+   "0001:001d": {
+    "esi": [
+     "IFSMGR.VXD+e57"
+    ],
+    "edi": [
+     "IFSMGR.VXD+e57"
+    ],
+    "ecx": [
+     "IFSMGR.VXD+e57"
+    ]
+   },
+   "0001:004c": {
+    "esi": [
+     "IFSMGR.VXD+d90"
+    ],
+    "ebp": [
+     "VNETBIOS.VXD+1567"
+    ]
+   },
+   "0001:0044": {
+    "zf": [
+     "IFSMGR.VXD+d4a"
+    ],
+    "edx": [
+     "IFSMGR.VXD+b4de",
+     "IFSMGR.VXD+b518",
+     "IFSMGR.VXD+b5c6",
+     "VNETBIOS.VXD+4184"
+    ],
+    "ecx": [
+     "IFSMGR.VXD+b4de",
+     "IFSMGR.VXD+b518",
+     "IFSMGR.VXD+b5c6",
+     "VNETBIOS.VXD+4184"
+    ]
+   },
+   "0001:001a": {
+    "ebx": [
+     "IFSMGR.VXD+8c0",
+     "IFSMGR.VXD+190"
+    ],
+    "eax": [
+     "IFSMGR.VXD+8c0"
+    ]
+   },
+   "0001:015b": {
+    "ebp": [
+     "IFSMGR.VXD+1080"
+    ]
+   },
+   "002a:001a": {
+    "eax": [
+     "IFSMGR.VXD+1d1d1"
+    ]
+   },
+   "0001:0079": {
+    "ebp": [
+     "IFSMGR.VXD+dde3"
+    ]
+   },
+   "0005:0008": {
+    "edx": [
+     "IFSMGR.VXD+1ce34",
+     "IFSMGR.VXD+3408",
+     "NDIS.VXD+6407"
+    ],
+    "eax": [
+     "IFSMGR.VXD+1ce34",
+     "IFSMGR.VXD+3408",
+     "NDIS.VXD+6407"
+    ]
+   },
+   "0001:00b1": {
+    "eax": [
+     "IFSMGR.VXD+a47c",
+     "VNETSUP.VXD+3095",
+     "VNETBIOS.VXD+420f",
+     "VNETBIOS.VXD+434c",
+     "SHELL.VXD+408b",
+     "REBOOT.VXD+2032",
+     "REBOOT.VXD+204d",
+     "REBOOT.VXD+2067"
+    ],
+    "edx": [
+     "VNETSUP.VXD+3095"
+    ],
+    "cf": [
+     "VNETSUP.VXD+3095"
+    ]
+   },
+   "0001:000b": {
+    "cf": [
+     "IFSMGR.VXD+a4e6",
+     "VNETBIOS.VXD+43cc"
+    ],
+    "ecx": [
+     "IFSMGR.VXD+a4e6"
+    ],
+    "ebp": [
+     "IFSMGR.VXD+a4e6"
+    ],
+    "eax": [
+     "IFSMGR.VXD+a4e6",
+     "IFSMGR.VXD+a86b",
+     "VNETBIOS.VXD+43cc"
+    ],
+    "ebx": [
+     "IFSMGR.VXD+a86b"
+    ]
+   },
+   "0001:00a8": {
+    "eax": [
+     "IFSMGR.VXD+a745",
+     "IFSMGR.VXD+a771",
+     "IFSMGR.VXD+b3c1",
+     "VNETBIOS.VXD+4071",
+     "VNETBIOS.VXD+4375",
+     "SHELL.VXD+4550"
+    ],
+    "esi": [
+     "IFSMGR.VXD+a771"
+    ],
+    "edi": [
+     "VNETBIOS.VXD+4071"
+    ]
+   },
+   "0001:00ff": {
+    "eax": [
+     "IFSMGR.VXD+a7ce"
+    ]
+   },
+   "0001:010d": {
+    "esi": [
+     "IFSMGR.VXD+a7e3"
+    ],
+    "edi": [
+     "IFSMGR.VXD+a7e3"
+    ]
+   },
+   "0001:00a6": {
+    "eax": [
+     "IFSMGR.VXD+aaeb"
+    ]
+   },
+   "0001:000c": {
+    "eax": [
+     "IFSMGR.VXD+b4fa",
+     "IFSMGR.VXD+b534",
+     "IFSMGR.VXD+b5dd",
+     "VNETBIOS.VXD+419b",
+     "VNETBIOS.VXD+41bb"
+    ],
+    "cf": [
+     "VNETBIOS.VXD+419b",
+     "VNETBIOS.VXD+41bb"
+    ]
+   },
+   "0001:00a9": {
+    "eax": [
+     "IFSMGR.VXD+adce",
+     "VREDIR.VXD+2212c",
+     "NDIS.VXD+fc38"
+    ],
+    "ebp": [
+     "VREDIR.VXD+2212c"
+    ]
+   },
+   "0001:00aa": {
+    "eax": [
+     "IFSMGR.VXD+aebf",
+     "NDIS.VXD+fcd7"
+    ],
+    "edi": [
+     "NDIS.VXD+fcd7"
+    ]
+   },
+   "0001:0151": {
+    "ebx": [
+     "IFSMGR.VXD+b425",
+     "VNETSUP.VXD+3354",
+     "VCOMM.VXD+4236",
+     "VCOMM.VXD+4726"
+    ],
+    "eax": [
+     "IFSMGR.VXD+b425",
+     "IFSMGR.VXD+af80",
+     "IFSMGR.VXD+afb9",
+     "VNETSUP.VXD+32ef",
+     "VNETSUP.VXD+3354",
+     "VCOMM.VXD+4236",
+     "VCOMM.VXD+4726"
+    ],
+    "ebp": [
+     "VNETSUP.VXD+32ef",
+     "VNETSUP.VXD+3354",
+     "VCOMM.VXD+4726"
+    ],
+    "edi": [
+     "VCOMM.VXD+4236"
+    ],
+    "esi": [
+     "VCOMM.VXD+4236"
+    ]
+   },
+   "0001:008f": {
+    "cf": [
+     "IFSMGR.VXD+af2e",
+     "IFSMGR.VXD+b04b",
+     "IFSMGR.VXD+b0cc",
+     "IFSMGR.VXD+b0fa",
+     "IFSMGR.VXD+b12d",
+     "IFSMGR.VXD+b15b",
+     "IFSMGR.VXD+b1c4",
+     "NDIS.VXD+fe56",
+     "NDIS.VXD+fd24",
+     "NDIS.VXD+fd0e",
+     "NDIS.VXD+f957",
+     "NDIS.VXD+f97d",
+     "SHELL.VXD+105c2",
+     "SHELL.VXD+10641"
+    ],
+    "eax": [
+     "IFSMGR.VXD+af2e",
+     "NDIS.VXD+fd0e",
+     "NDIS.VXD+f957"
+    ],
+    "edx": [
+     "IFSMGR.VXD+b04b",
+     "IFSMGR.VXD+b1c4",
+     "NDIS.VXD+f957"
+    ],
+    "edi": [
+     "IFSMGR.VXD+b0cc",
+     "IFSMGR.VXD+b0fa",
+     "IFSMGR.VXD+b12d",
+     "IFSMGR.VXD+b15b",
+     "NDIS.VXD+f957",
+     "SHELL.VXD+10641"
+    ],
+    "ebx": [
+     "NDIS.VXD+fd24"
+    ],
+    "ebp": [
+     "NDIS.VXD+f957",
+     "NDIS.VXD+f97d"
+    ]
+   },
+   "0001:0149": {
+    "eax": [
+     "IFSMGR.VXD+b1ef",
+     "VCOMM.VXD+473b"
+    ],
+    "ebp": [
+     "VNETSUP.VXD+36a3",
+     "VNETSUP.VXD+355c",
+     "VNETSUP.VXD+3309",
+     "VCOMM.VXD+424a",
+     "VCOMM.VXD+426b",
+     "VCOMM.VXD+473b"
+    ],
+    "ebx": [
+     "VNETSUP.VXD+3309"
+    ],
+    "edi": [
+     "SHELL.VXD+10610"
+    ],
+    "esi": [
+     "VCOMM.VXD+424a"
+    ]
+   },
+   "0001:00b3": {
+    "edx": [
+     "IFSMGR.VXD+afe0",
+     "IFSMGR.VXD+b00c",
+     "VNETSUP.VXD+3073",
+     "VNETBIOS.VXD+4107",
+     "NDIS.VXD+f900"
+    ],
+    "cf": [
+     "IFSMGR.VXD+afe0",
+     "IFSMGR.VXD+b00c",
+     "VNETSUP.VXD+3073",
+     "VNETBIOS.VXD+4107",
+     "NDIS.VXD+f900"
+    ],
+    "ebp": [
+     "NDIS.VXD+f900"
+    ]
+   },
+   "0001:005a": {
+    "edx": [
+     "VCACHE.VXD+202f"
+    ]
+   },
+   "0001:011d": {
+    "eax": [
+     "VCACHE.VXD+2146"
+    ]
+   },
+   "0001:011e": {
+    "eax": [
+     "VCACHE.VXD+21b3"
+    ]
+   },
+   "0001:00b7": {
+    "edx": [
+     "VNETSUP.VXD+30cb",
+     "NDIS.VXD+1b075",
+     "SHELL.VXD+10594",
+     "REBOOT.VXD+208e"
+    ],
+    "edi": [
+     "SHELL.VXD+10594"
+    ]
+   },
+   "0006:000e": {
+    "ebp": [
+     "VREDIR.VXD+5baf"
+    ]
+   },
+   "0001:0028": {
+    "ebp": [
+     "VREDIR.VXD+5d6f",
+     "VREDIR.VXD+2261",
+     "VREDIR.VXD+2057",
+     "VREDIR.VXD+208d"
+    ],
+    "edi": [
+     "VREDIR.VXD+2057"
+    ]
+   },
+   "0001:0027": {
+    "ebp": [
+     "VREDIR.VXD+5d84",
+     "VREDIR.VXD+20c0",
+     "NETBEUI.VXD+299",
+     "NETBEUI.VXD+6078"
+    ],
+    "esi": [
+     "VREDIR.VXD+20c0",
+     "VREDIR.VXD+1db8",
+     "NETBEUI.VXD+299"
+    ],
+    "edi": [
+     "VREDIR.VXD+20c0",
+     "VREDIR.VXD+1db8",
+     "NETBEUI.VXD+6078"
+    ],
+    "ebx": [
+     "VREDIR.VXD+20c0"
+    ]
+   },
+   "0001:0025": {
+    "ecx": [
+     "VREDIR.VXD+5c9e",
+     "SHELL.VXD+46a2"
+    ],
+    "ebp": [
+     "VREDIR.VXD+5c9e"
+    ],
+    "eax": [
+     "VREDIR.VXD+5c9e",
+     "NETBEUI.VXD+93ca",
+     "NDIS.VXD+68f6",
+     "SHELL.VXD+46a2",
+     "SHELL.VXD+46b0",
+     "SHELL.VXD+aa1f"
+    ],
+    "esi": [
+     "NETBEUI.VXD+93ca"
+    ],
+    "edi": [
+     "NETBEUI.VXD+93ca"
+    ],
+    "cf": [
+     "NETBEUI.VXD+93ca",
+     "SHELL.VXD+46a2",
+     "SHELL.VXD+46b0",
+     "SHELL.VXD+aa1f"
+    ],
+    "edx": [
+     "SHELL.VXD+aa1f"
+    ]
+   },
+   "0006:000d": {
+    "esi": [
+     "VREDIR.VXD+5b8f",
+     "VNETBIOS.VXD+c2"
+    ],
+    "edi": [
+     "VREDIR.VXD+5b8f",
+     "VNETBIOS.VXD+c2"
+    ],
+    "cf": [
+     "VREDIR.VXD+5b8f",
+     "VNETBIOS.VXD+c2"
+    ],
+    "ebp": [
+     "VREDIR.VXD+5b8f"
+    ]
+   },
+   "0006:0005": {
+    "ecx": [
+     "VREDIR.VXD+5b68"
+    ]
+   },
+   "0001:0026": {
+    "edx": [
+     "VREDIR.VXD+5d46",
+     "SHELL.VXD+ab0f"
+    ],
+    "esi": [
+     "NETBEUI.VXD+9460"
+    ]
+   },
+   "0001:0000": {
+    "eax": [
+     "VREDIR.VXD+221ae"
+    ]
+   },
+   "0001:0086": {
+    "edi": [
+     "VNETBIOS.VXD+117d"
+    ],
+    "ecx": [
+     "VNETBIOS.VXD+117d"
+    ],
+    "eax": [
+     "VNETBIOS.VXD+117d"
+    ],
+    "ebx": [
+     "VNETBIOS.VXD+117d"
+    ],
+    "esi": [
+     "VNETBIOS.VXD+117d",
+     "NETBEUI.VXD+2e9",
+     "NETBEUI.VXD+36a"
+    ],
+    "edx": [
+     "VNETBIOS.VXD+117d"
+    ],
+    "ebp": [
+     "VNETBIOS.VXD+117d",
+     "NETBEUI.VXD+36a"
+    ]
+   },
+   "0001:0159": {
+    "eax": [
+     "VNETBIOS.VXD+132b",
+     "REBOOT.VXD+1f1",
+     "REBOOT.VXD+1c5"
+    ],
+    "ecx": [
+     "REBOOT.VXD+1f1"
+    ]
+   },
+   "002a:000d": {
+    "eax": [
+     "VNETBIOS.VXD+223"
+    ]
+   },
+   "0001:00bf": {
+    "eax": [
+     "VNETBIOS.VXD+4241",
+     "SHELL.VXD+46fc"
+    ],
+    "edi": [
+     "SHELL.VXD+46fc"
+    ],
+    "ecx": [
+     "SHELL.VXD+46fc"
+    ],
+    "edx": [
+     "SHELL.VXD+46fc"
+    ],
+    "esi": [
+     "SHELL.VXD+46fc"
+    ],
+    "ebx": [
+     "SHELL.VXD+46fc"
+    ],
+    "ebp": [
+     "SHELL.VXD+46fc"
+    ]
+   },
+   "0001:00d5": {
+    "eax": [
+     "VNETBIOS.VXD+42f0"
+    ]
+   },
+   "0001:006b": {
+    "edx": [
+     "VNETBIOS.VXD+42f9"
+    ],
+    "eax": [
+     "VNETBIOS.VXD+42f9"
+    ]
+   },
+   "0001:00ad": {
+    "eax": [
+     "VNETBIOS.VXD+4338"
+    ]
+   },
+   "0001:0042": {
+    "edi": [
+     "VNETBIOS.VXD+43e7"
+    ],
+    "edx": [
+     "VNETBIOS.VXD+43e7"
+    ],
+    "ecx": [
+     "VNETBIOS.VXD+43e7"
+    ]
+   },
+   "0001:0039": {
+    "edx": [
+     "VNETBIOS.VXD+14c6"
+    ],
+    "ebx": [
+     "VNETBIOS.VXD+14c6"
+    ]
+   },
+   "0001:0038": {
+    "esi": [
+     "NETBEUI.VXD+410"
+    ],
+    "eax": [
+     "NETBEUI.VXD+410"
+    ]
+   },
+   "0001:00f1": {
+    "ebx": [
+     "NETBEUI.VXD+3664"
+    ],
+    "cf": [
+     "NETBEUI.VXD+3664"
+    ]
+   },
+   "0001:000e": {
+    "esi": [
+     "NDIS.VXD+667b",
+     "NDIS.VXD+66ee",
+     "NDIS.VXD+a2f9"
+    ],
+    "ebp": [
+     "NDIS.VXD+667b"
+    ],
+    "edx": [
+     "NDIS.VXD+66ee"
+    ],
+    "ebx": [
+     "NDIS.VXD+66ee"
+    ]
+   },
+   "0003:0004": {
+    "ecx": [
+     "NDIS.VXD+6706"
+    ]
+   },
+   "0001:0146": {
+    "ecx": [
+     "NDIS.VXD+10025"
+    ]
+   },
+   "0005:0007": {
+    "ebp": [
+     "NDIS.VXD+75ca"
+    ],
+    "eax": [
+     "NDIS.VXD+75ca"
+    ]
+   },
+   "0003:0001": {
+    "ecx": [
+     "NDIS.VXD+c155"
+    ],
+    "eax": [
+     "NDIS.VXD+c155"
+    ],
+    "cf": [
+     "LPT.VXD+220d"
+    ]
+   },
+   "0004:0016": {
+    "edx": [
+     "NDIS.VXD+ffa7"
+    ],
+    "ebp": [
+     "NDIS.VXD+ffa7"
+    ]
+   },
+   "0003:0011": {
+    "esi": [
+     "NDIS.VXD+19865",
+     "LPT.VXD+64bf"
+    ],
+    "ebp": [
+     "NDIS.VXD+19865",
+     "LPT.VXD+64bf"
+    ]
+   },
+   "0001:00b8": {
+    "ebx": [
+     "NDIS.VXD+f8ee",
+     "NDIS.VXD+f93a",
+     "SHELL.VXD+1064c"
+    ],
+    "cf": [
+     "NDIS.VXD+f8ee",
+     "NDIS.VXD+f93a",
+     "SHELL.VXD+1064c"
+    ],
+    "ebp": [
+     "NDIS.VXD+f8ee",
+     "NDIS.VXD+f93a"
+    ],
+    "eax": [
+     "NDIS.VXD+f8ee",
+     "NDIS.VXD+f93a",
+     "SHELL.VXD+1064c"
+    ],
+    "edi": [
+     "SHELL.VXD+1064c"
+    ]
+   },
+   "0001:010a": {
+    "eax": [
+     "PERF.VXD+3ed8"
+    ]
+   },
+   "0001:010b": {
+    "zf": [
+     "PERF.VXD+3ee5"
+    ],
+    "eax": [
+     "PERF.VXD+3ee5"
+    ]
+   },
+   "0001:017d": {
+    "esi": [
+     "PERF.VXD+329b",
+     "SHELL.VXD+d588"
+    ],
+    "edi": [
+     "PERF.VXD+329b"
+    ],
+    "ebp": [
+     "PERF.VXD+329b",
+     "SHELL.VXD+d588"
+    ],
+    "ebx": [
+     "SHELL.VXD+d588"
+    ],
+    "eax": [
+     "SHELL.VXD+d588"
+    ]
+   },
+   "0001:0152": {
+    "esi": [
+     "PERF.VXD+32dd",
+     "PERF.VXD+3317",
+     "PERF.VXD+334e"
+    ],
+    "ebp": [
+     "PERF.VXD+32dd",
+     "PERF.VXD+3317",
+     "PERF.VXD+334e",
+     "PERF.VXD+312a"
+    ],
+    "eax": [
+     "PERF.VXD+32dd",
+     "PERF.VXD+3317",
+     "PERF.VXD+334e",
+     "PERF.VXD+312a"
+    ],
+    "edi": [
+     "PERF.VXD+334e",
+     "PERF.VXD+312a"
+    ]
+   },
+   "000b:0000": {
+    "cf": [
+     "SHELL.VXD+0"
+    ]
+   },
+   "0001:0037": {
+    "ebp": [
+     "SHELL.VXD+add0"
+    ]
+   },
+   "0001:0002": {
+    "edi": [
+     "SHELL.VXD+116e3"
+    ],
+    "edx": [
+     "SHELL.VXD+116e3"
+    ],
+    "zf": [
+     "SHELL.VXD+116e3",
+     "SHELL.VXD+45",
+     "SHELL.VXD+ad15"
+    ],
+    "esi": [
+     "SHELL.VXD+116e3"
+    ],
+    "ebx": [
+     "SHELL.VXD+116e3",
+     "SHELL.VXD+45"
+    ],
+    "ebp": [
+     "SHELL.VXD+116e3",
+     "SHELL.VXD+ad15"
+    ]
+   },
+   "0001:00a5": {
+    "zf": [
+     "SHELL.VXD+1007b",
+     "SHELL.VXD+c103",
+     "VCOMM.VXD+1ab"
+    ],
+    "eax": [
+     "SHELL.VXD+1007b",
+     "SHELL.VXD+c103"
+    ],
+    "ebp": [
+     "SHELL.VXD+c103"
+    ]
+   },
+   "0001:006d": {
+    "edi": [
+     "SHELL.VXD+ae3b"
+    ],
+    "ebp": [
+     "SHELL.VXD+ae3b"
+    ],
+    "eax": [
+     "SHELL.VXD+ae3b",
+     "SHELL.VXD+d5f4"
+    ]
+   },
+   "0001:017e": {
+    "ebx": [
+     "SHELL.VXD+e608"
+    ],
+    "eax": [
+     "SHELL.VXD+e608"
+    ]
+   },
+   "0001:009e": {
+    "eax": [
+     "SHELL.VXD+c0de",
+     "SHELL.VXD+aacf",
+     "SHELL.VXD+11a52"
+    ],
+    "ebp": [
+     "SHELL.VXD+11a52"
+    ]
+   },
+   "0001:0030": {
+    "ebx": [
+     "SHELL.VXD+a6d1",
+     "SHELL.VXD+e4c1"
+    ]
+   },
+   "0001:0093": {
+    "ebp": [
+     "SHELL.VXD+a6e2",
+     "SHELL.VXD+e5a6",
+     "SHELL.VXD+143"
+    ],
+    "cf": [
+     "SHELL.VXD+e5a6",
+     "SHELL.VXD+d52b"
+    ],
+    "edx": [
+     "SHELL.VXD+11265",
+     "SHELL.VXD+1125e"
+    ],
+    "ebx": [
+     "SHELL.VXD+1126d",
+     "SHELL.VXD+d52b",
+     "SHELL.VXD+91"
+    ],
+    "esi": [
+     "SHELL.VXD+d52b"
+    ],
+    "eax": [
+     "SHELL.VXD+139"
+    ]
+   },
+   "000d:0005": {
+    "edi": [
+     "SHELL.VXD+11983"
+    ]
+   },
+   "000d:0007": {
+    "esi": [
+     "SHELL.VXD+11995",
+     "SHELL.VXD+40ea",
+     "SHELL.VXD+40f5",
+     "SHELL.VXD+4100",
+     "SHELL.VXD+410b"
+    ],
+    "edi": [
+     "SHELL.VXD+11995"
+    ],
+    "cf": [
+     "SHELL.VXD+40ea",
+     "SHELL.VXD+40f5",
+     "SHELL.VXD+4100"
+    ],
+    "ebp": [
+     "SHELL.VXD+40ea",
+     "SHELL.VXD+40f5",
+     "SHELL.VXD+4100",
+     "SHELL.VXD+410b"
+    ]
+   },
+   "000d:000a": {
+    "cf": [
+     "SHELL.VXD+a78f"
+    ]
+   },
+   "0001:007b": {
+    "esi": [
+     "SHELL.VXD+d601"
+    ],
+    "edx": [
+     "SHELL.VXD+d601"
+    ],
+    "ebp": [
+     "SHELL.VXD+d601"
+    ],
+    "eax": [
+     "SHELL.VXD+d601"
+    ]
+   },
+   "0001:014c": {
+    "edi": [
+     "SHELL.VXD+acab"
+    ],
+    "eax": [
+     "SHELL.VXD+acab"
+    ]
+   },
+   "0001:0032": {
+    "edi": [
+     "SHELL.VXD+11452",
+     "SHELL.VXD+114de"
+    ],
+    "eax": [
+     "SHELL.VXD+11452",
+     "SHELL.VXD+114de",
+     "SHELL.VXD+11366",
+     "SHELL.VXD+112b3",
+     "SHELL.VXD+e4f9"
+    ],
+    "ebp": [
+     "SHELL.VXD+114de"
+    ],
+    "ebx": [
+     "SHELL.VXD+11366"
+    ],
+    "edx": [
+     "SHELL.VXD+112b3"
+    ]
+   },
+   "000a:0004": {
+    "esi": [
+     "SHELL.VXD+11474"
+    ],
+    "edi": [
+     "SHELL.VXD+11474"
+    ],
+    "ecx": [
+     "SHELL.VXD+11474"
+    ]
+   },
+   "0001:002c": {
+    "esi": [
+     "SHELL.VXD+11484"
+    ],
+    "cf": [
+     "SHELL.VXD+11484"
+    ],
+    "ecx": [
+     "SHELL.VXD+11484"
+    ],
+    "ebp": [
+     "SHELL.VXD+ad91"
+    ]
+   },
+   "0001:0033": {
+    "cf": [
+     "SHELL.VXD+114a0"
+    ],
+    "ebp": [
+     "SHELL.VXD+114a0"
+    ]
+   },
+   "0001:0031": {
+    "esi": [
+     "SHELL.VXD+1124b"
+    ],
+    "edx": [
+     "SHELL.VXD+1124b"
+    ]
+   },
+   "000a:0001": {
+    "ebx": [
+     "SHELL.VXD+d51f"
+    ]
+   },
+   "0001:0166": {
+    "edi": [
+     "SHELL.VXD+d53b"
+    ],
+    "ecx": [
+     "SHELL.VXD+d53b"
+    ]
+   },
+   "0001:00e0": {
+    "edx": [
+     "SHELL.VXD+d5b4"
+    ],
+    "ebp": [
+     "SHELL.VXD+d5b4"
+    ],
+    "eax": [
+     "SHELL.VXD+d5b4"
+    ]
+   },
+   "0001:013f": {
+    "ecx": [
+     "SHELL.VXD+a10d"
+    ],
+    "ebp": [
+     "SHELL.VXD+a10d"
+    ],
+    "eax": [
+     "SHELL.VXD+a10d"
+    ]
+   },
+   "000d:0008": {
+    "ebx": [
+     "SHELL.VXD+5026",
+     "SHELL.VXD+68"
+    ],
+    "ebp": [
+     "SHELL.VXD+68"
+    ]
+   },
+   "0001:0040": {
+    "edi": [
+     "SHELL.VXD+90ac"
+    ],
+    "ecx": [
+     "SHELL.VXD+90ac"
+    ],
+    "edx": [
+     "SHELL.VXD+90ac"
+    ],
+    "eax": [
+     "SHELL.VXD+90ac",
+     "SHELL.VXD+a99c"
+    ],
+    "esi": [
+     "SHELL.VXD+90ac",
+     "SHELL.VXD+a99c"
+    ],
+    "ebx": [
+     "SHELL.VXD+90ac",
+     "SHELL.VXD+a99c"
+    ],
+    "ebp": [
+     "SHELL.VXD+90ac"
+    ]
+   },
+   "0001:00d0": {
+    "edx": [
+     "SHELL.VXD+d366"
+    ],
+    "ebx": [
+     "SHELL.VXD+d366"
+    ],
+    "ecx": [
+     "SHELL.VXD+d366"
+    ],
+    "eax": [
+     "SHELL.VXD+d366"
+    ]
+   },
+   "000d:000c": {
+    "zf": [
+     "SHELL.VXD+16c"
+    ],
+    "ebp": [
+     "SHELL.VXD+16c"
+    ],
+    "eax": [
+     "SHELL.VXD+16c"
+    ]
+   },
+   "000a:0007": {
+    "edx": [
+     "SHELL.VXD+1bd"
+    ],
+    "ebp": [
+     "SHELL.VXD+1bd"
+    ],
+    "eax": [
+     "SHELL.VXD+1bd"
+    ]
+   },
+   "000a:0008": {
+    "ebp": [
+     "SHELL.VXD+1fe"
+    ]
+   },
+   "000a:000a": {
+    "ebp": [
+     "SHELL.VXD+3ec"
+    ]
+   },
+   "000d:0006": {
+    "ebx": [
+     "SHELL.VXD+119ad"
+    ],
+    "ecx": [
+     "SHELL.VXD+119ad"
+    ]
+   },
+   "0001:00db": {
+    "ebx": [
+     "SHELL.VXD+4519"
+    ],
+    "eax": [
+     "SHELL.VXD+4519"
+    ]
+   },
+   "0001:0009": {
+    "edx": [
+     "SHELL.VXD+4582"
+    ],
+    "ecx": [
+     "SHELL.VXD+4582"
+    ],
+    "cf": [
+     "SHELL.VXD+4582"
+    ]
+   },
+   "000a:0002": {
+    "esi": [
+     "SHELL.VXD+459c"
+    ]
+   },
+   "0001:018e": {
+    "eax": [
+     "SHELL.VXD+a9ff"
+    ]
+   },
+   "0001:0109": {
+    "zf": [
+     "SHELL.VXD+510"
+    ],
+    "ebp": [
+     "SHELL.VXD+510"
+    ]
+   },
+   "0001:0021": {
+    "cf": [
+     "SHELL.VXD+ad6d"
+    ],
+    "ebp": [
+     "SHELL.VXD+ad6d"
+    ]
+   },
+   "0001:0114": {
+    "edi": [
+     "REBOOT.VXD+e1"
+    ]
+   },
+   "0001:00e9": {
+    "cf": [
+     "REBOOT.VXD+20ca"
+    ]
+   },
+   "0033:003e": {
+    "eax": [
+     "VCOMM.VXD+416d",
+     "VCOMM.VXD+3f5e"
+    ],
+    "edi": [
+     "VCOMM.VXD+3f5e"
+    ],
+    "ebx": [
+     "VCOMM.VXD+7483"
+    ]
+   },
+   "0033:001a": {
+    "esi": [
+     "VCOMM.VXD+3eea"
+    ],
+    "ebx": [
+     "VCOMM.VXD+3eea"
+    ],
+    "eax": [
+     "VCOMM.VXD+3eea"
+    ]
+   },
+   "0033:001f": {
+    "ebx": [
+     "VCOMM.VXD+3efe"
+    ],
+    "eax": [
+     "VCOMM.VXD+3efe",
+     "VCOMM.VXD+4543"
+    ],
+    "esi": [
+     "VCOMM.VXD+4543"
+    ]
+   },
+   "0001:012e": {
+    "ebp": [
+     "VCOMM.VXD+3560"
+    ]
+   },
+   "0033:0064": {
+    "edi": [
+     "VCOMM.VXD+35fb"
+    ],
+    "ebp": [
+     "VCOMM.VXD+35fb"
+    ]
+   },
+   "0001:012f": {
+    "ebp": [
+     "VCOMM.VXD+3671"
+    ]
+   },
+   "0001:006c": {
+    "esi": [
+     "LPT.VXD+3825"
+    ],
+    "eax": [
+     "LPT.VXD+3825",
+     "LPT.VXD+37a3"
+    ],
+    "edi": [
+     "LPT.VXD+37a3"
+    ]
+   },
+   "0004:0004": {
+    "esi": [
+     "LPT.VXD+3781"
+    ]
+   },
+   "0004:000e": {
+    "edi": [
+     "LPT.VXD+3790"
+    ],
+    "ecx": [
+     "LPT.VXD+3790"
+    ],
+    "cf": [
+     "LPT.VXD+3790"
+    ],
+    "eax": [
+     "LPT.VXD+3790"
+    ],
+    "edx": [
+     "LPT.VXD+3790"
+    ],
+    "ebx": [
+     "LPT.VXD+3790"
+    ]
+   },
+   "0003:0008": {
+    "esi": [
+     "LPT.VXD+64ad"
+    ],
+    "ebp": [
+     "LPT.VXD+64ad"
+    ]
+   },
+   "0003:0009": {
+    "esi": [
+     "LPT.VXD+645f"
+    ],
+    "ebp": [
+     "LPT.VXD+645f"
+    ]
+   },
+   "0003:000b": {
+    "edx": [
+     "LPT.VXD+39c4"
+    ],
+    "cf": [
+     "LPT.VXD+39c4"
+    ],
+    "ebp": [
+     "LPT.VXD+39c4"
+    ]
+   },
+   "0004:000f": {
+    "cf": [
+     "LPT.VXD+376a"
+    ]
+   },
+   "0004:0006": {
+    "ecx": [
+     "LPT.VXD+39aa"
+    ]
+   },
+   "0004:0009": {
+    "edi": [
+     "LPT.VXD+3871"
+    ],
+    "cf": [
+     "LPT.VXD+3871"
+    ]
+   },
+   "0004:000c": {
+    "edi": [
+     "LPT.VXD+3901"
+    ]
+   },
+   "0004:000b": {
+    "edx": [
+     "LPT.VXD+38d0"
+    ],
+    "edi": [
+     "LPT.VXD+38d0"
+    ],
+    "cf": [
+     "LPT.VXD+38d0"
+    ],
+    "zf": [
+     "LPT.VXD+38d0"
+    ]
+   }
+  },
+  "names": {
+   "002a:0018": "VWIN32_TerminateApp (EDI the thread: its saved ring-3 context back and VWIN32's APC queued that ends it; IFSMGR's, as its INT 21h dispatch returns -41h, which no VxD of the bundle and no stand-in returns)",
+   "0041:0001": "VCDFSD",
+   "0021:0007": "PAGEFILE (DYNAPAGE.VXD)",
+   "0487:0001": "NWLINK (IPX/SPX), absent where the network is NetBEUI's as here",
+   "049b:0001": "VNBT (NetBIOS over TCP/IP)",
+   "049b:0002": "VNBT (NetBIOS over TCP/IP)",
+   "0487:0004": "NWLINK (IPX/SPX), absent where the network is NetBEUI's as here",
+   "0032:0001": "VSERVER",
+   "0482:0001": "SNAPVXD (SNAPSHOT.VXD)",
+   "0497:0001": "MSODISUP",
+   "0496:0001": "NDIS2SUP"
+  }
+ },
+ "dynUntranslatable": {
+  "opcode ff": {
+   "count": 276,
+   "modules": {
+    "MSSNDSYS.VXD": 12,
+    "VTDAPI.VXD": 3,
+    "IFSMGR.VXD": 34,
+    "VCACHE.VXD": 11,
+    "VNETSUP.VXD": 27,
+    "VREDIR.VXD": 24,
+    "NDIS.VXD": 8,
+    "SHELL.VXD": 8,
+    "USER32.DLL": 2,
+    "COMDLG32.DLL": 1,
+    "SHELL32.DLL": 76,
+    "MSACM32.DLL": 6,
+    "ICCVID.DLL": 14,
+    "MSVIDC32.DLL": 1,
+    "IR32_32.DLL": 5,
+    "MPREXE.EXE": 1,
+    "WINHLP32.EXE": 10,
+    "EXPLORER.EXE": 15,
+    "GRPCONV.EXE": 4,
+    "AUTORUN.EXE": 1,
+    "CALC.EXE": 5,
+    "SNDVOL32.EXE": 3,
+    "MPR.DLL": 1,
+    "GDI": 1,
+    "USER": 2,
+    "MSGSRV32": 1
+   },
+   "first": [
+    "MSSNDSYS.VXD+110",
+    "MSSNDSYS.VXD+114",
+    "MSSNDSYS.VXD+115",
+    "MSSNDSYS.VXD+116",
+    "MSSNDSYS.VXD+c7",
+    "MSSNDSYS.VXD+d0",
+    "MSSNDSYS.VXD+d4",
+    "MSSNDSYS.VXD+d8"
+   ],
+   "flow": 1,
+   "flowAt": [
+    "USER+62cd6"
+   ]
+  },
+  "opcode 62": {
+   "count": 217,
+   "modules": {
+    "MSSNDSYS.VXD": 3,
+    "VTDAPI.VXD": 8,
+    "MSOPL.VXD": 3,
+    "ENABLE.VXD": 13,
+    "IFSMGR.VXD": 36,
+    "VREDIR.VXD": 10,
+    "VNETBIOS.VXD": 6,
+    "NDIS.VXD": 32,
+    "PERF.VXD": 4,
+    "REBOOT.VXD": 6,
+    "COMDLG32.DLL": 1,
+    "SHELL32.DLL": 28,
+    "ICCVID.DLL": 2,
+    "WINHLP32.EXE": 14,
+    "EXPLORER.EXE": 18,
+    "GRPCONV.EXE": 17,
+    "SYSTRAY.EXE": 1,
+    "MSNP32.DLL": 1,
+    "MSNET32.DLL": 13,
+    "MPRSERV.DLL": 1
+   },
+   "first": [
+    "MSSNDSYS.VXD+2014",
+    "MSSNDSYS.VXD+205c",
+    "MSSNDSYS.VXD+20a6",
+    "VTDAPI.VXD+4202",
+    "VTDAPI.VXD+4205",
+    "VTDAPI.VXD+4218",
+    "VTDAPI.VXD+41d9",
+    "VTDAPI.VXD+41e3"
+   ]
+  },
+  "opcode 63": {
+   "count": 843,
+   "modules": {
+    "MSSNDSYS.VXD": 3,
+    "VTDAPI.VXD": 1,
+    "MSOPL.VXD": 2,
+    "ENABLE.VXD": 6,
+    "IFSMGR.VXD": 106,
+    "VCACHE.VXD": 4,
+    "VNETSUP.VXD": 4,
+    "VREDIR.VXD": 27,
+    "VNETBIOS.VXD": 26,
+    "NETBEUI.VXD": 2,
+    "NDIS.VXD": 323,
+    "PERF.VXD": 6,
+    "SHELL.VXD": 11,
+    "REBOOT.VXD": 12,
+    "VCOMM.VXD": 2,
+    "USER32.DLL": 4,
+    "COMDLG32.DLL": 9,
+    "COMCTL32.DLL": 1,
+    "SHELL32.DLL": 112,
+    "WINMM.DLL": 2,
+    "DESK.CPL": 1,
+    "MSACM32.DLL": 22,
+    "MPREXE.EXE": 1,
+    "WINHLP32.EXE": 16,
+    "EXPLORER.EXE": 29,
+    "GRPCONV.EXE": 25,
+    "SYSTRAY.EXE": 3,
+    "WELCOME.EXE": 4,
+    "SNDVOL32.EXE": 2,
+    "CDPLAYER.EXE": 1,
+    "MPR.DLL": 5,
+    "MSNP32.DLL": 29,
+    "MPRSERV.DLL": 40,
+    "MSPWL32.DLL": 1,
+    "SVRAPI.DLL": 1
+   },
+   "first": [
+    "MSSNDSYS.VXD+20d7",
+    "MSSNDSYS.VXD+20d8",
+    "MSSNDSYS.VXD+20de",
+    "VTDAPI.VXD+41bd",
+    "MSOPL.VXD+1019",
+    "MSOPL.VXD+1032",
+    "ENABLE.VXD+1004",
+    "ENABLE.VXD+1018"
+   ]
+  },
+  "x87 d9 d4": {
+   "count": 1,
+   "modules": {
+    "DSOUND.VXD": 1
+   },
+   "first": [
+    "DSOUND.VXD+0"
+   ]
+  },
+  "opcode f4": {
+   "count": 35,
+   "modules": {
+    "IFSMGR.VXD": 10,
+    "VCACHE.VXD": 2,
+    "VNETSUP.VXD": 1,
+    "VREDIR.VXD": 5,
+    "COMCTL32.DLL": 1,
+    "SHELL32.DLL": 12,
+    "ICCVID.DLL": 2,
+    "MPLAYER.EXE": 1,
+    "WINHLP32.EXE": 1
+   },
+   "first": [
+    "IFSMGR.VXD+5914",
+    "IFSMGR.VXD+7244",
+    "IFSMGR.VXD+7417",
+    "IFSMGR.VXD+723c",
+    "IFSMGR.VXD+723e",
+    "IFSMGR.VXD+741c",
+    "IFSMGR.VXD+75b0",
+    "IFSMGR.VXD+75b5"
+   ]
+  },
+  "opcode f1": {
+   "count": 29,
+   "modules": {
+    "IFSMGR.VXD": 4,
+    "SHELL32.DLL": 15,
+    "ICCVID.DLL": 7,
+    "IR32_32.DLL": 1,
+    "CALC.EXE": 1,
+    "CDPLAYER.EXE": 1
+   },
+   "first": [
+    "IFSMGR.VXD+537c",
+    "IFSMGR.VXD+756c",
+    "IFSMGR.VXD+bcf4",
+    "IFSMGR.VXD+c1eb",
+    "SHELL32.DLL+5f110",
+    "SHELL32.DLL+5ffcd",
+    "SHELL32.DLL+5ffcf",
+    "SHELL32.DLL+5ffd9"
+   ]
+  },
+  "x87 dd /5 (memory)": {
+   "count": 17,
+   "modules": {
+    "IFSMGR.VXD": 17
+   },
+   "first": [
+    "IFSMGR.VXD+6d08",
+    "IFSMGR.VXD+6d54",
+    "IFSMGR.VXD+6d78",
+    "IFSMGR.VXD+6d9c",
+    "IFSMGR.VXD+6db0",
+    "IFSMGR.VXD+6ddf",
+    "IFSMGR.VXD+6e20",
+    "IFSMGR.VXD+6e28"
+   ]
+  },
+  "0f 62": {
+   "count": 6,
+   "modules": {
+    "IFSMGR.VXD": 6
+   },
+   "first": [
+    "IFSMGR.VXD+71df",
+    "IFSMGR.VXD+71e6",
+    "IFSMGR.VXD+71e7",
+    "IFSMGR.VXD+71e9",
+    "IFSMGR.VXD+71ef",
+    "IFSMGR.VXD+71ff"
+   ]
+  },
+  "x87 df ff": {
+   "count": 1,
+   "modules": {
+    "IFSMGR.VXD": 1
+   },
+   "first": [
+    "IFSMGR.VXD+73a5"
+   ]
+  },
+  "x87 df df": {
+   "count": 3,
+   "modules": {
+    "IFSMGR.VXD": 3
+   },
+   "first": [
+    "IFSMGR.VXD+73a9",
+    "IFSMGR.VXD+73aa",
+    "IFSMGR.VXD+73c4"
+   ]
+  },
+  "0f f": {
+   "count": 9,
+   "modules": {
+    "IFSMGR.VXD": 4,
+    "ICCVID.DLL": 5
+   },
+   "first": [
+    "IFSMGR.VXD+73b0",
+    "IFSMGR.VXD+73cf",
+    "IFSMGR.VXD+73d0",
+    "IFSMGR.VXD+73d1",
+    "ICCVID.DLL+2040",
+    "ICCVID.DLL+cfcc",
+    "ICCVID.DLL+d74c",
+    "ICCVID.DLL+d8cc"
+   ]
+  },
+  "0f 10": {
+   "count": 46,
+   "modules": {
+    "IFSMGR.VXD": 4,
+    "VREDIR.VXD": 8,
+    "ICCVID.DLL": 4,
+    "WINHLP32.EXE": 1,
+    "MSNP32.DLL": 7,
+    "MSNET32.DLL": 21,
+    "MPRSERV.DLL": 1
+   },
+   "first": [
+    "IFSMGR.VXD+bc10",
+    "IFSMGR.VXD+bc2e",
+    "IFSMGR.VXD+bc30",
+    "IFSMGR.VXD+c0f3",
+    "VREDIR.VXD+f8e",
+    "VREDIR.VXD+fa0",
+    "VREDIR.VXD+fa3",
+    "VREDIR.VXD+fae"
+   ]
+  },
+  "x87 d9 da": {
+   "count": 2,
+   "modules": {
+    "IFSMGR.VXD": 1,
+    "ICCVID.DLL": 1
+   },
+   "first": [
+    "IFSMGR.VXD+c1d5",
+    "ICCVID.DLL+e10d"
+   ]
+  },
+  "opcode fe": {
+   "count": 20,
+   "modules": {
+    "IFSMGR.VXD": 2,
+    "COMDLG32.DLL": 2,
+    "SHELL32.DLL": 1,
+    "MSACM32.DLL": 2,
+    "ICCVID.DLL": 2,
+    "IR32_32.DLL": 1,
+    "WINHLP32.EXE": 1,
+    "GRPCONV.EXE": 1,
+    "MSNET32.DLL": 8
+   },
+   "first": [
+    "IFSMGR.VXD+c1f3",
+    "IFSMGR.VXD+c1f7",
+    "COMDLG32.DLL+d356",
+    "COMDLG32.DLL+d358",
+    "SHELL32.DLL+60074",
+    "MSACM32.DLL+135d",
+    "MSACM32.DLL+1361",
+    "ICCVID.DLL+e12b"
+   ]
+  },
+  "x87 db /6 (memory)": {
+   "count": 2,
+   "modules": {
+    "VCACHE.VXD": 1,
+    "PERF.VXD": 1
+   },
+   "first": [
+    "VCACHE.VXD+300b",
+    "PERF.VXD+d0"
+   ]
+  },
+  "0f 0": {
+   "count": 83,
+   "modules": {
+    "VNETSUP.VXD": 51,
+    "NDIS.VXD": 3,
+    "COMDLG32.DLL": 20,
+    "SHELL32.DLL": 3,
+    "ICCVID.DLL": 4,
+    "WINHLP32.EXE": 1,
+    "EXPLORER.EXE": 1
+   },
+   "first": [
+    "VNETSUP.VXD+3820",
+    "VNETSUP.VXD+3824",
+    "VNETSUP.VXD+3830",
+    "VNETSUP.VXD+3834",
+    "VNETSUP.VXD+3836",
+    "VNETSUP.VXD+3840",
+    "VNETSUP.VXD+3844",
+    "VNETSUP.VXD+3845"
+   ]
+  },
+  "0f 6": {
+   "count": 1,
+   "modules": {
+    "VNETSUP.VXD": 1
+   },
+   "first": [
+    "VNETSUP.VXD+cd8"
+   ]
+  },
+  "mov from segment register 7": {
+   "count": 2,
+   "modules": {
+    "VNETSUP.VXD": 2
+   },
+   "first": [
+    "VNETSUP.VXD+3a97",
+    "VNETSUP.VXD+3aa2"
+   ]
+  },
+  "0f 26": {
+   "count": 1,
+   "modules": {
+    "VREDIR.VXD": 1
+   },
+   "first": [
+    "VREDIR.VXD+167b"
+   ]
+  },
+  "0f 9": {
+   "count": 2,
+   "modules": {
+    "VNETBIOS.VXD": 2
+   },
+   "first": [
+    "VNETBIOS.VXD+1983",
+    "VNETBIOS.VXD+198c"
+   ]
+  },
+  "enter with nesting level 1": {
+   "count": 2,
+   "modules": {
+    "NDIS.VXD": 1,
+    "VCOMM.VXD": 1
+   },
+   "first": [
+    "NDIS.VXD+ca4",
+    "VCOMM.VXD+33b"
+   ]
+  },
+  "0f 1": {
+   "count": 10,
+   "modules": {
+    "COMDLG32.DLL": 2,
+    "SHELL32.DLL": 1,
+    "WINHLP32.EXE": 1,
+    "EXPLORER.EXE": 3,
+    "CDPLAYER.EXE": 3
+   },
+   "first": [
+    "COMDLG32.DLL+e009",
+    "COMDLG32.DLL+e019",
+    "SHELL32.DLL+61180",
+    "WINHLP32.EXE+36fc0",
+    "EXPLORER.EXE+224a5",
+    "EXPLORER.EXE+224b5",
+    "EXPLORER.EXE+224c0",
+    "CDPLAYER.EXE+1540"
+   ]
+  },
+  "lea with a register operand": {
+   "count": 12,
+   "modules": {
+    "COMCTL32.DLL": 1,
+    "SHELL32.DLL": 7,
+    "IR32_32.DLL": 4
+   },
+   "first": [
+    "COMCTL32.DLL+f399",
+    "SHELL32.DLL+5cffa",
+    "SHELL32.DLL+5cffd",
+    "SHELL32.DLL+5cffe",
+    "SHELL32.DLL+5d001",
+    "SHELL32.DLL+5d005",
+    "SHELL32.DLL+5d00d",
+    "SHELL32.DLL+5d00e"
+   ]
+  },
+  "0f e2": {
+   "count": 10,
+   "modules": {
+    "SHELL32.DLL": 10
+   },
+   "first": [
+    "SHELL32.DLL+60496",
+    "SHELL32.DLL+60499",
+    "SHELL32.DLL+5f0af",
+    "SHELL32.DLL+5f0b0",
+    "SHELL32.DLL+5f0b4",
+    "SHELL32.DLL+604a1",
+    "SHELL32.DLL+604c1",
+    "SHELL32.DLL+604dc"
+   ]
+  },
+  "opcode ce": {
+   "count": 12,
+   "modules": {
+    "SHELL32.DLL": 12
+   },
+   "first": [
+    "SHELL32.DLL+5ca2d",
+    "SHELL32.DLL+5e175",
+    "SHELL32.DLL+5e178",
+    "SHELL32.DLL+5e17e",
+    "SHELL32.DLL+5e4b4",
+    "SHELL32.DLL+5e4b9",
+    "SHELL32.DLL+5e4e1",
+    "SHELL32.DLL+5e6fc"
+   ]
+  },
+  "x87 df dd": {
+   "count": 7,
+   "modules": {
+    "SHELL32.DLL": 7
+   },
+   "first": [
+    "SHELL32.DLL+5e2c2",
+    "SHELL32.DLL+5e2c9",
+    "SHELL32.DLL+5f184",
+    "SHELL32.DLL+5f185",
+    "SHELL32.DLL+5f69d",
+    "SHELL32.DLL+5f69e",
+    "SHELL32.DLL+5f6a2"
+   ]
+  },
+  "enter with nesting level 27": {
+   "count": 1,
+   "modules": {
+    "SHELL32.DLL": 1
+   },
+   "first": [
+    "SHELL32.DLL+5e496"
+   ]
+  },
+  "x87 d9 df": {
+   "count": 1,
+   "modules": {
+    "SHELL32.DLL": 1
+   },
+   "first": [
+    "SHELL32.DLL+5e531"
+   ]
+  },
+  "x87 db df": {
+   "count": 4,
+   "modules": {
+    "SHELL32.DLL": 4
+   },
+   "first": [
+    "SHELL32.DLL+5e535",
+    "SHELL32.DLL+5e636",
+    "SHELL32.DLL+5e639",
+    "SHELL32.DLL+5e63d"
+   ]
+  },
+  "x87 da dc": {
+   "count": 1,
+   "modules": {
+    "SHELL32.DLL": 1
+   },
+   "first": [
+    "SHELL32.DLL+5f91d"
+   ]
+  },
+  "0f ff": {
+   "count": 5,
+   "modules": {
+    "MSVCRT20.DLL": 5
+   },
+   "first": [
+    "MSVCRT20.DLL+11f15",
+    "MSVCRT20.DLL+11f2e",
+    "MSVCRT20.DLL+11f32",
+    "MSVCRT20.DLL+11f36",
+    "MSVCRT20.DLL+11f58"
+   ]
+  },
+  "0f 11": {
+   "count": 2,
+   "modules": {
+    "ICCVID.DLL": 2
+   },
+   "first": [
+    "ICCVID.DLL+3409",
+    "ICCVID.DLL+a260"
+   ]
+  },
+  "x87 da db": {
+   "count": 1,
+   "modules": {
+    "ICCVID.DLL": 1
+   },
+   "first": [
+    "ICCVID.DLL+a242"
+   ]
+  },
+  "mov to segment register 1": {
+   "count": 2,
+   "modules": {
+    "ICCVID.DLL": 1,
+    "GDI": 1
+   },
+   "first": [
+    "ICCVID.DLL+a491",
+    "GDI+44dba"
+   ],
+   "flow": 1,
+   "flowAt": [
+    "GDI+44dba"
+   ]
+  },
+  "enter with nesting level 6": {
+   "count": 1,
+   "modules": {
+    "ICCVID.DLL": 1
+   },
+   "first": [
+    "ICCVID.DLL+a4e5"
+   ]
+  },
+  "enter with nesting level 13": {
+   "count": 1,
+   "modules": {
+    "WINHLP32.EXE": 1
+   },
+   "first": [
+    "WINHLP32.EXE+2cd6a"
+   ]
+  },
+  "enter with nesting level 23": {
+   "count": 1,
+   "modules": {
+    "WINHLP32.EXE": 1
+   },
+   "first": [
+    "WINHLP32.EXE+31c07"
+   ]
+  },
+  "enter with nesting level 21": {
+   "count": 1,
+   "modules": {
+    "WINHLP32.EXE": 1
+   },
+   "first": [
+    "WINHLP32.EXE+31c10"
+   ]
+  },
+  "0f 41": {
+   "count": 1,
+   "modules": {
+    "EXPLORER.EXE": 1
+   },
+   "first": [
+    "EXPLORER.EXE+212d2"
+   ]
+  },
+  "x87 d9 /1 (memory)": {
+   "count": 1,
+   "modules": {
+    "GDI": 1
+   },
+   "first": [
+    "GDI+466f0"
+   ],
+   "flow": 1,
+   "flowAt": [
+    "GDI+466f0"
+   ]
+  }
+ }
+}
