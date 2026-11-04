@@ -16,7 +16,7 @@ window.W95BraidPage = function (ui) {
   const B = window.W95Braid, W = ui.W95Win32, fs = ui.fs;
   const here = new Map();                 // the moments in this page's memory, by name: { s: the page's record, machines: { key: { app, info } } }
   const diskTouched = new Set(), mods = [], line = new B.Line();
-  const auto = { timer: null, n: 0, ring: [], every: 0, keep: 3 };
+  const auto = { timer: null, n: 0, ring: [], every: 0, keep: 3, atimer: null, an: 0, anchors: [], anchorEvery: 0, anchorKeep: 3 };
   let anchorBusy = null;   // (the name of the anchor being written, anchor)
   let sig = null, quiet = false, markN = 0;
   const key = a => (a.system ? 'system' : a.path);
@@ -58,12 +58,34 @@ window.W95BraidPage = function (ui) {
   }
 
   // ---- anchored moments: IndexedDB, this origin's
-  const db = fn => new Promise((ok, no) => { const r = indexedDB.open('w95-braid', 2); r.onupgradeneeded = () => { if (!r.result.objectStoreNames.contains('anchors')) r.result.createObjectStore('anchors', { keyPath: 'name' }); }; r.onsuccess = () => Promise.resolve(fn(r.result)).then(v => { r.result.close(); ok(v); }, e => { r.result.close(); no(e); }); r.onerror = () => no(r.error); });
+  // (an anchor's blobs are kept as chunks shared between anchors, braid.js packAnchor: the record in 'anchors' lists
+  // its chunks' hashes, each chunk once in 'chunks' under its hash. A chunk is written only when the store has none
+  // under its hash, and letting an anchor go deletes the chunks no anchor left refers to)
+  const db = fn => new Promise((ok, no) => { const r = indexedDB.open('w95-braid', 3); r.onupgradeneeded = () => { const d = r.result; if (!d.objectStoreNames.contains('anchors')) d.createObjectStore('anchors', { keyPath: 'name' }); if (!d.objectStoreNames.contains('chunks')) d.createObjectStore('chunks'); }; r.onsuccess = () => Promise.resolve(fn(r.result)).then(v => { r.result.close(); ok(v); }, e => { r.result.close(); no(e); }); r.onerror = () => no(r.error); });
   const req = (tx, r) => new Promise((ok, no) => { r.onsuccess = () => ok(r.result); r.onerror = () => no(r.error); });
-  const dbGet = name => db(d => req(null, d.transaction('anchors').objectStore('anchors').get(String(name))));
-  const dbAll = () => db(d => req(null, d.transaction('anchors').objectStore('anchors').getAll()));
-  const dbPut = rec => db(d => new Promise((ok, no) => { const tx = d.transaction('anchors', 'readwrite'); tx.objectStore('anchors').put(rec); tx.oncomplete = () => ok(true); tx.onerror = () => no(tx.error); }));
-  const dbDel = name => db(d => new Promise((ok, no) => { const st = d.transaction('anchors', 'readwrite').objectStore('anchors'), g = st.getKey(String(name)); g.onsuccess = () => { if (g.result === undefined) return ok(false); const x = st.delete(String(name)); x.onsuccess = () => ok(true); x.onerror = () => no(x.error); }; g.onerror = () => no(g.error); }));
+  const done = tx => new Promise((ok, no) => { tx.oncomplete = () => ok(true); tx.onerror = () => no(tx.error); tx.onabort = () => no(tx.error || new Error('aborted')); });
+  const dbRaw = name => db(d => req(null, d.transaction('anchors').objectStore('anchors').get(String(name))));
+  const dbGet = async name => {
+    const s = await dbRaw(name); if (!s || !s.packed) return s;
+    const want = [...B.chunkRefs([s])], got = new Map();
+    await db(d => { const st = d.transaction('chunks').objectStore('chunks'); return Promise.all(want.map(h => req(null, st.get(h)).then(c => { if (c) got.set(h, c); }))); });
+    return B.unpackAnchor(s, h => got.get(h));
+  };
+  const dbAll = () => db(d => req(null, d.transaction('anchors').objectStore('anchors').getAll()));   // (as stored: names, chunk lists and lengths, not the bytes)
+  const dbPut = async rec => {
+    const { rec: s, chunks } = await B.packAnchor(rec);
+    return db(d => { const tx = d.transaction(['anchors', 'chunks'], 'readwrite'), cs = tx.objectStore('chunks');
+      for (const [h, b] of chunks) { const g = cs.getKey(h); g.onsuccess = () => { if (g.result === undefined) cs.put(b, h); }; }
+      tx.objectStore('anchors').put(s); return done(tx); });
+  };
+  const dbDel = name => db(async d => {
+    const tx = d.transaction(['anchors', 'chunks'], 'readwrite'), st = tx.objectStore('anchors'), cs = tx.objectStore('chunks');
+    const had = (await req(null, st.getKey(String(name)))) !== undefined;
+    if (had) await req(null, st.delete(String(name)));
+    const keep = B.chunkRefs(await req(null, st.getAll())), all = await req(null, cs.getAllKeys());
+    for (const h of all) if (!keep.has(h)) cs.delete(h);
+    await done(tx); return had;
+  });
 
   // ---- a shared session: this person's marks and travels, to the others, as intents of the session (shared.js)
   const share = op => { if (quiet) return; const S = ui.shared(); if (!S) return; S.intent({ key: op.op === 'mark' ? `braid:mark:${op.name}` : `braid:${op.op}`, kind: 'braid', ...op }); };
@@ -186,18 +208,34 @@ window.W95BraidPage = function (ui) {
     },
     /** the line marking itself as the machine runs: a moment every `ms` (30 s), named t1, t2, ..., the last `keep` (3)
      *  held (one the lint found broken is held beyond them, as the state to travel away from); what a lock-up or a
-     *  crash is travelled back from when no one marked a moment before it. every(0) ends it */
-    every(ms = 30000, keep = 3) {
-      clearTimeout(auto.timer); auto.timer = null; auto.every = ms; auto.keep = keep; if (!ms) return null;
+     *  crash is travelled back from when no one marked a moment before it. And anchored on this computer every
+     *  `o.anchorEvery` ms (5 min), live1, live2, ..., the last `o.anchorKeep` (3) kept, a broken one held beyond them:
+     *  the marks live in the page's memory and a reload loses them, the anchors do not, so a running line is never
+     *  more than anchorEvery from a moment a reloaded page travels to. An older anchor is let go only after a newer
+     *  one is written. every(0) ends both; anchorEvery 0, the anchoring alone */
+    every(ms = 30000, keep = 3, o = {}) {
+      clearTimeout(auto.timer); auto.timer = null; auto.every = ms; auto.keep = keep;
+      clearTimeout(auto.atimer); auto.atimer = null; auto.anchorEvery = ms ? (o.anchorEvery === undefined ? 300000 : o.anchorEvery) : 0; auto.anchorKeep = o.anchorKeep || 3;
+      if (!ms) return null;
+      const anchorTick = async () => {
+        if (!auto.atimer) return;
+        try {
+          const r = await braid.anchor('live' + (++auto.an)); auto.anchors.push(r.name);
+          const fine = auto.anchors.filter(n => (line.broken.get(n) || 'ok') !== 'broken');
+          while (fine.length > auto.anchorKeep) { const n = fine.shift(); auto.anchors.splice(auto.anchors.indexOf(n), 1); await braid.forget(n); }
+        } catch (e) { console.warn('[braid] the line could not anchor itself:', e.message); }   // (another anchor being written, a ring-0 run on every step: the next tick)
+        if (auto.atimer) auto.atimer = setTimeout(anchorTick, auto.anchorEvery);
+      };
+      if (auto.anchorEvery) auto.atimer = setTimeout(anchorTick, auto.anchorEvery);
       const tick = async () => {
         if (!auto.timer) return;
         try { const name = 't' + (++auto.n); const r = await braid.mark(name); auto.ring.push(name); const fine = auto.ring.filter(n => (line.broken.get(n) || 'ok') !== 'broken' && !(line.moments.get(n) || {}).anchored); while (fine.length > keep) { const n = fine.shift(); auto.ring.splice(auto.ring.indexOf(n), 1); await braid.forget(n); } if (r.verdict === 'broken') ui.emit('braid.broken', { moment: name, findings: r.findings }); }
         catch (e) { console.warn('[braid] the line could not mark itself:', e.message); }
         if (auto.timer) auto.timer = setTimeout(tick, ms);
       };
-      auto.timer = setTimeout(tick, ms); return { every: ms, keep };
+      auto.timer = setTimeout(tick, ms); return { every: ms, keep, anchorEvery: auto.anchorEvery, anchorKeep: auto.anchorKeep };
     },
-    get auto() { return { every: auto.every, keep: auto.keep, moments: auto.ring.slice() }; },
+    get auto() { return { every: auto.every, keep: auto.keep, moments: auto.ring.slice(), anchorEvery: auto.anchorEvery, anchorKeep: auto.anchorKeep, anchors: auto.anchors.slice() }; },
     /** the system's machine between two moments (or a moment and now): the lint's findings and their verdict (broken,
      *  suspect, ok). The signs of a machine that will not come back: the Win16Lock held by one thread across both, a
      *  thread at the same place with its time running out each slice, a ring-0 run at the same place, faults since, the
@@ -401,6 +439,7 @@ window.W95BraidPage = function (ui) {
     return win;
   }
 
+  braid.__test = { dbPut, dbGet, dbDel, dbAll };   // (the store, for tests/braidchunks.test.mjs)
   return braid;
 };
 })();

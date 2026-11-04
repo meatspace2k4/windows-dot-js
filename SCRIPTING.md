@@ -81,7 +81,10 @@ one left runs no further but its moments stay, to travel to again. A lock-up, a 
 to the moment before it and go on, with the machine's scripts changed meanwhile if need be (`reloadScript`: a mod).
 
 Moments live in this page's memory and end with it, unless anchored on this computer (IndexedDB), where a page that
-starts later travels to them; neither needs a server. A moment is a record of named sections under a checksum and the
+starts later travels to them; neither needs a server. A running line is always anchored: `every` anchors it as well
+as marking it, so a reload costs a run nothing; marks are for moving about within the page. An anchor is stored as
+chunks of 256 KB under their SHA-256, each kept once, so anchors minutes apart share all the memory that did not
+change, and letting one go deletes only the chunks no other anchor has. A moment is a record of named sections under a checksum and the
 signature of the build that made it (braid.js, win32.js, ne16.js, vmm.js, v86.js, dyn.js, fs.js): a damaged copy or
 another build's is refused. The lint compares moments and disallows system-breaking states (its verdict on each:
 `broken`, `suspect`, `ok`); the mods are named beside a moment, as a sidecar, never carried in it. In a shared
@@ -95,7 +98,7 @@ to the same moment, so everyone is at the same place on one line.
 | `braid.travel({ t })` | to machine time `t` on the line (a scrub, back or ahead): the moment at or before it on the lineage, then the run from there to `t`, fast (`speed`), with the journal's actions made again as the clock reaches each one's time; from where the line is when that is between the moment and `t` |
 | `braid.anchor(name?)` | the moment of now anchored on this computer (every machine's bytes and objects by name and path, the disk, the shell, the registry, the mods, the line), under a checksum and the build signature; marked on the line here as well. The memo's ground: a page that has it starts there, nothing run again |
 | `braid.moments()`, `braid.forget(name)` | every moment on the line (`here`: this page's memory; `anchored`: this computer; `gen`, `at`, `verdict`); one let go from both |
-| `braid.every(ms = 30000, keep = 3)`, `braid.auto` | the line marking itself as the machine runs, `t1`, `t2`, ..., the last `keep` held (one found broken is held beyond them): what a lock-up or a crash is travelled back from when no one marked a moment. `every(0)` ends it |
+| `braid.every(ms = 30000, keep = 3, { anchorEvery = 300000, anchorKeep = 3 })`, `braid.auto` | the line marking itself as the machine runs, `t1`, `t2`, ..., the last `keep` held (one found broken is held beyond them): what a lock-up or a crash is travelled back from when no one marked a moment. And anchoring itself on this computer every `anchorEvery` ms, `live1`, `live2`, ..., the last `anchorKeep` kept (a broken one held beyond them), an older one let go only after a newer one is written: what a reloaded page travels back to. `every(0)` ends both; `anchorEvery: 0` the anchoring alone |
 | `braid.lint(a, b?)` | the system's machine between two moments (or a moment and now): `verdict` and `findings`. The signs of a machine that will not come back: the Win16Lock held by one thread across both, a thread at the same place with its time running out each slice, a ring-0 run at the same place, faults since, the process ended, a heap or queue only growing. Heuristics: the halting problem allows no proof |
 | `braid.memo(actions)` | a span already computed: the segment from the moment the line is at whose actions are these (`[[op, args], ...]`, as the journal has them) and whose end is on the line. The line travels to its end, the work between not done again (PIDGEN's key check, a copy): `{ from, to, ms, gen }`, or null |
 | `braid.line` | the line: `gen` now, `forks` (each generation: the moment and generation it grew from, `how`: travel, scrub, memo, anchor), `moments` with their verdicts, `segments` (each pair of moments, with how many actions between), `events` (every fault a machine reported, under its generation), `journal` |

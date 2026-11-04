@@ -322,6 +322,52 @@ function refuseAnchor(rec, build) {
   return null;
 }
 
+// An anchored moment as stored: its blobs (each machine's and the page's) cut in chunks of CHUNK bytes, each kept once
+// under its SHA-256, and the record holding each blob as the list of its chunks' hashes and its length. Anchors taken
+// minutes apart share every chunk of memory that did not change, so the line anchoring itself keeps a few of them
+// for little more than one. The checksum (anchorSum) stays over the blobs put back together: a chunk damaged or
+// missing is refused as the whole moment's damage is.
+const CHUNK = 256 * 1024;
+const hex = b => Array.from(new Uint8Array(b), x => x.toString(16).padStart(2, '0')).join('');
+const blobOf = b => (b instanceof Uint8Array ? b : new Uint8Array(b.buffer || b));
+/** the record to store and its chunks: { rec, chunks: Map(hash -> bytes) }; `sha` hashes bytes to an ArrayBuffer */
+async function packAnchor(rec, sha = b => crypto.subtle.digest('SHA-256', b)) {
+  const chunks = new Map();
+  const cut = async b => {
+    b = blobOf(b); const hs = [];
+    for (let at = 0; at < b.length; at += CHUNK) { const c = b.subarray(at, Math.min(at + CHUNK, b.length)), h = hex(await sha(c)); if (!chunks.has(h)) chunks.set(h, c.slice()); hs.push(h); }
+    return { chunks: hs, length: b.length };
+  };
+  const machines = {};
+  for (const [k, m] of Object.entries(rec.machines || {})) machines[k] = { ...m, blob: await cut(m.blob) };
+  const page = rec.page ? { ...rec.page, blob: await cut(rec.page.blob) } : rec.page;
+  return { rec: { ...rec, machines, page, packed: CHUNK }, chunks };
+}
+/** the stored record made whole again: each blob from its chunks (`get(hash)` the chunk's bytes, or a promise of
+ *  them); a record stored whole (before chunks) comes back as it is. A missing chunk throws */
+async function unpackAnchor(s, get) {
+  if (!s || !s.packed) return s;
+  const join = async b => {
+    if (!b || !Array.isArray(b.chunks)) return b;
+    const out = new Uint8Array(b.length); let at = 0;
+    for (const h of b.chunks) { const c = await get(h); if (!c) throw new Error(`the anchored moment is damaged (chunk ${h.slice(0, 12)} missing)`); out.set(blobOf(c), at); at += c.byteLength; }
+    if (at !== b.length) throw new Error('the anchored moment is damaged (chunks short)');
+    return out;
+  };
+  const machines = {};
+  for (const [k, m] of Object.entries(s.machines || {})) machines[k] = { ...m, blob: await join(m.blob) };
+  const page = s.page ? { ...s.page, blob: await join(s.page.blob) } : s.page;
+  const rec = { ...s, machines, page }; delete rec.packed; return rec;
+}
+/** every chunk the stored records refer to: what a chunk store keeps when one of them is let go */
+function chunkRefs(records) {
+  const out = new Set();
+  for (const s of records) { if (!s || !s.packed) continue; for (const b of [...Object.values(s.machines || {}).map(m => m.blob), s.page && s.page.blob]) if (b && b.chunks) for (const h of b.chunks) out.add(h); }
+  return out;
+}
+/** a blob's length whether stored whole or as chunks */
+const blobLength = b => (!b ? 0 : Array.isArray(b.chunks) ? b.length : (b.length !== undefined ? b.length : b.byteLength || 0));
+
 // ---------------------------------------------------------------- the line: the machine's time as a whole, in generations
 // Generation 0 is the run from the page's start. Travel to a moment begins the next generation, which grows from that
 // moment (in the generation it was taken in); the one left runs no further, but its moments stay on the line and are
@@ -413,7 +459,7 @@ class Line {
   static from(o) { const l = new Line(); if (!o) return l; l.gen = o.gen || 0; l.forks = o.forks || l.forks; for (const m of o.moments || []) l.moments.set(m.name, m); l.events = o.events || []; l.segments = o.segments || []; l.j = o.j || l.j; l.broken = new Map(o.broken || []); return l; }
 }
 
-const api = { Ref, takeGraph, restoreGraph, serialize, rebind, make, checksum, refuse, describe, buildSignature, lint, verdict, mod, anchor, anchorSum, refuseAnchor, Line, BUILD_FILES, MAGIC, ANCHOR, VERSION, fnv, fnvStr, FNV0 };
+const api = { Ref, takeGraph, restoreGraph, serialize, rebind, make, checksum, refuse, describe, buildSignature, lint, verdict, mod, anchor, anchorSum, refuseAnchor, packAnchor, unpackAnchor, chunkRefs, blobLength, CHUNK, Line, BUILD_FILES, MAGIC, ANCHOR, VERSION, fnv, fnvStr, FNV0 };
 if (typeof self !== 'undefined') self.W95Braid = api;
 if (typeof window !== 'undefined') window.W95Braid = api;
 })();
