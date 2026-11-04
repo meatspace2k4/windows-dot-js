@@ -8,6 +8,11 @@
 (() => {
 const { Process } = window.W95Win32;
 const P = Object.create(Process.prototype);   // (a V86 machine's own methods, over the processor's: Process itself unchanged)
+// (the prototype under a name of its own: a moment arrived at in another page makes its VMs' machines anew by the
+// name their prototype's constructor has (braid.js rebind, worker.js 'import' protos); as Process's they got Process's
+// methods and none of these, and the VM ran nothing)
+function V86Machine() {}
+V86Machine.prototype = P; P.constructor = V86Machine;
 const u32 = v => v >>> 0;
 const V86_BASE = 0x00400000, ROM = 0xf0000, STUB = 0x1000;   // the vectors' stubs at F000:1000 + 4n
 const CPU = ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi', 'cf', 'pf', 'zf', 'sf', 'of', 'df', 'fs', 'ftop', 'fsw', 'fcw', 'eip',
@@ -27,6 +32,7 @@ function machine(o = {}) {
   p.v86 = o.base || V86_BASE; p.xmsKB = o.xmsKB || XMS.kb; p.disk = o.disk; p.geom = { heads: 16, spt: 63 }; p.o = o;
   p.keys = []; p.port60 = 0; p.irq = 0; p.ticksAt = Date.now(); p.halted = false; p.polls = 0; p.v86Hooks = new Set([0x21, 0x2f]);
   p.trap = function (next, code) { this.v86Trap(next, code); };
+  if (o.pc) p.vgaInit();   // (the PC's own VGA: what runs before Windows draws on it, IO.SYS's start-up screen)
   p.portIO = function (port, size, isIn) { this.v86Port(port, size, isIn); };
   p.v86Reset();
   return p;
@@ -145,6 +151,8 @@ P.v86Int = function (n) {
 };
 // a call from the ROM (0F FF n) or HLT: the BIOS's service n, then on at `next` (the IRET after it)
 P.v86Trap = function (next, code) {
+  // (a store into the VGA's window, made, or a load from it, about to be: `next` is the address, not where to go on)
+  if (code >= 0x2000000) { if (code >= 0x3000000) this.vgaMemRead(u32(next), code & 0xff); else this.vgaMemWrite(u32(next), code & 0xff); return; }
   this.cpu.eip.value = next;
   if (code === 0x300) { if (!this.irq && !this.keys.length) this.halted = true; return; }
   if (code >= 0x400) { const h = HOOK[code - 0x400]; if (h && h.call(this, next)) this.s16(0x110002, 1); return; }   // (taken: the code goes on at eip)
@@ -528,6 +536,12 @@ P.v86Port = function (port, size, isIn, val) {
     const r = this.o.vgaPort(port, size, isIn, c.eax.value >>> 0);
     if (r !== undefined) { if (isIn) { const m = size === 1 ? 0xff : size === 2 ? 0xffff : -1; c.eax.value = (c.eax.value & ~m) | (r & m); } return; }
   }
+  // (the PC's own VGA, before Windows: vgaPortIO)
+  if (port >= 0x3b0 && port <= 0x3df && this.vga && !this.o.vgaPort) {
+    const r = this.vgaPortIO(port, size, isIn, c.eax.value >>> 0);
+    if (isIn) { const m = size === 1 ? 0xff : size === 2 ? 0xffff : -1; c.eax.value = (c.eax.value & ~m) | (r & m); }
+    return;
+  }
   if (!isIn) {
     if (port === 0x70) this.cmosAt = c.eax.value & 0x7f;
     // the reset line: the keyboard controller's pulse (command FEh) or port 92h's bit 0, as the PC starts again
@@ -711,6 +725,102 @@ P.vgaMode3 = function () {
 };
 /** the cursor's place (CRTC 0Eh, 0Fh: its offset in the screen's cells) and shape (0Ah, 0Bh), as the BIOS sets them */
 P.vgaCursor = function (r, c) { const o = r * 80 + c; this.vgaOut(0x3d4, 0x0e); this.vgaOut(0x3d5, o >> 8); this.vgaOut(0x3d4, 0x0f); this.vgaOut(0x3d5, o & 0xff); };
+
+// ---------------------------------------------------------------- the PC's own VGA, before Windows
+// What runs on the PC before Windows takes it draws on the VGA itself: IO.SYS's start-up screen sets mode 13h, makes it
+// 320x400 unchained (four planes, each pixel's column picking its plane), loads its palette through the DAC and cycles
+// its bottom band from its timer handler; the logo is its own (the one built into the IO.SYS on the disk, Windows 98's
+// once Setup has put its own there) or C:\LOGO.SYS. The registers, the DAC, the four planes and the latches, as the
+// ports and the 64K window at A0000h reach them (the window's stores and loads come to the host, dyn.js's device
+// range); text mode stays the BIOS's B8000h cells. The page draws the screen from here, and the start-up screen Windows
+// keeps while it loads is this frame (win95.js bootLogoStart)
+const VGA_WIN = 0xa0000;
+const VGA_MODE13 = {
+  misc: 0x63, seq: [0x03, 0x01, 0x0f, 0x00, 0x0e],
+  crtc: [0x5f, 0x4f, 0x50, 0x82, 0x54, 0x80, 0xbf, 0x1f, 0x00, 0x41, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x9c, 0x8e, 0x8f, 0x28, 0x40, 0x96, 0xb9, 0xa3, 0xff],
+  attr: [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x41, 0x00, 0x0f, 0x00, 0x00],
+  gc: [0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x05, 0x0f, 0xff],
+};
+P.vgaInit = function () {
+  this.vga = { misc: 0x67, seq: new Uint8Array(8), seqI: 0, crtc: new Uint8Array(0x40), crtcI: 0, gc: new Uint8Array(16), gcI: 0, attr: new Uint8Array(0x20), attrI: 0, attrFF: 0,
+    dac: new Uint8Array(768), dacW: 0, dacR: 0, mask: 0xff, planes: [0, 1, 2, 3].map(() => new Uint8Array(0x10000)), latch: new Uint8Array(4), retrace: 0 };
+  this.vgaRange = [this.v86 + VGA_WIN, 0x10000];   // (dyn.js mmioRange: this machine's stores and loads there come to vgaMemWrite/vgaMemRead)
+};
+P.vgaPortIO = function (port, size, isIn, val) {
+  const g = this.vga;
+  if (!isIn) { for (let i = 0; i < size; i++) this.vgaPortOut(port + i, (val >>> (8 * i)) & 0xff); return undefined; }
+  let v = 0; for (let i = 0; i < size; i++) v |= this.vgaPortIn(port + i) << (8 * i);
+  return v >>> 0;
+};
+P.vgaPortOut = function (port, v) {
+  const g = this.vga;
+  switch (port) {
+    case 0x3c0: if (!g.attrFF) g.attrI = v & 0x3f; else g.attr[g.attrI & 0x1f] = v; g.attrFF ^= 1; break;
+    case 0x3c2: g.misc = v; break;
+    case 0x3c4: g.seqI = v & 7; break;
+    case 0x3c5: g.seq[g.seqI] = v; break;
+    case 0x3c6: g.mask = v; break;
+    case 0x3c7: g.dacR = (v * 3) % 768; break;
+    case 0x3c8: g.dacW = (v * 3) % 768; break;
+    case 0x3c9: g.dac[g.dacW] = v & 0x3f; g.dacW = (g.dacW + 1) % 768; this.dirty = true; break;
+    case 0x3ce: g.gcI = v & 15; break;
+    case 0x3cf: g.gc[g.gcI] = v; break;
+    case 0x3b4: case 0x3d4: g.crtcI = v & 0x3f; break;
+    case 0x3b5: case 0x3d5: g.crtc[g.crtcI] = v; this.dirty = true; break;
+  }
+};
+P.vgaPortIn = function (port) {
+  const g = this.vga;
+  switch (port) {
+    case 0x3c0: return g.attrI; case 0x3c1: return g.attr[g.attrI & 0x1f]; case 0x3cc: return g.misc;
+    case 0x3c4: return g.seqI; case 0x3c5: return g.seq[g.seqI]; case 0x3c6: return g.mask;
+    case 0x3c7: return 3; case 0x3c8: return (g.dacW / 3) | 0;
+    case 0x3c9: { const v = g.dac[g.dacR]; g.dacR = (g.dacR + 1) % 768; return v; }
+    case 0x3ce: return g.gcI; case 0x3cf: return g.gc[g.gcI];
+    case 0x3b4: case 0x3d4: return g.crtcI; case 0x3b5: case 0x3d5: return g.crtc[g.crtcI];
+    case 0x3ba: case 0x3da: g.attrFF = 0; return (g.retrace ^= 9);   // (the attribute flip-flop reset; retrace toggling, as the programs wait on it)
+  }
+  return 0xff;
+};
+/** a store into the 64K window, made: in the chained mode (13h) the window is the screen's bytes as they are; unchained,
+ *  each byte goes to the planes the map mask (sequencer 2) selects, or the latches with write mode 1 */
+P.vgaMemWrite = function (lin, size) {
+  const g = this.vga; if (!g) return; this.dirty = true;
+  if (g.seq[4] & 8) return;
+  const off = lin - this.v86 - VGA_WIN, mask = g.seq[2] & 0xf, wm = g.gc[5] & 3;
+  for (let i = 0; i < size; i++) {
+    const o = (off + i) & 0xffff, b = this.u8[lin + i];
+    for (let p = 0; p < 4; p++) if (mask & (1 << p)) g.planes[p][o] = wm === 1 ? g.latch[p] : b;
+  }
+};
+/** a load from the window, before it is made: unchained, the latches take every plane's byte and the load reads the
+ *  plane read map select (graphics 4) names */
+P.vgaMemRead = function (lin, size) {
+  const g = this.vga; if (!g || (g.seq[4] & 8)) return;
+  const off = lin - this.v86 - VGA_WIN, rp = g.gc[4] & 3;
+  for (let i = 0; i < size; i++) { const o = (off + i) & 0xffff; for (let p = 0; p < 4; p++) g.latch[p] = g.planes[p][o]; this.u8[lin + i] = g.planes[rp][o]; }
+};
+P.vgaMode13 = function (clear) {
+  const t = VGA_MODE13, g = this.vga;
+  g.misc = t.misc; t.seq.forEach((v, i) => { g.seq[i] = v; }); g.crtc.fill(0); t.crtc.forEach((v, i) => { g.crtc[i] = v; });
+  t.gc.forEach((v, i) => { g.gc[i] = v; }); t.attr.forEach((v, i) => { g.attr[i] = v; }); g.attrFF = 0;
+  if (clear) { this.u8.fill(0, this.v86 + VGA_WIN, this.v86 + VGA_WIN + 0x10000); for (const p of g.planes) p.fill(0); }
+  // (the VGA BIOS's default 256 colours begin with the EGA's 16; what a program draws with, it loads itself)
+  for (let i = 0; i < 256; i++) { const k = i < 16 ? [0, 1, 2, 3, 4, 5, 20, 7, 56, 57, 58, 59, 60, 61, 62, 63][i] : 0, c = (p, s) => (k >> p & 1) * 0x2a + (k >> s & 1) * 0x15; g.dac.set(i < 16 ? [c(2, 5), c(1, 4), c(0, 3)] : [0, 0, 0], 3 * i); }
+  this.s8(0x449, 0x13); this.s16(0x44a, 40); this.dirty = true;
+};
+/** the screen as the VGA scans it out, when it is in a graphics mode: { w, h, px (an index a pixel), pal ([r, g, b]
+ *  each, 8 bits) }; null in text mode */
+P.vgaFrame = function () {
+  const g = this.vga; if (!g || !(g.gc[6] & 1)) return null;
+  const c = g.crtc, vde = (c[0x12] | ((c[7] & 2) << 7) | ((c[7] & 0x40) << 3)) + 1, scan = (c[9] & 0x1f) + 1, dbl = c[9] & 0x80 ? 2 : 1;
+  const w = (c[1] + 1) * 4, h = Math.max(1, Math.floor(vde / (scan * dbl))), start = c[0x0c] << 8 | c[0x0d], chain4 = !!(g.seq[4] & 8);
+  const stride = chain4 ? c[0x13] * 8 : c[0x13] * 2, px = new Uint8Array(w * h), base = this.v86 + VGA_WIN;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++)
+    px[y * w + x] = chain4 ? this.u8[base + ((start * 4 + y * stride + x) & 0xffff)] : g.planes[x & 3][(start + y * stride + (x >> 2)) & 0xffff];
+  const pal = Array.from({ length: 256 }, (_, i) => { const m = g.mask & i, d = g.dac; return [d[3 * m] << 2 | d[3 * m] >> 4, d[3 * m + 1] << 2 | d[3 * m + 1] >> 4, d[3 * m + 2] << 2 | d[3 * m + 2] >> 4]; });
+  return { w, h, px, pal };
+};
 function video() {
   const ah = this.ah(), cols = 80, rows = 25;
   const cur = () => [this.m8(0x451), this.m8(0x450)];   // row, column
@@ -731,7 +841,11 @@ function video() {
   };
   this.dirty = true;
   switch (ah) {
-    case 0x00: this.vgaMode3(); scroll(0, 0, 0, rows - 1, cols - 1, 7, true); setCur(0, 0); this.s8(0x449, 3); return;
+    case 0x00:
+      // (mode 13h, 320x200 at 256 colours, on the PC's own VGA: IO.SYS's start-up screen starts there; bit 7, the
+      // window kept as it is)
+      if ((this.al() & 0x7f) === 0x13 && this.vga) { this.vgaMode13(!(this.al() & 0x80)); return; }
+      this.vgaMode3(); scroll(0, 0, 0, rows - 1, cols - 1, 7, true); setCur(0, 0); this.s8(0x449, 3); return;
     case 0x01: { const cx = this.r('cx'); this.s16(0x460, cx); this.vgaOut(0x3d4, 0x0a); this.vgaOut(0x3d5, cx >> 8); this.vgaOut(0x3d4, 0x0b); this.vgaOut(0x3d5, cx & 0xff); return; }
     case 0x02: setCur((this.cpu.edx.value >> 8) & 0xff, this.cpu.edx.value & 0xff); return;
     case 0x03: { const [r, c] = cur(); this.w('dx', (r << 8) | c); this.w('cx', this.m16(0x460)); return; }
@@ -740,7 +854,16 @@ function video() {
     case 0x08: { const [r, c] = cur(); this.w('ax', this.m16(cell(r, c))); return; }
     case 0x09: case 0x0a: { const [r, c] = cur(); let n = this.r('cx'); for (let i = 0; i < n && c + i < cols * rows; i++) { const a = cell(r, c) + i * 2; this.s8(a, this.al()); if (ah === 9) this.s8(a + 1, this.cpu.ebx.value & 0xff); } return; }
     case 0x0e: tty(this.al()); return;
-    case 0x0f: this.w('ax', (cols << 8) | 3); this.cpu.ebx.value &= ~0xff00; return;
+    case 0x0f: { const mode = this.m8(0x449) === 0x13 ? 0x13 : 3; this.w('ax', ((mode === 0x13 ? 40 : cols) << 8) | mode); this.cpu.ebx.value &= ~0xff00; return; }
+    case 0x10: {   // the DAC's registers: 10h one set (BX, DH CH CL), 12h a block set (BX first, CX many, ES:DX), 15h one read, 17h a block read
+      const g = this.vga, al = this.al(); if (!g) return;
+      const bx = this.r('bx'), cx = this.r('cx');
+      if (al === 0x10) { g.dac.set([(this.cpu.edx.value >> 8) & 0x3f, (cx >> 8) & 0x3f, cx & 0x3f], 3 * (bx & 0xff)); this.dirty = true; }
+      else if (al === 0x12) { const s = this.lin(this.cpu.es.value, this.r('dx')) - this.v86; for (let i = 0; i < cx * 3 && 3 * bx + i < 768; i++) g.dac[3 * bx + i] = this.m8(s + i) & 0x3f; this.dirty = true; }
+      else if (al === 0x15) { const d = g.dac, i = 3 * (bx & 0xff); this.cpu.edx.value = (this.cpu.edx.value & ~0xff00) | (d[i] << 8); this.w('cx', d[i + 1] << 8 | d[i + 2]); }
+      else if (al === 0x17) { const s = this.lin(this.cpu.es.value, this.r('dx')) - this.v86; for (let i = 0; i < cx * 3 && 3 * bx + i < 768; i++) this.s8(s + i, g.dac[3 * bx + i]); }
+      return;
+    }
     case 0x12: if ((this.cpu.ebx.value & 0xff) === 0x10) this.w('bx', 0x0003); return;   // EGA information: colour, 256K
     case 0x1a: if (this.al() === 0) { this.setAL(0x1a); this.w('bx', 0x0008); } return;   // the display: VGA with a colour monitor
     case 0x13: { const s = this.lin(this.cpu.es.value, this.r('bp')) - this.v86, n = this.r('cx'), dx = this.r('dx'); setCur(dx >> 8, dx & 0xff); for (let i = 0; i < n; i++) tty(this.m8(s + i)); return; }
@@ -983,7 +1106,7 @@ class FatView {
   /** the BPB's numbers, for DOS's device parameters and drive parameter block */
   bpb() { const L = this.layout(); return L; }
 }
-M.FatView = FatView;
+M.FatView = FatView; M.V86Machine = V86Machine;
 // A VM's local disks (o.disks: a letter's FatView), as IFSMgr answers for Windows' own drives in a VM: the drive is
 // local and fixed to the IOCTLs that ask (4408h, 4409h), its device parameters, locks and media ID are the generic
 // IOCTL's (440Dh), its drive parameter block is 7302h's, and its sectors are read by INT 25h and 7305h, from the view;

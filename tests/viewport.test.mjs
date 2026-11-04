@@ -41,8 +41,9 @@ const cut = (w, a, b, keep = true) => { const i = w.indexOf(a); assert.ok(i >= 0
   const S = new Function('innerWidth', 'innerHeight', 'ZOOM', 'mkc', 'resize', 'setTimeout', `let sysApp = null;\n${page}`);
   const canvas = () => ({ getContext: () => ({ createImageData: (x, y) => ({ data: new Uint8ClampedArray(4 * x * y) }) }) });
   const env = (iw, ih) => S(iw, ih, 1, canvas, () => resizes++, f => f());
-  // the mode is the viewport itself 640x480 at the least, 1024 wide and 960 high at most (the driver's megabyte)
-  assert.deepEqual(env(1024, 768).mode(), [1024, 768]); assert.deepEqual(env(1003, 777).mode(), [1003, 777]); assert.deepEqual(env(100, 100).mode(), [640, 480]); assert.deepEqual(env(3000, 2000).mode(), [1024, 960]);
+  // the mode is the viewport itself 640x480 at the least, 1016 wide (Windows 98 Setup's billboard text is sized for
+  // below 1024) and 960 high at most (the driver's megabyte)
+  assert.deepEqual(env(1024, 768).mode(), [1016, 768]); assert.deepEqual(env(1003, 777).mode(), [1003, 777]); assert.deepEqual(env(100, 100).mode(), [640, 480]); assert.deepEqual(env(3000, 2000).mode(), [1016, 960]);
   const settle = async () => { for (let i = 0; i < 8; i++) await new Promise(f => setImmediate(f)); };
   // the largest mode the viewport holds, asked for once; a thread holding USER, the machine answers null and makes
   // the change when none does (its 'mode' message), the canvases following then
@@ -62,9 +63,9 @@ const cut = (w, a, b, keep = true) => { const i = w.indexOf(a); assert.ok(i >= 0
   const w = src('win95.js');
   const B = (bpp, ...a) => new Function('innerWidth', 'innerHeight', 'ZOOM', `const bootBpp = () => ${bpp};\n${cut(w, 'const nativeMode = ', '\n')}\n${cut(w, 'function bootSize() {', '\n}\n')}\nreturn bootSize();`)(...a);
   assert.deepEqual(B(16, 913, 765, 1), [913, 765]);
-  assert.deepEqual(B(16, 1280, 1000, 1), [1024, 960]);
+  assert.deepEqual(B(16, 1280, 1000, 1), [1016, 960]);
   assert.deepEqual(B(16, 700, 520, 1), [700, 520]);
-  assert.deepEqual(B(32, 1280, 1000, 1), [1024, 960]);
+  assert.deepEqual(B(32, 1280, 1000, 1), [1016, 960]);
 }
 // the app's window is the monitor: the page asks the host to size the window's content to the system machine's mode
 // as the machine starts and whenever its screen size is set; the preload carries the request, the main process sizes

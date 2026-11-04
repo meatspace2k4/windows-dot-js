@@ -47,14 +47,14 @@ assert.ok(!/w95\.shutdown|cleanStart/.test(w));
   const M = new Function('W', 'self', 'fs', 'post', `return class {\n${src.slice(i, src.indexOf('\n  }\n', j) + 4)}\n}`);
   const run = (items, runonce) => {
     const started = [], spawned = [], exits = [];
-    const W = { regVals: () => items, regGet: () => undefined }, self = { W95SYSTEM: { programs: runonce ? { 'RUNONCE.EXE': {} } : {} } }, fs = { exists: f => f === 'C:\\WINDOWS\\RUNONCE.EXE' };
+    const W = { regVals: () => items, regGet: () => undefined }, self = { W95SYSTEM: { programs: runonce ? { 'RUNONCE.EXE': {} } : {} } }, fs = { exists: f => f === 'C:\\WINDOWS\\SYSTEM\\RUNONCE.EXE' || f === 'C:\\WINDOWS\\RUNONCE.EXE' };   // (a stray copy in the Windows folder is never the one run)
     const m = new (M(W, self, fs, () => {}))(); let pc = null;
     Object.assign(m, { alive: true, proc: { trapped: null, init16() { exits.push('init16'); }, startTask16(n) { started.push(n); return 0x1234; } }, spawnProgram(f) { spawned.push(f); return (pc = { onExit: c => exits.push(c) }); }, exited: (c, why) => exits.push(['exited', why]) });
     const r = m.startSystemTask();
     return { r, started, spawned, exits, pc, m };
   };
   const a = run([['programs on the start menu', {}]], true);
-  assert.deepEqual([a.r, a.spawned, a.started, a.exits], [true, ['C:\\WINDOWS\\RUNONCE.EXE'], [], ['init16']]);
+  assert.deepEqual([a.r, a.spawned, a.started, a.exits], [true, ['C:\\WINDOWS\\SYSTEM\\RUNONCE.EXE'], [], ['init16']]);
   a.pc.onExit(0); assert.deepEqual(a.exits, ['init16', 0]); assert.equal(a.m.sysPending, true); assert.deepEqual(a.started, []);   // (RUNONCE ended: MSGSRV32 starts from the step loop)
   assert.equal(a.m.startMsgsrv(), true); assert.deepEqual(a.started, ['MSGSRV32.EXE']);
   const b = run([], true); assert.deepEqual([b.r, b.spawned, b.started], [true, [], ['MSGSRV32.EXE']]);

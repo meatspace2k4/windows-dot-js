@@ -1170,6 +1170,11 @@ function dosMachine(program, args, o = {}) {
     files = ['IO.SYS', 'MSDOS.SYS'].filter(n => fromC(n)).map(n => ({ name: n, data: fromC(n), attr: 7 }));
     const add = p => { const d = fromC(p); if (d && !files.some(f => (f.path || f.name).toUpperCase() === p.toUpperCase())) files.push({ path: p, data: d }); };
     add('COMMAND.COM'); add('CONFIG.SYS'); add('AUTOEXEC.BAT'); add('WINDOWS\\IFSHLP.SYS'); add('WINDOWS\\SYSTEM.DAT'); add('WINDOWS\\USER.DAT'); add('WINDOWS\\WIN.COM');
+    // (the drivers IO.SYS loads by itself, as MSDOS.SYS's [Options] and its own list have them: DBLBUFF.SYS for
+    // DoubleBuffer, which Windows 98 Setup sets, and SETVER.EXE; left off, Windows 98's IO.SYS said DBLBUFF.SYS was missing)
+    const opts = W95FS.decode(fromC('MSDOS.SYS') || new Uint8Array(0));
+    if (/^\s*DoubleBuffer\s*=\s*[12]/im.test(opts)) add('WINDOWS\\DBLBUFF.SYS');
+    add('WINDOWS\\SETVER.EXE');
     // (the drivers CONFIG.SYS loads, by their paths on C:)
     for (const l of W95FS.decode(fromC('CONFIG.SYS') || new Uint8Array(0)).split(/\r?\n/)) {
       const r = /^\s*(?:DEVICE|DEVICEHIGH|INSTALL|INSTALLHIGH)\s*=\s*(?:\/\S+\s+)*C:\\(\S+)/i.exec(l); if (r) add(r[1]);
@@ -1277,6 +1282,7 @@ function pcBoot() {
   if (pc) clearInterval(pc.timer);
   if (!window.W95V86 || !window.W95DOS) { pc = null; screen = 'black'; dirty(); return; }
   if (!fs.exists(join(WINDIR, 'SYSTEM.DAT'))) flushRegistry();   // (a disk made before Windows wrote its registry's files)
+  if (diskSystem() === 'win95') strayCopies();
   const m = dosMachine(null, null, { pc: true, floppy: pcFloppy, windows: path => pcWindows(path), reset: () => setTimeout(pcBoot, 0) });
   pc = { m, timer: 0, failed: null };
   if (!dosFont) { const d = window.W95SYSTEM && W95SYSTEM.dos && W95SYSTEM.dos['EGA.CPI']; if (d) dosFont = cpiFont(b64bytes(d), 437, 14); }
@@ -2591,6 +2597,7 @@ function runDialog() {
 }
 function runCommand(v) {
   if (!v) return;
+  if (/^braid$/i.test(v.trim()) && braid) return braid.window();   // (ring α's window: the line as a slider, braid-page.js)
   let cmd = v, arg = '';
   const q = /^"([^"]*)"\s*(.*)$/.exec(v);
   if (q) { cmd = q[1]; arg = q[2]; } else if (!fs.exists(v)) { const m = /^(\S+)\s+(.*)$/.exec(v); if (m) { cmd = m[1]; arg = m[2]; } }
@@ -3530,8 +3537,10 @@ const nativeApps = new Set();
 // EXPLORER.EXE's screen is shown on); 640x480 at the least, 1024 on a side at most (the display driver's longest scan
 // line and its memory count: ne16.js displaySlot). A viewport larger than that gets a 1024-wide or 1024-tall screen, centered
 // (the custom mode has the driver's 1024-byte scan lines in the 1 MB its memory count finds, so 960 lines at most: a
-// mode of a full megabyte, 1024 by 1024, the driver refuses and falls back from)
-const nativeMode = () => [Math.max(640, Math.min(1024, Math.floor(innerWidth / ZOOM))), Math.max(480, Math.min(960, Math.floor(innerHeight / ZOOM)))];
+// mode of a full megabyte, 1024 by 1024, the driver refuses and falls back from). The width stops at 1016: Windows 98
+// Setup sizes its billboard's text by the screen's width (W98SETUP 3:2b91, 14 pt at 1024 and wider, 8 pt below), and
+// its 14 pt Arial drew every step heavy; an odd width (1023) drew the screen skewed
+const nativeMode = () => [Math.max(640, Math.min(1016, Math.floor(innerWidth / ZOOM))), Math.max(480, Math.min(960, Math.floor(innerHeight / ZOOM)))];
 const sharedNow = () => (window.W95HOST && window.W95HOST.shared && window.W95Shared) || null;
 // the mode the system's machine boots in, as Display Properties leaves it for the display driver: Display\Settings
 // under the current configuration (Resolution "w,h", BitsPerPixel), read by the display driver as it is enabled; the one
@@ -3636,6 +3645,19 @@ function sysDisk(gui) {
     unlock('C:\\MSDOS.SYS'); fs.writeFile('C:\\MSDOS.SYS', W95FS.encode(`${own}\r\n${pad.join('\r\n')}\r\n`)); fs.setAttrs('C:\\MSDOS.SYS', HSR);
   }
 }
+/** a copy this page put in the Windows folder before of a program Setup puts in SYSTEM (`names`), the bundle's own bytes:
+ *  removed. Windows 98's MSGSRV32 runs "runonce.exe -m", found in the Windows folder before SYSTEM, and Windows 95's
+ *  RUNONCE ran on Windows 98 (its "Windows 95 Setup" over Setup's first-start items). At the page's start and at each
+ *  boot of the PC (Setup's restart, a moment's disk travelled to) */
+function strayCopies(names = ['SPOOL32.EXE', 'SYSTRAY.EXE', 'MPREXE.EXE', 'RUNONCE.EXE']) {
+  const S = window.W95SYSTEM || {};
+  for (const name of names) {
+    const d = (S.programs || {})[name], stray = join(WINDIR, name); if (!d) continue;
+    let cur = null; try { cur = fs.readFile(stray); } catch (_) { /* none */ }
+    const want = cur && b64bytes(d.file);
+    if (cur && cur.length === want.length && cur.every((b, i) => b === want[i])) { fs.setAttrs(stray, 0); fs.unlink(stray); }
+  }
+}
 function installPrograms() {
   const stub = exeStub(), S = window.W95SYSTEM || {};
   const OURS = new Set(['CLAUDE.EXE', 'SESSTRAY.EXE', 'DBWIN.EXE']);   // (a program of this project's: its file is the one its translation is of, kept current)
@@ -3645,8 +3667,11 @@ function installPrograms() {
     if (cur && !(cur.length === stub.length && cur.every((b, i) => b === stub[i])) && !(want && !(cur.length === want.length && cur.every((b, i) => b === want[i])))) return;
     fs.writeFile(path, want || b64bytes(b64));
   };
-  const IN_SYSTEM = new Set(['SPOOL32.EXE', 'SYSTRAY.EXE', 'MPREXE.EXE']);   // the programs Setup puts in SYSTEM rather than the Windows folder (COPY.INF: LDID 11; MPR starts MPREXE from there)
+  // the programs Setup puts in SYSTEM rather than the Windows folder (COPY.INF: LDID 11; MPR starts MPREXE from there;
+  // SETUPC.INF's [winother.files], RUNONCE.EXE)
+  const IN_SYSTEM = new Set(['SPOOL32.EXE', 'SYSTRAY.EXE', 'MPREXE.EXE', 'RUNONCE.EXE']);
   for (const [name, d] of Object.entries(S.programs || {})) if (!d.onCD) put(join(WINDIR, IN_SYSTEM.has(name) ? 'SYSTEM' : '', name), d.file);   // (one the CD runs from the disc: Hover!)
+  strayCopies(IN_SYSTEM);
   // the system modules the programs run on, in SYSTEM as Setup puts them (SHELL32 reads its icons from its file)
   for (const [name, d] of Object.entries({ ...S.dlls, ...S.net, ...S.drivers })) if (!d.onCD) put(join(WINDIR, 'SYSTEM', name), d.file);
   for (const d of Object.values(S.ne || {})) if (d.fileName && !d.onDisk) put(join(WINDIR, d.fileName === 'PROGMAN.EXE' ? '' : 'SYSTEM', d.fileName), d.file);   // (a printer driver: as the Add Printer wizard copies it; Program Manager in the Windows folder, COPY.INF)
@@ -3846,7 +3871,7 @@ class RemoteApp extends NativeApp {
     if (!this.kids) { this.kids = new Map(); this.kidsAsked = new Set(); }
     if (!this.kidsAsked.has(hwnd)) {
       this.kidsAsked.add(hwnd);
-      this.cmd('children', [hwnd]).then(r => { this.kidsAsked.delete(hwnd); if (r) this.kids.set(hwnd, r); else this.kids.delete(hwnd); });
+      this.cmd('children', [hwnd]).then(r => { if (!this.kids) return; this.kidsAsked.delete(hwnd); if (r) this.kids.set(hwnd, r); else this.kids.delete(hwnd); });   // (no map: the answer came to a machine travelled meanwhile, braid-page.js)
     }
     return this.kids.get(hwnd) || [];
   }
@@ -4117,6 +4142,7 @@ class RemoteApp extends NativeApp {
     if (this.mprReady) { this.mprReady(false); this.mprReady = null; }
     setTimeout(() => this.worker.terminate(), 0);
     emit('program.exit', { path: this.path, code, ...(why ? { why } : {}) });
+    if (why && this.system) console.error(`[system] ${why}`);
     if (why) msgBox(basename(this.path), `This program has performed an illegal operation and will be shut down.\n\n${why}`, 'error', ['OK'], null, { noTask: false, modal: false });
     dirty();
     if (own && this.system && !why) systemEnded(code);
@@ -4187,11 +4213,21 @@ function startSystem() {
   })().finally(() => { sysStarting = null; }));
 }
 // The start-up screen while the system's machine boots, as IO.SYS shows it until Windows' display driver takes the
-// screen: the CD's LOGO.SYS (320x400, 8 bits, shown at 4:3), its bottom band (palette entries 236-255) rotating. It
-// stays until the machine has a window on screen (Setup's, the logon's, the shell's)
+// screen, its bottom band (palette entries 236-255) rotating. After the PC's own boot it is what IO.SYS drew on the
+// VGA as Windows took over (v86.js vgaFrame): the logo of the IO.SYS on the disk, Windows 98's once Setup has put its
+// own there, or C:\LOGO.SYS; none when IO.SYS showed none (MSDOS.SYS Logo=0). A machine started with no PC boot
+// before it shows the CD's LOGO.SYS (320x400, 8 bits, shown at 4:3). It stays until the machine has a window on
+// screen (Setup's, the logon's, the shell's)
 const bootLogo = { on: false, img: null, pal: null, px: null, timer: 0 };
 function bootLogoStart() {
-  const s = (window.W95SYSTEM || {}).logo; if (!s || window.W95SYSTEMVM === false) return;
+  if (window.W95SYSTEMVM === false) return;
+  if (pc && pc.m && pc.m.vga) {
+    const fr = pc.m.vgaFrame(); if (!fr) return;
+    Object.assign(bootLogo, { px: fr.px, pal: fr.pal, w: fr.w, h: fr.h, cv: mkc(fr.w, fr.h) }); bootLogo.img = bootLogo.cv.getContext('2d').createImageData(fr.w, fr.h);
+    bootLogo.fromPc = true;
+  } else if (bootLogo.fromPc) bootLogo.px = null;
+  const s = (window.W95SYSTEM || {}).logo;
+  if (!bootLogo.px && !s) return;
   if (!bootLogo.px) {
     const b = b64bytes(s), dv = new DataView(b.buffer), off = dv.getUint32(10, true), w = dv.getInt32(18, true), h = dv.getInt32(22, true);
     bootLogo.pal = Array.from({ length: 256 }, (_, i) => [b[54 + 4 * i + 2], b[54 + 4 * i + 1], b[54 + 4 * i]]);
@@ -4204,13 +4240,20 @@ function bootLogoStart() {
 }
 function bootLogoEnd() { if (!bootLogo.on) return; bootLogo.on = false; clearInterval(bootLogo.timer); dirty(); }
 function drawBootLogo() {
-  const L = bootLogo, d = L.img.data, step = Math.floor((performance.now() - L.t0) / 60) % 20;
-  const pal = L.pal.map((c, i) => (i >= 236 ? L.pal[236 + (i - 236 + step) % 20] : c));
-  for (let i = 0; i < L.px.length; i++) { const c = pal[L.px[i]]; d[4 * i] = c[0]; d[4 * i + 1] = c[1]; d[4 * i + 2] = c[2]; d[4 * i + 3] = 255; }
-  L.cv.getContext('2d').putImageData(L.img, 0, 0);
+  const L = bootLogo, step = Math.floor((performance.now() - L.t0) / 60) % 20;
+  drawIndexed(L.px, L.w, L.h, L.pal.map((c, i) => (i >= 236 ? L.pal[236 + (i - 236 + step) % 20] : c)), L);
+}
+/** an indexed picture (`px` a palette index a pixel, `pal` [r, g, b] each) on the whole screen at 4:3, black around it,
+ *  as a monitor shows the VGA's 320-wide modes; `into` keeps its canvas and image between frames */
+const idxCanvas = {};
+function drawIndexed(px, w, h, pal, into = idxCanvas) {
+  if (!into.cv || into.cv.width !== w || into.cv.height !== h) { into.cv = mkc(w, h); into.img = into.cv.getContext('2d').createImageData(w, h); }
+  const d = into.img.data;
+  for (let i = 0; i < w * h; i++) { const c = pal[px[i]]; d[4 * i] = c[0]; d[4 * i + 1] = c[1]; d[4 * i + 2] = c[2]; d[4 * i + 3] = 255; }
+  into.cv.getContext('2d').putImageData(into.img, 0, 0);
   fill(0, 0, W, H, '#000');
   const s = Math.min(W / 4, H / 3), dw = Math.round(s * 4), dh = Math.round(s * 3);
-  ctx.imageSmoothingEnabled = false; ctx.drawImage(L.cv, (W - dw) >> 1, (H - dh) >> 1, dw, dh);
+  ctx.imageSmoothingEnabled = false; ctx.drawImage(into.cv, (W - dw) >> 1, (H - dh) >> 1, dw, dh);
 }
 /** at boot: once the desktop is drawn and the page has loaded */
 function systemBootLater() {
@@ -4828,7 +4871,7 @@ function render() {
   rafPending = false;
   const txt = msgApp && msgApp.txt;
   if (txt) { drawTextScreen(txt); return; }
-  if (screen === 'dos' && pc) { drawTextScreen(pcText()); setTimeout(dirty, 250); return; }
+  if (screen === 'dos' && pc) { const fr = pc.m.vgaFrame && pc.m.vgaFrame(); if (fr) drawIndexed(fr.px, fr.w, fr.h, fr.pal); else drawTextScreen(pcText()); setTimeout(dirty, fr ? 60 : 250); return; }
   if (bootLogo.on && screen === 'desktop') { drawBootLogo(); return; }
   if (screen !== 'desktop') {
     fill(0, 0, W, H, '#000');
@@ -4844,13 +4887,13 @@ function render() {
   // page's own desktop and taskbar
   const sa = monApp();
   if (!!sa !== monitor) resize();
-  if (sa) sa.scanToCanvas(); else drawDesktop();
+  // (the monitor shows the system's machine; without it there is no picture, only the fault that ended it: the page
+  // draws no desktop or taskbar of its own)
+  if (sa) sa.scanToCanvas(); else fill(0, 0, W, H, '#000');
   // a screen saver running full screen on the machine is topmost: the shell's own windows, menus and tips stay under it
   if (sa && sa.snap && sa.snap.list.some(n => /^WindowsScreenSaverClass$/i.test(n.cls || '') && !n.preview)) { const na = pointerApp(mouse.x, mouse.y); if (na) drawSprite(na); return; }
   const m = modal();
-  if (!sa && !tbar.ontop) drawTaskbar();
   for (const w of windows) if (!(sa && w.app === sa && !w.win32) && !w.min && !(m && m.dim && w === m)) w.draw();
-  if (!sa && tbar.ontop) drawTaskbar();
   if (m && m.dim) { ctx.fillStyle = PAT.dim; ctx.fillRect(0, 0, W, H); m.draw(); }
   for (const mm of menus) drawMenu(mm);
   if (drag) xorFrame(drag.r, drag.t);
@@ -5692,7 +5735,11 @@ async function osCatchUp() {
   for (const [id, v] of S.world()) osApply(id, v, local);
 }
 /** another machine's intent made here: the same call, on a thread of its own (worker.js 'intent'), as it is made there */
-function osIntent(i) { emit('sync.intent', { key: i.key }); return sysApp && sysApp.alive ? sysApp.cmd('intent', [i]) : null; }
+function osIntent(i) {
+  emit('sync.intent', { key: i.key });
+  if (i.kind === 'braid') return braid ? braid.remote(i) : null;   // (another person's mark or travel on the shared line: braid-page.js remote)
+  return sysApp && sysApp.alive ? sysApp.cmd('intent', [i]) : null;
+}
 if (sharedNow()) {
   sharedNow().onObj((id, v, by) => { if (osCaught) osApply(id, v, null, by); });   // (by: the machine whose person did it)
   sharedNow().onIntent(i => { if (osCaught) osIntent(i); });
@@ -5996,7 +6043,7 @@ const script = {
   open(path) { openPath(path); dirty(); },
   saver(path) { startFullSaver(path); },
   stopSaver() { if (!fullSaver || !fullSaver.pid) return false; stopSaverProcess(fullSaver); fullSaver = null; return true; },
-  screen() { return { width: W, height: H, taskbar: barTop() }; },
+  screen() { return { width: W, height: H, taskbar: barTop(), screen }; },   // (screen: what the 'screen' event carries, readable before waiting on it)
   screenshot() { render(); return cv.toDataURL('image/png'); },
   // the machine the saver runs on, as its last frame reported it (the saver is a process of the system's machine, so
   // the counts are the machine's: its timers, its GL frames, its guest time; the bench takes differences while it runs)
@@ -6020,206 +6067,44 @@ let ccdApi = null;
 const WORKER_SCRIPTS = new Set(['claude-app.js', 'session-dll.js', 'session-tray.js', 'dbwin.js', 'shell32.js', 'osclass.js', 'saver-runtime.js', 'gl.js', 'sound.js']);
 // the page's scripts that only define things, so can be loaded again (win95.js loaded twice ran two shells on one screen)
 const PAGE_SCRIPTS = new Set(['ccd.js']);
-// ---------------------------------------------------------------- ring α on the page (braid.js): the machines' moments, with the disk and the registry beside them
-// A moment is taken of every machine running (each worker's cmd 'mark': its memory, registers and objects), then of
-// the page's file system (the volumes' trees, as a graph of its own) and the page's registry; rewinding puts each
-// back, and writes the disk's store what the tree has again for every node written since, so the disk on this
-// computer is the moment's too. The moments live in memory: a reload of the page is the end of them.
-const braidMoments = new Map(), diskTouched = new Set(); let braidBuild = null;
-const braidBuildSig = () => braidBuild || (braidBuild = W95Braid.buildSignature(f => fetch(f, { cache: 'no-store' }).then(r => r.text())).then(sig => { for (const a of machineWorkers) a.cmd('build', [sig]); return sig; }));
-/** the volumes' stores, each wrapped once to note the node ids written (what a rewind writes back); the wrap is the
- *  volume's `store` from then on, so a moment's graph keeps it too */
-function braidWatchStores() {
-  for (const v of fs.vols.values()) {
-    const st = v.store; if (!st || st.under) continue;
-    const rec = sid => diskTouched.add(sid);
-    v.store = { ...st, under: st, node: r => { rec(r.sid); return st.node(r); }, remove: sid => { rec(sid); return st.remove(sid); }, data: (sid, off, b) => { rec(sid); return st.data(sid, off, b); }, size: (sid, n) => { rec(sid); return st.size(sid, n); } };
-  }
-}
-const braidOpaque = () => { const o = new Set([fs.uncBackend]); for (const v of [...fs.vols.values(), ...fs.uncs.values()]) { if (v.disc) o.add(v.disc); if (v.remote) o.add(v.remote); if (v.store) o.add(v.store); } o.delete(null); o.delete(undefined); return o; };
-// the shell's own state: its windows (the ones it draws itself: a fault's box, a message box, a folder, and the
-// mirrors of the machines'), the active one, the modals, the menus, a capture or drag in progress, the clipboard: a
-// graph of its own in the moment, put back by assignment, so the screen after a rewind is the moment's screen. A
-// machine's page-side object (its worker, the calls in flight, its rings) is the host's live thing, left alone
-const braidShell = () => ({ windows, tasks, modals, active, menus, menuSrc, cap, drag, ghost, screen, textClip, clipOwner, msgApp, cascadeN });
-const braidShellSkip = (o, k) => (o && o.worker instanceof Worker && /^(worker|calls|nextCall|started|ring|rpcSab|lanRing|mem|modeBusy|modeDone|alive|lanStation|lanDetach|kids|kidsAsked|cv|cx|img|d32|ov|ox|oimg|o32|pal|scr|snap)$/.test(k)) || (o === fs && k === 'subs');   // (a machine's page-side canvases and image data are drawing surfaces, drawn again from its memory and frames)
-const braid = {
-  /** a moment of everything, by name: resolves with what was taken */
-  async mark(name = 'moment') {
-    name = String(name); const build = await braidBuildSig(); braidWatchStores();
-    const machines = {};
-    for (const a of [...machineWorkers]) if (a.alive) { const r = await a.cmd('mark', [name]); if (!r) throw new Error(`the machine ${a.system ? 'system' : a.path} took no moment (inside a call: try again)`); machines[a.system ? 'system' : a.path] = { app: a, info: r }; }
-    closeMenus();
-    const graph = W95Braid.takeGraph([fs, braidShell()], { opaque: braidOpaque(), skip: braidShellSkip });
-    const s = W95Braid.make({ disk: { kind: 'graph', graph }, registry: { kind: 'json', value: W95Win32.regDump() } }, { name, build, now: Date.now() });
-    s.machines = machines; s.gen = braidLine.gen; braidMoments.set(name, s);
-    // (the journal since the last moment closed into a segment from it to this one)
-    if (braidJ.from !== null) braidJ.segments.push({ from: braidJ.from, fromSum: braidJ.fromSum, to: name, toSum: s.sum, actions: braidJ.actions.slice(), at0: braidJ.at0, ms: Date.now() - (braidJ.t0 || Date.now()), gen: braidLine.gen });
-    braidJ.from = name; braidJ.fromSum = s.sum; braidJ.actions = []; braidJ.at0 = machines.system ? machines.system.info.now : 0; braidJ.t0 = Date.now();
-    return { ...W95Braid.describe(s), machines: Object.fromEntries(Object.entries(machines).map(([k, m]) => [k, m.info])) };
+// ---------------------------------------------------------------- ring α on the page (braid.js, braid-page.js): the machines' moments with the disk, the registry and the shell beside them, on one line
+// What of the shell Braid needs: the machines, the file system, the shell's own state (the windows it draws itself: a
+// fault's box, a message box, a folder, the mirrors of the machines'; the active one, the modals, the menus, a
+// capture or drag in progress, the clipboard), given as one object and put back by assignment, so the screen after
+// travel is the moment's screen; the dialogs and drawing for the Braid window; the session, for the line shared with
+// the other people in it
+const braidUi = () => ({
+  W95Win32, fs, emit, dirty, closeMenus, dialog, closeWin, msgBox, activate, script,
+  machines: () => [...machineWorkers], sysApp: () => sysApp, startSystem, windows: () => windows, shared: () => sharedNow(),
+  shell: () => ({ windows, tasks, modals, active, menus, menuSrc, cap, drag, ghost, screen, textClip, clipOwner, msgApp, cascadeN }),
+  setShell: sh => { ({ windows, tasks, modals, active, menus, menuSrc, cap, drag, ghost, screen, textClip, clipOwner, msgApp, cascadeN } = sh); },
+  // a machine's window the page is told of (a moment arrived at: its windows as the record has them, braid-page.js
+  // arrive), placed as a frame's list places one, with no focus given to the machine; one the page has by that key
+  // takes the new place instead
+  adoptNative: (app, n, o = {}) => {
+    const key = n.key || n.hwnd; let w = app.wins.get(key);
+    if (w) w.set(n); else { w = new NativeWin(app, n); app.wins.set(key, w); windows.push(w); if (!w.noTask) tasks.push(w); }
+    Object.assign(w, o); if (o.noTask !== undefined && !o.noTask && !tasks.includes(w)) tasks.push(w);
+    windows = windows.filter(v => v !== w); windows.push(w); dirty(); return w;
   },
-  /** everything put back at the moment: the machines first (each stops touching the disk's later state), then the
-   *  page's file system and registry, then the disk's store */
-  async rewind(name, o = {}) {
-    const s = braidMoments.get(String(name)); if (!s) throw new Error(`no moment ${name}`);
-    // (another build's moment: refused, unless forced: the code changed under the machine is what a rewind is for,
-    // and the state's shape is the same until braid.js's VERSION says otherwise; the fork records the build it came from)
-    const why = W95Braid.refuse(s, await braidBuildSig()); if (why && !(o.force && /build/.test(why))) throw new Error(why);
-    const out = {};
-    for (const [k, m] of Object.entries(s.machines)) { if (!m.app.alive) { out[k] = 'gone'; continue; } out[k] = await m.app.cmd('rewind', [s.name]); if (!out[k]) throw new Error(`the machine ${k} refused the moment (see the console)`); m.app.kids = null; }
-    closeMenus();
-    const [, sh] = W95Braid.restoreGraph(s.sections.disk.graph);
-    ({ windows, tasks, modals, active, menus, menuSrc, cap, drag, ghost, screen, textClip, clipOwner, msgApp, cascadeN } = sh);
-    W95Win32.regLoad(s.sections.registry.value, true);
-    const nodes = new Map(), stores = [];
-    for (const v of fs.vols.values()) if (v.store && v.store.under) { stores.push(v.store.under); (function walk(n) { if (n.sid !== undefined) nodes.set(n.sid, n); if (n.dir) for (const k of n.kids.values()) walk(k); })(v.root); }
-    let wrote = 0, removed = 0;
-    for (const sid of [...diskTouched].sort((a, b) => a - b)) {
-      const n = nodes.get(sid);
-      if (!n) { for (const st of stores) st.remove(sid); removed++; continue; }
-      const st = n.vol.store.under;
-      st.node({ sid, parent: n.parent ? fs.sidOf(n.parent) : -1, name: n.name, short: n.short, dir: n.dir, ord: n.ord || 0, attrs: n.attrs, ctime: n.ctime, mtime: n.mtime, atime: n.atime });
-      if (!n.dir) { st.size(sid, n.size); if (n.size) st.data(sid, 0, n.buf.slice(0, n.size)); }
-      wrote++;
-    }
-    diskTouched.clear(); fs.version++; dirty();
-    // (a rewind forks the line: the new generation grows from the moment, in the generation the moment was taken in;
-    // the one left runs no further, its faults and moments stay on the line)
-    braidLine.gen++; braidLine.forks.push({ gen: braidLine.gen, from: s.name, fromGen: s.gen, at: Date.now(), now: s.now, left: braidLine.gen - 1 });
-    braidJ.from = s.name; braidJ.fromSum = s.sum; braidJ.actions = []; braidJ.at0 = s.machines.system ? s.machines.system.info.now : 0; braidJ.t0 = Date.now();
-    emit('braid.rewound', { gen: braidLine.gen, moment: s.name, fromGen: s.gen });
-    return { ...out, gen: braidLine.gen, disk: { wrote, removed } };
-  },
-  moments: () => [...braidMoments.values()].map(s => ({ ...W95Braid.describe(s), machines: Object.fromEntries(Object.entries(s.machines).map(([k, m]) => [k, m.info])) })),
-  forget(name) { const s = braidMoments.get(String(name)); if (!s) return false; for (const m of Object.values(s.machines)) if (m.app.alive) m.app.cmd('forget', [s.name]); return braidMoments.delete(String(name)); },
-  /** the system's machine between two moments (or a moment and now): what looks like a machine that will not come back */
-  lint: (a, b) => sysApp && sysApp.alive ? sysApp.cmd('lint', b === undefined ? [String(a)] : [String(a), String(b)]) : Promise.resolve(null),
-  /** the system's machine run ahead of the wall by `x` (its steps back to back, each x periods of its own clock):
-   *  the waits on time pass x times faster than real time; 1 is a person's pace again. Answers { scale, now } */
-  speed: x => sysApp && sysApp.alive ? sysApp.cmd('speed', [x]) : Promise.resolve(null),
-  /** the machine's own clock, ms since its start */
-  now: () => sysApp && sysApp.alive ? sysApp.cmd('now') : Promise.resolve(null),
-  get build() { return braidBuildSig(); },
-  // the line kept as the machine runs: a moment every `every` ms (30 s), the last `keep` (3) held, named rec1, rec2,
-  // ...: what a lock-up or a crash is rewound from when no one marked a moment before it
-  record(o = {}) {
-    braid.stop(); const every = o.every || 30000, keep = o.keep || 3;
-    const tick = async () => { if (!braidRec.timer) return; try { const name = 'rec' + (++braidRec.n); await braid.mark(name); braidRec.ring.push(name); while (braidRec.ring.length > keep) braid.forget(braidRec.ring.shift()); } catch (_) { /* inside a call: the next tick */ } if (braidRec.timer) braidRec.timer = setTimeout(tick, every); };
-    braidRec.timer = setTimeout(tick, every); return { every, keep };
-  },
-  stop() { clearTimeout(braidRec.timer); braidRec.timer = null; },
-  get recorded() { return braidRec.ring.slice(); },
-};
-const braidRec = { timer: null, n: 0, ring: [] };
-// the line itself, in generations: generation 0 is the run from the page's start; each rewind begins the next, from
-// the moment it went back to. Every fault a machine reports is written to the line as it comes, with the machine's
-// own record of it (win32.js faultInfo: the exception, its registers, the stack's words and the code path to it) and
-// the machine's fault log at that instant, under its generation: a fault of generation n and the same fault of
-// generation n+1 are compared record for record (braid.same), never from memory of what a dialog said
-const braidLine = { gen: 0, events: [], forks: [] };   // (forks: each generation after the first, the moment and generation it grew from)
-const braidJ = { from: null, fromSum: null, at0: 0, actions: [], segments: [], quiet: false };
-/** an action of the API's, into the journal with the machine's clock (asked of the machine, written when it answers) */
-function braidNote(op, args) {
-  if (braidJ.quiet) return;
-  const a = { op, args: args.map(x => (x && typeof x === 'object' && !(x instanceof RegExp) ? { name: x.name, role: x.role, window: x.window instanceof RegExp ? String(x.window) : x.window } : x instanceof RegExp ? String(x) : x)), t: Date.now(), at: null };
-  braidJ.actions.push(a); if (sysApp && sysApp.alive) sysApp.cmd('now').then(n => { a.at = n; });
-}
-const braidDb = fn => new Promise((ok, no) => { const r = indexedDB.open('w95-braid', 1); r.onupgradeneeded = () => r.result.createObjectStore('moments', { keyPath: 'name' }); r.onsuccess = () => Promise.resolve(fn(r.result)).then(v => { r.result.close(); ok(v); }, e => { r.result.close(); no(e); }); r.onerror = () => no(r.error); });
-function braidFault(app, f, fatal) {
-  const ev = { gen: braidLine.gen, t: Date.now(), machine: app.system ? 'system' : app.path, fatal, fault: f, faults: null };
-  braidLine.events.push(ev);
-  if (app.alive) app.cmd('faults').then(l => { ev.faults = l; emit('braid.fault', { gen: ev.gen, machine: ev.machine, fault: f, faults: l }); });
-  else emit('braid.fault', { gen: ev.gen, machine: ev.machine, fault: f, faults: null });
-}
-// (defined by descriptor: `line` and `journal` are getters, which Object.assign would read once and copy as values)
-Object.defineProperties(braid, Object.getOwnPropertyDescriptors({
-  /** the line: its generation now, the forks (each generation, the moment and generation it grew from), the moments
-   *  by the generation they were taken in, and every fault written to it, by generation */
-  get line() { return { gen: braidLine.gen, forks: braidLine.forks.map(f => ({ ...f })), moments: [...braidMoments.values()].map(s => ({ name: s.name, gen: s.gen, at: s.at })), events: braidLine.events.map(e => ({ ...e })) }; },
-  // ---- the journal: every action made through the API since the last moment, stamped with the machine's own clock
-  // (cmd 'now'), closed into a segment by the next moment: { from, actions, to }. A segment is replayed from its moment
-  // with the same actions at the same machine times (the machine's clock being its own, not the wall's: worker.js
-  // vclock), and one already run from the same moment with the same actions is skipped to its end
-  get journal() { return { from: braidJ.from, actions: braidJ.actions.slice(), segments: braidJ.segments.map(s => ({ ...s })) }; },
-  /** the segment recorded from the moment the line is at now whose actions are these (JSON-equal), with its end
-   *  held: the line jumps to the end. null when there is none to jump to */
-  async skip(actions) {
-    const key = JSON.stringify(actions), seg = braidJ.segments.find(s => s.from === braidJ.from && s.fromSum === braidJ.fromSum && JSON.stringify(s.actions.map(a => [a.op, a.args])) === key && braidMoments.has(s.to));
-    if (!seg) return null;
-    const r = await braid.rewind(seg.to); return { skipped: true, from: seg.from, to: seg.to, ms: seg.ms, rewind: r };
-  },
-  /** a segment run again from its moment: the same actions, each when the machine's clock reaches the time it was
-   *  made at (the clock asked between, at `every` ms of the wall) */
-  async replay(index, o = {}) {
-    const seg = braidJ.segments[index]; if (!seg) throw new Error(`no segment ${index}`);
-    await braid.rewind(seg.from); const a0 = (await sysApp.cmd('now')), every = o.every || 50;
-    for (const a of seg.actions) {
-      for (;;) { const now = await sysApp.cmd('now'); if (now - a0 >= a.at - seg.at0) break; await new Promise(r => setTimeout(r, every)); }
-      braidJ.quiet = true; try { await script[a.op](...a.args); } finally { braidJ.quiet = false; }
-      braidJ.actions.push({ ...a, replayed: true });
-    }
-    return { from: seg.from, actions: seg.actions.length };
-  },
-  // ---- moments kept on this computer (IndexedDB, this origin's): bytes and meta of every machine and of the page's
-  // file system and registry, by name; brought back into a page booted afresh by the paths of the objects (braid.js
-  // rebind). A kept moment is the memo's ground: a page that has it starts there, nothing run again
-  async save(name) {
-    name = String(name); const build = await braidBuildSig(); const machines = {};
-    for (const a of [...machineWorkers]) if (a.alive) {
-      // (asked at a step with no ring-0 run in flight: up to 20 s of steps)
-      let ex = null; for (let i = 0; i < 400 && !(ex && ex.meta); i++) { ex = await a.cmd('export'); if (ex && ex.busy) await new Promise(r => setTimeout(r, 50)); }
-      if (!ex || !ex.meta) throw new Error('export refused: ' + (ex && ex.busy ? 'a ring-0 run in flight on every step' : 'inside a call: try again'));
-      machines[a.system ? 'system' : a.path] = ex;
-    }
-    closeMenus();
-    const page = W95Braid.serialize(W95Braid.takeGraph([fs, braidShell()], { opaque: braidOpaque(), skip: braidShellSkip }));
-    const rec = { name, at: Date.now(), build, machines, page: { meta: page.meta, roots: page.roots, blob: page.blob }, registry: W95Win32.regDump(), journal: braid.journal, line: braid.line };
-    await braidDb(db => new Promise((ok, no) => { const tx = db.transaction('moments', 'readwrite'); tx.objectStore('moments').put(rec); tx.oncomplete = ok; tx.onerror = () => no(tx.error); }));
-    return { name, bytes: Object.values(machines).reduce((n, m) => n + m.blob.length, page.blob.length), build };
-  },
-  async kept() { return braidDb(db => new Promise((ok, no) => { const r = db.transaction('moments').objectStore('moments').getAll(); r.onsuccess = () => ok(r.result.map(x => ({ name: x.name, at: x.at, build: x.build, machines: Object.keys(x.machines), bytes: Object.values(x.machines).reduce((n, m) => n + m.blob.length, x.page.blob.length) }))); r.onerror = () => no(r.error); })); },
-  /** a kept moment brought into this page's machines (booted: their objects matched by path) and its file system and
-   *  registry; refused for another build's */
-  async load(name, o = {}) {
-    const rec = await braidDb(db => new Promise((ok, no) => { const r = db.transaction('moments').objectStore('moments').get(String(name)); r.onsuccess = () => ok(r.result); r.onerror = () => no(r.error); }));
-    if (!rec) throw new Error(`no kept moment ${name}`);
-    const build = await braidBuildSig(); if (rec.build !== build && !o.force) throw new Error(`the moment is build ${rec.build}'s, this is ${build} (load(name, { force: true }) brings it in anyway)`);
-    const out = {};
-    for (const [k, ex] of Object.entries(rec.machines)) { const a = k === 'system' ? sysApp : [...machineWorkers].find(x => x.path === k); if (!a || !a.alive) { out[k] = 'no such machine running'; continue; } out[k] = await a.cmd('import', [ex]); a.kids = null; }
-    braidWatchStores(); closeMenus();
-    const r = W95Braid.rebind([fs, braidShell()], rec.page, { opaque: braidOpaque(), skip: braidShellSkip });
-    W95Win32.regLoad(rec.registry, true);
-    // (the disk's store: every node, as the tree has it now)
-    const stores = []; for (const v of fs.vols.values()) if (v.store && v.store.under) { stores.push(v.store.under); (function walk(n) { const sid = fs.sidOf(n); v.store.under.node({ sid, parent: n.parent ? fs.sidOf(n.parent) : -1, name: n.name, short: n.short, dir: n.dir, ord: n.ord || 0, attrs: n.attrs, ctime: n.ctime, mtime: n.mtime, atime: n.atime }); if (!n.dir) { v.store.under.size(sid, n.size); if (n.size) v.store.under.data(sid, 0, n.buf.slice(0, n.size)); } else for (const k of n.kids.values()) walk(k); })(v.root); }
-    diskTouched.clear(); fs.version++; dirty();
-    braidLine.gen++; braidLine.forks.push({ gen: braidLine.gen, from: rec.name, fromGen: null, at: Date.now(), kept: true, build: rec.build, forced: rec.build !== build });
-    braidJ.from = rec.name; braidJ.fromSum = null; braidJ.actions = []; braidJ.at0 = await sysApp.cmd('now');
-    return { ...out, page: r, gen: braidLine.gen };
-  },
-  async drop(name) { return braidDb(db => new Promise((ok, no) => { const tx = db.transaction('moments', 'readwrite'); tx.objectStore('moments').delete(String(name)); tx.oncomplete = () => ok(true); tx.onerror = () => no(tx.error); })); },
-  /** two faults of the line compared (by index into `line.events`, or the last of two generations): the same
-   *  exception at the same place on the same thread with the same stack words and the same path, or where they part */
-  same(a, b) {
-    const ev = x => (typeof x === 'number' ? braidLine.events[x] : braidLine.events.filter(e => e.gen === x.gen).slice(-1)[0]);
-    const A = ev(a), B = ev(b); if (!A || !B) return { same: false, why: 'no such fault on the line' };
-    const diff = [], fa = A.fault || {}, fb = B.fault || {};
-    for (const k of ['why', 'at', 'module', 'ring', 'thread', 'cr2', 'from', 'esp', 'ss']) if (JSON.stringify(fa[k]) !== JSON.stringify(fb[k])) diff.push({ what: k, a: fa[k], b: fb[k] });
-    for (const k of Object.keys({ ...(fa.regs || {}), ...(fb.regs || {}) })) if ((fa.regs || {})[k] !== (fb.regs || {})[k]) diff.push({ what: 'reg ' + k, a: (fa.regs || {})[k], b: (fb.regs || {})[k] });
-    const sa = fa.stack || [], sb = fb.stack || []; for (let i = 0; i < Math.max(sa.length, sb.length); i++) if (sa[i] !== sb[i]) diff.push({ what: 'stack ' + i, a: sa[i], b: sb[i] });
-    // (the machine's log of it: the thread, the block it came from, the code path, the stack as symbols)
-    const la = (A.faults || []).filter(x => x.thread !== 'host').slice(-1)[0] || {}, lb = (B.faults || []).filter(x => x.thread !== 'host').slice(-1)[0] || {};
-    for (const k of ['why', 'thread', 'from', 'fromIn', 'at', 'esp', 'ss']) if (JSON.stringify(la[k]) !== JSON.stringify(lb[k])) diff.push({ what: 'log ' + k, a: la[k], b: lb[k] });
-    for (const k of ['path', 'stack']) { const pa = la[k] || [], pb = lb[k] || []; for (let i = 0; i < Math.max(pa.length, pb.length); i++) if (pa[i] !== pb[i]) diff.push({ what: `log ${k} ${i}`, a: pa[i], b: pb[i] }); }
-    return { same: !diff.length, gens: [A.gen, B.gen], diff };
-  },
-}));
+  setActive: w => { active = w; blinkOn = true; dirty(); },
+  gfx: { K, fill, text, textW, btnUp, focusRect },
+});
+const braid = window.W95BraidPage ? window.W95BraidPage(braidUi()) : null;
+/** a fault a machine reported, written to the line under its generation (braid-page.js fault) */
+function braidFault(app, f, fatal) { if (braid) braid.fault(app, f, fatal); }
+// a script of the site's loaded again over the running machine or page: a mod of ring α's, named (with the sum of its
+// text) beside every moment marked from then on, never carried in one (braid.js mod)
 async function reloadScript(f) {
   f = String(f || ''); if (!/^[\w.-]+\.js$/.test(f)) throw new Error(`reloadScript: a script of the site's, by name (${f})`);
-  if (WORKER_SCRIPTS.has(f)) { if (!sysApp || !sysApp.alive) throw new Error('reloadScript: the system\'s machine is not running'); return { machine: await sysApp.cmd('reload', [f]) }; }
+  if (WORKER_SCRIPTS.has(f)) { if (!sysApp || !sysApp.alive) throw new Error('reloadScript: the system\'s machine is not running'); const r = await sysApp.cmd('reload', [f]); if (braid && r) braid.modded({ name: f, sum: r.sum }); return { machine: r }; }
   if (!PAGE_SCRIPTS.has(f)) throw new Error(`reloadScript: ${f} runs the page itself and cannot be loaded twice: reload the page`);
-  await new Promise((ok, no) => { const s = document.createElement('script'); s.src = `${f}?reload=${Date.now()}`; s.onload = ok; s.onerror = () => no(new Error(`reloadScript: ${f} did not load`)); document.head.appendChild(s); });
+  const url = `${f}?reload=${Date.now()}`;
+  const text = await fetch(url, { cache: 'no-store' }).then(r => { if (!r.ok) throw new Error(`reloadScript: ${f} did not load (${r.status})`); return r.text(); });
+  await new Promise((ok, no) => { const s = document.createElement('script'); s.src = url; s.onload = ok; s.onerror = () => no(new Error(`reloadScript: ${f} did not load`)); document.head.appendChild(s); });
   if (f === 'ccd.js') ccdApi = null;
-  return { page: f };
+  const rec = W95Braid.mod(f, text); if (braid) braid.modded(rec);
+  return { page: f, sum: rec.sum };
 }
 const ccdUi = () => ({
   W95Win32, fs, emit, dirty, dialog, msgBox, openWin, closeWin, activate, notepad, runCommand, openPath, netBoot, dosRun: window.W95V86 && window.W95DOS ? dosRun : null,
@@ -6228,8 +6113,8 @@ const ccdUi = () => ({
   gfx: { K, fill, field, text, esc, wrap, textW, ellipsis, btnUp, btnDown, focusRect, clip: (x, y, w, h, f) => { ctx.save(); ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip(); try { f(); } finally { ctx.restore(); } } },
   Win, DialogBody, popup: openPopup, on: script.on,
 });
-// (the API's actions go to ring α's journal as they are made, with the machine's clock: braidNote)
-for (const k of ['click', 'dblclick', 'type', 'typeOwn', 'key', 'run', 'drag', 'open']) { const f = script[k]; if (typeof f === 'function') script[k] = function (...a) { braidNote(k, a); return f.apply(this, a); }; }
+// (the API's actions go to ring α's journal as they are made, with the machine's clock: braid-page.js note)
+if (braid) for (const k of braid.actions) { const f = script[k]; if (typeof f === 'function') script[k] = function (...a) { braid.note(k, a); return f.apply(this, a); }; }
 window.win95 = { ...script,
   // the PC: its text screen as lines, keys typed at its keyboard (each character; {Enter}, {F8}, ... by DOS_KEYS' names),
   // a power cycle; its machine and whether Windows has the screen
