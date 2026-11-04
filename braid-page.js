@@ -71,7 +71,14 @@ window.W95BraidPage = function (ui) {
     await db(d => { const st = d.transaction('chunks').objectStore('chunks'); return Promise.all(want.map(h => req(null, st.get(h)).then(c => { if (c) got.set(h, c); }))); });
     return B.unpackAnchor(s, h => got.get(h));
   };
-  const dbAll = () => db(d => req(null, d.transaction('anchors').objectStore('anchors').getAll()));   // (as stored: names, chunk lists and lengths, not the bytes)
+  // (never every record at once: an anchor stored whole, before chunks, is the machines' bytes, 350 to 700 MB, and a
+  // getAll over thirteen of them asked the page for 6.7 GB, which paused it on the edge of running out of memory at each
+  // anchor (whose names came from it) and each moments(). Names come from the keys; records one at a time, by cursor,
+  // each let go before the next, only what is asked kept: `fn(record)` answers what to keep of it)
+  const dbNames = () => db(d => req(null, d.transaction('anchors').objectStore('anchors').getAllKeys()));
+  const eachIn = (st, fn) => new Promise((ok, no) => { const c = st.openCursor(); c.onsuccess = () => { const cur = c.result; if (!cur) return ok(); fn(cur.value); cur.continue(); }; c.onerror = () => no(c.error); });
+  const dbEach = fn => db(d => { const out = []; return eachIn(d.transaction('anchors').objectStore('anchors'), v => { const x = fn(v); if (x !== undefined) out.push(x); }).then(() => out); });
+  const summary = x => ({ name: x.name, gen: x.gen, now: x.now, at: x.at, build: x.build, mods: x.mods, bytes: Object.values(x.machines || {}).reduce((n, m) => n + B.blobLength(m.blob), x.page ? B.blobLength(x.page.blob) : 0) });
   const dbPut = async rec => {
     const { rec: s, chunks } = await B.packAnchor(rec);
     return db(d => { const tx = d.transaction(['anchors', 'chunks'], 'readwrite'), cs = tx.objectStore('chunks');
@@ -82,7 +89,8 @@ window.W95BraidPage = function (ui) {
     const tx = d.transaction(['anchors', 'chunks'], 'readwrite'), st = tx.objectStore('anchors'), cs = tx.objectStore('chunks');
     const had = (await req(null, st.getKey(String(name)))) !== undefined;
     if (had) await req(null, st.delete(String(name)));
-    const keep = B.chunkRefs(await req(null, st.getAll())), all = await req(null, cs.getAllKeys());
+    const keep = new Set(); await eachIn(st, v => { for (const h of B.chunkRefs([v])) keep.add(h); });   // (in the same transaction: no anchor written between the count and the deletes)
+    const all = await req(null, cs.getAllKeys());
     for (const h of all) if (!keep.has(h)) cs.delete(h);
     await done(tx); return had;
   });
@@ -169,7 +177,7 @@ window.W95BraidPage = function (ui) {
       name = name == null ? autoName() : String(name);
       // (a name already on the line or on this computer: the moment of now takes the next free one, name-2, name-3, ...;
       // the earlier moment keeps its own)
-      const taken = new Set([...here.keys(), ...line.moments.keys(), ...(await dbAll().catch(() => [])).filter(Boolean).map(x => x.name)]);
+      const taken = new Set([...here.keys(), ...line.moments.keys(), ...(await dbNames().catch(() => []))]);
       if (taken.has(name)) { let i = 2; while (taken.has(`${name}-${i}`)) i++; name = `${name}-${i}`; }
       await braid.mark(name);
       const b = await build(), machines = {};
@@ -194,7 +202,7 @@ window.W95BraidPage = function (ui) {
     async moments() {
       const by = new Map();
       for (const m of line.moments.values()) by.set(m.name, { ...m, verdict: line.broken.get(m.name) || (m.verdict || 'ok'), here: here.has(m.name), anchored: !!m.anchored });
-      for (const x of (await dbAll().catch(() => [])).filter(Boolean)) { const w = by.get(x.name); if (w) { w.anchored = true; w.anchorBytes = Object.values(x.machines).reduce((n, m) => n + m.blob.length, x.page.blob.length); } else by.set(x.name, { name: x.name, gen: x.gen, at: x.now, wall: x.at, build: x.build, mods: x.mods, here: false, anchored: true, verdict: 'ok', anchorBytes: Object.values(x.machines).reduce((n, m) => n + m.blob.length, x.page.blob.length) }); }
+      for (const x of await dbEach(summary).catch(() => [])) { const w = by.get(x.name); if (w) { w.anchored = true; w.anchorBytes = x.bytes; } else by.set(x.name, { name: x.name, gen: x.gen, at: x.now, wall: x.at, build: x.build, mods: x.mods, here: false, anchored: true, verdict: 'ok', anchorBytes: x.bytes }); }
       return [...by.values()].sort((a, b) => a.at - b.at || a.wall - b.wall);
     },
     /** a moment let go: from this page's memory, from every machine, and from this computer */
@@ -439,7 +447,7 @@ window.W95BraidPage = function (ui) {
     return win;
   }
 
-  braid.__test = { dbPut, dbGet, dbDel, dbAll };   // (the store, for tests/braidchunks.test.mjs)
+  braid.__test = { dbPut, dbGet, dbDel, dbNames, dbEach, summary };   // (the store, for tests/braidchunks.test.mjs)
   return braid;
 };
 })();

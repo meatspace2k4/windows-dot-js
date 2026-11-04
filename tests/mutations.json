@@ -58,6 +58,9 @@
     { "id": "chunks-fixed-cuts", "file": "braid.js", "fix": "an anchor is cut at its entries, so a shifted blob shares its unchanged memory",
       "from": "const big = (Array.isArray(meta) ? meta : [])", "to": "const big = ([])",
       "killedBy": ["node tests/braidchunks.test.mjs"], "case": null },
+    { "id": "anchors-getall", "file": "braid-page.js", "fix": "no read brings every anchor into memory at once (6.7 GB paused the page)",
+      "from": "d.transaction('anchors').objectStore('anchors').getAllKeys()", "to": "d.transaction('anchors').objectStore('anchors').getAll()).then(a => a.map(x => x.name)",
+      "killedBy": ["node tests/braidchunks.test.mjs"], "case": null },
     { "id": "gitref-climb", "file": "tools/gitref.py", "fix": "no /__ref/ path climbs out of the commit",
       "from": "if not m or '..' in m[1].split('/') or '..' in m[2].split('/'): return None", "to": "if not m: return None",
       "killedBy": ["python3 tests/gitref_test.py"], "case": null }

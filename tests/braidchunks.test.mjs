@@ -59,7 +59,10 @@ const idb = (() => {
       const finish = () => setTimeout(() => { if (!ended && tx.pending === 0) { ended = true; tx.oncomplete && tx.oncomplete(); } }, 0);
       const wrap = f => { tx.pending++; const r = request(f); const s = r; queueMicrotask(() => queueMicrotask(() => { tx.pending--; finish(); })); return s; };
       tx.objectStore = n => { const s = stores.get(n); return {
-        get: k => wrap(() => s.m.get(k)), getKey: k => wrap(() => (s.m.has(k) ? k : undefined)), getAll: () => wrap(() => [...s.m.values()]),
+        get: k => wrap(() => s.m.get(k)), getKey: k => wrap(() => (s.m.has(k) ? k : undefined)),
+        // (every record at once is what paused the page at 6.7 GB: the anchors' store refuses it here)
+        getAll: () => wrap(() => { if (n === 'anchors') throw new Error('getAll over the anchors: every anchor in memory at once'); return [...s.m.values()]; }),
+        openCursor: () => { const keys = [...s.m.keys()]; let i = 0; const r = {}; const step = () => { tx.pending++; queueMicrotask(() => { r.result = i < keys.length ? { value: s.m.get(keys[i]), continue: () => { i++; step(); } } : null; r.onsuccess && r.onsuccess(); queueMicrotask(() => { tx.pending--; finish(); }); }); }; step(); return r; },
         getAllKeys: () => wrap(() => [...s.m.keys()]), put: (v, k) => wrap(() => { s.m.set(s.keyPath ? v[s.keyPath] : k, v); }), delete: k => wrap(() => { s.m.delete(k); }) }; };
       finish(); return tx;
     },
@@ -78,6 +81,8 @@ assert.ok(T, 'braid-page.js gives its store to tests (__test)');
   await T.dbPut(moment('two', changed, bytes(100, 9)));
   const n2 = idb.stores.get('chunks').m.size;
   assert.equal(n2 - n1, 1, 'an anchor that differs in one chunk stores one chunk more');
+  assert.deepEqual((await T.dbNames().catch(e => assert.fail(`names without reading every anchor: ${e.message}`))).sort(), ['one', 'two'], 'names from the keys alone');
+  assert.deepEqual((await T.dbEach(T.summary)).map(x => [x.name, x.bytes]).sort(), [['one', 8 * C + 100], ['two', 8 * C + 100]], 'each record summed one at a time');
   const two = await T.dbGet('two').catch(e => assert.fail(`the anchor read back whole: ${e.message}`)); assert.deepEqual(two.machines.system.blob, changed); assert.equal(B.refuseAnchor(two, 'b'), null);
   assert.equal(await T.dbDel('one'), true);
   assert.equal(idb.stores.get('chunks').m.size, n2 - 1, 'letting one go deletes the chunk only it had');
