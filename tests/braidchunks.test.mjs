@@ -29,6 +29,25 @@ const moment = (name, sys, page) => B.anchor({ name, now: 1, build: 'b', machine
   assert.equal(await B.unpackAnchor(a, () => { throw new Error('no chunks asked'); }), a);
 }
 
+{ // two anchors of one machine minutes apart: a small buffer ahead of the memory grew (every byte after it moved) and
+  // one page of the memory was written. Cut at the entries, the second stores the small run and that page anew, not
+  // the whole memory again; cut at fixed offsets, it would store almost all of it
+  const mem = bytes(64 * C, 11), m = { log: new Uint8Array(1000), regs: new Uint32Array(64), mem };
+  const exp = o => B.serialize(B.takeGraph([o]));
+  const a = exp(m);
+  m.log = new Uint8Array(1300); m.mem[37 * C + 9] ^= 0x5a;
+  const b = exp(m);
+  const rec = ex => B.anchor({ name: 'x', now: 1, build: 'b', machines: { system: { meta: ex.meta, roots: ex.roots, blob: ex.blob, now: 1 } }, page: null, registry: {}, mods: [] });
+  const pa = await B.packAnchor(rec(a)), pb = await B.packAnchor(rec(b));
+  const fresh = [...pb.chunks.keys()].filter(h => !pa.chunks.has(h)).length;
+  assert.ok(fresh <= 2, `cut at the entries: ${fresh} new chunks of ${pb.chunks.size} (the small run and the written page)`);
+  assert.deepEqual((await B.unpackAnchor(pb.rec, h => pb.chunks.get(h))).machines.system.blob, b.blob, 'and read back whole');
+  // (the same two cut at fixed offsets, as before: nearly every chunk new, which is what the entries' cuts are for)
+  const fixed = ex => new Set(B.cutPoints(ex.blob.length, null).map(([s, e]) => ex.blob.subarray(s, e).join(',')));
+  const fa = fixed(a), fb = fixed(b); let fixedFresh = 0; for (const k of fb) if (!fa.has(k)) fixedFresh++;
+  assert.ok(fixedFresh > fb.size / 2, `fixed offsets: ${fixedFresh} of ${fb.size} new`);
+}
+
 // ---- the store: braid-page.js's own dbPut/dbGet/dbDel over an IndexedDB stand-in (the calls they make, no more)
 const idb = (() => {
   const stores = new Map();

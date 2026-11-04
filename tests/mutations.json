@@ -55,6 +55,9 @@
     { "id": "chunk-missing-ok", "file": "braid.js", "fix": "an anchor with a chunk missing is refused, not read short",
       "from": "if (!c) throw new Error(`the anchored moment is damaged (chunk", "to": "if (false) throw new Error(`the anchored moment is damaged (chunk",
       "killedBy": ["node tests/braidchunks.test.mjs"], "case": null },
+    { "id": "chunks-fixed-cuts", "file": "braid.js", "fix": "an anchor is cut at its entries, so a shifted blob shares its unchanged memory",
+      "from": "const big = (Array.isArray(meta) ? meta : [])", "to": "const big = ([])",
+      "killedBy": ["node tests/braidchunks.test.mjs"], "case": null },
     { "id": "gitref-climb", "file": "tools/gitref.py", "fix": "no /__ref/ path climbs out of the commit",
       "from": "if not m or '..' in m[1].split('/') or '..' in m[2].split('/'): return None", "to": "if not m: return None",
       "killedBy": ["python3 tests/gitref_test.py"], "case": null }
