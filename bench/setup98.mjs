@@ -28,6 +28,16 @@ export const pageDrive = async (key, o = {}) => {
   let fault = null, nf = 0, lastFault = null, atKey = false; const forks = [], faults = [];
   // (the line marking itself every o.every ms (30 s), the last four held; o.every 0 leaves it to the steps' moments)
   if (o.every !== 0) B.every(o.every || 30000, 4);
+  // (and anchored on this computer every o.anchorEvery ms (5 min) as `setup-live`: the line's own marks live in the
+  // page's memory, so a reload would lose the run; an anchor the reloaded page travels to. Left running after the
+  // ladder returns, through the restart)
+  if (o.anchorEvery !== 0 && !window.__w98live) {
+    let busy = false;
+    window.__w98live = setInterval(async () => {
+      if (busy) return; busy = true;
+      try { const r = await B.anchor('setup-live'); win95.note(`anchored setup-live (${r && r.verdict})`); } catch (e) { win95.note(`anchor setup-live failed: ${e.message}`); } finally { busy = false; }
+    }, o.anchorEvery || 5 * 60000);
+  }
   // (the rungs past the restart anchored as Setup meets them, w98-reboot, w98-firstboot, w98-desktop: the ground
   // bench/anchor98.mjs checks each later change from, Setup not run again. Left armed when the ladder returns, as
   // the machine goes on into its restart)
