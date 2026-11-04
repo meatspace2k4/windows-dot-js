@@ -1,0 +1,3934 @@
+{
+ "modules": {
+  "9XMIG.DLL": {
+   "module": "MIGRATE",
+   "imports": [
+    "KERNEL",
+    "USER",
+    "SETUPX"
+   ],
+   "reachable": 1382,
+   "blockStarts": 284
+  },
+  "CFGWIZ.DLL": {
+   "module": "CFGWIZ",
+   "imports": [
+    "KERNEL",
+    "NETDI",
+    "SETUPX"
+   ],
+   "reachable": 444,
+   "blockStarts": 78
+  },
+  "COMCTL31.DLL": {
+   "module": "COMCTL31",
+   "imports": [
+    "KERNEL",
+    "GDI",
+    "USER"
+   ],
+   "reachable": 4150,
+   "blockStarts": 1058
+  },
+  "COMMCTRL.DLL": {
+   "module": "COMMCTRL",
+   "imports": [
+    "KERNEL",
+    "GDI",
+    "USER"
+   ],
+   "reachable": 8894,
+   "blockStarts": 2305
+  },
+  "COMMDLG.DLL": {
+   "module": "COMMDLG",
+   "imports": [
+    "KERNEL",
+    "GDI",
+    "USER",
+    "KEYBOARD"
+   ],
+   "reachable": 26949,
+   "blockStarts": 6811
+  },
+  "COMPLINC.DLL": {
+   "module": "COMPLINC",
+   "imports": [
+    "KERNEL",
+    "GDI",
+    "USER",
+    "COMMDLG"
+   ],
+   "reachable": 7848,
+   "blockStarts": 1797
+  },
+  "DINDI.DLL": {
+   "module": "DINDI",
+   "imports": [
+    "KERNEL",
+    "USER",
+    "NETDI",
+    "SETUPX",
+    "COMMCTRL"
+   ],
+   "reachable": 4093,
+   "blockStarts": 1016
+  },
+  "DLCNDI.DLL": {
+   "module": "DLCNDI",
+   "imports": [
+    "SETUPX",
+    "NETDI",
+    "KERNEL",
+    "USER"
+   ],
+   "reachable": 634,
+   "blockStarts": 138
+  },
+  "DSKMAINT.DLL": {
+   "module": "DSKMAINT",
+   "imports": [
+    "KERNEL",
+    "USER",
+    "KEYBOARD",
+    "SHELL"
+   ],
+   "reachable": 65656,
+   "blockStarts": 16079
+  },
+  "INFRARED.DLL": {
+   "module": "INFRARED",
+   "imports": [
+    "KERNEL",
+    "USER",
+    "SETUPX",
+    "SHELL",
+    "COMMCTRL"
+   ],
+   "reachable": 3236,
+   "blockStarts": 836
+  },
+  "ISSETUP.DLL": {
+   "module": "ICSSETUP",
+   "imports": [
+    "KERNEL",
+    "USER",
+    "SETUPX",
+    "SHELL"
+   ],
+   "reachable": 3414,
+   "blockStarts": 728
+  },
+  "KOMMCTRL.DLL": {
+   "module": "COMMCTRL",
+   "imports": [
+    "KERNEL",
+    "USER",
+    "GDI",
+    "KEYBOARD"
+   ],
+   "reachable": 28382,
+   "blockStarts": 7190
+  },
+  "LZEXPAND.DLL": {
+   "module": "LZEXPAND",
+   "imports": [
+    "KERNEL",
+    "USER"
+   ],
+   "reachable": 6943,
+   "blockStarts": 1680
+  },
+  "MSPRINT.DLL": {
+   "module": "MSPRINT",
+   "imports": [
+    "KERNEL",
+    "USER",
+    "GDI",
+    "KEYBOARD",
+    "SETUPX"
+   ],
+   "reachable": 7848,
+   "blockStarts": 1650
+  },
+  "MSTCP.DLL": {
+   "module": "MSTCP",
+   "imports": [
+    "KERNEL",
+    "GDI",
+    "USER",
+    "NETDI",
+    "SETUPX"
+   ],
+   "reachable": 725,
+   "blockStarts": 171
+  },
+  "NDSWAN16.DLL": {
+   "module": "NDSWAN16",
+   "imports": [
+    "KERNEL"
+   ],
+   "reachable": 141,
+   "blockStarts": 29
+  },
+  "NETAPI.DLL": {
+   "module": "NETAPI",
+   "imports": [
+    "KERNEL",
+    "USER"
+   ],
+   "reachable": 32056,
+   "blockStarts": 7138
+  },
+  "NETDI.DLL": {
+   "module": "NETDI",
+   "imports": [
+    "SETUPX",
+    "NETOS",
+    "SHELL",
+    "KERNEL",
+    "GDI",
+    "USER",
+    "KEYBOARD"
+   ],
+   "reachable": 54191,
+   "blockStarts": 12119
+  },
+  "NETOS.DLL": {
+   "module": "NETOS",
+   "imports": [
+    "SETUPX",
+    "KERNEL",
+    "USER"
+   ],
+   "reachable": 3437,
+   "blockStarts": 741
+  },
+  "NWNDS.DLL": {
+   "module": "NWNDS",
+   "imports": [
+    "KERNEL",
+    "USER",
+    "KEYBOARD",
+    "NETDI",
+    "SETUPX"
+   ],
+   "reachable": 644,
+   "blockStarts": 150
+  },
+  "PIDGEN.DLL": {
+   "module": "PIDGEN",
+   "imports": [
+    "KERNEL",
+    "USER"
+   ],
+   "reachable": 5616,
+   "blockStarts": 1089
+  },
+  "PPPNDI.DLL": {
+   "module": "PPPNDI",
+   "imports": [
+    "KERNEL",
+    "USER",
+    "NETDI",
+    "SETUPX"
+   ],
+   "reachable": 380,
+   "blockStarts": 65
+  },
+  "RNASETUP.DLL": {
+   "module": "RNASETUP",
+   "imports": [
+    "KERNEL",
+    "USER",
+    "SETUPX",
+    "SHELL"
+   ],
+   "reachable": 1822,
+   "blockStarts": 462
+  },
+  "RPLIMAGE.DLL": {
+   "module": "RPLIMAGE",
+   "imports": [
+    "KERNEL",
+    "USER"
+   ],
+   "reachable": 5664,
+   "blockStarts": 1311
+  },
+  "SETUPX.DLL": {
+   "module": "SETUPX",
+   "imports": [
+    "KERNEL",
+    "USER",
+    "GDI",
+    "KEYBOARD"
+   ],
+   "reachable": 91092,
+   "blockStarts": 20213
+  },
+  "SHELL.DLL": {
+   "module": "SHELL",
+   "imports": [
+    "KERNEL",
+    "GDI",
+    "USER",
+    "KEYBOARD"
+   ],
+   "reachable": 8372,
+   "blockStarts": 2011
+  },
+  "SUEXPAND.DLL": {
+   "module": "SUEXPAND",
+   "imports": [
+    "KERNEL",
+    "USER"
+   ],
+   "reachable": 2374,
+   "blockStarts": 538
+  },
+  "SUHELPER.BIN": {
+   "module": "MWHSETUP",
+   "imports": [
+    "KERNEL",
+    "USER"
+   ],
+   "reachable": 164,
+   "blockStarts": 45
+  },
+  "SUWIN.EXE": {
+   "module": "SUWIN",
+   "imports": [
+    "VERX",
+    "SETUPX",
+    "KERNEL",
+    "USER",
+    "GDI",
+    "KEYBOARD"
+   ],
+   "reachable": 32968,
+   "blockStarts": 7713
+  },
+  "SYSDETMG.DLL": {
+   "module": "SYSDETMG",
+   "imports": [
+    "SETUPX",
+    "VER",
+    "KERNEL",
+    "USER"
+   ],
+   "reachable": 35513,
+   "blockStarts": 7664
+  },
+  "VER.DLL": {
+   "module": "VER",
+   "imports": [
+    "LZEXPAND",
+    "KERNEL",
+    "USER",
+    "KEYBOARD"
+   ],
+   "reachable": 2355,
+   "blockStarts": 573
+  },
+  "VERX.DLL": {
+   "module": "VERX",
+   "imports": [
+    "SUEXPAND",
+    "KERNEL",
+    "USER",
+    "KEYBOARD"
+   ],
+   "reachable": 3560,
+   "blockStarts": 855
+  },
+  "W98SETUP.BIN": {
+   "module": "W98SETUP",
+   "imports": [
+    "KERNEL",
+    "USER",
+    "GDI"
+   ],
+   "reachable": 22368,
+   "blockStarts": 5002
+  },
+  "WIN95BB.DLL": {
+   "module": "WIN95BB",
+   "imports": [
+    "KERNEL",
+    "USER",
+    "GDI"
+   ],
+   "reachable": 2921,
+   "blockStarts": 671
+  },
+  "WINSOCK.DLL": {
+   "module": "WINSOCK",
+   "imports": [
+    "KERNEL",
+    "USER",
+    "GDI"
+   ],
+   "reachable": 5847,
+   "blockStarts": 1311
+  }
+ },
+ "interrupts": {
+  "int 21h ax=?": {
+   "answer": null,
+   "sites": [
+    "DSKMAINT.DLL 1:2ff"
+   ],
+   "count": 1
+  },
+  "int 21h ax=19??": {
+   "answer": "answered",
+   "sites": [
+    "COMMDLG.DLL 2:625e (DOS3Call)"
+   ],
+   "count": 1
+  },
+  "int 21h ax=0e??": {
+   "answer": "answered",
+   "sites": [
+    "COMMDLG.DLL 1:2c6e (DOS3Call)",
+    "COMMDLG.DLL 2:626b (DOS3Call)",
+    "COMMDLG.DLL 2:628a (DOS3Call)",
+    "NETAPI.DLL 13:3ffa",
+    "SETUPX.DLL 17:191b",
+    "SHELL.DLL 1:a0 (DOS3Call)"
+   ],
+   "count": 9
+  },
+  "int 21h ax=3b??": {
+   "answer": "answered",
+   "sites": [
+    "COMMDLG.DLL 1:2c94 (DOS3Call)",
+    "NETAPI.DLL 13:4026",
+    "NETDI.DLL 41:2534",
+    "SETUPX.DLL 17:1ab2",
+    "SHELL.DLL 1:128 (DOS3Call)",
+    "SUWIN.EXE 12:1eae"
+   ],
+   "count": 8
+  },
+  "int 21h ax=475c": {
+   "answer": "answered",
+   "sites": [
+    "COMMDLG.DLL 1:2ce5 (DOS3Call)",
+    "SHELL.DLL 1:e4 (DOS3Call)"
+   ],
+   "count": 2
+  },
+  "int 21h ax=59?? bx=0000": {
+   "answer": "answered",
+   "sites": [
+    "COMMDLG.DLL 1:2d05 (DOS3Call)",
+    "COMMDLG.DLL 1:2e78 (DOS3Call)",
+    "DSKMAINT.DLL 1:799",
+    "SETUPX.DLL 15:3c56",
+    "SHELL.DLL 4:821"
+   ],
+   "count": 5
+  },
+  "int 21h ax=2f??": {
+   "answer": "answered",
+   "sites": [
+    "COMMDLG.DLL 1:2d25 (DOS3Call)",
+    "COMMDLG.DLL 1:2dc5 (DOS3Call)"
+   ],
+   "count": 2
+  },
+  "int 21h ax=1a??": {
+   "answer": "answered",
+   "sites": [
+    "COMMDLG.DLL 1:2d37 (DOS3Call)",
+    "COMMDLG.DLL 1:2d5d (DOS3Call)",
+    "COMMDLG.DLL 1:2dd7 (DOS3Call)"
+   ],
+   "count": 3
+  },
+  "int 21h ax=4e00": {
+   "answer": "answered",
+   "sites": [
+    "DSKMAINT.DLL 5:512"
+   ],
+   "count": 1
+  },
+  "int 21h ax=4f00": {
+   "answer": "answered",
+   "sites": [
+    "COMMDLG.DLL 1:2da5 (DOS3Call)",
+    "DSKMAINT.DLL 5:586"
+   ],
+   "count": 2
+  },
+  "int 21h ax=11??": {
+   "answer": "answered",
+   "sites": [
+    "COMMDLG.DLL 1:2de8 (DOS3Call)"
+   ],
+   "count": 1
+  },
+  "int 21h ax=1a00": {
+   "answer": "answered",
+   "sites": [
+    "COMMDLG.DLL 1:2e31 (DOS3Call)",
+    "DSKMAINT.DLL 3:4c96",
+    "DSKMAINT.DLL 3:4cad",
+    "DSKMAINT.DLL 3:5375",
+    "DSKMAINT.DLL 3:53ae",
+    "DSKMAINT.DLL 3:53fe"
+   ],
+   "count": 10
+  },
+  "int 21h ax=??00": {
+   "answer": null,
+   "sites": [
+    "COMMDLG.DLL 1:2e9a (DOS3Call)"
+   ],
+   "count": 1
+  },
+  "int 2fh ax=1500 bx=0000": {
+   "answer": "answered",
+   "sites": [
+    "COMMDLG.DLL 2:7196"
+   ],
+   "count": 1
+  },
+  "int 2fh ax=150b": {
+   "answer": "answered",
+   "sites": [
+    "COMMDLG.DLL 2:71a4"
+   ],
+   "count": 1
+  },
+  "int 21h ax=32??": {
+   "answer": "answered",
+   "sites": [
+    "COMMDLG.DLL 2:71cf (DOS3Call)"
+   ],
+   "count": 1
+  },
+  "int 21h ax=6000": {
+   "answer": "answered",
+   "sites": [
+    "DSKMAINT.DLL 1:1ac"
+   ],
+   "count": 1
+  },
+  "int 2fh ax=5601": {
+   "answer": "answered",
+   "sites": [
+    "DSKMAINT.DLL 1:1f3"
+   ],
+   "count": 1
+  },
+  "int 21h ax=71a0 bx=0000": {
+   "answer": "answered",
+   "sites": [
+    "DSKMAINT.DLL 1:235"
+   ],
+   "count": 1
+  },
+  "int 21h ax=3305": {
+   "answer": "answered",
+   "sites": [
+    "DSKMAINT.DLL 1:260",
+    "DSKMAINT.DLL 3:4dd9",
+    "SYSDETMG.DLL 2:9a61"
+   ],
+   "count": 3
+  },
+  "int 21h ax=440d bx=0000": {
+   "answer": "answered",
+   "sites": [
+    "DSKMAINT.DLL 1:29c"
+   ],
+   "count": 1
+  },
+  "int 21h ax=440d": {
+   "answer": "answered",
+   "sites": [
+    "W98SETUP.BIN 2:95"
+   ],
+   "count": 1
+  },
+  "int 21h ax=7304": {
+   "answer": "answered",
+   "sites": [
+    "DSKMAINT.DLL 1:723",
+    "DSKMAINT.DLL 3:4e28",
+    "DSKMAINT.DLL 3:4e7c",
+    "DSKMAINT.DLL 5:7fa",
+    "DSKMAINT.DLL 5:863"
+   ],
+   "count": 5
+  },
+  "int 21h ax=7302": {
+   "answer": "answered",
+   "sites": [
+    "DSKMAINT.DLL 1:766",
+    "DSKMAINT.DLL 10:142"
+   ],
+   "count": 2
+  },
+  "int 21h ax=1900": {
+   "answer": "answered",
+   "sites": [
+    "DSKMAINT.DLL 1:7c4",
+    "DSKMAINT.DLL 1:814",
+    "DSKMAINT.DLL 10:45d",
+    "SETUPX.DLL 17:190e",
+    "SUWIN.EXE 12:200",
+    "W98SETUP.BIN 5:7e"
+   ],
+   "count": 6
+  },
+  "int 21h ax=7305": {
+   "answer": "answered",
+   "sites": [
+    "DSKMAINT.DLL 1:7d8",
+    "DSKMAINT.DLL 1:828",
+    "DSKMAINT.DLL 10:477"
+   ],
+   "count": 3
+  },
+  "int 21h ax=3c??": {
+   "answer": "answered (threw on an empty machine: Cannot read properties of undefined (reading 'get'))",
+   "sites": [
+    "DSKMAINT.DLL 3:4c28"
+   ],
+   "count": 1
+  },
+  "int 21h ax=2f00": {
+   "answer": "answered",
+   "sites": [
+    "DSKMAINT.DLL 3:4c86",
+    "DSKMAINT.DLL 3:5365",
+    "DSKMAINT.DLL 3:53ee",
+    "DSKMAINT.DLL 5:4f9",
+    "DSKMAINT.DLL 10:509"
+   ],
+   "count": 5
+  },
+  "int 21h ax=1100": {
+   "answer": "answered",
+   "sites": [
+    "DSKMAINT.DLL 3:4c9b"
+   ],
+   "count": 1
+  },
+  "int 21h ax=0d??": {
+   "answer": "answered",
+   "sites": [
+    "DSKMAINT.DLL 3:4d03",
+    "SYSDETMG.DLL 2:d874",
+    "W98SETUP.BIN 2:2642"
+   ],
+   "count": 3
+  },
+  "int 21h ax=2a??": {
+   "answer": "answered",
+   "sites": [
+    "DSKMAINT.DLL 3:4d0d"
+   ],
+   "count": 1
+  },
+  "int 21h ax=2c00": {
+   "answer": "answered",
+   "sites": [
+    "DSKMAINT.DLL 3:4d13",
+    "DSKMAINT.DLL 5:68d"
+   ],
+   "count": 2
+  },
+  "int 21h ax=7303": {
+   "answer": "answered",
+   "sites": [
+    "DSKMAINT.DLL 3:4ece",
+    "DSKMAINT.DLL 3:4fad",
+    "DSKMAINT.DLL 5:705"
+   ],
+   "count": 3
+  },
+  "int 21h ax=3600": {
+   "answer": "answered",
+   "sites": [
+    "DSKMAINT.DLL 3:4ee8",
+    "DSKMAINT.DLL 3:4fcf",
+    "DSKMAINT.DLL 5:71e",
+    "DSKMAINT.DLL 6:727c",
+    "DSKMAINT.DLL 10:5ca",
+    "SUWIN.EXE 12:16b1"
+   ],
+   "count": 6
+  },
+  "int 21h ax=??01": {
+   "answer": null,
+   "sites": [
+    "DSKMAINT.DLL 3:4f0e"
+   ],
+   "count": 1
+  },
+  "int 21h ax=5a00": {
+   "answer": "answered (threw on an empty machine: Cannot read properties of undefined (reading 'get'))",
+   "sites": [
+    "DSKMAINT.DLL 3:4f46"
+   ],
+   "count": 1
+  },
+  "int 21h ax=41??": {
+   "answer": "answered",
+   "sites": [
+    "DSKMAINT.DLL 3:4f5b",
+    "SETUPX.DLL 15:3bdd",
+    "SETUPX.DLL 25:48",
+    "SHELL.DLL 7:33 (DOS3Call)",
+    "SUWIN.EXE 5:25 (DOS3Call)",
+    "W98SETUP.BIN 2:1187 (DOS3Call)"
+   ],
+   "count": 6
+  },
+  "int 21h ax=710d": {
+   "answer": "answered",
+   "sites": [
+    "DSKMAINT.DLL 6:760b"
+   ],
+   "count": 1
+  },
+  "int 21h ax=5700": {
+   "answer": "answered (threw on an empty machine: Cannot read properties of undefined (reading 'get'))",
+   "sites": [
+    "DSKMAINT.DLL 3:54b2"
+   ],
+   "count": 1
+  },
+  "int 21h ax=5701": {
+   "answer": "answered (threw on an empty machine: Cannot read properties of undefined (reading 'get'))",
+   "sites": [
+    "DSKMAINT.DLL 3:5503"
+   ],
+   "count": 1
+  },
+  "int 21h ax=71a8": {
+   "answer": "answered",
+   "sites": [
+    "DSKMAINT.DLL 4:a402"
+   ],
+   "count": 1
+  },
+  "int 31h ax=0300 bx=0021": {
+   "answer": null,
+   "sites": [
+    "DSKMAINT.DLL 5:5b",
+    "NETAPI.DLL 2:1e05",
+    "NETAPI.DLL 2:1fb5"
+   ],
+   "count": 3
+  },
+  "int 2fh ax=1600": {
+   "answer": "answered",
+   "sites": [
+    "NETAPI.DLL 2:1dae"
+   ],
+   "count": 1
+  },
+  "int 2fh ax=1684 bx=002a": {
+   "answer": "answered",
+   "sites": [
+    "DSKMAINT.DLL 5:202"
+   ],
+   "count": 1
+  },
+  "int 21h ax=3b00": {
+   "answer": "answered",
+   "sites": [
+    "DSKMAINT.DLL 5:4bc",
+    "DSKMAINT.DLL 10:a"
+   ],
+   "count": 2
+  },
+  "int 21h ax=3c00": {
+   "answer": "answered (threw on an empty machine: Cannot read properties of undefined (reading 'get'))",
+   "sites": [
+    "DSKMAINT.DLL 5:5bc"
+   ],
+   "count": 1
+  },
+  "int 21h ax=3e00": {
+   "answer": "answered (threw on an empty machine: Cannot read properties of undefined (reading 'get'))",
+   "sites": [
+    "DSKMAINT.DLL 5:5ca",
+    "DSKMAINT.DLL 6:7543"
+   ],
+   "count": 2
+  },
+  "int 21h ax=4100": {
+   "answer": "answered",
+   "sites": [
+    "DSKMAINT.DLL 5:5e4"
+   ],
+   "count": 1
+  },
+  "int 21h ax=440d bx=0001": {
+   "answer": "answered",
+   "sites": [
+    "DSKMAINT.DLL 5:650"
+   ],
+   "count": 1
+  },
+  "int 21h ax=2a00": {
+   "answer": "answered",
+   "sites": [
+    "DSKMAINT.DLL 5:669"
+   ],
+   "count": 1
+  },
+  "int 2fh ax=1684 bx=0010": {
+   "answer": "answered",
+   "sites": [
+    "DSKMAINT.DLL 5:762"
+   ],
+   "count": 1
+  },
+  "int 21h ax=4404": {
+   "answer": "answered",
+   "sites": [
+    "DSKMAINT.DLL 6:73f7"
+   ],
+   "count": 1
+  },
+  "int 2fh ax=4a11 bx=0000": {
+   "answer": "answered",
+   "sites": [
+    "DSKMAINT.DLL 6:70d0",
+    "DSKMAINT.DLL 6:71ba",
+    "DSKMAINT.DLL 6:721a",
+    "DSKMAINT.DLL 6:732d",
+    "DSKMAINT.DLL 6:773e",
+    "SUWIN.EXE 3:55d5"
+   ],
+   "count": 6
+  },
+  "int 31h ax=0300 bx=002f": {
+   "answer": null,
+   "sites": [
+    "DSKMAINT.DLL 6:7134"
+   ],
+   "count": 1
+  },
+  "int 2fh ax=4a11 bx=0001": {
+   "answer": "answered",
+   "sites": [
+    "DSKMAINT.DLL 6:71c9",
+    "DSKMAINT.DLL 6:71ee",
+    "SUWIN.EXE 3:54f3",
+    "SUWIN.EXE 3:5518"
+   ],
+   "count": 4
+  },
+  "int 21h ax=4300": {
+   "answer": "answered",
+   "sites": [
+    "DSKMAINT.DLL 6:725a",
+    "SETUPX.DLL 15:3c20",
+    "SETUPX.DLL 25:c",
+    "VER.DLL 3:aeb (DOS3Call)",
+    "VERX.DLL 2:f86 (DOS3Call)"
+   ],
+   "count": 5
+  },
+  "int 21h ax=4301": {
+   "answer": "answered",
+   "sites": [
+    "DSKMAINT.DLL 6:7304",
+    "SETUPX.DLL 25:31",
+    "W98SETUP.BIN 2:1211 (DOS3Call)"
+   ],
+   "count": 3
+  },
+  "int 21h ax=6800": {
+   "answer": "answered (threw on an empty machine: Cannot read properties of undefined (reading 'get'))",
+   "sites": [
+    "DSKMAINT.DLL 6:752f"
+   ],
+   "count": 1
+  },
+  "int 21h ax=716c": {
+   "answer": "answered (threw on an empty machine: Cannot read properties of undefined (reading 'get'))",
+   "sites": [
+    "DSKMAINT.DLL 6:7563"
+   ],
+   "count": 1
+  },
+  "int 21h ax=42??": {
+   "answer": "answered (threw on an empty machine: Cannot read properties of undefined (reading 'get'))",
+   "sites": [
+    "DSKMAINT.DLL 6:758e",
+    "SETUPX.DLL 1:109"
+   ],
+   "count": 2
+  },
+  "int 21h ax=4000": {
+   "answer": "answered (threw on an empty machine: Cannot read properties of undefined (reading 'get'))",
+   "sites": [
+    "DSKMAINT.DLL 6:75aa"
+   ],
+   "count": 1
+  },
+  "int 21h ax=3f00": {
+   "answer": "answered (threw on an empty machine: Cannot read properties of undefined (reading 'get'))",
+   "sites": [
+    "DSKMAINT.DLL 6:75c6"
+   ],
+   "count": 1
+  },
+  "int 21h ax=5600": {
+   "answer": "answered",
+   "sites": [
+    "DSKMAINT.DLL 6:76e1"
+   ],
+   "count": 1
+  },
+  "int 2fh ax=4a11 bx=000f": {
+   "answer": "answered",
+   "sites": [
+    "DSKMAINT.DLL 6:774d"
+   ],
+   "count": 1
+  },
+  "int 21h ax=5400": {
+   "answer": "answered",
+   "sites": [
+    "DSKMAINT.DLL 8:aa"
+   ],
+   "count": 1
+  },
+  "int 21h ax=2e00": {
+   "answer": "answered",
+   "sites": [
+    "DSKMAINT.DLL 8:b6"
+   ],
+   "count": 1
+  },
+  "int 21h ax=2e01": {
+   "answer": "answered",
+   "sites": [
+    "DSKMAINT.DLL 8:c2"
+   ],
+   "count": 1
+  },
+  "int 31h ax=0301 bx=0000": {
+   "answer": "unhandled DPMI 301",
+   "sites": [
+    "DSKMAINT.DLL 10:bf",
+    "DSKMAINT.DLL 10:3fb",
+    "DSKMAINT.DLL 10:59b",
+    "NETAPI.DLL 2:1ed8"
+   ],
+   "count": 4
+  },
+  "int 21h ax=3200": {
+   "answer": "answered",
+   "sites": [
+    "DSKMAINT.DLL 10:17c"
+   ],
+   "count": 1
+  },
+  "int 21h ax=3000": {
+   "answer": "answered",
+   "sites": [
+    "DSKMAINT.DLL 10:48b",
+    "NETAPI.DLL 2:1c88",
+    "NETAPI.DLL 2:1f07",
+    "SETUPX.DLL 17:31b",
+    "SUWIN.EXE 12:2f5"
+   ],
+   "count": 5
+  },
+  "int 25h ax=?": {
+   "answer": null,
+   "sites": [
+    "DSKMAINT.DLL 10:4d8"
+   ],
+   "count": 1
+  },
+  "int 2fh ax=1684 bx=0033": {
+   "answer": "answered (threw on an empty machine: Cannot read properties of undefined (reading 'findIndex'))",
+   "sites": [
+    "ISSETUP.DLL 1:46",
+    "MSPRINT.DLL 4:28",
+    "NETDI.DLL 16:24",
+    "NETDI.DLL 23:24",
+    "NETDI.DLL 27:24",
+    "NETDI.DLL 42:24"
+   ],
+   "count": 12
+  },
+  "int 21h ax=51??": {
+   "answer": "answered",
+   "sites": [
+    "NETAPI.DLL 1:aeb"
+   ],
+   "count": 1
+  },
+  "int 31h ax=0303": {
+   "answer": "unhandled DPMI 303",
+   "sites": [
+    "NETAPI.DLL 1:afe",
+    "NETAPI.DLL 1:b14"
+   ],
+   "count": 2
+  },
+  "int 31h ax=0304": {
+   "answer": "unhandled DPMI 304",
+   "sites": [
+    "NETAPI.DLL 1:b92",
+    "NETAPI.DLL 1:ba0"
+   ],
+   "count": 2
+  },
+  "int 21h ax=6506": {
+   "answer": "answered",
+   "sites": [
+    "NETAPI.DLL 2:1dba"
+   ],
+   "count": 1
+  },
+  "int 31h ax=0000": {
+   "answer": "answered (threw on an empty machine: Cannot read properties of undefined (reading '1536'))",
+   "sites": [
+    "NETAPI.DLL 2:1e1b",
+    "NETOS.DLL 5:f"
+   ],
+   "count": 2
+  },
+  "int 31h ax=0007": {
+   "answer": "answered",
+   "sites": [
+    "NETAPI.DLL 2:1e2d",
+    "NETOS.DLL 5:31"
+   ],
+   "count": 2
+  },
+  "int 31h ax=?": {
+   "answer": null,
+   "sites": [
+    "NETAPI.DLL 2:1e35"
+   ],
+   "count": 1
+  },
+  "int 21h ax=6501": {
+   "answer": "answered",
+   "sites": [
+    "NETAPI.DLL 2:1f6a"
+   ],
+   "count": 1
+  },
+  "int 21h ax=5e00": {
+   "answer": "answered",
+   "sites": [
+    "NETAPI.DLL 2:2013"
+   ],
+   "count": 1
+  },
+  "int 2ah ax=0100 bx=0a44": {
+   "answer": "answered",
+   "sites": [
+    "NETAPI.DLL 2:204d"
+   ],
+   "count": 1
+  },
+  "int 21h ax=5f3d": {
+   "answer": "answered",
+   "sites": [
+    "NETAPI.DLL 2:211d"
+   ],
+   "count": 1
+  },
+  "int 2ah ax=0100 bx=0a04": {
+   "answer": "answered",
+   "sites": [
+    "NETAPI.DLL 2:21aa"
+   ],
+   "count": 1
+  },
+  "int 21h ax=5100": {
+   "answer": "answered",
+   "sites": [
+    "NETAPI.DLL 2:2519"
+   ],
+   "count": 1
+  },
+  "int 31h ax=0300": {
+   "answer": null,
+   "sites": [
+    "NETOS.DLL 5:144"
+   ],
+   "count": 1
+  },
+  "int 2ah ax=?": {
+   "answer": null,
+   "sites": [
+    "NETAPI.DLL 2:257e"
+   ],
+   "count": 1
+  },
+  "int 2fh ax=?": {
+   "answer": null,
+   "sites": [
+    "NETAPI.DLL 2:2582",
+    "SETUPX.DLL 17:2d1",
+    "SUWIN.EXE 12:2ab",
+    "W98SETUP.BIN 5:e5"
+   ],
+   "count": 4
+  },
+  "int 21h ax=6200": {
+   "answer": "answered",
+   "sites": [
+    "NETAPI.DLL 9:5"
+   ],
+   "count": 1
+  },
+  "int 2ah ax=0000": {
+   "answer": "answered",
+   "sites": [
+    "NETAPI.DLL 9:16"
+   ],
+   "count": 1
+  },
+  "int 2fh ax=4200": {
+   "answer": "answered",
+   "sites": [
+    "NETAPI.DLL 19:3"
+   ],
+   "count": 1
+  },
+  "int 21h ax=5f02": {
+   "answer": "answered",
+   "sites": [
+    "NETDI.DLL 41:21d3",
+    "NETDI.DLL 41:22c5",
+    "NETDI.DLL 41:23fe",
+    "SETUPX.DLL 17:e22",
+    "SUWIN.EXE 12:ff0",
+    "W98SETUP.BIN 5:89c"
+   ],
+   "count": 6
+  },
+  "int 21h ax=47??": {
+   "answer": "answered",
+   "sites": [
+    "NETDI.DLL 41:24d3",
+    "RPLIMAGE.DLL 1:3b",
+    "SETUPX.DLL 17:1a6c",
+    "SUWIN.EXE 12:1e68",
+    "W98SETUP.BIN 2:50aa",
+    "W98SETUP.BIN 5:a40"
+   ],
+   "count": 6
+  },
+  "int 2fh ax=d701 bx=0000": {
+   "answer": "answered",
+   "sites": [
+    "NETOS.DLL 2:1cc"
+   ],
+   "count": 1
+  },
+  "int 31h ax=0008": {
+   "answer": "answered",
+   "sites": [
+    "NETOS.DLL 5:41"
+   ],
+   "count": 1
+  },
+  "int 31h ax=0009": {
+   "answer": "answered",
+   "sites": [
+    "NETOS.DLL 5:4e"
+   ],
+   "count": 1
+  },
+  "int 31h ax=0001": {
+   "answer": "answered (threw on an empty machine: Cannot set properties of undefined (setting '0'))",
+   "sites": [
+    "NETOS.DLL 5:71"
+   ],
+   "count": 1
+  },
+  "int 31h ax=0301": {
+   "answer": "unhandled DPMI 301",
+   "sites": [
+    "NETOS.DLL 5:190",
+    "SYSDETMG.DLL 2:85ca"
+   ],
+   "count": 2
+  },
+  "int 31h ax=0301 bx=0001": {
+   "answer": "unhandled DPMI 301",
+   "sites": [
+    "NETOS.DLL 6:94e"
+   ],
+   "count": 1
+  },
+  "int 21h ax=6601": {
+   "answer": "answered",
+   "sites": [
+    "SETUPX.DLL 3:4a96"
+   ],
+   "count": 1
+  },
+  "int 21h ax=4400": {
+   "answer": "answered (threw on an empty machine: Cannot read properties of undefined (reading 'get'))",
+   "sites": [
+    "SETUPX.DLL 3:7b42",
+    "SYSDETMG.DLL 2:8a9a"
+   ],
+   "count": 2
+  },
+  "int 21h ax=716c bx=0002": {
+   "answer": "answered (threw on an empty machine: Cannot read properties of undefined (reading 'get'))",
+   "sites": [
+    "SETUPX.DLL 5:d46"
+   ],
+   "count": 1
+  },
+  "int 21h ax=7160": {
+   "answer": "answered",
+   "sites": [
+    "SETUPX.DLL 17:81d",
+    "SUWIN.EXE 12:7f7"
+   ],
+   "count": 2
+  },
+  "int 2fh ax=1684 bx=000a": {
+   "answer": "answered (threw on an empty machine: Cannot read properties of undefined (reading 'findIndex'))",
+   "sites": [
+    "SETUPX.DLL 7:396b"
+   ],
+   "count": 1
+  },
+  "int 21h ax=36??": {
+   "answer": "answered",
+   "sites": [
+    "SETUPX.DLL 7:5978"
+   ],
+   "count": 1
+  },
+  "int 21h ax=30??": {
+   "answer": "answered",
+   "sites": [
+    "SETUPX.DLL 17:2f",
+    "W98SETUP.BIN 2:6"
+   ],
+   "count": 2
+  },
+  "int 21h ax=4411": {
+   "answer": "answered",
+   "sites": [
+    "W98SETUP.BIN 2:4c"
+   ],
+   "count": 1
+  },
+  "int 21h ax=59??": {
+   "answer": "answered",
+   "sites": [
+    "SETUPX.DLL 17:5a",
+    "SETUPX.DLL 17:9f8",
+    "SETUPX.DLL 17:139b",
+    "SUWIN.EXE 12:1fc7",
+    "W98SETUP.BIN 5:9e3"
+   ],
+   "count": 5
+  },
+  "int 2fh ax=5600 bx=0000": {
+   "answer": "answered",
+   "sites": [
+    "SETUPX.DLL 17:2b3",
+    "SUWIN.EXE 12:28d",
+    "W98SETUP.BIN 5:c7"
+   ],
+   "count": 3
+  },
+  "int 21h ax=4409": {
+   "answer": "answered",
+   "sites": [
+    "SETUPX.DLL 17:335",
+    "SUWIN.EXE 12:30f"
+   ],
+   "count": 2
+  },
+  "int 21h ax=52??": {
+   "answer": "answered",
+   "sites": [
+    "SETUPX.DLL 17:348",
+    "SUWIN.EXE 12:322",
+    "W98SETUP.BIN 2:39f9",
+    "W98SETUP.BIN 2:4453"
+   ],
+   "count": 4
+  },
+  "int 2fh ax=150b bx=0000": {
+   "answer": "answered",
+   "sites": [
+    "SETUPX.DLL 17:a1e",
+    "SUWIN.EXE 12:926",
+    "W98SETUP.BIN 5:1aa"
+   ],
+   "count": 3
+  },
+  "int 12h ax=5043 bx=4d4e": {
+   "answer": "answered",
+   "sites": [
+    "SETUPX.DLL 17:10fa",
+    "SETUPX.DLL 17:1886",
+    "SUWIN.EXE 3:6108",
+    "SUWIN.EXE 12:1416",
+    "SUWIN.EXE 12:1cb2",
+    "W98SETUP.BIN 5:334"
+   ],
+   "count": 6
+  },
+  "int 21h ax=0e00": {
+   "answer": "answered",
+   "sites": [
+    "SETUPX.DLL 17:190a",
+    "SUWIN.EXE 12:1fc",
+    "W98SETUP.BIN 5:7a"
+   ],
+   "count": 3
+  },
+  "int 21h ax=56??": {
+   "answer": "answered",
+   "sites": [
+    "SETUPX.DLL 25:62",
+    "SHELL.DLL 7:19 (DOS3Call)",
+    "SUWIN.EXE 5:d (DOS3Call)",
+    "VER.DLL 3:c1d (DOS3Call)",
+    "VERX.DLL 2:108e (DOS3Call)"
+   ],
+   "count": 5
+  },
+  "int 21h ax=68??": {
+   "answer": "answered (threw on an empty machine: Cannot read properties of undefined (reading 'get'))",
+   "sites": [
+    "SETUPX.DLL 25:78"
+   ],
+   "count": 1
+  },
+  "int 21h ax=5a??": {
+   "answer": "answered (threw on an empty machine: Cannot read properties of undefined (reading 'get'))",
+   "sites": [
+    "SETUPX.DLL 25:91"
+   ],
+   "count": 1
+  },
+  "int 13h ax=0d??": {
+   "answer": "answered",
+   "sites": [
+    "SUWIN.EXE 3:2aca",
+    "SUWIN.EXE 3:2b65"
+   ],
+   "count": 2
+  },
+  "int 21h ax=440d bx=0100": {
+   "answer": "answered",
+   "sites": [
+    "SUWIN.EXE 3:2cf0"
+   ],
+   "count": 1
+  },
+  "int 21h ax=3306 bx=0000": {
+   "answer": "answered",
+   "sites": [
+    "SUWIN.EXE 12:1ae",
+    "SUWIN.EXE 12:180f"
+   ],
+   "count": 2
+  },
+  "int 21h ax=4408": {
+   "answer": "answered",
+   "sites": [
+    "SUWIN.EXE 12:2dd"
+   ],
+   "count": 1
+  },
+  "int 11h ax=?": {
+   "answer": null,
+   "sites": [
+    "SUWIN.EXE 12:1108"
+   ],
+   "count": 1
+  },
+  "int 21h ax=0d00": {
+   "answer": "answered",
+   "sites": [
+    "SUWIN.EXE 12:1325"
+   ],
+   "count": 1
+  },
+  "int 2fh ax=168a": {
+   "answer": "answered",
+   "sites": [
+    "SYSDETMG.DLL 2:df53",
+    "W98SETUP.BIN 2:4d21"
+   ],
+   "count": 2
+  },
+  "int 2fh ax=1688 bx=0bad": {
+   "answer": "answered",
+   "sites": [
+    "SYSDETMG.DLL 2:df76",
+    "W98SETUP.BIN 2:4d44"
+   ],
+   "count": 2
+  },
+  "int 31h ax=0800": {
+   "answer": "answered",
+   "sites": [
+    "SYSDETMG.DLL 2:e1df"
+   ],
+   "count": 1
+  },
+  "int 2fh ax=1684 bx=0001": {
+   "answer": "answered (threw on an empty machine: Cannot read properties of undefined (reading 'findIndex'))",
+   "sites": [
+    "SYSDETMG.DLL 3:8f48"
+   ],
+   "count": 1
+  },
+  "int 12h ax=444d": {
+   "answer": "answered",
+   "sites": [
+    "SYSDETMG.DLL 3:a9e3"
+   ],
+   "count": 1
+  },
+  "int 21h ax=3900": {
+   "answer": "answered",
+   "sites": [
+    "W98SETUP.BIN 2:10f0 (DOS3Call)"
+   ],
+   "count": 1
+  },
+  "int 21h ax=3a??": {
+   "answer": "answered",
+   "sites": [
+    "W98SETUP.BIN 2:11d8 (DOS3Call)"
+   ],
+   "count": 1
+  },
+  "int 2fh ax=1684": {
+   "answer": "answered",
+   "sites": [
+    "W98SETUP.BIN 2:25fb"
+   ],
+   "count": 1
+  },
+  "int 2fh ax=d201 bx=4849": {
+   "answer": "answered",
+   "sites": [
+    "W98SETUP.BIN 2:4718"
+   ],
+   "count": 1
+  },
+  "int 2fh ax=0600": {
+   "answer": "answered",
+   "sites": [
+    "W98SETUP.BIN 2:4b55"
+   ],
+   "count": 1
+  },
+  "int 2fh ax=b700": {
+   "answer": "answered",
+   "sites": [
+    "W98SETUP.BIN 2:4b6d"
+   ],
+   "count": 1
+  },
+  "int 21h ax=35??": {
+   "answer": "answered",
+   "sites": [
+    "W98SETUP.BIN 4:621",
+    "W98SETUP.BIN 4:67d",
+    "W98SETUP.BIN 4:6b8",
+    "W98SETUP.BIN 4:6f3",
+    "W98SETUP.BIN 4:72e",
+    "W98SETUP.BIN 4:769"
+   ],
+   "count": 17
+  },
+  "int 21h ax=350a": {
+   "answer": "answered",
+   "sites": [
+    "W98SETUP.BIN 4:627"
+   ],
+   "count": 1
+  },
+  "int 21h ax=2500": {
+   "answer": "answered",
+   "sites": [
+    "W98SETUP.BIN 4:68f",
+    "W98SETUP.BIN 4:6ca",
+    "W98SETUP.BIN 4:705",
+    "W98SETUP.BIN 4:740",
+    "W98SETUP.BIN 4:77b",
+    "W98SETUP.BIN 4:7b6"
+   ],
+   "count": 16
+  },
+  "int 31h ax=0200": {
+   "answer": "answered",
+   "sites": [
+    "W98SETUP.BIN 4:699",
+    "W98SETUP.BIN 4:6d4",
+    "W98SETUP.BIN 4:70f",
+    "W98SETUP.BIN 4:74a",
+    "W98SETUP.BIN 4:785",
+    "W98SETUP.BIN 4:7c0"
+   ],
+   "count": 16
+  },
+  "int 31h ax=0201": {
+   "answer": "answered",
+   "sites": [
+    "W98SETUP.BIN 4:6ad",
+    "W98SETUP.BIN 4:6e8",
+    "W98SETUP.BIN 4:723",
+    "W98SETUP.BIN 4:75e",
+    "W98SETUP.BIN 4:799",
+    "W98SETUP.BIN 4:7d4"
+   ],
+   "count": 32
+  },
+  "int 21h ax=25??": {
+   "answer": "answered",
+   "sites": [
+    "W98SETUP.BIN 4:a48",
+    "W98SETUP.BIN 4:a85",
+    "W98SETUP.BIN 4:ac2",
+    "W98SETUP.BIN 4:aff",
+    "W98SETUP.BIN 4:b3c",
+    "W98SETUP.BIN 4:b79"
+   ],
+   "count": 16
+  }
+ },
+ "imports": {
+  "USER.#420": {
+   "have": "Windows 95 module",
+   "count": 305
+  },
+  "SETUPX.#47": {
+   "have": "Windows 95 module and the program's own",
+   "count": 187
+  },
+  "SETUPX.#50": {
+   "have": "Windows 95 module and the program's own",
+   "count": 242
+  },
+  "KERNEL.#353": {
+   "have": "stand-in",
+   "count": 84
+  },
+  "SETUPX.#39": {
+   "have": "Windows 95 module and the program's own",
+   "count": 336
+  },
+  "SETUPX.#38": {
+   "have": "Windows 95 module and the program's own",
+   "count": 154
+  },
+  "KERNEL.#90": {
+   "have": "stand-in",
+   "count": 657
+  },
+  "USER.#473": {
+   "have": "Windows 95 module",
+   "count": 21
+  },
+  "KERNEL.#88": {
+   "have": "stand-in",
+   "count": 713
+  },
+  "KERNEL.#128": {
+   "have": "stand-in",
+   "count": 47
+  },
+  "KERNEL.#89": {
+   "have": "stand-in",
+   "count": 267
+  },
+  "SETUPX.#40": {
+   "have": "Windows 95 module and the program's own",
+   "count": 63
+  },
+  "SETUPX.#53": {
+   "have": "Windows 95 module and the program's own",
+   "count": 175
+  },
+  "USER.#471": {
+   "have": "Windows 95 module",
+   "count": 455
+  },
+  "KERNEL.#4": {
+   "have": "stand-in",
+   "count": 33
+  },
+  "KERNEL.#23": {
+   "have": "stand-in",
+   "count": 12
+  },
+  "KERNEL.#3": {
+   "have": "stand-in",
+   "count": 24
+  },
+  "KERNEL.#102": {
+   "have": "stand-in",
+   "count": 250
+  },
+  "KERNEL.#131": {
+   "have": "stand-in",
+   "count": 19
+  },
+  "KERNEL.#137": {
+   "have": "stand-in",
+   "count": 13
+  },
+  "KERNEL.#1": {
+   "have": "stand-in",
+   "count": 14
+  },
+  "KERNEL.#16": {
+   "have": "stand-in",
+   "count": 55
+  },
+  "KERNEL.#20": {
+   "have": "stand-in",
+   "count": 22
+  },
+  "KERNEL.#15": {
+   "have": "stand-in",
+   "count": 263
+  },
+  "KERNEL.#18": {
+   "have": "stand-in",
+   "count": 259
+  },
+  "NETDI.#37": {
+   "have": "Windows 95 module and the program's own",
+   "count": 2
+  },
+  "NETDI.#38": {
+   "have": "Windows 95 module and the program's own",
+   "count": 10
+  },
+  "NETDI.#46": {
+   "have": "Windows 95 module and the program's own",
+   "count": 3
+  },
+  "NETDI.#26": {
+   "have": "Windows 95 module and the program's own",
+   "count": 3
+  },
+  "KERNEL.#95": {
+   "have": "stand-in",
+   "count": 43
+  },
+  "KERNEL.#50": {
+   "have": "stand-in",
+   "count": 89
+  },
+  "NETDI.#31": {
+   "have": "Windows 95 module and the program's own",
+   "count": 1
+  },
+  "KERNEL.#96": {
+   "have": "stand-in",
+   "count": 54
+  },
+  "KERNEL.#166": {
+   "have": "stand-in",
+   "count": 17
+  },
+  "KERNEL.#48": {
+   "have": "stand-in",
+   "count": 1
+  },
+  "KERNEL.#29": {
+   "have": "stand-in",
+   "count": 3
+  },
+  "NETDI.#14": {
+   "have": "Windows 95 module and the program's own",
+   "count": 7
+  },
+  "KERNEL.#17": {
+   "have": "stand-in",
+   "count": 418
+  },
+  "KERNEL.#5": {
+   "have": "stand-in",
+   "count": 175
+  },
+  "KERNEL.#6": {
+   "have": "stand-in",
+   "count": 12
+  },
+  "KERNEL.#10": {
+   "have": "stand-in",
+   "count": 3
+  },
+  "KERNEL.#348": {
+   "have": "stand-in",
+   "count": 96
+  },
+  "KERNEL.#7": {
+   "have": "stand-in",
+   "count": 208
+  },
+  "KERNEL.#60": {
+   "have": "stand-in",
+   "count": 32
+  },
+  "KERNEL.#61": {
+   "have": "stand-in",
+   "count": 32
+  },
+  "KERNEL.#62": {
+   "have": "stand-in",
+   "count": 41
+  },
+  "USER.#180": {
+   "have": "Windows 95 module",
+   "count": 86
+  },
+  "USER.#66": {
+   "have": "Windows 95 module",
+   "count": 82
+  },
+  "GDI.#52": {
+   "have": "Windows 95 module",
+   "count": 33
+  },
+  "GDI.#51": {
+   "have": "Windows 95 module",
+   "count": 14
+  },
+  "GDI.#45": {
+   "have": "Windows 95 module",
+   "count": 196
+  },
+  "GDI.#439": {
+   "have": "Windows 95 module",
+   "count": 4
+  },
+  "GDI.#34": {
+   "have": "Windows 95 module",
+   "count": 60
+  },
+  "GDI.#69": {
+   "have": "Windows 95 module",
+   "count": 139
+  },
+  "USER.#68": {
+   "have": "Windows 95 module",
+   "count": 86
+  },
+  "KERNEL.#19": {
+   "have": "stand-in",
+   "count": 353
+  },
+  "KERNEL.#63": {
+   "have": "stand-in",
+   "count": 39
+  },
+  "KERNEL.#47": {
+   "have": "stand-in",
+   "count": 31
+  },
+  "USER.#404": {
+   "have": "Windows 95 module",
+   "count": 30
+  },
+  "USER.#179": {
+   "have": "Windows 95 module",
+   "count": 113
+  },
+  "GDI.#66": {
+   "have": "Windows 95 module",
+   "count": 51
+  },
+  "GDI.#80": {
+   "have": "Windows 95 module",
+   "count": 31
+  },
+  "GDI.#87": {
+   "have": "Windows 95 module",
+   "count": 21
+  },
+  "USER.#173": {
+   "have": "Windows 95 module",
+   "count": 59
+  },
+  "USER.#57": {
+   "have": "Windows 95 module",
+   "count": 34
+  },
+  "USER.#111": {
+   "have": "Windows 95 module",
+   "count": 400
+  },
+  "USER.#22": {
+   "have": "Windows 95 module",
+   "count": 31
+  },
+  "USER.#23": {
+   "have": "Windows 95 module",
+   "count": 24
+  },
+  "USER.#91": {
+   "have": "Windows 95 module",
+   "count": 255
+  },
+  "USER.#136": {
+   "have": "Windows 95 module",
+   "count": 38
+  },
+  "USER.#26": {
+   "have": "Windows 95 module",
+   "count": 21
+  },
+  "USER.#135": {
+   "have": "Windows 95 module",
+   "count": 73
+  },
+  "USER.#232": {
+   "have": "Windows 95 module",
+   "count": 11
+  },
+  "USER.#42": {
+   "have": "Windows 95 module",
+   "count": 88
+  },
+  "USER.#34": {
+   "have": "Windows 95 module",
+   "count": 109
+  },
+  "USER.#37": {
+   "have": "Windows 95 module",
+   "count": 13
+  },
+  "USER.#69": {
+   "have": "Windows 95 module",
+   "count": 44
+  },
+  "USER.#176": {
+   "have": "stand-in",
+   "count": 212
+  },
+  "USER.#92": {
+   "have": "Windows 95 module",
+   "count": 81
+  },
+  "USER.#101": {
+   "have": "Windows 95 module",
+   "count": 181
+  },
+  "USER.#249": {
+   "have": "Windows 95 module",
+   "count": 56
+  },
+  "USER.#90": {
+   "have": "Windows 95 module",
+   "count": 6
+  },
+  "GDI.#82": {
+   "have": "Windows 95 module",
+   "count": 21
+  },
+  "GDI.#57": {
+   "have": "Windows 95 module",
+   "count": 8
+  },
+  "USER.#262": {
+   "have": "Windows 95 module",
+   "count": 17
+  },
+  "USER.#46": {
+   "have": "Windows 95 module",
+   "count": 72
+  },
+  "KERNEL.#65": {
+   "have": "stand-in",
+   "count": 5
+  },
+  "USER.#242": {
+   "have": "Windows 95 module",
+   "count": 6
+  },
+  "KERNEL.#21": {
+   "have": "stand-in",
+   "count": 176
+  },
+  "USER.#241": {
+   "have": "Windows 95 module",
+   "count": 2
+  },
+  "USER.#108": {
+   "have": "Windows 95 module",
+   "count": 10
+  },
+  "USER.#113": {
+   "have": "Windows 95 module",
+   "count": 15
+  },
+  "USER.#114": {
+   "have": "Windows 95 module",
+   "count": 16
+  },
+  "USER.#6": {
+   "have": "Windows 95 module",
+   "count": 3
+  },
+  "USER.#60": {
+   "have": "Windows 95 module",
+   "count": 9
+  },
+  "USER.#59": {
+   "have": "Windows 95 module",
+   "count": 3
+  },
+  "USER.#47": {
+   "have": "Windows 95 module",
+   "count": 28
+  },
+  "USER.#53": {
+   "have": "Windows 95 module",
+   "count": 26
+  },
+  "USER.#48": {
+   "have": "Windows 95 module",
+   "count": 4
+  },
+  "USER.#106": {
+   "have": "Windows 95 module",
+   "count": 10
+  },
+  "USER.#277": {
+   "have": "Windows 95 module",
+   "count": 11
+  },
+  "USER.#35": {
+   "have": "Windows 95 module",
+   "count": 15
+  },
+  "USER.#104": {
+   "have": "Windows 95 module",
+   "count": 17
+  },
+  "USER.#110": {
+   "have": "Windows 95 module",
+   "count": 25
+  },
+  "USER.#49": {
+   "have": "Windows 95 module",
+   "count": 9
+  },
+  "USER.#41": {
+   "have": "Windows 95 module",
+   "count": 17
+  },
+  "KERNEL.#57": {
+   "have": "stand-in",
+   "count": 2
+  },
+  "KERNEL.#58": {
+   "have": "stand-in",
+   "count": 23
+  },
+  "GDI.#56": {
+   "have": "Windows 95 module",
+   "count": 3
+  },
+  "GDI.#93": {
+   "have": "Windows 95 module",
+   "count": 7
+  },
+  "GDI.#154": {
+   "have": "Windows 95 module",
+   "count": 8
+  },
+  "GDI.#2": {
+   "have": "Windows 95 module",
+   "count": 18
+  },
+  "GDI.#9": {
+   "have": "Windows 95 module",
+   "count": 39
+  },
+  "GDI.#1": {
+   "have": "Windows 95 module",
+   "count": 57
+  },
+  "GDI.#29": {
+   "have": "Windows 95 module",
+   "count": 33
+  },
+  "USER.#78": {
+   "have": "Windows 95 module",
+   "count": 19
+  },
+  "USER.#472": {
+   "have": "Windows 95 module",
+   "count": 95
+  },
+  "GDI.#91": {
+   "have": "Windows 95 module",
+   "count": 12
+  },
+  "GDI.#351": {
+   "have": "Windows 95 module",
+   "count": 21
+  },
+  "USER.#39": {
+   "have": "Windows 95 module",
+   "count": 12
+  },
+  "USER.#33": {
+   "have": "Windows 95 module",
+   "count": 31
+  },
+  "GDI.#104": {
+   "have": "Windows 95 module",
+   "count": 2
+  },
+  "KERNEL.#8": {
+   "have": "stand-in",
+   "count": 16
+  },
+  "KERNEL.#9": {
+   "have": "stand-in",
+   "count": 18
+  },
+  "USER.#133": {
+   "have": "Windows 95 module",
+   "count": 26
+  },
+  "GDI.#30": {
+   "have": "Windows 95 module",
+   "count": 1
+  },
+  "GDI.#22": {
+   "have": "Windows 95 module",
+   "count": 3
+  },
+  "GDI.#39": {
+   "have": "Windows 95 module",
+   "count": 1
+  },
+  "USER.#40": {
+   "have": "Windows 95 module",
+   "count": 12
+  },
+  "USER.#125": {
+   "have": "Windows 95 module",
+   "count": 52
+  },
+  "USER.#134": {
+   "have": "Windows 95 module",
+   "count": 16
+  },
+  "USER.#124": {
+   "have": "Windows 95 module",
+   "count": 39
+  },
+  "USER.#107": {
+   "have": "Windows 95 module",
+   "count": 16
+  },
+  "GDI.#48": {
+   "have": "Windows 95 module",
+   "count": 9
+  },
+  "GDI.#68": {
+   "have": "Windows 95 module",
+   "count": 33
+  },
+  "GDI.#11": {
+   "have": "Windows 95 module",
+   "count": 1
+  },
+  "USER.#32": {
+   "have": "Windows 95 module",
+   "count": 47
+  },
+  "USER.#29": {
+   "have": "Windows 95 module",
+   "count": 53
+  },
+  "USER.#18": {
+   "have": "Windows 95 module",
+   "count": 12
+  },
+  "USER.#19": {
+   "have": "Windows 95 module",
+   "count": 9
+  },
+  "USER.#17": {
+   "have": "Windows 95 module",
+   "count": 5
+  },
+  "USER.#71": {
+   "have": "Windows 95 module",
+   "count": 13
+  },
+  "USER.#28": {
+   "have": "Windows 95 module",
+   "count": 8
+  },
+  "USER.#109": {
+   "have": "Windows 95 module",
+   "count": 15
+  },
+  "USER.#70": {
+   "have": "Windows 95 module",
+   "count": 4
+  },
+  "USER.#16": {
+   "have": "Windows 95 module",
+   "count": 5
+  },
+  "GDI.#156": {
+   "have": "Windows 95 module",
+   "count": 2
+  },
+  "GDI.#440": {
+   "have": "Windows 95 module",
+   "count": 1
+  },
+  "GDI.#442": {
+   "have": "Windows 95 module",
+   "count": 6
+  },
+  "GDI.#60": {
+   "have": "Windows 95 module",
+   "count": 6
+  },
+  "USER.#118": {
+   "have": "Windows 95 module",
+   "count": 20
+  },
+  "USER.#25": {
+   "have": "Windows 95 module",
+   "count": 28
+  },
+  "USER.#76": {
+   "have": "Windows 95 module",
+   "count": 22
+  },
+  "USER.#13": {
+   "have": "Windows 95 module",
+   "count": 63
+  },
+  "USER.#174": {
+   "have": "Windows 95 module",
+   "count": 11
+  },
+  "USER.#84": {
+   "have": "Windows 95 module",
+   "count": 2
+  },
+  "USER.#263": {
+   "have": "Windows 95 module",
+   "count": 4
+  },
+  "USER.#159": {
+   "have": "Windows 95 module",
+   "count": 4
+  },
+  "USER.#264": {
+   "have": "Windows 95 module",
+   "count": 2
+  },
+  "USER.#250": {
+   "have": "Windows 95 module",
+   "count": 2
+  },
+  "USER.#158": {
+   "have": "Windows 95 module",
+   "count": 2
+  },
+  "USER.#154": {
+   "have": "Windows 95 module",
+   "count": 4
+  },
+  "USER.#156": {
+   "have": "Windows 95 module",
+   "count": 3
+  },
+  "USER.#373": {
+   "have": "Windows 95 module",
+   "count": 2
+  },
+  "KERNEL.#129": {
+   "have": "stand-in",
+   "count": 6
+  },
+  "KERNEL.#59": {
+   "have": "stand-in",
+   "count": 6
+  },
+  "USER.#239": {
+   "have": "Windows 95 module",
+   "count": 19
+  },
+  "USER.#165": {
+   "have": "Windows 95 module",
+   "count": 1
+  },
+  "GDI.#21": {
+   "have": "Windows 95 module",
+   "count": 1
+  },
+  "USER.#119": {
+   "have": "Windows 95 module",
+   "count": 3
+  },
+  "USER.#166": {
+   "have": "Windows 95 module",
+   "count": 3
+  },
+  "USER.#10": {
+   "have": "Windows 95 module",
+   "count": 12
+  },
+  "USER.#236": {
+   "have": "Windows 95 module",
+   "count": 6
+  },
+  "USER.#12": {
+   "have": "Windows 95 module",
+   "count": 12
+  },
+  "USER.#167": {
+   "have": "Windows 95 module",
+   "count": 3
+  },
+  "KERNEL.#328": {
+   "have": "stand-in",
+   "count": 7
+  },
+  "USER.#56": {
+   "have": "Windows 95 module",
+   "count": 7
+  },
+  "USER.#36": {
+   "have": "Windows 95 module",
+   "count": 18
+  },
+  "USER.#24": {
+   "have": "Windows 95 module",
+   "count": 22
+  },
+  "USER.#58": {
+   "have": "Windows 95 module",
+   "count": 5
+  },
+  "USER.#81": {
+   "have": "Windows 95 module",
+   "count": 28
+  },
+  "USER.#77": {
+   "have": "Windows 95 module",
+   "count": 16
+  },
+  "KERNEL.#11": {
+   "have": "stand-in",
+   "count": 1
+  },
+  "USER.#127": {
+   "have": "Windows 95 module",
+   "count": 4
+  },
+  "USER.#74": {
+   "have": "Windows 95 module",
+   "count": 9
+  },
+  "USER.#191": {
+   "have": "Windows 95 module",
+   "count": 6
+  },
+  "USER.#88": {
+   "have": "Windows 95 module",
+   "count": 30
+  },
+  "USER.#95": {
+   "have": "Windows 95 module",
+   "count": 9
+  },
+  "USER.#94": {
+   "have": "Windows 95 module",
+   "count": 15
+  },
+  "USER.#93": {
+   "have": "Windows 95 module",
+   "count": 28
+  },
+  "USER.#240": {
+   "have": "Windows 95 module",
+   "count": 5
+  },
+  "USER.#83": {
+   "have": "Windows 95 module",
+   "count": 1
+  },
+  "GDI.#61": {
+   "have": "Windows 95 module",
+   "count": 1
+  },
+  "GDI.#27": {
+   "have": "Windows 95 module",
+   "count": 5
+  },
+  "USER.#466": {
+   "have": "Windows 95 module",
+   "count": 14
+  },
+  "USER.#122": {
+   "have": "Windows 95 module",
+   "count": 24
+  },
+  "GDI.#36": {
+   "have": "Windows 95 module",
+   "count": 1
+  },
+  "GDI.#20": {
+   "have": "Windows 95 module",
+   "count": 12
+  },
+  "GDI.#19": {
+   "have": "Windows 95 module",
+   "count": 12
+  },
+  "USER.#79": {
+   "have": "Windows 95 module",
+   "count": 16
+  },
+  "USER.#244": {
+   "have": "Windows 95 module",
+   "count": 2
+  },
+  "KERNEL.#207": {
+   "have": "stand-in",
+   "count": 6
+  },
+  "USER.#432": {
+   "have": "Windows 95 module",
+   "count": 8
+  },
+  "KEYBOARD.#6": {
+   "have": "Windows 95 module",
+   "count": 38
+  },
+  "USER.#430": {
+   "have": "Windows 95 module",
+   "count": 72
+  },
+  "USER.#431": {
+   "have": "Windows 95 module",
+   "count": 62
+  },
+  "KEYBOARD.#5": {
+   "have": "Windows 95 module",
+   "count": 37
+  },
+  "USER.#100": {
+   "have": "Windows 95 module",
+   "count": 1
+  },
+  "USER.#513": {
+   "have": "Windows 95 module",
+   "count": 5
+  },
+  "USER.#525": {
+   "have": "Windows 95 module",
+   "count": 2
+  },
+  "USER.#243": {
+   "have": "Windows 95 module",
+   "count": 1
+  },
+  "KERNEL.#74": {
+   "have": "stand-in",
+   "count": 80
+  },
+  "KERNEL.#107": {
+   "have": "stand-in",
+   "count": 50
+  },
+  "USER.#131": {
+   "have": "Windows 95 module",
+   "count": 2
+  },
+  "USER.#97": {
+   "have": "Windows 95 module",
+   "count": 14
+  },
+  "USER.#189": {
+   "have": "Windows 95 module",
+   "count": 1
+  },
+  "USER.#1": {
+   "have": "Windows 95 module",
+   "count": 47
+  },
+  "KERNEL.#136": {
+   "have": "stand-in",
+   "count": 13
+  },
+  "KERNEL.#81": {
+   "have": "stand-in",
+   "count": 126
+  },
+  "USER.#98": {
+   "have": "Windows 95 module",
+   "count": 20
+  },
+  "KERNEL.#121": {
+   "have": "stand-in",
+   "count": 1
+  },
+  "USER.#512": {
+   "have": "Windows 95 module",
+   "count": 2
+  },
+  "USER.#185": {
+   "have": "Windows 95 module",
+   "count": 1
+  },
+  "USER.#96": {
+   "have": "Windows 95 module",
+   "count": 14
+  },
+  "USER.#527": {
+   "have": "Windows 95 module",
+   "count": 1
+  },
+  "GDI.#153": {
+   "have": "Windows 95 module",
+   "count": 3
+  },
+  "GDI.#38": {
+   "have": "Windows 95 module",
+   "count": 5
+  },
+  "GDI.#53": {
+   "have": "Windows 95 module",
+   "count": 1
+  },
+  "GDI.#128": {
+   "have": "Windows 95 module",
+   "count": 12
+  },
+  "GDI.#81": {
+   "have": "Windows 95 module",
+   "count": 2
+  },
+  "GDI.#94": {
+   "have": "Windows 95 module",
+   "count": 1
+  },
+  "GDI.#96": {
+   "have": "Windows 95 module",
+   "count": 1
+  },
+  "GDI.#3": {
+   "have": "Windows 95 module",
+   "count": 3
+  },
+  "GDI.#12": {
+   "have": "Windows 95 module",
+   "count": 1
+  },
+  "GDI.#14": {
+   "have": "Windows 95 module",
+   "count": 1
+  },
+  "GDI.#33": {
+   "have": "Windows 95 module",
+   "count": 2
+  },
+  "KERNEL.#24": {
+   "have": "stand-in",
+   "count": 7
+  },
+  "KERNEL.#132": {
+   "have": "stand-in",
+   "count": 9
+  },
+  "KERNEL.#127": {
+   "have": "stand-in",
+   "count": 23
+  },
+  "KERNEL.#91": {
+   "have": "stand-in",
+   "count": 5
+  },
+  "KERNEL.#52": {
+   "have": "stand-in",
+   "count": 16
+  },
+  "KERNEL.#51": {
+   "have": "stand-in",
+   "count": 16
+  },
+  "USER.#89": {
+   "have": "Windows 95 module",
+   "count": 7
+  },
+  "USER.#87": {
+   "have": "Windows 95 module",
+   "count": 18
+  },
+  "COMMDLG.#1": {
+   "have": "Windows 95 module and the program's own",
+   "count": 1
+  },
+  "USER.#286": {
+   "have": "Windows 95 module",
+   "count": 4
+  },
+  "USER.#293": {
+   "have": "Windows 95 module",
+   "count": 2
+  },
+  "USER.#292": {
+   "have": "Windows 95 module",
+   "count": 4
+  },
+  "KERNEL.#36": {
+   "have": "stand-in",
+   "count": 10
+  },
+  "USER.#291": {
+   "have": "Windows 95 module",
+   "count": 4
+  },
+  "USER.#31": {
+   "have": "Windows 95 module",
+   "count": 4
+  },
+  "USER.#67": {
+   "have": "Windows 95 module",
+   "count": 2
+  },
+  "USER.#238": {
+   "have": "Windows 95 module",
+   "count": 1
+  },
+  "KERNEL.#220": {
+   "have": "stand-in",
+   "count": 40
+  },
+  "SETUPX.#60": {
+   "have": "Windows 95 module and the program's own",
+   "count": 1
+  },
+  "SETUPX.#205": {
+   "have": "Windows 95 module and the program's own",
+   "count": 1
+  },
+  "SETUPX.#508": {
+   "have": "Windows 95 module and the program's own",
+   "count": 36
+  },
+  "SETUPX.#2": {
+   "have": "Windows 95 module and the program's own",
+   "count": 38
+  },
+  "SETUPX.#210": {
+   "have": "Windows 95 module and the program's own",
+   "count": 58
+  },
+  "SETUPX.#4": {
+   "have": "Windows 95 module and the program's own",
+   "count": 54
+  },
+  "NETDI.#21": {
+   "have": "Windows 95 module and the program's own",
+   "count": 1
+  },
+  "NETDI.#27": {
+   "have": "Windows 95 module and the program's own",
+   "count": 10
+  },
+  "NETDI.#74": {
+   "have": "Windows 95 module and the program's own",
+   "count": 3
+  },
+  "NETDI.#73": {
+   "have": "Windows 95 module and the program's own",
+   "count": 1
+  },
+  "NETDI.#35": {
+   "have": "Windows 95 module and the program's own",
+   "count": 2
+  },
+  "SETUPX.#42": {
+   "have": "Windows 95 module and the program's own",
+   "count": 34
+  },
+  "SETUPX.#44": {
+   "have": "Windows 95 module and the program's own",
+   "count": 25
+  },
+  "KERNEL.#513": {
+   "have": "stand-in",
+   "count": 3
+  },
+  "KERNEL.#515": {
+   "have": "stand-in",
+   "count": 8
+  },
+  "KERNEL.#514": {
+   "have": "stand-in",
+   "count": 6
+  },
+  "KERNEL.#518": {
+   "have": "stand-in",
+   "count": 52
+  },
+  "NETDI.#28": {
+   "have": "Windows 95 module and the program's own",
+   "count": 1
+  },
+  "NETDI.#45": {
+   "have": "Windows 95 module and the program's own",
+   "count": 4
+  },
+  "NETDI.#39": {
+   "have": "Windows 95 module and the program's own",
+   "count": 7
+  },
+  "NETDI.#75": {
+   "have": "Windows 95 module and the program's own",
+   "count": 2
+  },
+  "NETDI.#76": {
+   "have": "Windows 95 module and the program's own",
+   "count": 1
+  },
+  "NETDI.#22": {
+   "have": "Windows 95 module and the program's own",
+   "count": 3
+  },
+  "SHELL.#262": {
+   "have": "Windows 95 module",
+   "count": 1
+  },
+  "KERNEL.#134": {
+   "have": "stand-in",
+   "count": 16
+  },
+  "KERNEL.#135": {
+   "have": "stand-in",
+   "count": 8
+  },
+  "SHELL.#263": {
+   "have": "Windows 95 module",
+   "count": 1
+  },
+  "SHELL.#264": {
+   "have": "Windows 95 module",
+   "count": 2
+  },
+  "KERNEL.#25": {
+   "have": "stand-in",
+   "count": 30
+  },
+  "KERNEL.#84": {
+   "have": "stand-in",
+   "count": 91
+  },
+  "KERNEL.#86": {
+   "have": "stand-in",
+   "count": 54
+  },
+  "KERNEL.#85": {
+   "have": "stand-in",
+   "count": 40
+  },
+  "KERNEL.#82": {
+   "have": "stand-in",
+   "count": 95
+  },
+  "SHELL.#38": {
+   "have": "Windows 95 module and the program's own",
+   "count": 1
+  },
+  "KERNEL.#184": {
+   "have": "stand-in",
+   "count": 18
+  },
+  "KERNEL.#185": {
+   "have": "stand-in",
+   "count": 23
+  },
+  "KERNEL.#217": {
+   "have": "stand-in",
+   "count": 27
+  },
+  "KERNEL.#218": {
+   "have": "stand-in",
+   "count": 7
+  },
+  "KERNEL.#226": {
+   "have": "stand-in",
+   "count": 13
+  },
+  "KERNEL.#175": {
+   "have": "stand-in",
+   "count": 11
+  },
+  "KERNEL.#187": {
+   "have": "stand-in",
+   "count": 10
+  },
+  "KERNEL.#189": {
+   "have": "stand-in",
+   "count": 7
+  },
+  "KERNEL.#196": {
+   "have": "stand-in",
+   "count": 2
+  },
+  "KERNEL.#176": {
+   "have": "stand-in",
+   "count": 23
+  },
+  "SETUPX.#303": {
+   "have": "Windows 95 module and the program's own",
+   "count": 20
+  },
+  "SETUPX.#301": {
+   "have": "Windows 95 module and the program's own",
+   "count": 1
+  },
+  "SETUPX.#313": {
+   "have": "Windows 95 module and the program's own",
+   "count": 3
+  },
+  "SETUPX.#304": {
+   "have": "Windows 95 module and the program's own",
+   "count": 26
+  },
+  "SETUPX.#319": {
+   "have": "Windows 95 module and the program's own",
+   "count": 60
+  },
+  "SETUPX.#305": {
+   "have": "Windows 95 module and the program's own",
+   "count": 44
+  },
+  "KERNEL.#222": {
+   "have": "stand-in",
+   "count": 4
+  },
+  "SETUPX.#318": {
+   "have": "Windows 95 module and the program's own",
+   "count": 4
+  },
+  "KERNEL.#223": {
+   "have": "stand-in",
+   "count": 4
+  },
+  "KERNEL.#221": {
+   "have": "stand-in",
+   "count": 2
+  },
+  "SETUPX.#344": {
+   "have": "Windows 95 module and the program's own",
+   "count": 4
+  },
+  "KERNEL.#420": {
+   "have": "stand-in",
+   "count": 2
+  },
+  "SHELL.#20": {
+   "have": "Windows 95 module and the program's own",
+   "count": 2
+  },
+  "KERNEL.#225": {
+   "have": "stand-in",
+   "count": 17
+  },
+  "KERNEL.#216": {
+   "have": "stand-in",
+   "count": 4
+  },
+  "KERNEL.#219": {
+   "have": "stand-in",
+   "count": 3
+  },
+  "USER.#54": {
+   "have": "Windows 95 module",
+   "count": 5
+  },
+  "SETUPX.#112": {
+   "have": "Windows 95 module and the program's own",
+   "count": 32
+  },
+  "USER.#50": {
+   "have": "Windows 95 module",
+   "count": 21
+  },
+  "SETUPX.#41": {
+   "have": "Windows 95 module and the program's own",
+   "count": 33
+  },
+  "SETUPX.#309": {
+   "have": "Windows 95 module and the program's own",
+   "count": 3
+  },
+  "SETUPX.#308": {
+   "have": "Windows 95 module and the program's own",
+   "count": 7
+  },
+  "SETUPX.#302": {
+   "have": "Windows 95 module and the program's own",
+   "count": 4
+  },
+  "SETUPX.#43": {
+   "have": "Windows 95 module and the program's own",
+   "count": 48
+  },
+  "USER.#421": {
+   "have": "Windows 95 module",
+   "count": 8
+  },
+  "SETUPX.#200": {
+   "have": "Windows 95 module and the program's own",
+   "count": 19
+  },
+  "SETUPX.#101": {
+   "have": "Windows 95 module and the program's own",
+   "count": 41
+  },
+  "SETUPX.#201": {
+   "have": "Windows 95 module and the program's own",
+   "count": 31
+  },
+  "SHELL.#157": {
+   "have": "Windows 95 module",
+   "count": 5
+  },
+  "USER.#483": {
+   "have": "Windows 95 module",
+   "count": 11
+  },
+  "USER.#281": {
+   "have": "Windows 95 module",
+   "count": 8
+  },
+  "GDI.#461": {
+   "have": "Windows 95 module",
+   "count": 12
+  },
+  "GDI.#471": {
+   "have": "Windows 95 module",
+   "count": 15
+  },
+  "USER.#72": {
+   "have": "Windows 95 module",
+   "count": 5
+  },
+  "USER.#258": {
+   "have": "Windows 95 module",
+   "count": 2
+  },
+  "USER.#120": {
+   "have": "Windows 95 module",
+   "count": 3
+  },
+  "USER.#228": {
+   "have": "Windows 95 module",
+   "count": 1
+  },
+  "USER.#123": {
+   "have": "Windows 95 module",
+   "count": 1
+  },
+  "GDI.#529": {
+   "have": "Windows 95 module",
+   "count": 2
+  },
+  "GDI.#363": {
+   "have": "Windows 95 module",
+   "count": 1
+  },
+  "GDI.#489": {
+   "have": "Windows 95 module",
+   "count": 1
+  },
+  "GDI.#83": {
+   "have": "Windows 95 module",
+   "count": 3
+  },
+  "USER.#282": {
+   "have": "Windows 95 module",
+   "count": 17
+  },
+  "USER.#283": {
+   "have": "Windows 95 module",
+   "count": 11
+  },
+  "GDI.#148": {
+   "have": "Windows 95 module",
+   "count": 3
+  },
+  "USER.#390": {
+   "have": "Windows 95 module",
+   "count": 1
+  },
+  "USER.#394": {
+   "have": "Windows 95 module",
+   "count": 2
+  },
+  "USER.#457": {
+   "have": "Windows 95 module",
+   "count": 3
+  },
+  "USER.#290": {
+   "have": "Windows 95 module",
+   "count": 18
+  },
+  "GDI.#47": {
+   "have": "Windows 95 module",
+   "count": 1
+  },
+  "USER.#190": {
+   "have": "Windows 95 module",
+   "count": 1
+  },
+  "GDI.#64": {
+   "have": "Windows 95 module",
+   "count": 1
+  },
+  "USER.#237": {
+   "have": "Windows 95 module",
+   "count": 1
+  },
+  "GDI.#77": {
+   "have": "Windows 95 module",
+   "count": 2
+  },
+  "USER.#80": {
+   "have": "Windows 95 module",
+   "count": 7
+  },
+  "USER.#21": {
+   "have": "Windows 95 module",
+   "count": 6
+  },
+  "USER.#476": {
+   "have": "Windows 95 module",
+   "count": 5
+  },
+  "GDI.#65": {
+   "have": "Windows 95 module",
+   "count": 1
+  },
+  "USER.#85": {
+   "have": "Windows 95 module",
+   "count": 4
+  },
+  "USER.#452": {
+   "have": "Windows 95 module",
+   "count": 4
+  },
+  "USER.#319": {
+   "have": "Windows 95 module",
+   "count": 6
+  },
+  "USER.#475": {
+   "have": "Windows 95 module",
+   "count": 7
+  },
+  "USER.#73": {
+   "have": "Windows 95 module",
+   "count": 4
+  },
+  "USER.#64": {
+   "have": "Windows 95 module",
+   "count": 7
+  },
+  "GDI.#35": {
+   "have": "Windows 95 module",
+   "count": 7
+  },
+  "USER.#62": {
+   "have": "Windows 95 module",
+   "count": 2
+  },
+  "USER.#659": {
+   "have": "Windows 95 module",
+   "count": 1
+  },
+  "KERNEL.#83": {
+   "have": "stand-in",
+   "count": 17
+  },
+  "USER.#436": {
+   "have": "Windows 95 module",
+   "count": 2
+  },
+  "USER.#435": {
+   "have": "Windows 95 module",
+   "count": 2
+  },
+  "KERNEL.#115": {
+   "have": "stand-in",
+   "count": 16
+  },
+  "KERNEL.#320": {
+   "have": "stand-in",
+   "count": 3
+  },
+  "KERNEL.#147": {
+   "have": "stand-in",
+   "count": 7
+  },
+  "SETUPX.#312": {
+   "have": "Windows 95 module and the program's own",
+   "count": 3
+  },
+  "USER.#271": {
+   "have": "Windows 95 module",
+   "count": 34
+  },
+  "SETUPX.#306": {
+   "have": "Windows 95 module and the program's own",
+   "count": 3
+  },
+  "SETUPX.#32": {
+   "have": "Windows 95 module and the program's own",
+   "count": 4
+  },
+  "SETUPX.#7": {
+   "have": "Windows 95 module and the program's own",
+   "count": 43
+  },
+  "SETUPX.#9": {
+   "have": "Windows 95 module and the program's own",
+   "count": 1
+  },
+  "SETUPX.#6": {
+   "have": "Windows 95 module and the program's own",
+   "count": 89
+  },
+  "SETUPX.#10": {
+   "have": "Windows 95 module and the program's own",
+   "count": 8
+  },
+  "SETUPX.#103": {
+   "have": "Windows 95 module and the program's own",
+   "count": 20
+  },
+  "SETUPX.#132": {
+   "have": "Windows 95 module and the program's own",
+   "count": 136
+  },
+  "SETUPX.#11": {
+   "have": "Windows 95 module and the program's own",
+   "count": 31
+  },
+  "SETUPX.#20": {
+   "have": "Windows 95 module and the program's own",
+   "count": 22
+  },
+  "SETUPX.#22": {
+   "have": "Windows 95 module and the program's own",
+   "count": 12
+  },
+  "KERNEL.#70": {
+   "have": "stand-in",
+   "count": 3
+  },
+  "SETUPX.#21": {
+   "have": "Windows 95 module and the program's own",
+   "count": 22
+  },
+  "SETUPX.#18": {
+   "have": "Windows 95 module and the program's own",
+   "count": 22
+  },
+  "SETUPX.#19": {
+   "have": "Windows 95 module and the program's own",
+   "count": 26
+  },
+  "KERNEL.#72": {
+   "have": "stand-in",
+   "count": 2
+  },
+  "SETUPX.#62": {
+   "have": "Windows 95 module and the program's own",
+   "count": 5
+  },
+  "KERNEL.#71": {
+   "have": "stand-in",
+   "count": 2
+  },
+  "SETUPX.#29": {
+   "have": "Windows 95 module and the program's own",
+   "count": 15
+  },
+  "SETUPX.#17": {
+   "have": "Windows 95 module and the program's own",
+   "count": 3
+  },
+  "SETUPX.#36": {
+   "have": "Windows 95 module and the program's own",
+   "count": 3
+  },
+  "SETUPX.#37": {
+   "have": "Windows 95 module and the program's own",
+   "count": 1
+  },
+  "GDI.#360": {
+   "have": "Windows 95 module",
+   "count": 3
+  },
+  "SETUPX.#375": {
+   "have": "Windows 95 module and the program's own",
+   "count": 10
+  },
+  "USER.#175": {
+   "have": "Windows 95 module",
+   "count": 8
+  },
+  "SETUPX.#377": {
+   "have": "Windows 95 module and the program's own",
+   "count": 4
+  },
+  "SETUPX.#131": {
+   "have": "Windows 95 module and the program's own",
+   "count": 1
+  },
+  "SETUPX.#300": {
+   "have": "Windows 95 module and the program's own",
+   "count": 5
+  },
+  "USER.#427": {
+   "have": "Windows 95 module",
+   "count": 1
+  },
+  "SETUPX.#326": {
+   "have": "Windows 95 module and the program's own",
+   "count": 3
+  },
+  "SETUPX.#61": {
+   "have": "Windows 95 module and the program's own",
+   "count": 3
+  },
+  "SETUPX.#130": {
+   "have": "Windows 95 module and the program's own",
+   "count": 1
+  },
+  "KERNEL.#197": {
+   "have": "stand-in",
+   "count": 1
+  },
+  "KERNEL.#198": {
+   "have": "stand-in",
+   "count": 1
+  },
+  "NETOS.#2": {
+   "have": "the program's own",
+   "count": 17
+  },
+  "SETUPX.#610": {
+   "have": "the program's own",
+   "count": 1
+  },
+  "SHELL.#1": {
+   "have": "Windows 95 module and the program's own",
+   "count": 2
+  },
+  "SHELL.#3": {
+   "have": "Windows 95 module and the program's own",
+   "count": 2
+  },
+  "SETUPX.#700": {
+   "have": "the program's own",
+   "count": 2
+  },
+  "USER.#7": {
+   "have": "Windows 95 module",
+   "count": 9
+  },
+  "SETUPX.#31": {
+   "have": "Windows 95 module and the program's own",
+   "count": 29
+  },
+  "SETUPX.#23": {
+   "have": "Windows 95 module and the program's own",
+   "count": 17
+  },
+  "SETUPX.#114": {
+   "have": "Windows 95 module and the program's own",
+   "count": 3
+  },
+  "SETUPX.#126": {
+   "have": "Windows 95 module and the program's own",
+   "count": 2
+  },
+  "SETUPX.#5": {
+   "have": "Windows 95 module and the program's own",
+   "count": 1
+  },
+  "SETUPX.#33": {
+   "have": "Windows 95 module and the program's own",
+   "count": 1
+  },
+  "SETUPX.#115": {
+   "have": "Windows 95 module and the program's own",
+   "count": 7
+  },
+  "SETUPX.#26": {
+   "have": "Windows 95 module and the program's own",
+   "count": 8
+  },
+  "SETUPX.#25": {
+   "have": "Windows 95 module and the program's own",
+   "count": 11
+  },
+  "SETUPX.#65": {
+   "have": "Windows 95 module and the program's own",
+   "count": 2
+  },
+  "SETUPX.#27": {
+   "have": "Windows 95 module and the program's own",
+   "count": 7
+  },
+  "NETOS.#27": {
+   "have": "the program's own",
+   "count": 1
+  },
+  "NETOS.#26": {
+   "have": "the program's own",
+   "count": 2
+  },
+  "NETOS.#3": {
+   "have": "the program's own",
+   "count": 3
+  },
+  "NETOS.#5": {
+   "have": "the program's own",
+   "count": 3
+  },
+  "SETUPX.#451": {
+   "have": "Windows 95 module and the program's own",
+   "count": 5
+  },
+  "USER.#171": {
+   "have": "Windows 95 module",
+   "count": 6
+  },
+  "SETUPX.#450": {
+   "have": "Windows 95 module and the program's own",
+   "count": 5
+  },
+  "USER.#155": {
+   "have": "Windows 95 module",
+   "count": 1
+  },
+  "NETOS.#24": {
+   "have": "the program's own",
+   "count": 1
+  },
+  "SETUPX.#314": {
+   "have": "Windows 95 module and the program's own",
+   "count": 1
+  },
+  "SETUPX.#322": {
+   "have": "Windows 95 module and the program's own",
+   "count": 1
+  },
+  "SETUPX.#30": {
+   "have": "Windows 95 module and the program's own",
+   "count": 12
+  },
+  "SETUPX.#310": {
+   "have": "Windows 95 module and the program's own",
+   "count": 2
+  },
+  "SETUPX.#102": {
+   "have": "Windows 95 module and the program's own",
+   "count": 7
+  },
+  "SETUPX.#107": {
+   "have": "Windows 95 module and the program's own",
+   "count": 5
+  },
+  "SETUPX.#35": {
+   "have": "Windows 95 module and the program's own",
+   "count": 2
+  },
+  "SETUPX.#13": {
+   "have": "Windows 95 module and the program's own",
+   "count": 26
+  },
+  "NETOS.#4": {
+   "have": "the program's own",
+   "count": 1
+  },
+  "SETUPX.#370": {
+   "have": "Windows 95 module and the program's own",
+   "count": 13
+  },
+  "SETUPX.#366": {
+   "have": "Windows 95 module and the program's own",
+   "count": 5
+  },
+  "SETUPX.#45": {
+   "have": "Windows 95 module and the program's own",
+   "count": 9
+  },
+  "SETUPX.#369": {
+   "have": "Windows 95 module and the program's own",
+   "count": 1
+  },
+  "SETUPX.#380": {
+   "have": "Windows 95 module and the program's own",
+   "count": 3
+  },
+  "SETUPX.#381": {
+   "have": "Windows 95 module and the program's own",
+   "count": 2
+  },
+  "SETUPX.#372": {
+   "have": "Windows 95 module and the program's own",
+   "count": 6
+  },
+  "SETUPX.#374": {
+   "have": "Windows 95 module and the program's own",
+   "count": 2
+  },
+  "SETUPX.#333": {
+   "have": "Windows 95 module and the program's own",
+   "count": 2
+  },
+  "SETUPX.#371": {
+   "have": "Windows 95 module and the program's own",
+   "count": 3
+  },
+  "SETUPX.#373": {
+   "have": "Windows 95 module and the program's own",
+   "count": 3
+  },
+  "KERNEL.#68": {
+   "have": "stand-in",
+   "count": 1
+  },
+  "KERNEL.#69": {
+   "have": "stand-in",
+   "count": 1
+  },
+  "SETUPX.#540": {
+   "have": "the program's own",
+   "count": 1
+  },
+  "SETUPX.#104": {
+   "have": "Windows 95 module and the program's own",
+   "count": 37
+  },
+  "SETUPX.#413": {
+   "have": "Windows 95 module and the program's own",
+   "count": 1
+  },
+  "SETUPX.#365": {
+   "have": "Windows 95 module and the program's own",
+   "count": 1
+  },
+  "NETOS.#30": {
+   "have": "the program's own",
+   "count": 1
+  },
+  "NETOS.#29": {
+   "have": "the program's own",
+   "count": 1
+  },
+  "SETUPX.#54": {
+   "have": "Windows 95 module and the program's own",
+   "count": 1
+  },
+  "SETUPX.#110": {
+   "have": "Windows 95 module and the program's own",
+   "count": 4
+  },
+  "SETUPX.#119": {
+   "have": "Windows 95 module and the program's own",
+   "count": 1
+  },
+  "SETUPX.#8": {
+   "have": "Windows 95 module and the program's own",
+   "count": 9
+  },
+  "USER.#287": {
+   "have": "Windows 95 module",
+   "count": 2
+  },
+  "SETUPX.#353": {
+   "have": "the program's own",
+   "count": 1
+  },
+  "NETOS.#6": {
+   "have": "the program's own",
+   "count": 1
+  },
+  "NETDI.#32": {
+   "have": "Windows 95 module and the program's own",
+   "count": 1
+  },
+  "NETDI.#25": {
+   "have": "Windows 95 module and the program's own",
+   "count": 1
+  },
+  "NETDI.#33": {
+   "have": "Windows 95 module and the program's own",
+   "count": 1
+  },
+  "KERNEL.#49": {
+   "have": "stand-in",
+   "count": 17
+  },
+  "KERNEL.#234": {
+   "have": "stand-in",
+   "count": 1
+  },
+  "KERNEL.#232": {
+   "have": "stand-in",
+   "count": 1
+  },
+  "KERNEL.#233": {
+   "have": "stand-in",
+   "count": 1
+  },
+  "KERNEL.#224": {
+   "have": "stand-in",
+   "count": 1
+  },
+  "KERNEL.#227": {
+   "have": "stand-in",
+   "count": 5
+  },
+  "USER.#55": {
+   "have": "Windows 95 module",
+   "count": 3
+  },
+  "GDI.#76": {
+   "have": "Windows 95 module",
+   "count": 1
+  },
+  "KERNEL.#143": {
+   "have": "stand-in",
+   "count": 1
+  },
+  "KERNEL.#349": {
+   "have": "stand-in",
+   "count": 1
+  },
+  "USER.#269": {
+   "have": "Windows 95 module",
+   "count": 15
+  },
+  "KERNEL.#334": {
+   "have": "stand-in",
+   "count": 12
+  },
+  "USER.#268": {
+   "have": "Windows 95 module",
+   "count": 13
+  },
+  "KERNEL.#97": {
+   "have": "stand-in",
+   "count": 3
+  },
+  "USER.#403": {
+   "have": "Windows 95 module",
+   "count": 4
+  },
+  "USER.#478": {
+   "have": "Windows 95 module",
+   "count": 1
+  },
+  "USER.#650": {
+   "have": "Windows 95 module",
+   "count": 1
+  },
+  "USER.#15": {
+   "have": "Windows 95 module",
+   "count": 1
+  },
+  "KERNEL.#337": {
+   "have": "stand-in",
+   "count": 8
+  },
+  "KERNEL.#347": {
+   "have": "stand-in",
+   "count": 11
+  },
+  "KERNEL.#346": {
+   "have": "stand-in",
+   "count": 2
+  },
+  "KERNEL.#157": {
+   "have": "stand-in",
+   "count": 1
+  },
+  "KERNEL.#56": {
+   "have": "stand-in",
+   "count": 12
+  },
+  "KERNEL.#55": {
+   "have": "stand-in",
+   "count": 2
+  },
+  "USER.#45": {
+   "have": "Windows 95 module",
+   "count": 2
+  },
+  "USER.#235": {
+   "have": "Windows 95 module",
+   "count": 1
+  },
+  "USER.#121": {
+   "have": "Windows 95 module",
+   "count": 1
+  },
+  "USER.#234": {
+   "have": "Windows 95 module",
+   "count": 1
+  },
+  "KERNEL.#169": {
+   "have": "stand-in",
+   "count": 2
+  },
+  "USER.#284": {
+   "have": "Windows 95 module",
+   "count": 1
+  },
+  "GDI.#346": {
+   "have": "Windows 95 module",
+   "count": 1
+  },
+  "USER.#455": {
+   "have": "Windows 95 module",
+   "count": 2
+  },
+  "KERNEL.#168": {
+   "have": "stand-in",
+   "count": 1
+  },
+  "USER.#456": {
+   "have": "Windows 95 module",
+   "count": 3
+  },
+  "KERNEL.#30": {
+   "have": "stand-in",
+   "count": 3
+  },
+  "USER.#5": {
+   "have": "Windows 95 module",
+   "count": 3
+  },
+  "SETUPX.#209": {
+   "have": "Windows 95 module and the program's own",
+   "count": 18
+  },
+  "SETUPX.#3": {
+   "have": "Windows 95 module and the program's own",
+   "count": 2
+  },
+  "VERX.VERQUERYVALUE": {
+   "have": "the program's own",
+   "count": 6
+  },
+  "SETUPX.#204": {
+   "have": "Windows 95 module and the program's own",
+   "count": 1
+  },
+  "SETUPX.#622": {
+   "have": "the program's own",
+   "count": 7
+  },
+  "SETUPX.#105": {
+   "have": "Windows 95 module and the program's own",
+   "count": 2
+  },
+  "SETUPX.#144": {
+   "have": "Windows 95 module and the program's own",
+   "count": 1
+  },
+  "SETUPX.#124": {
+   "have": "Windows 95 module and the program's own",
+   "count": 1
+  },
+  "SETUPX.#122": {
+   "have": "Windows 95 module and the program's own",
+   "count": 1
+  },
+  "SETUPX.#123": {
+   "have": "Windows 95 module and the program's own",
+   "count": 2
+  },
+  "VERX.GETFILEVERSIONINFO": {
+   "have": "the program's own",
+   "count": 4
+  },
+  "SETUPX.#528": {
+   "have": "Windows 95 module and the program's own",
+   "count": 2
+  },
+  "SETUPX.#116": {
+   "have": "Windows 95 module and the program's own",
+   "count": 1
+  },
+  "SETUPX.#206": {
+   "have": "Windows 95 module and the program's own",
+   "count": 2
+  },
+  "SETUPX.#208": {
+   "have": "Windows 95 module and the program's own",
+   "count": 5
+  },
+  "SETUPX.#207": {
+   "have": "Windows 95 module and the program's own",
+   "count": 2
+  },
+  "SETUPX.#512": {
+   "have": "the program's own",
+   "count": 1
+  },
+  "SETUPX.#151": {
+   "have": "Windows 95 module and the program's own",
+   "count": 1
+  },
+  "SETUPX.#153": {
+   "have": "Windows 95 module and the program's own",
+   "count": 1
+  },
+  "SETUPX.#156": {
+   "have": "Windows 95 module and the program's own",
+   "count": 1
+  },
+  "SETUPX.#155": {
+   "have": "Windows 95 module and the program's own",
+   "count": 1
+  },
+  "SETUPX.#507": {
+   "have": "Windows 95 module and the program's own",
+   "count": 1
+  },
+  "SETUPX.#509": {
+   "have": "Windows 95 module and the program's own",
+   "count": 1
+  },
+  "VERX.GETFILEVERSIONINFOSIZE": {
+   "have": "the program's own",
+   "count": 3
+  },
+  "SETUPX.#145": {
+   "have": "Windows 95 module and the program's own",
+   "count": 2
+  },
+  "SETUPX.#621": {
+   "have": "the program's own",
+   "count": 2
+  },
+  "SETUPX.#108": {
+   "have": "Windows 95 module and the program's own",
+   "count": 2
+  },
+  "SETUPX.#64": {
+   "have": "Windows 95 module and the program's own",
+   "count": 5
+  },
+  "SETUPX.#141": {
+   "have": "Windows 95 module and the program's own",
+   "count": 1
+  },
+  "SETUPX.#142": {
+   "have": "Windows 95 module and the program's own",
+   "count": 1
+  },
+  "SETUPX.#575": {
+   "have": "the program's own",
+   "count": 3
+  },
+  "SETUPX.#214": {
+   "have": "Windows 95 module and the program's own",
+   "count": 1
+  },
+  "SETUPX.#775": {
+   "have": "the program's own",
+   "count": 1
+  },
+  "SETUPX.#129": {
+   "have": "the program's own",
+   "count": 1
+  },
+  "SETUPX.#121": {
+   "have": "Windows 95 module and the program's own",
+   "count": 1
+  },
+  "SETUPX.#361": {
+   "have": "Windows 95 module and the program's own",
+   "count": 2
+  },
+  "VER.#7": {
+   "have": "Windows 95 module and the program's own",
+   "count": 1
+  },
+  "VER.#11": {
+   "have": "Windows 95 module and the program's own",
+   "count": 1
+  },
+  "SETUPX.#111": {
+   "have": "Windows 95 module and the program's own",
+   "count": 1
+  },
+  "KERNEL.#192": {
+   "have": "stand-in",
+   "count": 2
+  },
+  "LZEXPAND.#6": {
+   "have": "Windows 95 module and the program's own",
+   "count": 7
+  },
+  "LZEXPAND.#2": {
+   "have": "Windows 95 module and the program's own",
+   "count": 5
+  },
+  "KERNEL.#186": {
+   "have": "stand-in",
+   "count": 2
+  },
+  "LZEXPAND.#5": {
+   "have": "Windows 95 module and the program's own",
+   "count": 8
+  },
+  "LZEXPAND.#4": {
+   "have": "Windows 95 module and the program's own",
+   "count": 5
+  },
+  "LZEXPAND.#1": {
+   "have": "Windows 95 module and the program's own",
+   "count": 1
+  },
+  "SUEXPAND.LZCLOSE": {
+   "have": "the program's own",
+   "count": 7
+  },
+  "SUEXPAND.LZOPENFILE": {
+   "have": "the program's own",
+   "count": 5
+  },
+  "SUEXPAND.LZREAD": {
+   "have": "the program's own",
+   "count": 16
+  },
+  "SUEXPAND.LZSEEK": {
+   "have": "the program's own",
+   "count": 11
+  },
+  "SUEXPAND.LZCOPY": {
+   "have": "the program's own",
+   "count": 1
+  },
+  "USER.#181": {
+   "have": "Windows 95 module",
+   "count": 1
+  },
+  "USER.#246": {
+   "have": "Windows 95 module",
+   "count": 1
+  },
+  "USER.#137": {
+   "have": "Windows 95 module",
+   "count": 2
+  },
+  "USER.#139": {
+   "have": "Windows 95 module",
+   "count": 1
+  },
+  "USER.#138": {
+   "have": "Windows 95 module",
+   "count": 2
+  },
+  "USER.#224": {
+   "have": "Windows 95 module",
+   "count": 1
+  },
+  "USER.#193": {
+   "have": "Windows 95 module",
+   "count": 1
+  },
+  "USER.#142": {
+   "have": "Windows 95 module",
+   "count": 1
+  },
+  "USER.#188": {
+   "have": "Windows 95 module",
+   "count": 1
+  },
+  "KERNEL.#149": {
+   "have": "stand-in",
+   "count": 1
+  },
+  "GDI.#150": {
+   "have": "Windows 95 module",
+   "count": 2
+  },
+  "GDI.#7": {
+   "have": "Windows 95 module",
+   "count": 4
+  },
+  "KERNEL.#111": {
+   "have": "stand-in",
+   "count": 1
+  },
+  "KERNEL.#191": {
+   "have": "stand-in",
+   "count": 1
+  },
+  "KERNEL.#170": {
+   "have": "stand-in",
+   "count": 1
+  },
+  "KERNEL.#112": {
+   "have": "stand-in",
+   "count": 1
+  },
+  "GDI.#70": {
+   "have": "Windows 95 module",
+   "count": 1
+  },
+  "GDI.#67": {
+   "have": "Windows 95 module",
+   "count": 2
+  },
+  "KERNEL.LOADLIBRARYEX32W": {
+   "have": null,
+   "count": 3,
+   "sites": [
+    "WINSOCK.DLL 1:cb4",
+    "WINSOCK.DLL 1:12ed",
+    "WINSOCK.DLL 1:13e6"
+   ]
+  },
+  "KERNEL.GETPROCADDRESS32W": {
+   "have": null,
+   "count": 3,
+   "sites": [
+    "WINSOCK.DLL 1:ce7",
+    "WINSOCK.DLL 1:1304",
+    "WINSOCK.DLL 1:1444"
+   ]
+  },
+  "KERNEL.FREELIBRARY32W": {
+   "have": null,
+   "count": 4,
+   "sites": [
+    "WINSOCK.DLL 1:d08",
+    "WINSOCK.DLL 1:132e",
+    "WINSOCK.DLL 1:14e4",
+    "WINSOCK.DLL 1:1513"
+   ]
+  },
+  "USER.#192": {
+   "have": "Windows 95 module",
+   "count": 1
+  },
+  "USER.#115": {
+   "have": "Windows 95 module",
+   "count": 2
+  },
+  "KERNEL.#148": {
+   "have": "stand-in",
+   "count": 1
+  }
+ },
+ "ports": {
+  "out 22h": {
+   "handled": null,
+   "sites": [
+    "W98SETUP.BIN 1:138",
+    "W98SETUP.BIN 1:146"
+   ],
+   "count": 2
+  },
+  "in 23h": {
+   "handled": null,
+   "sites": [
+    "W98SETUP.BIN 1:13a"
+   ],
+   "count": 1
+  },
+  "out 23h": {
+   "handled": null,
+   "sites": [
+    "W98SETUP.BIN 1:14b"
+   ],
+   "count": 1
+  },
+  "in 61h": {
+   "handled": "timer",
+   "sites": [
+    "W98SETUP.BIN 1:154"
+   ],
+   "count": 1
+  },
+  "out 61h": {
+   "handled": "timer",
+   "sites": [
+    "W98SETUP.BIN 1:158",
+    "W98SETUP.BIN 1:178",
+    "W98SETUP.BIN 1:195"
+   ],
+   "count": 3
+  },
+  "out 43h": {
+   "handled": "timer",
+   "sites": [
+    "W98SETUP.BIN 1:15e",
+    "W98SETUP.BIN 1:199",
+    "W98SETUP.BIN 1:1b2"
+   ],
+   "count": 3
+  },
+  "out 42h": {
+   "handled": "timer",
+   "sites": [
+    "W98SETUP.BIN 1:162",
+    "W98SETUP.BIN 1:164",
+    "W98SETUP.BIN 1:1b6",
+    "W98SETUP.BIN 1:1b8"
+   ],
+   "count": 4
+  },
+  "in 42h": {
+   "handled": "timer",
+   "sites": [
+    "W98SETUP.BIN 1:19b",
+    "W98SETUP.BIN 1:1a6",
+    "W98SETUP.BIN 1:1aa"
+   ],
+   "count": 3
+  }
+ },
+ "dynUntranslatable": {}
+}

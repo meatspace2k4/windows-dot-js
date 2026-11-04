@@ -31,13 +31,22 @@ const sig = `0-01+${head}`, cb = `?v=${sig}`, site = join(root, 'deploy/win95/.s
 const page = readFileSync(join(site, 'index.html'), 'utf8');
 const tag = n => page.match(new RegExp(`<meta name="build-${n}" content="([^"]*)" />`))[1];
 assert.equal(tag('channel'), 'dev'); assert.equal(tag('sig'), sig); assert.equal(tag('version'), '0.0.1'); assert.equal(tag('commit'), head);
+// the page's hand-written scripts packed into app.js after the generated bundles' own tags, the worker's into
+// worker-libs.js after system.js and savers.js, each in the order they were loaded; every URL stamped
 const srcs = [...page.matchAll(/<script src="([^"]+)"/g)].map(m => m[1]);
-assert.ok(srcs.length > 10 && srcs.every(s => s.endsWith(cb)), srcs.join(' '));
+assert.ok(srcs.length >= 8 && srcs.every(s => s.endsWith(cb)), srcs.join(' '));
+assert.equal(srcs[srcs.length - 1], `app.js${cb}`); assert.ok(srcs.some(s => s.startsWith('system.js')) && !srcs.some(s => /^(fs|ne16|win32|host-web)\.js/.test(s)), srcs.join(' '));
 assert.ok(page.includes(`register('sw.js${cb}')`));
 assert.ok(readFileSync(join(site, 'win95.js'), 'utf8').includes(`new Worker('worker.js${cb}')`));
-assert.ok(readFileSync(join(site, 'host-web.js'), 'utf8').includes(`.src = 'win95.js${cb}'`));
+const app = readFileSync(join(site, 'app.js'), 'utf8');
+assert.ok(app.includes(`.src = 'win95.js${cb}'`) && app.includes('W95FS') && app.includes('W95Shared'), 'app.js holds host-web.js, fs.js and shared.js');
+assert.ok(!existsSync(join(site, 'host-web.js')) && !existsSync(join(site, 'ne16.js')), 'the packed files are not served on their own');
 const imports = readFileSync(join(site, 'worker.js'), 'utf8').split('\n').find(l => l.startsWith('importScripts('));
-assert.ok([...imports.matchAll(/'([^']+)'/g)].every(m => m[1].endsWith(cb)), imports);
+const imported = [...imports.matchAll(/'([^']+)'/g)].map(m => m[1]);
+assert.ok(imported.every(s => s.endsWith(cb)), imports);
+assert.deepEqual(imported.map(s => s.split('?')[0]), ['system.js', 'savers.js', 'worker-libs.js'], imports);
+const libs = readFileSync(join(site, 'worker-libs.js'), 'utf8');
+assert.ok(libs.indexOf('W95Bridge') < libs.indexOf('W95FS') && libs.indexOf('W95FS') < libs.indexOf('W95SaverRuntime'), 'worker-libs.js in importScripts order');
 assert.ok(readFileSync(join(site, 'sw.js'), 'utf8').includes(`const CACHE = 'win95-${sig}';`));
 for (const f of ['system.js', 'cdrom.iso', 'icons/icon192.png', 'manifest.webmanifest']) assert.ok(existsSync(join(site, f)), f);
 // the working tree is untouched by the stamps
@@ -48,7 +57,7 @@ assert.ok(readFileSync(join(root, 'win95.js'), 'utf8').includes("new Worker('wor
 if (spawnSync('terser', ['--version']).status === 0) {
   r = run(['--build-only', '--commit', head, '--version', '0-01']);
   assert.equal(r.status, 0, r.stdout + r.stderr);
-  for (const f of execFileSync('git', ['-C', root, 'ls-files', '--', '*.js'], { encoding: 'utf8' }).split('\n').filter(f => f && !f.includes('/'))) {
+  for (const f of ['app.js', 'worker-libs.js', 'win95.js', 'worker.js', 'sw.js']) {
     const c = spawnSync('node', ['--check', join(site, f)], { encoding: 'utf8' });
     assert.equal(c.status, 0, f + ': ' + c.stderr);
   }

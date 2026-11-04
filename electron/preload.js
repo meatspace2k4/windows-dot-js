@@ -22,8 +22,10 @@ contextBridge.exposeInMainWorld('W95HOST', {
     list: () => ipcRenderer.sendSync('shares-list'),
     op: (name, op, ...args) => ipcRenderer.sendSync('share-op', name, op, ...args),
   },
-  // the disc in the CD drive: the CD image chosen with File > Insert CD Image, a byte range at a time (null with none)
-  cd: { read: (sector, length) => ipcRenderer.sendSync('cd-read', sector, length) },
+  // the disc in the CD drive: the CD image chosen with File > Insert CD Image, a byte range at a time (null with none),
+  // its file's name, and each time another is put in
+  cd: { read: (sector, length) => ipcRenderer.sendSync('cd-read', sector, length), image: () => ipcRenderer.sendSync('cd-image'),
+    on: f => ipcRenderer.on('cd-changed', (_, name) => f(name)) },
   // the audio CD in the second drive: its table of contents (null with none) and its sectors a byte range at a time
   audio: { toc: ipcRenderer.sendSync('audio-toc'), read: (start, length) => ipcRenderer.invoke('audio-read', start, length) },
   // the window is the monitor: its content takes the size of the display mode the system's machine is in

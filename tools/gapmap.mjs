@@ -77,4 +77,41 @@ if (mode === '--standins') {
     }
   }
   log(JSON.stringify(out));
-} else { log('usage: node tools/gapmap.mjs --standins [system.js] | --dyn reach.json [system.js]  (tools/staticmap.py runs both)'); process.exit(2); }
+} else if (mode === '--files') {
+  // tools/filemap.py's questions about programs from disk: each interrupt function run on an empty machine (an
+  // "unhandled" answer its gap; a throw is the handler's, on a machine with nothing in it); each 16-bit import's
+  // stand-in and what it answers (K16: 'w' a word in AX); each port's handler; the block starts run-time translation
+  // cannot take, the files' segments put where filemap.py says
+  const q = JSON.parse(readFileSync(rest[0], 'utf8')), out = { ints: {}, imports: {}, ports: {}, dyn: {} };
+  p.rmode = true; p.fs = new Proxy({}, { get: (_, k) => (k === 'vols' ? new Map() : k === 'cwd' ? 'C:\\' : () => { throw new window.W95FS.FSError(2, 'x'); }) });
+  for (const [vec, ax, bx, cx] of q.ints) {
+    // (AH unknown, or a DPMI real-mode call whose registers are in memory: nothing an empty machine can say)
+    const a = ax === null || ax & 0x200000 ? null : ax & 0x100000 ? ax & 0xff00 : ax;
+    if (a === null || (vec === 0x31 && (a === 0x300 || a === 0x302))) { out.ints[`${vec},${ax},${bx},${cx}`] = null; continue; }
+    p.cpu.eax.value = a; p.cpu.ebx.value = bx ?? 0; p.cpu.ecx.value = cx ?? 0; p.trapped = null;
+    let ans; try { p.interrupt(vec, 0x5000); ans = p.trapped || 'answered'; } catch (e) { ans = `answered (threw on an empty machine: ${String(e && e.message || e).slice(0, 60)})`; }
+    out.ints[`${vec},${ax},${bx},${cx}`] = ans;
+  }
+  for (const k of q.imports) {
+    const d = N.K16[k], m = /^KERNEL\.#(\d+)$/.exec(k);
+    out.imports[k] = d ? { have: 'stand-in', ret: d[1] } : m && N.KERNEL_EQUATES[m[1]] !== undefined ? { have: 'constant' } : {};
+  }
+  for (const port of q.ports) {
+    const h = [['vxd', 'vxdTrapIO'], ['sound', 'soundIO'], ['network card', 'nicIO'], ['printer port', 'lptIO'], ['timer', 'pitIO']].find(([, f]) => {
+      if (!p[f]) return false; p.cpu.eax.value = 0; try { return !!p[f](port, 1, true); } catch (_) { return true; } });
+    out.ports[port] = h ? h[0] : (port >= 0x3b0 && port <= 0x3df) || port === 0x217a || port === 0x217b ? 'display adapter' : null;
+  }
+  for (const [name, r] of Object.entries(q.dyn)) {
+    const f = readFileSync(r.file), n = f.readUInt32LE(0x3c), shift = f.readUInt16LE(n + 0x32) || 9, segt = n + f.readUInt16LE(n + 0x22);
+    for (const [num, base] of Object.entries(r.segs)) { const o = segt + 8 * (num - 1), off = f.readUInt16LE(o) << shift, len = f.readUInt16LE(o + 2) || 0x10000; p.u8.fill(0, base, base + 0x10000); p.u8.set(f.subarray(off, off + len), base); }
+    for (const s0 of r.starts) {
+      const ptr = s0.endsWith('*'), s = s0.replace(/\*$/, ''), [num, off] = s.split(':'), lin = r.segs[num] + parseInt(off, 16);   // (*: reached only from a relocated address)
+      let res; try { res = p.dynCheck(lin, false); } catch (e) { res = { unsupported: `translator error: ${e.message}` }; }
+      if (!res.unsupported) continue;
+      const k = res.unsupported.replace(/ at [0-9a-f]+$/, ''), e = out.dyn[k] || (out.dyn[k] = { count: 0, flow: 0, first: [], flowAt: [] });
+      e.count++; if (e.first.length < 8) e.first.push(`${name} ${s}`);
+      if (!ptr) { e.flow++; if (e.flowAt.length < 8) e.flowAt.push(`${name} ${s}`); }
+    }
+  }
+  log(JSON.stringify(out));
+} else { log('usage: node tools/gapmap.mjs --standins [system.js] | --dyn reach.json [system.js] | --files questions.json  (tools/staticmap.py, tools/filemap.py)'); process.exit(2); }

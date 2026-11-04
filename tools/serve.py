@@ -1,15 +1,18 @@
 """The dev server: the project folder over HTTP on 127.0.0.1, answering byte ranges (the CD drive reads its disc a few
-sectors at a time), with cdrom.iso the CD image given by --iso.
+sectors at a time), with cdrom.iso the CD image given by --iso, and each --cd another the drive can take (/__cd lists them).
 
-    python3 tools/serve.py 8095 --iso "Win95 OSR2.ISO"
+    python3 tools/serve.py 8095 --iso "Win95 OSR2.ISO" --cd "Windows 98 SE.iso"
 """
 import argparse, base64, http.server, json, os, re, shutil, socket
 
 ap = argparse.ArgumentParser(); ap.add_argument('port', type=int); ap.add_argument('--iso'); ap.add_argument('--host', default='127.0.0.1')
 # HTTPS with this certificate and key: a page from another computer is a secure context only over HTTPS, and only a
 # secure context has the shared memory the machines run on (SharedArrayBuffer) and the sound's AudioWorklet
-ap.add_argument('--cert'); ap.add_argument('--key'); a = ap.parse_args()
+ap.add_argument('--cert'); ap.add_argument('--key')
+ap.add_argument('--cd', action='append', default=[], help='another CD image the drive can take (each served read-only at /cd/<n>/<name>)'); a = ap.parse_args()
 root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CDS = ([{'name': os.path.basename(a.iso), 'path': a.iso, 'url': 'cdrom.iso'}] if a.iso else []) + \
+      [{'name': os.path.basename(p), 'path': p, 'url': f'cd/{i + (1 if a.iso else 0)}/' + os.path.basename(p).replace(' ', '%20')} for i, p in enumerate(a.cd)]
 # the sessions people share (tools/sessions.py: /__sessions, /__session/<id>/...), kept in .sessions beside the project,
 # one folder of them per port (each port a page origin of its own, as each has its own disk)
 import sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import sessions
@@ -102,9 +105,18 @@ class H(http.server.SimpleHTTPRequestHandler):
 
     def __init__(self, *x, **k): super().__init__(*x, directory=root, **k)
     def translate_path(self, p):
-        if a.iso and p.split('?')[0] == '/cdrom.iso': return a.iso
+        q = p.split('?')[0]
+        if a.iso and q == '/cdrom.iso': return a.iso
+        m = re.match(r'/cd/(\d+)/', q)
+        if m and int(m[1]) < len(CDS): return CDS[int(m[1])]['path']
         return super().translate_path(p)
     def send_head(self):
+        if self.path.split('?')[0] == '/__cd':   # (the CD images the drive can take: --iso's first, as cdrom.iso, then each --cd)
+            b = json.dumps([{'name': c['name'], 'url': c['url']} for c in CDS if os.path.isfile(c['path'])]).encode()
+            self.send_response(200); self.send_header('Content-Type', 'application/json'); self.send_header('Content-Length', str(len(b))); self.end_headers()
+            import io; return io.BytesIO(b)
+        return self.send_range()
+    def send_range(self):
         for k in ('If-Modified-Since', 'If-None-Match'): del self.headers[k]   # (never a 304: a copy the browser kept from before is not reused)
         m = re.match(r'bytes=(\d+)-(\d*)$', self.headers.get('Range', ''))
         path = self.translate_path(self.path)

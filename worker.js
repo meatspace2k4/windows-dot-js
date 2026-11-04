@@ -11,6 +11,7 @@ self.W95LAN = { stations: new Set(), frames: 0 };
 importScripts('bridge.js', 'fs.js', 'win32.js', 'gl.js', 'shell32.js', 'system.js', 'claude-exe.js', 'claude-app.js', 'session-dll.js', 'sesstray-exe.js', 'session-tray.js', 'dbwin-exe.js', 'dbwin.js','osclass.js', 'ne16.js', 'vmm.js', 'sound.js', 'lan.js', 'parallel.js', 'netfs.js', 'dyn.js', 'savers.js', 'saver-runtime.js');
 const B = self.W95Bridge, W = self.W95Win32, { FSError, join, basename, extname } = self.W95FS;
 const b64bytes = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+const sha256 = W.sha256;   // (a program's identity as the bundle records it: spawnProgram)
 const post = (m, tr) => self.postMessage(m, tr || []);
 self.W95CDAUDIO = (op, from, to) => post({ t: 'cdaudio', op, from, to });   // (the audio CD drive's play and stop, for the page's cdaudio.js: ne16.js cdRequest)
 self.W95MIC = on => post({ t: 'mic', on });                                 // (the sound card's capture started or stopped: the page's microphone: sound.js)
@@ -631,10 +632,12 @@ class Machine {
     // the Start menu over DDE with the shell, which waits for it)
     if (this.holdStartup && !/^(SYSTRAY|MPREXE|MMTASK|RUNDLL32|EXPLORER|MSGSRV32|RUNONCE|GRPCONV|SETUP|SUWIN)\.(EXE|TSK)$/i.test(basename(file))) return { elsewhere: true };
     // a Windows (16-bit) program of the system's: a task of this machine's, as KERNEL's WinExec starts one
-    const ne = Object.values((self.W95SYSTEM || {}).ne || {}).find(d => d.fileName === basename(file).toUpperCase() && /\.EXE$/.test(d.fileName));
+    // (the file the bundle's module was made from: another program of that name is one from disk)
+    let ne = Object.values((self.W95SYSTEM || {}).ne || {}).find(d => d.fileName === basename(file).toUpperCase() && /\.EXE$/.test(d.fileName));
+    if (ne && fs.exists(file)) { try { if (sha256(fs.readFile(file)) !== ne.meta.sha256) ne = null; } catch (_) { /* as the bundle has it */ } }
     if (ne) return this.proc.winExec16(ne.fileName, arg || '', show === undefined ? 1 : show);
     // (one from disk the bundle does not carry: the same, its module mapped by KERNEL's loader; its instance, else the error)
-    if (!((self.W95SYSTEM || {}).programs || {})[basename(file).toUpperCase()] && this.isNE(file)) return this.proc.winExec16(fs.realpath(file), arg || '', show === undefined ? 1 : show);
+    if (!this.bundled(file) && this.isNE(file)) return this.proc.winExec16(fs.realpath(file), arg || '', show === undefined ? 1 : show);
     const r = this.spawnProgram(file, arg);
     // WinExec's NE scheduler expects a process record with a 16-bit main thread. SCRs
     // are advanced independently as Win32 processes, so report successful launch
@@ -645,10 +648,20 @@ class Machine {
     if (r === 8 && this.system) { rpc('host', 'runApart', [file, arg]); return { elsewhere: true }; }
     return r;
   }
+  // the bundle's translation of the program in the file: the one made from these very bytes (its SHA-256, under any
+  // name), as the page finds one (win95.js nativeProgram). By name alone, the Windows 98 CD's AUTORUN.EXE ran the
+  // Windows 95 CD's translated code over its own image
+  bundled(file) {
+    const progs = (self.W95SYSTEM || {}).programs || {}, name = basename(file).toUpperCase();
+    let b; try { b = fs.readFile(file); } catch (_) { return null; }
+    const sha = sha256(b);
+    if (progs[name] && progs[name].meta.sha256 === sha) return progs[name];
+    return Object.values(progs).find(d => d.meta.sha256 === sha) || null;
+  }
   spawnProgram(file, arg, o = {}) {
-    const S = self.W95SYSTEM || {}, p = this.proc;
+    const p = this.proc;
     if (/\.SCR$/i.test(file)) return this.spawnSaver(file, arg || '');
-    const name = basename(file).toUpperCase(), d = (S.programs || {})[name] || this.dynProgram(file);
+    const name = basename(file).toUpperCase(), d = this.bundled(file) || this.dynProgram(file);
     // (a Windows 3.x program the bundle does not carry: started as WinExec starts one, its module mapped by KERNEL's
     // loader and its code translated as it runs, ne16.js loadNEDynamic)
     if (!d && this.isNE(file)) { const r = p.winExec16(fs.realpath(file), arg || '', 1); this.kick(); return r > 32 ? { ok: true } : r; }
@@ -1274,12 +1287,28 @@ class Machine {
       // another DLL returns there; into the trace's log; no offsets ends it)
       case 'watchAt': {
         const [name, offs] = args, want = new Set(offs || []), log = this.traceLog || (this.traceLog = []);
-        if (!want.size) { p.runHook = null; return true; }
+        if (!want.size) { const seen = p.runHook && p.runHook.seen; p.runHook = null; return seen || true; }   // (ending it: how many dispatches came into the module, and the offsets most often)
+        // (a program's own image by its file's name, AUTORUN or AUTORUN.EXE: each process's EXE, which is in no module list)
+        const own = x => x && x.exe && x.path && (x.path.replace(/^.*\\/, '').toUpperCase() === name.toUpperCase() || x.path.replace(/^.*\\/, '').replace(/\.[^.]*$/, '').toUpperCase() === name.toUpperCase());
         p.runHook = eip => {
-          const m = p.modules.find(x => x.name === name && eip >= x.base && eip < x.base + (x.size || 0));
+          const exes = [p.pc0, p.pc, ...(p.procs || new Map()).values()].filter(own).map(x => x.exe);
+          const m = [...p.modules.filter(x => x.name === name), ...exes].find(x => eip >= x.base && eip < x.base + (x.size || (x.meta && x.meta.textHi - x.base) || 0));
+          if (m) { const s = p.runHook.seen; s.n++; const k = (eip - m.base).toString(16); s.at[k] = (s.at[k] || 0) + 1; }
           if (m && want.has(eip - m.base)) { const sp = p.reg('esp') >>> 0; log.push([Math.round(performance.now()), p.thread16 && p.thread16.pc ? p.thread16.pc.path : 'host', 'watch', `${name}+${(eip - m.base).toString(16)}`, `eax ${(p.reg('eax') >>> 0).toString(16)}`, `args ${[4, 8, 12, 16, 20].map(k => (p.r32(sp + k) >>> 0).toString(16)).join(' ')}`]); }   // (the stack's first five arguments, as a stdcall function sees them on entry)
         };
+        p.runHook.seen = { n: 0, at: {} };
         return true;
+      }
+      case 'blocks': {   // (the blocks of run-time code the threads of programs whose path matches run, in order, the last n kept; with no arguments, what was kept, as symbols, and the hook ended)
+        if (args[0]) {
+          const want = new RegExp(args[0], 'i'), n = args[1] || 4000, log = [];
+          // (named as each runs: a program's image is its own process's, which is in place only while its thread runs)
+          // (a Windows 3.x task by its module's name, as trace names it; a Win32 process by its program's path)
+          const named = t => { const m = t.task && t.task.hInst && p.neByHandle(t.task.hInst); return (t.pc && t.pc.path) || (m && m.name) || ''; };
+          p.dynHook = eip => { const t = p.thread16; if (t && want.test(named(t))) { log.push(`${t.id} ${p.whereOf(eip)}`); if (log.length > n) log.splice(0, log.length - n); } };
+          p.dynHook.log = log; return true;
+        }
+        const l = (p.dynHook && p.dynHook.log) || []; p.dynHook = null; return l;
       }
       case 'trace': { if (args[0]) this.traceOn(args[0], args[1]); const l = this.traceLog || []; return l.splice(0); }   // (the calls traced so far; a thread regexp, and one for the import names, starts a trace)
       case 'faults': return (p.faultLog || []).splice(0);   // (a diagnostic: the code the machine found none at, and why)

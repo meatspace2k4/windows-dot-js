@@ -14,7 +14,8 @@ const u32 = v => v >>> 0;
 const LDT = 0x30000, ACC = 0x40000, MEM_PAGES = 2048;
 const G = ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi', 'cf', 'pf', 'zf', 'sf', 'of', 'df', 'fs', 'ftop', 'fsw', 'fcw', 'eip',
   'cs', 'ds', 'es', 'ss', 'fsel', 'gsel', 'csb', 'dsb', 'esb', 'ssb', 'gsb',
-  'if'];   // the interrupt flag (win32.js CPU_REGS): CLI, STI, PUSHF, POPF and IRET here keep it
+  'if',    // the interrupt flag (win32.js CPU_REGS): CLI, STI, PUSHF, POPF and IRET here keep it
+  'xf'];   // the flags POPF and IRET keep for PUSHF and nothing else sets: AF, NT, AC, ID (flagsWord)
 const GI = Object.fromEntries(G.map((n, i) => [n, i]));
 const SEG = [['es', 'esb'], ['cs', 'csb'], ['ss', 'ssb'], ['ds', 'dsb'], ['fsel', 'fs'], ['gsel', 'gsb']];   // by sreg number
 const I32 = 0x7f, I64 = 0x7e;
@@ -218,7 +219,11 @@ function translate(p, lin, csb, d32, v86) {
       f.lg(loc).c(0xfff8).op('and').c(LDT).op('add').ld(4).gs(base);
     };
     // the flags as a word: CF PF AF(0) ZF SF TF(0) IF DF OF, bit 1 set
-    const flagsWord = loc => { f.gg('cf').gg('pf').c(2).op('shl').op('or').gg('zf').c(6).op('shl').op('or').gg('sf').c(7).op('shl').op('or').gg('if').c(9).op('shl').op('or').gg('df').c(10).op('shl').op('or').gg('of').c(11).op('shl').op('or').c(0x2).op('or').ls(loc); };
+    const flagsWord = loc => { f.gg('cf').gg('pf').c(2).op('shl').op('or').gg('zf').c(6).op('shl').op('or').gg('sf').c(7).op('shl').op('or').gg('if').c(9).op('shl').op('or').gg('df').c(10).op('shl').op('or').gg('of').c(11).op('shl').op('or').gg('xf').op('or').c(0x2).op('or').ls(loc); };
+    // (the flags kept as they were popped, nothing here computing them: AF, NT, AC and ID, the xf global; an i486's AC
+    // and ID take what POPFD gives them, which is how a program tells it from a 386 and finds CPUID. NT is XFLAGS' in V86)
+    const XM = vm ? 0x240010 : 0x244010;
+    const keepX = (loc, osz) => { const m = osz === 4 ? XM : XM & 0xffff; f.gg('xf').c(~m).op('and').lg(loc).c(m).op('and').op('or').gs('xf'); };
     // a real-mode interrupt in a V86 machine: FLAGS, CS and IP pushed, IF cleared, CS:IP from the vector at 0:4n
     const realInt = (n, next) => {
       // (a vector the host hooks, as the VMM's Hook_V86_Int_Chain: the host sees the interrupt first, and takes it,
@@ -298,7 +303,7 @@ function translate(p, lin, csb, d32, v86) {
     if (b === 0xcf) {   // iret: IP, CS, flags
       pop(T, osz); pop(B, osz); pop(C, osz);
       for (const [k, n2] of [[0, 'cf'], [2, 'pf'], [6, 'zf'], [7, 'sf'], [9, 'if'], [10, 'df'], [11, 'of']]) f.lg(C).c(k).op('shr_u').c(1).op('and').gs(n2);
-      if (vm) f.c(XFLAGS).lg(C).c(0x7000).op('and').st(2);
+      keepX(C, osz); if (vm) f.c(XFLAGS).lg(C).c(0x7000).op('and').st(2);
       loadSeg(1, B); f.lg(T).gg('csb').op('add').e(0x0f); return done(pc);
     }
     if (b === 0x9a) {   // call far ptr16:16/32
@@ -509,7 +514,7 @@ function translate(p, lin, csb, d32, v86) {
     if (b === 0xd7) { f.gg(sbase(seg === null ? 3 : seg)).gg('ebx'); if (asz === 2) f.c(0xffff).op('and'); f.gg('eax').c(0xff).op('and').op('add').op('add').ld(1).ls(T); wrReg(0, 1, T); continue; }
     if (b === 0x9c || b === 0x9d) {   // pushf / popf: the flags the translated code keeps
       if (b === 0x9c) { flagsWord(T); if (vm) f.lg(T).c(XFLAGS).ld(2).op('or').ls(T); push(T, osz); }
-      else { pop(T, osz); for (const [k, n2] of [[0, 'cf'], [2, 'pf'], [6, 'zf'], [7, 'sf'], [9, 'if'], [10, 'df'], [11, 'of']]) f.lg(T).c(k).op('shr_u').c(1).op('and').gs(n2); if (vm) f.c(XFLAGS).lg(T).c(0x7000).op('and').st(2); }
+      else { pop(T, osz); for (const [k, n2] of [[0, 'cf'], [2, 'pf'], [6, 'zf'], [7, 'sf'], [9, 'if'], [10, 'df'], [11, 'of']]) f.lg(T).c(k).op('shr_u').c(1).op('and').gs(n2); keepX(T, osz); if (vm) f.c(XFLAGS).lg(T).c(0x7000).op('and').st(2); }
       continue;
     }
     if (b === 0xc8) {   // enter size, 0
@@ -852,6 +857,7 @@ P.dynBlock = function (eip) {
   const env = this.dynEnv || (this.dynEnv = { mem: this.mem, io: (port, k) => this.portIO(port & 0xffff, k & 7, !!(k & 8)), trap: (x, c) => this.trap(x, c),
     fsin: Math.sin, fcos: Math.cos, ftan: Math.tan, fatan2: Math.atan2, fexp2: x => Math.pow(2, x), flog2: Math.log2, fmod: (a, b) => a % b, frem: (a, b) => a - b * Math.round(a / b),
     ...f80, ...(e ? { f80load: e.f80load, f80store: e.f80store } : {}) });
+  if (!this.cpu.xf) this.cpu.xf = new WebAssembly.Global({ value: 'i32', mutable: true }, 0);   // (a processor made without it: v86.js's)
   const run = new WebAssembly.Instance(new WebAssembly.Module(assemble(t.fn, Object.prototype.toString.call(this.mem.buffer) === '[object SharedArrayBuffer]')), { env, cpu: this.cpu }).exports.run;
   c = { run, bytes: Array.from(u8.subarray(eip, eip + t.len)) };
   this.dynCache.set(key, [c, ...kept.slice(0, 3)]);
@@ -866,6 +872,7 @@ P.dynRun = function (eip) {
     if (this.entryHooks) { const h = this.entryHooks.get(eip); if (h) { const to = h.call(this); if (to !== undefined) { eip = u32(to); if (eip === LAYOUT.SENTINEL || eip >= LAYOUT.THUNK16 || this.modules.some(m => eip >= m.meta.textLo && eip < m.meta.textHi && !m.hidden && this.hasBlock(m, eip))) return eip; continue; } } }
     const blk = this.dynBlock(eip); if (!blk) return null;
     const from = eip;
+    if (this.dynHook) this.dynHook(eip);   // (a diagnostic: the blocks a program runs, worker.js cmd 'blocks')
     try { eip = u32(blk.run()); }
     catch (e) { if (!(e instanceof WebAssembly.RuntimeError)) throw e; this.trapped = `run-time code at ${eip.toString(16)} (instruction at ${u32(this.cpu.eip.value).toString(16)}): ${e.message}`; return null; }
     if (this.memW) this.memCheck(`run-time code at ${from.toString(16)}`);   // (a write watch: each block of run-time code, win32.js memCheck)

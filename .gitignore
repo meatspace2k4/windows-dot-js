@@ -11,6 +11,8 @@
 /audiocd.bin
 /audiocd.cue
 /audiocd.json
+/claude-exe.js
+/claude-exe.js
 # deploy: per-machine config and the staged build
 deploy/*/deploy.config
 deploy/*/.staging/

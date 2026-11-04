@@ -88,6 +88,10 @@ P.dosData = function () {
   this.w32(d.lol + 0x12, 0xffffffff); far(d.lol + 0x16, d.cds); far(d.lol + 0x1a, d.fcb);
   this.u8[d.lol + 0x20] = 0; this.u8[d.lol + 0x21] = 26;        // block devices, LASTDRIVE
   this.w32(d.lol + 0x22, 0xffffffff); this.w16(d.lol + 0x26, 0x8004); this.writeA(d.lol + 0x2c, 'NUL     ');
+  // what IO.SYS records at boot: the boot drive (C:, 3), a 386 or later (dword moves), and the extended memory in KB
+  // as INT 15h AH=88h gave it, the machine's 16 MB less the first (GlobalMemoryStatus' total). Windows 98 Setup takes
+  // its memory from this word, and found none
+  this.u8[d.lol + 0x43] = 3; this.u8[d.lol + 0x44] = 1; this.w16(d.lol + 0x45, 15 * 1024);
   // CDS entries (58h bytes each): the path "X:\", flags (4000h physical for the drives the shell has), the root's length
   for (let i = 0; i < 26; i++) {
     const e = d.cds + 0x58 * i, l = String.fromCharCode(65 + i), has = this.fs && this.fs.vols && this.fs.vols.has(l);
@@ -243,6 +247,15 @@ P.loadLibrary16 = function (name, native = false, defer = false) {
   if (!byFile && this.ne.has(base)) return this.ne.get(base);
   const sys = byFile || all[base] || Object.values(all).find(s => s.fileName === file || s.fileName === file + '.DLL');
   if (!sys) return this.loadNEFile(name);
+  // (the bundle's translation is for the file it was made from: another file of that module's name where the loader
+  // finds it, Windows 98 Setup's own SETUPX.DLL, VER.DLL, NETDI.DLL, is mapped from disk and runs its own code. A
+  // placeholder, no module with code, is the bundle's)
+  if (sys.meta.sha256) {
+    const full = this.findFile16(/\\/.test(name) ? name : sys.fileName);
+    let f = null; try { f = full && this.fs.readFile(full); } catch (_) { /* as the bundle has it */ }
+    const ne = f && f[0] === 0x4d && f[1] === 0x5a && f.length > 0x40 ? rd.u32(f, 0x3c) : 0;
+    if (ne && ne + 0x40 < f.length && f[ne] === 0x4e && f[ne + 1] === 0x45 && rd.u16(f, ne + 0x1c) && window.W95Win32.sha256(f) !== sys.meta.sha256) return this.loadNEFile(full);
+  }
   if (sys.onDisk && !this.findFile16(/\\/.test(name) ? name : sys.fileName)) return null;   // a module Setup leaves on the CD: once installed
   const b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
   if (this.ne.has(sys.meta.name.toUpperCase())) return this.ne.get(sys.meta.name.toUpperCase());
@@ -649,7 +662,7 @@ const cdRequest0 = p => {
   if (!disc) {
     if (cd.audio) disc = { tracks: cd.audio.tracks.map(t => ({ ...t, ctl: 0x01 })), leadout: cd.audio.leadout };
     else {
-      let n = 0; try { const d = cd.disc && cd.disc.read(16, 1); n = d && d.length >= 84 ? new DataView(d.buffer, d.byteOffset).getUint32(80, true) : 0; } catch (_) { n = 0; }
+      const n = cd.sectors || 0;
       disc = { tracks: [{ number: 1, lba: 0, sectors: n || 333000, ctl: 0x41 }], leadout: n || 333000 };
     }
     st.toc = disc;
@@ -672,10 +685,15 @@ const cdRequest0 = p => {
       case 0: p.w32(b + 1, 0); break;
       case 1: p.u8[b + 1] = 0; p.w32(b + 2, a.pos); break;
       case 4: for (let i = 0; i < 4; i++) { p.u8[b + 1 + 2 * i] = i; p.u8[b + 2 + 2 * i] = 0xff; } break;
-      case 6: p.w32(b + 1, cd.audio ? 0x0214 : 0x0a14); break;   // (a data disc is no audio disc to the drive's audio side: 0800h, no disc, with 0200h, Red Book addressing kept)
+      case 6: p.w32(b + 1, cd.audio ? 0x0214 : 0x0a14 | (cd.ready === false ? 1 : 0)); break;   // (a data disc is no audio disc to the drive's audio side: 0800h, no disc, with 0200h, Red Book addressing kept; an empty drive's door open, 1)
       case 7: p.u8[b + 1] = 0; p.w16(b + 2, 2048); break;
       case 8: p.w32(b + 1, disc.leadout); break;
-      case 9: p.u8[b + 1] = st.seen ? 1 : 0xff; st.seen = true; break;   // (the first ask of a drive finds the disc just changed: MCICDA reads a disc's table only then, and starts with none)
+      case 9: {   // (the first ask of a drive finds the disc just changed: MCICDA reads a disc's table only then, and starts with none. The page is asked each time, as a disc may have been swapped since: a change drops what was kept of the old one)
+        const now = [...p.fs.vols.values()].find(v => v.letter === cd.letter), m = now ? now.media || 0 : -1;
+        p.u8[b + 1] = st.seen && st.media === m ? 1 : 0xff; st.seen = true;
+        if (st.media !== m) { st.media = m; st.vol = now || null; st.toc = null; Object.assign(a, { state: 'idle', from: 0, to: 0, pos: 0 }); }
+        break;
+      }
       case 10: p.u8[b + 1] = disc.tracks[0].number; p.u8[b + 2] = disc.tracks[disc.tracks.length - 1].number; p.w32(b + 3, msf(disc.leadout)); break;
       case 11: { const tr = disc.tracks.find(x => x.number === p.u8[b + 1]); if (!tr) return status(0x8003); p.w32(b + 2, msf(tr.lba)); p.u8[b + 6] = tr.ctl; break; }
       case 12: {   // the Q channel: the track (BCD) and index, the time in the track, then on the disc
@@ -856,9 +874,29 @@ const INTS = {
       }
       break;
       case 0x50: case 0x51: case 0x62: return;
+      // the memory allocation strategy (AL 0 get into AX, 1 set from BX: first fit, 0, at start) and the upper memory
+      // blocks' link (2 get into AL, 3 set from BX: not linked, 0, at start), as MS-DOS 7 keeps them
+      case 0x58: {
+        const m = this.dosMem || (this.dosMem = { strategy: 0, link: 0 }), bx = this.cpu.ebx.value & 0xffff;
+        if (al === 0) { this.ax(m.strategy); return; }
+        if (al === 1) { m.strategy = bx & 0xc3; return; }
+        if (al === 2) { this.ax((this.ax() & 0xff00) | m.link); return; }
+        if (al === 3 && bx <= 1) { m.link = bx; return; }
+        CF(this, 1); this.ax(1); this.dosError = 1; return;
+      }
+      case 0x2e: this.dosVerify = al & 1; return;                                 // set the verify flag
+      case 0x54: this.ax((this.ax() & 0xff00) | (this.dosVerify ? 1 : 0)); return;  // and get it
+      case 0x60: {   // TRUENAME: DS:SI's name as MS-DOS knows it (full, its short form, upper case) at ES:DI
+        const p16 = (s, r) => (this.rmode ? ((this.cpu[s].value & 0xffff) << 4) + (this.cpu[r].value & 0xffff) : this.lin(((this.cpu[s].value & 0xffff) << 16) | (this.cpu[r].value & 0xffff)));
+        let full = this.dosFull(this.readA(p16('ds', 'esi')) || ''); try { full = this.fs.stat(full).shortPath; } catch (_) { /* not there: as named */ }
+        this.writeA(p16('es', 'edi'), full.toUpperCase()); return;
+      }
+      case 0x65: case 0x66: return this.dosCountry(ah, al);
       // the redirector's list of redirected devices (5F02h, BX the index): the drives MPR connects are the network
       // process's; none is redirected through DOS here, so the list is empty (18, no more entries)
-      case 0x5f: if (al === 2) { CF(this, 1); this.ax(18); this.dosError = 18; return; } break;
+      // the rest of 5Fh is the redirector's and LAN Manager's (5F3Dh, NETAPI's): no real-mode one is loaded, so MS-DOS
+      // answers each an invalid function (1)
+      case 0x5f: if (al === 2) { CF(this, 1); this.ax(18); this.dosError = 18; return; } if (al >= 0x30) { CF(this, 1); this.ax(1); this.dosError = 1; return; } break;
       // the last call's extended error (BX 0): AX the code, BH its class, BL the suggested action, CH where it happened
       case 0x59: {
         const e = this.dosError || 0, cls = [2, 3, 15, 18].includes(e) ? 8 : e === 5 ? 3 : e ? 13 : 0;
@@ -946,7 +984,7 @@ const INTS = {
     // handle file calls, on the handles KERNEL's _lopen/OpenFile give out: BX handle, CX count, DS:DX buffer or name;
     // CF and AX = error code on failure (2 not found, 5 denied, 6 bad handle)
     // (in real mode, as a VxD's nested execution calls DOS, a segment is a paragraph number)
-    if ([0x3c, 0x3d, 0x3e, 0x3f, 0x40, 0x41, 0x42, 0x57, 0x5b, 0x6c].includes(ah) || (ah === 0x44 && (al === 2 || al === 0) && this.dosFiles.get(this.cpu.ebx.value & 0xffff) && this.dosFiles.get(this.cpu.ebx.value & 0xffff).dev)) {
+    if ([0x3c, 0x3d, 0x3e, 0x3f, 0x40, 0x41, 0x42, 0x57, 0x5a, 0x5b, 0x68, 0x6a, 0x6c].includes(ah) || (ah === 0x71 && al === 0x6c) || (ah === 0x44 && (al === 2 || al === 0) && this.dosFiles.get(this.cpu.ebx.value & 0xffff) && this.dosFiles.get(this.cpu.ebx.value & 0xffff).dev)) {
       // (a VxD's call through Exec_VxD_Int: 32-bit offsets on a flat DS)
       const flat = this.vxdFlat, off16 = r => (flat ? u32(this.cpu[r].value) : this.cpu[r].value & 0xffff);
       const bx = this.cpu.ebx.value & 0xffff, cx = flat ? u32(this.cpu.ecx.value) : this.cpu.ecx.value & 0xffff, dx = off16('edx');
@@ -976,6 +1014,19 @@ const INTS = {
             if (cx !== 8 || this.r16(b) !== 0xe970 || this.r16(b + 2) !== 0x3735) return fail(1);
             this.w16(b, 0x3735); this.w16(b + 2, 0xef70); this.w16(b + 4, hp.entry); this.w16(b + 6, hp.seg); return this.ax(8);
           }
+          case 0x5a: {   // a temporary file: DS:DX the folder ending in a backslash, a name made in it and added there
+            // (8 hex digits, as MS-DOS makes one), AX the handle
+            const b = dsdx(), dir = this.readA(b) || '', full0 = this.dosFull(dir || '.');
+            for (let k = 0; k < 0x1000; k++) {
+              const nm = ((Date.now() + k * 0x9e3779b1) >>> 0).toString(16).toUpperCase().padStart(8, '0'), full = window.W95FS.join(full0, nm);
+              if (this.fs.exists(full)) continue;
+              const h = this.dosOpen(full, 'wx+'); if (h === 0xffff) return fail(this.lastError || 3);
+              this.writeA(b + dir.length, (dir && !/[\\:]$/.test(dir) ? '\\' : '') + nm); return this.ax(h);
+            }
+            return fail(5);
+          }
+          case 0x68: case 0x6a: if (!f) return fail(6); return;   // commit a file: written through already
+          case 0x71:   // the long-name extended open (716Ch): as 6Ch, the name long
           case 0x6c: {   // extended open: BX the mode, CX attributes, DX the action (low nibble if it exists: 1 open, 2
             // replace; high nibble if not: 1 create), DS:SI the name; AX the handle, CX what was done (1 opened, 2 created, 3 replaced)
             const name = this.readA(at(off16('esi'))) || '', found = this.findFile16(name);
@@ -1011,6 +1062,28 @@ const INTS = {
   0x25() { absDisk(this, false); },
   0x26() { absDisk(this, true); },
   0x41() {},   // the kernel debugger's interface: no debugger is present, so every notification goes unheard
+  // MS-DOS's network and critical-section hooks (INT 2Ah): no network software in real mode takes them, so DOS's own
+  // IRET answers each: 00h's AH comes back 0, no network installed (NETAPI asks), and 80h-82h's critical sections pass
+  0x2a() {},
+  // the fixed disk BIOS (INT 13h) as a program under Windows reaches it: AH=00h and 0Dh reset the drive (SUWIN resets
+  // each before it reads its boot record); any other function stops here, named (a gap)
+  0x13(next) {
+    const ah = this.ax() >> 8;
+    if (ah === 0x00 || ah === 0x0d) { CF(this, 0); this.ax(this.ax() & 0xff); return; }
+    this.trapped = `unhandled int 13h ax=${this.ax().toString(16)}`; return LAYOUT.SENTINEL;
+  },
+  // the system BIOS (INT 15h): C0h its configuration table at ES:BX (F000:E6F5, by __F000H's selector in protected
+  // mode, as NETOS reads it): 8 bytes, an AT-class machine (model FCh, submodel 1) with a second interrupt
+  // controller, a real-time clock and INT 15h AH=4Fh called by the keyboard's interrupt
+  0x15(next) {
+    const ah = this.ax() >> 8;
+    if (ah === 0xc0) {
+      const t = 0xfe6f5; this.u8.set([8, 0, 0xfc, 1, 0, 0x70, 0, 0, 0, 0], t);
+      if (this.rmode) this.cpu.es.value = 0xf000; else this.seg('es', 0x147);
+      this.cpu.ebx.value = lo16(this.cpu.ebx.value, 0xe6f5); CF(this, 0); this.ax(this.ax() & 0xff); return;
+    }
+    this.trapped = `unhandled int 15h ax=${this.ax().toString(16)}`; return LAYOUT.SENTINEL;
+  },
   0x16() { biosKbd(this); },
   0x33() {   // the DOS mouse driver interface, as far as MOUSE.DRV asks it: 24h version, type (PS/2) and IRQ
     const ax = this.ax();
@@ -1047,6 +1120,11 @@ const INTS = {
     // sends them: the disc is the CD's data disc, one data track from 0 to its lead-out, so it has no audio to play
     if (ax === 0x1510) return cdRequest(this);
     if (ax === 0x1689 || ax === 0x1680) return;
+    // the DPMI host's vendor API (168Ah, DS:SI its name: "MS-DOS"'s function 100h a selector of the LDT) and 1688h
+    // BX=0BADh (the same, Windows 3.1's): none, AL and AX come back as they went. This machine's LDT is not in the
+    // processor's form (bases and limits at LDT, the access bytes a table of their own), so a selector of it would be
+    // read wrong; a caller goes on without one (Windows 98 Setup's W98SETUP)
+    if (ax === 0x168a || ax === 0x1688) return;
     if (ax === 0x160b) return;          // identify Windows-aware TSRs: none is loaded, so ES:DI comes back as it went in
     if (ax === 0x1607) return;          // device callout to real-mode software (a VxD asking for its TSR's API): none answers
     if ([0x11, 0xb8, 0xb7, 0x58].includes(ax >> 8)) return;   // real-mode network redirector, network, APPEND and real-mode network extension checks: none is loaded (AL comes back as it went)
@@ -2400,9 +2478,67 @@ P.setVideoMode = function (mode, clear, hicolor) {
   if (a.bpp === 8 && clear) for (let i = 0; i < 256; i++) { a.dac[3 * i] = a.dac[3 * i + 1] = a.dac[3 * i + 2] = 0; }
   return true;
 };
+// The 8254 timer (ports 40h-43h) and port 61h's side of it: each channel counts down at 1.193182 MHz from its load, by
+// the clock, in its mode (0: once to zero, OUT high there; 2 and 3: periodic, 3 a square wave counting by two), with
+// latch and read-back commands, a count read low byte then high where its access says so. Channel 2 counts while
+// port 61h's bit 0 (its gate) is set, and holds while it is clear; 61h answers its gate, the speaker bit, the refresh
+// toggle (bit 4) and channel 2's OUT (bit 5). With nothing here every read was FFh: Windows 98 Setup times its CPU by
+// channel 2, read back as no time at all, and divided by it
+const PIT_HZ = 1193.182;   // (counts a millisecond)
+P.pitIO = function (port, size, isIn) {
+  if (!(port >= 0x40 && port <= 0x43) && port !== 0x61) return false;
+  const eax = this.cpu.eax.value, v = eax & 0xff, now = this.now();
+  const pit = this.pit || (this.pit = { p61: 0, ch: [0, 1, 2].map(() => ({ rw: 3, mode: 3, init: 0x10000, t0: now, held: null, lo: true, wlo: true, latch: [], gate: true })) });
+  pit.ch[2].gate = !!(pit.p61 & 1);
+  // a channel's count and OUT now: the counts gone since its load (or its gate's rise), up to where its gate fell
+  const state = c => {
+    const n = Math.floor(((c.held === null ? now : c.held) - c.t0) * PIT_HZ), N = c.init || 0x10000;
+    if (c.mode === 0 || c.mode === 4 || c.mode === 1 || c.mode === 5) { const left = N - n; return { count: ((left % 0x10000) + 0x10000) % 0x10000, out: left <= 0 }; }
+    if (c.mode === 3 || c.mode === 7) { const k = n % N; return { count: (N - 2 * (k % (N >> 1 || 1))) & 0xfffe, out: k < N / 2 }; }
+    const k = n % N; return { count: (N - k) & 0xffff, out: k !== N - 1 };
+  };
+  const ret = r => { this.cpu.eax.value = (eax & ~0xff) | (r & 0xff); return true; };
+  if (port === 0x61) {
+    if (isIn) return ret((pit.p61 & 0x0f) | ((Math.floor(now * 66) & 1) << 4) | (state(pit.ch[2]).out ? 0x20 : 0));
+    const c = pit.ch[2], was = pit.p61 & 1; pit.p61 = v & 0x0f;
+    if ((v & 1) && !was) { c.t0 = c.held === null || c.mode !== 0 ? now : now - (c.held - c.t0); c.held = null; }   // (mode 0 goes on from where it held; the others start again)
+    else if (!(v & 1) && was && c.held === null) c.held = now;
+    return true;
+  }
+  if (port === 0x43) {
+    if (isIn) return ret(0xff);
+    const sc = v >> 6;
+    if (sc === 3) {   // read-back: bit 5 clear latches the counts, bit 4 clear the status, of the channels in bits 1-3
+      for (let i = 0; i < 3; i++) if (v & (2 << i)) {
+        const c = pit.ch[i], s = state(c); c.latch = [];
+        if (!(v & 0x10)) c.latch.push((s.out ? 0x80 : 0) | (c.rw << 4) | (c.mode << 1));
+        if (!(v & 0x20)) { if (c.rw !== 2) c.latch.push(s.count & 0xff); if (c.rw !== 1) c.latch.push(s.count >> 8); }
+      }
+      return true;
+    }
+    const c = pit.ch[sc], rw = (v >> 4) & 3;
+    if (!rw) { const s = state(c); c.latch = c.rw === 1 ? [s.count & 0xff] : c.rw === 2 ? [s.count >> 8] : [s.count & 0xff, s.count >> 8]; return true; }   // (counter latch)
+    Object.assign(c, { rw, mode: (v >> 1) & 7, lo: true, wlo: true, latch: [] });
+    return true;
+  }
+  const c = pit.ch[port - 0x40];
+  if (isIn) {
+    if (c.latch.length) return ret(c.latch.shift());
+    const s = state(c).count;
+    if (c.rw === 1) return ret(s & 0xff);
+    if (c.rw === 2) return ret(s >> 8);
+    const r = c.lo ? s & 0xff : s >> 8; c.lo = !c.lo; return ret(r);
+  }
+  // a load: the count (0 is 10000h) once whole, counting from now if the gate lets it
+  if (c.rw === 1) c.init = v; else if (c.rw === 2) c.init = v << 8;
+  else if (c.wlo) { c.pend = v; c.wlo = false; return true; } else { c.init = c.pend | (v << 8); c.wlo = true; }
+  c.t0 = now; c.held = c.gate ? null : now;
+  return true;
+};
 P.portIO = function (port, size, isIn) {
   if (window.W95PORTTRACE) window.W95PORTTRACE(port, size, isIn, this);
   if (this.vxdTrapIO && this.vxdTrapIO(port, size, isIn)) return;   // a port a VxD traps (vmm.js)
+  if (size === 1 && this.pitIO(port, size, isIn)) return;   // the timer and port 61h
   if (this.soundIO && this.soundIO(port, size, isIn)) return;   // the sound card, DMA and interrupt controllers (sound.js)
   if (this.nicIO && this.nicIO(port, size, isIn)) return;   // the network card (lan.js)
   if (this.lptIO && this.lptIO(port, size, isIn)) return;   // the printer port (parallel.js)
@@ -2757,7 +2893,10 @@ const iniApi = () => window.W95Win32;
 const winIni = (p, file, sec, key) => { const { iniGet } = iniApi(); return iniGet(p.fs, file, sec, key); };
 
 def16('KERNEL', 2, 'w', 'v', function (code) { this.exitCode = code; this.host.exited(code); });                        // ExitKernel
-def16('KERNEL', 3, '', 'w', () => 0x4f4);                                                                              // GetVersion (3.95)
+// GetVersion: Windows 3.95 in AX (5F03h, the minor version in the high byte), the MS-DOS version in DX (7.00, DH the
+// major: INT 21h AH=30h's), as Windows 95's own answers. AX alone, 4F4h, Windows 98 Setup read DX for MS-DOS 0 and
+// said it needs MS-DOS 5.00 or later
+def16('KERNEL', 3, '', 'l', () => 0x07005f03);
 // GetVersionEx(far OSVERSIONINFO): 4.0 build 950, Windows (KERNEL32's GetVersionExA answers the same); SETUPX takes the
 // export's presence for an installed system rather than Setup's
 def16('KERNEL', 149, 'l', 'w', function (fp) { const p = this.lin(fp); if (!p || this.r32(p) < 148) return 0; this.w32(p + 4, 4); this.w32(p + 8, 0); this.w32(p + 12, 950); this.w32(p + 16, 1); this.writeA(p + 20, ' B'); return 1; });
@@ -3164,12 +3303,55 @@ def16('KERNEL', 223, 'llpppppp', 'l', function (hk, i, name, cbn, res, type, dat
 def16('KERNEL', 225, 'lppppp', 'l', function (hk, name, res, type, data, cb) { return API.ADVAPI32.RegQueryValueExA[1].call(this, hk, name, res, type, data, cb); });
 def16('KERNEL', 226, 'lpllpl', 'l', function (hk, name, res, type, data, n) { return API.ADVAPI32.RegSetValueExA[1].call(this, hk, name, res, type, data, n); });   // RegSetValueEx
 def16('KERNEL', 227, 'l', 'l', () => 0);                                                              // RegFlushKey: the registry store writes through
+// RegLoadKey, RegUnLoadKey, RegSaveKey: as ADVAPI32's answer them (a hive file, Windows 95's registry format, is
+// neither written nor read here: findings/filemap.json, SETUPX's)
+def16('KERNEL', 232, 'lpp', 'l', function (hk, sub, file) { return API.ADVAPI32.RegLoadKeyA[1].call(this, hk, sub, file); });
+def16('KERNEL', 233, 'lp', 'l', function (hk, sub) { return API.ADVAPI32.RegUnLoadKeyA[1].call(this, hk, sub); });
+def16('KERNEL', 234, 'lpl', 'l', function (hk, file, sa) { return API.ADVAPI32.RegSaveKeyA[1].call(this, hk, file, sa); });
+// SelectorAccessRights(sel, op, rights): op 0 the rights, the descriptor's access byte low and its sixth byte high
+// (granularity, default size, limit 16-19); 1 sets them, as DPMI 0009h does (the access byte, G and D)
+def16('KERNEL', 196, 'www', 'w', function (sel, op, v) {
+  if (!this.selValid(sel)) return 0;
+  const at = L.ACC + (sel & 0xfff8), acc = this.r32(at);
+  if (op === 0) return ((acc >>> 8) & 0xff) | ((((acc >>> 16) & 0xc0) | ((this.selLimit(sel) >>> 16) & 0x0f)) << 8);
+  this.w32(at, (acc & ~0xc0ff00) | (v & 0xff) << 8 | ((v & 0xc000) << 8)); if (this.refreshSegs) this.refreshSegs(); return 0;
+});
 def16('KERNEL', 216, 'llpl', 'l', function (hk, i, buf, n) { return API.ADVAPI32.RegEnumKeyA[1].call(this, hk, i, buf, n); });   // RegEnumKey
 def16('KERNEL', 224, 'lppp', 'l', function (hk, sub, data, cb) { return API.ADVAPI32.RegQueryValueA[1].call(this, hk, sub, data, cb); });   // RegQueryValue
 
 // files (DOS handles over the in-memory FS)
 const OF = { READ: 0, WRITE: 1, READWRITE: 2, PARSE: 0x100, DELETE: 0x200, CREATE: 0x1000, EXIST: 0x4000 };
 /** a DOS name as a full path: relative to the current directory (or a drive's root), . and .. folded */
+/** MS-DOS's country information (INT 21h AH=65h) and code page (66h), as the United States' code page 437 has them:
+ *  65h AL=1 the extended country information into ES:DI (CX its room), 2, 4, 5, 6, 7 a far pointer to the upper case,
+ *  file name upper case, file name characters, collating and double-byte tables, each a size word and its bytes in
+ *  MS-DOS's memory; 66h AL=1 the active and system code pages in BX and DX, 2 sets one (437 the only) */
+P.dosCountry = function (ah, al) {
+  const CP = 437, reg = (r, v) => { this.cpu[r].value = lo16(this.cpu[r].value, v); };
+  const fail = code => { CF(this, 1); this.ax(code); this.dosError = code; };
+  if (ah === 0x66) { if (al === 1) { reg('ebx', CP); reg('edx', CP); return; } if (al === 2) return (this.cpu.ebx.value & 0xffff) === CP ? undefined : fail(0x25); return fail(1); }
+  const T = this.dosTables || (this.dosTables = (() => {
+    this.dosData();   // (after MS-DOS's own data, in its memory)
+    const a = (this.dosTop + 15) & ~15, t = { seg: a >>> 4 }; let o = a; const put = (k, bytes) => { t[k] = o - a; this.w16(o, bytes.length); this.u8.set(bytes, o + 2); o += 2 + bytes.length; };
+    const up = Array.from({ length: 128 }, (_, i) => 0x80 + i); for (const [l, u] of [[0x81, 0x9a], [0x82, 0x90], [0x83, 0x41], [0x84, 0x8e], [0x85, 0x41], [0x86, 0x8f], [0x87, 0x80], [0x88, 0x45], [0x89, 0x45], [0x8a, 0x45], [0x8b, 0x49], [0x8c, 0x49], [0x8d, 0x49], [0x91, 0x92], [0x93, 0x4f], [0x94, 0x99], [0x95, 0x4f], [0x96, 0x55], [0x97, 0x55], [0x98, 0x59], [0xa0, 0x41], [0xa1, 0x49], [0xa2, 0x4f], [0xa3, 0x55], [0xa4, 0xa5]]) up[l - 0x80] = u;
+    put('upper', up); put('fupper', up);
+    put('term', [1, 0, 0xff, 0, 0, 0x20, 2, 14, ...'."/\\[]:|<>+=;,'.split('').map(c => c.charCodeAt(0))]);
+    const coll = Array.from({ length: 256 }, (_, i) => (i >= 0x61 && i <= 0x7a ? i - 0x20 : i >= 0x80 ? up[i - 0x80] < 0x80 ? up[i - 0x80] : i : i)); put('coll', coll);
+    put('dbcs', [0, 0]);
+    this.dosTop = o; return t;
+  })());
+  const es = this.cpu.es.value & 0xffff, di = this.cpu.edi.value & 0xffff, buf = this.rmode ? (es << 4) + di : this.lin((es << 16) | di), room = this.cpu.ecx.value & 0xffff;
+  if (al === 1) {
+    if (room < 5) return fail(1);
+    const b = new Uint8Array(41); b[0] = 1; b[1] = 38; b[3] = 1; b[5] = CP & 0xff; b[6] = CP >> 8;   // (size, country 1, code page)
+    // date format 0 (m d y), currency "$", thousands ",", decimal ".", date "-", time ":", currency first, 2 digits, 12-hour, data list ","
+    b[7] = 0; b[9] = 0x24; b[14] = 0x2c; b[16] = 0x2e; b[18] = 0x2d; b[20] = 0x3a; b[22] = 0; b[23] = 2; b[24] = 0; b[29] = 0x2c;
+    const n = Math.min(room, 41); this.u8.set(b.subarray(0, n), buf); reg('ecx', n); return;
+  }
+  const k = { 2: 'upper', 4: 'fupper', 5: 'term', 6: 'coll', 7: 'dbcs' }[al]; if (!k) return fail(1);
+  if (room < 5) return fail(1);
+  this.u8[buf] = al; this.w16(buf + 1, T[k]); this.w16(buf + 3, T.seg); reg('ecx', 5);
+};
 P.dosFull = function (name) {
   const W = window.W95FS; let p = String(name || '').replace(/\//g, '\\');
   if (/^[a-z]:\\/i.test(p) || p.startsWith('\\\\')) { /* full */ } else if (/^[a-z]:/i.test(p)) p = W.join(p.slice(0, 2) + '\\', p.slice(2));
@@ -3283,6 +3465,14 @@ P.dosNames = function (fn, lfn) {
         this.ax(fn === 0x4e ? h : 0); return;
       }
       case 0xa1: if (this.lfnFinds) this.lfnFinds.delete(this.cpu.ebx.value & 0xffff); return;
+      case 0xa8: {   // a short name for DS:SI's long one, at ES:DI: DH 0 the 11 bytes of a directory entry, 1 a name with its dot
+        if (!lfn) break;
+        const up = (this.readA(dssi()) || '').replace(/^.*[\\/]/, '').toUpperCase(), dot = up.lastIndexOf('.'), bad = /[^A-Z0-9!#$%&'()\-@^_`{}~\x80-\xff]/g;
+        let base = (dot > 0 ? up.slice(0, dot) : up).replace(/[ .]/g, '').replace(bad, '_') || '_', ext = dot > 0 ? up.slice(dot + 1).replace(/ /g, '').replace(bad, '_').slice(0, 3) : '';
+        if (!W.is83(up)) base = base.slice(0, 6) + '~1'; else base = base.slice(0, 8);
+        if ((this.cpu.edx.value >> 8 & 0xff) === 0) this.writeA(esdi(), base.padEnd(8) + ext.padEnd(3), 12); else this.writeA(esdi(), base + (ext ? '.' + ext : ''), 13);
+        return;
+      }
       case 0x56: { const from = this.dosFull(this.readA(dsdx())), to = this.dosFull(this.readA(esdi())); this.fs.rename(from, to); return; }
       case 0x60: {   // the full name of DS:SI at ES:DI: CL 0 as given (expanded), 1 its short form, 2 its long form
         const full = this.dosFull(this.readA(dssi())), how = cx & 0xff;
