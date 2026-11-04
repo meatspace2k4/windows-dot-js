@@ -1,0 +1,198 @@
+[
+ {
+  "vxd": "IFSMGR.VXD",
+  "at": "19cf5",
+  "bytes": "ff 05 f7 00 00 00",
+  "kind": "absolute",
+  "what": "absolute f7h: the IVT"
+ },
+ {
+  "vxd": "IFSMGR.VXD",
+  "at": "1da40",
+  "bytes": "ff 05 10 04 00 00",
+  "kind": "absolute",
+  "what": "absolute 410h: the BIOS data area"
+ },
+ {
+  "vxd": "LPT.VXD",
+  "at": "2e1f",
+  "bytes": "ff 35 80 00 00 00",
+  "kind": "absolute",
+  "what": "absolute 80h: the IVT"
+ },
+ {
+  "vxd": "MSSNDSYS.VXD",
+  "at": "528e",
+  "bytes": "ff 05 00 04 00 00",
+  "kind": "absolute",
+  "what": "absolute 400h: the BIOS data area"
+ },
+ {
+  "vxd": "NDIS.VXD",
+  "at": "d34e",
+  "bytes": "ff 3d 03 01 00 00",
+  "kind": "absolute",
+  "what": "absolute 103h: the IVT"
+ },
+ {
+  "vxd": "NDIS.VXD",
+  "at": "1a302",
+  "bytes": "ff 3d 03 01 00 00",
+  "kind": "absolute",
+  "what": "absolute 103h: the IVT"
+ },
+ {
+  "vxd": "NDIS.VXD",
+  "at": "1a412",
+  "bytes": "ff 3d 03 01 00 00",
+  "kind": "absolute",
+  "what": "absolute 103h: the IVT"
+ },
+ {
+  "vxd": "NETBEUI.VXD",
+  "at": "6e44",
+  "bytes": "ff 0d 00 04 00 00",
+  "kind": "absolute",
+  "what": "absolute 400h: the BIOS data area"
+ },
+ {
+  "vxd": "SHELL.VXD",
+  "at": "e4c5",
+  "bytes": "0f b6 15 84 04 00 00",
+  "kind": "absolute",
+  "what": "absolute 484h: the BIOS data area"
+ },
+ {
+  "vxd": "SHELL.VXD",
+  "at": "e542",
+  "bytes": "8a 15 4a 04 00 00",
+  "kind": "absolute",
+  "what": "absolute 44ah: the BIOS data area"
+ },
+ {
+  "vxd": "SHELL.VXD",
+  "at": "e549",
+  "bytes": "8a 35 84 04 00 00",
+  "kind": "absolute",
+  "what": "absolute 484h: the BIOS data area"
+ },
+ {
+  "vxd": "SHELL.VXD",
+  "at": "776e",
+  "bytes": "c1 e0 0c 66 c1 e8 0c",
+  "kind": "segoff",
+  "what": "linear made segment:offset: an address handed to real-mode code"
+ },
+ {
+  "vxd": "VCOMM.VXD",
+  "at": "2aba",
+  "bytes": "8b 15 04 04 00 00",
+  "kind": "absolute",
+  "what": "absolute 404h: the BIOS data area"
+ },
+ {
+  "vxd": "VDD.VXD",
+  "at": "618b",
+  "bytes": "0f b6 05 84 04 00 00",
+  "kind": "absolute",
+  "what": "absolute 484h: the BIOS data area"
+ },
+ {
+  "vxd": "VDD.VXD",
+  "at": "6935",
+  "bytes": "0f b6 05 84 04 00 00",
+  "kind": "absolute",
+  "what": "absolute 484h: the BIOS data area"
+ },
+ {
+  "vxd": "VDD.VXD",
+  "at": "6942",
+  "bytes": "0f b6 05 4a 04 00 00",
+  "kind": "absolute",
+  "what": "absolute 44ah: the BIOS data area"
+ },
+ {
+  "vxd": "VDD.VXD",
+  "at": "15273",
+  "bytes": "0f b7 05 4c 04 00 00",
+  "kind": "absolute",
+  "what": "absolute 44ch: the BIOS data area"
+ },
+ {
+  "vxd": "VDD.VXD",
+  "at": "15284",
+  "bytes": "0f b6 15 62 04 00 00",
+  "kind": "absolute",
+  "what": "absolute 462h: the BIOS data area"
+ },
+ {
+  "vxd": "VDD.VXD",
+  "at": "15300",
+  "bytes": "0f b7 05 4e 04 00 00",
+  "kind": "absolute",
+  "what": "absolute 44eh: the BIOS data area"
+ },
+ {
+  "vxd": "VDD.VXD",
+  "at": "15309",
+  "bytes": "0f b6 15 62 04 00 00",
+  "kind": "absolute",
+  "what": "absolute 462h: the BIOS data area"
+ },
+ {
+  "vxd": "VDD.VXD",
+  "at": "1535c",
+  "bytes": "0f b6 0d 62 04 00 00",
+  "kind": "absolute",
+  "what": "absolute 462h: the BIOS data area"
+ },
+ {
+  "vxd": "VDD.VXD",
+  "at": "15376",
+  "bytes": "0f b6 0d 62 04 00 00",
+  "kind": "absolute",
+  "what": "absolute 462h: the BIOS data area"
+ },
+ {
+  "vxd": "VDD.VXD",
+  "at": "153fa",
+  "bytes": "0f b7 05 4e 04 00 00",
+  "kind": "absolute",
+  "what": "absolute 44eh: the BIOS data area"
+ },
+ {
+  "vxd": "VDD.VXD",
+  "at": "1573c",
+  "bytes": "66 8b 15 63 04 00 00",
+  "kind": "absolute",
+  "what": "absolute 463h: the BIOS data area"
+ },
+ {
+  "vxd": "VNETBIOS.VXD",
+  "at": "1907",
+  "bytes": "8b 04 85 00 00 00 00",
+  "kind": "vector",
+  "what": "mov r,m [reg*4 + 0h]: interrupt vector read/written by number"
+ },
+ {
+  "vxd": "VNETBIOS.VXD",
+  "at": "4b8d",
+  "bytes": "c1 e0 0c 66 c1 e8 0c",
+  "kind": "segoff",
+  "what": "linear made segment:offset: an address handed to real-mode code"
+ },
+ {
+  "vxd": "VNETBIOS.VXD",
+  "at": "4c14",
+  "bytes": "c1 e0 0c 66 c1 e8 0c",
+  "kind": "segoff",
+  "what": "linear made segment:offset: an address handed to real-mode code"
+ },
+ {
+  "vxd": "VREDIR.VXD",
+  "at": "ec04",
+  "bytes": "ff 05 02 01 00 00",
+  "kind": "absolute",
+  "what": "absolute 102h: the IVT"
+ }
+]

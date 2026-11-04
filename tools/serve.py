@@ -90,6 +90,14 @@ class H(http.server.SimpleHTTPRequestHandler):
             try: q = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')
             except ValueError: self.send_error(400); return
             claude(self, q); return
+        if self.path.split('?')[0] == '/__cdlog':   # (the dev page's CD request trace, as deploy/win95/win95_server.py keeps it)
+            if not local_request(self): self.send_error(403); return
+            try:
+                q = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')
+                os.makedirs('/tmp/w95', exist_ok=True)
+                with open('/tmp/w95/cdlog.txt', 'a') as f: f.write('\n'.join(str(x)[:300] for x in q.get('lines', [])[:500]) + '\n')
+            except (ValueError, OSError): pass
+            self.send_response(204); self.end_headers(); return
         if self.path.split('?')[0] != '/__share': self.send_error(404); return
         q = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')
         if q.get('op') == '$list': r = [{'name': x['name'], 'remark': ''} for x in SHARES if os.path.isdir(x['path'])]

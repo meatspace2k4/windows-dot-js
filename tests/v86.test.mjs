@@ -37,4 +37,37 @@ const run = (code, setup) => {
   assert.equal(name(0), 'IO      SYS'); assert.equal(name(32), 'MSDOS   SYS'); assert.equal(name(64), 'WINDOWS    '); assert.equal(d[root + 64 + 11], 0x10);
   assert.equal(dv.getUint32(vol + 28, true), 63, 'hidden sectors: the partition\'s start');
 }
+// the PC's MS-DOS running the VMM's loader: the code before its protected-mode entry runs (the block ends before an
+// instruction translation cannot take), Windows starts there (o.windows); its end with 44h returns through the
+// loader's exit: WIN.COM's buffer (INT 2Fh AX=4B20h) gets the program, INT 2Fh AX=1606h, INT 21h AH=4Ch AL=44h
+{
+  let started = null; const calls = [];
+  const m = V.machine({ pc: true, windows: p => { started = p; } });
+  m.sda = 0x700; m.s16(0x710, 0x1000); m.s16(0x0fff * 16 + 3, 0x100);   // (the PSP the loader runs as, its block's size)
+  m.vmm = { path: 'C:\\WINDOWS\\SYSTEM\\VMM32.VXD', ivt: m.u8.slice(m.v86, m.v86 + 1024), xms: new Set() };
+  m.u8.set([0xb8, 0x01, 0x00, 0x0f, 0x20, 0xc0], m.v86 + 0x10100);   // mov ax,1; mov eax,cr0
+  m.sreg('cs', 0x1010); m.sreg('ss', 0x2000); m.cpu.esp.value = 0x100; m.cpu.eip.value = m.v86 + 0x10100; m.ticksAt = Date.now() + 1e9;
+  assert.equal(m.v86Run(50), 'idle'); assert.equal(m.r('ax'), 1, 'the code before the CR0 access ran');
+  assert.equal(started, 'C:\\WINDOWS\\SYSTEM\\VMM32.VXD'); assert.ok(m.winWait);
+  m.s16(0x2f * 4, 0x0400); m.s16(0x2f * 4 + 2, 0x3000);   // WIN.COM's INT 2Fh: 4B20h gives its buffer 3000:0500h
+  m.u8.set([0x3d, 0x20, 0x4b, 0x75, 0x07, 0xba, 0x00, 0x30, 0xb9, 0x00, 0x05, 0xcf, 0xcf], m.v86 + 0x30400);   // cmp ax,4B20h; jne; mov dx,3000h; mov cx,500h; iret
+  const P = Object.getPrototypeOf(m); m.v86Trap = function (next, code) { if (code === 0x421 || code === 0x42f) calls.push(this.r('ax')); if (code === 0x421 && this.ah() === 0x4c) { this.halted = true; this.cpu.eip.value = next; return; } return P.v86Trap.call(this, next, code); };
+  m.winDone(0x44, { path: 'C:\\WINDOWS\\COMMAND.COM', tail: '' });
+  for (let i = 0; i < 10 && !m.halted; i++) m.v86Run(50);
+  assert.deepEqual(calls, [0x4b20, 0x1606, 0x4c44]);
+  let s = ''; for (let i = 0; m.m8(0x30500 + i); i++) s += String.fromCharCode(m.m8(0x30500 + i));
+  assert.equal(s, 'C:\\WINDOWS\\COMMAND.COM'); assert.deepEqual([m.m8(0x30580), m.m8(0x30581)], [0, 13], 'an empty command tail');
+}
+// drive A:: a 1.44 MB image in it, read by CHS (cylinder 1, head 1, sector 3: LBA 56), its change line told once; the
+// BIOS boots it before the hard disk
+{
+  const img = new Uint8Array(1474560); img[56 * 512] = 0xab; img[510] = 0x55; img[511] = 0xaa; img[0] = 0xf4;
+  const fl = { image: img, changed: true };
+  const m = V.machine({ floppy: fl }); m.ticksAt = Date.now() + 1e9;
+  m.v86Boot(); assert.equal((m.cpu.eip.value >>> 0) - m.v86, 0x7c00); assert.equal(m.r('dx') & 0xff, 0); assert.equal(m.m8(0x7c00), 0xf4);
+  fl.changed = true;
+  const rd = () => { m.u8.set([0xb8, 0x01, 0x02, 0xb9, 0x03, 0x01, 0xba, 0x00, 0x01, 0xbb, 0x00, 0x80, 0xcd, 0x13, 0xf4], m.v86 + 0x7c00);
+    m.sreg('cs', 0); m.sreg('es', 0); m.sreg('ss', 0); m.cpu.esp.value = 0x7c00; m.cpu.eip.value = m.v86 + 0x7c00; m.halted = false; m.v86Run(50); return m.ah(); };
+  assert.equal(rd(), 0x06, 'the first read after a change: changed'); assert.equal(rd(), 0); assert.equal(m.m8(0x8000), 0xab);
+}
 console.log('v86: ok');

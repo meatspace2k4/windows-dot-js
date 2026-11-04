@@ -172,7 +172,10 @@ VXDS = [('mmdevldr.vxd', 0x01800000, 0x07C00000), ('mssndsys.vxd', 0x01810000, 0
         ('shell.vxd', 0x018E0000, 0x07E20000), ('reboot.vxd', 0x01900000, 0x07E80000),
         # the parallel port (WIN95_02.CAB): the communications VxD that serves ports to KERNEL32's comm calls and loads
         # each port's driver, the printer port's driver, and the enumerator of what is plugged into it
-        ('vcomm.vxd', 0x01920000, 0x07EC0000), ('lpt.vxd', 0x01940000, 0x07F00000), ('lptenum.vxd', 0x01960000, 0x07F40000)]
+        ('vcomm.vxd', 0x01920000, 0x07EC0000), ('lpt.vxd', 0x01940000, 0x07F00000), ('lptenum.vxd', 0x01960000, 0x07F40000),
+        # the display's VxD (WIN95_02.CAB): what WinOldAp's grabber reads an MS-DOS VM's screen through (its PM API's
+        # functions 0-9), and the display driver's VDD calls (80h on)
+        ('vdd.vxd', 0x012E0000, 0x06290000)]
 # NDIS miniports (PE images NDIS loads and links to its own exports): (file, load base, block-table base). NE2000.SYS
 # drives the NE2000-compatible card (NETNOVEL.INF *PNP80D6)
 DRIVERS = [('ne2000.sys', 0x012D0000, 0x05AC0000)]

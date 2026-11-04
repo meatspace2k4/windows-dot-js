@@ -65,7 +65,9 @@ class Fn {
 }
 
 // ---------------------------------------------------------------- decoding
-class Unsupported extends Error {}
+// (n: the instruction of the block being translated that it met, so the block can end before it: dynBlock)
+let insnAt = 0;
+class Unsupported extends Error { constructor(m) { super(m); this.n = insnAt; } }
 const MASK = { 1: 0xff, 2: 0xffff, 4: -1 };
 const COND = ['o', 'no', 'b', 'ae', 'e', 'ne', 'be', 'a', 's', 'ns', 'p', 'np', 'l', 'ge', 'le', 'g'];
 
@@ -84,11 +86,11 @@ function mmioRange(p, lin) {
 /** translate the block at linear `lin` (code segment base `csb`, 32-bit default when `d32`); `v86` is the linear
  *  base of a virtual-8086 machine's first megabyte when the code is that machine's: a segment register's base is then
  *  v86 + 16 * its value, INT goes through the machine's own interrupt vectors, and the BIOS's ROM calls the host */
-function translate(p, lin, csb, d32, v86) {
+function translate(p, lin, csb, d32, v86, limit) {
   const vm = v86 !== undefined && v86 !== null;
   // (a V86 machine's FLAGS bits 12-14, IOPL and NT, which a 386 keeps as written and the translated code keeps no
   // global for: a word of the machine's own, past its first megabyte and the 64K above it)
-  const XFLAGS = vm ? (v86 + 0x110000) | 0 : 0;
+  const XFLAGS = vm ? (p.v86Flags || (v86 + 0x110000)) | 0 : 0;   // (a machine's own word for them, p.v86Flags: the system VM's, whose 110000h is its threads' stacks)
   const u8 = p.u8;
   const f = new Fn();
   const T = f.loc(), A = f.loc(), B = f.loc(), R = f.loc(), C = f.loc(), X = f.loc(), K = f.loc(), D = f.loc();   // scratch locals
@@ -112,7 +114,8 @@ function translate(p, lin, csb, d32, v86) {
   const fetchS8 = () => (fetch() << 24) >> 24;
   const done = next => { f.c(next | 0); return { fn: f, len: pc - lin, n }; };
   for (;;) {
-    if (++n > 400) return done(pc);   // a long straight run: continue in another block
+    if (++n > (limit || 400)) return done(pc);   // a long straight run: continue in another block
+    insnAt = n;
     const start = pc;
     f.c(start | 0).gs('eip');
     let osz = d32 ? 4 : 2, asz = d32 ? 4 : 2, seg = null, rep = null;
@@ -263,7 +266,7 @@ function translate(p, lin, csb, d32, v86) {
     if (b === 0x07 || b === 0x17 || b === 0x1f) { pop(T, osz); loadSeg(b >> 3, T); continue; }
     if (b === 0x69 || b === 0x6b) {   // imul r, rm, imm
       const o = modrm(); rd(o, osz); f.ls(B); f.c(b === 0x69 ? (osz === 4 ? fetch32() : (fetch16() << 16) >> 16) : fetchS8()).ls(C);
-      f.lg(B).lg(C).op('mul').ls(R); f.c(0).gs('cf'); f.c(0).gs('of'); wrReg(o.reg, osz, R); continue;
+      imul2(f, osz, B, C, R, W); wrReg(o.reg, osz, R); continue;
     }
     if (b >= 0x70 && b < 0x80) {   // jcc short
       const d = fetchS8(), t = pc + d; cond(b & 15); f.ls(T); f.lg(T).if_().c(t | 0).e(0x0f).end(); return done(pc);
@@ -443,7 +446,7 @@ function translate(p, lin, csb, d32, v86) {
         if (b2 >= 0xbe) { const sh = 32 - ssz * 8; f.c(sh).op('shl').c(sh).op('shr_s'); }
         f.ls(T); wrReg(o.reg, osz, T); continue;
       }
-      if (b2 === 0xaf) { const o = modrm(); rdReg(o.reg, osz); rd(o, osz); f.op('mul').ls(R); f.c(0).gs('cf'); f.c(0).gs('of'); wrReg(o.reg, osz, R); continue; }
+      if (b2 === 0xaf) { const o = modrm(); rdReg(o.reg, osz); f.ls(B); rd(o, osz); f.ls(C); imul2(f, osz, B, C, R, W); wrReg(o.reg, osz, R); continue; }
       if (b2 >= 0xc8 && b2 < 0xd0) { const r = b2 & 7; f.gg(G[r]).ls(T); f.lg(T).c(24).op('shl').lg(T).c(8).op('shl').c(0xff0000).op('and').op('or').lg(T).c(8).op('shr_u').c(0xff00).op('and').op('or').lg(T).c(24).op('shr_u').op('or').gs(G[r]); continue; }
       if (b2 === 0xa4 || b2 === 0xa5 || b2 === 0xac || b2 === 0xad) {   // shld / shrd
         const o = modrm(), left = b2 < 0xa8; f.c(b2 & 1 ? 0 : fetch()); if (b2 & 1) f.gg('ecx'); else f.c(0).op('or'); f.c(31).op('and').ls(C);
@@ -454,6 +457,7 @@ function translate(p, lin, csb, d32, v86) {
           else f.lg(B).lg(C).op('shr_u').lg(T).c(32).lg(C).op('sub').op('shl').op('or').ls(R).lg(B).lg(C).c(1).op('sub').op('shr_u').c(1).op('and').gs('cf');
         } else if (left) f.lg(B).c(16).op('shl').lg(T).c(0xffff).op('and').op('or').lg(C).op('shl').c(16).op('shr_u').ls(R).lg(B).c(16).lg(C).op('sub').op('shr_u').c(1).op('and').gs('cf');
         else f.lg(T).c(16).op('shl').lg(B).c(0xffff).op('and').op('or').lg(C).op('shr_u').c(0xffff).op('and').ls(R).lg(B).lg(C).c(1).op('sub').op('shr_u').c(1).op('and').gs('cf');   // counts past 16 are undefined on x86
+        f.lg(R).lg(B).op('xor').c(osz * 8 - 1).op('shr_u').c(1).op('and').gs('of');   // (OF: the sign changed, as a 1-bit shift sets it)
         szp(osz); wr(o, osz, R); f.end(); continue;
       }
       if (b2 === 0xa0 || b2 === 0xa8) { f.gg(b2 === 0xa0 ? 'fsel' : 'gsel').ls(T); push(T, osz); continue; }
@@ -471,6 +475,13 @@ function translate(p, lin, csb, d32, v86) {
         const sz = b2 & 1 ? osz : 1, o = modrm();
         rdReg(0, sz); f.ls(B); rd(o, sz); f.ls(C); alu2(7, sz);
         f.lg(B).lg(C).op('eq').if_(); rdReg(o.reg, sz); f.ls(T); wr(o, sz, T); f.else_(); wrReg(0, sz, C); f.end();
+        continue;
+      }
+      // xadd: the sum (flags as add) to the destination, the destination's old value to the source register
+      if (b2 === 0xc0 || b2 === 0xc1) {
+        const sz = b2 & 1 ? osz : 1, o = modrm();
+        rd(o, sz); f.ls(B); rdReg(o.reg, sz); f.ls(C); alu2(0, sz);
+        wrReg(o.reg, sz, B); wr(o, sz, R);
         continue;
       }
       if (b2 === 0xa3 || b2 === 0xab || b2 === 0xb3 || b2 === 0xbb || b2 === 0xba) {   // bt / bts / btr / btc
@@ -719,6 +730,9 @@ function shift(f, op, sz, o, rd, wr, L, szp) {
       f.lg(B).lg(R).op(op === 0 ? 'shl' : 'shr_u').lg(B).c(w).lg(R).op('sub').op(op === 0 ? 'shr_u' : 'shl').op('or').c(m).op('and').ls(R);
     }
     if (op === 0) f.lg(R).c(1).op('and').gs('cf'); else f.lg(R).c(w - 1).op('shr_u').c(1).op('and').gs('cf');
+    // (OF, as a 1-bit rotate sets it: ROL the top bit XOR CF, ROR the top two bits XORed)
+    if (op === 0) f.lg(R).c(w - 1).op('shr_u').gg('cf').op('xor').c(1).op('and').gs('of');
+    else f.lg(R).c(w - 1).op('shr_u').lg(R).c(w - 2).op('shr_u').op('xor').c(1).op('and').gs('of');
   } else {                      // rcl / rcr: a rotate of w + 1 bits, CF above the operand
     const X = f.loc64(), K = f.loc64(), mask = (1n << BigInt(w + 1)) - 1n;
     f.gg('cf').e(EXT_U).c64(w).op64('shl').lg(B).c(m).op('and').e(EXT_U).op64('or').ls(X);
@@ -733,6 +747,19 @@ function shift(f, op, sz, o, rd, wr, L, szp) {
   }
   wr(o, sz, R);
   f.end();
+}
+
+// imul r, r/m and imul r, r/m, imm (0Fh AFh, 69h, 6Bh): R the low half of B * C, signed; CF and OF set when the product
+// does not fit the operand (a 16-bit product checked on sign-extended operands)
+function imul2(f, osz, B, C, R, W) {
+  if (osz === 4) {
+    f.lg(B).e(EXT_S).lg(C).e(EXT_S).op64('mul').e(0x21, uleb(W));
+    f.e(0x20, uleb(W)).e(WRAP).ls(R); f.e(0x20, uleb(W)).lg(R).e(EXT_S).op64('ne').gs('cf');
+  } else {
+    f.lg(B).c(16).op('shl').c(16).op('shr_s').lg(C).c(16).op('shl').c(16).op('shr_s').op('mul').ls(R);
+    f.lg(R).c(16).op('shl').c(16).op('shr_s').lg(R).op('ne').gs('cf');
+  }
+  f.gg('cf').gs('of');
 }
 
 // mul / imul / div / idiv (group 3, sub-ops 4..7)
@@ -849,8 +876,14 @@ P.dynBlock = function (eip) {
   let c = kept.find(k => k.bytes.every((v, i) => u8[eip + i] === v));
   if (c) return c;
   let t;
+  // (an instruction translation cannot take ends the block before it: what comes first runs, and the block after it
+  // starts at that instruction, where the failure is the instruction's own)
   try { t = translate(this, eip, csb, d32, vm ? this.v86 : null); }
-  catch (e) { if (e instanceof Unsupported) { this.trapped = `run-time code at ${eip.toString(16)}: ${e.message}`; return null; } throw e; }
+  catch (e) {
+    if (!(e instanceof Unsupported)) throw e;
+    if (e.n > 1) t = translate(this, eip, csb, d32, vm ? this.v86 : null, e.n - 1);
+    else { this.trapped = `run-time code at ${eip.toString(16)}: ${e.message}`; return null; }
+  }
   t.fn.e(0x0f);
   // (the imports: the memory, port I/O, interrupts, and the x87's math, the process's own as its static modules get it)
   const e = this.imports && this.imports.env, f80 = { f80load: a => this.f80load(a), f80store: (a, v) => this.f80store(a, v) };

@@ -26,7 +26,12 @@ const CPU_REGS = ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi', 'cf', 
 // can give up the processor (a thread at its top level) does after SLICE_MS; one inside a call the host made cannot,
 // and runs on, as a processor would: its machine is a worker's (worker.js), so it holds nothing but that machine, whose
 // interrupts (the keys, the mouse, the timer) still come at each check
-const BUDGET = 0x4000, SLICE_MS = 40;
+// (4 ms: the machine's step, with the input, the timers and a frame, comes round faster than the display's 120 a second
+// while a thread computes. A thread stops only where it is at its own top level, not in a call the host made for it,
+// and Windows 98 Setup's preparation comes there about every 5 ms: a 7 ms slice ran to its second such point, 10 ms,
+// 95 steps a second; 4 ms stops at the first. The step's own work is ~0.1 ms. At 40 a busy 16-bit program left the
+// page 16 frames a second)
+const BUDGET = 0x1000, SLICE_MS = 4;   // (BUDGET: blocks between the checks, so a slice ends close to its time)
 const WM = { NULL: 0, CREATE: 1, DESTROY: 2, MOVE: 3, SIZE: 5, ACTIVATE: 6, SETFOCUS: 7, KILLFOCUS: 8, PAINT: 0xf, CLOSE: 0x10,
   QUIT: 0x12, ERASEBKGND: 0x14, SHOWWINDOW: 0x18, ACTIVATEAPP: 0x1c, SETCURSOR: 0x20, NCCREATE: 0x81, NCDESTROY: 0x82,
   NCACTIVATE: 0x86, KEYDOWN: 0x100, KEYUP: 0x101, CHAR: 0x102, SYSKEYDOWN: 0x104, SYSCOMMAND: 0x112, TIMER: 0x113,
@@ -404,7 +409,7 @@ class Process {
   /** Dispatch across modules until the sentinel (0), a yield (1) or a fault (2). */
   runAt(eip) {
     if (this.runLevel++ === 0) this.runT0 = this.now();   // the host's processor is the guest's from here
-    try { return this.dispatch(eip); } finally { this.runLevel--; }
+    try { return this.dispatch(eip); } finally { if (this.callRun && this.callRun.level === this.runLevel) this.callRun = null; this.runLevel--; }
   }
   /** run at `eip` as a thread's top level: a run that can give up the processor when its time is up (1) */
   runTop(eip) {
@@ -424,18 +429,27 @@ class Process {
   /** the dispatcher's question when the block budget runs out: 1 to give the processor back to the host here */
   tick(eip) {
     this.cpu.budget.value = BUDGET;
+    const vc = this.host.vclock; if (vc) vc.now += vc.perTick;   // (the machine's own clock: a quantum per BUDGET blocks, whatever the host's speed; worker.js vclock)
     if (this.inputPoll && !this.inPoll) { this.inPoll = true; try { this.inputPoll(); } finally { this.inPoll = false; } }   // interrupts: the keyboard's and the mouse's
     if (this.runLevel === this.yieldLevel && !this.noPreempt) {
       if (this.now() - this.runT0 < SLICE_MS) return 0;
       this.preempted = u32(eip); return 1;
     }
-    return 0;   // (inside a call the host made it cannot stop: it runs on)
+    // (inside a call the host made it cannot stop: it runs on. One that runs on 10 s is named once in the log, where it
+    // is: nothing else runs meanwhile, and the machine answers nothing)
+    const s = this.callRun;
+    if (!s || s.level !== this.runLevel) this.callRun = { level: this.runLevel, t0: performance.now(), told: false };
+    else if (!s.told && performance.now() - s.t0 > 10000) {
+      s.told = true;
+      log('warn', 'win32', `a call the host made runs on at ${this.whereOf(eip)} (${u32(eip).toString(16)}), thread ${this.thread16 ? this.thread16.id : 'main'}, level ${this.runLevel}/${this.yieldLevel}, depth ${this.depth}, ring 0 ${this.r0Depth || 0}`);
+    }
+    return 0;
   }
   /** no code at `at` the processor can run (nothing mapped there: #PF; an instruction run-time translation cannot
    *  take: #UD): the exception's continuation, or null for a stop of the emulator's own (trapped) */
   noCode(at) {
     const t = this.trapped || '';
-    (this.faultLog || (this.faultLog = [])).push({ at: u32(at).toString(16), atIn: this.whereOf(at), why: t, esp: u32(this.cpu.esp.value).toString(16), from: u32(this.lastBlock || 0).toString(16), fromIn: this.whereOf(this.lastBlock || 0), cs: (this.cpu.cs.value & 0xffff).toString(16), ss: (this.cpu.ss.value & 0xffff).toString(16), thread: this.thread16 ? this.thread16.id : 'main' }); if (this.faultLog.length > 50) this.faultLog.shift();   // (a diagnostic: cmd 'faults')
+    (this.faultLog || (this.faultLog = [])).push({ at: u32(at).toString(16), atIn: this.whereOf(at), why: t, esp: u32(this.cpu.esp.value).toString(16), from: u32(this.lastBlock || 0).toString(16), fromIn: this.whereOf(this.lastBlock || 0), path: this.entryRing ? [...Array(32).keys()].map(k => this.entryRing[(this.entryAt + k) & 31]).filter(Boolean).map(v => this.whereOf(v)) : [], stack: (() => { try { const ss = this.cpu.ss.value & 0xffff, sp = ss && ss !== LAYOUT.FLATDS ? (this.cpu.ssb.value >>> 0) + (this.cpu.esp.value & 0xffff) : u32(this.cpu.esp.value); return Array.from({ length: 8 }, (_, k) => this.r32(sp + 4 * k) >>> 0).map(v => `${v.toString(16)} ${this.whereOf(v)}`); } catch (_) { return []; } })(), cs: (this.cpu.cs.value & 0xffff).toString(16), ss: (this.cpu.ss.value & 0xffff).toString(16), thread: this.thread16 ? this.thread16.id : 'main' }); if (this.faultLog.length > 50) this.faultLog.shift();   // (a diagnostic: cmd 'faults')
     if (/^run-time code/.test(t)) { log('warn', 'win32', t); this.trapped = null; return this.raise(6, at); }   // (an emulator gap: named)
     if (t && !/^jump to unmapped address/.test(t)) return null;
     this.trapped = null; return this.raise(14, at, at);
@@ -526,8 +540,8 @@ class Process {
   /** a write watch on linear [lo, lo+len): the range is compared with its last contents at each dispatch (a block of a
    *  recompiled module, a stand-in's call) and each run-time block, and the first change since, with what ran last,
    *  goes in `hits` (cmd 'memwatch'); null ends it */
-  memWatch(lo, len) {
-    this.memW = lo == null ? null : { lo: u32(lo), len: len | 0, snap: this.u8.slice(u32(lo), u32(lo) + (len | 0)), hits: [], n: 0 };
+  memWatch(lo, len, own, max) {   // (own: a thread's id whose own writes are not recorded, for a watch on that thread's stack; max: the hits kept, 50)
+    this.memW = lo == null ? null : { lo: u32(lo), len: len | 0, snap: this.u8.slice(u32(lo), u32(lo) + (len | 0)), hits: [], n: 0, own: own || null, max: max || 50 };
     return this.memW;
   }
   memCheck(by) {
@@ -535,8 +549,9 @@ class Process {
     for (; i < n; i++) if (u8[lo + i] !== s[i]) break;
     if (i === n) return;
     let j = n - 1; while (j > i && u8[lo + j] === s[j]) j--;
+    if (w.own && this.thread16 && this.thread16.id === w.own) { s.set(u8.subarray(lo, lo + n)); return; }
     w.n++;
-    if (w.hits.length < 50) w.hits.push({ at: (lo + i).toString(16), n: j - i + 1, was: Array.from(s.subarray(i, Math.min(j + 1, i + 16))), now: Array.from(u8.subarray(lo + i, Math.min(lo + j + 1, lo + i + 16))),
+    if (w.hits.length < w.max) w.hits.push({ at: (lo + i).toString(16), n: j - i + 1, was: Array.from(s.subarray(i, Math.min(j + 1, i + 16))), now: Array.from(u8.subarray(lo + i, Math.min(lo + j + 1, lo + i + 16))),
       by: by || this.whereOf(this.lastBlock || 0), thread: this.thread16 ? this.thread16.id : 'main', t: Math.round(this.now()),
       // (the return addresses on the stack then, as symbols: who the code that wrote was called by)
       stack: Array.from({ length: 48 }, (_, k) => this.r32(u32(this.cpu.esp.value) + 4 * k)).filter(v => this.modules.some(m => m.meta && v >= m.meta.textLo && v < m.meta.textHi)).map(v => this.whereOf(v)) });
@@ -565,7 +580,7 @@ class Process {
       if (this.modeSwitch && eip < LAYOUT.THUNK16) this.modeSwitch(m);
       if (m.clock) this.tick16();   // SYSTEM.DRV reads the time the timer VxD keeps current
       let r;
-      this.lastBlock = eip;
+      this.lastBlock = eip; (this.entryRing || (this.entryAt = 0, this.entryRing = new Uint32Array(32)))[this.entryAt++ & 31] = eip;   // (the last 32 entries into modules: a fault's way there, noCode)
       try { r = m.run(eip); } catch (e) {
         // an access past the end of memory (a pointer that is no address the machine has): a page fault where the guest
         // made it, for its own handlers or its fault dialog, as the processor raises one; not the machine's end
@@ -784,6 +799,18 @@ class Process {
     let p = list && list.length ? list.pop() : 0;
     if (!p) {
       p = this.heapTop; this.heapTop += n;
+      // (the heap's end reached: the free blocks merged where they touch, the end given back where the last of them
+      // reaches it, then the smallest free block that holds it, the rest of that block free again at its size)
+      if (this.heapTop > LAYOUT.HEAP_END) {
+        this.heapTop -= n; this.coalesce(); p = this.heapTop; this.heapTop += n;
+        if (this.heapTop > LAYOUT.HEAP_END) {
+          let best = 0; for (const [s, l] of this.freeList) if (s >= n && l.length && (!best || s < best)) best = s;
+          if (best) {
+            this.heapTop -= n; p = this.freeList.get(best).pop();
+            if (best > n) { const r = best - n; if (!this.freeList.has(r)) this.freeList.set(r, []); this.freeList.get(r).push(p + n); }
+          }
+        }
+      }
       if (this.heapTop > LAYOUT.HEAP_END) {   // (the report says what holds the heap: live blocks by size, and what idles on the free lists)
         const by = new Map(); let live = 0; for (const [, s] of this.allocs) { by.set(s, (by.get(s) || 0) + s); live += s; }
         let idle = 0; for (const [s, l] of this.freeList) idle += s * l.length;
@@ -794,6 +821,15 @@ class Process {
     this.allocs.set(p, n); if (zero) this.u8.fill(0, p, p + n);
     if (n >= 8 << 20) (this.bigAllocs || (this.bigAllocs = [])).push(`${n} bytes at ${p.toString(16)}: ${(new Error().stack || '').split('\n').slice(2, 7).map(s => s.trim()).join(' < ')}`);   // (who takes a block of 8 MB or more: the out-of-memory report)
     return p;
+  }
+  /** the free lists with adjacent free blocks merged into one, and the heap's top lowered past free blocks at its end */
+  coalesce() {
+    const blocks = []; for (const [s, l] of this.freeList) for (const a of l) blocks.push([a, s]);
+    blocks.sort((x, y) => x[0] - y[0]);
+    const merged = [];
+    for (const [a, s] of blocks) { const last = merged[merged.length - 1]; if (last && last[0] + last[1] === a) last[1] += s; else merged.push([a, s]); }
+    while (merged.length && merged[merged.length - 1][0] + merged[merged.length - 1][1] === this.heapTop) this.heapTop = merged.pop()[0];
+    this.freeList = new Map(); for (const [a, s] of merged) { if (!this.freeList.has(s)) this.freeList.set(s, []); this.freeList.get(s).push(a); }
   }
   free(p) { const n = this.allocs.get(p); if (!n) return false; this.allocs.delete(p); if (!this.freeList.has(n)) this.freeList.set(n, []); this.freeList.get(n).push(p); return true; }
   realloc(p, n) { if (!p) return this.alloc(n); const old = this.allocs.get(p) || 0; if (n <= old) return p; const q = this.alloc(n, true); this.u8.copyWithin(q, p, p + old); this.free(p); return q; }
@@ -1081,6 +1117,20 @@ const regAttach = store => {
 };
 /** the registry as it is now, in the form a store's load gives it ([path, values, name]), for a machine in a worker */
 const regDump = () => [...REGISTRY].map(([path, m]) => [path, [...m], KEYNAME.get(path) || null]);
+/** this copy of the registry put back as a dump had it (a moment rewound: braid.js). Quiet, the copy alone changes;
+ *  `tell`, each difference goes as the operation that makes it, so the store and the other copies follow */
+const regLoad = (held, tell) => {
+  if (!tell) { REGISTRY.clear(); KEYNAME.clear(); for (const [path, vals, name] of held) { REGISTRY.set(path, new Map(vals)); if (name) KEYNAME.set(path, name); } return; }
+  const want = new Map(held.map(([path, vals, name]) => [path, { vals: new Map(vals), name }]));
+  for (const path of [...REGISTRY.keys()].sort().reverse()) if (!want.has(path) && REGISTRY.has(path)) regDel(path);
+  for (const [path, { vals, name }] of want) {
+    if (!REGISTRY.has(path)) regMake(path, name ? path.slice(0, path.length - name.length) + name : null);
+    if (name && KEYNAME.get(path) !== name) { KEYNAME.set(path, name); regChanged({ op: 'key', path, name }); }
+    const m = REGISTRY.get(path);
+    for (const n of [...m.keys()]) if (!vals.has(n)) { m.delete(n); regChanged({ op: 'del', path, name: n }); }
+    for (const [n, v] of vals) if (JSON.stringify(m.get(n)) !== JSON.stringify(v)) { m.set(n, v); regChanged({ op: 'set', path, name: n, value: v }); }
+  }
+};
 /** a change another copy of the registry made (a machine's in its worker, or the page's): applied here, and passed on
  *  to this copy's store unless `quiet` ('remote': another person's, to this page's machines but not its store) */
 const regApply = (o, quiet) => {
@@ -1109,6 +1159,82 @@ const regSet = (path, name, value) => {
   REGISTRY.get(path).set(name.toLowerCase(), value); regChanged({ op: 'set', path, name: name.toLowerCase(), value });
 };
 const HKEY = { 0x80000000: 'hkcr', 0x80000001: 'hkcu', 0x80000002: 'hklm', 0x80000003: 'hku', 0x80000005: 'hkcc', 0x80000006: 'hkdd', 1: 'hkcr', 2: 'hkcu', 3: 'hklm' };
+/** the registry's file, as Windows 95 writes it to the Windows folder (and IO.SYS's real-mode registry reads it):
+ *  'system' SYSTEM.DAT, HKEY_LOCAL_MACHINE (HKEY_CLASSES_ROOT its SOFTWARE\Classes, HKEY_CURRENT_CONFIG its
+ *  Config\0001); 'user' USER.DAT, HKEY_USERS (HKEY_CURRENT_USER its .Default). The CREG format: a 20h-byte header, the
+ *  RGKN block of key entries (1Ch bytes each: hash, parent, first child, next sibling, the key's id and RGDB block, the
+ *  offsets from RGKN's start), then RGDB blocks of 4 KB multiples holding each key's name and values, by id */
+const regHive = which => {
+  // the tree: [path in the hive, the registry path its values come from]
+  const map = which === 'user' ? [['', 'hku'], ['.default', 'hkcu']] : [['', 'hklm'], ['software\\classes', 'hkcr'], ['config\\0001', 'hkcc']];
+  const root = { name: '', kids: new Map(), vals: null };
+  const at = (hp, name) => { let n = root; if (hp) for (const seg of hp.split('\\')) { let k = n.kids.get(seg); if (!k) n.kids.set(seg, k = { name: seg, kids: new Map(), vals: null }); n = k; } if (name && !n.orig) n.orig = name; return n; };
+  for (const [path, vals] of REGISTRY) for (const [hp, rp] of map) {
+    if (path !== rp && !path.startsWith(rp + '\\')) continue;
+    if (map.some(([h2, r2]) => r2 !== rp && r2.startsWith(rp + '\\') && (path === r2 || path.startsWith(r2 + '\\')))) continue;
+    const rest = path.slice(rp.length + 1), n = at([hp, rest].filter(Boolean).join('\\'));
+    const nm = KEYNAME.get(path); if (nm) n.orig = nm;
+    n.vals = n.vals ? new Map([...n.vals, ...vals]) : new Map(vals);
+  }
+  if (which === 'user' && !root.kids.has('.default')) at('.default', '.Default'); else if (root.kids.has('.default')) root.kids.get('.default').orig = '.Default';
+  const enc = s => { const b = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) b[i] = s.charCodeAt(i) & 0xff; return b; };
+  const value = (k, v) => {   // [type, name bytes, data bytes]
+    const name = enc(v && typeof v === 'object' && v.name !== undefined ? String(v.name) : k);
+    if (typeof v === 'number') { const d = new Uint8Array(4); new DataView(d.buffer).setUint32(0, v >>> 0, true); return [4, name, d]; }
+    if (typeof v === 'string') return [1, name, enc(v)];
+    const d = v && v.data ? (v.data instanceof Uint8Array ? v.data : new Uint8Array(v.data)) : new Uint8Array(0);
+    return [v && v.type !== undefined ? v.type : 3, name, (v && (v.type === 1 || v.type === 2) && d.length && d[d.length - 1] === 0) ? d.subarray(0, d.length - 1) : d];
+  };
+  // the key entries in RGKN, depth first (the root first, with no RGDB record), and each key's record
+  const keys = []; const walk = (n, parent) => { n.i = keys.length; n.parent = parent; keys.push(n); for (const k of n.kids.values()) walk(k, n); };
+  walk(root, null);
+  const recs = keys.map((n, i) => {
+    if (!i) return null;
+    const name = enc(n.orig || n.name), vals = [...(n.vals || new Map())].map(([k, v]) => value(k, v));
+    const size = 0x14 + name.length + vals.reduce((s, [, nm, d]) => s + 0x0c + nm.length + d.length, 0);
+    return { name, vals, size };
+  });
+  // the records in blocks: each block 20h of header and its records, rounded up to 4 KB (the rest one free record)
+  const blocks = []; let cur = null;
+  for (let i = 1; i < keys.length; i++) {
+    const r = recs[i];
+    if (!cur || (cur.recs.length && cur.used + r.size > 0x1000 - 0x20 - 0x10)) { cur = { recs: [], used: 0, ids: 0 }; blocks.push(cur); }
+    r.block = blocks.length - 1; r.id = cur.ids++; cur.recs.push(r); cur.used += r.size;
+  }
+  const rgknSize = (0x20 + keys.length * 0x1c + 0xfff) & ~0xfff;
+  const blockSize = b => (b.used + 0x20 + 0x10 + 0xfff) & ~0xfff;
+  const total = 0x20 + rgknSize + blocks.reduce((s, b) => s + blockSize(b), 0);
+  const out = new Uint8Array(total), dv = new DataView(out.buffer), tag = (o, s) => out.set(enc(s), o);
+  tag(0, 'CREG'); dv.setUint32(4, 0x10000, true); dv.setUint32(8, 0x20 + rgknSize, true); dv.setUint16(0x10, blocks.length, true); dv.setUint16(0x16, 0x80, true);
+  const K = 0x20;
+  tag(K, 'RGKN'); dv.setUint32(K + 4, rgknSize, true); dv.setUint32(K + 8, 0x20, true); dv.setUint16(K + 0x0c, 0xffff, true); dv.setUint16(K + 0x0e, 0xffff, true); dv.setUint32(K + 0x10, 9, true);
+  const off = n => (n ? 0x20 + n.i * 0x1c : 0xffffffff);
+  for (const n of keys) {
+    const e = K + off(n), kids = [...n.kids.values()], sib = n.parent ? [...n.parent.kids.values()] : [], si = sib.indexOf(n);
+    let hash = 0; for (const c of (n.orig || n.name).toUpperCase()) hash += c.charCodeAt(0) & 0xff;
+    dv.setUint32(e, 0, true); dv.setUint32(e + 4, hash, true); dv.setUint32(e + 8, 0xffffffff, true);
+    dv.setUint32(e + 0x0c, off(n.parent), true); dv.setUint32(e + 0x10, off(kids[0]), true); dv.setUint32(e + 0x14, off(si >= 0 ? sib[si + 1] : null), true);
+    const r = recs[n.i]; dv.setUint16(e + 0x18, r ? r.id : 0xffff, true); dv.setUint16(e + 0x1a, r ? r.block : 0, true);
+  }
+  let o = 0x20 + rgknSize;
+  blocks.forEach((b, bn) => {
+    const size = blockSize(b), free = size - 0x20 - b.used;
+    tag(o, 'RGDB'); dv.setUint32(o + 4, size, true); dv.setUint32(o + 8, free, true); dv.setUint16(o + 0x0c, b.ids, true); dv.setUint16(o + 0x0e, bn, true);
+    dv.setUint32(o + 0x10, 0x20 + b.used, true); dv.setUint16(o + 0x14, b.ids, true);
+    let p = o + 0x20;
+    for (const r of b.recs) {
+      dv.setUint32(p, r.size, true); dv.setUint16(p + 4, r.id, true); dv.setUint16(p + 6, bn, true); dv.setUint32(p + 8, r.size, true);
+      dv.setUint16(p + 0x0c, r.name.length, true); dv.setUint16(p + 0x0e, r.vals.length, true); out.set(r.name, p + 0x14);
+      let q = p + 0x14 + r.name.length;
+      for (const [type, nm, d] of r.vals) { dv.setUint32(q, type, true); dv.setUint16(q + 8, nm.length, true); dv.setUint16(q + 0x0a, d.length, true); out.set(nm, q + 0x0c); out.set(d, q + 0x0c + nm.length); q += 0x0c + nm.length + d.length; }
+      p += r.size;
+    }
+    // (the rest of the block one free record: its ids FFFFh)
+    dv.setUint32(p, free, true); dv.setUint32(p + 4, 0xffffffff, true); dv.setUint32(p + 8, 0xffffffff, true);
+    o += size;
+  });
+  return out;
+};
 
 // ---------------------------------------------------------------- API table: [argc, impl]; argc < 0 = cdecl varargs
 // ---------------------------------------------------------------- the machine's log
@@ -3150,5 +3276,5 @@ function peString(bytes, id) {
   } catch (_) { return null; }
 }
 
-window.W95Win32 = { log, regAttach, regGet, regKids, regVals, regDel, regSet, regDump, regApply, regWatch: f => regWatchers.add(f), Process, API, STAND_IN, LAYOUT, WM, YIELD, iniGet, iniSet, iniRead, peString, peResource, faultText, fmtMsg, def, dcOf, GuestError, HangError, FaultError, mkCanvas, dibOut, sha256 };
+window.W95Win32 = { log, regAttach, regGet, regKids, regVals, regDel, regSet, regDump, regApply, regLoad, regHive, regWatch: f => regWatchers.add(f), Process, API, STAND_IN, LAYOUT, WM, YIELD, iniGet, iniSet, iniRead, peString, peResource, faultText, fmtMsg, def, dcOf, GuestError, HangError, FaultError, mkCanvas, dibOut, sha256 };
 })();

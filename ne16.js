@@ -32,6 +32,7 @@ P.init16 = function () {
   for (const [sel, base] of [[0x107, 0], [0x10f, 0x400], [0x117, 0xa0000], [0x11f, 0xb0000], [0x127, 0xb8000], [0x12f, 0xc0000], [0x137, 0xd0000], [0x13f, 0xe0000], [0x147, 0xf0000]])
     this.setDesc(sel, base, 0xffff, 0xf300);   // __0000H, __0040H, __A000H ... __F000H
   this.dosTop = 0x50000;                       // conventional memory handed out by GlobalDOSAlloc
+  this.rmIvtInit();                            // the interrupt vectors at linear 0, as a PC has them
   this.stackLevel = 0;
   this.ne = new Map();                // upper-case module name -> NE module record
   this.ghandles = new Map();          // selector -> global block {lin, size, sels, flags, lock, owner}
@@ -49,6 +50,14 @@ P.setDesc = function (sel, base, limit, acc = 0xf300) {
 P.selBase = function (sel) { return this.r32(L.LDT + (sel & 0xfff8)); };
 P.selLimit = function (sel) { return this.r32(L.LDT + (sel & 0xfff8) + 4); };
 P.selValid = function (sel) { return (sel & 0xfff8) && this.selUsed[(sel & 0xfff8) >> 3]; };
+/** a new selector with selector s's base, limit and access (AllocSelector, the alias calls, DPMI 000Ah): one
+ *  descriptor, as the source is one (a 32-bit segment with a 4 GB limit among them), or the tiles of a huge global
+ *  block when s is the first of its block's selectors */
+P.copySel = function (s, acc = this.r32(L.ACC + (s & 0xfff8))) {
+  const g = this.ghandles && this.ghandles.get(s);
+  if (g && g.n > 1) return this.allocSels(this.selBase(s), this.selLimit(s) + 1, acc);
+  const n = this.allocSels(0, 1); this.setDesc(n, this.selBase(s), this.selLimit(s), acc); return n;
+};
 /** n consecutive selectors (stepping by __AHINCR) covering [base, base+size) */
 P.allocSels = function (base, size, acc = 0xf300) {
   const n = Math.max(1, Math.ceil(size / 0x10000));
@@ -58,7 +67,7 @@ P.allocSels = function (base, size, acc = 0xf300) {
     for (let k = 0; k < n; k++) this.setDesc(((i + k) << 3) | 7, base + 0x10000 * k, Math.min(size - 0x10000 * k, 0x10000) - 1 + (k ? 0 : Math.max(0, size - 0x10000)) , acc);
     return (i << 3) | 7;
   }
-  throw new GuestError('out of selectors');
+  throw new GuestError(`out of selectors (${n} for ${u32(size).toString(16)}h bytes)`);
 };
 P.freeSels = function (sel, n = 1) {
   for (let k = 0; k < n; k++) { const i = ((sel & 0xfff8) >> 3) + k; this.selUsed[i] = 0; this.w32(L.LDT + 8 * i, 0); this.w32(L.LDT + 8 * i + 4, 0); this.w32(L.ACC + 8 * i, 0); }
@@ -225,7 +234,7 @@ P.initNE = function (rec) {
 };
 P.neByHandle = function (h) {
   h &= 0xffff; if (!h) return null;
-  for (const m of this.ne.values()) if (m.hModule === h || m.hInstance === h || (m.dgroup | 1) === (h | 1) || m.segs.some(s => (s.sel | 1) === (h | 1))) return m;
+  for (const m of this.ne.values()) if (m.hModule === h || m.hInstance === h || (m.dgroup | 1) === (h | 1) || m.segs.some(s => (s.sel | 1) === (h | 1)) || (m.instances && [...m.instances].some(g => (g | 1) === (h | 1)))) return m;
   return null;
 };
 P.neExport = function (m, key) {
@@ -234,11 +243,21 @@ P.neExport = function (m, key) {
 };
 // `native`: also bring up the modules the JS personality stands in for (JS16) from their recompiled code, for a
 // session that runs native USER; otherwise those imports stay with the JS implementations
+/** Windows' fixed drive `l` as a hard disk: a FAT view of fs.js's drive (v86.js FatView), one for the system's BIOS
+ *  and every MS-DOS VM */
+P.fixedDisk = function (l) {
+  if (!this.vmDisks && window.W95V86 && this.fs) { this.vmDisks = {}; for (const [k, v] of this.fs.vols) if (v.kind === 'fixed') this.vmDisks[k] = new window.W95V86.FatView(this.fs, k); }
+  return (this.vmDisks && this.vmDisks[l]) || null;
+};
+/** the display's grabber, the module GRABBER: the file SYSTEM.INI's [boot] 386grabber names, where KERNEL finds it */
+P.grabberFile = function () { const g = this.fs && winIni(this, 'SYSTEM.INI', 'boot', '386grabber'); return g ? this.findFile16(g) : null; };
 P.loadLibrary16 = function (name, native = false, defer = false) {
   this.init16();
   name = name.replace(/\.?\s*$/, '');   // ("MMSYSTEM.", VB3's Declare ... Lib "MMSYSTEM": a name with no extension)
   const base = name.toUpperCase().replace(/^.*\\/, '').replace(/\.(DLL|EXE|DRV)$/, '');
   if (base === 'KERNEL' || base === 'KRNL386') return this.kernelModule();   // KRNL386.EXE is the module KERNEL's file
+  // the module GRABBER (WinOldAp's import) is the display's grabber, the file SYSTEM.INI's [boot] 386grabber names
+  if (base === 'GRABBER' && !this.ne.has('GRABBER')) { const g = this.grabberFile(); if (g) name = g; }
   const all = (window.W95SYSTEM && window.W95SYSTEM.ne) || {};
   const file = name.toUpperCase().replace(/^.*\\/, '');
   // a file name finds that file's module first (MSACM.DRV is the module MSACMMAP, not MSACM.DLL's MSACM)
@@ -370,7 +389,7 @@ P.loadNEDynamic = function (key, file) {
   const mods = []; for (let i = 0; i < h(0x1e); i++) mods.push(pstr(n + h(0x2a) + rd.u16(file, n + h(0x28) + 2 * i)).toUpperCase());
   const all = (window.W95SYSTEM && window.W95SYSTEM.ne) || {}, dir = key.slice(0, key.lastIndexOf('\\'));
   const there = m => m === 'KERNEL' || JS16.includes(m) || this.ne.has(m) || all[m] || Object.values(all).some(s => s.meta && s.meta.name.toUpperCase() === m) ||
-    ['.DLL', '.EXE', '.DRV'].some(x => this.findFile16(m + x) || this.fs.exists(`${dir}\\${m}${x}`));
+    ['.DLL', '.EXE', '.DRV'].some(x => this.findFile16(m + x) || this.fs.exists(`${dir}\\${m}${x}`)) || (m === 'GRABBER' && !!this.grabberFile());
   const missing = mods.find(m => !there(m));
   if (missing) { this.missing16 = `${missing}.DLL`; log('warn', 'ne16', `${key}: ${missing}.DLL is not found`); return null; }
   this.dirs16 = [...new Set([dir, ...(this.dirs16 || [])])].slice(0, 8);   // (its folder searched for its DLLs, as the program's own is)
@@ -474,8 +493,15 @@ const JS16 = ['KERNEL', 'USER', 'KEYBOARD', 'SYSTEM', 'VDD', 'VFLATD', 'DPMI'];
 // after. Run on the interrupted code's stack or client, their frames went below its SS:SP over what it keeps there:
 // DIBENG's compiled blit keeps its line count at SS:0 of a 4Ah-byte stack, and WELCOME's blit ran from 0 at the first
 // start (the sound card's interrupt, a56b40c; VTDAPI's timer event nesting MMSYSTEM's callback, e00457a)
+const INT_FLAGS = ['cf', 'pf', 'zf', 'sf', 'of', 'df'];
 P.asInterrupt = function (fn) {
   if (this.inInterrupt) return fn();
+  // (the code interrupted goes on with its flags as it left them, as the processor's FLAGS on the stack give them back
+  // at IRET: what the interrupt runs, a VxD's time-out or the mouse's and keyboard's handling, changes them, and the
+  // calls it makes (vxdCall, call16) put back the registers but not the flags. Interrupted between a CMP and its jump in
+  // another block, PIDGEN's binary GCD on Windows 98 Setup's product key took the handler's flags, ran past x = y into
+  // x = 0 and never ended)
+  const flags = INT_FLAGS.filter(f => this.cpu[f]).map(f => [f, this.cpu[f].value]);
   const c = this.cpu, st = c.ss && { ss: c.ss.value, ssb: c.ssb.value, esp: c.esp.value }, ie = c.if ? c.if.value : 1;
   const vm = { crs: this.crs, level: this.crsLevel, pool: this.crsPool, cb: this.vmcb ? this.r32(this.vmcb + 8) : 0 };
   if (!this.intStack && st) { this.intStack = this.alloc(0x10000); this.intCrs = this.alloc(0x60); this.intCrsPool = []; }
@@ -488,6 +514,7 @@ P.asInterrupt = function (fn) {
   this.inInterrupt = true;
   try { return fn(); } finally {
     this.inInterrupt = false;
+    for (const [f, v] of flags) c[f].value = v;
     if (st) { c.ss.value = st.ss; c.ssb.value = st.ssb; c.esp.value = st.esp; }
     if (c.if) c.if.value = ie;
     this.crs = vm.crs; this.crsLevel = vm.level; this.crsPool = vm.pool; if (this.vmcb) this.w32(this.vmcb + 8, vm.cb);
@@ -572,7 +599,7 @@ P.api16 = function (eip) {
   this.retCS = cs;
   let r;
   try { r = fn.apply(this, vals); }
-  catch (e) { if (e instanceof GuestError) { this.trapped = e.message; return LAYOUT.SENTINEL; } throw e; }
+  catch (e) { if (e instanceof GuestError) { const m = this.neByHandle(cs); this.trapped = `${e.message} in ${t.key}, called from ${m ? m.name : '?'} ${cs.toString(16)}:${ip.toString(16)}`; return LAYOUT.SENTINEL; } throw e; }
   if (this.exitCode !== null) return LAYOUT.SENTINEL;
   if (r === YIELD) { this.preempted = 0; return -1; }   // a thread suspended in the call: it runs the call again when resumed (it stopped there, not where its time ran out)
   if (ret === 'w' || ret === 'i') this.cpu.eax.value = lo16(this.cpu.eax.value, r | 0);   // (a word, unsigned or signed: lstrcmp's -1)
@@ -594,11 +621,115 @@ P.ax = function (v) { if (v === undefined) return this.cpu.eax.value & 0xffff; t
 P.interrupt = function (vec, next) {
   const h = INTS[vec];
   if (window.W95INTTRACE) window.W95INTTRACE(vec, this);
+  if (!this.rmode && this.v86 === undefined && this.rmReflect(vec)) return next;
   if (!h) { this.trapped = `unhandled interrupt ${vec.toString(16)}h (ax=${this.ax().toString(16)}) at ${u32(next).toString(16)}`; return LAYOUT.SENTINEL; }
   const r = h.call(this, next);
   return r === undefined ? next : r;
 };
+// A protected-mode software interrupt whose real-mode vector a program has installed (the system VM's vectors at 0:4n,
+// which the emulator itself never sets: a nonzero one is a program's), reflected to V86 mode as Windows' DPMI host
+// reflects one it has no protected-mode handler for: the general registers as they are, CS:IP from the vector,
+// FLAGS and a return pushed on a real-mode stack in DOS memory, run in V86 mode on the system VM's first megabyte until
+// the handler's IRET comes back; the interrupts it issues are answered by the system VM's DOS and BIOS (INTS, in real
+// mode), and the general registers and flags it leaves are the interrupt's results. Windows 98 Setup runs its
+// real-mode probes so (W98SETUP 5:246: a routine copied to DOS memory, INT 12h pointed at it, INT 12h issued): with
+// INT 12h answered here instead (640), its NetWare probe called every drive a network drive and Setup found no drive
+// for its temporary folder. The vectors Windows answers in protected mode itself (KERNEL's 21h and 2Fh, the DPMI
+// host's 31h, 20h's VxD calls) stay the system's
+const RM_KEEP = new Set([0x20, 0x21, 0x2f, 0x31]);
+const RM_INTS = new Set([...Array(256).keys()]);
+P.rmReflect = function (vec) {
+  if (RM_KEEP.has(vec)) return false;
+  // (a program's handler is in conventional memory a program was given, a GlobalDOSAlloc block: the low memory's other
+  // contents are the emulator's own, IFSHLP's image and the tables, whose vectors the system answers itself)
+  const v = this.r32(vec * 4), at = ((v >>> 16) << 4) + (v & 0xffff);
+  if (!v || ![...this.ghandles.values()].some(b => b.dos && at >= b.lin && at < b.lin + b.size)) return false;
+  const c = this.cpu, keep = {}; for (const k of Object.keys(c)) keep[k] = c[k].value;
+  this.rmStackGet();
+  const ss = this.rmStack >>> 4, ret = this.rmStack + 0x10;   // (the return: an address no code is at, the stack's own first paragraph)
+  const sreg = (s, b, sel) => { c[s].value = sel & 0xffff; c[b].value = (sel & 0xffff) << 4; };
+  let sp = 0xffe; const push = w => { sp -= 2; this.w16(this.rmStack + sp, w); };
+  let fl = 0x0202; for (const [f, b] of [['cf', 0], ['pf', 2], ['zf', 6], ['sf', 7], ['df', 10], ['of', 11]]) fl |= (c[f].value & 1) << b;
+  push(fl); push(ss); push(0x10);
+  sreg('ss', 'ssb', ss); c.esp.value = sp; sreg('ds', 'dsb', 0); sreg('es', 'esb', 0); sreg('fsel', 'fs', 0); sreg('gsel', 'gsb', 0); sreg('cs', 'csb', v >>> 16);
+  const was = { v86: this.v86, hooks: this.v86Hooks, flags: this.v86Flags, rm: this.rmode };
+  this.v86 = 0; this.v86Hooks = RM_INTS; this.v86Flags = this.v86FlagsAt; this.rmode = true;
+  try { this.rmRun(u32(c.csb.value + (v & 0xffff)), ret, `real-mode INT ${vec.toString(16)}h handler at ${(v >>> 16).toString(16)}:${(v & 0xffff).toString(16)}`); }
+  finally {
+    Object.assign(this, { v86: was.v86, v86Hooks: was.hooks, v86Flags: was.flags, rmode: was.rm });
+    const res = {}; for (const r of ['eax', 'ebx', 'ecx', 'edx', 'esi', 'edi', 'ebp', 'cf', 'pf', 'zf', 'sf', 'of', 'df']) res[r] = c[r].value;
+    for (const k of Object.keys(c)) c[k].value = keep[k];
+    for (const r of Object.keys(res)) c[r].value = res[r];
+  }
+  return true;
+};
+/** real-mode code run on the system VM's first megabyte from linear `eip` until it comes to `ret` (an address no code
+ *  is at, a return pushed for it): the registers as the code leaves them. The caller has set the segments and the
+ *  stack and switched the translator to V86 mode (as rmReflect does) */
+P.rmRun = function (eip, ret, what) {
+  const c = this.cpu;
+  // (rmRunning: real-mode code on the system VM's stack is running; the host's poll between blocks runs no time-outs
+  // meanwhile (worker.js pollIn), as NETBEUI's timer, run from the poll inside VNETBIOS's post, posted again on the
+  // same stack over the first post's frame, whose IRET then went to 0000:FFF8)
+  this.rmRunning = (this.rmRunning || 0) + 1;
+  try {
+    for (let k = 0; eip !== ret; k++) {
+      if (k > 200000) throw new GuestError(`${what} did not return`);
+      c.eip.value = eip; const blk = this.dynBlock(eip);
+      if (!blk || this.trapped) throw new GuestError(this.trapped || `${what}: no code at ${eip.toString(16)}`);
+      eip = u32(blk.run());
+    }
+  } finally { this.rmRunning--; }
+};
+/** the real-mode stack the system VM's reflected real-mode code runs on (a 4 KB paragraph block in DOS memory), and
+ *  where its translator keeps the flags it needs (dyn.js v86Flags) */
+P.rmStackGet = function () {
+  if (!this.rmStack) { const a = (this.dosTop + 15) & ~15; this.dosTop = a + 0x1000; this.rmStack = a; this.v86FlagsAt = this.alloc(16); }
+  return this.rmStack;
+};
+/** the system VM's interrupt vector table, in its memory at linear 0 as a PC's is: the vectors the personality answers
+ *  (its BIOS and DOS, INTS) each to a stub in DOS memory that enters the host (0F FF n, then IRET: a far call through
+ *  the vector reaches the handler as an INT does); every other vector to the stub's IRET alone, the dummy handler a
+ *  PC's BIOS points its unused vectors at. A VxD that sets a vector (Set_V86_Int_Vector) writes it here, where code
+ *  that reads the table itself finds it: VNETBIOS posts an NCB by Simulate_Far_Call of its `cli; retf` stub with the
+ *  INT 5Ch vector, read from 170h itself, pushed after; at its init it chains the vector it found behind a far jump
+ *  (the BIOS's IRET on a PC), or, finding 0000:0000, makes the stub `cli; iret` and the vector that IRET, which pops
+ *  the post's frame wrong. Read from the map alone the vector was 0 in memory (SUWIN's "invalid instruction at
+ *  0137:0000FFFF" as Windows 98 Setup saved its system files), and a table with 0 for it ended at 0137:0000FFF1 */
+P.rmIvtInit = function () {
+  if (this.rmIvt) return this.rmIvt;
+  const a = (this.dosTop + 15) & ~15; this.dosTop = a + 0x400; this.rmIvt = a;
+  for (let n = 0; n < 256; n++) {
+    this.u8.set([0x0f, 0xff, n, 0xcf], a + n * 4);
+    const set = this.vxdVecs && this.vxdVecs.v86.get(n);
+    if (set) this.w32(n * 4, set); else if (!this.r32(n * 4)) this.w32(n * 4, ((a >>> 4) << 16 | (n * 4 + (INTS[n] ? 0 : 3))) >>> 0);
+  }
+  return a;
+};
+/** an interrupt the real-mode code reflected above issues (dyn.js: a hooked vector traps 400h + n): the system VM's own
+ *  answer for it, in real mode, the code going on after the INT */
+P.rmInt = function (n, next) {
+  const done = () => { this.cpu.eip.value = next; this.w16(this.v86Flags + 2, 1); };   // (taken: the code goes on at EIP)
+  if (this.v86IntChain && this.v86IntChain(n)) return done();   // (the VxDs that hooked it first, as the VMM offers it)
+  // (a vector nothing here answers: the BIOS's dummy handler, an IRET, as a PC's unused vectors point to one; the code
+  // goes on with its registers as they were. Named once, as a gap: VNETBIOS's post routine comes through the
+  // real-mode INT 5Ch vector, which no NetBIOS of the V86 side has)
+  const h = INTS[n];
+  if (!h) { (this.rmIntsSeen || (this.rmIntsSeen = new Set())); if (!this.rmIntsSeen.has(n)) { this.rmIntsSeen.add(n); log('warn', 'ne16', `real-mode INT ${n.toString(16)}h (ax=${this.ax().toString(16)}): no handler, returned as the BIOS's dummy vector does`); } return done(); }
+  h.call(this, next);
+  // (DOS's own INT 2Fh returns a function nothing in the chain claims with the registers as they were, as IO.SYS's
+  // does: the multiplex interrupt's answer for "no one here")
+  if (n === 0x2f && /^unhandled int 2Fh/.test(this.trapped || '')) this.trapped = null;
+  done();
+};
 const CF = (p, on) => { p.cpu.cf.value = on ? 1 : 0; };
+/** a drive's boot sector and its sectors from `first`: a fixed drive's from its disk (P.fixedDisk, the view the BIOS
+ *  and the VMs read), another's its boot sector and zeros */
+const volBoot = (p, l, v) => { const d = p.fixedDisk && p.fixedDisk(l); return d ? d.read(d.layout().hidden, 1) : bootSector(v); };
+const volSectors = (p, l, v, first, n) => {
+  const d = p.fixedDisk && p.fixedDisk(l); if (d) return d.read(d.layout().hidden + first, n);
+  const out = new Uint8Array(512 * n); if (first === 0 && n) out.set(bootSector(v)); return out;
+};
 /** a FAT boot sector for a volume: its BPB from its size and cluster, its serial and label (INT 25h's sector 0) */
 function bootSector(v) {
   const b = new Uint8Array(512), dv = new DataView(b.buffer), total = Math.max(1, Math.floor((v.total || 0) / 512)), spc = Math.max(1, Math.min(128, Math.round((v.cluster || 4096) / 512)));
@@ -626,7 +757,7 @@ function absDisk(p, write) {
   };
   let v; try { v = p.fs.statvfs(drive + ':\\'); } catch (_) { return done(false, 0x8002); }   // (not ready: no such drive)
   if (write) return done(true);   // (nothing written)
-  for (let i = 0; i < n; i++) { const s = first + i; if (s === 0) p.u8.set(bootSector(v), buf + 512 * i); else p.u8.fill(0, buf + 512 * i, buf + 512 * (i + 1)); }
+  p.u8.set(volSectors(p, drive, v, first, n), buf);
   done(true);
 }
 // MSCDEX's device request (INT 2Fh AX=1510h) for the CD drive: the request header's status (+3) is set done (100h), or
@@ -745,7 +876,7 @@ const INTS = {
       case 0x0007: this.w32(L.LDT + (bx & 0xfff8), u32((cx << 16) | dx)); this.refreshSegs(); return;
       case 0x0008: this.w32(L.LDT + (bx & 0xfff8) + 4, u32((cx << 16) | dx)); return;
       case 0x0009: this.w32(L.ACC + (bx & 0xfff8), (cx & 0xff) << 8 | ((cx & 0xc000) << 8)); return;
-      case 0x000a: { const s = this.allocSels(this.selBase(bx), this.selLimit(bx) + 1, 0xf300); this.ax(s); return; }
+      case 0x000a: { const s = this.copySel(bx, (this.r32(L.ACC + (bx & 0xfff8)) & ~0xff00) | 0xf300); this.ax(s); return; }   // (a data alias: the source's size and granularity kept)
       case 0x000b: { const a = this.lin((this.cpu.es.value << 16) | (this.cpu.edi.value & 0xffff)), b = this.selBase(bx), l = this.selLimit(bx);
         this.w16(a, l); this.w16(a + 2, b); this.u8[a + 4] = b >>> 16; this.w16(a + 5, this.r32(L.ACC + (bx & 0xfff8)) >>> 8); this.u8[a + 7] = b >>> 24; return; }
       case 0x000c: { const a = this.lin((this.cpu.es.value << 16) | (this.cpu.edi.value & 0xffff));
@@ -872,7 +1003,7 @@ const INTS = {
         if (!v || v.kind === 'remote') { CF(this, 1); this.ax(15); this.dosError = 15; return; }
         this.ax(v.kind === 'removable' ? 0 : 1); return;
       }
-      break;
+      break;   // (the device IOCTLs below: IFSHLP's control data, the console's)
       case 0x50: case 0x51: case 0x62: return;
       // the memory allocation strategy (AL 0 get into AX, 1 set from BX: first fit, 0, at start) and the upper memory
       // blocks' link (2 get into AL, 3 set from BX: not linked, 0, at start), as MS-DOS 7 keeps them
@@ -940,7 +1071,7 @@ const INTS = {
           const name = this.readA(at(this.cpu.ds.value, this.cpu.edx.value)) || '', L = (name[0] || this.fs.cwd[0]).toUpperCase();
           let v; try { v = this.fs.statvfs(L + ':\\'); } catch (_) { return fail(0x0f); }   // (invalid drive)
           const buf = at(this.cpu.es.value, this.cpu.edx.value * 0 + (this.cpu.edi.value & 0xffff)), cx = this.cpu.ecx.value & 0xffff;
-          const bs = bootSector(v), spc = bs[13], bps = 512, total = bs.length && (new DataView(bs.buffer).getUint16(19, true) || new DataView(bs.buffer).getUint32(32, true));
+          const bs = volBoot(this, L, v), spc = bs[13], bps = 512, total = bs.length && (new DataView(bs.buffer).getUint16(19, true) || new DataView(bs.buffer).getUint32(32, true));
           const fat32 = bs[0x52] === 0x46, spf = fat32 ? new DataView(bs.buffer).getUint32(36, true) : new DataView(bs.buffer).getUint16(22, true), nfats = bs[16], res = new DataView(bs.buffer).getUint16(14, true);
           const rootSecs = fat32 ? 0 : Math.ceil(512 * 32 / bps), data0 = res + nfats * spf + rootSecs, clusters = Math.max(1, Math.floor((total - data0) / spc));
           const freeCl = Math.min(clusters, Math.floor((v.free || 0) / (spc * bps)));
@@ -969,7 +1100,7 @@ const INTS = {
           const L = String.fromCharCode(64 + (this.cpu.edx.value & 0xff)), pk = at(this.cpu.ds.value, this.cpu.ebx.value), write = this.cpu.esi.value & 1;
           let v; try { v = this.fs.statvfs(L + ':\\'); } catch (_) { return fail(0x0f); }
           const first = this.r32(pk) >>> 0, n = this.r16(pk + 4), buf = at(this.r16(pk + 8), this.r16(pk + 6));
-          if (!write) for (let i = 0; i < n; i++) { const s = first + i; if (s === 0) this.u8.set(bootSector(v), buf + 512 * i); else this.u8.fill(0, buf + 512 * i, buf + 512 * (i + 1)); }
+          if (!write) this.u8.set(volSectors(this, L, v, first, n), buf);
           this.ax(0); CF(this, 0); return;
         }
         break;
@@ -1038,7 +1169,9 @@ const INTS = {
           }
           case 0x3e: if (!f) return fail(6); if (!f.dev) this.fs.close(f.fd); this.dosFiles.delete(bx); return;
           case 0x3f: { if (!f) return fail(6); const b = this.fs.read(f.fd, cx); this.u8.set(b, dsdx()); return this.ax(b.length); }
-          case 0x40: if (!f) return fail(6); return this.ax(this.fs.write(f.fd, this.u8.slice(dsdx(), dsdx() + cx)));
+          // (a write of 0 bytes sets the file's length to where it is, as MS-DOS's does: a program that rewrites a file in
+          // place ends it there. Windows 98 Setup rewrote AUTOEXEC.BAT shorter and the old file's end stayed after it)
+          case 0x40: if (!f) return fail(6); if (!cx && !f.dev) { this.fs.truncate(f.fd); return this.ax(0); } return this.ax(this.fs.write(f.fd, this.u8.slice(dsdx(), dsdx() + cx)));
           case 0x41: this.fs.unlink(this.readA(dsdx()) || ''); return;
           case 0x57: {   // file dates: AL 0 written, 4 accessed, 6 created (CX time, DX date); the setters change nothing
             if (!f) return fail(6); if (al & 1) return;
@@ -1051,6 +1184,15 @@ const INTS = {
         }
       } catch (e) { if (e instanceof window.W95FS.FSError) return fail(e.code || 5); throw e; }
     }
+    // (a function past MS-DOS 7's last, 73h, that nothing here claims: a network shell's, NetWare's from B4h on, which
+    // Windows 98 Setup probes for after the Save System Files page (DCh, its connection number): DOS's dispatcher answers
+    // AL 0, which a NetWare probe reads as no shell, no connection)
+    if (ah > 0x73) { this.ax(this.ax() & 0xff00); return; }
+    // (an IOCTL subfunction nothing above claims: past MS-DOS 7's table (11h), or for a handle no device here takes:
+    // invalid function (1) with carry, as the CD's IO.SYS answers it (its dispatcher at 154D9h: cmp al,11h / ja
+    // 156A3h, which is mov al,1 and the error exit). Windows 98 Setup's SUWIN issues 44E0h as it saves the system
+    // files, and stopped here)
+    if (ah === 0x44) { CF(this, 1); this.ax(1); this.dosError = 1; return; }
     this.trapped = `unhandled int 21h ax=${this.ax().toString(16)} bx=${(this.cpu.ebx.value & 0xffff).toString(16)} cx=${(this.cpu.ecx.value & 0xffff).toString(16)}`; return LAYOUT.SENTINEL;
   },
   0x11() { this.ax(0x0023); },
@@ -1065,11 +1207,33 @@ const INTS = {
   // MS-DOS's network and critical-section hooks (INT 2Ah): no network software in real mode takes them, so DOS's own
   // IRET answers each: 00h's AH comes back 0, no network installed (NETAPI asks), and 80h-82h's critical sections pass
   0x2a() {},
-  // the fixed disk BIOS (INT 13h) as a program under Windows reaches it: AH=00h and 0Dh reset the drive (SUWIN resets
-  // each before it reads its boot record); any other function stops here, named (a gap)
+  // the fixed disk BIOS (INT 13h) as a program under Windows reaches it: the first hard disk (DL 80h) is C:, the FAT
+  // view of fs.js's drive the MS-DOS VMs have too (v86.js FatView), at 255 heads and 63 sectors a track. AH=00h and 0Dh
+  // reset (SUWIN resets each drive before it reads its boot record); 08h its geometry (and the diskette drive's, a
+  // 1.44 MB one with no disk the system reads); 02h reads by cylinder, head and sector into ES:BX, 03h writes from it
+  // (the view takes the sectors ahead of its FATs, the MBR and boot sector; another is refused, 03h write protected);
+  // 15h the type and size; 41h no extensions. Any other function stops here, named (a gap)
   0x13(next) {
-    const ah = this.ax() >> 8;
-    if (ah === 0x00 || ah === 0x0d) { CF(this, 0); this.ax(this.ax() & 0xff); return; }
+    const ah = this.ax() >> 8, dl = this.cpu.edx.value & 0xff, view = dl === 0x80 && this.fixedDisk && this.fixedDisk('C');
+    const ok = () => { CF(this, 0); this.ax(this.ax() & 0xff); }, bad = e => { CF(this, 1); this.ax((e << 8) | (this.ax() & 0xff)); };
+    if (ah === 0x00 || ah === 0x0d) return ok();
+    const L = view ? view.layout() : null, all = L ? L.hidden + L.sectors : 0, cyls = Math.ceil(all / (255 * 63));
+    if (ah === 0x08) {
+      if (dl === 0x80 && L) { const c = cyls - 1; this.cpu.ecx.value = lo16(this.cpu.ecx.value, ((c & 0xff) << 8) | ((c >> 2) & 0xc0) | 63); this.cpu.edx.value = lo16(this.cpu.edx.value, (254 << 8) | 1); return ok(); }
+      if (dl === 0x00) { this.cpu.ebx.value = (this.cpu.ebx.value & ~0xff) | 4; this.cpu.ecx.value = lo16(this.cpu.ecx.value, (79 << 8) | 18); this.cpu.edx.value = lo16(this.cpu.edx.value, (1 << 8) | 1); return ok(); }
+      return bad(0x01);
+    }
+    if (ah === 0x15) { if (dl === 0x80 && L) { this.cpu.ecx.value = lo16(this.cpu.ecx.value, all >>> 16); this.cpu.edx.value = lo16(this.cpu.edx.value, all); CF(this, 0); this.ax((3 << 8) | (this.ax() & 0xff)); return; } if (dl === 0) { CF(this, 0); this.ax((2 << 8) | (this.ax() & 0xff)); return; } return bad(0); }
+    if (ah === 0x41) return bad(0x01);
+    if ((ah === 0x02 || ah === 0x03) && !L) return bad(dl < 0x80 ? 0x80 : 0x01);
+    if (ah === 0x02 || ah === 0x03) {
+      const cx = this.cpu.ecx.value & 0xffff, cyl = (cx >> 8) | ((cx & 0xc0) << 2), sec = cx & 0x3f, head = (this.cpu.edx.value >> 8) & 0xff, n = this.ax() & 0xff;
+      const lba = (cyl * 255 + head) * 63 + sec - 1, bx = this.cpu.ebx.value & 0xffff, es = this.cpu.es.value & 0xffff;
+      const at = this.rmode ? (es << 4) + bx : this.lin(u32((es << 16) | bx));
+      if (ah === 0x03) { if (!view.write(lba, this.u8.slice(at, at + n * 512))) return bad(0x03); }
+      else this.u8.set(view.read(lba, n), at);
+      CF(this, 0); this.ax(n); return;
+    }
     this.trapped = `unhandled int 13h ax=${this.ax().toString(16)}`; return LAYOUT.SENTINEL;
   },
   // the system BIOS (INT 15h): C0h its configuration table at ES:BX (F000:E6F5, by __F000H's selector in protected
@@ -1127,6 +1291,9 @@ const INTS = {
     if (ax === 0x168a || ax === 0x1688) return;
     if (ax === 0x160b) return;          // identify Windows-aware TSRs: none is loaded, so ES:DI comes back as it went in
     if (ax === 0x1607) return;          // device callout to real-mode software (a VxD asking for its TSR's API): none answers
+    // VDD's notice to real-mode display software around a mode set it makes in a VM (BL 2 before its INT 10h calls,
+    // 1 after: VDD.VXD 1:49EC, 1:4A23): no such software is loaded, so it comes back as it went
+    if (ax === 0x160e) return;
     if ([0x11, 0xb8, 0xb7, 0x58].includes(ax >> 8)) return;   // real-mode network redirector, network, APPEND and real-mode network extension checks: none is loaded (AL comes back as it went)
     if ((ax >> 8) === 0x40) return;    // VDD save/restore and critical-section notifications
     if (ax === 0x4a32) return;         // boot progress to IO.SYS (USER reports start-up done; its answer is not read)
@@ -1148,6 +1315,16 @@ const INTS = {
 P.blockIoctl = function () {
   const fail = e => { CF(this, 1); this.ax(e); this.dosError = e; };
   const bl = this.cpu.ebx.value & 0xff, cx = this.cpu.ecx.value & 0xffff;
+  // (the physical volume locks, 084Bh and 086Bh, name the disk by its INT 13h unit in BL: 80h the first hard disk, C:'s
+  // FAT view, 0 and 1 the diskette drives; Windows 98 Setup locks unit 80h before it reads the master boot record, and
+  // with BL taken for a drive letter it was refused, "Message SU991010")
+  if (cx === 0x084b || cx === 0x086b) {
+    const unit = bl, there = unit === 0x80 ? !!(this.fixedDisk && this.fixedDisk('C')) : unit < 2 && this.fs.vols.has(String.fromCharCode(65 + unit));
+    if (!there) return fail(15);
+    const locks = this.physLocks || (this.physLocks = new Map());
+    if (cx === 0x084b) locks.set(unit, (this.cpu.ebx.value >> 8) & 0xff); else { const lv = locks.get(unit); if (lv) locks.set(unit, lv - 1); else locks.delete(unit); }
+    CF(this, 0); this.ax(0); return;
+  }
   const L = bl ? String.fromCharCode(64 + bl) : this.fs.cwd[0].toUpperCase(), v = this.fs.vols.get(L);
   if (!v || v.kind === 'remote') return fail(15);
   // (the volume locks a disk utility takes before it writes sectors, logical 084Ah/086Ah, physical 084Bh/086Bh, and
@@ -1156,8 +1333,8 @@ P.blockIoctl = function () {
   // the level held, FFFFh none, as Disk Defragmenter asks before its own lock: answered 0, it said a disk utility had
   // C: locked)
   const locks = this.volLocks || (this.volLocks = new Map());
-  if (cx === 0x084a || cx === 0x084b) { locks.set(L, (this.cpu.ebx.value >> 8) & 0xff); this.ax(0); return; }
-  if (cx === 0x086a || cx === 0x086b) { const lv = locks.get(L); if (lv) locks.set(L, lv - 1); else locks.delete(L); this.ax(0); return; }
+  if (cx === 0x084a) { locks.set(L, (this.cpu.ebx.value >> 8) & 0xff); this.ax(0); return; }
+  if (cx === 0x086a) { const lv = locks.get(L); if (lv) locks.set(L, lv - 1); else locks.delete(L); this.ax(0); return; }
   if (cx === 0x0870) { const lv = locks.get(L); this.ax(lv === undefined ? 0xffff : lv); this.cpu.ecx.value = lo16(this.cpu.ecx.value, 0); return; }
   if (cx === 0x086c) { this.ax(0); return; }   // (the lock's access flag: nothing has written or mapped the volume since)
   const a = this.lin(((this.cpu.ds.value & 0xffff) << 16) | (this.cpu.edx.value & 0xffff));
@@ -1165,11 +1342,11 @@ P.blockIoctl = function () {
   // 0860h the device's parameters (DS:DX: special functions, device type, attributes, cylinders, media type, then the
   // BPB, as the boot sector's, INT 25h's); 0866h its media id (info level, serial, label, file system type)
   if (cx === 0x0860 && vi) {
-    const bs = bootSector(vi); this.u8[a + 1] = v.kind === 'removable' ? 7 : 5; this.w16(a + 2, v.kind === 'removable' ? 0 : 1);
+    const bs = volBoot(this, L, vi); this.u8[a + 1] = v.kind === 'removable' ? 7 : 5; this.w16(a + 2, v.kind === 'removable' ? 0 : 1);
     this.w16(a + 4, 1024); this.u8[a + 6] = 0; this.u8.set(bs.subarray(11, 36), a + 7); this.ax(0); return;
   }
   if (cx === 0x0866 && vi) {
-    const bs = bootSector(vi), e = bs[0x52] === 0x46 ? 64 : 36;   // (the extended BPB: FAT32's further on)
+    const bs = volBoot(this, L, vi), e = bs[0x52] === 0x46 ? 64 : 36;   // (the extended BPB: FAT32's further on)
     this.w16(a, 0); this.u8.set(bs.subarray(e + 3, e + 26), a + 2); this.ax(0); return;
   }
   if (cx !== 0x086f) return fail(1);
@@ -1186,6 +1363,10 @@ P.trapHook = function (e, code) {
   if (code >= 0x3000000) { this.mmioRead(u32(e), code & 0xff); return true; }
   if (code >= 0x2000000) { this.mmioWrite(u32(e), code & 0xff); return true; }
   if (code >= 0x1000000) { this.portIO(code & 0xffff, (code >> 16) & 7, !!(code & 0x800000)); return true; }
+  if (code >= 0x400 && code < 0x500 && this.v86 === 0) { this.rmInt(code - 0x400, u32(e)); return true; }   // (real-mode code's INT: rmReflect)
+  // (real-mode code that came to a vector's ROM stub itself, 0F FF n then IRET, a far return to the vector: the BIOS's
+  // service n, then on at the IRET; VNETBIOS's post stub returns through the INT 5Ch vector so)
+  if (code >= 0x200 && code < 0x300 && this.v86 === 0) { this.rmInt(code - 0x200, u32(e)); return true; }
   this.cpu.eip.value = this.interrupt(code - 0x100, u32(e)) | 0;
   return true;
 };
@@ -1282,8 +1463,23 @@ vxdApi(0x0001, 'VMM', {
   0x26d() { return 0; },
 });
 vxdApi(0x0009, 'REBOOT', {});
+vxdApi(0x000d, 'VKD', {
+  0() { return 0x200; },   // version 2.00: WinOldAp takes a VKD of version 2 only (WINOA386.MOD 2:C18)
+  // a key typed into an MS-DOS VM's window, which WinOldAp hands on (WINOA386.MOD 2:FFB): EBX the VM, CH the scan
+  // code, CL the character; into that VM's keyboard as its BIOS takes keys, carry clear. Missing, the first key typed
+  // stopped WinOldAp ("unimplemented VKD API function 1h")
+  1() {
+    const v = this.vmOf && this.vmOf(this.cpu.ebx.value), m = v && !v.sys && !v.gone ? v.m : null;
+    if (m) m.keys.push(this.cpu.ecx.value & 0x7fff);
+    this.cpu.cf.value = m ? 0 : 1;
+  },
+});
 vxdApi(0x000c, 'VMD', {
   0() { return 0x400; },                                       // version 4.00
+  // WinOldAp's: the pointer over an MS-DOS VM's window, for that VM's mouse (EBX the VM, CX the buttons, the high word
+  // of ECX the buttons that changed, EDI the position: Y in the high word, X in the low, in the VM's pixels); kept on
+  // the VM for its INT 33h. ECX goes back as it came: the changes WinOldAp captures the pointer for
+  1() { const v = this.vmOf && this.vmOf(this.cpu.ebx.value); if (v && !v.sys) v.mouse = { buttons: this.cpu.ecx.value & 0xffff, x: this.cpu.edi.value & 0xffff, y: this.cpu.edi.value >>> 16 }; },
   5() { this.cpu.edx.value = lo16(this.cpu.edx.value, 0); return 4; },   // mouse type: PS/2 (no serial port IRQ to claim)
   // asked after the type; a zero answer sends MOUSE.DRV through a set-up of its own that this mouse does not need
   // (an unconfirmed reading of the driver)
@@ -1481,7 +1677,9 @@ P.nativeChildren = function (parent, send = true) {
   // thread waits on a reply to a SendMessage of its own: one sent from here then went into that thread's chain of
   // sends, and it waited for good. Then the control is `unknown`: its window text only, no check, no items)
   // (send false: nothing asked, the caller asks from a thread of its own: worker.js 'world')
-  const ask = send && !this.replyAwaited();
+  // (nor while a thread holds the Win16Lock: it is in the middle of a run of its own (SUWIN's key check) and takes no
+  // message until it is done; a send then waited on it, and the page lost its frames meanwhile)
+  const ask = send && !this.replyAwaited() && !this.win16Held;
   const walk = (p, depth) => {
     for (let h = u(262, [['w', p], ['w', 5]]), n = 0; h && n < 512; h = u(262, [['w', h], ['w', 2]]), n++) {
       if (!u(49, [['w', h]])) continue;
@@ -2081,6 +2279,9 @@ vxdApi(0x0033, 'CONFIGMG', {
     const arg = cmArgs(this), dn = this.cmNode(arg(1)); if (!dn || !dn.parent) return CR.INVALID_DEVNODE;
     const sib = dn.parent.children, n = sib[sib.indexOf(dn) + 1]; if (!n) return CR.NO_SUCH_DEVNODE; this.w32(this.lin(arg(0)), n.handle); return CR.SUCCESS;
   },
+  // Get_Depth(far *depth, dn, flags): how many parents above it, the root's 0 (NETDI, walking up from a network
+  // device's devnode as Windows 98 Setup identifies the computer)
+  8() { const arg = cmArgs(this), dn = this.cmNode(arg(1)); if (!dn) return CR.INVALID_DEVNODE; let d = 0; for (let x = dn; x.parent; x = x.parent) d++; this.w32(this.lin(arg(0)), d); return CR.SUCCESS; },
   // the logical configurations and their resource descriptors, as CONFIGMG gives them to ring-0 callers (vmm.js), the
   // pointers here 16:16: Add_Empty_Log_Conf(far *lc, dn, priority, flags), Get_First_Log_Conf(far *lc, dn, flags),
   // Get_Next_Log_Conf(far *lc, lc, flags), Add_Res_Des(far *rd, lc, resource, far data, len, flags),
@@ -2237,9 +2438,106 @@ P.customEntry = function (w, h, slot = CUSTOM_SLOTS[0]) {
   for (const [o, v] of [[8, w], [0xa, h], [0x34, w], [0x36, -h], [0x3c, w], [0x3e, -h], [0x44, X], [0x46, -X], [0x4c, Y], [0x4e, -Y], [0x54, Y], [0x56, -Y]]) this.w16(gdi + o, v & 0xffff);
   return true;
 };
+// The grabber's functions of VDD (EBX the VM, ES:EDI the caller's buffer), answered from the VM's machine (vmm.js): its
+// video state as the BIOS keeps it, its screen memory where it is in Windows' memory, and what changed on it.
+//   1, 6  the VM's video memory (28h bytes): +0..+0Ch each plane's linear address, +10h the displayed page's offset,
+//         +14h..+20h each plane's size (the text screen at its B8000h, 32K); DL flags, none
+//   2, 8  its video state (20h bytes, VDD 2:2D86): +0 the mode (the BIOS's number), +2 flags (8: text), +3 the rows,
+//         +4/+6 the cursor's column and row, +8/+0Ah its first and last scan line, +0Ch the 16 palette registers,
+//         +1Ch the columns
+//   3     what changed since it was last cleared: CX nonzero and flags 8 (the whole screen: the grabber repaints it all,
+//         VGAFULL 1:85F), CX 0 when nothing did
+//   4     the changes cleared; 5 the memory let go; 7 and 9 nothing kept here
+// +24h of the memory record: the colors, 256 dwords, as VDD's register state has them (VDD 1:2436E): an attribute's
+// palette register value indexes it for the DAC entry in its low byte, and that entry's top three bytes are the DAC's
+// 6-bit blue, green and red, which the grabber shifts into a COLORREF (VGAFULL 1:1913). The VGA's default DAC: its
+// first 64 the EGA's colors. Left 0, every color the grabber looked up was black, and MEM's text was drawn black on black
+P.grabPalette = function (v) {
+  if (!v.grabPal) {
+    v.grabPal = this.alloc(0x400);
+    for (let i = 0; i < 256; i++) {
+      const k = i & 63, c = (p, s) => (k >> p & 1) * 0x2a + (k >> s & 1) * 0x15;
+      const [r, g, b] = i < 64 ? [c(2, 5), c(1, 4), c(0, 3)] : [0, 0, 0];
+      this.w32(v.grabPal + 4 * i, u32((b << 24) | (g << 16) | (r << 8) | i));
+    }
+  }
+  return v.grabPal;
+};
+P.vddGrab = function (fn) {
+  const v = this.vmOf && this.vmOf(this.cpu.ebx.value), m = v && !v.sys ? v.m : null;
+  const buf = () => this.lin(((this.cpu.es.value & 0xffff) << 16) | (this.cpu.edi.value & 0xffff));
+  const text = () => (m ? m.u8.slice(m.v86 + 0xb8000 + m.m16(0x44e), m.v86 + 0xb8000 + m.m16(0x44e) + 4000) : null);
+  this.cpu.cf.value = 0;
+  if (!v || v.sys) { if (fn === 3) this.cpu.ecx.value &= ~0xffff; this.cpu.eax.value = 0; return; }
+  // (a VM whose program has ended, its machine gone: its screen as last seen, its state as last given, for the
+  // grabber's last repaints of the window. Its record left as it was, the grabber took the stack's garbage for the
+  // memory's address and wrote out of bounds (VGAFULL 1:1333) when the key that ended MEM was pressed)
+  if (!m) {
+    const a = buf();
+    if (fn === 1 || fn === 6) {
+      this.u8.fill(0, a, a + 0x28);
+      if (!v.grabMem) { v.grabMem = this.alloc(0x8000); for (let i = 0; i < 0x4000; i++) this.w16(v.grabMem + 2 * i, 0x0720); }
+      this.w32(a, v.grabMem); this.w32(a + 0x14, 0x8000); this.w32(a + 0x24, this.grabPalette(v)); this.w32(a + 0x10, v.grabPage || 0);
+      this.cpu.edx.value &= ~0xff;
+    } else if (fn === 2 || fn === 8) {
+      if (v.grabState) this.u8.set(v.grabState, a);
+      else { this.u8.fill(0, a, a + 0x20); this.u8[a] = 3; this.u8[a + 2] = 9; this.u8[a + 3] = 25; this.w16(a + 0x1c, 80); [0, 1, 2, 3, 4, 5, 0x14, 7, 0x38, 0x39, 0x3a, 0x3b, 0x3c, 0x3d, 0x3e, 0x3f].forEach((p, i) => { this.u8[a + 0xc + i] = p; }); }
+    } else if (fn === 3) { this.w16(a, 8); this.w16(a + 2, 0); this.cpu.ecx.value = (this.cpu.ecx.value & ~0xffff) | 1; }
+    return;
+  }
+  if (fn === 1 || fn === 6) {
+    // (VDD's own memory for the grab, the screen as it is now copied there (VDD 1:2432B), not the VM's: the grabber
+    // works in what it is given (VGAFULL 1:1333 clears rows with REP STOSW), and given the VM's screen it wiped MEM's
+    // output; the window stayed black with the VM's own text gone)
+    // In text mode +4 (plane 1) is the grabber's shadow, the screen as it last drew it: given one, it draws only the
+    // cells that differ from it (VGAFULL 1:BAD), and a repaint after the window was erased drew nothing (the text
+    // showed, then went); given the screen itself, nothing ever differed and the window stayed black. 0: no shadow,
+    // every cell drawn each time (1:D0F, 1:BAB)
+    const a = buf(); this.u8.fill(0, a, a + 0x28);
+    if (!v.grabMem) v.grabMem = this.alloc(0x8000);
+    this.u8.copyWithin(v.grabMem, m.v86 + 0xb8000, m.v86 + 0xb8000 + 0x8000);
+    this.w32(a, v.grabMem); this.w32(a + 0x14, 0x8000);
+    this.w32(a + 0x24, this.grabPalette(v));
+    v.grabPage = m.m16(0x44e); this.w32(a + 0x10, v.grabPage); this.cpu.edx.value &= ~0xff; return;
+  }
+  if (fn === 2 || fn === 8) {
+    const a = buf(), page = m.m8(0x462), cur = m.m16(0x450 + 2 * page), cols = m.m16(0x44a) || 80, rows = (m.m8(0x484) || 24) + 1;
+    let s = m.m8(0x461) & 0x1f, e = m.m8(0x460) & 0x1f; const max = 15;
+    if (s > max) { s = 0; e = 0; } else { if (s === e) e++; if (!e) e = max + 1; if (s >= e) [s, e] = [e, s]; if (s > max) { e = max + 1; s = 0; } }
+    this.u8.fill(0, a, a + 0x20);
+    this.u8[a] = m.m8(0x449); this.u8[a + 2] = 8 | 1; this.u8[a + 3] = rows;
+    this.w16(a + 4, cur & 0xff); this.w16(a + 6, cur >> 8); this.w16(a + 8, s); this.w16(a + 0xa, e);
+    [0, 1, 2, 3, 4, 5, 0x14, 7, 0x38, 0x39, 0x3a, 0x3b, 0x3c, 0x3d, 0x3e, 0x3f].forEach((p, i) => { this.u8[a + 0xc + i] = p; });
+    this.w16(a + 0x1c, cols); v.grabState = this.u8.slice(a, a + 0x20); return;
+  }
+  // (3 answers the whole screen each time: WinOldAp repaints its window through it (3, then the grabber's update),
+  // and an answer of no change after the window was erased drew nothing back: the text printed, then cleared. Its
+  // wake for a change (41Ah, vmDisplayEvent) still comes only when the screen changed since 4)
+  if (fn === 3) {
+    const a = buf(); this.w16(a, 8); this.w16(a + 2, 0);
+    this.cpu.ecx.value = (this.cpu.ecx.value & ~0xffff) | 1; return;
+  }
+  if (fn === 4) { v.grabShot = text(); v.grabCur = m.m16(0x450 + 2 * m.m8(0x462)); v.dispPosted = 0; }
+  // 7: the whole screen changed for the next 3 (VDD 1:24419 > 1:2116E), as the grabber asks when its window was
+  // erased; doing nothing, the next 3 found no change, nothing was drawn back, and the window's text cleared
+  if (fn === 7) v.grabShot = null;
+};
 def16('VDD', 0, '', 'jmp', function () {
-  const fn = u32(this.cpu.eax.value);
+  // Windows 95's own VDD.VXD when it is loaded (vmm.js, STATIC_VXDS): its protected-mode API answers the grabber and
+  // the display driver; what follows answers in its absence (a machine without the bundle's VDD)
+  const rv = (this.cpu.eax.value & 0xff) < 0x80 && this.vxdApiRoute && this.vxdApiRoute(0x000a); if (rv) return this.vxdPmApi(rv);
+  // (the function in AX: a 16-bit caller sets no more, and EAX's high word is whatever it held (3DF7h, 141Fh from the
+  // grabber, whose calls then went unanswered: WinOldAp's window had no rows, a title and a toolbar)
+  const fn = this.cpu.eax.value & 0xffff;
   switch (fn) {
+    // the grabber's functions (below 80h, VDD.VXD 1:2413F): 0 VDD's version, 4.00, its 8-byte ID ("VIDEOVGA", as
+    // VDD_Get_Version gives it) copied to ES:EDI (VDD 1:B20F); the grabber takes a VDD of 3.0Ah to 4.00
+    case 0: {
+      const es = this.cpu.es.value & 0xffff;
+      if (es) { const a = this.lin((es << 16) | (this.cpu.edi.value & 0xffff)); [...'VIDEOVGA'].forEach((c, i) => { this.u8[a + i] = c.charCodeAt(0); }); }
+      this.cpu.eax.value = 0x400; break;
+    }
+    case 1: case 2: case 3: case 4: case 5: case 6: case 7: case 8: case 9: this.vddGrab(fn); break;
     case 0x80: this.cpu.eax.value = this.cpu.ecx.value; break;          // VDD_DRIVER_REGISTER: VRAM the visible screen uses
     case 0x83: {                                                         // the W32's MMU and accelerator at EDX (B8000h): a selector for them in EDX
       const a = this.adapter();
@@ -2984,12 +3282,12 @@ def16('KERNEL', 112, 'w', 'w', function (h) { const b = this.gblock(h); if (b &&
 def16('KERNEL', 177, 'ww', 'w', function (src, dst) {    // PrestoChangoSelector: dst = src with code/data swapped
   const acc = this.r32(L.ACC + (src & 0xfff8)); this.setDesc(dst, this.selBase(src), this.selLimit(src), acc ^ 0x0800); this.refreshSegs(); return dst;
 });
-def16('KERNEL', 170, 'w', 'w', function (s) { return this.allocSels(this.selBase(s), this.selLimit(s) + 1, 0xf300); });   // AllocCStoDSAlias
-def16('KERNEL', 171, 'w', 'w', function (s) { return this.allocSels(this.selBase(s), this.selLimit(s) + 1, 0xfb00); });   // AllocDStoCSAlias
+def16('KERNEL', 170, 'w', 'w', function (s) { return this.copySel(s, 0xf300); });   // AllocCStoDSAlias
+def16('KERNEL', 171, 'w', 'w', function (s) { return this.copySel(s, 0xfb00); });   // AllocDStoCSAlias
 def16('KERNEL', 184, 'l', 'l', function (n) {           // GlobalDOSAlloc: conventional memory, DX = paragraph, AX = selector
   n = (u32(n) + 15) & ~15; if (this.dosTop + n > 0xa0000) return 0;
   const lin = this.dosTop; this.dosTop += n; this.u8.fill(0, lin, lin + n);
-  const sel = this.allocSels(lin, n); this.ghandles.set(sel, { lin, size: n, n: 1, flags: 0, lock: 0, owner: 0 });
+  const sel = this.allocSels(lin, n); this.ghandles.set(sel, { lin, size: n, n: 1, flags: 0, lock: 0, owner: 0, dos: true });
   return u32(((lin >> 4) << 16) | sel);
 });
 def16('KERNEL', 185, 'w', 'w', function (s) { const b = this.gblock(s); if (b) { this.ghandles.delete(this.gsel(s)); this.freeSels(this.gsel(s), b.n); } return 0; });
@@ -3181,7 +3479,7 @@ def16('KERNEL', 471, '', 'l', function () { return this.thread16 && this.thread1
 def16('KEYBOARD', 100, 'w', 'v', function () {});                              // ScreenSwitchEnable
 
 // selectors
-def16('KERNEL', 175, 'w', 'w', function (s) { if (!s) return this.allocSels(0, 1); return this.allocSels(this.selBase(s), this.selLimit(s) + 1, this.r32(L.ACC + (s & 0xfff8))); });
+def16('KERNEL', 175, 'w', 'w', function (s) { if (!s) return this.allocSels(0, 1); return this.copySel(s); });
 def16('KERNEL', 176, 'w', 'w', function (s) { this.freeSels(s); return 0; });
 def16('KERNEL', 186, 'w', 'l', function (s) { return this.selBase(s); });
 def16('KERNEL', 187, 'wl', 'w', function (s, b) { this.w32(L.LDT + (s & 0xfff8), b); this.refreshSegs(); return s; });
@@ -3273,15 +3571,24 @@ P.findData16 = function (a, e) {
   ft(4, e.ctime); ft(12, e.atime); ft(20, e.mtime); this.w32(a + 32, e.size);
   this.writeA(a + 44, e.name, 260); if (e.shortName && e.shortName !== e.name) this.writeA(a + 304, e.shortName, 14);
 };
-def16('KERNEL', 413, 'sp', 'w', function (pat, data) {
+// FindFirstFile / FindNextFile / FindClose: the search's handle a DWORD, in DX:AX and on the stack (PIFMGR.DLL 2:7CF
+// keeps DX and passes DX:AX to FindClose); INVALID_HANDLE_VALUE when nothing matches
+def16('KERNEL', 413, 'sp', 'l', function (pat, data) {
   const full = this.dosFull(pat), i = full.lastIndexOf('\\'), dir = i <= 2 ? full.slice(0, 3) : full.slice(0, i), mask = full.slice(i + 1) || '*';
   let list; try { list = this.fs.readdir(dir, mask === '*.*' ? '*' : mask); } catch (_) { list = []; }
-  if (!list.length) { this.lastError = 2; return 0xffff; }
+  if (!list.length) { this.lastError = 2; return 0xffffffff; }
   this.findData16(data, list[0]);
   this.finds16 = this.finds16 || new Map(); const h = 0x4800 + (this.findNext16 = ((this.findNext16 || 0) + 1) & 0x3ff); this.finds16.set(h, { list, i: 1 }); return h;
 });
-def16('KERNEL', 414, 'wp', 'w', function (h, data) { const f = this.finds16 && this.finds16.get(h); if (!f || f.i >= f.list.length) { this.lastError = 18; return 0; } this.findData16(data, f.list[f.i++]); return 1; });
-def16('KERNEL', 415, 'w', 'w', function (h) { return this.finds16 && this.finds16.delete(h) ? 1 : 0; });
+def16('KERNEL', 414, 'lp', 'w', function (h, data) { const f = this.finds16 && this.finds16.get(h); if (!f || f.i >= f.list.length) { this.lastError = 18; return 0; } this.findData16(data, f.list[f.i++]); return 1; });
+def16('KERNEL', 415, 'l', 'w', function (h) { return this.finds16 && this.finds16.delete(h) ? 1 : 0; });
+// CreateDirectory(path, security attributes) and SetFileAttributes(path, attributes): TRUE, or FALSE with the error
+def16('KERNEL', 144, 'sl', 'w', function (name) {
+  try { this.fs.mkdir(this.dosFull(name)); return 1; } catch (e) { if (!(e instanceof window.W95FS.FSError)) throw e; this.lastError = e.code || 5; return 0; }
+});
+def16('KERNEL', 421, 'sl', 'w', function (name, attrs) {
+  try { this.fs.setAttrs(this.dosFull(name), attrs & 0x27); return 1; } catch (e) { if (!(e instanceof window.W95FS.FSError)) throw e; this.lastError = e.code || 2; return 0; }
+});
 // GetFileAttributes: the attributes, -1 for a name that is not there
 def16('KERNEL', 420, 's', 'l', function (name) { const f = this.findFile16(name) || (name && this.fs.exists(this.dosFull(name)) ? this.dosFull(name) : null); if (!f) { this.lastError = this.dosError = 2; return 0xffffffff; } const i = this.fs.stat(f); return i.attrs | (i.isDir ? 0x10 : 0); });
 // GetDriveType(0 for A:): 2 removable, 3 fixed, 4 remote (Win16 reports CD-ROM drives as remote), 0 no such drive
@@ -3422,10 +3729,14 @@ P.dosNames = function (fn, lfn) {
       case 0x36: {   // free space: AX sectors a cluster, BX free clusters, CX bytes a sector, DX clusters
         const dl = this.cpu.edx.value & 0xff, d = dl ? String.fromCharCode(64 + dl) : this.fs.cwd[0];
         let v; try { v = this.fs.statvfs(d + ':\\'); } catch (_) { this.ax(0xffff); return; }
+        const disk = this.fixedDisk && this.fixedDisk(d.toUpperCase());   // (a fixed drive's disk, as its BIOS and DPB give it)
+        if (disk) { const L = disk.layout(); this.ax(L.spc); reg('ebx', L.clusters - L.used); reg('ecx', 512); reg('edx', L.clusters); return; }
         const spc = Math.max(1, Math.round((v.cluster || 4096) / 512)), cl = spc * 512;
         this.ax(spc); reg('ebx', Math.min(0xffff, Math.floor(v.free / cl))); reg('ecx', 512); reg('edx', Math.min(0xffff, Math.floor(v.total / cl))); return;
       }
-      case 0x39: this.fs.mkdir(this.dosFull(this.readA(dsdx()))); return;
+      // (MKDIR of a folder that is there: access denied (5), as MS-DOS answers it, not the file system's 183; Windows 98
+      // Setup takes 5 from C:\WINDOWS as the folder being there, and with 183 stopped: "Setup cannot create" (SU0343))
+      case 0x39: { const full = this.dosFull(this.readA(dsdx())); if (!lfn && !this.vxdFlat && this.thread16 && this.thread16.task && this.fs.exists(full)) return fail(5); this.fs.mkdir(full); return; }
       case 0x3a: this.fs.rmdir(this.dosFull(this.readA(dsdx()))); return;
       case 0x3b: this.fs.chdir(this.dosFull(this.readA(dsdx()))); return;
       case 0x41: this.fs.unlink(this.dosFull(this.readA(dsdx()))); return;
@@ -3522,7 +3833,8 @@ def16('KERNEL', 85, 'sw', 'w', function (name, mode) { const f = this.findFile16
 def16('KERNEL', 83, 'sw', 'w', function (name) { return this.dosOpen(/^[a-z]:\\/i.test(name) ? name : window.W95FS.join(this.fs.cwd, name), 'w+'); });   // _lcreat
 def16('KERNEL', 81, 'w', 'w', function (h) { const f = this.dosFiles.get(h); if (!f) return 0xffff; this.fs.close(f.fd); this.dosFiles.delete(h); return 0; });
 const lread = function (h, buf, n) { const f = this.dosFiles.get(h); if (!f) return 0xffffffff; const b = this.fs.read(f.fd, n); this.u8.set(b, buf); return b.length; };
-const lwrite = function (h, buf, n) { const f = this.dosFiles.get(h); if (!f) return 0xffffffff; return this.fs.write(f.fd, this.u8.slice(buf, buf + n)); };
+// (_lwrite and _hwrite of 0 bytes set the file's length to where it is, as INT 21h AH=40h does)
+const lwrite = function (h, buf, n) { const f = this.dosFiles.get(h); if (!f) return 0xffffffff; if (!n && !f.dev) { this.fs.truncate(f.fd); return 0; } return this.fs.write(f.fd, this.u8.slice(buf, buf + n)); };
 def16('KERNEL', 82, 'wpw', 'w', function (h, b, n) { return lread.call(this, h, b, n); });
 def16('KERNEL', 349, 'wpl', 'l', function (h, b, n) { return lread.call(this, h, b, n); });
 def16('KERNEL', 86, 'wpw', 'w', function (h, b, n) { return lwrite.call(this, h, b, n); });
@@ -3684,27 +3996,45 @@ const res32 = (p, h32, id, type) => {
   if (type === 5) data = dialog16(data); // RT_DIALOG
   return data;
 };
+// (one resource handle for each resource of a module, as KERNEL's is its entry in the module's resource table: found
+// again, the same handle, and its loaded block shared with a count that FreeResource takes back. A new handle and block
+// at each find, never freed, held a copy of USER's 65488-byte resource for each load, 104 of them, until MSGSRV32 ran
+// out of memory)
+const resHandle = function (key, rec) {
+  const ix = this.resIx || (this.resIx = new Map());
+  let k = ix.get(key); if (k) return k;
+  (this.resHandles = this.resHandles || []).push(rec); k = this.resHandles.length * 4; ix.set(key, k); return k;
+};
 def16('KERNEL', 60, 'wxx', 'w', function (h, name, type) {     // FindResource
   const h32 = this.hinst32 && this.hinst32(h);
   if (h32) {
-    const data = res32(this, h32, resKey.call(this, name), resKey.call(this, type)); if (!data) return 0;
-    (this.resHandles = this.resHandles || []).push({ data }); return this.resHandles.length * 4;
+    const kn = resKey.call(this, name), kt = resKey.call(this, type), data = res32(this, h32, kn, kt); if (!data) return 0;
+    return resHandle.call(this, `${h32}:${kt}:${kn}`, { data });
   }
   const m = this.neByHandle(h); if (!m) return 0;
   const k = resKey.call(this, name), t = resKey.call(this, type);
   const i = this.neResources(m).findIndex(r => r.id === k && r.type === t);
   if (i < 0) return 0;
-  (this.resHandles = this.resHandles || []).push({ m, r: m.res[i] }); return this.resHandles.length * 4;
+  return resHandle.call(this, m.res[i], { m, r: m.res[i] });
 });
 def16('KERNEL', 168, 'www', 'w', function (h, type, size) { return this.globalAlloc16(GMEM_MOVEABLE, size); });   // DirectResAlloc
 def16('KERNEL', 61, 'ww', 'w', function (h, hr) {               // LoadResource
   const e = this.resHandles && this.resHandles[hr / 4 - 1]; if (!e) return 0;
-  if (!e.g && e.data) { e.g = this.globalAlloc16(0, e.data.length || 1); this.u8.set(e.data, this.gblock(e.g).lin); }
-  if (!e.g) { e.g = this.globalAlloc16(0, e.r.len); this.u8.set(e.m.file.subarray(e.r.off, e.r.off + e.r.len), this.gblock(e.g).lin); }
+  if (e.g && e.b && this.gblock(e.g) === e.b) { e.n++; return e.g; }   // (loaded and not freed since: shared)
+  const bytes = e.data || e.m.file.subarray(e.r.off, e.r.off + e.r.len);
+  e.g = this.globalAlloc16(0, bytes.length || 1); if (!e.g) return 0;
+  e.b = this.gblock(e.g); this.u8.set(bytes, e.b.lin); e.n = 1;
+  (this.resByG || (this.resByG = new Map())).set(e.g, e);
   return e.g;
 });
 def16('KERNEL', 62, 'w', 'l', function (h) { const b = this.gblock(h); return b ? u32(this.gsel(h) << 16) : 0; });   // LockResource
-def16('KERNEL', 63, 'w', 'w', () => 0);
+def16('KERNEL', 63, 'w', 'w', function (h) {                    // FreeResource: the last of its loads frees the block
+  const e = this.resByG && this.resByG.get(h);
+  if (!e || e.g !== h || this.gblock(h) !== e.b) return 0;
+  if (--e.n > 0) return 0;
+  this.resByG.delete(h); e.g = 0; e.b = null;
+  return K16['KERNEL.#17'][2].call(this, h);
+});
 def16('KERNEL', 64, 'ww', 'w', function (h, hr) {               // AccessResource: the module's file opened for reading at the resource
   const e = this.resHandles && this.resHandles[hr / 4 - 1]; if (!e || !e.m || !e.m.path) return 0xffff;
   const fh = this.dosOpen(e.m.path, 'r'), f = this.dosFiles.get(fh); if (f) this.fs.seek(f.fd, e.r.off, 0);
@@ -4249,14 +4579,17 @@ def16('KERNEL', 459, 'l', 'l', function (h) { const e = ev16(this, h); if (!e) r
  *  Properties' hourglass after a screen saver's preview ended) */
 P.queueGone = function (t) {
   if (!t || !t.queue) return;
-  for (const s of (this.threadsById || new Map()).values()) if (s !== t) this.answerSend(s, q => q === t.queue);
+  for (const s of (this.threadsById || new Map()).values()) if (s !== t) this.answerSend(s, q => q === t.queue, `thread ${t.id} ended`);
 };
 /** thread s's SendMessage answered (0) when the queue it went to is `gone(queue)`; true if it was */
-P.answerSend = function (s, gone) {
+P.answerSend = function (s, gone, why) {
   const u = this.ne && this.ne.get('USER'), ds = u && u.segs && u.segs.find(x => x.num === 32);
   if (!ds || !this.selValid(ds.sel) || !s.queue || !s.state || s.state === 'done' || !this.selValid(s.queue)) return false;
   const d = this.selBase(ds.sel), q = this.selBase(s.queue), rec = this.r16(q + 0x4e);
   if (!rec || !(this.r16(q + 0x4c) & 0x8000) || (this.u8[d + rec + 0x24] & 1) || !gone(this.r16(d + rec + 0x12))) return false;
+  // (answered for a queue no thread of the host's has: the thread that owns it, if one does, as a record of what was cut short)
+  const to = this.r16(d + rec + 0x12), owner = [...this.threadsById.values()].find(t => t.queue === to);
+  log('warn', 'ne16', `thread ${s.id}'s SendMessage (record ${rec.toString(16)}, message ${this.r16(d + rec + 0x26).toString(16)}h to window ${this.r16(d + rec + 0x34).toString(16)}h) to queue ${to.toString(16)} answered 0: ${why || 'the queue is gone'}${owner ? ` (thread ${owner.id} has it, ${owner.state})` : ''}`);
   this.w32(d + rec + 0x20, 0); this.u8[d + rec + 0x24] |= 1;
   this.w16(q + 0x48, this.r16(q + 0x48) | 0x8000); this.w16(q + 0x4a, this.r16(q + 0x4a) | 0x8000); this.w16(q + 0x4c, 0);
   const e = ev16(this, this.r32(q + 0xc)); if (e) this.signal(e);
@@ -4268,7 +4601,7 @@ P.sendToGone = function () {
   const s = this.thread16; if (!s || !s.queue || !this.threadsById) return;
   // (the main and system threads, which have no state, go on)
   const live = new Set(); for (const t of this.threadsById.values()) if (t.queue && t.state !== 'done') live.add(t.queue);
-  P.answerSend.call(this, s, q => q && !live.has(q));
+  P.answerSend.call(this, s, q => q && !live.has(q), 'no thread that goes on has the queue');
 };
 /** whether `h` is the event of a thread's queue that USER has woken since it was armed: its wake mask (4Ch) cleared by
  *  the waker, its wake bits (48h) set */
@@ -4299,6 +4632,14 @@ def16('KERNEL', 460, 'll', 'l', function (h, ms) {
   if (this.thread16) this.thread16.waitOn = { hs: [h], all: 0, ms };   // (for a probe)
   if (!e.set && ms && this.atThreadTop()) { P.idle.call(this); return waitTop(this, ms); }
   if (!e.set && ms) this.waitNested(() => e.set);
+  // a call the host made (no thread: the page's reading of a window's controls, worker.js nativeChildren) waits on
+  // for the reply to its SendMessage, as the sender blocks on Windows: the receiving thread needs several turns to
+  // wake, take the message and reply. Given one turn, the call came back unanswered, USER freed the message's record,
+  // and the receiver's queue still held it; what took the memory next was called as a procedure (Explorer, after
+  // Windows 98 Setup's ScanDisk: "invalid page fault at 0002:3B08", the record's bytes a posted message's time)
+  // (up to 64 turns or 200 ms of the machine's time: a receiver busy in a long run of its own (SUWIN's key check) is
+  // not waited for; the page keeps its frames, and the caller sees the time-out as before)
+  if (!e.set && ms && !this.thread16) for (let k = 0, t0 = performance.now(); k < 64 && !e.set && performance.now() - t0 < 200; k++) { this.waitNested(() => e.set); if (!e.set && P.queueWoken.call(this, h)) e.set = true; }
   waitDone(this);
   if (!e.set) return 0x102; if (!e.manual) e.set = false; return 0;
 });
@@ -4548,6 +4889,13 @@ P.taskFault = function (t, why, fault) {
 P.taskModuleEnded = function (t) {
   if (t.modEnded) return; t.modEnded = true;
   if (this.fgWanted) this.fgWanted.delete(t.tdb);   // (one that showed no window)
+  // (an instance's own DGROUP goes with it: its heap, atoms and memory)
+  if (t.task && t.task.ownDg) {
+    const g = t.task.ownDg; t.task.ownDg = 0;
+    if (t.task.mod && t.task.mod.instances) t.task.mod.instances.delete(g);
+    if (this.lheaps) this.lheaps.delete(g | 1); if (this.atoms) this.atoms.delete(g | 1);
+    K16['KERNEL.#17'][2].call(this, g);
+  }
   const m = t.task && t.task.mod, u = this.ne && this.ne.get('USER');
   if (!m || !m.taskModule || !u || !u.meta || !this.neExport(u, 391)) return;
   if ([...this.threadsById.values()].some(x => x !== t && x.task && x.task.mod === m && x.state !== 'done')) return;
@@ -4715,7 +5063,7 @@ P.threads16 = function (nested = false, only = null) {
       if (e instanceof window.W95Win32.GuestError && !(e instanceof window.W95Win32.HangError) && this.noMain && (t.pc || t.task)) {
         t.state = 'done'; this.wakeWaiters(t);
         if (this.win16Held && this.win16Held.who === t) this.win16Held = null;
-        log('warn', 'ne16', `thread ${t.id} ended: ${e.message}`);
+        log('warn', 'ne16', `thread ${t.id} ended: ${e.message} (${String(e.stack || '').split('\n').slice(1, 5).map(s => s.trim()).join(' | ')})`);
         if (t.pc) { t.pc.trapped = e.message; (this.pcFaults || (this.pcFaults = [])).push({ pc: t.pc, why: e.message }); this.endProcess(t.pc, 0xffffffff); }
         else this.taskFault(t, e.message);
         return;
@@ -4774,6 +5122,15 @@ def16('KERNEL', 473, '', 'jmp', function () {
   this.cpu.eax.value = (this.hinst32(h16) || h) | 0; return this.retf16(0);
 });
 def16('KERNEL', 476, 'l', 'l', function (h) { return h; });                                            // ConvertToGlobalHandle: one process, so already global
+// WinOldAp's console, KERNEL32's side (KRNL386's thunks into it): the console object of an MS-DOS program's window,
+// which the Win32 console processes that window hosts attach to. WOACreateConsole(VM, hwnd) makes one for the window;
+// WOADestroyConsole frees it; WOAFullScreen(console, on) records the window's state; WOATerminateProcess ends the
+// Win32 processes on the console (a plain MS-DOS program's has none); WOAAbort(console) ends a pending console read
+def16('KERNEL', 467, 'lw', 'l', function (vm, hwnd) { return this.newHandle({ kind: 'woaConsole', vm, hwnd, full: false }); });
+def16('KERNEL', 470, 'l', 'v', function (h) { const c = this.handles.get(h); if (c && c.kind === 'woaConsole') this.handles.delete(h); });
+def16('KERNEL', 477, 'lw', 'v', function (h, on) { const c = this.handles.get(h); if (c && c.kind === 'woaConsole') c.full = !!on; });
+def16('KERNEL', 478, 'l', 'v', function (h) { const c = this.handles.get(h); if (c && c.kind === 'woaConsole' && c.pcs) for (const pc of c.pcs) if (pc.exitCode === null) this.endProcess(pc, 0xffffffff); });
+def16('KERNEL', 492, 'w', 'v', function () {});
 def16('KERNEL', 474, 'l', 'w', function (h) { return this.handles.delete(h) ? 1 : 0; });               // CloseW32Handle
 def16('KERNEL', 105, '', 'w', function () { return 0x0400; });                                         // GetExeVersion: system code expects Windows 4.0
 def16('KERNEL', 132, '', 'l', function () { return 0x0c29; });                                         // GetWinFlags: protected mode, 486, enhanced, 80x87, paging
@@ -4844,6 +5201,24 @@ def16('KERNEL', 45, 'sp', 'l', function (name, pb) {
   // the module's one DGROUP holds the stack of its first live task only: a second instance (MMSYSTEM starts MMTASK
   // more than once) keeps a stack of its own, as this loader gives each module one DGROUP, not one per instance
   t.task.dgStack = ![...this.threadsById.values()].some(x => x !== t && x.task && x.task.dgStack && x.task.dgroup === rec.dgroup && x.state !== 'done');
+  // a second instance of a MULTIPLEDATA program (WinOldAp, one per MS-DOS program) gets a DGROUP of its own, as KERNEL
+  // gives each instance one: the data as the file has it, then its stack and the local heap InitTask makes (on the
+  // module's, with no heap of its own, its LocalAlloc failed: "no local heap in ... called from WINOLDAP")
+  // (and InitTask hands it the instance already running as its previous one, SI: WinMain's hPrevInstance, with which
+  // a program skips registering its window classes again; given 0, WinOldAp's second registered them again, USER
+  // refused (LogError 42) and it stopped with "There are not enough system resources to run this program")
+  const prev = [...this.threadsById.values()].find(x => x !== t && x.task && x.task.mod === rec && x.state !== 'done');
+  if (prev) t.task.prev = prev.task.hInst;
+  if (!t.task.dgStack && (flags & 0x0002) && dg) {
+    const size = Math.min(0x10000, (data + taskStack(t.task.stack || 1) + (t.task.heap || 0x1000) + 15) & ~15);
+    const g = this.globalAlloc16(0, size), b = this.gblock(g); if (!g || !b) return 8;
+    this.u8.fill(0, b.lin, b.lin + size);
+    if (dg.len) this.u8.set(rec.file.subarray(dg.fileoff, dg.fileoff + dg.len), b.lin);
+    for (const [lin, n, v] of m.fixups || []) if (lin >= dg.base && lin < dg.base + Math.max(dg.alloc, 1)) { const a = b.lin + lin - dg.base; if (n === 1) this.u8[a] = v; else if (n === 2) this.w16(a, v); else this.w32(a, v); }
+    if (rec.relocSeg) rec.relocSeg({ ...dg, base: b.lin });
+    Object.assign(t.task, { dgroup: g, hInst: g, ownDg: g, dgStack: true });
+    (rec.instances || (rec.instances = new Set())).add(g);
+  }
   t.tdb = newTdb(this, { hInst: rec.hInstance, hModule: rec.hModule, name: rec.name });
   // (its first window brought to the front, worker.js frame; not a program another machine started in a shared session)
   if (t.task.origin !== 'remote') (this.fgWanted || (this.fgWanted = new Set())).add(t.tdb);
@@ -4892,7 +5267,7 @@ def16('KERNEL', 91, '', 'jmp', function () {
     this.w16(ds + 0x0a, Math.max(0x10, sp - taskStack(k.stack || 1))); this.w16(ds + 0x0c, sp); this.w16(ds + 0x0e, sp);
   }
   this.ax(1); this.seg('es', k.psp); this.cpu.ebx.value = lo16(this.cpu.ebx.value, 0x81); this.cpu.ecx.value = lo16(this.cpu.ecx.value, k.stack);
-  this.cpu.edx.value = lo16(this.cpu.edx.value, k.show); this.cpu.esi.value = lo16(this.cpu.esi.value, 0); this.cpu.edi.value = lo16(this.cpu.edi.value, k.hInst);
+  this.cpu.edx.value = lo16(this.cpu.edx.value, k.show); this.cpu.esi.value = lo16(this.cpu.esi.value, k.prev || 0); this.cpu.edi.value = lo16(this.cpu.edi.value, k.hInst);
   return this.retf16(0);
 });
 def16('KERNEL', 30, 'w', 'w', function () {
@@ -5551,5 +5926,5 @@ P.nativeFontDC = function (font) {
 const NAMES16 = { KERNEL: {}, ...NAMES16_INIT };
 /** a personality module's export names: the CD module's own (the system bundle's names16) and the ones listed here */
 const names16 = mod => ({ ...((window.W95SYSTEM && window.W95SYSTEM.names16) || {})[mod], ...NAMES16[mod] });
-window.W95NE16 = { K16, NAMES16, names16, L, def16, INTS, VXD_API, CR, regStr, KERNEL_EQUATES, DOS_ENV };
+window.W95NE16 = { K16, NAMES16, names16, L, def16, INTS, VXD_API, CR, regStr, KERNEL_EQUATES, DOS_ENV, RM_INTS };
 })();
