@@ -28,6 +28,10 @@ export const pageDrive = async (key, o = {}) => {
   let fault = null, nf = 0, lastFault = null, atKey = false; const forks = [], faults = [];
   // (the line marking itself every o.every ms (30 s), the last four held; o.every 0 leaves it to the steps' moments)
   if (o.every !== 0) B.every(o.every || 30000, 4);
+  // (the rungs past the restart anchored as Setup meets them, w98-reboot, w98-firstboot, w98-desktop: the ground
+  // bench/anchor98.mjs checks each later change from, Setup not run again. Left armed when the ladder returns, as
+  // the machine goes on into its restart)
+  if (o.anchors !== false && !window.__w98anchors) window.__w98anchors = (await import('/bench/anchor98.mjs')).armAnchors();
   const mark = async name => { try { const r = await B.mark(name); lg(`moment ${name} (${r.verdict})`); return r; } catch (e) { lg(`moment ${name} failed: ${e.message}`); return null; } };
   // (a fault a machine reports is an event on the line (braid.fault: the program, the exception, the machine's fault
   // log); the fault box the shell draws for it is not modal, so the event is what the driver goes by)
