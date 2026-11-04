@@ -1360,7 +1360,7 @@ class Machine {
       // the other people in a shared session ([{ client, user, color }]), for SESSTRAY.EXE's icons (session-tray.js),
       // told to its window
       case 'tray': {
-        self.W95TrayPeople = args[0] || []; self.W95TrayOwner = args[1] || null; const st = self.W95TrayState;
+        self.W95TrayPeople = args[0] || []; self.W95TrayOwner = args[1] || null; self.W95TrayMoments = args[2] || []; const st = self.W95TrayState;
         return st && st.hwnd ? this.netCall('PostMessageA', [st.hwnd, 0x8005, 0, 0], 'USER32') : false;
       }
       // (a program another machine runs in a shared session: its clock as of its start there, args[1], ne16.js startClock)

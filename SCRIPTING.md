@@ -88,8 +88,15 @@ change, and letting one go deletes only the chunks no other anchor has. A moment
 signature of the build that made it (braid.js, win32.js, ne16.js, vmm.js, v86.js, dyn.js, fs.js): a damaged copy or
 another build's is refused. The lint compares moments and disallows system-breaking states (its verdict on each:
 `broken`, `suspect`, `ok`); the mods are named beside a moment, as a sidecar, never carried in it. In a shared
-session every person's marks and travels are the session's: each machine marks at the same machine time and travels
-to the same moment, so everyone is at the same place on one line.
+session every person's marks, anchors, travels, scrubs and forgets are the session's: each is posted as an intent and
+made on every machine, the asker's too, as it reaches it in the session's op order, so each machine takes its own
+moment, or goes back to it, at the same place in the session's history (its disk and registry stay its own, as a
+session keeps them). The server keeps the session's shared state (its objects, settings and strokes) with each mark
+or anchor (tools/sessions.py), the anchored ones in its folder; a travel to one sets it back on every machine, which
+then sets its copies of the session's objects to it, as a machine joining does. Braid's intents are not settings: a
+machine joining does not make them again. The line marking and anchoring itself (`every`) is each machine's own. In a
+session, SESSTRAY.EXE's Braid icon in the notification area marks or anchors a moment, or travels to one, from inside
+Windows.
 
 | Call | Does |
 | --- | --- |

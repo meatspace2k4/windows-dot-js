@@ -3908,6 +3908,13 @@ class RemoteApp extends NativeApp {
       // MPR loaded in the system's machine (or no network client): the shell's network calls go ahead (netBoot)
       case 'mpr': this.mprUp = m.up; if (this.mprReady) { this.mprReady(m.up); this.mprReady = null; } return;
       case 'session': sessionCommand(m.op); return;   // (Export or Import Session, from the Start menu: SESSION.DLL)
+      // (the Braid icon's menu, SESSTRAY.DLL: Mark Now, Anchor Now, Travel To a moment; the session's, every machine's)
+      case 'trayBraid': {
+        if (!braid) return;
+        const r = m.op === 'mark' ? braid.mark() : m.op === 'anchor' ? braid.anchor() : m.op === 'travel' && m.name ? braid.travel(m.name, { force: true }) : null;
+        if (r) Promise.resolve(r).then(() => trayPeople(), e => { peerNotes.push({ text: `Braid: ${e.message}`, until: Date.now() + 4000 }); dirty(); });
+        return;
+      }
       case 'trayWhere': {   // (Where Is, from a person's icon: SESSTRAY.DLL)
         const who = window.W95Shared && window.W95Shared.people().find(p => p.client === m.client);
         if (who && who.x == null) { peerNotes.push({ text: `${who.user || 'Guest'} has not moved their pointer yet`, until: Date.now() + 4000 }); setTimeout(dirty, 4100); }
@@ -4940,7 +4947,10 @@ function trayPeople() {
   // owner, whose profile every settings change goes to: a name's own session is theirs, Guest's the shared one)
   const wins = client => [...S.world()].filter(([, v]) => v && v.origin === client && v.folder === undefined).map(([id, v]) => ({ id, title: v.title || id }));
   const owner = /^guest$/i.test(S.logon.session) || S.logon.session === 'guest' ? 'Guest' : (S.logon.session === S.ownSession(S.logon.user) ? S.logon.user : S.logon.session);
-  a.cmd('tray', [S.people().map(p => ({ client: p.client, user: p.user || 'Guest', color: peerColor(p.client), wins: wins(p.client) })), owner]).catch(() => {});
+  // (and the line's moments, newest first, for the Braid icon's Travel To: the session's, which a choice there travels
+  // every machine to, braid-page.js viaLine)
+  const moments = braid ? braid.along().filter(m => !/^(t|live)\d+$/.test(m.name)).slice(-20).reverse().map(m => ({ name: m.name, anchored: !!m.anchored, broken: m.verdict === 'broken' })) : [];
+  a.cmd('tray', [S.people().map(p => ({ client: p.client, user: p.user || 'Guest', color: peerColor(p.client), wins: wins(p.client) })), owner, moments]).catch(() => {});
   if (!trayStarted) { trayStarted = true; a.cmd('run', ['SESSTRAY.EXE']).catch(() => { trayStarted = false; }); }
 }
 // the pointers of the other people in a shared session (shared.js), each an arrow with their name beside it in their
@@ -5735,14 +5745,18 @@ async function osCatchUp() {
   for (const [id, v] of S.world()) osApply(id, v, local);
 }
 /** another machine's intent made here: the same call, on a thread of its own (worker.js 'intent'), as it is made there */
-function osIntent(i) {
+function osIntent(i, reset) {
   emit('sync.intent', { key: i.key });
-  if (i.kind === 'braid') return braid ? braid.remote(i) : null;   // (another person's mark or travel on the shared line: braid-page.js remote)
+  // (a mark, anchor or travel on the shared line, anyone's, this person's too, made as it reaches this machine:
+  // braid-page.js remote. A travel that set the session's shared state back (`reset`, shared.js) has this machine's
+  // copies of the session's objects set to it after its own moment is put back, as a machine joining sets them: even
+  // a machine that has no such moment of its own then has the session's state at it)
+  if (i.kind === 'braid') return (braid ? Promise.resolve(braid.remote(i)).then(() => { if (reset) return osCatchUp(); }) : Promise.resolve(reset ? osCatchUp() : null)).then(() => trayPeople());   // (the Braid icon's moments, as the line has them now)
   return sysApp && sysApp.alive ? sysApp.cmd('intent', [i]) : null;
 }
 if (sharedNow()) {
   sharedNow().onObj((id, v, by) => { if (osCaught) osApply(id, v, null, by); });   // (by: the machine whose person did it)
-  sharedNow().onIntent(i => { if (osCaught) osIntent(i); });
+  sharedNow().onIntent((i, by, reset) => { if (osCaught) osIntent(i, reset); });
   sharedNow().onInput((id, part, by) => { if (osCaught) osStroke(id, part, by); else (osInputWait.get(id) || osInputWait.set(id, []).get(id)).push([part, by]); });
 }
 // (once this machine's shell is up, its first window list with the desktop's: the session's objects as they are)

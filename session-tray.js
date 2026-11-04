@@ -8,7 +8,14 @@
   if (typeof importScripts !== 'function' || !self.W95Win32) return;   // (the system's machine's worker only)
   const { def } = self.W95Win32;
   const WM = { DESTROY: 2, COMMAND: 0x111, LBUTTONUP: 0x202, RBUTTONUP: 0x205, POPUP: 0x8002, ICON: 0x8003, PEOPLE: 0x8005, NOTIFY: 0x8006, FREE: 0x8007 };
-  const NIM = { ADD: 0, MODIFY: 1, DELETE: 2 }, CMD = { WHERE: 1001, FOLLOW: 1002, WINDOW: 2000 };   // (WINDOW + n: the person's nth window)
+  const NIM = { ADD: 0, MODIFY: 1, DELETE: 2 }, CMD = { WHERE: 1001, FOLLOW: 1002, WINDOW: 2000, MARK: 3001, ANCHOR: 3002, TRAVEL: 3100 };   // (WINDOW + n: the person's nth window; TRAVEL + n: the nth moment)
+  // the Braid icon (its own uid, past any person's): the session's line from inside Windows. Its menu marks or anchors
+  // a moment, or travels to one, as the session's (every machine's, at one place in the session's history: the page
+  // makes the choice, braid-page.js viaLine); the moments come from the page (W95TrayMoments, with the people)
+  const BRAID_UID = 0x7fff;
+  const HOURGLASS = [
+    '................', '..############..', '..############..', '...##......##...', '....##....##....', '.....##..##.....', '......####......', '.......##.......',
+    '.......##.......', '......####......', '.....######.....', '....########....', '...##########...', '..############..', '..############..', '................'];
   const st = self.W95TrayState = { hwnd: 0, people: new Map(), uid: 1, pt: 0, menuFor: null, menuWins: [], following: null };
   const fn = (p, dll, nm) => { const m = p.byName.get(dll); return m && m.exports.get(nm); };
   const U = (p, nm, args) => p.call(fn(p, 'USER32', nm), args), G = (p, nm, args) => p.call(fn(p, 'GDI32', nm), args);
@@ -23,9 +30,9 @@
   const FIGURE = [
     '................', '......####......', '.....######.....', '.....######.....', '.....######.....', '......####......', '.......##.......', '....########....',
     '...##########...', '..############..', '..############..', '..############..', '..############..', '..############..', '..############..', '................'];
-  function icon(p, [r, g, b]) {
+  function icon(p, [r, g, b], shape = FIGURE) {
     const mask = p.alloc(32), bmi = p.alloc(48), bits = p.alloc(64), info = p.alloc(20);
-    FIGURE.forEach((row, y) => {
+    shape.forEach((row, y) => {
       let m = 0xffff, c = 0;
       for (let x = 0; x < 16; x++) if (row[x] === '#') { m &= ~(0x8000 >> x); c |= 0x8000 >> x; }
       p.u8[mask + 2 * y] = m >> 8; p.u8[mask + 2 * y + 1] = m & 0xff;                       // (a bitmap's rows, top first)
@@ -73,6 +80,8 @@
     if (!h) return 0;
     st.hwnd = h; st.pt = p.alloc(8); st.people.clear();
     sync(p);
+    st.braid = { user: 'Braid: the session\'s line', uid: BRAID_UID, icon: icon(p, [128, 0, 128], HOURGLASS) };
+    U(p, 'PostMessageA', [h, WM.NOTIFY, NIM.ADD, nid(p, st.braid)]);
     return h;
   });
   // (hwnd, msg, wp, lp, &result): 1 for a message it answered
@@ -81,8 +90,26 @@
     if (h !== st.hwnd) return 0;
     if (msg === WM.PEOPLE) { sync(p); return done(); }
     if (msg === WM.FREE) { const who = st.gone && st.gone.get(wp); if (who) { st.gone.delete(wp); U(p, 'DestroyIcon', [who.icon]); p.free(who.nid); } return done(); }
+    if (msg === WM.ICON && (lp === WM.LBUTTONUP || lp === WM.RBUTTONUP) && wp === BRAID_UID) {
+      const m = U(p, 'CreatePopupMenu', []);
+      U(p, 'AppendMenuA', [m, 1, 0, str(p, 'bname', 'Braid: the session\'s line')]);           // (grayed: what it is)
+      U(p, 'AppendMenuA', [m, 0x800, 0, 0]);
+      U(p, 'AppendMenuA', [m, 0, CMD.MARK, str(p, 'bmark', '&Mark Now')]);
+      U(p, 'AppendMenuA', [m, 0, CMD.ANCHOR, str(p, 'banchor', '&Anchor Now')]);
+      const ms = (self.W95TrayMoments || []).slice(0, 20); st.menuMoments = ms;
+      const sub = U(p, 'CreatePopupMenu', []);
+      if (!ms.length) U(p, 'AppendMenuA', [sub, 1, 0, str(p, 'bnone', '(no moments yet)')]);
+      ms.forEach((x, i) => U(p, 'AppendMenuA', [sub, 0, CMD.TRAVEL + i, str(p, `bm${i}`, `${String(x.name).replace(/&/g, '&&').slice(0, 48)}${x.anchored ? '  (anchored)' : ''}${x.broken ? '  (broken)' : ''}`)]));
+      U(p, 'AppendMenuA', [m, 0x10, sub, str(p, 'btravel', '&Travel To')]);   // (MF_POPUP)
+      U(p, 'SetForegroundWindow', [h]); U(p, 'GetCursorPos', [st.pt]);
+      U(p, 'PostMessageA', [h, WM.POPUP, m, st.pt]);
+      return done();
+    }
+    if (msg === WM.COMMAND && (wp & 0xffff) === CMD.MARK) { self.postMessage({ t: 'trayBraid', op: 'mark' }); return done(); }
+    if (msg === WM.COMMAND && (wp & 0xffff) === CMD.ANCHOR) { self.postMessage({ t: 'trayBraid', op: 'anchor' }); return done(); }
+    if (msg === WM.COMMAND && (wp & 0xffff) >= CMD.TRAVEL && (wp & 0xffff) < CMD.TRAVEL + 100) { const x = (st.menuMoments || [])[(wp & 0xffff) - CMD.TRAVEL]; if (x) self.postMessage({ t: 'trayBraid', op: 'travel', name: x.name }); return done(); }
     if (msg === WM.ICON && (lp === WM.LBUTTONUP || lp === WM.RBUTTONUP)) {
-      const who = [...st.people.values()].find(x => x.uid === wp); if (!who) return done();
+      const who =[...st.people.values()].find(x => x.uid === wp); if (!who) return done();
       const m = U(p, 'CreatePopupMenu', []);
       U(p, 'AppendMenuA', [m, 1, 0, str(p, 'name', who.user)]);                         // MF_GRAYED: their name
       U(p, 'AppendMenuA', [m, 0x800, 0, 0]);                                           // a separator

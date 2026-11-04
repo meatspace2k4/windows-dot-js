@@ -97,6 +97,16 @@ window.W95BraidPage = function (ui) {
 
   // ---- a shared session: this person's marks and travels, to the others, as intents of the session (shared.js)
   const share = op => { if (quiet) return; const S = ui.shared(); if (!S) return; S.intent({ key: op.op === 'mark' ? `braid:mark:${op.name}` : `braid:${op.op}`, kind: 'braid', ...op }); };
+  // (in a shared session a mark, anchor, travel, scrub or forget is the session's: posted as its intent and made here
+  // as it comes back in the op order, with every other machine, so each takes its own moment, or goes back to it, at
+  // the same place in the session's history, and the server keeps the session's shared state with it (tools/sessions.py
+  // braid). The call resolves with what was made here. `local` keeps one to this machine: the line marking and
+  // anchoring itself (every) is each machine's own net)
+  const waits = new Map(), waitKey = op => `${op.op}:${op.name != null ? op.name : op.t}`;
+  const viaLine = (op, o = {}) => {
+    if (quiet || o.local || o.quiet || !ui.shared()) return null;
+    return new Promise((ok, no) => { const k = waitKey(op); const w = waits.get(k); if (w) w.no(new Error(`another ${op.op} of ${k} was asked for`)); waits.set(k, { ok, no }); share(op); });
+  };
 
   // ---- the shell's state put back (the windows the page draws, the active one, the menus, the clipboard)
   const shellBack = sh => { ui.setShell(sh); };
@@ -115,9 +125,9 @@ window.W95BraidPage = function (ui) {
     async mark(name, o = {}) {
       name = name == null ? autoName() : String(name);
       if (here.has(name)) throw new Error(`a moment named ${name} is on the line already`);
+      const v = viaLine({ op: 'mark', name }, o); if (v) return v;
       const b = await build(); watchStores();
-      const S = ui.shared(), at = o.at != null ? o.at : (S && !quiet ? (await clock()) + 200 : null);
-      if (at != null && !quiet) share({ op: 'mark', name, at });
+      const at = o.at != null ? o.at : null;
       const machines = {};
       for (const a of live()) { const r = await (a.system && at != null ? a.cmd('markAt', [name, at]) : a.cmd('mark', [name])); if (!r) throw new Error(`the machine ${key(a)} took no moment (inside a call: try again)`); machines[key(a)] = { app: a, info: r }; }
       ui.closeMenus();
@@ -146,8 +156,9 @@ window.W95BraidPage = function (ui) {
      *  `force`: a broken state is what one travels away from). Travel forks the line: the new generation grows from
      *  the moment; the one left runs no further, its moments stay */
     async travel(to, o = {}) {
-      if (to && typeof to === 'object' && 't' in to) return scrub(Number(to.t), o);
+      if (to && typeof to === 'object' && 't' in to) { const v = viaLine({ op: 'scrub', t: Number(to.t) }, o); return v || scrub(Number(to.t), o); }
       const name = String(to), h = here.get(name);
+      const asked = viaLine({ op: 'travel', name, force: !!o.force }, o); if (asked) return asked;
       if (!h) return arrive(name, o);
       const v = line.broken.get(name); if (v === 'broken' && !o.force) throw new Error(`the moment ${name} is a broken state (the lint): travel(name, { force: true }) goes anyway`);
       const why = B.refuse(h.s, await build()); if (why && !(o.force && /build/.test(why))) throw new Error(why);
@@ -158,7 +169,6 @@ window.W95BraidPage = function (ui) {
       W.regLoad(h.s.sections.registry.value, true);
       const disk = writeDisk(false);
       const gen = line.fork(name, o.how || 'travel', { now });
-      if (!o.quiet) share({ op: 'travel', name, force: !!o.force });
       ui.emit('braid.travel', { gen, moment: name, fromGen: line.moments.get(name).gen, at: line.moments.get(name).at, how: o.how || 'travel' });
       ui.dirty();
       return { ...out, gen, at: line.moments.get(name).at, disk };
@@ -167,7 +177,9 @@ window.W95BraidPage = function (ui) {
      *  and path, the page's disk and shell, the registry, the mods and the line, under a checksum and the build's
      *  signature; marked on the line here as well. Taken at a step with no ring-0 run in flight. The memo's ground: a
      *  page that has it starts there, nothing run again */
-    async anchor(name) {
+    async anchor(name, o = {}) {
+      if (name == null) name = autoName();
+      const v = viaLine({ op: 'anchor', name: String(name) }, o); if (v) return v;
       // (one anchor at a time: the moment it marks is a braid.mark like any, and a listener that anchors on marks
       // anchored again from inside this one, each a moment of 300 MB under a name grown by its prefix, until this
       // computer's store held gigabytes)
@@ -179,7 +191,7 @@ window.W95BraidPage = function (ui) {
       // the earlier moment keeps its own)
       const taken = new Set([...here.keys(), ...line.moments.keys(), ...(await dbNames().catch(() => []))]);
       if (taken.has(name)) { let i = 2; while (taken.has(`${name}-${i}`)) i++; name = `${name}-${i}`; }
-      await braid.mark(name);
+      await braid.mark(name, { local: true });   // (the anchor's own moment: made here; the anchor is the session's already when it is)
       const b = await build(), machines = {};
       for (const a of live()) {
         let ex = null; for (let i = 0; i < 400 && !(ex && ex.meta); i++) { ex = await a.cmd('export'); if (ex && ex.busy) await sleep(50); }
@@ -207,11 +219,12 @@ window.W95BraidPage = function (ui) {
     },
     /** a moment let go: from this page's memory, from every machine, and from this computer */
     async forget(name, o = {}) {
-      name = String(name); const h = here.get(name);
+      name = String(name);
+      const v = viaLine({ op: 'forget', name }, o); if (v) return v;
+      const h = here.get(name);
       if (h) for (const m of Object.values(h.machines)) if (m.app.alive) m.app.cmd('forget', [name]);
       const anchored = await dbDel(name).catch(() => false);
       here.delete(name); const was = line.forget(name) || anchored;
-      if (!o.quiet && was) share({ op: 'forget', name });
       return was;
     },
     /** the line marking itself as the machine runs: a moment every `ms` (30 s), named t1, t2, ..., the last `keep` (3)
@@ -228,16 +241,16 @@ window.W95BraidPage = function (ui) {
       const anchorTick = async () => {
         if (!auto.atimer) return;
         try {
-          const r = await braid.anchor('live' + (++auto.an)); auto.anchors.push(r.name);
+          const r = await braid.anchor('live' + (++auto.an), { local: true }); auto.anchors.push(r.name);
           const fine = auto.anchors.filter(n => (line.broken.get(n) || 'ok') !== 'broken');
-          while (fine.length > auto.anchorKeep) { const n = fine.shift(); auto.anchors.splice(auto.anchors.indexOf(n), 1); await braid.forget(n); }
+          while (fine.length > auto.anchorKeep) { const n = fine.shift(); auto.anchors.splice(auto.anchors.indexOf(n), 1); await braid.forget(n, { local: true }); }
         } catch (e) { console.warn('[braid] the line could not anchor itself:', e.message); }   // (another anchor being written, a ring-0 run on every step: the next tick)
         if (auto.atimer) auto.atimer = setTimeout(anchorTick, auto.anchorEvery);
       };
       if (auto.anchorEvery) auto.atimer = setTimeout(anchorTick, auto.anchorEvery);
       const tick = async () => {
         if (!auto.timer) return;
-        try { const name = 't' + (++auto.n); const r = await braid.mark(name); auto.ring.push(name); const fine = auto.ring.filter(n => (line.broken.get(n) || 'ok') !== 'broken' && !(line.moments.get(n) || {}).anchored); while (fine.length > keep) { const n = fine.shift(); auto.ring.splice(auto.ring.indexOf(n), 1); await braid.forget(n); } if (r.verdict === 'broken') ui.emit('braid.broken', { moment: name, findings: r.findings }); }
+        try { const name = 't' + (++auto.n); const r = await braid.mark(name, { local: true }); auto.ring.push(name); const fine = auto.ring.filter(n => (line.broken.get(n) || 'ok') !== 'broken' && !(line.moments.get(n) || {}).anchored); while (fine.length > keep) { const n = fine.shift(); auto.ring.splice(auto.ring.indexOf(n), 1); await braid.forget(n, { local: true }); } if (r.verdict === 'broken') ui.emit('braid.broken', { moment: name, findings: r.findings }); }
         catch (e) { console.warn('[braid] the line could not mark itself:', e.message); }
         if (auto.timer) auto.timer = setTimeout(tick, ms);
       };
@@ -313,14 +326,19 @@ window.W95BraidPage = function (ui) {
     /** another person's mark or travel (an intent of the session, kind 'braid'), made here: a mark at the machine time
      *  they named, a travel to the moment they named, a scrub to the time */
     async remote(i) {
-      quiet = true;
+      // (anyone's, this person's own too: made here as it reaches this machine in the session's op order; the call
+      // that asked for it here, if this person's, resolves with what was made, viaLine)
+      const k = waitKey(i), w = waits.get(k); waits.delete(k);
+      const L = { local: true };
       try {
-        if (i.op === 'mark') await braid.mark(i.name, { at: i.at });
-        else if (i.op === 'travel') await braid.travel(i.name, { force: !!i.force, quiet: true });
-        else if (i.op === 'scrub') await braid.travel({ t: i.t }, { quiet: true });
-        else if (i.op === 'forget') await braid.forget(i.name, { quiet: true });
-      } catch (e) { console.warn(`[braid] another person's ${i.op} could not be made here:`, e.message); }
-      finally { quiet = false; }
+        let r;
+        if (i.op === 'mark') r = await braid.mark(i.name, { ...L, at: i.at });
+        else if (i.op === 'anchor') r = await braid.anchor(i.name, L);
+        else if (i.op === 'travel') r = await braid.travel(i.name, { ...L, force: !!i.force });
+        else if (i.op === 'scrub') r = await braid.travel({ t: i.t }, L);
+        else if (i.op === 'forget') r = await braid.forget(i.name, L);
+        if (w) w.ok(r);
+      } catch (e) { if (w) w.no(e); else console.warn(`[braid] another person's ${i.op} could not be made here:`, e.message); }
     },
     /** the Braid window: the line as a slider, the moments as ticks (coloured by the lint), the forks, the thumb at
      *  now; drag it to travel to a time, click a tick to travel to its moment; Mark, Anchor, Lint, the line marking itself */
@@ -349,7 +367,6 @@ window.W95BraidPage = function (ui) {
       await sleep(20);
     }
     const r = await done;
-    if (!o.quiet) share({ op: 'scrub', t });
     ui.emit('braid.scrub', { t, at: r.at, from: stay ? null : m.name, actions: acts.length });
     return { at: r.at, from: stay ? null : m.name, actions: acts.length, left: !!r.left };
   }
