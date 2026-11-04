@@ -9,7 +9,7 @@ const page = ({ moments = ['w98-desktop', 'exitwin-stuck'], menus = [['Windows U
   const emit = (t, e) => [...(subs.get(t) || [])].forEach(f => f({ type: t, ...e }));
   const w = {
     travelled: [], anchored: [], notes: [], keys: [], emit,
-    braid: { moments: async () => moments.map(name => ({ name })), travel: async (n, o) => { w.travelled.push([n, o]); }, anchor: async n => { w.anchored.push(n); return { verdict: 'ok' }; } },
+    braid: { moments: async () => moments.map(name => ({ name })), travel: async (n, o) => { w.travelled.push([n, o]); if (w.duringTravel) w.duringTravel(); }, anchor: async n => { w.anchored.push(n); return { verdict: 'ok' }; } },
     on, next: (t, test, ms) => new Promise((ok, no) => { const off = on(t, e => { if (test(e)) { off(); ok(e); } }); setTimeout(() => { off(); no(new Error(`no ${t} in ${ms} ms`)); }, ms); }),
     key: k => w.keys.push(k), menus: () => menus, windows: () => [], note: s => w.notes.push(s),
     fs: { stat: f => { if (!files.includes(f)) throw new Error('none'); return {}; } },
@@ -26,6 +26,17 @@ const cases = {
 { // the event after the travel: passed, from the anchor, forced (another build's moment is this tree's to arrive at)
   const w = page(); const p = pageCheck('ok', cases); setTimeout(() => w.emit('screen', { screen: 'black' }), 50);
   const r = await p; assert.equal(r.ok, true, r.why); assert.deepEqual(w.travelled, [['exitwin-stuck', { force: true }]]);
+}
+{ // the restore's own events are not the case passing: the screen the travel shows on its way does not count
+  const w = page(); w.duringTravel = () => w.emit('screen', { screen: 'black' });
+  const r = await pageCheck('ok', { ok: { ...cases.ok, ms: 300 } }); assert.equal(r.ok, false, 'passed on an event of the travel itself'); assert.match(r.why, /no screen/);
+}
+{ // restart: the PC's boot screens pass it, a black screen (a machine that stopped) does not
+  let w = page(); let p = pageCheck('restart'); setTimeout(() => w.emit('screen', { screen: 'dos' }), 50);
+  assert.equal((await p).ok, true);
+  const { CASES } = await import('../bench/anchor98.mjs');
+  w = page(); p = pageCheck('restart', { restart: { ...CASES.restart, ms: 300 } }); setTimeout(() => w.emit('screen', { screen: 'black' }), 50);
+  assert.equal((await p).ok, false, 'a black screen is not the restart');
 }
 { // a fault while it waits: failed at once, with the fault
   const w = page(); const p = pageCheck('fault', cases); setTimeout(() => w.emit('braid.fault', { fault: { program: 'EXPLORER', why: 'page fault' } }), 50);

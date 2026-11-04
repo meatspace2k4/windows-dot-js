@@ -46,14 +46,16 @@ export const armAnchors = (anchors = ANCHORS) => {
  *  machine must then run with no fault and the line no broken verdict */
 export const CASES = {
   // rung 6: ExitWindows from "Restarting your computer": USER's 3Bh ends every other process's tasks and returns
-  restart: { anchor: 'exitwin-stuck', type: 'screen', test: 'e => e.screen !== "desktop"', ms: 10 * 60000, rung: 6 },
+  // (the PC's own boot screens, not any change: a black screen is also what a machine that stopped shows)
+  restart: { anchor: 'exitwin-stuck', type: 'screen', test: 'e => e.screen === "dos" || e.screen === "logow" || e.screen === "logos"', ms: 10 * 60000, rung: 6 },
   // rung 7: the PC boots what Setup copied, and Windows 98's IO.SYS draws its own logo (v86.js VGA)
   logo: { anchor: 'w98-reboot', type: 'screen', test: 'e => e.screen === "logow" || e.screen === "logos"', ms: 10 * 60000, rung: 7 },
   // rung 8: the first boot shows Windows 98's Setup screen (98's RUNONCE, from SYSTEM; a Windows 95 one is the stray)
   firstboot: { anchor: 'w98-reboot', type: 'window.open', test: 'e => /Setup$/.test(e.title)', ms: 30 * 60000, rung: 8,
     check: 'async () => /^Windows 98 Setup$/.test(win95.windows().map(w => w.title).find(t => /Setup$/.test(t)) || "") ? null : "the first boot\'s Setup screen is " + JSON.stringify(win95.windows().map(w => w.title))' },
   // rung 9: the first start's items run to Explorer's desktop
-  desktop: { anchor: 'w98-firstboot', type: 'window.open', test: 'e => e.title === "Program Manager"', ms: 30 * 60000, rung: 9, hold: 30000 },
+  desktop: { anchor: 'w98-firstboot', type: 'window.open', test: 'e => e.title === "Program Manager"', ms: 30 * 60000, rung: 9, hold: 30000,
+    check: 'async () => { const t = win95.windows().map(w => w.title); return t.some(x => /Windows 95/.test(x)) ? "a Windows 95 window on Windows 98\'s desktop: " + JSON.stringify(t) : null; }' },
   // after the upgrade: Windows 98's Start menu (Windows Update is 98's, not 95's)
   startmenu: { anchor: 'w98-desktop', act: 'async () => win95.key("ctrl+esc")', type: 'menu.open', test: 'e => (e.menus || []).length > 0', ms: 60000, rung: 9,
     check: 'async () => { const m = win95.menus().flat(); win95.key("esc"); return m.some(x => /Windows Update/.test(x)) ? null : "the Start menu is not Windows 98\'s: " + JSON.stringify(m); }' },
@@ -77,10 +79,12 @@ export const pageCheck = async (name, cases = CASES) => {
   // (a failure ends the wait at once: each wait is raced with the first fault or broken verdict)
   const orFail = p => new Promise((ok, no) => { const iv = setInterval(() => { if (failed) { clearInterval(iv); no(new Error(failed)); } }, 250); p.then(v => { clearInterval(iv); ok(v); }, e => { clearInterval(iv); no(e); }); });
   try {
-    let ev = null;
-    if (c.act) { await B.travel(c.anchor, { force: true }); await sleep(500); }
-    const reached = c.type ? win95.next(c.type, fn(c.test), c.ms) : null;
-    if (!c.act) await B.travel(c.anchor, { force: true }); else await fn(c.act)();
+    let ev = null, there = false;
+    if (c.act) { await B.travel(c.anchor, { force: true }); there = true; await sleep(500); }
+    // (waited for from before the travel, so nothing the arrival sets off is missed; but only an event after the
+    // arrival counts: the page's state before it, or the restore itself, is not the case passing)
+    const test = c.type ? fn(c.test) : null, reached = c.type ? win95.next(c.type, e => there && test(e), c.ms) : null;
+    if (!c.act) { const t = B.travel(c.anchor, { force: true }); await t; there = true; } else await fn(c.act)();
     if (reached) ev = await orFail(reached);
     const why = c.check ? await orFail(Promise.resolve(fn(c.check)())) : null;
     if (why) throw new Error(why);

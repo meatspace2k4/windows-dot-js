@@ -6,7 +6,7 @@ server's own: the endpoints (__cd, __claude, __cdlog, ...), the CD images, and t
 """
 import re, subprocess
 
-REF = re.compile(r'^/__ref/([\w.\-/^~]{1,80}?)/(.*)$')
+REF = re.compile(r'^/__ref/([\w.\-^~]{1,80})/(.*)$')   # (a rev is one segment: a sha, a branch without a slash, HEAD~n)
 _shas = {}
 
 

@@ -74,4 +74,22 @@ const SYS_PID = 0x40, MAIN_PID = 0x50;
   assert.equal(fn.call({ w32: (a, v) => mem.setUint32(a, v, true) }, 4), 0);
   assert.equal(mem.getUint32(4, true), 0, 'the lock pointer written is null');
 }
+// 5. Run-time code is translated per stack width (and CS): a ring-3 call checks its return address against the
+// protected pages only on a 32-bit stack. The same bytes run first on a 16-bit stack and then on the flat one must
+// not reuse the first translation, or a flat call's push into a protected page runs on unchecked
+{
+  for (const f of ['dyn.js']) new Function(readFileSync(new URL('../' + f, import.meta.url), 'utf8'))();
+  const { LAYOUT } = window.W95Win32;
+  const mem = new WebAssembly.Memory({ initial: 2048, maximum: 2048 }), u8 = new Uint8Array(mem.buffer);
+  const p = Object.create(Process.prototype), traps = [];
+  Object.assign(p, { mem, r0Depth: 0, trap: (a, code) => traps.push([a >>> 0, code >>> 0]), modules: [], cpu: {} });
+  for (const n of ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi', 'cf', 'pf', 'zf', 'sf', 'of', 'df', 'fs', 'ftop', 'fsw', 'fcw', 'eip',
+    'cs', 'ds', 'es', 'ss', 'fsel', 'gsel', 'csb', 'dsb', 'esb', 'ssb', 'gsb', 'budget', 'if']) p.cpu[n] = new WebAssembly.Global({ value: 'i32', mutable: true }, n === 'if' ? 1 : 0);
+  const at = 0x401100; u8.set([0xe8, 0, 0, 0, 0], at);   // call $+5
+  const stack = 0x2000000; u8[LAYOUT.PROT + (stack >>> 12)] = 1;   // (the page below the flat stack's top: protected)
+  p.cpu.ss.value = 0x17; p.cpu.esp.value = 0x8000; p.dynBlock(at).run();   // (a 16-bit stack: selector 17h, its descriptor not big)
+  assert.deepEqual(traps, [], 'no check on a 16-bit stack');
+  p.cpu.ss.value = 0; p.cpu.esp.value = stack + 0x1000; p.dynBlock(at).run();
+  assert.deepEqual(traps, [[stack + 0x1000 - 4, 0x4000010]], 'the flat stack\'s call checks its push against the protected page (a write fault there)');
+}
 console.log('w98fixes: ok');

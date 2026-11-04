@@ -7,6 +7,8 @@ sys.path.insert(0, os.path.join(root, 'tools')); import gitref
 assert gitref.split('/index.html') is None
 assert gitref.split('/__ref/HEAD/index.html?debug=1') == ('HEAD', 'index.html')
 assert gitref.split('/__ref/main~3/bench/x.mjs') == ('main~3', 'bench/x.mjs')
+assert gitref.split('/__ref/refs/mutants/x/index.html') == ('refs', 'mutants/x/index.html'), 'a rev is one segment (refs alone, which names no commit)'
+assert gitref.blob(root, 'refs', 'mutants/x/index.html') is None
 assert gitref.split('/__ref/HEAD/../.git/config') is None
 assert gitref.split('/__ref/../x/y') is None
 
