@@ -1017,6 +1017,21 @@ class Process {
     this.freeList = new Map(); for (const [a, s] of merged) { if (!this.freeList.has(s)) this.freeList.set(s, []); this.freeList.get(s).push(a); }
   }
   free(p) { const n = this.allocs.get(p); if (!n) return false; this.allocs.delete(p); if (!this.freeList.has(n)) this.freeList.set(n, []); this.freeList.get(n).push(p); return true; }
+  /** block `p` grown to `n` bytes where it is (the new bytes zeroed): at the heap's top, or over the free block that
+   *  follows it; false when neither has the room */
+  extend(p, n) {
+    n = (Math.max(n, 1) + 15) & ~15; const old = this.allocs.get(p); if (!old) return false; if (n <= old) return true;
+    let ok = false;
+    if (p + old === this.heapTop && p + n <= LAYOUT.HEAP_END) { this.heapTop = p + n; ok = true; }
+    else for (const [s, l] of this.freeList) {
+      const i = l.indexOf(p + old); if (i < 0 || old + s < n) continue;
+      l.splice(i, 1); const rest = old + s - n;
+      if (rest) { if (!this.freeList.has(rest)) this.freeList.set(rest, []); this.freeList.get(rest).push(p + n); }
+      ok = true; break;
+    }
+    if (!ok) return false;
+    this.allocs.set(p, n); this.u8.fill(0, p + old, p + n); return true;
+  }
   realloc(p, n) { if (!p) return this.alloc(n); const old = this.allocs.get(p) || 0; if (n <= old) return p; const q = this.alloc(n, true); this.u8.copyWithin(q, p, p + old); this.free(p); return q; }
 
   // ---- handles

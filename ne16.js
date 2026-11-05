@@ -3454,7 +3454,12 @@ def16('KERNEL', 16, 'wlw', 'w', function (h, n, fl) {   // GlobalReAlloc
   const sel = this.gsel(h);
   if (n > b.size) {
     const cap = (this.allocs.get(b.lin) || 0) - 16;
-    if (n > cap) { const nl = this.alloc(n + 16, true); this.u8.copyWithin(nl, b.lin, b.lin + b.size); if (b.heap) this.free(b.lin); b.lin = nl; b.heap = true; }
+    // grown where it is when the heap has the room; else moved, a segment past 64K given room to 2 MB as it moves, so it
+    // need not move again. Its linear address is held by others: Windows 98's GDI grows its data segment (its 32-bit heap
+    // past the 16-bit one) after GDI32 took flat pointers into it, and moved, GDI32's GetStockObject read the old place
+    // (no stock brush a GDI object: WinHelp's RegisterClass refused, "(null) (2)")
+    if (n > cap && b.heap && this.extend(b.lin, n + 16)) this.u8.fill(0, b.lin + b.size, b.lin + n);
+    else if (n > cap) { const nl = this.alloc((n > 0x10000 ? Math.max(n, 0x200000) : n) + 16, true); this.u8.copyWithin(nl, b.lin, b.lin + b.size); if (b.heap) this.free(b.lin); b.lin = nl; b.heap = true; }
     else this.u8.fill(0, b.lin + b.size, b.lin + n);
   }
   b.size = n;

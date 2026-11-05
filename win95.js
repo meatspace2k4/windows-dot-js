@@ -1307,6 +1307,8 @@ function loadHives() {
 }
 function pcBoot() {
   if (pc) clearInterval(pc.timer);
+  // (a power cycle ends every program: the last run's dialogs go with it)
+  [...windows].forEach(w => closeWin(w, true)); closeMenus();
   if (!window.W95V86 || !window.W95DOS) { pc = null; screen = 'black'; dirty(); return; }
   if (!fs.exists(join(WINDIR, 'SYSTEM.DAT'))) flushRegistry();   // (a disk made before Windows wrote its registry's files)
   if (diskSystem() === 'win95') strayCopies();

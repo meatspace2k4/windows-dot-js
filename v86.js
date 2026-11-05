@@ -446,7 +446,7 @@ HOOK[0x2f] = function (next) {
   };
   const file = () => this.redir.get(this.m16(sft() + 0x0b));
   // (a diagnostic: the calls and how each was answered, the last 100)
-  const log = this.rlog || (this.rlog = []); log.push(`11${al.toString(16).padStart(2, '0')} ${fn1().slice(0, 60)} cx=${this.r('cx').toString(16)}`); if (log.length > 100) log.shift();
+  const log = this.rlog || (this.rlog = []); log.push(`11${al.toString(16).padStart(2, '0')} ${fn1().slice(0, 60)} cx=${this.r('cx').toString(16)}`); if (log.length > (this.rlogMax || 100)) log.shift();
   try {
     switch (al) {
       case 0x00: this.setAL(0xff); this.cpu.cf.value = 0; return true;                          // installed
