@@ -607,7 +607,10 @@ class Process {
     // (the way there in the log too, as it happens: a machine that ends of it, the system's machine at its start, leaves
     // no fault log to ask for)
     { const f = this.faultLog[this.faultLog.length - 1]; log('warn', 'win32', `no code at ${f.at} (${f.atIn}) (${f.why || 'unmapped'}) cs ${f.cs} ss ${f.ss} ${['eax', 'ebx', 'ecx', 'edx', 'esi', 'edi', 'ebp'].map(r => `${r} ${u32(this.cpu[r].value).toString(16)}`).join(' ')} from ${f.fromIn || f.from}, esp ${f.esp}; the way there: ${f.path.slice(-16).join(' < ')}; stack ${(f.stack || []).slice(0, 8).join(' ')}`); }
-    if (/^run-time code/.test(t)) { log('warn', 'win32', t); this.trapped = null; return this.raise(6, at); }   // (an emulator gap: named)
+    // (an emulator gap: named; the #UD at the instruction itself, not where the run of run-time code began: QUARTZ's MMX
+    // probe (EMMS under its own handler, a 486 having none) was raised blocks earlier, and its handler did not take it)
+    const ud = this.trappedAt; this.trappedAt = undefined;
+    if (/^run-time code/.test(t)) { log('warn', 'win32', t); this.trapped = null; return this.raise(6, ud !== undefined ? ud : at); }
     if (t && !/^jump to unmapped address/.test(t)) return null;
     this.trapped = null; return this.raise(14, at, at);
   }

@@ -302,7 +302,10 @@ class Machine {
     // program as it boots, and exec found no process to give its image room in)
     const exe = /\s/.test(this.path) ? `"${this.path}"` : this.path;
     try {
-      if (this.system) { host.vmTop = 0x0a000000; host.vmPages = 2048; }
+      // (the system's machine: 224 MB above the layout for VirtualAlloc's reservations and the DLLs the arena has no room
+      // for. Windows 98's first start ran 96 MB out: VCACHE's 30 MB at boot, RUNDLL32's MSVCRT heaps at 4 MB each, and
+      // JSCRIPT.DLL then had no room ("An error occurred loading jscript.dll", Windows Update's item))
+      if (this.system) { host.vmTop = 0x0a000000; host.vmPages = 4096; }
       this.proc = new W.Process(this.bytes, prog.module, { ...prog.meta, name: prog.name.replace(/\.EXE$/, '') }, host, this.arg ? `${exe} ${this.arg}` : exe, dlls);
       this.proc.soundQuiet = !!this.quiet;   // (sound.js: the card's output off for the one sound)
       if (this.system && this.session) this.proc.onIntent = i => post({ t: 'intent', i });   // (a shared session's: ne16.js hookIntents)

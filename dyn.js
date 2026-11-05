@@ -912,7 +912,7 @@ P.dynBlock = function (eip) {
   catch (e) {
     if (!(e instanceof Unsupported)) throw e;
     if (e.n > 1) { ends.set(key, e.n - 1); t = translate(this, eip, csb, d32, vm ? this.v86 : null, e.n - 1, ss32); }
-    else { this.trapped = `run-time code at ${eip.toString(16)} (${this.whereOf(eip)}, bytes ${Array.from(u8.subarray(eip, eip + 12), v => v.toString(16).padStart(2, '0')).join(' ')}): ${e.message}`; return null; }
+    else { this.trappedAt = eip; this.trapped = `run-time code at ${eip.toString(16)} (${this.whereOf(eip)}, bytes ${Array.from(u8.subarray(eip, eip + 12), v => v.toString(16).padStart(2, '0')).join(' ')}): ${e.message}`; return null; }
   }
   t.fn.e(0x0f);
   // (the imports: the memory, port I/O, interrupts, and the x87's math, the process's own as its static modules get it)

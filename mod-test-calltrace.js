@@ -1,7 +1,7 @@
 // (a test: every JS-implemented call WINHLP32's threads make, with string arguments, answer and last error, into the
 // console; YIELD answers passed through untouched)
 (() => {
-  const W = self.W95Win32, API = W && W.API; if (!API || API.__callTraced4) return; API.__callTraced4 = true; self.W95TraceOnly = /regsvr32/i;
+  const W = self.W95Win32, API = W && W.API; self.W95TraceOnly = self.W95TraceQ || null; if (!API || API.__callTraced4) return; API.__callTraced4 = true;
   const only = /winhlp/i, strOf = (p, v) => { if (!(v >>> 16)) return null; try { const s = p.readA(v, 120); return s && /^[\x20-\x7e]{2,}$/.test(s) ? s : null; } catch (_) { return null; } };
   for (const dll of Object.keys(API)) for (const nm of Object.keys(API[dll])) {
     const d = API[dll][nm]; if (!Array.isArray(d) || typeof d[1] !== 'function' || d[0] === 'regs') continue; const f = d[1];
