@@ -13,6 +13,7 @@ const LAYOUT = { SENTINEL: 0xFFFFFFF0, THUNK: 0xFFFF0000, THUNK16: 0xFFFE0000, F
   // frame buffer's ring-0 mapping): ring-3 code's accesses are checked against it (dyn.js guard), protect() sets it
   PROT: 0x05500000 };
 const DLL_CHAIN = 0xFFFFFFE0;   // (where a DllMain run as LoadLibrary returns comes back to: Process.dllChainStep)
+const SEH_CONT = 0xFFFFFFDC;    // (where an exception handler the dispatcher called returns to: sehStep)
 const YIELD = Symbol('yield');   // returned by an API implementation to suspend the guest at depth 0
 const NO_CLOCK = Object.freeze({ tick: 0, wall: 0 });   // (a program reading this machine's own clock: Process.clockOf)
 const TICK_MS = 65536 * 1000 / 1193182;   // PIT channel 0 period, 54.925 ms
@@ -451,6 +452,7 @@ class Process {
   hookDllChain() {
     const hooks = this.entryHooks || (this.entryHooks = new Map());
     if (!hooks.has(DLL_CHAIN)) hooks.set(DLL_CHAIN, function () { return this.dllChainStep(); });
+    if (!hooks.has(SEH_CONT)) hooks.set(SEH_CONT, function () { return sehStep(this); });
   }
   dllChainStep() {
     const sp = u32(this.reg('esp')), k = this.r32(sp), i = this.r32(sp + 4);
@@ -851,7 +853,7 @@ class Process {
       throw new FaultError(f);
     }
     if (!this.r32(this.cpu.fs.value) || this.r32(this.cpu.fs.value) === 0xffffffff) throw new FaultError(f);
-    const r = sehDispatch(this, EXC_CODE[n] || 0xc0000005, eip, n === 14 || n === 13 ? [this.pfWrite ? 1 : 0, cr2] : [], f);
+    const r = sehStart(this, EXC_CODE[n] || 0xc0000005, eip, n === 14 || n === 13 ? [this.pfWrite ? 1 : 0, cr2] : [], f, 0);
     if (r === null) throw new FaultError(f);
     return r;
   }
@@ -915,6 +917,7 @@ class Process {
     (this.entryRing || (this.entryAt = 0, this.entryRing = new Uint32Array(32)))[this.entryAt++ & 31] = u32(eip);   // (an import called from inside a module's run: a fault's way there names it, noCode)
     if (u32(eip) < LAYOUT.THUNK) return this.api16(u32(eip));
     if (u32(eip) === DLL_CHAIN) return this.dllChainStep();   // (a module's own return to the chain comes here, not through the dispatcher)
+    if (u32(eip) === SEH_CONT) return sehStep(this);          // (and an exception handler's return to the dispatcher)
     const t = this.thunks[(u32(eip) - LAYOUT.THUNK) >> 2];
     if (!t || !t.def) {   // a call into an import with nothing behind it: a page fault at its address, from where it was called
       log('warn', 'win32', `unimplemented import ${t ? t.dll + '!' + t.nm : u32(eip).toString(16)}`);
@@ -1672,50 +1675,76 @@ function sehContext(p, at, eip, esp) {
   for (const [r, o] of Object.entries(CTX)) p.w32(at + o, p.reg(r));
   p.w32(at + 0xb8, eip); p.w32(at + 0xc4, esp); p.w32(at + 0xc0, 0x202);
 }
-/** an exception (code, at `eip`, its parameters) through the thread's structured handlers, as KERNEL32 dispatches one:
- *  the address to go on at (a handler continued it), SENTINEL when a handler took it and the program ran on past
- *  here, null when none handled it */
-function sehDispatch(p, code, eip, params, fault, flags = 0) {
+/** an exception (code, at `eip`, its parameters) through the thread's structured handlers, as KERNEL32 dispatches one.
+ *  Each handler is called by the thread itself, its return coming back to SEH_CONT (sehStep), not as a call the host
+ *  makes: a handler that takes the exception (MSVC's _except_handler3: RtlUnwind, then its __except block) never
+ *  returns, and the program runs on as itself. Called as the host's, QUARTZ's MMX probe (EMMS under its own handler)
+ *  ran on inside the call: REGSVR32's message box and its message loop, the machine answering nothing. The address to
+ *  go on at (the first handler's), or null when the thread's chain has none. When every handler declines: the fault's
+ *  dialog for `fault` (a processor exception), else the exception `code` at `eip` (RaiseException's) */
+function sehStart(p, code, eip, params, fault, flags) {
   p.sehFault = fault;
   const sp = u32(p.reg('esp')), rec = (sp - 0x400) & ~15, ctx = rec + 0x60, n = Math.min(params.length, 15);
   // (a stack pointer that is no address the machine has: nothing can be pushed for a handler, the fault is not
   // handled, the program's fault dialog takes it rather than the machine ending)
   if (sp < 0x10000 || sp > p.u8.length) return null;
+  // (the dispatches whose records are now below the stack are over: their handler took the exception and the program
+  // ran on above them)
+  const live = p.sehLive || (p.sehLive = new Map());
+  for (const [r] of live) if (r < sp) live.delete(r);
   p.u8.fill(0, rec, rec + 0x50);
   p.w32(rec, code); p.w32(rec + 4, flags & 1); p.w32(rec + 12, eip); p.w32(rec + 16, n);
   for (let i = 0; i < n; i++) p.w32(rec + 20 + 4 * i, params[i]);
   sehContext(p, ctx, eip, sp);
-  p.reg('esp', rec - 0x40);
-  // a frame off the thread's stack (the TIB's top and limit; past the end of memory) ends the chain, as KERNEL32
-  // takes it: what the frames before it did not handle is not handled
-  const tib = p.cpu.fs.value, end = p.mem.buffer.byteLength, top = p.r32(tib + 4), limit = p.r32(tib + 8);
-  const onStack = f => f + 8 <= end && !(top > limit && (f < limit || f + 8 > top));
   // (an exception raised inside a handler, nested: its search starts above the frame whose handler is running, as
   // KERNEL32's dispatcher skips the frames it is already in, EXCEPTION_NESTED_CALL. Searched from the chain's head, a
   // handler that faulted was asked about its own fault, and again, until the page's stack ran out)
-  const active = p.sehActive || (p.sehActive = []), nested = active.length ? active[active.length - 1] : 0;
+  let nested = 0; for (const s of live.values()) if (s.f && s.rec > sp) nested = s.f;
   if (nested) p.w32(rec + 4, (flags & 1) | 0x10);
-  for (let f = nested ? p.r32(nested) : p.r32(tib); f !== SEH_END && f && onStack(f); f = p.r32(f)) {
-    active.push(f);
-    let r; try { r = sehCall(p, p.r32(f + 4), [rec, f, ctx, 0], sp); } finally { active.pop(); }
-    if (r === 'escaped') return LAYOUT.SENTINEL;
-    if (r === 0) {   // continue execution where the context says
-      for (const [rg, o] of Object.entries(CTX)) p.reg(rg, p.r32(ctx + o));
-      p.reg('esp', p.r32(ctx + 0xc4)); return p.r32(ctx + 0xb8);
-    }
+  const st = { rec, ctx, sp, f: 0, nested, fault, code, eip, tib: p.cpu.fs.value };   // (plain data: a moment keeps it)
+  live.set(rec, st);
+  if (p.hookDllChain) p.hookDllChain();
+  return sehNext(p, st);
+}
+/** the next frame's handler called for dispatch `st`: its address, the frame and the call's arguments on the stack below
+ *  the record, its return to SEH_CONT; null when the chain has no more (the stack as the exception found it) */
+function sehNext(p, st) {
+  // a frame off the thread's stack (the TIB's top and limit; past the end of memory) ends the chain, as KERNEL32
+  // takes it: what the frames before it did not handle is not handled
+  const tib = st.tib, end = p.mem.buffer.byteLength, top = p.r32(tib + 4), limit = p.r32(tib + 8);
+  const onStack = f => f + 8 <= end && !(top > limit && (f < limit || f + 8 > top));
+  const f = st.f ? p.r32(st.f) : st.nested ? p.r32(st.nested) : p.r32(tib);
+  if (f === SEH_END || !f || !onStack(f)) { p.sehLive.delete(st.rec); p.reg('esp', st.sp); return null; }
+  st.f = f;
+  p.reg('esp', st.rec - 0x40);
+  p.push(0); p.push(st.ctx); p.push(f); p.push(st.rec); p.push(SEH_CONT);
+  return p.r32(f + 4);
+}
+/** a handler returned (EAX: 0 continue execution where the context says, 1 continue the search): where to go on */
+function sehStep(p) {
+  const sp = u32(p.reg('esp')), rec = p.r32(sp), st = p.sehLive && p.sehLive.get(rec);
+  if (!st) throw new GuestError(`an exception handler returned to a dispatch that is over (record ${rec.toString(16)})`);
+  if (p.reg('eax') === 0) {
+    p.sehLive.delete(rec);
+    for (const [rg, o] of Object.entries(CTX)) p.reg(rg, p.r32(st.ctx + o));
+    p.reg('esp', p.r32(st.ctx + 0xc4)); return p.r32(st.ctx + 0xb8);
   }
-  p.reg('esp', sp);
-  return null;
+  const go = sehNext(p, st);
+  if (go !== null) return go;
+  throw sehUnhandled(p, st.fault, st.code, st.eip);
+}
+/** nothing handled it: KERNEL32's unhandled-exception path ends the program with its fault dialog */
+function sehUnhandled(p, fault, code, eip) {
+  if (fault) return new FaultError(fault);
+  const f = p.faultInfo(0, eip, 0); f.code = code; f.why = `exception ${u32(code).toString(16)} at ${u32(eip).toString(16)}`; return new FaultError(f);
 }
 def('KERNEL32', 'RaiseException', 'regs', function () {
   const sp = u32(this.reg('esp')), ret = this.r32(sp), code = this.r32(sp + 4), flags = this.r32(sp + 8), n = Math.min(this.r32(sp + 12), 15), argv = this.r32(sp + 16);
   const params = []; for (let i = 0; i < n; i++) params.push(this.r32(argv + 4 * i));
   this.reg('esp', sp + 20);
-  const r = sehDispatch(this, code, ret, params, null, flags);
+  const r = sehStart(this, code, ret, params, null, flags);
   if (r !== null) return r;
-  // nothing handled it: KERNEL32's unhandled-exception path ends the program with its fault dialog
-  const f = this.faultInfo(0, ret, 0); f.code = code; f.why = `exception ${u32(code).toString(16)} at ${u32(ret).toString(16)}`;
-  throw new FaultError(f);
+  throw sehUnhandled(this, null, code, ret);
 });
 // RtlUnwind(target frame, target IP, record, return value): the handlers of the frames above the target are called
 // with the record marked unwinding (2; and 4 when there is no target: the whole chain), each frame taken off the chain
@@ -3829,5 +3858,5 @@ function peString(bytes, id) {
   } catch (_) { return null; }
 }
 
-window.W95Win32 = { log, regAttach, regGet, regKids, regVals, regDel, regSet, regDump, regApply, regLoad, regHive, regReadHive, regWatch: f => regWatchers.add(f), Process, API, STAND_IN, LAYOUT, WM, YIELD, iniGet, iniSet, iniRead, peString, peResource, faultText, fmtMsg, def, dcOf, GuestError, HangError, FaultError, mkCanvas, dibOut, sha256 };
+window.W95Win32 = { log, regAttach, regGet, regKids, regVals, regDel, regSet, regDump, regApply, regLoad, regHive, regReadHive, regWatch: f => regWatchers.add(f), Process, API, STAND_IN, LAYOUT, WM, YIELD, iniGet, iniSet, iniRead, peString, peResource, faultText, fmtMsg, def, dcOf, GuestError, HangError, FaultError, mkCanvas, dibOut, sha256, sehStep, SEH_CONT };
 })();
