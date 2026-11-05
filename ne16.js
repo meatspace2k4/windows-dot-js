@@ -205,6 +205,7 @@ P.loadNE = function (name, file, module, meta) {
     this.w32(L.LDT + (rec.dgroup & 0xfff8) + 4, init - 1);
   }
   for (const sg of meta.segs) if (sg.num !== meta.autodata) this.ghandles.set(sg.sel | 1, { lin: sg.base, size: Math.max(sg.alloc, 1), n: 1, flags: 0, lock: 0, owner: rec.hModule, code: !(sg.flags & 1) });
+  if (this.initAfter32 && this.initAfter32.has(name)) rec.initLater = true;   // (its LibEntry run by bootUser16 once its 32-bit half is loaded, whoever imports it first)
   this.modules.push(rec); this.byName.set(name, rec); this.ne.set(name, rec);
   if (this.onModuleLoad) this.onModuleLoad(name, rec);   // (a watch asked for before the module came: worker.js cmd 'watch')
   return rec;
@@ -326,6 +327,11 @@ P.loadLibrary16 = function (name, native = false, defer = false) {
   rec.fileName = sys.fileName;
   for (const imp of sys.meta.imports || []) if (imp !== 'KERNEL' && (native || !JS16.includes(imp))) this.loadLibrary16(imp, native);
   if (defer) return rec;   // the caller runs LibEntry (initNE) once what it needs is in place
+  // (a boot module's LibEntry waits for bootUser16, as KRNL386's bootstrap defers each library's init until its own
+  // step: USER.EXE loaded by USER32's ThunkInitLS, under a DLL that GDI's LibEntry loaded (Windows 98's GDI.EXE loads
+  // USER32's importers), ran its LibEntry here before USER32 had connected its thunks, and jumped through the unset
+  // target table)
+  if (rec.initLater) return rec;
   if (!this.initNE(rec)) { log('warn', 'ne16', `${base} LibEntry failed`); }
   return rec;
 };
@@ -1705,10 +1711,29 @@ P.inputPendingFor = function (hwnd) {
 /** fn run as the task of the started process that owns a window (as its main thread), the way that process's own
  *  calls for the window run: USER's SetActiveWindow activates only a window of the calling task */
 P.asWindowTask = function (hwnd, fn) {
+  // (a Win32 window: as the thread whose queue it is on, not the process's main thread. Every thread of a process
+  // has the process's task, and a send made as the main thread to a window of another of its threads went from the
+  // main thread's queue to that one: the host's call gave up while the record stood on Explorer's queue, the record
+  // was freed and used again, and Explorer, taking its sends while waiting on one of its own, called the reused
+  // memory's 0 as a reply's callback (Windows 98 Setup, saving the system files: "EXPLORER caused an invalid page
+  // fault at 0000:0000"). Made as the window's own thread, the send is the thread's own: USER calls the procedure)
+  const own = this.thread16 ? null : this.windowThread(hwnd);
+  if (own && !own.task && (own.flat || own.pc)) return this.asThread(own, fn);
   const task = this.thread16 ? 0 : this.user16(224, [['w', hwnd]]).ax;                                 // GetWindowTask
   const pc = task && this.procs && [...this.procs.values()].find(c => c.tdb === task && c.main && c.main.state !== 'done');
   if (!pc) return fn();
   return this.asThread(pc.main, fn);   // (on a stack of the call's own: the task's holds its frames where it stopped)
+};
+/** the thread whose queue a window is on: USER's window structure, found through its handle table at 10000h in
+ *  USER's data (USER 4:1367, the table's last handle at 10070h), holds the queue at 20h; null for no live thread */
+P.windowThread = function (hwnd) {
+  const u = this.ne && this.ne.get('USER'), ds = u && u.segs && u.segs.find(x => x.num === 32);
+  hwnd &= 0xffff;
+  if (!ds || !this.selValid(ds.sel) || !hwnd || hwnd & 3 || hwnd < 0x80 || !this.threadsById) return null;
+  const d = this.selBase(ds.sel); if (hwnd > this.r16(d + 0x10070)) return null;
+  const wnd = this.r32(d + 0x10000 + hwnd); if (!wnd) return null;
+  const hq = this.r16(d + wnd + 0x20); if (!hq) return null;
+  return [...this.threadsById.values()].find(t => t.queue === hq && t.state && t.state !== 'done') || null;
 };
 /** the Windows 3.x task's thread that owns a window, for a window of no started process: null for a window of a
  *  process, or of a task that ended. A message the host sends into such a window from the system's context goes to
@@ -1847,10 +1872,10 @@ P.nativeChildren = function (parent, send = true) {
       let text = '';
       if (/^(edit|combobox|richedit)$/i.test(cls) && ask) {   // SendMessage WM_GETTEXT, into a buffer the size of an edit's limit (WordPad's RICHEDIT too)
         if (!this.tbufLin) { this.tbufLin = this.alloc(0x10000); this.tbufSel = this.allocSels(this.tbufLin, 0x10000); }
-        const tl = u(111, [['w', h], ['w', 0x0d], ['w', 0xffff], ['l', u32(this.tbufSel << 16)]]); text = tl ? this.readA(this.tbufLin, tl) : '';
+        const tl = this.asWindowTask(h, () => u(111, [['w', h], ['w', 0x0d], ['w', 0xffff], ['l', u32(this.tbufSel << 16)]])); text = tl ? this.readA(this.tbufLin, tl) : '';
       } else { const tl = u(107, [['w', h], ['w', 0x0d], ['w', 160], ['l', buf + 16]]); text = tl ? this.readA(a + 16, tl) : ''; }
       const c = { hwnd: h, parent: p, x, y, w, h: hh, cls, text, id: u(277, [['w', h]]), style, enabled: !!u(35, [['w', h]]), focused: h === focus, depth, ...(ask ? {} : { unknown: true }) };
-      if (/^button$/i.test(cls) && [2, 3, 4, 5, 6, 9].includes(style & 0x0f)) c.checked = ask ? u(111, [['w', h], ['w', 0x400], ['w', 0], ['l', 0]]) : undefined;
+      if (/^button$/i.test(cls) && [2, 3, 4, 5, 6, 9].includes(style & 0x0f)) c.checked = ask ? this.asWindowTask(h, () => u(111, [['w', h], ['w', 0x400], ['w', 0], ['l', 0]])) : undefined;
       if (ask && /^SysTabControl32$/i.test(cls)) c.items = this.tabItems(h, x, y);
       if (ask && /^SysListView32$/i.test(cls)) c.items = this.listItems(h, x, y);
       out.push(c); walk(h, depth + 1);
@@ -2178,7 +2203,7 @@ P.menuDataText = function (data) {
  *  bounds on screen (the control at x, y), its label and whether it is selected, from the control's own messages
  *  with flat buffers (as tabItems) */
 P.listItems = function (h, x, y) {
-  const a = this.wbufLin, send = (m, wp, lp) => this.user16(111, [['w', h], ['w', m], ['w', wp], ['l', lp]]).dxax | 0;
+  const a = this.wbufLin, send = (m, wp, lp) => this.asWindowTask(h, () => this.user16(111, [['w', h], ['w', m], ['w', wp], ['l', lp]]).dxax | 0);
   const n = Math.min(send(0x1004, 0, 0), 256), out = [];   // LVM_GETITEMCOUNT
   const rc = a + 0x100, it = a + 0x110, txt = a + 0x140;
   for (let i = 0; i < n; i++) {
@@ -2195,7 +2220,7 @@ P.listItems = function (h, x, y) {
 /** item `i` of list view `h` selected and focused alone (LVM_SETITEMSTATE), and opened as Enter opens it (the list's
  *  owner opens the selection: a folder window opens the folder, the file) */
 P.listItem = function (h, i, open) {
-  const it = this.wbufLin + 0x110, set = (n, state) => { this.u8.fill(0, it, it + 36); this.w32(it + 12, state); this.w32(it + 16, 3); this.user16(111, [['w', h], ['w', 0x102b], ['w', n & 0xffff], ['l', it]]); };
+  const it = this.wbufLin + 0x110, set = (n, state) => { this.u8.fill(0, it, it + 36); this.w32(it + 12, state); this.w32(it + 16, 3); this.asWindowTask(h, () => this.user16(111, [['w', h], ['w', 0x102b], ['w', n & 0xffff], ['l', it]])); };
   set(-1, 0); set(i, 3);   // (every item's selection and focus off, then this one's on: LVIS_FOCUSED | LVIS_SELECTED)
   if (open) { this.user16(110, [['w', h], ['w', 0x100], ['w', 0x0d], ['l', 0x001c0001]]); this.user16(110, [['w', h], ['w', 0x101], ['w', 0x0d], ['l', 0xc01c0001]]); }   // PostMessage WM_KEYDOWN, WM_KEYUP VK_RETURN
   return true;
@@ -2205,7 +2230,7 @@ P.listItem = function (h, i, open) {
  *  (a message past WM_USER goes to the 32-bit window with lParam as it is). A tab without text (Explorer's task
  *  buttons draw themselves) is named by the window its lParam holds */
 P.tabItems = function (h, x, y) {
-  const a = this.wbufLin, buf = u32(this.wbufSel << 16), send = (m, wp, lp) => this.user16(111, [['w', h], ['w', m], ['w', wp], ['l', lp]]).dxax | 0;
+  const a = this.wbufLin, buf = u32(this.wbufSel << 16), send = (m, wp, lp) => this.asWindowTask(h, () => this.user16(111, [['w', h], ['w', m], ['w', wp], ['l', lp]]).dxax | 0);
   const n = Math.min(send(0x1304, 0, 0), 64), sel = send(0x130b, 0, 0), out = [];   // TCM_GETITEMCOUNT, TCM_GETCURSEL
   const rc = a + 0x100, it = a + 0x110, txt = a + 0x140;
   for (let i = 0; i < n; i++) {
@@ -3744,7 +3769,9 @@ const profStr = function (file, app, key, d, buf, n) {
     if (s) for (const k of s.keys.values()) { const b = k.name; if (o + b.length + 2 > n) break; W(this, buf + o, b); o += b.length + 1; }
     this.u8[buf + o] = 0; return o;
   }
-  const v = winIni(this, file, app, key); return W(this, buf, v === null ? (d || '') : v, n);
+  // (one pair of quotes around the value taken off, as Windows does: Windows 98 Setup's billboard, WIN95BB.INI's
+  // Text1="Please |sit |back ...", drew each line in its quotes)
+  const v = winIni(this, file, app, key); return W(this, buf, v === null ? (d || '') : v.replace(/^(["'])([^]*)\1$/, '$2'), n);
 };
 def16('KERNEL', 58, 'sssxw', 'w', function (app, key, d, buf, n) { return profStr.call(this, 'WIN.INI', app, key, d, this.lin(buf), n); });
 def16('KERNEL', 128, 'sssxws', 'w', function (app, key, d, buf, n, f) { return profStr.call(this, f, app, key, d, this.lin(buf), n); });
@@ -4837,10 +4864,28 @@ P.queueWoken = function (h) {
  *  the time-out (ms, INFINITE for none) has run out (WAIT_TIMEOUT then); 0 once ready */
 const waitTop = (p, ms) => {
   const t = p.thread16 || (p.mainWait = p.mainWait || {});
-  if (ms === 0xffffffff) return YIELD;
+  // (waitYield: the thread's last yield is this wait, which waitBlocked may pass by; the time-out's return leaves its
+  // waitOn behind, and the thread's next yield (for the Win16Lock, inside a call) was passed by on it, Explorer stopped
+  // in the middle of SHELL32's calls into USER)
+  if (ms === 0xffffffff) { t.waitYield = true; return YIELD; }
   if (!t.wake) t.wake = p.now() + ms;
-  else if (p.now() >= t.wake) { t.wake = 0; return 0x102; }
-  return YIELD;
+  else if (p.now() >= t.wake) { t.wake = 0; t.waitOn = null; return 0x102; }
+  t.waitYield = true; return YIELD;
+};
+/** whether thread t, stopped in a wait at its top level, would only wait again if run now: a Win32 thread in
+ *  WaitForSingle/MultipleObjects none of whose events is set,
+ *  its queue not woken, no reply to a send of its own awaited, its time-out not reached. The scheduler passes it by:
+ *  run, it made the call again and yielded, every pass. Windows 98 Setup's file copy, SUWIN yielding between blocks,
+ *  went round W98SETUP, MSGSRV32, MMTASK, SETUP, Explorer's and the others' waits each time, and the machine's time ran
+ *  at a twentieth of the wall's */
+P.waitBlocked = function (t) {
+  if (t.state !== 'waiting' || t.preempted || !t.ctx || !t.waitYield) return false;
+  const now = this.now();
+  const w = t.waitOn; if (!w || !w.hs || !w.hs.length || t.task) return false;
+  if (t.wake && now >= t.wake) return false;
+  if (t.queue && this.selValid(t.queue)) { const q = this.selBase(t.queue); if (this.r16(q + 0x4c) & 0x8000 || this.r16(q + 0x4e) || (!this.r16(q + 0x4c) && this.r16(q + 0x48))) return false; }
+  for (const h of w.hs) { const o = this.obj(h); if (!o || o.kind !== 'event' || o.set || P.queueWoken.call(this, h)) return false; }   // (events alone: a thread's or process's end, a semaphore, run as before)
+  return true;
 };
 const waitDone = p => { const t = p.thread16 || p.mainWait; if (t) { t.wake = 0; t.waitOn = null; } };
 // KERNEL.495: KRNL386's thunk to KERNEL32's WaitForMultipleObjectsEx (KRNL386 seg3:40CCh, entry 15h of KERNEL32's
@@ -5073,6 +5118,10 @@ P.stackFree = function (t) {
 /** process pc's view of the arena in place, where its image overlaps another process's (spawn, win32.js arenaUse) */
 P.imgUse = function (pc) {
   this.dllUse(pc);   // (and its private-arena DLLs' data, win32.js; the system's for a thread of no started process)
+  // (a Windows 3.x task's thread leaves the arena's views as they are: its code is in its own segments, never in a
+  // process's image at 400000h. Put back each time, Windows 98 Setup's helper's megabyte there was copied out and in
+  // at every switch between SUWIN's file copy and the helper, a millisecond each)
+  const t = this.thread16; if (!pc && t && t.task && !t.pc) return;
   this.arenaUse(pc);
 };
 /** the size of a PE file's image (SizeOfImage), 0 for no PE file */
@@ -5237,6 +5286,7 @@ P.threads16 = function (nested = false, only = null) {
   try { for (const t of only ? [only] : [...this.threadsById.values()]) {   // the threads there are as the pass starts: one created in it starts in the next
     if (t === caller || t.state === 'running' || t.blocked || (t.id === MAIN_TID && !caller) || (t.id === MAIN_TID && caller) || !t.state || t.state === 'done' || t.state === 'hung' || t.state === 'suspended' || (t.state === 'waiting' && t.wait && !t.wait.set)) continue;   // a thread that yielded with no event to wait for (in WaitEvent) runs again
     if (this.win16Held && this.win16Held.who !== t && !(caller && this.win16Held.who === caller)) continue;   // another thread holds the Win16Lock (a caller that yields hands its own over)
+    if (!only && this.waitBlocked(t)) continue;   // (it would only wait again)
     const main = this.saveCtx16();
     const sw = this.switchMs || (this.switchMs = { img: 0, load: 0, run: 0, save: 0, n: 0 }); let tm = performance.now();   // (a diagnostic: where a thread switch's time goes, cmd 'views')
     this.thread16 = t; t.sliceStart = this.now(); this.preempted = 0; this.imgUse(t.pc); this.cwdSwitch(t); if (this.thhookLin) this.tdbCurrent(t); sw.img += performance.now() - tm; sw.n++;
@@ -5269,7 +5319,7 @@ P.threads16 = function (nested = false, only = null) {
         r = this.start16(t.start >>> 16, t.start & 0xffff, t.task ? [] : [['l', t.param]]);
       } else {
         // it yielded at its top level, so it holds no 16-bit stack aliases: it takes them from the level in use now
-        tm = performance.now(); this.loadCtx16(t.ctx); this.stackLevel = main.stackLevel; t.state = 'running'; t.wait = null; sw.load += performance.now() - tm;
+        tm = performance.now(); this.loadCtx16(t.ctx); this.stackLevel = main.stackLevel; t.state = 'running'; t.wait = null; t.waitYield = false; sw.load += performance.now() - tm;
         tm = performance.now(); r = this.runTop(u32(this.cpu.eip.value)); sw.run += performance.now() - tm;
       }
       // a thread that stopped in a wait gave up the processor there (the call's YIELD clears what its time running out
@@ -5537,6 +5587,8 @@ def16('KERNEL', 91, '', 'jmp', function () {
 def16('KERNEL', 30, 'w', 'w', function () {
   const t = thr(this, 0), top = !this.asTask && (this.thread16 ? this.depth === this.thread16.depth : this.depth === 0);
   if (t.events > 0) { t.events--; t.slept = false; return 0; }   // an event posted to the task (PostEvent, its start): no wait
+  // (not passed by in the scheduler's round, waitBlocked: a task is woken by more than PostEvent here, a directed yield
+  // among them, and held back 50 ms MPREXE's thread came back from a Yield inside USER with its stack gone)
   if (top && !t.slept) { t.slept = true; P.idle.call(this); return YIELD; }
   if (!top) this.threads16(true);   // inside a call: the other tasks run, as the wait would let them
   t.slept = false; return 0;
@@ -5698,7 +5750,11 @@ K('ThunkConnect32', 6, function (td, f16, m16, m32, hmod, reason) {
     this.lsRelays.set(u32(td + this.r32(td + 0x20)), { ft: true, get table() { return rel.bind(); } });
     // a 16-bit half already loaded (USER, GDI, KERNEL) is bound now: the 32-bit side's own code reads the target table
     // straight from its data (USER32's CreateWindowExA), not only through the relays
-    const loaded = this.ne && this.ne.get(name.replace(/\.(EXE|DRV)$/, '')); if (loaded && loaded.meta) rel.bind();
+    // (a module of that name without the half (Windows 98 Setup's own VER.DLL, loaded from C:\WININST0.400 by SUWIN
+    // before any Win32 process had VERSION.DLL) is left for the first call, as KERNEL32 binds late: the attach of
+    // VERSION.DLL in a process Setup started threw here, and MSGSRV32 stopped)
+    const loaded = this.ne && this.ne.get(name.replace(/\.(EXE|DRV)$/, ''));
+    if (loaded && loaded.meta) try { rel.bind(); } catch (e) { if (!(e instanceof GuestError)) throw e; log('warn', 'ne16', `ThunkConnect32 ${this.readA(m32)} LS01: ${e.message}; left for the first call`); }
     return 1;
   }
   // 16 -> 32: the 32-bit half's target table, for the 16-bit half (ThunkConnect16's record, made now if its half has

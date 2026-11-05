@@ -51,11 +51,19 @@ window.W95BraidPage = function (ui) {
       if (!n) { for (const st of stores) st.remove(sid); removed++; continue; }
       const st = n.vol.store.under; st.node(nodeRec(n));
       if (!n.dir) { st.size(sid, n.size); if (n.size) st.data(sid, 0, n.buf.slice(0, n.size)); }
-      wrote++;
+      storeSids.add(sid); wrote++;
+    }
+    // (every node: the store then holds this tree and nothing else. A moment's nodes carry the ids of the line that
+    // anchored it; written over a store numbered by another line, the store held both trees under one numbering, a
+    // folder's id a file's, and the page's next start could not attach it)
+    if (all) {
+      for (const st of stores) { const held = st.load && st.load(); if (held) for (const e of held.nodes) storeSids.add(e.sid); }
+      for (const sid of [...storeSids]) if (!nodes.has(sid)) { for (const st of stores) st.remove(sid); storeSids.delete(sid); removed++; }
     }
     diskTouched.clear(); fs.version++; ui.dirty();
     return { wrote, removed };
   }
+  const storeSids = new Set();   // (the node ids this page wrote to the disk's store, beside those it loaded)
 
   // ---- anchored moments: IndexedDB, this origin's
   // (an anchor's blobs are kept as chunks shared between anchors, braid.js packAnchor: the record in 'anchors' lists
@@ -389,7 +397,12 @@ window.W95BraidPage = function (ui) {
     // (the system's machine the page starts as something needs it: a moment with one, arrived at in a page that has
     // none yet, starts it first, booted, then brings the moment into it; the moment's page is not arrived at into a
     // page with no machine for it, which left the line at the moment and the machines where they were)
-    for (const [k, ex] of Object.entries(rec.machines)) { const a = k === 'system' ? (sys() || await ui.startSystem()) : live().find(x => x.path === k); if (!a) throw new Error(`no machine running for the moment's ${k}`); out[k] = await a.cmd('import', [ex]); forgetKids(a); }
+    // (booted on the moment's own disk, brought into the page's tree and its store first: the store held another
+    // generation's disk, the one Windows 98 Setup's restart left half renamed (Windows 95's GDI.EXE and USER.EXE beside
+    // Windows 98's GDI32 and USER32), and the boot on it died in GDI's LibEntry, leaving no machine to arrive in. The
+    // shell is left as it is: the record's shell comes in with the rest below)
+    if (rec.machines.system && !sys()) { B.rebind([fs, {}], rec.page, { opaque: opaque(), skip: shellSkip }); writeDisk(true); }
+    for (const [k, ex] of Object.entries(rec.machines)) { const a = k === 'system' ? (sys() || await ui.startSystem()) : live().find(x => x.path === k); if (!a) throw new Error(`no machine running for the moment's ${k}`); out[k] = await a.cmd('import', [ex]); forgetKids(a); if (k === 'system') a.keepMode = true; }   // (the moment's display mode stays: win95.js syncMode)
     watchStores(); ui.closeMenus();
     // (the shell's windows are not rebound: a machine's windows come from its next frame, as they are its own, and a
     // window of the page's is code the record cannot carry. Matched by position to the booted shell's windows, the

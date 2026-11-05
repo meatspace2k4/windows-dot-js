@@ -3643,6 +3643,10 @@ function fitWindow(w, h) { const s = window.W95HOST && window.W95HOST.screen; if
 // take is not asked for again until the viewport changes
 function syncMode() {
   const a = sysApp; if (!a || !a.alive || !a.setMode) return;
+  // (a machine arrived at a moment keeps the moment's mode, the page its monitor (followMode); asked for the pane's
+  // size right after the arrival, the display driver cleared the frame buffer and the system, in a fault dialog, never
+  // painted it again: a black screen with a strip of the taskbar. The pane's next resize asks again)
+  if (a.keepMode) return;
   const [w, h] = bootSize();
   if ((w === a.sw && h === a.sh) || (a.modeRefused || []).some(([x, y]) => x === w && y === h)) return;
   a.setMode(w, h).then(() => { if (a.alive) syncMode(); });
@@ -5485,7 +5489,7 @@ function handleKey(e) {
 // ---------------------------------------------------------------- boot
 let modeTimer = 0, viewSize = '';
 function resize() {
-  if (`${innerWidth}x${innerHeight}` !== viewSize) { viewSize = `${innerWidth}x${innerHeight}`; if (sysApp) sysApp.modeRefused = null; }   // (a new size: the modes refused at the last one may be taken now)
+  if (`${innerWidth}x${innerHeight}` !== viewSize) { viewSize = `${innerWidth}x${innerHeight}`; if (sysApp) { sysApp.modeRefused = null; sysApp.keepMode = false; } }   // (a new size: the modes refused at the last one may be taken now, a moment's kept mode changed)
   // once EXPLORER.EXE is the shell the page is its monitor: the machine's whole screen at its own pixels (ZOOM),
   // centered, black around it, in the largest of its modes the page holds (syncMode); before, the shell's own screen
   // fills the page

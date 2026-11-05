@@ -60,13 +60,43 @@ const remotePath = p => { try { return typeof p === 'string' && !!rfs.remoteAt(p
 // and descriptors here
 const pathOps = new Set(['exists', 'stat', 'readdir', 'readFile', 'writeFile', 'open', 'unlink', 'mkdir', 'rmdir', 'realpath', 'setAttrs', 'statvfs', 'chdir', 'resolve', 'shortPath', 'setLabel', 'truncate']);
 const fdOps = new Set(['read', 'write', 'close', 'seek', 'fstat', 'ftruncate']);
+// a CD's file opened for reading is read here, its bytes taken from the page once as it opens: each read, seek and
+// close a round trip to the page's busy main thread, Windows 98 Setup's copy from its cabinets went at the page's pace,
+// not the machine's. The disc is read-only, so the copy here is the file (a disc changed in the drive since: the next
+// open takes the new one's). The descriptors are the process's (cdFds), so a moment carries them with the handles
+// that name them: kept here apart, a travel back to a moment with Setup's copy of D:\WIN98\CSSETUP.EXE open found
+// its descriptor gone, "Invalid handle"
+const CD_FD = 0x20000000; let cdLetters = null;
+const cdTable = () => { const p = machine && machine.proc; if (!p) throw new FSError(6, ''); return p.cdFds || (p.cdFds = { next: CD_FD, open: {} }); };
+const cdPath = p => {
+  if (typeof p !== 'string' || !/^[A-Za-z]:\\/.test(p)) return false;
+  const l = p[0].toUpperCase();
+  if (!cdLetters || !cdLetters.has(l)) { cdLetters = new Map(rpc('fs', 'vols').map(v => [v.letter.toUpperCase(), v.kind === 'cdrom' && !v.audio])); }
+  return !!cdLetters.get(l);
+};
+const cdOpen = (path, flags = 'r') => {
+  if (self.W95NoCdCache || flags !== 'r' || !cdPath(path)) return null;
+  const st = rpc('fs', 'stat', [path]); if (!st || st.dir) return null;
+  const T = cdTable(), buf = rpc('fs', 'readFile', [path]), fd = T.next++;
+  T.open[fd] = { buf, pos: 0, st };
+  return fd;
+};
+const cdOp = (k, fd, args) => {
+  const T = cdTable(), h = T.open[fd]; if (!h) throw new FSError(6, String(fd));
+  if (k === 'read') { const len = args[0], n = Math.max(0, Math.min(len === undefined ? Infinity : len, h.buf.length - h.pos)), b = h.buf.slice(h.pos, h.pos + n); h.pos += n; return b; }
+  if (k === 'seek') { const w = args[1] || 0, p = (w === 1 ? h.pos : w === 2 ? h.buf.length : 0) + args[0]; if (p < 0) throw new FSError(131, ''); h.pos = p; return p; }
+  if (k === 'fstat') return h.st;
+  if (k === 'close') { delete T.open[fd]; return; }
+  throw new FSError(5, '');   // (write, ftruncate: the disc is read-only)
+};
 const fs = new Proxy({}, {
   get(_, k) {
     if (k === 'cwd') return rpc('fs', 'getCwd');
     if (k === 'vols') { const m = new Map(rpc('fs', 'vols').map(v => [v.letter, v])); for (const v of rfs.vols.values()) m.set(v.letter, { letter: v.letter, kind: 'remote', label: v.label, remote: true, unc: v.unc }); return m; }
     return (...args) => {
       if (pathOps.has(k) && remotePath(args[0])) return rfs[k](...args);
-      if (fdOps.has(k) && args[0] >= REMOTE_FD) return rfs[k](...args);
+      if (fdOps.has(k) && args[0] >= REMOTE_FD) return args[0] >= CD_FD ? cdOp(k, args[0], args.slice(1)) : rfs[k](...args);
+      if (k === 'open') { const fd = cdOpen(args[0], args[1]); if (fd !== null) return fd; }
       if ((k === 'rename' || k === 'copy') && (remotePath(args[0]) || remotePath(args[1]))) {
         if (remotePath(args[0]) && remotePath(args[1])) return rfs[k](...args);
         const data = remotePath(args[0]) ? rfs.readFile(args[0]) : rpc('fs', 'readFile', [args[0]]);
@@ -189,7 +219,7 @@ class Machine {
       if (typeof rec.run === 'function' && !isExe) continue;
       if (rec.meta && rec.meta.dynamic) continue;
       let mod = rec.module instanceof WebAssembly.Module ? rec.module : null;
-      if (!mod && rec.kind === 'vxd') mod = ((S.vxds || {})[rec.file] || {}).mod;
+      if (!mod && rec.kind === 'vxd') { const d = (S.vxds || {})[rec.file]; if (d) mod = d.mod || (d.wasm && (d.mod = new WebAssembly.Module(b64bytes(d.wasm)))); }   // (a VxD the moment had loaded and this machine had not, SPOOLER: its module is made only as vmm.js vxd loads it)
       else if (!mod && rec.kind === 'ne') mod = ((S.ne || {})[rec.name] || Object.values(S.ne || {}).find(d => d.meta === rec.meta) || {}).mod;
       else if (!mod && isExe) { const progs = S.programs || {}, d = (rec.meta.sha256 && Object.values(progs).find(x => x.meta && x.meta.sha256 === rec.meta.sha256)) || progs[rec.meta.name + '.EXE']; if (d) mod = d.mod || d.modSync || (d.modSync = new WebAssembly.Module(b64bytes(d.wasm))); }
       else if (!mod) {

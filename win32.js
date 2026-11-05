@@ -251,6 +251,7 @@ class Process {
       if (m.segs) { for (const s of m.segs) out.push([s.base, s.base + Math.max(s.alloc || 0, s.len || 0, 1)]); }
       else if (m.size) out.push([m.base, m.base + m.size]);
     }
+    for (const s of this.standins || []) out.push([s.base, s.base + s.size]);
     return out;
   }
   /** room for an image of `size` bytes in the arena below the heap (400000h-2000000h): at `pref` when nothing is there,
@@ -296,9 +297,29 @@ class Process {
   /** the module handle of a DLL implemented here (OPENGL32), one per name: LoadLibrary's and GetModuleHandle's */
   jsDll(name) {
     const m = this.jsDlls || (this.jsDlls = new Map());
-    if (!m.has(name)) m.set(name, 0x10000000 | (this.newHandle({ kind: 'module', name }) & 0xffff));
+    if (!m.has(name)) m.set(name, this.standinImage(name) || 0x10000000 | (this.newHandle({ kind: 'module', name }) & 0xffff));
     return m.get(name);
   }
+  /** the module handle of a stand-in whose file is on the disk (Windows 98's KERNEL32.DLL): its headers mapped at a
+   *  base of their own in the arena, as the loader maps the DLL, the rest of its room kept. A program reads a module's
+   *  header through its handle: MSVCRT's __heap_select reads the EXE module's linker version from it, and in the
+   *  system's process that module is KERNEL32 (GetModuleHandleA). 0 when the file is not there */
+  standinImage(name) {
+    if (!this.fs || !/^[A-Z0-9_$~!#%&'()@^`{}-]+(\.[A-Z0-9]+)?$/i.test(name)) return 0;
+    const file = /\./.test(name) ? name : name + '.DLL';
+    let f = null, path = null;
+    for (const d of ['C:\\WINDOWS\\SYSTEM', 'C:\\WINDOWS']) { try { f = this.fs.readFile(d + '\\' + file); path = d + '\\' + file; break; } catch (_) { /* not there */ } }
+    if (!f || f.length < 0x40 || f[0] !== 0x4d || f[1] !== 0x5a) return 0;
+    const dv = new DataView(f.buffer, f.byteOffset, f.byteLength), pe = dv.getUint32(0x3c, true);
+    if (pe + 0xf8 > f.length || dv.getUint32(pe, true) !== 0x4550) return 0;
+    const opt = pe + 24, pref = dv.getUint32(opt + 28, true), size = dv.getUint32(opt + 56, true), hdr = Math.min(dv.getUint32(opt + 60, true), f.length, size);
+    const base = this.imageRoom(pref, size, true);
+    if (!base) return 0;
+    this.u8.set(f.subarray(0, hdr), base);
+    (this.standins || (this.standins = [])).push({ name, base, size, path });
+    return base;
+  }
+  standinAt(h) { return (this.standins || []).find(s => s.base === h) || null; }
   moduleFor(h) { h = this.hmod(h); const e = this.exe; return e && e.base === h ? e : this.modules.find(m => m.base === h && !m.hidden) || e; }   // (the running process's own program first: another's may be at its base, arenaClaim)
   thunkFor(dll, nm) {
     const key = dll + '!' + nm;
@@ -633,6 +654,7 @@ class Process {
         if (eip < 0x10000) (this.nullJumps || (this.nullJumps = [])).push({ at: eip, from: this.lastBlock >>> 0, cs: this.cpu.cs ? this.cpu.cs.value & 0xffff : null });
         const next = this.dataCode && this.dataCode(eip);
         if (next !== undefined && next !== null) { eip = next; continue; }
+        (this.entryRing || (this.entryAt = 0, this.entryRing = new Uint32Array(32)))[this.entryAt++ & 31] = eip;   // (run-time code entered: in a fault's way there too)
         const dyn = this.dynRun && this.dynRun(eip);   // code generated at run time (dyn.js)
         if (dyn === -1) return 1;   // its time was up
         if (dyn !== undefined && dyn !== null) { eip = dyn; continue; }
@@ -813,6 +835,7 @@ class Process {
       this.trapped = `watchdog: guest ran ${Math.round(this.now() - (this.lastYield || this.t0))} ms in one slice (calling ${t ? t.dll + '!' + t.nm : u32(eip).toString(16)} from ${m ? (m === this.exe || m.name === 'EXE' ? (this.pc.path || 'EXE') : m.name) + '+' + (ret - m.base).toString(16) : ret.toString(16)}, thread ${this.thread16 ? this.thread16.id : 'main'})`;
       return LAYOUT.SENTINEL;
     }
+    (this.entryRing || (this.entryAt = 0, this.entryRing = new Uint32Array(32)))[this.entryAt++ & 31] = u32(eip);   // (an import called from inside a module's run: a fault's way there names it, noCode)
     if (u32(eip) < LAYOUT.THUNK) return this.api16(u32(eip));
     const t = this.thunks[(u32(eip) - LAYOUT.THUNK) >> 2];
     if (!t || !t.def) {   // a call into an import with nothing behind it: a page fault at its address, from where it was called
@@ -826,7 +849,7 @@ class Process {
     if (t.cls && this.effect) this.effect(t.cls, `${t.dll}!${t.nm}`);
     if (nargs === 'regs') {   // register-convention entry: the implementation moves ESP and picks the continuation
       try { return u32(fn.call(this)); }
-      catch (e) { if (e instanceof GuestError) { this.trapped = e.message; return LAYOUT.SENTINEL; } throw e; }
+      catch (e) { if (e instanceof GuestError) { this.trapped = e.message; return LAYOUT.SENTINEL; } return this.apiPastMemory(e, t, eip); }
     }
     const a = []; for (let i = 0; i < (nargs < 0 ? 8 : nargs); i++) a.push(this.r32(sp + 4 + 4 * i));
     const pc = this.thread16 && this.thread16.pc;
@@ -834,13 +857,20 @@ class Process {
       (pc.user32Calls || (pc.user32Calls = [])).push({ name: t.nm, args: a.slice(0, 4) });
     let r;
     try { r = fn.apply(this, a); }
-    catch (e) { if (e instanceof GuestError) { this.trapped = e.message; return LAYOUT.SENTINEL; } throw e; }
+    catch (e) { if (e instanceof GuestError) { this.trapped = e.message; return LAYOUT.SENTINEL; } return this.apiPastMemory(e, t, eip); }
     if (r === YIELD) { this.preempted = 0; return -1; }   // (stopped in the call, not where its time ran out)
     if (this.exitCode !== null) return LAYOUT.SENTINEL;
     this.reg('eax', r === undefined ? 0 : r);
     const ret = this.r32(sp);
     this.reg('esp', sp + 4 + (nargs < 0 ? 0 : 4 * nargs));
     return ret;
+  }
+  /** a call given a pointer that is no address the machine has (its read or write went past the end of memory): a page
+   *  fault in the call, from where it was called, as Windows' own code faults in the caller's thread (its handlers, or
+   *  its fault dialog); not the machine's end */
+  apiPastMemory(e, t, eip) {
+    if (!(e instanceof RangeError) || !/bounds/.test(e.message)) throw e;
+    try { return this.raise(14, u32(eip), u32(eip)); } catch (f) { if (f instanceof FaultError) f.fault.import = t.dll + '!' + t.nm; throw f; }
   }
   f80load(a) {
     const lo = this.r32(a), hi = this.r32(a + 4), se = this.r16(a + 8);
@@ -1420,9 +1450,10 @@ def('KERNEL32', 'GetCommandLineA', 0, function () {
 def('KERNEL32', 'GetStartupInfoA', 1, function (p) { this.u8.fill(0, p, p + 68); this.w32(p, 68); });
 def('KERNEL32', 'GetModuleHandleA', 1, function (name) {
   // (NULL: the calling process's own image, as Windows 98's KERNEL32 takes it from the process database's EXE module,
-  // [ppdbCur]+98h; a process with none, the system's whose first task is MSGSRV32, 16-bit, answers 0. Read from the
-  // system's process's image, there is none: a DLL calling it from GDI's LibEntry at boot stopped the machine)
-  if (!name) { const pc = this.thread16 && this.thread16.pc, exe = (pc && pc.exe) || this.exe; return exe ? exe.base : 0; }
+  // [ppdbCur]+98h. The system's process, the kernel's own (Toolhelp lists it as KERNEL32.DLL), has KERNEL32 as that
+  // module: MSVCRT's DllMain, loaded from GDI's LibEntry at Windows 98's boot, reads the linker version from the
+  // module's PE header (__heap_select), and read it at 0 when this answered 0)
+  if (!name) { const pc = this.thread16 && this.thread16.pc, exe = (pc && pc.exe) || this.exe; return exe ? exe.base : this.jsDll('KERNEL32'); }
   const n = (this.readA(name) || '').toUpperCase().replace(/^.*\\/, '').replace(/\.DLL$/, ''), m = this.byName.get(n);
   // (a DLL implemented here is loaded once an image imported it or LoadLibrary loaded it: GDI32's ChoosePixelFormat
   // and SwapBuffers find OPENGL32 by GetModuleHandle, and give up without it)
@@ -1431,6 +1462,7 @@ def('KERNEL32', 'GetModuleHandleA', 1, function (name) {
 });
 def('KERNEL32', 'GetModuleFileNameA', 3, function (h, buf, n) {
   h = this.hmod(h);
+  const s = this.standinAt(h); if (s) return this.writeA(buf, s.path, n);
   const m = h && this.modules.find(x => x.base === h && x !== this.exe && x.kind !== 'ne');   // a DLL: its file in SYSTEM; another program: its file
   const other = m && m.name === 'EXE' && [this.pc0, ...(this.procs || new Map()).values()].find(x => x && x.exe === m);
   // (a module named with its own extension, DESK.CPL or WINSPOOL.DRV, is that file; the others are .DLL. A DLL mapped
@@ -1507,7 +1539,7 @@ def('KERNEL32', 'GetProcAddress', 2, function (h, name) {
   const nm = name >>> 16 ? this.readA(name) : '#' + name;
   const native = this.modules.find(x => x.base === this.hmod(h));
   if (native) return native.exports.get(nm) || 0;
-  const m = this.obj(0x0000ffff & h) || { name: 'KERNEL32' };
+  const m = this.standinAt(h) || this.obj(0x0000ffff & h) || { name: 'KERNEL32' };
   return API[m.name] && this.importDef(m.name, nm) ? this.thunkFor(m.name, nm) : 0;
 });
 // ---- structured exceptions. RaiseException hands the exception to the handlers on the thread's chain (FS:[0]) as
@@ -1726,7 +1758,7 @@ def('KERNEL32', 'GetPrivateProfileStringA', 6, function (sec, key, dflt, buf, n,
     return o;
   }
   const v = iniGet(this.fs, this.readA(file), this.readA(sec), this.readA(key));
-  return this.writeA(buf, v === null ? (this.readA(dflt) || '') : v, n);
+  return this.writeA(buf, v === null ? (this.readA(dflt) || '') : v.replace(/^(["'])([^]*)\1$/, '$2'), n);   // (one pair of quotes taken off, as Windows does)
 });
 def('KERNEL32', 'WritePrivateProfileStringA', 4, function (sec, key, val, file) {
   if (this.iniIntent) this.iniIntent(file ? this.readA(file) : 'WIN.INI', this.readA(sec), key ? this.readA(key) : null, val ? this.readA(val) : null, null);
@@ -1933,6 +1965,12 @@ function enumFormats(p, proc, list) {
 def('KERNEL32', 'EnumDateFormatsA', 3, function (proc, lc, flags) { return enumFormats(this, proc, DATE_FORMATS[flags & 3]); });
 def('KERNEL32', 'EnumTimeFormatsA', 3, function (proc) { return enumFormats(this, proc, TIME_FORMATS); });
 def('KERNEL32', 'GetSystemDefaultLCID', 0, () => 0x409);
+// (the defaults by their names, 0 the user's; a neutral sublanguage its language's default; any other as it is)
+def('KERNEL32', 'ConvertDefaultLocale', 1, lc => {
+  lc >>>= 0;
+  if (lc === 0 || lc === 0x400 || lc === 0x800) return 0x409;
+  return (lc & 0xfc00) === 0 ? (lc & 0xffff03ff) | 0x400 : lc;
+});
 // the system's language, as its locale's (Windows 98's KERNEL32 reads it from a word of its data, the system locale's
 // LANGID: mov ax,[...]; ret); 27 of Windows 98's files import it, and none could start past it
 def('KERNEL32', 'GetSystemDefaultLangID', 0, () => 0x409);
