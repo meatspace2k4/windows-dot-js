@@ -3103,9 +3103,58 @@ def('ADVAPI32', 'CryptGetHashParam', 5, function (h, param, buf, pn, fl) {
   this.u8.set(val, buf); return 1;
 });
 def('ADVAPI32', 'CryptDestroyHash', 1, function (h) { if (!hashOf(this, h)) { this.lastError = 6; return 0; } this.handles.delete(h); return 1; });
-for (const [nm, n] of [['CryptGenKey', 4], ['CryptDeriveKey', 5], ['CryptImportKey', 6], ['CryptGetUserKey', 3], ['CryptEncrypt', 7], ['CryptDecrypt', 6], ['CryptSignHashA', 6], ['CryptVerifySignatureA', 6], ['CryptHashSessionKey', 3]])
+// CryptSetHashParam: HP_HASHVAL sets the hash's value (CRYPT32 verifies a signature over a hash it computed itself)
+def('ADVAPI32', 'CryptSetHashParam', 4, function (h, param, data, fl) {
+  const o = hashOf(this, h); if (!o) { this.lastError = 6; return 0; }
+  if (param !== 2) { this.lastError = 0x80090009; return 0; }
+  o.done = this.u8.slice(data, data + o.alg.size); o.parts = null; return 1;
+});
+// RSA public keys and PKCS #1 v1.5 signatures, as the base provider verifies them: WinVerifyTrust's Authenticode check
+// (SOFTPUB, CRYPT32) of a signed CAB, Java Package Manager's xmldso4.cab on Windows 98's first start, which failed with
+// TRUST_E (0x800B010B) as CryptImportKey had no keys. A PUBLICKEYBLOB (PUBLICKEYSTRUC, RSAPUBKEY 'RSA1', the modulus)
+// and the signature are little-endian
+const NTE_BAD_KEY = 0x80090003, NTE_BAD_SIGNATURE = 0x80090006, NTE_BAD_TYPE = 0x8009000a;
+const leBig = b => { let x = 0n; for (let i = b.length - 1; i >= 0; i--) x = (x << 8n) | BigInt(b[i]); return x; };
+const modPow = (b, e, m) => { let r = 1n; b %= m; for (; e > 0n; e >>= 1n) { if (e & 1n) r = (r * b) % m; b = (b * b) % m; } return r; };
+const DIGEST_INFO = { md5: [0x30, 0x20, 0x30, 0x0c, 0x06, 0x08, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x02, 0x05, 0x05, 0x00, 0x04, 0x10],
+  sha1: [0x30, 0x21, 0x30, 0x09, 0x06, 0x05, 0x2b, 0x0e, 0x03, 0x02, 0x1a, 0x05, 0x00, 0x04, 0x14] };
+def('ADVAPI32', 'CryptImportKey', 6, function (prov, data, len, pub, fl, out) {
+  if (len < 20 || this.u8[data] !== 6 || this.r32(data + 8) !== 0x31415352) { this.lastError = this.u8[data] !== 6 ? NTE_BAD_TYPE : NTE_BAD_KEY; return 0; }   // (a PUBLICKEYBLOB of RSA1 alone)
+  const bits = this.r32(data + 12), k = bits >> 3; if (!k || 20 + k > len) { this.lastError = NTE_BAD_KEY; return 0; }
+  const key = { kind: 'cryptkey', alg: this.r32(data + 4), bits, e: BigInt(this.r32(data + 16)), n: leBig(this.u8.subarray(data + 20, data + 20 + k)) };
+  this.w32(out, this.newHandle(key)); return 1;
+});
+const keyOf = (p, h) => { const o = p.obj(h); return o && o.kind === 'cryptkey' ? o : null; };
+/** the signature `sig` (little-endian, `len` bytes) of hash `h` checked with public key `k`; CRYPT_NOHASHOID (1): the
+ *  hash alone after the padding, without its DigestInfo */
+function rsaVerify(p, h, sig, len, k, fl) {
+  const o = hashOf(p, h), key = keyOf(p, k);
+  if (!o) { p.lastError = NTE_BAD_HASH; return 0; }
+  if (!key) { p.lastError = NTE_BAD_KEY; return 0; }
+  const size = (key.bits + 7) >> 3; if (len !== size) { p.lastError = NTE_BAD_SIGNATURE; return 0; }
+  let m = modPow(leBig(p.u8.subarray(sig, sig + len)), key.e, key.n);
+  const em = new Uint8Array(size); for (let i = size - 1; i >= 0; i--) { em[i] = Number(m & 0xffn); m >>= 8n; }
+  const t = [...(fl & 1 ? [] : DIGEST_INFO[o.alg.name] || []), ...hashDone(o)];
+  let i = 2; if (em[0] !== 0 || em[1] !== 1) { p.lastError = NTE_BAD_SIGNATURE; return 0; }
+  while (i < size && em[i] === 0xff) i++;
+  const ok = i >= 10 && em[i] === 0 && size - i - 1 === t.length && t.every((v, j) => em[i + 1 + j] === v);
+  if (!ok) { p.lastError = NTE_BAD_SIGNATURE; return 0; }
+  return 1;
+}
+def('ADVAPI32', 'CryptVerifySignatureA', 6, function (h, sig, len, k, desc, fl) { return rsaVerify(this, h, sig, len, k, fl); });
+def('ADVAPI32', 'CryptVerifySignatureW', 6, function (h, sig, len, k, desc, fl) { return rsaVerify(this, h, sig, len, k, fl); });
+// CryptGetKeyParam: KP_ALGID (7), KP_BLOCKLEN (8), KP_KEYLEN (9), as DWORDs
+def('ADVAPI32', 'CryptGetKeyParam', 5, function (k, param, buf, pn, fl) {
+  const key = keyOf(this, k); if (!key) { this.lastError = NTE_BAD_KEY; return 0; }
+  const v = param === 7 ? key.alg : param === 8 || param === 9 ? key.bits : null;
+  if (v === null) { this.lastError = 0x80090009; return 0; }
+  const have = this.r32(pn); this.w32(pn, 4); if (!buf) return 1;
+  if (have < 4) { this.lastError = 234; return 0; }
+  this.w32(buf, v); return 1;
+});
+for (const [nm, n] of [['CryptGenKey', 4], ['CryptDeriveKey', 5], ['CryptGetUserKey', 3], ['CryptEncrypt', 7], ['CryptDecrypt', 6], ['CryptSignHashA', 6], ['CryptHashSessionKey', 3]])
   def('ADVAPI32', nm, n, function () { this.lastError = NTE_BAD_ALGID; return 0; });
-def('ADVAPI32', 'CryptDestroyKey', 1, function () { this.lastError = 6; return 0; });
+def('ADVAPI32', 'CryptDestroyKey', 1, function (k) { if (!keyOf(this, k)) { this.lastError = NTE_BAD_KEY; return 0; } this.handles.delete(k); return 1; });
 
 // USER32
 const SM = { 0: 'w', 1: 'h', 16: 'w', 17: 'h' };
