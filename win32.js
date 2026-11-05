@@ -2300,6 +2300,7 @@ def('KERNEL32', 'CreateFileA', 7, function (name, access, share, sa, disp, flags
 def('KERNEL32', 'CloseHandle', 1, function (h) {
   const f = fileOf(this, h); if (f) fsCall(this, () => this.fs.close(f.fd)); const c = commOf(this, h); if (c) vcomm(this, 18, [c.vh]);
   const m = this.obj(h); this.handles.delete(h);
+  if (m && m.name) { if (this.namedOwner) this.namedOwner.delete(h); namedGone(this, m); }
   // (a file's mapping goes with its last handle, and its data with it)
   if (m && m.kind === 'mapping' && m.file && ![...this.handles.values()].includes(m)) { this.free(m.base); m.base = 0; if (this.mappings) this.mappings.delete(m); }
   return 1;
@@ -2709,9 +2710,23 @@ def('KERNEL32', '_hwrite', 3, function (h, b, n) { return API.KERNEL32._lwrite[1
 const named = (p, name, make) => {
   const key = name && p.readA(name).toUpperCase(), objs = p.namedObjs || (p.namedObjs = new Map()), had = key && objs.get(key);
   if (had) { p.lastError = 183; return p.newHandle(had); }
-  const o = make(); if (key) objs.set(key, o); p.lastError = 0; return p.newHandle(o);
+  const o = make(); if (key) { objs.set(key, o); o.name = key; } p.lastError = 0;
+  const h = p.newHandle(o); if (key && p.pc) (p.namedOwner || (p.namedOwner = new Map())).set(h, p.pc); return h;
 };
-const openNamed = (p, name, kind) => { const o = name && (p.namedObjs || new Map()).get(p.readA(name).toUpperCase()); if (!o || o.kind !== kind) { p.lastError = 2; return 0; } p.lastError = 0; return p.newHandle(o); };
+/** a named object whose last handle has gone: its name with it, as the kernel frees an object nothing refers to. Kept,
+ *  RUNONCE's Runonce_Instance_Mutex outlived the RUNONCE that made it, and every RUNONCE after it found a "previous
+ *  instance" and quit, started again and again */
+const namedGone = (p, o) => {
+  if (!o || !o.name || !p.namedObjs || p.namedObjs.get(o.name) !== o) return;
+  for (const v of p.handles.values()) if (v === o) return;
+  p.namedObjs.delete(o.name);
+};
+/** a process's handles to named objects closed as it ends (its other handles are the machine's to keep, as before) */
+const namedClose = (p, pc) => {
+  for (const [h, owner] of p.namedOwner || []) if (owner === pc) { const o = p.handles.get(h); p.namedOwner.delete(h); p.handles.delete(h); namedGone(p, o); }
+};
+const openNamed = (p, name, kind) => { const o = name && (p.namedObjs || new Map()).get(p.readA(name).toUpperCase()); if (!o || o.kind !== kind) { p.lastError = 2; return 0; } p.lastError = 0; const h = p.newHandle(o); if (p.pc) (p.namedOwner || (p.namedOwner = new Map())).set(h, p.pc); return h; };
+Process.prototype.namedClose = function (pc) { namedClose(this, pc); };
 def('KERNEL32', 'CreateEventA', 4, function (sa, manual, initial, name) { return named(this, name, () => ({ kind: 'event', manual: !!manual, set: !!initial })); });
 def('KERNEL32', 'OpenEventA', 3, function (access, inherit, name) { return openNamed(this, name, 'event'); });
 def('KERNEL32', 'SetEvent', 1, function (h) { const o = this.obj(h); if (!o || o.kind !== 'event') return 0; if (this.signal) this.signal(o); else o.set = true; return 1; });

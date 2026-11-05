@@ -5277,6 +5277,7 @@ P.endProcess = function (pc, code) {
     t.state = 'done'; this.wakeWaiters(t); if (this.win16Held && this.win16Held.who === t) this.win16Held = null;
     if (t.flat && t.stackBase) { this.stackFree(t); this.free(t.tib); t.tib = 0; }   // (its stack and thread information block go with it)
   }
+  if (this.namedClose) this.namedClose(pc);   // (its handles to named objects, and the names nothing else holds)
   // the address space it reserved (VirtualAlloc) goes with it, as its private arena does on Windows 95
   for (const [b, r] of this.vregions || new Map()) if (r.pc === pc) { this.vregions.delete(b); if (r.heap) this.free(r.heap); else (this.vspare || (this.vspare = [])).push({ base: b, size: r.size }); }
   for (const [h, dc] of this.glNativeDCs || new Map()) if (dc.pc === pc) { if (dc.bits) this.free(dc.bits); this.glNativeDCs.delete(h); }   // (gl.js: its frames' DIBs)
