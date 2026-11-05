@@ -1769,7 +1769,8 @@ P.cwdSwitch = function (t) {
   // (a task's directory starts as its program's, as LoadModule sets it (a program loaded from its file: its path);
   // a process's as its starter's, inherited as it first runs)
   if (to && to.cwd === undefined && to.task && to.task.mod && to.task.mod.path) { const full = String(to.task.mod.path), i = full.lastIndexOf('\\'); to.cwd = i <= 2 ? full.slice(0, 3) : full.slice(0, i); }
-  if (to && to.cwd && to.cwd !== this.fs.cwd) this.fs.chdir(to.cwd);
+  // (made the page's only when a path is next resolved there, worker.js cwdLazy: a switch between tasks is no round trip)
+  if (to && to.cwd && to.cwd !== this.fs.cwd) { if (this.fs.cwdLazy) this.fs.cwdLazy(to.cwd); else this.fs.chdir(to.cwd); }
   this.cwdHolder = to;
 };
 /** the native USER's visible top-level windows, topmost first, with their screen rectangles, owners, classes and

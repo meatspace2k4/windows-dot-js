@@ -405,6 +405,7 @@ class Process {
     // (its data as a new process gets it, a DLL of the private arena's: as loaded, the attached ones' put by)
     const v = m.priv;
     if (v && v.init) {
+      this.dllInPlace = null;   // (the views in place changed here: dllUse walks the list again)
       if (v.cur === null) v.cur = pc;
       else if (v.cur !== pc) { if (v.cur !== GONE) v.bufs.set(v.cur, v.ranges.map(([lo, hi]) => this.u8.slice(lo, hi))); v.ranges.forEach(([lo], i) => this.u8.set(v.init[i], lo)); v.cur = pc; }
     }
@@ -417,14 +418,20 @@ class Process {
    *  process's (ne16.js imgUse) */
   dllUse(pc) {
     const key = pc || this.pc0 || (this.pc0 = { pid: 0x50 });
-    for (const m of this.modules || []) {
+    // (the view in place already this process's, and no module come or gone since: nothing to walk. Walked at every
+    // thread switch, the module list cost a tenth of a millisecond each, and Windows 98 Setup's copy, its Win16 tasks
+    // taking turns thousands of times a second, spent more time here than in its own code)
+    const mods = this.modules || [];
+    if (this.dllInPlace === key && this.dllInPlaceN === mods.length) return;
+    for (const m of mods) {
       const v = m.priv; if (!v || !v.init || v.cur === key || !v.bufs.has(key)) continue;
       if (v.cur !== GONE && v.cur !== null) v.bufs.set(v.cur, v.ranges.map(([lo, hi]) => this.u8.slice(lo, hi)));
       const mine = v.bufs.get(key); v.bufs.delete(key); v.ranges.forEach(([lo], i) => this.u8.set(mine[i], lo)); v.cur = key;
     }
+    this.dllInPlace = key; this.dllInPlaceN = mods.length;
   }
   /** a process's end: its copies of the DLLs' data go */
-  dllForget(pc) { for (const m of this.modules || []) { const v = m.priv; if (!v) continue; v.bufs.delete(pc); if (v.cur === pc) v.cur = GONE; } }
+  dllForget(pc) { this.dllInPlace = null; for (const m of this.modules || []) { const v = m.priv; if (!v) continue; v.bufs.delete(pc); if (v.cur === pc) v.cur = GONE; } }
   /** a range of the arena where programs' images overlap, Windows 95 mapping each process's at the base its header
    *  names in an address space of its own (400000h-7FFFFFFFh): two programs linked at 400000h without relocations run
    *  at once, and two instances of one program each have their own data. A slot keeps one copy of [lo, hi) per view:

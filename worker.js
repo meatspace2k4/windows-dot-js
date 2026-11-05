@@ -89,9 +89,17 @@ const cdOp = (k, fd, args) => {
   if (k === 'close') { delete T.open[fd]; return; }
   throw new FSError(5, '');   // (write, ftruncate: the disc is read-only)
 };
+// the current directory as the thread switches (ne16.js cwdSwitch, cwdLazy): kept here and told to the page only before
+// the next call that resolves a path there. Told at each switch, each a round trip to the page's busy main thread (the
+// directory read, then set), the switches between Windows 98 Setup's tasks during its copy cost more than their code
+let pageCwd, wantCwd;
+const cwdApply = () => { if (wantCwd !== undefined) { if (wantCwd !== pageCwd) { rpc('fs', 'setCwd', [wantCwd]); pageCwd = wantCwd; } wantCwd = undefined; } };
 const fs = new Proxy({}, {
   get(_, k) {
-    if (k === 'cwd') return rpc('fs', 'getCwd');
+    if (k === 'cwd') return wantCwd !== undefined ? wantCwd : pageCwd !== undefined ? pageCwd : (pageCwd = rpc('fs', 'getCwd'));
+    if (k === 'cwdLazy') return p => { wantCwd = p; };   // (ne16.js cwdSwitch asks for it by name: this proxy answers any name, so it is there)
+    if (k !== 'vols') cwdApply();
+    if (k === 'chdir') return (...args) => { pageCwd = undefined; return rpc('fs', 'chdir', args); };
     if (k === 'vols') { const m = new Map(rpc('fs', 'vols').map(v => [v.letter, v])); for (const v of rfs.vols.values()) m.set(v.letter, { letter: v.letter, kind: 'remote', label: v.label, remote: true, unc: v.unc }); return m; }
     return (...args) => {
       if (pathOps.has(k) && remotePath(args[0])) return rfs[k](...args);
@@ -107,7 +115,7 @@ const fs = new Proxy({}, {
       return rpc('fs', k, args);
     };
   },
-  set(_, k, v) { if (k === 'cwd') rpc('fs', 'setCwd', [v]); return true; },
+  set(_, k, v) { if (k === 'cwd') { wantCwd = undefined; rpc('fs', 'setCwd', [v]); pageCwd = v; } return true; },
 });
 self.W95SHELL = new Proxy({}, { get(_, k) { return k === 'fs' ? fs : (...args) => { post({ t: 'shell', fn: k, args: JSON.parse(JSON.stringify(args.filter(a => typeof a !== 'object' || a === null || a.constructor === Object))) }); return true; }; } });
 
