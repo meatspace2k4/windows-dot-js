@@ -16,7 +16,9 @@
   const HOURGLASS = [
     '................', '..############..', '..############..', '...##......##...', '....##....##....', '.....##..##.....', '......####......', '.......##.......',
     '.......##.......', '......####......', '.....######.....', '....########....', '...##########...', '..############..', '..############..', '................'];
-  const st = self.W95TrayState = { hwnd: 0, people: new Map(), uid: 1, pt: 0, menuFor: null, menuWins: [], following: null };
+  // (kept on the worker: the script loaded again into a running machine (cmd 'reload') goes on with SESSTRAY.EXE's
+  // window, icons and the Turbo window as they are)
+  const st = self.W95TrayState = self.W95TrayState || { hwnd: 0, people: new Map(), uid: 1, pt: 0, menuFor: null, menuWins: [], following: null };
   const fn = (p, dll, nm) => { const m = p.byName.get(dll); return m && m.exports.get(nm); };
   const U = (p, nm, args) => p.call(fn(p, 'USER32', nm), args), G = (p, nm, args) => p.call(fn(p, 'GDI32', nm), args);
   // a string in the program's memory, one buffer per use, grown as the text grows
@@ -79,18 +81,64 @@
   const GAUGE = [
     '................', '................', '.....######.....', '...##......##...', '..#..........#..', '.#............#.', '.#.......##...#.', '#.......##.....#',
     '#......##......#', '#.....###......#', '#.....###......#', '.#............#.', '..############..', '................', '................', '................'];
+  // (its icon: Control Panel's System, the computer, from the shell's assets (assets.js cpl_system16), as 16 by 16 RGB
+  // rows top first and the mask's rows, 1 clear)
+  const SYSTEM16 = { rgb: 'AAAAAAAAAAAAAAAAAAAAgICAgICAgICAgICAgICAgICAgICAgICAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgICAwMDAwMDAwMDAwMDAwMDAwMDAwMDAgICAAAAAAAAAAAAAAAAAAAAAAAAAgICA////////////////////////wMDAgICAgICAAAAAAAAAAAAAAAAAAAAAAAAAgICA////AACAAACAAACAAACAAACAwMDAgICAgICAAAAAAAAAAAAAAAAAAAAAAAAAgICA////AACAAP//AAD/AAD/AAD/wMDAgICAgICAAAAAAAAAAAAAAAAAAAAAAAAAgICA////AACAAAD/AAD/AAD/AAD/wMDAgICAgICAAAAAAAAAAAAAAAAAAAAAAAAAgICA////AACAAAD/AAD/AAD/AAD/wMDAgICAgICAAAAAAAAAAAAAAAAAAAAAAAAAgICA////wMDAwMDAwMDAwMDAwMDAwMDAgICAAAAAgICAgICAAAAAAAAAAAAAAAAAgICAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgICAwMDAAAAAAAAAAAAAAAAAgICAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAgICAwMDAgICAAAAAAAAAAAAAAAAAgICAAAAAgICAAAAAgICAAAAAgICAAAAAgICAAAAAgICAgICAAAAAAAAAAAAAgICAAAAAwMDAAAAAwMDAAAAAwMDAAAAAwMDAAAAAwMDAgICA////wMDAgICAgICA////////////////////////////////////////gICAgICAgICAwMDAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA////////////gICAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgICAwMDAgICAgICAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgICAAAAAAAAAAAAAAAAA',
+    mask: [0xf807, 0xf003, 0xe003, 0xe003, 0xe003, 0xe003, 0xe003, 0xe001, 0xe001, 0xc001, 0xc001, 0x8000, 0x0, 0x0, 0xffc1, 0xffe3] };
+  /** an icon in colour (24 bits a pixel) from rows of RGB and its mask, as a program makes one (CreateIconIndirect) */
+  function icon24(p, { rgb, mask }) {
+    const px = Uint8Array.from(atob(rgb), c => c.charCodeAt(0)), m = p.alloc(32), bmi = p.alloc(40), bits = p.alloc(16 * 48), info = p.alloc(20);
+    for (let y = 0; y < 16; y++) {
+      p.u8[m + 2 * y] = mask[y] >> 8; p.u8[m + 2 * y + 1] = mask[y] & 0xff;
+      for (let x = 0; x < 16; x++) { const s = (y * 16 + x) * 3, d = bits + (15 - y) * 48 + x * 3; p.u8[d] = px[s + 2]; p.u8[d + 1] = px[s + 1]; p.u8[d + 2] = px[s]; }   // (a DIB's rows bottom first, BGR)
+    }
+    p.u8.fill(0, bmi, bmi + 40); p.w32(bmi, 40); p.w32(bmi + 4, 16); p.w32(bmi + 8, 16); p.w16(bmi + 12, 1); p.w16(bmi + 14, 24);
+    const dc = U(p, 'GetDC', [0]), color = G(p, 'CreateDIBitmap', [dc, bmi, 4, bits, bmi, 0]); U(p, 'ReleaseDC', [0, dc]);
+    const hmask = G(p, 'CreateBitmap', [16, 16, 1, 1, m]);
+    p.w32(info, 1); p.w32(info + 4, 0); p.w32(info + 8, 0); p.w32(info + 12, hmask); p.w32(info + 16, color);
+    const h = U(p, 'CreateIconIndirect', [info]);
+    G(p, 'DeleteObject', [hmask]); G(p, 'DeleteObject', [color]); for (const a of [m, bmi, bits, info]) p.free(a);
+    return h || U(p, 'LoadIconA', [0, 32512]);
+  }
   const meterSample = () => {
     const m = typeof machine !== 'undefined' && machine, p = m && m.proc, sw = p && p.switchMs;
     return [performance.now(), sw ? sw.run : 0, m && m.vclock ? m.vclock.now : 0];
   };
+  // (the window's face is Windows' own controls, as a dialog's: a static for its label, COMCTL32's progress bar,
+  // smooth (PBS_SMOOTH), and two statics for the figures, each in the system's dialog font; the meter sets the bar's
+  // position and the statics' text every second)
+  const K32 = (p, nm, args) => p.call(p.thunkFor('KERNEL32', nm), args);
   function meterOpen(p) {
-    if (st.meterHwnd && U(p, 'IsWindow', [st.meterHwnd])) { U(p, 'ShowWindow', [st.meterHwnd, 5]); U(p, 'SetForegroundWindow', [st.meterHwnd]); return; }
-    const inst = p.call(p.thunkFor('KERNEL32', 'GetModuleHandleA'), [0]), w = 220, hh = 104;
-    const sx = U(p, 'GetSystemMetrics', [0]), sy = U(p, 'GetSystemMetrics', [1]);
-    // WS_EX_TOPMOST | WS_EX_TOOLWINDOW; WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE: by the taskbar's corner, over the rest
-    st.meterHwnd = U(p, 'CreateWindowExA', [0x88, str(p, 'class', 'W95SessionTray'), str(p, 'mtitle', 'Machine Speed'), 0x90C80000, sx - w - 8, sy - hh - 40, w, hh, 0, 0, inst, 0]);
-    st.meterSamples = [meterSample()]; st.meterRun = null; st.meterMach = null;
-    if (st.meterHwnd) U(p, 'SetTimer', [st.meterHwnd, METER_TIMER, 1000, 0]);
+    if (st.meterHwnd && U(p, 'IsWindow', [st.meterHwnd])) {
+      if (st.meterBar) { U(p, 'ShowWindow', [st.meterHwnd, 5]); U(p, 'SetForegroundWindow', [st.meterHwnd]); return; }
+      U(p, 'KillTimer', [st.meterHwnd, METER_TIMER]); U(p, 'DestroyWindow', [st.meterHwnd]);   // (v0's painted window, from before a reload: made again of controls)
+    }
+    st.meterBar = st.meterRunTxt = st.meterMachTxt = 0;
+    const inst = K32(p, 'GetModuleHandleA', [0]), w = 230, hh = 108;
+    if (!st.meterCC) {   // COMCTL32's classes registered in this process (InitCommonControls), as a program that uses them does
+      const cc = K32(p, 'LoadLibraryA', [str(p, 'cc', 'COMCTL32.DLL')]), init = cc && K32(p, 'GetProcAddress', [cc, str(p, 'icc', 'InitCommonControls')]);
+      if (init) p.call(init, []); st.meterCC = cc || -1;
+    }
+    // the work area's corner by the taskbar's clock (SPI_GETWORKAREA)
+    const wa = st.meterRc || (st.meterRc = p.alloc(16)); U(p, 'SystemParametersInfoA', [48, 0, wa, 0]);
+    const x = p.r32(wa + 8) - w - 4, y = p.r32(wa + 12) - hh - 4;
+    // WS_EX_TOPMOST | WS_EX_TOOLWINDOW; WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE
+    const h = st.meterHwnd = U(p, 'CreateWindowExA', [0x88, str(p, 'class', 'W95SessionTray'), str(p, 'mtitle', 'Machine Speed'), 0x90C80000, x, y, w, hh, 0, 0, inst, 0]);
+    if (!h) return;
+    const rc = st.meterRc; U(p, 'GetClientRect', [h, rc]); const cw = p.r32(rc + 8);
+    const font = G(p, 'GetStockObject', [17]);   // DEFAULT_GUI_FONT
+    const child = (cls, text, style, cx, cy, ww, wh, id) => { const c = U(p, 'CreateWindowExA', [0, str(p, `c${id}`, cls), str(p, `t${id}`, text), 0x50000000 | style, cx, cy, ww, wh, h, id, inst, 0]); if (c) U(p, 'SendMessageA', [c, 0x30, font, 0]); return c; };
+    child('STATIC', 'Turbo', 0, 10, 8, cw - 20, 14, 101);
+    st.meterBar = child('msctls_progress32', '', 0x01, 10, 26, cw - 20, 18, 102);   // PBS_SMOOTH
+    if (st.meterBar) U(p, 'SendMessageA', [st.meterBar, 0x401, 0, 100 << 16]);     // PBM_SETRANGE 0..100
+    st.meterRunTxt = child('STATIC', '...', 0, 10, 52, (cw - 20) >> 1, 14, 103);
+    st.meterMachTxt = child('STATIC', '', 2, 10 + ((cw - 20) >> 1), 52, (cw - 20) - ((cw - 20) >> 1), 14, 104);   // SS_RIGHT    st.meterSamples = [meterSample()]; st.meterRun = null; st.meterMach = null;
+    U(p, 'SetTimer', [h, METER_TIMER, 1000, 0]);
+  }
+  function meterShow(p) {
+    if (st.meterBar) U(p, 'SendMessageA', [st.meterBar, 0x402, st.meterRun === null ? 0 : Math.round(Math.min(1, st.meterRun / 8) * 100), 0]);   // PBM_SETPOS
+    if (st.meterRunTxt) U(p, 'SetWindowTextA', [st.meterRunTxt, str(p, 'mrun', st.meterRun === null ? '...' : `${st.meterRun.toFixed(1)} s run`)]);
+    if (st.meterMachTxt) U(p, 'SetWindowTextA', [st.meterMachTxt, str(p, 'mmach', st.meterMach === null ? '' : `${st.meterMach.toFixed(1)} s machine`)]);
   }
   function meterPaint(p, h) {
     const ps = st.meterPs || (st.meterPs = p.alloc(64)), rc = st.meterRc || (st.meterRc = p.alloc(16));
@@ -119,7 +167,7 @@
     const s = st.meterSamples || (st.meterSamples = []), t = meterSample(); s.push(t);
     while (s.length > 1 && t[0] - s[0][0] > METER_WINDOW) s.shift();
     if (s.length > 1) { const [w0, r0, m0] = s[0], [w1, r1, m1] = s[s.length - 1], k = METER_WINDOW / (w1 - w0); st.meterRun = (r1 - r0) * k / 1000; st.meterMach = (m1 - m0) * k / 1000; }
-    U(p, 'InvalidateRect', [h, 0, 0]);
+    if (st.meterBar) meterShow(p); else U(p, 'InvalidateRect', [h, 0, 0]);
   }
 
   // (wndproc), as SESSTRAY.EXE's entry calls it: the window, or 0
@@ -133,7 +181,7 @@
     sync(p);
     st.braid = { user: 'Braid: the session\'s line', uid: BRAID_UID, icon: icon(p, [128, 0, 128], HOURGLASS) };
     U(p, 'PostMessageA', [h, WM.NOTIFY, NIM.ADD, nid(p, st.braid)]);
-    st.meter = { user: 'Turbo: the machine\'s speed', uid: METER_UID, icon: icon(p, [0, 0, 128], GAUGE) };
+    st.meter = { user: 'Turbo: the machine\'s speed', uid: METER_UID, icon: icon24(p, SYSTEM16) };
     U(p, 'PostMessageA', [h, WM.NOTIFY, NIM.ADD, nid(p, st.meter)]);
     return h;
   });
@@ -141,7 +189,10 @@
   def('SESSTRAY', 'Handle', 5, function (h, msg, wp, lp, res) {
     const p = this, done = (v = 0) => { p.w32(res, v); return 1; };
     if (st.meterHwnd && h === st.meterHwnd) {   // the Turbo window: painted here, its figures every second; closed, it is hidden
-      if (msg === 0x0f) { meterPaint(p, h); return done(); }                               // WM_PAINT
+      // (its controls paint themselves; the window's face, and the statics' background, are the 3D face colour)
+      if (msg === 0x14) { const rc = st.meterRc; U(p, 'GetClientRect', [h, rc]); U(p, 'FillRect', [wp, rc, 16]); return done(1); }   // WM_ERASEBKGND: COLOR_BTNFACE + 1
+      if (msg === 0x138) { G(p, 'SetBkColor', [wp, U(p, 'GetSysColor', [15])]); return done(U(p, 'GetSysColorBrush', [15])); }   // WM_CTLCOLORSTATIC
+      if (msg === 0x0f && !st.meterBar) { meterPaint(p, h); return done(); }               // WM_PAINT (v0's face, with no controls)
       if (msg === 0x113 && wp === METER_TIMER) { meterTick(p, h); return done(); }         // WM_TIMER
       if (msg === 0x10) { U(p, 'ShowWindow', [h, 0]); return done(); }                      // WM_CLOSE
       return 0;
