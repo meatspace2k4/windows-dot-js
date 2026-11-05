@@ -25,4 +25,19 @@ const n = sizeOf(blocks[blocks.length - 1]) + sizeOf(blocks[blocks.length - 2]);
 p.free(blocks[blocks.length - 1]); p.free(blocks[blocks.length - 2]);
 const top = p.alloc(n);
 assert.equal(top, blocks[blocks.length - 2], 'the heap\'s top lowered and reused');
+// a block the heap holds in no one piece comes from the address space above it, and goes back there when freed
+// (Explorer's 2.3 MB for MSHTML's file, refused with 17 MB free on the lists)
+{
+  const q = Object.create(Process.prototype);
+  q.mem = { buffer: new ArrayBuffer(LAYOUT.HEAP_END + 0x800000) }; Object.defineProperty(q, 'u8', { value: new Uint8Array(q.mem.buffer) });
+  q.heapTop = LAYOUT.HEAP; q.allocs = new Map(); q.freeList = new Map(); q.vmTop = LAYOUT.HEAP_END + 0x100000;
+  const bs = []; while (q.heapTop + 0x100000 <= LAYOUT.HEAP_END) bs.push(q.alloc(0x100000, false));
+  if (q.heapTop < LAYOUT.HEAP_END) bs.push(q.alloc(LAYOUT.HEAP_END - q.heapTop, false));
+  for (let i = 0; i < bs.length; i += 2) q.free(bs[i]);   // (every other megabyte free: none of 2 MB)
+  const b = q.alloc(0x240120);
+  assert.ok(b >= LAYOUT.HEAP_END + 0x100000, 'from above the heap');
+  assert.equal(q.allocs.get(b), 0x240120);
+  assert.equal(q.free(b), true); assert.deepEqual(q.vspare, [{ base: b, size: 0x250000 }], 'back in that space');
+  assert.equal(q.alloc(0x240120), b, 'and taken from it again');
+}
 console.log('heapcoalesce: ok');

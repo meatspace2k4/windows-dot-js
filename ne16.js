@@ -5301,6 +5301,7 @@ P.endProcess = function (pc, code) {
     t.state = 'done'; this.wakeWaiters(t); if (this.win16Held && this.win16Held.who === t) this.win16Held = null;
     if (t.flat && t.stackBase) { this.stackFree(t); this.free(t.tib); t.tib = 0; }   // (its stack and thread information block go with it)
   }
+  if (pc.pdb && this.thread16 && this.thread16.pc !== pc) { this.free(pc.pdb); pc.pdb = 0; }   // (its database, when no thread of its own is the one running)
   if (this.namedClose) this.namedClose(pc);   // (its handles to named objects, and the names nothing else holds)
   // the address space it reserved (VirtualAlloc) goes with it, as its private arena does on Windows 95
   for (const [b, r] of this.vregions || new Map()) if (r.pc === pc) { this.vregions.delete(b); if (r.heap) this.free(r.heap); else (this.vspare || (this.vspare = [])).push({ base: b, size: r.size }); }
@@ -5388,6 +5389,10 @@ P.threads16 = function (nested = false, only = null) {
         this.u8.copyWithin(t.tib, LAYOUT.TIB, LAYOUT.TIB + 0x100);
         this.w32(t.tib, 0xffffffff); this.w32(t.tib + 4, t.stackBase + t.stack); this.w32(t.tib + 8, t.stackBase); this.w32(t.tib + 0x18, t.tib);
         this.w16(t.tib + 0x28, 0);
+        // (the block's pointer to its process's database, 30h: a record of the kernel's whose flags, at 20h, a
+        // program reads for itself. MSHTML asks there whether the process is a Win16 one (flag 8) before it makes
+        // a thread's stack: with no record, Explorer read at 20h and ended as its desktop came up)
+        if (t.pc) { if (!t.pc.pdb) { t.pc.pdb = this.alloc(0x100); this.w32(t.pc.pdb, 5); this.w32(t.pc.pdb + 4, 1); } this.w32(t.tib + 0x30, t.pc.pdb); }
         for (const [s, b] of SEGS) { this.cpu[s].value = 0; if (s !== 'fsel') this.cpu[b].value = 0; }
         this.cpu.fs.value = t.tib; this.depth = 0; t.depth = 0; this.stackLevel = main.stackLevel;
         let esp = t.stackBase + t.stack - 16; esp -= 4; this.w32(esp, t.param); esp -= 4; this.w32(esp, LAYOUT.SENTINEL);

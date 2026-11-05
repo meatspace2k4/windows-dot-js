@@ -373,7 +373,33 @@ class Process {
    *  common stub for a call it leaves unimplemented. (Windows 98's SETUPAPI imports ADVAPI32's IsTextUnicode, which
    *  Windows 98's ADVAPI32 exports as that stub and this ADVAPI32 lacked: a dead thunk, and Explorer's first start
    *  faulted in it) */
-  importDef(dll, nm) { return (API[dll] || {})[nm] || this.unimpStub(dll, nm) || undefined; }
+  importDef(dll, nm) { return (API[dll] || {})[nm] || this.byOrdinal(dll, nm) || this.unimpStub(dll, nm) || undefined; }
+  /** an import by number of a call defined here by name: the name `dll`'s own file gives that ordinal (Windows 98's
+   *  ICWCONN1 reaches KERNEL32's QT_Thunk as #561, and ended in a dead thunk). Its definition, or null */
+  byOrdinal(dll, nm) {
+    if (nm[0] !== '#' || !this.fs || !API[dll]) return null;
+    const names = this.ordNames32 || (this.ordNames32 = new Map());
+    if (!names.has(dll)) {
+      const map = new Map(); names.set(dll, map);
+      const file = /\./.test(dll) ? dll : dll + '.DLL'; let f = null;
+      for (const d of [...(this.loadDirs || []), 'C:\\WINDOWS\\SYSTEM', 'C:\\WINDOWS']) { try { f = this.fs.readFile(d + '\\' + file); break; } catch (_) { /* not there */ } }
+      if (f && f.length > 0x40 && f[0] === 0x4d && f[1] === 0x5a) {
+        const dv = new DataView(f.buffer, f.byteOffset, f.byteLength), pe = dv.getUint32(0x3c, true);
+        if (pe + 0xf8 <= f.length && dv.getUint32(pe, true) === 0x4550) {
+          const opt = pe + 24, nsec = dv.getUint16(pe + 6, true), sh = opt + dv.getUint16(pe + 20, true);
+          const off = r => { for (let i = 0; i < nsec; i++) { const s = sh + 40 * i, va = dv.getUint32(s + 12, true), n = Math.max(dv.getUint32(s + 8, true), dv.getUint32(s + 16, true)); if (r >= va && r < va + n) { const o = dv.getUint32(s + 20, true) + r - va; return o < f.length ? o : -1; } } return -1; };
+          const str = o => { let s = ''; while (o >= 0 && o < f.length && f[o]) s += String.fromCharCode(f[o++]); return s; };
+          const ex = off(dv.getUint32(opt + 96, true));
+          if (ex >= 0) {
+            const obase = dv.getUint32(ex + 16, true), nn = dv.getUint32(ex + 24, true), na = off(dv.getUint32(ex + 32, true)), oa = off(dv.getUint32(ex + 36, true));
+            if (na >= 0 && oa >= 0) for (let i = 0; i < nn; i++) map.set(dv.getUint16(oa + 2 * i, true) + obase, str(off(dv.getUint32(na + 4 * i, true))));
+          }
+        }
+      }
+    }
+    const name = names.get(dll).get(+nm.slice(1));
+    return (name && API[dll][name]) || null;
+  }
   /** an export of `dll`'s file that is `xor eax,eax; mov cl,N; jmp KERNEL32!#17` (directly or through a jump):
    *  KERNEL32's CommonUnimpStub, which sets ERROR_CALL_NOT_IMPLEMENTED, returns by N's high nibble (1: 1, 13: 50,
    *  14: 120, 15: -1, else 0) and pops N's low nibble of arguments. Its definition, or null */
@@ -1032,10 +1058,18 @@ class Process {
         // (the top back where it was: left past the end by one request too big for the heap, every allocation after
         // it, a dozen bytes for a fault's dialog among them, was refused too, with 21 MB free, and Windows ended)
         this.heapTop -= n;
+        // (a block the heap has no room for in one piece, its free bytes scattered among the live ones after some
+        // hundreds of programs: from the address space above, where VirtualAlloc's regions are, and back there
+        // when it is freed. Explorer's 2.3 MB for MSHTML's file was refused with 17 MB free)
+        const size = (n + 0xffff) & ~0xffff, sp = (this.vspare || []).findIndex(r => r.size >= size); let b = 0;
+        if (sp >= 0) { const s = this.vspare.splice(sp, 1)[0]; b = s.base; if (s.size > size) this.vspare.push({ base: b + size, size: s.size - size }); }
+        else if (this.vmTop && this.vmTop + size <= this.mem.buffer.byteLength) { b = this.vmTop; this.vmTop += size; }
+        if (b) { (this.bigBlocks || (this.bigBlocks = new Map())).set(b, size); this.allocs.set(b, n); if (zero) this.u8.fill(0, b, b + n); return b; }
         const by = new Map(); let live = 0; for (const [, s] of this.allocs) { by.set(s, (by.get(s) || 0) + s); live += s; }
         let idle = 0; for (const [s, l] of this.freeList) idle += s * l.length;
         const top = [...by].sort((a, b) => b[1] - a[1]).slice(0, 6).map(([s, t]) => `${s}x${t / s}`).join(' ');
-        throw new GuestError(`out of memory: ${(live >> 20)} MB live in ${this.allocs.size} blocks (${top}), ${idle >> 20} MB idle on the free lists; big blocks: ${(this.bigAllocs || []).join(' | ')}`);
+        let most = 0; for (const [s, l] of this.freeList) if (l.length && s > most) most = s;
+        throw new GuestError(`out of memory asking for ${n} bytes (the largest free block ${most}): ${(live >> 20)} MB live in ${this.allocs.size} blocks (${top}), ${idle >> 20} MB idle on the free lists; big blocks: ${(this.bigAllocs || []).join(' | ')}`);
       }
     }
     this.allocs.set(p, n); if (zero) this.u8.fill(0, p, p + n);
@@ -1051,7 +1085,9 @@ class Process {
     while (merged.length && merged[merged.length - 1][0] + merged[merged.length - 1][1] === this.heapTop) this.heapTop = merged.pop()[0];
     this.freeList = new Map(); for (const [a, s] of merged) { if (!this.freeList.has(s)) this.freeList.set(s, []); this.freeList.get(s).push(a); }
   }
-  free(p) { const n = this.allocs.get(p); if (!n) return false; this.allocs.delete(p); if (!this.freeList.has(n)) this.freeList.set(n, []); this.freeList.get(n).push(p); return true; }
+  free(p) { const n = this.allocs.get(p); if (!n) return false; this.allocs.delete(p);
+    const big = this.bigBlocks && this.bigBlocks.get(p); if (big) { this.bigBlocks.delete(p); (this.vspare || (this.vspare = [])).push({ base: p, size: big }); return true; }   // (one from above the heap: back to that space)
+    if (!this.freeList.has(n)) this.freeList.set(n, []); this.freeList.get(n).push(p); return true; }
   /** block `p` grown to `n` bytes where it is (the new bytes zeroed): at the heap's top, or over the free block that
    *  follows it; false when neither has the room */
   extend(p, n) {
@@ -1312,6 +1348,15 @@ function iniSet(fs, file, sec, key, value) {
   else if (value === null) { if (e) { s.keys.delete(key.toLowerCase()); s.lines = s.lines.filter(x => x !== e); } }
   else if (e) e.value = value;
   else { const n = { name: key, value }; s.keys.set(key.toLowerCase(), n); s.lines.push(n); }
+  let text = '';
+  for (const v of ini.values()) { text += `[${v.name}]\r\n`; for (const k of v.lines) text += k.raw !== undefined ? `${k.raw}\r\n` : `${k.name}=${k.value}\r\n`; text += '\r\n'; }
+  fs.writeFile(iniPath(file), text);
+}
+/** a line that is not key=value added to the section, made when it is not there (WritePrivateProfileSection) */
+function iniAddLine(fs, file, sec, raw) {
+  const ini = iniRead(fs, file), sk = sec.toLowerCase();
+  if (!ini.has(sk)) ini.set(sk, { name: sec, keys: new Map(), lines: [] });
+  ini.get(sk).lines.push({ raw });
   let text = '';
   for (const v of ini.values()) { text += `[${v.name}]\r\n`; for (const k of v.lines) text += k.raw !== undefined ? `${k.raw}\r\n` : `${k.name}=${k.value}\r\n`; text += '\r\n'; }
   fs.writeFile(iniPath(file), text);
@@ -1828,7 +1873,10 @@ def('KERNEL32', 'GlobalMemoryStatus', 1, function (p) {   // 16 MB of RAM, as Ge
   this.w32(p, 32); this.w32(p + 4, 50); this.w32(p + 8, 0x1000000); this.w32(p + 12, 0x800000); this.w32(p + 16, 0x2000000); this.w32(p + 20, 0x1800000);
   this.w32(p + 24, 0x7fc00000); this.w32(p + 28, 0x7f000000);
 });
-def('KERNEL32', 'QueryPerformanceCounter', 1, function (p) { const t = Math.floor((this.progTime('tick') - 3600000) * 1193.182); this.w32(p, t % 4294967296); this.w32(p + 4, Math.floor(t / 4294967296)); return 1; });
+// (two reads are never the same count: a read of the timer chip takes a few of its ticks, 5 microseconds or so on
+// the machines of the day. The clock here moves a millisecond at a time: Windows 98's WELCOME times a short loop
+// between two reads to rate the processor, found no time had passed, and divided by it)
+def('KERNEL32', 'QueryPerformanceCounter', 1, function (p) { let t = Math.floor((this.progTime('tick') - 3600000) * 1193.182); if (t < (this.qpcLast || 0) + 6) t = this.qpcLast + 6; this.qpcLast = t; this.w32(p, t % 4294967296); this.w32(p + 4, Math.floor(t / 4294967296)); return 1; });
 def('KERNEL32', 'QueryPerformanceFrequency', 1, function (p) { this.w32(p, 1193182); this.w32(p + 4, 0); return 1; });
 def('KERNEL32', 'IsBadStringPtrW', 2, function (a) { return !a || a >= this.mem.buffer.byteLength ? 1 : 0; });
 def('KERNEL32', 'LocalHandle', 1, p => p);
@@ -1927,7 +1975,18 @@ def('KERNEL32', 'lstrcpyA', 2, function (d, s) { this.writeA(d, this.readA(s) ||
 def('KERNEL32', 'lstrcpynA', 3, function (d, s, n) { this.writeA(d, this.readA(s) || '', n); return d; });
 def('KERNEL32', 'lstrcatA', 2, function (d, s) { this.writeA(d, (this.readA(d) || '') + (this.readA(s) || '')); return d; });
 def('KERNEL32', 'lstrcmpiA', 2, function (a, b) { const x = (this.readA(a) || '').toLowerCase(), y = (this.readA(b) || '').toLowerCase(); return x < y ? -1 >>> 0 : x > y ? 1 : 0; });
-def('KERNEL32', 'lstrcmpA', 2, function (a, b) { const x = this.readA(a) || '', y = this.readA(b) || ''; return x < y ? -1 >>> 0 : x > y ? 1 : 0; });
+// Windows' order of two strings: their letters first, whatever their case; the same letters, the one with the lower
+// case at the first place they differ comes first ("version" before "Version"). -1, 0 or 1. By character code, the
+// capital came first: SETUPAPI's string table, its chains kept in this order, found "Version" where it looked for
+// "version", no section of any INF was found, and nothing Setup installs through it was registered
+const strOrder = (x, y, ci) => {
+  const X = x.toLowerCase(), Y = y.toLowerCase();
+  if (X !== Y) return X < Y ? -1 : 1;
+  if (ci) return 0;
+  for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return x[i] === X[i] ? -1 : 1;
+  return 0;
+};
+def('KERNEL32', 'lstrcmpA', 2, function (a, b) { return strOrder(this.readA(a) || '', this.readA(b) || '', false) >>> 0; });
 def('KERNEL32', 'GetPrivateProfileIntA', 4, function (sec, key, dflt, file) {
   const v = iniGet(this.fs, this.readA(file), this.readA(sec), this.readA(key));
   const n = v === null ? NaN : parseInt(v, 10);
@@ -1976,6 +2035,19 @@ def('KERNEL32', 'GetPrivateProfileStringA', 6, function (sec, key, dflt, buf, n,
 def('KERNEL32', 'WritePrivateProfileStringA', 4, function (sec, key, val, file) {
   if (this.iniIntent) this.iniIntent(file ? this.readA(file) : 'WIN.INI', this.readA(sec), key ? this.readA(key) : null, val ? this.readA(val) : null, null);
   try { iniSet(this.fs, this.readA(file), this.readA(sec), key ? this.readA(key) : null, val ? this.readA(val) : null); return 1; } catch (_) { return 0; }
+});
+// WritePrivateProfileSection(section, lines, file): the section's lines replaced by these (each NUL-terminated, then a
+// NUL); a null list takes the section away
+def('KERNEL32', 'WritePrivateProfileSectionA', 3, function (sec, data, file) {
+  try {
+    const f = this.readA(file), s = this.readA(sec);
+    iniSet(this.fs, f, s, null, null);
+    for (let a = data; a && this.u8[a];) {
+      const l = this.readA(a), m = /^([^=]*)=(.*)$/.exec(l); a += l.length + 1;
+      if (m) iniSet(this.fs, f, s, m[1].trim(), m[2]); else iniAddLine(this.fs, f, s, l);
+    }
+    return 1;
+  } catch (_) { return 0; }
 });
 def('KERNEL32', 'GetPrivateProfileStructA', 5, function (sec, key, buf, n, file) {
   const v = iniGet(this.fs, this.readA(file), this.readA(sec), this.readA(key));
@@ -2260,7 +2332,7 @@ def('KERNEL32', 'GetLocaleInfoA', 4, function (lc, type, buf, n) {
 def('KERNEL32', 'CompareStringW', 6, () => 2);
 def('KERNEL32', 'CompareStringA', 6, function (lc, f, a, na, b, nb) {
   const x = this.readA(a, na < 0 ? 65536 : na) || '', y = this.readA(b, nb < 0 ? 65536 : nb) || '';
-  const ci = f & 1, X = ci ? x.toLowerCase() : x, Y = ci ? y.toLowerCase() : y; return X < Y ? 1 : X > Y ? 3 : 2;
+  return strOrder(x, y, !!(f & 1)) + 2;
 });
 def('KERNEL32', 'SetEnvironmentVariableA', 2, function (name, value) {
   const k = this.readA(name); if (!k) return 0;
@@ -2799,7 +2871,9 @@ def('KERNEL32', '_hwrite', 3, function (h, b, n) { return API.KERNEL32._lwrite[1
 // named synchronization objects: a second create finds the first (ERROR_ALREADY_EXISTS), Open* finds it by name
 const named = (p, name, make) => {
   const key = name && p.readA(name).toUpperCase(), objs = p.namedObjs || (p.namedObjs = new Map()), had = key && objs.get(key);
-  if (had) { p.lastError = 183; return p.newHandle(had); }
+  // (a second create's handle is its process's too, closed as it ends: left open, it kept the name alive after
+  // every process that had it was gone, and each RUNONCE after two had met found a "previous instance")
+  if (had) { p.lastError = 183; const h = p.newHandle(had); if (p.pc) (p.namedOwner || (p.namedOwner = new Map())).set(h, p.pc); return h; }
   const o = make(); if (key) { objs.set(key, o); o.name = key; } p.lastError = 0;
   const h = p.newHandle(o); if (key && p.pc) (p.namedOwner || (p.namedOwner = new Map())).set(h, p.pc); return h;
 };
@@ -2932,8 +3006,30 @@ def('KERNEL32', 'GetAtomNameA', 3, function (id, buf, n) {
 // count. With no table, or a service past its end, the client's EAX is 1 and it returns to the caller with the
 // arguments still on its stack: Windows 98's WINMM asks VTDAPI (442h, no Win32 services) for the time that way at its
 // start, and takes 10 or less for no answer and asks by DeviceIoControl
+// KERNEL32.122 (Windows 98's, no name: BFF96DA0h): a program gives the kernel a procedure to tell of the programs
+// that start (0, procedure) or asks for the telling to begin (1); TASKMON, which logs them for the defragmenter,
+// calls it as it starts. None is told here
+def('KERNEL32', '#122', 2, () => 0);
+const VMM_PAGE = { 0: 3, 1: 5, 2: 3, 0x0a: 2, 0x0d: 4 };   // (the VMM's page services answered here: their argument counts)
 for (let k = 1; k <= 9; k++) def('KERNEL32', `#${k}`, 'regs', function () {
   const sp = u32(this.reg('esp')), ret = this.r32(sp), id = this.r32(sp + 4), dev = id >>> 16, n = id & 0xffff;
+  // (the VMM's own, device 1: the page services a program makes memory with past KERNEL32. MSHTML makes each of its
+  // threads' stacks so: _PageReserve (0: an arena or page, the pages, flags) answers the address; _PageCommit (1:
+  // page, pages, pager, its data, flags) and _PageDecommit (2) say the pages are there, as a region's are here from
+  // its reservation; _PageModifyPermissions (0Dh: page, pages, and-mask, or-mask) answers the permissions before;
+  // _PageFree (0Ah: address, flags) gives the region back. Each pops its arguments)
+  if (dev === 1 && VMM_PAGE[n]) {
+    const a = k => this.r32(sp + 8 + 4 * k); let r;
+    if (n === 0) {
+      r = API.KERNEL32.VirtualAlloc[1].call(this, 0, a(1) << 12, 0x2000) >>> 0;
+      const reg = r && this.vregions && this.vregions.get(r); if (reg) reg.pc = (this.thread16 && this.thread16.pc) || null;   // (its process's, gone with it)
+      if (!r) r = 0xffffffff;
+    } else if (n === 0x0a) r = API.KERNEL32.VirtualFree[1].call(this, a(0), 0, 0x8000);
+    else if (n === 0x0d) r = 0x20060000;
+    else r = 1;
+    this.reg('esp', sp + 8 + 4 * VMM_PAGE[n]); this.reg('eax', r);
+    return ret;
+  }
   const v = this.vxdById && this.vxdById(dev), ddb = v && v.ddb, t = ddb && (this.r16(ddb + 0x0a) & 0x4000) ? this.r32(ddb + 0x38) : 0;
   if (t && n < this.r32(t)) throw new GuestError(`VxDCall ${id.toString(16)}: ${v.name || dev.toString(16)}'s Win32 service ${n} (handler ${this.r32(t + 8 + 8 * n).toString(16)}, ${this.r32(t + 12 + 8 * n)} arguments) is not dispatched here`);
   this.reg('esp', sp + 8); this.reg('eax', 1);
@@ -2964,6 +3060,8 @@ def('KERNEL32', 'MoveFileExA', 3, function (a, b, fl) {
 });
 // FindResourceExA(module, type, name, language): FindResourceA's lookup (BFF80A40h), one language to a resource here
 def('KERNEL32', 'FindResourceExA', 4, function (m, type, name) { return API.KERNEL32.FindResourceA[1].call(this, m, name, type); });
+// (and the wide one, one of the few Unicode calls Windows 95's KERNEL32 answers: Windows 98's Explorer asks it)
+def('KERNEL32', 'FindResourceExW', 4, function (m, type, name) { return API.KERNEL32.FindResourceW[1].call(this, m, name, type); });
 // GetFileAttributesExA(name, GetFileExInfoStandard, WIN32_FILE_ATTRIBUTE_DATA): attributes, creation, access and write
 // times, size high and low; the find data's first 36 bytes
 def('KERNEL32', 'GetFileAttributesExA', 3, function (n, level, p) {
