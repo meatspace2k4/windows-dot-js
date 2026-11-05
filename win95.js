@@ -1299,7 +1299,7 @@ function loadHives() {
     // (the file as the host last wrote or read it is the registry as it is already, unless the registry has lost what
     // it holds: a store or moment from before it was read left the registry without Setup's keys, its stamp saying
     // read, and Explorer found none of the shell's classes)
-    if (st === hiveStamps.get(file) && held) {
+    if (st === hiveStamps.get(file) && held && held.length) {
       const roots = which === 'system' ? ['hklm', 'hkcr', 'hkcc'] : ['hku', 'hkcu'], have = new Set(W.regDump().map(([k]) => k.toLowerCase()));
       if (held.every(([k]) => !roots.includes(k.split('\\')[0].toLowerCase()) || have.has(k.toLowerCase()))) continue;
       console.info(`[registry] ${file}: the registry lacks keys the file holds; read again`);

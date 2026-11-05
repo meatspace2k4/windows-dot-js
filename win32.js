@@ -892,7 +892,9 @@ class Process {
       // not get to handle, as nothing can be pushed for a handler)
       const limit = this.r32(this.cpu.fs.value + 8) >>> 0;
       if (u32(eip) < limit && u32(eip) >= limit - 0x10000) {
-        log('warn', 'win32', `stack fault: thread ${this.thread16 ? this.thread16.id : 'main'}'s stack ran out at ${u32(eip).toString(16)}`);
+        // (with the code it was running and the return addresses nearest the stack's end: the recursion that ran it out)
+        const chain = []; for (let a = u32(this.cpu.esp.value), end = a + 0x4000; a < end && chain.length < 24; a += 4) { let v; try { v = this.r32(a) >>> 0; } catch (_) { break; } const w = this.whereOf(v); if (w && /[A-Za-z]/.test(w) && /\+/.test(w)) chain.push(w); }
+        log('warn', 'win32', `stack fault: thread ${this.thread16 ? this.thread16.id : 'main'}'s stack ran out at ${u32(eip).toString(16)}, in ${this.whereOf(this.cpu.eip.value)}; returns ${chain.join(' < ')}`);
         throw new FaultError(Object.assign(this.faultInfo(12, u32(this.cpu.eip.value), u32(eip)), { why: `stack fault at ${u32(this.cpu.eip.value).toString(16)}` }));
       }
       this.pfWrite = !!(code & 0x10);
@@ -1660,9 +1662,17 @@ def('KERNEL32', 'FreeLibrary', 1, function (h) {
   // the address space above the heap's, imageRoom)
   return 1;
 });
+// (kept apart from MSJAVA's own name, under which a stand-in would take the whole DLL's place)
+const STANDIN_EXPORTS = { MSJAVA: ['JavaPkgMgr_Install'] };
+// (RUNDLL32's entry: hwnd, hinst, command line, show; done, nothing to install)
+def('MSJAVA~', 'JavaPkgMgr_Install', 4, function () { return 0; });
 def('KERNEL32', 'GetProcAddress', 2, function (h, name) {
   const nm = name >>> 16 ? this.readA(name) : '#' + name;
   const native = this.modules.find(x => x.base === this.hmod(h));
+  // (an export a stand-in answers in place of the module's own: MSJAVA's JavaPkgMgr_Install, the Java packages
+  // Windows 98 Setup installs through RUNDLL32 at the first start, not installed: "Unable to install Java packages")
+  const own = native && STANDIN_EXPORTS[native.name.toUpperCase().replace(/\.DLL$/, '')];
+  if (own && own.includes(nm)) return this.thunkFor(native.name.toUpperCase().replace(/\.DLL$/, '') + '~', nm);
   if (native) return native.exports.get(nm) || 0;
   const m = this.standinAt(h) || this.obj(0x0000ffff & h) || { name: 'KERNEL32' };
   return API[m.name] && this.importDef(m.name, nm) ? this.thunkFor(m.name, nm) : 0;

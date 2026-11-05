@@ -511,7 +511,11 @@ P.loadNEDynamic = function (key, file) {
   const segs = [];
   for (let i = 0; i < nseg; i++) {
     const e = segt + 8 * i, off = rd.u16(file, e) << shift, len = rd.u16(file, e + 2) || (off ? 0x10000 : 0), flags = rd.u16(file, e + 4), minalloc = rd.u16(file, e + 6) || 0x10000;
-    const size = i + 1 === autodata ? 0x10000 : Math.max(len, minalloc, 1), base = this.alloc(size + 16);
+    // (GDI's and USER's data segments with room to grow to 2 MB where they are: Windows 98's GDI grows its own past
+    // 64K for its 32-bit heap after GDI32 has taken flat pointers into it, so it must not move; moved, GDI32's
+    // GetStockObject read the old place and WinHelp's RegisterClass refused its brush, "(null) (2)")
+    const room = i + 1 === autodata && /^(GDI|USER)$/.test(name) ? 0x200000 : 0;
+    const size = i + 1 === autodata ? 0x10000 : Math.max(len, minalloc, 1), base = this.alloc(Math.max(size, room) + 16);
     // (a 32-bit code segment, flag 2000h, a 32-bit descriptor, as loadNE makes the bundle's: Windows 98's DIBENG.DLL's
     // blits, run as 16-bit code, read their first instruction as FF /7)
     const sel = this.allocSels(base, size, flags & 1 ? 0xf300 : flags & 0x2000 ? 0x40fb00 : 0xfb00);
@@ -3295,7 +3299,13 @@ P.local32Init = function (segment, tableSize, heapSize, flags) {
   if (heapSize === 0xffffffff) heapSize = 1 << 20;
   heapSize = u32((heapSize + 0xffff) & 0xffff0000); segSize = (segSize + 0xfff) & ~0xfff;
   const tot = segSize + HTABLE + heapSize;
-  const base = this.alloc(tot + 0x10000); const hdr = base + segSize;
+  // (the segment's own block when it has the room, or can be grown where it is: the segment's linear address is held by
+  // others. Windows 98's GDI makes its 32-bit heap in its data segment after GDI32 took flat pointers into it; moved,
+  // GDI32's GetStockObject read the old place, and WinHelp's RegisterClass refused its brush: "(null) (2)")
+  const old = segment ? this.selBase(segment) : 0;
+  const inPlace = !!segment && ((this.allocs.get(old) || 0) >= tot + 0x10000 || this.extend(old, tot + 0x10000));
+  const base = inPlace ? old : this.alloc(tot + 0x10000); const hdr = base + segSize;
+  if (inPlace) this.u8.fill(0, base + segSize, base + tot);
   this.u8.fill(0, hdr, hdr + HTABLE);
   // header (LOCAL32HEADER): freeListFirst[16], freeListSize[16], freeListLast[16], selectorTableOffset, selectorTableSize, selectorDelta, segment, base, limit, flags, magic, heap
   this.w16(hdr + 0, L32HDR); this.w16(hdr + 64, HPAGE - 4); this.w16(hdr + 32, (HPAGE - L32HDR) / 4);
@@ -3310,8 +3320,7 @@ P.local32Init = function (segment, tableSize, heapSize, flags) {
   this.w32(hdr + 104, segment || even); this.w32(hdr + 108, base); this.w32(hdr + 112, HPAGE - 1); this.w32(hdr + 116, 0);
   this.w32(hdr + 120, 0x3233484c); this.w32(hdr + 124, 0);
   if (segment) {    // move the segment into the start of the new block
-    const old = this.selBase(segment);
-    this.u8.copyWithin(base, old, old + segSize);
+    if (!inPlace) this.u8.copyWithin(base, old, old + segSize);
     this.w32(L.LDT + (segment & 0xfff8), base); this.w32(L.LDT + (segment & 0xfff8) + 4, tot - 1);
     const gb = this.gblock(segment); if (gb) { gb.lin = base; gb.size = tot; }
     this.refreshSegs();
@@ -3454,12 +3463,9 @@ def16('KERNEL', 16, 'wlw', 'w', function (h, n, fl) {   // GlobalReAlloc
   const sel = this.gsel(h);
   if (n > b.size) {
     const cap = (this.allocs.get(b.lin) || 0) - 16;
-    // grown where it is when the heap has the room; else moved, a segment past 64K given room to 2 MB as it moves, so it
-    // need not move again. Its linear address is held by others: Windows 98's GDI grows its data segment (its 32-bit heap
-    // past the 16-bit one) after GDI32 took flat pointers into it, and moved, GDI32's GetStockObject read the old place
-    // (no stock brush a GDI object: WinHelp's RegisterClass refused, "(null) (2)")
+    // (grown where it is when the heap has the room after it; else moved)
     if (n > cap && b.heap && this.extend(b.lin, n + 16)) this.u8.fill(0, b.lin + b.size, b.lin + n);
-    else if (n > cap) { const nl = this.alloc((n > 0x10000 ? Math.max(n, 0x200000) : n) + 16, true); this.u8.copyWithin(nl, b.lin, b.lin + b.size); if (b.heap) this.free(b.lin); b.lin = nl; b.heap = true; }
+    else if (n > cap) { const nl = this.alloc(n + 16, true); this.u8.copyWithin(nl, b.lin, b.lin + b.size); if (b.heap) this.free(b.lin); b.lin = nl; b.heap = true; }
     else this.u8.fill(0, b.lin + b.size, b.lin + n);
   }
   b.size = n;
