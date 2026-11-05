@@ -95,9 +95,11 @@ export const pageDrive = async (key, o = {}) => {
         // key's boxes ended shifted), each box read back and typed again where it differs; hushed from the journal, so
         // the key is on no line and in no anchored moment; the click on the edit is hushed with it, so the span's
         // actions are the same whatever box took the focus)
+        // (the boxes as the page shows them, left to right: USER's order of the dialog's children is not theirs on the
+        // page, and the first in it was the second box, where the key's first group went)
         await B.hush(async () => {
-          await win95.click(edit); await sleep(300);
-          const groups = String(key).split('-'), boxesNow = async () => (await win95.elementsNow()).filter(e => e.role === 'text-edit' && WIZ.test(e.window));
+          const groups = String(key).split('-'), boxesNow = async () => (await win95.elementsNow()).filter(e => e.role === 'text-edit' && WIZ.test(e.window)).sort((a, b) => a.x - b.x);
+          await win95.click((await boxesNow())[0] || edit); await sleep(300);
           for (const g of groups) for (const ch of g) { win95.type(ch); await sleep(150); }
           for (let pass = 0; pass < 3; pass++) {
             const boxes = await boxesNow(); if (boxes.length === groups.length && boxes.every((b, i) => String(b.name) === groups[i])) break;

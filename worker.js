@@ -184,7 +184,7 @@ class Machine {
   braidNamed() { const by = new Map(); for (const [v, k] of this.braidNames()) by.set(k, v); return name => by.get(name); }
   /** the properties of the machine's own object that are the host's live things, not the moment's: the step timer,
    *  the message channel, the input ring, the moments themselves, the clock's skew */
-  braidSkip(obj, k) { return (obj === this && (k === 'timer' || k === 'stepDue' || k === 'soonCh' || k === 'soonPending' || k === 'ring' || k === 'alive' || k === 'mods' || k === 'stepLog' || k === 'started' || k === 'fast' || k === 'until' || k === 'untilWait' || k === 'markWait' || k === 'detLog' || k === 'trailLog')) || (obj === this.proc && (k === 'dynCache' || k === 'dynFast' || k === 'dynEnv' || k === 'runHook')); }   // (the run-time translations: a cache of code, made again as the code runs; its wasm instances cannot be exported. dynFast, the block each address ran last, too: carried in a moment without its code, an arrival from an anchor called a block with no run)
+  braidSkip(obj, k) { return (obj === this && (k === 'timer' || k === 'stepDue' || k === 'soonCh' || k === 'soonPending' || k === 'ring' || k === 'alive' || k === 'mods' || k === 'stepLog' || k === 'started' || k === 'fast' || k === 'until' || k === 'untilWait' || k === 'markWait' || k === 'detLog' || k === 'trailLog' || k === 'childAsks' || k === 'askChain' || k === 'readQ' || k === 'reader')) || (obj === this.proc && (k === 'dynCache' || k === 'dynFast' || k === 'dynEnv' || k === 'runHook')); }   // (the run-time translations: a cache of code, made again as the code runs; its wasm instances cannot be exported. dynFast, the block each address ran last, too: carried in a moment without its code, an arrival from an anchor called a block with no run)
   /** the lint's record of the machine now (braid.js lint) */
   braidProbe() {
     const p = this.proc, held = p.win16Held ? { who: typeof p.win16Held.who === 'object' ? 'thread ' + p.win16Held.who.id : String(p.win16Held.who), since: p.win16Held.since, cpu: p.win16Held.cpu, hung: !!p.win16Held.hung } : null;
@@ -1148,8 +1148,21 @@ class Machine {
    *  reply as a program's thread does. Sent from the host, a send the receiver did not answer within the host's call was
    *  given up, USER freed its record, and the queue that still held it called the freed record's procedure: W98SETUP
    *  ("invalid page fault at 0137:00000000", the page reading Explorer's taskbar tabs as it looked for AutoRun's Yes) */
-  async childrenAsked(parent) {
-    const p = this.proc, out = p.nativeChildren(parent);
+  // (one asking thread at a time, and a window's read asked for and not yet begun is the answer to the same question
+  // again: the page reads every window's controls each time it looks, and a thread for each read, each one's send to a
+  // Windows 3.x task waiting inside another's, piled up 600 threads deep while SUWIN prepared its wizard, and the
+  // machine stopped. A read already begun answers only those who asked before it: one asked after it reads afresh, as
+  // the Product Key's boxes, read back after each is typed, came back as they were before the typing)
+  childrenAsked(parent) {
+    const m = this.childAsks || (this.childAsks = new Map());
+    if (m.has(parent)) return m.get(parent);
+    const go = (this.askChain || Promise.resolve()).then(() => { m.delete(parent); return this.childrenAskNow(parent); });
+    this.askChain = go.catch(() => null); m.set(parent, go);
+    return go;
+  }
+  async childrenAskNow(parent) {
+    const p = this.proc; if (p.depth) return null;
+    const out = p.nativeChildren(parent);
     if (!Array.isArray(out) || !out.length) return out;
     const bufs = [], buf = n => { const b = p.alloc(n); p.u8.fill(0, b, b + n); bufs.push(b); return b; };
     const send = (calls, h, m, wp, lp) => calls.push({ dll: 'USER32', name: 'SendMessageA', args: [h, m, wp >>> 0, lp >>> 0], ifWindow: h }) - 1;
@@ -1163,7 +1176,7 @@ class Machine {
         else if (/^SysTabControl32$/i.test(c.cls)) need.push(r => { c.tabs = { n: Math.min(r[0], 64), sel: r[1] | 0 }; }, [send(first, c.hwnd, 0x1304, 0, 0), send(first, c.hwnd, 0x130b, 0, 0)]);   // TCM_GETITEMCOUNT, TCM_GETCURSEL
         else if (/^SysListView32$/i.test(c.cls)) need.push(r => { c.list = { n: Math.min(r[0], 256) }; }, [send(first, c.hwnd, 0x1004, 0, 0)]);   // LVM_GETITEMCOUNT
       }
-      const r1 = first.length ? await this.netBatch(first) : [];
+      const r1 = first.length ? await this.readBatch(first) : [];
       if (!r1) return out;
       for (let k = 0; k < need.length; k += 2) need[k](need[k + 1].map(i => r1[i] | 0));
       // (then each tab's and each item's rectangle and text)
@@ -1183,11 +1196,44 @@ class Machine {
             (c.items = c.items || []).push({ x: c.x + l, y: c.y + t, w: s(8) - l, h: s(12) - t, text: r[b] > 0 ? p.readA(txt, Math.min(r[b], 63)) : '', index: i, selected: !!(r[s2] & 2) }); });
         }
       }
-      const r2 = second.length ? await this.netBatch(second) : [];
+      const r2 = second.length ? await this.readBatch(second) : [];
       if (r2) for (const f of fill) f(r2);
       for (const c of out) { delete c.tabs; delete c.list; if (c.cls !== undefined) delete c.unknown; }
       return out;
     } finally { for (const b of bufs) p.free(b); }
+  }
+  /** exports called one after another on the reading thread, a thread of this process made once that waits, blocked,
+   *  for the next batch (KERNEL32 __ReadNext) and reports each one done (__ReadDone); their results, as netBatch's.
+   *  A thread made for each read had its queue made by USER as it started (InitThreadInput), and one started while
+   *  SUWIN held the Win16Lock behind its Save System Files page ran on inside that call, and the machine stopped */
+  readBatch(calls) {
+    const p = this.proc, le32 = v => [v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, (v >>> 24) & 0xff];
+    const fns = calls.map(c => { const m = p.byName.get(c.dll); return m && m.exports.get(c.name) ? m.exports.get(c.name) : 0; });
+    const u32m = p.byName.get('USER32'), isWin = u32m && u32m.exports.get('IsWindow');
+    if (!calls.length || fns.some(f => !f) || !isWin) return Promise.resolve(null);
+    const n = calls.length, size = (n + 1) * 8 + calls.reduce((s, c) => s + 5 * c.args.length + 11 + (c.ifWindow ? 19 : 0), 0) + 1;
+    const a = p.alloc(size), ptrs = a + size - (n + 1) * 8, res = ptrs + (n + 1) * 4, isWinAt = ptrs + 4 * n;
+    p.w32(isWinAt, isWin); const code = [];
+    calls.forEach((c, k) => {
+      if (c.ifWindow) code.push(0x68, ...le32(c.ifWindow), 0xff, 0x15, ...le32(isWinAt), 0x85, 0xc0, 0x0f, 0x84, ...le32(5 * c.args.length + 6));   // push hwnd; call [IsWindow]; test eax, eax; jz (to the result: 0)
+      for (let i = c.args.length - 1; i >= 0; i--) code.push(0x68, ...le32(c.args[i]));   // push imm32
+      code.push(0xff, 0x15, ...le32(ptrs + 4 * k), 0xa3, ...le32(res + 4 * k));             // call [ptr]; mov [res], eax
+      p.w32(ptrs + 4 * k, fns[k]);
+    });
+    code.push(0xc3);   // ret
+    p.u8.set(code, a);
+    return new Promise(ok => {
+      (this.readQ || (this.readQ = [])).push({ code: a, done: () => { const r = calls.map((_, k) => p.r32(res + 4 * k)); p.free(a); ok(r); } });
+      if (!this.reader || this.reader.state === 'done') {
+        // (its loop: call [__ReadNext] (the next batch's code, the thread blocked until there is one); call eax;
+        // call [__ReadDone]; again)
+        const l = p.alloc(32), next = l + 24, done = l + 28;
+        p.w32(next, p.thunkFor('KERNEL32', '__ReadNext')); p.w32(done, p.thunkFor('KERNEL32', '__ReadDone'));
+        p.u8.set([0xff, 0x15, ...le32(next), 0xff, 0xd0, 0xff, 0x15, ...le32(done), 0xeb, 0xf0], l);
+        this.reader = p.newThread(l, 0, 0x10000, true, false);
+      } else this.reader.blocked = false;
+      this.kick();
+    });
   }
   onWindow(name, args) { return this.netBatch([{ dll: 'USER32', name, args, ifWindow: args[0] }]).then(r => r && r[0]); }
   netCall(name, args = [], dll = 'MPR') { return this.netBatch([{ dll, name, args }]).then(r => r && r[0]); }
@@ -1811,6 +1857,14 @@ class Machine {
 }
 
 let machine = null;
+// the reading thread's waits (Machine.readBatch): the next batch's code, the thread blocked until there is one (woken as
+// one is queued, not run again to look); and a batch done
+W.def('KERNEL32', '__ReadNext', 0, function () {
+  const q = machine && machine.readQ, t = this.thread16;
+  if (q && q.length) return q[0].code;
+  if (t) t.blocked = true; return W.YIELD;
+});
+W.def('KERNEL32', '__ReadDone', 0, function () { const b = machine && machine.readQ && machine.readQ.shift(); if (b) b.done(); return 0; });
 const moments = new Map();   // (ring α: the moments of this machine, by name, held here outside the machine's graph)
 self.onmessage = e => {
   const m = e.data;
