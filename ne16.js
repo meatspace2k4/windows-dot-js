@@ -4927,8 +4927,19 @@ const waitTop = (p, ms) => {
  *  went round W98SETUP, MSGSRV32, MMTASK, SETUP, Explorer's and the others' waits each time, and the machine's time ran
  *  at a twentieth of the wall's */
 P.waitBlocked = function (t) {
-  if (t.state !== 'waiting' || t.preempted || !t.ctx || !t.waitYield) return false;
+  if (t.state !== 'waiting' || t.preempted || !t.ctx) return false;
   const now = this.now();
+  // (a Win16 task in WaitEvent with no event counted, its queue not woken: run, it only went round its message loop and
+  // waited again. SUWIN's copy yields between blocks, and each yield went round MSGSRV32's, MMTASK's, SETUP's and
+  // W98SETUP's GetMessage, nine thousand switches a second. PostEvent, a directed yield and its queue's wake bits wake
+  // it; a tenth of a second passed by, it runs once anyway, as nothing else here may wake it)
+  if (t.task && t.slept) {
+    if (t.events > 0 || t.directed) return false;
+    if (t.queue && this.selValid(t.queue)) { const q = this.selBase(t.queue); if (this.r16(q + 0x4c) & 0x8000 || this.r16(q + 0x4e) || (!this.r16(q + 0x4c) && this.r16(q + 0x48))) return false; }
+    if (!t.sleptAt || now - t.sleptAt >= 100) { t.sleptAt = now; return false; }
+    return true;
+  }
+  if (!t.waitYield) return false;
   const w = t.waitOn; if (!w || !w.hs || !w.hs.length || t.task) return false;
   if (t.wake && now >= t.wake) return false;
   if (t.queue && this.selValid(t.queue)) { const q = this.selBase(t.queue); if (this.r16(q + 0x4c) & 0x8000 || this.r16(q + 0x4e) || (!this.r16(q + 0x4c) && this.r16(q + 0x48))) return false; }
@@ -5508,7 +5519,7 @@ def16('KERNEL', 29, '', 'v', function () {                                      
   if (!top) this.threads16(true);   // inside a call: the other tasks and threads run now, as Yield switches to them
   t.yielded = false;
 });
-def16('KERNEL', 150, 'w', 'v', function () { if (!this.atThreadTop()) this.threads16(true); });         // DirectedYield: inside a call, the other tasks run now (at the top level the host's scheduler runs them next)
+def16('KERNEL', 150, 'w', 'v', function (task) { for (const t of (this.threadsById || new Map()).values()) if (t.task && t.tdb === task) t.directed = true; if (!this.atThreadTop()) this.threads16(true); });         // DirectedYield: inside a call, the other tasks run now (at the top level the host's scheduler runs them next)
 // WaitEvent: the task sleeps until an event is posted to it. A thread that is not inside a call JS made gives up
 // its slice once (timers, input and the other threads run) and the wait then ends; USER checks its queue again.
 // LoadModule(name, parameter block { environment, far command tail, far show command, - }): a library loads as
@@ -5642,7 +5653,7 @@ def16('KERNEL', 30, 'w', 'w', function () {
   if (t.events > 0) { t.events--; t.slept = false; return 0; }   // an event posted to the task (PostEvent, its start): no wait
   // (not passed by in the scheduler's round, waitBlocked: a task is woken by more than PostEvent here, a directed yield
   // among them, and held back 50 ms MPREXE's thread came back from a Yield inside USER with its stack gone)
-  if (top && !t.slept) { t.slept = true; P.idle.call(this); return YIELD; }
+  if (top && !t.slept) { t.slept = true; t.sleptAt = this.now ? this.now() : 0; t.directed = false; P.idle.call(this); return YIELD; }
   if (!top) this.threads16(true);   // inside a call: the other tasks run, as the wait would let them
   t.slept = false; return 0;
 });

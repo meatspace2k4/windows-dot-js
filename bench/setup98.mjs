@@ -102,7 +102,7 @@ export const pageDrive = async (key, o = {}) => {
           for (let pass = 0; pass < 3; pass++) {
             const boxes = await boxesNow(); if (boxes.length === groups.length && boxes.every((b, i) => String(b.name) === groups[i])) break;
             for (let i = 0; i < groups.length && i < boxes.length; i++) {
-              if (String(boxes[i].name) === groups[i]) continue;
+              if (String(boxes[i].name) === groups[i] || !String(boxes[i].name || '')) continue;   // (a box read back empty: its text is not reported, it is not typed again)
               await win95.click(boxes[i]); await sleep(400); win95.key('End'); await sleep(150); for (let k = 0; k < 6; k++) { win95.key('Backspace'); await sleep(120); }
               for (const ch of groups[i]) { win95.type(ch); await sleep(250); } await sleep(500);
             }

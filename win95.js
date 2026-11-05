@@ -2850,7 +2850,9 @@ function shutdownSeq(code) {
   // returns to MS-DOS with the code, which WIN.COM acts on (pcEnd)
   for (const a of new Set([...nativeApps, sysApp])) if (a && a.alive) a.exited(0);
   flushRegistry();
-  screen = 'logow'; dirty();
+  // (the machine gone, the page is no longer its monitor: the shutdown screen and the PC's after it fill the page, not
+  // the machine's last mode's size)
+  screen = 'logow'; resize(); dirty();
   setTimeout(() => pcEnd(code), 2600);
 }
 /** Windows itself shut down (Explorer's Shut Down: USER's ExitWindows ending in KERNEL's ExitKernel): a clean
