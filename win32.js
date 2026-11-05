@@ -266,6 +266,13 @@ class Process {
     if (free(pref)) return pref;
     const PROGRAMS = [0x01000000, 0x01100000], programs = a => !own && a < PROGRAMS[1] && PROGRAMS[0] < a + size;
     if (relocatable) for (let a = 0x00620000; a + size <= 0x02000000; a += 0x10000) if (free(a) && !programs(a)) return a;
+    // (the arena full: a relocatable DLL in the address space above the layout's, where VirtualAlloc's regions are, as
+    // Windows maps a DLL wherever its process has room. Windows 98's first start maps more DLLs than the arena holds,
+    // and IEPEERS.DLL and OCCACHE.DLL found no room)
+    if (relocatable && !own && this.vmTop) {
+      const b = (this.vmTop + 0xffff) & ~0xffff, n = (size + 0xffff) & ~0xffff;
+      if (b + n <= this.mem.buffer.byteLength) { this.vmTop = b + n; return b; }
+    }
     return 0;
   }
   /** a DLL an image imports or LoadLibrary names that the system bundle does not carry, from its file, as Windows'
@@ -489,29 +496,6 @@ class Process {
       const mine = v.bufs.get(key); v.bufs.delete(key); v.ranges.forEach(([lo], i) => this.u8.set(mine[i], lo)); v.cur = key;
     }
     this.dllInPlace = key; this.dllInPlaceN = mods.length;
-  }
-  /** a DLL mapped from its file (diskDll) unmapped, as Windows frees a library no process holds: when no live process
-   *  holds a LoadLibrary count on it and no module still loaded imports it, the freeing process's DLL_PROCESS_DETACH,
-   *  then its room in the arena given back, and the DLLs it imported freed the same way. The bundle's translated DLLs
-   *  stay. (Nothing was ever unmapped: Windows 98's first start loaded every DLL Setup registers into the arena below
-   *  the heap, it filled, and IEPEERS.DLL and OCCACHE.DLL found no room, "An error occurred loading") */
-  dllUnload(m) {
-    const d = this.dlls && this.dlls.get(m.name);
-    if (m.unloaded || m.name === 'EXE' || !m.meta || !m.meta.dynamic || !d || d.meta !== m.meta) return;
-    const procs = [this.pc0, ...(this.procs || new Map()).values()].filter(Boolean), live = procs.filter(x => x.exitCode === null || x.exitCode === undefined);
-    if (live.some(x => x.dllRefs && x.dllRefs.get(m) > 0)) return;
-    if (this.modules.some(x => x !== m && !x.unloaded && x.deps && x.deps.includes(m))) return;
-    m.unloaded = true;
-    const pc = this.pc;
-    if (pc.attached && pc.attached.has(m) && m.meta.entry && !(this.cpu.ss.value & 0xffff)) {
-      try { this.call(m.meta.entry, [m.base, 0, 0]); } catch (e) { if (!(e instanceof GuestError)) throw e; this.trapped = null; }
-    }
-    for (const x of procs) { if (x.attached) x.attached.delete(m); if (x.dllRefs) x.dllRefs.delete(m); }
-    this.modules = this.modules.filter(x => x !== m); if (this.byName.get(m.name) === m) this.byName.delete(m.name);
-    this.inits = this.inits.filter(x => x !== m); if (this.initOrder) this.initOrder = this.initOrder.filter(x => x !== m);
-    this.dlls.delete(m.name); this.dllInPlace = null;
-    log('info', 'win32', `${m.name} unmapped from ${m.base.toString(16)}-${(m.base + m.size).toString(16)} (${pc.path || 'system'})`);
-    for (const dep of m.deps || []) this.dllUnload(dep);
   }
   /** a process's end: its copies of the DLLs' data go */
   dllForget(pc) { this.dllInPlace = null; for (const m of this.modules || []) { const v = m.priv; if (!v) continue; v.bufs.delete(pc); if (v.cur === pc) v.cur = GONE; } }
@@ -963,6 +947,15 @@ class Process {
    *  its fault dialog); not the machine's end */
   apiPastMemory(e, t, eip) {
     if (!(e instanceof RangeError) || !/bounds/.test(e.message)) throw e;
+    // (KERNEL32's calls check their pointers on Windows 98, its parameter validation: one that is no address fails the
+    // call with ERROR_INVALID_PARAMETER, not a fault in it. SHLWAPI's ShellExecuteExW converts lpClass whatever the mask
+    // says, SHDOCVW leaves it as its stack had it, and WideCharToMultiByte of that garbage faulted Explorer on Windows 98's
+    // first start)
+    if (t && t.dll === 'KERNEL32' && t.def && typeof t.def[0] === 'number' && t.def[0] >= 0) {
+      const sp = u32(this.reg('esp')), ret = this.r32(sp);
+      this.lastError = 87; this.reg('eax', 0); this.reg('esp', sp + 4 + 4 * t.def[0]);
+      return ret;
+    }
     try { return this.raise(14, u32(eip), u32(eip)); } catch (f) { if (f instanceof FaultError) f.fault.import = t.dll + '!' + t.nm; throw f; }
   }
   f80load(a) {
@@ -1625,7 +1618,6 @@ def('KERNEL32', 'LoadLibraryA', 1, function (n) {
   // does (a DLL another process loaded is attached to this one too: RUNDLL32 ran MMSYS.CPL on WINMM before the
   // shell's thread had attached WINMM, so WINMM's thunks to MMSYSTEM were not connected and it crashed in them)
   if (native) {
-    { const refs = this.pc.dllRefs || (this.pc.dllRefs = new Map()); refs.set(native, (refs.get(native) || 0) + 1); }   // (FreeLibrary's count: dllUnload)
     // (called by the guest through the import, on a flat stack: the DllMains run as the thread's own code as the call
     // returns, dllChainStart)
     if (this.apiCall && this.apiCall.sp === u32(this.reg('esp')) && !(this.cpu.ss.value & 0xffff)) {
@@ -1642,13 +1634,9 @@ def('KERNEL32', 'LoadLibraryA', 1, function (n) {
 def('KERNEL32', 'FreeLibrary', 1, function (h) {
   const dm = this.dataMods && this.dataMods.get(u32(h));   // (a file mapped as data: its copy given back)
   if (dm) { this.dataMods.delete(u32(h)); this.free(dm.block); return 1; }
-  // (a DLL mapped from its file: the process's count of LoadLibrary calls down by one; at none, unmapped when nothing
-  // else holds it, dllUnload)
-  const m = this.modules.find(x => x.base === u32(h) && x.name !== 'EXE'); if (!m) return 1;
-  const refs = this.pc.dllRefs, n = (refs && refs.get(m)) || 0;
-  if (n > 1) { refs.set(m, n - 1); return 1; }
-  if (refs) refs.delete(m);
-  this.dllUnload(m);
+  // (a DLL stays mapped: one copy serves every process here, and a freed one was still used, by another process's
+  // calls, by a thread it had started (QUARTZ's), or by pointers taken from it; the room it takes is the arena's or
+  // the address space above the heap's, imageRoom)
   return 1;
 });
 def('KERNEL32', 'GetProcAddress', 2, function (h, name) {

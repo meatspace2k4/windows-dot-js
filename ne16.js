@@ -5760,8 +5760,22 @@ const ret32 = p => { const sp = p.reg('esp'), r = p.r32(sp); p.reg('esp', sp + 4
 const push32 = (p, v) => { const sp = p.reg('esp') - 4; p.reg('esp', sp); p.w32(sp, v); };
 const pop32 = p => { const sp = p.reg('esp'), v = p.r32(sp); p.reg('esp', sp + 4); return v; };
 /** the module a thunk buffer names (GDI.EXE etc.), loaded if needed, and the 16-bit export holding the thunk data */
+/** the folder a 32-bit module was mapped from (its file's), or null for one of the bundle's */
+P.moduleDir32 = function (h) {
+  const m = h && this.modules.find(x => x.base === u32(h) && x.name !== 'EXE'), p = m && m.meta && m.meta.path;
+  return p && /\\/.test(p) ? p.replace(/\\[^\\]*$/, '') : null;
+};
+/** fn with `dir` searched by the 16-bit loader after its own folders (findFile16) */
+P.withDir16 = function (dir, fn) {
+  if (!dir) return fn();
+  const was = this.dirs16; this.dirs16 = [...(was || []), dir];
+  try { return fn(); } finally { this.dirs16 = was; }
+};
 P.thunkData16 = function (dll16, name) {
-  const m = this.loadLibrary16(dll16); if (!m) throw new GuestError(`thunk: cannot load ${dll16}`);
+  // (the 32-bit caller's folder searched too, as for ThunkConnect32: the return address on the stack is in its module)
+  const ret = this.r32(this.reg('esp')), caller = this.modules.find(x => x.size && ret >= x.base && ret < x.base + x.size && x.name !== 'EXE');
+  const dir = caller && this.moduleDir32(caller.base);
+  const m = this.withDir16(dir, () => this.loadLibrary16(dll16)); if (!m) throw new GuestError(`thunk: cannot load ${dll16} (for ${caller ? caller.name + (caller.meta && caller.meta.path ? ' ' + caller.meta.path : '') : 'no module at ' + ret.toString(16)}; ${dir || 'no folder of its own'}, ${this.fs.cwd})`);
   const sp = this.neExport(m, name); if (!sp) throw new GuestError(`thunk: ${dll16} has no ${name}`);
   const td = this.lin(sp);
   if (this.r16(td + 6) === 0xffff) this.w16(td + 6, sp >>> 16);   // selector of the thunk data's own segment
@@ -5790,7 +5804,10 @@ K('ThunkConnect32', 6, function (td, f16, m16, m32, hmod, reason) {
   const magic = this.readA(td, 4), name = (this.readA(m16) || '').toUpperCase().replace(/\.DLL$/, '');
   // late binding ('LB01' in the 32-bit data): the 16-bit half is found when a thunk is first called
   const late = this.readA(td + 0xc, 4) === 'LB01', f16name = this.readA(f16);
-  const find = () => { const m = this.loadLibrary16(name, true); const sp = m && this.neExport(m, f16name); return sp ? this.lin(sp) : 0; };
+  // (the 16-bit half looked for beside the 32-bit one too: NetMeeting's NMASWIN.DLL is in Program Files\NetMeeting
+  // with the DLL that connects to it, and MSGSRV32 ended on "thunk: cannot load" on Windows 98's first start)
+  const dir32 = this.moduleDir32(hmod);
+  const find = () => { const m = this.withDir16(dir32, () => this.loadLibrary16(name, true)); const sp = m && this.neExport(m, f16name); return sp ? this.lin(sp) : 0; };
   if (late && magic === 'LS01') {
     this.lsRelays = this.lsRelays || new Map();
     const rel = { ft: false, table: 0, bind: () => { if (!rel.table) { const t16 = find(); if (!t16) throw new GuestError(`thunk to ${name}: no ${f16name}`); rel.table = this.lin(this.r32(t16 + 8)); this.w32(td + 8, rel.table); } return rel.table; } };
@@ -5923,16 +5940,29 @@ KR('#45', function () {          // Common32ThkLS: EAX = 16-bit common entry, CX
   return this.enter16from32(this.reg('eax'), sp - 32, n + 32, 0, true, { kind: 'common', sp, edi0: edi, ret });
 });
 // pointer mapping
-KR('SMapLS', function () { const a = this.reg('eax'); this.reg('edx', a >>> 16 ? this.mapLS(a) : 0); if (a >>> 16) this.reg('eax', this.reg('edx')); return ret32(this); });
-KR('SUnMapLS', function () { return ret32(this); });
+// (KERNEL32's MapLS family as Windows 98's: a selector of its own based at the address itself, offset 0, freed by the
+// matching UnMapLS, as KRNL386's MapLS (#358) gives one. VERSION.DLL's VerQueryValueA takes the 16-bit answer's offset
+// alone and adds the block's flat address to it; with a shared 32K-aligned alias the offset carried the address's low
+// bits, the answer pointed past the block, and ODBCCP32 found ODBCINT.DLL "a different version")
+P.mapLSExact = function (a) {
+  a = u32(a); if (!(a >>> 16)) return a;
+  const sel = this.allocSels(a, 0x10000); (this.mapped16 = this.mapped16 || new Set()).add(sel);
+  return u32(sel << 16);
+};
+P.unmapLSExact = function (sp) {
+  const sel = (sp >>> 16) & 0xfff8 | 7;
+  if (this.mapped16 && this.mapped16.has(sel) && !(sp & 0xffff)) { this.mapped16.delete(sel); this.freeSels(sel, 1); }
+};
+KR('SMapLS', function () { const a = this.reg('eax'); this.reg('edx', a >>> 16 ? this.mapLSExact(a) : 0); if (a >>> 16) this.reg('eax', this.reg('edx')); return ret32(this); });
+KR('SUnMapLS', function () { this.unmapLSExact(this.reg('eax')); return ret32(this); });
 for (let n = 8; n <= 40; n += 4) {
-  KR('SMapLS_IP_EBP_' + n, function () { const a = this.reg('ebp') + n, v = this.r32(a); const s = v >>> 16 ? this.mapLS(v) : v; this.w32(a, s); this.reg('edx', s); this.reg('eax', s); return ret32(this); });
-  KR('SUnMapLS_IP_EBP_' + n, function () { this.w32(this.reg('ebp') + n, 0); return ret32(this); });
+  KR('SMapLS_IP_EBP_' + n, function () { const a = this.reg('ebp') + n, v = this.r32(a); const s = v >>> 16 ? this.mapLSExact(v) : v; this.w32(a, s); this.reg('edx', s); this.reg('eax', s); return ret32(this); });
+  KR('SUnMapLS_IP_EBP_' + n, function () { const a = this.reg('ebp') + n; this.unmapLSExact(this.r32(a)); this.w32(a, 0); return ret32(this); });
 }
 K('MapSL', 1, function (sp) { return this.lin(sp); });
 K('MapSLFix', 1, function (sp) { return this.lin(sp); });
-K('MapLS', 1, function (a) { return this.mapLS(a); });
-K('UnMapLS', 1, () => 0);
+K('MapLS', 1, function (a) { return this.mapLSExact(a); });
+K('UnMapLS', 1, function (sp) { this.unmapLSExact(sp); return 0; });
 KR('UnMapSLFixArray', function () { const r = ret32(this); this.reg('esp', this.reg('esp') + 8); return r; });
 K('MapHInstLS', 0, function () { const h = this.reg('eax'); return this.nativeUser16() ? this.hinst16(h) : h; });
 K('MapHInstLS_PN', 0, function () { const h = this.reg('eax'); return h ? (this.nativeUser16() ? this.hinst16(h) : h) : 0; });
