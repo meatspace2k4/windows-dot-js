@@ -4954,9 +4954,49 @@ function render() {
   }
   const cur = cursorAt(mouse.x, mouse.y);
   for (const a of nativeApps) if (a.ov && a.alive && a !== sa) ctx.drawImage(a.ov, 0, 0);
+  drawShellOverlays();
   if (cur === 'none') { const na = pointerApp(mouse.x, mouse.y); if (na) drawSprite(na); }
   else drawCursor(cur);
   drawPeers();
+}
+// ---- the shell's overlays: drawn over the machine's screen by the page, in Windows 98's look, with the shell's own
+// font and bevels (no program of the machine's: they take no input and need nothing of USER). The first is the
+// machine's speed meter (script API `speedMeter(true)`): how much of each 8 s of the wall's time the system's machine
+// spends running its threads (worker.js switchMs.run, cmd 'views'), as Windows 98's smooth progress bar, and how far
+// its own clock moves meanwhile (cmd 'now', which braid.speed stretches)
+const shellOverlays = new Map();
+function drawShellOverlays() { for (const o of shellOverlays.values()) o.draw(); }
+const SPEED_WINDOW = 8000;
+function speedMeter(on) {
+  const had = shellOverlays.get('speed');
+  if (!on) { if (had) { clearInterval(had.timer); shellOverlays.delete('speed'); dirty(); } return false; }
+  if (had) return true;
+  const o = { samples: [], run: null, mach: null };
+  o.tick = async () => {
+    const a = sysApp; if (!a || !a.alive) { o.run = null; dirty(); return; }
+    let v, now; try { [v, now] = await Promise.all([a.cmd('views'), a.cmd('now')]); } catch (_) { return; }
+    const t = performance.now(), s = o.samples; s.push([t, v && v.switchMs ? v.switchMs.run : 0, now || 0]);
+    while (s.length > 1 && t - s[0][0] > SPEED_WINDOW) s.shift();
+    if (s.length > 1) { const [w0, r0, m0] = s[0], [w1, r1, m1] = s[s.length - 1], k = SPEED_WINDOW / (w1 - w0); o.run = (r1 - r0) * k / 1000; o.mach = (m1 - m0) * k / 1000; }
+    dirty();
+  };
+  o.draw = () => {
+    const w = 200, h = 78, x = W - w - 6, y = 6, cy = y + 3, ch = 18;
+    fill(x, y, w, h, K.face); frameRaised(x, y, w, h);
+    // (the caption: Windows 98's gradient from the active caption's colour to its second one, the text bold in white)
+    const g = ctx.createLinearGradient(x + 3, 0, x + w - 3, 0); g.addColorStop(0, '#000080'); g.addColorStop(1, '#1084d0');
+    ctx.fillStyle = g; ctx.fillRect(x + 3, cy, w - 6, ch);
+    text('Machine Speed', x + 7, cy + 3, K.hl, true);
+    text('Turbo', x + 10, y + 28);
+    const bx = x + 10, by = y + 44, bw = w - 20, bh = 14;
+    fill(bx, by, bw, bh, K.face); edge(bx, by, bw, bh, K.sh, K.hl);   // (Windows 98's progress bar: a one-pixel sunken edge)
+    if (o.run !== null) fill(bx + 2, by + 2, Math.round((bw - 4) * Math.min(1, o.run / 8)), bh - 4, K.sel);
+    const l = o.run === null ? (sysApp && sysApp.alive ? '...' : 'No system machine') : `${o.run.toFixed(1)} s run`, r = o.mach === null ? '' : `${o.mach.toFixed(1)} s machine`;
+    text(l, bx, y + 61); if (r) text(r, bx + bw - textW(r), y + 61);
+  };
+  o.timer = setInterval(o.tick, 1000); o.tick();
+  shellOverlays.set('speed', o); dirty();
+  return true;
 }
 /** this machine's own Windows Logon recorded another user (Network\Logon's user name: Shut Down's "Close all programs
  *  and log on as a different user", then the logon form): in a shared session, the page goes to that person's
@@ -6106,6 +6146,8 @@ const script = {
   // the machine the saver runs on, as its last frame reported it (the saver is a process of the system's machine, so
   // the counts are the machine's: its timers, its GL frames, its guest time; the bench takes differences while it runs)
   saverStats() { const a = fullSaver && fullSaver.pid && fullSaver.app; return a && a.alive && a.stats ? { ...a.stats } : null; },
+  // the shell's speed meter over the screen (drawShellOverlays), on or off
+  speedMeter(on = true) { return speedMeter(on); },
   on(type, fn) { if (!listeners.has(type)) listeners.set(type, new Set()); listeners.get(type).add(fn); return () => listeners.get(type).delete(fn); },
   // resolves with the next event of this type that passes the test, or rejects after the timeout
   next(type, test, ms = 10000) {

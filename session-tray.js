@@ -71,6 +71,57 @@
     }
   }
 
+  // the Turbo icon (a gauge): the machine's own speed, opened as a window of Windows' own (its caption and frame USER's,
+  // its face painted with GDI): how much of each 8 s of the wall's time the machine spends running its threads (ne16.js
+  // threads16's switchMs.run, as the page's speed meter reads it), as a smooth progress bar, and how far its clock moves
+  // meanwhile (the worker's vclock, which braid.speed stretches)
+  const METER_UID = 0x7ffe, METER_TIMER = 1, METER_WINDOW = 8000;
+  const GAUGE = [
+    '................', '................', '.....######.....', '...##......##...', '..#..........#..', '.#............#.', '.#.......##...#.', '#.......##.....#',
+    '#......##......#', '#.....###......#', '#.....###......#', '.#............#.', '..############..', '................', '................', '................'];
+  const meterSample = () => {
+    const m = typeof machine !== 'undefined' && machine, p = m && m.proc, sw = p && p.switchMs;
+    return [performance.now(), sw ? sw.run : 0, m && m.vclock ? m.vclock.now : 0];
+  };
+  function meterOpen(p) {
+    if (st.meterHwnd && U(p, 'IsWindow', [st.meterHwnd])) { U(p, 'ShowWindow', [st.meterHwnd, 5]); U(p, 'SetForegroundWindow', [st.meterHwnd]); return; }
+    const inst = p.call(p.thunkFor('KERNEL32', 'GetModuleHandleA'), [0]), w = 220, hh = 104;
+    const sx = U(p, 'GetSystemMetrics', [0]), sy = U(p, 'GetSystemMetrics', [1]);
+    // WS_EX_TOPMOST | WS_EX_TOOLWINDOW; WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE: by the taskbar's corner, over the rest
+    st.meterHwnd = U(p, 'CreateWindowExA', [0x88, str(p, 'class', 'W95SessionTray'), str(p, 'mtitle', 'Machine Speed'), 0x90C80000, sx - w - 8, sy - hh - 40, w, hh, 0, 0, inst, 0]);
+    st.meterSamples = [meterSample()]; st.meterRun = null; st.meterMach = null;
+    if (st.meterHwnd) U(p, 'SetTimer', [st.meterHwnd, METER_TIMER, 1000, 0]);
+  }
+  function meterPaint(p, h) {
+    const ps = st.meterPs || (st.meterPs = p.alloc(64)), rc = st.meterRc || (st.meterRc = p.alloc(16));
+    const dc = U(p, 'BeginPaint', [h, ps]);
+    U(p, 'GetClientRect', [h, rc]); const cw = p.r32(rc + 8), ch = p.r32(rc + 12);
+    U(p, 'FillRect', [dc, rc, 16]);                                                     // COLOR_BTNFACE + 1
+    const old = G(p, 'SelectObject', [dc, G(p, 'GetStockObject', [17])]);              // DEFAULT_GUI_FONT
+    G(p, 'SetBkMode', [dc, 1]); G(p, 'SetTextColor', [dc, U(p, 'GetSysColor', [18])]);  // TRANSPARENT; COLOR_BTNTEXT
+    const out = (s, x, y) => G(p, 'TextOutA', [dc, x, y, str(p, `m${x}${y}`, s), s.length]);
+    out('Turbo', 10, 8);
+    const bx = 10, by = 26, bw = cw - 20, bh = 18;
+    p.w32(rc, bx); p.w32(rc + 4, by); p.w32(rc + 8, bx + bw); p.w32(rc + 12, by + bh);
+    U(p, 'DrawEdge', [dc, rc, 2, 0x0f]);                                                // BDR_SUNKENOUTER, BF_RECT: the progress bar's well
+    if (st.meterRun !== null) {
+      const fw = Math.round((bw - 4) * Math.min(1, st.meterRun / 8));
+      if (fw > 0) { p.w32(rc, bx + 2); p.w32(rc + 4, by + 2); p.w32(rc + 8, bx + 2 + fw); p.w32(rc + 12, by + bh - 2); U(p, 'FillRect', [dc, rc, 14]); }   // COLOR_HIGHLIGHT + 1
+    }
+    const l = st.meterRun === null ? '...' : `${st.meterRun.toFixed(1)} s run`, r = st.meterMach === null ? '' : `${st.meterMach.toFixed(1)} s machine`;
+    out(l, bx, by + bh + 8);
+    if (r) { const sz = st.meterSz || (st.meterSz = p.alloc(8)); G(p, 'GetTextExtentPoint32A', [dc, str(p, 'mr', r), r.length, sz]); out(r, bx + bw - p.r32(sz), by + bh + 8); }
+    G(p, 'SelectObject', [dc, old]);
+    U(p, 'EndPaint', [h, ps]);
+    void ch;
+  }
+  function meterTick(p, h) {
+    const s = st.meterSamples || (st.meterSamples = []), t = meterSample(); s.push(t);
+    while (s.length > 1 && t[0] - s[0][0] > METER_WINDOW) s.shift();
+    if (s.length > 1) { const [w0, r0, m0] = s[0], [w1, r1, m1] = s[s.length - 1], k = METER_WINDOW / (w1 - w0); st.meterRun = (r1 - r0) * k / 1000; st.meterMach = (m1 - m0) * k / 1000; }
+    U(p, 'InvalidateRect', [h, 0, 0]);
+  }
+
   // (wndproc), as SESSTRAY.EXE's entry calls it: the window, or 0
   def('SESSTRAY', 'Start', 1, function (wndproc) {
     const p = this, inst = p.call(p.thunkFor('KERNEL32', 'GetModuleHandleA'), [0]), cls = str(p, 'class', 'W95SessionTray'), wc = p.alloc(40);
@@ -82,12 +133,21 @@
     sync(p);
     st.braid = { user: 'Braid: the session\'s line', uid: BRAID_UID, icon: icon(p, [128, 0, 128], HOURGLASS) };
     U(p, 'PostMessageA', [h, WM.NOTIFY, NIM.ADD, nid(p, st.braid)]);
+    st.meter = { user: 'Turbo: the machine\'s speed', uid: METER_UID, icon: icon(p, [0, 0, 128], GAUGE) };
+    U(p, 'PostMessageA', [h, WM.NOTIFY, NIM.ADD, nid(p, st.meter)]);
     return h;
   });
   // (hwnd, msg, wp, lp, &result): 1 for a message it answered
   def('SESSTRAY', 'Handle', 5, function (h, msg, wp, lp, res) {
     const p = this, done = (v = 0) => { p.w32(res, v); return 1; };
+    if (st.meterHwnd && h === st.meterHwnd) {   // the Turbo window: painted here, its figures every second; closed, it is hidden
+      if (msg === 0x0f) { meterPaint(p, h); return done(); }                               // WM_PAINT
+      if (msg === 0x113 && wp === METER_TIMER) { meterTick(p, h); return done(); }         // WM_TIMER
+      if (msg === 0x10) { U(p, 'ShowWindow', [h, 0]); return done(); }                      // WM_CLOSE
+      return 0;
+    }
     if (h !== st.hwnd) return 0;
+    if (msg === WM.ICON && (lp === WM.LBUTTONUP || lp === WM.RBUTTONUP) && wp === METER_UID) { meterOpen(p); return done(); }
     if (msg === WM.PEOPLE) { sync(p); return done(); }
     if (msg === WM.FREE) { const who = st.gone && st.gone.get(wp); if (who) { st.gone.delete(wp); U(p, 'DestroyIcon', [who.icon]); p.free(who.nid); } return done(); }
     if (msg === WM.ICON && (lp === WM.LBUTTONUP || lp === WM.RBUTTONUP) && wp === BRAID_UID) {
