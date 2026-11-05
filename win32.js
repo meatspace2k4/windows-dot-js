@@ -2456,11 +2456,14 @@ def('KERNEL32', 'CreateFileA', 7, function (name, access, share, sa, disp, flags
     if ((disp === 3 || disp === 5) && !exists) throw new window.W95FS.FSError(2, path); // OPEN_EXISTING / TRUNCATE_EXISTING
     if (exists && this.fs.stat(path).isDir) return this.newHandle({ kind: 'dirhandle', path });
     const mode = disp === 2 || disp === 5 ? (read ? 'w+' : 'w') : !exists ? (read ? 'w+' : 'w') : write ? 'r+' : 'r';
-    return this.newHandle({ kind: 'file', fd: this.fs.open(path, mode), path });
+    // (FILE_FLAG_DELETE_ON_CLOSE, 4000000h: the file goes when its handle is closed. ADVPACK tries whether a folder
+    // takes files so, with TMP4352$.TMP: kept, one was left in the Temp, Desktop and StartUp folders, and the one
+    // in StartUp was opened as Windows 98 logged on)
+    return this.newHandle({ kind: 'file', fd: this.fs.open(path, mode), path, delOnClose: !!(flags & 0x4000000) });
   }, 0xffffffff);
 });
 def('KERNEL32', 'CloseHandle', 1, function (h) {
-  const f = fileOf(this, h); if (f) fsCall(this, () => this.fs.close(f.fd)); const c = commOf(this, h); if (c) vcomm(this, 18, [c.vh]);
+  const f = fileOf(this, h); if (f) fsCall(this, () => { this.fs.close(f.fd); if (f.delOnClose) this.fs.unlink(f.path); }); const c = commOf(this, h); if (c) vcomm(this, 18, [c.vh]);
   const m = this.obj(h); this.handles.delete(h);
   if (m && m.name) { if (this.namedOwner) this.namedOwner.delete(h); namedGone(this, m); }
   // (a file's mapping goes with its last handle, and its data with it)
@@ -3010,24 +3013,27 @@ def('KERNEL32', 'GetAtomNameA', 3, function (id, buf, n) {
 // that start (0, procedure) or asks for the telling to begin (1); TASKMON, which logs them for the defragmenter,
 // calls it as it starts. None is told here
 def('KERNEL32', '#122', 2, () => 0);
-const VMM_PAGE = { 0: 3, 1: 5, 2: 3, 0x0a: 2, 0x0d: 4 };   // (the VMM's page services answered here: their argument counts)
+const VMM_PAGE = new Set([0, 1, 2, 0x0a, 0x0d]);   // (the VMM's page services answered here)
 for (let k = 1; k <= 9; k++) def('KERNEL32', `#${k}`, 'regs', function () {
   const sp = u32(this.reg('esp')), ret = this.r32(sp), id = this.r32(sp + 4), dev = id >>> 16, n = id & 0xffff;
   // (the VMM's own, device 1: the page services a program makes memory with past KERNEL32. MSHTML makes each of its
   // threads' stacks so: _PageReserve (0: an arena or page, the pages, flags) answers the address; _PageCommit (1:
   // page, pages, pager, its data, flags) and _PageDecommit (2) say the pages are there, as a region's are here from
   // its reservation; _PageModifyPermissions (0Dh: page, pages, and-mask, or-mask) answers the permissions before;
-  // _PageFree (0Ah: address, flags) gives the region back. Each pops its arguments)
-  if (dev === 1 && VMM_PAGE[n]) {
-    const a = k => this.r32(sp + 8 + 4 * k); let r;
+  // _PageFree (0Ah: address, flags) gives the region back. Each pops its arguments, as every VMM service does: the
+  // number the caller's ordinal names, VxDCall0 to VxDCall8. The VMM's others answer 0 here: ScanRegW calls service
+  // 1Ch with one argument by VxDCall1 at its logon check and does not take it off its stack itself; left on, its
+  // thread's procedure returned into its CRT block and faulted)
+  if (dev === 1) {
+    const a = i => this.r32(sp + 8 + 4 * i); let r;
     if (n === 0) {
       r = API.KERNEL32.VirtualAlloc[1].call(this, 0, a(1) << 12, 0x2000) >>> 0;
       const reg = r && this.vregions && this.vregions.get(r); if (reg) reg.pc = (this.thread16 && this.thread16.pc) || null;   // (its process's, gone with it)
       if (!r) r = 0xffffffff;
     } else if (n === 0x0a) r = API.KERNEL32.VirtualFree[1].call(this, a(0), 0, 0x8000);
     else if (n === 0x0d) r = 0x20060000;
-    else r = 1;
-    this.reg('esp', sp + 8 + 4 * VMM_PAGE[n]); this.reg('eax', r);
+    else r = VMM_PAGE.has(n) ? 1 : 0;
+    this.reg('esp', sp + 8 + 4 * (k - 1)); this.reg('eax', r);
     return ret;
   }
   const v = this.vxdById && this.vxdById(dev), ddb = v && v.ddb, t = ddb && (this.r16(ddb + 0x0a) & 0x4000) ? this.r32(ddb + 0x38) : 0;
