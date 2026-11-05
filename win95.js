@@ -4194,6 +4194,9 @@ class RemoteApp extends NativeApp {
     if (window.W95Sound) W95Sound.close(this);
     for (const w of this.wins.values()) closeWin(w, true);
     this.wins.clear();
+    // (and any of its windows the page holds outside its map, a travel's shell put back: a dead machine's window
+    // took the mouse and answered nothing)
+    for (const w of windows.filter(v => v.native && v.app === this)) closeWin(w, true);
     if (msgApp === this) msgApp = null;
     for (const ok of this.calls.values()) ok(null); this.calls.clear();
     if (this.mprReady) { this.mprReady(false); this.mprReady = null; }
@@ -5266,7 +5269,7 @@ const SIZE_CUR = { n: 'sizens', s: 'sizens', e: 'sizewe', w: 'sizewe', nw: 'size
  *  there when no shell menu or dialog has the mouse (as pointermove routes it) */
 // (a machine stopped by a fault, its fault dialog up, moves no pointer: the page's own is drawn over it, not the
 // machine's frozen one where the mouse last left it)
-const pointerApp = (x, y) => { const a = cap ? cap.native || null : !menus.length && !modal() ? nativeAt(x, y) : null; return a && !a.stopped ? a : null; };
+const pointerApp = (x, y) => { const a = cap ? cap.native || null : !menus.length && !modal() ? nativeAt(x, y) : null; return a && a.alive && !a.stopped ? a : null; };
 function cursorAt(x, y) {
   if (drag) return drag.cursor;
   if (pointerApp(x, y)) return 'none';   // one pointer: where a machine has the mouse, the cursor is its USER's, as its display adapter has it
@@ -5284,7 +5287,7 @@ function cursorAt(x, y) {
 // the taskbar takes a point when it is on top, or when no window covers it there
 const onTaskbar = (x, y) => !monApp() && y >= barTop() && (tbar.ontop || !winAt(x, y));
 // (the system's machine's windows are its screen, under the page's own: a point on none of the page's is the machine's)
-function winAt(x, y) { const sa = monApp(); for (let i = windows.length - 1; i >= 0; i--) if ((windows[i].app !== sa || windows[i].win32) && !windows[i].min && inR(windows[i], x, y)) return windows[i]; return null; }
+function winAt(x, y) { const sa = monApp(); for (let i = windows.length - 1; i >= 0; i--) if ((windows[i].app !== sa || windows[i].win32) && !windows[i].min && !(windows[i].native && !windows[i].app.alive) && inR(windows[i], x, y)) return windows[i]; return null; }   // (a window of a machine that has ended takes no pointer)
 /** the system's machine while it runs: the page is then its monitor, its whole screen what the page shows (the desktop,
  *  the taskbar and every window on it are the shell's SYSTEM.INI names, EXPLORER.EXE, as the machine draws them) */
 let monitor = false;   // (the page shows the machine's screen: resize)
@@ -6183,7 +6186,14 @@ const braidUi = () => ({
   W95Win32, fs, emit, dirty, closeMenus, dialog, closeWin, msgBox, activate, script,
   machines: () => [...machineWorkers], sysApp: () => sysApp, startSystem, windows: () => windows, shared: () => sharedNow(),
   shell: () => ({ windows, tasks, modals, active, menus, menuSrc, cap, drag, ghost, screen, textClip, clipOwner, msgApp, cascadeN }),
-  setShell: sh => { ({ windows, tasks, modals, active, menus, menuSrc, cap, drag, ghost, screen, textClip, clipOwner, msgApp, cascadeN } = sh); },
+  setShell: sh => {
+    ({ windows, tasks, modals, active, menus, menuSrc, cap, drag, ghost, screen, textClip, clipOwner, msgApp, cascadeN } = sh);
+    // (a machine's windows only while it runs: one ended since the moment leaves none behind to hold the mouse)
+    const dead = w => w && w.native && !(w.app && w.app.alive);
+    windows = windows.filter(w => !dead(w)); tasks = tasks.filter(w => !dead(w)); modals = modals.filter(w => !dead(w));
+    if (dead(active)) active = windows[windows.length - 1] || null;
+    if (cap && cap.native && !cap.native.alive) cap = null;
+  },
   // a machine's window the page is told of (a moment arrived at: its windows as the record has them, braid-page.js
   // arrive), placed as a frame's list places one, with no focus given to the machine; one the page has by that key
   // takes the new place instead
