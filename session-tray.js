@@ -173,11 +173,16 @@
   // (wndproc), as SESSTRAY.EXE's entry calls it: the window, or 0
   def('SESSTRAY', 'Start', 1, function (wndproc) {
     const p = this, inst = p.call(p.thunkFor('KERNEL32', 'GetModuleHandleA'), [0]), cls = str(p, 'class', 'W95SessionTray'), wc = p.alloc(40);
+    // (one instance, as a notification-area program keeps itself: one already running (its window there) and this one
+    // ends at once, its icons not added twice)
+    if (U(p, 'FindWindowA', [cls, str(p, 'title', 'Session')])) return 0;
     for (const [o, v] of [[0, 0], [4, wndproc], [8, 0], [12, 0], [16, inst], [20, 0], [24, 0], [28, 0], [32, 0], [36, cls]]) p.w32(wc + o, v);
     U(p, 'RegisterClassA', [wc]);
     const h = U(p, 'CreateWindowExA', [0, cls, str(p, 'title', 'Session'), 0x80000000, 0, 0, 0, 0, 0, 0, inst, 0]);   // WS_POPUP, never shown
     if (!h) return 0;
-    st.hwnd = h; st.pt = p.alloc(8); st.people.clear();
+    st.hwnd = h; st.pt = p.alloc(8); st.people.clear(); st.meterHwnd = 0; st.meterBar = 0;
+    // (the shell's TaskbarCreated: a new taskbar (Explorer started again) has no icons, and each program adds its own back)
+    st.taskbarCreated = U(p, 'RegisterWindowMessageA', [str(p, 'tbc', 'TaskbarCreated')]);
     sync(p);
     st.braid = { user: 'Braid: the session\'s line', uid: BRAID_UID, icon: icon(p, [128, 0, 128], HOURGLASS) };
     U(p, 'PostMessageA', [h, WM.NOTIFY, NIM.ADD, nid(p, st.braid)]);
@@ -245,7 +250,15 @@
     if (msg === WM.COMMAND && (wp & 0xffff) === CMD.WHERE) { self.postMessage({ t: 'trayWhere', client: st.menuFor }); return done(); }
     if (msg === WM.COMMAND && (wp & 0xffff) === CMD.FOLLOW) { st.following = st.following === st.menuFor ? null : st.menuFor; self.postMessage({ t: 'trayFollow', client: st.following }); return done(); }
     if (msg === WM.COMMAND && (wp & 0xffff) >= CMD.WINDOW && (wp & 0xffff) < CMD.WINDOW + 100) { const w = st.menuWins[(wp & 0xffff) - CMD.WINDOW]; if (w) self.postMessage({ t: 'trayWindow', id: w.id, client: st.menuFor }); return done(); }
-    if (msg === WM.DESTROY) { st.hwnd = 0; U(p, 'PostQuitMessage', [0]); return done(); }
+    if (st.taskbarCreated && msg === st.taskbarCreated) { for (const w of [...st.people.values(), st.braid, st.meter]) if (w) U(p, 'PostMessageA', [h, WM.NOTIFY, NIM.ADD, nid(p, w)]); return done(); }
+    // (its end: each of its icons taken from the notification area, as a program takes its own when it goes; left there,
+    // they stood until the pointer passed over them, and a program started again added its own beside them)
+    if (msg === WM.DESTROY) {
+      const notify = fn(p, 'SHELL32', 'Shell_NotifyIconA');
+      for (const w of [...st.people.values(), st.braid, st.meter]) if (w && w.nid && notify) p.call(notify, [NIM.DELETE, nid(p, w)]);
+      if (st.meterHwnd && U(p, 'IsWindow', [st.meterHwnd])) U(p, 'DestroyWindow', [st.meterHwnd]);
+      st.hwnd = 0; st.meterHwnd = 0; st.meterBar = 0; U(p, 'PostQuitMessage', [0]); return done();
+    }
     return 0;
   });
 })();
