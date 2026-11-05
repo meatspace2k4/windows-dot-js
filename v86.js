@@ -899,7 +899,9 @@ function video() {
       // (mode 13h, 320x200 at 256 colours, on the PC's own VGA: IO.SYS's start-up screen starts there; bit 7, the
       // window kept as it is)
       if ((this.al() & 0x7f) === 0x13 && this.vga) { this.vgaMode13(!(this.al() & 0x80)); return; }
-      this.vgaMode3(); scroll(0, 0, 0, rows - 1, cols - 1, 7, true); setCur(0, 0); this.s8(0x449, 3); return;
+      // (mode 3; bit 7 keeps what the screen holds, as for 13h: IO.SYS goes back from its logo with 83h, and the
+      // screen cleared there lost WININIT's "Please wait while Setup updates your configuration f" before its "iles.")
+      this.vgaMode3(); if (!(this.al() & 0x80)) scroll(0, 0, 0, rows - 1, cols - 1, 7, true); setCur(0, 0); this.s8(0x449, 3); return;
     case 0x01: { const cx = this.r('cx'); this.s16(0x460, cx); this.vgaOut(0x3d4, 0x0a); this.vgaOut(0x3d5, cx >> 8); this.vgaOut(0x3d4, 0x0b); this.vgaOut(0x3d5, cx & 0xff); return; }
     case 0x02: setCur((this.cpu.edx.value >> 8) & 0xff, this.cpu.edx.value & 0xff); return;
     case 0x03: { const [r, c] = cur(); this.w('dx', (r << 8) | c); this.w('cx', this.m16(0x460)); return; }

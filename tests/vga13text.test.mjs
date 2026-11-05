@@ -20,4 +20,9 @@ assert.equal(px(39 * 8, 3 * 8), 0x0f, 'the first at row 3, column 39, in pixels 
 assert.equal(px(0, 4 * 8 + 7), 0x0f, 'the second wrapped at 40 columns to the next row');
 assert.deepEqual([m.m8(0x451), m.m8(0x450)], [4, 1], 'the cursor after it');
 assert.deepEqual(m.u8.slice(V + 0xb8000, V + 0xb8000 + 4000), b800, 'the text buffer untouched');
+// back to text with bit 7 (83h): the screen kept, the cursor home; without it (03h) cleared
+int10(0x0003); for (const ch of 'Please wait') int10(0x0e00 | ch.charCodeAt(0), 7);
+int10(0x0093); int10(0x0083);
+assert.equal(String.fromCharCode(m.m8(0xb8000), m.m8(0xb8002)), 'Pl', 'mode 83h keeps the text screen');
+int10(0x0003); assert.equal(m.m8(0xb8000), 0x20, 'mode 03h clears it');
 console.log('vga13text: ok');
