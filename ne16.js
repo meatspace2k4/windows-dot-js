@@ -70,8 +70,7 @@ P.allocSels = function (base, size, acc = 0xf300) {
   throw new GuestError(`out of selectors (${n} for ${u32(size).toString(16)}h bytes)`);
 };
 P.freeSels = function (sel, n = 1) {
-  // (a loaded module's segment freed: said, with who asked, as nothing should free one; GDI's code selector 885F went
-  // while RUNONCE ran on Windows 98's first start)
+  // (a loaded module's segment freed: said, with who asked, as nothing should free one)
   if (this.ne) for (let k = 0; k < n; k++) { const s = (((sel & 0xfff8) >> 3) + k) << 3; for (const m of this.ne.values()) for (const g of m.segs || []) if (g.sel && (g.sel & 0xfff8) === s) {
     const f = u32(this.cpu.ssb.value) + (this.cpu.esp.value & 0xffff), ret = (this.r16(f + 2) << 16 | this.r16(f)) >>> 0;
     log('warn', 'ne16', `${m.name} segment ${g.num}'s selector ${(g.sel | 7).toString(16)} freed (asked ${(sel >>> 0).toString(16)} n ${n}), from ${this.whereOf(this.lin(ret)) || ret.toString(16)} thread ${this.thread16 ? this.thread16.id : 'main'}`);

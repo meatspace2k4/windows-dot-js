@@ -125,8 +125,8 @@ function translate(p, lin, csb, d32, v86, limit, ss32In) {
     let b;
     for (;;) {
       b = fetch();
-      if (b === 0x66) osz = osz === 4 ? 2 : 4;
-      else if (b === 0x67) asz = asz === 4 ? 2 : 4;
+      if (b === 0x66) osz = d32 ? 2 : 4;   // (a prefix given twice is given once, not undone: DIBENG's 66 66 9A, a 16:16 far call from its 32-bit blit code, ran as 16:32 to 885F:343703BD, RUNONCE's fault on Windows 98's first start)
+      else if (b === 0x67) asz = d32 ? 2 : 4;
       else if (b === 0x26 || b === 0x2e || b === 0x36 || b === 0x3e) seg = (b >> 3) & 3;
       else if (b === 0x64) seg = 4; else if (b === 0x65) seg = 5;
       else if (b === 0xf3 || b === 0xf2) rep = b;
