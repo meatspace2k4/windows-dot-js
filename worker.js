@@ -1765,6 +1765,8 @@ self.onmessage = e => {
   if (m.t === 'start') {
     rpcSab = m.rpc; lanRing = m.o.lan || null; regStore.held = m.registry; W.regAttach(regStore); if (m.o.exp) Object.assign(self, m.o.exp);
     W.log.watch(line => { if (!line.posted) post({ t: 'log', line }); });   // (this machine's log lines, to the page's ring)
+    // (a diagnostic: mods the page names (window.W95BOOTMODS) loaded before the machine is made, so they see its boot)
+    for (const f of m.o.bootMods || []) if (/^[\w.-]+\.js$/.test(f)) { try { importScripts(`${f}?boot=${Date.now()}`); } catch (e) { console.error('[bootmods]', f, e); } }
     machine = new Machine(m.o); machine.start().catch(err => { console.error(err); post({ t: 'exited', code: -1, why: String(err && err.message || err) }); });
   } else if (m.t === 'cmd') {
     const reply = (value, error) => { if (m.id) post({ t: 'reply', id: m.id, value: value === undefined ? null : value, error }, value && value.blob instanceof Uint8Array ? [value.blob.buffer] : []); };   // (an export's bytes handed over, not copied)

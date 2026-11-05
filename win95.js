@@ -3867,7 +3867,7 @@ class RemoteApp extends NativeApp {
     this.worker.onmessage = e => this.message(e.data);
     this.worker.onerror = e => { console.error('[worker]', e.message); this.exited(-1, e.message); };
     this.worker.postMessage({ t: 'start', rpc: this.rpcSab, registry: W95Win32.regDump(), o: {
-      path: this.path, arg: this.arg, system: this.system, quiet: this.quiet, pcDos: this.system && pc && pc.m.dosState ? pc.m.dosState() : null, holdStartup: this.system && !!(sharedNow() && window.W95HOST.shared.joining), session: this.system && !!sharedNow(), wallSkew: sharedNow() ? sharedNow().clockSkew() : 0, sw: this.sw, sh: this.sh, shellW: W, workH: workH(), ring: this.ring, lan: this.lanRing || null,
+      path: this.path, arg: this.arg, system: this.system, quiet: this.quiet, bootMods: this.system ? (Array.isArray(window.W95BOOTMODS) ? window.W95BOOTMODS : (new URLSearchParams(location.search).get('bootmods') || '').split(',').filter(Boolean)) : null, pcDos: this.system && pc && pc.m.dosState ? pc.m.dosState() : null, holdStartup: this.system && !!(sharedNow() && window.W95HOST.shared.joining), session: this.system && !!sharedNow(), wallSkew: sharedNow() ? sharedNow().clockSkew() : 0, sw: this.sw, sh: this.sh, shellW: W, workH: workH(), ring: this.ring, lan: this.lanRing || null,
       bytes: bytes || null, prog: prog ? { name: prog.name, meta: prog.d.meta } : null,
       memwatch: new URLSearchParams(location.search).get('memwatch'),
       dynat: new URLSearchParams(location.search).get('dynat'),   // (?dynat=12219c9: a VxD's blocks there run as run-time code, vmm.js vxd)   // (?memwatch=0,16: cmd 'memwatch' from the machine's first instruction, boot's writes too)

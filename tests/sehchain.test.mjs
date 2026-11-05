@@ -86,4 +86,22 @@ faults(thread(0x40000), 'a frame below the stack ends the chain');
   assert.deepEqual(r.calls, [0x403000], 'thread B\'s own handler is asked');
   assert.equal(r.at >>> 0, 0x7d000000);
 }
+// a handler that took its exception through RtlUnwind ends that dispatch: the thread's next exception, raised deeper
+// in the stack, is not taken for one raised inside it (QUARTZ's second MMX probe went unhandled)
+{
+  const p = thread(0x8ff00); p.w32(0x8ff00, 0xffffffff); p.w32(0x8ff04, 0x401000);
+  const { API } = window.W95Win32;
+  const takes = function () {   // (_except_handler3: RtlUnwind(frame, ...), then the __except block)
+    const frame = this.r32((this.cpu.esp.value >>> 0) + 8), sp = (this.cpu.esp.value >>> 0) - 0x40;
+    this.cpu.esp.value = sp; this.w32(sp, 0x7e000000); this.w32(sp + 4, frame); this.w32(sp + 8, 0); this.w32(sp + 12, 0); this.w32(sp + 16, 0);
+    API.KERNEL32.RtlUnwind[1].call(this);
+    this.cpu.esp.value = 0x8ff00 - 0x20; return 0x7c000000;
+  };
+  const a = run(p, { 0x401000: takes }, p.raise(6, 0x7a000000));
+  assert.equal(a.at >>> 0, 0x7c000000);
+  p.cpu.esp.value = 0x8fd00;   // (deeper than the first's record)
+  const b = run(p, { 0x401000: takes }, p.raise(6, 0x7a000010));
+  assert.deepEqual(b.calls, [0x401000], 'the second probe goes to the thread\'s own handler too');
+  assert.equal(b.at >>> 0, 0x7c000000);
+}
 console.log('sehchain: ok');

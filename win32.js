@@ -1779,6 +1779,10 @@ def('KERNEL32', '#88', -1, function (cb, flags, fn) { const sp = this.reg('esp')
 def('KERNEL32', 'RtlUnwind', 'regs', function () {
   const sp = u32(this.reg('esp')), ret = this.r32(sp), target = this.r32(sp + 4), given = this.r32(sp + 12), value = this.r32(sp + 16);
   const keep = ['ebx', 'esi', 'edi', 'ebp'].map(r => [r, this.reg(r)]);
+  // (a handler unwinding has taken its exception: the thread's dispatches below the target frame are over, as the
+  // program runs on above them. Left, QUARTZ's next MMX probe, deeper in the stack, was taken for one raised inside
+  // the first's handler and its search began past QUARTZ's own frame: unhandled)
+  if (this.sehLive) { const tib = this.cpu.fs.value; for (const [r, s] of this.sehLive) if (s.tib === tib && (!target || r < u32(target))) this.sehLive.delete(r); }
   const rec = (sp - 0x400) & ~15, ctx = rec + 0x60;
   if (given) this.u8.copyWithin(rec, given, given + 0x50); else { this.u8.fill(0, rec, rec + 0x50); this.w32(rec, 0xc0000027); this.w32(rec + 12, ret); }
   this.w32(rec + 4, this.r32(rec + 4) | (target ? 2 : 6));
