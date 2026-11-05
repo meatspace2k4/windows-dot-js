@@ -3668,6 +3668,16 @@ def16('KERNEL', 466, '', 'jmp', function () {
   if (t.pc) this.endProcess(t.pc, code);
   t.exitCode = code; return LAYOUT.SENTINEL;
 });
+// NukeProcess(DWORD pid, WORD flags, WORD code): USER's EndTask ends a program that does not answer (RUNONCE's, as
+// Setup ended HWINFO): that process ends; its own, ends as ExitProcess does. A pid no process has: nothing
+def16('KERNEL', 465, '', 'jmp', function () {
+  const f = this.cpu.ssb.value + (this.cpu.esp.value & 0xffff), code = this.r16(f + 4), pid = this.r32(f + 8) >>> 0, t = this.thread16;
+  const pc = this.procs && (this.procs.get(pid) || [...this.procs.values()].find(x => x.pid === pid || (x.pid >>> 0) === pid));
+  if (!pc) log('warn', 'ne16', `NukeProcess(${pid.toString(16)}): no such process`);
+  if (pc && t && t.pc === pc) { this.endProcess(pc, code); t.exitCode = code; return LAYOUT.SENTINEL; }
+  if (pc) this.endProcess(pc, code);
+  return this.retf16(8);
+});
 // BUNNY_351: KRNL386 calls VWIN32's protected-mode API, function 0Dh (KRNL386 seg1 DB9h), as USER's ExitWindows
 // finishes (USER seg16 14FDh), before the session's end. VWIN32 is this personality's: the Win32 side ends with the
 // machine. UNCONFIRMED: what VWIN32's function 0Dh does is not read from its code

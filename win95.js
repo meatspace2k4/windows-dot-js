@@ -1294,8 +1294,16 @@ function loadHives() {
   if (diskSystem() !== 'win95') return;
   const W = W95Win32, read = new Map();
   for (const [file, which] of HIVES) {
-    const p = join(WINDIR, file), st = hiveStamp(p); if (!st || st === hiveStamps.get(file)) continue;
+    const p = join(WINDIR, file), st = hiveStamp(p); if (!st) continue;
     let held = null; try { held = W.regReadHive(fs.readFile(p), which); } catch (e) { console.error('[registry]', file, e); }
+    // (the file as the host last wrote or read it is the registry as it is already, unless the registry has lost what
+    // it holds: a store or moment from before it was read left the registry without Setup's keys, its stamp saying
+    // read, and Explorer found none of the shell's classes)
+    if (st === hiveStamps.get(file) && held) {
+      const roots = which === 'system' ? ['hklm', 'hkcr', 'hkcc'] : ['hku', 'hkcu'], have = new Set(W.regDump().map(([k]) => k.toLowerCase()));
+      if (held.every(([k]) => !roots.includes(k.split('\\')[0].toLowerCase()) || have.has(k.toLowerCase()))) continue;
+      console.info(`[registry] ${file}: the registry lacks keys the file holds; read again`);
+    }
     if (held && held.length) read.set(which, held);
     hiveStamps.set(file, st);
   }
