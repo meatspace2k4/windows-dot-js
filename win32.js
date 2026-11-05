@@ -262,8 +262,20 @@ class Process {
    *  A relocated DLL is placed clear of the programs' two bases: 400000h (the scan starts above it) and 1000000h, where
    *  35 of Windows 98's programs are linked with no relocations, the largest 5F000h (DXDIAG). Relocated next to
    *  MSHTA's image there, MSVCRT left PSTORES no room, and its start failed (ERROR_BAD_EXE_FORMAT) */
+  /** the address ranges the bundle's 16-bit modules load at (their segments' fixed bases), for this machine's choice */
+  bundleSpans16() {
+    if (!this.neBundle) return [];
+    const all = this.neBundle();
+    if (this.neSpans && this.neSpans.of === all) return this.neSpans.spans;
+    const spans = [];
+    for (const s of Object.values(all)) for (const g of (s.meta && s.meta.segs) || []) spans.push([g.base, g.base + Math.max(g.alloc || 0, g.len || 0, 1)]);
+    this.neSpans = { of: all, spans }; return spans;
+  }
   imageRoom(pref, size, relocatable, own = false) {
-    const spans = own ? this.moduleSpans(m => m.name !== 'EXE') : this.moduleSpans(), free = a => a >= 0x400000 && a + size <= 0x02000000 && !spans.some(([lo, hi]) => a < hi && lo < a + size);
+    // (and every 16-bit module of the bundle's, loaded or not: each loads at its build's fixed base (loadNE), over
+    // whatever is there. WINSPOOL.DRV, placed at BA0000h before MMTASK, had MMTASK's image written over it, and
+    // RUNDLL32 faulted in its start)
+    const spans = [...(own ? this.moduleSpans(m => m.name !== 'EXE') : this.moduleSpans()), ...this.bundleSpans16()], free =a => a >= 0x400000 && a + size <= 0x02000000 && !spans.some(([lo, hi]) => a < hi && lo < a + size);
     if (free(pref)) return pref;
     const PROGRAMS = [0x01000000, 0x01100000], programs = a => !own && a < PROGRAMS[1] && PROGRAMS[0] < a + size;
     if (relocatable) for (let a = 0x00620000; a + size <= 0x02000000; a += 0x10000) if (free(a) && !programs(a)) return a;

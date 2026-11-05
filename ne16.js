@@ -40,7 +40,8 @@ P.init16 = function () {
   this.atoms = new Map();             // selector -> atom table
   this.dosFiles = new Map(); this.nextDosFile = 5;
   this.mapls = new Map();             // linear 32K-aligned base -> selector (MapLS)
-  this.th16 = (window.W95SYSTEM && window.W95SYSTEM.thunks16 || []).map(k => this.thunk16Def(k));
+  // (Windows 98's build's table extends the bundle's, the same thunks at the same numbers: tools/build_system98.py)
+  this.th16 = ((window.W95SYSTEM98 && window.W95SYSTEM98.thunks16) || (window.W95SYSTEM && window.W95SYSTEM.thunks16) || []).map(k => this.thunk16Def(k));
   this.lastError16 = 0;
 };
 P.setDesc = function (sel, base, limit, acc = 0xf300) {
@@ -187,6 +188,16 @@ P.loadNE = function (name, file, module, meta) {
     this.setDesc(sg.sel, sg.base, limit, sg.flags & 1 ? 0xf300 : (sg.bits === 32 ? 0x40fb00 : 0xfb00));
   }
   for (const [lin, size, val] of meta.fixups) { if (size === 1) u8[lin] = val; else if (size === 2) this.w16(lin, val); else this.w32(lin, val); }
+  // (Windows 98's GDI and USER, their build (system98.js): the data segment on the heap with room to grow to 2 MB
+  // where it is, as loadNEFile gives the files' own. GDI grows it for its 32-bit heap after GDI32 has taken flat
+  // pointers into it; at the build's base, the next image close after it, it was moved, GDI32 read the old place, and
+  // RUNDLL32 faulted in WINSPOOL.DRV's start as the desktop came up. The code reaches it by its selector's base)
+  const dgRoom = meta.autodata && /^(GDI|USER)$/.test(name) && (this.neBundle()[name] || {}).w98;
+  if (dgRoom) {
+    const dg = meta.segs[meta.autodata - 1], lin = this.alloc(0x200000 + 16, true);
+    u8.copyWithin(lin, dg.base, dg.base + Math.max(dg.alloc, 0x10000));
+    this.setDesc(dg.sel, lin, 0xffff, 0xf300); rec.dgLin = lin;
+  }
   for (const [ord, [sel, off]] of Object.entries(meta.exports)) rec.exports.set(+ord, u32((sel << 16) | off));
   rec.run = new WebAssembly.Instance(module, this.imports).exports.run;
   if (name === 'SYSTEM' || name === 'MMSYSTEM') rec.clock = true;   // they read the timer's counts from memory
@@ -200,7 +211,7 @@ P.loadNE = function (name, file, module, meta) {
   rec.hInstance = rec.dgroup || rec.hModule;
   if (rec.dgroup) {   // DGROUP starts at its minimum allocation plus local heap and stack; the module grows it itself
     const dg = meta.segs[meta.autodata - 1], init = Math.min(0x10000, ((dg.minalloc || 0x10000) + rd.u16(file, n + 0x10) + taskStack(rd.u16(file, n + 0x12)) + 15) & ~15);
-    this.ghandles.set(rec.dgroup | 1, { lin: dg.base, size: init, n: 1, flags: 2, lock: 0, owner: rec.hModule });
+    this.ghandles.set(rec.dgroup | 1, { lin: rec.dgLin || dg.base, size: init, n: 1, flags: 2, lock: 0, owner: rec.hModule, ...(rec.dgLin ? { heap: true } : {}) });
     this.w32(L.LDT + (rec.dgroup & 0xfff8) + 4, init - 1);
   }
   for (const sg of meta.segs) if (sg.num !== meta.autodata) this.ghandles.set(sg.sel | 1, { lin: sg.base, size: Math.max(sg.alloc, 1), n: 1, flags: 0, lock: 0, owner: rec.hModule, code: !(sg.flags & 1) });
@@ -280,7 +291,7 @@ P.bundleDisk16 = function (sys, fname, native, memo = new Map()) {
   let r = null;
   if (isNE && window.W95Win32.sha256(f) !== sys.meta.sha256) r = full;
   else {
-    const all = (window.W95SYSTEM && window.W95SYSTEM.ne) || {};
+    const all = this.neBundle();
     for (const imp of sys.meta.imports || []) {
       // (KERNEL's and the JS stand-ins' are thunks, answered whatever runs; a JS16 name loaded as a module (native USER,
       // Windows 98's from its file) is decided by what is loaded, whatever this caller's flag: a bundled COMMDLG loaded
@@ -288,7 +299,10 @@ P.bundleDisk16 = function (sys, fname, native, memo = new Map()) {
       const m = this.ne.get(imp);
       if (imp === 'KERNEL' || (JS16.includes(imp) && !(m && m.meta) && !native)) continue;
       const s = !m && (all[imp] || Object.values(all).find(x => x.meta && x.meta.name.toUpperCase() === imp));
-      const stale = m ? !!(m.meta && m.meta.dynamic) : !!(s && this.bundleDisk16(s, s.fileName, native, memo));
+      // (and one of the other build: Windows 95's build of this module is linked to Windows 95's of its imports, at
+      // their selectors, not Windows 98's, tools/build_system98.py)
+      const other = x => !!(x && x.w98) !== !!sys.w98;
+      const stale = m ? !!(m.meta && m.meta.dynamic) || (!!m.meta && other(m)) : !!(s && (other(s) || this.bundleDisk16(s, s.fileName, native, memo)));
       if (!stale) continue;
       // (with no file of its own to map, it is not found, as the loader finds no file: the bundle's copy would call the
       // bundle's imp at selectors nothing made)
@@ -297,6 +311,28 @@ P.bundleDisk16 = function (sys, fname, native, memo = new Map()) {
   }
   memo.set(key, r); return r;
 };
+/** the bundle's 16-bit modules for this machine's disk: each one Windows 98's build (system98.js, tools/
+ *  build_system98.py) where the disk's file is the file that build was made from, else Windows 95's (system.js).
+ *  Windows 98 Setup puts its own GDI.EXE, USER.EXE and the rest in place of Windows 95's; with only Windows 95's
+ *  build, each was mapped from its file and ran block by block as run-time code, and the screen drew at under a
+ *  frame a second. Decided once for the machine, from the files as it starts (Setup's restart is a new machine) */
+P.neBundle = function () {
+  if (this.neAll) return this.neAll;
+  const all = (window.W95SYSTEM && window.W95SYSTEM.ne) || {}, w98 = (window.W95SYSTEM98 && window.W95SYSTEM98.ne) || {};
+  if (!Object.keys(w98).length || !this.fs || self.W95SYS98 === false) return all;   // (?exp=W95SYS98=false: Windows 95's build only)
+  const pick = {}, ours = {};
+  for (const [k, s] of Object.entries(all)) {
+    const alt = w98[k]; pick[k] = s;
+    if (!alt) continue;
+    const full = this.findFile16(alt.fileName); let f = null; try { f = full && this.fs.readFile(full); } catch (_) { /* none */ }
+    if (f && window.W95Win32.sha256(f) === alt.meta.sha256) { alt.w98 = true; ours[k] = alt; }
+  }
+  // (Windows 98's builds take the image ranges, block tables and selectors of Windows 95's builds of the same modules
+  // (tools/build_system98.py): with any of them, none of those is loaded; a module whose file is neither build's is
+  // mapped from its file, loadNEFile)
+  if (Object.keys(ours).length) for (const k of Object.keys(w98)) { if (ours[k]) pick[k] = ours[k]; else delete pick[k]; }
+  return (this.neAll = pick);
+};
 P.loadLibrary16 = function (name, native = false, defer = false) {
   this.init16();
   name = name.replace(/\.?\s*$/, '');   // ("MMSYSTEM.", VB3's Declare ... Lib "MMSYSTEM": a name with no extension)
@@ -304,7 +340,7 @@ P.loadLibrary16 = function (name, native = false, defer = false) {
   if (base === 'KERNEL' || base === 'KRNL386') return this.kernelModule();   // KRNL386.EXE is the module KERNEL's file
   // the module GRABBER (WinOldAp's import) is the display's grabber, the file SYSTEM.INI's [boot] 386grabber names
   if (base === 'GRABBER' && !this.ne.has('GRABBER')) { const g = this.grabberFile(); if (g) name = g; }
-  const all = (window.W95SYSTEM && window.W95SYSTEM.ne) || {};
+  const all = this.neBundle();
   const file = name.toUpperCase().replace(/^.*\\/, '');
   // a file name finds that file's module first (MSACM.DRV is the module MSACMMAP, not MSACM.DLL's MSACM)
   const byFile = /\./.test(file) && Object.values(all).find(s => s.fileName === file);
@@ -323,7 +359,7 @@ P.loadLibrary16 = function (name, native = false, defer = false) {
   const b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
   if (this.ne.has(sys.meta.name.toUpperCase())) return this.ne.get(sys.meta.name.toUpperCase());
   const rec = this.loadNE(sys.meta.name.toUpperCase(), sys.fileBytes || (sys.fileBytes = b64(sys.file)), sys.mod || (sys.mod = new WebAssembly.Module(b64(sys.wasm))), sys.meta);
-  rec.fileName = sys.fileName;
+  rec.fileName = sys.fileName; rec.w98 = !!sys.w98;   // (which build: a module of the other one's imports are mapped from their files, bundleDisk16)
   for (const imp of sys.meta.imports || []) if (imp !== 'KERNEL' && (native || !JS16.includes(imp))) this.loadLibrary16(imp, native);
   if (defer) return rec;   // the caller runs LibEntry (initNE) once what it needs is in place
   // (a boot module's LibEntry waits for bootUser16, as KRNL386's bootstrap defers each library's init until its own
@@ -345,11 +381,12 @@ P.bootUser16 = function () {
   // them when it loads, naming GDI.EXE: so GDI's image first, then GDI32, then GDI's LibEntry, as USER's below. Run as
   // the display driver's import, its LibEntry read the unset target table and jumped to what was at 0. The bundle's
   // GDI loads in the drivers' order below, as it always has
-  const gsys = window.W95SYSTEM && window.W95SYSTEM.ne && window.W95SYSTEM.ne.GDI;
-  const gdiDisk = !this.ne.has('GDI') && !!(gsys && this.bundleDisk16(gsys, gsys.fileName, true));
+  const gsys = this.neBundle().GDI;
+  // (Windows 98's GDI, its build or its file, the same: system98.js)
+  const gdiDisk = !this.ne.has('GDI') && !!(gsys && (gsys.w98 || this.bundleDisk16(gsys, gsys.fileName, true)));
   this.initAfter32 = new Set(gdiDisk ? ['GDI', 'USER'] : ['USER']);
   const gdi = gdiDisk ? this.loadLibrary16('GDI', true, true) : null;
-  if (gdi && gdi.meta && gdi.meta.dynamic && !gdi.inited) {
+  if (gdi && gdi.meta && (gdi.meta.dynamic || gdi.w98) && !gdi.inited) {
     const sys = window.W95SYSTEM, b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
     if (sys && sys.dlls) for (const [n, x] of Object.entries(sys.dlls)) { const k = n.replace(/\.DLL$/, ''); if (!this.dlls.has(k)) this.dlls.set(k, { file: x.fileBytes || (x.fileBytes = b64(x.file)), module: x.mod || (x.mod = new WebAssembly.Module(b64(x.wasm))), meta: x.meta }); }
     this.loadDll('GDI32'); this.runPendingInits();
@@ -502,7 +539,7 @@ P.loadNEDynamic = function (key, file) {
   // the modules it imports, by the module-reference table: each one there (loaded, the bundle's, a JS one, or a file
   // in the program's folder or Windows'), or the module is not loaded, as KRNL386 refuses one whose DLL is missing
   const mods = []; for (let i = 0; i < h(0x1e); i++) mods.push(pstr(n + h(0x2a) + rd.u16(file, n + h(0x28) + 2 * i)).toUpperCase());
-  const all = (window.W95SYSTEM && window.W95SYSTEM.ne) || {}, dir = key.slice(0, key.lastIndexOf('\\'));
+  const all = this.neBundle(), dir = key.slice(0, key.lastIndexOf('\\'));
   const there = m => m === 'KERNEL' || JS16.includes(m) || this.ne.has(m) || all[m] || Object.values(all).some(s => s.meta && s.meta.name.toUpperCase() === m) ||
     ['.DLL', '.EXE', '.DRV'].some(x => this.findFile16(m + x) || this.fs.exists(`${dir}\\${m}${x}`)) || (m === 'GRABBER' && !!this.grabberFile());
   const missing = mods.find(m => !there(m));

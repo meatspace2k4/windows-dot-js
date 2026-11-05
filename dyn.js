@@ -885,9 +885,17 @@ function assemble(fn, shared) {
 function fileCodeSeg(p, eip) {
   for (const m of p.ne ? p.ne.values() : []) {
     if (!m || !m.meta || !m.meta.dynamic || !m.segs) continue;
-    for (const g of m.segs) if (!(g.flags & 1) && g.len && eip >= g.base && eip < g.base + g.len) return g;
+    for (const g of m.segs) if (!(g.flags & 1) && g.len && eip >= g.base && eip < g.base + g.len) { g.mod = m; return g; }
   }
   return null;
+}
+/** a block start run-time code reached in a module loaded from its file, kept as its segment and offset (the module's
+ *  dynEntries): what running it found of its code, the entries tools/recomp.py takes to translate the file whole
+ *  (--entries; the worker posts them to the server, findings/dynentries) */
+function noteEntry(g, a) {
+  const m = g.mod; if (!m) return;
+  const s = m.dynEntries || (m.dynEntries = new Set()), k = `${g.num}:${a - g.base}`;
+  if (!s.has(k)) { s.add(k); (m.dynNew || (m.dynNew = new Set())).add(k); }
 }
 const REGION_BLOCKS = 96, REGION_ROUNDS = 512;
 /** a region of a file-loaded module's code from `eip`: the blocks reached from it by the near jumps, calls and
@@ -965,6 +973,7 @@ P.dynBlock = function (eip) {
     const had = kr.find(k => regionOk(this, k)); if (had) return remember(had);
     const r = dynRegion(this, eip, g, csb, d32, ss32, keyOf);
     if (r) {
+      for (const { a } of r.ranges) noteEntry(g, a);
       const run = new WebAssembly.Instance(new WebAssembly.Module(assemble(r.fn, Object.prototype.toString.call(this.mem.buffer) === '[object SharedArrayBuffer]')), { env: dynEnv(this), cpu: this.cpu }).exports.run;
       const c = { run, ranges: r.ranges, hooks: this.entryHooks ? this.entryHooks.size : 0 };
       // (the region for each of its blocks: entered at one later (a return from another module, a callback), it runs

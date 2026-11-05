@@ -9,6 +9,8 @@ self.window = self;
 // segment on the page (the other computer, lanhost.js; other machines' cards), frames passing both ways
 self.W95LAN = { stations: new Set(), frames: 0 };
 importScripts('bridge.js', 'braid.js', 'fs.js', 'win32.js', 'gl.js', 'shell32.js', 'system.js', 'claude-exe.js', 'claude-app.js', 'session-dll.js', 'sesstray-exe.js', 'session-tray.js', 'dbwin-exe.js', 'dbwin.js','osclass.js', 'ne16.js', 'setupx-lzx.js', 'vmm.js', 'sound.js', 'lan.js', 'parallel.js', 'netfs.js', 'dyn.js', 'v86.js', 'savers.js', 'saver-runtime.js');
+// Windows 98's build of its 16-bit modules, where it has been made (tools/build_system98.py): ne16.js neBundle
+try { importScripts('system98.js'); } catch (_) { /* none built: Windows 98's modules run from their files */ }
 const B = self.W95Bridge, W = self.W95Win32, { FSError, join, basename, extname } = self.W95FS;
 const b64bytes = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
 const sha256 = W.sha256;   // (a program's identity as the bundle records it: spawnProgram)
@@ -177,7 +179,7 @@ class Machine {
     if (this.names) return this.names;
     const S = self.W95SYSTEM || {}, n = new Map();
     const add = (v, name) => { if (v && (typeof v === 'object' || typeof v === 'function') && !n.has(v)) n.set(v, name); };
-    for (const [g, grp] of [['ne', S.ne], ['dlls', S.dlls], ['programs', S.programs], ['net', S.net], ['vxds', S.vxds], ['savers', (self.W95SAVERS || {}).dlls]]) for (const [k, d] of Object.entries(grp || {})) { add(d, `${g}:${k}`); add(d.meta, `${g}:${k}.meta`); add(d.bytes, `${g}:${k}.bytes`); add(d.imgBytes, `${g}:${k}.imgBytes`); add(d.mod, `${g}:${k}.mod`); if (typeof d.modSync === 'object') add(d.modSync, `${g}:${k}.modSync`); }
+    for (const [g, grp] of [['ne', S.ne], ['ne98', (self.W95SYSTEM98 || {}).ne], ['dlls', S.dlls], ['programs', S.programs], ['net', S.net], ['vxds', S.vxds], ['savers', (self.W95SAVERS || {}).dlls]]) for (const [k, d] of Object.entries(grp || {})) { add(d, `${g}:${k}`); add(d.meta, `${g}:${k}.meta`); add(d.bytes, `${g}:${k}.bytes`); add(d.imgBytes, `${g}:${k}.imgBytes`); add(d.mod, `${g}:${k}.mod`); if (typeof d.modSync === 'object') add(d.modSync, `${g}:${k}.modSync`); }
     if (this.proc) for (const [k, d] of this.proc.dlls) if (d.module || d.meta && !d.meta.dynamic) { add(d, `dll:${k}`); add(d.meta, `dll:${k}.meta`); add(d.file, `dll:${k}.file`); add(d.module, `dll:${k}.module`); }
     return (this.names = n);
   }
@@ -228,7 +230,7 @@ class Machine {
       if (rec.meta && rec.meta.dynamic) continue;
       let mod = rec.module instanceof WebAssembly.Module ? rec.module : null;
       if (!mod && rec.kind === 'vxd') { const d = (S.vxds || {})[rec.file]; if (d) mod = d.mod || (d.wasm && (d.mod = new WebAssembly.Module(b64bytes(d.wasm)))); }   // (a VxD the moment had loaded and this machine had not, SPOOLER: its module is made only as vmm.js vxd loads it)
-      else if (!mod && rec.kind === 'ne') mod = ((S.ne || {})[rec.name] || Object.values(S.ne || {}).find(d => d.meta === rec.meta) || {}).mod;
+      else if (!mod && rec.kind === 'ne') { const n98 = (self.W95SYSTEM98 || {}).ne || {}, d = Object.values(n98).find(x => x.meta && rec.meta && x.meta.sha256 && x.meta.sha256 === rec.meta.sha256 && rec.w98) || (S.ne || {})[rec.name] || Object.values(S.ne || {}).find(x => x.meta === rec.meta) || {}; mod = d.mod || (d.wasm && rec.w98 && (d.mod = new WebAssembly.Module(b64bytes(d.wasm)))); }   // (Windows 98's build where the moment's module was it)
       else if (!mod && isExe) { const progs = S.programs || {}, d = (rec.meta.sha256 && Object.values(progs).find(x => x.meta && x.meta.sha256 === rec.meta.sha256)) || progs[rec.meta.name + '.EXE']; if (d) mod = d.mod || d.modSync || (d.modSync = new WebAssembly.Module(b64bytes(d.wasm))); }
       else if (!mod) {
         const d = p.dlls && p.dlls.get(rec.name); if (d && d.module instanceof WebAssembly.Module) mod = d.module;
@@ -798,6 +800,7 @@ class Machine {
       post({ t: 'held', held: { hung: p.win16Held.hung, who, since: p.win16Held.since }, stats: { ...p.stats } }); this.postScan();
     }   // (no USER while a thread holds the lock: the page learns it is held, and has the screen)
     this.lastStepEnd = performance.now();
+    if (this.lastStepEnd - (this.dynPostAt || 0) > 10000) { this.dynPostAt = this.lastStepEnd; this.dynEntriesPost(); }
     if (this.detLog) { const th = p.thread16; this.detLog.push(`step @${this.vclock.now} slices ${p.stats.slices} th ${th ? th.id : 'main'} eip ${(p.cpu.eip.value >>> 0).toString(16)} esp ${(p.cpu.esp.value >>> 0).toString(16)} eax ${(p.cpu.eax.value >>> 0).toString(16)}`); if (this.detLog.length > 200000) this.detLog.splice(0, 100000); }
     // (a machine with work left (a thread's time ran out, or one holds the Win16Lock) steps again at once, through a
     // message rather than a timer, whose 16 ms left a third of a busy machine's time unused; an idle one waits 16 ms;
@@ -815,6 +818,20 @@ class Machine {
     const wall = performance.now();
     if (busy || this.keyq.length || this.fast) { this.stepDue = wall; this.stepSoon(); }
     else { const due = this.stepDue = Math.max((this.stepDue || wall) + 16, wall - 48); this.timer = setTimeout(() => this.step(), Math.max(0, due - wall)); }
+  }
+  /** the block starts run-time code found in modules loaded from their files since the last post (dyn.js noteEntry),
+   *  sent to the server, which keeps them by the file's SHA-256 for tools/recomp.py (--entries) */
+  dynEntriesPost() {
+    const p = this.proc;
+    for (const m of p && p.ne ? p.ne.values() : []) {
+      if (!m || !m.dynNew || !m.dynNew.size || !m.file) continue;
+      const entries = [...m.dynNew]; m.dynNew.clear();
+      const sha = m.dynSha || (m.dynSha = W.sha256(m.file));
+      // (the file itself with the first post: what ran, which tools/build_system98.py translates)
+      let bytes = null; if (!m.dynFileSent) { m.dynFileSent = true; let s = ''; for (let i = 0; i < m.file.length; i += 0x8000) s += String.fromCharCode.apply(null, m.file.subarray(i, i + 0x8000)); bytes = btoa(s); }
+      fetch('/__dynentries', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: m.name, file: String(m.path || '').replace(/^.*\\/, ''), sha, size: m.file.length, entries, ...(bytes ? { bytes } : {}) }) })
+        .catch(() => { for (const e of entries) m.dynNew.add(e); if (bytes) m.dynFileSent = false; });   // (kept for the next post)
+    }
   }
   /** the next step as soon as the worker's other messages (the page's input, commands) have had their turn */
   stepSoon() {
