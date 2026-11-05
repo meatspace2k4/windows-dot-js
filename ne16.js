@@ -1875,6 +1875,11 @@ P.nativeChildren = function (parent, send = true) {
   // (nor while a thread holds the Win16Lock: it is in the middle of a run of its own (SUWIN's key check) and takes no
   // message until it is done; a send then waited on it, and the page lost its frames meanwhile)
   const ask = send && !this.replyAwaited() && !this.win16Held;
+  // (a Windows 3.x task's controls are sent nothing either: a send from the system's context into its window makes a
+  // record on the task's queue that it answers only at its own loop (windowTask16), and the host's next call linked it
+  // again: W98SETUP, waited on for its Continue button, faulted returning from its wash window's procedure to 0137:0000.
+  // Its edits answer with their window text (DefWindowProc), its buttons with their state word (the check in bits 0-1))
+  const w16 = !!this.windowTask16(parent), sendOk = ask && !w16;
   const walk = (p, depth) => {
     for (let h = u(262, [['w', p], ['w', 5]]), n = 0; h && n < 512; h = u(262, [['w', h], ['w', 2]]), n++) {
       if (!u(49, [['w', h]])) continue;
@@ -1883,14 +1888,14 @@ P.nativeChildren = function (parent, send = true) {
       const cl = u(58, [['w', h], ['l', buf + 0x180], ['w', 64]]), cls = cl ? this.readA(a + 0x180, cl) : '';
       const style = this.user16(135, [['w', h], ['w', 0xfff0]]).dxax;                                            // GetWindowLong(GWL_STYLE)
       let text = '';
-      if (/^(edit|combobox|richedit)$/i.test(cls) && ask) {   // SendMessage WM_GETTEXT, into a buffer the size of an edit's limit (WordPad's RICHEDIT too)
+      if (/^(edit|combobox|richedit)$/i.test(cls) && sendOk) {   // SendMessage WM_GETTEXT, into a buffer the size of an edit's limit (WordPad's RICHEDIT too)
         if (!this.tbufLin) { this.tbufLin = this.alloc(0x10000); this.tbufSel = this.allocSels(this.tbufLin, 0x10000); }
         const tl = this.asWindowTask(h, () => u(111, [['w', h], ['w', 0x0d], ['w', 0xffff], ['l', u32(this.tbufSel << 16)]])); text = tl ? this.readA(this.tbufLin, tl) : '';
       } else { const tl = u(107, [['w', h], ['w', 0x0d], ['w', 160], ['l', buf + 16]]); text = tl ? this.readA(a + 16, tl) : ''; }
       const c = { hwnd: h, parent: p, x, y, w, h: hh, cls, text, id: u(277, [['w', h]]), style, enabled: !!u(35, [['w', h]]), focused: h === focus, depth, ...(ask ? {} : { unknown: true }) };
-      if (/^button$/i.test(cls) && [2, 3, 4, 5, 6, 9].includes(style & 0x0f)) c.checked = ask ? this.asWindowTask(h, () => u(111, [['w', h], ['w', 0x400], ['w', 0], ['l', 0]])) : undefined;
-      if (ask && /^SysTabControl32$/i.test(cls)) c.items = this.tabItems(h, x, y);
-      if (ask && /^SysListView32$/i.test(cls)) c.items = this.listItems(h, x, y);
+      if (/^button$/i.test(cls) && [2, 3, 4, 5, 6, 9].includes(style & 0x0f)) c.checked = sendOk ? this.asWindowTask(h, () => u(111, [['w', h], ['w', 0x400], ['w', 0], ['l', 0]])) : ask ? u(133, [['w', h], ['w', 0]]) & 3 : undefined;   // BM_GETCHECK; GetWindowWord(0)
+      if (sendOk && /^SysTabControl32$/i.test(cls)) c.items = this.tabItems(h, x, y);
+      if (sendOk && /^SysListView32$/i.test(cls)) c.items = this.listItems(h, x, y);
       out.push(c); walk(h, depth + 1);
     }
   };

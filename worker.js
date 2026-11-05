@@ -8,7 +8,7 @@ self.window = self;
 // the Ethernet segment as this worker has it: its own stations (the card, in the system's machine), and the rest of the
 // segment on the page (the other computer, lanhost.js; other machines' cards), frames passing both ways
 self.W95LAN = { stations: new Set(), frames: 0 };
-importScripts('bridge.js', 'braid.js', 'fs.js', 'win32.js', 'gl.js', 'shell32.js', 'system.js', 'claude-exe.js', 'claude-app.js', 'session-dll.js', 'sesstray-exe.js', 'session-tray.js', 'dbwin-exe.js', 'dbwin.js','osclass.js', 'ne16.js', 'vmm.js', 'sound.js', 'lan.js', 'parallel.js', 'netfs.js', 'dyn.js', 'v86.js', 'savers.js', 'saver-runtime.js');
+importScripts('bridge.js', 'braid.js', 'fs.js', 'win32.js', 'gl.js', 'shell32.js', 'system.js', 'claude-exe.js', 'claude-app.js', 'session-dll.js', 'sesstray-exe.js', 'session-tray.js', 'dbwin-exe.js', 'dbwin.js','osclass.js', 'ne16.js', 'setupx-lzx.js', 'vmm.js', 'sound.js', 'lan.js', 'parallel.js', 'netfs.js', 'dyn.js', 'v86.js', 'savers.js', 'saver-runtime.js');
 const B = self.W95Bridge, W = self.W95Win32, { FSError, join, basename, extname } = self.W95FS;
 const b64bytes = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
 const sha256 = W.sha256;   // (a program's identity as the bundle records it: spawnProgram)
@@ -184,7 +184,7 @@ class Machine {
   braidNamed() { const by = new Map(); for (const [v, k] of this.braidNames()) by.set(k, v); return name => by.get(name); }
   /** the properties of the machine's own object that are the host's live things, not the moment's: the step timer,
    *  the message channel, the input ring, the moments themselves, the clock's skew */
-  braidSkip(obj, k) { return (obj === this && (k === 'timer' || k === 'soonCh' || k === 'soonPending' || k === 'ring' || k === 'alive' || k === 'mods' || k === 'stepLog' || k === 'started' || k === 'fast' || k === 'until' || k === 'untilWait' || k === 'markWait' || k === 'detLog' || k === 'trailLog')) || (obj === this.proc && (k === 'dynCache' || k === 'dynFast' || k === 'dynEnv' || k === 'runHook')); }   // (the run-time translations: a cache of code, made again as the code runs; its wasm instances cannot be exported. dynFast, the block each address ran last, too: carried in a moment without its code, an arrival from an anchor called a block with no run)
+  braidSkip(obj, k) { return (obj === this && (k === 'timer' || k === 'stepDue' || k === 'soonCh' || k === 'soonPending' || k === 'ring' || k === 'alive' || k === 'mods' || k === 'stepLog' || k === 'started' || k === 'fast' || k === 'until' || k === 'untilWait' || k === 'markWait' || k === 'detLog' || k === 'trailLog')) || (obj === this.proc && (k === 'dynCache' || k === 'dynFast' || k === 'dynEnv' || k === 'runHook')); }   // (the run-time translations: a cache of code, made again as the code runs; its wasm instances cannot be exported. dynFast, the block each address ran last, too: carried in a moment without its code, an arrival from an anchor called a block with no run)
   /** the lint's record of the machine now (braid.js lint) */
   braidProbe() {
     const p = this.proc, held = p.win16Held ? { who: typeof p.win16Held.who === 'object' ? 'thread ' + p.win16Held.who.id : String(p.win16Held.who), since: p.win16Held.since, cpu: p.win16Held.cpu, hung: !!p.win16Held.hung } : null;
@@ -256,6 +256,7 @@ class Machine {
     this.until = null; if (this.untilWait) { const w = this.untilWait; this.untilWait = null; w({ at: s.now, left: true }); }
     this.faultTaken = false; this.stopped = false; this.txtGen = -1;
     if (this.proc.fault) this.proc.fault = null;
+    if (this.proc.lzxInstall) this.proc.lzxInstall();   // (SETUPX's decoder answered in JS again: the moment's entry hooks are its own, setupx-lzx.js)
     this.timer = 0; this.soonPending = false;
     if (this.alive) this.timer = setTimeout(() => this.step(), 0);
     return { ms: Math.round(performance.now() - t0), now: s.now };
@@ -804,7 +805,13 @@ class Machine {
     // (a moment asked for at a time of the clock, reached: taken now, between steps: cmd 'markAt')
     if (this.markWait && this.vclock.now >= this.markWait.at) { const w = this.markWait; this.markWait = null; try { const s = this.braidMark(w.name); moments.set(s.name, s); w.ok({ ...self.W95Braid.describe(s), took: s.took }); } catch (e) { w.no(e); } }
     const busy = p.preempted || p.win16Held || performance.now() - t0 > 6;
-    if (busy || this.keyq.length || this.fast) this.stepSoon(); else this.timer = setTimeout(() => this.step(), 16);
+    // (an idle step starts a period after the last one started, not a period after it ended: waiting 16 ms past each
+    // step's own work made the steps ~21 ms apart on the wall while each moved the clock 16 ms, so the machine ran at
+    // three quarters of real time and its sound card made too few samples, the output running dry (stutter). Late by
+    // up to three periods (a timer's jitter, a slow step), it catches up; later than that, the cadence starts again)
+    const wall = performance.now();
+    if (busy || this.keyq.length || this.fast) { this.stepDue = wall; this.stepSoon(); }
+    else { const due = this.stepDue = Math.max((this.stepDue || wall) + 16, wall - 48); this.timer = setTimeout(() => this.step(), Math.max(0, due - wall)); }
   }
   /** the next step as soon as the worker's other messages (the page's input, commands) have had their turn */
   stepSoon() {

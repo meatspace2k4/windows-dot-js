@@ -3,7 +3,8 @@
 // here into the caller's buffer. Every Win98 SE .CAB folder is LZX with a 2 MB window (CFFOLDER typeCompress 1503h).
 // The stream's state (window, R0-R2, trees' lengths, block in progress, E8 header) lives on the process (lzxJS), so a
 // moment carries it with the memory; a stream the native decoder began goes on natively until LDIReset (the
-// internal context's byte count at +2B0Ch back to 0).
+// internal context's byte count at +2B0Ch back to 0). Each machine's worker loads it after ne16.js (worker.js
+// importScripts); a travel puts the hook back (worker.js braidTravel, lzxInstall)
 (() => {
   const W = self.W95Win32, P = W && W.Process.prototype; if (!P || P.__lzxjs) return;
   const SEG = 23, OFF = 0x128, SIG = [0xc8, 0x0c, 0x00, 0x00, 0x57, 0x56, 0x66, 0xc7, 0x46, 0xf4];
@@ -170,15 +171,13 @@
   };
   P.lzxInstall = function () { return install(this); };
   // (SETUPX loaded from its file after this; the hooks made again for a moment from another computer, worker.js
-  // import, which ends in hookTaken; a travel, whose entryHooks are the moment's)
+  // import, which ends in hookTaken; a travel, whose entryHooks are the moment's, calls lzxInstall itself)
   const wasLoad = P.loadNEDynamic;
   P.loadNEDynamic = function (key, file) { const r = wasLoad.apply(this, arguments); if (r && r.name === 'SETUPX') install(this); return r; };
   const wasTaken = P.hookTaken;
   P.hookTaken = function (user) { const r = wasTaken.apply(this, arguments); install(this); return r; };
-  if (typeof Machine === 'function' && Machine.prototype.braidTravel) {
-    const wasTravel = Machine.prototype.braidTravel;
-    Machine.prototype.braidTravel = function (s) { const r = wasTravel.apply(this, arguments); install(this.proc); return r; };
-  }
   P.__lzxjs = true;
-  if (typeof machine !== 'undefined' && machine && machine.proc) install(machine.proc);
+  // (loaded over a running machine (cmd 'reload'): its SETUPX hooked now. At the worker's import, worker.js's `let
+  // machine` is not yet initialized, and reading it throws)
+  try { if (machine && machine.proc) install(machine.proc); } catch (_) { /* at import: no machine yet */ }
 })();
