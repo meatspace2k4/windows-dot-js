@@ -74,4 +74,16 @@ faults(thread(0x40000), 'a frame below the stack ends the chain');
   const r = run(p, { 0x401000: function () { this.cpu.esp.value = 0x8ff00 - 0x20; return 0x7c000000; } }, p.raise(6, 0x7a000000));
   assert.equal(r.at >>> 0, 0x7c000000, 'the __except block runs as the thread\'s own code, not inside a call the host made');
 }
+// another thread's dispatch, its handler having taken the exception (its record left higher in memory), is not this
+// thread's outer one: this thread's search starts at its own chain's head (QUARTZ's MMX probe in REGSVR32 went unhandled,
+// its search begun in another thread's chain)
+{
+  const p = thread(0x8ff00); p.w32(0x8ff00, 0xffffffff); p.w32(0x8ff04, 0x401000);
+  run(p, { 0x401000: function () { this.cpu.esp.value = 0x8ff00 - 0x20; return 0x7c000000; } }, p.raise(6, 0x7a000000));   // thread A's, taken
+  const tibB = 0x2000; p.cpu.fs.value = tibB; p.w32(tibB, 0x6ff00); p.w32(tibB + 4, 0x70000); p.w32(tibB + 8, 0x60000);
+  p.w32(0x6ff00, 0xffffffff); p.w32(0x6ff04, 0x403000); p.cpu.esp.value = 0x6ff80;
+  const r = run(p, { 0x403000: function () { this.cpu.esp.value = 0x6ff00 - 0x20; return 0x7d000000; } }, p.raise(6, 0x7b000000));
+  assert.deepEqual(r.calls, [0x403000], 'thread B\'s own handler is asked');
+  assert.equal(r.at >>> 0, 0x7d000000);
+}
 console.log('sehchain: ok');

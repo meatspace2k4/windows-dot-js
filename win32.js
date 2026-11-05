@@ -1690,8 +1690,10 @@ function sehStart(p, code, eip, params, fault, flags) {
   if (sp < 0x10000 || sp > p.u8.length) return null;
   // (the dispatches whose records are now below the stack are over: their handler took the exception and the program
   // ran on above them)
-  const live = p.sehLive || (p.sehLive = new Map());
-  for (const [r] of live) if (r < sp) live.delete(r);
+  // (each thread's own: the machine's threads share the process object, and another thread's dispatch, its record
+  // higher in memory, was taken for an outer one of this thread's, its search begun in that thread's chain)
+  const live = p.sehLive || (p.sehLive = new Map()), tibNow = p.cpu.fs.value;
+  for (const [r, s] of live) if (s.tib === tibNow && r < sp) live.delete(r);
   p.u8.fill(0, rec, rec + 0x50);
   p.w32(rec, code); p.w32(rec + 4, flags & 1); p.w32(rec + 12, eip); p.w32(rec + 16, n);
   for (let i = 0; i < n; i++) p.w32(rec + 20 + 4 * i, params[i]);
@@ -1699,9 +1701,9 @@ function sehStart(p, code, eip, params, fault, flags) {
   // (an exception raised inside a handler, nested: its search starts above the frame whose handler is running, as
   // KERNEL32's dispatcher skips the frames it is already in, EXCEPTION_NESTED_CALL. Searched from the chain's head, a
   // handler that faulted was asked about its own fault, and again, until the page's stack ran out)
-  let nested = 0; for (const s of live.values()) if (s.f && s.rec > sp) nested = s.f;
+  let nested = 0; for (const s of live.values()) if (s.tib === tibNow && s.f && s.rec > sp) nested = s.f;
   if (nested) p.w32(rec + 4, (flags & 1) | 0x10);
-  const st = { rec, ctx, sp, f: 0, nested, fault, code, eip, tib: p.cpu.fs.value };   // (plain data: a moment keeps it)
+  const st = { rec, ctx, sp, f: 0, nested, fault, code, eip, tib: tibNow };   // (plain data: a moment keeps it)
   live.set(rec, st);
   if (p.hookDllChain) p.hookDllChain();
   return sehNext(p, st);
