@@ -2058,10 +2058,18 @@ def('KERNEL32', 'GetProcessVersion', 1, () => 0x00040000);          // a 4.0 pro
 def('KERNEL32', 'LocalLock', 1, p => p);
 def('KERNEL32', 'LocalUnlock', 1, () => 1);
 def('KERNEL32', 'GetTempFileNameA', 4, function (dir, pre, uniq, out) {
-  const u = uniq || ((Date.now() & 0xffff) | 1), d = this.readA(dir) || 'C:\\WINDOWS\\TEMP';
-  const name = `${d.replace(/\\$/, '')}\\${(this.readA(pre) || '').slice(0, 3)}${u.toString(16).toUpperCase().padStart(4, '0')}.TMP`;
-  if (!uniq) fsCall(this, () => this.fs.writeFile(name, new Uint8Array(0)));
-  this.writeA(out, name, 260); return u;
+  // (uUnique 0: a number not in use, counted up from the clock's until the name is free, and the file made empty, as
+  // Windows does. Taken from the clock alone, two calls in one millisecond had one name: WinHelp's index (-g) made its
+  // second file over the first, "(null) (2)", its rcExists)
+  const d = (this.readA(dir) || 'C:\\WINDOWS\\TEMP').replace(/\\$/, ''), pfx = (this.readA(pre) || '').slice(0, 3);
+  const nameOf = v => `${d}\\${pfx}${v.toString(16).toUpperCase().padStart(4, '0')}.TMP`;
+  let u = uniq & 0xffff;
+  if (!u) {
+    u = (Date.now() & 0xffff) || 1;
+    for (let k = 0; k < 0xffff && this.fs.exists(nameOf(u)); k++) u = (u & 0xffff) === 0xffff ? 1 : u + 1;
+    const nm = nameOf(u); fsCall(this, () => this.fs.writeFile(nm, new Uint8Array(0)));
+  }
+  this.writeA(out, nameOf(u), 260); return u;
 });
 // dates and times in the user's format (en-US: M/d/yy and h:mm:ss tt), or the one asked for
 const fmtDT = (p, st, fmt, isTime) => {

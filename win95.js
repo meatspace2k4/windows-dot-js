@@ -1312,6 +1312,8 @@ function pcBoot() {
   if (diskSystem() === 'win95') strayCopies();
   const m = dosMachine(null, null, { pc: true, floppy: pcFloppy, windows: path => pcWindows(path), reset: () => setTimeout(pcBoot, 0) });
   pc = { m, timer: 0, failed: null };
+  // (the VGA BIOS's 8x8 characters, which it draws in a graphics mode: EGA.CPI's, code page 437)
+  { const d = window.W95SYSTEM && W95SYSTEM.dos && W95SYSTEM.dos['EGA.CPI']; if (d && !m.font8) m.font8 = cpiFont(b64bytes(d), 437, 8); }
   if (!dosFont) { const d = window.W95SYSTEM && W95SYSTEM.dos && W95SYSTEM.dos['EGA.CPI']; if (d) dosFont = cpiFont(b64bytes(d), 437, 14); }
   screen = 'dos'; dirty();
   const me = pc;

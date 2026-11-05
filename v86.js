@@ -832,7 +832,50 @@ P.vgaFrame = function () {
   const pal = Array.from({ length: 256 }, (_, i) => { const m = g.mask & i, d = g.dac; return [d[3 * m] << 2 | d[3 * m] >> 4, d[3 * m + 1] << 2 | d[3 * m + 1] >> 4, d[3 * m + 2] << 2 | d[3 * m + 2] >> 4]; });
   return { w, h, px, pal };
 };
+/** the VGA BIOS's character services in mode 13h: 40x25 cells of 8x8 pixels at A000h, the colour in BL (bit 7: XORed);
+ *  the cursor in the BIOS's data area as in text mode */
+function video13() {
+  const ah = this.ah(), cols = 40, rows = 25, base = this.v86 + VGA_WIN, f = this.font8;
+  const cur = () => [this.m8(0x451), this.m8(0x450)];
+  const setCur = (r, c) => { this.s8(0x450, c); this.s8(0x451, r); };
+  const glyph = (r, c, ch, color) => {
+    if (r >= rows || c >= cols) return;
+    for (let y = 0; y < 8; y++) {
+      const bits = f[ch * 8 + y], row = base + (r * 8 + y) * 320 + c * 8;
+      for (let x = 0; x < 8; x++) {
+        const on = bits & (0x80 >> x);
+        if (color & 0x80) { if (on) this.u8[row + x] ^= color & 0x7f; } else this.u8[row + x] = on ? color : 0;
+      }
+    }
+  };
+  const scroll = (n, top, left, bot, right, fill, up) => {
+    const h = bot - top + 1, w = (right - left + 1) * 8, x0 = left * 8;
+    const move = (dst, src) => { for (let y = 0; y < 8; y++) this.u8.copyWithin(base + (dst * 8 + y) * 320 + x0, base + (src * 8 + y) * 320 + x0, base + (src * 8 + y) * 320 + x0 + w); };
+    const clear = r => { for (let y = 0; y < 8; y++) this.u8.fill(fill, base + (r * 8 + y) * 320 + x0, base + (r * 8 + y) * 320 + x0 + w); };
+    if (!n || n >= h) { for (let r = top; r <= bot; r++) clear(r); return; }
+    for (let i = 0; i < h - n; i++) up ? move(top + i, top + i + n) : move(bot - i, bot - i - n);
+    for (let i = 0; i < n; i++) clear(up ? bot - i : top + i);
+  };
+  this.dirty = true;
+  switch (ah) {
+    case 0x02: setCur((this.cpu.edx.value >> 8) & 0xff, this.cpu.edx.value & 0xff); return;
+    case 0x03: { const [r, c] = cur(); this.w('dx', (r << 8) | c); this.w('cx', this.m16(0x460)); return; }
+    case 0x06: case 0x07: { const cx = this.r('cx'), dx = this.r('dx'); scroll(this.al(), cx >> 8, cx & 0xff, Math.min(dx >> 8, rows - 1), Math.min(dx & 0xff, cols - 1), this.cpu.ebx.value >> 8 & 0xff, ah === 6); return; }
+    case 0x09: case 0x0a: { let [r, c] = cur(); const n = this.r('cx'), color = this.cpu.ebx.value & 0xff; for (let i = 0; i < n && r < rows; i++) { glyph(r, c, this.al(), color); if (++c >= cols) { c = 0; r++; } } return; }
+    case 0x0e: {
+      let [r, c] = cur(); const ch = this.al();
+      if (ch === 13) c = 0; else if (ch === 10) r++; else if (ch === 8) { if (c) c--; } else if (ch === 7) { /* the bell */ }
+      else { glyph(r, c, ch, this.cpu.ebx.value & 0xff); if (++c >= cols) { c = 0; r++; } }
+      if (r >= rows) { scroll(1, 0, 0, rows - 1, cols - 1, 0, true); r = rows - 1; }
+      setCur(r, c); return;
+    }
+  }
+}
 function video() {
+  // (in mode 13h the VGA BIOS draws characters as pixels, 40 columns of 8x8 (its font, font8: the page's EGA.CPI), the
+  // colour in BL, and leaves the text buffer alone: IO.SYS's and WININIT's messages under the boot logo went into B800h
+  // at 80 columns, and the text screen after showed them torn across lines, a run of spaces before "iles...")
+  if (this.m8(0x449) === 0x13 && this.vga && this.font8 && [0x02, 0x03, 0x06, 0x07, 0x09, 0x0a, 0x0e].includes(this.ah())) return video13.call(this);
   const ah = this.ah(), cols = 80, rows = 25;
   const cur = () => [this.m8(0x451), this.m8(0x450)];   // row, column
   const setCur = (r, c) => { this.s8(0x450, c); this.s8(0x451, r); this.vgaCursor(r, c); };
@@ -1218,5 +1261,6 @@ for (const n of [0x21, 0x2f]) {
     return h.call(this, next);
   };
 }
+M.BIOS = BIOS;   // (the ROM's services by vector: tests call them)
 window.W95V86 = M;
 })();
