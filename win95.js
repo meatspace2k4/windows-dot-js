@@ -4278,6 +4278,7 @@ function startSystem() {
     const a = new RemoteApp(join(WINDIR, 'SYSTEM', 'MSGSRV32.EXE'), '', { system: true, quiet });
     if (!(await a.start(null, null))) { bootLogoEnd(); return null; }
     sysApp = a;
+    emit('system.start', {});   // (the address's settings are made in it, speed and mods: urlSettings)
     return a;
   })().finally(() => { sysStarting = null; }));
 }
@@ -6292,5 +6293,45 @@ window.win95 = { ...script,
   } });
   Object.defineProperty(api, 'scriptLog', { get: () => on, set: v => { on = !!v; say(`script log ${on ? 'on' : 'off'}`); } });
   api.note = text => say(String(text));
+}
+// the page's settings from its address (an experiment): ?name=value as the page loads, and #name=value at any time, a
+// change to the part after # being no reload, each made as it changes; a name the part after # gives takes the place
+// of the query's. mod, once for each of the site's mods, NAME or NAME:VALUE (mod-NAME.js, its setting VALUE):
+// #mod=turbo:8&mod=setupclock loads mod-turbo.js with 8 (cmd 'reload', its self.W95ModArg) and mod-setupclock.js, into
+// the system's machine and into each one after it (a restart's); a new value loads it again, and taken out, the mod is
+// ended as it ends itself (cmd 'modOff'; one with no end stays until the page reloads).
+// mute: 0 or 1, the sound output on or off; anchor: an anchored moment, travelled to once, as the system's machine
+// first comes up
+{
+  // (the address's parameters, each name's values: the part after #'s where it has the name, else the query's)
+  const read = () => {
+    const q = new URLSearchParams(location.search), h = new URLSearchParams(location.hash.replace(/^#/, ''));
+    return { all: k => (h.has(k) ? h : q).getAll(k), get: k => (h.has(k) ? h : q).get(k), has: k => h.has(k) || q.has(k) };
+  };
+  // (each mod's file and setting: turbo:8, mod-turbo:8 and mod-turbo.js:8 are mod-turbo.js with 8)
+  const modsOf = list => {
+    const out = new Map();
+    for (const e of list) {
+      const i = e.indexOf(':'), n = (i < 0 ? e : e.slice(0, i)).trim().replace(/\.js$/i, '').replace(/^mod-/i, ''), v = i < 0 ? '' : e.slice(i + 1);
+      if (/^[\w-]+$/.test(n)) out.set(`mod-${n}.js`, v);
+    }
+    return out;
+  };
+  const made = {}, mods = new Map(); let anchored = false, busy = Promise.resolve();
+  const apply = why => (busy = busy.then(async () => {
+    const o = read(), a = sysApp && sysApp.alive ? sysApp : null;
+    const mute = o.get('mute');
+    if (mute !== null && mute !== made.mute) { made.mute = mute; if (window.W95Sound && W95Sound.setMuted) W95Sound.setMuted(/^(1|true)$/i.test(mute)); }
+    if (!a) return;
+    if (why === 'system') mods.clear();   // (a new system's machine: its mods are its own to be loaded)
+    const want = modsOf(o.all('mod'));
+    for (const [f, v] of want) if (mods.get(f) !== v) { try { await a.cmd('reload', [f, v]); mods.set(f, v); } catch (e) { console.warn('[address] mod', f, e && e.message); } }
+    for (const f of [...mods.keys()]) if (!want.has(f)) { mods.delete(f); try { if (!(await a.cmd('modOff', [f]))) console.warn('[address] mod', f, 'has no way to end itself: it stays until the page reloads'); } catch (e) { console.warn('[address] mod', f, e && e.message); } }
+    const anchor = o.get('anchor');
+    if (anchor && !anchored) { anchored = true; try { await braid.travel(anchor); } catch (e) { console.warn('[address] anchor', anchor, e && e.message); } }
+  }).catch(e => console.warn('[address]', e && e.message)));
+  window.addEventListener('hashchange', () => apply('hash'));
+  window.win95.on('system.start', () => apply('system'));
+  apply('load');
 }
 })();

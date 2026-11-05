@@ -40,5 +40,6 @@
     return undefined;
   }));
   p.setupClockOff = offs;
+  (self.W95ModOff || (self.W95ModOff = {}))['mod-setupclock.js'] = () => { for (const off of offs) off(); p.setupClockOff = []; clearInterval(p.setupClockTimer); };
   W.log('info', 'mod', `setupclock: Setup's minutes at the machine's speed (${offs.length} of USER's formatters)`);
 })();

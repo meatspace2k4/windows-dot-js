@@ -135,6 +135,10 @@ function translate(p, lin, csb, d32, v86, limit, ss32In, fIn) {
   const fetchS8 = () => (fetch() << 24) >> 24;
   const done = next => { succ.push(next >>> 0); f.c(next | 0); if (f.rg) f.jmp(); return { fn: f, len: pc - lin, n, succ }; };
   const jcc = t => { succ.push(t >>> 0); f.if_().c(t | 0).jmp().end(); };   // (on the condition on the stack, to t)
+  // (a block ended for the host to look again, not by a jump: a stack segment loaded (MOV SS, POP SS, LSS), after which
+  // the next block is translated for the stack's width as it is then. In a region it goes back to the host, not round
+  // the region's loop into a block translated for the width before)
+  const exit = next => { f.c(next | 0); if (f.rg) f.e(0x0f); return { fn: f, len: pc - lin, n, succ }; };
   for (;;) {
     if (++n > (limit || 400)) return done(pc);   // a long straight run: continue in another block
     insnAt = n;
@@ -288,7 +292,7 @@ function translate(p, lin, csb, d32, v86, limit, ss32In, fIn) {
     if (b >= 0x58 && b < 0x60) { pop(T, osz); wrReg(b & 7, osz, T); continue; }
     if (b === 0x68 || b === 0x6a) { f.c(b === 0x68 ? (osz === 4 ? fetch32() : fetch16()) : fetchS8()).ls(T); push(T, osz); continue; }
     if (b === 0x06 || b === 0x0e || b === 0x16 || b === 0x1e) { f.gg(SEG[b >> 3][0]).ls(T); push(T, osz); continue; }
-    if (b === 0x07 || b === 0x17 || b === 0x1f) { pop(T, osz); loadSeg(b >> 3, T); if (b === 0x17) return done(pc); continue; }
+    if (b === 0x07 || b === 0x17 || b === 0x1f) { pop(T, osz); loadSeg(b >> 3, T); if (b === 0x17) return exit(pc); continue; }
     if (b === 0x69 || b === 0x6b) {   // imul r, rm, imm
       const o = modrm(); rd(o, osz); f.ls(B); f.c(b === 0x69 ? (osz === 4 ? fetch32() : (fetch16() << 16) >> 16) : fetchS8()).ls(C);
       imul2(f, osz, B, C, R, W); wrReg(o.reg, osz, R); continue;
@@ -311,7 +315,7 @@ function translate(p, lin, csb, d32, v86, limit, ss32In, fIn) {
     // (segment registers 6 and 7 are none, and CS is no mov's to load: an invalid opcode, as the processor takes them;
     // indexed past the table, the translator itself threw: tools/staticmap.py)
     if (b === 0x8c) { const o = modrm(); if (o.reg > 5) throw new Unsupported(`mov from segment register ${o.reg}`); f.gg(SEG[o.reg][0]).ls(T); wr(o, o.isReg ? osz : 2, T); continue; }
-    if (b === 0x8e) { const o = modrm(); if (o.reg > 5 || o.reg === 1) throw new Unsupported(`mov to segment register ${o.reg}`); rd(o, 2); f.ls(T); loadSeg(o.reg, T); if (o.reg === 2) return done(pc); continue; }
+    if (b === 0x8e) { const o = modrm(); if (o.reg > 5 || o.reg === 1) throw new Unsupported(`mov to segment register ${o.reg}`); rd(o, 2); f.ls(T); loadSeg(o.reg, T); if (o.reg === 2) return exit(pc); continue; }
     if (b === 0x8d) { const o = modrm(); if (o.isReg) throw new Unsupported('lea with a register operand'); f.lg(A).gg(sbase(o.sr)).op('sub').ls(T); wrReg(o.reg, osz, T); continue; }   // lea: the offset (less the base its address added: SS's for BP and SP)
     if (b === 0x8f) { const o = modrm(); pop(T, osz); wr(o, osz, T); continue; }
     if (b === 0x90) continue;
@@ -487,7 +491,7 @@ function translate(p, lin, csb, d32, v86, limit, ss32In, fIn) {
       }
       if (b2 === 0xa0 || b2 === 0xa8) { f.gg(b2 === 0xa0 ? 'fsel' : 'gsel').ls(T); push(T, osz); continue; }
       if (b2 === 0xa1 || b2 === 0xa9) { pop(T, osz); loadSeg(b2 === 0xa1 ? 4 : 5, T); continue; }
-      if (b2 === 0xb2 || b2 === 0xb4 || b2 === 0xb5) { const o = modrm(); f.lg(A).ld(osz).ls(T); f.lg(A).c(osz).op('add').ld(2).ls(B); wrReg(o.reg, osz, T); loadSeg(b2 === 0xb2 ? 2 : b2 === 0xb4 ? 4 : 5, B); if (b2 === 0xb2) return done(pc); continue; }
+      if (b2 === 0xb2 || b2 === 0xb4 || b2 === 0xb5) { const o = modrm(); f.lg(A).ld(osz).ls(T); f.lg(A).c(osz).op('add').ld(2).ls(B); wrReg(o.reg, osz, T); loadSeg(b2 === 0xb2 ? 2 : b2 === 0xb4 ? 4 : 5, B); if (b2 === 0xb2) return exit(pc); continue; }
       // cpuid: the processor as the machine is one (an i486DX4: tools/recomp.py x_cpuid)
       if (b2 === 0xa2) {
         f.gg('eax').op('eqz').if_().c(1).gs('eax').c(0x756e6547).gs('ebx').c(0x49656e69).gs('edx').c(0x6c65746e).gs('ecx').else_();
@@ -893,8 +897,9 @@ const REGION_BLOCKS = 96, REGION_ROUNDS = 512;
  *  transfer, an interrupt, a fault). One block a module, called one at a time from the host, ran Windows 98 Setup's
  *  copy engine (SETUPX, which the bundle has no translation of) at a few hundred thousand blocks a second */
 function dynRegion(p, eip, g, csb, d32, ss32, keyOf) {
+  // (entered at any of its blocks: the address it is entered at is EIP's as it is called, dynRun)
   const f = new Fn(), PC = f.loc(), N = f.loc(), hooks = p.entryHooks, ends = p.dynEnds || (p.dynEnds = new Map());
-  f.c(eip | 0).ls(PC).c(REGION_ROUNDS).ls(N);
+  f.gg('eip').ls(PC).c(REGION_ROUNDS).ls(N);
   f.lp(); f.rg = { pc: PC, base: f.depth };
   f.lg(N).c(1).op('sub').lt(N).op('eqz').if_().lg(PC).e(0x0f).end();
   const ranges = [], q = [eip], seen = new Set(q);
@@ -962,6 +967,9 @@ P.dynBlock = function (eip) {
     if (r) {
       const run = new WebAssembly.Instance(new WebAssembly.Module(assemble(r.fn, Object.prototype.toString.call(this.mem.buffer) === '[object SharedArrayBuffer]')), { env: dynEnv(this), cpu: this.cpu }).exports.run;
       const c = { run, ranges: r.ranges, hooks: this.entryHooks ? this.entryHooks.size : 0 };
+      // (the region for each of its blocks: entered at one later (a return from another module, a callback), it runs
+      // as it is, not a region of its own made and compiled for each address code is entered at)
+      for (const { a } of r.ranges) { if (a === eip) continue; const k = keyOf(a) + ':R', l = this.dynCache.get(k) || []; this.dynCache.set(k, [c, ...l.slice(0, 3)]); }
       this.dynCache.set(rk, [c, ...kr.slice(0, 3)]); dynTrim(this);
       return remember(c);
     }
@@ -1042,6 +1050,7 @@ P.dynRun = function (eip) {
     const blk = this.dynBlock(eip); if (!blk) return null;
     const from = eip; w += blk.ranges ? 64 : 1;
     if (this.dynHook) this.dynHook(eip);   // (a diagnostic: the blocks a program runs, worker.js cmd 'blocks')
+    if (blk.ranges) this.cpu.eip.value = eip;   // (a region starts at the block it is entered at)
     try { eip = u32(blk.run()); }
     catch (e) { if (!(e instanceof WebAssembly.RuntimeError)) throw e; this.trapped = `run-time code at ${eip.toString(16)} (instruction at ${u32(this.cpu.eip.value).toString(16)}): ${e.message}`; return null; }
     if (this.memW) this.memCheck(`run-time code at ${from.toString(16)}`);   // (a write watch: each block of run-time code, win32.js memCheck)

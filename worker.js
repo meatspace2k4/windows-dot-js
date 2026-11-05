@@ -1719,10 +1719,14 @@ class Machine {
         if (!/^[\w.-]+\.js$/.test(f)) throw new Error(`reload: a script of the site's, by name (${f})`);
         const url = `${f}?reload=${Date.now()}`, x = new XMLHttpRequest(); x.open('GET', url, false); x.send();
         if (x.status !== 200) throw new Error(`reload: ${f} did not load (${x.status})`);
-        importScripts(url);
+        // (args[1]: the mod's own setting, self.W95ModArg as it runs: the page's address gives it, #turbo=8)
+        self.W95ModArg = args[1] === undefined ? null : args[1];
+        try { importScripts(url); } finally { self.W95ModArg = null; }
         const rec = self.W95Braid.mod(f, x.responseText); this.mods.push(rec);
         return { reloaded: f, sum: rec.sum };
       }
+      // (a mod ended as it ends itself, self.W95ModOff[file], which it set as it ran; false for one that has no end)
+      case 'modOff': { const off = self.W95ModOff && self.W95ModOff[args[0]]; if (!off) return false; delete self.W95ModOff[args[0]]; off(); return true; }
       case 'mods': return this.mods.slice();
       // ring α (braid.js): a moment of the machine marked now, by name; the machine at one again; the moments on its line
       case 'mark': { const s = this.braidMark(String(args[0] || 'moment')); moments.set(s.name, s); return { ...self.W95Braid.describe(s), took: s.took }; }

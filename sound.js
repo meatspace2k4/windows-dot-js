@@ -466,7 +466,9 @@ const play = (proc, rate, L, R, n) => {
 };
 system();   // as the machine starts
 // a machine in a worker plays through here: its samples (the page's output, its streams keyed by `k`)
-window.W95Sound = { play: (k, rate, L, R) => play(k, rate, L, R, L.length), close: k => P.soundClose.call(k) };
+window.W95Sound = { play: (k, rate, L, R) => play(k, rate, L, R, L.length), close: k => P.soundClose.call(k),
+  // (the output on or off while the machine runs, the page's address's mute: the same gain the page's ?mute=1 sets)
+  setMuted: m => { window.W95MUTE = !!m; const s = system(); if (s && s.dest) s.dest.gain.value = m ? 0 : 1; if (!m && s && s.ctx && s.ctx.state === 'suspended') s.ctx.resume(); } };
 // The codec's clock. A port access the guest makes (a codec register, its status, a DMA counter) takes an ISA I/O cycle,
 // about a microsecond, on the card: inside a run of guest code the codec moves on by that much per access, however long
 // the recompiled code takes between them. Between runs (the host's turn) and when the guest reads the time of day it
