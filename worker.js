@@ -1681,7 +1681,7 @@ class Machine {
         for (const t of p.thunks || []) if (t && t.dll) t.def = p.importDef(t.dll, t.nm);
         // (the hooks at the exports other modules enter (win32.js entryHooks) are code: made again for the USER loaded,
         // as its load made them (ne16.js hookIntents, hookClock, hookTaken); a return watched by a diagnostic is not)
-        { p.entryHooks = new Map(); p.entryLists = new Map(); p.retPend = new Map(); const user = p.ne && p.ne.get('USER'); if (user && user.meta) { p.hookIntents(user); p.hookClock(user); p.hookTaken(user); } }
+        { p.entryHooks = new Map(); p.entryLists = new Map(); p.retPend = new Map(); const user = p.ne && p.ne.get('USER'); if (user && user.meta) { p.hookIntents(user); p.hookClock(user); p.hookTaken(user); } if (p.hookDllChain) p.hookDllChain(); }
         // (a started program's end told to the page (program.exit), as 'run' tells it; its console's or a saver's own
         // telling is not carried)
         for (const pc of (p.procs || new Map()).values()) if (pc && typeof pc.onExit !== 'function') pc.onExit = code => { if (!pc.fault) post({ t: 'emit', ev: 'program.exit', data: { path: pc.path, code } }); };

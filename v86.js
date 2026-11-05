@@ -30,7 +30,7 @@ function machine(o = {}) {
   // (o.base: where its first megabyte is, in a memory shared with Windows' VMM: a VM's at its CB_High_Linear; o.xmsKB
   // the extended memory it has past 120000h)
   p.v86 = o.base || V86_BASE; p.xmsKB = o.xmsKB || XMS.kb; p.disk = o.disk; p.geom = { heads: 16, spt: 63 }; p.o = o;
-  p.keys = []; p.port60 = 0; p.irq = 0; p.ticksAt = Date.now(); p.halted = false; p.polls = 0; p.v86Hooks = new Set([0x21, 0x2f]);
+  p.keys = []; p.port60 = 0; p.irq = 0; p.isr = 0; p.ticksAt = Date.now(); p.halted = false; p.polls = 0; p.v86Hooks = new Set([0x21, 0x2f]);
   p.trap = function (next, code) { this.v86Trap(next, code); };
   if (o.pc) p.vgaInit();   // (the PC's own VGA: what runs before Windows draws on it, IO.SYS's start-up screen)
   p.portIO = function (port, size, isIn) { this.v86Port(port, size, isIn); };
@@ -136,7 +136,14 @@ P.v86Interrupts = function () {
   const queued = ((this.m16(0x41c) - this.m16(0x41a) + 32) % 32) >> 1;   // (the BIOS's buffer: keys wait in the host's while it is nearly full, none lost)
   if (this.keys.length && !(this.irq & 2) && !this.kbdBusy && queued < 12) { const k = this.keys.shift(); this.port60Key = k; this.port60 = k >> 8; this.irq |= 2; this.kbdBusy = true; }   // (a key: its scan code << 8 | its character)
   if (!this.irq || !this.cpu.if.value) return;
-  const n = this.irq & 1 ? 0 : 1; this.irq &= ~(1 << n);
+  const n = this.irq & 1 ? 0 : 1;
+  // (an interrupt in service holds its line and every lower one until its EOI, as the 8259 does: a handler that sets IF
+  // early is not entered again by the next tick. IO.SYS's logo hook rotates the DAC's 236..255 after an STI; a tick
+  // the host raised while it ran (the page late by a frame) ran the rotation inside the rotation, and the outer one's
+  // last colours went to the wrapped index, entry 0: the logo's black came out lime)
+  const held = this.isr ? this.isr & -this.isr : 0;
+  if (held && held <= 1 << n) return;
+  this.irq &= ~(1 << n); this.isr |= 1 << n;
   this.halted = false;
   this.v86Int(8 + n);
 };
@@ -543,6 +550,9 @@ P.v86Port = function (port, size, isIn, val) {
     return;
   }
   if (!isIn) {
+    // the interrupt controller's end of interrupt: the in-service bit let go (a non-specific EOI the highest's, a
+    // specific one, 60h + n, IRQ n's), the next request of that line or a lower one deliverable again (v86Interrupts)
+    if (port === 0x20) { const v = (val !== undefined ? val : c.eax.value) & 0xff; if (v === 0x20) this.isr &= this.isr - 1; else if ((v & 0xf8) === 0x60) this.isr &= ~(1 << (v & 7)); }
     if (port === 0x70) this.cmosAt = c.eax.value & 0x7f;
     // the reset line: the keyboard controller's pulse (command FEh) or port 92h's bit 0, as the PC starts again
     else if ((port === 0x64 && (c.eax.value & 0xff) === 0xfe) || (port === 0x92 && c.eax.value & 1)) BIOS[0xfe].call(this);
@@ -578,6 +588,7 @@ const BIOS = {};
 BIOS[0x08] = function () { this.s32(0x46c, this.dv.getUint32(this.v86 + 0x46c, true) + 1); };   // the tick (INT 1Ch and the EOI follow in the ROM)
 BIOS[0x09] = function () {   // the keyboard: the key read from port 60h into the buffer (a scan code and its character)
   const k = this.port60Key; this.kbdBusy = false;
+  this.isr &= ~2;   // (its EOI, as the BIOS's INT 9 ends: the line deliverable again, v86Interrupts)
   // Ctrl+Alt+Del: the warm boot (40:72h 1234h, the memory test skipped), the PC started again
   if (k >> 8 === 0x53 && (this.m8(0x417) & 0x0c) === 0x0c) { this.s16(0x472, 0x1234); if (this.o.reset) this.o.reset(); else { this.v86Reset(); this.v86Boot(); } return; }
   if (k) { const t = this.m16(0x41c), nt = t + 2 >= this.m16(0x482) ? this.m16(0x480) : t + 2; if (nt !== this.m16(0x41a)) { this.s16(0x400 + t, k); this.s16(0x41c, nt); } }

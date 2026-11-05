@@ -12,6 +12,7 @@ const LAYOUT = { SENTINEL: 0xFFFFFFF0, THUNK: 0xFFFF0000, THUNK16: 0xFFFE0000, F
   // a byte a 4 KB page of the address space, nonzero where ring 3 has no access (the null page, the VxDs' images, the
   // frame buffer's ring-0 mapping): ring-3 code's accesses are checked against it (dyn.js guard), protect() sets it
   PROT: 0x05500000 };
+const DLL_CHAIN = 0xFFFFFFE0;   // (where a DllMain run as LoadLibrary returns comes back to: Process.dllChainStep)
 const YIELD = Symbol('yield');   // returned by an API implementation to suspend the guest at depth 0
 const NO_CLOCK = Object.freeze({ tick: 0, wall: 0 });   // (a program reading this machine's own clock: Process.clockOf)
 const TICK_MS = 65536 * 1000 / 1193182;   // PIT channel 0 period, 54.925 ms
@@ -320,7 +321,25 @@ class Process {
     return base;
   }
   standinAt(h) { return (this.standins || []).find(s => s.base === h) || null; }
-  moduleFor(h) { h = this.hmod(h); const e = this.exe; return e && e.base === h ? e : this.modules.find(m => m.base === h && !m.hidden) || e; }   // (the running process's own program first: another's may be at its base, arenaClaim)
+  /** a Win32 file mapped as data (LoadLibraryEx's LOAD_LIBRARY_AS_DATAFILE): the section holding its resources copied
+   *  into the heap, at the address its RVAs are read from; the module handle, or 0 for a file with no resources */
+  dataModule(file, path) {
+    const dv = new DataView(file.buffer, file.byteOffset, file.byteLength), pe = dv.getUint32(0x3c, true);
+    const nsec = dv.getUint16(pe + 6, true), opt = pe + 24, optSize = dv.getUint16(pe + 20, true), magic = dv.getUint16(opt, true);
+    const dirs = opt + (magic === 0x20b ? 112 : 96), rsrc = dirs + 16 + 8 <= file.length ? dv.getUint32(dirs + 16, true) : 0;
+    let sec = null;
+    for (let i = 0; i < nsec; i++) {
+      const o = opt + optSize + 40 * i, va = dv.getUint32(o + 12, true), vs = dv.getUint32(o + 8, true), raw = dv.getUint32(o + 16, true), rp = dv.getUint32(o + 20, true);
+      if (rsrc >= va && rsrc < va + Math.max(vs, raw)) { sec = { va, size: Math.max(vs, raw), raw, rp }; break; }
+    }
+    if (!rsrc || !sec) { this.lastError = 1812; return 0; }   // ERROR_RESOURCE_DATA_NOT_FOUND
+    const block = this.alloc(sec.size); this.u8.set(file.subarray(sec.rp, sec.rp + Math.min(sec.raw, sec.size, file.length - sec.rp)), block);
+    const base = u32(block - sec.va), name = String(path).replace(/^.*\\/, '').toUpperCase().replace(/\.DLL$/, '');
+    (this.dataMods || (this.dataMods = new Map())).set(base, { name, base, rsrc, block, path, data: true, exports: new Map() });
+    this.lastError = 0;
+    return base;
+  }
+  moduleFor(h) { h = this.hmod(h); const dm = this.dataMods && this.dataMods.get(u32(h)); if (dm) return dm; const e = this.exe; return e && e.base === h ? e : this.modules.find(m => m.base === h && !m.hidden) || e; }   // (the running process's own program first: another's may be at its base, arenaClaim)
   thunkFor(dll, nm) {
     const key = dll + '!' + nm;
     if (this.thunkByName.has(key)) return this.thunkByName.get(key);
@@ -399,8 +418,52 @@ class Process {
     out.push(m); return out;
   }
   attach(m) {
+    const entry = this.attachPrep(m); if (!entry) return;
+    this.call(entry, [m.base, 1, 0]);
+    this.attachOle(m);
+  }
+  /** SHELL32 told OLE is there once its DllMain has run (SHLoadOLE #151) */
+  attachOle(m) {
+    const ole = m.name === 'SHELL32' && m.exports.get('#151');
+    if (ole) { this.shellNotifyList(m); this.call(ole, [2]); }
+  }
+  /** the DllMains of `mods` run by the thread itself as LoadLibrary returns to it, not as a call the host makes: the
+   *  thread can give up the processor in one, as in any code of its own. Made inside a call the host made, a DllMain
+   *  that waited on another thread waited for good, nothing else running meanwhile (Windows 98's first start: RUNONCE's
+   *  LoadLibrary of a DLL whose DllMain loaded another, whose DllMain sent to a window of another thread, USER's
+   *  wait for the reply at 3:1626 run on, and the machine answered nothing). The frame on the guest's stack, from ESP
+   *  up: how many, the next one's index, their bases, LoadLibrary's answer, the caller's return address */
+  dllChainStart(mods, ret, top, result) {
+    const k = mods.length, f = u32(top - 4 * (k + 4));
+    this.w32(f, k); this.w32(f + 4, 0); mods.forEach((m, i) => this.w32(f + 8 + 4 * i, m.base));
+    this.w32(f + 8 + 4 * k, result); this.w32(f + 12 + 4 * k, ret);
+    this.reg('esp', f); this.hookDllChain();
+    return DLL_CHAIN;
+  }
+  /** the chain's address hooked (again after a travel, whose hooks are the moment's: worker.js) */
+  hookDllChain() {
+    const hooks = this.entryHooks || (this.entryHooks = new Map());
+    if (!hooks.has(DLL_CHAIN)) hooks.set(DLL_CHAIN, function () { return this.dllChainStep(); });
+  }
+  dllChainStep() {
+    const sp = u32(this.reg('esp')), k = this.r32(sp), i = this.r32(sp + 4);
+    if (i > 0) { const prev = this.modules.find(x => x.base === this.r32(sp + 4 + 4 * i)); if (prev && prev.oleDue) { prev.oleDue = false; this.attachOle(prev); } }
+    if (i < k) {
+      this.w32(sp + 4, i + 1);
+      const base = this.r32(sp + 8 + 4 * i), m = this.modules.find(x => x.base === base), entry = m && this.attachPrep(m);
+      if (!entry) return DLL_CHAIN;
+      if (m.name === 'SHELL32') m.oleDue = true;
+      this.push(0); this.push(1); this.push(base); this.push(DLL_CHAIN);
+      return entry;
+    }
+    this.reg('eax', this.r32(sp + 8 + 4 * k));
+    const ret = this.r32(sp + 12 + 4 * k); this.reg('esp', sp + 16 + 4 * k);
+    return ret;
+  }
+  /** the process marked attached to `m` and the DLL's data made its own: DllMain's address, 0 for none to run */
+  attachPrep(m) {
     const pc = this.pc, done = pc.attached || (pc.attached = new Set());
-    if (done.has(m) || !m.meta || m.clock) return;
+    if (done.has(m) || !m.meta || m.clock) return 0;
     done.add(m);
     // (its data as a new process gets it, a DLL of the private arena's: as loaded, the attached ones' put by)
     const v = m.priv;
@@ -409,10 +472,7 @@ class Process {
       if (v.cur === null) v.cur = pc;
       else if (v.cur !== pc) { if (v.cur !== GONE) v.bufs.set(v.cur, v.ranges.map(([lo, hi]) => this.u8.slice(lo, hi))); v.ranges.forEach(([lo], i) => this.u8.set(v.init[i], lo)); v.cur = pc; }
     }
-    if (!m.meta.entry) return;
-    this.call(m.meta.entry, [m.base, 1, 0]);
-    const ole = m.name === 'SHELL32' && m.exports.get('#151');
-    if (ole) { this.shellNotifyList(m); this.call(ole, [2]); }
+    return m.meta.entry || 0;
   }
   /** the private-arena DLLs' data of process `pc` (the system's when null) in place, as the thread that runs is that
    *  process's (ne16.js imgUse) */
@@ -429,6 +489,29 @@ class Process {
       const mine = v.bufs.get(key); v.bufs.delete(key); v.ranges.forEach(([lo], i) => this.u8.set(mine[i], lo)); v.cur = key;
     }
     this.dllInPlace = key; this.dllInPlaceN = mods.length;
+  }
+  /** a DLL mapped from its file (diskDll) unmapped, as Windows frees a library no process holds: when no live process
+   *  holds a LoadLibrary count on it and no module still loaded imports it, the freeing process's DLL_PROCESS_DETACH,
+   *  then its room in the arena given back, and the DLLs it imported freed the same way. The bundle's translated DLLs
+   *  stay. (Nothing was ever unmapped: Windows 98's first start loaded every DLL Setup registers into the arena below
+   *  the heap, it filled, and IEPEERS.DLL and OCCACHE.DLL found no room, "An error occurred loading") */
+  dllUnload(m) {
+    const d = this.dlls && this.dlls.get(m.name);
+    if (m.unloaded || m.name === 'EXE' || !m.meta || !m.meta.dynamic || !d || d.meta !== m.meta) return;
+    const procs = [this.pc0, ...(this.procs || new Map()).values()].filter(Boolean), live = procs.filter(x => x.exitCode === null || x.exitCode === undefined);
+    if (live.some(x => x.dllRefs && x.dllRefs.get(m) > 0)) return;
+    if (this.modules.some(x => x !== m && !x.unloaded && x.deps && x.deps.includes(m))) return;
+    m.unloaded = true;
+    const pc = this.pc;
+    if (pc.attached && pc.attached.has(m) && m.meta.entry && !(this.cpu.ss.value & 0xffff)) {
+      try { this.call(m.meta.entry, [m.base, 0, 0]); } catch (e) { if (!(e instanceof GuestError)) throw e; this.trapped = null; }
+    }
+    for (const x of procs) { if (x.attached) x.attached.delete(m); if (x.dllRefs) x.dllRefs.delete(m); }
+    this.modules = this.modules.filter(x => x !== m); if (this.byName.get(m.name) === m) this.byName.delete(m.name);
+    this.inits = this.inits.filter(x => x !== m); if (this.initOrder) this.initOrder = this.initOrder.filter(x => x !== m);
+    this.dlls.delete(m.name); this.dllInPlace = null;
+    log('info', 'win32', `${m.name} unmapped from ${m.base.toString(16)}-${(m.base + m.size).toString(16)} (${pc.path || 'system'})`);
+    for (const dep of m.deps || []) this.dllUnload(dep);
   }
   /** a process's end: its copies of the DLLs' data go */
   dllForget(pc) { this.dllInPlace = null; for (const m of this.modules || []) { const v = m.priv; if (!v) continue; v.bufs.delete(pc); if (v.cur === pc) v.cur = GONE; } }
@@ -528,7 +611,7 @@ class Process {
     if (!s || s.level !== this.runLevel) this.callRun = { level: this.runLevel, t0: performance.now(), told: false };
     else if (!s.told && performance.now() - s.t0 > 10000) {
       s.told = true;
-      log('warn', 'win32', `a call the host made runs on at ${this.whereOf(eip)} (${u32(eip).toString(16)}), thread ${this.thread16 ? this.thread16.id : 'main'}, level ${this.runLevel}/${this.yieldLevel}, depth ${this.depth}, ring 0 ${this.r0Depth || 0}`);
+      log('warn', 'win32', `a call the host made runs on at ${this.whereOf(eip)} (${u32(eip).toString(16)}), thread ${this.thread16 ? this.thread16.id : 'main'}, level ${this.runLevel}/${this.yieldLevel}, depth ${this.depth}, ring 0 ${this.r0Depth || 0}; the host's way in: ${((Error.stackTraceLimit = Math.max(Error.stackTraceLimit || 10, 80)), new Error().stack || '').split('\n').slice(2).map(l => (l.match(/at (?:Process\.|P\.|Machine\.|Object\.)?([\w$.]+) /) || [])[1]).filter(n => n && !/^(tick|dynRun|dispatch|runAt|trap|raise)$/.test(n)).slice(0, 24).join(' < ')}`);
     }
     return 0;
   }
@@ -844,6 +927,7 @@ class Process {
     }
     (this.entryRing || (this.entryAt = 0, this.entryRing = new Uint32Array(32)))[this.entryAt++ & 31] = u32(eip);   // (an import called from inside a module's run: a fault's way there names it, noCode)
     if (u32(eip) < LAYOUT.THUNK) return this.api16(u32(eip));
+    if (u32(eip) === DLL_CHAIN) return this.dllChainStep();   // (a module's own return to the chain comes here, not through the dispatcher)
     const t = this.thunks[(u32(eip) - LAYOUT.THUNK) >> 2];
     if (!t || !t.def) {   // a call into an import with nothing behind it: a page fault at its address, from where it was called
       log('warn', 'win32', `unimplemented import ${t ? t.dll + '!' + t.nm : u32(eip).toString(16)}`);
@@ -862,11 +946,13 @@ class Process {
     const pc = this.thread16 && this.thread16.pc;
     if (pc && /\.SCR$/i.test(pc.path || '') && t.dll === 'USER32' && /^(IsWindow|GetForegroundWindow|GetParent|GetClientRect|GetDC|CreateWindowExA|GetSystemMetrics|ChangeDisplaySettingsA)$/.test(t.nm))
       (pc.user32Calls || (pc.user32Calls = [])).push({ name: t.nm, args: a.slice(0, 4) });
-    let r;
+    let r; const wasCall = this.apiCall; this.apiCall = { sp, nargs }; this.dllChain = null;
     try { r = fn.apply(this, a); }
     catch (e) { if (e instanceof GuestError) { this.trapped = e.message; return LAYOUT.SENTINEL; } return this.apiPastMemory(e, t, eip); }
+    finally { this.apiCall = wasCall; }
     if (r === YIELD) { this.preempted = 0; return -1; }   // (stopped in the call, not where its time ran out)
     if (this.exitCode !== null) return LAYOUT.SENTINEL;
+    if (this.dllChain) { const c = this.dllChain; this.dllChain = null; return this.dllChainStart(c, this.r32(sp), sp + 4 + 4 * nargs, r === undefined ? 0 : r); }
     this.reg('eax', r === undefined ? 0 : r);
     const ret = this.r32(sp);
     this.reg('esp', sp + 4 + (nargs < 0 ? 0 : 4 * nargs));
@@ -1469,6 +1555,7 @@ def('KERNEL32', 'GetModuleHandleA', 1, function (name) {
 });
 def('KERNEL32', 'GetModuleFileNameA', 3, function (h, buf, n) {
   h = this.hmod(h);
+  const dm = this.dataMods && this.dataMods.get(u32(h)); if (dm) return this.writeA(buf, dm.path, n);   // (a file mapped as data)
   const s = this.standinAt(h); if (s) return this.writeA(buf, s.path, n);
   const m = h && this.modules.find(x => x.base === h && x !== this.exe && x.kind !== 'ne');   // a DLL: its file in SYSTEM; another program: its file
   const other = m && m.name === 'EXE' && [this.pc0, ...(this.procs || new Map()).values()].find(x => x && x.exe === m);
@@ -1537,11 +1624,33 @@ def('KERNEL32', 'LoadLibraryA', 1, function (n) {
   // the process attaches to the library and to every DLL it uses, dependencies first, as Windows 95's LoadLibrary
   // does (a DLL another process loaded is attached to this one too: RUNDLL32 ran MMSYS.CPL on WINMM before the
   // shell's thread had attached WINMM, so WINMM's thunks to MMSYSTEM were not connected and it crashed in them)
-  if (native) { this.runPendingInits(); for (const m of this.importClosure(native)) this.attach(m); return native.base; }
+  if (native) {
+    { const refs = this.pc.dllRefs || (this.pc.dllRefs = new Map()); refs.set(native, (refs.get(native) || 0) + 1); }   // (FreeLibrary's count: dllUnload)
+    // (called by the guest through the import, on a flat stack: the DllMains run as the thread's own code as the call
+    // returns, dllChainStart)
+    if (this.apiCall && this.apiCall.sp === u32(this.reg('esp')) && !(this.cpu.ss.value & 0xffff)) {
+      const mods = [...new Set([...this.inits, ...this.importClosure(native)])]; this.inits = [];
+      const done = this.pc.attached;
+      if (mods.some(m => !(done && done.has(m)) && m.meta && !m.clock)) this.dllChain = mods;
+      return native.base;
+    }
+    this.runPendingInits(); for (const m of this.importClosure(native)) this.attach(m); return native.base;
+  }
   if (!API[name]) { this.lastError = 126; return 0; }   // ERROR_MOD_NOT_FOUND: neither a system DLL here nor one implemented in JS
   return this.jsDll(name);
 });
-def('KERNEL32', 'FreeLibrary', 1, () => 1);
+def('KERNEL32', 'FreeLibrary', 1, function (h) {
+  const dm = this.dataMods && this.dataMods.get(u32(h));   // (a file mapped as data: its copy given back)
+  if (dm) { this.dataMods.delete(u32(h)); this.free(dm.block); return 1; }
+  // (a DLL mapped from its file: the process's count of LoadLibrary calls down by one; at none, unmapped when nothing
+  // else holds it, dllUnload)
+  const m = this.modules.find(x => x.base === u32(h) && x.name !== 'EXE'); if (!m) return 1;
+  const refs = this.pc.dllRefs, n = (refs && refs.get(m)) || 0;
+  if (n > 1) { refs.set(m, n - 1); return 1; }
+  if (refs) refs.delete(m);
+  this.dllUnload(m);
+  return 1;
+});
 def('KERNEL32', 'GetProcAddress', 2, function (h, name) {
   const nm = name >>> 16 ? this.readA(name) : '#' + name;
   const native = this.modules.find(x => x.base === this.hmod(h));
@@ -1877,6 +1986,37 @@ def('KERNEL32', 'FindResourceW', 3, function (m, name, type) {
   const r = this.findResource(n(type), n(name), this.moduleFor(m)); if (!r) return 0;
   return this.newHandle({ kind: 'res', ...r });
 });
+// the resource directory's levels enumerated to a callback: types, a type's names, a name's languages, each callback
+// returning FALSE to stop. A name or type that is a string goes to the callback as a pointer to it (ANSI or UTF-16 as
+// the call is), a number as itself. (Windows 98's first start: RUNDLL32's registrations called
+// EnumResourceLanguagesA, an import this KERNEL32 did not have, and three RUNDLL32s faulted at its dead thunk)
+const resLevel = (p, mod, dir) => {
+  const root = mod.base + mod.rsrc, nn = p.r16(dir + 12), ni = p.r16(dir + 14), out = [];
+  for (let i = 0; i < nn + ni; i++) {
+    const e = dir + 16 + 8 * i, nm = p.r32(e), off = p.r32(e + 4);
+    out.push({ key: nm & 0x80000000 ? p.readW(root + (nm & 0x7fffffff) + 2, p.r16(root + (nm & 0x7fffffff))) : nm, sub: off & 0x80000000 ? root + (off & 0x7fffffff) : 0 });
+  }
+  return out;
+};
+const resPick = (list, key) => list.find(e => typeof key === 'string' ? typeof e.key === 'string' && e.key.toUpperCase() === key.toUpperCase() : e.key === key) || null;
+function resEnum(p, wide, h, keys, cb, lp) {
+  const mod = p.moduleFor(h); if (!mod || !mod.rsrc) { p.lastError = 1812; return 0; }   // ERROR_RESOURCE_DATA_NOT_FOUND
+  let dir = mod.base + mod.rsrc;
+  for (const k of keys) { const e = resPick(resLevel(p, mod, dir), k); if (!e || !e.sub) { p.lastError = keys.indexOf(k) ? 1814 : 1813; return 0; } dir = e.sub; }   // ERROR_RESOURCE_NAME/TYPE_NOT_FOUND
+  const tmp = [], arg = v => { if (typeof v !== 'string') return v; const a = p.alloc(2 * v.length + 2); if (wide) { for (let i = 0; i < v.length; i++) p.w16(a + 2 * i, v.charCodeAt(i)); p.w16(a + 2 * v.length, 0); } else p.writeA(a, v, v.length + 1); tmp.push(a); return a; };
+  try {
+    const fixed = keys.map(arg);
+    for (const e of resLevel(p, mod, dir)) if (!p.call(cb, [h, ...fixed, arg(e.key), lp])) break;
+  } finally { for (const a of tmp) p.free(a); }
+  return 1;
+}
+const resKey = (p, v, wide) => (v >>> 16 ? (wide ? p.readW(v) : p.readA(v)) : v);
+def('KERNEL32', 'EnumResourceTypesA', 3, function (h, cb, lp) { return resEnum(this, false, h, [], cb, lp); });
+def('KERNEL32', 'EnumResourceTypesW', 3, function (h, cb, lp) { return resEnum(this, true, h, [], cb, lp); });
+def('KERNEL32', 'EnumResourceNamesA', 4, function (h, type, cb, lp) { return resEnum(this, false, h, [resKey(this, type, false)], cb, lp); });
+def('KERNEL32', 'EnumResourceNamesW', 4, function (h, type, cb, lp) { return resEnum(this, true, h, [resKey(this, type, true)], cb, lp); });
+def('KERNEL32', 'EnumResourceLanguagesA', 5, function (h, type, name, cb, lp) { return resEnum(this, false, h, [resKey(this, type, false), resKey(this, name, false)], cb, lp); });
+def('KERNEL32', 'EnumResourceLanguagesW', 5, function (h, type, name, cb, lp) { return resEnum(this, true, h, [resKey(this, type, true), resKey(this, name, true)], cb, lp); });
 // a loaded resource is its data's address, as on Win32 (code hands LoadResource's result on without LockResource)
 def('KERNEL32', 'LoadResource', 2, function (m, h) { const r = this.obj(h); return r && r.kind === 'res' ? r.addr : 0; });
 def('KERNEL32', 'LockResource', 1, function (h) { const r = this.obj(h); return r && r.kind === 'res' ? r.addr : h; });
@@ -2239,7 +2379,16 @@ def('KERNEL32', 'CopyFileA', 3, function (a, b, fail) { return fsCall(this, () =
 def('KERNEL32', 'CreateDirectoryA', 2, function (n) { return fsCall(this, () => (this.fs.mkdir(this.readA(n)), 1)); });
 def('KERNEL32', 'RemoveDirectoryA', 1, function (n) { return fsCall(this, () => (this.fs.rmdir(this.readA(n)), 1)); });
 def('KERNEL32', 'GetCurrentDirectoryA', 2, function (n, b) { return this.writeA(b, this.fs.cwd.replace(/\\$/, (m, o) => (o > 2 ? '' : m)), n); });
-def('KERNEL32', 'SetCurrentDirectoryA', 1, function (n) { return fsCall(this, () => (this.fs.chdir(this.readA(n)), 1)); });
+// (a drive alone, "C:", is that drive's current directory, as DOS keeps one a drive: the process's last there, else its
+// root. Taken for the root, WINHLP32's restore of its directory with "C:" left it in C:\, and Windows 98's help index
+// ("winhlp32 -g windows.hlp") looked for C:\windows.hlp: "(null) (2)")
+def('KERNEL32', 'SetCurrentDirectoryA', 1, function (n) {
+  const pc = this.pc, dc = pc.driveCwd || (pc.driveCwd = {}), cur = this.fs.cwd || '';
+  if (/^[A-Za-z]:/.test(cur)) dc[cur[0].toUpperCase()] = cur;
+  let path = this.readA(n) || '';
+  if (/^[A-Za-z]:$/.test(path)) { const d = path[0].toUpperCase(); if (cur[0] && cur[0].toUpperCase() === d) return 1; path = dc[d] || d + ':\\'; }
+  return fsCall(this, () => (this.fs.chdir(path), 1));
+});
 def('KERNEL32', 'GetDriveTypeA', 1, function (n) { const l = ((this.readA(n) || this.fs.cwd)[0] || 'C').toUpperCase(); const v = this.fs.vols.get(l); return !v ? 1 : { removable: 2, fixed: 3, remote: 4, cdrom: 5 }[v.kind] || 3; });   // (a network drive's DRIVE_REMOTE)
 // QueryDosDeviceA(name, target, max), as Windows 98's KERNEL32 has it (BFF70000h+388A0h, behind its argument check):
 // no name, no buffer or a size over 104h is ERROR_INVALID_PARAMETER; COMn and LPTn are their own targets; "X:", a drive
@@ -2389,6 +2538,7 @@ def('KERNEL32', 'CreateProcessA', 10, function (app, cmd, pa, ta, inherit, flags
     return 1;
   }
   if (r.elsewhere) { if (pi) this.u8.fill(0, pi, pi + 16); return 1; }   // (a second instance in a machine of its own: no handles here)
+  if (dir) { const d = this.readA(dir); if (d) r.cwd = d.length > 3 ? d.replace(/\\+$/, '') : d; }   // (the directory it is given to start in)
   if (pi) { this.w32(pi, this.newHandle({ kind: 'process', pid: r.pid })); this.w32(pi + 4, this.newHandle({ kind: 'thread', id: r.main.id })); this.w32(pi + 8, r.pid); this.w32(pi + 12, r.main.id); }
   // it returns once the new process is loaded, as Windows 95's waits for its load-done event: its main thread has
   // attached its DLLs and USER has its per-process data (WaitForInputIdle, which callers ask next, reads it)
@@ -2472,11 +2622,19 @@ def('KERNEL32', 'LoadLibraryExA', 3, function (name, f, fl) {
     // ERROR_FILE_NOT_FOUND, not a bad image)
     const at = /\\|:/.test(path) ? [path] : [...(this.loadDirs || []), 'C:\\WINDOWS\\SYSTEM', 'C:\\WINDOWS'].map(d => d + '\\' + path);
     let file = null;
-    for (const q of at) { try { file = this.fs.readFile(this.fs.resolve ? this.fs.resolve(q) : q); break; } catch (_) { /* not there */ } }
+    // (the path as given: the file system takes short names and long. A `resolve` of its was asked first, which it has
+    // not, and the worker's proxy of it answers any name with a call to the page that throws: every file loaded as data
+    // was not found, and Windows 98's first start could not register MSHTMLED.DLL or ICMFILTER.DLL, 80070002)
+    for (const q of at) { try { file = this.fs.readFile(q); break; } catch (_) { /* not there */ } }
     if (!file) { this.lastError = 2; return 0; }
     let pe = false;
     try { const b = file; const o = b.length > 0x40 ? b[0x3c] | b[0x3d] << 8 | b[0x3e] << 16 | b[0x3f] << 24 : 0; pe = b[0] === 0x4d && b[1] === 0x5a && o + 4 <= b.length && b[o] === 0x50 && b[o + 1] === 0x45 && !b[o + 2] && !b[o + 3]; } catch (_) { pe = false; }
     if (!pe) { this.lastError = 193; return 0; }
+    // (mapped as data, as Windows maps such a file: no image in the arena, no DllMain, its resources only. Loaded as an
+    // image each time, the arena filled with what VERSION.DLL and REGSVR32 only read the resources of, and FreeLibrary
+    // gives none of it back: on Windows 98's first start IEPEERS.DLL found no room, and VERSION.DLL could not read
+    // ODBCINT.DLL's version, so ODBCCP32 said the two were different versions)
+    return this.dataModule(file, path);
   }
   return API.KERNEL32.LoadLibraryA[1].call(this, name);
 });
@@ -2852,6 +3010,80 @@ def('ADVAPI32', 'RegQueryInfoKeyA', 12, function (hk, cls, ccls, res, nsub, maxs
 def('ADVAPI32', 'AllocateLocallyUniqueId', 1, function (p) { this.luid = (this.luid || 0x3e8) + 1; this.w32(p, this.luid); this.w32(p + 4, 0); return 1; });
 for (const [nm, n] of [['InitializeSecurityDescriptor', 2], ['SetSecurityDescriptorDacl', 4], ['RegisterEventSourceW', 2], ['ReportEventW', 9], ['DeregisterEventSource', 1]])
   def('ADVAPI32', nm, n, function () { this.lastError = 120; return 0; });
+
+// the CryptoAPI as the Microsoft Base Cryptographic Provider answers what Windows 98's programs ask of it: a context
+// (any provider and key container, a verification one included), MD5 and SHA-1 hashes, random bytes. Keys, encryption
+// and signatures are the one thing not here: their calls fail NTE_BAD_ALGID, as a provider without the algorithm does.
+// (Windows 98's first start: the registrations RUNDLL32 made called CryptAcquireContextA, an import this ADVAPI32 did
+// not have, and three RUNDLL32s faulted at its dead thunk)
+const md5 = bytes => {
+  const S = [7, 12, 17, 22, 5, 9, 14, 20, 4, 11, 16, 23, 6, 10, 15, 21], K = Array.from({ length: 64 }, (_, i) => (Math.abs(Math.sin(i + 1)) * 2 ** 32) >>> 0);
+  const n = bytes.length, len = ((n + 8) >> 6) + 1 << 6, m = new Uint8Array(len); m.set(bytes); m[n] = 0x80;
+  const dv = new DataView(m.buffer); dv.setUint32(len - 8, (n << 3) >>> 0, true); dv.setUint32(len - 4, Math.floor(n / 0x20000000), true);
+  const H = [0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476];
+  for (let o = 0; o < len; o += 64) {
+    let [a, b, c, d] = H;
+    for (let i = 0; i < 64; i++) {
+      const r = i >> 4, f = r === 0 ? (b & c) | (~b & d) : r === 1 ? (d & b) | (~d & c) : r === 2 ? b ^ c ^ d : c ^ (b | ~d);
+      const g = r === 0 ? i : r === 1 ? (5 * i + 1) & 15 : r === 2 ? (3 * i + 5) & 15 : (7 * i) & 15, s = S[r * 4 + (i & 3)];
+      const x = (a + f + K[i] + dv.getUint32(o + 4 * g, true)) >>> 0;
+      a = d; d = c; c = b; b = (b + ((x << s) | (x >>> (32 - s)))) >>> 0;
+    }
+    H[0] = (H[0] + a) >>> 0; H[1] = (H[1] + b) >>> 0; H[2] = (H[2] + c) >>> 0; H[3] = (H[3] + d) >>> 0;
+  }
+  const out = new Uint8Array(16), ov = new DataView(out.buffer); H.forEach((h, i) => ov.setUint32(4 * i, h, true)); return out;
+};
+const sha1 = bytes => {
+  const n = bytes.length, len = ((n + 8) >> 6) + 1 << 6, m = new Uint8Array(len); m.set(bytes); m[n] = 0x80;
+  const dv = new DataView(m.buffer); dv.setUint32(len - 4, (n << 3) >>> 0); dv.setUint32(len - 8, Math.floor(n / 0x20000000));
+  const H = [0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476, 0xc3d2e1f0], w = new Uint32Array(80), rl = (x, k) => (x << k) | (x >>> (32 - k));
+  for (let o = 0; o < len; o += 64) {
+    for (let i = 0; i < 16; i++) w[i] = dv.getUint32(o + 4 * i);
+    for (let i = 16; i < 80; i++) w[i] = rl(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
+    let [a, b, c, d, e] = H;
+    for (let i = 0; i < 80; i++) {
+      const f = i < 20 ? (b & c) | (~b & d) : i < 40 ? b ^ c ^ d : i < 60 ? (b & c) | (b & d) | (c & d) : b ^ c ^ d;
+      const k = i < 20 ? 0x5a827999 : i < 40 ? 0x6ed9eba1 : i < 60 ? 0x8f1bbcdc : 0xca62c1d6;
+      const t = (rl(a, 5) + f + e + k + w[i]) >>> 0; e = d; d = c; c = rl(b, 30) >>> 0; b = a; a = t;
+    }
+    H[0] = (H[0] + a) >>> 0; H[1] = (H[1] + b) >>> 0; H[2] = (H[2] + c) >>> 0; H[3] = (H[3] + d) >>> 0; H[4] = (H[4] + e) >>> 0;
+  }
+  const out = new Uint8Array(20), ov = new DataView(out.buffer); H.forEach((h, i) => ov.setUint32(4 * i, h)); return out;
+};
+const CALG = { 0x8003: { name: 'md5', f: md5, size: 16 }, 0x8004: { name: 'sha1', f: sha1, size: 20 } };
+const NTE_BAD_ALGID = 0x80090008, NTE_BAD_HASH = 0x80090002, NTE_BAD_UID = 0x80090001;
+def('ADVAPI32', 'CryptAcquireContextA', 5, function (out, cont, prov, type, fl) {
+  if (fl & 0x10) { this.lastError = 0; return 1; }   // CRYPT_DELETEKEYSET: nothing kept, nothing to delete
+  this.w32(out, this.newHandle({ kind: 'cryptprov', type })); this.lastError = 0; return 1;
+});
+def('ADVAPI32', 'CryptAcquireContextW', 5, function (out, cont, prov, type, fl) { return API.ADVAPI32.CryptAcquireContextA[1].call(this, out, 0, 0, type, fl); });
+def('ADVAPI32', 'CryptReleaseContext', 2, function (h) { const o = this.obj(h); if (!o || o.kind !== 'cryptprov') { this.lastError = NTE_BAD_UID; return 0; } this.handles.delete(h); return 1; });
+def('ADVAPI32', 'CryptGenRandom', 3, function (h, n, buf) { const b = new Uint8Array(n); crypto.getRandomValues(b.subarray(0, Math.min(n, 65536))); for (let o = 65536; o < n; o += 65536) crypto.getRandomValues(b.subarray(o, Math.min(n, o + 65536))); this.u8.set(b, buf); return 1; });
+def('ADVAPI32', 'CryptCreateHash', 5, function (prov, alg, key, fl, out) {
+  const a = CALG[alg]; if (!a || key) { this.lastError = NTE_BAD_ALGID; return 0; }
+  this.w32(out, this.newHandle({ kind: 'crypthash', alg: a, parts: [], done: null })); return 1;
+});
+const hashOf = (p, h) => { const o = p.obj(h); return o && o.kind === 'crypthash' ? o : null; };
+def('ADVAPI32', 'CryptHashData', 4, function (h, data, n, fl) {
+  const o = hashOf(this, h); if (!o || o.done) { this.lastError = o ? NTE_BAD_HASH : 6; return 0; }
+  o.parts.push(this.u8.slice(data, data + n)); return 1;
+});
+const hashDone = o => { if (!o.done) { const n = o.parts.reduce((s, b) => s + b.length, 0), all = new Uint8Array(n); let k = 0; for (const b of o.parts) { all.set(b, k); k += b.length; } o.done = o.alg.f(all); o.parts = null; } return o.done; };
+def('ADVAPI32', 'CryptGetHashParam', 5, function (h, param, buf, pn, fl) {
+  const o = hashOf(this, h); if (!o) { this.lastError = 6; return 0; }
+  const val = param === 1 ? (() => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, o.alg === CALG[0x8003] ? 0x8003 : 0x8004, true); return b; })()   // HP_ALGID
+    : param === 2 ? hashDone(o)                                                                                                                                   // HP_HASHVAL
+    : param === 4 ? (() => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, o.alg.size, true); return b; })() : null;                          // HP_HASHSIZE
+  if (!val) { this.lastError = 0x80090009; return 0; }   // NTE_BAD_FLAGS (a parameter it has not)
+  const have = this.r32(pn); this.w32(pn, val.length);
+  if (!buf) return 1;
+  if (have < val.length) { this.lastError = 234; return 0; }   // ERROR_MORE_DATA
+  this.u8.set(val, buf); return 1;
+});
+def('ADVAPI32', 'CryptDestroyHash', 1, function (h) { if (!hashOf(this, h)) { this.lastError = 6; return 0; } this.handles.delete(h); return 1; });
+for (const [nm, n] of [['CryptGenKey', 4], ['CryptDeriveKey', 5], ['CryptImportKey', 6], ['CryptGetUserKey', 3], ['CryptEncrypt', 7], ['CryptDecrypt', 6], ['CryptSignHashA', 6], ['CryptVerifySignatureA', 6], ['CryptHashSessionKey', 3]])
+  def('ADVAPI32', nm, n, function () { this.lastError = NTE_BAD_ALGID; return 0; });
+def('ADVAPI32', 'CryptDestroyKey', 1, function () { this.lastError = 6; return 0; });
 
 // USER32
 const SM = { 0: 'w', 1: 'h', 16: 'w', 17: 'h' };

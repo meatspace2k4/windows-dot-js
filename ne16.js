@@ -1361,6 +1361,19 @@ const INTS = {
     this.trapped = `unhandled int 15h ax=${this.ax().toString(16)}`; return LAYOUT.SENTINEL;
   },
   0x16() { biosKbd(this); },
+  // the NT system calls Windows 98's NTDLL makes (EAX the service, EDX its arguments), which NTKERN answers: the power
+  // calls and two Plug and Play ones. This PC has no ACPI and no power management: NtPowerInformation answers with an
+  // empty structure (no capabilities, no battery, on mains), the others STATUS_NOT_SUPPORTED. (Unanswered, RUNDLL32's
+  // power scheme set-up on Windows 98's first start ended at "unhandled interrupt 2eh (ax=108)")
+  0x2e() {
+    const svc = this.cpu.eax.value >>> 0, a = u32(this.cpu.edx.value), arg = k => this.r32(a + 4 * k);
+    if (svc === 0x108) {   // NtPowerInformation(level, in, inLen, out, outLen)
+      const out = arg(3), n = arg(4);
+      if (out && n) { this.u8.fill(0, out, out + n); if (arg(0) === 5 && n >= 4) this.u8[out] = 1; }   // (SystemBatteryState: AcOnLine)
+      this.cpu.eax.value = 0; return;
+    }
+    this.cpu.eax.value = 0xc00000bb | 0;   // STATUS_NOT_SUPPORTED
+  },
   0x33() {   // the DOS mouse driver interface, as far as MOUSE.DRV asks it: 24h version, type (PS/2) and IRQ
     const ax = this.ax();
     if (ax === 0x24) { this.cpu.ebx.value = lo16(this.cpu.ebx.value, 0x0626); this.cpu.ecx.value = lo16(this.cpu.ecx.value, 0x0400); return; }
@@ -3562,7 +3575,28 @@ def16('KERNEL', 47, 's', 'w', function (name) {   // GetModuleHandle
   if (JS16.includes(n) && !(m && m.meta)) return this.jsModule(n).hModule;   // natively loaded only in a native-USER session
   // a program's module goes with its last task (MMSYSTEM waits for MMTASK's to go as Windows exits)
   if (m && m.taskModule && ![...(this.threadsById || new Map()).values()].some(t => t.task && t.task.mod === m && t.state !== 'done')) return 0;
-  return m ? m.hModule : 0;
+  if (m) return m.hModule;
+  // (a Win32 program running: its module, as Windows 98 gives each process's image a 16-bit module of its name, the
+  // handle WinExec answers with. MSGSRV32 starts "runonce.exe -m" and waits for GetModuleHandle("RUNONCE.EXE") to be
+  // 0 before it starts the shell; answered 0 from the start, Explorer came up beside RUNONCE, ran RunOnce's values
+  // itself, RUNONCE's own (@NetDi_RegFlush = FlushRegistry) as commands ("Cannot find the file 'FlushRegistry'"),
+  // and the registrations twice)
+  if (!/\.(DLL|DRV)$/i.test(name || '')) {
+    const pc = [...(this.procs || new Map()).values()].find(c => c && c.exe && c.exitCode === null && String(c.path || '').toUpperCase().replace(/^.*\\/, '').replace(/\.EXE$/, '') === n);
+    if (pc) return this.hinst16(pc.exe.base, pc.exe) & 0xffff;
+  }
+  return 0;
+});
+// UnicodeToAnsi (#434): a UTF-16 string to the ANSI code page (cp -1: the system's), its terminator too; the bytes
+// written, the terminator counted. VER.DLL turns a Win32 file's version resource to ANSI with it, in place (the
+// destination two bytes below the source): every character is read before any is written. (Unimplemented, VER's
+// GetFileVersionInfo of a Win32 file faulted, and RUNDLL32 with it on Windows 98's first start)
+def16('KERNEL', 434, 'ppw', 'w', function (src, dst, cp) {
+  if (!src || !dst) return 0;
+  const s = []; for (let i = 0; i < 0x8000; i++) { const c = this.r16(src + 2 * i); if (!c) break; s.push(c); }
+  const enc = window.W95FS.encode(String.fromCharCode(...s));
+  this.u8.set(enc, dst); this.u8[dst + enc.length] = 0;
+  return enc.length + 1;
 });
 def16('KERNEL', 133, 'w', 'w', function (h) {   // GetExePtr (a Win32 module's 16-bit handle is its own module)
   if (h === this.kernelModule().hModule) return h; if (this.hinst32 && this.hinst32(h)) return h;
@@ -4259,7 +4293,11 @@ def16('KERNEL', 60, 'wxx', 'w', function (h, name, type) {     // FindResource
   const h32 = this.hinst32 && this.hinst32(h);
   if (h32) {
     const kn = resKey.call(this, name), kt = resKey.call(this, type), data = res32(this, h32, kn, kt); if (!data) return 0;
-    return resHandle.call(this, `${h32}:${kt}:${kn}`, { data });
+    // (keyed by the module, not its base: every program linked at 400000h has that base, and the first one's icon 2
+    // was every later one's. RUNONCE's "Windows is now setting up" animation (icons 2 to 5) showed another program's
+    // icon, the Windows logo, as one of its frames)
+    const mod = this.moduleFor(h32), mid = mod && (mod.resUid || (mod.resUid = (this.resUidNext = (this.resUidNext || 0) + 1)));
+    return resHandle.call(this, `${h32}:${mid}:${kt}:${kn}`, { data });
   }
   const m = this.neByHandle(h); if (!m) return 0;
   const k = resKey.call(this, name), t = resKey.call(this, type);
@@ -4676,7 +4714,12 @@ def16('KERNEL', 631, '', 'jmp', function () {
     if (td32 && !rec.mod) Object.assign(rec, { mod: m, table: u32(td32 + (this.r32(td32 + 0x20) | 0)) });
   }
   const tgt = rec && rec.table ? this.r32(rec.table + cx) : 0;
-  if (rec && rec.mod && tgt >= rec.mod.meta.textLo && tgt < rec.mod.meta.textHi) return this.enter32from16(tgt);
+  // (code of the module: its translated text, or, for one mapped from its file and run as run-time code (dyn.js), whose
+  // text range is empty, its image. Windows 98's VERSION.DLL is such a module: VER.DLL's every call into its 32-bit half
+  // was answered with the error value, GetFileVersionInfoSize was 0 for every Win32 file, and ODBCCP32 said ODBCINT.DLL
+  // was a different version than itself)
+  const mm = rec && rec.mod && rec.mod.meta, inMod = mm && (mm.textHi > mm.textLo ? tgt >= mm.textLo && tgt < mm.textHi : mm.dynamic && tgt >= rec.mod.base && tgt < rec.mod.base + rec.mod.size);
+  if (inMod) return this.enter32from16(tgt);
   const db = this.lin(this.r32(td + 0x28)), nargs = db ? this.r32(db + 2 * cx) : 0, err = db ? this.r32(db + 2 * cx + 4) : 0;
   const ssb = u32(this.cpu.ssb.value), sp = this.cpu.esp.value & 0xffff, ip = this.r16(ssb + sp), cs = this.r16(ssb + ((sp + 2) & 0xffff));
   this.cpu.eax.value = lo16(this.cpu.eax.value, err & 0xffff); this.cpu.edx.value = lo16(this.cpu.edx.value, err >>> 16);
@@ -5069,6 +5112,11 @@ let nextPid = 0x60;
 P.spawn = function (file, module, meta, path, cmdline) {
   const pc = { pid: nextPid, path, exitCode: null, tdb: newTdb(this, { name: String(path || '').replace(/^.*\\/, '').replace(/\.[^.]*$/, '') }), started: false, parent: (this.thread16 && this.thread16.pc) || null };   // (parent: the process whose thread starts it)
   nextPid += 4;
+  // (its current directory its starter's, as CreateProcess with no directory gives it: the running thread's, in place
+  // now; one the system starts, the Windows folder, the system's own. Left to whichever directory was in place when it
+  // first ran, WINHLP32 started by RUNONCE took "windows.hlp" for C:\windows.hlp, and "-g windows.hlp", Windows 98's
+  // first start's help index, ended in an "Error" box: "(null) (2)")
+  try { pc.cwd = this.thread16 && this.fs ? this.fs.cwd : 'C:\\WINDOWS'; } catch (_) { /* no file system: left to the first switch */ }
   // its image where its header says, in a view of its own wherever another process's program is there (win32.js
   // arenaClaim): a second instance of a program already running, or another program linked at the same base. A second
   // instance keeps one image record, as code, with each process's own copy of its data
