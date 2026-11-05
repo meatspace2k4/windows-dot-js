@@ -88,6 +88,14 @@ function mmioRange(p, lin) {
 /** translate the block at linear `lin` (code segment base `csb`, 32-bit default when `d32`); `v86` is the linear
  *  base of a virtual-8086 machine's first megabyte when the code is that machine's: a segment register's base is then
  *  v86 + 16 * its value, INT goes through the machine's own interrupt vectors, and the BIOS's ROM calls the host */
+// (a diagnostic: each place a size prefix comes twice in one instruction, said once, with the bytes there: the
+// rule changed from a toggle to "given once", and the boot after Windows 98 Setup went into data at 500022 since)
+const dynRepeatSeen = new Set();
+function dynRepeat(p, at, b, d32) {
+  const k = `${(at >>> 0).toString(16)}:${b}`; if (dynRepeatSeen.has(k)) return; dynRepeatSeen.add(k);
+  const bytes = Array.from(p.u8.subarray(at >>> 0, (at >>> 0) + 12), x => x.toString(16).padStart(2, '0')).join(' ');
+  console.warn(`[dyn] repeated ${b.toString(16)} prefix at ${(at >>> 0).toString(16)} (${d32 ? '32' : '16'}-bit code${p.v86 !== undefined && p.v86 !== null ? ', v86' : ''}): ${bytes}`);
+}
 function translate(p, lin, csb, d32, v86, limit, ss32In) {
   const vm = v86 !== undefined && v86 !== null;
   // (a V86 machine's FLAGS bits 12-14, IOPL and NT, which a 386 keeps as written and the translated code keeps no
@@ -125,8 +133,8 @@ function translate(p, lin, csb, d32, v86, limit, ss32In) {
     let b;
     for (;;) {
       b = fetch();
-      if (b === 0x66) osz = d32 ? 2 : 4;   // (a prefix given twice is given once, not undone: DIBENG's 66 66 9A, a 16:16 far call from its 32-bit blit code, ran as 16:32 to 885F:343703BD, RUNONCE's fault on Windows 98's first start)
-      else if (b === 0x67) asz = d32 ? 2 : 4;
+      if (b === 0x66) { if (osz !== (d32 ? 4 : 2)) dynRepeat(p, start, 0x66, d32); osz = d32 ? 2 : 4; }   // (a prefix given twice is given once, not undone: DIBENG's 66 66 9A, a 16:16 far call from its 32-bit blit code, ran as 16:32 to 885F:343703BD, RUNONCE's fault on Windows 98's first start)
+      else if (b === 0x67) { if (asz !== (d32 ? 4 : 2)) dynRepeat(p, start, 0x67, d32); asz = d32 ? 2 : 4; }
       else if (b === 0x26 || b === 0x2e || b === 0x36 || b === 0x3e) seg = (b >> 3) & 3;
       else if (b === 0x64) seg = 4; else if (b === 0x65) seg = 5;
       else if (b === 0xf3 || b === 0xf2) rep = b;
