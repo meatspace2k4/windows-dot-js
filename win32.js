@@ -271,7 +271,20 @@ class Process {
     // Windows maps a DLL wherever its process has room. Windows 98's first start maps more DLLs than the arena holds,
     // and IEPEERS.DLL and OCCACHE.DLL found no room)
     if (relocatable && !own && this.vmTop) {
-      const b = (this.vmTop + 0xffff) & ~0xffff, n = (size + 0xffff) & ~0xffff;
+      const n = (size + 0xffff) & ~0xffff;
+      // (first the room ended processes gave back (endProcess: their VirtualAlloc regions, vspare): taken only from the
+      // top, that space ran out after Windows 98's first start had run REGSVR32 a few dozen times, and WMI.DLL and
+      // DEVMGR32.DLL found none: RUNDLL's "Error loading devmgr32.dll", error 126)
+      const spare = this.vspare || [];
+      for (let i = 0; i < spare.length; i++) {
+        const s = spare[i], a = (s.base + 0xffff) & ~0xffff, end = s.base + s.size;
+        if (a + n > end || spans.some(([lo, hi]) => a < hi && lo < a + n)) continue;
+        spare.splice(i, 1);
+        if (a > s.base) spare.push({ base: s.base, size: a - s.base });
+        if (a + n < end) spare.push({ base: a + n, size: end - a - n });
+        this.u8.fill(0, a, a + n); return a;
+      }
+      const b = (this.vmTop + 0xffff) & ~0xffff;
       if (b + n <= this.mem.buffer.byteLength) { this.vmTop = b + n; return b; }
     }
     return 0;
@@ -416,6 +429,16 @@ class Process {
   runPendingInits() {
     const pending = this.inits; this.inits = [];
     for (const m of pending) this.attach(m);
+  }
+  /** the DLLs loaded since the last run, each after the DLLs it imports: one of those may have been loaded long ago by
+   *  another process, and this process attaches to it before the new DLL's DllMain calls it. The new ones alone, ahead
+   *  of what they import: a DLL REGSVR32 loaded ran its DllMain with OLEAUT32 not yet this process's (another's slot
+   *  index in its data), its SysAllocString set the thread's block there, OLE32's CoSetState loaded OLEAUT32, whose
+   *  DllMain then ran and took a new index, and SysAllocString read the thread's block at 0 */
+  pendingInits() {
+    const pending = this.inits, out = [], seen = new Set(); this.inits = [];
+    for (const m of pending) this.importClosure(m, out, seen);
+    return out;
   }
   /** DllMain(DLL_PROCESS_ATTACH) of a DLL for the current process, once: each process attaches to every DLL it uses,
    *  as Windows 95 attaches them, though the image is loaded once in this address space */
@@ -893,8 +916,15 @@ class Process {
       const limit = this.r32(this.cpu.fs.value + 8) >>> 0;
       if (u32(eip) < limit && u32(eip) >= limit - 0x10000) {
         // (with the code it was running and the return addresses nearest the stack's end: the recursion that ran it out)
-        const chain = []; for (let a = u32(this.cpu.esp.value), end = a + 0x4000; a < end && chain.length < 24; a += 4) { let v; try { v = this.r32(a) >>> 0; } catch (_) { break; } const w = this.whereOf(v); if (w && /[A-Za-z]/.test(w) && /\+/.test(w)) chain.push(w); }
-        log('warn', 'win32', `stack fault: thread ${this.thread16 ? this.thread16.id : 'main'}'s stack ran out at ${u32(eip).toString(16)}, in ${this.whereOf(this.cpu.eip.value)}; returns ${chain.join(' < ')}`);
+        // (only words in a module's code are named: whereOf for every word of the stack made each stack fault seconds long)
+        // (a DLL loaded from its file has no text bounds in its record: its image's span; Explorer's stack ran out in
+        // SHLWAPI and USER32, both from files, and the log named no return address)
+        const code = this.modules.filter(x => (x.meta && x.meta.textHi > x.meta.textLo) || (x.base && x.size)).map(x => x.meta && x.meta.textHi > x.meta.textLo ? [x.meta.textLo >>> 0, x.meta.textHi >>> 0] : [x.base >>> 0, (x.base + x.size) >>> 0]);
+        const chain = []; for (let a = u32(this.cpu.esp.value), end = Math.min(a + 0x8000, this.u8.length - 4); a < end && chain.length < 40; a += 4) { const v = this.r32(a) >>> 0; if (code.some(([lo, hi]) => v >= lo && v < hi)) chain.push(this.whereOf(v)); }
+        // (and the frames by their EBP chain, each with its place on the stack: what took the stack, not only its end)
+        const frames = []; for (let bp = u32(this.cpu.ebp.value), k = 0; k < 400 && bp > 0x1000 && bp + 8 <= this.u8.length; k++) { const nb = this.r32(bp) >>> 0; frames.push(`${this.whereOf(this.r32(bp + 4) >>> 0)}@${bp.toString(16)}`); if (nb <= bp) break; bp = nb; }
+        const top = this.r32(this.cpu.fs.value + 4) >>> 0;
+        log('warn', 'win32', `stack fault: thread ${this.thread16 ? this.thread16.id : 'main'}'s stack (${limit.toString(16)}-${top.toString(16)}) ran out at ${u32(eip).toString(16)}, in ${this.whereOf(this.cpu.eip.value)}; returns ${chain.join(' < ')}; frames ${frames.length > 60 ? [...frames.slice(0, 30), `... ${frames.length - 60} more ...`, ...frames.slice(-30)].join(' < ') : frames.join(' < ')}`);
         throw new FaultError(Object.assign(this.faultInfo(12, u32(this.cpu.eip.value), u32(eip)), { why: `stack fault at ${u32(this.cpu.eip.value).toString(16)}` }));
       }
       this.pfWrite = !!(code & 0x10);
@@ -999,6 +1029,9 @@ class Process {
         }
       }
       if (this.heapTop > LAYOUT.HEAP_END) {   // (the report says what holds the heap: live blocks by size, and what idles on the free lists)
+        // (the top back where it was: left past the end by one request too big for the heap, every allocation after
+        // it, a dozen bytes for a fault's dialog among them, was refused too, with 21 MB free, and Windows ended)
+        this.heapTop -= n;
         const by = new Map(); let live = 0; for (const [, s] of this.allocs) { by.set(s, (by.get(s) || 0) + s); live += s; }
         let idle = 0; for (const [s, l] of this.freeList) idle += s * l.length;
         const top = [...by].sort((a, b) => b[1] - a[1]).slice(0, 6).map(([s, t]) => `${s}x${t / s}`).join(' ');
@@ -1644,7 +1677,7 @@ def('KERNEL32', 'LoadLibraryA', 1, function (n) {
     // (called by the guest through the import, on a flat stack: the DllMains run as the thread's own code as the call
     // returns, dllChainStart)
     if (this.apiCall && this.apiCall.sp === u32(this.reg('esp')) && !(this.cpu.ss.value & 0xffff)) {
-      const mods = [...new Set([...this.inits, ...this.importClosure(native)])]; this.inits = [];
+      const mods = [...new Set([...this.pendingInits(), ...this.importClosure(native)])];
       const done = this.pc.attached;
       if (mods.some(m => !(done && done.has(m)) && m.meta && !m.clock)) this.dllChain = mods;
       return native.base;
@@ -1662,17 +1695,20 @@ def('KERNEL32', 'FreeLibrary', 1, function (h) {
   // the address space above the heap's, imageRoom)
   return 1;
 });
-// (kept apart from MSJAVA's own name, under which a stand-in would take the whole DLL's place)
-const STANDIN_EXPORTS = { MSJAVA: ['JavaPkgMgr_Install'] };
-// (RUNDLL32's entry: hwnd, hinst, command line, show; done, nothing to install)
-def('MSJAVA~', 'JavaPkgMgr_Install', 4, function () { return 0; });
+// (an export of a DLL loaded from its file answered here instead: kept out of API, where a name is a whole DLL's
+// stand-in. RUNDLL32's entry: hwnd, hinst, command line, show; done, nothing to install)
+const STANDIN_EXPORTS = { MSJAVA: { JavaPkgMgr_Install: [4, function () { return 0; }] } };
 def('KERNEL32', 'GetProcAddress', 2, function (h, name) {
   const nm = name >>> 16 ? this.readA(name) : '#' + name;
   const native = this.modules.find(x => x.base === this.hmod(h));
   // (an export a stand-in answers in place of the module's own: MSJAVA's JavaPkgMgr_Install, the Java packages
   // Windows 98 Setup installs through RUNDLL32 at the first start, not installed: "Unable to install Java packages")
   const own = native && STANDIN_EXPORTS[native.name.toUpperCase().replace(/\.DLL$/, '')];
-  if (own && own.includes(nm)) return this.thunkFor(native.name.toUpperCase().replace(/\.DLL$/, '') + '~', nm);
+  if (own && own[nm]) {
+    const key = 'MSJAVA!' + nm;
+    if (!this.thunkByName.has(key)) { this.thunkByName.set(key, LAYOUT.THUNK + this.thunks.length * 4); this.thunks.push({ dll: 'MSJAVA', nm, def: own[nm] }); }
+    return this.thunkByName.get(key);
+  }
   if (native) return native.exports.get(nm) || 0;
   const m = this.standinAt(h) || this.obj(0x0000ffff & h) || { name: 'KERNEL32' };
   return API[m.name] && this.importDef(m.name, nm) ? this.thunkFor(m.name, nm) : 0;
@@ -1825,14 +1861,22 @@ def('KERNEL32', 'RtlUnwind', 'regs', function () {
 // UnhandledExceptionFilter(EXCEPTION_POINTERS): the program's own top-level filter first (SetUnhandledExceptionFilter),
 // else KERNEL32's fault dialog for the exception being dispatched; EXCEPTION_EXECUTE_HANDLER (1): the program ends
 def('KERNEL32', 'UnhandledExceptionFilter', 1, function (ptrs) {
-  if (this.topFilter) { const r = this.call(this.topFilter, [ptrs]); if (r !== 0) return r; }
+  const top = topFilterOf(this);
+  if (top.fn) { const r = this.call(top.fn, [ptrs]); if (r !== 0) return r; }
   const rec = this.r32(ptrs), ctx = this.r32(ptrs + 4);
   const f = this.sehFault && this.sehFault.eip === this.r32(rec + 12) ? this.sehFault : this.faultInfo(0, this.r32(rec + 12), 0);
   if (!this.sehFault || f !== this.sehFault) { f.code = this.r32(rec); for (const [r, o] of Object.entries(CTX)) f.regs[r] = this.r32(ctx + o); }
   if (this.host.faultDialog) this.host.faultDialog(f);
   return 1;
 });
-def('KERNEL32', 'SetUnhandledExceptionFilter', 1, function (fn) { const was = this.topFilter || 0; this.topFilter = fn; return was; });
+// (each process's own, as KERNEL32 keeps it in the process: one for the machine, the second REGSVR32 to load MSVCRT
+// was given MSVCRT's own filter as the one before it, and the filter called itself until the stack ran out)
+const topFilterOf = p => { const pc = p.thread16 && p.thread16.pc; return pc ? (pc.topFilter || (pc.topFilter = { fn: 0 })) : (p.topFilterMain || (p.topFilterMain = { fn: 0 })); };
+def('KERNEL32', 'SetUnhandledExceptionFilter', 1, function (fn) { const top = topFilterOf(this), was = top.fn || 0; top.fn = fn; return was; });
+// GetSystemPowerStatus(SYSTEM_POWER_STATUS*): on mains, no battery (Task Scheduler's MSTASK asks at its start)
+def('KERNEL32', 'GetSystemPowerStatus', 1, function (p) {
+  this.u8[p] = 1; this.u8[p + 1] = 128; this.u8[p + 2] = 255; this.u8[p + 3] = 0; this.w32(p + 4, 0xffffffff); this.w32(p + 8, 0xffffffff); return 1;
+});
 def('KERNEL32', 'GetLastError', 0, function () { return this.lastError || 0; });
 def('KERNEL32', 'SetLastError', 1, function (e) { this.lastError = e; });
 def('KERNEL32', 'LocalAlloc', 2, function (f, n) { return this.alloc(n); });
@@ -1858,8 +1902,10 @@ def('KERNEL32', 'VirtualAlloc', 4, function (a, n, type) {
   if (a && vregion(this, a)) return a & ~0xfff;
   const size = (n + 0xffff) & ~0xffff, regions = this.vregions || (this.vregions = new Map()), end = this.mem.buffer.byteLength;
   let b = 0, heap = null;
+  // (a spare region larger than asked for: its rest stays spare. Taken whole, a 64 KiB reservation used up a 4 MB
+  // heap's room, the address space ran out, and regions came from the program heap, below the layout's top)
   const spare = (this.vspare || []).findIndex(r => r.size >= size);
-  if (spare >= 0) { b = this.vspare.splice(spare, 1)[0].base; this.u8.fill(0, b, b + size); }
+  if (spare >= 0) { const s = this.vspare.splice(spare, 1)[0]; b = s.base; if (s.size > size) this.vspare.push({ base: b + size, size: s.size - size }); this.u8.fill(0, b, b + size); }
   else if (this.vmTop + size <= end) { b = this.vmTop; this.vmTop += size; }
   else { heap = this.alloc(size + 0xffff, true); b = (heap + 0xffff) & ~0xffff; }
   // (pc: the process whose own program reserved it, the caller's return address in its image, or a DLL whose
@@ -2138,7 +2184,14 @@ def('KERNEL32', 'GetCurrentThreadId', 0, function () { return this.currentThread
 def('KERNEL32', 'GetCurrentProcessId', 0, function () { return this.pc.pid; });
 def('KERNEL32', 'GetCurrentThread', 0, () => 0xfffffffe);
 // TLS slots are the process's; the values are each thread's (a thread the scheduler runs keeps its own)
-const tlsOf = p => (p.thread16 && p.thread16.flat ? (p.thread16.tls = p.thread16.tls || []) : (p.tls = p.tls || []));
+// (every thread its own slots: one machine-wide set for threads not flagged flat let another thread's OLEAUT32 clear
+// the slot REGSVR32's had just set, and SysAllocString read its per-thread block at 0)
+// (keyed by the thread information block FS points at, the processor's own idea of which thread runs: a call that ran
+// other threads inside it left the record of the current thread another's, and OLEAUT32's slot was set in that one)
+const tlsOf = p => {
+  const fs = p.cpu.fs.value >>> 0, m = p.tlsByTib || (p.tlsByTib = new Map());
+  if (!m.has(fs)) m.set(fs, []); return m.get(fs);
+};
 def('KERNEL32', 'TlsAlloc', 0, function () { this.tls = this.tls || []; this.tlsN = Math.max(this.tlsN || 0, this.tls.length); this.tls[this.tlsN] = 0; return this.tlsN++; });
 def('KERNEL32', 'TlsFree', 1, () => 1);
 def('KERNEL32', 'TlsGetValue', 1, function (i) { return tlsOf(this)[i] || 0; });

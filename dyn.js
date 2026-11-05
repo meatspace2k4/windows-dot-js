@@ -68,6 +68,7 @@ class Fn {
 // (n: the instruction of the block being translated that it met, so the block can end before it: dynBlock)
 let insnAt = 0;
 class Unsupported extends Error { constructor(m) { super(m); this.n = insnAt; } }
+const DYN_MAX = 60000;   // (the run-time blocks kept translated, dynBlock)
 const MASK = { 1: 0xff, 2: 0xffff, 4: -1 };
 const COND = ['o', 'no', 'b', 'ae', 'e', 'ne', 'be', 'a', 's', 'ns', 'p', 'np', 'l', 'ge', 'le', 'g'];
 
@@ -924,6 +925,10 @@ P.dynBlock = function (eip) {
   const run = new WebAssembly.Instance(new WebAssembly.Module(assemble(t.fn, Object.prototype.toString.call(this.mem.buffer) === '[object SharedArrayBuffer]')), { env, cpu: this.cpu }).exports.run;
   c = { run, bytes: Array.from(u8.subarray(eip, eip + t.len)) };
   this.dynCache.set(key, [c, ...kept.slice(0, 3)]);
+  // (the cache has a size: past it, the older half goes, to be translated again if it runs again. Each block is a
+  // WebAssembly module of its own, kept for good: Windows 98's first start, every DLL of it run from its file, made
+  // them by the hundred thousand, and the tab ran out of memory)
+  if (this.dynCache.size > DYN_MAX) { let n = this.dynCache.size >> 1; for (const k of this.dynCache.keys()) { this.dynCache.delete(k); if (--n <= 0) break; } fast.clear(); }
   return remember(c);
 };
 /** whether `eip` starts a block of a translated module the dispatcher runs (not hidden: another process's program at

@@ -1299,11 +1299,10 @@ function loadHives() {
     // (the file as the host last wrote or read it is the registry as it is already, unless the registry has lost what
     // it holds: a store or moment from before it was read left the registry without Setup's keys, its stamp saying
     // read, and Explorer found none of the shell's classes)
-    if (st === hiveStamps.get(file) && held && held.length) {
-      const roots = which === 'system' ? ['hklm', 'hkcr', 'hkcc'] : ['hku', 'hkcu'], have = new Set(W.regDump().map(([k]) => k.toLowerCase()));
-      if (held.every(([k]) => !roots.includes(k.split('\\')[0].toLowerCase()) || have.has(k.toLowerCase()))) continue;
-      console.info(`[registry] ${file}: the registry lacks keys the file holds; read again`);
-    }
+    // (the file as the host last wrote or read it: the registry as it is now stands. Keys the file holds and the
+    // registry does not are keys Windows has deleted since: read again for them, the file put back RunOnce\Setup's
+    // items at every start that followed a restart with no flush, and Windows 98 set itself up again each time)
+    if (st === hiveStamps.get(file)) continue;
     if (held && held.length) read.set(which, held);
     hiveStamps.set(file, st);
   }
@@ -3937,6 +3936,8 @@ class RemoteApp extends NativeApp {
     return new Promise(ok => { this.calls.set(id, ok); this.worker.postMessage({ t: 'cmd', id, name, args }); });
   }
   message(m) {
+    // (a machine that has ended draws no more: its worker's last frames put its windows back on the screen, undrawn)
+    if (!this.alive && m.t === 'frame') return;
     switch (m.t) {
       case 'rpc': this.serve(m); return;
       case 'started':

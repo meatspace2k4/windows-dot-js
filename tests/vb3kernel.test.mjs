@@ -71,12 +71,14 @@ const proc = () => {
   p.cpu.eax.value = 0x4400; p.cpu.ebx.value = 1; p.interrupt(0x21, 0); assert.equal(p.cpu.edx.value & 0x80, 0x80);
 }
 // Yield: a task whose queue has a sent message waiting (wake bits at 4Ah: QS_SENDMESSAGE) yields through USER's
-// UserYield (USER.332); otherwise as OldYield
+// UserYield (USER.332): at the thread's top level it goes on there as its own code (farJump), inside a call as a call
+// the host makes; otherwise as OldYield
 {
   const p = proc(), q = p.allocSels(p.alloc(0x100), 0x100), calls = [];
   p.ne.set('USER', { meta: {}, segs: [] }); p.neExport = (m, o) => (o === 332 ? 0x12340000 : 0); p.user16 = o => calls.push(o);
   p.thread16 = { id: 9, depth: 0, task: {}, queue: q }; p.threadsById = new Map([[9, p.thread16]]);
-  p.w16(p.selBase(q) + 0x4a, 0x40); assert.equal(k(29, p), undefined); assert.deepEqual(calls, [332]);
+  p.w16(p.selBase(q) + 0x4a, 0x40); assert.deepEqual(k(29, p), { farJump: 0x12340000 }); assert.deepEqual(calls, [], 'the thread runs UserYield itself');
+  p.depth = 1; assert.equal(k(29, p), undefined); assert.deepEqual(calls, [332], 'inside a call: called'); p.depth = 0;
   p.w16(p.selBase(q) + 0x4a, 0); assert.equal(k(29, p), YIELD); assert.deepEqual(calls, [332], 'no sent message: no UserYield');
 }
 // InitTask: the local heap LocalInit(DS, 0, heap) at the DGROUP's end; the stack's bounds from the caller's SP

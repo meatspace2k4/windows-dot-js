@@ -46,13 +46,24 @@ window.W95BraidPage = function (ui) {
     const nodes = new Map(), stores = []; let wrote = 0, removed = 0;
     for (const v of fs.vols.values()) if (v.store && v.store.under) { stores.push(v.store.under); (function walk(n) { if (n.sid !== undefined || all) nodes.set(fs.sidOf(n), n); if (n.dir) for (const k of n.kids.values()) walk(k); })(v.root); }
     const sids = all ? [...nodes.keys()] : [...diskTouched].sort((a, b) => a - b);
+    const put = (n, sid) => { const st = n.vol.store.under; st.node(nodeRec(n)); if (!n.dir) { st.size(sid, n.size); if (n.size) return st.data(sid, 0, all ? n.buf.subarray(0, n.size) : n.buf.slice(0, n.size)); } };
+    const later = [];
     for (const sid of sids) {
       const n = nodes.get(sid);
       if (!n) { for (const st of stores) st.remove(sid); removed++; continue; }
-      const st = n.vol.store.under; st.node(nodeRec(n));
-      if (!n.dir) { st.size(sid, n.size); if (n.size) st.data(sid, 0, n.buf.slice(0, n.size)); }
+      if (all) later.push(sid); else put(n, sid);
       storeSids.add(sid); wrote++;
     }
+    // (every node: one file at a time, the next once the store has taken the last. Handed over all at once, as a
+    // moment arrived at from its anchor hands the whole disk over, each file's copy waited in the page for its turn in
+    // the store: 400 MB of disk held the page at over 2 GB, everything ran slowly, and the tab ran out of memory)
+    if (later.length) diskPump = diskPump.then(async () => {
+      const now = new Map(); for (const v of fs.vols.values()) if (v.store && v.store.under) (function walk(n) { now.set(fs.sidOf(n), n); if (n.dir) for (const k of n.kids.values()) walk(k); })(v.root);
+      for (const sid of later) {
+        const n = now.get(sid); if (!n || diskTouched.has(sid)) continue;   // (gone, or written since by its own change)
+        try { await put(n, sid); } catch (e) { console.error('[braid] disk store:', e); }
+      }
+    });
     // (every node: the store then holds this tree and nothing else. A moment's nodes carry the ids of the line that
     // anchored it; written over a store numbered by another line, the store held both trees under one numbering, a
     // folder's id a file's, and the page's next start could not attach it)
@@ -64,6 +75,7 @@ window.W95BraidPage = function (ui) {
     return { wrote, removed };
   }
   const storeSids = new Set();   // (the node ids this page wrote to the disk's store, beside those it loaded)
+  let diskPump = Promise.resolve();   // (the whole-disk writes in turn, writeDisk)
 
   // ---- anchored moments: IndexedDB, this origin's
   // (an anchor's blobs are kept as chunks shared between anchors, braid.js packAnchor: the record in 'anchors' lists
@@ -75,9 +87,9 @@ window.W95BraidPage = function (ui) {
   const dbRaw = name => db(d => req(null, d.transaction('anchors').objectStore('anchors').get(String(name))));
   const dbGet = async name => {
     const s = await dbRaw(name); if (!s || !s.packed) return s;
-    const want = [...B.chunkRefs([s])], got = new Map();
-    await db(d => { const st = d.transaction('chunks').objectStore('chunks'); return Promise.all(want.map(h => req(null, st.get(h)).then(c => { if (c) got.set(h, c); }))); });
-    return B.unpackAnchor(s, h => got.get(h));
+    // (each chunk read as its blob is joined, none kept: every chunk held at once beside the blobs joined from them, an
+    // anchor of 430 MB stood in the page twice over, and with the tree and the machine made from it the tab ran out)
+    return db(d => B.unpackAnchor(s, h => req(null, d.transaction('chunks').objectStore('chunks').get(h))));
   };
   // (never every record at once: an anchor stored whole, before chunks, is the machines' bytes, 350 to 700 MB, and a
   // getAll over thirteen of them asked the page for 6.7 GB, which paused it on the edge of running out of memory at each
@@ -402,7 +414,7 @@ window.W95BraidPage = function (ui) {
     // Windows 98's GDI32 and USER32), and the boot on it died in GDI's LibEntry, leaving no machine to arrive in. The
     // shell is left as it is: the record's shell comes in with the rest below)
     if (rec.machines.system && !sys()) { B.rebind([fs, {}], rec.page, { opaque: opaque(), skip: shellSkip }); writeDisk(true); }
-    for (const [k, ex] of Object.entries(rec.machines)) { const a = k === 'system' ? (sys() || await ui.startSystem()) : live().find(x => x.path === k); if (!a) throw new Error(`no machine running for the moment's ${k}`); out[k] = await a.cmd('import', [ex]); forgetKids(a); if (k === 'system') a.keepMode = true; }   // (the moment's display mode stays: win95.js syncMode)
+    for (const [k, ex] of Object.entries(rec.machines)) { const a = k === 'system' ? (sys() || await ui.startSystem()) : live().find(x => x.path === k); if (!a) throw new Error(`no machine running for the moment's ${k}`); out[k] = await a.cmd('import', [ex]); ex.blob = null; forgetKids(a); if (k === 'system') a.keepMode = true; }   // (the moment's display mode stays: win95.js syncMode)
     watchStores(); ui.closeMenus();
     // (the shell's windows are not rebound: a machine's windows come from its next frame, as they are its own, and a
     // window of the page's is code the record cannot carry. Matched by position to the booted shell's windows, the

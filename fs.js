@@ -365,7 +365,9 @@ class FileSystem {
     for (const e of held.nodes) {
       const n = e.sid === 0 ? r : new Node(e.name, e.dir, e.attrs, e.ctime);
       n.sid = e.sid; n.ord = e.ord; v.nextOrd = Math.max(v.nextOrd, e.ord + 1); n.ctime = e.ctime; n.mtime = e.mtime; n.atime = e.atime; v.nextSid = Math.max(v.nextSid, e.sid + 1);
-      if (!e.dir) { n.buf = e.data || new Uint8Array(0); n.size = n.buf.length; v.used += v.alloc(n.size); }
+      // (the file's bytes are the node's from here: the store's record of what it loaded keeps none. Kept there, the
+      // whole disk as it was at the page's start stayed in memory beside whatever disk replaced it, 400 MB for good)
+      if (!e.dir) { n.buf = e.data || new Uint8Array(0); e.data = undefined; n.size = n.buf.length; v.used += v.alloc(n.size); }
       bySid.set(e.sid, n);
     }
     let loose = 0;

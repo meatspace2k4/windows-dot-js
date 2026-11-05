@@ -713,6 +713,9 @@ P.api16 = function (eip) {
   catch (e) { if (e instanceof GuestError) { const m = this.neByHandle(cs); this.trapped = `${e.message} in ${t.key}, called from ${m ? m.name : '?'} ${cs.toString(16)}:${ip.toString(16)}`; return LAYOUT.SENTINEL; } throw e; }
   if (this.exitCode !== null) return LAYOUT.SENTINEL;
   if (r === YIELD) { this.preempted = 0; return -1; }   // a thread suspended in the call: it runs the call again when resumed (it stopped there, not where its time ran out)
+  // (on to another export as the thread's own code: the caller's return address and arguments left as they are, so its
+  // far return comes back to the caller; KERNEL's Yield goes on to USER's UserYield so)
+  if (r && r.farJump) { this.refreshSegs(); this.seg('cs', r.farJump >>> 16); return u32(this.selBase(r.farJump >>> 16) + (r.farJump & 0xffff)); }
   if (ret === 'w' || ret === 'i') this.cpu.eax.value = lo16(this.cpu.eax.value, r | 0);   // (a word, unsigned or signed: lstrcmp's -1)
   else if (ret === 'l') { this.cpu.eax.value = r | 0; this.cpu.edx.value = lo16(this.cpu.edx.value, u32(r) >>> 16); }
   this.cpu.esp.value = lo16(this.cpu.esp.value, sp + 4 + total);
@@ -5381,7 +5384,7 @@ P.threads16 = function (nested = false, only = null) {
       if (t.state === 'new' && t.flat) {
         // a Win32 thread (CreateThread): its own stack and thread information block, then its procedure called
         // with its parameter in flat mode; returning to the sentinel ends it
-        this.stackAlloc(t); t.tib = this.alloc(0x100);
+        this.stackAlloc(t); t.tib = this.alloc(0x100); if (this.tlsByTib) this.tlsByTib.delete(t.tib >>> 0);   // (no slots of a thread whose block this was)
         this.u8.copyWithin(t.tib, LAYOUT.TIB, LAYOUT.TIB + 0x100);
         this.w32(t.tib, 0xffffffff); this.w32(t.tib + 4, t.stackBase + t.stack); this.w32(t.tib + 8, t.stackBase); this.w32(t.tib + 0x18, t.tib);
         this.w16(t.tib + 0x28, 0);
@@ -5392,7 +5395,9 @@ P.threads16 = function (nested = false, only = null) {
         if (t.pc && !t.pc.started) this.pcStart(t.pc);
         r = this.runTop(u32(t.start));
         if (r === 0 && t.exitCode === undefined) t.exitCode = u32(this.cpu.eax.value);
-        if (r !== 1 && t.pc) { t.state = 'done'; this.pcThreadEnded(t); }
+        // (a thread that ended within its first slice: its stack and information block go too, as at the end below. Kept,
+        // each short REGSVR32 and RUNDLL32 of Windows 98's first start left 1 MB behind, and the heap ran out)
+        if (r !== 1 && t.pc) { t.state = 'done'; this.pcThreadEnded(t); if (t.stackBase) { this.stackFree(t); this.free(t.tib); t.tib = 0; } }
       } else if (t.state === 'new') {
         // its own flat stack, then a far call of its procedure (it returns to the sentinel)
         t.stackBase = this.alloc(t.stack); this.cpu.esp.value = t.stackBase + t.stack - 16; this.seg('ss', 0);
@@ -5536,6 +5541,10 @@ def16('KERNEL', 29, '', 'v', function () {                                      
   // UserYield, as KRNL386's Yield does for a task with a queue (MCIAVI's worker creates its window, sending to the
   // playing task, which yields in a loop until the worker is up)
   const user = t.task && t.queue && this.selValid(t.queue) && !t.userYield && (this.r16(this.selBase(t.queue) + 0x4a) & 0x40) && this.ne && this.ne.get('USER');
+  // (UserYield runs as the task's own code, from Yield's caller: run as a call the host made, the window procedure the
+  // sent message went to (MMSYSTEM's, at the system's start) could not be preempted, and while it ran nothing else
+  // did: no input, no frames, the pointer left behind the mouse)
+  if (user && user.meta && this.neExport(user, 332) && top) return { farJump: this.neExport(user, 332) };
   if (user && user.meta && this.neExport(user, 332)) { t.userYield = true; try { this.user16(332, []); } finally { t.userYield = false; } return; }
   if (top && !t.yielded) { t.yielded = true; return YIELD; }
   if (!top) this.threads16(true);   // inside a call: the other tasks and threads run now, as Yield switches to them
@@ -5604,7 +5613,7 @@ def16('KERNEL', 45, 'sp', 'l', function (name, pb) {
   // bounds) the exception frames it pushed there were no frames to KERNEL32's dispatcher. GDI32's TrueType
   // interpreter divides by zero on a glyph and catches it; uncaught, W98SETUP ended as it drew its billboard
   if (!t.tib) {
-    t.tib = this.alloc(0x100); this.u8.copyWithin(t.tib, LAYOUT.TIB, LAYOUT.TIB + 0x100);
+    t.tib = this.alloc(0x100); this.u8.copyWithin(t.tib, LAYOUT.TIB, LAYOUT.TIB + 0x100); if (this.tlsByTib) this.tlsByTib.delete(t.tib >>> 0);
     const sb = t.task.dgStack ? this.selBase(t.task.dgroup) : 0;
     this.w32(t.tib, 0xffffffff); this.w32(t.tib + 4, sb ? sb + t.task.sp : 0); this.w32(t.tib + 8, sb); this.w32(t.tib + 0x18, t.tib);
     this.w16(t.tib + 0x28, t.queue || 0);
@@ -6086,7 +6095,16 @@ K('#55', 5, function (fn, flags, cb, pargs, pret) {
   const r = this.call16(fn >>> 16, fn & 0xffff, args).dxax >>> 0; if (pret) this.w32(pret, r); return 1;
 });                                                       // PK16FNF: no prefix for 16-bit file names
 KR('K32Thk1632Epilog', function () { return ret32(this); });
-K('#17', 0, () => 0);                                      // CommonUnimpStub
+// CommonUnimpStub, which a DLL's unimplemented export jumps to with CL set (xor eax,eax; mov cl,N; jmp): it sets
+// ERROR_CALL_NOT_IMPLEMENTED, answers by N's high nibble (1: 1, 13: 50, 14: 120, 15: -1, else 0) and pops N's low
+// nibble of arguments. Popping none, Windows 98's USER32 LoadStringW left ODBC32 its four arguments on the stack,
+// and ODBC32's return went to its saved EDI, 106h
+KR('#17', function () {
+  const cl = this.cpu.ecx.value & 0xff, sp = this.reg('esp'), ret = this.r32(sp);
+  this.lastError = 120; this.reg('eax', { 1: 1, 13: 50, 14: 120, 15: 0xffffffff }[cl >> 4] || 0);
+  this.reg('esp', sp + 4 + 4 * (cl & 15));
+  return ret;
+});
 K('#18', 2, function (pid, off) { return pdw(this, pid, off | 0)[off | 0] >>> 0; });   // GetProcessDword
 // the daylight-saving check Explorer makes at start and on each WM_TIMECHANGE: a nonzero answer when KERNEL32 has just
 // moved the clock across the zone's transition (Explorer then broadcasts the time change). The host's clock already
@@ -6229,7 +6247,12 @@ K('TerminateThread', 2, function (h, code) {
 /** the thread a ring-0 thread handle is (its control block's TCB_ThreadId) */
 P.r0Tid = function (h) { const m = this.thcbs; if (m) for (const [tid, a] of m) if (a === u32(h)) return tid; return u32(h) & 0xffffff; };
 K('QueueUserAPC', 3, function (fn, h, data) { const o = this.obj(h), tid = o && o.kind === 'thread' ? o.id : this.currentThreadId(); this.queueApc(tid, fn, data); return 1; });
-K('RegisterServiceProcess', 2, () => 1);   // a process that outlives the user's logon (MPREXE): nothing ends processes at logoff here
+// RegisterServiceProcess(pid, type): fServiceProcess (100h) in the process's flags (GPD -4), as KERNEL32 marks it.
+// USER's ExitWindows leaves services to the end: unmarked, MPREXE was ended with the others, and Windows 98 Setup's
+// restart waited for good on the event MPREXE sets when the network's logoff is done
+K('RegisterServiceProcess', 2, function (pid, type) {
+  const d = pdw(this, u32(pid), '-4'); d['-4'] = type ? (d['-4'] | 0x100) : (d['-4'] & ~0x100); return 1;
+});
 K('OpenVxDHandle', 1, function (h) { return ev16(this, h) ? u32(0xc4000000 | (h & 0xffffff)) : 0; });
 P.r0Event = function (r0) { return (u32(r0) & 0xff000000) === 0xc4000000 ? ev16(this, r0 & 0xffffff) : null; };
 // a Win32 thread's ring-0 handle (VMM Get_Cur_Thread_Handle), which VWIN32_QueueUserApc takes

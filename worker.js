@@ -945,7 +945,7 @@ class Machine {
     } catch (e) { if (e && e.missingDll) { W.log('warn', 'spawn', e.message); return 2; } console.error(e); return 8; }   // (2: a DLL it needs is missing, as WinExec answers)
     // (its console: the MS-DOS machine's window it was started from, o.console, told when the program ends)
     if (o.console !== undefined) pc.console = o.console;
-    pc.onExit = code => { if (!pc.fault) post({ t: 'emit', ev: 'program.exit', data: { path: pc.path, code } }); if (pc.console !== undefined) post({ t: 'conExit', id: pc.console, code: code >>> 0 }); };
+    pc.onExit = code => { if (!pc.fault) post({ t: 'emit', ev: 'program.exit', data: { path: pc.path, code, cmd: pc.cmdLine } }); if (pc.console !== undefined) post({ t: 'conExit', id: pc.console, code: code >>> 0 }); };
     this.kick();
     return pc;
   }
@@ -1694,7 +1694,7 @@ class Machine {
         { p.entryHooks = new Map(); p.entryLists = new Map(); p.retPend = new Map(); const user = p.ne && p.ne.get('USER'); if (user && user.meta) { p.hookIntents(user); p.hookClock(user); p.hookTaken(user); } if (p.hookDllChain) p.hookDllChain(); }
         // (a started program's end told to the page (program.exit), as 'run' tells it; its console's or a saver's own
         // telling is not carried)
-        for (const pc of (p.procs || new Map()).values()) if (pc && typeof pc.onExit !== 'function') pc.onExit = code => { if (!pc.fault) post({ t: 'emit', ev: 'program.exit', data: { path: pc.path, code } }); };
+        for (const pc of (p.procs || new Map()).values()) if (pc && typeof pc.onExit !== 'function') pc.onExit = code => { if (!pc.fault) post({ t: 'emit', ev: 'program.exit', data: { path: pc.path, code, cmd: pc.cmdLine } }); };
         // (a module's wasm run is code the record cannot carry: made again from the bundle's module of its name. A 16-bit
         // module's by its name in the bundle (a record this machine had not has a metadata object of its own, not the
         // bundle's); a 32-bit DLL's from the machine's DLL table (the bundle's, the net's, a saver's: a DLL read from the

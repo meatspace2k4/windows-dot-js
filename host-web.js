@@ -131,7 +131,8 @@
       if (frozen) return;
       const tx = db.transaction(stores, 'readwrite', { durability: 'strict' });
       fn(...stores.map(s => tx.objectStore(s)));
-      tx.onerror = () => console.error('store write failed:', tx.error);
+      // (a promise for the write's end, for a caller that writes much and waits its turn: braid-page.js writeDisk)
+      return new Promise(ok => { tx.oncomplete = () => ok(true); tx.onabort = () => ok(false); tx.onerror = () => { console.error('store write failed:', tx.error); }; });
     };
     const chunks = (sid, from = 0) => IDBKeyRange.bound([sid, from], [sid, Infinity]);
     return {
