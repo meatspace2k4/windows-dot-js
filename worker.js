@@ -1143,6 +1143,52 @@ class Machine {
     for (let i = 0; i < (this.firstStart ? 1800 : 400) && !up(); i++) await new Promise(r => setTimeout(r, 50));   // (a first start takes its time under Setup's screen: the session's programs start after it)
   }
   /** USER32's `name` on a window (args[0]), made only while it is one (netBatch ifWindow) */
+  /** a window's controls (ne16.js nativeChildren, which sends nothing), and what only a message tells of them, an edit's
+   *  text, a button's check, a tab control's tabs, a list view's items, asked by a thread of its own that waits for each
+   *  reply as a program's thread does. Sent from the host, a send the receiver did not answer within the host's call was
+   *  given up, USER freed its record, and the queue that still held it called the freed record's procedure: W98SETUP
+   *  ("invalid page fault at 0137:00000000", the page reading Explorer's taskbar tabs as it looked for AutoRun's Yes) */
+  async childrenAsked(parent) {
+    const p = this.proc, out = p.nativeChildren(parent);
+    if (!Array.isArray(out) || !out.length) return out;
+    const bufs = [], buf = n => { const b = p.alloc(n); p.u8.fill(0, b, b + n); bufs.push(b); return b; };
+    const send = (calls, h, m, wp, lp) => calls.push({ dll: 'USER32', name: 'SendMessageA', args: [h, m, wp >>> 0, lp >>> 0], ifWindow: h }) - 1;
+    try {
+      // (first: edits' text, buttons' checks, the tab controls' counts and selections, the list views' counts)
+      const first = [], need = [];
+      for (const c of out) {
+        if (c.cls === undefined) continue;   // (a popup menu's items, which are no windows)
+        if (/^(edit|combobox|richedit)$/i.test(c.cls)) { const b = buf(0x1000); need.push(r => { c.text = r[0] > 0 ? p.readA(b, Math.min(r[0], 0xfff)) : c.text; }, [send(first, c.hwnd, 0x0d, 0x1000, b)]); }
+        else if (/^button$/i.test(c.cls) && [2, 3, 4, 5, 6, 9].includes(c.style & 0x0f)) need.push(r => { c.checked = r[0] & 3; }, [send(first, c.hwnd, 0xf0, 0, 0)]);   // BM_GETCHECK
+        else if (/^SysTabControl32$/i.test(c.cls)) need.push(r => { c.tabs = { n: Math.min(r[0], 64), sel: r[1] | 0 }; }, [send(first, c.hwnd, 0x1304, 0, 0), send(first, c.hwnd, 0x130b, 0, 0)]);   // TCM_GETITEMCOUNT, TCM_GETCURSEL
+        else if (/^SysListView32$/i.test(c.cls)) need.push(r => { c.list = { n: Math.min(r[0], 256) }; }, [send(first, c.hwnd, 0x1004, 0, 0)]);   // LVM_GETITEMCOUNT
+      }
+      const r1 = first.length ? await this.netBatch(first) : [];
+      if (!r1) return out;
+      for (let k = 0; k < need.length; k += 2) need[k](need[k + 1].map(i => r1[i] | 0));
+      // (then each tab's and each item's rectangle and text)
+      const second = [], fill = [];
+      for (const c of out) {
+        if (c.tabs) for (let i = 0; i < c.tabs.n; i++) {
+          const rc = buf(16), it = buf(28), txt = buf(64); p.w32(it, 1 | 8); p.w32(it + 12, txt); p.w32(it + 16, 64);   // TCIF_TEXT | TCIF_PARAM
+          const a = send(second, c.hwnd, 0x130a, i, rc), b = send(second, c.hwnd, 0x1305, i, it);   // TCM_GETITEMRECT, TCM_GETITEMA
+          fill.push(r => { if (!r[a]) return; const s = o => p.r32(rc + o) | 0, l = s(0), t = s(4); let text = p.readA(txt, 64); const wnd = p.r32(it + 24) & 0xffff;
+            if (!text && wnd && p.user16(47, [['w', wnd]]).ax) text = p.nativeText(wnd);   // (a tab without text: the window its lParam holds)
+            (c.items = c.items || []).push({ x: c.x + l, y: c.y + t, w: s(8) - l, h: s(12) - t, text, selected: i === c.tabs.sel }); });
+        }
+        if (c.list) for (let i = 0; i < c.list.n; i++) {
+          const rc = buf(16), it = buf(36), txt = buf(64); p.w32(it, 1); p.w32(it + 4, i); p.w32(it + 20, txt); p.w32(it + 24, 64);   // LVIR_BOUNDS; LVIF_TEXT, pszText, cchTextMax
+          const a = send(second, c.hwnd, 0x100e, i, rc), b = send(second, c.hwnd, 0x102d, i, it), s2 = send(second, c.hwnd, 0x102c, i, 2);   // LVM_GETITEMRECT, LVM_GETITEMTEXTA, LVM_GETITEMSTATE
+          fill.push(r => { if (!r[a]) return; const s = o => p.r32(rc + o) | 0, l = s(0), t = s(4);
+            (c.items = c.items || []).push({ x: c.x + l, y: c.y + t, w: s(8) - l, h: s(12) - t, text: r[b] > 0 ? p.readA(txt, Math.min(r[b], 63)) : '', index: i, selected: !!(r[s2] & 2) }); });
+        }
+      }
+      const r2 = second.length ? await this.netBatch(second) : [];
+      if (r2) for (const f of fill) f(r2);
+      for (const c of out) { delete c.tabs; delete c.list; if (c.cls !== undefined) delete c.unknown; }
+      return out;
+    } finally { for (const b of bufs) p.free(b); }
+  }
   onWindow(name, args) { return this.netBatch([{ dll: 'USER32', name, args, ifWindow: args[0] }]).then(r => r && r[0]); }
   netCall(name, args = [], dll = 'MPR') { return this.netBatch([{ dll, name, args }]).then(r => r && r[0]); }
   /** exports called one after another on one new thread of this process, each [dll, name, dword or string args]; their
@@ -1373,7 +1419,7 @@ class Machine {
       }
       case 'endProcess': { const p = this.proc, pc = p.procs && p.procs.get(args[0]); if (pc) p.endProcess(pc, args[1] || 0); return pc ? true : this.endSaver(args[0], args[1] || 0); }
       case 'closeWin32': return this.proc.sendMsg(args[0], W.WM.CLOSE);
-      case 'children': return p.depth ? null : p.nativeChildren(args[0]);
+      case 'children': return p.depth ? null : this.childrenAsked(args[0]);
       // a shared session's OS objects (ne16.js osWorld), and a control set as another machine has it
       // (its controls' contents asked from a thread of its own, all in one: WM_GETTEXT, BM_GETCHECK)
       case 'world': return p.depth ? null : (async () => {
@@ -1476,7 +1522,16 @@ class Machine {
         else await this.onWindow('SendMessageA', [c, 0x0c, 0, String(value)]);
         return true;
       })();
-      case 'listItem': return p.depth ? null : p.listItem(args[0], args[1], !!args[2]);   // a list view's item selected, or opened (the scripting API's click, dblclick)
+      case 'listItem': return p.depth ? null : (async () => {   // a list view's item selected, or opened (the scripting API's click, dblclick)
+        // (every item's selection and focus off, then this one's on: LVIS_FOCUSED | LVIS_SELECTED, LVM_SETITEMSTATE, sent
+        // from a thread of its own; the list's owner opens the selection as Enter opens it)
+        const [h, i, open] = args, it = [p.alloc(36), p.alloc(36)];
+        for (const [b, state] of [[it[0], 0], [it[1], 3]]) { p.u8.fill(0, b, b + 36); p.w32(b + 12, state); p.w32(b + 16, 3); }
+        await this.netBatch([{ dll: 'USER32', name: 'SendMessageA', args: [h, 0x102b, 0xffffffff, it[0]], ifWindow: h }, { dll: 'USER32', name: 'SendMessageA', args: [h, 0x102b, i, it[1]], ifWindow: h }]);
+        for (const b of it) p.free(b);
+        if (open && !p.depth) { p.user16(110, [['w', h], ['w', 0x100], ['w', 0x0d], ['l', 0x001c0001]]); p.user16(110, [['w', h], ['w', 0x101], ['w', 0x0d], ['l', 0xc01c0001]]); }   // PostMessage WM_KEYDOWN, WM_KEYUP VK_RETURN
+        return true;
+      })();
       case 'peek': { const at = args[2] ? (p.selValid(args[2]) ? p.selBase(args[2]) + args[0] : -1) : args[0]; return at < 0 ? null : Array.from(p.u8.subarray(at, at + Math.min(args[1], 4096))); }   // a diagnostic: memory bytes, at a linear address or [offset, n, selector]
       case 'menuscan': {   // a diagnostic: every menu handle USER has (IsMenu over the handle range), its item count and first item, and whether USER32's GetMenuItemRect places its first item in the window given
         if (p.depth) return null;

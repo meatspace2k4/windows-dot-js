@@ -1869,24 +1869,17 @@ P.findPopup = function (root, pop) {
 /** the visible descendants of a native window, front to back as USER links them: rectangle, class, text, control id,
  *  style and enabled state. Edits and combo boxes are asked for their text (WM_GETTEXT); buttons for their check
  *  state (BM_GETCHECK) */
-P.nativeChildren = function (parent, send = true) {
+P.nativeChildren = function (parent) {
   if (!this.wbufLin) this.nativeWindows();
   const a = this.wbufLin, buf = u32(this.wbufSel << 16), u = (o, args) => this.user16(o, args).ax, s16 = o => (this.r16(a + o) << 16) >> 16;
   const pl = u(58, [['w', parent], ['l', buf + 0x180], ['w', 64]]);
   if (pl && this.readA(a + 0x180, pl) === '#32768') return this.menuItems(parent);   // a popup menu's window: its items, which are no windows
   const out = [], focus = u(23);   // GetFocus
-  // (what only a message tells, an edit's text, a button's check, a tab's or list's items, is asked only while no
-  // thread waits on a reply to a SendMessage of its own: one sent from here then went into that thread's chain of
-  // sends, and it waited for good. Then the control is `unknown`: its window text only, no check, no items)
-  // (send false: nothing asked, the caller asks from a thread of its own: worker.js 'world')
-  // (nor while a thread holds the Win16Lock: it is in the middle of a run of its own (SUWIN's key check) and takes no
-  // message until it is done; a send then waited on it, and the page lost its frames meanwhile)
-  const ask = send && !this.replyAwaited() && !this.win16Held;
-  // (a Windows 3.x task's controls are sent nothing either: a send from the system's context into its window makes a
-  // record on the task's queue that it answers only at its own loop (windowTask16), and the host's next call linked it
-  // again: W98SETUP, waited on for its Continue button, faulted returning from its wash window's procedure to 0137:0000.
-  // Its edits answer with their window text (DefWindowProc), its buttons with their state word (the check in bits 0-1))
-  const w16 = !!this.windowTask16(parent), sendOk = ask && !w16;
+  // (nothing is sent from here: what only a message tells, an edit's text, a button's check, a tab's or list's items,
+  // the caller asks from a thread of its own, which waits for each reply (worker.js childrenAsked, 'world'). A send from
+  // the host that the receiver did not answer within the host's call was given up and USER freed its record while the
+  // receiver's queue held it: W98SETUP called the emptied record's procedure, "invalid page fault at 0137:00000000".
+  // Each control is `unknown` until then: its window text only, no check, no items)
   const walk = (p, depth) => {
     for (let h = u(262, [['w', p], ['w', 5]]), n = 0; h && n < 512; h = u(262, [['w', h], ['w', 2]]), n++) {
       if (!u(49, [['w', h]])) continue;
@@ -1894,28 +1887,13 @@ P.nativeChildren = function (parent, send = true) {
       const x = s16(0), y = s16(2), w = s16(4) - x, hh = s16(6) - y;
       const cl = u(58, [['w', h], ['l', buf + 0x180], ['w', 64]]), cls = cl ? this.readA(a + 0x180, cl) : '';
       const style = this.user16(135, [['w', h], ['w', 0xfff0]]).dxax;                                            // GetWindowLong(GWL_STYLE)
-      let text = '';
-      if (/^(edit|combobox|richedit)$/i.test(cls) && sendOk) {   // SendMessage WM_GETTEXT, into a buffer the size of an edit's limit (WordPad's RICHEDIT too)
-        if (!this.tbufLin) { this.tbufLin = this.alloc(0x10000); this.tbufSel = this.allocSels(this.tbufLin, 0x10000); }
-        const tl = this.asWindowTask(h, () => u(111, [['w', h], ['w', 0x0d], ['w', 0xffff], ['l', u32(this.tbufSel << 16)]])); text = tl ? this.readA(this.tbufLin, tl) : '';
-      } else { const tl = u(107, [['w', h], ['w', 0x0d], ['w', 160], ['l', buf + 16]]); text = tl ? this.readA(a + 16, tl) : ''; }
-      const c = { hwnd: h, parent: p, x, y, w, h: hh, cls, text, id: u(277, [['w', h]]), style, enabled: !!u(35, [['w', h]]), focused: h === focus, depth, ...(ask ? {} : { unknown: true }) };
-      if (/^button$/i.test(cls) && [2, 3, 4, 5, 6, 9].includes(style & 0x0f)) c.checked = sendOk ? this.asWindowTask(h, () => u(111, [['w', h], ['w', 0x400], ['w', 0], ['l', 0]])) : ask ? u(133, [['w', h], ['w', 0]]) & 3 : undefined;   // BM_GETCHECK; GetWindowWord(0)
-      if (sendOk && /^SysTabControl32$/i.test(cls)) c.items = this.tabItems(h, x, y);
-      if (sendOk && /^SysListView32$/i.test(cls)) c.items = this.listItems(h, x, y);
-      out.push(c); walk(h, depth + 1);
+      const tl = u(107, [['w', h], ['w', 0x0d], ['w', 160], ['l', buf + 16]]), text = tl ? this.readA(a + 16, tl) : '';   // DefWindowProc WM_GETTEXT: USER's own copy
+      out.push({ hwnd: h, parent: p, x, y, w, h: hh, cls, text, id: u(277, [['w', h]]), style, enabled: !!u(35, [['w', h]]), focused: h === focus, depth, unknown: true });
+      walk(h, depth + 1);
     }
   };
   walk(parent, 0);
   return out;
-};
-/** whether a thread waits on the reply to a SendMessage of its own: its queue's wake mask (4Ch) asks for QS_SMRESULT */
-P.replyAwaited = function () {
-  for (const t of (this.threadsById || new Map()).values()) {
-    if (!t.queue || !t.state || t.state === 'done' || !this.selValid(t.queue)) continue;
-    if (this.r16(this.selBase(t.queue) + 0x4c) & 0x8000) return true;
-  }
-  return false;
 };
 /** the OS's objects a shared session keeps the same on every machine (win95.js): each program's top-level windows
  *  (not the shell's, not owned popups) with their program and command line, place, size and shown state, and the
@@ -1938,7 +1916,7 @@ P.osWorld = function () {
     // (its controls whose contents only a message tells: listed here, asked by the caller from a thread of its own,
     // each [key, control, 'text' or 'check'])
     const ask = [];
-    for (const c of this.nativeChildren(w.hwnd, false)) {
+    for (const c of this.nativeChildren(w.hwnd)) {
       if (c.depth || !c.id) continue;
       if (/^(edit|combobox)$/i.test(c.cls)) ask.push([`${c.id}:${c.cls.toLowerCase()}`, c.hwnd, 'text']);
       else if (/^button$/i.test(c.cls) && [2, 3, 4, 5, 6, 9].includes(c.style & 0x0f)) ask.push([`${c.id}:button`, c.hwnd, 'check']);
@@ -2224,53 +2202,12 @@ P.menuDataText = function (data) {
   const id = this.r32(data + 12) >>> 0; if (!ok(id) || this.r16(id) < 16 || (this.u8[id + 2] & 0xf0) !== 0x30) return '';
   return this.readA(id + 14, 128).replace(/\.(lnk|pif|url)$/i, '');
 };
-/** a list view's items (COMCTL32's, in a 32-bit program: the desktop's icons, a folder window's files), each its
- *  bounds on screen (the control at x, y), its label and whether it is selected, from the control's own messages
- *  with flat buffers (as tabItems) */
-P.listItems = function (h, x, y) {
-  const a = this.wbufLin, send = (m, wp, lp) => this.asWindowTask(h, () => this.user16(111, [['w', h], ['w', m], ['w', wp], ['l', lp]]).dxax | 0);
-  const n = Math.min(send(0x1004, 0, 0), 256), out = [];   // LVM_GETITEMCOUNT
-  const rc = a + 0x100, it = a + 0x110, txt = a + 0x140;
-  for (let i = 0; i < n; i++) {
-    this.w32(rc, 0);   // LVIR_BOUNDS
-    if (!send(0x100e, i, rc)) continue;   // LVM_GETITEMRECT
-    const s32 = o => this.r32(rc + o) | 0, l = s32(0), t = s32(4);
-    this.u8.fill(0, it, it + 36); this.w32(it, 1); this.w32(it + 4, i); this.w32(it + 20, txt); this.w32(it + 24, 64); this.u8[txt] = 0;   // LVIF_TEXT, pszText, cchTextMax
-    const len = send(0x102d, i, it);   // LVM_GETITEMTEXTA
-    const text = len > 0 ? this.readA(txt, Math.min(len, 63)) : '';
-    out.push({ x: x + l, y: y + t, w: s32(8) - l, h: s32(12) - t, text, index: i, selected: !!(send(0x102c, i, 2) & 2) });   // LVM_GETITEMSTATE, LVIS_SELECTED
-  }
-  return out;
-};
-/** item `i` of list view `h` selected and focused alone (LVM_SETITEMSTATE), and opened as Enter opens it (the list's
- *  owner opens the selection: a folder window opens the folder, the file) */
-P.listItem = function (h, i, open) {
-  const it = this.wbufLin + 0x110, set = (n, state) => { this.u8.fill(0, it, it + 36); this.w32(it + 12, state); this.w32(it + 16, 3); this.asWindowTask(h, () => this.user16(111, [['w', h], ['w', 0x102b], ['w', n & 0xffff], ['l', it]])); };
-  set(-1, 0); set(i, 3);   // (every item's selection and focus off, then this one's on: LVIS_FOCUSED | LVIS_SELECTED)
-  if (open) { this.user16(110, [['w', h], ['w', 0x100], ['w', 0x0d], ['l', 0x001c0001]]); this.user16(110, [['w', h], ['w', 0x101], ['w', 0x0d], ['l', 0xc01c0001]]); }   // PostMessage WM_KEYDOWN, WM_KEYUP VK_RETURN
-  return true;
-};
-/** a tab control's tabs (COMCTL32's, in a 32-bit program: Explorer's task switcher), each its rectangle on screen (the
- *  control at x, y), its text and whether it is the selected one, from the control's own messages with flat buffers
- *  (a message past WM_USER goes to the 32-bit window with lParam as it is). A tab without text (Explorer's task
- *  buttons draw themselves) is named by the window its lParam holds */
-P.tabItems = function (h, x, y) {
-  const a = this.wbufLin, buf = u32(this.wbufSel << 16), send = (m, wp, lp) => this.asWindowTask(h, () => this.user16(111, [['w', h], ['w', m], ['w', wp], ['l', lp]]).dxax | 0);
-  const n = Math.min(send(0x1304, 0, 0), 64), sel = send(0x130b, 0, 0), out = [];   // TCM_GETITEMCOUNT, TCM_GETCURSEL
-  const rc = a + 0x100, it = a + 0x110, txt = a + 0x140;
-  for (let i = 0; i < n; i++) {
-    if (!send(0x130a, i, rc)) continue;   // TCM_GETITEMRECT
-    const s16 = o => (this.r16(rc + o) << 16) >> 16, l = s16(0), t = s16(4);
-    this.u8.fill(0, it, it + 28); this.w32(it, 1 | 8); this.w32(it + 12, txt); this.w32(it + 16, 64); this.u8[txt] = 0;   // TCIF_TEXT | TCIF_PARAM
-    send(0x1305, i, it);   // TCM_GETITEMA
-    let text = this.readA(txt, 64);
-    const wnd = this.r32(it + 24) & 0xffff;
-    if (!text && wnd && this.user16(47, [['w', wnd]]).ax) {   // IsWindow: GetWindowText of the window the tab stands for
-      const tl = this.user16(36, [['w', wnd], ['l', buf + 0x40], ['w', 160]]).ax; text = tl ? this.readA(a + 0x40, tl) : '';
-    }
-    out.push({ x: x + l, y: y + t, w: s16(8) - l, h: s16(12) - t, text, selected: i === sel });
-  }
-  return out;
+/** a window's title as USER keeps it (DefWindowProc WM_GETTEXT: USER's own copy, no message sent; GetWindowText sends
+ *  WM_GETTEXT to another task's window, and from the host that send could be given up) */
+P.nativeText = function (h) {
+  if (!this.wbufLin) this.nativeWindows();
+  const tl = this.user16(107, [['w', h], ['w', 0x0d], ['w', 160], ['l', u32(this.wbufSel << 16) + 16]]).ax;
+  return tl ? this.readA(this.wbufLin + 16, tl) : '';
 };
 /** a key into USER's keybd_event (USER.289), as KEYBOARD.DRV reports one: AL = virtual key, AH = 80h on release,
  *  BL = scan code, BH = 1 for an extended key */
