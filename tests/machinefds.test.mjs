@@ -10,7 +10,7 @@ const src = readFileSync(new URL('../win95.js', import.meta.url), 'utf8');
 const method = name => { const i = src.indexOf(`\n  ${name}(`), j = src.indexOf('\n  }\n', i); assert.ok(i > 0 && j > i, name); return src.slice(i + 1, j + 4); };
 const fs = new window.W95FS.FileSystem(); fs.mount('C', { kind: 'fixed', total: 1 << 24 }); fs.mkdir('C:\\WINDOWS\\SYSTEM', { recursive: true });
 fs.writeFile('C:\\WINDOWS\\SYSTEM\\SHELL.DLL', Uint8Array.of(1, 2, 3));
-const stubs = { fs, W95Bridge: { answer() {} }, nativeApps: new Set(), machineWorkers: new Set(), clipOwner: null, msgApp: null, closeWin() {}, emit() {}, msgBox() {}, dirty() {}, systemEnded() {}, basename: p => p, fatalText: () => '', runNative() {}, console };
+const stubs = { fs, W95Bridge: { answer() {} }, nativeApps: new Set(), machineWorkers: new Set(), windows: [], clipOwner: null, msgApp: null, closeWin() {}, emit() {}, msgBox() {}, dirty() {}, systemEnded() {}, basename: p => p, fatalText: () => '', runNative() {}, console };
 const M = new Function(...Object.keys(stubs), `return class {\n${method('serve')}\n${method('exited')}\n}`)(...Object.values(stubs));
 const a = new M(); Object.assign(a, { alive: true, wins: new Map(), calls: new Map(), worker: { terminate() {} }, answer() {}, path: 'C:\\WINDOWS\\SYSTEM\\MSGSRV32.EXE' });
 // (the reply goes out through bridge.js's answer: stood in for, the value kept)
