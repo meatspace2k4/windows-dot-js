@@ -151,7 +151,7 @@
     settings: { get_settings: 'The app\'s preferences.', set_setting: 'Change one preference (the user is asked).' },
     pr: { get_status: 'The session\'s pull request (none in Windows 95).', bind_pr: 'Bind a PR (none in Windows 95).', unbind_pr: 'Unbind a PR.', set_auto_merge: 'Auto-merge (none).', set_monitor: 'CI monitor (none).' },
     host: { open_in_editor: 'Open a file in Notepad.', reveal_path: 'Show a file or folder in its folder window.', request_keep_awake: 'Hold off the screen saver.',
-      get_storage_usage: 'The drives\' space.', sync_with_base_branch: 'Merge the base branch (no git in Windows 95).', clean_up_worktrees: 'Remove idle worktrees (none).',
+      get_storage_usage: 'The drives\' space.', sync_with_base_branch: 'Merge the base branch (no worktrees in Windows 95; the Git tool has status, diff, log, add, commit).', clean_up_worktrees: 'Remove idle worktrees (none).',
       discard_kept_worktree: 'Discard a kept worktree (none).' },
     directory: { change_directory: 'Move this session to another folder (the user is asked).', request_directory: 'Ask for access to a folder; without a path the user picks one.' },
     connectors: { session_connectors_status: 'The page\'s hosts as connectors: shares, cd, network, sound.', set_session_connector_enabled: 'Turn a connector on or off for the session.',
@@ -754,6 +754,93 @@
         return cut(out).join('\n') + (mode === 'count' ? `\n\nFound ${plural(total, 'total occurrence')} across ${plural(out.length, 'file')}.` : '');
       },
     };
+    // git on SRC:\'s checkout, run by the page's server (tools/serve.py /__git, tools/git_api.py: a fixed set of
+    // subcommands, every argument checked there): { op: 'check' } answers whether the command is allowed and whether it
+    // writes, before the user is asked; null when the server has none (one started before git_api.py)
+    const GIT_SUBS = ['status', 'diff', 'log', 'show', 'apply', 'add', 'commit'];
+    const NO_GIT = 'This page\'s server has no /__git: tools/serve.py was started before tools/git_api.py was added. Restart tools/serve.py (the page reconnects by itself) for git.';
+    const git = async (op, args) => {
+      let r; try { r = await fetch('__git', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ op, args }) }); } catch (e) { not(`git: ${e.message}`); }
+      if (r.status === 404 || r.status === 501) return null;
+      if (!r.ok) not(`git: HTTP ${r.status}`);
+      const j = await r.json(); if (j.error) not(j.error); return j;
+    };
+    // (meanwhile, a diff of named files against a commit is made here, from /__ref, the commit's file (gitref.py), and
+    // SRC:\, the tree's: a unified diff as git writes it, lines compared with their ends, Myers' shortest edit script)
+    const lineSplit = t => t.match(/[^\n]*\n|[^\n]+$/g) || [];
+    const editScript = (A, B) => {
+      let p = 0; while (p < A.length && p < B.length && A[p] === B[p]) p++;
+      let s = 0; while (s < A.length - p && s < B.length - p && A[A.length - 1 - s] === B[B.length - 1 - s]) s++;
+      const a = A.slice(p, A.length - s), b = B.slice(p, B.length - s), N = a.length, M = b.length, max = N + M, off = max + 1, mid = [];
+      const v = new Int32Array(2 * max + 3), trace = [];
+      found: for (let d = 0; d <= max; d++) {
+        trace.push(v.slice());
+        for (let k = -d; k <= d; k += 2) {
+          let x = k === -d || (k !== d && v[off + k - 1] < v[off + k + 1]) ? v[off + k + 1] : v[off + k - 1] + 1, y = x - k;
+          while (x < N && y < M && a[x] === b[y]) { x++; y++; }
+          v[off + k] = x; if (x >= N && y >= M) break found;
+        }
+      }
+      for (let d = trace.length - 1, x = N, y = M; d >= 0; d--) {
+        const w = trace[d], k = x - y, pk = k === -d || (k !== d && w[off + k - 1] < w[off + k + 1]) ? k + 1 : k - 1, px = w[off + pk], py = px - pk;
+        while (x > px && y > py) { mid.push([' ', p + x - 1, p + y - 1]); x--; y--; }
+        if (d > 0) mid.push(x === px ? ['+', -1, p + py] : ['-', p + px, -1]);
+        x = px; y = py;
+      }
+      const ops = []; for (let i = 0; i < p; i++) ops.push([' ', i, i]);
+      ops.push(...mid.reverse()); for (let i = s; i > 0; i--) ops.push([' ', A.length - i, B.length - i]);
+      return ops;
+    };
+    const unified = (oldText, newText, ctx = 3) => {
+      const A = lineSplit(oldText), B = lineSplit(newText), ops = editScript(A, B), out = []; let add = 0, del = 0;
+      const ch = ops.flatMap((o, i) => (o[0] === ' ' ? [] : [i])); if (!ch.length) return { text: '', add, del };
+      const at = (i, t) => ops.slice(0, i).filter(o => o[0] !== t).length, show = l => `${l.replace(/\n$/, '')}${l.endsWith('\n') ? '' : '\n\\ No newline at end of file'}`;
+      const span = (s, n) => (n === 1 ? `${s + 1}` : `${n ? s + 1 : s},${n}`);
+      for (let g = 0; g < ch.length;) {
+        let e = g; while (e + 1 < ch.length && ch[e + 1] - ch[e] <= 2 * ctx) e++;
+        const from = Math.max(0, ch[g] - ctx), to = Math.min(ops.length, ch[e] + ctx + 1), part = ops.slice(from, to);
+        const n1 = part.filter(o => o[0] !== '+').length, n2 = part.filter(o => o[0] !== '-').length;
+        out.push(`@@ -${span(at(from, '+'), n1)} +${span(at(from, '-'), n2)} @@`);
+        for (const [t, i, j] of part) { out.push(t + show(t === '+' ? B[j] : A[i])); if (t === '+') add++; else if (t === '-') del++; }
+        g = e + 1;
+      }
+      return { text: out.join('\n') + '\n', add, del };
+    };
+    const blobSha = async bytes => { const h = new Uint8Array(await crypto.subtle.digest('SHA-1', new Uint8Array([...new TextEncoder().encode(`blob ${bytes.length}\0`), ...bytes]))); return [...h].map(x => x.toString(16).padStart(2, '0')).join(''); };
+    // (git's --stat: names, counts and the +/- graph fitted into 80 columns as diff.c fits them)
+    const diffstat = (files, width = 80) => {   // (format-patch fits it into 72)
+      const nw = Math.max(...files.map(f => f.path.length)), maxc = Math.max(...files.map(f => f.add + f.del)), cw = String(maxc).length;
+      let gw = maxc, name = nw;
+      if (name + cw + 6 + gw > width) { if (gw > Math.floor(width * 3 / 8) - cw - 6) gw = Math.max(6, Math.floor(width * 3 / 8) - cw - 6); if (name > width - cw - 6 - gw) name = width - cw - 6 - gw; else gw = width - cw - 6 - name; }
+      const sl = n => (n ? 1 + Math.floor(n * (gw - 1) / maxc) : 0);
+      const rows = files.map(f => {
+        let a = f.add, d = f.del;
+        if (gw <= maxc) { let t = sl(a + d); if (t < 2 && a && d) t = 2; if (a < d) { a = sl(a); d = t - a; } else { d = sl(d); a = t - d; } }
+        return ` ${f.path.padEnd(name)} | ${String(f.add + f.del).padStart(cw)} ${'+'.repeat(a)}${'-'.repeat(d)}`;
+      });
+      const A = files.reduce((n, f) => n + f.add, 0), D = files.reduce((n, f) => n + f.del, 0);
+      return `${rows.join('\n')}\n ${plural(files.length, 'file')} changed${A ? `, ${A} insertion${A === 1 ? '' : 's'}(+)` : ''}${D ? `, ${D} deletion${D === 1 ? '' : 's'}(-)` : ''}${!A && !D ? ', 0 insertions(+), 0 deletions(-)' : ''}`;
+    };
+    const gitByRef = async args => {
+      const flags = args.filter(x => /^-/.test(x) && x !== '--'), dd = args.indexOf('--'), loose = (dd < 0 ? args.slice(1) : args.slice(1, dd)).filter(x => !/^-/.test(x));
+      const bad = flags.find(x => !['--stat', '--full-index'].includes(x)); if (bad) not(`${NO_GIT}\n\nMeanwhile only git diff [<commit>] [--stat] -- <files> is made here (from /__ref and SRC:\\), without ${bad}.`);
+      const rev = dd >= 0 && loose.length ? loose[0] : 'HEAD', paths = dd >= 0 ? args.slice(dd + 1) : loose;   // (without --, every word is a file)
+      if (!/^[\w.\-^~]{1,80}$/.test(rev)) not(`${NO_GIT}\n\nMeanwhile the commit is given as a sha, a branch without a slash or HEAD~n (not ${rev}).`);
+      if (!paths.length) not(`${NO_GIT}\n\nMeanwhile a diff of named files against a commit is made here: git diff [<commit>] [--stat] -- <files> (/__ref lists no changes by itself).`);
+      const files = [];
+      for (const p0 of paths) { const p = `SRC:\\${String(p0).replace(/^SRC:\\?/i, '').replace(/\//g, '\\')}`; for (const e of await srcList(p)) files.push(srcRel(e.path)); if (files.length > 400) break; }
+      const out = [], stat = [];
+      for (const rel of files.slice(0, 400)) {
+        let cur; try { cur = (await src('read', rel)).text; } catch (_) { continue; }   // (not text)
+        const r = await fetch(`__ref/${rev}/${rel.split('/').map(encodeURIComponent).join('/')}`, { cache: 'no-store' }); if (!r.ok) continue;
+        const ob = new Uint8Array(await r.arrayBuffer()), old = new TextDecoder().decode(ob), d = unified(old, cur); if (!d.text) continue;
+        const o = await blobSha(ob), n = await blobSha(new TextEncoder().encode(cur)), full = flags.includes('--full-index');
+        out.push(`diff --git a/${rel} b/${rel}\nindex ${full ? o : o.slice(0, 7)}..${full ? n : n.slice(0, 7)}\n--- a/${rel}\n+++ b/${rel}\n${d.text}`); stat.push({ path: rel, add: d.add, del: d.del });
+      }
+      const note = `(${NO_GIT} This diff is made by the page from /__ref/${rev} and SRC:\\: a file the commit does not track compares with itself and shows no change.)`;
+      if (!stat.length) return `${note}\n\n(no changes)`;
+      return `${note}\n\n${flags.includes('--stat') ? diffstat(stat) : out.join('')}`.slice(0, 100000);
+    };
     const FILES = {
       // AskUserQuestion: 1 to 4 questions of 2 to 4 options each, asked one after another as Claude Code asks them; two options
       // are a card in the Claude program (cardBox), more a message box of the page's with a button each, and a multi-select
@@ -837,6 +924,28 @@
           }
         } catch (e) { if (e instanceof CcdError) throw e; not(`${e && e.name || 'Error'}: ${e && e.message || e}`); }
       },
+      // Git: git on SRC:\'s checkout, run by the page's server (tools/git_api.py checks every argument): status, diff,
+      // log, show and apply --check read, as Read does; add and commit write the index and the history, by the session's
+      // permission mode: Plan mode refuses, Ask permissions asks (and Accept edits, for a commit), the others run. The
+      // server checks the command before the user is asked, so a refused one is never put to them
+      async Git(a) {
+        let args = a.args; if (typeof args === 'string') args = args.match(/"[^"]*"|'[^']*'|\S+/g).map(x => x.replace(/^(["'])(.*)\1$/s, '$2'));
+        if (!Array.isArray(args) || !args.length || args.some(x => typeof x !== 'string')) not('args: the git command as a list of strings, its subcommand first, such as ["status", "--short"].');
+        if (args[0] === 'git') args = args.slice(1);
+        if (!GIT_SUBS.includes(args[0])) not(`git ${args[0] || ''} is not allowed here: only ${GIT_SUBS.join(', ')}.`);
+        const s = self, c = await git('check', args);
+        if (!c) { if (args[0] === 'diff') return gitByRef(args); not(NO_GIT); }
+        if (c.writes) {
+          const m = s.permissionMode;
+          if (m === 'plan') not(`Plan mode: ${c.cmd} is not run (it writes the ${c.sub === 'add' ? 'index' : 'history'}). Present the plan first.`);
+          if ((m === 'default' || (m === 'acceptEdits' && c.sub === 'commit')) && !(await approve(`Claude wants to run this in the project's checkout (SRC:\\):\n\n${c.cmd.slice(0, 800)}\n\nAllow it?`))) not(`Permission to run ${c.cmd.slice(0, 200)} was denied.`);
+        }
+        const r = await git('run', args); if (!r) not(NO_GIT);
+        let out = `${r.out}${r.err ? `${r.out && !r.out.endsWith('\n') ? '\n' : ''}${r.err}` : ''}`.replace(/\s+$/, '');
+        if (r.code) out += `${out ? '\n' : ''}(git exited with code ${r.code})`;
+        if (out.length > 30000) out = `${out.slice(0, 30000)}\n... (output truncated: ${out.length} characters; narrow it with paths, --stat or -n)`;
+        return out || '(no output)';
+      },
       Read(a) {
         if (isSrc(abs(a.file_path))) return SRC_FILES.Read(a, abs(a.file_path));
         const p = onC(abs(a.file_path));
@@ -906,6 +1015,7 @@
       { name: 'Bash', description: 'Runs a command in MS-DOS (COMMAND.COM /C) in a machine of this Windows 95, its drives C: and D: Windows\' own, starting in the session\'s folder, and returns what it writes to the screen. The command line is MS-DOS\'s: 127 characters at most, no && or pipes to Unix tools; DIR, TYPE, COPY, REN, DEL, MD, SET, the programs in C:\\WINDOWS\\COMMAND (MEM, FIND, SORT, MORE, XCOPY, ATTRIB, FC, DEBUG, ...) and any MS-DOS program, with | and > as DOS has them. The session\'s permission mode decides whether the user is asked.', input_schema: S_({ command: { type: 'string', description: 'The MS-DOS command to run' }, description: { type: 'string', description: 'What the command does, in 5-10 words' }, timeout: { type: 'integer', description: 'Milliseconds before it is stopped (default 120000, at most 600000)' } }, ['command']) },
       { name: 'JavaScript', description: 'Runs JavaScript in the page this Windows 95 runs in, where its scripting API is (SRC:\\SCRIPTING.md): win95.* drives the shell and its programs as a person would (windows(), elementsNow(), click(query), run(cmd), next(event), ccd.<server>.<tool>(args), ...); win95.sysApp.cmd(name, args) asks the system\'s machine its diagnostics (probe, faults, trace, watch, memwatch, call, peek, effects); win95.reloadScript(\'file.js\') loads a script of the system changed on SRC:\\ again into the running page or machine, no restart (claude-app.js, this program\'s own code, keeps its window and turns). Wait for state with win95.next(event) or waitFor(query), not timers. The code is an expression (its value, a promise awaited) or a function body with return; the answer is the value as JSON, at most 30000 characters. The session\'s permission mode decides whether the user is asked.', input_schema: S_({ code: { type: 'string', description: 'The JavaScript to run' }, description: { type: 'string', description: 'What it does, in 5-10 words' } }, ['code']) },
       { name: 'Braid', description: 'Ring α: time travel through this running Windows (SRC:\\SCRIPTING.md, Ring α). action: mark (a moment of everything now, by name), travel (to a moment by name, or to a machine time t in ms on the line: back or ahead, the fix loaded meanwhile stays), moments (every moment on the line with the lint\'s verdict), lint (a moment against another or now: broken, suspect, ok), line (the generations, forks, moments, faults and the journal), memo (a span already computed from the moment the line is at, by its actions: travel to its end), anchor (the moment of now written to this computer, with a checksum and the build\'s signature), every (the line marking itself every ms, 0 to end), mods (the scripts loaded over the machine, beside the moments), speed (the machine run x times the wall), now (the machine\'s clock), forget (a moment let go), window (the Braid window). A lock-up, a blue screen or a fault dialog is left by travelling to the moment before it and going on. The session\'s permission mode decides whether the user is asked for a travel.', input_schema: S_({ action: { type: 'string', enum: ['mark', 'travel', 'moments', 'lint', 'line', 'memo', 'anchor', 'every', 'mods', 'speed', 'now', 'forget', 'window'], description: 'What to do' }, name: { type: 'string', description: 'The moment\'s name (mark, travel, anchor, forget; lint\'s first moment)' }, to: { type: 'string', description: 'lint: the second moment (now when left out)' }, t: { type: 'number', description: 'travel: a machine time on the line, ms' }, ms: { type: 'number', description: 'every: the interval, ms (0 ends it)' }, x: { type: 'number', description: 'speed: times the wall (1 is a person\'s pace)' }, force: { type: 'boolean', description: 'travel: to a moment of another build, or one the lint found broken' }, actions: { type: 'array', items: {}, description: 'memo: the span\'s actions as the journal has them, [[op, args], ...]' } }, ['action']) },
+      { name: 'Git', description: 'Runs git on SRC:\\\'s checkout (the project\'s code), through the page\'s server, with the arguments as a list (no shell). Allowed: status, diff, log, show, apply (only --check, --stat, --numstat, --summary), add and commit (its message by -m or -F <file of the checkout>; no --amend, no editor). Every option is checked against the subcommand\'s list; global options (-c, -C, --git-dir), push, fetch, remote, config, checkout, reset, --output, --no-index, paths outside the checkout or in .git are refused. Hooks do not run. add and commit follow the session\'s permission mode (Plan mode refuses, Ask permissions asks); the rest read, as Read does.', input_schema: S_({ args: { type: 'array', items: { type: 'string' }, description: 'The git command, subcommand first, such as ["status", "--short"], ["diff", "--stat"], ["log", "--oneline", "-n", "10"], ["commit", "-m", "message"]' } }, ['args']) },
       { name: 'Read', description: 'Reads a file from the C: drive (the system\'s own disk), or from SRC:\\, the project\'s own code (the checkout the page\'s server serves: the system\'s scripts, tools and tests; SRC:\\SCRIPTING.md is the scripting API). file_path is absolute (C:\\... or SRC:\\...) or relative to the session\'s folder. Reads up to 2000 lines from offset, in cat -n format with line numbers starting at 1. Other drives, network drives and shares are refused.', input_schema: S_({ file_path: { type: 'string', description: 'The path of the file to read' }, offset: { type: 'integer', description: 'The line number to start reading from' }, limit: { type: 'integer', description: 'The number of lines to read' } }, ['file_path']) },
       { name: 'Write', description: 'Writes a file on the C: drive or SRC:\\ (the project\'s code), overwriting it if it is there. An existing file must be Read first in this session. The session\'s permission mode decides whether the user is asked.', input_schema: S_({ file_path: { type: 'string', description: 'The path of the file to write' }, content: { type: 'string', description: 'The content to write to the file' } }, ['file_path', 'content']) },
       { name: 'Edit', description: 'Performs exact string replacement in a file on the C: drive or SRC:\\ (the project\'s code). The file must be Read first in this session. old_string must be unique in the file unless replace_all is true.', input_schema: S_({ file_path: { type: 'string', description: 'The path of the file to modify' }, old_string: { type: 'string', description: 'The text to replace' }, new_string: { type: 'string', description: 'The text to replace it with (must be different from old_string)' }, replace_all: { type: 'boolean', description: 'Replace all occurrences of old_string (default false)' } }, ['file_path', 'old_string', 'new_string']) },
@@ -1343,7 +1453,7 @@
           notes: ['There are no worktrees in Windows 95: clean_up_worktrees and discard_kept_worktree have nothing to remove.', 'Conversation history is kept in the registry (HKCU\\Software\\Claude\\Code) and never deleted from here.'],
         });
       },
-      sync_with_base_branch() { not(noWorktree); }, clean_up_worktrees() { return JSON.stringify({ removed: [], freed: 0, note: noWorktree }); }, discard_kept_worktree(a) { if (!byId(a.session_id)) not('No session with that id was found in this app.'); not(noWorktree); },
+      sync_with_base_branch() { not(`${noWorktree} Nothing is merged from here: the Git tool runs status, diff, log, show, apply --check, add and commit on SRC:\\'s checkout.`); }, clean_up_worktrees() { return JSON.stringify({ removed: [], freed: 0, note: noWorktree }); }, discard_kept_worktree(a) { if (!byId(a.session_id)) not('No session with that id was found in this app.'); not(noWorktree); },
     };
     T.directory = {
       async change_directory(a) {

@@ -69,7 +69,7 @@ def share_op(sh, op, *a):
 ERRNO = {2: 'ENOENT', 20: 'ENOTDIR', 13: 'EACCES', 1: 'EACCES', 17: 'EEXIST', 66: 'ENOTEMPTY', 39: 'ENOTEMPTY', 21: 'EISDIR'}
 
 from claude_api import local_request, claude, fetch_page
-import src_api, gitref
+import src_api, gitref, git_api
 
 class H(http.server.SimpleHTTPRequestHandler):
     def ref(self):
@@ -101,6 +101,9 @@ class H(http.server.SimpleHTTPRequestHandler):
         if self.path.split('?')[0] == '/__src':   # (the project's own files, CLAUDE.EXE's SRC:\: this machine's own pages only)
             if not local_request(self): self.send_error(403); return
             src_api.handle(self, root); return
+        if self.path.split('?')[0] == '/__git':   # (a fixed set of git commands on that checkout, each argument checked: tools/git_api.py; this machine's own pages only)
+            if not local_request(self): self.send_error(403); return
+            git_api.handle(self, root); return
         if self.path.split('?')[0] == '/__claude':
             if not local_request(self): self.send_error(403); return
             try: q = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')

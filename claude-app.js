@@ -522,7 +522,7 @@
   }
   async function turn(sid) {
     let failed = null;
-    if (!toolDefs) { const r = await page('@defs'); toolDefs = [...(r.result || []), ...HERE_DEFS]; }
+    { const r = await page('@defs'); if (r.result || !toolDefs) toolDefs = [...(r.result || []), ...HERE_DEFS]; }   // (asked each turn: a tool ccd.js has gained since a reload is offered from the next turn)
     try { for (let k = 0; k < 24; k++) {
       const s = load().find(x => x.id === sid); if (!s) return;
       const r = await ask(sid, s);

@@ -458,6 +458,9 @@ class Machine {
   // others find theirs (ne16.js strokeTarget)
   /** this person's mouse event, as fed: into the stroke it is part of */
   recordStroke(m) {
+    // (none outside a shared session (start's sharedStrokes): finding a press's window sends WM_NCHITTEST from the host
+    // into the window's task, and alone, at Windows 98's start, that send went on inside USER and the start stopped)
+    if (!this.sharedStrokes) return;
     const f = m[0], p = this.proc, sw = this.sw, sh = this.sh;
     const sx = Math.round(m[1] * (sw - 1) / 65535), sy = Math.round(m[2] * (sh - 1) / 65535);
     const was = this.btn || 0;
@@ -751,7 +754,7 @@ class Machine {
     if (this.stopped) return;
     if (this.sysPending && !p.depth && !p.thread16) { this.sysPending = false; if (!this.startMsgsrv()) return; }   // Setup's items done: the system's first task
     if (this.wantMode && !p.depth && !p.thread16 && !p.win16Held) {   // the mode the page asked for while a thread held USER: made now that none does
-      const [w, h] = this.wantMode; this.wantMode = null; const r = this.setMode(w, h); if (r) post({ t: 'mode', r }); else this.wantMode = [w, h];
+      const [w, h] = this.wantMode; this.wantMode = null; const r = this.setMode(w, h); if (r) r.then(v => post({ t: 'mode', r: v })); else this.wantMode = [w, h];
     }
     if (!p.win16Held && p.k32CloseRequest && p.k32CloseRequest()) post({ t: 'closeProgram' });   // REBOOT's APC: Close Program
     try {
@@ -1015,18 +1018,49 @@ class Machine {
   }
   async spawnSaverAsync(file, arg) {
     const savers = (self.W95SAVERS || {}).savers || {};
-    const hit = self.W95SaverRuntime.findSaver(file, savers);
-    if (!hit) return 11;
-    const [name, d] = hit, bytes = fs.readFile(file);
-    if (!await self.W95SaverRuntime.matchesImage(bytes, d)) return 11;
+    const hit = self.W95SaverRuntime.findSaver(fs.realpath(file), savers);
+    const bytes = fs.readFile(file);
+    // (a saver the bundle does not carry, or another build of one it does (OSR2's, Plus!'s 3D Pipes): run from its
+    // file, its code translated as it runs, as any other Win32 program the bundle does not carry)
+    if (!hit || !await self.W95SaverRuntime.matchesImage(bytes, hit[1])) return this.spawnSaverDynamic(file, arg);
+    const [name, d] = hit;
     const mod = await self.W95SaverRuntime.compileModule(d);
     return this.spawnSaver(file, arg, mod, name, bytes);
+  }
+  /** whether the file's bytes are the very image the bundle's saver was translated from (synchronous: WinExec's path) */
+  saverImageMatches(bytes, d) {
+    const b = d.scrBytes || (d.scrBytes = b64bytes(d.scr));
+    if (bytes.length !== b.length) return false;
+    for (let i = 0; i < b.length; i++) if (bytes[i] !== b[i]) return false;
+    return true;
+  }
+  /** a saver run from its file, its code translated as it runs (dyn.js), on the machine's own USER32 and GDI32: the
+   *  bundle's translation run over another image read code and data at the wrong places (3D Pipes' C run-time heap
+   *  read address 0 at its start, and the saver ended before it drew) */
+  spawnSaverDynamic(file, arg) {
+    const p = this.proc, d = this.dynProgram(file);
+    if (!d) return 11;
+    for (const run of [...this.savers.values()]) p.endProcess(run, 0);
+    const mode = /^\s*\/p\b/i.test(arg) ? 'p' : /^\s*\/c\b/i.test(arg) ? 'c' : 's';
+    const real = fs.realpath(file), cmdline = `"${real}" ${String(arg || '').trim() || '/s'}`;
+    let pc;
+    try { pc = p.spawn(fs.readFile(file), null, { ...d.meta, name: basename(real).toUpperCase().replace(/\.SCR$/, '') }, real, cmdline); }
+    catch (e) { if (e && e.missingDll) { W.log('warn', 'spawn', e.message); return 2; } console.error(e); return 8; }
+    pc.onExit = code => {
+      this.savers.delete(pc.pid);
+      post({ t: 'emit', ev: 'program.exit', data: { path: pc.path, mode, code, dynamic: true,
+        ...(pc.trapped || pc.main && pc.main.fault ? { why: pc.trapped || pc.main.fault.why } : {}) } });
+    };
+    pc.saverMode = mode; pc.nativeGdi = true; pc.previewHwnd = 0;
+    this.savers.set(pc.pid, pc); this.kick();
+    return pc;
   }
   spawnSaver(file, arg, compiledModule = null, bundleName = null, imageBytes = null) {
     const p = this.proc, bytes = imageBytes || fs.readFile(file), savers = (self.W95SAVERS || {}).savers || {};
     // (by its long name: Display Properties starts it by the short one, 3DFLYI~1.SCR)
     const hit = bundleName ? [bundleName, savers[bundleName]] : self.W95SaverRuntime.findSaver(fs.realpath(file), savers);
-    if (!hit) return 11;
+    // (WinExec's path checks the image too: only the bytes the bundle was made from run its translation)
+    if (!hit || (!imageBytes && !this.saverImageMatches(bytes, hit[1]))) return this.spawnSaverDynamic(file, arg);
     const [name, d] = hit;
     for (const run of [...this.savers.values()]) p.endProcess(run, 0);
     const mode = /^\s*\/p\b/i.test(arg) ? 'p' : /^\s*\/c\b/i.test(arg) ? 'c' : 's';
@@ -1411,22 +1445,25 @@ class Machine {
   /** the display mode changed to w by h at the page's request (its viewport holds another of the adapter's modes): the
    *  display configuration the mini-VDD reports becomes it, and USER's ChangeDisplaySettings makes the change as a
    *  Display Properties change does (the driver re-enabled in the new mode, the desktop resized, WM_DISPLAYCHANGE to
-   *  every window). The machine's screen size after it, with USER's answer; null while a thread holds USER */
+   *  every window). The machine's screen size after it, with USER's answer; null while a thread holds USER.
+   *  (Asked by a thread of the machine's, netBatch, as a program asks: USER sends WM_DISPLAYCHANGE to every window and
+   *  waits for each; sent inside a call the host made, Explorer's tray, a thread of its own, did not answer within
+   *  it, kept its place at the old screen's bottom, and Explorer faulted) */
   setMode(w, h, fields = 0x180000, flags = 0x80000000) {
     const p = this.proc; if (!p || p.depth || p.thread16 || p.win16Held) return null;
     p.host.width = w; p.host.height = h;
     // a DEVMODE (its 4.0 form, 7Ch bytes) naming the mode: dmFields DM_PELSWIDTH and DM_PELSHEIGHT (naming the depth too, or
   // the registry update flag, has USER answer DISP_CHANGE_RESTART); the change made now, as QuickRes asks for it (flag 80000000h)
-    const dm = p.alloc(0x7c), sel = p.allocSels(dm, 0x7c);
+    const dm = p.alloc(0x7c);
     p.w16(dm + 32, 0x400); p.w16(dm + 36, 0x7c); p.w32(dm + 40, fields);
     const slot = p.displaySlot ? p.displaySlot(w, h, p.displayConfig().bpp) : { w, h };   // (a size the driver does not list: its custom mode's entry at the depth, ne16.js)
     p.w32(dm + 104, 8); p.w32(dm + 108, slot.w); p.w32(dm + 112, slot.h);
-    let r;
-    try { r = p.user16(620, [['l', sel << 16], ['l', flags]]).dxax | 0; }   // ChangeDisplaySettings(lpDevMode, flags)
-    catch (e) { console.error(e); r = -1; }   // (DISP_CHANGE_FAILED: the machine stays as it is)
-    finally { p.freeSels(sel); p.free(dm); }
-    const a = p.scanout(); if (a.bpp) [this.sw, this.sh] = [a.w, a.h];
-    return { r, sw: this.sw, sh: this.sh };
+    const done = res => {
+      p.free(dm);
+      const a = p.scanout(); if (a.bpp) [this.sw, this.sh] = [a.w, a.h];
+      return { r: res ? res[0] | 0 : -1, sw: this.sw, sh: this.sh };   // (-1, DISP_CHANGE_FAILED: no thread could ask)
+    };
+    return this.netBatch([{ dll: 'USER32', name: 'ChangeDisplaySettingsA', args: [dm, flags >>> 0] }]).then(done, e => { console.error(e); return done(null); });
   }
   cmd(name, args) {
     const p = this.proc, u = (o, a) => p.user16(o, a);
@@ -1901,8 +1938,8 @@ self.onmessage = e => {
   } else if (m.t === 'cmd') {
     const reply = (value, error) => { if (m.id) post({ t: 'reply', id: m.id, value: value === undefined ? null : value, error }, value && value.blob instanceof Uint8Array ? [value.blob.buffer] : []); };   // (an export's bytes handed over, not copied)
     let value, error = null;
-    try { value = machine && machine.alive ? machine.cmd(m.name, m.args || []) : undefined; } catch (err) { console.error(err); error = String(err.message || err); }
-    if (value && typeof value.then === 'function') value.then(v => reply(v, null), err => reply(null, String(err && err.message || err)));
+    try { value = machine && machine.alive ? machine.cmd(m.name, m.args || []) : undefined; } catch (err) { console.error(err); error = String((err && err.stack) || err.message || err); }   // (with its stack: the page's log names where)
+    if (value && typeof value.then === 'function') value.then(v => reply(v, null), err => reply(null, String((err && (err.stack || err.message)) || err)));
     else reply(value, error);
     if (machine) machine.kick();
   } else if (m.t === 'lan') lanSend(pageSide, m.frame);   // a frame from the rest of the segment
