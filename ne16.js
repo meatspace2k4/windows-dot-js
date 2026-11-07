@@ -329,8 +329,12 @@ P.neBundle = function () {
   }
   // (Windows 98's builds take the image ranges, block tables and selectors of Windows 95's builds of the same modules
   // (tools/build_system98.py): with any of them, none of those is loaded; a module whose file is neither build's is
-  // mapped from its file, loadNEFile)
-  if (Object.keys(ours).length) for (const k of Object.keys(w98)) { if (ours[k]) pick[k] = ours[k]; else delete pick[k]; }
+  // mapped from its file, loadNEFile. Windows 98's only where a file of Windows 98's own is on the disk: one both have
+  // (TSENG.DRV, the same bytes) says nothing, and a fresh Windows 95 disk, matching Windows 98's DISPLAY build, lost
+  // Windows 95's GDI build: its GDI.EXE mapped from the file faulted in its LibEntry, "exception eh at 50000077")
+  const own98 = Object.keys(ours).some(k => ours[k].meta.sha256 !== (all[k] && all[k].meta && all[k].meta.sha256));
+  if (own98) for (const k of Object.keys(w98)) { if (ours[k]) pick[k] = ours[k]; else delete pick[k]; }
+  else for (const k of Object.keys(ours)) delete ours[k].w98;
   return (this.neAll = pick);
 };
 P.loadLibrary16 = function (name, native = false, defer = false) {
