@@ -239,6 +239,16 @@ class Machine {
       if (rec.meta && rec.meta.dynamic) {
         if (!rec.meta.lookup || !(rec.kind === 'ne' ? rec.file : rec.sha256)) continue;
         if (!rec.hidden) { p.neCompile(rec); continue; }
+        // (made now from its own code: its process's view put in place for it, then the view that was put back. Left
+        // to be made as its view came back, its code ran as run-time code until no host call was in progress, and
+        // Explorer's menu loop, the Start button pressed, never left one)
+        const owner = [...(p.procs || new Map()).values()].find(x => x.exe === rec && x.exitCode === null);
+        if (owner && p.arenaUse) {
+          const was = (p.arena || []).find(s => s.cur !== null), prev = was ? was.cur : null;
+          p.arenaUse(owner);
+          try { if (!rec.hidden) { p.neCompile(rec); continue; } }
+          finally { if (was) p.arenaUse(prev || null); }
+        }
         if (!rec.netText) { rec.netText = [rec.meta.textLo, rec.meta.textHi]; rec.meta.textLo = rec.meta.textHi = 0; }
         rec.run = null; rec.netReady = { had: null };
         continue;
@@ -1882,10 +1892,10 @@ class Machine {
         // (a late-bound LS01 connection's FT_Prolog relay as a moment of an earlier build has it: its table was a getter
         // the moment did not carry, so nothing: joined to its connection's QT_Thunk relay, the one at the nearest
         // address, its table that one's (ne16.js lsBind))
-        if (p.lsRelays) for (const [k, v] of p.lsRelays) if (v && v.ft && !v.rel && v.table === undefined) {
-          let best = null, d = Infinity; for (const [k2, v2] of p.lsRelays) if (v2 && !v2.ft && Math.abs(k2 - k) < d) { d = Math.abs(k2 - k); best = v2; }
-          if (best) v.rel = best;
-        }
+        // (its own connection's: ThunkConnect32 sets the QT_Thunk relay, then the FT_Prolog relay, so the one just before
+        // it in the map's order. The nearest address joined one to another DLL's connection: its calls went to that
+        // DLL's 16-bit targets)
+        if (p.lsRelays) { let prev = null; for (const [, v] of p.lsRelays) { if (v && v.ft && !v.rel && v.table === undefined && prev && !prev.ft) v.rel = prev; prev = v; } }
         for (const t of p.thunks || []) if (t && t.dll) t.def = p.importDef(t.dll, t.nm);
         // (the hooks at the exports other modules enter (win32.js entryHooks) are code: made again for the USER loaded,
         // as its load made them (ne16.js hookIntents, hookClock, hookTaken); a return watched by a diagnostic is not)

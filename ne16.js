@@ -6299,7 +6299,8 @@ K('EnumResourceNamesA', 4, () => 0);
 /** an LS01 relay's target table: the one its connect found, or, bound late, the 16-bit half's (loaded now, as
  *  KERNEL32 binds at the first call), written into the 32-bit side's data as Windows does */
 P.lsBind = function (rel) {
-  if (rel.table || !rel.late) return rel.table;
+  if (rel.table) return rel.table;
+  if (!rel.late) throw new GuestError('an LS01 relay with no target table and nothing to bind it by (a moment of an earlier build)');
   const { td, name, f16name, dir32 } = rel.late;
   const m = this.withDir16(dir32, () => this.loadLibrary16(name, true)), sp = m && this.neExport(m, f16name), t16 = sp ? this.lin(sp) : 0;
   if (!t16) throw new GuestError(`thunk to ${name}: no ${f16name}`);
