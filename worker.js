@@ -228,7 +228,6 @@ class Machine {
     const p = this.proc, S = self.W95SYSTEM || {};
     for (const rec of p.modules || []) {
       const isExe = rec.name === 'EXE' && rec.meta && rec.meta.name;
-      if (typeof rec.run === 'function' && !isExe) continue;
       // (a 16-bit module loaded from its file, translated whole as it loaded: made again from its code as the moment
       // has it, the memo's module where it hashes the same, dyn.js neCompile)
       // (an image too, a program's or DLL's mapped from its file; not a program whose process's view is put by, whose
@@ -244,6 +243,10 @@ class Machine {
         rec.run = null; rec.netReady = { had: null };
         continue;
       }
+      // (whatever run it has, a module translated whole is made again above: an arrival's rebind left each record the
+      // run of the live record at its position, another DLL's, over the moment's block table (MSTASK read 0, Explorer
+      // ran to DCh); a travel's, the module made since the moment, another numbering of its blocks)
+      if (typeof rec.run === 'function' && !isExe) continue;
       let mod = rec.module instanceof WebAssembly.Module ? rec.module : null;
       if (!mod && rec.kind === 'vxd') { const d = (S.vxds || {})[rec.file]; if (d) mod = d.mod || (d.wasm && (d.mod = new WebAssembly.Module(b64bytes(d.wasm)))); }   // (a VxD the moment had loaded and this machine had not, SPOOLER: its module is made only as vmm.js vxd loads it)
       else if (!mod && rec.kind === 'ne') mod = ((S.ne || {})[rec.name] || Object.values(S.ne || {}).find(d => d.meta === rec.meta) || {}).mod;
