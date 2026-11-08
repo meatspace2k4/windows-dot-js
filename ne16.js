@@ -558,6 +558,7 @@ P.loadNEDynamic = function (key, file) {
   // (its text: the code span; its block table found room among the modules' (win32.js tableRoom), the memo's place first)
   const textLo = codeSize ? codeBase : 0, textHi = codeSize ? codeBase + codeSize : 0;
   const lookup = codeSize ? this.tableRoom(4 * codeSize, memo ? memo.lookup : 0) : 0;
+  if (this.vmAudit) this.vmAudit(`${name}'s table`);
   const meta = { name, base: segs.length ? segs[0].base : 0, segs, autodata, entry: [h(0x16), h(0x14)], exports: {}, names, imports: [], textLo, textHi, lookup, blocks: [], fixups: [], dynamic: true };
   // (the device memory the bundle's build of this file writes as registers, recomp.py --mmio: a device's, whichever
   // file of the driver's runs. Windows 98's TSENG.DRV, mapped from its file, waited on the W32's accelerator status
@@ -5267,7 +5268,8 @@ P.endProcess = function (pc, code) {
   if (pc.pdb && this.thread16 && this.thread16.pc !== pc) { this.free(pc.pdb); pc.pdb = 0; }   // (its database, when no thread of its own is the one running)
   if (this.namedClose) this.namedClose(pc);   // (its handles to named objects, and the names nothing else holds)
   // the address space it reserved (VirtualAlloc) goes with it, as its private arena does on Windows 95
-  for (const [b, r] of this.vregions || new Map()) if (r.pc === pc) { this.vregions.delete(b); if (r.heap) this.free(r.heap); else (this.vspare || (this.vspare = [])).push({ base: b, size: r.size }); }
+  for (const [b, r] of this.vregions || new Map()) if (r.pc === pc) { this.vregions.delete(b); if (!r.heap) this.vmCheck(b, r.size, 'a process\'s region given back'); if (r.heap) this.free(r.heap); else (this.vspare || (this.vspare = [])).push({ base: b, size: r.size }); }
+  this.vmAudit('a process\'s end');
   for (const [h, dc] of this.glNativeDCs || new Map()) if (dc.pc === pc) { if (dc.bits) this.free(dc.bits); this.glNativeDCs.delete(h); }   // (gl.js: its frames' DIBs)
   for (const ctx of [...(this.glContexts || [])]) if (ctx.pc === pc) { if (this.glctx === ctx) this.glctx = null; window.W95GL.releaseContext(this, ctx); }   // (and its GPU contexts)
   if (this.thread16 && this.thread16.pc === pc) this.thread16.exitCode = code >>> 0;

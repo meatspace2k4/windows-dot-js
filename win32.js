@@ -240,6 +240,7 @@ class Process {
         rec.sha256 = sha256(f); rec.codeRanges = code;
         const had = this.neMemo(rec);
         meta.lookup = this.tableRoom(4 * (meta.textHi - meta.textLo), had && had.textLo === meta.textLo ? had.lookup : 0);
+        this.vmAudit(`${name}'s table`);
         this.neCompile(rec);
       }
     }
@@ -304,7 +305,10 @@ class Process {
     if (free(pref)) return pref;
     taken.sort((x, y) => x[0] - y[0]);
     let a = LAYOUT.TABLES;
-    for (const [lo, hi] of taken) { if (a + size <= lo) return a; if (hi > a) a = (hi + 0xfff) & ~0xfff; }
+    // (a gap between tables inside the tables' arena only: the tables placed above the layout, vmRoom's, have DLLs'
+    // images and VirtualAlloc's regions between them, and a table put in such a gap wrote its block numbers over them
+    // (VCACHE's 30 MB reservation, URLMON's and MSIDLE's code: MSIDLE's mouse hook ran zeros, a fatal exception 0E)
+    for (const [lo, hi] of taken) { if (a + size > LAYOUT.TABLES_END) break; if (a + size <= lo) return a; if (hi > a) a = (hi + 0xfff) & ~0xfff; }
     if (free(a)) return a;
     // (the tables' arena full, Windows 98's large DLLs (SHELL32, OLE32, MSHTML) translated as they load with the bundle's
     // tables in place: a table where VirtualAlloc's regions are, given as the module's own to it, its base the module's
@@ -330,6 +334,38 @@ class Process {
    *  of `spans`: first the room ended processes gave back (endProcess: their VirtualAlloc regions, vspare), then the
    *  top's. Taken only from the top, that space ran out after Windows 98's first start had run REGSVR32 a few dozen
    *  times, and WMI.DLL and DEVMGR32.DLL found none: RUNDLL's "Error loading devmgr32.dll", error 126. 0: none */
+  /** room [b, b+n) handed out above the layout checked against what is there: a module's image or block table named
+   *  with the allocation's stack (an error once each) */
+  vmCheck(b, n, what) {
+    if (!b) return b;
+    for (const m of this.modules || []) {
+      const t = m.meta, spans = [[m.base, m.base + (m.size || 0), 'image'], t && t.lookup ? [t.lookup, t.lookup + 4 * Math.max(0, (m.netText ? m.netText[1] - m.netText[0] : t.textHi - t.textLo)), 'table'] : null];
+      for (const s of spans) if (s && s[1] > s[0] && b < s[1] && s[0] < b + n) {
+        const k = `${what}:${m.name}:${s[2]}`; const seen = this.vmClash || (this.vmClash = new Set()); if (seen.has(k)) continue; seen.add(k);
+        log('error', 'win32', `${what} at ${(b >>> 0).toString(16)}+${n.toString(16)} over ${m.name}'s ${s[2]} ${(s[0] >>> 0).toString(16)}-${(s[1] >>> 0).toString(16)}: ${(new Error().stack || '').split('\n').slice(2, 8).map(x => x.trim()).join(' < ')}`);
+      }
+    }
+    return b;
+  }
+  /** the address space above the layout as its allocators keep it, checked after `what`: each spare piece, region, big
+   *  block, image and block table apart from the others and below the top (the first overlap logged with its stack) */
+  vmAudit(what) {
+    if (this.vmAudited || !this.vmTop) return;
+    const all = [];
+    for (const s of this.vspare || []) all.push([s.base, s.base + s.size, 'spare']);
+    for (const [b, r] of this.vregions || []) if (!r.heap) all.push([b, b + r.size, 'region']);
+    for (const [b, n] of this.bigBlocks || []) all.push([b, b + n, 'big block']);
+    for (const m of this.modules || []) {
+      if (m.size && m.base >= this.vmLo) all.push([m.base, m.base + m.size, m.name + ' image']);
+      const t = m.meta; if (t && t.lookup >= this.vmLo) all.push([t.lookup, t.lookup + 4 * Math.max(0, m.netText ? m.netText[1] - m.netText[0] : t.textHi - t.textLo), m.name + ' table']);
+    }
+    all.sort((x, y) => x[0] - y[0]);
+    for (let i = 0; i < all.length; i++) {
+      const a = all[i], b = all[i + 1], h = v => (v >>> 0).toString(16);
+      const bad = (b && b[0] < a[1]) ? `${a[2]} ${h(a[0])}-${h(a[1])} and ${b[2]} ${h(b[0])}-${h(b[1])}` : a[2] === 'spare' && a[1] > this.vmTop ? `spare ${h(a[0])}-${h(a[1])} past the top ${h(this.vmTop)}` : '';
+      if (bad) { this.vmAudited = true; log('error', 'win32', `vm overlap after ${what}: ${bad}: ${(new Error().stack || '').split('\n').slice(2, 9).map(x => x.trim()).join(' < ')}`); return; }
+    }
+  }
   vmRoom(size, align, spans = []) {
     if (!this.vmTop) return 0;
     const n = (size + align - 1) & -align, spare = this.vspare || [];
@@ -339,10 +375,10 @@ class Process {
       spare.splice(i, 1);
       if (a > s.base) spare.push({ base: s.base, size: a - s.base });
       if (a + n < end) spare.push({ base: a + n, size: end - a - n });
-      this.u8.fill(0, a, a + n); return a;
+      this.u8.fill(0, a, a + n); return this.vmCheck(a, n, 'room from the spare');
     }
     const b = (this.vmTop + align - 1) & -align;
-    if (b + n <= this.mem.buffer.byteLength) { this.vmTop = b + n; return b; }
+    if (b + n <= this.mem.buffer.byteLength) { this.vmTop = b + n; return this.vmCheck(b, n, 'room from the top'); }
     return 0;
   }
   /** a DLL an image imports or LoadLibrary names that the system bundle does not carry, from its file, as Windows'
@@ -1132,7 +1168,7 @@ class Process {
         const size = (n + 0xffff) & ~0xffff, sp = (this.vspare || []).findIndex(r => r.size >= size); let b = 0;
         if (sp >= 0) { const s = this.vspare.splice(sp, 1)[0]; b = s.base; if (s.size > size) this.vspare.push({ base: b + size, size: s.size - size }); }
         else if (this.vmTop && this.vmTop + size <= this.mem.buffer.byteLength) { b = this.vmTop; this.vmTop += size; }
-        if (b) { (this.bigBlocks || (this.bigBlocks = new Map())).set(b, size); this.allocs.set(b, n); if (zero) this.u8.fill(0, b, b + n); return b; }
+        if (b) { this.vmCheck(b, size, 'a big block'); (this.bigBlocks || (this.bigBlocks = new Map())).set(b, size); this.vmAudit('a big block'); this.allocs.set(b, n); if (zero) this.u8.fill(0, b, b + n); return b; }
         const by = new Map(); let live = 0; for (const [, s] of this.allocs) { by.set(s, (by.get(s) || 0) + s); live += s; }
         let idle = 0; for (const [s, l] of this.freeList) idle += s * l.length;
         const top = [...by].sort((a, b) => b[1] - a[1]).slice(0, 6).map(([s, t]) => `${s}x${t / s}`).join(' ');
@@ -1154,7 +1190,7 @@ class Process {
     this.freeList = new Map(); for (const [a, s] of merged) { if (!this.freeList.has(s)) this.freeList.set(s, []); this.freeList.get(s).push(a); }
   }
   free(p) { const n = this.allocs.get(p); if (!n) return false; this.allocs.delete(p);
-    const big = this.bigBlocks && this.bigBlocks.get(p); if (big) { this.bigBlocks.delete(p); (this.vspare || (this.vspare = [])).push({ base: p, size: big }); return true; }   // (one from above the heap: back to that space)
+    const big = this.bigBlocks && this.bigBlocks.get(p); if (big) { this.bigBlocks.delete(p); this.vmCheck(p, big, 'a big block given back'); (this.vspare || (this.vspare = [])).push({ base: p, size: big }); this.vmAudit('a big block given back'); return true; }   // (one from above the heap: back to that space)
     if (!this.freeList.has(n)) this.freeList.set(n, []); this.freeList.get(n).push(p); return true; }
   /** block `p` grown to `n` bytes where it is (the new bytes zeroed): at the heap's top, or over the free block that
    *  follows it; false when neither has the room */
@@ -2024,26 +2060,27 @@ def('KERNEL32', 'HeapSize', 3, function (h, f, p) { return this.allocs.get(p) ||
 const vregion = (p, a) => { for (const [b, r] of p.vregions || []) if (a >= b && a < b + r.size) return b; return 0; };
 def('KERNEL32', 'VirtualAlloc', 4, function (a, n, type) {
   if (a && vregion(this, a)) return a & ~0xfff;
-  const size = (n + 0xffff) & ~0xffff, regions = this.vregions || (this.vregions = new Map()), end = this.mem.buffer.byteLength;
-  let b = 0, heap = null;
-  // (a spare region larger than asked for: its rest stays spare. Taken whole, a 64 KiB reservation used up a 4 MB
-  // heap's room, the address space ran out, and regions came from the program heap, below the layout's top)
-  const spare = (this.vspare || []).findIndex(r => r.size >= size);
-  if (spare >= 0) { const s = this.vspare.splice(spare, 1)[0]; b = s.base; if (s.size > size) this.vspare.push({ base: b + size, size: s.size - size }); this.u8.fill(0, b, b + size); }
-  else if (this.vmTop + size <= end) { b = this.vmTop; this.vmTop += size; }
-  else { heap = this.alloc(size + 0xffff, true); b = (heap + 0xffff) & ~0xffff; }
+  const size = (n + 0xffff) & ~0xffff, regions = this.vregions || (this.vregions = new Map());
+  let heap = null;
+  // (on a 64 KiB boundary, Windows' allocation granularity, from the room ended processes gave back or the top
+  // (vmRoom: a spare piece's rest stays spare). MSO's allocator (MSONSEXT's) finds a block's header by masking its
+  // address to 64 KiB: a region at the top as the block tables left it, 4 KiB aligned, read no header, and faulted)
+  let b = this.vmTop ? this.vmRoom(size, 0x10000) : 0;
+  if (!b) { heap = this.alloc(size + 0xffff, true); b = (heap + 0xffff) & ~0xffff; }
   // (pc: the process whose own program reserved it, the caller's return address in its image, or a DLL whose
   // writable data is each process's own (priv: MSVCRT's, OLEAUT32's from their files, whose heaps' 4 MB reservations
   // their data holds): it goes when that process ends. What a DLL of one copy reserves (SHELL32's, DESK.CPL's) is the
   // DLL's, kept. MSVCRT's heap in every RUNDLL32 and REGSVR32 was kept: Windows 98's first start ran out of memory)
   const pc = this.pc, e = pc && pc.exe, ret = this.r32(this.reg('esp'));
   const by = !(e && ret >= e.base && ret < e.base + (e.size || 0)) && (this.modules || []).find(x => !x.hidden && !x.segs && x.size && ret >= x.base && ret < x.base + x.size);
+  this.vmCheck(b, size, 'VirtualAlloc');
   regions.set(b, { size, heap, pc: e && ret >= e.base && ret < e.base + (e.size || 0) ? pc : by && by.priv && pc ? pc : null });
+  this.vmAudit('VirtualAlloc');
   return b;
 });
 def('KERNEL32', 'VirtualFree', 3, function (p, n, type) {
   const r = type & 0x8000 && this.vregions && this.vregions.get(p);
-  if (r) { this.vregions.delete(p); if (r.heap) this.free(r.heap); else (this.vspare || (this.vspare = [])).push({ base: p, size: r.size }); }
+  if (r) { this.vregions.delete(p); if (!r.heap) this.vmCheck(p, r.size, 'VirtualFree'); if (r.heap) this.free(r.heap); else (this.vspare || (this.vspare = [])).push({ base: p, size: r.size }); this.vmAudit('VirtualFree'); }
   return 1;
 });
 def('KERNEL32', 'lstrlenA', 1, function (p) { return p ? this.readA(p).length : 0; });

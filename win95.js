@@ -4064,7 +4064,10 @@ class RemoteApp extends NativeApp {
   // (the page's buffers follow the screen the machine scans out, by their own size: a travel puts sw and sh back from
   // the moment and leaves the canvases, the page's live things, as they were, so a moment taken at 706x859 arrived at
   // from 640x480 had sw at 706 and a 640-wide image, and the 1416-byte lines were drawn 640 to a row, sheared)
-  followMode(m) { const s = m && m.scan; if (s && s.bpp && (s.w !== this.sw || s.h !== this.sh || !this.img || this.img.width !== s.w || this.img.height !== s.h)) this.screenSized(s.w, s.h); }
+  // (and the page's screen the machine's, once it is the page's monitor: the shell came up after the machine's first
+  // frame (Windows 98's start after RUNONCE's restart), and the page kept the boot logo's 320x200, the desktop cut to
+  // its corner)
+  followMode(m) { const s = m && m.scan; if (s && s.bpp && (s.w !== this.sw || s.h !== this.sh || !this.img || this.img.width !== s.w || this.img.height !== s.h)) this.screenSized(s.w, s.h); else if (this.system && typeof sysApp !== 'undefined' && this === sysApp && monApp() && (W !== this.sw || H !== this.sh)) resize(); }
   frame(m) {
     if (this.system && bootLogo.on && m.list.length) bootLogoEnd();   // (Windows has a window up: the start-up screen goes)
     if (this.system && sharedNow()) {   // (its windows changed: the session's objects may have; win95.js osSoon)
@@ -6195,7 +6198,7 @@ const PAGE_SCRIPTS = new Set(['ccd.js']);
 // the other people in it
 const braidUi = () => ({
   W95Win32, fs, emit, dirty, closeMenus, dialog, closeWin, msgBox, activate, script,
-  machines: () => [...machineWorkers], sysApp: () => sysApp, startSystem, windows: () => windows, shared: () => sharedNow(),
+  machines: () => [...machineWorkers], sysApp: () => sysApp, startSystem, pcBoot: () => pcBoot(), windows: () => windows, shared: () => sharedNow(),
   shell: () => ({ windows, tasks, modals, active, menus, menuSrc, cap, drag, ghost, screen, textClip, clipOwner, msgApp, cascadeN }),
   setShell: sh => {
     ({ windows, tasks, modals, active, menus, menuSrc, cap, drag, ghost, screen, textClip, clipOwner, msgApp, cascadeN } = sh);

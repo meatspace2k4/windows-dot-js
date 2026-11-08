@@ -1825,7 +1825,8 @@ svc(VMM, 0xaa, function () { return 1; });
 // (VCACHE reserves 30 MB at boot, which took most of the 56 MB heap)
 svc(VMM, 0x11d, function (arg) {
   const n = arg(1) * 4096, size = (n + 0xffff) & ~0xffff, end = this.mem.buffer.byteLength;
-  if (this.vmTop !== undefined && this.vmTop + size <= end) { const b = this.vmTop; this.vmTop += size; (this.vregions || (this.vregions = new Map())).set(b, { size, heap: null }); return b; }
+  const b = this.vmTop !== undefined && this.vmTop + size <= end && this.vmRoom ? this.vmRoom(size, 0x10000) : 0;   // (on a 64 KiB boundary, as VirtualAlloc's)
+  if (b) { (this.vregions || (this.vregions = new Map())).set(b, { size, heap: null }); return b; }
   const a = this.alloc(n + 4096); return (a + 4095) & ~4095;
 });
 svc(VMM, 0x11e, function (arg) { const a = arg(0) * 4096; this.u8.fill(0, a, a + arg(1) * 4096); return 1; });   // _PageCommit(page, n, ...)

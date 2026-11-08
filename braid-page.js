@@ -447,6 +447,10 @@ window.W95BraidPage = function (ui) {
     const gen = line.fork(name, 'anchor', { at: rec.now, build: rec.build, forced: rec.build !== b });
     if (line.moments.has(name)) line.moments.get(name).anchored = true;
     ui.emit('braid.travel', { gen, moment: name, at: rec.now, how: 'anchor' });
+    // (a moment with no system's machine, taken as the PC booted (Setup's restart: w98-reboot, w98-windows): the PC
+    // boots again on the moment's disk, the page's own machine ended. Left booting, the page's PC read the disk the
+    // arrival wrote under it and never reached Windows)
+    if (!rec.machines.system && ui.pcBoot) { const s = sys(); if (s && s.alive) s.exited(0); ui.pcBoot(); }
     ui.dirty();
     return { ...out, page: r, gen, at: rec.now, disk };
   }
