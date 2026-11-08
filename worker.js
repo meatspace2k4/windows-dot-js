@@ -233,7 +233,17 @@ class Machine {
       // has it, the memo's module where it hashes the same, dyn.js neCompile)
       // (an image too, a program's or DLL's mapped from its file; not a program whose process's view is put by, whose
       // code is not where its image is now)
-      if (rec.meta && rec.meta.dynamic) { if (rec.meta.lookup && !rec.hidden && (rec.kind === 'ne' ? rec.file : rec.sha256)) p.neCompile(rec); continue; }
+      // (one whose process's view is put by: its block table is the moment's, its run the module made before the travel,
+      // another numbering of its blocks, and Explorer, its view put back, ran other blocks than its own. Its text the
+      // dispatcher's no more, run-time code, until its view is in place and its module is made from its own code there,
+      // dyn.js neInstall)
+      if (rec.meta && rec.meta.dynamic) {
+        if (!rec.meta.lookup || !(rec.kind === 'ne' ? rec.file : rec.sha256)) continue;
+        if (!rec.hidden) { p.neCompile(rec); continue; }
+        if (!rec.netText) { rec.netText = [rec.meta.textLo, rec.meta.textHi]; rec.meta.textLo = rec.meta.textHi = 0; }
+        rec.run = null; rec.netReady = { had: null };
+        continue;
+      }
       let mod = rec.module instanceof WebAssembly.Module ? rec.module : null;
       if (!mod && rec.kind === 'vxd') { const d = (S.vxds || {})[rec.file]; if (d) mod = d.mod || (d.wasm && (d.mod = new WebAssembly.Module(b64bytes(d.wasm)))); }   // (a VxD the moment had loaded and this machine had not, SPOOLER: its module is made only as vmm.js vxd loads it)
       else if (!mod && rec.kind === 'ne') mod = ((S.ne || {})[rec.name] || Object.values(S.ne || {}).find(d => d.meta === rec.meta) || {}).mod;
