@@ -110,7 +110,7 @@ class H(http.server.SimpleHTTPRequestHandler):
             except ValueError: self.send_error(400); return
             claude(self, q); return
         if self.path.split('?')[0] == '/__cdlog':   # (the dev page's CD request trace, as deploy/win95/win95_server.py keeps it)
-            if not local_request(self): self.send_error(403); return
+            if not local_request(self, json=False): self.send_error(403); return
             try:
                 q = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')
                 os.makedirs('/tmp/w95', exist_ok=True)

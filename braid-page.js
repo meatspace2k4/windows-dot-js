@@ -189,6 +189,10 @@ window.W95BraidPage = function (ui) {
       const v = line.broken.get(name); if (v === 'broken' && !o.force) throw new Error(`the moment ${name} is a broken state (the lint): travel(name, { force: true }) goes anyway`);
       const why = B.refuse(h.s, await build()); if (why && !(o.force && /build/.test(why))) throw new Error(why);
       const out = {}, now = await clock();
+      // (a machine that no longer holds the moment, its worker started again since (Setup's restart: the moment taken as
+      // Windows 98's VMM loaded, w98-windows), has it from its anchor, as an ended one does)
+      const held = await Promise.all(Object.values(h.machines).map(m => (m.app.alive ? m.app.cmd('moments').then(l => (l || []).some(x => x.name === name), () => false) : true)));
+      if (held.includes(false) && (await dbNames().catch(() => [])).includes(name)) return arrive(name, o);
       for (const [k, m] of Object.entries(h.machines)) { if (!m.app.alive) { out[k] = 'gone'; continue; } out[k] = await m.app.cmd('travel', [name]); if (!out[k]) throw new Error(`the machine ${k} refused the moment (see the console)`); forgetKids(m.app); }
       ui.closeMenus();
       const [, sh] = B.restoreGraph(h.s.sections.disk.graph); shellBack(sh);

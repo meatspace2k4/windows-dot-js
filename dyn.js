@@ -1125,6 +1125,7 @@ P.hasBlock = function (m, eip) {
  *  2-11), then the dispatch loop's: api (a 16-bit thunk's entry) and tick (the block budget) */
 const NE_IMPORTS = [['io', 1], ['trap', 1], ['fsin', 2], ['fcos', 2], ['ftan', 2], ['fatan2', 3], ['fexp2', 2], ['flog2', 2], ['fmod', 3], ['frem', 3], ['f80load', 4], ['f80store', 5], ['api', 6], ['tick', 6]];
 const NE_RUN = NE_IMPORTS.length;   // (the run function's index; the blocks follow it)
+const NE_MAX_BYTES = 0x40000000;    // (the largest module the engine compiles: WebAssembly.Module's 1 GiB)
 const BUDGET_G = GI.budget;         // (the block budget, the processor's, which the dispatch loop counts down)
 const LOOKUP_G = G.length;          // (the block table's base, env.lookup: given as the module is made, so the memo's bytes hold no address of the table)
 /** the module: each block a function returning the address it goes on to (translate's, as dynBlock makes them),
@@ -1383,6 +1384,13 @@ P.neCompile = function (rec, again = false) {
   if (same) ({ wasm, blocks, lens, sums } = had);
   else {
     ({ wasm, blocks, lens, sums } = this.translateNE(rec));
+    // (a module the engine cannot compile, past its 1 GiB: named, with its largest blocks, and its code left run-time
+    // code; compiled, the machine's worker ended, "buffer source exceeds maximum size")
+    if (wasm.length > NE_MAX_BYTES) {
+      const at = blocks.map((a, i) => [a, lens[i]]).sort((x, y) => y[1] - x[1]).slice(0, 4).map(([a, n]) => `${(a >>> 0).toString(16)}+${n}`).join(' ');
+      window.W95Win32.log('error', 'dyn', `${label}: ${blocks.length} blocks translate to ${wasm.length} bytes, past the engine's limit; its code runs as run-time code (longest blocks: ${at})`);
+      meta.textLo = meta.textHi = 0; rec.run = null; rec.netTooBig = true; return rec;
+    }
     memoPut({ sha: rec.sha256, name: rec.name, file: rec.path || meta.path || null, codeBase: Math.min(...code.map(g => g.base)), sels, lookup: meta.lookup, textLo: meta.textLo, textHi: meta.textHi,
       codeHash: blocksHash(this.u8, blocks, lens), build: NET_BUILD, entries: [...(rec.dynEntries || [])], blocks, lens, sums, wasm, made: Date.now() });
   }
@@ -1432,7 +1440,7 @@ P.neRebuild = function () {
   if (this.depth) return false;
   // (16-bit modules and programs' and DLLs' images alike; an image put by, another process's program, waits for its own)
   for (const m of this.modules || []) {
-    if (!m || !m.meta || !m.meta.dynamic || !m.meta.lookup || m.hidden || m.netText || !m.dynNew || !m.dynNew.size) continue;
+    if (!m || !m.meta || !m.meta.dynamic || !m.meta.lookup || m.hidden || m.netText || m.netTooBig || !m.dynNew || !m.dynNew.size) continue;
     if (m.dynSeen !== m.dynNew.size) { m.dynSeen = m.dynNew.size; continue; }
     this.neCompile(m, true); return true;
   }
