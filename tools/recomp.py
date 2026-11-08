@@ -409,7 +409,6 @@ CODE_BYTES = frozenset()
 # the host after it is made, trap(address, 0x2000000 | size)
 MMIO = None
 UNLINKED = False   # (--unlinked: build_ne leaves the module out of the registry the modules after it link against)
-ENTRIES = None     # (--entries FILE: block starts run-time code found in the file, findings/dynentries, build_ne decodes from them too)
 def mmio_store(f, addr, sz, code=0x2000000):
     if not MMIO: return
     lo, n = MMIO
@@ -1673,15 +1672,6 @@ def build_ne(path, out, base, selbase, lookup, registry):
     entries += [sg['base'] for sg in ne.segs if sg['code'] and sg['len']]   # far pointers to offset 0 look like nulls to the heuristics
     if ne.entry_seg: entries.append(ne.segs[ne.entry_seg - 1]['base'] + ne.entry_off)
     entries += far_targets
-    # (--entries: the block starts run-time code reached in this file as it ran, findings/dynentries, SEG:OFFSET each,
-    # for the file whose SHA-256 the record names: code reached only through pointers, which decoding from the
-    # module's own entries does not find)
-    if ENTRIES:
-        rec = json.load(open(ENTRIES))
-        if rec.get('sha256') != hashlib.sha256(data).hexdigest(): sys.exit(f'{ENTRIES} is for another file than {path}')
-        for e in rec.get('entries', []):
-            s_, off = (int(x) for x in e.split(':'))
-            if 0 < s_ <= len(ne.segs) and ne.segs[s_ - 1]['code'] and off < ne.segs[s_ - 1]['len']: entries.append(ne.segs[s_ - 1]['base'] + off)
     # flat-thunk connection data: {checksum, 16:16 common entry}; the entry is reached only through it
     for nm, o in ne.names.items():
         if 'THKCONNECTIONDATA' in nm and o in ne.entries:
@@ -1815,7 +1805,6 @@ if __name__ == '__main__':
     if '--registry' in a: k = a.index('--registry'); reg = a[k + 1]; del a[k:k + 2]
     if '--mmio' in a: k = a.index('--mmio'); MMIO = tuple(int(v, 0) for v in a[k + 1].split(':')); del a[k:k + 2]
     if '--unlinked' in a: a.remove('--unlinked'); UNLINKED = True
-    if '--entries' in a: k = a.index('--entries'); ENTRIES = a[k + 1]; del a[k:k + 2]
     if '--vxd' in a: a.remove('--vxd')
     while len(a) > 2:
         v = int(a.pop(), 0); k = a.pop().lstrip('-'); kw[k] = v

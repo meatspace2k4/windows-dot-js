@@ -9,8 +9,6 @@ self.window = self;
 // segment on the page (the other computer, lanhost.js; other machines' cards), frames passing both ways
 self.W95LAN = { stations: new Set(), frames: 0 };
 importScripts('bridge.js', 'braid.js', 'fs.js', 'win32.js', 'gl.js', 'shell32.js', 'system.js', 'claude-exe.js', 'claude-app.js', 'session-dll.js', 'sesstray-exe.js', 'session-tray.js', 'dbwin-exe.js', 'dbwin.js','osclass.js', 'ne16.js', 'setupx-lzx.js', 'vmm.js', 'sound.js', 'lan.js', 'parallel.js', 'netfs.js', 'dyn.js', 'v86.js', 'savers.js', 'saver-runtime.js');
-// Windows 98's build of its 16-bit modules, where it has been made (tools/build_system98.py): ne16.js neBundle
-try { importScripts('system98.js'); } catch (_) { /* none built: Windows 98's modules run from their files */ }
 const B = self.W95Bridge, W = self.W95Win32, { FSError, join, basename, extname } = self.W95FS;
 const b64bytes = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
 const sha256 = W.sha256;   // (a program's identity as the bundle records it: spawnProgram)
@@ -179,14 +177,18 @@ class Machine {
     if (this.names) return this.names;
     const S = self.W95SYSTEM || {}, n = new Map();
     const add = (v, name) => { if (v && (typeof v === 'object' || typeof v === 'function') && !n.has(v)) n.set(v, name); };
-    for (const [g, grp] of [['ne', S.ne], ['ne98', (self.W95SYSTEM98 || {}).ne], ['dlls', S.dlls], ['programs', S.programs], ['net', S.net], ['vxds', S.vxds], ['savers', (self.W95SAVERS || {}).dlls]]) for (const [k, d] of Object.entries(grp || {})) { add(d, `${g}:${k}`); add(d.meta, `${g}:${k}.meta`); add(d.bytes, `${g}:${k}.bytes`); add(d.imgBytes, `${g}:${k}.imgBytes`); add(d.mod, `${g}:${k}.mod`); if (typeof d.modSync === 'object') add(d.modSync, `${g}:${k}.modSync`); }
+    for (const [g, grp] of [['ne', S.ne], ['dlls', S.dlls], ['programs', S.programs], ['net', S.net], ['vxds', S.vxds], ['savers', (self.W95SAVERS || {}).dlls]]) for (const [k, d] of Object.entries(grp || {})) { add(d, `${g}:${k}`); add(d.meta, `${g}:${k}.meta`); add(d.bytes, `${g}:${k}.bytes`); add(d.imgBytes, `${g}:${k}.imgBytes`); add(d.mod, `${g}:${k}.mod`); if (typeof d.modSync === 'object') add(d.modSync, `${g}:${k}.modSync`); }
     if (this.proc) for (const [k, d] of this.proc.dlls) if (d.module || d.meta && !d.meta.dynamic) { add(d, `dll:${k}`); add(d.meta, `dll:${k}.meta`); add(d.file, `dll:${k}.file`); add(d.module, `dll:${k}.module`); }
     return (this.names = n);
   }
   braidNamed() { const by = new Map(); for (const [v, k] of this.braidNames()) by.set(k, v); return name => by.get(name); }
   /** the properties of the machine's own object that are the host's live things, not the moment's: the step timer,
    *  the message channel, the input ring, the moments themselves, the clock's skew */
-  braidSkip(obj, k) { return (obj === this && (k === 'timer' || k === 'stepDue' || k === 'soonCh' || k === 'soonPending' || k === 'ring' || k === 'alive' || k === 'mods' || k === 'stepLog' || k === 'started' || k === 'fast' || k === 'until' || k === 'untilWait' || k === 'markWait' || k === 'detLog' || k === 'trailLog' || k === 'childAsks' || k === 'askChain' || k === 'readQ' || k === 'reader')) || (obj === this.proc && (k === 'dynCache' || k === 'dynFast' || k === 'dynEnv' || k === 'runHook')); }   // (the run-time translations: a cache of code, made again as the code runs; its wasm instances cannot be exported. dynFast, the block each address ran last, too: carried in a moment without its code, an arrival from an anchor called a block with no run)
+  braidSkip(obj, k) { return (obj === this && (k === 'timer' || k === 'stepDue' || k === 'soonCh' || k === 'soonPending' || k === 'ring' || k === 'alive' || k === 'mods' || k === 'stepLog' || k === 'started' || k === 'fast' || k === 'until' || k === 'untilWait' || k === 'markWait' || k === 'detLog' || k === 'trailLog' || k === 'childAsks' || k === 'askChain' || k === 'readQ' || k === 'reader')) || (obj === this.proc && (k === 'dynCache' || k === 'dynFast' || k === 'dynEnv' || k === 'runHook'))
+    // (a module translated whole as it loaded, a 16-bit module's or a program's or DLL's: its module's bytes kept for
+    // translating it again (dyn.js translateNE), and the memo's module being read, made again from its code and the
+    // memo; each moment copied them, MSHTML's 50 MB among them, four moments held at a time while Setup ran)
+    || ((k === 'netSeed' || k === 'netReady') && obj && obj.meta && obj.meta.dynamic); }   // (the run-time translations: a cache of code, made again as the code runs; its wasm instances cannot be exported. dynFast, the block each address ran last, too: carried in a moment without its code, an arrival from an anchor called a block with no run)
   /** the lint's record of the machine now (braid.js lint) */
   braidProbe() {
     const p = this.proc, held = p.win16Held ? { who: typeof p.win16Held.who === 'object' ? 'thread ' + p.win16Held.who.id : String(p.win16Held.who), since: p.win16Held.since, cpu: p.win16Held.cpu, hung: !!p.win16Held.hung } : null;
@@ -227,10 +229,14 @@ class Machine {
     for (const rec of p.modules || []) {
       const isExe = rec.name === 'EXE' && rec.meta && rec.meta.name;
       if (typeof rec.run === 'function' && !isExe) continue;
-      if (rec.meta && rec.meta.dynamic) continue;
+      // (a 16-bit module loaded from its file, translated whole as it loaded: made again from its code as the moment
+      // has it, the memo's module where it hashes the same, dyn.js neCompile)
+      // (an image too, a program's or DLL's mapped from its file; not a program whose process's view is put by, whose
+      // code is not where its image is now)
+      if (rec.meta && rec.meta.dynamic) { if (rec.meta.lookup && !rec.hidden && (rec.kind === 'ne' ? rec.file : rec.sha256)) p.neCompile(rec); continue; }
       let mod = rec.module instanceof WebAssembly.Module ? rec.module : null;
       if (!mod && rec.kind === 'vxd') { const d = (S.vxds || {})[rec.file]; if (d) mod = d.mod || (d.wasm && (d.mod = new WebAssembly.Module(b64bytes(d.wasm)))); }   // (a VxD the moment had loaded and this machine had not, SPOOLER: its module is made only as vmm.js vxd loads it)
-      else if (!mod && rec.kind === 'ne') { const n98 = (self.W95SYSTEM98 || {}).ne || {}, d = Object.values(n98).find(x => x.meta && rec.meta && x.meta.sha256 && x.meta.sha256 === rec.meta.sha256 && rec.w98) || (S.ne || {})[rec.name] || Object.values(S.ne || {}).find(x => x.meta === rec.meta) || {}; mod = d.mod || (d.wasm && rec.w98 && (d.mod = new WebAssembly.Module(b64bytes(d.wasm)))); }   // (Windows 98's build where the moment's module was it)
+      else if (!mod && rec.kind === 'ne') mod = ((S.ne || {})[rec.name] || Object.values(S.ne || {}).find(d => d.meta === rec.meta) || {}).mod;
       else if (!mod && isExe) { const progs = S.programs || {}, d = (rec.meta.sha256 && Object.values(progs).find(x => x.meta && x.meta.sha256 === rec.meta.sha256)) || progs[rec.meta.name + '.EXE']; if (d) mod = d.mod || d.modSync || (d.modSync = new WebAssembly.Module(b64bytes(d.wasm))); }
       else if (!mod) {
         const d = p.dlls && p.dlls.get(rec.name); if (d && d.module instanceof WebAssembly.Module) mod = d.module;
@@ -265,7 +271,8 @@ class Machine {
   }
   async start() {
     const S = self.W95SYSTEM;
-    await Promise.all([...Object.values(S.ne), ...Object.values(S.dlls), ...Object.values(S.net || {})].map(async m => { if (!m.mod) m.mod = await WebAssembly.compile(b64bytes(m.wasm)); }));
+    await Promise.all([...Object.values(S.ne), ...Object.values(S.dlls), ...Object.values(S.net || {})].map(async m => { if (!m.mod) m.mod = await WebAssembly.compile(b64bytes(m.wasm)); })
+      .concat(self.W95Dyn.memoLoad()));   // (and the translations of modules loaded from their files, memoized on this computer: dyn.js)
     if (self.fonts && typeof FontFace === 'function') await Promise.all(Object.entries((self.W95SAVERS || {}).fonts || {}).map(async ([family, data]) => {
       try { const font = await new FontFace(family, b64bytes(data)).load(); self.fonts.add(font); } catch (_) { /* bundled font unavailable in this worker */ }
     }));
@@ -727,7 +734,7 @@ class Machine {
   feedKeys() {
     const p = this.proc;
     if (!this.keyq.length || p.depth || this.ring0() || this.focusing) return;   // (a window being brought to the front first: 'focus')   // (the keyboard and mouse drivers report at interrupt time)
-    try { if (p.inputPending()) return; } catch (e) { console.error(e); }   // USER has input not yet taken
+    try { if (p.inputPending()) return; } catch (e) { console.error(e && e.stack ? e.stack : e); }   // USER has input not yet taken
     for (let n = 0; this.keyq.length && n < 16; n++) {
       const k = this.keyq.shift(); if (!n && p.personInput) try { p.personInput(); } catch (e) { this.r0Fault(e); } p.personActed = true;
       if (this.lagLog) this.lagLog.push({ k: 'key-fed', vk: k[0], up: k[2], t: Date.now() });
@@ -803,7 +810,6 @@ class Machine {
       post({ t: 'held', held: { hung: p.win16Held.hung, who, since: p.win16Held.since }, stats: { ...p.stats } }); this.postScan();
     }   // (no USER while a thread holds the lock: the page learns it is held, and has the screen)
     this.lastStepEnd = performance.now();
-    if (this.lastStepEnd - (this.dynPostAt || 0) > 10000) { this.dynPostAt = this.lastStepEnd; this.dynEntriesPost(); }
     if (this.detLog) { const th = p.thread16; this.detLog.push(`step @${this.vclock.now} slices ${p.stats.slices} th ${th ? th.id : 'main'} eip ${(p.cpu.eip.value >>> 0).toString(16)} esp ${(p.cpu.esp.value >>> 0).toString(16)} eax ${(p.cpu.eax.value >>> 0).toString(16)}`); if (this.detLog.length > 200000) this.detLog.splice(0, 100000); }
     // (a machine with work left (a thread's time ran out, or one holds the Win16Lock) steps again at once, through a
     // message rather than a timer, whose 16 ms left a third of a busy machine's time unused; an idle one waits 16 ms;
@@ -818,23 +824,13 @@ class Machine {
     // step's own work made the steps ~21 ms apart on the wall while each moved the clock 16 ms, so the machine ran at
     // three quarters of real time and its sound card made too few samples, the output running dry (stutter). Late by
     // up to three periods (a timer's jitter, a slow step), it catches up; later than that, the cadence starts again)
+    // (a step's end, no wasm frame live: a module loaded from its file whose run found blocks of its own, and no more
+    // since the last step, is translated again with them, dyn.js neRebuild. At idle steps only, a busy machine (Setup's
+    // copy, minutes long) ran its loops as run-time code all along)
+    const rebuilt = p.neInstall() || p.neRebuild();   // (and a module read from the memo put in place: dyn.js neInstall)
     const wall = performance.now();
-    if (busy || this.keyq.length || this.fast) { this.stepDue = wall; this.stepSoon(); }
+    if (busy || rebuilt || this.keyq.length || this.fast) { this.stepDue = wall; this.stepSoon(); }
     else { const due = this.stepDue = Math.max((this.stepDue || wall) + 16, wall - 48); this.timer = setTimeout(() => this.step(), Math.max(0, due - wall)); }
-  }
-  /** the block starts run-time code found in modules loaded from their files since the last post (dyn.js noteEntry),
-   *  sent to the server, which keeps them by the file's SHA-256 for tools/recomp.py (--entries) */
-  dynEntriesPost() {
-    const p = this.proc;
-    for (const m of p && p.ne ? p.ne.values() : []) {
-      if (!m || !m.dynNew || !m.dynNew.size || !m.file) continue;
-      const entries = [...m.dynNew]; m.dynNew.clear();
-      const sha = m.dynSha || (m.dynSha = W.sha256(m.file));
-      // (the file itself with the first post: what ran, which tools/build_system98.py translates)
-      let bytes = null; if (!m.dynFileSent) { m.dynFileSent = true; let s = ''; for (let i = 0; i < m.file.length; i += 0x8000) s += String.fromCharCode.apply(null, m.file.subarray(i, i + 0x8000)); bytes = btoa(s); }
-      fetch('/__dynentries', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: m.name, file: String(m.path || '').replace(/^.*\\/, ''), sha, size: m.file.length, entries, ...(bytes ? { bytes } : {}) }) })
-        .catch(() => { for (const e of entries) m.dynNew.add(e); if (bytes) m.dynFileSent = false; });   // (kept for the next post)
-    }
   }
   /** the next step as soon as the worker's other messages (the page's input, commands) have had their turn */
   stepSoon() {
@@ -1014,7 +1010,8 @@ class Machine {
     // arena: win32.js arenaClaim. Refused only where the system's modules are, 16-bit modules' segments counted too)
     const p = this.proc, base = p.imageRoom(pref, size, relocs, true);
     if (!base) { W.log('warn', 'spawn', `${file}: no room for its image at ${pref.toString(16)} (${relocs ? 'relocatable' : 'no relocations'})`); return null; }
-    return { dynamic: true, meta: { base, entry: base + ep, textLo: 0, textHi: 0, blocks: [], size } };
+    // (its image mapped from its file, its code translated whole as it loads: win32.js loadImage, meta.dynamic)
+    return { dynamic: true, meta: { base, entry: base + ep, textLo: 0, textHi: 0, blocks: [], size, dynamic: true, path: file } };
   }
   async spawnSaverAsync(file, arg) {
     const savers = (self.W95SAVERS || {}).savers || {};
@@ -1387,7 +1384,7 @@ class Machine {
       raw: t.ctx && t.ctx.ss && p.selValid(t.ctx.ss) ? (() => { const b = p.selBase(t.ctx.ss), sp = t.ctx.esp & 0xffff, o = []; for (let i = sp; i < Math.min(0xfffe, sp + 0x400); i += 2) o.push(p.r16(b + i).toString(16)); return { sp: sp.toString(16), words: o.join(' ') }; })() : null,
       queue: t.queue && p.selValid(t.queue) ? (q => ({ q: t.queue, task: p.r16(q + 2), flags: p.r16(q + 0x14), wake: p.r16(q + 0x48), changed: p.r16(q + 0x4a), mask: p.r16(q + 0x4c), ev: p.r32(q + 0xc),
         // (the SendMessage it waits on: USER's record of it, at 4Eh in USER's data, its words)
-        sent: (() => { const rec = p.r16(q + 0x4e), u = p.ne && p.ne.get('USER'), ds = u && u.segs && u.segs.find(s => s.num === 32); if (!rec || !ds || !p.selValid(ds.sel)) return null; const b = p.selBase(ds.sel) + rec, o = []; for (let i = 0; i < 0x30; i += 2) o.push(p.r16(b + i).toString(16)); return { rec: rec.toString(16), words: o.join(' ') }; })() }))(p.selBase(t.queue)) : null }));
+        sent: (() => { const rec = p.r16(q + 0x4e), u = p.ne && p.ne.get('USER'), ds = u && u.segs && u.meta && u.segs.find(s => s.num === u.meta.autodata); if (!rec || !ds || !p.selValid(ds.sel)) return null; const b = p.selBase(ds.sel) + rec, o = []; for (let i = 0; i < 0x30; i += 2) o.push(p.r16(b + i).toString(16)); return { rec: rec.toString(16), words: o.join(' ') }; })() }))(p.selBase(t.queue)) : null }));
     // every top-level window, hidden ones too, with its task (a window whose task has ended answers no message)
     const wins = [];
     if (!p.depth) {

@@ -17,7 +17,8 @@ const machine = () => {
   p.cpu = {};
   for (const n of ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi', 'cf', 'pf', 'zf', 'sf', 'of', 'df', 'fs', 'ftop', 'fsw', 'fcw', 'eip',
     'cs', 'ds', 'es', 'ss', 'fsel', 'gsel', 'csb', 'dsb', 'esb', 'ssb', 'gsb', 'budget', 'if']) p.cpu[n] = new WebAssembly.Global({ value: 'i32', mutable: true }, n === 'if' ? 1 : 0);
-  p.trap = () => {}; p.selLimit = () => 0xffffffff; p.tick = () => 0; p.modules = [];
+  // (tick as the machine's: the block budget filled again, win32.js; a region counts its rounds in it)
+  p.trap = () => {}; p.selLimit = () => 0xffffffff; p.tick = () => { p.cpu.budget.value = 0x1000; return 0; }; p.modules = [];
   new DataView(mem.buffer).setUint32(ACC + 0x18, 0x400000, true);   // (0x18: a 32-bit code segment; 0x20: a 32-bit stack)
   new DataView(mem.buffer).setUint32(ACC + 0x20, 0x400000, true);
   return p;

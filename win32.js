@@ -11,7 +11,10 @@ const LAYOUT = { SENTINEL: 0xFFFFFFF0, THUNK: 0xFFFF0000, THUNK16: 0xFFFE0000, F
   STACK_LO: 0x100000, STACK_TOP: 0x3ffff0, HEAP: 0x02000000, HEAP_END: 0x05500000,
   // a byte a 4 KB page of the address space, nonzero where ring 3 has no access (the null page, the VxDs' images, the
   // frame buffer's ring-0 mapping): ring-3 code's accesses are checked against it (dyn.js guard), protect() sets it
-  PROT: 0x05500000 };
+  PROT: 0x05500000,
+  // the modules' block tables (an i32 a code byte): the bundle's at the places its build gave them (tools/build_system.py),
+  // a module translated as it loads (dyn.js neCompile) where tableRoom finds room among them
+  TABLES: 0x05600000, TABLES_END: 0x08000000 };
 const DLL_CHAIN = 0xFFFFFFE0;   // (where a DllMain run as LoadLibrary returns comes back to: Process.dllChainStep)
 const SEH_CONT = 0xFFFFFFDC;    // (where an exception handler the dispatcher called returns to: sehStep)
 const YIELD = Symbol('yield');   // returned by an API implementation to suspend the guest at depth 0
@@ -221,6 +224,24 @@ class Process {
       rec.run = new WebAssembly.Instance(module, this.imports).exports.run;
       const look = new Uint32Array(this.mem.buffer, meta.lookup, meta.textHi - meta.textLo);
       meta.blocks.forEach((a, i) => { look[a - meta.textLo] = i + 1; });
+    } else if (meta.dynamic && dv.getUint16(opt + 68, true) !== 1 && this.neCompile && this.imports) {
+      // (a program's or DLL's image mapped from its file, ring 3's (not a native driver's): its code translated whole as
+      // it loads, relocated and its imports bound, into a module of the bundle's shape the dispatcher runs (dyn.js
+      // neCompile, memoized on this computer by the file's SHA-256); what it misses is run-time code until the module
+      // is translated again with it. Block by block, Windows 98's own USER32, GDI32, SHELL32 and Explorer, mapped from
+      // their files, drew the desktop and took the cursor's input at a crawl)
+      const code = [];
+      for (let i = 0; i < nsec; i++) {
+        const o = shdr + 40 * i, ch = dv.getUint32(o + 36, true), vs = dv.getUint32(o + 8, true) || dv.getUint32(o + 16, true), va = dv.getUint32(o + 12, true);
+        if ((ch & 0x20000020) && vs) code.push({ num: 0, base: base + va, len: vs, flags: 0, bits: 32, flat: true });
+      }
+      if (code.length) {
+        meta.textLo = Math.min(...code.map(g => g.base)); meta.textHi = Math.max(...code.map(g => g.base + g.len));
+        rec.sha256 = sha256(f); rec.codeRanges = code;
+        const had = this.neMemo(rec);
+        meta.lookup = this.tableRoom(4 * (meta.textHi - meta.textLo), had && had.textLo === meta.textLo ? had.lookup : 0);
+        this.neCompile(rec);
+      }
     }
     if (name !== 'EXE' && meta.entry) { this.inits.push(rec); (this.initOrder || (this.initOrder = [])).push(rec); }
     return rec;
@@ -262,14 +283,34 @@ class Process {
    *  A relocated DLL is placed clear of the programs' two bases: 400000h (the scan starts above it) and 1000000h, where
    *  35 of Windows 98's programs are linked with no relocations, the largest 5F000h (DXDIAG). Relocated next to
    *  MSHTA's image there, MSVCRT left PSTORES no room, and its start failed (ERROR_BAD_EXE_FORMAT) */
-  /** the address ranges the bundle's 16-bit modules load at (their segments' fixed bases), for this machine's choice */
+  /** the address ranges the bundle's 16-bit modules load at (their segments' fixed bases), loaded or not */
   bundleSpans16() {
-    if (!this.neBundle) return [];
-    const all = this.neBundle();
+    const all = (window.W95SYSTEM && window.W95SYSTEM.ne) || {};
     if (this.neSpans && this.neSpans.of === all) return this.neSpans.spans;
     const spans = [];
     for (const s of Object.values(all)) for (const g of (s.meta && s.meta.segs) || []) spans.push([g.base, g.base + Math.max(g.alloc || 0, g.len || 0, 1)]);
     this.neSpans = { of: all, spans }; return spans;
+  }
+  /** room for a block table of `size` bytes among the modules' (LAYOUT.TABLES to TABLES_END): at `pref` when nothing
+   *  is there (the memo's place for this file, dyn.js neMemo), else the first 4 KiB boundary with room. Taken: every
+   *  module of the bundle's, loaded or not (each loads with its build's table, at its build's place), and every module
+   *  loaded here. None left is the machine's error, as running out of selectors is */
+  tableRoom(size, pref = 0) {
+    const S = window.W95SYSTEM || {}, taken = [];
+    const span = t => { if (t && t.lookup && t.textHi > t.textLo) taken.push([t.lookup, t.lookup + 4 * (t.textHi - t.textLo)]); };
+    for (const grp of [S.ne, S.dlls, S.programs, S.net, S.vxds, (window.W95SAVERS || {}).dlls]) for (const d of Object.values(grp || {})) span(d.meta);
+    for (const m of this.modules) span(m.netText ? { lookup: m.meta.lookup, textLo: m.netText[0], textHi: m.netText[1] } : m.meta);   // (one whose module is being read from the memo: its table taken too)
+    const free = a => a >= LAYOUT.TABLES && a + size <= LAYOUT.TABLES_END && !taken.some(([lo, hi]) => a < hi && lo < a + size);
+    if (free(pref)) return pref;
+    taken.sort((x, y) => x[0] - y[0]);
+    let a = LAYOUT.TABLES;
+    for (const [lo, hi] of taken) { if (a + size <= lo) return a; if (hi > a) a = (hi + 0xfff) & ~0xfff; }
+    if (free(a)) return a;
+    // (the tables' arena full, Windows 98's large DLLs (SHELL32, OLE32, MSHTML) translated as they load with the bundle's
+    // tables in place: a table where VirtualAlloc's regions are, given as the module's own to it, its base the module's
+    // to read, vmRoom; Explorer's start found no room for 7D1F20h bytes)
+    const v = this.vmRoom(size, 0x1000); if (v) return v;
+    throw new GuestError(`no room for a block table of ${u32(size).toString(16)}h bytes`);
   }
   imageRoom(pref, size, relocatable, own = false) {
     // (and every 16-bit module of the bundle's, loaded or not: each loads at its build's fixed base (loadNE), over
@@ -282,23 +323,26 @@ class Process {
     // (the arena full: a relocatable DLL in the address space above the layout's, where VirtualAlloc's regions are, as
     // Windows maps a DLL wherever its process has room. Windows 98's first start maps more DLLs than the arena holds,
     // and IEPEERS.DLL and OCCACHE.DLL found no room)
-    if (relocatable && !own && this.vmTop) {
-      const n = (size + 0xffff) & ~0xffff;
-      // (first the room ended processes gave back (endProcess: their VirtualAlloc regions, vspare): taken only from the
-      // top, that space ran out after Windows 98's first start had run REGSVR32 a few dozen times, and WMI.DLL and
-      // DEVMGR32.DLL found none: RUNDLL's "Error loading devmgr32.dll", error 126)
-      const spare = this.vspare || [];
-      for (let i = 0; i < spare.length; i++) {
-        const s = spare[i], a = (s.base + 0xffff) & ~0xffff, end = s.base + s.size;
-        if (a + n > end || spans.some(([lo, hi]) => a < hi && lo < a + n)) continue;
-        spare.splice(i, 1);
-        if (a > s.base) spare.push({ base: s.base, size: a - s.base });
-        if (a + n < end) spare.push({ base: a + n, size: end - a - n });
-        this.u8.fill(0, a, a + n); return a;
-      }
-      const b = (this.vmTop + 0xffff) & ~0xffff;
-      if (b + n <= this.mem.buffer.byteLength) { this.vmTop = b + n; return b; }
+    if (relocatable && !own && this.vmTop) return this.vmRoom(size, 0x10000, spans);
+    return 0;
+  }
+  /** `size` bytes of the address space above the layout's, where VirtualAlloc's regions are, aligned to `align`, clear
+   *  of `spans`: first the room ended processes gave back (endProcess: their VirtualAlloc regions, vspare), then the
+   *  top's. Taken only from the top, that space ran out after Windows 98's first start had run REGSVR32 a few dozen
+   *  times, and WMI.DLL and DEVMGR32.DLL found none: RUNDLL's "Error loading devmgr32.dll", error 126. 0: none */
+  vmRoom(size, align, spans = []) {
+    if (!this.vmTop) return 0;
+    const n = (size + align - 1) & -align, spare = this.vspare || [];
+    for (let i = 0; i < spare.length; i++) {
+      const s = spare[i], a = (s.base + align - 1) & -align, end = s.base + s.size;
+      if (a + n > end || spans.some(([lo, hi]) => a < hi && lo < a + n)) continue;
+      spare.splice(i, 1);
+      if (a > s.base) spare.push({ base: s.base, size: a - s.base });
+      if (a + n < end) spare.push({ base: a + n, size: end - a - n });
+      this.u8.fill(0, a, a + n); return a;
     }
+    const b = (this.vmTop + align - 1) & -align;
+    if (b + n <= this.mem.buffer.byteLength) { this.vmTop = b + n; return b; }
     return 0;
   }
   /** a DLL an image imports or LoadLibrary names that the system bundle does not carry, from its file, as Windows'
@@ -727,13 +771,21 @@ class Process {
   /** `fn` run as execution reaches linear `at` through the dispatcher (an export another module enters, a return
    *  address another module returns to), beside any hook there already; the function that removes it. A hook that
    *  answers where to go on (ne16.js clockCall) ends the chain */
+  /** the host's hook at linear `at` (entryHooks: the dispatcher calls it as control arrives there). In a module
+   *  translated as it loaded (dyn.js neCompile) the address keeps no block, so the module's own calls to it come to
+   *  the dispatcher and the hook, as run-time code brought them */
+  setEntryHook(at, fn) {
+    at = u32(at); (this.entryHooks || (this.entryHooks = new Map())).set(at, fn);
+    const dm = (this.modules || []).find(m => m.meta && m.meta.dynamic && m.meta.lookup && at >= m.meta.textLo && at < m.meta.textHi);
+    if (dm) this.w32(dm.meta.lookup + 4 * (at - dm.meta.textLo), 0);
+  }
   addEntryHook(at, fn) {
     at = u32(at);
     const hooks = this.entryHooks || (this.entryHooks = new Map()), lists = this.entryLists || (this.entryLists = new Map());
     let l = lists.get(at);
     if (!l) {
       l = { fns: [], was: hooks.get(at) || null }; lists.set(at, l);
-      hooks.set(at, function () { for (const f of l.fns.slice()) { const to = f.call(this); if (to !== undefined) return to; } return l.was ? l.was.call(this) : undefined; });
+      this.setEntryHook(at, function () { for (const f of l.fns.slice()) { const to = f.call(this); if (to !== undefined) return to; } return l.was ? l.was.call(this) : undefined; });
     }
     l.fns.push(fn);
     return () => { const i = l.fns.indexOf(fn); if (i >= 0) l.fns.splice(i, 1); if (!l.fns.length) { lists.delete(at); if (l.was) hooks.set(at, l.was); else hooks.delete(at); } };
@@ -806,6 +858,10 @@ class Process {
       let r;
       this.lastBlock = eip; (this.entryRing || (this.entryAt = 0, this.entryRing = new Uint32Array(32)))[this.entryAt++ & 31] = eip;   // (the last 32 entries into modules: a fault's way there, noCode)
       try { r = m.run(eip); } catch (e) {
+        // a divide error (DIV or IDIV by 0, or a quotient too large: wasm's traps), #DE at the instruction, as the
+        // processor raises it, for the program's handlers (a module translated as it loaded, dyn.js, divides with wasm's
+        // own instructions; this was the machine's end)
+        if (e instanceof WebAssembly.RuntimeError && /divide by zero|integer overflow/.test(e.message)) { eip = this.raise(0, u32(this.cpu.eip.value)); continue; }
         // an access past the end of memory (a pointer that is no address the machine has): a page fault where the guest
         // made it, for its own handlers or its fault dialog, as the processor raises one; not the machine's end
         if (!(e instanceof WebAssembly.RuntimeError) || !/out of bounds/.test(e.message)) throw e;
@@ -1180,6 +1236,14 @@ class Process {
   }
   /** Earliest time something becomes deliverable, for the host scheduler. */
   now() { return this.host.now(); }
+  /** the machine's clock to the block, for a counter read as code runs (the 8254's, ne16.js pitIO): its clock, which
+   *  moves a quantum each BUDGET blocks (tick), and the part of the quantum the blocks run since have taken. Read by the
+   *  quantum alone, a short timed loop saw no time or a whole quantum: Windows 98 Setup timed its CPU by the 8254's
+   *  channel 2 over a few thousand blocks, read no time, and divided by it (W98SETUP 1:77Ch, exception 6h) */
+  blockNow() {
+    const vc = this.host.vclock, b = this.cpu.budget;
+    return this.now() + (vc && b ? Math.min(BUDGET, Math.max(0, BUDGET - b.value)) / BUDGET * vc.perTick : 0);
+  }
   /** the clock the running program reads, as an offset from this machine's ({ tick, wall } ms): a program started here
    *  for a shared session reads the clock of the machine that started it, as of its start there (ne16.js startClock) */
   clockOf() { const t = this.thread16, c = t && (t.pc ? t.pc.clock : t.task && t.task.clock); return c || NO_CLOCK; }

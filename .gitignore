@@ -1,8 +1,5 @@
 # generated from the Windows 95 CD (tools/build_system.py, build_savers.py, build_shell_assets.py, extract.py)
 /system.js
-# generated from the Windows 98 files that ran (tools/build_system98.py), and those files as the dev server keeps them
-/system98.js
-/findings/dynentries/*.bin
 /msdos.js
 /savers.js
 /assets.js

@@ -1200,7 +1200,7 @@ function dosRun(command, timeout = 120000, cwd = null) {
     const timer = setInterval(() => {
       const s0 = performance.now();
       while (performance.now() - s0 < 10) {
-        const st = m.v86Run(4000);
+        const st = m.v86Run(4000, s0 + 10);
         if (st === 'idle') { m.halted = false; break; }
         if (st === 'exit') { end({ exited: true }); return; }
         if (st === 'trap') { end({ error: m.trapped || 'the machine stopped' }); return; }
@@ -1248,7 +1248,7 @@ function dosBox(program, args) {
     if (failed) return;
     const t0 = performance.now();
     while (performance.now() - t0 < 8) {
-      const st = m.v86Run(4000);
+      const st = m.v86Run(4000, t0 + 8);
       if (st === 'idle') { m.halted = false; break; }
       if (st === 'exit') { closeWin(win, true); return; }
       if (st === 'trap') { failed = m.trapped || 'the machine stopped'; console.error('[dos]', failed); msgBox('MS-DOS Prompt', `This program has performed an illegal operation and will be shut down.\n\n${failed}`, 'error'); break; }
@@ -1330,7 +1330,7 @@ function pcBoot() {
     if (me.failed || pc !== me) return;
     const t0 = performance.now();
     while (performance.now() - t0 < 10) {
-      const st = m.v86Run(4000);
+      const st = m.v86Run(4000, t0 + 10);   // (the page's own time back by the tick's end: its viewport and input, while WININIT works)
       if (st === 'idle') { if (!m.winWait) m.halted = false; break; }
       if (st === 'trap') { me.failed = m.trapped || 'the machine stopped'; console.error('[pc]', me.failed); break; }
     }

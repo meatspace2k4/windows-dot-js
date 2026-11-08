@@ -109,10 +109,13 @@ P.v86Boot = function () {
 
 // ---------------------------------------------------------------- running
 /** run up to `n` blocks; 'idle' when the machine waits (HLT, a key), 'trap' with this.trapped set when it faulted */
-P.v86Run = function (n = 20000) {
+/** `until`: the page's time (performance.now) to give the page back by, checked every 64 blocks: a run of 4000 blocks of
+ *  WININIT's file work (each a call into the redirector) held the page past 100 ms, its viewport and input frozen */
+P.v86Run = function (n = 20000, until = Infinity) {
   if (this.conWait || this.winWait) return 'idle';   // (its EXEC waits for the Windows console program it started, conDone, or for Windows, winDone)
   let eip = u32(this.cpu.eip.value);
   for (let k = 0; k < n; k++) {
+    if ((k & 63) === 63 && performance.now() > until) break;
     this.cpu.eip.value = eip; this.v86Interrupts();   // (an interrupt pushes where the code is now)
     if (this.halted) { this.cpu.eip.value = eip; return 'idle'; }
     if (this.irqTaken) { this.irqTaken = false; eip = u32(this.cpu.eip.value); }

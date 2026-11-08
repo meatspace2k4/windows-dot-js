@@ -117,30 +117,6 @@ class H(http.server.SimpleHTTPRequestHandler):
                 with open('/tmp/w95/cdlog.txt', 'a') as f: f.write('\n'.join(str(x)[:300] for x in q.get('lines', [])[:500]) + '\n')
             except (ValueError, OSError): pass
             self.send_response(204); self.end_headers(); return
-        if self.path.split('?')[0] == '/__dynentries':   # (the block starts run-time code found in a module run from its file, worker.js dynEntriesPost)
-            # kept by the module and its file's SHA-256 in findings/dynentries, merged with what earlier runs found:
-            # the entries tools/recomp.py --entries translates the file whole from
-            if not local_request(self): self.send_error(403); return
-            try:
-                q = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')
-                name, sha = re.sub(r'[^\w.-]', '', str(q.get('name', ''))), re.sub(r'[^0-9a-f]', '', str(q.get('sha', '')))
-                if name and len(sha) == 64:
-                    d = os.path.join(root, 'findings', 'dynentries'); os.makedirs(d, exist_ok=True)
-                    p = os.path.join(d, f'{name}-{sha[:16]}.json')
-                    try: have = json.load(open(p))
-                    except (OSError, ValueError): have = {'name': name, 'file': q.get('file'), 'sha256': sha, 'size': q.get('size'), 'entries': []}
-                    have['entries'] = sorted(set(have['entries']) | {str(e) for e in q.get('entries', []) if re.fullmatch(r'\d+:\d+', str(e))}, key=lambda e: tuple(int(x) for x in e.split(':')))
-                    with open(p + '.tmp', 'w') as f: json.dump(have, f)
-                    os.replace(p + '.tmp', p)
-                    # (the file that ran, once: kept beside its entries when its bytes are the SHA-256 named)
-                    b = p[:-5] + '.bin'
-                    if q.get('bytes') and not os.path.exists(b):
-                        data = base64.b64decode(q['bytes'])
-                        if hashlib.sha256(data).hexdigest() == sha:
-                            with open(b + '.tmp', 'wb') as f: f.write(data)
-                            os.replace(b + '.tmp', b)
-            except (ValueError, OSError): pass
-            self.send_response(204); self.end_headers(); return
         if self.path.split('?')[0] != '/__share': self.send_error(404); return
         q = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')
         if q.get('op') == '$list': r = [{'name': x['name'], 'remark': ''} for x in SHARES if os.path.isdir(x['path'])]

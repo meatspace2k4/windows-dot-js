@@ -40,8 +40,7 @@ P.init16 = function () {
   this.atoms = new Map();             // selector -> atom table
   this.dosFiles = new Map(); this.nextDosFile = 5;
   this.mapls = new Map();             // linear 32K-aligned base -> selector (MapLS)
-  // (Windows 98's build's table extends the bundle's, the same thunks at the same numbers: tools/build_system98.py)
-  this.th16 = ((window.W95SYSTEM98 && window.W95SYSTEM98.thunks16) || (window.W95SYSTEM && window.W95SYSTEM.thunks16) || []).map(k => this.thunk16Def(k));
+  this.th16 = (window.W95SYSTEM && window.W95SYSTEM.thunks16 || []).map(k => this.thunk16Def(k));
   this.lastError16 = 0;
 };
 P.setDesc = function (sel, base, limit, acc = 0xf300) {
@@ -59,14 +58,16 @@ P.copySel = function (s, acc = this.r32(L.ACC + (s & 0xfff8))) {
   if (g && g.n > 1) return this.allocSels(this.selBase(s), this.selLimit(s) + 1, acc);
   const n = this.allocSels(0, 1); this.setDesc(n, this.selBase(s), this.selLimit(s), acc); return n;
 };
-/** n consecutive selectors (stepping by __AHINCR) covering [base, base+size) */
-P.allocSels = function (base, size, acc = 0xf300) {
+/** n consecutive selectors (stepping by __AHINCR) covering [base, base+size); `want`: the selector asked for (a
+ *  module placed where its memoized translation was made, dyn.js neMemo), given when its slots are free */
+P.allocSels = function (base, size, acc = 0xf300, want = 0) {
   const n = Math.max(1, Math.ceil(size / 0x10000));
+  const first = (want & 0xfff8) >> 3;
+  const fit = i => { for (let k = 0; k < n; k++) if (this.selUsed[i + k]) return false; return true; };
+  const take = i => { for (let k = 0; k < n; k++) this.setDesc(((i + k) << 3) | 7, base + 0x10000 * k, Math.min(size - 0x10000 * k, 0x10000) - 1 + (k ? 0 : Math.max(0, size - 0x10000)), acc); return (i << 3) | 7; };
+  if (first >= L.DYN && first + n < 8190 && fit(first)) return take(first);
   for (let i = L.DYN; i + n < 8190; i++) {
-    let ok = true; for (let k = 0; k < n; k++) if (this.selUsed[i + k]) { ok = false; i += k; break; }
-    if (!ok) continue;
-    for (let k = 0; k < n; k++) this.setDesc(((i + k) << 3) | 7, base + 0x10000 * k, Math.min(size - 0x10000 * k, 0x10000) - 1 + (k ? 0 : Math.max(0, size - 0x10000)) , acc);
-    return (i << 3) | 7;
+    if (fit(i)) return take(i);
   }
   throw new GuestError(`out of selectors (${n} for ${u32(size).toString(16)}h bytes)`);
 };
@@ -188,16 +189,6 @@ P.loadNE = function (name, file, module, meta) {
     this.setDesc(sg.sel, sg.base, limit, sg.flags & 1 ? 0xf300 : (sg.bits === 32 ? 0x40fb00 : 0xfb00));
   }
   for (const [lin, size, val] of meta.fixups) { if (size === 1) u8[lin] = val; else if (size === 2) this.w16(lin, val); else this.w32(lin, val); }
-  // (Windows 98's GDI and USER, their build (system98.js): the data segment on the heap with room to grow to 2 MB
-  // where it is, as loadNEFile gives the files' own. GDI grows it for its 32-bit heap after GDI32 has taken flat
-  // pointers into it; at the build's base, the next image close after it, it was moved, GDI32 read the old place, and
-  // RUNDLL32 faulted in WINSPOOL.DRV's start as the desktop came up. The code reaches it by its selector's base)
-  const dgRoom = meta.autodata && /^(GDI|USER)$/.test(name) && (this.neBundle()[name] || {}).w98;
-  if (dgRoom) {
-    const dg = meta.segs[meta.autodata - 1], lin = this.alloc(0x200000 + 16, true);
-    u8.copyWithin(lin, dg.base, dg.base + Math.max(dg.alloc, 0x10000));
-    this.setDesc(dg.sel, lin, 0xffff, 0xf300); rec.dgLin = lin;
-  }
   for (const [ord, [sel, off]] of Object.entries(meta.exports)) rec.exports.set(+ord, u32((sel << 16) | off));
   rec.run = new WebAssembly.Instance(module, this.imports).exports.run;
   if (name === 'SYSTEM' || name === 'MMSYSTEM') rec.clock = true;   // they read the timer's counts from memory
@@ -211,7 +202,7 @@ P.loadNE = function (name, file, module, meta) {
   rec.hInstance = rec.dgroup || rec.hModule;
   if (rec.dgroup) {   // DGROUP starts at its minimum allocation plus local heap and stack; the module grows it itself
     const dg = meta.segs[meta.autodata - 1], init = Math.min(0x10000, ((dg.minalloc || 0x10000) + rd.u16(file, n + 0x10) + taskStack(rd.u16(file, n + 0x12)) + 15) & ~15);
-    this.ghandles.set(rec.dgroup | 1, { lin: rec.dgLin || dg.base, size: init, n: 1, flags: 2, lock: 0, owner: rec.hModule, ...(rec.dgLin ? { heap: true } : {}) });
+    this.ghandles.set(rec.dgroup | 1, { lin: dg.base, size: init, n: 1, flags: 2, lock: 0, owner: rec.hModule });
     this.w32(L.LDT + (rec.dgroup & 0xfff8) + 4, init - 1);
   }
   for (const sg of meta.segs) if (sg.num !== meta.autodata) this.ghandles.set(sg.sel | 1, { lin: sg.base, size: Math.max(sg.alloc, 1), n: 1, flags: 0, lock: 0, owner: rec.hModule, code: !(sg.flags & 1) });
@@ -291,7 +282,7 @@ P.bundleDisk16 = function (sys, fname, native, memo = new Map()) {
   let r = null;
   if (isNE && window.W95Win32.sha256(f) !== sys.meta.sha256) r = full;
   else {
-    const all = this.neBundle();
+    const all = (window.W95SYSTEM && window.W95SYSTEM.ne) || {};
     for (const imp of sys.meta.imports || []) {
       // (KERNEL's and the JS stand-ins' are thunks, answered whatever runs; a JS16 name loaded as a module (native USER,
       // Windows 98's from its file) is decided by what is loaded, whatever this caller's flag: a bundled COMMDLG loaded
@@ -299,10 +290,7 @@ P.bundleDisk16 = function (sys, fname, native, memo = new Map()) {
       const m = this.ne.get(imp);
       if (imp === 'KERNEL' || (JS16.includes(imp) && !(m && m.meta) && !native)) continue;
       const s = !m && (all[imp] || Object.values(all).find(x => x.meta && x.meta.name.toUpperCase() === imp));
-      // (and one of the other build: Windows 95's build of this module is linked to Windows 95's of its imports, at
-      // their selectors, not Windows 98's, tools/build_system98.py)
-      const other = x => !!(x && x.w98) !== !!sys.w98;
-      const stale = m ? !!(m.meta && m.meta.dynamic) || (!!m.meta && other(m)) : !!(s && (other(s) || this.bundleDisk16(s, s.fileName, native, memo)));
+      const stale = m ? !!(m.meta && m.meta.dynamic) : !!(s && this.bundleDisk16(s, s.fileName, native, memo));
       if (!stale) continue;
       // (with no file of its own to map, it is not found, as the loader finds no file: the bundle's copy would call the
       // bundle's imp at selectors nothing made)
@@ -311,32 +299,6 @@ P.bundleDisk16 = function (sys, fname, native, memo = new Map()) {
   }
   memo.set(key, r); return r;
 };
-/** the bundle's 16-bit modules for this machine's disk: each one Windows 98's build (system98.js, tools/
- *  build_system98.py) where the disk's file is the file that build was made from, else Windows 95's (system.js).
- *  Windows 98 Setup puts its own GDI.EXE, USER.EXE and the rest in place of Windows 95's; with only Windows 95's
- *  build, each was mapped from its file and ran block by block as run-time code, and the screen drew at under a
- *  frame a second. Decided once for the machine, from the files as it starts (Setup's restart is a new machine) */
-P.neBundle = function () {
-  if (this.neAll) return this.neAll;
-  const all = (window.W95SYSTEM && window.W95SYSTEM.ne) || {}, w98 = (window.W95SYSTEM98 && window.W95SYSTEM98.ne) || {};
-  if (!Object.keys(w98).length || !this.fs || self.W95SYS98 === false) return all;   // (?exp=W95SYS98=false: Windows 95's build only)
-  const pick = {}, ours = {};
-  for (const [k, s] of Object.entries(all)) {
-    const alt = w98[k]; pick[k] = s;
-    if (!alt) continue;
-    const full = this.findFile16(alt.fileName); let f = null; try { f = full && this.fs.readFile(full); } catch (_) { /* none */ }
-    if (f && window.W95Win32.sha256(f) === alt.meta.sha256) { alt.w98 = true; ours[k] = alt; }
-  }
-  // (Windows 98's builds take the image ranges, block tables and selectors of Windows 95's builds of the same modules
-  // (tools/build_system98.py): with any of them, none of those is loaded; a module whose file is neither build's is
-  // mapped from its file, loadNEFile. Windows 98's only where a file of Windows 98's own is on the disk: one both have
-  // (TSENG.DRV, the same bytes) says nothing, and a fresh Windows 95 disk, matching Windows 98's DISPLAY build, lost
-  // Windows 95's GDI build: its GDI.EXE mapped from the file faulted in its LibEntry, "exception eh at 50000077")
-  const own98 = Object.keys(ours).some(k => ours[k].meta.sha256 !== (all[k] && all[k].meta && all[k].meta.sha256));
-  if (own98) for (const k of Object.keys(w98)) { if (ours[k]) pick[k] = ours[k]; else delete pick[k]; }
-  else for (const k of Object.keys(ours)) delete ours[k].w98;
-  return (this.neAll = pick);
-};
 P.loadLibrary16 = function (name, native = false, defer = false) {
   this.init16();
   name = name.replace(/\.?\s*$/, '');   // ("MMSYSTEM.", VB3's Declare ... Lib "MMSYSTEM": a name with no extension)
@@ -344,7 +306,7 @@ P.loadLibrary16 = function (name, native = false, defer = false) {
   if (base === 'KERNEL' || base === 'KRNL386') return this.kernelModule();   // KRNL386.EXE is the module KERNEL's file
   // the module GRABBER (WinOldAp's import) is the display's grabber, the file SYSTEM.INI's [boot] 386grabber names
   if (base === 'GRABBER' && !this.ne.has('GRABBER')) { const g = this.grabberFile(); if (g) name = g; }
-  const all = this.neBundle();
+  const all = (window.W95SYSTEM && window.W95SYSTEM.ne) || {};
   const file = name.toUpperCase().replace(/^.*\\/, '');
   // a file name finds that file's module first (MSACM.DRV is the module MSACMMAP, not MSACM.DLL's MSACM)
   const byFile = /\./.test(file) && Object.values(all).find(s => s.fileName === file);
@@ -363,7 +325,7 @@ P.loadLibrary16 = function (name, native = false, defer = false) {
   const b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
   if (this.ne.has(sys.meta.name.toUpperCase())) return this.ne.get(sys.meta.name.toUpperCase());
   const rec = this.loadNE(sys.meta.name.toUpperCase(), sys.fileBytes || (sys.fileBytes = b64(sys.file)), sys.mod || (sys.mod = new WebAssembly.Module(b64(sys.wasm))), sys.meta);
-  rec.fileName = sys.fileName; rec.w98 = !!sys.w98;   // (which build: a module of the other one's imports are mapped from their files, bundleDisk16)
+  rec.fileName = sys.fileName;
   for (const imp of sys.meta.imports || []) if (imp !== 'KERNEL' && (native || !JS16.includes(imp))) this.loadLibrary16(imp, native);
   if (defer) return rec;   // the caller runs LibEntry (initNE) once what it needs is in place
   // (a boot module's LibEntry waits for bootUser16, as KRNL386's bootstrap defers each library's init until its own
@@ -385,12 +347,11 @@ P.bootUser16 = function () {
   // them when it loads, naming GDI.EXE: so GDI's image first, then GDI32, then GDI's LibEntry, as USER's below. Run as
   // the display driver's import, its LibEntry read the unset target table and jumped to what was at 0. The bundle's
   // GDI loads in the drivers' order below, as it always has
-  const gsys = this.neBundle().GDI;
-  // (Windows 98's GDI, its build or its file, the same: system98.js)
-  const gdiDisk = !this.ne.has('GDI') && !!(gsys && (gsys.w98 || this.bundleDisk16(gsys, gsys.fileName, true)));
+  const gsys = window.W95SYSTEM && window.W95SYSTEM.ne && window.W95SYSTEM.ne.GDI;
+  const gdiDisk = !this.ne.has('GDI') && !!(gsys && this.bundleDisk16(gsys, gsys.fileName, true));
   this.initAfter32 = new Set(gdiDisk ? ['GDI', 'USER'] : ['USER']);
   const gdi = gdiDisk ? this.loadLibrary16('GDI', true, true) : null;
-  if (gdi && gdi.meta && (gdi.meta.dynamic || gdi.w98) && !gdi.inited) {
+  if (gdi && gdi.meta && gdi.meta.dynamic && !gdi.inited) {
     const sys = window.W95SYSTEM, b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
     if (sys && sys.dlls) for (const [n, x] of Object.entries(sys.dlls)) { const k = n.replace(/\.DLL$/, ''); if (!this.dlls.has(k)) this.dlls.set(k, { file: x.fileBytes || (x.fileBytes = b64(x.file)), module: x.mod || (x.mod = new WebAssembly.Module(b64(x.wasm))), meta: x.meta }); }
     this.loadDll('GDI32'); this.runPendingInits();
@@ -543,25 +504,38 @@ P.loadNEDynamic = function (key, file) {
   // the modules it imports, by the module-reference table: each one there (loaded, the bundle's, a JS one, or a file
   // in the program's folder or Windows'), or the module is not loaded, as KRNL386 refuses one whose DLL is missing
   const mods = []; for (let i = 0; i < h(0x1e); i++) mods.push(pstr(n + h(0x2a) + rd.u16(file, n + h(0x28) + 2 * i)).toUpperCase());
-  const all = this.neBundle(), dir = key.slice(0, key.lastIndexOf('\\'));
+  const all = (window.W95SYSTEM && window.W95SYSTEM.ne) || {}, dir = key.slice(0, key.lastIndexOf('\\'));
   const there = m => m === 'KERNEL' || JS16.includes(m) || this.ne.has(m) || all[m] || Object.values(all).some(s => s.meta && s.meta.name.toUpperCase() === m) ||
     ['.DLL', '.EXE', '.DRV'].some(x => this.findFile16(m + x) || this.fs.exists(`${dir}\\${m}${x}`)) || (m === 'GRABBER' && !!this.grabberFile());
   const missing = mods.find(m => !there(m));
   if (missing) { this.missing16 = `${missing}.DLL`; log('warn', 'ne16', `${key}: ${missing}.DLL is not found`); return null; }
   this.dirs16 = [...new Set([dir, ...(this.dirs16 || [])])].slice(0, 8);   // (its folder searched for its DLLs, as the program's own is)
-  const segs = [];
+  // (the translation of its code, memoized on this computer by the file (dyn.js neMemo), was made at a placement: its
+  // code's base, its segments' selectors. Placed there again when the room is free, the memo's module runs as it was)
+  const probe = { file }, memo = this.neMemo(probe);
+  const segs = [], hdr = [];
   for (let i = 0; i < nseg; i++) {
     const e = segt + 8 * i, off = rd.u16(file, e) << shift, len = rd.u16(file, e + 2) || (off ? 0x10000 : 0), flags = rd.u16(file, e + 4), minalloc = rd.u16(file, e + 6) || 0x10000;
+    hdr.push({ off, len, flags, minalloc: rd.u16(file, e + 6), size: i + 1 === autodata ? 0x10000 : Math.max(len, minalloc, 1) });
+  }
+  // its code segments one after another in the image arena, as the bundle's modules have theirs (loadNE), so its
+  // block table (an i32 a byte of the span) covers code alone; its data segments on the heap
+  const codeAt = [], codeSize = hdr.reduce((s, h) => (h.flags & 1) || !h.len ? s : (codeAt.push(s), s + ((h.size + 15) & ~15)), 0);
+  const codeBase = codeSize ? this.imageRoom(memo ? memo.codeBase : 0, codeSize, true) : 0;
+  if (codeSize && !codeBase) throw new GuestError(`${name}: no room for ${u32(codeSize).toString(16)}h bytes of code`);
+  for (let i = 0, c = 0; i < nseg; i++) {
+    const { off, len, flags, size, minalloc } = hdr[i], isCode = !(flags & 1) && len;
     // (GDI's and USER's data segments with room to grow to 2 MB where they are: Windows 98's GDI grows its own past
     // 64K for its 32-bit heap after GDI32 has taken flat pointers into it, so it must not move; moved, GDI32's
     // GetStockObject read the old place and WinHelp's RegisterClass refused its brush, "(null) (2)")
     const room = i + 1 === autodata && /^(GDI|USER)$/.test(name) ? 0x200000 : 0;
-    const size = i + 1 === autodata ? 0x10000 : Math.max(len, minalloc, 1), base = this.alloc(Math.max(size, room) + 16);
+    const base = isCode ? codeBase + codeAt[c++] : this.alloc(Math.max(size, room) + 16);
+    if (isCode) this.u8.fill(0, base, base + size);
     // (a 32-bit code segment, flag 2000h, a 32-bit descriptor, as loadNE makes the bundle's: Windows 98's DIBENG.DLL's
     // blits, run as 16-bit code, read their first instruction as FF /7)
-    const sel = this.allocSels(base, size, flags & 1 ? 0xf300 : flags & 0x2000 ? 0x40fb00 : 0xfb00);
+    const sel = this.allocSels(base, size, flags & 1 ? 0xf300 : flags & 0x2000 ? 0x40fb00 : 0xfb00, memo && memo.sels ? memo.sels[i] : 0);
     if (len && off) this.u8.set(file.subarray(off, off + len), base);
-    segs.push({ num: i + 1, sel, base, len, alloc: size, minalloc: rd.u16(file, e + 6), flags, bits: flags & 0x2000 ? 32 : 16, fileoff: off, rel: flags & 0x100 ? off + len : 0 });
+    segs.push({ num: i + 1, sel, base, len, alloc: size, minalloc, flags, bits: flags & 0x2000 ? 32 : 16, fileoff: off, rel: flags & 0x100 ? off + len : 0 });
   }
   // the entry table: ordinal -> segment:offset (fixed bundles name their segment, movable ones each entry's)
   const exports = new Map();
@@ -581,12 +555,15 @@ P.loadNEDynamic = function (key, file) {
       else { const off = rd.u16(file, p + 1); if (segs[ind - 1]) { exports.set(ord, u32((segs[ind - 1].sel << 16) | off)); prolog(ind, off, file[p]); } p += 3; }
     }
   }
-  const meta = { name, base: segs.length ? segs[0].base : 0, segs, autodata, entry: [h(0x16), h(0x14)], exports: {}, names, imports: [], textLo: 0, textHi: 0, blocks: [], fixups: [], dynamic: true };
+  // (its text: the code span; its block table found room among the modules' (win32.js tableRoom), the memo's place first)
+  const textLo = codeSize ? codeBase : 0, textHi = codeSize ? codeBase + codeSize : 0;
+  const lookup = codeSize ? this.tableRoom(4 * codeSize, memo ? memo.lookup : 0) : 0;
+  const meta = { name, base: segs.length ? segs[0].base : 0, segs, autodata, entry: [h(0x16), h(0x14)], exports: {}, names, imports: [], textLo, textHi, lookup, blocks: [], fixups: [], dynamic: true };
   // (the device memory the bundle's build of this file writes as registers, recomp.py --mmio: a device's, whichever
   // file of the driver's runs. Windows 98's TSENG.DRV, mapped from its file, waited on the W32's accelerator status
   // at B8000h+7F36h, plain memory to it, for good)
   { const fn = key.replace(/^.*\\/, '').toUpperCase(), b = Object.values(all).find(s => s.fileName === fn && s.meta && s.meta.mmio); if (b) meta.mmio = b.meta.mmio; }
-  const rec = { name, path: key, kind: 'ne', base: meta.base, meta, file, segs, exports, names, run: null, loading: true };
+  const rec = { name, path: key, kind: 'ne', base: meta.base, meta, file, segs, exports, names, run: null, loading: true, sha256: probe.sha256 };
   if (this.initAfter32 && this.initAfter32.has(name)) rec.initLater = true;   // (its LibEntry run by bootUser16 once its 32-bit half is loaded, whoever imports it first)
   this.ne.set(name, rec); this.modules.push(rec); this.byName.set(name, rec);   // (before its imports: a module that imports this one back finds it)
   meta.imports = mods;
@@ -597,6 +574,10 @@ P.loadNEDynamic = function (key, file) {
     this.ne.delete(name); this.byName.delete(name); this.modules = this.modules.filter(x => x !== rec);   // (not loaded after all)
     this.missing16 = e.missing16; log('warn', 'ne16', `${key}: ${e.missing16} is not found`); return null;
   }
+  // its code translated whole, relocated as it lies, into a module of the bundle's shape the dispatcher runs as it
+  // runs system.js's (dyn.js neCompile: the memo's where the code hashes the same); what it misses is run-time code
+  // until the module is translated again with it (neRebuild)
+  this.neCompile(rec);
   // its module database (a copy of its NE header) and handles, as loadNE makes them
   const hdrLen = Math.min(file.length - n, 0x4000), mdb = this.alloc(hdrLen + 16);
   this.u8.set(file.subarray(n, n + hdrLen), mdb);
@@ -1711,7 +1692,7 @@ P.hookTaken = function (user) {
   const u32m = this.byName && this.byName.get('USER32'); if (u32m) this.hookTaken32(u32m);
   for (const [ord, msgAt] of [[114, 2], [822, 4]]) {
     const at = this.neExport(user, ord); if (!at || !this.selValid(at >>> 16)) continue;
-    (this.entryHooks || (this.entryHooks = new Map())).set(u32(this.selBase(at >>> 16) + (at & 0xffff)), function () {
+    this.setEntryHook(this.selBase(at >>> 16) + (at & 0xffff), function () {
       const sp = this.selBase(this.cpu.ss.value) + (this.cpu.esp.value & 0xffff), off = this.r16(sp + 4), seg = this.r16(sp + 6);   // (the far return, then lpMsg)
       if (this.selValid(seg) && this.r16(this.selBase(seg) + off + msgAt) === 0x200) this.movesTaken = (this.movesTaken || 0) + 1;   // WM_MOUSEMOVE
       return undefined;   // (USER's own code goes on)
@@ -1722,7 +1703,7 @@ P.hookTaken = function (user) {
  *  thunks of its own, not USER's exports (the MSG a flat pointer on the stack: hwnd, then the message) */
 P.hookTaken32 = function (m) {
   const at = m.exports && m.exports.get('DispatchMessageA'); if (!at) return;
-  (this.entryHooks || (this.entryHooks = new Map())).set(u32(at), function () {
+  this.setEntryHook(at, function () {
     const lp = this.r32(u32(this.cpu.esp.value) + 4), msg = this.r32(lp + 4);
     if (msg === 0x200) this.movesTaken = (this.movesTaken || 0) + 1;   // WM_MOUSEMOVE
     if (msg >= 0x200 && msg <= 0x209) { const c = this.msgTaken || (this.msgTaken = {}); c[msg] = (c[msg] || 0) + 1; if (msg === 0x200 && (this.r32(lp + 8) & 1)) c.movesHeld = (c.movesHeld || 0) + 1; }   // (the mouse messages taken, by message, and the moves with the left button held: the strokes diagnostic)
@@ -1787,11 +1768,15 @@ P.asWindowTask = function (hwnd, fn) {
 /** the thread whose queue a window is on: USER's window structure, found through its handle table at 10000h in
  *  USER's data (USER 4:1367, the table's last handle at 10070h), holds the queue at 20h; null for no live thread */
 P.windowThread = function (hwnd) {
-  const u = this.ne && this.ne.get('USER'), ds = u && u.segs && u.segs.find(x => x.num === 32);
+  // (USER's data segment, its DGROUP: Windows 95's segment 32, Windows 98's 34, where 32 is code: read as the heap, a
+  // window's queue was read from past the end of memory at each key and move the page fed)
+  const u = this.ne && this.ne.get('USER'), ds = u && u.segs && u.meta && u.segs.find(x => x.num === u.meta.autodata);
   hwnd &= 0xffff;
   if (!ds || !this.selValid(ds.sel) || !hwnd || hwnd & 3 || hwnd < 0x80 || !this.threadsById) return null;
-  const d = this.selBase(ds.sel); if (hwnd > this.r16(d + 0x10070)) return null;
-  const wnd = this.r32(d + 0x10000 + hwnd); if (!wnd) return null;
+  // (each read inside the segment: a handle's slot freed or not yet made holds no window's offset)
+  const d = this.selBase(ds.sel), lim = u32(this.selLimit(ds.sel));
+  if (lim < 0x10072 || hwnd + 4 > lim - 0x10000 || hwnd > this.r16(d + 0x10070)) return null;
+  const wnd = this.r32(d + 0x10000 + hwnd) >>> 0; if (!wnd || wnd + 0x22 > lim) return null;
   const hq = this.r16(d + wnd + 0x20); if (!hq) return null;
   return [...this.threadsById.values()].find(t => t.queue === hq && t.state && t.state !== 'done') || null;
 };
@@ -2039,7 +2024,7 @@ P.startClock = function () {
 P.hookClock = function (user) {
   for (const ord of [13, 15]) {   // GetTickCount, GetCurrentTime
     const at = this.neExport(user, ord); if (!at) continue;
-    (this.entryHooks || (this.entryHooks = new Map())).set(u32(this.selBase(at >>> 16) + (at & 0xffff)), P.clockCall);
+    this.setEntryHook(this.selBase(at >>> 16) + (at & 0xffff), P.clockCall);
   }
 };
 P.clockCall = function () {
@@ -2061,7 +2046,7 @@ P.hookTapi = function (m) {
     const sp = u32(this.cpu.esp.value), ret = this.r32(sp), args = []; for (let i = 1; i <= nargs; i++) args.push(this.r32(sp + 4 * i));
     this.cpu.eax.value = u32(fn.call(this, ...args)); this.cpu.esp.value = sp + 4 + 4 * nargs; return u32(ret);
   };
-  const hook = (name, nargs, fn) => { const at = x.get(name); if (at) (this.entryHooks || (this.entryHooks = new Map())).set(u32(at), ans(nargs, fn)); };
+  const hook = (name, nargs, fn) => { const at = x.get(name); if (at) this.setEntryHook(at, ans(nargs, fn)); };
   hook('lineInitialize', 5, function (ph, hInst, cb, name, pn) { if (ph) this.w32(ph, this.newHandle({ kind: 'lineapp', hInst, cb })); if (pn) this.w32(pn, 0); return 0; });
   hook('lineShutdown', 1, function (h) { const o = this.obj(h); if (!o || o.kind !== 'lineapp') return 0x80000015; this.handles.delete(h); return 0; });   // (LINEERR_INVALAPPHANDLE)
   hook('lineNegotiateAPIVersion', 6, () => 0x80000002);
@@ -2072,7 +2057,7 @@ P.hookTapi = function (m) {
 // answered MMSYSERR_ALLOCATED (4) at the export's entry, as it is answered when another program holds the device.
 // WINMM's 32-bit exports (stdcall: the arguments popped) and MMSYSTEM's 16-bit ones (Pascal: their bytes popped)
 P.hookExclusive = function (m) {
-  const hooks = this.entryHooks || (this.entryHooks = new Map());
+  const hooks = { set: (at, fn) => this.setEntryHook(at, fn) };
   const remote = () => P.intentQuiet.call(this) && this.causeOf() === 'remote';
   if (m.name === 'WINMM' && m.exports) {
     for (const [nm, nargs] of [['waveOutOpen', 6], ['waveInOpen', 6], ['midiOutOpen', 5], ['midiInOpen', 5], ['mciSendCommandA', 4], ['mciSendStringA', 4]]) {
@@ -2096,7 +2081,7 @@ P.hookExclusive = function (m) {
   }
 };
 P.hookIntents = function (user) {
-  const hooks = this.entryHooks || (this.entryHooks = new Map());
+  const hooks = { set: (at, fn) => this.setEntryHook(at, fn) };
   const wasLoad = this.onModuleLoad; this.onModuleLoad = (name, m) => { if (wasLoad) wasLoad.call(this, name, m); if (name === 'TAPI32') this.hookTapi(m); if (name === 'WINMM' || name === 'MMSYSTEM') this.hookExclusive(m); if (name === 'USER32') this.hookTaken32(m); };
   for (const n of ['WINMM', 'MMSYSTEM']) { const m = this.byName && this.byName.get(n); if (m) this.hookExclusive(m); }   // (one loaded already)
   for (const [ord, fn] of [[483, P.spiIntent], [181, P.colorsIntent]]) {   // SystemParametersInfo, SetSysColors
@@ -2976,7 +2961,7 @@ P.setVideoMode = function (mode, clear, hicolor) {
 const PIT_HZ = 1193.182;   // (counts a millisecond)
 P.pitIO = function (port, size, isIn) {
   if (!(port >= 0x40 && port <= 0x43) && port !== 0x61) return false;
-  const eax = this.cpu.eax.value, v = eax & 0xff, now = this.now();
+  const eax = this.cpu.eax.value, v = eax & 0xff, now = this.blockNow();
   const pit = this.pit || (this.pit = { p61: 0, ch: [0, 1, 2].map(() => ({ rw: 3, mode: 3, init: 0x10000, t0: now, held: null, lo: true, wlo: true, latch: [], gate: true })) });
   pit.ch[2].gate = !!(pit.p61 & 1);
   // a channel's count and OUT now: the counts gone since its load (or its gate's rise), up to where its gate fell
@@ -4878,7 +4863,7 @@ P.queueGone = function (t) {
 };
 /** thread s's SendMessage answered (0) when the queue it went to is `gone(queue)`; true if it was */
 P.answerSend = function (s, gone, why) {
-  const u = this.ne && this.ne.get('USER'), ds = u && u.segs && u.segs.find(x => x.num === 32);
+  const u = this.ne && this.ne.get('USER'), ds = u && u.segs && u.meta && u.segs.find(x => x.num === u.meta.autodata);   // (USER's DGROUP: windowThread)
   if (!ds || !this.selValid(ds.sel) || !s.queue || !s.state || s.state === 'done' || !this.selValid(s.queue)) return false;
   const d = this.selBase(ds.sel), q = this.selBase(s.queue), rec = this.r16(q + 0x4e);
   if (!rec || !(this.r16(q + 0x4c) & 0x8000) || (this.u8[d + rec + 0x24] & 1) || !gone(this.r16(d + rec + 0x12))) return false;

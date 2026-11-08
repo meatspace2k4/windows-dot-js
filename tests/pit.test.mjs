@@ -24,4 +24,15 @@ assert.equal(0xffff - count, Math.floor(2 * 1193.182), 'the counts gone while th
 out(0x43, 0x36); out(0x40, 0); out(0x40, 0); t += 10;
 out(0x43, 0x00); const c0 = inp(0x40) | inp(0x40) << 8;
 assert.equal(c0, (0x10000 - 2 * Math.floor(10 * 1193.182)) & 0xfffe);
+// the clock to the block: within a quantum of the machine's clock (perTick a BUDGET blocks), the blocks run since its
+// last tick count (the budget gone). Timed by the quantum alone, Setup's few thousand blocks read no time or a whole one
+{
+  const q = Object.create(window.W95Win32.Process.prototype), vclock = { now: 50, perTick: 0.25 };
+  q.host = { now: () => vclock.now, vclock }; q.cpu = { eax: { value: 0 }, budget: { value: 0x1000 } };
+  const o = (port, v) => { q.cpu.eax.value = v; q.pitIO(port, 1, false); }, i = port => { q.cpu.eax.value = 0; q.pitIO(port, 1, true); return q.cpu.eax.value & 0xff; };
+  o(0x61, 0); o(0x43, 0xb0); o(0x42, 0xff); o(0x42, 0xff); o(0x61, 1);
+  q.cpu.budget.value -= 0x800;                         // half a quantum's blocks: 0.125 ms, 149 counts
+  o(0x61, 0); o(0x43, 0xc8); i(0x42);
+  assert.equal(0xffff - (i(0x42) | i(0x42) << 8), Math.floor(0.125 * 1193.182), 'half a quantum, counted');
+}
 console.log('pit: ok');
