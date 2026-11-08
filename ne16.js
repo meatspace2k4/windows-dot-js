@@ -5827,16 +5827,19 @@ K('ThunkConnect32', 6, function (td, f16, m16, m32, hmod, reason) {
   const find = () => { const m = this.withDir16(dir32, () => this.loadLibrary16(name, true)); const sp = m && this.neExport(m, f16name); return sp ? this.lin(sp) : 0; };
   if (late && magic === 'LS01') {
     this.lsRelays = this.lsRelays || new Map();
-    const rel = { ft: false, table: 0, bind: () => { if (!rel.table) { const t16 = find(); if (!t16) throw new GuestError(`thunk to ${name}: no ${f16name}`); rel.table = this.lin(this.r32(t16 + 8)); this.w32(td + 8, rel.table); } return rel.table; } };
+    // (data only, both relays the one record: what binds it is named in it, not held in a closure, so a moment carries
+    // it. A closure and a getter a moment cannot carry: arrived at, the FT_Prolog relay's table was undefined and the
+    // QT_Thunk relay bound the booted machine's record, and USER32's calls into USER jumped through garbage)
+    const rel = { ft: false, table: 0, late: { td, name, f16name, dir32 } };
     this.lsRelays.set(u32(td + this.r32(td + 0x1c)), rel);
-    this.lsRelays.set(u32(td + this.r32(td + 0x20)), { ft: true, get table() { return rel.bind(); } });
+    this.lsRelays.set(u32(td + this.r32(td + 0x20)), { ft: true, rel });
     // a 16-bit half already loaded (USER, GDI, KERNEL) is bound now: the 32-bit side's own code reads the target table
     // straight from its data (USER32's CreateWindowExA), not only through the relays
     // (a module of that name without the half (Windows 98 Setup's own VER.DLL, loaded from C:\WININST0.400 by SUWIN
     // before any Win32 process had VERSION.DLL) is left for the first call, as KERNEL32 binds late: the attach of
     // VERSION.DLL in a process Setup started threw here, and MSGSRV32 stopped)
     const loaded = this.ne && this.ne.get(name.replace(/\.(EXE|DRV)$/, ''));
-    if (loaded && loaded.meta) try { rel.bind(); } catch (e) { if (!(e instanceof GuestError)) throw e; log('warn', 'ne16', `ThunkConnect32 ${this.readA(m32)} LS01: ${e.message}; left for the first call`); }
+    if (loaded && loaded.meta) try { this.lsBind(rel); } catch (e) { if (!(e instanceof GuestError)) throw e; log('warn', 'ne16', `ThunkConnect32 ${this.readA(m32)} LS01: ${e.message}; left for the first call`); }
     return 1;
   }
   // 16 -> 32: the 32-bit half's target table, for the 16-bit half (ThunkConnect16's record, made now if its half has
@@ -6293,13 +6296,23 @@ K('EnumResourceNamesA', 4, () => 0);
  *   +3A: jmp +20 -> +5A: call/pop edx; sub edx,25 (edx = +3A); push edx; push <table ptr offset>; push FT_PrologPrime; ret
  * Executing it is equivalent to setting those registers and jumping to the primer.
  */
+/** an LS01 relay's target table: the one its connect found, or, bound late, the 16-bit half's (loaded now, as
+ *  KERNEL32 binds at the first call), written into the 32-bit side's data as Windows does */
+P.lsBind = function (rel) {
+  if (rel.table || !rel.late) return rel.table;
+  const { td, name, f16name, dir32 } = rel.late;
+  const m = this.withDir16(dir32, () => this.loadLibrary16(name, true)), sp = m && this.neExport(m, f16name), t16 = sp ? this.lin(sp) : 0;
+  if (!t16) throw new GuestError(`thunk to ${name}: no ${f16name}`);
+  rel.table = this.lin(this.r32(t16 + 8)); this.w32(td + 8, rel.table);
+  return rel.table;
+};
 P.dataCode = function (eip) {
   const tl = this.lsThunklets && this.lsThunklets.get(u32(eip));
   if (tl) { push32(this, tl.target); push32(this, tl.relay); return this.cbGlueLS; }
   const ls = this.lsRelays && this.lsRelays.get(u32(eip));
   if (ls) {   // ThunkConnect32's relays: target n (CL, or the byte at [EBP-4] for QT_Thunk) of the table into EDX
     const n = ls.ft ? this.reg('ecx') & 0xff : this.u8[u32(this.reg('ebp') - 4)];
-    this.reg('edx', this.r32((ls.bind ? ls.bind() : ls.table) + 4 * n));
+    this.reg('edx', this.r32(this.lsBind(ls.rel || ls) + 4 * n));
     if (!ls.ft) this.reg('ecx', n);
     return ls.ft ? this.ftProlog() : this.qtThunk();
   }

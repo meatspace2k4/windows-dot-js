@@ -2766,6 +2766,17 @@ def('KERNEL32', 'MapViewOfFile', 5, function (h, access, hi, lo) {
   if (!m.base) { const r = fsCall(this, () => { const b = this.fs.readFile(m.path); m.base = this.alloc(b.length + 1); m.size = b.length; m.file = true; this.u8.set(b, m.base); return 0; }); if (!m.base) return r || 0; }
   return m.base + lo;
 });
+// FlushViewOfFile: a file's view written back to its file (the view is the file's contents copied in when mapped); a
+// mapping of no file has nothing to write. Unimplemented, the thunk was a page fault in MSGSRV32 as Explorer opened My
+// Computer (the shell's shared view of its settings file)
+def('KERNEL32', 'FlushViewOfFile', 2, function (p) {
+  for (const m of this.mappings || sections(this).values()) if (m.base && p >= m.base && p < m.base + Math.max(m.size, 1)) {
+    if (!m.file || !m.path) return 1;
+    const r = fsCall(this, () => { this.fs.writeFile(m.path, this.u8.slice(m.base, m.base + m.size)); return 1; });
+    return r ? 1 : 0;
+  }
+  this.lastError = 487; return 0;   // ERROR_INVALID_ADDRESS
+});
 def('KERNEL32', 'UnmapViewOfFile', 1, function (p) { for (const m of this.mappings || sections(this).values()) if (p >= m.base && p < m.base + Math.max(m.size, 1)) return 1; this.free(p); return 1; });
 def('KERNEL32', 'CreateFileW', 7, () => 0xffffffff);
 def('KERNEL32', 'GetFullPathNameA', 4, function (n, len, buf, part) {

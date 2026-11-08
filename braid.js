@@ -211,7 +211,9 @@ function rebind(roots, ex, opts = {}) {
   for (const i of order) {
     const m = ex.meta[i], o = obj[i]; if (!o) continue;
     curPath = path[i];
-    if (m.kind === 'map') { o.clear(); for (const [k, v] of m.items) o.set(resolve(k), resolve(v)); }
+    // (a function the record could not carry, a map's value, kept as the live map has it by its key: IFSHLP's real-mode
+    // entry (ne16.js rmEntries) came back undefined)
+    if (m.kind === 'map') { const was = new Map(o); o.clear(); for (const [k, v] of m.items) { const key = resolve(k); let val = resolve(v); if (val === undefined && v && typeof v === 'object' && v.fn && was.has(key)) val = was.get(key); o.set(key, val); } }
     else if (m.kind === 'set') { o.clear(); for (const v of m.items) o.add(resolve(v)); }
     else if (m.kind === 'arr') { const was = o.slice(); o.length = 0; m.items.forEach((v, n) => { o[n] = resolve(v, was, n); }); }
     else if (m.kind === 'obj') {

@@ -1777,6 +1777,22 @@ class Machine {
         const l = (p.dynHook && p.dynHook.log) || []; p.dynHook = null; return l;
       }
       case 'trace': { if (args[0]) this.traceOn(args[0], args[1]); const l = this.traceLog || []; return l.splice(0); }   // (the calls traced so far; a thread regexp, and one for the import names, starts a trace)
+      // (a diagnostic: the functions the machine's objects hold, by the path a moment's walk gives them (braid.js): what
+      // an arrival's rebind keeps from the booted machine's object at that path, the moment carrying none)
+      case 'fns': {
+        const out = new Map(), seen = new Set(), opaque = this.braidOpaque(), names = this.braidNames();
+        const walk = (v, path, depth) => {
+          if (v === null || typeof v !== 'object' || seen.has(v) || opaque.has(v) || depth > 40) return; seen.add(v);
+          if (ArrayBuffer.isView(v) || v instanceof ArrayBuffer || (typeof WebAssembly === 'object' && (v instanceof WebAssembly.Memory || v instanceof WebAssembly.Global || v instanceof WebAssembly.Module || v instanceof WebAssembly.Instance))) return;
+          const gen = path.replace(/\/\d+(?=\/|$)/g, '/#').replace(/\/k\d+(?=\/|$)/g, '/k#');
+          const add = (k, f) => { if (names.has(f)) return; const key = gen + '/' + k; out.set(key, (out.get(key) || 0) + 1); };
+          if (v instanceof Map) { let i = 0; for (const [k, x] of v) { if (typeof x === 'function') add('(value)', x); else walk(x, path + '/' + (typeof k === 'string' || typeof k === 'number' ? k : 'v' + i), depth + 1); i++; } return; }
+          if (v instanceof Set) { let i = 0; for (const x of v) walk(x, path + '/' + i++, depth + 1); return; }
+          for (const k of Object.keys(v)) { if (v === this && this.braidSkip(v, k)) continue; const x = v[k]; if (typeof x === 'function') add(k, x); else walk(x, path + '/' + k, depth + 1); }
+        };
+        walk(this, '#0', 0);
+        return [...out].sort((a, b) => b[1] - a[1]).slice(0, args[0] || 80);
+      }
       case 'faults': { const l = (p.faultLog || []).splice(0); this.faultsTaken = (this.faultsTaken || 0) + l.length; return l; }   // (a diagnostic: the code the machine found none at, and why; the count read stays counted for the lint's probe)
       // a script of the machine's (a stand-in: claude-app.js, shell32.js, ...) loaded again from the page's server into
       // the running machine, no restart: its def()s replace the functions in place (win32.js def), so the thunks made
@@ -1855,12 +1871,21 @@ class Machine {
         // writable, so not in the export), and its own translations)
         for (const v of p.vms || []) { const m = v.m; if (!m || !m.mem) continue; if (!Object.getOwnPropertyDescriptor(m, 'u8')) Object.defineProperty(m, 'u8', { value: new Uint8Array(m.mem.buffer) }); if (!Object.getOwnPropertyDescriptor(m, 'dv')) Object.defineProperty(m, 'dv', { value: new DataView(m.mem.buffer) }); if (m.dynCache && !(m.dynCache instanceof Map)) m.dynCache = new Map(); }
         // (the 16/32-bit transitions in flight: each record's continuation found again by its kind's name, ne16.js retDone)
-        for (const r of p.retRecs || []) if (r && !r.done) { if (!r.kind || !p.retDone[r.kind]) throw new Error(`a transition in flight without a continuation's name (${r.kind})`); r.done = p.retDone[r.kind]; }
+        // (each one's own, whatever the rebind left: a record kept the continuation of the booted machine's record at its
+        // slot, another kind's, and a return through RET16.#2 went to 0 in Explorer)
+        for (const r of p.retRecs || []) if (r) { if (!r.kind || !p.retDone[r.kind]) throw new Error(`a transition in flight without a continuation's name (${r.kind})`); r.done = p.retDone[r.kind]; }
         // (the import thunks, by their names: the 16-bit ones' definitions (ne16.js K16) and the 32-bit ones' (win32.js
         // API) are code the export cannot carry; one the moment has and this machine had not made came without them,
         // and the first call through it died in api16. One of no definition is as thunk16For makes it: the native
         // module's export answers it, found again as it is called (api16, t.native))
         { const K16 = (self.W95NE16 || {}).K16 || {}; for (const t of p.th16 || []) if (t && t.key) { t.def = K16[t.key]; if (!t.def) delete t.native; } }
+        // (a late-bound LS01 connection's FT_Prolog relay as a moment of an earlier build has it: its table was a getter
+        // the moment did not carry, so nothing: joined to its connection's QT_Thunk relay, the one at the nearest
+        // address, its table that one's (ne16.js lsBind))
+        if (p.lsRelays) for (const [k, v] of p.lsRelays) if (v && v.ft && !v.rel && v.table === undefined) {
+          let best = null, d = Infinity; for (const [k2, v2] of p.lsRelays) if (v2 && !v2.ft && Math.abs(k2 - k) < d) { d = Math.abs(k2 - k); best = v2; }
+          if (best) v.rel = best;
+        }
         for (const t of p.thunks || []) if (t && t.dll) t.def = p.importDef(t.dll, t.nm);
         // (the hooks at the exports other modules enter (win32.js entryHooks) are code: made again for the USER loaded,
         // as its load made them (ne16.js hookIntents, hookClock, hookTaken); a return watched by a diagnostic is not)
