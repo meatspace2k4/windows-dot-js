@@ -909,9 +909,9 @@ function bootDisk() {
   mountDrives();
   W95Win32.regAttach(host.registry);
   if (!fs.attach('C', host.disk)) makeDisk(true);
-  // (a disk of Windows 3.1 is its own: nothing of Windows 95's Setup, and the MS-DOS it has, if any: one is installed
-  // on it as on any PC, by booting its Setup disk in A:)
-  if (diskSystem() === 'win31') { fs.chdir('C:\\'); return; }
+  // (a disk of Windows 3.1 is its own: nothing of Windows 95's Setup; MS-DOS 6.22 on it as SYS leaves it (MS-DOS 7's
+  // IO.SYS halts as Windows 3.1 starts), and an AUTOEXEC.BAT with the disk's own WIN.BAT's commands, which start Windows)
+  if (diskSystem() === 'win31') { sys622Disk(); win31Autoexec(); fs.chdir('C:\\'); return; }
   installPrograms(); setupFonts(); setupRegistry(); setupDisplay(); setupSavers(); setupSound(); setupHelp(); setupNetwork(); setupPorts(); setupPrinting(); setupVxds();
   if (host.shared) setupProfile(host.userName);
   setupStartMenu();   // (after the profile: its links go in the Programs folder the user's Shell Folders name)
@@ -1184,7 +1184,9 @@ function dosMachine(program, args, o = {}) {
     files = [{ name: 'IO.SYS', data: bytes(D.files['IO.SYS']), attr: 7 }, { name: 'MSDOS.SYS', data: W95FS.encode(msdos), attr: 7 },
       ...Object.keys(D.files).filter(p => p !== 'IO.SYS').map(p => ({ path: p, data: bytes(D.files[p]) }))];
   }
-  const m = V.machine({ disk: V.fat16(bytes(D.boot), files, 16), program, args, fs, conIn: dosConIn, ...o });
+  // (the boot sector the IO.SYS's own SYS writes: MS-DOS 7's loads an MZ IO.SYS, an older one MS-DOS 6's)
+  const io = files.find(f => f.name === 'IO.SYS'), old = io && !(io.data[0] === 0x4d && io.data[1] === 0x5a) && window.W95DOS622;
+  const m = V.machine({ disk: V.fat16(bytes(old ? old.boot : D.boot), files, 16), program, args, fs, conIn: dosConIn, ...o });
   m.o.winExec = dosWinExec(m);
   if (sharedNow()) m.wallSkew = sharedNow().clockSkew();   // (the session's wall clock for its real-time clock: v86Port)
   m.v86Clock(); m.v86Boot();
@@ -1340,6 +1342,8 @@ function pcBoot() {
 }
 /** the VMM WIN.COM loaded entering protected mode: the Windows it is starts, the screen its */
 function pcWindows(path) {
+  // (Windows 3.1's WIN386.EXE: its personality is not in the bundle yet, so nothing starts; the PC waits at its entry)
+  if (/WIN386\.EXE$/i.test(path)) { pc.failed = `${path}: no Windows 3.1 system in this build`; emit('pc.windows', { path, failed: pc.failed }); return; }
   screen = 'desktop'; ren = null; desk.selKey = null; active = null; dirty();
   emit('pc.windows', { path });
   loadHives();   // (the registry the VMM reads: Setup's new one after its restart)
@@ -3685,6 +3689,25 @@ function sysDisk(gui) {
     for (let i = 0; i < 18; i++) pad.push(';' + 'x'.repeat(68) + String.fromCharCode(97 + i));
     unlock('C:\\MSDOS.SYS'); fs.writeFile('C:\\MSDOS.SYS', W95FS.encode(`${own}\r\n${pad.join('\r\n')}\r\n`)); fs.setAttrs('C:\\MSDOS.SYS', HSR);
   }
+}
+/** MS-DOS 6.22 on C:, as its SYS.COM leaves it (W95DOS622, from its Setup Disk 1): IO.SYS and MSDOS.SYS (its kernel, not
+ *  a settings file), hidden, system and read-only, and COMMAND.COM in the root; in place of an MS-DOS 7 a disk has (its
+ *  IO.SYS an MZ program), and of none */
+function sys622Disk() {
+  const D = window.W95DOS622; if (!D) return;
+  let io = null; try { io = fs.readFile('C:\\IO.SYS'); } catch (_) { /* none */ }
+  if (io && !(io[0] === 0x4d && io[1] === 0x5a)) return;   // (an MS-DOS of its own already)
+  const HSR = ATTR.HIDDEN | ATTR.SYSTEM | ATTR.READONLY;
+  for (const n of ['IO.SYS', 'MSDOS.SYS']) { const p = 'C:\\' + n; try { fs.setAttrs(p, 0); } catch (_) { /* not there */ } fs.writeFile(p, b64bytes(D.files[n])); fs.setAttrs(p, HSR); }
+  fs.writeFile('C:\\COMMAND.COM', b64bytes(D.files['COMMAND.COM']));
+}
+/** a Windows 3.1 disk's AUTOEXEC.BAT, when it has none: the commands of its WIN.BAT (its PATH and settings, then
+ *  WIN.COM) if it keeps one in the root, its lines ended CR LF as COMMAND.COM reads them (one kept by DOSBox ends them
+ *  with LF alone, one line to MS-DOS), else WIN.COM from its Windows folder */
+function win31Autoexec() {
+  if (fs.exists('C:\\AUTOEXEC.BAT')) return;
+  let cmds = null; try { cmds = fs.readText('C:\\WIN.BAT').split(/\r?\n/).filter(l => l.trim()).join('\r\n'); } catch (_) { /* none */ }
+  fs.writeFile('C:\\AUTOEXEC.BAT', W95FS.encode(`@ECHO OFF\r\n${cmds || join(WINDIR, 'WIN.COM')}\r\n`));
 }
 /** a copy this page put in the Windows folder before of a program Setup puts in SYSTEM (`names`), the bundle's own bytes:
  *  removed. Windows 98's MSGSRV32 runs "runonce.exe -m", found in the Windows folder before SYSTEM, and Windows 95's
