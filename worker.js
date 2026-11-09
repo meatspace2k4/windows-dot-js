@@ -1740,6 +1740,7 @@ class Machine {
           const named = this.ordNames(m), label = nm => !/^#\d+$/.test(nm) ? nm : named.get(+nm.slice(1)) || (m.importers && m.importers.has(nm) ? `${nm} (${[...m.importers.get(nm)].join(', ')})` : nm);
           const hasName = new Set([...m.exports].filter(([nm]) => nm[0] !== '#').map(([, a]) => a));
           if (want) { for (const [nm, a] of m.exports) if (typeof a === 'number' && a && !(nm[0] === '#' && hasName.has(a)) && want.test(label(nm))) names.push([label(nm), a >>> 0]); }
+          else if (/^@[0-9a-f]+$/i.test(String(name))) names.push([String(name), (m.base + parseInt(String(name).slice(1), 16)) >>> 0]);   // (@offset: a place in the module's image, a function no export names)
           else { const k = [...named].find(([, v]) => v === name), a = m.exports.get(k ? `#${k[0]}` : name); if (a) names.push([label(k ? `#${k[0]}` : name), a >>> 0]); }
         }
         if (!names.length) return false;
@@ -1784,7 +1785,7 @@ class Machine {
           const exes = [p.pc0, p.pc, ...(p.procs || new Map()).values()].filter(own).map(x => x.exe);
           const m = [...p.modules.filter(x => x.name === name), ...exes].find(x => eip >= x.base && eip < x.base + (x.size || (x.meta && x.meta.textHi - x.base) || 0));
           if (m) { const s = p.runHook.seen; s.n++; const k = (eip - m.base).toString(16); s.at[k] = (s.at[k] || 0) + 1; }
-          if (m && want.has(eip - m.base)) { const sp = p.reg('esp') >>> 0; log.push([Math.round(performance.now()), p.thread16 && p.thread16.pc ? p.thread16.pc.path : 'host', 'watch', `${name}+${(eip - m.base).toString(16)}`, `eax ${(p.reg('eax') >>> 0).toString(16)}`, `args ${[4, 8, 12, 16, 20].map(k => (p.r32(sp + k) >>> 0).toString(16)).join(' ')}`, `frame ${[8, 12, 16, 20, 24, 28, 32, 36].map(k => (p.r32((p.reg('ebp') >>> 0) + k) >>> 0).toString(16)).join(' ')}`]); }   // (the stack's first five arguments, as a stdcall function sees them on entry; and the arguments of the function whose frame EBP holds, for a place inside one)
+          if (m && want.has(eip - m.base)) { const sp = p.reg('esp') >>> 0; log.push([Math.round(performance.now()), p.thread16 && p.thread16.pc ? p.thread16.pc.path : 'host', 'watch', `${name}+${(eip - m.base).toString(16)}`, `eax ${(p.reg('eax') >>> 0).toString(16)}`, `args ${[4, 8, 12, 16, 20].map(k => (p.r32(sp + k) >>> 0).toString(16)).join(' ')}`, `ret ${p.whereOf(p.r32(sp) >>> 0)}`, `frame ${[8, 12, 16, 20, 24, 28, 32, 36].map(k => (p.r32((p.reg('ebp') >>> 0) + k) >>> 0).toString(16)).join(' ')}`]); }   // (the stack's first five arguments, as a stdcall function sees them on entry; and the arguments of the function whose frame EBP holds, for a place inside one)
         };
         p.runHook.seen = { n: 0, at: {} };
         return true;
