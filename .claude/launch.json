@@ -55,7 +55,7 @@
     {
       "name": "win95 (braid, win98 cd 8151)",
       "runtimeExecutable": "zsh",
-      "runtimeArgs": ["-lc", "exec python3 tools/serve.py 8151 --iso '/Users/johusha/Downloads/Windows 95/Win95 OSR2.ISO' --cd '/Users/johusha/Downloads/Windows 98 se Upgrade.iso'"],
+      "runtimeArgs": ["-lc", "exec python3 tools/serve.py 8151 --iso '/Users/johusha/Downloads/Windows 95/Win95 OSR2.ISO' --cd '/Users/johusha/Downloads/Windows 98 se Upgrade.iso' --mods debug"],
       "port": 8151,
       "url": "http://braid.localhost:8151"
     },
@@ -72,6 +72,13 @@
       "runtimeArgs": ["tools/serve.py", "8117", "--iso", "/Users/johusha/Downloads/Windows 95/Win95 OSR2.ISO"],
       "port": 8117,
       "url": "http://127.0.0.1:8117"
+    },
+    {
+      "name": "win95 (braid sessions 8163)",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["tools/serve.py", "8163", "--iso", "/Users/johusha/Downloads/Windows 95/Win95 OSR2.ISO"],
+      "port": 8163,
+      "url": "http://braid3.localhost:8163"
     },
     {
       "name": "win95-dev (local Pi)",

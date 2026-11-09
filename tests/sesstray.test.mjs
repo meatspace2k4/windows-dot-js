@@ -37,7 +37,9 @@ const people = list => { window.W95TrayPeople = list; };
 people([{ client: 'a', user: 'Ann', color: [128, 0, 0] }]);
 assert.equal(defs['SESSTRAY.Start'].call(p, 0x401000), 0x77);
 const nids = () => calls.filter(c => c[0] === 'post' && c[2] === 0x8006);
-assert.equal(nids().length, 1); { const [, h, , op, d] = nids()[0]; assert.equal(h, 0x77); assert.equal(op, 0); assert.equal(p.readA(d + 24), 'Ann'); assert.equal(p.r32(d + 16), 0x8003); assert.equal(p.r32(d + 20), icons[0]); }
+// (Ann's icon, then the Braid icon: the session's line, its own uid past any person's)
+assert.equal(nids().length, 2); assert.equal(p.r32(nids()[1][4] + 8), 0x7fff); assert.match(p.readA(nids()[1][4] + 24), /^Braid/);
+{ const [, h, , op, d] = nids()[0]; assert.equal(h, 0x77); assert.equal(op, 0); assert.equal(p.readA(d + 24), 'Ann'); assert.equal(p.r32(d + 16), 0x8003); assert.equal(p.r32(d + 20), icons[0]); }
 const res = p.alloc(4), handle = (m, wp, lp) => defs['SESSTRAY.Handle'].call(p, 0x77, m, wp, lp, res);
 // Bob comes, Ann is renamed: one added, one changed
 people([{ client: 'a', user: 'Annie' }, { client: 'b', user: 'Bob' }]); calls.length = 0;
@@ -64,5 +66,16 @@ const items = calls.filter(c => c[0] === 'item');
 assert.ok(items.some(c => c[3] === 'Paint && Co' && c[2] === 2000), 'the window\'s item');
 assert.ok(items.some(c => c[1] === 0x10 && c[3] === 'Bob\'s &Windows'), 'the popup entry');
 handle(0x111, 2000, 0); assert.deepEqual(posted.at(-1), { t: 'trayWindow', id: 'w@b.x1', client: 'b' });
+// the Braid icon: Mark Now, Anchor Now, Travel To the line's moments (from the page, newest first), each to the page
+// as the session's (trayBraid); no moments, a grayed line saying so
+window.W95TrayMoments = []; calls.length = 0; handle(0x8003, 0x7fff, 0x202);
+assert.deepEqual(calls.filter(c => c[0] === 'item').map(c => c[3]), ['Braid: the session\'s line', null, '&Mark Now', '&Anchor Now', '(no moments yet)', '&Travel To']);
+assert.ok(calls.some(c => c[0] === 'post' && c[2] === 0x8002), 'tracked as a notification-area menu');
+handle(0x111, 3001, 0); assert.deepEqual(posted.at(-1), { t: 'trayBraid', op: 'mark' });
+handle(0x111, 3002, 0); assert.deepEqual(posted.at(-1), { t: 'trayBraid', op: 'anchor' });
+window.W95TrayMoments = [{ name: 'before & after', anchored: true }, { name: 'm1', broken: true }]; calls.length = 0; handle(0x8003, 0x7fff, 0x205);
+const bitems = calls.filter(c => c[0] === 'item');
+assert.ok(bitems.some(c => c[2] === 3100 && c[3] === 'before && after  (anchored)') && bitems.some(c => c[2] === 3101 && c[3] === 'm1  (broken)'), 'the moments, & doubled');
+handle(0x111, 3101, 0); assert.deepEqual(posted.at(-1), { t: 'trayBraid', op: 'travel', name: 'm1' });
 assert.equal(handle(0x0f, 0, 0), 0, 'another message: DefWindowProc\'s');
 console.log('sesstray: ok');

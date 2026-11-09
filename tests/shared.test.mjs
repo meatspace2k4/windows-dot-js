@@ -160,4 +160,25 @@ es1.on.reload({ data: '{}' }); assert.ok(P.location.reloaded);
   assert.deepEqual([...J.S.world()], [['NOTEPAD.EXE#0/Notepad#0', { x: 3 }], ['WELCOME.EXE#0/W#0', null]]);
   assert.deepEqual([...J.S.intents().keys()], ['spi:17']);
 }
+// Braid's intents: made here by every machine, this one's own too (each marks or travels at one place in the session's
+// order), never a setting a joiner makes again; a travel that brings the session's state back (reset) sets this
+// machine's copy to it, its own changes made before the travel dropped, and is told so (onIntent's third argument)
+{
+  const B = page('?session=b&user=Ann'); const S = B.S; S.start({ disk: {}, registry: { load: () => ({}) } }); const es = B.sources[0];
+  const got = []; S.onIntent((i, by, reset) => got.push([i.op, by, reset])); S.ready();
+  es.emit('op', { seq: 8, client: 'other', kind: 'obj', op: { id: 'W1', v: { title: 'Notepad', x: 10 } } });
+  es.emit('op', { seq: 9, client: S.client, kind: 'intent', op: { key: 'braid:mark:m1', kind: 'braid', op: 'mark', name: 'm1' } });
+  assert.deepEqual(got, [['mark', S.client, false]], 'its own mark made here too, as it comes back in order');
+  assert.ok(!S.intents().has('braid:mark:m1'), 'not a setting');
+  S.intent({ key: 'braid:anchor', kind: 'braid', op: 'anchor', name: 'a' }); assert.ok(!S.intents().has('braid:anchor'), 'nor one this machine sends');
+  es.emit('op', { seq: 10, client: 'other', kind: 'obj', op: { id: 'W2', v: { title: 'Paint' } } });
+  S.obj('W3', { title: 'Mine' });   // (this machine's own change, on its way when the travel comes)
+  es.emit('op', { seq: 11, client: 'other', kind: 'intent', op: { key: 'braid:travel', kind: 'braid', op: 'travel', name: 'm1' },
+    reset: { world: { W1: { title: 'Notepad', x: 10 } }, gens: {}, intents: { 'spi:17': { key: 'spi:17', kind: 'spi', ui: 1 } }, inputs: {}, moment: 'm1', from: 9 } });
+  assert.deepEqual(got.at(-1), ['travel', 'other', true]);
+  assert.deepEqual([...S.world()], [['W1', { title: 'Notepad', x: 10 }]], 'the session\'s state as it was at the moment');
+  assert.deepEqual([...S.intents().keys()], ['spi:17']);
+  await B.settle(); await B.settle();
+  assert.ok(!B.posts.some(p => JSON.stringify(p.body).includes('"W3"')), 'its change from before the travel not sent after it');
+}
 console.log('shared: ok');

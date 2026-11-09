@@ -242,11 +242,14 @@ class FM {
   }
   active() { return this.ops.some(o => o.stage !== 'off'); }
 }
-const fm = o => o.fm || (o.fm = new FM());
+// (one a moment brought (braid.js rebind) is an object of its data alone, its class the booted machine's had none of:
+// its class given back, "f.active is not a function" as the sound went on after an arrival)
+const asFM = f => { if (f && !(f instanceof FM)) Object.setPrototypeOf(f, FM.prototype); return f; };
+const fm = o => asFM(o.fm) || (o.fm = new FM());
 /** the synthesizer's sound from where it last stopped up to now, queued for the page's audio output */
 P.oplRender = function () {
   const o = this.opl3; if (!o || !o.fm) return;
-  const f = o.fm, now = this.now();
+  const f = asFM(o.fm), now = this.now();
   if (f.at === undefined) f.at = now;
   let n = Math.floor((now - f.at) * OPL_RATE / 1000);
   if (n <= 0) return;
@@ -350,19 +353,33 @@ for (let i = 0; i < 256; i++) {
 // (each open and close of an output clicks). Each source (a program's codec, its synthesizer) is a stream on it: a
 // worklet node that takes the source's samples from a queue at the source's own rate and converts them to the
 // context's (cubic interpolation over the continuous stream: no buffer is started per batch). After the queue runs
-// dry, output starts again once LEAD seconds of samples are queued, or the first of them has waited that long
+// dry, output starts again once LEAD seconds of samples are queued and the samples come at the pace they play, or the
+// last of them has waited LEAD (the sound's end), or a second of them is queued. The machine's clock is its own, not
+// the wall's (worker.js vclock): while the shell starts it runs at a fifth to a third of real time, the startup sound
+// with it, and output begun on LEAD alone ran dry a dozen times in its first two seconds. It waits for the pace instead
+// (the sound a little late, then whole)
 const LEAD = 0.1;
 const WORKLET = `registerProcessor('w95-stream', class extends AudioWorkletProcessor {
   constructor(o) {
     super(); const p = o.processorOptions; this.step = p.step; this.lead = p.lead;
     this.cap = 1 << 15; this.L = new Float32Array(this.cap); this.R = new Float32Array(this.cap); this.w = 0; this.r = 0;
-    this.on = false; this.wait = 0; this.live = true;
+    this.on = false; this.wait = 0; this.live = true; this.got = [];   // (got: [context time, samples] of the arrivals, the last quarter second's)
     this.port.onmessage = e => {
       if (e.data === 'end') { this.live = false; return; }
       const [a, b] = e.data; this.room(a.length);
       for (let i = 0, m = this.cap - 1; i < a.length; i++) { this.L[(this.w + i) & m] = a[i]; this.R[(this.w + i) & m] = b[i]; }
-      this.w += a.length;
+      this.w += a.length; this.wait = 0;
+      this.got.push([currentTime, a.length]); while (this.got.length > 1 && currentTime - this.got[0][0] > 0.25) this.got.shift();
     };
+  }
+  /** whether the samples come at least as fast as they play: those of the last quarter second against its length */
+  paced() {
+    const g = this.got; if (g.length < 2) return false;
+    // (a fifth of a second at least: a sound's first batches come together as it starts, and over a shorter span they
+    // read as paced on a machine running at a third of real time; the startup sound began, and broke off once)
+    const span = currentTime - g[0][0]; if (span < 0.2) return false;
+    let n = 0; for (let i = 1; i < g.length; i++) n += g[i][1];
+    return n >= 0.9 * span * sampleRate * this.step;
   }
   room(n) {   // the ring holds what is queued, from the sample before the read position on
     const from = Math.max(0, Math.floor(this.r) - 1);
@@ -374,7 +391,10 @@ const WORKLET = `registerProcessor('w95-stream', class extends AudioWorkletProce
   }
   process(_, outputs) {
     const L = outputs[0][0], R = outputs[0][1] || outputs[0][0], m = this.cap - 1, step = this.step;
-    if (!this.on && this.w - this.r > 2) { this.wait += L.length * step; if (this.w - this.r >= this.lead || this.wait >= this.lead) { this.on = true; this.wait = 0; } }
+    if (!this.on && this.w - this.r > 2) {
+      const q = this.w - this.r; this.wait += L.length * step;   // (wait: source samples' time since the last arrival)
+      if ((q >= this.lead && this.paced()) || this.wait >= this.lead || q >= 10 * this.lead) { this.on = true; this.wait = 0; }
+    }
     let k = 0;
     const at = (B, i) => B[Math.max(i, 0) & m];
     for (; this.on && k < L.length && this.r + 2 < this.w; k++, this.r += step) {
@@ -449,7 +469,9 @@ const play = (proc, rate, L, R, n) => {
 };
 system();   // as the machine starts
 // a machine in a worker plays through here: its samples (the page's output, its streams keyed by `k`)
-window.W95Sound = { play: (k, rate, L, R) => play(k, rate, L, R, L.length), close: k => P.soundClose.call(k) };
+window.W95Sound = { play: (k, rate, L, R) => play(k, rate, L, R, L.length), close: k => P.soundClose.call(k),
+  // (the output on or off while the machine runs, the page's address's mute: the same gain the page's ?mute=1 sets)
+  setMuted: m => { window.W95MUTE = !!m; const s = system(); if (s && s.dest) s.dest.gain.value = m ? 0 : 1; if (!m && s && s.ctx && s.ctx.state === 'suspended') s.ctx.resume(); } };
 // The codec's clock. A port access the guest makes (a codec register, its status, a DMA counter) takes an ISA I/O cycle,
 // about a microsecond, on the card: inside a run of guest code the codec moves on by that much per access, however long
 // the recompiled code takes between them. Between runs (the host's turn) and when the guest reads the time of day it

@@ -25,12 +25,14 @@ def setting(env, path):
     except OSError: return None
 api_key = lambda: setting('ANTHROPIC_API_KEY', KEY_FILE)
 workspace_id = lambda: setting('ANTHROPIC_WORKSPACE_ID', WORKSPACE_FILE)
-def local_request(h):
+def local_request(h, json=True):
+    """this machine's own page (its Origin the Host asked, a browser sends it with every cross-site POST); `json`: and
+    JSON, as no other site's form can send (a write the page's log takes, /__cdlog, is any body its own page sends)"""
     host = (h.headers.get('Host') or '').rsplit(':', 1)[0].strip('[]').lower()
     origin = h.headers.get('Origin')
     return (h.client_address[0] in ('127.0.0.1', '::1') and (host in ('localhost', '127.0.0.1', '::1') or host.endswith('.localhost'))
             and (origin is None or re.sub(r'^https?://', '', origin).rsplit(':', 1)[0].strip('[]').lower() == host)
-            and (h.headers.get('Content-Type') or '').startswith('application/json'))
+            and (not json or (h.headers.get('Content-Type') or '').startswith('application/json')))
 def site_request(h):
     """the site's own page on any host (the public one too): JSON, from an Origin of the Host asked, as no other site's page can send"""
     host = (h.headers.get('Host') or '').rsplit(':', 1)[0].strip('[]').lower()

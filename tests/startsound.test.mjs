@@ -10,7 +10,7 @@ function page(mute) {
   const started = [];
   class App { constructor(path, arg, o) { Object.assign(this, { path, arg, ...o }); } async start() { started.push(this); return true; } }
   const S = new Function('window', 'RemoteApp', 'NativeApp', 'join', 'WINDIR', `
-    let sysApp = null, sysStarting = null; const bootLogoEnd = () => {};   // (the start-up screen: the page's drawing)
+    let sysApp = null, sysStarting = null; const bootLogoEnd = () => {}, emit = () => {};   // (the start-up screen: the page's drawing; the page's events)
     ${cut('function startSystem() {', 'sysStarting = null; }));\n}')}
     return { startSystem };`);
   const win = { W95SYSTEM: { ne: { MSGSRV32: {} }, programs: { 'EXPLORER.EXE': {} } }, W95MUTE: mute, SharedArrayBuffer: function () {} };

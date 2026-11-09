@@ -1,5 +1,8 @@
 'use strict';
 
+// (in a function of its own: a script loaded again over the running machine (reloadScript, importScripts) redeclared
+// its top-level consts, a SyntaxError, and the reload did nothing)
+(() => {
 const LONG_SAVER_NAMES = {
   'CURVES AND COLORS.SCR': 'BEZIER.SCR',
   'SCROLLING MARQUEE.SCR': 'SSMARQUE.SCR',
@@ -46,3 +49,4 @@ self.W95SaverRuntime = {
     return saver.modPromise;
   },
 };
+})();

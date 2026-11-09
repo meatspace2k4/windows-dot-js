@@ -103,6 +103,20 @@
     if (m.seq && seq && m.seq > seq + 1) { catchUp(); return; }
     if (m.seq && m.seq <= seq) return;   // (one already applied, sent again)
     seq = Math.max(seq, m.seq || 0);
+    // (a Braid intent is an event on the line, made by every machine as it reaches it, the one that asked too: each
+    // marks, anchors or travels at the same place in the op order. A travel to a moment the server holds comes with
+    // the shared state as it was there (`reset`): this machine's copy set to it, and its own changes still on their way
+    // or waiting dropped, made before the moment the session went back from)
+    if (m.kind === 'intent' && m.op && m.op.kind === 'braid') {
+      if (m.reset) {
+        world.clear(); for (const [id, v] of Object.entries(m.reset.world || {})) world.set(id, v);
+        gens.clear(); for (const [id, g] of Object.entries(m.reset.gens || {})) gens.set(id, g);
+        intents.clear(); for (const [k, i] of Object.entries(m.reset.intents || {})) intents.set(k, i);
+        inputs.clear(); for (const [id, p] of Object.entries(m.reset.inputs || {})) inputs.set(id, p);
+        flying.clear(); outbox = outbox.filter(o => o.kind === 'intent');
+      }
+      deliver(m); return;
+    }
     if (m.kind === 'intent') { intents.set(m.op.key, m.op); if (m.client !== client) deliver(m); return; }
     // (a person's stroke into an object's window, or part of one: another machine's fed here, win95.js osStroke; its
     // own back is passed over. The history kept here is the session's for the objects started here for it)
@@ -126,7 +140,7 @@
   const deliver = m => {
     if (!ready16) { pending.push(m); return; }
     // (with the machine that made it: who did it, for its window's outline in their colour)
-    const to = m.kind === 'obj' ? onObj && (() => onObj(m.op.id, m.op.v, m.client)) : m.kind === 'intent' ? onIntent && (() => onIntent(m.op, m.client))
+    const to = m.kind === 'obj' ? onObj && (() => onObj(m.op.id, m.op.v, m.client)) : m.kind === 'intent' ? onIntent && (() => onIntent(m.op, m.client, !!m.reset))
       : m.kind === 'input' ? onInput && (() => onInput(m.op.id, m.op, m.client)) : null;
     if (to) { try { to(); } catch (e) { console.warn('[shared] another machine\'s change could not be made here:', e && e.message); } }
   };
@@ -189,7 +203,7 @@
   // (this machine's copy keeps what the session knows of the object beyond this machine's state: its origin)
   const obj = (id, v, patch) => { world.set(id, v == null ? null : L().merge(world.get(id), v)); send('obj', { id, v: v == null ? null : patch || v }, v == null ? null : v); };
   /** a setting this machine's person made, as the call that made it (ne16.js hookIntents), for every other machine */
-  const intent = i => { intents.set(i.key, i); send('intent', i); };
+  const intent = i => { if (i.kind !== 'braid') intents.set(i.key, i); send('intent', i); };
   /** this person's stroke into an object's window, or part of one (n: which stroke of this machine's; ev: its events
    *  as offsets from the window; pop: the object's popup it went into, if one; done: its end), for every other machine */
   const input = (id, part) => send('input', { id, ...part });

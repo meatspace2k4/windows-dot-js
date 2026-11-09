@@ -58,18 +58,25 @@ P.copySel = function (s, acc = this.r32(L.ACC + (s & 0xfff8))) {
   if (g && g.n > 1) return this.allocSels(this.selBase(s), this.selLimit(s) + 1, acc);
   const n = this.allocSels(0, 1); this.setDesc(n, this.selBase(s), this.selLimit(s), acc); return n;
 };
-/** n consecutive selectors (stepping by __AHINCR) covering [base, base+size) */
-P.allocSels = function (base, size, acc = 0xf300) {
+/** n consecutive selectors (stepping by __AHINCR) covering [base, base+size); `want`: the selector asked for (a
+ *  module placed where its memoized translation was made, dyn.js neMemo), given when its slots are free */
+P.allocSels = function (base, size, acc = 0xf300, want = 0) {
   const n = Math.max(1, Math.ceil(size / 0x10000));
+  const first = (want & 0xfff8) >> 3;
+  const fit = i => { for (let k = 0; k < n; k++) if (this.selUsed[i + k]) return false; return true; };
+  const take = i => { for (let k = 0; k < n; k++) this.setDesc(((i + k) << 3) | 7, base + 0x10000 * k, Math.min(size - 0x10000 * k, 0x10000) - 1 + (k ? 0 : Math.max(0, size - 0x10000)), acc); return (i << 3) | 7; };
+  if (first >= L.DYN && first + n < 8190 && fit(first)) return take(first);
   for (let i = L.DYN; i + n < 8190; i++) {
-    let ok = true; for (let k = 0; k < n; k++) if (this.selUsed[i + k]) { ok = false; i += k; break; }
-    if (!ok) continue;
-    for (let k = 0; k < n; k++) this.setDesc(((i + k) << 3) | 7, base + 0x10000 * k, Math.min(size - 0x10000 * k, 0x10000) - 1 + (k ? 0 : Math.max(0, size - 0x10000)) , acc);
-    return (i << 3) | 7;
+    if (fit(i)) return take(i);
   }
   throw new GuestError(`out of selectors (${n} for ${u32(size).toString(16)}h bytes)`);
 };
 P.freeSels = function (sel, n = 1) {
+  // (a loaded module's segment freed: said, with who asked, as nothing should free one)
+  if (this.ne) for (let k = 0; k < n; k++) { const s = (((sel & 0xfff8) >> 3) + k) << 3; for (const m of this.ne.values()) for (const g of m.segs || []) if (g.sel && (g.sel & 0xfff8) === s) {
+    const f = u32(this.cpu.ssb.value) + (this.cpu.esp.value & 0xffff), ret = (this.r16(f + 2) << 16 | this.r16(f)) >>> 0;
+    log('warn', 'ne16', `${m.name} segment ${g.num}'s selector ${(g.sel | 7).toString(16)} freed (asked ${(sel >>> 0).toString(16)} n ${n}), from ${this.whereOf(this.lin(ret)) || ret.toString(16)} thread ${this.thread16 ? this.thread16.id : 'main'}`);
+  } }
   for (let k = 0; k < n; k++) { const i = ((sel & 0xfff8) >> 3) + k; this.selUsed[i] = 0; this.w32(L.LDT + 8 * i, 0); this.w32(L.LDT + 8 * i + 4, 0); this.w32(L.ACC + 8 * i, 0); }
 };
 /** segmented -> linear */
@@ -199,6 +206,7 @@ P.loadNE = function (name, file, module, meta) {
     this.w32(L.LDT + (rec.dgroup & 0xfff8) + 4, init - 1);
   }
   for (const sg of meta.segs) if (sg.num !== meta.autodata) this.ghandles.set(sg.sel | 1, { lin: sg.base, size: Math.max(sg.alloc, 1), n: 1, flags: 0, lock: 0, owner: rec.hModule, code: !(sg.flags & 1) });
+  if (this.initAfter32 && this.initAfter32.has(name)) rec.initLater = true;   // (its LibEntry run by bootUser16 once its 32-bit half is loaded, whoever imports it first)
   this.modules.push(rec); this.byName.set(name, rec); this.ne.set(name, rec);
   if (this.onModuleLoad) this.onModuleLoad(name, rec);   // (a watch asked for before the module came: worker.js cmd 'watch')
   return rec;
@@ -320,6 +328,11 @@ P.loadLibrary16 = function (name, native = false, defer = false) {
   rec.fileName = sys.fileName;
   for (const imp of sys.meta.imports || []) if (imp !== 'KERNEL' && (native || !JS16.includes(imp))) this.loadLibrary16(imp, native);
   if (defer) return rec;   // the caller runs LibEntry (initNE) once what it needs is in place
+  // (a boot module's LibEntry waits for bootUser16, as KRNL386's bootstrap defers each library's init until its own
+  // step: USER.EXE loaded by USER32's ThunkInitLS, under a DLL that GDI's LibEntry loaded (Windows 98's GDI.EXE loads
+  // USER32's importers), ran its LibEntry here before USER32 had connected its thunks, and jumped through the unset
+  // target table)
+  if (rec.initLater) return rec;
   if (!this.initNE(rec)) { log('warn', 'ne16', `${base} LibEntry failed`); }
   return rec;
 };
@@ -497,15 +510,32 @@ P.loadNEDynamic = function (key, file) {
   const missing = mods.find(m => !there(m));
   if (missing) { this.missing16 = `${missing}.DLL`; log('warn', 'ne16', `${key}: ${missing}.DLL is not found`); return null; }
   this.dirs16 = [...new Set([dir, ...(this.dirs16 || [])])].slice(0, 8);   // (its folder searched for its DLLs, as the program's own is)
-  const segs = [];
+  // (the translation of its code, memoized on this computer by the file (dyn.js neMemo), was made at a placement: its
+  // code's base, its segments' selectors. Placed there again when the room is free, the memo's module runs as it was)
+  const probe = { file }, memo = this.neMemo(probe);
+  const segs = [], hdr = [];
   for (let i = 0; i < nseg; i++) {
     const e = segt + 8 * i, off = rd.u16(file, e) << shift, len = rd.u16(file, e + 2) || (off ? 0x10000 : 0), flags = rd.u16(file, e + 4), minalloc = rd.u16(file, e + 6) || 0x10000;
-    const size = i + 1 === autodata ? 0x10000 : Math.max(len, minalloc, 1), base = this.alloc(size + 16);
+    hdr.push({ off, len, flags, minalloc: rd.u16(file, e + 6), size: i + 1 === autodata ? 0x10000 : Math.max(len, minalloc, 1) });
+  }
+  // its code segments one after another in the image arena, as the bundle's modules have theirs (loadNE), so its
+  // block table (an i32 a byte of the span) covers code alone; its data segments on the heap
+  const codeAt = [], codeSize = hdr.reduce((s, h) => (h.flags & 1) || !h.len ? s : (codeAt.push(s), s + ((h.size + 15) & ~15)), 0);
+  const codeBase = codeSize ? this.imageRoom(memo ? memo.codeBase : 0, codeSize, true) : 0;
+  if (codeSize && !codeBase) throw new GuestError(`${name}: no room for ${u32(codeSize).toString(16)}h bytes of code`);
+  for (let i = 0, c = 0; i < nseg; i++) {
+    const { off, len, flags, size, minalloc } = hdr[i], isCode = !(flags & 1) && len;
+    // (GDI's and USER's data segments with room to grow to 2 MB where they are: Windows 98's GDI grows its own past
+    // 64K for its 32-bit heap after GDI32 has taken flat pointers into it, so it must not move; moved, GDI32's
+    // GetStockObject read the old place and WinHelp's RegisterClass refused its brush, "(null) (2)")
+    const room = i + 1 === autodata && /^(GDI|USER)$/.test(name) ? 0x200000 : 0;
+    const base = isCode ? codeBase + codeAt[c++] : this.alloc(Math.max(size, room) + 16);
+    if (isCode) this.u8.fill(0, base, base + size);
     // (a 32-bit code segment, flag 2000h, a 32-bit descriptor, as loadNE makes the bundle's: Windows 98's DIBENG.DLL's
     // blits, run as 16-bit code, read their first instruction as FF /7)
-    const sel = this.allocSels(base, size, flags & 1 ? 0xf300 : flags & 0x2000 ? 0x40fb00 : 0xfb00);
+    const sel = this.allocSels(base, size, flags & 1 ? 0xf300 : flags & 0x2000 ? 0x40fb00 : 0xfb00, memo && memo.sels ? memo.sels[i] : 0);
     if (len && off) this.u8.set(file.subarray(off, off + len), base);
-    segs.push({ num: i + 1, sel, base, len, alloc: size, minalloc: rd.u16(file, e + 6), flags, bits: flags & 0x2000 ? 32 : 16, fileoff: off, rel: flags & 0x100 ? off + len : 0 });
+    segs.push({ num: i + 1, sel, base, len, alloc: size, minalloc, flags, bits: flags & 0x2000 ? 32 : 16, fileoff: off, rel: flags & 0x100 ? off + len : 0 });
   }
   // the entry table: ordinal -> segment:offset (fixed bundles name their segment, movable ones each entry's)
   const exports = new Map();
@@ -525,12 +555,16 @@ P.loadNEDynamic = function (key, file) {
       else { const off = rd.u16(file, p + 1); if (segs[ind - 1]) { exports.set(ord, u32((segs[ind - 1].sel << 16) | off)); prolog(ind, off, file[p]); } p += 3; }
     }
   }
-  const meta = { name, base: segs.length ? segs[0].base : 0, segs, autodata, entry: [h(0x16), h(0x14)], exports: {}, names, imports: [], textLo: 0, textHi: 0, blocks: [], fixups: [], dynamic: true };
+  // (its text: the code span; its block table found room among the modules' (win32.js tableRoom), the memo's place first)
+  const textLo = codeSize ? codeBase : 0, textHi = codeSize ? codeBase + codeSize : 0;
+  const lookup = codeSize ? this.tableRoom(4 * codeSize, memo ? memo.lookup : 0) : 0;
+  if (this.vmAudit) this.vmAudit(`${name}'s table`);
+  const meta = { name, base: segs.length ? segs[0].base : 0, segs, autodata, entry: [h(0x16), h(0x14)], exports: {}, names, imports: [], textLo, textHi, lookup, blocks: [], fixups: [], dynamic: true };
   // (the device memory the bundle's build of this file writes as registers, recomp.py --mmio: a device's, whichever
   // file of the driver's runs. Windows 98's TSENG.DRV, mapped from its file, waited on the W32's accelerator status
   // at B8000h+7F36h, plain memory to it, for good)
   { const fn = key.replace(/^.*\\/, '').toUpperCase(), b = Object.values(all).find(s => s.fileName === fn && s.meta && s.meta.mmio); if (b) meta.mmio = b.meta.mmio; }
-  const rec = { name, path: key, kind: 'ne', base: meta.base, meta, file, segs, exports, names, run: null, loading: true };
+  const rec = { name, path: key, kind: 'ne', base: meta.base, meta, file, segs, exports, names, run: null, loading: true, sha256: probe.sha256 };
   if (this.initAfter32 && this.initAfter32.has(name)) rec.initLater = true;   // (its LibEntry run by bootUser16 once its 32-bit half is loaded, whoever imports it first)
   this.ne.set(name, rec); this.modules.push(rec); this.byName.set(name, rec);   // (before its imports: a module that imports this one back finds it)
   meta.imports = mods;
@@ -541,6 +575,10 @@ P.loadNEDynamic = function (key, file) {
     this.ne.delete(name); this.byName.delete(name); this.modules = this.modules.filter(x => x !== rec);   // (not loaded after all)
     this.missing16 = e.missing16; log('warn', 'ne16', `${key}: ${e.missing16} is not found`); return null;
   }
+  // its code translated whole, relocated as it lies, into a module of the bundle's shape the dispatcher runs as it
+  // runs system.js's (dyn.js neCompile: the memo's where the code hashes the same); what it misses is run-time code
+  // until the module is translated again with it (neRebuild)
+  this.neCompile(rec);
   // its module database (a copy of its NE header) and handles, as loadNE makes them
   const hdrLen = Math.min(file.length - n, 0x4000), mdb = this.alloc(hdrLen + 16);
   this.u8.set(file.subarray(n, n + hdrLen), mdb);
@@ -698,6 +736,9 @@ P.api16 = function (eip) {
   catch (e) { if (e instanceof GuestError) { const m = this.neByHandle(cs); this.trapped = `${e.message} in ${t.key}, called from ${m ? m.name : '?'} ${cs.toString(16)}:${ip.toString(16)}`; return LAYOUT.SENTINEL; } throw e; }
   if (this.exitCode !== null) return LAYOUT.SENTINEL;
   if (r === YIELD) { this.preempted = 0; return -1; }   // a thread suspended in the call: it runs the call again when resumed (it stopped there, not where its time ran out)
+  // (on to another export as the thread's own code: the caller's return address and arguments left as they are, so its
+  // far return comes back to the caller; KERNEL's Yield goes on to USER's UserYield so)
+  if (r && r.farJump) { this.refreshSegs(); this.seg('cs', r.farJump >>> 16); return u32(this.selBase(r.farJump >>> 16) + (r.farJump & 0xffff)); }
   if (ret === 'w' || ret === 'i') this.cpu.eax.value = lo16(this.cpu.eax.value, r | 0);   // (a word, unsigned or signed: lstrcmp's -1)
   else if (ret === 'l') { this.cpu.eax.value = r | 0; this.cpu.edx.value = lo16(this.cpu.edx.value, u32(r) >>> 16); }
   this.cpu.esp.value = lo16(this.cpu.esp.value, sp + 4 + total);
@@ -1350,6 +1391,19 @@ const INTS = {
     this.trapped = `unhandled int 15h ax=${this.ax().toString(16)}`; return LAYOUT.SENTINEL;
   },
   0x16() { biosKbd(this); },
+  // the NT system calls Windows 98's NTDLL makes (EAX the service, EDX its arguments), which NTKERN answers: the power
+  // calls and two Plug and Play ones. This PC has no ACPI and no power management: NtPowerInformation answers with an
+  // empty structure (no capabilities, no battery, on mains), the others STATUS_NOT_SUPPORTED. (Unanswered, RUNDLL32's
+  // power scheme set-up on Windows 98's first start ended at "unhandled interrupt 2eh (ax=108)")
+  0x2e() {
+    const svc = this.cpu.eax.value >>> 0, a = u32(this.cpu.edx.value), arg = k => this.r32(a + 4 * k);
+    if (svc === 0x108) {   // NtPowerInformation(level, in, inLen, out, outLen)
+      const out = arg(3), n = arg(4);
+      if (out && n) { this.u8.fill(0, out, out + n); if (arg(0) === 5 && n >= 4) this.u8[out] = 1; }   // (SystemBatteryState: AcOnLine)
+      this.cpu.eax.value = 0; return;
+    }
+    this.cpu.eax.value = 0xc00000bb | 0;   // STATUS_NOT_SUPPORTED
+  },
   0x33() {   // the DOS mouse driver interface, as far as MOUSE.DRV asks it: 24h version, type (PS/2) and IRQ
     const ax = this.ax();
     if (ax === 0x24) { this.cpu.ebx.value = lo16(this.cpu.ebx.value, 0x0626); this.cpu.ecx.value = lo16(this.cpu.ecx.value, 0x0400); return; }
@@ -1636,10 +1690,10 @@ P.inputPending = function () {
 P.hookTaken = function (user) {
   // (#114 for a Windows program; #822, DispatchMessage32, for a Win32 one, whose USER32 hands USER a 32-bit MSG:
   // hwnd a dword, then the message; and USER32's own entry, loaded already or later, hookTaken32)
-  const u32m = this.byName && this.byName.get('USER32'); if (u32m) this.hookTaken32(u32m);
+  const u32m = this.byName && this.byName.get('USER32'); if (u32m) { this.hookTaken32(u32m); this.hookPeek32(u32m); }
   for (const [ord, msgAt] of [[114, 2], [822, 4]]) {
     const at = this.neExport(user, ord); if (!at || !this.selValid(at >>> 16)) continue;
-    (this.entryHooks || (this.entryHooks = new Map())).set(u32(this.selBase(at >>> 16) + (at & 0xffff)), function () {
+    this.setEntryHook(this.selBase(at >>> 16) + (at & 0xffff), function () {
       const sp = this.selBase(this.cpu.ss.value) + (this.cpu.esp.value & 0xffff), off = this.r16(sp + 4), seg = this.r16(sp + 6);   // (the far return, then lpMsg)
       if (this.selValid(seg) && this.r16(this.selBase(seg) + off + msgAt) === 0x200) this.movesTaken = (this.movesTaken || 0) + 1;   // WM_MOUSEMOVE
       return undefined;   // (USER's own code goes on)
@@ -1650,12 +1704,20 @@ P.hookTaken = function (user) {
  *  thunks of its own, not USER's exports (the MSG a flat pointer on the stack: hwnd, then the message) */
 P.hookTaken32 = function (m) {
   const at = m.exports && m.exports.get('DispatchMessageA'); if (!at) return;
-  (this.entryHooks || (this.entryHooks = new Map())).set(u32(at), function () {
+  this.setEntryHook(at, function () {
     const lp = this.r32(u32(this.cpu.esp.value) + 4), msg = this.r32(lp + 4);
     if (msg === 0x200) this.movesTaken = (this.movesTaken || 0) + 1;   // WM_MOUSEMOVE
     if (msg >= 0x200 && msg <= 0x209) { const c = this.msgTaken || (this.msgTaken = {}); c[msg] = (c[msg] || 0) + 1; if (msg === 0x200 && (this.r32(lp + 8) & 1)) c.movesHeld = (c.movesHeld || 0) + 1; }   // (the mouse messages taken, by message, and the moves with the left button held: the strokes diagnostic)
     return undefined;
   });
+};
+/** USER32's PeekMessage at its entry: a thread whose last one found nothing (WIN32_OldYield) gives up its slice here,
+ *  before USER looks at its queue, so a loop polling PeekMessage lets input and the other threads run */
+P.hookPeek32 = function (m) {
+  for (const nm of ['PeekMessageA', 'PeekMessageW']) {
+    const at = m.exports && m.exports.get(nm); if (!at) continue;
+    this.setEntryHook(at, function () { const t = thr(this, 0); if (t.peekOwed) { t.peekOwed = 0; this.endSlice(); } return undefined; });
+  }
 };
 /** where USER's cursor is (GetCursorPos), for the pointer's hot spot in its image (null inside a call) */
 P.cursorPos = function () {
@@ -1699,10 +1761,33 @@ P.inputPendingFor = function (hwnd) {
 /** fn run as the task of the started process that owns a window (as its main thread), the way that process's own
  *  calls for the window run: USER's SetActiveWindow activates only a window of the calling task */
 P.asWindowTask = function (hwnd, fn) {
+  // (a Win32 window: as the thread whose queue it is on, not the process's main thread. Every thread of a process
+  // has the process's task, and a send made as the main thread to a window of another of its threads went from the
+  // main thread's queue to that one: the host's call gave up while the record stood on Explorer's queue, the record
+  // was freed and used again, and Explorer, taking its sends while waiting on one of its own, called the reused
+  // memory's 0 as a reply's callback (Windows 98 Setup, saving the system files: "EXPLORER caused an invalid page
+  // fault at 0000:0000"). Made as the window's own thread, the send is the thread's own: USER calls the procedure)
+  const own = this.thread16 ? null : this.windowThread(hwnd);
+  if (own && !own.task && (own.flat || own.pc)) return this.asThread(own, fn);
   const task = this.thread16 ? 0 : this.user16(224, [['w', hwnd]]).ax;                                 // GetWindowTask
   const pc = task && this.procs && [...this.procs.values()].find(c => c.tdb === task && c.main && c.main.state !== 'done');
   if (!pc) return fn();
   return this.asThread(pc.main, fn);   // (on a stack of the call's own: the task's holds its frames where it stopped)
+};
+/** the thread whose queue a window is on: USER's window structure, found through its handle table at 10000h in
+ *  USER's data (USER 4:1367, the table's last handle at 10070h), holds the queue at 20h; null for no live thread */
+P.windowThread = function (hwnd) {
+  // (USER's data segment, its DGROUP: Windows 95's segment 32, Windows 98's 34, where 32 is code: read as the heap, a
+  // window's queue was read from past the end of memory at each key and move the page fed)
+  const u = this.ne && this.ne.get('USER'), ds = u && u.segs && u.meta && u.segs.find(x => x.num === u.meta.autodata);
+  hwnd &= 0xffff;
+  if (!ds || !this.selValid(ds.sel) || !hwnd || hwnd & 3 || hwnd < 0x80 || !this.threadsById) return null;
+  // (each read inside the segment: a handle's slot freed or not yet made holds no window's offset)
+  const d = this.selBase(ds.sel), lim = u32(this.selLimit(ds.sel));
+  if (lim < 0x10072 || hwnd + 4 > lim - 0x10000 || hwnd > this.r16(d + 0x10070)) return null;
+  const wnd = this.r32(d + 0x10000 + hwnd) >>> 0; if (!wnd || wnd + 0x22 > lim) return null;
+  const hq = this.r16(d + wnd + 0x20); if (!hq) return null;
+  return [...this.threadsById.values()].find(t => t.queue === hq && t.state && t.state !== 'done') || null;
 };
 /** the Windows 3.x task's thread that owns a window, for a window of no started process: null for a window of a
  *  process, or of a task that ended. A message the host sends into such a window from the system's context goes to
@@ -1739,7 +1824,8 @@ P.cwdSwitch = function (t) {
   // (a task's directory starts as its program's, as LoadModule sets it (a program loaded from its file: its path);
   // a process's as its starter's, inherited as it first runs)
   if (to && to.cwd === undefined && to.task && to.task.mod && to.task.mod.path) { const full = String(to.task.mod.path), i = full.lastIndexOf('\\'); to.cwd = i <= 2 ? full.slice(0, 3) : full.slice(0, i); }
-  if (to && to.cwd && to.cwd !== this.fs.cwd) this.fs.chdir(to.cwd);
+  // (made the page's only when a path is next resolved there, worker.js cwdLazy: a switch between tasks is no round trip)
+  if (to && to.cwd && to.cwd !== this.fs.cwd) { if (this.fs.cwdLazy) this.fs.cwdLazy(to.cwd); else this.fs.chdir(to.cwd); }
   this.cwdHolder = to;
 };
 /** the native USER's visible top-level windows, topmost first, with their screen rectangles, owners, classes and
@@ -1818,19 +1904,17 @@ P.findPopup = function (root, pop) {
 /** the visible descendants of a native window, front to back as USER links them: rectangle, class, text, control id,
  *  style and enabled state. Edits and combo boxes are asked for their text (WM_GETTEXT); buttons for their check
  *  state (BM_GETCHECK) */
-P.nativeChildren = function (parent, send = true) {
+P.nativeChildren = function (parent) {
   if (!this.wbufLin) this.nativeWindows();
   const a = this.wbufLin, buf = u32(this.wbufSel << 16), u = (o, args) => this.user16(o, args).ax, s16 = o => (this.r16(a + o) << 16) >> 16;
   const pl = u(58, [['w', parent], ['l', buf + 0x180], ['w', 64]]);
   if (pl && this.readA(a + 0x180, pl) === '#32768') return this.menuItems(parent);   // a popup menu's window: its items, which are no windows
   const out = [], focus = u(23);   // GetFocus
-  // (what only a message tells, an edit's text, a button's check, a tab's or list's items, is asked only while no
-  // thread waits on a reply to a SendMessage of its own: one sent from here then went into that thread's chain of
-  // sends, and it waited for good. Then the control is `unknown`: its window text only, no check, no items)
-  // (send false: nothing asked, the caller asks from a thread of its own: worker.js 'world')
-  // (nor while a thread holds the Win16Lock: it is in the middle of a run of its own (SUWIN's key check) and takes no
-  // message until it is done; a send then waited on it, and the page lost its frames meanwhile)
-  const ask = send && !this.replyAwaited() && !this.win16Held;
+  // (nothing is sent from here: what only a message tells, an edit's text, a button's check, a tab's or list's items,
+  // the caller asks from a thread of its own, which waits for each reply (worker.js childrenAsked, 'world'). A send from
+  // the host that the receiver did not answer within the host's call was given up and USER freed its record while the
+  // receiver's queue held it: W98SETUP called the emptied record's procedure, "invalid page fault at 0137:00000000".
+  // Each control is `unknown` until then: its window text only, no check, no items)
   const walk = (p, depth) => {
     for (let h = u(262, [['w', p], ['w', 5]]), n = 0; h && n < 512; h = u(262, [['w', h], ['w', 2]]), n++) {
       if (!u(49, [['w', h]])) continue;
@@ -1838,28 +1922,13 @@ P.nativeChildren = function (parent, send = true) {
       const x = s16(0), y = s16(2), w = s16(4) - x, hh = s16(6) - y;
       const cl = u(58, [['w', h], ['l', buf + 0x180], ['w', 64]]), cls = cl ? this.readA(a + 0x180, cl) : '';
       const style = this.user16(135, [['w', h], ['w', 0xfff0]]).dxax;                                            // GetWindowLong(GWL_STYLE)
-      let text = '';
-      if (/^(edit|combobox|richedit)$/i.test(cls) && ask) {   // SendMessage WM_GETTEXT, into a buffer the size of an edit's limit (WordPad's RICHEDIT too)
-        if (!this.tbufLin) { this.tbufLin = this.alloc(0x10000); this.tbufSel = this.allocSels(this.tbufLin, 0x10000); }
-        const tl = u(111, [['w', h], ['w', 0x0d], ['w', 0xffff], ['l', u32(this.tbufSel << 16)]]); text = tl ? this.readA(this.tbufLin, tl) : '';
-      } else { const tl = u(107, [['w', h], ['w', 0x0d], ['w', 160], ['l', buf + 16]]); text = tl ? this.readA(a + 16, tl) : ''; }
-      const c = { hwnd: h, parent: p, x, y, w, h: hh, cls, text, id: u(277, [['w', h]]), style, enabled: !!u(35, [['w', h]]), focused: h === focus, depth, ...(ask ? {} : { unknown: true }) };
-      if (/^button$/i.test(cls) && [2, 3, 4, 5, 6, 9].includes(style & 0x0f)) c.checked = ask ? u(111, [['w', h], ['w', 0x400], ['w', 0], ['l', 0]]) : undefined;
-      if (ask && /^SysTabControl32$/i.test(cls)) c.items = this.tabItems(h, x, y);
-      if (ask && /^SysListView32$/i.test(cls)) c.items = this.listItems(h, x, y);
-      out.push(c); walk(h, depth + 1);
+      const tl = u(107, [['w', h], ['w', 0x0d], ['w', 160], ['l', buf + 16]]), text = tl ? this.readA(a + 16, tl) : '';   // DefWindowProc WM_GETTEXT: USER's own copy
+      out.push({ hwnd: h, parent: p, x, y, w, h: hh, cls, text, id: u(277, [['w', h]]), style, enabled: !!u(35, [['w', h]]), focused: h === focus, depth, unknown: true });
+      walk(h, depth + 1);
     }
   };
   walk(parent, 0);
   return out;
-};
-/** whether a thread waits on the reply to a SendMessage of its own: its queue's wake mask (4Ch) asks for QS_SMRESULT */
-P.replyAwaited = function () {
-  for (const t of (this.threadsById || new Map()).values()) {
-    if (!t.queue || !t.state || t.state === 'done' || !this.selValid(t.queue)) continue;
-    if (this.r16(this.selBase(t.queue) + 0x4c) & 0x8000) return true;
-  }
-  return false;
 };
 /** the OS's objects a shared session keeps the same on every machine (win95.js): each program's top-level windows
  *  (not the shell's, not owned popups) with their program and command line, place, size and shown state, and the
@@ -1882,7 +1951,7 @@ P.osWorld = function () {
     // (its controls whose contents only a message tells: listed here, asked by the caller from a thread of its own,
     // each [key, control, 'text' or 'check'])
     const ask = [];
-    for (const c of this.nativeChildren(w.hwnd, false)) {
+    for (const c of this.nativeChildren(w.hwnd)) {
       if (c.depth || !c.id) continue;
       if (/^(edit|combobox)$/i.test(c.cls)) ask.push([`${c.id}:${c.cls.toLowerCase()}`, c.hwnd, 'text']);
       else if (/^button$/i.test(c.cls) && [2, 3, 4, 5, 6, 9].includes(c.style & 0x0f)) ask.push([`${c.id}:button`, c.hwnd, 'check']);
@@ -1964,7 +2033,7 @@ P.startClock = function () {
 P.hookClock = function (user) {
   for (const ord of [13, 15]) {   // GetTickCount, GetCurrentTime
     const at = this.neExport(user, ord); if (!at) continue;
-    (this.entryHooks || (this.entryHooks = new Map())).set(u32(this.selBase(at >>> 16) + (at & 0xffff)), P.clockCall);
+    this.setEntryHook(this.selBase(at >>> 16) + (at & 0xffff), P.clockCall);
   }
 };
 P.clockCall = function () {
@@ -1986,7 +2055,7 @@ P.hookTapi = function (m) {
     const sp = u32(this.cpu.esp.value), ret = this.r32(sp), args = []; for (let i = 1; i <= nargs; i++) args.push(this.r32(sp + 4 * i));
     this.cpu.eax.value = u32(fn.call(this, ...args)); this.cpu.esp.value = sp + 4 + 4 * nargs; return u32(ret);
   };
-  const hook = (name, nargs, fn) => { const at = x.get(name); if (at) (this.entryHooks || (this.entryHooks = new Map())).set(u32(at), ans(nargs, fn)); };
+  const hook = (name, nargs, fn) => { const at = x.get(name); if (at) this.setEntryHook(at, ans(nargs, fn)); };
   hook('lineInitialize', 5, function (ph, hInst, cb, name, pn) { if (ph) this.w32(ph, this.newHandle({ kind: 'lineapp', hInst, cb })); if (pn) this.w32(pn, 0); return 0; });
   hook('lineShutdown', 1, function (h) { const o = this.obj(h); if (!o || o.kind !== 'lineapp') return 0x80000015; this.handles.delete(h); return 0; });   // (LINEERR_INVALAPPHANDLE)
   hook('lineNegotiateAPIVersion', 6, () => 0x80000002);
@@ -1997,7 +2066,7 @@ P.hookTapi = function (m) {
 // answered MMSYSERR_ALLOCATED (4) at the export's entry, as it is answered when another program holds the device.
 // WINMM's 32-bit exports (stdcall: the arguments popped) and MMSYSTEM's 16-bit ones (Pascal: their bytes popped)
 P.hookExclusive = function (m) {
-  const hooks = this.entryHooks || (this.entryHooks = new Map());
+  const hooks = { set: (at, fn) => this.setEntryHook(at, fn) };
   const remote = () => P.intentQuiet.call(this) && this.causeOf() === 'remote';
   if (m.name === 'WINMM' && m.exports) {
     for (const [nm, nargs] of [['waveOutOpen', 6], ['waveInOpen', 6], ['midiOutOpen', 5], ['midiInOpen', 5], ['mciSendCommandA', 4], ['mciSendStringA', 4]]) {
@@ -2021,8 +2090,8 @@ P.hookExclusive = function (m) {
   }
 };
 P.hookIntents = function (user) {
-  const hooks = this.entryHooks || (this.entryHooks = new Map());
-  const wasLoad = this.onModuleLoad; this.onModuleLoad = (name, m) => { if (wasLoad) wasLoad.call(this, name, m); if (name === 'TAPI32') this.hookTapi(m); if (name === 'WINMM' || name === 'MMSYSTEM') this.hookExclusive(m); if (name === 'USER32') this.hookTaken32(m); };
+  const hooks = { set: (at, fn) => this.setEntryHook(at, fn) };
+  const wasLoad = this.onModuleLoad; this.onModuleLoad = (name, m) => { if (wasLoad) wasLoad.call(this, name, m); if (name === 'TAPI32') this.hookTapi(m); if (name === 'WINMM' || name === 'MMSYSTEM') this.hookExclusive(m); if (name === 'USER32') { this.hookTaken32(m); this.hookPeek32(m); } };
   for (const n of ['WINMM', 'MMSYSTEM']) { const m = this.byName && this.byName.get(n); if (m) this.hookExclusive(m); }   // (one loaded already)
   for (const [ord, fn] of [[483, P.spiIntent], [181, P.colorsIntent]]) {   // SystemParametersInfo, SetSysColors
     const at = this.neExport(user, ord); if (at) hooks.set(u32(this.selBase(at >>> 16) + (at & 0xffff)), fn);
@@ -2168,53 +2237,12 @@ P.menuDataText = function (data) {
   const id = this.r32(data + 12) >>> 0; if (!ok(id) || this.r16(id) < 16 || (this.u8[id + 2] & 0xf0) !== 0x30) return '';
   return this.readA(id + 14, 128).replace(/\.(lnk|pif|url)$/i, '');
 };
-/** a list view's items (COMCTL32's, in a 32-bit program: the desktop's icons, a folder window's files), each its
- *  bounds on screen (the control at x, y), its label and whether it is selected, from the control's own messages
- *  with flat buffers (as tabItems) */
-P.listItems = function (h, x, y) {
-  const a = this.wbufLin, send = (m, wp, lp) => this.user16(111, [['w', h], ['w', m], ['w', wp], ['l', lp]]).dxax | 0;
-  const n = Math.min(send(0x1004, 0, 0), 256), out = [];   // LVM_GETITEMCOUNT
-  const rc = a + 0x100, it = a + 0x110, txt = a + 0x140;
-  for (let i = 0; i < n; i++) {
-    this.w32(rc, 0);   // LVIR_BOUNDS
-    if (!send(0x100e, i, rc)) continue;   // LVM_GETITEMRECT
-    const s32 = o => this.r32(rc + o) | 0, l = s32(0), t = s32(4);
-    this.u8.fill(0, it, it + 36); this.w32(it, 1); this.w32(it + 4, i); this.w32(it + 20, txt); this.w32(it + 24, 64); this.u8[txt] = 0;   // LVIF_TEXT, pszText, cchTextMax
-    const len = send(0x102d, i, it);   // LVM_GETITEMTEXTA
-    const text = len > 0 ? this.readA(txt, Math.min(len, 63)) : '';
-    out.push({ x: x + l, y: y + t, w: s32(8) - l, h: s32(12) - t, text, index: i, selected: !!(send(0x102c, i, 2) & 2) });   // LVM_GETITEMSTATE, LVIS_SELECTED
-  }
-  return out;
-};
-/** item `i` of list view `h` selected and focused alone (LVM_SETITEMSTATE), and opened as Enter opens it (the list's
- *  owner opens the selection: a folder window opens the folder, the file) */
-P.listItem = function (h, i, open) {
-  const it = this.wbufLin + 0x110, set = (n, state) => { this.u8.fill(0, it, it + 36); this.w32(it + 12, state); this.w32(it + 16, 3); this.user16(111, [['w', h], ['w', 0x102b], ['w', n & 0xffff], ['l', it]]); };
-  set(-1, 0); set(i, 3);   // (every item's selection and focus off, then this one's on: LVIS_FOCUSED | LVIS_SELECTED)
-  if (open) { this.user16(110, [['w', h], ['w', 0x100], ['w', 0x0d], ['l', 0x001c0001]]); this.user16(110, [['w', h], ['w', 0x101], ['w', 0x0d], ['l', 0xc01c0001]]); }   // PostMessage WM_KEYDOWN, WM_KEYUP VK_RETURN
-  return true;
-};
-/** a tab control's tabs (COMCTL32's, in a 32-bit program: Explorer's task switcher), each its rectangle on screen (the
- *  control at x, y), its text and whether it is the selected one, from the control's own messages with flat buffers
- *  (a message past WM_USER goes to the 32-bit window with lParam as it is). A tab without text (Explorer's task
- *  buttons draw themselves) is named by the window its lParam holds */
-P.tabItems = function (h, x, y) {
-  const a = this.wbufLin, buf = u32(this.wbufSel << 16), send = (m, wp, lp) => this.user16(111, [['w', h], ['w', m], ['w', wp], ['l', lp]]).dxax | 0;
-  const n = Math.min(send(0x1304, 0, 0), 64), sel = send(0x130b, 0, 0), out = [];   // TCM_GETITEMCOUNT, TCM_GETCURSEL
-  const rc = a + 0x100, it = a + 0x110, txt = a + 0x140;
-  for (let i = 0; i < n; i++) {
-    if (!send(0x130a, i, rc)) continue;   // TCM_GETITEMRECT
-    const s16 = o => (this.r16(rc + o) << 16) >> 16, l = s16(0), t = s16(4);
-    this.u8.fill(0, it, it + 28); this.w32(it, 1 | 8); this.w32(it + 12, txt); this.w32(it + 16, 64); this.u8[txt] = 0;   // TCIF_TEXT | TCIF_PARAM
-    send(0x1305, i, it);   // TCM_GETITEMA
-    let text = this.readA(txt, 64);
-    const wnd = this.r32(it + 24) & 0xffff;
-    if (!text && wnd && this.user16(47, [['w', wnd]]).ax) {   // IsWindow: GetWindowText of the window the tab stands for
-      const tl = this.user16(36, [['w', wnd], ['l', buf + 0x40], ['w', 160]]).ax; text = tl ? this.readA(a + 0x40, tl) : '';
-    }
-    out.push({ x: x + l, y: y + t, w: s16(8) - l, h: s16(12) - t, text, selected: i === sel });
-  }
-  return out;
+/** a window's title as USER keeps it (DefWindowProc WM_GETTEXT: USER's own copy, no message sent; GetWindowText sends
+ *  WM_GETTEXT to another task's window, and from the host that send could be given up) */
+P.nativeText = function (h) {
+  if (!this.wbufLin) this.nativeWindows();
+  const tl = this.user16(107, [['w', h], ['w', 0x0d], ['w', 160], ['l', u32(this.wbufSel << 16) + 16]]).ax;
+  return tl ? this.readA(this.wbufLin + 16, tl) : '';
 };
 /** a key into USER's keybd_event (USER.289), as KEYBOARD.DRV reports one: AL = virtual key, AH = 80h on release,
  *  BL = scan code, BH = 1 for an extended key */
@@ -2942,7 +2970,7 @@ P.setVideoMode = function (mode, clear, hicolor) {
 const PIT_HZ = 1193.182;   // (counts a millisecond)
 P.pitIO = function (port, size, isIn) {
   if (!(port >= 0x40 && port <= 0x43) && port !== 0x61) return false;
-  const eax = this.cpu.eax.value, v = eax & 0xff, now = this.now();
+  const eax = this.cpu.eax.value, v = eax & 0xff, now = this.blockNow();
   const pit = this.pit || (this.pit = { p61: 0, ch: [0, 1, 2].map(() => ({ rw: 3, mode: 3, init: 0x10000, t0: now, held: null, lo: true, wlo: true, latch: [], gate: true })) });
   pit.ch[2].gate = !!(pit.p61 & 1);
   // a channel's count and OUT now: the counts gone since its load (or its gate's rise), up to where its gate fell
@@ -3246,7 +3274,13 @@ P.local32Init = function (segment, tableSize, heapSize, flags) {
   if (heapSize === 0xffffffff) heapSize = 1 << 20;
   heapSize = u32((heapSize + 0xffff) & 0xffff0000); segSize = (segSize + 0xfff) & ~0xfff;
   const tot = segSize + HTABLE + heapSize;
-  const base = this.alloc(tot + 0x10000); const hdr = base + segSize;
+  // (the segment's own block when it has the room, or can be grown where it is: the segment's linear address is held by
+  // others. Windows 98's GDI makes its 32-bit heap in its data segment after GDI32 took flat pointers into it; moved,
+  // GDI32's GetStockObject read the old place, and WinHelp's RegisterClass refused its brush: "(null) (2)")
+  const old = segment ? this.selBase(segment) : 0;
+  const inPlace = !!segment && ((this.allocs.get(old) || 0) >= tot + 0x10000 || this.extend(old, tot + 0x10000));
+  const base = inPlace ? old : this.alloc(tot + 0x10000); const hdr = base + segSize;
+  if (inPlace) this.u8.fill(0, base + segSize, base + tot);
   this.u8.fill(0, hdr, hdr + HTABLE);
   // header (LOCAL32HEADER): freeListFirst[16], freeListSize[16], freeListLast[16], selectorTableOffset, selectorTableSize, selectorDelta, segment, base, limit, flags, magic, heap
   this.w16(hdr + 0, L32HDR); this.w16(hdr + 64, HPAGE - 4); this.w16(hdr + 32, (HPAGE - L32HDR) / 4);
@@ -3261,8 +3295,7 @@ P.local32Init = function (segment, tableSize, heapSize, flags) {
   this.w32(hdr + 104, segment || even); this.w32(hdr + 108, base); this.w32(hdr + 112, HPAGE - 1); this.w32(hdr + 116, 0);
   this.w32(hdr + 120, 0x3233484c); this.w32(hdr + 124, 0);
   if (segment) {    // move the segment into the start of the new block
-    const old = this.selBase(segment);
-    this.u8.copyWithin(base, old, old + segSize);
+    if (!inPlace) this.u8.copyWithin(base, old, old + segSize);
     this.w32(L.LDT + (segment & 0xfff8), base); this.w32(L.LDT + (segment & 0xfff8) + 4, tot - 1);
     const gb = this.gblock(segment); if (gb) { gb.lin = base; gb.size = tot; }
     this.refreshSegs();
@@ -3405,7 +3438,9 @@ def16('KERNEL', 16, 'wlw', 'w', function (h, n, fl) {   // GlobalReAlloc
   const sel = this.gsel(h);
   if (n > b.size) {
     const cap = (this.allocs.get(b.lin) || 0) - 16;
-    if (n > cap) { const nl = this.alloc(n + 16, true); this.u8.copyWithin(nl, b.lin, b.lin + b.size); if (b.heap) this.free(b.lin); b.lin = nl; b.heap = true; }
+    // (grown where it is when the heap has the room after it; else moved)
+    if (n > cap && b.heap && this.extend(b.lin, n + 16)) this.u8.fill(0, b.lin + b.size, b.lin + n);
+    else if (n > cap) { const nl = this.alloc(n + 16, true); this.u8.copyWithin(nl, b.lin, b.lin + b.size); if (b.heap) this.free(b.lin); b.lin = nl; b.heap = true; }
     else this.u8.fill(0, b.lin + b.size, b.lin + n);
   }
   b.size = n;
@@ -3531,7 +3566,28 @@ def16('KERNEL', 47, 's', 'w', function (name) {   // GetModuleHandle
   if (JS16.includes(n) && !(m && m.meta)) return this.jsModule(n).hModule;   // natively loaded only in a native-USER session
   // a program's module goes with its last task (MMSYSTEM waits for MMTASK's to go as Windows exits)
   if (m && m.taskModule && ![...(this.threadsById || new Map()).values()].some(t => t.task && t.task.mod === m && t.state !== 'done')) return 0;
-  return m ? m.hModule : 0;
+  if (m) return m.hModule;
+  // (a Win32 program running: its module, as Windows 98 gives each process's image a 16-bit module of its name, the
+  // handle WinExec answers with. MSGSRV32 starts "runonce.exe -m" and waits for GetModuleHandle("RUNONCE.EXE") to be
+  // 0 before it starts the shell; answered 0 from the start, Explorer came up beside RUNONCE, ran RunOnce's values
+  // itself, RUNONCE's own (@NetDi_RegFlush = FlushRegistry) as commands ("Cannot find the file 'FlushRegistry'"),
+  // and the registrations twice)
+  if (!/\.(DLL|DRV)$/i.test(name || '')) {
+    const pc = [...(this.procs || new Map()).values()].find(c => c && c.exe && c.exitCode === null && String(c.path || '').toUpperCase().replace(/^.*\\/, '').replace(/\.EXE$/, '') === n);
+    if (pc) return this.hinst16(pc.exe.base, pc.exe) & 0xffff;
+  }
+  return 0;
+});
+// UnicodeToAnsi (#434): a UTF-16 string to the ANSI code page (cp -1: the system's), its terminator too; the bytes
+// written, the terminator counted. VER.DLL turns a Win32 file's version resource to ANSI with it, in place (the
+// destination two bytes below the source): every character is read before any is written. (Unimplemented, VER's
+// GetFileVersionInfo of a Win32 file faulted, and RUNDLL32 with it on Windows 98's first start)
+def16('KERNEL', 434, 'ppw', 'w', function (src, dst, cp) {
+  if (!src || !dst) return 0;
+  const s = []; for (let i = 0; i < 0x8000; i++) { const c = this.r16(src + 2 * i); if (!c) break; s.push(c); }
+  const enc = window.W95FS.encode(String.fromCharCode(...s));
+  this.u8.set(enc, dst); this.u8[dst + enc.length] = 0;
+  return enc.length + 1;
 });
 def16('KERNEL', 133, 'w', 'w', function (h) {   // GetExePtr (a Win32 module's 16-bit handle is its own module)
   if (h === this.kernelModule().hModule) return h; if (this.hinst32 && this.hinst32(h)) return h;
@@ -3593,6 +3649,16 @@ def16('KERNEL', 466, '', 'jmp', function () {
   if (t.pc) this.endProcess(t.pc, code);
   t.exitCode = code; return LAYOUT.SENTINEL;
 });
+// NukeProcess(DWORD pid, WORD flags, WORD code): USER's EndTask ends a program that does not answer (RUNONCE's, as
+// Setup ended HWINFO): that process ends; its own, ends as ExitProcess does. A pid no process has: nothing
+def16('KERNEL', 465, '', 'jmp', function () {
+  const f = this.cpu.ssb.value + (this.cpu.esp.value & 0xffff), code = this.r16(f + 4), pid = this.r32(f + 8) >>> 0, t = this.thread16;
+  const pc = this.procs && (this.procs.get(pid) || [...this.procs.values()].find(x => x.pid === pid || (x.pid >>> 0) === pid));
+  if (!pc) log('warn', 'ne16', `NukeProcess(${pid.toString(16)}): no such process`);
+  if (pc && t && t.pc === pc) { this.endProcess(pc, code); t.exitCode = code; return LAYOUT.SENTINEL; }
+  if (pc) this.endProcess(pc, code);
+  return this.retf16(8);
+});
 // BUNNY_351: KRNL386 calls VWIN32's protected-mode API, function 0Dh (KRNL386 seg1 DB9h), as USER's ExitWindows
 // finishes (USER seg16 14FDh), before the session's end. VWIN32 is this personality's: the Win32 side ends with the
 // machine. UNCONFIRMED: what VWIN32's function 0Dh does is not read from its code
@@ -3639,7 +3705,19 @@ function oldYield() {
   if (top && !t.yielded) { t.yielded = true; return YIELD; }
   t.yielded = false;
 }
-def16('KERNEL', 447, '', 'v', oldYield);
+// WIN32_OldYield for a Win32 thread: Windows lets the Win16Lock go and takes it again, and the thread runs on, so what
+// PeekMessage answers is the queue as it is. Giving the slice up here, after USER has looked, the answer was the queue
+// as it was a slice of every other thread ago: SHELL32's icon thread, done with one icon, peeked, found nothing and
+// gave up its slice; the desktop's thread posted it the next icon (My Documents'); it came back with "no message",
+// took itself off the view as idle, and threw the task away as not its own: the icon stayed the blank document until
+// a refresh. The slice is given up at the thread's next PeekMessage instead, before USER looks (hookPeek32); a third
+// yield with no PeekMessage between (a loop of USER's own) gives it up here as before
+function win32OldYield() {
+  const t = thr(this, 0);
+  if (t.yielded || (t.peekOwed || 0) >= 2) { t.peekOwed = 0; return oldYield.call(this); }
+  t.peekOwed = (t.peekOwed || 0) + 1;
+}
+def16('KERNEL', 447, '', 'v', win32OldYield);
 // OldYield: the same for a Win16 task (USER's PeekMessage calls it when the queue is empty, as for MSGSRV32 polling
 // while MMTASK plays its sound)
 def16('KERNEL', 117, '', 'v', oldYield);
@@ -3738,7 +3816,9 @@ const profStr = function (file, app, key, d, buf, n) {
     if (s) for (const k of s.keys.values()) { const b = k.name; if (o + b.length + 2 > n) break; W(this, buf + o, b); o += b.length + 1; }
     this.u8[buf + o] = 0; return o;
   }
-  const v = winIni(this, file, app, key); return W(this, buf, v === null ? (d || '') : v, n);
+  // (one pair of quotes around the value taken off, as Windows does: Windows 98 Setup's billboard, WIN95BB.INI's
+  // Text1="Please |sit |back ...", drew each line in its quotes)
+  const v = winIni(this, file, app, key); return W(this, buf, v === null ? (d || '') : v.replace(/^(["'])([^]*)\1$/, '$2'), n);
 };
 def16('KERNEL', 58, 'sssxw', 'w', function (app, key, d, buf, n) { return profStr.call(this, 'WIN.INI', app, key, d, this.lin(buf), n); });
 def16('KERNEL', 128, 'sssxws', 'w', function (app, key, d, buf, n, f) { return profStr.call(this, f, app, key, d, this.lin(buf), n); });
@@ -3773,6 +3853,16 @@ def16('KERNEL', 413, 'sp', 'l', function (pat, data) {
 def16('KERNEL', 414, 'lp', 'w', function (h, data) { const f = this.finds16 && this.finds16.get(h); if (!f || f.i >= f.list.length) { this.lastError = 18; return 0; } this.findData16(data, f.list[f.i++]); return 1; });
 // FileTimeToLocalFileTime (KRNL386's thunk to KERNEL32's, entry 0Ah of its table): Windows 98's MSGSRV32 converts a
 // file's time with it at start, in place (both pointers the same 16:16 buffer)
+// IsPeFormat(lpszFile, hFile) (#431): whether the file is a Win32 image, its MZ header's new header a PE one. RUNDLL
+// asks it of the DLL its command line names, to hand a Win32 one to RUNDLL32; missing, RUNDLL ended on Windows 98's
+// first start. (by its name; a file only open, no name, is answered no)
+def16('KERNEL', 431, 'sw', 'w', function (name) {
+  const full = name ? this.findFile16(name) : null; if (!full) return 0;
+  let b; try { b = this.fs.readFile(full); } catch (_) { return 0; }
+  if (b.length < 0x40 || b[0] !== 0x4d || b[1] !== 0x5a) return 0;
+  const o = (b[0x3c] | b[0x3d] << 8 | b[0x3e] << 16 | b[0x3f] << 24) >>> 0;
+  return o + 4 <= b.length && b[o] === 0x50 && b[o + 1] === 0x45 && !b[o + 2] && !b[o + 3] ? 1 : 0;
+});
 def16('KERNEL', 432, 'pp', 'w', function (a, b) { return API.KERNEL32.FileTimeToLocalFileTime[1].call(this, a, b); });
 def16('KERNEL', 415, 'l', 'w', function (h) { return this.finds16 && this.finds16.delete(h) ? 1 : 0; });
 // CreateDirectory(path, security attributes) and SetFileAttributes(path, attributes): TRUE, or FALSE with the error
@@ -4182,8 +4272,16 @@ const dialog16 = d => {
 };
 // a Win32 module's resources, reached through its 16-bit handle (USER loading for a Win32 program); returned in the
 // layout 16-bit USER reads: accelerator tables go from 8-byte to 5-byte entries, menus and dialogs to ANSI text
-const res32 = (p, h32, id, type) => {
-  const mod = p.moduleFor(h32); if (!mod || mod.base !== h32) return null;
+/** a Win32 module's resource as 16-bit code reads it (mod: the module, or its base in this process), in its own image */
+// (read once for each module, type and name, and kept with the module: a program's image is not the one in place only
+// while its view is swapped in, the whole shared region copied out and back, and USER reads icons and cursors often)
+const res32 = (p, m, id, type) => {
+  const mod = typeof m === 'object' ? m : p.moduleFor(m); if (!mod || (typeof m !== 'object' && mod.base !== m)) return null;
+  if (!mod.hidden) return res32Read(p, mod, id, type);
+  const key = `${type}:${id}`, kept = (mod.res16 || (mod.res16 = new Map())); if (kept.has(key)) return kept.get(key);
+  const data = p.withImage(mod, () => res32Read(p, mod, id, type)); kept.set(key, data); return data;
+};
+const res32Read = (p, mod, id, type) => {
   const r = p.findResource(type, id, mod); if (!r) return null;
   let data = p.u8.slice(r.addr, r.addr + r.size);
   if (type === 9) {   // RT_ACCELERATOR
@@ -4215,8 +4313,15 @@ const resHandle = function (key, rec) {
 def16('KERNEL', 60, 'wxx', 'w', function (h, name, type) {     // FindResource
   const h32 = this.hinst32 && this.hinst32(h);
   if (h32) {
-    const kn = resKey.call(this, name), kt = resKey.call(this, type), data = res32(this, h32, kn, kt); if (!data) return 0;
-    return resHandle.call(this, `${h32}:${kt}:${kn}`, { data });
+    // (the handle's own module, read in its own image: MSTASK's handle in Explorer's process is MSTASK, not Explorer at
+    // the same base, whose icon the tray showed for the Task Scheduler's)
+    const mod = this.mod16(h) || this.moduleFor(h32);
+    const kn = resKey.call(this, name), kt = resKey.call(this, type), data = res32(this, this.mod16(h) || h32, kn, kt); if (!data) return 0;
+    // (keyed by the module, not its base: every program linked at 400000h has that base, and the first one's icon 2
+    // was every later one's. RUNONCE's "Windows is now setting up" animation (icons 2 to 5) showed another program's
+    // icon, the Windows logo, as one of its frames)
+    const mid = mod && (mod.resUid || (mod.resUid = (this.resUidNext = (this.resUidNext || 0) + 1)));
+    return resHandle.call(this, `${h32}:${mid}:${kt}:${kn}`, { data });
   }
   const m = this.neByHandle(h); if (!m) return 0;
   const k = resKey.call(this, name), t = resKey.call(this, type);
@@ -4633,7 +4738,12 @@ def16('KERNEL', 631, '', 'jmp', function () {
     if (td32 && !rec.mod) Object.assign(rec, { mod: m, table: u32(td32 + (this.r32(td32 + 0x20) | 0)) });
   }
   const tgt = rec && rec.table ? this.r32(rec.table + cx) : 0;
-  if (rec && rec.mod && tgt >= rec.mod.meta.textLo && tgt < rec.mod.meta.textHi) return this.enter32from16(tgt);
+  // (code of the module: its translated text, or, for one mapped from its file and run as run-time code (dyn.js), whose
+  // text range is empty, its image. Windows 98's VERSION.DLL is such a module: VER.DLL's every call into its 32-bit half
+  // was answered with the error value, GetFileVersionInfoSize was 0 for every Win32 file, and ODBCCP32 said ODBCINT.DLL
+  // was a different version than itself)
+  const mm = rec && rec.mod && rec.mod.meta, inMod = mm && (mm.textHi > mm.textLo ? tgt >= mm.textLo && tgt < mm.textHi : mm.dynamic && tgt >= rec.mod.base && tgt < rec.mod.base + rec.mod.size);
+  if (inMod) return this.enter32from16(tgt);
   const db = this.lin(this.r32(td + 0x28)), nargs = db ? this.r32(db + 2 * cx) : 0, err = db ? this.r32(db + 2 * cx + 4) : 0;
   const ssb = u32(this.cpu.ssb.value), sp = this.cpu.esp.value & 0xffff, ip = this.r16(ssb + sp), cs = this.r16(ssb + ((sp + 2) & 0xffff));
   this.cpu.eax.value = lo16(this.cpu.eax.value, err & 0xffff); this.cpu.edx.value = lo16(this.cpu.edx.value, err >>> 16);
@@ -4785,7 +4895,7 @@ P.queueGone = function (t) {
 };
 /** thread s's SendMessage answered (0) when the queue it went to is `gone(queue)`; true if it was */
 P.answerSend = function (s, gone, why) {
-  const u = this.ne && this.ne.get('USER'), ds = u && u.segs && u.segs.find(x => x.num === 32);
+  const u = this.ne && this.ne.get('USER'), ds = u && u.segs && u.meta && u.segs.find(x => x.num === u.meta.autodata);   // (USER's DGROUP: windowThread)
   if (!ds || !this.selValid(ds.sel) || !s.queue || !s.state || s.state === 'done' || !this.selValid(s.queue)) return false;
   const d = this.selBase(ds.sel), q = this.selBase(s.queue), rec = this.r16(q + 0x4e);
   if (!rec || !(this.r16(q + 0x4c) & 0x8000) || (this.u8[d + rec + 0x24] & 1) || !gone(this.r16(d + rec + 0x12))) return false;
@@ -4821,10 +4931,39 @@ P.queueWoken = function (h) {
  *  the time-out (ms, INFINITE for none) has run out (WAIT_TIMEOUT then); 0 once ready */
 const waitTop = (p, ms) => {
   const t = p.thread16 || (p.mainWait = p.mainWait || {});
-  if (ms === 0xffffffff) return YIELD;
+  // (waitYield: the thread's last yield is this wait, which waitBlocked may pass by; the time-out's return leaves its
+  // waitOn behind, and the thread's next yield (for the Win16Lock, inside a call) was passed by on it, Explorer stopped
+  // in the middle of SHELL32's calls into USER)
+  if (ms === 0xffffffff) { t.waitYield = true; return YIELD; }
   if (!t.wake) t.wake = p.now() + ms;
-  else if (p.now() >= t.wake) { t.wake = 0; return 0x102; }
-  return YIELD;
+  else if (p.now() >= t.wake) { t.wake = 0; t.waitOn = null; return 0x102; }
+  t.waitYield = true; return YIELD;
+};
+/** whether thread t, stopped in a wait at its top level, would only wait again if run now: a Win32 thread in
+ *  WaitForSingle/MultipleObjects none of whose events is set,
+ *  its queue not woken, no reply to a send of its own awaited, its time-out not reached. The scheduler passes it by:
+ *  run, it made the call again and yielded, every pass. Windows 98 Setup's file copy, SUWIN yielding between blocks,
+ *  went round W98SETUP, MSGSRV32, MMTASK, SETUP, Explorer's and the others' waits each time, and the machine's time ran
+ *  at a twentieth of the wall's */
+P.waitBlocked = function (t) {
+  if (t.state !== 'waiting' || t.preempted || !t.ctx) return false;
+  const now = this.now();
+  // (a Win16 task in WaitEvent with no event counted, its queue not woken: run, it only went round its message loop and
+  // waited again. SUWIN's copy yields between blocks, and each yield went round MSGSRV32's, MMTASK's, SETUP's and
+  // W98SETUP's GetMessage, nine thousand switches a second. PostEvent, a directed yield and its queue's wake bits wake
+  // it; a tenth of a second passed by, it runs once anyway, as nothing else here may wake it)
+  if (t.task && t.slept) {
+    if (t.events > 0 || t.directed) return false;
+    if (t.queue && this.selValid(t.queue)) { const q = this.selBase(t.queue); if (this.r16(q + 0x4c) & 0x8000 || this.r16(q + 0x4e) || (!this.r16(q + 0x4c) && this.r16(q + 0x48))) return false; }
+    if (!t.sleptAt || now - t.sleptAt >= 100) { t.sleptAt = now; return false; }
+    return true;
+  }
+  if (!t.waitYield) return false;
+  const w = t.waitOn; if (!w || !w.hs || !w.hs.length || t.task) return false;
+  if (t.wake && now >= t.wake) return false;
+  if (t.queue && this.selValid(t.queue)) { const q = this.selBase(t.queue); if (this.r16(q + 0x4c) & 0x8000 || this.r16(q + 0x4e) || (!this.r16(q + 0x4c) && this.r16(q + 0x48))) return false; }
+  for (const h of w.hs) { const o = this.obj(h); if (!o || o.kind !== 'event' || o.set || P.queueWoken.call(this, h)) return false; }   // (events alone: a thread's or process's end, a semaphore, run as before)
+  return true;
 };
 const waitDone = p => { const t = p.thread16 || p.mainWait; if (t) { t.wake = 0; t.waitOn = null; } };
 // KERNEL.495: KRNL386's thunk to KERNEL32's WaitForMultipleObjectsEx (KRNL386 seg3:40CCh, entry 15h of KERNEL32's
@@ -5008,6 +5147,11 @@ let nextPid = 0x60;
 P.spawn = function (file, module, meta, path, cmdline) {
   const pc = { pid: nextPid, path, exitCode: null, tdb: newTdb(this, { name: String(path || '').replace(/^.*\\/, '').replace(/\.[^.]*$/, '') }), started: false, parent: (this.thread16 && this.thread16.pc) || null };   // (parent: the process whose thread starts it)
   nextPid += 4;
+  // (its current directory its starter's, as CreateProcess with no directory gives it: the running thread's, in place
+  // now; one the system starts, the Windows folder, the system's own. Left to whichever directory was in place when it
+  // first ran, WINHLP32 started by RUNONCE took "windows.hlp" for C:\windows.hlp, and "-g windows.hlp", Windows 98's
+  // first start's help index, ended in an "Error" box: "(null) (2)")
+  try { pc.cwd = this.thread16 && this.fs ? this.fs.cwd : 'C:\\WINDOWS'; } catch (_) { /* no file system: left to the first switch */ }
   // its image where its header says, in a view of its own wherever another process's program is there (win32.js
   // arenaClaim): a second instance of a program already running, or another program linked at the same base. A second
   // instance keeps one image record, as code, with each process's own copy of its data
@@ -5057,6 +5201,10 @@ P.stackFree = function (t) {
 /** process pc's view of the arena in place, where its image overlaps another process's (spawn, win32.js arenaUse) */
 P.imgUse = function (pc) {
   this.dllUse(pc);   // (and its private-arena DLLs' data, win32.js; the system's for a thread of no started process)
+  // (a Windows 3.x task's thread leaves the arena's views as they are: its code is in its own segments, never in a
+  // process's image at 400000h. Put back each time, Windows 98 Setup's helper's megabyte there was copied out and in
+  // at every switch between SUWIN's file copy and the helper, a millisecond each)
+  const t = this.thread16; if (!pc && t && t.task && !t.pc) return;
   this.arenaUse(pc);
 };
 /** the size of a PE file's image (SizeOfImage), 0 for no PE file */
@@ -5148,8 +5296,19 @@ P.endProcess = function (pc, code) {
     t.state = 'done'; this.wakeWaiters(t); if (this.win16Held && this.win16Held.who === t) this.win16Held = null;
     if (t.flat && t.stackBase) { this.stackFree(t); this.free(t.tib); t.tib = 0; }   // (its stack and thread information block go with it)
   }
+  if (pc.pdb && this.thread16 && this.thread16.pc !== pc) { this.free(pc.pdb); pc.pdb = 0; }   // (its database, when no thread of its own is the one running)
+  if (this.namedClose) this.namedClose(pc);   // (its handles to named objects, and the names nothing else holds)
   // the address space it reserved (VirtualAlloc) goes with it, as its private arena does on Windows 95
-  for (const [b, r] of this.vregions || new Map()) if (r.pc === pc) { this.vregions.delete(b); if (r.heap) this.free(r.heap); else (this.vspare || (this.vspare = [])).push({ base: b, size: r.size }); }
+  for (const [b, r] of this.vregions || new Map()) if (r.pc === pc) { this.vregions.delete(b); if (!r.heap) this.vmCheck(b, r.size, 'a process\'s region given back'); if (r.heap) this.free(r.heap); else (this.vspare || (this.vspare = [])).push({ base: b, size: r.size }); }
+  this.vmAudit('a process\'s end');
+  // (the DLLs it attached that no process goes on with: their translations let go, the image left mapped. Kept, every
+  // DLL Windows 98's first start ran (REGSVR32's and RUNDLL32's hundreds) kept its compiled module and its wasm for the
+  // session: the page's process grew to 17 GB and crashed)
+  if (pc.attached && this.dynRelease) {
+    const live = [...(this.procs || new Map()).values()].filter(x => x !== pc && x.exitCode === null);
+    if (this.pc0 && this.pc0 !== pc && !live.includes(this.pc0)) live.push(this.pc0);
+    for (const m of pc.attached) if (!live.some(x => x.attached && x.attached.has(m))) this.dynRelease(m);
+  }
   for (const [h, dc] of this.glNativeDCs || new Map()) if (dc.pc === pc) { if (dc.bits) this.free(dc.bits); this.glNativeDCs.delete(h); }   // (gl.js: its frames' DIBs)
   for (const ctx of [...(this.glContexts || [])]) if (ctx.pc === pc) { if (this.glctx === ctx) this.glctx = null; window.W95GL.releaseContext(this, ctx); }   // (and its GPU contexts)
   if (this.thread16 && this.thread16.pc === pc) this.thread16.exitCode = code >>> 0;
@@ -5186,8 +5345,11 @@ def16('KERNEL', 441, 'llllll', 'l', function (attr, stack, start, param, flags, 
   if (ptid) this.w32(this.lin(ptid), id);
   return this.newHandle({ kind: 'thread', id });
 });
-P.saveCtx16 = function () { return this.saveFull(); };   // (a thread's time can run out between any two blocks: all of it)
-P.loadCtx16 = function (c) { this.loadFull(c); this.rebaseGlobals(); };
+// (and its last error, which is each thread's own: one for the machine, another thread's call between a FindFirstFile
+// that found nothing and SHELL32's GetLastError changed it, the folder's EnumObjects answered a success with no
+// enumerator, and Windows 95's Explorer, running its StartUp folder, called through the null pointer)
+P.saveCtx16 = function () { const c = this.saveFull(); c.lastError = this.lastError; return c; };   // (a thread's time can run out between any two blocks: all of it)
+P.loadCtx16 = function (c) { this.loadFull(c); if ('lastError' in c) this.lastError = c.lastError; this.rebaseGlobals(); };
 /** a stopped thread going on: a segment register holding a global block's selector takes the block's base as its
  *  descriptor has it now, as reloading the register on a task switch does. GlobalReAlloc moves a block that grows past
  *  its memory, and a thread stopped with the old base (DIBENG's blit stack segment, its line count at SS:0) ran on in
@@ -5221,26 +5383,34 @@ P.threads16 = function (nested = false, only = null) {
   try { for (const t of only ? [only] : [...this.threadsById.values()]) {   // the threads there are as the pass starts: one created in it starts in the next
     if (t === caller || t.state === 'running' || t.blocked || (t.id === MAIN_TID && !caller) || (t.id === MAIN_TID && caller) || !t.state || t.state === 'done' || t.state === 'hung' || t.state === 'suspended' || (t.state === 'waiting' && t.wait && !t.wait.set)) continue;   // a thread that yielded with no event to wait for (in WaitEvent) runs again
     if (this.win16Held && this.win16Held.who !== t && !(caller && this.win16Held.who === caller)) continue;   // another thread holds the Win16Lock (a caller that yields hands its own over)
+    if (!only && this.waitBlocked(t)) continue;   // (it would only wait again)
     const main = this.saveCtx16();
     const sw = this.switchMs || (this.switchMs = { img: 0, load: 0, run: 0, save: 0, n: 0 }); let tm = performance.now();   // (a diagnostic: where a thread switch's time goes, cmd 'views')
+    if (this.sliceEnd !== undefined) { this.cpu.budget.value = this.sliceEnd; this.sliceEnd = undefined; }   // (a slice ended early that stopped another way first: the blocks left are this thread's)
     this.thread16 = t; t.sliceStart = this.now(); this.preempted = 0; this.imgUse(t.pc); this.cwdSwitch(t); if (this.thhookLin) this.tdbCurrent(t); sw.img += performance.now() - tm; sw.n++;
     let r;
     try {
       if (t.state === 'new' && t.flat) {
         // a Win32 thread (CreateThread): its own stack and thread information block, then its procedure called
         // with its parameter in flat mode; returning to the sentinel ends it
-        this.stackAlloc(t); t.tib = this.alloc(0x100);
+        this.stackAlloc(t); t.tib = this.alloc(0x100); if (this.tlsByTib) this.tlsByTib.delete(t.tib >>> 0);   // (no slots of a thread whose block this was)
         this.u8.copyWithin(t.tib, LAYOUT.TIB, LAYOUT.TIB + 0x100);
         this.w32(t.tib, 0xffffffff); this.w32(t.tib + 4, t.stackBase + t.stack); this.w32(t.tib + 8, t.stackBase); this.w32(t.tib + 0x18, t.tib);
         this.w16(t.tib + 0x28, 0);
+        // (the block's pointer to its process's database, 30h: a record of the kernel's whose flags, at 20h, a
+        // program reads for itself. MSHTML asks there whether the process is a Win16 one (flag 8) before it makes
+        // a thread's stack: with no record, Explorer read at 20h and ended as its desktop came up)
+        if (t.pc) { if (!t.pc.pdb) { t.pc.pdb = this.alloc(0x100); this.w32(t.pc.pdb, 5); this.w32(t.pc.pdb + 4, 1); } this.w32(t.tib + 0x30, t.pc.pdb); }
         for (const [s, b] of SEGS) { this.cpu[s].value = 0; if (s !== 'fsel') this.cpu[b].value = 0; }
         this.cpu.fs.value = t.tib; this.depth = 0; t.depth = 0; this.stackLevel = main.stackLevel;
         let esp = t.stackBase + t.stack - 16; esp -= 4; this.w32(esp, t.param); esp -= 4; this.w32(esp, LAYOUT.SENTINEL);
-        this.cpu.esp.value = esp; t.state = 'running';
+        this.cpu.esp.value = esp; t.state = 'running'; this.lastError = 0;
         if (t.pc && !t.pc.started) this.pcStart(t.pc);
         r = this.runTop(u32(t.start));
         if (r === 0 && t.exitCode === undefined) t.exitCode = u32(this.cpu.eax.value);
-        if (r !== 1 && t.pc) { t.state = 'done'; this.pcThreadEnded(t); }
+        // (a thread that ended within its first slice: its stack and information block go too, as at the end below. Kept,
+        // each short REGSVR32 and RUNDLL32 of Windows 98's first start left 1 MB behind, and the heap ran out)
+        if (r !== 1 && t.pc) { t.state = 'done'; this.pcThreadEnded(t); if (t.stackBase) { this.stackFree(t); this.free(t.tib); t.tib = 0; } }
       } else if (t.state === 'new') {
         // its own flat stack, then a far call of its procedure (it returns to the sentinel)
         t.stackBase = this.alloc(t.stack); this.cpu.esp.value = t.stackBase + t.stack - 16; this.seg('ss', 0);
@@ -5253,7 +5423,7 @@ P.threads16 = function (nested = false, only = null) {
         r = this.start16(t.start >>> 16, t.start & 0xffff, t.task ? [] : [['l', t.param]]);
       } else {
         // it yielded at its top level, so it holds no 16-bit stack aliases: it takes them from the level in use now
-        tm = performance.now(); this.loadCtx16(t.ctx); this.stackLevel = main.stackLevel; t.state = 'running'; t.wait = null; sw.load += performance.now() - tm;
+        tm = performance.now(); this.loadCtx16(t.ctx); this.stackLevel = main.stackLevel; t.state = 'running'; t.wait = null; t.waitYield = false; sw.load += performance.now() - tm;
         tm = performance.now(); r = this.runTop(u32(this.cpu.eip.value)); sw.run += performance.now() - tm;
       }
       // a thread that stopped in a wait gave up the processor there (the call's YIELD clears what its time running out
@@ -5262,7 +5432,7 @@ P.threads16 = function (nested = false, only = null) {
       // the lock go, another thread blitted on DIBENG's one blit stack (its line count at SS:0 run down to 0), and
       // WELCOME's blit went on from 0: `dec dword ss:[0]` 4 billion times, the hourglass at the first start
       t.preempted = r === 1 && !!this.preempted; this.holdWin16(t);
-      if (r === 1) { tm = performance.now(); t.ctx = this.saveCtx16(); t.state = 'waiting'; sw.save += performance.now() - tm; }
+      if (r === 1) { tm = performance.now(); t.ctx = this.saveCtx16(); t.state = 'waiting'; t.peekOwed = 0; sw.save += performance.now() - tm; }   // (peekOwed: the slice it owed for an empty PeekMessage is given, hookPeek32)
       else {
         t.state = 'done'; this.wakeWaiters(t);
         // a fault in a program the system started ends that program, as Windows 95 closes the one program that
@@ -5384,12 +5554,16 @@ def16('KERNEL', 29, '', 'v', function () {                                      
   // UserYield, as KRNL386's Yield does for a task with a queue (MCIAVI's worker creates its window, sending to the
   // playing task, which yields in a loop until the worker is up)
   const user = t.task && t.queue && this.selValid(t.queue) && !t.userYield && (this.r16(this.selBase(t.queue) + 0x4a) & 0x40) && this.ne && this.ne.get('USER');
+  // (UserYield runs as the task's own code, from Yield's caller: run as a call the host made, the window procedure the
+  // sent message went to (MMSYSTEM's, at the system's start) could not be preempted, and while it ran nothing else
+  // did: no input, no frames, the pointer left behind the mouse)
+  if (user && user.meta && this.neExport(user, 332) && top) return { farJump: this.neExport(user, 332) };
   if (user && user.meta && this.neExport(user, 332)) { t.userYield = true; try { this.user16(332, []); } finally { t.userYield = false; } return; }
   if (top && !t.yielded) { t.yielded = true; return YIELD; }
   if (!top) this.threads16(true);   // inside a call: the other tasks and threads run now, as Yield switches to them
   t.yielded = false;
 });
-def16('KERNEL', 150, 'w', 'v', function () { if (!this.atThreadTop()) this.threads16(true); });         // DirectedYield: inside a call, the other tasks run now (at the top level the host's scheduler runs them next)
+def16('KERNEL', 150, 'w', 'v', function (task) { for (const t of (this.threadsById || new Map()).values()) if (t.task && t.tdb === task) t.directed = true; if (!this.atThreadTop()) this.threads16(true); });         // DirectedYield: inside a call, the other tasks run now (at the top level the host's scheduler runs them next)
 // WaitEvent: the task sleeps until an event is posted to it. A thread that is not inside a call JS made gives up
 // its slice once (timers, input and the other threads run) and the wait then ends; USER checks its queue again.
 // LoadModule(name, parameter block { environment, far command tail, far show command, - }): a library loads as
@@ -5452,7 +5626,7 @@ def16('KERNEL', 45, 'sp', 'l', function (name, pb) {
   // bounds) the exception frames it pushed there were no frames to KERNEL32's dispatcher. GDI32's TrueType
   // interpreter divides by zero on a glyph and catches it; uncaught, W98SETUP ended as it drew its billboard
   if (!t.tib) {
-    t.tib = this.alloc(0x100); this.u8.copyWithin(t.tib, LAYOUT.TIB, LAYOUT.TIB + 0x100);
+    t.tib = this.alloc(0x100); this.u8.copyWithin(t.tib, LAYOUT.TIB, LAYOUT.TIB + 0x100); if (this.tlsByTib) this.tlsByTib.delete(t.tib >>> 0);
     const sb = t.task.dgStack ? this.selBase(t.task.dgroup) : 0;
     this.w32(t.tib, 0xffffffff); this.w32(t.tib + 4, sb ? sb + t.task.sp : 0); this.w32(t.tib + 8, sb); this.w32(t.tib + 0x18, t.tib);
     this.w16(t.tib + 0x28, t.queue || 0);
@@ -5521,7 +5695,9 @@ def16('KERNEL', 91, '', 'jmp', function () {
 def16('KERNEL', 30, 'w', 'w', function () {
   const t = thr(this, 0), top = !this.asTask && (this.thread16 ? this.depth === this.thread16.depth : this.depth === 0);
   if (t.events > 0) { t.events--; t.slept = false; return 0; }   // an event posted to the task (PostEvent, its start): no wait
-  if (top && !t.slept) { t.slept = true; P.idle.call(this); return YIELD; }
+  // (not passed by in the scheduler's round, waitBlocked: a task is woken by more than PostEvent here, a directed yield
+  // among them, and held back 50 ms MPREXE's thread came back from a Yield inside USER with its stack gone)
+  if (top && !t.slept) { t.slept = true; t.sleptAt = this.now ? this.now() : 0; t.directed = false; P.idle.call(this); return YIELD; }
   if (!top) this.threads16(true);   // inside a call: the other tasks run, as the wait would let them
   t.slept = false; return 0;
 });
@@ -5644,8 +5820,22 @@ const ret32 = p => { const sp = p.reg('esp'), r = p.r32(sp); p.reg('esp', sp + 4
 const push32 = (p, v) => { const sp = p.reg('esp') - 4; p.reg('esp', sp); p.w32(sp, v); };
 const pop32 = p => { const sp = p.reg('esp'), v = p.r32(sp); p.reg('esp', sp + 4); return v; };
 /** the module a thunk buffer names (GDI.EXE etc.), loaded if needed, and the 16-bit export holding the thunk data */
+/** the folder a 32-bit module was mapped from (its file's), or null for one of the bundle's */
+P.moduleDir32 = function (h) {
+  const m = h && this.modules.find(x => x.base === u32(h) && x.name !== 'EXE'), p = m && m.meta && m.meta.path;
+  return p && /\\/.test(p) ? p.replace(/\\[^\\]*$/, '') : null;
+};
+/** fn with `dir` searched by the 16-bit loader after its own folders (findFile16) */
+P.withDir16 = function (dir, fn) {
+  if (!dir) return fn();
+  const was = this.dirs16; this.dirs16 = [...(was || []), dir];
+  try { return fn(); } finally { this.dirs16 = was; }
+};
 P.thunkData16 = function (dll16, name) {
-  const m = this.loadLibrary16(dll16); if (!m) throw new GuestError(`thunk: cannot load ${dll16}`);
+  // (the 32-bit caller's folder searched too, as for ThunkConnect32: the return address on the stack is in its module)
+  const ret = this.r32(this.reg('esp')), caller = this.modules.find(x => x.size && ret >= x.base && ret < x.base + x.size && x.name !== 'EXE');
+  const dir = caller && this.moduleDir32(caller.base);
+  const m = this.withDir16(dir, () => this.loadLibrary16(dll16)); if (!m) throw new GuestError(`thunk: cannot load ${dll16} (for ${caller ? caller.name + (caller.meta && caller.meta.path ? ' ' + caller.meta.path : '') : 'no module at ' + ret.toString(16)}; ${dir || 'no folder of its own'}, ${this.fs.cwd})`);
   const sp = this.neExport(m, name); if (!sp) throw new GuestError(`thunk: ${dll16} has no ${name}`);
   const td = this.lin(sp);
   if (this.r16(td + 6) === 0xffff) this.w16(td + 6, sp >>> 16);   // selector of the thunk data's own segment
@@ -5674,15 +5864,25 @@ K('ThunkConnect32', 6, function (td, f16, m16, m32, hmod, reason) {
   const magic = this.readA(td, 4), name = (this.readA(m16) || '').toUpperCase().replace(/\.DLL$/, '');
   // late binding ('LB01' in the 32-bit data): the 16-bit half is found when a thunk is first called
   const late = this.readA(td + 0xc, 4) === 'LB01', f16name = this.readA(f16);
-  const find = () => { const m = this.loadLibrary16(name, true); const sp = m && this.neExport(m, f16name); return sp ? this.lin(sp) : 0; };
+  // (the 16-bit half looked for beside the 32-bit one too: NetMeeting's NMASWIN.DLL is in Program Files\NetMeeting
+  // with the DLL that connects to it, and MSGSRV32 ended on "thunk: cannot load" on Windows 98's first start)
+  const dir32 = this.moduleDir32(hmod);
+  const find = () => { const m = this.withDir16(dir32, () => this.loadLibrary16(name, true)); const sp = m && this.neExport(m, f16name); return sp ? this.lin(sp) : 0; };
   if (late && magic === 'LS01') {
     this.lsRelays = this.lsRelays || new Map();
-    const rel = { ft: false, table: 0, bind: () => { if (!rel.table) { const t16 = find(); if (!t16) throw new GuestError(`thunk to ${name}: no ${f16name}`); rel.table = this.lin(this.r32(t16 + 8)); this.w32(td + 8, rel.table); } return rel.table; } };
+    // (data only, both relays the one record: what binds it is named in it, not held in a closure, so a moment carries
+    // it. A closure and a getter a moment cannot carry: arrived at, the FT_Prolog relay's table was undefined and the
+    // QT_Thunk relay bound the booted machine's record, and USER32's calls into USER jumped through garbage)
+    const rel = { ft: false, table: 0, late: { td, name, f16name, dir32 } };
     this.lsRelays.set(u32(td + this.r32(td + 0x1c)), rel);
-    this.lsRelays.set(u32(td + this.r32(td + 0x20)), { ft: true, get table() { return rel.bind(); } });
+    this.lsRelays.set(u32(td + this.r32(td + 0x20)), { ft: true, rel });
     // a 16-bit half already loaded (USER, GDI, KERNEL) is bound now: the 32-bit side's own code reads the target table
     // straight from its data (USER32's CreateWindowExA), not only through the relays
-    const loaded = this.ne && this.ne.get(name.replace(/\.(EXE|DRV)$/, '')); if (loaded && loaded.meta) rel.bind();
+    // (a module of that name without the half (Windows 98 Setup's own VER.DLL, loaded from C:\WININST0.400 by SUWIN
+    // before any Win32 process had VERSION.DLL) is left for the first call, as KERNEL32 binds late: the attach of
+    // VERSION.DLL in a process Setup started threw here, and MSGSRV32 stopped)
+    const loaded = this.ne && this.ne.get(name.replace(/\.(EXE|DRV)$/, ''));
+    if (loaded && loaded.meta) try { this.lsBind(rel); } catch (e) { if (!(e instanceof GuestError)) throw e; log('warn', 'ne16', `ThunkConnect32 ${this.readA(m32)} LS01: ${e.message}; left for the first call`); }
     return 1;
   }
   // 16 -> 32: the 32-bit half's target table, for the 16-bit half (ThunkConnect16's record, made now if its half has
@@ -5803,16 +6003,29 @@ KR('#45', function () {          // Common32ThkLS: EAX = 16-bit common entry, CX
   return this.enter16from32(this.reg('eax'), sp - 32, n + 32, 0, true, { kind: 'common', sp, edi0: edi, ret });
 });
 // pointer mapping
-KR('SMapLS', function () { const a = this.reg('eax'); this.reg('edx', a >>> 16 ? this.mapLS(a) : 0); if (a >>> 16) this.reg('eax', this.reg('edx')); return ret32(this); });
-KR('SUnMapLS', function () { return ret32(this); });
+// (KERNEL32's MapLS family as Windows 98's: a selector of its own based at the address itself, offset 0, freed by the
+// matching UnMapLS, as KRNL386's MapLS (#358) gives one. VERSION.DLL's VerQueryValueA takes the 16-bit answer's offset
+// alone and adds the block's flat address to it; with a shared 32K-aligned alias the offset carried the address's low
+// bits, the answer pointed past the block, and ODBCCP32 found ODBCINT.DLL "a different version")
+P.mapLSExact = function (a) {
+  a = u32(a); if (!(a >>> 16)) return a;
+  const sel = this.allocSels(a, 0x10000); (this.mapped16 = this.mapped16 || new Set()).add(sel);
+  return u32(sel << 16);
+};
+P.unmapLSExact = function (sp) {
+  const sel = (sp >>> 16) & 0xfff8 | 7;
+  if (this.mapped16 && this.mapped16.has(sel) && !(sp & 0xffff)) { this.mapped16.delete(sel); this.freeSels(sel, 1); }
+};
+KR('SMapLS', function () { const a = this.reg('eax'); this.reg('edx', a >>> 16 ? this.mapLSExact(a) : 0); if (a >>> 16) this.reg('eax', this.reg('edx')); return ret32(this); });
+KR('SUnMapLS', function () { this.unmapLSExact(this.reg('eax')); return ret32(this); });
 for (let n = 8; n <= 40; n += 4) {
-  KR('SMapLS_IP_EBP_' + n, function () { const a = this.reg('ebp') + n, v = this.r32(a); const s = v >>> 16 ? this.mapLS(v) : v; this.w32(a, s); this.reg('edx', s); this.reg('eax', s); return ret32(this); });
-  KR('SUnMapLS_IP_EBP_' + n, function () { this.w32(this.reg('ebp') + n, 0); return ret32(this); });
+  KR('SMapLS_IP_EBP_' + n, function () { const a = this.reg('ebp') + n, v = this.r32(a); const s = v >>> 16 ? this.mapLSExact(v) : v; this.w32(a, s); this.reg('edx', s); this.reg('eax', s); return ret32(this); });
+  KR('SUnMapLS_IP_EBP_' + n, function () { const a = this.reg('ebp') + n; this.unmapLSExact(this.r32(a)); this.w32(a, 0); return ret32(this); });
 }
 K('MapSL', 1, function (sp) { return this.lin(sp); });
 K('MapSLFix', 1, function (sp) { return this.lin(sp); });
-K('MapLS', 1, function (a) { return this.mapLS(a); });
-K('UnMapLS', 1, () => 0);
+K('MapLS', 1, function (a) { return this.mapLSExact(a); });
+K('UnMapLS', 1, function (sp) { this.unmapLSExact(sp); return 0; });
 KR('UnMapSLFixArray', function () { const r = ret32(this); this.reg('esp', this.reg('esp') + 8); return r; });
 K('MapHInstLS', 0, function () { const h = this.reg('eax'); return this.nativeUser16() ? this.hinst16(h) : h; });
 K('MapHInstLS_PN', 0, function () { const h = this.reg('eax'); return h ? (this.nativeUser16() ? this.hinst16(h) : h) : 0; });
@@ -5821,12 +6034,16 @@ P.nativeUser16 = function () { const u = this.ne && this.ne.get('USER'); return 
 /** the 16-bit handle USER uses for a Win32 module (as Windows 95 gives each one), made on first use */
 P.hinst16 = function (h32, mod = this.moduleFor(h32)) {
   this.h16of = this.h16of || new Map(); this.h32of = this.h32of || new Map();
+  // (a module's handle, the module at that base: none for an address no module of this process is at. moduleFor answers
+  // the running process's program wherever it is for such an address, Explorer's for MSTASK's 1000000h, and the handle
+  // made for it then had no module of its own: FindResource with it found Explorer's icons for the Task Scheduler's)
+  if (mod && u32(mod.base) !== u32(h32)) mod = null;
   // (a program's by its image: two programs at one base, each in its process's view, are two modules to USER, their
-  // classes each their own)
-  const owners = this.h16owner || (this.h16owner = new Map()), was = owners.get(h32), exe = mod && mod.name === 'EXE' && mod.base === h32;
-  const key = exe && was && was !== mod && [...(this.procs || new Map()).values()].some(x => x.exitCode === null && x.exe === was) ? mod : h32;
-  if (exe && key === h32) owners.set(h32, mod);
+  // classes and resources each their own, never the handle of the base itself)
+  const key = mod && mod.name === 'EXE' ? mod : h32;
   if (this.h16of.has(key)) return this.h16of.get(key);
+  // (the handle this program was given by its base, as a moment taken before kept it: its own, the one USER knows it by)
+  { const s = this.h16of.get(h32); if (key !== h32 && s && this.mod16of && this.mod16of.get(s & 0xfffe) === mod) { this.h16of.set(key, s); return s; } }
   // a module database as KERNEL makes one for a Win32 module: 'NE', and flags with NE_FFLAGS_WIN32 (10h) and single
   // data, plus the library bit for a DLL
   const pe = mod && mod.base === h32 ? this.r32(h32 + 0x3c) : 0;
@@ -5834,7 +6051,23 @@ P.hinst16 = function (h32, mod = this.moduleFor(h32)) {
   const mdb = this.alloc(0x40); this.u8.set([0x4e, 0x45], mdb); this.w16(mdb + 0x0c, 0x0011 | (dll ? 0x8000 : 0));
   const sel = this.allocSels(mdb, 0x40);
   this.h16of.set(key, sel); this.h32of.set(sel & 0xfffe, h32);
+  if (mod) (this.mod16of || (this.mod16of = new Map())).set(sel & 0xfffe, mod);   // (and the module itself, hinst16's own: mod16)
   return sel;
+};
+/** the Win32 module a 16-bit handle hinst16 made stands for: the very module, not whichever is at its base in this
+ *  process (two programs linked at 400000h are two handles; USER copying MSTASK's tray icon from its resource in
+ *  Explorer's process found Explorer's own icon at 400000h); null for a handle hinst16 did not make */
+P.mod16 = function (h16) { return (this.mod16of && this.mod16of.get(h16 & 0xfffe)) || null; };
+/** fn run with module mod's image in place: a program whose process's view is put by (another process's, in the arena
+ *  its image shares) has its view put in for fn and, whatever fn does, the view that was in place put back: the view of
+ *  the process that had it, or the running process's where none was (never the other program's left at its base, where
+ *  the running code would run it) */
+P.withImage = function (mod, fn) {
+  if (!mod || !mod.hidden || !this.arenaUse) return fn();
+  const owner = [...(this.procs || new Map()).values()].find(x => x.exe === mod && x.exitCode === null); if (!owner) return fn();
+  const slot = (this.arena || []).find(s => s.own.has(owner)), prev = slot ? slot.cur : null;
+  this.arenaUse(owner);
+  try { return fn(); } finally { this.arenaUse(prev === null || prev === undefined ? this.pc || null : prev || null); }
 };
 /** KERNEL32 starting a Win32 program under the native USER: USER's InitApp (USER.5) for its task, as a 16-bit program
  *  calls it itself. The first one also runs USER's first-task start-up: the installable drivers SYSTEM.INI's [boot]
@@ -5898,7 +6131,16 @@ K('#55', 5, function (fn, flags, cb, pargs, pret) {
   const r = this.call16(fn >>> 16, fn & 0xffff, args).dxax >>> 0; if (pret) this.w32(pret, r); return 1;
 });                                                       // PK16FNF: no prefix for 16-bit file names
 KR('K32Thk1632Epilog', function () { return ret32(this); });
-K('#17', 0, () => 0);                                      // CommonUnimpStub
+// CommonUnimpStub, which a DLL's unimplemented export jumps to with CL set (xor eax,eax; mov cl,N; jmp): it sets
+// ERROR_CALL_NOT_IMPLEMENTED, answers by N's high nibble (1: 1, 13: 50, 14: 120, 15: -1, else 0) and pops N's low
+// nibble of arguments. Popping none, Windows 98's USER32 LoadStringW left ODBC32 its four arguments on the stack,
+// and ODBC32's return went to its saved EDI, 106h
+KR('#17', function () {
+  const cl = this.cpu.ecx.value & 0xff, sp = this.reg('esp'), ret = this.r32(sp);
+  this.lastError = 120; this.reg('eax', { 1: 1, 13: 50, 14: 120, 15: 0xffffffff }[cl >> 4] || 0);
+  this.reg('esp', sp + 4 + 4 * (cl & 15));
+  return ret;
+});
 K('#18', 2, function (pid, off) { return pdw(this, pid, off | 0)[off | 0] >>> 0; });   // GetProcessDword
 // the daylight-saving check Explorer makes at start and on each WM_TIMECHANGE: a nonzero answer when KERNEL32 has just
 // moved the clock across the zone's transition (Explorer then broadcasts the time change). The host's clock already
@@ -6041,7 +6283,12 @@ K('TerminateThread', 2, function (h, code) {
 /** the thread a ring-0 thread handle is (its control block's TCB_ThreadId) */
 P.r0Tid = function (h) { const m = this.thcbs; if (m) for (const [tid, a] of m) if (a === u32(h)) return tid; return u32(h) & 0xffffff; };
 K('QueueUserAPC', 3, function (fn, h, data) { const o = this.obj(h), tid = o && o.kind === 'thread' ? o.id : this.currentThreadId(); this.queueApc(tid, fn, data); return 1; });
-K('RegisterServiceProcess', 2, () => 1);   // a process that outlives the user's logon (MPREXE): nothing ends processes at logoff here
+// RegisterServiceProcess(pid, type): fServiceProcess (100h) in the process's flags (GPD -4), as KERNEL32 marks it.
+// USER's ExitWindows leaves services to the end: unmarked, MPREXE was ended with the others, and Windows 98 Setup's
+// restart waited for good on the event MPREXE sets when the network's logoff is done
+K('RegisterServiceProcess', 2, function (pid, type) {
+  const d = pdw(this, u32(pid), '-4'); d['-4'] = type ? (d['-4'] | 0x100) : (d['-4'] & ~0x100); return 1;
+});
 K('OpenVxDHandle', 1, function (h) { return ev16(this, h) ? u32(0xc4000000 | (h & 0xffffff)) : 0; });
 P.r0Event = function (r0) { return (u32(r0) & 0xff000000) === 0xc4000000 ? ev16(this, r0 & 0xffffff) : null; };
 // a Win32 thread's ring-0 handle (VMM Get_Cur_Thread_Handle), which VWIN32_QueueUserApc takes
@@ -6112,13 +6359,24 @@ K('EnumResourceNamesA', 4, () => 0);
  *   +3A: jmp +20 -> +5A: call/pop edx; sub edx,25 (edx = +3A); push edx; push <table ptr offset>; push FT_PrologPrime; ret
  * Executing it is equivalent to setting those registers and jumping to the primer.
  */
+/** an LS01 relay's target table: the one its connect found, or, bound late, the 16-bit half's (loaded now, as
+ *  KERNEL32 binds at the first call), written into the 32-bit side's data as Windows does */
+P.lsBind = function (rel) {
+  if (rel.table) return rel.table;
+  if (!rel.late) throw new GuestError('an LS01 relay with no target table and nothing to bind it by (a moment of an earlier build)');
+  const { td, name, f16name, dir32 } = rel.late;
+  const m = this.withDir16(dir32, () => this.loadLibrary16(name, true)), sp = m && this.neExport(m, f16name), t16 = sp ? this.lin(sp) : 0;
+  if (!t16) throw new GuestError(`thunk to ${name}: no ${f16name}`);
+  rel.table = this.lin(this.r32(t16 + 8)); this.w32(td + 8, rel.table);
+  return rel.table;
+};
 P.dataCode = function (eip) {
   const tl = this.lsThunklets && this.lsThunklets.get(u32(eip));
   if (tl) { push32(this, tl.target); push32(this, tl.relay); return this.cbGlueLS; }
   const ls = this.lsRelays && this.lsRelays.get(u32(eip));
   if (ls) {   // ThunkConnect32's relays: target n (CL, or the byte at [EBP-4] for QT_Thunk) of the table into EDX
     const n = ls.ft ? this.reg('ecx') & 0xff : this.u8[u32(this.reg('ebp') - 4)];
-    this.reg('edx', this.r32((ls.bind ? ls.bind() : ls.table) + 4 * n));
+    this.reg('edx', this.r32(this.lsBind(ls.rel || ls) + 4 * n));
     if (!ls.ft) this.reg('ecx', n);
     return ls.ft ? this.ftProlog() : this.qtThunk();
   }

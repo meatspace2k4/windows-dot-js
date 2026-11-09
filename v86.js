@@ -30,7 +30,7 @@ function machine(o = {}) {
   // (o.base: where its first megabyte is, in a memory shared with Windows' VMM: a VM's at its CB_High_Linear; o.xmsKB
   // the extended memory it has past 120000h)
   p.v86 = o.base || V86_BASE; p.xmsKB = o.xmsKB || XMS.kb; p.disk = o.disk; p.geom = { heads: 16, spt: 63 }; p.o = o;
-  p.keys = []; p.port60 = 0; p.irq = 0; p.ticksAt = Date.now(); p.halted = false; p.polls = 0; p.v86Hooks = new Set([0x21, 0x2f]);
+  p.keys = []; p.port60 = 0; p.irq = 0; p.isr = 0; p.ticksAt = Date.now(); p.halted = false; p.polls = 0; p.v86Hooks = new Set([0x21, 0x2f]);
   p.trap = function (next, code) { this.v86Trap(next, code); };
   if (o.pc) p.vgaInit();   // (the PC's own VGA: what runs before Windows draws on it, IO.SYS's start-up screen)
   p.portIO = function (port, size, isIn) { this.v86Port(port, size, isIn); };
@@ -109,10 +109,13 @@ P.v86Boot = function () {
 
 // ---------------------------------------------------------------- running
 /** run up to `n` blocks; 'idle' when the machine waits (HLT, a key), 'trap' with this.trapped set when it faulted */
-P.v86Run = function (n = 20000) {
+/** `until`: the page's time (performance.now) to give the page back by, checked every 64 blocks: a run of 4000 blocks of
+ *  WININIT's file work (each a call into the redirector) held the page past 100 ms, its viewport and input frozen */
+P.v86Run = function (n = 20000, until = Infinity) {
   if (this.conWait || this.winWait) return 'idle';   // (its EXEC waits for the Windows console program it started, conDone, or for Windows, winDone)
   let eip = u32(this.cpu.eip.value);
   for (let k = 0; k < n; k++) {
+    if ((k & 63) === 63 && performance.now() > until) break;
     this.cpu.eip.value = eip; this.v86Interrupts();   // (an interrupt pushes where the code is now)
     if (this.halted) { this.cpu.eip.value = eip; return 'idle'; }
     if (this.irqTaken) { this.irqTaken = false; eip = u32(this.cpu.eip.value); }
@@ -132,11 +135,18 @@ P.v86Run = function (n = 20000) {
 // keyboard's (IRQ 1, INT 09h)
 P.v86Interrupts = function () {
   const now = Date.now();
-  if (now - this.ticksAt >= 55) { this.ticksAt = now; this.irq |= 1; }
+  if ((now - this.ticksAt) * (this.speed || 1) >= 55) { this.ticksAt = now; this.irq |= 1; }   // (speed: the clock run ahead of the wall, braid.speed)
   const queued = ((this.m16(0x41c) - this.m16(0x41a) + 32) % 32) >> 1;   // (the BIOS's buffer: keys wait in the host's while it is nearly full, none lost)
   if (this.keys.length && !(this.irq & 2) && !this.kbdBusy && queued < 12) { const k = this.keys.shift(); this.port60Key = k; this.port60 = k >> 8; this.irq |= 2; this.kbdBusy = true; }   // (a key: its scan code << 8 | its character)
   if (!this.irq || !this.cpu.if.value) return;
-  const n = this.irq & 1 ? 0 : 1; this.irq &= ~(1 << n);
+  const n = this.irq & 1 ? 0 : 1;
+  // (an interrupt in service holds its line and every lower one until its EOI, as the 8259 does: a handler that sets IF
+  // early is not entered again by the next tick. IO.SYS's logo hook rotates the DAC's 236..255 after an STI; a tick
+  // the host raised while it ran (the page late by a frame) ran the rotation inside the rotation, and the outer one's
+  // last colours went to the wrapped index, entry 0: the logo's black came out lime)
+  const held = this.isr ? this.isr & -this.isr : 0;
+  if (held && held <= 1 << n) return;
+  this.irq &= ~(1 << n); this.isr |= 1 << n;
   this.halted = false;
   this.v86Int(8 + n);
 };
@@ -439,7 +449,7 @@ HOOK[0x2f] = function (next) {
   };
   const file = () => this.redir.get(this.m16(sft() + 0x0b));
   // (a diagnostic: the calls and how each was answered, the last 100)
-  const log = this.rlog || (this.rlog = []); log.push(`11${al.toString(16).padStart(2, '0')} ${fn1().slice(0, 60)} cx=${this.r('cx').toString(16)}`); if (log.length > 100) log.shift();
+  const log = this.rlog || (this.rlog = []); log.push(`11${al.toString(16).padStart(2, '0')} ${fn1().slice(0, 60)} cx=${this.r('cx').toString(16)}`); if (log.length > (this.rlogMax || 100)) log.shift();
   try {
     switch (al) {
       case 0x00: this.setAL(0xff); this.cpu.cf.value = 0; return true;                          // installed
@@ -543,6 +553,9 @@ P.v86Port = function (port, size, isIn, val) {
     return;
   }
   if (!isIn) {
+    // the interrupt controller's end of interrupt: the in-service bit let go (a non-specific EOI the highest's, a
+    // specific one, 60h + n, IRQ n's), the next request of that line or a lower one deliverable again (v86Interrupts)
+    if (port === 0x20) { const v = (val !== undefined ? val : c.eax.value) & 0xff; if (v === 0x20) this.isr &= this.isr - 1; else if ((v & 0xf8) === 0x60) this.isr &= ~(1 << (v & 7)); }
     if (port === 0x70) this.cmosAt = c.eax.value & 0x7f;
     // the reset line: the keyboard controller's pulse (command FEh) or port 92h's bit 0, as the PC starts again
     else if ((port === 0x64 && (c.eax.value & 0xff) === 0xfe) || (port === 0x92 && c.eax.value & 1)) BIOS[0xfe].call(this);
@@ -578,6 +591,7 @@ const BIOS = {};
 BIOS[0x08] = function () { this.s32(0x46c, this.dv.getUint32(this.v86 + 0x46c, true) + 1); };   // the tick (INT 1Ch and the EOI follow in the ROM)
 BIOS[0x09] = function () {   // the keyboard: the key read from port 60h into the buffer (a scan code and its character)
   const k = this.port60Key; this.kbdBusy = false;
+  this.isr &= ~2;   // (its EOI, as the BIOS's INT 9 ends: the line deliverable again, v86Interrupts)
   // Ctrl+Alt+Del: the warm boot (40:72h 1234h, the memory test skipped), the PC started again
   if (k >> 8 === 0x53 && (this.m8(0x417) & 0x0c) === 0x0c) { this.s16(0x472, 0x1234); if (this.o.reset) this.o.reset(); else { this.v86Reset(); this.v86Boot(); } return; }
   if (k) { const t = this.m16(0x41c), nt = t + 2 >= this.m16(0x482) ? this.m16(0x480) : t + 2; if (nt !== this.m16(0x41a)) { this.s16(0x400 + t, k); this.s16(0x41c, nt); } }
@@ -821,7 +835,50 @@ P.vgaFrame = function () {
   const pal = Array.from({ length: 256 }, (_, i) => { const m = g.mask & i, d = g.dac; return [d[3 * m] << 2 | d[3 * m] >> 4, d[3 * m + 1] << 2 | d[3 * m + 1] >> 4, d[3 * m + 2] << 2 | d[3 * m + 2] >> 4]; });
   return { w, h, px, pal };
 };
+/** the VGA BIOS's character services in mode 13h: 40x25 cells of 8x8 pixels at A000h, the colour in BL (bit 7: XORed);
+ *  the cursor in the BIOS's data area as in text mode */
+function video13() {
+  const ah = this.ah(), cols = 40, rows = 25, base = this.v86 + VGA_WIN, f = this.font8;
+  const cur = () => [this.m8(0x451), this.m8(0x450)];
+  const setCur = (r, c) => { this.s8(0x450, c); this.s8(0x451, r); };
+  const glyph = (r, c, ch, color) => {
+    if (r >= rows || c >= cols) return;
+    for (let y = 0; y < 8; y++) {
+      const bits = f[ch * 8 + y], row = base + (r * 8 + y) * 320 + c * 8;
+      for (let x = 0; x < 8; x++) {
+        const on = bits & (0x80 >> x);
+        if (color & 0x80) { if (on) this.u8[row + x] ^= color & 0x7f; } else this.u8[row + x] = on ? color : 0;
+      }
+    }
+  };
+  const scroll = (n, top, left, bot, right, fill, up) => {
+    const h = bot - top + 1, w = (right - left + 1) * 8, x0 = left * 8;
+    const move = (dst, src) => { for (let y = 0; y < 8; y++) this.u8.copyWithin(base + (dst * 8 + y) * 320 + x0, base + (src * 8 + y) * 320 + x0, base + (src * 8 + y) * 320 + x0 + w); };
+    const clear = r => { for (let y = 0; y < 8; y++) this.u8.fill(fill, base + (r * 8 + y) * 320 + x0, base + (r * 8 + y) * 320 + x0 + w); };
+    if (!n || n >= h) { for (let r = top; r <= bot; r++) clear(r); return; }
+    for (let i = 0; i < h - n; i++) up ? move(top + i, top + i + n) : move(bot - i, bot - i - n);
+    for (let i = 0; i < n; i++) clear(up ? bot - i : top + i);
+  };
+  this.dirty = true;
+  switch (ah) {
+    case 0x02: setCur((this.cpu.edx.value >> 8) & 0xff, this.cpu.edx.value & 0xff); return;
+    case 0x03: { const [r, c] = cur(); this.w('dx', (r << 8) | c); this.w('cx', this.m16(0x460)); return; }
+    case 0x06: case 0x07: { const cx = this.r('cx'), dx = this.r('dx'); scroll(this.al(), cx >> 8, cx & 0xff, Math.min(dx >> 8, rows - 1), Math.min(dx & 0xff, cols - 1), this.cpu.ebx.value >> 8 & 0xff, ah === 6); return; }
+    case 0x09: case 0x0a: { let [r, c] = cur(); const n = this.r('cx'), color = this.cpu.ebx.value & 0xff; for (let i = 0; i < n && r < rows; i++) { glyph(r, c, this.al(), color); if (++c >= cols) { c = 0; r++; } } return; }
+    case 0x0e: {
+      let [r, c] = cur(); const ch = this.al();
+      if (ch === 13) c = 0; else if (ch === 10) r++; else if (ch === 8) { if (c) c--; } else if (ch === 7) { /* the bell */ }
+      else { glyph(r, c, ch, this.cpu.ebx.value & 0xff); if (++c >= cols) { c = 0; r++; } }
+      if (r >= rows) { scroll(1, 0, 0, rows - 1, cols - 1, 0, true); r = rows - 1; }
+      setCur(r, c); return;
+    }
+  }
+}
 function video() {
+  // (in mode 13h the VGA BIOS draws characters as pixels, 40 columns of 8x8 (its font, font8: the page's EGA.CPI), the
+  // colour in BL, and leaves the text buffer alone: IO.SYS's and WININIT's messages under the boot logo went into B800h
+  // at 80 columns, and the text screen after showed them torn across lines, a run of spaces before "iles...")
+  if (this.m8(0x449) === 0x13 && this.vga && this.font8 && [0x02, 0x03, 0x06, 0x07, 0x09, 0x0a, 0x0e].includes(this.ah())) return video13.call(this);
   const ah = this.ah(), cols = 80, rows = 25;
   const cur = () => [this.m8(0x451), this.m8(0x450)];   // row, column
   const setCur = (r, c) => { this.s8(0x450, c); this.s8(0x451, r); this.vgaCursor(r, c); };
@@ -845,7 +902,9 @@ function video() {
       // (mode 13h, 320x200 at 256 colours, on the PC's own VGA: IO.SYS's start-up screen starts there; bit 7, the
       // window kept as it is)
       if ((this.al() & 0x7f) === 0x13 && this.vga) { this.vgaMode13(!(this.al() & 0x80)); return; }
-      this.vgaMode3(); scroll(0, 0, 0, rows - 1, cols - 1, 7, true); setCur(0, 0); this.s8(0x449, 3); return;
+      // (mode 3; bit 7 keeps what the screen holds, as for 13h: IO.SYS goes back from its logo with 83h, and the
+      // screen cleared there lost WININIT's "Please wait while Setup updates your configuration f" before its "iles.")
+      this.vgaMode3(); if (!(this.al() & 0x80)) scroll(0, 0, 0, rows - 1, cols - 1, 7, true); setCur(0, 0); this.s8(0x449, 3); return;
     case 0x01: { const cx = this.r('cx'); this.s16(0x460, cx); this.vgaOut(0x3d4, 0x0a); this.vgaOut(0x3d5, cx >> 8); this.vgaOut(0x3d4, 0x0b); this.vgaOut(0x3d5, cx & 0xff); return; }
     case 0x02: setCur((this.cpu.edx.value >> 8) & 0xff, this.cpu.edx.value & 0xff); return;
     case 0x03: { const [r, c] = cur(); this.w('dx', (r << 8) | c); this.w('cx', this.m16(0x460)); return; }
@@ -1207,5 +1266,6 @@ for (const n of [0x21, 0x2f]) {
     return h.call(this, next);
   };
 }
+M.BIOS = BIOS;   // (the ROM's services by vector: tests call them)
 window.W95V86 = M;
 })();

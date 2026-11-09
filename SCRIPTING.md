@@ -6,6 +6,18 @@ canvas and keys through the shell's key handler. It is the same in the Electron 
 
 Coordinates are screen pixels of the emulated display, origin top left. `win95.screen()` gives the size.
 
+## Reading the screen: start here
+
+`await win95.report(n = 3)` is the one call for "what is on the screen and what went wrong". Use it before anything
+else; do not write a script to read a dialog.
+
+- `screen`: what the `screen` event carries (`desktop`, `dos`, `logow`, ...).
+- `windows`: each window, bottom to top, with `title`, `x`, `y`, `w`, `h`, `active` and `modal`. Its `text` lists
+  every control as its machine has it now (`static: Setup needs to restart...`, `button: Restart Now`), so a dialog's
+  message and buttons can be read without a screenshot.
+- `faults`: the line's last `n` faults, each with `why`, `program`, `module`, `eip` and `cr2` in hex, and `last`, the
+  fault log's last entry (`why`, `at` as a symbol, the first eight stack words as symbols).
+
 ## Input
 
 | Call | Does |
@@ -81,12 +93,22 @@ one left runs no further but its moments stay, to travel to again. A lock-up, a 
 to the moment before it and go on, with the machine's scripts changed meanwhile if need be (`reloadScript`: a mod).
 
 Moments live in this page's memory and end with it, unless anchored on this computer (IndexedDB), where a page that
-starts later travels to them; neither needs a server. A moment is a record of named sections under a checksum and the
+starts later travels to them; neither needs a server. A running line is always anchored: `every` anchors it as well
+as marking it, so a reload costs a run nothing; marks are for moving about within the page. An anchor is stored as
+chunks of 256 KB under their SHA-256, each kept once, so anchors minutes apart share all the memory that did not
+change, and letting one go deletes only the chunks no other anchor has. A moment is a record of named sections under a checksum and the
 signature of the build that made it (braid.js, win32.js, ne16.js, vmm.js, v86.js, dyn.js, fs.js): a damaged copy or
 another build's is refused. The lint compares moments and disallows system-breaking states (its verdict on each:
 `broken`, `suspect`, `ok`); the mods are named beside a moment, as a sidecar, never carried in it. In a shared
-session every person's marks and travels are the session's: each machine marks at the same machine time and travels
-to the same moment, so everyone is at the same place on one line.
+session every person's marks, anchors, travels, scrubs and forgets are the session's: each is posted as an intent and
+made on every machine, the asker's too, as it reaches it in the session's op order, so each machine takes its own
+moment, or goes back to it, at the same place in the session's history (its disk and registry stay its own, as a
+session keeps them). The server keeps the session's shared state (its objects, settings and strokes) with each mark
+or anchor (tools/sessions.py), the anchored ones in its folder; a travel to one sets it back on every machine, which
+then sets its copies of the session's objects to it, as a machine joining does. Braid's intents are not settings: a
+machine joining does not make them again. The line marking and anchoring itself (`every`) is each machine's own. In a
+session, SESSTRAY.EXE's Braid icon in the notification area marks or anchors a moment, or travels to one, from inside
+Windows.
 
 | Call | Does |
 | --- | --- |
@@ -95,13 +117,16 @@ to the same moment, so everyone is at the same place on one line.
 | `braid.travel({ t })` | to machine time `t` on the line (a scrub, back or ahead): the moment at or before it on the lineage, then the run from there to `t`, fast (`speed`), with the journal's actions made again as the clock reaches each one's time; from where the line is when that is between the moment and `t` |
 | `braid.anchor(name?)` | the moment of now anchored on this computer (every machine's bytes and objects by name and path, the disk, the shell, the registry, the mods, the line), under a checksum and the build signature; marked on the line here as well. The memo's ground: a page that has it starts there, nothing run again |
 | `braid.moments()`, `braid.forget(name)` | every moment on the line (`here`: this page's memory; `anchored`: this computer; `gen`, `at`, `verdict`); one let go from both |
-| `braid.every(ms = 30000, keep = 3)`, `braid.auto` | the line marking itself as the machine runs, `t1`, `t2`, ..., the last `keep` held (one found broken is held beyond them): what a lock-up or a crash is travelled back from when no one marked a moment. `every(0)` ends it |
+| `braid.every(ms = 30000, keep = 3, { anchorEvery = 300000, anchorKeep = 3 })`, `braid.auto` | the line marking itself as the machine runs, `t1`, `t2`, ..., the last `keep` held (one found broken is held beyond them): what a lock-up or a crash is travelled back from when no one marked a moment. And anchoring itself on this computer every `anchorEvery` ms, `live1`, `live2`, ..., the last `anchorKeep` kept (a broken one held beyond them), an older one let go only after a newer one is written: what a reloaded page travels back to. `every(0)` ends both; `anchorEvery: 0` the anchoring alone |
 | `braid.lint(a, b?)` | the system's machine between two moments (or a moment and now): `verdict` and `findings`. The signs of a machine that will not come back: the Win16Lock held by one thread across both, a thread at the same place with its time running out each slice, a ring-0 run at the same place, faults since, the process ended, a heap or queue only growing. Heuristics: the halting problem allows no proof |
 | `braid.memo(actions)` | a span already computed: the segment from the moment the line is at whose actions are these (`[[op, args], ...]`, as the journal has them) and whose end is on the line. The line travels to its end, the work between not done again (PIDGEN's key check, a copy): `{ from, to, ms, gen }`, or null |
 | `braid.line` | the line: `gen` now, `forks` (each generation: the moment and generation it grew from, `how`: travel, scrub, memo, anchor), `moments` with their verdicts, `segments` (each pair of moments, with how many actions between), `events` (every fault a machine reported, under its generation), `journal` |
 | `braid.journal` | the actions made through the API since the last moment (`click`, `dblclick`, `type`, `key`, `run`, `drag`, `open`), each stamped with the machine's clock; `segments`: each pair of moments with the actions between them |
 | `braid.same(a, b)` | two faults of the line compared record for record (by index into `line.events`, or `{ gen }` for a generation's last): `same`, and `diff` where they part |
-| `braid.now()`, `braid.speed(x)` | the machine's own clock (ms since its start), and the machine run ahead of the wall by `x`: steps back to back, each `x` periods, so what waits on time passes `x` times faster than real time (progress bars included; `speed(1)` is a person's pace again) |
+| `braid.now()` | the machine's own clock (ms since its start) |
+| `braid.setMachineSpeed(x)` | both machines run ahead of the wall by `x`: the PC's (its clock times the loading screen and the boot before Windows' own machine starts) and the system's (steps back to back, each `x` periods), so what waits on time passes `x` times faster than real time (progress bars included; `setMachineSpeed(1)` is a person's pace again). Resolves with what `speed()` reads |
+| `braid.speed()` | read only: the speed each machine is set to (`pc`, `system`; `null` for one not running) and the system's clock (`now`) |
+| `braid.watchPageLongTasks(ms = 300)`, `braid.pageLongTasks()` | each time one task held the page's main thread longer than `ms` (the PC's machine, the shell and a travel's unpacking run there): `at`, `ms`, `heapMB`, the braid `step` in progress. `watchPageLongTasks` starts the log afresh (`0` ends it and hands it back), `pageLongTasks` reads it; each is also the event `braid.pageLongTask` |
 | `braid.mods` | the scripts loaded over the running machine or page (`reloadScript`), `{ name, sum }` each: named beside every moment marked from then on |
 | `braid.window()`, Run > `braid` | the Braid window: the line as a slider (moments as ticks coloured by the lint, forks as wedges, the thumb at now); drag the thumb to a time or click a moment to travel; Mark, Anchor, Lint; the line marking itself |
 | `sysApp.cmd('mark' \| 'markAt' \| 'travel' \| 'moments' \| 'forget' \| 'lint' \| 'probe' \| 'speed' \| 'now' \| 'until' \| 'mods' \| 'export' \| 'import', [...])` | the same for one machine alone (`markAt`: at a time of its clock; `until`: run fast to a time and answer; `export`, `import`: its moment as bytes, and arrived at from them) |

@@ -15,7 +15,8 @@ const LDT = 0x30000, ACC = 0x40000, MEM_PAGES = 2048;
 const G = ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi', 'cf', 'pf', 'zf', 'sf', 'of', 'df', 'fs', 'ftop', 'fsw', 'fcw', 'eip',
   'cs', 'ds', 'es', 'ss', 'fsel', 'gsel', 'csb', 'dsb', 'esb', 'ssb', 'gsb',
   'if',    // the interrupt flag (win32.js CPU_REGS): CLI, STI, PUSHF, POPF and IRET here keep it
-  'xf'];   // the flags POPF and IRET keep for PUSHF and nothing else sets: AF, NT, AC, ID (flagsWord)
+  'xf',    // the flags POPF and IRET keep for PUSHF and nothing else sets: AF, NT, AC, ID (flagsWord)
+  'budget'];   // the blocks left in the clock's quantum (win32.js tick): a region counts its rounds there, as a module its blocks
 const GI = Object.fromEntries(G.map((n, i) => [n, i]));
 const SEG = [['es', 'esb'], ['cs', 'csb'], ['ss', 'ssb'], ['ds', 'dsb'], ['fsel', 'fs'], ['gsel', 'gsb']];   // by sreg number
 const I32 = 0x7f, I64 = 0x7e;
@@ -37,9 +38,22 @@ const F64 = { load: 0x2b, store: 0x39, add: 0xa0, sub: 0xa1, mul: 0xa2, div: 0xa
   eq: 0x61, ne: 0x62, lt: 0x63, gt: 0x64, fromI32: 0xb7, fromI64: 0xb9, fromF32: 0xbb, toF32: 0xb6 };
 const F64T = 0x7c, NF = 4;   // (four f64 locals, the first ones: the x87's operands and result)
 
+/** a function's code as it is written: bytes in a buffer that grows (as an array of numbers, 8 bytes a byte, the
+ *  174000 blocks of Windows 98's MSHTML translated at once took the tab past its memory); `length` set back cuts it */
+class Bytes {
+  constructor() { this.a = new Uint8Array(512); this.length = 0; }
+  push(v) { if (this.length === this.a.length) { const n = new Uint8Array(this.a.length * 2); n.set(this.a); this.a = n; } this.a[this.length++] = v; }
+  view() { return this.a.subarray(0, this.length); }
+}
 class Fn {
-  constructor() { this.b = []; this.nloc = 0; this.n64 = 0; this.l64 = []; }
-  e(...x) { for (const v of x) Array.isArray(v) ? this.b.push(...v) : this.b.push(v); return this; }
+  // (depth: the structured blocks open; rg: a region's dispatch loop (its PC local and the loop's depth), where a jump
+  // to a near address goes back to the loop instead of returning it to the host, dynRegion)
+  constructor() { this.b = new Bytes(); this.nloc = 0; this.n64 = 0; this.l64 = []; this.depth = 0; this.rg = null; }
+  /** a jump to the address on the stack: returned to the host, or in a region the loop's next round */
+  jmp() { if (!this.rg) return this.e(0x0f); return this.ls(this.rg.pc).e(0x0c, uleb(this.depth - this.rg.base)); }
+  blk() { this.depth++; return this.e(0x02, 0x40); }
+  lp() { this.depth++; return this.e(0x03, 0x40); }
+  e(...x) { const b = this.b; for (const v of x) { if (Array.isArray(v)) for (const w of v) b.push(w); else b.push(v); } return this; }
   c(v) { return this.e(0x41, sleb(v)); }
   c64(v) { return this.e(0x42, sleb64(v)); }
   cf(v) { const b = new Uint8Array(new Float64Array([v]).buffer); return this.e(0x44, ...b); }
@@ -55,12 +69,16 @@ class Fn {
   gs(n) { return this.e(0x24, uleb(GI[n])); }
   ld(sz, signed) { return this.e(sz === 4 ? 0x28 : sz === 2 ? (signed ? 0x2e : 0x2f) : (signed ? 0x2c : 0x2d), 0, 0); }
   st(sz) { return this.e(sz === 4 ? 0x36 : sz === 2 ? 0x3b : 0x3a, 0, 0); }
-  if_() { return this.e(0x04, 0x40); }
+  if_() { this.depth++; return this.e(0x04, 0x40); }
   else_() { return this.e(0x05); }
-  end() { return this.e(0x0b); }
+  end() { this.depth--; return this.e(0x0b); }
+  /** the function's entry in a code section: its size, its locals, its code, its end (a Uint8Array) */
   body() {
     const groups = [[...uleb(NF), F64T]]; if (this.nloc) groups.push([...uleb(this.nloc), I32]); if (this.n64) groups.push([...uleb(this.n64), I64]);
-    const b = [...uleb(groups.length), ...groups.flat(), ...this.b, 0x0b]; return [...uleb(b.length), ...b];
+    const head = [...uleb(groups.length), ...groups.flat()], code = this.b.view(), size = head.length + code.length + 1, pre = uleb(size);
+    const out = new Uint8Array(pre.length + size);
+    out.set(pre); out.set(head, pre.length); out.set(code, pre.length + head.length); out[out.length - 1] = 0x0b;
+    return out;
   }
 }
 
@@ -68,6 +86,10 @@ class Fn {
 // (n: the instruction of the block being translated that it met, so the block can end before it: dynBlock)
 let insnAt = 0;
 class Unsupported extends Error { constructor(m) { super(m); this.n = insnAt; } }
+// (the run-time blocks kept translated, dynBlock: each its own compiled module, about 200 KB of the engine's code space
+// whatever its size. At 60000 a machine's cache held 48509 and the PC's 12834 at Windows 98's first start, 13 GB of
+// code in 258000 regions, and the page's process ran out of memory and crashed)
+const DYN_MAX = 6000;
 const MASK = { 1: 0xff, 2: 0xffff, 4: -1 };
 const COND = ['o', 'no', 'b', 'ae', 'e', 'ne', 'be', 'a', 's', 'ns', 'p', 'np', 'l', 'ge', 'le', 'g'];
 
@@ -88,15 +110,28 @@ function mmioRange(p, lin) {
 /** translate the block at linear `lin` (code segment base `csb`, 32-bit default when `d32`); `v86` is the linear
  *  base of a virtual-8086 machine's first megabyte when the code is that machine's: a segment register's base is then
  *  v86 + 16 * its value, INT goes through the machine's own interrupt vectors, and the BIOS's ROM calls the host */
-function translate(p, lin, csb, d32, v86, limit, ss32In) {
+// (a diagnostic: each place a size prefix comes twice in one instruction, said once, with the bytes there: the
+// rule changed from a toggle to "given once", and the boot after Windows 98 Setup went into data at 500022 since)
+const dynRepeatSeen = new Set();
+function dynRepeat(p, at, b, d32) {
+  const k = `${(at >>> 0).toString(16)}:${b}`; if (dynRepeatSeen.has(k)) return; dynRepeatSeen.add(k);
+  const bytes = Array.from(p.u8.subarray(at >>> 0, (at >>> 0) + 12), x => x.toString(16).padStart(2, '0')).join(' ');
+  console.warn(`[dyn] repeated ${b.toString(16)} prefix at ${(at >>> 0).toString(16)} (${d32 ? '32' : '16'}-bit code${p.v86 !== undefined && p.v86 !== null ? ', v86' : ''}): ${bytes}`);
+}
+/** `endIn`: the code segment's end, where a block of a module loaded from its file stops (the segment's bytes end
+ *  there; the next segment's follow in memory, another segment's code) */
+function translate(p, lin, csb, d32, v86, limit, ss32In, fIn, endIn, r3In) {
   const vm = v86 !== undefined && v86 !== null;
   // (a V86 machine's FLAGS bits 12-14, IOPL and NT, which a 386 keeps as written and the translated code keeps no
   // global for: a word of the machine's own, past its first megabyte and the 64K above it)
   const XFLAGS = vm ? (p.v86Flags || (v86 + 0x110000)) | 0 : 0;   // (a machine's own word for them, p.v86Flags: the system VM's, whose 110000h is its threads' stacks)
   const u8 = p.u8;
-  const f = new Fn();
-  const T = f.loc(), A = f.loc(), B = f.loc(), R = f.loc(), C = f.loc(), X = f.loc(), K = f.loc(), D = f.loc();   // scratch locals
-  const W = f.loc64();
+  // (a region's blocks go into one function, fIn, and share its scratch locals)
+  const f = fIn || new Fn();
+  const S = f.scratch || (f.scratch = { T: f.loc(), A: f.loc(), B: f.loc(), R: f.loc(), C: f.loc(), X: f.loc(), K: f.loc(), D: f.loc(), W: f.loc64() });
+  const { T, A, B, R, C, X, K, D, W } = S;   // scratch locals
+  // (the near addresses the block goes on to that are known as it is translated: a region's next blocks, dynRegion)
+  const succ = [];
   // code of a module that writes a device's registers (its build's mmio range, recomp.py --mmio): each store that
   // lands there goes to the host after it is made, as the module's translated code sends it
   const mm = mmioRange(p, lin);
@@ -104,7 +139,8 @@ function translate(p, lin, csb, d32, v86, limit, ss32In) {
   const devLoad = (a, sz) => dev(a, sz, 0x3000000);   // (and its loads from there ask the host first, as recomp.py's do)
   // a ring-3 program's code (flat 32-bit, outside a VxD's run): an access to a page ring 3 has no access to (the null
   // page, the VxDs', the frame buffer's: win32.js PROT, a byte a page) is a page fault at the address, before it is made
-  const r3 = !vm && !csb && d32 && !(p.r0Depth > 0) && !(p.cpu.cs.value & 0xffff);
+  // (`r3In`: said by the caller, a program's or DLL's code translated as it loads, whatever runs at that moment)
+  const r3 = r3In !== undefined ? r3In : !vm && !csb && d32 && !(p.r0Depth > 0) && !(p.cpu.cs.value & 0xffff);
   // (a call's return address checked as the stack grows: a thread's stack has protected pages below it, and runaway
   // recursion meets them as a stack fault, not running on down through the heap; ESP's own accesses are not checked)
   const ssWide = ss32In !== undefined ? ss32In : !vm && (!!(p.r32(ACC + (p.cpu.ss.value & 0xfff8)) & 0x400000) || !(p.cpu.ss.value & 0xffff));
@@ -115,8 +151,14 @@ function translate(p, lin, csb, d32, v86, limit, ss32In) {
   const fetch16 = () => { const v = u8[pc] | (u8[pc + 1] << 8); pc += 2; return v; };
   const fetch32 = () => { const v = u8[pc] | (u8[pc + 1] << 8) | (u8[pc + 2] << 16) | (u8[pc + 3] << 24); pc += 4; return v; };
   const fetchS8 = () => (fetch() << 24) >> 24;
-  const done = next => { f.c(next | 0); return { fn: f, len: pc - lin, n }; };
+  const done = next => { succ.push(next >>> 0); f.c(next | 0); if (f.rg) f.jmp(); return { fn: f, len: pc - lin, n, succ }; };
+  const jcc = t => { succ.push(t >>> 0); f.if_().c(t | 0).jmp().end(); };   // (on the condition on the stack, to t)
+  // (a block ended for the host to look again, not by a jump: a stack segment loaded (MOV SS, POP SS, LSS), after which
+  // the next block is translated for the stack's width as it is then. In a region it goes back to the host, not round
+  // the region's loop into a block translated for the width before)
+  const exit = next => { f.c(next | 0); if (f.rg) f.e(0x0f); return { fn: f, len: pc - lin, n, succ }; };
   for (;;) {
+    if (endIn && pc >= endIn) return exit(pc);   // (the segment's end: the processor would fault there; the dispatcher gets the address)
     if (++n > (limit || 400)) return done(pc);   // a long straight run: continue in another block
     insnAt = n;
     const start = pc;
@@ -125,8 +167,8 @@ function translate(p, lin, csb, d32, v86, limit, ss32In) {
     let b;
     for (;;) {
       b = fetch();
-      if (b === 0x66) osz = osz === 4 ? 2 : 4;
-      else if (b === 0x67) asz = asz === 4 ? 2 : 4;
+      if (b === 0x66) { if (osz !== (d32 ? 4 : 2)) dynRepeat(p, start, 0x66, d32); osz = d32 ? 2 : 4; }   // (a prefix given twice is given once, not undone: DIBENG's 66 66 9A, a 16:16 far call from its 32-bit blit code, ran as 16:32 to 885F:343703BD, RUNONCE's fault on Windows 98's first start)
+      else if (b === 0x67) { if (asz !== (d32 ? 4 : 2)) dynRepeat(p, start, 0x67, d32); asz = d32 ? 2 : 4; }
       else if (b === 0x26 || b === 0x2e || b === 0x36 || b === 0x3e) seg = (b >> 3) & 3;
       else if (b === 0x64) seg = 4; else if (b === 0x65) seg = 5;
       else if (b === 0xf3 || b === 0xf2) rep = b;
@@ -269,13 +311,13 @@ function translate(p, lin, csb, d32, v86, limit, ss32In) {
     if (b >= 0x58 && b < 0x60) { pop(T, osz); wrReg(b & 7, osz, T); continue; }
     if (b === 0x68 || b === 0x6a) { f.c(b === 0x68 ? (osz === 4 ? fetch32() : fetch16()) : fetchS8()).ls(T); push(T, osz); continue; }
     if (b === 0x06 || b === 0x0e || b === 0x16 || b === 0x1e) { f.gg(SEG[b >> 3][0]).ls(T); push(T, osz); continue; }
-    if (b === 0x07 || b === 0x17 || b === 0x1f) { pop(T, osz); loadSeg(b >> 3, T); if (b === 0x17) return done(pc); continue; }
+    if (b === 0x07 || b === 0x17 || b === 0x1f) { pop(T, osz); loadSeg(b >> 3, T); if (b === 0x17) return exit(pc); continue; }
     if (b === 0x69 || b === 0x6b) {   // imul r, rm, imm
       const o = modrm(); rd(o, osz); f.ls(B); f.c(b === 0x69 ? (osz === 4 ? fetch32() : (fetch16() << 16) >> 16) : fetchS8()).ls(C);
       imul2(f, osz, B, C, R, W); wrReg(o.reg, osz, R); continue;
     }
     if (b >= 0x70 && b < 0x80) {   // jcc short
-      const d = fetchS8(), t = pc + d; cond(b & 15); f.ls(T); f.lg(T).if_().c(t | 0).e(0x0f).end(); return done(pc);
+      const d = fetchS8(), t = pc + d; cond(b & 15); jcc(t); return done(pc);
     }
     if (b >= 0x80 && b <= 0x83) {
       const sz = b === 0x80 || b === 0x82 ? 1 : osz, o = modrm();
@@ -292,7 +334,7 @@ function translate(p, lin, csb, d32, v86, limit, ss32In) {
     // (segment registers 6 and 7 are none, and CS is no mov's to load: an invalid opcode, as the processor takes them;
     // indexed past the table, the translator itself threw: tools/staticmap.py)
     if (b === 0x8c) { const o = modrm(); if (o.reg > 5) throw new Unsupported(`mov from segment register ${o.reg}`); f.gg(SEG[o.reg][0]).ls(T); wr(o, o.isReg ? osz : 2, T); continue; }
-    if (b === 0x8e) { const o = modrm(); if (o.reg > 5 || o.reg === 1) throw new Unsupported(`mov to segment register ${o.reg}`); rd(o, 2); f.ls(T); loadSeg(o.reg, T); if (o.reg === 2) return done(pc); continue; }
+    if (b === 0x8e) { const o = modrm(); if (o.reg > 5 || o.reg === 1) throw new Unsupported(`mov to segment register ${o.reg}`); rd(o, 2); f.ls(T); loadSeg(o.reg, T); if (o.reg === 2) return exit(pc); continue; }
     if (b === 0x8d) { const o = modrm(); if (o.isReg) throw new Unsupported('lea with a register operand'); f.lg(A).gg(sbase(o.sr)).op('sub').ls(T); wrReg(o.reg, osz, T); continue; }   // lea: the offset (less the base its address added: SS's for BP and SP)
     if (b === 0x8f) { const o = modrm(); pop(T, osz); wr(o, osz, T); continue; }
     if (b === 0x90) continue;
@@ -391,7 +433,7 @@ function translate(p, lin, csb, d32, v86, limit, ss32In) {
     if (b === 0xc2 || b === 0xc3) {   // ret near
       const n2 = b === 0xc2 ? fetch16() : 0; pop(T, osz);
       if (n2) { if (ss32) f.gg('esp').c(n2).op('add').gs('esp'); else f.gg('esp').c(0xffff0000).op('and').gg('esp').c(n2).op('add').c(0xffff).op('and').op('or').gs('esp'); }
-      f.lg(T).gg('csb').op('add').e(0x0f); return done(pc);
+      f.lg(T).gg('csb').op('add').jmp(); return done(pc);
     }
     if (b === 0xc4 || b === 0xc5) {   // les / lds
       const o = modrm(); f.lg(A).ld(osz).ls(T); f.lg(A).c(osz).op('add').ld(2).ls(B); wrReg(o.reg, osz, T); loadSeg(b === 0xc4 ? 0 : 3, B); continue;
@@ -410,14 +452,14 @@ function translate(p, lin, csb, d32, v86, limit, ss32In) {
         f.gg('ecx'); if (asz === 2) f.c(0xffff).op('and'); f.c(0).op('ne');
         if (b === 0xe1) f.gg('zf').op('and'); if (b === 0xe0) f.gg('zf').op('eqz').op('and');
       }
-      f.if_().c(t | 0).e(0x0f).end(); return done(pc);
+      jcc(t); return done(pc);
     }
-    if (b === 0xe8) { const d = osz === 4 ? fetch32() : (fetch16() << 16) >> 16; callGuard(); f.c(offOf(pc)).ls(T); push(T, osz); return done(osz === 4 ? pc + d : csb + ((pc - csb + d) & 0xffff)); }
+    if (b === 0xe8) { const d = osz === 4 ? fetch32() : (fetch16() << 16) >> 16; callGuard(); f.c(offOf(pc)).ls(T); push(T, osz); succ.push(pc >>> 0); return done(osz === 4 ? pc + d : csb + ((pc - csb + d) & 0xffff)); }
     if (b === 0xe9) { const d = osz === 4 ? fetch32() : (fetch16() << 16) >> 16; return done(osz === 4 ? pc + d : csb + ((pc - csb + d) & 0xffff)); }
     if (b === 0xeb) { const d = fetchS8(); return done(pc + d); }
-    if (b === 0xea) {   // jmp far ptr16:16/32
+    if (b === 0xea) {   // jmp far ptr16:16/32 (what follows it is no successor of the block's: a region's, a module's walk)
       const off = osz === 4 ? fetch32() : fetch16(), sel = fetch16();
-      f.c(sel).ls(T); loadSeg(1, T); f.gg('csb').c(off | 0).op('add').e(0x0f); return done(pc);
+      f.c(sel).ls(T); loadSeg(1, T); f.gg('csb').c(off | 0).op('add').e(0x0f); return exit(pc);
     }
     if (b === 0xf5) { f.gg('cf').op('eqz').gs('cf'); continue; }
     if (b === 0xf8 || b === 0xf9) { f.c(b & 1).gs('cf'); continue; }
@@ -435,8 +477,8 @@ function translate(p, lin, csb, d32, v86, limit, ss32In) {
       const sz = b & 1 ? osz : 1, o = modrm();
       if (o.reg <= 1) { const cf = K; f.gg('cf').ls(cf); rd(o, sz); f.ls(B); f.c(1).ls(C); alu2(o.reg ? 5 : 0, sz); f.lg(cf).gs('cf'); wr(o, sz, R); continue; }
       if (b === 0xff && o.reg === 6) { rd(o, osz); f.ls(T); push(T, osz); continue; }
-      if (b === 0xff && o.reg === 4) { rd(o, osz); f.gg('csb').op('add').e(0x0f); return done(pc); }
-      if (b === 0xff && o.reg === 2) { rd(o, osz); f.ls(B); callGuard(); f.c(offOf(pc)).ls(T); push(T, osz); f.lg(B).gg('csb').op('add').e(0x0f); return done(pc); }
+      if (b === 0xff && o.reg === 4) { rd(o, osz); f.gg('csb').op('add').jmp(); return done(pc); }
+      if (b === 0xff && o.reg === 2) { rd(o, osz); f.ls(B); callGuard(); f.c(offOf(pc)).ls(T); push(T, osz); succ.push(pc >>> 0); f.lg(B).gg('csb').op('add').jmp(); return done(pc); }
       if (b === 0xff && (o.reg === 3 || o.reg === 5)) {   // call/jmp far [mem]
         f.lg(A).ld(osz).ls(B); f.lg(A).c(osz).op('add').ld(2).ls(C);
         if (o.reg === 3) { f.gg('cs').ls(T); push(T, osz); f.c(offOf(pc)).ls(T); push(T, osz); }
@@ -445,7 +487,7 @@ function translate(p, lin, csb, d32, v86, limit, ss32In) {
     }
     if (b === 0x0f) {
       const b2 = fetch();
-      if (b2 >= 0x80 && b2 < 0x90) { const d = osz === 4 ? fetch32() : (fetch16() << 16) >> 16, t = osz === 4 ? pc + d : csb + ((pc - csb + d) & 0xffff); cond(b2 & 15); f.if_().c(t | 0).e(0x0f).end(); return done(pc); }
+      if (b2 >= 0x80 && b2 < 0x90) { const d = osz === 4 ? fetch32() : (fetch16() << 16) >> 16, t = osz === 4 ? pc + d : csb + ((pc - csb + d) & 0xffff); cond(b2 & 15); jcc(t); return done(pc); }
       if (b2 >= 0x90 && b2 < 0xa0) { const o = modrm(); cond(b2 & 15); f.ls(T); wr(o, 1, T); continue; }
       if (b2 === 0xb6 || b2 === 0xb7 || b2 === 0xbe || b2 === 0xbf) {
         const ssz = b2 & 1 ? 2 : 1, o = modrm(); rd(o, ssz);
@@ -468,7 +510,7 @@ function translate(p, lin, csb, d32, v86, limit, ss32In) {
       }
       if (b2 === 0xa0 || b2 === 0xa8) { f.gg(b2 === 0xa0 ? 'fsel' : 'gsel').ls(T); push(T, osz); continue; }
       if (b2 === 0xa1 || b2 === 0xa9) { pop(T, osz); loadSeg(b2 === 0xa1 ? 4 : 5, T); continue; }
-      if (b2 === 0xb2 || b2 === 0xb4 || b2 === 0xb5) { const o = modrm(); f.lg(A).ld(osz).ls(T); f.lg(A).c(osz).op('add').ld(2).ls(B); wrReg(o.reg, osz, T); loadSeg(b2 === 0xb2 ? 2 : b2 === 0xb4 ? 4 : 5, B); if (b2 === 0xb2) return done(pc); continue; }
+      if (b2 === 0xb2 || b2 === 0xb4 || b2 === 0xb5) { const o = modrm(); f.lg(A).ld(osz).ls(T); f.lg(A).c(osz).op('add').ld(2).ls(B); wrReg(o.reg, osz, T); loadSeg(b2 === 0xb2 ? 2 : b2 === 0xb4 ? 4 : 5, B); if (b2 === 0xb2) return exit(pc); continue; }
       // cpuid: the processor as the machine is one (an i486DX4: tools/recomp.py x_cpuid)
       if (b2 === 0xa2) {
         f.gg('eax').op('eqz').if_().c(1).gs('eax').c(0x756e6547).gs('ebx').c(0x49656e69).gs('edx').c(0x6c65746e).gs('ecx').else_();
@@ -831,7 +873,7 @@ function strop(f, b, osz, asz, seg, rep, L, alu2, szp, dev, guard) {
   };
   if (!rep) { body(); return; }
   // while (count) { body; count--; stop on zf for repe/repne with cmps/scas }
-  f.e(0x02, 0x40).e(0x03, 0x40);
+  f.blk().lp();
   idx('ecx'); f.op('eqz').e(0x0d, 1);
   body();
   if (asz === 4) f.gg('ecx').c(1).op('sub').gs('ecx'); else f.gg('ecx').c(0xffff0000).op('and').gg('ecx').c(1).op('sub').c(0xffff).op('and').op('or').gs('ecx');
@@ -853,8 +895,72 @@ function assemble(fn, shared) {
     imp('fsin', 2), imp('fcos', 2), imp('ftan', 2), imp('fatan2', 3), imp('fexp2', 2), imp('flog2', 2), imp('fmod', 3), imp('frem', 3), imp('f80load', 4), imp('f80store', 5)]);
   const funcs = vec([[0]]);
   const exps = vec([[...str('run'), 0x00, 12]]);
-  const code = vec([fn.body()]);
+  const code = vec([[...fn.body()]]);
   return new Uint8Array([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0, ...sec(1, types), ...sec(2, imps), ...sec(3, funcs), ...sec(7, exps), ...sec(10, code)]);
+}
+
+/** the code segment of a module loaded from its file that holds linear `eip` (its bytes as loaded, written no more):
+ *  { base, len }, or null */
+function fileCodeSeg(p, eip) {
+  for (const m of p.ne ? p.ne.values() : []) {
+    if (!m || !m.meta || !m.meta.dynamic || !m.segs) continue;
+    for (const g of m.segs) if (!(g.flags & 1) && g.len && eip >= g.base && eip < g.base + g.len) { g.mod = m; return g; }
+  }
+  // (a program's or DLL's code mapped from its file, its executable sections: the one in place in this process's view)
+  for (const m of p.modules || []) {
+    if (!m.codeRanges || m.hidden || !m.meta) continue;
+    for (const g of m.codeRanges) if (eip >= g.base && eip < g.base + g.len) { g.mod = m; return g; }
+  }
+  return null;
+}
+/** a block start run-time code reached in a module loaded from its file, kept as its segment and offset (the module's
+ *  dynEntries, the new ones dynNew): what running it found of its code that the static walk did not, the entries the
+ *  module is translated again with (neRebuild) and the memo keeps for its next load (neCompile) */
+function noteEntry(g, a) {
+  const m = g.mod; if (!m) return;
+  // (a 16-bit module's by its segment and offset; an image's as 0 and its offset from the image's base)
+  const s = m.dynEntries || (m.dynEntries = new Set()), k = `${g.num}:${a - (g.flat ? m.base : g.base)}`;
+  if (!s.has(k)) { s.add(k); (m.dynNew || (m.dynNew = new Set())).add(k); }
+}
+const REGION_BLOCKS = 96, REGION_ROUNDS = 512;
+/** a region of a file-loaded module's code from `eip`: the blocks reached from it by the near jumps, calls and
+ *  branches known as they are translated (up to REGION_BLOCKS, in its code segment), in one function whose loop runs
+ *  the block at its PC, goes round to the block a jump in it reaches, and returns to the host an address none of
+ *  them starts at, when the clock's quantum is spent (each round a block of the block budget, as the modules count
+ *  theirs: the processor's time, dynRun ticks), or where a block itself returns (a far transfer, an interrupt, a
+ *  fault). Counted as 64 blocks a call whatever it ran, a region's loop read as no time on the 8254 (win32.js blockNow),
+ *  and Windows 98 Setup's CPU timing divided by it (W98SETUP 1:6E0h) */
+function dynRegion(p, eip, g, csb, d32, ss32, keyOf) {
+  // (entered at any of its blocks: the address it is entered at is EIP's as it is called, dynRun)
+  // (its first round runs whatever the budget: entered, a region goes one block on at least)
+  const f = new Fn(), PC = f.loc(), FIRST = f.loc(), hooks = p.entryHooks, ends = p.dynEnds || (p.dynEnds = new Map());
+  const gEnd = g.base + g.len;
+  f.gg('eip').ls(PC).c(1).ls(FIRST);
+  f.lp(); f.rg = { pc: PC, base: f.depth };
+  f.gg('budget').c(0).op('le_s').lg(FIRST).op('eqz').op('and').if_().lg(PC).e(0x0f).end();
+  f.c(0).ls(FIRST); f.gg('budget').c(1).op('sub').gs('budget');
+  const ranges = [], q = [eip], seen = new Set(q);
+  while (q.length && ranges.length < REGION_BLOCKS) {
+    const a = q.shift();
+    if (a !== eip && hooks && hooks.has(a)) continue;   // (a hooked address is the host's to enter, dynRun)
+    const mark = f.b.length, depth = f.depth;
+    f.lg(PC).c(a | 0).op('eq').if_();
+    const body = f.b.length;
+    let t = null;
+    try { t = translate(p, a, csb, d32, null, ends.get(keyOf(a)), ss32, f, gEnd); }
+    catch (e) {
+      if (!(e instanceof Unsupported)) throw e;
+      f.b.length = body; f.depth = depth + 1;   // (back to the block's test, its body gone)
+      if (e.n > 1) { ends.set(keyOf(a), e.n - 1); t = translate(p, a, csb, d32, null, e.n - 1, ss32, f, gEnd); }
+    }
+    if (!t) { f.b.length = mark; f.depth = depth; if (a === eip) return null; continue; }
+    f.end();
+    ranges.push({ a, bytes: Array.from(p.u8.subarray(a, a + t.len)) });
+    for (const s of t.succ) if (!seen.has(s) && s >= g.base && s < gEnd) { seen.add(s); q.push(s); }
+  }
+  f.lg(PC).e(0x0f);   // (an address no block of the region starts at: the host's)
+  f.end(); f.lg(PC);
+  return { fn: f, ranges };
 }
 
 /** the run-time block at linear `eip`, translated now or from the cache; null when it cannot be translated */
@@ -884,11 +990,28 @@ P.dynBlock = function (eip) {
   // blocks a millisecond, a quarter of the time in this lookup)
   const r0 = this.r0Depth > 0, fast = this.dynFast || (this.dynFast = new Map()), fe = fast.get(eip);
   if (fe && fe.csb === csb && fe.cs === cs && fe.d32 === d32 && fe.ss32 === ss32 && fe.vm === vm && fe.r0 === r0) {
-    const b = fe.c.bytes; let i = 0; for (; i < b.length; i++) if (u8[eip + i] !== b[i]) break;
-    if (i === b.length) return fe.c;
+    if (fe.c.ranges ? regionOk(this, fe.c) : bytesOk(u8, eip, fe.c.bytes)) return fe.c;
   }
   const remember = c => { fast.set(eip, { c, csb, cs, d32, ss32, vm, r0 }); return c; };
-  const key =`${eip}:${csb}:${d32 ? 32 : 16}:s${ss32 ? 32 : 16}:c${cs}${vm ? 'v' : ''}${this.r0Depth > 0 ? 'r0' : ''}`;   // (ring 0's translation has no ring-3 guard)
+  const keyOf = a => `${a}:${csb}:${d32 ? 32 : 16}:s${ss32 ? 32 : 16}:c${cs}${vm ? 'v' : ''}${this.r0Depth > 0 ? 'r0' : ''}`;   // (ring 0's translation has no ring-3 guard)
+  const key = keyOf(eip);
+  // (code of a module loaded from its file: a region of its blocks in one function, dynRegion)
+  const g = !vm && !r0 && fileCodeSeg(this, eip);
+  if (g) {
+    const rk = key + ':R', kr = this.dynCache.get(rk) || [];
+    const had = kr.find(k => regionOk(this, k)); if (had) return remember(had);
+    const r = dynRegion(this, eip, g, csb, d32, ss32, keyOf);
+    if (r) {
+      for (const { a } of r.ranges) noteEntry(g, a);
+      const run = new WebAssembly.Instance(new WebAssembly.Module(assemble(r.fn, Object.prototype.toString.call(this.mem.buffer) === '[object SharedArrayBuffer]')), { env: dynEnv(this), cpu: this.cpu }).exports.run;
+      const c = { run, ranges: r.ranges, hooks: this.entryHooks ? this.entryHooks.size : 0 };
+      // (the region for each of its blocks: entered at one later (a return from another module, a callback), it runs
+      // as it is, not a region of its own made and compiled for each address code is entered at)
+      for (const { a } of r.ranges) { if (a === eip) continue; const k = keyOf(a) + ':R', l = this.dynCache.get(k) || []; this.dynCache.set(k, [c, ...l.slice(0, 3)]); }
+      this.dynCache.set(rk, [c, ...kr.slice(0, 3)]); dynTrim(this);
+      return remember(c);
+    }
+  }
   // (a few translations per address: two processes' programs at one base, each process's view in place in turn, arenaUse)
   const kept = this.dynCache.get(key) || [];
   let c = kept.find(k => k.bytes.every((v, i) => u8[eip + i] === v));
@@ -904,20 +1027,35 @@ P.dynBlock = function (eip) {
   catch (e) {
     if (!(e instanceof Unsupported)) throw e;
     if (e.n > 1) { ends.set(key, e.n - 1); t = translate(this, eip, csb, d32, vm ? this.v86 : null, e.n - 1, ss32); }
-    else { this.trapped = `run-time code at ${eip.toString(16)} (${this.whereOf(eip)}, bytes ${Array.from(u8.subarray(eip, eip + 12), v => v.toString(16).padStart(2, '0')).join(' ')}): ${e.message}`; return null; }
+    else { this.trappedAt = eip; this.trapped = `run-time code at ${eip.toString(16)} (${this.whereOf(eip)}, bytes ${Array.from(u8.subarray(eip, eip + 12), v => v.toString(16).padStart(2, '0')).join(' ')}): ${e.message}`; return null; }
   }
   t.fn.e(0x0f);
-  // (the imports: the memory, port I/O, interrupts, and the x87's math, the process's own as its static modules get it)
-  const e = this.imports && this.imports.env, f80 = { f80load: a => this.f80load(a), f80store: (a, v) => this.f80store(a, v) };
-  const env = this.dynEnv || (this.dynEnv = { mem: this.mem, io: (port, k) => this.portIO(port & 0xffff, k & 7, !!(k & 8)), trap: (x, c) => this.trap(x, c),
-    fsin: Math.sin, fcos: Math.cos, ftan: Math.tan, fatan2: Math.atan2, fexp2: x => Math.pow(2, x), flog2: Math.log2, fmod: (a, b) => a % b, frem: (a, b) => a - b * Math.round(a / b),
-    ...f80, ...(e ? { f80load: e.f80load, f80store: e.f80store } : {}) });
-  if (!this.cpu.xf) this.cpu.xf = new WebAssembly.Global({ value: 'i32', mutable: true }, 0);   // (a processor made without it: v86.js's)
-  const run = new WebAssembly.Instance(new WebAssembly.Module(assemble(t.fn, Object.prototype.toString.call(this.mem.buffer) === '[object SharedArrayBuffer]')), { env, cpu: this.cpu }).exports.run;
+  const run = new WebAssembly.Instance(new WebAssembly.Module(assemble(t.fn, Object.prototype.toString.call(this.mem.buffer) === '[object SharedArrayBuffer]')), { env: dynEnv(this), cpu: this.cpu }).exports.run;
   c = { run, bytes: Array.from(u8.subarray(eip, eip + t.len)) };
-  this.dynCache.set(key, [c, ...kept.slice(0, 3)]);
+  this.dynCache.set(key, [c, ...kept.slice(0, 3)]); dynTrim(this);
   return remember(c);
 };
+/** the imports: the memory, port I/O, interrupts, and the x87's math, the process's own as its static modules get it */
+function dynEnv(p) {
+  if (!p.cpu.xf) p.cpu.xf = new WebAssembly.Global({ value: 'i32', mutable: true }, 0);   // (a processor made without it: v86.js's)
+  if (p.dynEnv) return p.dynEnv;
+  const e = p.imports && p.imports.env, f80 = { f80load: a => p.f80load(a), f80store: (a, v) => p.f80store(a, v) };
+  return (p.dynEnv = { mem: p.mem, io: (port, k) => p.portIO(port & 0xffff, k & 7, !!(k & 8)), trap: (x, c) => p.trap(x, c),
+    fsin: Math.sin, fcos: Math.cos, ftan: Math.tan, fatan2: Math.atan2, fexp2: x => Math.pow(2, x), flog2: Math.log2, fmod: (a, b) => a % b, frem: (a, b) => a - b * Math.round(a / b),
+    ...f80, ...(e ? { f80load: e.f80load, f80store: e.f80store } : {}) });
+}
+/** the cache has a size: past it, the older half goes, to be translated again if it runs again. Each block is a
+ *  WebAssembly module of its own, kept for good: Windows 98's first start, every DLL of it run from its file, made
+ *  them by the hundred thousand, and the tab ran out of memory */
+function dynTrim(p) {
+  if (p.dynCache.size <= DYN_MAX) return;
+  let n = p.dynCache.size >> 1; for (const k of p.dynCache.keys()) { p.dynCache.delete(k); if (--n <= 0) break; }
+  if (p.dynFast) p.dynFast.clear();
+}
+const bytesOk = (u8, at, b) => { for (let i = 0; i < b.length; i++) if (u8[at + i] !== b[i]) return false; return true; };
+/** a region still as it was translated: each block's bytes, and the host's hooks (an address hooked since is the
+ *  host's to enter, and the region would run past it) */
+const regionOk = (p, c) => (p.entryHooks ? p.entryHooks.size : 0) === c.hooks && c.ranges.every(r => bytesOk(p.u8, r.a, r.bytes));
 /** whether `eip` starts a block of a translated module the dispatcher runs (not hidden: another process's program at
  *  this address is not this one's code, arenaUse). The modules' code ranges by 64K page, made again when the module
  *  list changes: run-time code asked after every block, and went through every module each time */
@@ -938,8 +1076,12 @@ P.staticCodeAt = function (eip) {
 };
 /** run run-time code from `eip` until control reaches translated module code (or the sentinel); the next address */
 P.dynRun = function (eip) {
+  // (the processor's time, as the dispatcher asks: the block budget the translated modules count down, a region's call
+  // as a run of blocks; at none left, tick. One count, so the clock to the block (win32.js blockNow) reads run-time
+  // code's blocks as it reads the modules')
+  const bud = this.cpu.budget;
   for (let n = 0; ; n++) {
-    if ((n & 0xfff) === 0xfff) { this.cpu.eip.value = eip; if (this.tick(eip)) return -1; }   // the processor's time, as the dispatcher asks
+    if (bud.value <= 0) { this.cpu.eip.value = eip; if (this.tick(eip)) return -1; }
     // (an export another module enters, hooked, win32.js dispatch: a module run from its file reaches it here, never
     // through the dispatcher; a hook that answers where to go on takes the call)
     if (this.entryHooks) { const h = this.entryHooks.get(eip); if (h) { const to = h.call(this); if (to !== undefined) { eip = u32(to); if (eip === LAYOUT.SENTINEL || eip >= LAYOUT.THUNK16 || this.staticCodeAt(eip)) return eip; continue; } } }
@@ -948,10 +1090,17 @@ P.dynRun = function (eip) {
     // its file, called its LS01 relay, and the relay's padding (INT 3) ran instead)
     if (this.dataCode) { const to = this.dataCode(eip); if (to !== undefined && to !== null) { eip = u32(to); if (eip === LAYOUT.SENTINEL || eip >= LAYOUT.THUNK16 || this.staticCodeAt(eip)) return eip; continue; } }
     const blk = this.dynBlock(eip); if (!blk) return null;
-    const from = eip;
+    const from = eip; if (!blk.ranges) bud.value -= 1;   // (a region counts its own rounds)
     if (this.dynHook) this.dynHook(eip);   // (a diagnostic: the blocks a program runs, worker.js cmd 'blocks')
+    if (blk.ranges) this.cpu.eip.value = eip;   // (a region starts at the block it is entered at)
     try { eip = u32(blk.run()); }
-    catch (e) { if (!(e instanceof WebAssembly.RuntimeError)) throw e; this.trapped = `run-time code at ${eip.toString(16)} (instruction at ${u32(this.cpu.eip.value).toString(16)}): ${e.message}`; return null; }
+    catch (e) {
+      if (!(e instanceof WebAssembly.RuntimeError)) throw e;
+      // (a divide error: #DE at the instruction, for the program's handlers, as the processor raises it; it was
+      // reported as code the machine had none of, exception 6)
+      if (/divide by zero|integer overflow/.test(e.message)) { eip = u32(this.raise(0, u32(this.cpu.eip.value))); if (eip === LAYOUT.SENTINEL || eip >= LAYOUT.THUNK16 || this.staticCodeAt(eip)) return eip; continue; }
+      this.trapped = `run-time code at ${eip.toString(16)} (instruction at ${u32(this.cpu.eip.value).toString(16)}): ${e.message}`; return null;
+    }
     if (this.memW) this.memCheck(`run-time code at ${from.toString(16)}`);   // (a write watch: each block of run-time code, win32.js memCheck)
     if (eip === LAYOUT.SENTINEL || eip >= LAYOUT.THUNK16) return eip;
     if (this.staticCodeAt(eip)) return eip;   // (another process's program at this address is not this one's code: arenaUse)
@@ -961,5 +1110,367 @@ P.dynRun = function (eip) {
 P.hasBlock = function (m, eip) {
   if (!m.meta.lookup) return false;
   return new Uint32Array(this.mem.buffer, m.meta.lookup + 4 * (eip - m.meta.textLo), 1)[0] !== 0;
+};
+
+// ---------------------------------------------------------------- a module loaded from its file, translated whole
+// A 16-bit module KRNL386's loader maps from its file (ne16.js loadNEDynamic: Windows 98's GDI.EXE and USER.EXE over
+// Windows 95's, Setup's own SETUPX.DLL, a program's DLLs) runs as the bundle's modules run: its code translated whole
+// as it loads, from the block starts its file names and the ones found as it ran, into one module of the bundle's
+// shape (a function a block, a table of them, a dispatch loop over the module's block table), so the dispatcher
+// finds it by its text range and calls its run(eip) as it calls system.js's. Run block by block (dynBlock) and by
+// regions of a few dozen blocks (dynRegion), Windows 98's desktop drew at under a frame a second. The translation is
+// memoized on this computer (IndexedDB) by the file's SHA-256 with the placement it was made at: a later start that
+// finds the same room puts the module there and runs the memo's module, translating nothing. Blocks the file's
+// entries do not reach (reached through pointers: window procedures, callbacks, jump tables) are run-time code when
+// first met (trap 2 → dynRun → dynRegion, noteEntry) and the module is translated again with them at an idle step of
+// the machine's (neRebuild), the memo updated
+/** the imports of a module translated here, in the order translate()'s calls name them (io 0, trap 1, the x87's
+ *  2-11), then the dispatch loop's: api (a 16-bit thunk's entry) and tick (the block budget) */
+const NE_IMPORTS = [['io', 1], ['trap', 1], ['fsin', 2], ['fcos', 2], ['ftan', 2], ['fatan2', 3], ['fexp2', 2], ['flog2', 2], ['fmod', 3], ['frem', 3], ['f80load', 4], ['f80store', 5], ['api', 6], ['tick', 6]];
+const NE_RUN = NE_IMPORTS.length;   // (the run function's index; the blocks follow it)
+const NE_MAX_BYTES = 0x40000000;    // (the largest module the engine compiles: WebAssembly.Module's 1 GiB)
+const BUDGET_G = GI.budget;         // (the block budget, the processor's, which the dispatch loop counts down)
+const LOOKUP_G = G.length;          // (the block table's base, env.lookup: given as the module is made, so the memo's bytes hold no address of the table)
+/** the module: each block a function returning the address it goes on to (translate's, as dynBlock makes them),
+ *  the table of them, and run(eip), tools/recomp.py's dispatch loop: at the sentinel 0; at a 16-bit thunk the
+ *  host's api, and 1 when it answers -1 (the thread's time is up); every BUDGET blocks tick, 1 when it says stop;
+ *  outside the module's code 3; at an address of its own with no block trap(eip, 2) and 2 (run-time code, dynRun);
+ *  else the block, found in the module's table, an i32 a code byte at `lookup` (the block's number + 1) */
+function assembleNE(bodies, textLo, textHi, shared, flat = false) {
+  // (the sections but the code as arrays; the code, the blocks' bodies (each a Uint8Array, its size first and its end
+  // last, Fn.body), copied into the module's bytes once: a module of USER's 45000 blocks is 12 MB)
+  const sec = (n, b) => [n, ...uleb(b.length), ...b];
+  const types = vec([[0x60, 0, 1, I32], [0x60, 2, I32, I32, 0], [0x60, 1, F64T, 1, F64T], [0x60, 2, F64T, F64T, 1, F64T], [0x60, 1, I32, 1, F64T], [0x60, 2, I32, F64T, 0], [0x60, 1, I32, 1, I32]]);
+  const imps = vec([[...str('env'), ...str('mem'), 0x02, ...(shared ? [0x03, ...uleb(MEM_PAGES), ...uleb(65536)] : [0x00, ...uleb(MEM_PAGES)])],
+    ...G.map(n => [...str('cpu'), ...str(n), 0x03, I32, 1]), [...str('env'), ...str('lookup'), 0x03, I32, 0],
+    ...NE_IMPORTS.map(([n, t]) => [...str('env'), ...str(n), 0x00, t])]);
+  const funcs = vec([[6], ...bodies.map(() => [0])]);
+  const table = vec([[0x70, 0x00, ...uleb(bodies.length)]]);
+  const exps = vec([[...str('run'), 0x00, NE_RUN]]);
+  const elem = vec([[0x00, 0x41, 0x00, 0x0b, ...vec(bodies.map((_, i) => uleb(NE_RUN + 1 + i)))]]);
+  // run(eip): local 0 the address, local 1 its block's number
+  const imp = n => [0x10, ...uleb(NE_IMPORTS.findIndex(([k]) => k === n))];
+  const EIP = [0x20, 0], ID = [0x20, 1], SET_EIP = [0x20, 0, 0x24, ...uleb(GI.eip)], c = v => [0x41, ...sleb(v)];
+  const r = [
+    0x03, 0x40,                                                                               // loop
+    ...EIP, ...c(LAYOUT.SENTINEL), OP.eq, 0x04, 0x40, ...SET_EIP, ...c(0), 0x0f, 0x0b,     //   at the sentinel: 0
+    ...EIP, ...c(LAYOUT.THUNK16), OP.ge_u, 0x04, 0x40,                                     //   a 16-bit thunk: the host's api
+    ...SET_EIP, ...EIP, ...imp('api'), 0x21, 0, ...EIP, ...c(-1), OP.eq, 0x04, 0x40, ...c(1), 0x0f, 0x0b, 0x0c, 1, 0x0b,
+    0x23, ...uleb(BUDGET_G), ...c(1), OP.sub, 0x24, ...uleb(BUDGET_G),                      //   the block budget
+    0x23, ...uleb(BUDGET_G), ...c(0), OP.le_s, 0x04, 0x40, ...SET_EIP, ...EIP, ...imp('tick'), 0x04, 0x40, ...c(1), 0x0f, 0x0b, 0x0b,
+    ...EIP, ...c(textLo), OP.sub, 0x22, 1, ...c(textHi - textLo), OP.ge_u, 0x04, 0x40, ...SET_EIP, ...c(3), 0x0f, 0x0b,   // outside the module: 3
+    // the processor as the module was translated for (run-time code keys each block by it, dynBlock): a program's or
+    // DLL's code with CS 0 on a 32-bit stack, a 16-bit segment's on a 16-bit one; else run-time code takes the block
+    // (Windows 98's USER32 runs its window procedures' callbacks on a 16-bit stack: as 32-bit pushes and pops there,
+    // a return went to 0)
+    0x23, ...uleb(GI.ss), ...c(0xfff8), OP.and, 0x22, 2, OP.eqz,                                  //   SS null, or
+    0x20, 2, ...c(ACC), OP.add, 0x28, 2, 0, ...c(0x400000), OP.and, ...c(0), OP.ne, OP.or,        //   its descriptor's B bit: a 32-bit stack
+    ...(flat ? [0x23, ...uleb(GI.cs), ...c(0xffff), OP.and, OP.eqz, OP.and, OP.eqz] : []),        //   flat: with CS 0, or not as translated
+    0x04, 0x40, ...SET_EIP, ...EIP, ...c(2), ...imp('trap'), ...c(2), 0x0f, 0x0b,
+    ...ID, ...c(2), OP.shl, 0x23, ...uleb(LOOKUP_G), OP.add, 0x28, 2, 0, 0x22, 1, OP.eqz, 0x04, 0x40,   //   no block here: run-time code
+    ...SET_EIP, ...EIP, ...c(2), ...imp('trap'), ...c(2), 0x0f, 0x0b,
+    ...SET_EIP, ...ID, ...c(1), OP.sub, 0x11, 0, 0x00, 0x21, 0,                                 //   the block
+    0x0c, 0, 0x0b,
+    0x00];                                                                                    // unreachable
+  const run = [...uleb(1), ...uleb(2), I32, ...r, 0x0b];   // (locals 1, the block's number, and 2, a selector)
+  const head = [...uleb(bodies.length + 1), ...uleb(run.length), ...run];
+  const codeLen = bodies.reduce((s, b) => s + b.length, head.length);
+  const pre = [0, 0x61, 0x73, 0x6d, 1, 0, 0, 0, ...sec(1, types), ...sec(2, imps), ...sec(3, funcs), ...sec(4, table), ...sec(7, exps), ...sec(9, elem), 10, ...uleb(codeLen), ...head];
+  const out = new Uint8Array(pre.length + codeLen - head.length);
+  out.set(pre); let at = pre.length;
+  for (const b of bodies) { out.set(b, at); at += b.length; }
+  return out;
+}
+/** a module's code: a 16-bit module's code segments, or a program's or DLL's executable sections (codeRanges: flat,
+ *  CS base 0, 32-bit, ring 3; win32.js loadImage) */
+const codeSegs = rec => rec.codeRanges || rec.segs.filter(g => !(g.flags & 1) && g.len);
+/** a hash of the bytes a translation was made from, its blocks' own as they lie in memory relocated (not the data
+ *  between them: a DLL's import table in its code section, written as it loads, the targets each start's own) */
+function blocksHash(u8, blocks, lens) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < blocks.length; i++) for (let a = blocks[i], e = a + lens[i]; a < e; a++) { h ^= u8[a]; h = Math.imul(h, 0x01000193); }
+  return h >>> 0;
+}
+/** the block starts of a program or DLL mapped from its file: its exports in its code, its entry point, each pointer
+ *  its base relocations name that points into its code (vtables, jump tables, the procedures it hands to Windows),
+ *  and the ones found as it ran (dynEntries) */
+function peEntries(p, rec) {
+  const base = rec.base, pe = base + p.r32(base + 0x3c), opt = pe + 24, dir = k => [p.r32(opt + 96 + 8 * k), p.r32(opt + 96 + 8 * k + 4)];
+  // (the import tables are no code, though Microsoft's linker puts them in the code section: the import address table
+  // (directory 12) and each import's name and address arrays. Their pointers' targets (call [slot]) are no block
+  // starts, and their bytes, the imports bound, are another start's each time: as blocks, the memo's hash never matched)
+  const data = [];
+  { const [r, s] = dir(12); if (r && s) data.push([base + r, base + r + s]); }
+  { const [r] = dir(1); if (r) for (let d = base + r; p.r32(d + 12); d += 20) for (const t of [p.r32(d), p.r32(d + 16)]) { if (!t) continue; let e = base + t; while (p.r32(e)) e += 4; data.push([base + t, e + 4]); } }
+  const code = codeSegs(rec), out = new Set();
+  const inCode = a => code.some(g => a >= g.base && a < g.base + g.len) && !data.some(([lo, hi]) => a >= lo && a < hi);
+  for (const a of rec.exports.values()) if (inCode(a)) out.add(a);
+  if (rec.meta.entry && inCode(rec.meta.entry)) out.add(rec.meta.entry);
+  const [rva, size] = dir(5);
+  if (rva && size) for (let o = base + rva, end = o + size; o < end;) {
+    const page = p.r32(o), sz = p.r32(o + 4); if (sz < 8) break;
+    for (let k = 8; k < sz; k += 2) { const e = p.r16(o + k); if (e >> 12 === 3) { const t = p.r32(base + page + (e & 0xfff)) >>> 0; if (inCode(t)) out.add(t); } }
+    o += sz;
+  }
+  for (const e of rec.dynEntries || []) { const off = +e.split(':')[1], a = (base + off) >>> 0; if (inCode(a)) out.add(a); }
+  return [...out];
+}
+/** the block starts a module's file names: its entry table's, each code segment's start, its entry point, the
+ *  targets of its internal relocations in code (far calls and jumps between its segments, and the pointers its data
+ *  holds to its code), a flat thunk's connection data; and the ones found as it ran (dynEntries, noteEntry) */
+P.neEntries = function (rec) {
+  if (rec.codeRanges) return peEntries(this, rec);
+  const code = codeSegs(rec), file = rec.file;
+  const inCode = (g, off) => g && !(g.flags & 1) && off < g.len;
+  const out = new Set();
+  for (const g of code) out.add(g.base);
+  const bySel = new Map(rec.segs.map(g => [g.sel & 0xfff8, g]));
+  const linOf = far => { const g = bySel.get((far >>> 16) & 0xfff8); return inCode(g, far & 0xffff) ? g.base + (far & 0xffff) : 0; };
+  for (const v of rec.exports.values()) { const a = linOf(v); if (a) out.add(a); }
+  { const [es, eo] = rec.meta.entry; const g = rec.segs[es - 1]; if (inCode(g, eo)) out.add(g.base + eo); }
+  // (each place an internal relocation made: a far pointer (16:16) or a selector and offset as the loader left them in
+  // memory, relocSeg16; read there, an additive one's offset is the instruction's own (W98SETUP's far calls name
+  // segment 1 offset 0 and add the call's offset), a chain's each place's, a movable entry's its entry's)
+  for (const sg of rec.segs) {
+    if (!sg.rel) continue;
+    const cnt = file[sg.rel] | (file[sg.rel + 1] << 8);
+    for (let k = 0; k < cnt; k++) {
+      const r = sg.rel + 2 + 8 * k, at = file[r], typ = file[r + 1], off = file[r + 2] | (file[r + 3] << 8);
+      if ((typ & 3) !== 0 || at !== 3) continue;
+      const take = loc => { if (loc + 4 > sg.alloc) return; const t = linOf(this.r32(sg.base + loc)); if (t) out.add(t); };
+      if (typ & 4) { take(off); continue; }
+      // (a chain: each place held the next's offset before the loader wrote the pointer there; the file has the chain)
+      for (let loc = off, guard = 0; loc !== 0xffff && loc + 4 <= sg.len && guard < 0x10000; guard++) { take(loc); loc = file[sg.fileoff + loc] | (file[sg.fileoff + loc + 1] << 8); }
+    }
+  }
+  for (const [nm, ord] of Object.entries(rec.names || {})) {
+    if (!/THKCONNECTIONDATA/.test(nm)) continue;
+    const v = rec.exports.get(ord); const g = v && bySel.get((v >>> 16) & 0xfff8); if (!g) continue;
+    const at = g.base + (v & 0xffff), ptr = this.r32(at + 4), t = ((ptr >>> 16) === 0xffff || ((ptr >>> 16) & 0xfff8) === (g.sel & 0xfff8)) && inCode(g, ptr & 0xffff) ? g.base + (ptr & 0xffff) : 0;
+    if (t) out.add(t);
+  }
+  for (const e of rec.dynEntries || []) { const [num, off] = e.split(':').map(Number), g = rec.segs[num - 1]; if (inCode(g, off)) out.add(g.base + off); }
+  return [...out];
+};
+/** the module's code translated whole from its entries (neEntries), each block reached by the near jumps, calls and
+ *  branches known as it is translated (translate's succ) in its code segments; its blocks sorted, the module's bytes
+ *  (assembleNE). A block an instruction translation cannot take ends before it (as dynBlock's do); one that starts
+ *  at such an instruction is left out, and run-time code meets it (#UD there, as the bundle's modules raise it).
+ *  Each block's translation is taken back from the module's own wasm (netSeed: its blocks, their lengths and the hash
+ *  of the bytes each was made from) while its bytes are as they were: translated again with the entries found since,
+ *  only those are new work */
+P.translateNE = function (rec) {
+  const code = codeSegs(rec), segOf = a => code.find(g => a >= g.base && a < g.base + g.len);
+  // (the blocks it was made with, read back from its own module (netSeed: its wasm, blocks and their lengths), not kept
+  // beside it: a second copy of every module's code, MSHTML's 50 MB among them)
+  const kept = seedBlocks(this.u8, rec.netSeed), next = new Map();
+  // (the blocks kept, each still a block while its bytes are as they were, and the walk from the entries for new ones)
+  const q = [...this.neEntries(rec), ...kept.keys()];
+  while (q.length) {
+    const a = q.pop(); if (next.has(a)) continue;
+    const g = segOf(a); if (!g) continue;
+    let c = kept.get(a);
+    if (!c || rangeSum(this.u8, a, c.len) !== c.sum) {
+      // (a 16-bit segment's code: its base CS's, its width its flag's, a 16-bit stack; a program's or DLL's: flat, on a
+      // 32-bit stack, ring 3's accesses checked as run-time code checks them)
+      const csb = g.flat ? 0 : g.base, d32 = g.flat || g.bits === 32, ss32 = !!g.flat, r3 = !!g.flat;
+      let t = null;
+      try { t = translate(this, a, csb, d32, null, undefined, ss32, undefined, g.base + g.len, r3); }
+      catch (e) { if (!(e instanceof Unsupported)) throw e; if (e.n > 1) t = translate(this, a, csb, d32, null, e.n - 1, ss32, undefined, g.base + g.len, r3); }
+      // (the block returns the address it goes on to, as dynBlock's do: what a block leaves on the stack past that
+      // (an exit made inside it, then the address after) is the return's to drop)
+      if (t) t.fn.e(0x0f);
+      const len = t ? t.len : 1;
+      c = { len, sum: rangeSum(this.u8, a, len), body: t ? t.fn.body() : null, succ: t ? t.succ : [] };
+    }
+    next.set(a, c);
+    for (const s of c.succ) if (!next.has(s) && segOf(s)) q.push(s);
+  }
+  const blocks = [...next.keys()].filter(a => next.get(a).body).sort((x, y) => x - y);
+  const shared = Object.prototype.toString.call(this.mem.buffer) === '[object SharedArrayBuffer]';
+  return { wasm: assembleNE(blocks.map(a => next.get(a).body), rec.meta.textLo, rec.meta.textHi, shared, !!rec.codeRanges), blocks,
+    lens: blocks.map(a => next.get(a).len), sums: Uint32Array.from(blocks, a => next.get(a).sum) };
+};
+/** a hash of the `n` bytes at `a`: a block's code as it was translated, kept by the module (4 bytes a block, not its
+ *  bytes), to tell a block still as it was from one written since */
+function rangeSum(u8, a, n) { let h = 0x811c9dc5; for (let i = 0; i < n; i++) { h ^= u8[a + i]; h = Math.imul(h, 0x01000193); } return h >>> 0; }
+/** the blocks of a module made from the memo (its wasm, its blocks and each one's length in the code), as translateNE
+ *  keeps them: each block's body read back from the module's code section (the run function first, then the blocks in
+ *  order), its bytes as they lie now (the memo's hash said they are as translated). Where it goes on to is not kept:
+ *  every kept block is walked from (translateNE) */
+function seedBlocks(u8, seed) {
+  const kept = new Map(); if (!seed || !seed.lens || !seed.sums) return kept;
+  const w = seed.wasm; let p = 8;
+  const rd = () => { let v = 0, s = 0, b; do { b = w[p++]; v |= (b & 0x7f) << s; s += 7; } while (b & 0x80); return v >>> 0; };
+  while (p < w.length) { const id = w[p++], n = rd(); if (id !== 10) { p += n; continue; } break; }
+  const count = rd(); if (count !== seed.blocks.length + 1) return kept;
+  { const n = rd(); p += n; }   // (run)
+  for (let i = 0; i < seed.blocks.length; i++) {
+    const at = p, n = rd(), a = seed.blocks[i]; p += n;
+    kept.set(a, { len: seed.lens[i], sum: seed.sums[i], body: w.subarray(at, p), succ: [] });
+  }
+  return kept;
+}
+/** the memo of translations on this computer: IndexedDB, a record a file (by its SHA-256) with the placement the
+ *  translation was made at (its code's base, its segments' selectors, its block table), the hash of its blocks' code,
+ *  its entries, its blocks (with each one's length and hash) in one store, read whole as the worker starts (memoLoad);
+ *  the module's bytes in another, read as a module that matches its record loads (memoWasm). Written as a module is
+ *  translated (memoPut). Every module's bytes read at the start, those of modules the start never loads among them,
+ *  held hundreds of MB, and Windows 98's first start took the tab past its memory. A page with no IndexedDB (a test)
+ *  keeps them in memory */
+const MEMO_DB = 'w95-netrans', MEMO_STORE = 'index', MEMO_WASM = 'wasm';
+/** the translator that made a memo's module: its own code, hashed (translate and its helpers, the module's assembly);
+ *  a module another translator made is translated again */
+const NET_BUILD = (() => {
+  let h = 0x811c9dc5;
+  for (const fn of [translate, x87, shift, imul2, muldiv, strop, assembleNE, peEntries]) { const s = String(fn); for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); } }
+  return (h >>> 0).toString(16);
+})();
+const memo = new Map();
+const memoDb = () => new Promise((ok, no) => {
+  const r = indexedDB.open(MEMO_DB, 2);
+  r.onupgradeneeded = () => {
+    const d = r.result;
+    if (d.objectStoreNames.contains('modules')) d.deleteObjectStore('modules');   // (version 1's: each record with its bytes)
+    if (!d.objectStoreNames.contains(MEMO_STORE)) d.createObjectStore(MEMO_STORE, { keyPath: 'sha' });
+    if (!d.objectStoreNames.contains(MEMO_WASM)) d.createObjectStore(MEMO_WASM);
+  };
+  r.onsuccess = () => ok(r.result); r.onerror = () => no(r.error);
+});
+const memoLoad = async () => {
+  if (typeof indexedDB === 'undefined') return memo;
+  try {
+    const db = await memoDb();
+    const all = await new Promise((ok, no) => { const q = db.transaction(MEMO_STORE).objectStore(MEMO_STORE).getAll(); q.onsuccess = () => ok(q.result || []); q.onerror = () => no(q.error); });
+    db.close(); for (const r of all) memo.set(r.sha, r);
+  } catch (e) { console.warn('[dyn] the translation memo could not be read:', e && e.message); }
+  return memo;
+};
+const memoPut = rec => {
+  if (typeof indexedDB === 'undefined') { memo.set(rec.sha, rec); return; }
+  const { wasm, ...ix } = rec; memo.set(rec.sha, ix);
+  memoDb().then(db => {
+    const t = db.transaction([MEMO_STORE, MEMO_WASM], 'readwrite'); t.objectStore(MEMO_STORE).put(ix); t.objectStore(MEMO_WASM).put(wasm, rec.sha);
+    t.oncomplete = () => db.close(); t.onerror = () => db.close();
+  }).catch(e => console.warn('[dyn] the translation memo could not be written:', e && e.message));
+};
+/** a memo's module bytes, by the file's SHA-256 (null: none) */
+const memoWasm = sha => memoDb().then(db => new Promise((ok, no) => {
+  const q = db.transaction(MEMO_WASM).objectStore(MEMO_WASM).get(sha);
+  q.onsuccess = () => { db.close(); ok(q.result || null); }; q.onerror = () => { db.close(); no(q.error); };
+}));
+window.W95Dyn = { memo, memoLoad, memoPut, memoWasm };
+/** the memo's record for a file, by its SHA-256: the placement a loader asks for before it places the module */
+P.neMemo = function (rec) { rec.sha256 = rec.sha256 || window.W95Win32.sha256(rec.file); return memo.get(rec.sha256) || null; };
+/** the module's code translated and installed, as loadNE installs the bundle's: its block table filled, its run made.
+ *  The memo's module where the code hashes as it did when it was made (the same bytes at the same placement: its
+ *  imports resolved the same way, its selectors and thunks the same); else translated now (and the memo written).
+ *  `again`: translated now whatever the memo, with the entries found since (neRebuild) */
+P.neCompile = function (rec, again = false) {
+  const meta = rec.meta, code = codeSegs(rec); if (!code.length) return;
+  // (an experiment, ?exp=netSkip=NAME|NAME: those modules left run-time code, not translated whole)
+  if (self.netSkip && new RegExp(`^(${self.netSkip})$`, 'i').test(rec.name)) { meta.textLo = meta.textHi = 0; rec.run = null; return rec; }
+  rec.released = false;   // (one let go, dynRelease: made again now)
+  if (rec.netText) { [meta.textLo, meta.textHi] = rec.netText; rec.netText = null; rec.netReady = null; }   // (one whose memo's module was being read: its text back)
+  const t0 = performance.now(), had = this.neMemo(rec), sels = (rec.segs || []).map(g => g.sel);
+  // (the memo's module where its blocks' bytes lie as they were translated, at the same text: its relocations, its
+  // selectors and the targets of its far calls the same)
+  const same = !again && had && had.lens && had.sums && had.build === NET_BUILD && had.textLo === meta.textLo && had.textHi === meta.textHi && had.codeHash === blocksHash(this.u8, had.blocks, had.lens);
+  if (had && had.entries) { const s = rec.dynEntries || (rec.dynEntries = new Set()); for (const e of had.entries) s.add(e); }
+  const label = rec.name === 'EXE' ? meta.path || meta.name || 'EXE' : rec.name;
+  // (the memo's module, its bytes in the memo's store: read and compiled as the machine runs, the module's code run-time
+  // code meanwhile (its text not the dispatcher's until then: netText), and put in place at a step's end, neInstall)
+  if (same && !had.wasm) {
+    rec.netText = [meta.textLo, meta.textHi]; meta.textLo = meta.textHi = 0; rec.netReady = null;
+    // (the read's answer the record's only while it is still that file's, waiting for it: an arrival rebinds the
+    // records by their place, and a read MSIDLE's load began answered on the record that was SHDOCVW's by then, which
+    // got MSIDLE's module, its own code run-time code, the Channel Bar's control black)
+    const sha = rec.sha256, mine = () => rec.sha256 === sha && rec.netText && !rec.netReady;
+    memoWasm(sha).then(wasm => wasm ? WebAssembly.compile(wasm).then(mod => { if (mine()) rec.netReady = { mod, wasm, had, t0 }; }) : mine() && (rec.netReady = { had: null }))
+      .catch(e => { console.warn(`[dyn] ${label}: the memo's module could not be read:`, e && e.message); if (mine()) rec.netReady = { had: null }; });
+    return rec;
+  }
+  let wasm, blocks, lens, sums;
+  if (same) ({ wasm, blocks, lens, sums } = had);
+  else {
+    ({ wasm, blocks, lens, sums } = this.translateNE(rec));
+    // (a module the engine cannot compile, past its 1 GiB: named, with its largest blocks, and its code left run-time
+    // code; compiled, the machine's worker ended, "buffer source exceeds maximum size")
+    if (wasm.length > NE_MAX_BYTES) {
+      const at = blocks.map((a, i) => [a, lens[i]]).sort((x, y) => y[1] - x[1]).slice(0, 4).map(([a, n]) => `${(a >>> 0).toString(16)}+${n}`).join(' ');
+      window.W95Win32.log('error', 'dyn', `${label}: ${blocks.length} blocks translate to ${wasm.length} bytes, past the engine's limit; its code runs as run-time code (longest blocks: ${at})`);
+      meta.textLo = meta.textHi = 0; rec.run = null; rec.netTooBig = true; return rec;
+    }
+    // (and the image's span, the place a loader asks for and the allocators keep clear: win32.js loadDll, memoSpans)
+    const imageLo = rec.kind === 'ne' || !meta.size ? meta.textLo : meta.base, imageHi = rec.kind === 'ne' || !meta.size ? meta.textHi : meta.base + meta.size;
+    memoPut({ sha: rec.sha256, name: rec.name, file: rec.path || meta.path || null, codeBase: Math.min(...code.map(g => g.base)), sels, lookup: meta.lookup, textLo: meta.textLo, textHi: meta.textHi, imageLo, imageHi,
+      codeHash: blocksHash(this.u8, blocks, lens), build: NET_BUILD, entries: [...(rec.dynEntries || [])], blocks, lens, sums, wasm, made: Date.now() });
+  }
+  const t1 = performance.now();
+  this.neSet(rec, new WebAssembly.Module(wasm), { wasm, blocks, lens, sums });
+  const t2 = performance.now();
+  // (a memo not used says why: placed elsewhere (its room taken), or the same place with other bytes (an import's
+  // target or a thunk's number not what it was))
+  const why = same || again || !had ? '' : had.codeBase !== Math.min(...code.map(g => g.base)) || sels.some((s, i) => (had.sels || [])[i] !== s) ? '; the memo\'s placed elsewhere' : '; the memo\'s code differs';
+  window.W95Win32.log('debug', 'dyn', `${label}: ${blocks.length} blocks ${same ? 'from the memo' : again ? 'translated again' : 'translated'} (${wasm.length} bytes, ${Math.round(t1 - t0)} ms to translate, ${Math.round(t2 - t1)} ms to compile${why})`);
+  return rec;
+};
+/** a module's translation put in place: its block table filled, its run made from `mod` (`seed`: its bytes, blocks,
+ *  their lengths and hashes, for translating it again) */
+P.neSet = function (rec, mod, seed) {
+  const meta = rec.meta, { blocks } = seed;
+  const inst = new WebAssembly.Instance(mod, { env: { ...this.imports.env, ...dynEnv(this), lookup: new WebAssembly.Global({ value: 'i32', mutable: false }, meta.lookup | 0) }, cpu: this.cpu });
+  const look = new Uint32Array(this.mem.buffer, meta.lookup, meta.textHi - meta.textLo);
+  look.fill(0); blocks.forEach((a, i) => { look[a - meta.textLo] = i + 1; });
+  // (a hooked address is the host's to enter, as run-time code leaves it: no block there, its call comes to the
+  // dispatcher's hook; win32.js setEntryHook clears one hooked later)
+  for (const a of this.entryHooks ? this.entryHooks.keys() : []) if (a >= meta.textLo && a < meta.textHi) look[a - meta.textLo] = 0;
+  meta.blocks = blocks; rec.module = mod; rec.run = inst.exports.run;
+  rec.netSeed = seed;   // (its blocks taken back from its module when it is translated again: translateNE)
+  if (rec.dynNew) rec.dynNew.clear(); rec.dynSeen = 0;
+  if (this.dynFast) this.dynFast.clear();   // (an address with a block of the module's now goes to it, not to its region)
+};
+/** at a step's end (no wasm frame live): one module whose memo's module has been read and compiled (neCompile) put in
+ *  place, its code checked as it is now against the memo's hash first (else translated now); true when one was */
+P.neInstall = function () {
+  if (this.depth) return false;
+  for (const m of this.modules || []) {
+    if (!m || !m.netText || !m.netReady || m.hidden) continue;
+    const { mod, wasm, had, t0 } = m.netReady, meta = m.meta; [meta.textLo, meta.textHi] = m.netText; m.netText = null; m.netReady = null;
+    const label = m.name === 'EXE' ? meta.path || meta.name || 'EXE' : m.name;
+    // (another file's memo, or another text: translated now, as one not in the memo)
+    if (!had || had.sha !== m.sha256 || had.textLo !== meta.textLo || had.textHi !== meta.textHi || had.codeHash !== blocksHash(this.u8, had.blocks, had.lens)) { this.neCompile(m, true); return true; }
+    this.neSet(m, mod, { wasm, blocks: had.blocks, lens: had.lens, sums: had.sums });
+    window.W95Win32.log('debug', 'dyn', `${label}: ${had.blocks.length} blocks from the memo (${wasm.length} bytes, put in place ${Math.round(performance.now() - t0)} ms after its load)`);
+    return true;
+  }
+  return false;
+};
+/** a DLL no live process has attached: its translation let go (its compiled module, its run, the wasm kept to translate
+ *  it again), its text run-time code meanwhile as a module being read from the memo is (netText), its image and block
+ *  table's room left as they are; made again as a process attaches it (win32.js attachPrep). A 16-bit module, a
+ *  program's image, or one already put by is left alone */
+P.dynRelease = function (m) {
+  if (!m || m.kind === 'ne' || m.name === 'EXE' || !m.meta || !m.meta.dynamic || !m.meta.lookup || m.netText || m.released) return false;
+  if (!m.run && !m.module) return false;
+  const meta = m.meta;
+  m.netText = [meta.textLo, meta.textHi]; meta.textLo = meta.textHi = 0;
+  m.run = null; m.module = null; m.netSeed = null; m.netReady = null; m.released = true;
+  if (m.dynNew) m.dynNew.clear();
+  if (this.dynFast) this.dynFast.clear();
+  return true;
+};
+/** at an idle step of the machine (worker.js step: no thread in a call the host made, no wasm frame live): one module
+ *  whose run found blocks of its own (noteEntry's dynNew), and found no more since the last idle step, translated
+ *  again with them; true when one was. (Found still finding, it waits: a start meets its holes by the hundred) */
+P.neRebuild = function () {
+  if (this.depth) return false;
+  // (16-bit modules and programs' and DLLs' images alike; an image put by, another process's program, waits for its own)
+  for (const m of this.modules || []) {
+    if (!m || !m.meta || !m.meta.dynamic || !m.meta.lookup || m.hidden || m.netText || m.netTooBig || !m.dynNew || !m.dynNew.size) continue;
+    if (m.dynSeen !== m.dynNew.size) { m.dynSeen = m.dynNew.size; continue; }
+    this.neCompile(m, true); return true;
+  }
+  return false;
 };
 })();

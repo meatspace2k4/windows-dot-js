@@ -96,4 +96,29 @@ const user16 = { name: 'USER', base: 0x01a00000, segs: [{ base: 0x01a00000, allo
   const k = machine({}).loadImage(dllAt(0xbff70000, 0xc0000040), null, { base: 0x00780000, entry: 0, textLo: 0, textHi: 0, blocks: [] }, 'KRNL');
   assert.ok(!k.priv, 'a shared-arena DLL\'s data is one copy');
 }
+// LoadLibrary of a path: the file there, outside SYSTEM and the Windows folder (IERNONCE's C:\PROGRA~1\INTERN~1\
+// HMMAPI.DLL: its folder dropped, it was looked for in SYSTEM and the Windows folder only, and not found); the
+// search folders as they were after
+{
+  const p = machine({ 'C:\\PROGRA~1\\INTERN~1\\TESTLIB.DLL': lib });
+  Object.assign(p, { readA: () => 'C:\\PROGRA~1\\INTERN~1\\TESTLIB.DLL', runPendingInits() {}, importClosure: m => [m], attach() {} });
+  const API = window.W95Win32.API;
+  assert.equal(API.KERNEL32.LoadLibraryA[1].call(p, 0x100), 0x00700000, 'loaded from its folder');
+  assert.equal(p.loadDirs, undefined, 'the search folders as they were');
+  let named = ''; Object.assign(p, { hmod: h => h, writeA: (b, s) => { named = s; return s.length; }, exe: null, host: {} });
+  API.KERNEL32.GetModuleFileNameA[1].call(p, 0x00700000, 0x200, 260);
+  assert.equal(named, 'C:\\PROGRA~1\\INTERN~1\\TESTLIB.DLL', 'GetModuleFileName: the file it was mapped from');
+  const q = machine({ 'C:\\PROGRA~1\\INTERN~1\\TESTLIB.DLL': lib }); Object.assign(q, { readA: () => 'TESTLIB.DLL', lastError: 0 });
+  assert.equal(API.KERNEL32.LoadLibraryA[1].call(q, 0x100), 0, 'a bare name is not looked for there');
+}
+// LoadLibraryEx as a data file (2): a bare name looked for in the search folders; no such file is ERROR_FILE_NOT_FOUND
+// (it was ERROR_BAD_EXE_FORMAT), a file that is no Win32 image ERROR_BAD_EXE_FORMAT
+{
+  const API = window.W95Win32.API, ex = API.KERNEL32.LoadLibraryExA[1];
+  const p = machine({ 'C:\\WINDOWS\\SYSTEM\\TESTLIB.DLL': lib, 'C:\\WINDOWS\\SYSTEM\\TEXT.DLL': new Uint8Array(0x100) });
+  let asked = ''; Object.assign(p, { readA: () => asked, runPendingInits() {}, importClosure: m => [m], attach() {}, lastError: 0 });
+  asked = 'NOTHERE.DLL'; assert.equal(ex.call(p, 1, 0, 2), 0); assert.equal(p.lastError, 2, 'not there: file not found');
+  asked = 'TEXT.DLL'; assert.equal(ex.call(p, 1, 0, 2), 0); assert.equal(p.lastError, 193, 'no image: bad format');
+  asked = 'TESTLIB.DLL'; assert.equal(ex.call(p, 1, 0, 2), 0x00700000, 'a bare name found in SYSTEM');
+}
 console.log('diskdll: ok');

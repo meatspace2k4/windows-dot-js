@@ -16,7 +16,7 @@ window.W95BraidPage = function (ui) {
   const B = window.W95Braid, W = ui.W95Win32, fs = ui.fs;
   const here = new Map();                 // the moments in this page's memory, by name: { s: the page's record, machines: { key: { app, info } } }
   const diskTouched = new Set(), mods = [], line = new B.Line();
-  const auto = { timer: null, n: 0, ring: [], every: 0, keep: 3 };
+  const auto = { timer: null, n: 0, ring: [], v: new Map(), hold: null, every: 0, keep: 3, atimer: null, an: 0, anchors: [], anchorEvery: 0, anchorKeep: 3 };
   let anchorBusy = null;   // (the name of the anchor being written, anchor)
   let sig = null, quiet = false, markN = 0;
   const key = a => (a.system ? 'system' : a.path);
@@ -46,27 +46,87 @@ window.W95BraidPage = function (ui) {
     const nodes = new Map(), stores = []; let wrote = 0, removed = 0;
     for (const v of fs.vols.values()) if (v.store && v.store.under) { stores.push(v.store.under); (function walk(n) { if (n.sid !== undefined || all) nodes.set(fs.sidOf(n), n); if (n.dir) for (const k of n.kids.values()) walk(k); })(v.root); }
     const sids = all ? [...nodes.keys()] : [...diskTouched].sort((a, b) => a - b);
+    const put = (n, sid) => { const st = n.vol.store.under; st.node(nodeRec(n)); if (!n.dir) { st.size(sid, n.size); if (n.size) return st.data(sid, 0, all ? n.buf.subarray(0, n.size) : n.buf.slice(0, n.size)); } };
+    const later = [];
     for (const sid of sids) {
       const n = nodes.get(sid);
       if (!n) { for (const st of stores) st.remove(sid); removed++; continue; }
-      const st = n.vol.store.under; st.node(nodeRec(n));
-      if (!n.dir) { st.size(sid, n.size); if (n.size) st.data(sid, 0, n.buf.slice(0, n.size)); }
-      wrote++;
+      if (all) later.push(sid); else put(n, sid);
+      storeSids.add(sid); wrote++;
+    }
+    // (every node: one file at a time, the next once the store has taken the last. Handed over all at once, as a
+    // moment arrived at from its anchor hands the whole disk over, each file's copy waited in the page for its turn in
+    // the store: 400 MB of disk held the page at over 2 GB, everything ran slowly, and the tab ran out of memory)
+    if (later.length) diskPump = diskPump.then(async () => {
+      const now = new Map(); for (const v of fs.vols.values()) if (v.store && v.store.under) (function walk(n) { now.set(fs.sidOf(n), n); if (n.dir) for (const k of n.kids.values()) walk(k); })(v.root);
+      for (const sid of later) {
+        const n = now.get(sid); if (!n || diskTouched.has(sid)) continue;   // (gone, or written since by its own change)
+        try { await put(n, sid); } catch (e) { console.error('[braid] disk store:', e); }
+      }
+    });
+    // (every node: the store then holds this tree and nothing else. A moment's nodes carry the ids of the line that
+    // anchored it; written over a store numbered by another line, the store held both trees under one numbering, a
+    // folder's id a file's, and the page's next start could not attach it)
+    if (all) {
+      for (const st of stores) { const held = st.load && st.load(); if (held) for (const e of held.nodes) storeSids.add(e.sid); }
+      for (const sid of [...storeSids]) if (!nodes.has(sid)) { for (const st of stores) st.remove(sid); storeSids.delete(sid); removed++; }
     }
     diskTouched.clear(); fs.version++; ui.dirty();
     return { wrote, removed };
   }
+  const storeSids = new Set();   // (the node ids this page wrote to the disk's store, beside those it loaded)
+  let diskPump = Promise.resolve();   // (the whole-disk writes in turn, writeDisk)
 
   // ---- anchored moments: IndexedDB, this origin's
-  const db = fn => new Promise((ok, no) => { const r = indexedDB.open('w95-braid', 2); r.onupgradeneeded = () => { if (!r.result.objectStoreNames.contains('anchors')) r.result.createObjectStore('anchors', { keyPath: 'name' }); }; r.onsuccess = () => Promise.resolve(fn(r.result)).then(v => { r.result.close(); ok(v); }, e => { r.result.close(); no(e); }); r.onerror = () => no(r.error); });
+  // (an anchor's blobs are kept as chunks shared between anchors, braid.js packAnchor: the record in 'anchors' lists
+  // its chunks' hashes, each chunk once in 'chunks' under its hash. A chunk is written only when the store has none
+  // under its hash, and letting an anchor go deletes the chunks no anchor left refers to)
+  const db = fn => new Promise((ok, no) => { const r = indexedDB.open('w95-braid', 3); r.onupgradeneeded = () => { const d = r.result; if (!d.objectStoreNames.contains('anchors')) d.createObjectStore('anchors', { keyPath: 'name' }); if (!d.objectStoreNames.contains('chunks')) d.createObjectStore('chunks'); }; r.onsuccess = () => Promise.resolve(fn(r.result)).then(v => { r.result.close(); ok(v); }, e => { r.result.close(); no(e); }); r.onerror = () => no(r.error); });
   const req = (tx, r) => new Promise((ok, no) => { r.onsuccess = () => ok(r.result); r.onerror = () => no(r.error); });
-  const dbGet = name => db(d => req(null, d.transaction('anchors').objectStore('anchors').get(String(name))));
-  const dbAll = () => db(d => req(null, d.transaction('anchors').objectStore('anchors').getAll()));
-  const dbPut = rec => db(d => new Promise((ok, no) => { const tx = d.transaction('anchors', 'readwrite'); tx.objectStore('anchors').put(rec); tx.oncomplete = () => ok(true); tx.onerror = () => no(tx.error); }));
-  const dbDel = name => db(d => new Promise((ok, no) => { const st = d.transaction('anchors', 'readwrite').objectStore('anchors'), g = st.getKey(String(name)); g.onsuccess = () => { if (g.result === undefined) return ok(false); const x = st.delete(String(name)); x.onsuccess = () => ok(true); x.onerror = () => no(x.error); }; g.onerror = () => no(g.error); }));
+  const done = tx => new Promise((ok, no) => { tx.oncomplete = () => ok(true); tx.onerror = () => no(tx.error); tx.onabort = () => no(tx.error || new Error('aborted')); });
+  const dbRaw = name => db(d => req(null, d.transaction('anchors').objectStore('anchors').get(String(name))));
+  const dbGet = async name => {
+    const s = await dbRaw(name); if (!s || !s.packed) return s;
+    // (each chunk read as its blob is joined, none kept: every chunk held at once beside the blobs joined from them, an
+    // anchor of 430 MB stood in the page twice over, and with the tree and the machine made from it the tab ran out)
+    return db(d => B.unpackAnchor(s, h => req(null, d.transaction('chunks').objectStore('chunks').get(h))));
+  };
+  // (never every record at once: an anchor stored whole, before chunks, is the machines' bytes, 350 to 700 MB, and a
+  // getAll over thirteen of them asked the page for 6.7 GB, which paused it on the edge of running out of memory at each
+  // anchor (whose names came from it) and each moments(). Names come from the keys; records one at a time, by cursor,
+  // each let go before the next, only what is asked kept: `fn(record)` answers what to keep of it)
+  const dbNames = () => db(d => req(null, d.transaction('anchors').objectStore('anchors').getAllKeys()));
+  const eachIn = (st, fn) => new Promise((ok, no) => { const c = st.openCursor(); c.onsuccess = () => { const cur = c.result; if (!cur) return ok(); fn(cur.value); cur.continue(); }; c.onerror = () => no(c.error); });
+  const dbEach = fn => db(d => { const out = []; return eachIn(d.transaction('anchors').objectStore('anchors'), v => { const x = fn(v); if (x !== undefined) out.push(x); }).then(() => out); });
+  const summary = x => ({ name: x.name, gen: x.gen, now: x.now, at: x.at, build: x.build, mods: x.mods, bytes: Object.values(x.machines || {}).reduce((n, m) => n + B.blobLength(m.blob), x.page ? B.blobLength(x.page.blob) : 0) });
+  const dbPut = async rec => {
+    const { rec: s, chunks } = await B.packAnchor(rec);
+    return db(d => { const tx = d.transaction(['anchors', 'chunks'], 'readwrite'), cs = tx.objectStore('chunks');
+      for (const [h, b] of chunks) { const g = cs.getKey(h); g.onsuccess = () => { if (g.result === undefined) cs.put(b, h); }; }
+      tx.objectStore('anchors').put(s); return done(tx); });
+  };
+  const dbDel = name => db(async d => {
+    const tx = d.transaction(['anchors', 'chunks'], 'readwrite'), st = tx.objectStore('anchors'), cs = tx.objectStore('chunks');
+    const had = (await req(null, st.getKey(String(name)))) !== undefined;
+    if (had) await req(null, st.delete(String(name)));
+    const keep = new Set(); await eachIn(st, v => { for (const h of B.chunkRefs([v])) keep.add(h); });   // (in the same transaction: no anchor written between the count and the deletes)
+    const all = await req(null, cs.getAllKeys());
+    for (const h of all) if (!keep.has(h)) cs.delete(h);
+    await done(tx); return had;
+  });
 
   // ---- a shared session: this person's marks and travels, to the others, as intents of the session (shared.js)
   const share = op => { if (quiet) return; const S = ui.shared(); if (!S) return; S.intent({ key: op.op === 'mark' ? `braid:mark:${op.name}` : `braid:${op.op}`, kind: 'braid', ...op }); };
+  // (in a shared session a mark, anchor, travel, scrub or forget is the session's: posted as its intent and made here
+  // as it comes back in the op order, with every other machine, so each takes its own moment, or goes back to it, at
+  // the same place in the session's history, and the server keeps the session's shared state with it (tools/sessions.py
+  // braid). The call resolves with what was made here. `local` keeps one to this machine: the line marking and
+  // anchoring itself (every) is each machine's own net)
+  const waits = new Map(), waitKey = op => `${op.op}:${op.name != null ? op.name : op.t}`;
+  const viaLine = (op, o = {}) => {
+    if (quiet || o.local || o.quiet || !ui.shared()) return null;
+    return new Promise((ok, no) => { const k = waitKey(op); const w = waits.get(k); if (w) w.no(new Error(`another ${op.op} of ${k} was asked for`)); waits.set(k, { ok, no }); share(op); });
+  };
 
   // ---- the shell's state put back (the windows the page draws, the active one, the menus, the clipboard)
   const shellBack = sh => { ui.setShell(sh); };
@@ -85,9 +145,9 @@ window.W95BraidPage = function (ui) {
     async mark(name, o = {}) {
       name = name == null ? autoName() : String(name);
       if (here.has(name)) throw new Error(`a moment named ${name} is on the line already`);
+      const v = viaLine({ op: 'mark', name }, o); if (v) return v;
       const b = await build(); watchStores();
-      const S = ui.shared(), at = o.at != null ? o.at : (S && !quiet ? (await clock()) + 200 : null);
-      if (at != null && !quiet) share({ op: 'mark', name, at });
+      const at = o.at != null ? o.at : null;
       const machines = {};
       for (const a of live()) { const r = await (a.system && at != null ? a.cmd('markAt', [name, at]) : a.cmd('mark', [name])); if (!r) throw new Error(`the machine ${key(a)} took no moment (inside a call: try again)`); machines[key(a)] = { app: a, info: r }; }
       ui.closeMenus();
@@ -116,19 +176,29 @@ window.W95BraidPage = function (ui) {
      *  `force`: a broken state is what one travels away from). Travel forks the line: the new generation grows from
      *  the moment; the one left runs no further, its moments stay */
     async travel(to, o = {}) {
-      if (to && typeof to === 'object' && 't' in to) return scrub(Number(to.t), o);
+      if (to && typeof to === 'object' && 't' in to) { const v = viaLine({ op: 'scrub', t: Number(to.t) }, o); return v || scrub(Number(to.t), o); }
       const name = String(to), h = here.get(name);
+      const asked = viaLine({ op: 'travel', name, force: !!o.force }, o); if (asked) return asked;
       if (!h) return arrive(name, o);
+      // (the system's machine the moment is in has ended, its worker with it: the moment is gone from here. Its anchor
+      // comes back; without one, refused: a travel that skipped it as 'gone' ran nothing and said it had arrived)
+      if (h.machines.system && !h.machines.system.app.alive) {
+        if ((await dbNames().catch(() => [])).includes(name)) return arrive(name, o);
+        throw new Error(`the moment ${name} was in the system's machine, which ended: it went with it (an anchored moment comes back)`);
+      }
       const v = line.broken.get(name); if (v === 'broken' && !o.force) throw new Error(`the moment ${name} is a broken state (the lint): travel(name, { force: true }) goes anyway`);
       const why = B.refuse(h.s, await build()); if (why && !(o.force && /build/.test(why))) throw new Error(why);
       const out = {}, now = await clock();
+      // (a machine that no longer holds the moment, its worker started again since (Setup's restart: the moment taken as
+      // Windows 98's VMM loaded, w98-windows), has it from its anchor, as an ended one does)
+      const held = await Promise.all(Object.values(h.machines).map(m => (m.app.alive ? m.app.cmd('moments').then(l => (l || []).some(x => x.name === name), () => false) : true)));
+      if (held.includes(false) && (await dbNames().catch(() => [])).includes(name)) return arrive(name, o);
       for (const [k, m] of Object.entries(h.machines)) { if (!m.app.alive) { out[k] = 'gone'; continue; } out[k] = await m.app.cmd('travel', [name]); if (!out[k]) throw new Error(`the machine ${k} refused the moment (see the console)`); forgetKids(m.app); }
       ui.closeMenus();
       const [, sh] = B.restoreGraph(h.s.sections.disk.graph); shellBack(sh);
       W.regLoad(h.s.sections.registry.value, true);
       const disk = writeDisk(false);
       const gen = line.fork(name, o.how || 'travel', { now });
-      if (!o.quiet) share({ op: 'travel', name, force: !!o.force });
       ui.emit('braid.travel', { gen, moment: name, fromGen: line.moments.get(name).gen, at: line.moments.get(name).at, how: o.how || 'travel' });
       ui.dirty();
       return { ...out, gen, at: line.moments.get(name).at, disk };
@@ -137,7 +207,9 @@ window.W95BraidPage = function (ui) {
      *  and path, the page's disk and shell, the registry, the mods and the line, under a checksum and the build's
      *  signature; marked on the line here as well. Taken at a step with no ring-0 run in flight. The memo's ground: a
      *  page that has it starts there, nothing run again */
-    async anchor(name) {
+    async anchor(name, o = {}) {
+      if (name == null) name = autoName();
+      const v = viaLine({ op: 'anchor', name: String(name) }, o); if (v) return v;
       // (one anchor at a time: the moment it marks is a braid.mark like any, and a listener that anchors on marks
       // anchored again from inside this one, each a moment of 300 MB under a name grown by its prefix, until this
       // computer's store held gigabytes)
@@ -147,9 +219,9 @@ window.W95BraidPage = function (ui) {
       name = name == null ? autoName() : String(name);
       // (a name already on the line or on this computer: the moment of now takes the next free one, name-2, name-3, ...;
       // the earlier moment keeps its own)
-      const taken = new Set([...here.keys(), ...line.moments.keys(), ...(await dbAll().catch(() => [])).filter(Boolean).map(x => x.name)]);
+      const taken = new Set([...here.keys(), ...line.moments.keys(), ...(await dbNames().catch(() => []))]);
       if (taken.has(name)) { let i = 2; while (taken.has(`${name}-${i}`)) i++; name = `${name}-${i}`; }
-      await braid.mark(name);
+      await braid.mark(name, { local: true });   // (the anchor's own moment: made here; the anchor is the session's already when it is)
       const b = await build(), machines = {};
       for (const a of live()) {
         let ex = null; for (let i = 0; i < 400 && !(ex && ex.meta); i++) { ex = await a.cmd('export'); if (ex && ex.busy) await sleep(50); }
@@ -172,32 +244,53 @@ window.W95BraidPage = function (ui) {
     async moments() {
       const by = new Map();
       for (const m of line.moments.values()) by.set(m.name, { ...m, verdict: line.broken.get(m.name) || (m.verdict || 'ok'), here: here.has(m.name), anchored: !!m.anchored });
-      for (const x of (await dbAll().catch(() => [])).filter(Boolean)) { const w = by.get(x.name); if (w) { w.anchored = true; w.anchorBytes = Object.values(x.machines).reduce((n, m) => n + m.blob.length, x.page.blob.length); } else by.set(x.name, { name: x.name, gen: x.gen, at: x.now, wall: x.at, build: x.build, mods: x.mods, here: false, anchored: true, verdict: 'ok', anchorBytes: Object.values(x.machines).reduce((n, m) => n + m.blob.length, x.page.blob.length) }); }
+      for (const x of await dbEach(summary).catch(() => [])) { const w = by.get(x.name); if (w) { w.anchored = true; w.anchorBytes = x.bytes; } else by.set(x.name, { name: x.name, gen: x.gen, at: x.now, wall: x.at, build: x.build, mods: x.mods, here: false, anchored: true, verdict: 'ok', anchorBytes: x.bytes }); }
       return [...by.values()].sort((a, b) => a.at - b.at || a.wall - b.wall);
     },
     /** a moment let go: from this page's memory, from every machine, and from this computer */
     async forget(name, o = {}) {
-      name = String(name); const h = here.get(name);
+      name = String(name);
+      const v = viaLine({ op: 'forget', name }, o); if (v) return v;
+      const h = here.get(name);
       if (h) for (const m of Object.values(h.machines)) if (m.app.alive) m.app.cmd('forget', [name]);
       const anchored = await dbDel(name).catch(() => false);
       here.delete(name); const was = line.forget(name) || anchored;
-      if (!o.quiet && was) share({ op: 'forget', name });
       return was;
     },
     /** the line marking itself as the machine runs: a moment every `ms` (30 s), named t1, t2, ..., the last `keep` (3)
      *  held (one the lint found broken is held beyond them, as the state to travel away from); what a lock-up or a
-     *  crash is travelled back from when no one marked a moment before it. every(0) ends it */
-    every(ms = 30000, keep = 3) {
-      clearTimeout(auto.timer); auto.timer = null; auto.every = ms; auto.keep = keep; if (!ms) return null;
+     *  crash is travelled back from when no one marked a moment before it. And anchored on this computer every
+     *  `o.anchorEvery` ms (5 min), live1, live2, ..., the last `o.anchorKeep` (3) kept, a broken one held beyond them:
+     *  the marks live in the page's memory and a reload loses them, the anchors do not, so a running line is never
+     *  more than anchorEvery from a moment a reloaded page travels to. An older anchor is let go only after a newer
+     *  one is written. every(0) ends both; anchorEvery 0, the anchoring alone */
+    every(ms = 30000, keep = 3, o = {}) {
+      clearTimeout(auto.timer); auto.timer = null; auto.every = ms; auto.keep = keep;
+      clearTimeout(auto.atimer); auto.atimer = null; auto.anchorEvery = ms ? (o.anchorEvery === undefined ? 300000 : o.anchorEvery) : 0; auto.anchorKeep = o.anchorKeep || 3;
+      if (!ms) return null;
+      const anchorTick = async () => {
+        if (!auto.atimer) return; const run = auto.atimer;
+        try {
+          const r = await braid.anchor('live' + (++auto.an), { local: true }); auto.anchors.push(r.name);
+          if (auto.atimer !== run) return;   // (stopped meanwhile: no anchor let go)
+          const fine = auto.anchors.filter(n => (line.broken.get(n) || 'ok') !== 'broken');
+          while (fine.length > auto.anchorKeep) { const n = fine.shift(); auto.anchors.splice(auto.anchors.indexOf(n), 1); await braid.forget(n, { local: true }); }
+        } catch (e) { console.warn('[braid] the line could not anchor itself:', e.message); }   // (another anchor being written, a ring-0 run on every step: the next tick)
+        if (auto.atimer) auto.atimer = setTimeout(anchorTick, auto.anchorEvery);
+      };
+      if (auto.anchorEvery) auto.atimer = setTimeout(anchorTick, auto.anchorEvery);
       const tick = async () => {
-        if (!auto.timer) return;
-        try { const name = 't' + (++auto.n); const r = await braid.mark(name); auto.ring.push(name); const fine = auto.ring.filter(n => (line.broken.get(n) || 'ok') !== 'broken' && !(line.moments.get(n) || {}).anchored); while (fine.length > keep) { const n = fine.shift(); auto.ring.splice(auto.ring.indexOf(n), 1); await braid.forget(n); } if (r.verdict === 'broken') ui.emit('braid.broken', { moment: name, findings: r.findings }); }
+        if (!auto.timer) return; const run = auto.timer;
+        // (a line stopped or started again while this mark was taken lets nothing go: the stop is to keep what it has;
+        // and the last clean moment before the latest suspect or broken one stays: the one before a fault to travel to,
+        // as moments after the fault lint clean again against each other)
+        try { const name = 't' + (++auto.n); const r = await braid.mark(name, { local: true }); auto.ring.push(name); auto.v.set(name, r.verdict || 'ok'); if (auto.timer !== run) return; const v = n => line.broken.get(n) || auto.v.get(n) || 'ok'; if (v(name) !== 'ok') auto.hold = auto.ring.slice(0, -1).filter(n => v(n) === 'ok').pop() || auto.hold; const hold = auto.hold; const fine = auto.ring.filter(n => n !== hold && v(n) !== 'broken' && !(line.moments.get(n) || {}).anchored); while (fine.length > keep) { const n = fine.shift(); auto.ring.splice(auto.ring.indexOf(n), 1); auto.v.delete(n); await braid.forget(n, { local: true }); } if (r.verdict === 'broken') ui.emit('braid.broken', { moment: name, findings: r.findings }); }
         catch (e) { console.warn('[braid] the line could not mark itself:', e.message); }
         if (auto.timer) auto.timer = setTimeout(tick, ms);
       };
-      auto.timer = setTimeout(tick, ms); return { every: ms, keep };
+      auto.timer = setTimeout(tick, ms); return { every: ms, keep, anchorEvery: auto.anchorEvery, anchorKeep: auto.anchorKeep };
     },
-    get auto() { return { every: auto.every, keep: auto.keep, moments: auto.ring.slice() }; },
+    get auto() { return { every: auto.every, keep: auto.keep, moments: auto.ring.slice(), anchorEvery: auto.anchorEvery, anchorKeep: auto.anchorKeep, anchors: auto.anchors.slice() }; },
     /** the system's machine between two moments (or a moment and now): the lint's findings and their verdict (broken,
      *  suspect, ok). The signs of a machine that will not come back: the Win16Lock held by one thread across both, a
      *  thread at the same place with its time running out each slice, a ring-0 run at the same place, faults since, the
@@ -209,7 +302,13 @@ window.W95BraidPage = function (ui) {
     },
     /** the system's machine run ahead of the wall by `x` (its steps back to back, each x periods of its own clock):
      *  the waits on time pass x times faster than real time; 1 is a person's pace again. Answers { scale, now } */
-    speed: x => { const s = sys(); return s ? s.cmd('speed', [x]) : Promise.resolve(null); },
+    // (the PC's machine too, whose clock times the loading screen and the boot before Windows' own machine starts)
+    /** the speed each machine is set to (`pc`, `system`: times ahead of the wall, null for a machine not running) and the
+     *  system's clock now: read only, nothing is changed (setMachineSpeed sets it) */
+    speed: async () => { const s = sys(), r = s ? await s.cmd('speedScale') : null; return { pc: ui.pcSpeed ? ui.pcSpeed() : null, system: r ? r.scale : null, now: r ? r.now : null }; },
+    /** both machines run `x` times ahead of the wall (1: a person's pace): the PC's, whose clock times the loading screen
+     *  and the boot before Windows' own machine starts, and the system's. Resolves with what `speed` reads */
+    setMachineSpeed: async x => { if (ui.pcSpeed) ui.pcSpeed(x); const s = sys(); if (s) await s.cmd('speed', [x]); return braid.speed(); },
     /** the machine's own clock, ms since its start: the line's time */
     now: () => clock(),
     get build() { return build(); },
@@ -267,14 +366,19 @@ window.W95BraidPage = function (ui) {
     /** another person's mark or travel (an intent of the session, kind 'braid'), made here: a mark at the machine time
      *  they named, a travel to the moment they named, a scrub to the time */
     async remote(i) {
-      quiet = true;
+      // (anyone's, this person's own too: made here as it reaches this machine in the session's op order; the call
+      // that asked for it here, if this person's, resolves with what was made, viaLine)
+      const k = waitKey(i), w = waits.get(k); waits.delete(k);
+      const L = { local: true };
       try {
-        if (i.op === 'mark') await braid.mark(i.name, { at: i.at });
-        else if (i.op === 'travel') await braid.travel(i.name, { force: !!i.force, quiet: true });
-        else if (i.op === 'scrub') await braid.travel({ t: i.t }, { quiet: true });
-        else if (i.op === 'forget') await braid.forget(i.name, { quiet: true });
-      } catch (e) { console.warn(`[braid] another person's ${i.op} could not be made here:`, e.message); }
-      finally { quiet = false; }
+        let r;
+        if (i.op === 'mark') r = await braid.mark(i.name, { ...L, at: i.at });
+        else if (i.op === 'anchor') r = await braid.anchor(i.name, L);
+        else if (i.op === 'travel') r = await braid.travel(i.name, { ...L, force: !!i.force });
+        else if (i.op === 'scrub') r = await braid.travel({ t: i.t }, L);
+        else if (i.op === 'forget') r = await braid.forget(i.name, L);
+        if (w) w.ok(r);
+      } catch (e) { if (w) w.no(e); else console.warn(`[braid] another person's ${i.op} could not be made here:`, e.message); }
     },
     /** the Braid window: the line as a slider, the moments as ticks (coloured by the lint), the forks, the thumb at
      *  now; drag it to travel to a time, click a tick to travel to its moment; Mark, Anchor, Lint, the line marking itself */
@@ -303,7 +407,6 @@ window.W95BraidPage = function (ui) {
       await sleep(20);
     }
     const r = await done;
-    if (!o.quiet) share({ op: 'scrub', t });
     ui.emit('braid.scrub', { t, at: r.at, from: stay ? null : m.name, actions: acts.length });
     return { at: r.at, from: stay ? null : m.name, actions: acts.length, left: !!r.left };
   }
@@ -316,7 +419,12 @@ window.W95BraidPage = function (ui) {
     // (the system's machine the page starts as something needs it: a moment with one, arrived at in a page that has
     // none yet, starts it first, booted, then brings the moment into it; the moment's page is not arrived at into a
     // page with no machine for it, which left the line at the moment and the machines where they were)
-    for (const [k, ex] of Object.entries(rec.machines)) { const a = k === 'system' ? (sys() || await ui.startSystem()) : live().find(x => x.path === k); if (!a) throw new Error(`no machine running for the moment's ${k}`); out[k] = await a.cmd('import', [ex]); forgetKids(a); }
+    // (booted on the moment's own disk, brought into the page's tree and its store first: the store held another
+    // generation's disk, the one Windows 98 Setup's restart left half renamed (Windows 95's GDI.EXE and USER.EXE beside
+    // Windows 98's GDI32 and USER32), and the boot on it died in GDI's LibEntry, leaving no machine to arrive in. The
+    // shell is left as it is: the record's shell comes in with the rest below)
+    if (rec.machines.system && !sys()) { B.rebind([fs, {}], rec.page, { opaque: opaque(), skip: shellSkip }); writeDisk(true); }
+    for (const [k, ex] of Object.entries(rec.machines)) { const a = k === 'system' ? (sys() || await ui.startSystem()) : live().find(x => x.path === k); if (!a) throw new Error(`no machine running for the moment's ${k}`); out[k] = await a.cmd('import', [ex], ex.blob && ex.blob.buffer instanceof ArrayBuffer && !ex.blob.byteOffset && ex.blob.byteLength === ex.blob.buffer.byteLength ? [ex.blob.buffer] : []); ex.blob = null; forgetKids(a); }   // (the moment's bytes moved to the machine, not copied, when they are a buffer of their own)
     watchStores(); ui.closeMenus();
     // (the shell's windows are not rebound: a machine's windows come from its next frame, as they are its own, and a
     // window of the page's is code the record cannot carry. Matched by position to the booted shell's windows, the
@@ -345,6 +453,10 @@ window.W95BraidPage = function (ui) {
     const gen = line.fork(name, 'anchor', { at: rec.now, build: rec.build, forced: rec.build !== b });
     if (line.moments.has(name)) line.moments.get(name).anchored = true;
     ui.emit('braid.travel', { gen, moment: name, at: rec.now, how: 'anchor' });
+    // (a moment with no system's machine, taken as the PC booted (Setup's restart: w98-reboot, w98-windows): the PC
+    // boots again on the moment's disk, the page's own machine ended. Left booting, the page's PC read the disk the
+    // arrival wrote under it and never reached Windows)
+    if (!rec.machines.system && ui.pcBoot) { const s = sys(); if (s && s.alive) s.exited(0); ui.pcBoot(); }
     ui.dirty();
     return { ...out, page: r, gen, at: rec.now, disk };
   }
@@ -401,6 +513,41 @@ window.W95BraidPage = function (ui) {
     return win;
   }
 
+  /** a diagnostic: each time the page's main thread was held up by one task longer than `ms` (the PC's machine, the
+   *  shell and a travel's unpacking all run there: a page that stops drawing for minutes after an arrival), with when,
+   *  for how long, the page's heap then and the braid step in progress. `watchPageLongTasks(ms)` starts the log afresh,
+   *  `pageLongTasks()` reads it, `watchPageLongTasks(0)` ends it and hands it back. Each is also an event,
+   *  `braid.pageLongTask` */
+  const stallLog = { obs: null, list: [], step: null };
+  // (the step in progress: a mark, travel or anchor, by its name and its argument's)
+  for (const k of ['mark', 'travel', 'anchor']) {
+    const f = braid[k]; if (typeof f !== 'function') continue;
+    braid[k] = function (...a) {
+      const was = stallLog.step; stallLog.step = `${k} ${typeof a[0] === 'string' ? a[0] : a[0] && a[0].t !== undefined ? `t=${a[0].t}` : ''}`.trim();
+      const done = () => { stallLog.step = was; };
+      try { const r = f.apply(this, a); if (r && typeof r.then === 'function') return r.finally(done); done(); return r; } catch (e) { done(); throw e; }
+    };
+  }
+  braid.pageLongTasks = () => stallLog.list.slice();
+  braid.watchPageLongTasks = (ms = 300) => {
+    if (stallLog.obs) { stallLog.obs.disconnect(); stallLog.obs = null; }
+    if (!ms) return stallLog.list.splice(0);
+    stallLog.list = [];
+    if (typeof PerformanceObserver !== 'function' || !(PerformanceObserver.supportedEntryTypes || []).includes('longtask')) return null;
+    const t0 = performance.now();
+    stallLog.obs = new PerformanceObserver(l => {
+      for (const e of l.getEntries()) {
+        if (e.duration < ms) continue;
+        const mem = performance.memory;
+        const rec = { at: Math.round(e.startTime - t0), ms: Math.round(e.duration), heapMB: mem ? Math.round(mem.usedJSHeapSize / 1048576) : null, step: stallLog.step };
+        stallLog.list.push(rec); if (stallLog.list.length > 2000) stallLog.list.shift();
+        ui.emit('braid.pageLongTask', rec);
+      }
+    });
+    stallLog.obs.observe({ type: 'longtask', buffered: false });
+    return true;
+  };
+  braid.__test = { dbPut, dbGet, dbDel, dbNames, dbEach, summary };   // (the store, for tests/braidchunks.test.mjs)
   return braid;
 };
 })();

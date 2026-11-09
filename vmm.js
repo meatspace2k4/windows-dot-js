@@ -28,7 +28,9 @@ P.vxd = function (file) {
   const run = new WebAssembly.Instance(mod, this.imports).exports.run;
   const look = new Uint32Array(this.mem.buffer, m.lookup, m.textHi - m.textLo);
   m.blocks.forEach((a, i) => { look[a - m.textLo] = i + 1; });
-  const rec = { kind: 'vxd', name: m.name.trim(), file: key, id: m.id, meta: m, run, ddb: m.ddb, procs: m.procs, base: m.base, clock: true };
+  // (its size: where it is, so an image looked for room is not mapped over it, win32.js imageRoom. Without one,
+  // Windows 98's MSHTML.DLL went over a VxD in the arena, and MSGSRV32's next call into the VxD ran MSHTML's bytes)
+  const rec = { kind: 'vxd', name: m.name.trim(), file: key, id: m.id, meta: m, run, ddb: m.ddb, procs: m.procs, base: m.base, size: m.size || img.length, clock: true };
   this.modules.push(rec); this.vxds.set(key, rec);
   // (debugging, ?dynat=addr,...: those blocks run as run-time code, block by block, so a write watch names the block
   // that wrote and the stack it ran on; a VxD's name: all of its blocks)
@@ -1823,7 +1825,8 @@ svc(VMM, 0xaa, function () { return 1; });
 // (VCACHE reserves 30 MB at boot, which took most of the 56 MB heap)
 svc(VMM, 0x11d, function (arg) {
   const n = arg(1) * 4096, size = (n + 0xffff) & ~0xffff, end = this.mem.buffer.byteLength;
-  if (this.vmTop !== undefined && this.vmTop + size <= end) { const b = this.vmTop; this.vmTop += size; (this.vregions || (this.vregions = new Map())).set(b, { size, heap: null }); return b; }
+  const b = this.vmTop !== undefined && this.vmTop + size <= end && this.vmRoom ? this.vmRoom(size, 0x10000) : 0;   // (on a 64 KiB boundary, as VirtualAlloc's)
+  if (b) { (this.vregions || (this.vregions = new Map())).set(b, { size, heap: null }); return b; }
   const a = this.alloc(n + 4096); return (a + 4095) & ~4095;
 });
 svc(VMM, 0x11e, function (arg) { const a = arg(0) * 4096; this.u8.fill(0, a, a + arg(1) * 4096); return 1; });   // _PageCommit(page, n, ...)

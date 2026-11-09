@@ -40,5 +40,12 @@ assert.equal(p.threadsById.get(2).stackBase, 0x300000, 'the other process keeps 
   q.ret = 0x1660000; const dll = VA.call(q, 0, 0x10000, 0x2000);
   assert.equal(q.vregions.get(own).pc, owner, 'the program reserved it: the process owns it');
   assert.equal(q.vregions.get(dll).pc, null, 'a DLL reserved it: kept');
+  // a DLL whose writable data is each process's own (MSVCRT from its file: its heap's 4 MB reservation, which its data
+  // holds): the process's, freed as it ends (kept, every RUNDLL32's and REGSVR32's ran Windows 98's first start out of memory)
+  q.modules = [{ name: 'MSVCRT', base: 0x1100000, size: 0x40000, priv: { ranges: [] } }, { name: 'SHELL32', base: 0x1660000, size: 0x10000 }];
+  q.ret = 0x1103ad9; const crt = VA.call(q, 0, 0x400000, 0x2000);
+  q.ret = 0x1660000; const shared = VA.call(q, 0, 0x10000, 0x2000);
+  assert.equal(q.vregions.get(crt).pc, owner, 'MSVCRT\'s heap: the process\'s');
+  assert.equal(q.vregions.get(shared).pc, null, 'a DLL of one copy: kept');
 }
 console.log('processfree: ok');
