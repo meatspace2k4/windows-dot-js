@@ -11,11 +11,24 @@ const { API } = window.W95Win32, { K16 } = window.W95NE16;
   // (strings at 10010h and 10040h: an address above 64K is a name, below it a number)
   const asked = [], mem = new Uint8Array(0x100), w = (a, s) => { [...s, '\0'].forEach((c, i) => { mem[a - 0x10000 + 2 * i] = c.charCodeAt(0); }); };
   w(0x10010, 'REGINST'); w(0x10040, 'MYTYPE');
-  const p = { readW: a => { let s = ''; for (let i = a - 0x10000; mem[i]; i += 2) s += String.fromCharCode(mem[i]); return s; }, readA: () => 'R', moduleFor: m => m,
+  const p = { readW: a => { let s = ''; for (let i = a - 0x10000; mem[i]; i += 2) s += String.fromCharCode(mem[i]); return s; }, readA: () => 'R', hmod: h => h, moduleFor: m => ({ base: m }),
     findResource: (t, n, m) => { asked.push([t, n, m]); return { addr: 0x1234, size: 8 }; }, newHandle: o => (asked.push(o), 7) };
   assert.equal(API.KERNEL32.FindResourceW[1].call(p, 0x400000, 0x10010, 0x10040), 7);
-  assert.deepEqual(asked[0], ['MYTYPE', 'REGINST', 0x400000], 'names read as UTF-16');
-  API.KERNEL32.FindResourceW[1].call(p, 0x400000, 5, 6); assert.deepEqual(asked[2], [6, 5, 0x400000], 'by number');
+  assert.deepEqual(asked[0], ['MYTYPE', 'REGINST', { base: 0x400000 }], 'names read as UTF-16');
+  API.KERNEL32.FindResourceW[1].call(p, 0x400000, 5, 6); assert.deepEqual(asked[2], [6, 5, { base: 0x400000 }], 'by number');
+  // (a handle no module of the process has: no resource, ERROR_RESOURCE_TYPE_NOT_FOUND, not the program's own)
+  const q = { ...p, moduleFor: () => ({ base: 0x400000 }) };
+  assert.equal(API.KERNEL32.FindResourceW[1].call(q, 0x7fe00000, 5, 6), 0); assert.equal(q.lastError, 1813);
+}
+// IsBadReadPtr / IsBadWritePtr: a count of 0 is never bad, NULL included (OLE32's IsClassOfCategories with no
+// required categories); NULL with bytes asked for is
+{
+  const p = { mem: { buffer: { byteLength: 0x10000 } } };
+  for (const f of ['IsBadReadPtr', 'IsBadWritePtr']) {
+    assert.equal(API.KERNEL32[f][1].call(p, 0, 0), 0, f + '(NULL, 0)');
+    assert.equal(API.KERNEL32[f][1].call(p, 0, 16), 1, f + '(NULL, 16)');
+    assert.equal(API.KERNEL32[f][1].call(p, 0x1000, 16), 0); assert.equal(API.KERNEL32[f][1].call(p, 0xfff8, 16), 1);
+  }
 }
 // IsPeFormat: a PE image yes, an NE one and no file no
 {

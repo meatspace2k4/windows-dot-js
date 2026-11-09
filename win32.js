@@ -2207,8 +2207,12 @@ def('KERNEL32', 'GetPrivateProfileSectionA', 4, function (sec, buf, n, file) {
 def('KERNEL32', 'GetProfileSectionA', 3, function (sec, buf, n) { return API.KERNEL32.GetPrivateProfileSectionA[1].call(this, sec, buf, n, 0); });
 def('KERNEL32', 'GetProfileStringA', 5, function (sec, key, dflt, buf, n) { return API.KERNEL32.GetPrivateProfileStringA[1].call(this, sec, key, dflt, buf, n, 0); });
 def('KERNEL32', 'GetSystemDirectoryA', 2, function (b, n) { return this.writeA(b, 'C:\\WINDOWS\\SYSTEM', n); });
-def('KERNEL32', 'IsBadReadPtr', 2, function (a, n) { return !a || a + n > this.mem.buffer.byteLength ? 1 : 0; });
-def('KERNEL32', 'IsBadWritePtr', 2, function (a, n) { return !a || a + n > this.mem.buffer.byteLength ? 1 : 0; });
+// IsBadReadPtr / IsBadWritePtr: no bytes asked for is never bad, whatever the pointer (Windows answers 0 for a count of
+// 0): OLE32's IsClassOfCategories checks a required list of none, NULL, that way; told it was bad it answered
+// E_POINTER, MSHTML took the Active Desktop Mover (marked safe for scripting) for a control not marked safe, and the
+// desktop asked "Some software (ActiveX controls) on this page might be unsafe" each time it was made
+def('KERNEL32', 'IsBadReadPtr', 2, function (a, n) { return n && (!a || a + n > this.mem.buffer.byteLength) ? 1 : 0; });
+def('KERNEL32', 'IsBadWritePtr', 2, function (a, n) { return n && (!a || a + n > this.mem.buffer.byteLength) ? 1 : 0; });
 def('KERNEL32', 'RtlMoveMemory', 3, function (d, s, n) { this.u8.copyWithin(d, s, s + n); });
 def('KERNEL32', 'IsDBCSLeadByte', 1, () => 0);    // code page 1252 has no lead bytes
 def('KERNEL32', 'MulDiv', 3, function (a, b, c) {    // rounded (a*b)/c, -1 on overflow or division by zero
@@ -2342,15 +2346,27 @@ def('KERNEL32', 'SetPriorityClass', 2, () => 1);
 // process and read back (default level 280h, no flags)
 def('KERNEL32', 'SetProcessShutdownParameters', 2, function (level, flags) { const pc = this.pc || this; pc.shutdownParams = [level, flags]; return 1; });
 def('KERNEL32', 'GetProcessShutdownParameters', 2, function (pl, pf) { const pc = this.pc || this, [l, f] = pc.shutdownParams || [0x280, 0]; if (pl) this.w32(pl, l); if (pf) this.w32(pf, f); return 1; });
+/** the module whose resources handle `m` names: the process's own program for 0, else the module at that handle,
+ *  none for a handle no module of this process has (1813). Not the program's in its place: Explorer copying
+ *  MSTASK's tray icon from its resource (CopyImage, LR_COPYFROMRESOURCE) found its own icon 403, a computer, and the
+ *  tray showed it in place of the Task Scheduler's */
+const resModule = (p, m) => {
+  if (!m) return p.moduleFor(0);
+  const mod = p.moduleFor(m), h = u32(p.hmod(m));
+  if (!mod || (u32(mod.base) !== h && !(p.dataMods && p.dataMods.get(h)))) { p.lastError = 1813; return null; }   // ERROR_RESOURCE_TYPE_NOT_FOUND
+  return mod;
+};
 def('KERNEL32', 'FindResourceA', 3, function (m, name, type) {
-  const r = this.findResource(this.resName(type), this.resName(name), this.moduleFor(m)); if (!r) return 0;
+  const mod = resModule(this, m); if (!mod) return 0;
+  const r = this.findResource(this.resName(type), this.resName(name), mod); if (!r) return 0;
   return this.newHandle({ kind: 'res', ...r });
 });
 // FindResourceW: Windows 98's KERNEL32 has it (its own code, not the common stub), names in UTF-16 or by number (RUNONCE's
 // call was a dead thunk, and RUNONCE ended on Windows 98's first start)
 def('KERNEL32', 'FindResourceW', 3, function (m, name, type) {
   const n = p => (p >>> 16 ? this.readW(p) : p);
-  const r = this.findResource(n(type), n(name), this.moduleFor(m)); if (!r) return 0;
+  const mod = resModule(this, m); if (!mod) return 0;
+  const r = this.findResource(n(type), n(name), mod); if (!r) return 0;
   return this.newHandle({ kind: 'res', ...r });
 });
 // the resource directory's levels enumerated to a callback: types, a type's names, a name's languages, each callback

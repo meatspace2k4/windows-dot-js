@@ -1480,6 +1480,12 @@ class Machine {
   setMode(w, h, fields = 0x180000, flags = 0x80000000) {
     const p = this.proc; if (!p || p.depth || p.thread16 || p.win16Held) return null;
     p.host.width = w; p.host.height = h;
+    // the mode recorded as Display Properties records it before USER changes it (Display\Settings' Resolution, as the
+    // page's bootMode writes it at boot): Explorer's tray reads it on WM_DISPLAYCHANGE (EXPLORER 41243Bh) and, while it
+    // names another width than the driver's, takes the change for one waiting on a restart and leaves the taskbar
+    // where the old screen had it; SHDOC401's desktop reads it too
+    const res = { type: 1, data: self.W95FS.encode(`${w},${h}\0`), name: 'Resolution' };
+    for (const k of ['hkcc\\display\\settings', 'hklm\\config\\0001\\display\\settings']) self.W95Win32.regSet(k, 'Resolution', res);
     // a DEVMODE (its 4.0 form, 7Ch bytes) naming the mode: dmFields DM_PELSWIDTH and DM_PELSHEIGHT (naming the depth too, or
   // the registry update flag, has USER answer DISP_CHANGE_RESTART); the change made now, as QuickRes asks for it (flag 80000000h)
     const dm = p.alloc(0x7c);
@@ -1744,6 +1750,8 @@ class Machine {
             if (seg) for (let i = 0; i < n; i++) a.push(this.r16(sp + 4 + 2 * i).toString(16)); else for (let i = 1; i <= n; i++) a.push((this.r32(sp + 4 * i) >>> 0).toString(16));
             const ret = seg ? (this.selBase(this.r16(sp + 2)) + this.r16(sp)) >>> 0 : this.r32(sp) >>> 0;
             const rec = { t: Math.round(performance.now() - t0), name: `${m.name}!${nm}`, args: a, from: this.whereOf(ret), thread: this.thread16 ? this.thread16.id : 'main' };
+            // (a 32-bit caller's callers: the stack's dwords that are places in a module's code, innermost first)
+            if (!seg) { const st = []; for (let o = sp + 4; o < sp + 0x2000 && st.length < 24; o += 4) { const w = this.whereOf(this.r32(o) >>> 0); if (/^[A-Z0-9_]+(\.[A-Z]+)?\+[0-9a-f]+/i.test(w)) st.push(w); } rec.stack = st; }
             if (log().length < 20000) log().push(rec);
             this.onReturn((eax, edx) => { rec.eax = eax.toString(16); if (seg) { rec.ax = (eax & 0xffff).toString(16); rec.dxax = (((edx & 0xffff) << 16 | (eax & 0xffff)) >>> 0).toString(16); } });
           });
@@ -1774,7 +1782,7 @@ class Machine {
           const exes = [p.pc0, p.pc, ...(p.procs || new Map()).values()].filter(own).map(x => x.exe);
           const m = [...p.modules.filter(x => x.name === name), ...exes].find(x => eip >= x.base && eip < x.base + (x.size || (x.meta && x.meta.textHi - x.base) || 0));
           if (m) { const s = p.runHook.seen; s.n++; const k = (eip - m.base).toString(16); s.at[k] = (s.at[k] || 0) + 1; }
-          if (m && want.has(eip - m.base)) { const sp = p.reg('esp') >>> 0; log.push([Math.round(performance.now()), p.thread16 && p.thread16.pc ? p.thread16.pc.path : 'host', 'watch', `${name}+${(eip - m.base).toString(16)}`, `eax ${(p.reg('eax') >>> 0).toString(16)}`, `args ${[4, 8, 12, 16, 20].map(k => (p.r32(sp + k) >>> 0).toString(16)).join(' ')}`]); }   // (the stack's first five arguments, as a stdcall function sees them on entry)
+          if (m && want.has(eip - m.base)) { const sp = p.reg('esp') >>> 0; log.push([Math.round(performance.now()), p.thread16 && p.thread16.pc ? p.thread16.pc.path : 'host', 'watch', `${name}+${(eip - m.base).toString(16)}`, `eax ${(p.reg('eax') >>> 0).toString(16)}`, `args ${[4, 8, 12, 16, 20].map(k => (p.r32(sp + k) >>> 0).toString(16)).join(' ')}`, `frame ${[8, 12, 16, 20, 24, 28, 32, 36].map(k => (p.r32((p.reg('ebp') >>> 0) + k) >>> 0).toString(16)).join(' ')}`]); }   // (the stack's first five arguments, as a stdcall function sees them on entry; and the arguments of the function whose frame EBP holds, for a place inside one)
         };
         p.runHook.seen = { n: 0, at: {} };
         return true;

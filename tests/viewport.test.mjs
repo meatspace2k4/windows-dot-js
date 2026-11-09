@@ -19,6 +19,10 @@ const cut = (w, a, b, keep = true) => { const i = w.indexOf(a); assert.ok(i >= 0
     user16: () => { throw new Error('the host asked USER itself'); }, scanout: () => ({ w: 800, h: 600, bpp: 8 }),
     displayConfig: () => ({ bpp: 16 }), displaySlot: (w, h, bpp) => { p.slotBpp = bpp; return { w, h }; },
   };
+  // (the mode recorded first, as Display Properties records it: Explorer's tray reads Display\Settings' Resolution on
+  // WM_DISPLAYCHANGE and leaves the taskbar where it was while it names another width)
+  const regs = [];
+  globalThis.self = { W95FS: { encode: s => new TextEncoder().encode(s) }, W95Win32: { regSet: (k, n, v) => regs.push([k, n, new TextDecoder().decode(v.data)]) } };
   const m = new M(); m.proc = p; m.sw = 1024; m.sh = 768;
   let batches = [], answer = [0];
   m.netBatch = calls => { batches.push(calls); return Promise.resolve(answer); };
@@ -27,6 +31,7 @@ const cut = (w, a, b, keep = true) => { const i = w.indexOf(a); assert.ok(i >= 0
   assert.deepEqual(batches, [[{ dll: 'USER32', name: 'ChangeDisplaySettingsA', args: [0x1000, 0x80000000] }]]);
   assert.equal(p.slotBpp, 16, 'the driver\'s entry for the size at the configured depth');
   assert.deepEqual([p.host.width, p.host.height], [800, 600]);
+  assert.deepEqual(regs, [['hkcc\\display\\settings', 'Resolution', '800,600\0'], ['hklm\\config\\0001\\display\\settings', 'Resolution', '800,600\0']]);
   assert.equal(mem.getUint16(0x1000 + 36, true), 0x7c); assert.equal(mem.getUint32(0x1000 + 40, true), 0x180000);
   assert.deepEqual([104, 108, 112].map(o => mem.getUint32(0x1000 + o, true)), [8, 800, 600]);
   assert.deepEqual(await r, { r: 0, sw: 800, sh: 600 });
