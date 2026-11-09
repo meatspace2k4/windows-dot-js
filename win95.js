@@ -3927,10 +3927,12 @@ class RemoteApp extends NativeApp {
   /** whether the system's machine has MPR loaded, once it has come to that (worker.js loadMpr) */
   mprLoaded() { return this.mprUp !== undefined ? Promise.resolve(this.mprUp) : new Promise(ok => { this.mprReady = ok; }); }
   /** a request to the machine; resolves to its answer */
-  cmd(name, args = []) {
+  /** `transfer`: buffers moved to the machine, not copied (an arrival's moment, hundreds of MB, is the caller's no more:
+   *  copied, a second copy beside the first, Windows 95's 440 MB one was "Data cannot be cloned, out of memory") */
+  cmd(name, args = [], transfer = []) {
     if (!this.alive) return Promise.resolve(null);
     const id = this.nextCall++;
-    return new Promise(ok => { this.calls.set(id, ok); this.worker.postMessage({ t: 'cmd', id, name, args }); });
+    return new Promise(ok => { this.calls.set(id, ok); this.worker.postMessage({ t: 'cmd', id, name, args }, transfer); });
   }
   message(m) {
     // (a machine that has ended draws no more: its worker's last frames put its windows back on the screen, undrawn)

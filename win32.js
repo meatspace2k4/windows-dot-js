@@ -385,9 +385,12 @@ class Process {
     if (!this.vmTop) return 0;
     // (clear of the places the memo has for modules not loaded here (memoSpans) while there is room elsewhere: a DLL
     // put where its translation was made runs the memo's module; put elsewhere, translated again, whole, in the step)
-    return this.vmRoomClear(size, align, [...spans, ...this.memoSpans()]) || this.vmRoomClear(size, align, spans);
+    return this.vmRoomClear(size, align, [...spans, ...this.memoSpans()], true) || this.vmRoomClear(size, align, spans, false);
   }
-  vmRoomClear(size, align, spans) {
+  /** `topClear`: the top's room checked against `spans` too (the first pass, the memo's places); the last pass takes the
+   *  top as it is, as it always has (checked there, a module mapped above the top refused every allocation from it, and
+   *  MPREXE could not load IENPSTUB.DLL, error 126) */
+  vmRoomClear(size, align, spans, topClear) {
     const n = (size + align - 1) & -align, spare = this.vspare || (this.vspare = []);
     const hit = a => spans.find(([lo, hi]) => a < hi && lo < a + n);
     for (let i = 0; i < spare.length; i++) {
@@ -404,7 +407,7 @@ class Process {
     // memo's places, which lie across the whole space from runs before, a few allocations took the space up, and
     // MSJET40's block table found no room)
     const b = (this.vmTop + align - 1) & -align;
-    if (b + n > this.mem.buffer.byteLength || hit(b)) return 0;
+    if (b + n > this.mem.buffer.byteLength || (topClear && hit(b))) return 0;
     this.vmTop = b + n; return this.vmCheck(b, n, 'room from the top');
   }
   /** the room [b, b+size) above the layout taken where it is, when it is free (a spare piece holds it, or it is past the
