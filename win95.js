@@ -1265,7 +1265,7 @@ function dosBox(program, args) {
 // ExitWindows' code (pcEnd) and WIN.COM does what it asks: Restart in MS-DOS mode runs DOSSTART.BAT and COMMAND.COM
 // (EXIT starts Windows again), a restart resets the PC. Its text screen is the display, whole; the page's keys are its
 // keyboard; Ctrl+Alt+Del restarts it
-let pc = null;
+let pc = null, pcSpeed = 1;   // (pcSpeed: the PC's clock run ahead of the wall, as braid.speed runs the system's: its loading screen too)
 // the PC's diskette drive A: as its BIOS reads it by sector: a 1.44 MB disk image put in (pc.floppy), the change line
 // set as one goes in, what is written to it kept in the image; the BIOS boots it when it is in at a start
 const pcFloppy = { image: null, name: null, changed: false };
@@ -1320,7 +1320,7 @@ function pcBoot() {
   if (!fs.exists(join(WINDIR, 'SYSTEM.DAT'))) flushRegistry();   // (a disk made before Windows wrote its registry's files)
   if (diskSystem() === 'win95') strayCopies();
   const m = dosMachine(null, null, { pc: true, floppy: pcFloppy, windows: path => pcWindows(path), reset: () => setTimeout(pcBoot, 0) });
-  pc = { m, timer: 0, failed: null };
+  pc = { m, timer: 0, failed: null }; m.speed = pcSpeed;
   // (the VGA BIOS's 8x8 characters, which it draws in a graphics mode: EGA.CPI's, code page 437)
   { const d = window.W95SYSTEM && W95SYSTEM.dos && W95SYSTEM.dos['EGA.CPI']; if (d && !m.font8) m.font8 = cpiFont(b64bytes(d), 437, 8); }
   if (!dosFont) { const d = window.W95SYSTEM && W95SYSTEM.dos && W95SYSTEM.dos['EGA.CPI']; if (d) dosFont = cpiFont(b64bytes(d), 437, 14); }
@@ -6195,6 +6195,7 @@ const PAGE_SCRIPTS = new Set(['ccd.js']);
 const braidUi = () => ({
   W95Win32, fs, emit, dirty, closeMenus, dialog, closeWin, msgBox, activate, script,
   machines: () => [...machineWorkers], sysApp: () => sysApp, startSystem, pcBoot: () => pcBoot(), windows: () => windows, shared: () => sharedNow(),
+  pcSpeed: x => { pcSpeed = Math.max(1, Number(x) || 1); if (pc && pc.m) pc.m.speed = pcSpeed; return pcSpeed; },
   shell: () => ({ windows, tasks, modals, active, menus, menuSrc, cap, drag, ghost, screen, textClip, clipOwner, msgApp, cascadeN }),
   setShell: sh => {
     ({ windows, tasks, modals, active, menus, menuSrc, cap, drag, ghost, screen, textClip, clipOwner, msgApp, cascadeN } = sh);

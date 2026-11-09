@@ -1376,8 +1376,12 @@ P.neCompile = function (rec, again = false) {
   // code meanwhile (its text not the dispatcher's until then: netText), and put in place at a step's end, neInstall)
   if (same && !had.wasm) {
     rec.netText = [meta.textLo, meta.textHi]; meta.textLo = meta.textHi = 0; rec.netReady = null;
-    memoWasm(rec.sha256).then(wasm => wasm ? WebAssembly.compile(wasm).then(mod => { rec.netReady = { mod, wasm, had, t0 }; }) : (rec.netReady = { had: null }))
-      .catch(e => { console.warn(`[dyn] ${label}: the memo's module could not be read:`, e && e.message); rec.netReady = { had: null }; });
+    // (the read's answer the record's only while it is still that file's, waiting for it: an arrival rebinds the
+    // records by their place, and a read MSIDLE's load began answered on the record that was SHDOCVW's by then, which
+    // got MSIDLE's module, its own code run-time code, the Channel Bar's control black)
+    const sha = rec.sha256, mine = () => rec.sha256 === sha && rec.netText && !rec.netReady;
+    memoWasm(sha).then(wasm => wasm ? WebAssembly.compile(wasm).then(mod => { if (mine()) rec.netReady = { mod, wasm, had, t0 }; }) : mine() && (rec.netReady = { had: null }))
+      .catch(e => { console.warn(`[dyn] ${label}: the memo's module could not be read:`, e && e.message); if (mine()) rec.netReady = { had: null }; });
     return rec;
   }
   let wasm, blocks, lens, sums;
@@ -1426,7 +1430,8 @@ P.neInstall = function () {
     if (!m || !m.netText || !m.netReady || m.hidden) continue;
     const { mod, wasm, had, t0 } = m.netReady, meta = m.meta; [meta.textLo, meta.textHi] = m.netText; m.netText = null; m.netReady = null;
     const label = m.name === 'EXE' ? meta.path || meta.name || 'EXE' : m.name;
-    if (!had || had.codeHash !== blocksHash(this.u8, had.blocks, had.lens)) { this.neCompile(m, true); return true; }
+    // (another file's memo, or another text: translated now, as one not in the memo)
+    if (!had || had.sha !== m.sha256 || had.textLo !== meta.textLo || had.textHi !== meta.textHi || had.codeHash !== blocksHash(this.u8, had.blocks, had.lens)) { this.neCompile(m, true); return true; }
     this.neSet(m, mod, { wasm, blocks: had.blocks, lens: had.lens, sums: had.sums });
     window.W95Win32.log('debug', 'dyn', `${label}: ${had.blocks.length} blocks from the memo (${wasm.length} bytes, put in place ${Math.round(performance.now() - t0)} ms after its load)`);
     return true;

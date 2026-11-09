@@ -302,7 +302,8 @@ window.W95BraidPage = function (ui) {
     },
     /** the system's machine run ahead of the wall by `x` (its steps back to back, each x periods of its own clock):
      *  the waits on time pass x times faster than real time; 1 is a person's pace again. Answers { scale, now } */
-    speed: x => { const s = sys(); return s ? s.cmd('speed', [x]) : Promise.resolve(null); },
+    // (the PC's machine too, whose clock times the loading screen and the boot before Windows' own machine starts)
+    speed: x => { if (ui.pcSpeed) ui.pcSpeed(x); const s = sys(); return s ? s.cmd('speed', [x]) : Promise.resolve(null); },
     /** the machine's own clock, ms since its start: the line's time */
     now: () => clock(),
     get build() { return build(); },
@@ -507,6 +508,40 @@ window.W95BraidPage = function (ui) {
     return win;
   }
 
+  /** a diagnostic: each time the page's main thread was held up by one task longer than `ms` (the PC's machine, the
+   *  shell and a travel's unpacking all run there: a page that stops drawing for minutes after an arrival), with when,
+   *  for how long, the page's heap then and the braid step in progress. `watchPageLongTasks(ms)` starts the log afresh,
+   *  `pageLongTasks()` reads it, `watchPageLongTasks(0)` ends it and hands it back. Each is also an event,
+   *  `braid.pageLongTask` */
+  const stallLog = { obs: null, list: [], step: null };
+  // (the step in progress: a mark, travel or anchor, by its name and its argument's)
+  for (const k of ['mark', 'travel', 'anchor']) {
+    const f = braid[k]; if (typeof f !== 'function') continue;
+    braid[k] = function (...a) {
+      const was = stallLog.step; stallLog.step = `${k} ${typeof a[0] === 'string' ? a[0] : a[0] && a[0].t !== undefined ? `t=${a[0].t}` : ''}`.trim();
+      const done = () => { stallLog.step = was; };
+      try { const r = f.apply(this, a); if (r && typeof r.then === 'function') return r.finally(done); done(); return r; } catch (e) { done(); throw e; }
+    };
+  }
+  braid.pageLongTasks = () => stallLog.list.slice();
+  braid.watchPageLongTasks = (ms = 300) => {
+    if (stallLog.obs) { stallLog.obs.disconnect(); stallLog.obs = null; }
+    if (!ms) return stallLog.list.splice(0);
+    stallLog.list = [];
+    if (typeof PerformanceObserver !== 'function' || !(PerformanceObserver.supportedEntryTypes || []).includes('longtask')) return null;
+    const t0 = performance.now();
+    stallLog.obs = new PerformanceObserver(l => {
+      for (const e of l.getEntries()) {
+        if (e.duration < ms) continue;
+        const mem = performance.memory;
+        const rec = { at: Math.round(e.startTime - t0), ms: Math.round(e.duration), heapMB: mem ? Math.round(mem.usedJSHeapSize / 1048576) : null, step: stallLog.step };
+        stallLog.list.push(rec); if (stallLog.list.length > 2000) stallLog.list.shift();
+        ui.emit('braid.pageLongTask', rec);
+      }
+    });
+    stallLog.obs.observe({ type: 'longtask', buffered: false });
+    return true;
+  };
   braid.__test = { dbPut, dbGet, dbDel, dbNames, dbEach, summary };   // (the store, for tests/braidchunks.test.mjs)
   return braid;
 };

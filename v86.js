@@ -135,7 +135,7 @@ P.v86Run = function (n = 20000, until = Infinity) {
 // keyboard's (IRQ 1, INT 09h)
 P.v86Interrupts = function () {
   const now = Date.now();
-  if (now - this.ticksAt >= 55) { this.ticksAt = now; this.irq |= 1; }
+  if ((now - this.ticksAt) * (this.speed || 1) >= 55) { this.ticksAt = now; this.irq |= 1; }   // (speed: the clock run ahead of the wall, braid.speed)
   const queued = ((this.m16(0x41c) - this.m16(0x41a) + 32) % 32) >> 1;   // (the BIOS's buffer: keys wait in the host's while it is nearly full, none lost)
   if (this.keys.length && !(this.irq & 2) && !this.kbdBusy && queued < 12) { const k = this.keys.shift(); this.port60Key = k; this.port60 = k >> 8; this.irq |= 2; this.kbdBusy = true; }   // (a key: its scan code << 8 | its character)
   if (!this.irq || !this.cpu.if.value) return;
