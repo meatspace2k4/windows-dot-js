@@ -1599,12 +1599,39 @@ const regMake = (path, orig) => {
   }
 };
 const keyName = (path, k) => KEYNAME.get(k) || k.slice(path.length + 1);
+// the registry's other names for a key, as Windows 95 has them: HKEY_LOCAL_MACHINE\SOFTWARE\Classes is
+// HKEY_CLASSES_ROOT, HKEY_LOCAL_MACHINE\Config\0001 is HKEY_CURRENT_CONFIG, HKEY_USERS\.DEFAULT is HKEY_CURRENT_USER:
+// the same keys, kept under the second name. Kept as two trees, a class URLMON or SHELL32 looked up under
+// HKLM\SOFTWARE\Classes was not there (SHRegOpenUSKey: the Web view's MIME filter, a folder's %THISDIRNAME% left as it
+// was). The first name's own key stays, so the key above it still lists it
+const REG_ALIAS = [['hklm\\software\\classes', 'hkcr'], ['hklm\\config\\0001', 'hkcc'], ['hku\\.default', 'hkcu']];
+/** a key's path under the name the registry keeps it by (lower case in, lower case out) */
+const regCanon = path => { for (const [a, b] of REG_ALIAS) if (path === a || path.startsWith(a + '\\')) return b + path.slice(a.length); return path; };
+/** a key's path as given (its case), under the name the registry keeps it by */
+const regCanonGiven = given => { const low = given.toLowerCase(); for (const [a, b] of REG_ALIAS) if (low === a || low.startsWith(a + '\\')) return b + given.slice(a.length); return given; };
+/** whether a stored path lies under another name of a key (left from before the names were one: not written out) */
+const regAliased = path => REG_ALIAS.some(([a]) => path.startsWith(a + '\\'));
+/** what a registry kept under the other names before they were one, given to the key it names, where that has none */
+// (`tell`: each value given passed on as a change, to the store and the other copies; quiet, this copy alone)
+const regUnify = tell => {
+  for (const [path, m] of [...REGISTRY]) {
+    if (!REG_ALIAS.some(([a]) => path === a || path.startsWith(a + '\\'))) continue;
+    const to = regCanon(path); if (to === path) continue;
+    if (!REGISTRY.has(to)) {
+      if (tell) regMake(to, KEYNAME.get(path) ? to.slice(0, to.length - KEYNAME.get(path).length) + KEYNAME.get(path) : null);
+      else { const parts = to.split('\\'); for (let k = 1; k <= parts.length; k++) { const q = parts.slice(0, k).join('\\'); if (!REGISTRY.has(q)) REGISTRY.set(q, new Map()); } }
+    }
+    const t = REGISTRY.get(to);
+    for (const [n, v] of m) if (!t.has(n)) { t.set(n, v); if (tell) regChanged({ op: 'set', path: to, name: n, value: v }); }
+  }
+};
 const regAttach = store => {
   regStore = store;
   const held = store.load();
   if (!held) { for (const [path, m] of REGISTRY) { store.op({ op: 'key', path }); for (const [name, value] of m) store.op({ op: 'set', path, name, value }); } return false; }
   REGISTRY.clear(); KEYNAME.clear();
   for (const [path, vals, name] of held) { REGISTRY.set(path, new Map(vals)); if (name) KEYNAME.set(path, name); }
+  regUnify(true);
   return true;
 };
 /** the registry as it is now, in the form a store's load gives it ([path, values, name]), for a machine in a worker */
@@ -1612,7 +1639,7 @@ const regDump = () => [...REGISTRY].map(([path, m]) => [path, [...m], KEYNAME.ge
 /** this copy of the registry put back as a dump had it (a moment rewound: braid.js). Quiet, the copy alone changes;
  *  `tell`, each difference goes as the operation that makes it, so the store and the other copies follow */
 const regLoad = (held, tell) => {
-  if (!tell) { REGISTRY.clear(); KEYNAME.clear(); for (const [path, vals, name] of held) { REGISTRY.set(path, new Map(vals)); if (name) KEYNAME.set(path, name); } return; }
+  if (!tell) { REGISTRY.clear(); KEYNAME.clear(); for (const [path, vals, name] of held) { REGISTRY.set(path, new Map(vals)); if (name) KEYNAME.set(path, name); } regUnify(false); return; }
   const want = new Map(held.map(([path, vals, name]) => [path, { vals: new Map(vals), name }]));
   for (const path of [...REGISTRY.keys()].sort().reverse()) if (!want.has(path) && REGISTRY.has(path)) regDel(path);
   for (const [path, { vals, name }] of want) {
@@ -1626,6 +1653,7 @@ const regLoad = (held, tell) => {
 /** a change another copy of the registry made (a machine's in its worker, or the page's): applied here, and passed on
  *  to this copy's store unless `quiet` ('remote': another person's, to this page's machines but not its store) */
 const regApply = (o, quiet) => {
+  if (o && o.path && regCanon(o.path) !== o.path) o = { ...o, path: regCanon(o.path) };   // (a change made under another name of the key)
   const was = regQuiet; if (quiet) regQuiet = quiet === 'remote' ? 'remote' : true;
   try {
     if (o.op === 'key') {   // (its name with it, to this copy's store too: the case a later load gives back)
@@ -1640,13 +1668,13 @@ const regApply = (o, quiet) => {
 };
 // the shell's own registry reads and writes (Explorer's settings), through the same store as a program's
 /** the names of a key's subkeys, as stored (lower case) */
-const regKids = path => { path = path.toLowerCase(); return [...REGISTRY.keys()].filter(k => k.startsWith(path + '\\') && !k.slice(path.length + 1).includes('\\')).map(k => k.slice(path.length + 1)); };
+const regKids = path => { path = regCanon(path.toLowerCase()); return [...REGISTRY.keys()].filter(k => k.startsWith(path + '\\') && !k.slice(path.length + 1).includes('\\')).map(k => k.slice(path.length + 1)); };
 /** a key's values as [name, value] pairs, and a key removed with its subkeys */
-const regVals = path => [...(REGISTRY.get(path.toLowerCase()) || new Map()).entries()];
-const regDel = path => { path = path.toLowerCase(); let any = false; for (const k of [...REGISTRY.keys()]) if (k === path || k.startsWith(path + '\\')) { REGISTRY.delete(k); KEYNAME.delete(k); any = true; } if (any) regChanged({ op: 'delkey', path }); };
-const regGet = (path, name) => { const m = REGISTRY.get(path.toLowerCase()); return m ? m.get(name.toLowerCase()) : undefined; };
+const regVals = path => [...(REGISTRY.get(regCanon(path.toLowerCase())) || new Map()).entries()];
+const regDel = path => { path = regCanon(path.toLowerCase()); let any = false; for (const k of [...REGISTRY.keys()]) if (k === path || k.startsWith(path + '\\')) { REGISTRY.delete(k); KEYNAME.delete(k); any = true; } if (any) regChanged({ op: 'delkey', path }); };
+const regGet = (path, name) => { const m = REGISTRY.get(regCanon(path.toLowerCase())); return m ? m.get(name.toLowerCase()) : undefined; };
 const regSet = (path, name, value) => {
-  const orig = path; path = path.toLowerCase(); regMake(path, orig);
+  const orig = regCanonGiven(path); path = regCanon(path.toLowerCase()); regMake(path, orig);
   if (name === null) return;   // the key alone
   REGISTRY.get(path).set(name.toLowerCase(), value); regChanged({ op: 'set', path, name: name.toLowerCase(), value });
 };
@@ -1663,6 +1691,7 @@ const regHive = which => {
   const at = (hp, name) => { let n = root; if (hp) for (const seg of hp.split('\\')) { let k = n.kids.get(seg); if (!k) n.kids.set(seg, k = { name: seg, kids: new Map(), vals: null }); n = k; } if (name && !n.orig) n.orig = name; return n; };
   for (const [path, vals] of REGISTRY) for (const [hp, rp] of map) {
     if (path !== rp && !path.startsWith(rp + '\\')) continue;
+    if (regAliased(path)) continue;   // (one kept under another name of a key before the names were one: its key's own is written)
     if (map.some(([h2, r2]) => r2 !== rp && r2.startsWith(rp + '\\') && (path === r2 || path.startsWith(r2 + '\\')))) continue;
     const rest = path.slice(rp.length + 1), n = at([hp, rest].filter(Boolean).join('\\'));
     const nm = KEYNAME.get(path); if (nm) n.orig = nm;
@@ -3371,7 +3400,8 @@ const regPath = (p, hk, sub, asGiven) => {
   const root = HKEY[hk] || (p.obj(hk) || {}).path; if (!root) return null;
   const given = sub ? (p.readA(sub) || '').replace(/^\\+|\\+$/g, '') : '';
   const base = asGiven && !HKEY[hk] ? (p.obj(hk) || {}).given || root : root;
-  return given ? `${asGiven ? base : root}\\${asGiven ? given : given.toLowerCase()}` : asGiven ? base : root;
+  const path = given ? `${asGiven ? base : root}\\${asGiven ? given : given.toLowerCase()}` : asGiven ? base : root;
+  return asGiven ? regCanonGiven(path) : regCanon(path);   // (HKLM\SOFTWARE\Classes is HKEY_CLASSES_ROOT: REG_ALIAS)
 };
 const regVal = v => typeof v === 'number' ? { type: 4, data: new Uint8Array(new Uint32Array([v]).buffer) } : typeof v === 'string' ? { type: 1, data: window.W95FS.encode(v + '\0') } : v;
 const regOpen = function (hk, sub, out, create) {

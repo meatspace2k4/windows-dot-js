@@ -1368,6 +1368,8 @@ P.neMemo = function (rec) { rec.sha256 = rec.sha256 || window.W95Win32.sha256(re
  *  `again`: translated now whatever the memo, with the entries found since (neRebuild) */
 P.neCompile = function (rec, again = false) {
   const meta = rec.meta, code = codeSegs(rec); if (!code.length) return;
+  // (an experiment, ?exp=netSkip=NAME|NAME: those modules left run-time code, not translated whole)
+  if (self.netSkip && new RegExp(`^(${self.netSkip})$`, 'i').test(rec.name)) { meta.textLo = meta.textHi = 0; rec.run = null; return rec; }
   rec.released = false;   // (one let go, dynRelease: made again now)
   if (rec.netText) { [meta.textLo, meta.textHi] = rec.netText; rec.netText = null; rec.netReady = null; }   // (one whose memo's module was being read: its text back)
   const t0 = performance.now(), had = this.neMemo(rec), sels = (rec.segs || []).map(g => g.sel);
