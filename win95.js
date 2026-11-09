@@ -5598,7 +5598,8 @@ function resize() {
     W = sysApp.sw; H = sysApp.sh;
     const cw = W * ZOOM, ch = H * ZOOM;
     cv.width = W; cv.height = H; cv.style.width = cw + 'px'; cv.style.height = ch + 'px';
-    cv.style.marginLeft = Math.max(0, (innerWidth - cw) >> 1) + 'px'; cv.style.marginTop = Math.max(0, (innerHeight - ch) >> 1) + 'px';
+    // (a screen larger than the page, one the machine kept when asked for the page's: its middle shown, as it is in the middle of a larger page)
+    cv.style.marginLeft = ((innerWidth - cw) >> 1) + 'px'; cv.style.marginTop = ((innerHeight - ch) >> 1) + 'px';
   } else {
     W = Math.max(320, Math.floor(innerWidth / ZOOM)); H = Math.max(240, Math.floor(innerHeight / ZOOM));
     cv.width = W; cv.height = H; cv.style.width = W * ZOOM + 'px'; cv.style.height = H * ZOOM + 'px'; cv.style.marginLeft = cv.style.marginTop = '0';
