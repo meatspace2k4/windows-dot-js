@@ -6359,14 +6359,25 @@ window.win95 = { ...script,
     }
     return out;
   };
-  const made = {}, mods = new Map(); let anchored = false, busy = Promise.resolve();
+  // (the site's mod file, NAME.mod: the address's mods=NAME, else the one its server names (tools/serve.py --mods),
+  // else prod.mod; one mod a line, # a comment. Loaded as the address's mods are, the address's added to them, one of
+  // the same name in the address taking its place)
+  let served = [];
+  const modFile = async () => {
+    const name = read().get('mods') || await fetch('/__mods', { cache: 'no-store' }).then(r => (r.ok ? r.json() : null), () => null).then(j => j && j.profile, () => null) || 'prod';
+    if (!/^[\w-]+$/.test(name)) { console.warn('[address] mods', name, 'is no mod file\'s name'); return; }
+    const t = await fetch(`${name}.mod`, { cache: 'no-store' }).then(r => (r.ok ? r.text() : null), () => null);
+    if (t === null) { console.warn('[address] mods', `${name}.mod`, 'could not be read'); return; }
+    served = t.split(/\r?\n/).map(l => l.replace(/#.*/, '').trim()).filter(Boolean);
+  };
+  const made = {}, mods = new Map(); let anchored = false, busy = modFile().catch(e => console.warn('[address] mods', e && e.message));
   const apply = why => (busy = busy.then(async () => {
     const o = read(), a = sysApp && sysApp.alive ? sysApp : null;
     const mute = o.get('mute');
     if (mute !== null && mute !== made.mute) { made.mute = mute; if (window.W95Sound && W95Sound.setMuted) W95Sound.setMuted(/^(1|true)$/i.test(mute)); }
     if (!a) return;
     if (why === 'system') mods.clear();   // (a new system's machine: its mods are its own to be loaded)
-    const want = modsOf(o.all('mod'));
+    const want = modsOf([...served, ...o.all('mod')]);
     for (const [f, v] of want) if (mods.get(f) !== v) { try { await a.cmd('reload', [f, v]); mods.set(f, v); } catch (e) { console.warn('[address] mod', f, e && e.message); } }
     for (const f of [...mods.keys()]) if (!want.has(f)) { mods.delete(f); try { if (!(await a.cmd('modOff', [f]))) console.warn('[address] mod', f, 'has no way to end itself: it stays until the page reloads'); } catch (e) { console.warn('[address] mod', f, e && e.message); } }
     const anchor = o.get('anchor');

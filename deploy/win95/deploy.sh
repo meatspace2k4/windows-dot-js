@@ -477,6 +477,8 @@ build_staging() {
         stage_file "$f" "$STAGING_DIR/site/$(basename "$f")"
     done
     cp "$REPO_ROOT/index.html" "$REPO_ROOT/manifest.webmanifest" "$STAGING_DIR/site/"
+    # (the mod files, NAME.mod: the page loads prod.mod's mods unless its address names another, win95.js)
+    cp "$REPO_ROOT/"*.mod "$STAGING_DIR/site/"
     # (the page's own test tools, loaded by a tab with ?debug=1: the sketcher, the fuzzer over real machines)
     mkdir -p "$STAGING_DIR/site/tools/convolution"
     cp "$REPO_ROOT/tools/sketch.mjs" "$STAGING_DIR/site/tools/" && cp "$REPO_ROOT/tools/convolution/fuzz-tabs.mjs" "$STAGING_DIR/site/tools/convolution/"

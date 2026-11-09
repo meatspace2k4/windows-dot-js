@@ -9,6 +9,7 @@ ap = argparse.ArgumentParser(); ap.add_argument('port', type=int); ap.add_argume
 # HTTPS with this certificate and key: a page from another computer is a secure context only over HTTPS, and only a
 # secure context has the shared memory the machines run on (SharedArrayBuffer) and the sound's AudioWorklet
 ap.add_argument('--cert'); ap.add_argument('--key')
+ap.add_argument('--mods', help="the mod file the page loads its machines' mods from, NAME.mod in the project (debug, test, prod; /__mods names it), when its address names none (mods=NAME)")
 ap.add_argument('--cd', action='append', default=[], help='another CD image the drive can take (each served read-only at /cd/<n>/<name>)'); a = ap.parse_args()
 root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CDS = ([{'name': os.path.basename(a.iso), 'path': a.iso, 'url': 'cdrom.iso'}] if a.iso else []) + \
@@ -142,6 +143,10 @@ class H(http.server.SimpleHTTPRequestHandler):
             if self.client_address[0] not in ('127.0.0.1', '::1'): self.send_response(403); self.end_headers(); import io; return io.BytesIO(b'')
             b = os.environ.get('W98KEY', '').encode()
             self.send_response(200); self.send_header('Content-Type', 'text/plain'); self.send_header('Cache-Control', 'no-store'); self.send_header('Content-Length', str(len(b))); self.end_headers()
+            import io; return io.BytesIO(b)
+        if self.path.split('?')[0] == '/__mods':   # (the mod file given by --mods, the page's to load: win95.js)
+            b = json.dumps({'profile': a.mods}).encode()
+            self.send_response(200); self.send_header('Content-Type', 'application/json'); self.send_header('Cache-Control', 'no-store'); self.send_header('Content-Length', str(len(b))); self.end_headers()
             import io; return io.BytesIO(b)
         if self.path.split('?')[0] == '/__cd':   # (the CD images the drive can take: --iso's first, as cdrom.iso, then each --cd)
             b = json.dumps([{'name': c['name'], 'url': c['url']} for c in CDS if os.path.isfile(c['path'])]).encode()

@@ -55,7 +55,7 @@
     {
       "name": "win95 (braid, win98 cd 8151)",
       "runtimeExecutable": "zsh",
-      "runtimeArgs": ["-lc", "exec python3 tools/serve.py 8151 --iso '/Users/johusha/Downloads/Windows 95/Win95 OSR2.ISO' --cd '/Users/johusha/Downloads/Windows 98 se Upgrade.iso'"],
+      "runtimeArgs": ["-lc", "exec python3 tools/serve.py 8151 --iso '/Users/johusha/Downloads/Windows 95/Win95 OSR2.ISO' --cd '/Users/johusha/Downloads/Windows 98 se Upgrade.iso' --mods debug"],
       "port": 8151,
       "url": "http://braid.localhost:8151"
     },
