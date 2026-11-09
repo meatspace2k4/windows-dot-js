@@ -43,4 +43,12 @@ const { Process, API } = window.W95Win32, P = Process.prototype;
   assert.deepEqual([...mem.subarray(r.addr, r.addr + r.size)], [1, 2, 3], 'its own bytes, not those at its base now');
   assert.equal(API.KERNEL32.FindResourceA[1].call(p, 0x400000, 5, 3).addr, r.addr); assert.equal(swapped, 1, 'kept: swapped in once');
 }
+// GetModuleFileNameA of the running process's own program at its base: its file, not another program's at that base
+{
+  const exe = { name: 'EXE', base: 0x400000 }, spool = { name: 'EXE', base: 0x400000 }, out = [];
+  const p = { hmod: h => h, pc: { exe, path: 'C:\\WINDOWS\\EXPLORER.EXE' }, procs: new Map([[1, { exe: spool, path: 'C:\\WINDOWS\\SYSTEM\\SPOOL32.EXE' }]]), modules: [spool, exe],
+    writeA: (b, s) => (out.push(s), s.length), standinAt: () => null };
+  API.KERNEL32.GetModuleFileNameA[1].call(p, 0x400000, 0x100, 260);
+  assert.deepEqual(out, ['C:\\WINDOWS\\EXPLORER.EXE']);
+}
 console.log('resview: ok');

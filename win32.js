@@ -1846,6 +1846,9 @@ def('KERNEL32', 'GetModuleHandleA', 1, function (name) {
 });
 def('KERNEL32', 'GetModuleFileNameA', 3, function (h, buf, n) {
   h = this.hmod(h);
+  // (the running process's own program at its base: another program linked at the same base is another process's,
+  // Explorer asking for its own 400000h was told SPOOL32.EXE)
+  if (h && this.pc && this.pc.exe && this.pc.exe.base === h && this.pc.path) return this.writeA(buf, this.pc.path, n);
   const dm = this.dataMods && this.dataMods.get(u32(h)); if (dm) return this.writeA(buf, dm.path, n);   // (a file mapped as data)
   const s = this.standinAt(h); if (s) return this.writeA(buf, s.path, n);
   const m = h && this.modules.find(x => x.base === h && x !== this.exe && x.kind !== 'ne');   // a DLL: its file in SYSTEM; another program: its file
