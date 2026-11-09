@@ -239,9 +239,17 @@ class Process {
         meta.textLo = Math.min(...code.map(g => g.base)); meta.textHi = Math.max(...code.map(g => g.base + g.len));
         rec.sha256 = sha256(f); rec.codeRanges = code;
         const had = this.neMemo(rec);
-        meta.lookup = this.tableRoom(4 * (meta.textHi - meta.textLo), had && had.textLo === meta.textLo ? had.lookup : 0);
-        this.vmAudit(`${name}'s table`);
-        this.neCompile(rec);
+        // (no room for its table, or its translation failing: its code run-time code, not a module the dispatcher enters
+        // with no run (MSJET40, its table refused, took the dispatcher down: "m.run is not a function")
+        try {
+          meta.lookup = this.tableRoom(4 * (meta.textHi - meta.textLo), had && had.textLo === meta.textLo ? had.lookup : 0);
+          this.vmAudit(`${name}'s table`);
+          this.neCompile(rec);
+        } catch (e) {
+          if (!(e instanceof GuestError)) throw e;
+          log('warn', 'win32', `${name}: ${e.message}; its code runs as run-time code`);
+          meta.textLo = meta.textHi = 0; rec.run = null; meta.lookup = 0;
+        }
       }
     }
     if (name !== 'EXE' && meta.entry) { this.inits.push(rec); (this.initOrder || (this.initOrder = [])).push(rec); }
@@ -392,11 +400,11 @@ class Process {
       if (a + n < end) spare.push({ base: a + n, size: end - a - n });
       this.u8.fill(0, a, a + n); return this.vmCheck(a, n, 'room from the spare');
     }
-    // (from the top, past what it must stay clear of: the room passed over is spare, for what fits there)
-    let b = (this.vmTop + align - 1) & -align, h;
-    while (b + n <= this.mem.buffer.byteLength && (h = hit(b))) b = (h[1] + align - 1) & -align;
-    if (b + n > this.mem.buffer.byteLength) return 0;
-    if (b > this.vmTop) spare.push({ base: this.vmTop, size: b - this.vmTop });
+    // (from the top only where it is clear: the top is not moved on past what it must keep clear of. Moved past the
+    // memo's places, which lie across the whole space from runs before, a few allocations took the space up, and
+    // MSJET40's block table found no room)
+    const b = (this.vmTop + align - 1) & -align;
+    if (b + n > this.mem.buffer.byteLength || hit(b)) return 0;
     this.vmTop = b + n; return this.vmCheck(b, n, 'room from the top');
   }
   /** the room [b, b+size) above the layout taken where it is, when it is free (a spare piece holds it, or it is past the
@@ -405,7 +413,10 @@ class Process {
     if (!this.vmTop || !this.vmLo || b < this.vmLo || b % 0x1000) return 0;
     const n = (size + 0xfff) & ~0xfff, end = b + n, spare = this.vspare || (this.vspare = []);
     if (spans.some(([lo, hi]) => b < hi && lo < end) || end > this.mem.buffer.byteLength) return 0;
+    // (past the top only right at it: the top moved on far, to a place a run before had, took the space below it out of
+    // the top's reach)
     if (b >= this.vmTop) {
+      if (b - this.vmTop > 0x100000) return 0;
       if (b > this.vmTop) spare.push({ base: this.vmTop, size: b - this.vmTop });
       this.vmTop = end; this.u8.fill(0, b, end); return this.vmCheck(b, n, 'the memo\'s place, from the top');
     }
@@ -679,7 +690,10 @@ class Process {
     if (done.has(m) || !m.meta || m.clock) return 0;
     done.add(m);
     // (a DLL whose translation went with the last process that had it (dyn.js dynRelease): made again for this one)
-    if (m.released && this.neCompile) { m.released = false; this.neCompile(m); }
+    if (m.released && this.neCompile) {
+      m.released = false;
+      try { this.neCompile(m); } catch (e) { if (!(e instanceof GuestError)) throw e; log('warn', 'win32', `${m.name}: ${e.message}; its code runs as run-time code`); m.meta.textLo = m.meta.textHi = 0; m.run = null; }
+    }
     // (its data as a new process gets it, a DLL of the private arena's: as loaded, the attached ones' put by)
     const v = m.priv;
     if (v && v.init) {
