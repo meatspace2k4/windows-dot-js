@@ -1736,22 +1736,24 @@ const regHive = which => {
   const blockSize = b => (b.used + 0x20 + 0x10 + 0xfff) & ~0xfff;
   const total = 0x20 + rgknSize + blocks.reduce((s, b) => s + blockSize(b), 0);
   const out = new Uint8Array(total), dv = new DataView(out.buffer), tag = (o, s) => out.set(enc(s), o);
-  tag(0, 'CREG'); dv.setUint32(4, 0x10000, true); dv.setUint32(8, 0x20 + rgknSize, true); dv.setUint16(0x10, blocks.length, true); dv.setUint16(0x16, 0x80, true);
+  tag(0, 'CREG'); dv.setUint32(4, 0x10000, true); dv.setUint32(8, 0x20 + rgknSize, true); dv.setUint16(0x10, blocks.length, true); dv.setUint16(0x12, 0x21, true); dv.setUint16(0x16, 1, true);
   const K = 0x20;
-  tag(K, 'RGKN'); dv.setUint32(K + 4, rgknSize, true); dv.setUint32(K + 8, 0x20, true); dv.setUint16(K + 0x0c, 0xffff, true); dv.setUint16(K + 0x0e, 0xffff, true); dv.setUint32(K + 0x10, 9, true);
+  tag(K, 'RGKN'); dv.setUint32(K + 4, rgknSize, true); dv.setUint32(K + 8, 0x20, true); dv.setUint32(K + 0x10, 8, true);
+  // (the block's space past its entries is one free entry, the head of its free list: 80000000h, its size, the next (none))
+  { const end = 0x20 + keys.length * 0x1c, left = rgknSize - end; dv.setUint32(K + 0x0c, left >= 0x1c ? end : 0xffffffff, true); if (left >= 0x1c) { dv.setUint32(K + end, 0x80000000, true); dv.setUint32(K + end + 4, left, true); dv.setUint32(K + end + 8, 0xffffffff, true); } }
   const off = n => (n ? 0x20 + n.i * 0x1c : 0xffffffff);
   for (const n of keys) {
     const e = K + off(n), kids = [...n.kids.values()], sib = n.parent ? [...n.parent.kids.values()] : [], si = sib.indexOf(n);
     let hash = 0; for (const c of (n.orig || n.name).toUpperCase()) hash += c.charCodeAt(0) & 0xff;
-    dv.setUint32(e, 0, true); dv.setUint32(e + 4, hash, true); dv.setUint32(e + 8, 0xffffffff, true);
+    dv.setUint32(e, 0, true); dv.setUint32(e + 4, hash, true); dv.setUint32(e + 8, n.parent ? 0xffffffff : 0, true);
     dv.setUint32(e + 0x0c, off(n.parent), true); dv.setUint32(e + 0x10, off(kids[0]), true); dv.setUint32(e + 0x14, off(si >= 0 ? sib[si + 1] : null), true);
-    const r = recs[n.i]; dv.setUint16(e + 0x18, r ? r.id : 0xffff, true); dv.setUint16(e + 0x1a, r ? r.block : 0, true);
+    const r = recs[n.i]; dv.setUint16(e + 0x18, r ? r.id : 0xffff, true); dv.setUint16(e + 0x1a, r ? r.block : 0xffff, true);
   }
   let o = 0x20 + rgknSize;
   blocks.forEach((b, bn) => {
     const size = blockSize(b), free = size - 0x20 - b.used;
-    tag(o, 'RGDB'); dv.setUint32(o + 4, size, true); dv.setUint32(o + 8, free, true); dv.setUint16(o + 0x0c, b.ids, true); dv.setUint16(o + 0x0e, bn, true);
-    dv.setUint32(o + 0x10, 0x20 + b.used, true); dv.setUint16(o + 0x14, b.ids, true);
+    tag(o, 'RGDB'); dv.setUint32(o + 4, size, true); dv.setUint32(o + 8, free, true); dv.setUint16(o + 0x0c, 8, true); dv.setUint16(o + 0x0e, bn, true);
+    dv.setUint32(o + 0x10, 0x20 + b.used, true); dv.setUint16(o + 0x14, b.ids, true); dv.setUint16(o + 0x16, b.ids, true);   // (the keys it holds, and the next id free)
     let p = o + 0x20;
     for (const r of b.recs) {
       dv.setUint32(p, r.size, true); dv.setUint16(p + 4, r.id, true); dv.setUint16(p + 6, bn, true); dv.setUint32(p + 8, r.size, true);
