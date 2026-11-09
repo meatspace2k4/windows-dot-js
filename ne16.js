@@ -4252,8 +4252,16 @@ const dialog16 = d => {
 };
 // a Win32 module's resources, reached through its 16-bit handle (USER loading for a Win32 program); returned in the
 // layout 16-bit USER reads: accelerator tables go from 8-byte to 5-byte entries, menus and dialogs to ANSI text
-const res32 = (p, h32, id, type) => {
-  const mod = p.moduleFor(h32); if (!mod || mod.base !== h32) return null;
+/** a Win32 module's resource as 16-bit code reads it (mod: the module, or its base in this process), in its own image */
+// (read once for each module, type and name, and kept with the module: a program's image is not the one in place only
+// while its view is swapped in, the whole shared region copied out and back, and USER reads icons and cursors often)
+const res32 = (p, m, id, type) => {
+  const mod = typeof m === 'object' ? m : p.moduleFor(m); if (!mod || (typeof m !== 'object' && mod.base !== m)) return null;
+  if (!mod.hidden) return res32Read(p, mod, id, type);
+  const key = `${type}:${id}`, kept = (mod.res16 || (mod.res16 = new Map())); if (kept.has(key)) return kept.get(key);
+  const data = p.withImage(mod, () => res32Read(p, mod, id, type)); kept.set(key, data); return data;
+};
+const res32Read = (p, mod, id, type) => {
   const r = p.findResource(type, id, mod); if (!r) return null;
   let data = p.u8.slice(r.addr, r.addr + r.size);
   if (type === 9) {   // RT_ACCELERATOR
@@ -4285,11 +4293,14 @@ const resHandle = function (key, rec) {
 def16('KERNEL', 60, 'wxx', 'w', function (h, name, type) {     // FindResource
   const h32 = this.hinst32 && this.hinst32(h);
   if (h32) {
-    const kn = resKey.call(this, name), kt = resKey.call(this, type), data = res32(this, h32, kn, kt); if (!data) return 0;
+    // (the handle's own module, read in its own image: MSTASK's handle in Explorer's process is MSTASK, not Explorer at
+    // the same base, whose icon the tray showed for the Task Scheduler's)
+    const mod = this.mod16(h) || this.moduleFor(h32);
+    const kn = resKey.call(this, name), kt = resKey.call(this, type), data = res32(this, this.mod16(h) || h32, kn, kt); if (!data) return 0;
     // (keyed by the module, not its base: every program linked at 400000h has that base, and the first one's icon 2
     // was every later one's. RUNONCE's "Windows is now setting up" animation (icons 2 to 5) showed another program's
     // icon, the Windows logo, as one of its frames)
-    const mod = this.moduleFor(h32), mid = mod && (mod.resUid || (mod.resUid = (this.resUidNext = (this.resUidNext || 0) + 1)));
+    const mid = mod && (mod.resUid || (mod.resUid = (this.resUidNext = (this.resUidNext || 0) + 1)));
     return resHandle.call(this, `${h32}:${mid}:${kt}:${kn}`, { data });
   }
   const m = this.neByHandle(h); if (!m) return 0;
@@ -6002,7 +6013,9 @@ P.hinst16 = function (h32, mod = this.moduleFor(h32)) {
   // (a program's by its image: two programs at one base, each in its process's view, are two modules to USER, their
   // classes each their own)
   const owners = this.h16owner || (this.h16owner = new Map()), was = owners.get(h32), exe = mod && mod.name === 'EXE' && mod.base === h32;
-  const key = exe && was && was !== mod && [...(this.procs || new Map()).values()].some(x => x.exitCode === null && x.exe === was) ? mod : h32;
+  // (and a program at a base another program had, ended or not, a handle of its own: the other's, which USER may still
+  // keep an icon or cursor under, stays that program's, its resources its own)
+  const key = exe && was && was !== mod ? mod : h32;
   if (exe && key === h32) owners.set(h32, mod);
   if (this.h16of.has(key)) return this.h16of.get(key);
   // a module database as KERNEL makes one for a Win32 module: 'NE', and flags with NE_FFLAGS_WIN32 (10h) and single
@@ -6012,7 +6025,23 @@ P.hinst16 = function (h32, mod = this.moduleFor(h32)) {
   const mdb = this.alloc(0x40); this.u8.set([0x4e, 0x45], mdb); this.w16(mdb + 0x0c, 0x0011 | (dll ? 0x8000 : 0));
   const sel = this.allocSels(mdb, 0x40);
   this.h16of.set(key, sel); this.h32of.set(sel & 0xfffe, h32);
+  if (mod && mod.base === h32) (this.mod16of || (this.mod16of = new Map())).set(sel & 0xfffe, mod);   // (and the module itself, hinst16's own: mod16)
   return sel;
+};
+/** the Win32 module a 16-bit handle hinst16 made stands for: the very module, not whichever is at its base in this
+ *  process (two programs linked at 400000h are two handles; USER copying MSTASK's tray icon from its resource in
+ *  Explorer's process found Explorer's own icon at 400000h); null for a handle hinst16 did not make */
+P.mod16 = function (h16) { return (this.mod16of && this.mod16of.get(h16 & 0xfffe)) || null; };
+/** fn run with module mod's image in place: a program whose process's view is put by (another process's, in the arena
+ *  its image shares) has its view put in for fn and, whatever fn does, the view that was in place put back: the view of
+ *  the process that had it, or the running process's where none was (never the other program's left at its base, where
+ *  the running code would run it) */
+P.withImage = function (mod, fn) {
+  if (!mod || !mod.hidden || !this.arenaUse) return fn();
+  const owner = [...(this.procs || new Map()).values()].find(x => x.exe === mod && x.exitCode === null); if (!owner) return fn();
+  const slot = (this.arena || []).find(s => s.own.has(owner)), prev = slot ? slot.cur : null;
+  this.arenaUse(owner);
+  try { return fn(); } finally { this.arenaUse(prev === null || prev === undefined ? this.pc || null : prev || null); }
 };
 /** KERNEL32 starting a Win32 program under the native USER: USER's InitApp (USER.5) for its task, as a 16-bit program
  *  calls it itself. The first one also runs USER's first-task start-up: the installable drivers SYSTEM.INI's [boot]

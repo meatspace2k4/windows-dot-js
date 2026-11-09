@@ -243,6 +243,8 @@ INFS = ['shell.inf',
         'msprint.inf', 'msprint2.inf',
         # where each file of the CD's cabinets is, which Setup's engine copies from (PRECOPY2.CAB)
         'layout.inf', 'layout1.inf',
+        # the national language support Setup installs, its default locale's (PRECOPY2.CAB): Nls\Locale and Nls\Codepage
+        'locale.inf',
         # the Accessories' components, whose links Setup adds to the Start menu (WIN95_02.CAB)
         'applets.inf']
 # the sounds Setup puts in C:\WINDOWS\MEDIA: MOTOWN.INF's start-up sound and MMOPT.INF's clips of a Typical install (WIN95_02.CAB)

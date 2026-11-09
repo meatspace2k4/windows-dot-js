@@ -2352,13 +2352,25 @@ def('KERNEL32', 'GetProcessShutdownParameters', 2, function (pl, pf) { const pc 
  *  tray showed it in place of the Task Scheduler's */
 const resModule = (p, m) => {
   if (!m) return p.moduleFor(0);
+  if (!(m >>> 16) && p.mod16 && p.mod16(m)) return p.mod16(m);   // (a module's 16-bit handle, as USER keeps it: that module)
   const mod = p.moduleFor(m), h = u32(p.hmod(m));
   if (!mod || (u32(mod.base) !== h && !(p.dataMods && p.dataMods.get(h)))) { p.lastError = 1813; return null; }   // ERROR_RESOURCE_TYPE_NOT_FOUND
   return mod;
 };
+/** a resource of module mod: its place in mod's image; for a program whose image is not the one in place (another
+ *  process's, put by in the arena they share) a copy made while its image is, kept with the module, so LoadResource and
+ *  LockResource read its bytes and not the program at its base in this process */
+const resIn = (p, mod, type, name) => {
+  if (!mod.hidden || !p.withImage) return p.findResource(type, name, mod);
+  const key = `${type}:${name}`, kept = (mod.resCopies || (mod.resCopies = new Map())).get(key); if (kept) return kept;
+  const got = p.withImage(mod, () => { const r = p.findResource(type, name, mod); return r && p.u8.slice(r.addr, r.addr + r.size); });
+  if (!got) return null;
+  const addr = p.alloc(got.length || 1); p.u8.set(got, addr);
+  const r = { addr, size: got.length }; mod.resCopies.set(key, r); return r;
+};
 def('KERNEL32', 'FindResourceA', 3, function (m, name, type) {
   const mod = resModule(this, m); if (!mod) return 0;
-  const r = this.findResource(this.resName(type), this.resName(name), mod); if (!r) return 0;
+  const r = resIn(this, mod, this.resName(type), this.resName(name)); if (!r) return 0;
   return this.newHandle({ kind: 'res', ...r });
 });
 // FindResourceW: Windows 98's KERNEL32 has it (its own code, not the common stub), names in UTF-16 or by number (RUNONCE's
@@ -2366,7 +2378,7 @@ def('KERNEL32', 'FindResourceA', 3, function (m, name, type) {
 def('KERNEL32', 'FindResourceW', 3, function (m, name, type) {
   const n = p => (p >>> 16 ? this.readW(p) : p);
   const mod = resModule(this, m); if (!mod) return 0;
-  const r = this.findResource(n(type), n(name), mod); if (!r) return 0;
+  const r = resIn(this, mod, n(type), n(name)); if (!r) return 0;
   return this.newHandle({ kind: 'res', ...r });
 });
 // the resource directory's levels enumerated to a callback: types, a type's names, a name's languages, each callback

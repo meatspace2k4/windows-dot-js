@@ -26,6 +26,9 @@ export const pageDrive = async (key, o = {}) => {
   // there when run again with { from: 'wizard' })
   if (!key) { key = await fetch('/__w98key', { cache: 'no-store' }).then(r => (r.ok ? r.text() : ''), () => ''); if (!key && !o.keyless) throw new Error('no product key: W98KEY in the server\'s environment, or passed in'); }
   let fault = null, nf = 0, lastFault = null, atKey = false; const forks = [], faults = [];
+  // (Setup and RUNONCE's first-start items 8 times ahead of the wall, by their programs' names (mod-turbo.js), in this
+  // machine and each one after Setup's restart: the address's mod, added when it has no turbo of its own)
+  { const h = new URLSearchParams(location.hash.replace(/^#/, '')); if (!h.getAll('mod').some(m => /^(mod-)?turbo\b/i.test(m)) && !new URLSearchParams(location.search).getAll('mod').some(m => /^(mod-)?turbo\b/i.test(m))) { h.append('mod', o.turbo || 'turbo:8@SETUP,W98SETUP,SUWIN,RUNONCE'); location.hash = h.toString(); lg(`speed by program: ${h.getAll('mod').join(' ')}`); } }
   // (the line marking itself every o.every ms (30 s), the last four held, and anchoring itself every 5 minutes, the
   // last three kept (braid.every), so a reload travels back to the run; o.every 0 leaves it to the steps' moments)
   if (o.every !== 0) B.every(o.every || 30000, 4);

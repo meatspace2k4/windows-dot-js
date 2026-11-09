@@ -3140,7 +3140,7 @@ function infParse(text) {
   const subst = s => s.replace(/%([^%]*)%(\\?)/g, (m, k, bs) => (k === '' ? '%' + bs : k === '24' || k === '30' ? 'C:\\' : (dirs[k] ?? strings[k.toLowerCase()] ?? `%${k}%`) + bs));
   return { sec, fields, subst };
 }
-function infAddReg(text, section, hkr) {
+function infAddReg(text, section, hkr, keep = () => true) {
   const { sec, fields, subst } = infParse(text);
   const ROOT = { HKCR: 'hkcr', HKCU: 'hkcu', HKLM: 'hklm', HKU: 'hku', HKR: hkr };   // HKR: the device's own key, for a device INF
   for (const l of sec[section.toLowerCase()] || []) {
@@ -3149,7 +3149,7 @@ function infAddReg(text, section, hkr) {
     const sub = subst(f[1] || ''), key = sub ? root + '\\' + sub : root, flags = parseInt(f[3] || '0', 16) || 0;
     if (f.length < 3) { W95Win32.regSet(key, null); continue; }
     const name = subst(f[2] || '');
-    if (flags & 2 && W95Win32.regGet(key, name) !== undefined) continue;
+    if ((flags & 2 && W95Win32.regGet(key, name) !== undefined) || !keep(key, name)) continue;
     if (flags & 1) W95Win32.regSet(key, name, { type: 3, data: Uint8Array.from(f.slice(4).filter(Boolean).map(h => parseInt(h, 16))) });
     else W95Win32.regSet(key, name, { type: 1, data: W95FS.encode(subst(f.slice(4).join(',')) + '\0') });
   }
@@ -3279,8 +3279,23 @@ function setupRegistration() {
   // where Setup put the shared Windows files (SHELL32 runs RUNDLL32 from there: Control Panel's applets)
   if (W95Win32.regGet(cv + '\\setup', 'SharedDir') === undefined) W95Win32.regSet(cv + '\\setup', 'SharedDir', str(WINDIR));
 }
+// Setup's national language support (LOCALE.INF): [NLSAPI]'s nls.reg, the code pages and the locales Windows has
+// (Nls\Codepage, Nls\Locale), and its default locale's option, L0409 (Nls\Locale's own value 00000409, the user's
+// International locale, the ANSI and OEM code pages), on a registry that has not had them. Without them Windows 98
+// Setup read no system locale (SETUPX: Nls\Locale's value, its last four digits Internet Explorer's ChannelLocale) and
+// wrote ChannelLocale 0000. (nls.reg's RunOnce item runs ADDREG.EXE, which turns WIN.INI's [intl] into the user's
+// International settings: kept only where the disk has the program)
+function setupLocale() {
+  const inf = ((window.W95SYSTEM || {}).infs || {})['LOCALE.INF']; if (!inf) return;
+  if (W95Win32.regGet('hklm\\system\\currentcontrolset\\control\\nls\\locale', '') !== undefined) return;
+  const { sec, fields, subst } = infParse(inf), addreg = fs.exists(join(WINDIR, 'SYSTEM', 'ADDREG.EXE'));
+  infAddReg(inf, 'nls.reg', undefined, (key, name) => addreg || !(/\\runonce$/i.test(key) && name.toUpperCase() === 'NLSREG'));
+  const option = (sec[subst('%Default_Locale%').toLowerCase()] || []).map(l => l.split(';')[0]).find(l => /^\s*addreg\s*=/i.test(l));
+  for (const s of option ? fields(option.slice(option.indexOf('=') + 1)) : []) if (s) infAddReg(inf, s);
+}
 function setupRegistry() {
   setupRegistration();
+  setupLocale();
   const inf = ((window.W95SYSTEM || {}).infs || {})['SHELL.INF']; if (!inf) return;
   if (W95Win32.regGet('hkcr\\clsid\\{20d04fe0-3aea-1069-a2d8-08002b30309d}\\inprocserver32', '') !== undefined) return;
   infAddReg(inf, 'shell.reg');
