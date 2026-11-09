@@ -1752,6 +1752,8 @@ class Machine {
             const rec = { t: Math.round(performance.now() - t0), name: `${m.name}!${nm}`, args: a, from: this.whereOf(ret), thread: this.thread16 ? this.thread16.id : 'main' };
             // (a 32-bit caller's callers: the stack's dwords that are places in a module's code, innermost first)
             if (!seg) { const st = []; for (let o = sp + 4; o < sp + 0x2000 && st.length < 24; o += 4) { const w = this.whereOf(this.r32(o) >>> 0); if (/^[A-Z0-9_]+(\.[A-Z]+)?\+[0-9a-f]+/i.test(w)) st.push(w); } rec.stack = st; }
+            // (and each 32-bit argument that points at text, ANSI or UTF-16, as the call sees it)
+            if (!seg) rec.text = a.map(x => { const v = parseInt(x, 16); if (v < 0x10000 || v >= this.u8.length - 2) return null; try { const s = this.readA(v, 80) || ''; if (/^[\x20-\x7e]{2,}$/.test(s)) return s; const w = this.readW ? this.readW(v, 80) || '' : ''; return /^[\x20-\x7e]{2,}$/.test(w) ? 'W:' + w : null; } catch (_) { return null; } });
             if (log().length < 20000) log().push(rec);
             this.onReturn((eax, edx) => { rec.eax = eax.toString(16); if (seg) { rec.ax = (eax & 0xffff).toString(16); rec.dxax = (((edx & 0xffff) << 16 | (eax & 0xffff)) >>> 0).toString(16); } });
           });
