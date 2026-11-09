@@ -467,6 +467,10 @@ class Machine {
     // them to take each: USER keeps only the latest of the moves waiting in its queue, and the path is what a
     // program drawing with them makes)
     while (this.mouseq.length) {
+      // (a button's change goes in 50 ms after the last one, as a hand's press and release come apart: a script's
+      // click queued both at once, fed in one pass USER had them at the same moment, and Explorer's Start button,
+      // its menu opened on the press, stayed pressed with no menu)
+      if (this.mouseq[0][0] & 0x1e) { const now = performance.now(); if (now - (this.btnFedAt || 0) < 50) break; this.btnFedAt = now; }
       if (this.btn && this.stroke && this.mouseq[0][0] === 0x8001) {
         // (a drag's moves run at most lagMax ahead of the program taking them: USER's DispatchMessage counts the
         // moves taken, ne16.js hookTaken; past 100 ms without one taken, the next goes in anyway. Four ahead
