@@ -242,11 +242,14 @@ class FM {
   }
   active() { return this.ops.some(o => o.stage !== 'off'); }
 }
-const fm = o => o.fm || (o.fm = new FM());
+// (one a moment brought (braid.js rebind) is an object of its data alone, its class the booted machine's had none of:
+// its class given back, "f.active is not a function" as the sound went on after an arrival)
+const asFM = f => { if (f && !(f instanceof FM)) Object.setPrototypeOf(f, FM.prototype); return f; };
+const fm = o => asFM(o.fm) || (o.fm = new FM());
 /** the synthesizer's sound from where it last stopped up to now, queued for the page's audio output */
 P.oplRender = function () {
   const o = this.opl3; if (!o || !o.fm) return;
-  const f = o.fm, now = this.now();
+  const f = asFM(o.fm), now = this.now();
   if (f.at === undefined) f.at = now;
   let n = Math.floor((now - f.at) * OPL_RATE / 1000);
   if (n <= 0) return;
