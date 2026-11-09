@@ -39,4 +39,10 @@ const thread = () => { const t = { id: 0x66, depth: 0 }; return { t, p: { thread
   p.cpu.budget.value = 300; p.preempted = 0; p.runLevel = 2; P.endSlice.call(p);
   assert.equal(P.tick.call(p, 0x401000), 0); assert.equal(p.preempted, 0); assert.equal(p.cpu.budget.value, 300);
 }
+// a thread's last error is its own: kept with its context, put back as it runs again
+{
+  const p = { lastError: 2, saveFull: () => ({}), loadFull: () => {}, rebaseGlobals: () => {} };
+  const c = P.saveCtx16.call(p); p.lastError = 87; P.loadCtx16.call(p, c); assert.equal(p.lastError, 2);
+  p.lastError = 5; P.loadCtx16.call(p, {}); assert.equal(p.lastError, 5, 'a context from before it was kept: left');
+}
 console.log('peekyield: ok');

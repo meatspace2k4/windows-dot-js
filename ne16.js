@@ -5345,8 +5345,11 @@ def16('KERNEL', 441, 'llllll', 'l', function (attr, stack, start, param, flags, 
   if (ptid) this.w32(this.lin(ptid), id);
   return this.newHandle({ kind: 'thread', id });
 });
-P.saveCtx16 = function () { return this.saveFull(); };   // (a thread's time can run out between any two blocks: all of it)
-P.loadCtx16 = function (c) { this.loadFull(c); this.rebaseGlobals(); };
+// (and its last error, which is each thread's own: one for the machine, another thread's call between a FindFirstFile
+// that found nothing and SHELL32's GetLastError changed it, the folder's EnumObjects answered a success with no
+// enumerator, and Windows 95's Explorer, running its StartUp folder, called through the null pointer)
+P.saveCtx16 = function () { const c = this.saveFull(); c.lastError = this.lastError; return c; };   // (a thread's time can run out between any two blocks: all of it)
+P.loadCtx16 = function (c) { this.loadFull(c); if ('lastError' in c) this.lastError = c.lastError; this.rebaseGlobals(); };
 /** a stopped thread going on: a segment register holding a global block's selector takes the block's base as its
  *  descriptor has it now, as reloading the register on a task switch does. GlobalReAlloc moves a block that grows past
  *  its memory, and a thread stopped with the old base (DIBENG's blit stack segment, its line count at SS:0) ran on in
@@ -5401,7 +5404,7 @@ P.threads16 = function (nested = false, only = null) {
         for (const [s, b] of SEGS) { this.cpu[s].value = 0; if (s !== 'fsel') this.cpu[b].value = 0; }
         this.cpu.fs.value = t.tib; this.depth = 0; t.depth = 0; this.stackLevel = main.stackLevel;
         let esp = t.stackBase + t.stack - 16; esp -= 4; this.w32(esp, t.param); esp -= 4; this.w32(esp, LAYOUT.SENTINEL);
-        this.cpu.esp.value = esp; t.state = 'running';
+        this.cpu.esp.value = esp; t.state = 'running'; this.lastError = 0;
         if (t.pc && !t.pc.started) this.pcStart(t.pc);
         r = this.runTop(u32(t.start));
         if (r === 0 && t.exitCode === undefined) t.exitCode = u32(this.cpu.eax.value);
