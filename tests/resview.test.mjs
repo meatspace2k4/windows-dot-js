@@ -24,13 +24,18 @@ const { Process, API } = window.W95Win32, P = Process.prototype;
 // hinst16: a program at a base an ended one had gets a handle of its own; mod16 gives each its own module
 {
   const base = 0x400000, a = { name: 'EXE', base }, b = { name: 'EXE', base };
-  const mem = new Uint8Array(0x500000), dv = new DataView(mem.buffer); let next = 0x1000, sel = 0x100;
+  const mem = new Uint8Array(0x1100000), dv = new DataView(mem.buffer); let next = 0x1000, sel = 0x100;
   const p = { procs: new Map(), r32: x => dv.getUint32(x, true), r16: x => dv.getUint16(x, true), w16: (x, v) => dv.setUint16(x, v, true), u8: mem,
     alloc: n => (next += n) - n, allocSels: () => (sel += 8), moduleFor: () => a };
   const ha = P.hinst16.call(p, base, a); p.procs.set(1, { exe: a, exitCode: 0 });
   const hb = P.hinst16.call(p, base, b);
   assert.notEqual(ha, hb, 'its own handle, the ended program\'s left to it');
   assert.equal(P.mod16.call(p, ha), a); assert.equal(P.mod16.call(p, hb), b); assert.equal(P.hinst32.call(p, hb), base);
+  // (asked where no module of the process is, moduleFor's answer the running program elsewhere: a handle of no module,
+  // never the one the program at that base gets)
+  const explorer = { name: 'EXE', base: 0x10000 }, c = { name: 'EXE', base: 0x1000000 };
+  const hx = P.hinst16.call(p, 0x1000000, explorer), hc = P.hinst16.call(p, 0x1000000, c);
+  assert.notEqual(hx, hc, 'the program its own'); assert.equal(P.mod16.call(p, hc), c); assert.equal(P.mod16.call(p, hx), null);
 }
 // FindResourceA of a program whose image is put by: a copy, made while its image was in place, kept for the next ask
 {

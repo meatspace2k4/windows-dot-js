@@ -6034,14 +6034,16 @@ P.nativeUser16 = function () { const u = this.ne && this.ne.get('USER'); return 
 /** the 16-bit handle USER uses for a Win32 module (as Windows 95 gives each one), made on first use */
 P.hinst16 = function (h32, mod = this.moduleFor(h32)) {
   this.h16of = this.h16of || new Map(); this.h32of = this.h32of || new Map();
+  // (a module's handle, the module at that base: none for an address no module of this process is at. moduleFor answers
+  // the running process's program wherever it is for such an address, Explorer's for MSTASK's 1000000h, and the handle
+  // made for it then had no module of its own: FindResource with it found Explorer's icons for the Task Scheduler's)
+  if (mod && u32(mod.base) !== u32(h32)) mod = null;
   // (a program's by its image: two programs at one base, each in its process's view, are two modules to USER, their
-  // classes each their own)
-  const owners = this.h16owner || (this.h16owner = new Map()), was = owners.get(h32), exe = mod && mod.name === 'EXE' && mod.base === h32;
-  // (and a program at a base another program had, ended or not, a handle of its own: the other's, which USER may still
-  // keep an icon or cursor under, stays that program's, its resources its own)
-  const key = exe && was && was !== mod ? mod : h32;
-  if (exe && key === h32) owners.set(h32, mod);
+  // classes and resources each their own, never the handle of the base itself)
+  const key = mod && mod.name === 'EXE' ? mod : h32;
   if (this.h16of.has(key)) return this.h16of.get(key);
+  // (the handle this program was given by its base, as a moment taken before kept it: its own, the one USER knows it by)
+  { const s = this.h16of.get(h32); if (key !== h32 && s && this.mod16of && this.mod16of.get(s & 0xfffe) === mod) { this.h16of.set(key, s); return s; } }
   // a module database as KERNEL makes one for a Win32 module: 'NE', and flags with NE_FFLAGS_WIN32 (10h) and single
   // data, plus the library bit for a DLL
   const pe = mod && mod.base === h32 ? this.r32(h32 + 0x3c) : 0;
@@ -6049,7 +6051,7 @@ P.hinst16 = function (h32, mod = this.moduleFor(h32)) {
   const mdb = this.alloc(0x40); this.u8.set([0x4e, 0x45], mdb); this.w16(mdb + 0x0c, 0x0011 | (dll ? 0x8000 : 0));
   const sel = this.allocSels(mdb, 0x40);
   this.h16of.set(key, sel); this.h32of.set(sel & 0xfffe, h32);
-  if (mod && mod.base === h32) (this.mod16of || (this.mod16of = new Map())).set(sel & 0xfffe, mod);   // (and the module itself, hinst16's own: mod16)
+  if (mod) (this.mod16of || (this.mod16of = new Map())).set(sel & 0xfffe, mod);   // (and the module itself, hinst16's own: mod16)
   return sel;
 };
 /** the Win32 module a 16-bit handle hinst16 made stands for: the very module, not whichever is at its base in this
