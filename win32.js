@@ -298,6 +298,9 @@ class Process {
     if (this.neSpans && this.neSpans.of === all) return this.neSpans.spans;
     const spans = [];
     for (const s of Object.values(all)) for (const g of (s.meta && s.meta.segs) || []) spans.push([g.base, g.base + Math.max(g.alloc || 0, g.len || 0, 1)]);
+    // (and every VxD of the bundle's, loaded or not: each loads at its build's base (vmm.js vxd), its pages ring 0's.
+    // MSIDLE.DLL mapped over SPOOLER.VXD's at 14C0000h read its own data as a protected page, and MSGSRV32 faulted)
+    for (const d of Object.values((window.W95SYSTEM && window.W95SYSTEM.vxds) || {})) if (d && d.meta && d.meta.base) spans.push([d.meta.base, d.meta.base + Math.max(d.meta.size || 0, 0x1000)]);
     this.neSpans = { of: all, spans }; return spans;
   }
   /** room for a block table of `size` bytes among the modules' (LAYOUT.TABLES to TABLES_END): at `pref` when nothing
