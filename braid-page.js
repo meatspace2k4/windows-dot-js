@@ -418,7 +418,7 @@ window.W95BraidPage = function (ui) {
     // Windows 98's GDI32 and USER32), and the boot on it died in GDI's LibEntry, leaving no machine to arrive in. The
     // shell is left as it is: the record's shell comes in with the rest below)
     if (rec.machines.system && !sys()) { B.rebind([fs, {}], rec.page, { opaque: opaque(), skip: shellSkip }); writeDisk(true); }
-    for (const [k, ex] of Object.entries(rec.machines)) { const a = k === 'system' ? (sys() || await ui.startSystem()) : live().find(x => x.path === k); if (!a) throw new Error(`no machine running for the moment's ${k}`); out[k] = await a.cmd('import', [ex]); ex.blob = null; forgetKids(a); if (k === 'system') a.keepMode = true; }   // (the moment's display mode stays: win95.js syncMode)
+    for (const [k, ex] of Object.entries(rec.machines)) { const a = k === 'system' ? (sys() || await ui.startSystem()) : live().find(x => x.path === k); if (!a) throw new Error(`no machine running for the moment's ${k}`); out[k] = await a.cmd('import', [ex]); ex.blob = null; forgetKids(a); }
     watchStores(); ui.closeMenus();
     // (the shell's windows are not rebound: a machine's windows come from its next frame, as they are its own, and a
     // window of the page's is code the record cannot carry. Matched by position to the booted shell's windows, the

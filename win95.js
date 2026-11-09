@@ -3656,10 +3656,6 @@ function fitWindow(w, h) { const s = window.W95HOST && window.W95HOST.screen; if
 // take is not asked for again until the viewport changes
 function syncMode() {
   const a = sysApp; if (!a || !a.alive || !a.setMode) return;
-  // (a machine arrived at a moment keeps the moment's mode, the page its monitor (followMode); asked for the pane's
-  // size right after the arrival, the display driver cleared the frame buffer and the system, in a fault dialog, never
-  // painted it again: a black screen with a strip of the taskbar. The pane's next resize asks again)
-  if (a.keepMode) return;
   const [w, h] = bootSize();
   if ((w === a.sw && h === a.sh) || (a.modeRefused || []).some(([x, y]) => x === w && y === h)) return;
   a.setMode(w, h).then(() => { if (a.alive) syncMode(); });
@@ -4067,7 +4063,7 @@ class RemoteApp extends NativeApp {
   // (and the page's screen the machine's, once it is the page's monitor: the shell came up after the machine's first
   // frame (Windows 98's start after RUNONCE's restart), and the page kept the boot logo's 320x200, the desktop cut to
   // its corner)
-  followMode(m) { const s = m && m.scan; if (s && s.bpp && (s.w !== this.sw || s.h !== this.sh || !this.img || this.img.width !== s.w || this.img.height !== s.h)) this.screenSized(s.w, s.h); else if (this.system && typeof sysApp !== 'undefined' && this === sysApp && monApp() && (W !== this.sw || H !== this.sh)) resize(); }
+  followMode(m) { const s = m && m.scan; if (s && s.bpp && (s.w !== this.sw || s.h !== this.sh || !this.img || this.img.width !== s.w || this.img.height !== s.h)) this.screenSized(s.w, s.h); }
   frame(m) {
     if (this.system && bootLogo.on && m.list.length) bootLogoEnd();   // (Windows has a window up: the start-up screen goes)
     if (this.system && sharedNow()) {   // (its windows changed: the session's objects may have; win95.js osSoon)
@@ -5552,7 +5548,7 @@ function handleKey(e) {
 // ---------------------------------------------------------------- boot
 let modeTimer = 0, viewSize = '';
 function resize() {
-  if (`${innerWidth}x${innerHeight}` !== viewSize) { viewSize = `${innerWidth}x${innerHeight}`; if (sysApp) { sysApp.modeRefused = null; sysApp.keepMode = false; } }   // (a new size: the modes refused at the last one may be taken now, a moment's kept mode changed)
+  if (`${innerWidth}x${innerHeight}` !== viewSize) { viewSize = `${innerWidth}x${innerHeight}`; if (sysApp) sysApp.modeRefused = null; }   // (a new size: the modes refused at the last one may be taken now)
   // once EXPLORER.EXE is the shell the page is its monitor: the machine's whole screen at its own pixels (ZOOM),
   // centered, black around it, in the largest of its modes the page holds (syncMode); before, the shell's own screen
   // fills the page
