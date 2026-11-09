@@ -1084,7 +1084,7 @@ P.dynRun = function (eip) {
     if (bud.value <= 0) { this.cpu.eip.value = eip; if (this.tick(eip)) return -1; }
     // (an export another module enters, hooked, win32.js dispatch: a module run from its file reaches it here, never
     // through the dispatcher; a hook that answers where to go on takes the call)
-    if (this.entryHooks) { const h = this.entryHooks.get(eip); if (h) { const to = h.call(this); if (to !== undefined) { eip = u32(to); if (eip === LAYOUT.SENTINEL || eip >= LAYOUT.THUNK16 || this.staticCodeAt(eip)) return eip; continue; } } }
+    if (this.entryHooks) { const h = this.entryHooks.get(eip); if (h && !this.hookedIn(eip)) { const to = h.call(this); if (to !== undefined) { eip = u32(to); if (eip === LAYOUT.SENTINEL || eip >= LAYOUT.THUNK16 || this.staticCodeAt(eip)) return eip; continue; } } }
     // (code the host runs in a module's data, ne16.js dataCode: ThunkConnect32's relays, LS thunklets. The dispatcher
     // asks for it, and so must a run of run-time code going on to its next block: Windows 98's SHELL32, mapped from
     // its file, called its LS01 relay, and the relay's padding (INT 3) ran instead)
@@ -1146,7 +1146,7 @@ function assembleNE(bodies, textLo, textHi, shared, flat = false) {
     ...NE_IMPORTS.map(([n, t]) => [...str('env'), ...str(n), 0x00, t])]);
   const funcs = vec([[6], ...bodies.map(() => [0])]);
   const table = vec([[0x70, 0x00, ...uleb(bodies.length)]]);
-  const exps = vec([[...str('run'), 0x00, NE_RUN]]);
+  const exps = vec([[...str('run'), 0x00, NE_RUN], [...str('tbl'), 0x01, 0]]);   // (its table, where a hooked block's stub goes: hookStub)
   const elem = vec([[0x00, 0x41, 0x00, 0x0b, ...vec(bodies.map((_, i) => uleb(NE_RUN + 1 + i)))]]);
   // run(eip): local 0 the address, local 1 its block's number
   const imp = n => [0x10, ...uleb(NE_IMPORTS.findIndex(([k]) => k === n))];
@@ -1422,10 +1422,8 @@ P.neSet = function (rec, mod, seed) {
   const inst = new WebAssembly.Instance(mod, { env: { ...this.imports.env, ...dynEnv(this), lookup: new WebAssembly.Global({ value: 'i32', mutable: false }, meta.lookup | 0) }, cpu: this.cpu });
   const look = new Uint32Array(this.mem.buffer, meta.lookup, meta.textHi - meta.textLo);
   look.fill(0); blocks.forEach((a, i) => { look[a - meta.textLo] = i + 1; });
-  // (a hooked address is the host's to enter, as run-time code leaves it: no block there, its call comes to the
-  // dispatcher's hook; win32.js setEntryHook clears one hooked later)
-  for (const a of this.entryHooks ? this.entryHooks.keys() : []) if (a >= meta.textLo && a < meta.textHi) look[a - meta.textLo] = 0;
   meta.blocks = blocks; rec.module = mod; rec.run = inst.exports.run;
+  rec.table = inst.exports.tbl; this.hookRestub(rec);   // (each hooked block's stub, in this table)
   rec.netSeed = seed;   // (its blocks taken back from its module when it is translated again: translateNE)
   if (rec.dynNew) rec.dynNew.clear(); rec.dynSeen = 0;
   if (this.dynFast) this.dynFast.clear();   // (an address with a block of the module's now goes to it, not to its region)
@@ -1446,6 +1444,78 @@ P.neInstall = function () {
   }
   return false;
 };
+// ---------------------------------------------------------------- the host's hooks in a translated module
+// A hook at a block of a module translated as it loaded (win32.js setEntryHook: an export, a return address) is the
+// module's own: the block's entry in its block table names a stub in its table (the module exports it, tbl), a wasm
+// function that calls the host's hook and then the block, or returns where the hook sent the call. The module's
+// dispatch loop reaches it as it reaches any block: a call from the module's own code, a near jump, a return, or the
+// dispatcher's run(eip) for one from another module, which then leaves the hook to the stub (hookedIn). The block's
+// own entry is put back as the hook goes (hookUnstub), and a table made again (neSet, a travel's runs made again:
+// worker.js) gets its stubs again (hookRestub)
+/** the stub: hook(eip) answers 0 (the call taken: EIP's global where it goes on) or the block's entry (its number + 1) */
+const STUB_WASM = (() => {
+  const sec = (n, b) => [n, ...uleb(b.length), ...b];
+  const types = vec([[0x60, 0, 1, I32], [0x60, 1, I32, 1, I32]]);
+  const imps = vec([[...str('env'), ...str('tbl'), 0x01, 0x70, 0x00, 0x00], [...str('env'), ...str('hook'), 0x00, 1], [...str('cpu'), ...str('eip'), 0x03, I32, 1]]);
+  const body = [...uleb(1), ...uleb(1), I32,
+    0x23, 0, 0x10, 0, 0x22, 0, OP.eqz, 0x04, I32,   // hook(eip); taken:
+    0x23, 0,                                        //   where it goes on
+    0x05, 0x20, 0, 0x41, 1, OP.sub, 0x11, 0, 0,     // else the block, by its number
+    0x0b, 0x0b];
+  return new Uint8Array([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0, ...sec(1, types), ...sec(2, imps), ...sec(3, vec([[0]])), ...sec(7, vec([[...str('stub'), 0x00, 1]])), ...sec(10, vec([[...uleb(body.length), ...body]]))]);
+})();
+let stubMod = null;
+/** the block at linear `at` of module `rec` entered through its stub (no block there: run-time code's, dynRun's hook) */
+P.hookStub = function (rec, at) {
+  const meta = rec.meta; at = u32(at);
+  if (!meta || !meta.lookup || at < meta.textLo || at >= meta.textHi) return;
+  const slot = meta.lookup + 4 * (at - meta.textLo), v = u32(this.r32(slot)); if (!v) return;
+  if (!rec.table) { this.w32(slot, 0); return; }   // (a module run with no table of its own to give: the dispatcher's, as run-time code)
+  let s = rec.hookStub;
+  if (!s || s.tbl !== rec.table) {
+    const inst = new WebAssembly.Instance(stubMod || (stubMod = new WebAssembly.Module(STUB_WASM)), { env: { tbl: rec.table, hook: e => this.hookEnter(rec, e) }, cpu: { eip: this.cpu.eip } });
+    const i = rec.table.grow(1); rec.table.set(i, inst.exports.stub);
+    s = rec.hookStub = { tbl: rec.table, v: i + 1 }; rec.hooked = new Map();
+  }
+  if (v === s.v) return;
+  rec.hooked.set(at, v); this.w32(slot, s.v);
+};
+/** the block at `at` entered as it was, its hook gone (win32.js addEntryHook) */
+P.hookUnstub = function (at) {
+  at = u32(at);
+  for (const m of this.modules || []) {
+    const v = m.hooked && m.hooked.get(at); if (!v) continue;
+    m.hooked.delete(at);
+    const t = m.meta, slot = t.lookup + 4 * (at - t.textLo);
+    if (m.hookStub && m.hookStub.tbl === m.table && at >= t.textLo && at < t.textHi && u32(this.r32(slot)) === m.hookStub.v) this.w32(slot, v);
+  }
+};
+/** a module's table made again (its stubs gone with the old one): a stub for each hooked block of it */
+P.hookRestub = function (rec) {
+  rec.hookStub = null; rec.hooked = new Map();
+  const t = rec.meta; if (!this.entryHooks || !rec.table) return;
+  for (const a of this.entryHooks.keys()) if (a >= t.textLo && a < t.textHi) this.hookStub(rec, a);
+};
+/** whether `eip` is a hooked block a module running there enters through its stub (the dispatcher's hook left to it) */
+P.hookedIn = function (eip) {
+  for (const m of this.modules || []) {
+    const t = m.meta;
+    if (m.hooked && m.hooked.has(eip) && m.hookStub && m.hookStub.tbl === m.table && !m.hidden && t && eip >= t.textLo && eip < t.textHi) return true;
+  }
+  return false;
+};
+/** the stub's call: the hooks at `eip` (entryHooks), as the dispatcher runs them; 0 with EIP's global set where one
+ *  sends the call, else the block's entry. A hook that ends the slice (win32.js endSlice) has the block wait for the
+ *  thread's next turn, as at the dispatcher, and the hook is not run again as it comes back to it (hookPass) */
+P.hookEnter = function (rec, eip) {
+  eip = u32(eip);
+  const orig = (rec.hooked && rec.hooked.get(eip)) || 0, th = this.thread16 ? this.thread16.id : 'main', pass = this.hookPass || (this.hookPass = new Map());
+  const was = pass.get(th); if (was !== undefined) { pass.delete(th); if (was === eip && orig) return orig; }
+  const h = this.entryHooks && this.entryHooks.get(eip);
+  if (h) { const to = h.call(this); if (to !== undefined) { this.cpu.eip.value = u32(to); return 0; } }
+  if (this.cpu.budget.value <= 0 && orig) { pass.set(th, eip); this.cpu.eip.value = eip; return 0; }
+  return orig;
+};
 /** a DLL no live process has attached: its translation let go (its compiled module, its run, the wasm kept to translate
  *  it again), its text run-time code meanwhile as a module being read from the memo is (netText), its image and block
  *  table's room left as they are; made again as a process attaches it (win32.js attachPrep). A 16-bit module, a
@@ -1455,7 +1525,7 @@ P.dynRelease = function (m) {
   if (!m.run && !m.module) return false;
   const meta = m.meta;
   m.netText = [meta.textLo, meta.textHi]; meta.textLo = meta.textHi = 0;
-  m.run = null; m.module = null; m.netSeed = null; m.netReady = null; m.released = true;
+  m.run = null; m.module = null; m.netSeed = null; m.netReady = null; m.released = true; m.table = null; m.hooked = null; m.hookStub = null;
   if (m.dynNew) m.dynNew.clear();
   if (this.dynFast) this.dynFast.clear();
   return true;

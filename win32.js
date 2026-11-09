@@ -901,13 +901,13 @@ class Process {
   /** `fn` run as execution reaches linear `at` through the dispatcher (an export another module enters, a return
    *  address another module returns to), beside any hook there already; the function that removes it. A hook that
    *  answers where to go on (ne16.js clockCall) ends the chain */
-  /** the host's hook at linear `at` (entryHooks: the dispatcher calls it as control arrives there). In a module
-   *  translated as it loaded (dyn.js neCompile) the address keeps no block, so the module's own calls to it come to
-   *  the dispatcher and the hook, as run-time code brought them */
+  /** the host's hook at linear `at` (entryHooks: the dispatcher calls it as control arrives there). At a block of a
+   *  module translated as it loaded (dyn.js neCompile) the module's own stub there calls it (dyn.js hookStub), the
+   *  module's own calls to it and another module's alike */
   setEntryHook(at, fn) {
     at = u32(at); (this.entryHooks || (this.entryHooks = new Map())).set(at, fn);
     const dm = (this.modules || []).find(m => m.meta && m.meta.dynamic && m.meta.lookup && at >= m.meta.textLo && at < m.meta.textHi);
-    if (dm) this.w32(dm.meta.lookup + 4 * (at - dm.meta.textLo), 0);
+    if (dm) this.hookStub(dm, at);
   }
   addEntryHook(at, fn) {
     at = u32(at);
@@ -918,11 +918,12 @@ class Process {
       this.setEntryHook(at, function () { for (const f of l.fns.slice()) { const to = f.call(this); if (to !== undefined) return to; } return l.was ? l.was.call(this) : undefined; });
     }
     l.fns.push(fn);
-    return () => { const i = l.fns.indexOf(fn); if (i >= 0) l.fns.splice(i, 1); if (!l.fns.length) { lists.delete(at); if (l.was) hooks.set(at, l.was); else hooks.delete(at); } };
+    return () => { const i = l.fns.indexOf(fn); if (i >= 0) l.fns.splice(i, 1); if (!l.fns.length) { lists.delete(at); if (l.was) hooks.set(at, l.was); else { hooks.delete(at); if (this.hookUnstub) this.hookUnstub(at); } } };
   }
   /** at an export's entry: `fn(eax, edx)` once the call returns to its caller (the return address on the stack now:
    *  a 32-bit near return, or a 16-bit far one), matched by thread and stack depth so nested and concurrent calls
-   *  each find their own. Only a return that comes back through the dispatcher is seen (one from another module) */
+   *  each find their own. A return to a translated module's block is seen in the module (dyn.js hookStub); one to a
+   *  bundle module's only as it comes back through the dispatcher (from another module) */
   onReturn(fn) {
     const seg = !!(this.cpu.ss.value & 0xffff), sp = seg ? u32(this.cpu.ssb.value) + (this.cpu.esp.value & 0xffff) : u32(this.cpu.esp.value);
     const ret = seg ? u32(this.selBase(this.r16(sp + 2)) + this.r16(sp)) : u32(this.r32(sp)), th = this.thread16 ? this.thread16.id : 'main', self_ = this;
@@ -970,7 +971,8 @@ class Process {
       if (this.memW) this.memCheck();
       // (an export another module enters, watched: a shared session's intents, ne16.js hookIntents; a hook that answers
       // the call itself gives where it returns to: a program's clock, ne16.js hookClock)
-      if (this.entryHooks) { const h = this.entryHooks.get(eip); if (h) { const to = h.call(this); if (to !== undefined) { eip = to; continue; } } }
+      // (a translated module's hooked block calls its hook itself, its stub: dyn.js hookStub)
+      if (this.entryHooks) { const h = this.entryHooks.get(eip); if (h && !(this.hookedIn && this.hookedIn(eip))) { const to = h.call(this); if (to !== undefined) { eip = to; continue; } } }
       const m = eip >= LAYOUT.THUNK16 ? this.modules[0] : this.modules.find(x => eip >= x.meta.textLo && eip < x.meta.textHi && !x.hidden);   // (not a program whose process's view is put by: arenaUse)
       if (!m) {
         if (eip < 0x10000) (this.nullJumps || (this.nullJumps = [])).push({ at: eip, from: this.lastBlock >>> 0, cs: this.cpu.cs ? this.cpu.cs.value & 0xffff : null });

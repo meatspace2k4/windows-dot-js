@@ -271,7 +271,11 @@ class Machine {
         }
       }
       if (rec.meta && !rec.meta.textHi && !(rec.meta.blocks || []).length && !mod) continue;   // (a program mapped from its file: its code translated as it runs, no run to make)
-      if (mod) { rec.run = new WebAssembly.Instance(mod, p.imports).exports.run; if (rec.meta && rec.meta.lookup) { const look = new Uint32Array(p.mem.buffer, rec.meta.lookup, rec.meta.textHi - rec.meta.textLo); rec.meta.blocks.forEach((a, i) => { look[a - rec.meta.textLo] = i + 1; }); } }
+      if (mod) {
+        const inst = new WebAssembly.Instance(mod, p.imports); rec.run = inst.exports.run;
+        if (rec.meta && rec.meta.lookup) { const look = new Uint32Array(p.mem.buffer, rec.meta.lookup, rec.meta.textHi - rec.meta.textLo); rec.meta.blocks.forEach((a, i) => { look[a - rec.meta.textLo] = i + 1; }); }
+        if (inst.exports.tbl && p.hookRestub) { rec.table = inst.exports.tbl; p.hookRestub(rec); }   // (a translated module's hooked blocks, its stubs in the new table: dyn.js hookStub)
+      }
       else if (typeof rec.run !== 'function') console.warn(`[arrival] ${rec.name}${isExe ? ' (' + rec.meta.name + ')' : ''}: no module to make its run from`);
     }
   }
