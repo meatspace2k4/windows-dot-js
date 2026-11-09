@@ -303,7 +303,12 @@ window.W95BraidPage = function (ui) {
     /** the system's machine run ahead of the wall by `x` (its steps back to back, each x periods of its own clock):
      *  the waits on time pass x times faster than real time; 1 is a person's pace again. Answers { scale, now } */
     // (the PC's machine too, whose clock times the loading screen and the boot before Windows' own machine starts)
-    speed: x => { if (ui.pcSpeed) ui.pcSpeed(x); const s = sys(); return s ? s.cmd('speed', [x]) : Promise.resolve(null); },
+    /** the speed each machine is set to (`pc`, `system`: times ahead of the wall, null for a machine not running) and the
+     *  system's clock now: read only, nothing is changed (setMachineSpeed sets it) */
+    speed: async () => { const s = sys(), r = s ? await s.cmd('speedScale') : null; return { pc: ui.pcSpeed ? ui.pcSpeed() : null, system: r ? r.scale : null, now: r ? r.now : null }; },
+    /** both machines run `x` times ahead of the wall (1: a person's pace): the PC's, whose clock times the loading screen
+     *  and the boot before Windows' own machine starts, and the system's. Resolves with what `speed` reads */
+    setMachineSpeed: async x => { if (ui.pcSpeed) ui.pcSpeed(x); const s = sys(); if (s) await s.cmd('speed', [x]); return braid.speed(); },
     /** the machine's own clock, ms since its start: the line's time */
     now: () => clock(),
     get build() { return build(); },

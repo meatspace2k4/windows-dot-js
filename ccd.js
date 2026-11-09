@@ -916,7 +916,7 @@
             case 'anchor': return show(await br.anchor(a.name));
             case 'every': return show(br.every(a.ms == null ? 30000 : a.ms));
             case 'mods': return show(br.mods);
-            case 'speed': return show(await br.speed(a.x == null ? 1 : a.x));
+            case 'speed': return show(await (a.x == null ? br.speed() : br.setMachineSpeed(a.x)));   // (no x: read only)
             case 'now': return show(await br.now());
             case 'forget': { if (!a.name) not('name: the moment to let go.'); return show(await br.forget(a.name)); }
             case 'window': { br.window(); return 'The Braid window is open.'; }

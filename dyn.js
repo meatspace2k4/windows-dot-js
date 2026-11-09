@@ -86,7 +86,10 @@ class Fn {
 // (n: the instruction of the block being translated that it met, so the block can end before it: dynBlock)
 let insnAt = 0;
 class Unsupported extends Error { constructor(m) { super(m); this.n = insnAt; } }
-const DYN_MAX = 60000;   // (the run-time blocks kept translated, dynBlock)
+// (the run-time blocks kept translated, dynBlock: each its own compiled module, about 200 KB of the engine's code space
+// whatever its size. At 60000 a machine's cache held 48509 and the PC's 12834 at Windows 98's first start, 13 GB of
+// code in 258000 regions, and the page's process ran out of memory and crashed)
+const DYN_MAX = 6000;
 const MASK = { 1: 0xff, 2: 0xffff, 4: -1 };
 const COND = ['o', 'no', 'b', 'ae', 'e', 'ne', 'be', 'a', 's', 'ns', 'p', 'np', 'l', 'ge', 'le', 'g'];
 

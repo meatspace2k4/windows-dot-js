@@ -6,6 +6,18 @@ canvas and keys through the shell's key handler. It is the same in the Electron 
 
 Coordinates are screen pixels of the emulated display, origin top left. `win95.screen()` gives the size.
 
+## Reading the screen: start here
+
+`await win95.report(n = 3)` is the one call for "what is on the screen and what went wrong". Use it before anything
+else; do not write a script to read a dialog.
+
+- `screen`: what the `screen` event carries (`desktop`, `dos`, `logow`, ...).
+- `windows`: each window, bottom to top, with `title`, `x`, `y`, `w`, `h`, `active` and `modal`. Its `text` lists
+  every control as its machine has it now (`static: Setup needs to restart...`, `button: Restart Now`), so a dialog's
+  message and buttons can be read without a screenshot.
+- `faults`: the line's last `n` faults, each with `why`, `program`, `module`, `eip` and `cr2` in hex, and `last`, the
+  fault log's last entry (`why`, `at` as a symbol, the first eight stack words as symbols).
+
 ## Input
 
 | Call | Does |
@@ -111,7 +123,10 @@ Windows.
 | `braid.line` | the line: `gen` now, `forks` (each generation: the moment and generation it grew from, `how`: travel, scrub, memo, anchor), `moments` with their verdicts, `segments` (each pair of moments, with how many actions between), `events` (every fault a machine reported, under its generation), `journal` |
 | `braid.journal` | the actions made through the API since the last moment (`click`, `dblclick`, `type`, `key`, `run`, `drag`, `open`), each stamped with the machine's clock; `segments`: each pair of moments with the actions between them |
 | `braid.same(a, b)` | two faults of the line compared record for record (by index into `line.events`, or `{ gen }` for a generation's last): `same`, and `diff` where they part |
-| `braid.now()`, `braid.speed(x)` | the machine's own clock (ms since its start), and the machine run ahead of the wall by `x`: steps back to back, each `x` periods, so what waits on time passes `x` times faster than real time (progress bars included; `speed(1)` is a person's pace again) |
+| `braid.now()` | the machine's own clock (ms since its start) |
+| `braid.setMachineSpeed(x)` | both machines run ahead of the wall by `x`: the PC's (its clock times the loading screen and the boot before Windows' own machine starts) and the system's (steps back to back, each `x` periods), so what waits on time passes `x` times faster than real time (progress bars included; `setMachineSpeed(1)` is a person's pace again). Resolves with what `speed()` reads |
+| `braid.speed()` | read only: the speed each machine is set to (`pc`, `system`; `null` for one not running) and the system's clock (`now`) |
+| `braid.watchPageLongTasks(ms = 300)`, `braid.pageLongTasks()` | each time one task held the page's main thread longer than `ms` (the PC's machine, the shell and a travel's unpacking run there): `at`, `ms`, `heapMB`, the braid `step` in progress. `watchPageLongTasks` starts the log afresh (`0` ends it and hands it back), `pageLongTasks` reads it; each is also the event `braid.pageLongTask` |
 | `braid.mods` | the scripts loaded over the running machine or page (`reloadScript`), `{ name, sum }` each: named beside every moment marked from then on |
 | `braid.window()`, Run > `braid` | the Braid window: the line as a slider (moments as ticks coloured by the lint, forks as wedges, the thumb at now); drag the thumb to a time or click a moment to travel; Mark, Anchor, Lint; the line marking itself |
 | `sysApp.cmd('mark' \| 'markAt' \| 'travel' \| 'moments' \| 'forget' \| 'lint' \| 'probe' \| 'speed' \| 'now' \| 'until' \| 'mods' \| 'export' \| 'import', [...])` | the same for one machine alone (`markAt`: at a time of its clock; `until`: run fast to a time and answer; `export`, `import`: its moment as bytes, and arrived at from them) |

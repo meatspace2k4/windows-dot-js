@@ -6195,7 +6195,7 @@ const PAGE_SCRIPTS = new Set(['ccd.js']);
 const braidUi = () => ({
   W95Win32, fs, emit, dirty, closeMenus, dialog, closeWin, msgBox, activate, script,
   machines: () => [...machineWorkers], sysApp: () => sysApp, startSystem, pcBoot: () => pcBoot(), windows: () => windows, shared: () => sharedNow(),
-  pcSpeed: x => { pcSpeed = Math.max(1, Number(x) || 1); if (pc && pc.m) pc.m.speed = pcSpeed; return pcSpeed; },
+  pcSpeed: x => { if (x === undefined) return pcSpeed; pcSpeed = Math.max(1, Number(x) || 1); if (pc && pc.m) pc.m.speed = pcSpeed; return pcSpeed; },   // (no argument: read)
   shell: () => ({ windows, tasks, modals, active, menus, menuSrc, cap, drag, ghost, screen, textClip, clipOwner, msgApp, cascadeN }),
   setShell: sh => {
     ({ windows, tasks, modals, active, menus, menuSrc, cap, drag, ghost, screen, textClip, clipOwner, msgApp, cascadeN } = sh);

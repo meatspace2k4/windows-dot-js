@@ -1847,6 +1847,7 @@ class Machine {
       case 'build': { this.build = String(args[0] || ''); return this.build; }
       // the machine run ahead of the wall: steps back to back, each a scaled period of the machine's time (x times the
       // 16 ms); 1 is the pace of a person's machine again. The clock as it reads now
+      case 'speedScale': return { scale: this.vclock.scale || 1, now: this.vclock.now };   // (the scale 'speed' set, read alone: 'speed' sets it)
       case 'speed': { const x = Math.max(1, Number(args[0]) || 1); this.fast = x > 1; this.vclock.scale = x; if (this.fast) this.kick(); return { scale: x, now: this.vclock.now }; }
       case 'now': return this.vclock.now;
       // the machine run to a time of its own clock, fast (x the pace, 8), then at a person's pace again: answers when
