@@ -303,6 +303,11 @@ class Process {
     for (const m of this.modules) span(m.netText ? { lookup: m.meta.lookup, textLo: m.netText[0], textHi: m.netText[1] } : m.meta);   // (one whose module is being read from the memo: its table taken too)
     const free = a => a >= LAYOUT.TABLES && a + size <= LAYOUT.TABLES_END && !taken.some(([lo, hi]) => a < hi && lo < a + size);
     if (free(pref)) return pref;
+    // (the memo's tables for modules not loaded here kept clear while there is room elsewhere in the arena, as vmRoom
+    // keeps their images clear: each module's table where its translation was made)
+    { const all = [...taken, ...this.memoSpans()].sort((x, y) => x[0] - y[0]); let b = LAYOUT.TABLES;
+      for (const [lo, hi] of all) { if (b + size > LAYOUT.TABLES_END) break; if (b + size <= lo) return b; if (hi > b) b = (hi + 0xfff) & ~0xfff; }
+      if (b + size <= LAYOUT.TABLES_END) return b; }
     taken.sort((x, y) => x[0] - y[0]);
     let a = LAYOUT.TABLES;
     // (a gap between tables inside the tables' arena only: the tables placed above the layout, vmRoom's, have DLLs'
@@ -323,6 +328,8 @@ class Process {
     const spans = [...(own ? this.moduleSpans(m => m.name !== 'EXE') : this.moduleSpans()), ...this.bundleSpans16()], free =a => a >= 0x400000 && a + size <= 0x02000000 && !spans.some(([lo, hi]) => a < hi && lo < a + size);
     if (free(pref)) return pref;
     const PROGRAMS = [0x01000000, 0x01100000], programs = a => !own && a < PROGRAMS[1] && PROGRAMS[0] < a + size;
+    // (clear of the memo's places for modules not loaded here first, as vmRoom keeps clear of them)
+    if (relocatable) { const memo = this.memoSpans(), kept = a => !memo.some(([lo, hi]) => a < hi && lo < a + size); for (let a = 0x00620000; a + size <= 0x02000000; a += 0x10000) if (free(a) && !programs(a) && kept(a)) return a; }
     if (relocatable) for (let a = 0x00620000; a + size <= 0x02000000; a += 0x10000) if (free(a) && !programs(a)) return a;
     // (the arena full: a relocatable DLL in the address space above the layout's, where VirtualAlloc's regions are, as
     // Windows maps a DLL wherever its process has room. Windows 98's first start maps more DLLs than the arena holds,
@@ -368,18 +375,62 @@ class Process {
   }
   vmRoom(size, align, spans = []) {
     if (!this.vmTop) return 0;
-    const n = (size + align - 1) & -align, spare = this.vspare || [];
+    // (clear of the places the memo has for modules not loaded here (memoSpans) while there is room elsewhere: a DLL
+    // put where its translation was made runs the memo's module; put elsewhere, translated again, whole, in the step)
+    return this.vmRoomClear(size, align, [...spans, ...this.memoSpans()]) || this.vmRoomClear(size, align, spans);
+  }
+  vmRoomClear(size, align, spans) {
+    const n = (size + align - 1) & -align, spare = this.vspare || (this.vspare = []);
+    const hit = a => spans.find(([lo, hi]) => a < hi && lo < a + n);
     for (let i = 0; i < spare.length; i++) {
-      const s = spare[i], a = (s.base + align - 1) & -align, end = s.base + s.size;
-      if (a + n > end || spans.some(([lo, hi]) => a < hi && lo < a + n)) continue;
+      const s = spare[i], end = s.base + s.size;
+      let a = (s.base + align - 1) & -align, h;
+      while (a + n <= end && (h = hit(a))) a = (h[1] + align - 1) & -align;
+      if (a + n > end) continue;
       spare.splice(i, 1);
       if (a > s.base) spare.push({ base: s.base, size: a - s.base });
       if (a + n < end) spare.push({ base: a + n, size: end - a - n });
       this.u8.fill(0, a, a + n); return this.vmCheck(a, n, 'room from the spare');
     }
-    const b = (this.vmTop + align - 1) & -align;
-    if (b + n <= this.mem.buffer.byteLength) { this.vmTop = b + n; return this.vmCheck(b, n, 'room from the top'); }
-    return 0;
+    // (from the top, past what it must stay clear of: the room passed over is spare, for what fits there)
+    let b = (this.vmTop + align - 1) & -align, h;
+    while (b + n <= this.mem.buffer.byteLength && (h = hit(b))) b = (h[1] + align - 1) & -align;
+    if (b + n > this.mem.buffer.byteLength) return 0;
+    if (b > this.vmTop) spare.push({ base: this.vmTop, size: b - this.vmTop });
+    this.vmTop = b + n; return this.vmCheck(b, n, 'room from the top');
+  }
+  /** the room [b, b+size) above the layout taken where it is, when it is free (a spare piece holds it, or it is past the
+   *  top) and clear of `spans`: the memo's place for a module (vmRoom's pieces otherwise). 0 when it is not */
+  vmTake(b, size, spans = []) {
+    if (!this.vmTop || !this.vmLo || b < this.vmLo || b % 0x1000) return 0;
+    const n = (size + 0xfff) & ~0xfff, end = b + n, spare = this.vspare || (this.vspare = []);
+    if (spans.some(([lo, hi]) => b < hi && lo < end) || end > this.mem.buffer.byteLength) return 0;
+    if (b >= this.vmTop) {
+      if (b > this.vmTop) spare.push({ base: this.vmTop, size: b - this.vmTop });
+      this.vmTop = end; this.u8.fill(0, b, end); return this.vmCheck(b, n, 'the memo\'s place, from the top');
+    }
+    const i = spare.findIndex(s => s.base <= b && end <= s.base + s.size); if (i < 0) return 0;
+    const s = spare.splice(i, 1)[0];
+    if (b > s.base) spare.push({ base: s.base, size: b - s.base });
+    if (end < s.base + s.size) spare.push({ base: end, size: s.base + s.size - end });
+    this.u8.fill(0, b, end); return this.vmCheck(b, n, 'the memo\'s place, from the spare');
+  }
+  /** the places the memo (dyn.js) has for the modules it holds and this machine has not loaded: each one's image (its
+   *  code span for a record from before images were kept) and its block table. Read again as the memo grows */
+  memoSpans() {
+    const memo = window.W95Dyn && window.W95Dyn.memo; if (!memo || !memo.size) return [];
+    const loaded = new Set((this.modules || []).map(m => m && m.sha256).filter(Boolean));
+    for (const m of this.ne ? this.ne.values() : []) if (m && m.sha256) loaded.add(m.sha256);
+    const key = `${memo.size}:${loaded.size}`;
+    if (this.memoSpanKey === key) return this.memoSpanList;
+    const out = [];
+    for (const r of memo.values()) {
+      if (!r || loaded.has(r.sha) || !(r.textHi > r.textLo)) continue;
+      out.push(r.imageHi > r.imageLo ? [r.imageLo, r.imageHi] : [r.textLo, r.textHi]);
+      if (r.lookup) out.push([r.lookup, r.lookup + 4 * (r.textHi - r.textLo)]);
+    }
+    this.memoSpanKey = key; this.memoSpanList = out;
+    return out;
   }
   /** a DLL an image imports or LoadLibrary names that the system bundle does not carry, from its file, as Windows'
    *  loader finds it: the program's folder, SYSTEM, the Windows folder. Mapped where there is room, its code translated
@@ -398,7 +449,19 @@ class Process {
     if (pe + 0xf8 > f.length || dv.getUint32(pe, true) !== 0x4550 || !(dv.getUint16(pe + 22, true) & 0x2000)) return null;   // (IMAGE_FILE_DLL)
     const opt = pe + 24, pref = dv.getUint32(opt + 28, true), size = dv.getUint32(opt + 56, true), ep = dv.getUint32(opt + 16, true);
     const relocatable = !(dv.getUint16(pe + 22, true) & 1) && dv.getUint32(opt + 96 + 5 * 8 + 4, true) > 0;
-    const base = this.imageRoom(pref, size, relocatable);
+    // (where the memo's translation of this file was made, first: the module put there runs the memo's module, not one
+    // translated again, whole, as it loads (dyn.js neCompile). Its image's base, or its code's less the code's offset)
+    let memoBase = 0;
+    if (relocatable && window.W95Dyn && window.W95Dyn.memo.size) {
+      const had = window.W95Dyn.memo.get(sha256(f));
+      if (had && had.imageLo) memoBase = had.imageLo;
+      else if (had && had.textLo) {
+        const nsec = dv.getUint16(pe + 6, true), shdr = opt + dv.getUint16(pe + 20, true); let lo = Infinity;
+        for (let i = 0; i < nsec; i++) { const o = shdr + 40 * i, ch = dv.getUint32(o + 36, true), vs = dv.getUint32(o + 8, true) || dv.getUint32(o + 16, true); if ((ch & 0x20000020) && vs) lo = Math.min(lo, dv.getUint32(o + 12, true)); }
+        if (lo < Infinity) memoBase = had.textLo - lo;
+      }
+    }
+    const base = (memoBase && memoBase !== pref && (this.imageRoom(memoBase, size, false) || this.vmTake(memoBase, size, this.moduleSpans()))) || this.imageRoom(pref, size, relocatable);
     if (!base) { log('warn', 'win32', `${file}: no room for its image at ${pref.toString(16)}`); return null; }
     // (the file it was mapped from: GetModuleFileName's answer, TRIEDIT's own type library found beside it)
     const d = { file: f, module: null, meta: { base, entry: ep ? base + ep : 0, textLo: 0, textHi: 0, blocks: [], size, dynamic: true, path } };
@@ -615,6 +678,8 @@ class Process {
     const pc = this.pc, done = pc.attached || (pc.attached = new Set());
     if (done.has(m) || !m.meta || m.clock) return 0;
     done.add(m);
+    // (a DLL whose translation went with the last process that had it (dyn.js dynRelease): made again for this one)
+    if (m.released && this.neCompile) { m.released = false; this.neCompile(m); }
     // (its data as a new process gets it, a DLL of the private arena's: as loaded, the attached ones' put by)
     const v = m.priv;
     if (v && v.init) {

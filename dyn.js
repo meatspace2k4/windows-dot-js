@@ -1368,6 +1368,7 @@ P.neMemo = function (rec) { rec.sha256 = rec.sha256 || window.W95Win32.sha256(re
  *  `again`: translated now whatever the memo, with the entries found since (neRebuild) */
 P.neCompile = function (rec, again = false) {
   const meta = rec.meta, code = codeSegs(rec); if (!code.length) return;
+  rec.released = false;   // (one let go, dynRelease: made again now)
   if (rec.netText) { [meta.textLo, meta.textHi] = rec.netText; rec.netText = null; rec.netReady = null; }   // (one whose memo's module was being read: its text back)
   const t0 = performance.now(), had = this.neMemo(rec), sels = (rec.segs || []).map(g => g.sel);
   // (the memo's module where its blocks' bytes lie as they were translated, at the same text: its relocations, its
@@ -1398,7 +1399,9 @@ P.neCompile = function (rec, again = false) {
       window.W95Win32.log('error', 'dyn', `${label}: ${blocks.length} blocks translate to ${wasm.length} bytes, past the engine's limit; its code runs as run-time code (longest blocks: ${at})`);
       meta.textLo = meta.textHi = 0; rec.run = null; rec.netTooBig = true; return rec;
     }
-    memoPut({ sha: rec.sha256, name: rec.name, file: rec.path || meta.path || null, codeBase: Math.min(...code.map(g => g.base)), sels, lookup: meta.lookup, textLo: meta.textLo, textHi: meta.textHi,
+    // (and the image's span, the place a loader asks for and the allocators keep clear: win32.js loadDll, memoSpans)
+    const imageLo = rec.kind === 'ne' || !meta.size ? meta.textLo : meta.base, imageHi = rec.kind === 'ne' || !meta.size ? meta.textHi : meta.base + meta.size;
+    memoPut({ sha: rec.sha256, name: rec.name, file: rec.path || meta.path || null, codeBase: Math.min(...code.map(g => g.base)), sels, lookup: meta.lookup, textLo: meta.textLo, textHi: meta.textHi, imageLo, imageHi,
       codeHash: blocksHash(this.u8, blocks, lens), build: NET_BUILD, entries: [...(rec.dynEntries || [])], blocks, lens, sums, wasm, made: Date.now() });
   }
   const t1 = performance.now();
@@ -1440,6 +1443,20 @@ P.neInstall = function () {
     return true;
   }
   return false;
+};
+/** a DLL no live process has attached: its translation let go (its compiled module, its run, the wasm kept to translate
+ *  it again), its text run-time code meanwhile as a module being read from the memo is (netText), its image and block
+ *  table's room left as they are; made again as a process attaches it (win32.js attachPrep). A 16-bit module, a
+ *  program's image, or one already put by is left alone */
+P.dynRelease = function (m) {
+  if (!m || m.kind === 'ne' || m.name === 'EXE' || !m.meta || !m.meta.dynamic || !m.meta.lookup || m.netText || m.released) return false;
+  if (!m.run && !m.module) return false;
+  const meta = m.meta;
+  m.netText = [meta.textLo, meta.textHi]; meta.textLo = meta.textHi = 0;
+  m.run = null; m.module = null; m.netSeed = null; m.netReady = null; m.released = true;
+  if (m.dynNew) m.dynNew.clear();
+  if (this.dynFast) this.dynFast.clear();
+  return true;
 };
 /** at an idle step of the machine (worker.js step: no thread in a call the host made, no wasm frame live): one module
  *  whose run found blocks of its own (noteEntry's dynNew), and found no more since the last idle step, translated

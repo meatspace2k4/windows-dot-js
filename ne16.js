@@ -5270,6 +5270,14 @@ P.endProcess = function (pc, code) {
   // the address space it reserved (VirtualAlloc) goes with it, as its private arena does on Windows 95
   for (const [b, r] of this.vregions || new Map()) if (r.pc === pc) { this.vregions.delete(b); if (!r.heap) this.vmCheck(b, r.size, 'a process\'s region given back'); if (r.heap) this.free(r.heap); else (this.vspare || (this.vspare = [])).push({ base: b, size: r.size }); }
   this.vmAudit('a process\'s end');
+  // (the DLLs it attached that no process goes on with: their translations let go, the image left mapped. Kept, every
+  // DLL Windows 98's first start ran (REGSVR32's and RUNDLL32's hundreds) kept its compiled module and its wasm for the
+  // session: the page's process grew to 17 GB and crashed)
+  if (pc.attached && this.dynRelease) {
+    const live = [...(this.procs || new Map()).values()].filter(x => x !== pc && x.exitCode === null);
+    if (this.pc0 && this.pc0 !== pc && !live.includes(this.pc0)) live.push(this.pc0);
+    for (const m of pc.attached) if (!live.some(x => x.attached && x.attached.has(m))) this.dynRelease(m);
+  }
   for (const [h, dc] of this.glNativeDCs || new Map()) if (dc.pc === pc) { if (dc.bits) this.free(dc.bits); this.glNativeDCs.delete(h); }   // (gl.js: its frames' DIBs)
   for (const ctx of [...(this.glContexts || [])]) if (ctx.pc === pc) { if (this.glctx === ctx) this.glctx = null; window.W95GL.releaseContext(this, ctx); }   // (and its GPU contexts)
   if (this.thread16 && this.thread16.pc === pc) this.thread16.exitCode = code >>> 0;
