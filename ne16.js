@@ -1690,7 +1690,7 @@ P.inputPending = function () {
 P.hookTaken = function (user) {
   // (#114 for a Windows program; #822, DispatchMessage32, for a Win32 one, whose USER32 hands USER a 32-bit MSG:
   // hwnd a dword, then the message; and USER32's own entry, loaded already or later, hookTaken32)
-  const u32m = this.byName && this.byName.get('USER32'); if (u32m) this.hookTaken32(u32m);
+  const u32m = this.byName && this.byName.get('USER32'); if (u32m) { this.hookTaken32(u32m); this.hookPeek32(u32m); }
   for (const [ord, msgAt] of [[114, 2], [822, 4]]) {
     const at = this.neExport(user, ord); if (!at || !this.selValid(at >>> 16)) continue;
     this.setEntryHook(this.selBase(at >>> 16) + (at & 0xffff), function () {
@@ -1710,6 +1710,14 @@ P.hookTaken32 = function (m) {
     if (msg >= 0x200 && msg <= 0x209) { const c = this.msgTaken || (this.msgTaken = {}); c[msg] = (c[msg] || 0) + 1; if (msg === 0x200 && (this.r32(lp + 8) & 1)) c.movesHeld = (c.movesHeld || 0) + 1; }   // (the mouse messages taken, by message, and the moves with the left button held: the strokes diagnostic)
     return undefined;
   });
+};
+/** USER32's PeekMessage at its entry: a thread whose last one found nothing (WIN32_OldYield) gives up its slice here,
+ *  before USER looks at its queue, so a loop polling PeekMessage lets input and the other threads run */
+P.hookPeek32 = function (m) {
+  for (const nm of ['PeekMessageA', 'PeekMessageW']) {
+    const at = m.exports && m.exports.get(nm); if (!at) continue;
+    this.setEntryHook(at, function () { const t = thr(this, 0); if (t.peekOwed) { t.peekOwed = 0; this.endSlice(); } return undefined; });
+  }
 };
 /** where USER's cursor is (GetCursorPos), for the pointer's hot spot in its image (null inside a call) */
 P.cursorPos = function () {
@@ -2083,7 +2091,7 @@ P.hookExclusive = function (m) {
 };
 P.hookIntents = function (user) {
   const hooks = { set: (at, fn) => this.setEntryHook(at, fn) };
-  const wasLoad = this.onModuleLoad; this.onModuleLoad = (name, m) => { if (wasLoad) wasLoad.call(this, name, m); if (name === 'TAPI32') this.hookTapi(m); if (name === 'WINMM' || name === 'MMSYSTEM') this.hookExclusive(m); if (name === 'USER32') this.hookTaken32(m); };
+  const wasLoad = this.onModuleLoad; this.onModuleLoad = (name, m) => { if (wasLoad) wasLoad.call(this, name, m); if (name === 'TAPI32') this.hookTapi(m); if (name === 'WINMM' || name === 'MMSYSTEM') this.hookExclusive(m); if (name === 'USER32') { this.hookTaken32(m); this.hookPeek32(m); } };
   for (const n of ['WINMM', 'MMSYSTEM']) { const m = this.byName && this.byName.get(n); if (m) this.hookExclusive(m); }   // (one loaded already)
   for (const [ord, fn] of [[483, P.spiIntent], [181, P.colorsIntent]]) {   // SystemParametersInfo, SetSysColors
     const at = this.neExport(user, ord); if (at) hooks.set(u32(this.selBase(at >>> 16) + (at & 0xffff)), fn);
@@ -3697,7 +3705,19 @@ function oldYield() {
   if (top && !t.yielded) { t.yielded = true; return YIELD; }
   t.yielded = false;
 }
-def16('KERNEL', 447, '', 'v', oldYield);
+// WIN32_OldYield for a Win32 thread: Windows lets the Win16Lock go and takes it again, and the thread runs on, so what
+// PeekMessage answers is the queue as it is. Giving the slice up here, after USER has looked, the answer was the queue
+// as it was a slice of every other thread ago: SHELL32's icon thread, done with one icon, peeked, found nothing and
+// gave up its slice; the desktop's thread posted it the next icon (My Documents'); it came back with "no message",
+// took itself off the view as idle, and threw the task away as not its own: the icon stayed the blank document until
+// a refresh. The slice is given up at the thread's next PeekMessage instead, before USER looks (hookPeek32); a third
+// yield with no PeekMessage between (a loop of USER's own) gives it up here as before
+function win32OldYield() {
+  const t = thr(this, 0);
+  if (t.yielded || (t.peekOwed || 0) >= 2) { t.peekOwed = 0; return oldYield.call(this); }
+  t.peekOwed = (t.peekOwed || 0) + 1;
+}
+def16('KERNEL', 447, '', 'v', win32OldYield);
 // OldYield: the same for a Win16 task (USER's PeekMessage calls it when the queue is empty, as for MSGSRV32 polling
 // while MMTASK plays its sound)
 def16('KERNEL', 117, '', 'v', oldYield);
@@ -5363,6 +5383,7 @@ P.threads16 = function (nested = false, only = null) {
     if (!only && this.waitBlocked(t)) continue;   // (it would only wait again)
     const main = this.saveCtx16();
     const sw = this.switchMs || (this.switchMs = { img: 0, load: 0, run: 0, save: 0, n: 0 }); let tm = performance.now();   // (a diagnostic: where a thread switch's time goes, cmd 'views')
+    if (this.sliceEnd !== undefined) { this.cpu.budget.value = this.sliceEnd; this.sliceEnd = undefined; }   // (a slice ended early that stopped another way first: the blocks left are this thread's)
     this.thread16 = t; t.sliceStart = this.now(); this.preempted = 0; this.imgUse(t.pc); this.cwdSwitch(t); if (this.thhookLin) this.tdbCurrent(t); sw.img += performance.now() - tm; sw.n++;
     let r;
     try {
@@ -5408,7 +5429,7 @@ P.threads16 = function (nested = false, only = null) {
       // the lock go, another thread blitted on DIBENG's one blit stack (its line count at SS:0 run down to 0), and
       // WELCOME's blit went on from 0: `dec dword ss:[0]` 4 billion times, the hourglass at the first start
       t.preempted = r === 1 && !!this.preempted; this.holdWin16(t);
-      if (r === 1) { tm = performance.now(); t.ctx = this.saveCtx16(); t.state = 'waiting'; sw.save += performance.now() - tm; }
+      if (r === 1) { tm = performance.now(); t.ctx = this.saveCtx16(); t.state = 'waiting'; t.peekOwed = 0; sw.save += performance.now() - tm; }   // (peekOwed: the slice it owed for an empty PeekMessage is given, hookPeek32)
       else {
         t.state = 'done'; this.wakeWaiters(t);
         // a fault in a program the system started ends that program, as Windows 95 closes the one program that

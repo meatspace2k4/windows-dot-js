@@ -808,8 +808,17 @@ class Process {
     const look = new Uint32Array(this.mem.buffer, m.meta.lookup, m.meta.textHi - m.meta.textLo);
     for (let i = Math.max(0, at); i < bl.length && bl[i] < a + 4; i++) look[bl[i] - m.meta.textLo] = 0;
   }
+  /** the running thread's slice ends where it is: the dispatcher's next question gives the processor back, as when
+   *  its time runs out (inside a call the host made it runs on) */
+  endSlice() { if (this.sliceEnd === undefined) { this.sliceEnd = Math.max(1, this.cpu.budget.value); this.cpu.budget.value = 0; } }
   /** the dispatcher's question when the block budget runs out: 1 to give the processor back to the host here */
   tick(eip) {
+    // (a slice ended before its time, endSlice: the blocks left are the next slice's, and no quantum went by)
+    if (this.sliceEnd !== undefined) {
+      this.cpu.budget.value = this.sliceEnd; this.sliceEnd = undefined;
+      if (this.runLevel === this.yieldLevel && !this.noPreempt) { this.preempted = u32(eip); return 1; }
+      return 0;
+    }
     this.cpu.budget.value = BUDGET;
     const vc = this.host.vclock; if (vc) vc.now += vc.perTick;   // (the machine's own clock: a quantum per BUDGET blocks, whatever the host's speed; worker.js vclock)
     if (this.inputPoll && !this.inPoll) { this.inPoll = true; try { this.inputPoll(); } finally { this.inPoll = false; } }   // interrupts: the keyboard's and the mouse's
@@ -1010,6 +1019,7 @@ class Process {
     if (this.hungMain) return true;   // the main thread hung: it never runs again
     this.depth = 0; this.waiting = false; this.lastYield = this.now();
     if (this.userStack) this.userStack();
+    if (this.sliceEnd !== undefined) { this.cpu.budget.value = this.sliceEnd; this.sliceEnd = undefined; }   // (a slice ended early that stopped another way first)
     let r; this.preempted = 0;
     if (this.mainCtx) { this.loadFull(this.mainCtx); this.mainCtx = null; if (this.rebaseGlobals) { this.rebaseGlobals(); this.resumeEip = u32(this.cpu.eip.value); } }   // where its time ran out, every register as it was (a global block's segment at the block's base now, EIP at the same offset in it)
     try { r = this.runTop(this.resumeEip); }
