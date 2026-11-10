@@ -1,6 +1,6 @@
 {
-  "name": "Dark",
-  "about": "A dark colour scheme for Windows. Each colour is a value of HKCU\\Control Panel\\Colors (\"R G B\") and the SetSysColors index beside it.",
+  "name": "Midnight",
+  "about": "A dark colour scheme for Windows, kept as Display Properties keeps one: the scheme Midnight in HKCU\\Control Panel\\Appearance\\Schemes (Windows Standard's metrics and fonts, with these colours as its last 29 COLORREFs, each R, G, B, 2), named in Appearance\\Current. Each colour is also a value of HKCU\\Control Panel\\Colors (\"R G B\") and the SetSysColors index beside it.",
   "colors": {
     "Scrollbar":             { "index": 0,  "rgb": [40, 40, 40] },
     "Background":            { "index": 1,  "rgb": [24, 24, 24] },
