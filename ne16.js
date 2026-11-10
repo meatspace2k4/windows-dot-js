@@ -4469,7 +4469,8 @@ def16('KERNEL', 517, '', 'jmp', function () {
   const n = this.r32(f + 4) & 0x7fffffff, mask = this.r32(f + 8), proc = this.r32(f + 12);
   const args = new Array(n);
   for (let i = 0; i < n; i++) { const v = this.r32(f + 16 + 4 * i); args[n - 1 - i] = mask & (1 << i) ? this.lin(v) : v; }
-  const save = { kind: 'cp32', proc, args, pop: 12 + 4 * n }; for (const r of GPR) save[r] = this.cpu[r].value; for (const [s, b] of SEGS) { save[s] = this.cpu[s].value; save[b] = this.cpu[b].value; }
+  const save = { kind: 'cp32', proc, args, pop: 12 + 4 * n, sysLevel: this.sysLevel || 0 }; for (const r of GPR) save[r] = this.cpu[r].value; for (const [s, b] of SEGS) { save[s] = this.cpu[s].value; save[b] = this.cpu[b].value; }
+  this.sysLevel = 0;   // CallProc32W lets the Win16Lock go for the 32-bit call (as KERNEL's releases it); retDone.cp32 takes it back
   // on the flat alias of the 16-bit stack, as KRNL386's 16 -> 32 callbacks run
   for (const [s, b] of SEGS) { this.cpu[s].value = 0; if (s !== 'fsel') this.cpu[b].value = 0; }
   this.cpu.fs.value = this.tibFor();
@@ -4494,7 +4495,8 @@ def16('KERNEL', 518, '', 'jmp', function () {
   const ssb = u32(this.cpu.ssb.value), f = ssb + (this.cpu.esp.value & 0xffff);
   const n = this.r32(f + 4) & 0x7fffffff, mask = this.r32(f + 8), proc = this.r32(f + 12);
   const args = []; for (let i = 0; i < n; i++) { const v = this.r32(f + 16 + 4 * i); args.push(mask & (1 << i) ? this.lin(v) : v); }
-  const save = { kind: 'cp32', proc, args, pop: 0 }; for (const r of GPR) save[r] = this.cpu[r].value; for (const [s, b] of SEGS) { save[s] = this.cpu[s].value; save[b] = this.cpu[b].value; }
+  const save = { kind: 'cp32', proc, args, pop: 0, sysLevel: this.sysLevel || 0 }; for (const r of GPR) save[r] = this.cpu[r].value; for (const [s, b] of SEGS) { save[s] = this.cpu[s].value; save[b] = this.cpu[b].value; }
+  this.sysLevel = 0;   // CallProc32W lets the Win16Lock go for the 32-bit call (as KERNEL's releases it); retDone.cp32 takes it back
   for (const [s, b] of SEGS) { this.cpu[s].value = 0; if (s !== 'fsel') this.cpu[b].value = 0; }
   this.cpu.fs.value = this.tibFor();
   let esp = f & ~3;
@@ -4856,8 +4858,11 @@ def16('KERNEL', 630, '', 'jmp', function () {                                 //
 
 // ---- what USER.EXE's start-up asks of KERNEL (each read from KRNL386.EXE's own code where it has no public name)
 def16('KERNEL', 340, 's', 'v', function () {});                                  // DiagOutput: boot-log text, kept only under a debugger
-def16('KERNEL', 480, '', 'v', function () {});                                   // _EnterWin16Lock: one thread runs here, so nothing to exclude
-def16('KERNEL', 481, '', 'v', function () {});                                   // _LeaveWin16Lock
+// _EnterWin16Lock and _LeaveWin16Lock: 16-bit code lets the Win16Lock go around a stretch (USER around a call up to a
+// 32-bit window procedure) and takes it again after. Counted in the thread's sys level as KERNEL32's #97 and #98 are, so
+// a thread preempted in that stretch does not keep the lock (holdWin16)
+def16('KERNEL', 480, '', 'v', function () { this.sysLevel = (this.sysLevel || 0) + 1; });   // _EnterWin16Lock
+def16('KERNEL', 481, '', 'v', function () { this.sysLevel = (this.sysLevel || 0) - 1; });   // _LeaveWin16Lock
 // GetpWin16Lock: a far pointer to the Win16Lock's SYSLEVEL, which DCIMAN's start-up keeps for its _EnterSysLevel and
 // _LeaveSysLevel around the display driver's DCI calls; entering and leaving it are as the Win16Lock's (480, 481)
 def16('KERNEL', 449, '', 'l', function () {
@@ -5757,6 +5762,7 @@ P.retDone = {
   back32(c) { this.reg('esp', c.esp + 8); return c.ret; },                           // (W32S_BackTo32)
   cp32(c) {                                                                          // (CallProc32W, _CallProcEx32W: the 16-bit caller's registers back, DX:AX the result)
     const r = u32(this.cpu.eax.value); if (window.W95CP32) window.W95CP32(c.proc, c.args, r);
+    this.sysLevel = c.sysLevel;   // the Win16Lock again, at the level the 16-bit caller had
     for (const g of GPR) this.cpu[g].value = c[g]; for (const [s, b] of SEGS) { this.cpu[s].value = c[s]; this.cpu[b].value = c[b]; }
     this.cpu.eax.value = r | 0; this.cpu.edx.value = lo16(this.cpu.edx.value, r >>> 16);
     return this.retf16(c.pop);

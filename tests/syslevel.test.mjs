@@ -34,4 +34,14 @@ const h = lvl => { const q = { preempted: 0x676416, sysLevel: lvl, cpu: { cs: { 
 assert.equal(h(1) && h(1).who, who, 'inside a thunk or GDI32\'s locked code: held');
 assert.equal(h(0), null, 'in its own flat code: not held');
 assert.equal(h(-1), null, 'in a window procedure 16-bit code called: not held');
+
+// 16-bit code's own: _LeaveWin16Lock (KERNEL.481) lets the lock go, _EnterWin16Lock (480) takes it again
+const K16 = window.W95NE16.K16, q = { sysLevel: 1 };
+K16['KERNEL.#481'][2].call(q); assert.equal(q.sysLevel, 0, '_LeaveWin16Lock releases it');
+K16['KERNEL.#480'][2].call(q); assert.equal(q.sysLevel, 1, '_EnterWin16Lock takes it');
+// CallProc32W lets the lock go for the 32-bit call and takes it back at the level the 16-bit caller had: a window
+// procedure called that way does not keep the lock when its thread is preempted
+const text = readFileSync(new URL('../ne16.js', import.meta.url), 'utf8');
+assert.equal((text.match(/kind: 'cp32', proc, args, pop: [^}]*, sysLevel: this\.sysLevel \|\| 0 \}[^\n]*\n  this\.sysLevel = 0;/g) || []).length, 2, 'both CallProc32W entries release it');
+assert.match(text, /cp32\(c\) \{[^\n]*\n[^\n]*\n    this\.sysLevel = c\.sysLevel;/, 'and its return takes it back');
 console.log('syslevel: ok');
