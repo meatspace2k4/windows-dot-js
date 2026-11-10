@@ -38,7 +38,7 @@ function send(method, params = {}, sessionId) {
 }
 function onMessage(m) {
   if (m.id) { const p = pending.get(m.id); if (!p) return; pending.delete(m.id); if (m.error) p.no(new Error(m.error.message)); else p.ok(m.result); return; }
-  if (m.method === 'Target.attachedToTarget') { adopt(m.params.sessionId, m.params.targetInfo); return; }
+  if (m.method === 'Target.attachedToTarget') { const c = adopt(m.params.sessionId, m.params.targetInfo), parent = m.sessionId && bySessionId.get(m.sessionId); if (parent && parent.onChild) parent.onChild(c); return; }
   if (m.method === 'Target.detachedFromTarget') { const s = bySessionId.get(m.params.sessionId); if (s) { sessions.delete(s.name); bySessionId.delete(s.sessionId); } return; }
   const s = bySessionId.get(m.sessionId); if (!s) return;
   const p = m.params;
@@ -115,9 +115,12 @@ const tools = {
       // and on every worker of it, holding their scripts; a dozen of them on a page that loads a 160 MB bundle ran its
       // tab out of memory)
       if (![...sessions.values()].some(s => s.targetId === t.targetId)) {
+        // (its worker, when the browser lists one: attached as the page's auto-attach reports it, waited for by that
+        // event, not by a time)
+        const hasWorker = (await send('Target.getTargets')).targetInfos.some(x => x.type === 'worker' && /worker\.js/.test(x.url));
         const { sessionId } = await send('Target.attachToTarget', { targetId: t.targetId, flatten: true });
-        adopt(sessionId, t);
-        await new Promise(r => setTimeout(r, 800));   // its workers attach, their scripts are listed
+        const ps = adopt(sessionId, t), child = new Promise(r => { ps.onChild = c => { if (c.type === 'worker') r(c); }; });
+        if (hasWorker) await child;
       }
       return [...sessions.values()].map(s => ({ session: s.name, type: s.type, url: s.url, scripts: s.scripts.size }));
     } },
@@ -202,6 +205,49 @@ async function guestWhere() {
   if (f && f.functionName === 'w95ApiEntry') { const r = await cmd(s, 'Debugger.evaluateOnCallFrame', { callFrameId: f.callFrameId, expression: 'JSON.stringify({ call, args: args.map(a => a.toString(16)), from, thread })', returnByValue: true }); st.api = JSON.parse(r.result.value); }
   return { paused: !!s.paused, ...st };
 }
+// ---------------------------------------------------------------- the shell: SCRIPTING.md's win95 API, called as it is
+// Each runs one win95 call in the page and answers what it answers; a wait is the API's own (next, an element's
+// lookup), which ends on the event, or at once on the system failing (system.fail, braid.fault). A query's strings
+// in /slashes/ are regular expressions.
+const pageSession = async () => {
+  let s = [...sessions.values()].find(x => x.type === 'page' && /\/\?|win95|braid|localhost/.test(x.url || ''));
+  if (!s) { await tools.attach.run({ url: process.env.W95_URL || 'localhost' }); s = [...sessions.values()].find(x => x.type === 'page'); }
+  if (!s) throw new Error('no page is attached');
+  return s;
+};
+const reviveQuery = 'const Q = q => { if (!q || typeof q !== "object") return q; const o = {}; for (const [k, v] of Object.entries(q)) { const m = typeof v === "string" && /^\\/(.*)\\/([a-z]*)$/.exec(v); o[k] = m ? new RegExp(m[1], m[2]) : v; } return o; };';
+async function shell(body) {
+  const s = await pageSession();
+  const r = await cmd(s, 'Runtime.evaluate', { expression: `(async () => { ${reviveQuery} ${body} })()`, awaitPromise: true, returnByValue: true });
+  if (r.exceptionDetails) throw new Error(((r.exceptionDetails.exception && r.exceptionDetails.exception.description) || r.exceptionDetails.text).split('\n')[0]);
+  return r.result.value === undefined ? 'done' : r.result.value;
+}
+const Q = { type: 'object', description: 'An element query: { name, role, window }, each a string or "/regexp/".' };
+Object.assign(tools, {
+  shell_report: { description: 'win95.report(n): the screen, every window with its controls\' text, the last n faults. Start here.',
+    props: { n: N }, required: [], run: ({ n = 3 }) => shell(`return await win95.report(${Number(n) || 3});`) },
+  shell_click: { description: 'win95.click (or dblclick) on an element query: looked up as its machine shows it now; rejects saying what the window has, or at once when the system fails.',
+    props: { query: Q, double: { type: 'boolean' } }, required: ['query'],
+    run: ({ query, double }) => shell(`const e = await win95.${double ? 'dblclick' : 'click'}(Q(${JSON.stringify(query)})); return e && { name: e.name, role: e.role, window: e.window };`) },
+  shell_key: { description: 'win95.key(...keys): named keys (enter, esc, tab, alt+n, ctrl+shift+tab, ...).', props: { keys: { type: 'array', items: S } }, required: ['keys'],
+    run: ({ keys }) => shell(`win95.key(...${JSON.stringify(keys)}); return 'pressed';`) },
+  shell_type: { description: 'win95.type(text).', props: { text: S }, required: ['text'], run: ({ text }) => shell(`win95.type(${JSON.stringify(text)}); return 'typed';`) },
+  shell_run: { description: 'win95.run(command): what Start > Run does.', props: { command: S }, required: ['command'], run: ({ command }) => shell(`win95.run(${JSON.stringify(command)}); return 'run';`) },
+  shell_next: { description: 'win95.next(type, test): the next event of that type whose title matches `title` ("/regexp/" or exact); ends at once when the system fails. Start it with `then` (a shell_* call to make once it is listening), so the event the call causes is not missed.',
+    props: { type: S, title: S, ms: N, then: { type: 'object', description: '{ tool, args }: a shell_* tool to call once listening.' } }, required: ['type'],
+    async run({ type, title, ms = 60000, then }) {
+      const t = title ? JSON.stringify(title) : 'null';
+      const s = await pageSession(), key = `__next${nextId++}`;
+      await cmd(s, 'Runtime.evaluate', { expression: `(() => { ${reviveQuery} const t = ${t}, m = t && /^\\/(.*)\\/([a-z]*)$/.exec(t), re = m ? new RegExp(m[1], m[2]) : null; window.${key} = win95.next(${JSON.stringify(type)}, t === null ? null : e => re ? re.test(e.title || '') : e.title === t, ${Number(ms)}).then(e => ({ event: e }), e => ({ error: e.message })); })()` });
+      const did = then && tools[then.tool] ? await tools[then.tool].run(then.args || {}) : null;
+      const r = await cmd(s, 'Runtime.evaluate', { expression: `window.${key}.finally(() => { delete window.${key}; })`, awaitPromise: true, returnByValue: true });
+      return { then: did, ...r.result.value };
+    } },
+  shell_cmd: { description: 'win95.sysApp.cmd(name, args): the system machine\'s diagnostics (probe, faults, watch, call16, ...).', props: { name: S, args: { type: 'array' } }, required: ['name'],
+    run: ({ name, args = [] }) => shell(`return await win95.sysApp.cmd(${JSON.stringify(name)}, ${JSON.stringify(args)});`) },
+  shell_eval: { description: 'Any win95 API expression, awaited (win95 in scope).', props: { expression: S }, required: ['expression'],
+    run: ({ expression }) => shell(`return await (${expression});`) },
+});
 Object.assign(tools, {
   screenshot: { description: 'A picture of the page (the machine\'s screen). `file`: also save the PNG there.', props: { file: S }, required: [],
     async run({ file }) {

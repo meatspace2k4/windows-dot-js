@@ -148,7 +148,7 @@ the key check and each page already lived from the same moment are memo'd past.
 | Call | Does |
 | --- | --- |
 | `on(type, fn)` | calls `fn(event)` for each event of `type`; returns the function that stops it |
-| `next(type, test?, ms = 10000)` | a promise for the next event of `type` that passes `test`; rejects after `ms` |
+| `next(type, test?, ms = 10000)` | a promise for the next event of `type` that passes `test`; rejects at once, with what failed, when the system fails meanwhile (`system.fail`, `braid.fault`), else after `ms`. An element's lookup (`click({ name })`, `waitFor`) ends the same way |
 
 `type` is an event name, its family (`'window'`, `'fs'`, ...) or `'*'` for all. Every event has `type` and `t`
 (ms since the epoch).
@@ -165,6 +165,7 @@ the key check and each page already lived from the same moment are memo'd past.
 | `saver.start`, `saver.stop` | `path` | a full-screen screen saver starts or ends |
 | `program.exit` | `path`, `mode` (`s`, `p`, `c`), `code`, `why` if it failed | a guest program ends |
 | `screen` | `screen` | boot screens, desktop, shutdown |
+| `system.fail` | `kind` (`console`, `exception`, `rejection`), `text` | the page logs an error (a worker's error and the machines' error lines come through it) or has an uncaught exception or rejection |
 | `devtools` | `open` | the browser's DevTools open or close (the Windows 95 app says; a browser tab cannot) |
 | `tray.follow`, `tray.window` | `client`; `id`, `client` | Follow chosen from a person's notification-area icon (`client` null when ended); one of their windows chosen there |
 | `sync.input` | `id`, `n`, `events`, `done` | this person's mouse stroke into a session object's window, or part of one, sent to the session |

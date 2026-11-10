@@ -5661,6 +5661,19 @@ function emit(type, data = {}) {
   for (const k of [type, type.split('.')[0], '*']) for (const fn of listeners.get(k) || []) { try { fn(ev); } catch (e) { console.error(e); } }
   if (typeof window.__w95event === 'function') { try { window.__w95event(JSON.stringify(ev)); } catch (_) { /* client gone */ } }
 }
+// The system failing: a console error or an uncaught exception of the page's, a worker's error (its console.error), a
+// fault a machine reports (braid.fault). Each is the event 'system.fail' ({ kind, text }), and every wait of the API
+// (next, an element's lookup) ends on it, rejecting with it: a script waiting for a window does not sit on a
+// system that has gone wrong
+let lastFail = null;
+const systemFail = (kind, text) => { lastFail = { kind, text: String(text).slice(0, 600), at: performance.now() }; emit('system.fail', { kind, text: lastFail.text }); };
+{
+  const ce = console.error.bind(console); let inside = false;
+  console.error = (...a) => { ce(...a); if (inside) return; inside = true; try { systemFail('console', a.map(x => (x && x.stack) || (typeof x === 'object' ? (() => { try { return JSON.stringify(x); } catch (_) { return String(x); } })() : String(x))).join(' ')); } finally { inside = false; } };
+  window.addEventListener('error', e => systemFail('exception', (e.error && e.error.stack) || e.message));
+  window.addEventListener('unhandledrejection', e => systemFail('rejection', (e.reason && e.reason.stack) || e.reason));
+}
+const failText = e => `${e.kind}: ${e.text || (e.fault && (e.fault.why || e.fault.module)) || ''}`;
 function snapshot() {
   return {
     wins: new Map(windows.map(w => [w, { title: w.title, min: !!w.min, max: !!w.max }])),
@@ -6125,6 +6138,7 @@ async function resolveEl(q, ms = 5000) {
   for (;;) {
     all = await elementsNow(); e = findEl(q, all);
     if (e) return e;
+    if (typeof lastFail !== 'undefined' && lastFail && lastFail.at >= t0) throw new Error(`no element matches ${qText(q)}: the system failed, ${failText(lastFail)}`);
     if (performance.now() - t0 >= ms) break;
     await new Promise(r => setTimeout(r, 50));
   }
@@ -6194,6 +6208,16 @@ const script = {
   async elementsNow(q) { return filterEls(await elementsNow(), q); },
   find: q => findEl(q),
   windows() { return windows.map(winInfo); },
+  // what is on the screen and what went wrong, in one call (SCRIPTING.md, Reading the screen): the screen, each window
+  // with its controls' text as its machine has them now, the line's last n faults and the fault log's last entry
+  async report(n = 3) {
+    const els = await elementsNow(), hx = v => (typeof v === 'number' ? (v >>> 0).toString(16) : v);
+    const wins = windows.map(winInfo).map(w => ({ ...w, text: els.filter(e => e.window === w.title && e.name).map(e => `${e.role}: ${e.name}`) }));
+    const evs = braid ? braid.faultEvents() : [];
+    const faults = evs.slice(-n).map(e => { const f = e.fault || {}; return { why: f.why, program: f.program, module: f.module, eip: hx(f.eip), cr2: hx(f.cr2), gen: e.gen, machine: e.machine }; });
+    const log = evs.length && evs[evs.length - 1].faults, l = Array.isArray(log) && log[log.length - 1];
+    return { screen, windows: wins, faults, last: l ? { why: l.why, at: l.at || l.atIn, stack: (l.stack || []).slice(0, 8) } : null };
+  },
   // the machines' log (win32.js log): the emulator's messages, programs' OutputDebugString, KERNEL's LogError, each
   // { n, t, level, tag, text, machine }, since line n; the same lines are in DevTools' console at their level and in
   // the Debug Monitor (Programs > Accessories > System Tools)
@@ -6240,12 +6264,17 @@ const script = {
   // the shell's speed meter over the screen (drawShellOverlays), on or off
   speedMeter(on = true) { return speedMeter(on); },
   on(type, fn) { if (!listeners.has(type)) listeners.set(type, new Set()); listeners.get(type).add(fn); return () => listeners.get(type).delete(fn); },
-  // resolves with the next event of this type that passes the test, or rejects after the timeout
+  // resolves with the next event of this type that passes the test; rejects at once when the system fails meanwhile
+  // (system.fail, braid.fault: what failed), else after the timeout
   next(type, test, ms = 10000) {
     test = test || (() => true);   // (no test, or null: any event of the type)
     return new Promise((ok, no) => {
-      const off = script.on(type, e => { if (test(e)) { off(); clearTimeout(t); ok(e); } });
-      const t = setTimeout(() => { off(); no(new Error(`no ${type} within ${ms} ms`)); }, ms);
+      const end = () => { off(); offFail(); offFault(); clearTimeout(t); };
+      const off = script.on(type, e => { if (test(e)) { end(); ok(e); } });
+      const fail = e => { end(); no(new Error(`${type} not reached: ${failText(e.type === 'braid.fault' ? { kind: 'fault', ...e } : e)}`)); };
+      const offFail = type === 'system.fail' ? () => {} : script.on('system.fail', fail);
+      const offFault = type === 'braid.fault' ? () => {} : script.on('braid.fault', fail);
+      const t = setTimeout(() => { end(); no(new Error(`no ${type} within ${ms} ms`)); }, ms);
     });
   },
 };

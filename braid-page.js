@@ -316,6 +316,8 @@ window.W95BraidPage = function (ui) {
      *  anchor), every moment (with the lint's verdict), the segments between moments with how many actions each, the
      *  faults written to it, and the journal since the last moment */
     get line() { return line.describe(); },
+    /** the faults the machines reported, as the line holds them (win95.report) */
+    faultEvents() { return line.events.slice(); },
     /** the journal: every action made through the API since the last moment, stamped with the machine's clock, and
      *  the segments closed between moments (each pair of moments with the actions between them) */
     get journal() { return { from: line.j.from, actions: line.j.actions.slice(), segments: line.segments.map(s => ({ ...s, actions: s.actions.slice() })) }; },
