@@ -1444,13 +1444,16 @@ P.neCompile = function (rec, again = false) {
  *  their lengths and hashes, for translating it again) */
 P.neSet = function (rec, mod, seed) {
   const meta = rec.meta, { blocks } = seed;
-  const inst = new WebAssembly.Instance(mod, { env: { ...this.imports.env, ...dynEnv(this), lookup: new WebAssembly.Global({ value: 'i32', mutable: false }, meta.lookup | 0) }, cpu: this.cpu });
+  const env = { ...this.imports.env, ...dynEnv(this), lookup: new WebAssembly.Global({ value: 'i32', mutable: false }, meta.lookup | 0) };
+  // A module named for the debugger runs as JavaScript made from the same wasm (dynjs.js).
+  const label = rec.name === 'EXE' ? meta.path || meta.name || 'EXE' : rec.name, J = self.W95DynJs;
+  const run = J && seed.wasm && J.wants(label) ? J.make(seed.wasm, label, blocks, env, this.cpu, this.mem).run : new WebAssembly.Instance(mod, { env, cpu: this.cpu }).exports.run;
   const look = new Uint32Array(this.mem.buffer, meta.lookup, meta.textHi - meta.textLo);
   look.fill(0); blocks.forEach((a, i) => { look[a - meta.textLo] = i + 1; });
   // (a hooked address is the host's to enter, as run-time code leaves it: no block there, its call comes to the
   // dispatcher's hook; win32.js setEntryHook clears one hooked later)
   for (const a of this.entryHooks ? this.entryHooks.keys() : []) if (a >= meta.textLo && a < meta.textHi) look[a - meta.textLo] = 0;
-  meta.blocks = blocks; rec.module = mod; rec.run = inst.exports.run;
+  meta.blocks = blocks; rec.module = mod; rec.run = run;
   rec.netSeed = seed;   // (its blocks taken back from its module when it is translated again: translateNE)
   if (rec.dynNew) rec.dynNew.clear(); rec.dynSeen = 0;
   if (this.dynFast) this.dynFast.clear();   // (an address with a block of the module's now goes to it, not to its region)

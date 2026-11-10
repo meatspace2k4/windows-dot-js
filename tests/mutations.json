@@ -165,6 +165,15 @@
       "killedBy": ["node tests/duphandle.test.mjs"], "case": null },
     { "id": "mprexe-once", "file": "worker.js", "fix": "MPREXE is MPR's to start; the host's second one took MPR's shared server record and GRPCONV waited for good",
       "from": "      this.blankPasswordList();\n", "to": "      this.blankPasswordList(); this.spawnProgram('C:\\\\WINDOWS\\\\SYSTEM\\\\MPREXE.EXE', '');\n",
-      "killedBy": ["node tests/mprexeonce.test.mjs"], "case": null }
+      "killedBy": ["node tests/mprexeonce.test.mjs"], "case": null },
+    { "id": "syslevel-enter", "file": "ne16.js", "fix": "KERNEL32 #97 takes the Win16Lock; lowering the level there left GDI32's flat code without it",
+      "from": "K('#97', 1, function () { this.sysLevel = (this.sysLevel || 0) + 1;", "to": "K('#97', 1, function () { this.sysLevel = (this.sysLevel || 0) - 1;",
+      "killedBy": ["node tests/syslevel.test.mjs"], "case": null },
+    { "id": "thunk-lock", "file": "ne16.js", "fix": "a thunk into 16-bit code keeps the Win16Lock until it returns; the tray drew another thread's icon for the Task Scheduler's",
+      "from": "  this.sysLevel = (this.sysLevel || 0) + 1;\n  const sel = target >>> 16, off = target & 0xffff;", "to": "  const sel = target >>> 16, off = target & 0xffff;",
+      "killedBy": ["node tests/syslevel.test.mjs"], "case": null },
+    { "id": "dynjs-named", "file": "dyn.js", "fix": "a module named for the debugger runs as JavaScript made from its wasm",
+      "from": "J && seed.wasm && J.wants(label) ? ", "to": "false ? ",
+      "killedBy": ["node tests/dynjs.test.mjs"], "case": null }
   ]
 }
