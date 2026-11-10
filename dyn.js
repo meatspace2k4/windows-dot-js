@@ -1299,7 +1299,7 @@ function rangeSum(u8, a, n) { let h = 0x811c9dc5; for (let i = 0; i < n; i++) { 
  *  order), its bytes as they lie now (the memo's hash said they are as translated). Where it goes on to is not kept:
  *  every kept block is walked from (translateNE) */
 function seedBlocks(u8, seed) {
-  const kept = new Map(); if (!seed || !seed.lens || !seed.sums) return kept;
+  const kept = new Map(); if (!seed || !seed.lens || !seed.sums || !seed.wasm) return kept;
   const w = seed.wasm; let p = 8;
   const rd = () => { let v = 0, s = 0, b; do { b = w[p++]; v |= (b & 0x7f) << s; s += 7; } while (b & 0x80); return v >>> 0; };
   while (p < w.length) { const id = w[p++], n = rd(); if (id !== 10) { p += n; continue; } break; }
@@ -1364,9 +1364,11 @@ const memoWasm = sha => memoDb().then(db => new Promise((ok, no) => {
 // a budget of bytes, one after another: a module's bytes take seconds to read and compile (MSHTML's are 60 MB), and
 // begun only as its DLL loaded, the first folder window ran MSHTML, URLMON, JSCRIPT and OLEAUT32 as run-time code for
 // 12 to 26 seconds and stood empty meanwhile. neCompile takes a module being warmed, or warmed, as its read.
-const warm = new Map();   // sha -> Promise<{ mod, wasm } | null>
+// (a module compiled keeps no bytes of its own beside the engine's: { mod, bytes }, its length)
+const warm = new Map(), asked = new Set();   // sha -> Promise<{ mod, bytes } | null>; asked: those a load has read
 const WARM_BYTES = 200 << 20, WARM_AGE = 14 * 86400e3;
-const memoModule = sha => warm.get(sha) || memoWasm(sha).then(wasm => (wasm ? WebAssembly.compile(wasm).then(mod => ({ mod, wasm })) : null));
+const memoCompile = sha => memoWasm(sha).then(wasm => (wasm ? WebAssembly.compile(wasm).then(mod => ({ mod, bytes: wasm.length })) : null));
+const memoModule = sha => { asked.add(sha); const w = warm.get(sha); warm.delete(sha); return w || memoCompile(sha); };
 const memoUsed = (had, bytes) => {
   const day = Math.floor(Date.now() / 86400e3); if (!had || (had.usedDay === day && had.bytes === bytes)) return;
   had.usedDay = day; had.used = Date.now(); had.bytes = bytes;
@@ -1379,9 +1381,9 @@ const memoWarm = async () => {
   const now = Date.now(), list = [...memo.values()].filter(r => r && r.used && r.bytes && now - r.used < WARM_AGE && r.build === NET_BUILD).sort((a, b) => b.bytes - a.bytes);
   let left = WARM_BYTES, n = 0;
   for (const r of list) {
-    if (r.bytes > left || warm.has(r.sha)) continue;
+    if (r.bytes > left || warm.has(r.sha) || asked.has(r.sha)) continue;
     left -= r.bytes; n++;
-    const p = memoWasm(r.sha).then(wasm => (wasm ? WebAssembly.compile(wasm).then(mod => ({ mod, wasm })) : null)).catch(() => null);
+    const p = memoCompile(r.sha).catch(() => null);
     warm.set(r.sha, p); await p;   // (one at a time: each is tens of megabytes read and compiled)
   }
   return n;
@@ -1438,12 +1440,12 @@ P.neCompile = function (rec, again = false) {
     // records by their place, and a read MSIDLE's load began answered on the record that was SHDOCVW's by then, which
     // got MSIDLE's module, its own code run-time code, the Channel Bar's control black)
     const sha = rec.sha256, mine = () => rec.sha256 === sha && rec.netText && !rec.netReady;
-    memoModule(sha).then(m => { warm.delete(sha); if (mine()) rec.netReady = m ? { mod: m.mod, wasm: m.wasm, had, t0 } : { had: null }; })
+    memoModule(sha).then(m => { if (mine()) rec.netReady = m ? { mod: m.mod, bytes: m.bytes, had, t0 } : { had: null }; })
       .catch(e => { console.warn(`[dyn] ${label}: the memo's module could not be read:`, e && e.message); if (mine()) rec.netReady = { had: null }; });
     return rec;
   }
-  let wasm, blocks, lens, sums;
-  if (same) ({ wasm, blocks, lens, sums } = had);
+  let wasm, blocks, lens, sums, made;
+  if (same) ({ wasm, blocks, lens, sums, made } = had);
   else {
     ({ wasm, blocks, lens, sums } = this.translateNE(rec));
     // (a module the engine cannot compile, past its 1 GiB: named, with its largest blocks, and its code left run-time
@@ -1455,11 +1457,12 @@ P.neCompile = function (rec, again = false) {
     }
     // (and the image's span, the place a loader asks for and the allocators keep clear: win32.js loadDll, memoSpans)
     const imageLo = rec.kind === 'ne' || !meta.size ? meta.textLo : meta.base, imageHi = rec.kind === 'ne' || !meta.size ? meta.textHi : meta.base + meta.size;
+    made = Date.now();
     memoPut({ sha: rec.sha256, name: rec.name, file: rec.path || meta.path || null, codeBase: Math.min(...code.map(g => g.base)), sels, lookup: meta.lookup, textLo: meta.textLo, textHi: meta.textHi, imageLo, imageHi,
-      codeHash: blocksHash(this.u8, blocks, lens), build: NET_BUILD, entries: [...(rec.dynEntries || [])], blocks, lens, sums, wasm, made: Date.now() });
+      codeHash: blocksHash(this.u8, blocks, lens), build: NET_BUILD, entries: [...(rec.dynEntries || [])], blocks, lens, sums, wasm, made });
   }
   const t1 = performance.now();
-  this.neSet(rec, new WebAssembly.Module(wasm), { wasm, blocks, lens, sums });
+  this.neSet(rec, new WebAssembly.Module(wasm), { wasm, blocks, lens, sums, made });
   const t2 = performance.now();
   // (a memo not used says why: placed elsewhere (its room taken), or the same place with other bytes (an import's
   // target or a thunk's number not what it was))
@@ -1482,7 +1485,11 @@ P.neSet = function (rec, mod, seed) {
   // dispatcher's hook; win32.js setEntryHook clears one hooked later)
   for (const a of this.entryHooks ? this.entryHooks.keys() : []) if (a >= meta.textLo && a < meta.textHi) look[a - meta.textLo] = 0;
   meta.blocks = blocks; rec.module = mod; rec.run = run;
-  rec.netSeed = seed;   // (its blocks taken back from its module when it is translated again: translateNE)
+  // (its blocks taken back from its module when it is translated again: translateNE. The module's bytes are the memo's
+  // to keep, read back for that (neRebuild): kept here too, every module's bytes stood beside the engine's own copy,
+  // 270 MB of a start's 2.4 GB, MSHTML's 57 among them)
+  if (seed.wasm && seed.made && !rec.dynJs && typeof indexedDB !== 'undefined') seed = { ...seed, wasm: null, bytes: seed.wasm.length };
+  rec.netSeed = seed;
   if (rec.dynNew) rec.dynNew.clear(); rec.dynSeen = 0;
   if (this.dynFast) this.dynFast.clear();   // (an address with a block of the module's now goes to it, not to its region)
 };
@@ -1492,13 +1499,13 @@ P.neInstall = function () {
   if (this.depth) return false;
   for (const m of this.modules || []) {
     if (!m || !m.netText || !m.netReady || m.hidden) continue;
-    const { mod, wasm, had, t0 } = m.netReady, meta = m.meta; [meta.textLo, meta.textHi] = m.netText; m.netText = null; m.netReady = null;
+    const { mod, bytes, had, t0 } = m.netReady, meta = m.meta; [meta.textLo, meta.textHi] = m.netText; m.netText = null; m.netReady = null;
     const label = m.name === 'EXE' ? meta.path || meta.name || 'EXE' : m.name;
     // (another file's memo, or another text: translated now, as one not in the memo)
     if (!had || had.sha !== m.sha256 || had.textLo !== meta.textLo || had.textHi !== meta.textHi || had.codeHash !== blocksHash(this.u8, had.blocks, had.lens)) { this.neCompile(m, true); return true; }
-    this.neSet(m, mod, { wasm, blocks: had.blocks, lens: had.lens, sums: had.sums });
-    memoUsed(had, wasm.length);
-    window.W95Win32.log('debug', 'dyn', `${label}: ${had.blocks.length} blocks from the memo (${wasm.length} bytes, put in place ${Math.round(performance.now() - t0)} ms after its load)`);
+    this.neSet(m, mod, { wasm: null, bytes, blocks: had.blocks, lens: had.lens, sums: had.sums, made: had.made });
+    memoUsed(had, bytes);
+    window.W95Win32.log('debug', 'dyn', `${label}: ${had.blocks.length} blocks from the memo (${bytes} bytes, put in place ${Math.round(performance.now() - t0)} ms after its load)`);
     return true;
   }
   return false;
@@ -1517,6 +1524,17 @@ P.dynRelease = function (m) {
   if (this.dynFast) this.dynFast.clear();
   return true;
 };
+/** a translated module's bytes read back from the memo into its seed (neSet keeps none): the memo's still where its
+ *  record is the one this translation made and the bytes are of its length; a promise of whether the seed has them.
+ *  One that is not the memo's any more is left without, and translated whole when it is translated again */
+P.seedWasm = function (m) {
+  const s = m.netSeed; if (!s || s.wasm) return Promise.resolve(!!s);
+  if (!s.made) return Promise.resolve(false);
+  if (m.seedRead) return m.seedRead;
+  const sha = m.sha256, ours = w => { const r = memo.get(sha); return w && r && r.made === s.made && w.length === s.bytes; };
+  return (m.seedRead = memoWasm(sha).then(w => { if (ours(w)) s.wasm = w; else s.made = 0; }, () => { s.made = 0; })
+    .then(() => { m.seedRead = null; return !!s.wasm; }));
+};
 /** at an idle step of the machine (worker.js step: no thread in a call the host made, no wasm frame live): one module
  *  whose run found blocks of its own (noteEntry's dynNew), and found no more since the last idle step, translated
  *  again with them; true when one was. (Found still finding, it waits: a start meets its holes by the hundred) */
@@ -1526,6 +1544,9 @@ P.neRebuild = function () {
   for (const m of this.modules || []) {
     if (!m || !m.meta || !m.meta.dynamic || !m.meta.lookup || m.hidden || m.netText || m.netTooBig || !m.dynNew || !m.dynNew.size) continue;
     if (m.dynSeen !== m.dynNew.size) { m.dynSeen = m.dynNew.size; continue; }
+    // (its blocks' bytes read back from the memo first, the module's as the memo has it still (the record made with
+    // this translation, of its length); else every block is translated again)
+    if (m.netSeed && !m.netSeed.wasm && m.netSeed.made) { this.seedWasm(m); continue; }
     this.neCompile(m, true); return true;
   }
   return false;

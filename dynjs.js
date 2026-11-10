@@ -210,7 +210,8 @@ const expr = s => { if (!s) return null; try { return new Function('R', 'r8', 'r
 const addrOf = v => (typeof v === 'string' ? parseInt(v, 16) : v) >>> 0;
 const labelOf = m => (m.name === 'EXE' ? m.meta.path || m.meta.name || 'EXE' : m.name);
 const shortOf = m => String(labelOf(m)).split(/[\\/]/).pop().replace(/\.\w+$/, '').toUpperCase();
-const translated = p => (p.modules || []).filter(m => m && m.meta && m.meta.lookup && m.netSeed && m.netSeed.wasm && m.run && !m.netText);
+// (a module's wasm is the memo's to keep (dyn.js neSet): read back, p.seedWasm, where the debugger needs it)
+const translated = p => (p.modules || []).filter(m => m && m.meta && m.meta.lookup && m.netSeed && m.run && !m.netText);
 /** The debugger's methods, each called with the machine's process first. The page's win95.debug calls them through
  *  the worker's cmd 'debug' ([method, ...arguments]); addresses are numbers or hex strings. */
 const D = {
@@ -220,6 +221,8 @@ const D = {
    *  Returns the names now running as JavaScript. */
   run(p, names = []) {
     api.names.clear(); for (const n of names) if (n) api.names.add(String(n).toUpperCase().replace(/\.\w+$/, ''));
+    const need = translated(p).filter(m => !m.netSeed.wasm && m.netSeed.made && api.wants(labelOf(m)));
+    if (need.length) return Promise.all(need.map(m => p.seedWasm(m))).then(() => D.run(p, names));
     for (const m of translated(p)) { const want = api.wants(labelOf(m)); if (want === !!m.dynJs || m.hidden) continue; m.dynJs = want; p.neSet(m, m.module, m.netSeed); }
     return translated(p).filter(m => m.dynJs).map(shortOf);
   },
@@ -245,6 +248,7 @@ const D = {
    *  JavaScript): { module, block, text }, or null where no translated block holds it. */
   source(p, addr) {
     const a = resolve(p, addr), m = translated(p).find(x => a >= x.meta.textLo && a < x.meta.textHi); if (!m) return null;
+    if (!m.netSeed.wasm) return p.seedWasm(m).then(ok => (ok ? D.source(p, addr) : null));
     const bl = m.netSeed.blocks; let block = -1; for (const b of bl) if (b <= a && b > block) block = b; if (block < 0) return null;
     const key = String(labelOf(m)).toUpperCase(); if (!made.has(key)) made.set(key, source(m.netSeed.wasm, labelOf(m), bl));
     const s = made.get(key), i = s.indexOf(`\nfunction b_${hex(block)}(`); if (i < 0) return null;
