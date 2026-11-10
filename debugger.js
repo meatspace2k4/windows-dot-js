@@ -179,8 +179,8 @@
     if (msg === WM.TIMER) { guard(() => poll(p)); return done(); }
     if (msg === WM.SIZE) { if (st.cmd) layout(p, lp & 0xffff, lp >>> 16); return done(); }
     if (msg === WM.SETFOCUS) { if (st.cmd) U(p, 'SetFocus', [st.cmd]); return done(); }
-    // (the read-only panes in the system's window colours, as its editable ones are: an edit that cannot be typed in
-    // takes the button face otherwise. The colours are Windows' own, Display Properties > Appearance)
+    // (the read-only panes in the system's window colors, as its editable ones are: an edit that cannot be typed in
+    // takes the button face otherwise. The colors are Windows' own, Display Properties > Appearance)
     if (msg === WM.CTLCOLORSTATIC && (lp === st.code || lp === st.regs || lp === st.out)) {
       G(p, 'SetBkColor', [wp, U(p, 'GetSysColor', [5])]); G(p, 'SetTextColor', [wp, U(p, 'GetSysColor', [8])]); return done(U(p, 'GetSysColorBrush', [5]));   // COLOR_WINDOW, COLOR_WINDOWTEXT
     }
