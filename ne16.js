@@ -4315,8 +4315,18 @@ def16('KERNEL', 60, 'wxx', 'w', function (h, name, type) {     // FindResource
   if (h32) {
     // (the handle's own module, read in its own image: MSTASK's handle in Explorer's process is MSTASK, not Explorer at
     // the same base, whose icon the tray showed for the Task Scheduler's)
+    const kn = resKey.call(this, name), kt = resKey.call(this, type);
+    // (a handle made for a base with no module of its own, as a moment taken before hinst16 kept each program's own
+    // holds it, Explorer's for MSTASK's 1000000h: the program at that base whose resource it is, and the handle its own
+    // from then on)
+    if (!this.mod16(h) && u32(this.moduleFor(h32).base) !== u32(h32)) {
+      for (const pc of (this.procs || new Map()).values()) {
+        const m = pc && pc.exitCode === null && pc.exe && u32(pc.exe.base) === u32(h32) ? pc.exe : null;
+        if (m && res32(this, m, kn, kt)) { (this.mod16of || (this.mod16of = new Map())).set(h & 0xfffe, m); break; }
+      }
+    }
     const mod = this.mod16(h) || this.moduleFor(h32);
-    const kn = resKey.call(this, name), kt = resKey.call(this, type), data = res32(this, this.mod16(h) || h32, kn, kt); if (!data) return 0;
+    const data = res32(this, this.mod16(h) || h32, kn, kt); if (!data) return 0;
     // (keyed by the module, not its base: every program linked at 400000h has that base, and the first one's icon 2
     // was every later one's. RUNONCE's "Windows is now setting up" animation (icons 2 to 5) showed another program's
     // icon, the Windows logo, as one of its frames)

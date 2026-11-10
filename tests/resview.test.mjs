@@ -37,6 +37,21 @@ const { Process, API } = window.W95Win32, P = Process.prototype;
   const hx = P.hinst16.call(p, 0x1000000, explorer), hc = P.hinst16.call(p, 0x1000000, c);
   assert.notEqual(hx, hc, 'the program its own'); assert.equal(P.mod16.call(p, hc), c); assert.equal(P.mod16.call(p, hx), null);
 }
+// FindResource (KERNEL.60) with a handle of no module, as a moment taken before kept one (Explorer's for MSTASK's
+// 1000000h): the program at that base whose resource it is, its own handle from then on; never Explorer's
+{
+  const { K16 } = window.W95NE16, find = K16['KERNEL.#60'][2];
+  const explorer = { name: 'EXE', base: 0x400000 }, ddhelp = { name: 'EXE', base: 0x1000000 }, mstask = { name: 'EXE', base: 0x1000000 };
+  const mem = new Uint8Array(0x1000); let next = 0x800;
+  const p = { u8: mem, procs: new Map([[1, { exe: ddhelp, exitCode: null }], [2, { exe: mstask, exitCode: null }], [3, { exe: explorer, exitCode: null }]]),
+    mod16of: new Map(), hinst32: h => (h === 0x1237 ? 0x1000000 : 0), mod16: P.mod16, moduleFor: () => explorer, readA: x => x, resName: x => x,
+    findResource: (type, id, m) => (m === mstask && id === 403 ? { addr: 0x10, size: 4 } : m === explorer && id === 403 ? { addr: 0x20, size: 4 } : null), resKey: x => x };
+  mem.set([1, 2, 3, 4], 0x10); mem.set([9, 9, 9, 9], 0x20);
+  p.resHandles = []; p.resIx = new Map();
+  const r = find.call(p, 0x1237, 403, 14);
+  assert.ok(r, 'found'); assert.deepEqual([...p.resHandles[r / 4 - 1].data], [1, 2, 3, 4], 'MSTASK\'s, not Explorer\'s');
+  assert.equal(P.mod16.call(p, 0x1237), mstask, 'the handle MSTASK\'s from then on');
+}
 // FindResourceA of a program whose image is put by: a copy, made while its image was in place, kept for the next ask
 {
   const mod = { base: 0x400000, hidden: true }, mem = new Uint8Array(0x1000);
