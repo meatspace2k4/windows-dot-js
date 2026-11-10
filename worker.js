@@ -152,7 +152,7 @@ self.W95AudioSink = (proc, rate, L, R, n) => {
 const NATIVE = { exec: null };
 class Machine {
   constructor(o) {
-    Object.assign(this, o); this.keyq = []; this.mouseq = []; this.mods = {}; this.ax = -1; this.ay = -1; this.cursorOn = false; this.mouse = { x: -100, y: -100 };
+    Object.assign(this, o); this.keyq = []; this.mouseq = []; this.keyMods = {}; this.ax = -1; this.ay = -1; this.cursorOn = false; this.mouse = { x: -100, y: -100 };
     this.ring = o.ring; this.pending = new Map(); this.alive = true; this.savers = new Map();
     // the machine's own clock (host.now, Process.now: the VxDs' time-outs, USER's timers, the ticks programs read):
     // not the wall's. It moves by a quantum per BUDGET blocks the processor runs (win32.js tick) and by a step's
@@ -259,7 +259,7 @@ class Machine {
       if (typeof rec.run === 'function' && !isExe) continue;
       let mod = rec.module instanceof WebAssembly.Module ? rec.module : null;
       if (!mod && rec.kind === 'vxd') { const d = (S.vxds || {})[rec.file]; if (d) mod = d.mod || (d.wasm && (d.mod = new WebAssembly.Module(b64bytes(d.wasm)))); }   // (a VxD the moment had loaded and this machine had not, SPOOLER: its module is made only as vmm.js vxd loads it)
-      else if (!mod && rec.kind === 'ne') mod = ((S.ne || {})[rec.name] || Object.values(S.ne || {}).find(d => d.meta === rec.meta) || {}).mod;
+      else if (!mod && rec.kind === 'ne') { const d = (S.ne || {})[rec.name] || Object.values(S.ne || {}).find(x => x.meta === rec.meta); if (d) mod = d.mod || (d.wasm && (d.mod = new WebAssembly.Module(b64bytes(d.wasm)))); }
       else if (!mod && isExe) { const progs = S.programs || {}, d = (rec.meta.sha256 && Object.values(progs).find(x => x.meta && x.meta.sha256 === rec.meta.sha256)) || progs[rec.meta.name + '.EXE']; if (d) mod = d.mod || d.modSync || (d.modSync = new WebAssembly.Module(b64bytes(d.wasm))); }
       else if (!mod) {
         const d = p.dlls && p.dlls.get(rec.name); if (d && d.module instanceof WebAssembly.Module) mod = d.module;
@@ -294,8 +294,20 @@ class Machine {
   }
   async start() {
     const S = self.W95SYSTEM;
-    await Promise.all([...Object.values(S.ne), ...Object.values(S.dlls), ...Object.values(S.net || {})].map(async m => { if (!m.mod) m.mod = await WebAssembly.compile(b64bytes(m.wasm)); })
+    // The bundle's modules compiled ahead of their first use: those this disk runs, the ones whose file in the Windows
+    // folder is the bundle's own (its SHA-256) or is not there. A module the disk has another build of (Windows 98's
+    // over Windows 95's) runs from its file (dyn.js) and the bundle's is not compiled at all: compiled regardless, the
+    // 76 of them were machine code held beside Windows 98's own translations, a tab of 3 GB. One used after all is
+    // compiled where it is first asked for (the tables' `module`).
+    const ours = (d, file) => {
+      for (const dir of ['C:\\WINDOWS\\SYSTEM\\', 'C:\\WINDOWS\\']) { let b; try { b = fs.readFile(dir + file); } catch (_) { continue; } return !d.meta.sha256 || sha256(b) === d.meta.sha256; }
+      return true;
+    };
+    const ahead = [...Object.entries(S.ne).map(([k, d]) => [d, d.fileName || k]), ...Object.entries(S.dlls).map(([k, d]) => [d, k]), ...Object.entries(S.net || {}).map(([k, d]) => [d, k])]
+      .filter(([d, file]) => { try { return ours(d, file); } catch (_) { return true; } }).map(([d]) => d);
+    await Promise.all(ahead.map(async m => { if (!m.mod) m.mod = await WebAssembly.compile(b64bytes(m.wasm)); })
       .concat(self.W95Dyn.memoLoad()));   // (and the translations of modules loaded from their files, memoized on this computer: dyn.js)
+    self.W95Dyn.memoWarm();   // (the memo's modules the last starts used, read and compiled from now on, ahead of their load)
     if (self.fonts && typeof FontFace === 'function') await Promise.all(Object.entries((self.W95SAVERS || {}).fonts || {}).map(async ([family, data]) => {
       try { const font = await new FontFace(family, b64bytes(data)).load(); self.fonts.add(font); } catch (_) { /* bundled font unavailable in this worker */ }
     }));
@@ -303,7 +315,9 @@ class Machine {
     if (!prog) prog = { name: 'MSGSRV32.EXE', meta: Object.values(S.programs)[0].meta, module: null };
     else prog.module = await WebAssembly.compile(b64bytes(S.programs[prog.name].wasm));
     const dlls = new Map();
-    for (const [n, d] of Object.entries(S.dlls)) { d.bytes = d.bytes || b64bytes(d.file); dlls.set(n.replace(/\.DLL$/, ''), { file: d.bytes, module: d.mod, meta: d.meta }); }
+    for (const [n, d] of Object.entries(S.dlls)) dlls.set(n.replace(/\.DLL$/, ''), {
+      get file() { return d.bytes || (d.bytes = b64bytes(d.file)); }, meta: d.meta,
+      get module() { return d.mod instanceof WebAssembly.Module ? d.mod : (d.modSync || (d.modSync = new WebAssembly.Module(b64bytes(d.wasm)))); } });
     for (const [n, d] of Object.entries(S.net || {})) dlls.set(n.replace(/\.DLL$/, ''), {
       get file() { return d.bytes || (d.bytes = b64bytes(d.file)); }, meta: d.meta,
       get module() { return d.mod instanceof WebAssembly.Module ? d.mod : (d.modSync || (d.modSync = new WebAssembly.Module(b64bytes(d.wasm)))); } });
@@ -429,10 +443,12 @@ class Machine {
   }
   queueKey(vk, sc, up, mods) {
     for (const [m, on, code] of [[16, mods.shift, 0x2a], [17, mods.ctrl, 0x1d], [18, mods.alt, 0x38]]) {
-      if (m === vk || !!this.mods[m] === !!on) continue;
-      this.mods[m] = on; this.keyq.push([m, code, !on]);
+      if (m === vk || !!this.keyMods[m] === !!on) continue;
+      this.keyMods[m] = on; this.keyq.push([m, code, !on]);
     }
-    if (vk === 16 || vk === 17 || vk === 18) this.mods[vk] = !up;
+    // (the modifiers' state in a table of its own: kept in `mods`, the list of scripts loaded over the machine, it was
+    // entries 16 to 18 of that list)
+    if (vk === 16 || vk === 17 || vk === 18) this.keyMods[vk] = !up;
     this.keyq.push([vk, sc, up]);
   }
   stopFullSavers() {

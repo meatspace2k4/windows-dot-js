@@ -419,10 +419,11 @@ class Process {
     if (!this.vmTop || !this.vmLo || b < this.vmLo || b % 0x1000) return 0;
     const n = (size + 0xfff) & ~0xfff, end = b + n, spare = this.vspare || (this.vspare = []);
     if (spans.some(([lo, hi]) => b < hi && lo < end) || end > this.mem.buffer.byteLength) return 0;
-    // (past the top only right at it: the top moved on far, to a place a run before had, took the space below it out of
-    // the top's reach)
+    // (past the top, however far: the space between stays to hand as a spare piece, which vmRoom takes from before the
+    // top. Refused when more than a megabyte past it, a DLL loaded late had its place only when the allocations before
+    // it happened to end there: MSHTML and URLMON, loaded as the first folder window opens, were translated again
+    // whole at every start, 74 MB of code, and that window took most of a minute to fill)
     if (b >= this.vmTop) {
-      if (b - this.vmTop > 0x100000) return 0;
       if (b > this.vmTop) spare.push({ base: this.vmTop, size: b - this.vmTop });
       this.vmTop = end; this.u8.fill(0, b, end); return this.vmCheck(b, n, 'the memo\'s place, from the top');
     }
@@ -2975,18 +2976,21 @@ def('KERNEL32', 'WriteConsoleA', 5, function (h, buf, n, put) { const o = conOf(
 // can use: MPR hands its waiting thread's to MPREXE, which queues the APC that ends the wait there (copied as the
 // pseudo-handle, the APC went to MPREXE's own thread, and GRPCONV's link to the Removable Disk in SendTo waited for
 // good: Windows 98's first start stopped at "Programs on the Start menu")
-// A file mapping's duplicate is a handle of its own to the mapping, and DUPLICATE_CLOSE_SOURCE (1) closes the one
-// duplicated: the shell hands a folder's ID list to Explorer as a mapping (SHLWAPI's SHAllocShared duplicates the
-// mapping's handle for Explorer and closes its own; SHLockShared maps the duplicate). Duplicated as the same handle,
-// the close took the mapping with it, Explorer got no ID list, and My Computer and Network Neighborhood opened as the
-// path "" does, the current directory: C:\.
+// A kernel object's duplicate (a file mapping, an event, a mutex, a semaphore, a thread, a process) is a handle of
+// its own to the object, and DUPLICATE_CLOSE_SOURCE (1) closes the one duplicated: the object lives until its last
+// handle is closed. The shell hands a folder's ID list to Explorer as a mapping (SHLWAPI's SHAllocShared duplicates
+// the mapping's handle for Explorer and closes its own; SHLockShared maps the duplicate). Duplicated as the same
+// handle, the close took the mapping with it, Explorer got no ID list, and My Computer and Network Neighborhood opened
+// as the path "" does, the current directory: C:\. An event duplicated that way went with its maker's CloseHandle,
+// and the thread waiting on the duplicate waited its whole time-out: a folder window empty for a minute.
+const DUP_KINDS = new Set(['mapping', 'event', 'mutex', 'semaphore', 'thread', 'process']);
 def('KERNEL32', 'DuplicateHandle', 7, function (a, h, b, out, access, inherit, opts) {
   h >>>= 0;
   const o = h < 0xfffffffe ? this.obj(h) : null;
   let r;
   if (h === 0xfffffffe) r = this.newHandle({ kind: 'thread', id: this.currentThreadId() });
   else if (h === 0xffffffff) r = this.newHandle({ kind: 'process', pid: this.pc.pid });
-  else if (o && o.kind === 'mapping') { r = this.nextHandle; this.nextHandle += 4; this.handles.set(r, o); if (opts & 1) this.handles.delete(h); }
+  else if (o && DUP_KINDS.has(o.kind)) { r = this.nextHandle; this.nextHandle += 4; this.handles.set(r, o); if (opts & 1) this.handles.delete(h); }
   else r = h;
   if (out) this.w32(out, r); return 1;
 });
@@ -3016,6 +3020,42 @@ def('KERNEL32', 'CreateThread', 6, function (attr, stack, start, param, flags, p
   const t = this.newThread(start, param, stack, true, !!(flags & 4));
   if (ptid) this.w32(ptid, t.id);
   return this.newHandle({ kind: 'thread', id: t.id });
+});
+// Fibers, as Windows 98's KERNEL32 has them (Windows 95's has none). A fiber is a record the thread's TIB names at
+// +10h, its first dword the fiber's data (GetFiberData reads it there): { data, SEH chain, stack top, stack limit,
+// ESP, EBP, EBX, ESI, EDI, where it goes on, its stack's block }. SwitchToFiber keeps the running fiber's place in
+// its record and goes on with the other's, on its stack, with its SEH chain and stack bounds in the TIB.
+// MSHTML decodes an image on a fiber: it takes KERNEL32's CreateFiber where there is one, its own stand-in for them
+// on Windows 95 alone (version 4.0), and with neither decodes nothing, so on Windows 98 (4.10) no image in a page
+// ever finished loading: a folder's Web view never got its onload (My Computer's pie chart control stayed a white
+// box) and Explorer's busy animation ran for good.
+const FIBER = { data: 0, seh: 4, top: 8, limit: 12, esp: 16, ebp: 20, ebx: 24, esi: 28, edi: 32, eip: 36, block: 40, size: 48 };
+def('KERNEL32', 'ConvertThreadToFiber', 1, function (data) {
+  const tib = this.cpu.fs.value >>> 0, f = this.alloc(FIBER.size); this.u8.fill(0, f, f + FIBER.size);
+  this.w32(f + FIBER.data, data); this.w32(tib + 0x10, f); return f;
+});
+def('KERNEL32', 'CreateFiber', 3, function (size, start, data) {
+  const n = Math.max((size + 0xfff) & ~0xfff, 0x10000), block = this.alloc(n), f = this.alloc(FIBER.size); this.u8.fill(0, f, f + FIBER.size);
+  // (its first switch arrives at its procedure as a call does: the data its argument, and a return ends the thread)
+  const sp = (block + n - 16) & ~3; this.w32(sp, this.thunkFor('KERNEL32', 'ExitThread')); this.w32(sp + 4, data);
+  for (const [k, v] of [['data', data], ['seh', 0xffffffff], ['top', block + n], ['limit', block], ['esp', sp], ['eip', start], ['block', block]]) this.w32(f + FIBER[k], v);
+  return f;
+});
+def('KERNEL32', 'DeleteFiber', 1, function (f) {
+  if (!f || this.r32((this.cpu.fs.value >>> 0) + 0x10) === f >>> 0) return 0;   // (the running fiber's own end is its thread's: ExitThread)
+  const block = this.r32(f + FIBER.block); if (block) this.free(block); this.free(f); return 0;
+});
+def('KERNEL32', 'SwitchToFiber', 'regs', function () {
+  const sp = u32(this.reg('esp')), ret = this.r32(sp), to = this.r32(sp + 4), tib = this.cpu.fs.value >>> 0, cur = this.r32(tib + 0x10);
+  if (cur) {
+    this.w32(cur + FIBER.seh, this.r32(tib)); this.w32(cur + FIBER.top, this.r32(tib + 4)); this.w32(cur + FIBER.limit, this.r32(tib + 8));
+    this.w32(cur + FIBER.esp, sp + 8); this.w32(cur + FIBER.eip, ret);
+    for (const r of ['ebp', 'ebx', 'esi', 'edi']) this.w32(cur + FIBER[r], u32(this.reg(r)));
+  }
+  this.w32(tib, this.r32(to + FIBER.seh)); this.w32(tib + 4, this.r32(to + FIBER.top)); this.w32(tib + 8, this.r32(to + FIBER.limit)); this.w32(tib + 0x10, to);
+  for (const r of ['ebp', 'ebx', 'esi', 'edi']) this.reg(r, this.r32(to + FIBER[r]));
+  this.reg('esp', this.r32(to + FIBER.esp));
+  return this.r32(to + FIBER.eip);
 });
 def('KERNEL32', 'ExitThread', 'regs', function () {
   const c = this.r32(this.reg('esp') + 4);

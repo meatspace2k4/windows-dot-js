@@ -912,7 +912,7 @@ function bootDisk() {
   // (a disk of Windows 3.1 is its own: nothing of Windows 95's Setup; MS-DOS 6.22 on it as SYS leaves it (MS-DOS 7's
   // IO.SYS halts as Windows 3.1 starts), and an AUTOEXEC.BAT with the disk's own WIN.BAT's commands, which start Windows)
   if (diskSystem() === 'win31') { sys622Disk(); win31Autoexec(); fs.chdir('C:\\'); return; }
-  installPrograms(); setupFonts(); setupRegistry(); setupDisplay(); setupSavers(); setupSound(); setupHelp(); setupNetwork(); setupPorts(); setupPrinting(); setupVxds();
+  installPrograms(); setupFonts(); setupRegistry(); setupDisplay(); setupSavers(); setupSound(); setupHelp(); setupNetwork(); setupPorts(); setupPrinting(); setupVxds(); setupWebView();
   if (host.shared) setupProfile(host.userName);
   setupStartMenu();   // (after the profile: its links go in the Programs folder the user's Shell Folders name)
   fs.chdir('C:\\');
@@ -3416,6 +3416,23 @@ function setupDisplay() {
   if (W95Win32.iniGet(fs, 'SYSTEM.INI', 'boot', '*DisplayFallback') !== null) W95Win32.iniSet(fs, 'SYSTEM.INI', 'boot', '*DisplayFallback', null);
   setupDisplayDevices(); setupFontSize(); setupPatterns(); setupWallpapers();
 }
+// The folder templates of Windows 98's Web view (C:\WINDOWS\WEB\*.HTT, which WEBVW.DLL writes as it registers), in
+// the color scheme's colors: their left panel is "white" with a white watermark (wvleft.bmp) whatever the scheme, its
+// text the scheme's window text, so a dark scheme's panel was white with pale text. The panel takes the scheme's
+// Window color instead. And My Computer's pie chart control, which paints white until a drive is selected and its
+// script hides it at the first selection: hidden from the start, as it was invisible on the white panel. Each
+// template as WEBVW wrote it is changed once; one the user has changed otherwise is left as it is.
+function setupWebView() {
+  const dir = join(WINDIR, 'WEB'); let list; try { list = fs.readdir(dir); } catch (_) { return; }
+  for (const e of list) {
+    if (!/\.htt$/i.test(e.name)) continue;
+    const p = join(dir, e.name); let t; try { t = fs.readText(p); } catch (_) { continue; }
+    let u = t.replace(/background: white URL\(file:\/\/%TEMPLATEDIR%\\wvleft\.bmp\) no-repeat/g, 'background: window');
+    if (/id="?PieChart"?/i.test(u) && !/PieChart\.style\.display = "none";\s*Info\.innerHTML = L_Prompt_Text;\s*}\s*<\/script>/.test(u))
+      u = u.replace(/(FixSize\(\);\s*)(Info\.innerHTML = L_Prompt_Text;\s*}\s*<\/script>)/, '$1PieChart.style.display = "none";\r\n\t\t\t\t$2');
+    if (u !== t) { try { const a = fs.stat(p).attrs || 0; fs.setAttrs(p, 0); fs.writeFile(p, W95FS.encode(u)); fs.setAttrs(p, a); } catch (err) { console.error('[webview]', e.name, err); } }
+  }
+}
 // the wallpapers the Background page lists: SHELL.INF's basebitmaps, each in C:\WINDOWS by the name its addreg line
 // renames it to (RenameFiles\Win: bamboo.bmp to "Straw Mat.bmp"), each one the disk lacks
 function setupWallpapers() {
@@ -4212,7 +4229,15 @@ class RemoteApp extends NativeApp {
     if (e.code === 'Backspace' && e.ctrlKey && e.altKey) sc = 0x153;   // a Mac's Delete key: Ctrl+Alt+Del
     const a = (sc & 0x1ff) | (up ? 0x200 : 0) | (toUser ? 0x400 : 0), b = (e.shiftKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.altKey ? 4 : 0);
     if (W95Bridge.ringPut(this.ring, W95Bridge.KEY, a, b, vk)) this.ringPut = (this.ringPut || 0) + 1;
+    this.modsHeld = b;   // (the modifiers the machine has down after this key: let go when the page loses the keyboard)
     this.kick();
+  }
+  /** the page has lost the keyboard (another window or tab has it): the modifiers the machine has down are let go, as
+   *  their key-ups will never come here. Alt held while switching away stayed down in Windows for good: a double-click
+   *  on My Computer was Alt+double-click, its Properties, and Enter on a folder Alt+Enter */
+  releaseMods() {
+    const b = this.modsHeld || 0; if (!b) return;
+    for (const [bit, vk, code] of [[1, 16, 'ShiftLeft'], [2, 17, 'ControlLeft'], [4, 18, 'AltLeft']]) if (b & bit) this.ringKey({ keyCode: vk, code, shiftKey: false, ctrlKey: false, altKey: false }, true, true);
   }
   // VKD's first look at a key the program does not have the focus for: Ctrl+Alt+Del, and every key in message mode
   vkd(e, up) {
@@ -5507,6 +5532,7 @@ const nativeFocus = () => (!menus.length && !ren && !modal() && screen === 'desk
 // the keyboard reaches VKD before anything: the system in message mode (a blue screen) takes every key, and a hot key
 // goes to the native system with the focus, else to one that is frozen, else to any
 const vkdApp = () => msgApp || nativeFocus() || [...nativeApps].find(a => a.alive && a.proc && a.proc.win16Held) || [...nativeApps].find(a => a.alive);
+window.addEventListener('blur', () => { for (const a of nativeApps) if (a.alive && a.releaseMods) a.releaseMods(); });
 window.addEventListener('keyup', e => { shareKey(); keyUp(e); });
 window.addEventListener('keydown', e => { shareKey(); keyDown(e); });
 function keyUp(e) { if (devtoolsKey(e)) return; const v = vkdApp(); if (v && v.vkd(e, true)) { e.preventDefault(); return; } const a = nativeFocus(); if (a) { e.preventDefault(); if (e.keyCode) a.key(e, true); } }

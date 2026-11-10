@@ -1359,7 +1359,34 @@ const memoWasm = sha => memoDb().then(db => new Promise((ok, no) => {
   const q = db.transaction(MEMO_WASM).objectStore(MEMO_WASM).get(sha);
   q.onsuccess = () => { db.close(); ok(q.result || null); }; q.onerror = () => { db.close(); no(q.error); };
 }));
-window.W95Dyn = { memo, memoLoad, memoPut, memoWasm };
+// The memo's modules a machine put in place are marked with when (memoUsed: the index record alone written again), and
+// a machine starting reads and compiles the ones used most lately ahead of their load (memoWarm), largest first up to
+// a budget of bytes, one after another: a module's bytes take seconds to read and compile (MSHTML's are 60 MB), and
+// begun only as its DLL loaded, the first folder window ran MSHTML, URLMON, JSCRIPT and OLEAUT32 as run-time code for
+// 12 to 26 seconds and stood empty meanwhile. neCompile takes a module being warmed, or warmed, as its read.
+const warm = new Map();   // sha -> Promise<{ mod, wasm } | null>
+const WARM_BYTES = 200 << 20, WARM_AGE = 14 * 86400e3;
+const memoModule = sha => warm.get(sha) || memoWasm(sha).then(wasm => (wasm ? WebAssembly.compile(wasm).then(mod => ({ mod, wasm })) : null));
+const memoUsed = (had, bytes) => {
+  const day = Math.floor(Date.now() / 86400e3); if (!had || (had.usedDay === day && had.bytes === bytes)) return;
+  had.usedDay = day; had.used = Date.now(); had.bytes = bytes;
+  if (typeof indexedDB === 'undefined') return;
+  const { wasm, ...ix } = had;
+  memoDb().then(db => { const t = db.transaction(MEMO_STORE, 'readwrite'); t.objectStore(MEMO_STORE).put(ix); t.oncomplete = () => db.close(); t.onerror = () => db.close(); }).catch(() => {});
+};
+const memoWarm = async () => {
+  if (typeof indexedDB === 'undefined') return 0;
+  const now = Date.now(), list = [...memo.values()].filter(r => r && r.used && r.bytes && now - r.used < WARM_AGE && r.build === NET_BUILD).sort((a, b) => b.bytes - a.bytes);
+  let left = WARM_BYTES, n = 0;
+  for (const r of list) {
+    if (r.bytes > left || warm.has(r.sha)) continue;
+    left -= r.bytes; n++;
+    const p = memoWasm(r.sha).then(wasm => (wasm ? WebAssembly.compile(wasm).then(mod => ({ mod, wasm })) : null)).catch(() => null);
+    warm.set(r.sha, p); await p;   // (one at a time: each is tens of megabytes read and compiled)
+  }
+  return n;
+};
+window.W95Dyn = { memo, memoLoad, memoPut, memoWasm, memoWarm, memoUsed, warm };
 /** the memo's record for a file, by its SHA-256: the placement a loader asks for before it places the module */
 /** netpatch.js's fixes for the file a module was loaded from (by its SHA-256), made in the module's code as it is
  *  loaded, once: a byte patch where the code is as the file has it (one made already left as it is, one where the code
@@ -1411,7 +1438,7 @@ P.neCompile = function (rec, again = false) {
     // records by their place, and a read MSIDLE's load began answered on the record that was SHDOCVW's by then, which
     // got MSIDLE's module, its own code run-time code, the Channel Bar's control black)
     const sha = rec.sha256, mine = () => rec.sha256 === sha && rec.netText && !rec.netReady;
-    memoWasm(sha).then(wasm => wasm ? WebAssembly.compile(wasm).then(mod => { if (mine()) rec.netReady = { mod, wasm, had, t0 }; }) : mine() && (rec.netReady = { had: null }))
+    memoModule(sha).then(m => { warm.delete(sha); if (mine()) rec.netReady = m ? { mod: m.mod, wasm: m.wasm, had, t0 } : { had: null }; })
       .catch(e => { console.warn(`[dyn] ${label}: the memo's module could not be read:`, e && e.message); if (mine()) rec.netReady = { had: null }; });
     return rec;
   }
@@ -1470,6 +1497,7 @@ P.neInstall = function () {
     // (another file's memo, or another text: translated now, as one not in the memo)
     if (!had || had.sha !== m.sha256 || had.textLo !== meta.textLo || had.textHi !== meta.textHi || had.codeHash !== blocksHash(this.u8, had.blocks, had.lens)) { this.neCompile(m, true); return true; }
     this.neSet(m, mod, { wasm, blocks: had.blocks, lens: had.lens, sums: had.sums });
+    memoUsed(had, wasm.length);
     window.W95Win32.log('debug', 'dyn', `${label}: ${had.blocks.length} blocks from the memo (${wasm.length} bytes, put in place ${Math.round(performance.now() - t0)} ms after its load)`);
     return true;
   }

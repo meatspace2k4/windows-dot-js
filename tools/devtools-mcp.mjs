@@ -52,7 +52,7 @@ const note = (s, level, text) => { s.console.push({ n: ++s.seq, level, text: Str
 /** a new target's session: named, its debugger and runtime turned on, its own workers attached as they start */
 function adopt(sessionId, info) {
   if (bySessionId.has(sessionId)) return bySessionId.get(sessionId);
-  const s = { name: `s${sessions.size + 1}`, sessionId, type: info.type, url: info.url, title: info.title, scripts: new Map(), paused: null, console: [], seq: 0, waiters: [], breakpoints: new Map() };
+  const s = { name: `s${sessions.size + 1}`, sessionId, targetId: info.targetId, type: info.type, url: info.url, title: info.title, scripts: new Map(), paused: null, console: [], seq: 0, waiters: [], breakpoints: new Map() };
   while (sessions.has(s.name)) s.name = `s${Number(s.name.slice(1)) + 1}`;
   sessions.set(s.name, s); bySessionId.set(sessionId, s);
   const on = (method, params) => send(method, params, sessionId).catch(() => {});
@@ -111,9 +111,14 @@ const tools = {
       const all = (await send('Target.getTargets')).targetInfos.filter(x => x.type === 'page');
       const t = targetId ? all.find(x => x.targetId === targetId) : all.find(x => !url || x.url.includes(url));
       if (!t) throw new Error(`no page matches (pages: ${all.map(x => x.url).join(', ') || 'none'})`);
-      const { sessionId } = await send('Target.attachToTarget', { targetId: t.targetId, flatten: true });
-      adopt(sessionId, t);
-      await new Promise(r => setTimeout(r, 800));   // its workers attach, their scripts are listed
+      // (a page attached to already is not attached to again: each attach is a debugger session of its own on the page
+      // and on every worker of it, holding their scripts; a dozen of them on a page that loads a 160 MB bundle ran its
+      // tab out of memory)
+      if (![...sessions.values()].some(s => s.targetId === t.targetId)) {
+        const { sessionId } = await send('Target.attachToTarget', { targetId: t.targetId, flatten: true });
+        adopt(sessionId, t);
+        await new Promise(r => setTimeout(r, 800));   // its workers attach, their scripts are listed
+      }
       return [...sessions.values()].map(s => ({ session: s.name, type: s.type, url: s.url, scripts: s.scripts.size }));
     } },
   scripts: { description: 'The scripts a session has loaded (url, lines). `filter` is a substring of the URL, e.g. "dyn/" for the modules run as JavaScript.',
