@@ -186,7 +186,7 @@ function source(wasm, label, blocks) {
 //   capture: optional expression; its value is kept with the hit.
 // Expressions see R (registers), r8/r16/r32 (memory), n (times this breakpoint was reached) and thread (its id).
 const HITS_MAX = 1000;
-const BP = { on: false, byAddr: new Map(), byId: new Map(), hits: [], seq: 0, nextId: 1, proc: null, onHit: null,
+const BP = { on: false, stepAll: false, byAddr: new Map(), byId: new Map(), stops: new Map(), hits: [], seq: 0, nextId: 1, proc: null, onHit: null,
   at(a, R, M) {
     const list = BP.byAddr.get(a); if (!list) return;
     const t = BP.proc && BP.proc.thread16, thread = t ? t.id : 0;
@@ -221,7 +221,7 @@ const D = {
   },
   /** Add a breakpoint: { at, when, capture }. Returns { id, at }. Its module must be running as JavaScript. */
   breakpoint(p, spec = {}) {
-    const at = addrOf(spec.at), b = { id: BP.nextId++, at, when: spec.when || null, capture: spec.capture || null, n: 0, whenFn: expr(spec.when), captureFn: expr(spec.capture) };
+    const at = resolve(p, spec.at), b = { id: BP.nextId++, at, when: spec.when || null, capture: spec.capture || null, n: 0, whenFn: expr(spec.when), captureFn: expr(spec.capture) };
     BP.byId.set(b.id, b); if (!BP.byAddr.has(at)) BP.byAddr.set(at, []); BP.byAddr.get(at).push(b); BP.on = true;
     return { id: b.id, at };
   },
@@ -229,10 +229,10 @@ const D = {
   remove(p, id) {
     const b = BP.byId.get(id); if (!b) return false;
     BP.byId.delete(id); const l = BP.byAddr.get(b.at).filter(x => x !== b); if (l.length) BP.byAddr.set(b.at, l); else BP.byAddr.delete(b.at);
-    BP.on = !!BP.byId.size; return true;
+    BP.on = !!(BP.byId.size || BP.stepAll); return true;
   },
   /** Remove every breakpoint and forget the recorded hits. */
-  clear() { BP.byId.clear(); BP.byAddr.clear(); BP.hits.length = 0; BP.on = false; return true; },
+  clear() { BP.byId.clear(); BP.byAddr.clear(); BP.hits.length = 0; BP.on = BP.stepAll; return true; },
   /** The breakpoints: [{ id, at, when, capture, n }]. */
   breakpoints: () => [...BP.byId.values()].map(({ id, at, when, capture, n }) => ({ id, at, when, capture, n })),
   /** The recorded hits with seq above `since`: [{ seq, id, at, n, thread, regs, stack, value }]. */
@@ -240,15 +240,77 @@ const D = {
   /** The JavaScript of the block holding an address, from its module's wasm (the module need not be running as
    *  JavaScript): { module, block, text }, or null where no translated block holds it. */
   source(p, addr) {
-    const a = addrOf(addr), m = translated(p).find(x => a >= x.meta.textLo && a < x.meta.textHi); if (!m) return null;
+    const a = resolve(p, addr), m = translated(p).find(x => a >= x.meta.textLo && a < x.meta.textHi); if (!m) return null;
     const bl = m.netSeed.blocks; let block = -1; for (const b of bl) if (b <= a && b > block) block = b; if (block < 0) return null;
     const key = String(labelOf(m)).toUpperCase(); if (!made.has(key)) made.set(key, source(m.netSeed.wasm, labelOf(m), bl));
     const s = made.get(key), i = s.indexOf(`\nfunction b_${hex(block)}(`); if (i < 0) return null;
     return { module: shortOf(m), block, text: s.slice(i + 1, s.indexOf('\n}\n', i) + 2) };
   },
   /** Guest memory: `n` bytes at an address (4096 at most). */
-  read: (p, addr, n = 64) => Array.from(p.u8.subarray(addrOf(addr), addrOf(addr) + Math.min(n, 4096))),
+  read: (p, addr, n = 64) => Array.from(p.u8.subarray(resolve(p, addr), resolve(p, addr) + Math.min(n, 4096))),
+
+  // ---- the Windows API
+  /** An address from a place's name: a number, hex text, 'MODULE+offset' or an API 'DLL!Export' (a 16-bit module's
+   *  export by name or '#ordinal'). Returns { addr, name } with the name as the machine tells places (whereOf). */
+  resolve: (p, place) => { const addr = resolve(p, place); return { addr, name: p.whereOf(addr) }; },
+  /** The name of an address: module+offset, with the nearest export. */
+  where: (p, addr) => p.whereOf(addrOf(addr)),
+  /** Stop in a debugger at each call of an API (any module, translated to wasm or run as JavaScript): the call comes
+   *  through w95ApiEntry(call, args, from, thread), where a debugger's breakpoint sees it. `n`: argument count read.
+   *  Returns { id, call, addr }. */
+  stopAt(p, call, n = 6) {
+    const addr = resolve(p, call), id = BP.nextId++;
+    const off = p.addEntryHook(addr, function () { const c = callOf(this, n); w95ApiEntry(call, c.args, c.from, this.thread16 ? this.thread16.id : 0); });
+    BP.stops.set(id, { id, call, addr, off }); return { id, call, addr };
+  },
+  /** End one API stop by id, or all of them. */
+  unstop(p, id) { const ids = id == null ? [...BP.stops.keys()] : [id]; for (const i of ids) { const s = BP.stops.get(i); if (s) { s.off(); BP.stops.delete(i); } } return ids; },
+  stops: () => [...BP.stops.values()].map(({ id, call, addr }) => ({ id, call, addr })),
+  /** Trace API calls without stopping (the worker's watch): `dll`, `name` (an export, or '/regexp/' over the DLL's
+   *  exports), `n` arguments. calls() returns and clears the calls traced: [{ t, name, args, text, from, stack, eax }]. */
+  watch: (p, dll, name, n = 6) => BP.host.cmd('watch', [dll, name, n]),
+  unwatch: (p, dll) => BP.host.cmd('watch', [dll]),
+  calls: () => BP.host.cmd('watch', []),
+  /** The processor and the running thread as they are now: registers, flags, the stack's first `n` dwords with each
+   *  one's place when it is code, the thread and its program. */
+  state(p, n = 24) {
+    const c = p.cpu, reg = k => c[k].value >>> 0, regs = {};
+    for (const k of ['eax', 'ebx', 'ecx', 'edx', 'esi', 'edi', 'ebp', 'esp', 'eip', 'cs', 'ds', 'es', 'ss', 'fs']) regs[k] = hex(reg(k));
+    const seg = reg('ss') & 0xfff8, sp = seg ? (reg('ssb') + (reg('esp') & 0xffff)) >>> 0 : reg('esp'), stack = [];
+    for (let i = 0; i < n && sp + 4 * i + 4 <= p.u8.length; i++) { const v = p.r32(sp + 4 * i) >>> 0, w = p.whereOf(v); stack.push(`+${hex(4 * i)}  ${hex(v)}${/\+/.test(w) ? '  ' + w : ''}`); }
+    const t = p.thread16;
+    return { at: p.whereOf(reg('eip')), regs, flags: ['cf', 'zf', 'sf', 'of', 'df', 'pf'].filter(k => reg(k)).join(' '), stack16: !!seg, stack,
+      thread: t ? t.id : 0, program: t && t.pc ? t.pc.path : null, sysLevel: p.sysLevel || 0, win16Lock: p.win16Held ? (p.win16Held.who && p.win16Held.who.id) || String(p.win16Held.who) : null };
+  },
 };
+/** An API call's arguments and caller, read at its entry: 32-bit (dwords above the return address) or 16-bit (words). */
+function callOf(p, n) {
+  const seg = !!(p.cpu.ss.value & 0xffff), sp = seg ? (p.cpu.ssb.value >>> 0) + (p.cpu.esp.value & 0xffff) : p.cpu.esp.value >>> 0, args = [];
+  if (seg) for (let i = 0; i < n; i++) args.push(p.r16(sp + 4 + 2 * i)); else for (let i = 1; i <= n; i++) args.push(p.r32(sp + 4 * i) >>> 0);
+  const ret = seg ? (p.selBase(p.r16(sp + 2)) + p.r16(sp)) >>> 0 : p.r32(sp) >>> 0;
+  return { args, from: p.whereOf(ret) };
+}
+/** Every API call a stopAt names comes through here: a debugger breaks on the return line to stop at those calls. */
+function w95ApiEntry(call, args, from, thread) {
+  return call;
+}
+function resolve(p, place) {
+  if (typeof place === 'number') return place >>> 0;
+  const s = String(place).trim();
+  let m = /^([\w.]+)!(.+)$/.exec(s);
+  if (m) {
+    const mod = p.byName.get(m[1].toUpperCase()) || p.byName.get(m[1]); if (!mod) throw new Error(`debug: no module ${m[1]} is loaded`);
+    if (mod.kind === 'ne') { const a = p.neExport(mod, /^#?\d+$/.test(m[2]) ? +m[2].replace('#', '') : m[2]); if (!a || !p.selValid(a >>> 16)) throw new Error(`debug: ${s} is not an export`); return (p.selBase(a >>> 16) + (a & 0xffff)) >>> 0; }
+    const a = mod.exports.get(m[2]); if (typeof a !== 'number' || !a) throw new Error(`debug: ${s} is not an export`); return a >>> 0;
+  }
+  m = /^([\w.]+)\+([0-9a-f]+)$/i.exec(s);
+  if (m) {
+    const n = m[1].toUpperCase().replace(/\.\w+$/, ''), mod = (p.modules || []).find(x => x && x.meta && shortOf(x) === n) || p.byName.get(n); if (!mod) throw new Error(`debug: no module ${m[1]} is loaded`);
+    return ((mod.base || mod.meta.textLo) + parseInt(m[2], 16)) >>> 0;
+  }
+  if (!/^(0x)?[0-9a-f]+$/i.test(s)) throw new Error(`debug: ${s} is not an address, MODULE+offset or DLL!Export`);
+  return parseInt(s, 16) >>> 0;
+}
 const api = {
   /** Module names to run as JavaScript: upper case, no extension. '*' means all. */
   names: new Set(),
@@ -261,7 +323,10 @@ const api = {
   },
   source: label => made.get(String(label).toUpperCase()) || null,
   /** The debugger: debug(process, [method, ...arguments]) calls one of D's methods (see above). */
-  debug(p, [method, ...args]) { if (!D[method]) throw new Error(`debug: no method ${method}`); BP.proc = p; return D[method](p, ...args); },
+  debug(p, [method, ...args], host) { if (!D[method]) throw new Error(`debug: no method ${method}`); BP.proc = p; if (host) BP.host = host; return D[method](p, ...args); },
+  /** While on, every block of a JS-run module goes through BP.at, breakpoints or not: a debugger's breakpoint there
+   *  stops at the next block entered (tools/devtools-mcp.mjs guest_step). */
+  stepping(on) { BP.stepAll = !!on; BP.on = !!(BP.byId.size || BP.stepAll); return BP.on; },
   /** Called with each recorded hit as it happens (the worker posts it to the page). */
   set onHit(f) { BP.onHit = f; }, get onHit() { return BP.onHit; },
   _source: source, _parse: parse,

@@ -1843,7 +1843,7 @@ class Machine {
       case 'mods': return this.mods.slice();
       // The debugger (dynjs.js): args are [method, ...arguments]. Recorded hits are also posted to the page as they
       // happen (the page's 'debug.hit' event).
-      case 'debug': { const J = self.W95DynJs; if (!J.onHit) J.onHit = hit => post({ t: 'debug', hit }); return J.debug(p, args); }
+      case 'debug': { const J = self.W95DynJs; if (!J.onHit) J.onHit = hit => post({ t: 'debug', hit }); return J.debug(p, args, this); }
       // ring α (braid.js): a moment of the machine marked now, by name; the machine at one again; the moments on its line
       case 'mark': { const s = this.braidMark(String(args[0] || 'moment')); moments.set(s.name, s); return { ...self.W95Braid.describe(s), took: s.took }; }
       // (a moment at a time of the machine's own clock, taken at the end of the first step that reaches it: every

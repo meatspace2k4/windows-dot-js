@@ -167,6 +167,107 @@ const tools = {
     async run({ session: n, since = 0, filter, max = 100 }) { return session(n).console.filter(c => c.n > since && (!filter || c.text.includes(filter))).slice(-max).map(c => `${c.n} [${c.level}] ${c.text}`); } },
 };
 
+// ---------------------------------------------------------------- the machine: guest code and the Windows API
+// These work on the machine's worker through its debugger API (dynjs.js: W95DynJs.debug, the page's win95.debug).
+// A place is an address in hex, 'MODULE+offset' or an API 'DLL!Export' ('USER32!DrawIconEx', 'USER!#123').
+const worker = () => { const s = [...sessions.values()].find(x => x.type === 'worker' && /worker\.js/.test(x.url)); if (!s) throw new Error('no machine worker is attached; attach to the page first'); return s; };
+const hx = v => (v >>> 0).toString(16);
+/** one call of the machine's debugger API, in the worker (in the paused frame when it is paused) */
+async function guest(method, ...args) {
+  const s = worker(), expression = `JSON.stringify(self.W95DynJs.debug(machine.proc, ${JSON.stringify([method, ...args])}, machine))`;
+  const r = s.paused ? await cmd(s, 'Debugger.evaluateOnCallFrame', { callFrameId: s.paused.callFrames[0].callFrameId, expression, returnByValue: true })
+    : await cmd(s, 'Runtime.evaluate', { expression, returnByValue: true });
+  if (r.exceptionDetails) throw new Error((r.exceptionDetails.exception && r.exceptionDetails.exception.description || r.exceptionDetails.text).split('\n')[0]);
+  return r.result.value === undefined ? undefined : JSON.parse(r.result.value);
+}
+/** a script of the worker's by the end of its URL, waited for (a module just made JavaScript is parsed a moment later) */
+async function scriptEnding(s, end, ms = 4000) {
+  for (const t0 = Date.now(); ;) { const sc = [...s.scripts.values()].reverse().find(x => x.url.endsWith(end)); if (sc) return sc; if (Date.now() - t0 > ms) throw new Error(`no script ${end}`); await new Promise(r => setTimeout(r, 100)); }
+}
+/** a debugger breakpoint on the line after the first line matching `re` in a script */
+async function breakAfter(s, sc, re, condition) {
+  const L = (await cmd(s, 'Debugger.getScriptSource', { scriptId: sc.id })).scriptSource.split('\n'), i = L.findIndex(l => re.test(l)); if (i < 0) throw new Error(`${sc.url}: no line matches ${re}`);
+  const r = await cmd(s, 'Debugger.setBreakpointByUrl', { lineNumber: i + 1, url: sc.url, ...(condition ? { condition } : {}) });
+  return { id: r.breakpointId, line: i + 2 };
+}
+/** the machine where it is paused: its debugger state, plus the block or API call the pause is in */
+async function guestWhere() {
+  const s = worker(), st = await guest('state'), f = s.paused && s.paused.callFrames[0];
+  if (f && /^b_[0-9a-f]+$/.test(f.functionName)) st.block = await guest('where', parseInt(f.functionName.slice(2), 16));
+  if (f && f.functionName === 'w95ApiEntry') { const r = await cmd(s, 'Debugger.evaluateOnCallFrame', { callFrameId: f.callFrameId, expression: 'JSON.stringify({ call, args: args.map(a => a.toString(16)), from, thread })', returnByValue: true }); st.api = JSON.parse(r.result.value); }
+  return { paused: !!s.paused, ...st };
+}
+Object.assign(tools, {
+  screenshot: { description: 'A picture of the page (the machine\'s screen). `file`: also save the PNG there.', props: { file: S }, required: [],
+    async run({ file }) {
+      const s = [...sessions.values()].find(x => x.type === 'page'); if (!s) throw new Error('no page is attached');
+      const { data } = await cmd(s, 'Page.captureScreenshot', { format: 'png' });
+      if (file) (await import('node:fs')).writeFileSync(file, Buffer.from(data, 'base64'));
+      return { image: data, text: file ? `saved ${file}` : 'the page' };
+    } },
+  guest_modules: { description: 'The machine\'s translated modules: name, code range, blocks, and whether each runs as JavaScript (debuggable) or WebAssembly.', props: {}, required: [], run: () => guest('modules') },
+  guest_run: { description: 'Run exactly these modules as JavaScript (names like MSTASK, EXPLORER; * for all); the rest run as WebAssembly. Not while paused.', props: { names: { type: 'array', items: S } }, required: ['names'], run: ({ names }) => guest('run', names) },
+  guest_break: { description: 'Stop the machine when guest code enters the block at a place: an address in hex, MODULE+offset, or DLL!Export. Its module is run as JavaScript if it is not already. `condition` is a JavaScript expression over R (registers, e.g. R.eax) and r8/r16/r32(address).',
+    props: { at: S, condition: S }, required: ['at'],
+    async run({ at, condition }) {
+      const s = worker(), { addr, name } = await guest('resolve', at), src = await guest('source', addr);
+      if (!src) throw new Error(`${name} is not in a translated module`);
+      if (src.block !== addr) throw new Error(`no block starts at ${name}; it is inside the block at ${await guest('where', src.block)} (${hx(src.block)})`);
+      const mods = await guest('modules'), m = mods.find(x => x.name === src.module);
+      if (!m.js) await guest('run', [...mods.filter(x => x.js).map(x => x.name), m.name]);
+      const sc = await scriptEnding(s, `dyn/${m.label.replace(/[^\w.-]+/g, '_')}.js`), b = await breakAfter(s, sc, new RegExp(`^function b_${hx(addr)}\\(`), condition);
+      s.breakpoints.set(b.id, { at: name, url: sc.url, line: b.line, condition: condition || null });
+      return { id: b.id, at: name, address: hx(addr), script: `${sc.url}:${b.line}` };
+    } },
+  api_break: { description: 'Stop the machine at each call of a Windows API (DLL!Export), whatever module calls it and whether or not it runs as JavaScript. The pause reports the call, its first `args` arguments and the caller.',
+    props: { call: S, args: N, condition: { ...S, description: 'A JavaScript expression over call, args (numbers), from and thread.' } }, required: ['call'],
+    async run({ call, args = 6, condition }) {
+      const s = worker(), stop = await guest('stopAt', call, args);
+      if (s.apiBp) { await cmd(s, 'Debugger.removeBreakpoint', { breakpointId: s.apiBp.id }).catch(() => {}); s.breakpoints.delete(s.apiBp.id); }
+      s.apiConds = { ...(s.apiConds || {}), [call]: condition || 'true' };
+      const cond = Object.entries(s.apiConds).map(([c, e]) => `(call === ${JSON.stringify(c)} && (${e}))`).join(' || ');
+      s.apiBp = await breakAfter(s, await scriptEnding(s, '/dynjs.js'), /^function w95ApiEntry\(/, cond);
+      s.breakpoints.set(s.apiBp.id, { at: 'API calls: ' + Object.keys(s.apiConds).join(', '), condition: cond });
+      return { ...stop, addr: hx(stop.addr), name: await guest('where', stop.addr) };
+    } },
+  api_unbreak: { description: 'End the stops at API calls: one by id (from api_break), or all.', props: { id: N }, required: [],
+    async run({ id }) { const s = worker(), ids = await guest('unstop', id); if (!(await guest('stops')).length && s.apiBp) { await cmd(s, 'Debugger.removeBreakpoint', { breakpointId: s.apiBp.id }).catch(() => {}); s.breakpoints.delete(s.apiBp.id); s.apiBp = null; s.apiConds = {}; } return { ended: ids }; } },
+  api_watch: { description: 'Trace calls of a Windows API without stopping: `dll` and `name` (an export, or /regexp/ over the DLL\'s exports), reading `args` arguments. Read them with api_calls.',
+    props: { dll: S, name: S, args: N }, required: ['dll', 'name'], run: ({ dll, name, args = 6 }) => guest('watch', dll, name, args) },
+  api_calls: { description: 'The API calls traced since the last api_calls (the last `max`, default 60): time, thread, call with arguments, return value, caller, and the text arguments point at. `filter` is a substring.',
+    props: { max: N, filter: S }, required: [],
+    async run({ max = 60, filter }) { return (await guest('calls') || []).map(r => `${r.t} th${r.thread} ${r.name}(${r.args.join(', ')}) -> ${r.eax}  from ${r.from}${(r.text || []).some(Boolean) ? '  text ' + JSON.stringify(r.text.filter(Boolean)) : ''}`).filter(l => !filter || l.includes(filter)).slice(-max); } },
+  guest_state: { description: 'The machine\'s processor and running thread: registers, flags, the stack with each code address named (module+offset and nearest export), the thread, its program, the Win16Lock; when paused, the guest block or API call the pause is in.', props: {}, required: [], run: guestWhere },
+  guest_memory: { description: 'A hex dump of guest memory at a place.', props: { at: S, length: N }, required: ['at'],
+    async run({ at, length = 128 }) {
+      const { addr } = await guest('resolve', at), b = await guest('read', addr, length), out = [];
+      for (let i = 0; i < b.length; i += 16) { const row = b.slice(i, i + 16); out.push(`${hx(addr + i).padStart(8, '0')}  ${row.map(x => x.toString(16).padStart(2, '0')).join(' ').padEnd(47)}  ${row.map(x => (x >= 32 && x < 127 ? String.fromCharCode(x) : '.')).join('')}`); }
+      return out.join('\n');
+    } },
+  guest_step: { description: 'From a pause, run to the next guest block entered in a module run as JavaScript, and report the machine there.', props: {}, required: [],
+    async run() {
+      const s = worker(); if (!s.paused) throw new Error('the machine is not paused');
+      // (paused on a block's first line, its own entry is still ahead: that one is passed, the next is the step)
+      const from = s.paused.callFrames[0].functionName, once = async () => {
+      const ev = e => cmd(s, 'Debugger.evaluateOnCallFrame', { callFrameId: s.paused.callFrames[0].callFrameId, expression: e, returnByValue: true });
+      await ev('self.W95DynJs.stepping(true)');
+      const b = await breakAfter(s, await scriptEnding(s, '/dynjs.js'), /^  at\(a, R, M\) \{/);
+      s.paused = null; await cmd(s, 'Debugger.resume'); const hit = await waitPaused(s, 8000);
+      await cmd(s, 'Debugger.removeBreakpoint', { breakpointId: b.id });
+      if (!hit) { await cmd(s, 'Runtime.evaluate', { expression: 'self.W95DynJs.stepping(false)' }).catch(() => {}); return { paused: false, note: 'no block of a JavaScript-run module was entered in 8 s' }; }
+      await ev('self.W95DynJs.stepping(false)');
+      s.paused = null; await cmd(s, 'Debugger.stepOut'); await waitPaused(s, 3000);
+      return null; };
+      let r = await once();
+      if (!r && s.paused && s.paused.callFrames[0].functionName === from) r = await once();
+      return r || guestWhere();
+    } },
+  guest_record: { description: 'A recording breakpoint: each time the block at a place is entered (its module run as JavaScript) a hit is kept and the machine runs on. `when` and `capture` are expressions over R, r8/r16/r32, n (times reached) and thread.',
+    props: { at: S, when: S, capture: S }, required: ['at'], run: ({ at, when, capture }) => guest('breakpoint', { at, when, capture }) },
+  guest_hits: { description: 'The hits recording breakpoints kept, with seq above `since`: where, thread, registers, stack, captured value.', props: { since: N }, required: [],
+    async run({ since = 0 }) { return (await guest('hits', since)).map(h => ({ seq: h.seq, id: h.id, at: hx(h.at), n: h.n, thread: h.thread, value: h.value, eax: hx(h.regs.eax), esp: hx(h.regs.esp), stack: h.stack.slice(0, 6).map(hx).join(' ') })); } },
+});
+
 // ---------------------------------------------------------------- MCP over stdio (JSON-RPC, one message a line)
 const reply = (id, result) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\n');
 const fail = (id, code, message) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, error: { code, message } }) + '\n');
@@ -176,7 +277,8 @@ async function handle(m) {
   if (m.method === 'tools/list') return reply(m.id, { tools: Object.entries(tools).map(([name, t]) => ({ name, description: t.description, inputSchema: { type: 'object', properties: t.props, required: t.required } })) });
   if (m.method === 'tools/call') {
     const t = tools[m.params.name]; if (!t) return fail(m.id, -32602, `no tool ${m.params.name}`);
-    try { await connect(); const r = await t.run(m.params.arguments || {}); return reply(m.id, { content: [{ type: 'text', text: typeof r === 'string' ? r : JSON.stringify(r, null, 1) }] }); }
+    try { await connect(); const r = await t.run(m.params.arguments || {}); if (r && r.image) return reply(m.id, { content: [{ type: 'image', data: r.image, mimeType: 'image/png' }, { type: 'text', text: r.text }] });
+      return reply(m.id, { content: [{ type: 'text', text: typeof r === 'string' ? r : JSON.stringify(r, null, 1) }] }); }
     catch (e) { return reply(m.id, { content: [{ type: 'text', text: `error: ${e.message}` }], isError: true }); }
   }
   if (m.id !== undefined) fail(m.id, -32601, `no method ${m.method}`);
@@ -190,5 +292,25 @@ if (process.argv[2] === '--run') {
   }
   if (process.argv[4] !== '--hold') process.exit(0);   // --hold: stay attached, so a pause stays until this is stopped
   await new Promise(() => {});
+}
+// A daemon for the shell, so breakpoints and pauses last between calls:
+//   --daemon [port]            serve the tools on 127.0.0.1 (default port 9333)
+//   --call <tool> '<json>'     call one tool on the daemon and print its result
+const DPORT = 9333;
+if (process.argv[2] === '--daemon') {
+  const { createServer } = await import('node:http');
+  createServer((req, res) => {
+    let body = ''; req.on('data', d => { body += d; });
+    req.on('end', async () => {
+      let r; try { const { name, args } = JSON.parse(body); if (!tools[name]) throw new Error(`no tool ${name}`); await connect(); r = await tools[name].run(args || {}); } catch (e) { r = `error: ${e.message}`; }
+      if (r && r.image) r = r.text;
+      res.end(typeof r === 'string' ? r : JSON.stringify(r, null, 1));
+    });
+  }).listen(Number(process.argv[3]) || DPORT, '127.0.0.1');
+  await new Promise(() => {});
+}
+if (process.argv[2] === '--call') {
+  const r = await fetch(`http://127.0.0.1:${process.env.DEVTOOLS_PORT || DPORT}/`, { method: 'POST', body: JSON.stringify({ name: process.argv[3], args: JSON.parse(process.argv[4] || '{}') }) }).then(x => x.text()).catch(e => `error: the daemon does not answer (${e.message}); start it with --daemon`);
+  console.log(r); process.exit(0);
 }
 createInterface({ input: process.stdin }).on('line', line => { if (!line.trim()) return; let m; try { m = JSON.parse(line); } catch (e) { return; } handle(m).catch(e => { if (m.id !== undefined) fail(m.id, -32603, e.message); }); });

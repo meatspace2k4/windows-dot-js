@@ -373,6 +373,32 @@ trace is shrunk to the fewest actions that still fail, each try in a fresh sessi
 (`W95FuzzTabs.replay({ trace })`). `tools/convolution/fuzz.mjs` walks the protocol's model the same way, without
 machines.
 
+## The debugger
+
+`win95.debug` debugs the system machine's translated code and its Windows API calls (dynjs.js). Every call returns a
+promise. A place is an address in hex, `MODULE+offset`, or an API `DLL!Export` (`USER32!DrawIconEx`, `USER!#123`).
+
+| Call | Does |
+| --- | --- |
+| `modules()` | the translated modules: `[{ name, lo, hi, base, blocks, js }]` |
+| `run(names)` | runs exactly these modules as JavaScript (`'*'` for all), the rest as WebAssembly; their source shows in DevTools as `dyn/NAME.js`, a function a block (`b_1001def`), registers in `R` |
+| `breakpoint({ at, when, capture })` | records a hit each time the block at `at` is entered, and runs on; `when` and `capture` are expressions over `R`, `r8/r16/r32`, `n`, `thread` |
+| `hits(since)`, `next(id, ms)` | the recorded hits; the next one (also the `debug.hit` event) |
+| `remove(id)`, `clear()`, `breakpoints()` | |
+| `watch(dll, name, n)`, `calls()`, `unwatch(dll)` | traces calls of an export (or `/regexp/`) with `n` arguments, without stopping |
+| `stopAt(call, n)`, `unstop(id)`, `stops()` | routes an API's calls through `w95ApiEntry`, where a debugger's breakpoint stops at them |
+| `resolve(place)`, `where(address)` | a place's address; an address's name |
+| `state()` | registers, flags, the stack with code addresses named, the thread, its program, the Win16Lock |
+| `source(place)`, `read(place, n)` | the JavaScript of the block holding a place; guest memory |
+
+`tools/devtools-mcp.mjs` is an MCP server that drives a browser's debugger over the Chrome DevTools Protocol
+(`CDP_URL`, default `http://127.0.0.1:9222`; registered in `.mcp.json` as `devtools`). It attaches to the page and
+its worker and adds, on top of the debugger's own tools (`breakpoint`, `pause`, `resume`, `step`, `paused`,
+`evaluate`, `scripts`, `source`, `console`, `screenshot`), the machine's: `guest_break` (stop at a place, with a
+condition), `api_break` (stop at an API's calls), `api_watch` and `api_calls`, `guest_state`, `guest_step` (to the
+next block), `guest_memory`, `guest_record` and `guest_hits`, `guest_modules`, `guest_run`. From a shell:
+`node tools/devtools-mcp.mjs --daemon`, then `--call <tool> '<json>'`.
+
 ## Exploring
 
 `node bench/explore.mjs [endpoint] [--minutes 10] [--depth 12]` drives the system with these calls only, clicking

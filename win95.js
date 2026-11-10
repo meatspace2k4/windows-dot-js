@@ -6276,11 +6276,20 @@ function braidFault(app, f, fatal) { if (braid) braid.fault(app, f, fatal); }
 //   next(id, ms)              the next hit of breakpoint `id` (any, when id is omitted); rejects after ms
 //   source(address)           the JavaScript of the block holding an address: { module, block, text }
 //   read(address, n)          n bytes of guest memory
+// The Windows API. A place is an address, 'MODULE+offset' or an API 'DLL!Export' ('USER32!DrawIconEx', 'USER!#123').
+//   resolve(place), where(address)   a place's address and name; an address's name (module+offset, nearest export)
+//   watch(dll, name, n), calls(), unwatch(dll)
+//                             trace calls of an export (or '/regexp/' over the DLL's exports) with n arguments, without
+//                             stopping; calls() returns and clears them: [{ t, name, args, text, from, stack, eax }]
+//   stopAt(call, n), unstop(id), stops()
+//                             route each call of an API through dynjs.js's w95ApiEntry, where a debugger's breakpoint
+//                             stops at it (tools/devtools-mcp.mjs api_break); any module, wasm or JavaScript
+//   state()                   registers, flags, the stack with each code address named, the thread and its program
 // Each hit is also the page event 'debug.hit' (win95.on('debug.hit', fn)).
 const debugApi = (() => {
   const call = (method, ...args) => { if (!sysApp || !sysApp.alive) return Promise.reject(new Error('debug: the system\'s machine is not running')); return sysApp.cmd('debug', [method, ...args]); };
   const api = {};
-  for (const m of ['modules', 'run', 'breakpoint', 'remove', 'clear', 'breakpoints', 'hits', 'source', 'read']) api[m] = (...a) => call(m, ...a);
+  for (const m of ['modules', 'run', 'breakpoint', 'remove', 'clear', 'breakpoints', 'hits', 'source', 'read', 'resolve', 'where', 'stopAt', 'unstop', 'stops', 'watch', 'unwatch', 'calls', 'state']) api[m] = (...a) => call(m, ...a);
   api.next = (id, ms = 10000) => script.next('debug.hit', h => id === undefined || h.id === id, ms);
   return api;
 })();
