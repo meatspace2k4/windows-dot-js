@@ -81,4 +81,10 @@ assert.equal(dbg('clear'), true); assert.deepEqual(dbg('breakpoints'), []); asse
 assert.deepEqual(dbg('run', []), []); assert.ok(/native code/.test(String(j.rec.run)), 'run([]): back to WebAssembly');
 assert.deepEqual(dbg('run', ['pmod']), ['PMOD']); assert.equal(j.again(), 3); assert.equal(j.p.cpu.eax.value & 0xffff, 0xfcb8);
 assert.throws(() => dbg('nope'), /no method nope/);
+// an expression that throws ends its breakpoint and never the machine; one that does not parse is refused
+const b3 = dbg('breakpoint', { at: loop, when: 'R32(R.esp) === 1' });
+assert.equal(j.again(), 3, 'the machine runs on'); assert.match(dbg('breakpoints').find(b => b.id === b3.id).error, /R32 is not defined/);
+assert.deepEqual(dbg('hits'), []);
+assert.throws(() => dbg('breakpoint', { at: loop, when: 'R.eax ===' }), /does not parse/);
+dbg('clear');
 console.log('dynjs: ok');

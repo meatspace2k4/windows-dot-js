@@ -3226,7 +3226,7 @@ function setupStartMenu() {
     ['MOTOWN.INF', 'Vol.links', 'SNDVOL32.EXE', 'Volume Control'], ['MMOPT.INF', 'CDPlayer.inis', 'CDPLAYER.EXE', 'CD Player']].filter(([inf, , file]) => infs[inf] && (S.programs || {})[file]);
   const missing = accessories.some(a => a.links.some(k => !fs.exists(join(progs, k.folder, k[0] + '.lnk'))) || a.gone.some(k => fs.exists(join(progs, k.folder, k[0] + '.lnk')))) || (claude && !fs.exists(join(progs, 'Claude', 'Claude.lnk')))
     || media.some(m => !fs.exists(join(progs, 'Accessories', 'Multimedia', m[3] + '.lnk')))
-    || (session && !fs.exists(join(tools, 'Join Session.lnk'))) || (dbwin && !fs.exists(join(tools, 'Debug Monitor.lnk'))) || (clip &&!fs.exists(join(progs, 'Accessories', 'Clipboard Viewer.lnk')));
+    || (session && !fs.exists(join(tools, 'Join Session.lnk'))) || (dbwin && !fs.exists(join(tools, 'Debug Monitor.lnk'))) || ((S.programs || {})['W95DBG.EXE'] && !fs.exists(join(tools, 'Debugger.lnk'))) || (clip &&!fs.exists(join(progs, 'Accessories', 'Clipboard Viewer.lnk')));
   if (cur && cur[0] === 0x4c && cur[1] === 0 && !missing) return;   // ('L': a shell link's header)
   const out = new Map();
   const add = ({ sec, fields, subst }, names) => {
@@ -3257,6 +3257,7 @@ function setupStartMenu() {
     if (!groups.lines.some(l => /^group11=/i.test(l))) groups.lines.push(`group11=${tools.slice(progs.length + 1)}`);
     const g = out.get('group11') || out.set('group11', { name: 'group11', lines: [] }).get('group11');
     g.lines.push('"Debug Monitor", DBWIN.EXE');
+    if ((S.programs || {})['W95DBG.EXE']) g.lines.push('"Debugger", W95DBG.EXE');   // (the Debugger, debugger.js)
   }
   fs.writeFile(join(WINDIR, 'SETUP.INI'), W95FS.encode([...out.values()].map(v => `[${v.name}]\r\n${v.lines.join('\r\n')}\r\n`).join('\r\n')));
   // SETUPC.INF's RunOnce\Setup item: run under RUNONCE's "Windows 95 Setup" screen before the system's message server
@@ -3739,7 +3740,7 @@ function strayCopies(names = ['SPOOL32.EXE', 'SYSTRAY.EXE', 'MPREXE.EXE', 'RUNON
 }
 function installPrograms() {
   const stub = exeStub(), S = window.W95SYSTEM || {};
-  const OURS = new Set(['CLAUDE.EXE', 'SESSTRAY.EXE', 'DBWIN.EXE']);   // (a program of this project's: its file is the one its translation is of, kept current)
+  const OURS = new Set(['CLAUDE.EXE', 'SESSTRAY.EXE', 'DBWIN.EXE', 'W95DBG.EXE']);   // (a program of this project's: its file is the one its translation is of, kept current)
   const put = (path, b64) => {
     let cur = null; try { cur = fs.readFile(path); } catch (_) { /* not there */ }
     const want = OURS.has(basename(path).toUpperCase()) ? b64bytes(b64) : null;
@@ -6225,7 +6226,7 @@ let ccdApi = null;
 // a script of the site's loaded again from its server into the running page, no restart (the page's half of a change:
 // ccd.js's tools are made again on next use from their records in the registry); a script of the machines' goes to the
 // system's machine (worker.js cmd 'reload')
-const WORKER_SCRIPTS = new Set(['claude-app.js', 'session-dll.js', 'session-tray.js', 'dbwin.js', 'shell32.js', 'osclass.js', 'saver-runtime.js', 'gl.js', 'sound.js']);
+const WORKER_SCRIPTS = new Set(['claude-app.js', 'session-dll.js', 'session-tray.js', 'dbwin.js', 'debugger.js', 'dynjs.js', 'shell32.js', 'osclass.js', 'saver-runtime.js', 'gl.js', 'sound.js']);
 // the page's scripts that only define things, so can be loaded again (win95.js loaded twice ran two shells on one screen)
 const PAGE_SCRIPTS = new Set(['ccd.js']);
 // ---------------------------------------------------------------- ring α on the page (braid.js, braid-page.js): the machines' moments with the disk, the registry and the shell beside them, on one line

@@ -192,17 +192,21 @@ const BP = { on: false, stepAll: false, byAddr: new Map(), byId: new Map(), stop
     const t = BP.proc && BP.proc.thread16, thread = t ? t.id : 0;
     for (const b of list) {
       b.n++;
-      if (b.whenFn && !b.whenFn(R, M.r8, M.r16, M.r32, b.n, thread)) continue;
+      // (an expression that throws ends its breakpoint, with the error kept for the list: it never ends the machine)
+      if (b.error) continue;
+      let value;
+      try { if (b.whenFn && !b.whenFn(R, M.r8, M.r16, M.r32, b.n, thread)) continue; if (b.captureFn) value = b.captureFn(R, M.r8, M.r16, M.r32, b.n, thread); }
+      catch (e) { b.error = String(e && e.message || e); continue; }
       const regs = {}; for (const k of Object.keys(R)) regs[k] = R[k] >>> 0;
       const sp = (R.ss & 0xfff8 ? R.ssb + (R.esp & 0xffff) : R.esp) >>> 0, stack = [];
       for (let i = 0; i < 16; i++) stack.push(M.r32(sp + 4 * i) >>> 0);
-      const hit = { seq: ++BP.seq, id: b.id, at: a, n: b.n, thread, regs, stack, value: b.captureFn ? b.captureFn(R, M.r8, M.r16, M.r32, b.n, thread) : undefined };
+      const hit = { seq: ++BP.seq, id: b.id, at: a, n: b.n, thread, regs, stack, value };
       BP.hits.push(hit); if (BP.hits.length > HITS_MAX) BP.hits.shift();
       if (BP.onHit) BP.onHit(hit);
     }
   } };
 const made = new Map();
-const expr = s => (s ? new Function('R', 'r8', 'r16', 'r32', 'n', 'thread', `return (${s});`) : null);
+const expr = s => { if (!s) return null; try { return new Function('R', 'r8', 'r16', 'r32', 'n', 'thread', `return (${s});`); } catch (e) { throw new Error(`debug: the expression ${s} does not parse (${e.message})`); } };
 const addrOf = v => (typeof v === 'string' ? parseInt(v, 16) : v) >>> 0;
 const labelOf = m => (m.name === 'EXE' ? m.meta.path || m.meta.name || 'EXE' : m.name);
 const shortOf = m => String(labelOf(m)).split(/[\\/]/).pop().replace(/\.\w+$/, '').toUpperCase();
@@ -234,7 +238,7 @@ const D = {
   /** Remove every breakpoint and forget the recorded hits. */
   clear() { BP.byId.clear(); BP.byAddr.clear(); BP.hits.length = 0; BP.on = BP.stepAll; return true; },
   /** The breakpoints: [{ id, at, when, capture, n }]. */
-  breakpoints: () => [...BP.byId.values()].map(({ id, at, when, capture, n }) => ({ id, at, when, capture, n })),
+  breakpoints: () => [...BP.byId.values()].map(({ id, at, when, capture, n, error }) => ({ id, at, when, capture, n, error: error || null })),
   /** The recorded hits with seq above `since`: [{ seq, id, at, n, thread, regs, stack, value }]. */
   hits: (p, since = 0) => BP.hits.filter(h => h.seq > since),
   /** The JavaScript of the block holding an address, from its module's wasm (the module need not be running as
@@ -252,9 +256,9 @@ const D = {
   // ---- the Windows API
   /** An address from a place's name: a number, hex text, 'MODULE+offset' or an API 'DLL!Export' (a 16-bit module's
    *  export by name or '#ordinal'). Returns { addr, name } with the name as the machine tells places (whereOf). */
-  resolve: (p, place) => { const addr = resolve(p, place); return { addr, name: p.whereOf(addr) }; },
+  resolve: (p, place) => { const addr = resolve(p, place); return { addr, name: nameOf(p, addr) }; },
   /** The name of an address: module+offset, with the nearest export. */
-  where: (p, addr) => p.whereOf(addrOf(addr)),
+  where: (p, addr) => nameOf(p, addrOf(addr)),
   /** Stop in a debugger at each call of an API (any module, translated to wasm or run as JavaScript): the call comes
    *  through w95ApiEntry(call, args, from, thread), where a debugger's breakpoint sees it. `n`: argument count read.
    *  Returns { id, call, addr }. */
@@ -277,12 +281,19 @@ const D = {
     const c = p.cpu, reg = k => c[k].value >>> 0, regs = {};
     for (const k of ['eax', 'ebx', 'ecx', 'edx', 'esi', 'edi', 'ebp', 'esp', 'eip', 'cs', 'ds', 'es', 'ss', 'fs']) regs[k] = hex(reg(k));
     const seg = reg('ss') & 0xfff8, sp = seg ? (reg('ssb') + (reg('esp') & 0xffff)) >>> 0 : reg('esp'), stack = [];
-    for (let i = 0; i < n && sp + 4 * i + 4 <= p.u8.length; i++) { const v = p.r32(sp + 4 * i) >>> 0, w = p.whereOf(v); stack.push(`+${hex(4 * i)}  ${hex(v)}${/\+/.test(w) ? '  ' + w : ''}`); }
+    for (let i = 0; i < n && sp + 4 * i + 4 <= p.u8.length; i++) { const v = p.r32(sp + 4 * i) >>> 0, w = nameOf(p, v); stack.push(`+${hex(4 * i)}  ${hex(v)}${/\+/.test(w) ? '  ' + w : ''}`); }
     const t = p.thread16;
-    return { at: p.whereOf(reg('eip')), regs, flags: ['cf', 'zf', 'sf', 'of', 'df', 'pf'].filter(k => reg(k)).join(' '), stack16: !!seg, stack,
+    return { at: nameOf(p, reg('eip')), regs, flags: ['cf', 'zf', 'sf', 'of', 'df', 'pf'].filter(k => reg(k)).join(' '), stack16: !!seg, stack,
       thread: t ? t.id : 0, program: t && t.pc ? t.pc.path : null, sysLevel: p.sysLevel || 0, win16Lock: p.win16Held ? (p.win16Held.who && p.win16Held.who.id) || String(p.win16Held.who) : null };
   },
 };
+/** An address's name: its translated module by its file's name (a program is MSTASK, not EXE) and offset, with the
+ *  export the machine names there; else as the machine names it (whereOf). */
+function nameOf(p, a) {
+  const w = p.whereOf(a), m = translated(p).find(x => a >= x.meta.textLo && a < x.meta.textHi); if (!m) return w;
+  const ex = /\(.*\)$/.exec(w);
+  return `${shortOf(m)}+${hex(a - (m.base || m.meta.textLo))}${ex ? ' ' + ex[0] : ''}`;
+}
 /** An API call's arguments and caller, read at its entry: 32-bit (dwords above the return address) or 16-bit (words). */
 function callOf(p, n) {
   const seg = !!(p.cpu.ss.value & 0xffff), sp = seg ? (p.cpu.ssb.value >>> 0) + (p.cpu.esp.value & 0xffff) : p.cpu.esp.value >>> 0, args = [];
