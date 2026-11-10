@@ -3215,11 +3215,39 @@ def('KERNEL32', 'GetNumberFormatA', 6, function (lc, fl, val, fmt, out, n) {
 });
 // FORMAT_MESSAGE_FROM_STRING (400h) formats `src`; %1..%99 take inserts (with !fmt! printf specs) from the argument
 // array (2000h) or the va_list `args`; %0 ends the text, %n %% %. %! are line break, %, . and !; IGNORE_INSERTS (200h)
-// copies the text as it is. Message tables (FROM_HMODULE / FROM_SYSTEM) are not kept, so those give "Error N.".
+// copies the text as it is. FROM_HMODULE (800h) takes the text from `src`'s message table (RT_MESSAGETABLE, 11),
+// FROM_SYSTEM (1000h) from KERNEL32.DLL's, the module's first where both are given; a message in neither is
+// ERROR_MR_MID_NOT_FOUND (317) and no text. (Answered "Error N." for each, Windows 98's Display Properties read
+// "Error 6." for its colors and "Error 9." for its screen area: DESK.CPL's own messages, with inserts)
+const msgTableText = (bytes, id) => {
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), nb = dv.getUint32(0, true);
+  for (let i = 0; i < nb; i++) {
+    const lo = dv.getUint32(4 + 12 * i, true), hi = dv.getUint32(8 + 12 * i, true); if (id < lo || id > hi) continue;
+    let a = dv.getUint32(12 + 12 * i, true);
+    for (let k = lo; k < id; k++) a += dv.getUint16(a, true);
+    const len = dv.getUint16(a, true), wide = dv.getUint16(a + 2, true) & 1, b = bytes.slice(a + 4, a + len);   // (a copy: the machine's memory is shared, and TextDecoder reads no shared view)
+    return new TextDecoder(wide ? 'utf-16le' : 'latin1').decode(b).replace(/\0+$/, '');
+  }
+  return null;
+};
+const sysMessages = p => {
+  if (p.sysMsgTable !== undefined) return p.sysMsgTable;
+  let b = null; try { b = p.fs.readFile('C:\\WINDOWS\\SYSTEM\\KERNEL32.DLL'); } catch (_) { /* none on this disk */ }
+  return (p.sysMsgTable = (b && peResource(b, 11, 1)) || null);
+};
+const messageText = (p, fl, src, id) => {
+  if (fl & 0x800) {
+    const mod = resModule(p, src), r = mod && resIn(p, mod, 11, 1);
+    const t = r && msgTableText(p.u8.subarray(r.addr, r.addr + r.size), id >>> 0); if (t !== null && t !== undefined) return t;
+  }
+  if (fl & 0x1000) { const s = sysMessages(p), t = s && msgTableText(s, id >>> 0); if (t !== null) return t; }
+  return null;
+};
 def('KERNEL32', 'FormatMessageA', 7, function (fl, src, id, lang, buf, n, args) {
   let t;
-  if (fl & 0x400) {
-    const f = this.readA(src) || '';
+  const f = fl & 0x400 ? this.readA(src) || '' : messageText(this, fl, src, id);
+  if (f === null) { this.lastError = 317; return 0; }
+  {
     if (fl & 0x200) t = f;
     else {
       const arg = k => fl & 0x2000 ? this.r32(args + 4 * (k - 1)) : this.r32(this.r32(args) + 4 * (k - 1));
@@ -3237,7 +3265,7 @@ def('KERNEL32', 'FormatMessageA', 7, function (fl, src, id, lang, buf, n, args) 
         t += d;
       }
     }
-  } else t = `Error ${id}.\r\n`;
+  }
   if (fl & 0x100) { const p = this.alloc(t.length + 1); this.writeA(p, t); this.w32(buf, p); return t.length; }   // FORMAT_MESSAGE_ALLOCATE_BUFFER
   return this.writeA(buf, t, n);
 });

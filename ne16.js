@@ -2704,6 +2704,7 @@ P.vddGrab = function (fn) {
   // erased; doing nothing, the next 3 found no change, nothing was drawn back, and the window's text cleared
   if (fn === 7) v.grabShot = null;
 };
+const DISPLAY1 = 0x4c505344, DISPLAY1_NAME = '\\\\.\\DISPLAY1';   // (the one display device's handle and name, VDD 8Dh)
 def16('VDD', 0, '', 'jmp', function () {
   // Windows 95's own VDD.VXD when it is loaded (vmm.js, STATIC_VXDS): its protected-mode API answers the grabber and
   // the display driver; what follows answers in its absence (a machine without the bundle's VDD)
@@ -2738,6 +2739,28 @@ def16('VDD', 0, '', 'jmp', function () {
       this.u8.fill(0, a, a + n); this.w16(a, n); this.w32(a + 4, dn ? dn.handle : 0); this.writeA(a + 8, drv, 16);
       this.w16(a + 0x18, c.w); this.w16(a + 0x1a, c.h); this.w16(a + 0x1c, 96); this.u8[a + 0x1e] = 1; this.u8[a + 0x1f] = c.bpp;
       this.w16(a + 0x20, 60); this.w16(a + 0x22, 60);
+      // (and Windows 98's: the monitor's devnode, the adapter's child, whose name Display Properties shows)
+      const mon = this.devnodes().find(d => /^monitor$/i.test(d.cls));
+      if (n >= 0x30 && mon) this.w32(a + 0x2c, mon.handle);
+      this.cpu.eax.value = 0; break;
+    }
+    // Windows 98's display devices, USER's EnumDisplayDevices and its multiple-monitor start (USER 21:374E, 21:75F6):
+    // 8Dh a device's handle in EAX, EDX 2 by its number in EBX (1, the one display here), its name ("\\.\DISPLAY1",
+    // ECX bytes at most) to ES:DI; EDX 1 by the name at ES:DI. 8Fh the device's settings key (HKEY_CURRENT_CONFIG
+    // \Display\Settings, where BitsPerPixel and Resolution are) opened, its handle to the dword at ES:DI. A function
+    // that fails leaves EAX as it was. (Unanswered, USER kept no display: Display Properties read "(Unknown Monitor)
+    // on (Unknown Device)" and offered to extend the desktop onto the screen it was on)
+    case 0x8d: {
+      const a = this.lin((this.cpu.es.value << 16) | (this.cpu.edi.value & 0xffff)), sub = this.cpu.edx.value & 0xffff;
+      if (sub === 2 && u32(this.cpu.ebx.value) === 1) { this.writeA(a, DISPLAY1_NAME, Math.max(1, this.cpu.ecx.value & 0xffff)); this.cpu.eax.value = DISPLAY1; }
+      else if (sub === 1 && (this.readA(a) || '').toUpperCase() === DISPLAY1_NAME) this.cpu.eax.value = DISPLAY1;
+      break;
+    }
+    case 0x8f: {
+      if (u32(this.cpu.ebx.value) !== DISPLAY1) break;
+      const W = window.W95Win32, path = 'hkcc\\display\\settings';
+      if (!W.regKids('hkcc\\display').includes('settings')) W.regSet(path, null);
+      this.w32(this.lin((this.cpu.es.value << 16) | (this.cpu.edi.value & 0xffff)), this.newHandle({ kind: 'key', path, given: 'HKEY_CURRENT_CONFIG\\Display\\Settings' }));
       this.cpu.eax.value = 0; break;
     }
   }
