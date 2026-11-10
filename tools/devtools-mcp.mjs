@@ -251,6 +251,8 @@ Object.assign(tools, {
     } },
   shell_cmd: { description: 'win95.sysApp.cmd(name, args): the system machine\'s diagnostics (probe, faults, watch, call16, ...).', props: { name: S, args: { type: 'array' } }, required: ['name'],
     run: ({ name, args = [] }) => shell(`return await win95.sysApp.cmd(${JSON.stringify(name)}, ${JSON.stringify(args)});`) },
+  shell_activate: { description: 'win95.activate(title): brings a window to the front, as a click on it does. Answers its outcome.', props: { title: S }, required: ['title'],
+    run: ({ title }) => shell(`return await win95.outcome(() => win95.activate(Q({ t: ${JSON.stringify(title)} }).t));`) },
   shell_set: { description: 'win95.set(query, value): a native combo box\'s item chosen by its text, or a slider moved ("min", "max" or a number), by the control itself. Answers its outcome.',
     props: { query: Q, value: {} }, required: ['query', 'value'],
     run: ({ query, value }) => shell(`return await win95.outcome(() => win95.set(Q(${JSON.stringify(query)}), ${JSON.stringify(value)}));`) },

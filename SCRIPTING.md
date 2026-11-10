@@ -67,7 +67,8 @@ button or check box is pressed by its own window (the control is told to click i
 tab control; only when a person could do so now: the control is enabled, its window is the active one and no dialog
 waits over it; otherwise the call rejects, naming the window that is active. Anything else gets the pointer at its
 centre. `set(query, value)` (`shell_set`) chooses a native combo box's item by its text, or moves a slider (`'min'`,
-`'max'` or a number), the same way. Every answer's `how` says which of these was done. The call rejects, saying why, when nothing matches (naming what the window has), when something
+`'max'` or a number), the same way. Every answer's `how` says which of these was done. A window that is not the
+active one is brought forward first with `activate(title)` (`shell_activate`). The call rejects, saying why, when nothing matches (naming what the window has), when something
 covers the point, or at once when the system fails meanwhile. `waitFor(query, ms)` looks an element up the same way
 and resolves with it.
 
