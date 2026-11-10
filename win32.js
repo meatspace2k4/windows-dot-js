@@ -2975,10 +2975,19 @@ def('KERNEL32', 'WriteConsoleA', 5, function (h, buf, n, put) { const o = conOf(
 // can use: MPR hands its waiting thread's to MPREXE, which queues the APC that ends the wait there (copied as the
 // pseudo-handle, the APC went to MPREXE's own thread, and GRPCONV's link to the Removable Disk in SendTo waited for
 // good: Windows 98's first start stopped at "Programs on the Start menu")
-def('KERNEL32', 'DuplicateHandle', 7, function (a, h, b, out) {
+// A file mapping's duplicate is a handle of its own to the mapping, and DUPLICATE_CLOSE_SOURCE (1) closes the one
+// duplicated: the shell hands a folder's ID list to Explorer as a mapping (SHLWAPI's SHAllocShared duplicates the
+// mapping's handle for Explorer and closes its own; SHLockShared maps the duplicate). Duplicated as the same handle,
+// the close took the mapping with it, Explorer got no ID list, and My Computer and Network Neighborhood opened as the
+// path "" does, the current directory: C:\.
+def('KERNEL32', 'DuplicateHandle', 7, function (a, h, b, out, access, inherit, opts) {
   h >>>= 0;
-  const r = h === 0xfffffffe ? this.newHandle({ kind: 'thread', id: this.currentThreadId() })
-    : h === 0xffffffff ? this.newHandle({ kind: 'process', pid: this.pc.pid }) : h;
+  const o = h < 0xfffffffe ? this.obj(h) : null;
+  let r;
+  if (h === 0xfffffffe) r = this.newHandle({ kind: 'thread', id: this.currentThreadId() });
+  else if (h === 0xffffffff) r = this.newHandle({ kind: 'process', pid: this.pc.pid });
+  else if (o && o.kind === 'mapping') { r = this.nextHandle; this.nextHandle += 4; this.handles.set(r, o); if (opts & 1) this.handles.delete(h); }
+  else r = h;
   if (out) this.w32(out, r); return 1;
 });
 def('KERNEL32', 'WaitForSingleObject', 2, () => 0);
@@ -2996,6 +3005,14 @@ def('KERNEL32', 'GetExitCodeProcess', 2, function (h, out) {
 // no second thread
 def('KERNEL32', 'CreateThread', 6, function (attr, stack, start, param, flags, ptid) {
   if (!this.newThread || !this.nativeUser16 || !this.nativeUser16()) return 0;
+  // (a stack size of 0 is the program's own: its header's SizeOfStackReserve, a megabyte for most, as CreateThread
+  // gives one. Given 64K, Explorer's thread for a folder window ran out of stack making the window's toolbars, a
+  // stack fault in SHDOCVW, once the window had a folder to show)
+  if (!stack) {
+    const pc = this.thread16 && this.thread16.pc, base = (pc && pc.exe && pc.exe.base) || (this.exe && this.exe.base) || 0;
+    const pe = base ? base + this.r32(base + 0x3c) : 0;
+    if (pe && this.r32(pe) === 0x4550) stack = Math.min(Math.max(this.r32(pe + 24 + 72), 0x10000), 0x100000);
+  }
   const t = this.newThread(start, param, stack, true, !!(flags & 4));
   if (ptid) this.w32(ptid, t.id);
   return this.newHandle({ kind: 'thread', id: t.id });
