@@ -5971,6 +5971,13 @@ P.qtThunk = function () {
  * retDone, and that kind's data). `ret32`: the callee returns with a 32-bit far return (66h lret).
  */
 P.enter16from32 = function (target, src, n, map, ret32, cont) {
+  // A thunk into 16-bit code takes the Win16Lock, and the thread keeps it until the thunk returns (return16to32),
+  // including while 16-bit code calls back up into flat code. Counted in the thread's sys level, so a thread
+  // preempted in that flat code still holds the lock (holdWin16).
+  // Without it, Explorer's taskbar thread was preempted in GDI32's flat code that 16-bit GDI had called while drawing
+  // the Task Scheduler's icon into the tray's image list. Another thread then drew its own icon through GDI, and
+  // the tray showed that icon in the Task Scheduler's place.
+  this.sysLevel = (this.sysLevel || 0) + 1;
   const sel = target >>> 16, off = target & 0xffff;
   // a Win16 task's flat stack is in its DGROUP (CallProc32W runs the 32-bit side there): the callback's SS is the
   // DGROUP itself, as Windows keeps a task's stack (its code takes DS from SS), not another selector for that memory
@@ -5993,6 +6000,7 @@ P.enter16from32 = function (target, src, n, map, ret32, cont) {
   return u32(this.selBase(sel) + off);
 };
 P.return16to32 = function (rec) {
+  this.sysLevel = (this.sysLevel || 0) - 1;   // the thunk's Win16Lock is released (enter16from32)
   const popped = ((this.cpu.esp.value & 0xffff) - rec.sp0) & 0xffff;
   const ax = this.cpu.eax.value & 0xffff, dx = this.cpu.edx.value & 0xffff;
   this.last16 = { eax: u32(this.cpu.eax.value), ebx: u32(this.cpu.ebx.value), ecx: u32(this.cpu.ecx.value) };
@@ -6167,12 +6175,18 @@ K('#48', 1, function (p) { if (p) this.w32(p, 0); return 0; });   // ReleaseThun
 // its lock-owner paths, and a window procedure CallProc32W called returned to USER's 16:16 return address as a linear one
 K('#93', 1, function (pp) { if (pp) this.w32(pp, 0); return 0; });
 K('#92', 0, function () { if (!this.pk16SysVar) this.pk16SysVar = this.alloc(0x40); return this.pk16SysVar; });            // GetPK16SysVar
-// _EnterSysLevel / _LeaveSysLevel: the levels a thread holds (the Win16Lock among them), which it keeps when its time
-// runs out there (holdWin16)
-K('#86', 1, function () { this.sysLevel = (this.sysLevel || 0) + 1; return 0; });
-// (EAX is the caller's across both, as KERNEL32's own keep it: GDI32 takes the lock around an object's lookup and
-// returns the result it has in EAX straight after leaving: GetObjectType)
-K('#97', 1, function () { this.sysLevel = Math.max(0, (this.sysLevel || 0) - 1); return this.reg('eax'); });
+// The Win16Lock's level for 32-bit code. A thread preempted with a level above 0 keeps the lock (holdWin16).
+//   #97 _EnterSysLevel: take the lock (+1).
+//   #98 _LeaveSysLevel: release it (-1).
+//   #86: release it around a call out of 16-bit code (-1); USER32 and GDI32 follow it with #97 on the way back.
+// The level goes to -1 inside such a call out, because entering 16-bit code through a thunk is not counted here
+// (holdWin16 tells that from CS).
+// #86 and #97 were the wrong way round: #97 lowered the level and #86 raised it, so GDI32's 32-bit code never held the
+// lock. Explorer's taskbar thread was preempted inside GDI32 while drawing the Task Scheduler's icon into the tray's
+// image list, another thread drew its own icon through GDI, and the tray showed that icon instead.
+// All three keep EAX: GDI32's GetObjectType returns the value it has in EAX straight after leaving.
+K('#97', 1, function () { this.sysLevel = (this.sysLevel || 0) + 1; return this.reg('eax'); });
+K('#86', 1, function () { this.sysLevel = (this.sysLevel || 0) - 1; return this.reg('eax'); });
 K('#49', 1, () => 0);                                      // RestoreThunkLock
 // W32S_BackTo32 (KERNEL32 #51), as USER32's thunklet relays use it under native USER: entered by a jump with [ESP] the
 // 32-bit target and [ESP+4] where to return; calls the target with the ten DWORDs above those as its arguments and
@@ -6188,7 +6202,7 @@ API.KERNEL32['#51'] = ['regs', function () {
   return target;
 }];
 K('#96', 0, () => 1);
-K('#98', 1, function () { return this.reg('eax'); });
+K('#98', 1, function () { this.sysLevel = (this.sysLevel || 0) - 1; return this.reg('eax'); });
 K('GetProcessFlags', 1, () => 0);
 K('ConvertToGlobalHandle', 1, h => h);
 K('ReleaseMutex', 1, () => 1);   // one processor runs every thread here: a mutex has no one to keep out
