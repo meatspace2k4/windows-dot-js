@@ -118,7 +118,8 @@ const tools = {
       if (![...sessions.values()].some(s => s.targetId === t.targetId)) {
         // (its worker, when the browser lists one: attached as the page's auto-attach reports it, waited for by that
         // event, not by a time)
-        const hasWorker = (await send('Target.getTargets')).targetInfos.some(x => x.type === 'worker' && /worker\.js/.test(x.url));
+        // (the browser's own list names a page's dedicated workers; Target.getTargets leaves them out)
+        const hasWorker = (await fetch(`${CDP_URL}/json/list`).then(r => r.json()).catch(() => [])).some(x => x.type === 'worker' && /worker\.js/.test(x.url));
         const { sessionId } = await send('Target.attachToTarget', { targetId: t.targetId, flatten: true });
         const ps = adopt(sessionId, t), child = new Promise(r => { ps.onChild = c => { if (c.type === 'worker') r(c); }; });
         if (hasWorker) await child;
@@ -224,15 +225,19 @@ async function shell(body) {
   return r.result.value === undefined ? 'done' : r.result.value;
 }
 const Q = { type: 'object', description: 'An element query: { name, role, window }, each a string or "/regexp/".' };
+/** a check, in the page, that the active window is the one named: the topmost active one, by title or "/regexp/" */
+const activeIs = title => `{ const want = Q({ t: ${JSON.stringify(title)} }).t, a = win95.windows().filter(w => w.active).pop(); if (!a || !(want instanceof RegExp ? want.test(a.title) : a.title === want)) throw new Error('the active window is ' + (a ? JSON.stringify(a.title) + (a.modal ? ' (a dialog)' : '') : 'none') + ', not ' + JSON.stringify(${JSON.stringify(title)}) + ': read its text with shell_report and answer it'); }`;
 Object.assign(tools, {
   shell_report: { description: 'What happened since the last shell call (its events) and the screen now: every window with its controls\' text, the last n faults. Start here.',
     props: { n: N }, required: [], run: ({ n = 3 }) => shell(`return await win95.outcome(null, ${Number(n) || 3});`) },
   shell_click: { description: 'win95.click (or dblclick) on an element query: looked up as its machine shows it now; rejects saying what the window has, or at once when the system fails.',
     props: { query: Q, double: { type: 'boolean' } }, required: ['query'],
     run: ({ query, double }) => shell(`return await win95.outcome(() => win95.${double ? 'dblclick' : 'click'}(Q(${JSON.stringify(query)})));`) },
-  shell_key: { description: 'win95.key(...keys): named keys (enter, esc, tab, alt+n, ctrl+shift+tab, ...). Answers its outcome.', props: { keys: { type: 'array', items: S } }, required: ['keys'],
-    run: ({ keys }) => shell(`return await win95.outcome(() => win95.key(...${JSON.stringify(keys)}));`) },
-  shell_type: { description: 'win95.type(text). Answers its outcome.', props: { text: S }, required: ['text'], run: ({ text }) => shell(`return await win95.outcome(() => win95.type(${JSON.stringify(text)}));`) },
+  shell_key: { description: 'win95.key(...keys) into `window`, the window they are meant for (its title, or "/regexp/"): refused when another window is active, so a key meant for one dialog never answers the one that came in its place. Answers its outcome.',
+    props: { keys: { type: 'array', items: S }, window: S }, required: ['keys', 'window'],
+    run: ({ keys, window }) => shell(`return await win95.outcome(() => { ${activeIs(window)} win95.key(...${JSON.stringify(keys)}); });`) },
+  shell_type: { description: 'win95.type(text) into `window` (its title, or "/regexp/"): refused when another window is active. Answers its outcome.', props: { text: S, window: S }, required: ['text', 'window'],
+    run: ({ text, window }) => shell(`return await win95.outcome(() => { ${activeIs(window)} win95.type(${JSON.stringify(text)}); });`) },
   shell_run: { description: 'win95.run(command): what Start > Run does. Answers its outcome.', props: { command: S }, required: ['command'], run: ({ command }) => shell(`return await win95.outcome(() => win95.run(${JSON.stringify(command)}));`) },
   shell_next: { description: 'win95.next(type, test): the next event of that type whose title matches `title` ("/regexp/" or exact); ends at once when the system fails. Start it with `then` (a shell_* call to make once it is listening), so the event the call causes is not missed.',
     props: { type: S, title: S, ms: N, then: { type: 'object', description: '{ tool, args }: a shell_* tool to call once listening.' } }, required: ['type'],

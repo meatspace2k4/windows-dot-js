@@ -3414,7 +3414,7 @@ function winHelp(file = 'windows.hlp') { closeMenus(); if (hasHelp()) runNative(
 // always the same, so the note is cleared before each start
 function setupDisplay() {
   if (W95Win32.iniGet(fs, 'SYSTEM.INI', 'boot', '*DisplayFallback') !== null) W95Win32.iniSet(fs, 'SYSTEM.INI', 'boot', '*DisplayFallback', null);
-  setupDisplayDevices(); setupFontSize(); setupPatterns(); setupWallpapers();
+  setupDisplayDevices(); setupDisplayModes(); setupFontSize(); setupPatterns(); setupWallpapers();
 }
 // The folder templates of Windows 98's Web view (C:\WINDOWS\WEB\*.HTT, which WEBVW.DLL writes as it registers), in
 // the color scheme's colors: their left panel is "white" with a white watermark (wvleft.bmp) whatever the scheme, its
@@ -3467,6 +3467,12 @@ function setupDisplayDevices() {
   infAddReg(mon, '1280', cls + 'monitor\\0000');
   set(cls + 'monitor\\0000', { DriverDesc: 'Super VGA 1280x1024', ProviderName: 'Microsoft', InfPath: 'MONITOR.INF', InfSection: '1280.Install' });
   set('hklm\\enum\\monitor\\default_monitor\\0001', { Class: 'Monitor', Driver: 'Monitor\\0000', DeviceDesc: 'Super VGA 1280x1024', HardwareID: 'Monitor\\Default_Monitor', Mfg: '(Standard monitor types)' });
+}
+// deletes five MODES keys an earlier build of this page added to the display's software key (16-bit 1152x864 and
+// 1280x1024; 24-bit 1024x768, 1152x864 and 1280x1024), which TSENG.DRV's INF does not list
+function setupDisplayModes() {
+  const R = W95Win32, sw = 'hklm\\system\\currentcontrolset\\services\\class\\display\\0000\\modes\\';
+  for (const m of ['16\\1152,864', '16\\1280,1024', '24\\1024,768', '24\\1152,864', '24\\1280,1024']) R.regDel(sw + m);
 }
 // the font sizes Display Properties offers (FONTS.INF's MS_FONTSIZE_AddReg: Small Fonts at 96 dpi, Large at 120),
 // and the one the profile has, as the display's class installer records it: Small Fonts' system font files and DPI
@@ -6157,10 +6163,23 @@ async function resolveEl(q, ms = 5000) {
  *  the pointer input `send` makes at its centre, which must not be covered. Resolves with the element */
 async function actOn(q, send, item) {
   const e = await resolveEl(q), w = item && e.list && windows.find(x => x.native && x.title === e.window && x.app);
-  if (w) { await w.app.cmd('listItem', [e.list, e.index, !!item.open]); return e; }
+  if (w) { await w.app.cmd('listItem', [e.list, e.index, !!item.open]); return { ...e, how: 'its list view selected it' }; }
+  // (a native button, a radio button or a check box: pressed by its own window, the machine's 'press', which refuses
+  // one a person could not press now (disabled, under a dialog, its window not the active one) and says which. By
+  // the pointer at the place it was listed at, a dialog that came or moved meanwhile took the click instead, and
+  // Monitor Settings' Yes went to what lay under it)
+  const btn = item && !item.open && e.hwnd && /^(pushbutton|radiobutton|checkbutton)$/.test(e.role) && windows.find(x => x.native && x.title === e.window && x.app);
+  if (btn) {
+    const r = await btn.app.cmd('press', [e.hwnd]);
+    if (r !== true) { const a = windows.map(winInfo).filter(x => x.active).pop(); throw new Error(`${qText(asQuery(q))} is not pressed: ${r}${a ? `; the active window is '${a.title}'` : ''}`); }
+    return { ...e, how: 'pressed by its own window' };
+  }
   const cx = e.x + (e.w >> 1), cy = e.y + (e.h >> 1);
   if (e.covered) throw new Error(`${qText(asQuery(q))} is covered by ${e.coveredBy || 'another window'}`);
+  // (the pointer's click goes to whatever is at the point: named in the answer, the element itself or not)
+  const at = elements().filter(x => x.window === e.window && x.role !== 'titlebar' && cx >= x.x && cx < x.x + x.w && cy >= x.y && cy < x.y + x.h).pop();
   send(cx, cy);
+  e.how = `pointer at ${cx},${cy}, on ${at ? `${at.role} '${at.name}'` : 'no listed element'} of '${e.window}'`;
   return e;
 }
 // an element, a query for one, or plain coordinates, as the point a click lands on
@@ -6239,7 +6258,7 @@ const script = {
     try { if (fn) result = await fn(); await script.settle(); } catch (e) { error = e.message; }
     const report = await script.report(n);   // (the machines' windows asked of them now; their frames meanwhile shown)
     observe();   // (the shell's changes as events now, not on its next look)
-    if (result && typeof result === 'object') result = { name: result.name, role: result.role, window: result.window };
+    if (result && typeof result === 'object') result = { name: result.name, role: result.role, window: result.window, how: result.how };
     return { result, error, events: (window.W95Journal || []).splice(0), report };
   },
   // the machines' log (win32.js log): the emulator's messages, programs' OutputDebugString, KERNEL's LogError, each

@@ -1674,6 +1674,20 @@ class Machine {
         else await this.onWindow('SendMessageA', [c, 0x0c, 0, String(value)]);
         return true;
       })();
+      // a button pressed as itself (the scripting API's click on a native button): BM_CLICK posted to the control, which
+      // presses and releases itself and tells its dialog. Only a button a person could press now: it and its top-level
+      // window enabled (a window under a dialog is disabled), and that window the foreground one; else refused, saying
+      // which. Posted, not sent: its command may open a dialog, and a send would not return until that one closed
+      case 'press': return (async () => {
+        const h = args[0], one = (name, a) => this.netBatch([{ dll: 'USER32', name, args: a }]).then(r => (r ? r[0] : 0));
+        if (!(await one('IsWindow', [h]))) return 'gone';
+        // (its top-level window: up through the child windows only; a top-level window's GetParent is its owner)
+        let root = h; while ((await one('GetWindowLongA', [root, -16])) & 0x40000000) { const up = await one('GetParent', [root]); if (!up) break; root = up; }
+        if (!(await one('IsWindowEnabled', [h]))) return 'disabled';
+        if (!(await one('IsWindowEnabled', [root]))) return 'its window is disabled: a dialog is waiting over it';
+        if ((await one('GetForegroundWindow', [])) !== root) return 'its window is not the active one';
+        return (await one('PostMessageA', [h, 0xf5, 0, 0])) ? true : 'gone';
+      })();
       case 'listItem': return p.depth ? null : (async () => {   // a list view's item selected, or opened (the scripting API's click, dblclick)
         // (every item's selection and focus off, then this one's on: LVIS_FOCUSED | LVIS_SELECTED, LVM_SETITEMSTATE, sent
         // from a thread of its own; the list's owner opens the selection as Enter opens it)
