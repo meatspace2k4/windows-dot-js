@@ -1361,6 +1361,30 @@ const memoWasm = sha => memoDb().then(db => new Promise((ok, no) => {
 }));
 window.W95Dyn = { memo, memoLoad, memoPut, memoWasm };
 /** the memo's record for a file, by its SHA-256: the placement a loader asks for before it places the module */
+/** netpatch.js's fixes for the file a module was loaded from (by its SHA-256), made in the module's code as it is
+ *  loaded, once: a byte patch where the code is as the file has it (one made already left as it is, one where the code
+ *  is neither, logged and left), a handler the host's entry hook there. The bundle's modules are built with theirs
+ *  (tools/netpatch.py), so their files' hashes are no table's */
+P.netPatch = function (rec) {
+  const T = self.W95NetPatch, f = T && T.files && rec.sha256 && T.files[rec.sha256];
+  if (!f || rec.netPatched) return; rec.netPatched = true;
+  const hex = s => Uint8Array.from(String(s || '').match(/../g) || [], x => parseInt(x, 16)), log = window.W95Win32.log, made = [];
+  for (const x of f.patches || []) {
+    const m = /^(?:(\d+)|rva):([0-9a-f]+)$/i.exec(x.at || ''), g = m && m[1] ? (rec.segs || [])[+m[1] - 1] : null;
+    const at = !m ? -1 : m[1] ? (g ? g.base + parseInt(m[2], 16) : -1) : u32(rec.base + parseInt(m[2], 16));
+    if (at < 0) { log('warn', 'dyn', `${f.name || rec.name}: netpatch at ${x.at} is no place of the module's`); continue; }
+    if (x.handler) {
+      const h = T.handlers && T.handlers[x.handler];
+      if (h) { this.setEntryHook(at, h); made.push(`${x.at} ${x.handler}`); } else log('warn', 'dyn', `${f.name || rec.name}: no netpatch handler ${x.handler}`);
+      continue;
+    }
+    const want = hex(x.expect), put = hex(x.bytes), now = this.u8.subarray(at, at + put.length);
+    if (put.every((v, i) => now[i] === v)) continue;
+    if (want.length !== put.length || !want.every((v, i) => now[i] === v)) { log('warn', 'dyn', `${f.name || rec.name}: netpatch at ${x.at} finds ${Array.from(now, v => v.toString(16).padStart(2, '0')).join('')}, not ${x.expect}: left`); continue; }
+    this.u8.set(put, at); made.push(x.at);
+  }
+  if (made.length) log('info', 'dyn', `${f.name || rec.name}: netpatch ${made.join(', ')}`);
+};
 P.neMemo = function (rec) { rec.sha256 = rec.sha256 || window.W95Win32.sha256(rec.file); return memo.get(rec.sha256) || null; };
 /** the module's code translated and installed, as loadNE installs the bundle's: its block table filled, its run made.
  *  The memo's module where the code hashes as it did when it was made (the same bytes at the same placement: its
@@ -1373,6 +1397,7 @@ P.neCompile = function (rec, again = false) {
   rec.released = false;   // (one let go, dynRelease: made again now)
   if (rec.netText) { [meta.textLo, meta.textHi] = rec.netText; rec.netText = null; rec.netReady = null; }   // (one whose memo's module was being read: its text back)
   const t0 = performance.now(), had = this.neMemo(rec), sels = (rec.segs || []).map(g => g.sel);
+  this.netPatch(rec);   // (netpatch.js's fixes for this file in its code first: what is translated and hashed is the fixed code)
   // (the memo's module where its blocks' bytes lie as they were translated, at the same text: its relocations, its
   // selectors and the targets of its far calls the same)
   const same = !again && had && had.lens && had.sums && had.build === NET_BUILD && had.textLo === meta.textLo && had.textHi === meta.textHi && had.codeHash === blocksHash(this.u8, had.blocks, had.lens);

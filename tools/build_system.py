@@ -2,7 +2,7 @@
 programs that run on them, and write system.js: original file bytes, translated wasm and metadata for each, the
 shared table of 16-bit import thunks, and the font files. Usage: build_system.py SYS_DIR OUT.js [FONTS_DIR]"""
 import base64, json, os, subprocess, sys, tempfile
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import provenance
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import provenance, netpatch
 src, out = sys.argv[1], sys.argv[2]
 here = os.path.dirname(os.path.abspath(__file__))
 # the modules import the machine's memory as shared: each machine runs in a worker and the page reads its framebuffer
@@ -195,7 +195,7 @@ if fonts_dir:
 with tempfile.TemporaryDirectory() as tmp:
     reg = os.path.join(tmp, 'registry.json')
     for f, b, sel, lk in NE:
-        p = os.path.join(src, f); base = os.path.join(tmp, f)
+        p = netpatch.file(os.path.join(src, f), tmp); base = os.path.join(tmp, f)   # (the file with netpatch.js's fixes)
         trace = ['--trace'] if f.upper() in os.environ.get('TRACE_NE', '').upper().split(',') else []
         subprocess.run([sys.executable, os.path.join(here, 'recomp.py'), p, base, '--base', hex(b), '--selbase', hex(sel),
                         '--lookup', hex(lk), '--registry', reg] + (['--mmio', MMIO[f]] if f in MMIO else []) + (['--unlinked'] if f in DISPLAY_DRIVERS else []) + trace, check=True)
@@ -205,7 +205,7 @@ with tempfile.TemporaryDirectory() as tmp:
         bundle['ne'][key] = {'file': b64(p), 'fileName': f.upper(), 'wasm': b64(base + '.wasm'), 'meta': meta, **({'onDisk': True} if f in ON_DISK else {})}
     bundle['thunks16'] = json.load(open(reg))['thunks']
     for f, b, lk in PE:
-        p = os.path.join(src, f); base = os.path.join(tmp, f)
+        p = netpatch.file(os.path.join(src, f), tmp); base = os.path.join(tmp, f)   # (the file with netpatch.js's fixes)
         trace = ['--trace'] if f.upper() in os.environ.get('TRACE_NE', '').upper().split(',') else []
         subprocess.run([sys.executable, os.path.join(here, 'recomp.py'), p, base, '--base', hex(b), '--lookup', hex(lk)] + trace, check=True)
         bundle['dlls'][f.upper()] = {'file': b64(p), 'wasm': b64(base + '.wasm'), 'meta': json.load(open(base + '.json')), **({'onCD': True} if f in ON_CD else {})}
@@ -214,22 +214,22 @@ with tempfile.TemporaryDirectory() as tmp:
     bundle['names16'] = {'KERNEL': {v.upper(): k for k, v in neparse(os.path.join(src, 'krnl386.exe'))[4].items()}}
     bundle['vxds'] = {}
     for f, b, lk in VXDS:
-        p = os.path.join(src, f); base = os.path.join(tmp, f)
+        p = netpatch.file(os.path.join(src, f), tmp); base = os.path.join(tmp, f)   # (the file with netpatch.js's fixes)
         trace = ['--trace'] if f.upper() in os.environ.get('TRACE_NE', '').upper().split(',') else []
         subprocess.run([sys.executable, os.path.join(here, 'recomp.py'), p, base, '--vxd', '--base', hex(b), '--lookup', hex(lk)] + trace, check=True)
         bundle['vxds'][f.upper()] = {'image': b64(base + '.img'), 'wasm': b64(base + '.wasm'), 'meta': json.load(open(base + '.json'))}
     bundle['drivers'] = {}
     for f, b, lk in DRIVERS:
-        p = os.path.join(src, f); base = os.path.join(tmp, f)
+        p = netpatch.file(os.path.join(src, f), tmp); base = os.path.join(tmp, f)   # (the file with netpatch.js's fixes)
         subprocess.run([sys.executable, os.path.join(here, 'recomp.py'), p, base, '--base', hex(b), '--lookup', hex(lk)], check=True)
         bundle['drivers'][f.upper()] = {'file': b64(p), 'wasm': b64(base + '.wasm'), 'meta': json.load(open(base + '.json'))}
     bundle['net'] = {}
     for f, b, lk in NET:
-        p = os.path.join(src, f); base = os.path.join(tmp, f)
+        p = netpatch.file(os.path.join(src, f), tmp); base = os.path.join(tmp, f)   # (the file with netpatch.js's fixes)
         subprocess.run([sys.executable, os.path.join(here, 'recomp.py'), p, base, '--base', hex(b), '--lookup', hex(lk)], check=True)
         bundle['net'][f.upper()] = {'file': b64(p), 'wasm': b64(base + '.wasm'), 'meta': json.load(open(base + '.json'))}
     for f, b, lk in PROGRAMS:
-        p = os.path.join(src, f); base = os.path.join(tmp, f)
+        p = netpatch.file(os.path.join(src, f), tmp); base = os.path.join(tmp, f)   # (the file with netpatch.js's fixes)
         subprocess.run([sys.executable, os.path.join(here, 'recomp.py'), p, base, '--base', hex(b), '--lookup', hex(lk)], check=True)
         # (a program run from the CD: its file is the disc's)
         bundle['programs'][f.upper()] = {**({'onCD': True} if f in ON_CD else {'file': b64(p)}), 'wasm': b64(base + '.wasm'), 'meta': json.load(open(base + '.json'))}
