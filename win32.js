@@ -3247,7 +3247,12 @@ def('KERNEL32', 'FormatMessageA', 7, function (fl, src, id, lang, buf, n, args) 
   let t;
   const f = fl & 0x400 ? this.readA(src) || '' : messageText(this, fl, src, id);
   if (f === null) { this.lastError = 317; return 0; }
+  // (a maximum width, the flags' low byte: the text's own line breaks are not kept, each a space, and only %n's
+  // breaks are; under FFh no others are made, else the lines are broken at that width. Kept, Display Properties'
+  // colors read "High Color (16 bit)" and the message's CR LF, two blocks)
+  const width = fl & 0xff, src0 = width ? f.replace(/\r\n|\r|\n/g, ' ') : f;
   {
+    const f = src0;
     if (fl & 0x200) t = f;
     else {
       const arg = k => fl & 0x2000 ? this.r32(args + 4 * (k - 1)) : this.r32(this.r32(args) + 4 * (k - 1));
@@ -3266,6 +3271,7 @@ def('KERNEL32', 'FormatMessageA', 7, function (fl, src, id, lang, buf, n, args) 
       }
     }
   }
+  if (width && width < 0xff) t = t.split('\r\n').map(line => { let out = '', cur = ''; for (const w of line.split(' ')) { if (cur && (cur + ' ' + w).length > width) { out += cur + '\r\n'; cur = w; } else cur = cur ? cur + ' ' + w : w; } return out + cur; }).join('\r\n');
   if (fl & 0x100) { const p = this.alloc(t.length + 1); this.writeA(p, t); this.w32(buf, p); return t.length; }   // FORMAT_MESSAGE_ALLOCATE_BUFFER
   return this.writeA(buf, t, n);
 });
