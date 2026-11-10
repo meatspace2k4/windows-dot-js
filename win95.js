@@ -5655,8 +5655,15 @@ Promise.all(ready).then(() => { resize(); kbd.focus(); dirty(); });
 // client that registered the binding __w95event (Runtime.addBinding), as JSON { type, ...data }.
 // Window, menu and screen saver events come from comparing the shell's state after each change; file system
 // events come straight from the file system.
+// (every event but the file system's and a session's sync, since the last win95.outcome took them: an action's answer
+// carries what happened since the one before, whenever it came, so nothing that came between is lost)
+// (kept on the window: emit runs from the page's first lines, before a module constant here would exist)
 function emit(type, data = {}) {
   const ev = { type, ...data, t: Date.now() };
+  if (!/^(sync|fs)\./.test(type)) {
+    const j = window.W95Journal || (window.W95Journal = []), keys = ['type', 'title', 'modal', 'screen', 'kind', 'text', 'path', 'code', 'why', 'machine', 'menus'];
+    j.push(Object.fromEntries(Object.entries(ev).filter(([k]) => keys.includes(k)))); if (j.length > 400) j.shift();
+  }
   if (DEBUG && /^sync\./.test(type)) { const l = window.W95SYNCLOG || (window.W95SYNCLOG = []); l.push(ev); if (l.length > 200) l.shift(); }   // (a shared session's sync, from the page's start: ?debug=1)
   for (const k of [type, type.split('.')[0], '*']) for (const fn of listeners.get(k) || []) { try { fn(ev); } catch (e) { console.error(e); } }
   if (typeof window.__w95event === 'function') { try { window.__w95event(JSON.stringify(ev)); } catch (_) { /* client gone */ } }
@@ -6217,6 +6224,23 @@ const script = {
     const faults = evs.slice(-n).map(e => { const f = e.fault || {}; return { why: f.why, program: f.program, module: f.module, eip: hx(f.eip), cr2: hx(f.cr2), gen: e.gen, machine: e.machine }; });
     const log = evs.length && evs[evs.length - 1].faults, l = Array.isArray(log) && log[log.length - 1];
     return { screen, windows: wins, faults, last: l ? { why: l.why, at: l.at || l.atIn, stack: (l.stack || []).slice(0, 8) } : null };
+  },
+  // until the machines have taken the input and the page has drawn it (inputDrawn: their frames say so); ends at once
+  // when the system fails
+  async settle() {
+    await inputDrawn();
+    if (lastFail && lastFail.at > (this.settleFrom || 0)) throw new Error(`the system failed: ${failText(lastFail)}`);
+  },
+  // an action's outcome: fn run (a win95 call, or none: what happened since the last outcome), the machines having
+  // taken it, then { result, error, events, report }: every event since the last outcome (journal), and the screen
+  // now (win95.report). What a script acts on next is this, never a state assumed
+  async outcome(fn, n = 3) {
+    let result = null, error = null; this.settleFrom = performance.now();
+    try { if (fn) result = await fn(); await script.settle(); } catch (e) { error = e.message; }
+    const report = await script.report(n);   // (the machines' windows asked of them now; their frames meanwhile shown)
+    observe();   // (the shell's changes as events now, not on its next look)
+    if (result && typeof result === 'object') result = { name: result.name, role: result.role, window: result.window };
+    return { result, error, events: (window.W95Journal || []).splice(0), report };
   },
   // the machines' log (win32.js log): the emulator's messages, programs' OutputDebugString, KERNEL's LogError, each
   // { n, t, level, tag, text, machine }, since line n; the same lines are in DevTools' console at their level and in

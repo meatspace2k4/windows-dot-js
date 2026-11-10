@@ -29,9 +29,10 @@ async function connect() {
   ws.onmessage = e => onMessage(JSON.parse(e.data));
   ws.onclose = () => { ws = null; sessions.clear(); bySessionId.clear(); for (const p of pending.values()) p.no(new Error('the browser closed the connection')); pending.clear(); };
 }
-function send(method, params = {}, sessionId) {
+function send(method, params = {}, sessionId, untimed = false) {
   return new Promise((ok, no) => {
-    const id = nextId++, t = setTimeout(() => { pending.delete(id); no(new Error(`${method}: no answer in ${TIMEOUT} ms`)); }, TIMEOUT);
+    // (untimed: a shell action, which answers once the system has taken it or has failed, win95.outcome)
+    const id = nextId++, t = untimed ? null : setTimeout(() => { pending.delete(id); no(new Error(`${method}: no answer in ${TIMEOUT} ms`)); }, TIMEOUT);
     pending.set(id, { ok: v => { clearTimeout(t); ok(v); }, no: e => { clearTimeout(t); no(e); } });
     ws.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
   });
@@ -206,9 +207,9 @@ async function guestWhere() {
   return { paused: !!s.paused, ...st };
 }
 // ---------------------------------------------------------------- the shell: SCRIPTING.md's win95 API, called as it is
-// Each runs one win95 call in the page and answers what it answers; a wait is the API's own (next, an element's
-// lookup), which ends on the event, or at once on the system failing (system.fail, braid.fault). A query's strings
-// in /slashes/ are regular expressions.
+// An action (click, key, type, run) answers its outcome (win95.outcome): the events it caused, the screen once the
+// machines have taken it (win95.report), or the error it ended on; the answer is the state to act on next. A query's
+// strings in /slashes/ are regular expressions.
 const pageSession = async () => {
   let s = [...sessions.values()].find(x => x.type === 'page' && /\/\?|win95|braid|localhost/.test(x.url || ''));
   if (!s) { await tools.attach.run({ url: process.env.W95_URL || 'localhost' }); s = [...sessions.values()].find(x => x.type === 'page'); }
@@ -218,21 +219,21 @@ const pageSession = async () => {
 const reviveQuery = 'const Q = q => { if (!q || typeof q !== "object") return q; const o = {}; for (const [k, v] of Object.entries(q)) { const m = typeof v === "string" && /^\\/(.*)\\/([a-z]*)$/.exec(v); o[k] = m ? new RegExp(m[1], m[2]) : v; } return o; };';
 async function shell(body) {
   const s = await pageSession();
-  const r = await cmd(s, 'Runtime.evaluate', { expression: `(async () => { ${reviveQuery} ${body} })()`, awaitPromise: true, returnByValue: true });
+  const r = await send('Runtime.evaluate', { expression: `(async () => { ${reviveQuery} ${body} })()`, awaitPromise: true, returnByValue: true }, s.sessionId, true);
   if (r.exceptionDetails) throw new Error(((r.exceptionDetails.exception && r.exceptionDetails.exception.description) || r.exceptionDetails.text).split('\n')[0]);
   return r.result.value === undefined ? 'done' : r.result.value;
 }
 const Q = { type: 'object', description: 'An element query: { name, role, window }, each a string or "/regexp/".' };
 Object.assign(tools, {
-  shell_report: { description: 'win95.report(n): the screen, every window with its controls\' text, the last n faults. Start here.',
-    props: { n: N }, required: [], run: ({ n = 3 }) => shell(`return await win95.report(${Number(n) || 3});`) },
+  shell_report: { description: 'What happened since the last shell call (its events) and the screen now: every window with its controls\' text, the last n faults. Start here.',
+    props: { n: N }, required: [], run: ({ n = 3 }) => shell(`return await win95.outcome(null, ${Number(n) || 3});`) },
   shell_click: { description: 'win95.click (or dblclick) on an element query: looked up as its machine shows it now; rejects saying what the window has, or at once when the system fails.',
     props: { query: Q, double: { type: 'boolean' } }, required: ['query'],
-    run: ({ query, double }) => shell(`const e = await win95.${double ? 'dblclick' : 'click'}(Q(${JSON.stringify(query)})); return e && { name: e.name, role: e.role, window: e.window };`) },
-  shell_key: { description: 'win95.key(...keys): named keys (enter, esc, tab, alt+n, ctrl+shift+tab, ...).', props: { keys: { type: 'array', items: S } }, required: ['keys'],
-    run: ({ keys }) => shell(`win95.key(...${JSON.stringify(keys)}); return 'pressed';`) },
-  shell_type: { description: 'win95.type(text).', props: { text: S }, required: ['text'], run: ({ text }) => shell(`win95.type(${JSON.stringify(text)}); return 'typed';`) },
-  shell_run: { description: 'win95.run(command): what Start > Run does.', props: { command: S }, required: ['command'], run: ({ command }) => shell(`win95.run(${JSON.stringify(command)}); return 'run';`) },
+    run: ({ query, double }) => shell(`return await win95.outcome(() => win95.${double ? 'dblclick' : 'click'}(Q(${JSON.stringify(query)})));`) },
+  shell_key: { description: 'win95.key(...keys): named keys (enter, esc, tab, alt+n, ctrl+shift+tab, ...). Answers its outcome.', props: { keys: { type: 'array', items: S } }, required: ['keys'],
+    run: ({ keys }) => shell(`return await win95.outcome(() => win95.key(...${JSON.stringify(keys)}));`) },
+  shell_type: { description: 'win95.type(text). Answers its outcome.', props: { text: S }, required: ['text'], run: ({ text }) => shell(`return await win95.outcome(() => win95.type(${JSON.stringify(text)}));`) },
+  shell_run: { description: 'win95.run(command): what Start > Run does. Answers its outcome.', props: { command: S }, required: ['command'], run: ({ command }) => shell(`return await win95.outcome(() => win95.run(${JSON.stringify(command)}));`) },
   shell_next: { description: 'win95.next(type, test): the next event of that type whose title matches `title` ("/regexp/" or exact); ends at once when the system fails. Start it with `then` (a shell_* call to make once it is listening), so the event the call causes is not missed.',
     props: { type: S, title: S, ms: N, then: { type: 'object', description: '{ tool, args }: a shell_* tool to call once listening.' } }, required: ['type'],
     async run({ type, title, ms = 60000, then }) {
