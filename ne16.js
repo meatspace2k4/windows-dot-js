@@ -2748,8 +2748,7 @@ def16('VDD', 0, '', 'jmp', function () {
     // 8Dh a device's handle in EAX, EDX 2 by its number in EBX (1, the one display here), its name ("\\.\DISPLAY1",
     // ECX bytes at most) to ES:DI; EDX 1 by the name at ES:DI. 8Fh the device's settings key (HKEY_CURRENT_CONFIG
     // \Display\Settings, where BitsPerPixel and Resolution are) opened, its handle to the dword at ES:DI. A function
-    // that fails leaves EAX as it was. (Unanswered, USER kept no display: Display Properties read "(Unknown Monitor)
-    // on (Unknown Device)" and offered to extend the desktop onto the screen it was on)
+    // that fails leaves EAX as it was
     case 0x8d: {
       const a = this.lin((this.cpu.es.value << 16) | (this.cpu.edi.value & 0xffff)), sub = this.cpu.edx.value & 0xffff;
       if (sub === 2 && u32(this.cpu.ebx.value) === 1) { this.writeA(a, DISPLAY1_NAME, Math.max(1, this.cpu.ecx.value & 0xffff)); this.cpu.eax.value = DISPLAY1; }

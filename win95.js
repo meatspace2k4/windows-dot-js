@@ -3414,7 +3414,7 @@ function winHelp(file = 'windows.hlp') { closeMenus(); if (hasHelp()) runNative(
 // always the same, so the note is cleared before each start
 function setupDisplay() {
   if (W95Win32.iniGet(fs, 'SYSTEM.INI', 'boot', '*DisplayFallback') !== null) W95Win32.iniSet(fs, 'SYSTEM.INI', 'boot', '*DisplayFallback', null);
-  setupDisplayDevices(); setupDisplayModes(); setupFontSize(); setupPatterns(); setupWallpapers();
+  setupDisplayDevices(); setupFontSize(); setupPatterns(); setupWallpapers();
 }
 // The folder templates of Windows 98's Web view (C:\WINDOWS\WEB\*.HTT, which WEBVW.DLL writes as it registers), in
 // the color scheme's colors: their left panel is "white" with a white watermark (wvleft.bmp) whatever the scheme, its
@@ -3467,12 +3467,6 @@ function setupDisplayDevices() {
   infAddReg(mon, '1280', cls + 'monitor\\0000');
   set(cls + 'monitor\\0000', { DriverDesc: 'Super VGA 1280x1024', ProviderName: 'Microsoft', InfPath: 'MONITOR.INF', InfSection: '1280.Install' });
   set('hklm\\enum\\monitor\\default_monitor\\0001', { Class: 'Monitor', Driver: 'Monitor\\0000', DeviceDesc: 'Super VGA 1280x1024', HardwareID: 'Monitor\\Default_Monitor', Mfg: '(Standard monitor types)' });
-}
-// deletes five MODES keys an earlier build of this page added to the display's software key (16-bit 1152x864 and
-// 1280x1024; 24-bit 1024x768, 1152x864 and 1280x1024), which TSENG.DRV's INF does not list
-function setupDisplayModes() {
-  const R = W95Win32, sw = 'hklm\\system\\currentcontrolset\\services\\class\\display\\0000\\modes\\';
-  for (const m of ['16\\1152,864', '16\\1280,1024', '24\\1024,768', '24\\1152,864', '24\\1280,1024']) R.regDel(sw + m);
 }
 // the font sizes Display Properties offers (FONTS.INF's MS_FONTSIZE_AddReg: Small Fonts at 96 dpi, Large at 120),
 // and the one the profile has, as the display's class installer records it: Small Fonts' system font files and DPI
@@ -5661,9 +5655,8 @@ Promise.all(ready).then(() => { resize(); kbd.focus(); dirty(); });
 // client that registered the binding __w95event (Runtime.addBinding), as JSON { type, ...data }.
 // Window, menu and screen saver events come from comparing the shell's state after each change; file system
 // events come straight from the file system.
-// (every event but the file system's and a session's sync, since the last win95.outcome took them: an action's answer
-// carries what happened since the one before, whenever it came, so nothing that came between is lost)
-// (kept on the window: emit runs from the page's first lines, before a module constant here would exist)
+// Every event but the file system's and a session's sync is also kept in window.W95Journal (the last 400) until
+// win95.outcome takes them. (On the window: emit runs from the page's first lines, before a module constant here exists)
 function emit(type, data = {}) {
   const ev = { type, ...data, t: Date.now() };
   if (!/^(sync|fs)\./.test(type)) {
@@ -5676,8 +5669,7 @@ function emit(type, data = {}) {
 }
 // The system failing: a console error or an uncaught exception of the page's, a worker's error (its console.error), a
 // fault a machine reports (braid.fault). Each is the event 'system.fail' ({ kind, text }), and every wait of the API
-// (next, an element's lookup) ends on it, rejecting with it: a script waiting for a window does not sit on a
-// system that has gone wrong
+// (next, an element's lookup) ends on it, rejecting with it
 let lastFail = null;
 const systemFail = (kind, text) => { lastFail = { kind, text: String(text).slice(0, 600), at: performance.now() }; emit('system.fail', { kind, text: lastFail.text }); };
 {
@@ -6165,9 +6157,7 @@ async function actOn(q, send, item) {
   const e = await resolveEl(q), w = item && e.list && windows.find(x => x.native && x.title === e.window && x.app);
   if (w) { await w.app.cmd('listItem', [e.list, e.index, !!item.open]); return { ...e, how: 'its list view selected it' }; }
   // (a native button, a radio button or a check box: pressed by its own window, the machine's 'press', which refuses
-  // one a person could not press now (disabled, under a dialog, its window not the active one) and says which. By
-  // the pointer at the place it was listed at, a dialog that came or moved meanwhile took the click instead, and
-  // Monitor Settings' Yes went to what lay under it)
+  // one a person could not press now (disabled, under a dialog, its window not the active one) and says which)
   const btn = item && !item.open && e.hwnd && /^(pushbutton|radiobutton|checkbutton)$/.test(e.role) && windows.find(x => x.native && x.title === e.window && x.app);
   if (btn) {
     const r = await btn.app.cmd('press', [e.hwnd]);

@@ -3217,8 +3217,7 @@ def('KERNEL32', 'GetNumberFormatA', 6, function (lc, fl, val, fmt, out, n) {
 // array (2000h) or the va_list `args`; %0 ends the text, %n %% %. %! are line break, %, . and !; IGNORE_INSERTS (200h)
 // copies the text as it is. FROM_HMODULE (800h) takes the text from `src`'s message table (RT_MESSAGETABLE, 11),
 // FROM_SYSTEM (1000h) from KERNEL32.DLL's, the module's first where both are given; a message in neither is
-// ERROR_MR_MID_NOT_FOUND (317) and no text. (Answered "Error N." for each, Windows 98's Display Properties read
-// "Error 6." for its colors and "Error 9." for its screen area: DESK.CPL's own messages, with inserts)
+// ERROR_MR_MID_NOT_FOUND (317) and no text
 const msgTableText = (bytes, id) => {
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), nb = dv.getUint32(0, true);
   for (let i = 0; i < nb; i++) {
@@ -3248,8 +3247,7 @@ def('KERNEL32', 'FormatMessageA', 7, function (fl, src, id, lang, buf, n, args) 
   const f = fl & 0x400 ? this.readA(src) || '' : messageText(this, fl, src, id);
   if (f === null) { this.lastError = 317; return 0; }
   // (a maximum width, the flags' low byte: the text's own line breaks are not kept, each a space, and only %n's
-  // breaks are; under FFh no others are made, else the lines are broken at that width. Kept, Display Properties'
-  // colors read "High Color (16 bit)" and the message's CR LF, two blocks)
+  // breaks are; under FFh no others are made, else the lines are broken at that width)
   const width = fl & 0xff, src0 = width ? f.replace(/\r\n|\r|\n/g, ' ') : f;
   {
     const f = src0;

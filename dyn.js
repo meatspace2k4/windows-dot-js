@@ -1486,8 +1486,7 @@ P.neSet = function (rec, mod, seed) {
   for (const a of this.entryHooks ? this.entryHooks.keys() : []) if (a >= meta.textLo && a < meta.textHi) look[a - meta.textLo] = 0;
   meta.blocks = blocks; rec.module = mod; rec.run = run;
   // (its blocks taken back from its module when it is translated again: translateNE. The module's bytes are the memo's
-  // to keep, read back for that (neRebuild): kept here too, every module's bytes stood beside the engine's own copy,
-  // 270 MB of a start's 2.4 GB, MSHTML's 57 among them)
+  // to keep, read back for that (neRebuild, seedWasm): the engine holds its own copy of a compiled module's bytes)
   if (seed.wasm && seed.made && !rec.dynJs && typeof indexedDB !== 'undefined') seed = { ...seed, wasm: null, bytes: seed.wasm.length };
   rec.netSeed = seed;
   if (rec.dynNew) rec.dynNew.clear(); rec.dynSeen = 0;
