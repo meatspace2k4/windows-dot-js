@@ -156,6 +156,9 @@
       "killedBy": ["node tests/w98calls.test.mjs"], "case": null },
     { "id": "gitref-climb", "file": "tools/gitref.py", "fix": "no /__ref/ path climbs out of the commit",
       "from": "if not m or '..' in m[1].split('/') or '..' in m[2].split('/'): return None", "to": "if not m: return None",
-      "killedBy": ["python3 tests/gitref_test.py"], "case": null }
+      "killedBy": ["python3 tests/gitref_test.py"], "case": null },
+    { "id": "braid-share", "file": "braid.js", "fix": "moments share a memory's unchanged chunks; copied whole, the line ran the page out of memory",
+      "from": "chunks.push(old && sameBytes(old, cur) ? old : cur.slice());", "to": "chunks.push(cur.slice());",
+      "killedBy": ["node tests/braidshare.test.mjs"], "case": null }
   ]
 }

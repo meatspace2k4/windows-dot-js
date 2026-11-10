@@ -40,6 +40,36 @@ function fnv(h, bytes) { for (let i = 0; i < bytes.length; i++) { h ^= bytes[i];
 function fnvStr(h, s) { for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i) & 0xff; h = Math.imul(h, 0x01000193) >>> 0; } return h; }
 const FNV0 = 0x811c9dc5;
 
+// ---------------------------------------------------------------- a memory's bytes, in chunks shared between moments
+// A memory is taken as chunks of 256 KB, and a chunk whose bytes are the same as the memory's last moment's at that
+// place is that moment's chunk itself, not a copy: moments of a machine share the memory that did not change between
+// them, as anchors share their chunks on this computer. Copied whole, each moment held all of a machine's memory
+// (685 MB in Windows 98 Setup), and the line marking itself as Setup ran held five and more at once, and the page ran
+// out of memory. A chunk is never written once taken.
+const MEM_CHUNK = 0x40000;
+class Chunked {
+  constructor(chunks, length) { this.chunks = chunks; this.length = length; }
+  /** into `dst` (a Uint8Array at least as long), from its start */
+  copyTo(dst) { let at = 0; for (const c of this.chunks) { dst.set(c, at); at += c.length; } }
+}
+const lastChunks = new WeakMap();   // (a memory's chunks as its last moment took them)
+const sameBytes = (a, b) => {
+  if (a.length !== b.length) return false;
+  const n = a.length >>> 3, a8 = new BigUint64Array(a.buffer, a.byteOffset, n), b8 = new BigUint64Array(b.buffer, b.byteOffset, n);
+  for (let i = 0; i < n; i++) if (a8[i] !== b8[i]) return false;
+  for (let i = n << 3; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+};
+function takeMemory(mem) {
+  const live = new Uint8Array(mem.buffer), was = lastChunks.get(mem) || [], chunks = [];
+  for (let at = 0, k = 0; at < live.length; at += MEM_CHUNK, k++) {
+    const cur = live.subarray(at, Math.min(at + MEM_CHUNK, live.length)), old = was[k];
+    chunks.push(old && sameBytes(old, cur) ? old : cur.slice());
+  }
+  lastChunks.set(mem, chunks);
+  return new Chunked(chunks, live.length);
+}
+
 // ---------------------------------------------------------------- the graph
 /** the objects reachable from `roots`, each entry { o, kind, ... } by index; refs into them in the entries' contents.
  *  opts.opaque: a Set of objects kept by reference; opts.skip(obj, key): a property left out (a live thing of the host's) */
@@ -53,7 +83,7 @@ function takeGraph(roots, opts = {}) {
     let i = index.get(v); if (i !== undefined) return new Ref(i);
     i = entries.length; index.set(v, i);
     const e = { o: v }; entries.push(e);
-    if (hasWasm && v instanceof WebAssembly.Memory) { e.kind = 'mem'; e.bytes = new Uint8Array(v.buffer).slice(); bytes += e.bytes.length; return new Ref(i); }
+    if (hasWasm && v instanceof WebAssembly.Memory) { e.kind = 'mem'; e.bytes = takeMemory(v); bytes += e.bytes.length; return new Ref(i); }
     if (hasWasm && v instanceof WebAssembly.Global) { e.kind = 'global'; e.value = v.value; return new Ref(i); }
     if (v instanceof ArrayBuffer) { e.kind = 'ab'; e.bytes = new Uint8Array(v).slice(); bytes += e.bytes.length; return new Ref(i); }
     if (hasShared && v instanceof SharedArrayBuffer) { e.kind = 'ref'; return new Ref(i); }   // (shared with another worker or the page: a ring; a memory is copied through its Memory)
@@ -85,7 +115,7 @@ function takeGraph(roots, opts = {}) {
 function restoreGraph(g) {
   const E = g.entries, resolve = r => (r instanceof Ref ? (E[r.i].repl || E[r.i].o) : r);
   for (const e of E) {
-    if (e.kind === 'mem') new Uint8Array(e.o.buffer).set(e.bytes);
+    if (e.kind === 'mem') { e.bytes.copyTo(new Uint8Array(e.o.buffer)); lastChunks.set(e.o, e.bytes.chunks); }   // (the memory is the moment's again: its next moment shares these)
     else if (e.kind === 'global') e.o.value = e.value;
     else if (e.kind === 'ab') { if (e.o.byteLength === e.bytes.length) new Uint8Array(e.o).set(e.bytes); else e.repl = e.bytes.slice().buffer; }
     else if (e.kind === 'ta') { const t = e.ta || e.o; if (t.length === e.bytes.length) t.set(e.bytes); else if (!e.ta) e.repl = e.bytes.slice(); }
@@ -107,7 +137,8 @@ function restoreGraph(g) {
 function hashGraph(h, g) {
   for (const e of g.entries) {
     h = fnvStr(h, e.kind);
-    if (e.bytes) h = fnv(h, e.bytes);
+    if (e.bytes instanceof Chunked) for (const c of e.bytes.chunks) h = fnv(h, c);
+    else if (e.bytes) h = fnv(h, e.bytes);
     else if (e.kind === 'global') h = fnvStr(h, String(e.value));
     else if (e.kind === 'obj') for (const [k, v] of e.props) h = fnvStr(h, k + ':' + (v instanceof Ref ? '#' + v.i : typeof v === 'object' ? '' : String(v)));
     else if (e.items) h = fnvStr(h, String(e.items.length));
@@ -131,7 +162,8 @@ function serialize(g, nameOf = () => null) {
   const val = v => (v instanceof Ref ? { r: v.i } : typeof v === 'function' ? { fn: nameOf(v) || true } : (v !== null && typeof v === 'object') ? { opaque: nameOf(v) || true } : (typeof v === 'bigint' ? { big: v.toString() } : v === undefined ? { u: true } : Number.isNaN(v) ? { nan: true } : v));
   for (const e of g.entries) {
     const m = { kind: e.kind }; const p = Object.getPrototypeOf(e.o); m.proto = p && p.constructor && p.constructor.name !== 'Object' ? p.constructor.name : null;
-    if (e.kind === 'mem' || e.kind === 'ab') m.bytes = put(e.bytes);
+    if (e.kind === 'mem') { const at = total; for (const c of e.bytes.chunks) put(c); m.bytes = [at, e.bytes.length]; }
+    else if (e.kind === 'ab') m.bytes = put(e.bytes);
     else if (e.kind === 'ta') { m.bytes = put(e.bytes); m.ta = e.bytes.constructor.name; }
     else if (e.kind === 'global') m.value = e.value;
     else if (e.kind === 'canvas') { m.w = e.w; m.h = e.h; if (e.img) m.bytes = put(e.img.data); }
