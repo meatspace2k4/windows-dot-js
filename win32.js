@@ -1513,14 +1513,19 @@ function readLogFont(p, a) {
 function wsprintf(p, fmt, argp) {
   let i = 0;
   const next = () => { const v = p.r32(argp + 4 * i); i++; return v; };
-  return fmt.replace(/%([-#0 +]*)(\d*)(?:\.(\d+))?(h|l|ll)?([diuxXcsS%])/g, (m, flags, width, prec, len, t) => {
+  // (wsprintfA's string and character types: %s and %c the caller's own, ANSI; %ls, %ws and %S a wide string, %lc, %wc
+  // and %C a wide character; %hs and %hc ANSI. Read as ANSI, a wide string gave its first character alone: QUARTZ's
+  // DllRegisterServer makes its class keys with "CLSID\%ls", wrote every class to the one key "CLSID\{", and Windows
+  // Media Player found no filter graph class, error 80040154)
+  return fmt.replace(/%([-#0 +]*)(\d*)(?:\.(\d+))?(h|l|ll|w)?([diuxXcCsS%])/g, (m, flags, width, prec, len, t) => {
     if (t === '%') return '%';
+    const wide = len === 'l' || len === 'w' || (len !== 'h' && (t === 'S' || t === 'C'));
     let s;
     if (t === 'd' || t === 'i') s = String(next() | 0);
     else if (t === 'u') s = String(next() >>> 0);
     else if (t === 'x' || t === 'X') { s = (next() >>> 0).toString(16); if (t === 'X') s = s.toUpperCase(); if (flags.includes('#')) s = '0x' + s; }
-    else if (t === 'c') s = String.fromCharCode(next() & 0xff);
-    else s = p.readA(next()) ?? '(null)';
+    else if (t === 'c' || t === 'C') s = String.fromCharCode(next() & (wide ? 0xffff : 0xff));
+    else s = (wide ? p.readW(next()) : p.readA(next())) ?? '(null)';
     if (prec && 'sS'.includes(t)) s = s.slice(0, +prec);
     if (width && s.length < +width) s = flags.includes('-') ? s.padEnd(+width) : s.padStart(+width, flags.includes('0') && !'sS'.includes(t) ? '0' : ' ');
     return s;

@@ -1106,6 +1106,9 @@ function fsMsg(path, e) { return `${path} is not accessible.\n\n${e.message}`; }
 function openPath(path) {
   try { const i = fs.stat(path); if (!i.isDir) return shellOpen(path); fs.readdir(path); }
   catch (e) { if (e instanceof FSError) return msgBox(isRoot(path) ? driveLabel(path[0].toUpperCase()) : basename(path), fsMsg(path, e), 'error'); throw e; }
+  // (Windows' own Explorer the shell: the folder is its to open, as ShellExecute opens one. The page's folder window
+  // here was a Windows 95 window over Windows 98's desktop, in none of its colors)
+  const mon = monApp(); if (mon) return mon.cmd('shellOpen', [path]);
   return openFolder(new FsSource(path));
 }
 function shellOpen(path, arg) {
@@ -1126,7 +1129,7 @@ function runExe(path, arg) {
     // when it ends), as Windows 95 gives one a console
     if (b && exeKind(b) === 'pe') { const at = b[0x3c] | b[0x3d] << 8 | b[0x3e] << 16; if ((b[at + 92] | b[at + 93] << 8) === 3) { let sp = path; try { sp = fs.stat(path).shortPath; } catch (_) { /* as given */ } return dosBox('C:\\COMMAND.COM', `/C ${sp}${arg ? ` ${arg}` : ''}`); } }
   }
-  if (n === 'EXPLORER.EXE') return arg ? openPath(resolveArg(arg)) : openFolder(MyComputer);
+  if (n === 'EXPLORER.EXE') { const mon = monApp(); return arg ? openPath(resolveArg(arg)) : mon ? mon.cmd('shellOpenSpecial', [0x11]) : openFolder(MyComputer); }   // (0x11: CSIDL_DRIVES, My Computer)
   // any other program the system bundle carries runs natively
   runNative(path, arg || '').then(ok => { if (!ok) msgBox(dispName(basename(path)), `${path} is not a valid Windows application.`, 'error'); });
 }
