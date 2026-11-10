@@ -46,7 +46,8 @@ const run = named => {
   p.cpu.cs.value = g.sel; p.cpu.csb.value = g.base; p.cpu.ss.value = d.sel; p.cpu.ssb.value = d.base; p.cpu.esp.value = 0x10;
   assert.equal(rec.run(g.base), 3, 'out of the module at the far jump');
   const regs = Object.fromEntries(Object.entries(p.cpu).map(([k, v]) => [k, v.value]));
-  return { regs, rec, base: g.base, stack: [...p.u8.subarray(d.base, d.base + 0x10)] };
+  const again = () => { for (const r of ['eax', 'ebx', 'ecx']) p.cpu[r].value = 0; p.cpu.cs.value = g.sel; p.cpu.csb.value = g.base; p.cpu.ss.value = d.sel; p.cpu.ssb.value = d.base; p.cpu.esp.value = 0x10; return rec.run(g.base); };
+  return { p, again, regs, rec, base: g.base, stack: [...p.u8.subarray(d.base, d.base + 0x10)] };
 };
 const w = run(false), j = run(true);
 assert.equal(w.regs.eax & 0xffff, 0xfcb8, 'the wasm module: -(15 << 3) * 7');
@@ -59,5 +60,25 @@ const src = J.source('PMOD');
 assert.match(src, new RegExp(`function b_${(j.base >>> 0).toString(16)}\\(\\)`), 'a block is a function named by its address');
 assert.match(src, /sourceURL=dyn\/PMOD\.js/);
 assert.equal(J._source(j.rec.netSeed.wasm, 'PMOD', j.rec.netSeed.blocks), src, 'the same wasm, the same text');
-assert.deepEqual(J.breakAt(j.base), [j.base >>> 0]); assert.deepEqual(J.clearBreak(), []);
+
+// the debugger (W95DynJs.debug, the page's win95.debug). A breakpoint fires where a block is entered: the loop's block
+// at base + 5 is entered by the jump back, with CX 4, 3, 2, 1 (the first pass runs on inside the block before it)
+const dbg = (...a) => J.debug(j.p, a), loop = (j.base + 5) >>> 0, seen = []; J.onHit = h => seen.push(h.seq);
+assert.deepEqual(dbg('modules').map(m => [m.name, m.js]), [['PMOD', true]]);
+const b1 = dbg('breakpoint', { at: loop, capture: 'R.ecx & 0xffff' });
+assert.equal(j.again(), 3, 'a recording breakpoint does not stop the machine');
+assert.deepEqual(dbg('hits').map(h => h.value), [4, 3, 2, 1], 'each time the block is reached, with the captured value');
+assert.deepEqual(seen, [1, 2, 3, 4],'each hit told as it happens');
+const h0 = dbg('hits')[0]; assert.equal(h0.at, loop); assert.equal(h0.id, b1.id); assert.equal(h0.regs.ecx & 0xffff, 4); assert.equal(h0.stack.length, 16);
+assert.equal(dbg('breakpoints')[0].n, 4);
+assert.equal(dbg('remove', b1.id), true); assert.equal(dbg('remove', b1.id), false);
+const b2 = dbg('breakpoint', { at: loop.toString(16), when: 'n === 3 && (R.ecx & 0xffff) === 2', capture: 'r8(R.csb + 5)' });
+j.again();
+assert.deepEqual(dbg('hits', 4).map(h => [h.id, h.n, h.value]), [[b2.id, 3, 0x01]], 'a condition: only where it holds; memory read (the block\'s first byte)');
+const bs = dbg('source', loop + 1); assert.equal(bs.block, loop); assert.match(bs.text, new RegExp(`^function b_${loop.toString(16)}\\(`)); assert.match(bs.text, /\n\}$/);
+assert.deepEqual(dbg('read', j.base, 3), [0xb9, 5, 0]);
+assert.equal(dbg('clear'), true); assert.deepEqual(dbg('breakpoints'), []); assert.deepEqual(dbg('hits'), []);
+assert.deepEqual(dbg('run', []), []); assert.ok(/native code/.test(String(j.rec.run)), 'run([]): back to WebAssembly');
+assert.deepEqual(dbg('run', ['pmod']), ['PMOD']); assert.equal(j.again(), 3); assert.equal(j.p.cpu.eax.value & 0xffff, 0xfcb8);
+assert.throws(() => dbg('nope'), /no method nope/);
 console.log('dynjs: ok');

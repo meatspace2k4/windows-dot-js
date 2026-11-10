@@ -3,7 +3,8 @@
 // A module named in W95DynJs.names (set by mod-dynjs.js, #mod=dynjs:MSTASK+EXPLORER) runs as JavaScript made from its
 // wasm bytes instead of as WebAssembly. Each block is a function named by its guest address (b_1001def); registers are
 // R.eax etc. The source shows in DevTools as dyn/NAME.js, so breakpoints work there.
-// W95DynJs.breakAt(address) pauses at a block's entry while DevTools is open.
+// The page's win95.debug adds recording breakpoints on top (conditions, captured values, block source, memory); see
+// "the debugger" below. To stop the machine, set a breakpoint in DevTools.
 // The output depends only on the wasm bytes, so memoized modules convert without translating again.
 (() => {
 const VT = { 0x7f: 'i32', 0x7e: 'i64', 0x7d: 'f32', 0x7c: 'f64' };
@@ -156,6 +157,7 @@ function source(wasm, label, blocks) {
     `let dv = new DataView(mem.buffer); const D = () => (dv.buffer === mem.buffer ? dv : (dv = new DataView(mem.buffer)));`,
     `const r8 = a => D().getUint8(a >>> 0), r8s = a => D().getInt8(a >>> 0), r16 = a => D().getUint16(a >>> 0, true), r16s = a => D().getInt16(a >>> 0, true), r32 = a => D().getInt32(a >>> 0, true), r64 = a => D().getBigInt64(a >>> 0, true), rf32 = a => D().getFloat32(a >>> 0, true), rf64 = a => D().getFloat64(a >>> 0, true);`,
     `const w8 = (a, v) => D().setUint8(a >>> 0, v), w16 = (a, v) => D().setUint16(a >>> 0, v, true), w32 = (a, v) => D().setInt32(a >>> 0, v, true), w64 = (a, v) => D().setBigInt64(a >>> 0, v, true), wf32 = (a, v) => D().setFloat32(a >>> 0, v, true), wf64 = (a, v) => D().setFloat64(a >>> 0, v, true);`,
+    `const M = { r8, r16, r32 };`,
     `const zero = () => { throw new WebAssembly.RuntimeError('divide by zero'); };`,
     `const divs = (a, b) => (b === 0 ? zero() : a === -2147483648 && b === -1 ? (() => { throw new WebAssembly.RuntimeError('integer overflow'); })() : (a / b) | 0), divu = (a, b) => (b === 0 ? zero() : ((a >>> 0) / (b >>> 0)) | 0);`,
     `const rems = (a, b) => (b === 0 ? zero() : (a % b) | 0), remu = (a, b) => (b === 0 ? zero() : ((a >>> 0) % (b >>> 0)) | 0);`,
@@ -168,7 +170,7 @@ function source(wasm, label, blocks) {
   m.bodies.forEach((b, i) => {
     const t = m.types[m.funcT[i]], a = addr.get(i), name = a === undefined ? (i === 0 ? 'run' : `f${i}`) : `b_${hex(a)}`;
     L.push(`function ${name}(${t.p.map((_, k) => `p${k}`).join(', ')}) {${a === undefined ? '' : `   // ${hex(a)}`}`);
-    if (a !== undefined) L.push(`  if (BP.on) BP.at(0x${hex(a)}, R);`);
+    if (a !== undefined) L.push(`  if (BP.on) BP.at(0x${hex(a)}, R, M);`);
     L.push(body(m, wasm, b, t, name), '}');
   });
   L.push(`const T = [${m.table.map(f => `b_${hex(addr.get(f - nimp))}`).join(', ')}];`);
@@ -177,23 +179,91 @@ function source(wasm, label, blocks) {
   L.push(`const f0 = run;`, `return { run };`, `})`, `//# sourceURL=dyn/${label.replace(/[^\w.-]+/g, '_')}.js`);
   return L.join('\n');
 }
-// Every block calls BP.at(address, R) while BP.on is set; at a breakpoint address it runs `debugger`, which pauses in
-// DevTools with the registers in R.
-const BP = { on: false, breaks: new Set(), at(a, R) { if (BP.breaks.has(a)) debugger; } };
+// ---------------------------------------------------------------- the debugger
+// Every block of a JS-run module calls BP.at(address, R, M) while BP.on is set (M: r8, r16, r32 over guest memory).
+// A breakpoint is { id, at, when, capture, n }. It records a hit and runs on; the machine never stops here.
+//   when:    optional expression; the breakpoint fires only when it is truthy.
+//   capture: optional expression; its value is kept with the hit.
+// Expressions see R (registers), r8/r16/r32 (memory), n (times this breakpoint was reached) and thread (its id).
+const HITS_MAX = 1000;
+const BP = { on: false, byAddr: new Map(), byId: new Map(), hits: [], seq: 0, nextId: 1, proc: null, onHit: null,
+  at(a, R, M) {
+    const list = BP.byAddr.get(a); if (!list) return;
+    const t = BP.proc && BP.proc.thread16, thread = t ? t.id : 0;
+    for (const b of list) {
+      b.n++;
+      if (b.whenFn && !b.whenFn(R, M.r8, M.r16, M.r32, b.n, thread)) continue;
+      const regs = {}; for (const k of Object.keys(R)) regs[k] = R[k] >>> 0;
+      const sp = (R.ss & 0xfff8 ? R.ssb + (R.esp & 0xffff) : R.esp) >>> 0, stack = [];
+      for (let i = 0; i < 16; i++) stack.push(M.r32(sp + 4 * i) >>> 0);
+      const hit = { seq: ++BP.seq, id: b.id, at: a, n: b.n, thread, regs, stack, value: b.captureFn ? b.captureFn(R, M.r8, M.r16, M.r32, b.n, thread) : undefined };
+      BP.hits.push(hit); if (BP.hits.length > HITS_MAX) BP.hits.shift();
+      if (BP.onHit) BP.onHit(hit);
+    }
+  } };
 const made = new Map();
+const expr = s => (s ? new Function('R', 'r8', 'r16', 'r32', 'n', 'thread', `return (${s});`) : null);
+const addrOf = v => (typeof v === 'string' ? parseInt(v, 16) : v) >>> 0;
+const labelOf = m => (m.name === 'EXE' ? m.meta.path || m.meta.name || 'EXE' : m.name);
+const shortOf = m => String(labelOf(m)).split(/[\\/]/).pop().replace(/\.\w+$/, '').toUpperCase();
+const translated = p => (p.modules || []).filter(m => m && m.meta && m.meta.lookup && m.netSeed && m.netSeed.wasm && m.run && !m.netText);
+/** The debugger's methods, each called with the machine's process first. The page's win95.debug calls them through
+ *  the worker's cmd 'debug' ([method, ...arguments]); addresses are numbers or hex strings. */
+const D = {
+  /** The translated modules: [{ name, label, lo, hi, base, blocks, js }]. */
+  modules: p => translated(p).map(m => ({ name: shortOf(m), label: String(labelOf(m)), lo: m.meta.textLo >>> 0, hi: m.meta.textHi >>> 0, base: (m.base || m.meta.textLo) >>> 0, blocks: m.netSeed.blocks.length, js: !!m.dynJs })),
+  /** Run exactly these modules as JavaScript (names without extension, '*' for all); the rest go back to wasm.
+   *  Returns the names now running as JavaScript. */
+  run(p, names = []) {
+    api.names.clear(); for (const n of names) if (n) api.names.add(String(n).toUpperCase().replace(/\.\w+$/, ''));
+    for (const m of translated(p)) { const want = api.wants(labelOf(m)); if (want === !!m.dynJs || m.hidden) continue; m.dynJs = want; p.neSet(m, m.module, m.netSeed); }
+    return translated(p).filter(m => m.dynJs).map(shortOf);
+  },
+  /** Add a breakpoint: { at, when, capture }. Returns { id, at }. Its module must be running as JavaScript. */
+  breakpoint(p, spec = {}) {
+    const at = addrOf(spec.at), b = { id: BP.nextId++, at, when: spec.when || null, capture: spec.capture || null, n: 0, whenFn: expr(spec.when), captureFn: expr(spec.capture) };
+    BP.byId.set(b.id, b); if (!BP.byAddr.has(at)) BP.byAddr.set(at, []); BP.byAddr.get(at).push(b); BP.on = true;
+    return { id: b.id, at };
+  },
+  /** Remove one breakpoint by id; true when it existed. */
+  remove(p, id) {
+    const b = BP.byId.get(id); if (!b) return false;
+    BP.byId.delete(id); const l = BP.byAddr.get(b.at).filter(x => x !== b); if (l.length) BP.byAddr.set(b.at, l); else BP.byAddr.delete(b.at);
+    BP.on = !!BP.byId.size; return true;
+  },
+  /** Remove every breakpoint and forget the recorded hits. */
+  clear() { BP.byId.clear(); BP.byAddr.clear(); BP.hits.length = 0; BP.on = false; return true; },
+  /** The breakpoints: [{ id, at, when, capture, n }]. */
+  breakpoints: () => [...BP.byId.values()].map(({ id, at, when, capture, n }) => ({ id, at, when, capture, n })),
+  /** The recorded hits with seq above `since`: [{ seq, id, at, n, thread, regs, stack, value }]. */
+  hits: (p, since = 0) => BP.hits.filter(h => h.seq > since),
+  /** The JavaScript of the block holding an address, from its module's wasm (the module need not be running as
+   *  JavaScript): { module, block, text }, or null where no translated block holds it. */
+  source(p, addr) {
+    const a = addrOf(addr), m = translated(p).find(x => a >= x.meta.textLo && a < x.meta.textHi); if (!m) return null;
+    const bl = m.netSeed.blocks; let block = -1; for (const b of bl) if (b <= a && b > block) block = b; if (block < 0) return null;
+    const key = String(labelOf(m)).toUpperCase(); if (!made.has(key)) made.set(key, source(m.netSeed.wasm, labelOf(m), bl));
+    const s = made.get(key), i = s.indexOf(`\nfunction b_${hex(block)}(`); if (i < 0) return null;
+    return { module: shortOf(m), block, text: s.slice(i + 1, s.indexOf('\n}\n', i) + 2) };
+  },
+  /** Guest memory: `n` bytes at an address (4096 at most). */
+  read: (p, addr, n = 64) => Array.from(p.u8.subarray(addrOf(addr), addrOf(addr) + Math.min(n, 4096))),
+};
 const api = {
   /** Module names to run as JavaScript: upper case, no extension. '*' means all. */
   names: new Set(),
   wants(label) { const n = String(label).split(/[\\/]/).pop().replace(/\.\w+$/, '').toUpperCase(); return api.names.has(n) || api.names.has('*'); },
   /** Make the module; returns { run }. The source is kept for W95DynJs.source(label). */
-  make(wasm, label, blocks, env, cpu, mem) {
+  make(wasm, label, blocks, env, cpu, mem, proc) {
     const src = source(wasm, label, blocks); made.set(String(label).toUpperCase(), src);
+    if (proc) BP.proc = proc;
     return (0, eval)(src)(env, cpu, mem, BP);
   },
   source: label => made.get(String(label).toUpperCase()) || null,
-  /** Pause at a block's entry (needs DevTools open); clearBreak removes one address or all. */
-  breakAt: a => { BP.breaks.add(a >>> 0); BP.on = true; return [...BP.breaks]; },
-  clearBreak: a => { if (a === undefined) BP.breaks.clear(); else BP.breaks.delete(a >>> 0); BP.on = !!BP.breaks.size; return [...BP.breaks]; },
+  /** The debugger: debug(process, [method, ...arguments]) calls one of D's methods (see above). */
+  debug(p, [method, ...args]) { if (!D[method]) throw new Error(`debug: no method ${method}`); BP.proc = p; return D[method](p, ...args); },
+  /** Called with each recorded hit as it happens (the worker posts it to the page). */
+  set onHit(f) { BP.onHit = f; }, get onHit() { return BP.onHit; },
   _source: source, _parse: parse,
 };
 if (typeof self !== 'undefined') self.W95DynJs = api;

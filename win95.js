@@ -4040,6 +4040,7 @@ class RemoteApp extends NativeApp {
       // the screen's mode, DAC and the cursor sprite, as often as the machine runs, its window list or not (USER held)
       case 'scan': this.scr = m; this.followMode(m); dirty(); return;
       case 'mode': if (this.modeDone) this.modeDone(m.r); return;   // (a mode asked for while a thread held USER, made now)
+      case 'debug': emit('debug.hit', m.hit); return;   // a recording breakpoint was reached (win95.debug)
       case 'intent': { const S = sharedNow(); if (S) S.intent(m.i); return; }   // (a setting this machine's person made: ne16.js hookIntents)
       case 'stroke': if (this.system) osStrokeOut(m); return;   // (this person's mouse stroke into a window, or part of one: worker.js recordStroke)
       case 'strokeAt': { const client = String(m.key).split(':')[0]; if (m.done) peerAt.delete(client); else peerAt.set(client, { x: m.x, y: m.y, t: Date.now() }); dirty(); return; }   // (another person's stroke, as far as it is drawn here: their pointer drawn on it)
@@ -6261,6 +6262,28 @@ const braidUi = () => ({
 const braid = window.W95BraidPage ? window.W95BraidPage(braidUi()) : null;
 /** a fault a machine reported, written to the line under its generation (braid-page.js fault) */
 function braidFault(app, f, fatal) { if (braid) braid.fault(app, f, fatal); }
+// win95.debug: the debugger for the system machine's translated code (dynjs.js). Every method returns a promise.
+//   modules()                 the translated modules: [{ name, lo, hi, base, blocks, js }]
+//   run(names)                run exactly these modules as JavaScript ('*' for all); returns the names running so
+//   breakpoint({ at, when, capture })
+//                             Records a hit each time the block at `at` is entered, and runs on. at: a guest address
+//                             (number or hex string) where a block starts, in a module run as JavaScript.
+//                             when / capture: expressions over R (registers), r8/r16/r32 (memory), n (times reached)
+//                             and thread. Returns { id, at }.
+//   remove(id), clear()       remove one breakpoint, or all of them and the recorded hits
+//   breakpoints()             [{ id, at, when, capture, n }]
+//   hits(since)               recorded hits with seq above `since`: [{ seq, id, at, n, thread, regs, stack, value }]
+//   next(id, ms)              the next hit of breakpoint `id` (any, when id is omitted); rejects after ms
+//   source(address)           the JavaScript of the block holding an address: { module, block, text }
+//   read(address, n)          n bytes of guest memory
+// Each hit is also the page event 'debug.hit' (win95.on('debug.hit', fn)).
+const debugApi = (() => {
+  const call = (method, ...args) => { if (!sysApp || !sysApp.alive) return Promise.reject(new Error('debug: the system\'s machine is not running')); return sysApp.cmd('debug', [method, ...args]); };
+  const api = {};
+  for (const m of ['modules', 'run', 'breakpoint', 'remove', 'clear', 'breakpoints', 'hits', 'source', 'read']) api[m] = (...a) => call(m, ...a);
+  api.next = (id, ms = 10000) => script.next('debug.hit', h => id === undefined || h.id === id, ms);
+  return api;
+})();
 // a script of the site's loaded again over the running machine or page: a mod of ring α's, named (with the sum of its
 // text) beside every moment marked from then on, never carried in one (braid.js mod)
 async function reloadScript(f) {
@@ -6296,7 +6319,7 @@ window.win95 = { ...script,
     get disk() { return pcFloppy.image ? { name: pcFloppy.name, image: pcFloppy.image } : null; },
   },
   braid,
-  cd: { images: () => cdImages().map(i => i.name), insert: name => cdInsert(name), eject: () => cdInsert(null), get disc() { const v = fs.vols.get('D'); return v.ready ? { label: v.label, serial: v.serial, sectors: v.sectors } : null; } }, get ccd() { return ccdApi || (ccdApi = window.W95Ccd ? window.W95Ccd(ccdUi()) : null); }, get nativeApps() { return [...nativeApps]; }, get dos() { return [...dosMachines]; }, startSystem, get sysApp() { return sysApp; }, reloadScript, netBoot, netCall, syncNetDrives, mapNetDrive, disconnectNetDrive, fs, render, displayProperties, startFullSaver, get fullSaver() { return fullSaver; }, properties, driveProps, openFolder, openPath, shellOpen, notepad, msgBox, runDialog, findComputer, findFiles, winHelp, shutDownDialog, MyComputer, get state() { return { menus: menus.length, menuSrc, modals: modals.length, cap: !!cap, drag: !!drag, screen, active: active && active.title }; } };
+  cd: { images: () => cdImages().map(i => i.name), insert: name => cdInsert(name), eject: () => cdInsert(null), get disc() { const v = fs.vols.get('D'); return v.ready ? { label: v.label, serial: v.serial, sectors: v.sectors } : null; } }, get ccd() { return ccdApi || (ccdApi = window.W95Ccd ? window.W95Ccd(ccdUi()) : null); }, get nativeApps() { return [...nativeApps]; }, get dos() { return [...dosMachines]; }, startSystem, get sysApp() { return sysApp; }, debug: debugApi, reloadScript, netBoot, netCall, syncNetDrives, mapNetDrive, disconnectNetDrive, fs, render, displayProperties, startFullSaver, get fullSaver() { return fullSaver; }, properties, driveProps, openFolder, openPath, shellOpen, notepad, msgBox, runDialog, findComputer, findFiles, winHelp, shutDownDialog, MyComputer, get state() { return { menus: menus.length, menuSrc, modals: modals.length, cap: !!cap, drag: !!drag, screen, active: active && active.title }; } };
 // the scripting API's calls shown as they are made (?scriptlog=1, or win95.scriptLog = true): each win95.* call and each
 // win95.sysApp.cmd, then what it answered, as 'script' lines at the debug level in DevTools' console and the machines'
 // log (Verbose in both: Debug Monitor's Options > Verbose),

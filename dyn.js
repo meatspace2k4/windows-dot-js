@@ -1447,7 +1447,8 @@ P.neSet = function (rec, mod, seed) {
   const env = { ...this.imports.env, ...dynEnv(this), lookup: new WebAssembly.Global({ value: 'i32', mutable: false }, meta.lookup | 0) };
   // A module named for the debugger runs as JavaScript made from the same wasm (dynjs.js).
   const label = rec.name === 'EXE' ? meta.path || meta.name || 'EXE' : rec.name, J = self.W95DynJs;
-  const run = J && seed.wasm && J.wants(label) ? J.make(seed.wasm, label, blocks, env, this.cpu, this.mem).run : new WebAssembly.Instance(mod, { env, cpu: this.cpu }).exports.run;
+  rec.dynJs = !!(J && seed.wasm && J.wants(label));
+  const run = rec.dynJs ? J.make(seed.wasm, label, blocks, env, this.cpu, this.mem, this).run : new WebAssembly.Instance(mod, { env, cpu: this.cpu }).exports.run;
   const look = new Uint32Array(this.mem.buffer, meta.lookup, meta.textHi - meta.textLo);
   look.fill(0); blocks.forEach((a, i) => { look[a - meta.textLo] = i + 1; });
   // (a hooked address is the host's to enter, as run-time code leaves it: no block there, its call comes to the

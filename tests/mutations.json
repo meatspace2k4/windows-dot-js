@@ -173,7 +173,7 @@
       "from": "  this.sysLevel = (this.sysLevel || 0) + 1;\n  const sel = target >>> 16, off = target & 0xffff;", "to": "  const sel = target >>> 16, off = target & 0xffff;",
       "killedBy": ["node tests/syslevel.test.mjs"], "case": null },
     { "id": "dynjs-named", "file": "dyn.js", "fix": "a module named for the debugger runs as JavaScript made from its wasm",
-      "from": "J && seed.wasm && J.wants(label) ? ", "to": "false ? ",
+      "from": "rec.dynJs = !!(J && seed.wasm && J.wants(label));", "to": "rec.dynJs = false;",
       "killedBy": ["node tests/dynjs.test.mjs"], "case": null }
   ]
 }
