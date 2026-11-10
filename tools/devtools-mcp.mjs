@@ -81,13 +81,14 @@ async function props(s, objectId, max = 60) {
 }
 const scriptOf = (s, id) => s.scripts.get(id) || { id, url: `(script ${id})` };
 const frameLine = (s, f) => `${f.functionName || '(anonymous)'}  ${scriptOf(s, f.location.scriptId).url}:${f.location.lineNumber + 1}:${f.location.columnNumber + 1}`;
-/** where a paused session is: the reason, its call frames, and the top frame's local and closure variables */
+/** where a paused session is: the reason, its call frames, and the top frame's local variables (closure and global
+ *  names are left to evaluate) */
 async function where(s, frames = 12, scopes = true) {
   if (!s.paused) return { paused: false };
   const p = s.paused, out = { paused: true, reason: p.reason, hitBreakpoints: p.hitBreakpoints || [], frames: p.callFrames.slice(0, frames).map((f, i) => `#${i} ${frameLine(s, f)}`) };
   if (scopes && p.callFrames[0]) {
     out.scopes = {};
-    for (const sc of p.callFrames[0].scopeChain) if ((sc.type === 'local' || sc.type === 'closure' || sc.type === 'block') && sc.object.objectId) out.scopes[sc.type + (sc.name ? ` ${sc.name}` : '')] = await props(s, sc.object.objectId);
+    for (const sc of p.callFrames[0].scopeChain) if ((sc.type === 'local' || sc.type === 'block') && sc.object.objectId) out.scopes[sc.type + (sc.name ? ` ${sc.name}` : '')] = await props(s, sc.object.objectId);
   }
   return out;
 }
@@ -155,7 +156,7 @@ const tools = {
     async run({ session: n, expression, frame = 0 }) {
       const s = session(n);
       const r = s.paused ? await cmd(s, 'Debugger.evaluateOnCallFrame', { callFrameId: s.paused.callFrames[frame].callFrameId, expression, returnByValue: false, generatePreview: false })
-        : await cmd(s, 'Runtime.evaluate', { expression, awaitPromise: true, returnByValue: false, replMode: true });
+        : await cmd(s, 'Runtime.evaluate', { expression, awaitPromise: true, returnByValue: false });
       if (r.exceptionDetails) throw new Error((r.exceptionDetails.exception && r.exceptionDetails.exception.description) || r.exceptionDetails.text);
       const o = r.result;
       if (o.objectId && o.type === 'object' && o.subtype !== 'error') return { value: show(o), properties: await props(s, o.objectId) };
@@ -179,5 +180,14 @@ async function handle(m) {
     catch (e) { return reply(m.id, { content: [{ type: 'text', text: `error: ${e.message}` }], isError: true }); }
   }
   if (m.id !== undefined) fail(m.id, -32601, `no method ${m.method}`);
+}
+// From the shell, without an MCP client: --run '[["attach",{"url":"8151"}],["scripts",{"session":"s2","filter":"dyn/"}]]'
+// runs the calls in order in one connection and prints each result. Breakpoints and pauses end with the process.
+if (process.argv[2] === '--run') {
+  for (const [name, args] of JSON.parse(process.argv[3])) {
+    let r; try { await connect(); r = await tools[name].run(args || {}); } catch (e) { r = `error: ${e.message}`; }
+    console.log(`## ${name}\n${typeof r === 'string' ? r : JSON.stringify(r, null, 1)}`);
+  }
+  process.exit(0);
 }
 createInterface({ input: process.stdin }).on('line', line => { if (!line.trim()) return; let m; try { m = JSON.parse(line); } catch (e) { return; } handle(m).catch(e => { if (m.id !== undefined) fail(m.id, -32603, e.message); }); });
