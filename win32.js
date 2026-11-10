@@ -2945,7 +2945,17 @@ def('KERNEL32', 'GetConsoleMode', 2, function (h, p) { const o = conOf(this, h);
 // (the input's mode to the console's window, which edits and echoes the line as it says: ENABLE_LINE_INPUT 2, ENABLE_ECHO_INPUT 4)
 def('KERNEL32', 'SetConsoleMode', 2, function (h, mode) { const o = conOf(this, h); if (!o) return 0; if (o.io === 'in') { o.mode = mode; if (this.host.consoleMode) this.host.consoleMode(o.console, mode); } return 1; });
 def('KERNEL32', 'WriteConsoleA', 5, function (h, buf, n, put) { const o = conOf(this, h); if (!o) return 0; conWrite(this, o, buf, n); if (put) this.w32(put, n); return 1; });
-def('KERNEL32', 'DuplicateHandle', 7, function (a, h, b, out) { if (out) this.w32(out, h); return 1; });
+// a handle duplicated: the same object. The calling thread's or process's pseudo-handle (GetCurrentThread FFFFFFFEh,
+// GetCurrentProcess FFFFFFFFh) is duplicated as a real handle to that very thread or process, which another thread
+// can use: MPR hands its waiting thread's to MPREXE, which queues the APC that ends the wait there (copied as the
+// pseudo-handle, the APC went to MPREXE's own thread, and GRPCONV's link to the Removable Disk in SendTo waited for
+// good: Windows 98's first start stopped at "Programs on the Start menu")
+def('KERNEL32', 'DuplicateHandle', 7, function (a, h, b, out) {
+  h >>>= 0;
+  const r = h === 0xfffffffe ? this.newHandle({ kind: 'thread', id: this.currentThreadId() })
+    : h === 0xffffffff ? this.newHandle({ kind: 'process', pid: this.pc.pid }) : h;
+  if (out) this.w32(out, r); return 1;
+});
 def('KERNEL32', 'WaitForSingleObject', 2, () => 0);
 // a process's exit code: STILL_ACTIVE (103h) while it runs, else its code (a Win16 task's too); the process's own
 // pseudo-handle asks about itself. (It answered FALSE, and a caller polling for a child's end never saw it)

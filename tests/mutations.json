@@ -159,6 +159,12 @@
       "killedBy": ["python3 tests/gitref_test.py"], "case": null },
     { "id": "braid-share", "file": "braid.js", "fix": "moments share a memory's unchanged chunks; copied whole, the line ran the page out of memory",
       "from": "chunks.push(old && sameBytes(old, cur) ? old : cur.slice());", "to": "chunks.push(cur.slice());",
-      "killedBy": ["node tests/braidshare.test.mjs"], "case": null }
+      "killedBy": ["node tests/braidshare.test.mjs"], "case": null },
+    { "id": "duphandle-pseudo", "file": "win32.js", "fix": "DuplicateHandle of a pseudo-handle is a real handle to that thread or process: MPR's APC from MPREXE reaches GRPCONV's thread",
+      "from": "const r = h === 0xfffffffe ? this.newHandle({ kind: 'thread', id: this.currentThreadId() })", "to": "const r = h === 0 ? this.newHandle({ kind: 'thread', id: this.currentThreadId() })",
+      "killedBy": ["node tests/duphandle.test.mjs"], "case": null },
+    { "id": "mprexe-once", "file": "worker.js", "fix": "MPREXE is MPR's to start; the host's second one took MPR's shared server record and GRPCONV waited for good",
+      "from": "      this.blankPasswordList();\n", "to": "      this.blankPasswordList(); this.spawnProgram('C:\\\\WINDOWS\\\\SYSTEM\\\\MPREXE.EXE', '');\n",
+      "killedBy": ["node tests/mprexeonce.test.mjs"], "case": null }
   ]
 }

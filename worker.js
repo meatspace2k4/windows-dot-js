@@ -631,10 +631,12 @@ class Machine {
     try {
       p.init16(); const m = p.loadDll('MPR'); if (m) { p.runPendingInits(); p.attach(m); }
       this.blankPasswordList();
-      // the network's process, started as KERNEL32 starts it at boot and run to its first wait: it is its start that
-      // connects USER's network functions (SM_NETWORK), which the shell reads when it first lays out the desktop
-      const exe = ['C:\\WINDOWS\\SYSTEM\\MPREXE.EXE', 'C:\\WINDOWS\\MPREXE.EXE'].find(f => fs.exists(f));
-      if (exe) { const pc = this.spawnProgram(exe, ''); if (typeof pc === 'object') p.runUntilIdle(pc, 4000); }
+      // (the network's process, MPREXE, is MPR's to start, as Windows 95's and 98's MPR.DLL both do: the first call
+      // with no server registered in MPR's shared data creates MPRInitEvent, starts SYSTEM\MPREXE.EXE under MPRMutex
+      // and waits for it to register; every later call, in any process, finds it. MSPWL32's calls above are that first
+      // call. Started again here as well, a second MPREXE took MPR's shared server record and its worker thread ended
+      // with requests queued to it: GRPCONV's link to the Removable Disk in SendTo waited for good, and Windows 98's
+      // first start stopped at "Programs on the Start menu")
     } catch (e) { console.error(e); }
     post({ t: 'mpr', up: !!p.byName.get('MPR') });   // (the shell's network waits for it: win95.js netBoot)
   }
