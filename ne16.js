@@ -3385,9 +3385,9 @@ def16('KERNEL', 2, 'w', 'v', function (code) { this.exitCode = code; this.host.e
 // major: INT 21h AH=30h's), as Windows 95's own answers. AX alone, 4F4h, Windows 98 Setup read DX for MS-DOS 0 and
 // said it needs MS-DOS 5.00 or later
 def16('KERNEL', 3, '', 'l', () => 0x07005f03);
-// GetVersionEx(far OSVERSIONINFO): 4.0 build 950, Windows (KERNEL32's GetVersionExA answers the same); SETUPX takes the
+// GetVersionEx(far OSVERSIONINFO): as KERNEL32's GetVersionExA answers (win32.js versionInfo); SETUPX takes the
 // export's presence for an installed system rather than Setup's
-def16('KERNEL', 149, 'l', 'w', function (fp) { const p = this.lin(fp); if (!p || this.r32(p) < 148) return 0; this.w32(p + 4, 4); this.w32(p + 8, 0); this.w32(p + 12, 950); this.w32(p + 16, 1); this.writeA(p + 20, ' B'); return 1; });
+def16('KERNEL', 149, 'l', 'w', function (fp) { const p = this.lin(fp); if (!p || this.r32(p) < 148) return 0; iniApi().versionInfo(this, p); return 1; });
 def16('KERNEL', 4, 'www', 'w', function (sel, start, end) { const r = this.localInit(sel, start, end); this.cpu.ecx.value = lo16(this.cpu.ecx.value, r); return r; });
 def16('KERNEL', 5, 'ww', 'w', function (fl, n) { const h = this.localAlloc(fl, n); this.cpu.ecx.value = lo16(this.cpu.ecx.value, h); return h; });   // also in CX
 def16('KERNEL', 6, 'www', 'w', function (h, n, fl) { return this.localReAlloc(h, n, fl); });
@@ -6320,7 +6320,9 @@ K('RegisterServiceProcess', 2, function (pid, type) {
   const d = pdw(this, u32(pid), '-4'); d['-4'] = type ? (d['-4'] | 0x100) : (d['-4'] & ~0x100); return 1;
 });
 K('OpenVxDHandle', 1, function (h) { return ev16(this, h) ? u32(0xc4000000 | (h & 0xffffff)) : 0; });
-P.r0Event = function (r0) { return (u32(r0) & 0xff000000) === 0xc4000000 ? ev16(this, r0 & 0xffffff) : null; };
+// (the tag compared as a byte: `& 0xff000000` is a negative number in JavaScript and never equalled 0xC4000000, so no
+// ring-0 event was ever found and none was set from ring 0)
+P.r0Event = function (r0) { return u32(r0) >>> 24 === 0xc4 ? ev16(this, r0 & 0xffffff) : null; };
 // a Win32 thread's ring-0 handle (VMM Get_Cur_Thread_Handle), which VWIN32_QueueUserApc takes
 /** a thread's ring-0 handle: its thread control block (TCB_Flags, TCB_Signature 'THCB' at 0Ch, TCB_ClientPtr at 10h,
  *  TCB_VMHandle at 14h, TCB_ThreadId at 18h; the slots VxDs allocate follow from 100h) */

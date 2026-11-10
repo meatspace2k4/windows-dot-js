@@ -1940,9 +1940,29 @@ function sleep(ms) {
 }
 def('KERNEL32', 'Sleep', 1, function (ms) { return sleep.call(this, ms); });
 def('KERNEL32', 'SleepEx', 2, function (ms) { return sleep.call(this, ms); });
-def('KERNEL32', 'GetVersion', 0, () => 0xc0000004);
+// The version of Windows: KERNEL32.DLL's own, the file version in its version resource (VS_FIXEDFILEINFO: 4.10.2222
+// on Windows 98 Second Edition), as each Windows' KERNEL32 answers its own; 4.0.950, Windows 95's, with no such file.
+// (Answered 4.0 on Windows 98, Explorer's Start menu wore its Windows 95 banner: it takes bitmap 157, "Windows98",
+// only where GetVersionExA says 4.10 or later.)
+const winVersion = p => {
+  if (p.winVer) return p.winVer;
+  let major = 4, minor = 0, build = 950, b = null;
+  try { b = p.fs.readFile('C:\\WINDOWS\\SYSTEM\\KERNEL32.DLL'); } catch (_) { /* the bundle's KERNEL32: Windows 95's */ }
+  for (let i = 0; b && i + 16 <= b.length; i += 4) if (b[i] === 0xbd && b[i + 1] === 0x04 && b[i + 2] === 0xef && b[i + 3] === 0xfe) {
+    major = b[i + 10] | b[i + 11] << 8; minor = b[i + 8] | b[i + 9] << 8; build = b[i + 12] | b[i + 13] << 8; break;
+  }
+  return p.winVer = { major, minor, build };
+};
+/** an OSVERSIONINFO's numbers at `at`. Windows 98's build number carries the version above it (040A08AEh); Windows
+ *  95's is 950 as it was answered here */
+const versionInfo = (p, at) => {
+  const v = winVersion(p), w98 = v.minor >= 10;
+  p.w32(at + 4, v.major); p.w32(at + 8, v.minor); p.w32(at + 12, w98 ? (v.major << 24 | v.minor << 16 | v.build) >>> 0 : v.build); p.w32(at + 16, 1);
+  p.writeA(at + 20, w98 ? (v.build >= 2222 ? ' A ' : '') : ' B');
+};
+def('KERNEL32', 'GetVersion', 0, function () { const v = winVersion(this); return (0xc0000000 | v.minor << 8 | v.major) >>> 0; });
 def('KERNEL32', 'GetVersionExA', 1, function (p) {
-  this.w32(p + 4, 4); this.w32(p + 8, 0); this.w32(p + 12, 950); this.w32(p + 16, 1); this.writeA(p + 20, ' B');
+  versionInfo(this, p);
   const pc = this.thread16 && this.thread16.pc;
   if (pc && /\.SCR$/i.test(pc.path || '')) pc.versionInfoSeen = { size: this.r32(p), major: this.r32(p + 4), minor: this.r32(p + 8), build: this.r32(p + 12), platform: this.r32(p + 16) };
   return 1;
@@ -4410,5 +4430,5 @@ function peString(bytes, id) {
   } catch (_) { return null; }
 }
 
-window.W95Win32 = { log, regAttach, regGet, regKids, regVals, regDel, regSet, regDump, regApply, regLoad, regHive, regReadHive, regWatch: f => regWatchers.add(f), Process, API, STAND_IN, LAYOUT, WM, YIELD, iniGet, iniSet, iniRead, peString, peResource, faultText, fmtMsg, def, dcOf, GuestError, HangError, FaultError, mkCanvas, dibOut, sha256, sehStep, SEH_CONT };
+window.W95Win32 = { versionInfo, log,regAttach, regGet, regKids, regVals, regDel, regSet, regDump, regApply, regLoad, regHive, regReadHive, regWatch: f => regWatchers.add(f), Process, API, STAND_IN, LAYOUT, WM, YIELD, iniGet, iniSet, iniRead, peString, peResource, faultText, fmtMsg, def, dcOf, GuestError, HangError, FaultError, mkCanvas, dibOut, sha256, sehStep, SEH_CONT };
 })();

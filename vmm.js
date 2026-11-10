@@ -811,7 +811,12 @@ P.vxdCallAt = function (addr, sp, regs = {}) { return this.vxdCall(addr, regs, s
 
 // ---- VWIN32: the Win32 side
 svc(VWIN32, 0x02, function (arg) { this.queueApc(this.r0Tid(arg(2)), arg(0), arg(1)); return 1; });   // _VWIN32_QueueUserApc(proc, data, thread)
-svc(VWIN32, 0x0e, function (arg) { const e = this.r0Event(arg(0)); if (e) this.signal(e); return e ? 1 : 0; });   // _VWIN32_SetWin32Event
+// _VWIN32_SetWin32Event, _VWIN32_PulseWin32Event, _VWIN32_ResetWin32Event: the ring-0 event in EAX (the DDK's wrappers
+// load it there), which is how Windows 98's MMDEVLDR calls them for MMSYSTEM's DriverCallback to an mmThread (its API
+// function 4, at the sound card's interrupt). Read from the stack alone, that event was never set: MCIWAVE's thread
+// waited on it for good after its first buffer, Media Player stayed "playing" and the wave device stayed taken.
+const r0EventArg = (p, arg) => p.r0Event(p.cpu.eax.value) || p.r0Event(arg(0));
+svc(VWIN32, 0x0e, function (arg) { const e = r0EventArg(this, arg); if (e) this.signal(e); return e ? 1 : 0; });   // _VWIN32_SetWin32Event
 svc(VWIN32, 0x14, function () { return 1; });                                                         // _VWIN32_CloseVxDHandle
 // VWIN32_EnterCrstR0 / VWIN32_LeaveCrstR0 (EDX the critical section): SPOOLER's, around its queue's work. One
 // processor, and ring 0 is not preempted here: nothing else can be in it meanwhile (tools/staticmap.py found them called)
@@ -1638,7 +1643,7 @@ svc(VMM, 0x6d, function () { return 0x000f; });                                 
 svc(VMM, 0x6e, function (arg) { const sel = arg(1) & 0xffff; return this.selValid(sel) ? u32(this.selBase(sel)) : 0xffffffff; });   // _SelectorMapFlat(VM, sel, flags)
 svc(VMM, 0x10c, function () { CF(this, false); });                                                   // Validate_Thread_Handle
 svc(VMM, 0xf3, function () { this.cpu.esp.value = u32(this.cpu.esp.value) + 4; });                     // _Trace_Out_Service (debug output): it takes its string off the stack
-svc(VWIN32, 0x0f, function (arg) { const e = this.r0Event(arg(0)); if (e) { this.signal(e); e.set = false; } return e ? 1 : 0; });   // _VWIN32_PulseWin32Event
+svc(VWIN32, 0x0f, function (arg) { const e = r0EventArg(this, arg); if (e) { this.signal(e); e.set = false; } return e ? 1 : 0; });   // _VWIN32_PulseWin32Event
 
 // ---- VTD: the timer. Get_Version: EAX; Get_Interrupt_Period: EAX the ms between ticks (1: the host's clock);
 // Begin/End_Min_Int_Period (EAX ms)
@@ -2022,7 +2027,7 @@ svc(VPICD, 0x0b, function () { this.cpu.ecx.value = irqStatus(this); CF(this, !(
 // ---- VWIN32
 svc(VWIN32, 0x00, function () { this.cpu.eax.value = 0x400; CF(this, false); });                     // VWIN32_Get_Version
 svc(VWIN32, 0x0d, function () { return 0xc6000000 | 1; });                                          // VWIN32_GetCurrentProcessHandle
-svc(VWIN32, 0x10, function (arg) { const e = this.r0Event(arg(0)); if (e) e.set = false; return e ? 1 : 0; });   // _VWIN32_ResetWin32Event
+svc(VWIN32, 0x10, function (arg) { const e = r0EventArg(this, arg); if (e) e.set = false; return e ? 1 : 0; });   // _VWIN32_ResetWin32Event
 // _VWIN32_QueueKernelAPC(pfn, thread, data, flags): the ring-0 procedure called with the data when the thread next runs
 svc(VWIN32, 0x19, function (arg) { (this.kernelApcs = this.kernelApcs || []).push({ fn: arg(0), data: arg(2) }); ZF(this, false); return 1; });   // (ZF from the result, which IFSMGR tests)
 svc(VWIN32, 0x1a, function () { W.log('warn', 'vxd', 'VWIN32_SysErrorBox'); this.cpu.eax.value = 0; });
