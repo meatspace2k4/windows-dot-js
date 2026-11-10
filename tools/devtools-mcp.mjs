@@ -188,6 +188,7 @@ if (process.argv[2] === '--run') {
     let r; try { await connect(); r = await tools[name].run(args || {}); } catch (e) { r = `error: ${e.message}`; }
     console.log(`## ${name}\n${typeof r === 'string' ? r : JSON.stringify(r, null, 1)}`);
   }
-  process.exit(0);
+  if (process.argv[4] !== '--hold') process.exit(0);   // --hold: stay attached, so a pause stays until this is stopped
+  await new Promise(() => {});
 }
 createInterface({ input: process.stdin }).on('line', line => { if (!line.trim()) return; let m; try { m = JSON.parse(line); } catch (e) { return; } handle(m).catch(e => { if (m.id !== undefined) fail(m.id, -32603, e.message); }); });
