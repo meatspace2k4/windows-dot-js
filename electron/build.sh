@@ -9,7 +9,7 @@ R="$APP/Contents/Resources"
 mkdir -p "$R/app/web/icons"
 cp package.json main.js preload.js store.js shares.js "$R/app/"
 python3 ../tools/build_floppy.py ../mac ../floppy.js   # A: as mac/assets is now
-cp ../index.html ../*.js "$R/app/web/"
+cp ../index.html ../*.js ../*.mod "$R/app/web/"
 # the disc in the CD drive: the project's cdrom.iso, the one serve.py serves the page (File > Insert CD Image swaps it)
 ISO="$(cd .. && pwd)/cdrom.iso"
 test -f "$ISO" || { echo "no $ISO: the CD image the drive holds (serve.py --iso serves the same)" >&2; exit 1; }
