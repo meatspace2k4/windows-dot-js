@@ -4245,7 +4245,8 @@ class RemoteApp extends NativeApp {
     if (!this.alive || !this.ring) return;
     const f = kind === 'down' ? (btn === 2 ? 8 : 2) : kind === 'up' ? (btn === 2 ? 16 : 4) : 1;
     if (W95Bridge.ringPut(this.ring, W95Bridge.MOUSE, f, Math.round(x), Math.round(y))) this.ringPut = (this.ringPut || 0) + 1;
-    const k = `${Math.round(x)},${Math.round(y)}`, s = this.sentPts || (this.sentPts = []); s.push(k); if (s.length > 64) s.shift(); this.lastPtr = [Math.round(x), Math.round(y)];
+    // (the points sent that the machine's cursor has not been seen past: pointerAt drops the ones before the point it is at)
+    const k = `${Math.round(x)},${Math.round(y)}`, s = this.sentPts || (this.sentPts = []); s.push(k); if (s.length > 4096) s.shift(); this.lastPtr = [Math.round(x), Math.round(y)];
     this.kick();
   }
   /** where the hardware cursor is, as the mouse's interrupt moves it on a real machine ahead of whatever runs: at the
@@ -4259,7 +4260,10 @@ class RemoteApp extends NativeApp {
     for (let i = 0; i < n; i++) { h ^= sp.bits[i]; h = Math.imul(h, 16777619); }
     const key = `${h >>> 0}:${sp.px}:${sp.py}:${sp.cpp}`, hot = this.hots || (this.hots = new Map()), cur = this.scr && this.scr.cur;
     if (cur) {
-      this.follows = (this.sentPts || []).includes(`${cur.x},${cur.y}`);
+      // (it follows the mouse while it is at a point of the mouse's path it has yet to pass, however far behind: the
+      // points before that one are behind it and dropped; at none of them, the machine has put it elsewhere)
+      const s = this.sentPts || [], i = cur === this.curSeen ? -2 : s.indexOf(`${cur.x},${cur.y}`);   // (its first place on the path: one the mouse came back to is on it again later)
+      if (i !== -2) { this.follows = i >= 0; if (i > 0) s.splice(0, i); this.curSeen = cur; }
       if (sp.x === this.scr.sprite.x && sp.y === this.scr.sprite.y) hot.set(key, [cur.x - sp.x, cur.y - sp.y]);
     }
     const hs = hot.get(key); if (!this.follows || !hs) return null;
