@@ -251,6 +251,16 @@ Object.assign(tools, {
     } },
   shell_cmd: { description: 'win95.sysApp.cmd(name, args): the system machine\'s diagnostics (probe, faults, watch, call16, ...).', props: { name: S, args: { type: 'array' } }, required: ['name'],
     run: ({ name, args = [] }) => shell(`return await win95.sysApp.cmd(${JSON.stringify(name)}, ${JSON.stringify(args)});`) },
+  shell_set: { description: 'win95.set(query, value): a native combo box\'s item chosen by its text, or a slider moved ("min", "max" or a number), by the control itself. Answers its outcome.',
+    props: { query: Q, value: {} }, required: ['query', 'value'],
+    run: ({ query, value }) => shell(`return await win95.outcome(() => win95.set(Q(${JSON.stringify(query)}), ${JSON.stringify(value)}));`) },
+  worker_eval: { description: 'A JavaScript expression in the machine\'s worker (machine, machine.proc in scope), awaited; the worker is found by its script, whatever its session is named.', props: { expression: S }, required: ['expression'],
+    async run({ expression }) {
+      await pageSession(); const s = worker();
+      const r = await cmd(s, 'Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
+      if (r.exceptionDetails) throw new Error(((r.exceptionDetails.exception && r.exceptionDetails.exception.description) || r.exceptionDetails.text).split('\n')[0]);
+      return r.result.value === undefined ? 'undefined' : r.result.value;
+    } },
   shell_eval: { description: 'Any win95 API expression, awaited (win95 in scope).', props: { expression: S }, required: ['expression'],
     run: ({ expression }) => shell(`return await (${expression});`) },
 });

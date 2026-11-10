@@ -63,9 +63,11 @@ machines have taken the input. The MCP tools are these two. A report has:
 `click`, `dblclick`, `down`, `up` and `drag` take an element (from `elements()`/`find()`) or a query for one
 (`{ name, role, window }`, strings or RegExps). The element is looked up as its machine shows it now; a desktop icon or
 a folder window's file is selected (`click`) or opened (`dblclick`) by its list view itself; a native button, radio
-button or check box is pressed by its own window (the control is told to click itself), and only when a person could
-press it now: it is enabled, its window is the active one and no dialog waits over it; otherwise the call rejects,
-naming the window that is active. Anything else gets the pointer at its centre. The call rejects, saying why, when nothing matches (naming what the window has), when something
+button or check box is pressed by its own window (the control is told to click itself), and a tab is chosen by its
+tab control; only when a person could do so now: the control is enabled, its window is the active one and no dialog
+waits over it; otherwise the call rejects, naming the window that is active. Anything else gets the pointer at its
+centre. `set(query, value)` (`shell_set`) chooses a native combo box's item by its text, or moves a slider (`'min'`,
+`'max'` or a number), the same way. Every answer's `how` says which of these was done. The call rejects, saying why, when nothing matches (naming what the window has), when something
 covers the point, or at once when the system fails meanwhile. `waitFor(query, ms)` looks an element up the same way
 and resolves with it.
 

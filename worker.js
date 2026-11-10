@@ -1271,6 +1271,7 @@ class Machine {
         else if (/^button$/i.test(c.cls) && [2, 3, 4, 5, 6, 9].includes(c.style & 0x0f)) need.push(r => { c.checked = r[0] & 3; }, [send(first, c.hwnd, 0xf0, 0, 0)]);   // BM_GETCHECK
         else if (/^SysTabControl32$/i.test(c.cls)) need.push(r => { c.tabs = { n: Math.min(r[0], 64), sel: r[1] | 0 }; }, [send(first, c.hwnd, 0x1304, 0, 0), send(first, c.hwnd, 0x130b, 0, 0)]);   // TCM_GETITEMCOUNT, TCM_GETCURSEL
         else if (/^SysListView32$/i.test(c.cls)) need.push(r => { c.list = { n: Math.min(r[0], 256) }; }, [send(first, c.hwnd, 0x1004, 0, 0)]);   // LVM_GETITEMCOUNT
+        else if (/^msctls_trackbar32$/i.test(c.cls)) need.push(r => { c.slider = { pos: r[0], min: r[1], max: r[2] }; }, [send(first, c.hwnd, 0x400, 0, 0), send(first, c.hwnd, 0x401, 0, 0), send(first, c.hwnd, 0x402, 0, 0)]);   // TBM_GETPOS, TBM_GETRANGEMIN, TBM_GETRANGEMAX
       }
       const r1 = first.length ? await this.readBatch(first) : [];
       if (!r1) return out;
@@ -1283,7 +1284,7 @@ class Machine {
           const a = send(second, c.hwnd, 0x130a, i, rc), b = send(second, c.hwnd, 0x1305, i, it);   // TCM_GETITEMRECT, TCM_GETITEMA
           fill.push(r => { if (!r[a]) return; const s = o => p.r32(rc + o) | 0, l = s(0), t = s(4); let text = p.readA(txt, 64); const wnd = p.r32(it + 24) & 0xffff;
             if (!text && wnd && p.user16(47, [['w', wnd]]).ax) text = p.nativeText(wnd);   // (a tab without text: the window its lParam holds)
-            (c.items = c.items || []).push({ x: c.x + l, y: c.y + t, w: s(8) - l, h: s(12) - t, text, selected: i === c.tabs.sel }); });
+            (c.items = c.items || []).push({ x: c.x + l, y: c.y + t, w: s(8) - l, h: s(12) - t, text, selected: i === c.tabs.sel, index: i }); });
         }
         if (c.list) for (let i = 0; i < c.list.n; i++) {
           const rc = buf(16), it = buf(36), txt = buf(64); p.w32(it, 1); p.w32(it + 4, i); p.w32(it + 20, txt); p.w32(it + 24, 64);   // LVIR_BOUNDS; LVIF_TEXT, pszText, cchTextMax
@@ -1678,15 +1679,37 @@ class Machine {
       // presses and releases itself and tells its dialog. Only a button a person could press now: it and its top-level
       // window enabled (a window under a dialog is disabled), and that window the foreground one; else refused, saying
       // which. Posted, not sent: its command may open a dialog, and a send would not return until that one closed
-      case 'press': return (async () => {
-        const h = args[0], one = (name, a) => this.netBatch([{ dll: 'USER32', name, args: a }]).then(r => (r ? r[0] : 0));
+      // and the other controls set as themselves, under the same rule: [hwnd, 'tab', index] a tab control's tab chosen
+      // (TCM_SETCURFOCUS, which tells its owner as a click does); [hwnd, 'select', text] a combo box's item chosen by
+      // its text, its owner told (CBN_SELCHANGE); [hwnd, 'slide', pos | 'min' | 'max'] a trackbar moved, its owner told
+      // (WM_HSCROLL or WM_VSCROLL, TB_ENDTRACK)
+      case 'press': case 'ctl': return (async () => {
+        const [h, op, v] = name === 'press' ? [args[0], 'press'] : args, one = (fn, a) => this.netBatch([{ dll: 'USER32', name: fn, args: a }]).then(r => (r ? r[0] : 0));
         if (!(await one('IsWindow', [h]))) return 'gone';
         // (its top-level window: up through the child windows only; a top-level window's GetParent is its owner)
         let root = h; while ((await one('GetWindowLongA', [root, -16])) & 0x40000000) { const up = await one('GetParent', [root]); if (!up) break; root = up; }
         if (!(await one('IsWindowEnabled', [h]))) return 'disabled';
         if (!(await one('IsWindowEnabled', [root]))) return 'its window is disabled: a dialog is waiting over it';
         if ((await one('GetForegroundWindow', [])) !== root) return 'its window is not the active one';
-        return (await one('PostMessageA', [h, 0xf5, 0, 0])) ? true : 'gone';
+        if (op === 'press') return (await one('PostMessageA', [h, 0xf5, 0, 0])) ? true : 'gone';
+        if (op === 'tab') return (await one('PostMessageA', [h, 0x1330, v | 0, 0])) ? true : 'gone';
+        const parent = await one('GetParent', [h]), id = (await one('GetDlgCtrlID', [h])) & 0xffff;
+        if (op === 'select') {
+          let i = (await one('SendMessageA', [h, 0x158, 0xffffffff, String(v)])) | 0;   // CB_FINDSTRINGEXACT
+          if (i < 0) i = (await one('SendMessageA', [h, 0x14c, 0xffffffff, String(v)])) | 0;   // CB_FINDSTRING: the item that begins with it
+          if (i < 0) return `it has no item '${v}'`;
+          await one('SendMessageA', [h, 0x14e, i, 0]);   // CB_SETCURSEL
+          return (await one('PostMessageA', [parent, 0x111, (1 << 16 | id) >>> 0, h])) ? true : 'gone';
+        }
+        if (op === 'slide') {
+          const pos = v === 'min' ? await one('SendMessageA', [h, 0x401, 0, 0]) : v === 'max' ? await one('SendMessageA', [h, 0x402, 0, 0]) : v | 0;
+          await one('SendMessageA', [h, 0x405, 1, pos]);   // TBM_SETPOS
+          const vert = (await one('GetWindowLongA', [h, -16])) & 2;   // TBS_VERT
+          // (as a drag's end tells the owner: TB_THUMBPOSITION with the position, then TB_ENDTRACK)
+          await one('PostMessageA', [parent, vert ? 0x115 : 0x114, ((pos & 0xffff) << 16 | 4) >>> 0, h]);
+          return (await one('PostMessageA', [parent, vert ? 0x115 : 0x114, 8, h])) ? true : 'gone';
+        }
+        return `no such control action ${op}`;
       })();
       case 'listItem': return p.depth ? null : (async () => {   // a list view's item selected, or opened (the scripting API's click, dblclick)
         // (every item's selection and focus off, then this one's on: LVIS_FOCUSED | LVIS_SELECTED, LVM_SETITEMSTATE, sent

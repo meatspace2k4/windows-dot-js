@@ -3615,13 +3615,10 @@ function setupNetwork() {
 // holds the capture (menus, dragging), and the keys while one of them is the active window.
 const nativeApps = new Set();
 // the display mode for the system's machine: the page's viewport at its own pixels (the page is the monitor
-// EXPLORER.EXE's screen is shown on); 640x480 at the least, 1024 on a side at most (the display driver's longest scan
-// line and its memory count: ne16.js displaySlot). A viewport larger than that gets a 1024-wide or 1024-tall screen, centered
-// (the custom mode has the driver's 1024-byte scan lines in the 1 MB its memory count finds, so 960 lines at most: a
-// mode of a full megabyte, 1024 by 1024, the driver refuses and falls back from). The width stops at 1016: Windows 98
-// Setup sizes its billboard's text by the screen's width (W98SETUP 3:2b91, 14 pt at 1024 and wider, 8 pt below), and
-// its 14 pt Arial drew every step heavy; an odd width (1023) drew the screen skewed
-const nativeMode = () => [Math.max(640, Math.min(1016, Math.floor(innerWidth / ZOOM))), Math.max(480, Math.min(960, Math.floor(innerHeight / ZOOM)))];
+// EXPLORER.EXE's screen is shown on); 640x480 at the least, 1600x1200 at the most. A larger viewport gets a screen of
+// that size, centered. (Windows 98 Setup sizes its billboard's text by the screen's width: W98SETUP 3:2b91, 14 pt at
+// 1024 and wider, 8 pt below)
+const nativeMode = () => [Math.max(640, Math.min(1600, Math.floor(innerWidth / ZOOM))), Math.max(480, Math.min(1200, Math.floor(innerHeight / ZOOM)))];
 const sharedNow = () => (window.W95HOST && window.W95HOST.shared && window.W95Shared) || null;
 // the mode the system's machine boots in, as Display Properties leaves it for the display driver: Display\Settings
 // under the current configuration (Resolution "w,h", BitsPerPixel), read by the display driver as it is enabled; the one
@@ -3648,10 +3645,10 @@ function bootBpp() {
   return SCAN_BPP.has(reg) ? reg : BOOT_BPP;
 }
 /** the size the system's machine boots at: the page's, when its screen and the display driver's off-screen caches fit
- *  the adapter's 4 MB (TSENG.DRV counts the W32's memory through its segment selects); else the largest of the
+ *  the adapter's 8 MB; else the largest of the
  *  driver's sizes that fits */
 function bootSize() {
-  const [w, h] = nativeMode(), bpp = bootBpp(), fits = (x, y) => x * y * (bpp >> 3) + 0x10000 <= 4 << 20;
+  const [w, h] = nativeMode(), bpp = bootBpp(), fits = (x, y) => x * y * (bpp >> 3) + 0x10000 <= 8 << 20;
   if (bpp === 4) return [[800, 600], [640, 480]].find(([x, y]) => x <= w && y <= h) || [640, 480];   // (16 colors: VGA.DRV's 640x480 or SUPERVGA.DRV's 800x600, no other)
   if (fits(w, h)) return [w, h];
   return [[1024, 768], [800, 600], [640, 480]].find(([x, y]) => x <= w && y <= h && fits(x, y)) || [640, 480];
@@ -3861,9 +3858,61 @@ class NativeApp {
     const a = this.screenNow(); fill(0, 0, W, H, '#000');
     if (!a || !SCAN_BPP.has(a.bpp) || !this.d32) return;
     const pal = this.pal, dac = a.dac, v = a.vram, d = this.d32, sw = this.sw, w = Math.min(sw, a.w), h = Math.min(this.sh, a.h);
+    // the packed-pixel modes are scanned out by the graphics processor, from the video memory as it is (scanGl); the
+    // 16-color planar modes, and a page with no WebGL 2, by scanRow
+    if (a.bpp !== 4 && this.scanGl(a, w, h)) { ctx.drawImage(this.glc, 0, 0, w, h, 0, 0, w, h); return; }
     for (let i = 0; i < 256; i++) { const r = dac[3 * i], g = dac[3 * i + 1], b = dac[3 * i + 2]; pal[i] = 0xff000000 | ((b << 2 | b >> 4) << 16) | ((g << 2 | g >> 4) << 8) | (r << 2 | r >> 4); }
     for (let y = 0; y < h; y++) scanRow(a, v, pal, d, y * sw, y * a.pitch, 0, w);
     this.cx.putImageData(this.img, 0, 0, 0, 0, w, h); ctx.drawImage(this.cv, 0, 0, w, h, 0, 0, w, h);
+  }
+  /** the screen scanned out by the graphics processor: the video memory's bytes are one texture, a byte a texel, a
+   *  scan line a row (its width the line's length in bytes), and the DAC's 256 colors another; the fragment shader
+   *  reads each pixel's bytes and makes its color as scanPx does (8 bits through the DAC; 16 bits 5-6-5 or 5-5-5 by
+   *  the DAC's command register; 24 and 32 bits B, G, R). Its canvas is glc. False where there is no WebGL 2 */
+  scanGl(a, w, h) {
+    if (this.gl === null) return false;
+    if (!this.gl) {
+      const c = this.glc = document.createElement('canvas'), gl = c.getContext('webgl2', { alpha: false, antialias: false, depth: false, stencil: false });
+      if (!gl) { this.gl = null; return false; }
+      const sh = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; };
+      const prog = gl.createProgram();
+      gl.attachShader(prog, sh(gl.VERTEX_SHADER, '#version 300 es\nvoid main() { vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2)); gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); }'));
+      gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, `#version 300 es
+precision highp float; precision highp int; precision highp usampler2D;
+uniform usampler2D vram; uniform sampler2D dac; uniform int bytes, height, is565;
+out vec4 o;
+uint at(int x, int y) { return texelFetch(vram, ivec2(x, y), 0).r; }
+void main() {
+  int x = int(gl_FragCoord.x), y = height - 1 - int(gl_FragCoord.y);
+  if (bytes == 1) { o = texelFetch(dac, ivec2(int(at(x, y)), 0), 0); return; }
+  if (bytes == 2) {
+    uint c = at(2 * x, y) | at(2 * x + 1, y) << 8;
+    o = is565 != 0 ? vec4(float(c >> 11) / 31.0, float(c >> 5 & 63u) / 63.0, float(c & 31u) / 31.0, 1.0)
+      : vec4(float(c >> 10 & 31u) / 31.0, float(c >> 5 & 31u) / 31.0, float(c & 31u) / 31.0, 1.0);
+    return;
+  }
+  int i = bytes * x; o = vec4(float(at(i + 2, y)), float(at(i + 1, y)), float(at(i, y)), 255.0) / 255.0;
+}`));
+      gl.linkProgram(prog); if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+      gl.useProgram(prog); gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+      const tex = unit => { const t = gl.createTexture(); gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, t); for (const k of [gl.TEXTURE_MIN_FILTER, gl.TEXTURE_MAG_FILTER]) gl.texParameteri(gl.TEXTURE_2D, k, gl.NEAREST); return t; };
+      this.gl = { gl, vram: tex(0), dac: tex(1), u: Object.fromEntries(['vram', 'dac', 'bytes', 'height', 'is565'].map(n => [n, gl.getUniformLocation(prog, n)])), size: '', pal: new Uint8Array(1024) };
+      gl.uniform1i(this.gl.u.vram, 0); gl.uniform1i(this.gl.u.dac, 1);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 256, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, this.gl.pal);
+    }
+    const G = this.gl, gl = G.gl, c = this.glc, v = a.vram, pitch = a.pitch, bytes = a.bpp >> 3;
+    if (v.length < pitch * h) return false;
+    if (c.width !== w || c.height !== h) { c.width = w; c.height = h; gl.viewport(0, 0, w, h); }
+    gl.activeTexture(gl.TEXTURE0);
+    if (G.size !== `${pitch}x${h}`) { G.size = `${pitch}x${h}`; gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8UI, pitch, h, 0, gl.RED_INTEGER, gl.UNSIGNED_BYTE, null); }
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, pitch, h, gl.RED_INTEGER, gl.UNSIGNED_BYTE, v, 0);
+    if (bytes === 1) {
+      const p = G.pal, dac = a.dac; for (let i = 0; i < 256; i++) { const r = dac[3 * i], g = dac[3 * i + 1], b = dac[3 * i + 2]; p[4 * i] = r << 2 | r >> 4; p[4 * i + 1] = g << 2 | g >> 4; p[4 * i + 2] = b << 2 | b >> 4; p[4 * i + 3] = 255; }
+      gl.activeTexture(gl.TEXTURE1); gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 256, 1, gl.RGBA, gl.UNSIGNED_BYTE, p);
+    }
+    gl.uniform1i(G.u.bytes, bytes); gl.uniform1i(G.u.height, h); gl.uniform1i(G.u.is565, (a.dacMode & 0xe0) === 0xe0 ? 1 : 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    return true;
   }
   blit(w) {
     if (w.win32) { if (w.surface) ctx.drawImage(w.surface, w.x, w.y, w.w, w.h); return; }
@@ -6011,7 +6060,8 @@ function nativeEls(kids, win) {
     if (k === 'menuitem') { if (!c.separator) add('menuitem', label(c.text.split('\t')[0]), c, { window: 'Menu', depth: win.menuDepth || 0, disabled: !c.enabled, submenu: !!c.submenu, checked: !!c.checked }); continue; }
     if (k === 'traynotifywnd' || k === 'mstaskswwclass') continue;   // (holders of the clock and the tabs, listed for themselves)
     if (k === 'trayclockwclass') { add('clock', c.text, c, win); continue; }
-    if (k === 'systabcontrol32' && c.items) { for (const t of c.items) add('pushbutton', label(t.text), t, { ...win, pressed: !!t.selected }); continue; }
+    if (k === 'systabcontrol32' && c.items) { for (const t of c.items) add('pushbutton', label(t.text), t, { ...win, pressed: !!t.selected, tab: c.hwnd, index: t.index }); continue; }
+    if (k === 'msctls_trackbar32') { add('slider', '', c, { ...win, cls: c.cls, id: c.id, hwnd: c.hwnd, disabled: !c.enabled, ...(c.slider ? { value: c.slider.pos, min: c.slider.min, max: c.slider.max } : {}) }); continue; }
     // (a static of an icon or a bitmap, SS_ICON or SS_BITMAP: a graphic, its window text the resource's id, "\xff" and
     // a word, not its name)
     const pic = k === 'static' && [3, 0x0e].includes(c.style & 0x1f);
@@ -6159,6 +6209,13 @@ async function actOn(q, send, item) {
   // (a native button, a radio button or a check box: pressed by its own window, the machine's 'press', which refuses
   // one a person could not press now (disabled, under a dialog, its window not the active one) and says which)
   const btn = item && !item.open && e.hwnd && /^(pushbutton|radiobutton|checkbutton)$/.test(e.role) && windows.find(x => x.native && x.title === e.window && x.app);
+  // (a tab of a native tab control: chosen by the control itself)
+  const tabOf = item && !item.open && e.tab && windows.find(x => x.native && x.title === e.window && x.app);
+  if (tabOf) {
+    const r = await tabOf.app.cmd('ctl', [e.tab, 'tab', e.index]);
+    if (r !== true) { const a = windows.map(winInfo).filter(x => x.active).pop(); throw new Error(`${qText(asQuery(q))} is not chosen: ${r}${a ? `; the active window is '${a.title}'` : ''}`); }
+    return { ...e, how: 'chosen by its tab control' };
+  }
   if (btn) {
     const r = await btn.app.cmd('press', [e.hwnd]);
     if (r !== true) { const a = windows.map(winInfo).filter(x => x.active).pop(); throw new Error(`${qText(asQuery(q))} is not pressed: ${r}${a ? `; the active window is '${a.title}'` : ''}`); }
@@ -6201,6 +6258,16 @@ const script = {
     script.click(x, y, { double: true });
   },
   waitFor: (q, ms) => resolveEl(q, ms),
+  // a native combo box's item chosen by its text, or a slider moved to a position ('min', 'max' or a number): by the
+  // control itself, its owner told as a person's choice tells it; refused as a press is
+  async set(q, value) {
+    const e = await resolveEl(q), w = e.hwnd && windows.find(x => x.native && x.title === e.window && x.app);
+    const op = e.role === 'combobox' ? 'select' : e.role === 'slider' ? 'slide' : null;
+    if (!w || !op) throw new Error(`${qText(asQuery(q))} is a ${e.role}: set takes a native combo box or slider`);
+    const r = await w.app.cmd('ctl', [e.hwnd, op, value]);
+    if (r !== true) { const a = windows.map(winInfo).filter(x => x.active).pop(); throw new Error(`${qText(asQuery(q))} is not set: ${r}${a ? `; the active window is '${a.title}'` : ''}`); }
+    return { ...e, how: `set to ${value} by the control itself` };
+  },
   drag(x1, y1, x2, y2, steps = 8) {
     if (typeof x1 !== 'number') {
       const n = x2 ?? 8;
@@ -6228,7 +6295,7 @@ const script = {
   // with its controls' text as its machine has them now, the line's last n faults and the fault log's last entry
   async report(n = 3) {
     const els = await elementsNow(), hx = v => (typeof v === 'number' ? (v >>> 0).toString(16) : v);
-    const wins = windows.map(winInfo).map(w => ({ ...w, text: els.filter(e => e.window === w.title && e.name).map(e => `${e.role}: ${e.name}`) }));
+    const wins = windows.map(winInfo).map(w => ({ ...w, text: els.filter(e => e.window === w.title && (e.name || e.role === 'slider')).map(e => `${e.role}: ${e.name}${e.role === 'slider' ? `${e.value} (${e.min} to ${e.max})` : ''}${e.pressed ? ' (chosen)' : ''}${e.checked ? ' (checked)' : ''}${e.disabled ? ' (disabled)' : ''}`) }));
     const evs = braid ? braid.faultEvents() : [];
     const faults = evs.slice(-n).map(e => { const f = e.fault || {}; return { why: f.why, program: f.program, module: f.module, eip: hx(f.eip), cr2: hx(f.cr2), gen: e.gen, machine: e.machine }; });
     const log = evs.length && evs[evs.length - 1].faults, l = Array.isArray(log) && log[log.length - 1];

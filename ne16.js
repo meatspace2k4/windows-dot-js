@@ -2568,7 +2568,11 @@ const CUSTOM_SLOTS = [{ i: 6, w: 1024, h: 768, mode: 0x38 }, { i: 5, w: 800, h: 
  *  otherwise its largest entry for the depth stands for the custom size, and the driver's records for that entry are
  *  made to say w by h, so the driver enables, and GDI's desktop is, the configured size */
 P.displaySlot = function (w, h, bpp = 8) {
-  if (FB_SIZES.some(([x, y]) => x === w && y === h) || w > 1024 || h > 1024) { this.customMode = null; this.customRestore(); return { w, h }; }
+  // (the driver's own: a size its devnode's software key lists at the depth, MODES\<bpp>\<w>,<h>; with no such key,
+  // one of FB_SIZES)
+  const dn = this.devnodes().find(d => /^display$/i.test(d.cls)), sw = this.devSoftKey(dn), W = window.W95Win32;
+  const listed = sw && W.regKids(sw).includes('modes') ? W.regKids(`${sw}\\modes`).includes(String(bpp)) && W.regKids(`${sw}\\modes\\${bpp}`).includes(`${w},${h}`) : FB_SIZES.some(([x, y]) => x === w && y === h);
+  if (listed) { this.customMode = null; this.customRestore(); return { w, h }; }
   const slot = CUSTOM_SLOTS[bpp >= 24 ? 1 : 0];
   this.customMode = { w, h, mode: slot.mode }; this.customEntry(w, h, slot);
   return { w: slot.w, h: slot.h };
@@ -2781,7 +2785,7 @@ const egaDac = i => [(i >> 2 & 1) * 0x2a + (i >> 5 & 1) * 0x15, (i >> 1 & 1) * 0
 // 3C0h-3DFh, its memory windows A0000h-AFFFFh and B8000h-BFFFFh (the W32's MMU there) and the video BIOS at C0000h.
 // Its devnode is the one Setup made for it (win95.js setupDisplay)
 P.cards = function () { return [{ devnode: 'ROOT\\*PNP0912\\0000', io: [[0x3b0, 0x0c], [0x3c0, 0x20]], irq: [], dma: [], mem: [[0xa0000, 0x10000], [0xb8000, 0x8000], [0xc0000, 0x8000]] }]; };
-const VRAM_SIZE = 4 << 20, WIN = 0xa0000;   // (a W32p with 4 MB: the largest custom mode at 16 bits, with the driver's off-screen caches, fits)
+const VRAM_SIZE = 8 << 20, WIN = 0xa0000;   // (8 MB: 1600x1200 at 24 bits is 5.8 MB; the 64K window's banks reach its first 4 MB, the linear view all of it)
 P.adapter = function () {
   if (this.et) return this.et;
   this.init16();
@@ -2793,7 +2797,7 @@ P.adapter = function () {
 };
 /** move the window contents to VRAM and bring in another bank */
 P.setBank = function (b) {
-  const a = this.adapter(); b &= (VRAM_SIZE >> 16) - 1;   // (the W32's banks reach all its memory: segment select 2 adds their high bits)
+  const a = this.adapter(); b &= 0x3f;   // (64 banks, 4 MB: segment select's four bits and segment select 2's two)
   if (b === a.bank) return;
   if (a.flat || a.planar) { a.bank = b; return; }     // VFLATD presents VRAM linearly; the window is no longer the access path (nor is it in the planar modes: each access goes through the graphics controller, vgaRead/vgaWrite)
   const u8 = this.u8; a.vram = u8.subarray(a.vramLin, a.vramLin + VRAM_SIZE);
@@ -2806,7 +2810,9 @@ P.scanout = function () {
   const a = this.adapter();
   a.vram = this.u8.subarray(a.vramLin, a.vramLin + VRAM_SIZE);
   if (!a.flat && !a.planar) a.vram.set(this.u8.subarray(WIN, WIN + 0x10000), a.bank << 16);
-  if (a.crtc[0x13]) a.pitch = (a.crtc[0x13] | ((a.crtc[0x3f] & 0x80) << 1)) * (a.planar ? 2 : 8);   // CRTC offset register: bytes per scanline / 8 (/ 2 a plane's in the planar modes)
+  // CRTC offset register: bytes per scanline / 8 (/ 2 a plane's in the planar modes), its ninth bit in 3Fh; the bits
+  // above those (a line past 4088 bytes: 1600 pixels at 24 bits) are the mode set's own, offHi
+  if (a.crtc[0x13] || a.offHi) a.pitch = (a.crtc[0x13] | ((a.crtc[0x3f] & 0x80) << 1) | (a.offHi || 0) << 9) * (a.planar ? 2 : 8);
   return a;
 };
 /** the W32 hardware sprite as the CRTC overlays it: on (F7h bit 7), its screen position (E0h/E1h, E4h/E5h), the
@@ -2977,7 +2983,7 @@ P.setVideoMode = function (mode, clear, hicolor) {
   a.crtc[0x01] = (a.w >> 3) - 1; a.crtc[0x12] = vde & 0xff;
   a.crtc[0x07] = (a.crtc[0x07] & ~0x42) | ((vde >> 8 & 1) << 1) | ((vde >> 9 & 1) << 6);
   a.crtc[0x35] = (a.crtc[0x35] & ~0x04) | ((vde >> 10 & 1) << 2);
-  a.crtc[0x13] = off & 0xff; a.crtc[0x3f] = (a.crtc[0x3f] & 0x7f) | ((off >> 8 & 1) << 7);
+  a.crtc[0x13] = off & 0xff; a.crtc[0x3f] = (a.crtc[0x3f] & 0x7f) | ((off >> 8 & 1) << 7); a.offHi = off >> 9;
   if (clear) { a.vram.fill(0); this.u8.fill(0, WIN, WIN + 0x10000); }
   a.bank = 0; a.dirty = true;
   if (a.bpp === 8 && clear) for (let i = 0; i < 256; i++) { a.dac[3 * i] = a.dac[3 * i + 1] = a.dac[3 * i + 2] = 0; }
