@@ -38,7 +38,7 @@ const proc = () => {
     'cs', 'ds', 'es', 'ss', 'fsel', 'gsel', 'csb', 'dsb', 'esb', 'ssb', 'gsb', 'budget', 'if', 'xf']) p.cpu[r] = new WebAssembly.Global({ value: 'i32', mutable: true }, r === 'budget' ? 0x1000 : 0);
   Object.assign(p, { selUsed: new Uint8Array(0x2000), th16: [], depth: 0, ne: new Map(), modules: [], byName: new Map(), ghandles: new Map(),
     heapTop: LAYOUT.HEAP, freeList: new Map(), allocs: new Map(), init16() {}, findFile16: () => null, fs: { exists: () => false },
-    imports: { env: { api: () => 0, tick: () => 0, f80load: () => 0, f80store() {} } }, trap() {}, tick: () => 0 });
+    imports: { env: { api: () => 0, tick: () => 0, f80load: () => 0, f80store() {}, fbld: () => 0, fbstp() {} } }, trap() {}, tick: () => 0 });
   return p;
 };
 const run = (p, rec) => { const g = rec.segs[0]; p.cpu.cs.value = g.sel; p.cpu.csb.value = g.base; p.cpu.ss.value = rec.segs[1].sel; p.cpu.eax.value = 0; assert.equal(rec.run(g.base), 3); return p.cpu.eax.value & 0xffff; };

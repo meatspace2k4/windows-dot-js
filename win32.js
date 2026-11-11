@@ -113,7 +113,7 @@ class Process {
     this.protect(0, 0x1000);   // (the null page: no program's)
     if (host.memWatch) this.memWatch(host.memWatch[0], host.memWatch[1] || 4);   // (a write watch from the first instruction: ?memwatch=lo,len in hex)
     const math = { fsin: Math.sin, fcos: Math.cos, ftan: Math.tan, fatan2: Math.atan2, fexp2: x => Math.pow(2, x), flog2: Math.log2,
-      fmod: (a, b) => a % b, frem: (a, b) => a - b * Math.round(a / b), f80load: a => this.f80load(a), f80store: (a, v) => this.f80store(a, v), btrace: e => { if (window.W95BTRACE) window.W95BTRACE(e >>> 0); } };
+      fmod: (a, b) => a % b, frem: (a, b) => a - b * Math.round(a / b), f80load: a => this.f80load(a), f80store: (a, v) => this.f80store(a, v), fbld: a => this.fbld(a), fbstp: (a, v) => this.fbstp(a, v), btrace: e => { if (window.W95BTRACE) window.W95BTRACE(e >>> 0); } };
     this.imports = { env: { mem: this.mem, api: e => this.api(e), trap: (e, c) => this.trap(e, c), tick: e => this.tick(e), smc: a => this.smc(a), ...math }, cpu: this.cpu };
     this.modules = []; this.byName = new Map(); this.inits = [];
     // a host that runs the native window system brings it up first, as Windows is up before any program starts
@@ -1246,6 +1246,22 @@ class Process {
     const sign = se & 0x8000 ? -1 : 1, exp = se & 0x7fff;
     if (!exp && !lo && !hi) return 0 * sign;
     return sign * (hi * 4294967296 + lo) * Math.pow(2, exp - 16383 - 63);
+  }
+  /** FBLD: the 10-byte packed BCD at `a` (18 digits, two a byte, the low digit in the low nibble, the low byte first;
+   *  the sign bit 7 of byte 9) as a number */
+  fbld(a) {
+    let v = 0n; for (let i = 8; i >= 0; i--) { const b = this.u8[a + i]; v = v * 100n + BigInt((b >> 4) * 10 + (b & 15)); }
+    const n = Number(v); return this.u8[a + 9] & 0x80 ? -n : n;
+  }
+  /** FBSTP: a number stored as packed BCD, rounded to an integer as the control word's rounding field says (0 to
+   *  nearest, even at a half; 1 down; 2 up; 3 toward zero); one past 18 digits, or not a number, the indefinite */
+  fbstp(a, v) {
+    const rc = (this.cpu.fcw ? this.cpu.fcw.value >> 10 : 0) & 3;
+    let r = rc === 1 ? Math.floor(v) : rc === 2 ? Math.ceil(v) : rc === 3 ? Math.trunc(v) : Math.round(v) - (Math.abs(v % 1) === 0.5 && Math.round(v) % 2 ? 1 : 0);
+    if (!Number.isFinite(r) || Math.abs(r) >= 1e18) { this.u8.fill(0, a, a + 7); this.u8[a + 7] = 0xc0; this.u8[a + 8] = 0xff; this.u8[a + 9] = 0xff; return; }
+    let m = BigInt(Math.abs(r));
+    for (let i = 0; i < 9; i++) { const d = Number(m % 100n); m /= 100n; this.u8[a + i] = ((Math.floor(d / 10)) << 4) | (d % 10); }
+    this.u8[a + 9] = r < 0 || Object.is(r, -0) ? 0x80 : 0;
   }
   f80store(a, v) {
     const s = v < 0 || Object.is(v, -0) ? 0x8000 : 0; v = Math.abs(v);
@@ -2837,7 +2853,8 @@ def('KERNEL32', 'CreateFileA', 7, function (name, access, share, sa, disp, flags
   }, 0xffffffff);
 });
 def('KERNEL32', 'CloseHandle', 1, function (h) {
-  const f = fileOf(this, h); if (f) fsCall(this, () => { this.fs.close(f.fd); if (f.delOnClose) this.fs.unlink(f.path); }); const c = commOf(this, h); if (c) vcomm(this, 18, [c.vh]);
+  const f = fileOf(this, h); if (f && !(f.refs > 1)) fsCall(this, () => { this.fs.close(f.fd); if (f.delOnClose) this.fs.unlink(f.path); }); else if (f) f.refs--;
+  const c = commOf(this, h); if (c) vcomm(this, 18, [c.vh]);
   const m = this.obj(h); this.handles.delete(h);
   if (m && m.name) { if (this.namedOwner) this.namedOwner.delete(h); namedGone(this, m); }
   // (a file's mapping goes with its last handle, and its data with it)
@@ -2904,7 +2921,7 @@ def('KERNEL32', 'FlushFileBuffers', 1, () => 1);
 const lfile = (p, path, mode) => fsCall(p, () => p.newHandle({ kind: 'file', fd: p.fs.open(path, mode), path }), 0xffffffff);
 def('KERNEL32', '_lopen', 2, function (name, mode) { const m = mode & 3; return lfile(this, this.readA(name), m === 0 ? 'r' : 'r+'); });
 def('KERNEL32', '_lcreat', 2, function (name, attr) { return lfile(this, this.readA(name), 'w+'); });
-def('KERNEL32', '_lclose', 1, function (h) { const f = fileOf(this, h); if (!f) return 0xffffffff; fsCall(this, () => this.fs.close(f.fd)); this.handles.delete(h); return 0; });
+def('KERNEL32', '_lclose', 1, function (h) { const f = fileOf(this, h); if (!f) return 0xffffffff; if (f.refs > 1) f.refs--; else fsCall(this, () => this.fs.close(f.fd)); this.handles.delete(h); return 0; });
 def('KERNEL32', '_lread', 3, function (h, buf, n) {
   const co = conOf(this, h); if (co) { const g = this.scratch4 || (this.scratch4 = this.alloc(4)), r = conRead(this, co, buf, n, g); return r === YIELD ? r : this.r32(g); }   // (the console: XCOPY32 reads its answers so)
   const f = fileOf(this, h); if (!f) return 0xffffffff; return fsCall(this, () => { const b = this.fs.read(f.fd, n); this.u8.set(b, buf); return b.length; }, 0xffffffff); });
@@ -3081,6 +3098,10 @@ def('KERNEL32', 'DuplicateHandle', 7, function (a, h, b, out, access, inherit, o
   if (h === 0xfffffffe) r = this.newHandle({ kind: 'thread', id: this.currentThreadId() });
   else if (h === 0xffffffff) r = this.newHandle({ kind: 'process', pid: this.pc.pid });
   else if (o && DUP_KINDS.has(o.kind)) { r = this.nextHandle; this.nextHandle += 4; this.handles.set(r, o); if (opts & 1) this.handles.delete(h); }
+  // (a file's duplicate: another handle to the same open file, its position shared, the file closed with its last
+  // handle (CloseHandle). The handle itself back, OLE32's compound file closed its original and wrote through the
+  // duplicate it kept, the file gone: STG_E_INVALIDHANDLE, and a VB form's icon an "Invalid picture")
+  else if (o && o.kind === 'file') { r = this.nextHandle; this.nextHandle += 4; this.handles.set(r, o); o.refs = (o.refs || 1) + 1; if (opts & 1) API.KERNEL32.CloseHandle[1].call(this, h); }
   else r = h;
   if (out) this.w32(out, r); return 1;
 });

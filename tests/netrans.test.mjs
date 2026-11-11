@@ -40,7 +40,7 @@ const proc = () => {
   const traps = [];
   Object.assign(p, { selUsed: new Uint8Array(0x2000), th16: [], depth: 0, ne: new Map(), modules: [], byName: new Map(), ghandles: new Map(),
     heapTop: LAYOUT.HEAP, freeList: new Map(), allocs: new Map(), init16() {}, findFile16: () => null, fs: { exists: () => false },
-    imports: { env: { api: () => 0, tick: () => 0, f80load: () => 0, f80store() {} } }, trap: (x, c) => traps.push([x >>> 0, c]), tick: () => 0, traps });
+    imports: { env: { api: () => 0, tick: () => 0, f80load: () => 0, f80store() {}, fbld: () => 0, fbstp() {} } }, trap: (x, c) => traps.push([x >>> 0, c]), tick: () => 0, traps });
   return p;
 };
 memo.clear();

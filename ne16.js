@@ -5602,8 +5602,9 @@ def16('KERNEL', 29, '', 'v', function () {                                      
   const t = thr(this, 0), top = !this.asTask && (this.thread16 ? this.depth === this.thread16.depth : this.depth === 0);
   // a message another task sent waiting in the task's queue (its wake bits' QS_SENDMESSAGE): received through USER's
   // UserYield, as KRNL386's Yield does for a task with a queue (MCIAVI's worker creates its window, sending to the
-  // playing task, which yields in a loop until the worker is up)
-  const user = t.task && t.queue && this.selValid(t.queue) && !t.userYield && (this.r16(this.selBase(t.queue) + 0x4a) & 0x40) && this.ne && this.ne.get('USER');
+  // playing task, which yields in a loop until the worker is up). A Win32 thread in 16-bit code as well, which has a
+  // queue and no task: the CD Sampler's thread, in MCIAVI's loop as the worker's SetWindowPos sent to its window
+  const user = t.queue && this.selValid(t.queue) && !t.userYield && (this.r16(this.selBase(t.queue) + 0x4a) & 0x40) && this.ne && this.ne.get('USER');
   // (UserYield runs as the task's own code, from Yield's caller: run as a call the host made, the window procedure the
   // sent message went to (MMSYSTEM's, at the system's start) could not be preempted, and while it ran nothing else
   // did: no input, no frames, the pointer left behind the mouse)

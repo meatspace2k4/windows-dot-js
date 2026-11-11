@@ -284,7 +284,7 @@ Object.assign(tools, {
       if (src.block !== addr) throw new Error(`no block starts at ${name}; it is inside the block at ${await guest('where', src.block)} (${hx(src.block)})`);
       const mods = await guest('modules'), m = mods.find(x => x.name === src.module);
       if (!m.js) await guest('run', [...mods.filter(x => x.js).map(x => x.name), m.name]);
-      const sc = await scriptEnding(s, `dyn/${m.label.replace(/[^\w.-]+/g, '_')}.js`), b = await breakAfter(s, sc, new RegExp(`^function b_${hx(addr)}\\(`), condition);
+      const sc = await scriptEnding(s, `dyn/${m.label.replace(/[^\w.-]+/g, '_')}.js`), b = await breakAfter(s, sc, new RegExp(`^F\\[\\d+\\] = function b_${hx(addr)}\\(`), condition);
       s.breakpoints.set(b.id, { at: name, url: sc.url, line: b.line, condition: condition || null });
       return { id: b.id, at: name, address: hx(addr), script: `${sc.url}:${b.line}` };
     } },

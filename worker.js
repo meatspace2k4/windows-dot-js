@@ -758,6 +758,11 @@ class Machine {
     const arg32 = t => {
       try {
         if (t.nm === '#18') return `pid ${p.r32(p.reg('esp') + 4).toString(16)} off ${p.r32(p.reg('esp') + 8) | 0}`;   // (GetProcessDword)
+        // (a file call's handle, what the process's table has for it, and its next two arguments)
+        if (/^(ReadFile|WriteFile|SetFilePointer|GetFileSize|SetEndOfFile|FlushFileBuffers|CloseHandle|LockFile|UnlockFile|GetFileType|GetFileTime|SetFileTime|DuplicateHandle)$/.test(t.nm)) {
+          const a = k => p.r32(p.reg('esp') + 4 * k) >>> 0, h = a(t.nm === 'DuplicateHandle' ? 2 : 1), o = p.obj(h);
+          return `h ${h.toString(16)} (${o ? o.kind + (o.path ? ' ' + o.path : '') : 'none'}) ${a(2).toString(16)} ${a(3).toString(16)}`;
+        }
         if (/^Global(Alloc|ReAlloc|Lock|Unlock|Free|Size)$/.test(t.nm)) {   // (the block's handle, sizes and flags, and its text)
           const a = k => p.r32(p.reg('esp') + 4 * k) >>> 0, h = t.nm === 'GlobalAlloc' ? 0 : a(1);
           const txt = h > 0x10000 && h < p.u8.length ? ' "' + (p.readA(h, 48) || '').replace(/[^\x20-\x7e]/g, '.') + '"' : '';

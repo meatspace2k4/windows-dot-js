@@ -597,7 +597,10 @@ function translate(p, lin, csb, d32, v86, limit, ss32In, fIn, endIn, r3In) {
 // status, control and top in the fsw, fcw and ftop globals; its loads, stores, arithmetic, compares (C0 C2 C3 in
 // fsw), rounding by the control word, and the transcendental ones through the host's math imports
 const FPU = 0x10000;
-const IMP = { fsin: 2, fcos: 3, ftan: 4, fatan2: 5, fexp2: 6, flog2: 7, fmod: 8, frem: 9, f80load: 10, f80store: 11 };
+// (fbld and fbstp, 14 and 15, run-time blocks' alone: a module's blocks call each other at indices past its imports,
+// fixed in the memo's bodies, so its imports stay as they are and a block needing these is run-time code, neStatic)
+const IMP = { fsin: 2, fcos: 3, ftan: 4, fatan2: 5, fexp2: 6, flog2: 7, fmod: 8, frem: 9, f80load: 10, f80store: 11, fbld: 14, fbstp: 15 };
+let neStatic = false;   // (translateNE's walk is translating)
 const [FA, FB, FR, FT] = [0, 1, 2, 3];   // (the f64 locals)
 function x87(f, b, o, A) {
   const g = i => f.e(0x20, FA + i), s = i => f.e(0x21, FA + i);   // (get / set an f64 local by its number 0..3)
@@ -688,7 +691,10 @@ function x87(f, b, o, A) {
     if (b === 0xdf) {
       if (r === 0) { fpush(() => load('i16')); return; }
       if (r === 1 || r === 2 || r === 3) { istore(2, r === 1); if (r !== 2) fpop(); return; }
+      if ((r === 4 || r === 6) && neStatic) throw new Unsupported(`x87 df /${r} (packed BCD) in a module: run-time code`);
+      if (r === 4) { fpush(() => { f.lg(A).e(0x10, IMP.fbld); }); return; }                  // fbld: 18 packed BCD digits
       if (r === 5) { fpush(() => load('i64')); return; }
+      if (r === 6) { f.lg(A); stGet(0); f.e(0x10, IMP.fbstp); fpop(); return; }             // fbstp: as packed BCD, rounded as the control word says
       if (r === 7) { istore(8, false); fpop(); return; }
     }
     throw new Unsupported(`x87 ${b.toString(16)} /${r} (memory)`);
@@ -886,15 +892,18 @@ function strop(f, b, osz, asz, seg, rep, L, alu2, szp, dev, guard) {
 function assemble(fn, shared) {
   const sec = (n, b) => [n, ...uleb(b.length), ...b];
   // types: 0 run () -> i32; 1 (i32, i32); 2 (f64) -> f64; 3 (f64, f64) -> f64; 4 (i32) -> f64; 5 (i32, f64)
-  const types = vec([[0x60, 0, 1, I32], [0x60, 2, I32, I32, 0], [0x60, 1, F64T, 1, F64T], [0x60, 2, F64T, F64T, 1, F64T], [0x60, 1, I32, 1, F64T], [0x60, 2, I32, F64T, 0]]);
+  const types = vec([[0x60, 0, 1, I32], [0x60, 2, I32, I32, 0], [0x60, 1, F64T, 1, F64T], [0x60, 2, F64T, F64T, 1, F64T], [0x60, 1, I32, 1, F64T], [0x60, 2, I32, F64T, 0], [0x60, 1, I32, 1, I32]]);
   const imp = (n, t) => [...str('env'), ...str(n), 0x00, t];
   const imps = vec([[...str('env'), ...str('mem'), 0x02, ...(shared ? [0x03, ...uleb(MEM_PAGES), ...uleb(65536)] : [0x00, ...uleb(MEM_PAGES)])], ...G.map(n => [...str('cpu'), ...str(n), 0x03, I32, 1]),
     imp('io', 1),     // function 0: port I/O (port, size | 8 for IN)
     imp('trap', 1),   // function 1: an interrupt (continuation, 100h + n)
     // functions 2-11: the x87's (IMP), as the static modules import them
-    imp('fsin', 2), imp('fcos', 2), imp('ftan', 2), imp('fatan2', 3), imp('fexp2', 2), imp('flog2', 2), imp('fmod', 3), imp('frem', 3), imp('f80load', 4), imp('f80store', 5)]);
+    imp('fsin', 2), imp('fcos', 2), imp('ftan', 2), imp('fatan2', 3), imp('fexp2', 2), imp('flog2', 2), imp('fmod', 3), imp('frem', 3), imp('f80load', 4), imp('f80store', 5),
+    // functions 12-15: the static modules' api and tick (unused here, imported so the x87's BCD calls have one index
+    // in both), fbld and fbstp
+    imp('api', 6), imp('tick', 6), imp('fbld', 4), imp('fbstp', 5)]);
   const funcs = vec([[0]]);
-  const exps = vec([[...str('run'), 0x00, 12]]);
+  const exps = vec([[...str('run'), 0x00, 16]]);
   const code = vec([[...fn.body()]]);
   return new Uint8Array([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0, ...sec(1, types), ...sec(2, imps), ...sec(3, funcs), ...sec(7, exps), ...sec(10, code)]);
 }
@@ -1039,10 +1048,13 @@ P.dynBlock = function (eip) {
 function dynEnv(p) {
   if (!p.cpu.xf) p.cpu.xf = new WebAssembly.Global({ value: 'i32', mutable: true }, 0);   // (a processor made without it: v86.js's)
   if (p.dynEnv) return p.dynEnv;
-  const e = p.imports && p.imports.env, f80 = { f80load: a => p.f80load(a), f80store: (a, v) => p.f80store(a, v) };
+  const e = p.imports && p.imports.env, f80 = { f80load: a => p.f80load(a), f80store: (a, v) => p.f80store(a, v), fbld: a => p.fbld(a), fbstp: (a, v) => p.fbstp(a, v) };
   return (p.dynEnv = { mem: p.mem, io: (port, k) => p.portIO(port & 0xffff, k & 7, !!(k & 8)), trap: (x, c) => p.trap(x, c),
     fsin: Math.sin, fcos: Math.cos, ftan: Math.tan, fatan2: Math.atan2, fexp2: x => Math.pow(2, x), flog2: Math.log2, fmod: (a, b) => a % b, frem: (a, b) => a - b * Math.round(a / b),
-    ...f80, ...(e ? { f80load: e.f80load, f80store: e.f80store } : {}) });
+    // (api and tick, which run-time blocks import and never call, the process's own: this env is spread over a module's,
+    // whose blocks do call them)
+    api: (e && e.api) || (() => 0), tick: (e && e.tick) || (() => 0),
+    ...f80, ...(e ? { f80load: e.f80load, f80store: e.f80store, ...(e.fbld ? { fbld: e.fbld, fbstp: e.fbstp } : {}) } : {}) });
 }
 /** the cache has a size: past it, the older half goes, to be translated again if it runs again. Each block is a
  *  WebAssembly module of its own, kept for good: Windows 98's first start, every DLL of it run from its file, made
@@ -1275,8 +1287,10 @@ P.translateNE = function (rec) {
       // 32-bit stack, ring 3's accesses checked as run-time code checks them)
       const csb = g.flat ? 0 : g.base, d32 = g.flat || g.bits === 32, ss32 = !!g.flat, r3 = !!g.flat;
       let t = null;
+      neStatic = true;
       try { t = translate(this, a, csb, d32, null, undefined, ss32, undefined, g.base + g.len, r3); }
       catch (e) { if (!(e instanceof Unsupported)) throw e; if (e.n > 1) t = translate(this, a, csb, d32, null, e.n - 1, ss32, undefined, g.base + g.len, r3); }
+      finally { neStatic = false; }
       // (the block returns the address it goes on to, as dynBlock's do: what a block leaves on the stack past that
       // (an exit made inside it, then the address after) is the return's to drop)
       if (t) t.fn.e(0x0f);

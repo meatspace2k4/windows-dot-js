@@ -66,7 +66,10 @@ function body(m, wasm, [at, end], type, fname, ind = '  ') {
   for (let n = r.uleb(); n--;) { const k = r.uleb(), t = VT[r.u8()]; for (let i = 0; i < k; i++) { names.push(`${t === 'f64' ? 'f' : t === 'i64' ? 'q' : 'l'}${names.length}`); locals.push(t === 'i64' ? '0n' : '0'); } }
   let dead = 0, lab = 0, pad = ind;
   const emit = s => out.push(pad + s);
-  const push = (e, lit = false) => st.push({ e, lit }), pop = () => { const v = st.pop(); if (!v) throw new Error(`dynjs: ${fname}: the stack is empty at ${hex(r.at)}`); return v.lit ? v.e : `(${v.e})`; };
+  // (an expression grown long is put in a temporary with those pending under it, in order: a long run of pure operations
+  // folded into one expression nested past what the engine's parser recurses through, and the module did not load,
+  // "Maximum call stack size exceeded" at its eval)
+  const push = (e, lit = false) => { st.push({ e, lit }); if (!lit && e.length > 400) spill(); }, pop = () => { const v = st.pop(); if (!v) throw new Error(`dynjs: ${fname}: the stack is empty at ${hex(r.at)}`); return v.lit ? v.e : `(${v.e})`; };
   const spill = () => { for (const v of st) if (!v.lit) { const t = `t${temps.length}`; temps.push(t); emit(`${t} = ${v.e};`); v.e = t; v.lit = true; } };
   const br = n => { const c = ctl[ctl.length - 1 - n]; return !c ? `return${type.q.length ? ' ' + st[st.length - 1].e : ''};` : c.kind === 'loop' ? `continue ${c.label};` : `break ${c.label};`; };
   const open = (kind, head) => { const label = `${kind[0].toUpperCase()}${lab++}`; emit(`${label}: ${head} {`); ctl.push({ kind, label, h: st.length }); pad += '  '; };
@@ -99,7 +102,7 @@ function body(m, wasm, [at, end], type, fname, ind = '  ') {
     else if (op === 0x0f) { spill(); emit(`return${type.q.length ? ' ' + st[st.length - 1].e : ''};`); dead = 1; }
     else if (op === 0x10 || op === 0x11) {
       let t, callee;
-      if (op === 0x10) { const i = r.uleb(), f = m.impF[i]; t = m.types[f ? f.type : m.funcT[i - m.impF.length]]; callee = f ? `env.${f.name}` : `f${i - m.impF.length}`; }
+      if (op === 0x10) { const i = r.uleb(), f = m.impF[i]; t = m.types[f ? f.type : m.funcT[i - m.impF.length]]; callee = f ? `env.${f.name}` : `F[${i - m.impF.length}]`; }
       else { t = m.types[r.uleb()]; r.uleb(); callee = `T[${pop()}]`; }
       const args = t.p.map(() => pop()).reverse(); spill();
       const call = `${callee}(${args.join(', ')})`;
@@ -167,16 +170,18 @@ function source(wasm, label, blocks) {
     `const nearest = x => { const r = Math.round(x); return Math.abs(x % 1) === 0.5 && r % 2 ? r - 1 : r; };`,
     `const sat32 = x => (x !== x ? 0 : x <= -2147483648 ? -2147483648 : x >= 2147483647 ? 2147483647 : Math.trunc(x) | 0), trunc32 = x => Math.trunc(x) | 0;`,
     `const sat64 = x => (x !== x ? 0n : x <= -9223372036854775808 ? -9223372036854775808n : x >= 9223372036854775807 ? 9223372036854775807n : BigInt(Math.trunc(x)));`];
+  // (each function a slot of F, named, not a local of its own: a module's tens of thousands of blocks as declarations,
+  // and their aliases, each took a register of this function's frame, and the frame overflowed the worker's stack as
+  // the module was made, "Maximum call stack size exceeded" at 1:11)
+  L.push(`const F = [];`);
   m.bodies.forEach((b, i) => {
     const t = m.types[m.funcT[i]], a = addr.get(i), name = a === undefined ? (i === 0 ? 'run' : `f${i}`) : `b_${hex(a)}`;
-    L.push(`function ${name}(${t.p.map((_, k) => `p${k}`).join(', ')}) {${a === undefined ? '' : `   // ${hex(a)}`}`);
+    L.push(`F[${i}] = function ${name}(${t.p.map((_, k) => `p${k}`).join(', ')}) {${a === undefined ? '' : `   // ${hex(a)}`}`);
     if (a !== undefined) L.push(`  if (BP.on) BP.at(0x${hex(a)}, R, M);`);
     L.push(body(m, wasm, b, t, name), '}');
   });
-  L.push(`const T = [${m.table.map(f => `b_${hex(addr.get(f - nimp))}`).join(', ')}];`);
-  // Direct calls use f<i>; alias those to the named block functions.
-  m.bodies.forEach((_, i) => { const a = addr.get(i); if (a !== undefined) L.push(`const f${i} = b_${hex(a)};`); });
-  L.push(`const f0 = run;`, `return { run };`, `})`, `//# sourceURL=dyn/${label.replace(/[^\w.-]+/g, '_')}.js`);
+  L.push(`const T = [${m.table.map(f => `F[${f - nimp}]`).join(', ')}];`);
+  L.push(`return { run: F[0] };`, `})`, `//# sourceURL=dyn/${label.replace(/[^\w.-]+/g, '_')}.js`);
   return L.join('\n');
 }
 // ---------------------------------------------------------------- the debugger
@@ -251,8 +256,8 @@ const D = {
     if (!m.netSeed.wasm) return p.seedWasm(m).then(ok => (ok ? D.source(p, addr) : null));
     const bl = m.netSeed.blocks; let block = -1; for (const b of bl) if (b <= a && b > block) block = b; if (block < 0) return null;
     const key = String(labelOf(m)).toUpperCase(); if (!made.has(key)) made.set(key, source(m.netSeed.wasm, labelOf(m), bl));
-    const s = made.get(key), i = s.indexOf(`\nfunction b_${hex(block)}(`); if (i < 0) return null;
-    return { module: shortOf(m), block, text: s.slice(i + 1, s.indexOf('\n}\n', i) + 2) };
+    const s = made.get(key), i = s.indexOf(` = function b_${hex(block)}(`); if (i < 0) return null;
+    return { module: shortOf(m), block, text: s.slice(i + 3, s.indexOf('\n}\n', i) + 2) };
   },
   /** Guest memory: `n` bytes at an address (4096 at most). */
   read: (p, addr, n = 64) => Array.from(p.u8.subarray(resolve(p, addr), resolve(p, addr) + Math.min(n, 4096))),
