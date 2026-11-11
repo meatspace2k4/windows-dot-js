@@ -928,6 +928,11 @@ function fileCodeSeg(p, eip) {
 function noteEntry(g, a) {
   const m = g.mod; if (!m) return;
   // (a 16-bit module's by its segment and offset; an image's as 0 and its offset from the image's base)
+  // (one the memo's module, being read meanwhile (netText), has as a block of its own is no new block: its code runs as
+  // run-time code until the module is in place, and each address it ran was noted, the module translated again just
+  // after it was put in place, the memo's bytes new each time, and each first load compiled them anew while its code
+  // ran as run-time code, the first folder window's MSHTML 9 seconds)
+  if (m.netText && m.netHad && m.netHad.has(a)) return;
   const s = m.dynEntries || (m.dynEntries = new Set()), k = `${g.num}:${a - (g.flat ? m.base : g.base)}`;
   if (!s.has(k)) { s.add(k); (m.dynNew || (m.dynNew = new Set())).add(k); }
 }
@@ -1454,12 +1459,12 @@ P.neCompile = function (rec, again = false) {
   // (the memo's module, its bytes in the memo's store: read and compiled as the machine runs, the module's code run-time
   // code meanwhile (its text not the dispatcher's until then: netText), and put in place at a step's end, neInstall)
   if (same && !had.wasm) {
-    rec.netText = [meta.textLo, meta.textHi]; meta.textLo = meta.textHi = 0; rec.netReady = null;
+    rec.netText = [meta.textLo, meta.textHi]; meta.textLo = meta.textHi = 0; rec.netReady = null; rec.netHad = new Set(had.blocks);
     // (the read's answer the record's only while it is still that file's, waiting for it: an arrival rebinds the
     // records by their place, and a read MSIDLE's load began answered on the record that was SHDOCVW's by then, which
     // got MSIDLE's module, its own code run-time code, the Channel Bar's control black)
     const sha = rec.sha256, mine = () => rec.sha256 === sha && rec.netText && !rec.netReady;
-    memoModule(sha).then(m => { if (mine()) rec.netReady = m ? { mod: m.mod, bytes: m.bytes, had, t0 } : { had: null }; })
+    memoModule(sha).then(m => { if (mine()) rec.netReady = m ? { mod: m.mod, bytes: m.bytes, had, t0, at: performance.now() } : { had: null }; })
       .catch(e => { console.warn(`[dyn] ${label}: the memo's module could not be read:`, e && e.message); if (mine()) rec.netReady = { had: null }; });
     return rec;
   }
@@ -1497,13 +1502,16 @@ P.neSet = function (rec, mod, seed) {
   // A module named for the debugger runs as JavaScript made from the same wasm (dynjs.js).
   const label = rec.name === 'EXE' ? meta.path || meta.name || 'EXE' : rec.name, J = self.W95DynJs;
   rec.dynJs = !!(J && seed.wasm && J.wants(label));
+  const tI = performance.now();
   const run = rec.dynJs ? J.make(seed.wasm, label, blocks, env, this.cpu, this.mem, this).run : new WebAssembly.Instance(mod, { env, cpu: this.cpu }).exports.run;
+  const tL = performance.now();
   const look = new Uint32Array(this.mem.buffer, meta.lookup, meta.textHi - meta.textLo);
   look.fill(0); blocks.forEach((a, i) => { look[a - meta.textLo] = i + 1; });
+  rec.setMs = { instance: Math.round(tL - tI), table: Math.round(performance.now() - tL) };   // (where putting it in place went: the install's log line)
   // (a hooked address is the host's to enter, as run-time code leaves it: no block there, its call comes to the
   // dispatcher's hook; win32.js setEntryHook clears one hooked later)
   for (const a of this.entryHooks ? this.entryHooks.keys() : []) if (a >= meta.textLo && a < meta.textHi) look[a - meta.textLo] = 0;
-  meta.blocks = blocks; rec.module = mod; rec.run = run;
+  meta.blocks = blocks; rec.module = mod; rec.run = run; rec.netHad = null;
   // (its blocks taken back from its module when it is translated again: translateNE. The module's bytes are the memo's
   // to keep, read back for that (neRebuild, seedWasm): the engine holds its own copy of a compiled module's bytes)
   if (seed.wasm && seed.made && !rec.dynJs && typeof indexedDB !== 'undefined') seed = { ...seed, wasm: null, bytes: seed.wasm.length };
@@ -1517,15 +1525,18 @@ P.neInstall = function () {
   if (this.depth) return false;
   for (const m of this.modules || []) {
     if (!m || !m.netText || !m.netReady || m.hidden) continue;
-    const { mod, bytes, had, t0 } = m.netReady, meta = m.meta; [meta.textLo, meta.textHi] = m.netText; m.netText = null; m.netReady = null;
+    const { mod, bytes, had, t0, at } = m.netReady, meta = m.meta; [meta.textLo, meta.textHi] = m.netText; m.netText = null; m.netReady = null;
     const label = m.name === 'EXE' ? meta.path || meta.name || 'EXE' : m.name;
     // (another file's memo, or another text: translated now, as one not in the memo; and a record put in the memo's place
     // since the read began (the same file translated again at another place meanwhile): the bytes read may be the new
     // record's, made for that other place, whose run takes every address of this text for one outside it)
-    if (!had || had.sha !== m.sha256 || memo.get(had.sha) !== had ||had.textLo !== meta.textLo || had.textHi !== meta.textHi || had.codeHash !== blocksHash(this.u8, had.blocks, had.lens)) { this.neCompile(m, true); return true; }
+    const tH = performance.now();
+    if (!had || had.sha !== m.sha256 || memo.get(had.sha) !== had || had.textLo !== meta.textLo || had.textHi !== meta.textHi || had.codeHash !== blocksHash(this.u8, had.blocks, had.lens)) { this.neCompile(m, true); return true; }
+    const tS = performance.now();
     this.neSet(m, mod, { wasm: null, bytes, blocks: had.blocks, lens: had.lens, sums: had.sums, made: had.made });
     memoUsed(had, bytes);
-    window.W95Win32.log('debug', 'dyn', `${label}: ${had.blocks.length} blocks from the memo (${bytes} bytes, put in place ${Math.round(performance.now() - t0)} ms after its load)`);
+    const s = m.setMs || {};
+    window.W95Win32.log('debug', 'dyn', `${label}: ${had.blocks.length} blocks from the memo (${bytes} bytes, compiled ${Math.round(at - t0)} ms and put in place ${Math.round(performance.now() - t0)} ms after its load; the check ${Math.round(tS - tH)} ms, its instance ${s.instance} ms, its table ${s.table} ms, in all ${Math.round(performance.now() - tH)} ms)`);
     return true;
   }
   return false;
@@ -1539,7 +1550,7 @@ P.dynRelease = function (m) {
   if (!m.run && !m.module) return false;
   const meta = m.meta;
   m.netText = [meta.textLo, meta.textHi]; meta.textLo = meta.textHi = 0;
-  m.run = null; m.module = null; m.netSeed = null; m.netReady = null; m.released = true;
+  m.run = null; m.module = null; m.netSeed = null; m.netReady = null; m.released = true; m.netHad = null;
   if (m.dynNew) m.dynNew.clear();
   if (this.dynFast) this.dynFast.clear();
   return true;
