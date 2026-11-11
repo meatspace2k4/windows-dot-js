@@ -890,9 +890,11 @@ class Machine {
     // sound card made sound faster than the speakers play it, and the CD Sampler's movie sound played on after the
     // program had ended. Held to the wall itself, the sound queued was only what the last step made, and any step that
     // came late left the speakers with nothing: the sound broke up. Behind the wall by more than a quarter second, the
-    // reckoning starts again from now rather than racing to catch up)
+    // reckoning starts again from now rather than racing to catch up; ahead by more than a quarter second past the lead
+    // (a driver's polling, each port access its microsecond), the same, rather than the step waiting that long with a
+    // person's keys and moves waiting behind it)
     const vc = this.vclock, a = this.paceAt;
-    if (!a || this.fast || vc.scale !== 1 || vc.now < a.now || (wall - a.wall) - (vc.now - a.now) > 250) this.paceAt = { wall, now: vc.now };
+    if (!a || this.fast || vc.scale !== 1 || vc.now < a.now || Math.abs((wall - a.wall) - (vc.now - a.now) + PACE_LEAD) > 250 + PACE_LEAD) this.paceAt = { wall, now: vc.now };
     const ahead = this.paceAt ? (vc.now - this.paceAt.now) - (wall - this.paceAt.wall) - PACE_LEAD : 0;
     if (!this.fast && vc.scale === 1 && ahead > 1 && (busy || rebuilt)) { this.stepDue = wall + ahead; this.timer = setTimeout(() => this.step(), ahead); return; }
     if (busy || rebuilt || this.keyq.length || this.fast) { this.stepDue = wall; this.stepSoon(); }
