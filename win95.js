@@ -518,14 +518,45 @@ const WIN_INI_FONTS = [['MS Sans Serif 8,10,12,14,18,24', 'SSERIFE.FON'], ['MS S
 // answering byte ranges; cdrom.iso alone where the server has no list). A disc's tree is read from the disc as it is
 // put in, except the Windows 95 CD's, which cdrom.js has
 const CD_KEY = 'w95.cd';
+// (the images the person put in from this computer, Insert CD Image: each file read in place, by a blob URL, for as
+// long as the page is open)
+const cdLocal = [];
 function cdImages() {
   const host = window.W95HOST && window.W95HOST.cd;
   if (host) return [{ name: (host.image && host.image()) || 'CD', url: null }];
   try {
     const x = new XMLHttpRequest(); x.open('GET', '__cd', false); x.send();
-    if (x.status === 200) { const l = JSON.parse(x.responseText); if (Array.isArray(l) && l.length) return l; }
+    if (x.status === 200) { const l = JSON.parse(x.responseText); if (Array.isArray(l) && l.length) return [...l, ...cdLocal]; }
   } catch (_) { /* no list */ }
-  return [{ name: 'cdrom.iso', url: 'cdrom.iso' }];
+  return [{ name: 'cdrom.iso', url: 'cdrom.iso' }, ...cdLocal];
+}
+// Insert CD Image (Start > Programs > Accessories > System Tools) and the drive's Eject (Windows', ne16.js cdEject):
+// the app's own (File > Insert CD Image, Eject CD), which choose the file and tell the page (host.cd.on); in a
+// browser, a file on this computer chosen with the browser's picker (from the dialog's button: a click), and the disc
+// taken out here
+function cdCommand(op) {
+  const host = window.W95HOST && window.W95HOST.cd;
+  if (op === 'eject') { if (host && host.eject) host.eject(); else cdInsert(null); return; }
+  if (host && host.insert) { host.insert(); return; }
+  let w;
+  const pick = () => {
+    const input = document.createElement('input'); input.type = 'file'; input.accept = '.iso';
+    input.onchange = () => {
+      const f = input.files && input.files[0]; if (!f) return;
+      closeWin(w);
+      const i = cdLocal.findIndex(x => x.name === f.name); if (i >= 0) { URL.revokeObjectURL(cdLocal[i].url); cdLocal.splice(i, 1); }
+      cdLocal.push({ name: f.name, url: URL.createObjectURL(f) });
+      let r = null; try { r = cdInsert(f.name); } catch (_) { /* not found */ }
+      if (!r) msgBox('Insert CD Image', `${f.name} is not a CD image drive D: can read.`, 'error');
+    };
+    input.click();
+  };
+  w = dialog('Insert CD Image', 300, 96, [
+    { type: 'label', text: 'Choose a CD image (.iso) on this computer to put in drive D:.', x: 12, y: 12, w: 276 },
+    { type: 'button', label: '&Choose File...', x: 104, y: 62, w: 98, h: 23, def: true, fn: pick },
+    { type: 'button', label: 'Cancel', x: 208, y: 62, w: 80, h: 23, cancel: true, fn: () => closeWin(w) },
+  ], { modal: true });
+  return w;
 }
 // an image as a disc: { read(sector, bytes) }, null where it does not answer
 function cdDisc(img) {
@@ -3229,7 +3260,7 @@ function setupStartMenu() {
     ['MOTOWN.INF', 'Vol.links', 'SNDVOL32.EXE', 'Volume Control'], ['MMOPT.INF', 'CDPlayer.inis', 'CDPLAYER.EXE', 'CD Player']].filter(([inf, , file]) => infs[inf] && (S.programs || {})[file]);
   const missing = accessories.some(a => a.links.some(k => !fs.exists(join(progs, k.folder, k[0] + '.lnk'))) || a.gone.some(k => fs.exists(join(progs, k.folder, k[0] + '.lnk')))) || (claude && !fs.exists(join(progs, 'Claude', 'Claude.lnk')))
     || media.some(m => !fs.exists(join(progs, 'Accessories', 'Multimedia', m[3] + '.lnk')))
-    || (session && !fs.exists(join(tools, 'Join Session.lnk'))) || (dbwin && !fs.exists(join(tools, 'Debug Monitor.lnk'))) || ((S.programs || {})['W95DBG.EXE'] && !fs.exists(join(tools, 'Debugger.lnk'))) || (clip &&!fs.exists(join(progs, 'Accessories', 'Clipboard Viewer.lnk')));
+    || (session && !fs.exists(join(tools, 'Join Session.lnk'))) || (session && !fs.exists(join(tools, 'Insert CD Image.lnk'))) || (dbwin && !fs.exists(join(tools, 'Debug Monitor.lnk'))) || ((S.programs || {})['W95DBG.EXE'] && !fs.exists(join(tools, 'Debugger.lnk'))) || (clip &&!fs.exists(join(progs, 'Accessories', 'Clipboard Viewer.lnk')));
   if (cur && cur[0] === 0x4c && cur[1] === 0 && !missing) return;   // ('L': a shell link's header)
   const out = new Map();
   const add = ({ sec, fields, subst }, names) => {
@@ -3252,7 +3283,7 @@ function setupStartMenu() {
     const groups = out.get('progman.groups') || out.set('progman.groups', { name: 'progman.groups', lines: [] }).get('progman.groups');
     if (!groups.lines.some(l => /^group11=/i.test(l))) groups.lines.push(`group11=${tools.slice(progs.length + 1)}`);
     const g = out.get('group11') || out.set('group11', { name: 'group11', lines: [] }).get('group11');
-    g.lines.push('"Export Session", "RUNDLL32.EXE SESSION.DLL,Export"', '"Import Session", "RUNDLL32.EXE SESSION.DLL,Import"',
+    g.lines.push('"Export Session", "RUNDLL32.EXE SESSION.DLL,Export"', '"Import Session", "RUNDLL32.EXE SESSION.DLL,Import"', '"Insert CD Image", "RUNDLL32.EXE SESSION.DLL,InsertCD"',
       '"Save Session", "RUNDLL32.EXE SESSION.DLL,Save"', '"Open Session", "RUNDLL32.EXE SESSION.DLL,Open"', '"Join Session", "RUNDLL32.EXE SESSION.DLL,Join"');
   }
   if (dbwin) {
@@ -4048,11 +4079,7 @@ class RemoteApp extends NativeApp {
     switch (m.t) {
       case 'rpc': this.serve(m); return;
       case 'started':
-        this.mem = m.mem; [this.sw, this.sh] = [m.sw, m.sh];
-        this.cv = mkc(this.sw, this.sh); this.cx = this.cv.getContext('2d'); this.img = this.cx.createImageData(this.sw, this.sh);
-        this.ov = mkc(this.sw, this.sh); this.ox = this.ov.getContext('2d'); this.oimg = this.ox.createImageData(this.sw, this.sh); this.o32 = new Uint32Array(this.oimg.data.buffer);
-        this.d32 = new Uint32Array(this.img.data.buffer); this.pal = new Uint32Array(256);
-        if (this.system) fitWindow(this.sw, this.sh);
+        this.mem = m.mem; this.pal = new Uint32Array(256); this.screenSized(m.sw, m.sh);
         nativeApps.add(this);
         // the system's machine has the network stack and its card, as Windows does: a station on the page's segment
         if (this.lanRing) { this.lanStation = { rx: frame => { if (this.alive) W95Bridge.framePut(this.lanRing, frame); } }; this.lanDetach = window.W95LAN && W95LAN.attach(this.lanStation); }
@@ -4062,6 +4089,7 @@ class RemoteApp extends NativeApp {
       // MPR loaded in the system's machine (or no network client): the shell's network calls go ahead (netBoot)
       case 'mpr': this.mprUp = m.up; if (this.mprReady) { this.mprReady(m.up); this.mprReady = null; } return;
       case 'session': sessionCommand(m.op); return;   // (Export or Import Session, from the Start menu: SESSION.DLL)
+      case 'cd': if (m.op !== 'eject' || m.drive === 'D') cdCommand(m.op); return;   // (Insert CD Image, SESSION.DLL; the drive's Eject, ne16.js cdEject: D:'s disc, E:'s audio disc stays)
       // (the Braid icon's menu, SESSTRAY.DLL: Mark Now, Anchor Now, Travel To a moment; the session's, every machine's)
       case 'trayBraid': {
         if (!braid) return;
@@ -4114,8 +4142,8 @@ class RemoteApp extends NativeApp {
       case 'intent': { const S = sharedNow(); if (S) S.intent(m.i); return; }   // (a setting this machine's person made: ne16.js hookIntents)
       case 'stroke': if (this.system) osStrokeOut(m); return;   // (this person's mouse stroke into a window, or part of one: worker.js recordStroke)
       case 'strokeAt': { const client = String(m.key).split(':')[0]; if (m.done) peerAt.delete(client); else peerAt.set(client, { x: m.x, y: m.y, t: Date.now() }); dirty(); return; }   // (another person's stroke, as far as it is drawn here: their pointer drawn on it)
-      case 'text': this.txt = m.txt; if (msgApp === this) dirty(); return;
-      case 'msgMode': msgApp = m.on ? this : msgApp === this ? null : msgApp; this.r0 = m.on; dirty(); return;
+      case 'text': this.txt = m.txt; if (msgApp === this) { dirty(); this.logText(); } return;
+      case 'msgMode': msgApp = m.on ? this : msgApp === this ? null : msgApp; this.r0 = m.on; dirty(); if (m.on) this.logText(); return;
       case 'reset': machineReset(); return;
       case 'audio': if (window.W95Sound) W95Sound.play(this, m.rate, m.l, m.r); return;
       case 'regop': W95Win32.regApply(m.o); logonChanged(m.o); return;
@@ -4203,6 +4231,14 @@ class RemoteApp extends NativeApp {
   }
   iconOf(n) { return n && n.prog ? EXE_ICON[n.prog] || 'app' : this.icon; }
   // (the screen as the machine last reported its mode and DAC, VRAM read where it is in the shared memory)
+  /** the text screen of message mode (a blue screen: VWIN32's fatal exception, a protection error, Ctrl+Alt+Del's) into
+   *  the machines' log as an error, its text as shown, each new screen once; the page's system.fail with it */
+  logText() {
+    const t = this.txt; if (!t || !t.ch) return;
+    const rows = []; for (let r = 0; r < t.rows; r++) { let s = ''; for (let c = 0; c < t.cols; c++) s += String.fromCharCode(t.ch[r * t.cols + c] || 32); rows.push(s.trim()); }
+    const text = rows.filter(Boolean).join('\n'); if (!text || text === this.loggedText) return;
+    this.loggedText = text; W95Win32.log('error', 'bluescreen', text);
+  }
   screenNow() {
     const m = this.scr || this.snap; if (!m || !m.scan || !this.mem) return null; const a = m.scan;
     return { ...a, vram: new Uint8Array(this.mem, a.vram, Math.max(0, Math.min(scanBytes(a), this.mem.byteLength - a.vram))), dac: m.dac };
@@ -6221,7 +6257,10 @@ async function actOn(q, send, item) {
     return { ...e, how: 'chosen by its tab control' };
   }
   if (btn) {
-    const r = await btn.app.cmd('press', [e.hwnd]);
+    // (the keys and moves sent before it taken first, and a disabled button waited for as a missing element is, up to
+    // 5 s, a frame at a time: a person's press comes after what they typed, which the dialog may take to enable it)
+    await inputDrawn();
+    let r; for (const t0 = performance.now(); (r = await btn.app.cmd('press', [e.hwnd])) === 'disabled' && performance.now() - t0 < 5000;) await btn.app.nextFrame();
     if (r !== true) { const a = windows.map(winInfo).filter(x => x.active).pop(); throw new Error(`${qText(asQuery(q))} is not pressed: ${r}${a ? `; the active window is '${a.title}'` : ''}`); }
     return { ...e, how: 'pressed by its own window' };
   }

@@ -29,8 +29,6 @@ export const pageDrive = async (key, o = {}) => {
   // (Setup and RUNONCE's first-start items 8 times ahead of the wall, by their programs' names (mod-turbo.js), in this
   // machine and each one after Setup's restart: the address's mod, added when it has no turbo of its own)
   { const h = new URLSearchParams(location.hash.replace(/^#/, '')); if (!h.getAll('mod').some(m => /^(mod-)?turbo\b/i.test(m)) && !new URLSearchParams(location.search).getAll('mod').some(m => /^(mod-)?turbo\b/i.test(m))) { h.append('mod', o.turbo || 'turbo:8@SETUP,W98SETUP,SUWIN,RUNONCE'); location.hash = h.toString(); lg(`speed by program: ${h.getAll('mod').join(' ')}`); } }
-  // (and Setup on a 4 by 3 screen in the middle of the machine's, mod-setupscreen.js, the same way)
-  { const h = new URLSearchParams(location.hash.replace(/^#/, '')), has = l => l.some(m => /^(mod-)?setupscreen\b/i.test(m)); if (!has(h.getAll('mod')) && !has(new URLSearchParams(location.search).getAll('mod'))) { h.append('mod', 'setupscreen'); location.hash = h.toString(); } }
   // (the line marking itself every o.every ms (30 s), the last four held, and anchoring itself every 5 minutes, the
   // last three kept (braid.every), so a reload travels back to the run; o.every 0 leaves it to the steps' moments)
   if (o.every !== 0) B.every(o.every || 30000, 4);
@@ -49,7 +47,13 @@ export const pageDrive = async (key, o = {}) => {
       if (/Uninstall Drive/.test(e.title)) { await win95.click({ name: 'OK', window: /Uninstall Drive/ }); lg('Select Uninstall Drive: OK'); }
       // (the startup disk's own dialog, after its page: Setup asks for a disk in A: once its files are gathered; Cancel
       // skips the disk, as the page's Cancel did)
-      if (/^Insert Disk$/.test(e.title)) { await win95.click({ name: 'Cancel', window: 'Insert Disk' }); lg('Insert Disk: Cancel (no startup disk)'); }
+      else if (/^Insert Disk$/.test(e.title)) { await win95.click({ name: 'Cancel', window: 'Insert Disk' }); lg('Insert Disk: Cancel (no startup disk)'); }
+      // (any other dialog that reports an error, a file Setup cannot find among them: a fault on the line, the ladder
+      // stopped there, its text in the log)
+      else {
+        const text = (await win95.elementsNow()).filter(x => x.window === e.title && x.role === 'text').map(x => String(x.name)).join(' ');
+        if (!fault && /cannot|could not|error|not found|failed|invalid/i.test(text)) { fault = { title: `${e.title}: ${text.slice(0, 200)}`, t: Date.now() }; lg(`DIALOG ${fault.title}`); }
+      }
     }
     catch (err) { lg('dialog ' + e.title + ': ' + err.message); }
   });
@@ -145,7 +149,8 @@ export const pageDrive = async (key, o = {}) => {
       // (a page that went before its button was pressed (the Identification dialog Setup shows and takes down itself):
       // the ladder looks for the next page, the press not made)
       try { await step([['click', { name: btn.name, role: btn.role, window: btn.window }]], async () => { await win95.click(btn); lg(`${btn.name} on ${pg.title} :: ${pg.text.slice(0, 60)}`); }); }
-      catch (e) { if (!/no element matches/.test(e.message)) throw e; lg(`${pg.title} went before its ${btn.name} was pressed`); last = ''; continue; }
+      // (and a Next greyed again before the press, Setup's next check begun: the page looked for again)
+      catch (e) { if (!/no element matches|is not pressed: disabled/.test(e.message)) throw e; lg(`${pg.title}: ${btn.name} not pressed (${/disabled/.test(e.message) ? 'greyed again' : 'the page went'})`); last = ''; continue; }
       if (btn.name === 'Finish') done = true;
     }
     if (fault) await recover();

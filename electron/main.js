@@ -124,13 +124,21 @@ ipcMain.handle('audio-read', (e, start, length) => {
   const b = Buffer.alloc(length), n = fs.readSync(audioFd, b, 0, length, start)
   return b.subarray(0, n)
 })
+// the disc put in the drive (an image's file) or taken out (null): kept for the next start (cdrom.json), and the page told
+function cdPut(file) {
+  cdOpen(file); fs.writeFileSync(cdFile(), JSON.stringify({ image: cdImage }, null, 2))
+  for (const w of BrowserWindow.getAllWindows()) w.webContents.send('cd-changed', cdImage && path.basename(cdImage))
+}
 async function insertCD() {
   const r = await dialog.showOpenDialog({ title: 'Insert CD Image', buttonLabel: 'Insert', properties: ['openFile'], filters: [{ name: 'CD images', extensions: ['iso'] }] })
   if (r.canceled || !r.filePaths[0]) return
-  cdOpen(r.filePaths[0]); fs.writeFileSync(cdFile(), JSON.stringify({ image: cdImage }, null, 2))
-  for (const w of BrowserWindow.getAllWindows()) w.webContents.send('cd-changed', cdImage && path.basename(cdImage))
+  cdPut(r.filePaths[0])
 }
+const ejectCD = () => cdPut(null)
 ipcMain.on('cd-image', e => { e.returnValue = cdImage && path.basename(cdImage) })
+// (Windows' own: Start > Programs > Accessories > System Tools > Insert CD Image, and the drive's Eject)
+ipcMain.on('cd-insert', () => insertCD())
+ipcMain.on('cd-eject', () => ejectCD())
 async function shareFolder() {
   const r = await dialog.showOpenDialog({ title: 'Share a Folder', buttonLabel: 'Share', properties: ['openDirectory', 'createDirectory'] })
   if (!r.canceled && r.filePaths[0]) shares.add(r.filePaths[0])
@@ -138,13 +146,14 @@ async function shareFolder() {
 app.whenReady().then(() => {
   store = require('./store').open(dbFile())
   shares = require('./shares').open(path.join(app.getPath('userData'), 'shares.json'))
-  // the disc in the drive: the one the person inserted (cdrom.json), else the one the app was built with (cd.json,
-  // the project's cdrom.iso, the same disc serve.py serves the page)
-  const image = f => { try { return JSON.parse(fs.readFileSync(f, 'utf8')).image || null } catch (_) { return null } }
-  cdOpen(image(cdFile()) || image(path.join(__dirname, 'cd.json')))
+  // the disc in the drive: the one the person inserted, or none when they took it out (cdrom.json); before either,
+  // the one the app was built with (cd.json, the project's cdrom.iso, the same disc serve.py serves the page)
+  const kept = f => { try { return JSON.parse(fs.readFileSync(f, 'utf8')) } catch (_) { return null } }
+  const chosen = kept(cdFile()), built = kept(path.join(__dirname, 'cd.json'))
+  cdOpen(chosen ? chosen.image || null : built && built.image)
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     { role: 'appMenu' },
-    { label: 'File', submenu: [{ label: 'Share a Folder…', click: shareFolder }, { label: 'Insert CD Image…', click: insertCD }, { type: 'separator' },
+    { label: 'File', submenu: [{ label: 'Share a Folder…', click: shareFolder }, { label: 'Insert CD Image…', click: insertCD }, { label: 'Eject CD', click: ejectCD }, { type: 'separator' },
       { label: 'Export Session…', click: exportSession }, { label: 'Import Session…', click: importSession }] },
     { label: 'View', submenu: [{ role: 'togglefullscreen' }, { role: 'reload' }, { role: 'toggleDevTools' }] },
     { role: 'windowMenu' },

@@ -92,7 +92,7 @@ last to USER and the page has drawn it, as a person's hand does.
 | `run(command)`, `open(path)` | what Start > Run does; opens a folder window or the file's program |
 | `saver(path)`, `stopSaver()` | a screen saver full screen, and its end |
 | `fs` | the file system (`readText`, `writeFile`, `readdir`, `stat`, ...; fs.js) |
-| `cd.images()`, `cd.insert(name)`, `cd.eject()`, `cd.disc` | the CD images D: can take, putting one in (AutoRun then runs as Explorer runs it), taking it out, the disc in it. `?cd=<name>` picks one at start; the audio CD stays in E: |
+| `cd.images()`, `cd.insert(name)`, `cd.eject()`, `cd.disc` | the CD images D: can take, putting one in (AutoRun then runs as Explorer runs it), taking it out, the disc in it. `?cd=<name>` picks one at start; the audio CD stays in E:. Inside Windows, Start > Programs > Accessories > System Tools > Insert CD Image puts one in (the app's File > Insert CD Image; in a browser, an .iso file on this computer), and the drive's Eject takes it out (the app's Eject CD) |
 | `pc.text()`, `pc.type(keys)`, `pc.reset()`, `pc.inWindows`, `pc.failed` | the PC under Windows: its 80x25 text screen as lines, keys at its keyboard (`{Enter}`, `{F8}`), a power cycle, whether Windows has the screen, why it stopped |
 | `screen()` | `{ width, height, taskbar, screen }`: the size, the taskbar's top row, and what the `screen` event carries now |
 | `screenshot()`, `state` | a PNG data URL; menus, modals, pointer capture, the active window |

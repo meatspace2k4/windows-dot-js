@@ -904,6 +904,9 @@ function absDisk(p, write) {
 // volume's size, 9 media not changed, 10 the audio disc (tracks 1 to 1, the lead-out), 11 a track (a data track: its
 // control byte 41h), 12 the Q channel, 15 the audio status; IOCTL output (12), open (13), close (14), and play (84h),
 // stop (85h) and resume (88h), which have nothing to play on a data disc, are done
+/** the disc in a CD drive taken out, as the drive's eject does: the page is asked (win95.js cdCommand), which takes it
+ *  out of D: as the app's Eject CD or the page's own drive does; the system's machine, in its worker, only */
+const cdEject = (p, letter) => { if (typeof importScripts === 'function' && self.postMessage) self.postMessage({ t: 'cd', op: 'eject', drive: letter }); };
 const cdRequest = p => {   // (each request logged for the dev server's cd log: worker.js W95CDTRACE)
   const T = self.W95CDTRACE; if (!T) return cdRequest0(p);
   const at = (s, o) => (p.rmode ? ((s & 0xffff) << 4) + (o & 0xffff) : p.lin(u32(((s & 0xffff) << 16) | (o & 0xffff))));
@@ -997,7 +1000,9 @@ const cdRequest0 = p => {
     if (a.state === 'paused' && a.pos < a.to) { Object.assign(a, { state: 'playing', from: a.pos, t0: now }); send('play', a.pos, a.to); return status(0x0300); }
     return status(0x800c);
   }
-  if ([12, 13, 14].includes(cmd)) return status(0x0100 | busy);
+  // IOCTL output: the control block at the transfer address (+0Eh); its code 0, eject the disc
+  if (cmd === 12) { const t = p.r32(hdr + 0x0e), b = at(t >>> 16, t); if (p.u8[b] === 0) cdEject(p, cd.letter); return status(0x0100 | busy); }
+  if ([13, 14].includes(cmd)) return status(0x0100 | busy);
   return status(0x8003);
 };
 const INTS = {
@@ -1510,6 +1515,8 @@ P.blockIoctl = function () {
   if (cx === 0x086a) { const lv = locks.get(L); if (lv) locks.set(L, lv - 1); else locks.delete(L); this.ax(0); return; }
   if (cx === 0x0870) { const lv = locks.get(L); this.ax(lv === undefined ? 0xffff : lv); this.cpu.ecx.value = lo16(this.cpu.ecx.value, 0); return; }
   if (cx === 0x086c) { this.ax(0); return; }   // (the lock's access flag: nothing has written or mapped the volume since)
+  // a CD drive's 0848h, lock or unlock the drive's door (nothing to hold here), and 0849h, eject its disc
+  if ((cx === 0x0848 || cx === 0x0849) && v.kind === 'cdrom') { if (cx === 0x0849) cdEject(this, L); CF(this, 0); this.ax(0); return; }
   const a = this.lin(((this.cpu.ds.value & 0xffff) << 16) | (this.cpu.edx.value & 0xffff));
   const vi = (() => { try { return this.fs.statvfs(L + ':\\'); } catch (_) { return null; } })();
   // 0860h the device's parameters (DS:DX: special functions, device type, attributes, cylinders, media type, then the
