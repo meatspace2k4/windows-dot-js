@@ -1519,8 +1519,10 @@ P.neInstall = function () {
     if (!m || !m.netText || !m.netReady || m.hidden) continue;
     const { mod, bytes, had, t0 } = m.netReady, meta = m.meta; [meta.textLo, meta.textHi] = m.netText; m.netText = null; m.netReady = null;
     const label = m.name === 'EXE' ? meta.path || meta.name || 'EXE' : m.name;
-    // (another file's memo, or another text: translated now, as one not in the memo)
-    if (!had || had.sha !== m.sha256 || had.textLo !== meta.textLo || had.textHi !== meta.textHi || had.codeHash !== blocksHash(this.u8, had.blocks, had.lens)) { this.neCompile(m, true); return true; }
+    // (another file's memo, or another text: translated now, as one not in the memo; and a record put in the memo's place
+    // since the read began (the same file translated again at another place meanwhile): the bytes read may be the new
+    // record's, made for that other place, whose run takes every address of this text for one outside it)
+    if (!had || had.sha !== m.sha256 || memo.get(had.sha) !== had ||had.textLo !== meta.textLo || had.textHi !== meta.textHi || had.codeHash !== blocksHash(this.u8, had.blocks, had.lens)) { this.neCompile(m, true); return true; }
     this.neSet(m, mod, { wasm: null, bytes, blocks: had.blocks, lens: had.lens, sums: had.sums, made: had.made });
     memoUsed(had, bytes);
     window.W95Win32.log('debug', 'dyn', `${label}: ${had.blocks.length} blocks from the memo (${bytes} bytes, put in place ${Math.round(performance.now() - t0)} ms after its load)`);
