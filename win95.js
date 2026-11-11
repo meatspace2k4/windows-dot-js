@@ -693,7 +693,7 @@ function makeDisk(mounted) {
   for (const e of ['SSERIFE.FON', 'VGAFIX.FON', 'VGASYS.FON', 'MARLETT.TTF', 'ARIAL.TTF', 'TIMES.TTF', 'COUR.TTF']) if (!sysFonts[e]) fs.writeFile(join(WINDIR, 'FONTS', e), exeStub());
   for (const [e, d] of Object.entries(sysFonts)) fs.writeFile(join(WINDIR, 'FONTS', e), b64(d));
   fs.writeFile('C:\\Program Files\\Accessories\\WORDPAD.EXE', exeStub());
-  installPrograms(); setupFonts(); setupRegistry(); setupDisplay(); setupSavers(); setupSound(); setupHelp(); setupNetwork(); setupPorts(); setupPrinting(); setupVxds(); setupStartMenu();
+  installPrograms(true); setupFonts(); setupRegistry(); setupDisplay(); setupSavers(); setupSound(); setupHelp(); setupNetwork(); setupPorts(); setupPrinting(); setupVxds(); setupStartMenu();
   fs.chdir('C:\\');
 }
 // the CD's screen savers, byte for byte, under the long names APPLETS.INF gives them in LDID_SYS, and the DLLs they
@@ -943,7 +943,7 @@ function bootDisk() {
   // (a disk of Windows 3.1 is its own: nothing of Windows 95's Setup; MS-DOS 6.22 on it as SYS leaves it (MS-DOS 7's
   // IO.SYS halts as Windows 3.1 starts), and an AUTOEXEC.BAT with the disk's own WIN.BAT's commands, which start Windows)
   if (diskSystem() === 'win31') { sys622Disk(); win31Autoexec(); fs.chdir('C:\\'); return; }
-  setupFonts(); setupRegistry(); setupDisplay(); setupSavers(); setupSound(); setupHelp(); setupNetwork(); setupPorts(); setupPrinting(); setupVxds(); setupWebView();
+  installPrograms(); setupFonts(); setupRegistry(); setupDisplay(); setupSavers(); setupSound(); setupHelp(); setupNetwork(); setupPorts(); setupPrinting(); setupVxds(); setupWebView();
   if (host.shared) setupProfile(host.userName);
   setupStartMenu();   // (after the profile: its links go in the Programs folder the user's Shell Folders name)
   fs.chdir('C:\\');
@@ -3758,14 +3758,15 @@ const diskSystem = () => (fs.exists(join(WINDIR, 'SYSTEM', 'WIN386.EXE')) && !fs
  *  sector loads), COMMAND.COM in the root, and MSDOS.SYS, its settings, padded past 1024 bytes as IO.SYS requires (the
  *  lines Setup writes for programs that check its size): Windows 95's starting it (BootGUI=1), a disk of an older
  *  Windows booting to the prompt, its own WIN starting that */
-function sysDisk(gui) {
+// (`fresh` false: a disk the store held, whose files are its own: a stub replaced, nothing written that is not there)
+function sysDisk(gui, fresh = true) {
   const DOS = window.W95DOS; if (!DOS) return;
   const stub = exeStub(), HSR = ATTR.HIDDEN | ATTR.SYSTEM | ATTR.READONLY, unlock = p => { try { fs.setAttrs(p, 0); } catch (_) { /* not there */ } };
-  const put = (path, b64) => { let cur = null; try { cur = fs.readFile(path); } catch (_) { /* not there */ } if (!cur || (cur.length === stub.length && cur.every((b, i) => b === stub[i]))) fs.writeFile(path, b64bytes(b64)); };
-  unlock('C:\\IO.SYS'); put('C:\\IO.SYS', DOS.files['IO.SYS']); fs.setAttrs('C:\\IO.SYS', HSR);
+  const put = (path, b64) => { let cur = null; try { cur = fs.readFile(path); } catch (_) { /* not there */ } if ((!cur && fresh) || (cur && cur.length === stub.length && cur.every((b, i) => b === stub[i]))) fs.writeFile(path, b64bytes(b64)); };
+  if (fresh || fs.exists('C:\\IO.SYS')) { unlock('C:\\IO.SYS'); put('C:\\IO.SYS', DOS.files['IO.SYS']); fs.setAttrs('C:\\IO.SYS', HSR); }
   put('C:\\COMMAND.COM', DOS.files['COMMAND.COM']);
   let t = ''; try { t = fs.readText('C:\\MSDOS.SYS'); } catch (_) { /* written below */ }
-  if (t.length < 1024) {
+  if (t.length < 1024 && (fresh || t)) {
     const own = t.replace(/\r?\n/g, '\r\n').replace(/(\r\n)*$/, '') || `[Paths]\r\nWinDir=C:\\WINDOWS\r\nWinBootDir=C:\\WINDOWS\r\nHostWinBootDrv=C\r\n\r\n[Options]\r\nBootGUI=${gui ? 1 : 0}\r\nLogo=${gui ? 1 : 0}`;
     const pad = [';', ';The following lines are required for compatibility with other programs.', ';Do not remove them (MSDOS.SYS needs to be >1024 bytes).'];
     for (let i = 0; i < 18; i++) pad.push(';' + 'x'.repeat(68) + String.fromCharCode(97 + i));
@@ -3804,11 +3805,14 @@ function strayCopies(names = ['SPOOL32.EXE', 'SYSTRAY.EXE', 'MPREXE.EXE', 'RUNON
     if (cur && cur.length === want.length && cur.every((b, i) => b === want[i])) { fs.setAttrs(stray, 0); fs.unlink(stray); }
   }
 }
-function installPrograms() {
+// `fresh`: the disk makeDisk builds, given every file. A disk the store held gets nothing it lacks: a stub replaced by
+// the program's bytes and this project's own programs kept current, nothing written that is not there
+function installPrograms(fresh) {
   const stub = exeStub(), S = window.W95SYSTEM || {};
   const OURS = new Set(['CLAUDE.EXE', 'SESSTRAY.EXE', 'DBWIN.EXE', 'W95DBG.EXE']);   // (a program of this project's: its file is the one its translation is of, kept current)
   const put = (path, b64) => {
     let cur = null; try { cur = fs.readFile(path); } catch (_) { /* not there */ }
+    if (!cur && !fresh) return;
     const want = OURS.has(basename(path).toUpperCase()) ? b64bytes(b64) : null;
     if (cur && !(cur.length === stub.length && cur.every((b, i) => b === stub[i])) && !(want && !(cur.length === want.length && cur.every((b, i) => b === want[i])))) return;
     fs.writeFile(path, want || b64bytes(b64));
@@ -3823,14 +3827,14 @@ function installPrograms() {
   for (const d of Object.values(S.ne || {})) if (d.fileName && !d.onDisk) put(join(WINDIR, d.fileName === 'PROGMAN.EXE' ? '' : 'SYSTEM', d.fileName), d.file);   // (a printer driver: as the Add Printer wizard copies it; Program Manager in the Windows folder, COPY.INF)
   // MS-DOS's command interpreter, where Setup puts it: the root's (IO.SYS starts it) and the Windows folder's
   const DOS = window.W95DOS; if (DOS) for (const p of ['C:\\COMMAND.COM', join(WINDIR, 'COMMAND.COM')]) put(p, DOS.files['COMMAND.COM']);
-  sysDisk(true);
+  sysDisk(true, fresh);
   try { if (fs.readText('C:\\CONFIG.SYS') === CONFIG_SYS_OLD && !fs.exists(join(WINDIR, 'HIMEM.SYS'))) fs.writeFile('C:\\CONFIG.SYS', CONFIG_SYS.replace(/\n/g, '\r\n')); } catch (_) { /* none */ }
   // and WIN.COM, which IO.SYS's shell runs to start Windows (Setup builds it from WIN.CNF)
   if (DOS && DOS.files['WINDOWS\\WIN.COM']) put(join(WINDIR, 'WIN.COM'), DOS.files['WINDOWS\\WIN.COM']);
   // and IFSHLP.SYS, the file system helper IO.SYS loads from the Windows folder as it starts
   if (DOS && DOS.files['WINDOWS\\IFSHLP.SYS']) put(join(WINDIR, 'IFSHLP.SYS'), DOS.files['WINDOWS\\IFSHLP.SYS']);
   // the MS-DOS programs, in C:\WINDOWS\COMMAND (LDID_COMMAND)
-  if (DOS && DOS.command) { fs.mkdir(join(WINDIR, 'COMMAND'), { recursive: true }); for (const [n, d] of Object.entries(DOS.command)) put(join(WINDIR, 'COMMAND', n), d); }
+  if (DOS && DOS.command) { if (fresh) fs.mkdir(join(WINDIR, 'COMMAND'), { recursive: true }); for (const [n, d] of Object.entries(DOS.command)) put(join(WINDIR, 'COMMAND', n), d); }
   // the Windows 3.x runtime libraries, in SYSTEM (WIN87EM, NDDEAPI, OLE, WINSOCK: tools/build_dos.py)
   if (DOS && DOS.system) for (const [n, d] of Object.entries(DOS.system)) put(join(WINDIR, 'SYSTEM', n), d);
   // the display's grabber, which WinOldAp imports as GRABBER and KERNEL finds by SYSTEM.INI's [boot] 386grabber, as the
@@ -3841,9 +3845,9 @@ function installPrograms() {
   // Setup's optional components (Clipboard Viewer, CLIP.INF): their programs in the Windows folder, their help in HELP,
   // and the OptionalComponents value Add/Remove Programs reads to show one installed
   if (DOS && DOS.windows) for (const [n, d] of Object.entries(DOS.windows)) put(join(WINDIR, n), d);
-  if (DOS && DOS.help) { fs.mkdir(join(WINDIR, 'HELP'), { recursive: true }); for (const [n, d] of Object.entries(DOS.help)) put(join(WINDIR, 'HELP', n), d); }
+  if (DOS && DOS.help) { if (fresh) fs.mkdir(join(WINDIR, 'HELP'), { recursive: true }); for (const [n, d] of Object.entries(DOS.help)) put(join(WINDIR, 'HELP', n), d); }
   // the INFs Setup leaves in the INF folder that the system bundle does not carry (APPS.INF, which PIFMGR reads)
-  if (DOS && DOS.infs) { fs.mkdir(join(WINDIR, 'INF'), { recursive: true }); for (const [n, t] of Object.entries(DOS.infs)) { const f = join(WINDIR, 'INF', n); if (!fs.exists(f)) fs.writeFile(f, Uint8Array.from(t, c => c.charCodeAt(0))); } }
+  if (DOS && DOS.infs && fresh) { fs.mkdir(join(WINDIR, 'INF'), { recursive: true }); for (const [n, t] of Object.entries(DOS.infs)) { const f = join(WINDIR, 'INF', n); if (!fs.exists(f)) fs.writeFile(f, Uint8Array.from(t, c => c.charCodeAt(0))); } }
   if (DOS && DOS.infs && DOS.infs['CLIP.INF']) W95Win32.regSet('hklm\\software\\microsoft\\windows\\currentversion\\setup\\optionalcomponents\\clipbrd', 'Installed', { type: 1, data: W95FS.encode('1\0') });
   if (DOS && DOS.windows && DOS.windows['SOL.EXE']) W95Win32.regSet('hklm\\software\\microsoft\\windows\\currentversion\\setup\\optionalcomponents\\games', 'Installed', { type: 1, data: W95FS.encode('1\0') });   // (APPLETS.INF wingames.install.reg)
   // the components a Typical install sets up (Paint, WordPad, HyperTerminal, Phone Dialer, Disk Defragmenter, the
@@ -3851,12 +3855,10 @@ function installPrograms() {
   // once, as Setup installs one, its INF's AddReg and its UpdateInis lines for WIN.INI (its links: setupStartMenu)
   // the DLLs those programs need that the system bundle does not carry (their imports' closure: MFC, TAPI), where Setup
   // puts each (tools/build_dos.py); a file the bundle wrote is kept
-  for (const [path, d] of (DOS && DOS.deps) || []) { fs.mkdir(dirname(path), { recursive: true }); put(path, d); }
+  for (const [path, d] of (DOS && DOS.deps) || []) { if (fresh) fs.mkdir(dirname(path), { recursive: true }); put(path, d); }
   for (const c of (DOS && DOS.components) || []) {
-    const inf = DOS.infs[c.inf]; if (!inf) continue;
-    let fresh = false;
-    for (const [path, d] of c.files) { if (!fs.exists(path)) fresh = true; fs.mkdir(dirname(path), { recursive: true }); put(path, d); }
-    if (!fresh) continue;
+    const inf = DOS.infs[c.inf]; if (!inf || !fresh) continue;
+    for (const [path, d] of c.files) { fs.mkdir(dirname(path), { recursive: true }); put(path, d); }
     const body = Object.fromEntries((infParse(inf).sec[c.name.toLowerCase()] || []).map(l => l.split(';')[0]).filter(l => l.includes('=')).map(l => [l.slice(0, l.indexOf('=')).trim().toLowerCase(), l.slice(l.indexOf('=') + 1).trim()]));
     for (const s of (body.addreg || '').split(',').map(x => x.trim()).filter(Boolean)) infAddReg(inf, s);
     for (const s of (body.updateinis || '').split(',').map(x => x.trim()).filter(Boolean)) infUpdateInis(inf, s, /^win\.ini$/i);
