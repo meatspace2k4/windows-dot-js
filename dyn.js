@@ -1361,6 +1361,11 @@ const memoLoad = async () => {
   return memo;
 };
 const memoPut = rec => {
+  // (a module read and compiled ahead of its load from the record this one replaces, memoWarm, is that record's: let go.
+  // Kept, MSVCRT translated again at another place was given the old place's module as Explorer loaded it, whose code
+  // took every address of its own for one outside it: a thread of Explorer's went round one address for good, and
+  // Network Neighborhood's window stood empty with the hourglass)
+  warm.delete(rec.sha);
   if (typeof indexedDB === 'undefined') { memo.set(rec.sha, rec); return; }
   const { wasm, ...ix } = rec; memo.set(rec.sha, ix);
   memoDb().then(db => {
