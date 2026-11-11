@@ -2165,7 +2165,6 @@ def('KERNEL32', 'GlobalMemoryStatus', 1, function (p) {   // 16 MB of RAM, as Ge
 def('KERNEL32', 'QueryPerformanceCounter', 1, function (p) { let t = Math.floor((this.progTime('tick') - 3600000) * 1193.182); if (t < (this.qpcLast || 0) + 6) t = this.qpcLast + 6; this.qpcLast = t; this.w32(p, t % 4294967296); this.w32(p + 4, Math.floor(t / 4294967296)); return 1; });
 def('KERNEL32', 'QueryPerformanceFrequency', 1, function (p) { this.w32(p, 1193182); this.w32(p + 4, 0); return 1; });
 def('KERNEL32', 'IsBadStringPtrW', 2, function (a) { return !a || a >= this.mem.buffer.byteLength ? 1 : 0; });
-def('KERNEL32', 'LocalHandle', 1, p => p);
 def('KERNEL32', 'RtlFillMemory', 3, function (d, n, v) { this.u8.fill(v & 0xff, d, d + n); });
 // #87: whether the calling thread holds the Win16 lock (never for a Win32 thread); #88 (bytes of arguments, flags,
 // function, arguments...): the function called with the arguments, on the caller's stack for a Win32 thread
@@ -2213,12 +2212,43 @@ def('KERNEL32', 'GetSystemPowerStatus', 1, function (p) {
 });
 def('KERNEL32', 'GetLastError', 0, function () { return this.lastError || 0; });
 def('KERNEL32', 'SetLastError', 1, function (e) { this.lastError = e; });
-def('KERNEL32', 'LocalAlloc', 2, function (f, n) { return this.alloc(n); });
-def('KERNEL32', 'LocalFree', 1, function (p) { this.free(p); return 0; });
-def('KERNEL32', 'GlobalAlloc', 2, function (f, n) { return this.alloc(n); });
-def('KERNEL32', 'GlobalFree', 1, function (p) { this.free(p); return 0; });
-def('KERNEL32', 'GlobalLock', 1, p => p);
-def('KERNEL32', 'GlobalUnlock', 1, () => 1);
+// Global and local memory (one heap in Win32): a fixed block's handle is its address; a moveable one's (GMEM_MOVEABLE,
+// LMEM_MOVEABLE) is a cell of its own holding the block's address, the same handle however often the block moves as it
+// grows. A memory stream (OLE32's CreateStreamOnHGlobal) grows its block by GlobalReAlloc while whoever made the
+// stream keeps its handle (GetHGlobalFromStream): the handle as the block's old address read the freed block, and
+// OLEAUT32 took a VB form's icon for an invalid picture
+const MOVEABLE = 2, ZEROINIT = 0x40, MODIFY = 0x80, DISCARDED = 0x4000;
+const gmov = (p, h) => p.gmov && p.gmov.get(u32(h));
+function memAlloc(f, n) {
+  const ptr = this.alloc(n);
+  if (!(f & MOVEABLE)) return ptr;
+  const h = this.alloc(8); this.w32(h, ptr);
+  (this.gmov || (this.gmov = new Map())).set(h, { ptr, size: n, locks: 0 }); return h;
+}
+function memFree(h) {
+  const m = gmov(this, h);
+  if (m) { if (m.ptr) this.free(m.ptr); this.gmov.delete(u32(h)); this.free(h); return 0; }
+  this.free(h); return 0;
+}
+function memReAlloc(h, n, f) {
+  const m = gmov(this, h);
+  if (f & MODIFY) return h;   // (its flags alone)
+  if (!m) return this.realloc(h, n);
+  if (!n) { if (m.ptr) this.free(m.ptr); m.ptr = 0; m.size = 0; this.w32(h, 0); return h; }   // (discarded: the handle stays)
+  const old = m.size; m.ptr = m.ptr ? this.realloc(m.ptr, n) : this.alloc(n);
+  if (n > old && f & ZEROINIT) this.u8.fill(0, m.ptr + old, m.ptr + n);
+  m.size = n; this.w32(h, m.ptr); return h;
+}
+const memLock = function (h) { const m = gmov(this, h); if (!m) return h; if (m.ptr) m.locks++; return m.ptr; };
+const memUnlock = function (h) { const m = gmov(this, h); if (!m) return 0; if (m.locks) m.locks--; return m.locks; };
+const memSize = function (h) { const m = gmov(this, h); return m ? m.size : this.allocs.get(h) || 0; };
+const memHandle = function (p) { if (this.gmov) for (const [h, m] of this.gmov) if (m.ptr === u32(p)) return h; return p; };
+const memFlags = function (h) { const m = gmov(this, h); return m ? (m.ptr ? 0 : DISCARDED) | (m.locks & 0xff) : 0; };
+for (const k of ['Global', 'Local']) {
+  def('KERNEL32', k + 'Alloc', 2, memAlloc); def('KERNEL32', k + 'Free', 1, memFree); def('KERNEL32', k + 'ReAlloc', 3, memReAlloc);
+  def('KERNEL32', k + 'Lock', 1, memLock); def('KERNEL32', k + 'Unlock', 1, memUnlock); def('KERNEL32', k + 'Size', 1, memSize);
+  def('KERNEL32', k + 'Handle', 1, memHandle); def('KERNEL32', k + 'Flags', 1, memFlags);
+}
 def('KERNEL32', 'HeapCreate', 3, () => 0x5000);
 def('KERNEL32', 'HeapDestroy', 1, () => 1);
 def('KERNEL32', 'GetProcessHeap', 0, () => 0x5000);
@@ -2550,8 +2580,6 @@ def('KERNEL32', 'IsBadStringPtrA', 2, function (a, n) { if (!a || a >= this.mem.
 def('KERNEL32', 'IsDBCSLeadByteEx', 2, () => 0);                   // code page 1252 has no lead bytes
 def('KERNEL32', 'IsValidLocale', 2, (lcid) => (lcid & 0xffff) === 0x409 || (lcid & 0xffff) === 0x400 || (lcid & 0xffff) === 0x800 ? 1 : 0);
 def('KERNEL32', 'GetProcessVersion', 1, () => 0x00040000);          // a 4.0 program
-def('KERNEL32', 'LocalLock', 1, p => p);
-def('KERNEL32', 'LocalUnlock', 1, () => 1);
 def('KERNEL32', 'GetTempFileNameA', 4, function (dir, pre, uniq, out) {
   // (uUnique 0: a number not in use, counted up from the clock's until the name is free, and the file made empty, as
   // Windows does. Taken from the clock alone, two calls in one millisecond had one name: WinHelp's index (-g) made its
@@ -2625,8 +2653,6 @@ def('KERNEL32', 'HeapLock', 1, () => 1);
 def('KERNEL32', 'HeapUnlock', 1, () => 1);
 def('KERNEL32', 'HeapCompact', 2, () => 0);
 def('KERNEL32', 'HeapWalk', 2, () => 0);
-def('KERNEL32', 'LocalReAlloc', 3, function (p, n) { return this.realloc(p, n); });
-def('KERNEL32', 'GlobalReAlloc', 3, function (p, n) { return this.realloc(p, n); });
 def('KERNEL32', 'lstrlenW', 1, function (p) { return p ? this.readW(p).length : 0; });
 def('KERNEL32', 'lstrcpyW', 2, function (d, s) { const t = this.readW(s) || ''; for (let i = 0; i <= t.length; i++) this.w16(d + 2 * i, i < t.length ? t.charCodeAt(i) : 0); return d; });
 def('KERNEL32', 'GetUserDefaultLCID', 0, () => 0x409);
@@ -3228,9 +3254,6 @@ def('KERNEL32', 'ExpandEnvironmentStringsA', 3, function (src, dst, n) {
 });
 def('KERNEL32', 'RtlZeroMemory', 2, function (p, n) { this.u8.fill(0, p, p + n); });
 def('KERNEL32', 'InterlockedExchange', 2, function (p, v) { const o = this.r32(p); this.w32(p, v); return o; });
-def('KERNEL32', 'GlobalSize', 1, function (p) { return this.allocs.get(p) || 0; });
-def('KERNEL32', 'GlobalHandle', 1, p => p);
-def('KERNEL32', 'LocalSize', 1, function (p) { return this.allocs.get(p) || 0; });
 def('KERNEL32', 'IsBadCodePtr', 1, function (a) { return a && a < this.mem.buffer.byteLength ? 0 : 1; });
 def('KERNEL32', 'DebugBreak', 0, () => 0);
 def('KERNEL32', 'GetThreadLocale', 0, () => 0x409);
@@ -3545,7 +3568,6 @@ def('KERNEL32', 'GetFileAttributesExA', 3, function (n, level, p) {
 });
 // GlobalFlags (BFF748CDh) and LocalShrink (BFF9A0EAh), after the handle's check: a fixed block's flags (no lock count,
 // not discardable) are 0; the heap's size is what LocalShrink answers
-def('KERNEL32', 'GlobalFlags', 1, () => 0);
 def('KERNEL32', 'LocalShrink', 2, function () { return 0x10000; });
 // GlobalCompact: the largest free block, from GlobalMemoryStatus's free memory
 def('KERNEL32', 'GlobalCompact', 1, function () { const p = this.alloc(32); try { API.KERNEL32.GlobalMemoryStatus[1].call(this, p); return this.r32(p + 12); } finally { this.free(p); } });
