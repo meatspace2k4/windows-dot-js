@@ -1370,7 +1370,7 @@ const memoPut = rec => {
   // Kept, MSVCRT translated again at another place was given the old place's module as Explorer loaded it, whose code
   // took every address of its own for one outside it: a thread of Explorer's went round one address for good, and
   // Network Neighborhood's window stood empty with the hourglass)
-  warm.delete(rec.sha);
+  warm.delete(rec.sha); warmDone.delete(rec.sha);
   if (typeof indexedDB === 'undefined') { memo.set(rec.sha, rec); return; }
   const { wasm, ...ix } = rec; memo.set(rec.sha, ix);
   memoDb().then(db => {
@@ -1392,7 +1392,10 @@ const memoWasm = sha => memoDb().then(db => new Promise((ok, no) => {
 const warm = new Map(), asked = new Set();   // sha -> Promise<{ mod, bytes } | null>; asked: those a load has read
 const WARM_BYTES = 200 << 20, WARM_AGE = 14 * 86400e3;
 const memoCompile = sha => memoWasm(sha).then(wasm => (wasm ? WebAssembly.compile(wasm).then(mod => ({ mod, bytes: wasm.length })) : null));
-const memoModule = sha => { asked.add(sha); const w = warm.get(sha); warm.delete(sha); return w || memoCompile(sha); };
+const memoModule = sha => { asked.add(sha); const w = warm.get(sha); warm.delete(sha); warmDone.delete(sha); return w || memoCompile(sha); };
+// (the modules read ahead and compiled by now: sha -> { mod, bytes }, as memoWarm's reads finish; taken at once by a load)
+const warmDone = new Map();
+const memoModuleNow = sha => { const v = warmDone.get(sha); if (!v) return null; asked.add(sha); warm.delete(sha); warmDone.delete(sha); return v; };
 const memoUsed = (had, bytes) => {
   const day = Math.floor(Date.now() / 86400e3); if (!had || (had.usedDay === day && had.bytes === bytes)) return;
   had.usedDay = day; had.used = Date.now(); had.bytes = bytes;
@@ -1408,7 +1411,8 @@ const memoWarm = async () => {
     if (r.bytes > left || warm.has(r.sha) || asked.has(r.sha)) continue;
     left -= r.bytes; n++;
     const p = memoCompile(r.sha).catch(() => null);
-    warm.set(r.sha, p); await p;   // (one at a time: each is tens of megabytes read and compiled)
+    warm.set(r.sha, p); const v = await p;   // (one at a time: each is tens of megabytes read and compiled)
+    if (v && warm.get(r.sha) === p) warmDone.set(r.sha, v);   // (still this record's, not taken meanwhile)
   }
   return n;
 };
@@ -1458,6 +1462,16 @@ P.neCompile = function (rec, again = false) {
   const label = rec.name === 'EXE' ? meta.path || meta.name || 'EXE' : rec.name;
   // (the memo's module, its bytes in the memo's store: read and compiled as the machine runs, the module's code run-time
   // code meanwhile (its text not the dispatcher's until then: netText), and put in place at a step's end, neInstall)
+  // (one read and compiled ahead of its load (memoWarm) and done: put in place now, as its DLL loads. Taken by the
+  // promise, it waited for the step to end, the one loading it, its code run block by block meanwhile: the first
+  // folder window's MSHTML, compiled long before, went in a second after its load)
+  const ready = same && !had.wasm ? memoModuleNow(rec.sha256) : null;
+  if (ready) {
+    this.neSet(rec, ready.mod, { wasm: null, bytes: ready.bytes, blocks: had.blocks, lens: had.lens, sums: had.sums, made: had.made });
+    memoUsed(had, ready.bytes);
+    window.W95Win32.log('debug', 'dyn', `${label}: ${had.blocks.length} blocks from the memo (${ready.bytes} bytes, compiled ahead and put in place as it loaded)`);
+    return rec;
+  }
   if (same && !had.wasm) {
     rec.netText = [meta.textLo, meta.textHi]; meta.textLo = meta.textHi = 0; rec.netReady = null; rec.netHad = new Set(had.blocks);
     // (the read's answer the record's only while it is still that file's, waiting for it: an arrival rebinds the
@@ -1519,28 +1533,51 @@ P.neSet = function (rec, mod, seed) {
   if (rec.dynNew) rec.dynNew.clear(); rec.dynSeen = 0;
   if (this.dynFast) this.dynFast.clear();   // (an address with a block of the module's now goes to it, not to its region)
 };
-/** at a step's end (no wasm frame live): one module whose memo's module has been read and compiled (neCompile) put in
- *  place, its code checked as it is now against the memo's hash first (else translated now); true when one was */
+/** at a step's end (no wasm frame live): every module whose memo's module has been read and compiled (neCompile) put in
+ *  place, its code checked as it is now against the memo's hash first (else translated now, and the rest left to the
+ *  next step's end); true when one was. (Each takes milliseconds. One a step, the first folder window's MSHTML, compiled
+ *  127 ms after its load, went in 1.9 s after it, behind URLMON, MLANG and OLEAUT32, its code run block by block meanwhile) */
 P.neInstall = function () {
   if (this.depth) return false;
+  let put = false;
   for (const m of this.modules || []) {
     if (!m || !m.netText || !m.netReady || m.hidden) continue;
-    const { mod, bytes, had, t0, at } = m.netReady, meta = m.meta; [meta.textLo, meta.textHi] = m.netText; m.netText = null; m.netReady = null;
-    const label = m.name === 'EXE' ? meta.path || meta.name || 'EXE' : m.name;
-    // (another file's memo, or another text: translated now, as one not in the memo; and a record put in the memo's place
-    // since the read began (the same file translated again at another place meanwhile): the bytes read may be the new
-    // record's, made for that other place, whose run takes every address of this text for one outside it)
-    const tH = performance.now();
-    if (!had || had.sha !== m.sha256 || memo.get(had.sha) !== had || had.textLo !== meta.textLo || had.textHi !== meta.textHi || had.codeHash !== blocksHash(this.u8, had.blocks, had.lens)) { this.neCompile(m, true); return true; }
-    const tS = performance.now();
-    this.neSet(m, mod, { wasm: null, bytes, blocks: had.blocks, lens: had.lens, sums: had.sums, made: had.made });
-    memoUsed(had, bytes);
-    const s = m.setMs || {};
-    window.W95Win32.log('debug', 'dyn', `${label}: ${had.blocks.length} blocks from the memo (${bytes} bytes, compiled ${Math.round(at - t0)} ms and put in place ${Math.round(performance.now() - t0)} ms after its load; the check ${Math.round(tS - tH)} ms, its instance ${s.instance} ms, its table ${s.table} ms, in all ${Math.round(performance.now() - tH)} ms)`);
-    return true;
+    const r = netPut(this, m, false); if (r === 'translated') return true;
+    put = put || r;
+  }
+  return put;
+};
+/** code entered in a module whose memo's module has been read and compiled: put in place now, inside the call as it is
+ *  (its code has no frame of its own yet, having run as run-time code), rather than at the step's end; true when it
+ *  was. (Left to the step's end, the first folder window's MSHTML, compiled 123 ms after its load, went in 1.3 s after
+ *  it, its code run block by block meanwhile.) One whose check fails is left to the step's end, translated there */
+P.netEnter = function (eip) {
+  for (const m of this.modules || []) {
+    if (!m || !m.netText || !m.netReady || m.hidden || eip < m.netText[0] || eip >= m.netText[1]) continue;
+    return netPut(this, m, true) === true;
   }
   return false;
 };
+/** the memo's module read for `m` put in place: true; 'translated' when its code is not the memo's any more (translated
+ *  now, unless `inCall`: false, left as it is) */
+function netPut(p, m, inCall) {
+  const { mod, bytes, had, t0, at } = m.netReady, meta = m.meta, [lo, hi] = m.netText;
+  const label = m.name === 'EXE' ? meta.path || meta.name || 'EXE' : m.name;
+  // (another file's memo, or another text: translated now, as one not in the memo; and a record put in the memo's place
+  // since the read began (the same file translated again at another place meanwhile): the bytes read may be the new
+  // record's, made for that other place, whose run takes every address of this text for one outside it)
+  const tH = performance.now();
+  const ok = had && had.sha === m.sha256 && memo.get(had.sha) === had && had.textLo === lo && had.textHi === hi && had.codeHash === blocksHash(p.u8, had.blocks, had.lens);
+  if (!ok && inCall) return false;
+  [meta.textLo, meta.textHi] = m.netText; m.netText = null; m.netReady = null;
+  if (!ok) { p.neCompile(m, true); return 'translated'; }
+  const tS = performance.now();
+  p.neSet(m, mod, { wasm: null, bytes, blocks: had.blocks, lens: had.lens, sums: had.sums, made: had.made });
+  memoUsed(had, bytes);
+  const s = m.setMs || {};
+  window.W95Win32.log('debug', 'dyn', `${label}: ${had.blocks.length} blocks from the memo (${bytes} bytes, compiled ${Math.round(at - t0)} ms and put in place ${Math.round(performance.now() - t0)} ms after its load${inCall ? ', as its code was entered' : ''}; the check ${Math.round(tS - tH)} ms, its instance ${s.instance} ms, its table ${s.table} ms, in all ${Math.round(performance.now() - tH)} ms)`);
+  return true;
+}
 /** a DLL no live process has attached: its translation let go (its compiled module, its run, the wasm kept to translate
  *  it again), its text run-time code meanwhile as a module being read from the memo is (netText), its image and block
  *  table's room left as they are; made again as a process attaches it (win32.js attachPrep). A 16-bit module, a

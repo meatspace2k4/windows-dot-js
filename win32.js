@@ -996,6 +996,7 @@ class Process {
         if (eip < 0x10000) (this.nullJumps || (this.nullJumps = [])).push({ at: eip, from: this.lastBlock >>> 0, cs: this.cpu.cs ? this.cpu.cs.value & 0xffff : null });
         const next = this.dataCode && this.dataCode(eip);
         if (next !== undefined && next !== null) { eip = next; continue; }
+        if (this.netEnter && this.netEnter(eip)) continue;   // (a DLL whose memo's module is compiled now: put in place, and entered there, dyn.js)
         (this.entryRing || (this.entryAt = 0, this.entryRing = new Uint32Array(32)))[this.entryAt++ & 31] = eip;   // (run-time code entered: in a fault's way there too)
         const dyn = this.dynRun && this.dynRun(eip);   // code generated at run time (dyn.js)
         if (dyn === -1) return 1;   // its time was up
