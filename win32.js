@@ -192,9 +192,17 @@ class Process {
     this.modules.push(rec); this.byName.set(name, rec);
     const ex = dir(0);
     if (ex) {
-      const e = base + ex, nf = this.r32(e + 20), nn = this.r32(e + 24), fa = base + this.r32(e + 28), na = base + this.r32(e + 32), oa = base + this.r32(e + 36), obase = this.r32(e + 16);
-      for (let k = 0; k < nf; k++) { const r = this.r32(fa + 4 * k); if (r) rec.exports.set('#' + (obase + k), base + r); }
-      for (let k = 0; k < nn; k++) { const r = this.r32(fa + 4 * this.r16(oa + 2 * k)); if (r) rec.exports.set(this.readA(base + this.r32(na + 4 * k)), base + r); }
+      // (an export whose address is inside the export directory is a forwarder: "DLL.Name" or "DLL.#ord", another
+      // module's export, which exportOf resolves)
+      const e = base + ex, exEnd = ex + dv.getUint32(opt + 96 + 4, true), nf = this.r32(e + 20), nn = this.r32(e + 24), fa = base + this.r32(e + 28), na = base + this.r32(e + 32), oa = base + this.r32(e + 36), obase = this.r32(e + 16);
+      const put = (key, r) => { if (!r) return; if (r >= ex && r < exEnd) (rec.forwards || (rec.forwards = new Map())).set(key, this.readA(base + r)); else rec.exports.set(key, base + r); };
+      for (let k = 0; k < nf; k++) put('#' + (obase + k), this.r32(fa + 4 * k));
+      for (let k = 0; k < nn; k++) put(this.readA(base + this.r32(na + 4 * k)), this.r32(fa + 4 * this.r16(oa + 2 * k)));
+      // (the modules forwarded to loaded with it, and attached as its dependencies are: COMCAT's DllRegisterServer is
+      // OLE32's, called by whoever loads COMCAT alone)
+      for (const f of rec.forwards ? new Set([...rec.forwards.values()].map(s => s.slice(0, s.indexOf('.')).toUpperCase().replace(/\.DLL$/, ''))) : []) {
+        const t = f !== name && this.loadDll(f); if (t && !rec.deps.includes(t)) rec.deps.push(t);
+      }
     }
     for (let d = base + dir(1); dir(1) && this.r32(d + 12); d += 20) {
       const dll = this.readA(base + this.r32(d + 12)).toUpperCase().replace(/\.DLL$/, '');
@@ -211,7 +219,7 @@ class Process {
       for (let k = 0; ; k++, lut += 4) {
         const v = this.r32(lut); if (!v) break;
         const nm = v & 0x80000000 ? '#' + (v & 0xffff) : this.readA(base + v + 2);
-        const addr = (native && native.exports.get(nm)) || (this.peResolve && this.peResolve(dll, nm));   // a ring-0 image's (vmm.js PELDR)
+        const addr = (native && this.exportOf(native, nm)) || (this.peResolve && this.peResolve(dll, nm));   // a ring-0 image's (vmm.js PELDR)
         // (who imports an export by ordinal: the name cmd 'watch' gives one that has none, MFC30's)
         if (native && nm[0] === '#') { const by = native.importers || (native.importers = new Map()); if (!by.has(nm)) by.set(nm, new Set()); by.get(nm).add(name === 'EXE' ? (meta.name || name) : name); }
         this.w32(iat + 4 * k, addr || this.thunkFor(dll, nm));
@@ -515,6 +523,17 @@ class Process {
     return base;
   }
   standinAt(h) { return (this.standins || []).find(s => s.base === h) || null; }
+  /** a module's export by name or '#ordinal', a forwarder followed to the module it names (its stand-in's thunk where
+   *  that is one); 0 for none */
+  exportOf(m, nm, hops = 0) {
+    const a = m.exports.get(nm); if (a) return a;
+    const f = m.forwards && m.forwards.get(nm); if (!f || hops > 8) return 0;
+    const dot = f.indexOf('.'), dll = f.slice(0, dot).toUpperCase().replace(/\.DLL$/, ''), s = f.slice(dot + 1);
+    const key = s[0] === '#' ? '#' + parseInt(s.slice(1), 10) : s, t = this.loadDll(dll);
+    const r = t ? this.exportOf(t, key, hops + 1) : API[dll] && this.importDef(dll, key) ? this.thunkFor(dll, key) : 0;
+    if (r) m.exports.set(nm, r);
+    return r;
+  }
   /** a Win32 file mapped as data (LoadLibraryEx's LOAD_LIBRARY_AS_DATAFILE): the section holding its resources copied
    *  into the heap, at the address its RVAs are read from; the module handle, or 0 for a file with no resources */
   dataModule(file, path) {
@@ -2021,7 +2040,7 @@ def('KERNEL32', 'GetProcAddress', 2, function (h, name) {
     if (!this.thunkByName.has(key)) { this.thunkByName.set(key, LAYOUT.THUNK + this.thunks.length * 4); this.thunks.push({ dll: 'MSJAVA', nm, def: own[nm] }); }
     return this.thunkByName.get(key);
   }
-  if (native) return native.exports.get(nm) || 0;
+  if (native) return this.exportOf(native, nm);
   const m = this.standinAt(h) || this.obj(0x0000ffff & h) || { name: 'KERNEL32' };
   return API[m.name] && this.importDef(m.name, nm) ? this.thunkFor(m.name, nm) : 0;
 });
@@ -2237,6 +2256,39 @@ def('KERNEL32', 'VirtualFree', 3, function (p, n, type) {
   const r = type & 0x8000 && this.vregions && this.vregions.get(p);
   if (r) { this.vregions.delete(p); if (!r.heap) this.vmCheck(p, r.size, 'VirtualFree'); if (r.heap) this.free(r.heap); else (this.vspare || (this.vspare = [])).push({ base: p, size: r.size }); this.vmAudit('VirtualFree'); }
   return 1;
+});
+// VirtualProtect: memory here has no page protection, every page readable, writable and runnable; the protection a
+// page was last given is kept and answered as the old one (PAGE_EXECUTE_READWRITE before any), so a caller that puts
+// back what it found (MSVBVM50 writing its thunks into code) puts back its own
+def('KERNEL32', 'VirtualProtect', 4, function (a, n, prot, old) {
+  if (!n || !a) { this.lastError = 87; return 0; }
+  const prots = this.vprots || (this.vprots = new Map()), first = u32(a) >>> 12, last = (u32(a) + u32(n) - 1) >>> 12;
+  if (old) this.w32(old, prots.has(first) ? prots.get(first) : 0x40);
+  for (let pg = first; pg <= last; pg++) prots.set(pg, prot);
+  return 1;
+});
+// VirtualQuery: the region an address is in, as MEMORY_BASIC_INFORMATION (28 bytes): a reservation of VirtualAlloc's,
+// a module's image (MEM_IMAGE), a thread's stack, else the 4 KiB page it is on, committed; the protection the page
+// was given (VirtualProtect), else PAGE_EXECUTE_READWRITE
+def('KERNEL32', 'VirtualQuery', 3, function (a, buf, len) {
+  if (!buf || len < 28) { this.lastError = 24; return 0; }
+  a = u32(a);
+  let base = a & ~0xfff, size = 0x1000, alloc = base, type = 0x20000;   // MEM_PRIVATE
+  const r = this.vregions && [...this.vregions].find(([b, x]) => a >= b && a < b + x.size);
+  const m = !r && (this.modules || []).find(x => x.size && a >= x.base && a < x.base + x.size);
+  const t = !r && !m && this.threadsById && [...this.threadsById.values()].find(x => x.stackBase && a >= x.stackBase && a < x.stackBase + (x.stack || x.stackSize || 0));
+  if (r) { alloc = r[0]; base = r[0]; size = r[1].size; }
+  else if (m) { alloc = m.base; base = m.base; size = m.size; type = 0x1000000; }   // MEM_IMAGE
+  else if (t) { alloc = t.stackBase; base = t.stackBase; size = t.stack || t.stackSize; }
+  const prot = this.vprots && this.vprots.has(a >>> 12) ? this.vprots.get(a >>> 12) : 0x40;
+  [base, alloc, 0x40, size, 0x1000, prot, type].forEach((v, i) => this.w32(buf + 4 * i, v));   // MEM_COMMIT
+  return 28;
+});
+// the wide calls Windows 98's KERNEL32 has only as stubs: they fail, ERROR_CALL_NOT_IMPLEMENTED, as there
+for (const [nm, n] of [['GetModuleFileNameW', 3], ['CreateProcessW', 10], ['FormatMessageW', 7]]) def('KERNEL32', nm, n, function () { this.lastError = 120; return 0; });
+def('KERNEL32', 'lstrcmpiW', 2, function (a, b) {
+  const x = (this.readW(a) || '').toLowerCase(), y = (this.readW(b) || '').toLowerCase();
+  return x < y ? -1 >>> 0 : x > y ? 1 : 0;
 });
 def('KERNEL32', 'lstrlenA', 1, function (p) { return p ? this.readA(p).length : 0; });
 def('KERNEL32', 'lstrcpyA', 2, function (d, s) { this.writeA(d, this.readA(s) || ''); return d; });
@@ -2809,7 +2861,16 @@ def('KERNEL32', 'WriteFile', 5, function (h, buf, n, put, ovl) {
   const f = fileOf(this, h); if (!f) { if (put) this.w32(put, n); return 1; }
   return fsCall(this, () => { const k = this.fs.write(f.fd, this.u8.slice(buf, buf + n)); if (put) this.w32(put, k); return 1; });
 });
-def('KERNEL32', 'SetFilePointer', 4, function (h, lo, hip, how) { const f = fileOf(this, h); if (!f) return 0xffffffff; return fsCall(this, () => this.fs.seek(f.fd, lo | 0, how), 0xffffffff); });
+// SetFilePointer: the distance a signed 64-bit one with *lpDistanceToMoveHigh (lo alone a signed 32-bit one without
+// it), the new position's high dword written back there; NO_ERROR on success, which a caller reading GetLastError after
+// a position of FFFFFFFFh tells from a failure (OLE32's compound files)
+def('KERNEL32', 'SetFilePointer', 4, function (h, lo, hip, how) {
+  const f = fileOf(this, h); if (!f) { this.lastError = 6; return 0xffffffff; }
+  const dist = hip ? (this.r32(hip) | 0) * 0x100000000 + u32(lo) : lo | 0;
+  const r = fsCall(this, () => this.fs.seek(f.fd, dist, how), null); if (r === null) return 0xffffffff;
+  if (hip) this.w32(hip, Math.floor(r / 0x100000000));
+  this.lastError = 0; return u32(r);
+});
 def('KERNEL32', 'GetFileSize', 2, function (h, hi) { const f = fileOf(this, h); if (hi) this.w32(hi, 0); return f ? this.fs.fstat(f.fd).size : 0xffffffff; });
 def('KERNEL32', 'SetEndOfFile', 1, function (h) { const f = fileOf(this, h); return f ? fsCall(this, () => (this.fs.truncate(f.fd), 1)) : 0; });
 def('KERNEL32', 'FlushFileBuffers', 1, () => 1);
