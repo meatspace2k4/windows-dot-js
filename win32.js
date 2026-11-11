@@ -2903,7 +2903,10 @@ def('KERNEL32', 'GetDiskFreeSpaceA', 5, function (n, spc, bps, free, total) {
     if (spc) this.w32(spc, c / 512); if (bps) this.w32(bps, 512); if (free) this.w32(free, Math.floor(v.free / c)); if (total) this.w32(total, Math.floor(v.total / c)); return 1; });
 });
 def('KERNEL32', 'FindFirstFileA', 2, function (pat, data) {
-  const s = this.readA(pat); const dir = s.includes('\\') ? s.slice(0, s.lastIndexOf('\\')) || s.slice(0, 3) : this.fs.cwd, mask = s.slice(s.lastIndexOf('\\') + 1);
+  // (the name's trailing blanks are no part of it, as the file system takes a name, and a name with no wildcard its
+  // trailing dots: "regedit.exe " is REGEDIT.EXE; "*." keeps its dot, the files with no extension)
+  const s = this.readA(pat); const dir = s.includes('\\') ? s.slice(0, s.lastIndexOf('\\')) || s.slice(0, 3) : this.fs.cwd, raw = s.slice(s.lastIndexOf('\\') + 1).replace(/ +$/, '');
+  const mask = /[*?]/.test(raw) ? raw : raw.replace(/[. ]+$/, '') || raw;
   return fsCall(this, () => {
     const list = this.fs.readdir(dir.length === 2 ? dir + '\\' : dir, mask);
     if (!list.length) throw new window.W95FS.FSError(2, s);
