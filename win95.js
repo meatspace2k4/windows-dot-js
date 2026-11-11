@@ -943,7 +943,7 @@ function bootDisk() {
   // (a disk of Windows 3.1 is its own: nothing of Windows 95's Setup; MS-DOS 6.22 on it as SYS leaves it (MS-DOS 7's
   // IO.SYS halts as Windows 3.1 starts), and an AUTOEXEC.BAT with the disk's own WIN.BAT's commands, which start Windows)
   if (diskSystem() === 'win31') { sys622Disk(); win31Autoexec(); fs.chdir('C:\\'); return; }
-  installPrograms(); setupFonts(); setupRegistry(); setupDisplay(); setupSavers(); setupSound(); setupHelp(); setupNetwork(); setupPorts(); setupPrinting(); setupVxds(); setupWebView();
+  setupFonts(); setupRegistry(); setupDisplay(); setupSavers(); setupSound(); setupHelp(); setupNetwork(); setupPorts(); setupPrinting(); setupVxds(); setupWebView();
   if (host.shared) setupProfile(host.userName);
   setupStartMenu();   // (after the profile: its links go in the Programs folder the user's Shell Folders name)
   fs.chdir('C:\\');
