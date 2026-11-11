@@ -51,7 +51,7 @@
     if (disk) out.volume.push({ k: 'label', v: disk.label }, { k: 'serial', v: disk.serial });
     for (const [path, vals, name] of registry || []) {
       out.regkey.push(name ? { path, name } : { path });
-      for (const [n, v] of vals) out.regval.push({ path, name: n, value: { type: v.type, data: v.data } });
+      for (const [n, v] of vals) out.regval.push({ path, name: n, value: { type: v.type, data: v.data }, ord: out.regval.length + 1 });
     }
     return out;
   };
@@ -98,6 +98,7 @@
     document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 60000);
   };
   let frozen = false;   // (an imported session is replacing this one: the page going away writes nothing more)
+  let valOrd = 0;       // (the last registry value's place in the order values were made: a new one's is next)
 
   function host(db, disk, registry) {
     // ---- a session file: the stores as they stand now, as the Electron app's database; an imported one in their place
@@ -180,7 +181,11 @@
         load: () => registry,
         op: o => run(['regkey', 'regval'], async (regkey, regval) => {
           if (o.op === 'key') { const old = await req(regkey.get(o.path)), name = (old && old.name) || o.name; regkey.put(name ? { path: o.path, name } : { path: o.path }); }
-          else if (o.op === 'set') { if (!await req(regkey.get(o.path))) regkey.put({ path: o.path }); regval.put({ path: o.path, name: o.name, value: o.value }); }
+          else if (o.op === 'set') {
+            if (!await req(regkey.get(o.path))) regkey.put({ path: o.path });
+            const old = await req(regval.get([o.path, o.name]));
+            regval.put({ path: o.path, name: o.name, value: o.value, ord: old && old.ord !== undefined ? old.ord : ++valOrd });
+          }
           else if (o.op === 'del') regval.delete([o.path, o.name]);
           else if (o.op === 'delkey') {
             const inside = k => k === o.path || k.startsWith(o.path + '\\');
@@ -218,7 +223,9 @@
     let registry = null;
     if (keys.length) {
       const by = new Map(keys.map(k => [k.path, []])), names = new Map(keys.map(k => [k.path, k.name]));
-      for (const v of vals) (by.get(v.path) || by.set(v.path, []).get(v.path)).push([v.name, v.value]);
+      // (a key's values in the order they were made, as RegEnumValue gives them: the store keeps them by name)
+      vals.sort((a, b) => (a.ord || 0) - (b.ord || 0));
+      for (const v of vals) { (by.get(v.path) || by.set(v.path, []).get(v.path)).push([v.name, v.value]); if (v.ord > valOrd) valOrd = v.ord; }
       registry = [...by].map(([path, v]) => [path, v, names.get(path)]);
     }
     return { disk, registry };

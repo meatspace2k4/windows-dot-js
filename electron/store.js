@@ -19,6 +19,8 @@ function open(file) {
   `)
   // a key's name as created (its path is lower case), added to stores made before it was kept
   if (!db.prepare('PRAGMA table_info(regkey)').all().some(c => c.name === 'name')) db.exec('ALTER TABLE regkey ADD COLUMN name TEXT')
+  // a value's place in the order its key's values were made (RegEnumValue's order), added to stores made before it was kept
+  if (!db.prepare('PRAGMA table_info(regval)').all().some(c => c.name === 'ord')) db.exec('ALTER TABLE regval ADD COLUMN ord INTEGER')
   const q = {
     upsert: db.prepare(`INSERT INTO node (sid, parent, name, short, dir, ord, attrs, ctime, mtime, atime) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(sid) DO UPDATE SET parent = excluded.parent, name = excluded.name, short = excluded.short, ord = excluded.ord, attrs = excluded.attrs,
@@ -39,10 +41,11 @@ function open(file) {
     addNamedKey: db.prepare('INSERT INTO regkey (path, name) VALUES (?, ?) ON CONFLICT(path) DO UPDATE SET name = COALESCE(regkey.name, excluded.name)'),
     delKeys: db.prepare(`DELETE FROM regkey WHERE path = ? OR substr(path, 1, length(?) + 1) = ? || '\\'`),
     delKeyVals: db.prepare(`DELETE FROM regval WHERE path = ? OR substr(path, 1, length(?) + 1) = ? || '\\'`),
-    setVal: db.prepare('INSERT OR REPLACE INTO regval (path, name, value) VALUES (?, ?, ?)'),
+    setVal: db.prepare(`INSERT INTO regval (path, name, value, ord) VALUES (?, ?, ?, (SELECT COALESCE(MAX(ord), 0) + 1 FROM regval))
+      ON CONFLICT(path, name) DO UPDATE SET value = excluded.value`),
     delVal: db.prepare('DELETE FROM regval WHERE path = ? AND name = ?'),
     keys: db.prepare('SELECT path, name FROM regkey ORDER BY path'),
-    vals: db.prepare('SELECT name, value FROM regval WHERE path = ?'),
+    vals: db.prepare('SELECT name, value FROM regval WHERE path = ? ORDER BY ord, rowid'),
   }
   const tx = fn => { db.exec('BEGIN IMMEDIATE'); try { fn(); db.exec('COMMIT') } catch (e) { db.exec('ROLLBACK'); throw e } }
 
