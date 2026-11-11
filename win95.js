@@ -3445,7 +3445,25 @@ function winHelp(file = 'windows.hlp') { closeMenus(); if (hasHelp()) runNative(
 // always the same, so the note is cleared before each start
 function setupDisplay() {
   if (W95Win32.iniGet(fs, 'SYSTEM.INI', 'boot', '*DisplayFallback') !== null) W95Win32.iniSet(fs, 'SYSTEM.INI', 'boot', '*DisplayFallback', null);
-  setupDisplayDevices(); setupFontSize(); setupPatterns(); setupWallpapers();
+  setupDisplayDevices(); setupFontSize(); setupPatterns(); setupWallpapers(); setupSchemes();
+}
+// the color schemes of themes/ (Midnight, Steam) in Display Properties' list beside Windows' own: each a value of
+// Control Panel\Appearance\Schemes, the user's and .DEFAULT's, Windows Standard's metrics and fonts with the theme's
+// colors as its last 29 COLORREFs (R, G, B and Windows Standard's own fourth byte; an index a theme leaves out keeps
+// Windows Standard's)
+const SCHEME_THEMES = ['midnight', 'steam'];
+function setupSchemes() {
+  const themes = SCHEME_THEMES.map(n => { try { const x = new XMLHttpRequest(); x.open('GET', `themes/${n}.json`, false); x.send(); return x.status === 200 ? JSON.parse(x.responseText) : null; } catch (_) { return null; } }).filter(Boolean);
+  for (const key of ['hkcu\\control panel\\appearance\\schemes', 'hku\\.default\\control panel\\appearance\\schemes']) {
+    const std = W95Win32.regGet(key, 'Windows Standard'); if (!std || !std.data) continue;
+    const base = std.data instanceof Uint8Array ? std.data : Uint8Array.from(Object.values(std.data)), at = base.length - 29 * 4; if (at < 0) continue;
+    for (const t of themes) {
+      const d = base.slice();
+      for (const c of Object.values(t.colors)) if (c.index >= 0 && c.index < 29) d.set(c.rgb, at + 4 * c.index);
+      const was = W95Win32.regGet(key, t.name), had = was && was.data && (was.data instanceof Uint8Array ? was.data : Uint8Array.from(Object.values(was.data)));
+      if (!had || had.length !== d.length || had.some((v, i) => v !== d[i])) W95Win32.regSet(key, t.name, { type: 3, name: t.name, data: d });
+    }
+  }
 }
 // The folder templates of Windows 98's Web view (C:\WINDOWS\WEB\*.HTT, which WEBVW.DLL writes as it registers), in
 // the color scheme's colors: their left panel is "white" with a white watermark (wvleft.bmp) whatever the scheme, its
