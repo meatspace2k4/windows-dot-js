@@ -32,7 +32,7 @@ assert.ok(!/w95\.shutdown|cleanStart/.test(w));
 // shell, and SystemStart with it, come after Setup's screen
 {
   // (each boot's passes, the user's profile among them on a shared session's, then the Start menu's)
-  const lines = w.split('\n'), boots = lines.map((l, i) => [l, i]).filter(([l]) => /installPrograms\(\); setupFonts\(\);/.test(l));
+  const lines = w.split('\n'), boots = lines.map((l, i) => [l, i]).filter(([l]) => /installPrograms\((true)?\); setupFonts\(\);/.test(l));
   assert.equal(boots.length, 2);
   for (const [l, i] of boots) assert.ok(/\bsetupStartMenu\(\);/.test(lines.slice(i, i + 3).join('\n')), l);
   const body = cut('function setupStartMenu() {', "grpconv.exe') + ' -s'));\n}");

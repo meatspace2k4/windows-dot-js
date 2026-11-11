@@ -113,7 +113,10 @@ P.cdAuxGain = function () { const c = this.ad1848; return c ? [auxGain(c.regs[2]
 // (bits 0, 1), masks them (bits 6, 5) and resets the flags (bit 7). The status port reads 80h (an interrupt) with 40h
 // (timer 1) and 20h (timer 2). Time runs on the bus: each access to the chip takes 1 us, as an ISA read does
 const opl = p => p.opl3 || (p.opl3 = { idx: [0, 0], regs: [new Uint8Array(256), new Uint8Array(256)], t: 0, start: [0, 0], flags: 0 });
-const oplTime = (p, o) => { o.t = Math.max(o.t + 0.001, p.now()); return o.t; };
+// (an access takes its microsecond of the machine's own time, not a clock of the card's beside it: the card's time ran
+// ahead of the machine's as a driver polled, and its sound came faster than the speakers play it)
+const BUS_MS = 0.001, busTime = p => { const v = p.host && p.host.vclock; if (v) v.now += BUS_MS; };
+const oplTime = (p, o) => { busTime(p); o.t = Math.max(o.t, p.now()); return o.t; };
 const oplStatus = (p, o) => {
   const now = oplTime(p, o), r = o.regs[0][4];
   [[1, 2, 0.08, 0x40, 0x40], [2, 3, 0.32, 0x20, 0x20]].forEach(([bit, reg, step, flag, mask], i) => {
@@ -405,7 +408,9 @@ const WORKLET = `registerProcessor('w95-stream', class extends AudioWorkletProce
         O[k] = ((c3 * f + c2) * f + c1) * f + y1;
       }
     }
-    if (k < L.length) { if (this.on) this.port.postMessage(1); this.on = false; L.fill(0, k); R.fill(0, k); }   // ran dry
+    // ran dry: the queue it waits for before going on again twice as long, up to a second (samples that come unevenly
+    // break up the sound once, not at every gap)
+    if (k < L.length) { if (this.on) { this.port.postMessage(1); this.lead = Math.min(2 * this.lead, Math.round(sampleRate * step)); } this.on = false; L.fill(0, k); R.fill(0, k); }
     return this.live;
   }
 });`;
@@ -472,17 +477,16 @@ system();   // as the machine starts
 window.W95Sound = { play: (k, rate, L, R) => play(k, rate, L, R, L.length), close: k => P.soundClose.call(k),
   // (the output on or off while the machine runs, the page's address's mute: the same gain the page's ?mute=1 sets)
   setMuted: m => { window.W95MUTE = !!m; const s = system(); if (s && s.dest) s.dest.gain.value = m ? 0 : 1; if (!m && s && s.ctx && s.ctx.state === 'suspended') s.ctx.resume(); } };
-// The codec's clock. A port access the guest makes (a codec register, its status, a DMA counter) takes an ISA I/O cycle,
-// about a microsecond, on the card: inside a run of guest code the codec moves on by that much per access, however long
-// the recompiled code takes between them. Between runs (the host's turn) and when the guest reads the time of day it
-// catches up with the clock on the wall. So a driver that enables playback and turns it down a few register writes
-// later (MSSNDSYS as it starts) plays the microseconds it would on the card, not the time the emulation took
-const BUS_MS = 0.001;
+// The codec moves on to the machine's time as the guest touches it (a register, its status, a DMA counter: each access
+// an ISA cycle of the machine's time, busTime) and between runs (the host's turn): the samples due by then are played,
+// the interrupts due raised. The machine's time is kept to the wall's (worker.js step), so the card plays at the rate
+// the speakers do
 P.sound16 = function (bus = false) {
+  if (bus) busTime(this);
   if (!this.inSound) this.oplRender();
   this.irqPending();   // an interrupt held while the code had interrupts disabled, now that it enabled them
   const c = this.ad1848; if (!c) return;
-  c.t = bus ? c.t + BUS_MS : Math.max(c.t, this.now());
+  c.t = Math.max(c.t, this.now());
   if (!(c.regs[9] & 3) || this.inIRQ || this.inSound) return;
   this.inSound = true;
   try { if (c.regs[9] & 1) this.soundRun(c); else this.captureRun(c); } finally { this.inSound = false; }

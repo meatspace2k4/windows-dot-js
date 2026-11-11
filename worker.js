@@ -20,6 +20,9 @@ self.W95CDGAIN = (l, r) => post({ t: 'cdaudio', op: 'gain', l, r });       // (t
 
 // ---------------------------------------------------------------- the page, called synchronously
 let rpcSab = null;
+// how far ahead of the wall the machine's time may run at a person's pace (step): the sound its card makes is queued
+// that far ahead of the speakers, more than one late step takes
+const PACE_LEAD = 150;
 const mkErr = v => v.name === 'FSError' ? Object.assign(new FSError(v.code, v.path), { message: v.message }) : Object.assign(new Error(v.message), { name: v.name, code: v.code });
 function rpc(target, method, args = []) {
   const ctl = new Int32Array(rpcSab, 0, 4);
@@ -882,6 +885,16 @@ class Machine {
     // copy, minutes long) ran its loops as run-time code all along)
     const rebuilt = p.neInstall() || p.neRebuild();   // (and a module read from the memo put in place: dyn.js neInstall)
     const wall = performance.now();
+    // (at a person's pace the machine's time runs at most PACE_LEAD ahead of the wall's: a busy step past it waits for
+    // the wall instead of following at once. Back to back, a fast host ran the machine's clock ahead without end, its
+    // sound card made sound faster than the speakers play it, and the CD Sampler's movie sound played on after the
+    // program had ended. Held to the wall itself, the sound queued was only what the last step made, and any step that
+    // came late left the speakers with nothing: the sound broke up. Behind the wall by more than a quarter second, the
+    // reckoning starts again from now rather than racing to catch up)
+    const vc = this.vclock, a = this.paceAt;
+    if (!a || this.fast || vc.scale !== 1 || vc.now < a.now || (wall - a.wall) - (vc.now - a.now) > 250) this.paceAt = { wall, now: vc.now };
+    const ahead = this.paceAt ? (vc.now - this.paceAt.now) - (wall - this.paceAt.wall) - PACE_LEAD : 0;
+    if (!this.fast && vc.scale === 1 && ahead > 1 && (busy || rebuilt)) { this.stepDue = wall + ahead; this.timer = setTimeout(() => this.step(), ahead); return; }
     if (busy || rebuilt || this.keyq.length || this.fast) { this.stepDue = wall; this.stepSoon(); }
     else { const due = this.stepDue = Math.max((this.stepDue || wall) + 16, wall - 48); this.timer = setTimeout(() => this.step(), Math.max(0, due - wall)); }
   }
