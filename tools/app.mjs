@@ -48,12 +48,13 @@ async function evaluate(expression, ms = 30000) {
   } finally { ws.close(); }
 }
 
-async function start(disk = 'keep', build) {
+async function start(disk = 'keep', build, nowait) {
   await quit();
   if (disk === 'fresh') clearDisk();
   else if (disk !== 'keep') { if (!existsSync(disk)) throw new Error(`no disk at ${disk}`); clearDisk(); copyFileSync(disk, DISK); }
   if (build) execFileSync('sh', ['build.sh'], { cwd: join(ROOT, 'electron'), stdio: ['ignore', 'ignore', 'inherit'] });
   execFileSync('open', ['-n', APP]);
+  if (nowait) return 'started';
   const t0 = Date.now();
   for (;;) {
     const up = await evaluate('typeof win95 === "object" && !!win95.sysApp && !!win95.window("Program Manager") && document.title').catch(() => null);
@@ -67,7 +68,7 @@ const [verb, a, b] = process.argv.slice(2);
 // (the answer is written whole before the process ends: a pipe takes a long one in pieces)
 const out = [], console = { log: t => out.push(t), error: t => process.stderr.write(t + '\n') };
 try {
-  if (verb === 'start') console.log(await start(a === 'build' ? 'keep' : a, a === 'build' || b === 'build'));
+  if (verb === 'start' || verb === 'launch') console.log(await start(a === 'build' ? 'keep' : a, a === 'build' || b === 'build', verb === 'launch'));   // (launch: without waiting for the desktop)
   else if (verb === 'quit') { await quit(); console.log('quit'); }
   else if (verb === 'save') { if (!a) throw new Error('save <file>'); await quit(); copyFileSync(DISK, a); console.log(`the disk is at ${a}`); }
   else if (verb === 'eval') { const r = await evaluate(a, 600000);console.log(typeof r === 'string' ? r : JSON.stringify(r, null, 1)); }

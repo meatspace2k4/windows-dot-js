@@ -14,9 +14,17 @@ const HOOK = `(() => { if (!window.W95Sound) return 'no'; if (window.__snd) retu
     for (const a of (k.audioOuts || new Map()).values()) if (a.node && !a.__h) { a.__h = 1; a.node.port.addEventListener('message', () => log.push([Math.round(performance.now()), rate, 'dry'])); }
     return r; };
   return 'hooked'; })()`;
-ev('(location.reload(), 1)');
-for (let i = 0; i < 200 && ev(HOOK) !== 'hooked'; i++) await sleep(100);
-await sleep(1000 * (Number(process.argv[2]) || 40));
+// (`read`: what the last run recorded, the machine left as it is)
+// (`build`: the app quit, built and started, its one start recorded, in place of a reload of the page)
+if (process.argv[2] === 'build') {
+  execFileSync('node', [app, 'launch', 'build'], { stdio: 'ignore' });
+  for (let i = 0; i < 300 && ev(HOOK) !== 'hooked'; i++) await sleep(100);
+  await sleep(1000 * (Number(process.argv[3]) || 40));
+} else if (process.argv[2] !== 'read') {
+  ev('(location.reload(), 1)');
+  for (let i = 0; i < 200 && ev(HOOK) !== 'hooked'; i++) await sleep(100);
+  await sleep(1000 * (Number(process.argv[2]) || 40));
+}
 const log = JSON.parse(ev('JSON.stringify(window.__snd || [])') || '[]');
 const rates = [...new Set(log.map(e => e[1]))];
 for (const rate of rates) {
@@ -24,8 +32,12 @@ for (const rate of rates) {
   const n = b.reduce((s, e) => s + e[2], 0), gaps = [];
   for (let i = 1; i < b.length; i++) if (b[i][0] - b[i - 1][0] > 120) gaps.push(`${b[i][0] - b[i - 1][0]} ms at ${b[i - 1][0] - b[0][0]}`);
   // (the first 3 seconds, each tenth's samples as hundredths of the tenth: 100 is the pace they play at)
-  const tenths = Array.from({ length: 30 }, (_, i) => Math.round(1000 * b.filter(e => Math.floor((e[0] - b[0][0]) / 100) === i).reduce((s, e) => s + e[2], 0) / rate));
-  console.log(`${rate} Hz, each tenth of its first 3 s: ${tenths.join(' ')}`);
+  const tenths = Array.from({ length: Math.min(120, Math.ceil((b[b.length - 1][0] - b[0][0]) / 100) + 1) },(_, i) => Math.round(1000 * b.filter(e => Math.floor((e[0] - b[0][0]) / 100) === i).reduce((s, e) => s + e[2], 0) / rate));
+  console.log(`${rate} Hz, each tenth of a second: ${tenths.join(' ')}`);
+  // (what the machine logged over the sound: the modules translated as they loaded, with their times into it)
+  const t0 = b[0][0], t1 = b[b.length - 1][0];
+  const logged = JSON.parse(ev(`JSON.stringify(win95.log().filter(l => l.tag === 'dyn' && /compiled \\d+ ms/.test(String(l.text))).map(l => [Math.round(l.t - performance.timeOrigin), String(l.text).slice(0, 110)]).filter(l => l[0] >= ${t0} && l[0] <= ${t1}))`) || '[]');
+  for (const [t, text] of logged) console.log(`  at ${t - t0}: ${text}`);
   console.log(`${rate} Hz: ${(n / rate).toFixed(2)} s of sound in ${b.length} batches over ${((b[b.length - 1][0] - b[0][0]) / 1000).toFixed(2)} s; gaps: ${gaps.join(', ') || 'none'}; ran dry at: ${dry.join(', ') || 'never'}`);
 }
 if (!rates.length) console.log('no sound');

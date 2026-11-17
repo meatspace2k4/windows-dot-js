@@ -288,7 +288,7 @@ P.soundIO = function (port, size, isIn) {
       // the sound played unheard is over: one of some length (MSSNDSYS enables playback and turns it down again within
       // microseconds as it starts, which is no sound: the quiet goes on to SystemStart)
       if (c.idx === 9 && !(v & 1) && (was & 1) && this.soundQuiet && (this.quietMs || 0) >= 200) this.soundQuiet = false;
-      if (c.idx === 9 && (v & 1) && !(was & 1)) { c.count = (c.regs[14] << 8) | c.regs[15]; c.frac = 0; c.last = c.t; }
+      if (c.idx === 9 && (v & 1) && !(was & 1)) { c.count = (c.regs[14] << 8) | c.regs[15]; c.frac = 0; c.last = c.t; if (c.out) c.out.at = performance.now(); }
       // capture enable (bit 1): the count starts as for playback; the page's microphone is opened for it, and closed
       // when capture stops
       if (c.idx === 9 && (v & 2) && !(was & 2)) { c.count = (c.regs[14] << 8) | c.regs[15]; c.frac = 0; c.last = c.t; this.mic = { q: [], pos: 0, rate: 0 }; if (self.W95MIC) self.W95MIC(true); }
@@ -492,6 +492,7 @@ P.sound16 = function (bus = false) {
   if (!this.inSound) this.oplRender();
   this.irqPending();   // an interrupt held while the code had interrupts disabled, now that it enabled them
   const c = this.ad1848; if (!c) return;
+  cardSeen(c);
   c.t = Math.max(c.t, this.now());
   if (!(c.regs[9] & 3) || this.inIRQ || this.inSound) return;
   this.inSound = true;
@@ -532,9 +533,32 @@ P.captureRun = function (c) {
     if (c.count === 0) { c.count = (c.regs[14] << 8) | c.regs[15]; c.int = true; if (c.regs[10] & 2) this.raiseIRQ(WSS.irq); } else c.count--;
   }
 };
+// The card plays at its own pace, the speakers', and not at the machine's clock's: it keeps sound queued on the output
+// ahead of the speakers, taking the driver's buffer (and interrupting for the next half) as fast as the driver refills
+// it until that much is queued, then as the speakers play it. The machine's time runs at a tenth to a half of the
+// wall's while programs start; paced by it, the card made a tenth of the samples the speakers played and the startup
+// sound broke off. What is queued is reckoned here: what was made, less the wall's time since.
+// How far ahead (cardAhead, ms) follows how long the machine has lately left the card unattended (c.gap: the longest
+// wall time between two of its turns, fading over ten seconds): three times that, AHEAD_MIN at least. A machine at
+// rest tends the card every few milliseconds and the sound is heard AHEAD_MIN after the card played it (a film's
+// picture and its sound stay together); one starting programs leaves it a fifth of a second at a time, and the card is
+// that much further ahead before the sound could run out
+const AHEAD_MIN = 120, AHEAD_MAX = 1200;
+const cardAhead = c => Math.min(AHEAD_MAX, Math.max(AHEAD_MIN, 3 * (c.gap || 0)));
+/** the card's turn noted: the wall time since its last one, the longest of them kept (fading) */
+const cardSeen = c => {
+  const wall = performance.now(), g = c.seen === undefined ? 0 : Math.min(wall - c.seen, 2000); c.seen = wall;   // (2 s: the machine was stopped, not busy)
+  c.gap = Math.max(g, (c.gap || 0) * Math.exp(-g / 10000));};
 P.soundRun = function (c) {
-  const now = c.t, rate = rateOf(c.regs[8]), dt = Math.min(now - c.last, 250); c.last = now;
-  c.frac += rate * dt / 1000; let frames = Math.floor(c.frac); c.frac -= frames;
+  const rate = rateOf(c.regs[8]), wall = performance.now(), want = cardAhead(c); c.last = c.t;
+  const q = c.out && c.out.rate === rate ? c.out : (c.out = { rate, at: wall, ahead: 0 });   // (ahead: ms made and not yet played)
+  const dt = wall - q.at; q.ahead = Math.max(0, q.ahead - dt); q.at = wall;
+  // the frames due: the wall's time since the last run at the card's rate, four times that while less than `want` is
+  // queued, half while a tenth of a second more is. (All of `want` taken in one run was a whole block at once, its
+  // interrupt raised inside the port write that started the playback: the driver's sound stopped a second in)
+  const speed = q.ahead < want ? 4 : q.ahead > want + 100 ? 0.5 : 1;
+  c.frac = Math.min(c.frac + rate * Math.min(dt, 250) * speed / 1000, rate / 4);
+  const frames = Math.floor(c.frac); c.frac -= frames;
   if (frames <= 0) return;
   const stereo = !!(c.regs[8] & 0x10), fmt = (c.regs[8] >> 5) & 3, bps = fmt === 2 ? 2 : 1, ch = stereo ? 2 : 1;
   let irq = false;
@@ -561,7 +585,7 @@ P.soundRun = function (c) {
     if (irq) { irq = false; if (c.regs[10] & 2) { this.soundStats.irqs++; this.raiseIRQ(WSS.irq); } }
     if (end) break;
   }
-  this.soundStats.frames += k;
+  this.soundStats.frames += k; q.ahead += k * 1000 / rate;
   // (soundQuiet: the card's output off for one sound, which still plays to the guest: the DMA, the interrupts)
   if (k && this.soundQuiet) this.quietMs = (this.quietMs || 0) + k * 1000 / rate;
   if (k && !this.soundQuiet && play(this, rate, L, R, k)) this.soundStats.underruns = (this.soundStats.underruns || 0) + 1;
