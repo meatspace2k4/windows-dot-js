@@ -1,4 +1,4 @@
-// The app's shares (electron/shares.js): with no list, ~/Documents/Claude alone, as CLAUDE; a share is read-only (every
+// The app's shares (electron/shares.js): with no list, ~/Public alone, as PUBLIC; a share is read-only (every
 // operation that would change the Mac's files refused, the files left as they were, shown read-only, no free space)
 // unless its entry says "writable": true; no path leads outside the share
 import assert from 'node:assert/strict';
@@ -9,7 +9,7 @@ import { join } from 'node:path';
 const { open } = createRequire(import.meta.url)('../electron/shares.js');
 const dir = mkdtempSync(join(tmpdir(), 'w95shares-'));
 try {
-  assert.deepEqual(open(join(dir, 'none.json')).all(), [{ name: 'CLAUDE', path: join(homedir(), 'Documents', 'Claude') }], 'the share with no list');
+  assert.deepEqual(open(join(dir, 'none.json')).all(), [{ name: 'PUBLIC', path: join(homedir(), 'Public') }], 'the share with no list');
   const root = join(dir, 'root'); mkdirSync(join(root, 'sub'), { recursive: true }); writeFileSync(join(root, 'a.txt'), 'hello'); writeFileSync(join(dir, 'outside.txt'), 'out');
   writeFileSync(join(dir, 'list.json'), JSON.stringify([{ name: 'RO', path: root }, { name: 'RW', path: root, writable: true }]));
   writeFileSync(join(dir, 'gone.json'), JSON.stringify([{ name: 'GONE', path: join(dir, 'nowhere') }]));

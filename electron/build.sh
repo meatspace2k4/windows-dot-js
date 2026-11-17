@@ -7,7 +7,7 @@ rm -rf "$APP"
 cp -R node_modules/electron/dist/Electron.app "$APP"
 R="$APP/Contents/Resources"
 mkdir -p "$R/app/web/icons"
-cp package.json main.js preload.js store.js shares.js "$R/app/"
+cp package.json main.js preload.js store.js shares.js webdav.js "$R/app/"
 python3 ../tools/build_floppy.py ../mac ../floppy.js   # A: as mac/assets is now
 cp ../index.html ../*.js ../*.mod "$R/app/web/"
 # the drivers a page imports from beside itself (bench/setup98.mjs pageDrive, bench/anchor98.mjs)

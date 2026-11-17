@@ -139,6 +139,24 @@ ipcMain.on('cd-image', e => { e.returnValue = cdImage && path.basename(cdImage) 
 // (Windows' own: Start > Programs > Accessories > System Tools > Insert CD Image, and the drive's Eject)
 ipcMain.on('cd-insert', () => insertCD())
 ipcMain.on('cd-eject', () => ejectCD())
+// The shares on the Mac: each connected as a network volume (Finder's own, under Locations and in /Volumes), from the
+// app's WebDAV server, as it joins the list; File > Connect Shares in Finder also opens each one's window. They are
+// disconnected as the app quits (the server goes with it).
+const DAV_PORT = 9395, DAV = `http://127.0.0.1:${DAV_PORT}/`
+// (connected by mount_webdav at a folder of the app's own: Finder's Connect to Server asks, of a server on this very
+// computer, whether to send a name and password insecurely, and none is sent)
+function connectShares(show) {
+  const { execFile } = require('child_process')
+  for (const s of shares.served()) {
+    const at = path.join(app.getPath('userData'), 'Shares', s.name)
+    fs.promises.mkdir(at, { recursive: true }).then(() => execFile('mount_webdav', ['-S', '-v', s.name, DAV + encodeURIComponent(s.name), at], () => { if (show) execFile('open', [at], () => {}) }), () => {})
+  }
+}
+app.on('will-quit', () => {
+  // (by a process of its own, which outlives the app: every volume connected from this server)
+  const sh = `mount | sed -n 's|^${DAV}.* on \\(/.*\\) (webdav.*|\\1|p' | while IFS= read -r m; do umount "$m"; done`
+  require('child_process').spawn('/bin/sh', ['-c', sh], { detached: true, stdio: 'ignore' }).unref()
+})
 async function shareFolder() {
   const r = await dialog.showOpenDialog({ title: 'Share a Folder', buttonLabel: 'Share', properties: ['openDirectory', 'createDirectory'] })
   if (!r.canceled && r.filePaths[0]) shares.add(r.filePaths[0])
@@ -146,7 +164,9 @@ async function shareFolder() {
 app.whenReady().then(() => {
   store = require('./store').open(dbFile())
   // (a share joins the list once its folder has been read: the page is told, and connects its drive)
-  shares = require('./shares').open(path.join(app.getPath('userData'), 'shares.json'), () => { for (const w of BrowserWindow.getAllWindows()) w.webContents.send('shares-changed') })
+  shares = require('./shares').open(path.join(app.getPath('userData'), 'shares.json'), () => { for (const w of BrowserWindow.getAllWindows()) w.webContents.send('shares-changed'); connectShares(false) })
+  // the same shares for the Mac itself, read-only (webdav.js): File > Connect Shares in Finder connects each as a volume
+  require('./webdav').serve(() => shares.served(), DAV_PORT)
   // the disc in the drive: the one the person inserted, or none when they took it out (cdrom.json); before either,
   // the one the app was built with (cd.json, the project's cdrom.iso, the same disc serve.py serves the page)
   const kept = f => { try { return JSON.parse(fs.readFileSync(f, 'utf8')) } catch (_) { return null } }
@@ -154,7 +174,7 @@ app.whenReady().then(() => {
   cdOpen(chosen ? chosen.image || null : built && built.image)
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     { role: 'appMenu' },
-    { label: 'File', submenu: [{ label: 'Share a Folder…', click: shareFolder }, { label: 'Insert CD Image…', click: insertCD }, { label: 'Eject CD', click: ejectCD }, { type: 'separator' },
+    { label: 'File', submenu: [{ label: 'Share a Folder…', click: shareFolder }, { label: 'Connect Shares in Finder', click: () => connectShares(true) }, { label: 'Insert CD Image…', click: insertCD }, { label: 'Eject CD', click: ejectCD }, { type: 'separator' },
       { label: 'Export Session…', click: exportSession }, { label: 'Import Session…', click: importSession }] },
     { label: 'View', submenu: [{ role: 'togglefullscreen' }, { role: 'reload' }, { role: 'toggleDevTools' }] },
     { role: 'windowMenu' },

@@ -1,5 +1,5 @@
 // The Mac's folders the LAN's other computer (lanhost.js) serves as shares: each a name and a folder, kept in the app's
-// data folder (shares.json). ~/Documents/Claude is shared as CLAUDE unless the list says otherwise.
+// data folder (shares.json). ~/Public is shared as PUBLIC unless the list says otherwise.
 // A share is read-only: every operation that would change the Mac's files (write, truncate, create, mkdir, rmdir,
 // unlink, rename, times) is refused here, whatever the page asks; its files are shown read-only and its free space as
 // none. Only a share the list marks "writable": true takes changes.
@@ -19,7 +19,7 @@ const CHANGES = new Set(['write', 'truncate', 'create', 'mkdir', 'rmdir', 'unlin
 function open(file, changed = () => {}) {
   let list
   try { list = JSON.parse(fs.readFileSync(file, 'utf8')) } catch (_) { list = null }
-  if (!Array.isArray(list)) list = [{ name: 'CLAUDE', path: path.join(os.homedir(), 'Documents', 'Claude') }]
+  if (!Array.isArray(list)) list = [{ name: 'PUBLIC', path: path.join(os.homedir(), 'Public') }]
   // the shares whose folders have been read (the entries themselves), each after its first read ends
   const ready = new Set()
   const probe = s => fs.promises.readdir(s.path).then(() => { if (list.includes(s)) { ready.add(s); changed() } }, () => {})
@@ -88,6 +88,7 @@ function open(file, changed = () => {}) {
       } catch (e) { return { err: e.code || 'EIO' } }
     },
     probed,   // (every share of the list read, or refused)
+    served: () => list.filter(s => ready.has(s)).map(s => ({ name: s.name, path: s.path, home: !!s.home })),   // (for the Mac's own view of them, webdav.js)
     add: (dir, name) => {
       const base = (name || path.basename(dir)).toUpperCase().replace(/[^A-Z0-9_$~!#%&\-{}()@'`^]/g, '').slice(0, 12) || 'SHARE'
       let n = base; for (let i = 2; find(n); i++) n = base.slice(0, 12 - String(i).length) + i
