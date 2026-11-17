@@ -121,7 +121,7 @@ if (typeof process === 'object' && import.meta.url === `file://${process.argv[1]
   }
   let failed = 0, missing = 0;
   for (const n of names) {
-    const r = await c.evaluate(`import('/bench/anchor98.mjs').then(m => m.pageCheck(${JSON.stringify(n)}))`, CASES[n].ms + (CASES[n].hold || 0) + 120000)
+    const r = await c.evaluate(`import(new URL('bench/anchor98.mjs', document.baseURI).href).then(m => m.pageCheck(${JSON.stringify(n)}))`, CASES[n].ms + (CASES[n].hold || 0) + 120000)
       .catch(e => ({ case: n, ok: false, why: e.message }));
     console.log('ANCHOR98 ' + JSON.stringify(r));
     if (!r.ok) failed++; if (r.missing) missing++;

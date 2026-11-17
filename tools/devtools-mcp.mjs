@@ -6,12 +6,14 @@
 // The browser must expose the protocol:
 //   Chrome:            --remote-debugging-port=9222
 //   the Windows 95 app: 127.0.0.1:9334
-// Endpoint: CDP_URL (default http://127.0.0.1:9222). No dependencies (Node 22: fetch, WebSocket).
+// Endpoint: CDP_URL; without it, the Windows 95 app when it is running, else Chrome at 9222. No dependencies (Node 22:
+// fetch, WebSocket).
 //
 // Register:  claude mcp add devtools -- node tools/devtools-mcp.mjs
 import { createInterface } from 'node:readline';
 
-const CDP_URL = process.env.CDP_URL || 'http://127.0.0.1:9222';
+const APP_URL = 'http://127.0.0.1:9334';
+const CDP_URL = process.env.CDP_URL || (await fetch(`${APP_URL}/json/version`).then(r => r.ok, () => false) ? APP_URL : 'http://127.0.0.1:9222');
 const TIMEOUT = 15000;
 
 // ---------------------------------------------------------------- the protocol connection
@@ -212,8 +214,9 @@ async function guestWhere() {
 // machines have taken it (win95.report), or the error it ended on; the answer is the state to act on next. A query's
 // strings in /slashes/ are regular expressions.
 const pageSession = async () => {
-  let s = [...sessions.values()].find(x => x.type === 'page' && /\/\?|win95|braid|localhost/.test(x.url || ''));
-  if (!s) { await tools.attach.run({ url: process.env.W95_URL || 'localhost' }); s = [...sessions.values()].find(x => x.type === 'page'); }
+  // (the app's page is its own index.html, a file; a browser's is the local server's)
+  let s = [...sessions.values()].find(x => x.type === 'page' && /\/\?|win95|braid|localhost|\/app\/web\/index\.html/.test(x.url || ''));
+  if (!s) { await tools.attach.run({ url: process.env.W95_URL || (CDP_URL === APP_URL ? '/app/web/index.html' : 'localhost') }); s = [...sessions.values()].find(x => x.type === 'page'); }
   if (!s) throw new Error('no page is attached');
   return s;
 };

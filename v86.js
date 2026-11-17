@@ -63,6 +63,7 @@ P.retZF = function (on) { const a = this.stackFlags(); this.s16(a, (this.m16(a) 
 
 // ---------------------------------------------------------------- the PC at power-on
 P.v86Reset = function () {
+  this.resetAsked = false;
   this.u8.fill(0, this.v86, this.v86 + 0x110000);
   // the vectors: each to its stub in the ROM (0F FF n: the host's service, then IRET)
   for (let n = 0; n < 256; n++) {
@@ -112,7 +113,7 @@ P.v86Boot = function () {
 /** `until`: the page's time (performance.now) to give the page back by, checked every 64 blocks: a run of 4000 blocks of
  *  WININIT's file work (each a call into the redirector) held the page past 100 ms, its viewport and input frozen */
 P.v86Run = function (n = 20000, until = Infinity) {
-  if (this.conWait || this.winWait) return 'idle';   // (its EXEC waits for the Windows console program it started, conDone, or for Windows, winDone)
+  if (this.conWait || this.winWait || this.resetAsked) return 'idle';   // (reset, and the host yet to make it; its EXEC waits for the Windows console program it started, conDone, or for Windows, winDone)
   let eip = u32(this.cpu.eip.value);
   for (let k = 0; k < n; k++) {
     if ((k & 63) === 63 && performance.now() > until) break;
@@ -593,7 +594,7 @@ BIOS[0x09] = function () {   // the keyboard: the key read from port 60h into th
   const k = this.port60Key; this.kbdBusy = false;
   this.isr &= ~2;   // (its EOI, as the BIOS's INT 9 ends: the line deliverable again, v86Interrupts)
   // Ctrl+Alt+Del: the warm boot (40:72h 1234h, the memory test skipped), the PC started again
-  if (k >> 8 === 0x53 && (this.m8(0x417) & 0x0c) === 0x0c) { this.s16(0x472, 0x1234); if (this.o.reset) this.o.reset(); else { this.v86Reset(); this.v86Boot(); } return; }
+  if (k >> 8 === 0x53 && (this.m8(0x417) & 0x0c) === 0x0c) { this.s16(0x472, 0x1234); if (this.o.reset) { this.resetAsked = true; this.o.reset(); } else { this.v86Reset(); this.v86Boot(); } return; }
   if (k) { const t = this.m16(0x41c), nt = t + 2 >= this.m16(0x482) ? this.m16(0x480) : t + 2; if (nt !== this.m16(0x41a)) { this.s16(0x400 + t, k); this.s16(0x41c, nt); } }
 };
 BIOS[0x11] = function () { this.w('ax', this.m16(0x410)); };
@@ -625,7 +626,10 @@ BIOS[0x28] = function () { if (++this.polls >= 20) { this.polls = 0; this.halted
 BIOS[0x18] = function () { this.trapped = 'no system to boot (INT 18h)'; this.halted = true; };
 BIOS[0x19] = function () { this.v86Boot(); };
 // the processor's reset (the vector at FFFF:0000, the reset line): the PC from its power-on, or the machine anew
-BIOS[0xfe] = function () { this.halted = true; if (this.o.reset) this.o.reset(); else { this.v86Reset(); this.v86Boot(); this.halted = false; } };
+// (the host's reset comes after this turn of its loop: the processor runs nothing more meanwhile, resetAsked. Halted
+// alone, the next timer tick woke it, WIN.COM's code after its reset ran on into the vector table, and the PC stopped
+// on "run-time code at 500022: opcode ff" as Windows 98 Setup restarted the computer)
+BIOS[0xfe] = function () { this.halted = true; if (this.o.reset) { this.resetAsked = true; this.o.reset(); } else { this.v86Reset(); this.v86Boot(); this.halted = false; } };
 BIOS[0x1a] = function () {
   const ah = this.ah(), d = new Date();
   if (ah === 0x00) { const t = this.dv.getUint32(this.v86 + 0x46c, true); this.w('cx', t >>> 16); this.w('dx', t); this.setAL(0); return; }

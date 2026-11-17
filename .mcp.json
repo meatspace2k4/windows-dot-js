@@ -2,8 +2,7 @@
   "mcpServers": {
     "devtools": {
       "command": "node",
-      "args": ["tools/devtools-mcp.mjs"],
-      "env": { "CDP_URL": "http://127.0.0.1:9222" }
+      "args": ["tools/devtools-mcp.mjs"]
     }
   }
 }

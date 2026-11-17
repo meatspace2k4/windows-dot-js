@@ -160,7 +160,9 @@ window.W95BraidPage = function (ui) {
       // (the lint: this moment against the one before it on the line, when the system's machine still has both)
       let findings = null;
       const prev = line.along().filter(m => m.name !== name && m.at <= d.at).pop();
-      if (prev && here.has(prev.name) && machines.system) {
+      // (the same machine: one started since, Windows restarted under the line, has none of the moments before it)
+      const had = prev && here.get(prev.name);
+      if (had && machines.system && had.machines.system && had.machines.system.app === machines.system.app) {
         findings = await machines.system.app.cmd('lint', [prev.name, name]).catch(() => null);
         if (findings) { const v = B.verdict(findings); d.verdict = v; if (v !== 'ok') line.broken.set(name, v); ui.emit('braid.lint', { moment: name, from: prev.name, verdict: v, findings }); }
       }

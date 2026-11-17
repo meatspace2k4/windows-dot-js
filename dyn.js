@@ -1371,6 +1371,9 @@ const memoPut = rec => {
   // took every address of its own for one outside it: a thread of Explorer's went round one address for good, and
   // Network Neighborhood's window stood empty with the hourglass)
   warm.delete(rec.sha); warmDone.delete(rec.sha);
+  // (translated now, it is in use now: its place in this start's order kept from the record it replaces. Without it a
+  // module translated again with the blocks its run found was not read ahead at the next start, and loaded cold)
+  { const old = memo.get(rec.sha); if (old && old.start === START) { rec.start = old.start; rec.seq = old.seq; } useMark(rec, rec.wasm.length); }
   if (typeof indexedDB === 'undefined') { memo.set(rec.sha, rec); return; }
   const { wasm, ...ix } = rec; memo.set(rec.sha, ix);
   memoDb().then(db => {
@@ -1383,11 +1386,14 @@ const memoWasm = sha => memoDb().then(db => new Promise((ok, no) => {
   const q = db.transaction(MEMO_WASM).objectStore(MEMO_WASM).get(sha);
   q.onsuccess = () => { db.close(); ok(q.result || null); }; q.onerror = () => { db.close(); no(q.error); };
 }));
-// The memo's modules a machine put in place are marked with when (memoUsed: the index record alone written again), and
-// a machine starting reads and compiles the ones used most lately ahead of their load (memoWarm), largest first up to
-// a budget of bytes, one after another: a module's bytes take seconds to read and compile (MSHTML's are 60 MB), and
-// begun only as its DLL loaded, the first folder window ran MSHTML, URLMON, JSCRIPT and OLEAUT32 as run-time code for
-// 12 to 26 seconds and stood empty meanwhile. neCompile takes a module being warmed, or warmed, as its read.
+// The memo's modules a machine put in place are marked with the start that used them and their order in it (memoUsed,
+// useMark: the index record alone written again), and a machine starting reads and compiles them ahead of their load
+// (memoWarm) in that order, the last start's first, each start's in the order it came to them, up to a budget of bytes,
+// one after another: a module's bytes take seconds to read and compile (MSHTML's are 60 MB), and begun only as its DLL
+// loaded, the first folder window ran MSHTML, URLMON, JSCRIPT and OLEAUT32 as run-time code for 12 to 26 seconds and
+// stood empty meanwhile. (Largest first, the budget went to FP4AUTL, QUARTZ and MSDAIPP, which Setup had registered
+// once, and JSCRIPT, MSVCRT, WININET and URLMON, which every folder window loads, were compiled as they loaded.)
+// neCompile takes a module being warmed, or warmed, as its read.
 // (a module compiled keeps no bytes of its own beside the engine's: { mod, bytes }, its length)
 const warm = new Map(), asked = new Set();   // sha -> Promise<{ mod, bytes } | null>; asked: those a load has read
 const WARM_BYTES = 200 << 20, WARM_AGE = 14 * 86400e3;
@@ -1396,16 +1402,18 @@ const memoModule = sha => { asked.add(sha); const w = warm.get(sha); warm.delete
 // (the modules read ahead and compiled by now: sha -> { mod, bytes }, as memoWarm's reads finish; taken at once by a load)
 const warmDone = new Map();
 const memoModuleNow = sha => { const v = warmDone.get(sha); if (!v) return null; asked.add(sha); warm.delete(sha); warmDone.delete(sha); return v; };
+const START = Date.now(); let useSeq = 0;   // (this start, and how many modules it has used)
+const useMark = (r, bytes) => { if (r.start !== START) { r.start = START; r.seq = useSeq++; } r.used = Date.now(); r.bytes = bytes; };
 const memoUsed = (had, bytes) => {
-  const day = Math.floor(Date.now() / 86400e3); if (!had || (had.usedDay === day && had.bytes === bytes)) return;
-  had.usedDay = day; had.used = Date.now(); had.bytes = bytes;
+  if (!had || (had.start === START && had.bytes === bytes)) return;
+  useMark(had, bytes);
   if (typeof indexedDB === 'undefined') return;
   const { wasm, ...ix } = had;
   memoDb().then(db => { const t = db.transaction(MEMO_STORE, 'readwrite'); t.objectStore(MEMO_STORE).put(ix); t.oncomplete = () => db.close(); t.onerror = () => db.close(); }).catch(() => {});
 };
 const memoWarm = async () => {
   if (typeof indexedDB === 'undefined') return 0;
-  const now = Date.now(), list = [...memo.values()].filter(r => r && r.used && r.bytes && now - r.used < WARM_AGE && r.build === NET_BUILD).sort((a, b) => b.bytes - a.bytes);
+  const now = Date.now(), list = [...memo.values()].filter(r => r && r.used && r.bytes && now - r.used < WARM_AGE && r.build === NET_BUILD).sort((a, b) => (b.start || 0) - (a.start || 0) || (a.seq || 0) - (b.seq || 0));
   let left = WARM_BYTES, n = 0;
   for (const r of list) {
     if (r.bytes > left || warm.has(r.sha) || asked.has(r.sha)) continue;

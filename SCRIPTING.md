@@ -9,6 +9,23 @@ not been shown: **every answer is the machine's state, and the next thing you do
 The tools are the `devtools` MCP server's (tools/devtools-mcp.mjs, registered in `.mcp.json`). From a shell the same
 tools run as `node tools/devtools-mcp.mjs --run '[["shell_report",{}]]'`, several calls in order in one list.
 
+**Where the machine runs while you develop: the app.** `sh electron/build.sh` builds `electron/Windows 95.app` from
+the working tree; `open -n "electron/Windows 95.app"` starts it with its debugger at `127.0.0.1:9334`, where the tools
+find it with nothing set (Chrome at 9222 is the fallback; `CDP_URL` names another). The machine is worked through
+these tools and the page's API, which read the machine's own windows, controls, faults and log. The built-in browser
+pane, the Chrome extension and computer-use tools are not used on it: they see pixels of a screen the machine already
+describes.
+
+| To | Use |
+| --- | --- |
+| see the screen and what went wrong | `shell_report` |
+| press, type, run | `shell_click`, `shell_key`, `shell_type`, `shell_run`, `shell_set` |
+| ask the machine itself | `shell_cmd` (`probe`, `faults`, `call16`, ...: chapter 3), `shell_eval`, `worker_eval` |
+| stop it at a line of the emulator, or where guest code or an API call enters | `breakpoint` + `paused` + `evaluate` (session: the worker); `guest_break`, `api_break` |
+| watch a long run (Setup, a boot) | `node tools/shell-events.mjs` under a monitor: each fault, failure, screen and window as it comes |
+| go back before a fault | `win95.braid.travel` (chapter 4) |
+| start from a blank disk | quit the app, delete `~/Library/Application Support/local.win95/C.db*`, start it |
+
 **Look.** `shell_report` answers what has happened since your last call (`events`: windows opened and closed, menus,
 programs ended, faults, errors on the page) and the screen now (`report`: every window, bottom to top, with the text
 of each of its controls, and the latest faults). A dialog's message and buttons are in its window's `text`, so a

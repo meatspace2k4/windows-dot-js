@@ -1918,7 +1918,9 @@ class Machine {
       // happen (the page's 'debug.hit' event).
       case 'debug': { const J = self.W95DynJs; if (!J.onHit) J.onHit = hit => post({ t: 'debug', hit }); return J.debug(p, args, this); }
       // ring α (braid.js): a moment of the machine marked now, by name; the machine at one again; the moments on its line
-      case 'mark': { const s = this.braidMark(String(args[0] || 'moment')); moments.set(s.name, s); return { ...self.W95Braid.describe(s), took: s.took }; }
+      // (a machine still starting, the PC booting under it, has no moment to take: answered so, as one inside a call
+      // is, not thrown; the line marking itself met it at every restart, an error in the page's console)
+      case 'mark': { if (!this.proc) return null; const s = this.braidMark(String(args[0] || 'moment')); moments.set(s.name, s); return { ...self.W95Braid.describe(s), took: s.took }; }
       // (a moment at a time of the machine's own clock, taken at the end of the first step that reaches it: every
       // machine of a shared session marks at the same time of the same run, so all hold the same state)
       case 'markAt': {

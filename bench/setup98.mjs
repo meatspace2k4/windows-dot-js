@@ -8,7 +8,9 @@
 // met again on the new generation (braid.same) ends the run, reproduced. A step already lived from the same moment
 // with the same presses (the key's check, a page's Next) is memo'd past, its work not done again.
 //
-//   W98KEY=XXXXX-XXXXX-XXXXX-XXXXX-XXXXX node bench/setup98.mjs [endpoint]
+//   W98KEY=XXXXX-XXXXX-XXXXX-XXXXX-XXXXX node bench/setup98.mjs [endpoint] [from]
+//
+// `from` (license, wizard): the ladder from there, Setup already past its first dialog or past the key.
 //
 // The product key comes from the environment and goes to the page as a value; it is written nowhere, and the keys
 // typed are hushed from the line's journal. `endpoint` is a DevTools address (the app's http://127.0.0.1:9334). In a
@@ -35,7 +37,7 @@ export const pageDrive = async (key, o = {}) => {
   // (the rungs past the restart anchored as Setup meets them, w98-reboot, w98-firstboot, w98-desktop: the ground
   // bench/anchor98.mjs checks each later change from, Setup not run again. Left armed when the ladder returns, as
   // the machine goes on into its restart)
-  if (o.anchors !== false && !window.__w98anchors) window.__w98anchors = (await import('/bench/anchor98.mjs')).armAnchors();
+  if (o.anchors !== false && !window.__w98anchors) window.__w98anchors = (await import(new URL('bench/anchor98.mjs', document.baseURI).href)).armAnchors();   // (beside the page: the server's /bench, the app's web/bench)
   const mark = async name => { try { const r = await B.mark(name); lg(`moment ${name} (${r.verdict})`); return r; } catch (e) { lg(`moment ${name} failed: ${e.message}`); return null; } };
   // (a fault a machine reports is an event on the line (braid.fault: the program, the exception, the machine's fault
   // log); the fault box the shell draws for it is not modal, so the event is what the driver goes by)
@@ -44,7 +46,9 @@ export const pageDrive = async (key, o = {}) => {
   // (the uninstall-drive dialog comes as the pages run: pressed as it opens)
   const dialogs = win95.on('window.open', async e => {
     try {
-      if (/Uninstall Drive/.test(e.title)) { await win95.click({ name: 'OK', window: /Uninstall Drive/ }); lg('Select Uninstall Drive: OK'); }
+      // (Windows 95's Welcome, a topmost window of a first start: over Setup's pages, closed as a person closes it)
+      if (/^Welcome$/.test(e.title)) { win95.close(/^Welcome$/); lg('Welcome closed'); }
+      else if (/Uninstall Drive/.test(e.title)) { await win95.click({ name: 'OK', window: /Uninstall Drive/ }); lg('Select Uninstall Drive: OK'); }
       // (the startup disk's own dialog, after its page: Setup asks for a disk in A: once its files are gathered; Cancel
       // skips the disk, as the page's Cancel did)
       else if (/^Insert Disk$/.test(e.title)) { await win95.click({ name: 'Cancel', window: 'Insert Disk' }); lg('Insert Disk: Cancel (no startup disk)'); }
@@ -78,7 +82,8 @@ export const pageDrive = async (key, o = {}) => {
   const WIZ = /^Windows 98 Setup( Wizard)?$/;   // (the license and the key are the Wizard's pages, under either title)
   const el = (name, window) => ({ name, role: 'pushbutton', window: window instanceof RegExp ? String(window) : window });
   try {
-    if (o.from) lg(`from the ${o.from} on`);   // (Setup already past its first dialog ('license'), or past the key ('wizard'): the ladder from there)
+    if (win95.window(/^Welcome$/)) { win95.close(/^Welcome$/); lg('Welcome closed'); }
+    if (o.from) lg(`from the ${o.from} on`);// (Setup already past its first dialog ('license'), or past the key ('wizard'): the ladder from there)
     else {
       win95.cd.insert('Windows 98 se Upgrade.iso'); lg('CD inserted');
       // (the question may be up before a listener is: waited for as a control; a CD already in, which asks nothing, has
@@ -165,7 +170,7 @@ if (typeof process === 'object' && import.meta.url === `file://${process.argv[1]
   const key = process.env.W98KEY; if (!key) { console.error('W98KEY is not set'); process.exit(2); }
   const c = await connect(process.argv[2] || 'http://127.0.0.1:9334');
   for (let i = 0; i < 300 && !(await c.evaluate(SHELL_READY).catch(() => false)); i++) await new Promise(r => setTimeout(r, 1000));
-  const r = await c.evaluate(`(${pageDrive})(${JSON.stringify(key)})`, 90 * 60000);
+  const r = await c.evaluate(`(${pageDrive})(${JSON.stringify(key)}, ${JSON.stringify(process.argv[3] ? { from: process.argv[3] } : {})})`, 90 * 60000);
   for (const l of r.log) console.log(l);
   if (r.faults.length) { console.log('faults:', JSON.stringify(r.faults, null, 1)); console.log('forks:', JSON.stringify(r.forks, null, 1)); }
   // (one line a check runner keeps as the run's record: the ladder finished or not, the last thing it logged, the faults)
