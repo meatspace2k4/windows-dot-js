@@ -20,6 +20,7 @@ printf '{ "image": "%s" }\n' "$ISO" > "$R/app/cd.json"
 AUDIO="$(cd .. && pwd)/audiocd.bin"
 cp ../audiocd.json "$R/app/audiocd.json"; printf '{ "file": "%s" }\n' "$AUDIO" > "$R/app/audio.json"
 cp ../icons/*.png "$R/app/web/icons/"
+mkdir -p "$R/app/web/themes"; cp ../themes/*.json "$R/app/web/themes/"   # the display schemes the page reads (win95.js setupSchemes)
 rm "$R/app/web/sw.js"
 P="$APP/Contents/Info.plist"
 plutil -replace CFBundleName -string "Windows 95" "$P"
