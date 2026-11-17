@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // The shell's events as they happen, a line each (SCRIPTING.md, Events: the __w95event binding), for a watch that
 // reports while something long runs (Setup, a boot): faults, failures on the page, screens, windows opened, programs
-// that ended with a code or a reason, braid's travels and anchors.
+// that failed, braid's travels and anchors.
 //
 //   node tools/shell-events.mjs [seconds] [file]
 //
@@ -26,7 +26,8 @@ ws.onmessage = ev => {
   if (m.method !== 'Runtime.bindingCalled' || m.params.name !== '__w95event') return;
   if (file) appendFileSync(file, m.params.payload + '\n');
   let e; try { e = JSON.parse(m.params.payload); } catch (_) { return; }
-  if (!SHOW.test(e.type) || (e.type === 'program.exit' && !e.code && !e.why)) return;
+  // (a program's end only when it failed: a first start ends dozens with a code of their own, GRPCONV's 1 each time)
+  if (!SHOW.test(e.type) || (e.type === 'program.exit' && !e.why)) return;
   const { type, x, y, w, h, t, ...rest } = e;
   console.log(`${type} ${JSON.stringify(rest).slice(0, 330)}`);
 };

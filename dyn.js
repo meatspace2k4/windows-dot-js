@@ -1414,15 +1414,25 @@ const memoUsed = (had, bytes) => {
 const memoWarm = async () => {
   if (typeof indexedDB === 'undefined') return 0;
   const now = Date.now(), list = [...memo.values()].filter(r => r && r.used && r.bytes && now - r.used < WARM_AGE && r.build === NET_BUILD).sort((a, b) => (b.start || 0) - (a.start || 0) || (a.seq || 0) - (b.seq || 0));
-  let left = WARM_BYTES, n = 0;
-  for (const r of list) {
-    if (r.bytes > left || warm.has(r.sha) || asked.has(r.sha)) continue;
-    left -= r.bytes; n++;
-    const p = memoCompile(r.sha).catch(() => null);
-    warm.set(r.sha, p); const v = await p;   // (one at a time: each is tens of megabytes read and compiled)
-    if (v && warm.get(r.sha) === p) warmDone.set(r.sha, v);   // (still this record's, not taken meanwhile)
-  }
-  return n;
+  let left = WARM_BYTES; const picked = [];
+  // (all of what the last start used, whatever it comes to: that start held it; then the starts before it while the
+  // budget lasts. Under the budget alone, a start that opened a folder had Windows' own start's 163 MB and the folder's
+  // MSHTML, JSCRIPT and URLMON past it, read as the next start's first folder opened, 24 s)
+  const last = list.length ? list[0].start || 0 : 0;
+  for (const r of list) { if (warm.has(r.sha) || asked.has(r.sha) || (r.bytes > left && (r.start || 0) !== last)) continue; left -= r.bytes; picked.push(r); }
+  // (four at a time, in the list's order: each is up to tens of megabytes read and compiled, the engine compiling off
+  // this thread)
+  let i = 0; const t0 = performance.now();
+  const one = async () => {
+    while (i < picked.length) {
+      const r = picked[i++], p = memoCompile(r.sha).catch(() => null);
+      warm.set(r.sha, p); const v = await p;
+      if (v && warm.get(r.sha) === p) warmDone.set(r.sha, v);   // (still this record's, not taken meanwhile)
+    }
+  };
+  await Promise.all([one(), one(), one(), one()]);
+  if (picked.length) window.W95Win32.log('info', 'dyn', `the memo: ${picked.length} modules of ${list.length} read ahead and compiled (${Math.round((WARM_BYTES - left) / 1048576)} MB) in ${Math.round(performance.now() - t0)} ms`);
+  return picked.length;
 };
 window.W95Dyn = { memo, memoLoad, memoPut, memoWasm, memoWarm, memoUsed, warm };
 /** the memo's record for a file, by its SHA-256: the placement a loader asks for before it places the module */
@@ -1594,6 +1604,10 @@ P.dynRelease = function (m) {
   if (!m || m.kind === 'ne' || m.name === 'EXE' || !m.meta || !m.meta.dynamic || !m.meta.lookup || m.netText || m.released) return false;
   if (!m.run && !m.module) return false;
   const meta = m.meta;
+  // (its compiled module, while it is the memo's record's still, is at hand for the load that attaches it again, as one
+  // read ahead is: SHELL32, OLE32, COMCTL32 and SHLWAPI, let go as a start's first short program ended, were read again
+  // for Explorer inside the run that started it, and went in 6.5 s after their load)
+  { const s = m.netSeed, r = m.sha256 && memo.get(m.sha256); if (m.module instanceof WebAssembly.Module && s && s.made && !s.wasm && r && r.made === s.made && !m.dynJs) warmDone.set(m.sha256, { mod: m.module, bytes: s.bytes }); }
   m.netText = [meta.textLo, meta.textHi]; meta.textLo = meta.textHi = 0;
   m.run = null; m.module = null; m.netSeed = null; m.netReady = null; m.released = true; m.netHad = null;
   if (m.dynNew) m.dynNew.clear();

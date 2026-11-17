@@ -310,7 +310,10 @@ class Machine {
       .filter(([d, file]) => { try { return ours(d, file); } catch (_) { return true; } }).map(([d]) => d);
     await Promise.all(ahead.map(async m => { if (!m.mod) m.mod = await WebAssembly.compile(b64bytes(m.wasm)); })
       .concat(self.W95Dyn.memoLoad()));   // (and the translations of modules loaded from their files, memoized on this computer: dyn.js)
-    self.W95Dyn.memoWarm();   // (the memo's modules the last starts used, read and compiled from now on, ahead of their load)
+    // (the memo's modules the last starts used, read and compiled ahead of their load. The system's machine waits for
+    // them: its start is one run of the host's, no read's answer taken until it ends, and begun beside it USER, GDI,
+    // USER32 and GDI32 went in 16 s after they loaded, their code run block by block through all of Windows' start)
+    { const w = self.W95Dyn.memoWarm(); if (this.system) await w; }
     if (self.fonts && typeof FontFace === 'function') await Promise.all(Object.entries((self.W95SAVERS || {}).fonts || {}).map(async ([family, data]) => {
       try { const font = await new FontFace(family, b64bytes(data)).load(); self.fonts.add(font); } catch (_) { /* bundled font unavailable in this worker */ }
     }));
