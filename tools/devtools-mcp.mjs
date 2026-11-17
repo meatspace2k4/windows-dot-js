@@ -281,9 +281,9 @@ Object.assign(tools, {
       if (${!!close}) win95.close(title);
       return { ms: took, items, translated: late, faults };`) },
   profile: { description: 'Where the machine\'s worker spends its time over `ms` (default 3000): the `top` (default 25) functions by their own time, and by time with what they call. `then`: a shell_* call to make once the profile runs (what to measure).',
-    props: { ms: N, top: N, then: { type: 'object', description: '{ tool, args }' } }, required: [],
-    async run({ ms = 3000, top = 25, then }) {
-      await pageSession(); const s = worker();
+    props: { ms: N, top: N, page: { ...B, description: 'The page\'s own thread in place of the machine\'s worker.' }, then: { type: 'object', description: '{ tool, args }' } }, required: [],
+    async run({ ms = 3000, top = 25, then, page }) {
+      const ps = await pageSession(), s = page ? ps : worker();
       await cmd(s, 'Profiler.enable'); await cmd(s, 'Profiler.setSamplingInterval', { interval: 500 }); await cmd(s, 'Profiler.start');
       const did = then && tools[then.tool] ? await tools[then.tool].run(then.args || {}) : null;
       await new Promise(ok => setTimeout(ok, ms));

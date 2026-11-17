@@ -12,6 +12,9 @@ contextBridge.exposeInMainWorld('W95HOST', {
     data: (sid, offset, bytes) => send('data', sid, offset, bytes),
     size: (sid, size) => send('size', sid, size),
     label: (label, serial) => send('label', label, serial),
+    // once the app has taken every write sent so far: a whole disk is handed over a little at a time, each part once
+    // the last is taken (braid-page.js writeDisk), so the app's other work for the page is not kept waiting behind it
+    drained: () => ipcRenderer.invoke('store-drained'),
   },
   registry: {
     load: () => ipcRenderer.sendSync('registry-load'),

@@ -1,4 +1,4 @@
-// The database behind C: and the registry: SQLite in the app's data folder, one transaction per change.
+// The database behind C: and the registry: SQLite in the app's data folder, a transaction for each twentieth of a second's changes.
 // Files are kept in 64 KiB chunks so a write touches only the chunks it covers.
 const { DatabaseSync } = require('node:sqlite')
 const v8 = require('v8')
@@ -21,6 +21,8 @@ function open(file) {
   if (!db.prepare('PRAGMA table_info(regkey)').all().some(c => c.name === 'name')) db.exec('ALTER TABLE regkey ADD COLUMN name TEXT')
   // a value's place in the order its key's values were made (RegEnumValue's order), added to stores made before it was kept
   if (!db.prepare('PRAGMA table_info(regval)').all().some(c => c.name === 'ord')) db.exec('ALTER TABLE regval ADD COLUMN ord INTEGER')
+  // (a value set takes the place after the last one's, MAX(ord): found by this index, not by reading every value)
+  db.exec('CREATE INDEX IF NOT EXISTS regval_ord ON regval(ord)')
   const q = {
     upsert: db.prepare(`INSERT INTO node (sid, parent, name, short, dir, ord, attrs, ctime, mtime, atime) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(sid) DO UPDATE SET parent = excluded.parent, name = excluded.name, short = excluded.short, ord = excluded.ord, attrs = excluded.attrs,
@@ -39,15 +41,24 @@ function open(file) {
     vol: db.prepare('SELECT v FROM volume WHERE k = ?'),
     addKey: db.prepare('INSERT OR IGNORE INTO regkey (path) VALUES (?)'),
     addNamedKey: db.prepare('INSERT INTO regkey (path, name) VALUES (?, ?) ON CONFLICT(path) DO UPDATE SET name = COALESCE(regkey.name, excluded.name)'),
-    delKeys: db.prepare(`DELETE FROM regkey WHERE path = ? OR substr(path, 1, length(?) + 1) = ? || '\\'`),
-    delKeyVals: db.prepare(`DELETE FROM regval WHERE path = ? OR substr(path, 1, length(?) + 1) = ? || '\\'`),
+    // (a key and those under it: its path, and the paths from "path\" up to "path]", the character after the
+    // backslash, which the tables' indexes find. Matched by substr, each delete read every key and every value of
+    // the registry, and a registry replaced, a moment's, its 20,000 keys deleted one by one, took half a minute)
+    delKeys: db.prepare('DELETE FROM regkey WHERE path = ? OR (path >= ? AND path < ?)'),
+    delKeyVals: db.prepare('DELETE FROM regval WHERE path = ? OR (path >= ? AND path < ?)'),
     setVal: db.prepare(`INSERT INTO regval (path, name, value, ord) VALUES (?, ?, ?, (SELECT COALESCE(MAX(ord), 0) + 1 FROM regval))
       ON CONFLICT(path, name) DO UPDATE SET value = excluded.value`),
     delVal: db.prepare('DELETE FROM regval WHERE path = ? AND name = ?'),
     keys: db.prepare('SELECT path, name FROM regkey ORDER BY path'),
     vals: db.prepare('SELECT name, value FROM regval WHERE path = ? ORDER BY ord, rowid'),
   }
-  const tx = fn => { db.exec('BEGIN IMMEDIATE'); try { fn(); db.exec('COMMIT') } catch (e) { db.exec('ROLLBACK'); throw e } }
+  // The changes of each twentieth of a second are one transaction (flush ends it: the timer's, before a copy of the
+  // store, as it closes). One transaction per change, a moment arrived at from its anchor, its registry's 50,000
+  // values and its disk's files each set in the store, was 30 to 45 s of commits in the app's own process, which
+  // answered nothing else of the page's meanwhile: the worker of the machine the arrival starts began that much later
+  let open = false, timer = null
+  const flush = () => { if (!open) return; clearTimeout(timer); timer = null; open = false; db.exec('COMMIT') }
+  const tx = fn => { if (!open) { db.exec('BEGIN IMMEDIATE'); open = true; timer = setTimeout(flush, 50) } fn() }
 
   function write(sid, offset, bytes) {
     for (let at = 0; at < bytes.length;) {
@@ -81,7 +92,7 @@ function open(file) {
     label: (label, serial) => { q.setVol.run('label', label); q.setVol.run('serial', serial) },
     reg: o => {
       if (o.op === 'key') { if (o.name) q.addNamedKey.run(o.path, o.name); else q.addKey.run(o.path) }
-      else if (o.op === 'delkey') { q.delKeys.run(o.path, o.path, o.path); q.delKeyVals.run(o.path, o.path, o.path) }
+      else if (o.op === 'delkey') { const a = [o.path, o.path + '\\', o.path + ']']; q.delKeys.run(...a); q.delKeyVals.run(...a) }
       else if (o.op === 'set') { q.addKey.run(o.path); q.setVal.run(o.path, o.name, v8.serialize(o.value)) }
       else if (o.op === 'del') q.delVal.run(o.path, o.name)
     },
@@ -111,8 +122,9 @@ function open(file) {
     },
     // a copy of the whole store as it stands, consistent while it is in use (SQLite's VACUUM INTO): a session to
     // continue on another computer
-    exportTo: file => db.prepare('VACUUM INTO ?').run(file),
-    close: () => db.close(),
+    exportTo: file => { flush(); db.prepare('VACUUM INTO ?').run(file) },
+    flush,
+    close: () => { flush(); db.close() },
   }
 }
 

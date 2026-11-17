@@ -1712,7 +1712,12 @@ const regDump = () => [...REGISTRY].map(([path, m]) => [path, [...m], KEYNAME.ge
 const regLoad = (held, tell) => {
   if (!tell) { REGISTRY.clear(); KEYNAME.clear(); for (const [path, vals, name] of held) { REGISTRY.set(path, new Map(vals)); if (name) KEYNAME.set(path, name); } regUnify(false); return; }
   const want = new Map(held.map(([path, vals, name]) => [path, { vals: new Map(vals), name }]));
-  for (const path of [...REGISTRY.keys()].sort().reverse()) if (!want.has(path) && REGISTRY.has(path)) regDel(path);
+  // (the keys not wanted, deepest first, each deleted by itself: those under it are gone already. regDel looks through
+  // every key for the ones under its own, and 20,000 keys deleted that way were 5 s of an arrival. A wanted key under
+  // one not wanted goes with it, as the store's delete of the key takes it, and is made again below)
+  const gone = new Set([...REGISTRY.keys()].filter(path => !want.has(path)));
+  if (gone.size) for (const path of want.keys()) { for (let i = path.lastIndexOf('\\'); i > 0; i = path.lastIndexOf('\\', i - 1)) if (gone.has(path.slice(0, i))) { REGISTRY.delete(path); KEYNAME.delete(path); break; } }
+  for (const path of [...gone].sort().reverse()) { REGISTRY.delete(path); KEYNAME.delete(path); regChanged({ op: 'delkey', path }); }
   for (const [path, { vals, name }] of want) {
     if (!REGISTRY.has(path)) regMake(path, name ? path.slice(0, path.length - name.length) + name : null);
     if (name && KEYNAME.get(path) !== name) { KEYNAME.set(path, name); regChanged({ op: 'key', path, name }); }

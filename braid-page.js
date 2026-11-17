@@ -57,11 +57,26 @@ window.W95BraidPage = function (ui) {
     // (every node: one file at a time, the next once the store has taken the last. Handed over all at once, as a
     // moment arrived at from its anchor hands the whole disk over, each file's copy waited in the page for its turn in
     // the store: 400 MB of disk held the page at over 2 GB, everything ran slowly, and the tab ran out of memory)
+    // (a whole disk handed over while an earlier one still is: the earlier one stops. Its files are another tree's;
+    // going on, it wrote them into the store after this one had cleared the store of them)
+    const mine = all ? ++pumpGen : pumpGen;
     if (later.length) diskPump = diskPump.then(async () => {
+      await pumpHold;   // (an arrival's machines first: arrive0)
+      if (mine !== pumpGen) return;
       const now = new Map(); for (const v of fs.vols.values()) if (v.store && v.store.under) (function walk(n) { now.set(fs.sidOf(n), n); if (n.dir) for (const k of n.kids.values()) walk(k); })(v.root);
+      // (the page's other work has its turn every few milliseconds: a store that takes each file at once, the app's,
+      // made this one run of the page's, the whole disk through, and for 30 to 40 s the page took no input, no
+      // message of its machines (the one just started, waiting to say so) and no frame: an arrival stood black)
+      let slice = performance.now(), sent = 0;
+      const host = window.W95HOST && window.W95HOST.disk, drained = host && host.drained ? () => host.drained() : null;
       for (const sid of later) {
         const n = now.get(sid); if (!n || diskTouched.has(sid)) continue;   // (gone, or written since by its own change)
         try { await put(n, sid); } catch (e) { console.error('[braid] disk store:', e); }
+        // (and the app's: the next part once it has taken the last. Sent as fast as the page could, 300 MB of files
+        // stood in the app's queue for half a minute, and the worker of the machine an arrival starts, asked for
+        // behind them, began 28 to 44 s later: the arrival's black screen)
+        sent += n.dir ? 0 : n.size;
+        if (performance.now() - slice > 12 || sent > 1 << 20) { sent = 0; await (drained ? drained().catch(() => null) : new Promise(ok => setTimeout(ok, 0))); slice = performance.now(); if (mine !== pumpGen) return; }
       }
     });
     // (every node: the store then holds this tree and nothing else. A moment's nodes carry the ids of the line that
@@ -75,7 +90,8 @@ window.W95BraidPage = function (ui) {
     return { wrote, removed };
   }
   const storeSids = new Set();   // (the node ids this page wrote to the disk's store, beside those it loaded)
-  let diskPump = Promise.resolve();   // (the whole-disk writes in turn, writeDisk)
+  let diskPump = Promise.resolve(), pumpGen = 0;   // (the whole-disk writes in turn, writeDisk; the last one asked for)
+  let pumpHold = null;   // (while an arrival starts its machines: the disk is handed to the store after)
 
   // ---- anchored moments: IndexedDB, this origin's
   // (an anchor's blobs are kept as chunks shared between anchors, braid.js packAnchor: the record in 'anchors' lists
@@ -138,6 +154,9 @@ window.W95BraidPage = function (ui) {
   const autoName = () => `m${++markN}`;
 
   const braid = {
+    /** once the disk an arrival put in place is all in the page's store: the page is not ended before (the app asks
+     *  as it quits, tools/app.mjs before it quits it), or the store holds part of a disk */
+    settled: () => diskPump.then(() => true),
     /** a moment of everything, by name (m<n> when none), now: the machines first (each at a step), then the page's
      *  disk, registry and shell. In a shared session, at a machine time 200 ms ahead, which every machine marks at as
      *  its own clock reaches it (the same state everywhere). Linted against the moment before it on the line. Resolves
@@ -416,10 +435,23 @@ window.W95BraidPage = function (ui) {
   }
   /** to a moment anchored on this computer: brought into this page's machines (booted: their objects matched by path)
    *  and its disk, shell and registry; the line is the anchored one, the arrival a fork from the moment in it */
+  // (an arrival says so on the page while it lasts: it ends a machine, puts a disk and a registry in place and starts
+  // another, the screen black and the page taking no input meanwhile, which looked like a page that had stopped. What
+  // each part took is in the log)
   async function arrive(name, o) {
+    const note = document.createElement('div');
+    note.textContent = `Travelling to ${name}…`;
+    note.style.cssText = 'position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:2147483646;background:#c0c0c0;color:#000;font:12px "MS Sans Serif",Tahoma,sans-serif;padding:14px 22px;border:2px outset #fff;pointer-events:none';
+    document.body.appendChild(note);
+    await new Promise(ok => requestAnimationFrame(() => setTimeout(ok, 0)));   // (drawn before the work begins)
+    let go; pumpHold = new Promise(ok => { go = ok; });
+    try { return await arrive0(name, o, t => { note.textContent = `Travelling to ${name}… ${t}`; return new Promise(ok => requestAnimationFrame(() => setTimeout(ok, 0))); }); } finally { note.remove(); go(); pumpHold = null; }
+  }
+  async function arrive0(name, o, say) {
     const rec = await dbGet(name); if (!rec) throw new Error(`no moment ${name}: not on the line here, not anchored on this computer`);
     const b = await build(), why = B.refuseAnchor(rec, b); if (why && !(o.force && /build/.test(why))) throw new Error(why);
-    const out = {};
+    const out = {}, laps = []; let tl = performance.now();
+    const lap = async (what, next) => { const n = performance.now(); laps.push(`${what} ${Math.round(n - tl)} ms`); if (next) await say(next); tl = performance.now(); };
     // (the system's machine the page starts as something needs it: a moment with one, arrived at in a page that has
     // none yet, starts it first, booted, then brings the moment into it; the moment's page is not arrived at into a
     // page with no machine for it, which left the line at the moment and the machines where they were)
@@ -434,8 +466,13 @@ window.W95BraidPage = function (ui) {
     // (and on the moment's registry: the machine reads the page's as it starts. Started on the registry of the system
     // just ended, Windows 98's machine came up as that registry had it, and the moment brought into it had MSTASK and
     // Explorer fault as they next ran)
-    if (rec.machines.system && !sys()) { B.rebind([fs, {}], rec.page, { opaque: opaque(), skip: shellSkip }); writeDisk(true); W.regLoad(rec.registry, true); }
-    for (const [k, ex] of Object.entries(rec.machines)) { const a = k === 'system' ? (sys() || await ui.startSystem()) : live().find(x => x.path === k); if (!a) throw new Error(`no machine running for the moment's ${k}`); out[k] = await a.cmd('import', [ex], ex.blob && ex.blob.buffer instanceof ArrayBuffer && !ex.blob.byteOffset && ex.blob.byteLength === ex.blob.buffer.byteLength ? [ex.blob.buffer] : []); ex.blob = null; forgetKids(a); }   // (the moment's bytes moved to the machine, not copied, when they are a buffer of their own)
+    await lap('the moment read', 'its disk');
+    let diskKept = null;   // (the disk handed to the store already, here: not a second time below)
+    if (rec.machines.system && !sys()) { B.rebind([fs, {}], rec.page, { opaque: opaque(), skip: shellSkip }); diskKept = writeDisk(true); W.regLoad(rec.registry, true); }
+    await lap('its disk and registry put in place', 'its machines');
+    for (const [k, ex] of Object.entries(rec.machines)) { const ts = performance.now(), a = k === 'system' ? (sys() || await ui.startSystem()) : live().find(x => x.path === k); if (!a) throw new Error(`no machine running for the moment's ${k}`); laps.push(`${k} there after ${Math.round(performance.now() - ts)} ms`); out[k] = await a.cmd('import', [ex], ex.blob && ex.blob.buffer instanceof ArrayBuffer && !ex.blob.byteOffset && ex.blob.byteLength === ex.blob.buffer.byteLength ? [ex.blob.buffer] : []); ex.blob = null; forgetKids(a); }   // (the moment's bytes moved to the machine, not copied, when they are a buffer of their own)
+    for (const [k, v] of Object.entries(out)) if (v && v.took) laps.push(`${k}: ${v.took}`);
+    await lap('its machines started and brought in', 'its windows');
     watchStores(); ui.closeMenus();
     // (the shell's windows are not rebound: a machine's windows come from its next frame, as they are its own, and a
     // window of the page's is code the record cannot carry. Matched by position to the booted shell's windows, the
@@ -458,8 +495,11 @@ window.W95BraidPage = function (ui) {
     for (const w of [...ui.windows()]) if (w.native && [sys(), ...live()].includes(w.app) && !placed.has(w)) ui.closeWin(w, true);
     if (act) ui.setActive(act);
     r.placed = placed.size;
+    await lap('the page and its windows', 'its disk kept');
     W.regLoad(rec.registry, true);
-    const disk = writeDisk(true);
+    const disk = diskKept || writeDisk(true);
+    await lap('the registry and the disk kept');
+    console.info(`[braid] arrival at ${name}: ${laps.join(', ')}`);
     if (rec.line) Object.assign(line, B.Line.from(rec.line));
     const gen = line.fork(name, 'anchor', { at: rec.now, build: rec.build, forced: rec.build !== b });
     if (line.moments.has(name)) line.moments.get(name).anchored = true;

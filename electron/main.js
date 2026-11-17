@@ -41,6 +41,7 @@ const dbFile = () => path.join(app.getPath('userData'), 'C.db')
 // after asks for its disk first, and writes go through again)
 ipcMain.on('disk-load', e => { swapping = false; e.returnValue = store.loadDisk() })
 ipcMain.on('registry-load', e => { e.returnValue = store.loadRegistry() })
+ipcMain.handle('store-drained', () => true)   // (answered in its turn: after every write sent before it)
 ipcMain.on('store', (e, op, ...args) => {
   if (swapping) return
   try { store.apply(op, args) } catch (err) { console.error('store', op, err) }
@@ -83,6 +84,17 @@ async function importSession() {
   }
 }
 app.on('will-quit', () => store && store.close())
+// (the page may still be handing a disk to the store, a file at a time between its other work: a moment's, after an
+// arrival (braid-page.js writeDisk). The app quits once it has, a minute at most; quit before, the store held part of
+// one disk over another)
+let settling = false
+app.on('before-quit', e => {
+  const w = BrowserWindow.getAllWindows()[0]
+  if (settling || !w) return
+  e.preventDefault(); settling = true
+  const settled = w.webContents.executeJavaScript('window.win95 && win95.braid && win95.braid.settled ? win95.braid.settled() : true').catch(() => {})
+  Promise.race([settled, new Promise(ok => setTimeout(ok, 60000))]).then(() => app.quit())
+})
 
 // ---- the Mac's folders, as the LAN's other computer serves them (shares.js)
 let shares

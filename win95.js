@@ -4454,8 +4454,11 @@ function startSystem() {
     // MSGSRV32's start-up plays SystemStart at every start, as Windows 95's does (a reload, a Restart, after a crash),
     // and starts the shell SYSTEM.INI names; a page asked to be silent (?mute=1) starts quiet
     const quiet = window.W95MUTE;
+    const t0 = performance.now();
     const a = new RemoteApp(join(WINDIR, 'SYSTEM', 'MSGSRV32.EXE'), '', { system: true, quiet });
-    if (!(await a.start(null, null))) { bootLogoEnd(); return null; }
+    const made = a.start(null, null), t1 = performance.now();
+    if (!(await made)) { bootLogoEnd(); return null; }
+    console.info(`[system] its machine asked for in ${Math.round(t1 - t0)} ms, started ${Math.round(performance.now() - t1)} ms after`);
     sysApp = a;
     emit('system.start', {});   // (the address's settings are made in it, speed and mods: urlSettings)
     return a;

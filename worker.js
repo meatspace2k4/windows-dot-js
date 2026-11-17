@@ -301,6 +301,10 @@ class Machine {
   }
   async start() {
     const S = self.W95SYSTEM;
+    // (what the start's parts took, in the log: the worker's scripts (its clock starts as it is made), the bundle's
+    // modules and the memo's index, the memo's modules read ahead, the machine made and its first task started)
+    const laps = [`its scripts ${Math.round(performance.now())} ms`]; let tl = performance.now();
+    const lap = what => { const n = performance.now(); laps.push(`${what} ${Math.round(n - tl)} ms`); tl = n; };
     // The bundle's modules compiled ahead of their first use: those this disk runs, the ones whose file in the Windows
     // folder is the bundle's own (its SHA-256) or is not there. A module the disk has another build of (Windows 98's
     // over Windows 95's) runs from its file (dyn.js) and the bundle's is not compiled at all: compiled regardless, the
@@ -319,7 +323,9 @@ class Machine {
     // USER32 and GDI32 went in 16 s after they loaded, their code run block by block through all of Windows' start)
     // (the system on this disk, by its USER.EXE: the memo keeps each system's starts apart, dyn.js memoSys)
     { let id = ''; try { id = sha256(fs.readFile('C:\\WINDOWS\\SYSTEM\\USER.EXE')).slice(0, 16); } catch (_) { /* a disk with no Windows yet */ } self.W95Dyn.memoSys(id); this.sysId = id; }
+    lap('the bundle\'s modules and the memo\'s index');
     { const w = self.W95Dyn.memoWarm(); if (this.system) await w; }
+    lap('the memo\'s modules read ahead');
     if (self.fonts && typeof FontFace === 'function') await Promise.all(Object.entries((self.W95SAVERS || {}).fonts || {}).map(async ([family, data]) => {
       try { const font = await new FontFace(family, b64bytes(data)).load(); self.fonts.add(font); } catch (_) { /* bundled font unavailable in this worker */ }
     }));
@@ -389,6 +395,8 @@ class Machine {
     p.inputPoll = () => this.poll();
     // a blue screen's wait for its key in ring 0 that cannot stop (inside a call): the screen to the page, the keys from it
     p.msgWait = () => { this.sendText(); Atomics.wait(this.ring, 0, Atomics.load(this.ring, 0), 16); this.poll(); };
+    lap('the machine made and its first task started');
+    if (this.system) W.log('info', 'worker', `the system's machine started: ${laps.join(', ')}`);
     post({ t: 'started', sw: this.sw, sh: this.sh, mem: p.mem.buffer });
     this.step();
   }
@@ -825,6 +833,11 @@ class Machine {
     }
     if (this.stopped) return;
     if (this.sysPending && !p.depth && !p.thread16) { this.sysPending = false; if (!this.startMsgsrv()) return; }   // Setup's items done: the system's first task
+    // (a moment arrived at in a machine just started: the display's memory is that machine's, black, and Windows has
+    // no reason to draw what it believes is on it: the screen stayed black, the pointer alone moving over it, until
+    // something moved a window. Every window is asked to draw itself again, once no thread holds USER:
+    // RedrawWindow(desktop, all of it, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_FRAME))
+    if (this.redrawAll && !p.depth && !p.thread16 && !p.win16Held) { this.redrawAll = false; try { p.user16(290, [['w', 0], ['l', 0], ['w', 0], ['w', 0x0485]]); } catch (e) { console.error(e); } }
     if (this.wantMode && !p.depth && !p.thread16 && !p.win16Held) {   // the mode the page asked for while a thread held USER: made now that none does
       const [w, h] = this.wantMode; this.wantMode = null; const r = this.setMode(w, h); if (r) r.then(v => post({ t: 'mode', r: v })); else this.wantMode = [w, h];
     }
@@ -1974,13 +1987,14 @@ class Machine {
       }
       case 'import': {
         const ex = args[0], BR = self.W95Braid; clearTimeout(this.timer);
+        const t0 = performance.now(); let t1 = 0, t2 = 0;   // (what its parts took, for the page's log: took)
         // (the classes the machine's objects have, by name: one the moment has and this machine had not is made anew
         // with its prototype (braid.js rebind protoAt): a VM's machine (v86.js V86Machine), a VM's view of a disk (FatView))
         const V86 = self.W95V86 || {}, protos = { Machine, Process: W.Process, ...(V86.V86Machine ? { V86Machine: V86.V86Machine } : {}), ...(V86.FatView ? { FatView: V86.FatView } : {}) };
         const r = BR.rebind([this], { meta: ex.meta, roots: ex.roots, blob: ex.blob instanceof Uint8Array ? ex.blob : new Uint8Array(ex.blob) }, { opaque: this.braidOpaque(), skip: (o, k) => this.braidSkip(o, k), protos, named: this.braidNamed() });
         // (a module's instance is this machine's own: one the export brought that this machine had not loaded gets
         // its instance from its module, as loading it made one; the run-time translations are made again as code runs)
-        const p = this.proc, S = self.W95SYSTEM || {}; p.dynCache = new Map(); p.dynFast = new Map();
+        const p = this.proc, S = self.W95SYSTEM || {}; p.dynCache = new Map(); p.dynFast = new Map(); t1 = performance.now();
         // (a disk's FAT view is of this machine's file system, which the moment does not carry: one made anew from the
         // moment had none, and the first read of C:'s sectors after the arrival (MSGSRV32's, as Windows 98 Setup ran on)
         // ended in "reading 'version'" of nothing)
@@ -2022,10 +2036,12 @@ class Machine {
         while (B.ringTake(this.ring));
         this.keyq = []; this.mouseq = []; this.vclock.now = ex.now;
         this.faultTaken = false; this.stopped = false; this.txtGen = -1; this.timer = 0; this.soonPending = false;
+        this.redrawAll = true;   // (step: the windows drawn again on this machine's display)
         // (the page's screen follows the moment's mode at once: its canvases were the boot's; the windows come with the
         // next step's frame, no call into USER from here)
         { const a = p.scanout(); if (a.bpp) [this.sw, this.sh] = [a.w, a.h]; } this.shellSeen = true; this.postScan();   // (shellSeen: postScan asks USER for the windows otherwise, a call into the machine from here)
-        return p.netReads().then(() => { p.neInstall(); if (this.alive && !this.timer) this.timer = setTimeout(() => this.step(), 0); return r; });   // (as a travel: braidTravel)
+        t2 = performance.now();
+        return p.netReads().then(() => { p.neInstall(); if (this.alive && !this.timer) this.timer = setTimeout(() => this.step(), 0); r.took = `its objects ${Math.round(t1 - t0)} ms, its modules' code ${Math.round(t2 - t1)} ms, the memo's modules ${Math.round(performance.now() - t2)} ms`; return r; });   // (as a travel: braidTravel)
       }
       case 'views': {   // (a diagnostic: the modules' private data views and the arena, whose copies a thread switch swaps, and where the switches' time goes)
         const pidOf = k => (k === null ? null : k === 0 ? 0 : k === undefined ? 'undef' : typeof k === 'object' ? (k.pid !== undefined ? k.pid : 'obj') : k);
