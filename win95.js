@@ -6641,4 +6641,17 @@ window.win95 = { ...script,
   window.win95.on('system.start', () => apply('system'));
   apply('load');
 }
+// The page's title (the app's window title) names the Windows installed on the disk: the registry's own Version
+// ("Windows 95", "Windows 98"), Windows 3.1 by its files. Named again when a system starts and when a travel or an
+// arrival puts another moment's disk and registry in place.
+{
+  const installed = () => {
+    if (diskSystem() === 'win31') return 'Windows 3.1';
+    const v = W95Win32.regGet('hklm\\software\\microsoft\\windows\\currentversion', 'Version');
+    return (v && v.data && W95FS.decode(v.data).replace(/\0.*$/, '').trim()) || 'Windows 95';
+  };
+  const name = () => { try { const t = document.title.replace(/Windows [\w.]+$/, installed()); if (t !== document.title) document.title = t; } catch (_) { /* the disk is not there yet */ } };
+  for (const e of ['pc.boot', 'pc.windows', 'system.start', 'braid.travel']) window.win95.on(e, name);
+  name();
+}
 })();

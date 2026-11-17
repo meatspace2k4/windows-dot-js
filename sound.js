@@ -381,8 +381,12 @@ const WORKLET = `registerProcessor('w95-stream', class extends AudioWorkletProce
     // (a fifth of a second at least: a sound's first batches come together as it starts, and over a shorter span they
     // read as paced on a machine running at a third of real time; the startup sound began, and broke off once)
     const span = currentTime - g[0][0]; if (span < 0.2) return false;
-    let n = 0; for (let i = 1; i < g.length; i++) n += g[i][1];
-    return n >= 0.9 * span * sampleRate * this.step;
+    // (the batches of the span's first 50 ms are left out, and that time with them: the machine's clock catching up
+    // as a sound starts sends a tenth of a second of samples at once, and counted, they made a machine at half the
+    // wall's pace read as paced; the startup sound played a quarter second and stopped for half a second)
+    const BURST = 0.05, from = g[0][0] + BURST;
+    let n = 0; for (let i = 1; i < g.length; i++) if (g[i][0] > from) n += g[i][1];
+    return n >= 0.9 * (span - BURST) * sampleRate * this.step;
   }
   room(n) {   // the ring holds what is queued, from the sample before the read position on
     const from = Math.max(0, Math.floor(this.r) - 1);

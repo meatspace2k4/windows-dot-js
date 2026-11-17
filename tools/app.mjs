@@ -64,11 +64,13 @@ async function start(disk = 'keep', build) {
 }
 
 const [verb, a, b] = process.argv.slice(2);
+// (the answer is written whole before the process ends: a pipe takes a long one in pieces)
+const out = [], console = { log: t => out.push(t), error: t => process.stderr.write(t + '\n') };
 try {
   if (verb === 'start') console.log(await start(a === 'build' ? 'keep' : a, a === 'build' || b === 'build'));
   else if (verb === 'quit') { await quit(); console.log('quit'); }
   else if (verb === 'save') { if (!a) throw new Error('save <file>'); await quit(); copyFileSync(DISK, a); console.log(`the disk is at ${a}`); }
-  else if (verb === 'eval') { const r = await evaluate(a); console.log(typeof r === 'string' ? r : JSON.stringify(r, null, 1)); }
+  else if (verb === 'eval') { const r = await evaluate(a, 600000);console.log(typeof r === 'string' ? r : JSON.stringify(r, null, 1)); }
   else { console.error('usage: app.mjs start [keep|fresh|<file>] [build] | quit | save <file> | eval <expression>'); process.exit(2); }
-  process.exit(0);
+  process.stdout.write(out.join('\n') + '\n', () => process.exit(0));
 } catch (e) { console.error(`error: ${e.message}`); process.exit(1); }
