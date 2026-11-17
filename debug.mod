@@ -3,3 +3,4 @@
 # taking its place. Chosen by the address (mods=debug) or the server (tools/serve.py --mods debug)
 turbo:8@SETUP,W98SETUP,SUWIN,RUNONCE
 setupclock
+folderfit
