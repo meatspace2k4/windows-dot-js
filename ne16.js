@@ -916,7 +916,14 @@ const cdRequest = p => {   // (each request logged for the dev server's cd log: 
   T(`th${p.thread16 ? p.thread16.id : 0} d${drive} c${cmd.toString(16)}${b ? ' i' + p.u8[b] : ''} -> ${p.r16(hdr + 3).toString(16)}${b ? ' [' + [...p.u8.subarray(b, b + 8)].map(x => x.toString(16)).join(' ') + ']' : ''}`);
   return r;
 };
+// (a request to the drive takes a millisecond of the machine's time, as a command to an ATAPI drive does at least:
+// answered in none, two opens of CD Player's found the same GetTickCount. It names each drive's MCI device by the
+// tick it opens it at (alias "SJE%lu:"), the second open was refused as a duplicate alias, and a track opened from
+// the audio disc's folder said the disc was not inserted. The time had come from the asks of the page each request
+// made; a machine arrived at by a travel has the drives' volumes with it and asks nothing)
+const CD_REQUEST_MS = 1;
 const cdRequest0 = p => {
+  { const vc = p.host && p.host.vclock; if (vc) vc.now += CD_REQUEST_MS; }
   const rm = p.rmode, at = (s, o) => (rm ? ((s & 0xffff) << 4) + (o & 0xffff) : p.lin(u32(((s & 0xffff) << 16) | (o & 0xffff))));
   const hdr = at(p.cpu.es.value, p.cpu.ebx.value), drive = p.cpu.ecx.value & 0xffff;
   const status = v => p.w16(hdr + 3, v);
