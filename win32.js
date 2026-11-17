@@ -1610,7 +1610,26 @@ function iniAddLine(fs, file, sec, raw) {
   for (const v of ini.values()) { text += `[${v.name}]\r\n`; for (const k of v.lines) text += k.raw !== undefined ? `${k.raw}\r\n` : `${k.name}=${k.value}\r\n`; text += '\r\n'; }
   fs.writeFile(iniPath(file), text);
 }
-const REGISTRY = new Map([
+// The registry's keys by their full path. Its set of keys is counted as it changes (ver), so a key's subkeys are
+// listed once per change (regKidPaths) and not found again in every key at each RegEnumKey: Windows 98's registry has
+// tens of thousands of keys, each program's start enumerates hundreds, and the searches took a third of the machine's
+// time as the shell's programs started (the startup sound ran dry)
+class RegMap extends Map {
+  set(k, v) { if (!this.has(k)) this.ver = (this.ver || 0) + 1; return super.set(k, v); }
+  delete(k) { const had = super.delete(k); if (had) this.ver = (this.ver || 0) + 1; return had; }
+  clear() { this.ver = (this.ver || 0) + 1; super.clear(); }
+}
+let kidsVer = null, kidsBy = new Map();
+/** a key's subkeys (their full paths), in the order they were made */
+const regKidPaths = path => {
+  if (kidsVer !== REGISTRY.ver) {
+    kidsBy = new Map();
+    for (const k of REGISTRY.keys()) { const i = k.lastIndexOf('\\'); if (i < 0) continue; const p = k.slice(0, i); let a = kidsBy.get(p); if (!a) kidsBy.set(p, a = []); a.push(k); }
+    kidsVer = REGISTRY.ver;
+  }
+  return kidsBy.get(path) || [];
+};
+const REGISTRY = new RegMap([
   ['hkcu\\control panel\\desktop', new Map([['screensaveusepassword', 0]])],
   ['hkcu\\control panel\\colors', new Map()],
 ]);
@@ -1720,7 +1739,7 @@ const regApply = (o, quiet) => {
 };
 // the shell's own registry reads and writes (Explorer's settings), through the same store as a program's
 /** the names of a key's subkeys, as stored (lower case) */
-const regKids = path => { path = regCanon(path.toLowerCase()); return [...REGISTRY.keys()].filter(k => k.startsWith(path + '\\') && !k.slice(path.length + 1).includes('\\')).map(k => k.slice(path.length + 1)); };
+const regKids = path => { path = regCanon(path.toLowerCase()); return regKidPaths(path).map(k => k.slice(path.length + 1)); };
 /** a key's values as [name, value] pairs, and a key removed with its subkeys */
 const regVals = path => [...(REGISTRY.get(regCanon(path.toLowerCase())) || new Map()).entries()];
 const regDel = path => { path = regCanon(path.toLowerCase()); let any = false; for (const k of [...REGISTRY.keys()]) if (k === path || k.startsWith(path + '\\')) { REGISTRY.delete(k); KEYNAME.delete(k); any = true; } if (any) regChanged({ op: 'delkey', path }); };
@@ -3707,7 +3726,7 @@ def('ADVAPI32', 'RegSetValueExA', 6, function (hk, name, res, type, data, n) {
 });
 def('ADVAPI32', 'RegSetValueA', 5, function (hk, sub, type, data, n) { const path = regPath(this, hk, sub); if (!path) return 6; const m = regKey(path, true, regPath(this, hk, sub, true)), value = { type: 1, data: window.W95FS.encode((this.readA(data) || '') + '\0') }; m.set('', value); regChanged({ op: 'set', path, name: '', value }); return 0; });
 def('ADVAPI32', 'RegEnumKeyA', 4, function (hk, i, buf, n) {
-  const path = regPath(this, hk, 0); const kids = [...REGISTRY.keys()].filter(k => k.startsWith(path + '\\') && !k.slice(path.length + 1).includes('\\'));
+  const path = regPath(this, hk, 0); const kids = regKidPaths(path);
   if (i >= kids.length) return 259; this.writeA(buf, keyName(path, kids[i]), n); return 0;
 });
 def('ADVAPI32', 'RegFlushKey', 1, () => 0);                       // the registry store writes through
@@ -3728,7 +3747,7 @@ def('ADVAPI32', 'RegLoadKeyA', 3, () => 1); def('ADVAPI32', 'RegUnLoadKeyA', 2, 
 def('ADVAPI32', 'RegRemapPreDefKey', 2, () => 0);
 // RegEnumKeyExA(key, index, name, *cchName, -, class, *cchClass, *lastWrite): the name and its length; no classes, no times
 def('ADVAPI32', 'RegEnumKeyExA', 8, function (hk, i, buf, pn, res, cls, pcls, ft) {
-  const path = regPath(this, hk, 0); const kids = [...REGISTRY.keys()].filter(k => k.startsWith(path + '\\') && !k.slice(path.length + 1).includes('\\'));
+  const path = regPath(this, hk, 0); const kids = regKidPaths(path);
   if (i >= kids.length) return 259;
   const name = keyName(path, kids[i]), n = this.r32(pn); if (n <= name.length) { this.w32(pn, name.length + 1); return 234; }
   this.writeA(buf, name, n); this.w32(pn, name.length);
@@ -3743,7 +3762,7 @@ def('ADVAPI32', 'RegEnumValueA', 8, function (hk, i, name, cbName, res, type, da
 });
 def('ADVAPI32', 'RegQueryInfoKeyA', 12, function (hk, cls, ccls, res, nsub, maxsub, maxcls, nval, maxname, maxval, sd, ft) {
   const path = regPath(this, hk, 0), m = regKey(path); if (!m) return 2;
-  const kids = [...REGISTRY.keys()].filter(k => k.startsWith(path + '\\') && !k.slice(path.length + 1).includes('\\'));
+  const kids = regKidPaths(path);
   if (ccls) this.w32(ccls, 0); if (nsub) this.w32(nsub, kids.length); if (maxsub) this.w32(maxsub, Math.max(0, ...kids.map(k => k.length - path.length)));
   if (maxcls) this.w32(maxcls, 0); if (nval) this.w32(nval, m.size);
   if (maxname) this.w32(maxname, Math.max(0, ...[...m.keys()].map(k => k.length)));

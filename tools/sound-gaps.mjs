@@ -23,6 +23,9 @@ for (const rate of rates) {
   const b = log.filter(e => e[1] === rate && e[2] !== 'dry'), dry = log.filter(e => e[1] === rate && e[2] === 'dry').map(e => e[0] - b[0][0]);
   const n = b.reduce((s, e) => s + e[2], 0), gaps = [];
   for (let i = 1; i < b.length; i++) if (b[i][0] - b[i - 1][0] > 120) gaps.push(`${b[i][0] - b[i - 1][0]} ms at ${b[i - 1][0] - b[0][0]}`);
+  // (the first 3 seconds, each tenth's samples as hundredths of the tenth: 100 is the pace they play at)
+  const tenths = Array.from({ length: 30 }, (_, i) => Math.round(1000 * b.filter(e => Math.floor((e[0] - b[0][0]) / 100) === i).reduce((s, e) => s + e[2], 0) / rate));
+  console.log(`${rate} Hz, each tenth of its first 3 s: ${tenths.join(' ')}`);
   console.log(`${rate} Hz: ${(n / rate).toFixed(2)} s of sound in ${b.length} batches over ${((b[b.length - 1][0] - b[0][0]) / 1000).toFixed(2)} s; gaps: ${gaps.join(', ') || 'none'}; ran dry at: ${dry.join(', ') || 'never'}`);
 }
 if (!rates.length) console.log('no sound');

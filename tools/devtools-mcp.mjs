@@ -218,6 +218,8 @@ const pageSession = async () => {
   let s = [...sessions.values()].find(x => x.type === 'page' && /\/\?|win95|braid|localhost|\/app\/web\/index\.html/.test(x.url || ''));
   if (!s) { await tools.attach.run({ url: process.env.W95_URL || (CDP_URL === APP_URL ? '/app/web/index.html' : 'localhost') }); s = [...sessions.values()].find(x => x.type === 'page'); }
   if (!s) throw new Error('no page is attached');
+  // (the page's workers attach after it, each as the browser announces it: the machine's is waited for)
+  for (let i = 0; i < 30 && ![...sessions.values()].some(x => x.type === 'worker' && /worker\.js/.test(x.url)); i++) await new Promise(ok => setTimeout(ok, 100));
   return s;
 };
 const reviveQuery = 'const Q = q => { if (!q || typeof q !== "object") return q; const o = {}; for (const [k, v] of Object.entries(q)) { const m = typeof v === "string" && /^\\/(.*)\\/([a-z]*)$/.exec(v); o[k] = m ? new RegExp(m[1], m[2]) : v; } return o; };';
@@ -278,6 +280,23 @@ Object.assign(tools, {
       const faults = (await win95.report(4)).faults;
       if (${!!close}) win95.close(title);
       return { ms: took, items, translated: late, faults };`) },
+  profile: { description: 'Where the machine\'s worker spends its time over `ms` (default 3000): the `top` (default 25) functions by their own time, and by time with what they call. `then`: a shell_* call to make once the profile runs (what to measure).',
+    props: { ms: N, top: N, then: { type: 'object', description: '{ tool, args }' } }, required: [],
+    async run({ ms = 3000, top = 25, then }) {
+      await pageSession(); const s = worker();
+      await cmd(s, 'Profiler.enable'); await cmd(s, 'Profiler.setSamplingInterval', { interval: 500 }); await cmd(s, 'Profiler.start');
+      const did = then && tools[then.tool] ? await tools[then.tool].run(then.args || {}) : null;
+      await new Promise(ok => setTimeout(ok, ms));
+      const { profile: p } = await cmd(s, 'Profiler.stop');
+      const self = new Map(), byId = new Map(p.nodes.map(n => [n.id, n])), dt = p.timeDeltas, parent = new Map();
+      for (const n of p.nodes) for (const c of n.children || []) parent.set(c, n.id);
+      const name = n => `${n.callFrame.functionName || '(anonymous)'} ${n.callFrame.url.split('/').pop()}:${n.callFrame.lineNumber + 1}`;
+      const total = new Map();
+      p.samples.forEach((id, i) => { const d = dt[i] / 1000, n = byId.get(id); self.set(name(n), (self.get(name(n)) || 0) + d);
+        const seen = new Set(); for (let x = id; x; x = parent.get(x)) { const k = name(byId.get(x)); if (!seen.has(k)) { seen.add(k); total.set(k, (total.get(k) || 0) + d); } } });
+      const list = m => [...m].sort((a, b) => b[1] - a[1]).slice(0, top).map(([k, v]) => `${Math.round(v)} ms  ${k}`);
+      return { then: did, self: list(self), total: list(total) };
+    } },
   shell_eval: { description: 'Any win95 API expression, awaited (win95 in scope).', props: { expression: S }, required: ['expression'],
     run: ({ expression }) => shell(`return await (${expression});`) },
 });

@@ -357,7 +357,7 @@ for (let i = 0; i < 256; i++) {
 // worklet node that takes the source's samples from a queue at the source's own rate and converts them to the
 // context's (cubic interpolation over the continuous stream: no buffer is started per batch). After the queue runs
 // dry, output starts again once LEAD seconds of samples are queued and the samples come at the pace they play, or the
-// last of them has waited LEAD (the sound's end), or a second of them is queued. The machine's clock is its own, not
+// last of them has waited a fifth of a second (the sound's end), or a second of them is queued. The machine's clock is its own, not
 // the wall's (worker.js vclock): while the shell starts it runs at a fifth to a third of real time, the startup sound
 // with it, and output begun on LEAD alone ran dry a dozen times in its first two seconds. It waits for the pace instead
 // (the sound a little late, then whole)
@@ -400,7 +400,9 @@ const WORKLET = `registerProcessor('w95-stream', class extends AudioWorkletProce
     const L = outputs[0][0], R = outputs[0][1] || outputs[0][0], m = this.cap - 1, step = this.step;
     if (!this.on && this.w - this.r > 2) {
       const q = this.w - this.r; this.wait += L.length * step;   // (wait: source samples' time since the last arrival)
-      if ((q >= this.lead && this.paced()) || this.wait >= this.lead || q >= 10 * this.lead) { this.on = true; this.wait = 0; }
+      // (the sound's end: nothing more for END, a fifth of a second at least. At LEAD alone, a tenth of a second the
+      // machine spent elsewhere as the startup sound began read as its end: the little queued played, and ran dry)
+      if ((q >= this.lead && this.paced()) || this.wait >= Math.max(this.lead, 0.2 * sampleRate * step) || q >= 10 * this.lead) { this.on = true; this.wait = 0; }
     }
     let k = 0;
     const at = (B, i) => B[Math.max(i, 0) & m];
