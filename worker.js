@@ -187,7 +187,7 @@ class Machine {
   braidNamed() { const by = new Map(); for (const [v, k] of this.braidNames()) by.set(k, v); return name => by.get(name); }
   /** the properties of the machine's own object that are the host's live things, not the moment's: the step timer,
    *  the message channel, the input ring, the moments themselves, the clock's skew */
-  braidSkip(obj, k) { return (obj === this && (k === 'timer' || k === 'stepDue' || k === 'soonCh' || k === 'soonPending' || k === 'ring' || k === 'alive' || k === 'mods' || k === 'stepLog' || k === 'started' || k === 'fast' || k === 'until' || k === 'untilWait' || k === 'markWait' || k === 'detLog' || k === 'trailLog' || k === 'childAsks' || k === 'askChain' || k === 'readQ' || k === 'reader')) || (obj === this.proc && (k === 'dynCache' || k === 'dynFast' || k === 'dynEnv' || k === 'runHook'))
+  braidSkip(obj, k) { return (obj === this && (k === 'timer' || k === 'sysId' || k === 'stepDue' || k === 'soonCh' || k === 'soonPending' || k === 'ring' || k === 'alive' || k === 'mods' || k === 'stepLog' || k === 'started' || k === 'fast' || k === 'until' || k === 'untilWait' || k === 'markWait' || k === 'detLog' || k === 'trailLog' || k === 'childAsks' || k === 'askChain' || k === 'readQ' || k === 'reader')) || (obj === this.proc && (k === 'dynCache' || k === 'dynFast' || k === 'dynEnv' || k === 'runHook'))
     // (a module translated whole as it loaded, a 16-bit module's or a program's or DLL's: its module's bytes kept for
     // translating it again (dyn.js translateNE), and the memo's module being read, made again from its code and the
     // memo; each moment copied them, MSHTML's 50 MB among them, four moments held at a time while Setup ran)
@@ -313,6 +313,8 @@ class Machine {
     // (the memo's modules the last starts used, read and compiled ahead of their load. The system's machine waits for
     // them: its start is one run of the host's, no read's answer taken until it ends, and begun beside it USER, GDI,
     // USER32 and GDI32 went in 16 s after they loaded, their code run block by block through all of Windows' start)
+    // (the system on this disk, by its USER.EXE: the memo keeps each system's starts apart, dyn.js memoSys)
+    { let id = ''; try { id = sha256(fs.readFile('C:\\WINDOWS\\SYSTEM\\USER.EXE')).slice(0, 16); } catch (_) { /* a disk with no Windows yet */ } self.W95Dyn.memoSys(id); this.sysId = id; }
     { const w = self.W95Dyn.memoWarm(); if (this.system) await w; }
     if (self.fonts && typeof FontFace === 'function') await Promise.all(Object.entries((self.W95SAVERS || {}).fonts || {}).map(async ([family, data]) => {
       try { const font = await new FontFace(family, b64bytes(data)).load(); self.fonts.add(font); } catch (_) { /* bundled font unavailable in this worker */ }
@@ -1946,6 +1948,7 @@ class Machine {
       case 'speedScale': return { scale: this.vclock.scale || 1, now: this.vclock.now };   // (the scale 'speed' set, read alone: 'speed' sets it)
       case 'speed': { const x = Math.max(1, Number(args[0]) || 1); this.fast = x > 1; this.vclock.scale = x; if (this.fast) this.kick(); return { scale: x, now: this.vclock.now }; }
       case 'now': return this.vclock.now;
+      case 'sysId': return this.sysId || '';   // (the system this machine booted, by its USER.EXE: an arrival's check, braid-page.js arrive)
       // the machine run to a time of its own clock, fast (x the pace, 8), then at a person's pace again: answers when
       // it is there ({ at }), or when travel left the run ({ at, left }); a time already past answers at once
       case 'until': {
@@ -1963,7 +1966,7 @@ class Machine {
         if (this.proc.depth || (this.proc.r0Runs && this.proc.r0Runs.length) || (this.proc.retPend && [...this.proc.retPend.values()].some(l => l.length))) return { busy: true };
         const B = self.W95Braid, graph = B.takeGraph([this], { opaque: this.braidOpaque(), skip: (o, k) => this.braidSkip(o, k) });
         const names = this.braidNames(), ex = B.serialize(graph, v => names.get(v) || null);
-        return { meta: ex.meta, roots: ex.roots, blob: ex.blob, registry: W.regDump(), probe: this.braidProbe(), now: this.vclock.now, build: this.build || '', mods: this.mods.slice() };
+        return { meta: ex.meta, roots: ex.roots, blob: ex.blob, registry: W.regDump(), probe: this.braidProbe(), now: this.vclock.now, build: this.build || '', mods: this.mods.slice(), sys: this.sysId || '' };
       }
       case 'import': {
         const ex = args[0], BR = self.W95Braid; clearTimeout(this.timer);

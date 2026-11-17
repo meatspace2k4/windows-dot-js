@@ -1347,7 +1347,8 @@ const NET_BUILD = (() => {
 })();
 const memo = new Map();
 const memoDb = () => new Promise((ok, no) => {
-  const r = indexedDB.open(MEMO_DB, 2);
+  // (an experiment, ?exp=memoName=NAME: another memo, an empty one to begin with, this computer's own left as it is)
+  const r = indexedDB.open(self.memoName ? `${MEMO_DB}-${self.memoName}` : MEMO_DB, 2);
   r.onupgradeneeded = () => {
     const d = r.result;
     if (d.objectStoreNames.contains('modules')) d.deleteObjectStore('modules');   // (version 1's: each record with its bytes)
@@ -1403,7 +1404,11 @@ const memoModule = sha => { asked.add(sha); const w = warm.get(sha); warm.delete
 const warmDone = new Map();
 const memoModuleNow = sha => { const v = warmDone.get(sha); if (!v) return null; asked.add(sha); warm.delete(sha); warmDone.delete(sha); return v; };
 const START = Date.now(); let useSeq = 0;   // (this start, and how many modules it has used)
-const useMark = (r, bytes) => { if (r.start !== START) { r.start = START; r.seq = useSeq++; } r.used = Date.now(); r.bytes = bytes; };
+// (the system this machine runs, memoSys: a start and its order are kept for each system that used a module, r.by. One
+// memo serves every disk of this computer: kept as one, a Windows 95 running Setup was the last start, and Windows 98's
+// own start's modules, three starts back, were past the budget again)
+let sysId = '';
+const useMark = (r, bytes) => { if (r.start !== START) { r.start = START; r.seq = useSeq++; } (r.by || (r.by = {}))[sysId] = [START, r.seq]; r.used = Date.now(); r.bytes = bytes; };
 const memoUsed = (had, bytes) => {
   if (!had || (had.start === START && had.bytes === bytes)) return;
   useMark(had, bytes);
@@ -1413,13 +1418,17 @@ const memoUsed = (had, bytes) => {
 };
 const memoWarm = async () => {
   if (typeof indexedDB === 'undefined') return 0;
-  const now = Date.now(), list = [...memo.values()].filter(r => r && r.used && r.bytes && now - r.used < WARM_AGE && r.build === NET_BUILD).sort((a, b) => (b.start || 0) - (a.start || 0) || (a.seq || 0) - (b.seq || 0));
+  const now = Date.now(), list = [...memo.values()].filter(r => r && r.used && r.bytes && now - r.used < WARM_AGE && r.build === NET_BUILD);
+  // (this system's starts first, the last one's first, each in the order it came to its modules; then the rest, the
+  // most lately used first)
+  const mine = r => (r.by && r.by[sysId]) || null;
+  list.sort((a, b) => { const x = mine(a), y = mine(b); return x && y ? y[0] - x[0] || x[1] - y[1] : x ? -1 : y ? 1 : (b.used || 0) - (a.used || 0); });
   let left = WARM_BYTES; const picked = [];
   // (all of what the last start used, whatever it comes to: that start held it; then the starts before it while the
   // budget lasts. Under the budget alone, a start that opened a folder had Windows' own start's 163 MB and the folder's
   // MSHTML, JSCRIPT and URLMON past it, read as the next start's first folder opened, 24 s)
-  const last = list.length ? list[0].start || 0 : 0;
-  for (const r of list) { if (warm.has(r.sha) || asked.has(r.sha) || (r.bytes > left && (r.start || 0) !== last)) continue; left -= r.bytes; picked.push(r); }
+  const last = list.length && mine(list[0]) ? mine(list[0])[0] : -1;
+  for (const r of list) { if (warm.has(r.sha) || asked.has(r.sha) || (r.bytes > left && (mine(r) || [0])[0] !== last)) continue; left -= r.bytes; picked.push(r); }
   // (four at a time, in the list's order: each is up to tens of megabytes read and compiled, the engine compiling off
   // this thread)
   let i = 0; const t0 = performance.now();
@@ -1434,7 +1443,7 @@ const memoWarm = async () => {
   if (picked.length) window.W95Win32.log('info', 'dyn', `the memo: ${picked.length} modules of ${list.length} read ahead and compiled (${Math.round((WARM_BYTES - left) / 1048576)} MB) in ${Math.round(performance.now() - t0)} ms`);
   return picked.length;
 };
-window.W95Dyn = { memo, memoLoad, memoPut, memoWasm, memoWarm, memoUsed, warm };
+window.W95Dyn = { memo, memoLoad, memoPut, memoWasm, memoWarm, memoUsed, warm, memoSys: id => { sysId = String(id || ''); } };
 /** the memo's record for a file, by its SHA-256: the placement a loader asks for before it places the module */
 /** netpatch.js's fixes for the file a module was loaded from (by its SHA-256), made in the module's code as it is
  *  loaded, once: a byte patch where the code is as the file has it (one made already left as it is, one where the code

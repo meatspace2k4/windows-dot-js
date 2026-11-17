@@ -427,7 +427,14 @@ window.W95BraidPage = function (ui) {
     // generation's disk, the one Windows 98 Setup's restart left half renamed (Windows 95's GDI.EXE and USER.EXE beside
     // Windows 98's GDI32 and USER32), and the boot on it died in GDI's LibEntry, leaving no machine to arrive in. The
     // shell is left as it is: the record's shell comes in with the rest below)
-    if (rec.machines.system && !sys()) { B.rebind([fs, {}], rec.page, { opaque: opaque(), skip: shellSkip }); writeDisk(true); }
+    // (a system's machine running another system than the moment's, booted from another generation's disk: ended, and
+    // the moment's own started as for a page with none. Brought into it, a Windows 95 moment's programs ran over the
+    // modules of the half-upgraded disk the page had booted, each faulting as it next ran, then MSGSRV32: a blue screen)
+    { const want = rec.machines.system && rec.machines.system.sys, s = sys(); if (want && s && (await s.cmd('sysId').catch(() => '')) !== want) s.exited(0); }
+    // (and on the moment's registry: the machine reads the page's as it starts. Started on the registry of the system
+    // just ended, Windows 98's machine came up as that registry had it, and the moment brought into it had MSTASK and
+    // Explorer fault as they next ran)
+    if (rec.machines.system && !sys()) { B.rebind([fs, {}], rec.page, { opaque: opaque(), skip: shellSkip }); writeDisk(true); W.regLoad(rec.registry, true); }
     for (const [k, ex] of Object.entries(rec.machines)) { const a = k === 'system' ? (sys() || await ui.startSystem()) : live().find(x => x.path === k); if (!a) throw new Error(`no machine running for the moment's ${k}`); out[k] = await a.cmd('import', [ex], ex.blob && ex.blob.buffer instanceof ArrayBuffer && !ex.blob.byteOffset && ex.blob.byteLength === ex.blob.buffer.byteLength ? [ex.blob.buffer] : []); ex.blob = null; forgetKids(a); }   // (the moment's bytes moved to the machine, not copied, when they are a buffer of their own)
     watchStores(); ui.closeMenus();
     // (the shell's windows are not rebound: a machine's windows come from its next frame, as they are its own, and a
