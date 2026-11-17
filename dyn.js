@@ -1397,7 +1397,7 @@ const memoWasm = sha => memoDb().then(db => new Promise((ok, no) => {
 // neCompile takes a module being warmed, or warmed, as its read.
 // (a module compiled keeps no bytes of its own beside the engine's: { mod, bytes }, its length)
 const warm = new Map(), asked = new Set();   // sha -> Promise<{ mod, bytes } | null>; asked: those a load has read
-const WARM_BYTES = 200 << 20, WARM_AGE = 14 * 86400e3;
+const WARM_BYTES = 200 << 20, WARM_AGE = 14 * 86400e3, WARM_STARTS = 6;
 const memoCompile = sha => memoWasm(sha).then(wasm => (wasm ? WebAssembly.compile(wasm).then(mod => ({ mod, bytes: wasm.length })) : null));
 const memoModule = sha => { asked.add(sha); const w = warm.get(sha); warm.delete(sha); warmDone.delete(sha); return w || memoCompile(sha); };
 // (the modules read ahead and compiled by now: sha -> { mod, bytes }, as memoWarm's reads finish; taken at once by a load)
@@ -1427,8 +1427,12 @@ const memoWarm = async () => {
   // (all of what the last start used, whatever it comes to: that start held it; then the starts before it while the
   // budget lasts. Under the budget alone, a start that opened a folder had Windows' own start's 163 MB and the folder's
   // MSHTML, JSCRIPT and URLMON past it, read as the next start's first folder opened, 24 s)
-  const last = list.length && mine(list[0]) ? mine(list[0])[0] : -1;
-  for (const r of list) { if (warm.has(r.sha) || asked.has(r.sha) || (r.bytes > left && (mine(r) || [0])[0] !== last)) continue; left -= r.bytes; picked.push(r); }
+  // (and of what this system's last WARM_STARTS starts used: a module is marked with the last start that used it, so
+  // a start that opened no folder left MSHTML, URLMON, JSCRIPT and OLEAUT32 a start back and past the budget, and the
+  // start after it stood 20 s at its first folder waiting for their bytes)
+  const starts = [...new Set(list.map(r => (mine(r) || [0])[0]).filter(Boolean))].sort((a, b) => b - a);
+  const since = starts.length ? starts[Math.min(starts.length, WARM_STARTS) - 1] : Infinity;
+  for (const r of list) { if (warm.has(r.sha) || asked.has(r.sha) || (r.bytes > left && !((mine(r) || [0])[0] >= since))) continue; left -= r.bytes; picked.push(r); }
   // (four at a time, in the list's order: each is up to tens of megabytes read and compiled, the engine compiling off
   // this thread)
   let i = 0; const t0 = performance.now();
