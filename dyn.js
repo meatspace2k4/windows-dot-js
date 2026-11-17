@@ -1505,7 +1505,8 @@ P.neCompile = function (rec, again = false) {
     // records by their place, and a read MSIDLE's load began answered on the record that was SHDOCVW's by then, which
     // got MSIDLE's module, its own code run-time code, the Channel Bar's control black)
     const sha = rec.sha256, mine = () => rec.sha256 === sha && rec.netText && !rec.netReady;
-    memoModule(sha).then(m => { if (mine()) rec.netReady = m ? { mod: m.mod, bytes: m.bytes, had, t0, at: performance.now() } : { had: null }; })
+    // (netRead: the read, for what waits on it before the machine runs on, a travel's modules made again: netReads)
+    rec.netRead = memoModule(sha).then(m => { if (mine()) rec.netReady = m ? { mod: m.mod, bytes: m.bytes, had, t0, at: performance.now() } : { had: null }; })
       .catch(e => { console.warn(`[dyn] ${label}: the memo's module could not be read:`, e && e.message); if (mine()) rec.netReady = { had: null }; });
     return rec;
   }
@@ -1559,6 +1560,12 @@ P.neSet = function (rec, mod, seed) {
   rec.netSeed = seed;
   if (rec.dynNew) rec.dynNew.clear(); rec.dynSeen = 0;
   if (this.dynFast) this.dynFast.clear();   // (an address with a block of the module's now goes to it, not to its region)
+};
+/** the reads in flight of the memo's modules not yet in place (neCompile), as one promise: a travel or an arrival waits
+ *  for them before the machine runs on, and puts them in place (neInstall). Run on at once, every module the travel
+ *  made again ran as run-time code until its read's answer was taken, and the first folder opened after one took 22 s */
+P.netReads = function () {
+  return Promise.all((this.modules || []).filter(m => m && m.netText && !m.netReady && m.netRead).map(m => m.netRead));
 };
 /** at a step's end (no wasm frame live): every module whose memo's module has been read and compiled (neCompile) put in
  *  place, its code checked as it is now against the memo's hash first (else translated now, and the rest left to the

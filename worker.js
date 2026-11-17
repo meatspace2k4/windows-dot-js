@@ -292,8 +292,12 @@ class Machine {
     if (this.proc.fault) this.proc.fault = null;
     if (this.proc.lzxInstall) this.proc.lzxInstall();   // (SETUPX's decoder answered in JS again: the moment's entry hooks are its own, setupx-lzx.js)
     this.timer = 0; this.soonPending = false;
-    if (this.alive) this.timer = setTimeout(() => this.step(), 0);
-    return { ms: Math.round(performance.now() - t0), now: s.now };
+    // (the machine runs on once the memo's modules made again have been read and are in place: dyn.js netReads)
+    return this.proc.netReads().then(() => {
+      this.proc.neInstall();
+      if (this.alive && !this.timer) this.timer = setTimeout(() => this.step(), 0);
+      return { ms: Math.round(performance.now() - t0), now: s.now };
+    });
   }
   async start() {
     const S = self.W95SYSTEM;
@@ -2021,8 +2025,7 @@ class Machine {
         // (the page's screen follows the moment's mode at once: its canvases were the boot's; the windows come with the
         // next step's frame, no call into USER from here)
         { const a = p.scanout(); if (a.bpp) [this.sw, this.sh] = [a.w, a.h]; } this.shellSeen = true; this.postScan();   // (shellSeen: postScan asks USER for the windows otherwise, a call into the machine from here)
-        if (this.alive) this.timer = setTimeout(() => this.step(), 0);
-        return r;
+        return p.netReads().then(() => { p.neInstall(); if (this.alive && !this.timer) this.timer = setTimeout(() => this.step(), 0); return r; });   // (as a travel: braidTravel)
       }
       case 'views': {   // (a diagnostic: the modules' private data views and the arena, whose copies a thread switch swaps, and where the switches' time goes)
         const pidOf = k => (k === null ? null : k === 0 ? 0 : k === undefined ? 'undef' : typeof k === 'object' ? (k.pid !== undefined ? k.pid : 'obj') : k);
