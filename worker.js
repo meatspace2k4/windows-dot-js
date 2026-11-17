@@ -191,7 +191,13 @@ class Machine {
     // (a module translated whole as it loaded, a 16-bit module's or a program's or DLL's: its module's bytes kept for
     // translating it again (dyn.js translateNE), and the memo's module being read, made again from its code and the
     // memo; each moment copied them, MSHTML's 50 MB among them, four moments held at a time while Setup ran)
-    || ((k === 'netSeed' || k === 'netReady') && obj && obj.meta && obj.meta.dynamic); }   // (the run-time translations: a cache of code, made again as the code runs; its wasm instances cannot be exported. dynFast, the block each address ran last, too: carried in a moment without its code, an arrival from an anchor called a block with no run)
+    || ((k === 'netSeed' || k === 'netReady') && obj && obj.meta && obj.meta.dynamic)
+    // (an import thunk's definition, a 32-bit one's { dll, nm, def } or a 16-bit one's { key, def }: the API's own
+    // table entry, code, found again by the thunk's name (import). Carried in a moment, an arrival wrote the moment's
+    // into the entries of the thunks at the same places here, and where the two machines had made their thunks in
+    // another order (a first start's against a later one's) KERNEL32's __Ret32 returns became calls of 3 arguments:
+    // the next return from 32-bit code to 16-bit went to the far address as a flat one, a fault in USER)
+    || (k === 'def' && obj && ((typeof obj.dll === 'string' && typeof obj.nm === 'string') || typeof obj.key === 'string')); }   // (the run-time translations: a cache of code, made again as the code runs; its wasm instances cannot be exported. dynFast, the block each address ran last, too: carried in a moment without its code, an arrival from an anchor called a block with no run)
   /** the lint's record of the machine now (braid.js lint) */
   braidProbe() {
     const p = this.proc, held = p.win16Held ? { who: typeof p.win16Held.who === 'object' ? 'thread ' + p.win16Held.who.id : String(p.win16Held.who), since: p.win16Held.since, cpu: p.win16Held.cpu, hung: !!p.win16Held.hung } : null;
