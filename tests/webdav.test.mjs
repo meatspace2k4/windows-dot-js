@@ -22,6 +22,10 @@ try {
   { const r = await q('HEAD', '/CLAUDE/a.txt'); assert.equal(r.headers.get('content-length'), '11'); }
   assert.equal((await q('GET', '/CLAUDE/none.txt')).status, 404); assert.equal((await q('GET', '/OTHER/a.txt')).status, 404);
   assert.equal((await q('GET', '/CLAUDE/%2e%2e/outside.txt')).status, 404, 'no path outside the share');
+  // a host named for the share is the share alone, at the root: its files' addresses without the share's name
+  { const http = await import('node:http'), port = server.address().port;
+    const t = await new Promise((ok, no) => { const r = http.request({ host: '127.0.0.1', port, path: '/', method: 'PROPFIND', headers: { Host: `claude.localhost:${port}`, Depth: '1' } }, res => { let b = ''; res.on('data', d => { b += d; }); res.on('end', () => ok(b)); }); r.on('error', no); r.end(); });
+    assert.match(t, /<D:href>\/<\/D:href>/); assert.match(t, /<D:href>\/a\.txt<\/D:href>/); assert.doesNotMatch(t, /CLAUDE/); }
   // nothing changes a file
   for (const [m, p, h, b] of [['PUT', '/CLAUDE/a.txt', {}, 'X'], ['PUT', '/CLAUDE/new.txt', {}, 'X'], ['DELETE', '/CLAUDE/a.txt'], ['MKCOL', '/CLAUDE/d'], ['MOVE', '/CLAUDE/a.txt', { Destination: base + '/CLAUDE/b.txt' }],
     ['COPY', '/CLAUDE/a.txt', { Destination: base + '/CLAUDE/b.txt' }], ['PROPPATCH', '/CLAUDE/a.txt', {}, '<x/>'], ['LOCK', '/CLAUDE/a.txt', {}, '<x/>'], ['POST', '/CLAUDE/a.txt', {}, 'X']])

@@ -142,19 +142,22 @@ ipcMain.on('cd-eject', () => ejectCD())
 // The shares on the Mac: each connected as a network volume (Finder's own, under Locations and in /Volumes), from the
 // app's WebDAV server, as it joins the list; File > Connect Shares in Finder also opens each one's window. They are
 // disconnected as the app quits (the server goes with it).
-const DAV_PORT = 9395, DAV = `http://127.0.0.1:${DAV_PORT}/`
+const DAV_PORT = 9395
 // (connected by mount_webdav at a folder of the app's own: Finder's Connect to Server asks, of a server on this very
 // computer, whether to send a name and password insecurely, and none is sent)
 function connectShares(show) {
   const { execFile } = require('child_process')
   for (const s of shares.served()) {
-    const at = path.join(app.getPath('userData'), 'Shares', s.name)
-    fs.promises.mkdir(at, { recursive: true }).then(() => execFile('mount_webdav', ['-S', '-v', s.name, DAV + encodeURIComponent(s.name), at], () => { if (show) execFile('open', [at], () => {}) }), () => {})
+    // (the volume has the folder's own name, "Public", and its server is <share>.localhost: Finder lists a connected
+    // server by its host, and by the address the share was a folder inside "127.0.0.1")
+    const name = path.basename(s.path) || s.name, at = path.join(app.getPath('userData'), 'Shares', name)
+    const url = `http://${s.name.toLowerCase()}.localhost:${DAV_PORT}/`
+    fs.promises.mkdir(at, { recursive: true }).then(() => execFile('mount_webdav', ['-S', '-v', name, url, at], () => { if (show) execFile('open', [at], () => {}) }), () => {})
   }
 }
 app.on('will-quit', () => {
   // (by a process of its own, which outlives the app: every volume connected from this server)
-  const sh = `mount | sed -n 's|^${DAV}.* on \\(/.*\\) (webdav.*|\\1|p' | while IFS= read -r m; do umount "$m"; done`
+  const sh = `mount | sed -n 's|^http://[^/]*:${DAV_PORT}/.* on \\(/.*\\) (webdav.*|\\1|p' | while IFS= read -r m; do umount "$m"; done`
   require('child_process').spawn('/bin/sh', ['-c', sh], { detached: true, stdio: 'ignore' }).unref()
 })
 async function shareFolder() {

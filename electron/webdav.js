@@ -14,10 +14,15 @@ const href = parts => '/' + parts.map(encodeURIComponent).join('/')
 /** serve(shares, port): `shares()` answers the shares served now, each { name, path, home }. Answers the server. */
 function serve(shares, port) {
   // a request's share and file: null when it names none, or leads outside its share
-  const locate = async url => {
+  // (a host named for a share, <share>.localhost, is that share alone, at the server's root: Finder names a connected
+  // server by its host, so the share is "public.localhost" there and not a folder inside "127.0.0.1")
+  const locate = async (url, host) => {
     let parts
     try { parts = decodeURIComponent(new URL(url, 'http://x').pathname).split('/').filter(Boolean) } catch (_) { return null }
-    if (!parts.length) return { root: true, parts }
+    const m = /^([^.:]+)\.localhost(:\d+)?$/i.exec(host || ''), own = m && shares().find(x => x.name.toUpperCase() === m[1].toUpperCase())
+    if (own) parts = [own.name, ...parts]
+    const hp = p => (own ? p.slice(1) : p)   // (the parts as the client names them)
+    if (!parts.length) return { root: true, parts, hp }
     if (parts.some(p => p === '..' || p === '.' || p.includes('\\') || p.includes('\0'))) return null
     const s = shares().find(x => x.name.toUpperCase() === parts[0].toUpperCase())
     if (!s) return null
@@ -25,7 +30,7 @@ function serve(shares, port) {
     const root = await fs.promises.realpath(s.path), full = path.join(root, ...parts.slice(1))
     const real = await fs.promises.realpath(full).catch(() => null)
     if (!real || (real !== root && !real.startsWith(root + path.sep))) return null
-    return { share: s, full: real, parts: [s.name, ...parts.slice(1)] }
+    return { share: s, full: real, parts: [s.name, ...parts.slice(1)], hp }
   }
   const entry = (parts, st) => `<D:response><D:href>${esc(href(parts) + (st.isDirectory() && parts.length ? '/' : ''))}</D:href><D:propstat><D:prop>`
     + `<D:displayname>${esc(parts[parts.length - 1] || '')}</D:displayname>`
@@ -39,11 +44,11 @@ function serve(shares, port) {
     const deep = req.headers.depth !== '0', out = []
     if (at.root) { out.push(entry([], DIR)); if (deep) for (const s of shares()) out.push(entry([s.name], DIR)) }
     else {
-      const st = await fs.promises.stat(at.full); out.push(entry(at.parts, st))
+      const st = await fs.promises.stat(at.full); out.push(entry(at.hp(at.parts), st))
       if (deep && st.isDirectory()) for (const name of await fs.promises.readdir(at.full)) {
         if (at.share.home && at.parts.length === 1 && PROTECTED.has(name.toLowerCase())) continue
         const k = await fs.promises.stat(path.join(at.full, name)).catch(() => null)   // (a dangling link, or no permission)
-        if (k && (k.isFile() || k.isDirectory())) out.push(entry([...at.parts, name], k))
+        if (k && (k.isFile() || k.isDirectory())) out.push(entry(at.hp([...at.parts, name]), k))
       }
     }
     const body = Buffer.from(`<?xml version="1.0" encoding="utf-8"?><D:multistatus xmlns:D="DAV:">${out.join('')}</D:multistatus>`)
@@ -72,7 +77,7 @@ function serve(shares, port) {
     const run = async () => {
       if (req.method === 'OPTIONS') { res.writeHead(200, { DAV: '1', Allow: 'OPTIONS, PROPFIND, GET, HEAD', 'MS-Author-Via': 'DAV', 'Content-Length': 0 }); return res.end() }
       if (!['PROPFIND', 'GET', 'HEAD'].includes(req.method)) { res.writeHead(403, { 'Content-Length': 0 }); return res.end() }   // read-only
-      const at = await locate(req.url)
+      const at = await locate(req.url, req.headers.host)
       if (!at) { res.writeHead(404, { 'Content-Length': 0 }); return res.end() }
       return req.method === 'PROPFIND' ? propfind(req, res, at) : get(req, res, at, req.method === 'HEAD')
     }
@@ -80,6 +85,9 @@ function serve(shares, port) {
   })
   server.on('error', e => console.error('[webdav]', e.message))
   server.listen(port, '127.0.0.1')
+  // (a .localhost name is this computer's IPv6 loopback to macOS: the same server there; a port chosen by the system,
+  // the tests', has one address)
+  if (port) { const six = http.createServer((req, res) => server.emit('request', req, res)); six.on('error', e => console.error('[webdav]', e.message)); six.listen(port, '::1'); server.on('close', () => six.close()) }
   return server
 }
 module.exports = { serve }
