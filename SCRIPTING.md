@@ -24,7 +24,10 @@ describes.
 | stop it at a line of the emulator, or where guest code or an API call enters | `breakpoint` + `paused` + `evaluate` (session: the worker); `guest_break`, `api_break` |
 | watch a long run (Setup, a boot) | `node tools/shell-events.mjs` under a monitor: each fault, failure, screen and window as it comes |
 | go back before a fault | `win95.braid.travel` (chapter 4) |
-| start from a blank disk | quit the app, delete `~/Library/Application Support/local.win95/C.db*`, start it |
+| build and start the app, and wait for the desktop | `node tools/app.mjs start [keep\|fresh\|<C.db file>] [build]` (`keep`: its disk as it is; `fresh`: a blank disk; a file: a copy of that disk) |
+| set the app's disk aside | `node tools/app.mjs save <file>` (quits it first) |
+| one expression in the app's page | `node tools/app.mjs eval '<expression>'` |
+| time a folder opening, with what was translated meanwhile and the faults | `shell_measure {open: "My Computer"}` |
 
 **Look.** `shell_report` answers what has happened since your last call (`events`: windows opened and closed, menus,
 programs ended, faults, errors on the page) and the screen now (`report`: every window, bottom to top, with the text

@@ -266,6 +266,18 @@ Object.assign(tools, {
       if (r.exceptionDetails) throw new Error(((r.exceptionDetails.exception && r.exceptionDetails.exception.description) || r.exceptionDetails.text).split('\n')[0]);
       return r.result.value === undefined ? 'undefined' : r.result.value;
     } },
+  shell_measure: { description: 'Opens a desktop item (double click on `open`, its name on the desktop) and answers the time until its window `window` (default: titled as the item) lists its contents, the items listed, the modules translated meanwhile, and the faults. `close`: closes the window after.',
+    props: { open: S, window: S, close: B, ms: N }, required: ['open'],
+    run: ({ open, window: w, close, ms = 60000 }) => shell(`
+      const sleep = ms => new Promise(r => setTimeout(r, ms)), title = Q({ t: ${JSON.stringify(w || `/${open.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/`)} }).t;
+      const t0 = Date.now(), p0 = performance.now(); let items = null, took = null;
+      const opened = win95.window(title) ? null : win95.next('window.open', e => title instanceof RegExp ? title.test(e.title || '') : e.title === title, ${Number(ms)});
+      await win95.dblclick({ name: ${JSON.stringify(open)}, window: 'Program Manager' }); await opened;
+      while (performance.now() - p0 < ${Number(ms)}) { const els = (await win95.elementsNow({ window: title })).filter(e => e.role === 'listitem'); if (els.length) { took = Math.round(performance.now() - p0); items = els.map(e => e.name); break; } await sleep(100); }
+      const late = win95.log().filter(l => l.tag === 'dyn' && l.t >= t0 && /compiled \\d+ ms and put in place/.test(String(l.text))).map(l => String(l.text).split(':')[0]);
+      const faults = (await win95.report(4)).faults;
+      if (${!!close}) win95.close(title);
+      return { ms: took, items, translated: late, faults };`) },
   shell_eval: { description: 'Any win95 API expression, awaited (win95 in scope).', props: { expression: S }, required: ['expression'],
     run: ({ expression }) => shell(`return await (${expression});`) },
 });
