@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld('W95HOST', {
   shares: {
     list: () => ipcRenderer.sendSync('shares-list'),
     op: (name, op, ...args) => ipcRenderer.sendSync('share-op', name, op, ...args),
+    on: f => ipcRenderer.on('shares-changed', () => f()),   // a share joined the list (its folder read) or left it
   },
   // the disc in the CD drive: the CD image chosen with File > Insert CD Image, a byte range at a time (null with none),
   // its file's name, and each time another is put in or it is taken out; and the app's Insert CD Image and Eject CD,

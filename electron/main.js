@@ -145,7 +145,8 @@ async function shareFolder() {
 }
 app.whenReady().then(() => {
   store = require('./store').open(dbFile())
-  shares = require('./shares').open(path.join(app.getPath('userData'), 'shares.json'))
+  // (a share joins the list once its folder has been read: the page is told, and connects its drive)
+  shares = require('./shares').open(path.join(app.getPath('userData'), 'shares.json'), () => { for (const w of BrowserWindow.getAllWindows()) w.webContents.send('shares-changed') })
   // the disc in the drive: the one the person inserted, or none when they took it out (cdrom.json); before either,
   // the one the app was built with (cd.json, the project's cdrom.iso, the same disc serve.py serves the page)
   const kept = f => { try { return JSON.parse(fs.readFileSync(f, 'utf8')) } catch (_) { return null } }

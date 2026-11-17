@@ -4753,9 +4753,12 @@ function mountHostShares() {
     while (c <= 90 && fs.vols.has(String.fromCharCode(c))) c++;
     if (c > 90) break;
     const L = String.fromCharCode(c), unc = `\\\\${host}\\${s.name.toUpperCase()}`;
-    const v = fs.mount(L, { remote: hostBackend(s.name), unc, label: s.name.toUpperCase() }); v.host = true;
+    if ([...fs.vols.values()].some(v => v.host && v.unc === unc)) continue;   // (connected already)
+    const v = fs.mount(L, { remote: hostBackend(s.name), unc, label: s.name.toUpperCase() }); v.host = true; v.unc = unc;
   }
 }
+// (the app serves a share once its folder has been read, which can be after the page starts: its drive is connected then)
+if (window.W95HOST && window.W95HOST.shares && window.W95HOST.shares.on) window.W95HOST.shares.on(() => { try { mountHostShares(); dirty(); } catch (e) { console.error(e); } });
 /** connections MPR remembers (HKCU\Network\Persistent): the shell logs on as it boots to make them again; otherwise
  *  when it first needs the network */
 const netRemembered = () => W95Win32.regKids('hkcu\\network\\persistent').some(k => W95Win32.regGet('hkcu\\network\\persistent\\' + k, 'RemotePath') !== undefined);
