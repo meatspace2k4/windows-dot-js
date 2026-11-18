@@ -958,13 +958,17 @@ class Machine {
     post({ t: 'msgMode', on: true }); this.sendText(true);
   }
   /** VWIN32's blue screen for a fault at ring 0 (its text from the page), then the current application ends */
+  /** the blue screen of a fatal fault: answered, the machine stops where it is with the screen as it was, so the fault
+   *  can be read and the moment before it travelled to. It ended instead (exited), the page shut the PC down, and the
+   *  blue screen was gone before it could be read */
   fatal(f) {
     const p = this.proc, msg = rpc('host', 'fatalText', [f]), at = p.vxdService && p.vxdService(0x17, 3);
-    if (!msg || !at) { if (msg && this.system) this.blueText(msg); else this.exited(-1); return; }
+    const end = () => { this.stopped = true; clearTimeout(this.timer); this.sendText(); W.log('error', 'machine', `stopped at the blue screen: ${msg ? msg.split('\n').slice(0, 2).join(' ') : 'fault'}`); };
+    if (!msg || !at) { if (msg && this.system) this.blueText(msg); else end(); return; }
     const a = p.alloc(msg.length + 1); p.writeA(a, msg);
-    this.afterR0 = () => this.exited(-1);
-    try { if (p.r0Start(at, { ebx: p.sysVM(), eax: 0x40001000, ecx: a, edi: 0, esi: 0, edx: 0 }) !== null) this.exited(-1); }
-    catch (e) { console.error(e); this.exited(-1); }
+    this.afterR0 = end;
+    try { if (p.r0Start(at, { ebx: p.sysVM(), eax: 0x40001000, ecx: a, edi: 0, esi: 0, edx: 0 }) !== null) end(); }
+    catch (e) { console.error(e); end(); }
     this.sendText();
   }
   /** what the page draws: USER's windows, the screen's mode and palette, the cursor sprite, the text screen */
