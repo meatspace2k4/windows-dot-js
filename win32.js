@@ -175,6 +175,18 @@ class Process {
         for (let k = 8; k < sz; k += 2) { const e = this.r16(o + k); if (e >> 12 === 3) { const a = base + page + (e & 0xfff); this.w32(a, this.r32(a) + delta); } }
         o += sz;
       }
+      // an image with no relocations moved off its base (diskDll synthRelocs): each dword in its sections, resources
+      // aside, that is an address inside the image as linked is moved with it, as its relocations would have moved it
+      if (meta.synthRelocs && !dir(5)) {
+        const lo = pref >>> 0, hi = lo + dv.getUint32(opt + 56, true), rs = dir(2), re = rs + dv.getUint32(opt + 96 + 2 * 8 + 4, true);
+        let n = 0;
+        for (let i = 0; i < nsec; i++) {
+          const o = shdr + 40 * i, va = dv.getUint32(o + 12, true), len = Math.min(dv.getUint32(o + 8, true) || dv.getUint32(o + 16, true), dv.getUint32(o + 16, true));
+          if (rs && va >= rs && va < re) continue;
+          for (let k = 0; k + 4 <= len; k++) { const a = base + va + k, v = this.r32(a) >>> 0; if (v >= lo && v < hi) { this.w32(a, v + delta); n++; k += 3; } }
+        }
+        log('info', 'win32', `${name}: no relocations, moved from ${lo.toString(16)} to ${(base >>> 0).toString(16)}: ${n} addresses of itself found and moved`);
+      }
     }
     const rec = { name, base, pref, size: dv.getUint32(opt + 56, true), meta, rsrc: dir(2), exports: new Map(), run: null, deps: [] };
     // a DLL Windows 95 loads below 2 GB, in a process's private arena (OLE32, SHELL32, MFC: not the shared arena's,
@@ -475,7 +487,8 @@ class Process {
   diskDll(name, replacing = false) {
     // (one this system implements, the personality's KERNEL32, ADVAPI32, ...: that one, never its file; unless the file
     // replaces the bundle's own translation of it, replacing)
-    if (!this.fs || (API[name] && !replacing) || STAND_IN.has(name) || !/^[A-Z0-9_$~!#%&'()@^`{}-]+(\.[A-Z0-9]+)?$/i.test(name)) return null;
+    // (a long name may have spaces: the Plus! savers' engines, "Inside your Computer.dll", were never found)
+    if (!this.fs || (API[name] && !replacing) || STAND_IN.has(name) || !/^[A-Z0-9_$~!#%&'()@^`{}][A-Z0-9_$~!#%&'()@^`{} -]*(\.[A-Z0-9]+)?$/i.test(name)) return null;
     const file = /\./.test(name) ? name : name + '.DLL';
     const dirs = [...(this.loadDirs || []), 'C:\\WINDOWS\\SYSTEM', 'C:\\WINDOWS'];
     let f = null, path = null;
@@ -497,10 +510,15 @@ class Process {
         if (lo < Infinity) memoBase = had.textLo - lo;
       }
     }
-    const base = (memoBase && memoBase !== pref && !this.inExeZone(memoBase, size) && (this.imageRoom(memoBase, size, false) || this.vmTake(memoBase, size, this.moduleSpans()))) || this.imageRoom(pref, size, relocatable);
+    let base = (memoBase && memoBase !== pref && !this.inExeZone(memoBase, size) && (this.imageRoom(memoBase, size, false) || this.vmTake(memoBase, size, this.moduleSpans()))) || this.imageRoom(pref, size, relocatable);
+    // (one with no relocations based past the machine's memory, where it can never be: put where there is room, its
+    // addresses of itself found in its image, loadImage synthRelocs. The Plus! saver engine "Inside your Computer.dll"
+    // is linked at 7C980000h with none, and the theme's screen saver showed nothing)
+    const synth = !base && !relocatable && u32(pref) + size > this.mem.buffer.byteLength;
+    if (synth) base = this.imageRoom(0, size, true);
     if (!base) { log('warn', 'win32', `${file}: no room for its image at ${pref.toString(16)}`); return null; }
     // (the file it was mapped from: GetModuleFileName's answer, TRIEDIT's own type library found beside it)
-    const d = { file: f, module: null, meta: { base, entry: ep ? base + ep : 0, textLo: 0, textHi: 0, blocks: [], size, dynamic: true, path } };
+    const d = { file: f, module: null, meta: { base, entry: ep ? base + ep : 0, textLo: 0, textHi: 0, blocks: [], size, dynamic: true, path, ...(synth ? { synthRelocs: true } : {}) } };
     this.dlls.set(name, d);
     return d;
   }
@@ -2277,6 +2295,7 @@ function memAlloc(f, n) {
   (this.gmov || (this.gmov = new Map())).set(h, { ptr, size: n, locks: 0 }); return h;
 }
 function memFree(h) {
+  if (g16(this, h)) { const f16 = window.W95NE16 && window.W95NE16.K16['KERNEL.#17']; if (f16) f16[2].call(this, u32(h)); return 0; }   // (a 16-bit block's: GlobalFree16)
   const m = gmov(this, h);
   if (m) { if (m.ptr) this.free(m.ptr); this.gmov.delete(u32(h)); this.free(h); return 0; }
   this.free(h); return 0;
@@ -2290,9 +2309,13 @@ function memReAlloc(h, n, f) {
   if (n > old && f & ZEROINIT) this.u8.fill(0, m.ptr + old, m.ptr + n);
   m.size = n; this.w32(h, m.ptr); return h;
 }
-const memLock = function (h) { const m = gmov(this, h); if (!m) return h; if (m.ptr) m.locks++; return m.ptr; };
+// (a handle below 64K is a 16-bit global block's, as Windows 95's KERNEL32 takes one: GDI's metafiles are 16-bit
+// blocks, and Desktop Themes locks the one a graphics filter made of the theme's wallpaper (JPEGIM32.FLT ImportGr):
+// locked as an address, it drew nothing, and the preview's desktop was black)
+const g16 = (p, h) => (u32(h) && u32(h) < 0x10000 && p.ghandles && p.gblock && p.gblock(u32(h))) || null;
+const memLock = function (h) { const b = g16(this, h); if (b) return b.lin; const m = gmov(this, h); if (!m) return h; if (m.ptr) m.locks++; return m.ptr; };
 const memUnlock = function (h) { const m = gmov(this, h); if (!m) return 0; if (m.locks) m.locks--; return m.locks; };
-const memSize = function (h) { const m = gmov(this, h); return m ? m.size : this.allocs.get(h) || 0; };
+const memSize = function (h) { const b = g16(this, h); if (b) return b.size; const m = gmov(this, h); return m ? m.size : this.allocs.get(h) || 0; };
 const memHandle = function (p) { if (this.gmov) for (const [h, m] of this.gmov) if (m.ptr === u32(p)) return h; return p; };
 const memFlags = function (h) { const m = gmov(this, h); return m ? (m.ptr ? 0 : DISCARDED) | (m.locks & 0xff) : 0; };
 for (const k of ['Global', 'Local']) {
