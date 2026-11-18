@@ -4609,9 +4609,13 @@ def16('KERNEL', 533, '', 'jmp', function () {   // (hMem32: dword, msg: word) ->
     const had = DDE_SAME.has(msg) ? [...clip32(this)].find(([, w]) => w === h) : null;
     if (had) r = this.globalHandleOf(had[0]);
     if (!r) {
-      const n = this.allocs.get(h) || 0;
+      // (a moveable block's handle is a cell holding its address (win32.js memAlloc): the block is what goes across, not
+      // the cell. Its 16 bytes went instead, and Explorer took SHELL32's [ViewFolder(...)] for a command it did not
+      // know: Start > Settings > Control Panel, and CONTROL.EXE, opened nothing)
+      const mv = this.gmov && this.gmov.get(u32(h)), src = mv ? mv.ptr : h;
+      const n = mv ? mv.size : (this.allocs.get(h) || 0);
       r = this.globalAlloc16(0x2002, n);
-      if (r && n) this.u8.copyWithin(this.gblock(r).lin, h, h + n);
+      if (r && n && src) this.u8.copyWithin(this.gblock(r).lin, src, src + n);
       if (r) clip32(this).set(this.gsel(r), h);
     }
   }
@@ -6117,7 +6121,14 @@ K('MapSLFix', 1, function (sp) { return this.lin(sp); });
 K('MapLS', 1, function (a) { return this.mapLSExact(a); });
 K('UnMapLS', 1, function (sp) { this.unmapLSExact(sp); return 0; });
 KR('UnMapSLFixArray', function () { const r = ret32(this); this.reg('esp', this.reg('esp') + 8); return r; });
-K('MapHInstLS', 0, function () { const h = this.reg('eax'); return this.nativeUser16() ? this.hinst16(h) : h; });
+// (MapHInstLS of NULL: the calling process's own module, as KERNEL32's maps it (MapHInstLS_PN is the one that keeps
+// NULL). Made a handle of no module, USER's GetExePtr of it was 0 and RegisterClass failed: Desktop Themes registers
+// its window class with no instance and said "Not enough memory to run Desktop Themes")
+K('MapHInstLS', 0, function () {
+  const h = this.reg('eax'); if (!this.nativeUser16()) return h;
+  const pc = !h && this.thread16 && this.thread16.pc;
+  return pc && pc.exe ? this.hinst16(pc.exe.base, pc.exe) : this.hinst16(h);
+});
 K('MapHInstLS_PN', 0, function () { const h = this.reg('eax'); return h ? (this.nativeUser16() ? this.hinst16(h) : h) : 0; });
 /** whether this process runs the native USER.EXE (then Win32 module handles need 16-bit counterparts) */
 P.nativeUser16 = function () { const u = this.ne && this.ne.get('USER'); return !!(u && u.meta); };
