@@ -1004,9 +1004,16 @@ class Machine {
   exec(cmd, show) {
     if (this.traceLog) this.traceLog.push([Math.round(performance.now()), 'host', 'exec', `${cmd} (show ${show})`]);   // (a trace: every program start, with its command line)
     const m = /^\s*(?:"([^"]+)"|(\S+))\s*(.*)$/.exec(cmd || ''); if (!m) return 2;
-    let path = m[1] || m[2]; const arg = m[3];
-    if (!extname(path)) path += '.exe';
-    const file = (/^[a-z]:|^\\/i.test(path) ? [path] : [join('C:\\WINDOWS', path), join('C:\\WINDOWS\\SYSTEM', path), join(fs.cwd, path)]).find(f => fs.exists(f));
+    let path = m[1] || m[2], arg = m[3];
+    const where = p => { if (!extname(p)) p += '.exe'; return (/^[a-z]:|^\\/i.test(p) ? [p] : [join('C:\\WINDOWS', p), join('C:\\WINDOWS\\SYSTEM', p), join(fs.cwd, p)]).find(f => fs.exists(f)); };
+    let file = where(path);
+    // (an unquoted program name with spaces in it: each space in turn ends the name, as Windows takes one, until a
+    // file is there. The Pinball trial's launcher starts "C:\Program Files\...\hhouse.exe /L" as it is; taken to the
+    // first space, C:\Program was not found and no table started)
+    if (!file && !m[1] && arg) {
+      const words = cmd.trim().split(' ');
+      for (let i = 2; i <= words.length && !file; i++) { const f = where(words.slice(0, i).join(' ')); if (f) { file = f; arg = words.slice(i).join(' ').trim(); } }
+    }
     if (!file) return 2;
     // (a machine joining a shared session: a program the shell starts as Windows starts is the session's to start, if
     // the session runs it; the system's own still start)
