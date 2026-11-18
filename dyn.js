@@ -145,7 +145,9 @@ function translate(p, lin, csb, d32, v86, limit, ss32In, fIn, endIn, r3In) {
   // recursion meets them as a stack fault, not running on down through the heap; ESP's own accesses are not checked)
   const ssWide = ss32In !== undefined ? ss32In : !vm && (!!(p.r32(ACC + (p.cpu.ss.value & 0xfff8)) & 0x400000) || !(p.cpu.ss.value & 0xffff));
   const callGuard = () => { if (r3 && ssWide) { f.gg('esp').c(4).op('sub').ls(K); guard(K, true); } };
-  const guard = (a, wr) => { if (r3) f.lg(a).c(12).op('shr_u').e(0x2d, 0, uleb(LAYOUT.PROT)).if_().lg(a).c(wr ? 0x4000010 : 0x4000000).e(0x10, 1).gg('eip').e(0x0f).end(); };
+  // (a page's PROT byte: 1 no ring-3 access, 2 no ring-3 write (a VxD's image: ring 3 reads ring 0's memory on Windows
+  // 98, MSACM32 a counter of MMDEVLDR's it was given the address of, and faulted in MMTASK: no ADPCM sound played))
+  const guard = (a, wr) => { if (r3) { f.lg(a).c(12).op('shr_u').e(0x2d, 0, uleb(LAYOUT.PROT)); if (!wr) f.c(1).op('and'); f.if_().lg(a).c(wr ? 0x4000010 : 0x4000000).e(0x10, 1).gg('eip').e(0x0f).end(); } };
   let pc = lin, n = 0;
   const fetch = () => u8[pc++];
   const fetch16 = () => { const v = u8[pc] | (u8[pc + 1] << 8); pc += 2; return v; };

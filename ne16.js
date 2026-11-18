@@ -4799,6 +4799,11 @@ def16('KERNEL', 631, '', 'jmp', function () {
     const td32 = m && m.exports.get(rec.name32);
     if (td32 && !rec.mod) Object.assign(rec, { mod: m, table: u32(td32 + (this.r32(td32 + 0x20) | 0)) });
   }
+  // (and in each process that calls through it, as Windows loads the 32-bit half into the caller's process: its
+  // DllMain runs there first. Entered unattached, MSACM32 found no record of the process (its list of the processes
+  // attached, made by DllMain) and the wave mapper's every request was MMSYSERR_ERROR: no ADPCM sound played, the
+  // desktop themes' sounds among them)
+  else if (rec && rec.mod && this.pc && this.pc.exe && this.thread16 && this.thread16.pc === this.pc && !(this.pc.attached && this.pc.attached.has(rec.mod))) { this.runPendingInits(); for (const d of this.importClosure(rec.mod)) this.attach(d); }
   const tgt = rec && rec.table ? this.r32(rec.table + cx) : 0;
   // (code of the module: its translated text, or, for one mapped from its file and run as run-time code (dyn.js), whose
   // text range is empty, its image. Windows 98's VERSION.DLL is such a module: VER.DLL's every call into its 32-bit half

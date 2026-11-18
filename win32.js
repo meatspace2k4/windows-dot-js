@@ -139,7 +139,8 @@ class Process {
   get cmdPtr() { return this.pc.cmdPtr; }
   set cmdPtr(v) { (this.pc0 || (this.pc0 = { pid: 0x50 })).cmdPtr = v; }
   /** the whole pages in [lo, hi) as ring 0's only (`on`), or given back to ring 3: LAYOUT.PROT */
-  protect(lo, hi, on = true) { const a = (lo + 0xfff) >>> 12, b = hi >>> 12; if (b > a) this.u8.fill(on ? 1 : 0, LAYOUT.PROT + a, LAYOUT.PROT + b); }
+  // (`on` 'write': ring 3 may read them, not write them, as a VxD's memory is to ring 3 on Windows 95)
+  protect(lo, hi, on = true) { const a = (lo + 0xfff) >>> 12, b = hi >>> 12; if (b > a) this.u8.fill(on === 'write' ? 2 : on ? 1 : 0, LAYOUT.PROT + a, LAYOUT.PROT + b); }
   get u8() { return new Uint8Array(this.mem.buffer); }
   get dv() { return new DataView(this.mem.buffer); }
   r32(a) { return this.dv.getUint32(a, true); }
@@ -1962,7 +1963,12 @@ def('KERNEL32', 'GetCommandLineW', 0, function () {
   return (pc.cmdPtrW = w);
 });
 def('KERNEL32', 'GetCommandLineA', 0, function () {
-  const pc = this.thread16 && this.thread16.pc, ptr = this.cmdPtr;
+  const pc = this.thread16 && this.thread16.pc;
+  let ptr = this.cmdPtr;
+  // (a process with no command line of its own, the system's (MSGSRV32, MMTASK): an empty one, as a DLL's C run-time
+  // reads it as it attaches. Answered with what was there, MSACM32's _setargv read an address past the machine's memory
+  // and MSGSRV32 faulted: a blue screen)
+  if (!ptr || u32(ptr) >= this.mem.buffer.byteLength) { if (!this.emptyCmd) { this.emptyCmd = this.alloc(4); this.w32(this.emptyCmd, 0); } ptr = this.emptyCmd; }
   if (pc && /\.SCR$/i.test(pc.path || '')) pc.commandLineSeen = this.readA(ptr);
   return ptr;
 });

@@ -26,7 +26,7 @@ P.vxd = function (file, disk = false) {
   const b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
   const m = d.meta, img = d.imgBytes || (d.imgBytes = b64(d.image));
   this.u8.set(img, m.base);
-  this.protect(m.base, m.base + (m.size || img.length));   // (ring 0's pages: a program's stray pointer into them faults, win32.js PROT)
+  this.protect(m.base, m.base + (m.size || img.length), 'write');   // (ring 0's pages, read-only to ring 3 as on Windows 98: a program's stray pointer into them faults, win32.js PROT)
   const mod = d.mod || (d.mod = new WebAssembly.Module(b64(d.wasm)));
   const run = new WebAssembly.Instance(mod, this.imports).exports.run;
   const look = new Uint32Array(this.mem.buffer, m.lookup, m.textHi - m.textLo);
@@ -101,7 +101,7 @@ P.vxdFromDisk = function (key) {
   const probe = leImage(data, 0); if (!probe) { W.log('warn', 'vxd', `${key}: not an LE image`); return null; }
   const base = this.imageRoom(0, probe.size, true); if (!base) { W.log('warn', 'vxd', `${key}: no room for its ${probe.size.toString(16)} bytes`); return null; }
   const le = leImage(data, base);
-  this.u8.set(le.image, base); this.protect(base, base + le.size);
+  this.u8.set(le.image, base); this.protect(base, base + le.size, 'write');
   // (no translated module: textLo = textHi, so each block is translated as it is entered, win32.js dispatch)
   const meta = { name: le.name, id: le.id, ddb: le.ddb, procs: le.procs, services: le.services, base, size: le.size, textLo: 0, textHi: 0, blocks: [], vxd: true, disk: true };
   const rec = { kind: 'vxd', name: le.name, file: key, id: le.id, meta, run: null, ddb: le.ddb, procs: le.procs, base, size: le.size };
