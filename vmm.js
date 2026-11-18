@@ -24,6 +24,7 @@ P.vxd = function (file, disk = false) {
   if (this.vxds.has(key)) return this.vxds.get(key);
   const d = window.W95SYSTEM && window.W95SYSTEM.vxds && window.W95SYSTEM.vxds[key]; if (!d) return disk ? this.vxdFromDisk(key) : null;
   const b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+  { const v = this.vxdInstalled(key, d, b64); if (v) return v; }
   const m = d.meta, img = d.imgBytes || (d.imgBytes = b64(d.image));
   this.u8.set(img, m.base);
   this.protect(m.base, m.base + (m.size || img.length), 'write');   // (ring 0's pages, read-only to ring 3 as on Windows 98: a program's stray pointer into them faults, win32.js PROT)
@@ -92,14 +93,34 @@ const leImage = (data, base) => {
 // (only the ones known to run on this machine's VMM: a VxD taken from the disk runs on whatever services and hooks the
 // VMM here has, and one whose program gets on without it is better absent. DINPUT.VXD takes the mouse from VMD's pointer
 // hooks, which the machine's input does not pass through, and the Pinball trial's menu had no clicks; SAGE.VXD (System
-// Agent, which the Plus! savers open) had SHELL call back into an address with no code, a blue screen as the saver ran.
-// Not there, each one's program does without it, as before)
+// Agent, which the Plus! savers open) is left to its program to do without, as before)
 const DISK_VXDS = new Set(['DDRAW.VXD']);
 P.vxdFromDisk = function (key) {
   if (!this.fs || !DISK_VXDS.has(key)) return null;
   let data = null;
   for (const dir of ['C:\\WINDOWS\\SYSTEM', 'C:\\WINDOWS\\SYSTEM\\VMM32']) { try { data = this.fs.readFile(dir + '\\' + key); break; } catch (_) { /* not there */ } }
   if (!data) return null;
+  return this.vxdDiskImage(key, data);
+};
+/** the bundle's VxD as the installed system has it, when its VMM32.VXD (W4 or W3, w4.js) carries a newer one: that
+ *  one, from the disk, its code translated as it runs. Windows 98's USER asks SHELL's API for function 108h as its
+ *  idle check runs (ISUSERIDLE, as a screen saver waits); Windows 95's SHELL, the bundle's, has 100h-107h, and its
+ *  range check let 108h through to the word after its table, its list of hooks: a jump to the list's handle, a blue
+ *  screen (exception 06) as the saver ran. Its SDK version (DDB +4) says which is newer (400h, 40Ah for Windows 98).
+ *  null: the bundle's stands */
+const VMM32_NEWER = new Set(['SHELL.VXD']);
+P.vxdInstalled = function (key, d, b64) {
+  if (!this.fs || !VMM32_NEWER.has(key) || !self.W4) return null;
+  let f = null; try { f = W4.member(this.fs.readFile('C:\\WINDOWS\\SYSTEM\\VMM32.VXD'), key); } catch (_) { /* no VMM32 */ }
+  if (!f) return null;
+  const probe = leImage(f, 0); if (!probe) return null;
+  const img = d.imgBytes || (d.imgBytes = b64(d.image)), bundleSdk = img[d.meta.ddb - d.meta.base + 4] | img[d.meta.ddb - d.meta.base + 5] << 8;
+  const sdk = probe.image[probe.ddb + 4] | probe.image[probe.ddb + 5] << 8;
+  if (probe.id !== d.meta.id || sdk <= bundleSdk) return null;
+  return this.vxdDiskImage(key, f, `VMM32.VXD's (SDK ${sdk.toString(16)}h over the bundle's ${bundleSdk.toString(16)}h)`);
+};
+/** an LE image put in the arena with its fixups for where it is, its code translated as it runs */
+P.vxdDiskImage = function (key, data, from = 'the disk') {
   const probe = leImage(data, 0); if (!probe) { W.log('warn', 'vxd', `${key}: not an LE image`); return null; }
   const base = this.imageRoom(0, probe.size, true); if (!base) { W.log('warn', 'vxd', `${key}: no room for its ${probe.size.toString(16)} bytes`); return null; }
   const le = leImage(data, base);
@@ -108,7 +129,7 @@ P.vxdFromDisk = function (key) {
   const meta = { name: le.name, id: le.id, ddb: le.ddb, procs: le.procs, services: le.services, base, size: le.size, textLo: 0, textHi: 0, blocks: [], vxd: true, disk: true };
   const rec = { kind: 'vxd', name: le.name, file: key, id: le.id, meta, run: null, ddb: le.ddb, procs: le.procs, base, size: le.size };
   this.modules.push(rec); this.vxds.set(key, rec);
-  W.log('info', 'vxd', `${key} (${le.name}, VxD ${le.id.toString(16)}h) loaded from the disk at ${base.toString(16)}, its code translated as it runs`);
+  W.log('info', 'vxd', `${key} (${le.name}, VxD ${le.id.toString(16)}h) loaded from ${from} at ${base.toString(16)}, its code translated as it runs`);
   return rec;
 };
 /** the loaded VxD with device id `id` */

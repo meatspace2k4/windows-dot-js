@@ -8,7 +8,7 @@ self.window = self;
 // the Ethernet segment as this worker has it: its own stations (the card, in the system's machine), and the rest of the
 // segment on the page (the other computer, lanhost.js; other machines' cards), frames passing both ways
 self.W95LAN = { stations: new Set(), frames: 0 };
-importScripts('bridge.js', 'braid.js', 'fs.js', 'win32.js', 'gl.js', 'shell32.js', 'system.js', 'claude-exe.js', 'claude-app.js', 'session-dll.js', 'sesstray-exe.js', 'session-tray.js', 'dbwin-exe.js', 'dbwin.js', 'debugger-exe.js', 'debugger.js','osclass.js', 'ne16.js', 'setupx-lzx.js', 'vmm.js', 'sound.js', 'lan.js', 'parallel.js', 'netfs.js', 'netpatch.js', 'dynjs.js', 'dyn.js', 'v86.js', 'savers.js', 'saver-runtime.js');
+importScripts('bridge.js', 'braid.js', 'fs.js', 'win32.js', 'gl.js', 'shell32.js', 'system.js', 'claude-exe.js', 'claude-app.js', 'session-dll.js', 'sesstray-exe.js', 'session-tray.js', 'dbwin-exe.js', 'dbwin.js', 'debugger-exe.js', 'debugger.js','osclass.js', 'ne16.js', 'setupx-lzx.js', 'w4.js', 'vmm.js', 'sound.js', 'lan.js', 'parallel.js', 'netfs.js', 'netpatch.js', 'dynjs.js', 'dyn.js', 'v86.js', 'savers.js', 'saver-runtime.js');
 const B = self.W95Bridge, W = self.W95Win32, { FSError, join, basename, extname } = self.W95FS;
 const b64bytes = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
 const sha256 = W.sha256;   // (a program's identity as the bundle records it: spawnProgram)
