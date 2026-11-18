@@ -194,7 +194,7 @@ class Machine {
   braidNamed() { const by = new Map(); for (const [v, k] of this.braidNames()) by.set(k, v); return name => by.get(name); }
   /** the properties of the machine's own object that are the host's live things, not the moment's: the step timer,
    *  the message channel, the input ring, the moments themselves, the clock's skew */
-  braidSkip(obj, k) { return (obj === this && (k === 'timer' || k === 'sysId' || k === 'stepDue' || k === 'soonCh' || k === 'soonPending' || k === 'ring' || k === 'alive' || k === 'mods' || k === 'stepLog' || k === 'started' || k === 'fast' || k === 'until' || k === 'untilWait' || k === 'markWait' || k === 'detLog' || k === 'trailLog' || k === 'childAsks' || k === 'askChain' || k === 'readQ' || k === 'reader')) || (obj === this.proc && (k === 'dynCache' || k === 'dynFast' || k === 'dynEnv' || k === 'runHook'))
+  braidSkip(obj, k) { return (obj === this && (k === 'timer' || k === 'sysId' || k === 'stepDue' || k === 'paceAt' || k === 'btnFedAt' || k === 'lastFed' || k === 'lastStepEnd' || k === 'soonCh' || k === 'soonPending' || k === 'ring' || k === 'alive' || k === 'mods' || k === 'stepLog' || k === 'started' || k === 'fast' || k === 'until' || k === 'untilWait' || k === 'markWait' || k === 'detLog' || k === 'trailLog' || k === 'childAsks' || k === 'askChain' || k === 'readQ' || k === 'reader')) || (obj === this.proc && (k === 'dynCache' || k === 'dynFast' || k === 'dynEnv' || k === 'runHook'))
     // (a module translated whole as it loaded, a 16-bit module's or a program's or DLL's: its module's bytes kept for
     // translating it again (dyn.js translateNE), and the memo's module being read, made again from its code and the
     // memo; each moment copied them, MSHTML's 50 MB among them, four moments held at a time while Setup ran)
@@ -519,7 +519,9 @@ class Machine {
       // (a button's change goes in 50 ms after the last one, as a hand's press and release come apart: a script's
       // click queued both at once, fed in one pass USER had them at the same moment, and Explorer's Start button,
       // its menu opened on the press, stayed pressed with no menu)
-      if (this.mouseq[0][0] & 0x1e) { const now = performance.now(); if (now - (this.btnFedAt || 0) < 50) break; this.btnFedAt = now; }
+      // (the last one's time is this worker's clock's: one ahead of it is another worker's, a moment travelled to
+      // carried it (braidSkip leaves it out now), and every click waited until this clock caught up with it)
+      if (this.mouseq[0][0] & 0x1e) { const now = performance.now(), last = this.btnFedAt > now ? 0 : (this.btnFedAt || 0); if (now - last < 50) break; this.btnFedAt = now; }
       if (this.btn && this.stroke && this.mouseq[0][0] === 0x8001) {
         // (a drag's moves run at most lagMax ahead of the program taking them: USER's DispatchMessage counts the
         // moves taken, ne16.js hookTaken; past 100 ms without one taken, the next goes in anyway. Four ahead
