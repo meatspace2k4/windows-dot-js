@@ -89,12 +89,14 @@ const leImage = (data, base) => {
  *  as VWIN32 loads one for \\.\NAME.VXD: its image put in the arena with its fixups for where it is, and its code
  *  translated as it runs (dyn.js), as a program's is. Windows 98's DirectDraw opens DDRAW.VXD through DDHELP; with no
  *  VxD to open, DirectDrawCreate failed (E_FAIL) and the CD Sampler's Pinball closed as it started. null: no such VxD */
-// (not DINPUT.VXD: DirectInput's VxD takes the mouse and keyboard from VMD's and VKD's pointer and key hooks (VMD 8, 9),
-// which the machine's input does not pass through: it goes to USER's event procedures. Loaded, the Pinball trial's
-// menu read the mouse through it and had no clicks. Not there, DINPUT.DLL takes them from Windows' messages)
-const DISK_VXD_NOT = new Set(['DINPUT.VXD']);
+// (only the ones known to run on this machine's VMM: a VxD taken from the disk runs on whatever services and hooks the
+// VMM here has, and one whose program gets on without it is better absent. DINPUT.VXD takes the mouse from VMD's pointer
+// hooks, which the machine's input does not pass through, and the Pinball trial's menu had no clicks; SAGE.VXD (System
+// Agent, which the Plus! savers open) had SHELL call back into an address with no code, a blue screen as the saver ran.
+// Not there, each one's program does without it, as before)
+const DISK_VXDS = new Set(['DDRAW.VXD']);
 P.vxdFromDisk = function (key) {
-  if (!this.fs || !/^[A-Z0-9_$~!#%&@^-]+\.(VXD|386)$/.test(key) || DISK_VXD_NOT.has(key)) return null;
+  if (!this.fs || !DISK_VXDS.has(key)) return null;
   let data = null;
   for (const dir of ['C:\\WINDOWS\\SYSTEM', 'C:\\WINDOWS\\SYSTEM\\VMM32']) { try { data = this.fs.readFile(dir + '\\' + key); break; } catch (_) { /* not there */ } }
   if (!data) return null;
