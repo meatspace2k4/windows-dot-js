@@ -6410,7 +6410,8 @@ K('CreateFileA', 7, function (name, ...rest) {
   if (!m) return createFile.call(this, name, ...rest);
   let loaded = [...(this.vxds || new Map()).values()].find(v => v.inited && v.name.toUpperCase() === m[1].toUpperCase());   // any VxD loaded by that name
   // else a dynamic VxD of that name, loaded as VWIN32 loads it for the open (SYS_DYNAMIC_DEVICE_INIT)
-  if (!loaded && !VXD_FILES[m[1].toUpperCase()] && this.vxdLoad && ((window.W95SYSTEM || {}).vxds || {})[m[1].toUpperCase() + '.VXD']) loaded = this.vxdLoad(m[1].toUpperCase() + '.VXD');
+  // (one the bundle carries, or the system's own file: vmm.js vxdFromDisk)
+  if (!loaded && !VXD_FILES[m[1].toUpperCase()] && this.vxdLoad) loaded = this.vxdLoad(m[1].toUpperCase() + '.VXD', true);
   const id = VXD_FILES[m[1].toUpperCase()] || (loaded && loaded.id);
   if (!id) { this.lastError = 2; return 0xffffffff; }
   const vx = this.vxdById && this.vxdById(id);   // a recompiled VxD (vmm.js) is asked first (DIOC_OPEN)

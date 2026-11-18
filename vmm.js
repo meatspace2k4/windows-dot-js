@@ -15,11 +15,14 @@ const SEGS = [['cs', 'csb'], ['ds', 'dsb'], ['es', 'esb'], ['ss', 'ssb'], ['fsel
 
 // ---------------------------------------------------------------- loading and calling
 /** a VxD from the system bundle, loaded at its base: { name, id, meta, ddb, procs }; null if the bundle lacks it */
-P.vxd = function (file) {
+// (`disk`: one the bundle does not carry is looked for on the disk too. Only for a program's \\.\NAME.VXD open: the
+// static ones the registry names were loaded from the disk at boot as well, NDIS2SUP called a VDD service the VMM
+// does not have, and Windows ended as it started)
+P.vxd = function (file, disk = false) {
   this.vxds = this.vxds || new Map();
   const key = file.toUpperCase().replace(/^.*\\/, '');
   if (this.vxds.has(key)) return this.vxds.get(key);
-  const d = window.W95SYSTEM && window.W95SYSTEM.vxds && window.W95SYSTEM.vxds[key]; if (!d) return null;
+  const d = window.W95SYSTEM && window.W95SYSTEM.vxds && window.W95SYSTEM.vxds[key]; if (!d) return disk ? this.vxdFromDisk(key) : null;
   const b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
   const m = d.meta, img = d.imgBytes || (d.imgBytes = b64(d.image));
   this.u8.set(img, m.base);
@@ -38,6 +41,68 @@ P.vxd = function (file) {
     if (typeof a === 'string') { if (a.toUpperCase() === rec.name.toUpperCase()) look.fill(0); }
     else if (a >= m.textLo && a < m.textHi) this.smc(a);
   }
+  return rec;
+};
+/** an LE image (a VxD file) laid out as tools/recomp.py's LE lays one out: its objects one after another from `base`,
+ *  every internal fixup applied; its DDB (the first entry of the first bundle) and what it names. null for no LE */
+const leImage = (data, base) => {
+  const dv = new DataView(data.buffer, data.byteOffset, data.byteLength), u32d = o => dv.getUint32(o, true), u16d = o => dv.getUint16(o, true);
+  if (data.length < 0x40) return null;
+  const le = u32d(0x3c); if (le + 0x84 > data.length || data[le] !== 0x4c || data[le + 1] !== 0x45) return null;
+  const pgsz = u32d(le + 0x28), last = u32d(le + 0x2c), objtab = le + u32d(le + 0x40), nobj = u32d(le + 0x44);
+  const fpt = le + u32d(le + 0x68), frt = le + u32d(le + 0x6c), datapg = u32d(le + 0x80), npages = u32d(le + 0x14), enttab = le + u32d(le + 0x5c);
+  const opt = le + u32d(le + 0x48), filepage = i => (data[opt + 4 * i] << 16) | (data[opt + 4 * i + 1] << 8) | data[opt + 4 * i + 2];
+  const objs = []; let size = 0;
+  for (let i = 0; i < nobj; i++) { const o = objtab + 24 * i, ob = { vsize: u32d(o), flags: u32d(o + 8), pgidx: u32d(o + 12), pgcnt: u32d(o + 16), rva: size }; size += (ob.vsize + 0xfff) & ~0xfff; objs.push(ob); }
+  const image = new Uint8Array(size), iv = new DataView(image.buffer);
+  for (const o of objs) for (let k = 0; k < o.pgcnt; k++) {
+    const fp = filepage(o.pgidx + k - 1), n = fp < npages ? pgsz : last, src = datapg + (fp - 1) * pgsz, at = o.rva + k * pgsz;
+    image.set(data.subarray(src, Math.min(src + n, data.length)).subarray(0, Math.max(0, Math.min(n, size - at))), at);
+  }
+  for (const o of objs) for (let k = 0; k < o.pgcnt; k++) {
+    const pg = filepage(o.pgidx + k - 1) - 1; let q = frt + u32d(fpt + 4 * pg); const end = frt + u32d(fpt + 4 * pg + 4);
+    while (q < end) {
+      const src = data[q], fl = data[q + 1]; q += 2;
+      let offs = null, cnt = 0;
+      if (src & 0x20) { cnt = data[q]; q += 1; } else { offs = [dv.getInt16(q, true)]; q += 2; }
+      if (fl & 3) return null;   // (an import: no VxD has one)
+      let tobj; if (fl & 0x40) { tobj = u16d(q); q += 2; } else { tobj = data[q]; q += 1; }
+      let toff = 0;
+      if ((src & 0xf) !== 2) { if (fl & 0x10) { toff = u32d(q); q += 4; } else { toff = u16d(q); q += 2; } }
+      if (offs === null) { offs = []; for (let i = 0; i < cnt; i++) offs.push(dv.getInt16(q + 2 * i, true)); q += 2 * cnt; }
+      const val = (base + objs[tobj - 1].rva + toff) >>> 0;
+      for (const so of offs) {
+        const at = o.rva + k * pgsz + so; if (at < 0 || at + 4 > size) continue;
+        if ((src & 0xf) === 7) iv.setUint32(at, val, true);
+        else if ((src & 0xf) === 8) iv.setInt32(at, (val - (base + at + 4)) | 0, true);
+        else if ((src & 0xf) === 5) iv.setUint16(at, val & 0xffff, true);
+      }
+    }
+  }
+  const d = objs[u16d(enttab + 2) - 1].rva + u32d(enttab + 5), r = o => iv.getUint32(o, true);
+  const svc = r(d + 0x30), nsvc = r(d + 0x34), services = [];
+  if (svc && nsvc) for (let i = 0; i < nsvc; i++) services.push(r(svc - base + 4 * i));
+  let name = ''; for (let i = 0; i < 8; i++) name += String.fromCharCode(image[d + 0xc + i]);
+  return { image, size, ddb: base + d, id: iv.getUint16(d + 6, true), name: name.replace(/[ \0]+$/, ''), procs: { control: r(d + 0x18), v86: r(d + 0x1c), pm: r(d + 0x20) }, services };
+};
+/** a dynamic VxD the bundle does not carry, from the system's own folder (C:\WINDOWS\SYSTEM, or its VMM32 folder),
+ *  as VWIN32 loads one for \\.\NAME.VXD: its image put in the arena with its fixups for where it is, and its code
+ *  translated as it runs (dyn.js), as a program's is. Windows 98's DirectDraw opens DDRAW.VXD through DDHELP; with no
+ *  VxD to open, DirectDrawCreate failed (E_FAIL) and the CD Sampler's Pinball closed as it started. null: no such VxD */
+P.vxdFromDisk = function (key) {
+  if (!this.fs || !/^[A-Z0-9_$~!#%&@^-]+\.(VXD|386)$/.test(key)) return null;
+  let data = null;
+  for (const dir of ['C:\\WINDOWS\\SYSTEM', 'C:\\WINDOWS\\SYSTEM\\VMM32']) { try { data = this.fs.readFile(dir + '\\' + key); break; } catch (_) { /* not there */ } }
+  if (!data) return null;
+  const probe = leImage(data, 0); if (!probe) { W.log('warn', 'vxd', `${key}: not an LE image`); return null; }
+  const base = this.imageRoom(0, probe.size, true); if (!base) { W.log('warn', 'vxd', `${key}: no room for its ${probe.size.toString(16)} bytes`); return null; }
+  const le = leImage(data, base);
+  this.u8.set(le.image, base); this.protect(base, base + le.size);
+  // (no translated module: textLo = textHi, so each block is translated as it is entered, win32.js dispatch)
+  const meta = { name: le.name, id: le.id, ddb: le.ddb, procs: le.procs, services: le.services, base, size: le.size, textLo: 0, textHi: 0, blocks: [], vxd: true, disk: true };
+  const rec = { kind: 'vxd', name: le.name, file: key, id: le.id, meta, run: null, ddb: le.ddb, procs: le.procs, base, size: le.size };
+  this.modules.push(rec); this.vxds.set(key, rec);
+  W.log('info', 'vxd', `${key} (${le.name}, VxD ${le.id.toString(16)}h) loaded from the disk at ${base.toString(16)}, its code translated as it runs`);
   return rec;
 };
 /** the loaded VxD with device id `id` */
@@ -2107,11 +2172,13 @@ P.vxdBoot = function () {
 };
 
 /** a dynamically loadable VxD by file name, loaded and initialized (SYS_DYNAMIC_DEVICE_INIT) once */
-P.vxdLoad = function (file) {
-  const v = this.vxd(file); if (!v) return null;
+P.vxdLoad = function (file, disk = false) {
+  const v = this.vxd(file, disk); if (!v) return null;
   if (v.inited) return v;
   v.inited = true;
   const key = v.file, r = this.vxdControl(v, SYS_DYNAMIC_DEVICE_INIT);
+  // (one from the disk that declines to load is a device the open does not find, as VWIN32 answers it)
+  if (r.cf && v.meta.disk) { v.inited = false; W.log('warn', 'vxd', `${key} failed SYS_DYNAMIC_DEVICE_INIT`); return null; }
   if (r.cf) { this.trapped = `${key} failed SYS_DYNAMIC_DEVICE_INIT`; return null; }
   return v;
 };
