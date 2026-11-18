@@ -4391,7 +4391,12 @@ class RemoteApp extends NativeApp {
     setTimeout(() => this.worker.terminate(), 0);
     emit('program.exit', { path: this.path, code, ...(why ? { why } : {}) });
     if (why && this.system) console.error(`[system] ${why}`);
-    if (why) msgBox(basename(this.path), `This program has performed an illegal operation and will be shut down.\n\n${why}`, 'error', ['OK'], null, { noTask: false, modal: false });
+    if (why) {
+      const box = msgBox(basename(this.path), `This program has performed an illegal operation and will be shut down.\n\n${why}`, 'error', ['OK'], null, { noTask: false, modal: false });
+      // (the system's own end is undone by a travel to a moment before it: its box goes with it, rather than standing
+      // over the machine arrived in as if that one had failed)
+      if (this.system && box && window.win95 && window.win95.on) { const off = window.win95.on('braid.travel', () => { off(); try { closeWin(box); } catch (_) { /* closed */ } }); }
+    }
     dirty();
     if (own && this.system && !why) systemEnded(code);
   }

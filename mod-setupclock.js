@@ -7,7 +7,8 @@
 (() => {
   const p = machine.proc, W = self.W95Win32, u = p.ne && p.ne.get('USER'), vc = machine.vclock;
   if (!u) { W.log('warn', 'mod', 'setupclock: no USER'); return; }
-  for (const off of p.setupClockOff || []) off();
+  // (a moment travelled to carries the list, but not its functions: only the live ones are ended)
+  for (const off of p.setupClockOff || []) if (typeof off === 'function') off();
   const SETUP = /^(W98SETUP|SUWIN|SETUP)$/i, OVER_HOUR = 7, COUNT_SPAN = 30;   // (COUNT_SPAN: the countdown's last minutes its pace is taken over)
   // (the machine's clock against the wall's over the last two minutes, sampled every second. Over the meter's 8 s the
   // ratio swung with what the machine was doing that moment, a copy's bursts against its waits, and the figure with it:

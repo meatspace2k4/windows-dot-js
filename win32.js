@@ -36,6 +36,7 @@ const CPU_REGS = ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi', 'cf', 
 // and Windows 98 Setup's preparation comes there about every 5 ms: a 7 ms slice ran to its second such point, 10 ms,
 // 95 steps a second; 4 ms stops at the first. The step's own work is ~0.1 ms. At 40 a busy 16-bit program left the
 // page 16 frames a second)
+const EXE_ZONE_END = 0x00c00000;   // (400000h up to here: programs' images at their own base, DLLs elsewhere: imageRoom)
 const BUDGET = 0x1000, SLICE_MS = 4;   // (BUDGET: blocks between the checks, so a slice ends close to its time)
 const WM = { NULL: 0, CREATE: 1, DESTROY: 2, MOVE: 3, SIZE: 5, ACTIVATE: 6, SETFOCUS: 7, KILLFOCUS: 8, PAINT: 0xf, CLOSE: 0x10,
   QUIT: 0x12, ERASEBKGND: 0x14, SHOWWINDOW: 0x18, ACTIVATEAPP: 0x1c, SETCURSOR: 0x20, NCCREATE: 0x81, NCDESTROY: 0x82,
@@ -340,20 +341,29 @@ class Process {
     const v = this.vmRoom(size, 0x1000); if (v) return v;
     throw new GuestError(`no room for a block table of ${u32(size).toString(16)}h bytes`);
   }
+  /** whether [a, a+size) reaches into the room kept for programs' images (400000h to EXE_ZONE_END) */
+  inExeZone(a, size) { return a < EXE_ZONE_END && a + size > 0x400000; }
   imageRoom(pref, size, relocatable, own = false) {
     // (and every 16-bit module of the bundle's, loaded or not: each loads at its build's fixed base (loadNE), over
     // whatever is there. WINSPOOL.DRV, placed at BA0000h before MMTASK, had MMTASK's image written over it, and
     // RUNDLL32 faulted in its start)
     const spans = [...(own ? this.moduleSpans(m => m.name !== 'EXE') : this.moduleSpans()), ...this.bundleSpans16()], free =a => a >= 0x400000 && a + size <= 0x02000000 && !spans.some(([lo, hi]) => a < hi && lo < a + size);
-    if (free(pref)) return pref;
+    // (a module that can go anywhere goes clear of the programs' own images, 400000h up to EXE_ZONE_END, as Windows maps
+    // a DLL at its own base far from them: DLLs placed from 620000h up filled the room a program with no relocations
+    // needs at 400000h, and the CD Sampler's Pinball, 4.6 MB, had "no room for its image" (KERNEL32's stand-in at
+    // 620000h, OLEAUT32 and COMDLG32.OCX of the Sampler that started it). Into it only when there is no other room)
+    const zone = a => !own && relocatable && this.inExeZone(a, size);
+    if (free(pref) && !zone(pref)) return pref;
     const PROGRAMS = [0x01000000, 0x01100000], programs = a => !own && a < PROGRAMS[1] && PROGRAMS[0] < a + size;
+    const from = own ? 0x00620000 : EXE_ZONE_END;
     // (clear of the memo's places for modules not loaded here first, as vmRoom keeps clear of them)
-    if (relocatable) { const memo = this.memoSpans(), kept = a => !memo.some(([lo, hi]) => a < hi && lo < a + size); for (let a = 0x00620000; a + size <= 0x02000000; a += 0x10000) if (free(a) && !programs(a) && kept(a)) return a; }
-    if (relocatable) for (let a = 0x00620000; a + size <= 0x02000000; a += 0x10000) if (free(a) && !programs(a)) return a;
+    if (relocatable) { const memo = this.memoSpans(), kept = a => !memo.some(([lo, hi]) => a < hi && lo < a + size); for (let a = from; a + size <= 0x02000000; a += 0x10000) if (free(a) && !programs(a) && kept(a)) return a; }
+    if (relocatable) for (let a = from; a + size <= 0x02000000; a += 0x10000) if (free(a) && !programs(a)) return a;
     // (the arena full: a relocatable DLL in the address space above the layout's, where VirtualAlloc's regions are, as
     // Windows maps a DLL wherever its process has room. Windows 98's first start maps more DLLs than the arena holds,
     // and IEPEERS.DLL and OCCACHE.DLL found no room)
-    if (relocatable && !own && this.vmTop) return this.vmRoom(size, 0x10000, spans);
+    if (relocatable && !own && this.vmTop) { const r = this.vmRoom(size, 0x10000, spans); if (r) return r; }
+    if (relocatable && !own) for (let a = 0x00620000; a + size <= EXE_ZONE_END; a += 0x10000) if (free(a)) return a;
     return 0;
   }
   /** `size` bytes of the address space above the layout's, where VirtualAlloc's regions are, aligned to `align`, clear
@@ -487,7 +497,7 @@ class Process {
         if (lo < Infinity) memoBase = had.textLo - lo;
       }
     }
-    const base = (memoBase && memoBase !== pref && (this.imageRoom(memoBase, size, false) || this.vmTake(memoBase, size, this.moduleSpans()))) || this.imageRoom(pref, size, relocatable);
+    const base = (memoBase && memoBase !== pref && !this.inExeZone(memoBase, size) && (this.imageRoom(memoBase, size, false) || this.vmTake(memoBase, size, this.moduleSpans()))) || this.imageRoom(pref, size, relocatable);
     if (!base) { log('warn', 'win32', `${file}: no room for its image at ${pref.toString(16)}`); return null; }
     // (the file it was mapped from: GetModuleFileName's answer, TRIEDIT's own type library found beside it)
     const d = { file: f, module: null, meta: { base, entry: ep ? base + ep : 0, textLo: 0, textHi: 0, blocks: [], size, dynamic: true, path } };
@@ -3277,8 +3287,13 @@ def('KERNEL32', 'FileTimeToDosDateTime', 3, function (ft, pd, pt) {
   this.w16(pd, ((d.getUTCFullYear() - 1980) << 9) | ((d.getUTCMonth() + 1) << 5) | d.getUTCDate());
   this.w16(pt, (d.getUTCHours() << 11) | (d.getUTCMinutes() << 5) | (d.getUTCSeconds() >> 1)); return 1;
 });
+// (the date and the time are WORDs: the high halves of their stack slots are whatever the caller left there. Taken
+// whole, the Pinball trial's setup gave a year past what a Date holds, NaN, and BigInt(NaN) ended the system machine
+// as its File Copy began: MSGSRV32's "illegal operation". A date no Date can hold is ERROR_INVALID_PARAMETER)
 def('KERNEL32', 'DosDateTimeToFileTime', 3, function (dd, tt, ft) {
+  dd &= 0xffff; tt &= 0xffff;
   const ms = Date.UTC((dd >> 9) + 1980, ((dd >> 5) & 15) - 1, dd & 31, tt >> 11, (tt >> 5) & 63, (tt & 31) * 2);
+  if (!Number.isFinite(ms)) { this.lastError = 87; return 0; }
   ftPut(this, ft, BigInt(ms) * 10000n + 116444736000000000n); return 1;
 });
 def('KERNEL32', 'GetDiskFreeSpaceExA', 4, function (n, avail, total, free) {

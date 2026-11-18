@@ -369,6 +369,7 @@ const WORKLET = `registerProcessor('w95-stream', class extends AudioWorkletProce
     this.on = false; this.wait = 0; this.live = true; this.got = [];   // (got: [context time, samples] of the arrivals, the last quarter second's)
     this.port.onmessage = e => {
       if (e.data === 'end') { this.live = false; return; }
+      if (e.data && e.data.port) { e.data.port.onmessage = this.port.onmessage; return; }   // (the machine's worker's own channel: its samples, past the page's thread)
       const [a, b] = e.data; this.room(a.length);
       for (let i = 0, m = this.cap - 1; i < a.length; i++) { this.L[(this.w + i) & m] = a[i]; this.R[(this.w + i) & m] = b[i]; }
       this.w += a.length; this.wait = 0;
@@ -460,9 +461,20 @@ const out = (proc, rate) => {
       a.node.connect(s.dest);
       for (const m of a.pending) a.node.port.postMessage(m, [m[0].buffer, m[1].buffer]);
       a.pending = [];
+      link(proc, a, rate);
     });
   }
   return a;
+};
+// A machine in a worker sends a stream's samples to its worklet itself once the worklet is made (worker.js
+// W95AudioSink): through the page's thread, they stopped while it was busy, and a Braid travel keeps it busy for
+// seconds putting the moment in place: Windows' startup sound broke up. Linked again when the program's worker is
+// another (a travel's new machine), as its first samples come through the page
+const link = (proc, a, rate) => {
+  const w = proc.worker; if (!a.node || !w || !w.postMessage || a.linked === w || !window.MessageChannel) return;
+  const ch = new MessageChannel(); a.linked = w;
+  a.node.port.postMessage({ port: ch.port1 }, [ch.port1]);
+  w.postMessage({ t: 'audioPort', rate, port: ch.port2 }, [ch.port2]);
 };
 /** the program has exited: its streams leave the output (which stays open for the others) */
 P.soundClose = function () {
@@ -475,7 +487,7 @@ const play = (proc, rate, L, R, n) => {
   if (proc.audioOuts === null) return false;   // closed
   const a = out(proc, rate); if (!a) return false;
   const m = [Float32Array.from(L.subarray(0, n)), Float32Array.from(R.subarray(0, n))];
-  if (a.node) a.node.port.postMessage(m, [m[0].buffer, m[1].buffer]); else a.pending.push(m);
+  if (a.node) { a.node.port.postMessage(m, [m[0].buffer, m[1].buffer]); link(proc, a, Math.min(Math.max(Math.round(rate), 3000), 768000)); } else a.pending.push(m);
   const dry = a.dry > 0; a.dry = 0; return dry;
 };
 system();   // as the machine starts

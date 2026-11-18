@@ -146,9 +146,16 @@ W.Process.prototype.r0Idle = function () {
 const regStore = { held: null, load() { return this.held; }, op(o) { post({ t: 'regop', o }); } };
 
 // ---------------------------------------------------------------- sound: the samples go to the page's output
+// Once the page has made a stream's worklet, it hands this worker a channel to it (t 'audioPort'), and the samples go
+// there directly: through the page's own thread, they stopped while that thread was busy, and a Braid travel keeps
+// it busy for seconds putting the moment in place (the registry, the disk, the next machine): Windows' startup sound
+// broke up. The first samples of a stream go through the page, which makes the stream
+const audioPorts = self.W95AudioPorts = new Map();
+const audioKey = rate => Math.min(Math.max(Math.round(rate), 3000), 768000);   // (sound.js out: the stream a rate plays on)
 self.W95AudioSink = (proc, rate, L, R, n) => {
-  const l = Float32Array.from(L.subarray(0, n)), r = Float32Array.from(R.subarray(0, n));
-  post({ t: 'audio', rate, l, r }, [l.buffer, r.buffer]); return false;
+  const l = Float32Array.from(L.subarray(0, n)), r = Float32Array.from(R.subarray(0, n)), port = audioPorts.get(audioKey(rate));
+  if (port) port.postMessage([l, r], [l.buffer, r.buffer]); else post({ t: 'audio', rate, l, r }, [l.buffer, r.buffer]);
+  return false;
 };
 
 // ---------------------------------------------------------------- the machine
@@ -873,7 +880,8 @@ class Machine {
       const sl = this.stepLog || (this.stepLog = []); sl.push(st); if (sl.length > 120) sl.shift();
     } catch (e) {
       if (e instanceof W.FaultError) { p.depth = 0; p.faulted(e.fault); }
-      else if (!(e instanceof W.HangError)) { console.error(e && e.stack ? e.stack : e); this.exited(-1, e.message); return; }
+      // (its stack in the machine's log too: the worker's console goes with the worker, and a travel replaces it)
+      else if (!(e instanceof W.HangError)) { console.error(e && e.stack ? e.stack : e); W.log('error', 'machine', String(e && e.stack || e).slice(0, 2000)); this.exited(-1, e.message); return; }
       else { p.hung('host', e); p.depth = 0; }
     }
     p.stats.guestMs += performance.now() - t0;
@@ -2106,6 +2114,7 @@ self.onmessage = e => {
   const m = e.data;
   // (cmd 'det': what came in from outside, stamped with the machine's clock, beside each step's end: two runs from one
   // moment compared find where the outside made them differ)
+  if (m.t === 'audioPort') { audioPorts.set(m.rate, m.port); return; }   // (a stream's worklet, straight: W95AudioSink; the page's, not the machine's)
   if (machine && machine.detLog && m.t !== 'cmd') machine.detLog.push(`in ${m.t}${m.name ? ' ' + m.name : ''} @${machine.vclock.now}`);
   if (m.t === 'start') {
     rpcSab = m.rpc; lanRing = m.o.lan || null; regStore.held = m.registry; W.regAttach(regStore); if (m.o.exp) Object.assign(self, m.o.exp);

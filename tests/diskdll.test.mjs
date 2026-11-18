@@ -24,7 +24,7 @@ function pe({ dll, pref, fill, ch = 0x60000020 }) {
   return f;
 }
 // the DLL: exports from ordinal 268, its #287 the 20th, at RVA 1100h
-const lib = pe({ dll: true, pref: 0x00700000, fill: (dv, opt, at) => {
+const lib = pe({ dll: true, pref: 0x00d00000, fill: (dv, opt, at) => {
   dv.setUint32(opt + 96, 0x1000, true); dv.setUint32(opt + 100, 0x100, true);
   const e = at(0x1000); dv.setUint32(e + 16, 268, true); dv.setUint32(e + 20, 20, true); dv.setUint32(e + 24, 0, true); dv.setUint32(e + 28, 0x1040, true);
   dv.setUint32(at(0x1040) + 4 * 19, 0x1100, true);
@@ -52,9 +52,9 @@ const user16 = { name: 'USER', base: 0x01a00000, segs: [{ base: 0x01a00000, allo
   const rec = p.loadImage(exe, null, { base: 0x00400000, entry: 0, textLo: 0, textHi: 0, blocks: [] }, 'EXE');
   const testlib = p.byName.get('TESTLIB');
   assert.ok(testlib, 'the DLL on disk is loaded');
-  assert.equal(testlib.base, 0x00700000, 'at the base its header prefers, nothing there');
+  assert.equal(testlib.base, 0x00d00000, 'at the base its header prefers, nothing there');
   assert.deepEqual(p.thunks, [], 'no dead thunk');
-  assert.equal(p.r32(rec.base + 0x10a0) >>> 0, 0x00700000 + 0x1100, 'the IAT holds #287: the 20th export from base 268');
+  assert.equal(p.r32(rec.base + 0x10a0) >>> 0, 0x00d00000 + 0x1100, 'the IAT holds #287: the 20th export from base 268');
   assert.ok(rec.deps.includes(testlib), 'the program depends on it (its DllMain runs as the program starts)');
   assert.deepEqual([...testlib.importers.get('#287')], ['EXE'], 'who imports the ordinal: cmd watch\'s name for an export without one');
 }
@@ -72,15 +72,23 @@ const user16 = { name: 'USER', base: 0x01a00000, segs: [{ base: 0x01a00000, allo
   assert.equal(p.imageRoom(0x01a00000, 0x10000, false), 0, 'USER\'s code is not free for an image that cannot move');
   const b = p.imageRoom(0x01a00000, 0x10000, true);
   assert.ok(b && (b + 0x10000 <= 0x01a00000 || b >= 0x01a62ce0 + 0x1337), 'one that can move goes elsewhere');
-  p.modules.push({ name: 'X', base: 0x00620000, size: 0x30000, meta: {} });
-  assert.equal(p.imageRoom(0x00620000, 0x10000, true), 0x00650000, 'past a PE image too');
+  p.modules.push({ name: 'X', base: 0x00c00000, size: 0x30000, meta: {} });
+  assert.equal(p.imageRoom(0x00c00000, 0x10000, true), 0x00c30000, 'past a PE image too');
+}
+{ // room: a DLL that can move keeps out of the programs' own room (400000h to C00000h), so a program with no
+  // relocations has its base: the CD Sampler's Pinball, 49A000h bytes at 400000h, found DLLs from 620000h up there
+  const p = machine({});
+  const d = p.imageRoom(0x00620000, 0x73000, true); p.modules.push({ name: 'KERNEL32', base: d, size: 0x73000, meta: {} });
+  assert.ok(d >= 0x00c00000, 'a stand-in\'s room above it');
+  const o = p.imageRoom(0x65340000, 0x93000, true); assert.ok(o >= 0x00c00000, 'a DLL whose base is taken, above it too');
+  assert.equal(p.imageRoom(0x00400000, 0x49a000, false, true), 0x00400000, 'the program at its base');
 }
 // a private-arena DLL's writable data is each process's own (OLE32's: Explorer's "classes registered" state was Paint's
 // too, Paint's OleInitialize made no class and failed); a shared-arena DLL's (based at 80000000h and up), or a section
 // marked shared, is one copy
 {
   const dllAt = (pref, ch) => pe({ dll: true, pref, ch, fill: () => {} });
-  const p = machine({ 'C:\\WINDOWS\\SYSTEM\\PRIV.DLL': dllAt(0x00700000, 0xc0000040), 'C:\\WINDOWS\\SYSTEM\\SHRD.DLL': dllAt(0x00720000, 0xd0000040) });
+  const p = machine({ 'C:\\WINDOWS\\SYSTEM\\PRIV.DLL': dllAt(0x00d00000, 0xc0000040), 'C:\\WINDOWS\\SYSTEM\\SHRD.DLL': dllAt(0x00d20000, 0xd0000040) });
   const priv = p.loadDll('PRIV'), shrd = p.loadDll('SHRD'), at = priv.base + 0x1000, st = shrd.base + 0x1000;
   assert.ok(priv.priv && !shrd.priv, 'writable, unshared: per process; marked shared: one copy');
   const A = { pid: 1 }, B = { pid: 2 };
@@ -103,10 +111,10 @@ const user16 = { name: 'USER', base: 0x01a00000, segs: [{ base: 0x01a00000, allo
   const p = machine({ 'C:\\PROGRA~1\\INTERN~1\\TESTLIB.DLL': lib });
   Object.assign(p, { readA: () => 'C:\\PROGRA~1\\INTERN~1\\TESTLIB.DLL', runPendingInits() {}, importClosure: m => [m], attach() {} });
   const API = window.W95Win32.API;
-  assert.equal(API.KERNEL32.LoadLibraryA[1].call(p, 0x100), 0x00700000, 'loaded from its folder');
+  assert.equal(API.KERNEL32.LoadLibraryA[1].call(p, 0x100), 0x00d00000, 'loaded from its folder');
   assert.equal(p.loadDirs, undefined, 'the search folders as they were');
   let named = ''; Object.assign(p, { hmod: h => h, writeA: (b, s) => { named = s; return s.length; }, exe: null, host: {} });
-  API.KERNEL32.GetModuleFileNameA[1].call(p, 0x00700000, 0x200, 260);
+  API.KERNEL32.GetModuleFileNameA[1].call(p, 0x00d00000, 0x200, 260);
   assert.equal(named, 'C:\\PROGRA~1\\INTERN~1\\TESTLIB.DLL', 'GetModuleFileName: the file it was mapped from');
   const q = machine({ 'C:\\PROGRA~1\\INTERN~1\\TESTLIB.DLL': lib }); Object.assign(q, { readA: () => 'TESTLIB.DLL', lastError: 0 });
   assert.equal(API.KERNEL32.LoadLibraryA[1].call(q, 0x100), 0, 'a bare name is not looked for there');
@@ -119,6 +127,6 @@ const user16 = { name: 'USER', base: 0x01a00000, segs: [{ base: 0x01a00000, allo
   let asked = ''; Object.assign(p, { readA: () => asked, runPendingInits() {}, importClosure: m => [m], attach() {}, lastError: 0 });
   asked = 'NOTHERE.DLL'; assert.equal(ex.call(p, 1, 0, 2), 0); assert.equal(p.lastError, 2, 'not there: file not found');
   asked = 'TEXT.DLL'; assert.equal(ex.call(p, 1, 0, 2), 0); assert.equal(p.lastError, 193, 'no image: bad format');
-  asked = 'TESTLIB.DLL'; assert.equal(ex.call(p, 1, 0, 2), 0x00700000, 'a bare name found in SYSTEM');
+  asked = 'TESTLIB.DLL'; assert.equal(ex.call(p, 1, 0, 2), 0x00d00000, 'a bare name found in SYSTEM');
 }
 console.log('diskdll: ok');

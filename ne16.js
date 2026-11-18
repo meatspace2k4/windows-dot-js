@@ -1730,7 +1730,7 @@ P.hookTaken32 = function (m) {
 P.hookPeek32 = function (m) {
   for (const nm of ['PeekMessageA', 'PeekMessageW']) {
     const at = m.exports && m.exports.get(nm); if (!at) continue;
-    this.setEntryHook(at, function () { const t = thr(this, 0); if (t.peekOwed) { t.peekOwed = 0; this.endSlice(); } return undefined; });
+    this.setEntryHook(at, function () { const t = thr(this, 0); if (t.peekOwed) { t.peekOwed = 0; if (this.othersReady(t)) this.endSlice(); } return undefined; });
   }
 };
 /** where USER's cursor is (GetCursorPos), for the pointer's hot spot in its image (null inside a call) */
@@ -3742,9 +3742,13 @@ def16('KERNEL', 435, 'w', 'w', () => 0x10);                                     
 def16('KERNEL', 237, '', 'v', function () {});                                 // K237 nop
 // WIN32_OldYield: USER's PeekMessage calls it when the queue is empty. A thread not inside a call JS made gives up
 // its slice once, so a loop polling PeekMessage (SHELL32's drag loop, for one) lets input and the other threads run.
+// With no other thread ready to run, the thread runs on, as Windows' yield returns at once when there is nothing to
+// switch to: its slice ends when its time does. Given up each time, a loop that polls between pieces of its work took
+// the rest of the step from itself: SETUPX goes through its file queue for each file of a cabinet, PeekMessage at each
+// entry (VCPUICALLBACKPROC), and Windows Setup in Add/Remove Programs stood at "Scanning ..." a second a file
 function oldYield() {
   const t = thr(this, 0), top = !this.asTask && (this.thread16 ? this.depth === this.thread16.depth : this.depth === 0);
-  if (top && !t.yielded) { t.yielded = true; return YIELD; }
+  if (top && !t.yielded) { if (!this.othersReady(t)) return; t.yielded = true; return YIELD; }
   t.yielded = false;
 }
 // WIN32_OldYield for a Win32 thread: Windows lets the Win16Lock go and takes it again, and the thread runs on, so what
@@ -5002,6 +5006,25 @@ const waitTop = (p, ms) => {
  *  run, it made the call again and yielded, every pass. Windows 98 Setup's file copy, SUWIN yielding between blocks,
  *  went round W98SETUP, MSGSRV32, MMTASK, SETUP, Explorer's and the others' waits each time, and the machine's time ran
  *  at a twentieth of the wall's */
+/** whether a thread other than `self` would run in the next pass of threads16 (the pass's own tests; one kept out only
+ *  by the Win16Lock counts, as a yield lets the lock go), or input waits for the host */
+P.othersReady = function (self) {
+  const h = this.host; if (h && ((h.keyq && h.keyq.length) || (h.mouseq && h.mouseq.length))) return true;
+  if (!this.threadsById) return false;
+  for (const t of this.threadsById.values()) {
+    if (t === self || t.id === MAIN_TID || t.state === 'running' || t.blocked || !t.state || t.state === 'done' || t.state === 'hung' || t.state === 'suspended' || (t.state === 'waiting' && t.wait && !t.wait.set)) continue;
+    if (this.waitBlocked(t)) continue;
+    // (a Win32 thread in a timed wait (wait32) whose objects are not set and whose time has not run out: run, it only
+    // looks again. Task Scheduler's MSTASK waits so all along, and every yield was given to it)
+    const w = t.waitOn;
+    if (t.state === 'waiting' && w && t.wake && t.wake !== Infinity && this.now() < t.wake) {
+      const set = h => { const e = ev16(this, h); return !e || e.set; };
+      if (!(w.all ? w.hs.every(set) : w.hs.some(set))) continue;
+    }
+    return true;
+  }
+  return false;
+};
 P.waitBlocked = function (t) {
   if (t.state !== 'waiting' || t.preempted || !t.ctx) return false;
   const now = this.now();

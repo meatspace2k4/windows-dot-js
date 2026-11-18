@@ -176,8 +176,17 @@ async function shareFolder() {
   const r = await dialog.showOpenDialog({ title: 'Share a Folder', buttonLabel: 'Share', properties: ['openDirectory', 'createDirectory'] })
   if (!r.canceled && r.filePaths[0]) shares.add(r.filePaths[0])
 }
+// ---- View > Mute: the app's sound off (the machine runs on, its sound unheard), kept for the next start (mute.json)
+const muteFile = () => path.join(app.getPath('userData'), 'mute.json')
+let muted = false
+function setMuted(on) {
+  muted = !!on; fs.writeFileSync(muteFile(), JSON.stringify({ muted }))
+  for (const w of BrowserWindow.getAllWindows()) w.webContents.setAudioMuted(muted)
+}
+app.on('browser-window-created', (_, w) => w.webContents.setAudioMuted(muted))
 app.whenReady().then(() => {
-  store = require('./store').open(dbFile())
+  try { muted = !!JSON.parse(fs.readFileSync(muteFile(), 'utf8')).muted } catch (_) {}
+  store =require('./store').open(dbFile())
   // (a share joins the list once its folder has been read: the page is told, and connects its drive)
   shares = require('./shares').open(path.join(app.getPath('userData'), 'shares.json'), () => { for (const w of BrowserWindow.getAllWindows()) w.webContents.send('shares-changed'); connectShares(false) })
   // the same shares for the Mac itself, read-only (webdav.js): File > Connect Shares in Finder connects each as a volume
@@ -191,7 +200,8 @@ app.whenReady().then(() => {
     { role: 'appMenu' },
     { label: 'File', submenu: [{ label: 'Share a Folder…', click: shareFolder }, { label: 'Connect Shares in Finder', click: () => connectShares(true) }, { label: 'Insert CD Image…', click: insertCD }, { label: 'Eject CD', click: ejectCD }, { type: 'separator' },
       { label: 'Export Session…', click: exportSession }, { label: 'Import Session…', click: importSession }] },
-    { label: 'View', submenu: [{ role: 'togglefullscreen' }, { role: 'reload' }, { role: 'toggleDevTools' }] },
+    { label: 'View', submenu: [{ label: 'Mute', type: 'checkbox', checked: muted, accelerator: 'CmdOrCtrl+Shift+M', click: i => setMuted(i.checked) }, { type: 'separator' },
+      { role: 'togglefullscreen' }, { role: 'reload' }, { role: 'toggleDevTools' }] },
     { role: 'windowMenu' },
   ]))
   open()
