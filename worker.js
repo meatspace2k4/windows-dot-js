@@ -298,10 +298,6 @@ class Machine {
       }
       else if (typeof rec.run !== 'function') console.warn(`[arrival] ${rec.name}${isExe ? ' (' + rec.meta.name + ')' : ''}: no module to make its run from`);
     }
-    // (the display's message mode as the moment has it, told to the page: arrived from a blue screen into a moment
-    // without one, the page went on drawing the blue screen over the running machine, and took every key for it)
-    this.msg = !!p.msgMode; this.fatalShow = null; if (!p.msgMode) p.txt = null;
-    post({ t: 'msgMode', on: !!p.msgMode }); this.sendText(true);
   }
   braidTravel(s) {
     const why = self.W95Braid.refuse(s, this.build || ''); if (why) throw new Error(why);
@@ -313,7 +309,7 @@ class Machine {
     this.keyq = []; this.mouseq = [];
     this.vclock.now = s.now;   // (the machine's clock reads the moment's time again; the graph put it back as well)
     this.until = null; if (this.untilWait) { const w = this.untilWait; this.untilWait = null; w({ at: s.now, left: true }); }
-    this.faultTaken = false; this.stopped = false; this.txtGen = -1;
+    this.faultTaken = false; this.stopped = false; this.txtGen = -1; this.arrivedDisplay();
     if (this.proc.fault) this.proc.fault = null;
     if (this.proc.lzxInstall) this.proc.lzxInstall();   // (SETUPX's decoder answered in JS again: the moment's entry hooks are its own, setupx-lzx.js)
     this.timer = 0; this.soonPending = false;
@@ -1042,6 +1038,17 @@ class Machine {
       stats: { ...p.stats }, held: p.win16Held ? { hung: p.win16Held.hung } : null,
       input: { taken: this.ringTaken || 0, mouse: this.mouseq.length } }, pixels);   // (the input it has taken from the ring, and the mouse events not yet fed)
     this.clip();
+  }
+  /** a moment arrived at: the blue screen of the machine left behind (message mode, its text screen, a fatal's run and
+   *  what was to follow it) gives way to the display as the moment has it, and the page is told. Message mode reached
+   *  the page only as VDD went in and out of it (System_Control, vmm.js host.msgMode); a travel leaves it with no such
+   *  call, and the page went on drawing the blue screen over the running machine, taking every key for it. The fatal's
+   *  end, still armed, would stop the machine arrived in once any later ring-0 run finished */
+  arrivedDisplay() {
+    const p = this.proc;
+    this.fatalShow = null; this.afterR0 = null;
+    this.msg = !!p.msgMode; if (!p.msgMode) p.txt = null;
+    post({ t: 'msgMode', on: this.msg }); if (this.msg) this.sendText(true);
   }
   sendText(force) {
     const t = this.proc && this.proc.txt; if (!t || (!force && t.gen === this.txtGen)) return;
@@ -2105,7 +2112,7 @@ class Machine {
         W.regLoad(ex.registry);
         while (B.ringTake(this.ring));
         this.keyq = []; this.mouseq = []; this.vclock.now = ex.now;
-        this.faultTaken = false; this.stopped = false; this.txtGen = -1; this.timer = 0; this.soonPending = false;
+        this.faultTaken = false; this.stopped = false; this.txtGen = -1; this.arrivedDisplay(); this.timer = 0; this.soonPending = false;
         this.redrawAll = true;   // (step: the windows drawn again on this machine's display)
         // (the page's screen follows the moment's mode at once: its canvases were the boot's; the windows come with the
         // next step's frame, no call into USER from here)
