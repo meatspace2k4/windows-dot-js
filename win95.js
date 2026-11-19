@@ -4068,9 +4068,7 @@ class RemoteApp extends NativeApp {
     this.cv = mkc(sw, sh); this.cx = this.cv.getContext('2d'); this.img = this.cx.createImageData(sw, sh);
     this.ov = mkc(sw, sh); this.ox = this.ov.getContext('2d'); this.oimg = this.ox.createImageData(sw, sh); this.o32 = new Uint32Array(this.oimg.data.buffer);
     this.d32 = new Uint32Array(this.img.data.buffer); this.blank = false;
-    // (nor while a travel is under way: an anchor's arrival boots the system's machine first, and its boot mode had the
-    // window jump to 640x480 in the middle of the travel)
-    if (this.system && fit && !travels) fitWindow(sw, sh);
+    if (this.system && fit) fitWindow(sw, sh);
     resize();
   }
   /** the controls USER keeps for a native window, as the machine last reported them (none before its first answer);
