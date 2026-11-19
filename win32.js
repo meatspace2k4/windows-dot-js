@@ -848,14 +848,34 @@ class Process {
     try { return this.runAt(eip); } finally { this.yieldLevel = was; }
   }
   /** a module's code written over (code that patches itself): the block holding the address is translated again from
-   *  what is there now, at run time (dyn.js), from here on */
-  smc(a) {
+   *  what is there now, at run time (dyn.js), from here on. The address is kept on the module's record (smcAt), which
+   *  a moment carries, so a block table made again from the translation (a travel's arrival, worker.js remakeRuns)
+   *  drops the same blocks (smcAgain) */
+  smc(a, again = false) {
     a = u32(a);
     const m = this.modules.find(x => x.meta && x.meta.lookup && a >= x.meta.textLo && a < x.meta.textHi); if (!m) return;
+    if (!again) { const l = m.smcAt || (m.smcAt = []); if (!l.includes(a)) l.push(a); }
     const bl = m.meta.blocks; let lo = 0, hi = bl.length - 1, at = -1;
     while (lo <= hi) { const mid = (lo + hi) >> 1; if (bl[mid] <= a) { at = mid; lo = mid + 1; } else hi = mid - 1; }
     const look = new Uint32Array(this.mem.buffer, m.meta.lookup, m.meta.textHi - m.meta.textLo);
     for (let i = Math.max(0, at); i < bl.length && bl[i] < a + 4; i++) look[bl[i] - m.meta.textLo] = 0;
+  }
+  /** a module's block table just filled again from its translation (every block): the blocks whose code the machine
+   *  had written over dropped again, as smc dropped them. Filled whole, the table ran the translation of code no longer
+   *  there: SHELL.VXD's file has `nop; call` at SHELL+24, which its first message call writes back to the VxDCall it
+   *  stands for and runs again; after a travel the translated `call` ran over the VxDCall in memory, SHELL's stub
+   *  found its patch gone and went back to it for good, and the blue screen of a fatal exception never came up (the
+   *  machine stopped, its last screen the desktop). `image`: the bytes the translation was made from, laid out where
+   *  the module is (a VxD's), for a moment made before the addresses were kept: a block whose bytes differ is dropped */
+  smcAgain(m, image) {
+    for (const a of m.smcAt || []) this.smc(a, true);
+    if (!image || !m.meta || !m.meta.blocks) return;
+    const bl = m.meta.blocks, base = m.meta.base, lo = m.meta.textLo, look = new Uint32Array(this.mem.buffer, m.meta.lookup, m.meta.textHi - lo);
+    for (let i = 0; i < bl.length; i++) {
+      const a = bl[i], end = i + 1 < bl.length ? bl[i + 1] : m.meta.textHi;
+      if (!look[a - lo]) continue;
+      for (let b = a; b < end; b++) if (this.u8[b] !== image[b - base]) { look[a - lo] = 0; break; }
+    }
   }
   /** the running thread's slice ends where it is: the dispatcher's next question gives the processor back, as when
    *  its time runs out (inside a call the host made it runs on) */

@@ -4163,8 +4163,9 @@ class RemoteApp extends NativeApp {
       case 'stroke': if (this.system) osStrokeOut(m); return;   // (this person's mouse stroke into a window, or part of one: worker.js recordStroke)
       case 'strokeAt': { const client = String(m.key).split(':')[0]; if (m.done) peerAt.delete(client); else peerAt.set(client, { x: m.x, y: m.y, t: Date.now() }); dirty(); return; }   // (another person's stroke, as far as it is drawn here: their pointer drawn on it)
       case 'text': this.txt = m.txt; if (msgApp === this) { dirty(); this.logText(); } return;
-      case 'msgMode': msgApp = m.on ? this : msgApp === this ? null : msgApp; this.r0 = m.on; dirty(); if (m.on) this.logText(); return;
+      case 'msgMode': msgApp = m.on ? this : msgApp === this ? null : msgApp; this.r0 = m.on; if (!m.on) this.fatalStopped = false; dirty(); if (m.on) this.logText(); return;
       case 'reset': machineReset(); return;
+      case 'fatalStop': this.fatalStopped = true; return;   // (stopped at a fatal exception's blue screen: Ctrl+Alt+Del restarts the PC, vkd)
       case 'audio': if (window.W95Sound) W95Sound.play(this, m.rate, m.l, m.r); return;
       case 'regop': W95Win32.regApply(m.o); logonChanged(m.o); return;
       case 'closeProgram': closeProgram(this); return;
@@ -4352,6 +4353,8 @@ class RemoteApp extends NativeApp {
   vkd(e, up) {
     if (!this.alive) return false;
     const cad = e.ctrlKey && e.altKey && (e.code === 'Delete' || e.code === 'Backspace' || e.code === 'NumpadDecimal');
+    // (a machine stopped at a fatal exception's blue screen takes no keys: Ctrl+Alt+Del restarts the PC, as the screen says)
+    if (cad && this.fatalStopped) { if (!up) machineReset(); return true; }
     if (msgApp !== this && !cad) return false;
     this.ringKey(e, up, false); return true;
   }

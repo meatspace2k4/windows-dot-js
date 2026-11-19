@@ -287,9 +287,21 @@ class Machine {
         }
       }
       if (rec.meta && !rec.meta.textHi && !(rec.meta.blocks || []).length && !mod) continue;   // (a program mapped from its file: its code translated as it runs, no run to make)
-      if (mod) { rec.run = new WebAssembly.Instance(mod, p.imports).exports.run; if (rec.meta && rec.meta.lookup) { const look = new Uint32Array(p.mem.buffer, rec.meta.lookup, rec.meta.textHi - rec.meta.textLo); rec.meta.blocks.forEach((a, i) => { look[a - rec.meta.textLo] = i + 1; }); } }
+      if (mod) {
+        rec.run = new WebAssembly.Instance(mod, p.imports).exports.run;
+        if (rec.meta && rec.meta.lookup) {
+          const look = new Uint32Array(p.mem.buffer, rec.meta.lookup, rec.meta.textHi - rec.meta.textLo); rec.meta.blocks.forEach((a, i) => { look[a - rec.meta.textLo] = i + 1; });
+          // (the blocks the machine had dropped for code written over, dropped again: win32.js smcAgain)
+          const d = rec.kind === 'vxd' && (S.vxds || {})[rec.file], img = d && d.meta === rec.meta && d.image ? (d.imgBytes || (d.imgBytes = b64bytes(d.image))) : null;
+          p.smcAgain(rec, img);
+        }
+      }
       else if (typeof rec.run !== 'function') console.warn(`[arrival] ${rec.name}${isExe ? ' (' + rec.meta.name + ')' : ''}: no module to make its run from`);
     }
+    // (the display's message mode as the moment has it, told to the page: arrived from a blue screen into a moment
+    // without one, the page went on drawing the blue screen over the running machine, and took every key for it)
+    this.msg = !!p.msgMode; this.fatalShow = null; if (!p.msgMode) p.txt = null;
+    post({ t: 'msgMode', on: !!p.msgMode }); this.sendText(true);
   }
   braidTravel(s) {
     const why = self.W95Braid.refuse(s, this.build || ''); if (why) throw new Error(why);
@@ -370,7 +382,7 @@ class Machine {
         return canvas.getContext('2d');
       }, surfaceChanged: (h, pc) => { if (!h && m.w32DesktopSurface && m.w32DesktopSurface.pc === pc) m.w32DesktopSurface.version++; }, setCursor: () => {},
       exited: (code, why) => m.exited(code, why), boot: p => { m.proc = p; return p.bootUser16(); }, exec: (cmd, show) => m.exec(cmd, show),
-      msgMode: on => { m.msg = on; post({ t: 'msgMode', on }); m.sendText(true); }, reset: () => post({ t: 'reset' }),
+      msgMode: on => { m.msg = on; if (on && m.fatalShow) m.fatalShow.seen = true; post({ t: 'msgMode', on }); m.sendText(true); }, reset: () => post({ t: 'reset' }),
       faultDialog: f => post({ t: 'faultDialog', f }),
       console: (id, text) => post({ t: 'conOut', id, text }),   // (a console program's output, to its MS-DOS window: KERNEL32 WriteFile)
       consoleMode: (id, mode) => post({ t: 'conMode', id, mode }),   // (and its input's mode: line input, echo)
@@ -438,6 +450,9 @@ class Machine {
    *  box, not Windows' blue screen); anything else ends the machine */
   r0StepFailed(e) {
     const p = this.proc;
+    // (the blue screen's own run that failed: drawn by the machine, fatalShown. Its fault was passed over, faultTaken,
+    // and no step came after it: the machine stopped with the desktop on its screen)
+    if (this.fatalShow) { console.error(e && e.stack ? e.stack : e); this.fatalShown(e instanceof W.FaultError ? e.fault.why : e.message); return; }
     if (e instanceof W.FaultError) { p.depth = 0; p.faulted(e.fault); if (!this.faultTaken) this.answerFault(); return; }
     console.error(e && e.stack ? e.stack : e); this.exited(-1, e.message);
   }
@@ -839,6 +854,9 @@ class Machine {
     if (p.r0Runs && p.r0Runs.length && p.r0Runs.every(s => s.vm && s.wait)) {
       try { p.r0Step(); } catch (e) { this.r0StepFailed(e); return; }
     }
+    // (a fatal exception's blue screen a second of the machine's time on with the display not in message mode: drawn
+    // by the machine, fatalShown)
+    if (this.fatalShow && !this.fatalShow.seen && p.now() - this.fatalShow.t > 1000 && this.fatalShown('no message mode after 1 s')) return;
     if (p.r0Runs && p.r0Runs.length && !p.r0Runs.every(s => s.vm && s.wait)) {
       try { p.r0Step(); } catch (e) { this.r0StepFailed(e); return; }
       this.sendText();
@@ -947,13 +965,13 @@ class Machine {
   /** the blue screen as VWIN32 draws it through the display's message mode (blue, the " Windows " title reversed, the
    *  message, "Press any key to continue"), for a fault before SHELL's message service is up (MSGSRV32's start-up):
    *  the system stays stopped there, as Windows does; it was ended, and the page's own desktop came back as if it ran */
-  blueText(msg) {
+  blueText(msg, prompt = '*  Press any key to continue') {
     const cols = 80, rows = 25, ch = new Array(cols * rows).fill(32), at = new Array(cols * rows).fill(0x17);
     const put = (r, c, s, a) => { for (let i = 0; i < s.length && c + i < cols; i++) { ch[r * cols + c + i] = s.charCodeAt(i); if (a !== undefined) at[r * cols + c + i] = a; } };
     const title = ' Windows '; put(8, (cols - title.length) >> 1, title, 0x71);
     const lines = []; for (const para of String(msg).replace(/\r/g, '').split('\n')) { let l = ''; for (const w of para.split(' ')) { if ((l + ' ' + w).trim().length > 66) { lines.push(l); l = w; } else l = (l ? l + ' ' : '') + w; } lines.push(l); }
     lines.forEach((l, i) => put(10 + i, 7, l));
-    put(Math.min(rows - 2, 11 + lines.length + 1), 7, '*  Press any key to continue');
+    put(Math.min(rows - 2, 11 + lines.length + 1), 7, prompt);
     this.stopped = true; this.proc.txt = { cols, rows, ch, at, cur: -1, gen: (this.proc.txt ? this.proc.txt.gen : 0) + 1 };
     post({ t: 'msgMode', on: true }); this.sendText(true);
   }
@@ -961,15 +979,40 @@ class Machine {
   /** the blue screen of a fatal fault: answered, the machine stops where it is with the screen as it was, so the fault
    *  can be read and the moment before it travelled to. It ended instead (exited), the page shut the PC down, and the
    *  blue screen was gone before it could be read */
+  // (SHELL's message service draws it at ring 0, a run that can stop for its key (r0Start). A run that never puts the
+  // display in message mode, or fails, leaves no blue screen: the machine stopped with the desktop on its screen and
+  // nothing said, the run going round SHELL's own stub (smcAgain). The machine draws it then, as blueText does before
+  // SHELL's service is up: fatalShown)
+  // (the system's machine stops there with a blue screen saying so, and Ctrl+Alt+Del restarts the PC (win95.js
+  // fatalStop): SHELL's message ended at its key, the display left message mode, and the machine stopped with the
+  // desktop back on its screen, taking no input and saying nothing)
   fatal(f) {
     const p = this.proc, msg = rpc('host', 'fatalText', [f]), at = p.vxdService && p.vxdService(0x17, 3);
-    const end = () => { this.stopped = true; clearTimeout(this.timer); this.sendText(); W.log('error', 'machine', `stopped at the blue screen: ${msg ? msg.split('\n').slice(0, 2).join(' ') : 'fault'}`); };
-    if (!msg || !at) { if (msg && this.system) this.blueText(msg); else end(); return; }
+    const end = () => {
+      this.fatalShow = null; this.afterR0 = null; this.stopped = true; clearTimeout(this.timer);
+      if (msg && this.system) {
+        const first = String(msg).replace(/\r/g, '').split(/\n\s*\n/)[0];
+        this.blueText(`${first}\n\nThe system has stopped: Windows cannot go on after a fatal exception in its own process.`, '*  Press CTRL+ALT+DEL to restart your computer.');
+        post({ t: 'fatalStop' });
+      } else this.sendText();
+      W.log('error', 'machine', `stopped at the blue screen: ${msg ? msg.split('\n').slice(0, 2).join(' ') : 'fault'}`);
+    };
+    if (!msg || !at) { end(); return; }
     const a = p.alloc(msg.length + 1); p.writeA(a, msg);
-    this.afterR0 = end;
+    this.afterR0 = end; this.fatalShow = { msg, t: p.now(), end };
     try { if (p.r0Start(at, { ebx: p.sysVM(), eax: 0x40001000, ecx: a, edi: 0, esi: 0, edx: 0 }) !== null) end(); }
-    catch (e) { console.error(e); end(); }
+    catch (e) { this.fatalShown(e.message); return; }
     this.sendText();
+  }
+  /** the blue screen SHELL's service was to draw, drawn by the machine (blueText): its run failed (`why`), or a second
+   *  of the machine's time went by with the display not in message mode. The runs at ring 0 are given up; the machine
+   *  stops at it */
+  fatalShown(why) {
+    const s = this.fatalShow; if (!s) return false;
+    this.fatalShow = null; this.afterR0 = null; this.proc.r0Runs = [];
+    W.log('error', 'machine', `the blue screen did not come up from SHELL (${why}): drawn by the machine`);
+    s.end();
+    return true;
   }
   /** what the page draws: USER's windows, the screen's mode and palette, the cursor sprite, the text screen */
   frame() {
