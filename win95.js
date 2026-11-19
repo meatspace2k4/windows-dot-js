@@ -3740,8 +3740,11 @@ function fitWindow(w, h) { const s = window.W95HOST && window.W95HOST.screen; if
 // the system's machine follows the page: once its viewport holds another of the adapter's modes (the display driver,
 // FRAMEBUF.DRV, sets the resolutions of its own table and no other), the machine is asked for it; a mode it did not
 // take is not asked for again until the viewport changes
+// (not while a travel is under way: the moment's registry and shell come in after its machines, over the mode set in
+// between; asked once it is over, braidUi travelling)
+let travels = 0;
 function syncMode() {
-  const a = sysApp; if (!a || !a.alive || !a.setMode) return;
+  const a = sysApp; if (!a || !a.alive || !a.setMode || travels) return;
   const [w, h] = bootSize();
   if ((w === a.sw && h === a.sh) || (a.modeRefused || []).some(([x, y]) => x === w && y === h)) return;
   a.setMode(w, h).then(() => { if (a.alive) syncMode(); });
@@ -4058,12 +4061,14 @@ class RemoteApp extends NativeApp {
     if (r.sw !== w || r.sh !== h) (this.modeRefused = this.modeRefused || []).push([w, h]);
     if (r.sw !== this.sw || r.sh !== this.sh) this.screenSized(r.sw, r.sh);
   }
-  screenSized(sw, sh) {
+  /** `fit`: the window takes the mode's size (a mode the machine went to itself); not for a travel's, where the
+   *  machine is asked for the viewport's mode instead (resize, syncMode) */
+  screenSized(sw, sh, fit = true) {
     [this.sw, this.sh] = [sw, sh];
     this.cv = mkc(sw, sh); this.cx = this.cv.getContext('2d'); this.img = this.cx.createImageData(sw, sh);
     this.ov = mkc(sw, sh); this.ox = this.ov.getContext('2d'); this.oimg = this.ox.createImageData(sw, sh); this.o32 = new Uint32Array(this.oimg.data.buffer);
     this.d32 = new Uint32Array(this.img.data.buffer); this.blank = false;
-    if (this.system) fitWindow(sw, sh);
+    if (this.system && fit) fitWindow(sw, sh);
     resize();
   }
   /** the controls USER keeps for a native window, as the machine last reported them (none before its first answer);
@@ -4165,7 +4170,8 @@ class RemoteApp extends NativeApp {
       case 'text': this.txt = m.txt; if (msgApp === this) { dirty(); this.logText(); } return;
       case 'msgMode': msgApp = m.on ? this : msgApp === this ? null : msgApp; this.r0 = m.on; if (!m.on) this.fatalStopped = false; dirty(); if (m.on) this.logText(); return;
       case 'reset': machineReset(); return;
-      case 'fatalStop': this.fatalStopped = true; return;   // (stopped at a fatal exception's blue screen: Ctrl+Alt+Del restarts the PC, vkd)
+      case 'fatalStop': this.fatalStopped = true; return;
+      case 'arrived': this.arrivedMode = true; return;   // (a travel landed: its display mode is the moment's, followMode)   // (stopped at a fatal exception's blue screen: Ctrl+Alt+Del restarts the PC, vkd)
       case 'audio': if (window.W95Sound) W95Sound.play(this, m.rate, m.l, m.r); return;
       case 'regop': W95Win32.regApply(m.o); logonChanged(m.o); return;
       case 'closeProgram': closeProgram(this); return;
@@ -4223,7 +4229,14 @@ class RemoteApp extends NativeApp {
   // (and the page's screen the machine's, once it is the page's monitor: the shell came up after the machine's first
   // frame (Windows 98's start after RUNONCE's restart), and the page kept the boot logo's 320x200, the desktop cut to
   // its corner)
-  followMode(m) { const s = m && m.scan; if (s && s.bpp && (s.w !== this.sw || s.h !== this.sh || !this.img || this.img.width !== s.w || this.img.height !== s.h)) this.screenSized(s.w, s.h); }
+  // (a travel's mode is the moment's, not the person's: the window keeps its size and place, and the machine is asked
+  // for the mode the viewport holds (syncMode), as after the person resizes it. Fitted to the moment's mode, the window
+  // jumped to it: a moment of 640x480 arrived at in a full-size window shrank it and moved it)
+  followMode(m) {
+    const s = m && m.scan; if (!s || !s.bpp) return;
+    const arrived = this.arrivedMode; this.arrivedMode = false;
+    if (s.w !== this.sw || s.h !== this.sh || !this.img || this.img.width !== s.w || this.img.height !== s.h) this.screenSized(s.w, s.h, !arrived);
+  }
   frame(m) {
     if (this.system && bootLogo.on && m.list.length) bootLogoEnd();   // (Windows has a window up: the start-up screen goes)
     if (this.system && sharedNow()) {   // (its windows changed: the session's objects may have; win95.js osSoon)
@@ -6494,6 +6507,8 @@ const braidUi = () => ({
   },
   setActive: w => { active = w; blinkOn = true; dirty(); },
   gfx: { K, fill, text, textW, btnUp, focusRect },
+  // (a travel begun and ended, nested ones counted: the viewport's mode asked for once the last is over, syncMode)
+  travelling: on => { travels = Math.max(0, travels + (on ? 1 : -1)); if (!travels) syncMode(); },
 });
 const braid = window.W95BraidPage ? window.W95BraidPage(braidUi()) : null;
 /** a fault a machine reported, written to the line under its generation (braid-page.js fault) */

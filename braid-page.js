@@ -196,7 +196,16 @@ window.W95BraidPage = function (ui) {
      *  for a damaged moment (checksum), one of another build (unless `force`), or one the lint found broken (unless
      *  `force`: a broken state is what one travels away from). Travel forks the line: the new generation grows from
      *  the moment; the one left runs no further, its moments stay */
+    // (the page holds back what it asks of the machines for itself until the travel is over (ui.travelling: the display
+    // mode its viewport holds, win95.js syncMode): asked while the moment was still arriving, the mode was set in the
+    // machine, then the moment's registry came in after it (Display\Settings' Resolution, 1512,949 over 640,480), and
+    // Explorer's tray, reading it on WM_DISPLAYCHANGE, took the change for one waiting on a restart: the taskbar was
+    // left where the moment's larger screen had it, off the bottom of the screen)
     async travel(to, o = {}) {
+      if (ui.travelling) ui.travelling(true);
+      try { return await braid.travelIn(to, o); } finally { if (ui.travelling) ui.travelling(false); }
+    },
+    async travelIn(to, o = {}) {
       if (to && typeof to === 'object' && 't' in to) { const v = viaLine({ op: 'scrub', t: Number(to.t) }, o); return v || scrub(Number(to.t), o); }
       const name = String(to), h = here.get(name);
       const asked = viaLine({ op: 'travel', name, force: !!o.force }, o); if (asked) return asked;

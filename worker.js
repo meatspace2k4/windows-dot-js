@@ -1049,6 +1049,7 @@ class Machine {
     this.fatalShow = null; this.afterR0 = null;
     this.msg = !!p.msgMode; if (!p.msgMode) p.txt = null;
     post({ t: 'msgMode', on: this.msg }); if (this.msg) this.sendText(true);
+    post({ t: 'arrived' });   // (the moment's display mode, in the scans from here, is not the window's size to take: win95.js followMode)
   }
   sendText(force) {
     const t = this.proc && this.proc.txt; if (!t || (!force && t.gen === this.txtGen)) return;
