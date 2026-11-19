@@ -1047,6 +1047,10 @@ class Machine {
   arrivedDisplay() {
     const p = this.proc;
     this.fatalShow = null; this.afterR0 = null;
+    // (the screen's size the machine answers for (GetSystemMetrics, a DC's size) is the host's, which the moment does
+    // not carry: the adapter's mode, which it does. Left as the machine before had it, USER and Explorer arrived at
+    // 1512x949 were told of a 640x480 screen)
+    { const a = p.scanout(); if (a.bpp) { p.host.width = a.w; p.host.height = a.h; [this.sw, this.sh] = [a.w, a.h]; } }
     this.msg = !!p.msgMode; if (!p.msgMode) p.txt = null;
     post({ t: 'msgMode', on: this.msg }); if (this.msg) this.sendText(true);
     post({ t: 'arrived' });   // (the moment's display mode, in the scans from here, is not the window's size to take: win95.js followMode)

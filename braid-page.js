@@ -196,16 +196,7 @@ window.W95BraidPage = function (ui) {
      *  for a damaged moment (checksum), one of another build (unless `force`), or one the lint found broken (unless
      *  `force`: a broken state is what one travels away from). Travel forks the line: the new generation grows from
      *  the moment; the one left runs no further, its moments stay */
-    // (the page holds back what it asks of the machines for itself until the travel is over (ui.travelling: the display
-    // mode its viewport holds, win95.js syncMode): asked while the moment was still arriving, the mode was set in the
-    // machine, then the moment's registry came in after it (Display\Settings' Resolution, 1512,949 over 640,480), and
-    // Explorer's tray, reading it on WM_DISPLAYCHANGE, took the change for one waiting on a restart: the taskbar was
-    // left where the moment's larger screen had it, off the bottom of the screen)
     async travel(to, o = {}) {
-      if (ui.travelling) ui.travelling(true);
-      try { return await braid.travelIn(to, o); } finally { if (ui.travelling) ui.travelling(false); }
-    },
-    async travelIn(to, o = {}) {
       if (to && typeof to === 'object' && 't' in to) { const v = viaLine({ op: 'scrub', t: Number(to.t) }, o); return v || scrub(Number(to.t), o); }
       const name = String(to), h = here.get(name);
       const asked = viaLine({ op: 'travel', name, force: !!o.force }, o); if (asked) return asked;
@@ -223,10 +214,15 @@ window.W95BraidPage = function (ui) {
       // Windows 98's VMM loaded, w98-windows), has it from its anchor, as an ended one does)
       const held = await Promise.all(Object.values(h.machines).map(m => (m.app.alive ? m.app.cmd('moments').then(l => (l || []).some(x => x.name === name), () => false) : true)));
       if (held.includes(false) && (await dbNames().catch(() => [])).includes(name)) return arrive(name, o);
+      // (the moment's registry in place, the page's copy and the store, before its machines run on from it: put back
+      // after them, it went to the machines as changes (regLoad's tell) over what they had written since they arrived:
+      // Display\Settings' Resolution, written as the machine took the viewport's mode, went back to the moment's, and
+      // Explorer's tray, reading it on WM_DISPLAYCHANGE, took the change for one waiting on a restart and left the
+      // taskbar where the moment's larger screen had it)
+      W.regLoad(h.s.sections.registry.value, true);
       for (const [k, m] of Object.entries(h.machines)) { if (!m.app.alive) { out[k] = 'gone'; continue; } out[k] = await m.app.cmd('travel', [name]); if (!out[k]) throw new Error(`the machine ${k} refused the moment (see the console)`); forgetKids(m.app); }
       ui.closeMenus();
       const [, sh] = B.restoreGraph(h.s.sections.disk.graph); shellBack(sh);
-      W.regLoad(h.s.sections.registry.value, true);
       const disk = writeDisk(false);
       const gen = line.fork(name, o.how || 'travel', { now });
       ui.emit('braid.travel', { gen, moment: name, fromGen: line.moments.get(name).gen, at: line.moments.get(name).at, how: o.how || 'travel' });
@@ -477,7 +473,10 @@ window.W95BraidPage = function (ui) {
     // Explorer fault as they next ran)
     await lap('the moment read', 'its disk');
     let diskKept = null;   // (the disk handed to the store already, here: not a second time below)
-    if (rec.machines.system && !sys()) { B.rebind([fs, {}], rec.page, { opaque: opaque(), skip: shellSkip }); diskKept = writeDisk(true); W.regLoad(rec.registry, true); }
+    if (rec.machines.system && !sys()) { B.rebind([fs, {}], rec.page, { opaque: opaque(), skip: shellSkip }); diskKept = writeDisk(true); }
+    // (the moment's registry in place before its machines are brought in and run on from it; put back after them, it
+    // went to them as changes over what they had written since: braid.travel)
+    W.regLoad(rec.registry, true);
     await lap('its disk and registry put in place', 'its machines');
     for (const [k, ex] of Object.entries(rec.machines)) { const ts = performance.now(), a = k === 'system' ? (sys() || await ui.startSystem()) : live().find(x => x.path === k); if (!a) throw new Error(`no machine running for the moment's ${k}`); laps.push(`${k} there after ${Math.round(performance.now() - ts)} ms`); out[k] = await a.cmd('import', [ex], ex.blob && ex.blob.buffer instanceof ArrayBuffer && !ex.blob.byteOffset && ex.blob.byteLength === ex.blob.buffer.byteLength ? [ex.blob.buffer] : []); ex.blob = null; forgetKids(a); }   // (the moment's bytes moved to the machine, not copied, when they are a buffer of their own)
     for (const [k, v] of Object.entries(out)) if (v && v.took) laps.push(`${k}: ${v.took}`);
@@ -505,7 +504,6 @@ window.W95BraidPage = function (ui) {
     if (act) ui.setActive(act);
     r.placed = placed.size;
     await lap('the page and its windows', 'its disk kept');
-    W.regLoad(rec.registry, true);
     const disk = diskKept || writeDisk(true);
     await lap('the registry and the disk kept');
     console.info(`[braid] arrival at ${name}: ${laps.join(', ')}`);

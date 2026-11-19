@@ -3740,11 +3740,8 @@ function fitWindow(w, h) { const s = window.W95HOST && window.W95HOST.screen; if
 // the system's machine follows the page: once its viewport holds another of the adapter's modes (the display driver,
 // FRAMEBUF.DRV, sets the resolutions of its own table and no other), the machine is asked for it; a mode it did not
 // take is not asked for again until the viewport changes
-// (not while a travel is under way: the moment's registry and shell come in after its machines, over the mode set in
-// between; asked once it is over, braidUi travelling)
-let travels = 0;
 function syncMode() {
-  const a = sysApp; if (!a || !a.alive || !a.setMode || travels) return;
+  const a = sysApp; if (!a || !a.alive || !a.setMode) return;
   const [w, h] = bootSize();
   if ((w === a.sw && h === a.sh) || (a.modeRefused || []).some(([x, y]) => x === w && y === h)) return;
   a.setMode(w, h).then(() => { if (a.alive) syncMode(); });
@@ -6507,8 +6504,6 @@ const braidUi = () => ({
   },
   setActive: w => { active = w; blinkOn = true; dirty(); },
   gfx: { K, fill, text, textW, btnUp, focusRect },
-  // (a travel begun and ended, nested ones counted: the viewport's mode asked for once the last is over, syncMode)
-  travelling: on => { travels = Math.max(0, travels + (on ? 1 : -1)); if (!travels) syncMode(); },
 });
 const braid = window.W95BraidPage ? window.W95BraidPage(braidUi()) : null;
 /** a fault a machine reported, written to the line under its generation (braid-page.js fault) */
