@@ -3,7 +3,17 @@
 // starts win95.js. Each write opens its own readwrite transaction as it happens; IndexedDB runs those in the order
 // they were opened. In the app the preload has already set W95HOST and this only starts the shell.
 (() => {
-  const start = () => { const s = document.createElement('script'); s.src = 'win95.js'; s.async = false; document.body.appendChild(s); };
+  // A site served in two parts (tools/split_system.py): the page has what makes its disk and starts MS-DOS; the
+  // recompiled code, which the machines' workers run, is fetched from here on, behind the shell's start, so it is the
+  // browser's by the time Windows' machine asks for it (worker.js, by the same address: the build's stamp)
+  const fetchCode = () => {
+    const S = window.W95SYSTEM; if (!S || !S.code || !window.fetch) return;
+    const m = document.querySelector('meta[name="build-sig"]'), sig = m && m.getAttribute('content');
+    fetch(S.code + (sig && sig !== 'local' ? '?v=' + sig : ''), { credentials: 'same-origin' })
+      .then(async r => { const rd = r.body && r.body.getReader(); if (rd) while (!(await rd.read()).done) { /* into the browser's cache */ } })
+      .catch(e => console.warn('[host] the system\'s code was not fetched ahead:', e && e.message));
+  };
+  const start = () => { const s = document.createElement('script'); s.src = 'win95.js'; s.async = false; document.body.appendChild(s); fetchCode(); };
   if (window.W95HOST || !window.indexedDB) return start();
 
   const CHUNK = 65536;

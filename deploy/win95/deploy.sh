@@ -498,6 +498,12 @@ build_staging() {
         cp "$REPO_ROOT/$f" "$STAGING_DIR/site/$f.fresh" && mv "$STAGING_DIR/site/$f.fresh" "$STAGING_DIR/site/$f"
     done
 
+    # The bundles in two parts (tools/split_system.py): the staged system.js and savers.js without their recompiled
+    # code, which goes into system-code.js. The page starts from the first part; the code is fetched behind it
+    # (host-web.js) and taken by each machine's worker (worker.js), both by this build's stamp.
+    log_info "Splitting the recompiled code from what the page starts with..."
+    python3 "$REPO_ROOT/tools/split_system.py" --code "$STAGING_DIR/site/system-code.js" "$STAGING_DIR/site/system.js" "$STAGING_DIR/site/savers.js"
+
     bundle_site
     cache_bust_site
     stamp_build_meta
