@@ -18,6 +18,37 @@
 </head>
 <body>
 <canvas id="screen" tabindex="0"></canvas>
+<!-- The screen from the page's first moment: MS-DOS's text screen as the machine shows it when it starts ("Starting
+     Windows 95..." on its first line, the cursor on the next), drawn by the page itself while its scripts arrive (the
+     system's bundle is most of them, and the machine's disk and its text font are in it, so the machine itself cannot
+     draw before then). It is taken away when the shell has started and draws the machine's own screen (win95.js). -->
+<div id="bootText" aria-hidden="true"><pre>
+Starting Windows 95...
+<span>_</span></pre></div>
+<style>
+  #bootText { position: fixed; inset: 0; z-index: 1; background: #000; pointer-events: none; overflow: hidden; }
+  #bootText pre { position: absolute; left: 50%; top: 50%; width: 720px; height: 400px; margin: 0; transform: translate(-50%, -50%) scale(var(--boot-x, 1), var(--boot-y, 1));
+    font: 16px/16px "Perfect DOS VGA 437", "Px437 IBM VGA9", "Lucida Console", "Courier New", monospace; color: #aaa; letter-spacing: 0; }
+  #bootText span { animation: bootCursor 1s steps(1) infinite; }
+  @keyframes bootCursor { 50% { opacity: 0; } }
+</style>
+<script>
+// (the text screen's 720 by 400 stretched over the window, as the shell draws the machine's; gone once the shell is up and
+// draws: win95.js makes window.win95 as it starts, whose screen() says what it shows)
+(function bootText() {
+  const el = document.getElementById('bootText'); if (!el) return;
+  const fit = () => { el.style.setProperty('--boot-x', String(Math.max(0.1, innerWidth / 720))); el.style.setProperty('--boot-y', String(Math.max(0.1, innerHeight / 400))); };
+  fit(); addEventListener('resize', fit);
+  const gone = () => { removeEventListener('resize', fit); el.remove(); };
+  // (until the shell shows a screen of the machine's: its state no longer 'black', or a while after it started)
+  let up = 0;
+  (function wait() {
+    const w = window.win95; if (w && !up) up = performance.now();
+    let state = 'black'; try { if (w) state = w.screen().screen; } catch (_) { /* not yet */ }
+    if (w && (state !== 'black' || performance.now() - up > 15000)) requestAnimationFrame(() => requestAnimationFrame(gone)); else requestAnimationFrame(wait);
+  })();
+})();
+</script>
 <script src="assets.js"></script>
 <script src="assets-shell.js"></script>
 <script src="cdrom.js"></script>
