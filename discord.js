@@ -5,11 +5,17 @@
 // authenticate, which answers with the person.
 //
 // Nothing of the session's logistics is replaced: shared.js runs the session as before, on the same server
-// (tools/sessions.py). This only says which session and as whom before the page's store is chosen (host-web.js waits
-// for `ready`): the session is the Activity's instance id, which everyone in the same Activity has (it is on the
-// frame's URL, so it is known before the handshake ends), and the name is the person's Discord display name, or their
-// user name when the display name has letters a logon name cannot keep. A handshake that fails or does not end leaves the
-// person Guest in the instance's session, and Windows starts.
+// (tools/sessions.py). This only says which session and as whom. The session is the Activity's instance id, which
+// everyone in the same Activity has: it is on the frame's URL, so it is known at once, and Windows never waits for
+// Discord to start. The name is the person's Discord display name, or their user name when the display name has
+// letters a logon name cannot keep.
+//
+// Discord asks the person to authorize the application the first time (authorize shows its form), and nothing here
+// can tell beforehand whether it will. So a person this browser has not seen authorize starts as Guest, is asked once
+// Windows has started, and takes their name in the running session when Discord gives it (shared.js rename: the others
+// see the name change). One this browser has seen authorize is asked nothing, so the handshake runs before the page's
+// store is chosen (host-web.js waits for `ready`, a few seconds at most) and Windows starts under their name. A
+// handshake that fails, or a form left unanswered, leaves the person Guest in the instance's session.
 //
 // The SDK is imported only in Discord's frame (its launch parameters on the URL: frame_id, instance_id, platform), from
 // this origin (vendor/embedded-app-sdk.js: Discord's frame loads nothing from another origin), so a page anywhere else
@@ -17,7 +23,10 @@
 (() => {
   const q = new URLSearchParams(location.search);
   const inside = q.has('frame_id');
-  const TIMEOUT = 15000;   // (ready() never ends for a frame_id nobody answers: Windows starts without Discord then)
+  const BEFORE = 4000;                        // (how long Windows' start waits for the name of a person asked nothing)
+  const AUTHORIZED = 'w95.discord.authorized';   // (this browser has seen the person authorize: localStorage)
+  const kept = () => { try { return localStorage.getItem(AUTHORIZED) === '1'; } catch (_) { return false; } };
+  const keep = on => { try { on ? localStorage.setItem(AUTHORIZED, '1') : localStorage.removeItem(AUTHORIZED); } catch (_) { /* no storage */ } };
   let sdk = null, who = null;
 
   // the instance's id as a session's id (shared.js sessionId's letters, 64 at most): its own text when that fits, as
@@ -50,26 +59,36 @@
     if (!access_token) throw new Error('the server returned no access token');
     return sdk.commands.authenticate({ access_token });
   }
+  // (the display name when a logon name keeps all of it; one it would keep only part of, as "Bb" of "Bøb", is not
+  // theirs: their user name then, which Discord keeps to letters a logon name has)
+  const logonName = u => { const shown = String(u.global_name || '').trim(); return /^[\w.\- ]+$/.test(shown) ? shown : u.username || ''; };
 
-  const identify = async () => {
+  const identify = () => {
     const S = window.W95Shared, room = session(q.get('instance_id'));
     if (S && room) S.as(null, room);
-    try {
-      const auth = await Promise.race([handshake(), new Promise((_, no) => setTimeout(() => no(new Error('Discord did not answer')), TIMEOUT))]);
+    const seen = kept();
+    let started = false;
+    // the person, asked now if this browser has seen them authorize, else once Windows has started; never rejects
+    const asked = (seen || !S ? Promise.resolve() : S.started).then(handshake).then(auth => {
       const u = (auth && auth.user) || {};
       who = { id: u.id || null, username: u.username || '', name: u.global_name || u.username || '' };
-      // (the display name when a logon name keeps all of it; one it would keep only part of, as "Bb" of "Bøb", is not
-      // theirs: their user name then, which Discord keeps to letters a logon name has)
-      const shown = String(u.global_name || '').trim();
-      if (S) { S.as(u.username, room); if (/^[\w.\- ]+$/.test(shown)) S.as(shown, room); }
+      keep(true);
+      // (their name: the logon's if Windows has not started, else this person's in the running session)
+      if (S) { const n = logonName(u); if (started) S.rename(n); else S.as(n, room); }
       return who;
-    } catch (e) {
+    }, e => {
+      keep(false);
       console.warn('[discord] no identity from Discord, the person is Guest here:', (e && e.message) || e);
       return null;
-    }
+    });
+    const soon = seen ? Promise.race([asked, new Promise(ok => setTimeout(() => ok(null), BEFORE))]) : Promise.resolve(null);
+    return { ready: soon.then(w => { started = true; return w; }), identity: asked };
   };
 
-  /** inside: this page is in Discord's frame; ready: the person Discord named ({ id, username, name }), or null (never
-   *  rejects), after which W95Shared.logon is theirs; sdk(): the SDK once made */
-  window.W95Discord = { inside, session, ready: inside ? identify() : Promise.resolve(null), sdk: () => sdk, user: () => who };
+  /** inside: this page is in Discord's frame. ready: Windows may start (never rejects, never waits for a person to
+   *  answer Discord): the person ({ id, username, name }) if Discord named them in time, else null. identity: the person
+   *  whenever Discord names them (null if it does not), by when W95Shared's logon or session name is theirs. sdk(): the
+   *  SDK once made */
+  const I = inside ? identify() : { ready: Promise.resolve(null), identity: Promise.resolve(null) };
+  window.W95Discord = { inside, session, ready: I.ready, identity: I.identity, sdk: () => sdk, user: () => who };
 })();

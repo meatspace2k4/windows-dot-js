@@ -36,6 +36,16 @@
     if (u) logon.user = u;
     return !!u;
   };
+  /** this person's name, learnt while the session runs (discord.js: Discord named them after Windows started): theirs
+   *  in the session from now, told to the others by the events opened again under it (the new ones before the old
+   *  ones close, so nobody sees them leave). This machine's Windows keeps the logon it started with */
+  const rename = user => {
+    const u = name(user, 20); if (!u || u === logon.user) return false;
+    logon.user = u;
+    if (es) { const old = es; listen(); try { old.close(); } catch (_) { /* gone */ } }
+    return true;
+  };
+  let onStarted; const started = new Promise(ok => { onStarted = ok; });   // (Windows has started here: `ready`)
   /** the logon this browser keeps for its next visit (joining a session leaves this computer's own) */
   const remember = (user, session) => put(localStorage, LOGON, JSON.stringify({ ...(stored.own ? { own: stored.own } : {}), ...(stored.owns ? { owns: stored.owns } : {}), user: name(user, 20) || 'Guest', session: sessionId(session) || 'guest' }));
   /** the next start on a session this computer keeps (host-web.js's choice), not one on the server */
@@ -205,7 +215,7 @@
    *  as offsets from the window; pop: the object's popup it went into, if one; done: its end), for every other machine */
   const input = (id, part) => send('input', { id, ...part });
   /** Windows has started here: what came meanwhile is made now */
-  const ready = () => { ready16 = true; for (const m of pending.splice(0)) deliver(m); };
+  const ready = () => { ready16 = true; for (const m of pending.splice(0)) deliver(m); onStarted(); };
 
   // ---- logging off (Shut Down's "Close all programs and log on as a different user"): a name goes to that person's own
   // session (others join it by its id), Guest (or none) to the shared one; the page starts again there
@@ -218,7 +228,7 @@
   };
 
   window.W95Shared = {
-    wanted, start, ready, logon, as, client, ownSession, remember, logOff, goLocal, pointer, obj, intent,
+    wanted, start, ready, started, logon, as, rename, client, ownSession, remember, logOff, goLocal, pointer, obj, intent,
     people: () => [...people.values()], watch: f => { watchers.add(f); return () => watchers.delete(f); },
     seq: () => seq, world: () => new Map(world), onObj: f => { onObj = f; }, clockSkew: () => clockSkew,
     intents: () => new Map(intents), onIntent: f => { onIntent = f; },
