@@ -1303,10 +1303,14 @@ function pcBoot() {
   emit('pc.boot', {});
 }
 /** the VMM WIN.COM loaded entering protected mode: the Windows it is starts, the screen its */
+// (the monitor between WIN.COM starting Windows and Windows' machine having a screen: still the PC's text screen, as a
+// display shows the last mode set until the next one is. The machine's start waits for its worker, which on a site
+// served in two parts first takes the system's code, tools/split_system.py: the screen was black for as long)
+let pcShows = false;
 function pcWindows(path) {
   // (Windows 3.1's WIN386.EXE: its personality is not in the bundle yet, so nothing starts; the PC waits at its entry)
   if (/WIN386\.EXE$/i.test(path)) { pc.failed = `${path}: no Windows 3.1 system in this build`; emit('pc.windows', { path, failed: pc.failed }); return; }
-  screen = 'desktop'; ren = null; desk.selKey = null; active = null; dirty();
+  screen = 'desktop'; ren = null; desk.selKey = null; active = null; pcShows = true; dirty();
   emit('pc.windows', { path });
   systemBootLater(); netBootLater();
 }
@@ -4230,7 +4234,7 @@ function startSystem() {
     // and starts the shell SYSTEM.INI names; a page asked to be silent (?mute=1) starts quiet
     const quiet = window.W95MUTE;
     const a = new RemoteApp(join(WINDIR, 'SYSTEM', 'MSGSRV32.EXE'), '', { system: true, quiet });
-    if (!(await a.start(null, null))) { bootLogoEnd(); return null; }
+    if (!(await a.start(null, null))) { bootLogoEnd(); pcShows = false; return null; }
     sysApp = a;
     return a;
   })().finally(() => { sysStarting = null; }));
@@ -4912,7 +4916,9 @@ function render() {
   if (!!sa !== monitor) resize();
   // (the monitor shows the system's machine; without it there is no picture, only the fault that ended it: the page
   // draws no desktop or taskbar of its own)
-  if (sa) sa.scanToCanvas(); else fill(0, 0, W, H, '#000');
+  if (sa) { pcShows = false; sa.scanToCanvas(); }
+  else if (pcShows && pc && !pc.failed) { drawTextScreen(pcText()); setTimeout(dirty, 250); }   // (the PC's screen until Windows' machine has one: pcWindows)
+  else fill(0, 0, W, H, '#000');
   // a screen saver running full screen on the machine is topmost: the shell's own windows, menus and tips stay under it
   if (sa && sa.snap && sa.snap.list.some(n => /^WindowsScreenSaverClass$/i.test(n.cls || '') && !n.preview)) { const na = pointerApp(mouse.x, mouse.y); if (na) drawSprite(na); return; }
   const m = modal();
