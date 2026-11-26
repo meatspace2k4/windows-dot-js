@@ -48,7 +48,32 @@ class Session:
         self.intents = {}                      # (the settings made: key -> the intent that made it last)
         self.inputs = {}                       # (each object's strokes so far, in order, for a machine joining to feed its copy: id -> [part])
         self.cursors = {}                      # (the pointer images the people's pointers show, by key: the cursor each person's Windows shows them)
+        # (the session's half of each Braid moment: its shared state where the moment's mark or anchor stands in the op
+        # order, name -> {seq, world, gens, intents, inputs, anchored}. Each machine marks its own state as the intent
+        # reaches it, after every op before it; a travel puts this back, so the machines' own moments and the shared
+        # state they replicate are of the same point. An anchored one is kept in the folder, as a machine's anchor is)
+        self.moments = {}
         if folder: self.load()
+
+    # ---- Braid: a moment of the session's shared state, and a travel back to one
+    def snapshot(self):
+        return json.loads(json.dumps({'seq': self.seq, 'world': self.world, 'gens': self.gens, 'intents': self.intents, 'inputs': self.inputs}))
+
+    def braid(self, op):
+        """a Braid intent's effect on the session (its message's `reset` when it is a travel to a moment held here)"""
+        what, name = op.get('op'), str(op.get('name') or '')
+        if what in ('mark', 'anchor') and name:
+            self.moments[name] = dict(self.snapshot(), anchored=what == 'anchor' or bool((self.moments.get(name) or {}).get('anchored')))
+            if what == 'anchor': self.changed()
+        elif what == 'forget':
+            if self.moments.pop(name, None) is not None: self.changed()
+        elif what == 'travel':
+            m = self.moments.get(name)
+            if m:
+                c = json.loads(json.dumps(m))
+                self.world, self.gens, self.intents, self.inputs = c['world'], c['gens'], c['intents'], c['inputs']
+                return {'world': self.world, 'gens': self.gens, 'intents': self.intents, 'inputs': self.inputs, 'moment': name, 'from': m['seq']}
+        return None
 
     # ---- the state
     def apply(self, kind, op, client=None):
@@ -71,7 +96,9 @@ class Session:
         elif kind == 'intent':
             key = op.get('key')
             if not isinstance(key, str) or not key: raise ValueError('an intent needs a key')
-            self.intents[key] = op
+            # (a Braid intent is an event on the line, not a setting: kept out of the settings a joiner makes again, or
+            # a machine joining would mark, anchor or travel as it caught up)
+            if op.get('kind') != 'braid': self.intents[key] = op
         else: raise ValueError(f'no kind {kind}')
 
     def start(self, client, user):
@@ -106,6 +133,9 @@ class Session:
                 if isinstance(op.get('v'), dict) and self.world.get(oid) is None: op['v'] = dict(op['v'], origin=client)
             self.apply(kind, op, client); self.seq += 1
             msg = {'seq': self.seq, 'client': client, 'kind': kind, 'op': op}
+            if kind == 'intent' and op.get('kind') == 'braid':
+                reset = self.braid(op)
+                if reset: msg['reset'] = reset   # (every machine, the one that asked too, sets its copy of the shared state to the moment's)
             self.log.append(msg)
             if len(self.log) > LOG_KEEP: del self.log[:len(self.log) - LOG_KEEP]
             self.publish('op', msg)
@@ -178,7 +208,7 @@ class Session:
             self.dirty = False
             os.makedirs(self.folder, exist_ok=True)
             tmp = os.path.join(self.folder, 'state.json.tmp')
-            with open(tmp, 'w') as f: json.dump({'seq': self.seq, 'intents': self.intents}, f)
+            with open(tmp, 'w') as f: json.dump({'seq': self.seq, 'intents': self.intents, 'moments': {k: m for k, m in self.moments.items() if m.get('anchored')}}, f)
             os.replace(tmp, os.path.join(self.folder, 'state.json'))
 
     def load(self):
@@ -186,6 +216,7 @@ class Session:
         if not os.path.exists(p): return
         st = json.load(open(p))
         self.seq, self.intents = st.get('seq', 0), st.get('intents') or {}
+        self.moments = st.get('moments') or {}   # (the anchored ones: what a travel to an anchor puts back after a restart)
         # (the programs and windows a session had when its server stopped are not running on anyone's machine now)
         self.world = {}
 

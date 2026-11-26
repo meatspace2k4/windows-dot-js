@@ -15,20 +15,26 @@ const SEGS = [['cs', 'csb'], ['ds', 'dsb'], ['es', 'esb'], ['ss', 'ssb'], ['fsel
 
 // ---------------------------------------------------------------- loading and calling
 /** a VxD from the system bundle, loaded at its base: { name, id, meta, ddb, procs }; null if the bundle lacks it */
-P.vxd = function (file) {
+// (`disk`: one the bundle does not carry is looked for on the disk too. Only for a program's \\.\NAME.VXD open: the
+// static ones the registry names were loaded from the disk at boot as well, NDIS2SUP called a VDD service the VMM
+// does not have, and Windows ended as it started)
+P.vxd = function (file, disk = false) {
   this.vxds = this.vxds || new Map();
   const key = file.toUpperCase().replace(/^.*\\/, '');
   if (this.vxds.has(key)) return this.vxds.get(key);
-  const d = window.W95SYSTEM && window.W95SYSTEM.vxds && window.W95SYSTEM.vxds[key]; if (!d) return null;
+  const d = window.W95SYSTEM && window.W95SYSTEM.vxds && window.W95SYSTEM.vxds[key]; if (!d) return disk ? this.vxdFromDisk(key) : null;
   const b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+  { const v = this.vxdInstalled(key, d, b64); if (v) return v; }
   const m = d.meta, img = d.imgBytes || (d.imgBytes = b64(d.image));
   this.u8.set(img, m.base);
-  this.protect(m.base, m.base + (m.size || img.length));   // (ring 0's pages: a program's stray pointer into them faults, win32.js PROT)
+  this.protect(m.base, m.base + (m.size || img.length), 'write');   // (ring 0's pages, read-only to ring 3 as on Windows 98: a program's stray pointer into them faults, win32.js PROT)
   const mod = d.mod || (d.mod = new WebAssembly.Module(b64(d.wasm)));
   const run = new WebAssembly.Instance(mod, this.imports).exports.run;
   const look = new Uint32Array(this.mem.buffer, m.lookup, m.textHi - m.textLo);
   m.blocks.forEach((a, i) => { look[a - m.textLo] = i + 1; });
-  const rec = { kind: 'vxd', name: m.name.trim(), file: key, id: m.id, meta: m, run, ddb: m.ddb, procs: m.procs, base: m.base, clock: true };
+  // (its size: where it is, so an image looked for room is not mapped over it, win32.js imageRoom. Without one,
+  // Windows 98's MSHTML.DLL went over a VxD in the arena, and MSGSRV32's next call into the VxD ran MSHTML's bytes)
+  const rec = { kind: 'vxd', name: m.name.trim(), file: key, id: m.id, meta: m, run, ddb: m.ddb, procs: m.procs, base: m.base, size: m.size || img.length, clock: true };
   this.modules.push(rec); this.vxds.set(key, rec);
   // (debugging, ?dynat=addr,...: those blocks run as run-time code, block by block, so a write watch names the block
   // that wrote and the stack it ran on; a VxD's name: all of its blocks)
@@ -36,6 +42,94 @@ P.vxd = function (file) {
     if (typeof a === 'string') { if (a.toUpperCase() === rec.name.toUpperCase()) look.fill(0); }
     else if (a >= m.textLo && a < m.textHi) this.smc(a);
   }
+  return rec;
+};
+/** an LE image (a VxD file) laid out as tools/recomp.py's LE lays one out: its objects one after another from `base`,
+ *  every internal fixup applied; its DDB (the first entry of the first bundle) and what it names. null for no LE */
+const leImage = (data, base) => {
+  const dv = new DataView(data.buffer, data.byteOffset, data.byteLength), u32d = o => dv.getUint32(o, true), u16d = o => dv.getUint16(o, true);
+  if (data.length < 0x40) return null;
+  const le = u32d(0x3c); if (le + 0x84 > data.length || data[le] !== 0x4c || data[le + 1] !== 0x45) return null;
+  const pgsz = u32d(le + 0x28), last = u32d(le + 0x2c), objtab = le + u32d(le + 0x40), nobj = u32d(le + 0x44);
+  const fpt = le + u32d(le + 0x68), frt = le + u32d(le + 0x6c), datapg = u32d(le + 0x80), npages = u32d(le + 0x14), enttab = le + u32d(le + 0x5c);
+  const opt = le + u32d(le + 0x48), filepage = i => (data[opt + 4 * i] << 16) | (data[opt + 4 * i + 1] << 8) | data[opt + 4 * i + 2];
+  const objs = []; let size = 0;
+  for (let i = 0; i < nobj; i++) { const o = objtab + 24 * i, ob = { vsize: u32d(o), flags: u32d(o + 8), pgidx: u32d(o + 12), pgcnt: u32d(o + 16), rva: size }; size += (ob.vsize + 0xfff) & ~0xfff; objs.push(ob); }
+  const image = new Uint8Array(size), iv = new DataView(image.buffer);
+  for (const o of objs) for (let k = 0; k < o.pgcnt; k++) {
+    const fp = filepage(o.pgidx + k - 1), n = fp < npages ? pgsz : last, src = datapg + (fp - 1) * pgsz, at = o.rva + k * pgsz;
+    image.set(data.subarray(src, Math.min(src + n, data.length)).subarray(0, Math.max(0, Math.min(n, size - at))), at);
+  }
+  for (const o of objs) for (let k = 0; k < o.pgcnt; k++) {
+    const pg = filepage(o.pgidx + k - 1) - 1; let q = frt + u32d(fpt + 4 * pg); const end = frt + u32d(fpt + 4 * pg + 4);
+    while (q < end) {
+      const src = data[q], fl = data[q + 1]; q += 2;
+      let offs = null, cnt = 0;
+      if (src & 0x20) { cnt = data[q]; q += 1; } else { offs = [dv.getInt16(q, true)]; q += 2; }
+      if (fl & 3) return null;   // (an import: no VxD has one)
+      let tobj; if (fl & 0x40) { tobj = u16d(q); q += 2; } else { tobj = data[q]; q += 1; }
+      let toff = 0;
+      if ((src & 0xf) !== 2) { if (fl & 0x10) { toff = u32d(q); q += 4; } else { toff = u16d(q); q += 2; } }
+      if (offs === null) { offs = []; for (let i = 0; i < cnt; i++) offs.push(dv.getInt16(q + 2 * i, true)); q += 2 * cnt; }
+      const val = (base + objs[tobj - 1].rva + toff) >>> 0;
+      for (const so of offs) {
+        const at = o.rva + k * pgsz + so; if (at < 0 || at + 4 > size) continue;
+        if ((src & 0xf) === 7) iv.setUint32(at, val, true);
+        else if ((src & 0xf) === 8) iv.setInt32(at, (val - (base + at + 4)) | 0, true);
+        else if ((src & 0xf) === 5) iv.setUint16(at, val & 0xffff, true);
+      }
+    }
+  }
+  const d = objs[u16d(enttab + 2) - 1].rva + u32d(enttab + 5), r = o => iv.getUint32(o, true);
+  const svc = r(d + 0x30), nsvc = r(d + 0x34), services = [];
+  if (svc && nsvc) for (let i = 0; i < nsvc; i++) services.push(r(svc - base + 4 * i));
+  let name = ''; for (let i = 0; i < 8; i++) name += String.fromCharCode(image[d + 0xc + i]);
+  return { image, size, ddb: base + d, id: iv.getUint16(d + 6, true), name: name.replace(/[ \0]+$/, ''), procs: { control: r(d + 0x18), v86: r(d + 0x1c), pm: r(d + 0x20) }, services };
+};
+/** a dynamic VxD the bundle does not carry, from the system's own folder (C:\WINDOWS\SYSTEM, or its VMM32 folder),
+ *  as VWIN32 loads one for \\.\NAME.VXD: its image put in the arena with its fixups for where it is, and its code
+ *  translated as it runs (dyn.js), as a program's is. Windows 98's DirectDraw opens DDRAW.VXD through DDHELP; with no
+ *  VxD to open, DirectDrawCreate failed (E_FAIL) and the CD Sampler's Pinball closed as it started. null: no such VxD */
+// (only the ones known to run on this machine's VMM: a VxD taken from the disk runs on whatever services and hooks the
+// VMM here has, and one whose program gets on without it is better absent. DINPUT.VXD takes the mouse from VMD's pointer
+// hooks, which the machine's input does not pass through, and the Pinball trial's menu had no clicks; SAGE.VXD (System
+// Agent, which the Plus! savers open) is left to its program to do without, as before)
+const DISK_VXDS = new Set(['DDRAW.VXD']);
+P.vxdFromDisk = function (key) {
+  if (!this.fs || !DISK_VXDS.has(key)) return null;
+  let data = null;
+  for (const dir of ['C:\\WINDOWS\\SYSTEM', 'C:\\WINDOWS\\SYSTEM\\VMM32']) { try { data = this.fs.readFile(dir + '\\' + key); break; } catch (_) { /* not there */ } }
+  if (!data) return null;
+  return this.vxdDiskImage(key, data);
+};
+/** the bundle's VxD as the installed system has it, when its VMM32.VXD (W4 or W3, w4.js) carries a newer one: that
+ *  one, from the disk, its code translated as it runs. Windows 98's USER asks SHELL's API for function 108h as its
+ *  idle check runs (ISUSERIDLE, as a screen saver waits); Windows 95's SHELL, the bundle's, has 100h-107h, and its
+ *  range check let 108h through to the word after its table, its list of hooks: a jump to the list's handle, a blue
+ *  screen (exception 06) as the saver ran. Its SDK version (DDB +4) says which is newer (400h, 40Ah for Windows 98).
+ *  null: the bundle's stands */
+const VMM32_NEWER = new Set(['SHELL.VXD']);
+P.vxdInstalled = function (key, d, b64) {
+  if (!this.fs || !VMM32_NEWER.has(key) || !self.W4) return null;
+  let f = null; try { f = W4.member(this.fs.readFile('C:\\WINDOWS\\SYSTEM\\VMM32.VXD'), key); } catch (_) { /* no VMM32 */ }
+  if (!f) return null;
+  const probe = leImage(f, 0); if (!probe) return null;
+  const img = d.imgBytes || (d.imgBytes = b64(d.image)), bundleSdk = img[d.meta.ddb - d.meta.base + 4] | img[d.meta.ddb - d.meta.base + 5] << 8;
+  const sdk = probe.image[probe.ddb + 4] | probe.image[probe.ddb + 5] << 8;
+  if (probe.id !== d.meta.id || sdk <= bundleSdk) return null;
+  return this.vxdDiskImage(key, f, `VMM32.VXD's (SDK ${sdk.toString(16)}h over the bundle's ${bundleSdk.toString(16)}h)`);
+};
+/** an LE image put in the arena with its fixups for where it is, its code translated as it runs */
+P.vxdDiskImage = function (key, data, from = 'the disk') {
+  const probe = leImage(data, 0); if (!probe) { W.log('warn', 'vxd', `${key}: not an LE image`); return null; }
+  const base = this.imageRoom(0, probe.size, true); if (!base) { W.log('warn', 'vxd', `${key}: no room for its ${probe.size.toString(16)} bytes`); return null; }
+  const le = leImage(data, base);
+  this.u8.set(le.image, base); this.protect(base, base + le.size, 'write');
+  // (no translated module: textLo = textHi, so each block is translated as it is entered, win32.js dispatch)
+  const meta = { name: le.name, id: le.id, ddb: le.ddb, procs: le.procs, services: le.services, base, size: le.size, textLo: 0, textHi: 0, blocks: [], vxd: true, disk: true };
+  const rec = { kind: 'vxd', name: le.name, file: key, id: le.id, meta, run: null, ddb: le.ddb, procs: le.procs, base, size: le.size };
+  this.modules.push(rec); this.vxds.set(key, rec);
+  W.log('info', 'vxd', `${key} (${le.name}, VxD ${le.id.toString(16)}h) loaded from ${from} at ${base.toString(16)}, its code translated as it runs`);
   return rec;
 };
 /** the loaded VxD with device id `id` */
@@ -809,7 +903,12 @@ P.vxdCallAt = function (addr, sp, regs = {}) { return this.vxdCall(addr, regs, s
 
 // ---- VWIN32: the Win32 side
 svc(VWIN32, 0x02, function (arg) { this.queueApc(this.r0Tid(arg(2)), arg(0), arg(1)); return 1; });   // _VWIN32_QueueUserApc(proc, data, thread)
-svc(VWIN32, 0x0e, function (arg) { const e = this.r0Event(arg(0)); if (e) this.signal(e); return e ? 1 : 0; });   // _VWIN32_SetWin32Event
+// _VWIN32_SetWin32Event, _VWIN32_PulseWin32Event, _VWIN32_ResetWin32Event: the ring-0 event in EAX (the DDK's wrappers
+// load it there), which is how Windows 98's MMDEVLDR calls them for MMSYSTEM's DriverCallback to an mmThread (its API
+// function 4, at the sound card's interrupt). Read from the stack alone, that event was never set: MCIWAVE's thread
+// waited on it for good after its first buffer, Media Player stayed "playing" and the wave device stayed taken.
+const r0EventArg = (p, arg) => p.r0Event(p.cpu.eax.value) || p.r0Event(arg(0));
+svc(VWIN32, 0x0e, function (arg) { const e = r0EventArg(this, arg); if (e) this.signal(e); return e ? 1 : 0; });   // _VWIN32_SetWin32Event
 svc(VWIN32, 0x14, function () { return 1; });                                                         // _VWIN32_CloseVxDHandle
 // VWIN32_EnterCrstR0 / VWIN32_LeaveCrstR0 (EDX the critical section): SPOOLER's, around its queue's work. One
 // processor, and ring 0 is not preempted here: nothing else can be in it meanwhile (tools/staticmap.py found them called)
@@ -1636,7 +1735,7 @@ svc(VMM, 0x6d, function () { return 0x000f; });                                 
 svc(VMM, 0x6e, function (arg) { const sel = arg(1) & 0xffff; return this.selValid(sel) ? u32(this.selBase(sel)) : 0xffffffff; });   // _SelectorMapFlat(VM, sel, flags)
 svc(VMM, 0x10c, function () { CF(this, false); });                                                   // Validate_Thread_Handle
 svc(VMM, 0xf3, function () { this.cpu.esp.value = u32(this.cpu.esp.value) + 4; });                     // _Trace_Out_Service (debug output): it takes its string off the stack
-svc(VWIN32, 0x0f, function (arg) { const e = this.r0Event(arg(0)); if (e) { this.signal(e); e.set = false; } return e ? 1 : 0; });   // _VWIN32_PulseWin32Event
+svc(VWIN32, 0x0f, function (arg) { const e = r0EventArg(this, arg); if (e) { this.signal(e); e.set = false; } return e ? 1 : 0; });   // _VWIN32_PulseWin32Event
 
 // ---- VTD: the timer. Get_Version: EAX; Get_Interrupt_Period: EAX the ms between ticks (1: the host's clock);
 // Begin/End_Min_Int_Period (EAX ms)
@@ -1823,7 +1922,8 @@ svc(VMM, 0xaa, function () { return 1; });
 // (VCACHE reserves 30 MB at boot, which took most of the 56 MB heap)
 svc(VMM, 0x11d, function (arg) {
   const n = arg(1) * 4096, size = (n + 0xffff) & ~0xffff, end = this.mem.buffer.byteLength;
-  if (this.vmTop !== undefined && this.vmTop + size <= end) { const b = this.vmTop; this.vmTop += size; (this.vregions || (this.vregions = new Map())).set(b, { size, heap: null }); return b; }
+  const b = this.vmTop !== undefined && this.vmTop + size <= end && this.vmRoom ? this.vmRoom(size, 0x10000) : 0;   // (on a 64 KiB boundary, as VirtualAlloc's)
+  if (b) { (this.vregions || (this.vregions = new Map())).set(b, { size, heap: null }); return b; }
   const a = this.alloc(n + 4096); return (a + 4095) & ~4095;
 });
 svc(VMM, 0x11e, function (arg) { const a = arg(0) * 4096; this.u8.fill(0, a, a + arg(1) * 4096); return 1; });   // _PageCommit(page, n, ...)
@@ -2019,7 +2119,7 @@ svc(VPICD, 0x0b, function () { this.cpu.ecx.value = irqStatus(this); CF(this, !(
 // ---- VWIN32
 svc(VWIN32, 0x00, function () { this.cpu.eax.value = 0x400; CF(this, false); });                     // VWIN32_Get_Version
 svc(VWIN32, 0x0d, function () { return 0xc6000000 | 1; });                                          // VWIN32_GetCurrentProcessHandle
-svc(VWIN32, 0x10, function (arg) { const e = this.r0Event(arg(0)); if (e) e.set = false; return e ? 1 : 0; });   // _VWIN32_ResetWin32Event
+svc(VWIN32, 0x10, function (arg) { const e = r0EventArg(this, arg); if (e) e.set = false; return e ? 1 : 0; });   // _VWIN32_ResetWin32Event
 // _VWIN32_QueueKernelAPC(pfn, thread, data, flags): the ring-0 procedure called with the data when the thread next runs
 svc(VWIN32, 0x19, function (arg) { (this.kernelApcs = this.kernelApcs || []).push({ fn: arg(0), data: arg(2) }); ZF(this, false); return 1; });   // (ZF from the result, which IFSMGR tests)
 svc(VWIN32, 0x1a, function () { W.log('warn', 'vxd', 'VWIN32_SysErrorBox'); this.cpu.eax.value = 0; });
@@ -2099,11 +2199,13 @@ P.vxdBoot = function () {
 };
 
 /** a dynamically loadable VxD by file name, loaded and initialized (SYS_DYNAMIC_DEVICE_INIT) once */
-P.vxdLoad = function (file) {
-  const v = this.vxd(file); if (!v) return null;
+P.vxdLoad = function (file, disk = false) {
+  const v = this.vxd(file, disk); if (!v) return null;
   if (v.inited) return v;
   v.inited = true;
   const key = v.file, r = this.vxdControl(v, SYS_DYNAMIC_DEVICE_INIT);
+  // (one from the disk that declines to load is a device the open does not find, as VWIN32 answers it)
+  if (r.cf && v.meta.disk) { v.inited = false; W.log('warn', 'vxd', `${key} failed SYS_DYNAMIC_DEVICE_INIT`); return null; }
   if (r.cf) { this.trapped = `${key} failed SYS_DYNAMIC_DEVICE_INIT`; return null; }
   return v;
 };

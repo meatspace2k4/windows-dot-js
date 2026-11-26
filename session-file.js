@@ -67,7 +67,7 @@
     CREATE TABLE IF NOT EXISTS chunk (sid INTEGER NOT NULL, idx INTEGER NOT NULL, bytes BLOB NOT NULL, PRIMARY KEY (sid, idx));
     CREATE TABLE IF NOT EXISTS volume (k TEXT PRIMARY KEY, v);
     CREATE TABLE IF NOT EXISTS regkey (path TEXT PRIMARY KEY, name TEXT);
-    CREATE TABLE IF NOT EXISTS regval (path TEXT NOT NULL, name TEXT NOT NULL, value BLOB NOT NULL, PRIMARY KEY (path, name));`;
+    CREATE TABLE IF NOT EXISTS regval (path TEXT NOT NULL, name TEXT NOT NULL, value BLOB NOT NULL, ord INTEGER, PRIMARY KEY (path, name));`;
   const TABLES = ['node', 'chunk', 'volume', 'regkey', 'regval'];
 
   // rows: { node: [{ sid, parent, name, short, dir, ord, attrs, ctime, mtime, atime, size }], chunk: [{ sid, idx, bytes }],
@@ -80,7 +80,7 @@
     for (const r of rows.chunk) db.run('INSERT INTO chunk (sid, idx, bytes) VALUES (?, ?, ?)', [r.sid, r.idx, r.bytes]);
     for (const r of rows.volume) db.run('INSERT INTO volume (k, v) VALUES (?, ?)', [r.k, r.v === undefined ? null : r.v]);
     for (const r of rows.regkey) db.run('INSERT INTO regkey (path, name) VALUES (?, ?)', [r.path, r.name === undefined ? null : r.name]);
-    for (const r of rows.regval) db.run('INSERT INTO regval (path, name, value) VALUES (?, ?, ?)', [r.path, r.name, v8encode(r.value)]);
+    for (const r of rows.regval) db.run('INSERT INTO regval (path, name, value, ord) VALUES (?, ?, ?, ?)', [r.path, r.name, v8encode(r.value), r.ord === undefined ? null : r.ord]);
     db.exec('COMMIT');
   }
   // why a database is not a session (null when it is one), as the app checks one before it replaces its own
@@ -93,14 +93,15 @@
   }
   function read(db) {
     const u8 = b => (b instanceof Uint8Array ? new Uint8Array(b) : new Uint8Array(b || []));
-    const hasName = db.all('PRAGMA table_info(regkey)').some(c => c.name === 'name');
+    const hasName = db.all('PRAGMA table_info(regkey)').some(c => c.name === 'name'), hasOrd = db.all('PRAGMA table_info(regval)').some(c => c.name === 'ord');
     return {
       node: db.all('SELECT * FROM node ORDER BY sid').map(r => ({ sid: r.sid, parent: r.parent, name: r.name, short: r.short, dir: !!r.dir, ord: r.ord, attrs: r.attrs,
         ctime: r.ctime, mtime: r.mtime, atime: r.atime, size: r.size })),
       chunk: db.all('SELECT sid, idx, bytes FROM chunk ORDER BY sid, idx').map(r => ({ sid: r.sid, idx: r.idx, bytes: u8(r.bytes) })),
       volume: db.all('SELECT k, v FROM volume').map(r => ({ k: r.k, v: r.v })),
       regkey: db.all(`SELECT path${hasName ? ', name' : ''} FROM regkey ORDER BY path`).map(r => (r.name ? { path: r.path, name: r.name } : { path: r.path })),
-      regval: db.all('SELECT path, name, value FROM regval').map(r => ({ path: r.path, name: r.name, value: v8decode(u8(r.value)) })),
+      // (a key's values in the order they were made, as RegEnumValue gives them)
+      regval: db.all(`SELECT path, name, value${hasOrd ? ', ord' : ''} FROM regval ORDER BY ${hasOrd ? 'ord, ' : ''}rowid`).map((r, i) => ({ path: r.path, name: r.name, value: v8decode(u8(r.value)), ord: r.ord == null ? i + 1 : r.ord })),
     };
   }
 

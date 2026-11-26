@@ -12,4 +12,6 @@
   def('SESSION', 'Save', 4, () => { self.postMessage({ t: 'session', op: 'save' }); return 0; });
   def('SESSION', 'Open', 4, () => { self.postMessage({ t: 'session', op: 'open' }); return 0; });
   def('SESSION', 'Join', 4, () => { self.postMessage({ t: 'session', op: 'join' }); return 0; });
+  // Insert CD Image: a disc for drive D:, the app's own File > Insert CD Image, or a file on this computer in a browser
+  def('SESSION', 'InsertCD', 4, () => { self.postMessage({ t: 'cd', op: 'insert' }); return 0; });
 })();

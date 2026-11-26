@@ -13,7 +13,7 @@ Object.defineProperty(p, 'u8', { value: u8 });
 Object.assign(p, {
   selValid: s => s in base, selBase: s => base[s], r16: a => dv.getUint16(a, true), w16: (a, v) => dv.setUint16(a, v, true),
   r32: a => dv.getUint32(a, true), w32: (a, v) => dv.setUint32(a, v >>> 0, true), obj: h => (h === 77 ? ev : null), signal(e) { e.set = true; },
-  ne: new Map([['USER', { segs: [{ num: 32, sel: 0x30 }] }]]),
+  ne: new Map([['USER', { segs: [{ num: 32, sel: 0x30 }], meta: { autodata: 32 } }]]),   // (USER's DGROUP, its autodata: Windows 95's segment 32)
 });
 const sender = { id: 1, state: 'waiting', queue: 0x40 }, receiver = { id: 2, state: 'done', queue: 0x48 };
 p.threadsById = new Map([[1, sender], [2, receiver]]);

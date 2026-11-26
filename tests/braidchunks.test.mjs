@@ -1,0 +1,133 @@
+// Anchored moments as shared chunks (braid.js packAnchor, braid-page.js dbPut/dbGet/dbDel) and the line anchoring
+// itself (braid.every): a moment stored and read back is the same moment (its checksum holds); two anchors that differ
+// in one chunk store one chunk more than one; letting one go deletes only the chunks no other refers to; a missing or
+// damaged chunk is refused; and every() keeps a buffer of anchors, the oldest let go only after a newer is written.
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+globalThis.window = globalThis; globalThis.self = globalThis;
+new Function(readFileSync(new URL('../braid.js', import.meta.url), 'utf8'))();
+new Function(readFileSync(new URL('../braid-page.js', import.meta.url), 'utf8'))();
+const B = window.W95Braid, C = B.CHUNK;
+
+// (bytes no two chunks of which are alike: a xorshift stream from the seed)
+const bytes = (n, seed) => { const b = new Uint8Array(n); let x = seed * 2654435761 >>> 0 || 1; for (let i = 0; i < n; i++) { x ^= x << 13; x >>>= 0; x ^= x >>> 17; x ^= x << 5; x >>>= 0; b[i] = x & 0xff; } return b; };
+const moment = (name, sys, page) => B.anchor({ name, now: 1, build: 'b', machines: { system: { meta: { n: 1 }, roots: [0], blob: sys, now: 1 } }, page: { meta: {}, roots: [], blob: page }, registry: {}, mods: [] });
+
+{ // a round trip: the same bytes, the checksum holds
+  const a = moment('a', bytes(3 * C + 100, 1), bytes(C / 2, 2)), { rec, chunks } = await B.packAnchor(a);
+  assert.equal(rec.machines.system.blob.chunks.length, 4); assert.equal(rec.machines.system.blob.length, 3 * C + 100);
+  const back = await B.unpackAnchor(rec, h => chunks.get(h));
+  assert.deepEqual(back.machines.system.blob, a.machines.system.blob); assert.deepEqual(back.page.blob, a.page.blob);
+  assert.equal(B.refuseAnchor(back, 'b'), null, 'the moment read back is the one stored');
+  assert.equal(B.blobLength(rec.machines.system.blob), 3 * C + 100); assert.equal(B.blobLength(a.page.blob), C / 2);
+  // a chunk missing, or one damaged: refused
+  const h0 = rec.machines.system.blob.chunks[1];
+  await assert.rejects(B.unpackAnchor(rec, h => (h === h0 ? undefined : chunks.get(h))), /chunk .* missing/);
+  const bad = await B.unpackAnchor(rec, h => { const c = chunks.get(h); return h === h0 ? Uint8Array.from(c, (x, i) => (i === 5 ? x ^ 1 : x)) : c; });
+  assert.match(B.refuseAnchor(bad, 'b'), /damaged/);
+  // a record stored whole, from before chunks: read as it is
+  assert.equal(await B.unpackAnchor(a, () => { throw new Error('no chunks asked'); }), a);
+}
+
+{ // two anchors of one machine minutes apart: a small buffer ahead of the memory grew (every byte after it moved) and
+  // one page of the memory was written. Cut at the entries, the second stores the small run and that page anew, not
+  // the whole memory again; cut at fixed offsets, it would store almost all of it
+  const mem = bytes(64 * C, 11), m = { log: new Uint8Array(1000), regs: new Uint32Array(64), mem };
+  const exp = o => B.serialize(B.takeGraph([o]));
+  const a = exp(m);
+  m.log = new Uint8Array(1300); m.mem[37 * C + 9] ^= 0x5a;
+  const b = exp(m);
+  const rec = ex => B.anchor({ name: 'x', now: 1, build: 'b', machines: { system: { meta: ex.meta, roots: ex.roots, blob: ex.blob, now: 1 } }, page: null, registry: {}, mods: [] });
+  const pa = await B.packAnchor(rec(a)), pb = await B.packAnchor(rec(b));
+  const fresh = [...pb.chunks.keys()].filter(h => !pa.chunks.has(h)).length;
+  assert.ok(fresh <= 2, `cut at the entries: ${fresh} new chunks of ${pb.chunks.size} (the small run and the written page)`);
+  assert.deepEqual((await B.unpackAnchor(pb.rec, h => pb.chunks.get(h))).machines.system.blob, b.blob, 'and read back whole');
+  // (the same two cut at fixed offsets, as before: nearly every chunk new, which is what the entries' cuts are for)
+  const fixed = ex => new Set(B.cutPoints(ex.blob.length, null).map(([s, e]) => ex.blob.subarray(s, e).join(',')));
+  const fa = fixed(a), fb = fixed(b); let fixedFresh = 0; for (const k of fb) if (!fa.has(k)) fixedFresh++;
+  assert.ok(fixedFresh > fb.size / 2, `fixed offsets: ${fixedFresh} of ${fb.size} new`);
+}
+
+// ---- the store: braid-page.js's own dbPut/dbGet/dbDel over an IndexedDB stand-in (the calls they make, no more)
+const idb = (() => {
+  const stores = new Map();
+  const request = f => { const r = {}; queueMicrotask(() => { try { r.result = f(); r.onsuccess && r.onsuccess(); } catch (e) { r.error = e; r.onerror && r.onerror(); } }); return r; };
+  const db = {
+    objectStoreNames: { contains: n => stores.has(n) }, createObjectStore: (n, o = {}) => { stores.set(n, { keyPath: o.keyPath, m: new Map() }); }, close() {},
+    transaction(names) {
+      const tx = { pending: 0 }; let ended = false;
+      const finish = () => setTimeout(() => { if (!ended && tx.pending === 0) { ended = true; tx.oncomplete && tx.oncomplete(); } }, 0);
+      const wrap = f => { tx.pending++; const r = request(f); const s = r; queueMicrotask(() => queueMicrotask(() => { tx.pending--; finish(); })); return s; };
+      tx.objectStore = n => { const s = stores.get(n); return {
+        get: k => wrap(() => s.m.get(k)), getKey: k => wrap(() => (s.m.has(k) ? k : undefined)),
+        // (every record at once is what paused the page at 6.7 GB: the anchors' store refuses it here)
+        getAll: () => wrap(() => { if (n === 'anchors') throw new Error('getAll over the anchors: every anchor in memory at once'); return [...s.m.values()]; }),
+        openCursor: () => { const keys = [...s.m.keys()]; let i = 0; const r = {}; const step = () => { tx.pending++; queueMicrotask(() => { r.result = i < keys.length ? { value: s.m.get(keys[i]), continue: () => { i++; step(); } } : null; r.onsuccess && r.onsuccess(); queueMicrotask(() => { tx.pending--; finish(); }); }); }; step(); return r; },
+        getAllKeys: () => wrap(() => [...s.m.keys()]), put: (v, k) => wrap(() => { s.m.set(s.keyPath ? v[s.keyPath] : k, v); }), delete: k => wrap(() => { s.m.delete(k); }) }; };
+      finish(); return tx;
+    },
+  };
+  return { open: () => { const r = {}; setTimeout(() => { r.result = db; if (!stores.size) r.onupgradeneeded && r.onupgradeneeded(); r.onsuccess(); }, 0); return r; }, stores };
+})();
+globalThis.indexedDB = idb;
+
+const fakeUi = { W95Win32: { regDump: () => ({}) }, fs: { vols: new Map(), uncs: new Map() }, machines: () => [], sysApp: () => null, emit() {}, shared: () => null, closeMenus() {}, shell: () => ({}) };
+const page = window.W95BraidPage(fakeUi), T = page.__test;
+assert.ok(T, 'braid-page.js gives its store to tests (__test)');
+{
+  const base = bytes(8 * C, 3), changed = base.slice(); changed[5 * C + 7] ^= 0xff;
+  await T.dbPut(moment('one', base, bytes(100, 9)));
+  const n1 = idb.stores.get('chunks').m.size;
+  await T.dbPut(moment('two', changed, bytes(100, 9)));
+  const n2 = idb.stores.get('chunks').m.size;
+  assert.equal(n2 - n1, 1, 'an anchor that differs in one chunk stores one chunk more');
+  assert.deepEqual((await T.dbNames().catch(e => assert.fail(`names without reading every anchor: ${e.message}`))).sort(), ['one', 'two'], 'names from the keys alone');
+  assert.deepEqual((await T.dbEach(T.summary)).map(x => [x.name, x.bytes]).sort(), [['one', 8 * C + 100], ['two', 8 * C + 100]], 'each record summed one at a time');
+  const two = await T.dbGet('two').catch(e => assert.fail(`the anchor read back whole: ${e.message}`)); assert.deepEqual(two.machines.system.blob, changed); assert.equal(B.refuseAnchor(two, 'b'), null);
+  assert.equal(await T.dbDel('one'), true);
+  assert.equal(idb.stores.get('chunks').m.size, n2 - 1, 'letting one go deletes the chunk only it had');
+  assert.deepEqual((await T.dbGet('two')).machines.system.blob, changed, 'the other is whole');
+  assert.equal(await T.dbDel('two'), true); assert.equal(idb.stores.get('chunks').m.size, 0, 'none left when no anchor is');
+  assert.equal(await T.dbDel('two'), false);
+}
+
+{ // every(): the line anchors itself, keeping a buffer; the oldest goes only after a newer one is written
+  const log = [], anchored = [];
+  page.mark = async n => { log.push(['mark', n]); return { verdict: 'ok' }; };
+  page.anchor = async n => { await new Promise(r => setTimeout(r, 5)); anchored.push(n); log.push(['anchor', n]); return { name: n }; };
+  page.forget = async n => { log.push(['forget', n]); return true; };
+  page.every(1000, 3, { anchorEvery: 20, anchorKeep: 3 });
+  await new Promise(r => setTimeout(r, 300));
+  page.every(0);
+  const forgot = log.filter(([k]) => k === 'forget').map(([, n]) => n);
+  assert.ok(anchored.length >= 5, `anchored ${anchored.length} times`);
+  assert.deepEqual(page.auto.anchors, anchored.slice(-3), 'the last three kept');
+  assert.deepEqual(forgot.filter(n => /^live/.test(n)), anchored.slice(0, -3), 'the older ones let go, oldest first');
+  for (const n of forgot.filter(x => /^live/.test(x))) {
+    const i = log.findIndex(([k, x]) => k === 'forget' && x === n), newer = anchored[anchored.indexOf(n) + 3];
+    assert.ok(log.findIndex(([k, x]) => k === 'anchor' && x === newer) < i, `${n} let go only after ${newer} was written`);
+  }
+  assert.equal(page.every(1000).anchorEvery, 300000, 'anchoring on by default (5 min)'); page.every(0);
+  assert.equal(page.every(1000, 3, { anchorEvery: 0 }).anchorEvery, 0); page.every(0);
+}
+{ // every()'s marks: the last clean moment kept while later ones are suspect (the one before a fault, to travel to);
+  // and a mark in flight when the line stops lets nothing go (MSGSRV32's fault: t3, the moment before it, was let go
+  // by the tick that was marking t6 as the line was stopped to keep it)
+  const forgot = [], names = []; let gate = null;
+  // (two clean, the fault's (suspect), then clean again: the moments after a fault lint clean against each other)
+  page.mark = async name => { if (gate) await gate; names.push(name); return { verdict: names.length === 3 ? 'suspect' : 'ok' }; };
+  page.forget = async name => { forgot.push(name); return true; };
+  page.every(5, 3, { anchorEvery: 0 });
+  await new Promise(r => setTimeout(r, 200));
+  let release; gate = new Promise(r => { release = r; });
+  await new Promise(r => setTimeout(r, 30));   // (a mark waiting at the gate)
+  page.every(0); const before = forgot.length; release(); await new Promise(r => setTimeout(r, 30));
+  assert.equal(forgot.length, before, 'stopped: the mark in flight let nothing go');
+  const ring = page.auto.moments, clean = names[1];
+  assert.ok(names.length > 6, `marked ${names.length} times`);
+  assert.ok(!forgot.includes(clean) && ring.includes(clean), `the last clean moment ${clean} kept (${ring.join(' ')})`);
+  assert.ok(forgot.includes(names[0]), 'an older clean one let go');
+  assert.deepEqual(ring.filter(x => x !== clean), names.slice(-4), 'the rest a ring of three, and the stopped mark\'s own with nothing let go for it');
+}
+console.log('braidchunks: ok');
+process.exit(0);

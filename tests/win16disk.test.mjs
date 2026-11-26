@@ -6,7 +6,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 globalThis.window = globalThis; globalThis.self = globalThis;
-for (const f of ['fs.js', 'win32.js', 'ne16.js']) new Function(readFileSync(new URL('../' + f, import.meta.url), 'utf8'))();
+for (const f of ['fs.js', 'win32.js', 'ne16.js', 'dyn.js']) new Function(readFileSync(new URL('../' + f, import.meta.url), 'utf8'))();
 const { Process, LAYOUT } = window.W95Win32, { K16 } = window.W95NE16;
 
 // the file: MZ stub, NE header at 40h, two segments (code with one import fixup at 200h, DGROUP at 300h), KERNEL imported
@@ -31,11 +31,15 @@ const ne = (name, flags, prolog) => {
   return f;
 };
 const proc = () => {
+  // (a module from its file is translated as it loads, dyn.js neCompile: the processor's registers are the globals
+  // its module imports, the memory the machine's whole address space)
   const p = Object.create(Process.prototype);
-  p.mem = { buffer: new ArrayBuffer(LAYOUT.HEAP_END + (1 << 20)) };
-  p.cpu = {}; for (const r of ['eax', 'ebx', 'ecx', 'edx', 'esi', 'edi', 'ebp', 'esp', 'eip', 'cs', 'ds', 'es', 'ss', 'fs', 'gs', 'fsel', 'gsel', 'csb', 'dsb', 'esb', 'ssb', 'fsb', 'gsb']) p.cpu[r] = { value: 0 };
+  p.mem = new WebAssembly.Memory({ initial: 2048, maximum: 2048 });
+  p.cpu = {}; for (const r of ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi', 'cf', 'pf', 'zf', 'sf', 'of', 'df', 'fs', 'ftop', 'fsw', 'fcw', 'eip',
+    'cs', 'ds', 'es', 'ss', 'fsel', 'gsel', 'csb', 'dsb', 'esb', 'ssb', 'gsb', 'budget', 'if', 'xf']) p.cpu[r] = new WebAssembly.Global({ value: 'i32', mutable: true }, 0);
   Object.assign(p, { selUsed: new Uint8Array(0x2000), th16: [], depth: 0, ne: new Map(), modules: [], byName: new Map(), ghandles: new Map(),
-    heapTop: LAYOUT.HEAP, freeList: new Map(), allocs: new Map(), init16() {}, findFile16: () => null, fs: { exists: () => false } });
+    heapTop: LAYOUT.HEAP, freeList: new Map(), allocs: new Map(), init16() {}, findFile16: () => null, fs: { exists: () => false },
+    imports: { env: { api: () => 0, tick: () => 0, f80load: () => 0, f80store() {}, fbld: () => 0, fbstp() {} } }, trap() {}, tick: () => 0 });
   return p;
 };
 // a library: name without its NUL, the constant, the prolog patched with the DGROUP's selector, the expected version

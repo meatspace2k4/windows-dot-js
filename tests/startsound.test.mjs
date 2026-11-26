@@ -10,7 +10,7 @@ function page(mute) {
   const started = [];
   class App { constructor(path, arg, o) { Object.assign(this, { path, arg, ...o }); } async start() { started.push(this); return true; } }
   const S = new Function('window', 'RemoteApp', 'NativeApp', 'join', 'WINDIR', `
-    let sysApp = null, sysStarting = null; const bootLogoEnd = () => {};   // (the start-up screen: the page's drawing)
+    let sysApp = null, sysStarting = null; const bootLogoEnd = () => {}, emit = () => {};   // (the start-up screen: the page's drawing; the page's events)
     ${cut('function startSystem() {', 'sysStarting = null; }));\n}')}
     return { startSystem };`);
   const win = { W95SYSTEM: { ne: { MSGSRV32: {} }, programs: { 'EXPLORER.EXE': {} } }, W95MUTE: mute, SharedArrayBuffer: function () {} };
@@ -32,7 +32,7 @@ assert.ok(!/w95\.shutdown|cleanStart/.test(w));
 // shell, and SystemStart with it, come after Setup's screen
 {
   // (each boot's passes, the user's profile among them on a shared session's, then the Start menu's)
-  const lines = w.split('\n'), boots = lines.map((l, i) => [l, i]).filter(([l]) => /installPrograms\(\); setupFonts\(\);/.test(l));
+  const lines = w.split('\n'), boots = lines.map((l, i) => [l, i]).filter(([l]) => /installPrograms\((true)?\); setupFonts\(\);/.test(l));
   assert.equal(boots.length, 2);
   for (const [l, i] of boots) assert.ok(/\bsetupStartMenu\(\);/.test(lines.slice(i, i + 3).join('\n')), l);
   const body = cut('function setupStartMenu() {', "grpconv.exe') + ' -s'));\n}");
