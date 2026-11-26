@@ -16,7 +16,7 @@ it (@discord/embedded-app-sdk's ES module build, as ~/kkfm-jukebox/browser/vendo
 Discord's frame reaches these through its proxy (https://<application id>.discordsays.com/ mapped to this site), so they
 are answered for any host; the exchange gives a token only for a code Discord issued to this application.
 """
-import json, os, re, urllib.error, urllib.parse, urllib.request
+import json, os, re, sys, urllib.error, urllib.parse, urllib.request
 
 ID_FILE = os.path.expanduser('~/.config/win95/discord-client-id')
 SECRET_FILE = os.path.expanduser('~/.config/win95/discord-client-secret')
@@ -68,15 +68,38 @@ def send(h, status, body):
     return True
 
 
+def read_body(h):
+    """the request's body, by its Content-Length or as chunks (a proxy may send it either way): None past MAX_BODY"""
+    if 'chunked' in (h.headers.get('Transfer-Encoding') or '').lower():
+        out = b''
+        while True:
+            try: n = int(h.rfile.readline(64).split(b';')[0].strip() or b'0', 16)
+            except ValueError: return None
+            if n == 0:
+                while h.rfile.readline(1024) not in (b'\r\n', b'\n', b''): pass   # (the trailers)
+                return out
+            if len(out) + n > MAX_BODY: return None
+            out += h.rfile.read(n); h.rfile.readline(8)
+    try: n = int(h.headers.get('Content-Length') or 0)
+    except ValueError: return None
+    return h.rfile.read(n) if 0 <= n <= MAX_BODY else None
+
+
+def note(*a):
+    """a line in the server's log: what was asked and how it ended, never a code, a token or the secret"""
+    print('[discord]', *a, file=sys.stderr, flush=True)
+
+
 def handle(h, method):
     """answer a request for /__discord/...: True if it was one"""
     path = h.path.split('?')[0]
     if path == '/__discord/config' and method == 'GET': return send(h, 200, {'client_id': client_id() or ''})
     if path == '/__discord/token' and method == 'POST':
-        try: n = int(h.headers.get('Content-Length') or 0)
-        except ValueError: n = -1
-        if n < 0 or n > MAX_BODY: return send(h, 400, {'error': 'invalid_request', 'error_description': 'no body, or one too long'})
-        try: body = json.loads(h.rfile.read(n) or b'{}')
+        raw = read_body(h)
+        if raw is None: note('token: no body, or one too long'); return send(h, 400, {'error': 'invalid_request', 'error_description': 'no body, or one too long'})
+        try: body = json.loads(raw or b'{}')
         except ValueError: body = None
-        return send(h, *exchange(body.get('code') if isinstance(body, dict) else None))
+        status, answer = exchange(body.get('code') if isinstance(body, dict) else None)
+        note('token:', status, answer.get('error') or 'granted', answer.get('error_description') or '', f'({len(raw)} bytes asked)')
+        return send(h, status, answer)
     return False
