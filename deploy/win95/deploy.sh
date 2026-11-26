@@ -481,6 +481,12 @@ build_staging() {
     mkdir -p "$STAGING_DIR/site/tools/convolution"
     cp "$REPO_ROOT/tools/sketch.mjs" "$STAGING_DIR/site/tools/" && cp "$REPO_ROOT/tools/convolution/fuzz-tabs.mjs" "$STAGING_DIR/site/tools/convolution/"
     cp "$REPO_ROOT/icons/"*.png "$STAGING_DIR/site/icons/"
+    # (Discord's Embedded App SDK, which discord.js imports in Discord's frame only: served from this origin)
+    if [[ -e "$REPO_ROOT/vendor/embedded-app-sdk.js" ]]; then
+        mkdir -p "$STAGING_DIR/site/vendor" && stage_file "$REPO_ROOT/vendor/embedded-app-sdk.js" "$STAGING_DIR/site/vendor/embedded-app-sdk.js"
+    else
+        log_warn "No vendor/embedded-app-sdk.js: the page in Discord's frame starts as Guest (discord.js)"
+    fi
     stage_file "$REPO_ROOT/$CD_IMAGE" "$STAGING_DIR/site/$CD_IMAGE"
     # The audio CD in the second CD drive (tools/build_audiocd.py): the page needs it
     for f in audiocd.bin audiocd.json; do
@@ -498,7 +504,7 @@ build_staging() {
     minify_site
 
     # Server and unit, outside the served tree
-    cp "$SCRIPT_DIR/win95_server.py" "$SCRIPT_DIR/win95.service" "$REPO_ROOT/tools/sessions.py" "$REPO_ROOT/tools/claude_api.py" "$STAGING_DIR/"
+    cp "$SCRIPT_DIR/win95_server.py" "$SCRIPT_DIR/win95.service" "$REPO_ROOT/tools/sessions.py" "$REPO_ROOT/tools/claude_api.py" "$REPO_ROOT/tools/discord_api.py" "$STAGING_DIR/"
     # The public names' share (win95_server.py PUBLIC_SHARES), outside the served tree too
     rm -rf "$STAGING_DIR/share" && cp -R "$SCRIPT_DIR/share" "$STAGING_DIR/share"
 
@@ -515,7 +521,7 @@ deploy_files() {
     if [[ "${DRY_RUN:-0}" == "1" ]]; then
         log_warn "DRY RUN — rsync --dry-run: previewing changes, writing nothing."
         rsync -av --dry-run --itemize-changes --delete "$STAGING_DIR/site/" "$(pi_dest "$INSTALL_DIR/site/")"
-        rsync -av --dry-run --itemize-changes "$STAGING_DIR/win95_server.py" "$STAGING_DIR/sessions.py" "$STAGING_DIR/claude_api.py" "$(pi_dest "$INSTALL_DIR/")"
+        rsync -av --dry-run --itemize-changes "$STAGING_DIR/win95_server.py" "$STAGING_DIR/sessions.py" "$STAGING_DIR/claude_api.py" "$STAGING_DIR/discord_api.py" "$(pi_dest "$INSTALL_DIR/")"
         rsync -av --dry-run --itemize-changes --delete "$STAGING_DIR/share/" "$(pi_dest "$INSTALL_DIR/share/")"
         return 0
     fi
@@ -523,7 +529,7 @@ deploy_files() {
     # --delete is safe: site/ and share/ are created and owned by this script and hold nothing hand-placed.
     rsync -av --delete "$STAGING_DIR/site/" "$(pi_dest "$INSTALL_DIR/site/")"
     rsync -av --delete "$STAGING_DIR/share/" "$(pi_dest "$INSTALL_DIR/share/")"
-    rsync -av "$STAGING_DIR/win95_server.py" "$STAGING_DIR/sessions.py" "$STAGING_DIR/claude_api.py" "$(pi_dest "$INSTALL_DIR/")"
+    rsync -av "$STAGING_DIR/win95_server.py" "$STAGING_DIR/sessions.py" "$STAGING_DIR/claude_api.py" "$STAGING_DIR/discord_api.py" "$(pi_dest "$INSTALL_DIR/")"
     log_info "Files deployed to $(pi_dest "$INSTALL_DIR")"
     install_claude_key
 }

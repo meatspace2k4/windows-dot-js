@@ -7,6 +7,7 @@
 // Which session, and as whom: ?session= and ?user= on the URL (for testing, and a link to join someone), else the
 // logon this browser keeps (localStorage w95.logon: { user, session }), else Guest in the shared session 'guest'.
 // Each tab is a person of its own (its client id in sessionStorage). ?shared=0 runs on this browser's own store.
+// In Discord's frame (discord.js) the session is the Activity's instance and the name the person's Discord name.
 (() => {
   const q = new URLSearchParams(location.search);
   const LOGON = 'w95.logon', CLIENT = 'w95.client';
@@ -24,7 +25,17 @@
   // (?client= names the machine without touching this tab's own: a frame in the tab is a machine of its own)
   const client = sessionId(q.get('client')) || get(sessionStorage, CLIENT) || (() => { const c = Math.random().toString(36).slice(2, 8) + Math.random().toString(36).slice(2, 8); put(sessionStorage, CLIENT, c); return c; })();
   // (a page on a session this computer keeps, chosen by Open Session: its own store, until a session is joined)
-  const wanted = () => q.get('shared') !== '0' && !window.W95HOST && !(stored.local && !q.get('session'));
+  const wanted = () => q.get('shared') !== '0' && !window.W95HOST && (given || !(stored.local && !q.get('session')));
+  /** who and where, said by the place the page runs in before the session starts (discord.js: the Activity's instance
+   *  and the person's Discord name): the logon is theirs whatever this browser keeps. A name with nothing a logon name
+   *  keeps leaves the name as it was (false) */
+  let given = false;
+  const as = (user, session) => {
+    const u = name(user, 20), s = sessionId(session);
+    if (s) { logon.session = s; given = true; }
+    if (u) logon.user = u;
+    return !!u;
+  };
   /** the logon this browser keeps for its next visit (joining a session leaves this computer's own) */
   const remember = (user, session) => put(localStorage, LOGON, JSON.stringify({ ...(stored.own ? { own: stored.own } : {}), ...(stored.owns ? { owns: stored.owns } : {}), user: name(user, 20) || 'Guest', session: sessionId(session) || 'guest' }));
   /** the next start on a session this computer keeps (host-web.js's choice), not one on the server */
@@ -207,7 +218,7 @@
   };
 
   window.W95Shared = {
-    wanted, start, ready, logon, client, ownSession, remember, logOff, goLocal, pointer, obj, intent,
+    wanted, start, ready, logon, as, client, ownSession, remember, logOff, goLocal, pointer, obj, intent,
     people: () => [...people.values()], watch: f => { watchers.add(f); return () => watchers.delete(f); },
     seq: () => seq, world: () => new Map(world), onObj: f => { onObj = f; }, clockSkew: () => clockSkew,
     intents: () => new Map(intents), onIntent: f => { onIntent = f; },

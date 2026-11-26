@@ -229,6 +229,8 @@
       // a session shared with others (shared.js): its C: and registry the server's, the rest this browser's (the
       // shares, the computer's name, its kept sessions); with no server answering, this browser's own store
       const S = window.W95Shared;
+      // (in Discord's frame, discord.js: which session and as whom is Discord's to say first; never rejects)
+      if (window.W95Discord) await window.W95Discord.ready;
       window.W95HOST = (S && S.wanted() && S.start(own)) || own;
     } catch (e) { console.error('no persistent store, starting fresh:', e); }
     start();

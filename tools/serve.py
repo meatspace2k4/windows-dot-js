@@ -69,7 +69,7 @@ def share_op(sh, op, *a):
 ERRNO = {2: 'ENOENT', 20: 'ENOTDIR', 13: 'EACCES', 1: 'EACCES', 17: 'EEXIST', 66: 'ENOTEMPTY', 39: 'ENOTEMPTY', 21: 'EISDIR'}
 
 from claude_api import local_request, claude, fetch_page
-import src_api, gitref
+import src_api, gitref, discord_api
 
 class H(http.server.SimpleHTTPRequestHandler):
     def ref(self):
@@ -89,10 +89,12 @@ class H(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         if self.ref(): return
         if self.path.startswith('/__session') and SESSIONS.handle(self, 'GET'): return
+        if self.path.startswith('/__discord/') and discord_api.handle(self, 'GET'): return   # (the Discord Activity's application id, discord.js)
         super().do_GET()
     def do_POST(self):   # /__share: the shares' list, an operation on one ({ ok } or { err }), and the host's name
         if self.ref(): return
         if self.path.startswith('/__session') and SESSIONS.handle(self, 'POST'): return
+        if self.path.startswith('/__discord/') and discord_api.handle(self, 'POST'): return   # (the Discord Activity's token exchange)
         if self.path.split('?')[0] == '/__fetch':   # (the Claude program's Browser pane: a web page as text, for this machine's own pages only)
             if not local_request(self): self.send_error(403); return
             try: q = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')
@@ -160,6 +162,9 @@ class H(http.server.SimpleHTTPRequestHandler):
         self.send_header('Cache-Control', 'no-store')
         # cross-origin isolated, for the shared memory the machines' workers run on (SharedArrayBuffer)
         self.send_header('Cross-Origin-Opener-Policy', 'same-origin'); self.send_header('Cross-Origin-Embedder-Policy', 'require-corp')
+        # (the same for the page in another site's frame, Discord's: a frame is isolated by its own document's policy
+        # where its embedder is not, which the two above cannot give it)
+        self.send_header('Document-Isolation-Policy', 'isolate-and-require-corp')
         super().end_headers()
     def copyfile(self, src, dst):
         n = getattr(self, 'range_left', None)

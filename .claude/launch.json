@@ -74,6 +74,20 @@
       "url": "http://127.0.0.1:8117"
     },
     {
+      "name": "win95 (discord activity's site, 8111)",
+      "runtimeExecutable": "zsh",
+      "runtimeArgs": ["-lc", "W95_DISCORD_CLIENT_ID=1234567890123456789 W95_DISCORD_CLIENT_SECRET=stub-secret W95_DISCORD_API=http://127.0.0.1:8113/api exec python3 tools/serve.py 8111 --iso '/Users/johusha/Downloads/Windows 95/Win95 OSR2.ISO'"],
+      "port": 8111,
+      "url": "http://127.0.0.1:8111"
+    },
+    {
+      "name": "discord stub (8113, over 8111)",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["tools/discord_stub.py", "8113", "--same-origin", "--app", "http://127.0.0.1:8111", "--client-id", "1234567890123456789", "--client-secret", "stub-secret"],
+      "port": 8113,
+      "url": "http://127.0.0.1:8113"
+    },
+    {
       "name": "win95-dev (local Pi)",
       "url": "http://win95-dev.localhost:8770",
       "port": 8770

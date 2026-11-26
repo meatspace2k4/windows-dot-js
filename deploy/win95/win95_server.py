@@ -125,6 +125,7 @@ DEV_SITE = BASE.parent / (BASE.name + "-dev") / "site"
 import sys
 sys.path.insert(0, str(BASE))
 import sessions
+import discord_api   # (tools/discord_api.py, copied beside this by deploy.sh: /__discord/config and /__discord/token)
 from claude_api import local_request, site_request, claude, fetch_page   # (tools/claude_api.py, copied beside this by deploy.sh)
 SESSIONS = {"prod": sessions.Sessions(str(BASE / "sessions")), "dev": sessions.Sessions(str(BASE.parent / (BASE.name + "-dev") / "sessions"))}
 
@@ -184,6 +185,8 @@ class H(http.server.SimpleHTTPRequestHandler):
             self.send_header("Cache-Control", "private")
         self.send_header("Cross-Origin-Opener-Policy", "same-origin")
         self.send_header("Cross-Origin-Embedder-Policy", "require-corp")
+        # (the same for the page in Discord's frame, whose embedder is not isolated: by its own document's policy)
+        self.send_header("Document-Isolation-Policy", "isolate-and-require-corp")
         super().end_headers()
 
     def copyfile(self, src, dst):
@@ -201,10 +204,14 @@ class H(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith("/__session") and sessions_for(self.headers.get("Host")).handle(self, "GET"):
             return
+        if self.path.startswith("/__discord/") and discord_api.handle(self, "GET"):   # (the Discord Activity's application id, discord.js)
+            return
         super().do_GET()
 
     def do_POST(self):
         if self.path.startswith("/__session") and sessions_for(self.headers.get("Host")).handle(self, "POST"):
+            return
+        if self.path.startswith("/__discord/") and discord_api.handle(self, "POST"):   # (the Discord Activity's token exchange)
             return
         if self.path.split("?")[0] in ("/__claude", "/__fetch"):   # (/__fetch reads any address from this machine: its own *.localhost pages only)
             if not (site_request if self.path.startswith("/__claude") else local_request)(self):
