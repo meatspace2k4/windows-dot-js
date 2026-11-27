@@ -1999,7 +1999,11 @@ class Machine {
       // as fast as the processor goes (Solitaire's bouncing cards), runs as it did on a slower PC)
       case 'speed': {
         const x = Math.min(64, Math.max(0.01, Number(args[0]) || 1)), up = Math.max(1, x);
-        this.fast = up > 1; this.vclock.scale = up; this.vclock.perTick = 0.25 / Math.min(1, x); if (this.fast) this.kick();
+        // (and its steps a quarter as long, 4 ms of the machine's time: a step is a slice of code and then the rest of its
+        // period waited out, so at 16 ms the program's drawing came in one burst a step, the steps out of time with the
+        // display's frames, and a frame took two bursts or none: Solitaire's cards moved in jerks. Four steps a frame
+        // give each frame about the same share)
+        this.fast = up > 1; this.vclock.scale = up; this.vclock.perTick = 0.25 / Math.min(1, x); this.vclock.period = x < 1 ? 4 : 16; if (this.fast) this.kick();
         return { scale: up, cpu: Math.min(1, x), now: this.vclock.now };
       }
       case 'now': return this.vclock.now;
