@@ -132,7 +132,10 @@
     st.meterBar = child('msctls_progress32', '', 0x01, 10, 26, cw - 20, 18, 102);   // PBS_SMOOTH
     if (st.meterBar) U(p, 'SendMessageA', [st.meterBar, 0x401, 0, 100 << 16]);     // PBM_SETRANGE 0..100
     st.meterRunTxt = child('STATIC', '...', 0, 10, 52, (cw - 20) >> 1, 14, 103);
-    st.meterMachTxt = child('STATIC', '', 2, 10 + ((cw - 20) >> 1), 52, (cw - 20) - ((cw - 20) >> 1), 14, 104);   // SS_RIGHT    st.meterSamples = [meterSample()]; st.meterRun = null; st.meterMach = null;
+    st.meterMachTxt = child('STATIC', '', 2, 10 + ((cw - 20) >> 1), 52, (cw - 20) - ((cw - 20) >> 1), 14, 104);   // SS_RIGHT
+    // (the figures not known until a second sample: '...' meanwhile. These were on the comment's line above, so never
+    // run: the first second's tick read the run time as undefined, and its toFixed ended MSGSRV32)
+    st.meterSamples = [meterSample()]; st.meterRun = null; st.meterMach = null;
     U(p, 'SetTimer', [h, METER_TIMER, 1000, 0]);
   }
   function meterShow(p) {
