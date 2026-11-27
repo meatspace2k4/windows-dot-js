@@ -175,7 +175,9 @@
   const PIN_HIT = 19;   // (HTOBJECT: a hit-test code no default handling acts on)
   // (free: the pin at 45 degrees, its point to the south-west, its head up and right past the crossbar)
   const PIN_FREE = ['......#..', '......##.', '.....#.##', '..#.#.#..', '...#.#...', '....#....', '..#..#...', '.#.......', '#........'];
-  const PIN_UP = ['..#####..', '..#...#..', '..#...#..', '..#...#..', '.#######.', '....#....', '....#....', '....#....', '.........'];
+  // (pinned: the same pin upright, drawn as the tilted one is: a cap wider than the head's two sides, the crossbar,
+  // the point)
+  const PIN_UP = ['..#####..', '...#.#...', '...#.#...', '...#.#...', '.#######.', '....#....', '....#....', '....#....', '.........'];
   /** the pin's rectangle in the window's own coordinates: the close button's place (USER's small caption: its button
    *  SM_CXSMSIZE - 2 wide, SM_CYSMSIZE - 4 high, 2 in from the caption's right and top), one button further left */
   function pinRect(p, h) {
