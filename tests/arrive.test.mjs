@@ -7,7 +7,8 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 const bp = readFileSync(new URL('../braid-page.js', import.meta.url), 'utf8'), w = readFileSync(new URL('../win95.js', import.meta.url), 'utf8');
-const i = bp.indexOf('async function arrive('), body = bp.slice(i, bp.indexOf('\n  }\n', i));
+// (arrive puts up its note and runs arrive0, whose body is the arrival itself)
+const i = bp.indexOf('async function arrive0('), body = bp.slice(i, bp.indexOf('\n  }\n', i));
 assert.match(body, /own = \['windows', 'tasks', 'modals', 'active', 'menus', 'menuSrc', 'cap', 'drag', 'ghost', 'msgApp'\]/, 'the shell\'s own, kept');
 assert.match(body, /skip: \(o, k\) => shellSkip\(o, k\) \|\| \(o === sh && own\.includes\(k\)\)/, 'not rebound');
 assert.match(body, /Object\.assign\(sh, kept\); shellBack\(sh\);/, 'put back before the shell takes them');

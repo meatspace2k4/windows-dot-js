@@ -19,7 +19,7 @@ const make = new Function('env', `
   ${w.slice(i, j)}
   return { pointerApp: (x, y) => (sync(), pointerApp(x, y)), cursorAt: (x, y) => (sync(), cursorAt(x, y)) };`);
 const { pointerApp, cursorAt } = make(env);
-const A = { name: 'machine A' }, B = { name: 'machine B' };
+const A = { name: 'machine A', alive: true }, B = { name: 'machine B', alive: true };
 const shellW = { hit: () => 'client' };
 
 // over a machine's window: its cursor, and the sprite drawn is that machine's

@@ -49,4 +49,7 @@ if (toc && /Incredible Machine 3/.test(toc.album)) assert.equal(A.discId(), '20D
   assert.ok(audio.sources.every(s => s.stopped), 'all stopped'); const n = audio.fetched.length;
   await new Promise(ok => setTimeout(ok, 20)); assert.equal(audio.fetched.length, n, 'nothing fetched after stop');
 }
+// a request to the drive (MSCDEX's, ne16.js cdRequest0) takes time of the machine's: CD Player names each drive's MCI
+// device by GetTickCount as it opens it, and two opens at one tick were a duplicate alias, the audio disc "not inserted"
+assert.match(readFileSync(new URL('../ne16.js', import.meta.url), 'utf8'), /const cdRequest0 = p => \{\s*\{ const vc = p\.host && p\.host\.vclock; if \(vc\) vc\.now \+= CD_REQUEST_MS; \}/, 'a CD request moves the machine\'s clock on');
 console.log('cdaudio: ok');

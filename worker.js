@@ -8,7 +8,10 @@ self.window = self;
 // the Ethernet segment as this worker has it: its own stations (the card, in the system's machine), and the rest of the
 // segment on the page (the other computer, lanhost.js; other machines' cards), frames passing both ways
 self.W95LAN = { stations: new Set(), frames: 0 };
-importScripts('bridge.js', 'braid.js', 'fs.js', 'win32.js', 'gl.js', 'shell32.js', 'system.js', 'claude-exe.js', 'claude-app.js', 'session-dll.js', 'sesstray-exe.js', 'session-tray.js', 'dbwin-exe.js', 'dbwin.js','osclass.js', 'ne16.js', 'vmm.js', 'sound.js', 'lan.js', 'parallel.js', 'netfs.js', 'dyn.js', 'v86.js', 'savers.js', 'saver-runtime.js');
+importScripts('bridge.js', 'braid.js', 'fs.js', 'win32.js', 'gl.js', 'shell32.js', 'system.js', 'claude-exe.js', 'claude-app.js', 'session-dll.js', 'sesstray-exe.js', 'session-tray.js', 'dbwin-exe.js', 'dbwin.js', 'debugger-exe.js', 'debugger.js','osclass.js', 'ne16.js', 'setupx-lzx.js', 'w4.js', 'vmm.js', 'sound.js', 'lan.js', 'parallel.js', 'netfs.js', 'netpatch.js', 'dynjs.js', 'dyn.js', 'v86.js', 'savers.js', 'saver-runtime.js');
+// (a site served in two parts, tools/split_system.py: the bundles above came without their recompiled code, which
+// is this machine's to run; it is taken now, under the same stamp this worker was asked by, as the page fetched it)
+if (self.W95SYSTEM && self.W95SYSTEM.code) importScripts(self.W95SYSTEM.code + self.location.search);
 const B = self.W95Bridge, W = self.W95Win32, { FSError, join, basename, extname } = self.W95FS;
 const b64bytes = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
 const sha256 = W.sha256;   // (a program's identity as the bundle records it: spawnProgram)
@@ -20,6 +23,9 @@ self.W95CDGAIN = (l, r) => post({ t: 'cdaudio', op: 'gain', l, r });       // (t
 
 // ---------------------------------------------------------------- the page, called synchronously
 let rpcSab = null;
+// how far ahead of the wall the machine's time may run at a person's pace (step): the sound its card makes is queued
+// that far ahead of the speakers, more than one late step takes
+const PACE_LEAD = 150;
 const mkErr = v => v.name === 'FSError' ? Object.assign(new FSError(v.code, v.path), { message: v.message }) : Object.assign(new Error(v.message), { name: v.name, code: v.code });
 function rpc(target, method, args = []) {
   const ctl = new Int32Array(rpcSab, 0, 4);
@@ -60,13 +66,51 @@ const remotePath = p => { try { return typeof p === 'string' && !!rfs.remoteAt(p
 // and descriptors here
 const pathOps = new Set(['exists', 'stat', 'readdir', 'readFile', 'writeFile', 'open', 'unlink', 'mkdir', 'rmdir', 'realpath', 'setAttrs', 'statvfs', 'chdir', 'resolve', 'shortPath', 'setLabel', 'truncate']);
 const fdOps = new Set(['read', 'write', 'close', 'seek', 'fstat', 'ftruncate']);
+// a CD's file opened for reading is read here, its bytes taken from the page once as it opens: each read, seek and
+// close a round trip to the page's busy main thread, Windows 98 Setup's copy from its cabinets went at the page's pace,
+// not the machine's. The disc is read-only, so the copy here is the file (a disc changed in the drive since: the next
+// open takes the new one's). The descriptors are the process's (cdFds), so a moment carries them with the handles
+// that name them: kept here apart, a travel back to a moment with Setup's copy of D:\WIN98\CSSETUP.EXE open found
+// its descriptor gone, "Invalid handle"
+const CD_FD = 0x20000000; let cdLetters = null;
+const cdTable = () => { const p = machine && machine.proc; if (!p) throw new FSError(6, ''); return p.cdFds || (p.cdFds = { next: CD_FD, open: {} }); };
+const cdPath = p => {
+  if (typeof p !== 'string' || !/^[A-Za-z]:\\/.test(p)) return false;
+  const l = p[0].toUpperCase();
+  if (!cdLetters || !cdLetters.has(l)) { cdLetters = new Map(rpc('fs', 'vols').map(v => [v.letter.toUpperCase(), v.kind === 'cdrom' && !v.audio])); }
+  return !!cdLetters.get(l);
+};
+const cdOpen = (path, flags = 'r') => {
+  if (self.W95NoCdCache || flags !== 'r' || !cdPath(path)) return null;
+  const st = rpc('fs', 'stat', [path]); if (!st || st.dir) return null;
+  const T = cdTable(), buf = rpc('fs', 'readFile', [path]), fd = T.next++;
+  T.open[fd] = { buf, pos: 0, st };
+  return fd;
+};
+const cdOp = (k, fd, args) => {
+  const T = cdTable(), h = T.open[fd]; if (!h) throw new FSError(6, String(fd));
+  if (k === 'read') { const len = args[0], n = Math.max(0, Math.min(len === undefined ? Infinity : len, h.buf.length - h.pos)), b = h.buf.slice(h.pos, h.pos + n); h.pos += n; return b; }
+  if (k === 'seek') { const w = args[1] || 0, p = (w === 1 ? h.pos : w === 2 ? h.buf.length : 0) + args[0]; if (p < 0) throw new FSError(131, ''); h.pos = p; return p; }
+  if (k === 'fstat') return h.st;
+  if (k === 'close') { delete T.open[fd]; return; }
+  throw new FSError(5, '');   // (write, ftruncate: the disc is read-only)
+};
+// the current directory as the thread switches (ne16.js cwdSwitch, cwdLazy): kept here and told to the page only before
+// the next call that resolves a path there. Told at each switch, each a round trip to the page's busy main thread (the
+// directory read, then set), the switches between Windows 98 Setup's tasks during its copy cost more than their code
+let pageCwd, wantCwd;
+const cwdApply = () => { if (wantCwd !== undefined) { if (wantCwd !== pageCwd) { rpc('fs', 'setCwd', [wantCwd]); pageCwd = wantCwd; } wantCwd = undefined; } };
 const fs = new Proxy({}, {
   get(_, k) {
-    if (k === 'cwd') return rpc('fs', 'getCwd');
+    if (k === 'cwd') return wantCwd !== undefined ? wantCwd : pageCwd !== undefined ? pageCwd : (pageCwd = rpc('fs', 'getCwd'));
+    if (k === 'cwdLazy') return p => { wantCwd = p; };   // (ne16.js cwdSwitch asks for it by name: this proxy answers any name, so it is there)
+    if (k !== 'vols') cwdApply();
+    if (k === 'chdir') return (...args) => { pageCwd = undefined; return rpc('fs', 'chdir', args); };
     if (k === 'vols') { const m = new Map(rpc('fs', 'vols').map(v => [v.letter, v])); for (const v of rfs.vols.values()) m.set(v.letter, { letter: v.letter, kind: 'remote', label: v.label, remote: true, unc: v.unc }); return m; }
     return (...args) => {
       if (pathOps.has(k) && remotePath(args[0])) return rfs[k](...args);
-      if (fdOps.has(k) && args[0] >= REMOTE_FD) return rfs[k](...args);
+      if (fdOps.has(k) && args[0] >= REMOTE_FD) return args[0] >= CD_FD ? cdOp(k, args[0], args.slice(1)) : rfs[k](...args);
+      if (k === 'open') { const fd = cdOpen(args[0], args[1]); if (fd !== null) return fd; }
       if ((k === 'rename' || k === 'copy') && (remotePath(args[0]) || remotePath(args[1]))) {
         if (remotePath(args[0]) && remotePath(args[1])) return rfs[k](...args);
         const data = remotePath(args[0]) ? rfs.readFile(args[0]) : rpc('fs', 'readFile', [args[0]]);
@@ -77,7 +121,7 @@ const fs = new Proxy({}, {
       return rpc('fs', k, args);
     };
   },
-  set(_, k, v) { if (k === 'cwd') rpc('fs', 'setCwd', [v]); return true; },
+  set(_, k, v) { if (k === 'cwd') { wantCwd = undefined; rpc('fs', 'setCwd', [v]); pageCwd = v; } return true; },
 });
 self.W95SHELL = new Proxy({}, { get(_, k) { return k === 'fs' ? fs : (...args) => { post({ t: 'shell', fn: k, args: JSON.parse(JSON.stringify(args.filter(a => typeof a !== 'object' || a === null || a.constructor === Object))) }); return true; }; } });
 
@@ -97,6 +141,7 @@ W.Process.prototype.r0Idle = function () {
   const ms = due === null ? 200 : Math.min(due, 50);
   const got = lanRing ? B.frameWait(lanRing, ms) : (Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms), false);
   if (machine) { machine.vclock.now += ms * machine.vclock.scale; machine.poll(); }   // (the wait is the machine's time too)
+  if (machine && machine.detLog) machine.detLog.push(`r0idle ${ms} frame ${!!got} @${machine.vclock.now}`);
   return got || due !== null;
 };
 
@@ -104,16 +149,23 @@ W.Process.prototype.r0Idle = function () {
 const regStore = { held: null, load() { return this.held; }, op(o) { post({ t: 'regop', o }); } };
 
 // ---------------------------------------------------------------- sound: the samples go to the page's output
+// Once the page has made a stream's worklet, it hands this worker a channel to it (t 'audioPort'), and the samples go
+// there directly: through the page's own thread, they stopped while that thread was busy, and a Braid travel keeps
+// it busy for seconds putting the moment in place (the registry, the disk, the next machine): Windows' startup sound
+// broke up. The first samples of a stream go through the page, which makes the stream
+const audioPorts = self.W95AudioPorts = new Map();
+const audioKey = rate => Math.min(Math.max(Math.round(rate), 3000), 768000);   // (sound.js out: the stream a rate plays on)
 self.W95AudioSink = (proc, rate, L, R, n) => {
-  const l = Float32Array.from(L.subarray(0, n)), r = Float32Array.from(R.subarray(0, n));
-  post({ t: 'audio', rate, l, r }, [l.buffer, r.buffer]); return false;
+  const l = Float32Array.from(L.subarray(0, n)), r = Float32Array.from(R.subarray(0, n)), port = audioPorts.get(audioKey(rate));
+  if (port) port.postMessage([l, r], [l.buffer, r.buffer]); else post({ t: 'audio', rate, l, r }, [l.buffer, r.buffer]);
+  return false;
 };
 
 // ---------------------------------------------------------------- the machine
 const NATIVE = { exec: null };
 class Machine {
   constructor(o) {
-    Object.assign(this, o); this.keyq = []; this.mouseq = []; this.mods = {}; this.ax = -1; this.ay = -1; this.cursorOn = false; this.mouse = { x: -100, y: -100 };
+    Object.assign(this, o); this.keyq = []; this.mouseq = []; this.keyMods = {}; this.ax = -1; this.ay = -1; this.cursorOn = false; this.mouse = { x: -100, y: -100 };
     this.ring = o.ring; this.pending = new Map(); this.alive = true; this.savers = new Map();
     // the machine's own clock (host.now, Process.now: the VxDs' time-outs, USER's timers, the ticks programs read):
     // not the wall's. It moves by a quantum per BUDGET blocks the processor runs (win32.js tick) and by a step's
@@ -145,7 +197,17 @@ class Machine {
   braidNamed() { const by = new Map(); for (const [v, k] of this.braidNames()) by.set(k, v); return name => by.get(name); }
   /** the properties of the machine's own object that are the host's live things, not the moment's: the step timer,
    *  the message channel, the input ring, the moments themselves, the clock's skew */
-  braidSkip(obj, k) { return (obj === this && (k === 'timer' || k === 'soonCh' || k === 'soonPending' || k === 'ring' || k === 'alive' || k === 'mods' || k === 'stepLog' || k === 'started' || k === 'fast' || k === 'until' || k === 'untilWait' || k === 'markWait')) || (obj === this.proc && (k === 'dynCache' || k === 'dynEnv')); }   // (the run-time translations: a cache of code, made again as the code runs; its wasm instances cannot be exported)
+  braidSkip(obj, k) { return (obj === this && (k === 'timer' || k === 'sysId' || k === 'stepDue' || k === 'paceAt' || k === 'btnFedAt' || k === 'lastFed' || k === 'lastStepEnd' || k === 'soonCh' || k === 'soonPending' || k === 'ring' || k === 'alive' || k === 'mods' || k === 'stepLog' || k === 'started' || k === 'fast' || k === 'until' || k === 'untilWait' || k === 'markWait' || k === 'detLog' || k === 'trailLog' || k === 'childAsks' || k === 'askChain' || k === 'readQ' || k === 'reader')) || (obj === this.proc && (k === 'dynCache' || k === 'dynFast' || k === 'dynEnv' || k === 'runHook'))
+    // (a module translated whole as it loaded, a 16-bit module's or a program's or DLL's: its module's bytes kept for
+    // translating it again (dyn.js translateNE), and the memo's module being read, made again from its code and the
+    // memo; each moment copied them, MSHTML's 50 MB among them, four moments held at a time while Setup ran)
+    || ((k === 'netSeed' || k === 'netReady') && obj && obj.meta && obj.meta.dynamic)
+    // (an import thunk's definition, a 32-bit one's { dll, nm, def } or a 16-bit one's { key, def }: the API's own
+    // table entry, code, found again by the thunk's name (import). Carried in a moment, an arrival wrote the moment's
+    // into the entries of the thunks at the same places here, and where the two machines had made their thunks in
+    // another order (a first start's against a later one's) KERNEL32's __Ret32 returns became calls of 3 arguments:
+    // the next return from 32-bit code to 16-bit went to the far address as a flat one, a fault in USER)
+    || (k === 'def' && obj && ((typeof obj.dll === 'string' && typeof obj.nm === 'string') || typeof obj.key === 'string')); }   // (the run-time translations: a cache of code, made again as the code runs; its wasm instances cannot be exported. dynFast, the block each address ran last, too: carried in a moment without its code, an arrival from an anchor called a block with no run)
   /** the lint's record of the machine now (braid.js lint) */
   braidProbe() {
     const p = this.proc, held = p.win16Held ? { who: typeof p.win16Held.who === 'object' ? 'thread ' + p.win16Held.who.id : String(p.win16Held.who), since: p.win16Held.since, cpu: p.win16Held.cpu, hung: !!p.win16Held.hung } : null;
@@ -160,6 +222,7 @@ class Machine {
    *  record): memory, registers and the host's objects as one graph from the machine's own object, the registry, the
    *  lint's probe, the mods named */
   braidMark(name) {
+    if (!this.proc) throw new Error('the machine is starting: no moment yet');   // (the line marking itself while the PC boots)
     if (this.proc.depth) throw new Error('a moment is taken between steps, not inside a call');
     const t0 = performance.now(), B = self.W95Braid;
     const graph = B.takeGraph([this], { opaque: this.braidOpaque(), skip: (o, k) => this.braidSkip(o, k) });
@@ -184,11 +247,38 @@ class Machine {
     const p = this.proc, S = self.W95SYSTEM || {};
     for (const rec of p.modules || []) {
       const isExe = rec.name === 'EXE' && rec.meta && rec.meta.name;
+      // (a 16-bit module loaded from its file, translated whole as it loaded: made again from its code as the moment
+      // has it, the memo's module where it hashes the same, dyn.js neCompile)
+      // (an image too, a program's or DLL's mapped from its file; not a program whose process's view is put by, whose
+      // code is not where its image is now)
+      // (one whose process's view is put by: its block table is the moment's, its run the module made before the travel,
+      // another numbering of its blocks, and Explorer, its view put back, ran other blocks than its own. Its text the
+      // dispatcher's no more, run-time code, until its view is in place and its module is made from its own code there,
+      // dyn.js neInstall)
+      if (rec.meta && rec.meta.dynamic) {
+        if (!rec.meta.lookup || !(rec.kind === 'ne' ? rec.file : rec.sha256)) continue;
+        if (!rec.hidden) { p.neCompile(rec); continue; }
+        // (made now from its own code: its process's view put in place for it, then the view that was put back. Left
+        // to be made as its view came back, its code ran as run-time code until no host call was in progress, and
+        // Explorer's menu loop, the Start button pressed, never left one)
+        const owner = [...(p.procs || new Map()).values()].find(x => x.exe === rec && x.exitCode === null);
+        if (owner && p.arenaUse) {
+          const was = (p.arena || []).find(s => s.cur !== null), prev = was ? was.cur : null;
+          p.arenaUse(owner);
+          try { if (!rec.hidden) { p.neCompile(rec); continue; } }
+          finally { if (was) p.arenaUse(prev || null); }
+        }
+        if (!rec.netText) { rec.netText = [rec.meta.textLo, rec.meta.textHi]; rec.meta.textLo = rec.meta.textHi = 0; }
+        rec.run = null; rec.netReady = { had: null };
+        continue;
+      }
+      // (whatever run it has, a module translated whole is made again above: an arrival's rebind left each record the
+      // run of the live record at its position, another DLL's, over the moment's block table (MSTASK read 0, Explorer
+      // ran to DCh); a travel's, the module made since the moment, another numbering of its blocks)
       if (typeof rec.run === 'function' && !isExe) continue;
-      if (rec.meta && rec.meta.dynamic) continue;
       let mod = rec.module instanceof WebAssembly.Module ? rec.module : null;
-      if (!mod && rec.kind === 'vxd') mod = ((S.vxds || {})[rec.file] || {}).mod;
-      else if (!mod && rec.kind === 'ne') mod = ((S.ne || {})[rec.name] || Object.values(S.ne || {}).find(d => d.meta === rec.meta) || {}).mod;
+      if (!mod && rec.kind === 'vxd') { const d = (S.vxds || {})[rec.file]; if (d) mod = d.mod || (d.wasm && (d.mod = new WebAssembly.Module(b64bytes(d.wasm)))); }   // (a VxD the moment had loaded and this machine had not, SPOOLER: its module is made only as vmm.js vxd loads it)
+      else if (!mod && rec.kind === 'ne') { const d = (S.ne || {})[rec.name] || Object.values(S.ne || {}).find(x => x.meta === rec.meta); if (d) mod = d.mod || (d.wasm && (d.mod = new WebAssembly.Module(b64bytes(d.wasm)))); }
       else if (!mod && isExe) { const progs = S.programs || {}, d = (rec.meta.sha256 && Object.values(progs).find(x => x.meta && x.meta.sha256 === rec.meta.sha256)) || progs[rec.meta.name + '.EXE']; if (d) mod = d.mod || d.modSync || (d.modSync = new WebAssembly.Module(b64bytes(d.wasm))); }
       else if (!mod) {
         const d = p.dlls && p.dlls.get(rec.name); if (d && d.module instanceof WebAssembly.Module) mod = d.module;
@@ -216,13 +306,42 @@ class Machine {
     this.until = null; if (this.untilWait) { const w = this.untilWait; this.untilWait = null; w({ at: s.now, left: true }); }
     this.faultTaken = false; this.stopped = false; this.txtGen = -1;
     if (this.proc.fault) this.proc.fault = null;
+    if (this.proc.lzxInstall) this.proc.lzxInstall();   // (SETUPX's decoder answered in JS again: the moment's entry hooks are its own, setupx-lzx.js)
     this.timer = 0; this.soonPending = false;
-    if (this.alive) this.timer = setTimeout(() => this.step(), 0);
-    return { ms: Math.round(performance.now() - t0), now: s.now };
+    // (the machine runs on once the memo's modules made again have been read and are in place: dyn.js netReads)
+    return this.proc.netReads().then(() => {
+      this.proc.neInstall();
+      if (this.alive && !this.timer) this.timer = setTimeout(() => this.step(), 0);
+      return { ms: Math.round(performance.now() - t0), now: s.now };
+    });
   }
   async start() {
     const S = self.W95SYSTEM;
-    await Promise.all([...Object.values(S.ne), ...Object.values(S.dlls), ...Object.values(S.net || {})].map(async m => { if (!m.mod) m.mod = await WebAssembly.compile(b64bytes(m.wasm)); }));
+    // (what the start's parts took, in the log: the worker's scripts (its clock starts as it is made), the bundle's
+    // modules and the memo's index, the memo's modules read ahead, the machine made and its first task started)
+    const laps = [`its scripts ${Math.round(performance.now())} ms`]; let tl = performance.now();
+    const lap = what => { const n = performance.now(); laps.push(`${what} ${Math.round(n - tl)} ms`); tl = n; };
+    // The bundle's modules compiled ahead of their first use: those this disk runs, the ones whose file in the Windows
+    // folder is the bundle's own (its SHA-256) or is not there. A module the disk has another build of (Windows 98's
+    // over Windows 95's) runs from its file (dyn.js) and the bundle's is not compiled at all: compiled regardless, the
+    // 76 of them were machine code held beside Windows 98's own translations, a tab of 3 GB. One used after all is
+    // compiled where it is first asked for (the tables' `module`).
+    const ours = (d, file) => {
+      for (const dir of ['C:\\WINDOWS\\SYSTEM\\', 'C:\\WINDOWS\\']) { let b; try { b = fs.readFile(dir + file); } catch (_) { continue; } return !d.meta.sha256 || sha256(b) === d.meta.sha256; }
+      return true;
+    };
+    const ahead = [...Object.entries(S.ne).map(([k, d]) => [d, d.fileName || k]), ...Object.entries(S.dlls).map(([k, d]) => [d, k]), ...Object.entries(S.net || {}).map(([k, d]) => [d, k])]
+      .filter(([d, file]) => { try { return ours(d, file); } catch (_) { return true; } }).map(([d]) => d);
+    await Promise.all(ahead.map(async m => { if (!m.mod) m.mod = await WebAssembly.compile(b64bytes(m.wasm)); })
+      .concat(self.W95Dyn.memoLoad()));   // (and the translations of modules loaded from their files, memoized on this computer: dyn.js)
+    // (the memo's modules the last starts used, read and compiled ahead of their load. The system's machine waits for
+    // them: its start is one run of the host's, no read's answer taken until it ends, and begun beside it USER, GDI,
+    // USER32 and GDI32 went in 16 s after they loaded, their code run block by block through all of Windows' start)
+    // (the system on this disk, by its USER.EXE: the memo keeps each system's starts apart, dyn.js memoSys)
+    { let id = ''; try { id = sha256(fs.readFile('C:\\WINDOWS\\SYSTEM\\USER.EXE')).slice(0, 16); } catch (_) { /* a disk with no Windows yet */ } self.W95Dyn.memoSys(id); this.sysId = id; }
+    lap('the bundle\'s modules and the memo\'s index');
+    { const w = self.W95Dyn.memoWarm(); if (this.system) await w; }
+    lap('the memo\'s modules read ahead');
     if (self.fonts && typeof FontFace === 'function') await Promise.all(Object.entries((self.W95SAVERS || {}).fonts || {}).map(async ([family, data]) => {
       try { const font = await new FontFace(family, b64bytes(data)).load(); self.fonts.add(font); } catch (_) { /* bundled font unavailable in this worker */ }
     }));
@@ -230,7 +349,9 @@ class Machine {
     if (!prog) prog = { name: 'MSGSRV32.EXE', meta: Object.values(S.programs)[0].meta, module: null };
     else prog.module = await WebAssembly.compile(b64bytes(S.programs[prog.name].wasm));
     const dlls = new Map();
-    for (const [n, d] of Object.entries(S.dlls)) { d.bytes = d.bytes || b64bytes(d.file); dlls.set(n.replace(/\.DLL$/, ''), { file: d.bytes, module: d.mod, meta: d.meta }); }
+    for (const [n, d] of Object.entries(S.dlls)) dlls.set(n.replace(/\.DLL$/, ''), {
+      get file() { return d.bytes || (d.bytes = b64bytes(d.file)); }, meta: d.meta,
+      get module() { return d.mod instanceof WebAssembly.Module ? d.mod : (d.modSync || (d.modSync = new WebAssembly.Module(b64bytes(d.wasm)))); } });
     for (const [n, d] of Object.entries(S.net || {})) dlls.set(n.replace(/\.DLL$/, ''), {
       get file() { return d.bytes || (d.bytes = b64bytes(d.file)); }, meta: d.meta,
       get module() { return d.mod instanceof WebAssembly.Module ? d.mod : (d.modSync || (d.modSync = new WebAssembly.Module(b64bytes(d.wasm)))); } });
@@ -261,7 +382,13 @@ class Machine {
     // program as it boots, and exec found no process to give its image room in)
     const exe = /\s/.test(this.path) ? `"${this.path}"` : this.path;
     try {
-      if (this.system) { host.vmTop = 0x0a000000; host.vmPages = 2048; }
+      // (the system's machine: 224 MB above the layout for VirtualAlloc's reservations and the DLLs the arena has no room
+      // for. Windows 98's first start ran 96 MB out: VCACHE's 30 MB at boot, RUNDLL32's MSVCRT heaps at 4 MB each, and
+      // JSCRIPT.DLL then had no room ("An error occurred loading jscript.dll", Windows Update's item))
+      // (384 MB: the DLLs' images Windows 98's first start maps, VirtualAlloc's regions, and the block tables of the
+      // modules translated whole as they load, 4 bytes a byte of code, 173 MB across RUNONCE's 364; at 256 MB the tables
+      // were written over images and regions, and kept apart, REGSVR32 ran out of memory)
+      if (this.system) { host.vmTop = 0x0a000000; host.vmPages = 6144; }
       this.proc = new W.Process(this.bytes, prog.module, { ...prog.meta, name: prog.name.replace(/\.EXE$/, '') }, host, this.arg ? `${exe} ${this.arg}` : exe, dlls);
       this.proc.soundQuiet = !!this.quiet;   // (sound.js: the card's output off for the one sound)
       if (this.system && this.session) this.proc.onIntent = i => post({ t: 'intent', i });   // (a shared session's: ne16.js hookIntents)
@@ -284,6 +411,8 @@ class Machine {
     p.inputPoll = () => this.poll();
     // a blue screen's wait for its key in ring 0 that cannot stop (inside a call): the screen to the page, the keys from it
     p.msgWait = () => { this.sendText(); Atomics.wait(this.ring, 0, Atomics.load(this.ring, 0), 16); this.poll(); };
+    lap('the machine made and its first task started');
+    if (this.system) W.log('info', 'worker', `the system's machine started: ${laps.join(', ')}`);
     post({ t: 'started', sw: this.sw, sh: this.sh, mem: p.mem.buffer });
     this.step();
   }
@@ -297,6 +426,24 @@ class Machine {
   /** an error from ring 0 the poll ran (a VxD's time-out, VKD's key): a processor exception there is the machine's to
    *  answer (VWIN32's blue screen, step), and the run it interrupted goes no further; printed and passed over, the
    *  system ran on with the VxD's state broken (NETBEUI's time-out faulted, ran again from 0, and wrote over the screen) */
+  /** the processor exception the machine took (p.fault), answered as Windows does: at ring 0, or in the system's own
+   *  first task, MSGSRV32, the process Windows itself runs in, the blue screen (Windows cannot go on without it, and
+   *  VWIN32 says so; a fault dialog over the page's own desktop looked like a system still running); else the
+   *  program's fault dialog */
+  answerFault() {
+    const p = this.proc;
+    this.faultTaken = true; this.fatalN = (this.fatalN || 0) + 1;   // (fatalN: the processor exceptions the system answered, a blue screen or a fault dialog: the lint's broken state, braidProbe)
+    if (p.fault.ring === 0 || (this.system && (!p.fault.program || /MSGSRV32/i.test(p.fault.program)))) { this.fatal(p.fault); if (this.alive) this.timer = setTimeout(() => this.step(), 16); return; }
+    this.stopped = true; post({ t: 'fault', f: p.fault });
+  }
+  /** a run at ring 0 in flight (r0Step) that ended in an error: a processor exception is answered as any other
+   *  (answerFault: MSGSRV32's at 9A11E919, in a VxD call's nested run, ended the machine with the page's own fault
+   *  box, not Windows' blue screen); anything else ends the machine */
+  r0StepFailed(e) {
+    const p = this.proc;
+    if (e instanceof W.FaultError) { p.depth = 0; p.faulted(e.fault); if (!this.faultTaken) this.answerFault(); return; }
+    console.error(e && e.stack ? e.stack : e); this.exited(-1, e.message);
+  }
   r0Fault(e) {
     if (!(e instanceof W.FaultError)) { console.error(e); return; }
     this.proc.faulted(e.fault); throw e;
@@ -332,10 +479,12 @@ class Machine {
   }
   queueKey(vk, sc, up, mods) {
     for (const [m, on, code] of [[16, mods.shift, 0x2a], [17, mods.ctrl, 0x1d], [18, mods.alt, 0x38]]) {
-      if (m === vk || !!this.mods[m] === !!on) continue;
-      this.mods[m] = on; this.keyq.push([m, code, !on]);
+      if (m === vk || !!this.keyMods[m] === !!on) continue;
+      this.keyMods[m] = on; this.keyq.push([m, code, !on]);
     }
-    if (vk === 16 || vk === 17 || vk === 18) this.mods[vk] = !up;
+    // (the modifiers' state in a table of its own: kept in `mods`, the list of scripts loaded over the machine, it was
+    // entries 16 to 18 of that list)
+    if (vk === 16 || vk === 17 || vk === 18) this.keyMods[vk] = !up;
     this.keyq.push([vk, sc, up]);
   }
   stopFullSavers() {
@@ -370,6 +519,12 @@ class Machine {
     // them to take each: USER keeps only the latest of the moves waiting in its queue, and the path is what a
     // program drawing with them makes)
     while (this.mouseq.length) {
+      // (a button's change goes in 50 ms after the last one, as a hand's press and release come apart: a script's
+      // click queued both at once, fed in one pass USER had them at the same moment, and Explorer's Start button,
+      // its menu opened on the press, stayed pressed with no menu)
+      // (the last one's time is this worker's clock's: one ahead of it is another worker's, a moment travelled to
+      // carried it (braidSkip leaves it out now), and every click waited until this clock caught up with it)
+      if (this.mouseq[0][0] & 0x1e) { const now = performance.now(), last = this.btnFedAt > now ? 0 : (this.btnFedAt || 0); if (now - last < 50) break; this.btnFedAt = now; }
       if (this.btn && this.stroke && this.mouseq[0][0] === 0x8001) {
         // (a drag's moves run at most lagMax ahead of the program taking them: USER's DispatchMessage counts the
         // moves taken, ne16.js hookTaken; past 100 ms without one taken, the next goes in anyway. Four ahead
@@ -394,6 +549,9 @@ class Machine {
   // others find theirs (ne16.js strokeTarget)
   /** this person's mouse event, as fed: into the stroke it is part of */
   recordStroke(m) {
+    // (none outside a shared session (start's sharedStrokes): finding a press's window sends WM_NCHITTEST from the host
+    // into the window's task, and alone, at Windows 98's start, that send went on inside USER and the start stopped)
+    if (!this.sharedStrokes) return;
     const f = m[0], p = this.proc, sw = this.sw, sh = this.sh;
     const sx = Math.round(m[1] * (sw - 1) / 65535), sy = Math.round(m[2] * (sh - 1) / 65535);
     const was = this.btn || 0;
@@ -498,6 +656,11 @@ class Machine {
    *  "Windows 95 Setup" screen on USER's bare desktop; MSGSRV32 starts when RUNONCE has ended, so SystemStart (which
    *  MSGSRV32 plays before it starts the shell) and the shell come after the screen. False if it cannot start */
   startSystemTask() {
+    // (Windows 98's RUNONCE runs only as MSGSRV32 starts it, "runonce.exe -m": started by any other process during a
+    // first start it says "InSetup, but called by someone other than msgsvr32" and ends, and its items fell to
+    // Explorer, which ran its own commands, FlushRegistry, as files. Its message is its own: the RUNONCE that has it is
+    // left to MSGSRV32)
+    const ownedByMsgsrv = f => { try { return new TextDecoder('latin1').decode(fs.readFile(f)).includes('called by someone other than msgsvr32'); } catch (_) { return false; } };
     const p = this.proc, S = self.W95SYSTEM || {}, items = W.regVals('hklm\\software\\microsoft\\windows\\currentversion\\runonce\\setup');
     // (RUNONCE.EXE where Setup puts it, SYSTEM, LDID 11: SETUPC.INF; whichever Windows installed it, 95's or 98's)
     const exe = items.length && (S.programs || {})['RUNONCE.EXE'] ? ['C:\\WINDOWS\\SYSTEM\\RUNONCE.EXE'].find(f => fs.exists(f)) : null;
@@ -505,7 +668,7 @@ class Machine {
     // joins; a machine joining with them held never got its shell, which waits for them)
     this.firstStart = !!items.length;
     if (items.length && this.holdStartup) { this.holdStartup = false; post({ t: 'emit', ev: 'sync.firststart', data: {} }); }
-    if (!exe) return this.startMsgsrv();
+    if (!exe || ownedByMsgsrv(exe)) return this.startMsgsrv();
     p.init16();
     this.loadMpr();   // (before Setup's items: SHELL32 builds its desktop's items once in this address space, and RUNONCE is its first user)
     const pc = this.spawnProgram(exe, '');
@@ -522,10 +685,12 @@ class Machine {
     try {
       p.init16(); const m = p.loadDll('MPR'); if (m) { p.runPendingInits(); p.attach(m); }
       this.blankPasswordList();
-      // the network's process, started as KERNEL32 starts it at boot and run to its first wait: it is its start that
-      // connects USER's network functions (SM_NETWORK), which the shell reads when it first lays out the desktop
-      const exe = ['C:\\WINDOWS\\SYSTEM\\MPREXE.EXE', 'C:\\WINDOWS\\MPREXE.EXE'].find(f => fs.exists(f));
-      if (exe) { const pc = this.spawnProgram(exe, ''); if (typeof pc === 'object') p.runUntilIdle(pc, 4000); }
+      // (the network's process, MPREXE, is MPR's to start, as Windows 95's and 98's MPR.DLL both do: the first call
+      // with no server registered in MPR's shared data creates MPRInitEvent, starts SYSTEM\MPREXE.EXE under MPRMutex
+      // and waits for it to register; every later call, in any process, finds it. MSPWL32's calls above are that first
+      // call. Started again here as well, a second MPREXE took MPR's shared server record and its worker thread ended
+      // with requests queued to it: GRPCONV's link to the Removable Disk in SendTo waited for good, and Windows 98's
+      // first start stopped at "Programs on the Start menu")
     } catch (e) { console.error(e); }
     post({ t: 'mpr', up: !!p.byName.get('MPR') });   // (the shell's network waits for it: win95.js netBoot)
   }
@@ -631,13 +796,21 @@ class Machine {
     const arg32 = t => {
       try {
         if (t.nm === '#18') return `pid ${p.r32(p.reg('esp') + 4).toString(16)} off ${p.r32(p.reg('esp') + 8) | 0}`;   // (GetProcessDword)
+        // (a file call's handle, what the process's table has for it, and its next two arguments)
+        if (/^(ReadFile|WriteFile|SetFilePointer|GetFileSize|SetEndOfFile|FlushFileBuffers|CloseHandle|LockFile|UnlockFile|GetFileType|GetFileTime|SetFileTime|DuplicateHandle)$/.test(t.nm)) {
+          const a = k => p.r32(p.reg('esp') + 4 * k) >>> 0, h = a(t.nm === 'DuplicateHandle' ? 2 : 1), o = p.obj(h);
+          return `h ${h.toString(16)} (${o ? o.kind + (o.path ? ' ' + o.path : '') : 'none'}) ${a(2).toString(16)} ${a(3).toString(16)}`;
+        }
         if (/^Global(Alloc|ReAlloc|Lock|Unlock|Free|Size)$/.test(t.nm)) {   // (the block's handle, sizes and flags, and its text)
           const a = k => p.r32(p.reg('esp') + 4 * k) >>> 0, h = t.nm === 'GlobalAlloc' ? 0 : a(1);
           const txt = h > 0x10000 && h < p.u8.length ? ' "' + (p.readA(h, 48) || '').replace(/[^\x20-\x7e]/g, '.') + '"' : '';
           return t.nm === 'GlobalAlloc' ? `flags ${a(1).toString(16)} n ${a(2)}` : t.nm === 'GlobalReAlloc' ? `h ${h.toString(16)} n ${a(2)} flags ${a(3).toString(16)}${txt}` : `h ${h.toString(16)}${txt}`;
         }
         if (/^Global(Add|Find)AtomA$/.test(t.nm)) { const sp = p.r32(p.reg('esp') + 4); return sp >>> 16 ? p.readA(sp) || '' : '#' + sp; }
-        if (/^(LoadLibraryA|GetPrivateProfileSectionA|GetPrivateProfileStringA|FindFirstFileA|CreateFileA|GetFileAttributesA|DeleteFileA|MoveFileA|GetModuleHandleA|WritePrivateProfileStringA|CreateDirectoryA)$/.test(t.nm)) { const sp = p.r32(p.reg('esp') + 4); return sp > 0x10000 && sp < p.u8.length ? p.readA(sp) || '' : String(sp); }
+        if (/^(LoadLibraryA|LoadLibraryExA|SearchPathA|GetFullPathNameA|OpenFile|_lopen|GetPrivateProfileSectionA|GetPrivateProfileStringA|FindFirstFileA|CreateFileA|GetFileAttributesA|DeleteFileA|MoveFileA|GetModuleHandleA|WritePrivateProfileStringA|CreateDirectoryA)$/.test(t.nm)) { const sp = p.r32(p.reg('esp') + 4); return sp > 0x10000 && sp < p.u8.length ? p.readA(sp) || '' : String(sp); }
+        // (the address space asked for: VirtualAlloc's address, size and allocation type; HeapCreate's sizes)
+        if (t.nm === 'VirtualAlloc') { const q = k => p.r32(p.reg('esp') + 4 * k) >>> 0; return `at ${q(1).toString(16)} n ${q(2).toString(16)} type ${q(3).toString(16)}`; }
+        if (t.nm === 'HeapCreate') { const q = k => p.r32(p.reg('esp') + 4 * k) >>> 0; return `initial ${q(2).toString(16)} max ${q(3).toString(16)}`; }
         if (t.nm === 'GetProcAddress') { const sp = p.r32(p.reg('esp') + 8); return sp > 0x10000 && sp < p.u8.length ? p.readA(sp) || '' : '#' + sp; }
         if (!/^Reg(Open|Create|Query|Enum)/.test(t.nm)) return '';
         const s = p.r32(p.reg('esp') + 8); return s > 0x10000 && s < p.u8.length ? p.readA(s) || '' : String(s);
@@ -652,7 +825,7 @@ class Machine {
   feedKeys() {
     const p = this.proc;
     if (!this.keyq.length || p.depth || this.ring0() || this.focusing) return;   // (a window being brought to the front first: 'focus')   // (the keyboard and mouse drivers report at interrupt time)
-    try { if (p.inputPending()) return; } catch (e) { console.error(e); }   // USER has input not yet taken
+    try { if (p.inputPending()) return; } catch (e) { console.error(e && e.stack ? e.stack : e); }   // USER has input not yet taken
     for (let n = 0; this.keyq.length && n < 16; n++) {
       const k = this.keyq.shift(); if (!n && p.personInput) try { p.personInput(); } catch (e) { this.r0Fault(e); } p.personActed = true;
       if (this.lagLog) this.lagLog.push({ k: 'key-fed', vk: k[0], up: k[2], t: Date.now() });
@@ -667,10 +840,10 @@ class Machine {
     // (an MS-DOS VM's event that waits holds that VM only (vmm.js vmEventRun): the system goes on, and the thread whose
     // call signals it runs. Held as ring 0 is, nothing ran but the wait, and WinOldAp's next SHELL call never came)
     if (p.r0Runs && p.r0Runs.length && p.r0Runs.every(s => s.vm && s.wait)) {
-      try { p.r0Step(); } catch (e) { console.error(e && e.stack ? e.stack : e); this.exited(-1, e.message); return; }
+      try { p.r0Step(); } catch (e) { this.r0StepFailed(e); return; }
     }
     if (p.r0Runs && p.r0Runs.length && !p.r0Runs.every(s => s.vm && s.wait)) {
-      try { p.r0Step(); } catch (e) { console.error(e && e.stack ? e.stack : e); this.exited(-1, e.message); return; }
+      try { p.r0Step(); } catch (e) { this.r0StepFailed(e); return; }
       this.sendText();
       if (!(p.r0Runs && p.r0Runs.length) && this.afterR0) { const go = this.afterR0; this.afterR0 = null; go(); }
       if (this.alive) this.timer = setTimeout(() => this.step(), 16);
@@ -678,8 +851,13 @@ class Machine {
     }
     if (this.stopped) return;
     if (this.sysPending && !p.depth && !p.thread16) { this.sysPending = false; if (!this.startMsgsrv()) return; }   // Setup's items done: the system's first task
+    // (a moment arrived at in a machine just started: the display's memory is that machine's, black, and Windows has
+    // no reason to draw what it believes is on it: the screen stayed black, the pointer alone moving over it, until
+    // something moved a window. Every window is asked to draw itself again, once no thread holds USER:
+    // RedrawWindow(desktop, all of it, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_FRAME))
+    if (this.redrawAll && !p.depth && !p.thread16 && !p.win16Held) { this.redrawAll = false; try { p.user16(290, [['w', 0], ['l', 0], ['w', 0], ['w', 0x0485]]); } catch (e) { console.error(e); } }
     if (this.wantMode && !p.depth && !p.thread16 && !p.win16Held) {   // the mode the page asked for while a thread held USER: made now that none does
-      const [w, h] = this.wantMode; this.wantMode = null; const r = this.setMode(w, h); if (r) post({ t: 'mode', r }); else this.wantMode = [w, h];
+      const [w, h] = this.wantMode; this.wantMode = null; const r = this.setMode(w, h); if (r) r.then(v => post({ t: 'mode', r: v })); else this.wantMode = [w, h];
     }
     if (!p.win16Held && p.k32CloseRequest && p.k32CloseRequest()) post({ t: 'closeProgram' });   // REBOOT's APC: Close Program
     try {
@@ -707,18 +885,12 @@ class Machine {
       const sl = this.stepLog || (this.stepLog = []); sl.push(st); if (sl.length > 120) sl.shift();
     } catch (e) {
       if (e instanceof W.FaultError) { p.depth = 0; p.faulted(e.fault); }
-      else if (!(e instanceof W.HangError)) { console.error(e && e.stack ? e.stack : e); this.exited(-1, e.message); return; }
+      // (its stack in the machine's log too: the worker's console goes with the worker, and a travel replaces it)
+      else if (!(e instanceof W.HangError)) { console.error(e && e.stack ? e.stack : e); W.log('error', 'machine', String(e && e.stack || e).slice(0, 2000)); this.exited(-1, e.message); return; }
       else { p.hung('host', e); p.depth = 0; }
     }
     p.stats.guestMs += performance.now() - t0;
-    if (p.fault && !this.faultTaken) {
-      this.faultTaken = true; this.fatalN = (this.fatalN || 0) + 1;   // (fatalN: the processor exceptions the system answered, a blue screen or a fault dialog: the lint's broken state, braidProbe)
-      // (and one in the system's own first task, MSGSRV32, the process Windows itself runs in: Windows cannot go on
-      // without it, and VWIN32 says so on the blue screen; a fault dialog over the page's own desktop looked like a
-      // system still running)
-      if (p.fault.ring === 0 || (this.system && (!p.fault.program || /MSGSRV32/i.test(p.fault.program)))) { this.fatal(p.fault); if (this.alive) this.timer = setTimeout(() => this.step(), 16); return; }
-      this.stopped = true; post({ t: 'fault', f: p.fault }); return;
-    }
+    if (p.fault && !this.faultTaken) { this.answerFault(); return; }
     for (const f of (p.pcFaults || []).splice(0)) {
       f.pc.fault = true; this.fatalN = (this.fatalN || 0) + 1;
       // (MSGSRV32's own fault: the blue screen, Windows ended (fatal), not a program's dialog)
@@ -735,6 +907,7 @@ class Machine {
       post({ t: 'held', held: { hung: p.win16Held.hung, who, since: p.win16Held.since }, stats: { ...p.stats } }); this.postScan();
     }   // (no USER while a thread holds the lock: the page learns it is held, and has the screen)
     this.lastStepEnd = performance.now();
+    if (this.detLog) { const th = p.thread16; this.detLog.push(`step @${this.vclock.now} slices ${p.stats.slices} th ${th ? th.id : 'main'} eip ${(p.cpu.eip.value >>> 0).toString(16)} esp ${(p.cpu.esp.value >>> 0).toString(16)} eax ${(p.cpu.eax.value >>> 0).toString(16)}`); if (this.detLog.length > 200000) this.detLog.splice(0, 100000); }
     // (a machine with work left (a thread's time ran out, or one holds the Win16Lock) steps again at once, through a
     // message rather than a timer, whose 16 ms left a third of a busy machine's time unused; an idle one waits 16 ms;
     // one run fast (cmd 'speed') steps again at once whatever it has to do)
@@ -744,7 +917,29 @@ class Machine {
     // (a moment asked for at a time of the clock, reached: taken now, between steps: cmd 'markAt')
     if (this.markWait && this.vclock.now >= this.markWait.at) { const w = this.markWait; this.markWait = null; try { const s = this.braidMark(w.name); moments.set(s.name, s); w.ok({ ...self.W95Braid.describe(s), took: s.took }); } catch (e) { w.no(e); } }
     const busy = p.preempted || p.win16Held || performance.now() - t0 > 6;
-    if (busy || this.keyq.length || this.fast) this.stepSoon(); else this.timer = setTimeout(() => this.step(), 16);
+    // (an idle step starts a period after the last one started, not a period after it ended: waiting 16 ms past each
+    // step's own work made the steps ~21 ms apart on the wall while each moved the clock 16 ms, so the machine ran at
+    // three quarters of real time and its sound card made too few samples, the output running dry (stutter). Late by
+    // up to three periods (a timer's jitter, a slow step), it catches up; later than that, the cadence starts again)
+    // (a step's end, no wasm frame live: a module loaded from its file whose run found blocks of its own, and no more
+    // since the last step, is translated again with them, dyn.js neRebuild. At idle steps only, a busy machine (Setup's
+    // copy, minutes long) ran its loops as run-time code all along)
+    const rebuilt = p.neInstall() || p.neRebuild();   // (and a module read from the memo put in place: dyn.js neInstall)
+    const wall = performance.now();
+    // (at a person's pace the machine's time runs at most PACE_LEAD ahead of the wall's: a busy step past it waits for
+    // the wall instead of following at once. Back to back, a fast host ran the machine's clock ahead without end, its
+    // sound card made sound faster than the speakers play it, and the CD Sampler's movie sound played on after the
+    // program had ended. Held to the wall itself, the sound queued was only what the last step made, and any step that
+    // came late left the speakers with nothing: the sound broke up. Behind the wall by more than a quarter second, the
+    // reckoning starts again from now rather than racing to catch up; ahead by more than a quarter second past the lead
+    // (a driver's polling, each port access its microsecond), the same, rather than the step waiting that long with a
+    // person's keys and moves waiting behind it)
+    const vc = this.vclock, a = this.paceAt;
+    if (!a || this.fast || vc.scale !== 1 || vc.now < a.now || Math.abs((wall - a.wall) - (vc.now - a.now) + PACE_LEAD) > 250 + PACE_LEAD) this.paceAt = { wall, now: vc.now };
+    const ahead = this.paceAt ? (vc.now - this.paceAt.now) - (wall - this.paceAt.wall) - PACE_LEAD : 0;
+    if (!this.fast && vc.scale === 1 && ahead > 1 && (busy || rebuilt)) { this.stepDue = wall + ahead; this.timer = setTimeout(() => this.step(), ahead); return; }
+    if (busy || rebuilt || this.keyq.length || this.fast) { this.stepDue = wall; this.stepSoon(); }
+    else { const due = this.stepDue = Math.max((this.stepDue || wall) + 16, wall - 48); this.timer = setTimeout(() => this.step(), Math.max(0, due - wall)); }
   }
   /** the next step as soon as the worker's other messages (the page's input, commands) have had their turn */
   stepSoon() {
@@ -766,13 +961,17 @@ class Machine {
     post({ t: 'msgMode', on: true }); this.sendText(true);
   }
   /** VWIN32's blue screen for a fault at ring 0 (its text from the page), then the current application ends */
+  /** the blue screen of a fatal fault: answered, the machine stops where it is with the screen as it was, so the fault
+   *  can be read and the moment before it travelled to. It ended instead (exited), the page shut the PC down, and the
+   *  blue screen was gone before it could be read */
   fatal(f) {
     const p = this.proc, msg = rpc('host', 'fatalText', [f]), at = p.vxdService && p.vxdService(0x17, 3);
-    if (!msg || !at) { if (msg && this.system) this.blueText(msg); else this.exited(-1); return; }
+    const end = () => { this.stopped = true; clearTimeout(this.timer); this.sendText(); W.log('error', 'machine', `stopped at the blue screen: ${msg ? msg.split('\n').slice(0, 2).join(' ') : 'fault'}`); };
+    if (!msg || !at) { if (msg && this.system) this.blueText(msg); else end(); return; }
     const a = p.alloc(msg.length + 1); p.writeA(a, msg);
-    this.afterR0 = () => this.exited(-1);
-    try { if (p.r0Start(at, { ebx: p.sysVM(), eax: 0x40001000, ecx: a, edi: 0, esi: 0, edx: 0 }) !== null) this.exited(-1); }
-    catch (e) { console.error(e); this.exited(-1); }
+    this.afterR0 = end;
+    try { if (p.r0Start(at, { ebx: p.sysVM(), eax: 0x40001000, ecx: a, edi: 0, esi: 0, edx: 0 }) !== null) end(); }
+    catch (e) { console.error(e); end(); }
     this.sendText();
   }
   /** what the page draws: USER's windows, the screen's mode and palette, the cursor sprite, the text screen */
@@ -812,9 +1011,16 @@ class Machine {
   exec(cmd, show) {
     if (this.traceLog) this.traceLog.push([Math.round(performance.now()), 'host', 'exec', `${cmd} (show ${show})`]);   // (a trace: every program start, with its command line)
     const m = /^\s*(?:"([^"]+)"|(\S+))\s*(.*)$/.exec(cmd || ''); if (!m) return 2;
-    let path = m[1] || m[2]; const arg = m[3];
-    if (!extname(path)) path += '.exe';
-    const file = (/^[a-z]:|^\\/i.test(path) ? [path] : [join('C:\\WINDOWS', path), join('C:\\WINDOWS\\SYSTEM', path), join(fs.cwd, path)]).find(f => fs.exists(f));
+    let path = m[1] || m[2], arg = m[3];
+    const where = p => { if (!extname(p)) p += '.exe'; return (/^[a-z]:|^\\/i.test(p) ? [p] : [join('C:\\WINDOWS', p), join('C:\\WINDOWS\\SYSTEM', p), join(fs.cwd, p)]).find(f => fs.exists(f)); };
+    let file = where(path);
+    // (an unquoted program name with spaces in it: each space in turn ends the name, as Windows takes one, until a
+    // file is there. The Pinball trial's launcher starts "C:\Program Files\...\hhouse.exe /L" as it is; taken to the
+    // first space, C:\Program was not found and no table started)
+    if (!file && !m[1] && arg) {
+      const words = cmd.trim().split(' ');
+      for (let i = 2; i <= words.length && !file; i++) { const f = where(words.slice(0, i).join(' ')); if (f) { file = f; arg = words.slice(i).join(' ').trim(); } }
+    }
     if (!file) return 2;
     // (a machine joining a shared session: a program the shell starts as Windows starts is the session's to start, if
     // the session runs it; the system's own still start)
@@ -875,7 +1081,7 @@ class Machine {
     } catch (e) { if (e && e.missingDll) { W.log('warn', 'spawn', e.message); return 2; } console.error(e); return 8; }   // (2: a DLL it needs is missing, as WinExec answers)
     // (its console: the MS-DOS machine's window it was started from, o.console, told when the program ends)
     if (o.console !== undefined) pc.console = o.console;
-    pc.onExit = code => { if (!pc.fault) post({ t: 'emit', ev: 'program.exit', data: { path: pc.path, code } }); if (pc.console !== undefined) post({ t: 'conExit', id: pc.console, code: code >>> 0 }); };
+    pc.onExit = code => { if (!pc.fault) post({ t: 'emit', ev: 'program.exit', data: { path: pc.path, code, cmd: pc.cmdLine } }); if (pc.console !== undefined) post({ t: 'conExit', id: pc.console, code: code >>> 0 }); };
     this.kick();
     return pc;
   }
@@ -924,22 +1130,54 @@ class Machine {
     // arena: win32.js arenaClaim. Refused only where the system's modules are, 16-bit modules' segments counted too)
     const p = this.proc, base = p.imageRoom(pref, size, relocs, true);
     if (!base) { W.log('warn', 'spawn', `${file}: no room for its image at ${pref.toString(16)} (${relocs ? 'relocatable' : 'no relocations'})`); return null; }
-    return { dynamic: true, meta: { base, entry: base + ep, textLo: 0, textHi: 0, blocks: [], size } };
+    // (its image mapped from its file, its code translated whole as it loads: win32.js loadImage, meta.dynamic)
+    return { dynamic: true, meta: { base, entry: base + ep, textLo: 0, textHi: 0, blocks: [], size, dynamic: true, path: file } };
   }
   async spawnSaverAsync(file, arg) {
     const savers = (self.W95SAVERS || {}).savers || {};
-    const hit = self.W95SaverRuntime.findSaver(file, savers);
-    if (!hit) return 11;
-    const [name, d] = hit, bytes = fs.readFile(file);
-    if (!await self.W95SaverRuntime.matchesImage(bytes, d)) return 11;
+    const hit = self.W95SaverRuntime.findSaver(fs.realpath(file), savers);
+    const bytes = fs.readFile(file);
+    // (a saver the bundle does not carry, or another build of one it does (OSR2's, Plus!'s 3D Pipes): run from its
+    // file, its code translated as it runs, as any other Win32 program the bundle does not carry)
+    if (!hit || !await self.W95SaverRuntime.matchesImage(bytes, hit[1])) return this.spawnSaverDynamic(file, arg);
+    const [name, d] = hit;
     const mod = await self.W95SaverRuntime.compileModule(d);
     return this.spawnSaver(file, arg, mod, name, bytes);
+  }
+  /** whether the file's bytes are the very image the bundle's saver was translated from (synchronous: WinExec's path) */
+  saverImageMatches(bytes, d) {
+    const b = d.scrBytes || (d.scrBytes = b64bytes(d.scr));
+    if (bytes.length !== b.length) return false;
+    for (let i = 0; i < b.length; i++) if (bytes[i] !== b[i]) return false;
+    return true;
+  }
+  /** a saver run from its file, its code translated as it runs (dyn.js), on the machine's own USER32 and GDI32: the
+   *  bundle's translation run over another image read code and data at the wrong places (3D Pipes' C run-time heap
+   *  read address 0 at its start, and the saver ended before it drew) */
+  spawnSaverDynamic(file, arg) {
+    const p = this.proc, d = this.dynProgram(file);
+    if (!d) return 11;
+    for (const run of [...this.savers.values()]) p.endProcess(run, 0);
+    const mode = /^\s*\/p\b/i.test(arg) ? 'p' : /^\s*\/c\b/i.test(arg) ? 'c' : 's';
+    const real = fs.realpath(file), cmdline = `"${real}" ${String(arg || '').trim() || '/s'}`;
+    let pc;
+    try { pc = p.spawn(fs.readFile(file), null, { ...d.meta, name: basename(real).toUpperCase().replace(/\.SCR$/, '') }, real, cmdline); }
+    catch (e) { if (e && e.missingDll) { W.log('warn', 'spawn', e.message); return 2; } console.error(e); return 8; }
+    pc.onExit = code => {
+      this.savers.delete(pc.pid);
+      post({ t: 'emit', ev: 'program.exit', data: { path: pc.path, mode, code, dynamic: true,
+        ...(pc.trapped || pc.main && pc.main.fault ? { why: pc.trapped || pc.main.fault.why } : {}) } });
+    };
+    pc.saverMode = mode; pc.nativeGdi = true; pc.previewHwnd = 0;
+    this.savers.set(pc.pid, pc); this.kick();
+    return pc;
   }
   spawnSaver(file, arg, compiledModule = null, bundleName = null, imageBytes = null) {
     const p = this.proc, bytes = imageBytes || fs.readFile(file), savers = (self.W95SAVERS || {}).savers || {};
     // (by its long name: Display Properties starts it by the short one, 3DFLYI~1.SCR)
     const hit = bundleName ? [bundleName, savers[bundleName]] : self.W95SaverRuntime.findSaver(fs.realpath(file), savers);
-    if (!hit) return 11;
+    // (WinExec's path checks the image too: only the bytes the bundle was made from run its translation)
+    if (!hit || (!imageBytes && !this.saverImageMatches(bytes, hit[1]))) return this.spawnSaverDynamic(file, arg);
     const [name, d] = hit;
     for (const run of [...this.savers.values()]) p.endProcess(run, 0);
     const mode = /^\s*\/p\b/i.test(arg) ? 'p' : /^\s*\/c\b/i.test(arg) ? 'c' : 's';
@@ -1073,6 +1311,99 @@ class Machine {
     for (let i = 0; i < (this.firstStart ? 1800 : 400) && !up(); i++) await new Promise(r => setTimeout(r, 50));   // (a first start takes its time under Setup's screen: the session's programs start after it)
   }
   /** USER32's `name` on a window (args[0]), made only while it is one (netBatch ifWindow) */
+  /** a window's controls (ne16.js nativeChildren, which sends nothing), and what only a message tells of them, an edit's
+   *  text, a button's check, a tab control's tabs, a list view's items, asked by a thread of its own that waits for each
+   *  reply as a program's thread does. Sent from the host, a send the receiver did not answer within the host's call was
+   *  given up, USER freed its record, and the queue that still held it called the freed record's procedure: W98SETUP
+   *  ("invalid page fault at 0137:00000000", the page reading Explorer's taskbar tabs as it looked for AutoRun's Yes) */
+  // (one asking thread at a time, and a window's read asked for and not yet begun is the answer to the same question
+  // again: the page reads every window's controls each time it looks, and a thread for each read, each one's send to a
+  // Windows 3.x task waiting inside another's, piled up 600 threads deep while SUWIN prepared its wizard, and the
+  // machine stopped. A read already begun answers only those who asked before it: one asked after it reads afresh, as
+  // the Product Key's boxes, read back after each is typed, came back as they were before the typing)
+  childrenAsked(parent) {
+    const m = this.childAsks || (this.childAsks = new Map());
+    if (m.has(parent)) return m.get(parent);
+    const go = (this.askChain || Promise.resolve()).then(() => { m.delete(parent); return this.childrenAskNow(parent); });
+    this.askChain = go.catch(() => null); m.set(parent, go);
+    return go;
+  }
+  async childrenAskNow(parent) {
+    const p = this.proc; if (p.depth) return null;
+    const out = p.nativeChildren(parent);
+    if (!Array.isArray(out) || !out.length) return out;
+    const bufs = [], buf = n => { const b = p.alloc(n); p.u8.fill(0, b, b + n); bufs.push(b); return b; };
+    const send = (calls, h, m, wp, lp) => calls.push({ dll: 'USER32', name: 'SendMessageA', args: [h, m, wp >>> 0, lp >>> 0], ifWindow: h }) - 1;
+    try {
+      // (first: edits' text, buttons' checks, the tab controls' counts and selections, the list views' counts)
+      const first = [], need = [];
+      for (const c of out) {
+        if (c.cls === undefined) continue;   // (a popup menu's items, which are no windows)
+        if (/^(edit|combobox|richedit)$/i.test(c.cls)) { const b = buf(0x1000); need.push(r => { c.text = r[0] > 0 ? p.readA(b, Math.min(r[0], 0xfff)) : c.text; }, [send(first, c.hwnd, 0x0d, 0x1000, b)]); }
+        else if (/^button$/i.test(c.cls) && [2, 3, 4, 5, 6, 9].includes(c.style & 0x0f)) need.push(r => { c.checked = r[0] & 3; }, [send(first, c.hwnd, 0xf0, 0, 0)]);   // BM_GETCHECK
+        else if (/^SysTabControl32$/i.test(c.cls)) need.push(r => { c.tabs = { n: Math.min(r[0], 64), sel: r[1] | 0 }; }, [send(first, c.hwnd, 0x1304, 0, 0), send(first, c.hwnd, 0x130b, 0, 0)]);   // TCM_GETITEMCOUNT, TCM_GETCURSEL
+        else if (/^SysListView32$/i.test(c.cls)) need.push(r => { c.list = { n: Math.min(r[0], 256) }; }, [send(first, c.hwnd, 0x1004, 0, 0)]);   // LVM_GETITEMCOUNT
+        else if (/^msctls_trackbar32$/i.test(c.cls)) need.push(r => { c.slider = { pos: r[0], min: r[1], max: r[2] }; }, [send(first, c.hwnd, 0x400, 0, 0), send(first, c.hwnd, 0x401, 0, 0), send(first, c.hwnd, 0x402, 0, 0)]);   // TBM_GETPOS, TBM_GETRANGEMIN, TBM_GETRANGEMAX
+      }
+      const r1 = first.length ? await this.readBatch(first) : [];
+      if (!r1) return out;
+      for (let k = 0; k < need.length; k += 2) need[k](need[k + 1].map(i => r1[i] | 0));
+      // (then each tab's and each item's rectangle and text)
+      const second = [], fill = [];
+      for (const c of out) {
+        if (c.tabs) for (let i = 0; i < c.tabs.n; i++) {
+          const rc = buf(16), it = buf(28), txt = buf(64); p.w32(it, 1 | 8); p.w32(it + 12, txt); p.w32(it + 16, 64);   // TCIF_TEXT | TCIF_PARAM
+          const a = send(second, c.hwnd, 0x130a, i, rc), b = send(second, c.hwnd, 0x1305, i, it);   // TCM_GETITEMRECT, TCM_GETITEMA
+          fill.push(r => { if (!r[a]) return; const s = o => p.r32(rc + o) | 0, l = s(0), t = s(4); let text = p.readA(txt, 64); const wnd = p.r32(it + 24) & 0xffff;
+            if (!text && wnd && p.user16(47, [['w', wnd]]).ax) text = p.nativeText(wnd);   // (a tab without text: the window its lParam holds)
+            (c.items = c.items || []).push({ x: c.x + l, y: c.y + t, w: s(8) - l, h: s(12) - t, text, selected: i === c.tabs.sel, index: i }); });
+        }
+        if (c.list) for (let i = 0; i < c.list.n; i++) {
+          const rc = buf(16), it = buf(36), txt = buf(64); p.w32(it, 1); p.w32(it + 4, i); p.w32(it + 20, txt); p.w32(it + 24, 64);   // LVIR_BOUNDS; LVIF_TEXT, pszText, cchTextMax
+          const a = send(second, c.hwnd, 0x100e, i, rc), b = send(second, c.hwnd, 0x102d, i, it), s2 = send(second, c.hwnd, 0x102c, i, 2);   // LVM_GETITEMRECT, LVM_GETITEMTEXTA, LVM_GETITEMSTATE
+          fill.push(r => { if (!r[a]) return; const s = o => p.r32(rc + o) | 0, l = s(0), t = s(4);
+            (c.items = c.items || []).push({ x: c.x + l, y: c.y + t, w: s(8) - l, h: s(12) - t, text: r[b] > 0 ? p.readA(txt, Math.min(r[b], 63)) : '', index: i, selected: !!(r[s2] & 2) }); });
+        }
+      }
+      const r2 = second.length ? await this.readBatch(second) : [];
+      if (r2) for (const f of fill) f(r2);
+      for (const c of out) { delete c.tabs; delete c.list; if (c.cls !== undefined) delete c.unknown; }
+      return out;
+    } finally { for (const b of bufs) p.free(b); }
+  }
+  /** exports called one after another on the reading thread, a thread of this process made once that waits, blocked,
+   *  for the next batch (KERNEL32 __ReadNext) and reports each one done (__ReadDone); their results, as netBatch's.
+   *  A thread made for each read had its queue made by USER as it started (InitThreadInput), and one started while
+   *  SUWIN held the Win16Lock behind its Save System Files page ran on inside that call, and the machine stopped */
+  readBatch(calls) {
+    const p = this.proc, le32 = v => [v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, (v >>> 24) & 0xff];
+    const fns = calls.map(c => { const m = p.byName.get(c.dll); return m && m.exports.get(c.name) ? m.exports.get(c.name) : 0; });
+    const u32m = p.byName.get('USER32'), isWin = u32m && u32m.exports.get('IsWindow');
+    if (!calls.length || fns.some(f => !f) || !isWin) return Promise.resolve(null);
+    const n = calls.length, size = (n + 1) * 8 + calls.reduce((s, c) => s + 5 * c.args.length + 11 + (c.ifWindow ? 19 : 0), 0) + 1;
+    const a = p.alloc(size), ptrs = a + size - (n + 1) * 8, res = ptrs + (n + 1) * 4, isWinAt = ptrs + 4 * n;
+    p.w32(isWinAt, isWin); const code = [];
+    calls.forEach((c, k) => {
+      if (c.ifWindow) code.push(0x68, ...le32(c.ifWindow), 0xff, 0x15, ...le32(isWinAt), 0x85, 0xc0, 0x0f, 0x84, ...le32(5 * c.args.length + 6));   // push hwnd; call [IsWindow]; test eax, eax; jz (to the result: 0)
+      for (let i = c.args.length - 1; i >= 0; i--) code.push(0x68, ...le32(c.args[i]));   // push imm32
+      code.push(0xff, 0x15, ...le32(ptrs + 4 * k), 0xa3, ...le32(res + 4 * k));             // call [ptr]; mov [res], eax
+      p.w32(ptrs + 4 * k, fns[k]);
+    });
+    code.push(0xc3);   // ret
+    p.u8.set(code, a);
+    return new Promise(ok => {
+      (this.readQ || (this.readQ = [])).push({ code: a, done: () => { const r = calls.map((_, k) => p.r32(res + 4 * k)); p.free(a); ok(r); } });
+      if (!this.reader || this.reader.state === 'done') {
+        // (its loop: call [__ReadNext] (the next batch's code, the thread blocked until there is one); call eax;
+        // call [__ReadDone]; again)
+        const l = p.alloc(32), next = l + 24, done = l + 28;
+        p.w32(next, p.thunkFor('KERNEL32', '__ReadNext')); p.w32(done, p.thunkFor('KERNEL32', '__ReadDone'));
+        p.u8.set([0xff, 0x15, ...le32(next), 0xff, 0xd0, 0xff, 0x15, ...le32(done), 0xeb, 0xf0], l);
+        this.reader = p.newThread(l, 0, 0x10000, true, false);
+      } else this.reader.blocked = false;
+      this.kick();
+    });
+  }
   onWindow(name, args) { return this.netBatch([{ dll: 'USER32', name, args, ifWindow: args[0] }]).then(r => r && r[0]); }
   netCall(name, args = [], dll = 'MPR') { return this.netBatch([{ dll, name, args }]).then(r => r && r[0]); }
   /** exports called one after another on one new thread of this process, each [dll, name, dword or string args]; their
@@ -1174,7 +1505,7 @@ class Machine {
       raw: t.ctx && t.ctx.ss && p.selValid(t.ctx.ss) ? (() => { const b = p.selBase(t.ctx.ss), sp = t.ctx.esp & 0xffff, o = []; for (let i = sp; i < Math.min(0xfffe, sp + 0x400); i += 2) o.push(p.r16(b + i).toString(16)); return { sp: sp.toString(16), words: o.join(' ') }; })() : null,
       queue: t.queue && p.selValid(t.queue) ? (q => ({ q: t.queue, task: p.r16(q + 2), flags: p.r16(q + 0x14), wake: p.r16(q + 0x48), changed: p.r16(q + 0x4a), mask: p.r16(q + 0x4c), ev: p.r32(q + 0xc),
         // (the SendMessage it waits on: USER's record of it, at 4Eh in USER's data, its words)
-        sent: (() => { const rec = p.r16(q + 0x4e), u = p.ne && p.ne.get('USER'), ds = u && u.segs && u.segs.find(s => s.num === 32); if (!rec || !ds || !p.selValid(ds.sel)) return null; const b = p.selBase(ds.sel) + rec, o = []; for (let i = 0; i < 0x30; i += 2) o.push(p.r16(b + i).toString(16)); return { rec: rec.toString(16), words: o.join(' ') }; })() }))(p.selBase(t.queue)) : null }));
+        sent: (() => { const rec = p.r16(q + 0x4e), u = p.ne && p.ne.get('USER'), ds = u && u.segs && u.meta && u.segs.find(s => s.num === u.meta.autodata); if (!rec || !ds || !p.selValid(ds.sel)) return null; const b = p.selBase(ds.sel) + rec, o = []; for (let i = 0; i < 0x30; i += 2) o.push(p.r16(b + i).toString(16)); return { rec: rec.toString(16), words: o.join(' ') }; })() }))(p.selBase(t.queue)) : null }));
     // every top-level window, hidden ones too, with its task (a window whose task has ended answers no message)
     const wins = [];
     if (!p.depth) {
@@ -1215,7 +1546,8 @@ class Machine {
     const fv = p.vmDisks && p.vmDisks.C, FL = fv && fv.L, dsk = FL ? { spc: FL.spc, dataStart: FL.dataStart, clusters: FL.clusters, used: FL.used, dirs: [...FL.dirs.entries()].slice(0, 12).map(([k, d]) => [k, d.chain, d.entries]),
       sys: (() => { const d = FL.dirs.get('C:\\WINDOWS\\SYSTEM'); if (!d) return null; const s = fv.sector(FL.hidden + FL.dataStart + (d.start - 2) * FL.spc); return [...s.subarray(0, 64)].map(x => x.toString(16).padStart(2, '0')).join(' '); })() } : null;
     return { vms, dsk, steps: this.stepLog || [], crits, metrics, display, nic, stats: { ...p.stats, upMs: Math.round(performance.now()) }, sizes: { threads: p.threadsById ? p.threadsById.size : 0, entryHooks: p.entryHooks ? p.entryHooks.size : 0, retPend: p.retPend ? [...p.retPend.values()].reduce((n, l) => n + l.length, 0) : 0, tdbs: (p.tdbList || []).length, remoteClosed: p.remoteClosed ? p.remoteClosed.size : 0, lagLog: this.lagLog ? this.lagLog.length : 0, watchLog: (p.watchLog || []).length, effects: (p.effects || []).length, effectSeen: p.effectSeen ? p.effectSeen.size : 0, handles: p.handles ? p.handles.size : 0, dynCache: p.dynCache ? p.dynCache.size : 0, traceLog: (this.traceLog || []).length, keyq: this.keyq.length, mouseq: this.mouseq.length, procs: p.procs ? p.procs.size : 0, selUsed: p.selUsed ? p.selUsed.reduce((n, v) => n + v, 0) : 0 }, tdbs: (p.tdbList || []).map(s => ({ sel: s, name: p.selValid(s) ? p.readA(p.selBase(s) + 0xf2, 8) : null })), thhook: p.thhookLin ? Array.from(p.u8.subarray(p.thhookLin, p.thhookLin + 0x20)) : null, jsDlls: p.jsDlls ? Object.fromEntries(p.jsDlls) : null, nullJumps: (p.nullJumps || []).map(j => ({ ...j, fromIn: j.from !== undefined ? where(j.from) : undefined })),
-      mods32: (p.modules || []).filter(m => m.meta && m.meta.textHi).map(m => [m.name, m.base >>> 0, m.meta.textLo >>> 0, m.meta.textHi >>> 0]), thunkFails: p.thunkFails || [], thunkConns: p.thunkConns || [], gl: [...(p.glContexts || [])].map(c => ({ w: c.canvas && c.canvas.width, h: c.canvas && c.canvas.height, lost: !c.g || c.g.isContextLost(), err: c.g ? c.g.getError() : null, dc: c.dc ? { native: !!c.dc.native, bpp: c.dc.bpp, w: c.dc.w, h: c.dc.h, hwnd: c.dc.hwnd, hdc: c.dc.hdc, gdi: c.dc.native ? (() => {
+      vm: { top: p.vmTop >>> 0, lo: p.vmLo >>> 0, spare: (p.vspare || []).map(s => [s.base >>> 0, s.size >>> 0]), regions: [...(p.vregions || new Map())].map(([b, r]) => [b >>> 0, r.size >>> 0, r.heap ? 1 : 0]), big: [...(p.bigBlocks || new Map())].map(([b, n]) => [b >>> 0, n >>> 0]) },
+      mods32: (p.modules || []).filter(m => m.meta && m.meta.textHi).map(m => [m.name, m.base >>> 0, m.meta.textLo >>> 0, m.meta.textHi >>> 0, (m.meta.lookup || 0) >>> 0, m.size || 0]), thunkFails: p.thunkFails || [], thunkConns: p.thunkConns || [], gl: [...(p.glContexts || [])].map(c => ({ w: c.canvas && c.canvas.width, h: c.canvas && c.canvas.height, lost: !c.g || c.g.isContextLost(), err: c.g ? c.g.getError() : null, dc: c.dc ? { native: !!c.dc.native, bpp: c.dc.bpp, w: c.dc.w, h: c.dc.h, hwnd: c.dc.hwnd, hdc: c.dc.hdc, gdi: c.dc.native ? (() => {
       const g = p.byName.get('GDI32'), f = n => g.exports.get(n), r = p.alloc(32); try {
         const bm = p.call(f('GetCurrentObject'), [c.dc.hdc, 7]), got = bm ? p.call(f('GetObjectA'), [bm, 24, r]) : 0, type = p.call(f('GetObjectType'), [c.dc.hdc]);
         const gdi16 = p.ne && p.ne.get('GDI'), segs = gdi16 && gdi16.segs ? gdi16.segs.map(s => ({ num: s.num, sel: s.sel, base: s.base, alloc: s.alloc, lim: p.selValid(s.sel) ? p.selLimit(s.sel) : null, now: p.selValid(s.sel) ? p.selBase(s.sel) : null })) : null;
@@ -1232,22 +1564,31 @@ class Machine {
   /** the display mode changed to w by h at the page's request (its viewport holds another of the adapter's modes): the
    *  display configuration the mini-VDD reports becomes it, and USER's ChangeDisplaySettings makes the change as a
    *  Display Properties change does (the driver re-enabled in the new mode, the desktop resized, WM_DISPLAYCHANGE to
-   *  every window). The machine's screen size after it, with USER's answer; null while a thread holds USER */
+   *  every window). The machine's screen size after it, with USER's answer; null while a thread holds USER.
+   *  (Asked by a thread of the machine's, netBatch, as a program asks: USER sends WM_DISPLAYCHANGE to every window and
+   *  waits for each; sent inside a call the host made, Explorer's tray, a thread of its own, did not answer within
+   *  it, kept its place at the old screen's bottom, and Explorer faulted) */
   setMode(w, h, fields = 0x180000, flags = 0x80000000) {
     const p = this.proc; if (!p || p.depth || p.thread16 || p.win16Held) return null;
     p.host.width = w; p.host.height = h;
+    // the mode recorded as Display Properties records it before USER changes it (Display\Settings' Resolution, as the
+    // page's bootMode writes it at boot): Explorer's tray reads it on WM_DISPLAYCHANGE (EXPLORER 41243Bh) and, while it
+    // names another width than the driver's, takes the change for one waiting on a restart and leaves the taskbar
+    // where the old screen had it; SHDOC401's desktop reads it too
+    const res = { type: 1, data: self.W95FS.encode(`${w},${h}\0`), name: 'Resolution' };
+    for (const k of ['hkcc\\display\\settings', 'hklm\\config\\0001\\display\\settings']) self.W95Win32.regSet(k, 'Resolution', res);
     // a DEVMODE (its 4.0 form, 7Ch bytes) naming the mode: dmFields DM_PELSWIDTH and DM_PELSHEIGHT (naming the depth too, or
   // the registry update flag, has USER answer DISP_CHANGE_RESTART); the change made now, as QuickRes asks for it (flag 80000000h)
-    const dm = p.alloc(0x7c), sel = p.allocSels(dm, 0x7c);
+    const dm = p.alloc(0x7c);
     p.w16(dm + 32, 0x400); p.w16(dm + 36, 0x7c); p.w32(dm + 40, fields);
     const slot = p.displaySlot ? p.displaySlot(w, h, p.displayConfig().bpp) : { w, h };   // (a size the driver does not list: its custom mode's entry at the depth, ne16.js)
     p.w32(dm + 104, 8); p.w32(dm + 108, slot.w); p.w32(dm + 112, slot.h);
-    let r;
-    try { r = p.user16(620, [['l', sel << 16], ['l', flags]]).dxax | 0; }   // ChangeDisplaySettings(lpDevMode, flags)
-    catch (e) { console.error(e); r = -1; }   // (DISP_CHANGE_FAILED: the machine stays as it is)
-    finally { p.freeSels(sel); p.free(dm); }
-    const a = p.scanout(); if (a.bpp) [this.sw, this.sh] = [a.w, a.h];
-    return { r, sw: this.sw, sh: this.sh };
+    const done = res => {
+      p.free(dm);
+      const a = p.scanout(); if (a.bpp) [this.sw, this.sh] = [a.w, a.h];
+      return { r: res ? res[0] | 0 : -1, sw: this.sw, sh: this.sh };   // (-1, DISP_CHANGE_FAILED: no thread could ask)
+    };
+    return this.netBatch([{ dll: 'USER32', name: 'ChangeDisplaySettingsA', args: [dm, flags >>> 0] }]).then(done, e => { console.error(e); return done(null); });
   }
   cmd(name, args) {
     const p = this.proc, u = (o, a) => p.user16(o, a);
@@ -1303,7 +1644,7 @@ class Machine {
       }
       case 'endProcess': { const p = this.proc, pc = p.procs && p.procs.get(args[0]); if (pc) p.endProcess(pc, args[1] || 0); return pc ? true : this.endSaver(args[0], args[1] || 0); }
       case 'closeWin32': return this.proc.sendMsg(args[0], W.WM.CLOSE);
-      case 'children': return p.depth ? null : p.nativeChildren(args[0]);
+      case 'children': return p.depth ? null : this.childrenAsked(args[0]);
       // a shared session's OS objects (ne16.js osWorld), and a control set as another machine has it
       // (its controls' contents asked from a thread of its own, all in one: WM_GETTEXT, BM_GETCHECK)
       case 'world': return p.depth ? null : (async () => {
@@ -1360,7 +1701,7 @@ class Machine {
       // the other people in a shared session ([{ client, user, color }]), for SESSTRAY.EXE's icons (session-tray.js),
       // told to its window
       case 'tray': {
-        self.W95TrayPeople = args[0] || []; self.W95TrayOwner = args[1] || null; const st = self.W95TrayState;
+        self.W95TrayPeople = args[0] || []; self.W95TrayOwner = args[1] || null; self.W95TrayMoments = args[2] || []; const st = self.W95TrayState;
         return st && st.hwnd ? this.netCall('PostMessageA', [st.hwnd, 0x8005, 0, 0], 'USER32') : false;
       }
       // (a program another machine runs in a shared session: its clock as of its start there, args[1], ne16.js startClock)
@@ -1406,7 +1747,52 @@ class Machine {
         else await this.onWindow('SendMessageA', [c, 0x0c, 0, String(value)]);
         return true;
       })();
-      case 'listItem': return p.depth ? null : p.listItem(args[0], args[1], !!args[2]);   // a list view's item selected, or opened (the scripting API's click, dblclick)
+      // a button pressed as itself (the scripting API's click on a native button): BM_CLICK posted to the control, which
+      // presses and releases itself and tells its dialog. Only a button a person could press now: it and its top-level
+      // window enabled (a window under a dialog is disabled), and that window the foreground one; else refused, saying
+      // which. Posted, not sent: its command may open a dialog, and a send would not return until that one closed
+      // and the other controls set as themselves, under the same rule: [hwnd, 'tab', index] a tab control's tab chosen
+      // (TCM_SETCURFOCUS, which tells its owner as a click does); [hwnd, 'select', text] a combo box's item chosen by
+      // its text, its owner told (CBN_SELCHANGE); [hwnd, 'slide', pos | 'min' | 'max'] a trackbar moved, its owner told
+      // (WM_HSCROLL or WM_VSCROLL, TB_ENDTRACK)
+      case 'press': case 'ctl': return (async () => {
+        const [h, op, v] = name === 'press' ? [args[0], 'press'] : args, one = (fn, a) => this.netBatch([{ dll: 'USER32', name: fn, args: a }]).then(r => (r ? r[0] : 0));
+        if (!(await one('IsWindow', [h]))) return 'gone';
+        // (its top-level window: up through the child windows only; a top-level window's GetParent is its owner)
+        let root = h; while ((await one('GetWindowLongA', [root, -16])) & 0x40000000) { const up = await one('GetParent', [root]); if (!up) break; root = up; }
+        if (!(await one('IsWindowEnabled', [h]))) return 'disabled';
+        if (!(await one('IsWindowEnabled', [root]))) return 'its window is disabled: a dialog is waiting over it';
+        if ((await one('GetForegroundWindow', [])) !== root) return 'its window is not the active one';
+        if (op === 'press') return (await one('PostMessageA', [h, 0xf5, 0, 0])) ? true : 'gone';
+        if (op === 'tab') return (await one('PostMessageA', [h, 0x1330, v | 0, 0])) ? true : 'gone';
+        const parent = await one('GetParent', [h]), id = (await one('GetDlgCtrlID', [h])) & 0xffff;
+        if (op === 'select') {
+          let i = (await one('SendMessageA', [h, 0x158, 0xffffffff, String(v)])) | 0;   // CB_FINDSTRINGEXACT
+          if (i < 0) i = (await one('SendMessageA', [h, 0x14c, 0xffffffff, String(v)])) | 0;   // CB_FINDSTRING: the item that begins with it
+          if (i < 0) return `it has no item '${v}'`;
+          await one('SendMessageA', [h, 0x14e, i, 0]);   // CB_SETCURSEL
+          return (await one('PostMessageA', [parent, 0x111, (1 << 16 | id) >>> 0, h])) ? true : 'gone';
+        }
+        if (op === 'slide') {
+          const pos = v === 'min' ? await one('SendMessageA', [h, 0x401, 0, 0]) : v === 'max' ? await one('SendMessageA', [h, 0x402, 0, 0]) : v | 0;
+          await one('SendMessageA', [h, 0x405, 1, pos]);   // TBM_SETPOS
+          const vert = (await one('GetWindowLongA', [h, -16])) & 2;   // TBS_VERT
+          // (as a drag's end tells the owner: TB_THUMBPOSITION with the position, then TB_ENDTRACK)
+          await one('PostMessageA', [parent, vert ? 0x115 : 0x114, ((pos & 0xffff) << 16 | 4) >>> 0, h]);
+          return (await one('PostMessageA', [parent, vert ? 0x115 : 0x114, 8, h])) ? true : 'gone';
+        }
+        return `no such control action ${op}`;
+      })();
+      case 'listItem': return p.depth ? null : (async () => {   // a list view's item selected, or opened (the scripting API's click, dblclick)
+        // (every item's selection and focus off, then this one's on: LVIS_FOCUSED | LVIS_SELECTED, LVM_SETITEMSTATE, sent
+        // from a thread of its own; the list's owner opens the selection as Enter opens it)
+        const [h, i, open] = args, it = [p.alloc(36), p.alloc(36)];
+        for (const [b, state] of [[it[0], 0], [it[1], 3]]) { p.u8.fill(0, b, b + 36); p.w32(b + 12, state); p.w32(b + 16, 3); }
+        await this.netBatch([{ dll: 'USER32', name: 'SendMessageA', args: [h, 0x102b, 0xffffffff, it[0]], ifWindow: h }, { dll: 'USER32', name: 'SendMessageA', args: [h, 0x102b, i, it[1]], ifWindow: h }]);
+        for (const b of it) p.free(b);
+        if (open && !p.depth) { p.user16(110, [['w', h], ['w', 0x100], ['w', 0x0d], ['l', 0x001c0001]]); p.user16(110, [['w', h], ['w', 0x101], ['w', 0x0d], ['l', 0xc01c0001]]); }   // PostMessage WM_KEYDOWN, WM_KEYUP VK_RETURN
+        return true;
+      })();
       case 'peek': { const at = args[2] ? (p.selValid(args[2]) ? p.selBase(args[2]) + args[0] : -1) : args[0]; return at < 0 ? null : Array.from(p.u8.subarray(at, at + Math.min(args[1], 4096))); }   // a diagnostic: memory bytes, at a linear address or [offset, n, selector]
       case 'menuscan': {   // a diagnostic: every menu handle USER has (IsMenu over the handle range), its item count and first item, and whether USER32's GetMenuItemRect places its first item in the window given
         if (p.depth) return null;
@@ -1481,6 +1867,7 @@ class Machine {
           const named = this.ordNames(m), label = nm => !/^#\d+$/.test(nm) ? nm : named.get(+nm.slice(1)) || (m.importers && m.importers.has(nm) ? `${nm} (${[...m.importers.get(nm)].join(', ')})` : nm);
           const hasName = new Set([...m.exports].filter(([nm]) => nm[0] !== '#').map(([, a]) => a));
           if (want) { for (const [nm, a] of m.exports) if (typeof a === 'number' && a && !(nm[0] === '#' && hasName.has(a)) && want.test(label(nm))) names.push([label(nm), a >>> 0]); }
+          else if (/^@[0-9a-f]+$/i.test(String(name))) names.push([String(name), (m.base + parseInt(String(name).slice(1), 16)) >>> 0]);   // (@offset: a place in the module's image, a function no export names)
           else { const k = [...named].find(([, v]) => v === name), a = m.exports.get(k ? `#${k[0]}` : name); if (a) names.push([label(k ? `#${k[0]}` : name), a >>> 0]); }
         }
         if (!names.length) return false;
@@ -1491,6 +1878,12 @@ class Machine {
             if (seg) for (let i = 0; i < n; i++) a.push(this.r16(sp + 4 + 2 * i).toString(16)); else for (let i = 1; i <= n; i++) a.push((this.r32(sp + 4 * i) >>> 0).toString(16));
             const ret = seg ? (this.selBase(this.r16(sp + 2)) + this.r16(sp)) >>> 0 : this.r32(sp) >>> 0;
             const rec = { t: Math.round(performance.now() - t0), name: `${m.name}!${nm}`, args: a, from: this.whereOf(ret), thread: this.thread16 ? this.thread16.id : 'main' };
+            // (a 32-bit caller's callers: the stack's dwords that are places in a module's code, innermost first)
+            if (!seg) { const st = []; for (let o = sp + 4; o < sp + 0x2000 && st.length < 24; o += 4) { const w = this.whereOf(this.r32(o) >>> 0); if (/^[A-Z0-9_]+(\.[A-Z]+)?\+[0-9a-f]+/i.test(w)) st.push(w); } rec.stack = st; }
+            // (and each 32-bit argument that points at text, ANSI or UTF-16, as the call sees it)
+            if (!seg) rec.text = a.map(x => { const v = parseInt(x, 16); if (v < 0x10000 || v >= this.u8.length - 2) return null; try { const s = this.readA(v, 80) || ''; if (/^[\x20-\x7e]{2,}$/.test(s)) return s; const w = this.readW ? this.readW(v, 80) || '' : ''; return /^[\x20-\x7e]{2,}$/.test(w) ? 'W:' + w : null; } catch (_) { return null; } });
+            // (a 16-bit caller's far pointers to text: each pair of words, offset then segment, that is a string in a segment there is)
+            if (seg) rec.text = a.map((x, i) => { if (i + 1 >= a.length) return null; const s = parseInt(a[i + 1], 16), o = parseInt(x, 16); if (!(s & 0xfff8) || !this.selValid(s)) return null; try { const t = this.readA((this.selBase(s) + o) >>> 0, 80) || ''; return /^[\x20-\x7e]{2,}$/.test(t) ? t : null; } catch (_) { return null; } });
             if (log().length < 20000) log().push(rec);
             this.onReturn((eax, edx) => { rec.eax = eax.toString(16); if (seg) { rec.ax = (eax & 0xffff).toString(16); rec.dxax = (((edx & 0xffff) << 16 | (eax & 0xffff)) >>> 0).toString(16); } });
           });
@@ -1521,7 +1914,7 @@ class Machine {
           const exes = [p.pc0, p.pc, ...(p.procs || new Map()).values()].filter(own).map(x => x.exe);
           const m = [...p.modules.filter(x => x.name === name), ...exes].find(x => eip >= x.base && eip < x.base + (x.size || (x.meta && x.meta.textHi - x.base) || 0));
           if (m) { const s = p.runHook.seen; s.n++; const k = (eip - m.base).toString(16); s.at[k] = (s.at[k] || 0) + 1; }
-          if (m && want.has(eip - m.base)) { const sp = p.reg('esp') >>> 0; log.push([Math.round(performance.now()), p.thread16 && p.thread16.pc ? p.thread16.pc.path : 'host', 'watch', `${name}+${(eip - m.base).toString(16)}`, `eax ${(p.reg('eax') >>> 0).toString(16)}`, `args ${[4, 8, 12, 16, 20].map(k => (p.r32(sp + k) >>> 0).toString(16)).join(' ')}`]); }   // (the stack's first five arguments, as a stdcall function sees them on entry)
+          if (m && want.has(eip - m.base)) { const sp = p.reg('esp') >>> 0; log.push([Math.round(performance.now()), p.thread16 && p.thread16.pc ? p.thread16.pc.path : 'host', 'watch', `${name}+${(eip - m.base).toString(16)}`, `eax ${(p.reg('eax') >>> 0).toString(16)}`, `args ${[4, 8, 12, 16, 20].map(k => (p.r32(sp + k) >>> 0).toString(16)).join(' ')}`, `ret ${p.whereOf(p.r32(sp) >>> 0)}`, `frame ${[8, 12, 16, 20, 24, 28, 32, 36].map(k => (p.r32((p.reg('ebp') >>> 0) + k) >>> 0).toString(16)).join(' ')}`]); }   // (the stack's first five arguments, as a stdcall function sees them on entry; and the arguments of the function whose frame EBP holds, for a place inside one)
         };
         p.runHook.seen = { n: 0, at: {} };
         return true;
@@ -1538,6 +1931,22 @@ class Machine {
         const l = (p.dynHook && p.dynHook.log) || []; p.dynHook = null; return l;
       }
       case 'trace': { if (args[0]) this.traceOn(args[0], args[1]); const l = this.traceLog || []; return l.splice(0); }   // (the calls traced so far; a thread regexp, and one for the import names, starts a trace)
+      // (a diagnostic: the functions the machine's objects hold, by the path a moment's walk gives them (braid.js): what
+      // an arrival's rebind keeps from the booted machine's object at that path, the moment carrying none)
+      case 'fns': {
+        const out = new Map(), seen = new Set(), opaque = this.braidOpaque(), names = this.braidNames();
+        const walk = (v, path, depth) => {
+          if (v === null || typeof v !== 'object' || seen.has(v) || opaque.has(v) || depth > 40) return; seen.add(v);
+          if (ArrayBuffer.isView(v) || v instanceof ArrayBuffer || (typeof WebAssembly === 'object' && (v instanceof WebAssembly.Memory || v instanceof WebAssembly.Global || v instanceof WebAssembly.Module || v instanceof WebAssembly.Instance))) return;
+          const gen = path.replace(/\/\d+(?=\/|$)/g, '/#').replace(/\/k\d+(?=\/|$)/g, '/k#');
+          const add = (k, f) => { if (names.has(f)) return; const key = gen + '/' + k; out.set(key, (out.get(key) || 0) + 1); };
+          if (v instanceof Map) { let i = 0; for (const [k, x] of v) { if (typeof x === 'function') add('(value)', x); else walk(x, path + '/' + (typeof k === 'string' || typeof k === 'number' ? k : 'v' + i), depth + 1); i++; } return; }
+          if (v instanceof Set) { let i = 0; for (const x of v) walk(x, path + '/' + i++, depth + 1); return; }
+          for (const k of Object.keys(v)) { if (v === this && this.braidSkip(v, k)) continue; const x = v[k]; if (typeof x === 'function') add(k, x); else walk(x, path + '/' + k, depth + 1); }
+        };
+        walk(this, '#0', 0);
+        return [...out].sort((a, b) => b[1] - a[1]).slice(0, args[0] || 80);
+      }
       case 'faults': { const l = (p.faultLog || []).splice(0); this.faultsTaken = (this.faultsTaken || 0) + l.length; return l; }   // (a diagnostic: the code the machine found none at, and why; the count read stays counted for the lint's probe)
       // a script of the machine's (a stand-in: claude-app.js, shell32.js, ...) loaded again from the page's server into
       // the running machine, no restart: its def()s replace the functions in place (win32.js def), so the thunks made
@@ -1548,13 +1957,22 @@ class Machine {
         if (!/^[\w.-]+\.js$/.test(f)) throw new Error(`reload: a script of the site's, by name (${f})`);
         const url = `${f}?reload=${Date.now()}`, x = new XMLHttpRequest(); x.open('GET', url, false); x.send();
         if (x.status !== 200) throw new Error(`reload: ${f} did not load (${x.status})`);
-        importScripts(url);
+        // (args[1]: the mod's own setting, self.W95ModArg as it runs: the page's address gives it, #turbo=8)
+        self.W95ModArg = args[1] === undefined ? null : args[1];
+        try { importScripts(url); } finally { self.W95ModArg = null; }
         const rec = self.W95Braid.mod(f, x.responseText); this.mods.push(rec);
         return { reloaded: f, sum: rec.sum };
       }
+      // (a mod ended as it ends itself, self.W95ModOff[file], which it set as it ran; false for one that has no end)
+      case 'modOff': { const off = self.W95ModOff && self.W95ModOff[args[0]]; if (!off) return false; delete self.W95ModOff[args[0]]; off(); return true; }
       case 'mods': return this.mods.slice();
+      // The debugger (dynjs.js): args are [method, ...arguments]. Recorded hits are also posted to the page as they
+      // happen (the page's 'debug.hit' event).
+      case 'debug': { const J = self.W95DynJs; if (!J.onHit) J.onHit = hit => post({ t: 'debug', hit }); return J.debug(p, args, this); }
       // ring α (braid.js): a moment of the machine marked now, by name; the machine at one again; the moments on its line
-      case 'mark': { const s = this.braidMark(String(args[0] || 'moment')); moments.set(s.name, s); return { ...self.W95Braid.describe(s), took: s.took }; }
+      // (a machine still starting, the PC booting under it, has no moment to take: answered so, as one inside a call
+      // is, not thrown; the line marking itself met it at every restart, an error in the page's console)
+      case 'mark': { if (!this.proc) return null; const s = this.braidMark(String(args[0] || 'moment')); moments.set(s.name, s); return { ...self.W95Braid.describe(s), took: s.took }; }
       // (a moment at a time of the machine's own clock, taken at the end of the first step that reaches it: every
       // machine of a shared session marks at the same time of the same run, so all hold the same state)
       case 'markAt': {
@@ -1574,8 +1992,22 @@ class Machine {
       case 'build': { this.build = String(args[0] || ''); return this.build; }
       // the machine run ahead of the wall: steps back to back, each a scaled period of the machine's time (x times the
       // 16 ms); 1 is the pace of a person's machine again. The clock as it reads now
-      case 'speed': { const x = Math.max(1, Number(args[0]) || 1); this.fast = x > 1; this.vclock.scale = x; if (this.fast) this.kick(); return { scale: x, now: this.vclock.now }; }
+      case 'speedScale': return { scale: this.vclock.scale || 1, now: this.vclock.now };   // (the scale 'speed' set, read alone: 'speed' sets it)
+      // (x above 1: the machine's time x times the wall's, run back to back. Below 1: a processor x as fast, its time
+      // still the wall's: each quantum of blocks counts 1/x of the clock (perTick), so the pace that keeps the
+      // machine's time to the wall's lets x of the blocks run. A program whose loop has no timing of its own, drawn
+      // as fast as the processor goes (Solitaire's bouncing cards), runs as it did on a slower PC)
+      case 'speed': {
+        const x = Math.min(64, Math.max(0.01, Number(args[0]) || 1)), up = Math.max(1, x);
+        // (and its steps a quarter as long, 4 ms of the machine's time: a step is a slice of code and then the rest of its
+        // period waited out, so at 16 ms the program's drawing came in one burst a step, the steps out of time with the
+        // display's frames, and a frame took two bursts or none: Solitaire's cards moved in jerks. Four steps a frame
+        // give each frame about the same share)
+        this.fast = up > 1; this.vclock.scale = up; this.vclock.perTick = 0.25 / Math.min(1, x); this.vclock.period = x < 1 ? 4 : 16; if (this.fast) this.kick();
+        return { scale: up, cpu: Math.min(1, x), now: this.vclock.now };
+      }
       case 'now': return this.vclock.now;
+      case 'sysId': return this.sysId || '';   // (the system this machine booted, by its USER.EXE: an arrival's check, braid-page.js arrive)
       // the machine run to a time of its own clock, fast (x the pace, 8), then at a person's pace again: answers when
       // it is there ({ at }), or when travel left the run ({ at, left }); a time already past answers at once
       case 'until': {
@@ -1593,17 +2025,18 @@ class Machine {
         if (this.proc.depth || (this.proc.r0Runs && this.proc.r0Runs.length) || (this.proc.retPend && [...this.proc.retPend.values()].some(l => l.length))) return { busy: true };
         const B = self.W95Braid, graph = B.takeGraph([this], { opaque: this.braidOpaque(), skip: (o, k) => this.braidSkip(o, k) });
         const names = this.braidNames(), ex = B.serialize(graph, v => names.get(v) || null);
-        return { meta: ex.meta, roots: ex.roots, blob: ex.blob, registry: W.regDump(), probe: this.braidProbe(), now: this.vclock.now, build: this.build || '', mods: this.mods.slice() };
+        return { meta: ex.meta, roots: ex.roots, blob: ex.blob, registry: W.regDump(), probe: this.braidProbe(), now: this.vclock.now, build: this.build || '', mods: this.mods.slice(), sys: this.sysId || '' };
       }
       case 'import': {
         const ex = args[0], BR = self.W95Braid; clearTimeout(this.timer);
+        const t0 = performance.now(); let t1 = 0, t2 = 0;   // (what its parts took, for the page's log: took)
         // (the classes the machine's objects have, by name: one the moment has and this machine had not is made anew
         // with its prototype (braid.js rebind protoAt): a VM's machine (v86.js V86Machine), a VM's view of a disk (FatView))
         const V86 = self.W95V86 || {}, protos = { Machine, Process: W.Process, ...(V86.V86Machine ? { V86Machine: V86.V86Machine } : {}), ...(V86.FatView ? { FatView: V86.FatView } : {}) };
         const r = BR.rebind([this], { meta: ex.meta, roots: ex.roots, blob: ex.blob instanceof Uint8Array ? ex.blob : new Uint8Array(ex.blob) }, { opaque: this.braidOpaque(), skip: (o, k) => this.braidSkip(o, k), protos, named: this.braidNamed() });
         // (a module's instance is this machine's own: one the export brought that this machine had not loaded gets
         // its instance from its module, as loading it made one; the run-time translations are made again as code runs)
-        const p = this.proc, S = self.W95SYSTEM || {}; p.dynCache = new Map();
+        const p = this.proc, S = self.W95SYSTEM || {}; p.dynCache = new Map(); p.dynFast = new Map(); t1 = performance.now();
         // (a disk's FAT view is of this machine's file system, which the moment does not carry: one made anew from the
         // moment had none, and the first read of C:'s sectors after the arrival (MSGSRV32's, as Windows 98 Setup ran on)
         // ended in "reading 'version'" of nothing)
@@ -1612,19 +2045,28 @@ class Machine {
         // writable, so not in the export), and its own translations)
         for (const v of p.vms || []) { const m = v.m; if (!m || !m.mem) continue; if (!Object.getOwnPropertyDescriptor(m, 'u8')) Object.defineProperty(m, 'u8', { value: new Uint8Array(m.mem.buffer) }); if (!Object.getOwnPropertyDescriptor(m, 'dv')) Object.defineProperty(m, 'dv', { value: new DataView(m.mem.buffer) }); if (m.dynCache && !(m.dynCache instanceof Map)) m.dynCache = new Map(); }
         // (the 16/32-bit transitions in flight: each record's continuation found again by its kind's name, ne16.js retDone)
-        for (const r of p.retRecs || []) if (r && !r.done) { if (!r.kind || !p.retDone[r.kind]) throw new Error(`a transition in flight without a continuation's name (${r.kind})`); r.done = p.retDone[r.kind]; }
+        // (each one's own, whatever the rebind left: a record kept the continuation of the booted machine's record at its
+        // slot, another kind's, and a return through RET16.#2 went to 0 in Explorer)
+        for (const r of p.retRecs || []) if (r) { if (!r.kind || !p.retDone[r.kind]) throw new Error(`a transition in flight without a continuation's name (${r.kind})`); r.done = p.retDone[r.kind]; }
         // (the import thunks, by their names: the 16-bit ones' definitions (ne16.js K16) and the 32-bit ones' (win32.js
         // API) are code the export cannot carry; one the moment has and this machine had not made came without them,
         // and the first call through it died in api16. One of no definition is as thunk16For makes it: the native
         // module's export answers it, found again as it is called (api16, t.native))
         { const K16 = (self.W95NE16 || {}).K16 || {}; for (const t of p.th16 || []) if (t && t.key) { t.def = K16[t.key]; if (!t.def) delete t.native; } }
-        for (const t of p.thunks || []) if (t && t.dll) t.def = ((W.API || {})[t.dll] || {})[t.nm];
+        // (a late-bound LS01 connection's FT_Prolog relay as a moment of an earlier build has it: its table was a getter
+        // the moment did not carry, so nothing: joined to its connection's QT_Thunk relay, the one at the nearest
+        // address, its table that one's (ne16.js lsBind))
+        // (its own connection's: ThunkConnect32 sets the QT_Thunk relay, then the FT_Prolog relay, so the one just before
+        // it in the map's order. The nearest address joined one to another DLL's connection: its calls went to that
+        // DLL's 16-bit targets)
+        if (p.lsRelays) { let prev = null; for (const [, v] of p.lsRelays) { if (v && v.ft && !v.rel && v.table === undefined && prev && !prev.ft) v.rel = prev; prev = v; } }
+        for (const t of p.thunks || []) if (t && t.dll) t.def = p.importDef(t.dll, t.nm);
         // (the hooks at the exports other modules enter (win32.js entryHooks) are code: made again for the USER loaded,
         // as its load made them (ne16.js hookIntents, hookClock, hookTaken); a return watched by a diagnostic is not)
-        { p.entryHooks = new Map(); p.entryLists = new Map(); p.retPend = new Map(); const user = p.ne && p.ne.get('USER'); if (user && user.meta) { p.hookIntents(user); p.hookClock(user); p.hookTaken(user); } }
+        { p.entryHooks = new Map(); p.entryLists = new Map(); p.retPend = new Map(); const user = p.ne && p.ne.get('USER'); if (user && user.meta) { p.hookIntents(user); p.hookClock(user); p.hookTaken(user); } if (p.hookDllChain) p.hookDllChain(); }
         // (a started program's end told to the page (program.exit), as 'run' tells it; its console's or a saver's own
         // telling is not carried)
-        for (const pc of (p.procs || new Map()).values()) if (pc && typeof pc.onExit !== 'function') pc.onExit = code => { if (!pc.fault) post({ t: 'emit', ev: 'program.exit', data: { path: pc.path, code } }); };
+        for (const pc of (p.procs || new Map()).values()) if (pc && typeof pc.onExit !== 'function') pc.onExit = code => { if (!pc.fault) post({ t: 'emit', ev: 'program.exit', data: { path: pc.path, code, cmd: pc.cmdLine } }); };
         // (a module's wasm run is code the record cannot carry: made again from the bundle's module of its name. A 16-bit
         // module's by its name in the bundle (a record this machine had not has a metadata object of its own, not the
         // bundle's); a 32-bit DLL's from the machine's DLL table (the bundle's, the net's, a saver's: a DLL read from the
@@ -1636,11 +2078,12 @@ class Machine {
         while (B.ringTake(this.ring));
         this.keyq = []; this.mouseq = []; this.vclock.now = ex.now;
         this.faultTaken = false; this.stopped = false; this.txtGen = -1; this.timer = 0; this.soonPending = false;
+        this.redrawAll = true;   // (step: the windows drawn again on this machine's display)
         // (the page's screen follows the moment's mode at once: its canvases were the boot's; the windows come with the
         // next step's frame, no call into USER from here)
         { const a = p.scanout(); if (a.bpp) [this.sw, this.sh] = [a.w, a.h]; } this.shellSeen = true; this.postScan();   // (shellSeen: postScan asks USER for the windows otherwise, a call into the machine from here)
-        if (this.alive) this.timer = setTimeout(() => this.step(), 0);
-        return r;
+        t2 = performance.now();
+        return p.netReads().then(() => { p.neInstall(); if (this.alive && !this.timer) this.timer = setTimeout(() => this.step(), 0); r.took = `its objects ${Math.round(t1 - t0)} ms, its modules' code ${Math.round(t2 - t1)} ms, the memo's modules ${Math.round(performance.now() - t2)} ms`; return r; });   // (as a travel: braidTravel)
       }
       case 'views': {   // (a diagnostic: the modules' private data views and the arena, whose copies a thread switch swaps, and where the switches' time goes)
         const pidOf = k => (k === null ? null : k === 0 ? 0 : k === undefined ? 'undef' : typeof k === 'object' ? (k.pid !== undefined ? k.pid : 'obj') : k);
@@ -1648,7 +2091,28 @@ class Machine {
           priv: (p.modules || []).filter(m => m.priv && m.priv.init).map(m => ({ name: m.name, cur: pidOf(m.priv.cur), curIsPc0: m.priv.cur === p.pc0, keys: [...m.priv.bufs.keys()].map(pidOf), keyPc0: m.priv.bufs.has(p.pc0), bytes: m.priv.ranges.reduce((n, [lo, hi]) => n + hi - lo, 0) })),
           arena: (p.arena || []).map(s => ({ lo: s.lo.toString(16), hi: s.hi.toString(16), cur: pidOf(s.cur), own: [...s.own].map(pidOf), bufs: [...s.bufs.keys()].map(pidOf) })) };
       }
+      // (a diagnostic: 'det' [true] starts the determinism log afresh, [false] ends it, [] reads it: each step's end with
+      // the machine's clock and where the processor was, and what came in from outside meanwhile)
+      case 'det': { if (args[0] === true) { this.detLog = []; return true; } if (args[0] === false) { const l = this.detLog || []; this.detLog = null; return l; } return (this.detLog || []).slice(args[1] || 0); }
       case 'trail': {   // (a diagnostic: the next n dispatches, each its address as a symbol, then the hook ends; [] reads what came; with the holder's clock: runT0, the budget, the clock)
+        // (args[1] 'ring': the last n kept, the hook left on, each with CS (its width, 32 or 16, from its access rights),
+        // SS:SP: what ran just before a fault)
+        if (args[0] && args[1] === 'ring') {
+          const n = args[0], log = this.trailLog = [];
+          // (raw, named as they are read: a symbol a dispatch is too slow to keep up)
+          // (it stops at the first fault after it starts whose reason matches args[2] (a pattern; any fault without one):
+          // the dispatches that led to it kept. 'all' runs on. The fault log is read by its last entry, as the page's
+          // probe empties it as it reads)
+          const why = args[2] && args[2] !== 'all' ? new RegExp(args[2], 'i') : null, stop = args[2] !== 'all', last = () => { const l = p.faultLog || []; return l[l.length - 1] || null; }, l0 = last();
+          // (args[3]: only the threads of the program whose path matches it)
+          const prog = args[3] ? new RegExp(args[3], 'i') : null;
+          p.runHook = eip => { const f = stop && last(); if (f && f !== l0 && (!why || why.test(f.why || ''))) { p.runHook = null; return; } if (prog && !(p.thread16 && p.thread16.pc && prog.test(p.thread16.pc.path || ''))) return; if (args[4] === 'first' && log.length >= n) { p.runHook = null; return; } log.push([eip >>> 0, p.cpu.cs.value & 0xffff, p.cpu.ss.value & 0xffff, p.cpu.esp.value >>> 0, p.thread16 ? p.thread16.id : 'main']); if (log.length > 2 * n) log.splice(0, n); };
+          this.trailN = n; return true;
+        }
+        if (args[0] === 0 && args[1] === 'ring') {   // (the ring read: its last n, each named)
+          const w = s => (s && p.r32(0x40000 + (s & 0xfff8)) & 0x400000 ? 32 : 16), l = (this.trailLog || []).slice(-(this.trailN || 200));
+          return l.map(([eip, cs, ss, esp, th]) => `${eip.toString(16)} ${p.whereOf(eip)} cs ${cs.toString(16)}/${w(cs)} ss:sp ${ss.toString(16)}/${w(ss)}:${esp.toString(16)} th ${th}`);
+        }
         if (args[0]) { const n = args[0], log = this.trailLog = []; p.runHook = eip => { log.push(`${(eip >>> 0).toString(16)} ${p.whereOf(eip)} t ${p.now().toFixed(1)} b ${p.cpu.budget.value} th ${p.thread16 ? p.thread16.id : 'main'}`); if (log.length >= n) p.runHook = null; }; return true; }
         const l = this.trailLog || [];
         const h = p.win16Held && typeof p.win16Held.who === 'object' ? p.win16Held.who : null;
@@ -1665,18 +2129,32 @@ class Machine {
 }
 
 let machine = null;
+// the reading thread's waits (Machine.readBatch): the next batch's code, the thread blocked until there is one (woken as
+// one is queued, not run again to look); and a batch done
+W.def('KERNEL32', '__ReadNext', 0, function () {
+  const q = machine && machine.readQ, t = this.thread16;
+  if (q && q.length) return q[0].code;
+  if (t) t.blocked = true; return W.YIELD;
+});
+W.def('KERNEL32', '__ReadDone', 0, function () { const b = machine && machine.readQ && machine.readQ.shift(); if (b) b.done(); return 0; });
 const moments = new Map();   // (ring α: the moments of this machine, by name, held here outside the machine's graph)
 self.onmessage = e => {
   const m = e.data;
+  // (cmd 'det': what came in from outside, stamped with the machine's clock, beside each step's end: two runs from one
+  // moment compared find where the outside made them differ)
+  if (m.t === 'audioPort') { audioPorts.set(m.rate, m.port); return; }   // (a stream's worklet, straight: W95AudioSink; the page's, not the machine's)
+  if (machine && machine.detLog && m.t !== 'cmd') machine.detLog.push(`in ${m.t}${m.name ? ' ' + m.name : ''} @${machine.vclock.now}`);
   if (m.t === 'start') {
     rpcSab = m.rpc; lanRing = m.o.lan || null; regStore.held = m.registry; W.regAttach(regStore); if (m.o.exp) Object.assign(self, m.o.exp);
     W.log.watch(line => { if (!line.posted) post({ t: 'log', line }); });   // (this machine's log lines, to the page's ring)
+    // (a diagnostic: mods the page names (window.W95BOOTMODS) loaded before the machine is made, so they see its boot)
+    for (const f of m.o.bootMods || []) if (/^[\w.-]+\.js$/.test(f)) { try { importScripts(`${f}?boot=${Date.now()}`); } catch (e) { console.error('[bootmods]', f, e); } }
     machine = new Machine(m.o); machine.start().catch(err => { console.error(err); post({ t: 'exited', code: -1, why: String(err && err.message || err) }); });
   } else if (m.t === 'cmd') {
     const reply = (value, error) => { if (m.id) post({ t: 'reply', id: m.id, value: value === undefined ? null : value, error }, value && value.blob instanceof Uint8Array ? [value.blob.buffer] : []); };   // (an export's bytes handed over, not copied)
     let value, error = null;
-    try { value = machine && machine.alive ? machine.cmd(m.name, m.args || []) : undefined; } catch (err) { console.error(err); error = String(err.message || err); }
-    if (value && typeof value.then === 'function') value.then(v => reply(v, null), err => reply(null, String(err && err.message || err)));
+    try { value = machine && machine.alive ? machine.cmd(m.name, m.args || []) : undefined; } catch (err) { console.error(err); error = String((err && err.stack) || err.message || err); }   // (with its stack: the page's log names where)
+    if (value && typeof value.then === 'function') value.then(v => reply(v, null), err => reply(null, String((err && (err.stack || err.message)) || err)));
     else reply(value, error);
     if (machine) machine.kick();
   } else if (m.t === 'lan') lanSend(pageSide, m.frame);   // a frame from the rest of the segment

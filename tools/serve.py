@@ -3,12 +3,13 @@ sectors at a time), with cdrom.iso the CD image given by --iso, and each --cd an
 
     python3 tools/serve.py 8095 --iso "Win95 OSR2.ISO" --cd "Windows 98 SE.iso"
 """
-import argparse, base64, http.server, json, os, re, shutil, socket
+import argparse, base64, hashlib, http.server, json, os, re, shutil, socket
 
 ap = argparse.ArgumentParser(); ap.add_argument('port', type=int); ap.add_argument('--iso'); ap.add_argument('--host', default='127.0.0.1')
 # HTTPS with this certificate and key: a page from another computer is a secure context only over HTTPS, and only a
 # secure context has the shared memory the machines run on (SharedArrayBuffer) and the sound's AudioWorklet
 ap.add_argument('--cert'); ap.add_argument('--key')
+ap.add_argument('--mods', help="the mod file the page loads its machines' mods from, NAME.mod in the project (debug, test, prod; /__mods names it), when its address names none (mods=NAME)")
 ap.add_argument('--cd', action='append', default=[], help='another CD image the drive can take (each served read-only at /cd/<n>/<name>)'); a = ap.parse_args()
 root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CDS = ([{'name': os.path.basename(a.iso), 'path': a.iso, 'url': 'cdrom.iso'}] if a.iso else []) + \
@@ -69,7 +70,7 @@ def share_op(sh, op, *a):
 ERRNO = {2: 'ENOENT', 20: 'ENOTDIR', 13: 'EACCES', 1: 'EACCES', 17: 'EEXIST', 66: 'ENOTEMPTY', 39: 'ENOTEMPTY', 21: 'EISDIR'}
 
 from claude_api import local_request, claude, fetch_page
-import src_api, gitref
+import src_api, gitref, git_api, discord_api
 
 class H(http.server.SimpleHTTPRequestHandler):
     def ref(self):
@@ -89,10 +90,12 @@ class H(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         if self.ref(): return
         if self.path.startswith('/__session') and SESSIONS.handle(self, 'GET'): return
+        if self.path.startswith('/__discord/') and discord_api.handle(self, 'GET'): return   # (the Discord Activity's application id, discord.js)
         super().do_GET()
     def do_POST(self):   # /__share: the shares' list, an operation on one ({ ok } or { err }), and the host's name
         if self.ref(): return
         if self.path.startswith('/__session') and SESSIONS.handle(self, 'POST'): return
+        if self.path.startswith('/__discord/') and discord_api.handle(self, 'POST'): return   # (the Discord Activity's token exchange)
         if self.path.split('?')[0] == '/__fetch':   # (the Claude program's Browser pane: a web page as text, for this machine's own pages only)
             if not local_request(self): self.send_error(403); return
             try: q = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')
@@ -101,13 +104,16 @@ class H(http.server.SimpleHTTPRequestHandler):
         if self.path.split('?')[0] == '/__src':   # (the project's own files, CLAUDE.EXE's SRC:\: this machine's own pages only)
             if not local_request(self): self.send_error(403); return
             src_api.handle(self, root); return
+        if self.path.split('?')[0] == '/__git':   # (a fixed set of git commands on that checkout, each argument checked: tools/git_api.py; this machine's own pages only)
+            if not local_request(self): self.send_error(403); return
+            git_api.handle(self, root); return
         if self.path.split('?')[0] == '/__claude':
             if not local_request(self): self.send_error(403); return
             try: q = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')
             except ValueError: self.send_error(400); return
             claude(self, q); return
         if self.path.split('?')[0] == '/__cdlog':   # (the dev page's CD request trace, as deploy/win95/win95_server.py keeps it)
-            if not local_request(self): self.send_error(403); return
+            if not local_request(self, json=False): self.send_error(403); return
             try:
                 q = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')
                 os.makedirs('/tmp/w95', exist_ok=True)
@@ -140,6 +146,10 @@ class H(http.server.SimpleHTTPRequestHandler):
             b = os.environ.get('W98KEY', '').encode()
             self.send_response(200); self.send_header('Content-Type', 'text/plain'); self.send_header('Cache-Control', 'no-store'); self.send_header('Content-Length', str(len(b))); self.end_headers()
             import io; return io.BytesIO(b)
+        if self.path.split('?')[0] == '/__mods':   # (the mod file given by --mods, the page's to load: win95.js)
+            b = json.dumps({'profile': a.mods}).encode()
+            self.send_response(200); self.send_header('Content-Type', 'application/json'); self.send_header('Cache-Control', 'no-store'); self.send_header('Content-Length', str(len(b))); self.end_headers()
+            import io; return io.BytesIO(b)
         if self.path.split('?')[0] == '/__cd':   # (the CD images the drive can take: --iso's first, as cdrom.iso, then each --cd)
             b = json.dumps([{'name': c['name'], 'url': c['url']} for c in CDS if os.path.isfile(c['path'])]).encode()
             self.send_response(200); self.send_header('Content-Type', 'application/json'); self.send_header('Content-Length', str(len(b))); self.end_headers()
@@ -160,6 +170,9 @@ class H(http.server.SimpleHTTPRequestHandler):
         self.send_header('Cache-Control', 'no-store')
         # cross-origin isolated, for the shared memory the machines' workers run on (SharedArrayBuffer)
         self.send_header('Cross-Origin-Opener-Policy', 'same-origin'); self.send_header('Cross-Origin-Embedder-Policy', 'require-corp')
+        # (the same for the page in another site's frame, Discord's: a frame is isolated by its own document's policy
+        # where its embedder is not, which the two above cannot give it)
+        self.send_header('Document-Isolation-Policy', 'isolate-and-require-corp')
         super().end_headers()
     def copyfile(self, src, dst):
         n = getattr(self, 'range_left', None)

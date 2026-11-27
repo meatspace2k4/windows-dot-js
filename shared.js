@@ -7,6 +7,7 @@
 // Which session, and as whom: ?session= and ?user= on the URL (for testing, and a link to join someone), else the
 // logon this browser keeps (localStorage w95.logon: { user, session }), else Guest in the shared session 'guest'.
 // Each tab is a person of its own (its client id in sessionStorage). ?shared=0 runs on this browser's own store.
+// In Discord's frame (discord.js) the session is the Activity's instance and the name the person's Discord name.
 (() => {
   const q = new URLSearchParams(location.search);
   const LOGON = 'w95.logon', CLIENT = 'w95.client';
@@ -24,7 +25,27 @@
   // (?client= names the machine without touching this tab's own: a frame in the tab is a machine of its own)
   const client = sessionId(q.get('client')) || get(sessionStorage, CLIENT) || (() => { const c = Math.random().toString(36).slice(2, 8) + Math.random().toString(36).slice(2, 8); put(sessionStorage, CLIENT, c); return c; })();
   // (a page on a session this computer keeps, chosen by Open Session: its own store, until a session is joined)
-  const wanted = () => q.get('shared') !== '0' && !window.W95HOST && !(stored.local && !q.get('session'));
+  const wanted = () => q.get('shared') !== '0' && !window.W95HOST && (given || !(stored.local && !q.get('session')));
+  /** who and where, said by the place the page runs in before the session starts (discord.js: the Activity's instance
+   *  and the person's Discord name): the logon is theirs whatever this browser keeps. A name with nothing a logon name
+   *  keeps leaves the name as it was (false) */
+  let given = false;
+  const as = (user, session) => {
+    const u = name(user, 20), s = sessionId(session);
+    if (s) { logon.session = s; given = true; }
+    if (u) logon.user = u;
+    return !!u;
+  };
+  /** this person's name, learnt while the session runs (discord.js: Discord named them after Windows started): theirs
+   *  in the session from now, told to the others by the events opened again under it (the new ones before the old
+   *  ones close, so nobody sees them leave). This machine's Windows keeps the logon it started with */
+  const rename = user => {
+    const u = name(user, 20); if (!u || u === logon.user) return false;
+    logon.user = u;
+    if (es) { const old = es; listen(); try { old.close(); } catch (_) { /* gone */ } }
+    return true;
+  };
+  let onStarted; const started = new Promise(ok => { onStarted = ok; });   // (Windows has started here: `ready`)
   /** the logon this browser keeps for its next visit (joining a session leaves this computer's own) */
   const remember = (user, session) => put(localStorage, LOGON, JSON.stringify({ ...(stored.own ? { own: stored.own } : {}), ...(stored.owns ? { owns: stored.owns } : {}), user: name(user, 20) || 'Guest', session: sessionId(session) || 'guest' }));
   /** the next start on a session this computer keeps (host-web.js's choice), not one on the server */
@@ -103,6 +124,20 @@
     if (m.seq && seq && m.seq > seq + 1) { catchUp(); return; }
     if (m.seq && m.seq <= seq) return;   // (one already applied, sent again)
     seq = Math.max(seq, m.seq || 0);
+    // (a Braid intent is an event on the line, made by every machine as it reaches it, the one that asked too: each
+    // marks, anchors or travels at the same place in the op order. A travel to a moment the server holds comes with
+    // the shared state as it was there (`reset`): this machine's copy set to it, and its own changes still on their way
+    // or waiting dropped, made before the moment the session went back from)
+    if (m.kind === 'intent' && m.op && m.op.kind === 'braid') {
+      if (m.reset) {
+        world.clear(); for (const [id, v] of Object.entries(m.reset.world || {})) world.set(id, v);
+        gens.clear(); for (const [id, g] of Object.entries(m.reset.gens || {})) gens.set(id, g);
+        intents.clear(); for (const [k, i] of Object.entries(m.reset.intents || {})) intents.set(k, i);
+        inputs.clear(); for (const [id, p] of Object.entries(m.reset.inputs || {})) inputs.set(id, p);
+        flying.clear(); outbox = outbox.filter(o => o.kind === 'intent');
+      }
+      deliver(m); return;
+    }
     if (m.kind === 'intent') { intents.set(m.op.key, m.op); if (m.client !== client) deliver(m); return; }
     // (a person's stroke into an object's window, or part of one: another machine's fed here, win95.js osStroke; its
     // own back is passed over. The history kept here is the session's for the objects started here for it)
@@ -126,7 +161,7 @@
   const deliver = m => {
     if (!ready16) { pending.push(m); return; }
     // (with the machine that made it: who did it, for its window's outline in their colour)
-    const to = m.kind === 'obj' ? onObj && (() => onObj(m.op.id, m.op.v, m.client)) : m.kind === 'intent' ? onIntent && (() => onIntent(m.op, m.client))
+    const to = m.kind === 'obj' ? onObj && (() => onObj(m.op.id, m.op.v, m.client)) : m.kind === 'intent' ? onIntent && (() => onIntent(m.op, m.client, !!m.reset))
       : m.kind === 'input' ? onInput && (() => onInput(m.op.id, m.op, m.client)) : null;
     if (to) { try { to(); } catch (e) { console.warn('[shared] another machine\'s change could not be made here:', e && e.message); } }
   };
@@ -189,12 +224,12 @@
   // (this machine's copy keeps what the session knows of the object beyond this machine's state: its origin)
   const obj = (id, v, patch) => { world.set(id, v == null ? null : L().merge(world.get(id), v)); send('obj', { id, v: v == null ? null : patch || v }, v == null ? null : v); };
   /** a setting this machine's person made, as the call that made it (ne16.js hookIntents), for every other machine */
-  const intent = i => { intents.set(i.key, i); send('intent', i); };
+  const intent = i => { if (i.kind !== 'braid') intents.set(i.key, i); send('intent', i); };
   /** this person's stroke into an object's window, or part of one (n: which stroke of this machine's; ev: its events
    *  as offsets from the window; pop: the object's popup it went into, if one; done: its end), for every other machine */
   const input = (id, part) => send('input', { id, ...part });
   /** Windows has started here: what came meanwhile is made now */
-  const ready = () => { ready16 = true; for (const m of pending.splice(0)) deliver(m); };
+  const ready = () => { ready16 = true; for (const m of pending.splice(0)) deliver(m); onStarted(); };
 
   // ---- logging off (Shut Down's "Close all programs and log on as a different user"): a name goes to that person's own
   // session (others join it by its id), Guest (or none) to the shared one; the page starts again there
@@ -207,7 +242,7 @@
   };
 
   window.W95Shared = {
-    wanted, start, ready, logon, client, ownSession, remember, logOff, goLocal, pointer, obj, intent,
+    wanted, start, ready, started, logon, as, rename, client, ownSession, remember, logOff, goLocal, pointer, obj, intent,
     people: () => [...people.values()], watch: f => { watchers.add(f); return () => watchers.delete(f); },
     seq: () => seq, world: () => new Map(world), onObj: f => { onObj = f; }, clockSkew: () => clockSkew,
     intents: () => new Map(intents), onIntent: f => { onIntent = f; },

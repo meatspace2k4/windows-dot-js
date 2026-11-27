@@ -72,6 +72,7 @@ mkdirSync(join(inst, 'site'), { recursive: true }); mkdirSync(join(dev, 'site'),
 writeFileSync(join(inst, 'win95_server.py'), readFileSync(join(root, 'deploy/win95/win95_server.py')));
 writeFileSync(join(inst, 'sessions.py'), readFileSync(join(root, 'tools/sessions.py')));   // (beside it, as deploy.sh puts it)
 writeFileSync(join(inst, 'claude_api.py'), readFileSync(join(root, 'tools/claude_api.py')));
+writeFileSync(join(inst, 'discord_api.py'), readFileSync(join(root, 'tools/discord_api.py')));
 writeFileSync(join(inst, 'site/index.html'), '<meta name="build-channel" content="prod" />');
 writeFileSync(join(inst, 'site/a.js'), '0123456789');
 writeFileSync(join(inst, 'site/cdrom.iso'), '0123456789');

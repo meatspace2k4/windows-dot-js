@@ -116,6 +116,39 @@ for bad in ['', '../x', 'a/b', 'x' * 65]:
     try: S.Sessions().get(bad); raise AssertionError('id ' + bad)
     except ValueError: pass
 
+# ---- Braid: a mark keeps the session's shared state at its place in the op order; a travel to it puts that back and
+# goes to every machine (the one that asked too) with it as `reset`; Braid intents are not settings a joiner makes
+# again; an anchored moment is kept in the folder, a marked one is not; forget lets it go
+b = S.Session('braid'); qb = b.join('a', 'Ann'); qb.get_nowait()
+b.op('a', 'obj', {'id': 'W1', 'v': {'title': 'Notepad', 'x': 10}})
+b.op('a', 'intent', {'key': 'spi:17', 'kind': 'spi', 'action': 17, 'ui': 1})
+b.op('a', 'intent', {'key': 'braid:mark:m1', 'kind': 'braid', 'op': 'mark', 'name': 'm1'})
+assert 'braid:mark:m1' not in b.state()['intents'], 'a Braid intent is not a setting'
+b.op('a', 'obj', {'id': 'W1', 'v': {'x': 99}}); b.op('a', 'obj', {'id': 'W2', 'v': {'title': 'Paint'}})
+b.op('a', 'intent', {'key': 'spi:17', 'kind': 'spi', 'action': 17, 'ui': 0})
+while not qb.empty(): qb.get_nowait()
+seq = b.op('b', 'intent', {'key': 'braid:travel', 'kind': 'braid', 'op': 'travel', 'name': 'm1'})
+st = b.state()
+assert st['world'] == {'W1': {'title': 'Notepad', 'x': 10, 'origin': 'a'}} and st['intents']['spi:17']['ui'] == 1, st
+ev, msg = qb.get_nowait()
+assert ev == 'op' and 'reset' in msg, ('the travel goes out with the moment\'s shared state', msg)
+assert msg['seq'] == seq and msg['client'] == 'b' and msg['reset']['moment'] == 'm1' and msg['reset']['world'] == st['world'], msg
+assert msg['reset']['from'] == 3, 'the moment\'s place in the op order'
+# (a travel to a moment the session does not hold: the machines' own, no reset)
+b.op('a', 'intent', {'key': 'braid:travel', 'kind': 'braid', 'op': 'travel', 'name': 'nope'}); assert 'reset' not in qb.get_nowait()[1]
+root = tempfile.mkdtemp()
+try:
+    t = S.Sessions(root).get('keepb')
+    t.op('a', 'obj', {'id': 'W', 'v': {'title': 'Calc'}})
+    t.op('a', 'intent', {'key': 'braid:anchor', 'kind': 'braid', 'op': 'anchor', 'name': 'a1'})
+    t.op('a', 'intent', {'key': 'braid:mark:m2', 'kind': 'braid', 'op': 'mark', 'name': 'm2'})
+    t.save()
+    u = S.Sessions(root).get('keepb')
+    assert set(u.moments) == {'a1'} and u.moments['a1']['world']['W']['title'] == 'Calc', u.moments
+    u.op('a', 'intent', {'key': 'braid:forget', 'kind': 'braid', 'op': 'forget', 'name': 'a1'}); u.save()
+    assert S.Sessions(root).get('keepb').moments == {}
+finally: shutil.rmtree(root)
+
 # ---- HTTP: state, two people's streams, an op posted by one reaching the other
 sess = S.Sessions()
 class H(http.server.BaseHTTPRequestHandler):

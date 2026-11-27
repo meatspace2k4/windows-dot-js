@@ -1,0 +1,2560 @@
+{
+ "disk": "/private/tmp/claude-501/-Users-johusha-Win95/86d3c9fa-5e50-4682-a8b7-f94815e5a37d/scratchpad/w98/mixed",
+ "roots": [
+  "GDI.EXE",
+  "USER.EXE"
+ ],
+ "closure": [
+  "GDI",
+  "USER",
+  "COMMDLG",
+  "GDI32",
+  "DIBENG",
+  "SYSTEM",
+  "KEYBOARD",
+  "MOUSE",
+  "COMM",
+  "DDEML",
+  "MSMIXMGR",
+  "MPR",
+  "MMMIXER",
+  "COOL",
+  "USER32",
+  "KERNEL32",
+  "ADVAPI32",
+  "MSCMS",
+  "MMSYSTEM",
+  "SHELL32",
+  "NTDLL",
+  "SETUPAPI",
+  "WINMM",
+  "SETUPX",
+  "COMCTL32",
+  "SHLWAPI",
+  "VERSION",
+  "SHDOCVW",
+  "ADVPACK",
+  "LINKINFO",
+  "MSPRINT2",
+  "OLE32",
+  "CFGMGR32",
+  "LZ32",
+  "COMDLG32",
+  "WINSPOOL",
+  "RPCRT4",
+  "DEVMGR32",
+  "KOMMCTRL",
+  "LZEXPAND",
+  "SUEXPAND",
+  "PIDGEN",
+  "COMCTL31",
+  "VERX",
+  "SHELL",
+  "VER",
+  "RPLIMAGE",
+  "URLMON",
+  "OLEAUT32",
+  "W95INF32",
+  "SECUR32",
+  "WSOCK32",
+  "SVRAPI",
+  "MSNET32",
+  "NETAPI32",
+  "MSCAT32",
+  "WINTRUST",
+  "WMI",
+  "CDM",
+  "COMMCTRL",
+  "MSHTML",
+  "HLINK",
+  "INSENG",
+  "MLANG",
+  "MSVCRT20",
+  "NETBIOS",
+  "MSVCRT",
+  "CRYPT32",
+  "MSOSS",
+  "CRYPTNET",
+  "MFC42",
+  "WININET",
+  "RASAPI32",
+  "WLDAP32",
+  "SHFOLDER",
+  "PSTOREC",
+  "SENSAPI",
+  "ICFG95",
+  "CRYPTUI",
+  "TAPI32",
+  "MSPWL32",
+  "RNAUI",
+  "RNASERV",
+  "ICMP",
+  "SCHANNEL",
+  "WS2_32",
+  "RICHED32",
+  "XENROLL",
+  "TAPIUI",
+  "WOW32",
+  "WS2HELP"
+ ],
+ "loads": {
+  "GDI": [
+   "COMMDLG",
+   "DIBENG",
+   "GDI32",
+   "KERNEL"
+  ],
+  "USER": [
+   "COMM",
+   "COOL",
+   "DDEML",
+   "GDI",
+   "KERNEL",
+   "KEYBOARD",
+   "MMMIXER",
+   "MOUSE",
+   "MPR",
+   "MSMIXMGR",
+   "SYSTEM",
+   "USER32"
+  ],
+  "COMMDLG": [
+   "GDI",
+   "KERNEL",
+   "KEYBOARD",
+   "USER"
+  ],
+  "GDI32": [
+   "ADVAPI32",
+   "KERNEL32",
+   "MSCMS"
+  ],
+  "DIBENG": [
+   "KERNEL"
+  ],
+  "SYSTEM": [
+   "KERNEL"
+  ],
+  "KEYBOARD": [
+   "KERNEL"
+  ],
+  "MOUSE": [
+   "KERNEL",
+   "MOUSEMGR",
+   "POINTLIB"
+  ],
+  "COMM": [
+   "KERNEL"
+  ],
+  "DDEML": [
+   "GDI",
+   "KERNEL",
+   "KEYBOARD",
+   "USER"
+  ],
+  "MSMIXMGR": [
+   "MMSYSTEM"
+  ],
+  "MPR": [
+   "ADVAPI32",
+   "KERNEL32",
+   "SHELL32",
+   "USER32"
+  ],
+  "MMMIXER": [
+   "KERNEL",
+   "USER"
+  ],
+  "COOL": [
+   "KERNEL"
+  ],
+  "USER32": [
+   "ADVAPI32",
+   "GDI32",
+   "KERNEL32",
+   "NTDLL",
+   "USER32"
+  ],
+  "ADVAPI32": [
+   "KERNEL32"
+  ],
+  "MSCMS": [
+   "ADVAPI32",
+   "KERNEL32",
+   "SETUPAPI",
+   "USER32"
+  ],
+  "MMSYSTEM": [
+   "KERNEL",
+   "KEYBOARD",
+   "MMSYSTEM",
+   "SETUPX",
+   "USER",
+   "WINMM"
+  ],
+  "SHELL32": [
+   "ADVAPI32",
+   "ADVPACK",
+   "COMCTL32",
+   "GDI32",
+   "KERNEL32",
+   "LINKINFO",
+   "MPR",
+   "MSI",
+   "MSPRINT2",
+   "OLE32",
+   "SHDOCVW",
+   "SHLWAPI",
+   "USER32",
+   "VERSION",
+   "WINMM"
+  ],
+  "NTDLL": [
+   "KERNEL32"
+  ],
+  "SETUPAPI": [
+   "ADVAPI32",
+   "CFGMGR32",
+   "COMCTL32",
+   "COMDLG32",
+   "GDI32",
+   "KERNEL32",
+   "LZ32",
+   "MPR",
+   "NTDLL",
+   "RPCRT4",
+   "SHELL32",
+   "USER32",
+   "VERSION",
+   "WINSPOOL.DRV"
+  ],
+  "WINMM": [
+   "ADVAPI32",
+   "KERNEL32",
+   "USER32"
+  ],
+  "SETUPX": [
+   "COMCTL31",
+   "COMMDLG",
+   "DEVMGR32",
+   "GDI",
+   "KERNEL",
+   "KEYBLANG",
+   "KEYBOARD",
+   "KOMMCTRL",
+   "LZEXPAND",
+   "MMSYSTEM",
+   "PIDGEN",
+   "RPLIMAGE",
+   "SHELL",
+   "SUEXPAND",
+   "USER",
+   "VER",
+   "VERX"
+  ],
+  "COMCTL32": [
+   "ADVAPI32",
+   "GDI32",
+   "KERNEL32",
+   "USER32"
+  ],
+  "SHLWAPI": [
+   "ADVAPI32",
+   "GDI32",
+   "KERNEL32",
+   "MSHTMDBG",
+   "OLE32",
+   "USER32"
+  ],
+  "VERSION": [
+   "KERNEL32"
+  ],
+  "SHDOCVW": [
+   "ADVAPI32",
+   "COMCTL32",
+   "GDI32",
+   "KERNEL32",
+   "OLEAUT32",
+   "SHELL32",
+   "SHLWAPI",
+   "URLMON",
+   "USER32"
+  ],
+  "ADVPACK": [
+   "ADVAPI32",
+   "GDI32",
+   "KERNEL32",
+   "NTDLL",
+   "OLE32",
+   "SETUPAPI",
+   "USER32",
+   "VERSION",
+   "W95INF32"
+  ],
+  "LINKINFO": [
+   "ADVAPI32",
+   "KERNEL32",
+   "MPR",
+   "USER32"
+  ],
+  "MSPRINT2": [
+   "GDI32",
+   "KERNEL32",
+   "MPR",
+   "MSCMS",
+   "SHELL32",
+   "USER32",
+   "VERSION",
+   "WINSPOOL.DRV"
+  ],
+  "OLE32": [
+   "ADVAPI32",
+   "GDI32",
+   "KERNEL32",
+   "MPR",
+   "MSNET32",
+   "OLEAUT32",
+   "SECUR32",
+   "SHELL32",
+   "SVRAPI",
+   "USER32",
+   "WSOCK32"
+  ],
+  "CFGMGR32": [
+   "ADVAPI32",
+   "KERNEL32",
+   "NTDLL",
+   "USER32"
+  ],
+  "LZ32": [
+   "KERNEL32"
+  ],
+  "COMDLG32": [
+   "ADVAPI32",
+   "COMCTL32",
+   "GDI32",
+   "KERNEL32",
+   "SHELL32",
+   "SHLWAPI",
+   "USER32"
+  ],
+  "WINSPOOL": [
+   "GDI32",
+   "KERNEL32",
+   "USER32"
+  ],
+  "RPCRT4": [
+   "ADVAPI32",
+   "KERNEL32",
+   "NETAPI32",
+   "USER32"
+  ],
+  "DEVMGR32": [
+   "ADVAPI32",
+   "CDM",
+   "CFGMGR32",
+   "KERNEL32",
+   "MSCAT32",
+   "SETUPAPI",
+   "SHELL32",
+   "USER32",
+   "WINTRUST",
+   "WMI"
+  ],
+  "KOMMCTRL": [
+   "COMCTL32",
+   "COMMCTRL",
+   "GDI",
+   "KERNEL",
+   "KEYBOARD",
+   "USER"
+  ],
+  "LZEXPAND": [
+   "KERNEL",
+   "USER"
+  ],
+  "SUEXPAND": [
+   "KERNEL",
+   "USER"
+  ],
+  "PIDGEN": [
+   "KERNEL",
+   "USER"
+  ],
+  "COMCTL31": [
+   "COMCTL32",
+   "COMMCTRL",
+   "GDI",
+   "KERNEL",
+   "USER"
+  ],
+  "VERX": [
+   "KERNEL",
+   "KEYBOARD",
+   "SUEXPAND",
+   "USER"
+  ],
+  "SHELL": [
+   "COMMDLG",
+   "GDI",
+   "KERNEL",
+   "KEYBOARD",
+   "USER",
+   "W32SYS"
+  ],
+  "VER": [
+   "KERNEL",
+   "KEYBOARD",
+   "LZEXPAND",
+   "USER",
+   "W32SYS"
+  ],
+  "RPLIMAGE": [
+   "KERNEL",
+   "USER"
+  ],
+  "URLMON": [
+   "ADVAPI32",
+   "ADVPACK",
+   "GDI32",
+   "HLINK",
+   "INSENG",
+   "KERNEL32",
+   "MLANG",
+   "MSHTML",
+   "OLE32",
+   "OLEAUT32",
+   "SHELL32",
+   "SHLWAPI",
+   "USER32",
+   "VERSION"
+  ],
+  "OLEAUT32": [
+   "ADVAPI32",
+   "COMCTL32",
+   "GDI32",
+   "KERNEL32",
+   "MPR",
+   "OLE32",
+   "RPCRT4",
+   "USER32"
+  ],
+  "W95INF32": [
+   "KERNEL32",
+   "USER32"
+  ],
+  "SECUR32": [
+   "ADVAPI32",
+   "KERNEL32",
+   "MSVCRT20",
+   "USER32"
+  ],
+  "WSOCK32": [
+   "KERNEL32"
+  ],
+  "SVRAPI": [
+   "ADVAPI32",
+   "KERNEL32",
+   "MPR",
+   "USER32"
+  ],
+  "MSNET32": [
+   "ADVAPI32",
+   "KERNEL32",
+   "MPR",
+   "USER32"
+  ],
+  "NETAPI32": [
+   "NETBIOS"
+  ],
+  "MSCAT32": [
+   "ADVAPI32",
+   "CRYPT32",
+   "KERNEL32",
+   "MSVCRT",
+   "OLE32"
+  ],
+  "WINTRUST": [
+   "ADVAPI32",
+   "CRYPT32",
+   "CRYPTNET",
+   "KERNEL32",
+   "MSOSS",
+   "MSVCRT",
+   "USER32"
+  ],
+  "WMI": [
+   "CFGMGR32",
+   "KERNEL32",
+   "MSVCRT",
+   "RPCRT4",
+   "USER32"
+  ],
+  "CDM": [
+   "ADVAPI32",
+   "KERNEL32",
+   "MFC42",
+   "MSVCRT",
+   "RASAPI32",
+   "USER32",
+   "WININET",
+   "WINTRUST"
+  ],
+  "COMMCTRL": [
+   "GDI",
+   "KERNEL",
+   "USER"
+  ],
+  "MSHTML": [
+   "ADVAPI32",
+   "GDI32",
+   "KERNEL32",
+   "OLE32",
+   "SHLWAPI",
+   "USER32"
+  ],
+  "HLINK": [
+   "ADVAPI32",
+   "KERNEL32",
+   "OLE32",
+   "SHELL32",
+   "SHLWAPI",
+   "USER32"
+  ],
+  "INSENG": [
+   "ADVAPI32",
+   "ADVPACK",
+   "KERNEL32",
+   "OLE32",
+   "OLEAUT32",
+   "URLMON",
+   "USER32",
+   "WININET",
+   "WINTRUST"
+  ],
+  "MLANG": [
+   "ADVAPI32",
+   "GDI32",
+   "KERNEL32",
+   "OLE32",
+   "USER32"
+  ],
+  "MSVCRT20": [
+   "KERNEL32",
+   "USER32"
+  ],
+  "NETBIOS": [
+   "KERNEL32"
+  ],
+  "MSVCRT": [
+   "KERNEL32",
+   "USER32"
+  ],
+  "CRYPT32": [
+   "ADVAPI32",
+   "CRYPTNET",
+   "KERNEL32",
+   "MSOSS",
+   "MSVCRT",
+   "RPCRT4",
+   "SHELL32",
+   "USER32"
+  ],
+  "MSOSS": [
+   "KERNEL32",
+   "MOSSDMEM",
+   "MSVCRT",
+   "USER32"
+  ],
+  "CRYPTNET": [
+   "ADVAPI32",
+   "CRYPT32",
+   "KERNEL32",
+   "MSVCRT",
+   "SECUR32",
+   "USER32",
+   "WLDAP32"
+  ],
+  "MFC42": [
+   "GDI32",
+   "KERNEL32",
+   "MSVCRT",
+   "USER32"
+  ],
+  "WININET": [
+   "ADVAPI32",
+   "COMCTL32",
+   "CRYPTUI",
+   "ICFG95",
+   "KERNEL32",
+   "MPR",
+   "PSTOREC",
+   "RASAPI32",
+   "RPAWINET",
+   "SENSAPI",
+   "SHELL32",
+   "SHFOLDER",
+   "SHLWAPI",
+   "URLMON",
+   "USER32",
+   "WINTRUST"
+  ],
+  "RASAPI32": [
+   "ADVAPI32",
+   "GDI32",
+   "KERNEL32",
+   "MPR",
+   "MSPWL32",
+   "NETAPI32",
+   "RNASERV",
+   "RNAUI",
+   "SECUR32",
+   "SVRAPI",
+   "TAPI32",
+   "USER32",
+   "WSOCK32"
+  ],
+  "WLDAP32": [
+   "ADVAPI32",
+   "ICMP",
+   "KERNEL32",
+   "NETAPI32",
+   "SCHANNEL",
+   "SECUR32",
+   "SECURITY",
+   "USER32",
+   "WS2_32",
+   "WSOCK32"
+  ],
+  "SHFOLDER": [
+   "ADVAPI32",
+   "KERNEL32",
+   "SHELL32",
+   "SHLWAPI",
+   "USER32"
+  ],
+  "PSTOREC": [
+   "ADVAPI32",
+   "KERNEL32",
+   "OLE32",
+   "OLEAUT32",
+   "RPCRT4",
+   "USER32"
+  ],
+  "SENSAPI": [
+   "ADVAPI32",
+   "KERNEL32",
+   "RPCRT4"
+  ],
+  "ICFG95": [
+   "ADVAPI32",
+   "KERNEL32",
+   "SHELL32",
+   "USER32"
+  ],
+  "CRYPTUI": [
+   "ADVAPI32",
+   "COMCTL32",
+   "CRYPT32",
+   "CRYPTUI",
+   "GDI32",
+   "KERNEL32",
+   "MSVCRT",
+   "RICHED32",
+   "RPCRT4",
+   "USER32",
+   "WINTRUST",
+   "XENROLL"
+  ],
+  "TAPI32": [
+   "ADVAPI32",
+   "COMCTL32",
+   "KERNEL32",
+   "MSVCRT",
+   "RPCRT4",
+   "SHELL32",
+   "TAPI32",
+   "TAPIUI",
+   "USER32",
+   "VERSION",
+   "WOW32"
+  ],
+  "MSPWL32": [
+   "ADVAPI32",
+   "KERNEL32",
+   "MPR",
+   "USER32"
+  ],
+  "RNAUI": [
+   "ADVAPI32",
+   "COMCTL32",
+   "COMDLG32",
+   "GDI32",
+   "KERNEL32",
+   "RASAPI32",
+   "SHELL32",
+   "USER32"
+  ],
+  "RNASERV": [
+   "ADVAPI32",
+   "COMCTL32",
+   "KERNEL32",
+   "RASAPI32",
+   "SHELL32",
+   "USER32"
+  ],
+  "ICMP": [
+   "KERNEL32",
+   "NTDLL",
+   "WSOCK32"
+  ],
+  "SCHANNEL": [
+   "ADVAPI32",
+   "CRYPT32",
+   "KERNEL32",
+   "MSOSS",
+   "USER32",
+   "USERENV",
+   "VERSION",
+   "WSOCK32"
+  ],
+  "WS2_32": [
+   "ADVAPI32",
+   "KERNEL32",
+   "MSVCRT",
+   "USER32",
+   "WS2HELP"
+  ],
+  "RICHED32": [
+   "GDI32",
+   "KERNEL32",
+   "OLE32",
+   "PENWIN32",
+   "SHELL32",
+   "USER32"
+  ],
+  "XENROLL": [
+   "ADVAPI32",
+   "CRYPT32",
+   "KERNEL32",
+   "MSOSS",
+   "NTDLL",
+   "RPCRT4",
+   "USER32",
+   "VERSION"
+  ],
+  "WOW32": [
+   "KERNEL32"
+  ],
+  "WS2HELP": [
+   "KERNEL32"
+  ]
+ },
+ "boot_order": [
+  "SYSTEM",
+  "KEYBOARD",
+  "MOUSE",
+  "COMM",
+  "GDI"
+ ],
+ "init_after32": [
+  "GDI",
+  "USER"
+ ],
+ "bundled": [
+  "COMCTL32",
+  "COMDLG32",
+  "DASHRES",
+  "DCIMAN32",
+  "FTSRCH",
+  "GDI32",
+  "HOVERHLP",
+  "ICCVID",
+  "IR32_32",
+  "LINKINFO",
+  "MPR",
+  "MPRSERV",
+  "MSACM32",
+  "MSNET32",
+  "MSNP32",
+  "MSPRINT2",
+  "MSPWL32",
+  "MSRLE32",
+  "MSVCRT20",
+  "MSVFW32",
+  "MSVIDC32",
+  "OLE32",
+  "RPCRT4",
+  "SHELL32",
+  "SPOOLSS",
+  "SVRAPI",
+  "USER32",
+  "VERSION",
+  "WINMM",
+  "WOW32"
+ ],
+ "reach16": {
+  "GDI": 31501,
+  "USER": 66304,
+  "COMMDLG": 312,
+  "DIBENG": 77,
+  "SYSTEM": 61,
+  "KEYBOARD": 47,
+  "MOUSE": 525,
+  "COMM": 38,
+  "DDEML": 39,
+  "MSMIXMGR": 1,
+  "MMMIXER": 8,
+  "COOL": 27,
+  "MMSYSTEM": 22,
+  "SETUPX": 7512,
+  "KOMMCTRL": 1453,
+  "LZEXPAND": 0,
+  "SUEXPAND": 0,
+  "PIDGEN": 1304,
+  "COMCTL31": 720,
+  "VERX": 48,
+  "SHELL": 167,
+  "VER": 82,
+  "RPLIMAGE": 65,
+  "COMMCTRL": 342
+ },
+ "reach16segs": {
+  "GDI": {
+   "1": 8782,
+   "2": 1391,
+   "3": 2057,
+   "4": 162,
+   "5": 3449,
+   "6": 341,
+   "7": 0,
+   "8": 520,
+   "9": 1395,
+   "10": 0,
+   "11": 2504,
+   "12": 0,
+   "13": 268,
+   "14": 209,
+   "15": 0,
+   "16": 319,
+   "17": 1246,
+   "18": 0,
+   "19": 0,
+   "20": 837,
+   "21": 0,
+   "22": 15,
+   "23": 2799,
+   "24": 0,
+   "25": 25,
+   "26": 0,
+   "27": 0,
+   "28": 92,
+   "29": 0,
+   "30": 0,
+   "31": 0,
+   "32": 0,
+   "33": 953,
+   "34": 2464,
+   "35": 128,
+   "36": 0,
+   "37": 320,
+   "38": 211,
+   "39": 960,
+   "40": 0,
+   "41": 0,
+   "42": 54,
+   "43": 0,
+   "44": 0,
+   "45": 0
+  },
+  "USER": {
+   "1": 1001,
+   "2": 2236,
+   "3": 9294,
+   "4": 3480,
+   "5": 2037,
+   "6": 9220,
+   "7": 8183,
+   "8": 2752,
+   "9": 3625,
+   "10": 0,
+   "11": 2290,
+   "12": 3,
+   "13": 3145,
+   "14": 758,
+   "15": 687,
+   "16": 1447,
+   "17": 225,
+   "18": 3106,
+   "19": 0,
+   "20": 0,
+   "21": 8110,
+   "22": 77,
+   "23": 755,
+   "24": 0,
+   "25": 1109,
+   "26": 1561,
+   "27": 1031,
+   "28": 156,
+   "29": 0,
+   "30": 16,
+   "31": 0,
+   "32": 0
+  }
+ },
+ "reach16stubs": {
+  "GDI/42": [
+   "0812",
+   "0815",
+   "0845",
+   "0848",
+   "084a",
+   "084d",
+   "084f",
+   "0852",
+   "0854",
+   "0857",
+   "085e",
+   "0861",
+   "086d",
+   "0870",
+   "0872",
+   "0875",
+   "0877",
+   "087a",
+   "087c",
+   "087f",
+   "0881",
+   "0884",
+   "0886",
+   "0889",
+   "0890",
+   "0893",
+   "0895",
+   "0898",
+   "089a",
+   "08ba",
+   "08bd",
+   "08bf",
+   "08c2",
+   "08c6",
+   "08c7",
+   "08ca",
+   "08cc",
+   "2118",
+   "211b",
+   "211d",
+   "2120",
+   "213b",
+   "213e",
+   "2140",
+   "2143",
+   "2146",
+   "2166",
+   "2169",
+   "216b",
+   "216e",
+   "2172",
+   "2173",
+   "2176",
+   "2178"
+  ],
+  "USER/30": [
+   "1285",
+   "1288",
+   "12b2",
+   "12b5",
+   "12df",
+   "12e2",
+   "12e4",
+   "12e7",
+   "1302",
+   "1322",
+   "1325",
+   "1327",
+   "132a",
+   "132e",
+   "132f",
+   "1332"
+  ]
+ },
+ "reach32": {
+  "GDI32": 6253,
+  "MPR": 6023,
+  "USER32": 6626,
+  "KERNEL32": 76945,
+  "ADVAPI32": 8974,
+  "MSCMS": 11544,
+  "SHELL32": 36677,
+  "NTDLL": 276,
+  "SETUPAPI": 55277,
+  "WINMM": 10796,
+  "COMCTL32": 23591,
+  "SHLWAPI": 26326,
+  "VERSION": 453,
+  "SHDOCVW": 11285,
+  "ADVPACK": 18326,
+  "LINKINFO": 2657,
+  "MSPRINT2": 2454,
+  "OLE32": 84010,
+  "CFGMGR32": 5680,
+  "LZ32": 366,
+  "COMDLG32": 4062,
+  "WINSPOOL": 4106,
+  "RPCRT4": 40348,
+  "DEVMGR32": 3201,
+  "URLMON": 28920,
+  "OLEAUT32": 47381,
+  "W95INF32": 110,
+  "SECUR32": 1093,
+  "WSOCK32": 1543,
+  "SVRAPI": 2373,
+  "MSNET32": 23,
+  "NETAPI32": 9,
+  "MSCAT32": 9786,
+  "WINTRUST": 9868,
+  "WMI": 5947,
+  "CDM": 4745,
+  "MSHTML": 137310,
+  "HLINK": 9606,
+  "INSENG": 2119,
+  "MLANG": 9878,
+  "MSVCRT20": 52013,
+  "NETBIOS": 539,
+  "MSVCRT": 58079,
+  "CRYPT32": 63900,
+  "MSOSS": 8390,
+  "CRYPTNET": 3751,
+  "MFC42": 2137,
+  "WININET": 79801,
+  "RASAPI32": 15087,
+  "WLDAP32": 22585,
+  "SHFOLDER": 833,
+  "PSTOREC": 1634,
+  "SENSAPI": 351,
+  "ICFG95": 1480,
+  "CRYPTUI": 20015,
+  "TAPI32": 20258,
+  "MSPWL32": 5321,
+  "RNAUI": 1188,
+  "RNASERV": 317,
+  "ICMP": 563,
+  "SCHANNEL": 8835,
+  "WS2_32": 12383,
+  "RICHED32": 485,
+  "XENROLL": 1169,
+  "TAPIUI": 0,
+  "WOW32": 22,
+  "WS2HELP": 367
+ },
+ "thunk_inits": [
+  {
+   "dll32": "GDI32",
+   "at": "GDI32+2fde",
+   "kind": "ThunkInitSL",
+   "table": "bff279e0",
+   "export16": "IcmThkConnectionDataSL",
+   "dll16": "GDI.EXE",
+   "targets": [
+    {
+     "n": 0,
+     "relay": "bff27a2d",
+     "worker": "bff28891"
+    },
+    {
+     "n": 1,
+     "relay": "bff27a7a",
+     "worker": "bff28794"
+    },
+    {
+     "n": 2,
+     "relay": "bff27aa2",
+     "worker": "bff28086"
+    },
+    {
+     "n": 3,
+     "relay": "bff27aed",
+     "worker": "bff2819c"
+    },
+    {
+     "n": 4,
+     "relay": "bff27b2b",
+     "worker": "bff28155"
+    },
+    {
+     "n": 5,
+     "relay": "bff27b78",
+     "worker": "bff2811d"
+    },
+    {
+     "n": 6,
+     "relay": "bff27baa",
+     "worker": "bff280ff"
+    },
+    {
+     "n": 7,
+     "relay": "bff27bb7",
+     "worker": "bff27ff0"
+    },
+    {
+     "n": 8,
+     "relay": "bff27c02",
+     "worker": "bff27d31"
+    },
+    {
+     "n": 9,
+     "relay": "bff27c43",
+     "worker": "bff27cca"
+    }
+   ],
+   "libentry_calls": [
+    0,
+    4,
+    28,
+    32
+   ]
+  },
+  {
+   "dll32": "GDI32",
+   "at": "GDI32+2fcb",
+   "kind": "ThunkInitSL",
+   "table": "bff24080",
+   "export16": "FdThkConnectionDataSL",
+   "dll16": "GDI.EXE",
+   "targets": [
+    {
+     "n": 0,
+     "relay": "bff24151",
+     "worker": "bff25ae8"
+    },
+    {
+     "n": 1,
+     "relay": "bff2418b",
+     "worker": "bff273e1"
+    },
+    {
+     "n": 2,
+     "relay": "bff241dd",
+     "worker": "bff23df1"
+    },
+    {
+     "n": 3,
+     "relay": "bff2420f",
+     "worker": "bff23dd7"
+    },
+    {
+     "n": 4,
+     "relay": "bff24241",
+     "worker": "bff26734"
+    },
+    {
+     "n": 5,
+     "relay": "bff24253",
+     "worker": "bff26553"
+    },
+    {
+     "n": 6,
+     "relay": "bff24267",
+     "worker": "bff27135"
+    },
+    {
+     "n": 7,
+     "relay": "bff242d3",
+     "worker": "bff270b1"
+    },
+    {
+     "n": 8,
+     "relay": "bff2431c",
+     "worker": "bff26f89"
+    },
+    {
+     "n": 9,
+     "relay": "bff24329",
+     "worker": "bff2704f"
+    },
+    {
+     "n": 10,
+     "relay": "bff24336",
+     "worker": "bff26fed"
+    },
+    {
+     "n": 11,
+     "relay": "bff24343",
+     "worker": "bff26f27"
+    },
+    {
+     "n": 12,
+     "relay": "bff24350",
+     "worker": "bff26e29"
+    },
+    {
+     "n": 13,
+     "relay": "bff2438d",
+     "worker": "bff26dc8"
+    },
+    {
+     "n": 14,
+     "relay": "bff2439a",
+     "worker": "bff26c29"
+    },
+    {
+     "n": 15,
+     "relay": "bff2440d",
+     "worker": "bff272b0"
+    },
+    {
+     "n": 16,
+     "relay": "bff2441d",
+     "worker": null
+    },
+    {
+     "n": 17,
+     "relay": "bff24494",
+     "worker": "bff23878"
+    },
+    {
+     "n": 18,
+     "relay": "bff244a1",
+     "worker": "bff235ca"
+    },
+    {
+     "n": 19,
+     "relay": "bff244b1",
+     "worker": "bff2359b"
+    },
+    {
+     "n": 20,
+     "relay": "bff244c3",
+     "worker": "bff29e30"
+    },
+    {
+     "n": 21,
+     "relay": "bff24500",
+     "worker": "bff29978"
+    },
+    {
+     "n": 22,
+     "relay": "bff24540",
+     "worker": "bff29cf9"
+    },
+    {
+     "n": 23,
+     "relay": "bff24552",
+     "worker": "bff2c94c"
+    },
+    {
+     "n": 24,
+     "relay": "bff24573",
+     "worker": "bff29f47"
+    },
+    {
+     "n": 25,
+     "relay": "bff245bc",
+     "worker": "bff2bdb2"
+    },
+    {
+     "n": 26,
+     "relay": "bff24605",
+     "worker": "bff2c92e"
+    },
+    {
+     "n": 27,
+     "relay": "bff24617",
+     "worker": "bff2c6e8"
+    },
+    {
+     "n": 28,
+     "relay": "bff24647",
+     "worker": "bff2c55a"
+    },
+    {
+     "n": 29,
+     "relay": "bff24659",
+     "worker": "bff2a9ea"
+    },
+    {
+     "n": 30,
+     "relay": "bff24668",
+     "worker": "bff2adeb"
+    },
+    {
+     "n": 31,
+     "relay": "bff246ae",
+     "worker": "bff2b0eb"
+    },
+    {
+     "n": 32,
+     "relay": "bff246e5",
+     "worker": "bff2abf4"
+    },
+    {
+     "n": 33,
+     "relay": "bff2471f",
+     "worker": "bff2ab77"
+    },
+    {
+     "n": 34,
+     "relay": "bff24731",
+     "worker": "bff2aac3"
+    }
+   ],
+   "libentry_calls": [
+    32,
+    72,
+    76,
+    80,
+    84,
+    92,
+    104,
+    108,
+    112,
+    116,
+    120,
+    124,
+    132,
+    136
+   ]
+  },
+  {
+   "dll32": "GDI32",
+   "at": "GDI32+2fb8",
+   "kind": "ThunkInitLSF",
+   "table": "bff3f23c",
+   "export16": "FT_GdiFThkThkConnectionData",
+   "dll16": "GDI.EXE"
+  },
+  {
+   "dll32": "GDI32",
+   "at": "GDI32+2f87",
+   "kind": "ThunkInitLS",
+   "table": "bff3f220",
+   "export16": "GdiThkConnectionDataLS",
+   "dll16": "GDI.EXE"
+  },
+  {
+   "dll32": "USER32",
+   "at": "USER32+4086",
+   "kind": "ThunkInitSL",
+   "table": "bff55d74",
+   "export16": "Usr32thkConnectionDataSL",
+   "dll16": "USER.EXE",
+   "targets": [
+    {
+     "n": 0,
+     "relay": "bff55e59",
+     "worker": "bff57dde"
+    },
+    {
+     "n": 1,
+     "relay": "bff55e6d",
+     "worker": "bff57db0"
+    },
+    {
+     "n": 2,
+     "relay": "bff55e87",
+     "worker": "bff54ccd"
+    },
+    {
+     "n": 3,
+     "relay": "bff55e9b",
+     "worker": "bff54df4"
+    },
+    {
+     "n": 4,
+     "relay": "bff55edd",
+     "worker": "bff571ef"
+    },
+    {
+     "n": 5,
+     "relay": "bff55ef4",
+     "worker": "bff57159"
+    },
+    {
+     "n": 6,
+     "relay": "bff55f10",
+     "worker": "bff57120"
+    },
+    {
+     "n": 7,
+     "relay": "bff55f2c",
+     "worker": "bff54680"
+    },
+    {
+     "n": 8,
+     "relay": "bff55f58",
+     "worker": "bff54d7b"
+    },
+    {
+     "n": 9,
+     "relay": "bff55f77",
+     "worker": "bff5676e"
+    },
+    {
+     "n": 10,
+     "relay": "bff55fcc",
+     "worker": null
+    },
+    {
+     "n": 11,
+     "relay": "bff55fde",
+     "worker": null
+    },
+    {
+     "n": 12,
+     "relay": "bff55ff0",
+     "worker": null
+    },
+    {
+     "n": 13,
+     "relay": "bff56002",
+     "worker": null
+    },
+    {
+     "n": 14,
+     "relay": "bff56019",
+     "worker": null
+    },
+    {
+     "n": 15,
+     "relay": "bff5605a",
+     "worker": null
+    },
+    {
+     "n": 16,
+     "relay": "bff56098",
+     "worker": null
+    },
+    {
+     "n": 17,
+     "relay": "bff560dd",
+     "worker": "bff547a9"
+    },
+    {
+     "n": 18,
+     "relay": "bff560ed",
+     "worker": "bff547ba"
+    },
+    {
+     "n": 19,
+     "relay": "bff56135",
+     "worker": "bff549c9"
+    },
+    {
+     "n": 20,
+     "relay": "bff56171",
+     "worker": "bff5493e"
+    },
+    {
+     "n": 21,
+     "relay": "bff5619e",
+     "worker": "bff54b2a"
+    },
+    {
+     "n": 22,
+     "relay": "bff561ac",
+     "worker": "bff54abc"
+    },
+    {
+     "n": 23,
+     "relay": "bff561ba",
+     "worker": "bff54af6"
+    },
+    {
+     "n": 24,
+     "relay": "bff561c8",
+     "worker": "bff54b64"
+    },
+    {
+     "n": 25,
+     "relay": "bff561d6",
+     "worker": "bff54a70"
+    },
+    {
+     "n": 26,
+     "relay": "bff56209",
+     "worker": "bff54a96"
+    },
+    {
+     "n": 27,
+     "relay": "bff5623c",
+     "worker": "bff54774"
+    },
+    {
+     "n": 28,
+     "relay": "bff562a5",
+     "worker": "bff54789"
+    },
+    {
+     "n": 29,
+     "relay": "bff562f2",
+     "worker": null
+    },
+    {
+     "n": 30,
+     "relay": "bff56327",
+     "worker": null
+    },
+    {
+     "n": 31,
+     "relay": "bff56371",
+     "worker": null
+    },
+    {
+     "n": 32,
+     "relay": "bff563ba",
+     "worker": null
+    },
+    {
+     "n": 33,
+     "relay": "bff563f6",
+     "worker": "bff55397"
+    }
+   ],
+   "libentry_calls": [
+    4,
+    40,
+    76,
+    80
+   ]
+  },
+  {
+   "dll32": "USER32",
+   "at": "USER32+4073",
+   "kind": "ThunkInitLSF",
+   "table": "bff5d470",
+   "export16": "FT_UsrF2ThkThkConnectionData",
+   "dll16": "USER.EXE"
+  },
+  {
+   "dll32": "USER32",
+   "at": "USER32+4060",
+   "kind": "ThunkInitLSF",
+   "table": "bff5d3fc",
+   "export16": "FT_UsrFThkThkConnectionData",
+   "dll16": "USER.EXE"
+  },
+  {
+   "dll32": "USER32",
+   "at": "USER32+4049",
+   "kind": "ThunkInitLS",
+   "table": "bff5d538",
+   "export16": "MsgThkConnectionDataLS",
+   "dll16": "USER.EXE"
+  },
+  {
+   "dll32": "USER32",
+   "at": "USER32+4032",
+   "kind": "ThunkInitLS",
+   "table": "bff5d3e0",
+   "export16": "UsrThkConnectionDataLS",
+   "dll16": "USER.EXE"
+  },
+  {
+   "dll32": "LZ32",
+   "at": "LZ32+1045",
+   "kind": "ThunkInitLSF",
+   "table": "bfe62018",
+   "export16": "FT_LzFThkThkConnectionData",
+   "dll16": "SYSTHUNK.DLL"
+  }
+ ],
+ "stubs16": [
+  {
+   "mod": "GDI",
+   "seg": 42,
+   "export": "FDTHKCONNECTIONDATASL",
+   "var": "45:04e0",
+   "targets": {
+    "0": "07e2",
+    "4": "07e8",
+    "8": "07ee",
+    "c": "07f4",
+    "10": "07fa",
+    "14": "0800",
+    "18": "0806",
+    "1c": "080c",
+    "20": "ABORTPRINTER",
+    "24": "CLOSEPRINTER",
+    "28": "ENDDOCPRINTER",
+    "2c": "ENDPAGEPRINTER",
+    "30": "WRITEPRINTER",
+    "34": "STARTPAGEPRINTER",
+    "38": "STARTDOCPRINTERA",
+    "3c": "0836",
+    "40": "OPENPRINTERA",
+    "44": "0840",
+    "48": "0845",
+    "4c": "084a",
+    "50": "084f",
+    "54": "0854",
+    "58": "0859",
+    "5c": "085e",
+    "60": "0863",
+    "64": "0868",
+    "68": "086d",
+    "6c": "0872",
+    "70": "0877",
+    "74": "087c",
+    "78": "0881",
+    "7c": "0886",
+    "80": "088b",
+    "84": "0890",
+    "88": "0895"
+   },
+   "libentry_calls": [
+    "20",
+    "48",
+    "4c",
+    "50",
+    "54",
+    "5c",
+    "68",
+    "6c",
+    "70",
+    "74",
+    "78",
+    "7c",
+    "84",
+    "88"
+   ],
+   "writers": [
+    "GDI32"
+   ]
+  },
+  {
+   "mod": "GDI",
+   "seg": 42,
+   "export": "ICMTHKCONNECTIONDATASL",
+   "var": "45:04e4",
+   "targets": {
+    "0": "2118",
+    "4": "211d",
+    "8": "ICMCHECKCOLORSINGAMUT",
+    "c": "ICMTRANSLATERGBS",
+    "10": "ICMTRANSLATERGB",
+    "14": "ICMDELETETRANSFORM",
+    "18": "ICMCREATETRANSFORM",
+    "1c": "213b",
+    "20": "2140"
+   },
+   "libentry_calls": [
+    "0",
+    "4",
+    "1c",
+    "20"
+   ],
+   "writers": [
+    "GDI32"
+   ]
+  },
+  {
+   "mod": "USER",
+   "seg": 30,
+   "export": "USR32THKCONNECTIONDATASL",
+   "var": "32:03c2",
+   "targets": {
+    "0": "1280",
+    "4": "1285",
+    "8": "128a",
+    "c": "128f",
+    "10": "1294",
+    "14": "1299",
+    "18": "129e",
+    "1c": "12a3",
+    "20": "12a8",
+    "24": "12ad",
+    "28": "12b2",
+    "2c": "12b7",
+    "30": "12bc",
+    "34": "12c1",
+    "38": "12c6",
+    "3c": "12cb",
+    "40": "12d0",
+    "44": "12d5",
+    "48": "12da",
+    "4c": "12df",
+    "50": "12e4",
+    "54": "12e9",
+    "58": "12ee",
+    "5c": "12f3",
+    "60": "12f8",
+    "64": "12fd"
+   },
+   "libentry_calls": [
+    "4",
+    "28",
+    "4c",
+    "50"
+   ],
+   "writers": [
+    "USER32"
+   ]
+  }
+ ],
+ "order": [
+  {
+   "kind": "libentry-needs-table",
+   "mod": "GDI",
+   "export": "FDTHKCONNECTIONDATASL",
+   "via": [
+    "GDI32 ThunkInitSL"
+   ],
+   "targets": [
+    "cx 20 ABORTPRINTER",
+    "cx 48",
+    "cx 4c",
+    "cx 50",
+    "cx 54",
+    "cx 5c",
+    "cx 68",
+    "cx 6c",
+    "cx 70",
+    "cx 74",
+    "cx 78",
+    "cx 7c",
+    "cx 84",
+    "cx 88"
+   ],
+   "deferred": true,
+   "ok": true,
+   "why": "GDI's LibEntry calls through FDTHKCONNECTIONDATASL's table, written by GDI32's DllMain: that DllMain first, so the LibEntry waits (ne16.js initAfter32: yes)"
+  },
+  {
+   "kind": "libentry-needs-table",
+   "mod": "GDI",
+   "export": "ICMTHKCONNECTIONDATASL",
+   "via": [
+    "GDI32 ThunkInitSL"
+   ],
+   "targets": [
+    "cx 0",
+    "cx 4",
+    "cx 1c",
+    "cx 20"
+   ],
+   "deferred": true,
+   "ok": true,
+   "why": "GDI's LibEntry calls through ICMTHKCONNECTIONDATASL's table, written by GDI32's DllMain: that DllMain first, so the LibEntry waits (ne16.js initAfter32: yes)"
+  },
+  {
+   "kind": "libentry-needs-table",
+   "mod": "USER",
+   "export": "USR32THKCONNECTIONDATASL",
+   "via": [
+    "USER32 ThunkInitSL"
+   ],
+   "targets": [
+    "cx 4",
+    "cx 28",
+    "cx 4c",
+    "cx 50"
+   ],
+   "deferred": true,
+   "ok": true,
+   "why": "USER's LibEntry calls through USR32THKCONNECTIONDATASL's table, written by USER32's DllMain: that DllMain first, so the LibEntry waits (ne16.js initAfter32: yes)"
+  },
+  {
+   "kind": "dllmain-loads-half",
+   "dll32": "GDI32",
+   "dll16": "GDI",
+   "export": "IcmThkConnectionDataSL",
+   "at": "GDI32+2fde",
+   "deferred": true,
+   "ok": true,
+   "why": "GDI32's DllMain (ThunkInitSL IcmThkConnectionDataSL) loads GDI when it is not loaded yet: GDI's LibEntry would run under it, before the table is written (ne16.js initAfter32: yes)"
+  },
+  {
+   "kind": "dllmain-loads-half",
+   "dll32": "GDI32",
+   "dll16": "GDI",
+   "export": "FdThkConnectionDataSL",
+   "at": "GDI32+2fcb",
+   "deferred": true,
+   "ok": true,
+   "why": "GDI32's DllMain (ThunkInitSL FdThkConnectionDataSL) loads GDI when it is not loaded yet: GDI's LibEntry would run under it, before the table is written (ne16.js initAfter32: yes)"
+  },
+  {
+   "kind": "dllmain-loads-half",
+   "dll32": "GDI32",
+   "dll16": "GDI",
+   "export": "FT_GdiFThkThkConnectionData",
+   "at": "GDI32+2fb8",
+   "deferred": true,
+   "ok": true,
+   "why": "GDI32's DllMain (ThunkInitLSF FT_GdiFThkThkConnectionData) loads GDI when it is not loaded yet: GDI's LibEntry would run under it, before the table is written (ne16.js initAfter32: yes)"
+  },
+  {
+   "kind": "dllmain-loads-half",
+   "dll32": "GDI32",
+   "dll16": "GDI",
+   "export": "GdiThkConnectionDataLS",
+   "at": "GDI32+2f87",
+   "deferred": true,
+   "ok": true,
+   "why": "GDI32's DllMain (ThunkInitLS GdiThkConnectionDataLS) loads GDI when it is not loaded yet: GDI's LibEntry would run under it, before the table is written (ne16.js initAfter32: yes)"
+  },
+  {
+   "kind": "dllmain-loads-half",
+   "dll32": "USER32",
+   "dll16": "USER",
+   "export": "Usr32thkConnectionDataSL",
+   "at": "USER32+4086",
+   "deferred": true,
+   "ok": true,
+   "why": "USER32's DllMain (ThunkInitSL Usr32thkConnectionDataSL) loads USER when it is not loaded yet: USER's LibEntry would run under it, before the table is written (ne16.js initAfter32: yes)"
+  },
+  {
+   "kind": "dllmain-loads-half",
+   "dll32": "USER32",
+   "dll16": "USER",
+   "export": "FT_UsrF2ThkThkConnectionData",
+   "at": "USER32+4073",
+   "deferred": true,
+   "ok": true,
+   "why": "USER32's DllMain (ThunkInitLSF FT_UsrF2ThkThkConnectionData) loads USER when it is not loaded yet: USER's LibEntry would run under it, before the table is written (ne16.js initAfter32: yes)"
+  },
+  {
+   "kind": "dllmain-loads-half",
+   "dll32": "USER32",
+   "dll16": "USER",
+   "export": "FT_UsrFThkThkConnectionData",
+   "at": "USER32+4060",
+   "deferred": true,
+   "ok": true,
+   "why": "USER32's DllMain (ThunkInitLSF FT_UsrFThkThkConnectionData) loads USER when it is not loaded yet: USER's LibEntry would run under it, before the table is written (ne16.js initAfter32: yes)"
+  },
+  {
+   "kind": "dllmain-loads-half",
+   "dll32": "USER32",
+   "dll16": "USER",
+   "export": "MsgThkConnectionDataLS",
+   "at": "USER32+4049",
+   "deferred": true,
+   "ok": true,
+   "why": "USER32's DllMain (ThunkInitLS MsgThkConnectionDataLS) loads USER when it is not loaded yet: USER's LibEntry would run under it, before the table is written (ne16.js initAfter32: yes)"
+  },
+  {
+   "kind": "dllmain-loads-half",
+   "dll32": "USER32",
+   "dll16": "USER",
+   "export": "UsrThkConnectionDataLS",
+   "at": "USER32+4032",
+   "deferred": true,
+   "ok": true,
+   "why": "USER32's DllMain (ThunkInitLS UsrThkConnectionDataLS) loads USER when it is not loaded yet: USER's LibEntry would run under it, before the table is written (ne16.js initAfter32: yes)"
+  }
+ ],
+ "tables": [
+  {
+   "dll32": "GDI32",
+   "export16": "IcmThkConnectionDataSL",
+   "mod16": "GDI",
+   "target": 7,
+   "cx": 28,
+   "reads": "GDI32+1f8fe",
+   "at": "GDI32+802a",
+   "writers": [
+    9
+   ],
+   "why": "GDI's LibEntry calls IcmThkConnectionDataSL target 7 (cx 1c), which reads GDI32+1f8fe, written only by target 9, which the LibEntry does not call: read unset"
+  },
+  {
+   "dll32": "GDI32",
+   "export16": "IcmThkConnectionDataSL",
+   "mod16": "GDI",
+   "target": 8,
+   "cx": 32,
+   "reads": "GDI32+1f8fe",
+   "at": "GDI32+7d85",
+   "writers": [
+    9
+   ],
+   "why": "GDI's LibEntry calls IcmThkConnectionDataSL target 8 (cx 20), which reads GDI32+1f8fe, written only by target 9, which the LibEntry does not call: read unset"
+  },
+  {
+   "dll32": "USER32",
+   "export16": "Usr32thkConnectionDataSL",
+   "mod16": "USER",
+   "target": 1,
+   "cx": 4,
+   "reads": "USER32+e2ec",
+   "at": "USER32+7a05",
+   "writers": [
+    25,
+    26
+   ],
+   "why": "USER's LibEntry calls Usr32thkConnectionDataSL target 1 (cx 4), which reads USER32+e2ec, written only by targets 25, 26, which the LibEntry does not call: read unset"
+  }
+ ],
+ "derefs": [
+  {
+   "dll": "USER32",
+   "at": "USER32+40bf",
+   "call": "KERNEL32!GetProcAddress",
+   "insn": "mov dword ptr [eax], edi",
+   "why": "USER32+40bf reads through EAX right after KERNEL32!GetProcAddress, a stand-in that can answer 0 or a handle with no memory behind it"
+  },
+  {
+   "dll": "USER32",
+   "at": "USER32+40d1",
+   "call": "KERNEL32!GetProcAddress",
+   "insn": "mov dword ptr [eax], edi",
+   "why": "USER32+40d1 reads through EAX right after KERNEL32!GetProcAddress, a stand-in that can answer 0 or a handle with no memory behind it"
+  },
+  {
+   "dll": "MSVCRT",
+   "at": "MSVCRT+3a90",
+   "call": "KERNEL32!GetModuleHandleA",
+   "insn": "cmp word ptr [eax], 0x5a4d",
+   "why": "MSVCRT+3a90 reads through EAX right after KERNEL32!GetModuleHandleA, a stand-in that can answer 0 or a handle with no memory behind it"
+  }
+ ],
+ "imports": [
+  {
+   "dll": "GDI",
+   "imports": "KERNEL.#604",
+   "at": "42:1203",
+   "why": "no def16 for it"
+  },
+  {
+   "dll": "USER",
+   "imports": "KERNEL.#489",
+   "at": "3:2299",
+   "why": "no def16 for it"
+  },
+  {
+   "dll": "USER",
+   "imports": "KERNEL.#465",
+   "at": "16:0939",
+   "why": "no def16 for it"
+  },
+  {
+   "dll": "USER",
+   "imports": "KERNEL.#566",
+   "at": "29:0105",
+   "why": "no def16 for it"
+  },
+  {
+   "dll": "USER",
+   "imports": "KERNEL.#616",
+   "at": "30:0a9f",
+   "why": "no def16 for it"
+  },
+  {
+   "dll": "USER",
+   "imports": "KERNEL.#617",
+   "at": "30:0a53",
+   "why": "no def16 for it"
+  },
+  {
+   "dll": "GDI32",
+   "imports": "KERNEL32!#39",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "GDI32",
+   "imports": "KERNEL32!#51",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "USER32",
+   "imports": "KERNEL32!#39",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "USER32",
+   "imports": "KERNEL32!#51",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "ADVAPI32",
+   "imports": "KERNEL32!#2",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "ADVAPI32",
+   "imports": "KERNEL32!#3",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "ADVAPI32",
+   "imports": "KERNEL32!#4",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "ADVAPI32",
+   "imports": "KERNEL32!#5",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "ADVAPI32",
+   "imports": "KERNEL32!#6",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "ADVAPI32",
+   "imports": "KERNEL32!#7",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "ADVAPI32",
+   "imports": "KERNEL32!#9",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "NTDLL",
+   "imports": "KERNEL32!#72",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "NTDLL",
+   "imports": "KERNEL32!#73",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "NTDLL",
+   "imports": "KERNEL32!#74",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "NTDLL",
+   "imports": "KERNEL32!#75",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "NTDLL",
+   "imports": "KERNEL32!#76",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "NTDLL",
+   "imports": "KERNEL32!#77",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "NTDLL",
+   "imports": "KERNEL32!#78",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "NTDLL",
+   "imports": "KERNEL32!#79",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "NTDLL",
+   "imports": "KERNEL32!#80",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "NTDLL",
+   "imports": "KERNEL32!#81",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "NTDLL",
+   "imports": "KERNEL32!#82",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "NTDLL",
+   "imports": "KERNEL32!#83",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "NTDLL",
+   "imports": "KERNEL32!#84",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "NTDLL",
+   "imports": "KERNEL32!#85",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "NTDLL",
+   "imports": "KERNEL32!K32_NtCreateFile",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "NTDLL",
+   "imports": "KERNEL32!K32_RtlNtStatusToDosError",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "NTDLL",
+   "imports": "KERNEL32!dprintf",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "SETUPAPI",
+   "imports": "KERNEL32!WritePrivateProfileSectionA",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "WINMM",
+   "imports": "KERNEL32!#1",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "WINMM",
+   "imports": "KERNEL32!#2",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "WINMM",
+   "imports": "KERNEL32!#561",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "WINMM",
+   "imports": "KERNEL32!#71",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "COMCTL32",
+   "imports": "KERNEL32!EnumResourceLanguagesW",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "SHLWAPI",
+   "imports": "KERNEL32!EnumResourceNamesW",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "SHLWAPI",
+   "imports": "KERNEL32!GetSystemPowerStatus",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "SHDOCVW",
+   "imports": "KERNEL32!OpenSemaphoreA",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "ADVPACK",
+   "imports": "ADVAPI32!RegSaveKeyA",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "ADVPACK",
+   "imports": "ADVAPI32!RegUnLoadKeyA",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "ADVPACK",
+   "imports": "KERNEL32!WritePrivateProfileSectionA",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "LZ32",
+   "imports": "KERNEL32!#20",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "LZ32",
+   "imports": "KERNEL32!#21",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "LZ32",
+   "imports": "KERNEL32!#22",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "MSNET32",
+   "imports": "KERNEL32!CreateMailslotA",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "WMI",
+   "imports": "KERNEL32!InterlockedCompareExchange",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "MSHTML",
+   "imports": "KERNEL32!#3",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "MSHTML",
+   "imports": "KERNEL32!#4",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "MSHTML",
+   "imports": "KERNEL32!#5",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "MSHTML",
+   "imports": "KERNEL32!#6",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "MSHTML",
+   "imports": "KERNEL32!FlushViewOfFile",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "INSENG",
+   "imports": "KERNEL32!WritePrivateProfileSectionA",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "MLANG",
+   "imports": "KERNEL32!FindResourceExW",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "MSVCRT",
+   "imports": "KERNEL32!EnumSystemLocalesA",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "MSVCRT",
+   "imports": "KERNEL32!PeekNamedPipe",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "CRYPT32",
+   "imports": "ADVAPI32!CryptAcquireContextA",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "CRYPT32",
+   "imports": "ADVAPI32!CryptCreateHash",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "CRYPT32",
+   "imports": "ADVAPI32!CryptDecrypt",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "CRYPT32",
+   "imports": "ADVAPI32!CryptDestroyHash",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "CRYPT32",
+   "imports": "ADVAPI32!CryptDestroyKey",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "CRYPT32",
+   "imports": "ADVAPI32!CryptEncrypt",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "CRYPT32",
+   "imports": "ADVAPI32!CryptExportKey",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "CRYPT32",
+   "imports": "ADVAPI32!CryptGenKey",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "CRYPT32",
+   "imports": "ADVAPI32!CryptGenRandom",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "CRYPT32",
+   "imports": "ADVAPI32!CryptGetHashParam",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "CRYPT32",
+   "imports": "ADVAPI32!CryptGetKeyParam",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "CRYPT32",
+   "imports": "ADVAPI32!CryptGetProvParam",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "CRYPT32",
+   "imports": "ADVAPI32!CryptGetUserKey",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "CRYPT32",
+   "imports": "ADVAPI32!CryptHashData",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "CRYPT32",
+   "imports": "ADVAPI32!CryptImportKey",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "CRYPT32",
+   "imports": "ADVAPI32!CryptReleaseContext",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "CRYPT32",
+   "imports": "ADVAPI32!CryptSetHashParam",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "CRYPT32",
+   "imports": "ADVAPI32!CryptSetKeyParam",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "CRYPT32",
+   "imports": "ADVAPI32!CryptSetProvParam",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "CRYPT32",
+   "imports": "ADVAPI32!CryptSetProviderA",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "CRYPT32",
+   "imports": "ADVAPI32!CryptSignHashA",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "CRYPT32",
+   "imports": "ADVAPI32!CryptVerifySignatureA",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "MFC42",
+   "imports": "KERNEL32!SuspendThread",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "MFC42",
+   "imports": "KERNEL32!VirtualProtect",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "WININET",
+   "imports": "ADVAPI32!CryptAcquireContextA",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "WININET",
+   "imports": "ADVAPI32!CryptGetProvParam",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "WININET",
+   "imports": "ADVAPI32!CryptReleaseContext",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "WININET",
+   "imports": "ADVAPI32!CryptSetProvParam",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "WININET",
+   "imports": "KERNEL32!FlushViewOfFile",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "SHFOLDER",
+   "imports": "KERNEL32!EnumResourceLanguagesA",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "CRYPTUI",
+   "imports": "ADVAPI32!CryptAcquireContextA",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "CRYPTUI",
+   "imports": "ADVAPI32!CryptDestroyKey",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "CRYPTUI",
+   "imports": "ADVAPI32!CryptGetKeyParam",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "CRYPTUI",
+   "imports": "ADVAPI32!CryptGetProvParam",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "CRYPTUI",
+   "imports": "ADVAPI32!CryptGetUserKey",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "CRYPTUI",
+   "imports": "ADVAPI32!CryptReleaseContext",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "SCHANNEL",
+   "imports": "ADVAPI32!CryptAcquireContextA",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "SCHANNEL",
+   "imports": "ADVAPI32!CryptCreateHash",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "SCHANNEL",
+   "imports": "ADVAPI32!CryptDecrypt",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "SCHANNEL",
+   "imports": "ADVAPI32!CryptDestroyHash",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "SCHANNEL",
+   "imports": "ADVAPI32!CryptDestroyKey",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "SCHANNEL",
+   "imports": "ADVAPI32!CryptEncrypt",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "SCHANNEL",
+   "imports": "ADVAPI32!CryptExportKey",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "SCHANNEL",
+   "imports": "ADVAPI32!CryptGenKey",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "SCHANNEL",
+   "imports": "ADVAPI32!CryptGenRandom",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "SCHANNEL",
+   "imports": "ADVAPI32!CryptGetKeyParam",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "SCHANNEL",
+   "imports": "ADVAPI32!CryptGetUserKey",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "SCHANNEL",
+   "imports": "ADVAPI32!CryptHashData",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "SCHANNEL",
+   "imports": "ADVAPI32!CryptImportKey",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "SCHANNEL",
+   "imports": "ADVAPI32!CryptReleaseContext",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "SCHANNEL",
+   "imports": "ADVAPI32!CryptSetHashParam",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "SCHANNEL",
+   "imports": "ADVAPI32!CryptSetKeyParam",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "SCHANNEL",
+   "imports": "ADVAPI32!CryptSignHashA",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "SCHANNEL",
+   "imports": "ADVAPI32!CryptVerifySignatureA",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "XENROLL",
+   "imports": "ADVAPI32!CryptAcquireContextA",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "XENROLL",
+   "imports": "ADVAPI32!CryptCreateHash",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "XENROLL",
+   "imports": "ADVAPI32!CryptDeriveKey",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "XENROLL",
+   "imports": "ADVAPI32!CryptDestroyHash",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "XENROLL",
+   "imports": "ADVAPI32!CryptDestroyKey",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "XENROLL",
+   "imports": "ADVAPI32!CryptExportKey",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "XENROLL",
+   "imports": "ADVAPI32!CryptGenKey",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "XENROLL",
+   "imports": "ADVAPI32!CryptGenRandom",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "XENROLL",
+   "imports": "ADVAPI32!CryptGetProvParam",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "XENROLL",
+   "imports": "ADVAPI32!CryptGetUserKey",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "XENROLL",
+   "imports": "ADVAPI32!CryptHashData",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "XENROLL",
+   "imports": "ADVAPI32!CryptReleaseContext",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "XENROLL",
+   "imports": "ADVAPI32!CryptSetKeyParam",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  },
+  {
+   "dll": "WOW32",
+   "imports": "KERNEL32!#70",
+   "why": "no stand-in; the file exports real code for it, not the unimplemented stub: a dead thunk"
+  }
+ ]
+}

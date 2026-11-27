@@ -21,6 +21,19 @@ nowhere) and reports what stopped it; in a page with no DevTools endpoint, its `
 8. Hardware detection and the GUI phase of Setup.
 9. Windows 98's desktop.
 
+## Where to look at rung 7 (the real-mode stage)
+
+- WININIT's "could not upgrade" screen: WININIT.EXE processes `C:\WINDOWS\WININIT.INI` through the PC's redirector
+  (v86.js HOOK[0x2f], AH=11h). The PC's last 100 redirector calls are `win95.pc.machine.rlog`; DOS's last error is its
+  SDA's (`m.m16(m.sda + 4)`, the name in `m.sda + 9Eh`).
+- WININIT's code (MZ, image at 740h, data segment 0871h): the `[Rename]` loop is at code 0C20h. `NUL=` deletes a file
+  (`0BAh`), `DIRNUL=` removes a folder (`0F2h`), and either one counts a file or folder that is not there as done; any
+  other key is a rename, skipped when its source is not there. Failures go to the reporter at `5C4h`, whose `%1`/`%2`
+  are SysDispMsg sublists at DS:0716h and DS:0721h.
+- WININIT run offline with a WININIT.INI of your own: `tools/wininit-run.mjs` (the bundle's MS-DOS 7.10 and an
+  in-memory C:, as win95.js `dosRun` runs a program; Windows 98's tools need 7.00 or later, INT 21h AX=3306h).
+- The PC's screen and the IO.SYS logo: v86.js `vgaFrame`, drawn by win95.js `drawIndexed`.
+
 ## Runs
 
 | Date | Commit | Furthest step | First gap | Fix |

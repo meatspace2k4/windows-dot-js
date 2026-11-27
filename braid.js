@@ -40,6 +40,36 @@ function fnv(h, bytes) { for (let i = 0; i < bytes.length; i++) { h ^= bytes[i];
 function fnvStr(h, s) { for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i) & 0xff; h = Math.imul(h, 0x01000193) >>> 0; } return h; }
 const FNV0 = 0x811c9dc5;
 
+// ---------------------------------------------------------------- a memory's bytes, in chunks shared between moments
+// A memory is taken as chunks of 256 KB, and a chunk whose bytes are the same as the memory's last moment's at that
+// place is that moment's chunk itself, not a copy: moments of a machine share the memory that did not change between
+// them, as anchors share their chunks on this computer. Copied whole, each moment held all of a machine's memory
+// (685 MB in Windows 98 Setup), and the line marking itself as Setup ran held five and more at once, and the page ran
+// out of memory. A chunk is never written once taken.
+const MEM_CHUNK = 0x40000;
+class Chunked {
+  constructor(chunks, length) { this.chunks = chunks; this.length = length; }
+  /** into `dst` (a Uint8Array at least as long), from its start */
+  copyTo(dst) { let at = 0; for (const c of this.chunks) { dst.set(c, at); at += c.length; } }
+}
+const lastChunks = new WeakMap();   // (a memory's chunks as its last moment took them)
+const sameBytes = (a, b) => {
+  if (a.length !== b.length) return false;
+  const n = a.length >>> 3, a8 = new BigUint64Array(a.buffer, a.byteOffset, n), b8 = new BigUint64Array(b.buffer, b.byteOffset, n);
+  for (let i = 0; i < n; i++) if (a8[i] !== b8[i]) return false;
+  for (let i = n << 3; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+};
+function takeMemory(mem) {
+  const live = new Uint8Array(mem.buffer), was = lastChunks.get(mem) || [], chunks = [];
+  for (let at = 0, k = 0; at < live.length; at += MEM_CHUNK, k++) {
+    const cur = live.subarray(at, Math.min(at + MEM_CHUNK, live.length)), old = was[k];
+    chunks.push(old && sameBytes(old, cur) ? old : cur.slice());
+  }
+  lastChunks.set(mem, chunks);
+  return new Chunked(chunks, live.length);
+}
+
 // ---------------------------------------------------------------- the graph
 /** the objects reachable from `roots`, each entry { o, kind, ... } by index; refs into them in the entries' contents.
  *  opts.opaque: a Set of objects kept by reference; opts.skip(obj, key): a property left out (a live thing of the host's) */
@@ -53,7 +83,7 @@ function takeGraph(roots, opts = {}) {
     let i = index.get(v); if (i !== undefined) return new Ref(i);
     i = entries.length; index.set(v, i);
     const e = { o: v }; entries.push(e);
-    if (hasWasm && v instanceof WebAssembly.Memory) { e.kind = 'mem'; e.bytes = new Uint8Array(v.buffer).slice(); bytes += e.bytes.length; return new Ref(i); }
+    if (hasWasm && v instanceof WebAssembly.Memory) { e.kind = 'mem'; e.bytes = takeMemory(v); bytes += e.bytes.length; return new Ref(i); }
     if (hasWasm && v instanceof WebAssembly.Global) { e.kind = 'global'; e.value = v.value; return new Ref(i); }
     if (v instanceof ArrayBuffer) { e.kind = 'ab'; e.bytes = new Uint8Array(v).slice(); bytes += e.bytes.length; return new Ref(i); }
     if (hasShared && v instanceof SharedArrayBuffer) { e.kind = 'ref'; return new Ref(i); }   // (shared with another worker or the page: a ring; a memory is copied through its Memory)
@@ -85,7 +115,7 @@ function takeGraph(roots, opts = {}) {
 function restoreGraph(g) {
   const E = g.entries, resolve = r => (r instanceof Ref ? (E[r.i].repl || E[r.i].o) : r);
   for (const e of E) {
-    if (e.kind === 'mem') new Uint8Array(e.o.buffer).set(e.bytes);
+    if (e.kind === 'mem') { e.bytes.copyTo(new Uint8Array(e.o.buffer)); lastChunks.set(e.o, e.bytes.chunks); }   // (the memory is the moment's again: its next moment shares these)
     else if (e.kind === 'global') e.o.value = e.value;
     else if (e.kind === 'ab') { if (e.o.byteLength === e.bytes.length) new Uint8Array(e.o).set(e.bytes); else e.repl = e.bytes.slice().buffer; }
     else if (e.kind === 'ta') { const t = e.ta || e.o; if (t.length === e.bytes.length) t.set(e.bytes); else if (!e.ta) e.repl = e.bytes.slice(); }
@@ -107,7 +137,8 @@ function restoreGraph(g) {
 function hashGraph(h, g) {
   for (const e of g.entries) {
     h = fnvStr(h, e.kind);
-    if (e.bytes) h = fnv(h, e.bytes);
+    if (e.bytes instanceof Chunked) for (const c of e.bytes.chunks) h = fnv(h, c);
+    else if (e.bytes) h = fnv(h, e.bytes);
     else if (e.kind === 'global') h = fnvStr(h, String(e.value));
     else if (e.kind === 'obj') for (const [k, v] of e.props) h = fnvStr(h, k + ':' + (v instanceof Ref ? '#' + v.i : typeof v === 'object' ? '' : String(v)));
     else if (e.items) h = fnvStr(h, String(e.items.length));
@@ -131,7 +162,8 @@ function serialize(g, nameOf = () => null) {
   const val = v => (v instanceof Ref ? { r: v.i } : typeof v === 'function' ? { fn: nameOf(v) || true } : (v !== null && typeof v === 'object') ? { opaque: nameOf(v) || true } : (typeof v === 'bigint' ? { big: v.toString() } : v === undefined ? { u: true } : Number.isNaN(v) ? { nan: true } : v));
   for (const e of g.entries) {
     const m = { kind: e.kind }; const p = Object.getPrototypeOf(e.o); m.proto = p && p.constructor && p.constructor.name !== 'Object' ? p.constructor.name : null;
-    if (e.kind === 'mem' || e.kind === 'ab') m.bytes = put(e.bytes);
+    if (e.kind === 'mem') { const at = total; for (const c of e.bytes.chunks) put(c); m.bytes = [at, e.bytes.length]; }
+    else if (e.kind === 'ab') m.bytes = put(e.bytes);
     else if (e.kind === 'ta') { m.bytes = put(e.bytes); m.ta = e.bytes.constructor.name; }
     else if (e.kind === 'global') m.value = e.value;
     else if (e.kind === 'canvas') { m.w = e.w; m.h = e.h; if (e.img) m.bytes = put(e.img.data); }
@@ -211,7 +243,9 @@ function rebind(roots, ex, opts = {}) {
   for (const i of order) {
     const m = ex.meta[i], o = obj[i]; if (!o) continue;
     curPath = path[i];
-    if (m.kind === 'map') { o.clear(); for (const [k, v] of m.items) o.set(resolve(k), resolve(v)); }
+    // (a function the record could not carry, a map's value, kept as the live map has it by its key: IFSHLP's real-mode
+    // entry (ne16.js rmEntries) came back undefined)
+    if (m.kind === 'map') { const was = new Map(o); o.clear(); for (const [k, v] of m.items) { const key = resolve(k); let val = resolve(v); if (val === undefined && v && typeof v === 'object' && v.fn && was.has(key)) val = was.get(key); o.set(key, val); } }
     else if (m.kind === 'set') { o.clear(); for (const v of m.items) o.add(resolve(v)); }
     else if (m.kind === 'arr') { const was = o.slice(); o.length = 0; m.items.forEach((v, n) => { o[n] = resolve(v, was, n); }); }
     else if (m.kind === 'obj') {
@@ -322,6 +356,66 @@ function refuseAnchor(rec, build) {
   return null;
 }
 
+// An anchored moment as stored: its blobs (each machine's and the page's) cut in chunks of CHUNK bytes, each kept once
+// under its SHA-256, and the record holding each blob as the list of its chunks' hashes and its length. Anchors taken
+// minutes apart share every chunk of memory that did not change, so the line anchoring itself keeps a few of them
+// for little more than one. The checksum (anchorSum) stays over the blobs put back together: a chunk damaged or
+// missing is refused as the whole moment's damage is.
+// (cut where the blob's own entries begin: serialize packs every entry's bytes (the guest memory, buffers, typed
+// arrays, canvases) one after another in the graph's order, so an earlier entry that grows, shrinks, comes or goes
+// moves every byte after it. Cut at fixed offsets, two anchors six minutes apart in one Setup run shared 27% of their
+// chunks. An entry of CHUNK bytes or more is cut from its own start, so its unchanged pages are the same chunks
+// wherever it lies; the small entries between two such are cut as one run, where a shift stays)
+const CHUNK = 64 * 1024;
+const hex = b => Array.from(new Uint8Array(b), x => x.toString(16).padStart(2, '0')).join('');
+const blobOf = b => (b instanceof Uint8Array ? b : new Uint8Array(b.buffer || b));
+/** where a blob is cut: the start and end of each entry of `meta` (serialize's: bytes [at, length]) of CHUNK or more,
+ *  then every CHUNK from each such start; the blob's own ends */
+function cutPoints(len, meta) {
+  const big = (Array.isArray(meta) ? meta : []).map(m => m && m.bytes).filter(x => Array.isArray(x) && x[1] >= CHUNK).sort((a, b) => a[0] - b[0]);
+  const at = new Set([0, len]); for (const [s, n] of big) { at.add(s); at.add(s + n); }
+  const marks = [...at].filter(x => x >= 0 && x <= len).sort((a, b) => a - b), out = [];
+  for (let i = 0; i + 1 < marks.length; i++) for (let s = marks[i]; s < marks[i + 1]; s += CHUNK) out.push([s, Math.min(s + CHUNK, marks[i + 1])]);
+  return out;
+}
+/** the record to store and its chunks: { rec, chunks: Map(hash -> bytes) }; `sha` hashes bytes to an ArrayBuffer */
+async function packAnchor(rec, sha = b => crypto.subtle.digest('SHA-256', b)) {
+  const chunks = new Map();
+  const cut = async (b, meta) => {
+    b = blobOf(b); const hs = [];
+    for (const [s, e] of cutPoints(b.length, meta)) { const c = b.subarray(s, e), h = hex(await sha(c)); if (!chunks.has(h)) chunks.set(h, c.slice()); hs.push(h); }
+    return { chunks: hs, length: b.length };
+  };
+  const machines = {};
+  for (const [k, m] of Object.entries(rec.machines || {})) machines[k] = { ...m, blob: await cut(m.blob, m.meta) };
+  const page = rec.page ? { ...rec.page, blob: await cut(rec.page.blob, rec.page.meta) } : rec.page;
+  return { rec: { ...rec, machines, page, packed: CHUNK }, chunks };
+}
+/** the stored record made whole again: each blob from its chunks (`get(hash)` the chunk's bytes, or a promise of
+ *  them); a record stored whole (before chunks) comes back as it is. A missing chunk throws */
+async function unpackAnchor(s, get) {
+  if (!s || !s.packed) return s;
+  const join = async b => {
+    if (!b || !Array.isArray(b.chunks)) return b;
+    const out = new Uint8Array(b.length); let at = 0;
+    for (const h of b.chunks) { const c = await get(h); if (!c) throw new Error(`the anchored moment is damaged (chunk ${h.slice(0, 12)} missing)`); out.set(blobOf(c), at); at += c.byteLength; }
+    if (at !== b.length) throw new Error('the anchored moment is damaged (chunks short)');
+    return out;
+  };
+  const machines = {};
+  for (const [k, m] of Object.entries(s.machines || {})) machines[k] = { ...m, blob: await join(m.blob) };
+  const page = s.page ? { ...s.page, blob: await join(s.page.blob) } : s.page;
+  const rec = { ...s, machines, page }; delete rec.packed; return rec;
+}
+/** every chunk the stored records refer to: what a chunk store keeps when one of them is let go */
+function chunkRefs(records) {
+  const out = new Set();
+  for (const s of records) { if (!s || !s.packed) continue; for (const b of [...Object.values(s.machines || {}).map(m => m.blob), s.page && s.page.blob]) if (b && b.chunks) for (const h of b.chunks) out.add(h); }
+  return out;
+}
+/** a blob's length whether stored whole or as chunks */
+const blobLength = b => (!b ? 0 : Array.isArray(b.chunks) ? b.length : (b.length !== undefined ? b.length : b.byteLength || 0));
+
 // ---------------------------------------------------------------- the line: the machine's time as a whole, in generations
 // Generation 0 is the run from the page's start. Travel to a moment begins the next generation, which grows from that
 // moment (in the generation it was taken in); the one left runs no further, but its moments stay on the line and are
@@ -413,7 +507,7 @@ class Line {
   static from(o) { const l = new Line(); if (!o) return l; l.gen = o.gen || 0; l.forks = o.forks || l.forks; for (const m of o.moments || []) l.moments.set(m.name, m); l.events = o.events || []; l.segments = o.segments || []; l.j = o.j || l.j; l.broken = new Map(o.broken || []); return l; }
 }
 
-const api = { Ref, takeGraph, restoreGraph, serialize, rebind, make, checksum, refuse, describe, buildSignature, lint, verdict, mod, anchor, anchorSum, refuseAnchor, Line, BUILD_FILES, MAGIC, ANCHOR, VERSION, fnv, fnvStr, FNV0 };
+const api = { Ref, takeGraph, restoreGraph, serialize, rebind, make, checksum, refuse, describe, buildSignature, lint, verdict, mod, anchor, anchorSum, refuseAnchor, packAnchor, unpackAnchor, chunkRefs, blobLength, cutPoints, CHUNK, Line, BUILD_FILES, MAGIC, ANCHOR, VERSION, fnv, fnvStr, FNV0 };
 if (typeof self !== 'undefined') self.W95Braid = api;
 if (typeof window !== 'undefined') window.W95Braid = api;
 })();

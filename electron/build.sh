@@ -7,9 +7,11 @@ rm -rf "$APP"
 cp -R node_modules/electron/dist/Electron.app "$APP"
 R="$APP/Contents/Resources"
 mkdir -p "$R/app/web/icons"
-cp package.json main.js preload.js store.js shares.js "$R/app/"
+cp package.json main.js preload.js store.js shares.js webdav.js "$R/app/"
 python3 ../tools/build_floppy.py ../mac ../floppy.js   # A: as mac/assets is now
-cp ../index.html ../*.js "$R/app/web/"
+cp ../index.html ../*.js ../*.mod "$R/app/web/"
+# the drivers a page imports from beside itself (bench/setup98.mjs pageDrive, bench/anchor98.mjs)
+mkdir -p "$R/app/web/bench"; cp ../bench/runner.mjs ../bench/setup98.mjs ../bench/anchor98.mjs "$R/app/web/bench/"
 # the disc in the CD drive: the project's cdrom.iso, the one serve.py serves the page (File > Insert CD Image swaps it)
 ISO="$(cd .. && pwd)/cdrom.iso"
 test -f "$ISO" || { echo "no $ISO: the CD image the drive holds (serve.py --iso serves the same)" >&2; exit 1; }
@@ -18,6 +20,7 @@ printf '{ "image": "%s" }\n' "$ISO" > "$R/app/cd.json"
 AUDIO="$(cd .. && pwd)/audiocd.bin"
 cp ../audiocd.json "$R/app/audiocd.json"; printf '{ "file": "%s" }\n' "$AUDIO" > "$R/app/audio.json"
 cp ../icons/*.png "$R/app/web/icons/"
+mkdir -p "$R/app/web/themes"; cp ../themes/*.json "$R/app/web/themes/"   # the display schemes the page reads (win95.js setupSchemes)
 rm "$R/app/web/sw.js"
 P="$APP/Contents/Info.plist"
 plutil -replace CFBundleName -string "Windows 95" "$P"

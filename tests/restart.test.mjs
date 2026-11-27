@@ -112,7 +112,8 @@ assert.ok(K16['KERNEL.#362'] && K16['KERNEL.#351']);
 // MPREXE in SYSTEM, as COPY.INF puts it (LDID 11), where MPR starts it from GetSystemDirectory
 {
   const w = readFileSync(new URL('../win95.js', import.meta.url), 'utf8'), k = readFileSync(new URL('../worker.js', import.meta.url), 'utf8');
-  assert.ok(/IN_SYSTEM = new Set\(\[[^\]]*'MPREXE\.EXE'/.test(w)); assert.ok(/\['C:\\\\WINDOWS\\\\SYSTEM\\\\MPREXE\.EXE'/.test(k));
+  // (and started by MPR itself, from there, as Windows' MPR.DLL does: the worker no longer starts it by its path)
+  assert.ok(/IN_SYSTEM = new Set\(\[[^\]]*'MPREXE\.EXE'/.test(w)); assert.ok(/the network's process, MPREXE, is MPR's to start/.test(k)); assert.ok(!/\['C:\\\\WINDOWS\\\\SYSTEM\\\\MPREXE\.EXE'/.test(k));
 }
 
 // an access past the end of memory in recompiled code: a page fault where the guest made it (raise 14), not the end

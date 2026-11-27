@@ -365,14 +365,21 @@ class FileSystem {
     for (const e of held.nodes) {
       const n = e.sid === 0 ? r : new Node(e.name, e.dir, e.attrs, e.ctime);
       n.sid = e.sid; n.ord = e.ord; v.nextOrd = Math.max(v.nextOrd, e.ord + 1); n.ctime = e.ctime; n.mtime = e.mtime; n.atime = e.atime; v.nextSid = Math.max(v.nextSid, e.sid + 1);
-      if (!e.dir) { n.buf = e.data || new Uint8Array(0); n.size = n.buf.length; v.used += v.alloc(n.size); }
+      // (the file's bytes are the node's from here: the store's record of what it loaded keeps none. Kept there, the
+      // whole disk as it was at the page's start stayed in memory beside whatever disk replaced it, 400 MB for good)
+      if (!e.dir) { n.buf = e.data || new Uint8Array(0); e.data = undefined; n.size = n.buf.length; v.used += v.alloc(n.size); }
       bySid.set(e.sid, n);
     }
+    let loose = 0;
     for (const e of [...held.nodes].sort((a, b) => a.ord - b.ord)) {
       if (e.sid === 0) continue;
       const n = bySid.get(e.sid), p = bySid.get(e.parent);
+      // (a node under no folder, a damaged store's: left out, as CHKDSK leaves a lost cluster, and said so; the page
+      // starts on the rest instead of not at all)
+      if (!p || !p.dir) { loose++; if (!n.dir) v.used -= v.alloc(n.size); continue; }
       n.short = e.short; n.parent = p; p.kids.set(n.name.toUpperCase(), n); p.byShort.set(n.short, n);
     }
+    if (loose) console.warn(`[fs] ${letter}: ${loose} node${loose > 1 ? 's' : ''} of the store under no folder, left out`);
     if (held.label !== undefined) { v.label = held.label; v.serial = held.serial; }
     // (a shared volume's store gives this person a block of node ids of their own: what they create never takes an id
     // someone else's machine creates at the same time)

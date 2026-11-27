@@ -8,7 +8,9 @@
 // met again on the new generation (braid.same) ends the run, reproduced. A step already lived from the same moment
 // with the same presses (the key's check, a page's Next) is memo'd past, its work not done again.
 //
-//   W98KEY=XXXXX-XXXXX-XXXXX-XXXXX-XXXXX node bench/setup98.mjs [endpoint]
+//   W98KEY=XXXXX-XXXXX-XXXXX-XXXXX-XXXXX node bench/setup98.mjs [endpoint] [from]
+//
+// `from` (license, wizard): the ladder from there, Setup already past its first dialog or past the key.
 //
 // The product key comes from the environment and goes to the page as a value; it is written nowhere, and the keys
 // typed are hushed from the line's journal. `endpoint` is a DevTools address (the app's http://127.0.0.1:9334). In a
@@ -26,12 +28,16 @@ export const pageDrive = async (key, o = {}) => {
   // there when run again with { from: 'wizard' })
   if (!key) { key = await fetch('/__w98key', { cache: 'no-store' }).then(r => (r.ok ? r.text() : ''), () => ''); if (!key && !o.keyless) throw new Error('no product key: W98KEY in the server\'s environment, or passed in'); }
   let fault = null, nf = 0, lastFault = null, atKey = false; const forks = [], faults = [];
-  // (the line marking itself every o.every ms (30 s), the last four held; o.every 0 leaves it to the steps' moments)
+  // (Setup and RUNONCE's first-start items 8 times ahead of the wall, by their programs' names (mod-turbo.js), in this
+  // machine and each one after Setup's restart: the address's mod, added when it has no turbo of its own)
+  { const h = new URLSearchParams(location.hash.replace(/^#/, '')); if (!h.getAll('mod').some(m => /^(mod-)?turbo\b/i.test(m)) && !new URLSearchParams(location.search).getAll('mod').some(m => /^(mod-)?turbo\b/i.test(m))) { h.append('mod', o.turbo || 'turbo:8@SETUP,W98SETUP,SUWIN,RUNONCE'); location.hash = h.toString(); lg(`speed by program: ${h.getAll('mod').join(' ')}`); } }
+  // (the line marking itself every o.every ms (30 s), the last four held, and anchoring itself every 5 minutes, the
+  // last three kept (braid.every), so a reload travels back to the run; o.every 0 leaves it to the steps' moments)
   if (o.every !== 0) B.every(o.every || 30000, 4);
   // (the rungs past the restart anchored as Setup meets them, w98-reboot, w98-firstboot, w98-desktop: the ground
   // bench/anchor98.mjs checks each later change from, Setup not run again. Left armed when the ladder returns, as
   // the machine goes on into its restart)
-  if (o.anchors !== false && !window.__w98anchors) window.__w98anchors = (await import('/bench/anchor98.mjs')).armAnchors();
+  if (o.anchors !== false && !window.__w98anchors) window.__w98anchors = (await import(new URL('bench/anchor98.mjs', document.baseURI).href)).armAnchors();   // (beside the page: the server's /bench, the app's web/bench)
   const mark = async name => { try { const r = await B.mark(name); lg(`moment ${name} (${r.verdict})`); return r; } catch (e) { lg(`moment ${name} failed: ${e.message}`); return null; } };
   // (a fault a machine reports is an event on the line (braid.fault: the program, the exception, the machine's fault
   // log); the fault box the shell draws for it is not modal, so the event is what the driver goes by)
@@ -40,10 +46,18 @@ export const pageDrive = async (key, o = {}) => {
   // (the uninstall-drive dialog comes as the pages run: pressed as it opens)
   const dialogs = win95.on('window.open', async e => {
     try {
-      if (/Uninstall Drive/.test(e.title)) { await win95.click({ name: 'OK', window: /Uninstall Drive/ }); lg('Select Uninstall Drive: OK'); }
+      // (Windows 95's Welcome, a topmost window of a first start: over Setup's pages, closed as a person closes it)
+      if (/^Welcome$/.test(e.title)) { win95.close(/^Welcome$/); lg('Welcome closed'); }
+      else if (/Uninstall Drive/.test(e.title)) { await win95.click({ name: 'OK', window: /Uninstall Drive/ }); lg('Select Uninstall Drive: OK'); }
       // (the startup disk's own dialog, after its page: Setup asks for a disk in A: once its files are gathered; Cancel
       // skips the disk, as the page's Cancel did)
-      if (/^Insert Disk$/.test(e.title)) { await win95.click({ name: 'Cancel', window: 'Insert Disk' }); lg('Insert Disk: Cancel (no startup disk)'); }
+      else if (/^Insert Disk$/.test(e.title)) { await win95.click({ name: 'Cancel', window: 'Insert Disk' }); lg('Insert Disk: Cancel (no startup disk)'); }
+      // (any other dialog that reports an error, a file Setup cannot find among them: a fault on the line, the ladder
+      // stopped there, its text in the log)
+      else {
+        const text = (await win95.elementsNow()).filter(x => x.window === e.title && x.role === 'text').map(x => String(x.name)).join(' ');
+        if (!fault && /cannot|could not|error|not found|failed|invalid/i.test(text)) { fault = { title: `${e.title}: ${text.slice(0, 200)}`, t: Date.now() }; lg(`DIALOG ${fault.title}`); }
+      }
     }
     catch (err) { lg('dialog ' + e.title + ': ' + err.message); }
   });
@@ -68,7 +82,8 @@ export const pageDrive = async (key, o = {}) => {
   const WIZ = /^Windows 98 Setup( Wizard)?$/;   // (the license and the key are the Wizard's pages, under either title)
   const el = (name, window) => ({ name, role: 'pushbutton', window: window instanceof RegExp ? String(window) : window });
   try {
-    if (o.from) lg(`from the ${o.from} on`);   // (Setup already past its first dialog ('license'), or past the key ('wizard'): the ladder from there)
+    if (win95.window(/^Welcome$/)) { win95.close(/^Welcome$/); lg('Welcome closed'); }
+    if (o.from) lg(`from the ${o.from} on`);// (Setup already past its first dialog ('license'), or past the key ('wizard'): the ladder from there)
     else {
       win95.cd.insert('Windows 98 se Upgrade.iso'); lg('CD inserted');
       // (the question may be up before a listener is: waited for as a control; a CD already in, which asks nothing, has
@@ -94,14 +109,16 @@ export const pageDrive = async (key, o = {}) => {
         // key's boxes ended shifted), each box read back and typed again where it differs; hushed from the journal, so
         // the key is on no line and in no anchored moment; the click on the edit is hushed with it, so the span's
         // actions are the same whatever box took the focus)
+        // (the boxes as the page shows them, left to right: USER's order of the dialog's children is not theirs on the
+        // page, and the first in it was the second box, where the key's first group went)
         await B.hush(async () => {
-          await win95.click(edit); await sleep(300);
-          const groups = String(key).split('-'), boxesNow = async () => (await win95.elementsNow()).filter(e => e.role === 'text-edit' && WIZ.test(e.window));
+          const groups = String(key).split('-'), boxesNow = async () => (await win95.elementsNow()).filter(e => e.role === 'text-edit' && WIZ.test(e.window)).sort((a, b) => a.x - b.x);
+          await win95.click((await boxesNow())[0] || edit); await sleep(300);
           for (const g of groups) for (const ch of g) { win95.type(ch); await sleep(150); }
           for (let pass = 0; pass < 3; pass++) {
             const boxes = await boxesNow(); if (boxes.length === groups.length && boxes.every((b, i) => String(b.name) === groups[i])) break;
             for (let i = 0; i < groups.length && i < boxes.length; i++) {
-              if (String(boxes[i].name) === groups[i]) continue;
+              if (String(boxes[i].name) === groups[i] || !String(boxes[i].name || '')) continue;   // (a box read back empty: its text is not reported, it is not typed again)
               await win95.click(boxes[i]); await sleep(400); win95.key('End'); await sleep(150); for (let k = 0; k < 6; k++) { win95.key('Backspace'); await sleep(120); }
               for (const ch of groups[i]) { win95.type(ch); await sleep(250); } await sleep(500);
             }
@@ -137,7 +154,8 @@ export const pageDrive = async (key, o = {}) => {
       // (a page that went before its button was pressed (the Identification dialog Setup shows and takes down itself):
       // the ladder looks for the next page, the press not made)
       try { await step([['click', { name: btn.name, role: btn.role, window: btn.window }]], async () => { await win95.click(btn); lg(`${btn.name} on ${pg.title} :: ${pg.text.slice(0, 60)}`); }); }
-      catch (e) { if (!/no element matches/.test(e.message)) throw e; lg(`${pg.title} went before its ${btn.name} was pressed`); last = ''; continue; }
+      // (and a Next greyed again before the press, Setup's next check begun: the page looked for again)
+      catch (e) { if (!/no element matches|is not pressed: disabled/.test(e.message)) throw e; lg(`${pg.title}: ${btn.name} not pressed (${/disabled/.test(e.message) ? 'greyed again' : 'the page went'})`); last = ''; continue; }
       if (btn.name === 'Finish') done = true;
     }
     if (fault) await recover();
@@ -152,7 +170,7 @@ if (typeof process === 'object' && import.meta.url === `file://${process.argv[1]
   const key = process.env.W98KEY; if (!key) { console.error('W98KEY is not set'); process.exit(2); }
   const c = await connect(process.argv[2] || 'http://127.0.0.1:9334');
   for (let i = 0; i < 300 && !(await c.evaluate(SHELL_READY).catch(() => false)); i++) await new Promise(r => setTimeout(r, 1000));
-  const r = await c.evaluate(`(${pageDrive})(${JSON.stringify(key)})`, 90 * 60000);
+  const r = await c.evaluate(`(${pageDrive})(${JSON.stringify(key)}, ${JSON.stringify(process.argv[3] ? { from: process.argv[3] } : {})})`, 90 * 60000);
   for (const l of r.log) console.log(l);
   if (r.faults.length) { console.log('faults:', JSON.stringify(r.faults, null, 1)); console.log('forks:', JSON.stringify(r.forks, null, 1)); }
   // (one line a check runner keeps as the run's record: the ladder finished or not, the last thing it logged, the faults)

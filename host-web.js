@@ -3,7 +3,17 @@
 // starts win95.js. Each write opens its own readwrite transaction as it happens; IndexedDB runs those in the order
 // they were opened. In the app the preload has already set W95HOST and this only starts the shell.
 (() => {
-  const start = () => { const s = document.createElement('script'); s.src = 'win95.js'; s.async = false; document.body.appendChild(s); };
+  // A site served in two parts (tools/split_system.py): the page has what makes its disk and starts MS-DOS; the
+  // recompiled code, which the machines' workers run, is fetched from here on, behind the shell's start, so it is the
+  // browser's by the time Windows' machine asks for it (worker.js, by the same address: the build's stamp)
+  const fetchCode = () => {
+    const S = window.W95SYSTEM; if (!S || !S.code || !window.fetch) return;
+    const m = document.querySelector('meta[name="build-sig"]'), sig = m && m.getAttribute('content');
+    fetch(S.code + (sig && sig !== 'local' ? '?v=' + sig : ''), { credentials: 'same-origin' })
+      .then(async r => { const rd = r.body && r.body.getReader(); if (rd) while (!(await rd.read()).done) { /* into the browser's cache */ } })
+      .catch(e => console.warn('[host] the system\'s code was not fetched ahead:', e && e.message));
+  };
+  const start = () => { const s = document.createElement('script'); s.src = 'win95.js'; s.async = false; document.body.appendChild(s); fetchCode(); };
   if (window.W95HOST || !window.indexedDB) return start();
 
   const CHUNK = 65536;
@@ -51,7 +61,7 @@
     if (disk) out.volume.push({ k: 'label', v: disk.label }, { k: 'serial', v: disk.serial });
     for (const [path, vals, name] of registry || []) {
       out.regkey.push(name ? { path, name } : { path });
-      for (const [n, v] of vals) out.regval.push({ path, name: n, value: { type: v.type, data: v.data } });
+      for (const [n, v] of vals) out.regval.push({ path, name: n, value: { type: v.type, data: v.data }, ord: out.regval.length + 1 });
     }
     return out;
   };
@@ -98,6 +108,7 @@
     document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 60000);
   };
   let frozen = false;   // (an imported session is replacing this one: the page going away writes nothing more)
+  let valOrd = 0;       // (the last registry value's place in the order values were made: a new one's is next)
 
   function host(db, disk, registry) {
     // ---- a session file: the stores as they stand now, as the Electron app's database; an imported one in their place
@@ -131,7 +142,8 @@
       if (frozen) return;
       const tx = db.transaction(stores, 'readwrite', { durability: 'strict' });
       fn(...stores.map(s => tx.objectStore(s)));
-      tx.onerror = () => console.error('store write failed:', tx.error);
+      // (a promise for the write's end, for a caller that writes much and waits its turn: braid-page.js writeDisk)
+      return new Promise(ok => { tx.oncomplete = () => ok(true); tx.onabort = () => ok(false); tx.onerror = () => { console.error('store write failed:', tx.error); }; });
     };
     const chunks = (sid, from = 0) => IDBKeyRange.bound([sid, from], [sid, Infinity]);
     return {
@@ -179,7 +191,11 @@
         load: () => registry,
         op: o => run(['regkey', 'regval'], async (regkey, regval) => {
           if (o.op === 'key') { const old = await req(regkey.get(o.path)), name = (old && old.name) || o.name; regkey.put(name ? { path: o.path, name } : { path: o.path }); }
-          else if (o.op === 'set') { if (!await req(regkey.get(o.path))) regkey.put({ path: o.path }); regval.put({ path: o.path, name: o.name, value: o.value }); }
+          else if (o.op === 'set') {
+            if (!await req(regkey.get(o.path))) regkey.put({ path: o.path });
+            const old = await req(regval.get([o.path, o.name]));
+            regval.put({ path: o.path, name: o.name, value: o.value, ord: old && old.ord !== undefined ? old.ord : ++valOrd });
+          }
           else if (o.op === 'del') regval.delete([o.path, o.name]);
           else if (o.op === 'delkey') {
             const inside = k => k === o.path || k.startsWith(o.path + '\\');
@@ -217,7 +233,9 @@
     let registry = null;
     if (keys.length) {
       const by = new Map(keys.map(k => [k.path, []])), names = new Map(keys.map(k => [k.path, k.name]));
-      for (const v of vals) (by.get(v.path) || by.set(v.path, []).get(v.path)).push([v.name, v.value]);
+      // (a key's values in the order they were made, as RegEnumValue gives them: the store keeps them by name)
+      vals.sort((a, b) => (a.ord || 0) - (b.ord || 0));
+      for (const v of vals) { (by.get(v.path) || by.set(v.path, []).get(v.path)).push([v.name, v.value]); if (v.ord > valOrd) valOrd = v.ord; }
       registry = [...by].map(([path, v]) => [path, v, names.get(path)]);
     }
     return { disk, registry };
@@ -229,6 +247,8 @@
       // a session shared with others (shared.js): its C: and registry the server's, the rest this browser's (the
       // shares, the computer's name, its kept sessions); with no server answering, this browser's own store
       const S = window.W95Shared;
+      // (in Discord's frame, discord.js: which session and as whom is Discord's to say first; never rejects)
+      if (window.W95Discord) await window.W95Discord.ready;
       window.W95HOST = (S && S.wanted() && S.start(own)) || own;
     } catch (e) { console.error('no persistent store, starting fresh:', e); }
     start();

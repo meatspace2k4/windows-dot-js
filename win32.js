@@ -11,7 +11,12 @@ const LAYOUT = { SENTINEL: 0xFFFFFFF0, THUNK: 0xFFFF0000, THUNK16: 0xFFFE0000, F
   STACK_LO: 0x100000, STACK_TOP: 0x3ffff0, HEAP: 0x02000000, HEAP_END: 0x05500000,
   // a byte a 4 KB page of the address space, nonzero where ring 3 has no access (the null page, the VxDs' images, the
   // frame buffer's ring-0 mapping): ring-3 code's accesses are checked against it (dyn.js guard), protect() sets it
-  PROT: 0x05500000 };
+  PROT: 0x05500000,
+  // the modules' block tables (an i32 a code byte): the bundle's at the places its build gave them (tools/build_system.py),
+  // a module translated as it loads (dyn.js neCompile) where tableRoom finds room among them
+  TABLES: 0x05600000, TABLES_END: 0x08000000 };
+const DLL_CHAIN = 0xFFFFFFE0;   // (where a DllMain run as LoadLibrary returns comes back to: Process.dllChainStep)
+const SEH_CONT = 0xFFFFFFDC;    // (where an exception handler the dispatcher called returns to: sehStep)
 const YIELD = Symbol('yield');   // returned by an API implementation to suspend the guest at depth 0
 const NO_CLOCK = Object.freeze({ tick: 0, wall: 0 });   // (a program reading this machine's own clock: Process.clockOf)
 const TICK_MS = 65536 * 1000 / 1193182;   // PIT channel 0 period, 54.925 ms
@@ -31,6 +36,7 @@ const CPU_REGS = ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi', 'cf', 
 // and Windows 98 Setup's preparation comes there about every 5 ms: a 7 ms slice ran to its second such point, 10 ms,
 // 95 steps a second; 4 ms stops at the first. The step's own work is ~0.1 ms. At 40 a busy 16-bit program left the
 // page 16 frames a second)
+const EXE_ZONE_END = 0x00c00000;   // (400000h up to here: programs' images at their own base, DLLs elsewhere: imageRoom)
 const BUDGET = 0x1000, SLICE_MS = 4;   // (BUDGET: blocks between the checks, so a slice ends close to its time)
 const WM = { NULL: 0, CREATE: 1, DESTROY: 2, MOVE: 3, SIZE: 5, ACTIVATE: 6, SETFOCUS: 7, KILLFOCUS: 8, PAINT: 0xf, CLOSE: 0x10,
   QUIT: 0x12, ERASEBKGND: 0x14, SHOWWINDOW: 0x18, ACTIVATEAPP: 0x1c, SETCURSOR: 0x20, NCCREATE: 0x81, NCDESTROY: 0x82,
@@ -108,7 +114,7 @@ class Process {
     this.protect(0, 0x1000);   // (the null page: no program's)
     if (host.memWatch) this.memWatch(host.memWatch[0], host.memWatch[1] || 4);   // (a write watch from the first instruction: ?memwatch=lo,len in hex)
     const math = { fsin: Math.sin, fcos: Math.cos, ftan: Math.tan, fatan2: Math.atan2, fexp2: x => Math.pow(2, x), flog2: Math.log2,
-      fmod: (a, b) => a % b, frem: (a, b) => a - b * Math.round(a / b), f80load: a => this.f80load(a), f80store: (a, v) => this.f80store(a, v), btrace: e => { if (window.W95BTRACE) window.W95BTRACE(e >>> 0); } };
+      fmod: (a, b) => a % b, frem: (a, b) => a - b * Math.round(a / b), f80load: a => this.f80load(a), f80store: (a, v) => this.f80store(a, v), fbld: a => this.fbld(a), fbstp: (a, v) => this.fbstp(a, v), btrace: e => { if (window.W95BTRACE) window.W95BTRACE(e >>> 0); } };
     this.imports = { env: { mem: this.mem, api: e => this.api(e), trap: (e, c) => this.trap(e, c), tick: e => this.tick(e), smc: a => this.smc(a), ...math }, cpu: this.cpu };
     this.modules = []; this.byName = new Map(); this.inits = [];
     // a host that runs the native window system brings it up first, as Windows is up before any program starts
@@ -133,7 +139,8 @@ class Process {
   get cmdPtr() { return this.pc.cmdPtr; }
   set cmdPtr(v) { (this.pc0 || (this.pc0 = { pid: 0x50 })).cmdPtr = v; }
   /** the whole pages in [lo, hi) as ring 0's only (`on`), or given back to ring 3: LAYOUT.PROT */
-  protect(lo, hi, on = true) { const a = (lo + 0xfff) >>> 12, b = hi >>> 12; if (b > a) this.u8.fill(on ? 1 : 0, LAYOUT.PROT + a, LAYOUT.PROT + b); }
+  // (`on` 'write': ring 3 may read them, not write them, as a VxD's memory is to ring 3 on Windows 95)
+  protect(lo, hi, on = true) { const a = (lo + 0xfff) >>> 12, b = hi >>> 12; if (b > a) this.u8.fill(on === 'write' ? 2 : on ? 1 : 0, LAYOUT.PROT + a, LAYOUT.PROT + b); }
   get u8() { return new Uint8Array(this.mem.buffer); }
   get dv() { return new DataView(this.mem.buffer); }
   r32(a) { return this.dv.getUint32(a, true); }
@@ -169,6 +176,18 @@ class Process {
         for (let k = 8; k < sz; k += 2) { const e = this.r16(o + k); if (e >> 12 === 3) { const a = base + page + (e & 0xfff); this.w32(a, this.r32(a) + delta); } }
         o += sz;
       }
+      // an image with no relocations moved off its base (diskDll synthRelocs): each dword in its sections, resources
+      // aside, that is an address inside the image as linked is moved with it, as its relocations would have moved it
+      if (meta.synthRelocs && !dir(5)) {
+        const lo = pref >>> 0, hi = lo + dv.getUint32(opt + 56, true), rs = dir(2), re = rs + dv.getUint32(opt + 96 + 2 * 8 + 4, true);
+        let n = 0;
+        for (let i = 0; i < nsec; i++) {
+          const o = shdr + 40 * i, va = dv.getUint32(o + 12, true), len = Math.min(dv.getUint32(o + 8, true) || dv.getUint32(o + 16, true), dv.getUint32(o + 16, true));
+          if (rs && va >= rs && va < re) continue;
+          for (let k = 0; k + 4 <= len; k++) { const a = base + va + k, v = this.r32(a) >>> 0; if (v >= lo && v < hi) { this.w32(a, v + delta); n++; k += 3; } }
+        }
+        log('info', 'win32', `${name}: no relocations, moved from ${lo.toString(16)} to ${(base >>> 0).toString(16)}: ${n} addresses of itself found and moved`);
+      }
     }
     const rec = { name, base, pref, size: dv.getUint32(opt + 56, true), meta, rsrc: dir(2), exports: new Map(), run: null, deps: [] };
     // a DLL Windows 95 loads below 2 GB, in a process's private arena (OLE32, SHELL32, MFC: not the shared arena's,
@@ -187,9 +206,17 @@ class Process {
     this.modules.push(rec); this.byName.set(name, rec);
     const ex = dir(0);
     if (ex) {
-      const e = base + ex, nf = this.r32(e + 20), nn = this.r32(e + 24), fa = base + this.r32(e + 28), na = base + this.r32(e + 32), oa = base + this.r32(e + 36), obase = this.r32(e + 16);
-      for (let k = 0; k < nf; k++) { const r = this.r32(fa + 4 * k); if (r) rec.exports.set('#' + (obase + k), base + r); }
-      for (let k = 0; k < nn; k++) { const r = this.r32(fa + 4 * this.r16(oa + 2 * k)); if (r) rec.exports.set(this.readA(base + this.r32(na + 4 * k)), base + r); }
+      // (an export whose address is inside the export directory is a forwarder: "DLL.Name" or "DLL.#ord", another
+      // module's export, which exportOf resolves)
+      const e = base + ex, exEnd = ex + dv.getUint32(opt + 96 + 4, true), nf = this.r32(e + 20), nn = this.r32(e + 24), fa = base + this.r32(e + 28), na = base + this.r32(e + 32), oa = base + this.r32(e + 36), obase = this.r32(e + 16);
+      const put = (key, r) => { if (!r) return; if (r >= ex && r < exEnd) (rec.forwards || (rec.forwards = new Map())).set(key, this.readA(base + r)); else rec.exports.set(key, base + r); };
+      for (let k = 0; k < nf; k++) put('#' + (obase + k), this.r32(fa + 4 * k));
+      for (let k = 0; k < nn; k++) put(this.readA(base + this.r32(na + 4 * k)), this.r32(fa + 4 * this.r16(oa + 2 * k)));
+      // (the modules forwarded to loaded with it, and attached as its dependencies are: COMCAT's DllRegisterServer is
+      // OLE32's, called by whoever loads COMCAT alone)
+      for (const f of rec.forwards ? new Set([...rec.forwards.values()].map(s => s.slice(0, s.indexOf('.')).toUpperCase().replace(/\.DLL$/, ''))) : []) {
+        const t = f !== name && this.loadDll(f); if (t && !rec.deps.includes(t)) rec.deps.push(t);
+      }
     }
     for (let d = base + dir(1); dir(1) && this.r32(d + 12); d += 20) {
       const dll = this.readA(base + this.r32(d + 12)).toUpperCase().replace(/\.DLL$/, '');
@@ -206,7 +233,7 @@ class Process {
       for (let k = 0; ; k++, lut += 4) {
         const v = this.r32(lut); if (!v) break;
         const nm = v & 0x80000000 ? '#' + (v & 0xffff) : this.readA(base + v + 2);
-        const addr = (native && native.exports.get(nm)) || (this.peResolve && this.peResolve(dll, nm));   // a ring-0 image's (vmm.js PELDR)
+        const addr = (native && this.exportOf(native, nm)) || (this.peResolve && this.peResolve(dll, nm));   // a ring-0 image's (vmm.js PELDR)
         // (who imports an export by ordinal: the name cmd 'watch' gives one that has none, MFC30's)
         if (native && nm[0] === '#') { const by = native.importers || (native.importers = new Map()); if (!by.has(nm)) by.set(nm, new Set()); by.get(nm).add(name === 'EXE' ? (meta.name || name) : name); }
         this.w32(iat + 4 * k, addr || this.thunkFor(dll, nm));
@@ -219,6 +246,33 @@ class Process {
       rec.run = new WebAssembly.Instance(module, this.imports).exports.run;
       const look = new Uint32Array(this.mem.buffer, meta.lookup, meta.textHi - meta.textLo);
       meta.blocks.forEach((a, i) => { look[a - meta.textLo] = i + 1; });
+    } else if (meta.dynamic && dv.getUint16(opt + 68, true) !== 1 && this.neCompile && this.imports) {
+      // (a program's or DLL's image mapped from its file, ring 3's (not a native driver's): its code translated whole as
+      // it loads, relocated and its imports bound, into a module of the bundle's shape the dispatcher runs (dyn.js
+      // neCompile, memoized on this computer by the file's SHA-256); what it misses is run-time code until the module
+      // is translated again with it. Block by block, Windows 98's own USER32, GDI32, SHELL32 and Explorer, mapped from
+      // their files, drew the desktop and took the cursor's input at a crawl)
+      const code = [];
+      for (let i = 0; i < nsec; i++) {
+        const o = shdr + 40 * i, ch = dv.getUint32(o + 36, true), vs = dv.getUint32(o + 8, true) || dv.getUint32(o + 16, true), va = dv.getUint32(o + 12, true);
+        if ((ch & 0x20000020) && vs) code.push({ num: 0, base: base + va, len: vs, flags: 0, bits: 32, flat: true });
+      }
+      if (code.length) {
+        meta.textLo = Math.min(...code.map(g => g.base)); meta.textHi = Math.max(...code.map(g => g.base + g.len));
+        rec.sha256 = sha256(f); rec.codeRanges = code;
+        const had = this.neMemo(rec);
+        // (no room for its table, or its translation failing: its code run-time code, not a module the dispatcher enters
+        // with no run (MSJET40, its table refused, took the dispatcher down: "m.run is not a function")
+        try {
+          meta.lookup = this.tableRoom(4 * (meta.textHi - meta.textLo), had && had.textLo === meta.textLo ? had.lookup : 0);
+          this.vmAudit(`${name}'s table`);
+          this.neCompile(rec);
+        } catch (e) {
+          if (!(e instanceof GuestError)) throw e;
+          log('warn', 'win32', `${name}: ${e.message}; its code runs as run-time code`);
+          meta.textLo = meta.textHi = 0; rec.run = null; meta.lookup = 0;
+        }
+      }
     }
     if (name !== 'EXE' && meta.entry) { this.inits.push(rec); (this.initOrder || (this.initOrder = [])).push(rec); }
     return rec;
@@ -251,16 +305,181 @@ class Process {
       if (m.segs) { for (const s of m.segs) out.push([s.base, s.base + Math.max(s.alloc || 0, s.len || 0, 1)]); }
       else if (m.size) out.push([m.base, m.base + m.size]);
     }
+    for (const s of this.standins || []) out.push([s.base, s.base + s.size]);
     return out;
   }
   /** room for an image of `size` bytes in the arena below the heap (400000h-2000000h): at `pref` when nothing is there,
    *  else, for one that can be relocated, the first 64 KiB boundary with room; 0 when there is none. A program's own
-   *  image (`own`) goes over other programs' images: each process has its own view of that range (arenaClaim) */
-  imageRoom(pref, size, relocatable, own = false) {
-    const spans = own ? this.moduleSpans(m => m.name !== 'EXE') : this.moduleSpans(), free = a => a >= 0x400000 && a + size <= 0x02000000 && !spans.some(([lo, hi]) => a < hi && lo < a + size);
+   *  image (`own`) goes over other programs' images: each process has its own view of that range (arenaClaim).
+   *  A relocated DLL is placed clear of the programs' two bases: 400000h (the scan starts above it) and 1000000h, where
+   *  35 of Windows 98's programs are linked with no relocations, the largest 5F000h (DXDIAG). Relocated next to
+   *  MSHTA's image there, MSVCRT left PSTORES no room, and its start failed (ERROR_BAD_EXE_FORMAT) */
+  /** the address ranges the bundle's 16-bit modules load at (their segments' fixed bases), loaded or not */
+  bundleSpans16() {
+    const all = (window.W95SYSTEM && window.W95SYSTEM.ne) || {};
+    if (this.neSpans && this.neSpans.of === all) return this.neSpans.spans;
+    const spans = [];
+    for (const s of Object.values(all)) for (const g of (s.meta && s.meta.segs) || []) spans.push([g.base, g.base + Math.max(g.alloc || 0, g.len || 0, 1)]);
+    // (and every VxD of the bundle's, loaded or not: each loads at its build's base (vmm.js vxd), its pages ring 0's.
+    // MSIDLE.DLL mapped over SPOOLER.VXD's at 14C0000h read its own data as a protected page, and MSGSRV32 faulted)
+    for (const d of Object.values((window.W95SYSTEM && window.W95SYSTEM.vxds) || {})) if (d && d.meta && d.meta.base) spans.push([d.meta.base, d.meta.base + Math.max(d.meta.size || 0, 0x1000)]);
+    this.neSpans = { of: all, spans }; return spans;
+  }
+  /** room for a block table of `size` bytes among the modules' (LAYOUT.TABLES to TABLES_END): at `pref` when nothing
+   *  is there (the memo's place for this file, dyn.js neMemo), else the first 4 KiB boundary with room. Taken: every
+   *  module of the bundle's, loaded or not (each loads with its build's table, at its build's place), and every module
+   *  loaded here. None left is the machine's error, as running out of selectors is */
+  tableRoom(size, pref = 0) {
+    const S = window.W95SYSTEM || {}, taken = [];
+    const span = t => { if (t && t.lookup && t.textHi > t.textLo) taken.push([t.lookup, t.lookup + 4 * (t.textHi - t.textLo)]); };
+    for (const grp of [S.ne, S.dlls, S.programs, S.net, S.vxds, (window.W95SAVERS || {}).dlls]) for (const d of Object.values(grp || {})) span(d.meta);
+    for (const m of this.modules) span(m.netText ? { lookup: m.meta.lookup, textLo: m.netText[0], textHi: m.netText[1] } : m.meta);   // (one whose module is being read from the memo: its table taken too)
+    const free = a => a >= LAYOUT.TABLES && a + size <= LAYOUT.TABLES_END && !taken.some(([lo, hi]) => a < hi && lo < a + size);
     if (free(pref)) return pref;
-    if (relocatable) for (let a = 0x00620000; a + size <= 0x02000000; a += 0x10000) if (free(a)) return a;
+    // (the memo's tables for modules not loaded here kept clear while there is room elsewhere in the arena, as vmRoom
+    // keeps their images clear: each module's table where its translation was made)
+    { const all = [...taken, ...this.memoSpans()].sort((x, y) => x[0] - y[0]); let b = LAYOUT.TABLES;
+      for (const [lo, hi] of all) { if (b + size > LAYOUT.TABLES_END) break; if (b + size <= lo) return b; if (hi > b) b = (hi + 0xfff) & ~0xfff; }
+      if (b + size <= LAYOUT.TABLES_END) return b; }
+    taken.sort((x, y) => x[0] - y[0]);
+    let a = LAYOUT.TABLES;
+    // (a gap between tables inside the tables' arena only: the tables placed above the layout, vmRoom's, have DLLs'
+    // images and VirtualAlloc's regions between them, and a table put in such a gap wrote its block numbers over them
+    // (VCACHE's 30 MB reservation, URLMON's and MSIDLE's code: MSIDLE's mouse hook ran zeros, a fatal exception 0E)
+    for (const [lo, hi] of taken) { if (a + size > LAYOUT.TABLES_END) break; if (a + size <= lo) return a; if (hi > a) a = (hi + 0xfff) & ~0xfff; }
+    if (free(a)) return a;
+    // (the tables' arena full, Windows 98's large DLLs (SHELL32, OLE32, MSHTML) translated as they load with the bundle's
+    // tables in place: a table where VirtualAlloc's regions are, given as the module's own to it, its base the module's
+    // to read, vmRoom; Explorer's start found no room for 7D1F20h bytes)
+    const v = this.vmRoom(size, 0x1000); if (v) return v;
+    throw new GuestError(`no room for a block table of ${u32(size).toString(16)}h bytes`);
+  }
+  /** whether [a, a+size) reaches into the room kept for programs' images (400000h to EXE_ZONE_END) */
+  inExeZone(a, size) { return a < EXE_ZONE_END && a + size > 0x400000; }
+  imageRoom(pref, size, relocatable, own = false) {
+    // (and every 16-bit module of the bundle's, loaded or not: each loads at its build's fixed base (loadNE), over
+    // whatever is there. WINSPOOL.DRV, placed at BA0000h before MMTASK, had MMTASK's image written over it, and
+    // RUNDLL32 faulted in its start)
+    const spans = [...(own ? this.moduleSpans(m => m.name !== 'EXE') : this.moduleSpans()), ...this.bundleSpans16()], free =a => a >= 0x400000 && a + size <= 0x02000000 && !spans.some(([lo, hi]) => a < hi && lo < a + size);
+    // (a module that can go anywhere goes clear of the programs' own images, 400000h up to EXE_ZONE_END, as Windows maps
+    // a DLL at its own base far from them: DLLs placed from 620000h up filled the room a program with no relocations
+    // needs at 400000h, and the CD Sampler's Pinball, 4.6 MB, had "no room for its image" (KERNEL32's stand-in at
+    // 620000h, OLEAUT32 and COMDLG32.OCX of the Sampler that started it). Into it only when there is no other room)
+    const zone = a => !own && relocatable && this.inExeZone(a, size);
+    if (free(pref) && !zone(pref)) return pref;
+    const PROGRAMS = [0x01000000, 0x01100000], programs = a => !own && a < PROGRAMS[1] && PROGRAMS[0] < a + size;
+    const from = own ? 0x00620000 : EXE_ZONE_END;
+    // (clear of the memo's places for modules not loaded here first, as vmRoom keeps clear of them)
+    if (relocatable) { const memo = this.memoSpans(), kept = a => !memo.some(([lo, hi]) => a < hi && lo < a + size); for (let a = from; a + size <= 0x02000000; a += 0x10000) if (free(a) && !programs(a) && kept(a)) return a; }
+    if (relocatable) for (let a = from; a + size <= 0x02000000; a += 0x10000) if (free(a) && !programs(a)) return a;
+    // (the arena full: a relocatable DLL in the address space above the layout's, where VirtualAlloc's regions are, as
+    // Windows maps a DLL wherever its process has room. Windows 98's first start maps more DLLs than the arena holds,
+    // and IEPEERS.DLL and OCCACHE.DLL found no room)
+    if (relocatable && !own && this.vmTop) { const r = this.vmRoom(size, 0x10000, spans); if (r) return r; }
+    if (relocatable && !own) for (let a = 0x00620000; a + size <= EXE_ZONE_END; a += 0x10000) if (free(a)) return a;
     return 0;
+  }
+  /** `size` bytes of the address space above the layout's, where VirtualAlloc's regions are, aligned to `align`, clear
+   *  of `spans`: first the room ended processes gave back (endProcess: their VirtualAlloc regions, vspare), then the
+   *  top's. Taken only from the top, that space ran out after Windows 98's first start had run REGSVR32 a few dozen
+   *  times, and WMI.DLL and DEVMGR32.DLL found none: RUNDLL's "Error loading devmgr32.dll", error 126. 0: none */
+  /** room [b, b+n) handed out above the layout checked against what is there: a module's image or block table named
+   *  with the allocation's stack (an error once each) */
+  vmCheck(b, n, what) {
+    if (!b) return b;
+    for (const m of this.modules || []) {
+      const t = m.meta, spans = [[m.base, m.base + (m.size || 0), 'image'], t && t.lookup ? [t.lookup, t.lookup + 4 * Math.max(0, (m.netText ? m.netText[1] - m.netText[0] : t.textHi - t.textLo)), 'table'] : null];
+      for (const s of spans) if (s && s[1] > s[0] && b < s[1] && s[0] < b + n) {
+        const k = `${what}:${m.name}:${s[2]}`; const seen = this.vmClash || (this.vmClash = new Set()); if (seen.has(k)) continue; seen.add(k);
+        log('error', 'win32', `${what} at ${(b >>> 0).toString(16)}+${n.toString(16)} over ${m.name}'s ${s[2]} ${(s[0] >>> 0).toString(16)}-${(s[1] >>> 0).toString(16)}: ${(new Error().stack || '').split('\n').slice(2, 8).map(x => x.trim()).join(' < ')}`);
+      }
+    }
+    return b;
+  }
+  /** the address space above the layout as its allocators keep it, checked after `what`: each spare piece, region, big
+   *  block, image and block table apart from the others and below the top (the first overlap logged with its stack) */
+  vmAudit(what) {
+    if (this.vmAudited || !this.vmTop) return;
+    const all = [];
+    for (const s of this.vspare || []) all.push([s.base, s.base + s.size, 'spare']);
+    for (const [b, r] of this.vregions || []) if (!r.heap) all.push([b, b + r.size, 'region']);
+    for (const [b, n] of this.bigBlocks || []) all.push([b, b + n, 'big block']);
+    for (const m of this.modules || []) {
+      if (m.size && m.base >= this.vmLo) all.push([m.base, m.base + m.size, m.name + ' image']);
+      const t = m.meta; if (t && t.lookup >= this.vmLo) all.push([t.lookup, t.lookup + 4 * Math.max(0, m.netText ? m.netText[1] - m.netText[0] : t.textHi - t.textLo), m.name + ' table']);
+    }
+    all.sort((x, y) => x[0] - y[0]);
+    for (let i = 0; i < all.length; i++) {
+      const a = all[i], b = all[i + 1], h = v => (v >>> 0).toString(16);
+      const bad = (b && b[0] < a[1]) ? `${a[2]} ${h(a[0])}-${h(a[1])} and ${b[2]} ${h(b[0])}-${h(b[1])}` : a[2] === 'spare' && a[1] > this.vmTop ? `spare ${h(a[0])}-${h(a[1])} past the top ${h(this.vmTop)}` : '';
+      if (bad) { this.vmAudited = true; log('error', 'win32', `vm overlap after ${what}: ${bad}: ${(new Error().stack || '').split('\n').slice(2, 9).map(x => x.trim()).join(' < ')}`); return; }
+    }
+  }
+  vmRoom(size, align, spans = []) {
+    if (!this.vmTop) return 0;
+    // (clear of the places the memo has for modules not loaded here (memoSpans) while there is room elsewhere: a DLL
+    // put where its translation was made runs the memo's module; put elsewhere, translated again, whole, in the step)
+    return this.vmRoomClear(size, align, [...spans, ...this.memoSpans()], true) || this.vmRoomClear(size, align, spans, false);
+  }
+  /** `topClear`: the top's room checked against `spans` too (the first pass, the memo's places); the last pass takes the
+   *  top as it is, as it always has (checked there, a module mapped above the top refused every allocation from it, and
+   *  MPREXE could not load IENPSTUB.DLL, error 126) */
+  vmRoomClear(size, align, spans, topClear) {
+    const n = (size + align - 1) & -align, spare = this.vspare || (this.vspare = []);
+    const hit = a => spans.find(([lo, hi]) => a < hi && lo < a + n);
+    for (let i = 0; i < spare.length; i++) {
+      const s = spare[i], end = s.base + s.size;
+      let a = (s.base + align - 1) & -align, h;
+      while (a + n <= end && (h = hit(a))) a = (h[1] + align - 1) & -align;
+      if (a + n > end) continue;
+      spare.splice(i, 1);
+      if (a > s.base) spare.push({ base: s.base, size: a - s.base });
+      if (a + n < end) spare.push({ base: a + n, size: end - a - n });
+      this.u8.fill(0, a, a + n); return this.vmCheck(a, n, 'room from the spare');
+    }
+    // (from the top only where it is clear: the top is not moved on past what it must keep clear of. Moved past the
+    // memo's places, which lie across the whole space from runs before, a few allocations took the space up, and
+    // MSJET40's block table found no room)
+    const b = (this.vmTop + align - 1) & -align;
+    if (b + n > this.mem.buffer.byteLength || (topClear && hit(b))) return 0;
+    this.vmTop = b + n; return this.vmCheck(b, n, 'room from the top');
+  }
+  /** the room [b, b+size) above the layout taken where it is, when it is free (a spare piece holds it, or it is past the
+   *  top) and clear of `spans`: the memo's place for a module (vmRoom's pieces otherwise). 0 when it is not */
+  vmTake(b, size, spans = []) {
+    if (!this.vmTop || !this.vmLo || b < this.vmLo || b % 0x1000) return 0;
+    const n = (size + 0xfff) & ~0xfff, end = b + n, spare = this.vspare || (this.vspare = []);
+    if (spans.some(([lo, hi]) => b < hi && lo < end) || end > this.mem.buffer.byteLength) return 0;
+    // (past the top, however far: the space between stays to hand as a spare piece, which vmRoom takes from before the
+    // top. Refused when more than a megabyte past it, a DLL loaded late had its place only when the allocations before
+    // it happened to end there: MSHTML and URLMON, loaded as the first folder window opens, were translated again
+    // whole at every start, 74 MB of code, and that window took most of a minute to fill)
+    if (b >= this.vmTop) {
+      if (b > this.vmTop) spare.push({ base: this.vmTop, size: b - this.vmTop });
+      this.vmTop = end; this.u8.fill(0, b, end); return this.vmCheck(b, n, 'the memo\'s place, from the top');
+    }
+    const i = spare.findIndex(s => s.base <= b && end <= s.base + s.size); if (i < 0) return 0;
+    const s = spare.splice(i, 1)[0];
+    if (b > s.base) spare.push({ base: s.base, size: b - s.base });
+    if (end < s.base + s.size) spare.push({ base: end, size: s.base + s.size - end });
+    this.u8.fill(0, b, end); return this.vmCheck(b, n, 'the memo\'s place, from the spare');
+  }
+  /** the places the memo (dyn.js) has for the modules it holds and this machine has not loaded: each one's image (its
+   *  code span for a record from before images were kept) and its block table. Read again as the memo grows */
+  memoSpans() {
+    const memo = window.W95Dyn && window.W95Dyn.memo; if (!memo || !memo.size) return [];
+    const loaded = new Set((this.modules || []).map(m => m && m.sha256).filter(Boolean));
+    for (const m of this.ne ? this.ne.values() : []) if (m && m.sha256) loaded.add(m.sha256);
+    const key = `${memo.size}:${loaded.size}`;
+    if (this.memoSpanKey === key) return this.memoSpanList;
+    const out = [];
+    for (const r of memo.values()) {
+      if (!r || loaded.has(r.sha) || !(r.textHi > r.textLo)) continue;
+      out.push(r.imageHi > r.imageLo ? [r.imageLo, r.imageHi] : [r.textLo, r.textHi]);
+      if (r.lookup) out.push([r.lookup, r.lookup + 4 * (r.textHi - r.textLo)]);
+    }
+    this.memoSpanKey = key; this.memoSpanList = out;
+    return out;
   }
   /** a DLL an image imports or LoadLibrary names that the system bundle does not carry, from its file, as Windows'
    *  loader finds it: the program's folder, SYSTEM, the Windows folder. Mapped where there is room, its code translated
@@ -269,19 +488,38 @@ class Process {
   diskDll(name, replacing = false) {
     // (one this system implements, the personality's KERNEL32, ADVAPI32, ...: that one, never its file; unless the file
     // replaces the bundle's own translation of it, replacing)
-    if (!this.fs || (API[name] && !replacing) || STAND_IN.has(name) || !/^[A-Z0-9_$~!#%&'()@^`{}-]+(\.[A-Z0-9]+)?$/i.test(name)) return null;
+    // (a long name may have spaces: the Plus! savers' engines, "Inside your Computer.dll", were never found)
+    if (!this.fs || (API[name] && !replacing) || STAND_IN.has(name) || !/^[A-Z0-9_$~!#%&'()@^`{}][A-Z0-9_$~!#%&'()@^`{} -]*(\.[A-Z0-9]+)?$/i.test(name)) return null;
     const file = /\./.test(name) ? name : name + '.DLL';
     const dirs = [...(this.loadDirs || []), 'C:\\WINDOWS\\SYSTEM', 'C:\\WINDOWS'];
-    let f = null;
-    for (const d of dirs) { try { f = this.fs.readFile(d + '\\' + file); break; } catch (_) { /* not there */ } }
+    let f = null, path = null;
+    for (const d of dirs) { try { f = this.fs.readFile(d + '\\' + file); path = d + '\\' + file; break; } catch (_) { /* not there */ } }
     if (!f || f.length < 0x40 || f[0] !== 0x4d || f[1] !== 0x5a) return null;
     const dv = new DataView(f.buffer, f.byteOffset, f.byteLength), pe = dv.getUint32(0x3c, true);
     if (pe + 0xf8 > f.length || dv.getUint32(pe, true) !== 0x4550 || !(dv.getUint16(pe + 22, true) & 0x2000)) return null;   // (IMAGE_FILE_DLL)
     const opt = pe + 24, pref = dv.getUint32(opt + 28, true), size = dv.getUint32(opt + 56, true), ep = dv.getUint32(opt + 16, true);
     const relocatable = !(dv.getUint16(pe + 22, true) & 1) && dv.getUint32(opt + 96 + 5 * 8 + 4, true) > 0;
-    const base = this.imageRoom(pref, size, relocatable);
+    // (where the memo's translation of this file was made, first: the module put there runs the memo's module, not one
+    // translated again, whole, as it loads (dyn.js neCompile). Its image's base, or its code's less the code's offset)
+    let memoBase = 0;
+    if (relocatable && window.W95Dyn && window.W95Dyn.memo.size) {
+      const had = window.W95Dyn.memo.get(sha256(f));
+      if (had && had.imageLo) memoBase = had.imageLo;
+      else if (had && had.textLo) {
+        const nsec = dv.getUint16(pe + 6, true), shdr = opt + dv.getUint16(pe + 20, true); let lo = Infinity;
+        for (let i = 0; i < nsec; i++) { const o = shdr + 40 * i, ch = dv.getUint32(o + 36, true), vs = dv.getUint32(o + 8, true) || dv.getUint32(o + 16, true); if ((ch & 0x20000020) && vs) lo = Math.min(lo, dv.getUint32(o + 12, true)); }
+        if (lo < Infinity) memoBase = had.textLo - lo;
+      }
+    }
+    let base = (memoBase && memoBase !== pref && !this.inExeZone(memoBase, size) && (this.imageRoom(memoBase, size, false) || this.vmTake(memoBase, size, this.moduleSpans()))) || this.imageRoom(pref, size, relocatable);
+    // (one with no relocations based past the machine's memory, where it can never be: put where there is room, its
+    // addresses of itself found in its image, loadImage synthRelocs. The Plus! saver engine "Inside your Computer.dll"
+    // is linked at 7C980000h with none, and the theme's screen saver showed nothing)
+    const synth = !base && !relocatable && u32(pref) + size > this.mem.buffer.byteLength;
+    if (synth) base = this.imageRoom(0, size, true);
     if (!base) { log('warn', 'win32', `${file}: no room for its image at ${pref.toString(16)}`); return null; }
-    const d = { file: f, module: null, meta: { base, entry: ep ? base + ep : 0, textLo: 0, textHi: 0, blocks: [], size, dynamic: true } };
+    // (the file it was mapped from: GetModuleFileName's answer, TRIEDIT's own type library found beside it)
+    const d = { file: f, module: null, meta: { base, entry: ep ? base + ep : 0, textLo: 0, textHi: 0, blocks: [], size, dynamic: true, path, ...(synth ? { synthRelocs: true } : {}) } };
     this.dlls.set(name, d);
     return d;
   }
@@ -291,17 +529,135 @@ class Process {
   /** the module handle of a DLL implemented here (OPENGL32), one per name: LoadLibrary's and GetModuleHandle's */
   jsDll(name) {
     const m = this.jsDlls || (this.jsDlls = new Map());
-    if (!m.has(name)) m.set(name, 0x10000000 | (this.newHandle({ kind: 'module', name }) & 0xffff));
+    if (!m.has(name)) m.set(name, this.standinImage(name) || 0x10000000 | (this.newHandle({ kind: 'module', name }) & 0xffff));
     return m.get(name);
   }
-  moduleFor(h) { h = this.hmod(h); const e = this.exe; return e && e.base === h ? e : this.modules.find(m => m.base === h && !m.hidden) || e; }   // (the running process's own program first: another's may be at its base, arenaClaim)
+  /** the module handle of a stand-in whose file is on the disk (Windows 98's KERNEL32.DLL): its headers mapped at a
+   *  base of their own in the arena, as the loader maps the DLL, the rest of its room kept. A program reads a module's
+   *  header through its handle: MSVCRT's __heap_select reads the EXE module's linker version from it, and in the
+   *  system's process that module is KERNEL32 (GetModuleHandleA). 0 when the file is not there */
+  standinImage(name) {
+    if (!this.fs || !/^[A-Z0-9_$~!#%&'()@^`{}-]+(\.[A-Z0-9]+)?$/i.test(name)) return 0;
+    const file = /\./.test(name) ? name : name + '.DLL';
+    let f = null, path = null;
+    for (const d of ['C:\\WINDOWS\\SYSTEM', 'C:\\WINDOWS']) { try { f = this.fs.readFile(d + '\\' + file); path = d + '\\' + file; break; } catch (_) { /* not there */ } }
+    if (!f || f.length < 0x40 || f[0] !== 0x4d || f[1] !== 0x5a) return 0;
+    const dv = new DataView(f.buffer, f.byteOffset, f.byteLength), pe = dv.getUint32(0x3c, true);
+    if (pe + 0xf8 > f.length || dv.getUint32(pe, true) !== 0x4550) return 0;
+    const opt = pe + 24, pref = dv.getUint32(opt + 28, true), size = dv.getUint32(opt + 56, true), hdr = Math.min(dv.getUint32(opt + 60, true), f.length, size);
+    const base = this.imageRoom(pref, size, true);
+    if (!base) return 0;
+    this.u8.set(f.subarray(0, hdr), base);
+    (this.standins || (this.standins = [])).push({ name, base, size, path });
+    return base;
+  }
+  standinAt(h) { return (this.standins || []).find(s => s.base === h) || null; }
+  /** a module's export by name or '#ordinal', a forwarder followed to the module it names (its stand-in's thunk where
+   *  that is one); 0 for none */
+  exportOf(m, nm, hops = 0) {
+    const a = m.exports.get(nm); if (a) return a;
+    const f = m.forwards && m.forwards.get(nm); if (!f || hops > 8) return 0;
+    const dot = f.indexOf('.'), dll = f.slice(0, dot).toUpperCase().replace(/\.DLL$/, ''), s = f.slice(dot + 1);
+    const key = s[0] === '#' ? '#' + parseInt(s.slice(1), 10) : s, t = this.loadDll(dll);
+    const r = t ? this.exportOf(t, key, hops + 1) : API[dll] && this.importDef(dll, key) ? this.thunkFor(dll, key) : 0;
+    if (r) m.exports.set(nm, r);
+    return r;
+  }
+  /** a Win32 file mapped as data (LoadLibraryEx's LOAD_LIBRARY_AS_DATAFILE): the section holding its resources copied
+   *  into the heap, at the address its RVAs are read from; the module handle, or 0 for a file with no resources */
+  dataModule(file, path) {
+    const dv = new DataView(file.buffer, file.byteOffset, file.byteLength), pe = dv.getUint32(0x3c, true);
+    const nsec = dv.getUint16(pe + 6, true), opt = pe + 24, optSize = dv.getUint16(pe + 20, true), magic = dv.getUint16(opt, true);
+    const dirs = opt + (magic === 0x20b ? 112 : 96), rsrc = dirs + 16 + 8 <= file.length ? dv.getUint32(dirs + 16, true) : 0;
+    let sec = null;
+    for (let i = 0; i < nsec; i++) {
+      const o = opt + optSize + 40 * i, va = dv.getUint32(o + 12, true), vs = dv.getUint32(o + 8, true), raw = dv.getUint32(o + 16, true), rp = dv.getUint32(o + 20, true);
+      if (rsrc >= va && rsrc < va + Math.max(vs, raw)) { sec = { va, size: Math.max(vs, raw), raw, rp }; break; }
+    }
+    if (!rsrc || !sec) { this.lastError = 1812; return 0; }   // ERROR_RESOURCE_DATA_NOT_FOUND
+    const block = this.alloc(sec.size); this.u8.set(file.subarray(sec.rp, sec.rp + Math.min(sec.raw, sec.size, file.length - sec.rp)), block);
+    const base = u32(block - sec.va), name = String(path).replace(/^.*\\/, '').toUpperCase().replace(/\.DLL$/, '');
+    (this.dataMods || (this.dataMods = new Map())).set(base, { name, base, rsrc, block, path, data: true, exports: new Map() });
+    this.lastError = 0;
+    return base;
+  }
+  moduleFor(h) { h = this.hmod(h); const dm = this.dataMods && this.dataMods.get(u32(h)); if (dm) return dm; const e = this.exe; return e && e.base === h ? e : this.modules.find(m => m.base === h && !m.hidden) || e; }   // (the running process's own program first: another's may be at its base, arenaClaim)
   thunkFor(dll, nm) {
     const key = dll + '!' + nm;
     if (this.thunkByName.has(key)) return this.thunkByName.get(key);
-    const def = (API[dll] || {})[nm];
+    const def = this.importDef(dll, nm);
     const t = LAYOUT.THUNK + this.thunks.length * 4;
     this.thunks.push({ dll, nm, def }); this.thunkByName.set(key, t);
     return t;
+  }
+  /** what a call to `dll`!`nm` does: its definition here, else what the DLL's own file does when that is the system's
+   *  common stub for a call it leaves unimplemented. (Windows 98's SETUPAPI imports ADVAPI32's IsTextUnicode, which
+   *  Windows 98's ADVAPI32 exports as that stub and this ADVAPI32 lacked: a dead thunk, and Explorer's first start
+   *  faulted in it) */
+  importDef(dll, nm) { return (API[dll] || {})[nm] || this.byOrdinal(dll, nm) || this.unimpStub(dll, nm) || undefined; }
+  /** an import by number of a call defined here by name: the name `dll`'s own file gives that ordinal (Windows 98's
+   *  ICWCONN1 reaches KERNEL32's QT_Thunk as #561, and ended in a dead thunk). Its definition, or null */
+  byOrdinal(dll, nm) {
+    if (nm[0] !== '#' || !this.fs || !API[dll]) return null;
+    const names = this.ordNames32 || (this.ordNames32 = new Map());
+    if (!names.has(dll)) {
+      const map = new Map(); names.set(dll, map);
+      const file = /\./.test(dll) ? dll : dll + '.DLL'; let f = null;
+      for (const d of [...(this.loadDirs || []), 'C:\\WINDOWS\\SYSTEM', 'C:\\WINDOWS']) { try { f = this.fs.readFile(d + '\\' + file); break; } catch (_) { /* not there */ } }
+      if (f && f.length > 0x40 && f[0] === 0x4d && f[1] === 0x5a) {
+        const dv = new DataView(f.buffer, f.byteOffset, f.byteLength), pe = dv.getUint32(0x3c, true);
+        if (pe + 0xf8 <= f.length && dv.getUint32(pe, true) === 0x4550) {
+          const opt = pe + 24, nsec = dv.getUint16(pe + 6, true), sh = opt + dv.getUint16(pe + 20, true);
+          const off = r => { for (let i = 0; i < nsec; i++) { const s = sh + 40 * i, va = dv.getUint32(s + 12, true), n = Math.max(dv.getUint32(s + 8, true), dv.getUint32(s + 16, true)); if (r >= va && r < va + n) { const o = dv.getUint32(s + 20, true) + r - va; return o < f.length ? o : -1; } } return -1; };
+          const str = o => { let s = ''; while (o >= 0 && o < f.length && f[o]) s += String.fromCharCode(f[o++]); return s; };
+          const ex = off(dv.getUint32(opt + 96, true));
+          if (ex >= 0) {
+            const obase = dv.getUint32(ex + 16, true), nn = dv.getUint32(ex + 24, true), na = off(dv.getUint32(ex + 32, true)), oa = off(dv.getUint32(ex + 36, true));
+            if (na >= 0 && oa >= 0) for (let i = 0; i < nn; i++) map.set(dv.getUint16(oa + 2 * i, true) + obase, str(off(dv.getUint32(na + 4 * i, true))));
+          }
+        }
+      }
+    }
+    const name = names.get(dll).get(+nm.slice(1));
+    return (name && API[dll][name]) || null;
+  }
+  /** an export of `dll`'s file that is `xor eax,eax; mov cl,N; jmp KERNEL32!#17` (directly or through a jump):
+   *  KERNEL32's CommonUnimpStub, which sets ERROR_CALL_NOT_IMPLEMENTED, returns by N's high nibble (1: 1, 13: 50,
+   *  14: 120, 15: -1, else 0) and pops N's low nibble of arguments. Its definition, or null */
+  unimpStub(dll, nm) {
+    if (!this.fs || !API[dll]) return null;
+    const file = /\./.test(dll) ? dll : dll + '.DLL'; let f = null;
+    for (const d of [...(this.loadDirs || []), 'C:\\WINDOWS\\SYSTEM', 'C:\\WINDOWS']) { try { f = this.fs.readFile(d + '\\' + file); break; } catch (_) { /* not there */ } }
+    if (!f || f.length < 0x40 || f[0] !== 0x4d || f[1] !== 0x5a) return null;
+    const dv = new DataView(f.buffer, f.byteOffset, f.byteLength), pe = dv.getUint32(0x3c, true);
+    if (pe + 0xf8 > f.length || dv.getUint32(pe, true) !== 0x4550) return null;
+    const opt = pe + 24, nsec = dv.getUint16(pe + 6, true), sh = opt + dv.getUint16(pe + 20, true), base = dv.getUint32(opt + 28, true);
+    const off = r => { for (let i = 0; i < nsec; i++) { const s = sh + 40 * i, va = dv.getUint32(s + 12, true), n = Math.max(dv.getUint32(s + 8, true), dv.getUint32(s + 16, true)); if (r >= va && r < va + n) { const o = dv.getUint32(s + 20, true) + r - va; return o < f.length ? o : -1; } } return -1; };
+    const str = o => { let s = ''; while (o >= 0 && o < f.length && f[o]) s += String.fromCharCode(f[o++]); return s; };
+    const ex = off(dv.getUint32(opt + 96, true)); if (ex < 0) return null;
+    const obase = dv.getUint32(ex + 16, true), nf = dv.getUint32(ex + 20, true), nn = dv.getUint32(ex + 24, true), fa = off(dv.getUint32(ex + 28, true)), na = off(dv.getUint32(ex + 32, true)), oa = off(dv.getUint32(ex + 36, true));
+    let k = -1;
+    if (nm[0] === '#') k = +nm.slice(1) - obase;
+    else for (let i = 0; i < nn; i++) if (str(off(dv.getUint32(na + 4 * i, true))) === nm) { k = dv.getUint16(oa + 2 * i, true); break; }
+    if (k < 0 || k >= nf) return null;
+    let rva = dv.getUint32(fa + 4 * k, true), c = off(rva);
+    if (c < 0 || c + 9 > f.length || f[c] !== 0x33 || f[c + 1] !== 0xc0 || f[c + 2] !== 0xb1) return null;
+    const cl = f[c + 3]; rva += 4; c += 4;
+    if (f[c] === 0xe9) { rva = (rva + 5 + dv.getInt32(c + 1, true)) >>> 0; c = off(rva); }
+    else if (f[c] === 0xeb) { rva = (rva + 2 + dv.getInt8(c + 1)) >>> 0; c = off(rva); }
+    // (KERNEL32's own: straight to its #17, no import between: Windows 98's GetVersionExW, LoadLibraryW, ...)
+    const def = () => { const ret = { 1: 1, 13: 50, 14: 120, 15: 0xffffffff }[cl >> 4] || 0; return [cl & 15, function () { this.lastError = 120; return ret; }]; };
+    if (/^KERNEL32(\.DLL)?$/i.test(dll) && 17 - obase >= 0 && 17 - obase < nf && rva === dv.getUint32(fa + 4 * (17 - obase), true)) return def();
+    if (c < 0 || c + 6 > f.length || f[c] !== 0xff || f[c + 1] !== 0x25) return null;
+    const slot = (dv.getUint32(c + 2, true) - base) >>> 0;   // (the IAT entry it jumps through: KERNEL32's #17)
+    for (let d = off(dv.getUint32(opt + 104, true)); d >= 0 && d + 20 <= f.length && dv.getUint32(d + 12, true); d += 20) {
+      const iat = dv.getUint32(d + 16, true), lut = off(dv.getUint32(d, true) || iat);
+      if (slot < iat || (slot - iat) & 3 || !/^KERNEL32(\.DLL)?$/i.test(str(off(dv.getUint32(d + 12, true))))) continue;
+      const v = lut < 0 ? 0 : dv.getUint32(lut + slot - iat, true);
+      if (v !== (0x80000000 | 17) >>> 0) return null;
+      return def();
+    }
+    return null;
   }
   setupStack(cmdline) {
     const t = LAYOUT.TIB;
@@ -321,6 +677,16 @@ class Process {
     const pending = this.inits; this.inits = [];
     for (const m of pending) this.attach(m);
   }
+  /** the DLLs loaded since the last run, each after the DLLs it imports: one of those may have been loaded long ago by
+   *  another process, and this process attaches to it before the new DLL's DllMain calls it. The new ones alone, ahead
+   *  of what they import: a DLL REGSVR32 loaded ran its DllMain with OLEAUT32 not yet this process's (another's slot
+   *  index in its data), its SysAllocString set the thread's block there, OLE32's CoSetState loaded OLEAUT32, whose
+   *  DllMain then ran and took a new index, and SysAllocString read the thread's block at 0 */
+  pendingInits() {
+    const pending = this.inits, out = [], seen = new Set(); this.inits = [];
+    for (const m of pending) this.importClosure(m, out, seen);
+    return out;
+  }
   /** DllMain(DLL_PROCESS_ATTACH) of a DLL for the current process, once: each process attaches to every DLL it uses,
    *  as Windows 95 attaches them, though the image is loaded once in this address space */
   /** the DLLs a module imports, and theirs, dependencies first (the order DllMain runs in) */
@@ -330,32 +696,86 @@ class Process {
     out.push(m); return out;
   }
   attach(m) {
+    const entry = this.attachPrep(m); if (!entry) return;
+    this.call(entry, [m.base, 1, 0]);
+    this.attachOle(m);
+  }
+  /** SHELL32 told OLE is there once its DllMain has run (SHLoadOLE #151) */
+  attachOle(m) {
+    const ole = m.name === 'SHELL32' && m.exports.get('#151');
+    if (ole) { this.shellNotifyList(m); this.call(ole, [2]); }
+  }
+  /** the DllMains of `mods` run by the thread itself as LoadLibrary returns to it, not as a call the host makes: the
+   *  thread can give up the processor in one, as in any code of its own. Made inside a call the host made, a DllMain
+   *  that waited on another thread waited for good, nothing else running meanwhile (Windows 98's first start: RUNONCE's
+   *  LoadLibrary of a DLL whose DllMain loaded another, whose DllMain sent to a window of another thread, USER's
+   *  wait for the reply at 3:1626 run on, and the machine answered nothing). The frame on the guest's stack, from ESP
+   *  up: how many, the next one's index, their bases, LoadLibrary's answer, the caller's return address */
+  dllChainStart(mods, ret, top, result) {
+    const k = mods.length, f = u32(top - 4 * (k + 4));
+    this.w32(f, k); this.w32(f + 4, 0); mods.forEach((m, i) => this.w32(f + 8 + 4 * i, m.base));
+    this.w32(f + 8 + 4 * k, result); this.w32(f + 12 + 4 * k, ret);
+    this.reg('esp', f); this.hookDllChain();
+    return DLL_CHAIN;
+  }
+  /** the chain's address hooked (again after a travel, whose hooks are the moment's: worker.js) */
+  hookDllChain() {
+    const hooks = this.entryHooks || (this.entryHooks = new Map());
+    if (!hooks.has(DLL_CHAIN)) hooks.set(DLL_CHAIN, function () { return this.dllChainStep(); });
+    if (!hooks.has(SEH_CONT)) hooks.set(SEH_CONT, function () { return sehStep(this); });
+  }
+  dllChainStep() {
+    const sp = u32(this.reg('esp')), k = this.r32(sp), i = this.r32(sp + 4);
+    if (i > 0) { const prev = this.modules.find(x => x.base === this.r32(sp + 4 + 4 * i)); if (prev && prev.oleDue) { prev.oleDue = false; this.attachOle(prev); } }
+    if (i < k) {
+      this.w32(sp + 4, i + 1);
+      const base = this.r32(sp + 8 + 4 * i), m = this.modules.find(x => x.base === base), entry = m && this.attachPrep(m);
+      if (!entry) return DLL_CHAIN;
+      if (m.name === 'SHELL32') m.oleDue = true;
+      this.push(0); this.push(1); this.push(base); this.push(DLL_CHAIN);
+      return entry;
+    }
+    this.reg('eax', this.r32(sp + 8 + 4 * k));
+    const ret = this.r32(sp + 12 + 4 * k); this.reg('esp', sp + 16 + 4 * k);
+    return ret;
+  }
+  /** the process marked attached to `m` and the DLL's data made its own: DllMain's address, 0 for none to run */
+  attachPrep(m) {
     const pc = this.pc, done = pc.attached || (pc.attached = new Set());
-    if (done.has(m) || !m.meta || m.clock) return;
+    if (done.has(m) || !m.meta || m.clock) return 0;
     done.add(m);
+    // (a DLL whose translation went with the last process that had it (dyn.js dynRelease): made again for this one)
+    if (m.released && this.neCompile) {
+      m.released = false;
+      try { this.neCompile(m); } catch (e) { if (!(e instanceof GuestError)) throw e; log('warn', 'win32', `${m.name}: ${e.message}; its code runs as run-time code`); m.meta.textLo = m.meta.textHi = 0; m.run = null; }
+    }
     // (its data as a new process gets it, a DLL of the private arena's: as loaded, the attached ones' put by)
     const v = m.priv;
     if (v && v.init) {
+      this.dllInPlace = null;   // (the views in place changed here: dllUse walks the list again)
       if (v.cur === null) v.cur = pc;
       else if (v.cur !== pc) { if (v.cur !== GONE) v.bufs.set(v.cur, v.ranges.map(([lo, hi]) => this.u8.slice(lo, hi))); v.ranges.forEach(([lo], i) => this.u8.set(v.init[i], lo)); v.cur = pc; }
     }
-    if (!m.meta.entry) return;
-    this.call(m.meta.entry, [m.base, 1, 0]);
-    const ole = m.name === 'SHELL32' && m.exports.get('#151');
-    if (ole) { this.shellNotifyList(m); this.call(ole, [2]); }
+    return m.meta.entry || 0;
   }
   /** the private-arena DLLs' data of process `pc` (the system's when null) in place, as the thread that runs is that
    *  process's (ne16.js imgUse) */
   dllUse(pc) {
     const key = pc || this.pc0 || (this.pc0 = { pid: 0x50 });
-    for (const m of this.modules || []) {
+    // (the view in place already this process's, and no module come or gone since: nothing to walk. Walked at every
+    // thread switch, the module list cost a tenth of a millisecond each, and Windows 98 Setup's copy, its Win16 tasks
+    // taking turns thousands of times a second, spent more time here than in its own code)
+    const mods = this.modules || [];
+    if (this.dllInPlace === key && this.dllInPlaceN === mods.length) return;
+    for (const m of mods) {
       const v = m.priv; if (!v || !v.init || v.cur === key || !v.bufs.has(key)) continue;
       if (v.cur !== GONE && v.cur !== null) v.bufs.set(v.cur, v.ranges.map(([lo, hi]) => this.u8.slice(lo, hi)));
       const mine = v.bufs.get(key); v.bufs.delete(key); v.ranges.forEach(([lo], i) => this.u8.set(mine[i], lo)); v.cur = key;
     }
+    this.dllInPlace = key; this.dllInPlaceN = mods.length;
   }
   /** a process's end: its copies of the DLLs' data go */
-  dllForget(pc) { for (const m of this.modules || []) { const v = m.priv; if (!v) continue; v.bufs.delete(pc); if (v.cur === pc) v.cur = GONE; } }
+  dllForget(pc) { this.dllInPlace = null; for (const m of this.modules || []) { const v = m.priv; if (!v) continue; v.bufs.delete(pc); if (v.cur === pc) v.cur = GONE; } }
   /** a range of the arena where programs' images overlap, Windows 95 mapping each process's at the base its header
    *  names in an address space of its own (400000h-7FFFFFFFh): two programs linked at 400000h without relocations run
    *  at once, and two instances of one program each have their own data. A slot keeps one copy of [lo, hi) per view:
@@ -437,8 +857,17 @@ class Process {
     const look = new Uint32Array(this.mem.buffer, m.meta.lookup, m.meta.textHi - m.meta.textLo);
     for (let i = Math.max(0, at); i < bl.length && bl[i] < a + 4; i++) look[bl[i] - m.meta.textLo] = 0;
   }
+  /** the running thread's slice ends where it is: the dispatcher's next question gives the processor back, as when
+   *  its time runs out (inside a call the host made it runs on) */
+  endSlice() { if (this.sliceEnd === undefined) { this.sliceEnd = Math.max(1, this.cpu.budget.value); this.cpu.budget.value = 0; } }
   /** the dispatcher's question when the block budget runs out: 1 to give the processor back to the host here */
   tick(eip) {
+    // (a slice ended before its time, endSlice: the blocks left are the next slice's, and no quantum went by)
+    if (this.sliceEnd !== undefined) {
+      this.cpu.budget.value = this.sliceEnd; this.sliceEnd = undefined;
+      if (this.runLevel === this.yieldLevel && !this.noPreempt) { this.preempted = u32(eip); return 1; }
+      return 0;
+    }
     this.cpu.budget.value = BUDGET;
     const vc = this.host.vclock; if (vc) vc.now += vc.perTick;   // (the machine's own clock: a quantum per BUDGET blocks, whatever the host's speed; worker.js vclock)
     if (this.inputPoll && !this.inPoll) { this.inPoll = true; try { this.inputPoll(); } finally { this.inPoll = false; } }   // interrupts: the keyboard's and the mouse's
@@ -452,7 +881,7 @@ class Process {
     if (!s || s.level !== this.runLevel) this.callRun = { level: this.runLevel, t0: performance.now(), told: false };
     else if (!s.told && performance.now() - s.t0 > 10000) {
       s.told = true;
-      log('warn', 'win32', `a call the host made runs on at ${this.whereOf(eip)} (${u32(eip).toString(16)}), thread ${this.thread16 ? this.thread16.id : 'main'}, level ${this.runLevel}/${this.yieldLevel}, depth ${this.depth}, ring 0 ${this.r0Depth || 0}`);
+      log('warn', 'win32', `a call the host made runs on at ${this.whereOf(eip)} (${u32(eip).toString(16)}), thread ${this.thread16 ? this.thread16.id : 'main'}, level ${this.runLevel}/${this.yieldLevel}, depth ${this.depth}, ring 0 ${this.r0Depth || 0}; the host's way in: ${((Error.stackTraceLimit = Math.max(Error.stackTraceLimit || 10, 80)), new Error().stack || '').split('\n').slice(2).map(l => (l.match(/at (?:Process\.|P\.|Machine\.|Object\.)?([\w$.]+) /) || [])[1]).filter(n => n && !/^(tick|dynRun|dispatch|runAt|trap|raise)$/.test(n)).slice(0, 24).join(' < ')}`);
     }
     return 0;
   }
@@ -464,7 +893,10 @@ class Process {
     // (the way there in the log too, as it happens: a machine that ends of it, the system's machine at its start, leaves
     // no fault log to ask for)
     { const f = this.faultLog[this.faultLog.length - 1]; log('warn', 'win32', `no code at ${f.at} (${f.atIn}) (${f.why || 'unmapped'}) cs ${f.cs} ss ${f.ss} ${['eax', 'ebx', 'ecx', 'edx', 'esi', 'edi', 'ebp'].map(r => `${r} ${u32(this.cpu[r].value).toString(16)}`).join(' ')} from ${f.fromIn || f.from}, esp ${f.esp}; the way there: ${f.path.slice(-16).join(' < ')}; stack ${(f.stack || []).slice(0, 8).join(' ')}`); }
-    if (/^run-time code/.test(t)) { log('warn', 'win32', t); this.trapped = null; return this.raise(6, at); }   // (an emulator gap: named)
+    // (an emulator gap: named; the #UD at the instruction itself, not where the run of run-time code began: QUARTZ's MMX
+    // probe (EMMS under its own handler, a 486 having none) was raised blocks earlier, and its handler did not take it)
+    const ud = this.trappedAt; this.trappedAt = undefined;
+    if (/^run-time code/.test(t)) { log('warn', 'win32', t); this.trapped = null; return this.raise(6, ud !== undefined ? ud : at); }
     if (t && !/^jump to unmapped address/.test(t)) return null;
     this.trapped = null; return this.raise(14, at, at);
   }
@@ -518,13 +950,21 @@ class Process {
   /** `fn` run as execution reaches linear `at` through the dispatcher (an export another module enters, a return
    *  address another module returns to), beside any hook there already; the function that removes it. A hook that
    *  answers where to go on (ne16.js clockCall) ends the chain */
+  /** the host's hook at linear `at` (entryHooks: the dispatcher calls it as control arrives there). In a module
+   *  translated as it loaded (dyn.js neCompile) the address keeps no block, so the module's own calls to it come to
+   *  the dispatcher and the hook, as run-time code brought them */
+  setEntryHook(at, fn) {
+    at = u32(at); (this.entryHooks || (this.entryHooks = new Map())).set(at, fn);
+    const dm = (this.modules || []).find(m => m.meta && m.meta.dynamic && m.meta.lookup && at >= m.meta.textLo && at < m.meta.textHi);
+    if (dm) this.w32(dm.meta.lookup + 4 * (at - dm.meta.textLo), 0);
+  }
   addEntryHook(at, fn) {
     at = u32(at);
     const hooks = this.entryHooks || (this.entryHooks = new Map()), lists = this.entryLists || (this.entryLists = new Map());
     let l = lists.get(at);
     if (!l) {
       l = { fns: [], was: hooks.get(at) || null }; lists.set(at, l);
-      hooks.set(at, function () { for (const f of l.fns.slice()) { const to = f.call(this); if (to !== undefined) return to; } return l.was ? l.was.call(this) : undefined; });
+      this.setEntryHook(at, function () { for (const f of l.fns.slice()) { const to = f.call(this); if (to !== undefined) return to; } return l.was ? l.was.call(this) : undefined; });
     }
     l.fns.push(fn);
     return () => { const i = l.fns.indexOf(fn); if (i >= 0) l.fns.splice(i, 1); if (!l.fns.length) { lists.delete(at); if (l.was) hooks.set(at, l.was); else hooks.delete(at); } };
@@ -585,6 +1025,8 @@ class Process {
         if (eip < 0x10000) (this.nullJumps || (this.nullJumps = [])).push({ at: eip, from: this.lastBlock >>> 0, cs: this.cpu.cs ? this.cpu.cs.value & 0xffff : null });
         const next = this.dataCode && this.dataCode(eip);
         if (next !== undefined && next !== null) { eip = next; continue; }
+        if (this.netEnter && this.netEnter(eip)) continue;   // (a DLL whose memo's module is compiled now: put in place, and entered there, dyn.js)
+        (this.entryRing || (this.entryAt = 0, this.entryRing = new Uint32Array(32)))[this.entryAt++ & 31] = eip;   // (run-time code entered: in a fault's way there too)
         const dyn = this.dynRun && this.dynRun(eip);   // code generated at run time (dyn.js)
         if (dyn === -1) return 1;   // its time was up
         if (dyn !== undefined && dyn !== null) { eip = dyn; continue; }
@@ -596,6 +1038,10 @@ class Process {
       let r;
       this.lastBlock = eip; (this.entryRing || (this.entryAt = 0, this.entryRing = new Uint32Array(32)))[this.entryAt++ & 31] = eip;   // (the last 32 entries into modules: a fault's way there, noCode)
       try { r = m.run(eip); } catch (e) {
+        // a divide error (DIV or IDIV by 0, or a quotient too large: wasm's traps), #DE at the instruction, as the
+        // processor raises it, for the program's handlers (a module translated as it loaded, dyn.js, divides with wasm's
+        // own instructions; this was the machine's end)
+        if (e instanceof WebAssembly.RuntimeError && /divide by zero|integer overflow/.test(e.message)) { eip = this.raise(0, u32(this.cpu.eip.value)); continue; }
         // an access past the end of memory (a pointer that is no address the machine has): a page fault where the guest
         // made it, for its own handlers or its fault dialog, as the processor raises one; not the machine's end
         if (!(e instanceof WebAssembly.RuntimeError) || !/out of bounds/.test(e.message)) throw e;
@@ -623,6 +1069,7 @@ class Process {
     if (this.hungMain) return true;   // the main thread hung: it never runs again
     this.depth = 0; this.waiting = false; this.lastYield = this.now();
     if (this.userStack) this.userStack();
+    if (this.sliceEnd !== undefined) { this.cpu.budget.value = this.sliceEnd; this.sliceEnd = undefined; }   // (a slice ended early that stopped another way first)
     let r; this.preempted = 0;
     if (this.mainCtx) { this.loadFull(this.mainCtx); this.mainCtx = null; if (this.rebaseGlobals) { this.rebaseGlobals(); this.resumeEip = u32(this.cpu.eip.value); } }   // where its time ran out, every register as it was (a global block's segment at the block's base now, EIP at the same offset in it)
     try { r = this.runTop(this.resumeEip); }
@@ -704,7 +1151,7 @@ class Process {
       throw new FaultError(f);
     }
     if (!this.r32(this.cpu.fs.value) || this.r32(this.cpu.fs.value) === 0xffffffff) throw new FaultError(f);
-    const r = sehDispatch(this, EXC_CODE[n] || 0xc0000005, eip, n === 14 || n === 13 ? [this.pfWrite ? 1 : 0, cr2] : [], f);
+    const r = sehStart(this, EXC_CODE[n] || 0xc0000005, eip, n === 14 || n === 13 ? [this.pfWrite ? 1 : 0, cr2] : [], f, 0);
     if (r === null) throw new FaultError(f);
     return r;
   }
@@ -743,7 +1190,16 @@ class Process {
       // not get to handle, as nothing can be pushed for a handler)
       const limit = this.r32(this.cpu.fs.value + 8) >>> 0;
       if (u32(eip) < limit && u32(eip) >= limit - 0x10000) {
-        log('warn', 'win32', `stack fault: thread ${this.thread16 ? this.thread16.id : 'main'}'s stack ran out at ${u32(eip).toString(16)}`);
+        // (with the code it was running and the return addresses nearest the stack's end: the recursion that ran it out)
+        // (only words in a module's code are named: whereOf for every word of the stack made each stack fault seconds long)
+        // (a DLL loaded from its file has no text bounds in its record: its image's span; Explorer's stack ran out in
+        // SHLWAPI and USER32, both from files, and the log named no return address)
+        const code = this.modules.filter(x => (x.meta && x.meta.textHi > x.meta.textLo) || (x.base && x.size)).map(x => x.meta && x.meta.textHi > x.meta.textLo ? [x.meta.textLo >>> 0, x.meta.textHi >>> 0] : [x.base >>> 0, (x.base + x.size) >>> 0]);
+        const chain = []; for (let a = u32(this.cpu.esp.value), end = Math.min(a + 0x8000, this.u8.length - 4); a < end && chain.length < 40; a += 4) { const v = this.r32(a) >>> 0; if (code.some(([lo, hi]) => v >= lo && v < hi)) chain.push(this.whereOf(v)); }
+        // (and the frames by their EBP chain, each with its place on the stack: what took the stack, not only its end)
+        const frames = []; for (let bp = u32(this.cpu.ebp.value), k = 0; k < 400 && bp > 0x1000 && bp + 8 <= this.u8.length; k++) { const nb = this.r32(bp) >>> 0; frames.push(`${this.whereOf(this.r32(bp + 4) >>> 0)}@${bp.toString(16)}`); if (nb <= bp) break; bp = nb; }
+        const top = this.r32(this.cpu.fs.value + 4) >>> 0;
+        log('warn', 'win32', `stack fault: thread ${this.thread16 ? this.thread16.id : 'main'}'s stack (${limit.toString(16)}-${top.toString(16)}) ran out at ${u32(eip).toString(16)}, in ${this.whereOf(this.cpu.eip.value)}; returns ${chain.join(' < ')}; frames ${frames.length > 60 ? [...frames.slice(0, 30), `... ${frames.length - 60} more ...`, ...frames.slice(-30)].join(' < ') : frames.join(' < ')}`);
         throw new FaultError(Object.assign(this.faultInfo(12, u32(this.cpu.eip.value), u32(eip)), { why: `stack fault at ${u32(this.cpu.eip.value).toString(16)}` }));
       }
       this.pfWrite = !!(code & 0x10);
@@ -765,7 +1221,10 @@ class Process {
       this.trapped = `watchdog: guest ran ${Math.round(this.now() - (this.lastYield || this.t0))} ms in one slice (calling ${t ? t.dll + '!' + t.nm : u32(eip).toString(16)} from ${m ? (m === this.exe || m.name === 'EXE' ? (this.pc.path || 'EXE') : m.name) + '+' + (ret - m.base).toString(16) : ret.toString(16)}, thread ${this.thread16 ? this.thread16.id : 'main'})`;
       return LAYOUT.SENTINEL;
     }
+    (this.entryRing || (this.entryAt = 0, this.entryRing = new Uint32Array(32)))[this.entryAt++ & 31] = u32(eip);   // (an import called from inside a module's run: a fault's way there names it, noCode)
     if (u32(eip) < LAYOUT.THUNK) return this.api16(u32(eip));
+    if (u32(eip) === DLL_CHAIN) return this.dllChainStep();   // (a module's own return to the chain comes here, not through the dispatcher)
+    if (u32(eip) === SEH_CONT) return sehStep(this);          // (and an exception handler's return to the dispatcher)
     const t = this.thunks[(u32(eip) - LAYOUT.THUNK) >> 2];
     if (!t || !t.def) {   // a call into an import with nothing behind it: a page fault at its address, from where it was called
       log('warn', 'win32', `unimplemented import ${t ? t.dll + '!' + t.nm : u32(eip).toString(16)}`);
@@ -778,27 +1237,61 @@ class Process {
     if (t.cls && this.effect) this.effect(t.cls, `${t.dll}!${t.nm}`);
     if (nargs === 'regs') {   // register-convention entry: the implementation moves ESP and picks the continuation
       try { return u32(fn.call(this)); }
-      catch (e) { if (e instanceof GuestError) { this.trapped = e.message; return LAYOUT.SENTINEL; } throw e; }
+      catch (e) { if (e instanceof GuestError) { this.trapped = e.message; return LAYOUT.SENTINEL; } return this.apiPastMemory(e, t, eip); }
     }
     const a = []; for (let i = 0; i < (nargs < 0 ? 8 : nargs); i++) a.push(this.r32(sp + 4 + 4 * i));
     const pc = this.thread16 && this.thread16.pc;
     if (pc && /\.SCR$/i.test(pc.path || '') && t.dll === 'USER32' && /^(IsWindow|GetForegroundWindow|GetParent|GetClientRect|GetDC|CreateWindowExA|GetSystemMetrics|ChangeDisplaySettingsA)$/.test(t.nm))
       (pc.user32Calls || (pc.user32Calls = [])).push({ name: t.nm, args: a.slice(0, 4) });
-    let r;
+    let r; const wasCall = this.apiCall; this.apiCall = { sp, nargs }; this.dllChain = null;
     try { r = fn.apply(this, a); }
-    catch (e) { if (e instanceof GuestError) { this.trapped = e.message; return LAYOUT.SENTINEL; } throw e; }
+    catch (e) { if (e instanceof GuestError) { this.trapped = e.message; return LAYOUT.SENTINEL; } return this.apiPastMemory(e, t, eip); }
+    finally { this.apiCall = wasCall; }
     if (r === YIELD) { this.preempted = 0; return -1; }   // (stopped in the call, not where its time ran out)
     if (this.exitCode !== null) return LAYOUT.SENTINEL;
+    if (this.dllChain) { const c = this.dllChain; this.dllChain = null; return this.dllChainStart(c, this.r32(sp), sp + 4 + 4 * nargs, r === undefined ? 0 : r); }
     this.reg('eax', r === undefined ? 0 : r);
     const ret = this.r32(sp);
     this.reg('esp', sp + 4 + (nargs < 0 ? 0 : 4 * nargs));
     return ret;
+  }
+  /** a call given a pointer that is no address the machine has (its read or write went past the end of memory): a page
+   *  fault in the call, from where it was called, as Windows' own code faults in the caller's thread (its handlers, or
+   *  its fault dialog); not the machine's end */
+  apiPastMemory(e, t, eip) {
+    if (!(e instanceof RangeError) || !/bounds/.test(e.message)) throw e;
+    // (KERNEL32's calls check their pointers on Windows 98, its parameter validation: one that is no address fails the
+    // call with ERROR_INVALID_PARAMETER, not a fault in it. SHLWAPI's ShellExecuteExW converts lpClass whatever the mask
+    // says, SHDOCVW leaves it as its stack had it, and WideCharToMultiByte of that garbage faulted Explorer on Windows 98's
+    // first start)
+    if (t && t.dll === 'KERNEL32' && t.def && typeof t.def[0] === 'number' && t.def[0] >= 0) {
+      const sp = u32(this.reg('esp')), ret = this.r32(sp);
+      this.lastError = 87; this.reg('eax', 0); this.reg('esp', sp + 4 + 4 * t.def[0]);
+      return ret;
+    }
+    try { return this.raise(14, u32(eip), u32(eip)); } catch (f) { if (f instanceof FaultError) f.fault.import = t.dll + '!' + t.nm; throw f; }
   }
   f80load(a) {
     const lo = this.r32(a), hi = this.r32(a + 4), se = this.r16(a + 8);
     const sign = se & 0x8000 ? -1 : 1, exp = se & 0x7fff;
     if (!exp && !lo && !hi) return 0 * sign;
     return sign * (hi * 4294967296 + lo) * Math.pow(2, exp - 16383 - 63);
+  }
+  /** FBLD: the 10-byte packed BCD at `a` (18 digits, two a byte, the low digit in the low nibble, the low byte first;
+   *  the sign bit 7 of byte 9) as a number */
+  fbld(a) {
+    let v = 0n; for (let i = 8; i >= 0; i--) { const b = this.u8[a + i]; v = v * 100n + BigInt((b >> 4) * 10 + (b & 15)); }
+    const n = Number(v); return this.u8[a + 9] & 0x80 ? -n : n;
+  }
+  /** FBSTP: a number stored as packed BCD, rounded to an integer as the control word's rounding field says (0 to
+   *  nearest, even at a half; 1 down; 2 up; 3 toward zero); one past 18 digits, or not a number, the indefinite */
+  fbstp(a, v) {
+    const rc = (this.cpu.fcw ? this.cpu.fcw.value >> 10 : 0) & 3;
+    let r = rc === 1 ? Math.floor(v) : rc === 2 ? Math.ceil(v) : rc === 3 ? Math.trunc(v) : Math.round(v) - (Math.abs(v % 1) === 0.5 && Math.round(v) % 2 ? 1 : 0);
+    if (!Number.isFinite(r) || Math.abs(r) >= 1e18) { this.u8.fill(0, a, a + 7); this.u8[a + 7] = 0xc0; this.u8[a + 8] = 0xff; this.u8[a + 9] = 0xff; return; }
+    let m = BigInt(Math.abs(r));
+    for (let i = 0; i < 9; i++) { const d = Number(m % 100n); m /= 100n; this.u8[a + i] = ((Math.floor(d / 10)) << 4) | (d % 10); }
+    this.u8[a + 9] = r < 0 || Object.is(r, -0) ? 0x80 : 0;
   }
   f80store(a, v) {
     const s = v < 0 || Object.is(v, -0) ? 0x8000 : 0; v = Math.abs(v);
@@ -827,10 +1320,21 @@ class Process {
         }
       }
       if (this.heapTop > LAYOUT.HEAP_END) {   // (the report says what holds the heap: live blocks by size, and what idles on the free lists)
+        // (the top back where it was: left past the end by one request too big for the heap, every allocation after
+        // it, a dozen bytes for a fault's dialog among them, was refused too, with 21 MB free, and Windows ended)
+        this.heapTop -= n;
+        // (a block the heap has no room for in one piece, its free bytes scattered among the live ones after some
+        // hundreds of programs: from the address space above, where VirtualAlloc's regions are, and back there
+        // when it is freed. Explorer's 2.3 MB for MSHTML's file was refused with 17 MB free)
+        const size = (n + 0xffff) & ~0xffff, sp = (this.vspare || []).findIndex(r => r.size >= size); let b = 0;
+        if (sp >= 0) { const s = this.vspare.splice(sp, 1)[0]; b = s.base; if (s.size > size) this.vspare.push({ base: b + size, size: s.size - size }); }
+        else if (this.vmTop && this.vmTop + size <= this.mem.buffer.byteLength) { b = this.vmTop; this.vmTop += size; }
+        if (b) { this.vmCheck(b, size, 'a big block'); (this.bigBlocks || (this.bigBlocks = new Map())).set(b, size); this.vmAudit('a big block'); this.allocs.set(b, n); if (zero) this.u8.fill(0, b, b + n); return b; }
         const by = new Map(); let live = 0; for (const [, s] of this.allocs) { by.set(s, (by.get(s) || 0) + s); live += s; }
         let idle = 0; for (const [s, l] of this.freeList) idle += s * l.length;
         const top = [...by].sort((a, b) => b[1] - a[1]).slice(0, 6).map(([s, t]) => `${s}x${t / s}`).join(' ');
-        throw new GuestError(`out of memory: ${(live >> 20)} MB live in ${this.allocs.size} blocks (${top}), ${idle >> 20} MB idle on the free lists; big blocks: ${(this.bigAllocs || []).join(' | ')}`);
+        let most = 0; for (const [s, l] of this.freeList) if (l.length && s > most) most = s;
+        throw new GuestError(`out of memory asking for ${n} bytes (the largest free block ${most}): ${(live >> 20)} MB live in ${this.allocs.size} blocks (${top}), ${idle >> 20} MB idle on the free lists; big blocks: ${(this.bigAllocs || []).join(' | ')}`);
       }
     }
     this.allocs.set(p, n); if (zero) this.u8.fill(0, p, p + n);
@@ -846,7 +1350,24 @@ class Process {
     while (merged.length && merged[merged.length - 1][0] + merged[merged.length - 1][1] === this.heapTop) this.heapTop = merged.pop()[0];
     this.freeList = new Map(); for (const [a, s] of merged) { if (!this.freeList.has(s)) this.freeList.set(s, []); this.freeList.get(s).push(a); }
   }
-  free(p) { const n = this.allocs.get(p); if (!n) return false; this.allocs.delete(p); if (!this.freeList.has(n)) this.freeList.set(n, []); this.freeList.get(n).push(p); return true; }
+  free(p) { const n = this.allocs.get(p); if (!n) return false; this.allocs.delete(p);
+    const big = this.bigBlocks && this.bigBlocks.get(p); if (big) { this.bigBlocks.delete(p); this.vmCheck(p, big, 'a big block given back'); (this.vspare || (this.vspare = [])).push({ base: p, size: big }); this.vmAudit('a big block given back'); return true; }   // (one from above the heap: back to that space)
+    if (!this.freeList.has(n)) this.freeList.set(n, []); this.freeList.get(n).push(p); return true; }
+  /** block `p` grown to `n` bytes where it is (the new bytes zeroed): at the heap's top, or over the free block that
+   *  follows it; false when neither has the room */
+  extend(p, n) {
+    n = (Math.max(n, 1) + 15) & ~15; const old = this.allocs.get(p); if (!old) return false; if (n <= old) return true;
+    let ok = false;
+    if (p + old === this.heapTop && p + n <= LAYOUT.HEAP_END) { this.heapTop = p + n; ok = true; }
+    else for (const [s, l] of this.freeList) {
+      const i = l.indexOf(p + old); if (i < 0 || old + s < n) continue;
+      l.splice(i, 1); const rest = old + s - n;
+      if (rest) { if (!this.freeList.has(rest)) this.freeList.set(rest, []); this.freeList.get(rest).push(p + n); }
+      ok = true; break;
+    }
+    if (!ok) return false;
+    this.allocs.set(p, n); this.u8.fill(0, p + old, p + n); return true;
+  }
   realloc(p, n) { if (!p) return this.alloc(n); const old = this.allocs.get(p) || 0; if (n <= old) return p; const q = this.alloc(n, true); this.u8.copyWithin(q, p, p + old); this.free(p); return q; }
 
   // ---- handles
@@ -912,6 +1433,14 @@ class Process {
   }
   /** Earliest time something becomes deliverable, for the host scheduler. */
   now() { return this.host.now(); }
+  /** the machine's clock to the block, for a counter read as code runs (the 8254's, ne16.js pitIO): its clock, which
+   *  moves a quantum each BUDGET blocks (tick), and the part of the quantum the blocks run since have taken. Read by the
+   *  quantum alone, a short timed loop saw no time or a whole quantum: Windows 98 Setup timed its CPU by the 8254's
+   *  channel 2 over a few thousand blocks, read no time, and divided by it (W98SETUP 1:77Ch, exception 6h) */
+  blockNow() {
+    const vc = this.host.vclock, b = this.cpu.budget;
+    return this.now() + (vc && b ? Math.min(BUDGET, Math.max(0, BUDGET - b.value)) / BUDGET * vc.perTick : 0);
+  }
   /** the clock the running program reads, as an offset from this machine's ({ tick, wall } ms): a program started here
    *  for a shared session reads the clock of the machine that started it, as of its start there (ne16.js startClock) */
   clockOf() { const t = this.thread16, c = t && (t.pc ? t.pc.clock : t.task && t.task.clock); return c || NO_CLOCK; }
@@ -1050,14 +1579,19 @@ function readLogFont(p, a) {
 function wsprintf(p, fmt, argp) {
   let i = 0;
   const next = () => { const v = p.r32(argp + 4 * i); i++; return v; };
-  return fmt.replace(/%([-#0 +]*)(\d*)(?:\.(\d+))?(h|l|ll)?([diuxXcsS%])/g, (m, flags, width, prec, len, t) => {
+  // (wsprintfA's string and character types: %s and %c the caller's own, ANSI; %ls, %ws and %S a wide string, %lc, %wc
+  // and %C a wide character; %hs and %hc ANSI. Read as ANSI, a wide string gave its first character alone: QUARTZ's
+  // DllRegisterServer makes its class keys with "CLSID\%ls", wrote every class to the one key "CLSID\{", and Windows
+  // Media Player found no filter graph class, error 80040154)
+  return fmt.replace(/%([-#0 +]*)(\d*)(?:\.(\d+))?(h|l|ll|w)?([diuxXcCsS%])/g, (m, flags, width, prec, len, t) => {
     if (t === '%') return '%';
+    const wide = len === 'l' || len === 'w' || (len !== 'h' && (t === 'S' || t === 'C'));
     let s;
     if (t === 'd' || t === 'i') s = String(next() | 0);
     else if (t === 'u') s = String(next() >>> 0);
     else if (t === 'x' || t === 'X') { s = (next() >>> 0).toString(16); if (t === 'X') s = s.toUpperCase(); if (flags.includes('#')) s = '0x' + s; }
-    else if (t === 'c') s = String.fromCharCode(next() & 0xff);
-    else s = p.readA(next()) ?? '(null)';
+    else if (t === 'c' || t === 'C') s = String.fromCharCode(next() & (wide ? 0xffff : 0xff));
+    else s = (wide ? p.readW(next()) : p.readA(next())) ?? '(null)';
     if (prec && 'sS'.includes(t)) s = s.slice(0, +prec);
     if (width && s.length < +width) s = flags.includes('-') ? s.padEnd(+width) : s.padStart(+width, flags.includes('0') && !'sS'.includes(t) ? '0' : ' ');
     return s;
@@ -1096,7 +1630,35 @@ function iniSet(fs, file, sec, key, value) {
   for (const v of ini.values()) { text += `[${v.name}]\r\n`; for (const k of v.lines) text += k.raw !== undefined ? `${k.raw}\r\n` : `${k.name}=${k.value}\r\n`; text += '\r\n'; }
   fs.writeFile(iniPath(file), text);
 }
-const REGISTRY = new Map([
+/** a line that is not key=value added to the section, made when it is not there (WritePrivateProfileSection) */
+function iniAddLine(fs, file, sec, raw) {
+  const ini = iniRead(fs, file), sk = sec.toLowerCase();
+  if (!ini.has(sk)) ini.set(sk, { name: sec, keys: new Map(), lines: [] });
+  ini.get(sk).lines.push({ raw });
+  let text = '';
+  for (const v of ini.values()) { text += `[${v.name}]\r\n`; for (const k of v.lines) text += k.raw !== undefined ? `${k.raw}\r\n` : `${k.name}=${k.value}\r\n`; text += '\r\n'; }
+  fs.writeFile(iniPath(file), text);
+}
+// The registry's keys by their full path. Its set of keys is counted as it changes (ver), so a key's subkeys are
+// listed once per change (regKidPaths) and not found again in every key at each RegEnumKey: Windows 98's registry has
+// tens of thousands of keys, each program's start enumerates hundreds, and the searches took a third of the machine's
+// time as the shell's programs started (the startup sound ran dry)
+class RegMap extends Map {
+  set(k, v) { if (!this.has(k)) this.ver = (this.ver || 0) + 1; return super.set(k, v); }
+  delete(k) { const had = super.delete(k); if (had) this.ver = (this.ver || 0) + 1; return had; }
+  clear() { this.ver = (this.ver || 0) + 1; super.clear(); }
+}
+let kidsVer = null, kidsBy = new Map();
+/** a key's subkeys (their full paths), in the order they were made */
+const regKidPaths = path => {
+  if (kidsVer !== REGISTRY.ver) {
+    kidsBy = new Map();
+    for (const k of REGISTRY.keys()) { const i = k.lastIndexOf('\\'); if (i < 0) continue; const p = k.slice(0, i); let a = kidsBy.get(p); if (!a) kidsBy.set(p, a = []); a.push(k); }
+    kidsVer = REGISTRY.ver;
+  }
+  return kidsBy.get(path) || [];
+};
+const REGISTRY = new RegMap([
   ['hkcu\\control panel\\desktop', new Map([['screensaveusepassword', 0]])],
   ['hkcu\\control panel\\colors', new Map()],
 ]);
@@ -1106,7 +1668,22 @@ let regStore = null, regQuiet = false;
 const regWatchers = new Set();   // the page's: each change, for the machines' copies in their workers
 // (regQuiet true: nothing told; 'remote': a change another person's machine made, from the shared session's server
 // (shared.js): this page's machines told, the store not, the server having it already)
-const regChanged = op => { if (regQuiet === true) return; if (regStore && !regQuiet) regStore.op(op); for (const f of regWatchers) f(op); };
+// RegNotifyChangeKeyValue's asks: each one's event set once, at the first change to its key (or under it, when it
+// watches the subtree) of the kinds it asked for (REG_NOTIFY_CHANGE_NAME 1: keys made or deleted; LAST_SET 4: values),
+// whoever's change it was, this machine's or one told it quietly (another machine's, the page's)
+const regNotifies = new Set();
+const regNotify = op => {
+  if (!regNotifies.size || !op || !op.path) return;
+  const kind = op.op === 'set' || op.op === 'del' ? 4 : 1, parent = op.path.slice(0, op.path.lastIndexOf('\\'));
+  for (const n of [...regNotifies]) {
+    // (a key made or deleted is a change to its parent's names)
+    const hit = op.path === n.path || (n.sub && op.path.startsWith(n.path + '\\')) || (kind === 1 && parent === n.path);
+    if (!(n.filter & kind) || !hit) continue;
+    regNotifies.delete(n);
+    if (n.proc.signal) n.proc.signal(n.ev); else n.ev.set = true;
+  }
+};
+const regChanged = op => { regNotify(op); if (regQuiet === true) return; if (regStore && !regQuiet) regStore.op(op); for (const f of regWatchers) f(op); };
 // each key's name as it was created (RegEnumKey gives it back so: SPOOLSS finds its "Windows 4.0" environment by a
 // case-sensitive compare); the registry's paths themselves are lower case
 const KEYNAME = new Map();
@@ -1122,12 +1699,39 @@ const regMake = (path, orig) => {
   }
 };
 const keyName = (path, k) => KEYNAME.get(k) || k.slice(path.length + 1);
+// the registry's other names for a key, as Windows 95 has them: HKEY_LOCAL_MACHINE\SOFTWARE\Classes is
+// HKEY_CLASSES_ROOT, HKEY_LOCAL_MACHINE\Config\0001 is HKEY_CURRENT_CONFIG, HKEY_USERS\.DEFAULT is HKEY_CURRENT_USER:
+// the same keys, kept under the second name. Kept as two trees, a class URLMON or SHELL32 looked up under
+// HKLM\SOFTWARE\Classes was not there (SHRegOpenUSKey: the Web view's MIME filter, a folder's %THISDIRNAME% left as it
+// was). The first name's own key stays, so the key above it still lists it
+const REG_ALIAS = [['hklm\\software\\classes', 'hkcr'], ['hklm\\config\\0001', 'hkcc'], ['hku\\.default', 'hkcu']];
+/** a key's path under the name the registry keeps it by (lower case in, lower case out) */
+const regCanon = path => { for (const [a, b] of REG_ALIAS) if (path === a || path.startsWith(a + '\\')) return b + path.slice(a.length); return path; };
+/** a key's path as given (its case), under the name the registry keeps it by */
+const regCanonGiven = given => { const low = given.toLowerCase(); for (const [a, b] of REG_ALIAS) if (low === a || low.startsWith(a + '\\')) return b + given.slice(a.length); return given; };
+/** whether a stored path lies under another name of a key (left from before the names were one: not written out) */
+const regAliased = path => REG_ALIAS.some(([a]) => path.startsWith(a + '\\'));
+/** what a registry kept under the other names before they were one, given to the key it names, where that has none */
+// (`tell`: each value given passed on as a change, to the store and the other copies; quiet, this copy alone)
+const regUnify = tell => {
+  for (const [path, m] of [...REGISTRY]) {
+    if (!REG_ALIAS.some(([a]) => path === a || path.startsWith(a + '\\'))) continue;
+    const to = regCanon(path); if (to === path) continue;
+    if (!REGISTRY.has(to)) {
+      if (tell) regMake(to, KEYNAME.get(path) ? to.slice(0, to.length - KEYNAME.get(path).length) + KEYNAME.get(path) : null);
+      else { const parts = to.split('\\'); for (let k = 1; k <= parts.length; k++) { const q = parts.slice(0, k).join('\\'); if (!REGISTRY.has(q)) REGISTRY.set(q, new Map()); } }
+    }
+    const t = REGISTRY.get(to);
+    for (const [n, v] of m) if (!t.has(n)) { t.set(n, v); if (tell) regChanged({ op: 'set', path: to, name: n, value: v }); }
+  }
+};
 const regAttach = store => {
   regStore = store;
   const held = store.load();
   if (!held) { for (const [path, m] of REGISTRY) { store.op({ op: 'key', path }); for (const [name, value] of m) store.op({ op: 'set', path, name, value }); } return false; }
   REGISTRY.clear(); KEYNAME.clear();
   for (const [path, vals, name] of held) { REGISTRY.set(path, new Map(vals)); if (name) KEYNAME.set(path, name); }
+  regUnify(true);
   return true;
 };
 /** the registry as it is now, in the form a store's load gives it ([path, values, name]), for a machine in a worker */
@@ -1135,9 +1739,14 @@ const regDump = () => [...REGISTRY].map(([path, m]) => [path, [...m], KEYNAME.ge
 /** this copy of the registry put back as a dump had it (a moment rewound: braid.js). Quiet, the copy alone changes;
  *  `tell`, each difference goes as the operation that makes it, so the store and the other copies follow */
 const regLoad = (held, tell) => {
-  if (!tell) { REGISTRY.clear(); KEYNAME.clear(); for (const [path, vals, name] of held) { REGISTRY.set(path, new Map(vals)); if (name) KEYNAME.set(path, name); } return; }
+  if (!tell) { REGISTRY.clear(); KEYNAME.clear(); for (const [path, vals, name] of held) { REGISTRY.set(path, new Map(vals)); if (name) KEYNAME.set(path, name); } regUnify(false); return; }
   const want = new Map(held.map(([path, vals, name]) => [path, { vals: new Map(vals), name }]));
-  for (const path of [...REGISTRY.keys()].sort().reverse()) if (!want.has(path) && REGISTRY.has(path)) regDel(path);
+  // (the keys not wanted, deepest first, each deleted by itself: those under it are gone already. regDel looks through
+  // every key for the ones under its own, and 20,000 keys deleted that way were 5 s of an arrival. A wanted key under
+  // one not wanted goes with it, as the store's delete of the key takes it, and is made again below)
+  const gone = new Set([...REGISTRY.keys()].filter(path => !want.has(path)));
+  if (gone.size) for (const path of want.keys()) { for (let i = path.lastIndexOf('\\'); i > 0; i = path.lastIndexOf('\\', i - 1)) if (gone.has(path.slice(0, i))) { REGISTRY.delete(path); KEYNAME.delete(path); break; } }
+  for (const path of [...gone].sort().reverse()) { REGISTRY.delete(path); KEYNAME.delete(path); regChanged({ op: 'delkey', path }); }
   for (const [path, { vals, name }] of want) {
     if (!REGISTRY.has(path)) regMake(path, name ? path.slice(0, path.length - name.length) + name : null);
     if (name && KEYNAME.get(path) !== name) { KEYNAME.set(path, name); regChanged({ op: 'key', path, name }); }
@@ -1149,6 +1758,7 @@ const regLoad = (held, tell) => {
 /** a change another copy of the registry made (a machine's in its worker, or the page's): applied here, and passed on
  *  to this copy's store unless `quiet` ('remote': another person's, to this page's machines but not its store) */
 const regApply = (o, quiet) => {
+  if (o && o.path && regCanon(o.path) !== o.path) o = { ...o, path: regCanon(o.path) };   // (a change made under another name of the key)
   const was = regQuiet; if (quiet) regQuiet = quiet === 'remote' ? 'remote' : true;
   try {
     if (o.op === 'key') {   // (its name with it, to this copy's store too: the case a later load gives back)
@@ -1163,13 +1773,13 @@ const regApply = (o, quiet) => {
 };
 // the shell's own registry reads and writes (Explorer's settings), through the same store as a program's
 /** the names of a key's subkeys, as stored (lower case) */
-const regKids = path => { path = path.toLowerCase(); return [...REGISTRY.keys()].filter(k => k.startsWith(path + '\\') && !k.slice(path.length + 1).includes('\\')).map(k => k.slice(path.length + 1)); };
+const regKids = path => { path = regCanon(path.toLowerCase()); return regKidPaths(path).map(k => k.slice(path.length + 1)); };
 /** a key's values as [name, value] pairs, and a key removed with its subkeys */
-const regVals = path => [...(REGISTRY.get(path.toLowerCase()) || new Map()).entries()];
-const regDel = path => { path = path.toLowerCase(); let any = false; for (const k of [...REGISTRY.keys()]) if (k === path || k.startsWith(path + '\\')) { REGISTRY.delete(k); KEYNAME.delete(k); any = true; } if (any) regChanged({ op: 'delkey', path }); };
-const regGet = (path, name) => { const m = REGISTRY.get(path.toLowerCase()); return m ? m.get(name.toLowerCase()) : undefined; };
+const regVals = path => [...(REGISTRY.get(regCanon(path.toLowerCase())) || new Map()).entries()];
+const regDel = path => { path = regCanon(path.toLowerCase()); let any = false; for (const k of [...REGISTRY.keys()]) if (k === path || k.startsWith(path + '\\')) { REGISTRY.delete(k); KEYNAME.delete(k); any = true; } if (any) regChanged({ op: 'delkey', path }); };
+const regGet = (path, name) => { const m = REGISTRY.get(regCanon(path.toLowerCase())); return m ? m.get(name.toLowerCase()) : undefined; };
 const regSet = (path, name, value) => {
-  const orig = path; path = path.toLowerCase(); regMake(path, orig);
+  const orig = regCanonGiven(path); path = regCanon(path.toLowerCase()); regMake(path, orig);
   if (name === null) return;   // the key alone
   REGISTRY.get(path).set(name.toLowerCase(), value); regChanged({ op: 'set', path, name: name.toLowerCase(), value });
 };
@@ -1186,6 +1796,7 @@ const regHive = which => {
   const at = (hp, name) => { let n = root; if (hp) for (const seg of hp.split('\\')) { let k = n.kids.get(seg); if (!k) n.kids.set(seg, k = { name: seg, kids: new Map(), vals: null }); n = k; } if (name && !n.orig) n.orig = name; return n; };
   for (const [path, vals] of REGISTRY) for (const [hp, rp] of map) {
     if (path !== rp && !path.startsWith(rp + '\\')) continue;
+    if (regAliased(path)) continue;   // (one kept under another name of a key before the names were one: its key's own is written)
     if (map.some(([h2, r2]) => r2 !== rp && r2.startsWith(rp + '\\') && (path === r2 || path.startsWith(r2 + '\\')))) continue;
     const rest = path.slice(rp.length + 1), n = at([hp, rest].filter(Boolean).join('\\'));
     const nm = KEYNAME.get(path); if (nm) n.orig = nm;
@@ -1213,29 +1824,33 @@ const regHive = which => {
   const blocks = []; let cur = null;
   for (let i = 1; i < keys.length; i++) {
     const r = recs[i];
-    if (!cur || (cur.recs.length && cur.used + r.size > 0x1000 - 0x20 - 0x10)) { cur = { recs: [], used: 0, ids: 0 }; blocks.push(cur); }
+    if (!cur || (cur.recs.length && cur.used + r.size > 0x1000 - 0x20 - 0x14)) { cur = { recs: [], used: 0, ids: 0 }; blocks.push(cur); }
     r.block = blocks.length - 1; r.id = cur.ids++; cur.recs.push(r); cur.used += r.size;
   }
-  const rgknSize = (0x20 + keys.length * 0x1c + 0xfff) & ~0xfff;
-  const blockSize = b => (b.used + 0x20 + 0x10 + 0xfff) & ~0xfff;
+  // (as ScanReg reads RGKN: 291 entries in its first 2000h, then whole entries in each 1000h page; an RGDB block ends with 14h free)
+  const slot = i => (i < 291 ? 0x20 + i * 0x1c : 0x2000 + 0x1000 * Math.floor((i - 291) / 146) + 0x1c * ((i - 291) % 146));
+  const rgknSize = (slot(keys.length) + 0x1c + 0xfff) & ~0xfff;
+  const blockSize = b => (b.used + 0x20 + 0x14 + 0xfff) & ~0xfff;
   const total = 0x20 + rgknSize + blocks.reduce((s, b) => s + blockSize(b), 0);
   const out = new Uint8Array(total), dv = new DataView(out.buffer), tag = (o, s) => out.set(enc(s), o);
-  tag(0, 'CREG'); dv.setUint32(4, 0x10000, true); dv.setUint32(8, 0x20 + rgknSize, true); dv.setUint16(0x10, blocks.length, true); dv.setUint16(0x16, 0x80, true);
+  tag(0, 'CREG'); dv.setUint32(4, 0x10000, true); dv.setUint32(8, 0x20 + rgknSize, true); dv.setUint16(0x10, blocks.length, true); dv.setUint16(0x12, 0x21, true); dv.setUint16(0x16, 1, true);
   const K = 0x20;
-  tag(K, 'RGKN'); dv.setUint32(K + 4, rgknSize, true); dv.setUint32(K + 8, 0x20, true); dv.setUint16(K + 0x0c, 0xffff, true); dv.setUint16(K + 0x0e, 0xffff, true); dv.setUint32(K + 0x10, 9, true);
-  const off = n => (n ? 0x20 + n.i * 0x1c : 0xffffffff);
+  tag(K, 'RGKN'); dv.setUint32(K + 4, rgknSize, true); dv.setUint32(K + 8, 0x20, true); dv.setUint32(K + 0x10, 8, true);
+  // (the block's space past its entries is one free entry, the head of its free list: 80000000h, its size, the next (none))
+  { const end = slot(keys.length), left = rgknSize - end; dv.setUint32(K + 0x0c, left >= 0x1c ? end : 0xffffffff, true); if (left >= 0x1c) { dv.setUint32(K + end, 0x80000000, true); dv.setUint32(K + end + 4, left, true); dv.setUint32(K + end + 8, 0xffffffff, true); } }
+  const off = n => (n ? slot(n.i) : 0xffffffff);
   for (const n of keys) {
     const e = K + off(n), kids = [...n.kids.values()], sib = n.parent ? [...n.parent.kids.values()] : [], si = sib.indexOf(n);
     let hash = 0; for (const c of (n.orig || n.name).toUpperCase()) hash += c.charCodeAt(0) & 0xff;
-    dv.setUint32(e, 0, true); dv.setUint32(e + 4, hash, true); dv.setUint32(e + 8, 0xffffffff, true);
+    dv.setUint32(e, 0, true); dv.setUint32(e + 4, hash, true); dv.setUint32(e + 8, n.parent ? 0xffffffff : 0, true);
     dv.setUint32(e + 0x0c, off(n.parent), true); dv.setUint32(e + 0x10, off(kids[0]), true); dv.setUint32(e + 0x14, off(si >= 0 ? sib[si + 1] : null), true);
-    const r = recs[n.i]; dv.setUint16(e + 0x18, r ? r.id : 0xffff, true); dv.setUint16(e + 0x1a, r ? r.block : 0, true);
+    const r = recs[n.i]; dv.setUint16(e + 0x18, r ? r.id : 0xffff, true); dv.setUint16(e + 0x1a, r ? r.block : 0xffff, true);
   }
   let o = 0x20 + rgknSize;
   blocks.forEach((b, bn) => {
     const size = blockSize(b), free = size - 0x20 - b.used;
-    tag(o, 'RGDB'); dv.setUint32(o + 4, size, true); dv.setUint32(o + 8, free, true); dv.setUint16(o + 0x0c, b.ids, true); dv.setUint16(o + 0x0e, bn, true);
-    dv.setUint32(o + 0x10, 0x20 + b.used, true); dv.setUint16(o + 0x14, b.ids, true);
+    tag(o, 'RGDB'); dv.setUint32(o + 4, size, true); dv.setUint32(o + 8, free, true); dv.setUint16(o + 0x0c, 8, true); dv.setUint16(o + 0x0e, bn, true);
+    dv.setUint32(o + 0x10, 0x20 + b.used, true); dv.setUint16(o + 0x14, b.ids, true); dv.setUint16(o + 0x16, b.ids, true);   // (the keys it holds, and the next id free)
     let p = o + 0x20;
     for (const r of b.recs) {
       dv.setUint32(p, r.size, true); dv.setUint16(p + 4, r.id, true); dv.setUint16(p + 6, bn, true); dv.setUint32(p + 8, r.size, true);
@@ -1248,6 +1863,60 @@ const regHive = which => {
     dv.setUint32(p, free, true); dv.setUint32(p + 4, 0xffffffff, true); dv.setUint32(p + 8, 0xffffffff, true);
     o += size;
   });
+  return out;
+};
+/** a registry's file read back (regHive's format, and Windows 9x's own, as its Setup writes one): the keys it holds as
+ *  a dump's entries ([path, values, name], regLoad's), the hive's paths put where regHive takes them from ('system':
+ *  hklm, its software\classes hkcr, its config\0001 hkcc; 'user': hku, its .default hkcu). Null when it is not one */
+const regReadHive = (b, which) => {
+  if (!b || b.length < 0x40) return null;
+  const dv = new DataView(b.buffer, b.byteOffset, b.byteLength), tag = o => String.fromCharCode(b[o], b[o + 1], b[o + 2], b[o + 3]);
+  if (tag(0) !== 'CREG' || tag(0x20) !== 'RGKN') return null;
+  const K = 0x20, rgdb0 = dv.getUint32(8, true), nblocks = dv.getUint16(0x10, true);
+  const str = (o, n) => { let s = ''; for (let i = 0; i < n; i++) s += String.fromCharCode(b[o + i]); return s; };
+  // each key's record, by its block and id
+  const recs = new Map();
+  for (let o = rgdb0, bn = 0; bn < nblocks && o + 0x20 <= b.length && tag(o) === 'RGDB'; bn++) {
+    const size = dv.getUint32(o + 4, true), end = o + size;
+    for (let p = o + 0x20; p + 0x14 <= end;) {
+      const rs = dv.getUint32(p, true); if (rs < 0x14 || p + rs > end) break;
+      const id = dv.getUint16(p + 4, true), blk = dv.getUint16(p + 6, true);
+      if (id !== 0xffff) {
+        const nl = dv.getUint16(p + 0x0c, true), nv = dv.getUint16(p + 0x0e, true), vals = [];
+        let q = p + 0x14 + nl;
+        for (let i = 0; i < nv && q + 0x0c <= p + rs; i++) {
+          const type = dv.getUint32(q, true), vnl = dv.getUint16(q + 8, true), dl = dv.getUint16(q + 0x0a, true);
+          const name = str(q + 0x0c, vnl), d = b.slice(q + 0x0c + vnl, q + 0x0c + vnl + dl);
+          // (as the registry keeps a value RegSetValueEx gave: a DWORD a number, a string with its NUL, the rest bytes)
+          const v = type === 4 && dl === 4 ? new DataView(d.buffer).getUint32(0, true)
+            : { type, data: (type === 1 || type === 2) ? Uint8Array.from([...d, 0]) : d, ...(name !== name.toLowerCase() ? { name } : {}) };
+          vals.push([name.toLowerCase(), v]); q += 0x0c + vnl + dl;
+        }
+        recs.set(`${blk}:${id}`, { name: str(p + 0x14, nl), vals });
+      }
+      p += rs;
+    }
+    o = end;
+  }
+  // the tree from RGKN's root, each key's path in the hive
+  const out = [], map = which === 'user' ? [['.default', 'hkcu'], ['', 'hku']] : [['software\\classes', 'hkcr'], ['config\\0001', 'hkcc'], ['', 'hklm']];
+  const seen = new Set();
+  const visit = (off, hp, depth) => {
+    for (let guard = 0; off !== 0xffffffff && off + K + 0x1c <= b.length && guard < 1e6 && depth < 64; guard++) {
+      if (seen.has(off)) return; seen.add(off);
+      const e = K + off, r = recs.get(`${dv.getUint16(e + 0x1a, true)}:${dv.getUint16(e + 0x18, true)}`);
+      const isRoot = !hp && dv.getUint32(e + 0x0c, true) === 0xffffffff;
+      const name = isRoot ? '' : (r ? r.name : ''), path = isRoot ? '' : (hp === null ? name : `${hp}\\${name}`).replace(/^\\/, '');
+      if (!isRoot || (r && r.vals.length)) {
+        const low = path.toLowerCase(), [h, root] = map.find(([h]) => !h || low === h || low.startsWith(h + '\\'));
+        const rest = h ? low.slice(h.length + 1) : low, rp = [root, rest].filter(Boolean).join('\\');
+        out.push([rp, r ? r.vals : [], rest ? path.slice(path.lastIndexOf('\\') + 1) : null]);
+      }
+      visit(dv.getUint32(e + 0x10, true), isRoot ? '' : path, depth + 1);
+      off = dv.getUint32(e + 0x14, true);
+    }
+  };
+  visit(dv.getUint32(K + 8, true), null, 0);
   return out;
 };
 
@@ -1296,16 +1965,22 @@ def('KERNEL32', 'GetCommandLineW', 0, function () {
   return (pc.cmdPtrW = w);
 });
 def('KERNEL32', 'GetCommandLineA', 0, function () {
-  const pc = this.thread16 && this.thread16.pc, ptr = this.cmdPtr;
+  const pc = this.thread16 && this.thread16.pc;
+  let ptr = this.cmdPtr;
+  // (a process with no command line of its own, the system's (MSGSRV32, MMTASK): an empty one, as a DLL's C run-time
+  // reads it as it attaches. Answered with what was there, MSACM32's _setargv read an address past the machine's memory
+  // and MSGSRV32 faulted: a blue screen)
+  if (!ptr || u32(ptr) >= this.mem.buffer.byteLength) { if (!this.emptyCmd) { this.emptyCmd = this.alloc(4); this.w32(this.emptyCmd, 0); } ptr = this.emptyCmd; }
   if (pc && /\.SCR$/i.test(pc.path || '')) pc.commandLineSeen = this.readA(ptr);
   return ptr;
 });
 def('KERNEL32', 'GetStartupInfoA', 1, function (p) { this.u8.fill(0, p, p + 68); this.w32(p, 68); });
 def('KERNEL32', 'GetModuleHandleA', 1, function (name) {
   // (NULL: the calling process's own image, as Windows 98's KERNEL32 takes it from the process database's EXE module,
-  // [ppdbCur]+98h; a process with none, the system's whose first task is MSGSRV32, 16-bit, answers 0. Read from the
-  // system's process's image, there is none: a DLL calling it from GDI's LibEntry at boot stopped the machine)
-  if (!name) { const pc = this.thread16 && this.thread16.pc, exe = (pc && pc.exe) || this.exe; return exe ? exe.base : 0; }
+  // [ppdbCur]+98h. The system's process, the kernel's own (Toolhelp lists it as KERNEL32.DLL), has KERNEL32 as that
+  // module: MSVCRT's DllMain, loaded from GDI's LibEntry at Windows 98's boot, reads the linker version from the
+  // module's PE header (__heap_select), and read it at 0 when this answered 0)
+  if (!name) { const pc = this.thread16 && this.thread16.pc, exe = (pc && pc.exe) || this.exe; return exe ? exe.base : this.jsDll('KERNEL32'); }
   const n = (this.readA(name) || '').toUpperCase().replace(/^.*\\/, '').replace(/\.DLL$/, ''), m = this.byName.get(n);
   // (a DLL implemented here is loaded once an image imported it or LoadLibrary loaded it: GDI32's ChoosePixelFormat
   // and SwapBuffers find OPENGL32 by GetModuleHandle, and give up without it)
@@ -1314,10 +1989,17 @@ def('KERNEL32', 'GetModuleHandleA', 1, function (name) {
 });
 def('KERNEL32', 'GetModuleFileNameA', 3, function (h, buf, n) {
   h = this.hmod(h);
+  // (the running process's own program at its base: another program linked at the same base is another process's,
+  // Explorer asking for its own 400000h was told SPOOL32.EXE)
+  if (h && this.pc && this.pc.exe && this.pc.exe.base === h && this.pc.path) return this.writeA(buf, this.pc.path, n);
+  const dm = this.dataMods && this.dataMods.get(u32(h)); if (dm) return this.writeA(buf, dm.path, n);   // (a file mapped as data)
+  const s = this.standinAt(h); if (s) return this.writeA(buf, s.path, n);
   const m = h && this.modules.find(x => x.base === h && x !== this.exe && x.kind !== 'ne');   // a DLL: its file in SYSTEM; another program: its file
   const other = m && m.name === 'EXE' && [this.pc0, ...(this.procs || new Map()).values()].find(x => x && x.exe === m);
-  // (a module named with its own extension, DESK.CPL or WINSPOOL.DRV, is that file; the others are .DLL)
-  return this.writeA(buf, other ? other.path || this.host.path : m ? `C:\\WINDOWS\\SYSTEM\\${/\.[A-Z0-9]{1,3}$/i.test(m.name) ? m.name : m.name + '.DLL'}` : this.pc.path || this.host.path || 'C:\\WINDOWS\\SCRNSAVE.SCR', n);
+  // (a module named with its own extension, DESK.CPL or WINSPOOL.DRV, is that file; the others are .DLL. A DLL mapped
+  // from its file is that file, wherever it was: TRIEDIT's registration looked for its type library in SYSTEM, where
+  // it is not, and failed ERROR_FILE_NOT_FOUND on Windows 98's first start)
+  return this.writeA(buf, other ? other.path || this.host.path : m && m.meta && m.meta.path ? m.meta.path : m ? `C:\\WINDOWS\\SYSTEM\\${/\.[A-Z0-9]{1,3}$/i.test(m.name) ? m.name : m.name + '.DLL'}` : this.pc.path || this.host.path || 'C:\\WINDOWS\\SCRNSAVE.SCR', n);
 });
 def('KERNEL32', 'ExitProcess', 'regs', function () {
   const code = this.r32(this.reg('esp') + 4), pc = this.pc;
@@ -1360,31 +2042,84 @@ function sleep(ms) {
 }
 def('KERNEL32', 'Sleep', 1, function (ms) { return sleep.call(this, ms); });
 def('KERNEL32', 'SleepEx', 2, function (ms) { return sleep.call(this, ms); });
-def('KERNEL32', 'GetVersion', 0, () => 0xc0000004);
+// The version of Windows: KERNEL32.DLL's own, the file version in its version resource (VS_FIXEDFILEINFO: 4.10.2222
+// on Windows 98 Second Edition), as each Windows' KERNEL32 answers its own; 4.0.950, Windows 95's, with no such file.
+// (Answered 4.0 on Windows 98, Explorer's Start menu wore its Windows 95 banner: it takes bitmap 157, "Windows98",
+// only where GetVersionExA says 4.10 or later.)
+const winVersion = p => {
+  if (p.winVer) return p.winVer;
+  let major = 4, minor = 0, build = 950, b = null;
+  try { b = p.fs.readFile('C:\\WINDOWS\\SYSTEM\\KERNEL32.DLL'); } catch (_) { /* the bundle's KERNEL32: Windows 95's */ }
+  for (let i = 0; b && i + 16 <= b.length; i += 4) if (b[i] === 0xbd && b[i + 1] === 0x04 && b[i + 2] === 0xef && b[i + 3] === 0xfe) {
+    major = b[i + 10] | b[i + 11] << 8; minor = b[i + 8] | b[i + 9] << 8; build = b[i + 12] | b[i + 13] << 8; break;
+  }
+  return p.winVer = { major, minor, build };
+};
+/** an OSVERSIONINFO's numbers at `at`. Windows 98's build number carries the version above it (040A08AEh); Windows
+ *  95's is 950 as it was answered here */
+const versionInfo = (p, at) => {
+  const v = winVersion(p), w98 = v.minor >= 10;
+  p.w32(at + 4, v.major); p.w32(at + 8, v.minor); p.w32(at + 12, w98 ? (v.major << 24 | v.minor << 16 | v.build) >>> 0 : v.build); p.w32(at + 16, 1);
+  p.writeA(at + 20, w98 ? (v.build >= 2222 ? ' A ' : '') : ' B');
+};
+def('KERNEL32', 'GetVersion', 0, function () { const v = winVersion(this); return (0xc0000000 | v.minor << 8 | v.major) >>> 0; });
 def('KERNEL32', 'GetVersionExA', 1, function (p) {
-  this.w32(p + 4, 4); this.w32(p + 8, 0); this.w32(p + 12, 950); this.w32(p + 16, 1); this.writeA(p + 20, ' B');
+  versionInfo(this, p);
   const pc = this.thread16 && this.thread16.pc;
   if (pc && /\.SCR$/i.test(pc.path || '')) pc.versionInfoSeen = { size: this.r32(p), major: this.r32(p + 4), minor: this.r32(p + 8), build: this.r32(p + 12), platform: this.r32(p + 16) };
   return 1;
 });
 def('KERNEL32', 'LoadLibraryA', 1, function (n) {
   // (a name in quotes, as RUNDLL32 passes the one on its command line: "C:\WINDOWS\SYSTEM\DESK.CPL")
-  const name = (this.readA(n) || '').trim().replace(/^"(.*)"$/, '$1').toUpperCase().replace(/^.*\\/, '').replace(/\.DLL$/, '');
-  const native = this.loadDll(name);
+  const given = (this.readA(n) || '').trim().replace(/^"(.*)"$/, '$1'), name = given.toUpperCase().replace(/^.*\\/, '').replace(/\.DLL$/, '');
+  // (a path: the file there, and the DLLs it imports looked for in its folder first, as LOAD_WITH_ALTERED_SEARCH_PATH
+  // has it. Its folder was dropped: IERNONCE's C:\PROGRA~1\INTERN~1\HMMAPI.DLL was looked for in SYSTEM and the
+  // Windows folder only, not found, and Windows 98's first start said it was not installed)
+  const dir = /\\/.test(given) ? given.replace(/\\[^\\]*$/, '') : null, was = this.loadDirs;
+  if (dir) this.loadDirs = [dir, ...(was || []).filter(d => d.toUpperCase() !== dir.toUpperCase())];
+  let native; try { native = this.loadDll(name); } finally { this.loadDirs = was; }
   // the process attaches to the library and to every DLL it uses, dependencies first, as Windows 95's LoadLibrary
   // does (a DLL another process loaded is attached to this one too: RUNDLL32 ran MMSYS.CPL on WINMM before the
   // shell's thread had attached WINMM, so WINMM's thunks to MMSYSTEM were not connected and it crashed in them)
-  if (native) { this.runPendingInits(); for (const m of this.importClosure(native)) this.attach(m); return native.base; }
+  if (native) {
+    // (called by the guest through the import, on a flat stack: the DllMains run as the thread's own code as the call
+    // returns, dllChainStart)
+    if (this.apiCall && this.apiCall.sp === u32(this.reg('esp')) && !(this.cpu.ss.value & 0xffff)) {
+      const mods = [...new Set([...this.pendingInits(), ...this.importClosure(native)])];
+      const done = this.pc.attached;
+      if (mods.some(m => !(done && done.has(m)) && m.meta && !m.clock)) this.dllChain = mods;
+      return native.base;
+    }
+    this.runPendingInits(); for (const m of this.importClosure(native)) this.attach(m); return native.base;
+  }
   if (!API[name]) { this.lastError = 126; return 0; }   // ERROR_MOD_NOT_FOUND: neither a system DLL here nor one implemented in JS
   return this.jsDll(name);
 });
-def('KERNEL32', 'FreeLibrary', 1, () => 1);
+def('KERNEL32', 'FreeLibrary', 1, function (h) {
+  const dm = this.dataMods && this.dataMods.get(u32(h));   // (a file mapped as data: its copy given back)
+  if (dm) { this.dataMods.delete(u32(h)); this.free(dm.block); return 1; }
+  // (a DLL stays mapped: one copy serves every process here, and a freed one was still used, by another process's
+  // calls, by a thread it had started (QUARTZ's), or by pointers taken from it; the room it takes is the arena's or
+  // the address space above the heap's, imageRoom)
+  return 1;
+});
+// (an export of a DLL loaded from its file answered here instead: kept out of API, where a name is a whole DLL's
+// stand-in. RUNDLL32's entry: hwnd, hinst, command line, show; done, nothing to install)
+const STANDIN_EXPORTS = { MSJAVA: { JavaPkgMgr_Install: [4, function () { return 0; }] } };
 def('KERNEL32', 'GetProcAddress', 2, function (h, name) {
   const nm = name >>> 16 ? this.readA(name) : '#' + name;
   const native = this.modules.find(x => x.base === this.hmod(h));
-  if (native) return native.exports.get(nm) || 0;
-  const m = this.obj(0x0000ffff & h) || { name: 'KERNEL32' };
-  return API[m.name] && API[m.name][nm] ? this.thunkFor(m.name, nm) : 0;
+  // (an export a stand-in answers in place of the module's own: MSJAVA's JavaPkgMgr_Install, the Java packages
+  // Windows 98 Setup installs through RUNDLL32 at the first start, not installed: "Unable to install Java packages")
+  const own = native && STANDIN_EXPORTS[native.name.toUpperCase().replace(/\.DLL$/, '')];
+  if (own && own[nm]) {
+    const key = 'MSJAVA!' + nm;
+    if (!this.thunkByName.has(key)) { this.thunkByName.set(key, LAYOUT.THUNK + this.thunks.length * 4); this.thunks.push({ dll: 'MSJAVA', nm, def: own[nm] }); }
+    return this.thunkByName.get(key);
+  }
+  if (native) return this.exportOf(native, nm);
+  const m = this.standinAt(h) || this.obj(0x0000ffff & h) || { name: 'KERNEL32' };
+  return API[m.name] && this.importDef(m.name, nm) ? this.thunkFor(m.name, nm) : 0;
 });
 // ---- structured exceptions. RaiseException hands the exception to the handlers on the thread's chain (FS:[0]) as
 // the system's dispatcher does: each gets (record, its frame, context, dispatcher context) and answers continue
@@ -1409,50 +2144,78 @@ function sehContext(p, at, eip, esp) {
   for (const [r, o] of Object.entries(CTX)) p.w32(at + o, p.reg(r));
   p.w32(at + 0xb8, eip); p.w32(at + 0xc4, esp); p.w32(at + 0xc0, 0x202);
 }
-/** an exception (code, at `eip`, its parameters) through the thread's structured handlers, as KERNEL32 dispatches one:
- *  the address to go on at (a handler continued it), SENTINEL when a handler took it and the program ran on past
- *  here, null when none handled it */
-function sehDispatch(p, code, eip, params, fault, flags = 0) {
+/** an exception (code, at `eip`, its parameters) through the thread's structured handlers, as KERNEL32 dispatches one.
+ *  Each handler is called by the thread itself, its return coming back to SEH_CONT (sehStep), not as a call the host
+ *  makes: a handler that takes the exception (MSVC's _except_handler3: RtlUnwind, then its __except block) never
+ *  returns, and the program runs on as itself. Called as the host's, QUARTZ's MMX probe (EMMS under its own handler)
+ *  ran on inside the call: REGSVR32's message box and its message loop, the machine answering nothing. The address to
+ *  go on at (the first handler's), or null when the thread's chain has none. When every handler declines: the fault's
+ *  dialog for `fault` (a processor exception), else the exception `code` at `eip` (RaiseException's) */
+function sehStart(p, code, eip, params, fault, flags) {
   p.sehFault = fault;
   const sp = u32(p.reg('esp')), rec = (sp - 0x400) & ~15, ctx = rec + 0x60, n = Math.min(params.length, 15);
   // (a stack pointer that is no address the machine has: nothing can be pushed for a handler, the fault is not
   // handled, the program's fault dialog takes it rather than the machine ending)
   if (sp < 0x10000 || sp > p.u8.length) return null;
+  // (the dispatches whose records are now below the stack are over: their handler took the exception and the program
+  // ran on above them)
+  // (each thread's own: the machine's threads share the process object, and another thread's dispatch, its record
+  // higher in memory, was taken for an outer one of this thread's, its search begun in that thread's chain)
+  const live = p.sehLive || (p.sehLive = new Map()), tibNow = p.cpu.fs.value;
+  for (const [r, s] of live) if (s.tib === tibNow && r < sp) live.delete(r);
   p.u8.fill(0, rec, rec + 0x50);
   p.w32(rec, code); p.w32(rec + 4, flags & 1); p.w32(rec + 12, eip); p.w32(rec + 16, n);
   for (let i = 0; i < n; i++) p.w32(rec + 20 + 4 * i, params[i]);
   sehContext(p, ctx, eip, sp);
-  p.reg('esp', rec - 0x40);
-  // a frame off the thread's stack (the TIB's top and limit; past the end of memory) ends the chain, as KERNEL32
-  // takes it: what the frames before it did not handle is not handled
-  const tib = p.cpu.fs.value, end = p.mem.buffer.byteLength, top = p.r32(tib + 4), limit = p.r32(tib + 8);
-  const onStack = f => f + 8 <= end && !(top > limit && (f < limit || f + 8 > top));
   // (an exception raised inside a handler, nested: its search starts above the frame whose handler is running, as
   // KERNEL32's dispatcher skips the frames it is already in, EXCEPTION_NESTED_CALL. Searched from the chain's head, a
   // handler that faulted was asked about its own fault, and again, until the page's stack ran out)
-  const active = p.sehActive || (p.sehActive = []), nested = active.length ? active[active.length - 1] : 0;
+  let nested = 0; for (const s of live.values()) if (s.tib === tibNow && s.f && s.rec > sp) nested = s.f;
   if (nested) p.w32(rec + 4, (flags & 1) | 0x10);
-  for (let f = nested ? p.r32(nested) : p.r32(tib); f !== SEH_END && f && onStack(f); f = p.r32(f)) {
-    active.push(f);
-    let r; try { r = sehCall(p, p.r32(f + 4), [rec, f, ctx, 0], sp); } finally { active.pop(); }
-    if (r === 'escaped') return LAYOUT.SENTINEL;
-    if (r === 0) {   // continue execution where the context says
-      for (const [rg, o] of Object.entries(CTX)) p.reg(rg, p.r32(ctx + o));
-      p.reg('esp', p.r32(ctx + 0xc4)); return p.r32(ctx + 0xb8);
-    }
+  const st = { rec, ctx, sp, f: 0, nested, fault, code, eip, tib: tibNow };   // (plain data: a moment keeps it)
+  live.set(rec, st);
+  if (p.hookDllChain) p.hookDllChain();
+  return sehNext(p, st);
+}
+/** the next frame's handler called for dispatch `st`: its address, the frame and the call's arguments on the stack below
+ *  the record, its return to SEH_CONT; null when the chain has no more (the stack as the exception found it) */
+function sehNext(p, st) {
+  // a frame off the thread's stack (the TIB's top and limit; past the end of memory) ends the chain, as KERNEL32
+  // takes it: what the frames before it did not handle is not handled
+  const tib = st.tib, end = p.mem.buffer.byteLength, top = p.r32(tib + 4), limit = p.r32(tib + 8);
+  const onStack = f => f + 8 <= end && !(top > limit && (f < limit || f + 8 > top));
+  const f = st.f ? p.r32(st.f) : st.nested ? p.r32(st.nested) : p.r32(tib);
+  if (f === SEH_END || !f || !onStack(f)) { p.sehLive.delete(st.rec); p.reg('esp', st.sp); return null; }
+  st.f = f;
+  p.reg('esp', st.rec - 0x40);
+  p.push(0); p.push(st.ctx); p.push(f); p.push(st.rec); p.push(SEH_CONT);
+  return p.r32(f + 4);
+}
+/** a handler returned (EAX: 0 continue execution where the context says, 1 continue the search): where to go on */
+function sehStep(p) {
+  const sp = u32(p.reg('esp')), rec = p.r32(sp), st = p.sehLive && p.sehLive.get(rec);
+  if (!st) throw new GuestError(`an exception handler returned to a dispatch that is over (record ${rec.toString(16)})`);
+  if (p.reg('eax') === 0) {
+    p.sehLive.delete(rec);
+    for (const [rg, o] of Object.entries(CTX)) p.reg(rg, p.r32(st.ctx + o));
+    p.reg('esp', p.r32(st.ctx + 0xc4)); return p.r32(st.ctx + 0xb8);
   }
-  p.reg('esp', sp);
-  return null;
+  const go = sehNext(p, st);
+  if (go !== null) return go;
+  throw sehUnhandled(p, st.fault, st.code, st.eip);
+}
+/** nothing handled it: KERNEL32's unhandled-exception path ends the program with its fault dialog */
+function sehUnhandled(p, fault, code, eip) {
+  if (fault) return new FaultError(fault);
+  const f = p.faultInfo(0, eip, 0); f.code = code; f.why = `exception ${u32(code).toString(16)} at ${u32(eip).toString(16)}`; return new FaultError(f);
 }
 def('KERNEL32', 'RaiseException', 'regs', function () {
   const sp = u32(this.reg('esp')), ret = this.r32(sp), code = this.r32(sp + 4), flags = this.r32(sp + 8), n = Math.min(this.r32(sp + 12), 15), argv = this.r32(sp + 16);
   const params = []; for (let i = 0; i < n; i++) params.push(this.r32(argv + 4 * i));
   this.reg('esp', sp + 20);
-  const r = sehDispatch(this, code, ret, params, null, flags);
+  const r = sehStart(this, code, ret, params, null, flags);
   if (r !== null) return r;
-  // nothing handled it: KERNEL32's unhandled-exception path ends the program with its fault dialog
-  const f = this.faultInfo(0, ret, 0); f.code = code; f.why = `exception ${u32(code).toString(16)} at ${u32(ret).toString(16)}`;
-  throw new FaultError(f);
+  throw sehUnhandled(this, null, code, ret);
 });
 // RtlUnwind(target frame, target IP, record, return value): the handlers of the frames above the target are called
 // with the record marked unwinding (2; and 4 when there is no target: the whole chain), each frame taken off the chain
@@ -1473,10 +2236,12 @@ def('KERNEL32', 'GlobalMemoryStatus', 1, function (p) {   // 16 MB of RAM, as Ge
   this.w32(p, 32); this.w32(p + 4, 50); this.w32(p + 8, 0x1000000); this.w32(p + 12, 0x800000); this.w32(p + 16, 0x2000000); this.w32(p + 20, 0x1800000);
   this.w32(p + 24, 0x7fc00000); this.w32(p + 28, 0x7f000000);
 });
-def('KERNEL32', 'QueryPerformanceCounter', 1, function (p) { const t = Math.floor((this.progTime('tick') - 3600000) * 1193.182); this.w32(p, t % 4294967296); this.w32(p + 4, Math.floor(t / 4294967296)); return 1; });
+// (two reads are never the same count: a read of the timer chip takes a few of its ticks, 5 microseconds or so on
+// the machines of the day. The clock here moves a millisecond at a time: Windows 98's WELCOME times a short loop
+// between two reads to rate the processor, found no time had passed, and divided by it)
+def('KERNEL32', 'QueryPerformanceCounter', 1, function (p) { let t = Math.floor((this.progTime('tick') - 3600000) * 1193.182); if (t < (this.qpcLast || 0) + 6) t = this.qpcLast + 6; this.qpcLast = t; this.w32(p, t % 4294967296); this.w32(p + 4, Math.floor(t / 4294967296)); return 1; });
 def('KERNEL32', 'QueryPerformanceFrequency', 1, function (p) { this.w32(p, 1193182); this.w32(p + 4, 0); return 1; });
 def('KERNEL32', 'IsBadStringPtrW', 2, function (a) { return !a || a >= this.mem.buffer.byteLength ? 1 : 0; });
-def('KERNEL32', 'LocalHandle', 1, p => p);
 def('KERNEL32', 'RtlFillMemory', 3, function (d, n, v) { this.u8.fill(v & 0xff, d, d + n); });
 // #87: whether the calling thread holds the Win16 lock (never for a Win32 thread); #88 (bytes of arguments, flags,
 // function, arguments...): the function called with the arguments, on the caller's stack for a Win32 thread
@@ -1485,6 +2250,10 @@ def('KERNEL32', '#88', -1, function (cb, flags, fn) { const sp = this.reg('esp')
 def('KERNEL32', 'RtlUnwind', 'regs', function () {
   const sp = u32(this.reg('esp')), ret = this.r32(sp), target = this.r32(sp + 4), given = this.r32(sp + 12), value = this.r32(sp + 16);
   const keep = ['ebx', 'esi', 'edi', 'ebp'].map(r => [r, this.reg(r)]);
+  // (a handler unwinding has taken its exception: the thread's dispatches below the target frame are over, as the
+  // program runs on above them. Left, QUARTZ's next MMX probe, deeper in the stack, was taken for one raised inside
+  // the first's handler and its search began past QUARTZ's own frame: unhandled)
+  if (this.sehLive) { const tib = this.cpu.fs.value; for (const [r, s] of this.sehLive) if (s.tib === tib && (!target || r < u32(target))) this.sehLive.delete(r); }
   const rec = (sp - 0x400) & ~15, ctx = rec + 0x60;
   if (given) this.u8.copyWithin(rec, given, given + 0x50); else { this.u8.fill(0, rec, rec + 0x50); this.w32(rec, 0xc0000027); this.w32(rec + 12, ret); }
   this.w32(rec + 4, this.r32(rec + 4) | (target ? 2 : 6));
@@ -1502,22 +2271,66 @@ def('KERNEL32', 'RtlUnwind', 'regs', function () {
 // UnhandledExceptionFilter(EXCEPTION_POINTERS): the program's own top-level filter first (SetUnhandledExceptionFilter),
 // else KERNEL32's fault dialog for the exception being dispatched; EXCEPTION_EXECUTE_HANDLER (1): the program ends
 def('KERNEL32', 'UnhandledExceptionFilter', 1, function (ptrs) {
-  if (this.topFilter) { const r = this.call(this.topFilter, [ptrs]); if (r !== 0) return r; }
+  const top = topFilterOf(this);
+  if (top.fn) { const r = this.call(top.fn, [ptrs]); if (r !== 0) return r; }
   const rec = this.r32(ptrs), ctx = this.r32(ptrs + 4);
   const f = this.sehFault && this.sehFault.eip === this.r32(rec + 12) ? this.sehFault : this.faultInfo(0, this.r32(rec + 12), 0);
   if (!this.sehFault || f !== this.sehFault) { f.code = this.r32(rec); for (const [r, o] of Object.entries(CTX)) f.regs[r] = this.r32(ctx + o); }
   if (this.host.faultDialog) this.host.faultDialog(f);
   return 1;
 });
-def('KERNEL32', 'SetUnhandledExceptionFilter', 1, function (fn) { const was = this.topFilter || 0; this.topFilter = fn; return was; });
+// (each process's own, as KERNEL32 keeps it in the process: one for the machine, the second REGSVR32 to load MSVCRT
+// was given MSVCRT's own filter as the one before it, and the filter called itself until the stack ran out)
+const topFilterOf = p => { const pc = p.thread16 && p.thread16.pc; return pc ? (pc.topFilter || (pc.topFilter = { fn: 0 })) : (p.topFilterMain || (p.topFilterMain = { fn: 0 })); };
+def('KERNEL32', 'SetUnhandledExceptionFilter', 1, function (fn) { const top = topFilterOf(this), was = top.fn || 0; top.fn = fn; return was; });
+// GetSystemPowerStatus(SYSTEM_POWER_STATUS*): on mains, no battery (Task Scheduler's MSTASK asks at its start)
+def('KERNEL32', 'GetSystemPowerStatus', 1, function (p) {
+  this.u8[p] = 1; this.u8[p + 1] = 128; this.u8[p + 2] = 255; this.u8[p + 3] = 0; this.w32(p + 4, 0xffffffff); this.w32(p + 8, 0xffffffff); return 1;
+});
 def('KERNEL32', 'GetLastError', 0, function () { return this.lastError || 0; });
 def('KERNEL32', 'SetLastError', 1, function (e) { this.lastError = e; });
-def('KERNEL32', 'LocalAlloc', 2, function (f, n) { return this.alloc(n); });
-def('KERNEL32', 'LocalFree', 1, function (p) { this.free(p); return 0; });
-def('KERNEL32', 'GlobalAlloc', 2, function (f, n) { return this.alloc(n); });
-def('KERNEL32', 'GlobalFree', 1, function (p) { this.free(p); return 0; });
-def('KERNEL32', 'GlobalLock', 1, p => p);
-def('KERNEL32', 'GlobalUnlock', 1, () => 1);
+// Global and local memory (one heap in Win32): a fixed block's handle is its address; a moveable one's (GMEM_MOVEABLE,
+// LMEM_MOVEABLE) is a cell of its own holding the block's address, the same handle however often the block moves as it
+// grows. A memory stream (OLE32's CreateStreamOnHGlobal) grows its block by GlobalReAlloc while whoever made the
+// stream keeps its handle (GetHGlobalFromStream): the handle as the block's old address read the freed block, and
+// OLEAUT32 took a VB form's icon for an invalid picture
+const MOVEABLE = 2, ZEROINIT = 0x40, MODIFY = 0x80, DISCARDED = 0x4000;
+const gmov = (p, h) => p.gmov && p.gmov.get(u32(h));
+function memAlloc(f, n) {
+  const ptr = this.alloc(n);
+  if (!(f & MOVEABLE)) return ptr;
+  const h = this.alloc(8); this.w32(h, ptr);
+  (this.gmov || (this.gmov = new Map())).set(h, { ptr, size: n, locks: 0 }); return h;
+}
+function memFree(h) {
+  if (g16(this, h)) { const f16 = window.W95NE16 && window.W95NE16.K16['KERNEL.#17']; if (f16) f16[2].call(this, u32(h)); return 0; }   // (a 16-bit block's: GlobalFree16)
+  const m = gmov(this, h);
+  if (m) { if (m.ptr) this.free(m.ptr); this.gmov.delete(u32(h)); this.free(h); return 0; }
+  this.free(h); return 0;
+}
+function memReAlloc(h, n, f) {
+  const m = gmov(this, h);
+  if (f & MODIFY) return h;   // (its flags alone)
+  if (!m) return this.realloc(h, n);
+  if (!n) { if (m.ptr) this.free(m.ptr); m.ptr = 0; m.size = 0; this.w32(h, 0); return h; }   // (discarded: the handle stays)
+  const old = m.size; m.ptr = m.ptr ? this.realloc(m.ptr, n) : this.alloc(n);
+  if (n > old && f & ZEROINIT) this.u8.fill(0, m.ptr + old, m.ptr + n);
+  m.size = n; this.w32(h, m.ptr); return h;
+}
+// (a handle below 64K is a 16-bit global block's, as Windows 95's KERNEL32 takes one: GDI's metafiles are 16-bit
+// blocks, and Desktop Themes locks the one a graphics filter made of the theme's wallpaper (JPEGIM32.FLT ImportGr):
+// locked as an address, it drew nothing, and the preview's desktop was black)
+const g16 = (p, h) => (u32(h) && u32(h) < 0x10000 && p.ghandles && p.gblock && p.gblock(u32(h))) || null;
+const memLock = function (h) { const b = g16(this, h); if (b) return b.lin; const m = gmov(this, h); if (!m) return h; if (m.ptr) m.locks++; return m.ptr; };
+const memUnlock = function (h) { const m = gmov(this, h); if (!m) return 0; if (m.locks) m.locks--; return m.locks; };
+const memSize = function (h) { const b = g16(this, h); if (b) return b.size; const m = gmov(this, h); return m ? m.size : this.allocs.get(h) || 0; };
+const memHandle = function (p) { if (this.gmov) for (const [h, m] of this.gmov) if (m.ptr === u32(p)) return h; return p; };
+const memFlags = function (h) { const m = gmov(this, h); return m ? (m.ptr ? 0 : DISCARDED) | (m.locks & 0xff) : 0; };
+for (const k of ['Global', 'Local']) {
+  def('KERNEL32', k + 'Alloc', 2, memAlloc); def('KERNEL32', k + 'Free', 1, memFree); def('KERNEL32', k + 'ReAlloc', 3, memReAlloc);
+  def('KERNEL32', k + 'Lock', 1, memLock); def('KERNEL32', k + 'Unlock', 1, memUnlock); def('KERNEL32', k + 'Size', 1, memSize);
+  def('KERNEL32', k + 'Handle', 1, memHandle); def('KERNEL32', k + 'Flags', 1, memFlags);
+}
 def('KERNEL32', 'HeapCreate', 3, () => 0x5000);
 def('KERNEL32', 'HeapDestroy', 1, () => 1);
 def('KERNEL32', 'GetProcessHeap', 0, () => 0x5000);
@@ -1533,29 +2346,79 @@ def('KERNEL32', 'HeapSize', 3, function (h, f, p) { return this.allocs.get(p) ||
 const vregion = (p, a) => { for (const [b, r] of p.vregions || []) if (a >= b && a < b + r.size) return b; return 0; };
 def('KERNEL32', 'VirtualAlloc', 4, function (a, n, type) {
   if (a && vregion(this, a)) return a & ~0xfff;
-  const size = (n + 0xffff) & ~0xffff, regions = this.vregions || (this.vregions = new Map()), end = this.mem.buffer.byteLength;
-  let b = 0, heap = null;
-  const spare = (this.vspare || []).findIndex(r => r.size >= size);
-  if (spare >= 0) { b = this.vspare.splice(spare, 1)[0].base; this.u8.fill(0, b, b + size); }
-  else if (this.vmTop + size <= end) { b = this.vmTop; this.vmTop += size; }
-  else { heap = this.alloc(size + 0xffff, true); b = (heap + 0xffff) & ~0xffff; }
-  // (pc: the process whose own program reserved it, the caller's return address in its image: it goes when that
-  // process ends. What a DLL reserves (SHELL32's, DESK.CPL's) is the DLL's, kept: the DLLs are one copy here, shared)
+  const size = (n + 0xffff) & ~0xffff, regions = this.vregions || (this.vregions = new Map());
+  let heap = null;
+  // (on a 64 KiB boundary, Windows' allocation granularity, from the room ended processes gave back or the top
+  // (vmRoom: a spare piece's rest stays spare). MSO's allocator (MSONSEXT's) finds a block's header by masking its
+  // address to 64 KiB: a region at the top as the block tables left it, 4 KiB aligned, read no header, and faulted)
+  let b = this.vmTop ? this.vmRoom(size, 0x10000) : 0;
+  if (!b) { heap = this.alloc(size + 0xffff, true); b = (heap + 0xffff) & ~0xffff; }
+  // (pc: the process whose own program reserved it, the caller's return address in its image, or a DLL whose
+  // writable data is each process's own (priv: MSVCRT's, OLEAUT32's from their files, whose heaps' 4 MB reservations
+  // their data holds): it goes when that process ends. What a DLL of one copy reserves (SHELL32's, DESK.CPL's) is the
+  // DLL's, kept. MSVCRT's heap in every RUNDLL32 and REGSVR32 was kept: Windows 98's first start ran out of memory)
   const pc = this.pc, e = pc && pc.exe, ret = this.r32(this.reg('esp'));
-  regions.set(b, { size, heap, pc: e && ret >= e.base && ret < e.base + (e.size || 0) ? pc : null });
+  const by = !(e && ret >= e.base && ret < e.base + (e.size || 0)) && (this.modules || []).find(x => !x.hidden && !x.segs && x.size && ret >= x.base && ret < x.base + x.size);
+  this.vmCheck(b, size, 'VirtualAlloc');
+  regions.set(b, { size, heap, pc: e && ret >= e.base && ret < e.base + (e.size || 0) ? pc : by && by.priv && pc ? pc : null });
+  this.vmAudit('VirtualAlloc');
   return b;
 });
 def('KERNEL32', 'VirtualFree', 3, function (p, n, type) {
   const r = type & 0x8000 && this.vregions && this.vregions.get(p);
-  if (r) { this.vregions.delete(p); if (r.heap) this.free(r.heap); else (this.vspare || (this.vspare = [])).push({ base: p, size: r.size }); }
+  if (r) { this.vregions.delete(p); if (!r.heap) this.vmCheck(p, r.size, 'VirtualFree'); if (r.heap) this.free(r.heap); else (this.vspare || (this.vspare = [])).push({ base: p, size: r.size }); this.vmAudit('VirtualFree'); }
   return 1;
+});
+// VirtualProtect: memory here has no page protection, every page readable, writable and runnable; the protection a
+// page was last given is kept and answered as the old one (PAGE_EXECUTE_READWRITE before any), so a caller that puts
+// back what it found (MSVBVM50 writing its thunks into code) puts back its own
+def('KERNEL32', 'VirtualProtect', 4, function (a, n, prot, old) {
+  if (!n || !a) { this.lastError = 87; return 0; }
+  const prots = this.vprots || (this.vprots = new Map()), first = u32(a) >>> 12, last = (u32(a) + u32(n) - 1) >>> 12;
+  if (old) this.w32(old, prots.has(first) ? prots.get(first) : 0x40);
+  for (let pg = first; pg <= last; pg++) prots.set(pg, prot);
+  return 1;
+});
+// VirtualQuery: the region an address is in, as MEMORY_BASIC_INFORMATION (28 bytes): a reservation of VirtualAlloc's,
+// a module's image (MEM_IMAGE), a thread's stack, else the 4 KiB page it is on, committed; the protection the page
+// was given (VirtualProtect), else PAGE_EXECUTE_READWRITE
+def('KERNEL32', 'VirtualQuery', 3, function (a, buf, len) {
+  if (!buf || len < 28) { this.lastError = 24; return 0; }
+  a = u32(a);
+  let base = a & ~0xfff, size = 0x1000, alloc = base, type = 0x20000;   // MEM_PRIVATE
+  const r = this.vregions && [...this.vregions].find(([b, x]) => a >= b && a < b + x.size);
+  const m = !r && (this.modules || []).find(x => x.size && a >= x.base && a < x.base + x.size);
+  const t = !r && !m && this.threadsById && [...this.threadsById.values()].find(x => x.stackBase && a >= x.stackBase && a < x.stackBase + (x.stack || x.stackSize || 0));
+  if (r) { alloc = r[0]; base = r[0]; size = r[1].size; }
+  else if (m) { alloc = m.base; base = m.base; size = m.size; type = 0x1000000; }   // MEM_IMAGE
+  else if (t) { alloc = t.stackBase; base = t.stackBase; size = t.stack || t.stackSize; }
+  const prot = this.vprots && this.vprots.has(a >>> 12) ? this.vprots.get(a >>> 12) : 0x40;
+  [base, alloc, 0x40, size, 0x1000, prot, type].forEach((v, i) => this.w32(buf + 4 * i, v));   // MEM_COMMIT
+  return 28;
+});
+// the wide calls Windows 98's KERNEL32 has only as stubs: they fail, ERROR_CALL_NOT_IMPLEMENTED, as there
+for (const [nm, n] of [['GetModuleFileNameW', 3], ['CreateProcessW', 10], ['FormatMessageW', 7]]) def('KERNEL32', nm, n, function () { this.lastError = 120; return 0; });
+def('KERNEL32', 'lstrcmpiW', 2, function (a, b) {
+  const x = (this.readW(a) || '').toLowerCase(), y = (this.readW(b) || '').toLowerCase();
+  return x < y ? -1 >>> 0 : x > y ? 1 : 0;
 });
 def('KERNEL32', 'lstrlenA', 1, function (p) { return p ? this.readA(p).length : 0; });
 def('KERNEL32', 'lstrcpyA', 2, function (d, s) { this.writeA(d, this.readA(s) || ''); return d; });
 def('KERNEL32', 'lstrcpynA', 3, function (d, s, n) { this.writeA(d, this.readA(s) || '', n); return d; });
 def('KERNEL32', 'lstrcatA', 2, function (d, s) { this.writeA(d, (this.readA(d) || '') + (this.readA(s) || '')); return d; });
 def('KERNEL32', 'lstrcmpiA', 2, function (a, b) { const x = (this.readA(a) || '').toLowerCase(), y = (this.readA(b) || '').toLowerCase(); return x < y ? -1 >>> 0 : x > y ? 1 : 0; });
-def('KERNEL32', 'lstrcmpA', 2, function (a, b) { const x = this.readA(a) || '', y = this.readA(b) || ''; return x < y ? -1 >>> 0 : x > y ? 1 : 0; });
+// Windows' order of two strings: their letters first, whatever their case; the same letters, the one with the lower
+// case at the first place they differ comes first ("version" before "Version"). -1, 0 or 1. By character code, the
+// capital came first: SETUPAPI's string table, its chains kept in this order, found "Version" where it looked for
+// "version", no section of any INF was found, and nothing Setup installs through it was registered
+const strOrder = (x, y, ci) => {
+  const X = x.toLowerCase(), Y = y.toLowerCase();
+  if (X !== Y) return X < Y ? -1 : 1;
+  if (ci) return 0;
+  for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return x[i] === X[i] ? -1 : 1;
+  return 0;
+};
+def('KERNEL32', 'lstrcmpA', 2, function (a, b) { return strOrder(this.readA(a) || '', this.readA(b) || '', false) >>> 0; });
 def('KERNEL32', 'GetPrivateProfileIntA', 4, function (sec, key, dflt, file) {
   const v = iniGet(this.fs, this.readA(file), this.readA(sec), this.readA(key));
   const n = v === null ? NaN : parseInt(v, 10);
@@ -1578,8 +2441,12 @@ def('KERNEL32', 'GetPrivateProfileSectionA', 4, function (sec, buf, n, file) {
 def('KERNEL32', 'GetProfileSectionA', 3, function (sec, buf, n) { return API.KERNEL32.GetPrivateProfileSectionA[1].call(this, sec, buf, n, 0); });
 def('KERNEL32', 'GetProfileStringA', 5, function (sec, key, dflt, buf, n) { return API.KERNEL32.GetPrivateProfileStringA[1].call(this, sec, key, dflt, buf, n, 0); });
 def('KERNEL32', 'GetSystemDirectoryA', 2, function (b, n) { return this.writeA(b, 'C:\\WINDOWS\\SYSTEM', n); });
-def('KERNEL32', 'IsBadReadPtr', 2, function (a, n) { return !a || a + n > this.mem.buffer.byteLength ? 1 : 0; });
-def('KERNEL32', 'IsBadWritePtr', 2, function (a, n) { return !a || a + n > this.mem.buffer.byteLength ? 1 : 0; });
+// IsBadReadPtr / IsBadWritePtr: no bytes asked for is never bad, whatever the pointer (Windows answers 0 for a count of
+// 0): OLE32's IsClassOfCategories checks a required list of none, NULL, that way; told it was bad it answered
+// E_POINTER, MSHTML took the Active Desktop Mover (marked safe for scripting) for a control not marked safe, and the
+// desktop asked "Some software (ActiveX controls) on this page might be unsafe" each time it was made
+def('KERNEL32', 'IsBadReadPtr', 2, function (a, n) { return n && (!a || a + n > this.mem.buffer.byteLength) ? 1 : 0; });
+def('KERNEL32', 'IsBadWritePtr', 2, function (a, n) { return n && (!a || a + n > this.mem.buffer.byteLength) ? 1 : 0; });
 def('KERNEL32', 'RtlMoveMemory', 3, function (d, s, n) { this.u8.copyWithin(d, s, s + n); });
 def('KERNEL32', 'IsDBCSLeadByte', 1, () => 0);    // code page 1252 has no lead bytes
 def('KERNEL32', 'MulDiv', 3, function (a, b, c) {    // rounded (a*b)/c, -1 on overflow or division by zero
@@ -1599,11 +2466,24 @@ def('KERNEL32', 'GetPrivateProfileStringA', 6, function (sec, key, dflt, buf, n,
     return o;
   }
   const v = iniGet(this.fs, this.readA(file), this.readA(sec), this.readA(key));
-  return this.writeA(buf, v === null ? (this.readA(dflt) || '') : v, n);
+  return this.writeA(buf, v === null ? (this.readA(dflt) || '') : v.replace(/^(["'])([^]*)\1$/, '$2'), n);   // (one pair of quotes taken off, as Windows does)
 });
 def('KERNEL32', 'WritePrivateProfileStringA', 4, function (sec, key, val, file) {
   if (this.iniIntent) this.iniIntent(file ? this.readA(file) : 'WIN.INI', this.readA(sec), key ? this.readA(key) : null, val ? this.readA(val) : null, null);
   try { iniSet(this.fs, this.readA(file), this.readA(sec), key ? this.readA(key) : null, val ? this.readA(val) : null); return 1; } catch (_) { return 0; }
+});
+// WritePrivateProfileSection(section, lines, file): the section's lines replaced by these (each NUL-terminated, then a
+// NUL); a null list takes the section away
+def('KERNEL32', 'WritePrivateProfileSectionA', 3, function (sec, data, file) {
+  try {
+    const f = this.readA(file), s = this.readA(sec);
+    iniSet(this.fs, f, s, null, null);
+    for (let a = data; a && this.u8[a];) {
+      const l = this.readA(a), m = /^([^=]*)=(.*)$/.exec(l); a += l.length + 1;
+      if (m) iniSet(this.fs, f, s, m[1].trim(), m[2]); else iniAddLine(this.fs, f, s, l);
+    }
+    return 1;
+  } catch (_) { return 0; }
 });
 def('KERNEL32', 'GetPrivateProfileStructA', 5, function (sec, key, buf, n, file) {
   const v = iniGet(this.fs, this.readA(file), this.readA(sec), this.readA(key));
@@ -1700,10 +2580,72 @@ def('KERNEL32', 'SetPriorityClass', 2, () => 1);
 // process and read back (default level 280h, no flags)
 def('KERNEL32', 'SetProcessShutdownParameters', 2, function (level, flags) { const pc = this.pc || this; pc.shutdownParams = [level, flags]; return 1; });
 def('KERNEL32', 'GetProcessShutdownParameters', 2, function (pl, pf) { const pc = this.pc || this, [l, f] = pc.shutdownParams || [0x280, 0]; if (pl) this.w32(pl, l); if (pf) this.w32(pf, f); return 1; });
+/** the module whose resources handle `m` names: the process's own program for 0, else the module at that handle,
+ *  none for a handle no module of this process has (1813). Not the program's in its place: Explorer copying
+ *  MSTASK's tray icon from its resource (CopyImage, LR_COPYFROMRESOURCE) found its own icon 403, a computer, and the
+ *  tray showed it in place of the Task Scheduler's */
+const resModule = (p, m) => {
+  if (!m) return p.moduleFor(0);
+  if (!(m >>> 16) && p.mod16 && p.mod16(m)) return p.mod16(m);   // (a module's 16-bit handle, as USER keeps it: that module)
+  const mod = p.moduleFor(m), h = u32(p.hmod(m));
+  if (!mod || (u32(mod.base) !== h && !(p.dataMods && p.dataMods.get(h)))) { p.lastError = 1813; return null; }   // ERROR_RESOURCE_TYPE_NOT_FOUND
+  return mod;
+};
+/** a resource of module mod: its place in mod's image; for a program whose image is not the one in place (another
+ *  process's, put by in the arena they share) a copy made while its image is, kept with the module, so LoadResource and
+ *  LockResource read its bytes and not the program at its base in this process */
+const resIn = (p, mod, type, name) => {
+  if (!mod.hidden || !p.withImage) return p.findResource(type, name, mod);
+  const key = `${type}:${name}`, kept = (mod.resCopies || (mod.resCopies = new Map())).get(key); if (kept) return kept;
+  const got = p.withImage(mod, () => { const r = p.findResource(type, name, mod); return r && p.u8.slice(r.addr, r.addr + r.size); });
+  if (!got) return null;
+  const addr = p.alloc(got.length || 1); p.u8.set(got, addr);
+  const r = { addr, size: got.length }; mod.resCopies.set(key, r); return r;
+};
 def('KERNEL32', 'FindResourceA', 3, function (m, name, type) {
-  const r = this.findResource(this.resName(type), this.resName(name), this.moduleFor(m)); if (!r) return 0;
+  const mod = resModule(this, m); if (!mod) return 0;
+  const r = resIn(this, mod, this.resName(type), this.resName(name)); if (!r) return 0;
   return this.newHandle({ kind: 'res', ...r });
 });
+// FindResourceW: Windows 98's KERNEL32 has it (its own code, not the common stub), names in UTF-16 or by number (RUNONCE's
+// call was a dead thunk, and RUNONCE ended on Windows 98's first start)
+def('KERNEL32', 'FindResourceW', 3, function (m, name, type) {
+  const n = p => (p >>> 16 ? this.readW(p) : p);
+  const mod = resModule(this, m); if (!mod) return 0;
+  const r = resIn(this, mod, n(type), n(name)); if (!r) return 0;
+  return this.newHandle({ kind: 'res', ...r });
+});
+// the resource directory's levels enumerated to a callback: types, a type's names, a name's languages, each callback
+// returning FALSE to stop. A name or type that is a string goes to the callback as a pointer to it (ANSI or UTF-16 as
+// the call is), a number as itself. (Windows 98's first start: RUNDLL32's registrations called
+// EnumResourceLanguagesA, an import this KERNEL32 did not have, and three RUNDLL32s faulted at its dead thunk)
+const resLevel = (p, mod, dir) => {
+  const root = mod.base + mod.rsrc, nn = p.r16(dir + 12), ni = p.r16(dir + 14), out = [];
+  for (let i = 0; i < nn + ni; i++) {
+    const e = dir + 16 + 8 * i, nm = p.r32(e), off = p.r32(e + 4);
+    out.push({ key: nm & 0x80000000 ? p.readW(root + (nm & 0x7fffffff) + 2, p.r16(root + (nm & 0x7fffffff))) : nm, sub: off & 0x80000000 ? root + (off & 0x7fffffff) : 0 });
+  }
+  return out;
+};
+const resPick = (list, key) => list.find(e => typeof key === 'string' ? typeof e.key === 'string' && e.key.toUpperCase() === key.toUpperCase() : e.key === key) || null;
+function resEnum(p, wide, h, keys, cb, lp) {
+  const mod = p.moduleFor(h); if (!mod || !mod.rsrc) { p.lastError = 1812; return 0; }   // ERROR_RESOURCE_DATA_NOT_FOUND
+  let dir = mod.base + mod.rsrc;
+  for (const k of keys) { const e = resPick(resLevel(p, mod, dir), k); if (!e || !e.sub) { p.lastError = keys.indexOf(k) ? 1814 : 1813; return 0; } dir = e.sub; }   // ERROR_RESOURCE_NAME/TYPE_NOT_FOUND
+  const tmp = [], arg = v => { if (typeof v !== 'string') return v; const a = p.alloc(2 * v.length + 2); if (wide) { for (let i = 0; i < v.length; i++) p.w16(a + 2 * i, v.charCodeAt(i)); p.w16(a + 2 * v.length, 0); } else p.writeA(a, v, v.length + 1); tmp.push(a); return a; };
+  try {
+    const fixed = keys.map(arg);
+    for (const e of resLevel(p, mod, dir)) if (!p.call(cb, [h, ...fixed, arg(e.key), lp])) break;
+  } finally { for (const a of tmp) p.free(a); }
+  return 1;
+}
+const resKey = (p, v, wide) => (v >>> 16 ? (wide ? p.readW(v) : p.readA(v)) : v);
+def('KERNEL32', 'EnumResourceTypesA', 3, function (h, cb, lp) { return resEnum(this, false, h, [], cb, lp); });
+def('KERNEL32', 'EnumResourceTypesW', 3, function (h, cb, lp) { return resEnum(this, true, h, [], cb, lp); });
+def('KERNEL32', 'EnumResourceNamesA', 4, function (h, type, cb, lp) { return resEnum(this, false, h, [resKey(this, type, false)], cb, lp); });
+def('KERNEL32', 'EnumResourceNamesW', 4, function (h, type, cb, lp) { return resEnum(this, true, h, [resKey(this, type, true)], cb, lp); });
+def('KERNEL32', 'EnumResourceLanguagesA', 5, function (h, type, name, cb, lp) { return resEnum(this, false, h, [resKey(this, type, false), resKey(this, name, false)], cb, lp); });
+def('KERNEL32', 'EnumResourceLanguagesW', 5, function (h, type, name, cb, lp) { return resEnum(this, true, h, [resKey(this, type, true), resKey(this, name, true)], cb, lp); });
 // a loaded resource is its data's address, as on Win32 (code hands LoadResource's result on without LockResource)
 def('KERNEL32', 'LoadResource', 2, function (m, h) { const r = this.obj(h); return r && r.kind === 'res' ? r.addr : 0; });
 def('KERNEL32', 'LockResource', 1, function (h) { const r = this.obj(h); return r && r.kind === 'res' ? r.addr : h; });
@@ -1720,13 +2662,19 @@ def('KERNEL32', 'IsBadStringPtrA', 2, function (a, n) { if (!a || a >= this.mem.
 def('KERNEL32', 'IsDBCSLeadByteEx', 2, () => 0);                   // code page 1252 has no lead bytes
 def('KERNEL32', 'IsValidLocale', 2, (lcid) => (lcid & 0xffff) === 0x409 || (lcid & 0xffff) === 0x400 || (lcid & 0xffff) === 0x800 ? 1 : 0);
 def('KERNEL32', 'GetProcessVersion', 1, () => 0x00040000);          // a 4.0 program
-def('KERNEL32', 'LocalLock', 1, p => p);
-def('KERNEL32', 'LocalUnlock', 1, () => 1);
 def('KERNEL32', 'GetTempFileNameA', 4, function (dir, pre, uniq, out) {
-  const u = uniq || ((Date.now() & 0xffff) | 1), d = this.readA(dir) || 'C:\\WINDOWS\\TEMP';
-  const name = `${d.replace(/\\$/, '')}\\${(this.readA(pre) || '').slice(0, 3)}${u.toString(16).toUpperCase().padStart(4, '0')}.TMP`;
-  if (!uniq) fsCall(this, () => this.fs.writeFile(name, new Uint8Array(0)));
-  this.writeA(out, name, 260); return u;
+  // (uUnique 0: a number not in use, counted up from the clock's until the name is free, and the file made empty, as
+  // Windows does. Taken from the clock alone, two calls in one millisecond had one name: WinHelp's index (-g) made its
+  // second file over the first, "(null) (2)", its rcExists)
+  const d = (this.readA(dir) || 'C:\\WINDOWS\\TEMP').replace(/\\$/, ''), pfx = (this.readA(pre) || '').slice(0, 3);
+  const nameOf = v => `${d}\\${pfx}${v.toString(16).toUpperCase().padStart(4, '0')}.TMP`;
+  let u = uniq & 0xffff;
+  if (!u) {
+    u = (Date.now() & 0xffff) || 1;
+    for (let k = 0; k < 0xffff && this.fs.exists(nameOf(u)); k++) u = (u & 0xffff) === 0xffff ? 1 : u + 1;
+    const nm = nameOf(u); fsCall(this, () => this.fs.writeFile(nm, new Uint8Array(0)));
+  }
+  this.writeA(out, nameOf(u), 260); return u;
 });
 // dates and times in the user's format (en-US: M/d/yy and h:mm:ss tt), or the one asked for
 const fmtDT = (p, st, fmt, isTime) => {
@@ -1766,7 +2714,14 @@ def('KERNEL32', 'GetCurrentThreadId', 0, function () { return this.currentThread
 def('KERNEL32', 'GetCurrentProcessId', 0, function () { return this.pc.pid; });
 def('KERNEL32', 'GetCurrentThread', 0, () => 0xfffffffe);
 // TLS slots are the process's; the values are each thread's (a thread the scheduler runs keeps its own)
-const tlsOf = p => (p.thread16 && p.thread16.flat ? (p.thread16.tls = p.thread16.tls || []) : (p.tls = p.tls || []));
+// (every thread its own slots: one machine-wide set for threads not flagged flat let another thread's OLEAUT32 clear
+// the slot REGSVR32's had just set, and SysAllocString read its per-thread block at 0)
+// (keyed by the thread information block FS points at, the processor's own idea of which thread runs: a call that ran
+// other threads inside it left the record of the current thread another's, and OLEAUT32's slot was set in that one)
+const tlsOf = p => {
+  const fs = p.cpu.fs.value >>> 0, m = p.tlsByTib || (p.tlsByTib = new Map());
+  if (!m.has(fs)) m.set(fs, []); return m.get(fs);
+};
 def('KERNEL32', 'TlsAlloc', 0, function () { this.tls = this.tls || []; this.tlsN = Math.max(this.tlsN || 0, this.tls.length); this.tls[this.tlsN] = 0; return this.tlsN++; });
 def('KERNEL32', 'TlsFree', 1, () => 1);
 def('KERNEL32', 'TlsGetValue', 1, function (i) { return tlsOf(this)[i] || 0; });
@@ -1780,8 +2735,6 @@ def('KERNEL32', 'HeapLock', 1, () => 1);
 def('KERNEL32', 'HeapUnlock', 1, () => 1);
 def('KERNEL32', 'HeapCompact', 2, () => 0);
 def('KERNEL32', 'HeapWalk', 2, () => 0);
-def('KERNEL32', 'LocalReAlloc', 3, function (p, n) { return this.realloc(p, n); });
-def('KERNEL32', 'GlobalReAlloc', 3, function (p, n) { return this.realloc(p, n); });
 def('KERNEL32', 'lstrlenW', 1, function (p) { return p ? this.readW(p).length : 0; });
 def('KERNEL32', 'lstrcpyW', 2, function (d, s) { const t = this.readW(s) || ''; for (let i = 0; i <= t.length; i++) this.w16(d + 2 * i, i < t.length ? t.charCodeAt(i) : 0); return d; });
 def('KERNEL32', 'GetUserDefaultLCID', 0, () => 0x409);
@@ -1799,6 +2752,17 @@ function enumFormats(p, proc, list) {
 def('KERNEL32', 'EnumDateFormatsA', 3, function (proc, lc, flags) { return enumFormats(this, proc, DATE_FORMATS[flags & 3]); });
 def('KERNEL32', 'EnumTimeFormatsA', 3, function (proc) { return enumFormats(this, proc, TIME_FORMATS); });
 def('KERNEL32', 'GetSystemDefaultLCID', 0, () => 0x409);
+// (the defaults by their names, 0 the user's; a neutral sublanguage its language's default; any other as it is)
+def('KERNEL32', 'ConvertDefaultLocale', 1, lc => {
+  lc >>>= 0;
+  if (lc === 0 || lc === 0x400 || lc === 0x800) return 0x409;
+  return (lc & 0xfc00) === 0 ? (lc & 0xffff03ff) | 0x400 : lc;
+});
+// the system's language, as its locale's (Windows 98's KERNEL32 reads it from a word of its data, the system locale's
+// LANGID: mov ax,[...]; ret); 27 of Windows 98's files import it, and none could start past it
+def('KERNEL32', 'GetSystemDefaultLangID', 0, () => 0x409);
+// lstrcatW: Windows 98's KERNEL32 has it (its own code, not the common stub): the source after the destination's text
+def('KERNEL32', 'lstrcatW', 2, function (d, s) { const t = (this.readW(d) || '') + (this.readW(s) || ''); for (let i = 0; i <= t.length; i++) this.w16(d + 2 * i, i < t.length ? t.charCodeAt(i) : 0); return d; });
 def('KERNEL32', 'IsValidCodePage', 1, cp => (cp === 1252 || cp === 437 ? 1 : 0));
 def('KERNEL32', 'GetLocaleInfoW', 4, () => 0);
 // the locale's settings, as Windows 95 has them for English (United States) (1033); LOCALE_NOUSEROVERRIDE (80000000h)
@@ -1824,7 +2788,7 @@ def('KERNEL32', 'GetLocaleInfoA', 4, function (lc, type, buf, n) {
 def('KERNEL32', 'CompareStringW', 6, () => 2);
 def('KERNEL32', 'CompareStringA', 6, function (lc, f, a, na, b, nb) {
   const x = this.readA(a, na < 0 ? 65536 : na) || '', y = this.readA(b, nb < 0 ? 65536 : nb) || '';
-  const ci = f & 1, X = ci ? x.toLowerCase() : x, Y = ci ? y.toLowerCase() : y; return X < Y ? 1 : X > Y ? 3 : 2;
+  return strOrder(x, y, !!(f & 1)) + 2;
 });
 def('KERNEL32', 'SetEnvironmentVariableA', 2, function (name, value) {
   const k = this.readA(name); if (!k) return 0;
@@ -1948,12 +2912,17 @@ def('KERNEL32', 'CreateFileA', 7, function (name, access, share, sa, disp, flags
     if ((disp === 3 || disp === 5) && !exists) throw new window.W95FS.FSError(2, path); // OPEN_EXISTING / TRUNCATE_EXISTING
     if (exists && this.fs.stat(path).isDir) return this.newHandle({ kind: 'dirhandle', path });
     const mode = disp === 2 || disp === 5 ? (read ? 'w+' : 'w') : !exists ? (read ? 'w+' : 'w') : write ? 'r+' : 'r';
-    return this.newHandle({ kind: 'file', fd: this.fs.open(path, mode), path });
+    // (FILE_FLAG_DELETE_ON_CLOSE, 4000000h: the file goes when its handle is closed. ADVPACK tries whether a folder
+    // takes files so, with TMP4352$.TMP: kept, one was left in the Temp, Desktop and StartUp folders, and the one
+    // in StartUp was opened as Windows 98 logged on)
+    return this.newHandle({ kind: 'file', fd: this.fs.open(path, mode), path, delOnClose: !!(flags & 0x4000000) });
   }, 0xffffffff);
 });
 def('KERNEL32', 'CloseHandle', 1, function (h) {
-  const f = fileOf(this, h); if (f) fsCall(this, () => this.fs.close(f.fd)); const c = commOf(this, h); if (c) vcomm(this, 18, [c.vh]);
+  const f = fileOf(this, h); if (f && !(f.refs > 1)) fsCall(this, () => { this.fs.close(f.fd); if (f.delOnClose) this.fs.unlink(f.path); }); else if (f) f.refs--;
+  const c = commOf(this, h); if (c) vcomm(this, 18, [c.vh]);
   const m = this.obj(h); this.handles.delete(h);
+  if (m && m.name) { if (this.namedOwner) this.namedOwner.delete(h); namedGone(this, m); }
   // (a file's mapping goes with its last handle, and its data with it)
   if (m && m.kind === 'mapping' && m.file && ![...this.handles.values()].includes(m)) { this.free(m.base); m.base = 0; if (this.mappings) this.mappings.delete(m); }
   return 1;
@@ -2001,7 +2970,16 @@ def('KERNEL32', 'WriteFile', 5, function (h, buf, n, put, ovl) {
   const f = fileOf(this, h); if (!f) { if (put) this.w32(put, n); return 1; }
   return fsCall(this, () => { const k = this.fs.write(f.fd, this.u8.slice(buf, buf + n)); if (put) this.w32(put, k); return 1; });
 });
-def('KERNEL32', 'SetFilePointer', 4, function (h, lo, hip, how) { const f = fileOf(this, h); if (!f) return 0xffffffff; return fsCall(this, () => this.fs.seek(f.fd, lo | 0, how), 0xffffffff); });
+// SetFilePointer: the distance a signed 64-bit one with *lpDistanceToMoveHigh (lo alone a signed 32-bit one without
+// it), the new position's high dword written back there; NO_ERROR on success, which a caller reading GetLastError after
+// a position of FFFFFFFFh tells from a failure (OLE32's compound files)
+def('KERNEL32', 'SetFilePointer', 4, function (h, lo, hip, how) {
+  const f = fileOf(this, h); if (!f) { this.lastError = 6; return 0xffffffff; }
+  const dist = hip ? (this.r32(hip) | 0) * 0x100000000 + u32(lo) : lo | 0;
+  const r = fsCall(this, () => this.fs.seek(f.fd, dist, how), null); if (r === null) return 0xffffffff;
+  if (hip) this.w32(hip, Math.floor(r / 0x100000000));
+  this.lastError = 0; return u32(r);
+});
 def('KERNEL32', 'GetFileSize', 2, function (h, hi) { const f = fileOf(this, h); if (hi) this.w32(hi, 0); return f ? this.fs.fstat(f.fd).size : 0xffffffff; });
 def('KERNEL32', 'SetEndOfFile', 1, function (h) { const f = fileOf(this, h); return f ? fsCall(this, () => (this.fs.truncate(f.fd), 1)) : 0; });
 def('KERNEL32', 'FlushFileBuffers', 1, () => 1);
@@ -2009,7 +2987,7 @@ def('KERNEL32', 'FlushFileBuffers', 1, () => 1);
 const lfile = (p, path, mode) => fsCall(p, () => p.newHandle({ kind: 'file', fd: p.fs.open(path, mode), path }), 0xffffffff);
 def('KERNEL32', '_lopen', 2, function (name, mode) { const m = mode & 3; return lfile(this, this.readA(name), m === 0 ? 'r' : 'r+'); });
 def('KERNEL32', '_lcreat', 2, function (name, attr) { return lfile(this, this.readA(name), 'w+'); });
-def('KERNEL32', '_lclose', 1, function (h) { const f = fileOf(this, h); if (!f) return 0xffffffff; fsCall(this, () => this.fs.close(f.fd)); this.handles.delete(h); return 0; });
+def('KERNEL32', '_lclose', 1, function (h) { const f = fileOf(this, h); if (!f) return 0xffffffff; if (f.refs > 1) f.refs--; else fsCall(this, () => this.fs.close(f.fd)); this.handles.delete(h); return 0; });
 def('KERNEL32', '_lread', 3, function (h, buf, n) {
   const co = conOf(this, h); if (co) { const g = this.scratch4 || (this.scratch4 = this.alloc(4)), r = conRead(this, co, buf, n, g); return r === YIELD ? r : this.r32(g); }   // (the console: XCOPY32 reads its answers so)
   const f = fileOf(this, h); if (!f) return 0xffffffff; return fsCall(this, () => { const b = this.fs.read(f.fd, n); this.u8.set(b, buf); return b.length; }, 0xffffffff); });
@@ -2055,8 +3033,32 @@ def('KERNEL32', 'CopyFileA', 3, function (a, b, fail) { return fsCall(this, () =
 def('KERNEL32', 'CreateDirectoryA', 2, function (n) { return fsCall(this, () => (this.fs.mkdir(this.readA(n)), 1)); });
 def('KERNEL32', 'RemoveDirectoryA', 1, function (n) { return fsCall(this, () => (this.fs.rmdir(this.readA(n)), 1)); });
 def('KERNEL32', 'GetCurrentDirectoryA', 2, function (n, b) { return this.writeA(b, this.fs.cwd.replace(/\\$/, (m, o) => (o > 2 ? '' : m)), n); });
-def('KERNEL32', 'SetCurrentDirectoryA', 1, function (n) { return fsCall(this, () => (this.fs.chdir(this.readA(n)), 1)); });
+// (a drive alone, "C:", is that drive's current directory, as DOS keeps one a drive: the process's last there, else its
+// root. Taken for the root, WINHLP32's restore of its directory with "C:" left it in C:\, and Windows 98's help index
+// ("winhlp32 -g windows.hlp") looked for C:\windows.hlp: "(null) (2)")
+def('KERNEL32', 'SetCurrentDirectoryA', 1, function (n) {
+  const pc = this.pc, dc = pc.driveCwd || (pc.driveCwd = {}), cur = this.fs.cwd || '';
+  if (/^[A-Za-z]:/.test(cur)) dc[cur[0].toUpperCase()] = cur;
+  let path = this.readA(n) || '';
+  if (/^[A-Za-z]:$/.test(path)) { const d = path[0].toUpperCase(); if (cur[0] && cur[0].toUpperCase() === d) return 1; path = dc[d] || d + ':\\'; }
+  return fsCall(this, () => (this.fs.chdir(path), 1));
+});
 def('KERNEL32', 'GetDriveTypeA', 1, function (n) { const l = ((this.readA(n) || this.fs.cwd)[0] || 'C').toUpperCase(); const v = this.fs.vols.get(l); return !v ? 1 : { removable: 2, fixed: 3, remote: 4, cdrom: 5 }[v.kind] || 3; });   // (a network drive's DRIVE_REMOTE)
+// QueryDosDeviceA(name, target, max), as Windows 98's KERNEL32 has it (BFF70000h+388A0h, behind its argument check):
+// no name, no buffer or a size over 104h is ERROR_INVALID_PARAMETER; COMn and LPTn are their own targets; "X:", a drive
+// there, is its SUBST path (INT 21h 71AAh, BH 2), and a drive not substituted (every drive here: none is) is
+// ERROR_FILE_NOT_FOUND, as anything else is; a target longer than the buffer ERROR_INSUFFICIENT_BUFFER. The count of
+// the characters written, the NUL not counted. Missing, PIDSET's call was a dead thunk and its C runtime's exception
+// handling ran it out of stack on Windows 98's first start
+def('KERNEL32', 'QueryDosDeviceA', 3, function (name, target, max) {
+  if (!name || !target || u32(max) > 0x104) { this.lastError = 87; return 0; }
+  const n = (this.readA(name) || '').toUpperCase();
+  // (a drive, there or not, is no SUBST drive here: not found, as a name that is no device)
+  const to = /^(COM[1-9]|LPT[1-9])$/.test(n) ? n : null;
+  if (to === null) { this.lastError = 2; return 0; }
+  if (to.length + 1 > u32(max)) { this.lastError = 0x7a; return 0; }
+  this.writeA(target, to, to.length + 1); return to.length;
+});
 def('KERNEL32', 'GetLogicalDrives', 0, function () { let m = 0; for (const v of this.fs.vols.values()) m |= 1 << (v.letter.charCodeAt(0) - 65); return m; });
 // GetLogicalDriveStringsA: the drives' root paths, each null-terminated, then a null ("A:\0C:\0D:\0" with backslashes);
 // the length needed when the buffer is too small (LINKINFO asks with none first)
@@ -2071,7 +3073,10 @@ def('KERNEL32', 'GetDiskFreeSpaceA', 5, function (n, spc, bps, free, total) {
     if (spc) this.w32(spc, c / 512); if (bps) this.w32(bps, 512); if (free) this.w32(free, Math.floor(v.free / c)); if (total) this.w32(total, Math.floor(v.total / c)); return 1; });
 });
 def('KERNEL32', 'FindFirstFileA', 2, function (pat, data) {
-  const s = this.readA(pat); const dir = s.includes('\\') ? s.slice(0, s.lastIndexOf('\\')) || s.slice(0, 3) : this.fs.cwd, mask = s.slice(s.lastIndexOf('\\') + 1);
+  // (the name's trailing blanks are no part of it, as the file system takes a name, and a name with no wildcard its
+  // trailing dots: "regedit.exe " is REGEDIT.EXE; "*." keeps its dot, the files with no extension)
+  const s = this.readA(pat); const dir = s.includes('\\') ? s.slice(0, s.lastIndexOf('\\')) || s.slice(0, 3) : this.fs.cwd, raw = s.slice(s.lastIndexOf('\\') + 1).replace(/ +$/, '');
+  const mask = /[*?]/.test(raw) ? raw : raw.replace(/[. ]+$/, '') || raw;
   return fsCall(this, () => {
     const list = this.fs.readdir(dir.length === 2 ? dir + '\\' : dir, mask);
     if (!list.length) throw new window.W95FS.FSError(2, s);
@@ -2117,6 +3122,17 @@ def('KERNEL32', 'MapViewOfFile', 5, function (h, access, hi, lo) {
   if (!m.base) { const r = fsCall(this, () => { const b = this.fs.readFile(m.path); m.base = this.alloc(b.length + 1); m.size = b.length; m.file = true; this.u8.set(b, m.base); return 0; }); if (!m.base) return r || 0; }
   return m.base + lo;
 });
+// FlushViewOfFile: a file's view written back to its file (the view is the file's contents copied in when mapped); a
+// mapping of no file has nothing to write. Unimplemented, the thunk was a page fault in MSGSRV32 as Explorer opened My
+// Computer (the shell's shared view of its settings file)
+def('KERNEL32', 'FlushViewOfFile', 2, function (p) {
+  for (const m of this.mappings || sections(this).values()) if (m.base && p >= m.base && p < m.base + Math.max(m.size, 1)) {
+    if (!m.file || !m.path) return 1;
+    const r = fsCall(this, () => { this.fs.writeFile(m.path, this.u8.slice(m.base, m.base + m.size)); return 1; });
+    return r ? 1 : 0;
+  }
+  this.lastError = 487; return 0;   // ERROR_INVALID_ADDRESS
+});
 def('KERNEL32', 'UnmapViewOfFile', 1, function (p) { for (const m of this.mappings || sections(this).values()) if (p >= m.base && p < m.base + Math.max(m.size, 1)) return 1; this.free(p); return 1; });
 def('KERNEL32', 'CreateFileW', 7, () => 0xffffffff);
 def('KERNEL32', 'GetFullPathNameA', 4, function (n, len, buf, part) {
@@ -2128,7 +3144,33 @@ def('KERNEL32', 'GetConsoleMode', 2, function (h, p) { const o = conOf(this, h);
 // (the input's mode to the console's window, which edits and echoes the line as it says: ENABLE_LINE_INPUT 2, ENABLE_ECHO_INPUT 4)
 def('KERNEL32', 'SetConsoleMode', 2, function (h, mode) { const o = conOf(this, h); if (!o) return 0; if (o.io === 'in') { o.mode = mode; if (this.host.consoleMode) this.host.consoleMode(o.console, mode); } return 1; });
 def('KERNEL32', 'WriteConsoleA', 5, function (h, buf, n, put) { const o = conOf(this, h); if (!o) return 0; conWrite(this, o, buf, n); if (put) this.w32(put, n); return 1; });
-def('KERNEL32', 'DuplicateHandle', 7, function (a, h, b, out) { if (out) this.w32(out, h); return 1; });
+// a handle duplicated: the same object. The calling thread's or process's pseudo-handle (GetCurrentThread FFFFFFFEh,
+// GetCurrentProcess FFFFFFFFh) is duplicated as a real handle to that very thread or process, which another thread
+// can use: MPR hands its waiting thread's to MPREXE, which queues the APC that ends the wait there (copied as the
+// pseudo-handle, the APC went to MPREXE's own thread, and GRPCONV's link to the Removable Disk in SendTo waited for
+// good: Windows 98's first start stopped at "Programs on the Start menu")
+// A kernel object's duplicate (a file mapping, an event, a mutex, a semaphore, a thread, a process) is a handle of
+// its own to the object, and DUPLICATE_CLOSE_SOURCE (1) closes the one duplicated: the object lives until its last
+// handle is closed. The shell hands a folder's ID list to Explorer as a mapping (SHLWAPI's SHAllocShared duplicates
+// the mapping's handle for Explorer and closes its own; SHLockShared maps the duplicate). Duplicated as the same
+// handle, the close took the mapping with it, Explorer got no ID list, and My Computer and Network Neighborhood opened
+// as the path "" does, the current directory: C:\. An event duplicated that way went with its maker's CloseHandle,
+// and the thread waiting on the duplicate waited its whole time-out: a folder window empty for a minute.
+const DUP_KINDS = new Set(['mapping', 'event', 'mutex', 'semaphore', 'thread', 'process']);
+def('KERNEL32', 'DuplicateHandle', 7, function (a, h, b, out, access, inherit, opts) {
+  h >>>= 0;
+  const o = h < 0xfffffffe ? this.obj(h) : null;
+  let r;
+  if (h === 0xfffffffe) r = this.newHandle({ kind: 'thread', id: this.currentThreadId() });
+  else if (h === 0xffffffff) r = this.newHandle({ kind: 'process', pid: this.pc.pid });
+  else if (o && DUP_KINDS.has(o.kind)) { r = this.nextHandle; this.nextHandle += 4; this.handles.set(r, o); if (opts & 1) this.handles.delete(h); }
+  // (a file's duplicate: another handle to the same open file, its position shared, the file closed with its last
+  // handle (CloseHandle). The handle itself back, OLE32's compound file closed its original and wrote through the
+  // duplicate it kept, the file gone: STG_E_INVALIDHANDLE, and a VB form's icon an "Invalid picture")
+  else if (o && o.kind === 'file') { r = this.nextHandle; this.nextHandle += 4; this.handles.set(r, o); o.refs = (o.refs || 1) + 1; if (opts & 1) API.KERNEL32.CloseHandle[1].call(this, h); }
+  else r = h;
+  if (out) this.w32(out, r); return 1;
+});
 def('KERNEL32', 'WaitForSingleObject', 2, () => 0);
 // a process's exit code: STILL_ACTIVE (103h) while it runs, else its code (a Win16 task's too); the process's own
 // pseudo-handle asks about itself. (It answered FALSE, and a caller polling for a child's end never saw it)
@@ -2144,9 +3186,53 @@ def('KERNEL32', 'GetExitCodeProcess', 2, function (h, out) {
 // no second thread
 def('KERNEL32', 'CreateThread', 6, function (attr, stack, start, param, flags, ptid) {
   if (!this.newThread || !this.nativeUser16 || !this.nativeUser16()) return 0;
+  // (a stack size of 0 is the program's own: its header's SizeOfStackReserve, a megabyte for most, as CreateThread
+  // gives one. Given 64K, Explorer's thread for a folder window ran out of stack making the window's toolbars, a
+  // stack fault in SHDOCVW, once the window had a folder to show)
+  if (!stack) {
+    const pc = this.thread16 && this.thread16.pc, base = (pc && pc.exe && pc.exe.base) || (this.exe && this.exe.base) || 0;
+    const pe = base ? base + this.r32(base + 0x3c) : 0;
+    if (pe && this.r32(pe) === 0x4550) stack = Math.min(Math.max(this.r32(pe + 24 + 72), 0x10000), 0x100000);
+  }
   const t = this.newThread(start, param, stack, true, !!(flags & 4));
   if (ptid) this.w32(ptid, t.id);
   return this.newHandle({ kind: 'thread', id: t.id });
+});
+// Fibers, as Windows 98's KERNEL32 has them (Windows 95's has none). A fiber is a record the thread's TIB names at
+// +10h, its first dword the fiber's data (GetFiberData reads it there): { data, SEH chain, stack top, stack limit,
+// ESP, EBP, EBX, ESI, EDI, where it goes on, its stack's block }. SwitchToFiber keeps the running fiber's place in
+// its record and goes on with the other's, on its stack, with its SEH chain and stack bounds in the TIB.
+// MSHTML decodes an image on a fiber: it takes KERNEL32's CreateFiber where there is one, its own stand-in for them
+// on Windows 95 alone (version 4.0), and with neither decodes nothing, so on Windows 98 (4.10) no image in a page
+// ever finished loading: a folder's Web view never got its onload (My Computer's pie chart control stayed a white
+// box) and Explorer's busy animation ran for good.
+const FIBER = { data: 0, seh: 4, top: 8, limit: 12, esp: 16, ebp: 20, ebx: 24, esi: 28, edi: 32, eip: 36, block: 40, size: 48 };
+def('KERNEL32', 'ConvertThreadToFiber', 1, function (data) {
+  const tib = this.cpu.fs.value >>> 0, f = this.alloc(FIBER.size); this.u8.fill(0, f, f + FIBER.size);
+  this.w32(f + FIBER.data, data); this.w32(tib + 0x10, f); return f;
+});
+def('KERNEL32', 'CreateFiber', 3, function (size, start, data) {
+  const n = Math.max((size + 0xfff) & ~0xfff, 0x10000), block = this.alloc(n), f = this.alloc(FIBER.size); this.u8.fill(0, f, f + FIBER.size);
+  // (its first switch arrives at its procedure as a call does: the data its argument, and a return ends the thread)
+  const sp = (block + n - 16) & ~3; this.w32(sp, this.thunkFor('KERNEL32', 'ExitThread')); this.w32(sp + 4, data);
+  for (const [k, v] of [['data', data], ['seh', 0xffffffff], ['top', block + n], ['limit', block], ['esp', sp], ['eip', start], ['block', block]]) this.w32(f + FIBER[k], v);
+  return f;
+});
+def('KERNEL32', 'DeleteFiber', 1, function (f) {
+  if (!f || this.r32((this.cpu.fs.value >>> 0) + 0x10) === f >>> 0) return 0;   // (the running fiber's own end is its thread's: ExitThread)
+  const block = this.r32(f + FIBER.block); if (block) this.free(block); this.free(f); return 0;
+});
+def('KERNEL32', 'SwitchToFiber', 'regs', function () {
+  const sp = u32(this.reg('esp')), ret = this.r32(sp), to = this.r32(sp + 4), tib = this.cpu.fs.value >>> 0, cur = this.r32(tib + 0x10);
+  if (cur) {
+    this.w32(cur + FIBER.seh, this.r32(tib)); this.w32(cur + FIBER.top, this.r32(tib + 4)); this.w32(cur + FIBER.limit, this.r32(tib + 8));
+    this.w32(cur + FIBER.esp, sp + 8); this.w32(cur + FIBER.eip, ret);
+    for (const r of ['ebp', 'ebx', 'esi', 'edi']) this.w32(cur + FIBER[r], u32(this.reg(r)));
+  }
+  this.w32(tib, this.r32(to + FIBER.seh)); this.w32(tib + 4, this.r32(to + FIBER.top)); this.w32(tib + 8, this.r32(to + FIBER.limit)); this.w32(tib + 0x10, to);
+  for (const r of ['ebp', 'ebx', 'esi', 'edi']) this.reg(r, this.r32(to + FIBER[r]));
+  this.reg('esp', this.r32(to + FIBER.esp));
+  return this.r32(to + FIBER.eip);
 });
 def('KERNEL32', 'ExitThread', 'regs', function () {
   const c = this.r32(this.reg('esp') + 4);
@@ -2190,6 +3276,7 @@ def('KERNEL32', 'CreateProcessA', 10, function (app, cmd, pa, ta, inherit, flags
     return 1;
   }
   if (r.elsewhere) { if (pi) this.u8.fill(0, pi, pi + 16); return 1; }   // (a second instance in a machine of its own: no handles here)
+  if (dir) { const d = this.readA(dir); if (d) r.cwd = d.length > 3 ? d.replace(/\\+$/, '') : d; }   // (the directory it is given to start in)
   if (pi) { this.w32(pi, this.newHandle({ kind: 'process', pid: r.pid })); this.w32(pi + 4, this.newHandle({ kind: 'thread', id: r.main.id })); this.w32(pi + 8, r.pid); this.w32(pi + 12, r.main.id); }
   // it returns once the new process is loaded, as Windows 95's waits for its load-done event: its main thread has
   // attached its DLLs and USER has its per-process data (WaitForInputIdle, which callers ask next, reads it)
@@ -2231,8 +3318,13 @@ def('KERNEL32', 'FileTimeToDosDateTime', 3, function (ft, pd, pt) {
   this.w16(pd, ((d.getUTCFullYear() - 1980) << 9) | ((d.getUTCMonth() + 1) << 5) | d.getUTCDate());
   this.w16(pt, (d.getUTCHours() << 11) | (d.getUTCMinutes() << 5) | (d.getUTCSeconds() >> 1)); return 1;
 });
+// (the date and the time are WORDs: the high halves of their stack slots are whatever the caller left there. Taken
+// whole, the Pinball trial's setup gave a year past what a Date holds, NaN, and BigInt(NaN) ended the system machine
+// as its File Copy began: MSGSRV32's "illegal operation". A date no Date can hold is ERROR_INVALID_PARAMETER)
 def('KERNEL32', 'DosDateTimeToFileTime', 3, function (dd, tt, ft) {
+  dd &= 0xffff; tt &= 0xffff;
   const ms = Date.UTC((dd >> 9) + 1980, ((dd >> 5) & 15) - 1, dd & 31, tt >> 11, (tt >> 5) & 63, (tt & 31) * 2);
+  if (!Number.isFinite(ms)) { this.lastError = 87; return 0; }
   ftPut(this, ft, BigInt(ms) * 10000n + 116444736000000000n); return 1;
 });
 def('KERNEL32', 'GetDiskFreeSpaceExA', 4, function (n, avail, total, free) {
@@ -2254,9 +3346,6 @@ def('KERNEL32', 'ExpandEnvironmentStringsA', 3, function (src, dst, n) {
 });
 def('KERNEL32', 'RtlZeroMemory', 2, function (p, n) { this.u8.fill(0, p, p + n); });
 def('KERNEL32', 'InterlockedExchange', 2, function (p, v) { const o = this.r32(p); this.w32(p, v); return o; });
-def('KERNEL32', 'GlobalSize', 1, function (p) { return this.allocs.get(p) || 0; });
-def('KERNEL32', 'GlobalHandle', 1, p => p);
-def('KERNEL32', 'LocalSize', 1, function (p) { return this.allocs.get(p) || 0; });
 def('KERNEL32', 'IsBadCodePtr', 1, function (a) { return a && a < this.mem.buffer.byteLength ? 0 : 1; });
 def('KERNEL32', 'DebugBreak', 0, () => 0);
 def('KERNEL32', 'GetThreadLocale', 0, () => 0x409);
@@ -2269,9 +3358,23 @@ def('KERNEL32', 'DeviceIoControl', 8, function () { this.lastError = 50; return 
 def('KERNEL32', 'LoadLibraryExA', 3, function (name, f, fl) {
   if (fl & 2) {
     const path = this.readA(name) || '';
+    // (a bare name looked for as LoadLibrary looks: the search folders, SYSTEM, the Windows folder; a file not there is
+    // ERROR_FILE_NOT_FOUND, not a bad image)
+    const at = /\\|:/.test(path) ? [path] : [...(this.loadDirs || []), 'C:\\WINDOWS\\SYSTEM', 'C:\\WINDOWS'].map(d => d + '\\' + path);
+    let file = null;
+    // (the path as given: the file system takes short names and long. A `resolve` of its was asked first, which it has
+    // not, and the worker's proxy of it answers any name with a call to the page that throws: every file loaded as data
+    // was not found, and Windows 98's first start could not register MSHTMLED.DLL or ICMFILTER.DLL, 80070002)
+    for (const q of at) { try { file = this.fs.readFile(q); break; } catch (_) { /* not there */ } }
+    if (!file) { this.lastError = 2; return 0; }
     let pe = false;
-    try { const b = this.fs.readFile(this.fs.resolve ? this.fs.resolve(path) : path); const o = b.length > 0x40 ? b[0x3c] | b[0x3d] << 8 | b[0x3e] << 16 | b[0x3f] << 24 : 0; pe = b[0] === 0x4d && b[1] === 0x5a && o + 4 <= b.length && b[o] === 0x50 && b[o + 1] === 0x45 && !b[o + 2] && !b[o + 3]; } catch (_) { pe = false; }
+    try { const b = file; const o = b.length > 0x40 ? b[0x3c] | b[0x3d] << 8 | b[0x3e] << 16 | b[0x3f] << 24 : 0; pe = b[0] === 0x4d && b[1] === 0x5a && o + 4 <= b.length && b[o] === 0x50 && b[o + 1] === 0x45 && !b[o + 2] && !b[o + 3]; } catch (_) { pe = false; }
     if (!pe) { this.lastError = 193; return 0; }
+    // (mapped as data, as Windows maps such a file: no image in the arena, no DllMain, its resources only. Loaded as an
+    // image each time, the arena filled with what VERSION.DLL and REGSVR32 only read the resources of, and FreeLibrary
+    // gives none of it back: on Windows 98's first start IEPEERS.DLL found no room, and VERSION.DLL could not read
+    // ODBCINT.DLL's version, so ODBCCP32 said the two were different versions)
+    return this.dataModule(file, path);
   }
   return API.KERNEL32.LoadLibraryA[1].call(this, name);
 });
@@ -2291,11 +3394,42 @@ def('KERNEL32', 'GetNumberFormatA', 6, function (lc, fl, val, fmt, out, n) {
 });
 // FORMAT_MESSAGE_FROM_STRING (400h) formats `src`; %1..%99 take inserts (with !fmt! printf specs) from the argument
 // array (2000h) or the va_list `args`; %0 ends the text, %n %% %. %! are line break, %, . and !; IGNORE_INSERTS (200h)
-// copies the text as it is. Message tables (FROM_HMODULE / FROM_SYSTEM) are not kept, so those give "Error N.".
+// copies the text as it is. FROM_HMODULE (800h) takes the text from `src`'s message table (RT_MESSAGETABLE, 11),
+// FROM_SYSTEM (1000h) from KERNEL32.DLL's, the module's first where both are given; a message in neither is
+// ERROR_MR_MID_NOT_FOUND (317) and no text
+const msgTableText = (bytes, id) => {
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), nb = dv.getUint32(0, true);
+  for (let i = 0; i < nb; i++) {
+    const lo = dv.getUint32(4 + 12 * i, true), hi = dv.getUint32(8 + 12 * i, true); if (id < lo || id > hi) continue;
+    let a = dv.getUint32(12 + 12 * i, true);
+    for (let k = lo; k < id; k++) a += dv.getUint16(a, true);
+    const len = dv.getUint16(a, true), wide = dv.getUint16(a + 2, true) & 1, b = bytes.slice(a + 4, a + len);   // (a copy: the machine's memory is shared, and TextDecoder reads no shared view)
+    return new TextDecoder(wide ? 'utf-16le' : 'latin1').decode(b).replace(/\0+$/, '');
+  }
+  return null;
+};
+const sysMessages = p => {
+  if (p.sysMsgTable !== undefined) return p.sysMsgTable;
+  let b = null; try { b = p.fs.readFile('C:\\WINDOWS\\SYSTEM\\KERNEL32.DLL'); } catch (_) { /* none on this disk */ }
+  return (p.sysMsgTable = (b && peResource(b, 11, 1)) || null);
+};
+const messageText = (p, fl, src, id) => {
+  if (fl & 0x800) {
+    const mod = resModule(p, src), r = mod && resIn(p, mod, 11, 1);
+    const t = r && msgTableText(p.u8.subarray(r.addr, r.addr + r.size), id >>> 0); if (t !== null && t !== undefined) return t;
+  }
+  if (fl & 0x1000) { const s = sysMessages(p), t = s && msgTableText(s, id >>> 0); if (t !== null) return t; }
+  return null;
+};
 def('KERNEL32', 'FormatMessageA', 7, function (fl, src, id, lang, buf, n, args) {
   let t;
-  if (fl & 0x400) {
-    const f = this.readA(src) || '';
+  const f = fl & 0x400 ? this.readA(src) || '' : messageText(this, fl, src, id);
+  if (f === null) { this.lastError = 317; return 0; }
+  // (a maximum width, the flags' low byte: the text's own line breaks are not kept, each a space, and only %n's
+  // breaks are; under FFh no others are made, else the lines are broken at that width)
+  const width = fl & 0xff, src0 = width ? f.replace(/\r\n|\r|\n/g, ' ') : f;
+  {
+    const f = src0;
     if (fl & 0x200) t = f;
     else {
       const arg = k => fl & 0x2000 ? this.r32(args + 4 * (k - 1)) : this.r32(this.r32(args) + 4 * (k - 1));
@@ -2313,7 +3447,8 @@ def('KERNEL32', 'FormatMessageA', 7, function (fl, src, id, lang, buf, n, args) 
         t += d;
       }
     }
-  } else t = `Error ${id}.\r\n`;
+  }
+  if (width && width < 0xff) t = t.split('\r\n').map(line => { let out = '', cur = ''; for (const w of line.split(' ')) { if (cur && (cur + ' ' + w).length > width) { out += cur + '\r\n'; cur = w; } else cur = cur ? cur + ' ' + w : w; } return out + cur; }).join('\r\n');
   if (fl & 0x100) { const p = this.alloc(t.length + 1); this.writeA(p, t); this.w32(buf, p); return t.length; }   // FORMAT_MESSAGE_ALLOCATE_BUFFER
   return this.writeA(buf, t, n);
 });
@@ -2323,10 +3458,26 @@ def('KERNEL32', '_hwrite', 3, function (h, b, n) { return API.KERNEL32._lwrite[1
 // named synchronization objects: a second create finds the first (ERROR_ALREADY_EXISTS), Open* finds it by name
 const named = (p, name, make) => {
   const key = name && p.readA(name).toUpperCase(), objs = p.namedObjs || (p.namedObjs = new Map()), had = key && objs.get(key);
-  if (had) { p.lastError = 183; return p.newHandle(had); }
-  const o = make(); if (key) objs.set(key, o); p.lastError = 0; return p.newHandle(o);
+  // (a second create's handle is its process's too, closed as it ends: left open, it kept the name alive after
+  // every process that had it was gone, and each RUNONCE after two had met found a "previous instance")
+  if (had) { p.lastError = 183; const h = p.newHandle(had); if (p.pc) (p.namedOwner || (p.namedOwner = new Map())).set(h, p.pc); return h; }
+  const o = make(); if (key) { objs.set(key, o); o.name = key; } p.lastError = 0;
+  const h = p.newHandle(o); if (key && p.pc) (p.namedOwner || (p.namedOwner = new Map())).set(h, p.pc); return h;
 };
-const openNamed = (p, name, kind) => { const o = name && (p.namedObjs || new Map()).get(p.readA(name).toUpperCase()); if (!o || o.kind !== kind) { p.lastError = 2; return 0; } p.lastError = 0; return p.newHandle(o); };
+/** a named object whose last handle has gone: its name with it, as the kernel frees an object nothing refers to. Kept,
+ *  RUNONCE's Runonce_Instance_Mutex outlived the RUNONCE that made it, and every RUNONCE after it found a "previous
+ *  instance" and quit, started again and again */
+const namedGone = (p, o) => {
+  if (!o || !o.name || !p.namedObjs || p.namedObjs.get(o.name) !== o) return;
+  for (const v of p.handles.values()) if (v === o) return;
+  p.namedObjs.delete(o.name);
+};
+/** a process's handles to named objects closed as it ends (its other handles are the machine's to keep, as before) */
+const namedClose = (p, pc) => {
+  for (const [h, owner] of p.namedOwner || []) if (owner === pc) { const o = p.handles.get(h); p.namedOwner.delete(h); p.handles.delete(h); namedGone(p, o); }
+};
+const openNamed = (p, name, kind) => { const o = name && (p.namedObjs || new Map()).get(p.readA(name).toUpperCase()); if (!o || o.kind !== kind) { p.lastError = 2; return 0; } p.lastError = 0; const h = p.newHandle(o); if (p.pc) (p.namedOwner || (p.namedOwner = new Map())).set(h, p.pc); return h; };
+Process.prototype.namedClose = function (pc) { namedClose(this, pc); };
 def('KERNEL32', 'CreateEventA', 4, function (sa, manual, initial, name) { return named(this, name, () => ({ kind: 'event', manual: !!manual, set: !!initial })); });
 def('KERNEL32', 'OpenEventA', 3, function (access, inherit, name) { return openNamed(this, name, 'event'); });
 def('KERNEL32', 'SetEvent', 1, function (h) { const o = this.obj(h); if (!o || o.kind !== 'event') return 0; if (this.signal) this.signal(o); else o.set = true; return 1; });
@@ -2442,8 +3593,33 @@ def('KERNEL32', 'GetAtomNameA', 3, function (id, buf, n) {
 // count. With no table, or a service past its end, the client's EAX is 1 and it returns to the caller with the
 // arguments still on its stack: Windows 98's WINMM asks VTDAPI (442h, no Win32 services) for the time that way at its
 // start, and takes 10 or less for no answer and asks by DeviceIoControl
+// KERNEL32.122 (Windows 98's, no name: BFF96DA0h): a program gives the kernel a procedure to tell of the programs
+// that start (0, procedure) or asks for the telling to begin (1); TASKMON, which logs them for the defragmenter,
+// calls it as it starts. None is told here
+def('KERNEL32', '#122', 2, () => 0);
+const VMM_PAGE = new Set([0, 1, 2, 0x0a, 0x0d]);   // (the VMM's page services answered here)
 for (let k = 1; k <= 9; k++) def('KERNEL32', `#${k}`, 'regs', function () {
   const sp = u32(this.reg('esp')), ret = this.r32(sp), id = this.r32(sp + 4), dev = id >>> 16, n = id & 0xffff;
+  // (the VMM's own, device 1: the page services a program makes memory with past KERNEL32. MSHTML makes each of its
+  // threads' stacks so: _PageReserve (0: an arena or page, the pages, flags) answers the address; _PageCommit (1:
+  // page, pages, pager, its data, flags) and _PageDecommit (2) say the pages are there, as a region's are here from
+  // its reservation; _PageModifyPermissions (0Dh: page, pages, and-mask, or-mask) answers the permissions before;
+  // _PageFree (0Ah: address, flags) gives the region back. Each pops its arguments, as every VMM service does: the
+  // number the caller's ordinal names, VxDCall0 to VxDCall8. The VMM's others answer 0 here: ScanRegW calls service
+  // 1Ch with one argument by VxDCall1 at its logon check and does not take it off its stack itself; left on, its
+  // thread's procedure returned into its CRT block and faulted)
+  if (dev === 1) {
+    const a = i => this.r32(sp + 8 + 4 * i); let r;
+    if (n === 0) {
+      r = API.KERNEL32.VirtualAlloc[1].call(this, 0, a(1) << 12, 0x2000) >>> 0;
+      const reg = r && this.vregions && this.vregions.get(r); if (reg) reg.pc = (this.thread16 && this.thread16.pc) || null;   // (its process's, gone with it)
+      if (!r) r = 0xffffffff;
+    } else if (n === 0x0a) r = API.KERNEL32.VirtualFree[1].call(this, a(0), 0, 0x8000);
+    else if (n === 0x0d) r = 0x20060000;
+    else r = VMM_PAGE.has(n) ? 1 : 0;
+    this.reg('esp', sp + 8 + 4 * (k - 1)); this.reg('eax', r);
+    return ret;
+  }
   const v = this.vxdById && this.vxdById(dev), ddb = v && v.ddb, t = ddb && (this.r16(ddb + 0x0a) & 0x4000) ? this.r32(ddb + 0x38) : 0;
   if (t && n < this.r32(t)) throw new GuestError(`VxDCall ${id.toString(16)}: ${v.name || dev.toString(16)}'s Win32 service ${n} (handler ${this.r32(t + 8 + 8 * n).toString(16)}, ${this.r32(t + 12 + 8 * n)} arguments) is not dispatched here`);
   this.reg('esp', sp + 8); this.reg('eax', 1);
@@ -2474,6 +3650,8 @@ def('KERNEL32', 'MoveFileExA', 3, function (a, b, fl) {
 });
 // FindResourceExA(module, type, name, language): FindResourceA's lookup (BFF80A40h), one language to a resource here
 def('KERNEL32', 'FindResourceExA', 4, function (m, type, name) { return API.KERNEL32.FindResourceA[1].call(this, m, name, type); });
+// (and the wide one, one of the few Unicode calls Windows 95's KERNEL32 answers: Windows 98's Explorer asks it)
+def('KERNEL32', 'FindResourceExW', 4, function (m, type, name) { return API.KERNEL32.FindResourceW[1].call(this, m, name, type); });
 // GetFileAttributesExA(name, GetFileExInfoStandard, WIN32_FILE_ATTRIBUTE_DATA): attributes, creation, access and write
 // times, size high and low; the find data's first 36 bytes
 def('KERNEL32', 'GetFileAttributesExA', 3, function (n, level, p) {
@@ -2482,7 +3660,6 @@ def('KERNEL32', 'GetFileAttributesExA', 3, function (n, level, p) {
 });
 // GlobalFlags (BFF748CDh) and LocalShrink (BFF9A0EAh), after the handle's check: a fixed block's flags (no lock count,
 // not discardable) are 0; the heap's size is what LocalShrink answers
-def('KERNEL32', 'GlobalFlags', 1, () => 0);
 def('KERNEL32', 'LocalShrink', 2, function () { return 0x10000; });
 // GlobalCompact: the largest free block, from GlobalMemoryStatus's free memory
 def('KERNEL32', 'GlobalCompact', 1, function () { const p = this.alloc(32); try { API.KERNEL32.GlobalMemoryStatus[1].call(this, p); return this.r32(p + 12); } finally { this.free(p); } });
@@ -2537,7 +3714,8 @@ const regPath = (p, hk, sub, asGiven) => {
   const root = HKEY[hk] || (p.obj(hk) || {}).path; if (!root) return null;
   const given = sub ? (p.readA(sub) || '').replace(/^\\+|\\+$/g, '') : '';
   const base = asGiven && !HKEY[hk] ? (p.obj(hk) || {}).given || root : root;
-  return given ? `${asGiven ? base : root}\\${asGiven ? given : given.toLowerCase()}` : asGiven ? base : root;
+  const path = given ? `${asGiven ? base : root}\\${asGiven ? given : given.toLowerCase()}` : asGiven ? base : root;
+  return asGiven ? regCanonGiven(path) : regCanon(path);   // (HKLM\SOFTWARE\Classes is HKEY_CLASSES_ROOT: REG_ALIAS)
 };
 const regVal = v => typeof v === 'number' ? { type: 4, data: new Uint8Array(new Uint32Array([v]).buffer) } : typeof v === 'string' ? { type: 1, data: window.W95FS.encode(v + '\0') } : v;
 const regOpen = function (hk, sub, out, create) {
@@ -2599,17 +3777,28 @@ def('ADVAPI32', 'RegSetValueExA', 6, function (hk, name, res, type, data, n) {
 });
 def('ADVAPI32', 'RegSetValueA', 5, function (hk, sub, type, data, n) { const path = regPath(this, hk, sub); if (!path) return 6; const m = regKey(path, true, regPath(this, hk, sub, true)), value = { type: 1, data: window.W95FS.encode((this.readA(data) || '') + '\0') }; m.set('', value); regChanged({ op: 'set', path, name: '', value }); return 0; });
 def('ADVAPI32', 'RegEnumKeyA', 4, function (hk, i, buf, n) {
-  const path = regPath(this, hk, 0); const kids = [...REGISTRY.keys()].filter(k => k.startsWith(path + '\\') && !k.slice(path.length + 1).includes('\\'));
+  const path = regPath(this, hk, 0); const kids = regKidPaths(path);
   if (i >= kids.length) return 259; this.writeA(buf, keyName(path, kids[i]), n); return 0;
 });
 def('ADVAPI32', 'RegFlushKey', 1, () => 0);                       // the registry store writes through
+// RegNotifyChangeKeyValue(hKey, bWatchSubtree, dwNotifyFilter, hEvent, fAsynchronous): the event set at the key's next
+// change (regNotify). Windows 98's ADVAPI32 has it (its own code, not KERNEL32's common stub); missing here, the call
+// (CRYPT32 imports it) was a dead thunk on Windows 98's first start. A synchronous ask (no event) is answered at once: the change it
+// would wait for is not waited on, as no thread here can be held in the call
+def('ADVAPI32', 'RegNotifyChangeKeyValue', 5, function (hk, sub, filter, ev, async) {
+  const path = regPath(this, hk, 0); if (!path || !REGISTRY.has(path)) return 6;   // ERROR_INVALID_HANDLE
+  if (!async) return 0;
+  const o = this.obj(ev); if (!o || o.kind !== 'event') return 6;
+  regNotifies.add({ proc: this, path, sub: !!sub, filter: filter & 5 || 5, ev: o });
+  return 0;
+});
 def('ADVAPI32', 'RegConnectRegistryA', 3, () => 53);              // another computer's registry: ERROR_BAD_NETPATH
 // user profiles' hives (MPRSERV, when profiles are enabled): this machine keeps one user's settings
 def('ADVAPI32', 'RegLoadKeyA', 3, () => 1); def('ADVAPI32', 'RegUnLoadKeyA', 2, () => 1); def('ADVAPI32', 'RegSaveKeyA', 3, () => 1);
 def('ADVAPI32', 'RegRemapPreDefKey', 2, () => 0);
 // RegEnumKeyExA(key, index, name, *cchName, -, class, *cchClass, *lastWrite): the name and its length; no classes, no times
 def('ADVAPI32', 'RegEnumKeyExA', 8, function (hk, i, buf, pn, res, cls, pcls, ft) {
-  const path = regPath(this, hk, 0); const kids = [...REGISTRY.keys()].filter(k => k.startsWith(path + '\\') && !k.slice(path.length + 1).includes('\\'));
+  const path = regPath(this, hk, 0); const kids = regKidPaths(path);
   if (i >= kids.length) return 259;
   const name = keyName(path, kids[i]), n = this.r32(pn); if (n <= name.length) { this.w32(pn, name.length + 1); return 234; }
   this.writeA(buf, name, n); this.w32(pn, name.length);
@@ -2624,7 +3813,7 @@ def('ADVAPI32', 'RegEnumValueA', 8, function (hk, i, name, cbName, res, type, da
 });
 def('ADVAPI32', 'RegQueryInfoKeyA', 12, function (hk, cls, ccls, res, nsub, maxsub, maxcls, nval, maxname, maxval, sd, ft) {
   const path = regPath(this, hk, 0), m = regKey(path); if (!m) return 2;
-  const kids = [...REGISTRY.keys()].filter(k => k.startsWith(path + '\\') && !k.slice(path.length + 1).includes('\\'));
+  const kids = regKidPaths(path);
   if (ccls) this.w32(ccls, 0); if (nsub) this.w32(nsub, kids.length); if (maxsub) this.w32(maxsub, Math.max(0, ...kids.map(k => k.length - path.length)));
   if (maxcls) this.w32(maxcls, 0); if (nval) this.w32(nval, m.size);
   if (maxname) this.w32(maxname, Math.max(0, ...[...m.keys()].map(k => k.length)));
@@ -2636,6 +3825,129 @@ def('ADVAPI32', 'RegQueryInfoKeyA', 12, function (hk, cls, ccls, res, nsub, maxs
 def('ADVAPI32', 'AllocateLocallyUniqueId', 1, function (p) { this.luid = (this.luid || 0x3e8) + 1; this.w32(p, this.luid); this.w32(p + 4, 0); return 1; });
 for (const [nm, n] of [['InitializeSecurityDescriptor', 2], ['SetSecurityDescriptorDacl', 4], ['RegisterEventSourceW', 2], ['ReportEventW', 9], ['DeregisterEventSource', 1]])
   def('ADVAPI32', nm, n, function () { this.lastError = 120; return 0; });
+
+// the CryptoAPI as the Microsoft Base Cryptographic Provider answers what Windows 98's programs ask of it: a context
+// (any provider and key container, a verification one included), MD5 and SHA-1 hashes, random bytes. Keys, encryption
+// and signatures are the one thing not here: their calls fail NTE_BAD_ALGID, as a provider without the algorithm does.
+// (Windows 98's first start: the registrations RUNDLL32 made called CryptAcquireContextA, an import this ADVAPI32 did
+// not have, and three RUNDLL32s faulted at its dead thunk)
+const md5 = bytes => {
+  const S = [7, 12, 17, 22, 5, 9, 14, 20, 4, 11, 16, 23, 6, 10, 15, 21], K = Array.from({ length: 64 }, (_, i) => (Math.abs(Math.sin(i + 1)) * 2 ** 32) >>> 0);
+  const n = bytes.length, len = ((n + 8) >> 6) + 1 << 6, m = new Uint8Array(len); m.set(bytes); m[n] = 0x80;
+  const dv = new DataView(m.buffer); dv.setUint32(len - 8, (n << 3) >>> 0, true); dv.setUint32(len - 4, Math.floor(n / 0x20000000), true);
+  const H = [0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476];
+  for (let o = 0; o < len; o += 64) {
+    let [a, b, c, d] = H;
+    for (let i = 0; i < 64; i++) {
+      const r = i >> 4, f = r === 0 ? (b & c) | (~b & d) : r === 1 ? (d & b) | (~d & c) : r === 2 ? b ^ c ^ d : c ^ (b | ~d);
+      const g = r === 0 ? i : r === 1 ? (5 * i + 1) & 15 : r === 2 ? (3 * i + 5) & 15 : (7 * i) & 15, s = S[r * 4 + (i & 3)];
+      const x = (a + f + K[i] + dv.getUint32(o + 4 * g, true)) >>> 0;
+      a = d; d = c; c = b; b = (b + ((x << s) | (x >>> (32 - s)))) >>> 0;
+    }
+    H[0] = (H[0] + a) >>> 0; H[1] = (H[1] + b) >>> 0; H[2] = (H[2] + c) >>> 0; H[3] = (H[3] + d) >>> 0;
+  }
+  const out = new Uint8Array(16), ov = new DataView(out.buffer); H.forEach((h, i) => ov.setUint32(4 * i, h, true)); return out;
+};
+const sha1 = bytes => {
+  const n = bytes.length, len = ((n + 8) >> 6) + 1 << 6, m = new Uint8Array(len); m.set(bytes); m[n] = 0x80;
+  const dv = new DataView(m.buffer); dv.setUint32(len - 4, (n << 3) >>> 0); dv.setUint32(len - 8, Math.floor(n / 0x20000000));
+  const H = [0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476, 0xc3d2e1f0], w = new Uint32Array(80), rl = (x, k) => (x << k) | (x >>> (32 - k));
+  for (let o = 0; o < len; o += 64) {
+    for (let i = 0; i < 16; i++) w[i] = dv.getUint32(o + 4 * i);
+    for (let i = 16; i < 80; i++) w[i] = rl(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
+    let [a, b, c, d, e] = H;
+    for (let i = 0; i < 80; i++) {
+      const f = i < 20 ? (b & c) | (~b & d) : i < 40 ? b ^ c ^ d : i < 60 ? (b & c) | (b & d) | (c & d) : b ^ c ^ d;
+      const k = i < 20 ? 0x5a827999 : i < 40 ? 0x6ed9eba1 : i < 60 ? 0x8f1bbcdc : 0xca62c1d6;
+      const t = (rl(a, 5) + f + e + k + w[i]) >>> 0; e = d; d = c; c = rl(b, 30) >>> 0; b = a; a = t;
+    }
+    H[0] = (H[0] + a) >>> 0; H[1] = (H[1] + b) >>> 0; H[2] = (H[2] + c) >>> 0; H[3] = (H[3] + d) >>> 0; H[4] = (H[4] + e) >>> 0;
+  }
+  const out = new Uint8Array(20), ov = new DataView(out.buffer); H.forEach((h, i) => ov.setUint32(4 * i, h)); return out;
+};
+const CALG = { 0x8003: { name: 'md5', f: md5, size: 16 }, 0x8004: { name: 'sha1', f: sha1, size: 20 } };
+const NTE_BAD_ALGID = 0x80090008, NTE_BAD_HASH = 0x80090002, NTE_BAD_UID = 0x80090001;
+def('ADVAPI32', 'CryptAcquireContextA', 5, function (out, cont, prov, type, fl) {
+  if (fl & 0x10) { this.lastError = 0; return 1; }   // CRYPT_DELETEKEYSET: nothing kept, nothing to delete
+  this.w32(out, this.newHandle({ kind: 'cryptprov', type })); this.lastError = 0; return 1;
+});
+def('ADVAPI32', 'CryptAcquireContextW', 5, function (out, cont, prov, type, fl) { return API.ADVAPI32.CryptAcquireContextA[1].call(this, out, 0, 0, type, fl); });
+def('ADVAPI32', 'CryptReleaseContext', 2, function (h) { const o = this.obj(h); if (!o || o.kind !== 'cryptprov') { this.lastError = NTE_BAD_UID; return 0; } this.handles.delete(h); return 1; });
+def('ADVAPI32', 'CryptGenRandom', 3, function (h, n, buf) { const b = new Uint8Array(n); crypto.getRandomValues(b.subarray(0, Math.min(n, 65536))); for (let o = 65536; o < n; o += 65536) crypto.getRandomValues(b.subarray(o, Math.min(n, o + 65536))); this.u8.set(b, buf); return 1; });
+def('ADVAPI32', 'CryptCreateHash', 5, function (prov, alg, key, fl, out) {
+  const a = CALG[alg]; if (!a || key) { this.lastError = NTE_BAD_ALGID; return 0; }
+  this.w32(out, this.newHandle({ kind: 'crypthash', alg: a, parts: [], done: null })); return 1;
+});
+const hashOf = (p, h) => { const o = p.obj(h); return o && o.kind === 'crypthash' ? o : null; };
+def('ADVAPI32', 'CryptHashData', 4, function (h, data, n, fl) {
+  const o = hashOf(this, h); if (!o || o.done) { this.lastError = o ? NTE_BAD_HASH : 6; return 0; }
+  o.parts.push(this.u8.slice(data, data + n)); return 1;
+});
+const hashDone = o => { if (!o.done) { const n = o.parts.reduce((s, b) => s + b.length, 0), all = new Uint8Array(n); let k = 0; for (const b of o.parts) { all.set(b, k); k += b.length; } o.done = o.alg.f(all); o.parts = null; } return o.done; };
+def('ADVAPI32', 'CryptGetHashParam', 5, function (h, param, buf, pn, fl) {
+  const o = hashOf(this, h); if (!o) { this.lastError = 6; return 0; }
+  const val = param === 1 ? (() => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, o.alg === CALG[0x8003] ? 0x8003 : 0x8004, true); return b; })()   // HP_ALGID
+    : param === 2 ? hashDone(o)                                                                                                                                   // HP_HASHVAL
+    : param === 4 ? (() => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, o.alg.size, true); return b; })() : null;                          // HP_HASHSIZE
+  if (!val) { this.lastError = 0x80090009; return 0; }   // NTE_BAD_FLAGS (a parameter it has not)
+  const have = this.r32(pn); this.w32(pn, val.length);
+  if (!buf) return 1;
+  if (have < val.length) { this.lastError = 234; return 0; }   // ERROR_MORE_DATA
+  this.u8.set(val, buf); return 1;
+});
+def('ADVAPI32', 'CryptDestroyHash', 1, function (h) { if (!hashOf(this, h)) { this.lastError = 6; return 0; } this.handles.delete(h); return 1; });
+// CryptSetHashParam: HP_HASHVAL sets the hash's value (CRYPT32 verifies a signature over a hash it computed itself)
+def('ADVAPI32', 'CryptSetHashParam', 4, function (h, param, data, fl) {
+  const o = hashOf(this, h); if (!o) { this.lastError = 6; return 0; }
+  if (param !== 2) { this.lastError = 0x80090009; return 0; }
+  o.done = this.u8.slice(data, data + o.alg.size); o.parts = null; return 1;
+});
+// RSA public keys and PKCS #1 v1.5 signatures, as the base provider verifies them: WinVerifyTrust's Authenticode check
+// (SOFTPUB, CRYPT32) of a signed CAB, Java Package Manager's xmldso4.cab on Windows 98's first start, which failed with
+// TRUST_E (0x800B010B) as CryptImportKey had no keys. A PUBLICKEYBLOB (PUBLICKEYSTRUC, RSAPUBKEY 'RSA1', the modulus)
+// and the signature are little-endian
+const NTE_BAD_KEY = 0x80090003, NTE_BAD_SIGNATURE = 0x80090006, NTE_BAD_TYPE = 0x8009000a;
+const leBig = b => { let x = 0n; for (let i = b.length - 1; i >= 0; i--) x = (x << 8n) | BigInt(b[i]); return x; };
+const modPow = (b, e, m) => { let r = 1n; b %= m; for (; e > 0n; e >>= 1n) { if (e & 1n) r = (r * b) % m; b = (b * b) % m; } return r; };
+const DIGEST_INFO = { md5: [0x30, 0x20, 0x30, 0x0c, 0x06, 0x08, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x02, 0x05, 0x05, 0x00, 0x04, 0x10],
+  sha1: [0x30, 0x21, 0x30, 0x09, 0x06, 0x05, 0x2b, 0x0e, 0x03, 0x02, 0x1a, 0x05, 0x00, 0x04, 0x14] };
+def('ADVAPI32', 'CryptImportKey', 6, function (prov, data, len, pub, fl, out) {
+  if (len < 20 || this.u8[data] !== 6 || this.r32(data + 8) !== 0x31415352) { this.lastError = this.u8[data] !== 6 ? NTE_BAD_TYPE : NTE_BAD_KEY; return 0; }   // (a PUBLICKEYBLOB of RSA1 alone)
+  const bits = this.r32(data + 12), k = bits >> 3; if (!k || 20 + k > len) { this.lastError = NTE_BAD_KEY; return 0; }
+  const key = { kind: 'cryptkey', alg: this.r32(data + 4), bits, e: BigInt(this.r32(data + 16)), n: leBig(this.u8.subarray(data + 20, data + 20 + k)) };
+  this.w32(out, this.newHandle(key)); return 1;
+});
+const keyOf = (p, h) => { const o = p.obj(h); return o && o.kind === 'cryptkey' ? o : null; };
+/** the signature `sig` (little-endian, `len` bytes) of hash `h` checked with public key `k`; CRYPT_NOHASHOID (1): the
+ *  hash alone after the padding, without its DigestInfo */
+function rsaVerify(p, h, sig, len, k, fl) {
+  const o = hashOf(p, h), key = keyOf(p, k);
+  if (!o) { p.lastError = NTE_BAD_HASH; return 0; }
+  if (!key) { p.lastError = NTE_BAD_KEY; return 0; }
+  const size = (key.bits + 7) >> 3; if (len !== size) { p.lastError = NTE_BAD_SIGNATURE; return 0; }
+  let m = modPow(leBig(p.u8.subarray(sig, sig + len)), key.e, key.n);
+  const em = new Uint8Array(size); for (let i = size - 1; i >= 0; i--) { em[i] = Number(m & 0xffn); m >>= 8n; }
+  const t = [...(fl & 1 ? [] : DIGEST_INFO[o.alg.name] || []), ...hashDone(o)];
+  let i = 2; if (em[0] !== 0 || em[1] !== 1) { p.lastError = NTE_BAD_SIGNATURE; return 0; }
+  while (i < size && em[i] === 0xff) i++;
+  const ok = i >= 10 && em[i] === 0 && size - i - 1 === t.length && t.every((v, j) => em[i + 1 + j] === v);
+  if (!ok) { p.lastError = NTE_BAD_SIGNATURE; return 0; }
+  return 1;
+}
+def('ADVAPI32', 'CryptVerifySignatureA', 6, function (h, sig, len, k, desc, fl) { return rsaVerify(this, h, sig, len, k, fl); });
+def('ADVAPI32', 'CryptVerifySignatureW', 6, function (h, sig, len, k, desc, fl) { return rsaVerify(this, h, sig, len, k, fl); });
+// CryptGetKeyParam: KP_ALGID (7), KP_BLOCKLEN (8), KP_KEYLEN (9), as DWORDs
+def('ADVAPI32', 'CryptGetKeyParam', 5, function (k, param, buf, pn, fl) {
+  const key = keyOf(this, k); if (!key) { this.lastError = NTE_BAD_KEY; return 0; }
+  const v = param === 7 ? key.alg : param === 8 || param === 9 ? key.bits : null;
+  if (v === null) { this.lastError = 0x80090009; return 0; }
+  const have = this.r32(pn); this.w32(pn, 4); if (!buf) return 1;
+  if (have < 4) { this.lastError = 234; return 0; }
+  this.w32(buf, v); return 1;
+});
+for (const [nm, n] of [['CryptGenKey', 4], ['CryptDeriveKey', 5], ['CryptGetUserKey', 3], ['CryptEncrypt', 7], ['CryptDecrypt', 6], ['CryptSignHashA', 6], ['CryptHashSessionKey', 3]])
+  def('ADVAPI32', nm, n, function () { this.lastError = NTE_BAD_ALGID; return 0; });
+def('ADVAPI32', 'CryptDestroyKey', 1, function (k) { if (!keyOf(this, k)) { this.lastError = NTE_BAD_KEY; return 0; } this.handles.delete(k); return 1; });
 
 // USER32
 const SM = { 0: 'w', 1: 'h', 16: 'w', 17: 'h' };
@@ -3390,5 +4702,5 @@ function peString(bytes, id) {
   } catch (_) { return null; }
 }
 
-window.W95Win32 = { log, regAttach, regGet, regKids, regVals, regDel, regSet, regDump, regApply, regLoad, regHive, regWatch: f => regWatchers.add(f), Process, API, STAND_IN, LAYOUT, WM, YIELD, iniGet, iniSet, iniRead, peString, peResource, faultText, fmtMsg, def, dcOf, GuestError, HangError, FaultError, mkCanvas, dibOut, sha256 };
+window.W95Win32 = { versionInfo, log,regAttach, regGet, regKids, regVals, regDel, regSet, regDump, regApply, regLoad, regHive, regReadHive, regWatch: f => regWatchers.add(f), Process, API, STAND_IN, LAYOUT, WM, YIELD, iniGet, iniSet, iniRead, peString, peResource, faultText, fmtMsg, def, dcOf, GuestError, HangError, FaultError, mkCanvas, dibOut, sha256, sehStep, SEH_CONT };
 })();

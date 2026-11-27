@@ -518,14 +518,45 @@ const WIN_INI_FONTS = [['MS Sans Serif 8,10,12,14,18,24', 'SSERIFE.FON'], ['MS S
 // answering byte ranges; cdrom.iso alone where the server has no list). A disc's tree is read from the disc as it is
 // put in, except the Windows 95 CD's, which cdrom.js has
 const CD_KEY = 'w95.cd';
+// (the images the person put in from this computer, Insert CD Image: each file read in place, by a blob URL, for as
+// long as the page is open)
+const cdLocal = [];
 function cdImages() {
   const host = window.W95HOST && window.W95HOST.cd;
   if (host) return [{ name: (host.image && host.image()) || 'CD', url: null }];
   try {
     const x = new XMLHttpRequest(); x.open('GET', '__cd', false); x.send();
-    if (x.status === 200) { const l = JSON.parse(x.responseText); if (Array.isArray(l) && l.length) return l; }
+    if (x.status === 200) { const l = JSON.parse(x.responseText); if (Array.isArray(l) && l.length) return [...l, ...cdLocal]; }
   } catch (_) { /* no list */ }
-  return [{ name: 'cdrom.iso', url: 'cdrom.iso' }];
+  return [{ name: 'cdrom.iso', url: 'cdrom.iso' }, ...cdLocal];
+}
+// Insert CD Image (Start > Programs > Accessories > System Tools) and the drive's Eject (Windows', ne16.js cdEject):
+// the app's own (File > Insert CD Image, Eject CD), which choose the file and tell the page (host.cd.on); in a
+// browser, a file on this computer chosen with the browser's picker (from the dialog's button: a click), and the disc
+// taken out here
+function cdCommand(op) {
+  const host = window.W95HOST && window.W95HOST.cd;
+  if (op === 'eject') { if (host && host.eject) host.eject(); else cdInsert(null); return; }
+  if (host && host.insert) { host.insert(); return; }
+  let w;
+  const pick = () => {
+    const input = document.createElement('input'); input.type = 'file'; input.accept = '.iso';
+    input.onchange = () => {
+      const f = input.files && input.files[0]; if (!f) return;
+      closeWin(w);
+      const i = cdLocal.findIndex(x => x.name === f.name); if (i >= 0) { URL.revokeObjectURL(cdLocal[i].url); cdLocal.splice(i, 1); }
+      cdLocal.push({ name: f.name, url: URL.createObjectURL(f) });
+      let r = null; try { r = cdInsert(f.name); } catch (_) { /* not found */ }
+      if (!r) msgBox('Insert CD Image', `${f.name} is not a CD image drive D: can read.`, 'error');
+    };
+    input.click();
+  };
+  w = dialog('Insert CD Image', 300, 96, [
+    { type: 'label', text: 'Choose a CD image (.iso) on this computer to put in drive D:.', x: 12, y: 12, w: 276 },
+    { type: 'button', label: '&Choose File...', x: 104, y: 62, w: 98, h: 23, def: true, fn: pick },
+    { type: 'button', label: 'Cancel', x: 208, y: 62, w: 80, h: 23, cancel: true, fn: () => closeWin(w) },
+  ], { modal: true });
+  return w;
 }
 // an image as a disc: { read(sector, bytes) }, null where it does not answer
 function cdDisc(img) {
@@ -662,7 +693,7 @@ function makeDisk(mounted) {
   for (const e of ['SSERIFE.FON', 'VGAFIX.FON', 'VGASYS.FON', 'MARLETT.TTF', 'ARIAL.TTF', 'TIMES.TTF', 'COUR.TTF']) if (!sysFonts[e]) fs.writeFile(join(WINDIR, 'FONTS', e), exeStub());
   for (const [e, d] of Object.entries(sysFonts)) fs.writeFile(join(WINDIR, 'FONTS', e), b64(d));
   fs.writeFile('C:\\Program Files\\Accessories\\WORDPAD.EXE', exeStub());
-  installPrograms(); setupFonts(); setupRegistry(); setupDisplay(); setupSavers(); setupSound(); setupHelp(); setupNetwork(); setupPorts(); setupPrinting(); setupVxds(); setupStartMenu();
+  installPrograms(true); setupFonts(); setupRegistry(); setupDisplay(); setupSavers(); setupSound(); setupHelp(); setupNetwork(); setupPorts(); setupPrinting(); setupVxds(); setupStartMenu();
   fs.chdir('C:\\');
 }
 // the CD's screen savers, byte for byte, under the long names APPLETS.INF gives them in LDID_SYS, and the DLLs they
@@ -912,7 +943,7 @@ function bootDisk() {
   // (a disk of Windows 3.1 is its own: nothing of Windows 95's Setup; MS-DOS 6.22 on it as SYS leaves it (MS-DOS 7's
   // IO.SYS halts as Windows 3.1 starts), and an AUTOEXEC.BAT with the disk's own WIN.BAT's commands, which start Windows)
   if (diskSystem() === 'win31') { sys622Disk(); win31Autoexec(); fs.chdir('C:\\'); return; }
-  installPrograms(); setupFonts(); setupRegistry(); setupDisplay(); setupSavers(); setupSound(); setupHelp(); setupNetwork(); setupPorts(); setupPrinting(); setupVxds();
+  installPrograms(); setupFonts(); setupRegistry(); setupDisplay(); setupSavers(); setupSound(); setupHelp(); setupNetwork(); setupPorts(); setupPrinting(); setupVxds(); setupWebView();
   if (host.shared) setupProfile(host.userName);
   setupStartMenu();   // (after the profile: its links go in the Programs folder the user's Shell Folders name)
   fs.chdir('C:\\');
@@ -1106,6 +1137,9 @@ function fsMsg(path, e) { return `${path} is not accessible.\n\n${e.message}`; }
 function openPath(path) {
   try { const i = fs.stat(path); if (!i.isDir) return shellOpen(path); fs.readdir(path); }
   catch (e) { if (e instanceof FSError) return msgBox(isRoot(path) ? driveLabel(path[0].toUpperCase()) : basename(path), fsMsg(path, e), 'error'); throw e; }
+  // (Windows' own Explorer the shell: the folder is its to open, as ShellExecute opens one. The page's folder window
+  // here was a Windows 95 window over Windows 98's desktop, in none of its colors)
+  const mon = monApp(); if (mon) return mon.cmd('shellOpen', [path]);
   return openFolder(new FsSource(path));
 }
 function shellOpen(path, arg) {
@@ -1126,7 +1160,7 @@ function runExe(path, arg) {
     // when it ends), as Windows 95 gives one a console
     if (b && exeKind(b) === 'pe') { const at = b[0x3c] | b[0x3d] << 8 | b[0x3e] << 16; if ((b[at + 92] | b[at + 93] << 8) === 3) { let sp = path; try { sp = fs.stat(path).shortPath; } catch (_) { /* as given */ } return dosBox('C:\\COMMAND.COM', `/C ${sp}${arg ? ` ${arg}` : ''}`); } }
   }
-  if (n === 'EXPLORER.EXE') return arg ? openPath(resolveArg(arg)) : openFolder(MyComputer);
+  if (n === 'EXPLORER.EXE') { const mon = monApp(); return arg ? openPath(resolveArg(arg)) : mon ? mon.cmd('shellOpenSpecial', [0x11]) : openFolder(MyComputer); }   // (0x11: CSIDL_DRIVES, My Computer)
   // any other program the system bundle carries runs natively
   runNative(path, arg || '').then(ok => { if (!ok) msgBox(dispName(basename(path)), `${path} is not a valid Windows application.`, 'error'); });
 }
@@ -1160,6 +1194,21 @@ const dosConIn = (id, text) => { if (sysApp && sysApp.worker) sysApp.worker.post
 // (whether there is one), IFSHLP.SYS, the registry's files, COMMAND.COM and WIN.COM; from the shell's start on, C: is
 // the disk's own (takeDrives). Not HIMEM.SYS, which IO.SYS loads when it finds one: the machine's extended memory is
 // its BIOS's XMS (v86.js), which HIMEM.SYS would find already there
+/** the boot volume's copy of IO.SYS saying "Starting <name>..." where it says "Starting Windows 95..." (98 too): its
+ *  message as IO.SYS prints it (INT 21h's $-ended text) in the same 27 bytes, the blank line after it given up for the
+ *  two letters more, so nothing after it in IO.SYS moves. The PC in Discord's frame (discord.js): the Activity's name.
+ *  C:'s IO.SYS is not changed */
+function startingAs(f, name) {
+  if (!f || !f.data) return;
+  const was = 'Starting Windows 9_...\r\n\r\n$', now = `Starting ${name}...\r\n$`, d = f.data;
+  if (now.length > was.length) return;
+  for (let i = 0; i + was.length <= d.length; i++) {
+    let k = 0; while (k < was.length && (was[k] === '_' ? d[i + k] >= 0x30 && d[i + k] <= 0x39 : d[i + k] === was.charCodeAt(k))) k++;
+    if (k < was.length) continue;
+    const out = d.slice(); for (let j = 0; j < was.length; j++) out[i + j] = j < now.length ? now.charCodeAt(j) : 0;
+    f.data = out; return;
+  }
+}
 function dosMachine(program, args, o = {}) {
   const V = window.W95V86, D = window.W95DOS, bytes = s => b64bytes(s);
   if (program) try { program = fs.stat(program).shortPath; } catch (_) { /* (DOS's own name for it: its 8.3 path) */ }
@@ -1179,6 +1228,7 @@ function dosMachine(program, args, o = {}) {
     for (const l of W95FS.decode(fromC('CONFIG.SYS') || new Uint8Array(0)).split(/\r?\n/)) {
       const r = /^\s*(?:DEVICE|DEVICEHIGH|INSTALL|INSTALLHIGH)\s*=\s*(?:\/\S+\s+)*C:\\(\S+)/i.exec(l); if (r) add(r[1]);
     }
+    if (window.W95Discord && window.W95Discord.inside) startingAs(files.find(f => f.name === 'IO.SYS'), 'Windeez Nuts');
   } else {
     const msdos = '[Paths]\r\nWinDir=C:\\WINDOWS\r\nWinBootDir=C:\\WINDOWS\r\nHostWinBootDrv=C\r\n[Options]\r\nBootGUI=0\r\nLogo=0\r\n' + Array(20).fill(';' + 'x'.repeat(68)).join('\r\n') + '\r\n';
     files = [{ name: 'IO.SYS', data: bytes(D.files['IO.SYS']), attr: 7 }, { name: 'MSDOS.SYS', data: W95FS.encode(msdos), attr: 7 },
@@ -1202,7 +1252,7 @@ function dosRun(command, timeout = 120000, cwd = null) {
     const timer = setInterval(() => {
       const s0 = performance.now();
       while (performance.now() - s0 < 10) {
-        const st = m.v86Run(4000);
+        const st = m.v86Run(4000, s0 + 10);
         if (st === 'idle') { m.halted = false; break; }
         if (st === 'exit') { end({ exited: true }); return; }
         if (st === 'trap') { end({ error: m.trapped || 'the machine stopped' }); return; }
@@ -1250,7 +1300,7 @@ function dosBox(program, args) {
     if (failed) return;
     const t0 = performance.now();
     while (performance.now() - t0 < 8) {
-      const st = m.v86Run(4000);
+      const st = m.v86Run(4000, t0 + 8);
       if (st === 'idle') { m.halted = false; break; }
       if (st === 'exit') { closeWin(win, true); return; }
       if (st === 'trap') { failed = m.trapped || 'the machine stopped'; console.error('[dos]', failed); msgBox('MS-DOS Prompt', `This program has performed an illegal operation and will be shut down.\n\n${failed}`, 'error'); break; }
@@ -1267,26 +1317,64 @@ function dosBox(program, args) {
 // ExitWindows' code (pcEnd) and WIN.COM does what it asks: Restart in MS-DOS mode runs DOSSTART.BAT and COMMAND.COM
 // (EXIT starts Windows again), a restart resets the PC. Its text screen is the display, whole; the page's keys are its
 // keyboard; Ctrl+Alt+Del restarts it
-let pc = null;
+let pc = null, pcSpeed = 1;   // (pcSpeed: the PC's clock run ahead of the wall, as braid.speed runs the system's: its loading screen too)
 // the PC's diskette drive A: as its BIOS reads it by sector: a 1.44 MB disk image put in (pc.floppy), the change line
 // set as one goes in, what is written to it kept in the image; the BIOS boots it when it is in at a start
 const pcFloppy = { image: null, name: null, changed: false };
 /** the registry's files in the Windows folder, SYSTEM.DAT and USER.DAT, as Windows writes them when it flushes the
  *  registry (as it shuts down): what IO.SYS reads as the PC next starts */
+// (Windows writes its registry back into the files it loaded it from; a file put in their place since, as Windows 98
+// Setup puts its new SYSTEM.DAT and USER.DAT there before its restart, is not those files: the flush leaves it, and
+// the next start loads the registry from it (loadHives), as the VMM does. Each file as Windows last had it: its stamp,
+// kept in the registry under a root of the host's own no file holds (hkhost), so it goes with the registry's store, a
+// reload of the page and a moment travelled to)
+const HIVES = [['SYSTEM.DAT', 'system'], ['USER.DAT', 'user']];
+const hiveStamps = { get: f => { const v = W95Win32.regGet('hkhost\\hives', f.toLowerCase()); return typeof v === 'string' ? v : undefined; }, set: (f, v) => W95Win32.regSet('hkhost\\hives', f.toLowerCase(), v) };
+const hiveStamp = p => { try { const s = fs.stat(p), b = fs.readFile(p); let h = 0x811c9dc5; for (let i = 0; i < b.length; i++) h = Math.imul(h ^ b[i], 0x01000193); return `${s.size}:${h >>> 0}`; } catch (_) { return null; } };
 function flushRegistry() {
   if (diskSystem() !== 'win95') return;   // (Windows 3.1's registry is its REG.DAT, which its SHELL writes)
-  for (const [file, which] of [['SYSTEM.DAT', 'system'], ['USER.DAT', 'user']]) {
-    const p = join(WINDIR, file);
-    try { if (fs.exists(p)) fs.setAttrs(p, 0); fs.writeFile(p, W95Win32.regHive(which)); fs.setAttrs(p, ATTR.HIDDEN | ATTR.SYSTEM | ATTR.READONLY); } catch (e) { console.error('[registry]', file, e); }
+  for (const [file, which] of HIVES) {
+    const p = join(WINDIR, file), was = hiveStamps.get(file);
+    if (was && hiveStamp(p) !== was) { console.info(`[registry] ${file} was put there after Windows loaded its registry: left as it is`); continue; }
+    try { if (fs.exists(p)) fs.setAttrs(p, 0); fs.writeFile(p, W95Win32.regHive(which)); fs.setAttrs(p, ATTR.HIDDEN | ATTR.SYSTEM | ATTR.READONLY); hiveStamps.set(file, hiveStamp(p)); } catch (e) { console.error('[registry]', file, e); }
   }
+}
+/** Windows starting from the PC's boot loads its registry from SYSTEM.DAT and USER.DAT, as the VMM does: those the
+ *  host wrote itself (their stamps the same) are the registry as it is already; one another wrote (Setup's) is read
+ *  (win32.js regReadHive) and the registry made what it holds, the roots no file keeps (HKEY_DYN_DATA) kept */
+function loadHives() {
+  if (diskSystem() !== 'win95') return;
+  const W = W95Win32, read = new Map();
+  for (const [file, which] of HIVES) {
+    const p = join(WINDIR, file), st = hiveStamp(p); if (!st) continue;
+    let held = null; try { held = W.regReadHive(fs.readFile(p), which); } catch (e) { console.error('[registry]', file, e); }
+    // (the file as the host last wrote or read it is the registry as it is already, unless the registry has lost what
+    // it holds: a store or moment from before it was read left the registry without Setup's keys, its stamp saying
+    // read, and Explorer found none of the shell's classes)
+    // (the file as the host last wrote or read it: the registry as it is now stands. Keys the file holds and the
+    // registry does not are keys Windows has deleted since: read again for them, the file put back RunOnce\Setup's
+    // items at every start that followed a restart with no flush, and Windows 98 set itself up again each time)
+    if (st === hiveStamps.get(file)) continue;
+    if (held && held.length) read.set(which, held);
+    hiveStamps.set(file, st);
+  }
+  if (!read.size) return;
+  const roots = { system: ['hklm', 'hkcr', 'hkcc'], user: ['hku', 'hkcu'] }, from = [...read.keys()].flatMap(w => roots[w]);
+  const keep = W.regDump().filter(([path]) => !from.includes(path.split('\\')[0]));
+  W.regLoad([...keep, ...[...read.values()].flat()], true);
+  console.info(`[registry] loaded from ${[...read.keys()].map(w => w === 'system' ? 'SYSTEM.DAT' : 'USER.DAT').join(' and ')}`);
 }
 function pcBoot() {
   if (pc) clearInterval(pc.timer);
+  // (a power cycle ends every program: the last run's dialogs go with it)
+  [...windows].forEach(w => closeWin(w, true)); closeMenus();
   if (!window.W95V86 || !window.W95DOS) { pc = null; screen = 'black'; dirty(); return; }
   if (!fs.exists(join(WINDIR, 'SYSTEM.DAT'))) flushRegistry();   // (a disk made before Windows wrote its registry's files)
   if (diskSystem() === 'win95') strayCopies();
   const m = dosMachine(null, null, { pc: true, floppy: pcFloppy, windows: path => pcWindows(path), reset: () => setTimeout(pcBoot, 0) });
-  pc = { m, timer: 0, failed: null };
+  pc = { m, timer: 0, failed: null }; m.speed = pcSpeed;
+  // (the VGA BIOS's 8x8 characters, which it draws in a graphics mode: EGA.CPI's, code page 437)
+  { const d = window.W95SYSTEM && W95SYSTEM.dos && W95SYSTEM.dos['EGA.CPI']; if (d && !m.font8) m.font8 = cpiFont(b64bytes(d), 437, 8); }
   if (!dosFont) { const d = window.W95SYSTEM && W95SYSTEM.dos && W95SYSTEM.dos['EGA.CPI']; if (d) dosFont = cpiFont(b64bytes(d), 437, 14); }
   screen = 'dos'; dirty();
   const me = pc;
@@ -1294,7 +1382,7 @@ function pcBoot() {
     if (me.failed || pc !== me) return;
     const t0 = performance.now();
     while (performance.now() - t0 < 10) {
-      const st = m.v86Run(4000);
+      const st = m.v86Run(4000, t0 + 10);   // (the page's own time back by the tick's end: its viewport and input, while WININIT works)
       if (st === 'idle') { if (!m.winWait) m.halted = false; break; }
       if (st === 'trap') { me.failed = m.trapped || 'the machine stopped'; console.error('[pc]', me.failed); break; }
     }
@@ -1303,11 +1391,16 @@ function pcBoot() {
   emit('pc.boot', {});
 }
 /** the VMM WIN.COM loaded entering protected mode: the Windows it is starts, the screen its */
+// (the monitor between WIN.COM starting Windows and Windows' machine having a screen: still the PC's text screen, as a
+// display shows the last mode set until the next one is. The machine's start waits for its worker, which on a site
+// served in two parts first takes the system's code, tools/split_system.py: the screen was black for as long)
+let pcShows = false;
 function pcWindows(path) {
   // (Windows 3.1's WIN386.EXE: its personality is not in the bundle yet, so nothing starts; the PC waits at its entry)
   if (/WIN386\.EXE$/i.test(path)) { pc.failed = `${path}: no Windows 3.1 system in this build`; emit('pc.windows', { path, failed: pc.failed }); return; }
-  screen = 'desktop'; ren = null; desk.selKey = null; active = null; dirty();
+  screen = 'desktop'; ren = null; desk.selKey = null; active = null; pcShows = true; dirty();
   emit('pc.windows', { path });
+  loadHives();   // (the registry the VMM reads: Setup's new one after its restart)
   systemBootLater(); netBootLater();
 }
 /** Windows has ended with ExitWindows' `code`: the VMM's loader returns to WIN.COM with it, and the PC's screen is its
@@ -2826,7 +2919,9 @@ function shutdownSeq(code) {
   // returns to MS-DOS with the code, which WIN.COM acts on (pcEnd)
   for (const a of new Set([...nativeApps, sysApp])) if (a && a.alive) a.exited(0);
   flushRegistry();
-  screen = 'logow'; dirty();
+  // (the machine gone, the page is no longer its monitor: the shutdown screen and the PC's after it fill the page, not
+  // the machine's last mode's size)
+  screen = 'logow'; resize(); dirty();
   setTimeout(() => pcEnd(code), 2600);
 }
 /** Windows itself shut down (Explorer's Shut Down: USER's ExitWindows ending in KERNEL's ExitKernel): a clean
@@ -3099,7 +3194,7 @@ function infParse(text) {
   const subst = s => s.replace(/%([^%]*)%(\\?)/g, (m, k, bs) => (k === '' ? '%' + bs : k === '24' || k === '30' ? 'C:\\' : (dirs[k] ?? strings[k.toLowerCase()] ?? `%${k}%`) + bs));
   return { sec, fields, subst };
 }
-function infAddReg(text, section, hkr) {
+function infAddReg(text, section, hkr, keep = () => true) {
   const { sec, fields, subst } = infParse(text);
   const ROOT = { HKCR: 'hkcr', HKCU: 'hkcu', HKLM: 'hklm', HKU: 'hku', HKR: hkr };   // HKR: the device's own key, for a device INF
   for (const l of sec[section.toLowerCase()] || []) {
@@ -3108,7 +3203,7 @@ function infAddReg(text, section, hkr) {
     const sub = subst(f[1] || ''), key = sub ? root + '\\' + sub : root, flags = parseInt(f[3] || '0', 16) || 0;
     if (f.length < 3) { W95Win32.regSet(key, null); continue; }
     const name = subst(f[2] || '');
-    if (flags & 2 && W95Win32.regGet(key, name) !== undefined) continue;
+    if ((flags & 2 && W95Win32.regGet(key, name) !== undefined) || !keep(key, name)) continue;
     if (flags & 1) W95Win32.regSet(key, name, { type: 3, data: Uint8Array.from(f.slice(4).filter(Boolean).map(h => parseInt(h, 16))) });
     else W95Win32.regSet(key, name, { type: 1, data: W95FS.encode(subst(f.slice(4).join(',')) + '\0') });
   }
@@ -3185,7 +3280,7 @@ function setupStartMenu() {
     ['MOTOWN.INF', 'Vol.links', 'SNDVOL32.EXE', 'Volume Control'], ['MMOPT.INF', 'CDPlayer.inis', 'CDPLAYER.EXE', 'CD Player']].filter(([inf, , file]) => infs[inf] && (S.programs || {})[file]);
   const missing = accessories.some(a => a.links.some(k => !fs.exists(join(progs, k.folder, k[0] + '.lnk'))) || a.gone.some(k => fs.exists(join(progs, k.folder, k[0] + '.lnk')))) || (claude && !fs.exists(join(progs, 'Claude', 'Claude.lnk')))
     || media.some(m => !fs.exists(join(progs, 'Accessories', 'Multimedia', m[3] + '.lnk')))
-    || (session && !fs.exists(join(tools, 'Join Session.lnk'))) || (dbwin && !fs.exists(join(tools, 'Debug Monitor.lnk'))) || (clip &&!fs.exists(join(progs, 'Accessories', 'Clipboard Viewer.lnk')));
+    || (session && !fs.exists(join(tools, 'Join Session.lnk'))) || (session && !fs.exists(join(tools, 'Insert CD Image.lnk'))) || (dbwin && !fs.exists(join(tools, 'Debug Monitor.lnk'))) || ((S.programs || {})['W95DBG.EXE'] && !fs.exists(join(tools, 'Debugger.lnk'))) || (clip &&!fs.exists(join(progs, 'Accessories', 'Clipboard Viewer.lnk')));
   if (cur && cur[0] === 0x4c && cur[1] === 0 && !missing) return;   // ('L': a shell link's header)
   const out = new Map();
   const add = ({ sec, fields, subst }, names) => {
@@ -3208,7 +3303,7 @@ function setupStartMenu() {
     const groups = out.get('progman.groups') || out.set('progman.groups', { name: 'progman.groups', lines: [] }).get('progman.groups');
     if (!groups.lines.some(l => /^group11=/i.test(l))) groups.lines.push(`group11=${tools.slice(progs.length + 1)}`);
     const g = out.get('group11') || out.set('group11', { name: 'group11', lines: [] }).get('group11');
-    g.lines.push('"Export Session", "RUNDLL32.EXE SESSION.DLL,Export"', '"Import Session", "RUNDLL32.EXE SESSION.DLL,Import"',
+    g.lines.push('"Export Session", "RUNDLL32.EXE SESSION.DLL,Export"', '"Import Session", "RUNDLL32.EXE SESSION.DLL,Import"', '"Insert CD Image", "RUNDLL32.EXE SESSION.DLL,InsertCD"',
       '"Save Session", "RUNDLL32.EXE SESSION.DLL,Save"', '"Open Session", "RUNDLL32.EXE SESSION.DLL,Open"', '"Join Session", "RUNDLL32.EXE SESSION.DLL,Join"');
   }
   if (dbwin) {
@@ -3216,6 +3311,7 @@ function setupStartMenu() {
     if (!groups.lines.some(l => /^group11=/i.test(l))) groups.lines.push(`group11=${tools.slice(progs.length + 1)}`);
     const g = out.get('group11') || out.set('group11', { name: 'group11', lines: [] }).get('group11');
     g.lines.push('"Debug Monitor", DBWIN.EXE');
+    if ((S.programs || {})['W95DBG.EXE']) g.lines.push('"Debugger", W95DBG.EXE');   // (the Debugger, debugger.js)
   }
   fs.writeFile(join(WINDIR, 'SETUP.INI'), W95FS.encode([...out.values()].map(v => `[${v.name}]\r\n${v.lines.join('\r\n')}\r\n`).join('\r\n')));
   // SETUPC.INF's RunOnce\Setup item: run under RUNONCE's "Windows 95 Setup" screen before the system's message server
@@ -3238,8 +3334,23 @@ function setupRegistration() {
   // where Setup put the shared Windows files (SHELL32 runs RUNDLL32 from there: Control Panel's applets)
   if (W95Win32.regGet(cv + '\\setup', 'SharedDir') === undefined) W95Win32.regSet(cv + '\\setup', 'SharedDir', str(WINDIR));
 }
+// Setup's national language support (LOCALE.INF): [NLSAPI]'s nls.reg, the code pages and the locales Windows has
+// (Nls\Codepage, Nls\Locale), and its default locale's option, L0409 (Nls\Locale's own value 00000409, the user's
+// International locale, the ANSI and OEM code pages), on a registry that has not had them. Without them Windows 98
+// Setup read no system locale (SETUPX: Nls\Locale's value, its last four digits Internet Explorer's ChannelLocale) and
+// wrote ChannelLocale 0000. (nls.reg's RunOnce item runs ADDREG.EXE, which turns WIN.INI's [intl] into the user's
+// International settings: kept only where the disk has the program)
+function setupLocale() {
+  const inf = ((window.W95SYSTEM || {}).infs || {})['LOCALE.INF']; if (!inf) return;
+  if (W95Win32.regGet('hklm\\system\\currentcontrolset\\control\\nls\\locale', '') !== undefined) return;
+  const { sec, fields, subst } = infParse(inf), addreg = fs.exists(join(WINDIR, 'SYSTEM', 'ADDREG.EXE'));
+  infAddReg(inf, 'nls.reg', undefined, (key, name) => addreg || !(/\\runonce$/i.test(key) && name.toUpperCase() === 'NLSREG'));
+  const option = (sec[subst('%Default_Locale%').toLowerCase()] || []).map(l => l.split(';')[0]).find(l => /^\s*addreg\s*=/i.test(l));
+  for (const s of option ? fields(option.slice(option.indexOf('=') + 1)) : []) if (s) infAddReg(inf, s);
+}
 function setupRegistry() {
   setupRegistration();
+  setupLocale();
   const inf = ((window.W95SYSTEM || {}).infs || {})['SHELL.INF']; if (!inf) return;
   if (W95Win32.regGet('hkcr\\clsid\\{20d04fe0-3aea-1069-a2d8-08002b30309d}\\inprocserver32', '') !== undefined) return;
   infAddReg(inf, 'shell.reg');
@@ -3354,7 +3465,42 @@ function winHelp(file = 'windows.hlp') { closeMenus(); if (hasHelp()) runNative(
 // always the same, so the note is cleared before each start
 function setupDisplay() {
   if (W95Win32.iniGet(fs, 'SYSTEM.INI', 'boot', '*DisplayFallback') !== null) W95Win32.iniSet(fs, 'SYSTEM.INI', 'boot', '*DisplayFallback', null);
-  setupDisplayDevices(); setupFontSize(); setupPatterns(); setupWallpapers();
+  setupDisplayDevices(); setupFontSize(); setupPatterns(); setupWallpapers(); setupSchemes();
+}
+// the color schemes of themes/ (Midnight, Steam) in Display Properties' list beside Windows' own: each a value of
+// Control Panel\Appearance\Schemes, the user's and .DEFAULT's, Windows Standard's metrics and fonts with the theme's
+// colors as its last 29 COLORREFs (R, G, B and Windows Standard's own fourth byte; an index a theme leaves out keeps
+// Windows Standard's)
+const SCHEME_THEMES = ['midnight', 'steam'];
+function setupSchemes() {
+  const themes = SCHEME_THEMES.map(n => { try { const x = new XMLHttpRequest(); x.open('GET', `themes/${n}.json`, false); x.send(); return x.status === 200 ? JSON.parse(x.responseText) : null; } catch (_) { return null; } }).filter(Boolean);
+  for (const key of ['hkcu\\control panel\\appearance\\schemes', 'hku\\.default\\control panel\\appearance\\schemes']) {
+    const std = W95Win32.regGet(key, 'Windows Standard'); if (!std || !std.data) continue;
+    const base = std.data instanceof Uint8Array ? std.data : Uint8Array.from(Object.values(std.data)), at = base.length - 29 * 4; if (at < 0) continue;
+    for (const t of themes) {
+      const d = base.slice();
+      for (const c of Object.values(t.colors)) if (c.index >= 0 && c.index < 29) d.set(c.rgb, at + 4 * c.index);
+      const was = W95Win32.regGet(key, t.name), had = was && was.data && (was.data instanceof Uint8Array ? was.data : Uint8Array.from(Object.values(was.data)));
+      if (!had || had.length !== d.length || had.some((v, i) => v !== d[i])) W95Win32.regSet(key, t.name, { type: 3, name: t.name, data: d });
+    }
+  }
+}
+// The folder templates of Windows 98's Web view (C:\WINDOWS\WEB\*.HTT, which WEBVW.DLL writes as it registers), in
+// the color scheme's colors: their left panel is "white" with a white watermark (wvleft.bmp) whatever the scheme, its
+// text the scheme's window text, so a dark scheme's panel was white with pale text. The panel takes the scheme's
+// Window color instead. And My Computer's pie chart control, which paints white until a drive is selected and its
+// script hides it at the first selection: hidden from the start, as it was invisible on the white panel. Each
+// template as WEBVW wrote it is changed once; one the user has changed otherwise is left as it is.
+function setupWebView() {
+  const dir = join(WINDIR, 'WEB'); let list; try { list = fs.readdir(dir); } catch (_) { return; }
+  for (const e of list) {
+    if (!/\.htt$/i.test(e.name)) continue;
+    const p = join(dir, e.name); let t; try { t = fs.readText(p); } catch (_) { continue; }
+    let u = t.replace(/background: white URL\(file:\/\/%TEMPLATEDIR%\\wvleft\.bmp\) no-repeat/g, 'background: window');
+    if (/id="?PieChart"?/i.test(u) && !/PieChart\.style\.display = "none";\s*Info\.innerHTML = L_Prompt_Text;\s*}\s*<\/script>/.test(u))
+      u = u.replace(/(FixSize\(\);\s*)(Info\.innerHTML = L_Prompt_Text;\s*}\s*<\/script>)/, '$1PieChart.style.display = "none";\r\n\t\t\t\t$2');
+    if (u !== t) { try { const a = fs.stat(p).attrs || 0; fs.setAttrs(p, 0); fs.writeFile(p, W95FS.encode(u)); fs.setAttrs(p, a); } catch (err) { console.error('[webview]', e.name, err); } }
+  }
 }
 // the wallpapers the Background page lists: SHELL.INF's basebitmaps, each in C:\WINDOWS by the name its addreg line
 // renames it to (RenameFiles\Win: bamboo.bmp to "Straw Mat.bmp"), each one the disk lacks
@@ -3538,13 +3684,10 @@ function setupNetwork() {
 // holds the capture (menus, dragging), and the keys while one of them is the active window.
 const nativeApps = new Set();
 // the display mode for the system's machine: the page's viewport at its own pixels (the page is the monitor
-// EXPLORER.EXE's screen is shown on); 640x480 at the least, 1024 on a side at most (the display driver's longest scan
-// line and its memory count: ne16.js displaySlot). A viewport larger than that gets a 1024-wide or 1024-tall screen, centered
-// (the custom mode has the driver's 1024-byte scan lines in the 1 MB its memory count finds, so 960 lines at most: a
-// mode of a full megabyte, 1024 by 1024, the driver refuses and falls back from). The width stops at 1016: Windows 98
-// Setup sizes its billboard's text by the screen's width (W98SETUP 3:2b91, 14 pt at 1024 and wider, 8 pt below), and
-// its 14 pt Arial drew every step heavy; an odd width (1023) drew the screen skewed
-const nativeMode = () => [Math.max(640, Math.min(1016, Math.floor(innerWidth / ZOOM))), Math.max(480, Math.min(960, Math.floor(innerHeight / ZOOM)))];
+// EXPLORER.EXE's screen is shown on); 640x480 at the least, 1600x1200 at the most. A larger viewport gets a screen of
+// that size, centered. (Windows 98 Setup sizes its billboard's text by the screen's width: W98SETUP 3:2b91, 14 pt at
+// 1024 and wider, 8 pt below)
+const nativeMode = () => [Math.max(640, Math.min(1600, Math.floor(innerWidth / ZOOM))), Math.max(480, Math.min(1200, Math.floor(innerHeight / ZOOM)))];
 const sharedNow = () => (window.W95HOST && window.W95HOST.shared && window.W95Shared) || null;
 // the mode the system's machine boots in, as Display Properties leaves it for the display driver: Display\Settings
 // under the current configuration (Resolution "w,h", BitsPerPixel), read by the display driver as it is enabled; the one
@@ -3571,10 +3714,10 @@ function bootBpp() {
   return SCAN_BPP.has(reg) ? reg : BOOT_BPP;
 }
 /** the size the system's machine boots at: the page's, when its screen and the display driver's off-screen caches fit
- *  the adapter's 4 MB (TSENG.DRV counts the W32's memory through its segment selects); else the largest of the
+ *  the adapter's 8 MB; else the largest of the
  *  driver's sizes that fits */
 function bootSize() {
-  const [w, h] = nativeMode(), bpp = bootBpp(), fits = (x, y) => x * y * (bpp >> 3) + 0x10000 <= 4 << 20;
+  const [w, h] = nativeMode(), bpp = bootBpp(), fits = (x, y) => x * y * (bpp >> 3) + 0x10000 <= 8 << 20;
   if (bpp === 4) return [[800, 600], [640, 480]].find(([x, y]) => x <= w && y <= h) || [640, 480];   // (16 colors: VGA.DRV's 640x480 or SUPERVGA.DRV's 800x600, no other)
   if (fits(w, h)) return [w, h];
   return [[1024, 768], [800, 600], [640, 480]].find(([x, y]) => x <= w && y <= h && fits(x, y)) || [640, 480];
@@ -3635,14 +3778,15 @@ const diskSystem = () => (fs.exists(join(WINDIR, 'SYSTEM', 'WIN386.EXE')) && !fs
  *  sector loads), COMMAND.COM in the root, and MSDOS.SYS, its settings, padded past 1024 bytes as IO.SYS requires (the
  *  lines Setup writes for programs that check its size): Windows 95's starting it (BootGUI=1), a disk of an older
  *  Windows booting to the prompt, its own WIN starting that */
-function sysDisk(gui) {
+// (`fresh` false: a disk the store held, whose files are its own: a stub replaced, nothing written that is not there)
+function sysDisk(gui, fresh = true) {
   const DOS = window.W95DOS; if (!DOS) return;
   const stub = exeStub(), HSR = ATTR.HIDDEN | ATTR.SYSTEM | ATTR.READONLY, unlock = p => { try { fs.setAttrs(p, 0); } catch (_) { /* not there */ } };
-  const put = (path, b64) => { let cur = null; try { cur = fs.readFile(path); } catch (_) { /* not there */ } if (!cur || (cur.length === stub.length && cur.every((b, i) => b === stub[i]))) fs.writeFile(path, b64bytes(b64)); };
-  unlock('C:\\IO.SYS'); put('C:\\IO.SYS', DOS.files['IO.SYS']); fs.setAttrs('C:\\IO.SYS', HSR);
+  const put = (path, b64) => { let cur = null; try { cur = fs.readFile(path); } catch (_) { /* not there */ } if ((!cur && fresh) || (cur && cur.length === stub.length && cur.every((b, i) => b === stub[i]))) fs.writeFile(path, b64bytes(b64)); };
+  if (fresh || fs.exists('C:\\IO.SYS')) { unlock('C:\\IO.SYS'); put('C:\\IO.SYS', DOS.files['IO.SYS']); fs.setAttrs('C:\\IO.SYS', HSR); }
   put('C:\\COMMAND.COM', DOS.files['COMMAND.COM']);
   let t = ''; try { t = fs.readText('C:\\MSDOS.SYS'); } catch (_) { /* written below */ }
-  if (t.length < 1024) {
+  if (t.length < 1024 && (fresh || t)) {
     const own = t.replace(/\r?\n/g, '\r\n').replace(/(\r\n)*$/, '') || `[Paths]\r\nWinDir=C:\\WINDOWS\r\nWinBootDir=C:\\WINDOWS\r\nHostWinBootDrv=C\r\n\r\n[Options]\r\nBootGUI=${gui ? 1 : 0}\r\nLogo=${gui ? 1 : 0}`;
     const pad = [';', ';The following lines are required for compatibility with other programs.', ';Do not remove them (MSDOS.SYS needs to be >1024 bytes).'];
     for (let i = 0; i < 18; i++) pad.push(';' + 'x'.repeat(68) + String.fromCharCode(97 + i));
@@ -3681,11 +3825,14 @@ function strayCopies(names = ['SPOOL32.EXE', 'SYSTRAY.EXE', 'MPREXE.EXE', 'RUNON
     if (cur && cur.length === want.length && cur.every((b, i) => b === want[i])) { fs.setAttrs(stray, 0); fs.unlink(stray); }
   }
 }
-function installPrograms() {
+// `fresh`: the disk makeDisk builds, given every file. A disk the store held gets nothing it lacks: a stub replaced by
+// the program's bytes and this project's own programs kept current, nothing written that is not there
+function installPrograms(fresh) {
   const stub = exeStub(), S = window.W95SYSTEM || {};
-  const OURS = new Set(['CLAUDE.EXE', 'SESSTRAY.EXE', 'DBWIN.EXE']);   // (a program of this project's: its file is the one its translation is of, kept current)
+  const OURS = new Set(['CLAUDE.EXE', 'SESSTRAY.EXE', 'DBWIN.EXE', 'W95DBG.EXE']);   // (a program of this project's: its file is the one its translation is of, kept current)
   const put = (path, b64) => {
     let cur = null; try { cur = fs.readFile(path); } catch (_) { /* not there */ }
+    if (!cur && !fresh) return;
     const want = OURS.has(basename(path).toUpperCase()) ? b64bytes(b64) : null;
     if (cur && !(cur.length === stub.length && cur.every((b, i) => b === stub[i])) && !(want && !(cur.length === want.length && cur.every((b, i) => b === want[i])))) return;
     fs.writeFile(path, want || b64bytes(b64));
@@ -3700,14 +3847,14 @@ function installPrograms() {
   for (const d of Object.values(S.ne || {})) if (d.fileName && !d.onDisk) put(join(WINDIR, d.fileName === 'PROGMAN.EXE' ? '' : 'SYSTEM', d.fileName), d.file);   // (a printer driver: as the Add Printer wizard copies it; Program Manager in the Windows folder, COPY.INF)
   // MS-DOS's command interpreter, where Setup puts it: the root's (IO.SYS starts it) and the Windows folder's
   const DOS = window.W95DOS; if (DOS) for (const p of ['C:\\COMMAND.COM', join(WINDIR, 'COMMAND.COM')]) put(p, DOS.files['COMMAND.COM']);
-  sysDisk(true);
+  sysDisk(true, fresh);
   try { if (fs.readText('C:\\CONFIG.SYS') === CONFIG_SYS_OLD && !fs.exists(join(WINDIR, 'HIMEM.SYS'))) fs.writeFile('C:\\CONFIG.SYS', CONFIG_SYS.replace(/\n/g, '\r\n')); } catch (_) { /* none */ }
   // and WIN.COM, which IO.SYS's shell runs to start Windows (Setup builds it from WIN.CNF)
   if (DOS && DOS.files['WINDOWS\\WIN.COM']) put(join(WINDIR, 'WIN.COM'), DOS.files['WINDOWS\\WIN.COM']);
   // and IFSHLP.SYS, the file system helper IO.SYS loads from the Windows folder as it starts
   if (DOS && DOS.files['WINDOWS\\IFSHLP.SYS']) put(join(WINDIR, 'IFSHLP.SYS'), DOS.files['WINDOWS\\IFSHLP.SYS']);
   // the MS-DOS programs, in C:\WINDOWS\COMMAND (LDID_COMMAND)
-  if (DOS && DOS.command) { fs.mkdir(join(WINDIR, 'COMMAND'), { recursive: true }); for (const [n, d] of Object.entries(DOS.command)) put(join(WINDIR, 'COMMAND', n), d); }
+  if (DOS && DOS.command) { if (fresh) fs.mkdir(join(WINDIR, 'COMMAND'), { recursive: true }); for (const [n, d] of Object.entries(DOS.command)) put(join(WINDIR, 'COMMAND', n), d); }
   // the Windows 3.x runtime libraries, in SYSTEM (WIN87EM, NDDEAPI, OLE, WINSOCK: tools/build_dos.py)
   if (DOS && DOS.system) for (const [n, d] of Object.entries(DOS.system)) put(join(WINDIR, 'SYSTEM', n), d);
   // the display's grabber, which WinOldAp imports as GRABBER and KERNEL finds by SYSTEM.INI's [boot] 386grabber, as the
@@ -3718,9 +3865,9 @@ function installPrograms() {
   // Setup's optional components (Clipboard Viewer, CLIP.INF): their programs in the Windows folder, their help in HELP,
   // and the OptionalComponents value Add/Remove Programs reads to show one installed
   if (DOS && DOS.windows) for (const [n, d] of Object.entries(DOS.windows)) put(join(WINDIR, n), d);
-  if (DOS && DOS.help) { fs.mkdir(join(WINDIR, 'HELP'), { recursive: true }); for (const [n, d] of Object.entries(DOS.help)) put(join(WINDIR, 'HELP', n), d); }
+  if (DOS && DOS.help) { if (fresh) fs.mkdir(join(WINDIR, 'HELP'), { recursive: true }); for (const [n, d] of Object.entries(DOS.help)) put(join(WINDIR, 'HELP', n), d); }
   // the INFs Setup leaves in the INF folder that the system bundle does not carry (APPS.INF, which PIFMGR reads)
-  if (DOS && DOS.infs) { fs.mkdir(join(WINDIR, 'INF'), { recursive: true }); for (const [n, t] of Object.entries(DOS.infs)) { const f = join(WINDIR, 'INF', n); if (!fs.exists(f)) fs.writeFile(f, Uint8Array.from(t, c => c.charCodeAt(0))); } }
+  if (DOS && DOS.infs && fresh) { fs.mkdir(join(WINDIR, 'INF'), { recursive: true }); for (const [n, t] of Object.entries(DOS.infs)) { const f = join(WINDIR, 'INF', n); if (!fs.exists(f)) fs.writeFile(f, Uint8Array.from(t, c => c.charCodeAt(0))); } }
   if (DOS && DOS.infs && DOS.infs['CLIP.INF']) W95Win32.regSet('hklm\\software\\microsoft\\windows\\currentversion\\setup\\optionalcomponents\\clipbrd', 'Installed', { type: 1, data: W95FS.encode('1\0') });
   if (DOS && DOS.windows && DOS.windows['SOL.EXE']) W95Win32.regSet('hklm\\software\\microsoft\\windows\\currentversion\\setup\\optionalcomponents\\games', 'Installed', { type: 1, data: W95FS.encode('1\0') });   // (APPLETS.INF wingames.install.reg)
   // the components a Typical install sets up (Paint, WordPad, HyperTerminal, Phone Dialer, Disk Defragmenter, the
@@ -3728,12 +3875,10 @@ function installPrograms() {
   // once, as Setup installs one, its INF's AddReg and its UpdateInis lines for WIN.INI (its links: setupStartMenu)
   // the DLLs those programs need that the system bundle does not carry (their imports' closure: MFC, TAPI), where Setup
   // puts each (tools/build_dos.py); a file the bundle wrote is kept
-  for (const [path, d] of (DOS && DOS.deps) || []) { fs.mkdir(dirname(path), { recursive: true }); put(path, d); }
+  for (const [path, d] of (DOS && DOS.deps) || []) { if (fresh) fs.mkdir(dirname(path), { recursive: true }); put(path, d); }
   for (const c of (DOS && DOS.components) || []) {
-    const inf = DOS.infs[c.inf]; if (!inf) continue;
-    let fresh = false;
-    for (const [path, d] of c.files) { if (!fs.exists(path)) fresh = true; fs.mkdir(dirname(path), { recursive: true }); put(path, d); }
-    if (!fresh) continue;
+    const inf = DOS.infs[c.inf]; if (!inf || !fresh) continue;
+    for (const [path, d] of c.files) { fs.mkdir(dirname(path), { recursive: true }); put(path, d); }
     const body = Object.fromEntries((infParse(inf).sec[c.name.toLowerCase()] || []).map(l => l.split(';')[0]).filter(l => l.includes('=')).map(l => [l.slice(0, l.indexOf('=')).trim().toLowerCase(), l.slice(l.indexOf('=') + 1).trim()]));
     for (const s of (body.addreg || '').split(',').map(x => x.trim()).filter(Boolean)) infAddReg(inf, s);
     for (const s of (body.updateinis || '').split(',').map(x => x.trim()).filter(Boolean)) infUpdateInis(inf, s, /^win\.ini$/i);
@@ -3784,9 +3929,61 @@ class NativeApp {
     const a = this.screenNow(); fill(0, 0, W, H, '#000');
     if (!a || !SCAN_BPP.has(a.bpp) || !this.d32) return;
     const pal = this.pal, dac = a.dac, v = a.vram, d = this.d32, sw = this.sw, w = Math.min(sw, a.w), h = Math.min(this.sh, a.h);
+    // the packed-pixel modes are scanned out by the graphics processor, from the video memory as it is (scanGl); the
+    // 16-color planar modes, and a page with no WebGL 2, by scanRow
+    if (a.bpp !== 4 && this.scanGl(a, w, h)) { ctx.drawImage(this.glc, 0, 0, w, h, 0, 0, w, h); return; }
     for (let i = 0; i < 256; i++) { const r = dac[3 * i], g = dac[3 * i + 1], b = dac[3 * i + 2]; pal[i] = 0xff000000 | ((b << 2 | b >> 4) << 16) | ((g << 2 | g >> 4) << 8) | (r << 2 | r >> 4); }
     for (let y = 0; y < h; y++) scanRow(a, v, pal, d, y * sw, y * a.pitch, 0, w);
     this.cx.putImageData(this.img, 0, 0, 0, 0, w, h); ctx.drawImage(this.cv, 0, 0, w, h, 0, 0, w, h);
+  }
+  /** the screen scanned out by the graphics processor: the video memory's bytes are one texture, a byte a texel, a
+   *  scan line a row (its width the line's length in bytes), and the DAC's 256 colors another; the fragment shader
+   *  reads each pixel's bytes and makes its color as scanPx does (8 bits through the DAC; 16 bits 5-6-5 or 5-5-5 by
+   *  the DAC's command register; 24 and 32 bits B, G, R). Its canvas is glc. False where there is no WebGL 2 */
+  scanGl(a, w, h) {
+    if (this.gl === null) return false;
+    if (!this.gl) {
+      const c = this.glc = document.createElement('canvas'), gl = c.getContext('webgl2', { alpha: false, antialias: false, depth: false, stencil: false });
+      if (!gl) { this.gl = null; return false; }
+      const sh = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; };
+      const prog = gl.createProgram();
+      gl.attachShader(prog, sh(gl.VERTEX_SHADER, '#version 300 es\nvoid main() { vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2)); gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); }'));
+      gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, `#version 300 es
+precision highp float; precision highp int; precision highp usampler2D;
+uniform usampler2D vram; uniform sampler2D dac; uniform int bytes, height, is565;
+out vec4 o;
+uint at(int x, int y) { return texelFetch(vram, ivec2(x, y), 0).r; }
+void main() {
+  int x = int(gl_FragCoord.x), y = height - 1 - int(gl_FragCoord.y);
+  if (bytes == 1) { o = texelFetch(dac, ivec2(int(at(x, y)), 0), 0); return; }
+  if (bytes == 2) {
+    uint c = at(2 * x, y) | at(2 * x + 1, y) << 8;
+    o = is565 != 0 ? vec4(float(c >> 11) / 31.0, float(c >> 5 & 63u) / 63.0, float(c & 31u) / 31.0, 1.0)
+      : vec4(float(c >> 10 & 31u) / 31.0, float(c >> 5 & 31u) / 31.0, float(c & 31u) / 31.0, 1.0);
+    return;
+  }
+  int i = bytes * x; o = vec4(float(at(i + 2, y)), float(at(i + 1, y)), float(at(i, y)), 255.0) / 255.0;
+}`));
+      gl.linkProgram(prog); if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+      gl.useProgram(prog); gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+      const tex = unit => { const t = gl.createTexture(); gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, t); for (const k of [gl.TEXTURE_MIN_FILTER, gl.TEXTURE_MAG_FILTER]) gl.texParameteri(gl.TEXTURE_2D, k, gl.NEAREST); return t; };
+      this.gl = { gl, vram: tex(0), dac: tex(1), u: Object.fromEntries(['vram', 'dac', 'bytes', 'height', 'is565'].map(n => [n, gl.getUniformLocation(prog, n)])), size: '', pal: new Uint8Array(1024) };
+      gl.uniform1i(this.gl.u.vram, 0); gl.uniform1i(this.gl.u.dac, 1);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 256, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, this.gl.pal);
+    }
+    const G = this.gl, gl = G.gl, c = this.glc, v = a.vram, pitch = a.pitch, bytes = a.bpp >> 3;
+    if (v.length < pitch * h) return false;
+    if (c.width !== w || c.height !== h) { c.width = w; c.height = h; gl.viewport(0, 0, w, h); }
+    gl.activeTexture(gl.TEXTURE0);
+    if (G.size !== `${pitch}x${h}`) { G.size = `${pitch}x${h}`; gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8UI, pitch, h, 0, gl.RED_INTEGER, gl.UNSIGNED_BYTE, null); }
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, pitch, h, gl.RED_INTEGER, gl.UNSIGNED_BYTE, v, 0);
+    if (bytes === 1) {
+      const p = G.pal, dac = a.dac; for (let i = 0; i < 256; i++) { const r = dac[3 * i], g = dac[3 * i + 1], b = dac[3 * i + 2]; p[4 * i] = r << 2 | r >> 4; p[4 * i + 1] = g << 2 | g >> 4; p[4 * i + 2] = b << 2 | b >> 4; p[4 * i + 3] = 255; }
+      gl.activeTexture(gl.TEXTURE1); gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 256, 1, gl.RGBA, gl.UNSIGNED_BYTE, p);
+    }
+    gl.uniform1i(G.u.bytes, bytes); gl.uniform1i(G.u.height, h); gl.uniform1i(G.u.is565, (a.dacMode & 0xe0) === 0xe0 ? 1 : 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    return true;
   }
   blit(w) {
     if (w.win32) { if (w.surface) ctx.drawImage(w.surface, w.x, w.y, w.w, w.h); return; }
@@ -3854,8 +4051,9 @@ class RemoteApp extends NativeApp {
     this.worker.onmessage = e => this.message(e.data);
     this.worker.onerror = e => { console.error('[worker]', e.message); this.exited(-1, e.message); };
     this.worker.postMessage({ t: 'start', rpc: this.rpcSab, registry: W95Win32.regDump(), o: {
-      path: this.path, arg: this.arg, system: this.system, quiet: this.quiet, pcDos: this.system && pc && pc.m.dosState ? pc.m.dosState() : null, holdStartup: this.system && !!(sharedNow() && window.W95HOST.shared.joining), session: this.system && !!sharedNow(), wallSkew: sharedNow() ? sharedNow().clockSkew() : 0, sw: this.sw, sh: this.sh, shellW: W, workH: workH(), ring: this.ring, lan: this.lanRing || null,
+      path: this.path, arg: this.arg, system: this.system, quiet: this.quiet, bootMods: this.system ? (Array.isArray(window.W95BOOTMODS) ? window.W95BOOTMODS : (new URLSearchParams(location.search).get('bootmods') || '').split(',').filter(Boolean)) : null, pcDos: this.system && pc && pc.m.dosState ? pc.m.dosState() : null, holdStartup: this.system && !!(sharedNow() && window.W95HOST.shared.joining), session: this.system && !!sharedNow(), wallSkew: sharedNow() ? sharedNow().clockSkew() : 0, sw: this.sw, sh: this.sh, shellW: W, workH: workH(), ring: this.ring, lan: this.lanRing || null,
       bytes: bytes || null, prog: prog ? { name: prog.name, meta: prog.d.meta } : null,
+      sharedStrokes: !!sharedNow(),   // (this person's mouse strokes are a shared session's (worker.js recordStroke); alone, none is recorded)
       memwatch: new URLSearchParams(location.search).get('memwatch'),
       dynat: new URLSearchParams(location.search).get('dynat'),   // (?dynat=12219c9: a VxD's blocks there run as run-time code, vmm.js vxd)   // (?memwatch=0,16: cmd 'memwatch' from the machine's first instruction, boot's writes too)
       trace: new URLSearchParams(location.search).get('trace'),   // (?trace=MSGSRV32: the imports that thread calls, read back with cmd 'trace')
@@ -3908,20 +4106,20 @@ class RemoteApp extends NativeApp {
   /** whether the system's machine has MPR loaded, once it has come to that (worker.js loadMpr) */
   mprLoaded() { return this.mprUp !== undefined ? Promise.resolve(this.mprUp) : new Promise(ok => { this.mprReady = ok; }); }
   /** a request to the machine; resolves to its answer */
-  cmd(name, args = []) {
+  /** `transfer`: buffers moved to the machine, not copied (an arrival's moment, hundreds of MB, is the caller's no more:
+   *  copied, a second copy beside the first, Windows 95's 440 MB one was "Data cannot be cloned, out of memory") */
+  cmd(name, args = [], transfer = []) {
     if (!this.alive) return Promise.resolve(null);
     const id = this.nextCall++;
-    return new Promise(ok => { this.calls.set(id, ok); this.worker.postMessage({ t: 'cmd', id, name, args }); });
+    return new Promise(ok => { this.calls.set(id, ok); this.worker.postMessage({ t: 'cmd', id, name, args }, transfer); });
   }
   message(m) {
+    // (a machine that has ended draws no more: its worker's last frames put its windows back on the screen, undrawn)
+    if (!this.alive && m.t === 'frame') return;
     switch (m.t) {
       case 'rpc': this.serve(m); return;
       case 'started':
-        this.mem = m.mem; [this.sw, this.sh] = [m.sw, m.sh];
-        this.cv = mkc(this.sw, this.sh); this.cx = this.cv.getContext('2d'); this.img = this.cx.createImageData(this.sw, this.sh);
-        this.ov = mkc(this.sw, this.sh); this.ox = this.ov.getContext('2d'); this.oimg = this.ox.createImageData(this.sw, this.sh); this.o32 = new Uint32Array(this.oimg.data.buffer);
-        this.d32 = new Uint32Array(this.img.data.buffer); this.pal = new Uint32Array(256);
-        if (this.system) fitWindow(this.sw, this.sh);
+        this.mem = m.mem; this.pal = new Uint32Array(256); this.screenSized(m.sw, m.sh);
         nativeApps.add(this);
         // the system's machine has the network stack and its card, as Windows does: a station on the page's segment
         if (this.lanRing) { this.lanStation = { rx: frame => { if (this.alive) W95Bridge.framePut(this.lanRing, frame); } }; this.lanDetach = window.W95LAN && W95LAN.attach(this.lanStation); }
@@ -3931,6 +4129,14 @@ class RemoteApp extends NativeApp {
       // MPR loaded in the system's machine (or no network client): the shell's network calls go ahead (netBoot)
       case 'mpr': this.mprUp = m.up; if (this.mprReady) { this.mprReady(m.up); this.mprReady = null; } return;
       case 'session': sessionCommand(m.op); return;   // (Export or Import Session, from the Start menu: SESSION.DLL)
+      case 'cd': if (m.op !== 'eject' || m.drive === 'D') cdCommand(m.op); return;   // (Insert CD Image, SESSION.DLL; the drive's Eject, ne16.js cdEject: D:'s disc, E:'s audio disc stays)
+      // (the Braid icon's menu, SESSTRAY.DLL: Mark Now, Anchor Now, Travel To a moment; the session's, every machine's)
+      case 'trayBraid': {
+        if (!braid) return;
+        const r = m.op === 'mark' ? braid.mark() : m.op === 'anchor' ? braid.anchor() : m.op === 'travel' && m.name ? braid.travel(m.name, { force: true }) : null;
+        if (r) Promise.resolve(r).then(() => trayPeople(), e => { peerNotes.push({ text: `Braid: ${e.message}`, until: Date.now() + 4000 }); dirty(); });
+        return;
+      }
       case 'trayWhere': {   // (Where Is, from a person's icon: SESSTRAY.DLL)
         const who = window.W95Shared && window.W95Shared.people().find(p => p.client === m.client);
         if (who && who.x == null) { peerNotes.push({ text: `${who.user || 'Guest'} has not moved their pointer yet`, until: Date.now() + 4000 }); setTimeout(dirty, 4100); }
@@ -3972,11 +4178,12 @@ class RemoteApp extends NativeApp {
       // the screen's mode, DAC and the cursor sprite, as often as the machine runs, its window list or not (USER held)
       case 'scan': this.scr = m; this.followMode(m); dirty(); return;
       case 'mode': if (this.modeDone) this.modeDone(m.r); return;   // (a mode asked for while a thread held USER, made now)
+      case 'debug': emit('debug.hit', m.hit); return;   // a recording breakpoint was reached (win95.debug)
       case 'intent': { const S = sharedNow(); if (S) S.intent(m.i); return; }   // (a setting this machine's person made: ne16.js hookIntents)
       case 'stroke': if (this.system) osStrokeOut(m); return;   // (this person's mouse stroke into a window, or part of one: worker.js recordStroke)
       case 'strokeAt': { const client = String(m.key).split(':')[0]; if (m.done) peerAt.delete(client); else peerAt.set(client, { x: m.x, y: m.y, t: Date.now() }); dirty(); return; }   // (another person's stroke, as far as it is drawn here: their pointer drawn on it)
-      case 'text': this.txt = m.txt; if (msgApp === this) dirty(); return;
-      case 'msgMode': msgApp = m.on ? this : msgApp === this ? null : msgApp; this.r0 = m.on; dirty(); return;
+      case 'text': this.txt = m.txt; if (msgApp === this) { dirty(); this.logText(); } return;
+      case 'msgMode': msgApp = m.on ? this : msgApp === this ? null : msgApp; this.r0 = m.on; dirty(); if (m.on) this.logText(); return;
       case 'reset': machineReset(); return;
       case 'audio': if (window.W95Sound) W95Sound.play(this, m.rate, m.l, m.r); return;
       case 'regop': W95Win32.regApply(m.o); logonChanged(m.o); return;
@@ -4010,7 +4217,15 @@ class RemoteApp extends NativeApp {
         else if (m.method === 'setCwd') { fs.cwd = m.args[0]; v = null; }
         else if (m.method === 'vols') v = [...fs.vols.values()].map(x => ({ letter: x.letter, kind: x.kind, label: x.label, remote: !!x.remote, unc: x.unc || '', ready: x.ready, media: x.media || 0, sectors: x.sectors || 0, ...(x.audio ? { audio: x.audio } : {}) }));
         else if (typeof fs[m.method] !== 'function') throw new Error(`the file system has no ${m.method}`);
-        else v = fs[m.method](...m.args);
+        else {
+          v = fs[m.method](...m.args);
+          // (the descriptors the machine opens are its own, closed when it ends, as a process's handles are: Windows
+          // keeps a 16-bit module's file open for its discardable segments, and SHELL.DLL's and DDEML.DLL's stayed open
+          // on the page after Windows 95 shut down for Setup's restart, so WININIT could not replace them, a sharing
+          // violation each: "Windows could not upgrade the file")
+          if (m.method === 'open' && typeof v === 'number') (this.fds || (this.fds = new Set())).add(v);
+          else if (m.method === 'close' && this.fds) this.fds.delete(m.args[0]);
+        }
       } else if (m.target === 'host') {
         if (m.method === 'fatalText') v = fatalText(m.args[0]);
         else if (m.method === 'runApart') { runNative(m.args[0], m.args[1] || '', { apart: true }); v = true; }   // (it starts as the page goes on)
@@ -4021,7 +4236,13 @@ class RemoteApp extends NativeApp {
   // USER's windows as the machine reported them: the shell's windows for them, its screen, its cursor
   /** the page's canvases are the size of the mode the machine is in (a mode changed from inside it too: Display
    *  Properties) */
-  followMode(m) { const s = m && m.scan; if (s && s.bpp && (s.w !== this.sw || s.h !== this.sh)) this.screenSized(s.w, s.h); }
+  // (the page's buffers follow the screen the machine scans out, by their own size: a travel puts sw and sh back from
+  // the moment and leaves the canvases, the page's live things, as they were, so a moment taken at 706x859 arrived at
+  // from 640x480 had sw at 706 and a 640-wide image, and the 1416-byte lines were drawn 640 to a row, sheared)
+  // (and the page's screen the machine's, once it is the page's monitor: the shell came up after the machine's first
+  // frame (Windows 98's start after RUNONCE's restart), and the page kept the boot logo's 320x200, the desktop cut to
+  // its corner)
+  followMode(m) { const s = m && m.scan; if (s && s.bpp && (s.w !== this.sw || s.h !== this.sh || !this.img || this.img.width !== s.w || this.img.height !== s.h)) this.screenSized(s.w, s.h); }
   frame(m) {
     if (this.system && bootLogo.on && m.list.length) bootLogoEnd();   // (Windows has a window up: the start-up screen goes)
     if (this.system && sharedNow()) {   // (its windows changed: the session's objects may have; win95.js osSoon)
@@ -4050,6 +4271,14 @@ class RemoteApp extends NativeApp {
   }
   iconOf(n) { return n && n.prog ? EXE_ICON[n.prog] || 'app' : this.icon; }
   // (the screen as the machine last reported its mode and DAC, VRAM read where it is in the shared memory)
+  /** the text screen of message mode (a blue screen: VWIN32's fatal exception, a protection error, Ctrl+Alt+Del's) into
+   *  the machines' log as an error, its text as shown, each new screen once; the page's system.fail with it */
+  logText() {
+    const t = this.txt; if (!t || !t.ch) return;
+    const rows = []; for (let r = 0; r < t.rows; r++) { let s = ''; for (let c = 0; c < t.cols; c++) s += String.fromCharCode(t.ch[r * t.cols + c] || 32); rows.push(s.trim()); }
+    const text = rows.filter(Boolean).join('\n'); if (!text || text === this.loggedText) return;
+    this.loggedText = text; W95Win32.log('error', 'bluescreen', text);
+  }
   screenNow() {
     const m = this.scr || this.snap; if (!m || !m.scan || !this.mem) return null; const a = m.scan;
     return { ...a, vram: new Uint8Array(this.mem, a.vram, Math.max(0, Math.min(scanBytes(a), this.mem.byteLength - a.vram))), dac: m.dac };
@@ -4092,7 +4321,8 @@ class RemoteApp extends NativeApp {
     if (!this.alive || !this.ring) return;
     const f = kind === 'down' ? (btn === 2 ? 8 : 2) : kind === 'up' ? (btn === 2 ? 16 : 4) : 1;
     if (W95Bridge.ringPut(this.ring, W95Bridge.MOUSE, f, Math.round(x), Math.round(y))) this.ringPut = (this.ringPut || 0) + 1;
-    const k = `${Math.round(x)},${Math.round(y)}`, s = this.sentPts || (this.sentPts = []); s.push(k); if (s.length > 64) s.shift(); this.lastPtr = [Math.round(x), Math.round(y)];
+    // (the points sent that the machine's cursor has not been seen past: pointerAt drops the ones before the point it is at)
+    const k = `${Math.round(x)},${Math.round(y)}`, s = this.sentPts || (this.sentPts = []); s.push(k); if (s.length > 4096) s.shift(); this.lastPtr = [Math.round(x), Math.round(y)];
     this.kick();
   }
   /** where the hardware cursor is, as the mouse's interrupt moves it on a real machine ahead of whatever runs: at the
@@ -4106,7 +4336,10 @@ class RemoteApp extends NativeApp {
     for (let i = 0; i < n; i++) { h ^= sp.bits[i]; h = Math.imul(h, 16777619); }
     const key = `${h >>> 0}:${sp.px}:${sp.py}:${sp.cpp}`, hot = this.hots || (this.hots = new Map()), cur = this.scr && this.scr.cur;
     if (cur) {
-      this.follows = (this.sentPts || []).includes(`${cur.x},${cur.y}`);
+      // (it follows the mouse while it is at a point of the mouse's path it has yet to pass, however far behind: the
+      // points before that one are behind it and dropped; at none of them, the machine has put it elsewhere)
+      const s = this.sentPts || [], i = cur === this.curSeen ? -2 : s.indexOf(`${cur.x},${cur.y}`);   // (its first place on the path: one the mouse came back to is on it again later)
+      if (i !== -2) { this.follows = i >= 0; if (i > 0) s.splice(0, i); this.curSeen = cur; }
       if (sp.x === this.scr.sprite.x && sp.y === this.scr.sprite.y) hot.set(key, [cur.x - sp.x, cur.y - sp.y]);
     }
     const hs = hot.get(key); if (!this.follows || !hs) return null;
@@ -4125,7 +4358,15 @@ class RemoteApp extends NativeApp {
     if (e.code === 'Backspace' && e.ctrlKey && e.altKey) sc = 0x153;   // a Mac's Delete key: Ctrl+Alt+Del
     const a = (sc & 0x1ff) | (up ? 0x200 : 0) | (toUser ? 0x400 : 0), b = (e.shiftKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.altKey ? 4 : 0);
     if (W95Bridge.ringPut(this.ring, W95Bridge.KEY, a, b, vk)) this.ringPut = (this.ringPut || 0) + 1;
+    this.modsHeld = b;   // (the modifiers the machine has down after this key: let go when the page loses the keyboard)
     this.kick();
+  }
+  /** the page has lost the keyboard (another window or tab has it): the modifiers the machine has down are let go, as
+   *  their key-ups will never come here. Alt held while switching away stayed down in Windows for good: a double-click
+   *  on My Computer was Alt+double-click, its Properties, and Enter on a folder Alt+Enter */
+  releaseMods() {
+    const b = this.modsHeld || 0; if (!b) return;
+    for (const [bit, vk, code] of [[1, 16, 'ShiftLeft'], [2, 17, 'ControlLeft'], [4, 18, 'AltLeft']]) if (b & bit) this.ringKey({ keyCode: vk, code, shiftKey: false, ctrlKey: false, altKey: false }, true, true);
   }
   // VKD's first look at a key the program does not have the focus for: Ctrl+Alt+Del, and every key in message mode
   vkd(e, up) {
@@ -4154,19 +4395,28 @@ class RemoteApp extends NativeApp {
   exited(code, why, own) {
     if (!this.alive) return;
     this.alive = false; nativeApps.delete(this); machineWorkers.delete(this);
+    if (this.fds) { for (const fd of this.fds) { try { fs.close(fd); } catch (_) { /* closed already */ } } this.fds.clear(); }   // (its files, closed: serve)
     if (this.lanDetach) this.lanDetach();
     if (this.system) for (const a of machineWorkers) a.worker.postMessage({ t: 'netlink', port: null });
     if (clipOwner === this) clipOwner = null;
     if (window.W95Sound) W95Sound.close(this);
     for (const w of this.wins.values()) closeWin(w, true);
     this.wins.clear();
+    // (and any of its windows the page holds outside its map, a travel's shell put back: a dead machine's window
+    // took the mouse and answered nothing)
+    for (const w of windows.filter(v => v.native && v.app === this)) closeWin(w, true);
     if (msgApp === this) msgApp = null;
     for (const ok of this.calls.values()) ok(null); this.calls.clear();
     if (this.mprReady) { this.mprReady(false); this.mprReady = null; }
     setTimeout(() => this.worker.terminate(), 0);
     emit('program.exit', { path: this.path, code, ...(why ? { why } : {}) });
     if (why && this.system) console.error(`[system] ${why}`);
-    if (why) msgBox(basename(this.path), `This program has performed an illegal operation and will be shut down.\n\n${why}`, 'error', ['OK'], null, { noTask: false, modal: false });
+    if (why) {
+      const box = msgBox(basename(this.path), `This program has performed an illegal operation and will be shut down.\n\n${why}`, 'error', ['OK'], null, { noTask: false, modal: false });
+      // (the system's own end is undone by a travel to a moment before it: its box goes with it, rather than standing
+      // over the machine arrived in as if that one had failed)
+      if (this.system && box && window.win95 && window.win95.on) { const off = window.win95.on('braid.travel', () => { off(); try { closeWin(box); } catch (_) { /* closed */ } }); }
+    }
     dirty();
     if (own && this.system && !why) systemEnded(code);
   }
@@ -4229,9 +4479,13 @@ function startSystem() {
     // MSGSRV32's start-up plays SystemStart at every start, as Windows 95's does (a reload, a Restart, after a crash),
     // and starts the shell SYSTEM.INI names; a page asked to be silent (?mute=1) starts quiet
     const quiet = window.W95MUTE;
+    const t0 = performance.now();
     const a = new RemoteApp(join(WINDIR, 'SYSTEM', 'MSGSRV32.EXE'), '', { system: true, quiet });
-    if (!(await a.start(null, null))) { bootLogoEnd(); return null; }
+    const made = a.start(null, null), t1 = performance.now();
+    if (!(await made)) { bootLogoEnd(); pcShows = false; return null; }
+    console.info(`[system] its machine asked for in ${Math.round(t1 - t0)} ms, started ${Math.round(performance.now() - t1)} ms after`);
     sysApp = a;
+    emit('system.start', {});   // (the address's settings are made in it, speed and mods: urlSettings)
     return a;
   })().finally(() => { sysStarting = null; }));
 }
@@ -4527,9 +4781,12 @@ function mountHostShares() {
     while (c <= 90 && fs.vols.has(String.fromCharCode(c))) c++;
     if (c > 90) break;
     const L = String.fromCharCode(c), unc = `\\\\${host}\\${s.name.toUpperCase()}`;
-    const v = fs.mount(L, { remote: hostBackend(s.name), unc, label: s.name.toUpperCase() }); v.host = true;
+    if ([...fs.vols.values()].some(v => v.host && v.unc === unc)) continue;   // (connected already)
+    const v = fs.mount(L, { remote: hostBackend(s.name), unc, label: s.name.toUpperCase() }); v.host = true; v.unc = unc;
   }
 }
+// (the app serves a share once its folder has been read, which can be after the page starts: its drive is connected then)
+if (window.W95HOST && window.W95HOST.shares && window.W95HOST.shares.on) window.W95HOST.shares.on(() => { try { mountHostShares(); dirty(); } catch (e) { console.error(e); } });
 /** connections MPR remembers (HKCU\Network\Persistent): the shell logs on as it boots to make them again; otherwise
  *  when it first needs the network */
 const netRemembered = () => W95Win32.regKids('hkcu\\network\\persistent').some(k => W95Win32.regGet('hkcu\\network\\persistent\\' + k, 'RemotePath') !== undefined);
@@ -4912,7 +5169,9 @@ function render() {
   if (!!sa !== monitor) resize();
   // (the monitor shows the system's machine; without it there is no picture, only the fault that ended it: the page
   // draws no desktop or taskbar of its own)
-  if (sa) sa.scanToCanvas(); else fill(0, 0, W, H, '#000');
+  if (sa) { pcShows = false; sa.scanToCanvas(); }
+  else if (pcShows && pc && !pc.failed) { drawTextScreen(pcText()); setTimeout(dirty, 250); }   // (the PC's screen until Windows' machine has one: pcWindows)
+  else fill(0, 0, W, H, '#000');
   // a screen saver running full screen on the machine is topmost: the shell's own windows, menus and tips stay under it
   if (sa && sa.snap && sa.snap.list.some(n => /^WindowsScreenSaverClass$/i.test(n.cls || '') && !n.preview)) { const na = pointerApp(mouse.x, mouse.y); if (na) drawSprite(na); return; }
   const m = modal();
@@ -4926,9 +5185,49 @@ function render() {
   }
   const cur = cursorAt(mouse.x, mouse.y);
   for (const a of nativeApps) if (a.ov && a.alive && a !== sa) ctx.drawImage(a.ov, 0, 0);
+  drawShellOverlays();
   if (cur === 'none') { const na = pointerApp(mouse.x, mouse.y); if (na) drawSprite(na); }
   else drawCursor(cur);
   drawPeers();
+}
+// ---- the shell's overlays: drawn over the machine's screen by the page, in Windows 98's look, with the shell's own
+// font and bevels (no program of the machine's: they take no input and need nothing of USER). The first is the
+// machine's speed meter (script API `speedMeter(true)`): how much of each 8 s of the wall's time the system's machine
+// spends running its threads (worker.js switchMs.run, cmd 'views'), as Windows 98's smooth progress bar, and how far
+// its own clock moves meanwhile (cmd 'now', which braid.speed stretches)
+const shellOverlays = new Map();
+function drawShellOverlays() { for (const o of shellOverlays.values()) o.draw(); }
+const SPEED_WINDOW = 8000;
+function speedMeter(on) {
+  const had = shellOverlays.get('speed');
+  if (!on) { if (had) { clearInterval(had.timer); shellOverlays.delete('speed'); dirty(); } return false; }
+  if (had) return true;
+  const o = { samples: [], run: null, mach: null };
+  o.tick = async () => {
+    const a = sysApp; if (!a || !a.alive) { o.run = null; dirty(); return; }
+    let v, now; try { [v, now] = await Promise.all([a.cmd('views'), a.cmd('now')]); } catch (_) { return; }
+    const t = performance.now(), s = o.samples; s.push([t, v && v.switchMs ? v.switchMs.run : 0, now || 0]);
+    while (s.length > 1 && t - s[0][0] > SPEED_WINDOW) s.shift();
+    if (s.length > 1) { const [w0, r0, m0] = s[0], [w1, r1, m1] = s[s.length - 1], k = SPEED_WINDOW / (w1 - w0); o.run = (r1 - r0) * k / 1000; o.mach = (m1 - m0) * k / 1000; }
+    dirty();
+  };
+  o.draw = () => {
+    const w = 200, h = 78, x = W - w - 6, y = 6, cy = y + 3, ch = 18;
+    fill(x, y, w, h, K.face); frameRaised(x, y, w, h);
+    // (the caption: Windows 98's gradient from the active caption's colour to its second one, the text bold in white)
+    const g = ctx.createLinearGradient(x + 3, 0, x + w - 3, 0); g.addColorStop(0, '#000080'); g.addColorStop(1, '#1084d0');
+    ctx.fillStyle = g; ctx.fillRect(x + 3, cy, w - 6, ch);
+    text('Machine Speed', x + 7, cy + 3, K.hl, true);
+    text('Turbo', x + 10, y + 28);
+    const bx = x + 10, by = y + 44, bw = w - 20, bh = 14;
+    fill(bx, by, bw, bh, K.face); edge(bx, by, bw, bh, K.sh, K.hl);   // (Windows 98's progress bar: a one-pixel sunken edge)
+    if (o.run !== null) fill(bx + 2, by + 2, Math.round((bw - 4) * Math.min(1, o.run / 8)), bh - 4, K.sel);
+    const l = o.run === null ? (sysApp && sysApp.alive ? '...' : 'No system machine') : `${o.run.toFixed(1)} s run`, r = o.mach === null ? '' : `${o.mach.toFixed(1)} s machine`;
+    text(l, bx, y + 61); if (r) text(r, bx + bw - textW(r), y + 61);
+  };
+  o.timer = setInterval(o.tick, 1000); o.tick();
+  shellOverlays.set('speed', o); dirty();
+  return true;
 }
 /** this machine's own Windows Logon recorded another user (Network\Logon's user name: Shut Down's "Close all programs
  *  and log on as a different user", then the logon form): in a shared session, the page goes to that person's
@@ -4963,7 +5262,10 @@ function trayPeople() {
   // owner, whose profile every settings change goes to: a name's own session is theirs, Guest's the shared one)
   const wins = client => [...S.world()].filter(([, v]) => v && v.origin === client && v.folder === undefined).map(([id, v]) => ({ id, title: v.title || id }));
   const owner = /^guest$/i.test(S.logon.session) || S.logon.session === 'guest' ? 'Guest' : (S.logon.session === S.ownSession(S.logon.user) ? S.logon.user : S.logon.session);
-  a.cmd('tray', [S.people().map(p => ({ client: p.client, user: p.user || 'Guest', color: peerColor(p.client), wins: wins(p.client) })), owner]).catch(() => {});
+  // (and the line's moments, newest first, for the Braid icon's Travel To: the session's, which a choice there travels
+  // every machine to, braid-page.js viaLine)
+  const moments = braid ? braid.along().filter(m => !/^(t|live)\d+$/.test(m.name)).slice(-20).reverse().map(m => ({ name: m.name, anchored: !!m.anchored, broken: m.verdict === 'broken' })) : [];
+  a.cmd('tray', [S.people().map(p => ({ client: p.client, user: p.user || 'Guest', color: peerColor(p.client), wins: wins(p.client) })), owner, moments]).catch(() => {});
   if (!trayStarted) { trayStarted = true; a.cmd('run', ['SESSTRAY.EXE']).catch(() => { trayStarted = false; }); }
 }
 // the pointers of the other people in a shared session (shared.js), each an arrow with their name beside it in their
@@ -5189,7 +5491,7 @@ const SIZE_CUR = { n: 'sizens', s: 'sizens', e: 'sizewe', w: 'sizewe', nw: 'size
  *  there when no shell menu or dialog has the mouse (as pointermove routes it) */
 // (a machine stopped by a fault, its fault dialog up, moves no pointer: the page's own is drawn over it, not the
 // machine's frozen one where the mouse last left it)
-const pointerApp = (x, y) => { const a = cap ? cap.native || null : !menus.length && !modal() ? nativeAt(x, y) : null; return a && !a.stopped ? a : null; };
+const pointerApp = (x, y) => { const a = cap ? cap.native || null : !menus.length && !modal() ? nativeAt(x, y) : null; return a && a.alive && !a.stopped ? a : null; };
 function cursorAt(x, y) {
   if (drag) return drag.cursor;
   if (pointerApp(x, y)) return 'none';   // one pointer: where a machine has the mouse, the cursor is its USER's, as its display adapter has it
@@ -5207,7 +5509,7 @@ function cursorAt(x, y) {
 // the taskbar takes a point when it is on top, or when no window covers it there
 const onTaskbar = (x, y) => !monApp() && y >= barTop() && (tbar.ontop || !winAt(x, y));
 // (the system's machine's windows are its screen, under the page's own: a point on none of the page's is the machine's)
-function winAt(x, y) { const sa = monApp(); for (let i = windows.length - 1; i >= 0; i--) if ((windows[i].app !== sa || windows[i].win32) && !windows[i].min && inR(windows[i], x, y)) return windows[i]; return null; }
+function winAt(x, y) { const sa = monApp(); for (let i = windows.length - 1; i >= 0; i--) if ((windows[i].app !== sa || windows[i].win32) && !windows[i].min && !(windows[i].native && !windows[i].app.alive) && inR(windows[i], x, y)) return windows[i]; return null; }   // (a window of a machine that has ended takes no pointer)
 /** the system's machine while it runs: the page is then its monitor, its whole screen what the page shows (the desktop,
  *  the taskbar and every window on it are the shell's SYSTEM.INI names, EXPLORER.EXE, as the machine draws them) */
 let monitor = false;   // (the page shows the machine's screen: resize)
@@ -5372,6 +5674,7 @@ const nativeFocus = () => (!menus.length && !ren && !modal() && screen === 'desk
 // the keyboard reaches VKD before anything: the system in message mode (a blue screen) takes every key, and a hot key
 // goes to the native system with the focus, else to one that is frozen, else to any
 const vkdApp = () => msgApp || nativeFocus() || [...nativeApps].find(a => a.alive && a.proc && a.proc.win16Held) || [...nativeApps].find(a => a.alive);
+window.addEventListener('blur', () => { for (const a of nativeApps) if (a.alive && a.releaseMods) a.releaseMods(); });
 window.addEventListener('keyup', e => { shareKey(); keyUp(e); });
 window.addEventListener('keydown', e => { shareKey(); keyDown(e); });
 function keyUp(e) { if (devtoolsKey(e)) return; const v = vkdApp(); if (v && v.vkd(e, true)) { e.preventDefault(); return; } const a = nativeFocus(); if (a) { e.preventDefault(); if (e.keyCode) a.key(e, true); } }
@@ -5468,7 +5771,8 @@ function resize() {
     W = sysApp.sw; H = sysApp.sh;
     const cw = W * ZOOM, ch = H * ZOOM;
     cv.width = W; cv.height = H; cv.style.width = cw + 'px'; cv.style.height = ch + 'px';
-    cv.style.marginLeft = Math.max(0, (innerWidth - cw) >> 1) + 'px'; cv.style.marginTop = Math.max(0, (innerHeight - ch) >> 1) + 'px';
+    // (a screen larger than the page, one the machine kept when asked for the page's: its middle shown, as it is in the middle of a larger page)
+    cv.style.marginLeft = ((innerWidth - cw) >> 1) + 'px'; cv.style.marginTop = ((innerHeight - ch) >> 1) + 'px';
   } else {
     W = Math.max(320, Math.floor(innerWidth / ZOOM)); H = Math.max(240, Math.floor(innerHeight / ZOOM));
     cv.width = W; cv.height = H; cv.style.width = W * ZOOM + 'px'; cv.style.height = H * ZOOM + 'px'; cv.style.marginLeft = cv.style.marginTop = '0';
@@ -5493,12 +5797,30 @@ Promise.all(ready).then(() => { resize(); kbd.focus(); dirty(); });
 // client that registered the binding __w95event (Runtime.addBinding), as JSON { type, ...data }.
 // Window, menu and screen saver events come from comparing the shell's state after each change; file system
 // events come straight from the file system.
+// Every event but the file system's and a session's sync is also kept in window.W95Journal (the last 400) until
+// win95.outcome takes them. (On the window: emit runs from the page's first lines, before a module constant here exists)
 function emit(type, data = {}) {
   const ev = { type, ...data, t: Date.now() };
+  if (!/^(sync|fs)\./.test(type)) {
+    const j = window.W95Journal || (window.W95Journal = []), keys = ['type', 'title', 'modal', 'screen', 'kind', 'text', 'path', 'code', 'why', 'machine', 'menus'];
+    j.push(Object.fromEntries(Object.entries(ev).filter(([k]) => keys.includes(k)))); if (j.length > 400) j.shift();
+  }
   if (DEBUG && /^sync\./.test(type)) { const l = window.W95SYNCLOG || (window.W95SYNCLOG = []); l.push(ev); if (l.length > 200) l.shift(); }   // (a shared session's sync, from the page's start: ?debug=1)
   for (const k of [type, type.split('.')[0], '*']) for (const fn of listeners.get(k) || []) { try { fn(ev); } catch (e) { console.error(e); } }
   if (typeof window.__w95event === 'function') { try { window.__w95event(JSON.stringify(ev)); } catch (_) { /* client gone */ } }
 }
+// The system failing: a console error or an uncaught exception of the page's, a worker's error (its console.error), a
+// fault a machine reports (braid.fault). Each is the event 'system.fail' ({ kind, text }), and every wait of the API
+// (next, an element's lookup) ends on it, rejecting with it
+let lastFail = null;
+const systemFail = (kind, text) => { lastFail = { kind, text: String(text).slice(0, 600), at: performance.now() }; emit('system.fail', { kind, text: lastFail.text }); };
+{
+  const ce = console.error.bind(console); let inside = false;
+  console.error = (...a) => { ce(...a); if (inside) return; inside = true; try { systemFail('console', a.map(x => (x && x.stack) || (typeof x === 'object' ? (() => { try { return JSON.stringify(x); } catch (_) { return String(x); } })() : String(x))).join(' ')); } finally { inside = false; } };
+  window.addEventListener('error', e => systemFail('exception', (e.error && e.error.stack) || e.message));
+  window.addEventListener('unhandledrejection', e => systemFail('rejection', (e.reason && e.reason.stack) || e.reason));
+}
+const failText = e => `${e.kind}: ${e.text || (e.fault && (e.fault.why || e.fault.module)) || ''}`;
 function snapshot() {
   return {
     wins: new Map(windows.map(w => [w, { title: w.title, min: !!w.min, max: !!w.max }])),
@@ -5758,14 +6080,18 @@ async function osCatchUp() {
   for (const [id, v] of S.world()) osApply(id, v, local);
 }
 /** another machine's intent made here: the same call, on a thread of its own (worker.js 'intent'), as it is made there */
-function osIntent(i) {
+function osIntent(i, reset) {
   emit('sync.intent', { key: i.key });
-  if (i.kind === 'braid') return braid ? braid.remote(i) : null;   // (another person's mark or travel on the shared line: braid-page.js remote)
+  // (a mark, anchor or travel on the shared line, anyone's, this person's too, made as it reaches this machine:
+  // braid-page.js remote. A travel that set the session's shared state back (`reset`, shared.js) has this machine's
+  // copies of the session's objects set to it after its own moment is put back, as a machine joining sets them: even
+  // a machine that has no such moment of its own then has the session's state at it)
+  if (i.kind === 'braid') return (braid ? Promise.resolve(braid.remote(i)).then(() => { if (reset) return osCatchUp(); }) : Promise.resolve(reset ? osCatchUp() : null)).then(() => trayPeople());   // (the Braid icon's moments, as the line has them now)
   return sysApp && sysApp.alive ? sysApp.cmd('intent', [i]) : null;
 }
 if (sharedNow()) {
   sharedNow().onObj((id, v, by) => { if (osCaught) osApply(id, v, null, by); });   // (by: the machine whose person did it)
-  sharedNow().onIntent(i => { if (osCaught) osIntent(i); });
+  sharedNow().onIntent((i, by, reset) => { if (osCaught) osIntent(i, reset); });
   sharedNow().onInput((id, part, by) => { if (osCaught) osStroke(id, part, by); else (osInputWait.get(id) || osInputWait.set(id, []).get(id)).push([part, by]); });
 }
 // (once this machine's shell is up, its first window list with the desktop's: the session's objects as they are)
@@ -5827,7 +6153,8 @@ function nativeEls(kids, win) {
     if (k === 'menuitem') { if (!c.separator) add('menuitem', label(c.text.split('\t')[0]), c, { window: 'Menu', depth: win.menuDepth || 0, disabled: !c.enabled, submenu: !!c.submenu, checked: !!c.checked }); continue; }
     if (k === 'traynotifywnd' || k === 'mstaskswwclass') continue;   // (holders of the clock and the tabs, listed for themselves)
     if (k === 'trayclockwclass') { add('clock', c.text, c, win); continue; }
-    if (k === 'systabcontrol32' && c.items) { for (const t of c.items) add('pushbutton', label(t.text), t, { ...win, pressed: !!t.selected }); continue; }
+    if (k === 'systabcontrol32' && c.items) { for (const t of c.items) add('pushbutton', label(t.text), t, { ...win, pressed: !!t.selected, tab: c.hwnd, index: t.index }); continue; }
+    if (k === 'msctls_trackbar32') { add('slider', '', c, { ...win, cls: c.cls, id: c.id, hwnd: c.hwnd, disabled: !c.enabled, ...(c.slider ? { value: c.slider.pos, min: c.slider.min, max: c.slider.max } : {}) }); continue; }
     // (a static of an icon or a bitmap, SS_ICON or SS_BITMAP: a graphic, its window text the resource's id, "\xff" and
     // a word, not its name)
     const pic = k === 'static' && [3, 0x0e].includes(c.style & 0x1f);
@@ -5959,6 +6286,7 @@ async function resolveEl(q, ms = 5000) {
   for (;;) {
     all = await elementsNow(); e = findEl(q, all);
     if (e) return e;
+    if (typeof lastFail !== 'undefined' && lastFail && lastFail.at >= t0) throw new Error(`no element matches ${qText(q)}: the system failed, ${failText(lastFail)}`);
     if (performance.now() - t0 >= ms) break;
     await new Promise(r => setTimeout(r, 50));
   }
@@ -5970,10 +6298,31 @@ async function resolveEl(q, ms = 5000) {
  *  the pointer input `send` makes at its centre, which must not be covered. Resolves with the element */
 async function actOn(q, send, item) {
   const e = await resolveEl(q), w = item && e.list && windows.find(x => x.native && x.title === e.window && x.app);
-  if (w) { await w.app.cmd('listItem', [e.list, e.index, !!item.open]); return e; }
+  if (w) { await w.app.cmd('listItem', [e.list, e.index, !!item.open]); return { ...e, how: 'its list view selected it' }; }
+  // (a native button, a radio button or a check box: pressed by its own window, the machine's 'press', which refuses
+  // one a person could not press now (disabled, under a dialog, its window not the active one) and says which)
+  const btn = item && !item.open && e.hwnd && /^(pushbutton|radiobutton|checkbutton)$/.test(e.role) && windows.find(x => x.native && x.title === e.window && x.app);
+  // (a tab of a native tab control: chosen by the control itself)
+  const tabOf = item && !item.open && e.tab && windows.find(x => x.native && x.title === e.window && x.app);
+  if (tabOf) {
+    const r = await tabOf.app.cmd('ctl', [e.tab, 'tab', e.index]);
+    if (r !== true) { const a = windows.map(winInfo).filter(x => x.active).pop(); throw new Error(`${qText(asQuery(q))} is not chosen: ${r}${a ? `; the active window is '${a.title}'` : ''}`); }
+    return { ...e, how: 'chosen by its tab control' };
+  }
+  if (btn) {
+    // (the keys and moves sent before it taken first, and a disabled button waited for as a missing element is, up to
+    // 5 s, a frame at a time: a person's press comes after what they typed, which the dialog may take to enable it)
+    await inputDrawn();
+    let r; for (const t0 = performance.now(); (r = await btn.app.cmd('press', [e.hwnd])) === 'disabled' && performance.now() - t0 < 5000;) await btn.app.nextFrame();
+    if (r !== true) { const a = windows.map(winInfo).filter(x => x.active).pop(); throw new Error(`${qText(asQuery(q))} is not pressed: ${r}${a ? `; the active window is '${a.title}'` : ''}`); }
+    return { ...e, how: 'pressed by its own window' };
+  }
   const cx = e.x + (e.w >> 1), cy = e.y + (e.h >> 1);
   if (e.covered) throw new Error(`${qText(asQuery(q))} is covered by ${e.coveredBy || 'another window'}`);
+  // (the pointer's click goes to whatever is at the point: named in the answer, the element itself or not)
+  const at = elements().filter(x => x.window === e.window && x.role !== 'titlebar' && cx >= x.x && cx < x.x + x.w && cy >= x.y && cy < x.y + x.h).pop();
   send(cx, cy);
+  e.how = `pointer at ${cx},${cy}, on ${at ? `${at.role} '${at.name}'` : 'no listed element'} of '${e.window}'`;
   return e;
 }
 // an element, a query for one, or plain coordinates, as the point a click lands on
@@ -6005,6 +6354,16 @@ const script = {
     script.click(x, y, { double: true });
   },
   waitFor: (q, ms) => resolveEl(q, ms),
+  // a native combo box's item chosen by its text, or a slider moved to a position ('min', 'max' or a number): by the
+  // control itself, its owner told as a person's choice tells it; refused as a press is
+  async set(q, value) {
+    const e = await resolveEl(q), w = e.hwnd && windows.find(x => x.native && x.title === e.window && x.app);
+    const op = e.role === 'combobox' ? 'select' : e.role === 'slider' ? 'slide' : null;
+    if (!w || !op) throw new Error(`${qText(asQuery(q))} is a ${e.role}: set takes a native combo box or slider`);
+    const r = await w.app.cmd('ctl', [e.hwnd, op, value]);
+    if (r !== true) { const a = windows.map(winInfo).filter(x => x.active).pop(); throw new Error(`${qText(asQuery(q))} is not set: ${r}${a ? `; the active window is '${a.title}'` : ''}`); }
+    return { ...e, how: `set to ${value} by the control itself` };
+  },
   drag(x1, y1, x2, y2, steps = 8) {
     if (typeof x1 !== 'number') {
       const n = x2 ?? 8;
@@ -6028,6 +6387,33 @@ const script = {
   async elementsNow(q) { return filterEls(await elementsNow(), q); },
   find: q => findEl(q),
   windows() { return windows.map(winInfo); },
+  // what is on the screen and what went wrong, in one call (SCRIPTING.md, Reading the screen): the screen, each window
+  // with its controls' text as its machine has them now, the line's last n faults and the fault log's last entry
+  async report(n = 3) {
+    const els = await elementsNow(), hx = v => (typeof v === 'number' ? (v >>> 0).toString(16) : v);
+    const wins = windows.map(winInfo).map(w => ({ ...w, text: els.filter(e => e.window === w.title && (e.name || e.role === 'slider')).map(e => `${e.role}: ${e.name}${e.role === 'slider' ? `${e.value} (${e.min} to ${e.max})` : ''}${e.pressed ? ' (chosen)' : ''}${e.checked ? ' (checked)' : ''}${e.disabled ? ' (disabled)' : ''}`) }));
+    const evs = braid ? braid.faultEvents() : [];
+    const faults = evs.slice(-n).map(e => { const f = e.fault || {}; return { why: f.why, program: f.program, module: f.module, eip: hx(f.eip), cr2: hx(f.cr2), gen: e.gen, machine: e.machine }; });
+    const log = evs.length && evs[evs.length - 1].faults, l = Array.isArray(log) && log[log.length - 1];
+    return { screen, windows: wins, faults, last: l ? { why: l.why, at: l.at || l.atIn, stack: (l.stack || []).slice(0, 8) } : null };
+  },
+  // until the machines have taken the input and the page has drawn it (inputDrawn: their frames say so); ends at once
+  // when the system fails
+  async settle() {
+    await inputDrawn();
+    if (lastFail && lastFail.at > (this.settleFrom || 0)) throw new Error(`the system failed: ${failText(lastFail)}`);
+  },
+  // an action's outcome: fn run (a win95 call, or none: what happened since the last outcome), the machines having
+  // taken it, then { result, error, events, report }: every event since the last outcome (journal), and the screen
+  // now (win95.report). What a script acts on next is this, never a state assumed
+  async outcome(fn, n = 3) {
+    let result = null, error = null; this.settleFrom = performance.now();
+    try { if (fn) result = await fn(); await script.settle(); } catch (e) { error = e.message; }
+    const report = await script.report(n);   // (the machines' windows asked of them now; their frames meanwhile shown)
+    observe();   // (the shell's changes as events now, not on its next look)
+    if (result && typeof result === 'object') result = { name: result.name, role: result.role, window: result.window, how: result.how };
+    return { result, error, events: (window.W95Journal || []).splice(0), report };
+  },
   // the machines' log (win32.js log): the emulator's messages, programs' OutputDebugString, KERNEL's LogError, each
   // { n, t, level, tag, text, machine }, since line n; the same lines are in DevTools' console at their level and in
   // the Debug Monitor (Programs > Accessories > System Tools)
@@ -6071,13 +6457,20 @@ const script = {
   // the machine the saver runs on, as its last frame reported it (the saver is a process of the system's machine, so
   // the counts are the machine's: its timers, its GL frames, its guest time; the bench takes differences while it runs)
   saverStats() { const a = fullSaver && fullSaver.pid && fullSaver.app; return a && a.alive && a.stats ? { ...a.stats } : null; },
+  // the shell's speed meter over the screen (drawShellOverlays), on or off
+  speedMeter(on = true) { return speedMeter(on); },
   on(type, fn) { if (!listeners.has(type)) listeners.set(type, new Set()); listeners.get(type).add(fn); return () => listeners.get(type).delete(fn); },
-  // resolves with the next event of this type that passes the test, or rejects after the timeout
+  // resolves with the next event of this type that passes the test; rejects at once when the system fails meanwhile
+  // (system.fail, braid.fault: what failed), else after the timeout
   next(type, test, ms = 10000) {
     test = test || (() => true);   // (no test, or null: any event of the type)
     return new Promise((ok, no) => {
-      const off = script.on(type, e => { if (test(e)) { off(); clearTimeout(t); ok(e); } });
-      const t = setTimeout(() => { off(); no(new Error(`no ${type} within ${ms} ms`)); }, ms);
+      const end = () => { off(); offFail(); offFault(); clearTimeout(t); };
+      const off = script.on(type, e => { if (test(e)) { end(); ok(e); } });
+      const fail = e => { end(); no(new Error(`${type} not reached: ${failText(e.type === 'braid.fault' ? { kind: 'fault', ...e } : e)}`)); };
+      const offFail = type === 'system.fail' ? () => {} : script.on('system.fail', fail);
+      const offFault = type === 'braid.fault' ? () => {} : script.on('braid.fault', fail);
+      const t = setTimeout(() => { end(); no(new Error(`no ${type} within ${ms} ms`)); }, ms);
     });
   },
 };
@@ -6087,7 +6480,7 @@ let ccdApi = null;
 // a script of the site's loaded again from its server into the running page, no restart (the page's half of a change:
 // ccd.js's tools are made again on next use from their records in the registry); a script of the machines' goes to the
 // system's machine (worker.js cmd 'reload')
-const WORKER_SCRIPTS = new Set(['claude-app.js', 'session-dll.js', 'session-tray.js', 'dbwin.js', 'shell32.js', 'osclass.js', 'saver-runtime.js', 'gl.js', 'sound.js']);
+const WORKER_SCRIPTS = new Set(['claude-app.js', 'session-dll.js', 'session-tray.js', 'dbwin.js', 'debugger.js', 'dynjs.js', 'shell32.js', 'osclass.js', 'saver-runtime.js', 'gl.js', 'sound.js']);
 // the page's scripts that only define things, so can be loaded again (win95.js loaded twice ran two shells on one screen)
 const PAGE_SCRIPTS = new Set(['ccd.js']);
 // ---------------------------------------------------------------- ring α on the page (braid.js, braid-page.js): the machines' moments with the disk, the registry and the shell beside them, on one line
@@ -6098,9 +6491,17 @@ const PAGE_SCRIPTS = new Set(['ccd.js']);
 // the other people in it
 const braidUi = () => ({
   W95Win32, fs, emit, dirty, closeMenus, dialog, closeWin, msgBox, activate, script,
-  machines: () => [...machineWorkers], sysApp: () => sysApp, startSystem, windows: () => windows, shared: () => sharedNow(),
+  machines: () => [...machineWorkers], sysApp: () => sysApp, startSystem, pcBoot: () => pcBoot(), windows: () => windows, shared: () => sharedNow(),
+  pcSpeed: x => { if (x === undefined) return pcSpeed; pcSpeed = Math.max(1, Number(x) || 1); if (pc && pc.m) pc.m.speed = pcSpeed; return pcSpeed; },   // (no argument: read)
   shell: () => ({ windows, tasks, modals, active, menus, menuSrc, cap, drag, ghost, screen, textClip, clipOwner, msgApp, cascadeN }),
-  setShell: sh => { ({ windows, tasks, modals, active, menus, menuSrc, cap, drag, ghost, screen, textClip, clipOwner, msgApp, cascadeN } = sh); },
+  setShell: sh => {
+    ({ windows, tasks, modals, active, menus, menuSrc, cap, drag, ghost, screen, textClip, clipOwner, msgApp, cascadeN } = sh);
+    // (a machine's windows only while it runs: one ended since the moment leaves none behind to hold the mouse)
+    const dead = w => w && w.native && !(w.app && w.app.alive);
+    windows = windows.filter(w => !dead(w)); tasks = tasks.filter(w => !dead(w)); modals = modals.filter(w => !dead(w));
+    if (dead(active)) active = windows[windows.length - 1] || null;
+    if (cap && cap.native && !cap.native.alive) cap = null;
+  },
   // a machine's window the page is told of (a moment arrived at: its windows as the record has them, braid-page.js
   // arrive), placed as a frame's list places one, with no focus given to the machine; one the page has by that key
   // takes the new place instead
@@ -6116,6 +6517,37 @@ const braidUi = () => ({
 const braid = window.W95BraidPage ? window.W95BraidPage(braidUi()) : null;
 /** a fault a machine reported, written to the line under its generation (braid-page.js fault) */
 function braidFault(app, f, fatal) { if (braid) braid.fault(app, f, fatal); }
+// win95.debug: the debugger for the system machine's translated code (dynjs.js). Every method returns a promise.
+//   modules()                 the translated modules: [{ name, lo, hi, base, blocks, js }]
+//   run(names)                run exactly these modules as JavaScript ('*' for all); returns the names running so
+//   breakpoint({ at, when, capture })
+//                             Records a hit each time the block at `at` is entered, and runs on. at: a guest address
+//                             (number or hex string) where a block starts, in a module run as JavaScript.
+//                             when / capture: expressions over R (registers), r8/r16/r32 (memory), n (times reached)
+//                             and thread. Returns { id, at }.
+//   remove(id), clear()       remove one breakpoint, or all of them and the recorded hits
+//   breakpoints()             [{ id, at, when, capture, n }]
+//   hits(since)               recorded hits with seq above `since`: [{ seq, id, at, n, thread, regs, stack, value }]
+//   next(id, ms)              the next hit of breakpoint `id` (any, when id is omitted); rejects after ms
+//   source(address)           the JavaScript of the block holding an address: { module, block, text }
+//   read(address, n)          n bytes of guest memory
+// The Windows API. A place is an address, 'MODULE+offset' or an API 'DLL!Export' ('USER32!DrawIconEx', 'USER!#123').
+//   resolve(place), where(address)   a place's address and name; an address's name (module+offset, nearest export)
+//   watch(dll, name, n), calls(), unwatch(dll)
+//                             trace calls of an export (or '/regexp/' over the DLL's exports) with n arguments, without
+//                             stopping; calls() returns and clears them: [{ t, name, args, text, from, stack, eax }]
+//   stopAt(call, n), unstop(id), stops()
+//                             route each call of an API through dynjs.js's w95ApiEntry, where a debugger's breakpoint
+//                             stops at it (tools/devtools-mcp.mjs api_break); any module, wasm or JavaScript
+//   state()                   registers, flags, the stack with each code address named, the thread and its program
+// Each hit is also the page event 'debug.hit' (win95.on('debug.hit', fn)).
+const debugApi = (() => {
+  const call = (method, ...args) => { if (!sysApp || !sysApp.alive) return Promise.reject(new Error('debug: the system\'s machine is not running')); return sysApp.cmd('debug', [method, ...args]); };
+  const api = {};
+  for (const m of ['modules', 'run', 'breakpoint', 'remove', 'clear', 'breakpoints', 'hits', 'source', 'read', 'resolve', 'where', 'stopAt', 'unstop', 'stops', 'watch', 'unwatch', 'calls', 'state']) api[m] = (...a) => call(m, ...a);
+  api.next = (id, ms = 10000) => script.next('debug.hit', h => id === undefined || h.id === id, ms);
+  return api;
+})();
 // a script of the site's loaded again over the running machine or page: a mod of ring α's, named (with the sum of its
 // text) beside every moment marked from then on, never carried in one (braid.js mod)
 async function reloadScript(f) {
@@ -6151,7 +6583,7 @@ window.win95 = { ...script,
     get disk() { return pcFloppy.image ? { name: pcFloppy.name, image: pcFloppy.image } : null; },
   },
   braid,
-  cd: { images: () => cdImages().map(i => i.name), insert: name => cdInsert(name), eject: () => cdInsert(null), get disc() { const v = fs.vols.get('D'); return v.ready ? { label: v.label, serial: v.serial, sectors: v.sectors } : null; } }, get ccd() { return ccdApi || (ccdApi = window.W95Ccd ? window.W95Ccd(ccdUi()) : null); }, get nativeApps() { return [...nativeApps]; }, get dos() { return [...dosMachines]; }, startSystem, get sysApp() { return sysApp; }, reloadScript, netBoot, netCall, syncNetDrives, mapNetDrive, disconnectNetDrive, fs, render, displayProperties, startFullSaver, get fullSaver() { return fullSaver; }, properties, driveProps, openFolder, openPath, shellOpen, notepad, msgBox, runDialog, findComputer, findFiles, winHelp, shutDownDialog, MyComputer, get state() { return { menus: menus.length, menuSrc, modals: modals.length, cap: !!cap, drag: !!drag, screen, active: active && active.title }; } };
+  cd: { images: () => cdImages().map(i => i.name), insert: name => cdInsert(name), eject: () => cdInsert(null), get disc() { const v = fs.vols.get('D'); return v.ready ? { label: v.label, serial: v.serial, sectors: v.sectors } : null; } }, get ccd() { return ccdApi || (ccdApi = window.W95Ccd ? window.W95Ccd(ccdUi()) : null); }, get nativeApps() { return [...nativeApps]; }, get dos() { return [...dosMachines]; }, startSystem, get sysApp() { return sysApp; }, debug: debugApi, reloadScript, netBoot, netCall, syncNetDrives, mapNetDrive, disconnectNetDrive, fs, render, displayProperties, startFullSaver, get fullSaver() { return fullSaver; }, properties, driveProps, openFolder, openPath, shellOpen, notepad, msgBox, runDialog, findComputer, findFiles, winHelp, shutDownDialog, MyComputer, get state() { return { menus: menus.length, menuSrc, modals: modals.length, cap: !!cap, drag: !!drag, screen, active: active && active.title }; } };
 // the scripting API's calls shown as they are made (?scriptlog=1, or win95.scriptLog = true): each win95.* call and each
 // win95.sysApp.cmd, then what it answered, as 'script' lines at the debug level in DevTools' console and the machines'
 // log (Verbose in both: Debug Monitor's Options > Verbose),
@@ -6190,5 +6622,69 @@ window.win95 = { ...script,
   } });
   Object.defineProperty(api, 'scriptLog', { get: () => on, set: v => { on = !!v; say(`script log ${on ? 'on' : 'off'}`); } });
   api.note = text => say(String(text));
+}
+// the page's settings from its address (an experiment): ?name=value as the page loads, and #name=value at any time, a
+// change to the part after # being no reload, each made as it changes; a name the part after # gives takes the place
+// of the query's. mod, once for each of the site's mods, NAME or NAME:VALUE (mod-NAME.js, its setting VALUE):
+// #mod=turbo:8&mod=setupclock loads mod-turbo.js with 8 (cmd 'reload', its self.W95ModArg) and mod-setupclock.js, into
+// the system's machine and into each one after it (a restart's); a new value loads it again, and taken out, the mod is
+// ended as it ends itself (cmd 'modOff'; one with no end stays until the page reloads).
+// mute: 0 or 1, the sound output on or off; anchor: an anchored moment, travelled to once, as the system's machine
+// first comes up
+{
+  // (the address's parameters, each name's values: the part after #'s where it has the name, else the query's)
+  const read = () => {
+    const q = new URLSearchParams(location.search), h = new URLSearchParams(location.hash.replace(/^#/, ''));
+    return { all: k => (h.has(k) ? h : q).getAll(k), get: k => (h.has(k) ? h : q).get(k), has: k => h.has(k) || q.has(k) };
+  };
+  // (each mod's file and setting: turbo:8, mod-turbo:8 and mod-turbo.js:8 are mod-turbo.js with 8)
+  const modsOf = list => {
+    const out = new Map();
+    for (const e of list) {
+      const i = e.indexOf(':'), n = (i < 0 ? e : e.slice(0, i)).trim().replace(/\.js$/i, '').replace(/^mod-/i, ''), v = i < 0 ? '' : e.slice(i + 1);
+      if (/^[\w-]+$/.test(n)) out.set(`mod-${n}.js`, v);
+    }
+    return out;
+  };
+  // (the site's mod file, NAME.mod: the address's mods=NAME, else the one its server names (tools/serve.py --mods),
+  // else prod.mod; one mod a line, # a comment. Loaded as the address's mods are, the address's added to them, one of
+  // the same name in the address taking its place)
+  let served = [];
+  const modFile = async () => {
+    const name = read().get('mods') || await fetch('/__mods', { cache: 'no-store' }).then(r => (r.ok ? r.json() : null), () => null).then(j => j && j.profile, () => null) || 'prod';
+    if (!/^[\w-]+$/.test(name)) { console.warn('[address] mods', name, 'is no mod file\'s name'); return; }
+    const t = await fetch(`${name}.mod`, { cache: 'no-store' }).then(r => (r.ok ? r.text() : null), () => null);
+    if (t === null) { console.warn('[address] mods', `${name}.mod`, 'could not be read'); return; }
+    served = t.split(/\r?\n/).map(l => l.replace(/#.*/, '').trim()).filter(Boolean);
+  };
+  const made = {}, mods = new Map(); let anchored = false, busy = modFile().catch(e => console.warn('[address] mods', e && e.message));
+  const apply = why => (busy = busy.then(async () => {
+    const o = read(), a = sysApp && sysApp.alive ? sysApp : null;
+    const mute = o.get('mute');
+    if (mute !== null && mute !== made.mute) { made.mute = mute; if (window.W95Sound && W95Sound.setMuted) W95Sound.setMuted(/^(1|true)$/i.test(mute)); }
+    if (!a) return;
+    if (why === 'system') mods.clear();   // (a new system's machine: its mods are its own to be loaded)
+    const want = modsOf([...served, ...o.all('mod')]);
+    for (const [f, v] of want) if (mods.get(f) !== v) { try { await a.cmd('reload', [f, v]); mods.set(f, v); } catch (e) { console.warn('[address] mod', f, e && e.message); } }
+    for (const f of [...mods.keys()]) if (!want.has(f)) { mods.delete(f); try { if (!(await a.cmd('modOff', [f]))) console.warn('[address] mod', f, 'has no way to end itself: it stays until the page reloads'); } catch (e) { console.warn('[address] mod', f, e && e.message); } }
+    const anchor = o.get('anchor');
+    if (anchor && !anchored) { anchored = true; try { await braid.travel(anchor); } catch (e) { console.warn('[address] anchor', anchor, e && e.message); } }
+  }).catch(e => console.warn('[address]', e && e.message)));
+  window.addEventListener('hashchange', () => apply('hash'));
+  window.win95.on('system.start', () => apply('system'));
+  apply('load');
+}
+// The page's title (the app's window title) names the Windows installed on the disk: the registry's own Version
+// ("Windows 95", "Windows 98"), Windows 3.1 by its files. Named again when a system starts and when a travel or an
+// arrival puts another moment's disk and registry in place.
+{
+  const installed = () => {
+    if (diskSystem() === 'win31') return 'Windows 3.1';
+    const v = W95Win32.regGet('hklm\\software\\microsoft\\windows\\currentversion', 'Version');
+    return (v && v.data && W95FS.decode(v.data).replace(/\0.*$/, '').trim()) || 'Windows 95';
+  };
+  const name = () => { try { const t = document.title.replace(/Windows [\w.]+$/, installed()); if (t !== document.title) document.title = t; } catch (_) { /* the disk is not there yet */ } };
+  for (const e of ['pc.boot', 'pc.windows', 'system.start', 'braid.travel']) window.win95.on(e, name);
+  name();
 }
 })();
