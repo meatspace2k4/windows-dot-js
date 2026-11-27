@@ -288,7 +288,7 @@ P.soundIO = function (port, size, isIn) {
       // the sound played unheard is over: one of some length (MSSNDSYS enables playback and turns it down again within
       // microseconds as it starts, which is no sound: the quiet goes on to SystemStart)
       if (c.idx === 9 && !(v & 1) && (was & 1) && this.soundQuiet && (this.quietMs || 0) >= 200) this.soundQuiet = false;
-      if (c.idx === 9 && (v & 1) && !(was & 1)) { c.count = (c.regs[14] << 8) | c.regs[15]; c.frac = 0; c.last = c.t; if (c.out) c.out.at = performance.now(); }
+      if (c.idx === 9 && (v & 1) && !(was & 1)) { c.count = (c.regs[14] << 8) | c.regs[15]; c.frac = 0; c.last = c.t; c.onAt = c.t; c.played = 0; if (c.out) c.out.at = performance.now(); }
       // capture enable (bit 1): the count starts as for playback; the page's microphone is opened for it, and closed
       // when capture stops
       if (c.idx === 9 && (v & 2) && !(was & 2)) { c.count = (c.regs[14] << 8) | c.regs[15]; c.frac = 0; c.last = c.t; this.mic = { q: [], pos: 0, rate: 0 }; if (self.W95MIC) self.W95MIC(true); }
@@ -570,7 +570,14 @@ P.soundRun = function (c) {
   // interrupt raised inside the port write that started the playback: the driver's sound stopped a second in)
   const speed = q.ahead < want ? 4 : q.ahead > want + 100 ? 0.5 : 1;
   c.frac = Math.min(c.frac + rate * Math.min(dt, 250) * speed / 1000, rate / 4);
-  const frames = Math.floor(c.frac); c.frac -= frames;
+  // (in its first EARLY ms of the machine's time, the playback plays no more than the machine's time since it began:
+  // the frames above it wait, for the card to play once that time has gone. A driver that enables playback and turns
+  // it off again microseconds later (MSSNDSYS as it starts, its DMA buffer not filled yet) played the wall's time the
+  // emulation took over those port writes, four times over: a few dozen frames of whatever the buffer held, a step
+  // in both channels and back, a pop as the card came on)
+  const EARLY = 2, early = c.onAt !== undefined && c.t - c.onAt < EARLY;
+  const cap = early ? Math.max(0, Math.floor((c.t - c.onAt) * rate / 1000) - (c.played || 0)) : Infinity;
+  const frames = Math.min(Math.floor(c.frac), cap); c.frac -= frames;
   if (frames <= 0) return;
   const stereo = !!(c.regs[8] & 0x10), fmt = (c.regs[8] >> 5) & 3, bps = fmt === 2 ? 2 : 1, ch = stereo ? 2 : 1;
   let irq = false;
@@ -597,7 +604,7 @@ P.soundRun = function (c) {
     if (irq) { irq = false; if (c.regs[10] & 2) { this.soundStats.irqs++; this.raiseIRQ(WSS.irq); } }
     if (end) break;
   }
-  this.soundStats.frames += k; q.ahead += k * 1000 / rate;
+  this.soundStats.frames += k; q.ahead += k * 1000 / rate; c.played = (c.played || 0) + k;
   // (soundQuiet: the card's output off for one sound, which still plays to the guest: the DMA, the interrupts)
   if (k && this.soundQuiet) this.quietMs = (this.quietMs || 0) + k * 1000 / rate;
   if (k && !this.soundQuiet && play(this, rate, L, R, k)) this.soundStats.underruns = (this.soundStats.underruns || 0) + 1;
