@@ -5616,6 +5616,11 @@ def16('KERNEL', 476, 'l', 'l', function (h) { return h; });                     
 def16('KERNEL', 467, 'lw', 'l', function (vm, hwnd) { return this.newHandle({ kind: 'woaConsole', vm, hwnd, full: false }); });
 def16('KERNEL', 470, 'l', 'v', function (h) { const c = this.handles.get(h); if (c && c.kind === 'woaConsole') this.handles.delete(h); });
 def16('KERNEL', 477, 'lw', 'v', function (h, on) { const c = this.handles.get(h); if (c && c.kind === 'woaConsole') c.full = !!on; });
+// #468(console): WinOldAp's abort of the console's pending read (WINOA386.MOD 2:288); no Win32 process reads a
+// console through it here, so none is pending. #469(console, buffer): the title of the console's Win32 process, into
+// WinOldAp's buffer (2:2CD), which keeps its own title when the first byte is 0: none here, the empty title
+def16('KERNEL', 468, 'l', 'v', function () {});
+def16('KERNEL', 469, 'lp', 'v', function (h, buf) { if (buf) this.u8[buf] = 0; });
 def16('KERNEL', 478, 'l', 'v', function (h) { const c = this.handles.get(h); if (c && c.kind === 'woaConsole' && c.pcs) for (const pc of c.pcs) if (pc.exitCode === null) this.endProcess(pc, 0xffffffff); });
 def16('KERNEL', 492, 'w', 'v', function () {});
 def16('KERNEL', 474, 'l', 'w', function (h) { return this.handles.delete(h) ? 1 : 0; });               // CloseW32Handle

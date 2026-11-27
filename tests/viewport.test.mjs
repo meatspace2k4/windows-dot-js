@@ -85,7 +85,12 @@ const cut = (w, a, b, keep = true) => { const i = w.indexOf(a); assert.ok(i >= 0
 {
   const w = src('win95.js'), pre = src('electron/preload.js'), main = src('electron/main.js');
   assert.ok(/function fitWindow\(w, h\) \{ const s = window\.W95HOST && window\.W95HOST\.screen; if \(s\) s\.fit\(w \* ZOOM, h \* ZOOM\); \}/.test(w));
-  assert.equal((w.match(/if \(this\.system\) fitWindow\(/g) || []).length, 2);
+  // (both through screenSized, the machine's screen made at a size: at its start, and when its mode is taken or
+  // followed)
+  assert.equal((w.match(/if \(this\.system\) fitWindow\(/g) || []).length, 1);
+  assert.match(cut(w, '  screenSized(sw, sh) {', '\n  }\n'), /if \(this\.system\) fitWindow\(sw, sh\);/);
+  assert.match(w, /this\.mem = m\.mem; this\.pal = new Uint32Array\(256\); this\.screenSized\(m\.sw, m\.sh\);/);
+  assert.match(w, /if \(r\.sw !== this\.sw \|\| r\.sh !== this\.sh\) this\.screenSized\(r\.sw, r\.sh\);/);
   assert.ok(/screen: \{ fit: \(width, height\) => ipcRenderer\.send\('fit-window', width, height\) \}/.test(pre));
   assert.ok(/ipcMain\.on\('fit-window'/.test(main) && /win\.isFullScreen\(\) \|\| win\.isMaximized\(\)/.test(main) && /win\.setContentSize\(Math\.round\(width\), Math\.round\(height\), true\)/.test(main));
 }
