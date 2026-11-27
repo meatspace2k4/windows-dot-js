@@ -8,11 +8,12 @@ const n = readFileSync(new URL('../ne16.js', import.meta.url), 'utf8');
 const sr = readFileSync(new URL('../saver-runtime.js', import.meta.url), 'utf8');
 const sw = readFileSync(new URL('../sw.js', import.meta.url), 'utf8');
 
-assert.match(k, /'dyn\.js', 'savers\.js'/, 'the worker loads the compiled saver bundle');
-assert.match(k, /'savers\.js', 'saver-runtime\.js'/, 'the worker loads the asynchronous saver compiler');
-assert.match(sw, /'savers\.js', 'saver-runtime\.js'/, 'the service worker precaches the worker runtime dependency');
+assert.match(k, /importScripts\([^)]*'dyn\.js', 'v86\.js', 'savers\.js'/, 'the worker loads the compiled saver bundle');
+assert.match(k, /importScripts\([^)]*'savers\.js', 'saver-runtime\.js'\)/, 'the worker loads the asynchronous saver compiler');
+// (the service worker keeps every file as it is loaded, the worker's imports among them, rather than a list of its own)
+assert.match(sw, /every file the page loads is kept as it is loaded/, 'the service worker keeps the worker runtime dependency');
 assert.match(k, /fs\.readFile\(file\)/, 'the mounted SCR file supplies the process image');
-assert.match(k, /async spawnSaverAsync\(file, arg\)[\s\S]*?findSaver\(file, savers\)[\s\S]*?await self\.W95SaverRuntime\.matchesImage\(bytes, d\)[\s\S]*?await self\.W95SaverRuntime\.compileModule\(d\)/,
+assert.match(k, /async spawnSaverAsync\(file, arg\)[\s\S]*?findSaver\(fs\.realpath\(file\), savers\)[\s\S]*?await self\.W95SaverRuntime\.matchesImage\(bytes, hit\[1\]\)[\s\S]*?await self\.W95SaverRuntime\.compileModule\(d\)/,
   'selection resolves and asynchronously validates one bundle before compiling it');
 assert.doesNotMatch(k, /Object\.entries\(savers\)\.find|d\.scrBytes\s*=\s*b64bytes\(d\.scr\)/,
   'selection never synchronously scans and decodes the whole saver bundle');

@@ -127,6 +127,8 @@ const user16 = { name: 'USER', base: 0x01a00000, segs: [{ base: 0x01a00000, allo
   let asked = ''; Object.assign(p, { readA: () => asked, runPendingInits() {}, importClosure: m => [m], attach() {}, lastError: 0 });
   asked = 'NOTHERE.DLL'; assert.equal(ex.call(p, 1, 0, 2), 0); assert.equal(p.lastError, 2, 'not there: file not found');
   asked = 'TEXT.DLL'; assert.equal(ex.call(p, 1, 0, 2), 0); assert.equal(p.lastError, 193, 'no image: bad format');
-  asked = 'TESTLIB.DLL'; assert.equal(ex.call(p, 1, 0, 2), 0x00d00000, 'a bare name found in SYSTEM');
+  // (found in SYSTEM and mapped as data, its resources only, win32.js dataModule: this library has no resource
+  // section, so there is nothing to map, and the answer says so, not that the file is missing)
+  asked = 'TESTLIB.DLL'; assert.equal(ex.call(p, 1, 0, 2), 0); assert.equal(p.lastError, 1812, 'a bare name found in SYSTEM: no resources to map, not file not found');
 }
 console.log('diskdll: ok');
