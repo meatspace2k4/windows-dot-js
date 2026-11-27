@@ -1194,6 +1194,21 @@ const dosConIn = (id, text) => { if (sysApp && sysApp.worker) sysApp.worker.post
 // (whether there is one), IFSHLP.SYS, the registry's files, COMMAND.COM and WIN.COM; from the shell's start on, C: is
 // the disk's own (takeDrives). Not HIMEM.SYS, which IO.SYS loads when it finds one: the machine's extended memory is
 // its BIOS's XMS (v86.js), which HIMEM.SYS would find already there
+/** the boot volume's copy of IO.SYS saying "Starting <name>..." where it says "Starting Windows 95..." (98 too): its
+ *  message as IO.SYS prints it (INT 21h's $-ended text) in the same 27 bytes, the blank line after it given up for the
+ *  two letters more, so nothing after it in IO.SYS moves. The PC in Discord's frame (discord.js): the Activity's name.
+ *  C:'s IO.SYS is not changed */
+function startingAs(f, name) {
+  if (!f || !f.data) return;
+  const was = 'Starting Windows 9_...\r\n\r\n$', now = `Starting ${name}...\r\n$`, d = f.data;
+  if (now.length > was.length) return;
+  for (let i = 0; i + was.length <= d.length; i++) {
+    let k = 0; while (k < was.length && (was[k] === '_' ? d[i + k] >= 0x30 && d[i + k] <= 0x39 : d[i + k] === was.charCodeAt(k))) k++;
+    if (k < was.length) continue;
+    const out = d.slice(); for (let j = 0; j < was.length; j++) out[i + j] = j < now.length ? now.charCodeAt(j) : 0;
+    f.data = out; return;
+  }
+}
 function dosMachine(program, args, o = {}) {
   const V = window.W95V86, D = window.W95DOS, bytes = s => b64bytes(s);
   if (program) try { program = fs.stat(program).shortPath; } catch (_) { /* (DOS's own name for it: its 8.3 path) */ }
@@ -1213,6 +1228,7 @@ function dosMachine(program, args, o = {}) {
     for (const l of W95FS.decode(fromC('CONFIG.SYS') || new Uint8Array(0)).split(/\r?\n/)) {
       const r = /^\s*(?:DEVICE|DEVICEHIGH|INSTALL|INSTALLHIGH)\s*=\s*(?:\/\S+\s+)*C:\\(\S+)/i.exec(l); if (r) add(r[1]);
     }
+    if (window.W95Discord && window.W95Discord.inside) startingAs(files.find(f => f.name === 'IO.SYS'), 'Windeez Nuts');
   } else {
     const msdos = '[Paths]\r\nWinDir=C:\\WINDOWS\r\nWinBootDir=C:\\WINDOWS\r\nHostWinBootDrv=C\r\n[Options]\r\nBootGUI=0\r\nLogo=0\r\n' + Array(20).fill(';' + 'x'.repeat(68)).join('\r\n') + '\r\n';
     files = [{ name: 'IO.SYS', data: bytes(D.files['IO.SYS']), attr: 7 }, { name: 'MSDOS.SYS', data: W95FS.encode(msdos), attr: 7 },

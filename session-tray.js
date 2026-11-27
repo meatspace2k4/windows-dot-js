@@ -122,9 +122,12 @@
     // the work area's corner by the taskbar's clock (SPI_GETWORKAREA)
     const wa = st.meterRc || (st.meterRc = p.alloc(16)); U(p, 'SystemParametersInfoA', [48, 0, wa, 0]);
     const x = p.r32(wa + 8) - w - 4, y = p.r32(wa + 12) - hh - 4;
-    // WS_EX_TOPMOST | WS_EX_TOOLWINDOW; WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE
-    const h = st.meterHwnd = U(p, 'CreateWindowExA', [0x88, str(p, 'class', 'W95SessionTray'), str(p, 'mtitle', 'Machine Speed'), 0x90C80000, x, y, w, hh, 0, 0, inst, 0]);
+    // WS_EX_TOOLWINDOW, and WS_EX_TOPMOST while pinned (its caption's pin; pinned until it is let go); WS_POPUP |
+    // WS_CAPTION | WS_SYSMENU | WS_VISIBLE
+    if (st.pinned === undefined) st.pinned = true;
+    const h = st.meterHwnd = U(p, 'CreateWindowExA', [st.pinned ? 0x88 : 0x80, str(p, 'class', 'W95SessionTray'), str(p, 'mtitle', 'Machine Speed'), 0x90C80000, x, y, w, hh, 0, 0, inst, 0]);
     if (!h) return;
+    pinPaint(p, h);   // (its first frame was drawn inside CreateWindowEx, before the handle was known here to add the pin)
     const rc = st.meterRc; U(p, 'GetClientRect', [h, rc]); const cw = p.r32(rc + 8);
     const font = G(p, 'GetStockObject', [17]);   // DEFAULT_GUI_FONT
     const child = (cls, text, style, cx, cy, ww, wh, id) => { const c = U(p, 'CreateWindowExA', [0, str(p, `c${id}`, cls), str(p, `t${id}`, text), 0x50000000 | style, cx, cy, ww, wh, h, id, inst, 0]); if (c) U(p, 'SendMessageA', [c, 0x30, font, 0]); return c; };
@@ -166,6 +169,39 @@
     U(p, 'EndPaint', [h, ps]);
     void ch;
   }
+  // ---- the Turbo window's pin: a caption button of the close button's size and look (DrawFrameControl's push button,
+  // pushed while pinned), left of it, with a pushpin drawn on it: lying down when the window is free, upright when it is
+  // pinned on top (as Windows' own pushpins show the two)
+  const PIN_HIT = 19;   // (HTOBJECT: a hit-test code no default handling acts on)
+  const PIN_FREE = ['.........', '...#.....', '...##....', '...#####.', '####....#', '...#####.', '...##....', '...#.....', '.........'];
+  const PIN_UP = ['..#####..', '..#...#..', '..#...#..', '..#...#..', '.#######.', '....#....', '....#....', '....#....', '.........'];
+  /** the pin's rectangle in the window's own coordinates: the close button's place (USER's small caption: its button
+   *  SM_CXSMSIZE - 2 wide, SM_CYSMSIZE - 4 high, 2 in from the caption's right and top), one button further left */
+  function pinRect(p, h) {
+    const wr = st.pinWr || (st.pinWr = p.alloc(16)); U(p, 'GetWindowRect', [h, wr]);
+    const w = p.r32(wr + 8) - p.r32(wr), fx = U(p, 'GetSystemMetrics', [7]), fy = U(p, 'GetSystemMetrics', [8]);   // SM_CXDLGFRAME, SM_CYDLGFRAME
+    const bw = U(p, 'GetSystemMetrics', [52]) - 2, bh = U(p, 'GetSystemMetrics', [53]) - 4;                     // SM_CXSMSIZE, SM_CYSMSIZE
+    const right = w - fx - 2 - bw - 2, top = fy + 2;
+    return { x: right - bw, y: top, w: bw, h: bh };
+  }
+  function pinAt(p, h, lp) {
+    const wr = st.pinWr || (st.pinWr = p.alloc(16)); U(p, 'GetWindowRect', [h, wr]);
+    const x = ((lp << 16) >> 16) - p.r32(wr), y = (lp >> 16) - p.r32(wr + 4), r = pinRect(p, h);
+    return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
+  }
+  function pinPaint(p, h) {
+    const r = pinRect(p, h), rc = st.pinRc || (st.pinRc = p.alloc(16)), dc = U(p, 'GetWindowDC', [h]); if (!dc) return;
+    p.w32(rc, r.x); p.w32(rc + 4, r.y); p.w32(rc + 8, r.x + r.w); p.w32(rc + 12, r.y + r.h);
+    U(p, 'DrawFrameControl', [dc, rc, 4, 0x10 | (st.pinned ? 0x200 : 0)]);   // DFC_BUTTON, DFCS_BUTTONPUSH (| DFCS_PUSHED)
+    const glyph = st.pinned ? PIN_UP : PIN_FREE, ink = U(p, 'GetSysColor', [18]), ox = r.x + ((r.w - 9) >> 1) + (st.pinned ? 1 : 0), oy = r.y + ((r.h - 9) >> 1) + (st.pinned ? 1 : 0);   // COLOR_BTNTEXT; pushed: one down and right
+    glyph.forEach((row, y) => { for (let x = 0; x < 9; x++) if (row[x] === '#') G(p, 'SetPixel', [dc, ox + x, oy + y, ink]); });
+    U(p, 'ReleaseDC', [h, dc]);
+  }
+  function pinToggle(p, h) {
+    st.pinned = !st.pinned;
+    U(p, 'SetWindowPos', [h, st.pinned ? -1 : -2, 0, 0, 0, 0, 0x13]);   // HWND_TOPMOST / HWND_NOTOPMOST; SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE
+    pinPaint(p, h);
+  }
   function meterTick(p, h) {
     const s = st.meterSamples || (st.meterSamples = []), t = meterSample(); s.push(t);
     while (s.length > 1 && t[0] - s[0][0] > METER_WINDOW) s.shift();
@@ -197,6 +233,12 @@
   def('SESSTRAY', 'Handle', 5, function (h, msg, wp, lp, res) {
     const p = this, done = (v = 0) => { p.w32(res, v); return 1; };
     if (st.meterHwnd && h === st.meterHwnd) {   // the Turbo window: painted here, its figures every second; closed, it is hidden
+      // its pin, beside the close button: the caption's frame drawn by USER first, then the pin over it; a press on it
+      // pins the window on top of the others (WS_EX_TOPMOST) or lets it go
+      if (msg === 0x85 || msg === 0x86) { const r = U(p, 'DefWindowProcA', [h, msg, wp, lp]); pinPaint(p, h); return done(r); }   // WM_NCPAINT, WM_NCACTIVATE
+      if (msg === 0x84) { const r = U(p, 'DefWindowProcA', [h, msg, wp, lp]); return done(pinAt(p, h, lp) ? PIN_HIT : r); }    // WM_NCHITTEST
+      if ((msg === 0xa1 || msg === 0xa3) && wp === PIN_HIT) { pinToggle(p, h); return done(); }                                // WM_NCLBUTTONDOWN, DBLCLK
+      if (msg === 0xa0 && wp === PIN_HIT) return done();                                                                        // WM_NCMOUSEMOVE
       // (its controls paint themselves; the window's face, and the statics' background, are the 3D face colour)
       if (msg === 0x14) { const rc = st.meterRc; U(p, 'GetClientRect', [h, rc]); U(p, 'FillRect', [wp, rc, 16]); return done(1); }   // WM_ERASEBKGND: COLOR_BTNFACE + 1
       if (msg === 0x138) { G(p, 'SetBkColor', [wp, U(p, 'GetSysColor', [15])]); return done(U(p, 'GetSysColorBrush', [15])); }   // WM_CTLCOLORSTATIC
