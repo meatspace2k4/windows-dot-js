@@ -170,10 +170,11 @@
     void ch;
   }
   // ---- the Turbo window's pin: a caption button of the close button's size and look (DrawFrameControl's push button,
-  // pushed while pinned), left of it, with a pushpin drawn on it: lying down when the window is free, upright when it is
+  // pushed while pinned), left of it, with a pushpin drawn on it: tilted when the window is free, upright when it is
   // pinned on top (as Windows' own pushpins show the two)
   const PIN_HIT = 19;   // (HTOBJECT: a hit-test code no default handling acts on)
-  const PIN_FREE = ['.........', '...#.....', '...##....', '...#####.', '####....#', '...#####.', '...##....', '...#.....', '.........'];
+  // (free: the pin at 45 degrees, its point to the south-west, its head up and right past the crossbar)
+  const PIN_FREE = ['......#..', '......##.', '.....#.##', '..#.#.#..', '...#.#...', '....#....', '..#..#...', '.#.......', '#........'];
   const PIN_UP = ['..#####..', '..#...#..', '..#...#..', '..#...#..', '.#######.', '....#....', '....#....', '....#....', '.........'];
   /** the pin's rectangle in the window's own coordinates: the close button's place (USER's small caption: its button
    *  SM_CXSMSIZE - 2 wide, SM_CYSMSIZE - 4 high, 2 in from the caption's right and top), one button further left */
