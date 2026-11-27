@@ -1993,7 +1993,15 @@ class Machine {
       // the machine run ahead of the wall: steps back to back, each a scaled period of the machine's time (x times the
       // 16 ms); 1 is the pace of a person's machine again. The clock as it reads now
       case 'speedScale': return { scale: this.vclock.scale || 1, now: this.vclock.now };   // (the scale 'speed' set, read alone: 'speed' sets it)
-      case 'speed': { const x = Math.max(1, Number(args[0]) || 1); this.fast = x > 1; this.vclock.scale = x; if (this.fast) this.kick(); return { scale: x, now: this.vclock.now }; }
+      // (x above 1: the machine's time x times the wall's, run back to back. Below 1: a processor x as fast, its time
+      // still the wall's: each quantum of blocks counts 1/x of the clock (perTick), so the pace that keeps the
+      // machine's time to the wall's lets x of the blocks run. A program whose loop has no timing of its own, drawn
+      // as fast as the processor goes (Solitaire's bouncing cards), runs as it did on a slower PC)
+      case 'speed': {
+        const x = Math.min(64, Math.max(0.01, Number(args[0]) || 1)), up = Math.max(1, x);
+        this.fast = up > 1; this.vclock.scale = up; this.vclock.perTick = 0.25 / Math.min(1, x); if (this.fast) this.kick();
+        return { scale: up, cpu: Math.min(1, x), now: this.vclock.now };
+      }
       case 'now': return this.vclock.now;
       case 'sysId': return this.sysId || '';   // (the system this machine booted, by its USER.EXE: an arrival's check, braid-page.js arrive)
       // the machine run to a time of its own clock, fast (x the pace, 8), then at a person's pace again: answers when

@@ -3,10 +3,12 @@
 // only while one of them runs: a program by its file's name, .EXE or not (a 16-bit task by its module's, a 32-bit
 // process by its file's), the machine at a person's pace again once none does (bench/setup98.mjs names Windows 98
 // Setup's and RUNONCE's). The address's mods are loaded into each system's machine after it (Setup's restart), so the
-// list holds across it. Ended (the parameter taken out, cmd 'modOff'), the machine runs at a person's pace again
+// list holds across it. Ended (the parameter taken out, cmd 'modOff'), the machine runs at a person's pace again.
+// An x below 1 is a slower processor while they run (worker.js 'speed'): the machine's time still the wall's, x of the
+// code run in it, as a program whose own loop has no timing ran on a PC of its day (#mod=turbo:0.1@SOL, Solitaire)
 (() => {
   const arg = String(self.W95ModArg == null ? '' : self.W95ModArg), at = arg.indexOf('@');
-  const x = Math.max(1, Number(at < 0 ? arg : arg.slice(0, at)) || 1), W = self.W95Win32, p = machine.proc;
+  const x = Math.min(64, Math.max(0.01, Number(at < 0 ? arg : arg.slice(0, at)) || 1)), W = self.W95Win32, p = machine.proc;
   const names = new Set((at < 0 ? '' : arg.slice(at + 1)).split(',').map(s => s.trim().toUpperCase().replace(/\.EXE$/, '')).filter(Boolean));
   const offs = self.W95ModOff || (self.W95ModOff = {});
   if (offs['mod-turbo.js']) offs['mod-turbo.js']();   // (loaded again: the last one's watch ended first)
