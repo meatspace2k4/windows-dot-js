@@ -100,6 +100,18 @@
     G(p, 'DeleteObject', [hmask]); G(p, 'DeleteObject', [color]); for (const a of [m, bmi, bits, info]) p.free(a);
     return h || U(p, 'LoadIconA', [0, 32512]);
   }
+  /** an icon of Windows' own, small (16 by 16), from a file in the Windows folder, as a program takes one (SHELL32's
+   *  ExtractIconExA): 0 when there is none */
+  function nativeIcon(p, file, index) {
+    if (!p.byName.get('SHELL32')) K32(p, 'LoadLibraryA', [str(p, 'sh32', 'SHELL32.DLL')]);
+    const sh = p.byName.get('SHELL32'), ex = sh && sh.exports.get('ExtractIconExA'); if (!ex) return 0;
+    const win = p.alloc(260), out = p.alloc(4); p.w32(out, 0);
+    try {
+      K32(p, 'GetWindowsDirectoryA', [win, 260]);
+      p.call(ex, [str(p, 'nipath', `${p.readA(win)}\\${file}`), index, 0, out, 1]);
+      return p.r32(out);
+    } finally { p.free(win); p.free(out); }
+  }
   const meterSample = () => {
     const m = typeof machine !== 'undefined' && machine, p = m && m.proc, sw = p && p.switchMs;
     return [performance.now(), sw ? sw.run : 0, m && m.vclock ? m.vclock.now : 0];
@@ -226,7 +238,9 @@
     // (the shell's TaskbarCreated: a new taskbar (Explorer started again) has no icons, and each program adds its own back)
     st.taskbarCreated = U(p, 'RegisterWindowMessageA', [str(p, 'tbc', 'TaskbarCreated')]);
     sync(p);
-    st.braid = { user: 'Braid: the session\'s line', uid: BRAID_UID, icon: icon(p, [128, 0, 128], HOURGLASS) };
+    // (Braid's icon: Explorer's signpost, Windows' own (EXPLORER.EXE's sixth, small); the hourglass drawn here only
+    // where Explorer's file has none)
+    st.braid = { user: 'Braid: the session\'s line', uid: BRAID_UID, icon: nativeIcon(p, 'EXPLORER.EXE', 5) || icon(p, [128, 0, 128], HOURGLASS) };
     U(p, 'PostMessageA', [h, WM.NOTIFY, NIM.ADD, nid(p, st.braid)]);
     st.meter = { user: 'Turbo: the machine\'s speed', uid: METER_UID, icon: icon24(p, SYSTEM16) };
     U(p, 'PostMessageA', [h, WM.NOTIFY, NIM.ADD, nid(p, st.meter)]);
