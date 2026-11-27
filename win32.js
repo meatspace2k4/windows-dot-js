@@ -1824,19 +1824,21 @@ const regHive = which => {
   const blocks = []; let cur = null;
   for (let i = 1; i < keys.length; i++) {
     const r = recs[i];
-    if (!cur || (cur.recs.length && cur.used + r.size > 0x1000 - 0x20 - 0x10)) { cur = { recs: [], used: 0, ids: 0 }; blocks.push(cur); }
+    if (!cur || (cur.recs.length && cur.used + r.size > 0x1000 - 0x20 - 0x14)) { cur = { recs: [], used: 0, ids: 0 }; blocks.push(cur); }
     r.block = blocks.length - 1; r.id = cur.ids++; cur.recs.push(r); cur.used += r.size;
   }
-  const rgknSize = (0x20 + keys.length * 0x1c + 0xfff) & ~0xfff;
-  const blockSize = b => (b.used + 0x20 + 0x10 + 0xfff) & ~0xfff;
+  // (as ScanReg reads RGKN: 291 entries in its first 2000h, then whole entries in each 1000h page; an RGDB block ends with 14h free)
+  const slot = i => (i < 291 ? 0x20 + i * 0x1c : 0x2000 + 0x1000 * Math.floor((i - 291) / 146) + 0x1c * ((i - 291) % 146));
+  const rgknSize = (slot(keys.length) + 0x1c + 0xfff) & ~0xfff;
+  const blockSize = b => (b.used + 0x20 + 0x14 + 0xfff) & ~0xfff;
   const total = 0x20 + rgknSize + blocks.reduce((s, b) => s + blockSize(b), 0);
   const out = new Uint8Array(total), dv = new DataView(out.buffer), tag = (o, s) => out.set(enc(s), o);
   tag(0, 'CREG'); dv.setUint32(4, 0x10000, true); dv.setUint32(8, 0x20 + rgknSize, true); dv.setUint16(0x10, blocks.length, true); dv.setUint16(0x12, 0x21, true); dv.setUint16(0x16, 1, true);
   const K = 0x20;
   tag(K, 'RGKN'); dv.setUint32(K + 4, rgknSize, true); dv.setUint32(K + 8, 0x20, true); dv.setUint32(K + 0x10, 8, true);
   // (the block's space past its entries is one free entry, the head of its free list: 80000000h, its size, the next (none))
-  { const end = 0x20 + keys.length * 0x1c, left = rgknSize - end; dv.setUint32(K + 0x0c, left >= 0x1c ? end : 0xffffffff, true); if (left >= 0x1c) { dv.setUint32(K + end, 0x80000000, true); dv.setUint32(K + end + 4, left, true); dv.setUint32(K + end + 8, 0xffffffff, true); } }
-  const off = n => (n ? 0x20 + n.i * 0x1c : 0xffffffff);
+  { const end = slot(keys.length), left = rgknSize - end; dv.setUint32(K + 0x0c, left >= 0x1c ? end : 0xffffffff, true); if (left >= 0x1c) { dv.setUint32(K + end, 0x80000000, true); dv.setUint32(K + end + 4, left, true); dv.setUint32(K + end + 8, 0xffffffff, true); } }
+  const off = n => (n ? slot(n.i) : 0xffffffff);
   for (const n of keys) {
     const e = K + off(n), kids = [...n.kids.values()], sib = n.parent ? [...n.parent.kids.values()] : [], si = sib.indexOf(n);
     let hash = 0; for (const c of (n.orig || n.name).toUpperCase()) hash += c.charCodeAt(0) & 0xff;
