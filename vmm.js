@@ -430,7 +430,8 @@ P.vmClipboard = function (m) {
   const ax = m.r('ax'), dx = m.r('dx'), es = m.cpu.es.value & 0xffff, bx = m.r('bx'), big = ((m.r('si') << 16) | m.r('cx')) >>> 0;
   const ret = v => { m.w('ax', v); return true; };
   if (ax === 0x1700) return ret(0x0a01);
-  if (this.depth || this.thread16 || this.win16Held) return 'wait';
+  if (this.depth || this.thread16 || this.win16Held) { m.askedUser = true; return 'wait'; }
+  m.askedUser = false;
   const u = (ord, a = []) => this.user16(ord, a).ax;
   try {
     switch (ax) {
@@ -488,7 +489,7 @@ P.vmDisplayEvent = function (vm) {
  *  the exit code from the VM's DOS), then the VM closed, as Windows closes one: VM_Terminate in its context,
  *  VM_Not_Executeable (EDX VNE_Crashed when it stopped), Destroy_VM */
 P.vmEnd = function (vm, crashed = false) {
-  vm.started = false;
+  vm.started = false; if (vm.m) vm.m.askedUser = false;
   // (what its screen last showed, kept for the diagnostics: worker.js probe)
   if (vm.m) { const m = vm.m; vm.lastInts = m.ilog; vm.lastScreen = [...Array(25)].map((_, r) => [...Array(80)].map((_, c) => String.fromCharCode(m.m8(0xb8000 + (r * 80 + c) * 2) || 32)).join('').trimEnd()).filter(Boolean); }
   const cur = this.curVM; this.curVM = vm;

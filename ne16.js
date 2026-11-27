@@ -5016,9 +5016,11 @@ const waitTop = (p, ms) => {
  *  went round W98SETUP, MSGSRV32, MMTASK, SETUP, Explorer's and the others' waits each time, and the machine's time ran
  *  at a twentieth of the wall's */
 /** whether a thread other than `self` would run in the next pass of threads16 (the pass's own tests; one kept out only
- *  by the Win16Lock counts, as a yield lets the lock go), or input waits for the host */
+ *  by the Win16Lock counts, as a yield lets the lock go), or input waits for the host, or a VM waits for USER (its clipboard
+ *  call: ScanReg's report to Setup, never delivered while a polling loop kept the lock) */
 P.othersReady = function (self) {
   const h = this.host; if (h && ((h.keyq && h.keyq.length) || (h.mouseq && h.mouseq.length))) return true;
+  if (this.vms && this.vms.some(v => v.m && v.m.askedUser)) return true;
   if (!this.threadsById) return false;
   for (const t of this.threadsById.values()) {
     if (t === self || t.id === MAIN_TID || t.state === 'running' || t.blocked || !t.state || t.state === 'done' || t.state === 'hung' || t.state === 'suspended' || (t.state === 'waiting' && t.wait && !t.wait.set)) continue;

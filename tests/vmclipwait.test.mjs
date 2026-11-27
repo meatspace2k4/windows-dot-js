@@ -31,6 +31,9 @@ const sys = (busy, calls) => ({ depth: 0, thread16: null, win16Held: busy ? { wh
 { const calls = [], s = sys(false, calls), m = machine(0x1701, s); m.cpu.eip.value = 0x1234;
   assert.equal(HOOK[0x2f].call(m, 0x1234), true);
   assert.deepEqual(calls, [137], 'OpenClipboard'); assert.equal(m.regs.ax, 1); assert.equal(m.halted, false); assert.equal(m.cpu.eip.value, 0x1234); }
+// a VM waiting for USER says so (a yield then lets the Win16Lock go for it: ne16.js othersReady), and no longer once served
+{ const s = sys(true, []), m = machine(0x1701, s); HOOK[0x2f].call(m, 0x1234); assert.equal(m.askedUser, true, 'waiting');
+  s.win16Held = null; m.regs.ax = 0x1701; HOOK[0x2f].call(m, 0x1234); assert.equal(m.askedUser, false, 'served'); }
 // the version (1700h) answers whatever USER is doing
 { const m = machine(0x1700, sys(true, [])); HOOK[0x2f].call(m, 0x1234); assert.equal(m.regs.ax, 0x0a01); assert.equal(m.halted, false); }
 console.log('vmclipwait: ok');
