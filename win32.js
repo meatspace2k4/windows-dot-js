@@ -312,9 +312,14 @@ class Process {
     const had = this.byName.get(name), path = String(pc.path || '');
     if (!had || !had.meta || !had.meta.path || !this.fs || API[name] || STAND_IN.has(name) || !/\\/.test(path) || (pc.ownLoading && pc.ownLoading.has(name))) return null;
     const none = pc.notOwn || (pc.notOwn = new Map()); if (none.get(name) === had) return null;   // (asked once per module loaded)
-    const dir = path.replace(/\\[^\\]*$/, ''), file = dir + '\\' + (/\./.test(name) ? name : name + '.DLL'), no = () => { none.set(name, had); return null; };
-    if (file.toUpperCase() === String(had.meta.path).toUpperCase()) return no();
-    let f; try { f = this.fs.readFile(file); } catch (_) { return no(); }
+    // (the file this process's loader finds first: its program's folder, SYSTEM, the Windows folder. Another file than
+    // the one loaded, or the same path written over since (IE4WZD copies its ADVPACK.DLL over SYSTEM's while the old
+    // one is loaded), is this process's own, as a new process maps the file as it is now: given the old module,
+    // LANGCHK.EXE called ADVPACK!GetVersionFromFile, which it lacks, and faulted)
+    const leaf = /\./.test(name) ? name : name + '.DLL', no = () => { none.set(name, had); return null; };
+    let f = null, dir = null;
+    for (const d of [path.replace(/\\[^\\]*$/, ''), 'C:\\WINDOWS\\SYSTEM', 'C:\\WINDOWS']) { try { f = this.fs.readFile(d + '\\' + leaf); dir = d; break; } catch (_) { /* not there */ } }
+    if (!f) return no();
     const cur = this.dlls.get(name); if (!cur || !cur.file || sameBytes(f, cur.file)) return no();
     const was = this.loadDirs; let m = null;
     (pc.ownLoading || (pc.ownLoading = new Set())).add(name);

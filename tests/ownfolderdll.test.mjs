@@ -28,4 +28,15 @@ assert.equal(p.loadDll('ADVPACK'), sys, 'every other process keeps the one loade
 assert.equal(p.byName.get('ADVPACK'), sys);
 p.thread16 = { pc: { pid: 3, path: 'C:\\WINDOWS\\EXPLORER.EXE' } };
 assert.equal(p.loadDll('ADVPACK'), sys, 'a folder without one: the loaded one');
+// (SYSTEM's file written over while the old one is loaded, as IE4WZD copies its ADVPACK.DLL there: a process started
+// after finds the new file and maps it as its own; LANGCHK.EXE, given the old module, called its missing
+// GetVersionFromFile and faulted)
+files[SYS.toUpperCase()] = new Uint8Array([9, 9, 9, 9, 9]);
+const langchk = { pid: 4, path: 'C:\\WINDOWS\\MSDOWNLD.TMP\\ASE001.TMP\\LANGCHK.EXE' };
+p.thread16 = { pc: langchk };
+const fresh = p.loadDll('ADVPACK');
+assert.notEqual(fresh, sys, 'the file as it is now, not the module loaded before it was written over');
+assert.deepEqual([...fresh.file], [9, 9, 9, 9, 9]);
+p.thread16 = { pc: wextract };
+assert.equal(p.loadDll('ADVPACK'), sys, 'the process that had the old one keeps it');
 console.log('ownfolderdll: ok');
