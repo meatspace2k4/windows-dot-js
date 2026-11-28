@@ -32,6 +32,10 @@ assert.equal(had.seq, 1, 'one that came before the read');
 const later = script.next('window.open', null, 1000, 3);
 emit('window.open', { title: 'Paint' });
 assert.equal((await later).title, 'Paint');
+// (an event carrying a `seq` of its own (debug.halt's hit number was one) keeps the ring's number: 15793 stood in the
+// ring at 954, and a reader after 954 missed what followed)
+emit('debug.halt', { seq: 15793, place: 'USER+c75e' });
+{ const e = script.events(0, 'debug').events[0]; assert.equal(e.seq, script.events(0).seq, 'the ring\'s number'); }
 // (the ring's cap: the oldest go, and a read from before them says how many it lost)
 for (let i = 0; i < 4100; i++) emit('tick');
 const r = script.events(0); assert.ok(r.lost > 0 && r.events.length === 4000, 'capped, the loss said');

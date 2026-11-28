@@ -5813,7 +5813,7 @@ Promise.all(ready).then(() => { resize(); kbd.focus(); dirty(); });
 // stopped, and the machine stayed on its DOS boot text)
 function emit(type, data = {}) {
   const ev = { type, ...data, t: Date.now() };
-  { const r = window.W95EventRing || (window.W95EventRing = { seq: 0, list: [], max: 4000 }); r.list.push({ seq: ++r.seq, ...ev }); if (r.list.length > r.max) r.list.splice(0, r.list.length - r.max); }
+  { const r = window.W95EventRing || (window.W95EventRing = { seq: 0, list: [], max: 4000 }); r.list.push({ ...ev, seq: ++r.seq });   // (the ring's number last: an event's own `seq` never stands for it) if (r.list.length > r.max) r.list.splice(0, r.list.length - r.max); }
   if (!/^(sync|fs)\./.test(type)) {
     const j = window.W95Journal || (window.W95Journal = []), keys = ['type', 'title', 'modal', 'screen', 'kind', 'text', 'path', 'code', 'why', 'machine', 'menus'];
     j.push(Object.fromEntries(Object.entries(ev).filter(([k]) => keys.includes(k)))); if (j.length > 400) j.shift();

@@ -839,7 +839,7 @@ class Machine {
     if (!this.alive) return;
     // (halted by a breakpoint, dynjs.js 'halt': no step until the debugger's resume, which steps it again. The
     // machine's clock moves only in steps, so its time, timers and sound stop with it; the hit was recorded exactly)
-    if (this.proc && this.proc.dbgHalt) { if (!this.haltSaid) { this.haltSaid = true; post({ t: 'emit', ev: 'debug.halt', data: { ...this.proc.dbgHalt } }); } return; }
+    if (this.proc && this.proc.dbgHalt) { if (!this.haltSaid) { this.haltSaid = true; { const { seq, ...h } = this.proc.dbgHalt; post({ t: 'emit', ev: 'debug.halt', data: { ...h, hit: seq } }); }   // (the hit's number as `hit`: an event's `seq` is the page's ring's) } return; }
     this.haltSaid = false;
     const p = this.proc, t0 = performance.now(); this.stepClock0 = this.vclock.now;
     try { this.poll(); } catch (e) { if (!(e instanceof W.FaultError)) throw e; }   // (recorded by r0Fault, answered below)
