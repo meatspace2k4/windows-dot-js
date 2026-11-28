@@ -1,2 +1,3 @@
-The running machine is driven with the `devtools` MCP server's `shell_*` tools; SCRIPTING.md's first chapter is how a
-session with it goes.
+Before any tool call that touches the running machine, read SCRIPTING.md: its rules are how the machine is worked
+(the `devtools` MCP server's `shell_*` tools, one action and one answer at a time). Open a file under docs/scripting/
+only when SCRIPTING.md's table says it applies.
