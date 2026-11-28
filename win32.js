@@ -2509,10 +2509,16 @@ def('KERNEL32', 'GetPrivateProfileStringA', 6, function (sec, key, dflt, buf, n,
     if (!n) return 0;
     const ini = iniRead(this.fs, this.readA(file)), s = sec && ini.get(this.readA(sec).toLowerCase());
     const names = sec ? (s ? [...s.keys.values()].map(k => k.name) : []) : [...ini.values()].map(v => v.name);
-    let o = 0;
-    for (const nm of names) { if (o + nm.length + 2 > n) break; this.writeA(buf + o, nm, nm.length + 1); o += nm.length + 1; }
-    this.u8[buf + o] = 0; if (!o && n > 1) this.u8[buf + 1] = 0;
-    return o;
+    // (a list longer than the buffer: as much as fits, the last name cut, two NULs, and nSize - 2, as Windows answers.
+    // Stopped at the first name that did not fit, it answered 0: IE4WZD asks with a small buffer whether [Options.WIN]
+    // has keys, took it for empty, took JobName from [Options] (Job1, no such job), and IE 4's setup said the network
+    // was busy: InitializeJob's E_OUTOFMEMORY, INSENG copying the job's missing CabName)
+    const all = names.map(nm => nm + '\0').join('');
+    if (all.length + 1 <= n) { for (let i = 0; i < all.length; i++) this.u8[buf + i] = all.charCodeAt(i) & 0xff; this.u8[buf + all.length] = 0; if (!all.length && n > 1) this.u8[buf + 1] = 0; return all.length; }
+    if (n < 2) { this.u8[buf] = 0; return 0; }
+    for (let i = 0; i < n - 2; i++) this.u8[buf + i] = all.charCodeAt(i) & 0xff;
+    this.u8[buf + n - 2] = 0; this.u8[buf + n - 1] = 0;
+    return n - 2;
   }
   const v = iniGet(this.fs, this.readA(file), this.readA(sec), this.readA(key));
   return this.writeA(buf, v === null ? (this.readA(dflt) || '') : v.replace(/^(["'])([^]*)\1$/, '$2'), n);   // (one pair of quotes taken off, as Windows does)
