@@ -4485,6 +4485,9 @@ function startSystem() {
     if (!(await made)) { bootLogoEnd(); pcShows = false; return null; }
     console.info(`[system] its machine asked for in ${Math.round(t1 - t0)} ms, started ${Math.round(performance.now() - t1)} ms after`);
     sysApp = a;
+    // (its display driver has the screen now, as Windows 95's takes it from IO.SYS's logo before MSGSRV32 runs: the
+    // logo goes. Kept until the machine had a window, it was still up as MSGSRV32 played SystemStart, before the shell)
+    bootLogoEnd();
     emit('system.start', {});   // (the address's settings are made in it, speed and mods: urlSettings)
     return a;
   })().finally(() => { sysStarting = null; }));
