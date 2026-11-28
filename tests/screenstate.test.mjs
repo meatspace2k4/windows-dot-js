@@ -8,6 +8,6 @@ const i = w.indexOf('  screen() {'), line = w.slice(i, w.indexOf('\n', i));
 assert.match(line, /return \{ width: W, height: H, taskbar: barTop\(\), screen \}/, 'screen() answers the state');
 assert.match(w, /if \(now\.screen !== was\.screen\) emit\('screen', \{ screen: now\.screen \}\)/, 'the event carries the same');
 assert.match(w, /^let screen = 'desktop'/m);
-const doc = readFileSync(new URL('../docs/scripting/SCREEN.md', import.meta.url), 'utf8');
+const doc = readFileSync(new URL('../docs/driving-the-machine/SCREEN.md', import.meta.url), 'utf8');
 assert.match(doc, /`screen\(\)` \| `\{ width, height, taskbar, screen \}`/);
 console.log('screenstate: ok');

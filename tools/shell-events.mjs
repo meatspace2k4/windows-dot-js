@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// The shell's events as they happen, a line each (docs/scripting/EVENTS.md: the __w95event binding), for a watch that
+// The shell's events as they happen, a line each (docs/driving-the-machine/EVENTS.md: the __w95event binding), for a watch that
 // reports while something long runs (Setup, a boot): faults, failures on the page, screens, windows opened, programs
 // that failed, braid's travels and anchors.
 //

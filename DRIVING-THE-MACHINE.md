@@ -25,9 +25,9 @@ it at its remote debugging address, 127.0.0.1:9334; for a Chrome started with `-
 
 | Read | When |
 | --- | --- |
-| [docs/scripting/SCREEN.md](docs/scripting/SCREEN.md) | what a report holds; elements, queries, keys; windows, menus, files, CD; a worked session |
-| [docs/scripting/EVENTS.md](docs/scripting/EVENTS.md) | watching a long run; waiting for an event no action causes |
-| [docs/scripting/DEBUGGING.md](docs/scripting/DEBUGGING.md) | a fault or an error: the log, `shell_cmd`, the debugger, static tools |
-| [docs/scripting/BRAID.md](docs/scripting/BRAID.md) | marking, travelling, anchoring, the machine's speed |
-| [docs/scripting/INSIDE-WINDOWS.md](docs/scripting/INSIDE-WINDOWS.md) | Claude's tools in Windows, reloading a script, MS-DOS machines |
-| [docs/scripting/SHARED.md](docs/scripting/SHARED.md) | shared sessions, drawing, fuzzing over tabs |
+| [docs/driving-the-machine/SCREEN.md](docs/driving-the-machine/SCREEN.md) | what a report holds; elements, queries, keys; windows, menus, files, CD; a worked session |
+| [docs/driving-the-machine/EVENTS.md](docs/driving-the-machine/EVENTS.md) | watching a long run; waiting for an event no action causes |
+| [docs/driving-the-machine/DEBUGGING.md](docs/driving-the-machine/DEBUGGING.md) | a fault or an error: the log, `shell_cmd`, the debugger, static tools |
+| [docs/driving-the-machine/BRAID.md](docs/driving-the-machine/BRAID.md) | marking, travelling, anchoring, the machine's speed |
+| [docs/driving-the-machine/INSIDE-WINDOWS.md](docs/driving-the-machine/INSIDE-WINDOWS.md) | Claude's tools in Windows, reloading a script, MS-DOS machines |
+| [docs/driving-the-machine/SHARED.md](docs/driving-the-machine/SHARED.md) | shared sessions, drawing, fuzzing over tabs |

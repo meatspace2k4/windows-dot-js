@@ -4,7 +4,7 @@
 // anchored on this computer; the lint over the line; the mods beside it; and, in a shared session, the line shared
 // with the other people, who mark and travel together (their marks and travels are intents of the session, made on
 // every machine at the same machine time). win95.js makes it once (W95BraidPage(ui)) with what of the shell it needs;
-// the API is win95.braid (docs/scripting/BRAID.md), the Braid window (Run > braid) and CLAUDE.EXE's Braid tool use it.
+// the API is win95.braid (docs/driving-the-machine/BRAID.md), the Braid window (Run > braid) and CLAUDE.EXE's Braid tool use it.
 //
 // A moment is taken of every machine running (each worker's cmd 'mark': its memory, registers and objects, at a step),
 // then of the page's file system (the volumes' trees, as a graph of its own) and the page's registry. Travel to it puts

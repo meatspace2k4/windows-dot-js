@@ -211,7 +211,7 @@ async function guestWhere() {
   if (f && f.functionName === 'w95ApiEntry') { const r = await cmd(s, 'Debugger.evaluateOnCallFrame', { callFrameId: f.callFrameId, expression: 'JSON.stringify({ call, args: args.map(a => a.toString(16)), from, thread })', returnByValue: true }); st.api = JSON.parse(r.result.value); }
   return { paused: !!s.paused, ...st };
 }
-// ---------------------------------------------------------------- the shell: SCRIPTING.md's win95 API, called as it is
+// ---------------------------------------------------------------- the shell: DRIVING-THE-MACHINE.md's win95 API, called as it is
 // An action (click, key, type, run) answers its outcome (win95.outcome): the events it caused, the screen once the
 // machines have taken it (win95.report), or the error it ended on; the answer is the state to act on next. A query's
 // strings in /slashes/ are regular expressions.

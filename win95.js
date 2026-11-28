@@ -6104,7 +6104,7 @@ function osShellUp(list) {
 
 // ---------------------------------------------------------------- scripting
 // Drives the shell through the same input paths a person uses: pointer events on the screen canvas in screen
-// pixels, keys through the shell's key handler. Documented in SCRIPTING.md.
+// pixels, keys through the shell's key handler. Documented in DRIVING-THE-MACHINE.md.
 /** the pointer input sent so far fed to USER by each machine it went to (its frames say so), then drawn by the page */
 async function inputDrawn() {
   for (const a of [sysApp, ...nativeApps]) for (let n = 0; a && a.alive && !a.inputFed() && n < 600; n++) await a.nextFrame();
@@ -6388,7 +6388,7 @@ const script = {
   async elementsNow(q) { return filterEls(await elementsNow(), q); },
   find: q => findEl(q),
   windows() { return windows.map(winInfo); },
-  // what is on the screen and what went wrong, in one call (docs/scripting/SCREEN.md): the screen, each window
+  // what is on the screen and what went wrong, in one call (docs/driving-the-machine/SCREEN.md): the screen, each window
   // with its controls' text as its machine has them now, the line's last n faults and the fault log's last entry
   async report(n = 3) {
     const els = await elementsNow(), hx = v => (typeof v === 'number' ? (v >>> 0).toString(16) : v);
