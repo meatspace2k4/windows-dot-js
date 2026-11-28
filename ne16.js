@@ -5689,7 +5689,10 @@ P.threads16 = function (nested = false, only = null) {
   let order = all; if (bounded && this.t16Next !== undefined) { const i = all.findIndex(x => x.id === this.t16Next); if (i > 0) order = [...all.slice(i), ...all.slice(0, i)]; }
   let ranHere = 0; if (bounded) this.t16Next = undefined;
   try { for (const t of order) {   // the threads there are as the pass starts: one created in it starts in the next
-    if (bounded && ranHere && this.now() - passT0 >= PASS_MS) { this.t16Next = t.id; break; }
+    // (past it, only the threads whose slice ran out (preempted) wait for the next pass; a thread its wait or yield has
+    // let go runs in this one, as Windows boosts a thread its wait wakes. Holding those back too, MMTASK's wave
+    // callbacks came a pass late and SystemStart stuttered)
+    if (bounded && ranHere && t.preempted && this.now() - passT0 >= PASS_MS) { if (this.t16Next === undefined) this.t16Next = t.id; continue; }
     if (t === caller || t.state === 'running' || t.blocked || (t.id === MAIN_TID && !caller) || (t.id === MAIN_TID && caller) || !t.state || t.state === 'done' || t.state === 'hung' || t.state === 'suspended' || (t.state === 'waiting' && t.wait && !t.wait.set)) continue;   // a thread that yielded with no event to wait for (in WaitEvent) runs again
     if (this.win16Held && this.win16Held.who !== t && !(caller && this.win16Held.who === caller)) continue;   // another thread holds the Win16Lock (a caller that yields hands its own over)
     if (!only && this.waitBlocked(t)) continue;   // (it would only wait again)
