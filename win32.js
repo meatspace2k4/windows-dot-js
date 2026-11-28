@@ -2403,6 +2403,10 @@ function memFree(h) {
 function memReAlloc(h, n, f) {
   const m = gmov(this, h);
   if (f & MODIFY) return h;   // (its flags alone)
+  // (a fixed block, or a locked one, moves only when the call says it may (GMEM_MOVEABLE), as Windows': else a block
+  // that cannot grow where it is stays and the call fails. Moved and freed, its owner went on with the old address)
+  const grows = n > (m ? m.size : this.allocs.get(u32(h)) || 0);
+  if (grows && !(f & MOVEABLE) && (!m || m.locks)) { this.lastError = 8; return 0; }
   if (!m) return this.realloc(h, n);
   if (!n) { if (m.ptr) this.free(m.ptr); m.ptr = 0; m.size = 0; this.w32(h, 0); return h; }   // (discarded: the handle stays)
   const old = m.size; m.ptr = m.ptr ? this.realloc(m.ptr, n) : this.alloc(n);
@@ -2427,7 +2431,12 @@ def('KERNEL32', 'HeapCreate', 3, () => 0x5000);
 def('KERNEL32', 'HeapDestroy', 1, () => 1);
 def('KERNEL32', 'GetProcessHeap', 0, () => 0x5000);
 def('KERNEL32', 'HeapAlloc', 3, function (h, f, n) { return this.alloc(n, true); });
-def('KERNEL32', 'HeapReAlloc', 4, function (h, f, p, n) { return this.realloc(p, n); });
+// (HEAP_REALLOC_IN_PLACE_ONLY, 10h: a block that would have to move stays where it is and the call fails, as Windows'
+// does. Moved and freed instead, the caller went on using the old address, its memory another's next allocation)
+def('KERNEL32', 'HeapReAlloc', 4, function (h, f, p, n) {
+  if (f & 0x10 && p && n > (this.allocs.get(p) || 0)) { this.lastError = 8; return 0; }
+  return this.realloc(p, n);
+});
 def('KERNEL32', 'HeapFree', 3, function (h, f, p) { return this.free(p) ? 1 : 0; });
 def('KERNEL32', 'HeapSize', 3, function (h, f, p) { return this.allocs.get(p) || 0; });
 // VirtualAlloc: a new region (MEM_RESERVE, or a commit with no address), zeroed, or pages committed inside one already
