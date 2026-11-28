@@ -1130,10 +1130,14 @@ class Machine {
     const relocs = !(dv.getUint16(pe + 22, true) & 1) && dv.getUint32(opt + 96 + 5 * 8 + 4, true) > 0;
     // (its preferred base over other programs' images, in a view of its own, as each Windows 95 process has its own
     // arena: win32.js arenaClaim. Refused only where the system's modules are, 16-bit modules' segments counted too)
-    const p = this.proc, base = p.imageRoom(pref, size, relocs, true);
+    const p = this.proc; let base = p.imageRoom(pref, size, relocs, true), synth = false;
+    // (one with no relocations and no room at its base: put where there is room, its addresses of itself found in its
+    // image and moved, as diskDll places such a DLL (win32.js loadImage synthRelocs). BonziBUDDY's Peedy.exe, 33F000h
+    // bytes linked at 1000000h, reaches the system's 16-bit modules at 1100000h, and was "not a valid Win32 application")
+    if (!base && !relocs) { base = p.imageRoom(0, size, true, true); synth = !!base; }
     if (!base) { W.log('warn', 'spawn', `${file}: no room for its image at ${pref.toString(16)} (${relocs ? 'relocatable' : 'no relocations'})`); return null; }
     // (its image mapped from its file, its code translated whole as it loads: win32.js loadImage, meta.dynamic)
-    return { dynamic: true, meta: { base, entry: base + ep, textLo: 0, textHi: 0, blocks: [], size, dynamic: true, path: file } };
+    return { dynamic: true, meta: { base, entry: base + ep, textLo: 0, textHi: 0, blocks: [], size, dynamic: true, path: file, ...(synth ? { synthRelocs: true } : {}) } };
   }
   async spawnSaverAsync(file, arg) {
     const savers = (self.W95SAVERS || {}).savers || {};
