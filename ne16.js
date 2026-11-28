@@ -1468,6 +1468,9 @@ const INTS = {
       if (this.rmode) this.cpu.es.value = 0xf000; else this.seg('es', 0x147);
       this.cpu.ebx.value = lo16(this.cpu.ebx.value, 0xe6f5); CF(this, 0); this.ax(this.ax() & 0xff); return;
     }
+    // AH=4Dh, a vendor's BIOS service this AT BIOS does not have (Windows 95 OSR 2.5 Setup's SYSDETMG asks AX=4DD4h on
+    // Analyzing Your Computer): CF set, AH 86h, "function not supported", as an AT BIOS answers one
+    if (ah === 0x4d) { CF(this, 1); this.ax((0x86 << 8) | (this.ax() & 0xff)); return; }
     this.trapped = `unhandled int 15h ax=${this.ax().toString(16)}`; return LAYOUT.SENTINEL;
   },
   0x16() { biosKbd(this); },
