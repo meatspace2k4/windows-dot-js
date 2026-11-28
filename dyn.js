@@ -281,6 +281,19 @@ function translate(p, lin, csb, d32, v86, limit, ss32In, fIn, endIn, r3In) {
       f.lg(loc).c(0xfff8).op('and').c(LDT + 4).op('add').ld(1).c(16).op('shl').op('or');
       f.lg(loc).c(0xfff8).op('and').c(LDT + 7).op('add').ld(1).c(24).op('shl').op('or').gs(base);
     };
+    // a far call's or jump's target through a call gate (a system descriptor of type 4, 16-bit, or Ch, 32-bit): the
+    // gate's selector and offset in place of the instruction's, the offset it names ignored, as the processor takes
+    // them. No privilege is kept here, so the callee runs on the caller's stack, where its parameters already are and
+    // its RETF n removes them. Windows 95 OSR 2.5 Setup's SYSDETMG builds gates to its ring-0 port I/O (its segment 1)
+    // and calls through them: taken as a code segment, the gate's base was its target selector, and the call faulted
+    const gate = (sel, off) => {
+      if (vm) return;
+      const at = k => f.lg(sel).c(0xfff8).op('and').c(LDT + k).op('add');
+      at(5).ld(1).c(0x17).op('and').c(4).op('eq').if_();
+      at(0).ld(2); at(6).ld(2).c(16).op('shl'); at(5).ld(1).c(3).op('shr_u').c(1).op('and').op('mul').op('or').ls(off);
+      at(2).ld(2).ls(sel);
+      f.end();
+    };
     // the flags as a word: CF PF AF(0) ZF SF TF(0) IF DF OF, bit 1 set
     const flagsWord = loc => { f.gg('cf').gg('pf').c(2).op('shl').op('or').gg('zf').c(6).op('shl').op('or').gg('sf').c(7).op('shl').op('or').gg('if').c(9).op('shl').op('or').gg('df').c(10).op('shl').op('or').gg('of').c(11).op('shl').op('or').gg('xf').op('or').c(0x2).op('or').ls(loc); };
     // (the flags kept as they were popped, nothing here computing them: AF, NT, AC and ID, the xf global; an i486's AC
@@ -372,7 +385,7 @@ function translate(p, lin, csb, d32, v86, limit, ss32In, fIn, endIn, r3In) {
     if (b === 0x9a) {   // call far ptr16:16/32
       const off = osz === 4 ? fetch32() : fetch16(), sel = fetch16();
       f.gg('cs').ls(T); push(T, osz); f.c(offOf(pc)).ls(T); push(T, osz);
-      f.c(sel).ls(T); loadSeg(1, T); f.gg('csb').c(off | 0).op('add').e(0x0f); return done(pc);
+      f.c(sel).ls(T); f.c(off | 0).ls(B); gate(T, B); loadSeg(1, T); f.gg('csb').lg(B).op('add').e(0x0f); return done(pc);
     }
     if (vm && (b === 0xcd || b === 0xcc || b === 0xce)) {   // int n, int 3, into: through the machine's own vectors
       const v = b === 0xcd ? fetch() : b === 0xcc ? 3 : 4;
@@ -471,7 +484,7 @@ function translate(p, lin, csb, d32, v86, limit, ss32In, fIn, endIn, r3In) {
     if (b === 0xeb) { const d = fetchS8(); return done(pc + d); }
     if (b === 0xea) {   // jmp far ptr16:16/32 (what follows it is no successor of the block's: a region's, a module's walk)
       const off = osz === 4 ? fetch32() : fetch16(), sel = fetch16();
-      f.c(sel).ls(T); loadSeg(1, T); f.gg('csb').c(off | 0).op('add').e(0x0f); return exit(pc);
+      f.c(sel).ls(T); f.c(off | 0).ls(B); gate(T, B); loadSeg(1, T); f.gg('csb').lg(B).op('add').e(0x0f); return exit(pc);
     }
     if (b === 0xf5) { f.gg('cf').op('eqz').gs('cf'); continue; }
     if (b === 0xf8 || b === 0xf9) { f.c(b & 1).gs('cf'); continue; }
@@ -494,7 +507,7 @@ function translate(p, lin, csb, d32, v86, limit, ss32In, fIn, endIn, r3In) {
       if (b === 0xff && (o.reg === 3 || o.reg === 5)) {   // call/jmp far [mem]
         f.lg(A).ld(osz).ls(B); f.lg(A).c(osz).op('add').ld(2).ls(C);
         if (o.reg === 3) { f.gg('cs').ls(T); push(T, osz); f.c(offOf(pc)).ls(T); push(T, osz); }
-        loadSeg(1, C); f.lg(B).gg('csb').op('add').e(0x0f); return done(pc);
+        gate(C, B); loadSeg(1, C); f.lg(B).gg('csb').op('add').e(0x0f); return done(pc);
       }
     }
     if (b === 0x0f) {
