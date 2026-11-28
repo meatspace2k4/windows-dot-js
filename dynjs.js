@@ -226,8 +226,10 @@ const D = {
    *  Returns the names now running as JavaScript. */
   run(p, names = []) {
     api.names.clear(); for (const n of names) if (n) api.names.add(String(n).toUpperCase().replace(/\.\w+$/, ''));
-    const need = translated(p).filter(m => !m.netSeed.wasm && m.netSeed.made && api.wants(labelOf(m)));
-    if (need.length) return Promise.all(need.map(m => p.seedWasm(m))).then(() => D.run(p, names));
+    // (one with no wasm in hand, the memo's: the JavaScript kept for it read, else its wasm read back from the memo)
+    const need = translated(p).filter(m => !m.netSeed.wasm && m.netSeed.made && api.wants(labelOf(m)) && !kept.text.has(keyOf(m)) && !m.seedTried);
+    if (need.length) return Promise.all(need.map(m => keptGet(keyOf(m)).then(t => t || p.seedWasm(m)).then(() => { m.seedTried = true; }))).then(() => D.run(p, names));
+    for (const m of translated(p)) m.seedTried = false;
     for (const m of translated(p)) { const want = api.wants(labelOf(m)); if (want === !!m.dynJs || m.hidden) continue; m.dynJs = want; p.neSet(m, m.module, m.netSeed); }
     return translated(p).filter(m => m.dynJs).map(shortOf);
   },
@@ -253,11 +255,11 @@ const D = {
    *  JavaScript): { module, block, text }, or null where no translated block holds it. */
   source(p, addr) {
     const a = resolve(p, addr), m = translated(p).find(x => a >= x.meta.textLo && a < x.meta.textHi); if (!m) return null;
-    if (!m.netSeed.wasm) return p.seedWasm(m).then(ok => (ok ? D.source(p, addr) : null));
     const bl = m.netSeed.blocks; let block = -1; for (const b of bl) if (b <= a && b > block) block = b; if (block < 0) return null;
-    const key = String(labelOf(m)).toUpperCase(); if (!made.has(key)) made.set(key, source(m.netSeed.wasm, labelOf(m), bl));
-    const s = made.get(key), i = s.indexOf(` = function b_${hex(block)}(`); if (i < 0) return null;
-    return { module: shortOf(m), block, text: s.slice(i + 3, s.indexOf('\n}\n', i) + 2) };
+    const of = s => { if (!s) return null; const i = s.indexOf(` = function b_${hex(block)}(`); return i < 0 ? null : { module: shortOf(m), block, text: s.slice(i + 3, s.indexOf('\n}\n', i) + 2) }; };
+    // (at once where the text or the wasm is at hand; else a promise, its JavaScript read from what is kept)
+    const now = kept.text.get(keyOf(m)) || (m.netSeed.wasm ? textNow(m) : null);
+    return now ? of(now) : textOf(p, m).then(of);
   },
   /** The whole JavaScript of translated modules, from their wasm, as a JS-run module has it (dyn/NAME.js): `names`
    *  without extension, '*' for every one. Resolves with [{ name, label, file, hash, text }], file the source's own
@@ -268,10 +270,9 @@ const D = {
     const out = [];
     for (const m of translated(p)) {
       if (!all && !want.has(shortOf(m))) continue;
-      if (!m.netSeed.wasm && !(await p.seedWasm(m))) continue;
       const label = String(labelOf(m)), key = label.toUpperCase();
-      if (!made.has(key)) made.set(key, source(m.netSeed.wasm, labelOf(m), m.netSeed.blocks));
-      const text = made.get(key), file = `${label.replace(/[^\w.-]+/g, '_')}.js`;
+      const text = await textOf(p, m); if (!text) continue;
+      const file = `${label.replace(/[^\w.-]+/g, '_')}.js`;
       if (!madeHash.has(key) || madeHash.get(key).text !== text) { let h = 0x811c9dc5; for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 0x01000193); madeHash.set(key, { text, hash: (h >>> 0).toString(16) }); }
       const hash = madeHash.get(key).hash;
       out.push({ name: shortOf(m), label, file, hash, text: have[file] === hash ? null : text });
@@ -350,17 +351,93 @@ function resolve(p, place) {
   if (!/^(0x)?[0-9a-f]+$/i.test(s)) throw new Error(`debug: ${s} is not an address, MODULE+offset or DLL!Export`);
   return parseInt(s, 16) >>> 0;
 }
+// ---------------------------------------------------------------- the JavaScript kept
+// Each translation's JavaScript is made once and kept on this computer (IndexedDB w95-dynjs, a record a translation:
+// its file's SHA-256 and the memo's `made`), and in the app also as a file of its own (api.mirror: Electron's
+// userData/dyn/NAME-KEY.js). Made at the machine's idle steps (api.keep), one module a step, from its wasm; read back
+// as a module is asked to run as JavaScript, so a memo's module (whose wasm the worker does not hold) runs as the
+// JavaScript kept for it, and its breakpoints work, without its wasm read or its source made again
+const kept = { db: null, keys: null, open: null, text: new Map(), busy: new Set() };
+const keyOf = m => (m && m.sha256 && m.netSeed && m.netSeed.made ? `${String(m.sha256).slice(0, 16)}-${m.netSeed.made}` : null);
+const fileOf = (label, key) => `${String(label).split(/[\\/]/).pop().replace(/[^\w.-]+/g, '_')}-${key}.js`;
+function keptOpen() {
+  if (kept.open) return kept.open;
+  return (kept.open = new Promise(ok => {
+    if (typeof indexedDB === 'undefined') { kept.keys = new Set(); ok(null); return; }
+    let r; try { r = indexedDB.open('w95-dynjs', 1); } catch (_) { kept.keys = new Set(); ok(null); return; }
+    r.onupgradeneeded = () => r.result.createObjectStore('js', { keyPath: 'key' });
+    r.onerror = () => { kept.keys = new Set(); ok(null); };
+    r.onsuccess = () => {
+      kept.db = r.result; const q = kept.db.transaction('js').objectStore('js').getAllKeys();
+      q.onsuccess = () => { kept.keys = new Set(q.result); ok(kept.db); }; q.onerror = () => { kept.keys = new Set(); ok(kept.db); };
+    };
+  }));
+}
+/** the JavaScript kept for a translation (key), or null; held in memory once read */
+async function keptGet(key) {
+  if (!key) return null; if (kept.text.has(key)) return kept.text.get(key);
+  const db = await keptOpen(); if (!db || !kept.keys.has(key)) return null;
+  return new Promise(ok => { const q = db.transaction('js').objectStore('js').get(key); q.onsuccess = () => { const t = q.result ? q.result.text : null; if (t) kept.text.set(key, t); ok(t); }; q.onerror = () => ok(null); });
+}
+async function keptPut(key, label, text) {
+  const db = await keptOpen(), file = fileOf(label, key);
+  if (db) await new Promise(ok => { const t = db.transaction('js', 'readwrite'); t.objectStore('js').put({ key, label: String(label), file, text }); t.oncomplete = t.onerror = t.onabort = () => ok(); });
+  kept.keys.add(key);
+  if (api.mirror) try { api.mirror(file, text); } catch (_) { /* the file is a copy: the record is the store's */ }
+}
+/** a translated module's JavaScript: the text kept for its translation, else made from its wasm (read back from the
+ *  memo where the worker holds none) and kept; null when there is neither */
+async function textOf(p, m) {
+  const t = await keptGet(keyOf(m)); if (t) { made.set(String(labelOf(m)).toUpperCase(), t); return t; }
+  if (!m.netSeed.wasm && !(await p.seedWasm(m))) return null;
+  return textNow(m);
+}
+/** the module's JavaScript made now from the wasm it holds (the text made before for it, where it is the same
+ *  translation's), and kept */
+function textNow(m) {
+  const key = keyOf(m), label = labelOf(m), up = String(label).toUpperCase();
+  if (key && kept.text.has(key)) return kept.text.get(key);
+  const text = !key && made.has(up) ? made.get(up) : source(m.netSeed.wasm, label, m.netSeed.blocks); made.set(up, text);
+  if (key) { kept.text.set(key, text); if (kept.keys && !kept.keys.has(key)) keptPut(key, label, text); }
+  return text;
+}
 const api = {
   /** Module names to run as JavaScript: upper case, no extension. '*' means all. */
   names: new Set(),
   wants(label) { const n = String(label).split(/[\\/]/).pop().replace(/\.\w+$/, '').toUpperCase(); return api.names.has(n) || api.names.has('*'); },
   /** Make the module; returns { run }. The source is kept for W95DynJs.source(label). */
-  make(wasm, label, blocks, env, cpu, mem, proc) {
-    const src = source(wasm, label, blocks); made.set(String(label).toUpperCase(), src);
+  make(wasm, label, blocks, env, cpu, mem, proc, key) {
+    // (the JavaScript kept for this translation when there is one: the same text, not made again)
+    const src = (key && kept.text.get(key)) || source(wasm, label, blocks); made.set(String(label).toUpperCase(), src);
     if (proc) BP.proc = proc;
     return (0, eval)(src)(env, cpu, mem, BP);
   },
   source: label => made.get(String(label).toUpperCase()) || null,
+  /** whether the JavaScript kept for a translation is at hand (read into memory): a module with no wasm in hand can
+   *  run as it (dyn.js neSet) */
+  has: key => !!key && kept.text.has(key),
+  keyOf,
+  /** At an idle step: one translated module whose JavaScript is not kept yet made from its wasm and kept. A promise of
+   *  whether one was begun; one at a time */
+  keep(p) {
+    if (kept.busy.size || !kept.keys) { keptOpen(); return false; }
+    const m = translated(p).find(x => { const k = keyOf(x); return k && !kept.keys.has(k) && !x.netTooBig; }); if (!m) return false;
+    const key = keyOf(m), label = labelOf(m); kept.busy.add(key);
+    (async () => {
+      try {
+        if (!m.netSeed.wasm && !(await p.seedWasm(m))) { kept.keys.add(key); return; }   // (its bytes not the memo's any more: none to make it from)
+        if (keyOf(m) !== key) return;
+        const text = source(m.netSeed.wasm, label, m.netSeed.blocks);
+        if (!m.dynJs && m.netSeed.made) m.netSeed.wasm = null;   // (the bytes the memo's to keep, as neSet leaves them)
+        await keptPut(key, label, text);
+      } catch (e) { kept.keys.add(key); console.warn(`[dynjs] ${label}: its JavaScript could not be kept:`, e && e.message); }
+      finally { kept.busy.delete(key); }
+    })();
+    return true;
+  },
+  /** written with each JavaScript kept (file name, text): the app's copy on disk (worker.js) */
+  mirror: null,
+  _kept: kept, _keptGet: keptGet, _keptPut: keptPut, _fileOf: fileOf,
   /** The debugger: debug(process, [method, ...arguments]) calls one of D's methods (see above). */
   debug(p, [method, ...args], host) { if (!D[method]) throw new Error(`debug: no method ${method}`); BP.proc = p; if (host) BP.host = host; return D[method](p, ...args); },
   /** While on, every block of a JS-run module goes through BP.at, breakpoints or not: a debugger's breakpoint there

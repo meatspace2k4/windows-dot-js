@@ -1578,9 +1578,11 @@ P.neSet = function (rec, mod, seed) {
   const env = { ...this.imports.env, ...dynEnv(this), lookup: new WebAssembly.Global({ value: 'i32', mutable: false }, meta.lookup | 0) };
   // A module named for the debugger runs as JavaScript made from the same wasm (dynjs.js).
   const label = rec.name === 'EXE' ? meta.path || meta.name || 'EXE' : rec.name, J = self.W95DynJs;
-  rec.dynJs = !!(J && seed.wasm && J.wants(label));
+  // (a memo's module, its wasm not in hand: as the JavaScript kept for its translation, when that is read (dynjs.js))
+  const jsKey = J && rec.sha256 && seed.made ? `${String(rec.sha256).slice(0, 16)}-${seed.made}` : null;
+  rec.dynJs = !!(J && J.wants(label) && (seed.wasm || (J.has && J.has(jsKey))));
   const tI = performance.now();
-  const run = rec.dynJs ? J.make(seed.wasm, label, blocks, env, this.cpu, this.mem, this).run : new WebAssembly.Instance(mod, { env, cpu: this.cpu }).exports.run;
+  const run = rec.dynJs ? J.make(seed.wasm, label, blocks, env, this.cpu, this.mem, this, jsKey).run : new WebAssembly.Instance(mod, { env, cpu: this.cpu }).exports.run;
   const tL = performance.now();
   const look = new Uint32Array(this.mem.buffer, meta.lookup, meta.textHi - meta.textLo);
   look.fill(0); blocks.forEach((a, i) => { look[a - meta.textLo] = i + 1; });

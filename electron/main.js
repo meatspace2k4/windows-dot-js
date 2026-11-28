@@ -62,6 +62,13 @@ const dbFile = () => path.join(app.getPath('userData'), 'C.db')
 ipcMain.on('disk-load', e => { swapping = false; e.returnValue = store.loadDisk() })
 ipcMain.on('registry-load', e => { e.returnValue = store.loadRegistry() })
 ipcMain.handle('store-drained', () => true)   // (answered in its turn: after every write sent before it)
+// a translated module's JavaScript as the machine keeps it (dynjs.js keep): a file of its own in userData/dyn, its name
+// the module's and its translation's (NAME-KEY.js), written once
+ipcMain.on('dynjs-write', (e, file, text) => {
+  const name = path.basename(String(file)).replace(/[^\w.-]+/g, '_'); if (!/\.js$/.test(name)) return
+  const dir = path.join(app.getPath('userData'), 'dyn'), f = path.join(dir, name)
+  fs.promises.mkdir(dir, { recursive: true }).then(() => fs.promises.writeFile(f, String(text))).catch(err => console.warn('dynjs-write', name, err.message))
+})
 ipcMain.on('store', (e, op, ...args) => {
   if (swapping) return
   try { store.apply(op, args) } catch (err) { console.error('store', op, err) }

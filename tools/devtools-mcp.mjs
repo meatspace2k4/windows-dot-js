@@ -188,9 +188,11 @@ const worker = () => { const s = [...sessions.values()].find(x => x.type === 'wo
 const hx = v => (v >>> 0).toString(16);
 /** one call of the machine's debugger API, in the worker (in the paused frame when it is paused) */
 async function guest(method, ...args) {
-  const s = worker(), expression = `JSON.stringify(self.W95DynJs.debug(machine.proc, ${JSON.stringify([method, ...args])}, machine))`;
-  const r = s.paused ? await cmd(s, 'Debugger.evaluateOnCallFrame', { callFrameId: s.paused.callFrames[0].callFrameId, expression, returnByValue: true })
-    : await cmd(s, 'Runtime.evaluate', { expression, returnByValue: true });
+  // (an answer the debugger gives as a promise awaited: a memo's module, its wasm not in hand, answers source and run
+  // once its JavaScript is read; stringified unawaited it was {}, and guest_break said "no block starts ... at 0")
+  const call = `self.W95DynJs.debug(machine.proc, ${JSON.stringify([method, ...args])}, machine)`, s = worker();
+  const r = s.paused ? await cmd(s, 'Debugger.evaluateOnCallFrame', { callFrameId: s.paused.callFrames[0].callFrameId, expression: `JSON.stringify(${call})`, returnByValue: true })
+    : await cmd(s, 'Runtime.evaluate', { expression: `(async () => JSON.stringify(await ${call}))()`, awaitPromise: true, returnByValue: true });
   if (r.exceptionDetails) throw new Error((r.exceptionDetails.exception && r.exceptionDetails.exception.description || r.exceptionDetails.text).split('\n')[0]);
   return r.result.value === undefined ? undefined : JSON.parse(r.result.value);
 }

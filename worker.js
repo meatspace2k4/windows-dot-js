@@ -927,6 +927,8 @@ class Machine {
     // since the last step, is translated again with them, dyn.js neRebuild. At idle steps only, a busy machine (Setup's
     // copy, minutes long) ran its loops as run-time code all along)
     const rebuilt = p.neInstall() || p.neRebuild();   // (and a module read from the memo put in place: dyn.js neInstall)
+    // (and at an idle step, one translated module's JavaScript made and kept once, for its debugging: dynjs.js keep)
+    if (!rebuilt && !busy && self.W95DynJs && self.W95DynJs.keep) { const J = self.W95DynJs; if (!J.mirror && this.system) J.mirror = (file, text) => post({ t: 'dynjs', file, text }); J.keep(p); }
     const wall = performance.now();
     // (at a person's pace the machine's time runs at most PACE_LEAD ahead of the wall's: a busy step past it waits for
     // the wall instead of following at once. Back to back, a fast host ran the machine's clock ahead without end, its

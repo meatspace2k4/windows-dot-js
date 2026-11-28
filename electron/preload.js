@@ -39,6 +39,8 @@ contextBridge.exposeInMainWorld('W95HOST', {
   session: { host: true, export: () => ipcRenderer.send('session-export'), import: () => ipcRenderer.send('session-import') },
   // DevTools (Option+Cmd+I, View > Toggle Developer Tools): whether they are open now, and each change
   devtools: { get open() { return ipcRenderer.sendSync('devtools-open') }, on: f => ipcRenderer.on('devtools', (_, open) => f(open)) },
+  // the translated modules' JavaScript, each kept as the machine makes it (dynjs.js keep): a file of its own, userData/dyn
+  dynjs: { write: (file, text) => ipcRenderer.send('dynjs-write', file, text) },
   computerName: ipcRenderer.sendSync('host-name'),
   userName: ipcRenderer.sendSync('user-name'),   // the Mac's account: the name Setup gives the network logon
 })

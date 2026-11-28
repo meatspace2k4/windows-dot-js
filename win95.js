@@ -4128,6 +4128,8 @@ class RemoteApp extends NativeApp {
         if (this.started) this.started(true); return;
       // MPR loaded in the system's machine (or no network client): the shell's network calls go ahead (netBoot)
       case 'mpr': this.mprUp = m.up; if (this.mprReady) { this.mprReady(m.up); this.mprReady = null; } return;
+      // a translated module's JavaScript, kept (dynjs.js keep): the app's copy on disk, userData/dyn (electron/main.js)
+      case 'dynjs': { const H = window.W95HOST; if (H && H.dynjs) H.dynjs.write(m.file, m.text); return; }
       case 'session': sessionCommand(m.op); return;   // (Export or Import Session, from the Start menu: SESSION.DLL)
       case 'cd': if (m.op !== 'eject' || m.drive === 'D') cdCommand(m.op); return;   // (Insert CD Image, SESSION.DLL; the drive's Eject, ne16.js cdEject: D:'s disc, E:'s audio disc stays)
       // (the Braid icon's menu, SESSTRAY.DLL: Mark Now, Anchor Now, Travel To a moment; the session's, every machine's)
