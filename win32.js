@@ -3438,7 +3438,15 @@ def('KERNEL32', 'GetVolumeInformationA', 8, function (root, name, nn, serial, ma
   });
 });
 def('KERNEL32', 'SetVolumeLabelA', 2, function (root, name) { return fsCall(this, () => (this.fs.setLabel(((this.readA(root) || this.fs.cwd)[0] || 'C').toUpperCase(), this.readA(name) || ''), 1)); });
-def('KERNEL32', 'GetShortPathNameA', 3, function (l, s, n) { const r = fsCall(this, () => this.fs.stat(this.readA(l)).shortPath, null); if (r === null) return 0; return this.writeA(s, r, n); });   // (the path's 8.3 form, as stat gives it; a path that is not there fails)
+// (a folder given with its trailing backslash keeps it, as Windows answers: dropped, IE4.DLL's ShortPath gave ACME
+// "C:\PROGRA~1\INTERN~1", ACME's path formatter wants a folder ending in one, and Internet Explorer 4's Web Browser
+// failed at STF object 692 with Setup Error 991, "Your Setup files may be damaged")
+def('KERNEL32', 'GetShortPathNameA', 3, function (l, s, n) {
+  const given = this.readA(l) || '';
+  let r = fsCall(this, () => this.fs.stat(given).shortPath, null); if (r === null) return 0;
+  if (/[\\/]$/.test(given) && !/\\$/.test(r)) r += '\\';
+  return this.writeA(s, r, n);
+});   // (the path's 8.3 form, as stat gives it; a path that is not there fails)
 def('KERNEL32', 'ExpandEnvironmentStringsA', 3, function (src, dst, n) {
   const env = envOf(this), r = (this.readA(src) || '').replace(/%([^%]+)%/g, (m, k) => { const e = env.get(k.toUpperCase()); return e ? e.value : k.toUpperCase() === 'SYSTEMROOT' ? 'C:\\WINDOWS' : m; });
   if (n) this.writeA(dst, r, n); return r.length + 1;
