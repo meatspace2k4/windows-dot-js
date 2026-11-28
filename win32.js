@@ -2119,8 +2119,15 @@ def('KERNEL32', 'LoadLibraryA', 1, function (n) {
   // (a path: the file there, and the DLLs it imports looked for in its folder first, as LOAD_WITH_ALTERED_SEARCH_PATH
   // has it. Its folder was dropped: IERNONCE's C:\PROGRA~1\INTERN~1\HMMAPI.DLL was looked for in SYSTEM and the
   // Windows folder only, not found, and Windows 98's first start said it was not installed)
+  // (a bare name: the calling program's folder, then the current directory, before SYSTEM and the Windows folder, as
+  // Windows 95's LoadLibrary looks. Without them ACME's ACMSETUP.EXE did not find IE4.DLL beside it (error 126), ran
+  // none of its custom actions, and Internet Explorer 4's every component failed to install)
+  const pcNow = this.thread16 && this.thread16.pc, prog = String((pcNow && pcNow.path) || (this.exe && this.exe.meta && this.exe.meta.path) || '');
+  let cwd = null; try { cwd = this.fs && this.fs.cwd; } catch (_) { /* none */ }
+  const bare = given && !/\\/.test(given) ? [/\\/.test(prog) ? prog.replace(/\\[^\\]*$/, '') : null, cwd].filter(Boolean) : [];
   const dir = /\\/.test(given) ? given.replace(/\\[^\\]*$/, '') : null, was = this.loadDirs;
-  if (dir) this.loadDirs = [dir, ...(was || []).filter(d => d.toUpperCase() !== dir.toUpperCase())];
+  const first = dir ? [dir] : bare;
+  if (first.length) this.loadDirs = [...first, ...(was || []).filter(d => !first.some(f => f.toUpperCase() === d.toUpperCase()))];
   let native; try { native = this.loadDll(name); } finally { this.loadDirs = was; }
   // (a 16-bit DLL is no Win32 module: ERROR_BAD_EXE_FORMAT, as Windows 95's LoadLibrary answers, and RUNDLL32 then
   // loads it with LoadLibrary16 (KERNEL32 #35), finds the export with GetProcAddress16 (#37) and calls it through
