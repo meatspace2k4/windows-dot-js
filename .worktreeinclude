@@ -1,0 +1,17 @@
+# The gitignored files a new worktree copies from the main checkout (Claude Code's worktrees): the bundles generated
+# from the Windows 95 CD, the CD and audio CD images, and the app's dependencies. Without them a worktree's page and
+# app (electron/build.sh) do not start, and the bundles are rebuilt only by tools/build_system.py and its siblings
+/system.js
+/msdos.js
+/dos622.js
+/savers.js
+/assets.js
+/assets-shell.js
+/cdrom.js
+/floppy.js
+/claude-exe.js
+/cdrom.iso
+/audiocd.bin
+/audiocd.cue
+/audiocd.json
+electron/node_modules/

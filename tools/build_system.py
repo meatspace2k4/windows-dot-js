@@ -15,9 +15,11 @@ NE = [('gdi.exe', 0x01C00000, 0x1007, 0x06A00000), ('dibeng.dll', 0x01E00000, 0x
       # USER's drivers and DDEML before USER, so its calls into them link directly
       # (first selectors spaced by segment count: SYSTEM 2, KEYBOARD 10, MOUSE 2, COMM 3, DDEML 3; bases 128 KB apart,
       # each module's code and its DGROUP's 64 KB: packed at 64 KB, each DGROUP's heap grew over the next one's code)
-      ('system.drv', 0x00B00000, 0x1507, 0x07200000), ('keyboard.drv', 0x00B20000, 0x1527, 0x07240000),
-      ('mouse.drv', 0x00B40000, 0x1587, 0x07280000), ('comm.drv', 0x00B60000, 0x15A7, 0x072C0000),
-      ('ddeml.dll', 0x00B80000, 0x15C7, 0x07300000),
+      # (above 0C00000h, clear of the room programs' images take at their own base from 400000h: at 0B00000h they left
+      # a program with no relocations 7 MB, and Bonzi's installer, 7E2000h bytes at 400000h, had "no room for its image")
+      ('system.drv', 0x00C60000, 0x1507, 0x07200000), ('keyboard.drv', 0x00C80000, 0x1527, 0x07240000),
+      ('mouse.drv', 0x00CA0000, 0x1587, 0x07280000), ('comm.drv', 0x00CC0000, 0x15A7, 0x072C0000),
+      ('ddeml.dll', 0x00CE0000, 0x15C7, 0x07300000),
       ('user.exe', 0x01A00000, 0x1407, 0x06F00000),
       # the common dialogs: COMDLG32.DLL is a thunk layer over this (Setup installs WIN95_02.CAB's commdlg.new as it)
       ('commdlg.dll', 0x01B50000, 0x15E7, 0x07400000),
@@ -34,7 +36,8 @@ NE = [('gdi.exe', 0x01C00000, 0x1007, 0x06A00000), ('dibeng.dll', 0x01E00000, 0x
       ('mmsystem.dll', 0x01700000, 0x17D7, 0x07900000), ('mssndsys.drv', 0x01740000, 0x1847, 0x07980000),
       # MMSYSTEM's background task, which it starts with LoadModule (WIN95_02.CAB)
       # (its DGROUP's 64 KB, from 80h in, reached MSACM32.DLL's image at 17D0000h)
-      ('mmtask.tsk', 0x00BA0000, 0x187F, 0x07A80000),
+      # (above 0C00000h as the drivers are)
+      ('mmtask.tsk', 0x00D00000, 0x187F, 0x07A80000),
       # the audio compression manager and the wave mapper MMSYSTEM opens for WAVE_MAPPER (WIN95_02.CAB)
       ('msacm.dll', 0x01A80000, 0x188F, 0x07B00000), ('msacm.drv', 0x01AC0000, 0x18C7, 0x07B40000),
       # the card's OPL3 synthesizer driver (Drivers\midi\msopl.drv) and the MIDI mapper MMSYSTEM opens for MIDI_MAPPER (WIN95_13.CAB)
@@ -130,7 +133,9 @@ PE = [('gdi32.dll', 0x01D00000, 0x06C00000), ('user32.dll', 0x01D40000, 0x073400
       ('msacm32.dll', 0x017D0000, 0x07B80000),
       # OLE (WIN95_02.CAB): SHELL32 puts files on the clipboard through it ("Shell IDList Array" data objects), with
       # the RPC runtime and the C runtime it imports
-      ('ole32.dll', 0x01000000, 0x06300000), ('rpcrt4.dll', 0x010A0000, 0x06500000), ('msvcrt20.dll', 0x010E0000, 0x06600000),
+      # (below 1000000h, the base IExpress packages are linked at with no relocations: MS Agent's MSagent.exe, 62000h
+      # bytes there, had "no room for its image" with OLE32 at 1000000h)
+      ('ole32.dll', 0x00D20000, 0x06300000), ('rpcrt4.dll', 0x00DB0000, 0x06500000), ('msvcrt20.dll', 0x00DF0000, 0x06600000),
       # Windows Help's full-text search, which it loads for the Find tab (WIN95_13.CAB)
       ('ftsrch.dll', 0x01400000, 0x06900000),
       # printing (WIN95_27.CAB): the spooler's client the common dialogs load, and the spooler's router SPOOL32 runs
@@ -189,6 +194,11 @@ FONTS = ['vgasys.fon', 'vgafix.fon', 'vgaoem.fon', 'sserife.fon', 'serife.fon', 
          'modern.fon', 'dosapp.fon', 'arial.ttf', 'arialbd.ttf', 'arialbi.ttf', 'ariali.ttf', 'cour.ttf', 'courbd.ttf',
          'courbi.ttf', 'couri.ttf', 'times.ttf', 'timesbd.ttf', 'timesbi.ttf', 'timesi.ttf', 'symbol.ttf', 'wingding.ttf', 'marlett.ttf']
 fonts_dir = sys.argv[3] if len(sys.argv) > 3 else None
+# (every module the build compiles, and the fonts, checked before any is compiled: a SYS_DIR older than this list
+# stopped the build minutes in at the first one it lacked, a traceback naming one file at a time)
+_lacking = [e[0] for e in NE + PROGRAMS + PE + VXDS + DRIVERS + NET if not os.path.exists(os.path.join(src, e[0]))]
+_lacking += [f'{fonts_dir}/{f}' for f in FONTS if fonts_dir and not os.path.exists(os.path.join(fonts_dir, f))]
+if _lacking: sys.exit(f'build_system: missing from {src}: {" ".join(_lacking)} (each is on the Windows 95 CD, in WIN95_*.CAB or PRECOPY*.CAB)')
 bundle = {'ne': {}, 'dlls': {}, 'programs': {}, 'thunks16': [], 'fonts': {}}
 if fonts_dir:
     for f in FONTS: bundle['fonts'][f.upper()] = b64(os.path.join(fonts_dir, f))

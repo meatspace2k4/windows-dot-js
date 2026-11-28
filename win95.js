@@ -4249,7 +4249,7 @@ class RemoteApp extends NativeApp {
       const sig = m.list.map(n => `${n.hwnd},${n.x},${n.y},${n.w},${n.h},${n.iconic ? 1 : 0},${n.title}`).join(';');
       if (sig !== this.listSig) { this.listSig = sig; osShellUp(m.list); osSoon(); }
       osFrame();
-    }
+    } else if (this.system && !soloShellUp && m.list.some(n => n.cls === 'Progman')) { soloShellUp = true; trayPeople(); }
     this.snap = this.scr = m; this.stats = m.stats; this.held = m.held; this.capture = m.capture; this.cursorOn = m.cursorOn; this.followMode(m);    const seen = new Set();
     for (const n of m.list) {
       const key = n.key || n.hwnd;
@@ -5245,7 +5245,7 @@ function logonChanged(o) {
 const PEER_COLORS = [[0, 0, 128], [128, 0, 0], [0, 128, 0], [128, 0, 128], [0, 128, 128], [128, 128, 0], [0, 0, 255], [255, 0, 0]];
 /** a person's colour, by their machine: the same on every machine */
 function peerColor(client) { let h = 0; for (const ch of String(client)) h = (h * 31 + ch.charCodeAt(0)) >>> 0; return PEER_COLORS[h % PEER_COLORS.length]; }
-const peerNotes = [], peerAt = new Map(); let peerSeen = null, peerWhere = null, peerFollow = null, trayStarted = false;
+const peerNotes = [], peerAt = new Map(); let peerSeen = null, peerWhere = null, peerFollow = null, trayStarted = false, soloShellUp = false;
 function peopleChanged(list) {
   const now = Date.now(), names = new Map(list.map(p => [p.client, p.user || 'Guest']));
   if (peerSeen) {
@@ -5256,8 +5256,9 @@ function peopleChanged(list) {
   peerSeen = names; trayPeople(); dirty();
 }
 /** who is here, for the notification area's icons; SESSTRAY.EXE started the first time, once the shell is up */
+// (on a machine of its own too: no people, the Braid icon's moments this machine's line's; started once its shell is up)
 function trayPeople() {
-  const S = window.W95Shared, a = sysApp; if (!S || !a || !a.alive || !osCaught) return;
+  const S = window.W95Shared, a = sysApp; if (!S || !a || !a.alive || !(sharedNow() ? osCaught : soloShellUp)) return;
   // (with each person's windows: the session's objects whose origin is their machine, by title; and the session's
   // owner, whose profile every settings change goes to: a name's own session is theirs, Guest's the shared one)
   const wins = client => [...S.world()].filter(([, v]) => v && v.origin === client && v.folder === undefined).map(([id, v]) => ({ id, title: v.title || id }));
@@ -6674,6 +6675,10 @@ window.win95 = { ...script,
   window.win95.on('system.start', () => apply('system'));
   apply('load');
 }
+// The Braid icon on a machine of its own: a new system starts SESSTRAY.EXE again once its shell is up (frame), and
+// the icon's moments follow this machine's line
+window.win95.on('system.start', () => { if (!sharedNow()) { soloShellUp = false; trayStarted = false; } });
+for (const e of ['braid.mark', 'braid.anchor', 'braid.travel']) window.win95.on(e, () => { if (!sharedNow()) trayPeople(); });
 // The page's title (the app's window title) names the Windows installed on the disk: the registry's own Version
 // ("Windows 95", "Windows 98"), Windows 3.1 by its files. Named again when a system starts and when a travel or an
 // arrival puts another moment's disk and registry in place.
