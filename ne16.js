@@ -769,9 +769,53 @@ P.retf16 = function (n = 0) {
 P.ax = function (v) { if (v === undefined) return this.cpu.eax.value & 0xffff; this.cpu.eax.value = lo16(this.cpu.eax.value, v); };
 
 // ---------------------------------------------------------------- interrupts (DPMI and friends)
+// A software interrupt in protected mode goes to the protected-mode vector, as the DPMI host dispatches one: a
+// program's own handler where it set one (DPMI 0205h), entered with an interrupt frame (FLAGS, CS, IP) on its stack;
+// otherwise the host's (intDefault). Windows 95 Setup's hardware detection (SYSDETMG) installs a handler for INT 12h
+// and asks it its DOS calls (AX 444Dh, "DM"); answered by the BIOS's memory size instead, SYSDETMG walked a device
+// chain from garbage and allocated until there were no selectors left
 P.interrupt = function (vec, next) {
-  const h = INTS[vec];
   if (window.W95INTTRACE) window.W95INTTRACE(vec, this);
+  // (the protected-mode vectors: a program's handler's CS:IP, 0 the host's own, DPMI 0204h/0205h)
+  const pm = !this.rmode && this.v86 === undefined && this.pmVectors && this.pmVectors[vec];
+  if (pm) {
+    this.pushIntFrame(next);
+    this.seg('cs', pm >>> 16); return u32(this.selBase(pm >>> 16) + (pm & 0xffff));
+  }
+  return this.intDefault(vec, next);
+};
+/** the flags as a 16-bit FLAGS word (IF set), as an interrupt or exception frame carries them */
+P.flags16 = function () { let f = 0x202; for (const [r, b] of [['cf', 0], ['pf', 2], ['zf', 6], ['sf', 7], ['df', 10], ['of', 11]]) f |= (this.cpu[r].value & 1) << b; return f; };
+/** the flags from a FLAGS word */
+P.setFlags16 = function (f) { for (const [r, b] of [['cf', 0], ['pf', 2], ['zf', 6], ['sf', 7], ['df', 10], ['of', 11]]) this.cpu[r].value = (f >> b) & 1; };
+/** words pushed on the 16-bit stack, the first deepest */
+P.push16 = function (words) {
+  const ssb = u32(this.cpu.ssb.value); let sp = this.cpu.esp.value & 0xffff;
+  for (const w of words) { sp = (sp - 2) & 0xffff; this.w16(ssb + sp, w); }
+  this.cpu.esp.value = lo16(this.cpu.esp.value, sp);
+};
+/** n words popped from the 16-bit stack, the top first */
+P.pop16 = function (n) {
+  const ssb = u32(this.cpu.ssb.value), sp = this.cpu.esp.value & 0xffff, out = [];
+  for (let k = 0; k < n; k++) out.push(this.r16(ssb + ((sp + 2 * k) & 0xffff)));
+  this.cpu.esp.value = lo16(this.cpu.esp.value, sp + 2 * n); return out;
+};
+/** an interrupt frame for a return to `at` in the current CS: FLAGS, CS, IP, IP on top (an INT's, an exception's) */
+P.pushIntFrame = function (at) { const cs = this.cpu.cs.value & 0xffff; this.push16([this.flags16(), cs, (u32(at) - this.selBase(cs)) & 0xffff]); };
+/** the interrupt frame on top of the stack popped: [ip, cs, flags] */
+P.popIntFrame = function () { return this.pop16(3); };
+/** the host's own handler of protected-mode interrupt `n` as a far address a program can chain to (DPMI 0204h of a
+ *  vector no program set): DPMI.#(100h+n), its 16-bit thunk made as 0204h first hands it out, entered with an
+ *  interrupt frame, which it pops before the host's handling (intDefault) runs as for the INT at the frame's CS:IP */
+const HOST_VECTOR = 0x100;
+for (let n = 0; n < 0x100; n++) def16('DPMI', HOST_VECTOR + n, '', 'jmp', function () {
+  const [ip, cs] = this.popIntFrame(); this.seg('cs', cs); return this.intDefault(n, u32(this.selBase(cs) + ip));
+});
+P.hostVector = function (n) { return this.thunk16For(`DPMI.#${HOST_VECTOR + n}`); };
+/** the host's own handling of a protected-mode interrupt: reflected to V86 mode where a real-mode program hooked the
+ *  vector, else the personality's handler (INTS) */
+P.intDefault = function (vec, next) {
+  const h = INTS[vec];
   if (!this.rmode && this.v86 === undefined && this.rmReflect(vec)) return next;
   if (!h) { this.trapped = `unhandled interrupt ${vec.toString(16)}h (ax=${this.ax().toString(16)}) at ${u32(next).toString(16)}`; return LAYOUT.SENTINEL; }
   const r = h.call(this, next);
@@ -1045,10 +1089,15 @@ const INTS = {
       case 0x000c: { const a = this.lin((this.cpu.es.value << 16) | (this.cpu.edi.value & 0xffff));
         const b = this.r16(a + 2) | (this.u8[a + 4] << 16) | (this.u8[a + 7] << 24), l = this.r16(a) | ((this.u8[a + 6] & 0xf) << 16);
         this.setDesc(bx, u32(b), this.u8[a + 6] & 0x80 ? (l << 12) | 0xfff : l, this.r16(a + 5) << 8); this.refreshSegs(); return; }
-      case 0x0200: case 0x0202: case 0x0204: {   // get real-mode / exception / protected-mode interrupt vector
+      case 0x0204: case 0x0205: {   // the protected-mode interrupt vectors: a program's handler, or the host's own (hostVector)
+        const vecs = this.pmVectors || (this.pmVectors = new Uint32Array(256)), n = bx & 0xff;
+        if (ax === 0x0205) { vecs[n] = u32((cx << 16) | (this.cpu.edx.value & 0xffff)); return; }
+        const v = vecs[n] || this.hostVector(n); this.cpu.ecx.value = lo16(this.cpu.ecx.value, v >>> 16); this.cpu.edx.value = v & 0xffff; return;
+      }
+      case 0x0200: case 0x0202: {   // get real-mode / exception vector
         const v = ((this.exVec = this.exVec || {})[`${ax}:${bx & 0xff}`]) || (ax === 0x0202 ? this.thunk16For('DPMI.#1') : 0);
         this.cpu.ecx.value = lo16(this.cpu.ecx.value, v >>> 16); this.cpu.edx.value = v & 0xffff; return; }
-      case 0x0201: case 0x0203: case 0x0205: case 0x0283:   // 0x0283: Windows' set-exception-handler variant
+      case 0x0201: case 0x0203: case 0x0283:   // 0x0283: Windows' set-exception-handler variant
         (this.exVec = this.exVec || {})[`${ax === 0x0283 ? 0x0202 : ax - 1}:${bx & 0xff}`] = u32((cx << 16) | (this.cpu.edx.value & 0xffff)); return;
       case 0x0501: { const n = u32((bx << 16) | cx), p = this.alloc(n); this.cpu.ebx.value = lo16(this.cpu.ebx.value, p >>> 16); this.cpu.ecx.value = lo16(this.cpu.ecx.value, p);
         this.cpu.esi.value = lo16(this.cpu.esi.value, p >>> 16); this.cpu.edi.value = lo16(this.cpu.edi.value, p); return; }
@@ -3148,20 +3197,15 @@ P.portIO = function (port, size, isIn) {
 P.exception16 = function (n, at) {
   const cs = this.cpu.cs.value & 0xffff, h = this.exVec && this.exVec[`514:${n}`];
   if (!cs || !h) return false;
-  const ss = this.cpu.ss.value & 0xffff, sp0 = this.cpu.esp.value & 0xffff, ssb = this.cpu.ssb.value >>> 0;
-  let flags = 0x202; for (const [r, b] of [['cf', 0], ['pf', 2], ['zf', 6], ['sf', 7], ['df', 10], ['of', 11]]) flags |= (this.cpu[r].value & 1) << b;
-  const ret = this.thunk16For('DPMI.#2');
-  let sp = sp0;
-  for (const w of [ss, sp0, flags, cs, (at - this.selBase(cs)) & 0xffff, 0, ret >>> 16, ret & 0xffff]) { sp = (sp - 2) & 0xffff; this.w16(ssb + sp, w); }
-  this.cpu.esp.value = lo16(this.cpu.esp.value, sp);
+  const ss = this.cpu.ss.value & 0xffff, sp0 = this.cpu.esp.value & 0xffff, ret = this.thunk16For('DPMI.#2');
+  this.push16([ss, sp0]); this.pushIntFrame(at); this.push16([0, ret >>> 16, ret & 0xffff]);
   this.seg('cs', h >>> 16);
   this.cpu.eip.value = u32(this.selBase(h >>> 16) + (h & 0xffff)) | 0;
   return true;
 };
 def16('DPMI', 2, '', 'jmp', function () {      // the handler's retf lands here: resume at the frame's CS:IP
-  const ssb = this.cpu.ssb.value >>> 0, sp = this.cpu.esp.value & 0xffff, f = k => this.r16(ssb + ((sp + 2 * k) & 0xffff));
-  const ip = f(1), cs = f(2), flags = f(3), nsp = f(4), nss = f(5);
-  for (const [r, b] of [['cf', 0], ['pf', 2], ['zf', 6], ['sf', 7], ['df', 10], ['of', 11]]) this.cpu[r].value = (flags >> b) & 1;
+  this.pop16(1); const [ip, cs, flags] = this.popIntFrame(), [nsp, nss] = this.pop16(2);
+  this.setFlags16(flags);
   this.seg('ss', nss); this.cpu.esp.value = lo16(this.cpu.esp.value, nsp);
   this.seg('cs', cs); return u32(this.selBase(cs) + ip);
 });
