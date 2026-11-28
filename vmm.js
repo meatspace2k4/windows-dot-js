@@ -289,6 +289,7 @@ N.VXD_SVC = SVC;   // (the stand-ins by device << 16 | service, for the static c
 INTS[0x20] = function (next) {
   const d = this.r32(u32(next) - 4), dev = d >>> 16, n = d & 0x7fff, jmp = d & 0x8000, fn = SVC[dev << 16 | n];
   if (window.W95VXDTRACE) window.W95VXDTRACE(dev, n, this, u32(next) - 6);   // debugging: every VxDCall
+  if (this.vxdCallRing) { const r = this.vxdCallRing; r.push(`${dev.toString(16)}:${n.toString(16)}${fn ? '' : '?'}`); if (r.length > 24) r.shift(); }   // (the calls of a VxD's start-up, for its failure's log line: vxdBoot)
   // a hooked service (Hook_Device_Service), or one a loaded VxD provides (its DDB's service table): entered as the
   // VMM enters it, by a call (VxDCall: the return to after the dword pushed) or a jump (VxDJmp)
   const to = (this.svcHooks && this.svcHooks.get(dev << 16 | n)) || (!fn && this.vxdService(dev, n));
@@ -2188,9 +2189,11 @@ P.vxdBoot = function () {
   for (const msg of [0, 1, 2]) for (const v of vs) {
     this.vxdInitState = [0, 0x10000000, 0x20000000][msg];
     if (failed.has(v)) continue;
-    const r = this.vxdControl(v, msg);
+    this.vxdCallRing = [];
+    const r = this.vxdControl(v, msg), calls = this.vxdCallRing.join(' '); this.vxdCallRing = null;
     if (this.trapped) { W.log('warn', 'vxd', `${v.file} system control ${msg}: ${this.trapped}`); return; }
-    if (r.cf) { W.log('warn', 'vxd', `${v.file} failed system control ${msg}`); failed.add(v); v.inited = false; }
+    // (with the services it called last, device:service, ? where none answers here: "failed" alone said nothing of why)
+    if (r.cf) { W.log('warn', 'vxd', `${v.file} failed system control ${msg}; its last services ${calls || 'none'}`); failed.add(v); v.inited = false; }
   }
   this.vxdInitState = 0x40000000;
   this.k32RebootInit();
