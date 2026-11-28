@@ -7,12 +7,28 @@ const path = require('path')
 const bundled = path.join(__dirname, 'web', 'index.html')
 const page = fs.existsSync(bundled) ? bundled : path.join(__dirname, '..', 'index.html')
 
+// the window's place and size, kept in the app's own folder (window.json) as it last was, and taken again at start when
+// it still lies on a display
+const boundsFile = () => path.join(app.getPath('userData'), 'window.json')
+const savedBounds = () => {
+  try {
+    const b = JSON.parse(fs.readFileSync(boundsFile(), 'utf8'))
+    if (![b.x, b.y, b.width, b.height].every(Number.isFinite)) return null
+    const { screen } = require('electron'), a = screen.getDisplayMatching(b).workArea
+    return b.x < a.x + a.width && b.x + b.width > a.x && b.y < a.y + a.height && b.y + b.height > a.y ? b : null
+  } catch { return null }
+}
 function open() {
+  const b = savedBounds()
   const win = new BrowserWindow({
-    width: 640, height: 480, useContentSize: true, minWidth: 320, minHeight: 240,
+    width: 640, height: 480, useContentSize: true, minWidth: 320, minHeight: 240, ...(b ? { x: b.x, y: b.y, width: b.width, height: b.height, useContentSize: false } : {}),
     title: 'Windows 95', backgroundColor: '#000000', show: false,
     webPreferences: { backgroundThrottling: false, contextIsolation: true, sandbox: true, preload: path.join(__dirname, 'preload.js') },
   })
+  let keep = null
+  const save = () => { clearTimeout(keep); keep = null; if (win.isDestroyed() || win.isMinimized() || win.isFullScreen()) return; try { fs.mkdirSync(path.dirname(boundsFile()), { recursive: true }); fs.writeFileSync(boundsFile(), JSON.stringify(win.getNormalBounds())) } catch {} }
+  for (const ev of ['move', 'resize']) win.on(ev, () => { clearTimeout(keep); keep = setTimeout(save, 500) })
+  win.on('close', save)
   win.once('ready-to-show', () => { win.show(); win.focus() })
   // DevTools: Option+Cmd+I (Ctrl+Alt+I elsewhere) toggles them before the page sees the key, and the page is told
   // (W95HOST.devtools) so the machine knows (its registry's DevTools value, the Debug Monitor)
@@ -21,7 +37,11 @@ function open() {
   })
   win.webContents.on('devtools-opened', () => win.webContents.send('devtools', true))
   win.webContents.on('devtools-closed', () => win.webContents.send('devtools', false))
-  win.loadFile(page, { search: 'mods=debug&debug=1' })   // (the mods debug.mod names: win95.js modFile; debug=1: the machine's own commands, shell_cmd)
+  const search = 'mods=debug&debug=1'   // (the mods debug.mod names: win95.js modFile; debug=1: the machine's own commands, shell_cmd)
+  // (debug=1: the page starts with DevTools open, its console reading from the first line; in a window of their own,
+  // as docked they would take part of the screen's content size and move the window from where it was kept)
+  if (new URLSearchParams(search).get('debug') === '1') win.webContents.once('did-start-loading', () => win.webContents.openDevTools({ mode: 'detach' }))
+  win.loadFile(page, { search })
 }
 ipcMain.on('devtools-open', e => { e.returnValue = e.sender.isDevToolsOpened() })
 
