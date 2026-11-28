@@ -1,0 +1,17 @@
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+globalThis.window = globalThis; globalThis.self = globalThis;
+for (const f of ['fs.js', 'win32.js', 'ne16.js', 'vmm.js']) new Function(readFileSync(new URL('../' + f, import.meta.url), 'utf8'))();
+const W = window.W95Win32, SVC = Object.values(window).find(v => v && v.VXD_SVC).VXD_SVC;
+assert.equal(W.LAYOUT.ARENA, 0x80000000);
+const mem = new WebAssembly.Memory({ initial: 16 });
+const p = Object.create(W.Process.prototype);
+p.mem = mem; p.r0Alloc = n => 0x4000;
+const a = SVC[1 << 16 | 0x4f].call(p, i => [0x20][i]) >>> 0;
+assert.ok(a >= 0x80000000, `the ring-0 heap's block is in the system arena: ${a.toString(16)}`);
+p.w32(a, 0x12345678);
+assert.equal(p.r32(0x4000), 0x12345678);
+assert.equal(p.r32(a), 0x12345678);
+p.writeA(a + 8, 'arena');
+assert.equal(p.readA(a + 8), 'arena');
+console.log('sysarena: ok');

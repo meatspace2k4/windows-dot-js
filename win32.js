@@ -7,7 +7,7 @@
 (() => {
 // guest address space: low runtime area, stack, programs' images and the DLLs placed among them from 0x400000, heap,
 // per-module block lookup tables from 0x5600000, the system's modules from 0xA000000, VirtualAlloc's space past them
-const LAYOUT = { SENTINEL: 0xFFFFFFF0, THUNK: 0xFFFF0000, THUNK16: 0xFFFE0000, FPU: 0x10000, TIB: 0x11000, SCRATCH: 0x12000,
+const LAYOUT = { SENTINEL: 0xFFFFFFF0, THUNK: 0xFFFF0000, THUNK16: 0xFFFE0000, ARENA: 0x80000000, FPU: 0x10000, TIB: 0x11000, SCRATCH: 0x12000,
   STACK_LO: 0x100000, STACK_TOP: 0x3ffff0, HEAP: 0x02000000, HEAP_END: 0x05500000,
   // a byte a 4 KB page of the address space, nonzero where ring 3 has no access (the null page, the VxDs' images, the
   // frame buffer's ring-0 mapping): ring-3 code's accesses are checked against it (dyn.js guard), protect() sets it
@@ -148,18 +148,28 @@ class Process {
   set cmdPtr(v) { (this.pc0 || (this.pc0 = { pid: 0x50 })).cmdPtr = v; }
   /** the whole pages in [lo, hi) as ring 0's only (`on`), or given back to ring 3: LAYOUT.PROT */
   // (`on` 'write': ring 3 may read them, not write them, as a VxD's memory is to ring 3 on Windows 95)
-  protect(lo, hi, on = true) { const a = (lo + 0xfff) >>> 12, b = hi >>> 12; if (b > a) this.u8.fill(on === 'write' ? 2 : on ? 1 : 0, LAYOUT.PROT + a, LAYOUT.PROT + b); }
+  protect(lo, hi, on = true) {
+    const a = (lo + 0xfff) >>> 12, b = hi >>> 12; if (b > a) this.u8.fill(on === 'write' ? 2 : on ? 1 : 0, LAYOUT.PROT + a, LAYOUT.PROT + b);
+    // (who protected the pages, for a fault on them: its log line names the range and the code that set it)
+    const tags = this.protTags || (this.protTags = new Map());
+    if (on) tags.set(a, { lo, hi, by: ((new Error().stack || '').split('\n')[2] || '').trim() }); else tags.delete(a);
+  }
+  protOwner(addr) {
+    for (const t of (this.protTags || new Map()).values()) if (addr >= t.lo && addr < t.hi) return `${t.lo.toString(16)}-${t.hi.toString(16)} by ${t.by}`;
+    return 'none recorded';
+  }
   get u8() { return new Uint8Array(this.mem.buffer); }
   get dv() { return new DataView(this.mem.buffer); }
-  r32(a) { return this.dv.getUint32(a, true); }
-  w32(a, v) { this.dv.setUint32(a, v >>> 0, true); }
-  r16(a) { return this.dv.getUint16(a, true); }
-  w16(a, v) { this.dv.setUint16(a, v & 0xffff, true); }
-  r8(a) { return this.u8[a]; }
-  i32(a) { return this.dv.getInt32(a, true); }
-  readA(p, max = 65536) { if (!p) return null; const u = this.u8; let s = ''; for (let i = 0; i < max && u[p + i]; i++) s += String.fromCharCode(u[p + i]); return s; }
+  r32(a) { return this.dv.getUint32(a & 0x7fffffff, true); }
+  w32(a, v) { this.dv.setUint32(a & 0x7fffffff, v >>> 0, true); }
+  r16(a) { return this.dv.getUint16(a & 0x7fffffff, true); }
+  w16(a, v) { this.dv.setUint16(a & 0x7fffffff, v & 0xffff, true); }
+  r8(a) { return this.u8[a & 0x7fffffff]; }
+  i32(a) { return this.dv.getInt32(a & 0x7fffffff, true); }
+  readA(p, max = 65536) { if (!p) return null; p &= 0x7fffffff; const u = this.u8; let s = ''; for (let i = 0; i < max && u[p + i]; i++) s += String.fromCharCode(u[p + i]); return s; }
   readW(p, max = 65536) { if (!p) return null; let s = ''; for (let i = 0; i < max; i++) { const c = this.r16(p + 2 * i); if (!c) break; s += String.fromCharCode(c); } return s; }
   writeA(p, s, max) {
+    p &= 0x7fffffff;
     const b = window.W95FS.encode(s), n = max === undefined ? b.length : Math.min(b.length, max - 1);
     this.u8.set(b.subarray(0, n), p); this.u8[p + n] = 0; return n;
   }
@@ -1087,6 +1097,7 @@ class Process {
   dispatch(eip) {
     for (;;) {
       eip >>>= 0;
+      if (eip >= LAYOUT.ARENA && eip < LAYOUT.THUNK16) eip -= LAYOUT.ARENA;
       if (eip === LAYOUT.SENTINEL) return 0;
       // (the 16-bit thunks' segment's own memory, reached through a CS its descriptor gave: the thunk, ne16.js init16)
       if (this.t16r && eip >= this.t16r && eip < this.t16r + 0x10000) eip = u32(LAYOUT.THUNK16 + (eip - this.t16r));
@@ -1283,6 +1294,9 @@ class Process {
         throw new FaultError(Object.assign(this.faultInfo(12, u32(this.cpu.eip.value), u32(eip)), { why: `stack fault at ${u32(this.cpu.eip.value).toString(16)}` }));
       }
       this.pfWrite = !!(code & 0x10);
+      { let blk = 'no block'; for (const [b, n] of this.allocs || []) if (u32(eip) >= b && u32(eip) < b + n) { blk = `block ${b.toString(16)}+${n.toString(16)}`; break; }
+        const edi = u32(this.cpu.edi.value); let eb = ''; for (const [b, n] of this.allocs || []) if (edi - 0x4000 >= b && edi - 0x4000 < b + n) { eb = `, the write's start in block ${b.toString(16)}+${n.toString(16)}`; break; }
+        log('warn', 'win32', `protected page at ${u32(eip).toString(16)}: ${this.protOwner(u32(eip))}; ${blk}${eb}`); }
       (this.faultLog || (this.faultLog = [])).push({ why: `ring 3 ${this.pfWrite ? 'write' : 'read'} at ${u32(eip).toString(16)}, a protected page`, at: u32(this.cpu.eip.value).toString(16), atIn: this.whereOf(this.cpu.eip.value), thread: this.thread16 ? this.thread16.id : 'main',
         stack: Array.from({ length: 16 }, (_, k) => this.r32(u32(this.cpu.esp.value) + 4 * k)).map(v => this.whereOf(v)).filter(s => s && /[A-Z]/.test(s)) }); if (this.faultLog.length > 50) this.faultLog.shift();
       // (in the log as it happens too, as noCode's: a machine that ends of it, at its boot, leaves no fault log to ask for)
@@ -1913,7 +1927,13 @@ const regHive = which => {
   const blockSize = b => (b.used + 0x20 + 0x14 + 0xfff) & ~0xfff;
   const total = 0x20 + rgknSize + blocks.reduce((s, b) => s + blockSize(b), 0);
   const out = new Uint8Array(total), dv = new DataView(out.buffer), tag = (o, s) => out.set(enc(s), o);
-  tag(0, 'CREG'); dv.setUint32(4, 0x10000, true); dv.setUint32(8, 0x20 + rgknSize, true); dv.setUint16(0x10, blocks.length, true); dv.setUint16(0x12, 0x21, true); dv.setUint16(0x16, 1, true);
+  tag(0, 'CREG'); dv.setUint32(4, 0x10000, true); dv.setUint32(8, 0x20 + rgknSize, true); dv.setUint16(0x10, blocks.length, true); dv.setUint16(0x12, 0x20, true); dv.setUint16(0x16, 1, true);
+  // (its flags 20h, closed clean: bit 0 is the VMM's mark of a registry open and not yet written back, which IO.SYS
+  // takes at boot for one Windows did not close, and stops at the Startup Menu's "registry/configuration error")
+  // (the header's checksum at 0Ch: its other dwords XORed, as the VMM writes it and IO.SYS's real-mode registry checks
+  // it at boot. Left 0, IO.SYS took SYSTEM.DAT for damaged, found no SYSTEM.DA0, and every start stopped at the
+  // Startup Menu's "registry/configuration error", Safe mode chosen)
+  { let x = 0; for (let o = 0; o < 0x20; o += 4) if (o !== 0x0c) x ^= dv.getUint32(o, true); dv.setUint32(0x0c, x >>> 0, true); }
   const K = 0x20;
   tag(K, 'RGKN'); dv.setUint32(K + 4, rgknSize, true); dv.setUint32(K + 8, 0x20, true); dv.setUint32(K + 0x10, 8, true);
   // (the block's space past its entries is one free entry, the head of its free list: 80000000h, its size, the next (none))
@@ -2403,10 +2423,6 @@ function memFree(h) {
 function memReAlloc(h, n, f) {
   const m = gmov(this, h);
   if (f & MODIFY) return h;   // (its flags alone)
-  // (a fixed block, or a locked one, moves only when the call says it may (GMEM_MOVEABLE), as Windows': else a block
-  // that cannot grow where it is stays and the call fails. Moved and freed, its owner went on with the old address)
-  const grows = n > (m ? m.size : this.allocs.get(u32(h)) || 0);
-  if (grows && !(f & MOVEABLE) && (!m || m.locks)) { this.lastError = 8; return 0; }
   if (!m) return this.realloc(h, n);
   if (!n) { if (m.ptr) this.free(m.ptr); m.ptr = 0; m.size = 0; this.w32(h, 0); return h; }   // (discarded: the handle stays)
   const old = m.size; m.ptr = m.ptr ? this.realloc(m.ptr, n) : this.alloc(n);
@@ -3052,6 +3068,7 @@ def('KERNEL32', 'CloseHandle', 1, function (h) {
   if (m && m.name) { if (this.namedOwner) this.namedOwner.delete(h); namedGone(this, m); }
   // (a file's mapping goes with its last handle, and its data with it)
   if (m && m.kind === 'mapping') { if (m.file) mapFlush(this, m); mapGone(this, m); }
+  if (m && m.kind === 'socket' && m.ctx) socketGone(this, m);
   return 1;
 });
 // ---- consoles: a Win32 console program's, which an MS-DOS machine's window is (a DOS box is a console, as CONAGENT makes
@@ -3158,7 +3175,7 @@ def('KERNEL32', 'SetFileTime', 4, function (h, c, a, w) {
   const f = fileOf(this, h); if (!f) { this.lastError = 6; return 0; }
   const ms = p => p ? Number((ft64(this, p) - 116444736000000000n) / 10000n) : undefined, t = {};
   for (const [k, p] of [['ctime', c], ['atime', a], ['mtime', w]]) { const v = ms(p); if (v !== undefined) t[k] = v; }
-  this.fs.futimes(f.fd, t); return 1;
+  return fsCall(this, () => { this.fs.futimes(f.fd, t); return 1; });
 });
 def('KERNEL32', 'GetFileAttributesA', 1, function (n) { return fsCall(this, () => this.fs.stat(this.readA(n)).attrs, 0xffffffff); });
 def('KERNEL32', 'SetFileAttributesA', 2, function (n, a) { return fsCall(this, () => (this.fs.setAttrs(this.readA(n), a), 1)); });
@@ -3236,7 +3253,16 @@ def('KERNEL32', 'SearchPathA', 6, function (path, file, ext, n, buf, part) {
 const sections = p => p.sections || (p.sections = new Map());
 def('KERNEL32', 'CreateFileMappingA', 6, function (h, sa, prot, hi, lo, name) {
   const key = name ? this.readA(name).toUpperCase() : null, had = key && sections(this).get(key);
-  if (had) { this.lastError = 183; return this.newHandle(had); }
+  if (had) {
+    // (a file's named mapping asked for again larger, as WININET grows its cache index: the file and the mapping's data
+    // grown to the size asked for, in place when the heap has the room after it. Answered at its old size, WININET
+    // zeroed the new part past the data's end, into the next block's pages, and faulted)
+    let want = u32(hi) ? 0 : u32(lo);
+    if (!want && had.path) try { want = this.fs.stat(had.path).size; } catch (_) { want = 0; }
+    if (had.file && had.base && want > had.size) mapGrow(this, had, want);
+    else if (want > (had.want || 0)) had.want = want;
+    this.lastError = 183; return this.newHandle(had);
+  }
   let m;
   if (u32(h) === 0xffffffff) { if (!lo) { this.lastError = 87; return 0; } const base = this.alloc(lo); this.u8.fill(0, base, base + lo); m = { kind: 'mapping', base, size: lo }; }
   // (a file's: its size at least the size asked for, the file grown to it as Windows grows it, and written back when
@@ -3252,16 +3278,28 @@ def('KERNEL32', 'OpenFileMappingA', 3, function (access, inherit, name) {
   const m = name && sections(this).get(this.readA(name).toUpperCase()); if (!m) { this.lastError = 2; return 0; }
   this.lastError = 0; return this.newHandle(m);
 });
-def('KERNEL32', 'MapViewOfFile', 5, function (h, access, hi, lo) {
+def('KERNEL32', 'MapViewOfFile', 5, function (h, access, hi, lo, n) {
   const m = this.obj(h); if (!m || m.kind !== 'mapping') { this.lastError = 6; return 0; }
+  if (m.file && m.base && u32(lo) + u32(n) > m.size) mapGrow(this, m, u32(lo) + u32(n));
+  else if (m.file && m.base && m.path) { let fsz = 0; try { fsz = this.fs.stat(m.path).size; } catch (_) { fsz = 0; } if (fsz > m.size) mapGrow(this, m, fsz); }
   // (a file's mapping has its data at one address for as long as the mapping object lives, as Windows 95 keeps a
   // mapping in the shared arena: every view is that address, and unmapping a view leaves it. GDI32 maps a font file,
   // unmaps the view at once and reads the font through its address while it holds the mapping's handle; a copy per
   // view, freed at the unmap, was SUWIN's next GlobalAlloc, zeroed, and the TrueType loader found no table directory)
-  if (!m.base) { const r = fsCall(this, () => { const b = this.fs.readFile(m.path), n = Math.max(b.length, m.want || 0); m.base = this.alloc(n + 1); m.size = n; m.file = true; this.u8.fill(0, m.base, m.base + n + 1); this.u8.set(b, m.base); if (n > b.length && m.write) mapFlush(this, m); return 0; }); if (!m.base) return r || 0; }
+  if (!m.base) { const r = fsCall(this, () => { const b = this.fs.readFile(m.path), n = Math.max(b.length, m.want || 0); m.cap = m.write ? n + 0x400000 : n; m.base = this.alloc(m.cap + 1); m.size = n; m.file = true; this.u8.fill(0, m.base, m.base + n + 1); this.u8.set(b, m.base); if (n > b.length && m.write) mapFlush(this, m); return 0; }); if (!m.base) return r || 0; }
   if (m.file) m.views = (m.views || 0) + 1;
   return m.base + lo;
 });
+/** a file mapping's data grown to `want` bytes, in place when the heap has the room, the file's own bytes past the old
+ *  end read in */
+function mapGrow(p, m, want) {
+  const old = m.size;
+  if (want > (m.cap || old) && !p.extend(m.base, want + 1)) { const nb = p.alloc(want + 1); p.u8.copyWithin(nb, m.base, m.base + old); p.free(m.base); m.base = nb; }
+  p.u8.fill(0, m.base + old, m.base + want + 1);
+  try { const b = p.fs.readFile(m.path); if (b.length > old) p.u8.set(b.subarray(old, Math.min(b.length, want)), m.base + old); } catch (_) { /* none to read */ }
+  m.size = want; m.want = Math.max(m.want || 0, want);
+  if (m.write) mapFlush(p, m);
+}
 /** a writable file mapping's data written back to its file */
 const mapFlush = (p, m) => { if (m.file && m.write && m.path && m.base) fsCall(p, () => { p.fs.writeFile(m.path, p.u8.slice(m.base, m.base + m.size)); return 1; }); };
 /** a file's mapping gone once it has neither a handle nor a view, written back first (Windows keeps a mapping while a
@@ -3681,7 +3719,13 @@ def('KERNEL32', 'GlobalFindAtomA', 1, function (s) { { const r = userAtom(this, 
 def('KERNEL32', 'GlobalGetAtomNameA', 3, function (id, buf, n) { { const r = userAtom(this, 271, [['w', id], ['l', this.mapLS(buf)], ['w', Math.min(n, 0xffff)]]); if (r !== null) return r; } const a = atomsOf(this).byId.get(id); return a ? this.writeA(buf, a.name, n) : 0; });
 // WSOCK32's socket handles: a KERNEL32 handle it makes for each socket (CreateSocketHandle) and keeps its own data in
 // (SetHandleContext, GetHandleContext), as Windows 95's KERNEL32 serves them
-def('KERNEL32', 'CreateSocketHandle', 0, function () { return this.newHandle({ kind: 'socket', ctx: 0 }); });
+const WSOCK_CLOSESOCKET = 0x102;
+const socketGone = (p, m) => {
+  const v = p.vxdById && p.vxdById(0x3e); if (!v) return;
+  const b = p.sockCloseBuf || (p.sockCloseBuf = p.alloc(4)); p.w32(b, m.ctx);
+  p.vxdIoctl(v, WSOCK_CLOSESOCKET, b, 4, 0, 0, 0, 0);
+};
+def('KERNEL32', 'CreateSocketHandle', 0,function () { return this.newHandle({ kind: 'socket', ctx: 0 }); });
 def('KERNEL32', 'SetHandleContext', 2, function (h, ctx) { const o = this.obj(h); if (!o) { this.lastError = 6; return 0; } o.ctx = ctx >>> 0; return 1; });
 def('KERNEL32', 'GetHandleContext', 1, function (h) { const o = this.obj(h); if (!o) { this.lastError = 6; return 0; } return o.ctx >>> 0 || 0; });
 // code written at run time is translated from its bytes as they are when it runs (dyn.js checks a block's bytes

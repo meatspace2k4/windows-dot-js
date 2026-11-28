@@ -32,8 +32,10 @@ function receive(f) {
   if (f.length < 14) return;
   const toUs = eq(f, 0, MAC), bcast = eq(f, 0, BCAST_MAC), type = be16(f, 12);
   if (!toUs && !bcast) return;
+  gw.rx = (gw.rx || 0) + 1;
   if (type === 0x0806) arp(f);
-  else if (type === 0x0800) ipv4(f.subarray(14), f.subarray(6, 12));
+  else if (type === 0x0800) ipv4(f.subarray(14), f.slice(6, 12));   // (the sender's address copied: a connection keeps it, and the frame's buffer is the card's to reuse)
+  else if (type >= 0x600 && !gw.saidType) { gw.saidType = true; console.info(`[lanip] a frame of type ${type.toString(16)}h: not IP`); }
 }
 
 // ---------------------------------------------------------------- ARP: every address on the network but the PC's is
@@ -90,7 +92,9 @@ function udp(src, dst, u, mac) {
 function dhcp(d, mac) {
   if (d[0] !== 1 || be32(d, 236) !== 0x63825363) return;
   let type = 0; for (let o = 240; o < d.length && d[o] !== 255;) { if (d[o] === 0) { o++; continue; } if (d[o] === 53) type = d[o + 2]; o += 2 + d[o + 1]; }
-  const reply = type === 1 ? 2 : type === 3 ? 5 : 0; if (!reply) return;
+  const reply = type === 1 ? 2 : type === 3 ? 5 : 0;
+  console.info(`[lanip] DHCP ${['', 'DISCOVER', 'OFFER', 'REQUEST', 'DECLINE', 'ACK', 'NAK', 'RELEASE', 'INFORM'][type] || type} from ${[...d.subarray(28, 34)].map(x => x.toString(16).padStart(2, '0')).join(':')}${reply ? ', answered' : ''}`);
+  if (!reply) return;
   const r = new Uint8Array(300);
   r[0] = 2; r[1] = 1; r[2] = 6; r.set(d.subarray(4, 8), 4); r.set(d.subarray(10, 12), 10); r.set(PC, 16); r.set(GW, 20); r.set(d.subarray(28, 44), 28);
   put32(r, 236, 0x63825363);
@@ -200,14 +204,28 @@ async function request(c) {
   const out = {}; for (const [k, v] of Object.entries(hdrs)) if (!['host', 'connection', 'proxy-connection', 'keep-alive', 'accept-encoding', 'content-length', 'upgrade-insecure-requests'].includes(k)) out[k] = v;
   let r = null;
   for (const scheme of ['https', 'http']) {
-    r = await hostFetch({ url: `${scheme}://${host}${path}`, method, headers: out, body: blen ? Array.from(body) : null });
+    r = await followRedirects({ url: `${scheme}://${host}${path}`, method, headers: out, body: blen ? Array.from(body) : null });
     if (!r.error) break;
   }
   respond(c, r);
 }
+const MAX_REDIRECTS = 20;
+async function followRedirects(req) {
+  for (let hop = 0; ; hop++) {
+    const r = await hostFetch(req);
+    const loc = !r.error && r.status >= 300 && r.status < 400 && r.headers.find(([k]) => k.toLowerCase() === 'location');
+    if (!loc) return r;
+    if (hop >= MAX_REDIRECTS) return { error: `more than ${MAX_REDIRECTS} redirects from ${req.url}` };
+    const url = new URL(loc[1], req.url).href;
+    const keep = r.status === 307 || r.status === 308 || (r.status !== 303 && req.method === 'GET') || req.method === 'HEAD';
+    req = keep ? { ...req, url } : { ...req, url, method: 'GET', body: null };
+  }
+}
+gw.followRedirects = followRedirects;
 async function hostFetch(req) {
   const h = window.W95HOST && window.W95HOST.net;
   if (h) return h.fetch(req);
+  if (window.W95NETFETCH) return window.W95NETFETCH(req);
   try {
     const r = await fetch(req.url, { method: req.method, headers: req.headers, body: req.body ? new Uint8Array(req.body) : undefined, redirect: 'manual' });
     return { status: r.status || 200, statusText: r.statusText, headers: [...r.headers], body: new Uint8Array(await r.arrayBuffer()) };
@@ -222,10 +240,15 @@ function respond(c, r) {
     status = r.status === 308 ? 301 : r.status === 307 ? 302 : r.status;
     body = r.body instanceof Uint8Array ? r.body : new Uint8Array(r.body || []);
     const type = (r.headers.find(([k]) => k.toLowerCase() === 'content-type') || [, ''])[1];
-    if (/text\/|javascript|json|xml/i.test(type)) body = enc(deTLS(new TextDecoder(/charset=([\w-]+)/i.exec(type)?.[1] || 'utf-8').decode(body)));
+    if (/text\/|javascript|json|xml/i.test(type)) {
+      let s = deTLS(new TextDecoder(/charset=([\w-]+)/i.exec(type)?.[1] || 'utf-8').decode(body));
+      if (/text\/html/i.test(type)) s = self.W95IE4JS.html(s);
+      body = enc(s);
+    }
     for (const [k, v] of r.headers) {
       const l = k.toLowerCase();
       if (['content-encoding', 'transfer-encoding', 'content-length', 'connection', 'keep-alive', 'strict-transport-security', 'content-security-policy', 'alt-svc'].includes(l)) continue;
+      if (l === 'content-type' && /text\/|javascript|json|xml/i.test(v)) { headers.push([k, v.replace(/;\s*charset=[^;]*/i, '') + '; charset=utf-8']); continue; }
       headers.push([k, l === 'location' || l === 'set-cookie' ? deTLS(v).replace(/;\s*secure/gi, '') : v]);
     }
   }

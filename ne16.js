@@ -1345,7 +1345,7 @@ const INTS = {
       // (a VxD's call through Exec_VxD_Int: 32-bit offsets on a flat DS)
       const flat = this.vxdFlat, off16 = r => (flat ? u32(this.cpu[r].value) : this.cpu[r].value & 0xffff);
       const bx = this.cpu.ebx.value & 0xffff, cx = flat ? u32(this.cpu.ecx.value) : this.cpu.ecx.value & 0xffff, dx = off16('edx');
-      const at = off => (flat ? off : this.rmode ? ((this.cpu.ds.value & 0xffff) << 4) + off : this.lin((this.cpu.ds.value << 16) | off));
+      const at = off => (flat ? off & 0x7fffffff : this.rmode ? ((this.cpu.ds.value & 0xffff) << 4) + off : this.lin((this.cpu.ds.value << 16) | off));
       const dsdx = () => at(dx), f = this.dosFiles.get(bx);
       const fail = code => { CF(this, 1); this.ax(code); this.dosError = code; };
       try {
@@ -4169,7 +4169,7 @@ const FT_EPOCH = 11644473600000n;
 P.dosNames = function (fn, lfn) {
   const W = window.W95FS, flat = this.vxdFlat;
   const off16 = r => (flat ? u32(this.cpu[r].value) : this.cpu[r].value & 0xffff);
-  const at = (seg, off) => (flat ? off : this.rmode ? ((this.cpu[seg].value & 0xffff) << 4) + off : this.lin((this.cpu[seg].value << 16) | off));
+  const at = (seg, off) => (flat ? off & 0x7fffffff : this.rmode ? ((this.cpu[seg].value & 0xffff) << 4) + off : this.lin((this.cpu[seg].value << 16) | off));
   const dsdx = () => at('ds', off16('edx')), dssi = () => at('ds', off16('esi')), esdi = () => at('es', off16('edi'));
   const fail = code => { CF(this, 1); this.ax(code); this.dosError = code; };
   const reg = (r, v) => { this.cpu[r].value = lo16(this.cpu[r].value, v); };

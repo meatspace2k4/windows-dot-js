@@ -9,7 +9,7 @@
 // in a Client_Reg_Struc at EBP.
 (function () {
 const W = window.W95Win32, N = window.W95NE16, P = W.Process.prototype, { INTS, def16, CR, regStr } = N;
-const u32 = x => x >>> 0, lo16 = (x, v) => u32((x & 0xffff0000) | (v & 0xffff));
+const u32 = x => x >>> 0, lin = x => x & 0x7fffffff, lo16 =(x, v) => u32((x & 0xffff0000) | (v & 0xffff));
 const GPR = ['eax', 'ebx', 'ecx', 'edx', 'esi', 'edi', 'ebp', 'esp'];
 const SEGS = [['cs', 'csb'], ['ds', 'dsb'], ['es', 'esb'], ['ss', 'ssb'], ['fsel', 'fs'], ['gsel', 'gsb']];
 
@@ -96,7 +96,7 @@ const leImage = (data, base) => {
 // Agent, which the Plus! savers open) is left to its program to do without, as before)
 // (and TCP/IP's, NETTRANS.INF MSTCP: VIP, VTCP, VDHCP, VNBT and Winsock's VxD, which Network's Add copies from the CD
 // and lists as StaticVxD, loaded from the disk at boot (vxdBoot). Not loaded, TCP/IP installed had no network under it)
-const DISK_VXDS = new Set(['DDRAW.VXD', 'VIP.386', 'VTCP.386', 'VDHCP.386', 'VNBT.386', 'WSOCK.VXD']);
+const DISK_VXDS = new Set(['DDRAW.VXD', 'AFVXD.VXD', 'WSHTCP.VXD', 'VTDI.386', 'VIP.386', 'VTCP.386', 'VDHCP.386', 'VNBT.386', 'WSOCK.VXD']);
 P.vxdFromDisk = function (key) {
   if (!this.fs || !DISK_VXDS.has(key)) return null;
   let data = null;
@@ -124,9 +124,13 @@ P.vxdInstalled = function (key, d, b64) {
 /** an LE image put in the arena with its fixups for where it is, its code translated as it runs */
 P.vxdDiskImage = function (key, data, from = 'the disk') {
   const probe = leImage(data, 0); if (!probe) { W.log('warn', 'vxd', `${key}: not an LE image`); return null; }
-  const base = this.imageRoom(0, probe.size, true); if (!base) { W.log('warn', 'vxd', `${key}: no room for its ${probe.size.toString(16)} bytes`); return null; }
-  const le = leImage(data, base);
-  this.u8.set(le.image, base); this.protect(base, base + le.size, 'write');
+  // (its room taken from the heap, page aligned, so nothing is given its pages after: put where imageRoom found room
+  // without taking it, the heap gave the same pages to WININET, whose memset faulted on the image's write-protection)
+  let base = 0; try { const raw = this.alloc(probe.size + 0x1000); base = (raw + 0xfff) & ~0xfff; } catch (_) { base = 0; }
+  if (!base) { W.log('warn', 'vxd', `${key}: no room for its ${probe.size.toString(16)} bytes`); return null; }
+  const le = leImage(data, u32(W.LAYOUT.ARENA + base));
+  this.u8.set(le.image, base);
+  this.protect(base, base + le.size, 'write');
   // (no translated module: textLo = textHi, so each block is translated as it is entered, win32.js dispatch)
   const meta = { name: le.name, id: le.id, ddb: le.ddb, procs: le.procs, services: le.services, base, size: le.size, textLo: 0, textHi: 0, blocks: [], vxd: true, disk: true };
   const rec = { kind: 'vxd', name: le.name, file: key, id: le.id, meta, run: null, ddb: le.ddb, procs: le.procs, base, size: le.size };
@@ -593,7 +597,7 @@ P.vmMapPages = function (vmh, page, n, lin) {
   for (let i = 0; i < n; i++) {
     const pg = page + i, old = maps.get(pg);
     if (old) this.u8.copyWithin(old, vmLin(pg), vmLin(pg) + 0x1000);   // (what the VM wrote, to the page it had)
-    const to = lin ? lin(i) : 0;
+    const to = lin ? lin(i) & 0x7fffffff : 0;
     if (to) { maps.set(pg, to); this.u8.copyWithin(vmLin(pg), to, to + 0x1000); } else maps.delete(pg);
   }
   return 1;
@@ -676,9 +680,10 @@ svc(VMM, 0x53, function (arg) {
   const a = this.alloc(n + 4096); const p = (a + 4095) & ~4095; this.u8.fill(0, p, p + n);
   (this.pageAllocs || (this.pageAllocs = new Map())).set(p, a);   // (the block it is in, for _PageFree)
   if (arg(6)) this.w32(arg(6), p);
-  this.cpu.edx.value = p; return p;
+  const lin = u32(W.LAYOUT.ARENA + p);
+  this.cpu.edx.value = lin; return lin;
 });
-svc(VMM, 0x55, function (arg) { const a = this.pageAllocs && this.pageAllocs.get(u32(arg(0))); if (a) { this.pageAllocs.delete(u32(arg(0))); this.free(a); } return 1; });   // _PageFree(hMem, flags)
+svc(VMM, 0x55, function (arg) { const k = u32(arg(0)) & 0x7fffffff, a = this.pageAllocs && this.pageAllocs.get(k); if (a) { this.pageAllocs.delete(k); this.free(a); } return 1; });   // _PageFree(hMem, flags)
 svc(VMM, 0x63, function (arg) { return u32(arg(0) << 12); });                                         // _LinPageLock: the region's linear address
 svc(VMM, 0x64, function () { return 1; });                                                            // _LinPageUnLock
 // _HeapAllocate, _HeapFree: the VxDs' heap on ring 0's pages (win32.js PROT), as the VMM's heap is in the system arena,
@@ -702,8 +707,8 @@ P.r0HeapFree = function (a) {
   const h = this.r0Heap, n = h && h.sizes.get(a); if (!n) return false;
   h.sizes.delete(a); if (!h.free.has(n)) h.free.set(n, []); h.free.get(n).push(a); return true;
 };
-svc(VMM, 0x4f, function (arg) { return this.r0Alloc(arg(0)); });                                      // _HeapAllocate
-svc(VMM, 0x51, function (arg) { if (!this.r0HeapFree(u32(arg(0)))) this.free(u32(arg(0))); return 1; });   // _HeapFree(hAddress, flags)
+svc(VMM, 0x4f, function (arg) { return u32(W.LAYOUT.ARENA + this.r0Alloc(arg(0))); });                                     // _HeapAllocate
+svc(VMM, 0x51, function (arg) { const a = u32(arg(0)) & 0x7fffffff; if (!this.r0HeapFree(a)) this.free(a); return 1; });   // _HeapFree(hAddress, flags)
 
 // ---- VMM: selectors. _BuildDescriptorDWORDs(base, limit, type, size, flags) -> EAX low, EDX high dword
 svc(VMM, 0x7a, function (arg) {
@@ -837,19 +842,19 @@ svc(VMM, 0x150, function (arg) {                                                
   const name = (e[1] && e[1].name) || e[0], v = valBytes(e[1]);
   if (arg(3)) { const n = this.r32(arg(3)); if (name.length >= n) return ERR.MORE_DATA; this.writeA(arg(2), name, n); this.w32(arg(3), name.length); }
   if (arg(5)) this.w32(arg(5), v.type);
-  if (arg(7)) { const n = this.r32(arg(7)); this.w32(arg(7), v.data.length); if (arg(6)) { if (n < v.data.length) return ERR.MORE_DATA; this.u8.set(v.data, arg(6)); } }
+  if (arg(7)) { const n = this.r32(arg(7)); this.w32(arg(7), v.data.length); if (arg(6)) { if (n < v.data.length) return ERR.MORE_DATA; this.u8.set(v.data, lin(arg(6))); } }
   return ERR.SUCCESS;
 });
 svc(VMM, 0x151, function (arg) {                                                                      // _RegQueryValueEx(h, name, -, *type, data, *cb)
   const base = keyPath(this, arg(0)); if (!base) return ERR.BADKEY;
   const v = valBytes(W.regGet(base, arg(1) ? this.readA(arg(1)) || '' : '')); if (!v) return ERR.FILE_NOT_FOUND;
   if (arg(3)) this.w32(arg(3), v.type);
-  if (arg(5)) { const n = this.r32(arg(5)); this.w32(arg(5), v.data.length); if (arg(4)) { if (n < v.data.length) return ERR.MORE_DATA; this.u8.set(v.data, arg(4)); } }
+  if (arg(5)) { const n = this.r32(arg(5)); this.w32(arg(5), v.data.length); if (arg(4)) { if (n < v.data.length) return ERR.MORE_DATA; this.u8.set(v.data, lin(arg(4))); } }
   return ERR.SUCCESS;
 });
 svc(VMM, 0x152, function (arg) {                                                                      // _RegSetValueEx(h, name, -, type, data, cb)
   const base = keyPath(this, arg(0)); if (!base) return ERR.BADKEY;
-  W.regSet(base, arg(1) ? this.readA(arg(1)) || '' : '', { type: arg(3), data: this.u8.slice(arg(4), arg(4) + arg(5)) });
+  W.regSet(base, arg(1) ? this.readA(arg(1)) || '' : '', { type: arg(3), data: this.u8.slice(lin(arg(4)), lin(arg(4)) + arg(5)) });
   return ERR.SUCCESS;
 });
 svc(VMM, 0x155, function () { return ERR.SUCCESS; });                                                 // _RegFlushKey
@@ -1089,8 +1094,11 @@ svc(SHELL, 0x04, function () {
 // handle; a VxD the system bundle does not carry is a file the loader cannot open (3). UnloadDevice (EBX device id or
 // EDX name)
 const VXDLDR = 0x27;
+// Get_Version: AX the loader's version (Windows 95's 4.0), carry clear. Missing, WSOCK.VXD's Device_Init failed, and
+// Winsock had no VxD under it: Internet Explorer said "an internal error occurred in the Windows Internet extensions"
+svc(VXDLDR, 0x00, function () { this.cpu.eax.value = 0x0400; CF(this, false); });
 svc(VXDLDR, 0x01, function () {
-  const name = this.readA(u32(this.cpu.edx.value)) || '', v = this.cpu.eax.value & 1 ? this.vxdLoad(name) : this.vxd(name);
+  const name = this.readA(u32(this.cpu.edx.value)) || '', v = this.cpu.eax.value & 1 ? this.vxdLoad(name, true) : this.vxd(name, true);
   if (!v) { this.cpu.eax.value = 3; CF(this, true); return; }
   this.cpu.eax.value = v.ddb; this.cpu.edx.value = this.vxdDeviceInfo(v); CF(this, false);
 });
@@ -1224,7 +1232,7 @@ svc(VDD, 0x07, function () { const t = this.textScreen(); t.bg = this.cpu.eax.va
 svc(VDD, 0x08, function () { this.textScreen().fg = this.cpu.eax.value & 0xf; });
 svc(VDD, 0x09, function () { this.textScreen().bg = this.cpu.eax.value & 0xf; });
 svc(VDD, 0x0a, function () {
-  const t = this.textScreen(), row = u32(this.cpu.eax.value), col = u32(this.cpu.edx.value), a = u32(this.cpu.esi.value), n = u32(this.cpu.ecx.value);
+  const t = this.textScreen(), row = u32(this.cpu.eax.value), col = u32(this.cpu.edx.value), a = lin(this.cpu.esi.value), n = u32(this.cpu.ecx.value);
   for (let i = 0; i < n && col + i < t.cols && row < t.rows; i++) { const o = row * t.cols + col + i; t.ch[o] = this.u8[a + i]; t.at[o] = t.bg << 4 | t.fg; }
   t.gen++;
 });
@@ -1305,7 +1313,7 @@ svc(V86MMGR, 0x02, function () {
 // as an absent device's does: IFSMgr takes the system VM's DOS through DOSMGR's other services when there is one)
 const DOSMGR = 0x15;
 svc(DOSMGR, 0x01, function (arg) {
-  const v = this.vmOf(arg(0)), a = i => u32(arg(i)), s = i => (a(i) ? this.readA(a(i), 260) || '' : '');
+  const v = this.vmOf(arg(0)), a = i => lin(arg(i)), s =i => (a(i) ? this.readA(a(i), 260) || '' : '');
   if (!v) return 0;
   const tail = a(1) ? [...this.u8.subarray(a(1), a(1) + Math.min(this.u8[a(1)], 126) + 2)] : [0, 13];   // (DOS's form: its length, the text, CR)
   v.exec = { tail, program: s(2), dir: s(3) };
@@ -1473,7 +1481,7 @@ svc(CONFIGMG, 0x1b, function (arg) {                                            
 });
 svc(CONFIGMG, 0x1c, function (arg) {                                                                  // Add_Res_Des(*rd, lc, resource, data, len, flags)
   const lc = cmObjs(this).get(u32(arg(1))); if (!lc || lc.kind !== 'lc') return 7;
-  const rd = cmRd(this, lc, arg(2) & 0x7fff, this.u8.slice(arg(3), arg(3) + arg(4))); lc.res.push(rd);
+  const rd = cmRd(this, lc, arg(2) & 0x7fff, this.u8.slice(lin(arg(3)), lin(arg(3)) + arg(4))); lc.res.push(rd);
   if (arg(0)) this.w32(arg(0), rd.handle); return CR.SUCCESS;
 });
 // Get_Next_Res_Des(*rd, log conf or res des, resource type (0 all), *resource, flags)
@@ -1486,7 +1494,7 @@ svc(CONFIGMG, 0x1f, function (arg) {
 svc(CONFIGMG, 0x21, function (arg) { const rd = cmObjs(this).get(u32(arg(1))); if (!rd || rd.kind !== 'rd') return 8; this.w32(arg(0), rd.data.length); return CR.SUCCESS; });   // Get_Res_Des_Data_Size
 svc(CONFIGMG, 0x22, function (arg) {                                                                  // Get_Res_Des_Data(rd, buf, len, flags)
   const rd = cmObjs(this).get(u32(arg(0))); if (!rd || rd.kind !== 'rd') return 8;
-  if (arg(2) < rd.data.length) return CR.BUFFER_SMALL; this.u8.set(rd.data, arg(1)); return CR.SUCCESS;
+  if (arg(2) < rd.data.length) return CR.BUFFER_SMALL; this.u8.set(rd.data, lin(arg(1))); return CR.SUCCESS;
 });
 svc(CONFIGMG, 0x3b, function (arg) { const dn = this.cmNode(arg(1)); if (!dn) return CR.INVALID_DEVNODE; return this.cmConfig(dn, arg(0)); });   // Get_Alloc_Log_Conf(CMCONFIG, dn, flags)
 // Read_Registry_Value(dn, subkey, name, type, buf, *len, flags)
@@ -1495,14 +1503,14 @@ svc(CONFIGMG, 0x3e, function (arg) {
   const k = this.cmKey(dn, arg(1) && this.readA(arg(1)), arg(6)); if (!k) return CR.REGISTRY_ERROR;
   const v = valBytes(W.regGet('hklm\\' + k, (arg(2) && this.readA(arg(2))) || '')); if (!v) return CR.NO_SUCH_VALUE;
   const n = this.r32(arg(5)); this.w32(arg(5), v.data.length); if (n < v.data.length) return CR.BUFFER_SMALL;
-  if (arg(4)) this.u8.set(v.data, arg(4)); return CR.SUCCESS;
+  if (arg(4)) this.u8.set(v.data, lin(arg(4))); return CR.SUCCESS;
 });
 // Write_Registry_Value(dn, subkey, name, type, buf, len, flags): VCOMM's, a port's settings under its devnode's key (a
 // string to its terminating null)
 svc(CONFIGMG, 0x3f, function (arg) {
   const dn = this.cmNode(arg(0)); if (!dn) return CR.INVALID_DEVNODE;
   const k = this.cmKey(dn, arg(1) && this.readA(arg(1)), arg(6)); if (!k) return CR.REGISTRY_ERROR;
-  let data = this.u8.slice(arg(4), arg(4) + arg(5));
+  let data = this.u8.slice(lin(arg(4)), lin(arg(4)) + arg(5));
   if (arg(3) === 1) { const z = data.indexOf(0); if (z >= 0) data = data.slice(0, z + 1); }
   W.regSet('hklm\\' + k, (arg(2) && this.readA(arg(2))) || '', { type: arg(3), data }); return CR.SUCCESS;
 });
@@ -1585,8 +1593,8 @@ P.vmClientIdle = function () {
 // ---- VMM: running VM code from a VxD (nested execution). Begin_Nest_Exec; Simulate_Push (EAX: a word) and
 // Simulate_Far_Call (ECX segment, EDX offset) build the call; Resume_Exec runs it with the client registers until it
 // returns; End_Nest_Exec. Save_Client_State (EDI buffer) / Restore_Client_State (ESI buffer) copy the registers
-svc(VMM, 0x8d, function () { this.u8.copyWithin(u32(this.cpu.edi.value), this.vmClient(), this.vmClient() + 0x60); });
-svc(VMM, 0x8e, function () { this.u8.copyWithin(this.vmClient(), u32(this.cpu.esi.value), u32(this.cpu.esi.value) + 0x60); });
+svc(VMM, 0x8d, function () { this.u8.copyWithin(lin(this.cpu.edi.value), lin(this.vmClient()), lin(this.vmClient()) + 0x60); });
+svc(VMM, 0x8e, function () { this.u8.copyWithin(lin(this.vmClient()), lin(this.cpu.esi.value), lin(this.cpu.esi.value) + 0x60); });
 // Begin_Nest_Exec puts a protected-mode client on the VM's locked stack (unless it is on it already) and End_Nest_Exec
 // gives it its own back, as the VMM's do: a VxD builds its call under the client's SS:SP. On the stack of the code it
 // interrupted, VTDAPI's timer event wrote its callback's frame (and MMSYSTEM's callback ran) under WELCOME's SS:SP on
@@ -1737,6 +1745,17 @@ svc(VMM, 0x8f, function () {
 // Install_Exception_Handler(ESI: the VxD's Exception_Handler_Struc, a chain of code ranges with where a fault in each
 // recovers): kept for a fault in ring-0 code to consult
 svc(VMM, 0xef, function () { (this.r0ExcHandlers || (this.r0ExcHandlers = [])).push(u32(this.cpu.esi.value)); CF(this, false); });
+// _GetDemandPageInfo(DemandInfoStruc *, flags): the memory's page counts, as AFVXD.VXD sizes its pools by them
+// (DILin_Total_Count, DIPhys_Count, DIFree_Count, DIUnlock_Count, DILinear_Base_Addr, DILin_Total_Free, then the paging
+// counters and the paging file's size, 0 here, in its 14 dwords and reserved ones). Missing, AFVXD's start-up stopped
+// MSGSRV32 at boot
+svc(VMM, 0x6f, function (arg) {
+  const a = lin(arg(0)); if (!a) return 0;
+  const phys = (this.mem.buffer.byteLength >>> 12) || 0x4000, free = phys >>> 1;
+  this.u8.fill(0, a, a + 0x40);
+  this.w32(a, phys); this.w32(a + 4, phys); this.w32(a + 8, free); this.w32(a + 12, free); this.w32(a + 16, 0x400000); this.w32(a + 20, free);
+  return 0;
+});
 svc(VMM, 0x6d, function () { return 0x000f; });                                                        // _GetAppFlatDSAlias: the ring-3 flat data selector (FLATDS, base 0, 4G)
 svc(VMM, 0x6e, function (arg) { const sel = arg(1) & 0xffff; return this.selValid(sel) ? u32(this.selBase(sel)) : 0xffffffff; });   // _SelectorMapFlat(VM, sel, flags)
 svc(VMM, 0x10c, function () { CF(this, false); });                                                   // Validate_Thread_Handle
@@ -1890,9 +1909,9 @@ svc(VMM, 0xad, profNum(v => (/^-?\d*\.?\d+/.test(v) ? Math.round(parseFloat(v) *
 svc(VMM, 0xb1, profNum(v => (/^(1|on|yes|true)$/i.test(v) ? 0xffffffff : /^(0|off|no|false)$/i.test(v) ? 0 : null)));   // Get_Profile_Boolean
 // Get_Config_Directory: EDX the Windows directory (with its backslash); Get_Exec_Path: EDX VMM32's path, ECX the
 // length of its directory part
-const lin = (p, k, s) => p[k] || (p[k] = (() => { const a = p.alloc(s.length + 1); p.writeA(a, s); return a; })());
-svc(VMM, 0xb7, function () { this.cpu.edx.value = lin(this, 'cfgDirLin', 'C:\\WINDOWS\\'); this.cpu.ecx.value = 11; });   // (ECX: the characters up to the last backslash)
-svc(VMM, 0xb6, function () { this.cpu.edx.value = lin(this, 'execPathLin', 'C:\\WINDOWS\\SYSTEM\\VMM32.VXD'); this.cpu.ecx.value = 'C:\\WINDOWS\\SYSTEM\\'.length; });
+const strLin = (p, k, s) => p[k] || (p[k] = (() => { const a = p.alloc(s.length + 1); p.writeA(a, s); return a; })());
+svc(VMM, 0xb7, function () { this.cpu.edx.value = strLin(this, 'cfgDirLin', 'C:\\WINDOWS\\'); this.cpu.ecx.value = 11; });   // (ECX: the characters up to the last backslash)
+svc(VMM, 0xb6, function () { this.cpu.edx.value = strLin(this, 'execPathLin', 'C:\\WINDOWS\\SYSTEM\\VMM32.VXD'); this.cpu.ecx.value = 'C:\\WINDOWS\\SYSTEM\\'.length; });
 // OpenFile (EDX the name, EDI a buffer for the path found): the file found as DOS searches for it (the current
 // directory, the Windows and system directories, the path), opened for reading: EAX its DOS handle
 svc(VMM, 0xb8, function () {
@@ -1932,7 +1951,7 @@ svc(VMM, 0x11d, function (arg) {
   if (b) { (this.vregions || (this.vregions = new Map())).set(b, { size, heap: null }); return b; }
   const a = this.alloc(n + 4096); return (a + 4095) & ~4095;
 });
-svc(VMM, 0x11e, function (arg) { const a = arg(0) * 4096; this.u8.fill(0, a, a + arg(1) * 4096); return 1; });   // _PageCommit(page, n, ...)
+svc(VMM, 0x11e, function (arg) { const a = lin(arg(0) * 4096); this.u8.fill(0, a, a + arg(1) * 4096); return 1; });   // _PageCommit(page, n, ...)
 svc(VMM, 0x11f, function () { return 1; });                                                            // _PageDecommit(page, n, flags): committed again zeroed (_PageCommit)
 // _GetCurrentContext: the memory context in place, one address space here (a process's own image range is its view of
 // the arena, win32.js arenaClaim, not a context of its own). _PageAttach(pagesrc, hcontext, pagedst, n) maps the
@@ -1944,7 +1963,7 @@ svc(VMM, 0x125, function () { return 0; });
 // termination; a thread here is not ended inside a VxD's call
 svc(VMM, 0x135, function () {});
 svc(VMM, 0x136, function () {});
-svc(VMM, 0x17d, function (arg) { this.u8.copyWithin(arg(0), arg(1), arg(1) + arg(2)); return arg(0); });   // _lmemcpy
+svc(VMM, 0x17d, function (arg) { this.u8.copyWithin(lin(arg(0)), lin(arg(1)), lin(arg(1)) + arg(2)); return arg(0); });   // _lmemcpy
 // Map_Lin_To_VM_Addr (EAX linear, ECX limit): CX:EDX a selector to it and offset 0
 svc(VMM, 0x1d, function () { const s = this.allocSels(u32(this.cpu.eax.value), 1); this.setDesc(s, u32(this.cpu.eax.value), u32(this.cpu.ecx.value), 0xf300); this.cpu.ecx.value = lo16(this.cpu.ecx.value, s); this.cpu.edx.value = 0; CF(this, false); });
 
@@ -2159,7 +2178,7 @@ svc(CONFIGMG, 0x58, function () { return CR.SUCCESS; });                        
 // one of IOS's and wrote its current-directory entry, "\x10:\", through the end of its CDS table, at address 0)
 const IOS = 0x10;
 svc(IOS, 0x00, function () { this.cpu.eax.value = 0x400; CF(this, false); });
-svc(IOS, 0x08, function (arg) { this.u8[u32(arg(0)) + 1] = 0x10; });   // IRS_result: IORS_INVALID_COMMAND
+svc(IOS, 0x08, function (arg) { this.u8[lin(arg(0)) + 1] = 0x10; });   // IRS_result: IORS_INVALID_COMMAND
 // ---- a service of a device that is not loaded: its Get_Version (service 0) answers CF set, as the VMM's default
 // handler does, so a VxD can ask whether another one is there
 P.absentService = function (dev, n) {

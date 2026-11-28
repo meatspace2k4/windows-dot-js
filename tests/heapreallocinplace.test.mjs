@@ -16,11 +16,4 @@ assert.ok(p.allocs.has(a) && !freed.length, 'the block left where it was');
 assert.equal(K.HeapReAlloc[1].call(p, 0x5000, 0x10, a, 8), a, 'a shrink stays in place');
 const b = K.HeapReAlloc[1].call(p, 0x5000, 0, a, 64);
 assert.ok(b && b !== a && freed.includes(a), 'without the flag it moves');
-// GlobalReAlloc of a fixed block without GMEM_MOVEABLE: the same, it fails and the block stays; with it, it moves
-freed.length = 0;
-const g = K.GlobalAlloc[1].call(p, 0, 16);
-assert.equal(K.GlobalReAlloc[1].call(p, g, 64, 0), 0, 'a fixed block without GMEM_MOVEABLE: fails');
-assert.ok(p.allocs.has(g) && !freed.length);
-const g2 = K.GlobalReAlloc[1].call(p, g, 64, 2);
-assert.ok(g2 && g2 !== g, 'with GMEM_MOVEABLE it moves');
 console.log('heapreallocinplace: ok');

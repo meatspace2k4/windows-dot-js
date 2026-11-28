@@ -1217,8 +1217,16 @@ function dosMachine(program, args, o = {}) {
     const fromC = p => { try { return fs.readFile('C:\\' + p); } catch (_) { return null; } };
     // (a C: with no MS-DOS on it has none on its boot volume: its boot sector finds no IO.SYS, "Non-system disk")
     files = ['IO.SYS', 'MSDOS.SYS'].filter(n => fromC(n)).map(n => ({ name: n, data: fromC(n), attr: 7 }));
+    // (MSDOS.SYS with BootWarn=0 and BootMenu=0: IO.SYS starts Windows normally instead of stopping at the Startup Menu
+    // for Safe mode after it takes the registry for damaged)
+    { const ms = files.find(f => f.name === 'MSDOS.SYS');
+      if (ms) { let t = W95FS.decode(ms.data); t = t.replace(/^\s*Boot(Warn|Menu)\s*=.*\r?\n/gim, ''); t = /\[Options\]/i.test(t) ? t.replace(/\[Options\]\r?\n/i, m => m + 'BootWarn=0\r\nBootMenu=0\r\n') : t + '\r\n[Options]\r\nBootWarn=0\r\nBootMenu=0\r\n'; ms.data = W95FS.encode(t); } }
     const add = p => { const d = fromC(p); if (d && !files.some(f => (f.path || f.name).toUpperCase() === p.toUpperCase())) files.push({ path: p, data: d }); };
     add('COMMAND.COM'); add('CONFIG.SYS'); add('AUTOEXEC.BAT'); add('WINDOWS\\IFSHLP.SYS'); add('WINDOWS\\SYSTEM.DAT'); add('WINDOWS\\USER.DAT'); add('WINDOWS\\WIN.COM');
+    // (and the registry's backups: IO.SYS checks SYSTEM.DAT against SYSTEM.DA0 and USER.DAT against USER.DA0 as it
+    // boots, and with them missing from the boot volume took the registry for damaged and stopped every start at the
+    // Startup Menu's "registry/configuration error", Safe mode chosen)
+    add('WINDOWS\\SYSTEM.DA0'); add('WINDOWS\\USER.DA0');
     // (the drivers IO.SYS loads by itself, as MSDOS.SYS's [Options] and its own list have them: DBLBUFF.SYS for
     // DoubleBuffer, which Windows 98 Setup sets, and SETVER.EXE; left off, Windows 98's IO.SYS said DBLBUFF.SYS was missing)
     const opts = W95FS.decode(fromC('MSDOS.SYS') || new Uint8Array(0));
@@ -1336,7 +1344,15 @@ function flushRegistry() {
   for (const [file, which] of HIVES) {
     const p = join(WINDIR, file), was = hiveStamps.get(file);
     if (was && hiveStamp(p) !== was) { console.info(`[registry] ${file} was put there after Windows loaded its registry: left as it is`); continue; }
-    try { if (fs.exists(p)) fs.setAttrs(p, 0); fs.writeFile(p, W95Win32.regHive(which)); fs.setAttrs(p, ATTR.HIDDEN | ATTR.SYSTEM | ATTR.READONLY); hiveStamps.set(file, hiveStamp(p)); } catch (e) { console.error('[registry]', file, e); }
+    try {
+      const bytes = W95Win32.regHive(which);
+      if (fs.exists(p)) fs.setAttrs(p, 0); fs.writeFile(p, bytes); fs.setAttrs(p, ATTR.HIDDEN | ATTR.SYSTEM | ATTR.READONLY); hiveStamps.set(file, hiveStamp(p));
+      // (and its backup, SYSTEM.DA0 / USER.DA0, as Windows keeps one after each start that got as far as the desktop:
+      // IO.SYS's real-mode registry falls back to it, and with none it stopped every boot at the Startup Menu's
+      // "registry/configuration error")
+      const bak = p.replace(/\.DAT$/i, '.DA0');
+      if (fs.exists(bak)) fs.setAttrs(bak, 0); fs.writeFile(bak, bytes); fs.setAttrs(bak, ATTR.HIDDEN | ATTR.SYSTEM | ATTR.READONLY);
+    } catch (e) { console.error('[registry]', file, e); }
   }
 }
 /** Windows starting from the PC's boot loads its registry from SYSTEM.DAT and USER.DAT, as the VMM does: those the
@@ -3651,15 +3667,34 @@ function setupNetwork() {
   // leaves the card with none, its protocols unbound and their VxDs dropped from the boot: what it left is cleared
   // and the network set up as on the page's own install, else Network Neighborhood had no network after the upgrade)
   const card = 'hklm\\enum\\root\\net\\0000';
+  const cls = 'hklm\\system\\currentcontrolset\\services\\class\\';
+  const set = (k, o) => { for (const [n, v] of Object.entries(o)) R.regSet(k, n, typeof v === 'string' ? str(v) : v); };
+  const tcpip = () => {
+    const tcp = (window.W95SYSTEM || {}).tcpip; if (!tcp || !infs['NETTRANS.INF']) return;
+    for (const [f, d] of Object.entries(tcp)) { const p = join(WINDIR, 'SYSTEM', f); if (!fs.exists(p)) fs.writeFile(p, b64bytes(d)); }
+    infAddReg(infs['NETTRANS.INF'], 'MSTCP.ndi.reg', cls + 'nettrans\\0001');
+    infAddReg(infs['NETTRANS.INF'], 'MSTCP.AddReg', cls + 'nettrans\\0001');
+    infAddReg(infs['NETTRANS.INF'], 'MSTCP.VnbtOn.reg', cls + 'nettrans\\0001');
+    set(cls + 'nettrans\\0001', { DriverDesc: 'TCP/IP', InfPath: 'NETTRANS.INF', InfSection: 'MSTCP.ndi', IPAddress: '0.0.0.0', IPMask: '0.0.0.0' });
+    set('hklm\\system\\currentcontrolset\\services\\vxd\\wsock', { StaticVxD: 'wsock.vxd', Start: bin(0) });
+    set('hklm\\system\\currentcontrolset\\services\\vxd\\afvxd', { StaticVxD: 'afvxd.vxd', Start: bin(0) });
+    set('hklm\\system\\currentcontrolset\\services\\vxd\\mstcp', { EnableDNS: '1', NameServer: '10.0.2.3', Domain: 'lan', HostName: 'win95' });
+    set('hklm\\enum\\network\\mstcp\\0000', { Class: 'NetTrans', Driver: 'NetTrans\\0001', MasterCopy: 'Enum\\Network\\MSTCP\\0000', DeviceDesc: 'TCP/IP', CompatibleIDs: 'MSTCP', Mfg: 'Microsoft', ConfigFlags: bin(0, 0, 0, 0) });
+    R.regSet(card + '\\bindings', 'MSTCP\\0000', str(''));
+    R.regSet('hklm\\enum\\network\\mstcp\\0000\\bindings', 'VREDIR\\0000', str(''));
+  };
   if (R.regGet(card, 'Driver') !== undefined) {
-    if (R.regVals(card + '\\bindings').length) { setOrder(); return; }
+    const bound = R.regVals(card + '\\bindings').map(([n]) => n.toUpperCase());
+    if (bound.length) {
+      if (!bound.includes('MSTCP\\0000') || R.regGet(cls + 'nettrans\\0001', 'DeviceVxDs') === undefined || R.regGet(cls + 'nettrans\\0001', 'IPAddress') === undefined || R.regGet('hklm\\system\\currentcontrolset\\services\\vxd\\afvxd', 'StaticVxD') === undefined) tcpip();
+      else for (const [f, d] of Object.entries((window.W95SYSTEM || {}).tcpip || {})) { const p = join(WINDIR, 'SYSTEM', f); if (!fs.exists(p)) fs.writeFile(p, b64bytes(d)); }
+      setOrder(); return;
+    }
     for (const k of ['hklm\\enum\\network', 'hklm\\system\\currentcontrolset\\services\\class\\nettrans', 'hklm\\system\\currentcontrolset\\services\\class\\netclient', 'hklm\\system\\currentcontrolset\\services\\class\\netservice'])
       R.regDel(k);
     for (const k of R.regKids('hklm\\enum\\root\\net')) if (k !== '0000') R.regDel('hklm\\enum\\root\\net\\' + k);
     for (const k of R.regKids('hklm\\system\\currentcontrolset\\services\\class\\net')) if (k !== '0000') R.regDel('hklm\\system\\currentcontrolset\\services\\class\\net\\' + k);
   }
-  const cls = 'hklm\\system\\currentcontrolset\\services\\class\\';
-  const set = (k, o) => { for (const [n, v] of Object.entries(o)) R.regSet(k, n, typeof v === 'string' ? str(v) : v); };
   // the card
   infAddReg(infs['NET.INF'], 'ClassAddReg', cls + 'net'); infAddReg(infs['NETTRANS.INF'], 'NetTrans.AddReg', cls + 'nettrans'); infAddReg(infs['NETCLI.INF'], 'NetClientReg', cls + 'netclient');
   infAddReg(infs['NETNOVEL.INF'], 'ne2000.ndi.reg', cls + 'net\\0000');
@@ -3673,6 +3708,9 @@ function setupNetwork() {
   set(cls + 'nettrans\\0000', { DriverDesc: 'NetBEUI', InfPath: 'NETTRANS.INF', InfSection: 'NETBEUI.ndi' });
   set('hklm\\enum\\network\\netbeui\\0000', { Class: 'NetTrans', Driver: 'NetTrans\\0000', MasterCopy: 'Enum\\Network\\NETBEUI\\0000', DeviceDesc: 'NetBEUI', CompatibleIDs: 'NETBEUI', Mfg: 'Microsoft', ConfigFlags: bin(0x10, 0, 0, 0) });
   R.regSet('hklm\\enum\\network\\netbeui\\0000\\bindings', 'VREDIR\\0000', str(''));
+  // TCP/IP, its address from DHCP (the LAN's gateway, lanip.js): its files from the bundle into SYSTEM, its keys from
+  // NETTRANS.INF's own sections (its VxDs' StaticVxD, Winsock's), bound to the card, the client bound to it
+  tcpip();
   // the client and its provider
   for (const sec of ['VREDIR.ndi.reg', 'VREDIR.AddReg', 'MSNP32.AddReg']) infAddReg(infs['NETCLI.INF'], sec, cls + 'netclient\\0000');
   set(cls + 'netclient\\0000', { DriverDesc: 'Client for Microsoft Networks', InfPath: 'NETCLI.INF', InfSection: 'VREDIR.ndi' });
@@ -4185,6 +4223,12 @@ class RemoteApp extends NativeApp {
         return;
       }
       case 'lan': if (window.W95LAN && this.lanStation) W95LAN.send(this.lanStation, m.frame); return;
+      case 'netfetch': {   // (the worker's gateway, lanip.js: an HTTP request made from the host)
+        const h = window.W95HOST && window.W95HOST.net, w = this.worker;
+        Promise.resolve(h ? h.fetch(m.req) : fetch(m.req.url, { method: m.req.method, headers: m.req.headers }).then(async r => ({ status: r.status, statusText: r.statusText, headers: [...r.headers], body: new Uint8Array(await r.arrayBuffer()) })))
+          .catch(e => ({ error: String(e && e.message || e) })).then(r => w.postMessage({ t: 'netfetch-reply', id: m.id, r }));
+        return;
+      }
       case 'frame': this.frame(m); this.framed(); return;
       case 'held': this.held = m.held; this.stats = m.stats; this.framed(); return;
       // the screen's mode, DAC and the cursor sprite, as often as the machine runs, its window list or not (USER held)
@@ -4500,6 +4544,10 @@ function startSystem() {
     // (its display driver has the screen now, as Windows 95's takes it from IO.SYS's logo before MSGSRV32 runs: the
     // logo goes. Kept until the machine had a window, it was still up as MSGSRV32 played SystemStart, before the shell)
     bootLogoEnd();
+    // (the registry written to its files and their backups now Windows has started, as Windows 95 backs it up once a
+    // start succeeds: the next boot's IO.SYS has a good SYSTEM.DAT and SYSTEM.DA0 even when this session never shuts
+    // down cleanly, so it does not stop at the Startup Menu)
+    if (typeof flushRegistry === 'function') setTimeout(flushRegistry, 30000);
     emit('system.start', {});   // (the address's settings are made in it, speed and mods: urlSettings)
     return a;
   })().finally(() => { sysStarting = null; }));
@@ -5345,16 +5393,23 @@ function peerBits(k, img) {
   return b || null;
 }
 /** a sprite's bits (px, py, cpp, row, bits) drawn with its top-left at x, y; app: the machine whose screen is under it */
+const spritePal = new Uint32Array(256), spriteUnder = new Uint32Array(64), spriteXor = new Uint8Array(0x30000 + 256);
 function drawSpriteBits(sp, x, y, app = sysApp) {
   const cpp = sp.cpp || 1, w = Math.min(Math.floor((64 - sp.px) / cpp), W - x), h = Math.min(64 - sp.py, H - y);
   if (w <= 0 || h <= 0 || x < 0 || y < 0) return;
-  const scr = app && app.d32, sw = (app && app.sw) || 0, sh = (app && app.sh) || 0;
+  const a = app && app.screenNow ? app.screenNow() : null, pal = spritePal, under = spriteUnder;
+  if (a) for (let i = 0; i < 256; i++) { const r = a.dac[3 * i], g = a.dac[3 * i + 1], b = a.dac[3 * i + 2]; pal[i] = 0xff000000 | ((b << 2 | b >> 4) << 16) | ((g << 2 | g >> 4) << 8) | (r << 2 | r >> 4); }
   for (let j = 0; j < h; j++) {
-    const row = (sp.py + j) * sp.row;
+    const row = (sp.py + j) * sp.row, sy = y + j, x1 = a ? Math.min(x + w, a.w) : x;
+    under.fill(0xff000000);
+    if (a && sy < a.h && x1 > x) {
+      const s = sy * a.pitch, planar = a.bpp === 4, bpx = a.bpp >> 3, lo = planar ? x >> 3 : x * bpx, hi = planar ? ((x1 - 1) >> 3) + 1 : x1 * bpx;
+      for (let k = 0; k < (planar ? 4 : 1); k++) for (let b = lo; b < hi; b++) spriteXor[k * 0x10000 + b - lo] = a.vram[k * 0x10000 + s + b] ^ 0xff;
+      scanRow(a, spriteXor, pal, under, -x, -lo, x, x1);
+    }
     for (let i = 0; i < w; i++) {
       const p = sp.px + i * cpp, v = sp.bits[row + (p >> 2)] >> ((p & 3) * 2) & 3;
-      sprite32[j * 64 + i] = v === 2 ? 0 : v === 0 ? 0xff000000 : v === 1 ? 0xffffffff
-        : scr && x + i < sw && y + j < sh ? (0xff000000 | ~scr[(y + j) * sw + x + i]) >>> 0 : 0xffffffff;
+      sprite32[j * 64 + i] = v === 2 ? 0 : v === 0 ? 0xff000000 : v === 1 ? 0xffffffff : under[i];
     }
   }
   spriteCx.putImageData(spriteImg, 0, 0, 0, 0, w, h);

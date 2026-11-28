@@ -884,6 +884,7 @@ function video() {
   // at 80 columns, and the text screen after showed them torn across lines, a run of spaces before "iles...")
   if (this.m8(0x449) === 0x13 && this.vga && this.font8 && [0x02, 0x03, 0x06, 0x07, 0x09, 0x0a, 0x0e].includes(this.ah())) return video13.call(this);
   const ah = this.ah(), cols = 80, rows = 25;
+  if (self.W95INT10HOOK) self.W95INT10HOOK(this, ah);   // (debugging: each BIOS video call, its machine and function)
   const cur = () => [this.m8(0x451), this.m8(0x450)];   // row, column
   const setCur = (r, c) => { this.s8(0x450, c); this.s8(0x451, r); this.vgaCursor(r, c); };
   const cell = (r, c) => 0xb8000 + (r * cols + c) * 2;

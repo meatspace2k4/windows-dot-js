@@ -56,6 +56,7 @@ class Fn {
   lp() { this.depth++; return this.e(0x03, 0x40); }
   e(...x) { const b = this.b; for (const v of x) { if (Array.isArray(v)) for (const w of v) b.push(w); else b.push(v); } return this; }
   c(v) { return this.e(0x41, sleb(v)); }
+  lin() { return this.c(0x7fffffff).op('and'); }
   c64(v) { return this.e(0x42, sleb64(v)); }
   cf(v) { const b = new Uint8Array(new Float64Array([v]).buffer); return this.e(0x44, ...b); }
   op(n) { return this.e(OP[n]); }
@@ -210,7 +211,7 @@ function translate(p, lin, csb, d32, v86, limit, ss32In, fIn, endIn, r3In) {
         f.c(0xffff).op('and');
       }
       const sr = seg === null ? defSeg : seg;
-      f.gg(sbase(sr)).op('add').ls(A);
+      f.gg(sbase(sr)).op('add'); if (b !== 0x8d) f.lin(); f.ls(A);
       if (b !== 0x8d && !onStack) guard(A, false);   // (lea's address is no access; ESP's frame is the stack's own pages)
       return { reg, mem: true, sr };
     };
@@ -440,7 +441,7 @@ function translate(p, lin, csb, d32, v86, limit, ss32In, fIn, endIn, r3In) {
     if (b === 0x9f) { f.gg('cf').gg('pf').c(2).op('shl').op('or').gg('zf').c(6).op('shl').op('or').gg('sf').c(7).op('shl').op('or').c(2).op('or').ls(T); f.gg('eax').c(0xffff00ff).op('and').lg(T).c(8).op('shl').op('or').gs('eax'); continue; }
     if (b >= 0xa0 && b <= 0xa3) {   // mov al/eax, moffs
       const sz = b & 1 ? osz : 1, off = asz === 4 ? fetch32() : fetch16();
-      f.c(off).gg(sbase(seg === null ? 3 : seg)).op('add').ls(A); guard(A, !!(b & 2));
+      f.c(off).gg(sbase(seg === null ? 3 : seg)).op('add').lin().ls(A); guard(A, !!(b & 2));
       if (b & 2) { rdReg(0, sz); f.ls(T); f.lg(A).lg(T).st(sz); dev(A, sz); if (seg === 1) codeWritten = true; } else { devLoad(A, sz); f.lg(A).ld(sz).ls(T); wrReg(0, sz, T); }
       continue;
     }
@@ -563,7 +564,7 @@ function translate(p, lin, csb, d32, v86, limit, ss32In, fIn, endIn, r3In) {
         if (b2 === 0xba) f.c(fetch());
         else if (!o.isReg) {   // (a memory operand with a register's bit index: the index, signed, picks the operand-sized word from the address on; IFSMGR's)
           rdReg(o.reg, osz); if (osz === 2) f.c(16).op('shl').c(16).op('shr_s'); f.ls(X);
-          f.lg(A).lg(X).c(osz === 4 ? 5 : 4).op('shr_s').c(osz === 4 ? 2 : 1).op('shl').op('add').ls(A); f.lg(X);
+          f.lg(A).lg(X).c(osz === 4 ? 5 : 4).op('shr_s').c(osz === 4 ? 2 : 1).op('shl').op('add').lin().ls(A); f.lg(X);
         } else rdReg(o.reg, osz);
         f.c(osz * 8 - 1).op('and').ls(C); rd(o, osz); f.ls(B);
         f.lg(B).lg(C).op('shr_u').c(1).op('and').gs('cf');
@@ -601,7 +602,7 @@ function translate(p, lin, csb, d32, v86, limit, ss32In, fIn, endIn, r3In) {
       }
       throw new Unsupported(`0f ${b2.toString(16)}`);
     }
-    if (b === 0xd7) { f.gg(sbase(seg === null ? 3 : seg)).gg('ebx'); if (asz === 2) f.c(0xffff).op('and'); f.gg('eax').c(0xff).op('and').op('add').op('add').ld(1).ls(T); wrReg(0, 1, T); continue; }
+    if (b === 0xd7) { f.gg(sbase(seg === null ? 3 : seg)).gg('ebx'); if (asz === 2) f.c(0xffff).op('and'); f.gg('eax').c(0xff).op('and').op('add').op('add').lin().ld(1).ls(T); wrReg(0, 1, T); continue; }
     if (b === 0x9c || b === 0x9d) {   // pushf / popf: the flags the translated code keeps
       if (b === 0x9c) { flagsWord(T); if (vm) f.lg(T).c(XFLAGS).ld(2).op('or').ls(T); push(T, osz); }
       else { pop(T, osz); for (const [k, n2] of [[0, 'cf'], [2, 'pf'], [6, 'zf'], [7, 'sf'], [9, 'if'], [10, 'df'], [11, 'of']]) f.lg(T).c(k).op('shr_u').c(1).op('and').gs(n2); keepX(T, osz); if (vm) f.c(XFLAGS).lg(T).c(0x7000).op('and').st(2); }
@@ -888,7 +889,7 @@ function muldiv(f, op, sz, o, rd, L, rdReg, wrReg) {
 // string instructions, with rep / repe / repne
 function strop(f, b, osz, asz, seg, rep, L, alu2, szp, dev, guard) {
   const { T, A, B, C, R, D, X } = L, sz = b & 1 ? osz : 1;
-  const ld = () => { f.ls(X); guard(X, false); dev(X, sz, 0x3000000); f.lg(X).ld(sz); };   // (the address on the stack: the load, a device's asked first)
+  const ld = () => { f.lin().ls(X); guard(X, false); dev(X, sz, 0x3000000); f.lg(X).ld(sz); };   // (the address on the stack: the load, a device's asked first)
   const idx = r => { f.gg(r); if (asz === 2) f.c(0xffff).op('and'); };
   const step = r => {   // r += df ? -sz : sz, within the address size
     f.gg(r).c(-sz).c(sz).gg('df').e(0x1b).op('add');
@@ -900,10 +901,10 @@ function strop(f, b, osz, asz, seg, rep, L, alu2, szp, dev, guard) {
   const body = () => {
     // ins / outs: a port's value to ES:(E)DI, or DS:(E)SI's to the port, through the host's port I/O (which reads
     // and writes EAX: EAX kept around it)
-    if (kind === 'ins') { f.gg('eax').ls(X); f.gg('edx').c(0xffff).op('and').c(sz | 8).e(0x10, 0); f.gg('esb'); idx('edi'); f.op('add').gg('eax').st(sz); f.lg(X).gs('eax'); step('edi'); }
-    else if (kind === 'outs') { f.gg('eax').ls(X); f.gg(srcBase); idx('esi'); f.op('add').ld(sz).gs('eax'); f.gg('edx').c(0xffff).op('and').c(sz).e(0x10, 0); f.lg(X).gs('eax'); step('esi'); }
-    else if (kind === 'movs') { f.gg('esb'); idx('edi'); f.op('add').lt(D); guard(D, true); f.gg(srcBase); idx('esi'); f.op('add'); ld(); f.st(sz); dev(D, sz); step('esi'); step('edi'); }
-    else if (kind === 'stos') { f.gg('esb'); idx('edi'); f.op('add').lt(D); guard(D, true); f.gg('eax').st(sz); dev(D, sz); step('edi'); }
+    if (kind === 'ins') { f.gg('eax').ls(X); f.gg('edx').c(0xffff).op('and').c(sz | 8).e(0x10, 0); f.gg('esb'); idx('edi'); f.op('add').lin().gg('eax').st(sz); f.lg(X).gs('eax'); step('edi'); }
+    else if (kind === 'outs') { f.gg('eax').ls(X); f.gg(srcBase); idx('esi'); f.op('add').lin().ld(sz).gs('eax'); f.gg('edx').c(0xffff).op('and').c(sz).e(0x10, 0); f.lg(X).gs('eax'); step('esi'); }
+    else if (kind === 'movs') { f.gg('esb'); idx('edi'); f.op('add').lin().lt(D); guard(D, true); f.gg(srcBase); idx('esi'); f.op('add'); ld(); f.st(sz); dev(D, sz); step('esi'); step('edi'); }
+    else if (kind === 'stos') { f.gg('esb'); idx('edi'); f.op('add').lin().lt(D); guard(D, true); f.gg('eax').st(sz); dev(D, sz); step('edi'); }
     else if (kind === 'lods') { f.gg(srcBase); idx('esi'); f.op('add'); ld(); f.ls(T); if (sz === 4) f.lg(T).gs('eax'); else f.gg('eax').c(sz === 2 ? 0xffff0000 : 0xffffff00).op('and').lg(T).op('or').gs('eax'); step('esi'); }
     else if (kind === 'scas') { f.gg('eax').ls(B); f.gg('esb'); idx('edi'); f.op('add'); ld(); f.ls(C); alu2(7, sz); step('edi'); }
     else { f.gg(srcBase); idx('esi'); f.op('add'); ld(); f.ls(B); f.gg('esb'); idx('edi'); f.op('add'); ld(); f.ls(C); alu2(7, sz); step('esi'); step('edi'); }
@@ -1140,6 +1141,7 @@ P.dynRun = function (eip) {
   // code's blocks as it reads the modules')
   const bud = this.cpu.budget;
   for (let n = 0; ; n++) {
+    if (eip >= LAYOUT.ARENA && eip < LAYOUT.THUNK16) eip -= LAYOUT.ARENA;
     if (bud.value <= 0) { this.cpu.eip.value = eip; if (this.tick(eip)) return -1; }
     // (an export another module enters, hooked, win32.js dispatch: a module run from its file reaches it here, never
     // through the dispatcher; a hook that answers where to go on takes the call)

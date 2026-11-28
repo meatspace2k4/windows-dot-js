@@ -65,7 +65,7 @@ const remotePath = p => { try { return typeof p === 'string' && !!rfs.remoteAt(p
 // the file system, the page's: each call made there (its errors thrown here as they were there); the network's paths
 // and descriptors here
 const pathOps = new Set(['exists', 'stat', 'readdir', 'readFile', 'writeFile', 'open', 'unlink', 'mkdir', 'rmdir', 'realpath', 'setAttrs', 'statvfs', 'chdir', 'resolve', 'shortPath', 'setLabel', 'truncate']);
-const fdOps = new Set(['read', 'write', 'close', 'seek', 'fstat', 'ftruncate']);
+const fdOps = new Set(['read', 'write', 'close', 'seek', 'fstat', 'ftruncate', 'futimes']);
 // a CD's file opened for reading is read here, its bytes taken from the page once as it opens: each read, seek and
 // close a round trip to the page's busy main thread, Windows 98 Setup's copy from its cabinets went at the page's pace,
 // not the machine's. The disc is read-only, so the copy here is the file (a disc changed in the drive since: the next
@@ -109,6 +109,7 @@ const fs = new Proxy({}, {
     if (k === 'vols') { const m = new Map(rpc('fs', 'vols').map(v => [v.letter, v])); for (const v of rfs.vols.values()) m.set(v.letter, { letter: v.letter, kind: 'remote', label: v.label, remote: true, unc: v.unc }); return m; }
     return (...args) => {
       if (pathOps.has(k) && remotePath(args[0])) return rfs[k](...args);
+      if (k === 'futimes' && args[0] >= CD_FD) return;   // (a CD's file read here: its dates are the disc's)
       if (fdOps.has(k) && args[0] >= REMOTE_FD) return args[0] >= CD_FD ? cdOp(k, args[0], args.slice(1)) : rfs[k](...args);
       if (k === 'open') { const fd = cdOpen(args[0], args[1]); if (fd !== null) return fd; }
       if ((k === 'rename' || k === 'copy') && (remotePath(args[0]) || remotePath(args[1]))) {
@@ -128,6 +129,12 @@ self.W95SHELL = new Proxy({}, { get(_, k) { return k === 'fs' ? fs : (...args) =
 // ---------------------------------------------------------------- the segment: frames to and from the page's part of it
 const LAN = self.W95LAN, lanSend = LAN.send, pageSide = { rx() {} };
 LAN.send = (from, frame) => { lanSend(from, frame); if (from !== pageSide) post({ t: 'lan', frame: frame.slice() }); };
+// the gateway to the Internet (lanip.js) is a station here, beside the card: its answers reach the card at once, while
+// a driver waits for them inside one step (VDHCP's lease at boot). On the page it heard nothing until the step ended,
+// and Windows said it got no address. Its HTTP requests go to the page, which makes them from the host
+const netFetches = new Map(); let netFetchId = 0;
+self.W95NETFETCH = req => new Promise(done => { const id = ++netFetchId; netFetches.set(id, done); post({ t: 'netfetch', id, req }); });
+importScripts('ie4js.js', 'lanip.js');
 // the page's frames arrive in a ring the card takes them from as it is polled, ring 0 waiting for them included
 let lanRing = null;
 const lanDrain = () => { let f, any = false; while (lanRing && (f = B.frameTake(lanRing))) { lanSend(pageSide, f); any = true; } return any; };
@@ -477,6 +484,10 @@ class Machine {
         if (r[1] & 8) p.dispatchInput(W.WM.RBUTTONDOWN, 0, (r[3] << 16) | r[2]);
         if (r[1] & 16) p.dispatchInput(W.WM.RBUTTONUP, 0, (r[3] << 16) | r[2]);
       }
+    }
+    if (p.depth && this.mouseq.length && !p.r0Depth && !p.vxdCrit && !p.rmRunning && !this.inTimer && (!p.cpu.if || p.cpu.if.value)) {
+      this.inTimer = true; const d = p.depth; p.depth = 0;
+      try { this.feedMouse(); } catch (e) { this.r0Fault(e); } finally { p.depth = d; this.inTimer = false; }
     }
   }
   queueKey(vk, sc, up, mods) {
@@ -2170,6 +2181,7 @@ self.onmessage = e => {
     else reply(value, error);
     if (machine) machine.kick();
   } else if (m.t === 'lan') lanSend(pageSide, m.frame);   // a frame from the rest of the segment
+  else if (m.t === 'netfetch-reply') { const f = netFetches.get(m.id); if (f) { netFetches.delete(m.id); f(m.r); } }
   else if (m.t === 'netport') {   // (the system's machine) another machine's channel for its network files
     const sab = m.sab;
     m.port.onmessage = e => {

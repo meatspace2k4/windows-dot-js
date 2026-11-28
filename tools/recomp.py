@@ -366,7 +366,7 @@ class Loc:
     def __init__(self, f, op, size=None):
         self.f, self.op = f, op; self.size = size or op.size; self.addr = None
         if op.type == X.X86_OP_MEM:
-            self.addr = f.i(); emit_addr(f, op.mem); f.ls(self.addr)
+            self.addr = f.i(); emit_addr(f, op.mem); f.c(0x7fffffff).e(OPS['and_']); f.ls(self.addr)
             if not (op.mem.base == X.X86_REG_ESP and not op.mem.index): guard(f, self.addr)   # (ESP's frame: the stack's own pages)
     def read(self, signed=False):
         f, op, sz = self.f, self.op, self.size
@@ -430,7 +430,7 @@ def guard(f, addr, write=False):
     f.c(CUR.addr).gs('eip').lg(addr).c(0x4000010 if write else 0x4000000).e(0x10, uleb(IMP['trap'])).gg('eip').e(RETURN).e(0x0b)
 def guard_reg(f, reg, write=False):
     if not RING3 or segmode(): return
-    t = f.i(); f.gg(reg).ls(t); guard(f, t, write)
+    t = f.i(); f.gg(reg).c(0x7fffffff).e(OPS['and_']).ls(t); guard(f, t, write)
 # ---- segmented (NE) mode. CUR is the instruction being translated.
 CUR = None
 def segmode(): return CUR is not None and CUR.segbase is not None
@@ -688,7 +688,7 @@ class Translator:
         if segmode():
             if addr16(ins): f.c(0xffff).e(OPS['and_'])
             f.gg(SREG[seg][1]).e(OPS['add'])
-        f.mem(0x2d).e(OPS['or_']).gs('eax')
+        f.c(0x7fffffff).e(OPS['and_']).mem(0x2d).e(OPS['or_']).gs('eax')
     def x_pushal(self, f, ins, ops, live):
         t = f.i(); f.gg('esp').ls(t)
         for r in REGS: push_val(f, (lambda r=r: f.lg(t) if r == 'esp' else f.gg(r)))
@@ -1168,27 +1168,28 @@ class Translator:
         if segmode(): return self.string_seg(f, ins, kind, sz, rep)
         step = f.i()
         f.c(-sz).c(sz).gg('df').e(SELECT).ls(step)      # DF=1 decrements
+        lin = lambda r: f.gg(r).c(0x7fffffff).e(OPS['and_'])
         def one():
             if kind in ('movs', 'lods', 'cmps', 'outs'): guard_reg(f, 'esi')
             if kind in ('movs', 'stos', 'ins', 'scas', 'cmps'): guard_reg(f, 'edi', kind in ('movs', 'stos', 'ins'))
             if kind == 'movs':
-                f.gg('edi').gg('esi').mem(LOAD[sz]).mem(STORE[sz])
+                lin('edi'); lin('esi').mem(LOAD[sz]).mem(STORE[sz])
                 f.gg('esi').lg(step).e(OPS['add']).gs('esi'); f.gg('edi').lg(step).e(OPS['add']).gs('edi')
             elif kind == 'stos':
-                f.gg('edi').gg('eax').mem(STORE[sz]); f.gg('edi').lg(step).e(OPS['add']).gs('edi')
-            elif kind == 'outs': self.port_elem(f, ins, kind, sz, lambda: f.gg('esi')); f.gg('esi').lg(step).e(OPS['add']).gs('esi')
-            elif kind == 'ins': self.port_elem(f, ins, kind, sz, lambda: f.gg('edi')); f.gg('edi').lg(step).e(OPS['add']).gs('edi')
+                lin('edi').gg('eax').mem(STORE[sz]); f.gg('edi').lg(step).e(OPS['add']).gs('edi')
+            elif kind == 'outs': self.port_elem(f, ins, kind, sz, lambda: lin('esi')); f.gg('esi').lg(step).e(OPS['add']).gs('esi')
+            elif kind == 'ins': self.port_elem(f, ins, kind, sz, lambda: lin('edi')); f.gg('edi').lg(step).e(OPS['add']).gs('edi')
             elif kind == 'lods':
-                if sz == 4: f.gg('esi').mem(0x28).gs('eax')
-                else: f.gg('eax').c(~MASK[sz]).e(OPS['and_']).gg('esi').mem(LOAD[sz]).e(OPS['or_']).gs('eax')
+                if sz == 4: lin('esi').mem(0x28).gs('eax')
+                else: f.gg('eax').c(~MASK[sz]).e(OPS['and_']); lin('esi').mem(LOAD[sz]).e(OPS['or_']).gs('eax')
                 f.gg('esi').lg(step).e(OPS['add']).gs('esi')
             else:
                 a, b, r = f.i(), f.i(), f.i()
                 if kind == 'cmps':
-                    f.gg('esi').mem(LOAD[sz]).ls(a); f.gg('edi').mem(LOAD[sz]).ls(b)
+                    lin('esi').mem(LOAD[sz]).ls(a); lin('edi').mem(LOAD[sz]).ls(b)
                     f.gg('esi').lg(step).e(OPS['add']).gs('esi')
                 else:
-                    f.gg('eax').c(MASK[sz]).e(OPS['and_']).ls(a); f.gg('edi').mem(LOAD[sz]).ls(b)
+                    f.gg('eax').c(MASK[sz]).e(OPS['and_']).ls(a); lin('edi').mem(LOAD[sz]).ls(b)
                 f.gg('edi').lg(step).e(OPS['add']).gs('edi')
                 f.lg(a).lg(b).e(OPS['sub']).c(MASK[sz]).e(OPS['and_']).ls(r)
                 f.lg(a).lg(b).e(OPS['lt_u']).gs('cf')
@@ -1213,8 +1214,8 @@ class Translator:
         sseg = SREG[(srcop.mem.segment if srcop is not None and srcop.mem.segment else X.X86_REG_DS)][1]
         step = f.i(); f.c(-sz).c(sz).gg('df').e(SELECT).ls(step)
         idx = lambda r: (f.gg(r), f.c(mask), f.e(OPS['and_'])) if a16 else f.gg(r)
-        src = lambda: (idx('esi'), f.gg(sseg), f.e(OPS['add']))
-        dst = lambda: (idx('edi'), f.gg('esb'), f.e(OPS['add']))
+        src = lambda: (idx('esi'), f.gg(sseg), f.e(OPS['add']), f.c(0x7fffffff), f.e(OPS['and_']))
+        dst = lambda: (idx('edi'), f.gg('esb'), f.e(OPS['add']), f.c(0x7fffffff), f.e(OPS['and_']))
         def bump(r):
             if a16: f.gg(r).c(~0xffff).e(OPS['and_']).gg(r).lg(step).e(OPS['add']).c(0xffff).e(OPS['and_']).e(OPS['or_']).gs(r)
             else: f.gg(r).lg(step).e(OPS['add']).gs(r)

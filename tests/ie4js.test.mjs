@@ -1,0 +1,15 @@
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+globalThis.window = globalThis; globalThis.self = globalThis;
+new Function(readFileSync(new URL('../ie4js.js', import.meta.url), 'utf8'))();
+const J = self.W95IE4JS;
+const page = J.html('<html><head><title>t</title></head><body><script src=/s.js></script></body></html>');
+assert.ok(page.indexOf('window.__w95dom') < page.indexOf('<title>'));
+assert.ok(page.includes('<script src=/s.js></script>'));
+const AP = Array.prototype, saved = { find: AP.find, includes: AP.includes };
+delete AP.find; delete AP.includes;
+new Function('window', 'navigator', 'document', J.PRELUDE)(globalThis, { userLanguage: 'en-US' }, {});
+assert.equal([1, 2, 3].find(x => x > 1), 2);
+assert.ok([1, 2].includes(2));
+Object.assign(AP, saved);
+console.log('ie4js: ok');

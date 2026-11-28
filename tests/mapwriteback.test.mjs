@@ -9,7 +9,7 @@ for (const f of ['fs.js', 'win32.js']) new Function(readFileSync(new URL('../' +
 const { Process, API } = window.W95Win32, K = API.KERNEL32;
 const files = new Map([['C:\\INDEX.DAT', new Uint8Array(0)], ['C:\\FONT.TTF', new Uint8Array([1, 2, 3])]]);
 const p = Object.create(Process.prototype);
-p.mem = new WebAssembly.Memory({ initial: 4 });
+p.mem = new WebAssembly.Memory({ initial: 256 });
 let top = 0x1000, hn = 0x100; const handles = new Map();
 Object.assign(p, {
   fs: { readFile: n => files.get(n).slice(), writeFile: (n, b) => files.set(n, Uint8Array.from(b)) },
