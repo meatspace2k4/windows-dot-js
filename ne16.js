@@ -74,7 +74,9 @@ P.selValid = function (sel) { return (sel & 0xfff8) && this.selUsed[(sel & 0xfff
  *  block when s is the first of its block's selectors */
 P.copySel = function (s, acc = this.selAcc(s)) {
   const g = this.ghandles && this.ghandles.get(s);
-  if (g && g.n > 1) return this.allocSels(this.selBase(s), this.selLimit(s) + 1, acc);
+  // (the tiles' count kept, so FreeSelector frees them all: freed one, GDI's alias of each huge bitmap left the rest,
+  // and the machine ran out of selectors, MSGSRV32 faulting in GlobalAlloc as a menu opened)
+  if (g && g.n > 1) { const t = this.allocSels(this.selBase(s), this.selLimit(s) + 1, acc); (this.selTiles || (this.selTiles = new Map())).set(t, g.n); return t; }
   const n = this.allocSels(0, 1); this.setDesc(n, this.selBase(s), this.selLimit(s), acc); return n;
 };
 /** n consecutive selectors (stepping by __AHINCR) covering [base, base+size); `want`: the selector asked for (a
@@ -3908,7 +3910,10 @@ def16('KEYBOARD', 100, 'w', 'v', function () {});                              /
 
 // selectors
 def16('KERNEL', 175, 'w', 'w', function (s) { if (!s) return this.allocSels(0, 1); return this.copySel(s); });
-def16('KERNEL', 176, 'w', 'w', function (s) { this.freeSels(s); return 0; });
+def16('KERNEL', 176, 'w', 'w', function (s) {
+  const t = this.selTiles, k = (s & 0xfff8) | 7, n = (t && t.get(k)) || 1; if (n > 1) t.delete(k);
+  this.freeSels(s, n); return 0;
+});
 def16('KERNEL', 186, 'w', 'l', function (s) { return this.selBase(s); });
 def16('KERNEL', 187, 'wl', 'w', function (s, b) { this.setSelBase(s, b); this.refreshSegs(); return s; });
 def16('KERNEL', 188, 'w', 'l', function (s) { return this.selLimit(s); });
@@ -6345,7 +6350,10 @@ P.unmapLSExact = function (sp) {
   if (this.mapped16 && this.mapped16.has(sel) && !(sp & 0xffff)) { this.mapped16.delete(sel); this.freeSels(sel, 1); }
 };
 KR('SMapLS', function () { const a = this.reg('eax'); this.reg('edx', a >>> 16 ? this.mapLSExact(a) : 0); if (a >>> 16) this.reg('eax', this.reg('edx')); return ret32(this); });
-KR('SUnMapLS', function () { this.unmapLSExact(this.reg('eax')); return ret32(this); });
+// (SUnMapLS takes the pointer SMapLS gave in ECX, as USER32 calls it: its thunks keep SMapLS's EDX and give it back
+// in ECX after FT_Thunk, EAX the call's answer. Taken from EAX, each MapWindowPoints left its selector, and the
+// machine ran out of them in the hour: MSGSRV32 faulted in GlobalAlloc as a menu opened)
+KR('SUnMapLS', function () { this.unmapLSExact(this.reg('ecx')); return ret32(this); });
 for (let n = 8; n <= 40; n += 4) {
   KR('SMapLS_IP_EBP_' + n, function () { const a = this.reg('ebp') + n, v = this.r32(a); const s = v >>> 16 ? this.mapLSExact(v) : v; this.w32(a, s); this.reg('edx', s); this.reg('eax', s); return ret32(this); });
   KR('SUnMapLS_IP_EBP_' + n, function () { const a = this.reg('ebp') + n; this.unmapLSExact(this.r32(a)); this.w32(a, 0); return ret32(this); });
