@@ -3086,7 +3086,15 @@ def('KERNEL32', 'UnlockFile', 5, () => 1);
 def('KERNEL32', 'GetFileInformationByHandle', 2, function (h, p) {
   const f = fileOf(this, h); if (!f) return 0; const i = this.fs.fstat(f.fd); this.u8.fill(0, p, p + 52); this.w32(p, i.attrs); this.w32(p + 36, i.size); this.w32(p + 40, 1); return 1;
 });
-def('KERNEL32', 'SetFileTime', 4, () => 1);
+// (the dates given, as FILETIMEs; a null pointer leaves that one as it is. A no-op, every file Setup extracted kept the
+// time of its copy: BonziBUDDY's Installer VISE compares dates, took OSR 2.5's OLEAUT32.DLL of 1996 for newer than its
+// own, kept it, and BonziBUDDY said "The file 'OLEAUT32.DLL' is out of date")
+def('KERNEL32', 'SetFileTime', 4, function (h, c, a, w) {
+  const f = fileOf(this, h); if (!f) { this.lastError = 6; return 0; }
+  const ms = p => p ? Number((ft64(this, p) - 116444736000000000n) / 10000n) : undefined, t = {};
+  for (const [k, p] of [['ctime', c], ['atime', a], ['mtime', w]]) { const v = ms(p); if (v !== undefined) t[k] = v; }
+  this.fs.futimes(f.fd, t); return 1;
+});
 def('KERNEL32', 'GetFileAttributesA', 1, function (n) { return fsCall(this, () => this.fs.stat(this.readA(n)).attrs, 0xffffffff); });
 def('KERNEL32', 'SetFileAttributesA', 2, function (n, a) { return fsCall(this, () => (this.fs.setAttrs(this.readA(n), a), 1)); });
 def('KERNEL32', 'DeleteFileA', 1, function (n) { return fsCall(this, () => (this.fs.unlink(this.readA(n)), 1)); });

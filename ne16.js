@@ -1397,8 +1397,15 @@ const INTS = {
           // place ends it there. Windows 98 Setup rewrote AUTOEXEC.BAT shorter and the old file's end stayed after it)
           case 0x40: if (!f) return fail(6); if (!cx && !f.dev) { this.fs.truncate(f.fd); return this.ax(0); } return this.ax(this.fs.write(f.fd, this.u8.slice(dsdx(), dsdx() + cx)));
           case 0x41: this.fs.unlink(this.readA(dsdx()) || ''); return;
-          case 0x57: {   // file dates: AL 0 written, 4 accessed, 6 created (CX time, DX date); the setters change nothing
-            if (!f) return fail(6); if (al & 1) return;
+          case 0x57: {   // file dates: AL 0 written, 4 accessed, 6 created (CX time, DX date); 1, 5, 7 set them
+            if (!f) return fail(6);
+            // (setting them: SETUPX gives each file it extracts its cabinet's date. Not set, every file Setup copied was
+            // dated the day of its copy, newer than the installers that compare dates thought their own)
+            if (al & 1) {
+              const t = this.cpu.ecx.value & 0xffff, dt = this.cpu.edx.value & 0xffff;
+              const ms = new Date((dt >> 9) + 1980, ((dt >> 5) & 15) - 1, dt & 31, t >> 11, (t >> 5) & 63, (t & 31) * 2).getTime();
+              this.fs.futimes(f.fd, { [al === 5 ? 'atime' : al === 7 ? 'ctime' : 'mtime']: ms }); return;
+            }
             const i = this.fs.fstat(f.fd), d = new Date(al === 4 ? i.atime : al === 6 ? i.ctime : i.mtime);
             this.cpu.ecx.value = lo16(this.cpu.ecx.value, al === 4 ? 0 : (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1));
             this.cpu.edx.value = lo16(this.cpu.edx.value, ((Math.max(d.getFullYear(), 1980) - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate());

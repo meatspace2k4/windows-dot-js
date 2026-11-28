@@ -642,6 +642,8 @@ class FileSystem {
     this.resize(h.n, len === undefined ? h.pos : len); h.n.mtime = Date.now(); this.meta(h.n); this.emit('write', this.pathOf(h.n));
   }
   fstat(fd) { const h = this.handle(fd); return h.remote ? this.stat(h.path) : this.info(h.n); }
+  /** an open file's dates set ({ ctime, mtime, atime }, ms; the ones given) */
+  futimes(fd, t) { const h = this.handle(fd); this.setTimes(h.remote ? h.path : this.pathOf(h.n), t); }
   close(fd) { const h = this.handle(fd); this.fds.delete(fd); if (h.remote) h.remote.close(h.rh); else h.n.opens--; }
   // ---- whole-file helpers
   readFile(path) { const fd = this.open(path, 'r'); try { return this.read(fd); } finally { this.close(fd); } }
