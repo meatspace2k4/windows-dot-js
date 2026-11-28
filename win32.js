@@ -500,7 +500,12 @@ class Process {
     for (const d of dirs) { try { f = this.fs.readFile(d + '\\' + file); path = d + '\\' + file; break; } catch (_) { /* not there */ } }
     if (!f || f.length < 0x40 || f[0] !== 0x4d || f[1] !== 0x5a) return null;
     const dv = new DataView(f.buffer, f.byteOffset, f.byteLength), pe = dv.getUint32(0x3c, true);
-    if (pe + 0xf8 > f.length || dv.getUint32(pe, true) !== 0x4550 || !(dv.getUint16(pe + 22, true) & 0x2000)) return null;   // (IMAGE_FILE_DLL)
+    // (a Win32 image: a DLL, or a program LoadLibrary names, which Windows 95 maps as a module whose entry point it never
+    // calls, for its resources: RSABASE's DllRegisterServer loads SIGRES.EXE for its signature, and with no program
+    // taken said "CAPI: The install program could not open signature file", on Windows 95 OSR 2.5's first start)
+    if (pe + 0xf8 > f.length || dv.getUint32(pe, true) !== 0x4550) return null;
+    const isDll = !!(dv.getUint16(pe + 22, true) & 0x2000);   // (IMAGE_FILE_DLL)
+    if (!isDll && !/\.EXE$/i.test(file)) return null;
     const opt = pe + 24, pref = dv.getUint32(opt + 28, true), size = dv.getUint32(opt + 56, true), ep = dv.getUint32(opt + 16, true);
     const relocatable = !(dv.getUint16(pe + 22, true) & 1) && dv.getUint32(opt + 96 + 5 * 8 + 4, true) > 0;
     // (where the memo's translation of this file was made, first: the module put there runs the memo's module, not one
@@ -523,7 +528,7 @@ class Process {
     if (synth) base = this.imageRoom(0, size, true);
     if (!base) { log('warn', 'win32', `${file}: no room for its image at ${pref.toString(16)}`); return null; }
     // (the file it was mapped from: GetModuleFileName's answer, TRIEDIT's own type library found beside it)
-    const d = { file: f, module: null, meta: { base, entry: ep ? base + ep : 0, textLo: 0, textHi: 0, blocks: [], size, dynamic: true, path, ...(synth ? { synthRelocs: true } : {}) } };
+    const d = { file: f, module: null, meta: { base, entry: ep && isDll ? base + ep : 0, textLo: 0, textHi: 0, blocks: [], size, dynamic: true, path, ...(synth ? { synthRelocs: true } : {}) } };
     this.dlls.set(name, d);
     return d;
   }
