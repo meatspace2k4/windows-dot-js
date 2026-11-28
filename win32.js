@@ -916,6 +916,10 @@ class Process {
     this.cpu.budget.value = BUDGET;
     const vc = this.host.vclock; if (vc) vc.now += vc.perTick;   // (the machine's own clock: a quantum per BUDGET blocks, whatever the host's speed; worker.js vclock)
     if (this.inputPoll && !this.inPoll) { this.inPoll = true; try { this.inputPoll(); } finally { this.inPoll = false; } }   // interrupts: the keyboard's and the mouse's
+    // the sound card tended inside a long run too, every 10 ms of the wall's time, as its speakers play by the wall:
+    // tended only between slices, a run that went on (a thread inside a call, a heavy first start) left its queue to run
+    // dry and the sound stuttered under load
+    if (this.sound16 && !this.inSound) { const w = performance.now(); if (w - (this.soundTended || 0) >= 10) { this.soundTended = w; this.sound16(); } }
     if (this.runLevel === this.yieldLevel && !this.noPreempt) {
       if (this.now() - this.runT0 < SLICE_MS) return 0;
       this.preempted = u32(eip); return 1;
