@@ -27,6 +27,9 @@ export const pageDrive = async (key, o = {}) => {
     try {
       if (/^Welcome$/.test(e.title)) { win95.close(/^Welcome$/); lg('Welcome closed'); }
       else if (/Uninstall Drive/.test(e.title)) { await win95.click({ name: 'OK', window: /Uninstall Drive/ }); lg('Select Uninstall Drive: OK'); }
+      // (Setup's notice that it will ask for a device's model, and the Select Device page that asks: OK, its default)
+      else if (e.title === 'Setup' && (await win95.elementsNow()).some(x => x.window === 'Setup' && /could not identify one or more devices/.test(String(x.name)))) { await win95.click({ name: 'OK', window: 'Setup' }); lg('Setup: OK (it asks for a model next)'); }
+      else if (/^Select Device$/.test(e.title)) { await win95.click({ name: 'OK', window: 'Select Device' }); lg('Select Device: OK, its default'); }
       else if (/^Insert Disk$/.test(e.title)) { await win95.click({ name: 'Cancel', window: 'Insert Disk' }); lg('Insert Disk: Cancel (no startup disk)'); }
       else {
         const text = (await win95.elementsNow()).filter(x => x.window === e.title && x.role === 'text').map(x => String(x.name)).join(' ');
