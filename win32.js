@@ -2433,7 +2433,14 @@ def('KERNEL32', 'VirtualAlloc', 4, function (a, n, type) {
   // (vmRoom: a spare piece's rest stays spare). MSO's allocator (MSONSEXT's) finds a block's header by masking its
   // address to 64 KiB: a region at the top as the block tables left it, 4 KiB aligned, read no header, and faulted)
   let b = this.vmTop ? this.vmRoom(size, 0x10000) : 0;
-  if (!b) { heap = this.alloc(size + 0xffff, true); b = (heap + 0xffff) & ~0xffff; }
+  if (!b) { try { heap = this.alloc(size + 0xffff, true); b = (heap + 0xffff) & ~0xffff; } catch (e) { if (!(e instanceof GuestError)) throw e; heap = 0; b = 0; } }
+  // (no room for it: 0, as Windows answers, said in the log with its size and caller, once per size. Unsaid, WINHLP32's
+  // own heap, which doubles its reservation as it grows, failed with nothing to show where)
+  if (!b) {
+    const said = this.vaFailSaid || (this.vaFailSaid = new Set());
+    if (!said.has(size)) { said.add(size); log('warn', 'win32', `VirtualAlloc: no room for ${(size >>> 0).toString(16)}h bytes, called from ${this.whereOf(this.r32(this.reg('esp')))}`); }
+    this.lastError = 8; return 0;
+  }
   // (pc: the process whose own program reserved it, the caller's return address in its image, or a DLL whose
   // writable data is each process's own (priv: MSVCRT's, OLEAUT32's from their files, whose heaps' 4 MB reservations
   // their data holds): it goes when that process ends. What a DLL of one copy reserves (SHELL32's, DESK.CPL's) is the
