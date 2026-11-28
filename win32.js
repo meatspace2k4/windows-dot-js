@@ -1072,7 +1072,9 @@ class Process {
       if (this.memW) this.memCheck();
       // (an export another module enters, watched: a shared session's intents, ne16.js hookIntents; a hook that answers
       // the call itself gives where it returns to: a program's clock, ne16.js hookClock)
-      if (this.entryHooks) { const h = this.entryHooks.get(eip); if (h) { const to = h.call(this); if (to !== undefined) { eip = to; continue; } } }
+      // (hookedAt: the hooked address whose hook just ran, so the module's run, sent back here from that same address
+      // as no block of its table is there now, runs the code there and does not call the hook a second time)
+      if (this.entryHooks) { const h = this.entryHooks.get(eip); this.hookedAt = h ? eip : undefined; if (h) { const to = h.call(this); if (to !== undefined) { eip = to; continue; } } }
       const m = eip >= LAYOUT.THUNK16 ? this.modules[0] : this.modules.find(x => eip >= x.meta.textLo && eip < x.meta.textHi && !x.hidden);   // (not a program whose process's view is put by: arenaUse)
       if (!m) {
         if (eip < 0x10000) (this.nullJumps || (this.nullJumps = [])).push({ at: eip, from: this.lastBlock >>> 0, cs: this.cpu.cs ? this.cpu.cs.value & 0xffff : null });
@@ -1104,6 +1106,9 @@ class Process {
       }
       if (r === 2 && this.dynWant !== undefined) {   // no translated block there: code written at run time
         const at = this.dynWant; this.dynWant = undefined;
+        // (a hooked block, out of its module's table, comes here too: dynRun calls its hook as it enters it, unless
+        // the dispatcher has just called that one for this same entry (hookedAt), so each entry calls it once)
+        if (this.hookedAt !== at) this.hookedAt = undefined;
         const dyn = this.dynRun(at);
         if (dyn === null) { const go = this.noCode(at); if (go === null) return 2; eip = go; continue; }
         if (dyn === -1) return 1;

@@ -978,9 +978,13 @@ const REGION_BLOCKS = 96, REGION_ROUNDS = 512;
 function dynRegion(p, eip, g, csb, d32, ss32, keyOf) {
   // (entered at any of its blocks: the address it is entered at is EIP's as it is called, dynRun)
   // (its first round runs whatever the budget: entered, a region goes one block on at least)
-  const f = new Fn(), PC = f.loc(), FIRST = f.loc(), hooks = p.entryHooks, ends = p.dynEnds || (p.dynEnds = new Map());
+  const f = new Fn(), PC = f.loc(), FIRST = f.loc(), ENTRY = f.loc(), hooks = p.entryHooks, ends = p.dynEnds || (p.dynEnds = new Map());
   const gEnd = g.base + g.len;
-  f.gg('eip').ls(PC).c(1).ls(FIRST);
+  // (a region entered at a hooked address runs that block once, this entry's: its own jump back to it leaves the
+  // region for the host, which calls the hook again (dynRun). Run in the region, a loop at a breakpoint's block ran
+  // its rounds past the hook; ENTRY: that block not run yet)
+  const hookedEntry = !!(hooks && hooks.has(eip));
+  f.gg('eip').ls(PC).c(1).ls(FIRST).c(1).ls(ENTRY);
   f.lp(); f.rg = { pc: PC, base: f.depth };
   f.gg('budget').c(0).op('le_s').lg(FIRST).op('eqz').op('and').if_().lg(PC).e(0x0f).end();
   f.c(0).ls(FIRST); f.gg('budget').c(1).op('sub').gs('budget');
@@ -989,7 +993,8 @@ function dynRegion(p, eip, g, csb, d32, ss32, keyOf) {
     const a = q.shift();
     if (a !== eip && hooks && hooks.has(a)) continue;   // (a hooked address is the host's to enter, dynRun)
     const mark = f.b.length, depth = f.depth;
-    f.lg(PC).c(a | 0).op('eq').if_();
+    if (hookedEntry && a === eip) { f.lg(PC).c(a | 0).op('eq').lg(ENTRY).op('and').if_(); f.c(0).ls(ENTRY); }
+    else f.lg(PC).c(a | 0).op('eq').if_();
     const body = f.b.length;
     let t = null;
     try { t = translate(p, a, csb, d32, null, ends.get(keyOf(a)), ss32, f, gEnd); }
@@ -1052,7 +1057,8 @@ P.dynBlock = function (eip) {
       const c = { run, ranges: r.ranges, hooks: this.entryHooks ? this.entryHooks.size : 0 };
       // (the region for each of its blocks: entered at one later (a return from another module, a callback), it runs
       // as it is, not a region of its own made and compiled for each address code is entered at)
-      for (const { a } of r.ranges) { if (a === eip) continue; const k = keyOf(a) + ':R', l = this.dynCache.get(k) || []; this.dynCache.set(k, [c, ...l.slice(0, 3)]); }
+      // (not one entered at a hooked address: its block there runs once an entry, entered at it, dynRegion)
+      if (!(this.entryHooks && this.entryHooks.has(eip))) for (const { a } of r.ranges) { if (a === eip) continue; const k = keyOf(a) + ':R', l = this.dynCache.get(k) || []; this.dynCache.set(k, [c, ...l.slice(0, 3)]); }
       this.dynCache.set(rk, [c, ...kr.slice(0, 3)]); dynTrim(this);
       return remember(c);
     }
@@ -1132,7 +1138,8 @@ P.dynRun = function (eip) {
     if (bud.value <= 0) { this.cpu.eip.value = eip; if (this.tick(eip)) return -1; }
     // (an export another module enters, hooked, win32.js dispatch: a module run from its file reaches it here, never
     // through the dispatcher; a hook that answers where to go on takes the call)
-    if (this.entryHooks) { const h = this.entryHooks.get(eip); if (h) { const to = h.call(this); if (to !== undefined) { eip = u32(to); if (eip === LAYOUT.SENTINEL || this.thunkAt(eip) || this.staticCodeAt(eip)) return eip; continue; } } }
+    // (the first block's hook not called again where the dispatcher has just called it for this entry: win32.js hookedAt)
+    if (this.entryHooks) { const h = n === 0 && this.hookedAt === eip ? null : this.entryHooks.get(eip); this.hookedAt = undefined; if (h) { const to = h.call(this); if (to !== undefined) { eip = u32(to); if (eip === LAYOUT.SENTINEL || this.thunkAt(eip) || this.staticCodeAt(eip)) return eip; continue; } } }
     // (code the host runs in a module's data, ne16.js dataCode: ThunkConnect32's relays, LS thunklets. The dispatcher
     // asks for it, and so must a run of run-time code going on to its next block: Windows 98's SHELL32, mapped from
     // its file, called its LS01 relay, and the relay's padding (INT 3) ran instead)

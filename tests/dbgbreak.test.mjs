@@ -56,6 +56,21 @@ assert.equal(p.cpu.eip.value >>> 0, L, 'control back at the hooked block: the di
 off();
 assert.equal(p.r32(rec.meta.lookup + 4 * (L - rec.meta.textLo)), rec.meta.blocks.indexOf(L) + 1, 'the hook gone: the block back in the table');
 assert.equal(go(), 3, 'and the loop chained again, through to the far jump');
+// (1b) through the dispatcher: the module's run, come to the hooked block from its own jnz, is sent back (its trap,
+// dynWant) and the dispatcher calls the hook there, once an entry, then runs the code there (win32.js dispatch:
+// hookedAt; dyn.js dynRun, its region run once at a hooked entry: dynRegion ENTRY), and the loop goes on to its end.
+// The hook sees each jump back, CX 4, 3, 2, 1 (the first pass runs on inside the first block). In a region, the
+// loop's rounds ran past the hook, the first only seen
+{
+  delete p.trap;   // (the machine's own trap: no block there, dynWant, as dyn.js's run asks for run-time code)
+  const seen = []; const off2 = p.addEntryHook(L, function () { seen.push(this.cpu.ecx.value & 0xffff); });
+  for (const r of ['eax', 'ebx', 'ecx']) p.cpu[r].value = 0; p.cpu.cs.value = g.sel; p.cpu.csb.value = g.base; p.cpu.ss.value = d.sel; p.cpu.ssb.value = d.base; p.cpu.esp.value = 0x10;
+  try { p.dispatch(g.base); } catch (_) { /* the far jump to 0:0 ends it, as it may */ }
+  off2();
+  assert.ok(seen.length >= 4, `the hook called at each entry from within (${JSON.stringify(seen)})`);
+  assert.deepEqual(seen.slice(-4), [4, 3, 2, 1], 'once an entry, each with its registers then');
+  assert.equal(p.cpu.eax.value & 0xffff, 0xfcb8, 'and the code there run as it would be: the same result');
+}
 // (2b) the table's hit as the dispatcher calls the hook: exact registers, by sequence number; record runs on
 const b = J.debug(p, ['breakpoint', { at: 'PMOD+5', mode: 'record', capture: 'R.ecx & 0xffff' }]);
 assert.equal(b.at, L); assert.equal(b.mode, 'record');
