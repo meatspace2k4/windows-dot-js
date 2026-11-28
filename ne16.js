@@ -5138,6 +5138,14 @@ const ev16 = (p, h) => {
   // a semaphore: signalled while its count is above zero; a wait it satisfies takes one (MPR's request queue, which
   // MPREXE's server threads wait on through USER's MsgWaitForMultipleObjects)
   if (o.kind === 'semaphore') return { manual: false, get set() { return o.count > 0; }, set set(v) { if (!v && o.count > 0) o.count--; } };
+  // a mutex: signalled while no thread owns it, or for the thread that owns it (a wait again only counts up); a wait it
+  // satisfies makes the waiting thread its owner, until as many ReleaseMutex. Not a waitable here, USER's
+  // MsgWaitForMultipleObjects (#461) never saw a free one: ACME's ACMSETUP waited for good on IE4MUTEX, and Internet
+  // Explorer 4's setup stopped at 55%
+  if (o.kind === 'mutex') {
+    const me = p.thread16 ? p.thread16.id : MAIN_TID;
+    return { manual: false, get set() { return !o.owned || o.owner === me; }, set set(v) { if (!v) { if (o.owned && o.owner === me) o.count = (o.count || 1) + 1; else { o.owned = true; o.owner = me; o.count = 1; } } } };
+  }
   return null;
 };
 /** set an event and make the threads blocked on it runnable (they check their wait again when they run) */
@@ -6501,7 +6509,22 @@ K('#96', 0, () => 1);
 K('#98', 1, function () { this.sysLevel = (this.sysLevel || 0) - 1; return this.reg('eax'); });
 K('GetProcessFlags', 1, () => 0);
 K('ConvertToGlobalHandle', 1, h => h);
-K('ReleaseMutex', 1, () => 1);   // one processor runs every thread here: a mutex has no one to keep out
+// ReleaseMutex: the owner's count down, and at none the mutex free and its waiters woken (ev16); not the owner's, it
+// fails (ERROR_NOT_OWNER). A no-op before, so a mutex once waited for stayed owned for good
+K('ReleaseMutex', 1, function (h) {
+  const o = this.obj(h); if (!o || o.kind !== 'mutex') { this.lastError = 6; return 0; }
+  const me = this.thread16 ? this.thread16.id : MAIN_TID;
+  if (!o.owned || (o.owner !== undefined && o.owner !== me)) { this.lastError = 288; return 0; }
+  if (--o.count > 0) return 1;
+  o.owned = false; o.owner = undefined; o.count = 0; this.wakeWaiters(o); return 1;
+});
+// CreateMutex with initial ownership: the creating thread its owner, once (as ev16 counts a wait's)
+const createMutex32 = API.KERNEL32.CreateMutexA[1];
+K('CreateMutexA', 3, function (sa, owned, name) {
+  const h = createMutex32.call(this, sa, owned, name), o = this.obj(h);
+  if (o && o.kind === 'mutex' && owned && this.lastError !== 183) { o.owned = true; o.owner = this.thread16 ? this.thread16.id : MAIN_TID; o.count = 1; }
+  return h;
+});
 // ---- Win32 waits, events and user APCs under the native USER, on the threads threads16 runs. A wait that cannot be
 // satisfied gives up the processor at the thread's top level and is made again when the thread resumes (until it is
 // satisfied or its time runs out); an alertable wait runs the thread's queued APCs first and returns
