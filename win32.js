@@ -904,7 +904,7 @@ class Process {
     if (t && !/^jump to unmapped address/.test(t)) return null;
     this.trapped = null; return this.raise(14, at, at);
   }
-  // ---- diagnostics (worker.js cmd 'watch', 'memwatch', 'probe', 'faults'; docs/scripting/debugging.md)
+  // ---- diagnostics (worker.js cmd 'watch', 'memwatch', 'probe', 'faults'; docs/scripting/DEBUGGING.md)
   /** a linear address as a symbol: a thunk's import, a 16-bit module's segment:offset, or a 32-bit module's offset,
    *  with the nearest export at or before it (its name and the offset past it) when the module has one */
   whereOf(lin) {

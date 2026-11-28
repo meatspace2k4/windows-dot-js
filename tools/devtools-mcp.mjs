@@ -1,19 +1,21 @@
 #!/usr/bin/env node
-// An MCP server (stdio) that drives a browser's debugger over the Chrome DevTools Protocol.
-// It attaches to a page and its workers, so the machine's worker and the dyn/NAME.js modules can be debugged:
-// breakpoints, pause, resume, step, call frames, scope variables, evaluate, script source, console.
+// An MCP server (stdio) that drives a browser's debugger: the remote debugging interface Chrome and Electron serve
+// over HTTP and a WebSocket (the "Chrome DevTools Protocol"). It attaches to a page and its workers, so the machine's
+// worker and the dyn/NAME.js modules can be debugged: breakpoints, pause, resume, step, call frames, scope variables,
+// evaluate, script source, console.
 //
-// The browser must expose the protocol:
-//   Chrome:            --remote-debugging-port=9222
-//   the Windows 95 app: 127.0.0.1:9334
-// Endpoint: CDP_URL; without it, the Windows 95 app when it is running, else Chrome at 9222. No dependencies (Node 22:
-// fetch, WebSocket).
+// Which browser: BROWSER_DEBUGGER_URL, the address of a browser's remote debugging interface, when it is set;
+// otherwise the Windows 95 app's, 127.0.0.1:9334 (APP_DEBUGGER_URL). A Chrome started with
+// --remote-debugging-port=9222 is BROWSER_DEBUGGER_URL=http://127.0.0.1:9222. No dependencies (Node 22: fetch,
+// WebSocket).
 //
 // Register:  claude mcp add devtools -- node tools/devtools-mcp.mjs
 import { createInterface } from 'node:readline';
 
-const APP_URL = 'http://127.0.0.1:9334';
-const CDP_URL = process.env.CDP_URL || (await fetch(`${APP_URL}/json/version`).then(r => r.ok, () => false) ? APP_URL : 'http://127.0.0.1:9222');
+/** the Windows 95 app's remote debugging interface (electron/main.js remote-debugging-port) */
+const APP_DEBUGGER_URL = 'http://127.0.0.1:9334';
+/** the browser this server drives: its remote debugging interface's address */
+const DEBUGGER_URL = process.env.BROWSER_DEBUGGER_URL || APP_DEBUGGER_URL;
 const TIMEOUT = 15000;
 
 // ---------------------------------------------------------------- the protocol connection
@@ -25,7 +27,7 @@ const bySessionId = new Map();
 
 async function connect() {
   if (ws && ws.readyState === 1) return;
-  const v = await fetch(`${CDP_URL}/json/version`).then(r => r.json()).catch(e => { throw new Error(`no browser answers at ${CDP_URL} (${e.message}); start it with --remote-debugging-port`); });
+  const v = await fetch(`${DEBUGGER_URL}/json/version`).then(r => r.json()).catch(e => { throw new Error(`no browser's remote debugging interface answers at ${DEBUGGER_URL} (${e.message}): start the app (node tools/app.mjs start), or a Chrome with --remote-debugging-port and BROWSER_DEBUGGER_URL set to it`); });
   ws = new WebSocket(v.webSocketDebuggerUrl);
   await new Promise((ok, no) => { ws.onopen = ok; ws.onerror = () => no(new Error(`could not open ${v.webSocketDebuggerUrl}`)); });
   ws.onmessage = e => onMessage(JSON.parse(e.data));
@@ -121,7 +123,7 @@ const tools = {
         // (its worker, when the browser lists one: attached as the page's auto-attach reports it, waited for by that
         // event, not by a time)
         // (the browser's own list names a page's dedicated workers; Target.getTargets leaves them out)
-        const hasWorker = (await fetch(`${CDP_URL}/json/list`).then(r => r.json()).catch(() => [])).some(x => x.type === 'worker' && /worker\.js/.test(x.url));
+        const hasWorker = (await fetch(`${DEBUGGER_URL}/json/list`).then(r => r.json()).catch(() => [])).some(x => x.type === 'worker' && /worker\.js/.test(x.url));
         const { sessionId } = await send('Target.attachToTarget', { targetId: t.targetId, flatten: true });
         const ps = adopt(sessionId, t), child = new Promise(r => { ps.onChild = c => { if (c.type === 'worker') r(c); }; });
         if (hasWorker) await child;
@@ -216,7 +218,7 @@ async function guestWhere() {
 const pageSession = async () => {
   // (the app's page is its own index.html, a file; a browser's is the local server's)
   let s = [...sessions.values()].find(x => x.type === 'page' && /\/\?|win95|braid|localhost|\/app\/web\/index\.html/.test(x.url || ''));
-  if (!s) { await tools.attach.run({ url: process.env.W95_URL || (CDP_URL === APP_URL ? '/app/web/index.html' : 'localhost') }); s = [...sessions.values()].find(x => x.type === 'page'); }
+  if (!s) { await tools.attach.run({ url: process.env.W95_URL || (DEBUGGER_URL === APP_DEBUGGER_URL ? '/app/web/index.html' : 'localhost') }); s = [...sessions.values()].find(x => x.type === 'page'); }
   if (!s) throw new Error('no page is attached');
   // (the page's workers attach after it, each as the browser announces it: the machine's is waited for)
   for (let i = 0; i < 30 && ![...sessions.values()].some(x => x.type === 'worker' && /worker\.js/.test(x.url)); i++) await new Promise(ok => setTimeout(ok, 100));

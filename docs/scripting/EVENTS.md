@@ -24,7 +24,7 @@ carries every event, so `next` is for an event no action of yours causes (a prog
 | `saver.start`, `saver.stop` | `path` | a full-screen screen saver starts or ends |
 | `devtools` | `open` | the browser's DevTools open or close (the app says; a browser tab cannot) |
 | `fs.create`, `fs.write`, `fs.unlink`, `fs.mkdir`, `fs.rmdir`, `fs.rename`, `fs.attrib`, `fs.label`, `fs.mount` | `path`, `path2` | the file system changes |
-| `tray.follow`, `tray.window`, `sync.input`, `sync.stroke` | | a shared session's follow, and strokes (shared.md) |
+| `tray.follow`, `tray.window`, `sync.input`, `sync.stroke` | | a shared session's follow, and strokes (SHARED.md) |
 
 A DevTools client gets every event as JSON by registering the binding `__w95event` (`Runtime.addBinding`); each one
 arrives as `Runtime.bindingCalled` with the event in `params.payload`, across page reloads.

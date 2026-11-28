@@ -21,7 +21,7 @@ function open() {
   })
   win.webContents.on('devtools-opened', () => win.webContents.send('devtools', true))
   win.webContents.on('devtools-closed', () => win.webContents.send('devtools', false))
-  win.loadFile(page, { search: 'mods=debug' })   // (the mods debug.mod names: win95.js modFile)
+  win.loadFile(page, { search: 'mods=debug&debug=1' })   // (the mods debug.mod names: win95.js modFile; debug=1: the machine's own commands, shell_cmd)
 }
 ipcMain.on('devtools-open', e => { e.returnValue = e.sender.isDevToolsOpened() })
 

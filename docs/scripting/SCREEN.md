@@ -1,5 +1,15 @@
 # Reading and working the screen
 
+A worked session, setting the display to True Color, each step decided from the answer before it:
+
+1. `shell_run {"command": "control desk.cpl"}`: the events have `window.open Display Properties`.
+2. `shell_click {"query": {"name": "Settings ", "window": "Display Properties"}}`: its text now has
+   `combobox: High Color (16 bit)`.
+3. `shell_set {"query": {"role": "combobox", "window": "Display Properties"}, "value": "True Color (24 bit)"}`.
+4. `shell_click {"query": {"name": "Apply", "window": "Display Properties"}}`: the events have `window.open
+   Compatibility Warning`. That is the state: answer it, then Monitor Settings' Yes (it puts the old mode back after
+   15 seconds unanswered), each from the answer before.
+
 The tools call `window.win95`, the page's API. It is the same in the Electron app (DevTools protocol on
 `127.0.0.1:9334`) and in a browser tab. Coordinates are screen pixels of the emulated display, origin top left;
 `win95.screen()` gives the size.

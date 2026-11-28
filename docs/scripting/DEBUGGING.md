@@ -4,7 +4,8 @@ An error in an answer names what failed. Read it, the log and the fault log befo
 both. Then find the cause with the debugger, stepping through the code that went wrong. Don't reproduce the crash
 over and over and patch around it.
 
-`shell_cmd` needs the page opened with `?debug=1`.
+`shell_cmd` needs the page opened with `?debug=1`: the app opens its page so (electron/main.js); a browser page
+needs it in its address.
 
 - `win95.log(since)`: the machines' log, `{ n, t, level, tag, text, machine }` a line: what the emulator says of
   itself (`win32`, `ne16`, `vxd`, `spawn`), programs' `OutputDebugString`, KERNEL's `LogError`. The same lines go to
@@ -25,7 +26,7 @@ over and over and patch around it.
 | `watchAt`, `[dll, offsets]` | EAX each time execution comes into a module at those offsets from another |
 | `effects` | what the machine did and under which cause (input, remote, boot, host) |
 | `lag`, `strokes`, `pace` | input timing; a shared session's strokes; a drag's look-ahead |
-| `reload`, `[file]` | a machine script loaded again into the running machine (inside-windows.md) |
+| `reload`, `[file]` | a machine script loaded again into the running machine (INSIDE-WINDOWS.md) |
 
 Static tools, with nothing running: `python3 tools/staticmap.py` (the bundle's code an entry reaches, what the
 translator cannot take, the VxD services nothing provides: `findings/gapmap.json`), `tools/v86mem.py` (where VxDs
@@ -38,7 +39,7 @@ does.
 
 `win95.debug` (and the MCP server's `guest_*` and `api_*` tools) debugs the machine's translated code and its Windows
 API calls. A place is a hex address, `MODULE+offset` or `DLL!Export`. To understand a fault: go back before it with
-Braid (braid.md), set `api_break` or `guest_break` where the failing code starts, and step it with `guest_step`,
+Braid (BRAID.md), set `api_break` or `guest_break` where the failing code starts, and step it with `guest_step`,
 reading `guest_state` at each stop.
 
 | Call | Does |

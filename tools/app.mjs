@@ -17,7 +17,8 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const APP = join(ROOT, 'electron', 'Windows 95.app');
 const DATA = join(homedir(), 'Library', 'Application Support', 'local.win95');
 const DISK = join(DATA, 'C.db');
-const CDP = 'http://127.0.0.1:9334';
+/** the app's remote debugging interface (electron/main.js remote-debugging-port), where its page is evaluated */
+const APP_DEBUGGER_URL = 'http://127.0.0.1:9334';
 const sleep = ms => new Promise(ok => setTimeout(ok, ms));
 const running = () => spawnSync('pgrep', ['-f', 'Windows 95.app/Contents/MacOS/Electron']).status === 0;
 
@@ -31,7 +32,7 @@ const clearDisk = () => { for (const s of ['', '-wal', '-shm']) rmSync(DISK + s,
 
 /** an expression in the app's page, awaited; null while the page is not there yet */
 async function evaluate(expression, ms = 30000) {
-  const pages = await fetch(`${CDP}/json`).then(r => r.json()).catch(() => []);
+  const pages = await fetch(`${APP_DEBUGGER_URL}/json`).then(r => r.json()).catch(() => []);
   const page = pages.find(p => p.type === 'page' && /\/app\/web\/index\.html/.test(p.url));
   if (!page) return null;
   const ws = new WebSocket(page.webSocketDebuggerUrl);
