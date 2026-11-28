@@ -47,7 +47,7 @@ function one(e,s){var m=/^([a-zA-Z0-9]*)(#[\\w-]+)?((\\.[\\w-]+)*)$/.exec(s);if(
  if(m[1]&&e.tagName.toLowerCase()!=m[1].toLowerCase())return false;if(m[2]&&e.id!=m[2].substr(1))return false;
  if(m[3]){var c=" "+e.className+" ",k=m[3].split(".");for(var i=1;i<k.length;i++)if(c.indexOf(" "+k[i]+" ")<0)return false;}return true;}
 function match(e,s){var p=s.split(","),i;for(i=0;i<p.length;i++)if(one(e,p[i].replace(/^\\s+|\\s+$/g,"")))return true;return false;}
-function qsa(r,s){var a=all(r),o=[],i;for(i=0;i<a.length;i++)if(a[i].tagName&&match(a[i],s))o[o.length]=a[i];return o;}
+function qsa(r,s){var a=all(r),o=[],i;for(i=0;i<a.length;i++)if(a[i].tagName&&match(a[i],s))o[o.length]=window.__w95el(a[i]);return o;}
 function html(n){return typeof n=="string"?n.replace(/&/g,"&amp;").replace(/</g,"&lt;"):n.outerHTML;}
 function move(e,w,n){var h=html(n);if(typeof n!="string")n.outerHTML="";e.insertAdjacentHTML(w,h);return n;}
 var S={
@@ -74,6 +74,10 @@ function nat(o,k,a){switch(a.length){case 0:return o[k]();case 1:return o[k](a[0
 window.__w95throw=function(e){window.__w95err=e;return window.__w95err.__w95raise();};
 window.__w95io=function(o,C){if(o==null||typeof C!="function")return false;var c=o.constructor;while(c){if(c==C)return true;c=c.__w95super;}return C==Object;};
 window.__w95in=function(k,o){return o!=null&&o[k]!==undefined;};
+window.__w95el=function(e){if(!e||e.__w95)return e;e.__w95=1;for(var k in S)if(typeof e[k]=="undefined")e[k]=(function(f){return function(a,b,c){return f(this,a,b,c);};})(S[k]);return e;};
+window.__w95all=function(){var a=document.all,i;window.__w95el(document);for(i=0;i<a.length;i++)window.__w95el(a[i]);};
+window.__w95arr=function(x){return typeof x=="string"?x.split(""):Array.from(x);};
+window.__w95call=function(o,k,a){return o[k].apply(o,a);};
 window.__w95dom={
  m:function(o,k,a){if(o==null||typeof o[k]!="undefined"||!S[k])return nat(o,k,a);var b=[o],i;for(i=0;i<a.length;i++)b[b.length]=a[i];switch(b.length){case 1:return S[k](b[0]);case 2:return S[k](b[0],b[1]);case 3:return S[k](b[0],b[1],b[2]);default:return S[k](b[0],b[1],b[2],b[3]);}},
  cls:function(o,k,c,f){if(o.classList)return nat(o.classList,k,f===undefined?[c]:[c,f]);var s=" "+o.className+" ",h=s.indexOf(" "+c+" ")>=0;
@@ -83,11 +87,151 @@ window.__w95dom={
 })();
 `;
 
+const ID = /[A-Za-z0-9_$\u0080-￿]/, KEYWORD_BEFORE_REGEX = new Set(['return', 'typeof', 'instanceof', 'in', 'of', 'new', 'delete', 'void', 'throw', 'case', 'do', 'else']);
+const PUNCT = ['>>>=', '...', '===', '!==', '**=', '<<=', '>>=', '>>>', '=>', '==', '!=', '<=', '>=', '&&', '||', '??', '?.', '++', '--', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '<<', '>>', '**'];
+function tokens(s) {
+  const out = [];
+  const sig = () => { for (let k = out.length - 1; k >= 0; k--) if (out[k].t !== 'ws') return out[k]; return null; };
+  let i = 0;
+  while (i < s.length) {
+    const c = s[i], st = i;
+    if (/\s/.test(c)) { while (i < s.length && /\s/.test(s[i])) i++; out.push({ t: 'ws', v: s.slice(st, i) }); continue; }
+    if (c === '/' && s[i + 1] === '/') { while (i < s.length && s[i] !== '\n') i++; out.push({ t: 'ws', v: s.slice(st, i) }); continue; }
+    if (c === '/' && s[i + 1] === '*') { const e = s.indexOf('*/', i + 2); i = e < 0 ? s.length : e + 2; out.push({ t: 'ws', v: s.slice(st, i) }); continue; }
+    if (c === '"' || c === "'") { i++; while (i < s.length && s[i] !== c) { if (s[i] === '\\') i++; i++; } i++; out.push({ t: 'str', v: s.slice(st, i) }); continue; }
+    if (c === '`') {
+      const parts = []; let lit = ''; i++;
+      while (i < s.length && s[i] !== '`') {
+        if (s[i] === '\\') { lit += s[i] + s[i + 1]; i += 2; continue; }
+        if (s[i] === '$' && s[i + 1] === '{') {
+          parts.push({ lit }); lit = ''; i += 2; let d = 1; const es = i;
+          while (i < s.length && d) { const t = tokens(s.slice(i, i + 1)); if (s[i] === '{') d++; else if (s[i] === '}') d--; else if (s[i] === '`' || s[i] === '"' || s[i] === "'") { const q = tokens(s.slice(i)); i += q[0].v.length; continue; } i++; void t; }
+          parts.push({ expr: s.slice(es, i - 1) }); continue;
+        }
+        lit += s[i++];
+      }
+      i++; parts.push({ lit }); out.push({ t: 'tmpl', v: s.slice(st, i), parts }); continue;
+    }
+    if (ID.test(c)) { while (i < s.length && ID.test(s[i])) i++; const v = s.slice(st, i); out.push({ t: /^[0-9]/.test(v) ? 'num' : 'id', v }); continue; }
+    if (c === '/') {
+      const p = sig();
+      if (!p || (p.t === 'punct' && !/^[)\]}]$/.test(p.v)) || (p.t === 'id' && KEYWORD_BEFORE_REGEX.has(p.v))) {
+        i++; let cls = false;
+        while (i < s.length && (s[i] !== '/' || cls)) { if (s[i] === '\\') i++; else if (s[i] === '[') cls = true; else if (s[i] === ']') cls = false; i++; }
+        i++; while (i < s.length && /[a-z]/i.test(s[i])) i++;
+        out.push({ t: 'regex', v: s.slice(st, i) }); continue;
+      }
+    }
+    if (c === '.' && /[0-9]/.test(s[i + 1] || '')) { i++; while (i < s.length && ID.test(s[i])) i++; out.push({ t: 'num', v: s.slice(st, i) }); continue; }
+    const p = PUNCT.find(x => s.startsWith(x, i)) || c;
+    i += p.length; out.push({ t: 'punct', v: p });
+  }
+  return out;
+}
+const OPEN = { '(': ')', '[': ']', '{': '}' }, CLOSE = { ')': '(', ']': '[', '}': '{' };
+const isP = (t, v) => t && t.t === 'punct' && t.v === v;
+const join = ts => ts.map(t => t.v).join('');
+function next(ts, i) { while (i < ts.length && ts[i].t === 'ws') i++; return i; }
+function prev(ts, i) { while (i >= 0 && ts[i].t === 'ws') i--; return i; }
+function match(ts, i) {
+  const o = ts[i].v, c = OPEN[o]; let d = 0;
+  for (let k = i; k < ts.length; k++) { if (isP(ts[k], o)) d++; else if (isP(ts[k], c) && --d === 0) return k; }
+  return ts.length - 1;
+}
+function matchBack(ts, i) {
+  const c = ts[i].v, o = CLOSE[c]; let d = 0;
+  for (let k = i; k >= 0; k--) { if (isP(ts[k], c)) d++; else if (isP(ts[k], o) && --d === 0) return k; }
+  return 0;
+}
+function exprEnd(ts, i) {
+  let d = 0;
+  for (let k = i; k < ts.length; k++) {
+    const t = ts[k];
+    if (t.t !== 'punct') continue;
+    if (OPEN[t.v]) d++;
+    else if (CLOSE[t.v]) { if (d === 0) return k; d--; }
+    else if (d === 0 && (t.v === ',' || t.v === ';')) return k;
+  }
+  return ts.length;
+}
+function splitTop(ts) {
+  const parts = []; let d = 0, cur = [];
+  for (const t of ts) {
+    if (t.t === 'punct' && OPEN[t.v]) d++; else if (t.t === 'punct' && CLOSE[t.v]) d--;
+    if (d === 0 && isP(t, ',')) { parts.push(cur); cur = []; } else cur.push(t);
+  }
+  if (cur.some(t => t.t !== 'ws')) parts.push(cur);
+  return parts;
+}
+function spreadList(items) {
+  return '[].concat(' + items.map(p => { const k = next(p, 0); return isP(p[k], '...') ? `window.__w95arr(${es5(join(p.slice(k + 1)))})` : `[${es5(join(p))}]`; }).join(',') + ')';
+}
+const replace = (ts, a, b, s) => { ts.splice(a, b - a + 1, ...tokens(s)); };
+function es5(src) {
+  const ts = tokens(src);
+  for (let i = 0; i < ts.length; i++) {
+    const t = ts[i];
+    if (t.t === 'tmpl') {
+      const p = prev(ts, i - 1);
+      if (p >= 0 && (ts[p].t === 'id' || isP(ts[p], ')') || isP(ts[p], ']')) && !KEYWORD_BEFORE_REGEX.has(ts[p].v)) continue;
+      const s = '(' + t.parts.map(x => 'lit' in x ? JSON.stringify(x.lit.replace(/\\`/g, '`').replace(/\\\$/g, '$')) : `(${es5(x.expr)})`).join('+') + ')';
+      ts[i] = { t: 'raw', v: s };
+    } else if (t.t === 'id' && (t.v === 'const' || t.v === 'let')) {
+      const n = ts[next(ts, i + 1)];
+      if (t.v === 'const' || (n && (n.t === 'id' || isP(n, '[') || isP(n, '{')))) t.v = 'var';
+    }
+  }
+  for (let i = ts.length - 1; i >= 0; i--) {
+    if (!isP(ts[i], '=>')) continue;
+    const p = prev(ts, i - 1); let a, params;
+    if (isP(ts[p], ')')) { a = matchBack(ts, p); params = join(ts.slice(a + 1, p)); }
+    else { a = p; params = ts[p].v; }
+    const pa = prev(ts, a - 1); if (pa >= 0 && ts[pa].t === 'id' && ts[pa].v === 'async') a = pa;
+    const b = next(ts, i + 1);
+    if (isP(ts[b], '{')) { const e = match(ts, b); replace(ts, a, e, `function(${params})${join(ts.slice(b, e + 1))}`); }
+    else { const e = exprEnd(ts, b); replace(ts, a, e - 1, `function(${params}){return ${join(ts.slice(b, e))};}`); }
+    i = a;
+  }
+  for (let i = ts.length - 1; i >= 0; i--) {
+    if (!isP(ts[i], '[') && !isP(ts[i], '(')) continue;
+    const e = match(ts, i), inner = ts.slice(i + 1, e), items = splitTop(inner);
+    if (!items.some(p => isP(p[next(p, 0)], '...'))) continue;
+    const list = spreadList(items);
+    if (isP(ts[i], '[')) {
+      const p = prev(ts, i - 1);
+      if (p >= 0 && (ts[p].t === 'id' && !KEYWORD_BEFORE_REGEX.has(ts[p].v) || isP(ts[p], ')') || isP(ts[p], ']'))) continue;
+      replace(ts, i, e, list); continue;
+    }
+    let c = prev(ts, i - 1);
+    if (c < 0 || !(ts[c].t === 'id' || isP(ts[c], ')') || isP(ts[c], ']'))) continue;
+    let s = c;
+    for (;;) {
+      if (isP(ts[s], ')') || isP(ts[s], ']')) s = matchBack(ts, s);
+      const q = prev(ts, s - 1);
+      if (q >= 0 && (isP(ts[q], '.') || isP(ts[q], '?.'))) { s = prev(ts, q - 1); continue; }
+      if (q >= 0 && isP(ts[s], '[')) { s = q; continue; }
+      break;
+    }
+    const callee = ts.slice(s, c + 1), dot = callee.map((t, k) => isP(t, '.') ? k : -1).filter(k => k >= 0).pop();
+    const call = dot === undefined ? `${join(callee)}.apply(null,${list})` : `window.__w95call(${join(callee.slice(0, dot))},${JSON.stringify(join(callee.slice(dot + 1)).trim())},${list})`;
+    replace(ts, s, e, call); i = s;
+  }
+  return join(ts);
+}
+const ascii = s => s.replace(/[\u0080-￿]/g, c => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0'));
+function script(src) { return ascii(es5(src)); }
+
 function html(text) {
-  const pre = `<script>${PRELUDE}</script>`;
-  const m = /<head\b[^>]*>/i.exec(text);
-  return m ? text.slice(0, m.index + m[0].length) + pre + text.slice(m.index + m[0].length) : pre + text;
+  const conv = text.replace(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi, (all, attrs, code) => {
+    if (/\bsrc\s*=/i.test(attrs)) return /\bdefer\b/i.test(attrs) ? all : `<script defer${attrs}>${code}</script>`;
+    if (/type\s*=\s*["']?(?!text\/javascript|application\/javascript)[^"'\s>]+/i.test(attrs) || !code.trim()) return all;
+    return `<script${attrs}>${script(code)}</script>`;
+  });
+  const pre = `<script>${PRELUDE}</script>`, post = '<script>window.__w95all();</script>';
+  const h = /<head\b[^>]*>/i.exec(conv), withPre = h ? conv.slice(0, h.index + h[0].length) + pre + conv.slice(h.index + h[0].length) : pre + conv;
+  const b = withPre.search(/<\/body>/i);
+  return b >= 0 ? withPre.slice(0, b) + post + withPre.slice(b) : withPre + post;
 }
 
-self.W95IE4JS = { html, PRELUDE };
+self.W95IE4JS = { html, script, es5, PRELUDE };
 })();

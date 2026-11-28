@@ -242,7 +242,8 @@ function respond(c, r) {
     const type = (r.headers.find(([k]) => k.toLowerCase() === 'content-type') || [, ''])[1];
     if (/text\/|javascript|json|xml/i.test(type)) {
       let s = deTLS(new TextDecoder(/charset=([\w-]+)/i.exec(type)?.[1] || 'utf-8').decode(body));
-      if (/text\/html/i.test(type)) s = self.W95IE4JS.html(s);
+      if (/javascript|ecmascript/i.test(type)) s = self.W95IE4JS.script(s);
+      else if (/text\/html/i.test(type)) s = self.W95IE4JS.html(s);
       body = enc(s);
     }
     for (const [k, v] of r.headers) {
