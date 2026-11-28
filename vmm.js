@@ -980,8 +980,11 @@ svc(VMM, 0xa7, function (arg) {
 svc(VMM, 0x3b, function () { const l = this.vmHandles(), i = l.indexOf(u32(this.cpu.ebx.value)); this.cpu.ebx.value = l[(i + 1) % l.length]; });   // Get_Next_VM_Handle: round the list, the system VM first
 
 // ---- VMM: events. Schedule_Global_Event(ESI proc, EDX ref): EAX handle; the procedure runs between slices
-svc(VMM, 0x0e, function () { const q = this.vxdEvents || (this.vxdEvents = []); q.push({ fn: u32(this.cpu.esi.value), ref: u32(this.cpu.edx.value) }); this.cpu.esi.value = q.length; });
-svc(VMM, 0x0f, function () { const q = this.vxdEvents || (this.vxdEvents = []); q.push({ fn: u32(this.cpu.esi.value), ref: u32(this.cpu.edx.value), vm: u32(this.cpu.ebx.value) }); this.cpu.esi.value = q.length; });   // Schedule_VM_Event (EBX the VM)
+// Schedule_Global_Event, Schedule_VM_Event (EBX the VM): ESI the event's handle, a token of its own (r0Handle), which
+// Cancel_Global_Event and Cancel_VM_Event take. (The handle was the event's place in the queue: a cancel took whichever
+// event was there then, another device's, and left the cancelled one to run on a record its owner had freed)
+svc(VMM, 0x0e, function () { const q = this.vxdEvents || (this.vxdEvents = []), h = r0Handle(this); q.push({ fn: u32(this.cpu.esi.value), ref: u32(this.cpu.edx.value), handle: h }); this.cpu.esi.value = h; });
+svc(VMM, 0x0f, function () { const q = this.vxdEvents || (this.vxdEvents = []), h = r0Handle(this); q.push({ fn: u32(this.cpu.esi.value), ref: u32(this.cpu.edx.value), vm: u32(this.cpu.ebx.value), handle: h }); this.cpu.esi.value = h; });
 /** run the events VxDs scheduled (EBX the VM, EDX the reference data, EBP the client registers) */
 P.vxdRunEvents = function () { return this.asInterrupt(() => this.vxdRunEventsIn()); };
 P.vxdRunEventsIn = function () {
@@ -1847,7 +1850,7 @@ svc(VMM, 0x39, function () {});                                                 
 svc(VMM, 0x36, function () { this.cpu.eax.value = 20; this.cpu.ecx.value = 1; this.cpu.esi.value = 0; });   // Get_Time_Slice_Info: 20 ms, one VM scheduled
 // events: Cancel_Global_Event (ESI); Call_Restricted_Event (EAX boost, EBX VM, ECX flags, EDX ref, ESI proc, EDI
 // time-out): ESI the handle, the procedure run when the VM can take it; Cancel_Restricted_Event (ESI)
-svc(VMM, 0x12, function () { if (this.vxdEvents) this.vxdEvents = this.vxdEvents.filter((e, i) => e.handle !== u32(this.cpu.esi.value) && i + 1 !== u32(this.cpu.esi.value)); });
+svc(VMM, 0x12, function () { if (this.vxdEvents) this.vxdEvents = this.vxdEvents.filter(e => e.handle !== u32(this.cpu.esi.value)); });
 svc(VMM, 0x15a, function () { const q = this.vxdEvents || (this.vxdEvents = []), h = r0Handle(this); q.push({ fn: u32(this.cpu.esi.value), ref: u32(this.cpu.edx.value), handle: h }); this.cpu.esi.value = h; });
 svc(VMM, 0x15b, function () { if (this.vxdEvents) this.vxdEvents = this.vxdEvents.filter(e => e.handle !== u32(this.cpu.esi.value)); });
 // Call_When_Idle (ESI proc): run when the system is idle, until it returns carry clear; Cancel_Call_When_Idle (ESI)
