@@ -94,7 +94,9 @@ const leImage = (data, base) => {
 // VMM here has, and one whose program gets on without it is better absent. DINPUT.VXD takes the mouse from VMD's pointer
 // hooks, which the machine's input does not pass through, and the Pinball trial's menu had no clicks; SAGE.VXD (System
 // Agent, which the Plus! savers open) is left to its program to do without, as before)
-const DISK_VXDS = new Set(['DDRAW.VXD']);
+// (and TCP/IP's, NETTRANS.INF MSTCP: VIP, VTCP, VDHCP, VNBT and Winsock's VxD, which Network's Add copies from the CD
+// and lists as StaticVxD, loaded from the disk at boot (vxdBoot). Not loaded, TCP/IP installed had no network under it)
+const DISK_VXDS = new Set(['DDRAW.VXD', 'VIP.386', 'VTCP.386', 'VDHCP.386', 'VNBT.386', 'WSOCK.VXD']);
 P.vxdFromDisk = function (key) {
   if (!this.fs || !DISK_VXDS.has(key)) return null;
   let data = null;
@@ -2183,7 +2185,7 @@ P.vxdStatics = function () {
 P.vxdBoot = function () {
   if (this.vxdBooted) return; this.vxdBooted = true;
   this.init16();
-  const vs = this.vxdStatics().map(f => this.vxd(f)).filter(Boolean).sort((a, b) => this.r32(a.ddb + 0x14) - this.r32(b.ddb + 0x14));
+  const vs = this.vxdStatics().map(f => this.vxd(f, true)).filter(Boolean).sort((a, b) => this.r32(a.ddb + 0x14) - this.r32(b.ddb + 0x14));
   for (const v of vs) v.inited = true;
   const failed = new Set();
   for (const msg of [0, 1, 2]) for (const v of vs) {
