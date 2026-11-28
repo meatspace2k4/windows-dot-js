@@ -1132,11 +1132,11 @@ P.dynRun = function (eip) {
     if (bud.value <= 0) { this.cpu.eip.value = eip; if (this.tick(eip)) return -1; }
     // (an export another module enters, hooked, win32.js dispatch: a module run from its file reaches it here, never
     // through the dispatcher; a hook that answers where to go on takes the call)
-    if (this.entryHooks) { const h = this.entryHooks.get(eip); if (h) { const to = h.call(this); if (to !== undefined) { eip = u32(to); if (eip === LAYOUT.SENTINEL || eip >= LAYOUT.THUNK16 || this.staticCodeAt(eip)) return eip; continue; } } }
+    if (this.entryHooks) { const h = this.entryHooks.get(eip); if (h) { const to = h.call(this); if (to !== undefined) { eip = u32(to); if (eip === LAYOUT.SENTINEL || this.thunkAt(eip) || this.staticCodeAt(eip)) return eip; continue; } } }
     // (code the host runs in a module's data, ne16.js dataCode: ThunkConnect32's relays, LS thunklets. The dispatcher
     // asks for it, and so must a run of run-time code going on to its next block: Windows 98's SHELL32, mapped from
     // its file, called its LS01 relay, and the relay's padding (INT 3) ran instead)
-    if (this.dataCode) { const to = this.dataCode(eip); if (to !== undefined && to !== null) { eip = u32(to); if (eip === LAYOUT.SENTINEL || eip >= LAYOUT.THUNK16 || this.staticCodeAt(eip)) return eip; continue; } }
+    if (this.dataCode) { const to = this.dataCode(eip); if (to !== undefined && to !== null) { eip = u32(to); if (eip === LAYOUT.SENTINEL || this.thunkAt(eip) || this.staticCodeAt(eip)) return eip; continue; } }
     const blk = this.dynBlock(eip); if (!blk) return null;
     const from = eip; if (!blk.ranges) bud.value -= 1;   // (a region counts its own rounds)
     if (this.dynHook) this.dynHook(eip);   // (a diagnostic: the blocks a program runs, worker.js cmd 'blocks')
@@ -1146,11 +1146,11 @@ P.dynRun = function (eip) {
       if (!(e instanceof WebAssembly.RuntimeError)) throw e;
       // (a divide error: #DE at the instruction, for the program's handlers, as the processor raises it; it was
       // reported as code the machine had none of, exception 6)
-      if (/divide by zero|integer overflow/.test(e.message)) { eip = u32(this.raise(0, u32(this.cpu.eip.value))); if (eip === LAYOUT.SENTINEL || eip >= LAYOUT.THUNK16 || this.staticCodeAt(eip)) return eip; continue; }
+      if (/divide by zero|integer overflow/.test(e.message)) { eip = u32(this.raise(0, u32(this.cpu.eip.value))); if (eip === LAYOUT.SENTINEL || this.thunkAt(eip) || this.staticCodeAt(eip)) return eip; continue; }
       this.trapped = `run-time code at ${eip.toString(16)} (instruction at ${u32(this.cpu.eip.value).toString(16)}): ${e.message}`; return null;
     }
     if (this.memW) this.memCheck(`run-time code at ${from.toString(16)}`);   // (a write watch: each block of run-time code, win32.js memCheck)
-    if (eip === LAYOUT.SENTINEL || eip >= LAYOUT.THUNK16) return eip;
+    if (eip === LAYOUT.SENTINEL || this.thunkAt(eip)) return eip;
     if (this.staticCodeAt(eip)) return eip;   // (another process's program at this address is not this one's code: arenaUse)
   }
 };

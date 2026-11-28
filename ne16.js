@@ -28,7 +28,12 @@ P.init16 = function () {
   this.setDesc(L.FLATCS, 0, 0xffffffff, 0xcffb00);
   this.setDesc(L.SENT, LAYOUT.SENTINEL, 0xf, 0xfb00);
   for (let i = 0; i < L.NSTK; i++) this.setDesc(L.STK + 8 * i, 0, 0xffff, 0xf300);
-  this.setDesc(L.THSEL, L.T16, 0xffff, 0xfb00);
+  // the 16-bit thunks' segment: its descriptor's base is 64 KB of memory of its own (t16r), so that a read through it
+  // finds bytes, as USER's check of a dialog procedure reads its first one (Windows 95 OSR 2.5 Setup's SETUPX.#504, on
+  // Windows Components: at the thunks' address, outside memory, the read faulted); code that comes there through a
+  // CS loaded from the descriptor is the thunk at L.T16 (dispatch), where the translated modules call them
+  this.t16r = this.alloc(0x10000); this.u8.fill(0, this.t16r, this.t16r + 0x10000);
+  this.setDesc(L.THSEL, this.t16r, 0xffff, 0xfb00);
   for (const [sel, base] of [[0x107, 0], [0x10f, 0x400], [0x117, 0xa0000], [0x11f, 0xb0000], [0x127, 0xb8000], [0x12f, 0xc0000], [0x137, 0xd0000], [0x13f, 0xe0000], [0x147, 0xf0000]])
     this.setDesc(sel, base, 0xffff, 0xf300);   // __0000H, __0040H, __A000H ... __F000H
   this.dosTop = 0x50000;                       // conventional memory handed out by GlobalDOSAlloc

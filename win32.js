@@ -910,6 +910,7 @@ class Process {
   whereOf(lin) {
     lin = u32(lin);
     const N = window.W95NE16, T16 = N && N.L.T16;
+    if (this.t16r && lin >= this.t16r && lin < this.t16r + 0x10000) lin = u32(T16 + (lin - this.t16r));
     if (T16 && lin >= T16 && lin < T16 + 0x10000 && this.th16) { const th = this.th16[(lin - T16) >> 2]; if (th) return `thunk ${th.key}`; }
     if (lin >= LAYOUT.THUNK && this.thunks) { const t = this.thunks[(lin - LAYOUT.THUNK) >> 2]; if (t) return `${t.dll}!${t.nm}`; }
     for (const m of this.ne ? this.ne.values() : []) {
@@ -1015,10 +1016,15 @@ class Process {
       stack: Array.from({ length: 48 }, (_, k) => this.r32(u32(this.cpu.esp.value) + 4 * k)).filter(v => this.modules.some(m => m.meta && v >= m.meta.textLo && v < m.meta.textHi)).map(v => this.whereOf(v)) });
     s.set(u8.subarray(lo, lo + n));
   }
+  /** whether `eip` is a thunk's: the host's (at or above LAYOUT.THUNK16), or the 16-bit thunks' segment's own memory
+   *  (t16r, ne16.js init16), which the dispatcher takes as the thunk at LAYOUT.THUNK16 */
+  thunkAt(eip) { eip = u32(eip); return eip >= LAYOUT.THUNK16 || (!!this.t16r && eip >= this.t16r && eip < this.t16r + 0x10000); }
   dispatch(eip) {
     for (;;) {
       eip >>>= 0;
       if (eip === LAYOUT.SENTINEL) return 0;
+      // (the 16-bit thunks' segment's own memory, reached through a CS its descriptor gave: the thunk, ne16.js init16)
+      if (this.t16r && eip >= this.t16r && eip < this.t16r + 0x10000) eip = u32(LAYOUT.THUNK16 + (eip - this.t16r));
       if (this.runHook) this.runHook(eip);   // debugging: set from the page to watch every dispatch
       if (this.memW) this.memCheck();
       // (an export another module enters, watched: a shared session's intents, ne16.js hookIntents; a hook that answers
