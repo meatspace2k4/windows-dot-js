@@ -5,7 +5,11 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 const src = readFileSync(new URL('../win95.js', import.meta.url), 'utf8');
 const cut = (from, to) => { const i = src.indexOf(from); assert.ok(i >= 0, from); const j = src.indexOf(to, i); assert.ok(j > i, to); return src.slice(i, j); };
-const emitSrc = cut('const EVENT_RING = ', '\n// The system failing');
+const emitSrc = cut('function emit(type, data = {}) {', '\n// The system failing');
+// (emit runs from the page's first lines, before win95.js's module constants are initialized: it reads none. Its ring
+// size read from a `const EVENT_RING` threw "Cannot access 'EVENT_RING' before initialization", and the page's script
+// stopped at the machine's DOS boot text)
+assert.ok(!/\bEVENT_RING\b/.test(emitSrc) && !/^const EVENT_RING\b/m.test(src), 'no module constant in emit');
 const eventsSrc = cut('  events(after = 0, type = null) {', '\n  // resolves with the next event');
 const nextSrc = cut('  next(type, test, ms = 10000, after) {', '\n};\n');
 const make = new Function(`const window = {}, listeners = new Map(), DEBUG = false, failText = e => e.kind;

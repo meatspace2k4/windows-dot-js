@@ -5808,10 +5808,12 @@ Promise.all(ready).then(() => { resize(); kbd.focus(); dirty(); });
 // Every event is also numbered and kept in a ring (window.W95EventRing, the last EVENT_RING): win95.events(after)
 // answers those after a number, and win95.next(type, test, ms, after) one already there, so a script that reads
 // after the event came still sees it; any number of readers, none taking another's
-const EVENT_RING = 4000;
+// (its size a literal in emit, not a module constant: emit runs from the page's first lines, before a `const` here is
+// initialized, and a constant read there threw "Cannot access 'EVENT_RING' before initialization", the page's script
+// stopped, and the machine stayed on its DOS boot text)
 function emit(type, data = {}) {
   const ev = { type, ...data, t: Date.now() };
-  { const r = window.W95EventRing || (window.W95EventRing = { seq: 0, list: [] }); r.list.push({ seq: ++r.seq, ...ev }); if (r.list.length > EVENT_RING) r.list.splice(0, r.list.length - EVENT_RING); }
+  { const r = window.W95EventRing || (window.W95EventRing = { seq: 0, list: [], max: 4000 }); r.list.push({ seq: ++r.seq, ...ev }); if (r.list.length > r.max) r.list.splice(0, r.list.length - r.max); }
   if (!/^(sync|fs)\./.test(type)) {
     const j = window.W95Journal || (window.W95Journal = []), keys = ['type', 'title', 'modal', 'screen', 'kind', 'text', 'path', 'code', 'why', 'machine', 'menus'];
     j.push(Object.fromEntries(Object.entries(ev).filter(([k]) => keys.includes(k)))); if (j.length > 400) j.shift();
