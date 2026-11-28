@@ -909,6 +909,10 @@ function strop(f, b, osz, asz, seg, rep, L, alu2, szp, dev, guard) {
     else { f.gg(srcBase); idx('esi'); f.op('add'); ld(); f.ls(B); f.gg('esb'); idx('edi'); f.op('add'); ld(); f.ls(C); alu2(7, sz); step('esi'); step('edi'); }
   };
   if (!rep) { body(); return; }
+  // (its rounds charged to the block budget, one block for eight, after the loop: the whole count runs in one block,
+  // so a copy loop of rep movs counted as one block each, the machine's clock (win32.js tick) hardly moved, and a
+  // thread copying files held the Win16Lock through a step of 200 ms: the system stopped while Setup copied)
+  idx('ecx'); f.ls(A);
   // while (count) { body; count--; stop on zf for repe/repne with cmps/scas }
   f.blk().lp();
   idx('ecx'); f.op('eqz').e(0x0d, 1);
@@ -916,7 +920,8 @@ function strop(f, b, osz, asz, seg, rep, L, alu2, szp, dev, guard) {
   if (asz === 4) f.gg('ecx').c(1).op('sub').gs('ecx'); else f.gg('ecx').c(0xffff0000).op('and').gg('ecx').c(1).op('sub').c(0xffff).op('and').op('or').gs('ecx');
   if (kind === 'cmps' || kind === 'scas') { f.gg('zf'); if (rep === 0xf2) f.op('eqz'); f.op('eqz').e(0x0d, 1); }
   f.e(0x0c, 0).end().end();
-  void A; void R;
+  f.gg('budget').lg(A); idx('ecx'); f.op('sub').c(3).op('shr_u').op('sub').gs('budget');
+  void R;
 }
 
 // ---------------------------------------------------------------- module assembly and the cache
