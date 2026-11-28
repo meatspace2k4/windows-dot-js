@@ -2824,6 +2824,19 @@ def('KERNEL32', 'GetSystemTime', 1, function (p) {
 });
 def('KERNEL32', 'GetSystemTimeAsFileTime', 1, function (p) { const t = ftNow(this); this.w32(p, Number(t & 0xffffffffn)); this.w32(p + 4, Number(t >> 32n)); });
 def('KERNEL32', 'GetTimeZoneInformation', 1, function (p) { this.u8.fill(0, p, p + 172); this.w32(p, new Date().getTimezoneOffset()); return 0; });
+// SetTimeZoneInformation(TIME_ZONE_INFORMATION *): the zone recorded as Windows 95 keeps it, HKLM\System\
+// CurrentControlSet\control\TimeZoneInformation (Bias, StandardName and DaylightName, their biases, StandardStart and
+// DaylightStart as SYSTEMTIMEs, ActiveTimeBias); TRUE. The clock stays the host's. Date/Time Properties sets it on
+// Windows 95 Setup's first start (TIMEDATE.CPL), and was ended there by the call with no stand-in
+def('KERNEL32', 'SetTimeZoneInformation', 1, function (p) {
+  if (!p) { this.lastError = 87; return 0; }
+  const key = 'hklm\\system\\currentcontrolset\\control\\timezoneinformation', bias = this.r32(p) | 0;
+  const name = o => this.readW(p + o, 32) || '', st = o => ({ type: 3, data: this.u8.slice(p + o, p + o + 16) });
+  regSet(key, 'Bias', regVal(u32(bias))); regSet(key, 'StandardName', regVal(name(4))); regSet(key, 'StandardStart', st(132));
+  regSet(key, 'StandardBias', regVal(this.r32(p + 148))); regSet(key, 'DaylightName', regVal(name(152))); regSet(key, 'DaylightStart', st(280));
+  regSet(key, 'DaylightBias', regVal(this.r32(p + 296))); regSet(key, 'ActiveTimeBias', regVal(u32(bias)));
+  return 1;
+});
 def('KERNEL32', 'FileTimeToSystemTime', 2, function (ft, st) {
   const t = (BigInt(this.r32(ft + 4)) << 32n) | BigInt(this.r32(ft)), d = new Date(Number((t - 116444736000000000n) / 10000n));
   [d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDay(), d.getUTCDate(), d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds(), d.getUTCMilliseconds()].forEach((v, i) => this.w16(st + 2 * i, v)); return 1;
