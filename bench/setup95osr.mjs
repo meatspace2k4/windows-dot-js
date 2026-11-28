@@ -113,7 +113,7 @@ if (typeof process === 'object' && import.meta.url === `file://${process.argv[1]
   const key = process.env.W95OEMKEY; if (!key) { console.error('W95OEMKEY is not set'); process.exit(2); }
   const c = await connect(process.argv[2] || 'http://127.0.0.1:9334');
   for (let i = 0; i < 300 && !(await c.evaluate(SHELL_READY).catch(() => false)); i++) await new Promise(r => setTimeout(r, 1000));
-  const r = await c.evaluate(`(${pageDrive})(${JSON.stringify(key)}, {})`, 90 * 60000);
+  const r = await c.evaluate(`(${pageDrive})(${JSON.stringify(key)}, { stop: ${!!process.env.W95STOP} })`, 90 * 60000);
   for (const l of r.log) console.log(l);
   if (r.faults.length) console.log('faults:', JSON.stringify(r.faults, null, 1));
   const done = r.log.some(l => /ladder done/.test(l));
