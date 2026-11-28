@@ -310,6 +310,18 @@ Object.assign(tools, {
       if (file) (await import('node:fs')).writeFileSync(file, Buffer.from(data, 'base64'));
       return { image: data, text: file ? `saved ${file}` : 'the page' };
     } },
+  guest_save: { description: 'Save translated modules\' JavaScript (as a JS-run module has it, dyn/NAME.js) to files: `names` without extension (MSSETUP, ACMSETUP; * for all), into `dir` (default .sessions/dyn, git-ignored). Answers each file written and its size.',
+    props: { names: { type: 'array', items: S }, dir: S }, required: ['names'],
+    async run({ names, dir = '.sessions/dyn' }) {
+      const s = worker(), expression = `(async () => JSON.stringify(await self.W95DynJs.debug(machine.proc, ['dump', ${JSON.stringify(names)}], machine)))()`;
+      const r = await cmd(s, 'Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
+      if (r.exceptionDetails) throw new Error((r.exceptionDetails.exception && r.exceptionDetails.exception.description || r.exceptionDetails.text).split('\n')[0]);
+      const { mkdirSync, writeFileSync } = await import('node:fs'), { join, resolve } = await import('node:path');
+      mkdirSync(dir, { recursive: true });
+      const got = JSON.parse(r.result.value);
+      if (!got.length) throw new Error(`no translated module named ${names.join(', ')} (guest_modules lists them)`);
+      return got.map(m => { const f = resolve(join(dir, m.file)); writeFileSync(f, m.text); return { name: m.name, file: f, bytes: m.text.length }; });
+    } },
   guest_modules: { description: 'The machine\'s translated modules: name, code range, blocks, and whether each runs as JavaScript (debuggable) or WebAssembly.', props: {}, required: [], run: () => guest('modules') },
   guest_run: { description: 'Run exactly these modules as JavaScript (names like MSTASK, EXPLORER; * for all); the rest run as WebAssembly. Not while paused.', props: { names: { type: 'array', items: S } }, required: ['names'], run: ({ names }) => guest('run', names) },
   guest_break: { description: 'Stop the machine when guest code enters the block at a place: an address in hex, MODULE+offset, or DLL!Export. Its module is run as JavaScript if it is not already. `condition` is a JavaScript expression over R (registers, e.g. R.eax) and r8/r16/r32(address).',

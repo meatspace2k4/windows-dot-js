@@ -259,6 +259,20 @@ const D = {
     const s = made.get(key), i = s.indexOf(` = function b_${hex(block)}(`); if (i < 0) return null;
     return { module: shortOf(m), block, text: s.slice(i + 3, s.indexOf('\n}\n', i) + 2) };
   },
+  /** The whole JavaScript of translated modules, from their wasm, as a JS-run module has it (dyn/NAME.js): `names`
+   *  without extension, '*' for every one. Resolves with [{ name, label, file, text }], file the source's own name */
+  async dump(p, names = ['*']) {
+    const all = names.includes('*'), want = new Set(names.map(n => String(n).toUpperCase().replace(/\.\w+$/, '')));
+    const out = [];
+    for (const m of translated(p)) {
+      if (!all && !want.has(shortOf(m))) continue;
+      if (!m.netSeed.wasm && !(await p.seedWasm(m))) continue;
+      const label = String(labelOf(m)), key = label.toUpperCase();
+      if (!made.has(key)) made.set(key, source(m.netSeed.wasm, labelOf(m), m.netSeed.blocks));
+      out.push({ name: shortOf(m), label, file: `${label.replace(/[^\w.-]+/g, '_')}.js`, text: made.get(key) });
+    }
+    return out;
+  },
   /** Guest memory: `n` bytes at an address (4096 at most). */
   read: (p, addr, n = 64) => Array.from(p.u8.subarray(resolve(p, addr), resolve(p, addr) + Math.min(n, 4096))),
 
