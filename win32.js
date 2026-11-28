@@ -5,8 +5,8 @@
 // the Windows 95 screen savers use, and runs the recompiled blocks. GDI output
 // goes to a Canvas 2D surface.
 (() => {
-// guest address space: low runtime area, stack, images at 0x400000/0x1000000, native DLLs from 0x1800000,
-// heap, then per-module block lookup tables from 0x5600000
+// guest address space: low runtime area, stack, programs' images and the DLLs placed among them from 0x400000, heap,
+// per-module block lookup tables from 0x5600000, the system's modules from 0xA000000, VirtualAlloc's space past them
 const LAYOUT = { SENTINEL: 0xFFFFFFF0, THUNK: 0xFFFF0000, THUNK16: 0xFFFE0000, FPU: 0x10000, TIB: 0x11000, SCRATCH: 0x12000,
   STACK_LO: 0x100000, STACK_TOP: 0x3ffff0, HEAP: 0x02000000, HEAP_END: 0x05500000,
   // a byte a 4 KB page of the address space, nonzero where ring 3 has no access (the null page, the VxDs' images, the
@@ -14,7 +14,11 @@ const LAYOUT = { SENTINEL: 0xFFFFFFF0, THUNK: 0xFFFF0000, THUNK16: 0xFFFE0000, F
   PROT: 0x05500000,
   // the modules' block tables (an i32 a code byte): the bundle's at the places its build gave them (tools/build_system.py),
   // a module translated as it loads (dyn.js neCompile) where tableRoom finds room among them
-  TABLES: 0x05600000, TABLES_END: 0x08000000 };
+  TABLES: 0x05600000, TABLES_END: 0x08000000,
+  // the system's modules (tools/build_system.py), at their build's bases in an arena of their own, as Windows 95 keeps
+  // them in its shared arena above 2 GB: 400000h to 2000000h is the programs' whole, each image at its own base. Past
+  // it (and past the screen savers' images, 8000000h to A000000h), the address space VirtualAlloc reserves
+  SYS_ARENA: 0x0a000000, SYS_ARENA_END: 0x0b100000, VM_LO: 0x0b200000 };
 const DLL_CHAIN = 0xFFFFFFE0;   // (where a DllMain run as LoadLibrary returns comes back to: Process.dllChainStep)
 const SEH_CONT = 0xFFFFFFDC;    // (where an exception handler the dispatcher called returns to: sehStep)
 const YIELD = Symbol('yield');   // returned by an API implementation to suspend the guest at depth 0
@@ -2078,6 +2082,11 @@ def('KERNEL32', 'LoadLibraryA', 1, function (n) {
   const dir = /\\/.test(given) ? given.replace(/\\[^\\]*$/, '') : null, was = this.loadDirs;
   if (dir) this.loadDirs = [dir, ...(was || []).filter(d => d.toUpperCase() !== dir.toUpperCase())];
   let native; try { native = this.loadDll(name); } finally { this.loadDirs = was; }
+  // (a 16-bit DLL is no Win32 module: ERROR_BAD_EXE_FORMAT, as Windows 95's LoadLibrary answers, and RUNDLL32 then
+  // loads it with LoadLibrary16 (KERNEL32 #35), finds the export with GetProcAddress16 (#37) and calls it through
+  // SHELL32 #122. Given the module's place as a handle, RUNDLL32 took the 32-bit path and called GetProcAddress's 0:
+  // PEEDY.EXE's "rundll32.exe setupx.dll,InstallHinfSection" faulted at 0)
+  if (native && native.kind === 'ne') { this.lastError = 193; return 0; }
   // the process attaches to the library and to every DLL it uses, dependencies first, as Windows 95's LoadLibrary
   // does (a DLL another process loaded is attached to this one too: RUNDLL32 ran MMSYS.CPL on WINMM before the
   // shell's thread had attached WINMM, so WINMM's thunks to MMSYSTEM were not connected and it crashed in them)

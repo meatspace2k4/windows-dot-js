@@ -366,7 +366,7 @@ class Machine {
     const host = {
       memWatch: this.memwatch ? this.memwatch.split(',').map(v => parseInt(v, 16)) : null,
       dynAt: this.dynat ? this.dynat.split(',').map(v => (/^[0-9a-f]+$/i.test(v) ? parseInt(v, 16) : v)) : null,
-      fs, width: this.sw, height: this.sh, path: this.path, now: () => m.vclock.now, vclock: this.vclock, lan: !!(this.system && lanRing), system: !!this.system, vmPages: 2048, shared: true,   // (lan: the network stack and its card, as the system's machine has them; system: the Win16 tasks' process is its own)
+      fs, width: this.sw, height: this.sh, path: this.path, now: () => m.vclock.now, vclock: this.vclock, lan: !!(this.system && lanRing), system: !!this.system, vmPages: 2848, vmTop: W.LAYOUT.VM_LO, shared: true,   // (lan: the network stack and its card, as the system's machine has them; system: the Win16 tasks' process is its own)
       cursor: () => ({ x: m.mouse.x, y: m.mouse.y }), surface: (h, w, hh, win, pc) => {
         const canvas = new OffscreenCanvas(Math.max(1, w), Math.max(1, hh));
         if (!h) m.w32DesktopSurface = { canvas, w: canvas.width, h: canvas.height, pc, version: 1 };
@@ -388,7 +388,9 @@ class Machine {
       // (384 MB: the DLLs' images Windows 98's first start maps, VirtualAlloc's regions, and the block tables of the
       // modules translated whole as they load, 4 bytes a byte of code, 173 MB across RUNONCE's 364; at 256 MB the tables
       // were written over images and regions, and kept apart, REGSVR32 ran out of memory)
-      if (this.system) { host.vmTop = 0x0a000000; host.vmPages = 6144; }
+      // (both from LAYOUT.VM_LO, past the system's arena: 50 MB more for another machine and 18 MB more for the
+      // system's than they had above the layout before the arena was there)
+      if (this.system) host.vmPages = 6432;
       this.proc = new W.Process(this.bytes, prog.module, { ...prog.meta, name: prog.name.replace(/\.EXE$/, '') }, host, this.arg ? `${exe} ${this.arg}` : exe, dlls);
       this.proc.soundQuiet = !!this.quiet;   // (sound.js: the card's output off for the one sound)
       if (this.system && this.session) this.proc.onIntent = i => post({ t: 'intent', i });   // (a shared session's: ne16.js hookIntents)

@@ -8,79 +8,81 @@ here = os.path.dirname(os.path.abspath(__file__))
 # the modules import the machine's memory as shared: each machine runs in a worker and the page reads its framebuffer
 os.environ['RECOMP_SHARED'] = '1'
 b64 = lambda p: base64.b64encode(open(p, 'rb').read()).decode()
+# The system's modules load in an arena of their own, A000000h to B100000h (win32.js LAYOUT.SYS_ARENA), as Windows 95
+# keeps its system DLLs in the shared arena above 2 GB: the arena programs' images take, 400000h to 2000000h, is the
+# programs' whole. Packed into it, they left a program with no relocations little room: Bonzi's installer (7E2000h
+# bytes at 400000h) met USER's drivers at B00000h, MS Agent's MSagent.exe and its Peedy.exe (IExpress packages, 33F000h
+# bytes at 1000000h) OLE32 and the forty modules after it
 # NE modules, in dependency order: (file, load base, first selector, block-table base)
-NE = [('gdi.exe', 0x01C00000, 0x1007, 0x06A00000), ('dibeng.dll', 0x01E00000, 0x1207, 0x06D00000),
+NE = [('gdi.exe', 0x0AC00000, 0x1007, 0x06A00000), ('dibeng.dll', 0x0AE00000, 0x1207, 0x06D00000),
       # the display driver for the adapter the machine has, the Tseng ET4000/W32 (the CD's TSENG.DRV)
-      ('tseng.drv', 0x01E80000, 0x1307, 0x06E00000),
+      ('tseng.drv', 0x0AE80000, 0x1307, 0x06E00000),
       # USER's drivers and DDEML before USER, so its calls into them link directly
       # (first selectors spaced by segment count: SYSTEM 2, KEYBOARD 10, MOUSE 2, COMM 3, DDEML 3; bases 128 KB apart,
       # each module's code and its DGROUP's 64 KB: packed at 64 KB, each DGROUP's heap grew over the next one's code)
-      # (above 0C00000h, clear of the room programs' images take at their own base from 400000h: at 0B00000h they left
-      # a program with no relocations 7 MB, and Bonzi's installer, 7E2000h bytes at 400000h, had "no room for its image")
-      ('system.drv', 0x00C60000, 0x1507, 0x07200000), ('keyboard.drv', 0x00C80000, 0x1527, 0x07240000),
-      ('mouse.drv', 0x00CA0000, 0x1587, 0x07280000), ('comm.drv', 0x00CC0000, 0x15A7, 0x072C0000),
-      ('ddeml.dll', 0x00CE0000, 0x15C7, 0x07300000),
-      ('user.exe', 0x01A00000, 0x1407, 0x06F00000),
+      ('system.drv', 0x0B000000, 0x1507, 0x07200000), ('keyboard.drv', 0x0B020000, 0x1527, 0x07240000),
+      ('mouse.drv', 0x0B040000, 0x1587, 0x07280000), ('comm.drv', 0x0B060000, 0x15A7, 0x072C0000),
+      ('ddeml.dll', 0x0B080000, 0x15C7, 0x07300000),
+      ('user.exe', 0x0AA00000, 0x1407, 0x06F00000),
       # the common dialogs: COMDLG32.DLL is a thunk layer over this (Setup installs WIN95_02.CAB's commdlg.new as it)
-      ('commdlg.dll', 0x01B50000, 0x15E7, 0x07400000),
+      ('commdlg.dll', 0x0AB50000, 0x15E7, 0x07400000),
       # the shell's 16-bit half, which SHELL32.DLL thunks to (PRECOPY1.CAB)
-      ('shell.dll', 0x01B80000, 0x1647, 0x07480000),
+      ('shell.dll', 0x0AB80000, 0x1647, 0x07480000),
       # the 16-bit common controls COMCTL32.DLL thunks to and SYSDM's property sheets use: Setup installs it from
       # KOMMCTRL.DLL (SETUPC.INF; PRECOPY1.CAB's COMMCTRL.DLL is Setup's own smaller one)
-      ('commctrl.dll', 0x015A0000, 0x16B7, 0x05E00000),
+      ('commctrl.dll', 0x0A5A0000, 0x16B7, 0x05E00000),
       # the LZ decompression library VER.DLL opens files through (PRECOPY1.CAB)
-      ('lzexpand.dll', 0x01BE0000, 0x1757, 0x07880000),
+      ('lzexpand.dll', 0x0ABE0000, 0x1757, 0x07880000),
       # the version-information library VERSION.DLL thunks to, which file Properties loads (Setup installs WIN95_12.CAB's ver.new as it)
-      ('ver.dll', 0x01BC0000, 0x1727, 0x07800000),
+      ('ver.dll', 0x0ABC0000, 0x1727, 0x07800000),
       # the multimedia system WINMM.DLL thunks to, and the Windows Sound System driver it loads for the card (WIN95_02.CAB)
-      ('mmsystem.dll', 0x01700000, 0x17D7, 0x07900000), ('mssndsys.drv', 0x01740000, 0x1847, 0x07980000),
+      ('mmsystem.dll', 0x0A700000, 0x17D7, 0x07900000), ('mssndsys.drv', 0x0A740000, 0x1847, 0x07980000),
       # MMSYSTEM's background task, which it starts with LoadModule (WIN95_02.CAB)
       # (its DGROUP's 64 KB, from 80h in, reached MSACM32.DLL's image at 17D0000h)
-      # (above 0C00000h as the drivers are)
-      ('mmtask.tsk', 0x00D00000, 0x187F, 0x07A80000),
+      ('mmtask.tsk', 0x0B0A0000, 0x187F, 0x07A80000),
       # the audio compression manager and the wave mapper MMSYSTEM opens for WAVE_MAPPER (WIN95_02.CAB)
-      ('msacm.dll', 0x01A80000, 0x188F, 0x07B00000), ('msacm.drv', 0x01AC0000, 0x18C7, 0x07B40000),
+      ('msacm.dll', 0x0AA80000, 0x188F, 0x07B00000), ('msacm.drv', 0x0AAC0000, 0x18C7, 0x07B40000),
       # the card's OPL3 synthesizer driver (Drivers\midi\msopl.drv) and the MIDI mapper MMSYSTEM opens for MIDI_MAPPER (WIN95_13.CAB)
-      ('msopl.drv', 0x01860000, 0x1907, 0x07D00000), ('midimap.drv', 0x01880000, 0x1947, 0x07D40000),
+      ('msopl.drv', 0x0A860000, 0x1907, 0x07D00000), ('midimap.drv', 0x0A880000, 0x1947, 0x07D40000),
       # the MCI sequencer and waveaudio devices (MOTOWN.INF's MCISEQ and MCIWAVE, SYSTEM.INI [mci]) that play MIDI and
       # wave files for Media Player and mciSendString (WIN95_13.CAB)
-      ('mciseq.drv', 0x018A0000, 0x1987, 0x07DC0000), ('mciwave.drv', 0x018C0000, 0x19C7, 0x07E00000),
+      ('mciseq.drv', 0x0A8A0000, 0x1987, 0x07DC0000), ('mciwave.drv', 0x0A8C0000, 0x19C7, 0x07E00000),
       # the MCI CD audio device CD Player and mciSendString play audio discs through (MOTOWN.INF's MCICDA) (WIN95_02.CAB)
-      ('mcicda.drv', 0x01EC0000, 0x1927, 0x05C78000),
+      ('mcicda.drv', 0x0AEC0000, 0x1927, 0x05C78000),
       # the Setup engine (INF files, copying from the source disks, the registry), and the Add Printer wizard's 16-bit
       # half, which installs printer drivers through it (PRECOPY2.CAB)
-      ('setupx.dll', 0x01130000, 0x1A17, 0x05CA0000), ('msprint.dll', 0x014E0000, 0x1B97, 0x06E20000),
+      ('setupx.dll', 0x0A130000, 0x1A17, 0x05CA0000), ('msprint.dll', 0x0A4E0000, 0x1B97, 0x06E20000),
       # Setup's device installer, which the wizard runs for the Printer class (SYSDM.CPL's InstallDevice_Rundll), and
       # the Setup helpers it imports (WIN95_27.CAB, WIN95_09.CAB)
-      ('setup4.dll', 0x01510000, 0x1BCF, 0x06E80000), ('sysdm.cpl', 0x01530000, 0x1BDF, 0x070C0000),
+      ('setup4.dll', 0x0A510000, 0x1BCF, 0x06E80000), ('sysdm.cpl', 0x0A530000, 0x1BDF, 0x070C0000),
       # printer drivers MSPRINT.INF installs from the CD (WIN95_27.CAB): the universal driver and the Generic / Text Only
       # minidriver on it. Setup leaves them on the CD; each loads once the Add Printer wizard has copied its file
-      ('unidrv.dll', 0x01190000, 0x1C27, 0x06010000), ('tty.drv', 0x011E0000, 0x1CCF, 0x06110000),
+      ('unidrv.dll', 0x0A190000, 0x1C27, 0x06010000), ('tty.drv', 0x0A1E0000, 0x1CCF, 0x06110000),
       # the icon library UNIDRV's property pages load first (MSPRINT.INF's UNIDRV files, WIN95_20.CAB)
-      ('iconlib.dll', 0x01CD0000, 0x20C7, 0x07C20000),
+      ('iconlib.dll', 0x0ACD0000, 0x20C7, 0x07C20000),
       # Video for Windows (MOTOWN.INF's MCIAVI, WIN95_02.CAB): the MCI driver that plays .AVI files ([mci] avivideo),
       # the 16-bit video library it draws and decompresses through, and the display control interface that imports
       # (their images clear of SHELL32.DLL's, 01600000h-01662000h: at 01610000h and 01630000h MCIAVI and MSVIDEO lay
       # inside it, and their code ran as SHELL32's)
-      ('dciman.dll', 0x01EA0000, 0x2157, 0x071A8000), ('msvideo.dll', 0x013C0000, 0x20FF, 0x06E84000),
-      ('mciavi.drv', 0x013A0000, 0x20D7, 0x06DB8000),
+      ('dciman.dll', 0x0AEA0000, 0x2157, 0x071A8000), ('msvideo.dll', 0x0A3C0000, 0x20FF, 0x06E84000),
+      ('mciavi.drv', 0x0A3A0000, 0x20D7, 0x06DB8000),
       # the system's first task, which Windows 95 starts as it boots (WIN95_12.CAB): USER's first-task start-up loads
       # the installable drivers (MMSYSTEM, the sound card's) for it, and it plays SystemStart and starts the shell
-      ('msgsrv32.exe', 0x01570000, 0x1CEF, 0x06130000),
+      ('msgsrv32.exe', 0x0A570000, 0x1CEF, 0x06130000),
       # Program Manager, which GRPCONV starts to make Setup's program groups through its DDE (WIN95_17.CAB)
       # (its image after MSGSRV32's, which it overlapped at 01580000h)
-      ('progman.exe', 0x015E0000, 0x1CFF, 0x07FA0000),
+      ('progman.exe', 0x0A5E0000, 0x1CFF, 0x07FA0000),
       # the tool helper library (WIN95_02.CAB), which the Display applet's pages load, and those pages: Background,
       # Screen Saver, Appearance and Settings, which DESK.CPL shows (WIN95_02.CAB)
-      ('toolhelp.dll', 0x01FC0000, 0x1D47, 0x06800000), ('deskcp16.dll', 0x01F80000, 0x1D57, 0x06840000),
+      ('toolhelp.dll', 0x0AFC0000, 0x1D47, 0x06800000), ('deskcp16.dll', 0x0AF80000, 0x1D57, 0x06840000),
       # the class installers Device Manager loads for a device's property pages (its class key's Installer): the
       # multimedia devices' (WIN95_02.CAB) and the network's (PRECOPY1.CAB)
-      ('mmci.dll', 0x01970000, 0x1E17, 0x07160000), ('netdi.dll', 0x019A0000, 0x1E27, 0x06138000),
+      ('mmci.dll', 0x0A970000, 0x1E17, 0x07160000), ('netdi.dll', 0x0A9A0000, 0x1E27, 0x06138000),
       # the driver files a display, port or network device's Driver page lists (its class's EnumDriverStack) (WIN95_02.CAB)
-      ('enumfile.dll', 0x019E0000, 0x1FF7, 0x07170000),
+      ('enumfile.dll', 0x0A9E0000, 0x1FF7, 0x07170000),
       # the 16-color drivers the display's software key names for its 4-bit modes (MSDISP.INF TsengW32: MODES\4\640,480
       # VGA.DRV, MODES\4\800,600 SUPERVGA.DRV) (WIN95_02.CAB); their module name is DISPLAY too
-      ('vga.drv', 0x01C60000, 0x2007, 0x06260000), ('supervga.drv', 0x01C90000, 0x2067, 0x07180000)]
+      ('vga.drv', 0x0AC60000, 0x2007, 0x06260000), ('supervga.drv', 0x0AC90000, 0x2067, 0x07180000)]
 # the NE modules above that Setup leaves on the CD: a module of these loads only when its file is on the disk
 ON_DISK = {'unidrv.dll', 'tty.drv', 'iconlib.dll'}
 # the device memory a module writes as registers (recomp.py --mmio LO:SIZE): the Tseng driver's W32 MMU and
@@ -118,77 +120,75 @@ PROGRAMS = [('notepad.exe', 0x00400000, 0x06000000), ('rundll32.exe', 0x00410000
 # the programs and DLLs above that run from the CD: not installed on C:, their files read from the disc
 ON_CD = {'hover.exe', 'dashres.dll', 'hoverhlp.dll'}
 # 32-bit system DLLs: (file, load base, block-table base)
-PE = [('gdi32.dll', 0x01D00000, 0x06C00000), ('user32.dll', 0x01D40000, 0x07340000), ('comdlg32.dll', 0x01D60000, 0x07380000),
+PE = [('gdi32.dll', 0x0AD00000, 0x06C00000), ('user32.dll', 0x0AD40000, 0x07340000), ('comdlg32.dll', 0x0AD60000, 0x07380000),
       # the common controls and the shell, which COMDLG32's Explorer-style dialogs are built on (WIN95_02.CAB)
-      ('comctl32.dll', 0x01F00000, 0x07500000), ('shell32.dll', 0x01600000, 0x07600000),
+      ('comctl32.dll', 0x0AF00000, 0x07500000), ('shell32.dll', 0x0A600000, 0x07600000),
       # version resources for the shell's file properties (WIN95_02.CAB)
-      ('version.dll', 0x01D80000, 0x07840000),
+      ('version.dll', 0x0AD80000, 0x07840000),
       # the 32-bit multimedia API (WIN95_02.CAB), which SHELL32 and Win32 programs play sounds through
-      ('winmm.dll', 0x01760000, 0x079C0000),
+      ('winmm.dll', 0x0A760000, 0x079C0000),
       # the Multimedia and Sounds Control Panel applets (WIN95_02.CAB), which RUNDLL32 runs through SHELL32's Control_RunDLL
-      ('mmsys.cpl', 0x01780000, 0x07A00000),
+      ('mmsys.cpl', 0x0A780000, 0x07A00000),
       # the Display applet (WIN95_22.CAB): desktop Properties and Control Panel's Display, its pages in DESKCP16.DLL
-      ('desk.cpl', 0x01F60000, 0x068C0000),
+      ('desk.cpl', 0x0AF60000, 0x068C0000),
       # the 32-bit half of the audio compression manager, which MSACM.DLL thunks to (WIN95_02.CAB)
-      ('msacm32.dll', 0x017D0000, 0x07B80000),
+      ('msacm32.dll', 0x0A7D0000, 0x07B80000),
       # OLE (WIN95_02.CAB): SHELL32 puts files on the clipboard through it ("Shell IDList Array" data objects), with
       # the RPC runtime and the C runtime it imports
-      # (below 1000000h, the base IExpress packages are linked at with no relocations: MS Agent's MSagent.exe, 62000h
-      # bytes there, had "no room for its image" with OLE32 at 1000000h)
-      ('ole32.dll', 0x00D20000, 0x06300000), ('rpcrt4.dll', 0x00DB0000, 0x06500000), ('msvcrt20.dll', 0x00DF0000, 0x06600000),
+      ('ole32.dll', 0x0A000000, 0x06300000), ('rpcrt4.dll', 0x0A0A0000, 0x06500000), ('msvcrt20.dll', 0x0A0E0000, 0x06600000),
       # Windows Help's full-text search, which it loads for the Find tab (WIN95_13.CAB)
-      ('ftsrch.dll', 0x01400000, 0x06900000),
+      ('ftsrch.dll', 0x0A400000, 0x06900000),
       # printing (WIN95_27.CAB): the spooler's client the common dialogs load, and the spooler's router SPOOL32 runs
-      ('winspool.drv', 0x01460000, 0x06B20000), ('spoolss.dll', 0x01480000, 0x06B40000),
+      ('winspool.drv', 0x0A460000, 0x06B20000), ('spoolss.dll', 0x0A480000, 0x06B40000),
       # the Win32 side of 16-bit memory and handles (WOWGlobalLock16 and the rest), which WinHelp reads a 16-bit
       # WinHelp call's request through (WIN95_27.CAB)
-      ('wow32.dll', 0x014A0000, 0x06BC0000),
+      ('wow32.dll', 0x0A4A0000, 0x06BC0000),
       # the Add Printer wizard, which the Printers folder runs (SHELL32 calls its PrinterSetup32), thunking to MSPRINT.DLL (PRECOPY2.CAB)
-      ('msprint2.dll', 0x01500000, 0x070A0000),
+      ('msprint2.dll', 0x0A500000, 0x070A0000),
       # the link-tracking library a shell link is saved with (WIN95_16.CAB): GRPCONV loads it for each Start menu item it
       # makes from SETUP.INI, and without it made none, so Setup ran again at every start
-      ('linkinfo.dll', 0x01E50000, 0x06C80000),
+      ('linkinfo.dll', 0x0AE50000, 0x06C80000),
       # Hover!'s libraries, on the CD beside it (FUNSTUFF\HOVER): its art and its help's resources
       ('dashres.dll', 0x00700000, 0x064B0000), ('hoverhlp.dll', 0x00800000, 0x064B4000),
       # Video for Windows' 32-bit half, which MSVIDEO.DLL thunks to, the Cinepak codec ([drivers32] vidc.CVID) and the
       # display control interface (WIN95_02.CAB)
-      ('dciman32.dll', 0x01DB0000, 0x073B8000), ('msvfw32.dll', 0x01DC0000, 0x065A8000), ('iccvid.dll', 0x01D90000, 0x066B4000),
+      ('dciman32.dll', 0x0ADB0000, 0x073B8000), ('msvfw32.dll', 0x0ADC0000, 0x065A8000), ('iccvid.dll', 0x0AD90000, 0x066B4000),
       # the other codecs Setup installs with Video for Windows (MOTOWN.INF VIDC.MSVC, VIDC.MSRLE, VIDC.IV32): Microsoft
       # Video 1 ([drivers32] vidc.MSVC), RLE (VIDC.MRLE) and Indeo 3.2 (VIDC.IV32) (WIN95_06.CAB)
-      ('msvidc32.dll', 0x01D30000, 0x05780000), ('msrle32.dll', 0x01D50000, 0x057A0000), ('ir32_32.dll', 0x01AE0000, 0x05F90000)]
+      ('msvidc32.dll', 0x0AD30000, 0x05780000), ('msrle32.dll', 0x0AD50000, 0x057A0000), ('ir32_32.dll', 0x0AAE0000, 0x05F90000)]
 # VxDs (ring-0 drivers), recompiled to run under the VMM in vmm.js: (file, load base, block-table base). MMDEVLDR is the
 # device loader of MEDIA devnodes; MSSNDSYS the Windows Sound System card's driver (WIN95_02.CAB)
-VXDS = [('mmdevldr.vxd', 0x01800000, 0x07C00000), ('mssndsys.vxd', 0x01810000, 0x07C40000),
-        ('vtdapi.vxd', 0x01820000, 0x07C80000), ('dsound.vxd', 0x01830000, 0x07CC0000),
+VXDS = [('mmdevldr.vxd', 0x0A800000, 0x07C00000), ('mssndsys.vxd', 0x0A810000, 0x07C40000),
+        ('vtdapi.vxd', 0x0A820000, 0x07C80000), ('dsound.vxd', 0x0A830000, 0x07CC0000),
         # the OPL3's VxD, which arbitrates the synthesizer's ports (WIN95_13.CAB)
-        ('msopl.vxd', 0x01840000, 0x07D80000),
+        ('msopl.vxd', 0x0A840000, 0x07D80000),
         # Accessibility (ENABLE.INF, part of a Typical install, combined into VMM32): StickyKeys, FilterKeys and the
         # rest, whose state USER reads through its protected-mode API (WIN95_02.CAB)
-        ('enable.vxd', 0x01850000, 0x069C0000),
+        ('enable.vxd', 0x0A850000, 0x069C0000),
         # the print spooler's VxD (dynamic: SPOOL32 opens \\.\spooler), which takes printing from MS-DOS programs (WIN95_09.CAB)
-        ('spooler.vxd', 0x014C0000, 0x06BD0000),
+        ('spooler.vxd', 0x0A4C0000, 0x06BD0000),
         # the network (WIN95_02.CAB, PERF from WIN95_06.CAB): the file system manager and its cache, network support,
         # the Microsoft Networks redirector, NetBIOS, the NetBEUI protocol and the NDIS 3.1 wrapper
-        ('ifsmgr.vxd', 0x01200000, 0x05800000), ('vcache.vxd', 0x01230000, 0x058C0000), ('vnetsup.vxd', 0x01240000, 0x058E0000),
-        ('vredir.vxd', 0x01250000, 0x05900000), ('vnetbios.vxd', 0x01280000, 0x059A0000), ('netbeui.vxd', 0x01290000, 0x059C0000),
-        ('ndis.vxd', 0x012A0000, 0x05A00000), ('perf.vxd', 0x012C0000, 0x05A80000),
+        ('ifsmgr.vxd', 0x0A200000, 0x05800000), ('vcache.vxd', 0x0A230000, 0x058C0000), ('vnetsup.vxd', 0x0A240000, 0x058E0000),
+        ('vredir.vxd', 0x0A250000, 0x05900000), ('vnetbios.vxd', 0x0A280000, 0x059A0000), ('netbeui.vxd', 0x0A290000, 0x059C0000),
+        ('ndis.vxd', 0x0A2A0000, 0x05A00000), ('perf.vxd', 0x0A2C0000, 0x05A80000),
         # the shell's ring-0 half, whose system-modal messages show on the blue screen when Windows cannot show them,
         # and Ctrl+Alt+Del's: the Close Program request, and the blue screens of a system that does not answer (WIN95_12.CAB)
-        ('shell.vxd', 0x018E0000, 0x07E20000), ('reboot.vxd', 0x01900000, 0x07E80000),
+        ('shell.vxd', 0x0A8E0000, 0x07E20000), ('reboot.vxd', 0x0A900000, 0x07E80000),
         # the parallel port (WIN95_02.CAB): the communications VxD that serves ports to KERNEL32's comm calls and loads
         # each port's driver, the printer port's driver, and the enumerator of what is plugged into it
-        ('vcomm.vxd', 0x01920000, 0x07EC0000), ('lpt.vxd', 0x01940000, 0x07F00000), ('lptenum.vxd', 0x01960000, 0x07F40000),
+        ('vcomm.vxd', 0x0A920000, 0x07EC0000), ('lpt.vxd', 0x0A940000, 0x07F00000), ('lptenum.vxd', 0x0A960000, 0x07F40000),
         # the display's VxD (WIN95_02.CAB): what WinOldAp's grabber reads an MS-DOS VM's screen through (its PM API's
         # functions 0-9), and the display driver's VDD calls (80h on)
-        ('vdd.vxd', 0x012E0000, 0x06290000)]
+        ('vdd.vxd', 0x0A2E0000, 0x06290000)]
 # NDIS miniports (PE images NDIS loads and links to its own exports): (file, load base, block-table base). NE2000.SYS
 # drives the NE2000-compatible card (NETNOVEL.INF *PNP80D6)
-DRIVERS = [('ne2000.sys', 0x012D0000, 0x05AC0000)]
+DRIVERS = [('ne2000.sys', 0x0A2D0000, 0x05AC0000)]
 # the network's Win32 half (WIN95_02.CAB, MSPWL32 from WIN95_06.CAB), loaded by MPREXE.EXE, the process Windows 95
 # starts for it: the multiple provider router and its service, the Microsoft Networks provider and its LAN Manager
 # API, the password cache and the server API: (file, load base, block-table base)
-NET = [('mpr.dll', 0x01300000, 0x05AA0000), ('msnp32.dll', 0x01310000, 0x05AE0000), ('msnet32.dll', 0x01330000, 0x05B40000),
-       ('mprserv.dll', 0x01350000, 0x05B90000), ('mspwl32.dll', 0x01380000, 0x05C30000), ('svrapi.dll', 0x01390000, 0x05C70000)]
+NET = [('mpr.dll', 0x0A300000, 0x05AA0000), ('msnp32.dll', 0x0A310000, 0x05AE0000), ('msnet32.dll', 0x0A330000, 0x05B40000),
+       ('mprserv.dll', 0x0A350000, 0x05B90000), ('mspwl32.dll', 0x0A380000, 0x05C30000), ('svrapi.dll', 0x0A390000, 0x05C70000)]
 # fonts a VGA install of Windows 95 puts in C:\WINDOWS\FONTS (WIN95_02.CAB)
 FONTS = ['vgasys.fon', 'vgafix.fon', 'vgaoem.fon', 'sserife.fon', 'serife.fon', 'coure.fon', 'smalle.fon', 'symbole.fon',
          'modern.fon', 'dosapp.fon', 'arial.ttf', 'arialbd.ttf', 'arialbi.ttf', 'ariali.ttf', 'cour.ttf', 'courbd.ttf',
@@ -324,6 +324,13 @@ for b0, b1, b2, bn in images:
     if grown and b0 < grown[1] and grown[2].split(' ')[0] != bn.split(' ')[0]: sys.exit(f'images overlap: {grown[2]} grows to {grown[1]:#x}, over {bn} at {b0:#x}')
     if not held or b1 > held[1]: held = (b0, b1, bn)
     if not grown or b2 > grown[1]: grown = (b0, b2, bn)
+# every module of the system's in its arena (win32.js LAYOUT.SYS_ARENA), clear of the programs' (their own bundled
+# programs and the DLLs only one of them loads, Hover's, stay at their own bases there)
+SYS_ARENA = (0x0A000000, 0x0B100000)
+own = {f.upper() for f, *_ in PROGRAMS} | {'DASHRES.DLL', 'HOVERHLP.DLL'}
+for b0, b1, b2, bn in images:
+    if bn.split(' ')[0].upper() in own: continue
+    if b0 < SYS_ARENA[0] or b2 > SYS_ARENA[1]: sys.exit(f'outside the system\'s arena ({SYS_ARENA[0]:#x}-{SYS_ARENA[1]:#x}): {bn} {b0:#x}-{b2:#x}')
 with open(out, 'w') as fh:
     fh.write(provenance.line('tools/build_system.py', 'tools/recomp.py'))
     fh.write('// Generated by tools/build_system.py from the Windows 95 system files.\nwindow.W95SYSTEM = ')

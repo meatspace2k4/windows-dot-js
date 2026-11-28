@@ -1038,6 +1038,14 @@ class Translator:
                 f.e(EXT_S if signed else EXT_U).lg(v).e(Q['mul']).ls(q)
                 f.gg('eax').c(~0xffff).e(OPS['and_']).lg(q).e(WRAP).c(0xffff).e(OPS['and_']).e(OPS['or_']).gs('eax')
                 f.gg('edx').c(~0xffff).e(OPS['and_']).lg(q).c64(16).e(Q['shr_u']).e(WRAP).c(0xffff).e(OPS['and_']).e(OPS['or_']).gs('edx')
+                # (CF and OF: MUL's high half not zero, IMUL's product not its low half sign-extended, as dyn.js
+                # muldiv sets them. Left as they were, SETUPX's strtol read a CMP's carry after MUL CX as an overflow,
+                # every number it parsed came back 7FFFFFFFh, and no INF's %17% or %25% was ever substituted)
+                if live & (CF | OF):
+                    t = f.i(); f.lg(q).e(WRAP)
+                    if signed: f.ls(t).lg(t).c(16).e(OPS['shl']).c(16).e(OPS['shr_s']).lg(t).e(OPS['ne']).ls(t)
+                    else: f.c(16).e(OPS['shr_u']).c(0).e(OPS['ne']).ls(t)
+                    f.lg(t).gs('cf'); f.lg(t).gs('of')
             else:
                 f.gg('edx').c(16).e(OPS['shl']).gg('eax').c(0xffff).e(OPS['and_']).e(OPS['or_'])
                 f.e(EXT_S if signed else EXT_U).ls(q)
@@ -1049,7 +1057,11 @@ class Translator:
                 f.e(EXT_S if signed else EXT_U).lg(v).e(Q['mul']).ls(q)
                 f.gg('eax').c(~0xffff).e(OPS['and_']).lg(q).e(WRAP).c(0xffff).e(OPS['and_']).e(OPS['or_']).gs('eax')
                 if live & (CF | OF):
-                    t = f.i(); f.lg(q).e(WRAP).c(0xff00).e(OPS['and_']).c(0).e(OPS['ne']).ls(t); f.lg(t).gs('cf'); f.lg(t).gs('of')
+                    t = f.i(); f.lg(q).e(WRAP)
+                    # (IMUL's: the product not its low byte sign-extended; MUL's: AH not zero)
+                    if signed: f.ls(t).lg(t).c(24).e(OPS['shl']).c(24).e(OPS['shr_s']).lg(t).c(16).e(OPS['shl']).c(16).e(OPS['shr_s']).e(OPS['ne']).ls(t)
+                    else: f.c(0xff00).e(OPS['and_']).c(0).e(OPS['ne']).ls(t)
+                    f.lg(t).gs('cf'); f.lg(t).gs('of')
             else:
                 f.gg('eax').c(0xffff).e(OPS['and_'])
                 if signed: f.c(16).e(OPS['shl']).c(16).e(OPS['shr_s'])

@@ -54,7 +54,9 @@ assert.doesNotMatch(k, /savers\.values\(\).*dispatchInput|\.map\(run => run\.pro
   'P.spawn process records are not mistaken for independent Process instances');
 assert.match(k, /p\.dispatchInput\(W\.WM\.MOUSEMOVE/,
   'child saver windows share the system machine input dispatcher');
-assert.match(k, /host\.vmTop = 0x0a000000/, 'the system VM allocator skips the saver static image and lookup region');
+assert.match(k, /vmTop: W\.LAYOUT\.VM_LO/, 'the VM allocator starts at the layout\'s VM_LO');
+{ const lo = /VM_LO: (0x[0-9a-f]+)/.exec(g), arena = /SYS_ARENA_END: (0x[0-9a-f]+)/.exec(g);
+  assert.ok(lo && arena && +lo[1] >= +arena[1] && +lo[1] >= 0x0a000000, 'it skips the saver static image and lookup region, and the system\'s arena'); }
 assert.match(k, /pc\.previewHwnd = run\.previewHwnd;\s*if \(mode === 'p' && !native\) pc\.previewKey = `w32:\$\{run\.previewHwnd\}`;[\s\S]*?return pc;/,
   'WinExec receives the actual child process and only preview mode returns its HWND key');
 assert.match(k, /previewCmd = `"\$\{real\}" \/p \$\{parent\.hwnd\}`/,

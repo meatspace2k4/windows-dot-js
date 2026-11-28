@@ -11,7 +11,8 @@ globalThis.self = globalThis;
 for (const file of ['fs.js', 'win32.js', 'ne16.js', 'system.js']) new Function(readFileSync(new URL(`../${file}`, import.meta.url), 'utf8'))();
 const P = window.W95Win32.Process.prototype;
 const d = window.W95SYSTEM.ne.DISPLAY, file = Buffer.from(d.file, 'base64');
-const mem = new Uint8Array(64 << 20);
+// (as large as the driver's segments reach: the system's modules load in their arena, win32.js LAYOUT.SYS_ARENA)
+const mem = new Uint8Array(Math.max(...d.meta.segs.map(s => s.base + Math.max(s.alloc || 0, s.len || 0, 0x10000))));
 for (const s of d.meta.segs) mem.set(file.subarray(s.fileoff, s.fileoff + (s.len || 0)), s.base);
 const p = Object.create(P);
 Object.defineProperty(p, 'u8', { value: mem });
