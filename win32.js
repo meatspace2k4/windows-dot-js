@@ -369,9 +369,12 @@ class Process {
     // a DLL at its own base far from them: DLLs placed from 620000h up filled the room a program with no relocations
     // needs at 400000h, and the CD Sampler's Pinball, 4.6 MB, had "no room for its image" (KERNEL32's stand-in at
     // 620000h, OLEAUT32 and COMDLG32.OCX of the Sampler that started it). Into it only when there is no other room)
-    const zone = a => !own && relocatable && this.inExeZone(a, size);
-    if (free(pref) && !zone(pref)) return pref;
+    // (and clear of 1000000h, where programs linked for Windows 95 are based (Welcome, MSAGENT.EXE's IExpress package):
+    // SIGRES.EXE, which RSABASE loads for its signature on OSR 2.5's first start, is linked there too, relocatable, and
+    // at its base it left each such program "no room for its image", "not a valid Win32 application")
     const PROGRAMS = [0x01000000, 0x01100000], programs = a => !own && a < PROGRAMS[1] && PROGRAMS[0] < a + size;
+    const zone = a => !own && relocatable && (this.inExeZone(a, size) || programs(a));
+    if (free(pref) && !zone(pref)) return pref;
     const from = own ? 0x00620000 : EXE_ZONE_END;
     // (clear of the memo's places for modules not loaded here first, as vmRoom keeps clear of them)
     if (relocatable) { const memo = this.memoSpans(), kept = a => !memo.some(([lo, hi]) => a < hi && lo < a + size); for (let a = from; a + size <= 0x02000000; a += 0x10000) if (free(a) && !programs(a) && kept(a)) return a; }
