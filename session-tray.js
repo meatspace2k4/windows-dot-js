@@ -122,11 +122,12 @@
   const K32 = (p, nm, args) => p.call(p.thunkFor('KERNEL32', nm), args);
   function meterOpen(p) {
     if (st.meterHwnd && U(p, 'IsWindow', [st.meterHwnd])) {
-      if (st.meterBar) { U(p, 'ShowWindow', [st.meterHwnd, 5]); U(p, 'SetForegroundWindow', [st.meterHwnd]); return; }
-      U(p, 'KillTimer', [st.meterHwnd, METER_TIMER]); U(p, 'DestroyWindow', [st.meterHwnd]);   // (v0's painted window, from before a reload: made again of controls)
+      if (st.meterBar && st.meterSpeed) { U(p, 'ShowWindow', [st.meterHwnd, 5]); U(p, 'SetForegroundWindow', [st.meterHwnd]); return; }
+      // (a window from before a reload, painted (v0) or without the speed slider: made again as it is now)
+      U(p, 'KillTimer', [st.meterHwnd, METER_TIMER]); U(p, 'DestroyWindow', [st.meterHwnd]);
     }
-    st.meterBar = st.meterRunTxt = st.meterMachTxt = 0;
-    const inst = K32(p, 'GetModuleHandleA', [0]), w = 230, hh = 108;
+    st.meterBar = st.meterRunTxt = st.meterMachTxt = st.meterSpeed = st.meterSpeedTxt = 0;
+    const inst = K32(p, 'GetModuleHandleA', [0]), w = 230, hh = 156;
     if (!st.meterCC) {   // COMCTL32's classes registered in this process (InitCommonControls), as a program that uses them does
       const cc = K32(p, 'LoadLibraryA', [str(p, 'cc', 'COMCTL32.DLL')]), init = cc && K32(p, 'GetProcAddress', [cc, str(p, 'icc', 'InitCommonControls')]);
       if (init) p.call(init, []); st.meterCC = cc || -1;
@@ -148,12 +149,34 @@
     if (st.meterBar) U(p, 'SendMessageA', [st.meterBar, 0x401, 0, 100 << 16]);     // PBM_SETRANGE 0..100
     st.meterRunTxt = child('STATIC', '...', 0, 10, 52, (cw - 20) >> 1, 14, 103);
     st.meterMachTxt = child('STATIC', '', 2, 10 + ((cw - 20) >> 1), 52, (cw - 20) - ((cw - 20) >> 1), 14, 104);   // SS_RIGHT
+    // the machine's speed, set here: COMCTL32's trackbar (TBS_AUTOTICKS) over SPEEDS, each step the worker's 'speed'
+    // as mod-turbo sets it; its position the machine's speed as the window opens (the clock's scale)
+    st.meterSpeedTxt = child('STATIC', '', 0, 10, 76, cw - 20, 14, 105);
+    st.meterSpeed = child('msctls_trackbar32', '', 0x01, 6, 92, cw - 12, 28, 106);
+    if (st.meterSpeed) {
+      U(p, 'SendMessageA', [st.meterSpeed, 0x406, 1, (SPEEDS.length - 1) << 16]);   // TBM_SETRANGE 0..n-1
+      U(p, 'SendMessageA', [st.meterSpeed, 0x405, 1, speedPos()]);                   // TBM_SETPOS
+    }
+    speedLabel(p);
     // (the figures not known until a second sample: '...' meanwhile. These were on the comment's line above, so never
     // run: the first second's tick read the run time as undefined, and its toFixed ended MSGSRV32)
     st.meterSamples = [meterSample()]; st.meterRun = null; st.meterMach = null;
     U(p, 'SetTimer', [h, METER_TIMER, 1000, 0]);
   }
+  const SPEEDS = [1, 2, 4, 8, 16, 32, 64];
+  const speedNow = () => { const m = typeof machine !== 'undefined' && machine; return (m && m.vclock && m.vclock.scale) || 1; };
+  const speedPos = () => { const x = speedNow(); let best = 0; SPEEDS.forEach((s, i) => { if (Math.abs(Math.log(s / x)) < Math.abs(Math.log(SPEEDS[best] / x))) best = i; }); return best; };
+  function speedLabel(p) { if (st.meterSpeedTxt) U(p, 'SetWindowTextA', [st.meterSpeedTxt, str(p, 'mspd', `Speed: ${speedNow()} times`)]); }
+  /** the slider moved (WM_HSCROLL): the machine at that speed */
+  function speedSet(p) {
+    const i = U(p, 'SendMessageA', [st.meterSpeed, 0x400, 0, 0]), x = SPEEDS[Math.max(0, Math.min(SPEEDS.length - 1, i | 0))];   // TBM_GETPOS
+    if (x !== speedNow()) machine.cmd('speed', [x]);
+    speedLabel(p);
+  }
   function meterShow(p) {
+    // (the slider kept where the speed is: mod-turbo, or a script, may have set it meanwhile)
+    if (st.meterSpeed && SPEEDS[U(p, 'SendMessageA', [st.meterSpeed, 0x400, 0, 0])] !== speedNow()) { U(p, 'SendMessageA', [st.meterSpeed, 0x405, 1, speedPos()]); }
+    speedLabel(p);
     if (st.meterBar) U(p, 'SendMessageA', [st.meterBar, 0x402, st.meterRun === null ? 0 : Math.round(Math.min(1, st.meterRun / 8) * 100), 0]);   // PBM_SETPOS
     if (st.meterRunTxt) U(p, 'SetWindowTextA', [st.meterRunTxt, str(p, 'mrun', st.meterRun === null ? '...' : `${st.meterRun.toFixed(1)} s run`)]);
     if (st.meterMachTxt) U(p, 'SetWindowTextA', [st.meterMachTxt, str(p, 'mmach', st.meterMach === null ? '' : `${st.meterMach.toFixed(1)} s machine`)]);
@@ -261,6 +284,7 @@
       if (msg === 0x138) { G(p, 'SetBkColor', [wp, U(p, 'GetSysColor', [15])]); return done(U(p, 'GetSysColorBrush', [15])); }   // WM_CTLCOLORSTATIC
       if (msg === 0x0f && !st.meterBar) { meterPaint(p, h); return done(); }               // WM_PAINT (v0's face, with no controls)
       if (msg === 0x113 && wp === METER_TIMER) { meterTick(p, h); return done(); }         // WM_TIMER
+      if (msg === 0x114 && st.meterSpeed && lp === st.meterSpeed) { speedSet(p); return done(); }   // WM_HSCROLL from the speed slider
       if (msg === 0x10) { U(p, 'ShowWindow', [h, 0]); return done(); }                      // WM_CLOSE
       return 0;
     }
