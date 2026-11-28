@@ -16,4 +16,10 @@ for (const ax of [0x4dd4, 0x5300]) {   // (a vendor's; the APM BIOS's installati
   assert.equal(p.cpu.eax.value & 0xffff, 0x8600 | (ax & 0xff), 'AH 86h, AL kept');
   assert.equal(p.trapped, undefined);
 }
+// the PS/2 pointing device, this machine's mouse: C204h its ID (BH 0, a standard mouse); C201h reset (BH 0, BL AAh)
+for (const [ax, bx] of [[0xc204, 0x0000], [0xc201, 0x00aa]]) {
+  p.cpu.eax.value = ax; p.cpu.ebx.value = 0x1234; p.cpu.cf.value = 1;
+  assert.equal(INTS[0x15].call(p, 0), undefined, `${ax.toString(16)} answered`);
+  assert.deepEqual([p.cpu.cf.value, p.cpu.eax.value >> 8 & 0xff, p.cpu.ebx.value & 0xffff], [0, 0, ax === 0xc204 ? 0x0034 : bx], `${ax.toString(16)}: done, AH 0, BH the ID`);
+}
 console.log('int15vendor: ok');

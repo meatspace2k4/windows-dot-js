@@ -1472,6 +1472,13 @@ const INTS = {
     // Computer: AH=4Dh, a vendor's (AX=4DD4h), and AH=53h, the APM BIOS (5300h, its installation check: none here):
     // CF set, AH 86h, "function not supported", as an AT BIOS answers one
     if (ah === 0x4d || ah === 0x53) { CF(this, 1); this.ax((0x86 << 8) | (this.ax() & 0xff)); return; }
+    // the PS/2 pointing device (this machine's mouse, as INT 33h and VMD's API give its type): C201h reset, BH its ID
+    // (0, a standard mouse), BL AAh (its self-test passed); C204h its ID in BH. AH 0, CF clear. SYSDETMG asks C204h
+    const ax = this.ax();
+    if (ax === 0xc201 || ax === 0xc204) {
+      this.cpu.ebx.value = lo16(this.cpu.ebx.value, ax === 0xc201 ? 0x00aa : (this.cpu.ebx.value & 0xff));
+      CF(this, 0); this.ax(ax & 0xff); return;
+    }
     this.trapped = `unhandled int 15h ax=${this.ax().toString(16)}`; return LAYOUT.SENTINEL;
   },
   0x16() { biosKbd(this); },
