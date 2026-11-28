@@ -3042,7 +3042,7 @@ def('KERNEL32', 'CloseHandle', 1, function (h) {
   const m = this.obj(h); this.handles.delete(h);
   if (m && m.name) { if (this.namedOwner) this.namedOwner.delete(h); namedGone(this, m); }
   // (a file's mapping goes with its last handle, and its data with it)
-  if (m && m.kind === 'mapping' && m.file && ![...this.handles.values()].includes(m)) { this.free(m.base); m.base = 0; if (this.mappings) this.mappings.delete(m); }
+  if (m && m.kind === 'mapping') { if (m.file) mapFlush(this, m); mapGone(this, m); }
   return 1;
 });
 // ---- consoles: a Win32 console program's, which an MS-DOS machine's window is (a DOS box is a console, as CONAGENT makes
@@ -3230,7 +3230,11 @@ def('KERNEL32', 'CreateFileMappingA', 6, function (h, sa, prot, hi, lo, name) {
   if (had) { this.lastError = 183; return this.newHandle(had); }
   let m;
   if (u32(h) === 0xffffffff) { if (!lo) { this.lastError = 87; return 0; } const base = this.alloc(lo); this.u8.fill(0, base, base + lo); m = { kind: 'mapping', base, size: lo }; }
-  else { const f = fileOf(this, h); if (!f) { this.lastError = 6; return 0; } m = { kind: 'mapping', path: f.path }; }
+  // (a file's: its size at least the size asked for, the file grown to it as Windows grows it, and written back when
+  // it is writable (PAGE_READWRITE, PAGE_EXECUTE_READWRITE) as its views go and as it goes, mapFlush. Kept only in the
+  // view, WININET's cache index (index.dat) was its zeros on the disk: the next start read a cache limit of 0, made
+  // its containers with none, and Explorer faulted in WININET)
+  else { const f = fileOf(this, h); if (!f) { this.lastError = 6; return 0; } m = { kind: 'mapping', path: f.path, want: u32(hi) ? 0 : u32(lo), write: !!(prot & 0x44), views: 0 }; }
   if (key) sections(this).set(key, m);
   (this.mappings || (this.mappings = new Set())).add(m);
   this.lastError = 0; return this.newHandle(m);
@@ -3245,9 +3249,18 @@ def('KERNEL32', 'MapViewOfFile', 5, function (h, access, hi, lo) {
   // mapping in the shared arena: every view is that address, and unmapping a view leaves it. GDI32 maps a font file,
   // unmaps the view at once and reads the font through its address while it holds the mapping's handle; a copy per
   // view, freed at the unmap, was SUWIN's next GlobalAlloc, zeroed, and the TrueType loader found no table directory)
-  if (!m.base) { const r = fsCall(this, () => { const b = this.fs.readFile(m.path); m.base = this.alloc(b.length + 1); m.size = b.length; m.file = true; this.u8.set(b, m.base); return 0; }); if (!m.base) return r || 0; }
+  if (!m.base) { const r = fsCall(this, () => { const b = this.fs.readFile(m.path), n = Math.max(b.length, m.want || 0); m.base = this.alloc(n + 1); m.size = n; m.file = true; this.u8.fill(0, m.base, m.base + n + 1); this.u8.set(b, m.base); if (n > b.length && m.write) mapFlush(this, m); return 0; }); if (!m.base) return r || 0; }
+  if (m.file) m.views = (m.views || 0) + 1;
   return m.base + lo;
 });
+/** a writable file mapping's data written back to its file */
+const mapFlush = (p, m) => { if (m.file && m.write && m.path && m.base) fsCall(p, () => { p.fs.writeFile(m.path, p.u8.slice(m.base, m.base + m.size)); return 1; }); };
+/** a file's mapping gone once it has neither a handle nor a view, written back first (Windows keeps a mapping while a
+ *  view of it is left: WININET closes its handle and keeps the view) */
+const mapGone = (p, m) => {
+  if (!m.file || m.views > 0 || [...p.handles.values()].includes(m)) return;
+  mapFlush(p, m); p.free(m.base); m.base = 0; if (p.mappings) p.mappings.delete(m);
+};
 // FlushViewOfFile: a file's view written back to its file (the view is the file's contents copied in when mapped); a
 // mapping of no file has nothing to write. Unimplemented, the thunk was a page fault in MSGSRV32 as Explorer opened My
 // Computer (the shell's shared view of its settings file)
@@ -3259,7 +3272,13 @@ def('KERNEL32', 'FlushViewOfFile', 2, function (p) {
   }
   this.lastError = 487; return 0;   // ERROR_INVALID_ADDRESS
 });
-def('KERNEL32', 'UnmapViewOfFile', 1, function (p) { for (const m of this.mappings || sections(this).values()) if (p >= m.base && p < m.base + Math.max(m.size, 1)) return 1; this.free(p); return 1; });
+def('KERNEL32', 'UnmapViewOfFile', 1, function (p) {
+  for (const m of this.mappings || sections(this).values()) if (m.base && p >= m.base && p < m.base + Math.max(m.size, 1)) {
+    if (m.file) { mapFlush(this, m); m.views = Math.max(0, (m.views || 0) - 1); mapGone(this, m); }
+    return 1;
+  }
+  this.free(p); return 1;
+});
 def('KERNEL32', 'CreateFileW', 7, () => 0xffffffff);
 def('KERNEL32', 'GetFullPathNameA', 4, function (n, len, buf, part) {
   const s = this.readA(n); const full = /^[a-z]:/i.test(s) ? s : window.W95FS.join(this.fs.cwd, s); this.writeA(buf, full, len);
