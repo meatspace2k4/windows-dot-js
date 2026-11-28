@@ -3151,8 +3151,42 @@ P.pitIO = function (port, size, isIn) {
   c.t0 = now; c.held = c.gate ? null : now;
   return true;
 };
+/** the keyboard controller (an 8042) and its keyboard, an MF2 (ID ABh 83h), on ports 60h and 64h: 64h's status
+ *  (bit 0 a byte to read at 60h, bit 2 the system flag; never busy), the controller's commands at 64h (AAh its self
+ *  test, 55h; ABh the keyboard interface's, 0; 20h/60h its command byte), the keyboard's at 60h answered as one answers
+ *  them (F2h Identify FAh ABh 83h, FFh reset FAh AAh, EEh echo, the ones with a data byte and the others it takes FAh,
+ *  one it does not know FEh, resend). The keys themselves reach Windows by its keyboard driver's own way, not through
+ *  these ports. Windows 95 OSR 2.5 Setup's SYSDETMG identifies the keyboard so (its segment 1, at ring 0): with no
+ *  controller it read FFh, and Setup asked which keyboard this was */
+const KBD_OK = new Set([0xf3, 0xf4, 0xf5, 0xf6, 0xf7, 0xf8, 0xf9, 0xfa, 0xfb, 0xfc, 0xfd, 0xed, 0xf0]);
+P.kbcIO = function (port, isIn) {
+  const k = this.kbc || (this.kbc = { out: [], last: 0, cmd: 0x45, want: null });
+  if (isIn) {
+    if (port === 0x64) return 0x14 | (k.out.length ? 1 : 0);
+    if (k.out.length) k.last = k.out.shift();
+    return k.last;
+  }
+  const v = this.cpu.eax.value & 0xff;
+  if (port === 0x64) {
+    k.want = null;
+    if (v === 0xaa) k.out.push(0x55); else if (v === 0xab) k.out.push(0x00); else if (v === 0x20) k.out.push(k.cmd); else if (v === 0x60) k.want = 'cmd';
+    return 0;
+  }
+  if (k.want === 'cmd') { k.cmd = v; k.want = null; return 0; }
+  if (k.want === 'data') { k.want = null; k.out.push(0xfa); return 0; }
+  if (v === 0xf2) k.out.push(0xfa, 0xab, 0x83);
+  else if (v === 0xff) k.out.push(0xfa, 0xaa);
+  else if (v === 0xee) k.out.push(0xee);
+  else if (KBD_OK.has(v)) { k.out.push(0xfa); if (v === 0xed || v === 0xf3 || v === 0xf0) k.want = 'data'; }
+  else k.out.push(0xfe);
+  return 0;
+};
 P.portIO = function (port, size, isIn) {
   if (window.W95PORTTRACE) window.W95PORTTRACE(port, size, isIn, this);
+  if (size === 1 && (port === 0x60 || port === 0x64)) {
+    if (this.vxdTrapIO && this.vxdTrapIO(port, size, isIn)) return;   // (a VxD's trap first, as below)
+    const r = this.kbcIO(port, isIn); if (isIn) this.cpu.eax.value = (this.cpu.eax.value & ~0xff) | r; return;
+  }
   if (this.vxdTrapIO && this.vxdTrapIO(port, size, isIn)) return;   // a port a VxD traps (vmm.js)
   if (size === 1 && this.pitIO(port, size, isIn)) return;   // the timer and port 61h
   if (this.soundIO && this.soundIO(port, size, isIn)) return;   // the sound card, DMA and interrupt controllers (sound.js)
