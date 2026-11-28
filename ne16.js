@@ -105,7 +105,12 @@ P.dosData = function () {
   // (the swappable data area begins with the critical-error flag, InDOS after it, as DOS's does: what the InDOS
   // pointer is, minus one, is where its current PSP and DTA are found)
   const d = { seg, indos: a + 0x1001, lol: a + 0x20, sft: a + 0x100, fcb: a + 0x240, cds: a + 0x340, sda: a + 0x1000 };
-  this.w16(d.lol - 2, 0xffff);                                  // first MCB: none walked
+  // the memory arena: the first MCB (LoL-2), DOS's own ('Z', owner 8 "SC") from here to the end of conventional
+  // memory, the emulator's tables and the GlobalDOSAlloc blocks in it; no UMBs (LoL+66h FFFFh). (FFFFh, "none", was no
+  // arena: Windows 95 OSR 2.5 Setup's SYSDETMG took FFFF:0 for a free block above A000h, a UMB, whose next block
+  // (FFFFh+0+1) wrapped to 0:0, its first again, and made a UMB device of it on and on: the hourglass at User Information)
+  this.u8[a] = 0x5a; this.w16(a + 1, 8); this.w16(a + 3, 0x9fff - seg); this.writeA(a + 8, 'SC');
+  this.w16(d.lol - 2, seg); this.w16(d.lol + 0x66, 0xffff);
   // the drive parameter blocks (DOS 7.1's, 3Dh bytes): the hard disk's, C:, on a block device whose header is IO.SYS's
   d.dpb = a + 0xc40; d.blk = a + 0xc90; far(d.lol, d.dpb);
   this.u8[d.dpb] = 2; this.w16(d.dpb + 2, 512); this.u8[d.dpb + 4] = 15; this.u8[d.dpb + 5] = 4; this.w16(d.dpb + 6, 32); this.u8[d.dpb + 8] = 2;
