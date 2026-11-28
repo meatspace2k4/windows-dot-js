@@ -313,14 +313,20 @@ Object.assign(tools, {
   guest_save: { description: 'Save translated modules\' JavaScript (as a JS-run module has it, dyn/NAME.js) to files: `names` without extension (MSSETUP, ACMSETUP; * for all), into `dir` (default .sessions/dyn, git-ignored). Answers each file written and its size.',
     props: { names: { type: 'array', items: S }, dir: S }, required: ['names'],
     async run({ names, dir = '.sessions/dyn' }) {
-      const s = worker(), expression = `(async () => JSON.stringify(await self.W95DynJs.debug(machine.proc, ['dump', ${JSON.stringify(names)}], machine)))()`;
+      const { mkdirSync, writeFileSync, readFileSync, existsSync } = await import('node:fs'), { join, resolve } = await import('node:path');
+      mkdirSync(dir, { recursive: true });
+      // (the hashes of the files saved here before, dir/index.json: a module whose text has not changed is not sent
+      // from the machine nor written again)
+      const idx = join(dir, 'index.json'); let have = {}; try { have = JSON.parse(readFileSync(idx, 'utf8')); } catch (_) { /* none yet */ }
+      for (const f of Object.keys(have)) if (!existsSync(join(dir, f))) delete have[f];
+      const s = worker(), expression = `(async () => JSON.stringify(await self.W95DynJs.debug(machine.proc, ['dump', ${JSON.stringify(names)}, ${JSON.stringify(have)}], machine)))()`;
       const r = await cmd(s, 'Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
       if (r.exceptionDetails) throw new Error((r.exceptionDetails.exception && r.exceptionDetails.exception.description || r.exceptionDetails.text).split('\n')[0]);
-      const { mkdirSync, writeFileSync } = await import('node:fs'), { join, resolve } = await import('node:path');
-      mkdirSync(dir, { recursive: true });
       const got = JSON.parse(r.result.value);
       if (!got.length) throw new Error(`no translated module named ${names.join(', ')} (guest_modules lists them)`);
-      return got.map(m => { const f = resolve(join(dir, m.file)); writeFileSync(f, m.text); return { name: m.name, file: f, bytes: m.text.length }; });
+      const out = got.map(m => { const f = resolve(join(dir, m.file)); if (m.text === null) return { name: m.name, file: f, unchanged: true }; writeFileSync(f, m.text); have[m.file] = m.hash; return { name: m.name, file: f, bytes: m.text.length }; });
+      writeFileSync(idx, JSON.stringify(have, null, 1));
+      return out;
     } },
   guest_modules: { description: 'The machine\'s translated modules: name, code range, blocks, and whether each runs as JavaScript (debuggable) or WebAssembly.', props: {}, required: [], run: () => guest('modules') },
   guest_run: { description: 'Run exactly these modules as JavaScript (names like MSTASK, EXPLORER; * for all); the rest run as WebAssembly. Not while paused.', props: { names: { type: 'array', items: S } }, required: ['names'], run: ({ names }) => guest('run', names) },

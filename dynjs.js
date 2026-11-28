@@ -210,7 +210,7 @@ const BP = { on: false, stepAll: false, byAddr: new Map(), byId: new Map(), stop
       if (BP.onHit) BP.onHit(hit);
     }
   } };
-const made = new Map();
+const made = new Map(), madeHash = new Map();   // (madeHash: each made text's hash, for dump: made once per text)
 const expr = s => { if (!s) return null; try { return new Function('R', 'r8', 'r16', 'r32', 'n', 'thread', `return (${s});`); } catch (e) { throw new Error(`debug: the expression ${s} does not parse (${e.message})`); } };
 const addrOf = v => (typeof v === 'string' ? parseInt(v, 16) : v) >>> 0;
 const labelOf = m => (m.name === 'EXE' ? m.meta.path || m.meta.name || 'EXE' : m.name);
@@ -260,8 +260,10 @@ const D = {
     return { module: shortOf(m), block, text: s.slice(i + 3, s.indexOf('\n}\n', i) + 2) };
   },
   /** The whole JavaScript of translated modules, from their wasm, as a JS-run module has it (dyn/NAME.js): `names`
-   *  without extension, '*' for every one. Resolves with [{ name, label, file, text }], file the source's own name */
-  async dump(p, names = ['*']) {
+   *  without extension, '*' for every one. Resolves with [{ name, label, file, hash, text }], file the source's own
+   *  name, hash its text's (FNV-1a); `have` ({ file: hash }, what the caller saved before): a text unchanged since is
+   *  not sent again (text null), only its hash */
+  async dump(p, names = ['*'], have = {}) {
     const all = names.includes('*'), want = new Set(names.map(n => String(n).toUpperCase().replace(/\.\w+$/, '')));
     const out = [];
     for (const m of translated(p)) {
@@ -269,7 +271,10 @@ const D = {
       if (!m.netSeed.wasm && !(await p.seedWasm(m))) continue;
       const label = String(labelOf(m)), key = label.toUpperCase();
       if (!made.has(key)) made.set(key, source(m.netSeed.wasm, labelOf(m), m.netSeed.blocks));
-      out.push({ name: shortOf(m), label, file: `${label.replace(/[^\w.-]+/g, '_')}.js`, text: made.get(key) });
+      const text = made.get(key), file = `${label.replace(/[^\w.-]+/g, '_')}.js`;
+      if (!madeHash.has(key) || madeHash.get(key).text !== text) { let h = 0x811c9dc5; for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 0x01000193); madeHash.set(key, { text, hash: (h >>> 0).toString(16) }); }
+      const hash = madeHash.get(key).hash;
+      out.push({ name: shortOf(m), label, file, hash, text: have[file] === hash ? null : text });
     }
     return out;
   },

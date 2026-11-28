@@ -15,5 +15,11 @@ assert.equal(m.name, 'MSSETUP', 'by its name, any case, with or without the exte
 assert.match(m.file, /\.js$/);
 assert.match(m.text, /^\(function|F\[0\] = function run\(/m, 'its JavaScript');
 assert.ok(m.text.includes(`//# sourceURL=dyn/${m.file}`), 'the same name DevTools shows it under');
+assert.match(m.hash, /^[0-9a-f]+$/, 'its text\'s hash');
+// (saved before with that hash: not sent again; another hash: sent)
+const [again] = await self.W95DynJs.debug(p, ['dump', ['MSSETUP'], { [m.file]: m.hash }]);
+assert.equal(again.text, null, 'unchanged: no text'); assert.equal(again.hash, m.hash);
+const [changed] = await self.W95DynJs.debug(p, ['dump', ['MSSETUP'], { [m.file]: '0' }]);
+assert.equal(changed.text, m.text, 'another hash: the text');
 assert.deepEqual(await self.W95DynJs.debug(p, ['dump', ['NOSUCH']]), []);
 console.log('dynjsdump: ok');
