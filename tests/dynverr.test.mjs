@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 globalThis.window = globalThis; globalThis.self = globalThis;
 for (const file of ['fs.js', 'win32.js', 'ne16.js', 'dyn.js']) new Function(readFileSync(new URL(`../${file}`, import.meta.url), 'utf8'))();
-const P = window.W95Win32.Process.prototype, LDT = 0x30000, ACC = 0x40000;
+const P = window.W95Win32.Process.prototype, LDT = 0x30000;
 const p = Object.create(P), mem = new WebAssembly.Memory({ initial: 2048, maximum: 2048 });
 p.mem = mem; Object.defineProperty(p, 'u8', { value: new Uint8Array(mem.buffer) });
 p.cpu = {};
@@ -15,8 +15,9 @@ p.ne = new Map(); p.modules = []; p.trap = () => {};
 const dv = new DataView(mem.buffer);
 // descriptors: 1007h a data segment (base 1000h, limit FFh), 100Fh a code segment, 1017h none
 // (the access table holds the access byte as LAR answers it, in bits 8 to 15)
-dv.setUint32(LDT + 0x1000, 0x1000, true); dv.setUint32(LDT + 0x1004, 0xff, true); dv.setUint32(ACC + 0x1000, 0xf300, true);
-dv.setUint32(LDT + 0x1008, 0x2000, true); dv.setUint32(LDT + 0x100c, 0xff, true); dv.setUint32(ACC + 0x1008, 0xfb00, true);   // (code: access byte bit 3)
+// (the processor's descriptors: limit FFh, base 1000h and 2000h; a data and a code segment, access byte bit 3)
+dv.setUint32(LDT + 0x1000, 0x100000ff, true); dv.setUint32(LDT + 0x1004, 0xf300, true);
+dv.setUint32(LDT + 0x1008, 0x200000ff, true); dv.setUint32(LDT + 0x100c, 0xfb00, true);
 // verr ax; jmp 300000h (32-bit code) at 200000h, and verw ax; jmp 300000h at 200010h
 p.u8.set([0x0f, 0x00, 0xe0, 0xe9, ...new Uint8Array(new Int32Array([0x300000 - (0x200000 + 8)]).buffer)], 0x200000);
 p.u8.set([0x0f, 0x00, 0xe8, 0xe9, ...new Uint8Array(new Int32Array([0x300000 - (0x200010 + 8)]).buffer)], 0x200010);

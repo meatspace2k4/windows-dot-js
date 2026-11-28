@@ -9,7 +9,7 @@ const { Process, API, LAYOUT, GuestError, YIELD, log } = window.W95Win32;
 const P = Process.prototype;
 
 const L = {
-  LDT: 0x30000, ACC: 0x40000,                      // {base, limit} per selector; access rights at +0x10000
+  LDT: 0x30000,                                    // the LDT in the processor's form: an 8-byte descriptor per selector
   FLATDS: 0x000F, FLATCS: 0x0017, SENT: 0x001F,    // fixed selectors (SENT: far returns here end a call16)
   STK: 0x0027, NSTK: 24,                           // 16-bit stack aliases of the flat stack, one per nesting level
   DYN: 0x600,                                      // first LDT index handed out dynamically (below it, the recompiled modules' selectors: to 2FFFh)
@@ -43,17 +43,31 @@ P.init16 = function () {
   this.th16 = (window.W95SYSTEM && window.W95SYSTEM.thunks16 || []).map(k => this.thunk16Def(k));
   this.lastError16 = 0;
 };
+// The LDT is the processor's: each selector's descriptor, 8 bytes, as Windows 95's own (base in bytes 2-4 and 7, the
+// 20-bit limit in bytes 0-1 and the low nibble of 6, counted in 4 KB pages when G (bit 23 of the high dword) is set,
+// the access byte 5, D and AVL in byte 6). The recompiled and run-time code read it at every segment register load,
+// and a program writes it through its alias (INT 2Fh 168Ah's function 100h, 1688h): Windows 95 Setup builds its own
+// selector for DOS's CDS that way. It was {base, limit} with the access bits in a table beside it, with no alias to
+// give, and Setup read the CDS through selector 0: SUBST and JOIN "running"
+// (acc: the high dword's bits other than base and limit: the access byte, D, AVL; G and the limit's nibble follow from
+// the limit)
+const descHi = (base, lim20, g, acc) => u32((base & 0xff000000) | ((base >>> 16) & 0xff) | (acc & 0x70ff00) | (lim20 & 0xf0000) | (g ? 0x800000 : 0));
 P.setDesc = function (sel, base, limit, acc = 0xf300) {
-  const i = sel & 0xfff8;
-  this.w32(L.LDT + i, base); this.w32(L.LDT + i + 4, limit); this.w32(L.ACC + i, acc); this.selUsed[i >> 3] = 1;
+  const i = sel & 0xfff8; limit = u32(limit); base = u32(base);
+  const g = limit > 0xfffff, lim20 = g ? limit >>> 12 : limit;
+  this.w32(L.LDT + i, u32((lim20 & 0xffff) | ((base & 0xffff) << 16))); this.w32(L.LDT + i + 4, descHi(base, lim20, g, acc)); this.selUsed[i >> 3] = 1;
 };
-P.selBase = function (sel) { return this.r32(L.LDT + (sel & 0xfff8)); };
-P.selLimit = function (sel) { return this.r32(L.LDT + (sel & 0xfff8) + 4); };
+P.selBase = function (sel) { const i = L.LDT + (sel & 0xfff8); return u32(this.r16(i + 2) | this.u8[i + 4] << 16 | this.u8[i + 7] << 24); };
+P.selLimit = function (sel) { const i = L.LDT + (sel & 0xfff8), hi = this.r32(i + 4), lim20 = this.r16(i) | (hi & 0xf0000); return hi & 0x800000 ? u32(lim20 * 0x1000 + 0xfff) : lim20; };
+/** the descriptor's high dword without its base: the access byte, the limit's nibble, AVL, D and G (LAR's answer) */
+P.selAcc = function (sel) { return this.r32(L.LDT + (sel & 0xfff8) + 4) & 0x00ffff00; };
+P.setSelBase = function (sel, base) { this.setDesc(sel, base, this.selLimit(sel), this.selAcc(sel)); };
+P.setSelLimit = function (sel, limit) { this.setDesc(sel, this.selBase(sel), limit, this.selAcc(sel)); };
 P.selValid = function (sel) { return (sel & 0xfff8) && this.selUsed[(sel & 0xfff8) >> 3]; };
 /** a new selector with selector s's base, limit and access (AllocSelector, the alias calls, DPMI 000Ah): one
  *  descriptor, as the source is one (a 32-bit segment with a 4 GB limit among them), or the tiles of a huge global
  *  block when s is the first of its block's selectors */
-P.copySel = function (s, acc = this.r32(L.ACC + (s & 0xfff8))) {
+P.copySel = function (s, acc = this.selAcc(s)) {
   const g = this.ghandles && this.ghandles.get(s);
   if (g && g.n > 1) return this.allocSels(this.selBase(s), this.selLimit(s) + 1, acc);
   const n = this.allocSels(0, 1); this.setDesc(n, this.selBase(s), this.selLimit(s), acc); return n;
@@ -77,7 +91,7 @@ P.freeSels = function (sel, n = 1) {
     const f = u32(this.cpu.ssb.value) + (this.cpu.esp.value & 0xffff), ret = (this.r16(f + 2) << 16 | this.r16(f)) >>> 0;
     log('warn', 'ne16', `${m.name} segment ${g.num}'s selector ${(g.sel | 7).toString(16)} freed (asked ${(sel >>> 0).toString(16)} n ${n}), from ${this.whereOf(this.lin(ret)) || ret.toString(16)} thread ${this.thread16 ? this.thread16.id : 'main'}`);
   } }
-  for (let k = 0; k < n; k++) { const i = ((sel & 0xfff8) >> 3) + k; this.selUsed[i] = 0; this.w32(L.LDT + 8 * i, 0); this.w32(L.LDT + 8 * i + 4, 0); this.w32(L.ACC + 8 * i, 0); }
+  for (let k = 0; k < n; k++) { const i = ((sel & 0xfff8) >> 3) + k; this.selUsed[i] = 0; this.w32(L.LDT + 8 * i, 0); this.w32(L.LDT + 8 * i + 4, 0); }
 };
 /** segmented -> linear */
 P.lin = function (sp) { sp = u32(sp); return sp ? u32(this.selBase(sp >>> 16) + (sp & 0xffff)) : 0; };
@@ -203,7 +217,7 @@ P.loadNE = function (name, file, module, meta) {
   if (rec.dgroup) {   // DGROUP starts at its minimum allocation plus local heap and stack; the module grows it itself
     const dg = meta.segs[meta.autodata - 1], init = Math.min(0x10000, ((dg.minalloc || 0x10000) + rd.u16(file, n + 0x10) + taskStack(rd.u16(file, n + 0x12)) + 15) & ~15);
     this.ghandles.set(rec.dgroup | 1, { lin: dg.base, size: init, n: 1, flags: 2, lock: 0, owner: rec.hModule });
-    this.w32(L.LDT + (rec.dgroup & 0xfff8) + 4, init - 1);
+    this.setSelLimit(rec.dgroup, init - 1);
   }
   for (const sg of meta.segs) if (sg.num !== meta.autodata) this.ghandles.set(sg.sel | 1, { lin: sg.base, size: Math.max(sg.alloc, 1), n: 1, flags: 0, lock: 0, owner: rec.hModule, code: !(sg.flags & 1) });
   if (this.initAfter32 && this.initAfter32.has(name)) rec.initLater = true;   // (its LibEntry run by bootUser16 once its 32-bit half is loaded, whoever imports it first)
@@ -222,7 +236,7 @@ P.reloadData16 = function (rec) {
   if (rec.dgroup) {
     const dg = meta.segs[meta.autodata - 1], init = Math.min(0x10000, ((dg.minalloc || 0x10000) + rd.u16(rec.file, n + 0x10) + taskStack(rd.u16(rec.file, n + 0x12)) + 15) & ~15);
     const g = this.ghandles.get(rec.dgroup | 1); if (g) g.size = init;
-    this.w32(L.LDT + (rec.dgroup & 0xfff8) + 4, init - 1);
+    this.setSelLimit(rec.dgroup, init - 1);
     if (this.lheaps) this.lheaps.delete(rec.dgroup | 1);
     // (and its atoms, kept for a segment with no local heap: Minesweeper's "Minesweeper" outlived its task, and its
     // next start found it, took itself for a second instance and quit)
@@ -1022,12 +1036,12 @@ const INTS = {
       case 0x0001: this.freeSels(bx); return;
       case 0x0003: this.ax(8); return;
       case 0x0006: { const b = this.selBase(bx); this.cpu.ecx.value = lo16(this.cpu.ecx.value, b >>> 16); this.cpu.edx.value = lo16(this.cpu.edx.value, b); return; }
-      case 0x0007: this.w32(L.LDT + (bx & 0xfff8), u32((cx << 16) | dx)); this.refreshSegs(); return;
-      case 0x0008: this.w32(L.LDT + (bx & 0xfff8) + 4, u32((cx << 16) | dx)); return;
-      case 0x0009: this.w32(L.ACC + (bx & 0xfff8), (cx & 0xff) << 8 | ((cx & 0xc000) << 8)); return;
-      case 0x000a: { const s = this.copySel(bx, (this.r32(L.ACC + (bx & 0xfff8)) & ~0xff00) | 0xf300); this.ax(s); return; }   // (a data alias: the source's size and granularity kept)
-      case 0x000b: { const a = this.lin((this.cpu.es.value << 16) | (this.cpu.edi.value & 0xffff)), b = this.selBase(bx), l = this.selLimit(bx);
-        this.w16(a, l); this.w16(a + 2, b); this.u8[a + 4] = b >>> 16; this.w16(a + 5, this.r32(L.ACC + (bx & 0xfff8)) >>> 8); this.u8[a + 7] = b >>> 24; return; }
+      case 0x0007: this.setSelBase(bx, u32((cx << 16) | dx)); this.refreshSegs(); return;
+      case 0x0008: this.setSelLimit(bx, u32((cx << 16) | dx)); return;
+      case 0x0009: this.setDesc(bx, this.selBase(bx), this.selLimit(bx), (cx & 0xff) << 8 | ((cx & 0x4000) << 8)); this.refreshSegs(); return;   // (the access byte and D; G follows the limit)
+      case 0x000a: { const s = this.copySel(bx, (this.selAcc(bx) & ~0xff00) | 0xf300); this.ax(s); return; }   // (a data alias: the source's size and granularity kept)
+      case 0x000b: { const a = this.lin((this.cpu.es.value << 16) | (this.cpu.edi.value & 0xffff));   // (the descriptor itself)
+        this.u8.copyWithin(a, L.LDT + (bx & 0xfff8), L.LDT + (bx & 0xfff8) + 8); return; }
       case 0x000c: { const a = this.lin((this.cpu.es.value << 16) | (this.cpu.edi.value & 0xffff));
         const b = this.r16(a + 2) | (this.u8[a + 4] << 16) | (this.u8[a + 7] << 24), l = this.r16(a) | ((this.u8[a + 6] & 0xf) << 16);
         this.setDesc(bx, u32(b), this.u8[a + 6] & 0x80 ? (l << 12) | 0xfff : l, this.r16(a + 5) << 8); this.refreshSegs(); return; }
@@ -1259,7 +1273,7 @@ const INTS = {
     }
     // names and directories, as DOS 7 answers them, with its long-name functions (AH=71h, the same calls with long
     // names): CF and AX = error code on failure
-    if (ah === 0x71 || [0x0e, 0x11, 0x12, 0x1a, 0x2f, 0x36, 0x39, 0x3a, 0x3b, 0x41, 0x43, 0x47, 0x4e, 0x4f, 0x56].includes(ah)) {
+    if (ah === 0x71 || [0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x1a, 0x21, 0x22, 0x23, 0x24, 0x27, 0x28, 0x2f, 0x36, 0x39, 0x3a, 0x3b, 0x41, 0x43, 0x47, 0x4e, 0x4f, 0x56].includes(ah)) {
       const lfn = ah === 0x71, fn = lfn ? al : ah, r = this.dosNames(fn, lfn);
       if (r !== false) return r;
     }
@@ -1451,11 +1465,16 @@ const INTS = {
     // sends them: the disc is the CD's data disc, one data track from 0 to its lead-out, so it has no audio to play
     if (ax === 0x1510) return cdRequest(this);
     if (ax === 0x1689 || ax === 0x1680) return;
-    // the DPMI host's vendor API (168Ah, DS:SI its name: "MS-DOS"'s function 100h a selector of the LDT) and 1688h
-    // BX=0BADh (the same, Windows 3.1's): none, AL and AX come back as they went. This machine's LDT is not in the
-    // processor's form (bases and limits at LDT, the access bytes a table of their own), so a selector of it would be
-    // read wrong; a caller goes on without one (Windows 98 Setup's W98SETUP)
-    if (ax === 0x168a || ax === 0x1688) return;
+    // the DPMI host's vendor API (168Ah, DS:SI its name: "MS-DOS"'s entry point in ES:DI, AL 0; its function 100h the
+    // LDT's alias selector) and 1688h BX=0BADh (the alias in BX, AX 0: Windows 3.1's), as Windows 95's host answers.
+    // The LDT is the processor's (setDesc), so a descriptor written through the alias is the selector's at its next
+    // load. Unanswered, Windows 95 Setup read the CDS through selector 0, and SUBST and JOIN were "running"
+    if (ax === 0x168a) {
+      const pm = !this.rmode, at = pm ? this.lin(((this.cpu.ds.value & 0xffff) << 16) | (this.cpu.esi.value & 0xffff)) : ((this.cpu.ds.value & 0xffff) << 4) + (this.cpu.esi.value & 0xffff);
+      if (!pm || this.readA(at, 16) !== 'MS-DOS') return;
+      const e = this.thunk16For('DPMI.#3'); this.seg('es', e >>> 16); this.cpu.edi.value = lo16(this.cpu.edi.value, e & 0xffff); this.ax(this.ax() & 0xff00); return;
+    }
+    if (ax === 0x1688) { if (!this.rmode && (this.cpu.ebx.value & 0xffff) === 0x0bad) { this.ax(0); this.cpu.ebx.value = lo16(this.cpu.ebx.value, this.ldtAlias()); } return; }
     if (ax === 0x160b) return;          // identify Windows-aware TSRs: none is loaded, so ES:DI comes back as it went in
     if (ax === 0x1607) return;          // device callout to real-mode software (a VxD asking for its TSR's API): none answers
     // VDD's notice to real-mode display software around a mode set it makes in a VM (BL 2 before its INT 10h calls,
@@ -1645,6 +1664,8 @@ const vxdApi = (id, name, fns) => {
   });
 };
 vxdApi(0x0001, 'VMM', {
+  // Get_Version: Windows 95's VMM, 4.00 (AH major, AL minor), CF clear. Setup's hardware detection (SYSDETMG) asks it
+  0x0() { CF(this, 0); return 0x0400; },
   // asked once by USER's LibEntry, which keeps a value only when AH comes back 2 (meaning not established here);
   // 0 takes USER's own branch for its absence
   0x26d() { return 0; },
@@ -3145,6 +3166,15 @@ def16('DPMI', 2, '', 'jmp', function () {      // the handler's retf lands here:
   this.seg('cs', cs); return u32(this.selBase(cs) + ip);
 });
 def16('DPMI', 1, '', 'jmp', function () { this.trapped = 'unhandled processor exception in 16-bit code'; return LAYOUT.SENTINEL; });
+// the "MS-DOS" vendor entry point (INT 2Fh 168Ah), far-called with the function in AX: 100h the LDT's alias in AX,
+// CF clear; another, CF set
+def16('DPMI', 3, '', 'v', function () { if (this.ax() === 0x100) { this.ax(this.ldtAlias()); CF(this, 0); } else CF(this, 1); });
+/** a data selector of the LDT itself (its 8192 descriptors), made once: the DPMI host's alias for programs that write
+ *  their own descriptors */
+P.ldtAlias = function () {
+  if (!this.ldtAliasSel || !this.selValid(this.ldtAliasSel)) { const s = this.allocSels(L.LDT, 0x10000); this.ldtAliasSel = s; }
+  return this.ldtAliasSel;
+};
 
 // ---------------------------------------------------------------- global heap
 const GMEM_MOVEABLE = 2, GMEM_ZEROINIT = 0x40;
@@ -3338,7 +3368,7 @@ P.local32Init = function (segment, tableSize, heapSize, flags) {
   this.w32(hdr + 120, 0x3233484c); this.w32(hdr + 124, 0);
   if (segment) {    // move the segment into the start of the new block
     if (!inPlace) this.u8.copyWithin(base, old, old + segSize);
-    this.w32(L.LDT + (segment & 0xfff8), base); this.w32(L.LDT + (segment & 0xfff8) + 4, tot - 1);
+    this.setDesc(segment, base, tot - 1, this.selAcc(segment));
     const gb = this.gblock(segment); if (gb) { gb.lin = base; gb.size = tot; }
     this.refreshSegs();
   }
@@ -3488,7 +3518,7 @@ def16('KERNEL', 16, 'wlw', 'w', function (h, n, fl) {   // GlobalReAlloc
   b.size = n;
   const need = Math.ceil(n / 0x10000);
   if (need > b.n) { this.freeSels(sel, b.n); const ns = this.allocSels(b.lin, n); if (ns !== sel) { this.ghandles.delete(sel); this.ghandles.set(ns, b); b.n = need; this.refreshSegs(); return b.flags & GMEM_MOVEABLE ? ns - 1 : ns; } b.n = need; }
-  for (let k = 0; k < b.n; k++) { this.w32(L.LDT + (sel & 0xfff8) + 8 * k, b.lin + 0x10000 * k); this.w32(L.LDT + (sel & 0xfff8) + 8 * k + 4, (k ? Math.min(n - 0x10000 * k, 0x10000) : n) - 1); }
+  for (let k = 0; k < b.n; k++) { const s = (sel & 0xfff8) + 8 * k; this.setDesc(s, b.lin + 0x10000 * k, (k ? Math.min(n - 0x10000 * k, 0x10000) : n) - 1, this.selAcc(s)); }
   this.refreshSegs();
   return h;
 });
@@ -3519,7 +3549,7 @@ def16('KERNEL', 192, 'w', 'w', function (h) { const b = this.gblock(h); return b
 def16('KERNEL', 111, 'w', 'l', function (h) { const b = this.gblock(h); if (!b) return 0; b.lock++; return u32(this.gsel(h) << 16); });   // GlobalWire
 def16('KERNEL', 112, 'w', 'w', function (h) { const b = this.gblock(h); if (b && b.lock) b.lock--; return 1; });
 def16('KERNEL', 177, 'ww', 'w', function (src, dst) {    // PrestoChangoSelector: dst = src with code/data swapped
-  const acc = this.r32(L.ACC + (src & 0xfff8)); this.setDesc(dst, this.selBase(src), this.selLimit(src), acc ^ 0x0800); this.refreshSegs(); return dst;
+  this.setDesc(dst, this.selBase(src), this.selLimit(src), this.selAcc(src) ^ 0x0800); this.refreshSegs(); return dst;
 });
 def16('KERNEL', 170, 'w', 'w', function (s) { return this.copySel(s, 0xf300); });   // AllocCStoDSAlias
 def16('KERNEL', 171, 'w', 'w', function (s) { return this.copySel(s, 0xfb00); });   // AllocDStoCSAlias
@@ -3774,10 +3804,10 @@ def16('KEYBOARD', 100, 'w', 'v', function () {});                              /
 def16('KERNEL', 175, 'w', 'w', function (s) { if (!s) return this.allocSels(0, 1); return this.copySel(s); });
 def16('KERNEL', 176, 'w', 'w', function (s) { this.freeSels(s); return 0; });
 def16('KERNEL', 186, 'w', 'l', function (s) { return this.selBase(s); });
-def16('KERNEL', 187, 'wl', 'w', function (s, b) { this.w32(L.LDT + (s & 0xfff8), b); this.refreshSegs(); return s; });
+def16('KERNEL', 187, 'wl', 'w', function (s, b) { this.setSelBase(s, b); this.refreshSegs(); return s; });
 def16('KERNEL', 188, 'w', 'l', function (s) { return this.selLimit(s); });
-def16('KERNEL', 189, 'wl', 'w', function (s, l) { this.w32(L.LDT + (s & 0xfff8) + 4, l); return 0; });
-def16('KERNEL', 180, 'xl', 'l', function (sp, d) { const s = sp >>> 16; this.w32(L.LDT + (s & 0xfff8), this.selBase(s) + d); this.refreshSegs(); return sp; });  // LongPtrAdd
+def16('KERNEL', 189, 'wl', 'w', function (s, l) { this.setSelLimit(s, l); return 0; });
+def16('KERNEL', 180, 'xl', 'l', function (sp, d) { const s = sp >>> 16; this.setSelBase(s, this.selBase(s) + d); this.refreshSegs(); return sp; });  // LongPtrAdd
 def16('KERNEL', 357, 'x', 'l', function (sp) { return this.lin(sp); });              // MapSL
 // MapLS (KRNL386 seg1:588F): a new selector based at the address itself, 64K limit; EAX = sel:0000, DX = sel. An
 // address below 64K is returned as it is. Callers count on the zero offset (USER's 32->16 message thunk leaves AX
@@ -3948,9 +3978,9 @@ def16('KERNEL', 234, 'lpl', 'l', function (hk, file, sa) { return API.ADVAPI32.R
 // (granularity, default size, limit 16-19); 1 sets them, as DPMI 0009h does (the access byte, G and D)
 def16('KERNEL', 196, 'www', 'w', function (sel, op, v) {
   if (!this.selValid(sel)) return 0;
-  const at = L.ACC + (sel & 0xfff8), acc = this.r32(at);
-  if (op === 0) return ((acc >>> 8) & 0xff) | ((((acc >>> 16) & 0xc0) | ((this.selLimit(sel) >>> 16) & 0x0f)) << 8);
-  this.w32(at, (acc & ~0xc0ff00) | (v & 0xff) << 8 | ((v & 0xc000) << 8)); if (this.refreshSegs) this.refreshSegs(); return 0;
+  const acc = this.selAcc(sel);
+  if (op === 0) return (acc >>> 8) & 0xffff;   // (the access byte, and the sixth byte: G, D, AVL, the limit's nibble)
+  this.setDesc(sel, this.selBase(sel), this.selLimit(sel), (acc & ~0x40ff00) | (v & 0xff) << 8 | ((v & 0x4000) << 8)); if (this.refreshSegs) this.refreshSegs(); return 0;
 });
 def16('KERNEL', 216, 'llpl', 'l', function (hk, i, buf, n) { return API.ADVAPI32.RegEnumKeyA[1].call(this, hk, i, buf, n); });   // RegEnumKey
 def16('KERNEL', 224, 'lppp', 'l', function (hk, sub, data, cb) { return API.ADVAPI32.RegQueryValueA[1].call(this, hk, sub, data, cb); });   // RegQueryValue
@@ -4056,6 +4086,70 @@ P.dosNames = function (fn, lfn) {
         const [t, dt] = dosTime(e.mtime);
         this.u8[o + 12] = e.attrs | (e.isDir ? 0x10 : 0); this.w16(o + 23, t); this.w16(o + 25, dt); this.w32(o + 29, e.size >>> 0);
         this.ax(this.ax() & 0xff00); return;
+      }
+      // The FCB file calls, as MS-DOS 7 keeps them: DS:DX an FCB (extended when FFh is first, the FCB itself 7 bytes on),
+      // its drive (0 the current one) and blank-padded 8.3 name, current block at +0Ch, record size at +0Eh, file size
+      // at +10h, date and time at +14h and +16h, current record at +20h, random record at +21h; the file open on a DOS
+      // handle kept in its reserved bytes (+18h, with 4642h at +1Ah). AL 0, else FFh (EOF and partial records 1 and 3
+      // for reads), never the carry. Windows 95 OSR2 Setup's SUWIN creates a file with 16h after User Information
+      case 0x0f: case 0x10: case 0x13: case 0x14: case 0x15: case 0x16: case 0x17: case 0x21: case 0x22: case 0x23: case 0x24: case 0x27: case 0x28: {
+        const fcb = dsdx(), f = this.u8[fcb] === 0xff ? fcb + 7 : fcb;
+        const al = v => { this.ax((this.ax() & 0xff00) | v); };
+        const drive = () => { const n = this.u8[f]; return n ? String.fromCharCode(64 + n) : this.fs.cwd[0].toUpperCase(); };
+        const field = o => String.fromCharCode(...this.u8.subarray(f + o, f + o + 11)).toUpperCase();
+        const nameOf = s => { const b = s.slice(0, 8).trimEnd(), x = s.slice(8).trimEnd(); return x ? `${b}.${x}` : b; };
+        const folder = () => { const d = drive(); return this.fs.cwd[0].toUpperCase() === d ? this.fs.cwd : d + ':\\'; };
+        const pad = n => { const s = n.toUpperCase(), i = s.lastIndexOf('.'), b = i < 0 ? s : s.slice(0, i), x = i < 0 ? '' : s.slice(i + 1); return b.padEnd(8).slice(0, 8) + x.padEnd(3).slice(0, 3); };
+        const matches = want => { let l; try { l = this.fs.readdir(folder()); } catch (e) { if (e instanceof W.FSError) return []; throw e; } return l.filter(e => !e.isDir && [...want].every((c, i) => c === '?' || c === pad(e.shortName || e.name)[i])); };
+        const rsize = () => this.r16(f + 0x0e) || 0x80;
+        const open = () => (this.r16(f + 0x1a) === 0x4642 ? this.dosFiles.get(this.r16(f + 0x18)) : null);
+        const fill = h => {   // (an opened FCB: its handle, block 0, records of 128 bytes, the file's size, date and time)
+          const o = this.dosFiles.get(h), st = this.fs.fstat(o.fd), [t, d] = dosTime(st.mtime);
+          if (!this.u8[f]) this.u8[f] = drive().charCodeAt(0) - 64;
+          this.w16(f + 0x0c, 0); this.w16(f + 0x0e, 0x80); this.w32(f + 0x10, st.size >>> 0); this.w16(f + 0x14, d); this.w16(f + 0x16, t);
+          this.w16(f + 0x18, h); this.w16(f + 0x1a, 0x4642); this.u8[f + 0x20] = 0;
+        };
+        // (the record at `rec`, rsize bytes, between the file and the DTA; true when written or read whole)
+        const xfer = (rec, write) => {
+          const o = open(), n = rsize(); if (!o || !this.dta) return 1;
+          this.fs.seek(o.fd, rec * n, 0);
+          if (write) { this.fs.write(o.fd, this.u8.slice(this.dta, this.dta + n)); const sz = this.fs.fstat(o.fd).size >>> 0; this.w32(f + 0x10, sz); return 0; }
+          const b = this.fs.read(o.fd, n); this.u8.fill(0, this.dta + b.length, this.dta + n); this.u8.set(b, this.dta);
+          return b.length === 0 ? 1 : b.length < n ? 3 : 0;
+        };
+        const cur = () => this.r16(f + 0x0c) * 128 + this.u8[f + 0x20];
+        const setCur = r => { this.w16(f + 0x0c, Math.floor(r / 128)); this.u8[f + 0x20] = r % 128; };
+        const random = () => (rsize() < 64 ? this.r32(f + 0x21) : this.r32(f + 0x21) & 0xffffff);
+        try {
+          switch (fn) {
+            case 0x0f: case 0x16: {   // open, create (an existing file emptied)
+              const want = field(1);
+              const hit = fn === 0x0f ? matches(want)[0] : null; if (fn === 0x0f && !hit) return al(0xff);
+              const h = this.dosOpen(this.dosFull(folder().replace(/\\?$/, '\\') + (hit ? hit.shortName || hit.name : nameOf(want))), fn === 0x16 ? 'w+' : 'r+');
+              if (h === 0xffff) return al(0xff);
+              fill(h); return al(0);
+            }
+            case 0x10: { const o = open(); if (o) { this.fs.close(o.fd); this.dosFiles.delete(this.r16(f + 0x18)); this.w16(f + 0x1a, 0); } return al(0); }
+            case 0x13: { const l = matches(field(1)); for (const e of l) this.fs.unlink(folder().replace(/\\?$/, '\\') + (e.shortName || e.name)); return al(l.length ? 0 : 0xff); }
+            case 0x17: {   // rename: the new name at +11h, its '?' the old name's character there
+              const l = matches(field(1)), to = field(0x11); if (!l.length) return al(0xff);
+              for (const e of l) { const old = pad(e.shortName || e.name), nn = [...to].map((c, i) => (c === '?' ? old[i] : c)).join(''); this.fs.rename(folder().replace(/\\?$/, '\\') + (e.shortName || e.name), folder().replace(/\\?$/, '\\') + nameOf(nn)); }
+              return al(0);
+            }
+            case 0x14: case 0x15: { const r = cur(), v = xfer(r, fn === 0x15); if (v !== 1) setCur(r + 1); return al(v); }
+            case 0x21: case 0x22: { const r = random(); setCur(r); return al(xfer(r, fn === 0x22)); }
+            case 0x27: case 0x28: {   // random block: CX records from the random record, CX the count done
+              let r = random(), n = 0, v = 0; const want = cx;
+              if (fn === 0x28 && !want) { const o = open(); if (o) { this.fs.seek(o.fd, r * rsize(), 0); this.fs.truncate(o.fd); this.w32(f + 0x10, this.fs.fstat(o.fd).size >>> 0); } return al(0); }
+              const dta0 = this.dta;
+              for (; n < want; n++) { v = xfer(r, fn === 0x28); if (v === 1) break; r++; this.dta += rsize(); if (v === 3) { n++; break; } }
+              this.dta = dta0; setCur(r); this.w32(f + 0x21, r); reg('ecx', n); return al(v);
+            }
+            case 0x23: { const l = matches(field(1)); if (!l.length) return al(0xff); this.w32(f + 0x21, Math.ceil((l[0].size >>> 0) / rsize())); return al(0); }
+            case 0x24: this.w32(f + 0x21, cur()); return;
+          }
+        } catch (e) { if (e instanceof W.FSError) return al(0xff); throw e; }
+        return;
       }
       case 0x2f: { const [sg, o] = this.dtaFar || [0, 0]; if (this.rmode) this.cpu.es.value = sg; else this.seg('es', sg); reg('ebx', o); return; }
       case 0x36: {   // free space: AX sectors a cluster, BX free clusters, CX bytes a sector, DX clusters
@@ -6519,7 +6613,7 @@ P.slThunklet = function (target, rel) { return u32(target); };
 P.modeSwitch = function (m) {
   const ss = this.cpu.ss.value & 0xffff, flatSS = !ss || ss === L.FLATDS;
   if (m.kind !== 'ne') {
-    if (flatSS || !this.selValid(ss) || this.r32(L.ACC + (ss & 0xfff8)) & 0x400000) return;   // flat, or a 32-bit stack segment
+    if (flatSS || !this.selValid(ss) || this.selAcc(ss) & 0x400000) return;   // flat, or a 32-bit stack segment
     (this.stackSwaps = this.stackSwaps || []).push({ ss, ssb: u32(this.cpu.ssb.value) });
     this.cpu.esp.value = u32(this.cpu.ssb.value) + (this.cpu.esp.value & 0xffff);
     this.seg('ss', L.FLATDS);

@@ -16,7 +16,7 @@ function proc(blockSize) {
     mem: { buffer: buf }, allocs: new Map([[old, blockSize]]), freeList: new Map(), heapTop: 0x800000, gb,
     w16: (a, v) => dv.setUint16(a, v & 0xffff, true), w32: (a, v) => dv.setUint32(a, v >>> 0, true),
     r16: a => dv.getUint16(a, true), r32: a => dv.getUint32(a, true),
-    selBase: s => (s === seg ? gb.lin : 0), selLimit: () => 0xffff, allocSels: () => 0x2000, refreshSegs() {}, gblock: () => gb,
+    selBase: s => (s === seg ? gb.lin : 0), selLimit: () => 0xffff, allocSels: () => 0x2000, refreshSegs() {}, gblock: () => gb, selUsed: new Uint8Array(8192),
   });
   p.alloc = function (n) { const a = this.heapTop; this.heapTop += (n + 15) & ~15; this.allocs.set(a, n); return a; };
   u8.set([1, 2, 3, 4], old);

@@ -2112,7 +2112,7 @@ class Machine {
           this.trailN = n; return true;
         }
         if (args[0] === 0 && args[1] === 'ring') {   // (the ring read: its last n, each named)
-          const w = s => (s && p.r32(0x40000 + (s & 0xfff8)) & 0x400000 ? 32 : 16), l = (this.trailLog || []).slice(-(this.trailN || 200));
+          const w = s => (s && p.selAcc(s) & 0x400000 ? 32 : 16), l = (this.trailLog || []).slice(-(this.trailN || 200));
           return l.map(([eip, cs, ss, esp, th]) => `${eip.toString(16)} ${p.whereOf(eip)} cs ${cs.toString(16)}/${w(cs)} ss:sp ${ss.toString(16)}/${w(ss)}:${esp.toString(16)} th ${th}`);
         }
         if (args[0]) { const n = args[0], log = this.trailLog = []; p.runHook = eip => { log.push(`${(eip >>> 0).toString(16)} ${p.whereOf(eip)} t ${p.now().toFixed(1)} b ${p.cpu.budget.value} th ${p.thread16 ? p.thread16.id : 'main'}`); if (log.length >= n) p.runHook = null; }; return true; }

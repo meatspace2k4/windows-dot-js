@@ -22,7 +22,7 @@ SENTINEL = 0xFFFFFFF0
 THUNK_BASE = 0xFFFF0000
 THUNK16_BASE = 0xFFFE0000      # 16-bit import thunks (selector THUNK16_SEL)
 THUNK16_SEL = 0xFFF7
-LDT_BASE = 0x00030000          # 8192 x {base u32, limit u32}, indexed by selector >> 3; access rights u32 at +0x10000
+LDT_BASE = 0x00030000          # the LDT in the processor's form: 8192 8-byte descriptors, indexed by selector >> 3
 FPU_BASE = 0x00010000          # 8 x f64 registers
 LOOKUP_BYTES = 0x01000000     # per-module table (i32 per code byte: block id + 1) lives at a caller-chosen base
 MEM_PAGES = 2048               # 128 MiB
@@ -446,8 +446,13 @@ SREG = {X.X86_REG_CS: ('cs', 'csb'), X.X86_REG_DS: ('ds', 'dsb'), X.X86_REG_ES: 
         X.X86_REG_FS: ('fsel', 'fs'), X.X86_REG_GS: ('gsel', 'gsb')}
 SELBASE = {}   # selector -> linear base, known at build time
 def sel_base(f):
-    """selector on stack -> its linear base from the LDT in guest memory"""
-    f.c(3).e(OPS['shr_u']).c(3).e(OPS['shl']).c(LDT_BASE).e(OPS['add']).mem(0x28)
+    """selector on stack -> its linear base from its descriptor in the LDT in guest memory (the processor's form:
+    the base in bytes 2-3, 4 and 7)"""
+    a = f.i()
+    f.c(0xfff8).e(OPS['and_']).c(LDT_BASE).e(OPS['add']).ls(a)
+    f.lg(a).e(0x2f, 0, uleb(2))
+    f.lg(a).e(0x2d, 0, uleb(4)).c(16).e(OPS['shl']).e(OPS['or_'])
+    f.lg(a).e(0x2d, 0, uleb(7)).c(24).e(OPS['shl']).e(OPS['or_'])
 def load_sreg(f, reg, val):
     s, b = SREG[reg]; t = f.i(); val(); f.c(0xffff).e(OPS['and_']).ls(t)
     f.lg(t).gs(s); f.lg(t); sel_base(f); f.gs(b)
@@ -957,25 +962,30 @@ class Translator:
     def x_ror(self, f, ins, ops, live): self.shift(f, ins, ops, live, 'ror')
     def x_rcl(self, f, ins, ops, live): self.shift(f, ins, ops, live, 'rcl')
     def x_rcr(self, f, ins, ops, live): self.shift(f, ins, ops, live, 'rcr')
-    def descr(self, f, ops, off):
-        """lar/lsl: word at LDT entry + off for the selector in ops[1]; ZF = descriptor present"""
+    def descr(self, f, ops, lar):
+        """lar/lsl from the selector's descriptor in ops[1] (the processor's form): LAR the high dword without the
+        base, LSL the limit in bytes (G: 4 KB pages); ZF = descriptor present"""
         t, v = f.i(), f.i()
         Loc(f, ops[1]).read(); f.c(0xfff8).e(OPS['and_']).c(LDT_BASE).e(OPS['add']).ls(t)
         f.lg(t).e(0x28, 0, uleb(4)).lg(t).mem(0x28).e(OPS['or_']).c(0).e(OPS['ne']).gs('zf')
-        f.lg(t).e(0x28, 0, uleb(off)).ls(v)
+        if lar: f.lg(t).e(0x28, 0, uleb(4)).c(0x00ffff00).e(OPS['and_']).ls(v)
+        else:
+            f.lg(t).e(0x2f, 0, 0).lg(t).e(0x28, 0, uleb(4)).c(0xf0000).e(OPS['and_']).e(OPS['or_']).ls(v)
+            f.lg(t).e(0x28, 0, uleb(4)).c(0x800000).e(OPS['and_']).e(0x04, 0x40)
+            f.lg(v).c(12).e(OPS['shl']).c(0xfff).e(OPS['or_']).ls(v); f.e(0x0b)
         d = Loc(f, ops[0]); f.gg('zf').e(0x04, 0x40); d.write(lambda: f.lg(v)); f.e(0x0b)
-    def x_lsl(self, f, ins, ops, live): self.descr(f, ops, 4)
+    def x_lsl(self, f, ins, ops, live): self.descr(f, ops, False)
     # verr / verw: ZF when the selector's descriptor is present (a segment of this machine's is readable, and
     # writable unless it is code: TOOLHELP checks a task's SS before it reads the stack's bounds)
     def verify(self, f, ops, write):
         t = f.i()
         Loc(f, ops[0]).read(); f.c(0xfff8).e(OPS['and_']).c(LDT_BASE).e(OPS['add']).ls(t)
         f.lg(t).e(0x28, 0, uleb(4)).lg(t).mem(0x28).e(OPS['or_']).c(0).e(OPS['ne'])
-        if write: f.lg(t).e(0x28, 0, uleb(0x10000)).c(0x0800).e(OPS['and_']).c(0).e(OPS['eq']).e(OPS['and_'])   # (not a code segment: access byte bit 3)
+        if write: f.lg(t).e(0x28, 0, uleb(4)).c(0x0800).e(OPS['and_']).c(0).e(OPS['eq']).e(OPS['and_'])   # (not a code segment: access byte bit 3)
         f.gs('zf')
     def x_verr(self, f, ins, ops, live): self.verify(f, ops, False)
     def x_verw(self, f, ins, ops, live): self.verify(f, ops, True)
-    def x_lar(self, f, ins, ops, live): self.descr(f, ops, 0x10000)   # access rights table at LDT_BASE + 0x10000
+    def x_lar(self, f, ins, ops, live): self.descr(f, ops, True)
     def x_shld(self, f, ins, ops, live): self.dshift(f, ops, live, True)
     def x_shrd(self, f, ins, ops, live): self.dshift(f, ops, live, False)
     def dshift(self, f, ops, live, left):

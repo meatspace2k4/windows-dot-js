@@ -256,7 +256,7 @@ P.stackLin = function () { return this.stackLinOf(this.cpu.ss.value, this.cpu.ss
  *  as 16-bit code that jumped into a 32-bit module has it, or a 32-bit stack segment), the base and SP for a 16-bit one */
 P.stackLinOf = function (ss, ssb, esp) {
   ss &= 0xffff;
-  if (!ss || ss === N.L.FLATDS || this.r32(N.L.ACC + (ss & 0xfff8)) & 0x400000) return u32(esp);
+  if (!ss || ss === N.L.FLATDS || this.selAcc(ss) & 0x400000) return u32(esp);
   return u32(ssb + (esp & 0xffff));
 };
 /** run `fn` (VM code) from ring 0: the ring-0 frames down to the current ESP stay live while it runs */
@@ -636,10 +636,9 @@ svc(VMM, 0x17e, function (arg) {
 svc(VMM, 0x18e, function (arg) { const a = (this.readA(arg(0)) || '').toLowerCase(), b = (this.readA(arg(1)) || '').toLowerCase(); return a < b ? -1 : a > b ? 1 : 0; });   // _lstrcmpi
 // _GetDescriptor(selector, VM, flags): EAX the low dword, EDX the high
 svc(VMM, 0x7b, function (arg) {
-  const sel = arg(0) & 0xfff8, base = this.r32(N.L.LDT + sel); let lim = this.r32(N.L.LDT + sel + 4), g = 0;
-  if (lim > 0xfffff) { lim >>>= 12; g = 0x800000; }
-  this.cpu.edx.value = u32((base & 0xff000000) | ((base >>> 16) & 0xff) | (this.r32(N.L.ACC + sel) & 0x40ff00) | g | (lim & 0xf0000));
-  return u32((base & 0xffff) << 16 | (lim & 0xffff));
+  const at = N.L.LDT + (arg(0) & 0xfff8);   // (the LDT is the processor's: the descriptor as it is)
+  this.cpu.edx.value = this.r32(at + 4) >>> 0;
+  return this.r32(at) >>> 0;
 });
 // Get_Environment_String (ESI a name, or 0): EDX its value in the environment Windows started with, or with ESI 0 the
 // environment itself (in DOS's memory after its arena header, whose size MMDEVLDR reads); CF none of that name
@@ -765,7 +764,7 @@ svc(VMM, 0x2d, function () { const v = this.vmOf(this.cpu.ebx.value); if (v && !
 // registers, through its control block (CB_Client_Pointer), whatever EBP holds
 svc(VMM, 0x1c, function () {
   const ax = this.cpu.eax.value & 0xffff, c = this.r32(this.sysVM() + 8), seg = this.r16(c + (ax >> 8)), off = (ax & 0xff) === 0xff ? 0 : this.r32(c + (ax & 0xff));
-  const cs = this.r16(c + 0x28), big = this.selValid(cs) && this.r32(N.L.ACC + (cs & 0xfff8)) & 0x400000;
+  const cs = this.r16(c + 0x28), big = this.selValid(cs) && this.selAcc(cs) & 0x400000;
   this.cpu.eax.value = u32(this.selBase(seg) + (big ? off : off & 0xffff));
 });
 

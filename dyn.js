@@ -11,7 +11,8 @@ const P = Process.prototype;
 const u32 = v => v >>> 0;
 
 // layout shared with tools/recomp.py
-const LDT = 0x30000, ACC = 0x40000, MEM_PAGES = 2048;
+// (the LDT in the processor's form, ne16.js setDesc: a descriptor's high dword at +4 holds the access byte, D and G)
+const LDT = 0x30000, DESC_HI = LDT + 4, MEM_PAGES = 2048;
 const G = ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi', 'cf', 'pf', 'zf', 'sf', 'of', 'df', 'fs', 'ftop', 'fsw', 'fcw', 'eip',
   'cs', 'ds', 'es', 'ss', 'fsel', 'gsel', 'csb', 'dsb', 'esb', 'ssb', 'gsb',
   'if',    // the interrupt flag (win32.js CPU_REGS): CLI, STI, PUSHF, POPF and IRET here keep it
@@ -143,7 +144,7 @@ function translate(p, lin, csb, d32, v86, limit, ss32In, fIn, endIn, r3In) {
   const r3 = r3In !== undefined ? r3In : !vm && !csb && d32 && !(p.r0Depth > 0) && !(p.cpu.cs.value & 0xffff);
   // (a call's return address checked as the stack grows: a thread's stack has protected pages below it, and runaway
   // recursion meets them as a stack fault, not running on down through the heap; ESP's own accesses are not checked)
-  const ssWide = ss32In !== undefined ? ss32In : !vm && (!!(p.r32(ACC + (p.cpu.ss.value & 0xfff8)) & 0x400000) || !(p.cpu.ss.value & 0xffff));
+  const ssWide = ss32In !== undefined ? ss32In : !vm && (!!(p.r32(DESC_HI +(p.cpu.ss.value & 0xfff8)) & 0x400000) || !(p.cpu.ss.value & 0xffff));
   const callGuard = () => { if (r3 && ssWide) { f.gg('esp').c(4).op('sub').ls(K); guard(K, true); } };
   // (a page's PROT byte: 1 no ring-3 access, 2 no ring-3 write (a VxD's image: ring 3 reads ring 0's memory on Windows
   // 98, MSACM32 a counter of MMDEVLDR's it was given the address of, and faulted in MMTASK: no ADPCM sound played))
@@ -269,7 +270,10 @@ function translate(p, lin, csb, d32, v86, limit, ss32In, fIn, endIn, r3In) {
       const [sel, base] = SEG[sreg];
       f.lg(loc).c(0xffff).op('and').gs(sel);
       if (vm) { f.lg(loc).c(0xffff).op('and').c(4).op('shl').c(v86 | 0).op('add').gs(base); return; }   // (V86: the paragraph)
-      f.lg(loc).c(0xfff8).op('and').c(LDT).op('add').ld(4).gs(base);
+      // (the descriptor's base: bytes 2-3, 4 and 7)
+      f.lg(loc).c(0xfff8).op('and').c(LDT + 2).op('add').ld(2);
+      f.lg(loc).c(0xfff8).op('and').c(LDT + 4).op('add').ld(1).c(16).op('shl').op('or');
+      f.lg(loc).c(0xfff8).op('and').c(LDT + 7).op('add').ld(1).c(24).op('shl').op('or').gs(base);
     };
     // the flags as a word: CF PF AF(0) ZF SF TF(0) IF DF OF, bit 1 set
     const flagsWord = loc => { f.gg('cf').gg('pf').c(2).op('shl').op('or').gg('zf').c(6).op('shl').op('or').gg('sf').c(7).op('shl').op('or').gg('if').c(9).op('shl').op('or').gg('df').c(10).op('shl').op('or').gg('of').c(11).op('shl').op('or').gg('xf').op('or').c(0x2).op('or').ls(loc); };
@@ -558,16 +562,22 @@ function translate(p, lin, csb, d32, v86, limit, ss32In, fIn, endIn, r3In) {
         wrReg(o.reg, osz, T); f.end(); continue;
       }
       if (vm && b2 === 0x01 && ((u8[pc] >> 3) & 7) === 4) { const o = modrm(); f.c(0xfff0).ls(T); wr(o, 2, T); continue; }   // smsw: real mode (PE clear), as a 386 shows it
-      if (b2 === 0x02 || b2 === 0x03) {   // lar / lsl, as the recompiled ones: the access word (ACC) or limit (LDT +4) of the selector's descriptor, ZF when it is in use
+      if (b2 === 0x02 || b2 === 0x03) {   // lar / lsl, as the recompiled ones: the access rights or the limit of the selector's descriptor, ZF when it is in use
         const o = modrm(); rd(o, 2); f.c(0xfff8).op('and').ls(T);
         f.lg(T).c(LDT + 4).op('add').ld(4).lg(T).c(LDT).op('add').ld(4).op('or').c(0).op('ne').gs('zf');
-        f.gg('zf').if_(); f.lg(T).c(b2 === 0x02 ? ACC : LDT + 4).op('add').ld(4).ls(R); wrReg(o.reg, osz, R); f.end();
+        f.gg('zf').if_();
+        if (b2 === 0x02) f.lg(T).c(DESC_HI).op('add').ld(4).c(0x00ffff00).op('and').ls(R);   // LAR: the high dword without the base
+        else {   // LSL: the limit, in bytes (G: 4 KB pages)
+          f.lg(T).c(LDT).op('add').ld(2).lg(T).c(DESC_HI).op('add').ld(4).c(0xf0000).op('and').op('or').ls(R);
+          f.lg(T).c(DESC_HI).op('add').ld(4).c(0x800000).op('and').if_(); f.lg(R).c(12).op('shl').c(0xfff).op('or').ls(R); f.end();
+        }
+        wrReg(o.reg, osz, R); f.end();
         continue;
       }
       if (b2 === 0x00 && (((u8[pc] >> 3) & 7) === 4 || ((u8[pc] >> 3) & 7) === 5)) {   // verr / verw: ZF when the selector's descriptor is present (and, for verw, not code)
         const w = ((u8[pc] >> 3) & 7) === 5, o = modrm(); rd(o, 2); f.c(0xfff8).op('and').ls(T);
         f.lg(T).c(LDT + 4).op('add').ld(4).lg(T).c(LDT).op('add').ld(4).op('or').c(0).op('ne');
-        if (w) f.lg(T).c(ACC).op('add').ld(4).c(0x0800).op('and').op('eqz').op('and');
+        if (w) f.lg(T).c(DESC_HI).op('add').ld(4).c(0x0800).op('and').op('eqz').op('and');
         f.gs('zf'); continue;
       }
       throw new Unsupported(`0f ${b2.toString(16)}`);
@@ -995,12 +1005,12 @@ P.dynBlock = function (eip) {
   const vm = this.v86 !== undefined && this.v86 !== null;   // (a virtual-8086 machine's code: any segment value is one)
   const flat = !vm && !cs && !csb;
   if (vm ? eip >= u8.length : !eip || (flat ? eip >= u8.length : !cs || eip < csb || eip - csb > this.selLimit(cs))) { this.trapped = `jump to unmapped address ${eip.toString(16)}${vm || flat ? '' : ` (CS ${cs.toString(16)}: base ${csb.toString(16)}, limit ${cs ? u32(this.selLimit(cs)).toString(16) : '-'})`}`; return null; }
-  const d32 = !vm && (flat || !!(this.r32(ACC + (cs & 0xfff8)) & 0x400000));
+  const d32 = !vm && (flat || !!(this.r32(DESC_HI +(cs & 0xfff8)) & 0x400000));
   // (a translation holds the code segment's base and its operand size: the same bytes run through another segment, or
   // as 16-bit code where they ran as 32-bit, are another block. DIBENG compiles 16- and 32-bit blits into one buffer)
   // (and the stack's width, and CS itself: CS 0 and the flat selector share a base, and only CS 0's code has the ring-3
   // guard)
-  const ss = this.cpu.ss.value & 0xffff, ss32 = !vm && (!ss || !!(this.r32(ACC + (ss & 0xfff8)) & 0x400000));
+  const ss = this.cpu.ss.value & 0xffff, ss32 = !vm && (!ss || !!(this.r32(DESC_HI +(ss & 0xfff8)) & 0x400000));
   // (the block this address ran last, when it is run the same way and its bytes are as they were: the common case, a
   // loop's blocks, found by number, not by the string key below. Windows 98 Setup's CAB inflating in SETUPX ran 400
   // blocks a millisecond, a quarter of the time in this lookup)
@@ -1183,7 +1193,7 @@ function assembleNE(bodies, textLo, textHi, shared, flat = false) {
     // (Windows 98's USER32 runs its window procedures' callbacks on a 16-bit stack: as 32-bit pushes and pops there,
     // a return went to 0)
     0x23, ...uleb(GI.ss), ...c(0xfff8), OP.and, 0x22, 2, OP.eqz,                                  //   SS null, or
-    0x20, 2, ...c(ACC), OP.add, 0x28, 2, 0, ...c(0x400000), OP.and, ...c(0), OP.ne, OP.or,        //   its descriptor's B bit: a 32-bit stack
+    0x20, 2, ...c(DESC_HI), OP.add, 0x28, 2, 0, ...c(0x400000), OP.and, ...c(0), OP.ne, OP.or,        //   its descriptor's B bit: a 32-bit stack
     ...(flat ? [0x23, ...uleb(GI.cs), ...c(0xffff), OP.and, OP.eqz, OP.and, OP.eqz] : []),        //   flat: with CS 0, or not as translated
     0x04, 0x40, ...SET_EIP, ...EIP, ...c(2), ...imp('trap'), ...c(2), 0x0f, 0x0b,
     ...ID, ...c(2), OP.shl, 0x23, ...uleb(LOOKUP_G), OP.add, 0x28, 2, 0, 0x22, 1, OP.eqz, 0x04, 0x40,   //   no block here: run-time code

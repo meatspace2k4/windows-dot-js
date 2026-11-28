@@ -7,7 +7,7 @@ globalThis.window = globalThis;
 globalThis.self = globalThis;
 for (const file of ['fs.js', 'win32.js', 'ne16.js', 'dyn.js']) new Function(readFileSync(new URL(`../${file}`, import.meta.url), 'utf8'))();
 const P = window.W95Win32.Process.prototype;
-const ACC = 0x40000, AT = 0x200000;
+const ACC = 0x30004, AT = 0x200000;
 const p = Object.create(P), mem = new WebAssembly.Memory({ initial: 2048, maximum: 2048 });
 p.mem = mem;
 Object.defineProperty(p, 'u8', { value: new Uint8Array(mem.buffer) });
