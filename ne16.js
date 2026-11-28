@@ -5452,8 +5452,9 @@ P.spawn = function (file, module, meta, path, cmdline) {
     pc.exe = live.exe;
   } else {
     // (its DLLs the bundle does not carry looked for in its own folder first, win32.js diskDll)
-    this.loadDirs = [String(path || '').replace(/\\[^\\]*$/, '')];
-    try { pc.exe = this.loadImage(file, module, meta, 'EXE'); } finally { this.loadDirs = null; }
+    // (and its imports bound as its own process finds them, win32.js ownCopy)
+    this.loadDirs = [String(path || '').replace(/\\[^\\]*$/, '')]; this.loadingPc = pc;
+    try { pc.exe = this.loadImage(file, module, meta, 'EXE'); } finally { this.loadDirs = null; this.loadingPc = null; }
   }
   (this.procs || (this.procs = new Map())).set(pc.pid, pc);
   for (const s of this.arena || []) if (s.own.has(pc)) this.arenaHide(s);   // (its image the one in place, the others' put by)

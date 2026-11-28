@@ -282,7 +282,11 @@ class Process {
     return rec;
   }
   loadDll(name) {
-    if (this.byName.has(name)) return this.byName.get(name);
+    // (a process's own copy first: the one its program's folder holds where another of that name is loaded, as each
+    // Windows 95 process finds a DLL it imports in its program's folder before any other)
+    const pc = this.loadingPc || (this.thread16 && this.thread16.pc), own = pc && pc.ownDlls && pc.ownDlls.get(name);
+    if (own) return own;
+    if (this.byName.has(name)) return (pc && this.ownCopy(pc, name)) || this.byName.get(name);
     // (the bundle's translation is of the file it was made from: another file of that name where the loader finds it,
     // Windows 98's GDI32.DLL over Windows 95's, is mapped from disk and runs its own code, as ne16.js loadLibrary16
     // takes a 16-bit module; the bundle's GDI32 connected nothing of Windows 98's GDI.EXE)
@@ -297,6 +301,28 @@ class Process {
     const m = this.loadImage(d.file, d.module, d.meta, name);
     if (m && this.onDllLoad) this.onDllLoad(name, m);   // (a module watched as it comes: a shared session's intents, ne16.js)
     if (m && this.onModuleLoad) this.onModuleLoad(name, m);   // (a watch asked for before the module came: worker.js cmd 'watch')
+    return m;
+  }
+  /** the DLL `name` from the folder of process `pc`'s program, when another file of that name is the one loaded:
+   *  mapped as that process's own (pc.ownDlls), the loaded one left every other process's. IE4SETUP.EXE (an IExpress
+   *  package, OSR 2.5's first start) loads SYSTEM's ADVPACK.DLL, and starts IE4WZD.EXE from the folder it extracted
+   *  its own newer ADVPACK.DLL to; given SYSTEM's, IE4WZD's INSENG.DLL called its missing RegInstall and faulted.
+   *  null: none of its own */
+  ownCopy(pc, name) {
+    const had = this.byName.get(name), path = String(pc.path || '');
+    if (!had || !had.meta || !had.meta.path || !this.fs || API[name] || STAND_IN.has(name) || !/\\/.test(path) || (pc.ownLoading && pc.ownLoading.has(name))) return null;
+    const none = pc.notOwn || (pc.notOwn = new Map()); if (none.get(name) === had) return null;   // (asked once per module loaded)
+    const dir = path.replace(/\\[^\\]*$/, ''), file = dir + '\\' + (/\./.test(name) ? name : name + '.DLL'), no = () => { none.set(name, had); return null; };
+    if (file.toUpperCase() === String(had.meta.path).toUpperCase()) return no();
+    let f; try { f = this.fs.readFile(file); } catch (_) { return no(); }
+    const cur = this.dlls.get(name); if (!cur || !cur.file || sameBytes(f, cur.file)) return no();
+    const was = this.loadDirs; let m = null;
+    (pc.ownLoading || (pc.ownLoading = new Set())).add(name);
+    try {
+      this.loadDirs = [dir]; this.dlls.delete(name);
+      const d = this.diskDll(name); if (d) m = this.loadImage(d.file, d.module, d.meta, name);
+    } finally { this.loadDirs = was; this.dlls.set(name, cur); this.byName.set(name, had); pc.ownLoading.delete(name); }
+    if (m) (pc.ownDlls || (pc.ownDlls = new Map())).set(name, m);
     return m;
   }
   /** where each module is in memory: a PE image from its base for its size; a 16-bit module, each of its segments (its
