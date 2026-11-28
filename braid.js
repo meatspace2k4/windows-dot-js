@@ -234,7 +234,7 @@ function rebind(roots, ex, opts = {}) {
   const resolve = (v, l, k) => { if (v && typeof v === 'object') { if ('r' in v) return obj[v.r]; if (v.fn || v.opaque) { const n = v.fn || v.opaque; if (typeof n === 'string') { const got = named(n); if (got !== undefined) return got; } if (!(l && k !== undefined && l[k] !== undefined)) lost.push([typeof n === 'string' ? n : v.fn ? 'fn' : 'opaque', k, curPath]); return l && k !== undefined ? l[k] : undefined; } if (v.u) return undefined; if (v.nan) return NaN; if ('big' in v) return BigInt(v.big); } return v; };
   for (const i of order) {
     const m = ex.meta[i], o = obj[i]; if (!o) continue;
-    if (m.kind === 'mem') new Uint8Array(o.buffer).set(bytesOf(m));
+    if (m.kind === 'mem') { const b = bytesOf(m); if (b.length > o.buffer.byteLength) o.grow(Math.ceil((b.length - o.buffer.byteLength) / 0x10000)); new Uint8Array(o.buffer).set(b); }   // (grown as the machine's had: win32.js vmFit)
     else if (m.kind === 'global') o.value = m.value;
     else if (m.kind === 'ab') { if (o.byteLength === m.bytes[1]) new Uint8Array(o).set(bytesOf(m)); }
     else if (m.kind === 'ta') { const b = bytesOf(m); if (o.byteLength === b.length) new Uint8Array(o.buffer, o.byteOffset, o.byteLength).set(b); }

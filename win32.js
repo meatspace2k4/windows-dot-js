@@ -103,6 +103,10 @@ class Process {
     // host.vmPages more 64 KiB pages above the layout's, for the address space VirtualAlloc reserves (VMEM)
     const pages = meta.layout.pages + (host.vmPages || 0);
     this.mem = new WebAssembly.Memory({ initial: pages, maximum: pages, shared: !!host.shared });   // (shared: a machine in a worker, whose screen the page reads)
+    // (shared, it grows on demand to 2 GiB, the user address space, as VirtualAlloc's reservations and DLLs above the
+    // layout need it (vmFit): fixed, WINHLP32's heap, which doubles its reservation as it grows, ran out of room and
+    // copied into address 0)
+    this.vmMax = host.shared ? 0x8000 * 0x10000 : pages * 0x10000;
     this.vmLo = this.vmTop = host.vmTop || meta.layout.pages * 0x10000;
     this.cpu = {};
     for (const n of CPU_REGS) this.cpu[n] = new WebAssembly.Global({ value: 'i32', mutable: true }, n === 'fcw' ? 0x37f : n === 'budget' ? BUDGET : n === 'if' ? 1 : 0);
@@ -455,6 +459,13 @@ class Process {
       if (bad) { this.vmAudited = true; log('error', 'win32', `vm overlap after ${what}: ${bad}: ${(new Error().stack || '').split('\n').slice(2, 9).map(x => x.trim()).join(' < ')}`); return; }
     }
   }
+  /** whether [0, end) is memory, the memory grown to it when it may (vmMax) */
+  vmFit(end) {
+    const have = this.mem.buffer.byteLength;
+    if (end <= have) return true;
+    if (end > (this.vmMax || have)) return false;
+    this.mem.grow(Math.ceil((end - have) / 0x10000)); return true;
+  }
   vmRoom(size, align, spans = []) {
     if (!this.vmTop) return 0;
     // (clear of the places the memo has for modules not loaded here (memoSpans) while there is room elsewhere: a DLL
@@ -481,7 +492,7 @@ class Process {
     // memo's places, which lie across the whole space from runs before, a few allocations took the space up, and
     // MSJET40's block table found no room)
     const b = (this.vmTop + align - 1) & -align;
-    if (b + n > this.mem.buffer.byteLength || (topClear && hit(b))) return 0;
+    if ((topClear && hit(b)) || !this.vmFit(b + n)) return 0;
     this.vmTop = b + n; return this.vmCheck(b, n, 'room from the top');
   }
   /** the room [b, b+size) above the layout taken where it is, when it is free (a spare piece holds it, or it is past the
@@ -489,7 +500,7 @@ class Process {
   vmTake(b, size, spans = []) {
     if (!this.vmTop || !this.vmLo || b < this.vmLo || b % 0x1000) return 0;
     const n = (size + 0xfff) & ~0xfff, end = b + n, spare = this.vspare || (this.vspare = []);
-    if (spans.some(([lo, hi]) => b < hi && lo < end) || end > this.mem.buffer.byteLength) return 0;
+    if (spans.some(([lo, hi]) => b < hi && lo < end) || !this.vmFit(end)) return 0;
     // (past the top, however far: the space between stays to hand as a spare piece, which vmRoom takes from before the
     // top. Refused when more than a megabyte past it, a DLL loaded late had its place only when the allocations before
     // it happened to end there: MSHTML and URLMON, loaded as the first folder window opens, were translated again
@@ -1397,7 +1408,7 @@ class Process {
         // when it is freed. Explorer's 2.3 MB for MSHTML's file was refused with 17 MB free)
         const size = (n + 0xffff) & ~0xffff, sp = (this.vspare || []).findIndex(r => r.size >= size); let b = 0;
         if (sp >= 0) { const s = this.vspare.splice(sp, 1)[0]; b = s.base; if (s.size > size) this.vspare.push({ base: b + size, size: s.size - size }); }
-        else if (this.vmTop && this.vmTop + size <= this.mem.buffer.byteLength) { b = this.vmTop; this.vmTop += size; }
+        else if (this.vmTop && this.vmFit(this.vmTop + size)) { b = this.vmTop; this.vmTop += size; }
         if (b) { this.vmCheck(b, size, 'a big block'); (this.bigBlocks || (this.bigBlocks = new Map())).set(b, size); this.vmAudit('a big block'); this.allocs.set(b, n); if (zero) this.u8.fill(0, b, b + n); return b; }
         const by = new Map(); let live = 0; for (const [, s] of this.allocs) { by.set(s, (by.get(s) || 0) + s); live += s; }
         let idle = 0; for (const [s, l] of this.freeList) idle += s * l.length;
