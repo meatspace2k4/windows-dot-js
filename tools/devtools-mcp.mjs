@@ -114,7 +114,7 @@ const tools = {
     async run({ targetId, url }) {
       await connect();
       const all = (await send('Target.getTargets')).targetInfos.filter(x => x.type === 'page');
-      const t = targetId ? all.find(x => x.targetId === targetId) : all.find(x => !url || x.url.includes(url));
+      const t = targetId ? all.find(x => x.targetId === targetId) : all.find(x => !url || (url instanceof RegExp ? url.test(x.url) : x.url.includes(url)));
       if (!t) throw new Error(`no page matches (pages: ${all.map(x => x.url).join(', ') || 'none'})`);
       // (a page attached to already is not attached to again: each attach is a debugger session of its own on the page
       // and on every worker of it, holding their scripts; a dozen of them on a page that loads a 160 MB bundle ran its
@@ -218,7 +218,7 @@ async function guestWhere() {
 const pageSession = async () => {
   // (the app's page is its own index.html, a file; a browser's is the local server's)
   let s = [...sessions.values()].find(x => x.type === 'page' && /\/\?|win95|braid|localhost|\/app\/web\/index\.html/.test(x.url || ''));
-  if (!s) { await tools.attach.run({ url: process.env.W95_URL || (DEBUGGER_URL === APP_DEBUGGER_URL ? '/app/web/index.html' : 'localhost') }); s = [...sessions.values()].find(x => x.type === 'page'); }
+  if (!s) { await tools.attach.run({ url: process.env.W95_URL || (DEBUGGER_URL === APP_DEBUGGER_URL ? '/app/web/index.html' : /^https?:\/\/([\w.-]+\.)?(localhost|127\.0\.0\.1)[:/]/) }); s = [...sessions.values()].find(x => x.type === 'page'); }
   if (!s) throw new Error('no page is attached');
   // (the page's workers attach after it, each as the browser announces it: the machine's is waited for)
   for (let i = 0; i < 30 && ![...sessions.values()].some(x => x.type === 'worker' && /worker\.js/.test(x.url)); i++) await new Promise(ok => setTimeout(ok, 100));

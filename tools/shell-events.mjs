@@ -11,7 +11,8 @@
 // the page, so it can be started first.
 import { appendFileSync } from 'node:fs';
 const DEBUGGER_URL = process.env.BROWSER_DEBUGGER_URL || 'http://127.0.0.1:9334', [secs = 1800, file] = process.argv.slice(2);
-const isShell = t => t.type === 'page' && /\/app\/web\/index\.html|localhost/.test(t.url);
+// (the shell's page: the app's, or a dev server's on this computer, localhost or 127.0.0.1)
+const isShell = t => t.type === 'page' && /\/app\/web\/index\.html|^https?:\/\/([\w.-]+\.)?(localhost|127\.0\.0\.1)[:/]/.test(t.url);
 let pg;
 for (let i = 0; i < 300 && !pg; i++) {
   pg = await fetch(`${DEBUGGER_URL}/json`).then(r => r.json()).then(l => l.find(isShell), () => null);
