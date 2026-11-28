@@ -5805,8 +5805,13 @@ Promise.all(ready).then(() => { resize(); kbd.focus(); dirty(); });
 // events come straight from the file system.
 // Every event but the file system's and a session's sync is also kept in window.W95Journal (the last 400) until
 // win95.outcome takes them. (On the window: emit runs from the page's first lines, before a module constant here exists)
+// Every event is also numbered and kept in a ring (window.W95EventRing, the last EVENT_RING): win95.events(after)
+// answers those after a number, and win95.next(type, test, ms, after) one already there, so a script that reads
+// after the event came still sees it; any number of readers, none taking another's
+const EVENT_RING = 4000;
 function emit(type, data = {}) {
   const ev = { type, ...data, t: Date.now() };
+  { const r = window.W95EventRing || (window.W95EventRing = { seq: 0, list: [] }); r.list.push({ seq: ++r.seq, ...ev }); if (r.list.length > EVENT_RING) r.list.splice(0, r.list.length - EVENT_RING); }
   if (!/^(sync|fs)\./.test(type)) {
     const j = window.W95Journal || (window.W95Journal = []), keys = ['type', 'title', 'modal', 'screen', 'kind', 'text', 'path', 'code', 'why', 'machine', 'menus'];
     j.push(Object.fromEntries(Object.entries(ev).filter(([k]) => keys.includes(k)))); if (j.length > 400) j.shift();
@@ -6466,10 +6471,22 @@ const script = {
   // the shell's speed meter over the screen (drawShellOverlays), on or off
   speedMeter(on = true) { return speedMeter(on); },
   on(type, fn) { if (!listeners.has(type)) listeners.set(type, new Set()); listeners.get(type).add(fn); return () => listeners.get(type).delete(fn); },
+  /** the events numbered after `after` (0: all the ring holds), of `type` when given (a type, or its first part):
+   *  { seq, events }, seq the last number given out, for the next read */
+  events(after = 0, type = null) {
+    const r = window.W95EventRing || { seq: 0, list: [] };
+    const events = r.list.filter(e => e.seq > after && (!type || e.type === type || e.type.split('.')[0] === type));
+    return { seq: r.seq, events, ...(r.list.length && r.list[0].seq > after + 1 ? { lost: r.list[0].seq - after - 1 } : {}) };
+  },
   // resolves with the next event of this type that passes the test; rejects at once when the system fails meanwhile
   // (system.fail, braid.fault: what failed), else after the timeout
-  next(type, test, ms = 10000) {
+  // `after` (an event number, win95.events): one of the ring's since then that passes is the answer at once
+  next(type, test, ms = 10000, after) {
     test = test || (() => true);   // (no test, or null: any event of the type)
+    if (after !== undefined && after !== null) {
+      const r = window.W95EventRing, matches = e => e.type === type || e.type.split('.')[0] === type || type === '*';
+      const had = r && r.list.find(e => e.seq > after && matches(e) && test(e)); if (had) return Promise.resolve(had);
+    }
     return new Promise((ok, no) => {
       const end = () => { off(); offFail(); offFault(); clearTimeout(t); };
       const off = script.on(type, e => { if (test(e)) { end(); ok(e); } });

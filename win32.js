@@ -994,8 +994,17 @@ class Process {
    *  the dispatcher and the hook, as run-time code brought them */
   setEntryHook(at, fn) {
     at = u32(at); (this.entryHooks || (this.entryHooks = new Map())).set(at, fn);
-    const dm = (this.modules || []).find(m => m.meta && m.meta.dynamic && m.meta.lookup && at >= m.meta.textLo && at < m.meta.textHi);
+    // (any module with a block table, a 16-bit one's too: dyn.js neSet fills each the same way. Only a program's and
+    // a DLL's image were cleared, and in USER a breakpoint on CreateWindowEx saw none of USER's own calls to it)
+    const dm = this.hookedModule(at);
     if (dm) this.w32(dm.meta.lookup + 4 * (at - dm.meta.textLo), 0);
+  }
+  /** the translated module whose block table holds `at` (neSet's: one entry an address of its text), or none */
+  hookedModule(at) { return (this.modules || []).find(m => m && m.meta && m.meta.lookup && m.meta.textHi > m.meta.textLo && at >= m.meta.textLo && at < m.meta.textHi); }
+  /** a hook gone from `at`: its block back in its module's table, where the module has one there (neSet's numbering) */
+  unhookEntry(at) {
+    const dm = this.hookedModule(at), bl = dm && dm.meta.blocks; if (!bl) return;
+    const i = bl.indexOf(at); if (i >= 0) this.w32(dm.meta.lookup + 4 * (at - dm.meta.textLo), i + 1);
   }
   addEntryHook(at, fn) {
     at = u32(at);
@@ -1006,7 +1015,7 @@ class Process {
       this.setEntryHook(at, function () { for (const f of l.fns.slice()) { const to = f.call(this); if (to !== undefined) return to; } return l.was ? l.was.call(this) : undefined; });
     }
     l.fns.push(fn);
-    return () => { const i = l.fns.indexOf(fn); if (i >= 0) l.fns.splice(i, 1); if (!l.fns.length) { lists.delete(at); if (l.was) hooks.set(at, l.was); else hooks.delete(at); } };
+    return () => { const i = l.fns.indexOf(fn); if (i >= 0) l.fns.splice(i, 1); if (!l.fns.length) { lists.delete(at); if (l.was) hooks.set(at, l.was); else { hooks.delete(at); this.unhookEntry(at); } } };
   }
   /** at an export's entry: `fn(eax, edx)` once the call returns to its caller (the return address on the stack now:
    *  a 32-bit near return, or a 16-bit far one), matched by thread and stack depth so nested and concurrent calls

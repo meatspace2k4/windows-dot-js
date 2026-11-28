@@ -1597,6 +1597,7 @@ P.neSet = function (rec, mod, seed) {
   rec.netSeed = seed;
   if (rec.dynNew) rec.dynNew.clear(); rec.dynSeen = 0;
   if (this.dynFast) this.dynFast.clear();   // (an address with a block of the module's now goes to it, not to its region)
+  if (J && J.placed) J.placed(this);   // (the debugger's breakpoints found again: one waiting for this module set, dynjs.js)
 };
 /** the reads in flight of the memo's modules not yet in place (neCompile), as one promise: a travel or an arrival waits
  *  for them before the machine runs on, and puts them in place (neInstall). Run on at once, every module the travel

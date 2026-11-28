@@ -238,7 +238,11 @@ const Q = { type: 'object', description: 'An element query: { name, role, window
 const activeIs = title => `{ const want = Q({ t: ${JSON.stringify(title)} }).t, a = win95.windows().filter(w => w.active).pop(); if (!a || !(want instanceof RegExp ? want.test(a.title) : a.title === want)) throw new Error('the active window is ' + (a ? JSON.stringify(a.title) + (a.modal ? ' (a dialog)' : '') : 'none') + ', not ' + JSON.stringify(${JSON.stringify(title)}) + ': read its text with shell_report and answer it'); }`;
 Object.assign(tools, {
   shell_report: { description: 'What happened since the last shell call (its events) and the screen now: every window with its controls\' text, the last n faults. Start here.',
-    props: { n: N }, required: [], run: ({ n = 3 }) => shell(`return await win95.outcome(null, ${Number(n) || 3});`) },
+    props: { n: N, after: { ...N, description: 'An event number: the events numbered after it (the ring\'s, any reader\'s) instead of those since the last shell call; the answer\'s seq is the next read\'s.' } }, required: [],
+    run: ({ n = 3, after }) => shell(after === undefined ? `const o = await win95.outcome(null, ${Number(n) || 3}); return { ...o, seq: win95.events(1e15).seq };`
+      : `const o = await win95.outcome(null, ${Number(n) || 3}), r = win95.events(${Number(after)}); return { ...o, events: r.events, seq: r.seq, ...(r.lost ? { lost: r.lost } : {}) };`) },
+  shell_events: { description: 'The page\'s events numbered after `after` (0: all the ring keeps), of `type` when given: { seq, events }; never waits, any number of readers. Pass the answer\'s seq as the next `after`.',
+    props: { after: N, type: S }, required: [], run: ({ after = 0, type }) => shell(`return win95.events(${Number(after)}, ${type ? JSON.stringify(type) : 'null'});`) },
   shell_click: { description: 'win95.click (or dblclick) on an element query: looked up as its machine shows it now; rejects saying what the window has, or at once when the system fails.',
     props: { query: Q, double: { type: 'boolean' } }, required: ['query'],
     run: ({ query, double }) => shell(`return await win95.outcome(() => win95.${double ? 'dblclick' : 'click'}(Q(${JSON.stringify(query)})));`) },
@@ -249,11 +253,11 @@ Object.assign(tools, {
     run: ({ text, window }) => shell(`return await win95.outcome(() => { ${activeIs(window)} win95.type(${JSON.stringify(text)}); });`) },
   shell_run: { description: 'win95.run(command): what Start > Run does. Answers its outcome.', props: { command: S }, required: ['command'], run: ({ command }) => shell(`return await win95.outcome(() => win95.run(${JSON.stringify(command)}));`) },
   shell_next: { description: 'win95.next(type, test): the next event of that type whose title matches `title` ("/regexp/" or exact); ends at once when the system fails. Start it with `then` (a shell_* call to make once it is listening), so the event the call causes is not missed.',
-    props: { type: S, title: S, ms: N, then: { type: 'object', description: '{ tool, args }: a shell_* tool to call once listening.' } }, required: ['type'],
-    async run({ type, title, ms = 60000, then }) {
+    props: { type: S, title: S, ms: N, after: { ...N, description: 'An event number (shell_events\' seq): an event since then that matches is the answer at once, so one that came before this call is not missed.' }, then: { type: 'object', description: '{ tool, args }: a shell_* tool to call once listening.' } }, required: ['type'],
+    async run({ type, title, ms = 60000, then, after }) {
       const t = title ? JSON.stringify(title) : 'null';
       const s = await pageSession(), key = `__next${nextId++}`;
-      await cmd(s, 'Runtime.evaluate', { expression: `(() => { ${reviveQuery} const t = ${t}, m = t && /^\\/(.*)\\/([a-z]*)$/.exec(t), re = m ? new RegExp(m[1], m[2]) : null; window.${key} = win95.next(${JSON.stringify(type)}, t === null ? null : e => re ? re.test(e.title || '') : e.title === t, ${Number(ms)}).then(e => ({ event: e }), e => ({ error: e.message })); })()` });
+      await cmd(s, 'Runtime.evaluate', { expression: `(() => { ${reviveQuery} const t = ${t}, m = t && /^\\/(.*)\\/([a-z]*)$/.exec(t), re = m ? new RegExp(m[1], m[2]) : null; window.${key} = win95.next(${JSON.stringify(type)}, t === null ? null : e => re ? re.test(e.title || '') : e.title === t, ${Number(ms)}, ${after === undefined ? 'undefined' : Number(after)}).then(e => ({ event: e }), e => ({ error: e.message })); })()` });
       const did = then && tools[then.tool] ? await tools[then.tool].run(then.args || {}) : null;
       const r = await cmd(s, 'Runtime.evaluate', { expression: `window.${key}.finally(() => { delete window.${key}; })`, awaitPromise: true, returnByValue: true });
       return { then: did, ...r.result.value };
@@ -332,9 +336,10 @@ Object.assign(tools, {
     } },
   guest_modules: { description: 'The machine\'s translated modules: name, code range, blocks, and whether each runs as JavaScript (debuggable) or WebAssembly.', props: {}, required: [], run: () => guest('modules') },
   guest_run: { description: 'Run exactly these modules as JavaScript (names like MSTASK, EXPLORER; * for all); the rest run as WebAssembly. Not while paused.', props: { names: { type: 'array', items: S } }, required: ['names'], run: ({ names }) => guest('run', names) },
-  guest_break: { description: 'Stop the machine when guest code enters the block at a place: an address in hex, MODULE+offset, or DLL!Export. Its module is run as JavaScript if it is not already. `condition` is a JavaScript expression over R (registers, e.g. R.eax) and r8/r16/r32(address).',
-    props: { at: S, condition: S }, required: ['at'],
-    async run({ at, condition }) {
+  guest_break: { description: 'A breakpoint kept in the machine (not in this connection: it outlives this call and any client) at a place: an address in hex, MODULE+offset, or DLL!Export, found again as modules load or move. `mode` "halt" (the default here) stops the machine at that step\'s end, its clocks with it, until guest_resume; "record" only records. Each hit (exact registers, stack, thread) is read with guest_hits from a seq on; guest_state says whether it is halted. `when`/`capture`: expressions over R (registers), r8/r16/r32, n, thread. `cdp`: true for the old DevTools pause in the module\'s JavaScript instead (lives only while this connection does).',
+    props: { at: S, mode: { ...S, enum: ['halt', 'record'] }, when: S, capture: S, condition: S, cdp: B }, required: ['at'],
+    async run({ at, mode = 'halt', when, capture, condition, cdp }) {
+      if (!cdp) { const b = await guest('breakpoint', { at, mode, when: when || condition, capture }); return { ...b, at: b.at === null ? null : hx(b.at), name: b.at === null ? null : await guest('where', b.at) }; }
       const s = worker(), { addr, name } = await guest('resolve', at), src = await guest('source', addr);
       if (!src) throw new Error(`${name} is not in a translated module`);
       if (src.block !== addr) throw new Error(`no block starts at ${name}; it is inside the block at ${await guest('where', src.block)} (${hx(src.block)})`);
@@ -344,9 +349,10 @@ Object.assign(tools, {
       s.breakpoints.set(b.id, { at: name, url: sc.url, line: b.line, condition: condition || null });
       return { id: b.id, at: name, address: hx(addr), script: `${sc.url}:${b.line}` };
     } },
-  api_break: { description: 'Stop the machine at each call of a Windows API (DLL!Export), whatever module calls it and whether or not it runs as JavaScript. The pause reports the call, its first `args` arguments and the caller.',
-    props: { call: S, args: N, condition: { ...S, description: 'A JavaScript expression over call, args (numbers), from and thread.' } }, required: ['call'],
-    async run({ call, args = 6, condition }) {
+  api_break: { description: 'A breakpoint kept in the machine at each call of a Windows API (DLL!Export), whatever module calls it, wasm or JavaScript: guest_break at the export (same table, modes, hits, resume). `condition` an expression over R, r8/r16/r32, n, thread (the arguments on the stack: r32(R.esp+4)...). `cdp`: true for the old DevTools pause in w95ApiEntry with call/args/from (lives only while this connection does).',
+    props: { call: S, mode: { ...S, enum: ['halt', 'record'] }, args: N, condition: S, capture: S, cdp: B }, required: ['call'],
+    async run({ call, mode = 'halt', args = 6, condition, capture, cdp }) {
+      if (!cdp) return tools.guest_break.run({ at: call, mode, when: condition, capture });
       const s = worker(), stop = await guest('stopAt', call, args);
       if (s.apiBp) { await cmd(s, 'Debugger.removeBreakpoint', { breakpointId: s.apiBp.id }).catch(() => {}); s.breakpoints.delete(s.apiBp.id); }
       s.apiConds = { ...(s.apiConds || {}), [call]: condition || 'true' };
@@ -387,10 +393,14 @@ Object.assign(tools, {
       if (!r && s.paused && s.paused.callFrames[0].functionName === from) r = await once();
       return r || guestWhere();
     } },
-  guest_record: { description: 'A recording breakpoint: each time the block at a place is entered (its module run as JavaScript) a hit is kept and the machine runs on. `when` and `capture` are expressions over R, r8/r16/r32, n (times reached) and thread.',
-    props: { at: S, when: S, capture: S }, required: ['at'], run: ({ at, when, capture }) => guest('breakpoint', { at, when, capture }) },
-  guest_hits: { description: 'The hits recording breakpoints kept, with seq above `since`: where, thread, registers, stack, captured value.', props: { since: N }, required: [],
-    async run({ since = 0 }) { return (await guest('hits', since)).map(h => ({ seq: h.seq, id: h.id, at: hx(h.at), n: h.n, thread: h.thread, value: h.value, eax: hx(h.regs.eax), esp: hx(h.regs.esp), stack: h.stack.slice(0, 6).map(hx).join(' ') })); } },
+  guest_record: { description: 'guest_break with mode "record": each time the place is entered a hit is kept and the machine runs on. `when` and `capture` are expressions over R, r8/r16/r32, n (times reached) and thread.',
+    props: { at: S, when: S, capture: S }, required: ['at'], run: ({ at, when, capture }) => tools.guest_break.run({ at, mode: 'record', when, capture }) },
+  guest_hits: { description: 'The breakpoints\' hits with seq above `since` (never waits; any number of readers): breakpoint, place, where, thread, registers, stack, captured value, and whether it halted the machine. Pass the last seq as the next `since`.', props: { since: N }, required: [],
+    async run({ since = 0 }) { return (await guest('hits', since)).map(h => ({ seq: h.seq, id: h.id, place: h.place, at: hx(h.at), n: h.n, thread: h.thread, value: h.value, ...(h.halts ? { halts: true } : {}), eax: hx(h.regs.eax), esp: hx(h.regs.esp), stack: h.stack.slice(0, 6).map(hx).join(' ') })); } },
+  guest_breakpoints: { description: 'The breakpoints kept in the machine: id, place, where it is now (null: waiting for its module), mode, times reached.', props: {}, required: [], run: () => guest('breakpoints') },
+  guest_unbreak: { description: 'Remove a breakpoint kept in the machine by id, or every one (and their hits) with no id.', props: { id: N }, required: [],
+    run: ({ id }) => (id === undefined ? guest('clear') : guest('remove', id)) },
+  guest_resume: { description: 'The machine going on from a breakpoint\'s halt; its breakpoints stay. Answers whether it was halted.', props: {}, required: [], run: () => guest('resume') },
 });
 
 // ---------------------------------------------------------------- MCP over stdio (JSON-RPC, one message a line)

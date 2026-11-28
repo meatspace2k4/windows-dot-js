@@ -195,20 +195,8 @@ const BP = { on: false, stepAll: false, byAddr: new Map(), byId: new Map(), stop
   at(a, R, M) {
     const list = BP.byAddr.get(a); if (!list) return;
     const t = BP.proc && BP.proc.thread16, thread = t ? t.id : 0;
-    for (const b of list) {
-      b.n++;
-      // (an expression that throws ends its breakpoint, with the error kept for the list: it never ends the machine)
-      if (b.error) continue;
-      let value;
-      try { if (b.whenFn && !b.whenFn(R, M.r8, M.r16, M.r32, b.n, thread)) continue; if (b.captureFn) value = b.captureFn(R, M.r8, M.r16, M.r32, b.n, thread); }
-      catch (e) { b.error = String(e && e.message || e); continue; }
-      const regs = {}; for (const k of Object.keys(R)) regs[k] = R[k] >>> 0;
-      const sp = (R.ss & 0xfff8 ? R.ssb + (R.esp & 0xffff) : R.esp) >>> 0, stack = [];
-      for (let i = 0; i < 16; i++) stack.push(M.r32(sp + 4 * i) >>> 0);
-      const hit = { seq: ++BP.seq, id: b.id, at: a, n: b.n, thread, regs, stack, value };
-      BP.hits.push(hit); if (BP.hits.length > HITS_MAX) BP.hits.shift();
-      if (BP.onHit) BP.onHit(hit);
-    }
+    // (an expression that throws ends its breakpoint, with the error kept for the list: it never ends the machine)
+    for (const b of list.slice()) bpHit(b, a, R, M, thread);
   } };
 const made = new Map(), madeHash = new Map();   // (madeHash: each made text's hash, for dump: made once per text)
 const expr = s => { if (!s) return null; try { return new Function('R', 'r8', 'r16', 'r32', 'n', 'thread', `return (${s});`); } catch (e) { throw new Error(`debug: the expression ${s} does not parse (${e.message})`); } };
@@ -217,6 +205,46 @@ const labelOf = m => (m.name === 'EXE' ? m.meta.path || m.meta.name || 'EXE' : m
 const shortOf = m => String(labelOf(m)).split(/[\\/]/).pop().replace(/\.\w+$/, '').toUpperCase();
 // (a module's wasm is the memo's to keep (dyn.js neSet): read back, p.seedWasm, where the debugger needs it)
 const translated = p => (p.modules || []).filter(m => m && m.meta && m.meta.lookup && m.netSeed && m.run && !m.netText);
+/** a hit of breakpoint `b` at `a`: its expressions over the registers and memory, the hit recorded (regs, stack,
+ *  thread, value), and a halting one's halt asked for */
+function bpHit(b, a, R, M, thread) {
+  b.n++;
+  if (b.error) return;
+  let value;
+  try { if (b.whenFn && !b.whenFn(R, M.r8, M.r16, M.r32, b.n, thread)) return; if (b.captureFn) value = b.captureFn(R, M.r8, M.r16, M.r32, b.n, thread); }
+  catch (e) { b.error = String(e && e.message || e); return; }
+  const regs = {}; for (const k of Object.keys(R)) regs[k] = R[k] >>> 0;
+  const sp = (R.ss & 0xfff8 ? R.ssb + (R.esp & 0xffff) : R.esp) >>> 0, stack = [];
+  for (let i = 0; i < 16; i++) { try { stack.push(M.r32(sp + 4 * i) >>> 0); } catch (_) { break; } }
+  const hit = { seq: ++BP.seq, id: b.id, at: a, place: b.place, n: b.n, thread, regs, stack, value, ...(b.mode === 'halt' ? { halts: true } : {}) };
+  BP.hits.push(hit); if (BP.hits.length > HITS_MAX) BP.hits.shift();
+  if (b.mode === 'halt' && BP.proc && !BP.proc.dbgHalt) BP.proc.dbgHalt = { seq: hit.seq, id: b.id, at: a, place: b.place };
+  if (BP.onHit) BP.onHit(hit);
+}
+/** breakpoint `b` put where its place is now: the dispatcher's hook there (or the JS-run blocks' table, with no
+ *  dispatcher); moved when the place has moved, waiting (at null) while it cannot be found. `first`: a place that does
+ *  not parse throws */
+function bpInstall(p, b, first = false) {
+  let at = null;
+  try { at = resolve(p, b.place); b.why = null; } catch (e) { if (first && !/no module .* is loaded|is not an export/.test(e.message)) { BP.byId.delete(b.id); throw e; } b.why = e.message; }
+  // (a module run as JavaScript: its blocks report it themselves, each entry, chained or not (BP.at); a wasm one: the
+  // dispatcher's hook. Moved between the two as the module is (neSet, placed), never both: one hit an entry)
+  const inJs = at !== null && (p.modules || []).some(m => m && m.dynJs && m.meta && at >= m.meta.textLo && at < m.meta.textHi);
+  const useHook = !inJs && typeof p.addEntryHook === 'function';
+  if (at === b.at && ((useHook && b.off) || (!useHook && b.inTable))) return;
+  bpUninstall(b); b.at = at; if (at === null) return;
+  if (useHook) {
+    const M = { r8: x => p.u8[x >>> 0], r16: x => p.r16(x >>> 0), r32: x => p.r32(x >>> 0) };
+    b.off = p.addEntryHook(at, function () {
+      const c = this.cpu, R = {}; for (const k of Object.keys(c)) if (c[k] && typeof c[k].value === 'number') R[k] = c[k].value;
+      bpHit(b, at, R, M, this.thread16 ? this.thread16.id : 0);
+    });
+  } else { if (!BP.byAddr.has(at)) BP.byAddr.set(at, []); BP.byAddr.get(at).push(b); b.inTable = true; BP.on = true; }
+}
+function bpUninstall(b) {
+  if (b.off) { try { b.off(); } catch (_) { /* its machine gone */ } b.off = null; }
+  if (b.inTable && b.at !== null) { const l = (BP.byAddr.get(b.at) || []).filter(x => x !== b); if (l.length) BP.byAddr.set(b.at, l); else BP.byAddr.delete(b.at); b.inTable = false; }
+}
 /** The debugger's methods, each called with the machine's process first. The page's win95.debug calls them through
  *  the worker's cmd 'debug' ([method, ...arguments]); addresses are numbers or hex strings. */
 const D = {
@@ -233,22 +261,33 @@ const D = {
     for (const m of translated(p)) { const want = api.wants(labelOf(m)); if (want === !!m.dynJs || m.hidden) continue; m.dynJs = want; p.neSet(m, m.module, m.netSeed); }
     return translated(p).filter(m => m.dynJs).map(shortOf);
   },
-  /** Add a breakpoint: { at, when, capture }. Returns { id, at }. Its module must be running as JavaScript. */
+  /** Add a breakpoint: { at, when, capture, mode }. `at` a place (hex, MODULE+offset, DLL!Export), kept as it was given
+   *  and found again as modules are put in place (a module loaded later, placed again, translated again: api.placed);
+   *  one whose module is not loaded yet waits for it (at null). In the machine it is the dispatcher's hook at the
+   *  address (win32.js addEntryHook), for any module, wasm or JavaScript, the module's own calls and jumps to it
+   *  included (setEntryHook takes its block out of the module's table); with no dispatcher (a test's module), the
+   *  JS-run module's blocks report it (BP.at). mode 'record' (the default) records each hit and runs on; 'halt' also
+   *  stops the machine at the step's end (worker.js step: its clocks with it) until resume. Returns { id, at, place } */
   breakpoint(p, spec = {}) {
-    const at = resolve(p, spec.at), b = { id: BP.nextId++, at, when: spec.when || null, capture: spec.capture || null, n: 0, whenFn: expr(spec.when), captureFn: expr(spec.capture) };
-    BP.byId.set(b.id, b); if (!BP.byAddr.has(at)) BP.byAddr.set(at, []); BP.byAddr.get(at).push(b); BP.on = true;
-    return { id: b.id, at };
+    const mode = spec.mode === 'halt' ? 'halt' : 'record';
+    const place = typeof spec.at === 'number' ? `0x${(spec.at >>> 0).toString(16)}` : String(spec.at);   // (a number: its address, as hex text)
+    const b = { id: BP.nextId++, place, at: null, mode, when: spec.when || null, capture: spec.capture || null, n: 0, whenFn: expr(spec.when), captureFn: expr(spec.capture), off: null };
+    BP.byId.set(b.id, b); bpInstall(p, b, true);
+    return { id: b.id, at: b.at, place: b.place, mode, ...(b.at === null ? { waiting: b.why } : {}) };
   },
   /** Remove one breakpoint by id; true when it existed. */
   remove(p, id) {
     const b = BP.byId.get(id); if (!b) return false;
-    BP.byId.delete(id); const l = BP.byAddr.get(b.at).filter(x => x !== b); if (l.length) BP.byAddr.set(b.at, l); else BP.byAddr.delete(b.at);
-    BP.on = !!(BP.byId.size || BP.stepAll); return true;
+    bpUninstall(b); BP.byId.delete(id); BP.on = !!(BP.byAddr.size || BP.stepAll); return true;
   },
   /** Remove every breakpoint and forget the recorded hits. */
-  clear() { BP.byId.clear(); BP.byAddr.clear(); BP.hits.length = 0; BP.on = BP.stepAll; return true; },
-  /** The breakpoints: [{ id, at, when, capture, n }]. */
-  breakpoints: () => [...BP.byId.values()].map(({ id, at, when, capture, n, error }) => ({ id, at, when, capture, n, error: error || null })),
+  clear() { for (const b of BP.byId.values()) bpUninstall(b); BP.byId.clear(); BP.byAddr.clear(); BP.hits.length = 0; BP.on = BP.stepAll; return true; },
+  /** The breakpoints: [{ id, place, at, mode, when, capture, n }]. */
+  breakpoints: () => [...BP.byId.values()].map(({ id, place, at, mode, when, capture, n, error, why }) => ({ id, place, at, mode, when, capture, n, error: error || null, ...(at === null ? { waiting: why } : {}) })),
+  /** The machine halted by a 'halt' breakpoint: { seq, id, at, place } of the hit that halted it, or null */
+  halted: p => p.dbgHalt || null,
+  /** The machine going on from a halt (its next step); true when it was halted */
+  resume(p) { const was = !!p.dbgHalt; p.dbgHalt = null; if (was && BP.host && BP.host.step) setTimeout(() => BP.host.step(), 0); return was; },
   /** The recorded hits with seq above `since`: [{ seq, id, at, n, thread, regs, stack, value }]. */
   hits: (p, since = 0) => BP.hits.filter(h => h.seq > since),
   /** The JavaScript of the block holding an address, from its module's wasm (the module need not be running as
@@ -312,7 +351,7 @@ const D = {
     const seg = reg('ss') & 0xfff8, sp = seg ? (reg('ssb') + (reg('esp') & 0xffff)) >>> 0 : reg('esp'), stack = [];
     for (let i = 0; i < n && sp + 4 * i + 4 <= p.u8.length; i++) { const v = p.r32(sp + 4 * i) >>> 0, w = nameOf(p, v); stack.push(`+${hex(4 * i)}  ${hex(v)}${/\+/.test(w) ? '  ' + w : ''}`); }
     const t = p.thread16;
-    return { at: nameOf(p, reg('eip')), regs, flags: ['cf', 'zf', 'sf', 'of', 'df', 'pf'].filter(k => reg(k)).join(' '), stack16: !!seg, stack,
+    return { at: nameOf(p, reg('eip')), halted: p.dbgHalt || null, regs, flags: ['cf', 'zf', 'sf', 'of', 'df', 'pf'].filter(k => reg(k)).join(' '), stack16: !!seg, stack,
       thread: t ? t.id : 0, program: t && t.pc ? t.pc.path : null, sysLevel: p.sysLevel || 0, win16Lock: p.win16Held ? (p.win16Held.who && p.win16Held.who.id) || String(p.win16Held.who) : null };
   },
 };
@@ -435,6 +474,8 @@ const api = {
     })();
     return true;
   },
+  /** a module put in place (dyn.js neSet): the breakpoints found again, those waiting for it set, those it moved moved */
+  placed(p) { if (!BP.byId.size) return; BP.proc = p; for (const b of BP.byId.values()) bpInstall(p, b); },
   /** written with each JavaScript kept (file name, text): the app's copy on disk (worker.js) */
   mirror: null,
   _kept: kept, _keptGet: keptGet, _keptPut: keptPut, _fileOf: fileOf,
