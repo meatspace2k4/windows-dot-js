@@ -5417,6 +5417,7 @@ def16('KERNEL', 479, 'l', 'v', function (h) { this.signal(ev16(this, h)); });
 // ---- threads. One processor runs them one at a time: a thread created here starts when the scheduler next runs
 // (threads16, between slices of the main thread), runs until it waits on an event that is not set (then yields
 // in the wait, resuming there once the event is set), and ends when its procedure returns.
+const PASS_MS = 8;   // (the machine's time a pass of the threads the host makes may take: threads16)
 const MAIN_TID = 0x51, SYS_TID = 0x41, MAIN_PID = 0x50, SYS_PID = 0x40;   // the program's thread, and the system thread USER starts up on
 // the process the system thread runs in: on Windows' own machine (no program of its own), the Win16 process every 16-bit
 // task runs in, as USER starts up in KRNL386's own; a process of its own beside a machine's program. Two processes
@@ -5680,10 +5681,19 @@ P.threads16 = function (nested = false, only = null) {
   const caller = this.thread16, wasIn = this.inThreads, wasPreempted = this.preempted, t0 = this.runT0, wasAs = this.asTask;
   this.inThreads = true; this.threadsNest = (this.threadsNest || 0) + 1; this.asTask = false; if (caller) this.runT0 = this.now();
   if (this.tdbList && this.tdbList.length && !nested) this.tdbPrune();   // (the tasks that ended, out of KERNEL's task list)
-  try { for (const t of only ? [only] : [...this.threadsById.values()]) {   // the threads there are as the pass starts: one created in it starts in the next
+  // (a pass the host makes between slices (not nested, not one thread) ends once the machine's clock has gone
+  // PASS_MS past its start, at least one thread run, and the next pass starts with the thread it left: a pass of every
+  // thread was one step, and with Setup's many threads in slow code a step ran 1.9 s while nothing was drawn or taken
+  // in. The machine's clock, not the wall's: the same passes on every host, a moment's replay as it was)
+  const all = only ? [only] : [...this.threadsById.values()], bounded = !only && !nested, passT0 = this.now();
+  let order = all; if (bounded && this.t16Next !== undefined) { const i = all.findIndex(x => x.id === this.t16Next); if (i > 0) order = [...all.slice(i), ...all.slice(0, i)]; }
+  let ranHere = 0; if (bounded) this.t16Next = undefined;
+  try { for (const t of order) {   // the threads there are as the pass starts: one created in it starts in the next
+    if (bounded && ranHere && this.now() - passT0 >= PASS_MS) { this.t16Next = t.id; break; }
     if (t === caller || t.state === 'running' || t.blocked || (t.id === MAIN_TID && !caller) || (t.id === MAIN_TID && caller) || !t.state || t.state === 'done' || t.state === 'hung' || t.state === 'suspended' || (t.state === 'waiting' && t.wait && !t.wait.set)) continue;   // a thread that yielded with no event to wait for (in WaitEvent) runs again
     if (this.win16Held && this.win16Held.who !== t && !(caller && this.win16Held.who === caller)) continue;   // another thread holds the Win16Lock (a caller that yields hands its own over)
     if (!only && this.waitBlocked(t)) continue;   // (it would only wait again)
+    ranHere++;
     const main = this.saveCtx16();
     const sw = this.switchMs || (this.switchMs = { img: 0, load: 0, run: 0, save: 0, n: 0 }); let tm = performance.now();   // (a diagnostic: where a thread switch's time goes, cmd 'views')
     if (this.sliceEnd !== undefined) { this.cpu.budget.value = this.sliceEnd; this.sliceEnd = undefined; }   // (a slice ended early that stopped another way first: the blocks left are this thread's)
