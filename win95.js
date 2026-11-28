@@ -3647,7 +3647,17 @@ function setupNetwork() {
   // network client then logs on with, instead of the client's Enter Network Password before it
   const logon = 'hklm\\network\\logon', primary = W95FS.decode(((R.regGet(logon, 'PrimaryProvider') || {}).data) || new Uint8Array(0)).replace(/\0.*$/, '');
   if (primary === '' || primary === 'Microsoft Network') R.regSet(logon, 'PrimaryProvider', str('Windows Logon'));
-  if (R.regGet('hklm\\enum\\root\\net\\0000', 'Driver') !== undefined) { setOrder(); return; }
+  // (set up already when the card has a protocol bound to it. An upgrade's Setup (OSR 2.5 over the page's install)
+  // leaves the card with none, its protocols unbound and their VxDs dropped from the boot: what it left is cleared
+  // and the network set up as on the page's own install, else Network Neighborhood had no network after the upgrade)
+  const card = 'hklm\\enum\\root\\net\\0000';
+  if (R.regGet(card, 'Driver') !== undefined) {
+    if (R.regVals(card + '\\bindings').length) { setOrder(); return; }
+    for (const k of ['hklm\\enum\\network', 'hklm\\system\\currentcontrolset\\services\\class\\nettrans', 'hklm\\system\\currentcontrolset\\services\\class\\netclient', 'hklm\\system\\currentcontrolset\\services\\class\\netservice'])
+      R.regDel(k);
+    for (const k of R.regKids('hklm\\enum\\root\\net')) if (k !== '0000') R.regDel('hklm\\enum\\root\\net\\' + k);
+    for (const k of R.regKids('hklm\\system\\currentcontrolset\\services\\class\\net')) if (k !== '0000') R.regDel('hklm\\system\\currentcontrolset\\services\\class\\net\\' + k);
+  }
   const cls = 'hklm\\system\\currentcontrolset\\services\\class\\';
   const set = (k, o) => { for (const [n, v] of Object.entries(o)) R.regSet(k, n, typeof v === 'string' ? str(v) : v); };
   // the card
