@@ -408,7 +408,9 @@ class Process {
     // (the arena full: a relocatable DLL in the address space above the layout's, where VirtualAlloc's regions are, as
     // Windows maps a DLL wherever its process has room. Windows 98's first start maps more DLLs than the arena holds,
     // and IEPEERS.DLL and OCCACHE.DLL found no room)
-    if (relocatable && !own && this.vmTop) { const r = this.vmRoom(size, 0x10000, spans); if (r) return r; }
+    // (a program too, when it can be relocated: the OSR 2.5 CD's MSN251.EXE, an IExpress package of A8A000h bytes at
+    // 1000000h, found no gap that size below 2000000h, and its start failed with "no room for its image")
+    if (relocatable && this.vmTop) { const r = this.vmRoom(size, 0x10000, spans); if (r) return r; }
     if (relocatable && !own) for (let a = 0x00620000; a + size <= EXE_ZONE_END; a += 0x10000) if (free(a)) return a;
     return 0;
   }
