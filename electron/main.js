@@ -128,6 +128,15 @@ let shares
 ipcMain.on('shares-list', e => { e.returnValue = shares.list() })
 ipcMain.on('share-op', (e, name, op, ...args) => { e.returnValue = shares.op(name, op, ...args) })
 ipcMain.on('host-name', e => { e.returnValue = os.hostname().split('.')[0] })
+// ---- the Internet, as the LAN's gateway reaches it (lanip.js): one request from the Mac, with today's TLS, its answer
+// whole (status, headers, body), a redirect answered as it is so the page can give it to Windows
+ipcMain.handle('net-fetch', async (e, req) => {
+  const { net } = require('electron')
+  try {
+    const r = await net.fetch(req.url, { method: req.method || 'GET', headers: req.headers || {}, body: req.body && req.body.length ? Buffer.from(req.body) : undefined, redirect: 'manual' })
+    return { status: r.status, statusText: r.statusText, headers: [...r.headers], body: new Uint8Array(await r.arrayBuffer()) }
+  } catch (err) { return { error: String(err && err.message || err) } }
+})
 // the window is the monitor: its content is the size of the display mode the system's machine is in (the page asks
 // as the mode is set, and after a resize once the machine holds the largest mode the window held), unless the
 // window is full screen or maximized, where the screen is centered in it; likewise while DevTools are open (docked, they

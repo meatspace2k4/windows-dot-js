@@ -33,6 +33,8 @@ contextBridge.exposeInMainWorld('W95HOST', {
     on: f => ipcRenderer.on('cd-changed', (_, name) => f(name)), insert: () => ipcRenderer.send('cd-insert'), eject: () => ipcRenderer.send('cd-eject') },
   // the audio CD in the second drive: its table of contents (null with none) and its sectors a byte range at a time
   audio: { toc: ipcRenderer.sendSync('audio-toc'), read: (start, length) => ipcRenderer.invoke('audio-read', start, length) },
+  // the Internet the LAN's gateway reaches (lanip.js): one HTTP request made from the Mac, its answer whole
+  net: { fetch: req => ipcRenderer.invoke('net-fetch', req) },
   // the window is the monitor: its content takes the size of the display mode the system's machine is in
   screen: { fit: (width, height) => ipcRenderer.send('fit-window', width, height) },
   // a session file to continue on another computer: the app's own Export and Import Session (main.js), which choose the file

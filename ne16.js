@@ -2606,6 +2606,16 @@ vxdApi(0x0033, 'CONFIGMG', {
     this.w32(a, n); this.writeA(a + 4, regStr(W.regGet(idc, 'FriendlyName' + String(n).padStart(4, '0'))), 80); this.w32(a + 84, 0);
     return CR.SUCCESS;
   },
+  // Query_Arbitrator_Free_Size(far *size, dn, resource, flags), Query_Arbitrator_Free_Data(far buf, len, dn, resource,
+  // flags): which of a resource's values no device holds, a bit each, set when free (IRQ 16 bits, DMA 8, I/O ports
+  // 65536); the held ones are the emulated cards' (P.cards). NETDI asks as TCP/IP is added to a network card: missing,
+  // RUNDLL32 stopped in SETUPX
+  0x12() { const arg = cmArgs(this), n = this.cmFreeBits(arg(2)); if (!n) return CR.FAILURE; this.w32(this.lin(arg(0)), n.length); return CR.SUCCESS; },
+  0x13() {
+    const arg = cmArgs(this), n = this.cmFreeBits(arg(3)); if (!n) return CR.FAILURE;
+    if (arg(1) < n.length) return CR.BUFFER_SMALL;
+    this.u8.set(n, this.lin(arg(0))); return CR.SUCCESS;
+  },
   // Get_DevNode_Status(far *status, far *problem, dn, flags): started (DN_STARTED 8 | DN_DRIVER_LOADED 2 | DN_HAS_PROBLEM no)
   0x36() { const arg = cmArgs(this), dn = this.cmNode(arg(2)); if (!dn) return CR.INVALID_DEVNODE; this.w32(this.lin(arg(0)), 0x0a | (dn.started ? 0 : 0)); if (arg(1)) this.w32(this.lin(arg(1)), 0); return CR.SUCCESS; },
   // Get_Alloc_Log_Conf(far CMCONFIG, dn, flags): the resources the devnode was given
@@ -2629,6 +2639,20 @@ vxdApi(0x0033, 'CONFIGMG', {
     window.W95Win32.regSet('hklm\\' + k, (arg(2) && this.readA(this.lin(arg(2)))) || '', { type: arg(3), data: this.u8.slice(b, b + n) }); return CR.SUCCESS;
   },
 });
+/** the free values of a resource (ResType_IO 2, _DMA 3, _IRQ 4) as a bitmap, a bit set for each value no card holds;
+ *  null for one not arbitrated here (memory) */
+P.cmFreeBits = function (res) {
+  const size = res === 4 ? 16 : res === 3 ? 8 : res === 2 ? 0x10000 : 0; if (!size) return null;
+  const b = new Uint8Array(size / 8).fill(0xff), held = v => { if (v >= 0 && v < size) b[v >> 3] &= ~(1 << (v & 7)); };
+  for (const c of (this.cards && this.cards()) || []) {
+    if (res === 4) (c.irq || []).forEach(held);
+    else if (res === 3) (c.dma || []).forEach(held);
+    else for (const [base, n] of c.io || []) for (let v = base; v < base + n; v++) held(v);
+  }
+  if (res === 4) [0, 1, 2, 8, 13].forEach(held);   // (the timer, keyboard, cascade, clock and coprocessor: the system's)
+  if (res === 3) held(4);                         // (the cascade)
+  return b;
+};
 /** CMCONFIG for a devnode: memory windows (9: bases, lengths, attributes), I/O ports (20), IRQs (7), DMA channels (7),
  *  as Config_Buff_s lays them out */
 P.cmConfig = function (dn, a) {
