@@ -160,7 +160,13 @@ function translate(p, lin, csb, d32, v86, limit, ss32In, fIn, endIn, r3In) {
   // the next block is translated for the stack's width as it is then. In a region it goes back to the host, not round
   // the region's loop into a block translated for the width before)
   const exit = next => { f.c(next | 0); if (f.rg) f.e(0x0f); return { fn: f, len: pc - lin, n, succ }; };
+  // (a store through CS, real-mode or V86 code writing its own code segment (a protected-mode code segment cannot be
+  // written), ends the block after that instruction: what follows may be the code it wrote, and the next block is
+  // checked and translated from its bytes as they are then, as the processor fetches them. SYSDETMG's real-mode INT 12h
+  // stub writes the interrupt number into its INT's operand 43 bytes on, and the INT ran with the number before)
+  let codeWritten = false;
   for (;;) {
+    if (codeWritten) return exit(pc);
     if (endIn && pc >= endIn) return exit(pc);   // (the segment's end: the processor would fault there; the dispatcher gets the address)
     if (++n > (limit || 400)) return done(pc);   // a long straight run: continue in another block
     insnAt = n;
@@ -219,7 +225,7 @@ function translate(p, lin, csb, d32, v86, limit, ss32In, fIn, endIn, r3In) {
       f.gg(g).c(~(0xff << sh)).op('and').lg(loc).c(0xff).op('and'); if (sh) f.c(sh).op('shl'); f.op('or').gs(g);
     };
     const rd = (o, sz) => { if (o.isReg) rdReg(o.rm, sz); else { devLoad(A, sz); f.lg(A).ld(sz); } };
-    const wr = (o, sz, loc) => { if (o.isReg) wrReg(o.rm, sz, loc); else { f.lg(A).lg(loc).st(sz); dev(A, sz); } };
+    const wr = (o, sz, loc) => { if (o.isReg) wrReg(o.rm, sz, loc); else { f.lg(A).lg(loc).st(sz); dev(A, sz); if (o.sr === 1) codeWritten = true; } };
     const imm = sz => sz === 1 ? fetch() : sz === 2 ? fetch16() : fetch32();
     // ---- flags
     const bits = sz => sz * 8;
@@ -422,7 +428,7 @@ function translate(p, lin, csb, d32, v86, limit, ss32In, fIn, endIn, r3In) {
     if (b >= 0xa0 && b <= 0xa3) {   // mov al/eax, moffs
       const sz = b & 1 ? osz : 1, off = asz === 4 ? fetch32() : fetch16();
       f.c(off).gg(sbase(seg === null ? 3 : seg)).op('add').ls(A); guard(A, !!(b & 2));
-      if (b & 2) { rdReg(0, sz); f.ls(T); f.lg(A).lg(T).st(sz); dev(A, sz); } else { devLoad(A, sz); f.lg(A).ld(sz).ls(T); wrReg(0, sz, T); }
+      if (b & 2) { rdReg(0, sz); f.ls(T); f.lg(A).lg(T).st(sz); dev(A, sz); if (seg === 1) codeWritten = true; } else { devLoad(A, sz); f.lg(A).ld(sz).ls(T); wrReg(0, sz, T); }
       continue;
     }
     if (b === 0xa8 || b === 0xa9) { const sz = b & 1 ? osz : 1; rdReg(0, sz); f.c(imm(sz)).op('and').ls(R); f.c(0).gs('cf'); f.c(0).gs('of'); szp(sz); continue; }
